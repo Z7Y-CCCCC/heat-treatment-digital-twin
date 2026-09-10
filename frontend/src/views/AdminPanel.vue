@@ -10309,6 +10309,7 @@ async function openAdminSetupStep(step) {
 }
 
 .line-planner-tab {
+    height: 100%;
     min-height: calc(100vh - 86px);
     padding: 0;
     overflow: visible;
@@ -10321,6 +10322,7 @@ async function openAdminSetupStep(step) {
     display: none;
 }
 .line-planner-shell {
+    height: 100%;
     min-height: calc(100vh - 86px);
     display: grid;
     grid-template-rows: auto auto minmax(0, 1fr);
