@@ -7210,35 +7210,6 @@ async function openAdminSetupStep(step) {
 
                                 <div v-if="selectedLineEditor" class="line-structure-editor">
                                     <div class="line-structure-section">
-                                        <button
-                                            v-if="isLinePlacementPending(selectedLineEditor)"
-                                            type="button"
-                                            class="line-placement-pending-card"
-                                            @click="openLinePlacement(selectedLineEditor)"
-                                        >
-                                            <span class="line-placement-pending-icon">
-                                                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16v10H4zM8 12h8M12 8v8" /></svg>
-                                            </span>
-                                            <span class="line-placement-pending-copy">
-                                                <strong>产线在车间中的位置：待定</strong>
-                                                <small>这是该车间的第二条或后续产线。请到车间布局画布中手动决定出生位置。</small>
-                                            </span>
-                                            <span class="line-placement-pending-action">前往放置 <b>→</b></span>
-                                        </button>
-                                        <template v-else>
-                                            <div class="line-structure-title">
-                                                <strong>产线在车间中的位置</strong>
-                                                <span class="line-flow-hint">这些值是相对所属车间的局部坐标；车间移动时无需逐台修改设备。</span>
-                                            </div>
-                                            <div class="line-transform-grid">
-                                                <label>相对车间 X<input v-model.number="selectedLineLayout.transform.x" type="number" step="0.5" class="input input-sm" /></label>
-                                                <label>相对车间 Y<input v-model.number="selectedLineLayout.transform.y" type="number" step="0.1" class="input input-sm" /></label>
-                                                <label>相对车间 Z<input v-model.number="selectedLineLayout.transform.z" type="number" step="0.5" class="input input-sm" /></label>
-                                                <label>相对车间朝向（°）<input v-model.number="selectedLineLayout.transform.rotationY" type="number" min="-180" max="180" step="1" class="input input-sm" /></label>
-                                            </div>
-                                        </template>
-                                    </div>
-                                    <div class="line-structure-section">
                                         <div class="line-structure-title">
                                             <strong>设备线</strong>
                                             <button class="btn btn-sm" type="button" @click="addLineLayoutItem('lane')">+ 设备线</button>
