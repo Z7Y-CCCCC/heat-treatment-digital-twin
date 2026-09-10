@@ -980,6 +980,10 @@ async function deleteLine(id) {
 const devices = ref([])
 const savedDeviceLayoutSnapshots = ref({})
 const showDeviceForm = ref(false)
+const deviceFormStatus = ref('idle')
+const deviceFormError = ref('')
+const deviceFormTargetId = ref('')
+let deviceFormRequestToken = 0
 const editingDeviceWorkshopId = ref('')
 function defaultPlcConnectionConfig() {
     return {
@@ -1071,7 +1075,11 @@ async function loadDevices() {
 }
 
 function openCreateDevice() {
+    deviceFormRequestToken += 1
     isEditMode.value = false
+    deviceFormStatus.value = 'ready'
+    deviceFormError.value = ''
+    deviceFormTargetId.value = ''
     editingDeviceWorkshopId.value = workshops.value[0]?.id || ''
     Object.assign(editingDevice, { 
         id: '', name: '', line_id: placedLines.value[0]?.id || '',
@@ -1083,13 +1091,38 @@ function openCreateDevice() {
     showDeviceForm.value = true
 }
 
-function openEditDevice(d) {
+function closeDeviceForm() {
+    deviceFormRequestToken += 1
+    showDeviceForm.value = false
+    deviceFormStatus.value = 'idle'
+    deviceFormError.value = ''
+    deviceFormTargetId.value = ''
+}
+
+async function openEditDevice(d) {
+    const requestToken = ++deviceFormRequestToken
     isEditMode.value = true
-    const normalized = normalizeDeviceConfig(d)
-    Object.assign(editingDevice, { ...defaultPlcConnectionConfig(), ...normalized, line_id: normalized.line_id || '' })
-    editingDeviceWorkshopId.value = getDeviceWorkshopId(editingDevice) || workshops.value[0]?.id || ''
-    syncEditingDeviceInspectionState()
+    deviceFormStatus.value = 'loading'
+    deviceFormError.value = ''
+    deviceFormTargetId.value = String(d?.id || '')
     showDeviceForm.value = true
+
+    try {
+        const detail = await adminApi.getDevice(d.id)
+        if (requestToken !== deviceFormRequestToken || !showDeviceForm.value) return
+        if (!detail || detail.error) {
+            throw new Error(detail?.error || '设备详情加载失败')
+        }
+        const normalized = normalizeDeviceConfig(detail)
+        Object.assign(editingDevice, { ...defaultPlcConnectionConfig(), ...normalized, line_id: normalized.line_id || '' })
+        editingDeviceWorkshopId.value = getDeviceWorkshopId(editingDevice) || workshops.value[0]?.id || ''
+        syncEditingDeviceInspectionState()
+        deviceFormStatus.value = 'ready'
+    } catch (error) {
+        if (requestToken !== deviceFormRequestToken) return
+        deviceFormStatus.value = 'error'
+        deviceFormError.value = error?.message || '设备详情加载失败，请稍后重试'
+    }
 }
 
 async function saveDevice() {
@@ -7633,9 +7666,20 @@ async function openAdminSetupStep(step) {
 
                     <!-- 设备表单弹窗 -->
                     <Transition name="modal-fade">
-                        <div v-if="showDeviceForm" class="modal-overlay" @click.self="showDeviceForm = false">
+                        <div v-if="showDeviceForm" class="modal-overlay" @click.self="closeDeviceForm">
                             <div class="modal-box">
                             <h3>{{ isEditMode ? '编辑设备' : '新增设备' }}</h3>
+                            <div v-if="deviceFormStatus === 'loading'" class="device-form-state device-form-loading" role="status" aria-live="polite">
+                                <span class="device-form-spinner" aria-hidden="true"></span>
+                                <strong>正在加载设备详情</strong>
+                                <small>正在读取设备的最新配置，请稍候…</small>
+                            </div>
+                            <div v-else-if="deviceFormStatus === 'error'" class="device-form-state device-form-error" role="alert">
+                                <strong>设备详情加载失败</strong>
+                                <small>{{ deviceFormError }}</small>
+                                <button type="button" class="btn btn-primary btn-sm" @click="openEditDevice({ id: deviceFormTargetId })">重新加载</button>
+                            </div>
+                            <template v-else>
                             <div class="form-grid">
                                 <label>设备 ID<input v-model="editingDevice.id" :disabled="isEditMode" class="input" placeholder="如 Furnace_21" /></label>
                                 <label>设备名称<input v-model="editingDevice.name" class="input" placeholder="如 21# 多用炉" /></label>
@@ -7786,8 +7830,9 @@ async function openAdminSetupStep(step) {
                             </div>
                             <div class="modal-actions">
                                 <button @click="saveDevice" class="btn btn-primary">保存</button>
-                                <button @click="showDeviceForm = false" class="btn">取消</button>
+                                <button @click="closeDeviceForm" class="btn">取消</button>
                             </div>
+                            </template>
                             </div>
                         </div>
                     </Transition>
@@ -7829,7 +7874,7 @@ async function openAdminSetupStep(step) {
                         </table>
                     </div>
                     <div class="device-group" v-if="auxiliaryDevices.length">
-                        <h3 class="group-title">辅助设备 / 料车</h3>
+                        <h3 class="group-title">辅助设备</h3>
                         <table class="data-table">
                             <thead>
                                 <tr><th>ID</th><th>名称</th><th>车间</th><th>模型</th><th>PLC</th><th>操作</th></tr>
@@ -13038,6 +13083,32 @@ button:enabled:active {
 }
 .modal-box h3 { color: #1d1d1f; margin: 0 0 24px 0; font-size: 20px; font-weight: 600; }
 .modal-actions { display: flex; gap: 12px; justify-content: flex-end; margin-top: 32px; border-top: 1px solid rgba(0, 0, 0, 0.08); padding-top: 20px; }
+.device-form-state {
+    min-height: 260px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    color: #25364b;
+    text-align: center;
+    border: 1px solid rgba(52, 100, 145, 0.14);
+    border-radius: 16px;
+    background: linear-gradient(145deg, rgba(247, 250, 255, 0.98), rgba(239, 246, 253, 0.92));
+}
+.device-form-state small { color: #708096; }
+.device-form-loading { color: #1d5fa7; }
+.device-form-spinner {
+    width: 30px;
+    height: 30px;
+    border: 3px solid rgba(38, 111, 193, 0.18);
+    border-top-color: #2674d8;
+    border-radius: 50%;
+    animation: device-form-spin 800ms linear infinite;
+}
+.device-form-error { color: #9b2c2c; border-color: rgba(188, 61, 61, 0.2); background: linear-gradient(145deg, #fffafa, #fff2f2); }
+.device-form-error small { max-width: 520px; color: #a35d5d; }
+@keyframes device-form-spin { to { transform: rotate(360deg); } }
 
 .app-dialog-overlay {
     position: fixed;
