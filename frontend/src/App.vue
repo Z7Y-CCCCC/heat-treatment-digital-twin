@@ -215,6 +215,20 @@ function goBack() {
   isDrawerOpen.value = true
 }
 
+function canGoBack() {
+  return currentLevel.value > 0 && !(currentLevel.value === 1 && topLevel.value === 1)
+}
+
+function handleKeydown(event) {
+  if (event.key !== 'Escape' || event.defaultPrevented || !canGoBack()) return
+
+  const target = event.target
+  if (target instanceof HTMLElement && target.closest('input, textarea, select, [contenteditable="true"]')) return
+
+  event.preventDefault()
+  goBack()
+}
+
 function controlCamera(action) {
   sceneRuntime?.controlCamera(action)
 }
@@ -290,6 +304,7 @@ onMounted(async () => {
   window.addEventListener('workshop-selected', handleWorkshopSelected)
   window.addEventListener('line-selected', handleLineSelected)
   window.addEventListener('factory-selected', handleFactorySelected)
+  window.addEventListener('keydown', handleKeydown)
   window.addEventListener('pointerdown', unlockVoicePlayback, { passive: true })
 })
 
@@ -302,6 +317,7 @@ onUnmounted(() => {
   window.removeEventListener('workshop-selected', handleWorkshopSelected)
   window.removeEventListener('line-selected', handleLineSelected)
   window.removeEventListener('factory-selected', handleFactorySelected)
+  window.removeEventListener('keydown', handleKeydown)
   window.removeEventListener('pointerdown', unlockVoicePlayback)
 })
 </script>
@@ -403,7 +419,7 @@ onUnmounted(() => {
         <button class="tool-btn" @click="controlCamera('zoomOut')" title="拉远缩小">－</button>
       </div>
 
-      <button class="back-btn" v-if="currentLevel > 0 && !(currentLevel === 1 && topLevel === 1)" @click="goBack">
+      <button class="back-btn" v-if="canGoBack()" @click="goBack">
         返回上一级
       </button>
 
