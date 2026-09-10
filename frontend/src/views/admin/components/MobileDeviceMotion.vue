@@ -39,13 +39,6 @@ function positionOr(value, fallback) {
     }
 }
 
-function defaultStations(start, end) {
-    return [
-        { value: 1, label: '1号工位', anchorDeviceId: '', distanceMeters: 0, position: { ...start } },
-        { value: 2, label: '2号工位', anchorDeviceId: '', distanceMeters: '', position: { ...end } }
-    ]
-}
-
 function normalizeStations(value, fallback) {
     if (!Array.isArray(value)) return fallback.map(station => ({ ...station, position: { ...station.position } }))
     const stations = value
@@ -58,6 +51,8 @@ function normalizeStations(value, fallback) {
                 value: Number.isFinite(valueNumber) ? valueNumber : defaultValue,
                 label: String(source.label || `${Number.isFinite(valueNumber) ? valueNumber : defaultValue}号工位`),
                 anchorDeviceId: pointIdOr(source.anchorDeviceId ?? source.anchor_device_id),
+                deviceLineKey: pointIdOr(source.deviceLineKey ?? source.device_line_key),
+                deviceLineName: String(source.deviceLineName ?? source.device_line_name ?? ''),
                 distanceMeters: index === 0
                     ? 0
                     : (Number.isFinite(Number(source.distanceMeters ?? source.distance_meters))
@@ -94,7 +89,7 @@ function defaultMotion(device = {}) {
         sceneUnitsPerMeter: 1,
         start,
         end: { ...start, x: start.x + 10 },
-        stations: defaultStations(start, { ...start, x: start.x + 10 })
+        stations: []
     }
 }
 
@@ -119,7 +114,7 @@ function normalizeMotion(device) {
         sceneUnitsPerMeter: Math.max(0.0001, numberOr(source.sceneUnitsPerMeter ?? source.scene_units_per_meter, fallback.sceneUnitsPerMeter)),
         start: positionOr(source.start, fallback.start),
         end: positionOr(source.end, fallback.end),
-        stations: normalizeStations(source.stations, fallback.stations)
+        stations: Array.isArray(source.stations) ? normalizeStations(source.stations, fallback.stations) : []
     }
 }
 
@@ -142,6 +137,28 @@ function isAuxiliaryDevice(device) {
 
 const mobileDevices = computed(() => props.devices.filter(isAuxiliaryDevice))
 const selectedDevice = computed(() => mobileDevices.value.find(device => String(device.id) === String(selectedDeviceId.value)) || null)
+
+function deviceLineInfo(device) {
+    const config = parseJson(device?.instance_config)
+    const productionLineId = pointIdOr(config.laneLineId ?? config.lane_line_id ?? device?.line_id)
+    const deviceLineId = pointIdOr(config.laneId ?? config.lane_id)
+    const deviceLineName = String(config.laneName ?? config.lane_name ?? '').trim()
+    if (!deviceLineId) {
+        return {
+            key: `${productionLineId || 'unknown'}::unassigned`,
+            name: '未指定设备线',
+            deviceLineId: '',
+            productionLineId
+        }
+    }
+    return {
+        key: `${productionLineId || 'unknown'}::${deviceLineId}`,
+        name: deviceLineName || `设备线 ${deviceLineId}`,
+        deviceLineId,
+        productionLineId
+    }
+}
+
 const lineStationDevices = computed(() => {
     const lineId = deviceDetail.value?.line_id
     if (!lineId) return []
@@ -176,8 +193,81 @@ const lineStationDevices = computed(() => {
         next += 1
     })
     return candidates
-        .map(device => ({ ...device, stationNumber: nextById.get(device.id) }))
+        .map(device => {
+            const line = deviceLineInfo(device)
+            return {
+                ...device,
+                stationNumber: nextById.get(device.id),
+                deviceLineKey: line.key,
+                deviceLineName: line.name
+            }
+        })
         .sort((left, right) => left.stationNumber - right.stationNumber)
+})
+
+const deviceLineGroups = computed(() => {
+    const groups = new Map()
+    lineStationDevices.value.forEach(device => {
+        const info = deviceLineInfo(device)
+        if (!groups.has(info.key)) {
+            groups.set(info.key, {
+                key: info.key,
+                name: info.name,
+                deviceLineId: info.deviceLineId,
+                devices: []
+            })
+        }
+        groups.get(info.key).devices.push(device)
+    })
+    return [...groups.values()].sort((left, right) => left.name.localeCompare(right.name, 'zh-CN'))
+})
+
+function stationDeviceLineInfo(station) {
+    const explicitKey = pointIdOr(station?.deviceLineKey ?? station?.device_line_key)
+    if (explicitKey) {
+        const knownGroup = deviceLineGroups.value.find(group => group.key === explicitKey)
+        return knownGroup || {
+            key: explicitKey,
+            name: String(station?.deviceLineName ?? station?.device_line_name ?? '未指定设备线') || '未指定设备线',
+            deviceLineId: '',
+            devices: []
+        }
+    }
+    const anchor = lineStationDevices.value.find(device => String(device.id) === String(station?.anchorDeviceId))
+    if (anchor) return {
+        key: anchor.deviceLineKey,
+        name: anchor.deviceLineName,
+        deviceLineId: deviceLineInfo(anchor).deviceLineId,
+        devices: []
+    }
+    if (deviceLineGroups.value.length === 1) return deviceLineGroups.value[0]
+    const productionLineId = pointIdOr(deviceDetail.value?.line_id)
+    return {
+        key: `${productionLineId || 'unknown'}::unassigned`,
+        name: '待分配设备线',
+        deviceLineId: '',
+        devices: []
+    }
+}
+
+const stationGroups = computed(() => {
+    const groups = new Map()
+    deviceLineGroups.value.forEach(group => {
+        groups.set(group.key, { ...group, stations: [] })
+    })
+    ;(motion.value.stations || []).forEach(station => {
+        const info = stationDeviceLineInfo(station)
+        if (!groups.has(info.key)) {
+            groups.set(info.key, { ...info, stations: [] })
+        }
+        groups.get(info.key).stations.push(station)
+    })
+    return [...groups.values()]
+        .map(group => ({
+            ...group,
+            stations: group.stations.slice().sort((left, right) => numberOr(left.value) - numberOr(right.value))
+        }))
+        .sort((left, right) => left.name.localeCompare(right.name, 'zh-CN'))
 })
 const numericPoints = computed(() => dataPoints.value.filter(point => {
     const type = String(point.data_type || '').toUpperCase()
@@ -245,15 +335,24 @@ watch(mobileDevices, devices => {
 
 watch(selectedDeviceId, value => { loadDevice(value) })
 
-function addStation() {
+function addStation(deviceLineKey = '') {
     const stations = Array.isArray(motion.value.stations) ? motion.value.stations : []
-    const last = stations[stations.length - 1]
+    const group = stationGroups.value.find(item => item.key === deviceLineKey)
+    const groupStations = group?.stations || []
+    const last = groupStations[groupStations.length - 1] || stations[stations.length - 1]
     const nextValue = stations.reduce((max, station) => Math.max(max, numberOr(station.value, 0)), 0) + 1
     const base = last?.position || motion.value.end || motion.value.start
+    const fallbackGroup = stationDeviceLineInfo({ deviceLineKey })
+    const targetGroup = group || (deviceLineKey ? fallbackGroup : {
+        ...fallbackGroup,
+        name: '待分配设备线'
+    })
     stations.push({
         value: nextValue,
         label: `${nextValue}号工位`,
         anchorDeviceId: '',
+        deviceLineKey: targetGroup.key,
+        deviceLineName: targetGroup.name,
         distanceMeters: '',
         position: {
             x: numberOr(base?.x) + (last ? 10 : 0),
@@ -264,9 +363,10 @@ function addStation() {
     motion.value.stations = stations
 }
 
-function removeStation(index) {
+function removeStation(station) {
     if (!Array.isArray(motion.value.stations) || motion.value.stations.length <= 1) return
-    motion.value.stations.splice(index, 1)
+    const index = motion.value.stations.indexOf(station)
+    if (index >= 0) motion.value.stations.splice(index, 1)
 }
 
 function applyStationAnchor(station) {
@@ -284,14 +384,23 @@ function syncStationsFromLine() {
         errorMessage.value = '当前设备所属产线还没有固定设备，请先在产线画布中摆放设备'
         return
     }
-    const previousDistances = new Map((motion.value.stations || []).map(station => [Number(station.value), station.distanceMeters]))
-    motion.value.stations = lineStationDevices.value.map((device, index) => {
+    const previousDistances = new Map((motion.value.stations || []).map(station => {
+        const info = stationDeviceLineInfo(station)
+        return [`${info.key}::${Number(station.value)}`, station.distanceMeters]
+    }))
+    const groupIndexes = new Map()
+    motion.value.stations = lineStationDevices.value.map(device => {
         const value = device.stationNumber
+        const info = deviceLineInfo(device)
+        const groupIndex = groupIndexes.get(info.key) || 0
+        groupIndexes.set(info.key, groupIndex + 1)
         return {
             value,
             label: `${value}号工位 · ${device.name || device.id}`,
             anchorDeviceId: String(device.id),
-            distanceMeters: index === 0 ? 0 : (previousDistances.get(value) ?? ''),
+            deviceLineKey: info.key,
+            deviceLineName: info.name,
+            distanceMeters: groupIndex === 0 ? 0 : (previousDistances.get(`${info.key}::${value}`) ?? ''),
             position: {
                 x: numberOr(device.pos_x),
                 y: numberOr(device.pos_y),
@@ -299,7 +408,7 @@ function syncStationsFromLine() {
             }
         }
     })
-    message.value = `已从当前产线导入 ${lineStationDevices.value.length} 个工位位置`
+    message.value = `已按 ${deviceLineGroups.value.length} 条设备线导入 ${lineStationDevices.value.length} 个工位位置`
     errorMessage.value = ''
 }
 
@@ -311,22 +420,24 @@ function sceneDistance(left, right) {
 }
 
 const stationDistanceSummary = computed(() => {
-    const stations = [...(motion.value.stations || [])].sort((left, right) => numberOr(left.value) - numberOr(right.value))
     let totalMeters = 0
     let totalSceneUnits = 0
     let missingCount = 0
-    stations.forEach((station, index) => {
-        if (index === 0) return
-        const distance = Number(station.distanceMeters)
-        if (!Number.isFinite(distance) || distance <= 0) {
-            missingCount += 1
-        } else {
-            totalMeters += distance
-        }
-        totalSceneUnits += sceneDistance(stations[index - 1]?.position, station.position)
+    stationGroups.value.forEach(group => {
+        group.stations.forEach((station, index) => {
+            if (index === 0) return
+            const distance = Number(station.distanceMeters)
+            if (!Number.isFinite(distance) || distance <= 0) {
+                missingCount += 1
+            } else {
+                totalMeters += distance
+            }
+            totalSceneUnits += sceneDistance(group.stations[index - 1]?.position, station.position)
+        })
     })
     return {
-        stationCount: stations.length,
+        groupCount: stationGroups.value.length,
+        stationCount: (motion.value.stations || []).length,
         totalMeters,
         totalSceneUnits,
         missingCount,
@@ -362,7 +473,7 @@ async function saveMotion() {
             }
         }
         if (motion.value.simulationEnabled && stationDistanceSummary.value.missingCount > 0) {
-            errorMessage.value = '请填写每个相邻工位之间的现场间距；第一站不需要填写'
+            errorMessage.value = '请填写同一设备线内相邻工位之间的现场间距；每条设备线的第一站不需要填写'
             return
         }
         if (motion.value.simulationEnabled && motion.value.acceleration <= 0) {
@@ -376,6 +487,21 @@ async function saveMotion() {
     errorMessage.value = ''
     try {
         const existingConfig = parseJson(deviceDetail.value.instance_config)
+        const stations = stationGroups.value
+            .flatMap(group => group.stations.map((station, index) => ({
+                value: numberOr(station.value),
+                label: String(station.label || `${numberOr(station.value)}号工位`),
+                anchorDeviceId: pointIdOr(station.anchorDeviceId),
+                deviceLineKey: String(station.deviceLineKey || group.key || ''),
+                deviceLineName: String(station.deviceLineName || group.name || ''),
+                distanceMeters: index === 0 ? 0 : Math.max(0, numberOr(station.distanceMeters)),
+                position: {
+                    x: numberOr(station.position?.x),
+                    y: numberOr(station.position?.y),
+                    z: numberOr(station.position?.z)
+                }
+            })))
+            .sort((left, right) => left.value - right.value)
         const nextConfig = {
             ...existingConfig,
             movement: {
@@ -391,17 +517,7 @@ async function saveMotion() {
                 maxSpeed: Math.max(0.01, numberOr(motion.value.maxSpeed, 2)),
                 acceleration: Math.max(0.01, numberOr(motion.value.acceleration, 1)),
                 sceneUnitsPerMeter: stationDistanceSummary.value.sceneUnitsPerMeter,
-                stations: [...(motion.value.stations || [])].sort((left, right) => numberOr(left.value) - numberOr(right.value)).map((station, index) => ({
-                    value: numberOr(station.value),
-                    label: String(station.label || `${numberOr(station.value)}号工位`),
-                    anchorDeviceId: pointIdOr(station.anchorDeviceId),
-                    distanceMeters: index === 0 ? 0 : Math.max(0, numberOr(station.distanceMeters)),
-                    position: {
-                        x: numberOr(station.position?.x),
-                        y: numberOr(station.position?.y),
-                        z: numberOr(station.position?.z)
-                    }
-                })),
+                stations,
                 start: {
                     x: numberOr(motion.value.start.x),
                     y: numberOr(motion.value.start.y),
@@ -561,26 +677,39 @@ async function saveMotion() {
                         <div class="motion-step-title"><span>2</span><div><strong>导入现场工位</strong><small>设备在画布中的位置由系统自动读取，不需要手动填写 X / Y / Z。</small></div></div>
                         <div class="motion-section-actions">
                             <button type="button" class="btn btn-secondary motion-add-station" :disabled="!lineStationDevices.length" @click="syncStationsFromLine">从当前产线导入 {{ lineStationDevices.length }} 个</button>
-                            <button type="button" class="btn btn-secondary motion-add-station" @click="addStation">+ 手动添加</button>
+                            <button type="button" class="btn btn-secondary motion-add-station" @click="addStation()">+ 添加待分组工位</button>
                         </div>
                     </div>
                     <div class="motion-distance-summary" :class="{ warning: stationDistanceSummary.missingCount > 0 }">
-                        <strong>{{ stationDistanceSummary.stationCount }} 个工位</strong>
-                        <span v-if="stationDistanceSummary.missingCount">还需要填写 {{ stationDistanceSummary.missingCount }} 段现场间距</span>
-                        <span v-else-if="stationDistanceSummary.totalMeters > 0">已配置现场总距离 {{ stationDistanceSummary.totalMeters.toFixed(2) }} 米</span>
-                        <span v-else>开启运动模拟后，再填写相邻工位间距</span>
+                        <strong>{{ stationDistanceSummary.groupCount }} 条设备线 · {{ stationDistanceSummary.stationCount }} 个工位</strong>
+                        <span v-if="stationDistanceSummary.missingCount">还需要填写 {{ stationDistanceSummary.missingCount }} 段同设备线内的现场间距</span>
+                        <span v-else-if="stationDistanceSummary.totalMeters > 0">已按设备线配置现场总距离 {{ stationDistanceSummary.totalMeters.toFixed(2) }} 米</span>
+                        <span v-else>相邻间距只在同一设备线内填写，跨设备线不计算</span>
                     </div>
-                    <div class="motion-station-list">
-                        <div v-for="(station, index) in motion.stations" :key="index" class="motion-station-row">
-                            <div class="motion-station-order">{{ index + 1 }}</div>
-                            <label>PLC 编号<input v-model.number="station.value" type="number" step="1" class="input" /></label>
-                            <label>工位名称（可选）<input v-model="station.label" type="text" class="input" placeholder="例如：1号工位" /></label>
-                            <label v-if="index > 0" class="motion-distance-field">与上一站间距（米）<input v-model.number="station.distanceMeters" type="number" min="0.01" step="0.1" class="input" placeholder="例如 8.5" /></label>
-                            <div v-else class="motion-start-station"><strong>起始工位</strong><small>不需要填写间距</small></div>
-                            <button v-if="motion.stations.length > 1" type="button" class="motion-remove-station" title="删除工位" @click="removeStation(index)">删除</button>
-                        </div>
+                    <div class="motion-device-line-groups">
+                        <section v-for="group in stationGroups" :key="group.key" class="motion-device-line-group">
+                            <div class="motion-device-line-heading">
+                                <div>
+                                    <strong>{{ group.name }}</strong>
+                                    <small>{{ group.devices.length ? `${group.devices.length} 个固定设备` : '还没有导入工位' }} · 相邻间距只在本设备线内计算</small>
+                                </div>
+                                <button type="button" class="btn btn-secondary motion-add-station" @click="addStation(group.key)">+ 添加到此设备线</button>
+                            </div>
+                            <div v-if="group.stations.length" class="motion-station-list">
+                                <div v-for="(station, index) in group.stations" :key="station.anchorDeviceId || `${group.key}-${station.value}-${index}`" class="motion-station-row">
+                                    <div class="motion-station-order">{{ index + 1 }}</div>
+                                    <label>PLC 编号<input v-model.number="station.value" type="number" step="1" class="input" /></label>
+                                    <label>工位名称（可选）<input v-model="station.label" type="text" class="input" placeholder="例如：1号工位" /></label>
+                                    <label v-if="index > 0" class="motion-distance-field">与本设备线上一站间距（米）<input v-model.number="station.distanceMeters" type="number" min="0.01" step="0.1" class="input" placeholder="例如 8.5" /></label>
+                                    <div v-else class="motion-start-station"><strong>本设备线首站</strong><small>不需要填写跨线间距</small></div>
+                                    <button v-if="motion.stations.length > 1" type="button" class="motion-remove-station" title="删除工位" @click="removeStation(station)">删除</button>
+                                </div>
+                            </div>
+                            <div v-else class="motion-device-line-empty">点击“添加到此设备线”，或先从当前产线导入现场工位。</div>
+                        </section>
+                        <div v-if="!stationGroups.length" class="motion-device-line-empty">当前小车没有可用的设备线，请先在产线画布中摆放固定设备并绑定设备线。</div>
                     </div>
-                    <p v-if="!lineStationDevices.length" class="motion-inline-warning">当前小车没有找到同一产线的固定设备。请先在产线画布中摆放设备并设置工位编号，之后点击“从当前产线导入”。</p>
+                    <p v-if="!lineStationDevices.length" class="motion-inline-warning">当前小车所属产线没有找到带设备线的固定设备。请先在产线画布中摆放设备、绑定设备线并设置工位编号，之后点击“从当前产线导入”。</p>
                 </section>
 
                 <section v-if="motion.valueMode === 'station'" class="motion-step-card motion-simulation-panel">
@@ -745,6 +874,15 @@ async function saveMotion() {
 .motion-distance-summary strong { color: #1f4f68; }
 .motion-distance-summary.warning { color: #8a5a16; background: #fff8e7; }
 .motion-distance-summary.warning strong { color: #8a5a16; }
+.motion-device-line-groups { display: grid; gap: 12px; }
+.motion-device-line-group { overflow: hidden; border: 1px solid #dce6ef; border-radius: 11px; background: #fff; }
+.motion-device-line-heading { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 12px 14px; background: linear-gradient(135deg, #f4f9fd, #fbfdff); border-bottom: 1px solid #e8eef4; }
+.motion-device-line-heading > div { display: grid; gap: 4px; min-width: 0; }
+.motion-device-line-heading strong { color: #1f4f68; font-size: 13px; }
+.motion-device-line-heading small { color: #778397; font-size: 11px; line-height: 1.45; }
+.motion-device-line-heading .motion-add-station { min-height: 30px; padding: 0 10px; font-size: 11px; }
+.motion-device-line-group .motion-station-list { padding: 10px; }
+.motion-device-line-empty { padding: 14px; color: #8a97a8; background: #fbfcfe; font-size: 12px; line-height: 1.5; text-align: center; }
 .motion-station-list { display: grid; gap: 10px; }
 .motion-station-row { display: grid; grid-template-columns: 32px minmax(100px, .7fr) minmax(160px, 1.2fr) minmax(180px, 1fr) 48px; gap: 10px; align-items: end; padding: 12px; border: 1px solid #e8ecf1; border-radius: 10px; background: #fff; }
 .motion-station-order { display: grid; place-items: center; width: 28px; height: 28px; margin-bottom: 4px; border-radius: 8px; color: #24577a; background: #e8f2f9; font-size: 12px; font-weight: 800; }
@@ -793,6 +931,7 @@ async function saveMotion() {
     .motion-section-heading { flex-direction: column; }
     .motion-simulation-fields { grid-template-columns: 1fr; margin-left: 0; }
     .motion-simulation-switch { margin-left: 0; }
+    .motion-device-line-heading { align-items: flex-start; flex-direction: column; }
     .motion-station-row { grid-template-columns: 28px repeat(2, minmax(0, 1fr)); }
     .motion-remove-station { justify-self: start; padding: 0 8px; }
 }
