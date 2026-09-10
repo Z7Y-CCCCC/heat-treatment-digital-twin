@@ -117,6 +117,10 @@ if ($health) {
         APP_DATA_DIR = (Join-Path $backendDir 'data')
         UPLOADS_DIR = (Join-Path $backendDir 'uploads')
         FRONTEND_DIST = (Join-Path $projectDir 'frontend\dist')
+        # The native-dev frontend uses a dedicated local port. Register that
+        # exact origin so credentialed admin-auth requests pass the same
+        # loopback/origin checks as the default Vite ports.
+        CORS_ALLOWED_ORIGINS = $frontendOrigin
         ENABLE_CORS = 'true'
         DB_TYPE = 'mysql'
         MYSQL_HOST = $MySqlHost

@@ -14,7 +14,7 @@ export function getBackendOrigin() {
     const envOrigin = String(import.meta.env.VITE_BACKEND_ORIGIN || '').trim();
     if (envOrigin) return envOrigin.replace(/\/$/, '');
 
-    if (['5173', '4173'].includes(location.port)) {
+    if (['5173', '4173', '3423'].includes(location.port)) {
         const protocol = location.protocol === 'https:' ? 'https:' : 'http:';
         return `${protocol}//${location.hostname || '127.0.0.1'}:3001`;
     }
