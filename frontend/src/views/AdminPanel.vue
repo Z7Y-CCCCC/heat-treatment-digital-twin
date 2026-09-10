@@ -10393,7 +10393,7 @@ async function openAdminSetupStep(step) {
 }
 .line-planner-editor {
     min-width: 0;
-    align-self: start;
+    align-self: stretch;
     max-height: calc(100vh - 220px);
     overflow-x: hidden;
     overflow-y: auto;
