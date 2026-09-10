@@ -985,6 +985,10 @@ const deviceFormError = ref('')
 const deviceFormTargetId = ref('')
 let deviceFormRequestToken = 0
 const editingDeviceWorkshopId = ref('')
+const editingDeviceType = ref('fixed')
+const editingModelOptions = computed(() => editingDeviceType.value === 'auxiliary'
+    ? availableModelOptions.value
+    : availableModelOptions.value.filter(model => model.id !== 'transfer_cart'))
 function defaultPlcConnectionConfig() {
     return {
         plc_enabled: 0,
@@ -1080,6 +1084,7 @@ function openCreateDevice() {
     deviceFormStatus.value = 'ready'
     deviceFormError.value = ''
     deviceFormTargetId.value = ''
+    editingDeviceType.value = 'fixed'
     editingDeviceWorkshopId.value = workshops.value[0]?.id || ''
     Object.assign(editingDevice, { 
         id: '', name: '', line_id: placedLines.value[0]?.id || '',
@@ -1099,6 +1104,29 @@ function closeDeviceForm() {
     deviceFormTargetId.value = ''
 }
 
+function setEditingDeviceType(value) {
+    editingDeviceType.value = value === 'auxiliary' ? 'auxiliary' : 'fixed'
+    const config = parseInstanceConfig(editingDevice.instance_config)
+    if (editingDeviceType.value === 'auxiliary') {
+        editingDeviceWorkshopId.value ||= workshops.value[0]?.id || ''
+        config.role = editingDevice.model_type === 'transfer_cart' ? 'transfer_cart' : 'auxiliary'
+        config.workshop_id = editingDeviceWorkshopId.value
+        editingDevice.instance_config = JSON.stringify(config, null, 2)
+        if (editingDevice.line_id && !deviceFormLines.value.some(line => line.id === editingDevice.line_id)) {
+            editingDevice.line_id = ''
+        }
+    } else {
+        delete config.role
+        delete config.workshop_id
+        delete config.workshopId
+        if (editingDevice.model_type === 'transfer_cart') {
+            editingDevice.model_type = availableModelOptions.value.find(model => model.id !== 'transfer_cart')?.id || 'builtin_furnace'
+        }
+        editingDevice.line_id ||= lines.value[0]?.id || ''
+    }
+    editingDevice.instance_config = JSON.stringify(config, null, 2)
+}
+
 async function openEditDevice(d) {
     const requestToken = ++deviceFormRequestToken
     isEditMode.value = true
@@ -1115,6 +1143,7 @@ async function openEditDevice(d) {
         }
         const normalized = normalizeDeviceConfig(detail)
         Object.assign(editingDevice, { ...defaultPlcConnectionConfig(), ...normalized, line_id: normalized.line_id || '' })
+        editingDeviceType.value = isAuxiliaryDeviceConfig(normalized) ? 'auxiliary' : 'fixed'
         editingDeviceWorkshopId.value = getDeviceWorkshopId(editingDevice) || workshops.value[0]?.id || ''
         syncEditingDeviceInspectionState()
         deviceFormStatus.value = 'ready'
@@ -1129,7 +1158,7 @@ async function saveDevice() {
     if (!editingDevice.id || !editingDevice.name) {
         return alert('请填写设备ID和名称')
     }
-    const isAuxiliary = isAuxiliaryDeviceConfig(editingDevice)
+    const isAuxiliary = editingDeviceType.value === 'auxiliary'
     if (!isAuxiliary && !editingDevice.line_id) {
         return alert('普通设备必须选择所属产线')
     }
@@ -1142,6 +1171,13 @@ async function saveDevice() {
         parsedInstanceConfig = parseEditableInstanceConfig(editingDevice.instance_config)
     } catch (e) {
         return alert('实例配置 JSON 格式不正确')
+    }
+    if (isAuxiliary) {
+        parsedInstanceConfig.role = editingDevice.model_type === 'transfer_cart' ? 'transfer_cart' : 'auxiliary'
+    } else {
+        delete parsedInstanceConfig.role
+        delete parsedInstanceConfig.workshop_id
+        delete parsedInstanceConfig.workshopId
     }
     if (!isAuxiliary) {
         if (editingDeviceInspectionMode.value === 'inherit') {
@@ -7683,6 +7719,13 @@ async function openAdminSetupStep(step) {
                             <div class="form-grid">
                                 <label>设备 ID<input v-model="editingDevice.id" :disabled="isEditMode" class="input" placeholder="如 Furnace_21" /></label>
                                 <label>设备名称<input v-model="editingDevice.name" class="input" placeholder="如 21# 多用炉" /></label>
+                                <label>设备类型
+                                    <select v-model="editingDeviceType" class="input" @change="setEditingDeviceType($event.target.value)">
+                                        <option value="fixed">固定设备</option>
+                                        <option value="auxiliary">辅助设备</option>
+                                    </select>
+                                    <small class="field-hint">辅助设备可选择任意模型；固定设备用于产线上的标准设备。</small>
+                                </label>
                                 <label v-if="isAuxiliaryDeviceConfig(editingDevice)">所在车间
                                     <select v-model="editingDeviceWorkshopId" class="input">
                                         <option v-for="ws in workshops" :key="ws.id" :value="ws.id">{{ ws.name }}</option>
@@ -7696,7 +7739,7 @@ async function openAdminSetupStep(step) {
                                 </label>
                                 <label>使用模型
                                     <select v-model="editingDevice.model_type" class="input">
-                                        <option v-for="m in availableModelOptions" :key="m.id" :value="m.id">{{ m.name }}</option>
+                                        <option v-for="m in editingModelOptions" :key="m.id" :value="m.id">{{ m.name }}</option>
                                     </select>
                                 </label>
                                 <label>设备模板
