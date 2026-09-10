@@ -643,6 +643,7 @@ const lineDevicePoolDock = reactive({
 })
 const linePreviewStageRef = ref(null)
 const lineLayoutSaving = ref(false)
+const lineFlowMenuLaneId = ref('')
 let linePreviewDragState = null
 let lineDeviceDragState = null
 let lineDevicePoolMoveState = null
@@ -5040,6 +5041,7 @@ function touchLineLayout(line) {
 
 function selectLineEditor(lineId) {
     selectedLineEditorId.value = lineId
+    lineFlowMenuLaneId.value = ''
 }
 
 function toggleLinePlannerEditor() {
@@ -5056,6 +5058,15 @@ function setSelectedLineFlowDirection(direction) {
     const layout = getLineLayout(line)
     layout.flowDirection = ['right', 'left', 'none'].includes(direction) ? direction : 'right'
     touchLineLayout(line)
+}
+
+function toggleLineFlowMenu(laneId) {
+    lineFlowMenuLaneId.value = lineFlowMenuLaneId.value === laneId ? '' : laneId
+}
+
+function setLineFlowDirectionFromCanvas(direction) {
+    setSelectedLineFlowDirection(direction)
+    lineFlowMenuLaneId.value = ''
 }
 
 function lineFlowDirectionClass() {
@@ -7229,24 +7240,6 @@ async function openAdminSetupStep(step) {
                                     </div>
                                     <div class="line-structure-section">
                                         <div class="line-structure-title">
-                                            <strong>产线方向</strong>
-                                            <span class="line-flow-hint">调整时实时同步到 Unity 地面箭头</span>
-                                        </div>
-                                        <div class="line-flow-controls">
-                                            <button
-                                                v-for="option in lineFlowDirectionOptions"
-                                                :key="option.value"
-                                                type="button"
-                                                class="line-flow-btn"
-                                                :class="{ active: selectedLineLayout.flowDirection === option.value }"
-                                                @click="setSelectedLineFlowDirection(option.value)"
-                                            >
-                                                {{ option.label }}
-                                            </button>
-                                        </div>
-                                    </div>
-                                    <div class="line-structure-section">
-                                        <div class="line-structure-title">
                                             <strong>设备线</strong>
                                             <button class="btn btn-sm" type="button" @click="addLineLayoutItem('lane')">+ 设备线</button>
                                         </div>
@@ -7328,6 +7321,30 @@ async function openAdminSetupStep(step) {
                                         ></i>
                                         <i class="line-map-handle handle-left" @pointerdown.stop="startLinePreviewDrag('lane', lane.id, 'resize-left', $event)"></i>
                                         <i class="line-map-handle handle-right" @pointerdown.stop="startLinePreviewDrag('lane', lane.id, 'resize-right', $event)"></i>
+                                        <span class="line-map-flow-settings" @pointerdown.stop @click.stop>
+                                            <button
+                                                type="button"
+                                                class="line-map-flow-settings-trigger"
+                                                :class="{ active: lineFlowMenuLaneId === lane.id }"
+                                                :aria-expanded="lineFlowMenuLaneId === lane.id"
+                                                title="设置产线方向"
+                                                @click.stop="toggleLineFlowMenu(lane.id)"
+                                            >
+                                                <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.4"/><circle cx="12" cy="12" r="1.4"/><circle cx="19" cy="12" r="1.4"/></svg>
+                                            </button>
+                                            <span v-if="lineFlowMenuLaneId === lane.id" class="line-map-flow-menu" role="menu">
+                                                <button
+                                                    v-for="option in lineFlowDirectionOptions"
+                                                    :key="option.value"
+                                                    type="button"
+                                                    role="menuitem"
+                                                    :class="{ active: selectedLineLayout.flowDirection === option.value }"
+                                                    @click.stop="setLineFlowDirectionFromCanvas(option.value)"
+                                                >
+                                                    {{ option.label }}
+                                                </button>
+                                            </span>
+                                        </span>
                                     </div>
                                     <div
                                         v-for="rail in selectedLineLayout.rails"
@@ -10951,6 +10968,74 @@ async function openAdminSetupStep(step) {
 }
 .handle-left { left: -6px; }
 .handle-right { right: -6px; }
+.line-map-flow-settings {
+    position: absolute;
+    top: -22px;
+    right: -5px;
+    z-index: 8;
+    display: block;
+    width: 24px;
+    height: 24px;
+    padding: 0 !important;
+    background: transparent !important;
+    border-radius: 7px !important;
+}
+.line-map-flow-settings-trigger {
+    display: grid;
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    place-items: center;
+    color: #3c5968;
+    background: rgba(255,255,255,.94);
+    border: 1px solid rgba(25, 33, 38, 0.22);
+    border-radius: 7px;
+    box-shadow: 0 3px 8px rgba(25, 33, 38, 0.16);
+    cursor: pointer;
+    touch-action: manipulation;
+}
+.line-map-flow-settings-trigger:hover,
+.line-map-flow-settings-trigger.active {
+    color: #ffffff;
+    background: #245c7a;
+    border-color: #245c7a;
+}
+.line-map-flow-settings-trigger svg {
+    width: 15px;
+    height: 15px;
+    fill: currentColor;
+}
+.line-map-flow-menu {
+    position: absolute;
+    top: calc(100% + 8px);
+    right: 0;
+    z-index: 12;
+    display: grid;
+    gap: 3px;
+    min-width: 82px;
+    padding: 5px;
+    background: rgba(255,255,255,.98);
+    border: 1px solid rgba(25, 33, 38, 0.12);
+    border-radius: 9px;
+    box-shadow: 0 10px 24px rgba(25, 33, 38, 0.2);
+}
+.line-map-flow-menu button {
+    min-height: 27px;
+    padding: 4px 8px;
+    color: #42535d;
+    background: transparent;
+    border: 0;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 11px;
+    font-weight: 700;
+    white-space: nowrap;
+}
+.line-map-flow-menu button:hover,
+.line-map-flow-menu button.active {
+    color: #174e6b;
+    background: #e9f3f8;
+}
 .line-preview-dragging,
 .line-preview-dragging * {
     cursor: grabbing !important;
