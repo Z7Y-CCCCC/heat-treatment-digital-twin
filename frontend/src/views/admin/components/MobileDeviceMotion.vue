@@ -591,7 +591,7 @@ async function saveMotion() {
     <div class="tab-content mobile-motion-page">
         <div class="page-heading-row">
             <div>
-                <h2>移动设备</h2>
+                <h2>设备运动配置</h2>
                 <p class="desc">将设备模型绑定到 PLC 位置点位，收到实时位置后直接驱动 Unity 中的模型移动。</p>
             </div>
             <span class="motion-latency-badge">实时通道 · 100ms</span>
@@ -600,7 +600,7 @@ async function saveMotion() {
         <div v-if="!mobileDevices.length" class="empty-state">暂无辅助设备，请先在“设备管理”中添加小车或其他辅助设备。</div>
         <template v-else>
             <section class="motion-card motion-device-picker">
-                <label class="motion-device-select">选择移动设备（小车 / 辅助设备）
+                <label class="motion-device-select">选择设备（小车 / 辅助设备）
                     <select v-model="selectedDeviceId" class="input">
                         <option v-for="device in mobileDevices" :key="device.id" :value="String(device.id)">
                             {{ device.name || device.id }}（{{ device.id }}）

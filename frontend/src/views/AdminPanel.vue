@@ -6495,7 +6495,7 @@ const factoryTabs = [
     { key: 'workshops', label: '车间管理', icon: 'workshops' },
     { key: 'lines', label: '产线管理', icon: 'lines' },
     { key: 'devices', label: '设备管理', icon: 'devices' },
-    { key: 'mobile-devices', label: '移动设备', icon: 'mobile' }
+    { key: 'mobile-devices', label: '设备运动配置', icon: 'mobile' }
 ]
 const factoryTabKeys = factoryTabs.map(tab => tab.key)
 const dataTabs = [
