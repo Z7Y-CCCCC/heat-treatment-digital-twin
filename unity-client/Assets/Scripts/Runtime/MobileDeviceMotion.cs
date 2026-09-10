@@ -27,8 +27,10 @@ namespace HeatTreatment.DigitalTwin.Runtime
         private float _valueMax = 100f;
         private int _smoothingMs;
         private bool _simulationEnabled;
+        private string _speedMode = "fixed";
         private float _maxSpeed = 2f;
         private float _acceleration = 1f;
+        private float _sceneUnitsPerMeter = 1f;
         private float _motionSpeed;
         private bool _enabled;
         private bool _stationMode;
@@ -42,6 +44,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
         {
             public float Value;
             public Vector3 Position;
+            public float DistanceMeters;
         }
 
         public void Initialize(DeviceDto device)
@@ -69,8 +72,13 @@ namespace HeatTreatment.DigitalTwin.Runtime
             _smoothingMs = Mathf.Clamp(Mathf.RoundToInt(ReadNumber(movement?["smoothingMs"] ?? movement?["smoothing_ms"], 0f)), 0, 1000);
             _simulationEnabled = movement?.Value<bool?>("simulationEnabled") == true
                 || movement?.Value<bool?>("simulation_enabled") == true;
+            var speedMode = movement?["speedMode"] ?? movement?["speed_mode"];
+            _speedMode = speedMode == null
+                ? "fixed"
+                : string.Equals(speedMode.ToString(), "auto", StringComparison.OrdinalIgnoreCase) ? "auto" : "fixed";
             _maxSpeed = Mathf.Max(0.01f, ReadNumber(movement?["maxSpeed"] ?? movement?["max_speed"], 2f));
             _acceleration = Mathf.Max(0.01f, ReadNumber(movement?["acceleration"], 1f));
+            _sceneUnitsPerMeter = Mathf.Max(0.0001f, ReadNumber(movement?["sceneUnitsPerMeter"] ?? movement?["scene_units_per_meter"], 1f));
             _motionSpeed = 0f;
             _start = ReadVector(movement?["start"] as JObject, fallback);
             _end = ReadVector(movement?["end"] as JObject, new Vector3(_start.x + 10f, _start.y, _start.z));
@@ -172,12 +180,16 @@ namespace HeatTreatment.DigitalTwin.Runtime
             }
 
             var deltaTime = Mathf.Max(0.0001f, Time.unscaledDeltaTime);
+            var sceneUnitsPerMeter = Mathf.Max(0.0001f, _sceneUnitsPerMeter);
+            var distanceMeters = distance / sceneUnitsPerMeter;
             var stoppingDistance = (_motionSpeed * _motionSpeed) / (2f * Mathf.Max(0.01f, _acceleration));
-            var desiredSpeed = distance <= stoppingDistance
-                ? Mathf.Sqrt(Mathf.Max(0f, 2f * _acceleration * distance))
-                : _maxSpeed;
+            var desiredSpeed = distanceMeters <= stoppingDistance
+                ? Mathf.Sqrt(Mathf.Max(0f, 2f * _acceleration * distanceMeters))
+                : (_speedMode == "auto"
+                    ? Mathf.Sqrt(Mathf.Max(0f, 2f * _acceleration * distanceMeters))
+                    : _maxSpeed);
             _motionSpeed = Mathf.MoveTowards(_motionSpeed, desiredSpeed, _acceleration * deltaTime);
-            var step = _motionSpeed * deltaTime;
+            var step = _motionSpeed * deltaTime * sceneUnitsPerMeter;
             if (step >= distance)
             {
                 transform.localPosition = _targetPosition;
@@ -242,7 +254,8 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 result.Add(new StationAnchor
                 {
                     Value = value,
-                    Position = ReadVector(position, _start)
+                    Position = ReadVector(position, _start),
+                    DistanceMeters = ReadNumber(station["distanceMeters"] ?? station["distance_meters"], 0f)
                 });
             }
             return result

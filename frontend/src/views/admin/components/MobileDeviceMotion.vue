@@ -41,8 +41,8 @@ function positionOr(value, fallback) {
 
 function defaultStations(start, end) {
     return [
-        { value: 1, label: '1号工位', anchorDeviceId: '', position: { ...start } },
-        { value: 2, label: '2号工位', anchorDeviceId: '', position: { ...end } }
+        { value: 1, label: '1号工位', anchorDeviceId: '', distanceMeters: 0, position: { ...start } },
+        { value: 2, label: '2号工位', anchorDeviceId: '', distanceMeters: '', position: { ...end } }
     ]
 }
 
@@ -58,6 +58,11 @@ function normalizeStations(value, fallback) {
                 value: Number.isFinite(valueNumber) ? valueNumber : defaultValue,
                 label: String(source.label || `${Number.isFinite(valueNumber) ? valueNumber : defaultValue}号工位`),
                 anchorDeviceId: pointIdOr(source.anchorDeviceId ?? source.anchor_device_id),
+                distanceMeters: index === 0
+                    ? 0
+                    : (Number.isFinite(Number(source.distanceMeters ?? source.distance_meters))
+                        ? Math.max(0, Number(source.distanceMeters ?? source.distance_meters))
+                        : ''),
                 position: positionOr(source.position || source, defaultPosition)
             }
         })
@@ -78,13 +83,15 @@ function defaultMotion(device = {}) {
         enabled: false,
         currentPositionPointId: '',
         startActionPointId: '',
-        valueMode: 'normalized',
+        valueMode: 'station',
         valueMin: 0,
         valueMax: 100,
         smoothingMs: 0,
         simulationEnabled: false,
+        speedMode: 'auto',
         maxSpeed: 2,
         acceleration: 1,
+        sceneUnitsPerMeter: 1,
         start,
         end: { ...start, x: start.x + 10 },
         stations: defaultStations(start, { ...start, x: start.x + 10 })
@@ -101,13 +108,15 @@ function normalizeMotion(device) {
         enabled: source.enabled === true,
         currentPositionPointId: pointIdOr(source.currentPositionPointId ?? source.current_position_point_id),
         startActionPointId: pointIdOr(source.startActionPointId ?? source.start_action_point_id),
-        valueMode: ['range', 'station'].includes(source.valueMode) ? source.valueMode : 'normalized',
+        valueMode: ['normalized', 'range', 'station'].includes(source.valueMode) ? source.valueMode : fallback.valueMode,
         valueMin: numberOr(source.valueMin ?? source.value_min, fallback.valueMin),
         valueMax: numberOr(source.valueMax ?? source.value_max, fallback.valueMax),
         smoothingMs: Math.max(0, Math.min(1000, numberOr(source.smoothingMs ?? source.smoothing_ms, 0))),
         simulationEnabled: source.simulationEnabled === true || source.simulation_enabled === true,
+        speedMode: String(source.speedMode ?? source.speed_mode ?? fallback.speedMode).toLowerCase() === 'fixed' ? 'fixed' : 'auto',
         maxSpeed: Math.max(0.01, numberOr(source.maxSpeed ?? source.max_speed, fallback.maxSpeed)),
         acceleration: Math.max(0.01, numberOr(source.acceleration, fallback.acceleration)),
+        sceneUnitsPerMeter: Math.max(0.0001, numberOr(source.sceneUnitsPerMeter ?? source.scene_units_per_meter, fallback.sceneUnitsPerMeter)),
         start: positionOr(source.start, fallback.start),
         end: positionOr(source.end, fallback.end),
         stations: normalizeStations(source.stations, fallback.stations)
@@ -123,7 +132,16 @@ const saving = ref(false)
 const message = ref('')
 const errorMessage = ref('')
 
-const selectedDevice = computed(() => props.devices.find(device => String(device.id) === String(selectedDeviceId.value)) || null)
+function isAuxiliaryDevice(device) {
+    const config = parseJson(device?.instance_config)
+    return device?.model_type === 'transfer_cart'
+        || String(config.role || '').toLowerCase() === 'transfer_cart'
+        || String(config.role || '').toLowerCase() === 'auxiliary'
+        || config.sceneObject === true
+}
+
+const mobileDevices = computed(() => props.devices.filter(isAuxiliaryDevice))
+const selectedDevice = computed(() => mobileDevices.value.find(device => String(device.id) === String(selectedDeviceId.value)) || null)
 const lineStationDevices = computed(() => {
     const lineId = deviceDetail.value?.line_id
     if (!lineId) return []
@@ -202,6 +220,7 @@ async function loadDevice(deviceId) {
     errorMessage.value = ''
     try {
         const detail = await adminApi.getDevice(deviceId)
+        if (!detail || detail.error) throw new Error(detail?.error || '读取设备详情失败')
         deviceDetail.value = detail
         dataPoints.value = Array.isArray(detail?.dataPoints) ? detail.dataPoints : []
         motion.value = normalizeMotion(detail)
@@ -214,7 +233,7 @@ async function loadDevice(deviceId) {
     }
 }
 
-watch(() => props.devices, devices => {
+watch(mobileDevices, devices => {
     if (!devices.length) {
         selectedDeviceId.value = ''
         return
@@ -235,6 +254,7 @@ function addStation() {
         value: nextValue,
         label: `${nextValue}号工位`,
         anchorDeviceId: '',
+        distanceMeters: '',
         position: {
             x: numberOr(base?.x) + (last ? 10 : 0),
             y: numberOr(base?.y),
@@ -261,15 +281,17 @@ function applyStationAnchor(station) {
 
 function syncStationsFromLine() {
     if (!lineStationDevices.value.length) {
-        errorMessage.value = '当前设备所属产线还没有已编号的固定设备，请先在产线画布中摆放并编号'
+        errorMessage.value = '当前设备所属产线还没有固定设备，请先在产线画布中摆放设备'
         return
     }
-    motion.value.stations = lineStationDevices.value.map(device => {
+    const previousDistances = new Map((motion.value.stations || []).map(station => [Number(station.value), station.distanceMeters]))
+    motion.value.stations = lineStationDevices.value.map((device, index) => {
         const value = device.stationNumber
         return {
             value,
             label: `${value}号工位 · ${device.name || device.id}`,
             anchorDeviceId: String(device.id),
+            distanceMeters: index === 0 ? 0 : (previousDistances.get(value) ?? ''),
             position: {
                 x: numberOr(device.pos_x),
                 y: numberOr(device.pos_y),
@@ -280,6 +302,37 @@ function syncStationsFromLine() {
     message.value = `已从当前产线导入 ${lineStationDevices.value.length} 个工位位置`
     errorMessage.value = ''
 }
+
+function sceneDistance(left, right) {
+    const dx = numberOr(right?.x) - numberOr(left?.x)
+    const dy = numberOr(right?.y) - numberOr(left?.y)
+    const dz = numberOr(right?.z) - numberOr(left?.z)
+    return Math.sqrt((dx * dx) + (dy * dy) + (dz * dz))
+}
+
+const stationDistanceSummary = computed(() => {
+    const stations = [...(motion.value.stations || [])].sort((left, right) => numberOr(left.value) - numberOr(right.value))
+    let totalMeters = 0
+    let totalSceneUnits = 0
+    let missingCount = 0
+    stations.forEach((station, index) => {
+        if (index === 0) return
+        const distance = Number(station.distanceMeters)
+        if (!Number.isFinite(distance) || distance <= 0) {
+            missingCount += 1
+        } else {
+            totalMeters += distance
+        }
+        totalSceneUnits += sceneDistance(stations[index - 1]?.position, station.position)
+    })
+    return {
+        stationCount: stations.length,
+        totalMeters,
+        totalSceneUnits,
+        missingCount,
+        sceneUnitsPerMeter: totalMeters > 0 && totalSceneUnits > 0 ? totalSceneUnits / totalMeters : 1
+    }
+})
 
 async function saveMotion() {
     if (!deviceDetail.value?.id) return
@@ -303,7 +356,13 @@ async function saveMotion() {
             return
         }
         if (motion.value.simulationEnabled && motion.value.maxSpeed <= 0) {
-            errorMessage.value = '启用运动细节模拟时，最大速度必须大于 0'
+            if (motion.value.speedMode === 'fixed') {
+                errorMessage.value = '选择固定速度时，最大速度必须大于 0'
+                return
+            }
+        }
+        if (motion.value.simulationEnabled && stationDistanceSummary.value.missingCount > 0) {
+            errorMessage.value = '请填写每个相邻工位之间的现场间距；第一站不需要填写'
             return
         }
         if (motion.value.simulationEnabled && motion.value.acceleration <= 0) {
@@ -328,12 +387,15 @@ async function saveMotion() {
                 valueMax: numberOr(motion.value.valueMax, 100),
                 smoothingMs: Math.max(0, Math.min(1000, numberOr(motion.value.smoothingMs))),
                 simulationEnabled: motion.value.simulationEnabled === true,
+                speedMode: motion.value.speedMode === 'fixed' ? 'fixed' : 'auto',
                 maxSpeed: Math.max(0.01, numberOr(motion.value.maxSpeed, 2)),
                 acceleration: Math.max(0.01, numberOr(motion.value.acceleration, 1)),
-                stations: (motion.value.stations || []).map(station => ({
+                sceneUnitsPerMeter: stationDistanceSummary.value.sceneUnitsPerMeter,
+                stations: [...(motion.value.stations || [])].sort((left, right) => numberOr(left.value) - numberOr(right.value)).map((station, index) => ({
                     value: numberOr(station.value),
                     label: String(station.label || `${numberOr(station.value)}号工位`),
                     anchorDeviceId: pointIdOr(station.anchorDeviceId),
+                    distanceMeters: index === 0 ? 0 : Math.max(0, numberOr(station.distanceMeters)),
                     position: {
                         x: numberOr(station.position?.x),
                         y: numberOr(station.position?.y),
@@ -419,12 +481,12 @@ async function saveMotion() {
             <span class="motion-latency-badge">实时通道 · 100ms</span>
         </div>
 
-        <div v-if="!props.devices.length" class="empty-state">暂无设备，请先在“设备管理”中添加设备。</div>
+        <div v-if="!mobileDevices.length" class="empty-state">暂无辅助设备，请先在“设备管理”中添加小车或其他辅助设备。</div>
         <template v-else>
             <section class="motion-card motion-device-picker">
-                <label class="motion-device-select">选择移动设备
+                <label class="motion-device-select">选择移动设备（小车 / 辅助设备）
                     <select v-model="selectedDeviceId" class="input">
-                        <option v-for="device in props.devices" :key="device.id" :value="String(device.id)">
+                        <option v-for="device in mobileDevices" :key="device.id" :value="String(device.id)">
                             {{ device.name || device.id }}（{{ device.id }}）
                         </option>
                     </select>
@@ -440,7 +502,7 @@ async function saveMotion() {
                 <div class="motion-card-header">
                     <div>
                         <h3>移动控制</h3>
-                        <p>当前位置点位可传连续值，也可传 1、2、3 等工位编号；工位之间只做近似过渡，最终以编号对应的停靠点为准。</p>
+                        <p>推荐流程：绑定 PLC 的当前工位编号 → 导入产线工位 → 填写现场间距 → 保存。你不需要填写 Unity 坐标。</p>
                     </div>
                     <label class="motion-switch">
                         <input v-model="motion.enabled" type="checkbox" />
@@ -448,99 +510,106 @@ async function saveMotion() {
                     </label>
                 </div>
 
-                <div class="motion-form-grid">
-                    <label>当前位置点位 <span class="motion-required">*</span>
+                <section class="motion-step-card">
+                    <div class="motion-step-title"><span>1</span><div><strong>绑定 PLC 位置点位</strong><small>PLC 只需要传 1、2、3… 这样的当前工位编号。</small></div></div>
+                    <div class="motion-form-grid">
+                    <label>PLC 当前工位编号点位 <span class="motion-required">*</span>
                         <select v-model="motion.currentPositionPointId" class="input">
-                            <option value="">请选择数值点位</option>
+                            <option value="">请选择 PLC 数值点位</option>
                             <option v-for="point in numericPoints" :key="point.id" :value="String(point.id)">
                                 {{ pointLabel(point) }}
                             </option>
                         </select>
-                        <small v-if="motion.valueMode === 'station'">工位编号模式填写 1、2、3 等编号，对应下方配置的停靠位置。</small>
-                        <small v-else>归一化模式填写 0~1 或 0~100；范围模式按下方输入范围换算。</small>
+                        <small>例如：PLC 当前值为 1，小车就停在 1 号工位；变为 2，就移动到 2 号工位。</small>
                     </label>
-                    <label>开始行动点位
+                    <label>移动开始信号（可选）
                         <select v-model="motion.startActionPointId" class="input">
-                            <option value="">不绑定（收到位置即跟随）</option>
+                            <option value="">不绑定（收到编号就移动）</option>
                             <option v-for="point in actionPoints" :key="point.id" :value="String(point.id)">
                                 {{ pointLabel(point) }}
                             </option>
                         </select>
-                        <small>绑定后，点位为真时才更新模型位置；为假时保持当前位置。</small>
+                        <small>如果现场没有单独的启动信号，保持“不绑定”即可。</small>
                     </label>
-                    <label>位置值模式
-                        <select v-model="motion.valueMode" class="input">
-                            <option value="normalized">归一化进度（0~1 / 0~100）</option>
-                            <option value="range">输入范围映射</option>
-                            <option value="station">工位编号（1、2、3…）</option>
-                        </select>
-                    </label>
-                    <label>平滑时间（ms）
-                        <input v-model.number="motion.smoothingMs" type="number" min="0" max="1000" step="10" class="input" />
-                        <small>0 表示直接应用最新帧，延迟最低。</small>
-                    </label>
-                </div>
+                    </div>
+                </section>
 
-                <div v-if="motion.valueMode === 'range'" class="motion-range-row">
-                    <label>输入最小值<input v-model.number="motion.valueMin" type="number" class="input" /></label>
-                    <label>输入最大值<input v-model.number="motion.valueMax" type="number" class="input" /></label>
-                </div>
-
-                <div v-if="motion.valueMode === 'station'" class="motion-simulation-panel">
-                    <div class="motion-simulation-heading">
-                        <div>
-                            <strong>运动细节模拟</strong>
-                            <small>按场景坐标、最大速度和加速度模拟小车从当前点驶向目标工位。</small>
-                        </div>
-                        <label class="motion-switch">
-                            <input v-model="motion.simulationEnabled" type="checkbox" />
-                            启用速度 / 加速度模拟
+                <details class="motion-advanced-settings">
+                    <summary>高级兼容设置（普通工位编号模式无需修改）</summary>
+                    <div class="motion-form-grid">
+                        <label>位置值模式
+                            <select v-model="motion.valueMode" class="input">
+                                <option value="station">工位编号（推荐）</option>
+                                <option value="normalized">归一化进度（旧配置）</option>
+                                <option value="range">输入范围映射（旧配置）</option>
+                            </select>
+                        </label>
+                        <label>视觉平滑时间（ms）
+                            <input v-model.number="motion.smoothingMs" type="number" min="0" max="1000" step="10" class="input" />
+                            <small>只影响画面跟手程度，不是现场速度。0 表示延迟最低。</small>
                         </label>
                     </div>
-                    <div class="motion-range-row motion-kinematics-row">
-                        <label>最大速度（场景单位 / 秒）
-                            <input v-model.number="motion.maxSpeed" type="number" min="0.01" step="0.1" class="input" :disabled="!motion.simulationEnabled" />
-                        </label>
-                        <label>加速度（场景单位 / 秒²）
-                            <input v-model.number="motion.acceleration" type="number" min="0.01" step="0.1" class="input" :disabled="!motion.simulationEnabled" />
-                        </label>
+                    <div v-if="motion.valueMode === 'range'" class="motion-range-row">
+                        <label>输入最小值<input v-model.number="motion.valueMin" type="number" class="input" /></label>
+                        <label>输入最大值<input v-model.number="motion.valueMax" type="number" class="input" /></label>
                     </div>
-                    <small class="motion-simulation-note">关闭后保留低延迟保底：收到新工位值就直接到达目标位置；如设置了平滑时间，则只做简单视觉过渡，不代表真实运动过程。</small>
-                </div>
+                    <p class="motion-advanced-note">只有 PLC 不是传工位编号，而是传连续进度或其他数值时，才需要使用这里的旧模式。</p>
+                </details>
 
-                <div v-if="motion.valueMode === 'station'" class="motion-position-section">
+                <section v-if="motion.valueMode === 'station'" class="motion-step-card motion-position-section">
                     <div class="motion-section-heading">
-                        <div>
-                            <div class="motion-section-title">工位编号 / 停靠位置</div>
-                            <small>PLC 传入工位编号后，模型会定位到对应坐标；可参考固定设备位置后再微调坐标，留出安全间隙。编号之间的移动轨迹仅为近似动画。</small>
-                        </div>
+                        <div class="motion-step-title"><span>2</span><div><strong>导入现场工位</strong><small>设备在画布中的位置由系统自动读取，不需要手动填写 X / Y / Z。</small></div></div>
                         <div class="motion-section-actions">
-                            <button type="button" class="btn btn-secondary motion-add-station" :disabled="!lineStationDevices.length" @click="syncStationsFromLine">从产线导入 {{ lineStationDevices.length }} 个</button>
-                            <button type="button" class="btn btn-secondary motion-add-station" @click="addStation">+ 添加工位</button>
+                            <button type="button" class="btn btn-secondary motion-add-station" :disabled="!lineStationDevices.length" @click="syncStationsFromLine">从当前产线导入 {{ lineStationDevices.length }} 个</button>
+                            <button type="button" class="btn btn-secondary motion-add-station" @click="addStation">+ 手动添加</button>
                         </div>
+                    </div>
+                    <div class="motion-distance-summary" :class="{ warning: stationDistanceSummary.missingCount > 0 }">
+                        <strong>{{ stationDistanceSummary.stationCount }} 个工位</strong>
+                        <span v-if="stationDistanceSummary.missingCount">还需要填写 {{ stationDistanceSummary.missingCount }} 段现场间距</span>
+                        <span v-else-if="stationDistanceSummary.totalMeters > 0">已配置现场总距离 {{ stationDistanceSummary.totalMeters.toFixed(2) }} 米</span>
+                        <span v-else>开启运动模拟后，再填写相邻工位间距</span>
                     </div>
                     <div class="motion-station-list">
                         <div v-for="(station, index) in motion.stations" :key="index" class="motion-station-row">
-                            <label>编号<input v-model.number="station.value" type="number" step="1" class="input" /></label>
-                            <label>名称<input v-model="station.label" type="text" class="input" placeholder="例如：1号工位" /></label>
-                            <label>参考固定设备
-                                <select v-model="station.anchorDeviceId" class="input" @change="applyStationAnchor(station)">
-                                    <option value="">直接使用坐标</option>
-                                    <option v-for="device in props.devices" :key="device.id" :value="String(device.id)">
-                                        {{ device.name || device.id }}（{{ device.id }}）
-                                    </option>
-                                </select>
-                            </label>
-                            <label>X<input v-model.number="station.position.x" type="number" step="0.1" class="input" /></label>
-                            <label>Y<input v-model.number="station.position.y" type="number" step="0.1" class="input" /></label>
-                            <label>Z<input v-model.number="station.position.z" type="number" step="0.1" class="input" /></label>
+                            <div class="motion-station-order">{{ index + 1 }}</div>
+                            <label>PLC 编号<input v-model.number="station.value" type="number" step="1" class="input" /></label>
+                            <label>工位名称（可选）<input v-model="station.label" type="text" class="input" placeholder="例如：1号工位" /></label>
+                            <label v-if="index > 0" class="motion-distance-field">与上一站间距（米）<input v-model.number="station.distanceMeters" type="number" min="0.01" step="0.1" class="input" placeholder="例如 8.5" /></label>
+                            <div v-else class="motion-start-station"><strong>起始工位</strong><small>不需要填写间距</small></div>
                             <button v-if="motion.stations.length > 1" type="button" class="motion-remove-station" title="删除工位" @click="removeStation(index)">删除</button>
                         </div>
                     </div>
-                </div>
+                    <p v-if="!lineStationDevices.length" class="motion-inline-warning">当前小车没有找到同一产线的固定设备。请先在产线画布中摆放设备并设置工位编号，之后点击“从当前产线导入”。</p>
+                </section>
 
-                <div v-else class="motion-position-section">
-                    <div class="motion-section-title">起始位置 / 终点位置</div>
+                <section v-if="motion.valueMode === 'station'" class="motion-step-card motion-simulation-panel">
+                    <div class="motion-step-title"><span>3</span><div><strong>选择移动效果</strong><small>你只需要提供小车加速度；最大速度可以由系统按现场间距自动估算。</small></div></div>
+                    <label class="motion-switch motion-simulation-switch">
+                        <input v-model="motion.simulationEnabled" type="checkbox" />
+                        开启运动细节模拟
+                    </label>
+                    <div v-if="motion.simulationEnabled" class="motion-simulation-fields">
+                        <label>小车加速度（米 / 秒²）
+                            <input v-model.number="motion.acceleration" type="number" min="0.01" step="0.1" class="input" />
+                            <small>向电气工程人员要这个参数即可。</small>
+                        </label>
+                        <label>速度计算方式
+                            <select v-model="motion.speedMode" class="input">
+                                <option value="auto">自动估算（推荐）</option>
+                                <option value="fixed">我知道现场最大速度</option>
+                            </select>
+                            <small>自动估算会根据相邻工位间距和加速度计算，不需要填写最大速度。</small>
+                        </label>
+                        <label v-if="motion.speedMode === 'fixed'">现场最大速度（米 / 秒）
+                            <input v-model.number="motion.maxSpeed" type="number" min="0.01" step="0.1" class="input" />
+                        </label>
+                    </div>
+                    <p class="motion-simulation-note">关闭模拟时，小车收到新编号后直接切换到目标工位，并显示短暂的“移动中”提示；这是无法取得完整现场参数时的保底方式。</p>
+                </section>
+
+                <div v-if="motion.valueMode !== 'station'" class="motion-position-section">
+                    <div class="motion-section-title">旧模式的起始位置 / 终点位置</div>
                     <div class="motion-position-columns">
                         <div>
                             <strong>起始位置</strong>
@@ -614,6 +683,12 @@ async function saveMotion() {
 .motion-card-header { align-items: flex-start; margin-bottom: 20px; }
 .motion-card-header h3 { margin: 0 0 6px; }
 .motion-card-header p { margin: 0; }
+.motion-step-card { padding: 16px; border: 1px solid #e5ebf2; border-radius: 12px; background: #fbfcfe; }
+.motion-step-title { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 14px; }
+.motion-step-title > span { display: grid; place-items: center; flex: 0 0 26px; width: 26px; height: 26px; border-radius: 50%; color: #fff; background: linear-gradient(135deg, #4f8df7, #2563eb); font-size: 12px; font-weight: 800; }
+.motion-step-title > div { display: grid; gap: 4px; }
+.motion-step-title strong { color: #1d2939; font-size: 14px; }
+.motion-step-title small { color: #778397; font-size: 12px; font-weight: 400; line-height: 1.5; }
 .motion-switch, .inline-check { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; font-weight: 700; }
 .motion-switch input { width: 16px; height: 16px; accent-color: #1677ff; }
 .mobile-motion-page .input {
@@ -644,13 +719,21 @@ async function saveMotion() {
 .motion-form-grid small { font-weight: 400; line-height: 1.5; }
 .motion-required { color: #d92d20; }
 .motion-range-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; margin-top: 18px; }
-.motion-simulation-panel { margin-top: 18px; padding: 14px 16px; border: 1px solid #d9e7f0; border-radius: 12px; background: linear-gradient(135deg, #f3f9fd, #f8fbfd); }
+.motion-advanced-settings { margin-top: 14px; padding: 12px 14px; border: 1px dashed #cfd9e6; border-radius: 10px; background: #fff; }
+.motion-advanced-settings summary { color: #52657d; cursor: pointer; font-size: 12px; font-weight: 700; }
+.motion-advanced-settings[open] summary { margin-bottom: 14px; color: #24577a; }
+.motion-advanced-note { margin: 12px 0 0; color: #8a97a8; font-size: 12px; line-height: 1.5; }
+.motion-simulation-panel { margin-top: 18px; border-color: #d9e7f0; background: linear-gradient(135deg, #f3f9fd, #f8fbfd); }
 .motion-simulation-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
 .motion-simulation-heading > div { display: grid; gap: 4px; }
 .motion-simulation-heading strong { color: #1f4f68; font-size: 13px; }
 .motion-simulation-heading small, .motion-simulation-note { color: #6a8190; font-size: 12px; line-height: 1.5; }
 .motion-kinematics-row { margin-top: 12px; }
 .motion-simulation-note { display: block; margin-top: 10px; }
+.motion-simulation-switch { margin: -2px 0 12px 36px; color: #1f4f68; }
+.motion-simulation-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-left: 36px; }
+.motion-simulation-fields label { display: flex; flex-direction: column; gap: 7px; color: #344054; font-size: 13px; font-weight: 600; }
+.motion-simulation-fields small { color: #778397; font-size: 12px; font-weight: 400; line-height: 1.5; }
 .motion-position-section { margin-top: 22px; padding-top: 18px; border-top: 1px solid #edf0f4; }
 .motion-section-title { margin-bottom: 14px; color: #1d2939; font-weight: 700; }
 .motion-section-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 14px; }
@@ -658,10 +741,18 @@ async function saveMotion() {
 .motion-section-heading small { color: #778397; font-size: 12px; line-height: 1.5; }
 .motion-section-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 .motion-add-station { flex: 0 0 auto; min-height: 34px; padding: 0 12px; }
+.motion-distance-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 4px 0 12px; padding: 9px 11px; color: #42617b; background: #eef7fd; border-radius: 8px; font-size: 12px; }
+.motion-distance-summary strong { color: #1f4f68; }
+.motion-distance-summary.warning { color: #8a5a16; background: #fff8e7; }
+.motion-distance-summary.warning strong { color: #8a5a16; }
 .motion-station-list { display: grid; gap: 10px; }
-.motion-station-row { display: grid; grid-template-columns: 76px minmax(140px, 1.15fr) minmax(170px, 1.35fr) repeat(3, minmax(80px, 1fr)) 48px; gap: 10px; align-items: end; padding: 12px; border: 1px solid #e8ecf1; border-radius: 10px; background: #fbfcfd; }
+.motion-station-row { display: grid; grid-template-columns: 32px minmax(100px, .7fr) minmax(160px, 1.2fr) minmax(180px, 1fr) 48px; gap: 10px; align-items: end; padding: 12px; border: 1px solid #e8ecf1; border-radius: 10px; background: #fff; }
+.motion-station-order { display: grid; place-items: center; width: 28px; height: 28px; margin-bottom: 4px; border-radius: 8px; color: #24577a; background: #e8f2f9; font-size: 12px; font-weight: 800; }
 .motion-station-row label { display: flex; flex-direction: column; gap: 7px; color: #344054; font-size: 12px; font-weight: 600; }
 .motion-station-row .input { height: 36px; line-height: 36px; }
+.motion-start-station { display: flex; flex-direction: column; justify-content: center; min-height: 36px; gap: 3px; color: #52657d; font-size: 12px; }
+.motion-start-station small { color: #98a2b3; font-size: 11px; }
+.motion-inline-warning { margin: 12px 0 0; color: #8a5a16; font-size: 12px; line-height: 1.5; }
 .motion-remove-station { height: 36px; padding: 0; border: 0; color: #b42318; background: transparent; cursor: pointer; font: inherit; font-size: 12px; }
 .motion-remove-station:hover { color: #d92d20; text-decoration: underline; }
 .motion-position-columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
@@ -700,7 +791,9 @@ async function saveMotion() {
     .page-heading-row, .motion-card-header, .motion-device-picker { align-items: flex-start; flex-direction: column; }
     .motion-form-grid, .motion-range-row, .motion-position-columns { grid-template-columns: 1fr; }
     .motion-section-heading { flex-direction: column; }
-    .motion-station-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .motion-simulation-fields { grid-template-columns: 1fr; margin-left: 0; }
+    .motion-simulation-switch { margin-left: 0; }
+    .motion-station-row { grid-template-columns: 28px repeat(2, minmax(0, 1fr)); }
     .motion-remove-station { justify-self: start; padding: 0 8px; }
 }
 </style>
