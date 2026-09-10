@@ -78,6 +78,17 @@ function restartDataEngineSoon(reason) {
     }, 80);
 }
 
+// 设备实例配置（尤其是移动设备的路径配置）保存后，直接推送给 Unity。
+// 这样不需要等待下一次配置轮询，也不需要重建整套场景。
+function broadcastDeviceConfigurationChanged(deviceId, instanceConfig) {
+    if (!global.wsServer?.broadcast || !deviceId) return;
+    global.wsServer.broadcast('device_configuration_changed', {
+        deviceId: String(deviceId),
+        instanceConfig: parseJson(instanceConfig),
+        timestamp: Date.now()
+    });
+}
+
 router.get('/', async (req, res) => {
     try {
         const db = await getDb();
@@ -170,6 +181,7 @@ router.post('/', async (req, res) => {
             normalizedOptions
         ]);
         restartDataEngineSoon('create device');
+        broadcastDeviceConfigurationChanged(id, instance_config);
         res.json({ success: true, id });
     } catch (e) {
         res.status(400).json({ error: e.message });
@@ -235,6 +247,7 @@ router.put('/:id', async (req, res) => {
             req.params.id
         ]);
         restartDataEngineSoon('update device');
+        broadcastDeviceConfigurationChanged(req.params.id, nextInstanceConfig);
         res.json({ success: true });
     } catch (e) {
         res.status(400).json({ error: e.message });

@@ -45,6 +45,7 @@ import { useDataPoints } from './admin/composables/useDataPoints.js'
 import { formatPointValue, formatQualityLabel, formatPointTime } from './admin/utils/points.js'
 import NativeEnvironmentSettings from './admin/components/NativeEnvironmentSettings.vue'
 import DashboardDesigner from './admin/components/DashboardDesigner.vue'
+import MobileDeviceMotion from './admin/components/MobileDeviceMotion.vue'
 import { normalizeWorkshopLayout } from '../utils/spatialLayout.js'
 import {
     PLC_PROTOCOL_OPTIONS,
@@ -530,6 +531,8 @@ async function createWorkshop() {
     if (previousWorkshop) {
         const previousLayout = getWorkshopLayout(previousWorkshop)
         layout.transform.x = numberOrDefault(previousLayout.transform.x, 0)
+const lineStationEditingDeviceId = ref('')
+const lineStationDraft = ref('')
             + numberOrDefault(previousLayout.size.width, 100) * 0.5
             + layout.size.width * 0.5
             + 20
@@ -4993,6 +4996,8 @@ function deviceLayoutSnapshot(device) {
             coordinate_space: device?.coordinate_space || '',
             instance_config: config
         })
+    lineStationEditingDeviceId.value = ''
+    lineStationDraft.value = ''
     }
 }
 
@@ -5237,6 +5242,112 @@ async function resetSelectedLineLayout() {
 function getLineBaseZ(lineId) {
     const line = lines.value.find(item => item.id === lineId)
     if (Number(getLineLayout(line)?.version || 0) >= 2) return 0
+function readLineStationNumber(device) {
+    const config = parseInstanceConfig(device?.instance_config)
+    const value = Number(config.stationNumber ?? config.station_number)
+    return Number.isInteger(value) && value > 0 ? value : null
+}
+
+function getPlacedLineStationDevices(line = selectedLineEditor.value) {
+    if (!line?.id) return []
+    return devices.value.filter(device => (
+        !isAuxiliaryDeviceConfig(device)
+        && device.line_id === line.id
+        && resolveDeviceLayoutTarget(device, line, { allowFallback: false })?.type === 'lane'
+    ))
+}
+
+function getLineStationNumberMap(line = selectedLineEditor.value) {
+    const ordered = getPlacedLineStationDevices(line).slice().sort((left, right) => {
+        const xDelta = numberOrDefault(left.pos_x, 0) - numberOrDefault(right.pos_x, 0)
+        if (Math.abs(xDelta) > 0.001) return xDelta
+        return String(left.id).localeCompare(String(right.id))
+    })
+    const stationMap = new Map()
+    const used = new Set()
+    const missing = []
+
+    ordered.forEach(device => {
+        const value = readLineStationNumber(device)
+        if (value && !used.has(value)) {
+            stationMap.set(device.id, value)
+            used.add(value)
+        } else {
+            missing.push(device)
+        }
+    })
+
+    let next = 1
+    missing.forEach(device => {
+        while (used.has(next)) next += 1
+        stationMap.set(device.id, next)
+        used.add(next)
+        next += 1
+    })
+    return stationMap
+}
+
+function lineStationNumber(device, line = selectedLineEditor.value) {
+    return getLineStationNumberMap(line).get(device?.id) || '—'
+}
+
+function stationNumberForLinePlacement(device, line) {
+    if (!line?.id || isAuxiliaryDeviceConfig(device)) return null
+    const current = readLineStationNumber(device)
+    const stationMap = getLineStationNumberMap(line)
+    const occupied = new Set([...stationMap.entries()]
+        .filter(([deviceId]) => deviceId !== device?.id)
+        .map(([, value]) => value))
+    const alreadyPlacedOnLine = device?.line_id === line.id
+        && resolveDeviceLayoutTarget(device, line, { allowFallback: false })?.type === 'lane'
+    if (alreadyPlacedOnLine && current && !occupied.has(current)) return current
+
+    let next = 1
+    while (occupied.has(next)) next += 1
+    return next
+}
+
+function startLineStationEdit(device) {
+    lineStationEditingDeviceId.value = device?.id || ''
+    lineStationDraft.value = String(lineStationNumber(device) === '—' ? '' : lineStationNumber(device))
+}
+
+function cancelLineStationEdit() {
+    lineStationEditingDeviceId.value = ''
+    lineStationDraft.value = ''
+}
+
+async function saveLineStationNumber(device) {
+    const line = selectedLineEditor.value
+    const value = Number(lineStationDraft.value)
+    if (!line || !device || !Number.isInteger(value) || value < 1) {
+        return alert('工位编号必须是大于 0 的整数', { title: '编号无效', type: 'warning' })
+    }
+    const stationMap = getLineStationNumberMap(line)
+    const duplicate = [...stationMap.entries()].some(([deviceId, station]) => deviceId !== device.id && station === value)
+    if (duplicate) {
+        return alert(`产线「${line.name}」中工位 ${value} 已被其他设备占用`, { title: '编号重复', type: 'warning' })
+    }
+
+    const config = { ...parseInstanceConfig(device.instance_config), stationNumber: value }
+    const patch = { instance_config: JSON.stringify(config, null, 2) }
+    patchDeviceLocally(device.id, patch)
+    lineDeviceSavingId.value = device.id
+    try {
+        const payload = buildDevicePayloadForSave({ ...device, ...patch, instance_config: config }, line.workshop_id)
+        const result = await adminApi.updateDevice(device.id, payload)
+        if (result?.error) {
+            await loadDevices()
+            return alert(result.error, { title: '保存工位编号失败', type: 'danger' })
+        }
+        cancelLineStationEdit()
+        await loadDevices()
+        await reloadSavedNativeScenePreview('lines')
+    } finally {
+        lineDeviceSavingId.value = ''
+    }
+}
+
     const lineIndex = sortByOrder(lines.value).findIndex(line => line.id === lineId)
     return lineIndex >= 0 ? -lineIndex * 16 : 0
 }
@@ -5708,6 +5819,7 @@ async function finishLineDeviceDrag(event) {
     resetLineDeviceDrag()
     if (!drag.active || !drag.canDrop) {
         scheduleNativeScenePreview({ source: 'lines', includeLayout: true, deviceOverride: null })
+        config.stationNumber = stationNumberForLinePlacement(device, line)
         if (drag.active && drag.message) alert(drag.message, { type: 'warning' })
         return
     }
@@ -6313,7 +6425,8 @@ function openSelectedWorkshopLineEditor() {
 const factoryTabs = [
     { key: 'workshops', label: '车间管理', icon: 'workshops' },
     { key: 'lines', label: '产线管理', icon: 'lines' },
-    { key: 'devices', label: '设备管理', icon: 'devices' }
+    { key: 'devices', label: '设备管理', icon: 'devices' },
+    { key: 'mobile-devices', label: '移动设备', icon: 'mobile' }
 ]
 const factoryTabKeys = factoryTabs.map(tab => tab.key)
 const dataTabs = [
@@ -7197,6 +7310,27 @@ async function openAdminSetupStep(step) {
                                                 </span>
                                             </button>
                                             <div class="line-card-fields" v-if="selectedLineEditorId === line.id">
+                                        <span class="line-map-station-bubble" @pointerdown.stop @click.stop>
+                                            <template v-if="lineStationEditingDeviceId === device.id">
+                                                <span class="line-map-station-label">工位</span>
+                                                <input
+                                                    v-model="lineStationDraft"
+                                                    class="line-map-station-input"
+                                                    type="number"
+                                                    min="1"
+                                                    step="1"
+                                                    aria-label="工位编号"
+                                                    @keydown.enter.prevent.stop="saveLineStationNumber(device)"
+                                                    @keydown.esc.prevent.stop="cancelLineStationEdit"
+                                                />
+                                                <button type="button" class="line-map-station-action" title="保存编号" @click.stop="saveLineStationNumber(device)">✓</button>
+                                                <button type="button" class="line-map-station-action cancel" title="取消修改" @click.stop="cancelLineStationEdit">×</button>
+                                            </template>
+                                            <button v-else type="button" class="line-map-station-trigger" @click.stop="startLineStationEdit(device)">
+                                                <span>工位 {{ lineStationNumber(device) }}</span>
+                                                <small>悬停后点击修改</small>
+                                            </button>
+                                        </span>
                                                 <input v-model="line.name" class="input input-sm" placeholder="产线名称" />
                                                 <select v-model="line.workshop_id" class="input input-sm">
                                                     <option v-for="ws in workshops" :key="ws.id" :value="ws.id">{{ ws.name }}</option>
@@ -7336,7 +7470,7 @@ async function openAdminSetupStep(step) {
                                         v-for="device in selectedLineEditorDevices"
                                         :key="device.id"
                                         class="line-map-device"
-                                        :class="{ saving: lineDeviceSavingId === device.id }"
+                                        :class="{ saving: lineDeviceSavingId === device.id, 'is-station-editing': lineStationEditingDeviceId === device.id }"
                                         :style="linePreviewDeviceStyle(device)"
                                         title="拖到设备线重新归位"
                                         @pointerdown="startLineDeviceDrag(device.id, $event)"
@@ -7554,6 +7688,13 @@ async function openAdminSetupStep(step) {
                                         <strong>PLC 连接配置</strong>
                                         <span>每台设备可以连接不同 PLC；料车等辅助设备可保持未启用。</span>
                                     </div>
+                <!-- ======== 移动设备 ======== -->
+                <MobileDeviceMotion
+                    v-if="activeTab === 'mobile-devices'"
+                    :devices="devices"
+                    @saved="loadDevices"
+                />
+
                                     <label class="inline-check">
                                         <input v-model="editingDevice.plc_enabled" type="checkbox" :true-value="1" :false-value="0" />
                                         启用此设备直连 PLC 采集
@@ -10804,6 +10945,102 @@ async function openAdminSetupStep(step) {
     box-shadow: 0 0 0 3px rgba(43, 113, 151, 0.12);
 }
 .line-align-guide::before {
+.line-map-station-bubble {
+    position: absolute;
+    left: 50%;
+    bottom: calc(100% + 8px);
+    z-index: 9;
+    display: block;
+    min-width: 82px;
+    padding: 6px 8px;
+    color: #1f4f68;
+    background: rgba(248, 253, 255, .98);
+    border: 1px solid rgba(57, 123, 157, .42);
+    border-radius: 9px;
+    box-shadow: 0 8px 18px rgba(38, 74, 91, .24);
+    opacity: 0;
+    pointer-events: none;
+    transform: translate(-50%, 5px);
+    transition: opacity .16s ease, transform .16s ease;
+    text-align: center;
+    white-space: nowrap;
+}
+.line-map-station-bubble::after {
+    content: '';
+    position: absolute;
+    left: 50%;
+    bottom: -5px;
+    width: 8px;
+    height: 8px;
+    background: rgba(248, 253, 255, .98);
+    border-right: 1px solid rgba(57, 123, 157, .42);
+    border-bottom: 1px solid rgba(57, 123, 157, .42);
+    transform: translateX(-50%) rotate(45deg);
+}
+.line-map-device:hover .line-map-station-bubble,
+.line-map-device.is-station-editing .line-map-station-bubble,
+.line-map-station-bubble:focus-within {
+    opacity: 1;
+    pointer-events: auto;
+    transform: translate(-50%, 0);
+}
+.line-map-station-trigger {
+    display: grid;
+    gap: 2px;
+    min-width: 82px;
+    padding: 0;
+    color: inherit;
+    background: transparent;
+    border: 0;
+    cursor: pointer;
+    font: inherit;
+    font-size: 11px;
+    font-weight: 800;
+}
+.line-map-station-trigger small {
+    padding-left: 0;
+    color: #6c8794;
+    font-size: 9px;
+    font-weight: 600;
+}
+.line-map-station-label {
+    display: inline-block;
+    margin-right: 4px;
+    color: #5e7885;
+    font-size: 10px;
+    font-weight: 700;
+}
+.line-map-station-input {
+    width: 42px;
+    height: 22px;
+    padding: 0 4px;
+    color: #173f54;
+    background: #ffffff;
+    border: 1px solid #8ab6c9;
+    border-radius: 5px;
+    font: inherit;
+    font-size: 12px;
+    font-weight: 800;
+    text-align: center;
+}
+.line-map-station-action {
+    width: 22px;
+    height: 22px;
+    margin-left: 3px;
+    padding: 0;
+    color: #ffffff;
+    background: #26708f;
+    border: 0;
+    border-radius: 5px;
+    cursor: pointer;
+    font: inherit;
+    font-size: 12px;
+    font-weight: 800;
+}
+.line-map-station-action.cancel {
+    color: #6c7880;
+    background: #e8eef1;
+}
     top: 0;
 }
 .line-align-guide::after {

@@ -32,6 +32,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
         private static FactoryRuntime _instance;
         private readonly Dictionary<string, ModelBindingDriver> _drivers = new Dictionary<string, ModelBindingDriver>();
         private readonly Dictionary<string, DeviceStatusVisual> _visuals = new Dictionary<string, DeviceStatusVisual>();
+        private readonly Dictionary<string, MobileDeviceMotion> _motions = new Dictionary<string, MobileDeviceMotion>();
         private readonly Dictionary<string, JObject> _latestDeviceFrames = new Dictionary<string, JObject>();
         private readonly Dictionary<string, Transform> _deviceRoots = new Dictionary<string, Transform>();
         private readonly Dictionary<string, Transform> _workshopRoots = new Dictionary<string, Transform>();
@@ -218,11 +219,14 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 var driver = instance.Root.GetComponent<ModelBindingDriver>();
                 var visual = instance.Root.AddComponent<DeviceStatusVisual>();
                 visual.Initialize(device);
+                var motion = instance.Root.AddComponent<MobileDeviceMotion>();
+                motion.Initialize(device);
                 _dashboard.RegisterDevice(device, instance.Root, instance.Inspection);
                 if (!string.IsNullOrWhiteSpace(device.Id))
                 {
                     _drivers[device.Id] = driver;
                     _visuals[device.Id] = visual;
+                    _motions[device.Id] = motion;
                     _deviceRoots[device.Id] = instance.Root.transform;
                     _deviceModelTypes[device.Id] = device.ModelType ?? string.Empty;
                     _deviceLineIds[device.Id] = placement.LineId ?? device.LineId ?? string.Empty;
@@ -231,6 +235,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
                     {
                         driver.ApplyRealtime(latest);
                         visual.ApplyRealtime(latest);
+                        motion.ApplyRealtime(latest);
                         _dashboard.ApplyRealtime(device.Id, latest);
                     }
                 }
@@ -347,6 +352,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
                     _latestDeviceFrames[id] = deviceData;
                     if (_drivers.TryGetValue(id, out var driver)) driver.ApplyRealtime(deviceData);
                     if (_visuals.TryGetValue(id, out var visual)) visual.ApplyRealtime(deviceData);
+                    if (_motions.TryGetValue(id, out var motion)) motion.ApplyRealtime(deviceData);
                     _dashboard.ApplyRealtime(id, deviceData);
                 }
                 _diagnostics.RecordRealtimeFrame(payload.Value<long?>("timestamp") ?? 0L, devices.Count);
@@ -362,6 +368,10 @@ namespace HeatTreatment.DigitalTwin.Runtime
             else if (type == "configuration_changed")
             {
                 ApplyLiveSettings(message["payload"] as JObject);
+            }
+            else if (type == "device_configuration_changed")
+            {
+                ApplyLiveDeviceConfiguration(message["payload"] as JObject);
             }
             else if (type == "native_scene_preview")
             {
@@ -496,6 +506,11 @@ namespace HeatTreatment.DigitalTwin.Runtime
             }
 
             _modelLibrary.ApplyPreviewTransform(root, device);
+            if (_motions.TryGetValue(device.Id, out var motion))
+            {
+                var motionDevice = ResolveRuntimeDeviceForMotion(device);
+                motion.Reconfigure(motionDevice, true);
+            }
             if (!string.IsNullOrWhiteSpace(device.Name)) root.name = device.Name;
             _dashboard.ApplyPreviewDevice(device, root.gameObject);
         }
@@ -518,8 +533,11 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 var driver = root.GetComponent<ModelBindingDriver>();
                 var visual = root.AddComponent<DeviceStatusVisual>();
                 visual.Initialize(device);
+                var motion = root.AddComponent<MobileDeviceMotion>();
+                motion.Initialize(device);
                 _drivers[device.Id] = driver;
                 _visuals[device.Id] = visual;
+                _motions[device.Id] = motion;
                 _deviceRoots[device.Id] = root.transform;
                 _deviceModelTypes[device.Id] = device.ModelType ?? string.Empty;
                 _dashboard.ApplyPreviewDevice(device, root, instance.Inspection);
@@ -527,6 +545,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 {
                     driver?.ApplyRealtime(latest);
                     visual.ApplyRealtime(latest);
+                    motion.ApplyRealtime(latest);
                     _dashboard.ApplyRealtime(device.Id, latest);
                 }
                 if (previousRoot != null) Destroy(previousRoot.gameObject);
@@ -944,6 +963,33 @@ namespace HeatTreatment.DigitalTwin.Runtime
             Debug.Log("[FactoryRuntime] Dashboard configuration updated live");
         }
 
+        private void ApplyLiveDeviceConfiguration(JObject payload)
+        {
+            var deviceId = payload?.Value<string>("deviceId");
+            if (string.IsNullOrWhiteSpace(deviceId) || _config == null) return;
+            var device = EnumerateConfigDevices(_config).FirstOrDefault(item => item?.Id == deviceId);
+            if (device == null) return;
+            if (payload["instanceConfig"] != null) device.InstanceConfig = payload["instanceConfig"].DeepClone();
+            if (_motions.TryGetValue(deviceId, out var motion)) motion.Reconfigure(device, true);
+            _diagnostics.Activity = "Mobile device configuration updated live";
+        }
+
+        private DeviceDto ResolveRuntimeDeviceForMotion(DeviceDto patch)
+        {
+            if (patch == null || _config == null) return patch;
+            var current = EnumerateConfigDevices(_config).FirstOrDefault(item => item?.Id == patch.Id);
+            if (current == null) return patch;
+            if ((patch.DataPoints == null || patch.DataPoints.Count == 0) && current.DataPoints != null)
+            {
+                patch.DataPoints = current.DataPoints;
+            }
+            if (patch.InstanceConfigObject["movement"] == null && current.InstanceConfigObject["movement"] != null)
+            {
+                patch.InstanceConfig = current.InstanceConfigObject.DeepClone();
+            }
+            return patch;
+        }
+
         private void ApplyBackendQuality(IReadOnlyDictionary<string, string> settings)
         {
             if (_quality == null || !string.Equals(_settings?.qualityProfile, "auto", StringComparison.OrdinalIgnoreCase)) return;
@@ -981,6 +1027,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
         {
             _drivers.Clear();
             _visuals.Clear();
+            _motions.Clear();
             _deviceRoots.Clear();
             _workshopRoots.Clear();
             _lineRoots.Clear();
