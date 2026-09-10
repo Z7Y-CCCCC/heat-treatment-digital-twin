@@ -10379,6 +10379,7 @@ async function openAdminSetupStep(step) {
 }
 .line-planner-layout {
     position: relative;
+    height: 100%;
     min-height: calc(100vh - 220px);
     display: grid;
     grid-template-columns: minmax(380px, 440px) minmax(0, 1fr);
@@ -10394,7 +10395,8 @@ async function openAdminSetupStep(step) {
 .line-planner-editor {
     min-width: 0;
     align-self: stretch;
-    max-height: calc(100vh - 220px);
+    height: 100%;
+    max-height: none;
     overflow-x: hidden;
     overflow-y: auto;
     overscroll-behavior: contain;
@@ -10412,7 +10414,7 @@ async function openAdminSetupStep(step) {
     min-height: calc(100vh - 266px);
 }
 .admin-container.unity-embedded .line-planner-editor {
-    max-height: calc(100vh - 266px);
+    max-height: none;
 }
 .line-editor-panel,
 .line-basic-grid,
