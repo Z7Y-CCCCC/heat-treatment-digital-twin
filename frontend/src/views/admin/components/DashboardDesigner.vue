@@ -1,8 +1,9 @@
 <script setup>
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, onActivated, onDeactivated, reactive, ref, useId, watch } from 'vue'
 import { adminApi } from '../../../config/factoryConfig.js'
 import WidgetRenderer from '../../../runtime/WidgetRenderer.vue'
-import { applyVisibilityAction, widgetRuntimeVisible } from '../../../runtime/dashboardRules.js'
+import { applyReferenceHudLayout } from '../../../runtime/referenceHudLayout.js'
+import { applyVisibilityAction, matchesRule, widgetRuntimeVisible } from '../../../runtime/dashboardRules.js'
 import ColorField from './ColorField.vue'
 import {
   DASHBOARD_WIDGET_LIBRARY,
@@ -19,7 +20,7 @@ import {
   widgetTypeLabel
 } from '../../../runtime/dashboardSchema.js'
 
-const emit = defineEmits(['reload'])
+const emit = defineEmits(['reload', 'preview-view'])
 
 const viewportRef = ref(null)
 const documentModel = ref(normalizeDashboardDocument())
@@ -34,9 +35,12 @@ const acceptanceReport = ref(null)
 const acceptanceLoading = ref(false)
 const zoom = ref(0.68)
 const previewMode = ref(false)
+const fullscreenActive = ref(false)
+const designerShellRef = ref(null)
 const inspectorTab = ref('content')
 const selectedIds = ref([])
 const guides = reactive({ x: [], y: [] })
+const selectionBox = reactive({ active: false, x: 0, y: 0, width: 0, height: 0 })
 const devices = ref([])
 const points = ref([])
 const workshops = ref([])
@@ -77,14 +81,58 @@ const releaseDialog = ref(null)
 const layersCollapsed = ref(false)
 const canvasPreset = ref('1920x1080')
 const selectedViewId = ref('factory_overview')
+// This is an editor/preview context only. It lets the user choose which
+// device's data is used while editing a device view without cloning widgets.
+const editorDeviceId = ref('')
 const viewInspectorTab = ref('camera')
 const viewPanelCollapsed = ref(false)
+const PANEL_LAYOUT_KEY = 'dashboard-designer-panel-layout-v1'
+const panelLayout = reactive(readPanelLayout())
+const panelId = useId()
+const leftPanelId = `${panelId}-designer-left-panel`
+const rightPanelId = `${panelId}-designer-right-panel`
+let editorStateBeforeReload = null
 let pointerOperation = null
 let realtimeTimer = 0
 let localPersistTimer = 0
 let viewportObserver = null
 let viewportFitFrame = 0
 let manualZoom = false
+let designerDisposed = false
+let designerActive = true
+let realtimeRequestSeq = 0
+let realtimeInFlight = false
+let viewPreviewTimer = 0
+
+function readPanelLayout() {
+  try {
+    const stored = JSON.parse(localStorage.getItem(PANEL_LAYOUT_KEY) || '{}')
+    return { leftCollapsed: stored?.leftCollapsed === true, rightCollapsed: stored?.rightCollapsed === true }
+  } catch {
+    return { leftCollapsed: false, rightCollapsed: false }
+  }
+}
+
+async function toggleSidePanel(side) {
+  const key = side === 'left' ? 'leftCollapsed' : 'rightCollapsed'
+  panelLayout[key] = !panelLayout[key]
+  await nextTick()
+  // ResizeObserver refits automatic zoom; keep a manually chosen zoom level.
+  if (manualZoom) centerCanvas()
+}
+
+function revealRightPanel() {
+  if (!panelLayout.rightCollapsed) return
+  panelLayout.rightCollapsed = false
+  nextTick(() => {
+    if (manualZoom) centerCanvas()
+  })
+}
+
+watch(panelLayout, value => {
+  try { localStorage.setItem(PANEL_LAYOUT_KEY, JSON.stringify(value)) }
+  catch { /* Layout preferences must not affect editing when storage is unavailable. */ }
+})
 
 const backgroundColorPresets = [
   'transparent',
@@ -158,7 +206,46 @@ const views = computed(() => Array.isArray(documentModel.value.scene?.views) && 
   : createDefaultDashboardViews())
 const currentView = computed(() => views.value.find(view => view.id === selectedViewId.value) || views.value[0] || null)
 const viewModeLabel = computed(() => DASHBOARD_VIEW_MODES.find(item => item.id === currentView.value?.mode)?.label || '自定义视角')
-const systemWidgetCards = computed(() => SYSTEM_WIDGET_LIBRARY.map(definition => {
+const collapsedViewIds = reactive(new Set())
+const viewTreeRows = computed(() => {
+  const allViews = views.value
+  const byParent = new Map()
+  const viewIds = new Set(allViews.map(view => view.id))
+  byParent.set('', [])
+  allViews.forEach(view => {
+    const parentId = String(view.parentViewId || '')
+    if (parentId && parentId !== view.id && viewIds.has(parentId)) {
+      if (!byParent.has(parentId)) byParent.set(parentId, [])
+      byParent.get(parentId).push(view)
+    } else byParent.get('').push(view)
+    if (!byParent.has(view.id)) byParent.set(view.id, [])
+  })
+  const roots = byParent.get('')
+  const reachable = new Set()
+  const markReachable = view => {
+    if (!view || reachable.has(view.id)) return
+    reachable.add(view.id)
+    ;(byParent.get(view.id) || []).forEach(markReachable)
+  }
+  roots.forEach(markReachable)
+
+  const rows = []
+  const flattened = new Set()
+  const flatten = (view, level) => {
+    if (!view || flattened.has(view.id)) return
+    flattened.add(view.id)
+    const children = byParent.get(view.id) || []
+    rows.push({ view, level, hasChildren: children.length > 0, collapsed: collapsedViewIds.has(view.id) })
+    if (!collapsedViewIds.has(view.id)) children.forEach(child => flatten(child, level + 1))
+  }
+  roots.forEach(view => flatten(view, 0))
+  // 关系配置不完整时，把孤立视角作为根节点展示，避免在树中丢失。
+  allViews.filter(view => !reachable.has(view.id)).forEach(view => flatten(view, 0))
+  return rows
+})
+const systemWidgetCards = computed(() => SYSTEM_WIDGET_LIBRARY
+  .filter(definition => !['navigation', 'return_button'].includes(definition.type))
+  .map(definition => {
   const widget = systemWidgets.value.find(item => item.type === definition.type) || {
     id: `widget_${definition.type}`,
     type: definition.type,
@@ -170,23 +257,97 @@ const systemWidgetCards = computed(() => SYSTEM_WIDGET_LIBRARY.map(definition =>
     definition,
     label: (widget.title && !/^\d+$/.test(String(widget.title).trim())) ? widget.title : definition.label
   }
-}))
-const viewComponents = computed(() => [
-  ...overlayWidgets.value.map(widget => ({ widget, id: widget.id, label: widget.title || widgetTypeLabel(widget.type), type: widget.type })),
-  ...systemWidgetCards.value.map(card => ({ widget: card.widget, id: card.widget.id, label: card.label, type: card.widget.type }))
-])
+  }))
 const overlayWidgets = computed(() => documentModel.value.widgets
-  .filter(widget => !SYSTEM_WIDGET_TYPES.has(widget.type) && widget.runtimeTarget !== 'unity')
+  // Navigation and return are designer-authored components. Their runtime
+  // renderer is still the WebView layer, while other Unity system panels stay
+  // outside the editable canvas.
+  .filter(widget => ['navigation', 'return_button'].includes(widget.type) || (!SYSTEM_WIDGET_TYPES.has(widget.type) && widget.runtimeTarget !== 'unity'))
   .sort((left, right) => Number(left.zIndex || 0) - Number(right.zIndex || 0)))
-const systemWidgets = computed(() => documentModel.value.widgets.filter(widget => SYSTEM_WIDGET_TYPES.has(widget.type) || widget.runtimeTarget === 'unity'))
+const systemWidgets = computed(() => documentModel.value.widgets.filter(widget => !['navigation', 'return_button'].includes(widget.type) && (SYSTEM_WIDGET_TYPES.has(widget.type) || widget.runtimeTarget === 'unity')))
+const viewComponentCandidates = computed(() => [
+  // 导航和返回组件会进入画布；Unity 诊断面板、设备浮标等系统项仍不占画布。
+  ...overlayWidgets.value.map(widget => ({ widget, id: widget.id, label: widget.title || widgetTypeLabel(widget.type), type: widget.type }))
+].filter(item => item.widget.visible !== false && widgetMatchesCurrentView(item.widget)))
+const viewComponents = computed(() => viewComponentCandidates.value.filter(item => widgetAllowedInCurrentView(item.widget)))
+const hiddenViewComponents = computed(() => viewComponentCandidates.value.filter(item => !widgetAllowedInCurrentView(item.widget)))
 const selectedWidgets = computed(() => documentModel.value.widgets.filter(widget => selectedIds.value.includes(widget.id)))
 const selectedWidget = computed(() => selectedWidgets.value[selectedWidgets.value.length - 1] || null)
+const currentViewUsesDevice = computed(() => ['device', 'device_part'].includes(String(currentView.value?.targetType || '').toLowerCase())
+  || String(currentView.value?.mode || '').toLowerCase() === 'device')
+const editorDevice = computed(() => devices.value.find(device => String(device.id) === String(editorDeviceId.value)) || null)
+const designerVisibilityContext = computed(() => {
+  const view = currentView.value
+  const viewMode = view?.mode === 'custom' ? (view.targetType || 'factory') : (view?.mode || 'factory')
+  return {
+    ...previewContext,
+    viewId: view?.id || previewContext.viewId || '',
+    viewMode,
+    workshopId: view?.targetType === 'workshop' ? String(view.targetId || '') : '',
+    lineId: view?.targetType === 'line' ? String(view.targetId || '') : '',
+    // A device is a real visibility context only while editing a device view.
+    // This keeps device-specific widgets out of factory/workshop/line views.
+    deviceId: currentViewUsesDevice.value
+      ? String(editorDeviceId.value || previewContext.deviceId || devices.value[0]?.id || '')
+      : '',
+    inspectionStage: String(view?.metadata?.inspectionStage || previewContext.inspectionStage || ''),
+    partId: String(previewContext.partId || ''),
+    partName: String(previewContext.partName || '')
+  }
+})
+const currentViewTargetLabel = computed(() => {
+  const view = currentView.value
+  if (!view) return '未选择视角'
+  const targetType = String(view.targetType || view.mode || 'factory').toLowerCase()
+  if (targetType === 'device') return editorDevice.value?.name || view.targetId || '当前预览设备'
+  if (targetType === 'device_part') return `部件 ${view.targetId || '自动选择'} · ${editorDevice.value?.name || '当前预览设备'}`
+  if (targetType === 'line') return lines.value.find(item => String(item.id) === String(view.targetId))?.name || view.targetId || '当前产线'
+  if (targetType === 'workshop') return workshops.value.find(item => String(item.id) === String(view.targetId))?.name || view.targetId || '当前车间'
+  return '全厂'
+})
+const designerScopeHint = computed(() => currentViewUsesDevice.value
+  ? '画布和图层按当前设备视角 + 预览设备过滤；不匹配当前设备的组件不会显示。'
+  : '这是公共视角，所有设备共用；画布和图层只按当前全厂、车间或产线视角过滤。')
+const currentViewWidgets = computed(() => overlayWidgets.value.filter(widget => widgetAllowedInCurrentView(widget)))
+const currentViewHiddenWidgets = computed(() => viewComponentCandidates.value.filter(item => !widgetAllowedInCurrentView(item.widget)))
+const selectedCanvasWidgets = computed(() => selectedWidgets.value.filter(widget => widgetAllowedInCurrentView(widget)))
+const selectedAllLocked = computed(() => selectedCanvasWidgets.value.length > 0 && selectedCanvasWidgets.value.every(widget => widget.locked))
+const selectedHasUnlocked = computed(() => selectedCanvasWidgets.value.some(widget => !widget.locked))
+const selectedBounds = computed(() => {
+  const widgets = selectedCanvasWidgets.value
+  if (!widgets.length) return null
+  const left = Math.min(...widgets.map(widget => Number(widget.frame?.x || 0)))
+  const top = Math.min(...widgets.map(widget => Number(widget.frame?.y || 0)))
+  const right = Math.max(...widgets.map(widget => Number(widget.frame?.x || 0) + Number(widget.frame?.width || 0)))
+  const bottom = Math.max(...widgets.map(widget => Number(widget.frame?.y || 0) + Number(widget.frame?.height || 0)))
+  return { left, top, right, bottom }
+})
+const selectionActionsStyle = computed(() => {
+  const bounds = selectedBounds.value
+  if (!bounds) return { display: 'none' }
+  const toolbarWidth = selectedCanvasWidgets.value.length > 1 ? 116 : 72
+  const toolbarHeight = 36
+  const gap = 8
+  const inset = 8
+  let left = bounds.right - toolbarWidth
+  let top = bounds.top - toolbarHeight - gap
+  if (top < inset) top = bounds.bottom + gap
+  left = Math.max(inset, Math.min(canvas.value.width - toolbarWidth - inset, left))
+  top = Math.max(inset, Math.min(canvas.value.height - toolbarHeight - inset, top))
+  return { left: `${left}px`, top: `${top}px` }
+})
 const canUndo = computed(() => historyIndex.value > 0)
 const canRedo = computed(() => historyIndex.value >= 0 && historyIndex.value < history.value.length - 1)
 const isDirty = computed(() => JSON.stringify(documentModel.value) !== lastSavedSnapshot.value)
 const currentReleaseId = computed(() => currentRelease.value?.id || releases.value.find(item => item.is_current)?.id || '')
+const selectedBindingDeviceId = computed(() => {
+  if (selectedWidget.value?.data?.deviceScope === 'current') {
+    return String(editorDeviceId.value || previewContext.deviceId || devices.value[0]?.id || '')
+  }
+  return String(selectedWidget.value?.data?.deviceId || '')
+})
 const selectedDevicePoints = computed(() => points.value.filter(point =>
-  String(point.device_id) === String(selectedWidget.value?.data?.deviceId || '')
+  String(point.device_id) === selectedBindingDeviceId.value
   && String(point.access_type || 'READ').toUpperCase() === 'READ'
 ))
 const selectedDataSource = computed(() => dataSources.value.find(item => item.id === selectedWidget.value?.data?.connectionId) || null)
@@ -207,10 +368,32 @@ const libraryGroups = computed(() => {
   return [...groups.entries()].map(([name, items]) => ({ name, items }))
 })
 const zoomPercent = computed(() => `${Math.round(zoom.value * 100)}%`)
-function widgetAllowedInCurrentView(widget) {
+function widgetMatchesCurrentView(widget) {
   const view = currentView.value
-  if (!view) return true
+  if (!view) return false
   if (widget.visibility?.viewIds?.length && !widget.visibility.viewIds.includes(view.id)) return false
+  const effectiveMode = view.mode === 'custom' ? (view.targetType || 'factory') : view.mode
+  if (widget.visibility?.viewModes?.length && !widget.visibility.viewModes.includes(effectiveMode)) return false
+  const visibility = widget.visibility || {}
+  if (visibility.matchBoundDevice) {
+    const deviceId = String(designerVisibilityContext.value.deviceId || '')
+    const deviceScope = widget.data?.deviceScope === 'current' ? 'current' : 'fixed'
+    if (!deviceId) return false
+    if (deviceScope === 'fixed' && String(widget.data?.deviceId || '') !== deviceId) return false
+  }
+  // Device/view rules affect the editor list. Data-value rules are deliberately
+  // left to preview mode so a changing live value cannot make a component
+  // disappear while it is being edited.
+  const contextRules = (visibility.rules || []).filter(rule => rule?.source !== 'data')
+  if (!contextRules.length) return true
+  const matches = contextRules.map(rule => matchesRule(rule, { context: designerVisibilityContext.value }))
+  return visibility.ruleMode === 'any' ? matches.some(Boolean) : matches.every(Boolean)
+}
+
+function widgetAllowedInCurrentView(widget) {
+  if (!widgetMatchesCurrentView(widget)) return false
+  const view = currentView.value
+  if (!view) return false
   const state = view.componentState || {}
   if (state.hide?.includes(widget.id) || state.hide?.includes(`group:${widget.groupId}`)) return false
   if (state.show?.length && !state.show.includes(widget.id) && !state.show.includes(`group:${widget.groupId}`)) return false
@@ -230,7 +413,7 @@ const canvasTransformStyle = computed(() => ({
   height: `${canvas.value.height}px`,
   transform: `scale(${zoom.value})`,
   background: canvas.value.background === 'transparent'
-    ? 'radial-gradient(circle at 50% 35%, rgba(43,89,121,.22), transparent 48%), #07111c'
+    ? 'radial-gradient(ellipse at 52% 44%, #333c57 0%, #1c2439 42%, #101624 80%)'
     : canvas.value.background
 }))
 const canvasOuterStyle = computed(() => ({
@@ -250,11 +433,11 @@ async function runAcceptanceReport() {
     const result = await adminApi.getAcceptanceReport()
     if (result?.error) throw new Error(result.error)
     acceptanceReport.value = result
-    if (result.displayReady) setStatus('自动验收通过：配置、采集器与 Unity 均已就绪', 'success')
-    else if (result.configurationReady) setStatus('配置验收通过：等待 Unity 连接后即可展示', 'warning')
-    else setStatus(`验收未通过：${(result.blockingFailures || []).join('、') || '请查看报告'}`, 'danger')
+    if (result.displayReady) setStatus('运行检查通过：配置、采集器与 Unity 均已就绪', 'success')
+    else if (result.configurationReady) setStatus('配置检查通过：等待 Unity 连接后即可展示', 'warning')
+    else setStatus(`运行检查未通过：${(result.blockingFailures || []).join('、') || '请查看报告'}`, 'danger')
   } catch (error) {
-    setStatus(error.message || '自动验收失败', 'danger')
+    setStatus(error.message || '运行检查失败', 'danger')
   } finally {
     acceptanceLoading.value = false
   }
@@ -327,7 +510,81 @@ function clearLocalDraft() {
   try { localStorage.removeItem(localDraftKey()) } catch { /* ignore */ }
 }
 
+function editorStateKey(sceneId = documentModel.value.sceneId) {
+  return `dashboard-designer-state:${sceneId}`
+}
+
+function captureEditorState() {
+  return {
+    viewId: selectedViewId.value,
+    editorDeviceId: editorDeviceId.value,
+    selectedIds: [...selectedIds.value],
+    inspectorTab: inspectorTab.value,
+    viewInspectorTab: viewInspectorTab.value,
+    layersCollapsed: layersCollapsed.value,
+    viewPanelCollapsed: viewPanelCollapsed.value,
+    collapsedViewIds: [...collapsedViewIds],
+    zoom: zoom.value,
+    manualZoom
+  }
+}
+
+function persistEditorState(state = captureEditorState(), sceneId = documentModel.value.sceneId) {
+  if (!sceneId) return
+  try { localStorage.setItem(editorStateKey(sceneId), JSON.stringify({ ...state, savedAt: new Date().toISOString() })) }
+  catch { /* UI state persistence must not affect editing. */ }
+}
+
+function readEditorState(sceneId) {
+  try {
+    const value = JSON.parse(localStorage.getItem(editorStateKey(sceneId)) || 'null')
+    return value && typeof value === 'object' ? value : null
+  } catch {
+    return null
+  }
+}
+
+function rememberEditorState() {
+  const state = captureEditorState()
+  editorStateBeforeReload = state
+  persistEditorState(state)
+  return state
+}
+
+function restoreEditorState(state) {
+  const viewIds = new Set(views.value.map(view => String(view.id)))
+  const fallbackViewId = documentModel.value.scene?.defaultViewId || views.value[0]?.id || 'factory_overview'
+  selectedViewId.value = state?.viewId && viewIds.has(String(state.viewId))
+    ? String(state.viewId)
+    : fallbackViewId
+  if (state?.editorDeviceId !== undefined) editorDeviceId.value = String(state.editorDeviceId || '')
+  if (state?.inspectorTab) inspectorTab.value = state.inspectorTab
+  if (state?.viewInspectorTab) viewInspectorTab.value = state.viewInspectorTab
+  if (typeof state?.layersCollapsed === 'boolean') layersCollapsed.value = state.layersCollapsed
+  if (typeof state?.viewPanelCollapsed === 'boolean') viewPanelCollapsed.value = state.viewPanelCollapsed
+  collapsedViewIds.clear()
+  if (Array.isArray(state?.collapsedViewIds)) {
+    state.collapsedViewIds.forEach(viewId => {
+      if (viewIds.has(String(viewId))) collapsedViewIds.add(String(viewId))
+    })
+  }
+  syncPreviewContextFromView()
+
+  const widgetIds = new Set(currentViewWidgets.value.map(widget => String(widget.id)))
+  selectedIds.value = Array.isArray(state?.selectedIds)
+    ? state.selectedIds.map(id => String(id)).filter(id => widgetIds.has(id))
+    : []
+  if (state?.manualZoom && Number.isFinite(Number(state.zoom))) {
+    zoom.value = Math.max(0.25, Math.min(1.5, Number(state.zoom)))
+    manualZoom = true
+  }
+  editorStateBeforeReload = null
+  persistEditorState()
+  nextTick(() => { if (manualZoom) centerCanvas() })
+}
+
 async function loadDesigner({ allowLocal = true } = {}) {
+  const pendingEditorState = editorStateBeforeReload
   loading.value = true
   try {
     const [designer, deviceRows, pointRows, dataSourceResult, workshopRows, lineRows] = await Promise.all([
@@ -338,24 +595,29 @@ async function loadDesigner({ allowLocal = true } = {}) {
       adminApi.getWorkshops().catch(() => []),
       adminApi.getLines().catch(() => [])
     ])
+    if (designerDisposed) return
     if (designer?.error) throw new Error(designer.error)
     revision.value = Number(designer.revision || 0)
     const serverDocument = normalizeDashboardDocument(designer.document || {})
     const localDocument = allowLocal ? readLocalDraft(serverDocument.sceneId, revision.value) : null
-    documentModel.value = localDocument || serverDocument
+    documentModel.value = applyReferenceHudLayout(localDocument || serverDocument)
     releases.value = designer.releases || []
     currentRelease.value = designer.currentRelease || null
     devices.value = Array.isArray(deviceRows) ? deviceRows : []
     points.value = (Array.isArray(pointRows) ? pointRows : []).filter(point => String(point.access_type || 'READ').toUpperCase() === 'READ')
-    dataSources.value = Array.isArray(dataSourceResult?.connections) ? dataSourceResult.connections : []
+    // HTTP API sources currently support health checks only, not table/field or
+    // business-data bindings. Keep legacy database entries without sourceType.
+    dataSources.value = (Array.isArray(dataSourceResult?.connections) ? dataSourceResult.connections : [])
+      .filter(source => source.sourceType !== 'http_api' && source.type !== 'http_api')
     workshops.value = Array.isArray(workshopRows) ? workshopRows : []
     lines.value = Array.isArray(lineRows) ? lineRows : []
-    lastSavedSnapshot.value = snapshot(serverDocument)
+    // The reference HUD is a presentation migration applied on load. Treat
+    // that derived layout as the editor baseline so opening the designer does
+    // not falsely report an unsaved change before the user edits anything.
+    lastSavedSnapshot.value = snapshot(documentModel.value)
     resetHistory()
-    selectedViewId.value = documentModel.value.scene?.defaultViewId || documentModel.value.scene?.views?.[0]?.id || 'factory_overview'
-    previewContext.viewId = selectedViewId.value
-    syncPreviewContextFromView()
-    selectedIds.value = []
+    const savedEditorState = pendingEditorState || readEditorState(serverDocument.sceneId)
+    restoreEditorState(savedEditorState)
     setStatus(localDocument ? '已恢复本机未保存的编辑内容' : `草稿修订 ${revision.value}，运行中版本 ${designer.currentRelease?.version || '未发布'}`, localDocument ? 'warning' : 'success')
     await nextTick()
     fitCanvas('comfortable')
@@ -364,6 +626,7 @@ async function loadDesigner({ allowLocal = true } = {}) {
     setStatus(error.message || '设计器加载失败', 'danger')
   } finally {
     loading.value = false
+    scheduleCurrentViewPreview({ immediate: true })
   }
 }
 
@@ -372,7 +635,12 @@ function syncPreviewContextFromView() {
   if (!view) return
   previewContext.viewId = view.id
   previewContext.viewMode = view.mode === 'custom' ? (view.targetType || 'factory') : view.mode
-  if (view.targetType === 'device') previewContext.deviceId = view.targetId || previewContext.deviceId || ''
+  if (currentViewUsesDevice.value) {
+    editorDeviceId.value = view.targetType === 'device' && view.targetId
+      ? String(view.targetId)
+      : String(editorDeviceId.value || previewContext.deviceId || devices.value[0]?.id || '')
+    previewContext.deviceId = editorDeviceId.value
+  } else previewContext.deviceId = ''
   if (view.targetType === 'line') previewContext.lineId = view.targetId || previewContext.lineId || ''
   if (view.targetType === 'workshop') previewContext.workshopId = view.targetId || previewContext.workshopId || ''
   previewContext.inspectionStage = view.metadata?.inspectionStage || (view.id === 'device_detail' ? 'solid' : '')
@@ -384,11 +652,49 @@ function syncPreviewContextFromView() {
   }
 }
 
+function emitCurrentViewPreview({ immediate = false } = {}) {
+  if (designerDisposed || !designerActive || loading.value) return
+  const view = currentView.value
+  if (!view?.id) return
+  emit('preview-view', {
+    viewId: String(view.id),
+    view: deepClone(view),
+    immediate
+  })
+}
+
+function scheduleCurrentViewPreview({ immediate = false } = {}) {
+  window.clearTimeout(viewPreviewTimer)
+  viewPreviewTimer = 0
+  if (immediate) {
+    emitCurrentViewPreview({ immediate: true })
+    return
+  }
+  if (designerDisposed || !designerActive || loading.value) return
+  viewPreviewTimer = window.setTimeout(() => {
+    viewPreviewTimer = 0
+    emitCurrentViewPreview()
+  }, 45)
+}
+
+function updateEditorDevice() {
+  editorDeviceId.value = String(editorDeviceId.value || '')
+  if (editorDeviceId.value) previewContext.deviceId = editorDeviceId.value
+  setStatus(`当前编辑设备：${editorDevice.value?.name || editorDeviceId.value || '未选择'}；组件数据将按绑定范围预览`, 'info')
+  refreshRealtimePoints()
+}
+
+function toggleViewTreeNode(viewId) {
+  if (collapsedViewIds.has(viewId)) collapsedViewIds.delete(viewId)
+  else collapsedViewIds.add(viewId)
+}
+
 function selectView(viewId, { enterPreview = false } = {}) {
   if (!views.value.some(view => view.id === viewId)) return
   selectedViewId.value = viewId
   selectedIds.value = []
   syncPreviewContextFromView()
+  scheduleCurrentViewPreview({ immediate: true })
   if (enterPreview) previewMode.value = true
 }
 
@@ -424,9 +730,36 @@ function duplicateView() {
 function removeView() {
   if (!currentView.value || views.value.length <= 1) return setStatus('至少保留一个视角', 'warning')
   const removed = currentView.value.id
-  documentModel.value.scene.views = views.value.filter(view => view.id !== removed)
-  if (documentModel.value.scene.defaultViewId === removed) documentModel.value.scene.defaultViewId = documentModel.value.scene.views[0].id
-  selectedViewId.value = documentModel.value.scene.defaultViewId
+  const remainingViews = views.value.filter(view => view.id !== removed)
+  const remainingIds = new Set(remainingViews.map(view => view.id))
+  const fallbackParentId = remainingIds.has(String(currentView.value.parentViewId || ''))
+    ? String(currentView.value.parentViewId)
+    : ''
+  const nextDefaultViewId = remainingIds.has(String(documentModel.value.scene.defaultViewId || ''))
+    ? String(documentModel.value.scene.defaultViewId)
+    : (remainingViews[0]?.id || '')
+  // 删除视角时同步清理所有交叉引用，避免每个组件残留一个失效视角 ID，
+  // 最终在保存/校验时被展开成成百条错误。
+  documentModel.value.widgets.forEach(widget => {
+    if (Array.isArray(widget.visibility?.viewIds)) {
+      widget.visibility.viewIds = widget.visibility.viewIds.filter(viewId => remainingIds.has(String(viewId)))
+    }
+    if (Array.isArray(widget.events)) {
+      widget.events = widget.events.map(event => {
+        if (event?.action === 'switch_view' && event.viewId && !remainingIds.has(String(event.viewId))) {
+          return { ...event, viewId: fallbackParentId || nextDefaultViewId }
+        }
+        return event
+      })
+    }
+  })
+  documentModel.value.scene.views = remainingViews.map(view => ({
+    ...view,
+    parentViewId: view.parentViewId === removed ? fallbackParentId : view.parentViewId,
+    returnViewId: view.returnViewId === removed ? fallbackParentId : view.returnViewId
+  }))
+  documentModel.value.scene.defaultViewId = nextDefaultViewId
+  selectedViewId.value = fallbackParentId || nextDefaultViewId
   syncPreviewContextFromView()
   commitHistory('删除视角')
 }
@@ -454,12 +787,17 @@ function toggleViewComponent(view, id, visible) {
   state.hide = state.hide.filter(item => item !== id)
   state.show = state.show.filter(item => item !== id)
   if (!visible) state.hide.push(id)
+  else if (state.show.length) state.show.push(id)
   commitHistory(visible ? '视角显示组件' : '视角隐藏组件')
 }
 
 async function refreshRealtimePoints() {
+  if (designerDisposed || !designerActive || realtimeInFlight) return
+  const requestSeq = ++realtimeRequestSeq
+  realtimeInFlight = true
   try {
     const result = await adminApi.getRealtimePointValues('all')
+    if (designerDisposed || !designerActive || requestSeq !== realtimeRequestSeq) return
     if (result?.error || !Array.isArray(result?.points)) return
     const next = {}
     result.points.forEach(point => {
@@ -469,6 +807,8 @@ async function refreshRealtimePoints() {
     pointValues.value = next
   } catch {
     // PLC 离线时设计器继续使用组件占位值。
+  } finally {
+    if (requestSeq === realtimeRequestSeq) realtimeInFlight = false
   }
 }
 
@@ -507,10 +847,63 @@ function setZoom(value) {
   manualZoom = true
 }
 
+function handleCanvasWheel(event) {
+  // 保留 Ctrl/Command + 滚轮的浏览器惯例，普通滚轮才控制设计器画布。
+  if (event.ctrlKey || event.metaKey) return
+  if (!Number.isFinite(event.deltaY) || event.deltaY === 0) return
+
+  const scroll = event.currentTarget
+  if (!scroll || typeof scroll.getBoundingClientRect !== 'function') return
+
+  event.preventDefault()
+
+  const previousZoom = zoom.value
+  const zoomFactor = Math.exp(-Math.max(-120, Math.min(120, event.deltaY)) * 0.0015)
+  const nextZoom = Math.max(0.25, Math.min(1.5, previousZoom * zoomFactor))
+  if (nextZoom === previousZoom) return
+
+  // 记录鼠标指向的画布内容位置，缩放后把同一个内容点留在鼠标下方。
+  const stage = scroll.querySelector('.designer-canvas-stage')
+  const stageRect = stage?.getBoundingClientRect?.()
+  if (!stageRect) return
+  const canvasX = (event.clientX - stageRect.left) / previousZoom
+  const canvasY = (event.clientY - stageRect.top) / previousZoom
+
+  zoom.value = nextZoom
+  manualZoom = true
+
+  nextTick(() => {
+    if (!scroll.isConnected) return
+    const nextStageRect = stage.getBoundingClientRect()
+    const targetLeft = event.clientX - canvasX * nextZoom
+    const targetTop = event.clientY - canvasY * nextZoom
+    scroll.scrollLeft = Math.max(0, scroll.scrollLeft + nextStageRect.left - targetLeft)
+    scroll.scrollTop = Math.max(0, scroll.scrollTop + nextStageRect.top - targetTop)
+  })
+}
+
 function previewValueForWidget(widget) {
   const binding = widget.data || {}
   if (binding.mode === 'database') return databasePreviewValues[widget.id]?.value
-  if (binding.mode === 'plc') return pointValues.value[binding.pointId]?.value
+  if (binding.mode === 'plc') {
+    const isCurrentDevice = binding.deviceScope === 'current'
+    const deviceId = isCurrentDevice
+      ? selectedBindingDeviceId.value
+      : String(binding.deviceId || '')
+    if (isCurrentDevice) {
+      if (!deviceId) return undefined
+      const pointKey = String(binding.pointKey || binding.path || '')
+      const separator = pointKey.indexOf('.')
+      const category = separator > 0 ? pointKey.slice(0, separator) : ''
+      const field = separator > 0 ? pointKey.slice(separator + 1) : pointKey
+      const point = points.value.find(item => String(item.device_id) === deviceId
+        && (!category || String(item.category || item.category_resolved || 'analog') === category)
+        && String(item.value_role || item.field_name || item.name || '') === field)
+      if (point) return pointValues.value[`${deviceId}:${point.id}`]?.value
+      return pointValues.value[`${deviceId}:${binding.pointId}`]?.value
+    }
+    return pointValues.value[`${deviceId}:${binding.pointId}`]?.value ?? pointValues.value[binding.pointId]?.value
+  }
   if (binding.mode === 'runtime') {
     const context = { context: previewContext, selectedPart: previewSelectedPart.value }
     return String(binding.path || '').split('.').reduce((current, key) => current?.[key], context)
@@ -518,14 +911,17 @@ function previewValueForWidget(widget) {
   return widget.content?.value
 }
 
-function canvasPoint(event) {
-  const viewport = event.currentTarget?.closest?.('.designer-canvas') || event.currentTarget
-  const rect = viewport.querySelector?.('.designer-canvas-stage')?.getBoundingClientRect?.()
+function canvasPointAt(clientX, clientY) {
+  const rect = viewportRef.value?.querySelector?.('.designer-canvas-stage')?.getBoundingClientRect?.()
   if (!rect) return { x: 120, y: 120 }
   return {
-    x: (event.clientX - rect.left) / zoom.value,
-    y: (event.clientY - rect.top) / zoom.value
+    x: Math.max(0, Math.min(canvas.value.width, (clientX - rect.left) / zoom.value)),
+    y: Math.max(0, Math.min(canvas.value.height, (clientY - rect.top) / zoom.value))
   }
+}
+
+function canvasPoint(event) {
+  return canvasPointAt(event.clientX, event.clientY)
 }
 
 function snap(value) {
@@ -540,12 +936,69 @@ function widgetFrameStyle(widget) {
     width: `${widget.frame.width}px`,
     height: `${widget.frame.height}px`,
     zIndex: widget.zIndex,
+    '--overlay-text-scale': Math.min(.48, (Number(widget.style?.fontSize) || 18) / Math.max(1, Number(widget.frame.height) || 40)),
     transform: `rotate(${widget.frame.rotation || 0}deg)`,
     opacity: widget.visible ? 1 : 0.32
   }
 }
 
-function selectWidget(widget, event = {}) {
+function layerWidgetTitle(widget) {
+  const title = String(widget?.title || '').trim()
+  const typeLabel = String(widgetTypeLabel(widget?.type) || '').trim()
+  // 默认标题（例如“文本”）在图层很多时没有辨识度，退回稳定组件 ID；
+  // 用户自定义过的标题则优先显示，和右侧属性面板保持一致。
+  return title && title !== typeLabel ? title : String(widget?.id || typeLabel)
+}
+
+function layerWidgetDetail(widget) {
+  const content = widget?.content || {}
+  const binding = widget?.data || {}
+  if (widget?.type === 'text') return String(content.text || '{value}')
+  if (widget?.type === 'value') return String(content.label || binding.pointKey || binding.path || content.fallback || '{value}')
+  if (widget?.type === 'status') return String(content.onText || binding.pointKey || binding.path || '状态值')
+  if (binding.mode === 'plc') return String(binding.pointKey || binding.path || binding.pointId || 'PLC 只读点位')
+  if (binding.mode === 'database') return String(binding.formula || binding.table || binding.connectionId || '数据库数据')
+  if (binding.mode === 'runtime') return String(binding.path || '设备运行时数据')
+  if (widget?.type === 'trend') return String(content.seriesName || '实时趋势')
+  if (widget?.type === 'business_summary') return String(content.section || '业务摘要')
+  if (widget?.type === 'image') return String(content.alt || content.url || '图片')
+  return String(content.label || content.title || widget?.id || widgetTypeLabel(widget?.type))
+}
+
+function focusWidgetInCanvas(widget) {
+  nextTick(() => {
+    const scroll = viewportRef.value?.querySelector?.('.designer-canvas-scroll')
+    if (!scroll) return
+    const element = [...scroll.querySelectorAll('.designer-widget')]
+      .find(item => item.dataset.widgetId === String(widget?.id || ''))
+    if (!element) return
+
+    const scrollRect = scroll.getBoundingClientRect()
+    const elementRect = element.getBoundingClientRect()
+    const padding = 28
+    const visibleLeft = scrollRect.left + padding
+    const visibleRight = scrollRect.right - padding
+    const visibleTop = scrollRect.top + padding
+    const visibleBottom = scrollRect.bottom - padding
+    const alreadyVisible = elementRect.left >= visibleLeft
+      && elementRect.right <= visibleRight
+      && elementRect.top >= visibleTop
+      && elementRect.bottom <= visibleBottom
+    if (alreadyVisible) return
+
+    const targetLeft = scroll.scrollLeft + (elementRect.left - scrollRect.left)
+      - Math.max(0, (scroll.clientWidth - elementRect.width) / 2)
+    const targetTop = scroll.scrollTop + (elementRect.top - scrollRect.top)
+      - Math.max(0, (scroll.clientHeight - elementRect.height) / 2)
+    scroll.scrollTo({
+      left: Math.max(0, targetLeft),
+      top: Math.max(0, targetTop),
+      behavior: 'smooth'
+    })
+  })
+}
+
+function selectWidget(widget, event = {}, { focusCanvas = false } = {}) {
   const groupIds = widget.groupId
     ? documentModel.value.widgets.filter(item => item.groupId === widget.groupId).map(item => item.id)
     : [widget.id]
@@ -556,10 +1009,30 @@ function selectWidget(widget, event = {}) {
   } else if (!selectedIds.value.includes(widget.id) || groupIds.some(id => !selectedIds.value.includes(id))) {
     selectedIds.value = groupIds
   }
+  if (selectedIds.value.length) revealRightPanel()
+  if (focusCanvas) focusWidgetInCanvas(widget)
 }
 
 function clearSelection(event) {
   if (event.target === event.currentTarget || event.target.classList.contains('designer-canvas-stage')) selectedIds.value = []
+}
+
+function beginMarqueeSelection(event) {
+  if (previewMode.value || event.button !== 0) return
+  const point = canvasPoint(event)
+  pointerOperation = {
+    kind: 'marquee',
+    startX: event.clientX,
+    startY: event.clientY,
+    startPoint: point,
+    initialIds: [...selectedIds.value],
+    additive: Boolean(event.ctrlKey || event.metaKey || event.shiftKey),
+    moved: false
+  }
+  selectionBox.active = false
+  event.preventDefault()
+  window.addEventListener('pointermove', handlePointerMove)
+  window.addEventListener('pointerup', endPointerOperation, { once: true })
 }
 
 function addWidget(type, position = {}) {
@@ -568,8 +1041,18 @@ function addWidget(type, position = {}) {
   widget.frame.y = snap(Math.max(0, Math.min(canvas.value.height - widget.frame.height, widget.frame.y)))
   widget.zIndex = Math.max(0, ...documentModel.value.widgets.map(item => Number(item.zIndex || 0))) + 1
   documentModel.value.widgets.push(widget)
+  // A dragged-in component belongs to the view where it was dropped. Keep
+  // the membership in view state so deleting it later only affects that view.
+  views.value.forEach(view => {
+    const state = view.componentState || (view.componentState = { show: [], hide: [], hideNonTargetDevices: false })
+    state.show = Array.isArray(state.show) ? state.show.filter(id => id !== widget.id) : []
+    state.hide = Array.isArray(state.hide) ? state.hide.filter(id => id !== widget.id) : []
+    if (view.id === currentView.value?.id) state.show.push(widget.id)
+    else state.hide.push(widget.id)
+  })
   selectedIds.value = [widget.id]
   inspectorTab.value = 'content'
+  revealRightPanel()
   commitHistory(`添加${widgetTypeLabel(type)}`)
 }
 
@@ -582,6 +1065,7 @@ function addWidgetPreset(preset) {
   if (existing.length) {
     selectView(targetViewId)
     selectedIds.value = existing.map(widget => widget.id)
+    revealRightPanel()
     setStatus('部件详情面板已经存在，已为你定位到该组件组', 'warning')
     return
   }
@@ -619,6 +1103,7 @@ function addWidgetPreset(preset) {
   selectView(targetViewId)
   selectedIds.value = widgets.map(widget => widget.id)
   inspectorTab.value = 'content'
+  revealRightPanel()
   commitHistory(`加入${preset.label}`)
   setStatus('已生成部件详情面板：名称、说明和实时参数会随 Unity 选中部件自动切换', 'success')
 }
@@ -711,6 +1196,49 @@ function alignedPosition(frame, excludedIds) {
 
 function handlePointerMove(event) {
   if (!pointerOperation) return
+  if (pointerOperation.kind === 'marquee') {
+    const distance = Math.hypot(
+      event.clientX - pointerOperation.startX,
+      event.clientY - pointerOperation.startY
+    )
+    if (distance < 4) return
+
+    const start = pointerOperation.startPoint
+    const current = canvasPointAt(event.clientX, event.clientY)
+    const left = Math.min(start.x, current.x)
+    const top = Math.min(start.y, current.y)
+    const right = Math.max(start.x, current.x)
+    const bottom = Math.max(start.y, current.y)
+    selectionBox.active = true
+    selectionBox.x = left
+    selectionBox.y = top
+    selectionBox.width = right - left
+    selectionBox.height = bottom - top
+    pointerOperation.moved = true
+
+    const pickedIds = new Set()
+    const viewWidgets = currentViewWidgets.value
+    viewWidgets.forEach(widget => {
+      const frame = widget.frame || {}
+      const inside = Number(frame.x || 0) >= left
+        && Number(frame.y || 0) >= top
+        && Number(frame.x || 0) + Number(frame.width || 0) <= right
+        && Number(frame.y || 0) + Number(frame.height || 0) <= bottom
+      if (!inside) return
+      if (widget.groupId) {
+        viewWidgets.forEach(groupWidget => {
+          if (groupWidget.groupId === widget.groupId) pickedIds.add(groupWidget.id)
+        })
+      } else {
+        pickedIds.add(widget.id)
+      }
+    })
+
+    const nextIds = pointerOperation.additive ? new Set(pointerOperation.initialIds) : new Set()
+    pickedIds.forEach(id => nextIds.add(id))
+    selectedIds.value = [...nextIds]
+    return
+  }
   const dx = (event.clientX - pointerOperation.startX) / zoom.value
   const dy = (event.clientY - pointerOperation.startY) / zoom.value
   if (pointerOperation.kind === 'move') {
@@ -756,29 +1284,41 @@ function endPointerOperation() {
   window.removeEventListener('pointermove', handlePointerMove)
   guides.x = []
   guides.y = []
+  if (pointerOperation?.kind === 'marquee') {
+    if (!pointerOperation.moved && !pointerOperation.additive) selectedIds.value = []
+    selectionBox.active = false
+    pointerOperation = null
+    return
+  }
   if (pointerOperation && pointerOperation.before !== snapshot()) commitHistory(pointerOperation.kind === 'move' ? '移动组件' : '缩放组件')
   pointerOperation = null
+  selectionBox.active = false
 }
 
 function deleteSelected() {
   if (!selectedIds.value.length) return
-  const removable = new Set(selectedIds.value.filter(id => !findWidget(id)?.locked))
+  const removable = new Set(selectedIds.value.filter(id => {
+    const widget = findWidget(id)
+    return widget && widgetAllowedInCurrentView(widget) && !widget.locked
+  }))
   if (!removable.size) return setStatus('锁定组件不能删除', 'warning')
-  documentModel.value.widgets = documentModel.value.widgets.filter(widget => !removable.has(widget.id))
-  documentModel.value.scene.views.forEach(view => {
-    const state = view.componentState || (view.componentState = { show: [], hide: [], hideNonTargetDevices: false })
-    state.show = (state.show || []).filter(target => !removable.has(target))
-    state.hide = (state.hide || []).filter(target => !removable.has(target))
-  })
-  documentModel.value.widgets.forEach(widget => {
-    widget.events = (widget.events || []).filter(event => !(
-      ['set_visibility', 'toggle_visibility'].includes(event?.action)
-      && event.targetType === 'widget'
-      && removable.has(event.targetId)
-    ))
-  })
-  selectedIds.value = []
-  commitHistory('删除组件')
+  const state = currentView.value.componentState || (currentView.value.componentState = { show: [], hide: [], hideNonTargetDevices: false })
+  state.show = (state.show || []).filter(id => !removable.has(id))
+  state.hide = [...new Set([...(state.hide || []), ...removable])]
+  selectedIds.value = selectedIds.value.filter(id => !removable.has(id))
+  commitHistory('从当前视角移除组件')
+  setStatus(`已从“${currentView.value.name}”移除 ${removable.size} 个组件，可在本视角恢复`, 'success')
+}
+
+function removeWidgetFromCurrentView(widget) {
+  if (!widget || !currentView.value) return
+  if (widget.locked) return setStatus('锁定组件不能从当前视角删除', 'warning')
+  const state = currentView.value.componentState || (currentView.value.componentState = { show: [], hide: [], hideNonTargetDevices: false })
+  state.show = (state.show || []).filter(id => id !== widget.id)
+  state.hide = [...new Set([...(state.hide || []), widget.id])]
+  selectedIds.value = selectedIds.value.filter(id => id !== widget.id)
+  commitHistory(`从当前视角移除${widgetTypeLabel(widget.type)}`)
+  setStatus(`已从“${currentView.value.name}”移除${widget.title || widgetTypeLabel(widget.type)}`, 'success')
 }
 
 function applyChartPalette() {
@@ -806,6 +1346,17 @@ function copySelected() {
   })
   if (!copies.length) return
   documentModel.value.widgets.push(...copies)
+  // Copies are authored in the current view only. Without this membership
+  // update a copied widget is stored globally but is invisible in a view that
+  // already has an explicit component allow-list.
+  const copiedIds = new Set(copies.map(widget => widget.id))
+  views.value.forEach(view => {
+    const state = view.componentState || (view.componentState = { show: [], hide: [], hideNonTargetDevices: false })
+    state.show = (state.show || []).filter(id => !copiedIds.has(id))
+    state.hide = (state.hide || []).filter(id => !copiedIds.has(id))
+    if (view.id === currentView.value?.id) state.show.push(...copiedIds)
+    else state.hide.push(...copiedIds)
+  })
   selectedIds.value = copies.map(widget => widget.id)
   commitHistory('复制组件')
 }
@@ -851,6 +1402,20 @@ function toggleLayerLock(widget) {
   commitHistory(widget.locked ? '锁定组件' : '解锁组件')
 }
 
+function changeDeviceScope() {
+  const widget = selectedWidget.value
+  if (!widget) return
+  widget.data.deviceScope = widget.data.deviceScope === 'fixed' ? 'fixed' : 'current'
+  if (widget.data.deviceScope === 'current') {
+    widget.data.deviceId = ''
+    widget.visibility.matchBoundDevice = false
+  } else {
+    widget.data.deviceId = String(widget.data.deviceId || editorDeviceId.value || previewContext.deviceId || '')
+    widget.visibility.matchBoundDevice = Boolean(widget.data.deviceId)
+  }
+  recordProperty('修改设备绑定范围')
+}
+
 function bindSelectedPoint() {
   const widget = selectedWidget.value
   if (!widget) return
@@ -861,10 +1426,13 @@ function bindSelectedPoint() {
     return setStatus('设计器只允许绑定 READ 点位', 'danger')
   }
   widget.data.mode = 'plc'
-  widget.data.deviceId = String(point.device_id)
+  const isCurrentDevice = widget.data.deviceScope === 'current'
+  widget.data.deviceId = isCurrentDevice ? '' : String(point.device_id)
+  widget.data.pointKey = `${point.category || point.category_resolved || 'analog'}.${point.value_role || point.field_name || point.name}`
   widget.data.path = `${point.category || point.category_resolved || 'analog'}.${point.value_role || point.field_name || point.name}`
   widget.data.unit = point.unit || ''
   widget.data.readOnly = true
+  widget.visibility.matchBoundDevice = !isCurrentDevice && Boolean(widget.data.deviceId)
   commitHistory('绑定 PLC 只读点位')
 }
 
@@ -989,8 +1557,23 @@ function removeDatabaseDataset(index) {
 
 function bindDatabaseToDevice() {
   if (!selectedWidget.value) return
+  selectedWidget.value.data.deviceScope = 'fixed'
   selectedWidget.value.visibility.matchBoundDevice = Boolean(selectedWidget.value.data.deviceId)
   recordProperty('设置设备详情适用范围')
+}
+
+function changeDatabaseScope() {
+  const widget = selectedWidget.value
+  if (!widget) return
+  widget.data.deviceScope = widget.data.deviceScope === 'fixed' ? 'fixed' : 'current'
+  if (widget.data.deviceScope === 'current') {
+    widget.data.deviceId = ''
+    widget.visibility.matchBoundDevice = false
+    ensureDatabaseDatasets(widget).forEach(dataset => {
+      if (!dataset.contextKey) dataset.contextKey = 'deviceId'
+    })
+  }
+  recordProperty('修改数据库设备范围')
 }
 
 async function changeDatabaseConnection() {
@@ -1041,6 +1624,8 @@ function changeBindingMode() {
     widget.data.path = ''
     widget.data.source = ''
     widget.data.deviceId = ''
+    widget.data.pointKey = ''
+    widget.data.deviceScope = 'current'
     widget.visibility.matchBoundDevice = false
   }
   if (widget.data.mode !== 'runtime') {
@@ -1048,6 +1633,7 @@ function changeBindingMode() {
   }
   if (widget.data.mode !== 'plc') {
     widget.data.pointId = ''
+    widget.data.pointKey = ''
   }
   const usesExternalDatabase = ['database', 'business'].includes(widget.data.mode)
   if (!usesExternalDatabase) {
@@ -1083,22 +1669,6 @@ function addCondition() {
   commitHistory('添加条件样式')
 }
 
-function toggleViewMode(mode, checked) {
-  if (!selectedWidget.value) return
-  const modes = new Set(selectedWidget.value.visibility?.viewModes || [])
-  checked ? modes.add(mode) : modes.delete(mode)
-  selectedWidget.value.visibility.viewModes = [...modes]
-  recordProperty('修改显示视角')
-}
-
-function toggleViewId(viewId, checked) {
-  if (!selectedWidget.value) return
-  const ids = new Set(selectedWidget.value.visibility.viewIds || [])
-  checked ? ids.add(viewId) : ids.delete(viewId)
-  selectedWidget.value.visibility.viewIds = [...ids]
-  recordProperty('修改指定视角')
-}
-
 function addVisibilityRule() {
   if (!selectedWidget.value) return
   selectedWidget.value.visibility.rules.push({ source: 'context', path: 'viewMode', operator: '==', value: 'device' })
@@ -1126,16 +1696,41 @@ function normalizeVisibilityEventTarget(event) {
   recordProperty('修改显隐目标')
 }
 
-async function togglePreviewMode() {
-  previewMode.value = !previewMode.value
-  if (previewMode.value) {
-    syncPreviewContextFromView()
+function enterPreviewMode() {
+  previewMode.value = true
+  syncPreviewContextFromView()
+  Object.keys(previewGroupVisibility).forEach(key => delete previewGroupVisibility[key])
+  Object.keys(previewWidgetVisibility).forEach(key => delete previewWidgetVisibility[key])
+  return Promise.all(overlayWidgets.value.filter(widget => widget.data?.mode === 'database').map(widget => previewDatabaseBinding(widget, true)))
+}
+
+async function toggleFullscreenPreview() {
+  const shell = designerShellRef.value
+  if (previewMode.value || fullscreenActive.value) {
+    previewMode.value = false
+    if (document.fullscreenElement === shell) {
+      try { await document.exitFullscreen() } catch { /* browser may already be leaving fullscreen */ }
+    }
+    return
   }
-  if (previewMode.value) {
-    Object.keys(previewGroupVisibility).forEach(key => delete previewGroupVisibility[key])
-    Object.keys(previewWidgetVisibility).forEach(key => delete previewWidgetVisibility[key])
-    await Promise.all(overlayWidgets.value.filter(widget => widget.data?.mode === 'database').map(widget => previewDatabaseBinding(widget, true)))
+
+  const previewReady = enterPreviewMode()
+  if (!shell?.requestFullscreen) {
+    setStatus('当前浏览器不支持全屏，已进入预览模式', 'warning')
+    await previewReady
+    return
   }
+  try {
+    await shell.requestFullscreen({ navigationUI: 'hide' })
+  } catch {
+    setStatus('全屏权限未开启，已进入预览模式', 'warning')
+  }
+  await previewReady
+}
+
+function handleFullscreenChange() {
+  fullscreenActive.value = document.fullscreenElement === designerShellRef.value
+  if (!fullscreenActive.value) previewMode.value = false
 }
 
 function handlePreviewWidgetAction({ event }) {
@@ -1194,8 +1789,23 @@ function applyCanvasPreset() {
   nextTick(fitCanvas)
 }
 
+function applyPublishedRelease(release) {
+  if (!release?.id) return
+  const releaseId = String(release.id)
+  const nextRelease = { ...release, is_current: 1 }
+  releases.value = [
+    nextRelease,
+    ...releases.value.filter(item => String(item.id) !== releaseId)
+  ].map(item => ({
+    ...item,
+    is_current: String(item.id) === releaseId ? 1 : 0
+  }))
+  currentRelease.value = nextRelease
+}
+
 async function saveDraft() {
   if (saving.value) return
+  const editorState = rememberEditorState()
   saving.value = true
   try {
     documentModel.value.widgets.forEach(widget => { widget.data.readOnly = true })
@@ -1206,6 +1816,7 @@ async function saveDraft() {
     lastSavedSnapshot.value = snapshot()
     resetHistory()
     clearLocalDraft()
+    restoreEditorState(editorState)
     setStatus(`草稿已保存，修订 ${revision.value}；现场仍运行已发布版本`, 'success')
     emit('reload')
   } catch (error) {
@@ -1218,6 +1829,7 @@ async function saveDraft() {
 
 async function publishVersion() {
   if (publishing.value) return
+  rememberEditorState()
   if (isDirty.value) {
     await saveDraft()
     if (isDirty.value) return
@@ -1226,7 +1838,9 @@ async function publishVersion() {
   try {
     const result = await adminApi.publishDashboard(documentModel.value.sceneId, publishForm.version, publishForm.notes)
     if (result?.error) throw new Error(result.error)
-    await loadDesigner({ allowLocal: false })
+    // 发布接口已经返回新版本信息。设计器当前内存中的文档就是刚刚保存
+    // 的草稿，不需要再次请求草稿、设备、点位和数据源，避免整块画布闪回加载态。
+    applyPublishedRelease(result.release)
     setStatus(`版本 ${result.release.version} 已发布，Unity 与数据层已收到更新`, 'success')
     emit('reload')
   } catch (error) {
@@ -1244,6 +1858,7 @@ function requestActivateRelease(release) {
 async function activateRelease() {
   const release = releaseDialog.value
   if (!release) return
+  rememberEditorState()
   publishing.value = true
   try {
     const result = await adminApi.activateDashboardRelease(release.id)
@@ -1290,6 +1905,17 @@ function handleKeydown(event) {
 }
 
 watch(documentModel, scheduleLocalPersist, { deep: true })
+watch(currentView, () => {
+  // Camera fields are edited with v-model.number. A deep watcher keeps every
+  // view parameter on the same live-preview path, including target offsets and
+  // future camera fields added to the schema.
+  if (!loading.value) scheduleCurrentViewPreview()
+}, { deep: true })
+watch(
+  [selectedViewId, editorDeviceId, selectedIds, inspectorTab, viewInspectorTab, layersCollapsed, viewPanelCollapsed, zoom, () => [...collapsedViewIds]],
+  () => persistEditorState(),
+  { deep: true }
+)
 watch(() => [selectedWidget.value?.id, selectedWidget.value?.data?.mode], async ([id, mode]) => {
   if (!id || mode !== 'database') return
   const datasets = ensureDatabaseDatasets(selectedWidget.value)
@@ -1300,44 +1926,84 @@ watch(() => [selectedWidget.value?.id, selectedWidget.value?.data?.mode], async 
   await previewDatabaseBinding(selectedWidget.value, true)
 })
 
-onMounted(() => {
-  loadDesigner()
+function activateDesigner() {
+  if (designerDisposed) return
+  designerActive = true
   window.addEventListener('keydown', handleKeydown)
-  realtimeTimer = window.setInterval(refreshRealtimePoints, 3000)
-  viewportObserver = new ResizeObserver(() => {
-    window.cancelAnimationFrame(viewportFitFrame)
-    viewportFitFrame = window.requestAnimationFrame(() => {
-      if (!manualZoom) fitCanvas('comfortable')
-    })
-  })
-  if (viewportRef.value) viewportObserver.observe(viewportRef.value)
-})
+  if (!realtimeTimer) realtimeTimer = window.setInterval(refreshRealtimePoints, 3000)
+  if (viewportRef.value) viewportObserver?.observe(viewportRef.value)
+}
 
-onBeforeUnmount(() => {
+function deactivateDesigner() {
+  scheduleCurrentViewPreview({ immediate: true })
+  designerActive = false
+  realtimeRequestSeq += 1
+  realtimeInFlight = false
   persistLocalDraft()
   endPointerOperation()
   window.removeEventListener('keydown', handleKeydown)
   window.clearInterval(realtimeTimer)
+  realtimeTimer = 0
   window.clearTimeout(localPersistTimer)
+  window.clearTimeout(viewPreviewTimer)
+  viewPreviewTimer = 0
   window.cancelAnimationFrame(viewportFitFrame)
   viewportObserver?.disconnect()
+}
+
+onMounted(() => {
+  loadDesigner()
+  viewportObserver = new ResizeObserver(() => {
+    window.cancelAnimationFrame(viewportFitFrame)
+    viewportFitFrame = window.requestAnimationFrame(() => {
+      if (designerActive && !designerDisposed && !manualZoom) fitCanvas(previewMode.value ? 'all' : 'comfortable')
+    })
+  })
+  document.addEventListener('fullscreenchange', handleFullscreenChange)
+  activateDesigner()
+})
+
+onActivated(activateDesigner)
+onDeactivated(deactivateDesigner)
+onBeforeUnmount(() => {
+  designerDisposed = true
+  document.removeEventListener('fullscreenchange', handleFullscreenChange)
+  if (document.fullscreenElement === designerShellRef.value) document.exitFullscreen().catch(() => {})
+  deactivateDesigner()
 })
 </script>
 
 <template>
-  <section class="dashboard-designer-shell" :class="{ 'is-preview': previewMode }">
+  <section ref="designerShellRef" class="dashboard-designer-shell" :class="{ 'is-preview': previewMode, 'is-fullscreen': fullscreenActive }">
     <header class="designer-toolbar">
       <div class="designer-brand">
-        <span class="designer-brand-mark">D</span>
-        <div><strong>大屏低代码设计器</strong><small>Schema v3 · 多级视角 · 多数据源只读</small></div>
+        <span class="designer-brand-mark" aria-label="大屏设计器">D</span>
       </div>
       <div class="designer-toolbar-group">
         <button type="button" title="撤销 Ctrl+Z" :disabled="!canUndo" @click="undo">↶</button>
         <button type="button" title="重做 Ctrl+Y" :disabled="!canRedo" @click="redo">↷</button>
         <span class="toolbar-divider"></span>
-        <button type="button" title="复制 Ctrl+C" :disabled="!selectedIds.length" @click="copySelected">⧉</button>
-        <button type="button" title="删除 Delete" :disabled="!selectedIds.length" @click="deleteSelected">⌫</button>
-        <button type="button" title="锁定/解锁" :disabled="!selectedIds.length" @click="toggleSelectedLock">⌁</button>
+        <button type="button" class="designer-icon-button" title="复制 Ctrl+C" aria-label="复制选中组件" :disabled="!selectedIds.length" @click="copySelected">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <rect x="8" y="8" width="11" height="11" rx="1.5"></rect>
+            <path d="M16 8V5.5A1.5 1.5 0 0 0 14.5 4h-9A1.5 1.5 0 0 0 4 5.5v9A1.5 1.5 0 0 0 5.5 16H8"></path>
+          </svg>
+        </button>
+        <button type="button" class="designer-icon-button" title="从当前视角移除 Delete" aria-label="从当前视角移除选中组件" :disabled="!selectedIds.length" @click="deleteSelected">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13M10 11v5M14 11v5"></path>
+          </svg>
+        </button>
+        <button type="button" class="designer-icon-button" :title="selectedAllLocked ? '解锁选中组件' : '锁定选中组件'" :aria-label="selectedAllLocked ? '解锁选中组件' : '锁定选中组件'" :disabled="!selectedIds.length" @click="toggleSelectedLock">
+          <svg v-if="selectedAllLocked" viewBox="0 0 24 24" aria-hidden="true">
+            <rect x="5" y="10" width="14" height="10" rx="2"></rect>
+            <path d="M8 10V7a4 4 0 0 1 8 0v3M12 14v3"></path>
+          </svg>
+          <svg v-else viewBox="0 0 24 24" aria-hidden="true">
+            <rect x="5" y="10" width="14" height="10" rx="2"></rect>
+            <path d="M8 10V7a4 4 0 0 1 7.2-2.4M12 14v3"></path>
+          </svg>
+        </button>
         <button type="button" title="组合 Ctrl+G" :disabled="selectedIds.length < 2" @click="groupSelected">组合</button>
         <button type="button" title="取消组合 Ctrl+Shift+G" :disabled="!selectedWidgets.some(item => item.groupId)" @click="ungroupSelected">解组</button>
       </div>
@@ -1357,24 +2023,53 @@ onBeforeUnmount(() => {
           <option v-for="view in views" :key="view.id" :value="view.id">{{ view.name }}</option>
         </select>
         <span class="toolbar-status" :class="status.tone" :title="status.text">{{ status.text }}</span>
-        <button type="button" class="acceptance-button" :class="{ passed: acceptanceReport?.configurationReady }" :disabled="acceptanceLoading" :title="acceptanceReport ? `阻断项：${(acceptanceReport.blockingFailures || []).join('、') || '无'}` : '运行配置、数据与 Unity 自动验收'" @click="runAcceptanceReport">{{ acceptanceLoading ? '验收中…' : acceptanceReport?.displayReady ? '验收通过' : '自动验收' }}</button>
-        <button type="button" :class="{ active: previewMode }" @click="togglePreviewMode">{{ previewMode ? '退出预览' : '预览' }}</button>
+        <button type="button" class="acceptance-button" :class="{ passed: acceptanceReport?.configurationReady }" :disabled="acceptanceLoading" :title="acceptanceReport ? `阻断项：${(acceptanceReport.blockingFailures || []).join('、') || '无'}` : '运行配置、数据与 Unity 检查'" @click="runAcceptanceReport">{{ acceptanceLoading ? '检查中…' : acceptanceReport?.displayReady ? '检查通过' : '运行检查' }}</button>
+        <button
+          type="button"
+          class="fullscreen-button"
+          :class="{ active: previewMode }"
+          :aria-label="previewMode ? '退出全屏预览' : '全屏预览当前视角'"
+          :title="previewMode ? '退出全屏预览（Esc）' : '全屏预览当前视角'"
+          @click="toggleFullscreenPreview"
+        >
+          <svg v-if="!previewMode" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H3v5M16 3h5v5M8 21H3v-5M21 16v5h-5"></path></svg>
+          <svg v-else viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3v6H3M15 3v6h6M9 21v-6H3M21 15h-6v6"></path></svg>
+        </button>
         <button type="button" class="save-button" :disabled="saving || !isDirty" @click="saveDraft">{{ saving ? '保存中...' : '保存草稿' }}</button>
         <button type="button" class="publish-button" :disabled="publishing || saving" @click="publishVersion">{{ publishing ? '发布中...' : '保存并发布' }}</button>
       </div>
     </header>
 
-    <div class="designer-main">
-      <aside class="designer-left-panel">
+    <button
+      v-if="fullscreenActive"
+      type="button"
+      class="fullscreen-exit-button"
+      aria-label="退出全屏预览"
+      title="退出全屏预览（Esc）"
+      @click="toggleFullscreenPreview"
+    >
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3v6H3M15 3v6h6M9 21v-6H3M21 15h-6v6"></path></svg>
+    </button>
+
+    <div class="designer-main" :class="{ 'is-left-panel-collapsed': panelLayout.leftCollapsed, 'is-right-panel-collapsed': panelLayout.rightCollapsed }">
+      <aside :id="leftPanelId" v-show="!panelLayout.leftCollapsed" class="designer-left-panel" aria-label="视角与组件面板">
         <div class="view-panel-heading" @click="viewPanelCollapsed = !viewPanelCollapsed">
           <div><strong>视角编排</strong><small>Unity 镜头与组件状态</small></div><span>{{ viewPanelCollapsed ? '展开' : '收起' }}</span>
         </div>
         <div v-if="!viewPanelCollapsed" class="view-list">
-          <button v-for="view in views" :key="view.id" type="button" :class="{ active: selectedViewId === view.id }" @click="selectView(view.id)">
-            <span class="view-list-icon">{{ view.mode === 'device' ? '⌖' : view.mode === 'line' ? '≡' : view.mode === 'workshop' ? '⌂' : '◎' }}</span>
-            <span><strong>{{ view.name }}</strong><small>{{ DASHBOARD_VIEW_MODES.find(item => item.id === view.mode)?.description || '可配置镜头和组件状态' }}</small></span>
-            <i v-if="documentModel.scene.defaultViewId === view.id" title="默认视角">●</i>
-          </button>
+          <div class="view-tree" role="tree" aria-label="视角层级">
+            <div v-for="(row, rowIndex) in viewTreeRows" :key="row.view.id" class="view-tree-row" :class="{ root: row.level === 0, 'has-next': viewTreeRows[rowIndex + 1]?.view.parentViewId === row.view.id }" role="treeitem" :aria-level="row.level + 1" :aria-expanded="row.hasChildren ? !row.collapsed : undefined">
+              <div class="view-tree-rail">
+                <button type="button" class="view-tree-toggle" :class="{ empty: !row.hasChildren }" :aria-label="row.collapsed ? `展开${row.view.name}` : `收起${row.view.name}`" :disabled="!row.hasChildren" @click.stop="toggleViewTreeNode(row.view.id)">{{ row.hasChildren ? (row.collapsed ? '▸' : '▾') : '·' }}</button>
+                <span v-if="viewTreeRows[rowIndex + 1]?.view.parentViewId === row.view.id" class="view-tree-connector-arrow" aria-hidden="true">↓</span>
+              </div>
+              <button type="button" class="view-tree-select" :class="{ active: selectedViewId === row.view.id }" :title="row.view.name" @click="selectView(row.view.id)">
+                <span class="view-list-icon">{{ row.view.mode === 'device' ? '⌖' : row.view.mode === 'line' ? '≡' : row.view.mode === 'workshop' ? '⌂' : '◎' }}</span>
+                <span><strong>{{ row.view.name }}</strong></span>
+                <i v-if="documentModel.scene.defaultViewId === row.view.id" title="默认视角">●</i>
+              </button>
+            </div>
+          </div>
           <div class="view-list-actions"><button type="button" @click="addView">＋ 新视角</button><button type="button" :disabled="!currentView" @click="duplicateView">复制</button></div>
         </div>
         <div class="designer-panel-heading"><strong>场景组件组</strong><small>一次加入完整交互区域</small></div>
@@ -1385,7 +2080,7 @@ onBeforeUnmount(() => {
             <em>{{ documentModel.widgets.some(widget => widget.groupId === `group_${preset.id}` || (preset.id === 'device_part_detail' && widget.groupId === 'group_device_part_detail')) ? '已加入' : '一键加入' }}</em>
           </button>
         </div>
-        <div class="designer-panel-heading"><strong>单个组件</strong><small>拖入画布或单击添加</small></div>
+        <div class="designer-panel-heading"><strong>单个组件</strong><small>拖到画布指定位置添加</small></div>
         <div class="component-library">
           <section v-for="group in libraryGroups" :key="group.name">
             <h4>{{ group.name }}</h4>
@@ -1395,10 +2090,9 @@ onBeforeUnmount(() => {
                 :key="item.type"
                 type="button"
                 draggable="true"
-                :title="item.description"
-                @dragstart="handleLibraryDragStart($event, item.type)"
-                @click="addWidget(item.type)"
-              >
+                 :title="item.description"
+                 @dragstart="handleLibraryDragStart($event, item.type)"
+               >
                 <span>{{ item.icon }}</span><strong>{{ item.label }}</strong><small>{{ item.description }}</small>
               </button>
             </div>
@@ -1406,22 +2100,33 @@ onBeforeUnmount(() => {
         </div>
 
         <div class="layer-heading" @click="layersCollapsed = !layersCollapsed">
-          <strong>图层</strong><span>{{ layersCollapsed ? '展开' : '收起' }}</span>
+          <strong>当前视角组件（{{ currentViewWidgets.length }}）</strong><span>{{ layersCollapsed ? '展开' : '收起' }}</span>
         </div>
         <div v-if="!layersCollapsed" class="layer-list">
           <button
-            v-for="widget in [...overlayWidgets].reverse()"
+            v-for="widget in [...currentViewWidgets].reverse()"
             :key="widget.id"
             type="button"
             :class="{ active: selectedIds.includes(widget.id), hidden: !widget.visible }"
-            @click="selectWidget(widget, $event)"
+            @click="selectWidget(widget, $event, { focusCanvas: true })"
           >
             <span class="layer-type">{{ widgetTypeLabel(widget.type).slice(0, 1) }}</span>
-            <span class="layer-name">{{ widget.title || widgetTypeLabel(widget.type) }}</span>
+            <span class="layer-copy">
+              <strong class="layer-name" :title="layerWidgetTitle(widget)">{{ layerWidgetTitle(widget) }}</strong>
+              <small class="layer-value" :title="layerWidgetDetail(widget)">{{ layerWidgetDetail(widget) }}</small>
+            </span>
             <i title="显示/隐藏" @click.stop="toggleLayerVisibility(widget)">{{ widget.visible ? '◉' : '○' }}</i>
             <i title="锁定/解锁" @click.stop="toggleLayerLock(widget)">{{ widget.locked ? '◆' : '◇' }}</i>
           </button>
-          <p v-if="!overlayWidgets.length">从上方组件库添加第一个组件</p>
+          <p v-if="!currentViewWidgets.length">当前视角没有组件，从左侧拖入组件到画布</p>
+          <details v-if="currentViewHiddenWidgets.length" class="layer-hidden-components">
+            <summary>本视角已隐藏（{{ currentViewHiddenWidgets.length }}）</summary>
+            <button v-for="item in currentViewHiddenWidgets" :key="`hidden-layer-${item.id}`" type="button" @click="toggleViewComponent(currentView, item.id, true)">
+              <span class="layer-type">{{ widgetTypeLabel(item.type).slice(0, 1) }}</span>
+              <span class="layer-copy"><strong class="layer-name">{{ layerWidgetTitle(item.widget) }}</strong><small class="layer-value">{{ layerWidgetDetail(item.widget) }}</small></span>
+              <i title="恢复到当前视角">＋</i>
+            </button>
+          </details>
         </div>
         <details v-if="systemWidgetCards.length" class="system-widget-list" open>
           <summary>系统导航（{{ systemWidgetCards.length }}）</summary>
@@ -1432,11 +2137,41 @@ onBeforeUnmount(() => {
         </details>
       </aside>
 
+      <div class="designer-panel-toggle-rail is-left">
+        <button
+          type="button"
+          class="designer-panel-toggle"
+          :class="{ 'is-collapsed': panelLayout.leftCollapsed }"
+          :aria-expanded="!panelLayout.leftCollapsed"
+          :aria-controls="leftPanelId"
+          :aria-label="panelLayout.leftCollapsed ? '展开左侧面板' : '收起左侧面板'"
+          :title="panelLayout.leftCollapsed ? '展开左侧视角与组件面板' : '收起左侧视角与组件面板'"
+          @click="toggleSidePanel('left')"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 6-6 6 6 6" /></svg>
+        </button>
+      </div>
+
       <main ref="viewportRef" class="designer-canvas" @dragover.prevent @drop.prevent="handleCanvasDrop" @pointerdown="clearSelection">
+        <div class="designer-scope-bar">
+          <div class="designer-scope-copy">
+            <span>当前编辑对象</span>
+            <strong>{{ currentView?.name || '未选择视角' }}</strong>
+            <small>{{ viewModeLabel }} · {{ currentViewTargetLabel }}</small>
+          </div>
+          <label v-if="currentViewUsesDevice" class="designer-device-picker">
+            <span>预览设备</span>
+            <select v-model="editorDeviceId" @change="updateEditorDevice">
+              <option value="">请选择设备</option>
+              <option v-for="device in devices" :key="`preview-${device.id}`" :value="String(device.id)">{{ device.name || device.id }}（{{ device.id }}）</option>
+            </select>
+          </label>
+          <div class="designer-scope-hint" :class="{ 'is-public': !currentViewUsesDevice }">{{ designerScopeHint }}</div>
+        </div>
         <div v-if="loading" class="designer-loading"><span></span>正在加载草稿、点位与数据源...</div>
-        <div v-else class="designer-canvas-scroll">
+        <div v-else class="designer-canvas-scroll" @wheel="handleCanvasWheel">
           <div class="designer-canvas-spacer" :style="canvasOuterStyle">
-            <div class="designer-canvas-stage" :style="canvasTransformStyle">
+            <div class="designer-canvas-stage" :style="canvasTransformStyle" @pointerdown.stop="beginMarqueeSelection">
               <div class="canvas-safe-area" :style="{ inset: `${canvas.safeArea}px` }"></div>
               <div v-for="x in guides.x" :key="`gx-${x}`" class="alignment-guide vertical" :style="{ left: `${x}px` }"></div>
               <div v-for="y in guides.y" :key="`gy-${y}`" class="alignment-guide horizontal" :style="{ top: `${y}px` }"></div>
@@ -1444,14 +2179,17 @@ onBeforeUnmount(() => {
               <article
                 v-for="widget in canvasWidgets"
                 :key="widget.id"
-                class="designer-widget"
+                class="designer-widget hud-widget"
                 :class="{
+                  ['widget-type-' + widget.type]: true,
+                  'is-panel-heading': String(widget.content?.text || '').trim().startsWith('▸'),
                   selected: selectedIds.includes(widget.id),
                   locked: widget.locked,
                   hidden: !widget.visible,
                   grouped: !!widget.groupId
                 }"
                 :style="widgetFrameStyle(widget)"
+                :data-widget-id="widget.id"
                 @pointerdown.stop="beginMove($event, widget)"
                 @click.stop="selectWidget(widget, $event)"
               >
@@ -1466,7 +2204,9 @@ onBeforeUnmount(() => {
                   :business-data="mockBusinessData"
                   :runtime-context="previewContext"
                   :selected-part="previewSelectedPart"
+                  :data-ready="true"
                   preview
+                  overlay-mode
                   @action="handlePreviewWidgetAction"
                 />
                 <div v-if="!previewMode && selectedIds.includes(widget.id)" class="widget-selection-label">
@@ -1477,6 +2217,56 @@ onBeforeUnmount(() => {
                 </template>
               </article>
 
+              <div
+                v-if="!previewMode && selectionBox.active"
+                class="designer-selection-box"
+                :style="{
+                  left: `${selectionBox.x}px`,
+                  top: `${selectionBox.y}px`,
+                  width: `${selectionBox.width}px`,
+                  height: `${selectionBox.height}px`
+                }"
+                aria-hidden="true"
+              ></div>
+
+              <div
+                v-if="!previewMode && selectedCanvasWidgets.length"
+                class="selection-context-actions"
+                :class="{ 'is-multi': selectedCanvasWidgets.length > 1 }"
+                :style="selectionActionsStyle"
+                @pointerdown.stop
+                @click.stop
+              >
+                <span v-if="selectedCanvasWidgets.length > 1" class="selection-context-count">{{ selectedCanvasWidgets.length }}项</span>
+                <button
+                  type="button"
+                  class="widget-delete-toggle"
+                  aria-label="从当前视角删除选中组件"
+                  :title="selectedHasUnlocked ? '从当前视角删除选中组件' : '锁定组件不能删除'"
+                  :disabled="!selectedHasUnlocked"
+                  @click="deleteSelected"
+                >
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13M10 11v5M14 11v5"></path>
+                  </svg>
+                </button>
+                <button
+                  type="button"
+                  class="widget-lock-toggle"
+                  :class="{ locked: selectedAllLocked }"
+                  :aria-label="selectedAllLocked ? '解锁选中组件' : '锁定选中组件'"
+                  :title="selectedAllLocked ? '解锁选中组件' : '锁定选中组件'"
+                  @click="toggleSelectedLock"
+                >
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <rect x="5" y="10" width="14" height="10" rx="2"></rect>
+                    <path v-if="selectedAllLocked" d="M8 10V7a4 4 0 0 1 8 0v3"></path>
+                    <path v-else d="M8 10V7a4 4 0 0 1 7.2-2.4"></path>
+                    <path d="M12 14v3"></path>
+                  </svg>
+                </button>
+              </div>
+
               <div v-if="!canvasWidgets.length" class="empty-canvas-hint">
                 <strong>{{ overlayWidgets.length ? '当前视角没有可见组件' : '把组件拖到这里' }}</strong><span>画布为 {{ canvas.width }} × {{ canvas.height }}，运行时按屏幕等比缩放</span>
               </div>
@@ -1485,11 +2275,25 @@ onBeforeUnmount(() => {
         </div>
       </main>
 
-      <aside class="designer-right-panel">
+      <div class="designer-panel-toggle-rail is-right">
+        <button
+          type="button"
+          class="designer-panel-toggle"
+          :class="{ 'is-collapsed': panelLayout.rightCollapsed }"
+          :aria-expanded="!panelLayout.rightCollapsed"
+          :aria-controls="rightPanelId"
+          :aria-label="panelLayout.rightCollapsed ? '展开右侧面板' : '收起右侧面板'"
+          :title="panelLayout.rightCollapsed ? '展开右侧属性配置面板' : '收起右侧属性配置面板'"
+          @click="toggleSidePanel('right')"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m10 6 6 6-6 6" /></svg>
+        </button>
+      </div>
+
+      <aside :id="rightPanelId" v-show="!panelLayout.rightCollapsed" class="designer-right-panel" aria-label="属性配置面板">
         <template v-if="selectedWidget">
           <div class="selected-widget-heading">
             <div><span>{{ widgetTypeLabel(selectedWidget.type) }}</span><strong>{{ selectedWidget.title || selectedWidget.id }}</strong><small>{{ selectedWidget.id }}</small></div>
-            <button type="button" @click="toggleLayerLock(selectedWidget)">{{ selectedWidget.locked ? '解锁' : '锁定' }}</button>
           </div>
           <nav class="inspector-tabs">
             <button v-for="tab in [{id:'content',label:'内容'},{id:'style',label:'样式'},{id:'data',label:'数据来源'},{id:'condition',label:'显示条件'},{id:'animation',label:'动画'},{id:'event',label:'事件'}]" :key="tab.id" type="button" :class="{ active: inspectorTab === tab.id }" @click="inspectorTab = tab.id">{{ tab.label }}</button>
@@ -1508,6 +2312,14 @@ onBeforeUnmount(() => {
                 <label>关闭文字<input v-model="selectedWidget.content.offText" @change="recordProperty()" /></label>
                 <label>离线文字<input v-model="selectedWidget.content.unknownText" @change="recordProperty()" /></label>
                 <label>展示形态<select v-model="selectedWidget.content.shape" @change="recordProperty()"><option value="lamp">状态灯</option><option value="badge">状态标签</option><option value="switch">状态开关</option></select></label>
+              </template>
+              <template v-if="selectedWidget.type === 'navigation'">
+                <div class="readonly-banner compact"><span>独立组件</span>这是顶部导航状态组件；返回键是另一个独立组件，可分别移动、隐藏或锁定。</div>
+                <label>项目文字<input v-model="selectedWidget.content.projectLabel" @change="recordProperty('修改导航项目文字')" /></label>
+                <label>状态文字<input v-model="selectedWidget.content.statusText" @change="recordProperty('修改导航状态文字')" /></label>
+              </template>
+              <template v-if="selectedWidget.type === 'return_button'">
+                <div class="readonly-banner compact"><span>独立组件</span>这是独立返回键组件；删除 / 隐藏不会影响顶部导航状态栏。</div>
               </template>
               <template v-if="selectedWidget.type === 'image'">
                 <label>图片地址<input v-model="selectedWidget.content.url" placeholder="/uploads/... 或 https://..." @change="recordProperty()" /></label>
@@ -1568,9 +2380,14 @@ onBeforeUnmount(() => {
               <div class="property-grid two">
                 <label>圆角<input v-model.number="selectedWidget.style.borderRadius" type="number" min="0" max="80" @change="recordProperty('修改样式')" /></label>
                 <label>字号<input v-model.number="selectedWidget.style.fontSize" type="number" min="10" max="120" @change="recordProperty('修改样式')" /></label>
-                <label>透明度<input v-model.number="selectedWidget.style.opacity" type="number" min="0" max="1" step=".05" @change="recordProperty('修改样式')" /></label>
+                <label>内容透明度<input v-model.number="selectedWidget.style.opacity" type="number" min="0" max="1" step=".05" @change="recordProperty('修改样式')" /></label>
                 <label>内边距<input v-model.number="selectedWidget.style.padding" type="number" min="0" max="100" @change="recordProperty('修改样式')" /></label>
               </div>
+              <label class="panel-opacity-setting">
+                <span>面板背景不透明度 <b>{{ Math.round(Number(selectedWidget.style.backgroundOpacity || 0) * 100) }}%</b><small>透光 {{ Math.round((1 - Number(selectedWidget.style.backgroundOpacity || 0)) * 100) }}%</small></span>
+                <input v-model.number="selectedWidget.style.backgroundOpacity" type="range" min="0" max="1" step=".01" @change="recordProperty('修改面板透明度')" />
+                <small class="field-hint">只调整底色，不会让文字、数字和图表变淡。大屏与设计器预览同步使用。</small>
+              </label>
               <label>阴影<select v-model="selectedWidget.style.shadow" @change="recordProperty('修改样式')"><option value="none">无</option><option value="soft">柔和</option><option value="glow">发光</option><option value="strong">强调</option></select></label>
             </section>
 
@@ -1578,9 +2395,11 @@ onBeforeUnmount(() => {
               <div class="readonly-banner"><span>只读</span>所有外部数据源和 PLC 点位只用于展示，发布校验会拦截任何写入配置。</div>
               <label>数据来源<select v-model="selectedWidget.data.mode" @change="changeBindingMode"><option value="static">静态 / 组件默认数据</option><option value="plc">PLC 只读点位</option><option value="database">通用数据库连接</option><option value="business">排产业务只读适配层</option><option value="runtime">设备检查上下文</option></select></label>
               <template v-if="selectedWidget.data.mode === 'plc'">
-                <label>设备<select v-model="selectedWidget.data.deviceId" @change="selectedWidget.data.pointId=''; recordProperty('选择设备')"><option value="">请选择设备</option><option v-for="device in devices" :key="device.id" :value="String(device.id)">{{ device.name }}（{{ device.id }}）</option></select></label>
-                <label>READ 点位<select v-model="selectedWidget.data.pointId" :disabled="!selectedWidget.data.deviceId" @change="bindSelectedPoint"><option value="">请选择只读点位</option><option v-for="point in selectedDevicePoints" :key="point.id" :value="String(point.id)">{{ point.label || point.name }} · {{ point.plc_tag || `DB${point.db_number}.${point.db_byte_offset}` }}</option></select></label>
-                <div class="binding-summary" v-if="selectedWidget.data.pointId"><span>路径</span><code>{{ selectedWidget.data.path }}</code><span>实时值</span><strong>{{ pointValues[selectedWidget.data.pointId]?.value ?? '--' }} {{ selectedWidget.data.unit }}</strong></div>
+                <label>设备范围<select v-model="selectedWidget.data.deviceScope" @change="changeDeviceScope"><option value="current">当前设备（跟随视角）</option><option value="fixed">指定设备</option></select></label>
+                <p v-if="selectedWidget.data.deviceScope === 'current'" class="field-hint">同一个组件可用于所有设备，运行时自动读取当前视角设备的同名点位，不需要复制组件。</p>
+                <label v-if="selectedWidget.data.deviceScope === 'fixed'">绑定设备<select v-model="selectedWidget.data.deviceId" @change="selectedWidget.data.pointId=''; selectedWidget.data.pointKey=''; recordProperty('选择设备')"><option value="">请选择设备</option><option v-for="device in devices" :key="device.id" :value="String(device.id)">{{ device.name }}（{{ device.id }}）</option></select></label>
+                <label>READ 点位<select v-model="selectedWidget.data.pointId" :disabled="!selectedBindingDeviceId" @change="bindSelectedPoint"><option value="">请选择只读点位</option><option v-for="point in selectedDevicePoints" :key="point.id" :value="String(point.id)">{{ point.label || point.name }} · {{ point.plc_tag || `DB${point.db_number}.${point.db_byte_offset}` }}</option></select></label>
+                <div class="binding-summary" v-if="selectedWidget.data.pointId"><span>路径</span><code>{{ selectedWidget.data.path }}</code><span>实时值</span><strong>{{ previewValueForWidget(selectedWidget) ?? '--' }} {{ selectedWidget.data.unit }}</strong></div>
               </template>
               <template v-else-if="selectedWidget.data.mode === 'database'">
                 <div class="section-action-heading"><div><strong>数据项</strong><small>每项可来自不同数据库和表，别名用于下方公式</small></div><button type="button" @click="addDatabaseDataset">＋ 数据项</button></div>
@@ -1601,7 +2420,9 @@ onBeforeUnmount(() => {
                 </details>
                 <label>计算公式（可选）<input v-model="selectedWidget.data.formula" placeholder="例如：(a / b) * 100" @change="recordProperty('修改计算公式'); previewDatabaseBinding()" /><small class="field-hint">仅支持别名、数字、+ − × ÷ 和括号，不执行 SQL 或脚本。</small></label>
                 <div v-if="selectedWidget.data.formula" class="property-grid two"><label>计算结果名称<input v-model="selectedWidget.data.formulaLabel" @change="recordProperty()" /></label><ColorField v-model="selectedWidget.data.formulaColor" label="计算结果颜色" :presets="textColorPresets" @commit="recordProperty('修改计算颜色')" /></div>
-                <label>设备详情适用范围<select v-model="selectedWidget.data.deviceId" @change="bindDatabaseToDevice"><option value="">所有设备通用</option><option v-for="device in devices" :key="`db-${device.id}`" :value="String(device.id)">仅 {{ device.name }}（{{ device.id }}）</option></select><small class="field-hint">不同设备参数来自不同表时，复制组件后分别选择设备和表即可。</small></label>
+                <label>设备范围<select v-model="selectedWidget.data.deviceScope" @change="changeDatabaseScope"><option value="current">当前设备（跟随视角）</option><option value="fixed">指定设备 / 所有设备通用</option></select></label>
+                <label v-if="selectedWidget.data.deviceScope === 'fixed'">设备详情适用范围<select v-model="selectedWidget.data.deviceId" @change="bindDatabaseToDevice"><option value="">所有设备通用</option><option v-for="device in devices" :key="`db-${device.id}`" :value="String(device.id)">仅 {{ device.name }}（{{ device.id }}）</option></select><small class="field-hint">只有确实需要固定设备数据时才选择指定设备；通常选“当前设备”即可复用。</small></label>
+                <p v-else class="field-hint">运行时按当前视角设备读取；一个组件即可覆盖多台设备。</p>
                 <button type="button" class="inspector-preview-button" :disabled="databaseMetadataLoading" @click="previewDatabaseBinding()">刷新数据预览</button>
                 <div v-if="databasePreviewValues[selectedWidget.id]" class="binding-summary"><span>预览值</span><strong>{{ databasePreviewValues[selectedWidget.id]?.value ?? '--' }} {{ selectedWidget.data.unit }}</strong><span>数据项</span><code>{{ databasePreviewValues[selectedWidget.id]?.series?.map(item => `${item.label}: ${item.value ?? '--'}`).join(' · ') || '--' }}</code><span>状态</span><strong>{{ databasePreviewValues[selectedWidget.id]?.error || '读取正常' }}</strong></div>
               </template>
@@ -1621,14 +2442,6 @@ onBeforeUnmount(() => {
             </section>
 
             <section v-else-if="inspectorTab === 'condition'" class="inspector-section">
-              <div class="section-action-heading"><div><strong>运行时显示范围</strong><small>跟随 Unity 当前工厂 / 车间 / 产线 / 设备视角</small></div></div>
-              <div class="visibility-mode-grid">
-                <label v-for="mode in [{id:'factory',label:'工厂'},{id:'workshop',label:'车间'},{id:'line',label:'产线'},{id:'device',label:'设备'}]" :key="mode.id" class="visibility-mode-option"><input type="checkbox" :checked="selectedWidget.visibility.viewModes.includes(mode.id)" @change="toggleViewMode(mode.id, $event.target.checked)" />{{ mode.label }}</label>
-              </div>
-              <div class="view-id-grid"><label v-for="view in views" :key="view.id"><input type="checkbox" :checked="selectedWidget.visibility.viewIds.includes(view.id)" @change="toggleViewId(view.id, $event.target.checked)" /><span>{{ view.name }}</span></label></div>
-              <p class="visibility-hint">未勾选任何视角表示始终可见；进入实时预览后可在顶部切换视角检查。</p>
-              <label v-if="selectedWidget.data.deviceId" class="visibility-bound-device"><input v-model="selectedWidget.visibility.matchBoundDevice" type="checkbox" @change="recordProperty('修改设备上下文')" /> 仅当 Unity 正在查看该绑定设备时显示</label>
-
               <div class="section-action-heading"><div><strong>显隐规则</strong><small>可按当前对象或数据值决定组件出现 / 消失</small></div><button @click="addVisibilityRule">＋ 添加</button></div>
               <label v-if="selectedWidget.visibility.rules.length">多条规则<select v-model="selectedWidget.visibility.ruleMode" @change="recordProperty('修改显隐规则')"><option value="all">全部满足</option><option value="any">任意满足</option></select></label>
               <div v-for="(rule, index) in selectedWidget.visibility.rules" :key="`visible-${index}`" class="condition-card">
@@ -1702,9 +2515,14 @@ onBeforeUnmount(() => {
               <button type="button" class="view-delete-button" @click="removeView" :disabled="views.length <= 1">删除当前视角</button>
             </section>
             <section v-else-if="viewInspectorTab === 'components'" class="inspector-section">
-              <div class="readonly-banner"><span>所见即所得</span>当前画布显示的是这个视角会出现的组件；点击复选框即可配置进入/离开视角时的显隐。</div>
+              <div class="readonly-banner"><span>所见即所得</span>下面列出当前视角画布中的组件；顶部导航状态和返回键是两个独立组件，可分别删除 / 隐藏 / 锁定。Unity 诊断面板、设备浮标等运行时系统项不占画布。取消勾选可暂时隐藏，隐藏后可在“已隐藏组件”中恢复。</div>
               <label class="visibility-bound-device"><input v-model="currentView.componentState.hideNonTargetDevices" type="checkbox" @change="commitHistory('修改目标设备显隐')" /> 只显示目标范围内的设备</label>
-              <div class="view-component-list"><label v-for="item in viewComponents" :key="item.id"><input type="checkbox" :checked="!currentView.componentState.hide?.includes(item.id)" @change="toggleViewComponent(currentView, item.id, $event.target.checked)" /><span>{{ item.label }}</span><small>{{ item.type === 'navigation' ? '系统导航' : widgetTypeLabel(item.type) }}</small></label></div>
+              <div v-if="viewComponents.length" class="view-component-list"><label v-for="item in viewComponents" :key="item.id"><input type="checkbox" checked @change="toggleViewComponent(currentView, item.id, $event.target.checked)" /><span>{{ item.label }}</span><small>{{ item.type === 'navigation' ? '顶部导航' : item.type === 'return_button' ? '返回键' : widgetTypeLabel(item.type) }}</small></label></div>
+              <p v-else class="empty-inspector">当前视角还没有显示组件，请从左侧拖入组件到画布。</p>
+              <details v-if="hiddenViewComponents.length" class="view-hidden-components">
+                <summary>已隐藏组件（{{ hiddenViewComponents.length }}）</summary>
+                <div class="view-component-list"><label v-for="item in hiddenViewComponents" :key="item.id"><input type="checkbox" :checked="false" @change="toggleViewComponent(currentView, item.id, $event.target.checked)" /><span>{{ item.label }}</span><small>{{ item.type === 'navigation' ? '顶部导航' : item.type === 'return_button' ? '返回键' : widgetTypeLabel(item.type) }}</small></label></div>
+              </details>
             </section>
             <section v-else class="inspector-section">
               <label>返回上一级视角<select v-model="currentView.returnViewId" @change="commitHistory('修改返回视角')"><option value="">不返回</option><option v-for="view in views.filter(item => item.id !== currentView.id)" :key="view.id" :value="view.id">{{ view.name }}</option></select></label>
@@ -1748,9 +2566,9 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.dashboard-designer-shell { --panel:#0d1724; --panel2:#111f2f; --line:rgba(130,184,226,.16); --text:#eaf4ff; --muted:#8fa5ba; --accent:#42a5f5; display:flex; flex-direction:column; height:clamp(720px,calc(100vh - 150px),1080px); min-height:720px; overflow-x:auto; overflow-y:hidden; border:1px solid rgba(53,105,148,.26); border-radius:16px; color:var(--text); background:#08111c; box-shadow:0 22px 52px rgba(9,22,34,.18); scrollbar-color:#29445e #08111b; scrollbar-width:thin; font-family:"Microsoft YaHei UI","Segoe UI",sans-serif; }
+.dashboard-designer-shell { --panel:#0d1724; --panel2:#111f2f; --line:rgba(130,184,226,.16); --text:#eaf4ff; --muted:#8fa5ba; --accent:#42a5f5; display:flex; flex-direction:column; height:clamp(720px,calc(100vh - 150px),1080px); min-height:720px; overflow-x:auto; overflow-y:hidden; border:1px solid rgba(53,105,148,.26); border-radius:16px; color:var(--text); background:#08111c; box-shadow:0 22px 52px rgba(9,22,34,.18); scrollbar-color:#29445e #08111b; scrollbar-width:thin; font-family:var(--hud-font-text,"SF Pro Text","Inter","Segoe UI","PingFang SC","Microsoft YaHei UI",sans-serif); font-synthesis:none; -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility; }
 .designer-toolbar { flex:0 0 58px; display:flex; align-items:center; gap:14px; min-width:1180px; padding:0 14px; border-bottom:1px solid var(--line); background:linear-gradient(180deg,#142335,#0d1927); }
-.designer-brand { display:flex; align-items:center; gap:10px; width:224px; flex:0 0 224px; }
+.designer-brand { display:flex; align-items:center; gap:10px; width:42px; flex:0 0 42px; }
 .designer-brand-mark { display:grid; place-items:center; width:34px; height:34px; border:1px solid rgba(87,190,255,.48); border-radius:10px; color:#8ddcff; background:linear-gradient(145deg,rgba(45,159,232,.24),rgba(23,67,105,.22)); box-shadow:inset 0 1px rgba(255,255,255,.08),0 0 24px rgba(66,165,245,.12); font-weight:800; }
 .designer-brand strong,.designer-brand small { display:block; white-space:nowrap; }.designer-brand strong{font-size:13px}.designer-brand small{margin-top:2px;color:#7891a8;font-size:10px;letter-spacing:.04em}
 .designer-toolbar-group,.designer-toolbar-actions,.canvas-tools { display:flex; align-items:center; gap:5px; }
@@ -1758,7 +2576,36 @@ onBeforeUnmount(() => {
 .designer-toolbar button:hover:not(:disabled),.designer-toolbar button.active { color:#fff; border-color:rgba(84,188,255,.46); background:rgba(43,123,181,.28); }.designer-toolbar button:disabled{opacity:.34;cursor:not-allowed}.designer-toolbar .zoom-label{min-width:58px}.toolbar-divider{width:1px;height:20px;margin:0 3px;background:var(--line)}
 .canvas-tools { margin-left:auto; }.designer-toolbar-actions{margin-left:2px}.designer-toolbar .save-button{border-color:rgba(73,187,145,.28);color:#8ce6bf}.designer-toolbar .publish-button{border-color:rgba(66,165,245,.48);color:#fff;background:linear-gradient(135deg,#237abe,#155b91)}.designer-toolbar .acceptance-button{border-color:rgba(255,196,95,.38);color:#ffd88c}.designer-toolbar .acceptance-button.passed{border-color:rgba(69,223,155,.38);color:#8ce6bf}
 .toolbar-status{display:block;max-width:230px;overflow:hidden;padding:6px 9px;border:1px solid var(--line);border-radius:7px;color:#879bad;background:rgba(255,255,255,.04);font-size:9px;white-space:nowrap;text-overflow:ellipsis}.toolbar-status.success{color:#45c98f}.toolbar-status.warning{color:#ffc45f}.toolbar-status.danger{color:#ff6864}
-.designer-main { flex:1; min-width:1180px; min-height:0; display:grid; grid-template-columns:236px minmax(680px,1fr) 310px; overflow:hidden; }
+.designer-main {
+  --designer-left-width: 236px;
+  --designer-right-width: 310px;
+  --designer-left-track: var(--designer-left-width);
+  --designer-right-track: var(--designer-right-width);
+  flex: 1; min-width: 0; min-height: 0; display: grid;
+  grid-template-columns: var(--designer-left-track) 28px minmax(0, 1fr) 28px var(--designer-right-track);
+  overflow: hidden;
+}
+.designer-main.is-left-panel-collapsed { --designer-left-track: 0px; }
+.designer-main.is-right-panel-collapsed { --designer-right-track: 0px; }
+.designer-main > .designer-left-panel { grid-area: 1 / 1; min-width: 0; }
+.designer-main > .designer-canvas { grid-area: 1 / 3; }
+.designer-main > .designer-right-panel { grid-area: 1 / 5; min-width: 0; }
+.designer-panel-toggle-rail {
+  grid-row: 1; display: flex; align-items: center; justify-content: center;
+  min-width: 0; background: var(--panel2); border-inline: 1px solid var(--line);
+}
+.designer-panel-toggle-rail.is-left { grid-column: 2; }
+.designer-panel-toggle-rail.is-right { grid-column: 4; }
+.designer-panel-toggle {
+  display: flex; align-items: center; justify-content: center;
+  width: 26px; min-height: 48px; padding: 9px 3px;
+  border: 1px solid var(--line); border-radius: 7px; background: var(--panel); color: var(--text);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, .06); cursor: pointer; font: inherit;
+}
+.designer-panel-toggle:hover { border-color: #8e8e93; background: #ededf0; color: #1d1d1f; }
+.designer-panel-toggle:focus-visible { outline: 2px solid #1570ef; outline-offset: -2px; }
+.designer-panel-toggle svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.designer-panel-toggle.is-collapsed svg { transform: rotate(180deg); }
 .designer-left-panel,.designer-right-panel { min-height:0; overflow:auto; background:linear-gradient(180deg,#0d1927,#0a1420); scrollbar-color:#29445e transparent; }.designer-left-panel{border-right:1px solid var(--line)}.designer-right-panel{border-left:1px solid var(--line)}
 .designer-panel-heading,.selected-widget-heading { display:flex; align-items:center; justify-content:space-between; gap:10px; min-height:54px; padding:10px 14px; border-bottom:1px solid var(--line); }.designer-panel-heading strong{font-size:13px}.designer-panel-heading small{color:var(--muted);font-size:10px}
 .scene-preset-list{padding:9px 10px;border-bottom:1px solid var(--line)}.scene-preset-list>button{display:grid;grid-template-columns:34px minmax(0,1fr) auto;gap:9px;align-items:center;width:100%;padding:10px;border:1px solid rgba(89,178,238,.24);border-radius:10px;color:#e8f5ff;background:linear-gradient(145deg,rgba(27,70,102,.66),rgba(13,32,49,.72));text-align:left;cursor:pointer;transition:.15s}.scene-preset-list>button:hover{border-color:rgba(91,196,255,.52);transform:translateY(-1px);box-shadow:0 8px 24px rgba(0,10,20,.18)}.scene-preset-list>button>span{display:grid;place-items:center;width:34px;height:34px;border-radius:9px;color:#bceaff;background:rgba(80,179,239,.18);font-size:17px}.scene-preset-list strong,.scene-preset-list small{display:block}.scene-preset-list strong{font-size:11px}.scene-preset-list small{display:-webkit-box;margin-top:3px;overflow:hidden;color:#7f9bb1;font-size:8px;line-height:1.35;-webkit-box-orient:vertical;-webkit-line-clamp:2}.scene-preset-list em{padding:3px 6px;border-radius:99px;color:#8ed8ff;background:rgba(73,167,224,.14);font-size:8px;font-style:normal;white-space:nowrap}
@@ -1770,12 +2617,13 @@ onBeforeUnmount(() => {
 .designer-statusbar{flex:0 0 42px;display:flex;align-items:center;gap:18px;min-width:1180px;padding:0 13px;border-top:1px solid var(--line);color:#6f899f;background:#0b1622;font-size:9px}.designer-status{display:flex;align-items:center;min-width:300px;color:#8fa9bd}.designer-status i{width:6px;height:6px;margin-right:6px;border-radius:50%;background:#5f7b91}.designer-status.success i{background:#48d79a;box-shadow:0 0 10px rgba(72,215,154,.5)}.designer-status.warning i{background:#ffc45f}.designer-status.danger i{background:#ff6864}.designer-statusbar .dirty{color:#ffc66e}.release-strip{display:flex;align-items:center;gap:5px;margin-left:auto}.release-strip strong{margin-right:3px;color:#7d96aa}.release-strip button{display:flex;align-items:center;gap:5px;height:27px;padding:0 7px;border:1px solid var(--line);border-radius:6px;color:#9bb3c7;background:#102031;font-size:9px;cursor:pointer}.release-strip button.current{border-color:rgba(68,211,156,.28);color:#9ee8c9}.release-strip small{color:#617b90;font-size:7px}
 .designer-dialog-backdrop{position:fixed;inset:0;z-index:12000;display:grid;place-items:center;padding:20px;background:rgba(3,9,15,.68);backdrop-filter:blur(6px)}.designer-dialog{display:grid;gap:12px;width:min(430px,calc(100vw - 40px));padding:22px;border:1px solid rgba(89,171,227,.28);border-radius:16px;color:#eaf5ff;background:linear-gradient(155deg,#14283a,#0c1825);box-shadow:0 26px 90px rgba(0,0,0,.52)}.designer-dialog.compact{width:min(370px,calc(100vw - 40px));text-align:center}.dialog-icon{display:grid;place-items:center;width:42px;height:42px;border-radius:12px;color:#8bd8ff;background:rgba(66,165,245,.16);font-size:20px}.designer-dialog.compact .dialog-icon{justify-self:center}.designer-dialog h3,.designer-dialog p{margin:0}.designer-dialog h3{font-size:17px}.designer-dialog p{color:#8fa8bc;font-size:11px;line-height:1.6}.designer-dialog label{display:grid;gap:6px;color:#9bb2c5;font-size:10px;text-align:left}.designer-dialog input,.designer-dialog textarea{box-sizing:border-box;width:100%;padding:8px 10px;border:1px solid rgba(112,172,216,.22);border-radius:8px;color:#eef8ff;background:#091522;outline:none}.designer-dialog textarea{resize:vertical}.designer-dialog>div:last-child{display:flex;justify-content:flex-end;gap:8px;margin-top:4px}.designer-dialog button{min-width:76px;height:32px;border:1px solid var(--line);border-radius:8px;color:#acc3d5;background:#102235;cursor:pointer}.designer-dialog button.primary{border-color:#2c87c9;color:#fff;background:linear-gradient(135deg,#278bd1,#176298)}.designer-dialog-enter-active,.designer-dialog-leave-active{transition:.16s ease}.designer-dialog-enter-from,.designer-dialog-leave-to{opacity:0}.designer-dialog-enter-from .designer-dialog,.designer-dialog-leave-to .designer-dialog{transform:translateY(8px) scale(.98)}
 .is-preview .designer-left-panel,.is-preview .designer-right-panel{opacity:.42;pointer-events:none}.is-preview .designer-widget{cursor:default}.is-preview .canvas-safe-area{display:none}
+.widget-canvas-actions{position:absolute;z-index:10001;top:-32px;right:-2px;display:flex;align-items:center;gap:4px}.widget-canvas-actions button{display:grid;place-items:center;width:28px;height:28px;padding:0;border:1px solid rgba(255,255,255,.48);border-radius:8px;color:#fff;background:rgba(15,28,42,.94);box-shadow:0 3px 10px rgba(0,0,0,.3);cursor:pointer;transition:transform .16s ease,border-color .16s ease,background .16s ease}.widget-canvas-actions button svg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}.widget-canvas-actions button:hover:not(:disabled){border-color:#fff;background:#1d1d1f;transform:translateY(-1px)}.widget-canvas-actions button:disabled{opacity:.42;cursor:not-allowed}.widget-lock-toggle.locked{border-color:rgba(255,196,95,.78);color:#ffe0a3;background:rgba(92,61,14,.94)}.widget-delete-toggle{border-color:rgba(255,127,120,.54)!important;color:#ffaaa4!important}.widget-delete-toggle:hover:not(:disabled){border-color:#ff8f88!important;background:#762d2a!important;color:#fff!important}
 @keyframes designerSpin{to{transform:rotate(360deg)}}
-@media(max-width:1400px){.designer-main{grid-template-columns:210px minmax(620px,1fr) 280px}.designer-brand{width:190px;flex-basis:190px}.designer-toolbar{gap:8px}.designer-toolbar button{padding:0 7px}}
+@media(max-width:1400px){.designer-main{--designer-left-width:210px;--designer-right-width:280px}.designer-brand{width:42px;flex-basis:42px}.designer-toolbar{gap:8px}.designer-toolbar button{padding:0 7px}}
 
 /* 与后台管理统一的黑白简约工作台；画布本身仍保持实际发布主题。 */
 .dashboard-designer-shell{--panel:#fff;--panel2:#f5f5f7;--line:#dedee3;--text:#1d1d1f;--muted:#6e6e73;--accent:#1d1d1f;height:clamp(820px,calc(100vh - 112px),1120px);min-height:820px;border-color:#d7d7dc;color:#1d1d1f;background:#f0f0f2;box-shadow:0 18px 48px rgba(0,0,0,.08);scrollbar-color:#b8b8bd #ececef;font-size:13px}
-.designer-main{grid-template-columns:246px minmax(680px,1fr) 330px}
+.designer-main{--designer-left-width:246px;--designer-right-width:330px}
 .designer-toolbar{flex-basis:62px;border-bottom-color:#dedee3;background:rgba(255,255,255,.94);box-shadow:0 1px 0 rgba(0,0,0,.035);backdrop-filter:blur(18px)}
 .designer-brand-mark{border-color:#1d1d1f;color:#fff;background:#1d1d1f;box-shadow:none}.designer-brand strong{color:#1d1d1f;font-size:14px}.designer-brand small{color:#8e8e93;font-size:11px}
 .designer-toolbar button,.designer-toolbar select{border-color:#d8d8dd;color:#3a3a3c;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.035);font-size:13px}
@@ -1798,7 +2646,109 @@ onBeforeUnmount(() => {
 .is-preview .designer-left-panel,.is-preview .designer-right-panel{opacity:.56}
 .view-panel-heading{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:11px 12px;border-bottom:1px solid var(--line);cursor:pointer}.view-panel-heading strong,.view-panel-heading small{display:block}.view-panel-heading strong{font-size:13px}.view-panel-heading small{margin-top:3px;color:var(--muted);font-size:10px}.view-panel-heading>span{color:var(--muted);font-size:10px}
 .view-list{padding:7px;border-bottom:1px solid var(--line)}.view-list>button{display:grid;grid-template-columns:26px minmax(0,1fr) 14px;gap:7px;align-items:center;width:100%;padding:8px 7px;border:1px solid transparent;border-radius:8px;text-align:left;color:var(--text);background:transparent;cursor:pointer}.view-list>button:hover{background:var(--panel2)}.view-list>button.active{border-color:#cfcfd4;background:#f0f0f2}.view-list-icon{display:grid;place-items:center;width:24px;height:24px;border-radius:7px;color:#fff;background:#1d1d1f;font-size:13px}.view-list strong,.view-list small{display:block;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}.view-list strong{font-size:12px}.view-list small{margin-top:2px;color:var(--muted);font-size:9px}.view-list i{color:#2e9d5b;font-style:normal;font-size:10px}.view-list-actions{display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-top:6px}.view-list-actions button,.view-inspector-actions button{height:30px;border:1px solid #d8d8dd;border-radius:7px;color:#3a3a3c;background:#fff;font-size:11px;cursor:pointer}.view-list-actions button:first-child,.view-inspector-actions button:first-child{color:#fff;border-color:#1d1d1f;background:#1d1d1f}.view-list-actions button:disabled,.view-inspector-actions button:disabled{opacity:.45;cursor:not-allowed}.view-inspector-actions{display:grid;grid-template-columns:1fr 1fr;gap:7px}.view-inspector-actions button:last-child{color:#b42318}.view-component-list{display:grid;gap:6px;max-height:360px;overflow:auto}.view-component-list label{display:grid!important;grid-template-columns:18px minmax(0,1fr) auto;align-items:center;gap:6px!important;padding:8px;border:1px solid #e2e2e5;border-radius:8px;background:#f8f8fa;cursor:pointer}.view-component-list input{width:auto!important;min-height:auto!important;accent-color:#1d1d1f}.view-component-list span{overflow:hidden;color:#1d1d1f;white-space:nowrap;text-overflow:ellipsis}.view-component-list small{color:#8e8e93;font-size:10px}
+.view-tree{display:grid;gap:2px}.view-tree-row{position:relative;display:grid;grid-template-columns:28px minmax(0,1fr);align-items:stretch;min-width:0}.view-tree-rail{position:relative;display:flex;justify-content:center}.view-tree-row.has-next .view-tree-rail::before{content:'';position:absolute;z-index:0;top:50%;bottom:-50%;left:50%;border-left:1px solid #c8c8ce}.view-tree-connector-arrow{position:absolute;z-index:2;top:100%;left:50%;color:#8e8e93;background:#fff;font-size:11px;line-height:1;transform:translate(-50%,-50%)}.view-tree-toggle{position:relative;z-index:3;align-self:center;display:grid;place-items:center;width:22px;height:22px;padding:0;border:1px solid #d8d8dd;border-radius:50%;color:#6e6e73;background:#fff;font-size:12px;line-height:1;cursor:pointer}.view-tree-toggle:hover:not(:disabled){color:#1d1d1f;border-color:#8e8e93;background:#f0f0f2}.view-tree-toggle.empty{width:8px;height:8px;border:0;color:transparent;background:#1d1d1f;cursor:default}.view-tree-select{position:relative;display:grid;grid-template-columns:26px minmax(0,1fr) 14px;gap:7px;align-items:center;min-width:0;flex:1;padding:8px 7px;border:1px solid transparent;border-radius:8px;text-align:left;color:#1d1d1f;background:transparent;cursor:pointer}.view-tree-select:hover{background:#f0f0f2}.view-tree-select.active{border-color:#cfcfd4;background:#f0f0f2}.view-tree-select>span:nth-child(2){min-width:0}.view-tree-select strong{display:block;overflow:visible;white-space:normal;text-overflow:clip;word-break:break-word;line-height:1.25}.view-tree-select .view-list-icon{align-self:center}
+.view-hidden-components{border:1px solid #e2e2e5;border-radius:8px;background:#fafafa}.view-hidden-components summary{padding:9px;color:#6e6e73;font-size:11px;cursor:pointer}.view-hidden-components .view-component-list{padding:0 7px 7px;max-height:220px}.view-hidden-components .view-component-list label{background:#f3f3f5}
 .system-widget-card{display:grid!important;grid-template-columns:58px minmax(0,1fr);gap:9px;align-items:center;min-width:0;padding:8px!important}.system-widget-card>div:last-child{display:block;min-width:0;padding:0;border:0}.system-widget-card strong,.system-widget-card small,.system-widget-card em{display:block;max-width:100%}.system-widget-card strong{overflow:hidden;color:#1d1d1f;font-size:11px;white-space:nowrap;text-overflow:ellipsis}.system-widget-card small{display:-webkit-box;margin-top:2px;overflow:hidden;color:#8e8e93;font-size:9px;line-height:1.35;-webkit-box-orient:vertical;-webkit-line-clamp:2}.system-widget-card em{margin-top:3px;overflow:hidden;color:#6e6e73;font-size:8px;font-style:normal;white-space:nowrap;text-overflow:ellipsis}.system-widget-preview{position:relative;box-sizing:border-box;width:58px;height:42px;min-width:0;overflow:hidden;padding:0!important;border:1px solid #d8d8dd!important;border-radius:8px;background:linear-gradient(145deg,#2d2d31,#111113)}.system-widget-preview span{position:absolute;left:6px;top:5px;color:#fff;font-size:13px;font-weight:700}.system-widget-preview i,.system-widget-preview b{position:absolute;display:block;border-radius:4px;background:rgba(255,255,255,.8)}.system-widget-preview i{left:7px;right:7px;bottom:9px;height:4px}.system-widget-preview b{left:7px;bottom:18px;width:28px;height:6px;background:#777}.system-widget-preview.preview-label{background:linear-gradient(145deg,#203b4c,#11161a)}.system-widget-preview.preview-label i{left:27px;bottom:16px;width:21px;height:16px;border:1px solid #6fd1ff;background:rgba(79,166,215,.25)}.system-widget-preview.preview-label b{left:15px;bottom:8px;width:4px;height:9px;border-radius:50%;background:#54d3a0}.system-widget-preview.preview-diagnostics{background:#f0f0f2}.system-widget-preview.preview-diagnostics span{color:#1d1d1f}.system-widget-preview.preview-diagnostics i{left:7px;right:7px;bottom:10px;background:#49a86e}.system-widget-preview.preview-diagnostics b{left:7px;bottom:19px;width:34px;background:#999}.system-widget-preview.preview-line{background:linear-gradient(145deg,#38404a,#15171b)}.system-widget-preview.preview-line i{left:8px;right:8px;bottom:9px;height:14px;border:1px solid #888;background:transparent}.system-widget-preview.preview-line b{left:13px;bottom:14px;width:7px;height:7px;border-radius:50%;background:#65d69c}
 .view-delete-button{height:30px;border:1px solid #e1b8b5;border-radius:7px;color:#b42318;background:#fff;font-size:11px;cursor:pointer}.view-delete-button:disabled{opacity:.45;cursor:not-allowed}
-@media(max-width:1500px){.dashboard-designer-shell{min-height:780px}.designer-main{grid-template-columns:226px minmax(660px,1fr) 310px}.external-data-source-list{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:1500px){.dashboard-designer-shell{min-height:780px}.designer-main{--designer-left-width:226px;--designer-right-width:310px}.external-data-source-list{grid-template-columns:repeat(2,minmax(0,1fr))}}
+
+/* Keep both edge handles reachable on smaller windows, even with long toolbars. */
+.designer-toolbar, .designer-statusbar { box-sizing: border-box; min-width: 0; flex: 0 0 auto; flex-wrap: wrap; row-gap: 8px; }
+
+/* The editing context is intentionally visible above the canvas: users pick
+   a view and a preview device first, while the document keeps one reusable
+   widget instead of one copy per physical device. */
+.designer-canvas { display:flex; flex-direction:column; }
+.designer-scope-bar { flex:0 0 auto; display:flex; align-items:center; gap:16px; min-height:58px; box-sizing:border-box; padding:8px 16px; border-bottom:1px solid #e5e5e7; background:#fff; }
+.designer-scope-copy { display:grid; min-width:190px; gap:2px; }
+.designer-scope-copy span { color:#8e8e93; font-size:10px; }
+.designer-scope-copy strong { color:#1d1d1f; font-size:14px; }
+.designer-scope-copy small { overflow:hidden; color:#6e6e73; font-size:10px; text-overflow:ellipsis; white-space:nowrap; }
+.designer-device-picker { display:grid!important; grid-template-columns:auto minmax(150px,220px); align-items:center; gap:8px!important; margin-left:auto; color:#515154!important; font-size:11px!important; white-space:nowrap; }
+.designer-device-picker select { min-height:32px; padding:5px 8px; border:1px solid #d8d8dd; border-radius:7px; color:#1d1d1f; background:#fff; font:12px inherit; }
+.designer-scope-hint { max-width:330px; color:#8e8e93; font-size:10px; line-height:1.4; }
+.designer-scope-hint.is-public { margin-left:auto; max-width:420px; }
+.layer-hidden-components { margin:4px 7px 7px; border:1px solid #e2e2e5; border-radius:8px; background:#fafafa; }
+.layer-hidden-components summary { padding:8px; color:#6e6e73; font-size:10px; cursor:pointer; }
+.layer-hidden-components button { display:grid; grid-template-columns:24px minmax(0,1fr) 20px; align-items:center; width:100%; min-height:32px; padding:3px 6px; border:0; border-top:1px solid #ededee; color:#6e6e73; background:transparent; text-align:left; cursor:pointer; }
+.layer-hidden-components button:hover { background:#f0f0f2; }
+.layer-hidden-components button i { color:#176b3a; font-style:normal; text-align:center; }
+.designer-canvas > .designer-canvas-scroll { position:relative; inset:auto; flex:1; min-height:0; height:auto; }
+@media(max-width:1100px) { .designer-scope-bar { gap:9px; padding-inline:10px; } .designer-scope-hint { display:none; } .designer-device-picker { grid-template-columns:1fr; gap:3px!important; } }
+.designer-toolbar { min-height: 62px; padding-block: 10px; }
+.designer-toolbar-actions { flex-wrap: wrap; }
+
+.fullscreen-button{display:grid!important;place-items:center;width:34px;padding:0!important}.fullscreen-button svg,.fullscreen-exit-button svg{width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}.fullscreen-button.active{color:#fff!important;border-color:#1d1d1f!important;background:#1d1d1f!important}
+.fullscreen-exit-button{position:fixed;z-index:13000;top:18px;right:18px;display:grid;place-items:center;width:38px;height:38px;padding:0;border:1px solid rgba(255,255,255,.6);border-radius:10px;color:#fff;background:rgba(15,23,31,.78);box-shadow:0 8px 24px rgba(0,0,0,.25);cursor:pointer;backdrop-filter:blur(12px)}.fullscreen-exit-button:hover{background:rgba(29,29,31,.94);transform:translateY(-1px)}
+.dashboard-designer-shell.is-fullscreen{width:100vw;height:100vh;min-height:100vh;border:0;border-radius:0;overflow:hidden;background:#e9e9ec}.dashboard-designer-shell.is-fullscreen .designer-toolbar,.dashboard-designer-shell.is-fullscreen .designer-left-panel,.dashboard-designer-shell.is-fullscreen .designer-right-panel,.dashboard-designer-shell.is-fullscreen .designer-panel-toggle-rail,.dashboard-designer-shell.is-fullscreen .designer-statusbar{display:none}.dashboard-designer-shell.is-fullscreen .designer-main{grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(0,1fr)}.dashboard-designer-shell.is-fullscreen .designer-main>.designer-canvas{grid-area:1 / 1}.dashboard-designer-shell.is-fullscreen .designer-canvas-scroll{padding:0;display:grid;place-items:center}.dashboard-designer-shell.is-fullscreen .designer-canvas-spacer{margin:auto}.dashboard-designer-shell.is-fullscreen .designer-canvas-stage{box-shadow:none}
+.dashboard-designer-shell.is-fullscreen .designer-canvas-stage::before{display:none}.dashboard-designer-shell.is-fullscreen .designer-canvas-stage{background:radial-gradient(ellipse at 52% 44%,#333c57 0%,#1c2439 42%,#101624 80%)!important}
+.designer-statusbar { min-height: 42px; padding-block: 8px; }
+.designer-status { min-width: 0; }
+
+.designer-toolbar .designer-icon-button{display:grid;place-items:center;width:34px;padding:0}
+.designer-toolbar .designer-icon-button svg{width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;transition:transform .16s ease}
+.designer-toolbar .designer-icon-button:hover:not(:disabled) svg{transform:scale(1.08)}
+
+/* The scroll viewport owns the free space. Auto margins center the canvas
+   when it fits, while overflowing canvases still start at the scroll origin. */
+.designer-canvas-scroll { display:flex; align-items:flex-start; justify-content:flex-start; }
+.designer-canvas-scroll > .designer-canvas-spacer { margin:auto; }
+
+/* Layer rows expose the same two identifiers users see in the inspector:
+   the component title and its text/value/binding preview. */
+.layer-list > button { min-height:48px; }
+.layer-copy { display:grid; min-width:0; gap:2px; }
+.layer-copy .layer-name { display:block; overflow:hidden; font-size:11px; line-height:1.25; text-overflow:ellipsis; white-space:nowrap; }
+.layer-copy .layer-value { display:block; overflow:hidden; color:#8e8e93; font-size:10px; line-height:1.25; text-overflow:ellipsis; white-space:nowrap; }
+.layer-hidden-components button { min-height:44px; }
+
+/* Context actions stay beside the selection, but live in the stage's top
+   layer instead of inside each widget's stacking context. Nearby widgets can
+   no longer cover the delete/lock controls. */
+.designer-selection-box { position:absolute; z-index:11000; box-sizing:border-box; border:1px solid #1570ef; border-radius:3px; background:rgba(21,112,239,.12); pointer-events:none; }
+.selection-context-actions { position:absolute; z-index:2147483000; display:flex; align-items:center; gap:4px; min-height:36px; padding:3px; box-sizing:border-box; border:1px solid rgba(255,255,255,.56); border-radius:9px; color:#fff; background:rgba(15,28,42,.96); box-shadow:0 5px 16px rgba(0,0,0,.32); pointer-events:auto; }
+.selection-context-actions button { display:grid; place-items:center; width:28px; height:28px; padding:0; border:1px solid rgba(255,255,255,.48); border-radius:8px; color:#fff; background:rgba(15,28,42,.94); cursor:pointer; transition:transform .16s ease,border-color .16s ease,background .16s ease; }
+.selection-context-actions button svg { width:16px; height:16px; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
+.selection-context-actions button:hover:not(:disabled) { border-color:#fff; background:#1d1d1f; transform:translateY(-1px); }
+.selection-context-actions button:disabled { opacity:.42; cursor:not-allowed; }
+.selection-context-actions .selection-context-count { display:grid; place-items:center; min-width:32px; height:28px; padding:0 3px; color:#dff4ff; font-size:10px; font-weight:700; white-space:nowrap; }
+.selection-context-actions .widget-lock-toggle.locked { border-color:rgba(255,196,95,.78); color:#ffe0a3; background:rgba(92,61,14,.94); }
+.selection-context-actions .widget-delete-toggle { border-color:rgba(255,127,120,.54); color:#ffaaa4; }
+.selection-context-actions .widget-delete-toggle:hover:not(:disabled) { border-color:#ff8f88; background:#762d2a; color:#fff; }
+
+.panel-opacity-setting {
+  gap: 7px !important;
+  padding: 9px 10px;
+  border: 1px solid rgba(89, 178, 238, .18);
+  border-radius: 8px;
+  background: rgba(8, 19, 30, .28);
+}
+.panel-opacity-setting > span {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+.panel-opacity-setting > span b {
+  margin-left: auto;
+  color: #1d1d1f;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.panel-opacity-setting > span small {
+  color: #2e9d5b;
+  font-size: 10px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.panel-opacity-setting input[type="range"] {
+  min-height: 18px;
+  padding: 0;
+  border: 0;
+  accent-color: #1d1d1f;
+  background: transparent;
+}
+.panel-opacity-setting .field-hint {
+  margin: 0;
+}
 </style>

@@ -154,8 +154,8 @@ namespace HeatTreatment.DigitalTwin.Backend
             if (!float.IsFinite(Pitch)) Pitch = fallbackPitch;
             if (!float.IsFinite(DistanceScale) || DistanceScale <= 0f) DistanceScale = fallbackDistance;
             Yaw = Math.Max(-360f, Math.Min(360f, Yaw));
-            Pitch = Math.Max(6f, Math.Min(82f, Pitch));
-            DistanceScale = Math.Max(.1f, Math.Min(10f, DistanceScale));
+            Pitch = Math.Max(-89f, Math.Min(89f, Pitch));
+            DistanceScale = Math.Max(.05f, Math.Min(20f, DistanceScale));
             TargetOffset = NormalizeVector(TargetOffset);
         }
 
@@ -175,10 +175,10 @@ namespace HeatTreatment.DigitalTwin.Backend
 
         public void Normalize(float fallbackYaw, float fallbackPitch, float fallbackDistance)
         {
-            Camera ??= new DeviceInspectionCameraDto();
+            Camera ??= new DeviceInspectionCameraDto { Yaw = fallbackYaw, Pitch = fallbackPitch, DistanceScale = fallbackDistance };
             Camera.Normalize(fallbackYaw, fallbackPitch, fallbackDistance);
             if (!float.IsFinite(TransitionSeconds)) TransitionSeconds = .65f;
-            TransitionSeconds = Math.Max(0f, Math.Min(10f, TransitionSeconds));
+            TransitionSeconds = Math.Max(.05f, Math.Min(10f, TransitionSeconds));
             ViewId ??= string.Empty;
         }
     }
@@ -189,20 +189,25 @@ namespace HeatTreatment.DigitalTwin.Backend
         [JsonProperty("node_names")] public List<string> NodeNames { get; set; } = new List<string>();
         [JsonProperty("opacity")] public float Opacity { get; set; } = .18f;
         [JsonProperty("wireframe")] public bool Wireframe { get; set; }
+        [JsonProperty("transition")] public string Transition { get; set; } = "clip";
+        [JsonProperty("axis")] public string Axis { get; set; } = "y";
+        [JsonProperty("direction")] public int Direction { get; set; } = 1;
 
         public void Normalize()
         {
             NodePaths = NormalizeStrings(NodePaths);
             NodeNames = NormalizeStrings(NodeNames);
-            Opacity = Math.Max(.03f, Math.Min(.95f, float.IsFinite(Opacity) ? Opacity : .18f));
+            Opacity = Math.Max(0f, Math.Min(1f, float.IsFinite(Opacity) ? Opacity : .18f));
+            Transition = Transition == "fade" || Transition == "hide" ? Transition : "clip";
+            Axis = Axis == "x" || Axis == "z" ? Axis : "y";
+            Direction = Direction < 0 ? -1 : 1;
         }
 
-        private static List<string> NormalizeStrings(IEnumerable<string> values)
+        public static List<string> NormalizeStrings(IEnumerable<string> values)
         {
             return (values ?? Enumerable.Empty<string>())
-                .Select(value => (value ?? string.Empty).Trim())
                 .Where(value => !string.IsNullOrWhiteSpace(value))
-                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Distinct(StringComparer.Ordinal)
                 .Take(100)
                 .ToList();
         }
@@ -212,27 +217,43 @@ namespace HeatTreatment.DigitalTwin.Backend
     {
         [JsonProperty("id")] public string Id { get; set; } = string.Empty;
         [JsonProperty("name")] public string Name { get; set; } = string.Empty;
+        [JsonProperty("group")] public string Group { get; set; } = string.Empty;
+        [JsonProperty("enabled")] public bool Enabled { get; set; } = true;
         [JsonProperty("node_path")] public string NodePath { get; set; } = string.Empty;
         [JsonProperty("node_name")] public string NodeName { get; set; } = string.Empty;
+        [JsonProperty("node_paths")] public List<string> NodePaths { get; set; } = new List<string>();
+        [JsonProperty("node_names")] public List<string> NodeNames { get; set; } = new List<string>();
         [JsonProperty("explode_offset")] public List<float> ExplodeOffset { get; set; } = new List<float> { 0f, 0f, 0f };
+        [JsonProperty("explode_rotation")] public List<float> ExplodeRotation { get; set; } = new List<float> { 0f, 0f, 0f };
+        [JsonProperty("delay")] public float Delay { get; set; }
+        [JsonProperty("duration")] public float Duration { get; set; }
         [JsonProperty("label_offset")] public List<float> LabelOffset { get; set; } = new List<float> { 0f, .35f, 0f };
         [JsonProperty("description")] public string Description { get; set; } = string.Empty;
         [JsonProperty("point_ids")] public List<string> PointIds { get; set; } = new List<string>();
         [JsonProperty("point_keys")] public List<string> PointKeys { get; set; } = new List<string>();
         [JsonProperty("detail_view_id")] public string DetailViewId { get; set; } = string.Empty;
+        [JsonProperty("camera")] public DeviceInspectionCameraDto Camera { get; set; }
 
         public void Normalize(int index)
         {
             Id = string.IsNullOrWhiteSpace(Id) ? $"part_{index + 1}" : Id.Trim();
-            Name = string.IsNullOrWhiteSpace(Name) ? (NodeName ?? Id) : Name.Trim();
-            NodePath = (NodePath ?? string.Empty).Trim();
-            NodeName = (NodeName ?? string.Empty).Trim();
+            Name = string.IsNullOrWhiteSpace(Name) ? (string.IsNullOrWhiteSpace(NodeName) ? Id : NodeName) : Name.Trim();
+            Group ??= string.Empty;
+            NodePath ??= string.Empty;
+            NodeName ??= string.Empty;
+            NodePaths = DeviceInspectionShellDto.NormalizeStrings(NodePaths);
+            NodeNames = DeviceInspectionShellDto.NormalizeStrings(NodeNames);
             ExplodeOffset = DeviceInspectionCameraDto.NormalizeVector(ExplodeOffset);
+            ExplodeRotation = DeviceInspectionCameraDto.NormalizeVector(ExplodeRotation);
+            Delay = Math.Max(0f, Math.Min(10f, float.IsFinite(Delay) ? Delay : 0f));
+            Duration = Math.Max(0f, Math.Min(10f, float.IsFinite(Duration) ? Duration : 0f));
+            if (Duration > 0f) Duration = Math.Max(.05f, Duration);
             LabelOffset = DeviceInspectionCameraDto.NormalizeVector(LabelOffset);
             Description ??= string.Empty;
             DetailViewId ??= string.Empty;
             PointIds = NormalizeStrings(PointIds);
             PointKeys = NormalizeStrings(PointKeys);
+            Camera?.Normalize(238f, 19f, 1.12f);
         }
 
         private static List<string> NormalizeStrings(IEnumerable<string> values)
@@ -240,15 +261,28 @@ namespace HeatTreatment.DigitalTwin.Backend
             return (values ?? Enumerable.Empty<string>())
                 .Select(value => (value ?? string.Empty).Trim())
                 .Where(value => !string.IsNullOrWhiteSpace(value))
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .Take(64)
+                .Distinct(StringComparer.Ordinal)
+                .Take(256)
                 .ToList();
         }
     }
 
-    public sealed class DeviceInspectionConfigDto
+    public sealed class DeviceInspectionLabelsDto
     {
         [JsonProperty("enabled")] public bool Enabled { get; set; } = true;
+        [JsonProperty("leader_lines")] public bool LeaderLines { get; set; } = true;
+    }
+
+    public sealed class DeviceInspectionConfigDto
+    {
+        [JsonProperty("version")] public int Version { get; set; } = 1;
+        [JsonProperty("enabled")] public bool Enabled { get; set; } = true;
+        // An absent field is legacy parent-local data, never silently model-local.
+        [JsonProperty("offset_space")] public string OffsetSpace { get; set; } = "parent";
+        [JsonProperty("shell_duration")] public float ShellDuration { get; set; } = 1f;
+        [JsonProperty("stagger")] public float Stagger { get; set; } = .06f;
+        [JsonProperty("easing")] public string Easing { get; set; } = "smoothstep";
+        [JsonProperty("labels")] public DeviceInspectionLabelsDto Labels { get; set; } = new DeviceInspectionLabelsDto();
         [JsonProperty("shell")] public DeviceInspectionShellDto Shell { get; set; } = new DeviceInspectionShellDto();
         [JsonProperty("solid")] public DeviceInspectionStageDto Solid { get; set; } = new DeviceInspectionStageDto();
         [JsonProperty("xray")] public DeviceInspectionStageDto Xray { get; set; } = new DeviceInspectionStageDto
@@ -257,22 +291,31 @@ namespace HeatTreatment.DigitalTwin.Backend
         };
         [JsonProperty("exploded")] public DeviceInspectionStageDto Exploded { get; set; } = new DeviceInspectionStageDto
         {
-            Camera = new DeviceInspectionCameraDto { Yaw = 238f, Pitch = 22f, DistanceScale = 1.22f }
+            Camera = new DeviceInspectionCameraDto { Yaw = 238f, Pitch = 22f, DistanceScale = 1.22f },
+            TransitionSeconds = 1.5f
         };
-        [JsonProperty("animation_duration")] public float AnimationDuration { get; set; } = .65f;
+        [JsonProperty("animation_duration")] public float AnimationDuration { get; set; } = 1.5f;
+        [JsonProperty("playback_speed")] public float PlaybackSpeed { get; set; } = 1f;
         [JsonProperty("parts")] public List<DeviceInspectionPartDto> Parts { get; set; } = new List<DeviceInspectionPartDto>();
 
         public void Normalize()
         {
+            Version = 2;
+            OffsetSpace = OffsetSpace == "model" ? "model" : "parent";
+            ShellDuration = Math.Max(0f, Math.Min(5f, float.IsFinite(ShellDuration) ? ShellDuration : 1f));
+            Stagger = Math.Max(0f, Math.Min(1f, float.IsFinite(Stagger) ? Stagger : .06f));
+            Easing = Easing == "linear" || Easing == "cubic" ? Easing : "smoothstep";
+            Labels ??= new DeviceInspectionLabelsDto();
             Shell ??= new DeviceInspectionShellDto();
             Shell.Normalize();
             Solid ??= new DeviceInspectionStageDto();
-            Xray ??= new DeviceInspectionStageDto();
-            Exploded ??= new DeviceInspectionStageDto();
+            Xray ??= new DeviceInspectionStageDto { Camera = new DeviceInspectionCameraDto { DistanceScale = 1.08f } };
+            Exploded ??= new DeviceInspectionStageDto { Camera = new DeviceInspectionCameraDto { Pitch = 22f, DistanceScale = 1.22f }, TransitionSeconds = 1.5f };
             Solid.Normalize(238f, 19f, 1.12f);
             Xray.Normalize(238f, 19f, 1.08f);
             Exploded.Normalize(238f, 22f, 1.22f);
-            AnimationDuration = Math.Max(.05f, Math.Min(5f, float.IsFinite(AnimationDuration) ? AnimationDuration : .65f));
+            AnimationDuration = Math.Max(.05f, Math.Min(10f, float.IsFinite(AnimationDuration) ? AnimationDuration : 1.5f));
+            PlaybackSpeed = Math.Max(.25f, Math.Min(3f, float.IsFinite(PlaybackSpeed) ? PlaybackSpeed : 1f));
             Parts ??= new List<DeviceInspectionPartDto>();
             Parts = Parts.Take(64).ToList();
             for (var index = 0; index < Parts.Count; index += 1) Parts[index]?.Normalize(index);
@@ -300,7 +343,11 @@ namespace HeatTreatment.DigitalTwin.Backend
             catch { result = new DeviceInspectionConfigDto(); }
 
             result.Normalize();
-            if (result.Parts.Count == 0)
+            if (merged["parts"] is JArray authoredParts)
+            {
+                RestoreAuthoringVectors(merged, result, authoredParts);
+            }
+            else
             {
                 result.Parts = FallbackParts(asset?.MetadataObject);
                 for (var index = 0; index < result.Parts.Count; index += 1) result.Parts[index].Normalize(index);
@@ -308,9 +355,56 @@ namespace HeatTreatment.DigitalTwin.Backend
             return result;
         }
 
+        private static void RestoreAuthoringVectors(JObject source, DeviceInspectionConfigDto result, JArray sourceParts)
+        {
+            RestoreStageVector(source["solid"] as JObject, result.Solid);
+            RestoreStageVector(source["xray"] as JObject, result.Xray);
+            RestoreStageVector(source["exploded"] as JObject, result.Exploded);
+            for (var index = 0; index < result.Parts.Count && index < sourceParts.Count; index += 1)
+            {
+                var sourcePart = sourceParts[index] as JObject;
+                var targetPart = result.Parts[index];
+                if (sourcePart == null || targetPart == null) continue;
+                targetPart.ExplodeOffset = ReadVector(sourcePart["explode_offset"] ?? sourcePart["explodeOffset"], targetPart.ExplodeOffset);
+                targetPart.ExplodeRotation = ReadVector(sourcePart["explode_rotation"] ?? sourcePart["explodeRotation"], targetPart.ExplodeRotation);
+                targetPart.LabelOffset = ReadVector(sourcePart["label_offset"] ?? sourcePart["labelOffset"], targetPart.LabelOffset);
+                RestorePartCameraVector(sourcePart["camera"] as JObject, targetPart.Camera);
+            }
+        }
+
+        private static void RestoreStageVector(JObject sourceStage, DeviceInspectionStageDto targetStage)
+        {
+            if (sourceStage == null || targetStage?.Camera == null) return;
+            var sourceCamera = sourceStage["camera"] as JObject;
+            if (sourceCamera == null) return;
+            targetStage.Camera.TargetOffset = ReadVector(
+                sourceCamera["target_offset"] ?? sourceCamera["targetOffset"],
+                targetStage.Camera.TargetOffset);
+        }
+
+        private static void RestorePartCameraVector(JObject sourceCamera, DeviceInspectionCameraDto targetCamera)
+        {
+            if (sourceCamera == null || targetCamera == null) return;
+            targetCamera.TargetOffset = ReadVector(
+                sourceCamera["target_offset"] ?? sourceCamera["targetOffset"],
+                targetCamera.TargetOffset);
+        }
+
+        private static List<float> ReadVector(JToken token, IEnumerable<float> fallback)
+        {
+            try
+            {
+                var values = token?.ToObject<List<float>>();
+                if (values != null && values.Count > 0) return DeviceInspectionCameraDto.NormalizeVector(values);
+            }
+            catch { /* Keep the already-normalized DTO default for malformed vectors. */ }
+            return DeviceInspectionCameraDto.NormalizeVector(fallback);
+        }
+
         private static List<DeviceInspectionPartDto> FallbackParts(JObject metadata)
         {
             var result = new List<DeviceInspectionPartDto>();
+            var byTarget = new Dictionary<string, DeviceInspectionPartDto>(StringComparer.Ordinal);
             foreach (var binding in metadata?["partBindings"]?.OfType<JObject>() ?? Enumerable.Empty<JObject>())
             {
                 var nodeName = binding.Value<string>("node_name") ?? binding.Value<string>("nodeName") ?? string.Empty;
@@ -318,17 +412,28 @@ namespace HeatTreatment.DigitalTwin.Backend
                 var sourceGroup = binding.Value<string>("source_group") ?? binding.Value<string>("sourceGroup") ?? string.Empty;
                 var sourceKey = binding.Value<string>("source_key") ?? binding.Value<string>("sourceKey") ?? string.Empty;
                 if (string.IsNullOrWhiteSpace(nodeName) && string.IsNullOrWhiteSpace(nodePath)) continue;
-                result.Add(new DeviceInspectionPartDto
+                var key = string.IsNullOrWhiteSpace(nodePath) ? $"name:{nodeName}" : $"path:{nodePath}";
+                var pointKey = string.IsNullOrWhiteSpace(sourceKey) ? string.Empty
+                    : string.IsNullOrWhiteSpace(sourceGroup) ? sourceKey : $"{sourceGroup}.{sourceKey}";
+                if (byTarget.TryGetValue(key, out var existing))
+                {
+                    if (!string.IsNullOrWhiteSpace(pointKey) && !existing.PointKeys.Contains(pointKey)) existing.PointKeys.Add(pointKey);
+                    continue;
+                }
+                if (result.Count >= 64) continue;
+                var part = new DeviceInspectionPartDto
                 {
                     Id = binding.Value<string>("id") ?? $"part_{result.Count + 1}",
                     Name = binding.Value<string>("name") ?? nodeName,
                     NodeName = nodeName,
                     NodePath = nodePath,
                     Description = binding.Value<string>("description") ?? string.Empty,
-                    PointKeys = string.IsNullOrWhiteSpace(sourceKey)
+                    PointKeys = string.IsNullOrWhiteSpace(pointKey)
                         ? new List<string>()
-                        : new List<string> { $"{sourceGroup}.{sourceKey}" }
-                });
+                        : new List<string> { pointKey }
+                };
+                byTarget.Add(key, part);
+                result.Add(part);
             }
             return result;
         }

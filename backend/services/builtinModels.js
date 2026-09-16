@@ -1,40 +1,52 @@
-const multipurposeFurnaceV5Metadata = require('../assets/models/photo_multipurpose_furnace_v5_metadata.json');
+const { presetMetadata } = require('./inspectionPresets');
 
 const BUILTIN_MODELS = [
+    ...[
+        ['photo_multipurpose_furnace_v6', '多用炉 V6 · 可配置拆解样板', 'photo_multipurpose_furnace_v6_pipefix'],
+        ['photo_tempering_furnace_v6', '回火炉 V6 · 可配置拆解样板'],
+        ['photo_transfer_cart_v6', '转运小车 V6 · 可配置拆解样板'],
+        ['photo_washing_machine_v7', '清洗机 V7 · 可配置拆解样板']
+    ].map(([id, name, fileId = id]) => ({
+        id, name, file_path: `/assets/models/${fileId}.glb`, asset_type: 'model',
+        tags: JSON.stringify(['packaged', 'inspection_v2', 'assembly_demo']), thumbnail: `/assets/models/${id}_preview.png`,
+        default_scale: 1, metadata: JSON.stringify(presetMetadata(id)), is_builtin: true
+    })),
     {
-        id: 'builtin_furnace',
-        name: '内置多用炉模型（程序化几何体）',
-        file_path: null,
-        asset_type: 'model',
-        tags: JSON.stringify(['builtin', 'heat_treatment']),
-        thumbnail: null,
-        default_scale: 1.0,
-        metadata: JSON.stringify({ source: 'procedural', batchable: false }),
-        is_builtin: true
-    },
-    {
-        id: 'photo_multipurpose_furnace_v5',
-        name: '箱式气氛多用炉 V5（PBR 原生端验证资产）',
-        file_path: '/assets/models/photo_multipurpose_furnace_v5.glb',
-        asset_type: 'model',
-        tags: JSON.stringify(['packaged', 'heat_treatment', 'pbr', 'unity']),
-        thumbnail: '/assets/models/photo_multipurpose_furnace_v5_preview.png',
-        default_scale: 1.0,
-        metadata: JSON.stringify(multipurposeFurnaceV5Metadata),
-        is_builtin: true
-    },
-    {
-        id: 'transfer_cart',
-        name: '轨道料车 / 取料小车（程序化低模）',
-        file_path: null,
-        asset_type: 'model',
-        tags: JSON.stringify(['builtin', 'transfer_cart', 'rail']),
-        thumbnail: null,
-        default_scale: 1.0,
+        id: 'factory_hall_lowpoly',
+        name: '厂房环境 · 开放式总览模型',
+        file_path: '/assets/models/factory_hall_study/factory_hall_lowpoly.glb',
+        asset_type: 'environment',
+        tags: JSON.stringify(['packaged', 'environment', 'factory_overview']),
+        thumbnail: '/assets/models/factory_hall_study/preview.png',
+        default_scale: 1,
         metadata: JSON.stringify({
-            source: 'procedural',
-            intendedUse: 'line_between_transfer',
-            batchable: true
+            schema_version: 1,
+            assetRole: 'environment',
+            environmentOnly: true,
+            runtime: {
+                environmentOnly: true,
+                enableGenericBindings: false,
+                enableInspection: false
+            },
+            inspection: { enabled: false, parts: [], shell: { node_paths: [], node_names: [] } },
+            partBindings: [],
+            assetSpec: {
+                version: '1.0.0',
+                device_family: '环境模型',
+                unit: 'm',
+                delivery_status: 'released',
+                notes: '静态厂房环境资产，仅用于工厂总览'
+            },
+            optimization: {
+                mode: 'off',
+                mergeStatic: false,
+                instanceRepeated: false,
+                preserveAnimated: false,
+                materialEnhancement: 'original',
+                contactShadow: false,
+                environmentIntensity: 1
+            },
+            delivery: { status: 'released', role: 'environment', note: '仅用于工厂总览展示，不参与设备拆解、点位绑定或 PLC 动画' }
         }),
         is_builtin: true
     }

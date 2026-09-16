@@ -1,0 +1,1436 @@
+{
+  "sourcePath": "C:\\Users\\27323\\OneDrive\\Desktop\\大屏\\backend\\assets\\models\\photo_multipurpose_furnace_v6.glb",
+  "candidatePath": "C:\\Users\\27323\\OneDrive\\Desktop\\大屏\\backend\\assets\\models\\photo_multipurpose_furnace_v6_pipefix.glb",
+  "originalSha256": "773c45d6f1808a495f4bcde313848051d0c088fd5970b318786083628d068976",
+  "candidateSha256": "0de3b9aae08447079f4fbe7a0e622bbf1eb871f987cf770abce16f6a0d02c18b",
+  "originalMetadataSha256": "4aad968efc6d3854b4a468fb6bd2d39f5130568975d46be0ddcfa0fd04d782fb",
+  "originalAndMetadataUnchanged": true,
+  "method": "Six verified meter-feed pipes only: original-radius 12mm tubes; replace two final short-link quadratic bends per pipe with 22mm circular fillets, 6mm intervening straight; preserve both endpoint rings, all indices, nodes, materials, and other geometry. Recompute angle-weighted side normals only for these pipes; preserve flat cap normals.",
+  "changedNodeTransforms": 0,
+  "changedBindings": 0,
+  "changedIndexEntries": 0,
+  "limitations": [
+    "Derived copy only; selecting the fixed model as an application default is a separate configuration step.",
+    "Pipe routing remains a photo-estimated visual model, not a measured engineering specification.",
+    "Strict nonadjacent triangle intersection checks exclude shared vertices and coplanar contacts; closed-manifold, duplicate-face and topology checks supplement this test. Independent verification is still recommended."
+  ],
+  "correspondence": [
+    {
+      "pipe": 1,
+      "exportedVertexStart": 0,
+      "exportedVertexEnd": 279,
+      "maxOriginalReconstructionError": 3.1587231075204127e-7,
+      "changedPositionVertices": 120,
+      "unchangedEndpointRings": true
+    },
+    {
+      "pipe": 2,
+      "exportedVertexStart": 280,
+      "exportedVertexEnd": 559,
+      "maxOriginalReconstructionError": 2.9024660247126267e-7,
+      "changedPositionVertices": 120,
+      "unchangedEndpointRings": true
+    },
+    {
+      "pipe": 3,
+      "exportedVertexStart": 560,
+      "exportedVertexEnd": 839,
+      "maxOriginalReconstructionError": 2.6457287894434137e-7,
+      "changedPositionVertices": 120,
+      "unchangedEndpointRings": true
+    },
+    {
+      "pipe": 4,
+      "exportedVertexStart": 840,
+      "exportedVertexEnd": 1119,
+      "maxOriginalReconstructionError": 2.6476371267900545e-7,
+      "changedPositionVertices": 120,
+      "unchangedEndpointRings": true
+    },
+    {
+      "pipe": 5,
+      "exportedVertexStart": 1120,
+      "exportedVertexEnd": 1399,
+      "maxOriginalReconstructionError": 2.64655907207511e-7,
+      "changedPositionVertices": 120,
+      "unchangedEndpointRings": true
+    },
+    {
+      "pipe": 6,
+      "exportedVertexStart": 1400,
+      "exportedVertexEnd": 1679,
+      "maxOriginalReconstructionError": 2.740667545594778e-7,
+      "changedPositionVertices": 120,
+      "unchangedEndpointRings": true
+    }
+  ],
+  "filletRecords": [
+    {
+      "pipe": 1,
+      "fillets": [
+        {
+          "corner": 3,
+          "centerlineRadius": 0.022,
+          "tubeRadius": 0.012,
+          "ringStart": 13,
+          "ringEnd": 18,
+          "start": [
+            -1.83,
+            1.968,
+            -1.12
+          ],
+          "end": [
+            -1.808,
+            1.99,
+            -1.12
+          ]
+        },
+        {
+          "corner": 4,
+          "centerlineRadius": 0.022,
+          "tubeRadius": 0.012,
+          "ringStart": 19,
+          "ringEnd": 24,
+          "start": [
+            -1.802,
+            1.99,
+            -1.12
+          ],
+          "end": [
+            -1.78,
+            2.010871032557111,
+            -1.1130429891476297
+          ]
+        }
+      ]
+    },
+    {
+      "pipe": 2,
+      "fillets": [
+        {
+          "corner": 3,
+          "centerlineRadius": 0.022,
+          "tubeRadius": 0.012,
+          "ringStart": 13,
+          "ringEnd": 18,
+          "start": [
+            -1.27,
+            1.968,
+            -1.12
+          ],
+          "end": [
+            -1.248,
+            1.99,
+            -1.12
+          ]
+        },
+        {
+          "corner": 4,
+          "centerlineRadius": 0.022,
+          "tubeRadius": 0.012,
+          "ringStart": 19,
+          "ringEnd": 24,
+          "start": [
+            -1.242,
+            1.99,
+            -1.12
+          ],
+          "end": [
+            -1.22,
+            2.010871032557111,
+            -1.1130429891476297
+          ]
+        }
+      ]
+    },
+    {
+      "pipe": 3,
+      "fillets": [
+        {
+          "corner": 3,
+          "centerlineRadius": 0.022,
+          "tubeRadius": 0.012,
+          "ringStart": 13,
+          "ringEnd": 18,
+          "start": [
+            -0.71,
+            1.968,
+            -1.12
+          ],
+          "end": [
+            -0.688,
+            1.99,
+            -1.12
+          ]
+        },
+        {
+          "corner": 4,
+          "centerlineRadius": 0.022,
+          "tubeRadius": 0.012,
+          "ringStart": 19,
+          "ringEnd": 24,
+          "start": [
+            -0.6819999999999999,
+            1.99,
+            -1.12
+          ],
+          "end": [
+            -0.6599999999999999,
+            2.010871032557111,
+            -1.1130429891476297
+          ]
+        }
+      ]
+    },
+    {
+      "pipe": 4,
+      "fillets": [
+        {
+          "corner": 3,
+          "centerlineRadius": 0.022,
+          "tubeRadius": 0.012,
+          "ringStart": 13,
+          "ringEnd": 18,
+          "start": [
+            -0.15000000000000002,
+            1.968,
+            -1.12
+          ],
+          "end": [
+            -0.12800000000000003,
+            1.99,
+            -1.12
+          ]
+        },
+        {
+          "corner": 4,
+          "centerlineRadius": 0.022,
+          "tubeRadius": 0.012,
+          "ringStart": 19,
+          "ringEnd": 24,
+          "start": [
+            -0.122,
+            1.99,
+            -1.12
+          ],
+          "end": [
+            -0.1,
+            2.010871032557111,
+            -1.1130429891476297
+          ]
+        }
+      ]
+    },
+    {
+      "pipe": 5,
+      "fillets": [
+        {
+          "corner": 3,
+          "centerlineRadius": 0.022,
+          "tubeRadius": 0.012,
+          "ringStart": 13,
+          "ringEnd": 18,
+          "start": [
+            0.41,
+            1.968,
+            -1.12
+          ],
+          "end": [
+            0.432,
+            1.99,
+            -1.12
+          ]
+        },
+        {
+          "corner": 4,
+          "centerlineRadius": 0.022,
+          "tubeRadius": 0.012,
+          "ringStart": 19,
+          "ringEnd": 24,
+          "start": [
+            0.43799999999999994,
+            1.99,
+            -1.12
+          ],
+          "end": [
+            0.45999999999999996,
+            2.010871032557111,
+            -1.1130429891476297
+          ]
+        }
+      ]
+    },
+    {
+      "pipe": 6,
+      "fillets": [
+        {
+          "corner": 3,
+          "centerlineRadius": 0.022,
+          "tubeRadius": 0.012,
+          "ringStart": 13,
+          "ringEnd": 18,
+          "start": [
+            0.97,
+            1.968,
+            -1.12
+          ],
+          "end": [
+            0.992,
+            1.99,
+            -1.12
+          ]
+        },
+        {
+          "corner": 4,
+          "centerlineRadius": 0.022,
+          "tubeRadius": 0.012,
+          "ringStart": 19,
+          "ringEnd": 24,
+          "start": [
+            0.998,
+            1.99,
+            -1.12
+          ],
+          "end": [
+            1.02,
+            2.010871032557111,
+            -1.1130429891476297
+          ]
+        }
+      ]
+    }
+  ],
+  "before": [
+    {
+      "pipe": 1,
+      "triangles": 516,
+      "min": [
+        -1.9620000123977661,
+        0.5299999713897705,
+        -1.1314127445220947
+      ],
+      "max": [
+        -1.768295168876648,
+        2.47377872467041,
+        -0.9486637711524963
+      ],
+      "signedVolume": 0.0008865271065479648,
+      "boundaryEdges": 0,
+      "nonmanifoldEdges": 0,
+      "inconsistentDirectedEdges": 0,
+      "duplicateCoincidentFaces": 0,
+      "reversedTriangles": [
+        420,
+        437,
+        438,
+        439
+      ],
+      "degenerateTriangles": [],
+      "nonAdjacentStrictIntersectionPairs": [
+        {
+          "triangles": [
+            288,
+            329
+          ],
+          "point": [
+            -1.817980087324862,
+            1.9779592439087987,
+            -1.121086778326781
+          ]
+        },
+        {
+          "triangles": [
+            289,
+            329
+          ],
+          "point": [
+            -1.817980087324862,
+            1.9779592439087987,
+            -1.121086778326781
+          ]
+        },
+        {
+          "triangles": [
+            289,
+            330
+          ],
+          "point": [
+            -1.8176940949766183,
+            1.9776938019202448,
+            -1.1200000584524867
+          ]
+        },
+        {
+          "triangles": [
+            290,
+            330
+          ],
+          "point": [
+            -1.817694068345773,
+            1.977693828549107,
+            -1.1200000047683716
+          ]
+        },
+        {
+          "triangles": [
+            290,
+            331
+          ],
+          "point": [
+            -1.8179594583294891,
+            1.977979780921859,
+            -1.1189134715902087
+          ]
+        },
+        {
+          "triangles": [
+            400,
+            438
+          ],
+          "point": [
+            -1.7916982349903277,
+            2.0023581503194707,
+            -1.1203957484558542
+          ]
+        },
+        {
+          "triangles": [
+            400,
+            459
+          ],
+          "point": [
+            -1.7916339383620776,
+            2.0024589189757305,
+            -1.1202174317716846
+          ]
+        },
+        {
+          "triangles": [
+            418,
+            457
+          ],
+          "point": [
+            -1.791795635066565,
+            2.000341547495803,
+            -1.1130980964716768
+          ]
+        },
+        {
+          "triangles": [
+            418,
+            458
+          ],
+          "point": [
+            -1.7920609599260604,
+            2.0002973124124397,
+            -1.1133961763821216
+          ]
+        },
+        {
+          "triangles": [
+            418,
+            459
+          ],
+          "point": [
+            -1.7920398840820044,
+            2.0003779424069354,
+            -1.1136359737733132
+          ]
+        },
+        {
+          "triangles": [
+            439,
+            457
+          ],
+          "point": [
+            -1.7917958705570434,
+            2.0003404651051637,
+            -1.1130980228820104
+          ]
+        }
+      ]
+    },
+    {
+      "pipe": 2,
+      "triangles": 516,
+      "min": [
+        -1.4019999504089355,
+        0.5299999713897705,
+        -1.1314127445220947
+      ],
+      "max": [
+        -1.208295226097107,
+        2.47377872467041,
+        -0.9486637711524963
+      ],
+      "signedVolume": 0.000886527005928097,
+      "boundaryEdges": 0,
+      "nonmanifoldEdges": 0,
+      "inconsistentDirectedEdges": 0,
+      "duplicateCoincidentFaces": 0,
+      "reversedTriangles": [
+        936,
+        953,
+        954,
+        955
+      ],
+      "degenerateTriangles": [],
+      "nonAdjacentStrictIntersectionPairs": [
+        {
+          "triangles": [
+            804,
+            845
+          ],
+          "point": [
+            -1.2579799370643507,
+            1.9779591349110606,
+            -1.121086214569199
+          ]
+        },
+        {
+          "triangles": [
+            805,
+            845
+          ],
+          "point": [
+            -1.2579799370643507,
+            1.9779591349110606,
+            -1.121086214569199
+          ]
+        },
+        {
+          "triangles": [
+            805,
+            846
+          ],
+          "point": [
+            -1.2576940596561854,
+            1.977693834050599,
+            -1.1200000584704781
+          ]
+        },
+        {
+          "triangles": [
+            806,
+            846
+          ],
+          "point": [
+            -1.2576940330227424,
+            1.9776938606859382,
+            -1.1200000047683716
+          ]
+        },
+        {
+          "triangles": [
+            806,
+            847
+          ],
+          "point": [
+            -1.25795919833757,
+            1.9779795409838985,
+            -1.1189144874645809
+          ]
+        },
+        {
+          "triangles": [
+            916,
+            954
+          ],
+          "point": [
+            -1.2316984121892567,
+            2.0023581459567477,
+            -1.1203957337463564
+          ]
+        },
+        {
+          "triangles": [
+            916,
+            975
+          ],
+          "point": [
+            -1.2316341155614035,
+            2.002458919508007,
+            -1.1202174297181369
+          ]
+        },
+        {
+          "triangles": [
+            934,
+            973
+          ],
+          "point": [
+            -1.2317958086199883,
+            2.000341591946754,
+            -1.1130982434728771
+          ]
+        },
+        {
+          "triangles": [
+            934,
+            974
+          ],
+          "point": [
+            -1.2320611366531862,
+            2.000297284172475,
+            -1.1133961744118914
+          ]
+        },
+        {
+          "triangles": [
+            934,
+            975
+          ],
+          "point": [
+            -1.2320401162622352,
+            2.0003777151788134,
+            -1.1136353801614594
+          ]
+        },
+        {
+          "triangles": [
+            955,
+            973
+          ],
+          "point": [
+            -1.2317960449531027,
+            2.0003405055727654,
+            -1.1130981691037884
+          ]
+        }
+      ]
+    },
+    {
+      "pipe": 3,
+      "triangles": 516,
+      "min": [
+        -0.8420000076293945,
+        0.5299999713897705,
+        -1.1314127445220947
+      ],
+      "max": [
+        -0.6482952237129211,
+        2.47377872467041,
+        -0.9486637711524963
+      ],
+      "signedVolume": 0.0008865273484395119,
+      "boundaryEdges": 0,
+      "nonmanifoldEdges": 0,
+      "inconsistentDirectedEdges": 0,
+      "duplicateCoincidentFaces": 0,
+      "reversedTriangles": [
+        1452,
+        1469,
+        1470,
+        1471
+      ],
+      "degenerateTriangles": [],
+      "nonAdjacentStrictIntersectionPairs": [
+        {
+          "triangles": [
+            1320,
+            1361
+          ],
+          "point": [
+            -0.6985998692995715,
+            1.9785998419342228,
+            -1.1236414240632633
+          ]
+        },
+        {
+          "triangles": [
+            1321,
+            1361
+          ],
+          "point": [
+            -0.6979798158629674,
+            1.9779592188007622,
+            -1.1210863113259042
+          ]
+        },
+        {
+          "triangles": [
+            1321,
+            1362
+          ],
+          "point": [
+            -0.6976940207782457,
+            1.9776938521148695,
+            -1.1200000584553993
+          ]
+        },
+        {
+          "triangles": [
+            1322,
+            1362
+          ],
+          "point": [
+            -0.6976939941392768,
+            1.977693878742997,
+            -1.1200000047683716
+          ]
+        },
+        {
+          "triangles": [
+            1322,
+            1363
+          ],
+          "point": [
+            -0.697959298714156,
+            1.9779797985002199,
+            -1.118913719806727
+          ]
+        },
+        {
+          "triangles": [
+            1432,
+            1470
+          ],
+          "point": [
+            -0.6716982883050658,
+            2.002358163738686,
+            -1.120395792011769
+          ]
+        },
+        {
+          "triangles": [
+            1432,
+            1491
+          ],
+          "point": [
+            -0.6716340182639634,
+            2.002458894701162,
+            -1.1202175254241424
+          ]
+        },
+        {
+          "triangles": [
+            1450,
+            1489
+          ],
+          "point": [
+            -0.6717957491255279,
+            2.0003415533985653,
+            -1.1130981159923643
+          ]
+        },
+        {
+          "triangles": [
+            1450,
+            1490
+          ],
+          "point": [
+            -0.6720610795404451,
+            2.0002972750433354,
+            -1.1133960574659634
+          ]
+        },
+        {
+          "triangles": [
+            1450,
+            1491
+          ],
+          "point": [
+            -0.6720400577111028,
+            2.000377701519761,
+            -1.113635250968431
+          ]
+        },
+        {
+          "triangles": [
+            1471,
+            1489
+          ],
+          "point": [
+            -0.6717959844079133,
+            2.000340470249177,
+            -1.1130980414688967
+          ]
+        }
+      ]
+    },
+    {
+      "pipe": 4,
+      "triangles": 516,
+      "min": [
+        -0.28200000524520874,
+        0.5299999713897705,
+        -1.1314127445220947
+      ],
+      "max": [
+        -0.08829522132873535,
+        2.47377872467041,
+        -0.9486637711524963
+      ],
+      "signedVolume": 0.000886527116301704,
+      "boundaryEdges": 0,
+      "nonmanifoldEdges": 0,
+      "inconsistentDirectedEdges": 0,
+      "duplicateCoincidentFaces": 0,
+      "reversedTriangles": [
+        1968,
+        1985,
+        1986,
+        1987
+      ],
+      "degenerateTriangles": [],
+      "nonAdjacentStrictIntersectionPairs": [
+        {
+          "triangles": [
+            1836,
+            1877
+          ],
+          "point": [
+            -0.1385998601530032,
+            1.9785998278152614,
+            -1.123641345725801
+          ]
+        },
+        {
+          "triangles": [
+            1837,
+            1877
+          ],
+          "point": [
+            -0.137979843281104,
+            1.9779592188007622,
+            -1.1210863113259042
+          ]
+        },
+        {
+          "triangles": [
+            1837,
+            1878
+          ],
+          "point": [
+            -0.13769401180673127,
+            1.9776938635585763,
+            -1.1200000584458472
+          ]
+        },
+        {
+          "triangles": [
+            1838,
+            1878
+          ],
+          "point": [
+            -0.1376939851765196,
+            1.9776938901806318,
+            -1.1200000047683716
+          ]
+        },
+        {
+          "triangles": [
+            1838,
+            1879
+          ],
+          "point": [
+            -0.1379593231605319,
+            1.9779798361492502,
+            -1.1189136075747188
+          ]
+        },
+        {
+          "triangles": [
+            1948,
+            1986
+          ],
+          "point": [
+            -0.11169827919668535,
+            2.0023581626122375,
+            -1.1203957882137356
+          ]
+        },
+        {
+          "triangles": [
+            1948,
+            2007
+          ],
+          "point": [
+            -0.11163400725922329,
+            2.002458894084806,
+            -1.1202175278020723
+          ]
+        },
+        {
+          "triangles": [
+            1966,
+            2005
+          ],
+          "point": [
+            -0.11179575436017089,
+            2.000341549453829,
+            -1.1130981029469518
+          ]
+        },
+        {
+          "triangles": [
+            1966,
+            2006
+          ],
+          "point": [
+            -0.11206111175411436,
+            2.0002972503558207,
+            -1.1133960557389486
+          ]
+        },
+        {
+          "triangles": [
+            1966,
+            2007
+          ],
+          "point": [
+            -0.11204012049637678,
+            2.0003775554016294,
+            -1.1136348848374393
+          ]
+        },
+        {
+          "triangles": [
+            1987,
+            2005
+          ],
+          "point": [
+            -0.11179598957326761,
+            2.000340466633342,
+            -1.113098028403784
+          ]
+        }
+      ]
+    },
+    {
+      "pipe": 5,
+      "triangles": 516,
+      "min": [
+        0.27799999713897705,
+        0.5299999713897705,
+        -1.1314127445220947
+      ],
+      "max": [
+        0.47170478105545044,
+        2.47377872467041,
+        -0.9486637711524963
+      ],
+      "signedVolume": 0.0008865273455029537,
+      "boundaryEdges": 0,
+      "nonmanifoldEdges": 0,
+      "inconsistentDirectedEdges": 0,
+      "duplicateCoincidentFaces": 0,
+      "reversedTriangles": [
+        2484,
+        2501,
+        2502,
+        2503
+      ],
+      "degenerateTriangles": [],
+      "nonAdjacentStrictIntersectionPairs": [
+        {
+          "triangles": [
+            2352,
+            2393
+          ],
+          "point": [
+            0.42202013480973233,
+            1.977959219648467,
+            -1.1210863700577403
+          ]
+        },
+        {
+          "triangles": [
+            2353,
+            2393
+          ],
+          "point": [
+            0.42202013480973233,
+            1.977959219648467,
+            -1.1210863700577403
+          ]
+        },
+        {
+          "triangles": [
+            2353,
+            2394
+          ],
+          "point": [
+            0.4223059923355546,
+            1.9776938556702583,
+            -1.1200000584524317
+          ]
+        },
+        {
+          "triangles": [
+            2354,
+            2394
+          ],
+          "point": [
+            0.4223060189691879,
+            1.9776938822968304,
+            -1.1200000047683716
+          ]
+        },
+        {
+          "triangles": [
+            2354,
+            2395
+          ],
+          "point": [
+            0.4220407380408496,
+            1.977979747701859,
+            -1.1189138712369757
+          ]
+        },
+        {
+          "triangles": [
+            2464,
+            2502
+          ],
+          "point": [
+            0.44830171579774275,
+            2.0023581623586075,
+            -1.1203957873585737
+          ]
+        },
+        {
+          "triangles": [
+            2464,
+            2523
+          ],
+          "point": [
+            0.4483659898618536,
+            2.0024588925718283,
+            -1.120217533639214
+          ]
+        },
+        {
+          "triangles": [
+            2482,
+            2521
+          ],
+          "point": [
+            0.4482042264149665,
+            2.0003415595846805,
+            -1.1130981364501122
+          ]
+        },
+        {
+          "triangles": [
+            2482,
+            2522
+          ],
+          "point": [
+            0.447938892625031,
+            2.000297258742684,
+            -1.1133960563256515
+          ]
+        },
+        {
+          "triangles": [
+            2482,
+            2523
+          ],
+          "point": [
+            0.4479598953505896,
+            2.000377607389199,
+            -1.113635015103685
+          ]
+        },
+        {
+          "triangles": [
+            2503,
+            2521
+          ],
+          "point": [
+            0.44820399100741715,
+            2.0003404758858196,
+            -1.1130980618358044
+          ]
+        }
+      ]
+    },
+    {
+      "pipe": 6,
+      "triangles": 516,
+      "min": [
+        0.8379999995231628,
+        0.5299999713897705,
+        -1.1314127445220947
+      ],
+      "max": [
+        1.0317047834396362,
+        2.47377872467041,
+        -0.9486637711524963
+      ],
+      "signedVolume": 0.0008865278612448372,
+      "boundaryEdges": 0,
+      "nonmanifoldEdges": 0,
+      "inconsistentDirectedEdges": 0,
+      "duplicateCoincidentFaces": 0,
+      "reversedTriangles": [
+        3000,
+        3017,
+        3018,
+        3019
+      ],
+      "degenerateTriangles": [],
+      "nonAdjacentStrictIntersectionPairs": [
+        {
+          "triangles": [
+            2868,
+            2909
+          ],
+          "point": [
+            0.9814001378529859,
+            1.9785998419342228,
+            -1.1236414240632633
+          ]
+        },
+        {
+          "triangles": [
+            2869,
+            2909
+          ],
+          "point": [
+            0.98202019128959,
+            1.9779592188007622,
+            -1.1210863113259042
+          ]
+        },
+        {
+          "triangles": [
+            2869,
+            2910
+          ],
+          "point": [
+            0.9823060227639627,
+            1.9776938635585763,
+            -1.1200000584458472
+          ]
+        },
+        {
+          "triangles": [
+            2870,
+            2910
+          ],
+          "point": [
+            0.9823060493941993,
+            1.9776938901807108,
+            -1.1200000047683716
+          ]
+        },
+        {
+          "triangles": [
+            2870,
+            2911
+          ],
+          "point": [
+            0.9820407069793563,
+            1.9779798324317783,
+            -1.1189136186565272
+          ]
+        },
+        {
+          "triangles": [
+            2980,
+            3018
+          ],
+          "point": [
+            1.0083017069834008,
+            2.002358101255894,
+            -1.1203957005485201
+          ]
+        },
+        {
+          "triangles": [
+            2980,
+            3039
+          ],
+          "point": [
+            1.0083660497161442,
+            2.002458975924292,
+            -1.120217093961936
+          ]
+        },
+        {
+          "triangles": [
+            2998,
+            3037
+          ],
+          "point": [
+            1.008204315202176,
+            2.000341505134031,
+            -1.1130979556858844
+          ]
+        },
+        {
+          "triangles": [
+            2998,
+            3038
+          ],
+          "point": [
+            1.0079388650337469,
+            2.0002972747034087,
+            -1.113396173751259
+          ]
+        },
+        {
+          "triangles": [
+            2998,
+            3039
+          ],
+          "point": [
+            1.0079598851657876,
+            2.0003776910709803,
+            -1.1136353439960116
+          ]
+        },
+        {
+          "triangles": [
+            3019,
+            3037
+          ],
+          "point": [
+            1.0082040798061964,
+            2.000340426242278,
+            -1.1130978831190845
+          ]
+        }
+      ]
+    }
+  ],
+  "after": [
+    {
+      "pipe": 1,
+      "triangles": 516,
+      "min": [
+        -1.9620000123977661,
+        0.5299999713897705,
+        -1.1314127445220947
+      ],
+      "max": [
+        -1.768295168876648,
+        2.47377872467041,
+        -0.9486637711524963
+      ],
+      "signedVolume": 0.0008831399415021413,
+      "boundaryEdges": 0,
+      "nonmanifoldEdges": 0,
+      "inconsistentDirectedEdges": 0,
+      "duplicateCoincidentFaces": 0,
+      "reversedTriangles": [],
+      "degenerateTriangles": [],
+      "nonAdjacentStrictIntersectionPairs": []
+    },
+    {
+      "pipe": 2,
+      "triangles": 516,
+      "min": [
+        -1.4019999504089355,
+        0.5299999713897705,
+        -1.1314127445220947
+      ],
+      "max": [
+        -1.208295226097107,
+        2.47377872467041,
+        -0.9486637711524963
+      ],
+      "signedVolume": 0.000883139272840814,
+      "boundaryEdges": 0,
+      "nonmanifoldEdges": 0,
+      "inconsistentDirectedEdges": 0,
+      "duplicateCoincidentFaces": 0,
+      "reversedTriangles": [],
+      "degenerateTriangles": [],
+      "nonAdjacentStrictIntersectionPairs": []
+    },
+    {
+      "pipe": 3,
+      "triangles": 516,
+      "min": [
+        -0.8420000076293945,
+        0.5299999713897705,
+        -1.1314127445220947
+      ],
+      "max": [
+        -0.6482952237129211,
+        2.47377872467041,
+        -0.9486637711524963
+      ],
+      "signedVolume": 0.000883139192810709,
+      "boundaryEdges": 0,
+      "nonmanifoldEdges": 0,
+      "inconsistentDirectedEdges": 0,
+      "duplicateCoincidentFaces": 0,
+      "reversedTriangles": [],
+      "degenerateTriangles": [],
+      "nonAdjacentStrictIntersectionPairs": []
+    },
+    {
+      "pipe": 4,
+      "triangles": 516,
+      "min": [
+        -0.28200000524520874,
+        0.5299999713897705,
+        -1.1314127445220947
+      ],
+      "max": [
+        -0.08829522132873535,
+        2.47377872467041,
+        -0.9486637711524963
+      ],
+      "signedVolume": 0.0008831394390868637,
+      "boundaryEdges": 0,
+      "nonmanifoldEdges": 0,
+      "inconsistentDirectedEdges": 0,
+      "duplicateCoincidentFaces": 0,
+      "reversedTriangles": [],
+      "degenerateTriangles": [],
+      "nonAdjacentStrictIntersectionPairs": []
+    },
+    {
+      "pipe": 5,
+      "triangles": 516,
+      "min": [
+        0.27799999713897705,
+        0.5299999713897705,
+        -1.1314127445220947
+      ],
+      "max": [
+        0.47170478105545044,
+        2.47377872467041,
+        -0.9486637711524963
+      ],
+      "signedVolume": 0.0008831394498223807,
+      "boundaryEdges": 0,
+      "nonmanifoldEdges": 0,
+      "inconsistentDirectedEdges": 0,
+      "duplicateCoincidentFaces": 0,
+      "reversedTriangles": [],
+      "degenerateTriangles": [],
+      "nonAdjacentStrictIntersectionPairs": []
+    },
+    {
+      "pipe": 6,
+      "triangles": 516,
+      "min": [
+        0.8379999995231628,
+        0.5299999713897705,
+        -1.1314127445220947
+      ],
+      "max": [
+        1.0317047834396362,
+        2.47377872467041,
+        -0.9486637711524963
+      ],
+      "signedVolume": 0.0008831397828153449,
+      "boundaryEdges": 0,
+      "nonmanifoldEdges": 0,
+      "inconsistentDirectedEdges": 0,
+      "duplicateCoincidentFaces": 0,
+      "reversedTriangles": [],
+      "degenerateTriangles": [],
+      "nonAdjacentStrictIntersectionPairs": []
+    }
+  ],
+  "changes": {
+    "meshIndex": 58,
+    "meshName": "gas_instrument_bank_stainless_mesh.002",
+    "nodeIndex": 72,
+    "nodeName": "gas_instrument_bank_stainless",
+    "positionAccessor": 166,
+    "normalAccessor": 167,
+    "unchangedIndexAccessor": 168,
+    "eligibleExportedVertexIndicesInclusive": [
+      0,
+      1679
+    ],
+    "changedPositionVertices": 720,
+    "changedNormalVertices": 1560,
+    "absoluteAllowedByteRangesHalfOpen": [
+      [
+        3715544,
+        3735704
+      ],
+      [
+        3758648,
+        3778808
+      ]
+    ],
+    "actualChangedByteCount": 15874,
+    "actualChangedByteMin": 3717228,
+    "actualChangedByteMax": 3778805,
+    "changedTriangleIndexEntries": 0,
+    "unchangedJsonChunk": true,
+    "unchangedNodeHierarchy": true,
+    "unchangedMaterials": true,
+    "unchangedOtherGeometry": true,
+    "unchangedAccessorAndModelBounds": true,
+    "outsideAllowedRangesSha256": "9d2730a432ec39af7030f8dd489b5bda4068a2e061b745cb520488aabb7396b4"
+  },
+  "structure": {
+    "valid": true,
+    "expected_root": "photo_multipurpose_furnace_v6_root",
+    "stats": {
+      "file_bytes": 4971248,
+      "nodes": 104,
+      "meshes": 82,
+      "materials": 18,
+      "triangles": 121211,
+      "unique_mesh_triangles": 121211,
+      "mesh_instance_triangles": 121211,
+      "primitive_counts_by_mode": {
+        "4": 82
+      },
+      "scenes": 1
+    },
+    "limits": {
+      "max_triangles": 200000,
+      "max_nodes": 800
+    },
+    "metadata_checked": true,
+    "binding_targets": [
+      "door_front_lift",
+      "door_middle_lift",
+      "fan_rear_rotate",
+      "fan_front_rotate",
+      "agitator_oil_01_rotate",
+      "agitator_oil_02_rotate",
+      "agitator_oil_03_rotate",
+      "agitator_oil_04_rotate"
+    ],
+    "errors": [],
+    "glb": "C:\\Users\\27323\\OneDrive\\Desktop\\大屏\\backend\\assets\\models\\photo_multipurpose_furnace_v6_pipefix.glb",
+    "metadata": "C:\\Users\\27323\\OneDrive\\Desktop\\大屏\\backend\\assets\\models\\photo_multipurpose_furnace_v6_metadata.json"
+  },
+  "geometry": {
+    "valid": true,
+    "scope": "mesh-local geometry, counted per primitive; node instances/transforms and deformations excluded",
+    "stats": {
+      "file_bytes": 4971248,
+      "meshes": 82,
+      "primitives": 82,
+      "non_triangle_primitives": 0,
+      "triangles": 121211,
+      "non_finite_positions": 0,
+      "non_finite_normals": 0,
+      "non_unit_normals": 0,
+      "degenerate_triangles": 0,
+      "reversed_triangles": 0,
+      "invalid_index_triangles": 0,
+      "non_finite_triangles": 0
+    },
+    "thresholds": {
+      "normal_length_tolerance": 0.0001,
+      "degenerate_cross_length_lte": 1e-12,
+      "reversed_cross_dot_average_normal_lt": -1e-7
+    },
+    "counting_notes": [
+      "Vertex anomalies count VEC3 elements, including unused elements, per primitive reference.",
+      "Non-finite normals are excluded from the non-unit normal count.",
+      "Non-finite/invalid-index triangles are counted but excluded from degeneracy and winding tests.",
+      "Only meshes with anomalies are listed in mesh_issues and reversed_triangles_by_mesh."
+    ],
+    "reversed_triangles_by_mesh": [],
+    "mesh_issues": [],
+    "errors": [],
+    "glb": "C:\\Users\\27323\\OneDrive\\Desktop\\大屏\\backend\\assets\\models\\photo_multipurpose_furnace_v6_pipefix.glb"
+  }
+}

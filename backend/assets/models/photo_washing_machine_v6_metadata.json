@@ -1,0 +1,162 @@
+{
+  "schema_version": 1,
+  "model_id": "photo_washing_machine_v6",
+  "version": "v6",
+  "source": "photo_reference_geometry_study",
+  "batchable": true,
+  "optimization": {
+    "mode": "auto",
+    "mergeStatic": false,
+    "preserveAnimated": true,
+    "instanceRepeated": true,
+    "materialEnhancement": "original",
+    "contactShadow": true
+  },
+  "runtime": {
+    "enableGenericBindings": false,
+    "showStatusLight": true
+  },
+  "assetSpec": {
+    "version": "6.0.0",
+    "device_family": "清洗机",
+    "unit": "m",
+    "axis_rule": "Y-up export; orientation follows reference metadata",
+    "max_triangles": 200000,
+    "max_nodes": 800,
+    "max_texture_size": 2048,
+    "delivery_status": "review",
+    "notes": "照片估算外观，非实测CAD；绑定为待确认映射，不接入生产点位。"
+  },
+  "partBindings": [
+    {
+      "node_path": "",
+      "input_min": 0,
+      "input_max": 1,
+      "output_min": 0,
+      "invert": false,
+      "id": "wash_door_open",
+      "node_name": "wash_v6_node_wash_door_lift",
+      "source_group": "status",
+      "source_key": "wash_door_open",
+      "action": "translate",
+      "axis": "y",
+      "output_max": 1.27,
+      "source_mapping_status": "review_required"
+    },
+    {
+      "node_path": "",
+      "input_min": 0,
+      "input_max": 1,
+      "output_min": 0,
+      "invert": false,
+      "id": "wash_pump_1_speed",
+      "node_name": "wash_v6_node_wash_pump_01_shaft_rotate",
+      "source_group": "motors",
+      "source_key": "wash_pump_1_speed",
+      "action": "rotate_speed",
+      "axis": "x",
+      "speed_factor": 0.18,
+      "source_mapping_status": "review_required"
+    },
+    {
+      "node_path": "",
+      "input_min": 0,
+      "input_max": 1,
+      "output_min": 0,
+      "invert": false,
+      "id": "wash_pump_2_speed",
+      "node_name": "wash_v6_node_wash_pump_02_shaft_rotate",
+      "source_group": "motors",
+      "source_key": "wash_pump_2_speed",
+      "action": "rotate_speed",
+      "axis": "x",
+      "speed_factor": 0.18,
+      "source_mapping_status": "review_required"
+    },
+    {
+      "node_path": "",
+      "input_min": 0,
+      "input_max": 1,
+      "output_min": 0,
+      "invert": false,
+      "id": "wash_pump_3_speed",
+      "node_name": "wash_v6_node_wash_pump_03_shaft_rotate",
+      "source_group": "motors",
+      "source_key": "wash_pump_3_speed",
+      "action": "rotate_speed",
+      "axis": "x",
+      "speed_factor": 0.18,
+      "source_mapping_status": "review_required"
+    },
+    {
+      "node_path": "",
+      "input_min": 0,
+      "input_max": 1,
+      "output_min": 0,
+      "invert": false,
+      "id": "wash_pump_4_speed",
+      "node_name": "wash_v6_node_wash_pump_04_shaft_rotate",
+      "source_group": "motors",
+      "source_key": "wash_pump_4_speed",
+      "action": "rotate_speed",
+      "axis": "x",
+      "speed_factor": 0.18,
+      "source_mapping_status": "review_required"
+    }
+  ],
+  "inspection": {
+    "enabled": true,
+    "shell": {
+      "node_names": [
+        "wash_v6_node_tank_shell",
+        "wash_v6_node_upright_chamber_shell",
+        "wash_v6_node_black_sloping_hood"
+      ],
+      "node_paths": [],
+      "opacity": 0.16,
+      "wireframe": false
+    }
+  },
+  "reference": {
+    "photos": [
+      "清洗机/mmexport1783325196484.jpg",
+      "清洗机/mmexport1783325197891.jpg",
+      "清洗机/mmexport1783325199288.jpg"
+    ],
+    "dimensional_accuracy": "visual_estimate_not_measured",
+    "notes": [
+      "照片估算外观重建，非实测 CAD；只重建照片可见设备本体，不含厂房平台。",
+      "恢复下部大水箱、上部高耸竖腔、前端黑色斜罩；移除 V4 缺少照片依据的顶部平台轮廓。",
+      "控制柜为侧面宽双门柜，带门缝、双屏、侧百叶、底部电缆槽和叠层信号灯。",
+      "绿色倒 U 主管、回路支管、真实弯头法兰；蓝色泵为一大三小，不复制同尺寸泵或添加白色滤筒。",
+      "单扇提升门具有真实开口与上部容纳空间；1.27 米行程属于示意参数，须实测校准。",
+      "四个泵仅独立轴节点旋转，外壳与电机固定；GLB X 轴绑定，不旋转泵壳。",
+      "装料滚筒及未见内部泵叶轮按最小示意处理，不声称照片遮挡结构准确。"
+    ]
+  },
+  "release": {
+    "version": "6.0.0",
+    "status": "draft",
+    "published_at": "",
+    "history": []
+  },
+  "acceptance": {
+    "status": "review",
+    "stats": {
+      "file_bytes": 2557948,
+      "nodes": 86,
+      "meshes": 70,
+      "materials": 18,
+      "triangles": 56622,
+      "unique_mesh_triangles": 56622,
+      "mesh_instance_triangles": 56622,
+      "primitive_counts_by_mode": {
+        "4": 70
+      },
+      "scenes": 1
+    },
+    "production_runtime_tested": false,
+    "roundtrip_verified": true,
+    "geometry_verified": true
+  }
+}

@@ -1,62 +1,54 @@
-// 系统设置模块:连接设置、渲染档位、桌面运行/局域网投屏、引擎与 PLC 状态、数据库连接、数据库备份与整站灾备。
+// 系统设置模块:连接设置、Unity 画质、桌面运行、引擎与 PLC 状态、数据库连接、数据库备份与整站灾备。
 // loadSettings 是本模块的加载编排中心(顺带拉取运行配置、数据库配置与引擎状态)。
 // 数据库/灾备的恢复与切换需要重载全站数据,这些跨模块的 load 函数通过参数惰性注入。
 
-import { ref, reactive, computed, watch, nextTick } from 'vue'
-import QRCode from 'qrcode'
+import { ref, reactive, computed, watch, nextTick, onScopeDispose } from 'vue'
 import { adminApi } from '../../../config/factoryConfig.js'
 import { API_BASE } from '../../../runtime/backendEndpoint.js'
-import { RENDER_PROFILE_OPTIONS, normalizeRenderSettings } from '../../../runtime/renderConfig.js'
+import { adminFetch as fetch } from '../../../runtime/adminSession.js'
 import { normalizePlcOptions, normalizePlcProtocol } from '../../../config/plcProtocols.js'
 
 function createDefaultNativeEnvironmentConfig() {
     return {
         version: 3,
-        preset: 'bright_industrial',
-        sceneBrightness: 1.2,
-        ambientIntensity: 1.25,
-        keyLightIntensity: 1.4,
-        fillLightIntensity: 0.82,
-        reflectionIntensity: 1.08,
-        postExposure: 0.6,
-        contrast: 2,
-        saturation: 3,
-        bloomIntensity: 0.06,
-        vignetteIntensity: 0.035,
+        preset: 'neutral_factory',
+        sceneBrightness: 1.05,
+        ambientIntensity: 1.05,
+        keyLightIntensity: 1.25,
+        fillLightIntensity: 0.58,
+        reflectionIntensity: 0.96,
+        postExposure: 0.34,
+        contrast: 1,
+        saturation: 0,
+        bloomIntensity: 0.02,
+        vignetteIntensity: 0.02,
         fogEnabled: true,
-        fogStart: 95,
-        fogEnd: 360,
+        fogStart: 120,
+        fogEnd: 430,
         showGrid: true,
         showBackdrop: false,
         showWalls: false,
         wallEditorWidth: 100,
         wallEditorDepth: 80,
         walls: [],
-        skyColor: '#607FAF',
-        horizonColor: '#354A6A',
-        fogColor: '#26364F',
-        keyLightColor: '#FFF0DC',
-        fillLightColor: '#B5D2FF',
-        floorColor: '#263442',
-        gridColor: '#1D4759',
-        wallColor: '#283B59',
-        frameColor: '#526A86'
+        skyColor: '#696969',
+        horizonColor: '#464646',
+        fogColor: '#565656',
+        keyLightColor: '#F2F2F2',
+        fillLightColor: '#EAEAEA',
+        floorColor: '#5B5B5B',
+        gridColor: '#777777',
+        wallColor: '#5A5A5A',
+        frameColor: '#9A9A9A'
     }
 }
 
 const NATIVE_ENVIRONMENT_PRESETS = [
     {
-        value: 'bright_industrial',
-        label: '明亮工业蓝（推荐）',
-        tag: '通用推荐',
-        description: '明亮蓝灰环境，设备暗部更清楚，同时保留实体 PBR 材质。',
-        config: createDefaultNativeEnvironmentConfig()
-    },
-    {
         value: 'neutral_factory',
         label: '中性真实厂房',
         tag: '现场监控',
-        description: '低饱和灰蓝环境，颜色更自然，适合长时间运行和现场监控。',
+        description: '开放式低饱和灰蓝环境，颜色更自然，默认不显示围墙，适合长时间运行和现场监控。',
         config: {
             ...createDefaultNativeEnvironmentConfig(),
             preset: 'neutral_factory',
@@ -72,70 +64,13 @@ const NATIVE_ENVIRONMENT_PRESETS = [
             vignetteIntensity: 0.02,
             fogStart: 120,
             fogEnd: 430,
-            skyColor: '#718096',
-            horizonColor: '#465363',
-            fogColor: '#3A4654',
-            floorColor: '#343B42',
-            gridColor: '#34505A',
-            wallColor: '#3F4A58',
-            frameColor: '#667482'
-        }
-    },
-    {
-        value: 'showcase_blue',
-        label: '展厅增强蓝',
-        tag: '展厅效果',
-        description: '蓝色更鲜明，反射和高光更强，适合展厅或配置较高的电脑。',
-        config: {
-            ...createDefaultNativeEnvironmentConfig(),
-            preset: 'showcase_blue',
-            sceneBrightness: 1.18,
-            ambientIntensity: 1.18,
-            keyLightIntensity: 1.65,
-            fillLightIntensity: 0.98,
-            reflectionIntensity: 1.25,
-            postExposure: 0.72,
-            contrast: 6,
-            saturation: 6,
-            bloomIntensity: 0.12,
-            vignetteIntensity: 0.055,
-            fogStart: 80,
-            fogEnd: 300,
-            skyColor: '#5C79BC',
-            horizonColor: '#334C7A',
-            fogColor: '#293C63',
-            gridColor: '#1D6478',
-            wallColor: '#243A63',
-            frameColor: '#506E9D'
-        }
-    },
-    {
-        value: 'dark_technical',
-        label: '深色科技监控',
-        tag: '高对比',
-        description: '深蓝黑环境与更强对比度，适合突出数据面板和设备状态。',
-        config: {
-            ...createDefaultNativeEnvironmentConfig(),
-            preset: 'dark_technical',
-            sceneBrightness: 0.9,
-            ambientIntensity: 0.78,
-            keyLightIntensity: 1.18,
-            fillLightIntensity: 0.36,
-            reflectionIntensity: 0.88,
-            postExposure: 0.12,
-            contrast: 8,
-            saturation: -2,
-            bloomIntensity: 0.04,
-            vignetteIntensity: 0.1,
-            fogStart: 70,
-            fogEnd: 260,
-            skyColor: '#263855',
-            horizonColor: '#141E2C',
-            fogColor: '#101A28',
-            floorColor: '#141C24',
-            gridColor: '#153847',
-            wallColor: '#172438',
-            frameColor: '#31465D'
+            skyColor: '#696969',
+            horizonColor: '#464646',
+            fogColor: '#565656',
+            floorColor: '#5B5B5B',
+            gridColor: '#777777',
+            wallColor: '#5A5A5A',
+            frameColor: '#9A9A9A'
         }
     },
     {
@@ -146,6 +81,8 @@ const NATIVE_ENVIRONMENT_PRESETS = [
         config: null
     }
 ]
+
+const ACTIVE_NATIVE_ENVIRONMENT_PRESETS = new Set(['neutral_factory', 'custom'])
 
 function normalizeEnvironmentColor(value, fallback) {
     const text = String(value || '').trim().toUpperCase()
@@ -189,7 +126,9 @@ function normalizeNativeEnvironmentConfig(value) {
     const fogStart = dashboardNumber(source.fogStart, defaults.fogStart, 0, 500)
     return {
         version: 3,
-        preset: String(source.preset || defaults.preset).trim() || 'custom',
+        preset: ACTIVE_NATIVE_ENVIRONMENT_PRESETS.has(String(source.preset || '').trim())
+            ? String(source.preset).trim()
+            : defaults.preset,
         sceneBrightness: dashboardNumber(source.sceneBrightness, defaults.sceneBrightness, 0.8, 1.6),
         ambientIntensity: dashboardNumber(source.ambientIntensity, defaults.ambientIntensity, 0.2, 2.5),
         keyLightIntensity: dashboardNumber(source.keyLightIntensity, defaults.keyLightIntensity, 0, 3),
@@ -261,15 +200,9 @@ export function useSystemSettings({
         factory_name: '',
         data_mode: 'integrated_plc',
         realtime_stale_ms: '6000',
-        display_mode: 'industrial_twin',
         // 视角模式
         camera_mode: 'auto',
-        native_quality_profile: 'auto',
-        render_profile: 'balanced',
-        render_target_fps: 45,
-        render_scale: 1,
-        render_antialias: false,
-        render_label_fps: 12
+        native_quality_profile: 'auto'
     }
     const settings = reactive({ ...defaultSettings })
     const nativeEnvironmentConfig = reactive(createDefaultNativeEnvironmentConfig())
@@ -302,147 +235,71 @@ export function useSystemSettings({
             frameColor: config.frameColor
         } : null
     }))
-    const renderProfileOptions = RENDER_PROFILE_OPTIONS
-    const resolvedRenderSettings = computed(() => normalizeRenderSettings(settings))
-    const selectedRenderProfile = computed(() => (
-        renderProfileOptions.find(item => item.value === settings.render_profile)
-        || renderProfileOptions.find(item => item.value === 'balanced')
-    ))
-
-    // ============ 桌面运行与局域网投屏 ============
+    // ============ 桌面运行 ============
     const runtimeSettings = reactive({
         auto_start_enabled: true,
         auto_start_supported: false,
-        packaged: false,
-        lan_display_enabled: false,
-        lan_display_port: 8787,
-        lan_display_pin: ''
-    })
-    const runtimeStatus = reactive({
-        enabled: false,
-        running: false,
-        port: 8787,
-        pin: '',
-        urls: [],
-        pairingUrls: [],
-        clients: 0,
-        error: '',
-        note: ''
+        packaged: false
     })
     const runtimeSaving = ref(false)
     const runtimeMessage = ref('')
-    const runtimeQrDataUrl = ref('')
     let runtimeRefreshTimer = null
-    const firstCastPairingUrl = computed(() => runtimeStatus.pairingUrls?.[0] || '')
+    let runtimeSettingsDisposed = false
+    let runtimeRequestSeq = 0
+    let runtimeLoadInFlight = false
+    let runtimeSavedSnapshot = { ...runtimeSettings }
+    const runtimeEditableFields = new Set(['auto_start_enabled'])
 
-    async function refreshRuntimeQr() {
-        if (!firstCastPairingUrl.value) {
-            runtimeQrDataUrl.value = ''
-            return
+    function applyRuntimePayload(result, expectedDraft = runtimeSavedSnapshot) {
+        const next = {
+            auto_start_enabled: result.auto_start_enabled !== false,
+            auto_start_supported: result.auto_start_supported === true,
+            packaged: result.packaged === true
         }
-        try {
-            runtimeQrDataUrl.value = await QRCode.toDataURL(firstCastPairingUrl.value, {
-                width: 240,
-                margin: 1,
-                errorCorrectionLevel: 'M'
-            })
-        } catch (error) {
-            runtimeQrDataUrl.value = ''
-            runtimeMessage.value = `二维码生成失败：${error.message || error}`
+        for (const [key, value] of Object.entries(next)) {
+            // Poll live status without overwriting a user's unsaved form edits.
+            if (!runtimeEditableFields.has(key) || runtimeSettings[key] === expectedDraft[key]) runtimeSettings[key] = value
         }
+        runtimeSavedSnapshot = next
     }
 
     async function loadRuntimeSettings({ silent = false } = {}) {
+        if (runtimeSettingsDisposed || runtimeSaving.value || (silent && runtimeLoadInFlight)) return null
+        const requestSeq = ++runtimeRequestSeq
+        runtimeLoadInFlight = true
         try {
             const result = await adminApi.getRuntimeSettings()
+            if (runtimeSettingsDisposed || requestSeq !== runtimeRequestSeq) return null
             if (result?.error) throw new Error(result.error)
-            Object.assign(runtimeSettings, {
-                auto_start_enabled: result.auto_start_enabled !== false,
-                auto_start_supported: result.auto_start_supported === true,
-                packaged: result.packaged === true,
-                lan_display_enabled: result.lan_display_enabled === true,
-                lan_display_port: Number(result.lan_display_port || result.lan_display?.port || 8787),
-                lan_display_pin: String(result.lan_display_pin || result.lan_display?.pin || '')
-            })
-            Object.assign(runtimeStatus, result.lan_display || {}, {
-                urls: result.lan_display?.urls || [],
-                pairingUrls: result.lan_display?.pairingUrls || []
-            })
-            await refreshRuntimeQr()
+            applyRuntimePayload(result)
             return result
         } catch (error) {
-            if (!silent) runtimeMessage.value = `运行配置读取失败：${error.message || error}`
+            if (!runtimeSettingsDisposed && requestSeq === runtimeRequestSeq && !silent) runtimeMessage.value = `运行配置读取失败：${error.message || error}`
             return null
+        } finally {
+            if (requestSeq === runtimeRequestSeq) runtimeLoadInFlight = false
         }
     }
 
     async function saveRuntimeSettings() {
+        if (runtimeSaving.value || runtimeSettingsDisposed) return
         runtimeSaving.value = true
+        runtimeRequestSeq += 1
+        runtimeLoadInFlight = false
         runtimeMessage.value = '正在保存运行配置...'
+        const submitted = { ...runtimeSettings }
         try {
             const result = await adminApi.saveRuntimeSettings({
-                auto_start_enabled: runtimeSettings.auto_start_enabled,
-                lan_display_enabled: runtimeSettings.lan_display_enabled,
-                lan_display_port: runtimeSettings.lan_display_port,
-                lan_display_pin: runtimeSettings.lan_display_pin
+                auto_start_enabled: submitted.auto_start_enabled
             })
+            if (runtimeSettingsDisposed) return
             if (result?.error) throw new Error(result.error)
-            Object.assign(runtimeSettings, {
-                auto_start_enabled: result.auto_start_enabled !== false,
-                auto_start_supported: result.auto_start_supported === true,
-                packaged: result.packaged === true,
-                lan_display_enabled: result.lan_display_enabled === true,
-                lan_display_port: Number(result.lan_display_port || 8787),
-                lan_display_pin: String(result.lan_display_pin || '')
-            })
-            Object.assign(runtimeStatus, result.lan_display || {})
-            await refreshRuntimeQr()
-            runtimeMessage.value = runtimeSettings.lan_display_enabled
-                ? '运行配置已保存，投屏服务已按新配置启动。'
-                : '运行配置已保存，局域网投屏当前已关闭。'
+            applyRuntimePayload(result, submitted)
+            runtimeMessage.value = '运行配置已保存。'
         } catch (error) {
             runtimeMessage.value = `运行配置保存失败：${error.message || error}`
         } finally {
             runtimeSaving.value = false
-        }
-    }
-
-    async function rotateCastPin() {
-        if (!(await confirm('重新生成后，之前分享的投屏二维码和地址会立即失效，确定继续吗？'))) return
-        runtimeSaving.value = true
-        runtimeMessage.value = '正在生成新的投屏码...'
-        try {
-            const result = await adminApi.rotateCastPin()
-            if (result?.error) throw new Error(result.error)
-            runtimeSettings.lan_display_pin = String(result.lan_display_pin || result.lan_display?.pin || '')
-            Object.assign(runtimeStatus, result.lan_display || {})
-            await refreshRuntimeQr()
-            runtimeMessage.value = '投屏码已更新，旧设备会被要求重新授权。'
-        } catch (error) {
-            runtimeMessage.value = `投屏码更新失败：${error.message || error}`
-        } finally {
-            runtimeSaving.value = false
-        }
-    }
-
-    async function copyCastUrl(url) {
-        if (!url) return
-        try {
-            if (navigator.clipboard?.writeText) {
-                await navigator.clipboard.writeText(url)
-            } else {
-                const input = document.createElement('textarea')
-                input.value = url
-                input.style.position = 'fixed'
-                input.style.opacity = '0'
-                document.body.appendChild(input)
-                input.select()
-                document.execCommand('copy')
-                input.remove()
-            }
-            runtimeMessage.value = '投屏地址已复制。'
-        } catch (error) {
-            runtimeMessage.value = `复制失败，请手动选择地址：${url}`
         }
     }
 
@@ -455,7 +312,14 @@ export function useSystemSettings({
     function stopRuntimeRefresh() {
         if (runtimeRefreshTimer) clearInterval(runtimeRefreshTimer)
         runtimeRefreshTimer = null
+        runtimeRequestSeq += 1
+        runtimeLoadInFlight = false
     }
+
+    onScopeDispose(() => {
+        runtimeSettingsDisposed = true
+        stopRuntimeRefresh()
+    })
 
     async function loadSettings() {
         const s = await adminApi.getSettings()
@@ -466,15 +330,18 @@ export function useSystemSettings({
         const loadedSettings = { ...s }
         delete loadedSettings.native_environment_config
         delete loadedSettings.native_dashboard_config
+        // 旧版网页大屏配置仅保留在历史数据库中，不再进入后台表单或保存请求。
+        delete loadedSettings.display_mode
+        delete loadedSettings.render_profile
+        delete loadedSettings.render_target_fps
+        delete loadedSettings.render_scale
+        delete loadedSettings.render_antialias
+        delete loadedSettings.render_label_fps
         for (const key of Object.keys(settings)) delete settings[key]
         Object.assign(settings, defaultSettings, loadedSettings)
         if (!['auto', 'integrated_gpu', 'balanced', 'showcase'].includes(String(settings.native_quality_profile))) {
             settings.native_quality_profile = 'auto'
         }
-        settings.render_target_fps = Number(settings.render_target_fps || 45)
-        settings.render_scale = Number(settings.render_scale || 1)
-        settings.render_label_fps = Number(settings.render_label_fps || 12)
-        settings.render_antialias = ['1', 'true', 'yes', 'on'].includes(String(settings.render_antialias).toLowerCase())
         await loadRuntimeSettings({ silent: true })
         await loadDatabaseConfig()
         // 同时获取引擎状态
@@ -601,15 +468,32 @@ export function useSystemSettings({
         postgres: 5432,
         sqlserver: 1433
     }
-    const dataSourceConnections = ref([])
-    const dataSourceEditor = reactive({
-        id: '', name: '', type: 'mysql', host: '127.0.0.1', port: 3306,
-        user: '', password: '', database: '', filename: '', defaultSchema: '',
-        encrypt: false, trustServerCertificate: true, enabled: true, queryTimeoutMs: 8000
+    function defaultDataSourceDraft() {
+        return {
+            id: '', name: '', sourceType: 'database', type: 'mysql', host: '127.0.0.1', port: 3306,
+            user: '', password: '', database: '', filename: '', defaultSchema: '',
+            encrypt: false, trustServerCertificate: true, enabled: true, queryTimeoutMs: 8000,
+            baseUrl: '', healthPath: '/health', method: 'GET', authType: 'none',
+            apiKeyHeader: 'X-API-Key', apiKey: '', token: '', requestTimeoutMs: 8000
+        }
+    }
+    const emptyDataSourceHealth = () => ({
+        status: '', message: '', responseTimeMs: null, httpStatus: null, checkedAt: null
     })
+    const dataSourceConnections = ref([])
+    const dataSourceEditor = reactive(defaultDataSourceDraft())
     const dataSourceBusy = ref(false)
     const dataSourceMessage = ref('')
+    const dataSourceTestHealth = reactive(emptyDataSourceHealth())
+    let dataSourceTestFingerprint = ''
+    let dataSourceHealthToken = ''
+    let dataSourceSavedFingerprint = ''
+    let dataSourceDraftVersion = 0
+    let dataSourceEditorSession = 0
+    let dataSourceEditorHydrating = false
+    let dataSourceLoadSequence = 0
     const dataSourceBackupBusy = ref(false)
+    const dataSourceBackupMessage = ref('')
     const dataSourceBackupConfig = reactive({
         autoEnabled: true,
         startupEnabled: true,
@@ -626,117 +510,251 @@ export function useSystemSettings({
         lastError: null
     })
 
+    function dataSourcePayload(draft = dataSourceEditor) {
+        const common = {
+            id: draft.id, name: draft.name, sourceType: draft.sourceType,
+            type: draft.sourceType === 'http_api' ? 'http_api' : draft.type, enabled: draft.enabled
+        }
+        // Only submit editable fields belonging to this source/auth type. In particular,
+        // metadata and credentials from a previously selected source must never leak in.
+        const fields = draft.sourceType === 'http_api'
+            ? ['baseUrl', 'healthPath', 'method', 'authType', 'requestTimeoutMs', ...({
+                api_key: ['apiKeyHeader', 'apiKey'], bearer: ['token'], basic: ['user', 'password']
+            }[draft.authType] || [])]
+            : ['host', 'port', 'user', 'password', 'database', 'filename', 'defaultSchema',
+                'encrypt', 'trustServerCertificate', 'queryTimeoutMs']
+        for (const field of fields) common[field] = draft[field]
+        return common
+    }
+
+    function dataSourceDraftFingerprint() {
+        return JSON.stringify(dataSourcePayload())
+    }
+
+    function dataSourceTimeoutError() {
+        const timeout = Number(dataSourceEditor.sourceType === 'http_api'
+            ? dataSourceEditor.requestTimeoutMs : dataSourceEditor.queryTimeoutMs)
+        return Number.isInteger(timeout) && timeout >= 1000 && timeout <= 60000
+            ? '' : '超时请输入 1000–60000 毫秒之间的整数。'
+    }
+
+    function clearDataSourceHealth() {
+        Object.assign(dataSourceTestHealth, emptyDataSourceHealth())
+        dataSourceTestFingerprint = ''
+        dataSourceHealthToken = ''
+    }
+
+    function replaceDataSourceDraft(connection = {}) {
+        dataSourceEditorHydrating = true
+        try {
+            const draft = defaultDataSourceDraft()
+            for (const key of Object.keys(draft)) {
+                if (connection[key] !== undefined && connection[key] !== null) draft[key] = connection[key]
+            }
+            draft.sourceType = connection.sourceType || (connection.type === 'http_api' ? 'http_api' : 'database')
+            if (draft.sourceType === 'http_api') draft.type = 'http_api'
+            for (const key of Object.keys(dataSourceEditor)) {
+                if (!(key in draft)) delete dataSourceEditor[key]
+            }
+            Object.assign(dataSourceEditor, draft)
+        } finally {
+            dataSourceEditorHydrating = false
+        }
+        dataSourceDraftVersion += 1
+        dataSourceEditorSession += 1
+        clearDataSourceHealth()
+        dataSourceSavedFingerprint = connection.id ? dataSourceDraftFingerprint() : ''
+    }
+
     function resetDataSourceEditor() {
-        Object.assign(dataSourceEditor, {
-            id: '', name: '', type: 'mysql', host: '127.0.0.1', port: 3306,
-            user: '', password: '', database: '', filename: '', defaultSchema: '',
-            encrypt: false, trustServerCertificate: true, enabled: true, queryTimeoutMs: 8000
-        })
+        replaceDataSourceDraft()
         dataSourceMessage.value = ''
     }
 
     function editDataSource(connection) {
         if (!connection || connection.primary) return
-        Object.assign(dataSourceEditor, connection, { password: connection.password || '******' })
+        replaceDataSourceDraft(connection)
+        Object.assign(dataSourceTestHealth, emptyDataSourceHealth(), connection.health || {})
         dataSourceMessage.value = `正在编辑：${connection.name}`
     }
 
-    async function loadDataSources() {
+    async function loadDataSources({ silent = false, connectionsOnly = false } = {}) {
+        if (runtimeSettingsDisposed) return
+        const sequence = ++dataSourceLoadSequence
         try {
             const result = await adminApi.getDataSources()
-            dataSourceConnections.value = result.connections || []
+            if (runtimeSettingsDisposed || sequence !== dataSourceLoadSequence) return
+            if (result?.error || !Array.isArray(result?.connections)) throw new Error(result?.error || '后端没有返回数据源列表')
+            dataSourceConnections.value = result.connections
+            if (connectionsOnly) return
             Object.assign(dataSourceBackupConfig, result.backup || {})
             Object.assign(dataSourceBackupStatus, result.backupStatus || {}, {
                 connections: result.backupStatus?.connections || []
             })
+            if (dataSourceEditor.id && !dataSourceBusy.value && !dataSourceTestFingerprint
+                && dataSourceDraftFingerprint() === dataSourceSavedFingerprint) {
+                const current = dataSourceConnections.value.find(item => item.id === dataSourceEditor.id)
+                if (current && JSON.stringify(dataSourcePayload(current)) === dataSourceSavedFingerprint) {
+                    Object.assign(dataSourceTestHealth, emptyDataSourceHealth(), current.health || {})
+                } else {
+                    clearDataSourceHealth()
+                    dataSourceMessage.value = '列表中的数据源配置已变更，请重新选择数据源。'
+                }
+            }
         } catch (e) {
-            dataSourceMessage.value = `数据源读取失败：${e.message || e}`
+            if (!silent && !runtimeSettingsDisposed && sequence === dataSourceLoadSequence) dataSourceMessage.value = `数据源读取失败：${e.message || e}`
         }
     }
 
     async function testExternalDataSource() {
+        if (dataSourceBusy.value || runtimeSettingsDisposed) return
+        const validationError = dataSourceTimeoutError()
+        if (validationError) {
+            clearDataSourceHealth()
+            Object.assign(dataSourceTestHealth, { status: 'config_error', message: validationError })
+            dataSourceMessage.value = validationError
+            return
+        }
+        const submitted = dataSourcePayload()
+        const fingerprint = dataSourceDraftFingerprint()
+        const version = dataSourceDraftVersion
+        let refreshSavedHealth = false
+        clearDataSourceHealth()
         dataSourceBusy.value = true
-        dataSourceMessage.value = '正在以只读方式测试连接...'
+        dataSourceMessage.value = submitted.sourceType === 'http_api'
+            ? '正在测试接口健康度...'
+            : '正在以只读方式测试数据库连接...'
         try {
-            const result = await adminApi.testDataSource({ ...dataSourceEditor })
-            if (!result?.success) throw new Error(result?.error || '连接失败')
-            dataSourceMessage.value = '连接成功，可读取数据库结构。'
+            const result = await adminApi.testDataSource(submitted)
+            if (runtimeSettingsDisposed || version !== dataSourceDraftVersion) return
+            if (result?.health) {
+                Object.assign(dataSourceTestHealth, emptyDataSourceHealth(), result.health)
+                dataSourceTestFingerprint = fingerprint
+                dataSourceHealthToken = result.healthToken || ''
+                refreshSavedHealth = Boolean(submitted.id)
+            }
+            if (!result?.success) throw new Error(result?.error || result?.health?.message || '连接失败')
+            dataSourceMessage.value = submitted.sourceType === 'http_api'
+                ? '接口健康检查通过。'
+                : '数据库连接成功，可读取数据库结构。'
         } catch (e) {
-            dataSourceMessage.value = `连接失败：${e.message || e}`
+            if (runtimeSettingsDisposed || version !== dataSourceDraftVersion) return
+            dataSourceMessage.value = `${submitted.sourceType === 'http_api' ? '接口检查失败' : '连接失败'}：${e.message || e}`
+            if (!dataSourceTestHealth.status) Object.assign(dataSourceTestHealth, emptyDataSourceHealth(), {
+                status: 'check_failed', message: dataSourceMessage.value
+            })
         } finally {
+            // The backend only persists a test when it still matches the saved
+            // configuration. Re-read that authoritative list rather than copying
+            // an unsaved draft's health onto its saved card.
+            if (refreshSavedHealth && !runtimeSettingsDisposed && version === dataSourceDraftVersion) {
+                await loadDataSources({ silent: true, connectionsOnly: true })
+            }
             dataSourceBusy.value = false
         }
     }
 
     async function saveExternalDataSource() {
+        if (dataSourceBusy.value || runtimeSettingsDisposed) return
         if (!String(dataSourceEditor.name || '').trim()) {
             dataSourceMessage.value = '请填写连接名称'
             return
         }
+        const validationError = dataSourceTimeoutError()
+        if (validationError) {
+            dataSourceMessage.value = validationError
+            return
+        }
         dataSourceBusy.value = true
-        dataSourceMessage.value = '正在保存只读数据源...'
+        dataSourceLoadSequence += 1
+        dataSourceMessage.value = '正在保存外部数据源...'
+        const submitted = dataSourcePayload()
+        const fingerprint = dataSourceDraftFingerprint()
+        const version = dataSourceDraftVersion
+        const session = dataSourceEditorSession
         try {
-            const result = await adminApi.saveDataSource({ ...dataSourceEditor })
+            const testedCurrentDraft = dataSourceTestFingerprint
+                && dataSourceTestFingerprint === fingerprint
+            const result = await adminApi.saveDataSource({
+                ...submitted,
+                healthToken: testedCurrentDraft ? dataSourceHealthToken : ''
+            })
+            if (runtimeSettingsDisposed) return
             if (!result?.success) throw new Error(result?.error || '保存失败')
-            dataSourceConnections.value = result.connections || []
+            dataSourceLoadSequence += 1
+            if (Array.isArray(result.connections)) dataSourceConnections.value = result.connections
             Object.assign(dataSourceBackupConfig, result.backup || {})
-            dataSourceMessage.value = `已保存：${result.connection?.name || dataSourceEditor.name}`
-            resetDataSourceEditor()
-            await loadDataSources()
+            if (version === dataSourceDraftVersion) {
+                if (result.connection) editDataSource(result.connection)
+                else resetDataSourceEditor()
+                dataSourceMessage.value = `已保存：${result.connection?.name || submitted.name}`
+            } else if (session === dataSourceEditorSession) {
+                // A new connection gets its server id even if the user kept typing while
+                // saving, so the next save updates it instead of creating a duplicate.
+                if (!dataSourceEditor.id && result.connection?.id) dataSourceEditor.id = result.connection.id
+                dataSourceMessage.value = `已保存：${result.connection?.name || submitted.name}；当前表单还有未保存的修改。`
+            }
         } catch (e) {
-            dataSourceMessage.value = `保存失败：${e.message || e}`
+            if (!runtimeSettingsDisposed && session === dataSourceEditorSession) dataSourceMessage.value = `保存失败：${e.message || e}`
         } finally {
             dataSourceBusy.value = false
         }
     }
 
     async function removeExternalDataSource(connection) {
-        if (!connection?.id || connection.primary) return
-        if (!(await confirm(`删除只读数据源“${connection.name}”？已发布大屏中使用它的组件会显示离线。`))) return
+        if (!connection?.id || connection.primary || dataSourceBusy.value || runtimeSettingsDisposed) return
+        if (!(await confirm(`删除外部数据源“${connection.name}”？已发布大屏中使用它的组件会显示离线。`))) return
+        if (dataSourceBusy.value || runtimeSettingsDisposed) return
         dataSourceBusy.value = true
+        dataSourceLoadSequence += 1
         try {
             const result = await adminApi.deleteDataSource(connection.id)
-            dataSourceConnections.value = result.connections || []
+            if (runtimeSettingsDisposed) return
+            if (!result?.success) throw new Error(result?.error || '删除失败')
+            dataSourceLoadSequence += 1
+            if (Array.isArray(result.connections)) dataSourceConnections.value = result.connections
             Object.assign(dataSourceBackupConfig, result.backup || {})
             if (dataSourceEditor.id === connection.id) resetDataSourceEditor()
             dataSourceMessage.value = `已删除：${connection.name}`
-            await loadDataSources()
         } catch (e) {
-            dataSourceMessage.value = `删除失败：${e.message || e}`
+            if (!runtimeSettingsDisposed) dataSourceMessage.value = `删除失败：${e.message || e}`
         } finally {
             dataSourceBusy.value = false
         }
     }
 
     async function saveDataSourceBackupConfiguration() {
+        if (dataSourceBackupBusy.value || runtimeSettingsDisposed) return
         dataSourceBackupBusy.value = true
-        dataSourceMessage.value = '正在保存数据库自动备份配置...'
+        dataSourceBackupMessage.value = '正在保存数据库自动备份配置...'
         try {
             const result = await adminApi.saveDataSourceBackupConfig({ ...dataSourceBackupConfig })
             if (!result?.success) throw new Error(result?.error || '保存失败')
             Object.assign(dataSourceBackupConfig, result.config || {})
             Object.assign(dataSourceBackupStatus, result.status || {}, { connections: result.status?.connections || [] })
-            dataSourceMessage.value = '数据库自动压缩备份配置已保存。'
+            dataSourceBackupMessage.value = '数据库自动压缩备份配置已保存。'
         } catch (e) {
-            dataSourceMessage.value = `自动备份配置保存失败：${e.message || e}`
+            dataSourceBackupMessage.value = `自动备份配置保存失败：${e.message || e}`
         } finally {
             dataSourceBackupBusy.value = false
         }
     }
 
     async function runSelectedDatabaseBackups(connectionId = '') {
+        if (dataSourceBackupBusy.value || runtimeSettingsDisposed) return
         dataSourceBackupBusy.value = true
-        dataSourceMessage.value = connectionId ? '正在备份所选数据库...' : '正在备份所有已勾选数据库...'
+        dataSourceBackupMessage.value = connectionId ? '正在备份所选数据库...' : '正在备份所有已勾选数据库...'
         try {
             const result = await adminApi.runDataSourceBackups(connectionId)
+            if (result?.error || !Array.isArray(result?.results)) throw new Error(result?.error || '后端没有返回备份结果')
             Object.assign(dataSourceBackupStatus, result.status || {}, { connections: result.status?.connections || [] })
             const failed = (result.results || []).filter(item => !item.success)
-            dataSourceMessage.value = failed.length
+            dataSourceBackupMessage.value = failed.length
                 ? `备份完成，但有 ${failed.length} 个连接失败：${failed.map(item => item.error).join('；')}`
                 : '已完成数据库压缩备份。'
             await loadDatabaseBackups()
         } catch (e) {
-            dataSourceMessage.value = `数据库备份失败：${e.message || e}`
+            dataSourceBackupMessage.value = `数据库备份失败：${e.message || e}`
         } finally {
             dataSourceBackupBusy.value = false
         }
@@ -1005,8 +1023,10 @@ export function useSystemSettings({
     })
 
     watch(() => dataSourceEditor.type, (type, oldType) => {
+        if (dataSourceEditorHydrating || dataSourceEditor.sourceType !== 'database') return
         if (type === oldType) return
         const ports = { mysql: 3306, postgres: 5432, sqlserver: 1433 }
+        const schemas = { postgres: 'public', sqlserver: 'dbo' }
         const oldDefault = ports[oldType]
         if (type === 'sqlite') {
             dataSourceEditor.port = 0
@@ -1014,14 +1034,39 @@ export function useSystemSettings({
             return
         }
         if (!dataSourceEditor.port || dataSourceEditor.port === oldDefault) dataSourceEditor.port = ports[type]
-        if (type === 'postgres' && !dataSourceEditor.defaultSchema) dataSourceEditor.defaultSchema = 'public'
-        if (type === 'sqlserver' && !dataSourceEditor.defaultSchema) dataSourceEditor.defaultSchema = 'dbo'
-    })
+        if (!dataSourceEditor.defaultSchema || dataSourceEditor.defaultSchema === schemas[oldType]) {
+            dataSourceEditor.defaultSchema = schemas[type] || ''
+        }
+    }, { flush: 'sync' })
+
+    watch(() => dataSourceEditor.sourceType, (type, oldType) => {
+        if (dataSourceEditorHydrating || type === oldType) return
+        replaceDataSourceDraft({
+            id: dataSourceEditor.id, name: dataSourceEditor.name,
+            enabled: dataSourceEditor.enabled, sourceType: type
+        })
+        dataSourceSavedFingerprint = ''
+        dataSourceMessage.value = '数据源类型已切换，请重新填写连接和认证信息。'
+    }, { flush: 'sync' })
+
+    watch(() => dataSourceEditor.authType, (type, oldType) => {
+        if (dataSourceEditorHydrating || dataSourceEditor.sourceType !== 'http_api' || type === oldType) return
+        Object.assign(dataSourceEditor, { apiKey: '', token: '', user: '', password: '' })
+    }, { flush: 'sync' })
+
+    watch(dataSourceDraftFingerprint, () => {
+        if (dataSourceEditorHydrating) return
+        dataSourceDraftVersion += 1
+        const hadHealth = Boolean(dataSourceTestHealth.status)
+        clearDataSourceHealth()
+        if (hadHealth || dataSourceBusy.value) dataSourceMessage.value = '配置已变更，请重新测试。'
+    }, { flush: 'sync' })
 
     async function loadEngineStatus() {
         try {
             const res = await fetch(`${API_BASE}/engine/status`)
             const data = await res.json()
+            if (!res.ok || data?.error) throw new Error(data?.error || '读取引擎状态失败')
             Object.assign(engineStatus, data)
         } catch (e) {
             engineStatus.mode = null
@@ -1041,18 +1086,15 @@ export function useSystemSettings({
         const result = await adminApi.saveSettings({
             data_mode: settings.data_mode,
             native_quality_profile: settings.native_quality_profile,
-            render_profile: settings.render_profile,
-            render_target_fps: settings.render_target_fps,
-            render_scale: settings.render_scale,
-            render_antialias: settings.render_antialias,
-            render_label_fps: settings.render_label_fps,
             native_environment_config: JSON.stringify(normalizeNativeEnvironmentConfig(nativeEnvironmentConfig))
         })
         if (result?.error) return alert(result.error, { title: '设置保存失败', type: 'danger' })
         if (!result?.success) return alert('设置保存失败：后端没有返回成功状态', { title: '设置保存失败', type: 'danger' })
         // 保存后自动重启数据引擎
         try {
-            await fetch(`${API_BASE}/engine/restart`, { method: 'POST' })
+            const response = await fetch(`${API_BASE}/engine/restart`, { method: 'POST' })
+            const data = await response.json().catch(() => ({}))
+            if (!response.ok || data.success === false) throw new Error(data.error || '数据引擎重启失败')
             alert('设置已保存，数据引擎正在重启。', { title: '保存成功', type: 'success' })
         } catch (e) {
             alert('设置已保存，但数据引擎重启失败，请手动重启后端服务', { title: '保存成功', type: 'warning' })
@@ -1091,7 +1133,7 @@ export function useSystemSettings({
         const next = normalizeNativeEnvironmentConfig({
             ...selected.config,
             preset: selected.value,
-            showWalls: nativeEnvironmentConfig.showWalls,
+            showWalls: false,
             wallEditorWidth: nativeEnvironmentConfig.wallEditorWidth,
             wallEditorDepth: nativeEnvironmentConfig.wallEditorDepth,
             walls: nativeEnvironmentConfig.walls
@@ -1104,22 +1146,18 @@ export function useSystemSettings({
     function resetNativeEnvironmentConfig() {
         const defaults = {
             ...createDefaultNativeEnvironmentConfig(),
-            showWalls: nativeEnvironmentConfig.showWalls,
+            showWalls: false,
             wallEditorWidth: nativeEnvironmentConfig.wallEditorWidth,
             wallEditorDepth: nativeEnvironmentConfig.wallEditorDepth,
             walls: nativeEnvironmentConfig.walls
         }
         for (const key of Object.keys(nativeEnvironmentConfig)) delete nativeEnvironmentConfig[key]
         Object.assign(nativeEnvironmentConfig, defaults)
-        nativeEnvironmentMessage.value = '已恢复“明亮工业蓝”默认值，点击“立即应用”后推送到 Unity。'
+        nativeEnvironmentMessage.value = '已恢复“中性真实厂房”默认值，围墙已关闭；点击“立即应用”后推送到 Unity。'
     }
 
     return {
-        defaultSettings,
         settings,
-        renderProfileOptions,
-        resolvedRenderSettings,
-        selectedRenderProfile,
         nativeEnvironmentConfig,
         nativeEnvironmentSaving,
         nativeEnvironmentMessage,
@@ -1128,16 +1166,10 @@ export function useSystemSettings({
         applyNativeEnvironmentPreset,
         resetNativeEnvironmentConfig,
         runtimeSettings,
-        runtimeStatus,
         runtimeSaving,
         runtimeMessage,
-        runtimeQrDataUrl,
-        firstCastPairingUrl,
-        refreshRuntimeQr,
         loadRuntimeSettings,
         saveRuntimeSettings,
-        rotateCastPin,
-        copyCastUrl,
         startRuntimeRefresh,
         stopRuntimeRefresh,
         loadSettings,
@@ -1161,7 +1193,9 @@ export function useSystemSettings({
         dataSourceEditor,
         dataSourceBusy,
         dataSourceMessage,
+        dataSourceTestHealth,
         dataSourceBackupBusy,
+        dataSourceBackupMessage,
         dataSourceBackupConfig,
         dataSourceBackupStatus,
         resetDataSourceEditor,

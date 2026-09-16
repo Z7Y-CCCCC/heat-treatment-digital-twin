@@ -1,12 +1,13 @@
 const fs = require('fs');
+const http = require('http');
 const os = require('os');
 const path = require('path');
+const { createRunDirectory, createTestDatabase } = require('./integration-test-utils.cjs');
 
 async function main() {
-    const source = path.resolve(__dirname, '..', 'data', 'factory.db');
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'heat-treatment-data-source-'));
+    const root = createRunDirectory('data-source');
     const database = path.join(root, 'external.db');
-    fs.copyFileSync(source, database);
+    await createTestDatabase(database);
     const Database = require('better-sqlite3');
     const seed = new Database(database);
     seed.exec(`CREATE TABLE designer_metrics (
@@ -27,6 +28,7 @@ async function main() {
     seed.prepare('INSERT INTO designer_part_metrics(part_id, recorded_at, value) VALUES (?, ?, ?)').run('rear_fan_rotate', '2026-08-15 10:05:00', 88);
     seed.close();
     process.env.APP_DATA_DIR = root;
+    process.env.DATA_SOURCE_BACKUP_DIR = path.join(root, 'data-source-backups');
 
     const service = require('../services/dataSources');
     const connection = service.saveDataSource({
@@ -36,7 +38,87 @@ async function main() {
         filename: database,
         enabled: true
     });
-    await service.testDataSource(connection);
+    const databaseTest = await service.testDataSource(connection);
+    if (!databaseTest.success) throw new Error(`外部数据库连接测试失败：${databaseTest.error || databaseTest.health?.message}`);
+
+    const apiServer = http.createServer((req, res) => {
+        if (req.url === '/health') {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ status: 'ok' }));
+            return;
+        }
+        if (req.url === '/auth') {
+            if (req.headers['x-api-key'] !== 'test-key') {
+                res.writeHead(401);
+                res.end('unauthorized');
+                return;
+            }
+            res.writeHead(204);
+            res.end();
+            return;
+        }
+        if (req.url === '/forbidden') {
+            res.writeHead(403);
+            res.end('forbidden');
+            return;
+        }
+        if (req.url === '/error') {
+            res.writeHead(500);
+            res.end('error');
+            return;
+        }
+        res.writeHead(404);
+        res.end('not found');
+    });
+    apiServer.unref();
+    await new Promise(resolve => apiServer.listen(0, '127.0.0.1', resolve));
+    const apiPort = apiServer.address().port;
+    const apiSource = service.saveDataSource({
+        id: 'test_http_api',
+        name: '测试现场接口',
+        sourceType: 'http_api',
+        baseUrl: `http://127.0.0.1:${apiPort}`,
+        healthPath: '/health',
+        authType: 'none',
+        requestTimeoutMs: 2000,
+        enabled: true
+    });
+    const healthyApi = await service.testDataSource(apiSource);
+    if (!healthyApi.success || healthyApi.health.status !== 'healthy' || healthyApi.health.httpStatus !== 200) {
+        throw new Error(`HTTP API 健康检查失败：${JSON.stringify(healthyApi)}`);
+    }
+    const authApi = await service.testDataSource({
+        sourceType: 'http_api',
+        baseUrl: `http://127.0.0.1:${apiPort}`,
+        healthPath: '/auth',
+        authType: 'api_key',
+        apiKeyHeader: 'X-API-Key',
+        apiKey: 'wrong-key',
+        requestTimeoutMs: 2000
+    });
+    if (authApi.success || authApi.health.status !== 'auth_failed' || authApi.health.httpStatus !== 401) {
+        throw new Error(`HTTP API 认证失败未被区分：${JSON.stringify(authApi)}`);
+    }
+    const errorApi = await service.testDataSource({
+        sourceType: 'http_api',
+        baseUrl: `http://127.0.0.1:${apiPort}`,
+        healthPath: '/error',
+        authType: 'none',
+        requestTimeoutMs: 2000
+    });
+    if (errorApi.success || errorApi.health.status !== 'http_error' || errorApi.health.httpStatus !== 500) {
+        throw new Error(`HTTP API 响应错误未被区分：${JSON.stringify(errorApi)}`);
+    }
+    const publicSources = service.listDataSources().connections;
+    const publicApi = publicSources.find(item => item.id === apiSource.id);
+    if (!publicApi || publicApi.apiKey || publicApi.token || publicApi.password === 'test-key') {
+        throw new Error('HTTP API 凭据没有被正确隐藏');
+    }
+    const backupRulesWithApi = service.saveBackupConfig({ selectedConnectionIds: [connection.id, apiSource.id] });
+    if (backupRulesWithApi.selectedConnectionIds.includes(apiSource.id)
+        || service.getBackupStatus().connections.some(item => item.id === apiSource.id)) {
+        throw new Error('HTTP API 被错误加入数据库备份');
+    }
     const tables = await service.listTables(connection.id);
     const settingsTable = tables.find(item => item.name === 'settings') || tables[0];
     if (!settingsTable) throw new Error('没有读取到任何数据表');
@@ -116,6 +198,7 @@ async function main() {
         throw new Error('关闭正常退出备份后仍生成了备份');
     }
 
+    await new Promise(resolve => apiServer.close(resolve));
     console.log(JSON.stringify({
         success: true,
         connection: connection.id,
@@ -126,6 +209,10 @@ async function main() {
         multiDatasetFormula: multiPreview.value,
         deviceContextFormula: multiRuntime.widget_multi?.value,
         partContextValue: partRuntime.widget_part?.value,
+        httpApiHealth: healthyApi.health.status,
+        httpApiAuthFailure: authApi.health.status,
+        httpApiHttpFailure: errorApi.health.status,
+        httpApiExcludedFromBackup: true,
         backup: backup.filename,
         shutdownBackup: shutdownBackups[0],
         configurableTriggers: true

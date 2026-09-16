@@ -87,6 +87,22 @@ export function createDashboardDataStore(options = {}) {
     let eventsInFlight = false;
     let healthInFlight = false;
     let lastHealthRefreshAt = 0;
+    let eventsRequestId = 0;
+    const pendingRequests = new Set();
+
+    async function readJson(url, options = {}) {
+        const controller = new AbortController();
+        pendingRequests.add(controller);
+        const timeout = setTimeout(() => controller.abort(), 10000);
+        try {
+            const response = await fetch(url, { ...options, signal: controller.signal });
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            return await response.json();
+        } finally {
+            clearTimeout(timeout);
+            pendingRequests.delete(controller);
+        }
+    }
 
     function setStaleMs(value) {
         const next = Number(value);
@@ -145,7 +161,7 @@ export function createDashboardDataStore(options = {}) {
     }
 
     function applyDeviceRealtimeData(data) {
-        if (!data?.furnace_id) return;
+        if (disposed || !data?.furnace_id) return;
 
         lastRealtimeFrameAt = Date.now();
         latestDeviceDataMap.set(data.furnace_id, data);
@@ -165,6 +181,7 @@ export function createDashboardDataStore(options = {}) {
         };
 
         if (selectedDeviceId.value === data.furnace_id) {
+            Object.keys(selectedDeviceData).forEach(key => delete selectedDeviceData[key]);
             Object.assign(selectedDeviceData, data);
         }
 
@@ -214,7 +231,7 @@ export function createDashboardDataStore(options = {}) {
 
     function applyPlcStatus(payload) {
         plcStatusText.value = payload?.message || payload?.status || '状态未知';
-        (payload?.devices || []).forEach((deviceStatus) => {
+        (Array.isArray(payload?.devices) ? payload.devices : []).forEach((deviceStatus) => {
             const deviceId = deviceStatus.deviceId;
             if (!deviceId) return;
             const quality = deviceStatus.quality || qualityFromPlcStatus(deviceStatus.status);
@@ -254,6 +271,7 @@ export function createDashboardDataStore(options = {}) {
                 if (onDeviceData) onDeviceData(connectionData);
             }
         });
+        recomputeMetricsFromRuntime();
     }
 
     function cloneDataWithQuality(data, quality) {
@@ -273,10 +291,11 @@ export function createDashboardDataStore(options = {}) {
     }
 
     function applyFrame(payload) {
-        const devices = payload?.devices || [];
+        const devices = Array.isArray(payload?.devices) ? payload.devices : [];
         devices.forEach(applyDeviceRealtimeData);
         updateRollingTrend(devices);
         recomputeMetricsFromRuntime();
+        refreshMetrics();
         refreshEvents();
     }
 
@@ -288,8 +307,8 @@ export function createDashboardDataStore(options = {}) {
         const statuses = Object.values(deviceStatusMap);
         metrics.total_devices = statuses.length;
         metrics.online_devices = statuses.filter(s => s.online).length;
-        metrics.running_devices = statuses.filter(s => s.running).length;
-        metrics.alarm_devices = statuses.filter(s => s.alarm).length;
+        metrics.running_devices = statuses.filter(s => s.online && s.running).length;
+        metrics.alarm_devices = statuses.filter(s => s.online && s.alarm).length;
 
         if (!hasRecentRealtimeFrame() || metrics.online_devices === 0) {
             metrics.current_output = 0;
@@ -302,7 +321,9 @@ export function createDashboardDataStore(options = {}) {
     function updateRollingTrend(devices) {
         const timestamp = Date.now();
         if (timestamp - lastTrendUpdateAt < trendUpdateIntervalMs) return;
-        const temps = devices.map(d => Number(d.analog?.actual_temp)).filter(Number.isFinite);
+        const temps = devices
+            .filter(d => getDeviceQuality(d) === 'good' && d.analog?.actual_temp != null && String(d.analog.actual_temp).trim() !== '')
+            .map(d => Number(d.analog.actual_temp)).filter(Number.isFinite);
         if (!temps.length) return;
         lastTrendUpdateAt = timestamp;
         const avgTemp = temps.reduce((sum, value) => sum + value, 0) / temps.length;
@@ -341,7 +362,9 @@ export function createDashboardDataStore(options = {}) {
 
     async function refreshEvents(force = false) {
         const now = Date.now();
+        if (disposed) return;
         if (!force && (eventsInFlight || now - lastEventsRefreshAt < eventsRefreshIntervalMs)) return;
+        const requestId = ++eventsRequestId;
         eventsInFlight = true;
         try {
             const params = new URLSearchParams();
@@ -349,9 +372,8 @@ export function createDashboardDataStore(options = {}) {
             const windowHours = clampNumber(eventQueryOptions.eventWindowHours, 0, 87600, 24);
             if (windowHours > 0) params.set('window_hours', String(windowHours));
             if (eventQueryOptions.eventType) params.set('event_type', eventQueryOptions.eventType);
-            const resp = await fetch(`${API_BASE}/platform/events?${params.toString()}`);
-            if (!resp.ok) return;
-            const rows = await resp.json();
+            const rows = await readJson(`${API_BASE}/platform/events?${params.toString()}`);
+            if (disposed || requestId !== eventsRequestId || !Array.isArray(rows)) return;
             const emptyMsg = windowHours > 0
                 ? `最近 ${windowHours} 小时暂无报警履历`
                 : '暂无报警履历';
@@ -359,14 +381,16 @@ export function createDashboardDataStore(options = {}) {
         } catch (e) {
             // 离线时保留当前列表。
         } finally {
-            lastEventsRefreshAt = Date.now();
-            eventsInFlight = false;
+            if (requestId === eventsRequestId) {
+                lastEventsRefreshAt = Date.now();
+                eventsInFlight = false;
+            }
         }
     }
 
     async function refreshMetrics(force = false) {
         const now = Date.now();
-        if (!force && (metricsInFlight || now - lastMetricsRefreshAt < metricsRefreshIntervalMs)) return;
+        if (disposed || metricsInFlight || (!force && now - lastMetricsRefreshAt < metricsRefreshIntervalMs)) return;
         if (Object.keys(deviceStatusMap).length > 0 && !hasRecentRealtimeFrame()) {
             recomputeMetricsFromRuntime();
             lastMetricsRefreshAt = now;
@@ -374,14 +398,13 @@ export function createDashboardDataStore(options = {}) {
         }
         metricsInFlight = true;
         try {
-            const resp = await fetch(`${API_BASE}/platform/metrics/latest`);
-            if (!resp.ok) return;
-            const data = await resp.json();
+            const data = await readJson(`${API_BASE}/platform/metrics/latest`);
+            if (disposed || !data || typeof data !== 'object' || Array.isArray(data)) return;
             Object.assign(metrics, data);
             recomputeMetricsFromRuntime();
         } catch (e) {
             // 离线时用实时帧聚合兜底。
-            recomputeMetricsFromRuntime();
+            if (!disposed) recomputeMetricsFromRuntime();
         } finally {
             lastMetricsRefreshAt = Date.now();
             metricsInFlight = false;
@@ -403,18 +426,19 @@ export function createDashboardDataStore(options = {}) {
 
     async function refreshHealth(force = false) {
         const now = Date.now();
-        if (!force && (healthInFlight || now - lastHealthRefreshAt < 5000)) return;
+        if (disposed || healthInFlight || (!force && now - lastHealthRefreshAt < 5000)) return;
         healthInFlight = true;
         try {
-            const response = await fetch(`${API_BASE}/health`, { cache: 'no-store' });
-            const payload = await response.json().catch(() => null);
-            if (!response.ok || !payload) throw new Error('健康检查失败');
+            const payload = await readJson(`${API_BASE}/health`, { cache: 'no-store' });
+            if (disposed) return;
+            if (!payload) throw new Error('健康检查失败');
             health.status = payload.status || 'unknown';
             health.readiness = payload.readiness || { status: 'unknown', displayReady: false, failures: ['backend'] };
             health.components = payload.components || {};
             health.checkedAt = payload.timestamp || new Date().toISOString();
             plcStatusText.value = healthLabel(payload);
         } catch (error) {
+            if (disposed) return;
             health.status = 'offline';
             health.readiness = { status: 'not_ready', displayReady: false, failures: ['backend'] };
             health.components = { backend: { status: 'error' } };
@@ -428,58 +452,79 @@ export function createDashboardDataStore(options = {}) {
 
     function connect() {
         if (disposed) return;
+        if (wsClient && wsClient.readyState < 2) return;
         if (reconnectTimer) {
             clearTimeout(reconnectTimer);
             reconnectTimer = null;
         }
 
         const wsUrl = getWebSocketUrl('/ws');
-        wsClient = new WebSocket(wsUrl);
+        const socket = new WebSocket(wsUrl);
+        wsClient = socket;
 
-        wsClient.onopen = () => {
+        socket.onopen = () => {
+            if (disposed || wsClient !== socket) return;
             wsConnected.value = true;
             plcStatusText.value = '通信正常';
-            try { wsClient.send(JSON.stringify({ type: 'client_hello', role: 'web', client: 'dashboard-overlay' })); } catch (e) { /* ignore */ }
+            try { socket.send(JSON.stringify({ type: 'client_hello', role: 'web', client: 'dashboard-overlay' })); } catch (e) { /* ignore */ }
         };
 
-        wsClient.onmessage = (event) => {
+        socket.onmessage = (event) => {
+            if (disposed || wsClient !== socket) return;
             try {
                 const msg = JSON.parse(event.data);
                 if (msg.type === 'realtime_frame') {
                     applyFrame(msg.payload);
                 } else if (msg.type === 'device_data') {
                     applyDeviceRealtimeData(msg.payload);
+                    refreshMetrics();
                 } else if (msg.type === 'plc_status') {
                     applyPlcStatus(msg.payload);
                 }
-                onMessage?.(msg);
+                Promise.resolve(onMessage?.(msg)).catch(error => console.warn('[DataStore] 实时消息处理失败:', error));
             } catch (e) {
                 // 忽略非 JSON 消息。
             }
         };
 
-        wsClient.onclose = () => {
-            if (disposed) return;
+        socket.onclose = () => {
+            if (disposed || wsClient !== socket) return;
+            wsClient = null;
             wsConnected.value = false;
             plcStatusText.value = '连接断开，重连中...';
             reconnectTimer = setTimeout(() => connect(), 5000);
         };
 
-        wsClient.onerror = () => {
+        socket.onerror = () => {
+            if (disposed || wsClient !== socket) return;
             wsConnected.value = false;
         };
 
         if (!staleTimer) {
-            staleTimer = setInterval(checkStaleDevices, 1000);
+            staleTimer = setInterval(() => {
+                checkStaleDevices();
+                refreshMetrics();
+                refreshEvents();
+                refreshHealth();
+            }, 1000);
         }
     }
 
     function dispose() {
         disposed = true;
+        wsConnected.value = false;
+        eventsRequestId += 1;
+        pendingRequests.forEach(controller => controller.abort());
+        pendingRequests.clear();
+        onDeviceData = null;
+        onMessage = null;
         if (reconnectTimer) clearTimeout(reconnectTimer);
         if (staleTimer) clearInterval(staleTimer);
         if (wsClient) {
+            wsClient.onopen = null;
+            wsClient.onmessage = null;
             wsClient.onclose = null;
+            wsClient.onerror = null;
             wsClient.close();
         }
         reconnectTimer = null;

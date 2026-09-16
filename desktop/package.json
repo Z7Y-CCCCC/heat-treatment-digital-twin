@@ -6,6 +6,9 @@
   "author": "Digital Twin Team",
   "license": "UNLICENSED",
   "private": true,
+  "engines": {
+    "node": ">=22.12.0"
+  },
   "scripts": {
     "prepare:ffmpeg": "node scripts/prepare-ffmpeg.cjs",
     "prepare:resources": "node scripts/prepare-resources.cjs && npm run prepare:ffmpeg && node scripts/generate-third-party-notices.cjs",
@@ -14,6 +17,8 @@
     "build:unity:force": "node scripts/build-unity-client.cjs --force",
     "build:admin-host": "node scripts/build-native-admin-host.cjs",
     "test:logs": "node scripts/log-manager-test.cjs",
+    "test:processes": "node --test scripts/process-lifecycle-test.cjs scripts/desktop-supervisor-unit-test.cjs",
+    "test:resources": "node --test scripts/resource-preparation-test.cjs",
     "test:supervisor": "node scripts/backend-supervisor-test.cjs",
     "test:admin-host-parent": "node scripts/admin-host-parent-test.cjs",
     "dist": "npm run build:frontend && npm run build:unity && npm run build:admin-host && npm run prepare:resources && electron-builder --win nsis --x64"
@@ -32,10 +37,16 @@
     "files": [
       "main.cjs",
       "logManager.cjs",
+      "processLifecycle.cjs",
       "package.json",
       "assets/**/*"
     ],
     "extraResources": [
+      {
+        "from": "../shared",
+        "to": "shared",
+        "filter": ["*.cjs", "*.mjs"]
+      },
       {
         "from": "../frontend/dist",
         "to": "frontend",

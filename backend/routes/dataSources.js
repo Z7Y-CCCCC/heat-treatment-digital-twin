@@ -27,7 +27,7 @@ function localOnly(req, res, next) {
         next();
         return;
     }
-    res.status(403).json({ success: false, error: '数据库结构与连接配置仅允许在现场电脑本机查看' });
+    res.status(403).json({ success: false, error: '外部数据源、数据库结构与连接配置仅允许在现场电脑本机查看' });
 }
 
 function handleError(res, error, status = 400) {

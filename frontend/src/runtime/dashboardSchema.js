@@ -9,16 +9,17 @@ export const DEFAULT_DASHBOARD_CANVAS = Object.freeze({
   legacyGrid: { columns: 24, rows: 12 }
 })
 
-export const SYSTEM_WIDGET_TYPES = new Set(['navigation', 'device_label', 'diagnostics', 'line_overview_cards'])
+export const SYSTEM_WIDGET_TYPES = new Set(['navigation', 'return_button', 'device_label', 'diagnostics', 'line_overview_cards'])
 const SYSTEM_VIEW_COMPONENT_IDS = new Set([
-  'widget_navigation', 'widget_device_label', 'widget_diagnostics', 'widget_line_overview_cards',
-  'navigation', 'device_label', 'diagnostics', 'line_overview_cards'
+  'widget_navigation', 'widget_return_button', 'widget_device_label', 'widget_diagnostics', 'widget_line_overview_cards',
+  'navigation', 'return_button', 'device_label', 'diagnostics', 'line_overview_cards'
 ])
 
 export const SYSTEM_WIDGET_LIBRARY = [
   // 其余三种旧 Unity OnGUI 组件仍保留在 SYSTEM_WIDGET_TYPES 中用于读取历史发布，
   // 但正式大屏已经由透明 Web 数据层接管，不再向设计器暴露。
-  { type: 'navigation', label: '场景导航与返回', icon: '←', description: '大屏视角层级导航与返回上一级', preview: 'navigation' }
+  { type: 'navigation', label: '顶部导航状态', icon: '●', description: '顶部项目名称、连接状态和运行状态', preview: 'navigation' },
+  { type: 'return_button', label: '返回键', icon: '‹', description: '返回当前视角的上一级视角', preview: 'return_button' }
 ]
 
 export const DASHBOARD_VIEW_MODES = [
@@ -86,6 +87,16 @@ export function normalizeDashboardViews(scene = {}) {
   const views = [...raw, ...inspectionDefaults].slice(0, 50).map((view, index) => normalizeDashboardView(view, index))
   const ids = new Set(views.map(view => view.id))
   const defaultViewId = ids.has(String(source.defaultViewId || '')) ? String(source.defaultViewId) : (views[0]?.id || 'factory_overview')
+
+  // A broken parent reference used to leave a deep view in the tree while
+  // Unity had nowhere valid to return. Keep the authored view, but repair the
+  // navigation edge during normalization so Esc can always walk back safely.
+  views.forEach(view => {
+    if (view.parentViewId === view.id || (view.parentViewId && !ids.has(view.parentViewId))) view.parentViewId = ''
+    if (view.returnViewId === view.id || (view.returnViewId && !ids.has(view.returnViewId))) {
+      view.returnViewId = view.parentViewId || ''
+    }
+  })
   return { views, defaultViewId }
 }
 
@@ -94,6 +105,8 @@ export const DASHBOARD_WIDGET_LIBRARY = [
   { type: 'value', label: '数值', icon: '12', group: '基础', description: '任意数据源的数值与格式' },
   { type: 'status', label: '状态灯', icon: '●', group: '基础', description: '布尔状态、在线和报警' },
   { type: 'image', label: '图片', icon: '▧', group: '基础', description: '现场图片、Logo 和图标' },
+  { type: 'navigation', label: '顶部导航状态', icon: '●', group: '导航', description: '独立的项目名称、连接状态和运行状态' },
+  { type: 'return_button', label: '返回键', icon: '‹', group: '导航', description: '独立的上一级视角返回按钮' },
   { type: 'container', label: '容器', icon: '□', group: '布局', description: '透明卡片和区域分组' },
   { type: 'metrics', label: '指标组', icon: '▦', group: '数据', description: '多指标与环形图' },
   { type: 'business_summary', label: '业务摘要', icon: '▤', group: '数据', description: '只读显示排产批次、合规曲线、利用率、能耗和维护记录' },
@@ -191,6 +204,22 @@ const TYPE_DEFAULTS = {
     title: '实时消息',
     content: { speed: 30, limit: 20, eventWindowHours: 24 },
     style: { background: 'rgba(9, 22, 35, .8)', color: '#dbeeff', borderColor: 'rgba(89, 178, 238, .22)', borderRadius: 12 }
+  },
+  navigation: {
+    size: [600, 42],
+    title: '顶部导航状态',
+    content: {
+      showTitle: false,
+      projectLabel: '热处理车间项目 · 南区热处理车间智能监控大屏',
+      statusText: '模拟数据正常'
+    },
+    style: { background: 'transparent', color: '#eef7ff', borderColor: 'transparent', borderRadius: 0 }
+  },
+  return_button: {
+    size: [42, 42],
+    title: '返回键',
+    content: { showTitle: false },
+    style: { background: 'transparent', color: '#eef7ff', borderColor: 'transparent', borderRadius: 0 }
   }
 }
 
@@ -255,6 +284,9 @@ export function normalizeDashboardWidget(source = {}, canvas = DEFAULT_DASHBOARD
   const legacyColumns = canvas.legacyGrid?.columns || 24
   const legacyRows = canvas.legacyGrid?.rows || 12
   const hasCanonicalFrame = frame.width !== undefined || frame.height !== undefined
+  const isLegacyNavigationSeed = type === 'navigation' && !hasCanonicalFrame
+    && Number(source.x || 0) === 0 && Number(source.y || 0) === 0
+    && Number(source.w || 0) === 5 && Number(source.h || 0) === 5
   const data = objectValue(source.data, objectValue(source.binding, {}))
   const requestedMode = String(data.mode || '')
   const normalizedMode = requestedMode === 'plc' || requestedMode === 'database' || requestedMode === 'runtime' || requestedMode === 'business'
@@ -263,10 +295,39 @@ export function normalizeDashboardWidget(source = {}, canvas = DEFAULT_DASHBOARD
   const resolvedDataMode = normalizedMode === 'static'
     ? (type === 'business_summary' ? 'business' : (data.connectionId || data.connection_id ? 'database' : (data.pointId || data.point_id ? 'plc' : 'static')))
     : normalizedMode
+  const rawDeviceId = data.deviceId || data.device_id || ''
+  const requestedDeviceScope = String(data.deviceScope || data.device_scope || '').toLowerCase()
+  const deviceScope = requestedDeviceScope === 'current' || requestedDeviceScope === 'fixed'
+    ? requestedDeviceScope
+    : (rawDeviceId ? 'fixed' : 'current')
   const legacyDataset = normalizeDatabaseDataset(data, data, 0)
   const datasets = (Array.isArray(data.datasets) && data.datasets.length ? data.datasets : [legacyDataset])
     .slice(0, 12)
     .map((item, datasetIndex) => normalizeDatabaseDataset(item, legacyDataset, datasetIndex))
+  const normalizedFrame = isLegacyNavigationSeed
+    ? { x: 660, y: 18, width: 600, height: 42, rotation: 0 }
+    : {
+        x: hasCanonicalFrame ? numberValue(frame.x, 0) : numberValue(source.x, 0) / legacyColumns * canvas.width,
+        y: hasCanonicalFrame ? numberValue(frame.y, 0) : numberValue(source.y, 0) / legacyRows * canvas.height,
+        width: hasCanonicalFrame ? numberValue(frame.width, defaults.size[0], 20) : numberValue(source.w, defaults.size[0] / canvas.width * legacyColumns) / legacyColumns * canvas.width,
+        height: hasCanonicalFrame ? numberValue(frame.height, defaults.size[1], 20) : numberValue(source.h, defaults.size[1] / canvas.height * legacyRows) / legacyRows * canvas.height,
+        rotation: numberValue(frame.rotation, 0, -360, 360)
+      }
+  const normalizedStyle = {
+    ...deepClone(defaults.style || {}),
+    ...deepClone(source.style || source.config?.style || {})
+  }
+  // Keep panel background alpha separate from content opacity.  The latter
+  // fades text/charts as well, while this value only controls the HUD glass
+  // surface in overlay mode. Legacy documents without the field get a thin
+  // glass default instead of inheriting their old opaque card background.
+  normalizedStyle.backgroundOpacity = numberValue(
+    normalizedStyle.backgroundOpacity,
+    type === 'navigation' || type === 'return_button' ? 0 : 0.12,
+    0,
+    1
+  )
+  normalizedStyle.opacity = numberValue(normalizedStyle.opacity, 1, 0, 1)
   return {
     id: String(source.id || `widget_${type}_${index + 1}`).replace(/[^a-zA-Z0-9_-]/g, '_'),
     type,
@@ -276,20 +337,16 @@ export function normalizeDashboardWidget(source = {}, canvas = DEFAULT_DASHBOARD
     zIndex: Math.round(numberValue(source.zIndex ?? source.sort_order, index, -1000, 10000)),
     runtimeTarget: source.runtimeTarget || (SYSTEM_WIDGET_TYPES.has(type) ? 'unity' : 'overlay'),
     groupId: String(source.groupId || source.config?.__designer?.groupId || ''),
-    frame: {
-      x: hasCanonicalFrame ? numberValue(frame.x, 0) : numberValue(source.x, 0) / legacyColumns * canvas.width,
-      y: hasCanonicalFrame ? numberValue(frame.y, 0) : numberValue(source.y, 0) / legacyRows * canvas.height,
-      width: hasCanonicalFrame ? numberValue(frame.width, defaults.size[0], 20) : numberValue(source.w, defaults.size[0] / canvas.width * legacyColumns) / legacyColumns * canvas.width,
-      height: hasCanonicalFrame ? numberValue(frame.height, defaults.size[1], 20) : numberValue(source.h, defaults.size[1] / canvas.height * legacyRows) / legacyRows * canvas.height,
-      rotation: numberValue(frame.rotation, 0, -360, 360)
-    },
+    frame: normalizedFrame,
     content: { ...deepClone(defaults.content || {}), ...deepClone(config) },
-    style: { ...deepClone(defaults.style || {}), ...deepClone(source.style || source.config?.style || {}) },
+    style: normalizedStyle,
     data: {
       // 旧版无来源指标仍迁移为静态占位；新 runtime 模式只读取当前视角与部件上下文。
       mode: resolvedDataMode,
-      deviceId: String(data.deviceId || data.device_id || ''),
+      deviceScope,
+      deviceId: String(rawDeviceId),
       pointId: String(data.pointId || data.point_id || ''),
+      pointKey: String(data.pointKey || data.point_key || ''),
       path: resolvedDataMode === 'static' ? '' : String(data.path || ''),
       source: resolvedDataMode === 'static' ? '' : String(data.source || ''),
       connectionId: String(data.connectionId || data.connection_id || ''),
@@ -320,6 +377,66 @@ export function normalizeDashboardWidget(source = {}, canvas = DEFAULT_DASHBOARD
   }
 }
 
+function navigationFrames(canvas = DEFAULT_DASHBOARD_CANVAS) {
+  const width = Math.max(220, Math.min(600, Math.round(Number(canvas.width || 1920) * .32)))
+  return {
+    navigation: { x: Math.round((Number(canvas.width || 1920) - width) / 2), y: 18, width, height: 42, rotation: 0 },
+    returnButton: { x: 20, y: 18, width: 42, height: 42, rotation: 0 }
+  }
+}
+
+function ensureNavigationWidgets(rawWidgets, canvas) {
+  const widgets = Array.isArray(rawWidgets) ? rawWidgets.slice(0, 500) : []
+  const frames = navigationFrames(canvas)
+  let navigationIndex = widgets.findIndex(widget => String(widget?.type || widget?.widget_type || '').toLowerCase() === 'navigation')
+  let returnIndex = widgets.findIndex(widget => String(widget?.type || widget?.widget_type || '').toLowerCase() === 'return_button')
+  const missingCount = (navigationIndex < 0 ? 1 : 0) + (returnIndex < 0 ? 1 : 0)
+  if (widgets.length + missingCount > 500) {
+    let removeCount = widgets.length + missingCount - 500
+    for (let index = widgets.length - 1; index >= 0 && removeCount > 0; index -= 1) {
+      const type = String(widgets[index]?.type || widgets[index]?.widget_type || '').toLowerCase()
+      if (type === 'navigation' || type === 'return_button') continue
+      widgets.splice(index, 1)
+      removeCount -= 1
+    }
+    navigationIndex = widgets.findIndex(widget => String(widget?.type || widget?.widget_type || '').toLowerCase() === 'navigation')
+    returnIndex = widgets.findIndex(widget => String(widget?.type || widget?.widget_type || '').toLowerCase() === 'return_button')
+  }
+
+  if (navigationIndex < 0) {
+    widgets.push({
+      id: 'widget_navigation',
+      type: 'navigation',
+      title: '顶部导航状态',
+      frame: frames.navigation,
+      content: { showTitle: false, projectLabel: '热处理车间项目 · 南区热处理车间智能监控大屏', statusText: '模拟数据正常' },
+      style: { background: 'transparent', color: '#eef7ff', borderColor: 'transparent', borderRadius: 0 },
+      runtimeTarget: 'unity',
+      zIndex: 1000,
+      visible: true
+    })
+  } else if (returnIndex < 0) {
+    // The old navigation item represented both the status pill and the
+    // return button. Once split, keep its text but give it the status frame.
+    widgets[navigationIndex] = { ...widgets[navigationIndex], frame: frames.navigation, type: 'navigation' }
+  }
+
+  if (returnIndex < 0) {
+    widgets.push({
+      id: 'widget_return_button',
+      type: 'return_button',
+      title: '返回键',
+      frame: frames.returnButton,
+      content: { showTitle: false },
+      style: { background: 'transparent', color: '#eef7ff', borderColor: 'transparent', borderRadius: 0 },
+      runtimeTarget: 'unity',
+      zIndex: 1001,
+      visible: true
+    })
+  }
+  return widgets
+}
+
 export function normalizeDashboardDocument(source = {}) {
   const canvas = {
     ...DEFAULT_DASHBOARD_CANVAS,
@@ -331,7 +448,9 @@ export function normalizeDashboardDocument(source = {}) {
   canvas.gridSize = Math.round(numberValue(canvas.gridSize, 10, 1, 200))
   canvas.safeArea = Math.round(numberValue(canvas.safeArea, 24, 0, 400))
   const rawScene = objectValue(source.scene, {})
-  const widgets = (source.widgets || []).map((widget, index) => normalizeDashboardWidget(widget, canvas, index))
+  const rawWidgets = Array.isArray(source.widgets) ? source.widgets : []
+  const widgetSources = ensureNavigationWidgets(rawWidgets, canvas)
+  const widgets = widgetSources.map((widget, index) => normalizeDashboardWidget(widget, canvas, index))
   const widgetIds = new Set(widgets.map(widget => widget.id))
   const groupIds = new Set(widgets.map(widget => widget.groupId).filter(Boolean))
   const targetExists = target => {
@@ -350,6 +469,20 @@ export function normalizeDashboardDocument(source = {}) {
     })
   })
   const normalizedViews = normalizeDashboardViews(rawScene)
+  const validViewIds = new Set(normalizedViews.views.map(view => view.id))
+  widgets.forEach(widget => {
+    if (Array.isArray(widget.visibility?.viewIds)) {
+      widget.visibility.viewIds = widget.visibility.viewIds.filter(viewId => validViewIds.has(String(viewId)))
+    }
+    if (Array.isArray(widget.events)) {
+      widget.events = widget.events.map(event => {
+        if (event?.action === 'switch_view' && event.viewId && !validViewIds.has(String(event.viewId))) {
+          return { ...event, viewId: normalizedViews.defaultViewId }
+        }
+        return event
+      })
+    }
+  })
   normalizedViews.views = normalizedViews.views.map(view => ({
     ...view,
     componentState: {

@@ -1,11 +1,11 @@
 const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
+const { createSmokeSandbox, stopOwnedSmokeProcess } = require('./smoke-sandbox.cjs');
 
 const desktopDir = path.resolve(__dirname, '..');
 const projectDir = path.resolve(desktopDir, '..');
 const electron = path.join(desktopDir, 'node_modules', 'electron', 'dist', 'electron.exe');
-const outputDir = path.join(projectDir, 'output', `backend-supervisor-${Date.now()}-${process.pid}`);
 
 function waitForExit(child, timeoutMs) {
     return new Promise((resolve, reject) => {
@@ -23,26 +23,19 @@ function waitForExit(child, timeoutMs) {
 
 async function main() {
     if (!fs.existsSync(electron)) throw new Error(`找不到 Electron：${electron}`);
-    fs.rmSync(outputDir, { recursive: true, force: true });
-    fs.mkdirSync(outputDir, { recursive: true });
+    const sandbox = await createSmokeSandbox('backend-supervisor');
+    const outputDir = sandbox.directory;
     const child = spawn(electron, [path.join(desktopDir, 'main.cjs')], {
         cwd: desktopDir,
         windowsHide: true,
         env: {
-            ...process.env,
-            APP_USER_DATA_DIR: outputDir,
-            DISABLE_AUTO_START: 'true',
+            ...sandbox.env,
             NATIVE_CLIENT_SMOKE_MODE: 'true',
-            DESKTOP_SMOKE_CRASH_BACKEND_AFTER_MS: '7000',
-            // A production-style MySQL startup can take 15-25 seconds on a low-end
-            // Windows PC with antivirus/OneDrive enabled.  Leave enough time after
-            // the injected crash to observe a real healthy restart before quitting.
-            DESKTOP_SMOKE_EXIT_AFTER_MS: '45000',
-            DESKTOP_MYSQL_HOST: process.env.DESKTOP_MYSQL_HOST || '127.0.0.1',
-            DESKTOP_MYSQL_PORT: process.env.DESKTOP_MYSQL_PORT || '3307',
-            DESKTOP_MYSQL_USER: process.env.DESKTOP_MYSQL_USER || 'root',
-            DESKTOP_MYSQL_PASSWORD: process.env.DESKTOP_MYSQL_PASSWORD || 'root',
-            DESKTOP_MYSQL_DATABASE: process.env.DESKTOP_MYSQL_DATABASE || 'dongtai_daping'
+            DESKTOP_SMOKE_BACKEND_ONLY: 'true',
+            DESKTOP_SMOKE_CRASH_BACKEND_AFTER_MS: '3000',
+            // Only the hidden Electron supervisor and an isolated SQLite backend
+            // are started. Rendering and WebView2 have independent native tests.
+            DESKTOP_SMOKE_EXIT_AFTER_MS: '12000'
         },
         stdio: 'ignore'
     });
@@ -50,7 +43,7 @@ async function main() {
     try {
         exit = await waitForExit(child, 120000);
     } catch (error) {
-        try { child.kill(); } catch (killError) { /* ignore */ }
+        await stopOwnedSmokeProcess(child);
         throw error;
     }
 

@@ -5,7 +5,7 @@ const WebSocket = require('ws');
 const {
     BACKEND_DIR,
     REPO_DIR,
-    copySqliteDatabase,
+    createTestDatabase,
     createRunDirectory,
     findFreePort,
     forceStop,
@@ -18,7 +18,6 @@ const {
     waitUntil
 } = require('./integration-test-utils.cjs');
 
-const SOURCE_DB = path.resolve(process.env.PLC_TEST_SOURCE_DB || path.join(BACKEND_DIR, 'data', 'factory.db'));
 const SIMULATOR_DIR = path.resolve(
     process.env.PLC_SIMULATOR_DIR || path.join(REPO_DIR, '..', 'PLC仿真调试器')
 );
@@ -28,13 +27,36 @@ const OPCUA_ENGINE = path.join(SIMULATOR_DIR, 'opcua_engine.py');
 const MODBUS_DEVICE = 'Furnace_01';
 const OPCUA_DEVICE = 'Furnace_02';
 const MODBUS_POINTS = {
-    temperature: { node: 'HR40001', area: 'holding', offset: 0, type: 'word' },
-    pressure: { node: 'HR40002', area: 'holding', offset: 1, type: 'real' },
-    running: { node: 'C00001', area: 'coil', offset: 0, type: 'bool' }
+    temperature: { node: 'HR40001', area: 'holding', offset: 0, type: 'word', field: 'actual_temp', unit: '℃' },
+    pressure: { node: 'HR40002', area: 'holding', offset: 1, type: 'real', field: 'pressure', unit: 'bar' },
+    running: { node: 'C00001', area: 'coil', offset: 0, type: 'bool', field: 'running', category: 'status' },
+    byte: { node: 'HR40004', area: 'holding', offset: 3, type: 'byte', field: 'boundary_byte' },
+    int: { node: 'HR40005', area: 'holding', offset: 4, type: 'int', field: 'boundary_int' },
+    dword: { node: 'HR40006', area: 'holding', offset: 5, type: 'dword', field: 'boundary_dword' },
+    dint: { node: 'HR40008', area: 'holding', offset: 7, type: 'dint', field: 'boundary_dint' }
 };
 const OPCUA_POINTS = {
-    temperature: { node: 'ns=2;s=Factory.Furnace02.Temperature', type: 'real' },
-    running: { node: 'ns=2;s=Factory.Furnace02.Running', type: 'bool' }
+    temperature: { node: 'ns=2;s=Factory.Furnace02.Temperature', type: 'real', field: 'actual_temp', unit: '℃' },
+    running: { node: 'ns=2;s=Factory.Furnace02.Running', type: 'bool', field: 'running', category: 'status' },
+    byte: { node: 'ns=2;s=Factory.Furnace02.Byte', type: 'byte', field: 'boundary_byte' },
+    word: { node: 'ns=2;s=Factory.Furnace02.Word', type: 'word', field: 'boundary_word' },
+    int: { node: 'ns=2;s=Factory.Furnace02.Int', type: 'int', field: 'boundary_int' },
+    dword: { node: 'ns=2;s=Factory.Furnace02.Dword', type: 'dword', field: 'boundary_dword' },
+    dint: { node: 'ns=2;s=Factory.Furnace02.Dint', type: 'dint', field: 'boundary_dint' }
+};
+const INITIAL_MODBUS_VALUES = { temperature: 1200, pressure: 12.5, running: true, byte: 17, int: -123, dword: 305419896, dint: -123456789 };
+const INITIAL_OPCUA_VALUES = { temperature: 860.5, running: true, byte: 23, word: 2345, int: -234, dword: 591751049, dint: -234567890 };
+const RECOVERED_MODBUS_VALUES = { temperature: 1500, pressure: -25.25, running: false, byte: 42, int: -1234, dword: 4000000000, dint: -2000000000 };
+const RECOVERED_OPCUA_VALUES = { temperature: 900.5, running: false, byte: 43, word: 54321, int: -2345, dword: 3000000000, dint: -1900000000 };
+const TYPE_BOUNDARIES = {
+    bool: [false, true],
+    byte: [0, 255],
+    word: [0, 65535],
+    int: [-32768, 0, 32767],
+    dword: [0, 4294967295],
+    dint: [-2147483648, 0, 2147483647],
+    // 0.125 is exactly representable as Float32: any rounding is a pipeline loss.
+    real: [-12.5, 0, 123.75, 0.125]
 };
 const SHUTDOWN_TOKEN = `plc-simulator-protocol-${process.pid}-${Date.now()}`;
 
@@ -80,11 +102,16 @@ function configureDatabase(filename, modbusPort, opcuaPort) {
                 quality, scale, offset, expression, display_format, sample_interval_ms,
                 access_type, point_kind, alarm_record_role, alarm_level, alarm_condition
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'good', 1, 0, '', '', ?, 'READ', 'normal', '', 'WARNING', '=1')`);
-            insert.run(MODBUS_DEVICE, 'modbus_temperature', 'Modbus 温度', MODBUS_POINTS.temperature.node, 'WORD', '℃', 'analog', 'actual_temp', 250);
-            insert.run(MODBUS_DEVICE, 'modbus_pressure', 'Modbus 压力', MODBUS_POINTS.pressure.node, 'REAL', 'bar', 'analog', 'pressure', 250);
-            insert.run(MODBUS_DEVICE, 'modbus_running', 'Modbus 运行', MODBUS_POINTS.running.node, 'BOOL', '', 'status', 'running', 500);
-            insert.run(OPCUA_DEVICE, 'opc_temperature', 'OPC 温度', OPCUA_POINTS.temperature.node, 'REAL', '℃', 'analog', 'actual_temp', 250);
-            insert.run(OPCUA_DEVICE, 'opc_running', 'OPC 运行', OPCUA_POINTS.running.node, 'BOOL', '', 'status', 'running', 500);
+            for (const [deviceId, prefix, points] of [
+                [MODBUS_DEVICE, 'modbus', MODBUS_POINTS],
+                [OPCUA_DEVICE, 'opc', OPCUA_POINTS]
+            ]) {
+                for (const [key, point] of Object.entries(points)) {
+                    insert.run(deviceId, `${prefix}_${key}`, `${prefix} ${key}`, point.node,
+                        point.type.toUpperCase(), point.unit || '', point.category || 'analog', point.field,
+                        point.type === 'bool' ? 500 : 250);
+                }
+            }
         })();
         if (db.pragma('quick_check', { simple: true }) !== 'ok') throw new Error('集成测试数据库完整性检查失败');
     } finally {
@@ -102,7 +129,7 @@ function startSimulator(engine, protocolPort, controlPort, logName, extra = []) 
         ...extra
     ], {
         cwd: SIMULATOR_DIR,
-        env: { ...process.env, PYTHONUTF8: '1' },
+        env: { ...process.env, PYTHONUTF8: '1', PYTHONDONTWRITEBYTECODE: '1' },
         logFile: path.join(runDirectory, logName)
     });
 }
@@ -119,6 +146,13 @@ async function writeOpcUa(controlPort, point, value) {
         method: 'POST',
         body: JSON.stringify({ nodeId: point.node, type: point.type, value })
     });
+}
+
+async function seedPoints(write, controlPort, points, values) {
+    for (const [key, point] of Object.entries(points)) {
+        if (!Object.hasOwn(values, key)) throw new Error(`缺少初始化点位 ${key}`);
+        await write(controlPort, point, values[key]);
+    }
 }
 
 function connectWebSocket(port, frames, statuses) {
@@ -146,8 +180,8 @@ function connectWebSocket(port, frames, statuses) {
     });
 }
 
-function deviceFrame(frames, deviceId, after = 0) {
-    for (let index = frames.length - 1; index >= 0; index -= 1) {
+function deviceFrame(frames, deviceId, after = 0, minimumFrameIndex = 0) {
+    for (let index = frames.length - 1; index >= minimumFrameIndex; index -= 1) {
         const entry = frames[index];
         if (entry.receivedAt < after) break;
         if (entry.message?.payload?.devices?.some(device => device.deviceId === deviceId || device.furnace_id === deviceId)) {
@@ -163,6 +197,115 @@ function frameDevice(entry, deviceId) {
 
 function deviceStatus(entry, deviceId) {
     return entry?.message?.payload?.devices?.find(device => device.deviceId === deviceId);
+}
+
+function frameFence(frames) {
+    return { sentAt: Date.now(), frameIndex: frames.length };
+}
+
+function pointObservation(entry, deviceId, point) {
+    const device = frameDevice(entry, deviceId);
+    const category = point.category || 'analog';
+    return {
+        value: device?.[category]?.[point.field],
+        quality: device?.quality?.[category]?.[point.field]
+    };
+}
+
+function summarizePoints(entry, deviceId, points) {
+    return Object.fromEntries(Object.entries(points).map(([key, point]) => [key, {
+        address: point.node,
+        type: point.type.toUpperCase(),
+        ...pointObservation(entry, deviceId, point)
+    }]));
+}
+
+function allPointsQuality(entry, deviceId, points, quality) {
+    return Boolean(frameDevice(entry, deviceId)) && Object.values(points).every(point =>
+        pointObservation(entry, deviceId, point).quality === quality);
+}
+
+async function waitForPointValues(frames, deviceId, points, expected, fence, label, timeoutMs = 5000) {
+    try {
+        return await waitUntil(() => {
+            const entry = deviceFrame(frames, deviceId, fence.sentAt, fence.frameIndex);
+            const matches = Object.entries(expected).every(([key, value]) => {
+                const observed = pointObservation(entry, deviceId, points[key]);
+                return observed.value === value && observed.quality === 'good';
+            });
+            return entry && matches ? entry : null;
+        }, timeoutMs, label);
+    } catch (error) {
+        const latest = deviceFrame(frames, deviceId, fence.sentAt, fence.frameIndex);
+        throw new Error(`${label}: expected ${JSON.stringify(expected)}, latest ${JSON.stringify(summarizePoints(latest, deviceId, points))}`, { cause: error });
+    }
+}
+
+async function verifyTypeBoundaries(frames, deviceId, controlPort, points, write, evidence) {
+    // Run integers/BOOL before REAL so failures retain the completed type coverage.
+    const ordered = Object.entries(points).sort((a, b) => Number(a[1].type === 'real') - Number(b[1].type === 'real'));
+    for (const [key, point] of ordered) {
+        const pointEvidence = { point: key, address: point.node, type: point.type.toUpperCase(), samples: [] };
+        evidence.push(pointEvidence);
+        for (const expected of TYPE_BOUNDARIES[point.type]) {
+            const fence = frameFence(frames);
+            const response = await write(controlPort, point, expected);
+            if (response.value !== expected) throw new Error(`仿真器未保存 ${deviceId}/${key}=${expected}: ${JSON.stringify(response)}`);
+            const sample = { expected, simulatorValue: response.value };
+            pointEvidence.samples.push(sample);
+            try {
+                const observed = await waitForPointValues(frames, deviceId, points, { [key]: expected }, fence,
+                    `${deviceId} ${point.type.toUpperCase()} 边界 ${expected}`);
+                Object.assign(sample, pointObservation(observed, deviceId, point), {
+                    latencyMs: observed.receivedAt - fence.sentAt,
+                    sequence: observed.message.payload.seq
+                });
+            } catch (error) {
+                Object.assign(sample, pointObservation(deviceFrame(frames, deviceId, fence.sentAt, fence.frameIndex), deviceId, point));
+                throw error;
+            }
+        }
+    }
+}
+
+function boundariesComplete(points, evidence) {
+    return Object.entries(points).every(([key, point]) => {
+        const samples = evidence.find(entry => entry.point === key)?.samples || [];
+        return samples.length === TYPE_BOUNDARIES[point.type].length && samples.every((sample, index) =>
+            sample.expected === TYPE_BOUNDARIES[point.type][index]
+            && sample.value === sample.expected && sample.quality === 'good');
+    });
+}
+
+async function verifyIsolation(frames, healthyDevice, healthyPoints, controlPort, write, values,
+    failedDevice, failedPoints, failedBadFrame, evidence) {
+    const failedBadIndex = frames.indexOf(failedBadFrame);
+    for (const value of values) {
+        const fence = frameFence(frames);
+        await write(controlPort, healthyPoints.temperature, value);
+        const observed = await waitForPointValues(frames, healthyDevice, healthyPoints, { temperature: value }, fence,
+            `${failedDevice} 离线期间 ${healthyDevice} 新值 ${value}`);
+        if (!allPointsQuality(observed, healthyDevice, healthyPoints, 'good')) {
+            throw new Error(`离线隔离失败：${healthyDevice} 存在非 good 点位`);
+        }
+        // An offline peer must not briefly regain good quality from stale callbacks.
+        const unexpected = frames.slice(failedBadIndex).find(entry => frameDevice(entry, failedDevice)
+            && !allPointsQuality(entry, failedDevice, failedPoints, 'bad'));
+        if (unexpected) throw new Error(`离线隔离失败：${failedDevice} 未恢复时点位不再全部 bad`);
+        const failedFrame = deviceFrame(frames, failedDevice, failedBadFrame.receivedAt);
+        if (!allPointsQuality(failedFrame, failedDevice, failedPoints, 'bad')) {
+            throw new Error(`离线隔离失败：${failedDevice} 未保持 bad`);
+        }
+        evidence.push({
+            expected: value,
+            ...pointObservation(observed, healthyDevice, healthyPoints.temperature),
+            newFrame: frames.indexOf(observed) >= fence.frameIndex,
+            sentAt: fence.sentAt,
+            receivedAt: observed.receivedAt,
+            sequence: observed.message.payload.seq,
+            failedDeviceAllPointsBad: true
+        });
+    }
 }
 
 async function stopBackend() {
@@ -192,6 +335,13 @@ async function main() {
     const startedAt = Date.now();
     const frames = [];
     const statuses = [];
+    const coverage = {
+        initial: {},
+        typeBoundaries: { MODBUS_TCP: [], OPC_UA: [] },
+        outage: {},
+        isolation: { duringModbusOutage: [], duringOpcUaOutage: [] },
+        recovery: {}
+    };
     let result;
     try {
         if (!fs.existsSync(MODBUS_ENGINE) || !fs.existsSync(OPCUA_ENGINE)) {
@@ -209,7 +359,7 @@ async function main() {
         const uploadsDirectory = path.join(runDirectory, 'uploads');
         fs.mkdirSync(dataDirectory, { recursive: true });
         fs.mkdirSync(uploadsDirectory, { recursive: true });
-        await copySqliteDatabase(SOURCE_DB, databaseFile);
+        await createTestDatabase(databaseFile, { source: process.env.PLC_TEST_SOURCE_DB });
         configureDatabase(databaseFile, modbusPort, opcuaPort);
         fs.writeFileSync(path.join(dataDirectory, 'database-config.json'), JSON.stringify({ type: 'sqlite', filename: databaseFile }, null, 2));
 
@@ -220,11 +370,10 @@ async function main() {
         ]);
         await waitForHttp(`http://127.0.0.1:${modbusControlPort}/health`, 30000);
         await waitForHttp(`http://127.0.0.1:${opcuaControlPort}/health`, 30000);
-        await writeModbus(modbusControlPort, MODBUS_POINTS.temperature, 1200);
-        await writeModbus(modbusControlPort, MODBUS_POINTS.pressure, 12.5);
-        await writeModbus(modbusControlPort, MODBUS_POINTS.running, true);
-        await writeOpcUa(opcuaControlPort, OPCUA_POINTS.temperature, 860.5);
-        await writeOpcUa(opcuaControlPort, OPCUA_POINTS.running, true);
+        await Promise.all([
+            seedPoints(writeModbus, modbusControlPort, MODBUS_POINTS, INITIAL_MODBUS_VALUES),
+            seedPoints(writeOpcUa, opcuaControlPort, OPCUA_POINTS, INITIAL_OPCUA_VALUES)
+        ]);
 
         backend = startLoggedProcess(process.execPath, [path.join(BACKEND_DIR, 'server.js')], {
             cwd: BACKEND_DIR,
@@ -246,16 +395,13 @@ async function main() {
         socket = await connectWebSocket(backendPort, frames, statuses);
         await waitUntil(() => statuses.find(entry => deviceStatus(entry, MODBUS_DEVICE)?.status === 'connected'
             && deviceStatus(entry, OPCUA_DEVICE)?.status === 'connected'), 30000, '两种协议初始连接');
-        const initialModbus = await waitUntil(() => {
-            const entry = deviceFrame(frames, MODBUS_DEVICE);
-            const device = frameDevice(entry, MODBUS_DEVICE);
-            return device?.analog?.actual_temp === 1200 && device?.quality?.analog?.actual_temp === 'good' ? entry : null;
-        }, 15000, 'Modbus 初始值');
-        const initialOpcUa = await waitUntil(() => {
-            const entry = deviceFrame(frames, OPCUA_DEVICE);
-            const device = frameDevice(entry, OPCUA_DEVICE);
-            return device?.analog?.actual_temp === 860.5 && device?.quality?.analog?.actual_temp === 'good' ? entry : null;
-        }, 15000, 'OPC UA 初始值');
+        const initialFence = { sentAt: 0, frameIndex: 0 };
+        const initialModbus = await waitForPointValues(frames, MODBUS_DEVICE, MODBUS_POINTS, INITIAL_MODBUS_VALUES,
+            initialFence, 'Modbus 全部点位初始值', 15000);
+        const initialOpcUa = await waitForPointValues(frames, OPCUA_DEVICE, OPCUA_POINTS, INITIAL_OPCUA_VALUES,
+            initialFence, 'OPC UA 全部点位初始值', 15000);
+        coverage.initial.MODBUS_TCP = summarizePoints(initialModbus, MODBUS_DEVICE, MODBUS_POINTS);
+        coverage.initial.OPC_UA = summarizePoints(initialOpcUa, OPCUA_DEVICE, OPCUA_POINTS);
 
         const modbusLatencies = [];
         const opcuaLatencies = [];
@@ -267,16 +413,25 @@ async function main() {
             await writeOpcUa(opcuaControlPort, OPCUA_POINTS.temperature, opcuaValue);
             const modbusFrame = await waitUntil(() => {
                 const device = frameDevice(deviceFrame(frames, MODBUS_DEVICE, sentAt), MODBUS_DEVICE);
-                return device?.analog?.actual_temp === modbusValue ? deviceFrame(frames, MODBUS_DEVICE, sentAt) : null;
+                return device?.analog?.actual_temp === modbusValue && device?.quality?.analog?.actual_temp === 'good'
+                    ? deviceFrame(frames, MODBUS_DEVICE, sentAt) : null;
             }, 5000, `Modbus 连续值 ${modbusValue}`);
             const opcFrame = await waitUntil(() => {
                 const device = frameDevice(deviceFrame(frames, OPCUA_DEVICE, sentAt), OPCUA_DEVICE);
-                return device?.analog?.actual_temp === opcuaValue ? deviceFrame(frames, OPCUA_DEVICE, sentAt) : null;
+                return device?.analog?.actual_temp === opcuaValue && device?.quality?.analog?.actual_temp === 'good'
+                    ? deviceFrame(frames, OPCUA_DEVICE, sentAt) : null;
             }, 5000, `OPC UA 连续值 ${opcuaValue}`);
             modbusLatencies.push(modbusFrame.receivedAt - sentAt);
             opcuaLatencies.push(opcFrame.receivedAt - sentAt);
             await sleep(100);
         }
+
+        const boundaryResults = await Promise.allSettled([
+            verifyTypeBoundaries(frames, MODBUS_DEVICE, modbusControlPort, MODBUS_POINTS, writeModbus, coverage.typeBoundaries.MODBUS_TCP),
+            verifyTypeBoundaries(frames, OPCUA_DEVICE, opcuaControlPort, OPCUA_POINTS, writeOpcUa, coverage.typeBoundaries.OPC_UA)
+        ]);
+        const boundaryFailures = boundaryResults.filter(result => result.status === 'rejected');
+        if (boundaryFailures.length) throw new Error(boundaryFailures.map(result => result.reason.message).join('\n'));
 
         const modbusOutageAt = Date.now();
         await forceStop(modbusSimulator);
@@ -285,16 +440,22 @@ async function main() {
             && deviceStatus(entry, MODBUS_DEVICE)?.status === 'offline'), 10000, 'Modbus 断联离线');
         const opcStillConnected = await waitUntil(() => statuses.find(entry => entry.receivedAt >= modbusOutageAt
             && deviceStatus(entry, OPCUA_DEVICE)?.status === 'connected'), 8000, 'Modbus 断联时 OPC UA 保持连接');
+        const modbusBadFrame = await waitUntil(() => {
+            const entry = deviceFrame(frames, MODBUS_DEVICE, modbusOutageAt);
+            return allPointsQuality(entry, MODBUS_DEVICE, MODBUS_POINTS, 'bad') ? entry : null;
+        }, 10000, 'Modbus 断联后全部点位 bad');
+        coverage.outage.MODBUS_TCP = summarizePoints(modbusBadFrame, MODBUS_DEVICE, MODBUS_POINTS);
+        await verifyIsolation(frames, OPCUA_DEVICE, OPCUA_POINTS, opcuaControlPort, writeOpcUa, [880.25, 881.5, 882.75],
+            MODBUS_DEVICE, MODBUS_POINTS, modbusBadFrame, coverage.isolation.duringModbusOutage);
 
         const modbusRecoveryAt = Date.now();
         modbusSimulator = startSimulator(MODBUS_ENGINE, modbusPort, modbusControlPort, 'modbus-simulator-recovery.log', ['--unit-id', '1']);
         await waitForHttp(`http://127.0.0.1:${modbusControlPort}/health`, 30000);
-        await writeModbus(modbusControlPort, MODBUS_POINTS.temperature, 1500);
-        const modbusRecovered = await waitUntil(() => {
-            const entry = deviceFrame(frames, MODBUS_DEVICE, modbusRecoveryAt);
-            const device = frameDevice(entry, MODBUS_DEVICE);
-            return device?.analog?.actual_temp === 1500 && device?.quality?.analog?.actual_temp === 'good' ? entry : null;
-        }, 15000, 'Modbus 重连恢复');
+        const modbusRecoveryFence = frameFence(frames);
+        await seedPoints(writeModbus, modbusControlPort, MODBUS_POINTS, RECOVERED_MODBUS_VALUES);
+        const modbusRecovered = await waitForPointValues(frames, MODBUS_DEVICE, MODBUS_POINTS, RECOVERED_MODBUS_VALUES,
+            modbusRecoveryFence, 'Modbus 全部点位重连恢复', 15000);
+        coverage.recovery.MODBUS_TCP = summarizePoints(modbusRecovered, MODBUS_DEVICE, MODBUS_POINTS);
 
         const opcOutageAt = Date.now();
         await forceStop(opcuaSimulator);
@@ -303,6 +464,13 @@ async function main() {
             && deviceStatus(entry, OPCUA_DEVICE)?.status === 'offline'), 12000, 'OPC UA 断联离线');
         const modbusStillConnected = await waitUntil(() => statuses.find(entry => entry.receivedAt >= opcOutageAt
             && deviceStatus(entry, MODBUS_DEVICE)?.status === 'connected'), 8000, 'OPC UA 断联时 Modbus 保持连接');
+        const opcBadFrame = await waitUntil(() => {
+            const entry = deviceFrame(frames, OPCUA_DEVICE, opcOutageAt);
+            return allPointsQuality(entry, OPCUA_DEVICE, OPCUA_POINTS, 'bad') ? entry : null;
+        }, 12000, 'OPC UA 断联后全部点位 bad');
+        coverage.outage.OPC_UA = summarizePoints(opcBadFrame, OPCUA_DEVICE, OPCUA_POINTS);
+        await verifyIsolation(frames, MODBUS_DEVICE, MODBUS_POINTS, modbusControlPort, writeModbus, [1601, 1602, 1603],
+            OPCUA_DEVICE, OPCUA_POINTS, opcBadFrame, coverage.isolation.duringOpcUaOutage);
 
         const opcRecoveryAt = Date.now();
         opcuaSimulator = startSimulator(OPCUA_ENGINE, opcuaPort, opcuaControlPort, 'opcua-simulator-recovery.log', [
@@ -310,12 +478,11 @@ async function main() {
             '--namespace-uri', 'urn:heat-treatment:plc-simulator'
         ]);
         await waitForHttp(`http://127.0.0.1:${opcuaControlPort}/health`, 30000);
-        await writeOpcUa(opcuaControlPort, OPCUA_POINTS.temperature, 900.5);
-        const opcRecovered = await waitUntil(() => {
-            const entry = deviceFrame(frames, OPCUA_DEVICE, opcRecoveryAt);
-            const device = frameDevice(entry, OPCUA_DEVICE);
-            return device?.analog?.actual_temp === 900.5 && device?.quality?.analog?.actual_temp === 'good' ? entry : null;
-        }, 20000, 'OPC UA 重连恢复');
+        const opcRecoveryFence = frameFence(frames);
+        await seedPoints(writeOpcUa, opcuaControlPort, OPCUA_POINTS, RECOVERED_OPCUA_VALUES);
+        const opcRecovered = await waitForPointValues(frames, OPCUA_DEVICE, OPCUA_POINTS, RECOVERED_OPCUA_VALUES,
+            opcRecoveryFence, 'OPC UA 全部节点重建和点位重连恢复', 20000);
+        coverage.recovery.OPC_UA = summarizePoints(opcRecovered, OPCUA_DEVICE, OPCUA_POINTS);
 
         const metrics = {
             initial: { modbusAt: initialModbus.receivedAt, opcuaAt: initialOpcUa.receivedAt },
@@ -323,7 +490,9 @@ async function main() {
             opcuaLatencyMs: { samples: opcuaLatencies.length, p95: percentile(opcuaLatencies, 95) },
             outage: {
                 modbusOfflineAfterMs: modbusOffline.receivedAt - modbusOutageAt,
-                opcuaOfflineAfterMs: opcOffline.receivedAt - opcOutageAt
+                opcuaOfflineAfterMs: opcOffline.receivedAt - opcOutageAt,
+                modbusAllPointsBadAfterMs: modbusBadFrame.receivedAt - modbusOutageAt,
+                opcuaAllPointsBadAfterMs: opcBadFrame.receivedAt - opcOutageAt
             },
             recovery: {
                 modbusGoodAfterMs: modbusRecovered.receivedAt - modbusRecoveryAt,
@@ -342,7 +511,19 @@ async function main() {
             protocolIsolationDuringModbusOutage: Boolean(opcStillConnected),
             protocolIsolationDuringOpcUaOutage: Boolean(modbusStillConnected),
             modbusRecoveryGood: Boolean(modbusRecovered),
-            opcuaRecoveryGood: Boolean(opcRecovered)
+            opcuaRecoveryGood: Boolean(opcRecovered),
+            modbusAllPointsInitiallyGood: allPointsQuality(initialModbus, MODBUS_DEVICE, MODBUS_POINTS, 'good'),
+            opcuaAllPointsInitiallyGood: allPointsQuality(initialOpcUa, OPCUA_DEVICE, OPCUA_POINTS, 'good'),
+            modbusSevenTypeBoundaries: boundariesComplete(MODBUS_POINTS, coverage.typeBoundaries.MODBUS_TCP),
+            opcuaSevenTypeBoundaries: boundariesComplete(OPCUA_POINTS, coverage.typeBoundaries.OPC_UA),
+            modbusAllPointsBadDuringOutage: allPointsQuality(modbusBadFrame, MODBUS_DEVICE, MODBUS_POINTS, 'bad'),
+            opcuaAllPointsBadDuringOutage: allPointsQuality(opcBadFrame, OPCUA_DEVICE, OPCUA_POINTS, 'bad'),
+            opcuaFreshGoodFramesDuringModbusOutage: coverage.isolation.duringModbusOutage.length === 3
+                && coverage.isolation.duringModbusOutage.every(sample => sample.newFrame && sample.quality === 'good' && sample.failedDeviceAllPointsBad),
+            modbusFreshGoodFramesDuringOpcUaOutage: coverage.isolation.duringOpcUaOutage.length === 3
+                && coverage.isolation.duringOpcUaOutage.every(sample => sample.newFrame && sample.quality === 'good' && sample.failedDeviceAllPointsBad),
+            modbusAllPointsRecovered: allPointsQuality(modbusRecovered, MODBUS_DEVICE, MODBUS_POINTS, 'good'),
+            opcuaAllNodesRebuiltAndRecovered: allPointsQuality(opcRecovered, OPCUA_DEVICE, OPCUA_POINTS, 'good')
         };
         result = {
             success: Object.values(checks).every(Boolean),
@@ -356,7 +537,8 @@ async function main() {
                 backend: backendOrigin
             },
             metrics,
-            checks
+            checks,
+            coverage
         };
         if (!result.success) throw new Error('PLC 仿真器协议集成检查未全部通过');
     } catch (error) {
@@ -367,6 +549,7 @@ async function main() {
             completedAt: new Date().toISOString(),
             durationMs: Date.now() - startedAt,
             error: error.stack || error.message || String(error),
+            coverage,
             diagnostics: {
                 statuses: statuses.slice(-12),
                 frames: frames.slice(-12)

@@ -3,19 +3,19 @@ const path = require('path');
 const Database = require('better-sqlite3');
 const {
     BACKEND_DIR,
-    copySqliteDatabase,
+    createTestDatabase,
     createRunDirectory,
     findFreePort,
     forceStop,
     requestJson,
     sleep,
     startLoggedProcess,
+    testFetch,
     waitForExit,
     waitForHttp,
     waitUntil
 } = require('./integration-test-utils.cjs');
 
-const SOURCE_DB = path.resolve(process.env.RECOVERY_TEST_SOURCE_DB || path.join(BACKEND_DIR, 'data', 'factory.db'));
 const SHUTDOWN_TOKEN = `recovery-test-${process.pid}-${Date.now()}`;
 const ACK_KEY = 'power_test_last_acknowledged_write';
 const RECOVERY_KEY = 'power_test_recovery_marker';
@@ -97,7 +97,7 @@ async function gracefulStop() {
 }
 
 async function downloadAndVerifyBackup(filename) {
-    const response = await fetch(`${backendOrigin}/api/database/backups/${encodeURIComponent(filename)}/download`);
+    const response = await testFetch(`${backendOrigin}/api/database/backups/${encodeURIComponent(filename)}/download`);
     if (!response.ok) throw new Error(`Backup download failed: HTTP ${response.status}`);
     const destination = path.join(runDirectory, `downloaded-${filename}`);
     fs.writeFileSync(destination, Buffer.from(await response.arrayBuffer()));
@@ -121,13 +121,12 @@ async function main() {
     let result;
 
     try {
-        if (!fs.existsSync(SOURCE_DB)) throw new Error(`Source SQLite database not found: ${SOURCE_DB}`);
         const port = await findFreePort(3201);
         backendOrigin = `http://127.0.0.1:${port}`;
         const dataDir = path.join(runDirectory, 'data');
         const databaseFile = path.join(dataDir, 'factory.db');
         fs.mkdirSync(dataDir, { recursive: true });
-        await copySqliteDatabase(SOURCE_DB, databaseFile);
+        await createTestDatabase(databaseFile, { source: process.env.RECOVERY_TEST_SOURCE_DB });
         configureDatabase(databaseFile);
         fs.writeFileSync(path.join(dataDir, 'database-config.json'), JSON.stringify({
             type: 'sqlite',
@@ -249,7 +248,7 @@ async function main() {
             startedAt: new Date(startedAt).toISOString(),
             completedAt: new Date().toISOString(),
             durationMs: Date.now() - startedAt,
-            sourceDatabase: SOURCE_DB,
+            sourceDatabase: process.env.RECOVERY_TEST_SOURCE_DB || 'generated isolated test fixture',
             databaseFile,
             powerCut: {
                 at: new Date(powerCutAt).toISOString(),

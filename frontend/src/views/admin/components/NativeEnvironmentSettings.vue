@@ -1,5 +1,5 @@
 <script setup>
-import { computed } from 'vue'
+import { computed, onUnmounted, ref, watch } from 'vue'
 import NativeWallEditor from './NativeWallEditor.vue'
 
 const props = defineProps({
@@ -37,6 +37,37 @@ const visualPresetOptions = computed(() => (
 
 const showCustomPreview = computed(() => props.config.preset === 'custom')
 
+const appliedFeedback = ref(false)
+let appliedFeedbackTimer = null
+
+const messageTone = computed(() => {
+    const text = String(props.message || '')
+    if (!text) return ''
+    if (/失败|错误|异常/.test(text)) return 'error'
+    if (/已保存|实时应用/.test(text)) return 'success'
+    if (/点击“立即应用”/.test(text)) return 'info'
+    if (/正在|应用中|推送/.test(text)) return 'pending'
+    return 'info'
+})
+
+watch(() => props.message, (message) => {
+    const text = String(message || '')
+    if (/已保存|实时应用/.test(text) && !/失败|错误|异常/.test(text)) {
+        appliedFeedback.value = true
+        if (appliedFeedbackTimer) clearTimeout(appliedFeedbackTimer)
+        appliedFeedbackTimer = setTimeout(() => {
+            appliedFeedback.value = false
+            appliedFeedbackTimer = null
+        }, 2800)
+    } else if (/失败|错误|异常|点击“立即应用”/.test(text)) {
+        appliedFeedback.value = false
+    }
+})
+
+onUnmounted(() => {
+    if (appliedFeedbackTimer) clearTimeout(appliedFeedbackTimer)
+})
+
 function clamp(value, minimum, maximum) {
     return Math.min(maximum, Math.max(minimum, Number(value) || 0))
 }
@@ -55,15 +86,15 @@ function presetPreviewStyle(option) {
         : clamp(0.13 + (420 - Number(source.fogEnd || 360)) / 1200, 0.06, 0.32)
 
     return {
-        '--preview-sky': source.skyColor || '#607FAF',
-        '--preview-horizon': source.horizonColor || '#354A6A',
-        '--preview-fog': source.fogColor || '#26364F',
-        '--preview-key': source.keyLightColor || '#FFF0DC',
-        '--preview-fill': source.fillLightColor || '#B5D2FF',
-        '--preview-floor': source.floorColor || '#263442',
-        '--preview-grid': source.gridColor || '#1D4759',
-        '--preview-wall': source.wallColor || '#283B59',
-        '--preview-frame': source.frameColor || '#526A86',
+        '--preview-sky': source.skyColor || '#696969',
+        '--preview-horizon': source.horizonColor || '#464646',
+        '--preview-fog': source.fogColor || '#565656',
+        '--preview-key': source.keyLightColor || '#F2F2F2',
+        '--preview-fill': source.fillLightColor || '#EAEAEA',
+        '--preview-floor': source.floorColor || '#5B5B5B',
+        '--preview-grid': source.gridColor || '#777777',
+        '--preview-wall': source.wallColor || '#5A5A5A',
+        '--preview-frame': source.frameColor || '#9A9A9A',
         '--preview-brightness': brightness.toFixed(2),
         '--preview-saturation': saturation.toFixed(2),
         '--preview-contrast': contrast.toFixed(2),
@@ -96,10 +127,32 @@ function saveCustom() {
                 <p>所有参数作用于当前及以后导入的模型。保存后通过 WebSocket 实时应用，不重载模型、不生成荧光描边。</p>
             </div>
             <div class="environment-actions">
-                <button type="button" class="env-btn" @click="emit('reset')">恢复推荐值</button>
-                <button type="button" class="env-btn primary" :disabled="saving" @click="emit('save', {})">
-                    {{ saving ? '应用中...' : '立即应用到 Unity' }}
-                </button>
+                <div class="environment-action-buttons">
+                    <button type="button" class="env-btn" :disabled="saving" @click="emit('reset')">恢复推荐值</button>
+                    <button
+                        type="button"
+                        class="env-btn primary"
+                        :class="{ 'is-busy': saving, 'is-applied': appliedFeedback && !saving }"
+                        :disabled="saving"
+                        :aria-busy="saving"
+                        @click="emit('save', {})"
+                    >
+                        <span v-if="saving" class="env-btn-spinner" aria-hidden="true"></span>
+                        <span>{{ saving ? '正在应用...' : appliedFeedback ? '已应用到 Unity ✓' : '立即应用到 Unity' }}</span>
+                    </button>
+                </div>
+                <p
+                    v-if="message"
+                    class="environment-message"
+                    :class="`is-${messageTone}`"
+                    :role="messageTone === 'error' ? 'alert' : 'status'"
+                    aria-live="polite"
+                >
+                    <span class="environment-message-icon" aria-hidden="true">
+                        {{ messageTone === 'error' ? '!' : messageTone === 'success' ? '✓' : messageTone === 'pending' ? '◌' : 'i' }}
+                    </span>
+                    <span>{{ message }}</span>
+                </p>
             </div>
         </div>
 
@@ -248,7 +301,6 @@ function saveCustom() {
             </section>
         </div>
 
-        <p v-if="message" class="environment-message">{{ message }}</p>
     </section>
 </template>
 
@@ -257,10 +309,19 @@ function saveCustom() {
 .environment-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; }
 .environment-heading h3 { margin: 0 0 8px; color: #1d1d1f; font-size: 17px; }
 .environment-heading p { max-width: 760px; margin: 0; color: #6e6e73; font-size: 13px; line-height: 1.6; }
-.environment-actions { display: flex; flex: 0 0 auto; gap: 10px; }
-.env-btn { min-height: 36px; padding: 7px 15px; color: #343437; background: #fff; border: 1px solid #cfd3d7; border-radius: 7px; cursor: pointer; }
-.env-btn.primary { color: #fff; background: #176b8b; border-color: #176b8b; }
-.env-btn:disabled { opacity: .55; cursor: wait; }
+.environment-actions { display: flex; flex: 0 0 auto; min-width: 320px; flex-direction: column; align-items: stretch; gap: 8px; }
+.environment-action-buttons { display: flex; justify-content: flex-end; gap: 10px; }
+.env-btn { display: inline-flex; min-height: 36px; align-items: center; justify-content: center; gap: 8px; padding: 7px 15px; color: #343437; background: #fff; border: 1px solid #cfd3d7; border-radius: 7px; cursor: pointer; transition: transform .12s ease, background-color .16s ease, border-color .16s ease, box-shadow .16s ease, color .16s ease; }
+.env-btn:hover:not(:disabled) { border-color: #9ebac7; box-shadow: 0 3px 10px rgba(23, 107, 139, .12); }
+.env-btn:active:not(:disabled) { transform: translateY(1px) scale(.985); box-shadow: inset 0 2px 4px rgba(0, 0, 0, .14); }
+.env-btn:focus-visible { outline: 3px solid rgba(41, 126, 162, .22); outline-offset: 2px; }
+.env-btn.primary { color: #fff; background: #176b8b; border-color: #176b8b; box-shadow: 0 3px 9px rgba(23, 107, 139, .2); }
+.env-btn.primary:hover:not(:disabled) { background: #125c78; border-color: #125c78; box-shadow: 0 5px 13px rgba(23, 107, 139, .28); }
+.env-btn.primary.is-busy { background: #125c78; border-color: #125c78; box-shadow: 0 0 0 3px rgba(41, 126, 162, .16), 0 4px 12px rgba(23, 107, 139, .22); }
+.env-btn.primary.is-applied { background: #21844d; border-color: #21844d; box-shadow: 0 3px 10px rgba(33, 132, 77, .24); }
+.env-btn:disabled { opacity: .92; cursor: wait; }
+.env-btn-spinner { width: 13px; height: 13px; flex: 0 0 auto; border: 2px solid rgba(255, 255, 255, .42); border-top-color: #fff; border-radius: 50%; animation: env-btn-spin .72s linear infinite; }
+@keyframes env-btn-spin { to { transform: rotate(360deg); } }
 .env-input { width: 100%; min-height: 38px; padding: 8px 10px; color: #1d1d1f; background: #fff; border: 1px solid #d2d2d7; border-radius: 6px; box-sizing: border-box; }
 .preset-panel { margin-top: 20px; padding: 17px; background: #fff; border: 1px solid #dce6ed; border-radius: 10px; }
 .preset-panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 18px; }
@@ -317,10 +378,18 @@ function saveCustom() {
 .switch span::after { content: ''; position: absolute; top: 3px; left: 3px; width: 17px; height: 17px; background: #fff; border-radius: 50%; box-shadow: 0 1px 3px rgba(0,0,0,.25); transition: .2s ease; }
 .switch input:checked + span { background: #24834f; }
 .switch input:checked + span::after { transform: translateX(17px); }
-.environment-message { margin: 14px 0 0; color: #176b3a; font-size: 12px; line-height: 1.5; }
+.environment-message { display: flex; align-items: flex-start; gap: 8px; margin: 0; padding: 9px 11px; color: #245d78; background: #edf8fc; border: 1px solid #c9e5ef; border-radius: 8px; font-size: 12px; line-height: 1.5; }
+.environment-message-icon { display: inline-flex; width: 16px; height: 16px; flex: 0 0 auto; align-items: center; justify-content: center; color: currentColor; border: 1px solid currentColor; border-radius: 50%; font-size: 10px; font-weight: 700; line-height: 1; }
+.environment-message.is-pending { color: #176b8b; background: #edf8fc; border-color: #b9dfea; }
+.environment-message.is-pending .environment-message-icon { animation: env-message-pulse 1.1s ease-in-out infinite; }
+.environment-message.is-success { color: #176b3a; background: #edf9f1; border-color: #bfe5ca; }
+.environment-message.is-error { color: #a32828; background: #fff1f1; border-color: #efc5c5; }
+.environment-message.is-info { color: #765315; background: #fff8e8; border-color: #f0dfae; }
+@keyframes env-message-pulse { 50% { opacity: .42; transform: scale(.88); } }
 
 @media (max-width: 1180px) {
     .environment-heading { flex-direction: column; }
+    .environment-actions { width: 100%; min-width: 0; }
     .environment-grid,
     .color-grid { grid-template-columns: 1fr; }
     .preset-gallery { grid-template-columns: repeat(2, minmax(0, 1fr)); }

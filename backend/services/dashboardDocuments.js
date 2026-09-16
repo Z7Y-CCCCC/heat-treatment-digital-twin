@@ -36,9 +36,11 @@ async function getProjectAndScene(db, sceneId = '') {
     let scene = sceneId
         ? await db.get('SELECT * FROM scenes WHERE id = ?', [sceneId])
         : null;
+    if (sceneId && !scene) return { project: null, scene: null };
     let project = scene
         ? await db.get('SELECT * FROM projects WHERE id = ?', [scene.project_id])
         : null;
+    if (sceneId && !project) return { project: null, scene };
     if (!project) {
         project = await db.get('SELECT * FROM projects WHERE is_active = 1 ORDER BY created_at ASC LIMIT 1')
             || await db.get('SELECT * FROM projects ORDER BY created_at ASC LIMIT 1');
@@ -89,17 +91,23 @@ async function loadPublishedDocument(db, project, scene) {
 async function validatePlcBindings(db, document) {
     validateDocument(document);
     const databaseConnectionIds = [...new Set(document.widgets
-        .filter(widget => widget.data?.mode === 'database')
-        .flatMap(widget => (Array.isArray(widget.data.datasets) && widget.data.datasets.length
+        .filter(widget => widget.data?.mode === 'database' || widget.data?.mode === 'business')
+        .flatMap(widget => (widget.data.mode === 'database' && Array.isArray(widget.data.datasets) && widget.data.datasets.length
             ? widget.data.datasets
             : [widget.data]))
         .map(binding => String(binding.connectionId || ''))
         .filter(Boolean))];
-    for (const connectionId of databaseConnectionIds) resolveConnection(connectionId);
+    for (const connectionId of databaseConnectionIds) {
+        const connection = resolveConnection(connectionId);
+        if (connection.sourceType === 'http_api' || connection.type === 'http_api') {
+            throw new Error('HTTP API 数据源目前仅支持健康检查，数据库和业务数据组件请选择数据库连接');
+        }
+    }
     const bindings = document.widgets
         .filter(widget => widget.data?.mode === 'plc')
         .map(widget => ({
             widgetId: widget.id,
+            deviceScope: widget.data.deviceScope === 'current' ? 'current' : 'fixed',
             deviceId: String(widget.data.deviceId || ''),
             pointId: String(widget.data.pointId || '')
         }));
@@ -116,7 +124,7 @@ async function validatePlcBindings(db, document) {
             errors.push(`组件 ${binding.widgetId} 绑定的点位不存在：${binding.pointId}`);
             continue;
         }
-        if (String(point.device_id) !== binding.deviceId) {
+        if (binding.deviceScope !== 'current' && String(point.device_id) !== binding.deviceId) {
             errors.push(`组件 ${binding.widgetId} 的设备与点位不匹配`);
         }
         if (String(point.access_type || 'READ').toUpperCase() !== 'READ') {
@@ -132,6 +140,14 @@ async function validatePlcBindings(db, document) {
 
 async function syncLegacyWidgets(tx, document) {
     const rows = documentToLegacyWidgets(document);
+    const owners = rows.length
+        ? await tx.all(`SELECT id, scene_id FROM widgets WHERE id IN (${rows.map(() => '?').join(',')})`, rows.map(row => row.id))
+        : [];
+    const ownerById = new Map(owners.map(row => [String(row.id), String(row.scene_id)]));
+    for (const row of rows) {
+        const owner = ownerById.get(String(row.id));
+        if (owner && owner !== String(document.sceneId)) throw new Error(`组件 ID ${row.id} 已属于其他场景，请为新组件使用不同 ID`);
+    }
     const existing = await tx.all('SELECT id FROM widgets WHERE scene_id = ?', [document.sceneId]);
     const nextIds = new Set(rows.map(row => row.id));
     for (const row of existing) {
@@ -140,7 +156,18 @@ async function syncLegacyWidgets(tx, document) {
             await tx.run('DELETE FROM widgets WHERE id = ?', [row.id]);
         }
     }
-    for (const row of rows) await tx.upsert('widgets', row, 'id');
+    for (const row of rows) {
+        const columns = Object.keys(row);
+        if (ownerById.has(String(row.id))) {
+            const updates = columns.filter(column => column !== 'id');
+            const result = await tx.run(`UPDATE widgets SET ${updates.map(column => `${tx.q(column)} = ?`).join(', ')}
+                WHERE id = ? AND scene_id = ?`, [...updates.map(column => row[column]), row.id, document.sceneId]);
+            if (!Number(result.changes)) throw new Error(`组件 ${row.id} 已被其他操作更改，请刷新后重试`);
+        } else {
+            await tx.run(`INSERT INTO widgets (${columns.map(column => tx.q(column)).join(', ')})
+                VALUES (${columns.map(() => '?').join(', ')})`, columns.map(column => row[column]));
+        }
+    }
 }
 
 async function saveDraft(db, { sceneId, document: input, expectedRevision }) {
@@ -154,8 +181,10 @@ async function saveDraft(db, { sceneId, document: input, expectedRevision }) {
         error.status = 409;
         throw error;
     }
-    validateDocument(input);
     const document = normalizeDocument(input, { project, scene, source: 'designer' });
+    // Normalize first so deleting a view can repair legacy visibility/event
+    // references before validation instead of returning one error per widget.
+    validateDocument(document);
     document.projectId = String(project.id);
     document.sceneId = String(scene.id);
     document.scene.id = String(scene.id);
@@ -169,8 +198,15 @@ async function saveDraft(db, { sceneId, document: input, expectedRevision }) {
     };
 
     await db.transaction(async (tx) => {
-        await tx.run(`UPDATE scenes SET draft_json = ?, draft_revision = ?, updated_at = CURRENT_TIMESTAMP
-            WHERE id = ?`, [JSON.stringify(document), nextRevision, scene.id]);
+        const updated = await tx.run(`UPDATE scenes SET draft_json = ?, draft_revision = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ? AND COALESCE(draft_revision, 0) = ?`, [JSON.stringify(document), nextRevision, scene.id, currentRevision]);
+        if (!Number(updated.changes)) {
+            const latest = await tx.get('SELECT draft_revision FROM scenes WHERE id = ?', [scene.id]);
+            const error = new Error(`草稿已被其他工程师更新或删除，请刷新后重试（当前修订 ${latest?.draft_revision ?? '未知'}）`);
+            error.code = 'DRAFT_CONFLICT';
+            error.status = 409;
+            throw error;
+        }
         await syncLegacyWidgets(tx, document);
     });
     return { document, revision: nextRevision, project, scene: { ...scene, draft_revision: nextRevision } };
@@ -246,7 +282,8 @@ async function activateRelease(db, releaseIdValue) {
     await validatePlcBindings(db, document);
     await db.transaction(async (tx) => {
         await tx.run('UPDATE releases SET is_current = 0 WHERE project_id = ?', [release.project_id]);
-        await tx.run('UPDATE releases SET is_current = 1 WHERE id = ?', [release.id]);
+        const activated = await tx.run('UPDATE releases SET is_current = 1 WHERE id = ?', [release.id]);
+        if (!Number(activated.changes)) throw new Error('发布版本已被删除，无法切换');
         await tx.run('UPDATE scenes SET is_active = 0 WHERE project_id = ?', [release.project_id]);
         await tx.run('UPDATE scenes SET is_active = 1, published_release_id = ? WHERE id = ?', [release.id, scene.id]);
     });
@@ -266,7 +303,8 @@ async function deleteRelease(db, releaseIdValue) {
     const release = await db.get('SELECT * FROM releases WHERE id = ?', [releaseIdValue]);
     if (!release) throw new Error('发布版本不存在');
     if (release.is_current) throw new Error('当前正在运行的版本不能删除');
-    await db.run('DELETE FROM releases WHERE id = ?', [release.id]);
+    const deleted = await db.run('DELETE FROM releases WHERE id = ? AND is_current = 0', [release.id]);
+    if (!Number(deleted.changes)) throw new Error('发布版本已被切换为当前版本或删除，请刷新后重试');
     return { success: true };
 }
 

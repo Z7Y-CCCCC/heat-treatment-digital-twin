@@ -1,7 +1,9 @@
 const fs = require('fs');
 const path = require('path');
 const zlib = require('zlib');
-const { once } = require('events');
+const crypto = require('crypto');
+const { validateHeaderName, validateHeaderValue } = require('http');
+const { Readable } = require('stream');
 const { pipeline } = require('stream/promises');
 const {
     createDatabaseBackup,
@@ -27,6 +29,14 @@ const DEFAULT_BACKUP_CONFIG = Object.freeze({
     selectedConnectionIds: [PRIMARY_ID]
 });
 const SUPPORTED_TYPES = new Set(['mysql', 'postgres', 'sqlserver', 'sqlite']);
+const SUPPORTED_SOURCE_TYPES = new Set(['database', 'http_api']);
+const SUPPORTED_HTTP_AUTH_TYPES = new Set(['none', 'api_key', 'bearer', 'basic']);
+const HEALTH_STATUSES = new Set(['unknown', 'healthy', 'auth_failed', 'http_error', 'network_error', 'timeout', 'config_error']);
+const FORBIDDEN_AUTH_HEADERS = new Set(['host', 'connection', 'content-length', 'transfer-encoding', 'upgrade', 'trailer', 'te', 'keep-alive', 'expect']);
+const HEALTH_TOKEN_TTL_MS = 15 * 60 * 1000;
+const healthTokens = new Map();
+const latestHealthChecks = new Map();
+let lastHealthCheckTime = 0;
 const VALUE_MODES = new Set(['latest', 'first', 'list', 'count', 'sum', 'avg', 'min', 'max']);
 
 let mysqlDriver;
@@ -34,7 +44,10 @@ let pgDriver;
 let sqlServerDriver;
 let sqliteDriver;
 let maintenanceTimer = null;
+let startupBackupHandle = null;
+let maintenanceStarted = false;
 let backupPromise = null;
+const activeConnectionBackups = new Map();
 let lastBackupRun = null;
 let lastBackupError = null;
 const runtimeCache = new Map();
@@ -86,6 +99,36 @@ function normalizeType(value) {
     return SUPPORTED_TYPES.has(type) ? type : 'mysql';
 }
 
+function normalizeSourceType(value) {
+    const type = String(value || '').toLowerCase();
+    if (type === 'api' || type === 'http' || type === 'http-api') return 'http_api';
+    return SUPPORTED_SOURCE_TYPES.has(type) ? type : 'database';
+}
+
+function normalizeHttpAuthType(value) {
+    const type = String(value || 'none').trim().toLowerCase();
+    return type === 'api-key' ? 'api_key' : type;
+}
+
+function normalizeSecret(value, current = '') {
+    return value === undefined || value === MASKED_PASSWORD ? String(current || '') : String(value ?? '');
+}
+
+function normalizeHealth(health) {
+    if (!health || typeof health !== 'object') return null;
+    const checkedAt = health.checkedAt ? new Date(health.checkedAt) : null;
+    const optionalNumber = value => value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value)) ? Number(value) : null;
+    const responseTimeMs = optionalNumber(health.responseTimeMs);
+    const httpStatus = optionalNumber(health.httpStatus);
+    return {
+        status: HEALTH_STATUSES.has(health.status) ? health.status : 'unknown',
+        message: shortText(health.message, '', 500),
+        responseTimeMs: responseTimeMs === null ? null : Math.max(0, Math.round(responseTimeMs)),
+        httpStatus: Number.isInteger(httpStatus) && httpStatus >= 100 && httpStatus <= 599 ? httpStatus : null,
+        checkedAt: checkedAt && !Number.isNaN(checkedAt.getTime()) ? checkedAt.toISOString() : null
+    };
+}
+
 function defaultPort(type) {
     if (type === 'postgres') return 5432;
     if (type === 'sqlserver') return 1433;
@@ -94,29 +137,58 @@ function defaultPort(type) {
 }
 
 function normalizeConnection(source = {}, current = {}) {
-    const type = normalizeType(source.type ?? current.type);
-    const password = source.password === MASKED_PASSWORD
-        ? current.password || ''
-        : String(source.password ?? current.password ?? '');
-    const id = safeId(source.id ?? current.id, `source_${Date.now()}`);
-    return {
+    const currentSourceType = normalizeSourceType(current.sourceType ?? (current.type === 'http_api' ? 'http_api' : 'database'));
+    const sourceType = normalizeSourceType(source.sourceType ?? (
+        source.type || source.dbType ? (source.type === 'http_api' ? 'http_api' : 'database') : currentSourceType
+    ));
+    const sameSourceType = sourceType === currentSourceType;
+    const previous = sameSourceType ? current : {};
+    const type = sourceType === 'http_api'
+        ? 'http_api'
+        : normalizeType(source.dbType ?? source.type ?? previous.dbType ?? previous.type);
+    const id = safeId(source.id ?? current.id, `source_${crypto.randomUUID()}`);
+    const common = {
         id,
         name: shortText(source.name ?? current.name, `外部数据源 ${id}`, 100),
+        sourceType,
         type,
-        host: shortText(source.host ?? current.host, '127.0.0.1', 255),
-        port: finiteInteger(source.port ?? current.port, defaultPort(type), 1, 65535),
-        user: shortText(source.user ?? current.user, '', 255),
-        password,
-        database: shortText(source.database ?? current.database, '', 255),
-        filename: shortText(source.filename ?? current.filename, '', 2048),
-        defaultSchema: shortText(source.defaultSchema ?? current.defaultSchema, type === 'postgres' ? 'public' : '', 255),
-        encrypt: source.encrypt ?? current.encrypt ?? false ? true : false,
-        trustServerCertificate: source.trustServerCertificate ?? current.trustServerCertificate ?? true ? true : false,
         enabled: source.enabled ?? current.enabled ?? true ? true : false,
         readOnly: true,
-        queryTimeoutMs: finiteInteger(source.queryTimeoutMs ?? current.queryTimeoutMs, 8000, 1000, 60000),
-        createdAt: current.createdAt || source.createdAt || new Date().toISOString(),
-        updatedAt: new Date().toISOString()
+        // Only stored/server-generated health is trusted; POSTed health is not evidence.
+        health: normalizeHealth(current.health),
+        createdAt: current.createdAt || new Date().toISOString(),
+        updatedAt: current.updatedAt || new Date().toISOString(),
+        configRevision: current.configRevision || ''
+    };
+    if (sourceType === 'http_api') {
+        const authType = normalizeHttpAuthType(source.authType ?? previous.authType);
+        const credentials = authType === normalizeHttpAuthType(previous.authType) ? previous : {};
+        return {
+            ...common,
+            baseUrl: shortText(source.baseUrl ?? previous.baseUrl, '', 2048),
+            healthPath: shortText(source.healthPath ?? previous.healthPath, '/health', 1024),
+            method: 'GET',
+            authType,
+            apiKeyHeader: authType === 'api_key' ? shortText(source.apiKeyHeader ?? credentials.apiKeyHeader, 'X-API-Key', 100) : 'X-API-Key',
+            apiKey: authType === 'api_key' ? normalizeSecret(source.apiKey, credentials.apiKey) : '',
+            token: authType === 'bearer' ? normalizeSecret(source.token, credentials.token) : '',
+            user: authType === 'basic' ? shortText(source.user ?? credentials.user, '', 255) : '',
+            password: authType === 'basic' ? normalizeSecret(source.password, credentials.password) : '',
+            requestTimeoutMs: finiteInteger(source.requestTimeoutMs ?? previous.requestTimeoutMs, 8000, 1000, 60000)
+        };
+    }
+    return {
+        ...common,
+        host: shortText(source.host ?? previous.host, '127.0.0.1', 255),
+        port: type === 'sqlite' ? 0 : finiteInteger(source.port ?? previous.port, defaultPort(type), 1, 65535),
+        user: shortText(source.user ?? previous.user, '', 255),
+        password: normalizeSecret(source.password, previous.password),
+        database: shortText(source.database ?? previous.database, '', 255),
+        filename: shortText(source.filename ?? previous.filename, '', 2048),
+        defaultSchema: shortText(source.defaultSchema ?? previous.defaultSchema, type === 'postgres' ? 'public' : '', 255),
+        encrypt: source.encrypt ?? previous.encrypt ?? false ? true : false,
+        trustServerCertificate: source.trustServerCertificate ?? previous.trustServerCertificate ?? true ? true : false,
+        queryTimeoutMs: finiteInteger(source.queryTimeoutMs ?? previous.queryTimeoutMs, 8000, 1000, 60000)
     };
 }
 
@@ -158,7 +230,10 @@ function loadStoredConfig() {
         const connections = Array.isArray(raw.connections)
             ? raw.connections.map(item => normalizeConnection(item, item)).filter(item => item.id && item.id !== PRIMARY_ID)
             : [];
-        return { version: 1, connections, backup: normalizeBackupConfig(raw.backup) };
+        const backup = normalizeBackupConfig(raw.backup);
+        const databaseIds = new Set([PRIMARY_ID, ...connections.filter(item => !isHttpApiSource(item)).map(item => item.id)]);
+        backup.selectedConnectionIds = backup.selectedConnectionIds.filter(id => databaseIds.has(id));
+        return { version: 1, connections, backup };
     } catch (error) {
         console.warn('[DataSources] 配置读取失败，使用默认配置:', error.message);
         return defaultConfig();
@@ -173,12 +248,23 @@ function saveStoredConfig(config) {
 }
 
 function publicConnection(connection, extra = {}) {
-    return {
-        ...connection,
+    const { configRevision, ...visibleConnection } = connection;
+    const publicValue = {
+        ...visibleConnection,
         ...extra,
         password: connection.password ? MASKED_PASSWORD : '',
         readOnly: extra.primary ? false : true
     };
+    if (publicValue.health) {
+        publicValue.health = { ...publicValue.health, message: redactCredentials(publicValue.health.message, connection) };
+    }
+    if (connection.sourceType === 'http_api') {
+        publicValue.apiKey = connection.apiKey ? MASKED_PASSWORD : '';
+        publicValue.token = connection.token ? MASKED_PASSWORD : '';
+        publicValue.baseUrl = publicHttpUrl(connection.baseUrl);
+        publicValue.healthPath = publicHttpUrl(connection.healthPath);
+    }
+    return publicValue;
 }
 
 function primaryConnection() {
@@ -186,6 +272,7 @@ function primaryConnection() {
     return {
         id: PRIMARY_ID,
         name: '主业务数据库',
+        sourceType: 'database',
         type: normalizeType(config.type),
         host: config.host || '',
         port: Number(config.port || defaultPort(normalizeType(config.type))),
@@ -220,15 +307,74 @@ function resolveConnection(id) {
     return connection;
 }
 
+function isHttpApiSource(connection) {
+    return connection?.sourceType === 'http_api' || connection?.type === 'http_api';
+}
+
+function connectionFingerprint(connection) {
+    const fields = isHttpApiSource(connection)
+        ? ['sourceType', 'type', 'enabled', 'baseUrl', 'healthPath', 'method', 'authType', 'apiKeyHeader', 'apiKey', 'token', 'user', 'password', 'requestTimeoutMs']
+        : ['sourceType', 'type', 'enabled', 'host', 'port', 'user', 'password', 'database', 'filename', 'defaultSchema', 'encrypt', 'trustServerCertificate', 'queryTimeoutMs'];
+    return crypto.createHash('sha256').update(JSON.stringify(fields.map(field => connection[field]))).digest('hex');
+}
+
+function redactCredentials(message, connection) {
+    let safe = String(message || '');
+    const secrets = [connection.apiKey, connection.token, connection.password].filter(Boolean).sort((left, right) => right.length - left.length);
+    for (const secret of secrets) safe = safe.split(secret).join(MASKED_PASSWORD);
+    return safe.slice(0, 500);
+}
+
+function publicHttpUrl(value) {
+    let safe = String(value || '');
+    try {
+        const parsed = new URL(safe);
+        if (parsed.username || parsed.password) {
+            parsed.username = '';
+            parsed.password = '';
+            safe = parsed.href;
+        }
+    } catch { /* A health path is normally relative. */ }
+    // Also cover malformed/rejected URLs in a config_error test response.
+    safe = safe.replace(/^((?:[a-z][a-z0-9+.-]*:)?\/\/)[^/?#]*@/i, '$1');
+    return safe;
+}
+
+function issueHealthToken(connection, health) {
+    const now = Date.now();
+    for (const [token, result] of healthTokens) {
+        if (result.expiresAt <= now) healthTokens.delete(token);
+    }
+    // Keep uncommitted draft tests bounded; tokens disappear safely on restart.
+    while (healthTokens.size >= 512) healthTokens.delete(healthTokens.keys().next().value);
+    const token = crypto.randomBytes(32).toString('base64url');
+    healthTokens.set(token, { fingerprint: connectionFingerprint(connection), health: { ...health }, expiresAt: now + HEALTH_TOKEN_TTL_MS });
+    return token;
+}
+
 function saveDataSource(input = {}) {
     const stored = loadStoredConfig();
-    const requestedId = safeId(input.id, `source_${Date.now()}`);
+    const requestedId = safeId(input.id, `source_${crypto.randomUUID()}`);
     if (requestedId === PRIMARY_ID) throw new Error('主业务数据库请在上方专用区域修改');
     const index = stored.connections.findIndex(item => item.id === requestedId);
     const current = index >= 0 ? stored.connections[index] : {};
     const next = normalizeConnection({ ...input, id: requestedId }, current);
+    if (isHttpApiSource(next)) {
+        normalizeHttpUrl(next.baseUrl, next.healthPath);
+        httpAuthHeaders(next);
+    }
+    const fingerprint = connectionFingerprint(next);
+    next.health = current.id && connectionFingerprint(current) === fingerprint ? current.health : null;
+    const tested = healthTokens.get(input.healthToken);
+    if (tested && tested.expiresAt > Date.now() && tested.fingerprint === fingerprint
+        && (!next.health || new Date(tested.health.checkedAt) >= new Date(next.health.checkedAt))) {
+        next.health = { ...tested.health };
+    }
+    next.updatedAt = new Date().toISOString();
+    next.configRevision = crypto.randomUUID();
     if (index >= 0) stored.connections[index] = next;
     else stored.connections.push(next);
+    if (isHttpApiSource(next)) stored.backup.selectedConnectionIds = stored.backup.selectedConnectionIds.filter(id => id !== requestedId);
     saveStoredConfig(stored);
     runtimeCache.clear();
     return publicConnection(next);
@@ -243,21 +389,129 @@ function deleteDataSource(id) {
     if (stored.connections.length === before) throw new Error('数据源连接不存在');
     stored.backup.selectedConnectionIds = stored.backup.selectedConnectionIds.filter(item => item !== normalizedId);
     saveStoredConfig(stored);
+    latestHealthChecks.delete(normalizedId);
     runtimeCache.clear();
     return { success: true };
 }
 
 function resolveInputConnection(input = {}) {
     const id = safeId(input.id);
-    if (id) {
-        try {
-            const current = resolveConnection(id);
-            return normalizeConnection({ ...current, ...input, id }, current);
-        } catch (error) {
-            if (id === PRIMARY_ID) throw error;
+    const current = id === PRIMARY_ID ? primaryConnection() : (id ? loadStoredConfig().connections.find(item => item.id === id) : null);
+    // Manual tests may check a disabled connection, but never lose its masked credentials.
+    if (current) return normalizeConnection({ ...input, id }, current);
+    if (id && !input.sourceType && !input.type && !input.dbType) throw new Error('数据源连接不存在');
+    return normalizeConnection(input);
+}
+
+function normalizeHttpUrl(baseUrl, healthPath) {
+    const rawBase = String(baseUrl || '').trim();
+    if (!rawBase) throw new Error('请填写 API 根地址');
+    let base;
+    try { base = new URL(rawBase); } catch { throw new Error('API 根地址格式不正确'); }
+    if (!['http:', 'https:'].includes(base.protocol)) throw new Error('API 根地址只支持 http 或 https');
+    if (/[\u0000-\u001f\u007f]/.test(rawBase)) throw new Error('API 根地址包含非法字符');
+    if (base.username || base.password) throw new Error('API 根地址不能包含用户名或密码，请使用认证配置');
+    if (base.search || base.hash) throw new Error('API 根地址不能包含查询参数或片段，请将查询参数放入健康检查路径');
+    const pathValue = String(healthPath || '/health').trim() || '/health';
+    if (/[\u0000-\u001f\u007f\\]/.test(pathValue)) throw new Error('健康检查路径包含非法字符');
+    if (pathValue.startsWith('//')) throw new Error('健康检查地址必须使用当前 API 根地址');
+    let target;
+    try {
+        // A root such as https://host/api/v1 is a prefix, not a filename.
+        const directory = new URL(base);
+        if (!directory.pathname.endsWith('/')) directory.pathname += '/';
+        target = new URL(pathValue.replace(/^\/(?!\/)/, ''), directory);
+    } catch { throw new Error('健康检查地址格式不正确'); }
+    if (target.origin !== base.origin) throw new Error('健康检查地址必须与 API 根地址使用同一域名');
+    if (target.username || target.password) throw new Error('健康检查地址不能包含用户名或密码，请使用认证配置');
+    if (target.hash) throw new Error('健康检查路径不能包含片段');
+    return { base, target };
+}
+
+function httpAuthHeaders(connection) {
+    const authType = normalizeHttpAuthType(connection.authType);
+    if (!SUPPORTED_HTTP_AUTH_TYPES.has(authType)) throw new Error('不支持的 HTTP API 认证方式');
+    if (authType === 'none') return {};
+    if (authType === 'api_key') {
+        if (!String(connection.apiKey || '').trim()) throw new Error('API Key 认证未填写密钥');
+        const header = String(connection.apiKeyHeader || 'X-API-Key').trim();
+        try { validateHeaderName(header); } catch { throw new Error('API Key 请求头名称不合法'); }
+        if (header.length > 100 || FORBIDDEN_AUTH_HEADERS.has(header.toLowerCase()) || /^proxy-/i.test(header)) {
+            throw new Error('API Key 不能使用连接控制或代理请求头');
         }
+        try { validateHeaderValue(header, connection.apiKey); } catch { throw new Error('API Key 包含不能用于请求头的字符'); }
+        return { [header]: connection.apiKey };
     }
-    return normalizeConnection(input, {});
+    if (authType === 'bearer') {
+        if (!String(connection.token || '').trim()) throw new Error('Bearer Token 认证未填写令牌');
+        try { validateHeaderValue('Authorization', `Bearer ${connection.token}`); } catch { throw new Error('Bearer Token 包含不能用于请求头的字符'); }
+        return { Authorization: `Bearer ${connection.token}` };
+    }
+    if (!connection.user || !connection.password) throw new Error('Basic 认证需要填写用户名和密码');
+    if (/[:\u0000-\u001f\u007f]/.test(connection.user)) throw new Error('Basic 用户名不能包含冒号或控制字符');
+    return { Authorization: `Basic ${Buffer.from(`${connection.user}:${connection.password}`, 'utf8').toString('base64')}` };
+}
+
+async function testHttpApiSource(connection, checkedAt) {
+    const { target } = normalizeHttpUrl(connection.baseUrl, connection.healthPath);
+    // Validation belongs outside the network catch; malformed headers must be
+    // config_error, and native error strings can contain an entire credential.
+    const headers = new Headers({ Accept: 'application/json, text/plain, */*' });
+    for (const [name, value] of Object.entries(httpAuthHeaders(connection))) headers.set(name, value);
+    const startedAt = Date.now();
+    const health = {
+        status: 'unknown',
+        message: '',
+        responseTimeMs: null,
+        httpStatus: null,
+        checkedAt
+    };
+    try {
+        const response = await fetch(target, {
+            method: 'GET',
+            headers,
+            // Never forward custom API keys to a redirect destination.
+            redirect: 'manual',
+            signal: AbortSignal.timeout(connection.requestTimeoutMs)
+        });
+        health.responseTimeMs = Date.now() - startedAt;
+        health.httpStatus = response.status;
+        if (response.status === 401 || response.status === 403) {
+            health.status = 'auth_failed';
+            health.message = `接口拒绝访问（HTTP ${response.status}），请检查认证方式和凭据。`;
+        } else if (response.ok) {
+            health.status = 'healthy';
+            health.message = `接口可访问（HTTP ${response.status}）。`;
+        } else {
+            health.status = 'http_error';
+            health.message = response.status >= 300 && response.status < 400
+                ? `接口返回重定向（HTTP ${response.status}），为保护认证凭据未跟随跳转，请填写最终健康检查地址。`
+                : `接口返回异常状态（HTTP ${response.status}）。`;
+        }
+        // Health checks need only the status; do not retain streaming bodies or sockets.
+        if (response.body) await response.body.cancel().catch(() => {});
+    } catch (error) {
+        health.responseTimeMs = Date.now() - startedAt;
+        health.status = error?.name === 'TimeoutError' || error?.name === 'AbortError' ? 'timeout' : 'network_error';
+        health.message = health.status === 'timeout'
+            ? `接口请求超过 ${connection.requestTimeoutMs}ms 未响应。`
+            : '接口无法访问，请检查地址、网络、证书及目标服务是否运行。';
+    }
+    return health;
+}
+
+function persistHealth(connection, health, checkId) {
+    const normalizedId = safeId(connection.id);
+    if (!normalizedId || normalizedId === PRIMARY_ID || latestHealthChecks.get(normalizedId) !== checkId) return null;
+    const stored = loadStoredConfig();
+    const index = stored.connections.findIndex(item => item.id === normalizedId);
+    if (index < 0) return null;
+    const current = stored.connections[index];
+    if (current.configRevision !== connection.configRevision || current.createdAt !== connection.createdAt
+        || connectionFingerprint(current) !== connectionFingerprint(connection)) return null;
+    stored.connections[index] = { ...current, health: normalizeHealth(health) };
+    saveStoredConfig(stored);
+    return stored.connections[index];
 }
 
 function quoteIdentifier(value, type) {
@@ -276,6 +530,7 @@ function qualifiedTable(connection, schema, table) {
 }
 
 async function withConnection(connection, callback) {
+    if (isHttpApiSource(connection)) throw new Error('HTTP API 数据源不能执行数据库结构读取或数据库备份');
     const type = normalizeType(connection.type);
     if (type === 'mysql') {
         const client = await getMysql().createConnection({
@@ -303,15 +558,15 @@ async function withConnection(connection, callback) {
             statement_timeout: connection.queryTimeoutMs,
             query_timeout: connection.queryTimeoutMs
         });
-        await client.connect();
         try {
+            await client.connect();
             await client.query('SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY');
             return await callback({ type, client, connection });
         } finally { await client.end(); }
     }
     if (type === 'sqlserver') {
         const sql = getSqlServer();
-        const pool = await new sql.ConnectionPool({
+        const pool = new sql.ConnectionPool({
             server: connection.host,
             port: connection.port,
             user: connection.user,
@@ -324,8 +579,11 @@ async function withConnection(connection, callback) {
                 encrypt: !!connection.encrypt,
                 trustServerCertificate: connection.trustServerCertificate !== false
             }
-        }).connect();
-        try { return await callback({ type, client: pool, connection }); }
+        });
+        try {
+            await pool.connect();
+            return await callback({ type, client: pool, connection });
+        }
         finally { await pool.close(); }
     }
     if (type === 'sqlite') {
@@ -373,11 +631,58 @@ async function executeReadOnlyQuery(connectionId, sql, params = []) {
 
 async function testDataSource(input = {}) {
     const connection = resolveInputConnection(input);
-    return withConnection(connection, async handle => {
-        const sql = handle.type === 'sqlserver' ? 'SELECT 1 AS ok' : 'SELECT 1 AS ok';
-        await executeRows(handle, sql);
-        return { success: true, connection: publicConnection(connection, { primary: connection.id === PRIMARY_ID }) };
-    });
+    const checkId = crypto.randomUUID();
+    const persistedId = input.id ? safeId(input.id) : '';
+    if (persistedId) latestHealthChecks.set(persistedId, checkId);
+    lastHealthCheckTime = Math.max(Date.now(), lastHealthCheckTime + 1);
+    const checkedAt = new Date(lastHealthCheckTime).toISOString();
+    const startedAt = Date.now();
+    let health;
+    try {
+        if (isHttpApiSource(connection)) {
+            try {
+                health = await testHttpApiSource(connection, checkedAt);
+            } catch (error) {
+                health = {
+                    status: 'config_error',
+                    message: redactCredentials(error.message || String(error), connection),
+                    responseTimeMs: 0,
+                    httpStatus: null,
+                    checkedAt
+                };
+            }
+        } else {
+            try {
+                await withConnection(connection, handle => executeRows(handle, 'SELECT 1 AS ok'));
+                health = {
+                    status: 'healthy',
+                    message: '数据库连接成功，可读取数据库结构。',
+                    responseTimeMs: Date.now() - startedAt,
+                    httpStatus: null,
+                    checkedAt
+                };
+            } catch (error) {
+                health = {
+                    status: 'network_error',
+                    message: redactCredentials(`数据库连接失败：${error.message || String(error)}`, connection),
+                    responseTimeMs: Date.now() - startedAt,
+                    httpStatus: null,
+                    checkedAt
+                };
+            }
+        }
+        if (persistedId) persistHealth(connection, health, checkId);
+        return {
+            success: health.status === 'healthy',
+            health,
+            healthToken: issueHealthToken(connection, health),
+            // Return exactly the configuration that was tested, never a later saved edit.
+            connection: publicConnection({ ...connection, health }, { primary: connection.id === PRIMARY_ID }),
+            error: health.status === 'healthy' ? undefined : health.message
+        };
+    } finally {
+        if (latestHealthChecks.get(persistedId) === checkId) latestHealthChecks.delete(persistedId);
+    }
 }
 
 async function listTables(id) {
@@ -663,7 +968,10 @@ async function readRuntimeBindings(widgets = [], context = {}) {
 
 function saveBackupConfig(input = {}) {
     const stored = loadStoredConfig();
-    const validIds = new Set([PRIMARY_ID, ...stored.connections.map(item => item.id)]);
+    const validIds = new Set([
+        PRIMARY_ID,
+        ...stored.connections.filter(item => !isHttpApiSource(item)).map(item => item.id)
+    ]);
     const next = normalizeBackupConfig(input);
     next.selectedConnectionIds = next.selectedConnectionIds.filter(id => validIds.has(id));
     stored.backup = next;
@@ -707,25 +1015,18 @@ function jsonReplacer(key, value) {
     return value;
 }
 
-async function writeLine(stream, value) {
-    if (!stream.write(`${JSON.stringify(value, jsonReplacer)}\n`, 'utf8')) await once(stream, 'drain');
-}
-
 async function genericCompressedBackup(connection, destination) {
     return withConnection(connection, async handle => {
-        const output = fs.createWriteStream(destination, { flags: 'wx' });
-        const gzip = zlib.createGzip({ level: 6 });
-        gzip.pipe(output);
-        try {
-            await writeLine(gzip, {
+        async function* rowsToExport() {
+            yield `${JSON.stringify({
                 format: 'heat-treatment-readonly-database-export',
                 version: 1,
                 createdAt: new Date().toISOString(),
                 source: { id: connection.id, name: connection.name, type: connection.type, database: connection.database }
-            });
+            }, jsonReplacer)}\n`;
             const tables = await listTablesWithHandle(handle);
             for (const table of tables) {
-                await writeLine(gzip, { type: 'table', schema: table.schema, name: table.name });
+                yield `${JSON.stringify({ type: 'table', schema: table.schema, name: table.name }, jsonReplacer)}\n`;
                 let offset = 0;
                 while (true) {
                     const qualified = qualifiedTable(connection, table.schema, table.name);
@@ -736,18 +1037,15 @@ async function genericCompressedBackup(connection, destination) {
                         sql = `SELECT * FROM ${qualified} LIMIT 1000 OFFSET ${offset}`;
                     }
                     const rows = await executeRows(handle, sql);
-                    for (const row of rows) await writeLine(gzip, { type: 'row', table: table.name, schema: table.schema, data: row });
+                    for (const row of rows) {
+                        yield `${JSON.stringify({ type: 'row', table: table.name, schema: table.schema, data: row }, jsonReplacer)}\n`;
+                    }
                     if (rows.length < 1000) break;
                     offset += rows.length;
                 }
             }
-            gzip.end();
-            await once(output, 'close');
-        } catch (error) {
-            gzip.destroy();
-            output.destroy();
-            throw error;
         }
+        await pipeline(Readable.from(rowsToExport()), zlib.createGzip({ level: 6 }), fs.createWriteStream(destination, { flags: 'wx' }));
     });
 }
 
@@ -771,6 +1069,7 @@ async function listTablesWithHandle(handle) {
 }
 
 async function createExternalBackup(connection, reason) {
+    if (isHttpApiSource(connection)) throw new Error('HTTP API 数据源不参与数据库备份');
     const directory = backupDirectory(connection.id);
     const type = normalizeType(connection.type);
     const mysqlDumpAvailable = type === 'mysql' && resolveMysqlTools().available;
@@ -790,6 +1089,8 @@ async function createExternalBackup(connection, reason) {
             const snapshot = `${temporary}.db`;
             const sqlite = new (getSqlite())(source, { readonly: true, fileMustExist: true });
             try {
+                const integrity = sqlite.pragma('quick_check', { simple: true });
+                if (String(integrity).toLowerCase() !== 'ok') throw new Error(`外部 SQLite 数据库完整性检查失败: ${integrity}`);
                 await sqlite.backup(snapshot);
                 await pipeline(fs.createReadStream(snapshot), zlib.createGzip({ level: 6 }), fs.createWriteStream(temporary, { flags: 'wx' }));
             } finally {
@@ -809,11 +1110,22 @@ async function createExternalBackup(connection, reason) {
 
 async function createConnectionBackup(connectionId, reason = 'manual') {
     const id = safeId(connectionId);
-    if (id === PRIMARY_ID) {
-        const backup = await createDatabaseBackup(reason);
-        return { ...backup, connectionId: PRIMARY_ID, connectionName: '主业务数据库' };
+    const connection = id === PRIMARY_ID ? null : resolveConnection(id);
+    if (isHttpApiSource(connection)) throw new Error('HTTP API 数据源不参与数据库备份');
+    if (activeConnectionBackups.has(id)) return activeConnectionBackups.get(id);
+    const pending = (async () => {
+        if (id === PRIMARY_ID) {
+            const backup = await createDatabaseBackup(reason);
+            return { ...backup, connectionId: PRIMARY_ID, connectionName: '主业务数据库' };
+        }
+        return createExternalBackup(connection, reason);
+    })();
+    activeConnectionBackups.set(id, pending);
+    try {
+        return await pending;
+    } finally {
+        if (activeConnectionBackups.get(id) === pending) activeConnectionBackups.delete(id);
     }
-    return createExternalBackup(resolveConnection(id), reason);
 }
 
 async function runSelectedBackups(reason = 'scheduled') {
@@ -840,6 +1152,7 @@ async function runSelectedBackups(reason = 'scheduled') {
 function restartMaintenanceTimer() {
     if (maintenanceTimer) clearInterval(maintenanceTimer);
     maintenanceTimer = null;
+    if (!maintenanceStarted) return;
     const backup = loadStoredConfig().backup;
     if (!backup.scheduledEnabled) return;
     maintenanceTimer = setInterval(() => {
@@ -849,10 +1162,16 @@ function restartMaintenanceTimer() {
 }
 
 function startDataSourceMaintenance() {
+    maintenanceStarted = true;
+    if (startupBackupHandle) clearImmediate(startupBackupHandle);
+    startupBackupHandle = null;
     restartMaintenanceTimer();
     const backup = loadStoredConfig().backup;
     if (backup.startupEnabled) {
-        setImmediate(() => runSelectedBackups('startup').catch(error => console.error('[DataSources] 启动备份失败:', error.message)));
+        startupBackupHandle = setImmediate(() => {
+            startupBackupHandle = null;
+            if (maintenanceStarted) runSelectedBackups('startup').catch(error => console.error('[DataSources] 启动备份失败:', error.message));
+        });
     }
     return getBackupStatus();
 }
@@ -864,9 +1183,13 @@ function reloadDataSourceConfiguration() {
 }
 
 async function stopDataSourceMaintenance(options = {}) {
+    maintenanceStarted = false;
+    if (startupBackupHandle) clearImmediate(startupBackupHandle);
+    startupBackupHandle = null;
     if (maintenanceTimer) clearInterval(maintenanceTimer);
     maintenanceTimer = null;
     if (backupPromise) await backupPromise;
+    await Promise.allSettled([...activeConnectionBackups.values()]);
     const backup = loadStoredConfig().backup;
     if (options.backup === true && backup.shutdownEnabled) {
         return runSelectedBackups(options.reason || 'shutdown');
@@ -881,7 +1204,7 @@ function getBackupStatus() {
         running: !!backupPromise,
         lastBackupRun,
         lastError: lastBackupError,
-        connections: [primaryConnection(), ...stored.connections].map(connection => ({
+        connections: [primaryConnection(), ...stored.connections.filter(connection => !isHttpApiSource(connection))].map(connection => ({
             id: connection.id,
             name: connection.name,
             type: normalizeType(connection.type),

@@ -1,5 +1,7 @@
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
+const { AsyncLocalStorage } = require('async_hooks');
 const {
     buildDocumentFromLegacy,
     isCanonicalDocument,
@@ -70,6 +72,9 @@ let pool;
 let sqliteDb;
 let activeConfig;
 let initPromise;
+let closePromise;
+let sqliteOperationQueue = Promise.resolve();
+const sqliteTransactionContext = new AsyncLocalStorage();
 let lastInitError = null;
 let mysqlDriver;
 let pgDriver;
@@ -77,6 +82,7 @@ let sqlserverDriver;
 let sqliteDriver;
 let backupTimer;
 let backupPromise;
+let databaseRestoreActive = false;
 let lastBackup = null;
 let lastRecovery = null;
 let lastBackupError = null;
@@ -140,7 +146,7 @@ function sqliteQuickCheck(db) {
     }
 }
 
-function verifySqliteFile(filename) {
+function verifySqliteFile(filename, options = {}) {
     const resolved = path.resolve(filename);
     if (!fs.existsSync(resolved)) return { valid: false, error: '文件不存在' };
 
@@ -149,6 +155,12 @@ function verifySqliteFile(filename) {
     try {
         db = new Database(resolved, { readonly: true, fileMustExist: true });
         sqliteQuickCheck(db);
+        if (options.requireApplicationSchema) {
+            const tables = new Set(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all()
+                .map(row => String(row.name).toLowerCase()));
+            const missing = ['settings', 'devices', 'data_points', 'workshops', 'lines'].filter(table => !tables.has(table));
+            if (missing.length) throw new Error(`备份不是本软件的业务数据库，缺少表：${missing.join(', ')}`);
+        }
         return { valid: true, error: null };
     } catch (error) {
         return { valid: false, error: error.message };
@@ -575,8 +587,18 @@ function saveDatabaseConfig(input) {
         ...input,
         password: input.password === '******' ? current.password : (input.password ?? current.password)
     });
-    fs.writeFileSync(CONFIG_PATH, JSON.stringify(next, null, 2), 'utf8');
+    writeDatabaseConfig(next);
     return publicDatabaseConfig(next);
+}
+
+function writeDatabaseConfig(config) {
+    const temporary = `${CONFIG_PATH}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`;
+    try {
+        fs.writeFileSync(temporary, JSON.stringify(config, null, 2), { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+        fs.renameSync(temporary, CONFIG_PATH);
+    } finally {
+        fs.rmSync(temporary, { force: true });
+    }
 }
 
 function parseBackupRetentionDays(value) {
@@ -596,7 +618,7 @@ async function saveDatabaseBackupPolicy(input = {}) {
     if (!['sqlite', 'mysql'].includes(dialectName(next))) {
         throw new Error('当前数据库类型暂不支持本地文件备份保留策略');
     }
-    fs.writeFileSync(CONFIG_PATH, JSON.stringify(next, null, 2), 'utf8');
+    writeDatabaseConfig(next);
     if (activeConfig) activeConfig = { ...activeConfig, backupRetentionDays: retentionDays };
     const cleanup = pruneDatabaseBackups({ retentionDays, reason: 'policy-save' });
     return {
@@ -661,15 +683,22 @@ async function createDatabaseIfNeeded(config) {
             port: config.port,
             user: config.user,
             password: config.password,
+            connectTimeout: databaseConnectionTimeout(config),
             multipleStatements: false
         });
+        let failed = false;
         try {
-            await connection.query(
-                `CREATE DATABASE IF NOT EXISTS ${quoteIdentifier(config.database, config)}
-                 CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`
-            );
+            await connection.query({
+                sql: `CREATE DATABASE IF NOT EXISTS ${quoteIdentifier(config.database, config)}
+                    CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`,
+                timeout: databaseQueryTimeout(config)
+            });
+        } catch (error) {
+            failed = true;
+            connection.destroy();
+            throw error;
         } finally {
-            await connection.end();
+            if (!failed) await connection.end();
         }
         return;
     }
@@ -681,7 +710,10 @@ async function createDatabaseIfNeeded(config) {
             port: config.port,
             user: config.user,
             password: config.password,
-            database: config.adminDatabase || 'postgres'
+            database: config.adminDatabase || 'postgres',
+            connectionTimeoutMillis: databaseConnectionTimeout(config),
+            query_timeout: databaseQueryTimeout(config),
+            statement_timeout: databaseQueryTimeout(config)
         });
         try {
             const result = await adminPool.query('SELECT 1 FROM pg_database WHERE datname = $1', [config.database]);
@@ -696,8 +728,9 @@ async function createDatabaseIfNeeded(config) {
 
     if (dialect === 'sqlserver') {
         const sqlserver = getSqlServer();
-        const connection = await sqlserver.connect(sqlServerConnectionConfig(config, 'master'));
+        const connection = new sqlserver.ConnectionPool(sqlServerConnectionConfig(config, 'master'));
         try {
+            await connection.connect();
             await connection.request().query(
                 `IF DB_ID(N'${String(config.database).replace(/'/g, "''")}') IS NULL CREATE DATABASE ${quoteIdentifier(config.database, config)}`
             );
@@ -714,6 +747,8 @@ function sqlServerConnectionConfig(config, database = config.database) {
         user: config.user,
         password: config.password,
         database,
+        connectionTimeout: databaseConnectionTimeout(config),
+        requestTimeout: databaseQueryTimeout(config),
         options: {
             encrypt: !!config.encrypt,
             trustServerCertificate: config.trustServerCertificate !== false
@@ -733,6 +768,7 @@ async function initDb() {
             port: activeConfig.port,
             user: activeConfig.user,
             password: activeConfig.password,
+            connectTimeout: databaseConnectionTimeout(activeConfig),
             database: activeConfig.database,
             waitForConnections: true,
             connectionLimit: Number(activeConfig.connectionLimit || 10),
@@ -748,11 +784,15 @@ async function initDb() {
             user: activeConfig.user,
             password: activeConfig.password,
             database: activeConfig.database,
+            connectionTimeoutMillis: databaseConnectionTimeout(activeConfig),
+            query_timeout: databaseQueryTimeout(activeConfig),
+            statement_timeout: databaseQueryTimeout(activeConfig),
             max: Number(activeConfig.connectionLimit || 10)
         });
     } else if (dialect === 'sqlserver') {
         const sqlserver = getSqlServer();
-        pool = await sqlserver.connect(sqlServerConnectionConfig(activeConfig));
+        pool = new sqlserver.ConnectionPool(sqlServerConnectionConfig(activeConfig));
+        await pool.connect();
     } else if (dialect === 'sqlite') {
         ensureDataDir();
         sqliteDb = await openSqliteWithRecovery(activeConfig.filename || DEFAULT_CONFIG.filename);
@@ -766,9 +806,13 @@ async function initDb() {
 }
 
 async function getDb() {
+    if (closePromise) await closePromise;
     if (!initPromise) {
-        initPromise = initDb().catch((error) => {
+        initPromise = initDb().catch(async (error) => {
             lastInitError = error;
+            try { await disposeDatabaseConnections(); } catch (closeError) {
+                console.warn('[DB] 初始化失败后的连接清理失败:', closeError.message);
+            }
             initPromise = null;
             console.error('[DB] 初始化失败:', error.message);
             throw error;
@@ -788,18 +832,37 @@ function getDbStatus() {
 }
 
 async function closeDb() {
+    if (sqliteTransactionContext.getStore()?.active) {
+        throw new Error('不能在尚未结束的 SQLite 事务中关闭数据库');
+    }
+    if (closePromise) return closePromise;
+    const pendingInitialization = initPromise;
+    closePromise = (async () => {
+        if (pendingInitialization) await pendingInitialization.catch(() => {});
+        await disposeDatabaseConnections();
+        initPromise = null;
+    })();
+    try {
+        await closePromise;
+    } finally {
+        closePromise = null;
+    }
+}
+
+async function disposeDatabaseConnections() {
     if (pool) {
-        const dialect = dialectName();
-        if (dialect === 'mysql') await pool.end();
-        if (dialect === 'postgres') await pool.end();
-        if (dialect === 'sqlserver') await pool.close();
+        const connectionPool = pool;
         pool = null;
+        const dialect = dialectName();
+        if (dialect === 'mysql' || dialect === 'postgres') await connectionPool.end();
+        if (dialect === 'sqlserver') await connectionPool.close();
     }
-    if (sqliteDb) {
-        sqliteDb.close();
-        sqliteDb = null;
-    }
-    initPromise = null;
+    await enqueueSqliteOperation(() => {
+        if (sqliteDb) {
+            sqliteDb.close();
+            sqliteDb = null;
+        }
+    });
 }
 
 async function reconnectDb() {
@@ -916,7 +979,7 @@ async function createDatabaseBackup(reason = 'manual') {
                 await createMysqlDump(activeConfig, temporary, { serverVersion });
                 verification = await verifyMysqlDumpFile(temporary);
             } else {
-                await sqliteDb.backup(temporary);
+                await withSqliteConnection(connection => connection.backup(temporary));
                 verification = verifySqliteFile(temporary);
             }
             if (!verification.valid) throw new Error(verification.error);
@@ -988,6 +1051,7 @@ async function restoreMysqlDatabaseBackup(filename) {
     ensureDirectory(RECOVERY_DIR);
     const restoreSource = path.join(RECOVERY_DIR, `restore-source-${timestampToken()}-${process.pid}.sql.gz`);
     fs.rmSync(restoreSource, { force: true });
+    let protectedRollbackName;
 
     try {
         fs.copyFileSync(source, restoreSource);
@@ -995,6 +1059,8 @@ async function restoreMysqlDatabaseBackup(filename) {
         if (!copiedVerification.valid) throw new Error(`恢复源复制后校验失败: ${copiedVerification.error}`);
 
         const rollback = await createDatabaseBackup('before-restore');
+        protectedRollbackName = rollback.filename;
+        protectedBackupFiles.add(protectedRollbackName);
         const rollbackSource = path.join(BACKUP_DIR, rollback.filename);
         let serverVersion = '';
         try { serverVersion = String((await makeDbClient().get('SELECT VERSION() AS version'))?.version || ''); } catch (error) { /* tool selection can fall back */ }
@@ -1023,12 +1089,16 @@ async function restoreMysqlDatabaseBackup(filename) {
             throw error;
         }
     } finally {
+        if (protectedRollbackName) protectedBackupFiles.delete(protectedRollbackName);
         fs.rmSync(restoreSource, { force: true });
     }
 }
 
 async function restoreDatabaseBackup(filename) {
+    if (databaseRestoreActive) throw new Error('数据库正在恢复，请稍后再试');
+    databaseRestoreActive = true;
     const protectedName = path.basename(String(filename || ''));
+    let protectedRollbackName;
     if (protectedName && protectedName === filename) protectedBackupFiles.add(protectedName);
     try {
         await getDb();
@@ -1037,7 +1107,7 @@ async function restoreDatabaseBackup(filename) {
 
         if (backupPromise) await backupPromise;
         const source = resolveDatabaseBackupPath(filename);
-        const verification = verifySqliteFile(source);
+        const verification = verifySqliteFile(source, { requireApplicationSchema: true });
         if (!verification.valid) throw new Error(`备份完整性检查失败: ${verification.error}`);
 
         const target = path.resolve(activeConfig.filename || DEFAULT_CONFIG.filename);
@@ -1054,6 +1124,8 @@ async function restoreDatabaseBackup(filename) {
             if (!copiedVerification.valid) throw new Error(`恢复源复制后校验失败: ${copiedVerification.error}`);
 
             const rollback = await createDatabaseBackup('before-restore');
+            protectedRollbackName = rollback.filename;
+            protectedBackupFiles.add(protectedRollbackName);
             await closeDb();
 
             try {
@@ -1078,6 +1150,8 @@ async function restoreDatabaseBackup(filename) {
         }
     } finally {
         if (protectedName) protectedBackupFiles.delete(protectedName);
+        if (protectedRollbackName) protectedBackupFiles.delete(protectedRollbackName);
+        databaseRestoreActive = false;
     }
 }
 
@@ -1119,6 +1193,14 @@ function getDatabaseBackupStatus() {
         toolError: type === 'mysql' ? mysqlTools.error : null,
         backups
     };
+}
+
+function databaseConnectionTimeout(config) {
+    return boundedInteger(config.connectTimeoutMs ?? process.env.DB_CONNECT_TIMEOUT_MS, 8000, 1000, 30000);
+}
+
+function databaseQueryTimeout(config) {
+    return boundedInteger(config.queryTimeoutMs ?? process.env.DB_QUERY_TIMEOUT_MS, 10000, 1000, 60000);
 }
 
 async function startDatabaseMaintenance() {
@@ -1178,10 +1260,19 @@ async function testDatabaseConfig(input) {
             port: config.port,
             user: config.user,
             password: config.password,
-            database: config.database
+            database: config.database,
+            connectTimeout: databaseConnectionTimeout(config)
         });
-        await connection.query('SELECT 1');
-        await connection.end();
+        let failed = false;
+        try {
+            await connection.query({ sql: 'SELECT 1', timeout: databaseQueryTimeout(config) });
+        } catch (error) {
+            failed = true;
+            connection.destroy();
+            throw error;
+        } finally {
+            if (!failed) await connection.end();
+        }
         return true;
     }
     if (dialect === 'postgres') {
@@ -1191,26 +1282,39 @@ async function testDatabaseConfig(input) {
             port: config.port,
             user: config.user,
             password: config.password,
-            database: config.database
+            database: config.database,
+            connectionTimeoutMillis: databaseConnectionTimeout(config),
+            query_timeout: databaseQueryTimeout(config),
+            statement_timeout: databaseQueryTimeout(config)
         });
-        await testPool.query('SELECT 1');
-        await testPool.end();
+        try {
+            await testPool.query('SELECT 1');
+        } finally {
+            await testPool.end();
+        }
         return true;
     }
     if (dialect === 'sqlserver') {
         const sqlserver = getSqlServer();
-        const connection = await sqlserver.connect(sqlServerConnectionConfig(config));
-        await connection.request().query('SELECT 1 AS ok');
-        await connection.close();
+        const connection = new sqlserver.ConnectionPool(sqlServerConnectionConfig(config));
+        try {
+            await connection.connect();
+            await connection.request().query('SELECT 1 AS ok');
+        } finally {
+            await connection.close();
+        }
         return true;
     }
     if (dialect === 'sqlite') {
         const Database = getSqliteDatabase();
         ensureDataDir();
         const db = new Database(config.filename || DEFAULT_CONFIG.filename);
-        db.prepare('SELECT 1').get();
-        sqliteQuickCheck(db);
-        db.close();
+        try {
+            db.prepare('SELECT 1').get();
+            sqliteQuickCheck(db);
+        } finally {
+            db.close();
+        }
         return true;
     }
     throw new Error(`不支持的数据库类型: ${config.type}`);
@@ -1226,6 +1330,42 @@ function makeDbClient() {
         upsert: (table, data, key) => upsertWithClient(makeDbClient(), table, data, key),
         q: quoteIdentifier
     };
+}
+
+// better-sqlite3 has one connection. Awaiting inside BEGIN must not let a
+// different HTTP request accidentally read/write inside that transaction.
+function enqueueSqliteOperation(operation) {
+    const result = sqliteOperationQueue.then(operation);
+    sqliteOperationQueue = result.catch(() => {});
+    return result;
+}
+
+function withSqliteConnection(operation) {
+    const context = sqliteTransactionContext.getStore();
+    if (context) {
+        if (!context.active || context.connection !== sqliteDb) {
+            return Promise.reject(new Error('SQLite 事务已经结束，不能继续执行操作'));
+        }
+        return Promise.resolve().then(() => operation(context.connection));
+    }
+    return enqueueSqliteOperation(() => {
+        if (!sqliteDb) throw new Error('SQLite 数据库连接已关闭');
+        return operation(sqliteDb);
+    });
+}
+
+function makeSqliteTransactionClient(context) {
+    const invoke = (operation, ...args) => sqliteTransactionContext.run(context, () => operation(...args));
+    const client = {
+        all: (...args) => invoke(executeAll, ...args),
+        get: (...args) => invoke(executeGet, ...args),
+        run: (...args) => invoke(executeRun, ...args),
+        transaction: (...args) => invoke(transaction, ...args),
+        q: quoteIdentifier
+    };
+    client.insertIgnore = (table, data, key) => insertIgnoreWithClient(client, table, data, key);
+    client.upsert = (table, data, key) => upsertWithClient(client, table, data, key);
+    return client;
 }
 
 async function executeAll(sql, params = []) {
@@ -1245,7 +1385,7 @@ async function executeAll(sql, params = []) {
         const result = await request.query(normalized.text);
         return result.recordset || [];
     }
-    return sqliteDb.prepare(normalized.text).all(normalized.params);
+    return withSqliteConnection(connection => connection.prepare(normalized.text).all(normalized.params));
 }
 
 async function executeGet(sql, params = []) {
@@ -1271,8 +1411,10 @@ async function executeRun(sql, params = []) {
         const rowsAffected = result.rowsAffected?.[0] || 0;
         return { lastInsertRowid: null, insertId: null, changes: rowsAffected, affectedRows: rowsAffected };
     }
-    const result = sqliteDb.prepare(normalized.text).run(normalized.params);
-    return { lastInsertRowid: result.lastInsertRowid, insertId: result.lastInsertRowid, changes: result.changes, affectedRows: result.changes };
+    return withSqliteConnection(connection => {
+        const result = connection.prepare(normalized.text).run(normalized.params);
+        return { lastInsertRowid: result.lastInsertRowid, insertId: result.lastInsertRowid, changes: result.changes, affectedRows: result.changes };
+    });
 }
 
 function normalizeRunResult(result) {
@@ -1317,15 +1459,25 @@ async function transaction(callback) {
         }
     }
     if (dialect === 'sqlite') {
-        sqliteDb.prepare('BEGIN').run();
-        try {
-            const result = await callback(makeDbClient());
-            sqliteDb.prepare('COMMIT').run();
-            return result;
-        } catch (error) {
-            sqliteDb.prepare('ROLLBACK').run();
-            throw error;
+        if (sqliteTransactionContext.getStore()) {
+            throw new Error('不支持嵌套 SQLite 事务，请复用当前事务客户端');
         }
+        return withSqliteConnection(async connection => {
+            connection.prepare('BEGIN IMMEDIATE').run();
+            const context = { connection, active: true };
+            try {
+                const result = await sqliteTransactionContext.run(context, () => callback(makeSqliteTransactionClient(context)));
+                connection.prepare('COMMIT').run();
+                return result;
+            } catch (error) {
+                try { if (connection.inTransaction) connection.prepare('ROLLBACK').run(); } catch (rollbackError) {
+                    console.error('[DB] SQLite 事务回滚失败:', rollbackError.message);
+                }
+                throw error;
+            } finally {
+                context.active = false;
+            }
+        });
     }
     const sqlserver = getSqlServer();
     const tx = new sqlserver.Transaction(pool);
@@ -1401,9 +1553,7 @@ async function insertIgnore(table, data, key) {
 }
 
 async function insertIgnoreWithClient(client, table, data, key) {
-    const existing = await client.get(`SELECT * FROM ${tableName(table)} WHERE ${quoteIdentifier(key)} = ?`, [data[key]]);
-    if (existing) return { changes: 0, affectedRows: 0 };
-    return insertRowWithClient(client, table, data);
+    return conflictSafeInsert(client, table, data, key, false);
 }
 
 async function upsert(table, data, key) {
@@ -1411,14 +1561,50 @@ async function upsert(table, data, key) {
 }
 
 async function upsertWithClient(client, table, data, key) {
-    const existing = await client.get(`SELECT * FROM ${tableName(table)} WHERE ${quoteIdentifier(key)} = ?`, [data[key]]);
-    if (!existing) return insertRowWithClient(client, table, data);
-    const columns = Object.keys(data).filter(column => column !== key);
-    const assignments = columns.map(column => `${quoteIdentifier(column)} = ?`).join(', ');
-    return client.run(
-        `UPDATE ${tableName(table)} SET ${assignments} WHERE ${quoteIdentifier(key)} = ?`,
-        [...columns.map(column => data[column]), data[key]]
-    );
+    return conflictSafeInsert(client, table, data, key, true);
+}
+
+async function conflictSafeInsert(client, table, data, key, updateExisting) {
+    const columns = Object.keys(data);
+    const values = columns.map(column => data[column]);
+    const updates = updateExisting ? columns.filter(column => column !== key) : [];
+    const quotedColumns = columns.map(column => quoteIdentifier(column));
+    const keyColumn = quoteIdentifier(key);
+    const targetTable = tableName(table);
+    const dialect = dialectName();
+    if (dialect === 'mysql') {
+        // MySQL's ON DUPLICATE KEY matches every UNIQUE index, not only our
+        // requested key. Never update a different row on an unrelated unique
+        // collision; retry only the intended key when another writer wins.
+        const update = () => updates.length
+            ? client.run(`UPDATE ${targetTable} SET ${updates.map(column => `${quoteIdentifier(column)} = ?`).join(', ')} WHERE ${keyColumn} = ?`, [...updates.map(column => data[column]), data[key]])
+            : { changes: 0, affectedRows: 0 };
+        const existing = await client.get(`SELECT ${keyColumn} FROM ${targetTable} WHERE ${keyColumn} = ?`, [data[key]]);
+        if (existing) return update();
+        try {
+            return await insertRowWithClient(client, table, data);
+        } catch (error) {
+            if (error.code !== 'ER_DUP_ENTRY' && Number(error.errno) !== 1062) throw error;
+            const concurrent = await client.get(`SELECT ${keyColumn} FROM ${targetTable} WHERE ${keyColumn} = ?`, [data[key]]);
+            if (!concurrent) throw error;
+            return update();
+        }
+    }
+    if (dialect === 'sqlserver') {
+        const source = columns.map(column => `? AS ${quoteIdentifier(column)}`).join(', ');
+        const matched = updates.length
+            ? `WHEN MATCHED THEN UPDATE SET ${updates.map(column => `target.${quoteIdentifier(column)} = source.${quoteIdentifier(column)}`).join(', ')} `
+            : '';
+        return client.run(`MERGE ${targetTable} WITH (HOLDLOCK) AS target
+            USING (SELECT ${source}) AS source ON target.${keyColumn} = source.${keyColumn}
+            ${matched}WHEN NOT MATCHED THEN INSERT (${quotedColumns.join(', ')})
+            VALUES (${quotedColumns.map(column => `source.${column}`).join(', ')});`, values);
+    }
+    let sql = `INSERT INTO ${targetTable} (${quotedColumns.join(', ')}) VALUES (${columns.map(() => '?').join(', ')})`;
+    sql += ` ON CONFLICT (${keyColumn}) DO ${updates.length
+        ? `UPDATE SET ${updates.map(column => `${quoteIdentifier(column)} = excluded.${quoteIdentifier(column)}`).join(', ')}`
+        : 'NOTHING'}`;
+    return client.run(sql, values);
 }
 
 async function insertRow(table, data) {
@@ -1575,7 +1761,7 @@ async function rawQuery(sql) {
     if (dialect === 'mysql') return pool.query(sql);
     if (dialect === 'postgres') return pool.query(sql);
     if (dialect === 'sqlserver') return pool.request().query(sql);
-    return sqliteDb.exec(sql);
+    return withSqliteConnection(connection => connection.exec(sql));
 }
 
 async function initTables() {
@@ -1806,40 +1992,34 @@ async function seedDefaults() {
         ['data_mode', 'integrated_plc'],
         ['simulation_interval_ms', '2000'],
         ['realtime_stale_ms', '6000'],
-        ['display_mode', 'industrial_twin'],
         ['native_quality_profile', 'auto'],
-        ['render_profile', 'balanced'],
-        ['render_target_fps', '45'],
-        ['render_scale', '1'],
-        ['render_antialias', 'false'],
-        ['render_label_fps', '12'],
         ['native_environment_config', JSON.stringify({
             version: 1,
-            preset: 'bright_industrial',
-            sceneBrightness: 1.2,
-            ambientIntensity: 1.25,
-            keyLightIntensity: 1.4,
-            fillLightIntensity: 0.82,
-            reflectionIntensity: 1.08,
-            postExposure: 0.6,
-            contrast: 2,
-            saturation: 3,
-            bloomIntensity: 0.06,
-            vignetteIntensity: 0.035,
+            preset: 'neutral_factory',
+            sceneBrightness: 1.05,
+            ambientIntensity: 1.05,
+            keyLightIntensity: 1.25,
+            fillLightIntensity: 0.58,
+            reflectionIntensity: 0.96,
+            postExposure: 0.34,
+            contrast: 1,
+            saturation: 0,
+            bloomIntensity: 0.02,
+            vignetteIntensity: 0.02,
             fogEnabled: true,
-            fogStart: 95,
-            fogEnd: 360,
+            fogStart: 120,
+            fogEnd: 430,
             showGrid: true,
-            showBackdrop: true,
-            skyColor: '#607FAF',
-            horizonColor: '#354A6A',
-            fogColor: '#26364F',
-            keyLightColor: '#FFF0DC',
-            fillLightColor: '#B5D2FF',
-            floorColor: '#263442',
-            gridColor: '#1D4759',
-            wallColor: '#283B59',
-            frameColor: '#526A86'
+            showBackdrop: false,
+            skyColor: '#696969',
+            horizonColor: '#464646',
+            fogColor: '#565656',
+            keyLightColor: '#F2F2F2',
+            fillLightColor: '#EAEAEA',
+            floorColor: '#5B5B5B',
+            gridColor: '#777777',
+            wallColor: '#5A5A5A',
+            frameColor: '#9A9A9A'
         })],
         ['native_dashboard_config', JSON.stringify({
             version: 1,
@@ -1867,10 +2047,10 @@ async function seedDefaults() {
     await seedFactoryDefaults(db);
     await migrateSpatialHierarchyV2(db);
     await seedPlatformDefaults(db);
-    await migrateDefaultFurnacesToNativeV5(db);
+    await migrateDefaultFurnacesToNativeModel(db);
 }
 
-const NATIVE_FURNACE_MODEL_ID = 'photo_multipurpose_furnace_v5';
+const NATIVE_FURNACE_MODEL_ID = 'photo_multipurpose_furnace_v6';
 
 async function seedFactoryDefaults(db) {
     const workshopsCount = await db.get('SELECT COUNT(*) AS cnt FROM workshops');
@@ -2376,21 +2556,21 @@ async function migrateSpatialHierarchyV2(db) {
     });
 }
 
-async function migrateDefaultFurnacesToNativeV5(db) {
-    const migrationKey = 'native_v5_default_furnace_migrated';
+async function migrateDefaultFurnacesToNativeModel(db) {
+    const migrationKey = 'native_model_default_furnace_migrated';
     const migrated = await db.get('SELECT value FROM settings WHERE `key` = ?', [migrationKey]);
     if (String(migrated?.value || '') === '1') return;
 
     // Only replace the untouched factory seed devices. Uploaded models, renamed IDs and
     // devices with instance-specific configuration remain exactly as the engineer set them.
     await db.run(`UPDATE devices SET model_type = ?
-        WHERE model_type IN ('box_atmosphere_furnace', 'builtin_furnace')
+        WHERE model_type IN ('box_atmosphere_furnace', 'builtin_furnace', 'photo_multipurpose_furnace_v5')
         AND id LIKE 'Furnace_%'
         AND (model_file IS NULL OR model_file = '')
         AND (instance_config IS NULL OR instance_config = '' OR instance_config = '{}')`, [NATIVE_FURNACE_MODEL_ID]);
     await db.run(`UPDATE device_templates SET model_type = ?
         WHERE id = 'tpl_multipurpose_furnace'
-        AND model_type IN ('box_atmosphere_furnace', 'builtin_furnace')`, [NATIVE_FURNACE_MODEL_ID]);
+        AND model_type IN ('box_atmosphere_furnace', 'builtin_furnace', 'photo_multipurpose_furnace_v5')`, [NATIVE_FURNACE_MODEL_ID]);
     await db.upsert('settings', { key: migrationKey, value: '1' }, 'key');
 }
 

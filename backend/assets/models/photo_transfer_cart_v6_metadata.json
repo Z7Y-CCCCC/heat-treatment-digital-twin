@@ -1,0 +1,203 @@
+{
+  "schema_version": 1,
+  "model_id": "photo_transfer_cart_v6",
+  "version": "v6",
+  "source": "photo_reference_geometry_study",
+  "batchable": true,
+  "optimization": {
+    "mode": "auto",
+    "mergeStatic": false,
+    "preserveAnimated": true,
+    "instanceRepeated": true,
+    "materialEnhancement": "original",
+    "contactShadow": true
+  },
+  "runtime": {
+    "enableGenericBindings": false,
+    "showStatusLight": true
+  },
+  "assetSpec": {
+    "version": "6.0.0",
+    "device_family": "取料小车",
+    "unit": "m",
+    "axis_rule": "Y-up export; orientation follows reference metadata",
+    "max_triangles": 200000,
+    "max_nodes": 800,
+    "max_texture_size": 2048,
+    "delivery_status": "review",
+    "notes": "照片估算外观，非实测CAD；绑定为待确认映射，不接入生产点位。"
+  },
+  "partBindings": [
+    {
+      "node_path": "",
+      "input_min": 0,
+      "input_max": 1,
+      "output_min": 0,
+      "invert": false,
+      "id": "cart_travel_position",
+      "node_name": "cart_v6_node_cart_travel",
+      "source_group": "positions",
+      "source_key": "cart_travel_position",
+      "action": "translate",
+      "axis": "z",
+      "output_max": 1.2,
+      "source_mapping_status": "review_required"
+    },
+    {
+      "node_path": "",
+      "input_min": 0,
+      "input_max": 1,
+      "output_min": 0,
+      "invert": false,
+      "id": "cart_wheel_axle_1_rotate",
+      "node_name": "cart_v6_node_cart_wheel_axle_1_rotate",
+      "source_group": "motors",
+      "source_key": "cart_travel_speed",
+      "action": "rotate_speed",
+      "axis": "x",
+      "speed_factor": 0.07,
+      "source_mapping_status": "review_required"
+    },
+    {
+      "node_path": "",
+      "input_min": 0,
+      "input_max": 1,
+      "output_min": 0,
+      "invert": false,
+      "id": "cart_wheel_axle_2_rotate",
+      "node_name": "cart_v6_node_cart_wheel_axle_2_rotate",
+      "source_group": "motors",
+      "source_key": "cart_travel_speed",
+      "action": "rotate_speed",
+      "axis": "x",
+      "speed_factor": 0.07,
+      "source_mapping_status": "review_required"
+    },
+    {
+      "node_path": "",
+      "input_min": 0,
+      "input_max": 1,
+      "output_min": 0,
+      "invert": false,
+      "id": "cart_feed_roller_1_rotate",
+      "node_name": "cart_v6_node_cart_feed_roller_1_rotate",
+      "source_group": "motors",
+      "source_key": "cart_roller_speed",
+      "action": "rotate_speed",
+      "axis": "z",
+      "speed_factor": 0.1047197551,
+      "source_mapping_status": "review_required"
+    },
+    {
+      "node_path": "",
+      "input_min": 0,
+      "input_max": 1,
+      "output_min": 0,
+      "invert": false,
+      "id": "cart_feed_roller_2_rotate",
+      "node_name": "cart_v6_node_cart_feed_roller_2_rotate",
+      "source_group": "motors",
+      "source_key": "cart_roller_speed",
+      "action": "rotate_speed",
+      "axis": "z",
+      "speed_factor": 0.1047197551,
+      "source_mapping_status": "review_required"
+    },
+    {
+      "node_path": "",
+      "input_min": 0,
+      "input_max": 1,
+      "output_min": 0,
+      "invert": false,
+      "id": "cart_feed_roller_3_rotate",
+      "node_name": "cart_v6_node_cart_feed_roller_3_rotate",
+      "source_group": "motors",
+      "source_key": "cart_roller_speed",
+      "action": "rotate_speed",
+      "axis": "z",
+      "speed_factor": 0.1047197551,
+      "source_mapping_status": "review_required"
+    },
+    {
+      "node_path": "",
+      "input_min": 0,
+      "input_max": 1,
+      "output_min": 0,
+      "invert": false,
+      "id": "cart_feed_extension",
+      "node_name": "cart_v6_node_cart_feed_shuttle",
+      "source_group": "positions",
+      "source_key": "cart_feed_extension",
+      "action": "translate",
+      "axis": "x",
+      "output_max": 0.92,
+      "source_mapping_status": "review_required"
+    },
+    {
+      "node_path": "",
+      "input_min": 0,
+      "input_max": 1,
+      "output_min": 0,
+      "invert": false,
+      "id": "cart_cable_reel_speed",
+      "node_name": "cart_v6_node_cart_cable_reel_rotate",
+      "source_group": "motors",
+      "source_key": "cart_travel_speed",
+      "action": "rotate_speed",
+      "axis": "z",
+      "speed_factor": 0.035,
+      "source_mapping_status": "review_required"
+    }
+  ],
+  "inspection": {
+    "enabled": true,
+    "shell": {
+      "node_names": [],
+      "node_paths": [],
+      "opacity": 0.16,
+      "wireframe": false
+    }
+  },
+  "reference": {
+    "photos": [
+      "小车/mmexport1783325207583.jpg",
+      "小车/mmexport1783325208994.jpg",
+      "小车/mmexport1783325210390.jpg"
+    ],
+    "dimensional_accuracy": "visual_estimate_not_measured",
+    "notes": [
+      "照片参考外观重建，尺寸和不可见结构为估算，不构成制造或机构设计图。",
+      "Blender Z-up；送料+X，操作侧-Y；轨道与横移沿Y，导出GLB后横移轴为Z。",
+      "按三张实拍重做开口钢架、背板双层长环形链/导向、立式青绿色减速机、三辐银手轮、卷盘和斜顶操作柜。",
+      "承料结构改成双纵导轨和送料端3只局部长滚筒；未沿用V4整床均布滚筒。滚筒数量与遮挡区机构须实测确认。",
+      "轨道为独立静态参考组；走台花纹用低面数单网格，机座中心保留空透关系。",
+      "横移1.2m、送料0.92m和卷盘/轮轴转速仅作动画节点示意，尚未接入生产信号或运动联锁。",
+      "照片可见链节用于外观识别，未仿真链传动闭环运动或真实传动比。"
+    ]
+  },
+  "release": {
+    "version": "6.0.0",
+    "status": "draft",
+    "published_at": "",
+    "history": []
+  },
+  "acceptance": {
+    "status": "review",
+    "stats": {
+      "file_bytes": 2600764,
+      "nodes": 84,
+      "meshes": 67,
+      "materials": 18,
+      "triangles": 55392,
+      "unique_mesh_triangles": 55392,
+      "mesh_instance_triangles": 55392,
+      "primitive_counts_by_mode": {
+        "4": 67
+      },
+      "scenes": 1
+    },
+    "production_runtime_tested": false,
+    "roundtrip_verified": true,
+    "geometry_verified": true
+  }
+}

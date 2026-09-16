@@ -3,7 +3,7 @@ const path = require('path');
 const WebSocket = require('ws');
 const {
     BACKEND_DIR,
-    copySqliteDatabase,
+    createTestDatabase,
     createRunDirectory,
     findFreePort,
     forceStop,
@@ -13,7 +13,6 @@ const {
     waitForHttp
 } = require('./integration-test-utils.cjs');
 
-const SOURCE_DB = path.resolve(process.env.RUNTIME_TEST_SOURCE_DB || path.join(BACKEND_DIR, 'data', 'factory.db'));
 const SHUTDOWN_TOKEN = `runtime-test-${process.pid}-${Date.now()}`;
 
 async function websocketConnect(url, headers = {}) {
@@ -55,7 +54,7 @@ async function main() {
     try {
         fs.mkdirSync(dataDir, { recursive: true });
         fs.mkdirSync(uploadsDir, { recursive: true });
-        await copySqliteDatabase(SOURCE_DB, databaseFile);
+        await createTestDatabase(databaseFile, { source: process.env.RUNTIME_TEST_SOURCE_DB });
         fs.writeFileSync(path.join(dataDir, 'database-config.json'), JSON.stringify({
             type: 'sqlite',
             filename: databaseFile

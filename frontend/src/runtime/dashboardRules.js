@@ -45,8 +45,14 @@ export function widgetRuntimeVisible(widget = {}, runtime = {}) {
   if (Array.isArray(visibility.viewModes) && visibility.viewModes.length
     && !visibility.viewModes.includes(context.viewMode || 'factory')) return false
   if (visibility.matchBoundDevice) {
-    const boundDeviceId = String(widget.data?.deviceId || '')
-    if (!boundDeviceId || String(context.deviceId || '') !== boundDeviceId) return false
+    const deviceScope = widget.data?.deviceScope === 'current' ? 'current' : 'fixed'
+    if (deviceScope === 'current') {
+      // “当前设备” is a runtime context, not a duplicated widget per device.
+      if (!String(context.deviceId || '')) return false
+    } else {
+      const boundDeviceId = String(widget.data?.deviceId || '')
+      if (!boundDeviceId || String(context.deviceId || '') !== boundDeviceId) return false
+    }
   }
   const rules = Array.isArray(visibility.rules) ? visibility.rules : []
   if (!rules.length) return true

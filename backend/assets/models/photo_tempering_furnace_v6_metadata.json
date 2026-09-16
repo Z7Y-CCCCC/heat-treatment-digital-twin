@@ -1,0 +1,132 @@
+{
+  "schema_version": 1,
+  "model_id": "photo_tempering_furnace_v6",
+  "version": "v6",
+  "source": "photo_reference_geometry_study",
+  "batchable": true,
+  "optimization": {
+    "mode": "auto",
+    "mergeStatic": false,
+    "preserveAnimated": true,
+    "instanceRepeated": true,
+    "materialEnhancement": "original",
+    "contactShadow": true
+  },
+  "runtime": {
+    "enableGenericBindings": false,
+    "showStatusLight": true
+  },
+  "assetSpec": {
+    "version": "6.0.0",
+    "device_family": "回火炉",
+    "unit": "m",
+    "axis_rule": "Y-up export; orientation follows reference metadata",
+    "max_triangles": 200000,
+    "max_nodes": 800,
+    "max_texture_size": 2048,
+    "delivery_status": "review",
+    "notes": "照片估算外观，非实测CAD；绑定为待确认映射，不接入生产点位。"
+  },
+  "partBindings": [
+    {
+      "node_path": "",
+      "input_min": 0,
+      "input_max": 1,
+      "output_min": 0,
+      "invert": false,
+      "id": "tempering_door_open",
+      "node_name": "temper_v6_node_door_front_lift",
+      "source_group": "doors",
+      "source_key": "tempering_door_open",
+      "action": "translate",
+      "axis": "y",
+      "output_max": 1.64,
+      "source_mapping_status": "review_required"
+    },
+    {
+      "node_path": "",
+      "input_min": 0,
+      "input_max": 1,
+      "output_min": 0,
+      "invert": false,
+      "id": "tempering_door_drive_speed",
+      "node_name": "temper_v6_node_door_drive_shaft_rotate",
+      "source_group": "motors",
+      "source_key": "tempering_door_drive_speed",
+      "action": "rotate_speed",
+      "axis": "x",
+      "speed_factor": 1.0,
+      "source_mapping_status": "review_required"
+    },
+    {
+      "node_path": "",
+      "input_min": 0,
+      "input_max": 1,
+      "output_min": 0,
+      "invert": false,
+      "id": "tempering_fan_speed",
+      "node_name": "temper_v6_node_circulation_fan_rotate",
+      "source_group": "motors",
+      "source_key": "tempering_fan_speed",
+      "action": "rotate_speed",
+      "axis": "y",
+      "speed_factor": 1.0,
+      "source_mapping_status": "review_required"
+    }
+  ],
+  "inspection": {
+    "enabled": true,
+    "shell": {
+      "node_names": [
+        "temper_v6_node_thermal_shell",
+        "temper_v6_node_sloped_exhaust_hood"
+      ],
+      "node_paths": [],
+      "opacity": 0.16,
+      "wireframe": false
+    }
+  },
+  "reference": {
+    "photos": [
+      "回火炉/mmexport1783325204825.jpg",
+      "回火炉/mmexport1783325206255.jpg",
+      "回火炉/mmexport1783325200634.jpg",
+      "回火炉/mmexport1783325201991.jpg",
+      "回火炉/mmexport1783325203422.jpg",
+      "回火炉/mmexport1783325191832.jpg"
+    ],
+    "dimensional_accuracy": "visual_estimate_not_measured",
+    "notes": [
+      "以现场斜罩、单块圆角黑门、厚灰壳加强筋、黄平台/护笼梯、竖置门驱动及双门电柜为主要照片依据；不沿用V4横条铆钉门或直筒方罩。",
+      "炉口由独立门框和耐火腔组成，闭门参考姿态只保留一套门。升降门及双U形附件作为同一运动组。",
+      "升降行程1.64m：门板最高Z=4.22m，U形附件最低Z=2.50m。炉口上沿Z=2.445m；上行导槽在斜罩后方留出存放空间。",
+      "尺寸为照片比例估算，非工程测量。炉内耐火层、内置循环叶轮/轴、背部服务线路属示意；不得用于制造或作为现场管线接法。",
+      "门驱动转速绑定为独立可选示意点位；既有tempering_door_open与tempering_fan_speed语义保留，未修改生产配置。"
+    ]
+  },
+  "release": {
+    "version": "6.0.0",
+    "status": "draft",
+    "published_at": "",
+    "history": []
+  },
+  "acceptance": {
+    "status": "review",
+    "stats": {
+      "file_bytes": 2898412,
+      "nodes": 81,
+      "meshes": 65,
+      "materials": 19,
+      "triangles": 68495,
+      "unique_mesh_triangles": 68495,
+      "mesh_instance_triangles": 68495,
+      "primitive_counts_by_mode": {
+        "4": 65
+      },
+      "scenes": 1
+    },
+    "production_runtime_tested": false,
+    "roundtrip_verified": true,
+    "geometry_verified": true
+  }
+}

@@ -1,3 +1,4 @@
+const { normalizeInspection, validateInspection } = require('../../shared/inspectionConfig.cjs');
 const VALID_DELIVERY_STATUS = new Set(['draft', 'review', 'accepted', 'released']);
 const VALID_BINDING_ACTIONS = new Set(['rotate_speed', 'rotate_angle', 'translate', 'visibility', 'color']);
 const VALID_AXES = new Set(['x', 'y', 'z']);
@@ -25,17 +26,6 @@ const DEFAULT_MODEL_OPTIMIZATION = {
     materialEnhancement: 'auto',
     contactShadow: true,
     environmentIntensity: 0.85
-};
-
-const DEFAULT_INSPECTION_CAMERA = { yaw: 238, pitch: 19, distance_scale: 1.12, target_offset: [0, 0, 0] };
-const DEFAULT_INSPECTION = {
-    enabled: true,
-    shell: { node_paths: [], node_names: [], opacity: 0.18, wireframe: false },
-    solid: { view_id: '', camera: { ...DEFAULT_INSPECTION_CAMERA } },
-    xray: { view_id: '', camera: { ...DEFAULT_INSPECTION_CAMERA, distance_scale: 1.08 } },
-    exploded: { view_id: '', camera: { ...DEFAULT_INSPECTION_CAMERA, pitch: 22, distance_scale: 1.22 } },
-    animation_duration: 0.65,
-    parts: []
 };
 
 function parseMetadata(input) {
@@ -139,63 +129,6 @@ function normalizeOptimization(optimization = {}) {
     };
 }
 
-function normalizeInspectionCamera(camera = {}, fallback = DEFAULT_INSPECTION_CAMERA) {
-    const targetOffset = Array.isArray(camera.target_offset || camera.targetOffset)
-        ? (camera.target_offset || camera.targetOffset).slice(0, 3).map(value => numberOr(value, 0))
-        : [...fallback.target_offset];
-    while (targetOffset.length < 3) targetOffset.push(0);
-    return {
-        yaw: Math.max(-360, Math.min(360, numberOr(camera.yaw, fallback.yaw))),
-        pitch: Math.max(6, Math.min(82, numberOr(camera.pitch, fallback.pitch))),
-        distance_scale: Math.max(.1, Math.min(10, numberOr(camera.distance_scale ?? camera.distanceScale, fallback.distance_scale))),
-        target_offset: targetOffset
-    };
-}
-
-function normalizeInspection(inspection = {}, partBindings = []) {
-    const shell = inspection.shell || {};
-    const normalizeStrings = value => (Array.isArray(value) ? value : [])
-        .map(item => String(item || '').trim()).filter(Boolean).slice(0, 100);
-    const normalizeStage = (stage, fallback) => ({
-        view_id: String(stage?.view_id ?? stage?.viewId ?? ''),
-        camera: normalizeInspectionCamera(stage?.camera || {}, fallback)
-    });
-    const rawParts = Array.isArray(inspection.parts) && inspection.parts.length
-        ? inspection.parts
-        : partBindings.map((binding, index) => ({
-            id: binding.id || `part_${index + 1}`,
-            name: binding.name || binding.node_name || binding.node_path || `部件 ${index + 1}`,
-            node_path: binding.node_path || '',
-            node_name: binding.node_name || '',
-            point_keys: binding.source_key ? [`${binding.source_group || 'analog'}.${binding.source_key}`] : []
-        }));
-    return {
-        enabled: booleanOr(inspection.enabled, DEFAULT_INSPECTION.enabled),
-        shell: {
-            node_paths: normalizeStrings(shell.node_paths || shell.nodePaths),
-            node_names: normalizeStrings(shell.node_names || shell.nodeNames),
-            opacity: Math.max(.03, Math.min(.95, numberOr(shell.opacity, DEFAULT_INSPECTION.shell.opacity))),
-            wireframe: booleanOr(shell.wireframe, false)
-        },
-        solid: normalizeStage(inspection.solid, DEFAULT_INSPECTION.solid.camera),
-        xray: normalizeStage(inspection.xray, DEFAULT_INSPECTION.xray.camera),
-        exploded: normalizeStage(inspection.exploded, DEFAULT_INSPECTION.exploded.camera),
-        animation_duration: Math.max(.05, Math.min(5, numberOr(inspection.animation_duration ?? inspection.animationDuration, .65))),
-        parts: rawParts.slice(0, 64).map((part, index) => ({
-            id: String(part.id || `part_${index + 1}`),
-            name: String(part.name || part.node_name || part.nodeName || `部件 ${index + 1}`),
-            node_path: String(part.node_path || part.nodePath || ''),
-            node_name: String(part.node_name || part.nodeName || ''),
-            explode_offset: (Array.isArray(part.explode_offset || part.explodeOffset) ? (part.explode_offset || part.explodeOffset) : [0, 0, 0]).slice(0, 3).map(value => numberOr(value, 0)),
-            label_offset: (Array.isArray(part.label_offset || part.labelOffset) ? (part.label_offset || part.labelOffset) : [0, .35, 0]).slice(0, 3).map(value => numberOr(value, 0)),
-            description: String(part.description || ''),
-            point_ids: normalizeStrings(part.point_ids || part.pointIds),
-            point_keys: normalizeStrings(part.point_keys || part.pointKeys),
-            detail_view_id: String(part.detail_view_id || part.detailViewId || '')
-        }))
-    };
-}
-
 function normalizeModelMetadata(input, options = {}) {
     const raw = parseMetadata(input);
     const assetSpec = normalizeAssetSpec(raw.assetSpec || raw.asset_spec || {}, options.name);
@@ -221,13 +154,18 @@ function normalizeModelMetadata(input, options = {}) {
         release,
         runtime: {
             ...(raw.runtime || {}),
-            enableGenericBindings: partBindings.length > 0
+            enableGenericBindings: raw.runtime?.enableGenericBindings ?? partBindings.length > 0
         }
     };
 }
 
 function stringifyModelMetadata(input, options = {}) {
-    return JSON.stringify(normalizeModelMetadata(input, options));
+    const raw = parseMetadata(input);
+    if (Object.hasOwn(raw, 'inspection')) {
+        const validation = validateInspection(raw.inspection, options.nodes || []);
+        if (!validation.valid) throw new Error(`拆解配置不合法：${validation.errors.map(item => item.message).join('；')}`);
+    }
+    return JSON.stringify(normalizeModelMetadata(raw, options));
 }
 
 module.exports = {

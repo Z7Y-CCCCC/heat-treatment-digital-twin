@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Drawing.Drawing2D;
 using System.IO.Pipes;
 using System.Net.Http;
 using System.Text;
@@ -19,14 +18,12 @@ internal sealed class AdminPanelForm : Form
     private const int ParentDockStripHeight = 92;
     private const int ResizeBorderThickness = 8;
     private const int RoundedCornerRadius = 12;
-    private static readonly HttpClient DesktopControlClient = new() { Timeout = TimeSpan.FromSeconds(3) };
+    private static readonly HttpClient DesktopControlClient = new() { Timeout = TimeSpan.FromSeconds(1.5) };
     private readonly HostOptions _options;
     private readonly WebView2 _webView = new();
     private readonly Panel _header = new();
     private readonly Label _title = new();
     private readonly Label _status = new();
-    private readonly NativeRefreshButton _refreshButton;
-    private readonly ToolTip _refreshToolTip = new();
     private readonly Button _maximizeButton = new();
     private readonly Button _closeButton = new();
     private readonly Panel _resizeGrip = new();
@@ -61,6 +58,7 @@ internal sealed class AdminPanelForm : Form
     private bool _webViewDisposeAttempted;
     private bool _startupReadyReported;
     private bool _startupReadyReportInProgress;
+    private bool _exitRequested;
     private Task? _pipeTask;
 
     public AdminPanelForm(HostOptions options)
@@ -74,7 +72,6 @@ internal sealed class AdminPanelForm : Form
         _parentRestoreBounds = Rectangle.Empty;
         _attached = _parentHandle != IntPtr.Zero;
         _adminVisible = !options.StartInDashboardMode;
-        _refreshButton = new NativeRefreshButton(ReloadWebPages);
 
         Text = "后台管理";
         FormBorderStyle = FormBorderStyle.None;
@@ -179,15 +176,9 @@ internal sealed class AdminPanelForm : Form
         _resizeGrip.MouseMove += ContinueResize;
         _resizeGrip.MouseUp += EndResize;
 
-        _refreshButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-        _refreshButton.Location = new Point(Math.Max(0, ClientSize.Width - 166), 0);
-        _refreshToolTip.SetToolTip(_refreshButton, "刷新页面");
-
         Controls.Add(_webView);
         Controls.Add(_header);
         Controls.Add(_resizeGrip);
-        Controls.Add(_refreshButton);
-        _refreshButton.BringToFront();
         _resizeGrip.BringToFront();
     }
 
@@ -231,6 +222,8 @@ internal sealed class AdminPanelForm : Form
             _webView.CoreWebView2.Settings.IsStatusBarEnabled = false;
             _webView.CoreWebView2.Settings.AreDefaultContextMenusEnabled = true;
             _webView.CoreWebView2.NewWindowRequested += HandleNewWindow;
+            _webView.CoreWebView2.NavigationStarting += (_, args) =>
+                args.Cancel = !WebContentPolicy.IsSameOrigin(args.Uri, _options.Url);
             _webView.CoreWebView2.DownloadStarting += HandleDownload;
             _webView.CoreWebView2.WebMessageReceived += HandleWebMessage;
             _webView.CoreWebView2.NavigationCompleted += (_, args) =>
@@ -267,6 +260,7 @@ internal sealed class AdminPanelForm : Form
             }
             catch (Exception overlayException)
             {
+                if (_closing || IsDisposed) return;
                 WriteHostError("透明 WebView2 数据层初始化失败", overlayException);
                 _dashboardOverlay?.Dispose();
                 _dashboardOverlay = null;
@@ -275,6 +269,7 @@ internal sealed class AdminPanelForm : Form
         }
         catch (Exception exception)
         {
+            if (_closing || IsDisposed) return;
             _status.Text = "后台加载失败";
             var error = new Label
             {
@@ -293,7 +288,16 @@ internal sealed class AdminPanelForm : Form
     private void HandleNewWindow(object? sender, CoreWebView2NewWindowRequestedEventArgs args)
     {
         args.Handled = true;
-        _webView.CoreWebView2.Navigate(args.Uri);
+        if (WebContentPolicy.IsSameOrigin(args.Uri, _options.Url))
+        {
+            _webView.CoreWebView2.Navigate(args.Uri);
+        }
+        else if (args.IsUserInitiated && Uri.TryCreate(args.Uri, UriKind.Absolute, out var uri)
+            && (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps))
+        {
+            try { Process.Start(new ProcessStartInfo(uri.AbsoluteUri) { UseShellExecute = true }); }
+            catch (Exception exception) { WriteHostError("外部链接打开失败", exception); }
+        }
     }
 
     private void HandleDownload(object? sender, CoreWebView2DownloadStartingEventArgs args)
@@ -319,6 +323,7 @@ internal sealed class AdminPanelForm : Form
 
     private void HandleWebMessage(object? sender, CoreWebView2WebMessageReceivedEventArgs args)
     {
+        if (!WebContentPolicy.IsSameOrigin(args.Source, _options.Url)) return;
         try
         {
             using var document = JsonDocument.Parse(args.WebMessageAsJson);
@@ -477,21 +482,25 @@ internal sealed class AdminPanelForm : Form
 
     private bool IsParentProcessRunning()
     {
+        // If the original process could not be identified, never accept a later
+        // process that happens to reuse that PID as our parent.
+        if (!_parentProcessStartTimeUtc.HasValue) return false;
         var currentStartTime = ReadProcessStartTimeUtc(_options.ParentProcessId);
         if (!currentStartTime.HasValue) return false;
-        return !_parentProcessStartTimeUtc.HasValue
-            || currentStartTime.Value == _parentProcessStartTimeUtc.Value;
+        return currentStartTime.Value == _parentProcessStartTimeUtc.Value;
     }
 
     private bool TryResolveParentWindow()
     {
-        if (_parentHandle != IntPtr.Zero && NativeMethods.IsWindow(_parentHandle)) return true;
         if (_options.ParentProcessId <= 0) return false;
+        if (!IsParentProcessRunning()) return false;
+        if (IsOwnedParentWindow(_parentHandle)) return true;
+        _parentHandle = IntPtr.Zero;
         try
         {
             using var process = Process.GetProcessById(_options.ParentProcessId);
             process.Refresh();
-            if (process.MainWindowHandle != IntPtr.Zero)
+            if (IsOwnedParentWindow(process.MainWindowHandle))
             {
                 _parentHandle = process.MainWindowHandle;
                 return true;
@@ -502,6 +511,13 @@ internal sealed class AdminPanelForm : Form
             // Parent may still be starting or may have exited.
         }
         return false;
+    }
+
+    private bool IsOwnedParentWindow(IntPtr handle)
+    {
+        if (handle == IntPtr.Zero || !NativeMethods.IsWindow(handle)) return false;
+        return NativeMethods.GetWindowThreadProcessId(handle, out var processId) != 0
+            && processId == _options.ParentProcessId;
     }
 
     private void MaintainParentWindow()
@@ -748,6 +764,7 @@ internal sealed class AdminPanelForm : Form
     {
         if (_closeChoiceOpen) return;
         _closeChoiceOpen = true;
+        _dashboardOverlay?.HideOverlay();
         try
         {
             var choice = ShowCloseChoiceDialog();
@@ -759,9 +776,14 @@ internal sealed class AdminPanelForm : Form
             {
                 await ExitApplicationAsync();
             }
+            else
+            {
+                SyncDashboardOverlay();
+            }
         }
         catch (Exception exception)
         {
+            SyncDashboardOverlay();
             WriteHostError("关闭选择弹窗创建失败", exception);
             try
             {
@@ -979,10 +1001,24 @@ internal sealed class AdminPanelForm : Form
     private CloseChoice ShowCloseChoiceDialog()
     {
         using var dialog = new CloseChoiceDialog();
-        IWin32Window owner = _attached && _parentHandle != IntPtr.Zero
-            ? new WindowHandleOwner(_parentHandle)
-            : this;
-        dialog.ShowDialog(owner);
+        // The Unity HWND is in another process, so it cannot be used as the
+        // WinForms modal owner. Disable both underlying windows explicitly and
+        // use an ownerless, topmost dialog so no click can fall through to the
+        // 3D scene while the close choice is visible.
+        var hostWasEnabled = NativeMethods.IsWindowEnabled(Handle);
+        var parentCanBeDisabled = _parentHandle != IntPtr.Zero && NativeMethods.IsWindow(_parentHandle);
+        var parentWasEnabled = parentCanBeDisabled && NativeMethods.IsWindowEnabled(_parentHandle);
+        if (hostWasEnabled) NativeMethods.EnableWindow(Handle, false);
+        if (parentWasEnabled) NativeMethods.EnableWindow(_parentHandle, false);
+        try
+        {
+            dialog.ShowDialog();
+        }
+        finally
+        {
+            if (parentWasEnabled) NativeMethods.EnableWindow(_parentHandle, true);
+            if (hostWasEnabled) NativeMethods.EnableWindow(Handle, true);
+        }
         return dialog.Choice;
     }
 
@@ -1012,9 +1048,17 @@ internal sealed class AdminPanelForm : Form
 
     private async Task ExitApplicationAsync()
     {
+        if (_exitRequested) return;
+        _exitRequested = true;
+
         if (HasDesktopControl)
         {
-            if (await PostDesktopControlAsync("quit")) return;
+            if (await PostDesktopControlAsync("quit", TimeSpan.FromMilliseconds(900)))
+            {
+                HideForExit();
+                return;
+            }
+            _exitRequested = false;
             MessageBox.Show(
                 this,
                 "无法连接桌面管理服务。为避免绕过退出备份，本次没有强制结束程序；请稍后重试或从右下角托盘菜单退出。",
@@ -1027,10 +1071,15 @@ internal sealed class AdminPanelForm : Form
 
         if (TryResolveParentWindow())
         {
+            // WM_CLOSE can take a few frames while Unity releases its render
+            // resources. Hide the native controls immediately so the close
+            // choice never remains visible during that teardown.
+            HideForExit();
             NativeMethods.PostMessage(_parentHandle, NativeMethods.WmClose, IntPtr.Zero, IntPtr.Zero);
         }
         else
         {
+            _exitRequested = false;
             Close();
         }
     }
@@ -1042,11 +1091,7 @@ internal sealed class AdminPanelForm : Form
     {
         try
         {
-            var logDirectory = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-                "heat-treatment-digital-twin-desktop",
-                "logs"
-            );
+            var logDirectory = Program.LogDirectory;
             Directory.CreateDirectory(logDirectory);
             File.AppendAllText(
                 Path.Combine(logDirectory, "admin-host.log"),
@@ -1059,7 +1104,7 @@ internal sealed class AdminPanelForm : Form
         }
     }
 
-    private async Task<bool> PostDesktopControlAsync(string action)
+    private async Task<bool> PostDesktopControlAsync(string action, TimeSpan? timeout = null)
     {
         if (!HasDesktopControl) return false;
         try
@@ -1069,13 +1114,30 @@ internal sealed class AdminPanelForm : Form
                 $"{_options.DesktopControlUrl!.TrimEnd('/')}/{action}"
             );
             request.Headers.TryAddWithoutValidation("x-desktop-control-token", _options.DesktopControlToken);
-            using var response = await DesktopControlClient.SendAsync(request);
+            using var timeoutSource = timeout.HasValue ? new CancellationTokenSource(timeout.Value) : null;
+            using var response = await DesktopControlClient.SendAsync(
+                request,
+                timeoutSource?.Token ?? CancellationToken.None
+            );
             return response.IsSuccessStatusCode;
         }
         catch
         {
             return false;
         }
+    }
+
+    private void HideForExit()
+    {
+        _webView.Visible = false;
+        _dashboardOverlay?.HideOverlay();
+        if (_dashboardChrome != null && !_dashboardChrome.IsDisposed)
+        {
+            NativeMethods.ShowWindow(_dashboardChrome.Handle, NativeMethods.SwHide);
+            _dashboardChrome.Hide();
+        }
+        NativeMethods.ShowWindow(Handle, NativeMethods.SwHide);
+        Hide();
     }
 
     private async Task ReportStartupReadyAsync()
@@ -1292,6 +1354,7 @@ internal sealed class AdminPanelForm : Form
                 NativeMethods.SwpFrameChanged | NativeMethods.SwpShowWindow
             );
             _parentRestoreBounds = bounds;
+            _dashboardOverlay?.UpdateParentBounds(force: true);
             BeginInvoke(MaintainParentWindow);
             return;
         }
@@ -1328,6 +1391,7 @@ internal sealed class AdminPanelForm : Form
             {
                 _parentRestoreBounds = parentRect.ToRectangle();
             }
+            _dashboardOverlay?.UpdateParentBounds(force: true);
             SendHostState();
             return;
         }
@@ -1390,6 +1454,7 @@ internal sealed class AdminPanelForm : Form
                 NativeMethods.SwpFrameChanged | NativeMethods.SwpShowWindow
             );
             _parentMaximized = false;
+            _dashboardOverlay?.UpdateParentBounds(force: true);
         }
 
         NativeMethods.ReleaseCapture();
@@ -1406,6 +1471,7 @@ internal sealed class AdminPanelForm : Form
             _parentMaximized = NativeMethods.IsZoomed(_parentHandle);
             if (!_parentMaximized) _parentRestoreBounds = moved;
         }
+        _dashboardOverlay?.UpdateParentBounds(force: true);
         _dashboardChrome?.UpdateState(_parentMaximized);
         BeginInvoke(MaintainParentWindow);
         SendHostState();
@@ -1469,17 +1535,18 @@ internal sealed class AdminPanelForm : Form
         _dragStartBounds = new Rectangle(screenX - gripX, screenY - gripY, restore.Width, restore.Height);
         _dragPointerOffset = new Point(gripX, gripY);
         NativeMethods.ShowWindow(_parentHandle, NativeMethods.SwRestore);
-        NativeMethods.SetWindowPos(
-            _parentHandle,
-            NativeMethods.HwndTop,
-            _dragStartBounds.X,
-            _dragStartBounds.Y,
+            NativeMethods.SetWindowPos(
+                _parentHandle,
+                NativeMethods.HwndTop,
+                _dragStartBounds.X,
+                _dragStartBounds.Y,
             _dragStartBounds.Width,
             _dragStartBounds.Height,
-            NativeMethods.SwpFrameChanged | NativeMethods.SwpShowWindow
-        );
-        _parentMaximized = false;
-        _dashboardChrome?.UpdateState(false);
+                NativeMethods.SwpFrameChanged | NativeMethods.SwpShowWindow
+            );
+            _parentMaximized = false;
+            _dashboardOverlay?.UpdateParentBounds(force: true);
+            _dashboardChrome?.UpdateState(false);
     }
 
     private void DetachForDrag(int screenX, int screenY)
@@ -1571,10 +1638,13 @@ internal sealed class AdminPanelForm : Form
         {
             try
             {
-                await using var server = new NamedPipeServerStream(_options.PipeName, PipeDirection.In, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
+                await using var server = new NamedPipeServerStream(_options.PipeName, PipeDirection.In, 1, PipeTransmissionMode.Byte,
+                    PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
                 await server.WaitForConnectionAsync(cancellationToken);
                 using var reader = new StreamReader(server, Encoding.UTF8);
-                var command = await reader.ReadLineAsync(cancellationToken);
+                using var commandTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                commandTimeout.CancelAfter(TimeSpan.FromSeconds(2));
+                var command = await reader.ReadLineAsync(commandTimeout.Token);
                 if (!string.IsNullOrWhiteSpace(command) && !IsDisposed)
                 {
                     BeginInvoke(() =>
@@ -1592,8 +1662,13 @@ internal sealed class AdminPanelForm : Form
                     });
                 }
             }
-            catch (OperationCanceledException) { break; }
-            catch { await Task.Delay(200, cancellationToken); }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { break; }
+            catch (OperationCanceledException) { /* Incomplete pipe command timed out; accept the next client. */ }
+            catch
+            {
+                try { await Task.Delay(200, cancellationToken); }
+                catch (OperationCanceledException) { break; }
+            }
         }
     }
 
@@ -1717,114 +1792,6 @@ internal sealed class AdminPanelForm : Form
         public IntPtr Handle { get; } = handle;
     }
 
-    private sealed class NativeRefreshButton : Control
-    {
-        private readonly Action _action;
-        private bool _hovered;
-        private bool _pressed;
-
-        public NativeRefreshButton(Action action)
-        {
-            _action = action;
-            Size = new Size(40, 32);
-            Cursor = Cursors.Hand;
-            TabStop = false;
-            AccessibleRole = AccessibleRole.PushButton;
-            AccessibleName = "刷新页面";
-            SetStyle(
-                ControlStyles.AllPaintingInWmPaint
-                | ControlStyles.OptimizedDoubleBuffer
-                | ControlStyles.ResizeRedraw
-                | ControlStyles.UserPaint,
-                true
-            );
-        }
-
-        protected override void OnPaint(PaintEventArgs e)
-        {
-            base.OnPaint(e);
-            var graphics = e.Graphics;
-            graphics.SmoothingMode = SmoothingMode.AntiAlias;
-            using (var background = new LinearGradientBrush(
-                ClientRectangle,
-                Color.FromArgb(237, 242, 247),
-                Color.FromArgb(226, 234, 241),
-                LinearGradientMode.Vertical
-            ))
-            {
-                graphics.FillRectangle(background, ClientRectangle);
-            }
-
-            var scale = Math.Max(1f, DeviceDpi / 96f);
-            if (_hovered || _pressed)
-            {
-                var hoverRect = Rectangle.Inflate(ClientRectangle, -(int)Math.Round(2 * scale), -(int)Math.Round(2 * scale));
-                using var hoverPath = RoundedPath(hoverRect, Math.Max(4, (int)Math.Round(7 * scale)));
-                using var hoverBrush = new SolidBrush(_pressed
-                    ? Color.FromArgb(192, 206, 218)
-                    : Color.FromArgb(211, 222, 231));
-                graphics.FillPath(hoverBrush, hoverPath);
-            }
-
-            using var pen = new Pen(Color.FromArgb(71, 84, 103), 1.65f * scale)
-            {
-                StartCap = LineCap.Round,
-                EndCap = LineCap.Round
-            };
-            var arc = new RectangleF(12 * scale, 7 * scale, 16 * scale, 16 * scale);
-            graphics.DrawArc(pen, arc, -42, 300);
-            var tip = new PointF(arc.Right - 1.2f * scale, arc.Top + 3.2f * scale);
-            graphics.DrawLine(pen, tip, new PointF(tip.X - 5 * scale, tip.Y));
-            graphics.DrawLine(pen, tip, new PointF(tip.X, tip.Y + 5 * scale));
-        }
-
-        protected override void OnMouseEnter(EventArgs e)
-        {
-            base.OnMouseEnter(e);
-            _hovered = true;
-            Invalidate();
-        }
-
-        protected override void OnMouseLeave(EventArgs e)
-        {
-            base.OnMouseLeave(e);
-            _hovered = false;
-            _pressed = false;
-            Invalidate();
-        }
-
-        protected override void OnMouseDown(MouseEventArgs e)
-        {
-            base.OnMouseDown(e);
-            if (e.Button != MouseButtons.Left) return;
-            _pressed = true;
-            Capture = true;
-            Invalidate();
-        }
-
-        protected override void OnMouseUp(MouseEventArgs e)
-        {
-            base.OnMouseUp(e);
-            if (e.Button != MouseButtons.Left || !_pressed) return;
-            _pressed = false;
-            Capture = false;
-            Invalidate();
-            if (ClientRectangle.Contains(e.Location)) _action();
-        }
-
-        private static GraphicsPath RoundedPath(Rectangle rect, int radius)
-        {
-            var diameter = Math.Max(2, radius * 2);
-            var path = new GraphicsPath();
-            path.AddArc(rect.Left, rect.Top, diameter, diameter, 180, 90);
-            path.AddArc(rect.Right - diameter, rect.Top, diameter, diameter, 270, 90);
-            path.AddArc(rect.Right - diameter, rect.Bottom - diameter, diameter, diameter, 0, 90);
-            path.AddArc(rect.Left, rect.Bottom - diameter, diameter, diameter, 90, 90);
-            path.CloseFigure();
-            return path;
-        }
-    }
-
     protected override void OnFormClosing(FormClosingEventArgs e)
     {
         _closing = true;
@@ -1851,7 +1818,6 @@ internal sealed class AdminPanelForm : Form
 
     protected override void Dispose(bool disposing)
     {
-        if (disposing) _refreshToolTip.Dispose();
         if (disposing && !_webViewDisposeAttempted)
         {
             _webViewDisposeAttempted = true;

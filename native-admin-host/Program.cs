@@ -67,6 +67,9 @@ internal static class Program
 {
     internal const uint ShowMessage = NativeMethods.WmApp + 410;
     internal const uint CloseMessage = NativeMethods.WmApp + 411;
+    internal static string LogDirectory { get; private set; } = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+        "heat-treatment-digital-twin-desktop", "logs");
 
     [STAThread]
     private static void Main(string[] args)
@@ -76,6 +79,11 @@ internal static class Program
         // controller-level background color is applied. Admin pages remain opaque.
         Environment.SetEnvironmentVariable("WEBVIEW2_DEFAULT_BACKGROUND_COLOR", "00000000");
         var options = HostOptions.Parse(args);
+        if (!string.IsNullOrWhiteSpace(options.UserDataFolder))
+        {
+            var userDataRoot = Path.GetDirectoryName(Path.GetFullPath(options.UserDataFolder));
+            if (!string.IsNullOrEmpty(userDataRoot)) LogDirectory = Path.Combine(userDataRoot, "logs");
+        }
         using var mutex = new Mutex(true, options.MutexName, out var isOwner);
         if (!isOwner)
         {
@@ -133,11 +141,7 @@ internal static class Program
     {
         try
         {
-            var directory = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-                "heat-treatment-digital-twin-desktop",
-                "logs"
-            );
+            var directory = LogDirectory;
             Directory.CreateDirectory(directory);
             File.AppendAllText(
                 Path.Combine(directory, "admin-host.log"),

@@ -17,15 +17,21 @@ class DataEngine {
             devices: 0
         };
         this.alarmState = new Map();
+        this.alarmWriteQueue = Promise.resolve();
+        this.deviceSnapshots = new Map();
         this.lastMetricSnapshotAt = 0;
         this.metricSnapshotIntervalMs = 5000;
         this.runVersion = 0;
     }
 
     async start() {
-        this.runVersion += 1;
+        const runVersion = ++this.runVersion;
+        this._stopSources();
+        this.currentMode = null;
         const db = await getDb();
+        if (runVersion !== this.runVersion) return;
         const rows = await db.all('SELECT * FROM settings');
+        if (runVersion !== this.runVersion) return;
         const settings = {};
         rows.forEach(r => { settings[r.key] = r.value; });
 
@@ -33,29 +39,54 @@ class DataEngine {
         this.currentMode = mode;
         console.log(`\n[DataEngine] 启动，模式: ${mode}`);
 
-        switch (mode) {
-            case 'integrated_plc':
-                await this._startIntegratedPlcMode();
-                break;
-            case 'simulation':
-            default:
-                await this._startSimulationMode();
-                break;
+        try {
+            switch (mode) {
+                case 'integrated_plc':
+                    await this._startIntegratedPlcMode();
+                    break;
+                case 'simulation':
+                default:
+                    await this._startSimulationMode();
+                    break;
+            }
+        } catch (error) {
+            if (runVersion === this.runVersion) {
+                this._stopSources();
+                this.currentMode = null;
+                this.plcStatus = { status: 'error', message: error.message, timestamp: Date.now() };
+                this.collectorStatus = { ...this.collectorStatus, ...this.plcStatus };
+            }
+            throw error;
         }
+    }
+
+    _stopSources() {
+        const reader = this.plcReader;
+        const simulator = this.simulator;
+        this.plcReader = null;
+        this.simulator = null;
+        reader?.stop();
+        simulator?.stop();
+        this.deviceSnapshots.clear();
+        this.alarmState.clear();
+        this.lastMetricSnapshotAt = 0;
     }
 
     stop() {
         this.runVersion += 1;
-        if (this.plcReader) { this.plcReader.stop(); this.plcReader = null; }
-        if (this.simulator) { this.simulator.stop(); this.simulator = null; }
+        this._stopSources();
         this.currentMode = null;
+        this.plcStatus = { status: 'stopped', message: '采集器已停止', timestamp: Date.now() };
+        this.collectorStatus = { ...this.collectorStatus, ...this.plcStatus };
         console.log('[DataEngine] 所有数据源已停止');
     }
 
     async restart() {
         console.log('[DataEngine] 正在重启数据引擎...');
         this.stop();
+        const runVersion = this.runVersion;
         await new Promise(resolve => setTimeout(resolve, 500));
+        if (runVersion !== this.runVersion) return;
         await this.start();
     }
 
@@ -95,17 +126,21 @@ class DataEngine {
 
     _publishRealtimeData(deviceDataArray) {
         if (!Array.isArray(deviceDataArray) || deviceDataArray.length === 0) return;
+        for (const device of deviceDataArray) {
+            if (device?.furnace_id) this.deviceSnapshots.set(device.furnace_id, device);
+        }
+        const snapshots = [...this.deviceSnapshots.values()];
 
         this.collectorStatus = {
             ...this.collectorStatus,
             status: 'connected',
-            message: `内置采集器数据正常 (${deviceDataArray.length} 台设备)`,
+            message: `内置采集器数据正常 (${snapshots.length} 台设备)`,
             lastFrameAt: Date.now(),
             frames: this.collectorStatus.frames + 1,
-            devices: deviceDataArray.length
+            devices: snapshots.length
         };
 
-        this._recordMetrics(deviceDataArray).catch(e => {
+        this._recordMetrics(snapshots).catch(e => {
             console.warn('[DataEngine] 指标快照写入失败:', e.message);
         });
         this._recordAlarmEvents(deviceDataArray).catch(e => {
@@ -115,11 +150,13 @@ class DataEngine {
     }
 
     async _recordMetrics(deviceDataArray) {
+        const runVersion = this.runVersion;
         const now = Date.now();
         if (now - this.lastMetricSnapshotAt < this.metricSnapshotIntervalMs) return;
         this.lastMetricSnapshotAt = now;
 
         const db = await getDb();
+        if (runVersion !== this.runVersion) return;
         const totalDevices = deviceDataArray.length;
         const runningDevices = deviceDataArray.filter(d => !!d.status?.running).length;
         const alarmDevices = deviceDataArray.filter(d => !!d.status?.alarm).length;
@@ -145,10 +182,22 @@ class DataEngine {
         ]);
     }
 
-    async _recordAlarmEvents(deviceDataArray) {
+    _recordAlarmEvents(deviceDataArray) {
+        const runVersion = this.runVersion;
+        const pending = this.alarmWriteQueue.then(() => this._writeAlarmEvents(deviceDataArray, runVersion));
+        this.alarmWriteQueue = pending.catch(() => {});
+        return pending;
+    }
+
+    async _writeAlarmEvents(deviceDataArray, runVersion) {
+        if (runVersion !== this.runVersion) return;
         const db = await getDb();
+        if (runVersion !== this.runVersion) return;
         for (const deviceData of deviceDataArray) {
+            if (runVersion !== this.runVersion) return;
             const id = deviceData.furnace_id;
+            if (!id || deviceData.status?.alarm === null || deviceData.status?.alarm === undefined
+                || ['bad', 'stale'].includes(deviceData.quality?.status?.alarm)) continue;
             const alarm = !!deviceData.status?.alarm;
             const previous = this.alarmState.get(id) || false;
 
@@ -164,7 +213,7 @@ class DataEngine {
                     String(alarm),
                     this._deviceQuality(deviceData)
                 ]);
-                this.alarmState.set(id, alarm);
+                if (runVersion === this.runVersion) this.alarmState.set(id, alarm);
             }
         }
     }

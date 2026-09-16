@@ -2,6 +2,7 @@ const path = require('path');
 const WebSocket = require('ws');
 const {
     BACKEND_DIR,
+    createTestDatabase,
     createRunDirectory,
     findFreePort,
     forceStop,
@@ -42,6 +43,8 @@ function waitForConfigurationChanged(socket, timeoutMs = 5000) {
 
 async function main() {
     const runDirectory = createRunDirectory('native-dashboard-config');
+    const dataDir = path.join(runDirectory, 'data');
+    await createTestDatabase(path.join(dataDir, 'factory.db'));
     const port = await findFreePort(Number(process.env.TEST_BACKEND_PORT || 3011));
     const origin = `http://127.0.0.1:${port}`;
     const backend = startLoggedProcess(process.execPath, ['server.js'], {
@@ -51,12 +54,8 @@ async function main() {
             ...process.env,
             PORT: String(port),
             HOST: '127.0.0.1',
-            DB_TYPE: 'mysql',
-            MYSQL_HOST: process.env.TEST_MYSQL_HOST || '127.0.0.1',
-            MYSQL_PORT: process.env.TEST_MYSQL_PORT || '3307',
-            MYSQL_USER: process.env.TEST_MYSQL_USER || 'root',
-            MYSQL_PASSWORD: process.env.TEST_MYSQL_PASSWORD || 'root',
-            MYSQL_DATABASE: process.env.TEST_MYSQL_DATABASE || 'dongtai_daping'
+            APP_DATA_DIR: dataDir,
+            DB_TYPE: 'sqlite'
         }
     });
 
@@ -103,12 +102,12 @@ async function main() {
 
         if (saved.success !== true) throw new Error('设置保存接口未返回 success');
         if (event.type !== 'configuration_changed') throw new Error('WebSocket 配置事件类型不正确');
-        if (persistedConfig.sideMargin !== changed.sideMargin) throw new Error('MySQL 配置未持久化');
+        if (persistedConfig.sideMargin !== changed.sideMargin) throw new Error('配置未持久化');
         if (persistedEnvironment.sceneBrightness !== changedEnvironment.sceneBrightness) {
-            throw new Error('MySQL 场景与光效配置未持久化');
+            throw new Error('场景与光效配置未持久化');
         }
-        if (health.db?.type !== 'mysql') throw new Error(`测试后端未使用 MySQL: ${health.db?.type}`);
-        if (devices.length === 0 || points === 0) throw new Error('MySQL 中未读到设备或点位配置');
+        if (health.db?.type !== 'sqlite') throw new Error(`测试后端未使用隔离 SQLite: ${health.db?.type}`);
+        if (devices.length === 0 || points === 0) throw new Error('测试库中未读到设备或点位配置');
 
         console.log(JSON.stringify({
             success: true,

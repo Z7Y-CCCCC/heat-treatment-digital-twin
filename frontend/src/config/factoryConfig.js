@@ -1,5 +1,6 @@
 import { reactive, ref } from 'vue'
 import { API_BASE } from '../runtime/backendEndpoint.js'
+import { adminFetch as fetch } from '../runtime/adminSession.js'
 
 // 全局响应式配置状态
 const factoryConfig = reactive({
@@ -15,9 +16,12 @@ const factoryConfig = reactive({
 const loading = ref(false)
 const error = ref(null)
 
-async function readApiJson(resp, fallbackMessage = '请求失败') {
+async function readApiJson(resp, fallbackMessage = '请求失败', preserveFailureDetails = false) {
     const data = await resp.json().catch(() => ({}))
-    if (!resp.ok) return { error: data.error || `${fallbackMessage}: ${resp.status}` }
+    if (!resp.ok) return {
+        ...(preserveFailureDetails ? { ...data, success: false } : {}),
+        error: data.error || `${fallbackMessage}: ${resp.status}`
+    }
     return data
 }
 
@@ -64,12 +68,7 @@ async function loadConfig() {
 function useFallbackConfig() {
     factoryConfig.settings = {
         factory_name: '智能热处理数字孪生控制中心',
-        data_mode: 'integrated_plc',
-        render_profile: 'balanced',
-        render_target_fps: '45',
-        render_scale: '1',
-        render_antialias: 'false',
-        render_label_fps: '12'
+        data_mode: 'integrated_plc'
     }
     
     const lineNames = ['A 产线', 'B 产线', 'C 产线', 'D 产线']
@@ -241,7 +240,6 @@ export const adminApi = {
     async saveSettings(data) { return readApiJson(await fetch(`${API_BASE}/settings`, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) }), '保存设置失败') },
     async getRuntimeSettings() { return readApiJson(await fetch(`${API_BASE}/system/runtime`), '读取运行配置失败') },
     async saveRuntimeSettings(data) { return readApiJson(await fetch(`${API_BASE}/system/runtime`, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) }), '保存运行配置失败') },
-    async rotateCastPin() { return readApiJson(await fetch(`${API_BASE}/system/runtime/rotate-pin`, { method: 'POST' }), '重新生成投屏码失败') },
     async getCastDevices() { return readApiJson(await fetch(`${API_BASE}/system/cast/devices`), '读取局域网电视列表失败') },
     async refreshCastDevices() { return readApiJson(await fetch(`${API_BASE}/system/cast/refresh`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' }), '搜索局域网电视失败') },
     async startCast(deviceId) { return readApiJson(await fetch(`${API_BASE}/system/cast/start`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ deviceId }) }), '投屏到电视失败') },
@@ -251,12 +249,12 @@ export const adminApi = {
     async getDatabaseConfig() { return (await fetch(`${API_BASE}/database/config`)).json() },
     async testDatabaseConfig(data) { return readApiJson(await fetch(`${API_BASE}/database/test`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) }), '测试数据库连接失败') },
     async saveDatabaseConfig(data) { return readApiJson(await fetch(`${API_BASE}/database/config`, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) }), '保存数据库配置失败') },
-    async getDataSources() { return readApiJson(await fetch(`${API_BASE}/data-sources`), '读取数据源连接失败') },
-    async testDataSource(data) { return readApiJson(await fetch(`${API_BASE}/data-sources/test`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) }), '测试数据源连接失败') },
+    async getDataSources() { return readApiJson(await fetch(`${API_BASE}/data-sources`), '读取外部数据源失败') },
+    async testDataSource(data) { return readApiJson(await fetch(`${API_BASE}/data-sources/test`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) }), '测试外部数据源失败', true) },
     async saveDataSource(data) {
         const id = data?.id
         const url = id ? `${API_BASE}/data-sources/connections/${pathId(id)}` : `${API_BASE}/data-sources/connections`
-        return readApiJson(await fetch(url, { method: id ? 'PUT' : 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) }), '保存数据源连接失败')
+        return readApiJson(await fetch(url, { method: id ? 'PUT' : 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) }), '保存外部数据源失败')
     },
     async deleteDataSource(id) { return readApiJson(await fetch(`${API_BASE}/data-sources/connections/${pathId(id)}`, { method: 'DELETE' }), '删除数据源连接失败') },
     async getDataSourceTables(id) { return readApiJson(await fetch(`${API_BASE}/data-sources/connections/${pathId(id)}/tables`), '读取数据库表失败') },

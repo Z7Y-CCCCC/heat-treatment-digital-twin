@@ -11,7 +11,11 @@ const baseUrl = String(process.env.TEST_BASE_URL || 'http://127.0.0.1:3001').rep
 async function api(path, options = {}) {
     const response = await fetch(`${baseUrl}${path}`, {
         ...options,
-        headers: { 'Content-Type': 'application/json', ...(options.headers || {}) }
+        headers: {
+            'Content-Type': 'application/json',
+            ...(process.env.ADMIN_API_TOKEN ? { 'X-Admin-Token': process.env.ADMIN_API_TOKEN } : {}),
+            ...(options.headers || {})
+        }
     });
     const body = await response.json().catch(() => ({}));
     return { response, body };

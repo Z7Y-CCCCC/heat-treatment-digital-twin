@@ -5,17 +5,17 @@ const Database = require('better-sqlite3');
 const unzipper = require('unzipper');
 const {
     BACKEND_DIR,
-    copySqliteDatabase,
+    createTestDatabase,
     createRunDirectory,
     findFreePort,
     forceStop,
     requestJson,
     startLoggedProcess,
+    testFetch,
     waitForExit,
     waitForHttp
 } = require('./integration-test-utils.cjs');
 
-const SOURCE_DB = path.resolve(process.env.SITE_BACKUP_TEST_SOURCE_DB || path.join(BACKEND_DIR, 'data', 'factory.db'));
 const SHUTDOWN_TOKEN = `site-backup-test-${process.pid}-${Date.now()}`;
 const SETTING_KEY = 'site_backup_test_marker';
 const ORIGINAL_SETTING = 'value-before-export';
@@ -56,7 +56,7 @@ async function readSetting() {
 async function importArchive(filename, uploadName = path.basename(filename)) {
     const form = new FormData();
     form.append('backup', new Blob([fs.readFileSync(filename)], { type: 'application/zip' }), uploadName);
-    const response = await fetch(`${backendOrigin}/api/site-backups/import`, { method: 'POST', body: form });
+    const response = await testFetch(`${backendOrigin}/api/site-backups/import`, { method: 'POST', body: form });
     const text = await response.text();
     let body = null;
     try { body = text ? JSON.parse(text) : null; } catch (error) { body = text; }
@@ -85,9 +85,8 @@ async function main() {
     let result;
 
     try {
-        if (!fs.existsSync(SOURCE_DB)) throw new Error(`Source SQLite database not found: ${SOURCE_DB}`);
         fs.mkdirSync(modelsDir, { recursive: true });
-        await copySqliteDatabase(SOURCE_DB, databaseFile);
+        await createTestDatabase(databaseFile, { source: process.env.SITE_BACKUP_TEST_SOURCE_DB });
         fs.writeFileSync(path.join(dataDir, 'database-config.json'), JSON.stringify({
             type: 'sqlite',
             filename: databaseFile
@@ -152,7 +151,7 @@ async function main() {
         if (!exported.success || !exported.backup?.filename) throw new Error('Export API did not return a backup filename');
         const mirroredArchive = path.join(mirrorDir, exported.backup.filename);
 
-        const downloadResponse = await fetch(`${backendOrigin}/api/site-backups/${encodeURIComponent(exported.backup.filename)}/download`);
+        const downloadResponse = await testFetch(`${backendOrigin}/api/site-backups/${encodeURIComponent(exported.backup.filename)}/download`);
         if (!downloadResponse.ok) throw new Error(`Backup download failed: HTTP ${downloadResponse.status}`);
         const downloadedArchive = path.join(runDirectory, exported.backup.filename);
         fs.writeFileSync(downloadedArchive, Buffer.from(await downloadResponse.arrayBuffer()));

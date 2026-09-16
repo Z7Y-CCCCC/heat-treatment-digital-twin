@@ -1,5 +1,6 @@
 const express = require('express');
 const { normalizeWorkshopLayout, normalizeLineLayout } = require('../utils/spatialLayout');
+const { normalizeInspection, validateInspection } = require('../../shared/inspectionConfig.cjs');
 
 const MAX_DEVICES = 500;
 const MAX_LINES = 120;
@@ -58,6 +59,32 @@ function normalizeFocus(value) {
     };
 }
 
+function inspectionCommand(value) {
+    const source = safeObject(value);
+    const command = source.command;
+    if (!['stage', 'select', 'clear', 'progress', 'isolate', 'labels', 'pause', 'resume'].includes(command)) {
+        throw new Error('未知的拆解操作');
+    }
+    const result = { command };
+    if (command === 'stage') {
+        if (!['solid', 'xray', 'exploded'].includes(source.stage)) throw new Error('未知的拆解阶段');
+        result.stage = source.stage;
+    }
+    if (command === 'select') {
+        result.partId = shortText(source.partId, 128);
+        if (!result.partId) throw new Error('请选择拆解部件');
+    }
+    if (command === 'progress') {
+        if (typeof source.progress !== 'number' || !Number.isFinite(source.progress) || source.progress < 0 || source.progress > 1) throw new Error('拆解进度必须在 0 到 1 之间');
+        result.progress = source.progress;
+    }
+    if (command === 'isolate' || command === 'labels') {
+        if (typeof source.enabled !== 'boolean') throw new Error('拆解开关必须为布尔值');
+        result.enabled = source.enabled;
+    }
+    return result;
+}
+
 module.exports = function createNativePreviewRouter(controller) {
     const router = express.Router();
 
@@ -69,10 +96,51 @@ module.exports = function createNativePreviewRouter(controller) {
         });
     });
 
+    // A separate viewing-only endpoint keeps ordinary dashboard navigation
+    // working while admin is locked, without exposing layout/apply commands.
+    router.post('/navigate', (req, res) => {
+        const action = req.body?.action;
+        if (!['camera', 'focus', 'view', 'inspection_back', 'inspection'].includes(action)) {
+            res.status(400).json({ success: false, error: '只允许大屏视角导航操作' });
+            return;
+        }
+        let inspection;
+        if (action === 'inspection') {
+            try {
+                if (!shortText(req.body?.focus?.deviceId, 120)) throw new Error('拆解操作需要设备 ID');
+                inspection = inspectionCommand(req.body?.inspection);
+            } catch (error) { return res.status(400).json({ success: false, error: error.message }); }
+        }
+        const payload = {
+            version: 2,
+            action,
+            source: 'dashboard_overlay',
+            viewId: shortText(req.body?.viewId, 128),
+            focus: normalizeFocus(req.body?.focus),
+            ...(inspection ? { inspection } : {}),
+            cameraAction: ['rotateLeft', 'rotateRight', 'zoomIn', 'zoomOut', 'fit'].includes(req.body?.cameraAction)
+                ? req.body.cameraAction : '',
+            timestamp: Date.now()
+        };
+        const sent = controller.wsServer?.broadcastToRole?.('native_scene_preview', payload, 'unity') || 0;
+        res.json({ success: true, sent, unityClients: sent, timestamp: payload.timestamp });
+    });
+
     router.post('/', (req, res) => {
-        const action = ['apply', 'reset', 'reload', 'camera', 'focus', 'view', 'inspection_back'].includes(req.body?.action)
-            ? req.body.action
-            : 'apply';
+        const action = req.body?.action || 'apply';
+        if (!['apply', 'reset', 'reload', 'camera', 'focus', 'view', 'inspection_back', 'inspection_preview'].includes(action)) {
+            return res.status(400).json({ success: false, error: '未知的原生预览操作' });
+        }
+        if (action === 'inspection_preview') {
+            const focus = normalizeFocus(req.body?.focus);
+            if (!req.body?.inspectionConfig || typeof req.body.inspectionConfig !== 'object' || Array.isArray(req.body.inspectionConfig)) return res.status(400).json({ success: false, error: '需要完整的拆解配置对象' });
+            const validation = validateInspection(req.body?.inspectionConfig);
+            if (focus.mode !== 'device' || !focus.deviceId) return res.status(400).json({ success: false, error: '请选择拆解预览设备' });
+            if (!validation.valid) return res.status(400).json({ success: false, error: validation.errors.map(item => item.message).join('；'), issues: validation.errors });
+            const payload = { version: 2, action, source: 'admin', focus, inspectionConfig: normalizeInspection(req.body.inspectionConfig), timestamp: Date.now() };
+            const sent = controller.wsServer?.broadcastToRole?.('native_scene_preview', payload, 'unity') || 0;
+            return res.json({ success: true, sent, unityClients: sent, timestamp: payload.timestamp });
+        }
         const normalizedLines = (Array.isArray(req.body?.lines) ? req.body.lines : [])
             .slice(0, MAX_LINES)
             .map(line => ({

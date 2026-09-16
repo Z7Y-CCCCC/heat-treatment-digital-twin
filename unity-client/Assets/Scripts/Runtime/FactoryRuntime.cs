@@ -69,6 +69,9 @@ namespace HeatTreatment.DigitalTwin.Runtime
         private Camera _camera;
         private OrbitCameraController _orbit;
         private bool _sceneReady;
+        private int _lastBackNavigationFrame = -1;
+        private float _lastBackNavigationAt = float.NegativeInfinity;
+        private const float BackNavigationDebounceSeconds = 0.18f;
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         private static void EnsureRuntimeExists()
@@ -115,6 +118,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
             );
             _dashboard.ViewContextChanged += OnDashboardViewContextChanged;
             _dashboard.InspectionContextChanged += OnInspectionContextChanged;
+            _dashboard.ParentNavigationRequested += NavigateToParentCamera;
 
             _modelLibrary = GetOrAdd<RuntimeModelLibrary>();
             _webSocket = GetOrAdd<RealtimeWebSocketClient>();
@@ -141,6 +145,46 @@ namespace HeatTreatment.DigitalTwin.Runtime
         private void Update()
         {
             if (Input.GetKeyDown(KeyCode.F5)) BeginReload();
+            if (Input.GetKeyDown(KeyCode.Escape) || Input.GetKeyDown(KeyCode.Backspace))
+            {
+                RequestDashboardBack("Update");
+            }
+        }
+
+        /// <summary>
+        /// Unity's legacy input polling can miss a key when a native child
+        /// window has focus. OnGUI receives the player event path as a second
+        /// fallback; the frame guard makes Update and OnGUI idempotent.
+        /// </summary>
+        private void OnGUI()
+        {
+            var current = Event.current;
+            if (current == null || current.type != EventType.KeyDown) return;
+            if (current.keyCode != KeyCode.Escape && current.keyCode != KeyCode.Backspace) return;
+            current.Use();
+            RequestDashboardBack("OnGUI");
+        }
+
+        private void RequestDashboardBack(string source)
+        {
+            if (!TryBeginBackNavigation(_dashboard?.ActiveViewId, source)) return;
+            Debug.Log($"[FactoryRuntime] Keyboard back requested from {source} at view={_dashboard?.ActiveViewId ?? string.Empty}");
+            _dashboard?.NavigateBack();
+        }
+
+        private bool TryBeginBackNavigation(string expectedViewId, string source)
+        {
+            if (_lastBackNavigationFrame == Time.frameCount) return false;
+            if (Time.unscaledTime - _lastBackNavigationAt < BackNavigationDebounceSeconds) return false;
+            if (!string.IsNullOrWhiteSpace(expectedViewId)
+                && !string.Equals(expectedViewId, _dashboard?.ActiveViewId, StringComparison.OrdinalIgnoreCase))
+            {
+                _diagnostics.Activity = $"Ignored stale back request ({source})";
+                return false;
+            }
+            _lastBackNavigationFrame = Time.frameCount;
+            _lastBackNavigationAt = Time.unscaledTime;
+            return true;
         }
 
         private void BeginReload()
@@ -187,6 +231,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
 
         private async Task BuildFactoryAsync(FactoryConfigDto config, CancellationToken cancellationToken)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             _diagnostics.UpdateLoading(0.18f, "正在构建设备层级");
             DestroyCurrentFactory();
             _config = config;
@@ -205,6 +250,8 @@ namespace HeatTreatment.DigitalTwin.Runtime
             _diagnostics.FallbackDeviceCount = 0;
             _diagnostics.BackendState = "configuration online";
             _environment.RebuildFactoryFloor(config, devices);
+            await _environment.HallReady;
+            cancellationToken.ThrowIfCancellationRequested();
             _diagnostics.UpdateLoading(0.32f, "正在准备三维场景");
             _modelLibrary.Configure(_settings.backendHttpUrl, config.Models, _settings.modelLoadTimeoutSeconds);
 
@@ -216,6 +263,11 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 var device = placement.Device;
                 _diagnostics.Activity = $"Loading {device.Name ?? device.Id}";
                 var instance = await _modelLibrary.InstantiateAsync(device, placement.Parent, cancellationToken);
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    if (instance.Root != null) Destroy(instance.Root);
+                    cancellationToken.ThrowIfCancellationRequested();
+                }
                 var driver = instance.Root.GetComponent<ModelBindingDriver>();
                 var visual = instance.Root.AddComponent<DeviceStatusVisual>();
                 visual.Initialize(device);
@@ -240,15 +292,21 @@ namespace HeatTreatment.DigitalTwin.Runtime
                     }
                 }
                 _diagnostics.ReadyDeviceCount += 1;
-                if (instance.IsFallback) _diagnostics.FallbackDeviceCount += 1;
+                if (instance.IsFallback)
+                {
+                    _diagnostics.FallbackDeviceCount += 1;
+                    _diagnostics.ReportModelError(device.Name ?? device.Id, device.ModelType, instance.LoadError);
+                }
                 _diagnostics.TemplateCount = _modelLibrary.LoadedTemplateCount;
                 loadedPlacements += 1;
                 _diagnostics.UpdateLoading(0.32f + 0.55f * loadedPlacements / totalPlacements, $"正在加载设备模型（{loadedPlacements}/{totalPlacements}）");
                 await Task.Yield();
             }
 
-            var bounds = CalculateRendererBounds(_factoryRoot);
+            cancellationToken.ThrowIfCancellationRequested();
+            var bounds = CalculateFactoryOverviewBounds();
             _sceneReady = true;
+            NormalizeFactoryOverviewViewForEnvironment("factory_overview", "factory");
             _dashboard.CompleteFactory(bounds);
             _environment.RefreshReflectionProbe();
             _diagnostics.UpdateLoading(.96f, "正在连接实时数据");
@@ -373,6 +431,15 @@ namespace HeatTreatment.DigitalTwin.Runtime
             {
                 ApplyLiveDeviceConfiguration(message["payload"] as JObject);
             }
+            else if (type == "model_metadata_changed")
+            {
+                var modelId = message["payload"]?.Value<string>("modelId") ?? string.Empty;
+                _diagnostics.Activity = string.IsNullOrWhiteSpace(modelId)
+                    ? "Model metadata changed; reloading"
+                    : $"Model metadata changed ({modelId}); reloading";
+                Debug.Log($"[FactoryRuntime] {_diagnostics.Activity}");
+                BeginReload();
+            }
             else if (type == "native_scene_preview")
             {
                 ApplyNativeScenePreview(message["payload"] as JObject);
@@ -384,7 +451,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
             }
         }
 
-        private void ApplyNativeScenePreview(JObject payload)
+        private async void ApplyNativeScenePreview(JObject payload)
         {
             if (payload == null || _config == null || _factoryRoot == null) return;
             var sessionId = payload.Value<string>("sessionId") ?? "admin";
@@ -411,14 +478,39 @@ namespace HeatTreatment.DigitalTwin.Runtime
 
             if (string.Equals(action, "inspection_back", StringComparison.OrdinalIgnoreCase))
             {
+                var expectedViewId = payload.Value<string>("viewId");
+                // Escape can arrive through Unity's input loop and the WebView
+                // bridge for the same physical key. Use the same frame/time
+                // gate for both paths so one key moves exactly one level.
+                if (!TryBeginBackNavigation(expectedViewId, "WebView")) return;
                 _dashboard.NavigateBack();
                 _diagnostics.Activity = "Inspection level returned";
                 return;
             }
 
+            if (string.Equals(action, "inspection", StringComparison.Ordinal))
+            {
+                var deviceId = payload["focus"]?.Value<string>("deviceId");
+                var applied = _dashboard.ApplyInspectionCommand(deviceId, payload["inspection"] as JObject, out var error);
+                _diagnostics.Activity = applied ? "Inspection view updated" : $"Inspection command rejected: {error}";
+                if (!applied) Debug.LogWarning($"[FactoryRuntime] {_diagnostics.Activity}");
+                return;
+            }
+
+            if (string.Equals(action, "inspection_preview", StringComparison.Ordinal))
+            {
+                // Only the protected engineer-preview endpoint broadcasts this action.
+                // It is intentionally memory-only; reset/reload replaces it from metadata.
+                var deviceId = payload["focus"]?.Value<string>("deviceId");
+                var applied = _dashboard.ApplyInspectionPreview(deviceId, payload["inspectionConfig"] as JObject, out var error);
+                _diagnostics.Activity = applied ? "Unsaved inspection configuration previewed" : $"Inspection preview rejected: {error}";
+                if (!applied) Debug.LogWarning($"[FactoryRuntime] {_diagnostics.Activity}");
+                return;
+            }
+
             if (string.Equals(action, "focus", StringComparison.OrdinalIgnoreCase))
             {
-                var focusBounds = CalculateRendererBounds(_factoryRoot);
+                var focusBounds = CalculateFactoryOverviewBounds();
                 ApplyPreviewFocus(payload["focus"] as JObject, focusBounds, payload.Value<string>("viewId"));
                 _diagnostics.Activity = "Dashboard focus action applied";
                 return;
@@ -427,7 +519,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
             if (string.Equals(action, "view", StringComparison.OrdinalIgnoreCase))
             {
                 _dashboard.ApplyTransientView(payload["view"] as JObject);
-                var focusBounds = CalculateRendererBounds(_factoryRoot);
+                var focusBounds = CalculateFactoryOverviewBounds();
                 ApplyPreviewFocus(payload["focus"] as JObject, focusBounds, payload.Value<string>("viewId"));
                 _diagnostics.Activity = "Dashboard focus action applied";
                 return;
@@ -453,10 +545,12 @@ namespace HeatTreatment.DigitalTwin.Runtime
             if (includeLayout)
             {
                 _environment.RebuildFactoryFloor(previewConfig, devices, reset);
+                await _environment.HallReady;
+                if (payload == null || _factoryRoot == null) return;
                 if (reset) _environment.RefreshReflectionProbe();
             }
 
-            var factoryBounds = CalculateRendererBounds(_factoryRoot);
+            var factoryBounds = CalculateFactoryOverviewBounds();
             _dashboard.UpdatePreviewFactoryBounds(factoryBounds);
             ApplyPreviewFocus(payload["focus"] as JObject, factoryBounds, payload.Value<string>("viewId"));
             _diagnostics.Activity = reset
@@ -548,9 +642,13 @@ namespace HeatTreatment.DigitalTwin.Runtime
                     motion.ApplyRealtime(latest);
                     _dashboard.ApplyRealtime(device.Id, latest);
                 }
+                if (instance.IsFallback)
+                {
+                    _diagnostics.ReportModelError(device.Name ?? device.Id, device.ModelType, instance.LoadError);
+                }
                 if (previousRoot != null) Destroy(previousRoot.gameObject);
 
-                var bounds = CalculateRendererBounds(_factoryRoot);
+                var bounds = CalculateFactoryOverviewBounds();
                 _dashboard.UpdatePreviewFactoryBounds(bounds);
                 _environment.RefreshReflectionProbe();
             }
@@ -609,6 +707,38 @@ namespace HeatTreatment.DigitalTwin.Runtime
             }
         }
 
+        private Bounds CalculateFactoryOverviewBounds()
+        {
+            var bounds = CalculateRendererBounds(_factoryRoot);
+            if (_environment != null && _environment.HasFactoryHall)
+                bounds.Encapsulate(_environment.EnvironmentBounds);
+            return bounds;
+        }
+
+        private void NormalizeFactoryOverviewViewForEnvironment(string viewId, string mode)
+        {
+            var configuredView = _dashboard?.GetConfiguredView(viewId, mode);
+            var effectiveMode = configuredView?.Mode == "custom"
+                ? (configuredView.TargetType ?? "factory")
+                : (mode ?? "factory");
+            if (!string.Equals(effectiveMode, "factory", StringComparison.OrdinalIgnoreCase)
+                || _environment?.HasFactoryHall != true
+                || configuredView == null)
+            {
+                return;
+            }
+
+            // The published value was authored against the old six-device
+            // placeholder scene. A real hall is already included in the bounds,
+            // so keeping that legacy factor makes larger workshops push the whole
+            // scene beyond the camera far plane and appear completely empty.
+            configuredView.DistanceScale = Mathf.Min(configuredView.DistanceScale, 1.08f);
+            Debug.Log(
+                $"[FactoryRuntime] Factory overview camera normalized for hall: "
+                + $"distanceScale={configuredView.DistanceScale:0.00}, view={configuredView.Id}"
+            );
+        }
+
         private void ApplyPreviewFocus(JObject focus, Bounds factoryBounds, string viewId = "")
         {
             var mode = focus?.Value<string>("mode") ?? "factory";
@@ -616,6 +746,8 @@ namespace HeatTreatment.DigitalTwin.Runtime
             var effectiveMode = configuredView?.Mode == "custom"
                 ? (configuredView.TargetType ?? "factory")
                 : mode;
+            var overviewMode = string.Equals(effectiveMode, "factory", StringComparison.OrdinalIgnoreCase);
+            if (overviewMode) NormalizeFactoryOverviewViewForEnvironment(viewId, effectiveMode);
             if (configuredView != null && string.IsNullOrWhiteSpace(focus?.Value<string>("deviceId")) && configuredView.TargetType == "device")
             {
                 if (focus == null) focus = new JObject();
@@ -634,15 +766,19 @@ namespace HeatTreatment.DigitalTwin.Runtime
             if (string.Equals(effectiveMode, "device", StringComparison.OrdinalIgnoreCase))
             {
                 var deviceId = focus?.Value<string>("deviceId");
+                var inspectionStage = focus?.Value<string>("inspectionStage") ?? string.Empty;
+                if (string.IsNullOrWhiteSpace(inspectionStage))
+                    inspectionStage = configuredView?.Metadata?.Value<string>("inspectionStage") ?? string.Empty;
+                var partId = focus?.Value<string>("partId") ?? string.Empty;
+                if (string.IsNullOrWhiteSpace(partId))
+                    partId = configuredView?.Metadata?.Value<string>("partId") ?? string.Empty;
                 _dashboard.FocusPreviewDevice(
                     deviceId,
                     configuredView,
-                    focus?.Value<string>("inspectionStage") ?? string.Empty,
-                    focus?.Value<string>("partId") ?? string.Empty);
-                if (string.IsNullOrWhiteSpace(focus?.Value<string>("inspectionStage")))
-                {
-                    PublishDashboardContext("device", deviceId: deviceId, viewId: configuredView?.Id ?? viewId);
-                }
+                    inspectionStage,
+                    partId);
+                // FocusPreviewDevice emits both the base view context and the full
+                // inspection context. Do not overwrite the latter with empty defaults.
                 Debug.Log($"[FactoryRuntime] Native focus applied: mode=device, target={deviceId ?? string.Empty}");
                 return;
             }
@@ -684,13 +820,23 @@ namespace HeatTreatment.DigitalTwin.Runtime
                     .Where(id => !string.IsNullOrWhiteSpace(id)),
                 StringComparer.OrdinalIgnoreCase
             );
-            _dashboard.FocusPreviewBounds(selectedRoots.Count > 0
+            _dashboard.FocusPreviewBounds(!overviewMode && selectedRoots.Count > 0
                 ? CalculateRendererBounds(selectedRoots)
                 : factoryBounds,
                 configuredView,
                 selectedRoots.Count > 0 ? targetDeviceIds : null);
+            var contextWorkshopId = string.Equals(effectiveMode, "workshop", StringComparison.OrdinalIgnoreCase)
+                ? targetId
+                : string.Empty;
+            if (string.Equals(effectiveMode, "line", StringComparison.OrdinalIgnoreCase)
+                && !string.IsNullOrWhiteSpace(targetId))
+            {
+                contextWorkshopId = _config?.Workshops?
+                    .FirstOrDefault(workshop => workshop.Lines?.Any(line => string.Equals(line.Id, targetId, StringComparison.OrdinalIgnoreCase)) == true)
+                    ?.Id ?? string.Empty;
+            }
             PublishDashboardContext(effectiveMode, lineId: string.Equals(effectiveMode, "line", StringComparison.OrdinalIgnoreCase) ? targetId : string.Empty,
-                workshopId: string.Equals(effectiveMode, "workshop", StringComparison.OrdinalIgnoreCase) ? targetId : string.Empty,
+                workshopId: contextWorkshopId,
                 viewId: configuredView?.Id ?? viewId);
             Debug.Log($"[FactoryRuntime] Native focus applied: mode={effectiveMode}, target={targetId}, roots={selectedRoots.Count}");
         }
@@ -702,6 +848,68 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 ? (view.TargetType ?? "factory")
                 : (view?.Mode ?? mode);
             PublishDashboardContext(effectiveMode, deviceId: deviceId, viewId: view?.Id ?? _dashboard?.ActiveViewId ?? string.Empty);
+        }
+
+        private void NavigateToParentCamera()
+        {
+            if (_dashboard == null || _factoryRoot == null) return;
+
+            var currentMode = _lastDashboardContext?.Value<string>("viewMode") ?? "factory";
+            var current = _dashboard.GetConfiguredView(_dashboard.ActiveViewId, currentMode);
+            var parentViewId = current?.ReturnViewId ?? current?.ParentViewId;
+            if (string.IsNullOrWhiteSpace(parentViewId))
+            {
+                // Keep Esc useful for older/custom documents that predate the
+                // explicit parent edge. This mirrors the authored hierarchy.
+                parentViewId = string.Equals(currentMode, "device", StringComparison.OrdinalIgnoreCase)
+                    ? "line_overview"
+                    : string.Equals(currentMode, "line", StringComparison.OrdinalIgnoreCase)
+                        ? "workshop_overview"
+                        : string.Equals(currentMode, "workshop", StringComparison.OrdinalIgnoreCase)
+                            ? "factory_overview"
+                            : string.Empty;
+                if (string.IsNullOrWhiteSpace(parentViewId))
+                {
+                    _diagnostics.Activity = "Already at factory overview";
+                    return;
+                }
+            }
+
+            var parent = _dashboard.GetConfiguredView(parentViewId, "factory");
+            if (parent == null || string.Equals(parent.Id, current?.Id, StringComparison.OrdinalIgnoreCase))
+            {
+                _diagnostics.Activity = "No valid parent view";
+                return;
+            }
+
+            var mode = string.Equals(parent.Mode, "custom", StringComparison.OrdinalIgnoreCase)
+                ? (parent.TargetType ?? "factory")
+                : (parent.Mode ?? "factory");
+            var focus = new JObject { ["mode"] = mode };
+            var deviceId = _lastDashboardContext?.Value<string>("deviceId") ?? string.Empty;
+            var lineId = _lastDashboardContext?.Value<string>("lineId") ?? string.Empty;
+            var workshopId = _lastDashboardContext?.Value<string>("workshopId") ?? string.Empty;
+
+            if (string.IsNullOrWhiteSpace(lineId) && !string.IsNullOrWhiteSpace(deviceId))
+                _deviceLineIds.TryGetValue(deviceId, out lineId);
+            if (string.IsNullOrWhiteSpace(workshopId) && !string.IsNullOrWhiteSpace(deviceId))
+                _deviceWorkshopIds.TryGetValue(deviceId, out workshopId);
+            if (string.IsNullOrWhiteSpace(workshopId) && !string.IsNullOrWhiteSpace(lineId))
+            {
+                workshopId = _config?.Workshops?
+                    .FirstOrDefault(workshop => workshop.Lines?.Any(line => string.Equals(line.Id, lineId, StringComparison.OrdinalIgnoreCase)) == true)
+                    ?.Id ?? string.Empty;
+            }
+
+            if (string.Equals(mode, "device", StringComparison.OrdinalIgnoreCase))
+                focus["deviceId"] = string.IsNullOrWhiteSpace(parent.TargetId) ? deviceId : parent.TargetId;
+            else if (string.Equals(mode, "line", StringComparison.OrdinalIgnoreCase))
+                focus["lineId"] = string.IsNullOrWhiteSpace(parent.TargetId) ? lineId : parent.TargetId;
+            else if (string.Equals(mode, "workshop", StringComparison.OrdinalIgnoreCase))
+                focus["workshopId"] = string.IsNullOrWhiteSpace(parent.TargetId) ? workshopId : parent.TargetId;
+
+            ApplyPreviewFocus(focus, CalculateFactoryOverviewBounds(), parent.Id);
+            _diagnostics.Activity = $"Returned to {parent.Name}";
         }
 
         private void OnInspectionContextChanged(JObject payload)
@@ -735,7 +943,17 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 ["workshopId"] = workshopId ?? string.Empty,
                 ["lineId"] = lineId ?? string.Empty,
                 ["deviceId"] = deviceId ?? string.Empty,
+                ["inspectionEnabled"] = false,
                 ["inspectionStage"] = string.IsNullOrWhiteSpace(deviceId) ? "" : "solid",
+                ["inspectionProgress"] = 0f,
+                ["inspectionAnimating"] = false,
+                ["inspectionPhase"] = "idle",
+                ["inspectionIsolated"] = false,
+                ["inspectionLabelsEnabled"] = false,
+                ["inspectionLeaderLines"] = false,
+                ["inspectionHoveredPartId"] = string.Empty,
+                ["inspectionIssues"] = new JArray(),
+                ["inspectionParts"] = new JArray(),
                 ["partId"] = string.Empty,
                 ["partName"] = string.Empty,
                 ["partDescription"] = string.Empty,
@@ -768,7 +986,8 @@ namespace HeatTreatment.DigitalTwin.Runtime
                     _orbit?.ZoomBy(1.22f);
                     break;
                 case "fit":
-                    ApplyPreviewFocus(payload["focus"] as JObject, CalculateRendererBounds(_factoryRoot), _dashboard?.ActiveViewId);
+                    if (_dashboard?.RefitInspectionCamera() != true)
+                        ApplyPreviewFocus(payload["focus"] as JObject, CalculateFactoryOverviewBounds(), _dashboard?.ActiveViewId);
                     break;
             }
         }
@@ -1096,6 +1315,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
             }
             if (_dashboard != null) _dashboard.ViewContextChanged -= OnDashboardViewContextChanged;
             if (_dashboard != null) _dashboard.InspectionContextChanged -= OnInspectionContextChanged;
+            if (_dashboard != null) _dashboard.ParentNavigationRequested -= NavigateToParentCamera;
             if (_windowMenu != null) _windowMenu.SettingsRequested -= OpenAdminSettings;
             _reload?.Cancel();
             _reload?.Dispose();

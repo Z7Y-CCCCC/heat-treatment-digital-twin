@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+    <Compile Include="Program.cs" />
+    <Compile Include="../../unity-client/Assets/Scripts/Backend/BackendDtos.cs" Link="BackendDtos.cs" />
+    <Compile Include="../../unity-client/Assets/Scripts/Rendering/InspectionTimeline.cs" Link="InspectionTimeline.cs" />
+  </ItemGroup>
+</Project>

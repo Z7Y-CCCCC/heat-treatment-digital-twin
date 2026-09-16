@@ -60,6 +60,13 @@ function registerBuffer(registers, options) {
 }
 
 function decodeModbusRegisters(registers, parsed, options) {
+    const expected = Number(parsed.registerCount || 1);
+    if (!registers || registers.length < expected) {
+        throw new Error(`Modbus 返回寄存器数量不一致：期望 ${expected}，实际 ${registers?.length || 0}`);
+    }
+    if (Array.from(registers).some(value => !Number.isInteger(value) || value < 0 || value > 0xffff)) {
+        throw new Error('Modbus 返回了无效寄存器值');
+    }
     const type = canonicalDataType(parsed.type);
     const buffer = registerBuffer(registers, options);
     if (parsed.bit !== null) {
@@ -100,8 +107,12 @@ class ModbusTcpDriver {
                 port: this.endpoint.port,
                 timeout: this.endpoint.timeout
             });
+            if (this.client !== client) throw new Error('Modbus TCP 连接已取消');
         } catch (error) {
-            await this.disconnect();
+            if (this.client === client) await this.disconnect();
+            else {
+                try { await client.close(); } catch (closeError) { try { client.destroy?.(); } catch (_) { /* ignore */ } }
+            }
             throw error;
         }
     }
@@ -124,6 +135,10 @@ class ModbusTcpDriver {
             }
 
             if (parsed.area === 'coil' || parsed.area === 'discrete') {
+                if (!response?.data || response.data.length < parsed.registerCount) {
+                    throw new Error(`Modbus 返回位数量不一致：期望 ${parsed.registerCount}，实际 ${response?.data?.length || 0}`);
+                }
+                if (![true, false, 0, 1].includes(response.data[0])) throw new Error('Modbus 返回了无效位值');
                 values[point.tagName] = Boolean(response?.data?.[0]);
             } else {
                 values[point.tagName] = decodeModbusRegisters(response?.data || [], parsed, this.options);
@@ -188,6 +203,7 @@ class OpcUaDriver {
         this.client = client;
         try {
             await client.connect(endpointUrl);
+            if (this.client !== client) throw new Error('OPC UA 连接已取消');
 
             const identity = this.options.username
                 ? {
@@ -196,9 +212,15 @@ class OpcUaDriver {
                     password: this.options.password
                 }
                 : { type: opcua.UserTokenType.Anonymous };
-            this.session = await client.createSession(identity);
+            const session = await client.createSession(identity);
+            if (this.client !== client) {
+                try { await session.close(); } catch (closeError) { /* ignore */ }
+                throw new Error('OPC UA 会话建立已取消');
+            }
+            this.session = session;
         } catch (error) {
-            await this.disconnect();
+            if (this.client === client) await this.disconnect();
+            else { try { await client.disconnect(); } catch (closeError) { /* ignore */ } }
             throw error;
         }
     }

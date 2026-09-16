@@ -1,15 +1,15 @@
 const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const { createSmokeSandbox, stopOwnedSmokeProcess } = require('../desktop/scripts/smoke-sandbox.cjs');
+const { findFreePort, startLoggedProcess, testFetch: fetch } = require('../backend/scripts/integration-test-utils.cjs');
 
 const projectDir = path.resolve(__dirname, '..');
 const backendDir = path.join(projectDir, 'backend');
-const tmpDir = path.join(projectDir, 'tmp');
-const port = Number(process.env.NATIVE_SMOKE_PORT || 3421);
+let tmpDir;
+let port;
 const shutdownToken = `native-smoke-${process.pid}-${Date.now()}`;
-const backendStdout = path.join(tmpDir, 'native-smoke-backend.out.log');
-const backendStderr = path.join(tmpDir, 'native-smoke-backend.err.log');
-const unityLog = path.join(tmpDir, 'native-smoke-unity.log');
+let unityLog;
 const unityExe = path.join(
     projectDir,
     'unity-client',
@@ -20,11 +20,12 @@ const unityExe = path.join(
 
 const wait = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
 
-async function waitForHealth(url, timeoutMs = 30000) {
+async function waitForHealth(url, child, timeoutMs = 30000) {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
+        if (child.exitCode !== null || child.signalCode !== null) throw new Error('Isolated backend exited during startup');
         try {
-            const response = await fetch(url);
+            const response = await fetch(url, { signal: AbortSignal.timeout(2000) });
             if (response.ok) return;
         } catch (error) { /* retry */ }
         await wait(300);
@@ -81,51 +82,34 @@ async function waitForUnityAnyQuality(previousCount, timeoutMs = 15000) {
     return fs.existsSync(unityLog) ? fs.readFileSync(unityLog, 'utf8') : '';
 }
 
-function terminate(child) {
-    if (!child || child.exitCode !== null || child.killed) return;
-    try { child.kill(); } catch (error) { /* ignore */ }
-}
-
 async function main() {
-    fs.mkdirSync(tmpDir, { recursive: true });
-    for (const filename of [backendStdout, backendStderr, unityLog]) {
-        fs.rmSync(filename, { force: true });
-    }
     if (!fs.existsSync(unityExe)) throw new Error(`Missing Unity player: ${unityExe}`);
+    const sandbox = await createSmokeSandbox('native-client-smoke');
+    tmpDir = sandbox.directory;
+    unityLog = path.join(tmpDir, 'native-smoke-unity.log');
+    port = await findFreePort(process.env.NATIVE_SMOKE_PORT);
 
-    const stdoutFd = fs.openSync(backendStdout, 'a');
-    const stderrFd = fs.openSync(backendStderr, 'a');
     const origin = `http://127.0.0.1:${port}`;
     let backend;
     let unity;
     let originalDashboardConfig;
     let originalQualityProfile;
     try {
-        const databaseType = process.env.NATIVE_SMOKE_DB_TYPE || 'mysql';
-        backend = spawn(process.execPath, ['server.js'], {
+        const databaseType = 'sqlite';
+        backend = startLoggedProcess(process.execPath, ['server.js'], {
             cwd: backendDir,
-            windowsHide: true,
+            logFile: path.join(tmpDir, 'backend.log'),
             env: {
-                ...process.env,
+                ...sandbox.env,
                 NODE_ENV: 'production',
                 HOST: '127.0.0.1',
                 PORT: String(port),
-                APP_DATA_DIR: path.join(backendDir, 'data'),
-                UPLOADS_DIR: path.join(backendDir, 'uploads'),
                 FRONTEND_DIST: path.join(projectDir, 'frontend', 'dist'),
-                DB_TYPE: databaseType,
-                SQLITE_FILE: path.join(backendDir, 'data', 'factory.db'),
-                MYSQL_HOST: process.env.NATIVE_SMOKE_MYSQL_HOST || '127.0.0.1',
-                MYSQL_PORT: process.env.NATIVE_SMOKE_MYSQL_PORT || '3307',
-                MYSQL_USER: process.env.NATIVE_SMOKE_MYSQL_USER || 'root',
-                MYSQL_PASSWORD: process.env.NATIVE_SMOKE_MYSQL_PASSWORD || 'root',
-                MYSQL_DATABASE: process.env.NATIVE_SMOKE_MYSQL_DATABASE || 'dongtai_daping',
                 ENABLE_CORS: 'true',
                 DESKTOP_SHUTDOWN_TOKEN: shutdownToken
-            },
-            stdio: ['ignore', stdoutFd, stderrFd]
+            }
         });
-        await waitForHealth(`${origin}/api/health`);
+        await waitForHealth(`${origin}/api/health`, backend);
 
         const configResponse = await fetch(`${origin}/api/config`);
         if (!configResponse.ok) throw new Error(`Config HTTP ${configResponse.status}`);
@@ -163,7 +147,7 @@ async function main() {
             cwd: path.dirname(unityExe),
             windowsHide: true,
             env: {
-                ...process.env,
+                ...sandbox.env,
                 NO_PROXY: [process.env.NO_PROXY, 'localhost', '127.0.0.1']
                     .filter(Boolean)
                     .join(','),
@@ -224,6 +208,7 @@ async function main() {
                 && integratedQualityApplied
                 && automaticQualityApplied
                 && liveConfigurationApplied
+                && unity.exitCode === null && unity.signalCode === null
                 && !usedFallback
                 && runtimeExceptions.length === 0,
             backendPort: port,
@@ -261,7 +246,7 @@ async function main() {
                 });
             } catch (error) { /* best effort restore */ }
         }
-        terminate(unity);
+        await stopOwnedSmokeProcess(unity);
         if (backend) {
             try {
                 await fetch(`${origin}/api/internal/shutdown`, {
@@ -270,10 +255,8 @@ async function main() {
                 });
                 await wait(1200);
             } catch (error) { /* force close below */ }
-            terminate(backend);
+            await stopOwnedSmokeProcess(backend);
         }
-        fs.closeSync(stdoutFd);
-        fs.closeSync(stderrFd);
     }
 }
 

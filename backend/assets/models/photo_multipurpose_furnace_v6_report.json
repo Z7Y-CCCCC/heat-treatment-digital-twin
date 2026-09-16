@@ -1,0 +1,197 @@
+{
+  "valid": true,
+  "expected_root": "photo_multipurpose_furnace_v6_root",
+  "stats": {
+    "file_bytes": 4971248,
+    "nodes": 104,
+    "meshes": 82,
+    "materials": 18,
+    "triangles": 121211,
+    "unique_mesh_triangles": 121211,
+    "mesh_instance_triangles": 121211,
+    "primitive_counts_by_mode": {
+      "4": 82
+    },
+    "scenes": 1
+  },
+  "limits": {
+    "max_triangles": 200000,
+    "max_nodes": 800
+  },
+  "metadata_checked": true,
+  "binding_targets": [
+    "door_front_lift",
+    "door_middle_lift",
+    "fan_rear_rotate",
+    "fan_front_rotate",
+    "agitator_oil_01_rotate",
+    "agitator_oil_02_rotate",
+    "agitator_oil_03_rotate",
+    "agitator_oil_04_rotate"
+  ],
+  "errors": [],
+  "binding_axis_audit": [
+    {
+      "node": "door_front_lift",
+      "axis": "y",
+      "rotation": [
+        0,
+        0,
+        0,
+        1
+      ]
+    },
+    {
+      "node": "door_middle_lift",
+      "axis": "y",
+      "rotation": [
+        0,
+        0,
+        0,
+        1
+      ]
+    },
+    {
+      "node": "fan_rear_rotate",
+      "axis": "y",
+      "rotation": [
+        0,
+        0,
+        0,
+        1
+      ]
+    },
+    {
+      "node": "fan_front_rotate",
+      "axis": "y",
+      "rotation": [
+        0,
+        0,
+        0,
+        1
+      ]
+    },
+    {
+      "node": "agitator_oil_01_rotate",
+      "axis": "y",
+      "rotation": [
+        0,
+        0,
+        0,
+        1
+      ]
+    },
+    {
+      "node": "agitator_oil_02_rotate",
+      "axis": "y",
+      "rotation": [
+        0,
+        0,
+        0,
+        1
+      ]
+    },
+    {
+      "node": "agitator_oil_03_rotate",
+      "axis": "y",
+      "rotation": [
+        0,
+        0,
+        0,
+        1
+      ]
+    },
+    {
+      "node": "agitator_oil_04_rotate",
+      "axis": "y",
+      "rotation": [
+        0,
+        0,
+        0,
+        1
+      ]
+    }
+  ],
+  "model_id": "photo_multipurpose_furnace_v6",
+  "scope": "standalone photo-led review; production V5 unchanged",
+  "editable_objects": 966,
+  "geometry_pipeline": "evaluated mesh; functional-group + material merge; dynamic pivots preserved",
+  "original_assets_modified": false,
+  "roundtrip": {
+    "status": "passed",
+    "imported_objects": 104,
+    "triangles": 121211,
+    "bounds_blender_xyz": [
+      -3.3930001258850098,
+      -1.5885000228881836,
+      0.032499998807907104,
+      3.6500000953674316,
+      1.962499976158142,
+      4.8535003662109375
+    ],
+    "bounds_max_error_m": 0.0,
+    "bindings_resolved": 8,
+    "closed_door_ray_hit": {
+      "object": "door_front_lift_heat_black.001",
+      "x": 1.9524999856948853
+    },
+    "open_door_ray_hit": {
+      "object": "door_middle_lift_heat_black.001",
+      "x": 1.5750000476837158
+    },
+    "front_door_clear_after_lift": true,
+    "rotor_checks": [
+      {
+        "node": "fan_rear_rotate",
+        "gltf_local_axis": "y",
+        "blender_axis": "z",
+        "height_invariant": true
+      },
+      {
+        "node": "fan_front_rotate",
+        "gltf_local_axis": "y",
+        "blender_axis": "z",
+        "height_invariant": true
+      },
+      {
+        "node": "agitator_oil_01_rotate",
+        "gltf_local_axis": "y",
+        "blender_axis": "z",
+        "height_invariant": true
+      },
+      {
+        "node": "agitator_oil_02_rotate",
+        "gltf_local_axis": "y",
+        "blender_axis": "z",
+        "height_invariant": true
+      },
+      {
+        "node": "agitator_oil_03_rotate",
+        "gltf_local_axis": "y",
+        "blender_axis": "z",
+        "height_invariant": true
+      },
+      {
+        "node": "agitator_oil_04_rotate",
+        "gltf_local_axis": "y",
+        "blender_axis": "z",
+        "height_invariant": true
+      }
+    ],
+    "door_travel_checks": [
+      {
+        "node": "door_front_lift",
+        "samples": 11,
+        "roof_min_clearance_m": 0.05559205522604849
+      },
+      {
+        "node": "door_middle_lift",
+        "samples": 11,
+        "roof_min_clearance_m": 0.36145451337641
+      }
+    ],
+    "static_motor_housings_remain_fixed": true,
+    "production_runtime_tested": false,
+    "render": "backend\\assets\\models\\photo_multipurpose_furnace_v6_runtime_check.png"
+  }
+}

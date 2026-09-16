@@ -9,11 +9,11 @@ const {
     forceStop,
     requestJson,
     startLoggedProcess,
+    testFetch,
     waitForExit,
     waitForHttp
 } = require('./integration-test-utils.cjs');
 
-const CONFIG_FILE = path.join(BACKEND_DIR, 'data', 'database-config.json');
 const SHUTDOWN_TOKEN = `mysql-backup-test-${process.pid}-${Date.now()}`;
 const MARKER = 'mysql_backup_restore_test_marker';
 const MODEL_FILENAME = 'mysql-backup-test.glb';
@@ -24,20 +24,14 @@ let origin = null;
 let databaseName = null;
 
 function loadSourceConfig() {
-    const config = fs.existsSync(CONFIG_FILE)
-        ? JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'))
-        : {
-            type: 'mysql',
-            host: process.env.MYSQL_HOST || '127.0.0.1',
-            port: Number(process.env.MYSQL_PORT || 3307),
-            user: process.env.MYSQL_USER || 'root',
-            password: process.env.MYSQL_PASSWORD || 'root',
-            database: process.env.MYSQL_DATABASE || 'dongtai_daping'
-        };
-    if (String(config.type || '').toLowerCase() !== 'mysql') {
-        throw new Error('当前开发环境未配置 MySQL，无法执行 MySQL 灾备测试');
+    if (process.env.ALLOW_MYSQL_TEST !== 'true' || !process.env.TEST_MYSQL_HOST || !process.env.TEST_MYSQL_USER) {
+        throw new Error('MySQL 灾备测试需显式设置 ALLOW_MYSQL_TEST=true 和 TEST_MYSQL_HOST/PORT/USER/PASSWORD；不会读取现场数据库配置');
     }
-    return config;
+    return {
+        type: 'mysql', host: process.env.TEST_MYSQL_HOST,
+        port: Number(process.env.TEST_MYSQL_PORT || 3306),
+        user: process.env.TEST_MYSQL_USER, password: process.env.TEST_MYSQL_PASSWORD || ''
+    };
 }
 
 async function gracefulStop() {
@@ -87,6 +81,7 @@ async function main() {
         origin = `http://127.0.0.1:${port}`;
         backend = startLoggedProcess(process.execPath, [path.join(BACKEND_DIR, 'server.js')], {
             cwd: BACKEND_DIR,
+            allowExternalDatabase: true,
             env: {
                 ...process.env,
                 NODE_ENV: 'test',
@@ -123,7 +118,7 @@ async function main() {
 
         const siteExport = await requestJson(`${origin}/api/site-backups/export`, { method: 'POST' });
         if (!siteExport.success || !siteExport.backup?.filename) throw new Error('MySQL 整站备份未生成');
-        const siteDownload = await fetch(`${origin}/api/site-backups/${encodeURIComponent(siteExport.backup.filename)}/download`);
+        const siteDownload = await testFetch(`${origin}/api/site-backups/${encodeURIComponent(siteExport.backup.filename)}/download`);
         if (!siteDownload.ok) throw new Error(`MySQL 整站备份下载失败：HTTP ${siteDownload.status}`);
         const siteArchive = path.join(runDirectory, siteExport.backup.filename);
         fs.writeFileSync(siteArchive, Buffer.from(await siteDownload.arrayBuffer()));
@@ -136,7 +131,7 @@ async function main() {
         fs.writeFileSync(path.join(uploadsDir, 'models', MODEL_FILENAME), MUTATED_MODEL);
         const form = new FormData();
         form.append('backup', new Blob([fs.readFileSync(siteArchive)], { type: 'application/zip' }), path.basename(siteArchive));
-        const siteRestoreResponse = await fetch(`${origin}/api/site-backups/import`, { method: 'POST', body: form });
+        const siteRestoreResponse = await testFetch(`${origin}/api/site-backups/import`, { method: 'POST', body: form });
         const siteRestoreBody = await siteRestoreResponse.json();
         const siteSettings = await requestJson(`${origin}/api/settings`);
         const siteModel = fs.readFileSync(path.join(uploadsDir, 'models', MODEL_FILENAME));

@@ -1,5 +1,6 @@
 const express = require('express');
 const crypto = require('crypto');
+const { AsyncLocalStorage } = require('async_hooks');
 const { getDb, getDbStatus } = require('../db/database');
 const { isLoopbackAddress } = require('../middleware/security');
 const { normalizeWorkshopLayout, normalizeLineLayout } = require('../utils/spatialLayout');
@@ -10,6 +11,9 @@ const {
 } = require('../services/dashboardDocuments');
 const { mergeBuiltinModels } = require('../services/builtinModels');
 const { getHeatTreatmentTemplatePacks } = require('../services/heatTreatmentTemplates');
+const { getInspectionPresets } = require('../services/inspectionPresets');
+const { normalizeInspection, validateInspection } = require('../../shared/inspectionConfig.cjs');
+const { normalizeModelMetadata, stringifyModelMetadata } = require('../services/modelAssetMetadata');
 const { getLicenseStatus } = require('../services/license');
 const { saveDataSource, testDataSource } = require('../services/dataSources');
 
@@ -38,8 +42,10 @@ function suppliedToken(req) {
 
 function isAuthorized(req) {
     if (isLoopbackAddress(req.socket?.remoteAddress)) return true;
-    const configured = String(process.env.MCP_API_TOKEN || process.env.ADMIN_API_TOKEN || '');
-    return !!configured && safeTokenEqual(suppliedToken(req), configured);
+    const mcpToken = String(process.env.MCP_API_TOKEN || '');
+    const adminToken = String(process.env.ADMIN_API_TOKEN || '');
+    return (!!mcpToken && safeTokenEqual(suppliedToken(req), mcpToken))
+        || (!!adminToken && safeTokenEqual(req.get('x-admin-token') || suppliedToken(req), adminToken));
 }
 
 function parseJson(value, fallback = {}) {
@@ -75,6 +81,38 @@ function boolOr(value, fallback = false) {
     return ['1', 'true', 'yes', 'on', 'enabled'].includes(String(value).toLowerCase());
 }
 
+function isPlainObject(value) {
+    return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function clone(value) {
+    return JSON.parse(JSON.stringify(value));
+}
+
+function mergePlain(base, patch) {
+    const output = isPlainObject(base) ? clone(base) : {};
+    if (!isPlainObject(patch)) return output;
+    for (const [key, value] of Object.entries(patch)) {
+        if (isPlainObject(value) && isPlainObject(output[key])) output[key] = mergePlain(output[key], value);
+        else output[key] = clone(value);
+    }
+    return output;
+}
+
+function modelIdentifier(value) {
+    return identifier(value, '模型 ID', 160);
+}
+
+function finiteNumber(value, label, { min = -Infinity, max = Infinity, fallback } = {}) {
+    const number = Number(value);
+    if (!Number.isFinite(number)) {
+        if (fallback !== undefined) return fallback;
+        throw new Error(`${label}必须是数字`);
+    }
+    if (number < min || number > max) throw new Error(`${label}必须在 ${min} 到 ${max} 之间`);
+    return number;
+}
+
 function toolDefinitions() {
     return [
         {
@@ -83,6 +121,128 @@ function toolDefinitions() {
             inputSchema: {
                 type: 'object',
                 properties: {},
+                additionalProperties: false
+            }
+        },
+        {
+            name: 'get_model_inspection',
+            description: '读取模型的完整拆解编排：外壳、部件节点、位移/旋转、动画时序、镜头、标签、PLC/数据库部件绑定以及模型优化元数据。不修改配置。省略 modelId 时返回全部模型。',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    modelId: { type: 'string', description: '模型 ID；省略时读取全部模型' },
+                    includeMetadata: { type: 'boolean', description: '是否同时返回完整模型元数据，默认 true' }
+                },
+                additionalProperties: false
+            }
+        },
+        {
+            name: 'get_model_inspection_presets',
+            description: '读取软件内置的模型拆解配置模板。模板包含部件分组、节点、偏移、镜头和数据关联示例，不修改当前模型。',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    modelId: { type: 'string', description: '只读取指定模型的模板；省略时返回全部模板' }
+                },
+                additionalProperties: false
+            }
+        },
+        {
+            name: 'apply_model_inspection_preset',
+            description: '把软件内置模板应用到指定模型，只替换 inspection 拆解编排并保留其它模型元数据；保存后通知 Unity 热加载。',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    modelId: { type: 'string' },
+                    presetId: { type: 'string', description: '来自 get_model_inspection_presets 的模板 ID' }
+                },
+                required: ['modelId', 'presetId'],
+                additionalProperties: false
+            }
+        },
+        {
+            name: 'validate_model_inspection',
+            description: '校验模型拆解配置的结构、重复部件 ID、空节点目标、外壳/部件重叠和数量限制。不写入数据库；当前 MCP 校验无法读取 GLB 节点清单时会明确返回警告。',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    modelId: { type: 'string' },
+                    inspection: { type: 'object', description: '可选：校验这份临时配置；省略时校验数据库中的当前配置' }
+                },
+                required: ['modelId'],
+                additionalProperties: false
+            }
+        },
+        {
+            name: 'save_model_inspection',
+            description: '完整替换一个模型的拆解配置并通知 Unity 热加载。适合一次性保存外壳、镜头、动画和全部部件；其它模型元数据会保留。保存前会执行结构校验。',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    modelId: { type: 'string' },
+                    inspection: { type: 'object' }
+                },
+                required: ['modelId', 'inspection'],
+                additionalProperties: false
+            }
+        },
+        {
+            name: 'update_model_inspection',
+            description: '增量修改一个模型的拆解配置并通知 Unity 热加载。可同时修改顶层参数/镜头/外壳、单个部件、部件顺序、添加/删除部件，避免每次复制整份配置。',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    modelId: { type: 'string' },
+                    patch: { type: 'object', description: '拆解配置的增量字段，例如 playback_speed、shell、exploded、labels' },
+                    partUpdates: { type: 'array', description: '按 id 修改部件；元素格式为 {id, patch, remove?}' },
+                    addParts: { type: 'array', description: '追加标准化部件对象，必须包含 id 和 node_path/node_name/node_paths/node_names 之一' },
+                    removePartIds: { type: 'array', items: { type: 'string' } },
+                    order: { type: 'array', items: { type: 'string' }, description: '部件完整新顺序，必须覆盖当前全部部件 ID' }
+                },
+                required: ['modelId'],
+                additionalProperties: false
+            }
+        },
+        {
+            name: 'apply_model_inspection_layout',
+            description: '快速调整一个模型的部件拆解布局并通知 Unity。scale 会按比例放大/缩小现有部件偏移，默认保留高度；grid 会按当前配置生成稳定的二维网格。适合快速修正“太散/太挤”，不会复制组件。',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    modelId: { type: 'string' },
+                    strategy: { type: 'string', enum: ['scale', 'grid'], description: 'scale=相对当前布局缩放；grid=按部件顺序重新排成网格' },
+                    spacing: { type: 'number', minimum: 0.1, maximum: 5, description: '布局倍率，默认 1；scale 下 1 不改变布局' },
+                    includeY: { type: 'boolean', description: 'scale 是否同时缩放 Y 高度，默认 false' },
+                    preserveGround: { type: 'boolean', description: '是否把最低部件抬到地面以上，默认 true' }
+                },
+                required: ['modelId'],
+                additionalProperties: false
+            }
+        },
+        {
+            name: 'update_model_part_bindings',
+            description: '维护模型部件与 PLC/数据库点位的关联。replace 整组替换，merge 按 binding id 增量合并；保存后 Unity 会重新加载通用动画/状态绑定。',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    modelId: { type: 'string' },
+                    mode: { type: 'string', enum: ['replace', 'merge'], description: '默认 replace' },
+                    bindings: { type: 'array' }
+                },
+                required: ['modelId', 'bindings'],
+                additionalProperties: false
+            }
+        },
+        {
+            name: 'update_model_metadata',
+            description: '增量维护模型的全部可编辑元数据：assetSpec 交付规范、optimization 优化策略、inspection 拆解、partBindings 点位绑定、acceptance/release 状态和 runtime 运行开关。保存后通知 Unity。',
+            inputSchema: {
+                type: 'object',
+                properties: {
+                    modelId: { type: 'string' },
+                    patch: { type: 'object' }
+                },
+                required: ['modelId', 'patch'],
                 additionalProperties: false
             }
         },
@@ -303,13 +463,18 @@ function rpcError(id, code, message, data) {
 
 function createMcpRouter({ port = 3001 } = {}) {
     const router = express.Router();
+    const requestAuthorization = new AsyncLocalStorage();
 
     router.use((req, res, next) => {
         if (!isAuthorized(req)) {
             res.status(403).json({ success: false, error: 'MCP 接口仅允许本机访问；远程访问需配置 MCP_API_TOKEN' });
             return;
         }
-        next();
+        const headers = {};
+        for (const name of ['authorization', 'x-admin-token', 'x-mcp-token', 'cookie', 'x-csrf-token']) {
+            if (req.get(name)) headers[name] = req.get(name);
+        }
+        requestAuthorization.run(headers, next);
     });
 
     async function localApi(path, options = {}) {
@@ -317,12 +482,263 @@ function createMcpRouter({ port = 3001 } = {}) {
             ...options,
             headers: {
                 'content-type': 'application/json',
+                ...(requestAuthorization.getStore() || {}),
                 ...(options.headers || {})
             }
         });
         const body = await response.json().catch(() => ({}));
         if (!response.ok) throw new Error(body.error || `内部接口 ${path} 返回 ${response.status}`);
         return body;
+    }
+
+    async function loadModels() {
+        const db = await getDb();
+        const rows = await db.all('SELECT * FROM models ORDER BY id ASC');
+        return mergeBuiltinModels(rows);
+    }
+
+    async function loadModel(modelId) {
+        const id = modelIdentifier(modelId);
+        const model = (await loadModels()).find(item => item.id === id);
+        if (!model) throw new Error(`模型不存在：${id}`);
+        return {
+            model,
+            metadata: normalizeModelMetadata(model.metadata, { name: model.name })
+        };
+    }
+
+    function modelSummary(model) {
+        return {
+            id: model.id,
+            name: model.name,
+            file_path: model.file_path,
+            asset_type: model.asset_type,
+            is_builtin: !!model.is_builtin,
+            tags: parseJson(model.tags, []),
+            thumbnail: model.thumbnail || null,
+            default_scale: Number(model.default_scale || 1)
+        };
+    }
+
+    async function saveModelMetadata(modelId, metadata) {
+        const { model } = await loadModel(modelId);
+        if (!isPlainObject(metadata)) throw new Error('模型元数据必须是对象');
+        const normalized = normalizeModelMetadata(metadata, { name: model.name });
+        const serialized = stringifyModelMetadata(normalized, { name: model.name });
+        const saved = await localApi(`/api/models/${encodeURIComponent(model.id)}`, {
+            method: 'PUT',
+            body: JSON.stringify({
+                name: model.name,
+                tags: model.tags || '[]',
+                default_scale: Number(model.default_scale || 1),
+                metadata: serialized
+            })
+        });
+        return {
+            success: true,
+            model: modelSummary(saved.model || model),
+            metadata: normalizeModelMetadata(saved.model?.metadata || serialized, { name: model.name }),
+            unityNotified: true
+        };
+    }
+
+    function normalizePartId(value) {
+        const id = text(value);
+        if (!id || id.length > 160) throw new Error('部件 ID 不能为空且长度不能超过 160');
+        return id;
+    }
+
+    function patchInspectionParts(currentInspection, args = {}) {
+        let next = clone(normalizeInspection(currentInspection));
+        const removeIds = new Set((Array.isArray(args.removePartIds) ? args.removePartIds : []).map(normalizePartId));
+        if (removeIds.size) next.parts = next.parts.filter(part => !removeIds.has(part.id));
+
+        for (const item of Array.isArray(args.partUpdates) ? args.partUpdates : []) {
+            if (!isPlainObject(item)) throw new Error('partUpdates 的每一项必须是对象');
+            const id = normalizePartId(item.id);
+            const index = next.parts.findIndex(part => part.id === id);
+            if (item.remove === true) {
+                if (index >= 0) next.parts.splice(index, 1);
+                continue;
+            }
+            if (index < 0) throw new Error(`部件不存在：${id}；新增部件请使用 addParts`);
+            const explicitPatch = isPlainObject(item.patch)
+                ? item.patch
+                : Object.fromEntries(Object.entries(item).filter(([key]) => !['id', 'remove'].includes(key)));
+            next.parts[index] = mergePlain(next.parts[index], explicitPatch);
+        }
+
+        for (const part of Array.isArray(args.addParts) ? args.addParts : []) {
+            if (!isPlainObject(part)) throw new Error('addParts 的每一项必须是对象');
+            const id = normalizePartId(part.id);
+            if (next.parts.some(item => item.id === id)) throw new Error(`部件 ID 已存在：${id}`);
+            next.parts.push({ ...part, id });
+        }
+
+        if (args.order !== undefined) {
+            if (!Array.isArray(args.order)) throw new Error('order 必须是部件 ID 数组');
+            const order = args.order.map(normalizePartId);
+            const currentIds = next.parts.map(part => part.id);
+            if (order.length !== currentIds.length || new Set(order).size !== order.length
+                || currentIds.some(id => !order.includes(id))) {
+                throw new Error('order 必须完整覆盖修改后的全部部件 ID，且不能重复');
+            }
+            const byId = new Map(next.parts.map(part => [part.id, part]));
+            next.parts = order.map(id => byId.get(id));
+        }
+
+        if (isPlainObject(args.patch)) next = mergePlain(next, args.patch);
+        return normalizeInspection(next);
+    }
+
+    function applyInspectionLayout(currentInspection, args = {}) {
+        const strategy = text(args.strategy || 'scale').toLowerCase();
+        if (!['scale', 'grid'].includes(strategy)) throw new Error('strategy 只能是 scale 或 grid');
+        const spacing = finiteNumber(args.spacing === undefined ? 1 : args.spacing, 'spacing', { min: 0.1, max: 5 });
+        const includeY = boolOr(args.includeY, false);
+        const preserveGround = boolOr(args.preserveGround, true);
+        const next = clone(normalizeInspection(currentInspection));
+        const parts = next.parts;
+
+        if (strategy === 'scale') {
+            for (const part of parts) {
+                const offset = part.explode_offset || [0, 0, 0];
+                part.explode_offset = [
+                    Number(offset[0] || 0) * spacing,
+                    Number(offset[1] || 0) * (includeY ? spacing : 1),
+                    Number(offset[2] || 0) * spacing
+                ];
+            }
+        } else if (parts.length) {
+            const columns = Math.max(1, Math.ceil(Math.sqrt(parts.length)));
+            const rows = Math.max(1, Math.ceil(parts.length / columns));
+            const maxAbsX = Math.max(1, ...parts.map(part => Math.abs(Number(part.explode_offset?.[0] || 0))));
+            const maxAbsZ = Math.max(1, ...parts.map(part => Math.abs(Number(part.explode_offset?.[2] || 0))));
+            const cellX = columns > 1 ? (maxAbsX * 2) / (columns - 1) : maxAbsX;
+            const cellZ = rows > 1 ? (maxAbsZ * 2) / (rows - 1) : maxAbsZ;
+            parts.forEach((part, index) => {
+                const column = index % columns;
+                const row = Math.floor(index / columns);
+                const offset = part.explode_offset || [0, 0, 0];
+                part.explode_offset = [
+                    (column - (columns - 1) / 2) * cellX * spacing,
+                    Number(offset[1] || 0),
+                    (row - (rows - 1) / 2) * cellZ * spacing
+                ];
+            });
+        }
+
+        if (preserveGround && parts.length) {
+            const minY = Math.min(...parts.map(part => Number(part.explode_offset?.[1] || 0)));
+            if (minY < 0) {
+                const lift = -minY + 0.05;
+                parts.forEach(part => { part.explode_offset[1] += lift; });
+            }
+        }
+        return normalizeInspection(next);
+    }
+
+    async function getModelInspection(args = {}) {
+        const includeMetadata = args.includeMetadata !== false;
+        const models = args.modelId === undefined
+            ? await loadModels()
+            : [(await loadModel(args.modelId)).model];
+        const items = models.map(model => {
+            const metadata = normalizeModelMetadata(model.metadata, { name: model.name });
+            const inspection = normalizeInspection(metadata.inspection, metadata.partBindings);
+            const validation = validateInspection(inspection, []);
+            return {
+                model: modelSummary(model),
+                inspection,
+                partBindings: metadata.partBindings,
+                validation: { valid: validation.valid, errors: validation.errors, warnings: validation.warnings },
+                ...(includeMetadata ? { metadata } : {})
+            };
+        });
+        return { success: true, count: items.length, models: items };
+    }
+
+    async function getModelInspectionPresets(args = {}) {
+        const requested = args.modelId === undefined ? '' : modelIdentifier(args.modelId);
+        const presets = getInspectionPresets().filter(preset => !requested || preset.modelId === requested);
+        return { success: true, readOnly: true, count: presets.length, presets };
+    }
+
+    async function applyModelInspectionPreset(args = {}) {
+        const loaded = await loadModel(args.modelId);
+        const presetId = text(args.presetId);
+        if (!presetId) throw new Error('presetId 不能为空');
+        const preset = getInspectionPresets().find(item => item.id === presetId && item.modelId === loaded.model.id);
+        if (!preset) throw new Error(`找不到模型 ${loaded.model.id} 对应的拆解模板：${presetId}`);
+        const validation = validateInspection(preset.inspection, []);
+        if (!validation.valid) throw new Error(`内置拆解模板不合法：${validation.errors.map(item => item.message).join('；')}`);
+        return await saveModelMetadata(loaded.model.id, { ...loaded.metadata, inspection: preset.inspection });
+    }
+
+    async function validateModelInspection(args = {}) {
+        const loaded = await loadModel(args.modelId);
+        const inspection = args.inspection === undefined
+            ? loaded.metadata.inspection
+            : args.inspection;
+        if (!isPlainObject(inspection)) throw new Error('inspection 必须是对象');
+        const validation = validateInspection(inspection, []);
+        return {
+            success: true,
+            model: modelSummary(loaded.model),
+            valid: validation.valid,
+            errors: validation.errors,
+            warnings: validation.warnings,
+            inspection: validation.config
+        };
+    }
+
+    async function saveModelInspection(args = {}) {
+        const loaded = await loadModel(args.modelId);
+        if (!isPlainObject(args.inspection)) throw new Error('inspection 必须是对象');
+        const validation = validateInspection(args.inspection, []);
+        if (!validation.valid) throw new Error(`拆解配置不合法：${validation.errors.map(item => item.message).join('；')}`);
+        return await saveModelMetadata(loaded.model.id, { ...loaded.metadata, inspection: args.inspection });
+    }
+
+    async function updateModelInspection(args = {}) {
+        const loaded = await loadModel(args.modelId);
+        const inspection = patchInspectionParts(loaded.metadata.inspection, args);
+        const validation = validateInspection(inspection, []);
+        if (!validation.valid) throw new Error(`拆解配置不合法：${validation.errors.map(item => item.message).join('；')}`);
+        return await saveModelMetadata(loaded.model.id, { ...loaded.metadata, inspection });
+    }
+
+    async function applyModelInspectionLayout(args = {}) {
+        const loaded = await loadModel(args.modelId);
+        const inspection = applyInspectionLayout(loaded.metadata.inspection, args);
+        const validation = validateInspection(inspection, []);
+        if (!validation.valid) throw new Error(`拆解配置不合法：${validation.errors.map(item => item.message).join('；')}`);
+        return await saveModelMetadata(loaded.model.id, { ...loaded.metadata, inspection });
+    }
+
+    async function updateModelPartBindings(args = {}) {
+        const loaded = await loadModel(args.modelId);
+        if (!Array.isArray(args.bindings)) throw new Error('bindings 必须是数组');
+        const mode = text(args.mode || 'replace').toLowerCase();
+        if (!['replace', 'merge'].includes(mode)) throw new Error('mode 只能是 replace 或 merge');
+        let bindings = args.bindings;
+        if (mode === 'merge') {
+            const byId = new Map((loaded.metadata.partBindings || []).map((binding, index) => [String(binding.id || `binding_${index + 1}`), binding]));
+            for (const binding of args.bindings) {
+                if (!isPlainObject(binding)) throw new Error('bindings 的每一项必须是对象');
+                const id = String(binding.id || '');
+                if (!id) throw new Error('merge 模式下每个 binding 都必须有 id');
+                byId.set(id, mergePlain(byId.get(id) || {}, binding));
+            }
+            bindings = [...byId.values()];
+        }
+        return await saveModelMetadata(loaded.model.id, { ...loaded.metadata, partBindings: bindings });
+    }
+
+    async function updateModelMetadata(args = {}) {
+        const loaded = await loadModel(args.modelId);
+        if (!isPlainObject(args.patch)) throw new Error('patch 必须是对象');
+        return await saveModelMetadata(loaded.model.id, mergePlain(loaded.metadata, args.patch));
     }
 
     async function loadState() {
@@ -661,6 +1077,9 @@ function createMcpRouter({ port = 3001 } = {}) {
     async function configureReadonlyBusinessSource(args = {}) {
         const id = identifier(args.id, '数据源 ID', 80);
         if (id === 'primary') throw new Error('排产业务数据源必须使用独立的只读连接，不能覆盖主配置库');
+        if ((args.sourceType && args.sourceType !== 'database') || text(args.type).toLowerCase() === 'http_api') {
+            throw new Error('排产业务数据源仅支持数据库连接，HTTP API 目前仅支持健康检查');
+        }
         const input = {
             ...args,
             id,
@@ -671,7 +1090,8 @@ function createMcpRouter({ port = 3001 } = {}) {
         };
         if (!input.name) throw new Error('数据源名称不能为空');
         const tested = await testDataSource(input);
-        const connection = saveDataSource(input);
+        if (!tested.success) throw new Error(tested.error || tested.health?.message || '外部数据库连接测试失败，未保存或发布配置');
+        const connection = saveDataSource({ ...input, healthToken: tested.healthToken });
         let binding = { changedWidgets: 0, revision: null, release: null };
         if (args.bindBusinessWidgets !== false) {
             const db = await getDb();
@@ -736,6 +1156,15 @@ function createMcpRouter({ port = 3001 } = {}) {
     async function callTool(name, args = {}) {
         switch (name) {
             case 'get_project_state': return result(await loadState());
+            case 'get_model_inspection': return result(await getModelInspection(args));
+            case 'get_model_inspection_presets': return result(await getModelInspectionPresets(args));
+            case 'apply_model_inspection_preset': return result(await applyModelInspectionPreset(args));
+            case 'validate_model_inspection': return result(await validateModelInspection(args));
+            case 'save_model_inspection': return result(await saveModelInspection(args));
+            case 'update_model_inspection': return result(await updateModelInspection(args));
+            case 'apply_model_inspection_layout': return result(await applyModelInspectionLayout(args));
+            case 'update_model_part_bindings': return result(await updateModelPartBindings(args));
+            case 'update_model_metadata': return result(await updateModelMetadata(args));
             case 'set_data_mode': return result(await setDataMode(args));
             case 'upsert_workshop': return result(await upsertWorkshop(args));
             case 'upsert_line': return result(await upsertLine(args));

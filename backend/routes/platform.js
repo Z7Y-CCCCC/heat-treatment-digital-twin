@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { getDb } = require('../db/database');
+const { getDb, getDbStatus } = require('../db/database');
 const {
     releasePayload,
     loadDraftDocument,
@@ -44,6 +44,9 @@ function clampInteger(value, min, max, fallback) {
 }
 
 function formatSqlDateTime(date) {
+    // SQLite CURRENT_TIMESTAMP is UTC even when the desktop runs in UTC+08.
+    // Other drivers keep their existing session/local-time representation.
+    if (getDbStatus().type === 'sqlite') return date.toISOString().slice(0, 19).replace('T', ' ');
     const pad = value => String(value).padStart(2, '0');
     return [
         date.getFullYear(),
@@ -54,6 +57,16 @@ function formatSqlDateTime(date) {
         pad(date.getMinutes()),
         pad(date.getSeconds())
     ].join(':');
+}
+
+function publicEvents(rows) {
+    if (getDbStatus().type !== 'sqlite') return rows;
+    return rows.map(row => {
+        const value = row.occurred_at;
+        if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?$/.test(value)) return row;
+        const parsed = new Date(`${value.replace(' ', 'T')}Z`);
+        return Number.isNaN(parsed.getTime()) ? row : { ...row, occurred_at: parsed.toISOString() };
+    });
 }
 
 async function loadPlatformSnapshot() {
@@ -81,7 +94,7 @@ async function loadPlatformSnapshot() {
     const assets = await db.all('SELECT * FROM models ORDER BY created_at DESC');
     const deviceTemplates = await db.all('SELECT * FROM device_templates ORDER BY created_at ASC');
     const datapointTemplates = await db.all('SELECT * FROM datapoint_templates ORDER BY device_template_id, sort_order ASC');
-    const recentEvents = await db.all('SELECT * FROM event_logs ORDER BY occurred_at DESC, id DESC LIMIT 20');
+    const recentEvents = publicEvents(await db.all('SELECT * FROM event_logs ORDER BY occurred_at DESC, id DESC LIMIT 20'));
     const latestMetrics = await db.get('SELECT * FROM metric_snapshots ORDER BY snapshot_time DESC, id DESC LIMIT 1');
 
     return {
@@ -411,7 +424,7 @@ router.get('/events', async (req, res) => {
 
         const whereSql = where.length ? ` WHERE ${where.join(' AND ')}` : '';
         const rows = await db.all(`SELECT * FROM event_logs${whereSql} ORDER BY occurred_at DESC, id DESC LIMIT ${limit}`, params);
-        res.json(rows);
+        res.json(publicEvents(rows));
     } catch (e) {
         res.status(500).json({ error: e.message });
     }

@@ -1,16 +1,15 @@
 <script setup>
 import { ref, reactive, onMounted, onUnmounted, onActivated, onDeactivated, computed, watch, nextTick } from 'vue'
 import * as THREE from 'three'
-import QRCode from 'qrcode'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { adminApi } from '../config/factoryConfig.js'
 import { API_BASE } from '../runtime/backendEndpoint.js'
 import { SceneRuntime } from '../runtime/SceneRuntime.js'
-import { RENDER_PROFILE_OPTIONS, normalizeRenderSettings } from '../runtime/renderConfig.js'
 import { createVoiceAnnouncer, normalizeVoiceRule, parseVoiceConfig } from '../runtime/VoiceAnnouncer.js'
 import WidgetRenderer from '../runtime/WidgetRenderer.vue'
 import { createDeviceModel, resolveBackendAssetUrl } from '../three/ModelFactory.js'
+import { restoreGltfNodeNames } from '../three/gltfNodeIdentity.js'
 import {
     DEFAULT_DEVICE_LABEL_CONFIG,
     DEFAULT_DIAGNOSTIC_CONFIG,
@@ -45,8 +44,17 @@ import { useDataPoints } from './admin/composables/useDataPoints.js'
 import { formatPointValue, formatQualityLabel, formatPointTime } from './admin/utils/points.js'
 import NativeEnvironmentSettings from './admin/components/NativeEnvironmentSettings.vue'
 import DashboardDesigner from './admin/components/DashboardDesigner.vue'
+import AdminWindowChrome from './admin/components/AdminWindowChrome.vue'
+import AdminSecuritySettings from './admin/components/AdminSecuritySettings.vue'
+import AdminHelpGuide from './admin/components/AdminHelpGuide.vue'
 import MobileDeviceMotion from './admin/components/MobileDeviceMotion.vue'
+import ModelInspectionEditor from './admin/components/ModelInspectionEditor.vue'
+import ModelInspectionPreviewOverlay from './admin/components/ModelInspectionPreviewOverlay.vue'
+import { InspectionPreview, inspectionCameraPose } from '../runtime/InspectionPreview.js'
+import inspectionConfig from '../../../shared/inspectionConfig.mjs'
+import { adminSession, lockAdmin, refreshAdminSession } from '../runtime/adminSession.js'
 import { normalizeWorkshopLayout } from '../utils/spatialLayout.js'
+import { summarizeDeviceConnections } from './admin/utils/connectionStatus.js'
 import {
     PLC_PROTOCOL_OPTIONS,
     getPlcAddressHint,
@@ -58,125 +66,12 @@ import {
 
 defineOptions({ name: 'AdminPanel' })
 
+const { createInspectionDefaults, normalizeInspection, validateInspection } = inspectionConfig
+
 const ADMIN_UI_STATE_KEY = 'digital_twin_admin_ui_state_v1'
 const isUnityEmbedded = new URLSearchParams(window.location.search).get('embedded') === 'unity'
 const unityHostState = reactive({ attached: true, maximized: false, dockReady: false, adminVisible: true })
-let unityHostDragActive = false
-let unityHostDragTarget = 'admin'
-let unityHostDragStartX = 0
-let unityHostDragStartY = 0
-const UNITY_NATIVE_MOVE_THRESHOLD = 5
-
-function postUnityHostMessage(message) {
-    window.chrome?.webview?.postMessage(message)
-}
-
-function handleUnityHostMessage(event) {
-    if (event.data?.type !== 'host_state') return
-    unityHostState.attached = event.data.attached !== false
-    unityHostState.maximized = event.data.maximized === true
-    unityHostState.dockReady = event.data.dockReady === true
-    unityHostState.adminVisible = event.data.adminVisible !== false
-}
-
-function requestUnityHostAction(action) {
-    postUnityHostMessage({ type: 'host_action', action })
-}
-
-function handleUnityChromeDoubleClick(event) {
-    if (event.button !== 0) return
-    if (event.target?.closest?.('.unity-browser-tab, .unity-window-actions')) return
-    unityHostDragActive = false
-    requestUnityHostAction('maximize')
-}
-
-function beginUnityHostDrag(event, target = 'admin') {
-    if (event.button !== 0) return
-    if (!unityHostState.attached) {
-        postUnityHostMessage({
-            type: 'host_drag_start',
-            target: 'admin',
-            screenX: Math.round(event.screenX),
-            screenY: Math.round(event.screenY)
-        })
-        return
-    }
-    unityHostDragActive = true
-    unityHostDragTarget = target
-    unityHostDragStartX = event.screenX
-    unityHostDragStartY = event.screenY
-    event.currentTarget?.setPointerCapture?.(event.pointerId)
-    if (target === 'dashboard') return
-    postUnityHostMessage({
-        type: 'host_drag_start',
-        target,
-        screenX: Math.round(event.screenX),
-        screenY: Math.round(event.screenY)
-    })
-}
-
-function continueUnityHostDrag(event) {
-    if (!unityHostDragActive) return
-    if (unityHostDragTarget === 'dashboard') {
-        const deltaX = event.screenX - unityHostDragStartX
-        const deltaY = event.screenY - unityHostDragStartY
-        if ((deltaX * deltaX) + (deltaY * deltaY) < UNITY_NATIVE_MOVE_THRESHOLD * UNITY_NATIVE_MOVE_THRESHOLD) return
-        unityHostDragActive = false
-        event.currentTarget?.releasePointerCapture?.(event.pointerId)
-        postUnityHostMessage({
-            type: 'host_window_move_start',
-            screenX: Math.round(event.screenX),
-            screenY: Math.round(event.screenY)
-        })
-        return
-    }
-    postUnityHostMessage({ type: 'host_drag_move', screenX: Math.round(event.screenX), screenY: Math.round(event.screenY) })
-}
-
-function endUnityHostDrag(event) {
-    if (!unityHostDragActive) return
-    const target = unityHostDragTarget
-    unityHostDragActive = false
-    unityHostDragTarget = 'admin'
-    if (target === 'dashboard') return
-    postUnityHostMessage({
-        type: 'host_drag_end',
-        screenX: Math.round(event?.screenX || 0),
-        screenY: Math.round(event?.screenY || 0)
-    })
-}
-
-if (isUnityEmbedded) {
-    onMounted(() => {
-        window.chrome?.webview?.addEventListener('message', handleUnityHostMessage)
-        postUnityHostMessage({ type: 'host_action', action: 'state' })
-    })
-    onUnmounted(() => window.chrome?.webview?.removeEventListener('message', handleUnityHostMessage))
-}
-
-function closeAdminPanel() {
-    if (isUnityEmbedded && window.chrome?.webview) {
-        requestUnityHostAction('close_window')
-        return
-    }
-    window.location.assign('/')
-}
-
-function showUnityDashboard() {
-    requestUnityHostAction('show_dashboard')
-}
-
-function showUnityAdmin() {
-    requestUnityHostAction('show_admin')
-}
-
-function reloadAdminPage() {
-    if (isUnityEmbedded && window.chrome?.webview) {
-        requestUnityHostAction('reload_page')
-        return
-    }
-    window.location.reload()
-}
+watch(() => unityHostState.adminVisible, visible => { if (visible) refreshAdminSession() })
 
 function loadAdminUiState() {
     try {
@@ -194,9 +89,10 @@ const PLATFORM_SUBPAGES = [
     { key: 'environment', label: '场景与光效', description: 'Unity 灯光、后处理、围墙与空间' }
 ]
 const SETTINGS_SUBPAGES = [
+    { key: 'security', label: '后台安全', description: '后台密码、无操作自动锁定与立即锁定' },
     { key: 'runtime', label: '运行与投屏', description: '自启动、电视投屏与本地运行服务' },
     { key: 'database', label: '数据库与备份', description: '连接、外部数据源、备份与恢复' },
-    { key: 'performance', label: '客户端性能', description: 'Unity 画质与旧 Web 兼容参数' },
+    { key: 'performance', label: '客户端性能', description: 'Unity 画质' },
     { key: 'data', label: '数据通路', description: 'PLC 实时采集或离线模拟模式' },
     { key: 'license', label: '授权与版本', description: '离线许可证、有效期与发布信息' }
 ]
@@ -213,7 +109,6 @@ const adminContentRef = ref(null)
 const isAdminNavCollapsed = ref(!!storedAdminUiState.isAdminNavCollapsed)
 const isFactoryMenuOpen = ref(true)
 const isDataMenuOpen = ref(true)
-const isLegacyWebRenderSettingsOpen = ref(false)
 const isExternalDataSourcesOpen = ref(!!storedAdminUiState.isExternalDataSourcesOpen)
 const isAlarmConfigOpen = ref(!!storedAdminUiState.isAlarmConfigOpen)
 
@@ -240,6 +135,7 @@ const navIconPaths = {
     workshops: ['M4 20V8l8-4 8 4v12', 'M8 20v-8h8v8', 'M10 8h4'],
     lines: ['M4 7h5', 'M15 7h5', 'M9 7c2 0 4 10 6 10', 'M4 17h5', 'M15 17h5'],
     devices: ['M6 8h12v8H6z', 'M9 8V5h6v3', 'M9 19h6', 'M12 16v3'],
+    mobile: ['M5 8h14v8H5z', 'M8 8V5h8v3', 'M8 16v3', 'M16 16v3', 'M2 12h3', 'M19 12h3'],
     models: ['M12 3l8 4.5v9L12 21l-8-4.5v-9L12 3z', 'M12 12l8-4.5', 'M12 12v9', 'M12 12L4 7.5'],
     platform: ['M5 5h6v6H5z', 'M13 5h6v6h-6z', 'M5 13h6v6H5z', 'M13 13h6v6h-6z'],
     data: ['M4 7h16', 'M4 12h16', 'M4 17h16', 'M7 7v10', 'M17 7v10'],
@@ -250,11 +146,7 @@ const navIconPaths = {
 const { appDialog, openAppDialog, closeAppDialog, alert, confirm } = useAppDialog()
 
 const {
-    defaultSettings,
     settings,
-    renderProfileOptions,
-    resolvedRenderSettings,
-    selectedRenderProfile,
     nativeEnvironmentConfig,
     nativeEnvironmentSaving,
     nativeEnvironmentMessage,
@@ -263,16 +155,10 @@ const {
     applyNativeEnvironmentPreset,
     resetNativeEnvironmentConfig,
     runtimeSettings,
-    runtimeStatus,
     runtimeSaving,
     runtimeMessage,
-    runtimeQrDataUrl,
-    firstCastPairingUrl,
-    refreshRuntimeQr,
     loadRuntimeSettings,
     saveRuntimeSettings,
-    rotateCastPin,
-    copyCastUrl,
     startRuntimeRefresh,
     stopRuntimeRefresh,
     loadSettings,
@@ -296,7 +182,9 @@ const {
     dataSourceEditor,
     dataSourceBusy,
     dataSourceMessage,
+    dataSourceTestHealth,
     dataSourceBackupBusy,
+    dataSourceBackupMessage,
     dataSourceBackupConfig,
     dataSourceBackupStatus,
     resetDataSourceEditor,
@@ -347,6 +235,23 @@ const {
     scheduleComposerPreview: (...args) => scheduleComposerPreview(...args)
 })
 
+function dataSourceHealthLabel(status) {
+    return {
+        healthy: '健康',
+        auth_failed: '认证失败',
+        http_error: '接口异常',
+        network_error: '网络失败',
+        timeout: '请求超时',
+        config_error: '配置错误',
+        check_failed: '检查未完成',
+        unknown: '未检查'
+    }[status] || '未检查'
+}
+
+function isHttpDataSource(connection) {
+    return connection.sourceType === 'http_api' || connection.type === 'http_api'
+}
+
 const {
     castState,
     castBusyDeviceId,
@@ -374,7 +279,6 @@ function getDbStatusBadgeClass(statusText) {
 
 // ============ 车间管理 ============
 const workshops = ref([])
-const templatePacks = ref([])
 const licenseStatus = reactive({
     status: 'loading',
     reason: '正在读取授权状态…',
@@ -385,7 +289,10 @@ const licenseStatus = reactive({
     customer: null,
     issuedAt: null,
     expiresAt: null,
-    features: []
+    features: [],
+    machineId: null,
+    machineIdSource: null,
+    machineIdAvailable: false
 })
 const licenseText = ref('')
 const licenseBusy = ref(false)
@@ -441,16 +348,13 @@ const selectedWorkshopEditor = computed(() => (
 ))
 
 async function loadWorkshops() {
-    workshops.value = (await adminApi.getWorkshops()).map(normalizeWorkshopRecord)
+    const result = await adminApi.getWorkshops()
+    if (!Array.isArray(result)) throw new Error(result?.error || '车间列表读取失败')
+    workshops.value = result.map(normalizeWorkshopRecord)
     if (!workshops.value.some(workshop => workshop.id === selectedWorkshopEditorId.value)) {
         selectedWorkshopEditorId.value = workshops.value[0]?.id || ''
     }
     if (!workshops.value.length) workshopManagementStep.value = 'list'
-}
-
-async function loadTemplatePacks() {
-    const result = await adminApi.getHeatTreatmentTemplateLibrary()
-    templatePacks.value = Array.isArray(result?.packs) ? result.packs : []
 }
 
 async function loadLicenseStatus() {
@@ -480,10 +384,24 @@ function licenseStatusLabel(status) {
         expired: '已过期',
         not_yet_valid: '尚未生效',
         machine_mismatch: '安装实例不匹配',
+        machine_unavailable: '无法读取机器指纹',
         invalid: '无效',
         loading: '读取中…',
         error: '读取失败'
     }[status] || status || '未知'
+}
+
+async function copyLicenseMachineId() {
+    if (!licenseStatus.machineId) {
+        licenseMessage.value = '当前无法读取本机授权指纹，请检查服务日志。'
+        return
+    }
+    try {
+        await navigator.clipboard.writeText(licenseStatus.machineId)
+        licenseMessage.value = '本机授权指纹已复制，可发给许可证签发方。'
+    } catch (error) {
+        licenseMessage.value = '复制失败，请手动选中并复制授权指纹。'
+    }
 }
 
 async function installLicenseFromText() {
@@ -531,8 +449,6 @@ async function createWorkshop() {
     if (previousWorkshop) {
         const previousLayout = getWorkshopLayout(previousWorkshop)
         layout.transform.x = numberOrDefault(previousLayout.transform.x, 0)
-const lineStationEditingDeviceId = ref('')
-const lineStationDraft = ref('')
             + numberOrDefault(previousLayout.size.width, 100) * 0.5
             + layout.size.width * 0.5
             + 20
@@ -647,6 +563,8 @@ const lineDevicePoolDock = reactive({
 const linePreviewStageRef = ref(null)
 const lineLayoutSaving = ref(false)
 const lineFlowMenuLaneId = ref('')
+const lineStationEditingDeviceId = ref('')
+const lineStationDraft = ref('')
 let linePreviewDragState = null
 let lineDeviceDragState = null
 let lineDevicePoolMoveState = null
@@ -690,33 +608,12 @@ const nativeSceneHeaderLabel = computed(() => {
     if (!nativeScenePreviewChecked.value) return 'Unity 检测中'
     return nativeScenePreviewConnected.value ? 'Unity 已连接' : 'Unity 未连接'
 })
-const deviceConnectionSummary = computed(() => {
-    const statuses = Array.isArray(engineStatus.plcStatus?.devices)
-        ? engineStatus.plcStatus.devices
-        : []
-    const fallbackTotal = devices.value.filter(device => Number(device.plc_enabled || 0) > 0).length
-    const total = statuses.length || fallbackTotal
-    const online = statuses.filter(status => status.status === 'connected').length
-    const connecting = statuses.filter(status => ['connecting', 'retrying'].includes(status.status)).length
-    const tone = total <= 0
-        ? 'is-unknown'
-        : online === total
-            ? 'is-online'
-            : (online > 0 || connecting > 0)
-                ? 'is-partial'
-                : 'is-offline'
-    return {
-        total,
-        online,
-        tone,
-        label: total > 0 ? `设备 ${online}/${total} 在线` : '设备状态未知',
-        detail: engineStatus.plcStatus?.message || '尚未取得设备连接状态'
-    }
-})
+const deviceConnectionSummary = computed(() => summarizeDeviceConnections(engineStatus, devices.value))
 let nativeScenePreviewTimer = null
 let nativeScenePreviewStatusTimer = null
 let nativeScenePreviewSequence = 0
 let nativeScenePreviewPending = null
+let dashboardDesignerPreviewPayload = null
 
 function nativePreviewDevicePayload(device, override = null) {
     const source = override?.id === device?.id ? { ...device, ...override } : (device || {})
@@ -758,6 +655,21 @@ function buildNativePreviewFocus(source = activeTab.value) {
         workshopId: selectedComposerWorkshop.value?.id || '',
         lineId: selectedComposerLineId.value || '',
         deviceId: mode === 'device' ? (selectedComposerDeviceId.value || '') : ''
+    }
+}
+
+function buildDashboardDesignerFocus(view) {
+    const authoredMode = String(view?.mode || 'factory').toLowerCase()
+    const authoredTarget = String(view?.targetType || authoredMode || 'factory').toLowerCase()
+    const mode = authoredMode === 'custom' ? authoredTarget : authoredMode
+    const effectiveMode = mode === 'device_part' ? 'device' : mode
+    return {
+        mode: ['factory', 'workshop', 'line', 'device'].includes(effectiveMode) ? effectiveMode : 'factory',
+        workshopId: effectiveMode === 'workshop' ? String(view?.targetId || '') : '',
+        lineId: effectiveMode === 'line' ? String(view?.targetId || '') : '',
+        deviceId: effectiveMode === 'device' && authoredTarget === 'device' ? String(view?.targetId || '') : '',
+        inspectionStage: String(view?.metadata?.inspectionStage || ''),
+        partId: String(view?.metadata?.partId || '')
     }
 }
 
@@ -850,6 +762,27 @@ async function sendNativeScenePreview(payload, { quiet = false } = {}) {
     }
 }
 
+function handleDashboardViewPreview(payload) {
+    const view = payload?.view
+    if (!view?.id) return
+    dashboardDesignerPreviewPayload = {
+        action: 'view',
+        source: 'dashboard_designer',
+        viewId: String(payload.viewId || view.id),
+        view,
+        focus: buildDashboardDesignerFocus(view)
+    }
+    return sendNativeScenePreview(dashboardDesignerPreviewPayload, { quiet: true })
+}
+
+async function flushDashboardViewPreview() {
+    if (!dashboardDesignerPreviewPayload?.view?.id) return
+    // Re-send the latest in-memory designer view immediately before the host
+    // switches to the native dashboard. This covers edits made in a field just
+    // before clicking the "实时大屏" tab, even if the debounced preview is in flight.
+    await sendNativeScenePreview({ ...dashboardDesignerPreviewPayload }, { quiet: true })
+}
+
 function scheduleNativeScenePreview({ source = activeTab.value, includeLayout = false, deviceOverride } = {}) {
     if (!['composer', 'lines', 'spatial'].includes(source)) return
     nativeScenePreviewPending = {
@@ -918,7 +851,8 @@ function ensureSelectedLineEditor() {
 
 async function loadLines() {
     const result = await adminApi.getLines()
-    const normalizedLines = (Array.isArray(result) ? result : []).map(normalizeLineRecord)
+    if (!Array.isArray(result)) throw new Error(result?.error || '产线列表读取失败')
+    const normalizedLines = result.map(normalizeLineRecord)
     lines.value = normalizedLines
     savedLineLayoutSnapshots.value = Object.fromEntries(
         normalizedLines.map(line => [line.id, lineLayoutSnapshot(line)])
@@ -1072,7 +1006,9 @@ function copyModelInspectionToDevice() {
 }
 
 async function loadDevices() {
-    devices.value = await adminApi.getDevices()
+    const result = await adminApi.getDevices()
+    if (!Array.isArray(result)) throw new Error(result?.error || '设备列表读取失败')
+    devices.value = result
     savedDeviceLayoutSnapshots.value = Object.fromEntries(
         devices.value.map(device => [device.id, deviceLayoutSnapshot(device)])
     )
@@ -1256,6 +1192,8 @@ const {
     selectedDeviceForPoints,
     dataPoints,
     isPointsDirty,
+    pointsLoading,
+    pointsSaving,
     showPointAdvancedFields,
     loadedPointDeviceIds,
     alarmTextImportRaw,
@@ -1351,6 +1289,7 @@ function formatModelName(modelType) {
 
 // ============ 模型管理 ============
 const models = ref([])
+const DELETABLE_RETIRED_MODEL_IDS = new Set(['builtin_furnace', 'photo_multipurpose_furnace_v5', 'transfer_cart'])
 const modelPreviewRef = ref(null)
 const modelFileInputRef = ref(null)
 const selectedModelFile = ref(null)
@@ -1368,6 +1307,7 @@ const modelLibraryStep = ref(
 )
 const selectedPreviewModelId = ref(storedAdminUiState.selectedPreviewModelId || '')
 const modelPreviewStatus = ref('选择模型文件后在这里预览')
+const modelPreviewError = ref(null)
 const modelUploading = ref(false)
 const isModelPreviewActive = ref(false)
 const defaultModelAssetSpec = {
@@ -1393,15 +1333,7 @@ const defaultModelOptimization = {
     contactShadow: true,
     environmentIntensity: 0.85
 }
-const defaultModelInspection = {
-    enabled: true,
-    shell: { node_paths: [], node_names: [], opacity: 0.18, wireframe: false },
-    solid: { view_id: '', camera: { yaw: 238, pitch: 19, distance_scale: 1.12, target_offset: [0, 0, 0] } },
-    xray: { view_id: '', camera: { yaw: 238, pitch: 19, distance_scale: 1.08, target_offset: [0, .2, 0] } },
-    exploded: { view_id: '', camera: { yaw: 238, pitch: 22, distance_scale: 1.22, target_offset: [0, .35, 0] } },
-    animation_duration: .72,
-    parts: []
-}
+const defaultModelInspection = createInspectionDefaults()
 const modelWorkflowStepLabels = {
     imported: '导入',
     parsed: '解析',
@@ -1448,7 +1380,9 @@ const fallbackModelOptions = [
 ]
 const availableModelOptions = computed(() => {
     const merged = new Map(fallbackModelOptions.map(model => [model.id, model]))
-    models.value.forEach(model => merged.set(model.id, { ...model }))
+    models.value
+        .filter(model => !isEnvironmentModel(model))
+        .forEach(model => merged.set(model.id, { ...model }))
     return Array.from(merged.values())
 })
 
@@ -1467,6 +1401,8 @@ let modelPreviewSelectionBox = null
 let modelPreviewHighlightState = null
 let modelPreviewRootObject = null
 let modelPreviewAnimationState = null
+let modelInspectionPreview = null
+let inspectionPreviewRefreshTimer = null
 
 const modelPreviewNodes = ref([])
 const modelPreviewStats = reactive({
@@ -1484,17 +1420,20 @@ const modelAssetSpec = reactive({ ...defaultModelAssetSpec })
 const modelOptimization = reactive({ ...defaultModelOptimization })
 const modelInspection = reactive(JSON.parse(JSON.stringify(defaultModelInspection)))
 const modelInspectionParts = ref([])
-const selectedInspectionPartIndex = ref(-1)
 const inspectionPreviewStage = ref('solid')
-const inspectionPreviewState = ref(null)
-const inspectionShellNodePath = ref('')
+const inspectionPreviewSnapshot = ref({ stage: 'solid', progress: 0, parts: [] })
+const modelInspectionSaveRevision = ref(0)
+const modelInspectionSavedSignature = ref('')
+const modelInspectionDirty = computed(() => !!selectedPreviewModelId.value && !!modelInspectionSavedSignature.value && JSON.stringify(normalizeModelInspection(modelInspection)) !== modelInspectionSavedSignature.value)
+const inspectionPreviewDeviceId = ref('')
+const inspectionNativePreviewBusy = ref(false)
 const inspectionShellEntries = computed(() => {
     const paths = Array.isArray(modelInspection.shell?.node_paths) ? modelInspection.shell.node_paths : []
     const names = Array.isArray(modelInspection.shell?.node_names) ? modelInspection.shell.node_names : []
-    const entries = paths.map((path, index) => ({
+    const entries = paths.map((path) => ({
         key: `path:${path}`,
         path,
-        name: names[index] || ''
+        name: modelPreviewNodes.value.find(node => node.path === path)?.name || ''
     }))
     const representedNames = new Set(entries.map(entry => entry.name).filter(Boolean))
     names.forEach((name) => {
@@ -1502,11 +1441,6 @@ const inspectionShellEntries = computed(() => {
         entries.push({ key: `name:${name}`, path: '', name })
     })
     return entries
-})
-const inspectionPartForm = reactive({
-    id: '', name: '', node_path: '', node_name: '', description: '',
-    explode_x: 0, explode_y: 0, explode_z: 0,
-    point_keys_text: '', detail_view_id: ''
 })
 const selectedModelNodePath = ref('')
 const modelNodeSearchText = ref('')
@@ -1666,17 +1600,34 @@ function countUnresolvedModelBindings() {
 }
 
 const activePreviewModel = computed(() => getActivePreviewModel())
+function isEnvironmentModel(model) {
+    if (!model) return false
+    if (String(model.asset_type || '').toLowerCase() === 'environment') return true
+    const metadata = parseModelMetadata(model) || {}
+    return metadata.assetRole === 'environment'
+        || metadata.asset_role === 'environment'
+        || metadata.environmentOnly === true
+        || metadata.runtime?.environmentOnly === true
+}
+
+const activePreviewIsEnvironment = computed(() => isEnvironmentModel(activePreviewModel.value))
 // A packaged built-in GLB is still a real configurable asset. Only procedural
 // placeholders (which have no model file) must remain read-only.
-const canEditModelBindings = computed(() => !!activePreviewModel.value?.file_path)
+const canEditModelBindings = computed(() => !!activePreviewModel.value?.file_path && !activePreviewIsEnvironment.value)
 
 function modelLibraryStepRequiresModel(step) {
     return step === 'optimization' || step === 'inspection' || step === 'bindings'
 }
 
+function modelLibraryStepAvailable(step) {
+    if (!MODEL_LIBRARY_STEPS.some(item => item.key === step)) return false
+    if (modelLibraryStepRequiresModel(step) && !activePreviewModel.value) return false
+    return !activePreviewIsEnvironment.value || step === 'library' || step === 'import'
+}
+
 async function selectModelLibraryStep(step) {
-    if (!MODEL_LIBRARY_STEPS.some(item => item.key === step)) return
-    if (modelLibraryStepRequiresModel(step) && !activePreviewModel.value) return
+    if (modelLibraryStep.value === step) return
+    if (!modelLibraryStepAvailable(step)) return
     modelLibraryStep.value = step
     await nextTick()
     await renderSelectedModelPreview()
@@ -1824,13 +1775,18 @@ const modelReleaseHistory = computed(() => {
 })
 
 async function loadModels() {
-    models.value = await adminApi.getModels()
+    const result = await adminApi.getModels()
+    if (!Array.isArray(result)) throw new Error(result?.error || '模型列表读取失败')
+    models.value = result
     if (selectedPreviewModelId.value && !getActivePreviewModel()) {
         selectedPreviewModelId.value = ''
         modelPreviewModel = null
         if (modelLibraryStepRequiresModel(modelLibraryStep.value)) modelLibraryStep.value = 'library'
     }
     const selected = getActivePreviewModel()
+    if (selected && isEnvironmentModel(selected) && modelLibraryStepRequiresModel(modelLibraryStep.value)) {
+        modelLibraryStep.value = 'library'
+    }
     if (selected && !modelPreviewModel) {
         modelPreviewModel = selected
         loadModelBindingState(selected)
@@ -1976,6 +1932,7 @@ function disposeModelPreview(options = {}) {
         modelPreviewRuntime.controls?.dispose?.()
         disposeThreeObject(modelPreviewRuntime.scene)
         modelPreviewRuntime.renderer?.dispose?.()
+        modelPreviewRuntime.renderer?.forceContextLoss?.()
         const canvas = modelPreviewRuntime.renderer?.domElement
         if (canvas?.parentNode) canvas.parentNode.removeChild(canvas)
         modelPreviewRuntime = null
@@ -2024,17 +1981,27 @@ function modelNodeSegment(object, index) {
 function collectModelPreviewNodes(root) {
     const nodes = []
     const map = new Map()
+    root.updateMatrixWorld(true)
+    const inverseRoot = root.matrixWorld.clone().invert()
     const walk = (object, parentPath) => {
         object.children.forEach((child, index) => {
             const path = parentPath ? `${parentPath}/${modelNodeSegment(child, index)}` : modelNodeSegment(child, index)
             const meshCount = countMeshes(child)
             const rawName = child.name || child.type || `Node ${nodes.length + 1}`
+            const bounds = new THREE.Box3().setFromObject(child).applyMatrix4(inverseRoot)
             nodes.push({
                 path,
+                parentPath,
                 name: rawName,
                 displayName: translateModelNodeName(rawName),
                 type: child.type || 'Object3D',
-                meshCount
+                isMesh: !!child.isMesh,
+                meshCount,
+                bounds: bounds.isEmpty() ? null : {
+                    min: bounds.min.toArray(), max: bounds.max.toArray(),
+                    center: bounds.getCenter(new THREE.Vector3()).toArray(),
+                    size: bounds.getSize(new THREE.Vector3()).toArray()
+                }
             })
             map.set(path, child)
             walk(child, path)
@@ -2138,83 +2105,91 @@ function restoreModelPreviewHighlight() {
 }
 
 function restoreInspectionPreviewStage() {
-    const state = inspectionPreviewState.value
-    if (!state) return
-    restorePreviewAnimationMaterials(state.materials || [])
-    ;(state.targets || []).forEach((entry) => {
-        if (!entry.target) return
-        entry.target.position.copy(entry.position)
-        entry.target.visible = entry.visible
-    })
-    inspectionPreviewState.value = null
+    clearTimeout(inspectionPreviewRefreshTimer)
+    inspectionPreviewRefreshTimer = null
+    modelInspectionPreview?.dispose()
+    modelInspectionPreview = null
 }
 
-function resolveInspectionPreviewTarget(part = {}) {
-    if (part.node_path && modelPreviewNodeMap.has(part.node_path)) return modelPreviewNodeMap.get(part.node_path)
-    const name = String(part.node_name || '')
-    if (!name) return null
-    for (const target of modelPreviewNodeMap.values()) {
-        if (target?.name === name) return target
-    }
-    return null
-}
-
-function inspectionShellPreviewTargets() {
-    const targets = []
-    ;(modelInspection.shell?.node_paths || []).forEach((path) => {
-        const target = modelPreviewNodeMap.get(path)
-        if (target && !targets.includes(target)) targets.push(target)
-    })
-    ;(modelInspection.shell?.node_names || []).forEach((name) => {
-        for (const target of modelPreviewNodeMap.values()) {
-            if (target?.name === name && !targets.includes(target)) targets.push(target)
-        }
-    })
-    if (!targets.length) {
-        for (const target of modelPreviewNodeMap.values()) {
-            const name = String(target?.name || '').toLowerCase()
-            if (['shell', 'housing', 'casing', 'outer', 'enclosure', '外壳', '炉体'].some(token => name.includes(token))) targets.push(target)
-        }
-    }
-    return targets
-}
-
-function applyInspectionPreviewStage(stage = 'solid') {
-    inspectionPreviewStage.value = stage
-    if (!modelPreviewRootObject) return
+function createInspectionPreview() {
+    if (!modelPreviewRootObject || !modelPreviewRuntime || modelLibraryStep.value !== 'inspection') return null
     clearModelPreviewAnimation()
     clearModelPreviewSelectionBox()
     restoreModelPreviewHighlight()
     restoreInspectionPreviewStage()
+    modelPreviewRuntime.scene.background = new THREE.Color(0x11232f)
+    modelInspectionPreview = new InspectionPreview({
+        root: modelPreviewRootObject, nodeMap: modelPreviewNodeMap, nodes: modelPreviewNodes.value,
+        ...modelPreviewRuntime, config: modelInspection,
+        onState: state => { inspectionPreviewSnapshot.value = state; inspectionPreviewStage.value = state.stage },
+        onSelect: id => { selectedModelNodePath.value = ''; inspectionPreviewSnapshot.value = { ...inspectionPreviewSnapshot.value, selectedId: id } }
+    })
+    return modelInspectionPreview
+}
 
-    const shellTargets = inspectionShellPreviewTargets()
-    const partTargets = modelInspectionParts.value
-        .map(part => ({ part, target: resolveInspectionPreviewTarget(part) }))
-        .filter(entry => entry.target)
-    const targets = [...new Set([...shellTargets, ...partTargets.map(entry => entry.target)])]
-        .map(target => ({ target, position: target.position.clone(), visible: target.visible }))
-    const materials = previewMaterialEntries(modelPreviewRootObject)
-    inspectionPreviewState.value = { targets, materials }
+function applyInspectionPreviewStage(stage = 'solid') {
+    inspectionPreviewStage.value = stage
+    const preview = modelInspectionPreview || createInspectionPreview()
+    preview?.setStage(stage)
+}
 
-    if (stage === 'xray') {
-        const opacity = Number(modelInspection.shell?.opacity ?? .18)
-        shellTargets.forEach((target) => collectPreviewMeshes(target).forEach((mesh) => {
-            const list = Array.isArray(mesh.material) ? mesh.material : [mesh.material]
-            list.filter(Boolean).forEach((material) => {
-                material.transparent = true
-                material.opacity = opacity
-                material.depthWrite = false
-                material.needsUpdate = true
-            })
-        }))
-    } else if (stage === 'exploded') {
-        shellTargets.forEach(target => { target.visible = false })
-        partTargets.forEach(({ part, target }) => {
-            const offset = normalizeInspectionVector(part.explode_offset)
-            target.position.add(new THREE.Vector3(offset[0], offset[1], offset[2]))
-        })
-    }
-    fitPreviewCamera(modelPreviewRuntime.camera, modelPreviewRuntime.controls, modelPreviewRootObject)
+function inspectionPreviewCommand(command) {
+    const preview = modelInspectionPreview || createInspectionPreview()
+    preview?.command(command)
+}
+
+function updateModelInspectionDraft(value) {
+    for (const key of Object.keys(modelInspection)) if (!(key in value)) delete modelInspection[key]
+    Object.assign(modelInspection, value)
+    modelInspectionParts.value = modelInspection.parts
+}
+
+function scheduleInspectionDraftPreview() {
+    if (modelLibraryStep.value !== 'inspection' || activeTab.value !== 'models' || !modelPreviewRootObject) return
+    clearTimeout(inspectionPreviewRefreshTimer)
+    inspectionPreviewRefreshTimer = setTimeout(() => {
+        const previous = modelInspectionPreview?.capturePlaybackState()
+        const preview = createInspectionPreview()
+        if (!preview) return
+        preview.restorePlaybackState(previous)
+    }, 120)
+}
+
+function captureInspectionCamera(request) {
+    if (!modelInspectionPreview || !modelPreviewRuntime) return
+    const { camera, controls } = modelPreviewRuntime
+    const part = modelInspectionPreview.parts.find(item => item.config.id === request.partId)
+    const bounds = part?.bounds || (request.stage === 'exploded' ? modelInspectionPreview.explodedBounds : modelInspectionPreview.baseBounds)
+    const direction = camera.position.clone().sub(controls.target)
+    const distance = direction.length()
+    if (distance < 0.0001 || bounds.isEmpty()) return
+    const rootMatrix = modelPreviewRootObject.matrixWorld
+    const inverse = rootMatrix.clone().invert()
+    const localDirection = direction.clone().transformDirection(inverse)
+    const targetOffset = controls.target.clone().applyMatrix4(inverse).sub(bounds.getCenter(new THREE.Vector3()).applyMatrix4(inverse))
+    const pose = inspectionCameraPose(camera, bounds, { distance_scale: 1 }, rootMatrix)
+    request.apply?.({
+        yaw: Math.round(THREE.MathUtils.radToDeg(Math.atan2(localDirection.x, localDirection.z)) * 100) / 100,
+        pitch: Math.round(THREE.MathUtils.radToDeg(Math.asin(localDirection.y)) * 100) / 100,
+        distance_scale: Math.round(distance / pose.position.distanceTo(pose.target) * 1000) / 1000,
+        target_offset: targetOffset.toArray().map(value => Math.round(value * 1000) / 1000)
+    })
+    modelBindingStatus.value = '当前镜头已记录到拆解草稿，保存后可复用。'
+}
+
+async function previewInspectionOnNativeDevice() {
+    const device = devices.value.find(item => item.id === inspectionPreviewDeviceId.value && item.model_type === selectedPreviewModelId.value)
+    if (!device) { modelBindingStatus.value = '请选择使用当前模型的预览设备。'; return }
+    const validation = validateInspection(modelInspection, modelPreviewNodes.value)
+    if (!validation.valid) { modelBindingStatus.value = validation.errors.map(item => item.message).join('；'); return }
+    inspectionNativePreviewBusy.value = true
+    try {
+        const result = await adminApi.sendNativePreview({ action: 'inspection_preview', focus: { mode: 'device', deviceId: device.id }, inspectionConfig: normalizeModelInspection(modelInspection) })
+        if (result?.error || result?.success === false) throw new Error(result.error || '运行端未接受草稿')
+        if (!result?.sent) throw new Error('没有已连接的 Unity 运行端；草稿未发送，也未保存')
+        modelBindingStatus.value = `拆解草稿已推送至 ${device.name || device.id}，未写入数据库；可在运行端操作拆解。`
+    } catch (error) { modelBindingStatus.value = `运行端预览失败：${error.message}` }
+    finally { inspectionNativePreviewBusy.value = false }
 }
 
 function collectPreviewMeshes(object) {
@@ -2473,6 +2448,10 @@ function highlightPreviewTarget(target) {
 
 function resetModelPreviewCamera() {
     if (!modelPreviewRuntime?.camera || !modelPreviewRuntime?.controls || !modelPreviewRootObject) return
+    if (modelLibraryStep.value === 'inspection' && modelInspectionPreview) {
+        modelInspectionPreview.command({ command: 'clear' })
+        return
+    }
     fitPreviewCamera(modelPreviewRuntime.camera, modelPreviewRuntime.controls, modelPreviewRootObject)
     modelPreviewRuntime.controls.autoRotate = false
 }
@@ -2512,6 +2491,11 @@ function createModelPreviewRuntime(container) {
     scene.add(fillLight)
 
     const grid = new THREE.GridHelper(10, 10, 0xb6bec1, 0xd5dadc)
+    if (modelLibraryStep.value === 'inspection') {
+        grid.material.transparent = true
+        grid.material.opacity = 0.16
+        grid.material.depthWrite = false
+    }
     grid.position.y = -0.01
     scene.add(grid)
 
@@ -2532,6 +2516,7 @@ function createModelPreviewRuntime(container) {
             if (object.visible !== false && object.update) object.update(delta)
         })
         updateModelPreviewAnimation(delta)
+        modelInspectionPreview?.update(delta)
         controls.update()
         renderer.render(scene, camera)
         runtime.frameId = requestAnimationFrame(render)
@@ -2553,6 +2538,31 @@ function createModelPreviewRuntime(container) {
     return runtime
 }
 
+function buildModelPreviewError(error, source, diagnostic = null) {
+    const reason = String(diagnostic?.reason || error?.message || error || '未知模型加载错误')
+        .replace(/^Error:\s*/i, '')
+    return {
+        model: diagnostic?.modelName || source?.label || '未命名模型',
+        modelId: diagnostic?.modelId || '',
+        reason,
+        url: diagnostic?.url || source?.url || ''
+    }
+}
+
+async function probeModelPreviewResource(url) {
+    if (!/^https?:\/\//i.test(String(url || ''))) return
+    try {
+        const response = await fetch(url, { method: 'HEAD', cache: 'no-store' })
+        if (response.status === 405) return
+        if (!response.ok) {
+            throw new Error(`模型资源请求失败：HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ''}`)
+        }
+    } catch (error) {
+        if (String(error?.message || '').startsWith('模型资源请求失败')) throw error
+        throw new Error(`模型资源无法访问：${error?.message || error}`)
+    }
+}
+
 async function renderModelPreview(source) {
     modelPreviewSource = source
     await nextTick()
@@ -2563,11 +2573,14 @@ async function renderModelPreview(source) {
     const runtime = createModelPreviewRuntime(container)
     modelPreviewRuntime = runtime
     isModelPreviewActive.value = true
+    modelPreviewError.value = null
     modelPreviewStatus.value = `正在加载：${source.label}`
 
     try {
+        await probeModelPreviewResource(source.url)
         const loader = new GLTFLoader()
         const gltf = await loader.loadAsync(source.url)
+        restoreGltfNodeNames(gltf)
         if (modelPreviewSource !== source || modelPreviewRuntime !== runtime) {
             disposeThreeObject(gltf.scene)
             return
@@ -2591,9 +2604,12 @@ async function renderModelPreview(source) {
         if (modelLibraryStep.value === 'inspection') applyInspectionPreviewStage(inspectionPreviewStage.value)
         const box = new THREE.Box3().setFromObject(root)
         const size = box.getSize(new THREE.Vector3())
+        modelPreviewError.value = null
         modelPreviewStatus.value = `预览：${source.label} | 尺寸 ${size.x.toFixed(2)} x ${size.y.toFixed(2)} x ${size.z.toFixed(2)}`
     } catch (e) {
-        modelPreviewStatus.value = `预览失败：${e.message || e}`
+        if (modelPreviewSource !== source || modelPreviewRuntime !== runtime) return
+        modelPreviewError.value = buildModelPreviewError(e, source)
+        modelPreviewStatus.value = `模型未加载：${modelPreviewError.value.reason}`
     }
 }
 
@@ -2608,6 +2624,7 @@ async function renderBuiltinModelPreview(model) {
     const runtime = createModelPreviewRuntime(container)
     modelPreviewRuntime = runtime
     isModelPreviewActive.value = true
+    modelPreviewError.value = null
     modelPreviewStatus.value = `正在生成：${source.label}`
 
     try {
@@ -2638,6 +2655,11 @@ async function renderBuiltinModelPreview(model) {
         runtime.updatables.push(deviceModel)
         modelPreviewRootObject = deviceModel
 
+        if (deviceModel.userData?.modelLoadError) {
+            modelPreviewError.value = buildModelPreviewError(null, source, deviceModel.userData.modelLoadError)
+            modelPreviewStatus.value = '模型未加载，当前显示占位几何体'
+        }
+
         const { nodes, map } = collectModelPreviewNodes(deviceModel)
         modelPreviewNodes.value = nodes
         modelPreviewNodeMap = map
@@ -2647,9 +2669,13 @@ async function renderBuiltinModelPreview(model) {
         if (modelLibraryStep.value === 'inspection') applyInspectionPreviewStage(inspectionPreviewStage.value)
         const box = new THREE.Box3().setFromObject(deviceModel)
         const size = box.getSize(new THREE.Vector3())
-        modelPreviewStatus.value = `预览：${source.label} | 尺寸 ${size.x.toFixed(2)} x ${size.y.toFixed(2)} x ${size.z.toFixed(2)} | 内置程序化模型`
+        if (!modelPreviewError.value) {
+            modelPreviewStatus.value = `预览：${source.label} | 尺寸 ${size.x.toFixed(2)} x ${size.y.toFixed(2)} x ${size.z.toFixed(2)} | 内置程序化模型`
+        }
     } catch (e) {
-        modelPreviewStatus.value = `内置模型预览失败：${e.message || e}`
+        if (modelPreviewSource !== source || modelPreviewRuntime !== runtime) return
+        modelPreviewError.value = buildModelPreviewError(e, source)
+        modelPreviewStatus.value = `模型未加载：${modelPreviewError.value.reason}`
     }
 }
 
@@ -2672,6 +2698,7 @@ async function renderSelectedModelPreview() {
     if (!model) {
         disposeModelPreview()
         modelPreviewSource = null
+        modelPreviewError.value = null
         modelPreviewStatus.value = '选择模型文件后在这里预览'
         return
     }
@@ -2727,156 +2754,19 @@ function normalizeModelOptimization(optimization = {}) {
     }
 }
 
-function normalizeInspectionVector(value, fallback = [0, 0, 0]) {
-    const source = Array.isArray(value) ? value : fallback
-    return [0, 1, 2].map(index => Number(source[index] ?? fallback[index] ?? 0) || 0)
-}
-
-function normalizeInspectionCamera(camera = {}, fallback = {}) {
-    return {
-        yaw: Number(camera.yaw ?? fallback.yaw ?? 238),
-        pitch: Number(camera.pitch ?? fallback.pitch ?? 19),
-        distance_scale: Number(camera.distance_scale ?? camera.distanceScale ?? fallback.distance_scale ?? 1.12),
-        target_offset: normalizeInspectionVector(camera.target_offset || camera.targetOffset, fallback.target_offset || [0, 0, 0])
-    }
-}
-
-function normalizeInspectionPart(part = {}, index = 0) {
-    const explode = normalizeInspectionVector(part.explode_offset || part.explodeOffset)
-    return {
-        id: String(part.id || `part_${index + 1}`),
-        name: String(part.name || part.node_name || part.nodeName || `部件 ${index + 1}`),
-        node_path: String(part.node_path || part.nodePath || ''),
-        node_name: String(part.node_name || part.nodeName || ''),
-        explode_offset: explode,
-        label_offset: normalizeInspectionVector(part.label_offset || part.labelOffset, [0, .35, 0]),
-        description: String(part.description || ''),
-        point_ids: Array.isArray(part.point_ids || part.pointIds) ? [...(part.point_ids || part.pointIds)].map(String) : [],
-        point_keys: Array.isArray(part.point_keys || part.pointKeys) ? [...(part.point_keys || part.pointKeys)].map(String) : [],
-        detail_view_id: String(part.detail_view_id || part.detailViewId || '')
-    }
-}
-
 function normalizeModelInspection(inspection = {}) {
-    const shell = inspection.shell || {}
-    const normalizeStage = (source, fallback) => ({
-        view_id: String(source?.view_id ?? source?.viewId ?? fallback.view_id ?? ''),
-        camera: normalizeInspectionCamera(source?.camera || {}, fallback.camera)
-    })
-    return {
-        enabled: inspection.enabled !== false,
-        shell: {
-            node_paths: Array.isArray(shell.node_paths || shell.nodePaths) ? [...(shell.node_paths || shell.nodePaths)].map(String) : [],
-            node_names: Array.isArray(shell.node_names || shell.nodeNames) ? [...(shell.node_names || shell.nodeNames)].map(String) : [],
-            opacity: Math.max(.03, Math.min(.95, Number(shell.opacity ?? defaultModelInspection.shell.opacity))),
-            wireframe: !!shell.wireframe
-        },
-        solid: normalizeStage(inspection.solid, defaultModelInspection.solid),
-        xray: normalizeStage(inspection.xray, defaultModelInspection.xray),
-        exploded: normalizeStage(inspection.exploded, defaultModelInspection.exploded),
-        animation_duration: Math.max(.05, Math.min(5, Number(inspection.animation_duration ?? inspection.animationDuration ?? .72))),
-        parts: (Array.isArray(inspection.parts) ? inspection.parts : []).map(normalizeInspectionPart)
-    }
+    return normalizeInspection(inspection, modelPartBindings.value)
 }
 
 function loadModelInspectionState(model) {
     const metadata = parseModelMetadata(model)
-    const normalized = normalizeModelInspection(metadata.inspection || {})
-    Object.assign(modelInspection, normalized)
-    modelInspection.shell = normalized.shell
-    modelInspection.solid = normalized.solid
-    modelInspection.xray = normalized.xray
-    modelInspection.exploded = normalized.exploded
-    modelInspectionParts.value = normalized.parts
-    modelInspection.parts = modelInspectionParts.value
-    selectedInspectionPartIndex.value = -1
+    const normalized = normalizeInspection(metadata.inspection || createInspectionDefaults(), metadata.partBindings || [])
+    updateModelInspectionDraft(normalized)
+    modelInspectionSavedSignature.value = JSON.stringify(normalized)
+    modelInspectionSaveRevision.value += 1
     inspectionPreviewStage.value = 'solid'
-    resetInspectionPartForm()
-}
-
-function resetInspectionPartForm() {
-    Object.assign(inspectionPartForm, {
-        id: '', name: '', node_path: selectedModelNodePath.value || '', node_name: '',
-        description: '', explode_x: 0, explode_y: 0, explode_z: 0,
-        point_keys_text: '', detail_view_id: ''
-    })
-    selectedInspectionPartIndex.value = -1
-}
-
-function editInspectionPart(index) {
-    const part = modelInspectionParts.value[index]
-    if (!part) return
-    const explode = normalizeInspectionVector(part.explode_offset)
-    Object.assign(inspectionPartForm, {
-        id: part.id,
-        name: part.name,
-        node_path: part.node_path,
-        node_name: part.node_name,
-        description: part.description,
-        explode_x: explode[0],
-        explode_y: explode[1],
-        explode_z: explode[2],
-        point_keys_text: (part.point_keys || []).join(', '),
-        detail_view_id: part.detail_view_id || ''
-    })
-    selectedInspectionPartIndex.value = index
-    selectPreviewNode(part.node_path)
-}
-
-function saveInspectionPartDraft() {
-    const path = inspectionPartForm.node_path || selectedModelNodePath.value
-    const node = modelPreviewNodes.value.find(item => item.path === path)
-    if (!path && !inspectionPartForm.node_name) return alert('请先选择模型部件节点')
-    const part = normalizeInspectionPart({
-        id: inspectionPartForm.id || `part_${Date.now()}`,
-        name: inspectionPartForm.name || node?.displayName || node?.name,
-        node_path: path,
-        node_name: inspectionPartForm.node_name || node?.name || '',
-        explode_offset: [inspectionPartForm.explode_x, inspectionPartForm.explode_y, inspectionPartForm.explode_z],
-        description: inspectionPartForm.description,
-        point_keys: String(inspectionPartForm.point_keys_text || '').split(/[,，\n]/).map(item => item.trim()).filter(Boolean),
-        detail_view_id: inspectionPartForm.detail_view_id
-    }, selectedInspectionPartIndex.value)
-    if (selectedInspectionPartIndex.value >= 0) modelInspectionParts.value.splice(selectedInspectionPartIndex.value, 1, part)
-    else modelInspectionParts.value.push(part)
-    modelInspection.parts = modelInspectionParts.value
-    resetInspectionPartForm()
-    applyInspectionPreviewStage('exploded')
-}
-
-function removeInspectionPart(index) {
-    modelInspectionParts.value.splice(index, 1)
-    modelInspection.parts = modelInspectionParts.value
-    resetInspectionPartForm()
-    applyInspectionPreviewStage(inspectionPreviewStage.value)
-}
-
-function addInspectionShellNode() {
-    const path = inspectionShellNodePath.value || selectedModelNodePath.value
-    const node = modelPreviewNodes.value.find(item => item.path === path)
-    if (!path || !node) return alert('请先选择外壳节点')
-    modelInspection.shell.node_paths = [...new Set([...(modelInspection.shell.node_paths || []), path])]
-    modelInspection.shell.node_names = [...new Set([...(modelInspection.shell.node_names || []), node.name])]
-    inspectionShellNodePath.value = ''
-    applyInspectionPreviewStage('xray')
-}
-
-function removeInspectionShellNode(index) {
-    const entry = typeof index === 'number' ? inspectionShellEntries.value[index] : index
-    if (!entry) return
-    const pathIndex = entry.path ? modelInspection.shell.node_paths.indexOf(entry.path) : -1
-    const nameIndex = entry.name ? modelInspection.shell.node_names.indexOf(entry.name) : -1
-    if (pathIndex >= 0) modelInspection.shell.node_paths.splice(pathIndex, 1)
-    if (nameIndex >= 0) modelInspection.shell.node_names.splice(nameIndex, 1)
-    applyInspectionPreviewStage(inspectionPreviewStage.value)
-}
-
-function selectInspectionShellNode(entry) {
-    const node = modelPreviewNodes.value.find(item => (
-        (entry?.path && item.path === entry.path)
-        || (entry?.name && item.name === entry.name)
-    ))
-    selectPreviewNode(node?.path || entry?.path || '')
+    inspectionPreviewSnapshot.value = { stage: 'solid', progress: 0, parts: [] }
+    if (!devices.value.some(device => device.id === inspectionPreviewDeviceId.value && device.model_type === model?.id)) inspectionPreviewDeviceId.value = ''
 }
 
 function loadModelAssetSpec(model) {
@@ -2944,12 +2834,15 @@ function buildCurrentModelMetadata(model, overrides = {}) {
         release,
         runtime: {
             ...(metadata.runtime || {}),
-            enableGenericBindings: normalizedPartBindings.length > 0
+            enableGenericBindings: metadata.runtime?.enableGenericBindings ?? normalizedPartBindings.length > 0
         }
     }
 }
 
 async function persistModelMetadata(model, metadata, successMessage) {
+    const inspectionValidation = validateInspection(metadata.inspection || createInspectionDefaults(), modelPreviewNodes.value)
+    if (!inspectionValidation.valid) throw new Error(`拆解配置尚未通过校验：${inspectionValidation.errors.map(item => item.message).join('；')}`)
+    const inspectionAtRequest = JSON.stringify(modelInspection)
     const result = await adminApi.updateModel(model.id, {
         name: model.name,
         tags: model.tags,
@@ -2960,9 +2853,11 @@ async function persistModelMetadata(model, metadata, successMessage) {
     if (!result.success) throw new Error('后端没有返回成功状态')
     await loadModels()
     const updated = models.value.find(item => item.id === model.id) || result.model || model
+    const pendingInspection = JSON.stringify(modelInspection) !== inspectionAtRequest ? JSON.parse(JSON.stringify(modelInspection)) : null
     modelPreviewModel = updated
     selectedPreviewModelId.value = updated.id
     loadModelBindingState(updated)
+    if (pendingInspection) updateModelInspectionDraft(pendingInspection)
     modelBindingStatus.value = successMessage
     return updated
 }
@@ -3071,11 +2966,6 @@ function selectPreviewNode(path) {
     modelBindingForm.node_path = path || ''
     const node = modelPreviewNodes.value.find(item => item.path === path)
     if (node && !modelBindingForm.name) modelBindingForm.name = node.displayName || node.name
-    if (modelLibraryStep.value === 'inspection') {
-        inspectionPartForm.node_path = path || ''
-        inspectionPartForm.node_name = node?.name || ''
-        if (node && !inspectionPartForm.name) inspectionPartForm.name = node.displayName || node.name
-    }
     highlightPreviewNode(path)
 }
 
@@ -3166,6 +3056,8 @@ async function saveModelPartBindings(options = {}) {
     try {
         modelPartBindings.value = dedupeModelBindings(modelPartBindings.value)
         const metadata = buildCurrentModelMetadata(model)
+        // Enabling live motion is intentional only when the engineer saves motion bindings.
+        metadata.runtime.enableGenericBindings = modelPartBindings.value.length > 0
         const successMessage = options.successMessage || `已保存 ${modelPartBindings.value.length} 条部位绑定`
         await persistModelMetadata(model, metadata, successMessage)
         if (showAlert) await alert(successMessage, { title: '保存成功', type: 'success' })
@@ -3183,13 +3075,17 @@ async function saveModelPartBindings(options = {}) {
 async function saveModelInspection() {
     const model = activePreviewModel.value
     if (!model?.id || !canEditModelBindings.value) return false
+    const validation = validateInspection(modelInspection, modelPreviewNodes.value)
+    if (!modelPreviewNodes.value.length || !validation.valid) {
+        modelBindingStatus.value = !modelPreviewNodes.value.length ? '模型加载完成后才能校验并保存。' : `请先修正拆解配置：${validation.errors.map(item => item.message).join('；')}`
+        return false
+    }
     modelBindingSaving.value = true
     modelBindingStatus.value = '正在保存拆解检查配置...'
     try {
-        modelInspection.parts = modelInspectionParts.value.map(normalizeInspectionPart)
         const metadata = buildCurrentModelMetadata(model)
         await persistModelMetadata(model, metadata, `已保存 ${modelInspectionParts.value.length} 个关键部件和 ${inspectionShellEntries.value.length} 个外壳节点`)
-        await alert('拆解检查配置已保存，Unity 重新加载后生效', { title: '保存成功', type: 'success' })
+        await alert('拆解配置已保存，并已通知 Unity 运行端自动重新加载；也可在“配置与运行端”推送草稿即时预览。', { title: '保存成功', type: 'success' })
         return true
     } catch (e) {
         modelBindingStatus.value = `保存失败：${e.message || e}`
@@ -3312,7 +3208,7 @@ async function restoreModelRelease(record) {
             runtime: {
                 ...(current.runtime || {}),
                 ...(snapshot.runtime || {}),
-                enableGenericBindings: restoredBindings.length > 0
+                enableGenericBindings: snapshot.runtime?.enableGenericBindings ?? current.runtime?.enableGenericBindings ?? restoredBindings.length > 0
             },
             release: {
                 ...(current.release || {}),
@@ -3363,6 +3259,8 @@ function resetModelImportForm(file) {
 async function selectModelFile(event) {
     const file = event.target.files[0]
     if (!file) return
+    if (modelBindingSaving.value) { modelBindingStatus.value = '正在保存模型，请等待保存完成再切换文件。'; event.target.value = ''; return }
+    if (modelInspectionDirty.value && !(await confirm('当前模型有未保存的拆解编排。选择新文件会丢弃这些拆解更改，是否继续？'))) { event.target.value = ''; return }
     modelLibraryStep.value = 'import'
     selectedPreviewModelId.value = ''
     modelPreviewModel = null
@@ -3392,6 +3290,7 @@ function clearSelectedModelFile() {
     modelImportForm.metadata = defaultModelMetadataText()
     if (modelFileInputRef.value) modelFileInputRef.value.value = ''
     disposeModelPreview({ revokeObjectUrl: true })
+    modelPreviewError.value = null
     modelPreviewStatus.value = '选择模型文件后在这里预览'
     modelPreviewSource = null
 }
@@ -3433,6 +3332,8 @@ async function uploadModel() {
 }
 
 async function previewExistingModel(model) {
+    if (modelBindingSaving.value) { modelBindingStatus.value = '正在保存模型，请等待保存完成再切换。'; return }
+    if (modelInspectionDirty.value && !(await confirm('当前模型有未保存的拆解编排。切换模型会丢弃这些拆解更改，是否继续？'))) return
     selectedModelFile.value = null
     modelPreviewModel = model
     if (modelFileInputRef.value) modelFileInputRef.value.value = ''
@@ -3441,6 +3342,9 @@ async function previewExistingModel(model) {
         selectedModelObjectUrl = ''
     }
     selectedPreviewModelId.value = model.id
+    if (isEnvironmentModel(model) && modelLibraryStepRequiresModel(modelLibraryStep.value)) {
+        modelLibraryStep.value = 'library'
+    }
     loadModelBindingState(model)
     modelPreviewSource = model.file_path
         ? { url: resolveBackendAssetUrl(model.file_path), label: model.name || model.id }
@@ -3464,6 +3368,7 @@ async function deleteModel(id) {
             Object.assign(modelAssetSpec, { ...defaultModelAssetSpec })
             resetModelBindingForm()
             disposeModelPreview({ revokeObjectUrl: true })
+            modelPreviewError.value = null
             if (modelLibraryStepRequiresModel(modelLibraryStep.value)) modelLibraryStep.value = 'library'
         }
 
@@ -3870,6 +3775,7 @@ function applyNewWidgetDefaults() {
 
 async function loadPlatform() {
     const data = await adminApi.getPlatform()
+    if (!data || data.error) throw new Error(data?.error || '场景配置读取失败')
     platform.value = {
         ...data,
         widgets: (data.widgets || []).map(normalizeWidgetEditor)
@@ -3981,6 +3887,7 @@ const selectedComposerLineId = ref('')
 const selectedComposerDeviceId = ref('')
 const composerPreviewMode = ref('line')
 const composerPreviewStatus = ref('等待加载预览')
+const composerPreviewErrors = ref([])
 const composerSaving = ref(false)
 const composerBulkSaving = ref(false)
 const isComposerPreviewWide = ref(false)
@@ -4551,6 +4458,7 @@ async function renderComposerPreview() {
     composerPreviewQueued = false
     const token = ++composerPreviewSeq
     composerPreviewStatus.value = '正在刷新预览...'
+    composerPreviewErrors.value = []
     stopComposerPreviewWatchdog()
     disconnectComposerResizeObserver()
     disposeActiveComposerRuntime()
@@ -4598,6 +4506,7 @@ async function renderComposerPreview() {
             return
         }
         composerRuntime = runtime
+        composerPreviewErrors.value = runtime.getModelErrors?.() || []
         connectComposerResizeObserver(container)
         resizeComposerPreview()
         focusComposerPreview()
@@ -4606,13 +4515,23 @@ async function renderComposerPreview() {
             throw new Error('渲染画布未正确连接')
         }
         composerPreviewFailureCount = 0
-        composerPreviewStatus.value = '预览已同步'
+        composerPreviewStatus.value = composerPreviewErrors.value.length
+            ? `预览已同步，但有 ${composerPreviewErrors.value.length} 个模型未加载`
+            : '预览已同步'
         startComposerPreviewWatchdog()
     } catch (e) {
         if (composerRuntime === runtime) composerRuntime = null
         runtime?.dispose()
         if (token === composerPreviewSeq && activeTab.value === 'composer') {
             composerPreviewFailureCount += 1
+            composerPreviewErrors.value = [{
+                device: '现场预览',
+                deviceId: '',
+                model: '场景渲染',
+                modelId: '',
+                reason: e?.message || e || '未知预览错误',
+                url: ''
+            }]
             composerPreviewStatus.value = `预览加载失败：${e.message || e}`
             if (composerPreviewFailureCount <= 3) {
                 if (composerPreviewRetryTimer) clearTimeout(composerPreviewRetryTimer)
@@ -4739,6 +4658,8 @@ watch([workshops, lines, devices, models], () => {
     scheduleComposerPreview()
 }, { deep: true })
 
+watch(modelInspection, scheduleInspectionDraftPreview, { deep: true })
+
 watch(activeTab, async (tab) => {
     if (tab === 'composer') {
         ensureComposerSelection()
@@ -4811,6 +4732,7 @@ watch([
     () => lineDevicePoolDock.x,
     () => lineDevicePoolDock.y
 ], () => {
+    try {
     localStorage.setItem(ADMIN_UI_STATE_KEY, JSON.stringify({
         activeTab: activeTab.value,
         platformSubpage: platformSubpage.value,
@@ -4834,13 +4756,18 @@ watch([
         lineDevicePoolDockX: lineDevicePoolDock.x,
         lineDevicePoolDockY: lineDevicePoolDock.y
     }))
+    } catch { /* Local UI preferences are optional when storage is unavailable. */ }
 })
 
 // ============ 生命周期 ============
-onMounted(async () => {
+let adminPanelDisposed = false
+let adminPanelActive = true
+async function initializeAdminPanel() {
     window.addEventListener('beforeunload', handleUnsavedCanvasBeforeUnload)
     await loadWorkshops()
-    await Promise.all([loadLines(), loadDevices(), loadSettings(), loadModels(), loadPlatform(), loadTemplatePacks(), loadLicenseStatus(), loadReleaseStatus()])
+    if (adminPanelDisposed) return
+    await Promise.all([loadLines(), loadDevices(), loadSettings(), loadModels(), loadPlatform(), loadLicenseStatus(), loadReleaseStatus()])
+    if (adminPanelDisposed || !adminPanelActive) return
     startRuntimeRefresh()
     loadCastDevices({ silent: true })
     startCastRefresh()
@@ -4856,13 +4783,16 @@ onMounted(async () => {
         selectedDeviceForPoints.value = 'all'
     }
     if (activeTab.value === 'points') await loadDataPoints()
+    if (adminPanelDisposed) return
     ensureComposerSelection()
     syncComposerDraftFromSelection()
     await nextTick()
+    if (adminPanelDisposed) return
     scheduleComposerPreview()
     if (activeTab.value === 'composer') startComposerPreviewWatchdog()
     await refreshAdminConnectionStatus()
-    nativeScenePreviewStatusTimer = setInterval(refreshAdminConnectionStatus, 3000)
+    if (adminPanelDisposed || !adminPanelActive) return
+    if (!nativeScenePreviewStatusTimer) nativeScenePreviewStatusTimer = setInterval(refreshAdminConnectionStatus, 3000)
     if (activeTab.value === 'composer') scheduleNativeScenePreview({ source: 'composer' })
     if (activeTab.value === 'lines') scheduleNativeScenePreview({ source: 'lines', includeLayout: true })
     if (activeTab.value === 'workshops') {
@@ -4870,10 +4800,18 @@ onMounted(async () => {
         scheduleNativeScenePreview({ source: 'spatial', includeLayout: true })
     }
     if (activeTab.value === 'models') await renderSelectedModelPreview()
-})
+}
+
+onMounted(() => initializeAdminPanel().catch(error => {
+    if (!adminPanelDisposed && adminSession.authenticated) alert(error.message || '后台配置读取失败，请检查后端连接并刷新重试。', { title: '后台加载失败', type: 'danger' })
+}))
 
 onActivated(async () => {
+    adminPanelActive = true
     await nextTick()
+    if (adminPanelDisposed || !adminPanelActive) return
+    startRuntimeRefresh()
+    startCastRefresh()
     if (activeTab.value === 'composer') {
         startComposerPreviewWatchdog()
         scheduleComposerPreview()
@@ -4887,6 +4825,11 @@ onActivated(async () => {
 })
 
 onDeactivated(() => {
+    adminPanelActive = false
+    stopRuntimeRefresh()
+    stopCastRefresh()
+    if (nativeScenePreviewTimer) clearTimeout(nativeScenePreviewTimer)
+    nativeScenePreviewTimer = null
     if (nativeScenePreviewStatusTimer) clearInterval(nativeScenePreviewStatusTimer)
     nativeScenePreviewStatusTimer = null
     finishLinePreviewDrag()
@@ -4901,6 +4844,8 @@ onDeactivated(() => {
 })
 
 onUnmounted(() => {
+    adminPanelDisposed = true
+    adminPanelActive = false
     window.removeEventListener('beforeunload', handleUnsavedCanvasBeforeUnload)
     if (nativeScenePreviewTimer) clearTimeout(nativeScenePreviewTimer)
     if (nativeScenePreviewStatusTimer) clearInterval(nativeScenePreviewStatusTimer)
@@ -5065,8 +5010,6 @@ function deviceLayoutSnapshot(device) {
             coordinate_space: device?.coordinate_space || '',
             instance_config: config
         })
-    lineStationEditingDeviceId.value = ''
-    lineStationDraft.value = ''
     }
 }
 
@@ -5096,7 +5039,7 @@ const dirtyLineIds = computed(() => lines.value.filter(lineHasUnsavedLayout).map
 const lineLayoutDirty = computed(() => lineHasUnsavedLayout(selectedLineEditor.value))
 
 function handleUnsavedCanvasBeforeUnload(event) {
-    if (!dirtyLineIds.value.length) return
+    if (!dirtyLineIds.value.length && !modelInspectionDirty.value) return
     event.preventDefault()
     event.returnValue = ''
 }
@@ -5116,6 +5059,8 @@ function touchLineLayout(line) {
 function selectLineEditor(lineId) {
     selectedLineEditorId.value = lineId
     lineFlowMenuLaneId.value = ''
+    lineStationEditingDeviceId.value = ''
+    lineStationDraft.value = ''
 }
 
 function toggleLinePlannerEditor() {
@@ -5311,6 +5256,55 @@ async function resetSelectedLineLayout() {
 function getLineBaseZ(lineId) {
     const line = lines.value.find(item => item.id === lineId)
     if (Number(getLineLayout(line)?.version || 0) >= 2) return 0
+    const lineIndex = sortByOrder(lines.value).findIndex(line => line.id === lineId)
+    return lineIndex >= 0 ? -lineIndex * 16 : 0
+}
+
+function resolveDeviceLayoutTarget(device, line = selectedLineEditor.value, options = {}) {
+    if (!device || !line) return null
+    const layout = getLineLayout(line)
+    const config = parseInstanceConfig(device.instance_config)
+    const allowFallback = options.allowFallback !== false
+
+    if (isAuxiliaryDeviceConfig(device)) {
+        if (config.railLineId === line.id && config.railId) {
+            const rail = layout.rails.find(item => item.id === config.railId)
+            if (rail) return { type: 'rail', item: rail, explicit: true }
+        }
+        if (allowFallback && (config.railLineId === line.id || device.line_id === line.id) && layout.rails.length) {
+            const baseZ = getLineBaseZ(line.id)
+            const relativeZ = numberOrDefault(device.pos_z, baseZ) - baseZ
+            const rail = [...layout.rails]
+                .sort((a, b) => Math.abs(numberOrDefault(a.offsetZ, 0) - relativeZ) - Math.abs(numberOrDefault(b.offsetZ, 0) - relativeZ))[0]
+            if (rail) return { type: 'rail', item: rail, explicit: false }
+        }
+        return null
+    }
+
+    if (config.laneLineId === line.id && config.laneId) {
+        const lane = layout.lanes.find(item => item.id === config.laneId)
+        if (lane) return { type: 'lane', item: lane, explicit: true }
+    }
+
+    if (allowFallback && device.line_id === line.id && layout.lanes.length) {
+        const baseZ = getLineBaseZ(line.id)
+        const relativeZ = numberOrDefault(device.pos_z, baseZ) - baseZ
+        const lane = [...layout.lanes]
+            .sort((a, b) => Math.abs(numberOrDefault(a.offsetZ, 0) - relativeZ) - Math.abs(numberOrDefault(b.offsetZ, 0) - relativeZ))[0]
+        if (lane) return { type: 'lane', item: lane, explicit: false }
+    }
+
+    return null
+}
+
+function getDevicesBoundToLayoutItem(type, itemId, line = selectedLineEditor.value, sourceDevices = devices.value) {
+    if (!line || !itemId) return []
+    return sourceDevices.filter(device => {
+        const target = resolveDeviceLayoutTarget(device, line, { allowFallback: false })
+        return target?.type === type && target.item?.id === itemId
+    })
+}
+
 function readLineStationNumber(device) {
     const config = parseInstanceConfig(device?.instance_config)
     const value = Number(config.stationNumber ?? config.station_number)
@@ -5415,55 +5409,6 @@ async function saveLineStationNumber(device) {
     } finally {
         lineDeviceSavingId.value = ''
     }
-}
-
-    const lineIndex = sortByOrder(lines.value).findIndex(line => line.id === lineId)
-    return lineIndex >= 0 ? -lineIndex * 16 : 0
-}
-
-function resolveDeviceLayoutTarget(device, line = selectedLineEditor.value, options = {}) {
-    if (!device || !line) return null
-    const layout = getLineLayout(line)
-    const config = parseInstanceConfig(device.instance_config)
-    const allowFallback = options.allowFallback !== false
-
-    if (isAuxiliaryDeviceConfig(device)) {
-        if (config.railLineId === line.id && config.railId) {
-            const rail = layout.rails.find(item => item.id === config.railId)
-            if (rail) return { type: 'rail', item: rail, explicit: true }
-        }
-        if (allowFallback && (config.railLineId === line.id || device.line_id === line.id) && layout.rails.length) {
-            const baseZ = getLineBaseZ(line.id)
-            const relativeZ = numberOrDefault(device.pos_z, baseZ) - baseZ
-            const rail = [...layout.rails]
-                .sort((a, b) => Math.abs(numberOrDefault(a.offsetZ, 0) - relativeZ) - Math.abs(numberOrDefault(b.offsetZ, 0) - relativeZ))[0]
-            if (rail) return { type: 'rail', item: rail, explicit: false }
-        }
-        return null
-    }
-
-    if (config.laneLineId === line.id && config.laneId) {
-        const lane = layout.lanes.find(item => item.id === config.laneId)
-        if (lane) return { type: 'lane', item: lane, explicit: true }
-    }
-
-    if (allowFallback && device.line_id === line.id && layout.lanes.length) {
-        const baseZ = getLineBaseZ(line.id)
-        const relativeZ = numberOrDefault(device.pos_z, baseZ) - baseZ
-        const lane = [...layout.lanes]
-            .sort((a, b) => Math.abs(numberOrDefault(a.offsetZ, 0) - relativeZ) - Math.abs(numberOrDefault(b.offsetZ, 0) - relativeZ))[0]
-        if (lane) return { type: 'lane', item: lane, explicit: false }
-    }
-
-    return null
-}
-
-function getDevicesBoundToLayoutItem(type, itemId, line = selectedLineEditor.value, sourceDevices = devices.value) {
-    if (!line || !itemId) return []
-    return sourceDevices.filter(device => {
-        const target = resolveDeviceLayoutTarget(device, line, { allowFallback: false })
-        return target?.type === type && target.item?.id === itemId
-    })
 }
 
 function buildDeviceLayoutBindingPatch(device, type, item, line) {
@@ -5888,7 +5833,6 @@ async function finishLineDeviceDrag(event) {
     resetLineDeviceDrag()
     if (!drag.active || !drag.canDrop) {
         scheduleNativeScenePreview({ source: 'lines', includeLayout: true, deviceOverride: null })
-        config.stationNumber = stationNumberForLinePlacement(device, line)
         if (drag.active && drag.message) alert(drag.message, { type: 'warning' })
         return
     }
@@ -5938,6 +5882,7 @@ async function placeLineDeviceOnTarget(drag) {
         config.laneLineId = line.id
         config.laneId = target.id
         config.laneName = target.name
+        config.stationNumber = stationNumberForLinePlacement(device, line)
         delete config.railLineId
         delete config.railId
         delete config.railName
@@ -6538,118 +6483,8 @@ async function openAdminSetupStep(step) {
 </script>
 
 <template>
-    <div class="admin-container" :class="{ 'unity-embedded': isUnityEmbedded, 'unity-dashboard-tab': isUnityEmbedded && unityHostState.attached && !unityHostState.adminVisible, 'nav-collapsed': isAdminNavCollapsed, 'composer-active': activeTab === 'composer', 'line-planner-active': activeTab === 'lines' }">
-        <div
-            v-if="isUnityEmbedded"
-            class="unity-window-chrome"
-            :class="{ 'is-dock-ready': unityHostState.dockReady }"
-            @pointerdown="beginUnityHostDrag($event, 'dashboard')"
-            @pointermove="continueUnityHostDrag"
-            @pointerup="endUnityHostDrag"
-            @pointercancel="endUnityHostDrag"
-            @lostpointercapture="endUnityHostDrag"
-            @dblclick="handleUnityChromeDoubleClick"
-        >
-            <div
-                class="unity-tab-strip"
-            >
-                <button
-                    v-if="unityHostState.attached"
-                    type="button"
-                    class="unity-browser-tab unity-screen-tab"
-                    :class="{ 'is-active': !unityHostState.adminVisible }"
-                    title="实时大屏"
-                    @pointerdown.stop="beginUnityHostDrag($event, 'dashboard')"
-                    @pointermove.stop="continueUnityHostDrag"
-                    @pointerup.stop="endUnityHostDrag"
-                    @pointercancel.stop="endUnityHostDrag"
-                    @lostpointercapture.stop="endUnityHostDrag"
-                    @click="showUnityDashboard"
-                >
-                    <svg viewBox="0 0 24 24" aria-hidden="true">
-                        <rect x="3.5" y="4.5" width="17" height="12" rx="2" />
-                        <path d="M8 20h8M12 16.5V20" />
-                    </svg>
-                    <span>实时大屏</span>
-                </button>
-
-                <div
-                    class="unity-browser-tab unity-admin-tab"
-                    :class="{ 'is-active': !unityHostState.attached || unityHostState.adminVisible }"
-                    role="tab"
-                    aria-selected="true"
-                    title="后台管理"
-                    @pointerdown.stop="beginUnityHostDrag($event, 'admin')"
-                    @pointermove.stop="continueUnityHostDrag"
-                    @pointerup.stop="endUnityHostDrag"
-                    @pointercancel.stop="endUnityHostDrag"
-                    @lostpointercapture.stop="endUnityHostDrag"
-                    @click="showUnityAdmin"
-                >
-                    <svg viewBox="0 0 24 24" aria-hidden="true">
-                        <path d="M4 7h10M18 7h2M4 12h2M10 12h10M4 17h7M15 17h5" />
-                        <circle cx="16" cy="7" r="2" />
-                        <circle cx="8" cy="12" r="2" />
-                        <circle cx="13" cy="17" r="2" />
-                    </svg>
-                    <span>后台管理</span>
-                    <i class="unity-tab-online" aria-hidden="true"></i>
-                </div>
-
-            </div>
-
-            <div class="unity-window-actions" @pointerdown.stop>
-                <button
-                    type="button"
-                    class="unity-window-action"
-                    title="刷新页面"
-                    aria-label="刷新页面"
-                    @click="reloadAdminPage"
-                >
-                    <svg viewBox="0 0 24 24" aria-hidden="true">
-                        <path d="M19 8a7.5 7.5 0 1 0 .8 6.8" />
-                        <path d="M19 4v4h-4" />
-                    </svg>
-                </button>
-                <button
-                    type="button"
-                    class="unity-window-action"
-                    title="最小化"
-                    aria-label="最小化窗口"
-                    @click="requestUnityHostAction('minimize')"
-                >
-                    <svg viewBox="0 0 24 24" aria-hidden="true">
-                        <path d="M5 16.5h14" />
-                    </svg>
-                </button>
-                <button
-                    type="button"
-                    class="unity-window-action"
-                    :title="unityHostState.maximized ? '还原' : '最大化'"
-                    :aria-label="unityHostState.maximized ? '还原窗口' : '最大化窗口'"
-                    @click="requestUnityHostAction('maximize')"
-                >
-                    <svg v-if="unityHostState.maximized" viewBox="0 0 24 24" aria-hidden="true">
-                        <rect x="7" y="5" width="11" height="11" rx="1" />
-                        <path d="M7 9H5a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1v-3" />
-                    </svg>
-                    <svg v-else viewBox="0 0 24 24" aria-hidden="true">
-                        <rect x="5" y="5" width="14" height="14" rx="1.5" />
-                    </svg>
-                </button>
-                <button
-                    type="button"
-                    class="unity-window-action is-close"
-                    title="关闭软件"
-                    aria-label="关闭软件"
-                    @click="closeAdminPanel"
-                >
-                    <svg viewBox="0 0 24 24" aria-hidden="true">
-                        <path d="M6 6l12 12M18 6 6 18" />
-                    </svg>
-                </button>
-            </div>
-        </div>
+    <div class="admin-container" data-admin-workspace :class="{ 'unity-embedded': isUnityEmbedded, 'unity-dashboard-tab': isUnityEmbedded && unityHostState.attached && !unityHostState.adminVisible, 'nav-collapsed': isAdminNavCollapsed, 'composer-active': activeTab === 'composer', 'line-planner-active': activeTab === 'lines' }">
+        <AdminWindowChrome v-if="isUnityEmbedded" @state="Object.assign(unityHostState, $event)" @before-dashboard="flushDashboardViewPreview" />
         <!-- 顶部标题栏 -->
         <header class="admin-header">
             <div class="header-logo-section">
@@ -6683,6 +6518,11 @@ async function openAdminSetupStep(step) {
                 </div>
             </nav>
             <div class="admin-connection-strip" aria-label="系统连接状态" aria-live="polite">
+                <AdminHelpGuide @navigate="openAdminSetupStep" />
+                <button type="button" class="admin-lock-button" :title="`工程师已解锁 · ${adminSession.idleTimeoutMinutes} 分钟无操作后自动锁定；离开前请先保存并锁定`" @click="lockAdmin">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3M12 14v3"/></svg>
+                    立即锁定
+                </button>
                 <span
                     class="admin-connection-pill"
                     :class="nativeScenePreviewStatusClass"
@@ -7020,7 +6860,17 @@ async function openAdminSetupStep(step) {
                                 </button>
                             </div>
                         </div>
-                        <div ref="composerPreviewRef" class="composer-preview-stage"></div>
+                        <div ref="composerPreviewRef" class="composer-preview-stage">
+                            <div v-if="composerPreviewErrors.length" class="composer-preview-error" role="alert">
+                                <strong>模型未加载（当前显示占位几何体）</strong>
+                                <div v-for="error in composerPreviewErrors.slice(0, 4)" :key="`${error.deviceId || error.device}-${error.modelId || error.model}`" class="composer-preview-error-item">
+                                    <span>{{ error.device }}<template v-if="error.deviceId">（{{ error.deviceId }}）</template></span>
+                                    <small>{{ error.model }}<template v-if="error.modelId">（{{ error.modelId }}）</template>：{{ error.reason }}</small>
+                                    <code v-if="error.url">{{ error.url }}</code>
+                                </div>
+                                <em v-if="composerPreviewErrors.length > 4">还有 {{ composerPreviewErrors.length - 4 }} 个模型错误</em>
+                            </div>
+                        </div>
                         <div id="composer-preview-floating-host" class="composer-preview-floating-host"></div>
                         <div class="composer-preview-footer">
                             <span>{{ composerPreviewStatus }} · Web 操作辅助</span>
@@ -7379,27 +7229,6 @@ async function openAdminSetupStep(step) {
                                                 </span>
                                             </button>
                                             <div class="line-card-fields" v-if="selectedLineEditorId === line.id">
-                                        <span class="line-map-station-bubble" @pointerdown.stop @click.stop>
-                                            <template v-if="lineStationEditingDeviceId === device.id">
-                                                <span class="line-map-station-label">工位</span>
-                                                <input
-                                                    v-model="lineStationDraft"
-                                                    class="line-map-station-input"
-                                                    type="number"
-                                                    min="1"
-                                                    step="1"
-                                                    aria-label="工位编号"
-                                                    @keydown.enter.prevent.stop="saveLineStationNumber(device)"
-                                                    @keydown.esc.prevent.stop="cancelLineStationEdit"
-                                                />
-                                                <button type="button" class="line-map-station-action" title="保存编号" @click.stop="saveLineStationNumber(device)">✓</button>
-                                                <button type="button" class="line-map-station-action cancel" title="取消修改" @click.stop="cancelLineStationEdit">×</button>
-                                            </template>
-                                            <button v-else type="button" class="line-map-station-trigger" @click.stop="startLineStationEdit(device)">
-                                                <span>工位 {{ lineStationNumber(device) }}</span>
-                                                <small>悬停后点击修改</small>
-                                            </button>
-                                        </span>
                                                 <input v-model="line.name" class="input input-sm" placeholder="产线名称" />
                                                 <select v-model="line.workshop_id" class="input input-sm">
                                                     <option v-for="ws in workshops" :key="ws.id" :value="ws.id">{{ ws.name }}</option>
@@ -7544,6 +7373,27 @@ async function openAdminSetupStep(step) {
                                         title="拖到设备线重新归位"
                                         @pointerdown="startLineDeviceDrag(device.id, $event)"
                                     >
+                                        <span class="line-map-station-bubble" @pointerdown.stop @click.stop>
+                                            <template v-if="lineStationEditingDeviceId === device.id">
+                                                <span class="line-map-station-label">工位</span>
+                                                <input
+                                                    v-model="lineStationDraft"
+                                                    class="line-map-station-input"
+                                                    type="number"
+                                                    min="1"
+                                                    step="1"
+                                                    aria-label="工位编号"
+                                                    @keydown.enter.prevent.stop="saveLineStationNumber(device)"
+                                                    @keydown.esc.prevent.stop="cancelLineStationEdit"
+                                                />
+                                                <button type="button" class="line-map-station-action" title="保存编号" @click.stop="saveLineStationNumber(device)">✓</button>
+                                                <button type="button" class="line-map-station-action cancel" title="取消修改" @click.stop="cancelLineStationEdit">×</button>
+                                            </template>
+                                            <button v-else type="button" class="line-map-station-trigger" @click.stop="startLineStationEdit(device)">
+                                                <span>工位 {{ lineStationNumber(device) }}</span>
+                                                <small>悬停后点击修改</small>
+                                            </button>
+                                        </span>
                                         <strong>{{ device.name }}</strong>
                                         <small>{{ formatModelName(device.model_type) }}</small>
                                         <button
@@ -7674,30 +7524,6 @@ async function openAdminSetupStep(step) {
                     <h2>设备管理</h2>
                     <p class="desc">管理所有设备，包括设备名称、所属产线、使用模型和数据连接。</p>
 
-                    <section v-if="templatePacks.length" class="template-pack-library">
-                        <div class="template-pack-library-heading">
-                            <div>
-                                <strong>热处理数字孪生标准包</strong>
-                                <small>设备模型、只读点位、展示报警和部件绑定的可复用蓝图</small>
-                            </div>
-                            <span class="template-pack-readonly">只读蓝图</span>
-                        </div>
-                        <div class="template-pack-grid">
-                            <article v-for="pack in templatePacks" :key="pack.id" class="template-pack-card">
-                                <div class="template-pack-card-top">
-                                    <strong>{{ pack.name }}</strong>
-                                    <code>v{{ pack.version }}</code>
-                                </div>
-                                <p>{{ pack.description }}</p>
-                                <div class="template-pack-stats">
-                                    <span>{{ pack.pointPack?.length || 0 }} 个点位</span>
-                                    <span>{{ pack.alarmRules?.length || 0 }} 条报警</span>
-                                    <span>{{ pack.partBindings?.length || 0 }} 个部件</span>
-                                </div>
-                            </article>
-                        </div>
-                    </section>
-
                     <button @click="openCreateDevice" class="btn btn-primary" style="margin-bottom:20px">+ 添加设备</button>
 
                     <!-- 设备表单弹窗 -->
@@ -7775,13 +7601,6 @@ async function openAdminSetupStep(step) {
                                         <strong>PLC 连接配置</strong>
                                         <span>每台设备可以连接不同 PLC；料车等辅助设备可保持未启用。</span>
                                     </div>
-                <!-- ======== 移动设备 ======== -->
-                <MobileDeviceMotion
-                    v-if="activeTab === 'mobile-devices'"
-                    :devices="devices"
-                    @saved="loadDevices"
-                />
-
                                     <label class="inline-check">
                                         <input v-model="editingDevice.plc_enabled" type="checkbox" :true-value="1" :false-value="0" />
                                         启用此设备直连 PLC 采集
@@ -7951,6 +7770,13 @@ async function openAdminSetupStep(step) {
                     </div>
                 </div>
 
+                <!-- ======== 设备运动配置 ======== -->
+                <MobileDeviceMotion
+                    v-if="activeTab === 'mobile-devices'"
+                    :devices="devices"
+                    @saved="loadDevices"
+                />
+
                 <!-- ======== 模型库 ======== -->
                 <div v-if="activeTab === 'models'" class="tab-content">
                     <h2>3D 模型库</h2>
@@ -7964,7 +7790,7 @@ async function openAdminSetupStep(step) {
                                 type="button"
                                 class="secondary-page-nav-item"
                                 :class="{ active: modelLibraryStep === step.key }"
-                                :disabled="modelLibraryStepRequiresModel(step.key) && !activePreviewModel"
+                                :disabled="!modelLibraryStepAvailable(step.key)"
                                 :aria-current="modelLibraryStep === step.key ? 'step' : undefined"
                                 @click="selectModelLibraryStep(step.key)"
                             >
@@ -7978,7 +7804,7 @@ async function openAdminSetupStep(step) {
                         </nav>
                     </div>
 
-                    <div class="model-library-layout">
+                    <div class="model-library-layout" :class="{ 'inspection-workspace': modelLibraryStep === 'inspection' }">
                         <section class="model-library-main">
                             <section v-show="modelLibraryStep === 'import'" class="model-library-step-panel">
                                 <div class="model-step-heading">
@@ -8029,21 +7855,28 @@ async function openAdminSetupStep(step) {
                                         <td>{{ getModelBindingCount(m) }}</td>
                                         <td>{{ m.file_path || '（内置）' }}</td>
                                         <td>
-                                            <button v-if="!m.is_builtin" @click.stop="deleteModel(m.id)" class="btn btn-danger btn-sm">删除</button>
+                                            <button v-if="!m.is_builtin || DELETABLE_RETIRED_MODEL_IDS.has(m.id)" @click.stop="deleteModel(m.id)" class="btn btn-danger btn-sm">删除</button>
                                             <span v-else style="color:#888">系统内置</span>
                                         </td>
                                     </tr>
                                 </tbody>
                             </table>
                                 <div v-if="activePreviewModel" class="model-selection-actions">
-                                    <div><span>当前模型</span><strong>{{ activePreviewModel.name || activePreviewModel.id }}</strong></div>
-                                    <button class="btn" type="button" @click="selectModelLibraryStep('optimization')">优化与验收</button>
-                                    <button class="btn" type="button" @click="selectModelLibraryStep('inspection')">拆解检查</button>
-                                    <button class="btn btn-primary" type="button" @click="selectModelLibraryStep('bindings')">部位绑定</button>
+                                    <div>
+                                        <span>当前模型</span>
+                                        <strong>{{ activePreviewModel.name || activePreviewModel.id }}</strong>
+                                        <small v-if="activePreviewIsEnvironment" class="model-environment-note">环境模型 · 仅用于工厂总览，不参与拆解、点位绑定或 PLC 动画</small>
+                                    </div>
+                                    <template v-if="!activePreviewIsEnvironment">
+                                        <button class="btn" type="button" @click="selectModelLibraryStep('optimization')">优化与验收</button>
+                                        <button class="btn" type="button" @click="selectModelLibraryStep('inspection')">拆解检查</button>
+                                        <button class="btn btn-primary" type="button" @click="selectModelLibraryStep('bindings')">部位绑定</button>
+                                    </template>
+                                    <span v-else class="model-environment-badge">静态环境资产</span>
                                 </div>
                             </section>
 
-                            <section v-if="activePreviewModel" v-show="modelLibraryStep === 'optimization'" class="model-asset-governance model-library-step-panel">
+                            <section v-if="activePreviewModel && !activePreviewIsEnvironment" v-show="modelLibraryStep === 'optimization'" class="model-asset-governance model-library-step-panel">
                                 <div class="model-binding-header">
                                     <div>
                                         <h3>模型资产规范</h3>
@@ -8177,102 +8010,32 @@ async function openAdminSetupStep(step) {
                                 </template>
                             </section>
 
-                            <section v-if="activePreviewModel" v-show="modelLibraryStep === 'inspection'" class="model-binding-editor model-library-step-panel model-inspection-editor">
-                                <div class="model-binding-header">
-                                    <div>
-                                        <h3>设备逐层检查配置</h3>
-                                        <p>这里定义实体、透明外壳、拆解部件和部件详情所需的数据；同型号设备默认复用，设备实例仍可覆盖。</p>
-                                    </div>
-                                    <button class="btn btn-primary" type="button" @click="saveModelInspection" :disabled="!canEditModelBindings || modelBindingSaving">
-                                        {{ modelBindingSaving ? '保存中...' : '保存拆解配置' }}
-                                    </button>
-                                </div>
-
-                                <template v-if="canEditModelBindings">
-                                    <div class="inspection-stage-toolbar">
-                                        <label class="inline-check"><input v-model="modelInspection.enabled" type="checkbox" /> 启用逐层设备检查</label>
-                                        <button type="button" :class="{ active: inspectionPreviewStage === 'solid' }" @click="applyInspectionPreviewStage('solid')">1 实体</button>
-                                        <button type="button" :class="{ active: inspectionPreviewStage === 'xray' }" @click="applyInspectionPreviewStage('xray')">2 透视</button>
-                                        <button type="button" :class="{ active: inspectionPreviewStage === 'exploded' }" @click="applyInspectionPreviewStage('exploded')">3 拆解</button>
-                                    </div>
-
-                                    <div class="model-inspection-settings">
-                                        <label>透明外壳浓度<input v-model.number="modelInspection.shell.opacity" type="range" min=".03" max=".8" step=".01" @input="applyInspectionPreviewStage('xray')" /><small>{{ Math.round(modelInspection.shell.opacity * 100) }}%</small></label>
-                                        <label>拆解动画（秒）<input v-model.number="modelInspection.animation_duration" type="number" min=".05" max="5" step=".05" class="input" /></label>
-                                        <label class="inline-check"><input v-model="modelInspection.shell.wireframe" type="checkbox" /> 透视阶段强调线框色</label>
-                                    </div>
-
-                                    <div class="inspection-config-card">
-                                        <div class="model-release-header"><strong>外壳节点</strong><span>只有这些节点会透明或隐藏，内部部件保持不透明</span></div>
-                                        <div class="inspection-node-picker">
-                                            <select v-model="inspectionShellNodePath" class="input">
-                                                <option value="">选择模型节点作为外壳</option>
-                                                <option v-for="node in filteredModelPreviewNodes" :key="'shell-' + node.path" :value="node.path">{{ formatModelNodeOption(node) }}</option>
-                                            </select>
-                                            <button class="btn" type="button" @click="addInspectionShellNode">加入外壳</button>
-                                        </div>
-                                        <div class="inspection-node-chips">
-                                            <button v-for="entry in inspectionShellEntries" :key="entry.key" type="button" @click="selectInspectionShellNode(entry)">
-                                                <span>{{ entry.name || entry.path }}</span><i @click.stop="removeInspectionShellNode(entry)">×</i>
-                                            </button>
-                                            <small v-if="!inspectionShellEntries.length">未指定时运行端会按 shell / housing / 外壳等名称尝试识别。</small>
-                                        </div>
-                                    </div>
-
-                                    <div class="inspection-camera-grid">
-                                        <div v-for="stage in [{key:'solid',label:'实体镜头'},{key:'xray',label:'透视镜头'},{key:'exploded',label:'拆解镜头'}]" :key="stage.key" class="inspection-config-card">
-                                            <div class="model-release-header"><strong>{{ stage.label }}</strong><span>{{ modelInspection[stage.key].view_id || '使用模型默认镜头' }}</span></div>
-                                            <label>低代码视角 ID<input v-model="modelInspection[stage.key].view_id" class="input" :placeholder="stage.key === 'solid' ? 'device_detail' : 'device_' + stage.key" /></label>
-                                            <div class="property-grid three">
-                                                <label>水平角<input v-model.number="modelInspection[stage.key].camera.yaw" type="number" class="input" /></label>
-                                                <label>俯仰角<input v-model.number="modelInspection[stage.key].camera.pitch" type="number" class="input" /></label>
-                                                <label>距离比例<input v-model.number="modelInspection[stage.key].camera.distance_scale" type="number" min=".1" max="10" step=".01" class="input" /></label>
-                                            </div>
-                                        </div>
-                                    </div>
-
-                                    <div class="inspection-config-card">
-                                        <div class="model-release-header"><strong>关键部件</strong><span>拆解后可以点击，并把部件上下文交给右侧低代码组件</span></div>
-                                        <div class="model-binding-form inspection-part-form">
-                                            <label class="model-node-picker">模型节点
-                                                <select v-model="inspectionPartForm.node_path" class="input" @change="selectPreviewNode(inspectionPartForm.node_path)">
-                                                    <option value="">选择关键部件节点</option>
-                                                    <option v-for="node in filteredModelPreviewNodes" :key="'part-' + node.path" :value="node.path">{{ formatModelNodeOption(node) }}</option>
-                                                </select>
-                                            </label>
-                                            <label>部件 ID<input v-model="inspectionPartForm.id" class="input" placeholder="如 front_door" /></label>
-                                            <label>显示名称<input v-model="inspectionPartForm.name" class="input" placeholder="如 前门驱动组件" /></label>
-                                            <label>详情视角 ID<input v-model="inspectionPartForm.detail_view_id" class="input" placeholder="留空使用 device_part" /></label>
-                                            <label>拆解偏移 X<input v-model.number="inspectionPartForm.explode_x" type="number" step=".1" class="input" /></label>
-                                            <label>拆解偏移 Y<input v-model.number="inspectionPartForm.explode_y" type="number" step=".1" class="input" /></label>
-                                            <label>拆解偏移 Z<input v-model.number="inspectionPartForm.explode_z" type="number" step=".1" class="input" /></label>
-                                            <label class="wide-form-section">部件介绍<textarea v-model="inspectionPartForm.description" class="input" rows="2" placeholder="点击部件后显示在右侧详情中"></textarea></label>
-                                            <label class="wide-form-section">实时点位键<textarea v-model="inspectionPartForm.point_keys_text" class="input" rows="2" placeholder="motors.rear_fan_speed, analog.temperature"></textarea><small class="field-hint">使用“分组.字段”，多个用逗号或换行分隔；运行时会自动匹配当前设备点位。</small></label>
-                                            <div class="model-binding-actions">
-                                                <button class="btn btn-primary" type="button" @click="saveInspectionPartDraft">{{ selectedInspectionPartIndex >= 0 ? '更新部件' : '加入部件' }}</button>
-                                                <button class="btn" type="button" @click="resetInspectionPartForm">清空表单</button>
-                                            </div>
-                                        </div>
-
-                                        <table class="data-table model-binding-table">
-                                            <thead><tr><th>部件</th><th>节点</th><th>拆解偏移</th><th>点位键</th><th>操作</th></tr></thead>
-                                            <tbody>
-                                                <tr v-for="(part, index) in modelInspectionParts" :key="part.id" @click="selectPreviewNode(part.node_path)">
-                                                    <td><strong>{{ part.name }}</strong><small>{{ part.id }}</small></td>
-                                                    <td><code>{{ part.node_name || part.node_path }}</code></td>
-                                                    <td>{{ part.explode_offset.join(' / ') }}</td>
-                                                    <td>{{ (part.point_keys || []).join(', ') || '未绑定' }}</td>
-                                                    <td><button class="btn btn-sm" type="button" @click.stop="editInspectionPart(index)">编辑</button><button class="btn btn-danger btn-sm" type="button" @click.stop="removeInspectionPart(index)">删除</button></td>
-                                                </tr>
-                                                <tr v-if="!modelInspectionParts.length"><td colspan="5" style="text-align:center;color:#888">暂无关键部件；可先从右侧预览解析出的节点中选择。</td></tr>
-                                            </tbody>
-                                        </table>
-                                    </div>
-                                </template>
-                                <div class="model-binding-status">{{ modelBindingStatus }}</div>
+                            <section v-if="activePreviewModel && !activePreviewIsEnvironment" v-show="modelLibraryStep === 'inspection'" class="model-binding-editor model-library-step-panel model-inspection-editor">
+                                <ModelInspectionEditor
+                                    v-if="canEditModelBindings && modelLibraryStep === 'inspection'"
+                                    :model-value="modelInspection"
+                                    :model-id="selectedPreviewModelId"
+                                    :nodes="modelPreviewNodes"
+                                    :part-bindings="modelPartBindings"
+                                    :preview-state="inspectionPreviewSnapshot"
+                                    :devices="devices"
+                                    v-model:preview-device-id="inspectionPreviewDeviceId"
+                                    :saving="modelBindingSaving"
+                                    :save-revision="modelInspectionSaveRevision"
+                                    :saved-signature="modelInspectionSavedSignature"
+                                    :native-preview-busy="inspectionNativePreviewBusy"
+                                    :status="modelBindingStatus"
+                                    @update:model-value="updateModelInspectionDraft"
+                                    @save="saveModelInspection"
+                                    @reload="loadModelInspectionState(activePreviewModel)"
+                                    @command="inspectionPreviewCommand"
+                                    @capture-camera="captureInspectionCamera"
+                                    @native-preview="previewInspectionOnNativeDevice"
+                                />
+                                <p v-else-if="!canEditModelBindings">请选择具有真实节点结构的 GLB / GLTF 模型，再配置拆解。</p>
                             </section>
 
-                            <section v-if="activePreviewModel" v-show="modelLibraryStep === 'bindings'" class="model-binding-editor model-library-step-panel">
+                            <section v-if="activePreviewModel && !activePreviewIsEnvironment" v-show="modelLibraryStep === 'bindings'" class="model-binding-editor model-library-step-panel">
                                 <div class="model-binding-header">
                                     <div>
                                         <h3>部位与点位绑定</h3>
@@ -8376,7 +8139,7 @@ async function openAdminSetupStep(step) {
                             </section>
                         </section>
 
-                        <aside class="model-preview-panel">
+                        <aside class="model-preview-panel" :class="{ 'inspection-preview-panel': modelLibraryStep === 'inspection' }">
                             <div class="model-preview-header">
                                 <div class="model-preview-title">
                                     <strong>模型预览</strong>
@@ -8385,8 +8148,15 @@ async function openAdminSetupStep(step) {
                                 <span class="model-preview-mode-badge">{{ modelLibraryStep === 'inspection' ? '拆解预览' : modelLibraryStep === 'bindings' ? '绑定预览' : '模型预览' }}</span>
                             </div>
                             <div ref="modelPreviewRef" class="model-preview-stage">
+                                <ModelInspectionPreviewOverlay v-if="modelLibraryStep === 'inspection' && isModelPreviewActive && !modelPreviewError" :state="inspectionPreviewSnapshot" @command="inspectionPreviewCommand" />
                                 <div v-if="!isModelPreviewActive" class="model-preview-empty">选择文件或点击模型列表</div>
-                                <div v-if="selectedModelNodeInfo" class="model-preview-node-card">
+                                <div v-if="modelPreviewError" class="model-preview-error" role="alert">
+                                    <strong>模型未加载</strong>
+                                    <span>{{ modelPreviewError.model }}<template v-if="modelPreviewError.modelId">（{{ modelPreviewError.modelId }}）</template></span>
+                                    <small>{{ modelPreviewError.reason }}</small>
+                                    <code v-if="modelPreviewError.url">{{ modelPreviewError.url }}</code>
+                                </div>
+                                <div v-if="selectedModelNodeInfo && modelLibraryStep !== 'inspection'" class="model-preview-node-card">
                                     <strong>{{ selectedModelNodeInfo.displayName || selectedModelNodeInfo.name }}</strong>
                                     <span>{{ formatModelNodeType(selectedModelNodeInfo.type) }} · {{ formatMeshCount(selectedModelNodeInfo.meshCount) }}</span>
                                     <small>{{ selectedModelNodeInfo.path }}</small>
@@ -8431,7 +8201,7 @@ async function openAdminSetupStep(step) {
                     </div>
 
                     <div v-show="platformSubpage === 'designer'" class="secondary-page-panel secondary-page-panel-designer">
-                        <DashboardDesigner class="platform-designer-primary" @reload="loadPlatform" />
+                        <DashboardDesigner class="platform-designer-primary" @reload="loadPlatform" @preview-view="handleDashboardViewPreview" />
                     </div>
 
                     <div v-show="platformSubpage === 'scene'" v-if="platform.activeProject" class="settings-section secondary-page-panel">
@@ -8539,13 +8309,14 @@ async function openAdminSetupStep(step) {
                                             <div
                                                 v-for="previewWidget in dashboardPreviewWidgets"
                                                 :key="previewWidget.id"
-                                                class="widget-preview-slot"
-                                                :class="{ active: hoveredPreviewWidget.id === previewWidget.id, hidden: !previewWidget.visible }"
+                                                class="widget-preview-slot hud-widget"
+                                                :class="{ ['widget-type-' + (previewWidget.type || previewWidget.widget_type)]: true, active: hoveredPreviewWidget.id === previewWidget.id, hidden: !previewWidget.visible }"
                                                 :style="getAdminWidgetGridStyle(previewWidget)"
                                             >
                                                 <WidgetRenderer
                                                     v-if="previewWidget.visible && previewableWidgetTypes.has(previewWidget.widget_type)"
                                                     :widget="previewWidget"
+                                                    overlay-mode
                                                     :metrics="widgetPreviewMetrics"
                                                     :events="widgetPreviewEvents"
                                                     :trend-points="widgetPreviewTrendPoints"
@@ -8676,7 +8447,7 @@ async function openAdminSetupStep(step) {
                     <div class="form-row" style="margin-bottom:20px; align-items: flex-end;">
                         <div>
                             <label style="font-size:12px; color:#86868b; display:block; margin-bottom:5px;">筛选设备</label>
-                            <select v-model="selectedDeviceForPoints" @change="loadDataPoints" class="input" style="width:250px">
+                            <select v-model="selectedDeviceForPoints" @change="loadDataPoints" :disabled="pointsSaving" class="input" style="width:250px">
                                 <option value="all">全部设备</option>
                                 <option v-for="d in devices" :key="d.id" :value="d.id">{{ d.name }} ({{ d.id }})</option>
                             </select>
@@ -8684,12 +8455,12 @@ async function openAdminSetupStep(step) {
                         <div v-if="selectedDeviceForPoints" style="display:flex; gap:10px; margin-left: 20px;">
                             <button @click="alert('点表导入会做成模板校验后批量导入，当前请先手动配置关键点位。', { title: '点表导入', type: 'info' })" class="btn">导入点表</button>
                             <div v-if="!isAllPointsMode" style="position: relative; display: inline-block;">
-                                <select @change="copyPointsFrom($event.target.value); $event.target.value=''" class="input" style="width: 180px;">
+                                <select @change="copyPointsFrom($event.target.value); $event.target.value=''" :disabled="pointsLoading || pointsSaving" class="input" style="width: 180px;">
                                     <option value="">从其他设备复制...</option>
                                     <option v-for="d in devices.filter(x => x.id !== selectedDeviceForPoints)" :key="d.id" :value="d.id">复制自: {{ d.name }}</option>
                                 </select>
                             </div>
-                            <button v-if="!isAllPointsMode" @click="syncToLine" class="btn">应用到同产线</button>
+                            <button v-if="!isAllPointsMode" @click="syncToLine" :disabled="pointsLoading || pointsSaving" class="btn">应用到同产线</button>
                         </div>
                     </div>
 
@@ -8926,7 +8697,7 @@ async function openAdminSetupStep(step) {
                             </div>
                             <div style="display:flex; align-items: center; gap: 15px;">
                                 <span v-if="isPointsDirty" style="color: #ff9500; font-size: 13px;">存在未保存的修改</span>
-                                <button @click="saveAllPoints" class="btn btn-primary" :disabled="!isPointsDirty && dataPoints.length > 0">{{ isAllPointsMode ? '保存全部设备配置' : '保存当前设备配置' }}</button>
+                                <button @click="saveAllPoints" class="btn btn-primary" :disabled="pointsLoading || pointsSaving || (!isPointsDirty && dataPoints.length > 0)">{{ pointsLoading ? '正在读取点位…' : pointsSaving ? '正在保存…' : isAllPointsMode ? '保存全部设备配置' : '保存当前设备配置' }}</button>
                             </div>
                         </div>
 
@@ -9111,7 +8882,7 @@ async function openAdminSetupStep(step) {
                 <!-- ======== 系统设置 ======== -->
                 <div v-if="activeTab === 'settings'" class="tab-content">
                     <h2>系统设置</h2>
-                    <p class="desc">配置大屏渲染性能、数据通路、PLC 连接参数和通信方式。</p>
+                    <p class="desc">配置后台安全、Unity 大屏画质、数据通路和运行服务。</p>
 
                     <div class="secondary-page-nav-shell">
                         <nav class="secondary-page-nav" aria-label="系统设置分类">
@@ -9134,6 +8905,8 @@ async function openAdminSetupStep(step) {
                         </nav>
                     </div>
 
+                    <AdminSecuritySettings v-if="settingsSubpage === 'security'" />
+
                     <!-- 引擎运行状态 -->
                     <div class="engine-status-card" :class="'status-' + engineStatus.plcStatus?.status">
                         <div class="engine-status-header">
@@ -9151,7 +8924,7 @@ async function openAdminSetupStep(step) {
                         <div class="license-heading-row">
                             <div>
                                 <h3 class="section-title">离线许可证</h3>
-                                <p class="desc">许可证只在本机校验，不上传客户信息；强制授权开启后，许可证失效会保护配置写入。</p>
+                                <p class="desc">许可证由签发方离线签名，本机只用公钥校验；正式安装包没有有效许可证时将停止业务接口。</p>
                             </div>
                             <span class="license-status-pill" :class="`license-${licenseStatus.status}`">
                                 {{ licenseStatusLabel(licenseStatus.status) }}
@@ -9163,11 +8936,19 @@ async function openAdminSetupStep(step) {
                             <div><span>有效期</span><strong>{{ licenseStatus.expiresAt ? formatBackupTime(licenseStatus.expiresAt) : '—' }}</strong></div>
                             <div><span>强制授权</span><strong>{{ licenseStatus.enforce ? '已开启' : '未开启（开发/演示）' }}</strong></div>
                         </div>
+                        <div class="license-machine-card">
+                            <div>
+                                <span>本机授权指纹</span>
+                                <strong>{{ licenseStatus.machineId || '暂不可用' }}</strong>
+                                <small>签发方可将许可证绑定到这台电脑；只提供哈希指纹，不暴露原始硬件信息。来源：{{ licenseStatus.machineIdSource || '—' }}</small>
+                            </div>
+                            <button type="button" class="btn" :disabled="!licenseStatus.machineId" @click="copyLicenseMachineId">复制指纹</button>
+                        </div>
                         <div class="release-status-card">
                             <div><span>当前程序版本</span><strong>{{ releaseStatus.current?.productVersion || '—' }}</strong></div>
                             <div><span>配置版本</span><strong>{{ releaseStatus.current?.configurationVersion || '—' }}</strong></div>
                             <div><span>升级模式</span><strong>{{ releaseStatus.mode === 'offline_signed_package' ? '离线签名包' : '不可用' }}</strong></div>
-                            <p>升级包必须通过签名和 SHA-256 校验，低版本包会被拒绝；现场先导出整站灾备，再安装升级包，失败时按回滚说明恢复。</p>
+                            <p>升级包必须通过签名和 SHA-256 校验，低版本包会被拒绝；授权签发工具只应由交付方保管，客户侧不保存私钥。</p>
                         </div>
                         <p class="license-reason" :class="{ warning: !licenseStatus.valid && licenseStatus.enforce }">{{ licenseStatus.reason }}</p>
                         <div class="license-install-card">
@@ -9247,15 +9028,15 @@ async function openAdminSetupStep(step) {
                                         @click="isExternalDataSourcesOpen = !isExternalDataSourcesOpen"
                                     >
                                         <span>
-                                            <strong>外部只读数据库连接</strong>
-                                            <small>用于大屏组件取数，不接管对方数据库，也不会执行新增、修改或删除。</small>
+                                            <strong>外部数据源</strong>
+                                            <small>统一管理数据库和 HTTP API；外部请求由后台代理，业务数据只读使用。</small>
                                         </span>
                                         <span class="external-data-source-toggle-status">
-                                            {{ dataSourceConnections.filter(item => !item.primary).length }} 个连接
+                                            {{ dataSourceConnections.filter(item => !item.primary).length }} 个数据源
                                             <svg class="collapse-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m7 10 5 5 5-5" /></svg>
                                         </span>
                                     </button>
-                                    <button type="button" class="btn btn-small" @click="resetDataSourceEditor(); isExternalDataSourcesOpen = true">＋ 新建连接</button>
+                                    <button type="button" class="btn btn-small" @click="resetDataSourceEditor(); isExternalDataSourcesOpen = true">＋ 新建数据源</button>
                                 </div>
 
                                 <Transition name="section-collapse">
@@ -9269,15 +9050,22 @@ async function openAdminSetupStep(step) {
                                                 :class="{ active: dataSourceEditor.id === connection.id }"
                                                 @click="editDataSource(connection)"
                                             >
-                                                <span class="external-data-source-icon">DB</span>
-                                                <span><strong>{{ connection.name }}</strong><small>{{ connection.type }} · {{ connection.database || connection.filename }}</small></span>
-                                                <em>{{ connection.enabled ? '启用' : '停用' }}</em>
+                                                <span class="external-data-source-icon" :class="{ api: isHttpDataSource(connection) }">{{ isHttpDataSource(connection) ? 'API' : 'DB' }}</span>
+                                                <span><strong>{{ connection.name }}</strong><small>{{ isHttpDataSource(connection) ? `${connection.method || 'GET'} · ${connection.baseUrl || '未填写地址'}` : `${connection.type} · ${connection.database || connection.filename}` }}</small></span>
+                                                <em :class="{ unhealthy: connection.health && !['healthy', 'unknown'].includes(connection.health.status), unchecked: !connection.health || connection.health.status === 'unknown', disabled: !connection.enabled }">{{ connection.enabled ? '启用' : '停用' }}<small>{{ dataSourceHealthLabel(connection.health?.status) }}</small></em>
                                             </button>
-                                            <p v-if="!dataSourceConnections.some(item => !item.primary)" class="empty-hint">尚未添加外部数据源。添加后，设计器里可直接选择“连接 → 表 → 字段”。</p>
+                                            <p v-if="!dataSourceConnections.some(item => !item.primary)" class="empty-hint">尚未添加外部数据源。数据库可在设计器中选择“连接 → 表 → 字段”；HTTP API 的数据接口和字段映射将在后续配置。</p>
                                         </div>
 
                                         <div class="external-data-source-editor">
-                                            <label>连接名称<input v-model="dataSourceEditor.name" class="input" placeholder="例如：MES 生产数据库" /></label>
+                                            <label>数据源类型
+                                                <select v-model="dataSourceEditor.sourceType" class="input">
+                                                    <option value="database">数据库</option>
+                                                    <option value="http_api">HTTP API</option>
+                                                </select>
+                                            </label>
+                                            <label>数据源名称<input v-model="dataSourceEditor.name" class="input" placeholder="例如：MES 生产数据库 / 现场接口" /></label>
+                                            <template v-if="dataSourceEditor.sourceType === 'database'">
                                             <label>数据库类型
                                                 <select v-model="dataSourceEditor.type" class="input">
                                                     <option value="mysql">MySQL / MariaDB</option>
@@ -9291,19 +9079,48 @@ async function openAdminSetupStep(step) {
                                             <label v-if="dataSourceEditor.type !== 'sqlite'">数据库名<input v-model="dataSourceEditor.database" class="input" /></label>
                                             <label v-if="dataSourceEditor.type !== 'sqlite'">默认 Schema<input v-model="dataSourceEditor.defaultSchema" class="input" placeholder="PostgreSQL: public / SQL Server: dbo" /></label>
                                             <label v-if="dataSourceEditor.type !== 'sqlite'">只读账号<input v-model="dataSourceEditor.user" class="input" /></label>
-                                            <label v-if="dataSourceEditor.type !== 'sqlite'">密码<input v-model="dataSourceEditor.password" type="password" class="input" /></label>
+                                            <label v-if="dataSourceEditor.type !== 'sqlite'">密码<input v-model="dataSourceEditor.password" type="password" autocomplete="new-password" class="input" /></label>
                                             <label v-else class="external-data-source-wide">SQLite 文件<input v-model="dataSourceEditor.filename" class="input" placeholder="完整 .db 文件路径" /></label>
                                             <label>查询超时（毫秒）<input v-model.number="dataSourceEditor.queryTimeoutMs" type="number" min="1000" max="60000" class="input" /></label>
+                                            </template>
+                                            <template v-else>
+                                            <label class="external-data-source-wide">API 根地址<input v-model="dataSourceEditor.baseUrl" class="input" placeholder="例如：https://mes.example.com/api" /></label>
+                                            <label>健康检查地址<input v-model="dataSourceEditor.healthPath" class="input" placeholder="例如：/health" /></label>
+                                            <label>请求方式<select v-model="dataSourceEditor.method" class="input" disabled><option value="GET">GET</option></select></label>
+                                            <label>认证方式
+                                                <select v-model="dataSourceEditor.authType" class="input">
+                                                    <option value="none">无认证</option>
+                                                    <option value="api_key">API Key</option>
+                                                    <option value="bearer">Bearer Token</option>
+                                                    <option value="basic">Basic 用户名密码</option>
+                                                </select>
+                                            </label>
+                                            <label v-if="dataSourceEditor.authType === 'api_key'">API Key 请求头<input v-model="dataSourceEditor.apiKeyHeader" class="input" placeholder="X-API-Key" /></label>
+                                            <label v-if="dataSourceEditor.authType === 'api_key'">API Key<input v-model="dataSourceEditor.apiKey" type="password" autocomplete="new-password" class="input" placeholder="请输入密钥" /></label>
+                                            <label v-if="dataSourceEditor.authType === 'bearer'" class="external-data-source-wide">Bearer Token<input v-model="dataSourceEditor.token" type="password" autocomplete="new-password" class="input" placeholder="请输入令牌" /></label>
+                                            <label v-if="dataSourceEditor.authType === 'basic'">用户名<input v-model="dataSourceEditor.user" class="input" /></label>
+                                            <label v-if="dataSourceEditor.authType === 'basic'">密码<input v-model="dataSourceEditor.password" type="password" autocomplete="new-password" class="input" /></label>
+                                            <label>请求超时（毫秒）<input v-model.number="dataSourceEditor.requestTimeoutMs" type="number" min="1000" max="60000" class="input" /></label>
+                                            <p class="external-data-source-wide external-data-source-help">健康检查只证明接口当前可访问、认证正确且返回 2xx，不代表业务数据已经可用。后续再配置数据接口地址和 JSON 字段映射。</p>
+                                            </template>
+                                            <p v-if="dataSourceEditor.sourceType === 'database' ? dataSourceEditor.type !== 'sqlite' : dataSourceEditor.authType !== 'none'" class="external-data-source-wide external-data-source-help">已有凭据以掩码显示：不修改则保留，输入新值可替换，删除全部内容表示清空。切换数据源类型或认证方式后需重新填写凭据。</p>
                                             <label class="checkbox-line"><input v-model="dataSourceEditor.enabled" type="checkbox" /> 启用此连接</label>
                                         </div>
+                                        <div v-if="dataSourceTestHealth.status" class="external-data-source-health" :class="dataSourceTestHealth.status">
+                                            <div><strong>最近健康检查：{{ dataSourceHealthLabel(dataSourceTestHealth.status) }}</strong><span>{{ dataSourceTestHealth.message }}</span></div>
+                                            <small v-if="Number.isFinite(dataSourceTestHealth.responseTimeMs)">响应 {{ dataSourceTestHealth.responseTimeMs }}ms</small>
+                                            <small v-if="dataSourceTestHealth.httpStatus">HTTP {{ dataSourceTestHealth.httpStatus }}</small>
+                                            <small v-if="dataSourceTestHealth.checkedAt">最后检查：{{ formatBackupTime(dataSourceTestHealth.checkedAt) }}</small>
+                                        </div>
+                                        <div v-else class="external-data-source-health unknown"><div><strong>当前配置未检查</strong><span>测试后将显示健康状态、响应时间和最后检查时间；修改配置后需重新测试。</span></div></div>
                                         <div class="external-data-source-actions">
-                                            <button type="button" class="btn" :disabled="dataSourceBusy" @click="testExternalDataSource">测试只读连接</button>
-                                            <button type="button" class="btn btn-primary" :disabled="dataSourceBusy" @click="saveExternalDataSource">保存连接</button>
+                                            <button type="button" class="btn" :disabled="dataSourceBusy" @click="testExternalDataSource">{{ dataSourceEditor.sourceType === 'http_api' ? '测试接口健康度' : '测试数据库连接' }}</button>
+                                            <button type="button" class="btn btn-primary" :disabled="dataSourceBusy" @click="saveExternalDataSource">保存数据源</button>
                                             <button v-if="dataSourceEditor.id" type="button" class="btn btn-danger" :disabled="dataSourceBusy" @click="removeExternalDataSource({ ...dataSourceEditor })">删除</button>
-                                            <span v-if="dataSourceMessage">{{ dataSourceMessage }}</span>
                                         </div>
                                     </div>
                                 </Transition>
+                                <p v-if="dataSourceMessage" class="external-data-source-message" role="status" aria-live="polite">{{ dataSourceMessage }}</p>
                             </div>
 
                             <div class="database-backup-panel database-auto-backup-panel">
@@ -9353,11 +9170,12 @@ async function openAdminSetupStep(step) {
                                     <div><strong>手动备份、整站导出、恢复前安全备份</strong><small>这些操作由用户主动发起；恢复前回滚备份始终保留，避免恢复失败后无法撤回。</small></div>
                                 </div>
                                 <div class="database-backup-source-grid">
-                                    <label v-for="connection in dataSourceConnections" :key="`backup-${connection.id}`" class="database-backup-source-option">
+                                    <label v-for="connection in dataSourceConnections.filter(item => !isHttpDataSource(item))" :key="`backup-${connection.id}`" class="database-backup-source-option">
                                         <input v-model="dataSourceBackupConfig.selectedConnectionIds" type="checkbox" :value="connection.id" />
                                         <span><strong>{{ connection.name }}</strong><small>{{ connection.type }} · {{ connection.database || connection.filename }}</small></span>
                                     </label>
                                 </div>
+                                <p v-if="dataSourceBackupMessage" class="external-data-source-message" role="status" aria-live="polite">{{ dataSourceBackupMessage }}</p>
                                 <p v-if="dataSourceBackupStatus.lastError" class="database-recovery-notice">最近自动备份存在失败：{{ dataSourceBackupStatus.lastError.error }}</p>
                             </div>
 
@@ -9559,7 +9377,6 @@ async function openAdminSetupStep(step) {
                                     内置投屏编码器没有准备好，电视投屏按钮暂时不可用。正式安装包会自动内置；开发环境请在
                                     <code>desktop</code> 目录执行 <code>npm run prepare:ffmpeg</code>，等待几秒后重新搜索。
                                     <template v-if="castState.ffmpegError">检测结果：{{ castState.ffmpegError }}。</template>
-                                    在此之前可以先用下方的网页投屏。
                                 </p>
 
                                 <ul v-if="castState.devices.length" class="cast-device-list">
@@ -9627,64 +9444,12 @@ async function openAdminSetupStep(step) {
                                     <p class="runtime-help">
                                         安装版保存后由桌面程序立即同步到 Windows 登录项；开发环境只保存配置，不会修改当前电脑的自启动项。
                                     </p>
-                                </section>
-
-                                <section class="runtime-card cast-runtime-card">
-                                    <div class="runtime-card-heading">
-                                        <div>
-                                            <strong>网页投屏（备选）</strong>
-                                            <p>给不支持 DLNA、但自带浏览器的电视用：电视扫码或输入网址即可打开大屏。</p>
-                                        </div>
-                                        <span class="runtime-badge" :class="runtimeStatus.running ? 'is-supported' : 'is-muted'">
-                                            {{ runtimeStatus.running ? `运行中 · ${runtimeStatus.clients || 0} 台` : '未运行' }}
-                                        </span>
-                                    </div>
-                                    <label class="runtime-toggle-row">
-                                        <input v-model="runtimeSettings.lan_display_enabled" type="checkbox" />
-                                        <span class="runtime-toggle-track"><span></span></span>
-                                        <span>{{ runtimeSettings.lan_display_enabled ? '已开启' : '已关闭' }}</span>
-                                    </label>
-                                    <div class="runtime-inline-fields">
-                                        <label>端口
-                                            <input v-model.number="runtimeSettings.lan_display_port" class="input" type="number" min="1024" max="65535" />
-                                        </label>
-                                        <label>投屏码
-                                            <input :value="runtimeSettings.lan_display_pin" class="input runtime-pin-input" readonly />
-                                        </label>
-                                        <button class="btn btn-small" type="button" @click="rotateCastPin" :disabled="runtimeSaving">重新生成</button>
-                                    </div>
-                                </section>
-                            </div>
-
-                            <details class="runtime-cast-panel runtime-cast-fallback">
-                                <summary>
-                                    <span>电视浏览器入口（二维码 / 网址）</span>
-                                    <button class="btn btn-primary" type="button" @click.prevent.stop="saveRuntimeSettings" :disabled="runtimeSaving">
+                                    <button class="btn btn-primary runtime-save-button" type="button" @click="saveRuntimeSettings" :disabled="runtimeSaving">
                                         {{ runtimeSaving ? '保存中...' : '保存运行配置' }}
                                     </button>
-                                </summary>
-                                <div class="runtime-cast-header">
-                                    <div>
-                                        <p v-if="runtimeStatus.running">用电视浏览器打开下方地址，或扫描二维码；首次连接输入 6 位投屏码。</p>
-                                        <p v-else>开启“网页投屏”并保存后，这里会显示局域网地址和二维码。</p>
-                                    </div>
-                                </div>
-                                <div v-if="runtimeStatus.running" class="runtime-cast-content">
-                                    <div v-if="runtimeQrDataUrl" class="runtime-qr-block">
-                                        <img :src="runtimeQrDataUrl" alt="局域网投屏二维码" />
-                                        <small>扫码直达大屏</small>
-                                    </div>
-                                    <div class="runtime-url-block">
-                                        <div v-for="url in (runtimeStatus.pairingUrls.length ? runtimeStatus.pairingUrls : runtimeStatus.urls)" :key="url" class="runtime-url-row">
-                                            <code>{{ url }}</code>
-                                            <button class="btn btn-small" type="button" @click="copyCastUrl(url)">复制</button>
-                                        </div>
-                                        <p class="runtime-help">电脑与电视必须在同一局域网；电视需要现代浏览器和 WebGL。完全没有浏览器、也不支持 DLNA 的电视仍需 HDMI、Miracast 接收器或电视盒子。</p>
-                                    </div>
-                                </div>
-                                <p v-if="runtimeStatus.error" class="runtime-error">{{ runtimeStatus.error }}</p>
-                                <p v-if="runtimeMessage" class="runtime-message">{{ runtimeMessage }}</p>
-                            </details>
+                                    <p v-if="runtimeMessage" class="runtime-message">{{ runtimeMessage }}</p>
+                                </section>
+                            </div>
                         </div>
 
                         <!-- ===== Unity 原生客户端画质 ===== -->
@@ -9718,64 +9483,6 @@ async function openAdminSetupStep(step) {
                                 </template>
                                 <p>保存后通过 WebSocket 实时切换画质，无需按 F5；所有档位都不会自动减面。场景光效与大屏组件请在“组件配置”页面调整。</p>
                             </div>
-                        </div>
-
-                        <!-- ===== 渲染性能 ===== -->
-                        <div v-show="settingsSubpage === 'performance'" class="settings-section legacy-web-render-section secondary-page-panel" :class="{ open: isLegacyWebRenderSettingsOpen }">
-                            <div class="legacy-web-render-heading">
-                                <h3 class="section-title">旧 Web 大屏渲染性能（过渡保留）</h3>
-                                <button
-                                    type="button"
-                                    class="btn btn-small legacy-web-render-toggle icon-only"
-                                    :aria-expanded="isLegacyWebRenderSettingsOpen"
-                                    :aria-label="isLegacyWebRenderSettingsOpen ? '收起旧 Web 渲染设置' : '显示旧 Web 渲染设置'"
-                                    :title="isLegacyWebRenderSettingsOpen ? '收起设置' : '显示设置'"
-                                    @click="isLegacyWebRenderSettingsOpen = !isLegacyWebRenderSettingsOpen"
-                                >
-                                    <svg viewBox="0 0 20 20" aria-hidden="true">
-                                        <path d="M5.75 7.75 10 12l4.25-4.25" />
-                                    </svg>
-                                </button>
-                            </div>
-
-                            <Transition name="legacy-render-collapse">
-                                <div v-if="isLegacyWebRenderSettingsOpen" class="legacy-web-render-body">
-                                    <div class="settings-grid">
-                                        <label>性能档位
-                                            <select v-model="settings.render_profile" class="input">
-                                                <option v-for="profile in renderProfileOptions" :key="profile.value" :value="profile.value">
-                                                    {{ profile.label }}
-                                                </option>
-                                            </select>
-                                        </label>
-                                        <label>当前生效参数
-                                            <div class="input render-setting-readonly">
-                                                {{ resolvedRenderSettings.targetFps }} FPS / {{ Math.round(resolvedRenderSettings.renderScale * 100) }}% 分辨率
-                                            </div>
-                                        </label>
-                                    </div>
-
-                                    <div class="mode-hint render-profile-hint">
-                                        <p><strong>{{ selectedRenderProfile?.label }}：</strong>{{ selectedRenderProfile?.description }}</p>
-                                        <p>浮标刷新 {{ resolvedRenderSettings.labelFps }} FPS；抗锯齿{{ resolvedRenderSettings.antialias ? '开启' : '关闭' }}。保存后刷新大屏页面生效。</p>
-                                    </div>
-
-                                    <div v-if="settings.render_profile === 'custom'" class="settings-grid render-custom-grid">
-                                        <label>目标帧率 (15-144 FPS)
-                                            <input v-model.number="settings.render_target_fps" type="number" min="15" max="144" step="1" class="input" />
-                                        </label>
-                                        <label>渲染分辨率倍率 (0.5-1.5)
-                                            <input v-model.number="settings.render_scale" type="number" min="0.5" max="1.5" step="0.05" class="input" />
-                                        </label>
-                                        <label>3D 浮标刷新率 (1-30 FPS)
-                                            <input v-model.number="settings.render_label_fps" type="number" min="1" max="30" step="1" class="input" />
-                                        </label>
-                                        <label>抗锯齿
-                                            <span class="checkbox-line"><input v-model="settings.render_antialias" type="checkbox" /> 启用 WebGL 抗锯齿</span>
-                                        </label>
-                                    </div>
-                                </div>
-                            </Transition>
                         </div>
 
                         <!-- ===== 数据通路选择 ===== -->
@@ -9880,150 +9587,10 @@ async function openAdminSetupStep(step) {
 
 .admin-container {
     width: 100%; height: 100%; min-width: 0; min-height: 0;
-    background: #f5f5f7; color: #1d1d1f;
+    background: radial-gradient(circle at 90% -10%, #ffffff 0, #f5f7fb 34%, #f1f3f7 100%); color: #1d1d1f;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "SF Pro Display", "SF Pro Text", "Helvetica Neue", Arial, sans-serif;
     display: flex; flex-direction: column;
     overflow: hidden;
-}
-.unity-window-chrome {
-    height: 46px;
-    flex: 0 0 46px;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 6px 6px 0 8px;
-    color: #344054;
-    background: linear-gradient(180deg, #edf2f7 0%, #dfe7ef 100%);
-    border-bottom: 1px solid #cbd5df;
-    box-shadow: 0 2px 8px rgba(31, 50, 68, 0.14);
-    cursor: grab;
-    touch-action: none;
-    user-select: none;
-    z-index: 500;
-}
-.unity-window-chrome:active { cursor: grabbing; }
-.unity-tab-strip {
-    min-width: 0;
-    flex: 1;
-    align-self: stretch;
-    display: flex;
-    align-items: flex-end;
-    gap: 4px;
-    overflow: hidden;
-}
-.unity-browser-tab {
-    height: 35px;
-    flex: 0 0 auto;
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    padding: 0 14px;
-    border: 1px solid transparent;
-    border-bottom: 0;
-    border-radius: 10px 10px 0 0;
-    color: #475467;
-    font-family: inherit;
-    font-size: 13px;
-    font-weight: 600;
-    white-space: nowrap;
-}
-.unity-browser-tab svg,
-.unity-window-action svg {
-    width: 17px;
-    height: 17px;
-    fill: none;
-    stroke: currentColor;
-    stroke-width: 1.7;
-    stroke-linecap: round;
-    stroke-linejoin: round;
-}
-.unity-screen-tab {
-    background: transparent;
-    cursor: grab;
-    touch-action: none;
-    transition: color 0.16s ease, background 0.16s ease;
-}
-.unity-screen-tab:active { cursor: grabbing; }
-.unity-screen-tab:hover {
-    color: #175cd3;
-    background: rgba(255, 255, 255, 0.58);
-}
-.unity-admin-tab {
-    min-width: 178px;
-    background: transparent;
-    cursor: grab;
-    touch-action: none;
-    position: relative;
-    transition: color 0.16s ease, background 0.16s ease, border-color 0.16s ease, box-shadow 0.16s ease;
-}
-.unity-admin-tab:hover { background: rgba(255, 255, 255, 0.58); }
-.unity-admin-tab:active { cursor: grabbing; }
-.unity-browser-tab.is-active {
-    color: #172b3f;
-    background: #f8fafc;
-    border-color: #cbd5df;
-    box-shadow: 0 -1px 4px rgba(27, 45, 63, 0.08);
-}
-.unity-browser-tab.is-active::after {
-    content: '';
-    position: absolute;
-    left: 12px;
-    right: 12px;
-    bottom: -1px;
-    height: 2px;
-    background: #f8fafc;
-}
-.unity-screen-tab { position: relative; }
-.admin-container.unity-dashboard-tab .unity-screen-tab.is-active {
-    margin-bottom: 4px;
-    border-bottom: 1px solid #cbd5df;
-    border-radius: 10px;
-    box-shadow: 0 1px 5px rgba(27, 45, 63, 0.14);
-}
-.admin-container.unity-dashboard-tab .unity-screen-tab.is-active::after {
-    display: none;
-}
-.unity-admin-tab > svg { color: #1570ef; }
-.unity-window-chrome.is-dock-ready .unity-admin-tab {
-    border-color: #6ce9a6;
-    box-shadow: 0 -1px 0 #6ce9a6, 0 0 0 3px rgba(18, 183, 106, 0.1);
-}
-.unity-tab-online {
-    width: 7px;
-    height: 7px;
-    margin-left: auto;
-    border-radius: 50%;
-    background: #12b76a;
-    box-shadow: 0 0 0 3px rgba(18, 183, 106, 0.12);
-}
-.unity-window-actions {
-    height: 35px;
-    display: flex;
-    align-items: center;
-    align-self: flex-start;
-    margin-top: -6px;
-    margin-left: 8px;
-}
-.unity-window-action {
-    width: 40px;
-    height: 32px;
-    display: grid;
-    place-items: center;
-    padding: 0;
-    border: 0;
-    border-radius: 7px;
-    color: #475467;
-    background: transparent;
-    cursor: pointer;
-    transition: color 0.16s ease, background 0.16s ease;
-}
-.unity-window-action:hover {
-    color: #172b3f;
-    background: rgba(75, 98, 120, 0.13);
-}
-.unity-window-action.is-close:hover {
-    color: #fff;
-    background: #e5484d;
 }
 .admin-container.unity-embedded.line-planner-active {
     height: 100vh;
@@ -10043,9 +9610,22 @@ async function openAdminSetupStep(step) {
 .admin-header {
     display: flex; justify-content: space-between; align-items: center; gap: 18px;
     flex: 0 0 auto;
-    height: 64px; padding: 0 32px; background: rgba(255, 255, 255, 0.85);
-    border-bottom: 1px solid rgba(0, 0, 0, 0.08); z-index: 100;
+    height: 64px; padding: 0 32px; background: rgba(255, 255, 255, 0.78);
+    border-bottom: 1px solid rgba(15, 23, 42, 0.08); box-shadow: 0 8px 24px rgba(15, 23, 42, .04);
+    backdrop-filter: blur(18px) saturate(1.1); z-index: 100;
 }
+.admin-lock-button {
+    display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+    flex: 0 0 auto; padding: 8px 12px; border: 1px solid #344054; border-radius: 8px;
+    background: linear-gradient(135deg, #344054 0%, #1d2939 100%); color: #fff; font: inherit; font-size: 12px; font-weight: 600;
+    white-space: nowrap; cursor: pointer;
+    box-shadow: 0 6px 14px rgba(29, 41, 57, .18);
+    transition: transform 180ms cubic-bezier(.22, 1, .36, 1), background 180ms ease, box-shadow 180ms ease;
+}
+.admin-lock-button:hover { background: linear-gradient(135deg, #475467 0%, #182230 100%); transform: translateY(-1px); box-shadow: 0 10px 22px rgba(29, 41, 57, .24); }
+.admin-lock-button:active { transform: translateY(0) scale(.985); }
+.admin-lock-button:focus-visible { outline: 2px solid #84caff; outline-offset: 2px; }
+.admin-lock-button svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; }
 .header-logo-section {
     display: flex;
     align-items: center;
@@ -10226,14 +9806,14 @@ async function openAdminSetupStep(step) {
     .admin-setup-step { padding-right: 7px; padding-left: 7px; }
     .admin-setup-flow-connector { flex-basis: 8px; max-width: 12px; }
 }
-.admin-body { display: flex; flex: 1; min-height: 0; overflow: hidden; position: relative; }
+.admin-body { --admin-nav-width: 250px; display: flex; flex: 1; min-height: 0; overflow: hidden; position: relative; }
 .admin-container.line-planner-active .admin-body {
     min-height: 0;
     overflow: hidden;
 }
 
 .admin-nav {
-    width: 250px; background: rgba(245, 245, 247, 0.6);
+    width: var(--admin-nav-width); flex: 0 0 var(--admin-nav-width); background: rgba(245, 245, 247, 0.6);
     border-right: 1px solid rgba(0, 0, 0, 0.08);
     padding: 18px 12px 24px; overflow-y: auto; overflow-x: hidden;
     display: flex; flex-direction: column; gap: 4px;
@@ -10245,16 +9825,29 @@ async function openAdminSetupStep(step) {
     width: 100%;
     padding: 10px 16px; cursor: pointer; font-size: 14px; color: #434345;
     font-weight: 500; border-radius: 10px;
-    transition: all 0.25s cubic-bezier(0.25, 0.8, 0.25, 1); position: relative;
+    transition: color var(--ui-motion-standard) var(--ui-ease), background var(--ui-motion-standard) var(--ui-ease), box-shadow var(--ui-motion-standard) var(--ui-ease), transform var(--ui-motion-standard) var(--ui-ease); position: relative;
     display: flex; align-items: center; gap: 10px;
     background: transparent;
     font-family: inherit;
     text-align: left;
 }
+.nav-item::before {
+    content: '';
+    position: absolute;
+    left: 5px;
+    top: 50%;
+    width: 3px;
+    height: 9px;
+    border-radius: 99px;
+    background: var(--ui-accent);
+    opacity: 0;
+    transform: translateY(-50%) scaleY(.35);
+    transition: opacity var(--ui-motion-fast) var(--ui-ease), transform var(--ui-motion-fast) var(--ui-ease);
+}
 .nav-collapse-btn {
     appearance: none;
     position: absolute;
-    left: calc(250px - 18px);
+    left: calc(var(--admin-nav-width) - 18px);
     top: 50%;
     z-index: 30;
     width: 36px;
@@ -10314,11 +9907,13 @@ async function openAdminSetupStep(step) {
     font-size: 13px;
 }
 .nav-collapse-btn:hover,
-.nav-item:hover { color: #1d1d1f; background: rgba(0, 0, 0, 0.04); }
+.nav-item:hover { color: #1d1d1f; background: rgba(255, 255, 255, .74); box-shadow: 0 5px 16px rgba(15, 23, 42, .07); }
+.nav-item:hover { transform: translateX(2px); }
 .nav-item.active {
-    color: #ffffff; background: #111827;
-    box-shadow: 0 4px 12px rgba(17, 24, 39, 0.18); font-weight: 600;
+    color: #ffffff; background: #172033;
+    box-shadow: 0 8px 20px rgba(17, 24, 39, .18), inset 3px 0 0 #60a5fa; font-weight: 600;
 }
+.nav-item.active::before { opacity: 1; transform: translateY(-50%) scaleY(1); background: #93c5fd; }
 .nav-item.active::after { display: none; }
 .nav-icon,
 .nav-collapse-icon {
@@ -10350,9 +9945,13 @@ async function openAdminSetupStep(step) {
     text-overflow: ellipsis;
 }
 .admin-container.nav-collapsed .admin-nav {
-    width: 68px;
+    width: var(--admin-nav-width);
+    flex-basis: var(--admin-nav-width);
     padding: 16px 8px 24px;
     align-items: center;
+}
+.admin-container.nav-collapsed .admin-body {
+    --admin-nav-width: 68px;
 }
 .admin-container.nav-collapsed .nav-item {
     justify-content: center;
@@ -10360,7 +9959,7 @@ async function openAdminSetupStep(step) {
     width: 44px;
 }
 .admin-container.nav-collapsed .nav-collapse-btn {
-    left: calc(68px - 18px);
+    left: calc(var(--admin-nav-width) - 18px);
 }
 .admin-container.nav-collapsed .nav-group,
 .admin-container.nav-collapsed .nav-submenu {
@@ -10430,6 +10029,9 @@ async function openAdminSetupStep(step) {
     grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 7px;
 }
+@media (min-width: 1450px) {
+    .model-step-nav-shell .secondary-page-nav { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+}
 .secondary-page-nav-item {
     display: grid;
     grid-template-columns: 30px minmax(0, 1fr) 16px;
@@ -10445,7 +10047,22 @@ async function openAdminSetupStep(step) {
     text-align: left;
     cursor: pointer;
     box-shadow: 0 1px 2px rgba(0, 0, 0, 0.018);
-    transition: color 160ms ease, background-color 160ms ease, border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
+    position: relative;
+    overflow: hidden;
+    transition: color var(--ui-motion-standard) var(--ui-ease), background-color var(--ui-motion-standard) var(--ui-ease), border-color var(--ui-motion-standard) var(--ui-ease), box-shadow var(--ui-motion-standard) var(--ui-ease), transform var(--ui-motion-standard) var(--ui-ease);
+}
+.secondary-page-nav-item::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 10px;
+    bottom: 10px;
+    width: 3px;
+    border-radius: 99px;
+    background: var(--ui-accent);
+    opacity: 0;
+    transform: scaleY(.3);
+    transition: opacity var(--ui-motion-fast) var(--ui-ease), transform var(--ui-motion-fast) var(--ui-ease);
 }
 .secondary-page-nav-item:hover {
     color: #1d1d1f;
@@ -10455,11 +10072,12 @@ async function openAdminSetupStep(step) {
     transform: translateY(-1px);
 }
 .secondary-page-nav-item.active {
-    color: #ffffff;
-    background: #1d1d1f;
-    border-color: #1d1d1f;
-    box-shadow: 0 8px 18px rgba(29, 29, 31, 0.17);
+    color: #174ea6;
+    background: #eef5ff;
+    border-color: #8bb8f8;
+    box-shadow: 0 8px 20px rgba(37, 99, 235, .12), inset 3px 0 0 #2563eb;
 }
+.secondary-page-nav-item.active::before { opacity: 1; transform: scaleY(1); }
 .secondary-page-number {
     display: grid;
     place-items: center;
@@ -10473,8 +10091,8 @@ async function openAdminSetupStep(step) {
     letter-spacing: 0.04em;
 }
 .secondary-page-nav-item.active .secondary-page-number {
-    color: #1d1d1f;
-    background: #ffffff;
+    color: #ffffff;
+    background: #2563eb;
 }
 .secondary-page-copy {
     min-width: 0;
@@ -10497,7 +10115,7 @@ async function openAdminSetupStep(step) {
     font-weight: 500;
 }
 .secondary-page-nav-item.active .secondary-page-copy small {
-    color: rgba(255, 255, 255, 0.68);
+    color: #53709b;
 }
 .secondary-page-nav-item svg {
     width: 16px;
@@ -11033,102 +10651,6 @@ async function openAdminSetupStep(step) {
     box-shadow: 0 0 0 3px rgba(43, 113, 151, 0.12);
 }
 .line-align-guide::before {
-.line-map-station-bubble {
-    position: absolute;
-    left: 50%;
-    bottom: calc(100% + 8px);
-    z-index: 9;
-    display: block;
-    min-width: 82px;
-    padding: 6px 8px;
-    color: #1f4f68;
-    background: rgba(248, 253, 255, .98);
-    border: 1px solid rgba(57, 123, 157, .42);
-    border-radius: 9px;
-    box-shadow: 0 8px 18px rgba(38, 74, 91, .24);
-    opacity: 0;
-    pointer-events: none;
-    transform: translate(-50%, 5px);
-    transition: opacity .16s ease, transform .16s ease;
-    text-align: center;
-    white-space: nowrap;
-}
-.line-map-station-bubble::after {
-    content: '';
-    position: absolute;
-    left: 50%;
-    bottom: -5px;
-    width: 8px;
-    height: 8px;
-    background: rgba(248, 253, 255, .98);
-    border-right: 1px solid rgba(57, 123, 157, .42);
-    border-bottom: 1px solid rgba(57, 123, 157, .42);
-    transform: translateX(-50%) rotate(45deg);
-}
-.line-map-device:hover .line-map-station-bubble,
-.line-map-device.is-station-editing .line-map-station-bubble,
-.line-map-station-bubble:focus-within {
-    opacity: 1;
-    pointer-events: auto;
-    transform: translate(-50%, 0);
-}
-.line-map-station-trigger {
-    display: grid;
-    gap: 2px;
-    min-width: 82px;
-    padding: 0;
-    color: inherit;
-    background: transparent;
-    border: 0;
-    cursor: pointer;
-    font: inherit;
-    font-size: 11px;
-    font-weight: 800;
-}
-.line-map-station-trigger small {
-    padding-left: 0;
-    color: #6c8794;
-    font-size: 9px;
-    font-weight: 600;
-}
-.line-map-station-label {
-    display: inline-block;
-    margin-right: 4px;
-    color: #5e7885;
-    font-size: 10px;
-    font-weight: 700;
-}
-.line-map-station-input {
-    width: 42px;
-    height: 22px;
-    padding: 0 4px;
-    color: #173f54;
-    background: #ffffff;
-    border: 1px solid #8ab6c9;
-    border-radius: 5px;
-    font: inherit;
-    font-size: 12px;
-    font-weight: 800;
-    text-align: center;
-}
-.line-map-station-action {
-    width: 22px;
-    height: 22px;
-    margin-left: 3px;
-    padding: 0;
-    color: #ffffff;
-    background: #26708f;
-    border: 0;
-    border-radius: 5px;
-    cursor: pointer;
-    font: inherit;
-    font-size: 12px;
-    font-weight: 800;
-}
-.line-map-station-action.cancel {
-    color: #6c7880;
-    background: #e8eef1;
-}
     top: 0;
 }
 .line-align-guide::after {
@@ -11380,6 +10902,102 @@ async function openAdminSetupStep(step) {
 .line-map-device small {
     color: rgba(255,255,255,.72);
     font-size: 11px;
+}
+.line-map-station-bubble {
+    position: absolute;
+    left: 50%;
+    bottom: calc(100% + 8px);
+    z-index: 9;
+    display: block;
+    min-width: 82px;
+    padding: 6px 8px;
+    color: #1f4f68;
+    background: rgba(248, 253, 255, .98);
+    border: 1px solid rgba(57, 123, 157, .42);
+    border-radius: 9px;
+    box-shadow: 0 8px 18px rgba(38, 74, 91, .24);
+    opacity: 0;
+    pointer-events: none;
+    transform: translate(-50%, 5px);
+    transition: opacity .16s ease, transform .16s ease;
+    text-align: center;
+    white-space: nowrap;
+}
+.line-map-station-bubble::after {
+    content: '';
+    position: absolute;
+    left: 50%;
+    bottom: -5px;
+    width: 8px;
+    height: 8px;
+    background: rgba(248, 253, 255, .98);
+    border-right: 1px solid rgba(57, 123, 157, .42);
+    border-bottom: 1px solid rgba(57, 123, 157, .42);
+    transform: translateX(-50%) rotate(45deg);
+}
+.line-map-device:hover .line-map-station-bubble,
+.line-map-device.is-station-editing .line-map-station-bubble,
+.line-map-station-bubble:focus-within {
+    opacity: 1;
+    pointer-events: auto;
+    transform: translate(-50%, 0);
+}
+.line-map-station-trigger {
+    display: grid;
+    gap: 2px;
+    min-width: 82px;
+    padding: 0;
+    color: inherit;
+    background: transparent;
+    border: 0;
+    cursor: pointer;
+    font: inherit;
+    font-size: 11px;
+    font-weight: 800;
+}
+.line-map-station-trigger small {
+    padding-left: 0;
+    color: #6c8794;
+    font-size: 9px;
+    font-weight: 600;
+}
+.line-map-station-label {
+    display: inline-block;
+    margin-right: 4px;
+    color: #5e7885;
+    font-size: 10px;
+    font-weight: 700;
+}
+.line-map-station-input {
+    width: 42px;
+    height: 22px;
+    padding: 0 4px;
+    color: #173f54;
+    background: #ffffff;
+    border: 1px solid #8ab6c9;
+    border-radius: 5px;
+    font: inherit;
+    font-size: 12px;
+    font-weight: 800;
+    text-align: center;
+}
+.line-map-station-action {
+    width: 22px;
+    height: 22px;
+    margin-left: 3px;
+    padding: 0;
+    color: #ffffff;
+    background: #26708f;
+    border: 0;
+    border-radius: 5px;
+    cursor: pointer;
+    font: inherit;
+    font-size: 12px;
+    font-weight: 800;
+}
+.line-map-station-action.cancel {
+    color: #6c7880;
+    background: #e8eef1;
 }
 .line-map-remove {
     position: absolute;
@@ -11672,15 +11290,31 @@ async function openAdminSetupStep(step) {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    transition: all 0.18s ease;
+    position: relative;
+    overflow: hidden;
+    transition: color var(--ui-motion-fast) var(--ui-ease), background var(--ui-motion-fast) var(--ui-ease), border-color var(--ui-motion-fast) var(--ui-ease), box-shadow var(--ui-motion-fast) var(--ui-ease), transform var(--ui-motion-fast) var(--ui-ease);
 }
 
-.line-pill:hover, .device-pill:hover { background: #ffffff; border-color: rgba(0, 113, 227, 0.28); }
-.line-pill.active, .device-pill.active {
-    background: rgba(0, 113, 227, 0.08);
-    border-color: rgba(0, 113, 227, 0.45);
-    box-shadow: inset 3px 0 0 #0071e3;
+.line-pill::before, .device-pill::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 3px;
+    background: var(--ui-accent);
+    opacity: 0;
+    transform: scaleY(.25);
+    transition: opacity var(--ui-motion-fast) var(--ui-ease), transform var(--ui-motion-fast) var(--ui-ease);
 }
+.line-pill:hover, .device-pill:hover { background: #ffffff; border-color: #8bb8f8; box-shadow: 0 6px 16px rgba(37, 99, 235, .1); transform: translateY(-1px); }
+.line-pill.active, .device-pill.active {
+    color: #174ea6;
+    background: #eef5ff;
+    border-color: #7aaef2;
+    box-shadow: inset 3px 0 0 #2563eb, 0 5px 14px rgba(37, 99, 235, .1);
+}
+.line-pill.active::before, .device-pill.active::before { opacity: 1; transform: scaleY(1); }
 
 .line-pill em, .device-pill span {
     color: #86868b;
@@ -11955,8 +11589,10 @@ async function openAdminSetupStep(step) {
 }
 
 .preview-mode-buttons .btn.active {
-    background: #1d1d1f;
+    background: linear-gradient(135deg, #4f8df7 0%, #2563eb 56%, #1d4ed8 100%);
+    border-color: #2563eb;
     color: #ffffff;
+    box-shadow: 0 8px 18px rgba(37, 99, 235, .24);
 }
 .preview-camera-buttons {
     display: flex;
@@ -11985,6 +11621,64 @@ async function openAdminSetupStep(step) {
 
 .composer-preview-stage canvas {
     display: block;
+}
+
+.composer-preview-error {
+    position: absolute;
+    z-index: 8;
+    left: 16px;
+    right: 16px;
+    bottom: 16px;
+    display: grid;
+    gap: 6px;
+    max-height: min(46%, 280px);
+    overflow: auto;
+    padding: 14px 16px;
+    color: #fff2ef;
+    background: rgba(83, 24, 20, .94);
+    border: 1px solid rgba(255, 173, 159, .66);
+    border-left: 4px solid #ff725f;
+    border-radius: 10px;
+    box-shadow: 0 10px 28px rgba(34, 12, 10, .28);
+    pointer-events: auto;
+    touch-action: pan-y;
+    overscroll-behavior: contain;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255, 190, 178, .82) rgba(255, 255, 255, .1);
+}
+.composer-preview-error::-webkit-scrollbar { width: 10px; }
+.composer-preview-error::-webkit-scrollbar-track { background: rgba(255, 255, 255, .08); border-radius: 999px; }
+.composer-preview-error::-webkit-scrollbar-thumb { background: rgba(255, 190, 178, .82); border: 2px solid rgba(83, 24, 20, .94); border-radius: 999px; }
+
+.composer-preview-error > strong {
+    color: #ffd3cc;
+    font-size: 14px;
+}
+
+.composer-preview-error-item {
+    display: grid;
+    gap: 2px;
+    padding-top: 6px;
+    border-top: 1px solid rgba(255, 255, 255, .14);
+}
+
+.composer-preview-error-item span {
+    color: #fff5f2;
+    font-size: 12px;
+    font-weight: 700;
+}
+
+.composer-preview-error-item small,
+.composer-preview-error-item code,
+.composer-preview-error > em {
+    color: #ffdcd5;
+    font-size: 11px;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+}
+
+.composer-preview-error-item code {
+    font-family: SFMono-Regular, Consolas, Monaco, monospace;
 }
 
 .composer-preview-footer {
@@ -12028,8 +11722,8 @@ async function openAdminSetupStep(step) {
 .input::placeholder { color: #86868b; }
 .input:hover { border-color: rgba(0, 0, 0, 0.3); }
 .input:focus {
-    border-color: #0071e3; background: #ffffff;
-    box-shadow: 0 0 0 4px rgba(0, 113, 227, 0.15);
+    border-color: #4f8fe8; background: #ffffff;
+    box-shadow: 0 0 0 4px rgba(37, 99, 235, .13), 0 4px 12px rgba(37, 99, 235, .06);
 }
 .input:disabled {
     background: #e8e8ed; color: #86868b; border-color: rgba(0, 0, 0, 0.05);
@@ -12074,17 +11768,20 @@ async function openAdminSetupStep(step) {
 
 /* 按钮 */
 .btn {
-    padding: 8px 16px; border: none; border-radius: 8px;
-    background: #e8e8ed; color: #0066cc; cursor: pointer; font-size: 14px;
-    font-weight: 500; transition: color 160ms ease, background-color 160ms ease, box-shadow 180ms ease, transform 140ms ease;
+    position: relative;
+    overflow: hidden;
+    padding: 8px 16px; border: 1px solid #d5d9e1; border-radius: 9px;
+    background: linear-gradient(180deg, #ffffff 0%, #f3f7fc 100%); color: #2457a6; cursor: pointer; font-size: 14px;
+    font-weight: 600; box-shadow: 0 1px 2px rgba(15, 23, 42, .05);
+    transition: color var(--ui-motion-fast) var(--ui-ease), background var(--ui-motion-fast) var(--ui-ease), border-color var(--ui-motion-fast) var(--ui-ease), box-shadow var(--ui-motion-fast) var(--ui-ease), transform var(--ui-motion-fast) var(--ui-ease);
 }
-.btn:not(:disabled):hover { background: #d8d8dd; color: #0055b3; transform: translateY(-1px); }
-.btn:not(:disabled):active { transform: translateY(0) scale(0.98); }
-.btn:disabled { background: #f5f5f7; color: #a1a1a6; cursor: not-allowed; }
-.btn-primary { background: #0071e3; color: #ffffff; }
-.btn-primary:not(:disabled):hover { background: #0077ed; color: #ffffff; }
-.btn-danger { background: rgba(255, 59, 48, 0.1); color: #ff3b30; }
-.btn-danger:not(:disabled):hover { background: rgba(255, 59, 48, 0.2); color: #ff3b30; }
+.btn:not(:disabled):hover { background: linear-gradient(135deg, #f9fcff 0%, #e8f1ff 100%); color: #174ea6; border-color: #8bb8f8; transform: translateY(-2px); box-shadow: 0 8px 18px rgba(37, 99, 235, .12); }
+.btn:not(:disabled):active { transform: translateY(0) scale(.985); box-shadow: inset 0 2px 4px rgba(15, 23, 42, .1); }
+.btn:disabled { background: #f5f6f8; color: #a1a1a6; border-color: #e4e7ec; cursor: not-allowed; box-shadow: none; }
+.btn-primary { background: linear-gradient(135deg, #4f8df7 0%, #2563eb 56%, #1d4ed8 100%); border-color: #2563eb; color: #ffffff; box-shadow: 0 5px 12px rgba(37, 99, 235, .2); }
+.btn-primary:not(:disabled):hover { background: linear-gradient(135deg, #63a4ff 0%, #1d4ed8 62%, #1e40af 100%); border-color: #1d4ed8; color: #ffffff; box-shadow: 0 9px 20px rgba(37, 99, 235, .26); }
+.btn-danger { background: linear-gradient(135deg, #fff8f7 0%, #ffeceb 100%); border-color: #f0b5af; color: #b42318; }
+.btn-danger:not(:disabled):hover { background: linear-gradient(135deg, #fff4f2 0%, #ffdeda 100%); border-color: #e8897f; color: #9f1d17; box-shadow: 0 7px 16px rgba(180, 35, 24, .13); }
 .btn-sm { padding: 5px 12px; font-size: 12px; border-radius: 6px; }
 
 button:enabled:active {
@@ -13245,7 +12942,7 @@ button:enabled:active {
 .app-dialog-verification .input { width: 100%; }
 .app-dialog-verification small { color: #86868b; font-size: 11px; }
 .app-dialog-verification small strong { color: #1d1d1f; user-select: all; }
-.dialog-danger .app-dialog-actions .btn-primary { border-color: #d92d20; background: #d92d20; }
+.dialog-danger .app-dialog-actions .btn-primary { border-color: #d92d20; background: linear-gradient(135deg, #ef6a5b 0%, #d92d20 100%); }
 .dialog-danger .app-dialog-actions .btn-primary:disabled { border-color: #d9d9dd; background: #d9d9dd; }
 .app-dialog-actions {
     grid-column: 2;
@@ -13281,6 +12978,8 @@ button:enabled:active {
 .model-selection-actions > div { display: flex; min-width: 0; margin-right: auto; flex-direction: column; gap: 2px; }
 .model-selection-actions span { color: #86868b; font-size: 10px; }
 .model-selection-actions strong { overflow: hidden; color: #1d1d1f; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.model-environment-note { color: #5e6f86; font-size: 11px; line-height: 1.45; }
+.model-environment-badge { flex: 0 0 auto; padding: 6px 10px; color: #155e75; background: #e0f2fe; border: 1px solid #bae6fd; border-radius: 999px; font-size: 11px; font-weight: 600; }
 .model-library-layout .upload-area {
     display: flex;
     align-items: center;
@@ -13725,6 +13424,15 @@ button:enabled:active {
     overflow: hidden;
     background: #ffffff;
 }
+.inspection-workspace { grid-template-columns: minmax(0, 1.45fr) minmax(360px, 1fr); }
+.inspection-preview-panel { background: #11232f; border-color: #2c4655; }
+.inspection-preview-panel .model-preview-header { background: #162d3b; border-color: #2c4655; }
+.inspection-preview-panel .model-preview-title strong { color: #e4f1f6; }
+.inspection-preview-panel .model-preview-title span { color: #95b7c8; }
+.inspection-preview-panel .model-preview-mode-badge { background: #214e60; color: #b6e3ed; border-color: #326376; }
+.inspection-preview-panel .model-preview-stage { height: min(76vh, 820px); min-height: 560px; background: #11232f; }
+.inspection-preview-panel .model-preview-footer { color: #91afbd; background: #132936; border-color: #2c4655; }
+.inspection-preview-panel .model-preview-reset { z-index: 5; top: 12px; right: 12px; background: #244959; color: #d7eef7; border-color: #426778; }
 .model-preview-header {
     min-height: 54px;
     padding: 12px 14px;
@@ -13829,6 +13537,27 @@ button:enabled:active {
     font-size: 13px;
     pointer-events: none;
 }
+.model-preview-error {
+    position: absolute;
+    left: 14px;
+    right: 14px;
+    bottom: 14px;
+    z-index: 4;
+    display: grid;
+    gap: 4px;
+    padding: 12px 14px;
+    color: #7f1d1d;
+    background: rgba(255, 247, 237, .96);
+    border: 1px solid #f3b4a8;
+    border-left: 4px solid #d92d20;
+    border-radius: 10px;
+    box-shadow: 0 8px 24px rgba(122, 35, 23, .16);
+    pointer-events: none;
+}
+.model-preview-error strong { color: #b42318; font-size: 13px; }
+.model-preview-error span { color: #7f1d1d; font-size: 12px; font-weight: 700; }
+.model-preview-error small { color: #9b2c1f; font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }
+.model-preview-error code { color: #8b3f34; font-family: SFMono-Regular, Consolas, Monaco, monospace; font-size: 10px; line-height: 1.35; overflow-wrap: anywhere; }
 .model-preview-footer {
     min-height: 42px;
     padding: 10px 14px;
@@ -13854,73 +13583,6 @@ button:enabled:active {
     padding-bottom: 12px; border-bottom: 1px solid rgba(0, 0, 0, 0.06);
 }
 .scene-basic-note { margin: -8px 0 18px; padding: 11px 13px; color: #6e6e73; background: #f5f5f7; border-radius: 9px; font-size: 12px; line-height: 1.55; }
-.legacy-web-render-section {
-    padding-top: 18px;
-    padding-bottom: 18px;
-    overflow: hidden;
-    transition: border-color 180ms ease, background-color 180ms ease, box-shadow 180ms ease;
-}
-.legacy-web-render-section.open {
-    border-color: rgba(0, 113, 227, 0.16);
-    background: #ffffff;
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.035);
-}
-.legacy-web-render-heading {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 20px;
-}
-.legacy-web-render-heading .section-title {
-    margin: 0;
-    padding: 0;
-    border-bottom: 0;
-}
-.legacy-web-render-toggle {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 34px;
-    height: 34px;
-    padding: 0;
-    border-radius: 9px;
-    color: #1d1d1f;
-    background: #ffffff;
-    border: 1px solid rgba(0, 0, 0, 0.1);
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
-}
-.legacy-web-render-toggle:hover {
-    color: #0066cc;
-    background: #f5f9ff;
-    border-color: rgba(0, 102, 204, 0.22);
-}
-.legacy-web-render-toggle svg {
-    width: 15px;
-    height: 15px;
-    fill: none;
-    stroke: currentColor;
-    stroke-width: 1.8;
-    stroke-linecap: round;
-    stroke-linejoin: round;
-    transition: transform 180ms ease;
-}
-.legacy-web-render-section.open .legacy-web-render-toggle svg {
-    transform: rotate(180deg);
-}
-.legacy-web-render-body {
-    margin-top: 18px;
-    padding-top: 20px;
-    border-top: 1px solid rgba(0, 0, 0, 0.06);
-}
-.legacy-render-collapse-enter-active,
-.legacy-render-collapse-leave-active {
-    transition: opacity 160ms ease, transform 160ms ease;
-}
-.legacy-render-collapse-enter-from,
-.legacy-render-collapse-leave-to {
-    opacity: 0;
-    transform: translateY(-6px);
-}
 .settings-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
 .settings-grid label { display: flex; flex-direction: column; gap: 8px; font-size: 13px; color: #515154; font-weight: 500; }
 .render-setting-readonly { display: flex; align-items: center; color: #1d1d1f; background: #f5f5f7; }
@@ -13935,12 +13597,18 @@ button:enabled:active {
 .license-status-pill { flex: 0 0 auto; padding: 6px 11px; color: #5b5b60; background: #f1f1f3; border: 1px solid #dedee3; border-radius: 999px; font-size: 11px; font-weight: 700; }
 .license-status-pill.license-valid { color: #1f6b3b; background: #edf8f1; border-color: #bfe4ca; }
 .license-status-pill.license-not_enforced { color: #6a5517; background: #fff8df; border-color: #ead58a; }
-.license-status-pill.license-invalid,.license-status-pill.license-expired,.license-status-pill.license-machine_mismatch,.license-status-pill.license-error { color: #9b2c2c; background: #fff1f1; border-color: #efc6c6; }
+.license-status-pill.license-invalid,.license-status-pill.license-expired,.license-status-pill.license-machine_mismatch,.license-status-pill.license-machine_unavailable,.license-status-pill.license-error { color: #9b2c2c; background: #fff1f1; border-color: #efc6c6; }
 .license-summary-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-top: 18px; }
 .license-summary-grid > div { min-width: 0; padding: 12px 13px; background: #f7f7f8; border: 1px solid #e6e6e9; border-radius: 10px; }
 .license-summary-grid span,.license-summary-grid strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .license-summary-grid span { color: #86868b; font-size: 10px; }
 .license-summary-grid strong { margin-top: 5px; color: #27272a; font-size: 12px; }
+.license-machine-card { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-top: 12px; padding: 12px 13px; background: #f1f7ff; border: 1px solid #cfe0f7; border-radius: 10px; }
+.license-machine-card > div { min-width: 0; }
+.license-machine-card span,.license-machine-card strong,.license-machine-card small { display: block; }
+.license-machine-card span { color: #5b6e86; font-size: 10px; }
+.license-machine-card strong { margin-top: 5px; overflow-wrap: anywhere; color: #173f65; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; }
+.license-machine-card small { margin-top: 5px; color: #6b7f96; font-size: 11px; line-height: 1.45; }
 .release-status-card { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-top: 12px; padding: 12px 13px; background: #f7f7f8; border: 1px solid #e6e6e9; border-radius: 10px; }
 .release-status-card > div { min-width: 0; }
 .release-status-card span,.release-status-card strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -13968,16 +13636,42 @@ button:enabled:active {
 .external-data-source-card { display: grid; grid-template-columns: 34px minmax(0,1fr) auto; align-items: center; gap: 10px; min-width: 0; padding: 12px; color: #1d1d1f; background: #fff; border: 1px solid #e2e2e5; border-radius: 10px; text-align: left; cursor: pointer; transition: border-color 160ms ease,box-shadow 160ms ease,transform 160ms ease; }
 .external-data-source-card:hover,.external-data-source-card.active { border-color: #8e8e93; box-shadow: 0 8px 24px #0000000d; transform: translateY(-1px); }
 .external-data-source-icon { display: grid; place-items: center; width: 34px; height: 34px; color: #fff; background: #1d1d1f; border-radius: 9px; font-size: 10px; font-weight: 700; }
+.external-data-source-icon.api { background: #176b8e; }
 .external-data-source-card > span:nth-child(2) { min-width: 0; }
 .external-data-source-card strong,.external-data-source-card small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .external-data-source-card strong { font-size: 12px; }.external-data-source-card small { margin-top: 3px; color: #6e6e73; font-size: 10px; }
-.external-data-source-card em { color: #24834f; font-size: 10px; font-style: normal; }
+.external-data-source-card em { display: flex; flex-direction: column; align-items: flex-end; gap: 3px; color: #24834f; font-size: 10px; font-style: normal; white-space: nowrap; }
+.external-data-source-card em.unhealthy { color: #b45309; }
+.external-data-source-card em.unchecked,.external-data-source-card em.disabled { color: #6e6e73; }
+.external-data-source-card em small { color: inherit; font-size: 9px; }
 .external-data-source-editor { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 12px 18px; margin-top: 16px; padding: 16px; background: #f7f7f8; border: 1px solid #e5e5e7; border-radius: 10px; }
 .external-data-source-editor label { display: flex; flex-direction: column; gap: 6px; color: #515154; font-size: 12px; font-weight: 500; }
 .external-data-source-editor .checkbox-line { flex-direction: row; align-items: center; align-self: end; }
 .external-data-source-wide { grid-column: 1/-1; }
 .external-data-source-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 12px; }
 .external-data-source-actions span { color: #515154; font-size: 12px; }
+.external-data-source-message { margin: 12px 0 0; color: #515154; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.external-data-source-help { margin: 0; padding: 10px 12px; color: #6e6e73; background: #fff; border: 1px solid #e5e5e7; border-radius: 8px; font-size: 11px; line-height: 1.55; }
+.external-data-source-health { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-top: 12px; padding: 11px 13px; color: #176b45; background: #f0fbf5; border: 1px solid #b7e5c9; border-radius: 8px; font-size: 11px; }
+.external-data-source-health > div { display: flex; flex: 1 1 300px; flex-direction: column; gap: 3px; min-width: 0; }
+.external-data-source-health > div span { color: #4c705d; overflow-wrap: anywhere; line-height: 1.55; }
+.external-data-source-health > small { color: #4c705d; white-space: nowrap; }
+.external-data-source-health.auth_failed,.external-data-source-health.config_error { color: #a43d32; background: #fff5f3; border-color: #f0c1ba; }
+.external-data-source-health.unknown { color: #515154; background: #f7f7f8; border-color: #e5e5e7; }
+.external-data-source-health.unknown > div span { color: #6e6e73; }
+.external-data-source-health.check_failed { color: #9a5b13; background: #fff9eb; border-color: #ecd69c; }
+.external-data-source-health.check_failed > div span { color: #806a43; }
+.external-data-source-health.auth_failed > div span,.external-data-source-health.config_error > div span { color: #8f5a53; }
+.external-data-source-health.http_error,.external-data-source-health.network_error,.external-data-source-health.timeout { color: #9a5b13; background: #fff9eb; border-color: #ecd69c; }
+.external-data-source-health.http_error > div span,.external-data-source-health.network_error > div span,.external-data-source-health.timeout > div span { color: #806a43; }
+@media (max-width: 820px) {
+    .external-data-source-heading { flex-wrap: wrap; }
+    .external-data-source-list { grid-template-columns: repeat(2,minmax(0,1fr)); }
+}
+@media (max-width: 600px) {
+    .external-data-source-list,.external-data-source-editor { grid-template-columns: minmax(0,1fr); }
+    .external-data-source-toggle { gap: 10px; }
+}
 .database-auto-backup-panel { padding: 18px; background: #f7f7f8; border: 1px solid #e2e2e5; border-radius: 10px; }
 .database-backup-trigger-grid { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 10px; margin-top: 16px; }
 .database-backup-trigger-card { position: relative; display: grid; grid-template-columns: 34px minmax(0,1fr) 38px; align-items: center; gap: 10px; min-width: 0; min-height: 82px; padding: 12px; color: #515154; background: #fff; border: 1px solid #dedee3; border-radius: 12px; cursor: pointer; transition: border-color 160ms ease,background-color 160ms ease,box-shadow 160ms ease,transform 160ms ease; }
@@ -14066,7 +13760,7 @@ button:enabled:active {
 .site-backup-history-item:hover:not(:disabled) { background: #f5f5f7; border-color: #e2e2e5; }
 .site-backup-history-item strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
 .site-backup-history-item small { flex: 0 0 auto; color: #6e6e73; font-size: 11px; }
-.runtime-settings-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.runtime-settings-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; }
 .runtime-card { min-width: 0; padding: 18px; background: #ffffff; border: 1px solid #e5e5e7; border-radius: 10px; }
 .runtime-card-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .runtime-card-heading strong { color: #1d1d1f; font-size: 14px; }
@@ -14082,22 +13776,9 @@ button:enabled:active {
 .runtime-toggle-row input:checked + .runtime-toggle-track span { transform: translateX(16px); }
 .runtime-toggle-row input:disabled + .runtime-toggle-track { opacity: .55; }
 .runtime-help { margin: 12px 0 0; color: #86868b; font-size: 12px; line-height: 1.55; }
-.runtime-inline-fields { display: grid; grid-template-columns: minmax(100px, .8fr) minmax(120px, 1fr) auto; align-items: end; gap: 10px; margin-top: 16px; }
-.runtime-inline-fields label { display: flex; flex-direction: column; gap: 6px; color: #515154; font-size: 12px; font-weight: 500; }
-.runtime-pin-input { letter-spacing: 3px; font-family: SFMono-Regular, Consolas, Monaco, monospace; font-weight: 700; }
-.runtime-cast-panel { margin-top: 16px; padding: 18px; background: #f5f9fb; border: 1px solid #dcebf1; border-radius: 10px; }
-.runtime-cast-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
-.runtime-cast-header strong { color: #1d1d1f; font-size: 14px; }
-.runtime-cast-header p { margin: 6px 0 0; color: #515154; font-size: 12px; line-height: 1.55; }
-.runtime-cast-content { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 18px; align-items: center; margin-top: 16px; }
-.runtime-qr-block { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 8px; background: #ffffff; border-radius: 8px; }
-.runtime-qr-block img { display: block; width: 180px; height: 180px; image-rendering: pixelated; }
-.runtime-qr-block small { color: #6e6e73; font-size: 11px; }
-.runtime-url-block { min-width: 0; }
-.runtime-url-row { display: flex; align-items: center; gap: 8px; min-width: 0; margin-bottom: 8px; }
-.runtime-url-row code { flex: 1 1 auto; min-width: 0; overflow: auto; padding: 8px 10px; color: #1d4c62; background: #ffffff; border: 1px solid #dcebf1; border-radius: 6px; font-size: 11px; white-space: nowrap; }
 .runtime-error { margin: 14px 0 0; padding: 9px 11px; color: #8a1c14; background: #fff0ee; border-left: 3px solid #c9372c; font-size: 12px; line-height: 1.5; }
 .runtime-message { margin: 14px 0 0; color: #176b3a; font-size: 12px; line-height: 1.5; }
+.runtime-save-button { margin-top: 16px; }
 
 /* 局域网电视发现与一键投屏 */
 .cast-device-panel { margin-bottom: 16px; padding: 18px; background: #ffffff; border: 1px solid #d7e5ec; border-radius: 10px; }
@@ -14121,11 +13802,6 @@ button:enabled:active {
 .cast-empty { display: grid; gap: 7px; margin-top: 14px; padding: 20px 16px; color: #6e6e73; text-align: center; background: #f8fafb; border: 1px dashed #d3dde3; border-radius: 8px; }
 .cast-empty strong { color: #344054; font-size: 13px; }
 .cast-empty span { margin: 0 auto; max-width: 620px; font-size: 12px; line-height: 1.6; }
-.runtime-cast-fallback > summary { display: flex; align-items: center; justify-content: space-between; gap: 16px; color: #1d1d1f; font-size: 14px; font-weight: 600; cursor: pointer; }
-.runtime-cast-fallback > summary::-webkit-details-marker { display: none; }
-.runtime-cast-fallback > summary > span::before { content: '▸ '; color: #6e6e73; }
-.runtime-cast-fallback[open] > summary > span::before { content: '▾ '; }
-.runtime-cast-fallback[open] > summary { margin-bottom: 12px; }
 .mode-hint { margin-top: 16px; padding: 16px 20px; background: rgba(0, 102, 204, 0.03); border: 1px solid rgba(0, 102, 204, 0.1); border-radius: 8px; }
 .mode-hint p { margin: 6px 0; font-size: 13px; color: #434345; line-height: 1.6; }
 .mode-hint code { background: rgba(0, 0, 0, 0.04); padding: 2px 6px; border-radius: 4px; font-size: 12px; color: #1d1d1f; }
@@ -14151,9 +13827,6 @@ button:enabled:active {
 
 @media (max-width: 1180px) {
     .secondary-page-nav { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-    .runtime-settings-grid { grid-template-columns: 1fr; }
-    .runtime-cast-content { grid-template-columns: 1fr; }
-    .runtime-qr-block { justify-self: start; }
     .model-library-layout {
         grid-template-columns: 1fr;
     }
@@ -14261,9 +13934,12 @@ button:enabled:active {
     .secondary-page-nav { display: flex; overflow-x: auto; padding-bottom: 2px; scrollbar-width: thin; }
     .secondary-page-nav-item { flex: 0 0 min(250px, 78vw); }
     .secondary-page-copy small { display: none; }
+    .admin-container.line-planner-active .admin-body {
+        --admin-nav-width: 68px;
+    }
     .admin-container.line-planner-active .admin-nav {
-        width: 68px;
-        flex: 0 0 68px;
+        width: var(--admin-nav-width);
+        flex: 0 0 var(--admin-nav-width);
         padding: 16px 8px 24px;
         align-items: center;
     }
@@ -14388,7 +14064,8 @@ button:enabled:active {
 .workshop-step-nav svg { flex: 0 0 17px; width: 17px; height: 17px; margin-left: 8px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.8; }
 .spatial-rule-banner { display: flex; align-items: center; gap: 14px; margin: 14px 0; padding: 13px 15px; color: #475467; background: #f0f7fa; border: 1px solid #cfe2ea; border-radius: 9px; font-size: 12px; line-height: 1.55; }
 .spatial-rule-banner strong { flex: 0 0 auto; color: #175f7b; }
-.data-table tr.row-selected td { background: #f2f8fb; }
+.data-table tbody tr:not(.row-selected):hover td { background: #f8fbff; }
+.data-table tr.row-selected td { background: #edf5ff; box-shadow: inset 0 1px 0 rgba(37, 99, 235, .12), inset 0 -1px 0 rgba(37, 99, 235, .12); }
 .data-table td .btn + .btn { margin-left: 6px; }
 .workshop-create-row { margin-bottom: 14px; }
 .workshop-step-context { display: flex; align-items: center; gap: 12px; margin: 6px 0 14px; padding: 10px 12px; color: #6e6e73; background: #f8f8fa; border: 1px solid #e5e5e7; border-radius: 12px; font-size: 12px; }
@@ -14497,20 +14174,6 @@ button:enabled:active {
 .workshop-loading-state { display: grid; min-height: 280px; margin-top: 14px; place-items: center; color: #667085; background: #f8fafb; border: 1px dashed #cfd8df; border-radius: 14px; font-size: 13px; }
 .line-transform-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 12px; }
 .line-transform-grid .input { width: 100%; min-width: 0; box-sizing: border-box; }
-.template-pack-library { margin: 18px 0 20px; padding: 16px; border: 1px solid #dfe4ea; border-radius: 14px; background: linear-gradient(135deg, #f8fbfd, #f4f7fa); }
-.template-pack-library-heading { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
-.template-pack-library-heading strong, .template-pack-library-heading small { display: block; }
-.template-pack-library-heading strong { color: #1d2939; font-size: 15px; }
-.template-pack-library-heading small { margin-top: 4px; color: #667085; font-size: 11px; }
-.template-pack-readonly { flex: 0 0 auto; padding: 5px 9px; color: #175cd3; background: #eff8ff; border: 1px solid #b2ddff; border-radius: 999px; font-size: 10px; font-weight: 600; }
-.template-pack-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-top: 14px; }
-.template-pack-card { min-width: 0; padding: 12px; border: 1px solid #e4e7ec; border-radius: 10px; background: #fff; }
-.template-pack-card-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.template-pack-card-top strong { min-width: 0; overflow: hidden; color: #344054; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
-.template-pack-card-top code { flex: 0 0 auto; color: #98a2b3; font-size: 9px; }
-.template-pack-card p { min-height: 34px; margin: 8px 0; color: #667085; font-size: 10px; line-height: 1.55; }
-.template-pack-stats { display: flex; flex-wrap: wrap; gap: 6px; color: #475467; font-size: 10px; }
-.template-pack-stats span { padding: 4px 6px; border-radius: 5px; background: #f2f4f7; }
 @media (max-width: 1180px) {
     .workshop-spatial-heading { flex-direction: column; }
     .workshop-spatial-grid { grid-template-columns: repeat(2, minmax(140px, 1fr)); }
@@ -14532,6 +14195,5 @@ button:enabled:active {
     .line-placement-pending-card { align-items: flex-start; }
     .line-placement-pending-action { display: none; }
     .workshop-line-placement-dock { top: 10px; right: 10px; width: min(220px, calc(100% - 20px)); }
-    .template-pack-grid { grid-template-columns: 1fr; }
 }
 </style>

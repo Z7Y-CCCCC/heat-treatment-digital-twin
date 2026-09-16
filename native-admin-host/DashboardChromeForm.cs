@@ -133,12 +133,18 @@ internal sealed class DashboardChromeForm : Form
 
         private Rectangle WindowActionRect(int distanceFromRight)
         {
-            var actionWidth = ScaleMetric(40);
+            // Keep the four action hit zones contiguous. The old calculation
+            // clamped only the left-most button, so a narrow parent window
+            // could make the refresh/minimize/maximize zones overlap.
+            var rightInset = Math.Min(ScaleMetric(6), Math.Max(0, Width - 4));
+            var availableWidth = Math.Max(4, Width - rightInset);
+            var actionWidth = Math.Max(1, Math.Min(ScaleMetric(40), availableWidth / 4));
+            var actionAreaLeft = Math.Max(0, Width - rightInset - actionWidth * 4);
             return new Rectangle(
-                Math.Max(0, Width - actionWidth * distanceFromRight - ScaleMetric(6)),
+                actionAreaLeft + actionWidth * (4 - distanceFromRight),
                 0,
                 actionWidth,
-                ScaleMetric(32)
+                Math.Max(1, Math.Min(ScaleMetric(32), Height))
             );
         }
 
@@ -220,35 +226,90 @@ internal sealed class DashboardChromeForm : Form
             var iconColor = _hoverZone == 4 ? Color.White : Color.FromArgb(71, 84, 103);
             using var pen = new Pen(iconColor, ScaleMetric(1.5f)) { StartCap = LineCap.Round, EndCap = LineCap.Round };
 
-            var refresh = RefreshRect;
-            var refreshArc = new RectangleF(
-                refresh.Left + ScaleMetric(12),
-                refresh.Top + ScaleMetric(7),
-                ScaleMetric(16),
-                ScaleMetric(16)
-            );
-            graphics.DrawArc(pen, refreshArc, -42, 300);
-            var refreshTip = new PointF(refreshArc.Right - ScaleMetric(1.2f), refreshArc.Top + ScaleMetric(3.2f));
-            graphics.DrawLine(pen, refreshTip, new PointF(refreshTip.X - ScaleMetric(5), refreshTip.Y));
-            graphics.DrawLine(pen, refreshTip, new PointF(refreshTip.X, refreshTip.Y + ScaleMetric(5)));
+            DrawRefreshIcon(graphics, RefreshRect, iconColor);
 
             var minimize = MinimizeRect;
-            graphics.DrawLine(pen, minimize.Left + ScaleMetric(13), minimize.Top + ScaleMetric(21), minimize.Left + ScaleMetric(27), minimize.Top + ScaleMetric(21));
+            var minimizeWidth = Math.Min(ScaleMetric(14), Math.Max(1f, minimize.Width * 0.45f));
+            var minimizeY = minimize.Top + minimize.Height * 0.66f;
+            graphics.DrawLine(
+                pen,
+                minimize.Left + (minimize.Width - minimizeWidth) / 2f,
+                minimizeY,
+                minimize.Left + (minimize.Width + minimizeWidth) / 2f,
+                minimizeY
+            );
 
             var max = MaximizeRect;
             if (_maximized)
             {
-                graphics.DrawRectangle(pen, max.Left + ScaleMetric(15), max.Top + ScaleMetric(8), ScaleMetric(11), ScaleMetric(11));
-                graphics.DrawRectangle(pen, max.Left + ScaleMetric(11), max.Top + ScaleMetric(12), ScaleMetric(11), ScaleMetric(11));
+                var maxSize = ActionIconSize(max, 14);
+                var maxLeft = max.Left + (max.Width - maxSize) / 2f;
+                var maxTop = max.Top + (max.Height - maxSize) / 2f;
+                var maxSmallSize = maxSize * 11f / 14f;
+                graphics.DrawRectangle(
+                    pen,
+                    maxLeft + maxSize * 4f / 14f,
+                    maxTop,
+                    maxSmallSize,
+                    maxSmallSize
+                );
+                graphics.DrawRectangle(
+                    pen,
+                    maxLeft,
+                    maxTop + maxSize * 4f / 14f,
+                    maxSmallSize,
+                    maxSmallSize
+                );
             }
             else
             {
-                graphics.DrawRectangle(pen, max.Left + ScaleMetric(13), max.Top + ScaleMetric(9), ScaleMetric(14), ScaleMetric(14));
+                var maxSize = ActionIconSize(max, 14);
+                graphics.DrawRectangle(
+                    pen,
+                    max.Left + (max.Width - maxSize) / 2f,
+                    max.Top + (max.Height - maxSize) / 2f,
+                    maxSize,
+                    maxSize
+                );
             }
 
             var close = CloseRect;
-            graphics.DrawLine(pen, close.Left + ScaleMetric(13), close.Top + ScaleMetric(10), close.Left + ScaleMetric(27), close.Top + ScaleMetric(24));
-            graphics.DrawLine(pen, close.Left + ScaleMetric(27), close.Top + ScaleMetric(10), close.Left + ScaleMetric(13), close.Top + ScaleMetric(24));
+            var closeSize = ActionIconSize(close, 14);
+            var closeLeft = close.Left + (close.Width - closeSize) / 2f;
+            var closeTop = close.Top + (close.Height - closeSize) / 2f;
+            var closeInset = closeSize * 0.08f;
+            graphics.DrawLine(pen, closeLeft + closeInset, closeTop + closeInset, closeLeft + closeSize - closeInset, closeTop + closeSize - closeInset);
+            graphics.DrawLine(pen, closeLeft + closeSize - closeInset, closeTop + closeInset, closeLeft + closeInset, closeTop + closeSize - closeInset);
+        }
+
+        private void DrawRefreshIcon(Graphics graphics, Rectangle button, Color color)
+        {
+            var iconSize = ActionIconSize(button, 17);
+            var iconLeft = button.Left + (button.Width - iconSize) / 2f;
+            var iconTop = button.Top + (button.Height - iconSize) / 2f;
+            var unit = iconSize / 24f;
+
+            // This is the same geometry as the Vue title-bar SVG. Keeping
+            // the 24-unit coordinates here makes both window chrome variants
+            // render the same refresh mark instead of two similar-looking
+            // hand-drawn arrows.
+            var center = new PointF(iconLeft + 16.31f * unit, iconTop + 11.76f * unit);
+            var radius = 7.5f * unit;
+            var arcBounds = new RectangleF(center.X - radius, center.Y - radius, radius * 2f, radius * 2f);
+            var strokeWidth = Math.Max(0.75f, ScaleMetric(1.7f) * iconSize / ScaleMetric(24f));
+            using var refreshPen = new Pen(color, strokeWidth) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+            graphics.DrawArc(refreshPen, arcBounds, -54.4f, -265.6f);
+
+            var arrowTip = new PointF(iconLeft + 19f * unit, iconTop + 8f * unit);
+            graphics.DrawLine(refreshPen, iconLeft + 19f * unit, iconTop + 4f * unit, arrowTip.X, arrowTip.Y);
+            graphics.DrawLine(refreshPen, arrowTip.X, arrowTip.Y, iconLeft + 15f * unit, arrowTip.Y);
+        }
+
+        private float ActionIconSize(Rectangle button, float preferredSize)
+        {
+            var availableWidth = Math.Max(1f, button.Width - ScaleMetric(8f));
+            var availableHeight = Math.Max(1f, button.Height - ScaleMetric(8f));
+            return Math.Max(1f, Math.Min(ScaleMetric(preferredSize), Math.Min(availableWidth, availableHeight)));
         }
 
         private void DrawActionBackground(Graphics graphics, Rectangle rect, bool hovered, bool close)

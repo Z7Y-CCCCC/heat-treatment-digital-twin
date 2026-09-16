@@ -1,0 +1,225 @@
+{
+  "valid": true,
+  "expected_root": "photo_washing_machine_v7_root",
+  "stats": {
+    "file_bytes": 2911640,
+    "nodes": 112,
+    "meshes": 91,
+    "materials": 19,
+    "triangles": 64242,
+    "unique_mesh_triangles": 64242,
+    "mesh_instance_triangles": 64242,
+    "primitive_counts_by_mode": {
+      "4": 91
+    },
+    "scenes": 1
+  },
+  "limits": {
+    "max_triangles": 200000,
+    "max_nodes": 800
+  },
+  "metadata_checked": true,
+  "binding_targets": [
+    "wash_v7_node_wash_door_lift",
+    "wash_v7_node_wash_pump_01_shaft_rotate",
+    "wash_v7_node_wash_pump_02_shaft_rotate",
+    "wash_v7_node_wash_pump_03_shaft_rotate",
+    "wash_v7_node_wash_pump_04_shaft_rotate"
+  ],
+  "errors": [],
+  "model_id": "photo_washing_machine_v7",
+  "family": "清洗机 / 补齐后部箱体 V7",
+  "editable_objects": 708,
+  "production_runtime_tested": false,
+  "original_assets_modified": false,
+  "functional_groups": [
+    "chassis",
+    "tank_shell",
+    "upright_chamber_shell",
+    "loading_mouth_frame",
+    "visible_chamber",
+    "wash_door_lift",
+    "black_sloping_hood",
+    "door_drive_housing",
+    "wide_control_cabinet",
+    "pump_housings",
+    "wash_pump_01_shaft_rotate",
+    "wash_pump_02_shaft_rotate",
+    "wash_pump_03_shaft_rotate",
+    "wash_pump_04_shaft_rotate",
+    "green_process_pipework",
+    "rear_auxiliary_support",
+    "front_rear_connector",
+    "rear_auxiliary_shell",
+    "rear_low_top_covers",
+    "rear_external_services"
+  ],
+  "dimensional_accuracy": "visual_estimate_not_measured",
+  "binding_axes": [
+    {
+      "node": "wash_v7_node_wash_door_lift",
+      "axis": "y",
+      "action": "translate"
+    },
+    {
+      "node": "wash_v7_node_wash_pump_01_shaft_rotate",
+      "axis": "x",
+      "action": "rotate_speed"
+    },
+    {
+      "node": "wash_v7_node_wash_pump_02_shaft_rotate",
+      "axis": "x",
+      "action": "rotate_speed"
+    },
+    {
+      "node": "wash_v7_node_wash_pump_03_shaft_rotate",
+      "axis": "x",
+      "action": "rotate_speed"
+    },
+    {
+      "node": "wash_v7_node_wash_pump_04_shaft_rotate",
+      "axis": "x",
+      "action": "rotate_speed"
+    }
+  ],
+  "geometry_audit": {
+    "valid": true,
+    "scope": "mesh-local geometry, counted per primitive; node instances/transforms and deformations excluded",
+    "stats": {
+      "file_bytes": 2911640,
+      "meshes": 91,
+      "primitives": 91,
+      "non_triangle_primitives": 0,
+      "triangles": 64242,
+      "non_finite_positions": 0,
+      "non_finite_normals": 0,
+      "non_unit_normals": 0,
+      "degenerate_triangles": 0,
+      "reversed_triangles": 0,
+      "invalid_index_triangles": 0,
+      "non_finite_triangles": 0
+    },
+    "thresholds": {
+      "normal_length_tolerance": 0.0001,
+      "degenerate_cross_length_lte": 1e-12,
+      "reversed_cross_dot_average_normal_lt": -1e-07
+    },
+    "counting_notes": [
+      "Vertex anomalies count VEC3 elements, including unused elements, per primitive reference.",
+      "Non-finite normals are excluded from the non-unit normal count.",
+      "Non-finite/invalid-index triangles are counted but excluded from degeneracy and winding tests.",
+      "Only meshes with anomalies are listed in mesh_issues and reversed_triangles_by_mesh."
+    ],
+    "reversed_triangles_by_mesh": [],
+    "mesh_issues": [],
+    "errors": []
+  },
+  "roundtrip": {
+    "status": "passed",
+    "nodes": 112,
+    "triangles": 64242,
+    "bounds_max_error_m": 0.0,
+    "bounds_blender_xyz": [
+      -2.070000171661377,
+      -1.8445000648498535,
+      0.007000003010034561,
+      1.0468617677688599,
+      3.7780001163482666,
+      4.788000106811523
+    ],
+    "binding_checks": [
+      {
+        "node": "wash_v7_node_wash_door_lift",
+        "action": "translate",
+        "axis_gltf": "y",
+        "axis_blender": "z",
+        "unrelated_meshes_fixed": true
+      },
+      {
+        "node": "wash_v7_node_wash_pump_01_shaft_rotate",
+        "action": "rotate_speed",
+        "axis_gltf": "x",
+        "axis_blender": "x",
+        "unrelated_meshes_fixed": true
+      },
+      {
+        "node": "wash_v7_node_wash_pump_02_shaft_rotate",
+        "action": "rotate_speed",
+        "axis_gltf": "x",
+        "axis_blender": "x",
+        "unrelated_meshes_fixed": true
+      },
+      {
+        "node": "wash_v7_node_wash_pump_03_shaft_rotate",
+        "action": "rotate_speed",
+        "axis_gltf": "x",
+        "axis_blender": "x",
+        "unrelated_meshes_fixed": true
+      },
+      {
+        "node": "wash_v7_node_wash_pump_04_shaft_rotate",
+        "action": "rotate_speed",
+        "axis_gltf": "x",
+        "axis_blender": "x",
+        "unrelated_meshes_fixed": true
+      }
+    ],
+    "door_ray_checks": [
+      {
+        "node": "wash_v7_node_wash_door_lift.001",
+        "closed_hit": "wash_v7_wash_door_lift_heat_black.001",
+        "opened_hit": "wash_v7_visible_chamber_heat_black.001",
+        "ray_clear": true,
+        "travel": 1.27,
+        "sweep_samples": [
+          {
+            "fraction": 0.0,
+            "surface_intersections": 0
+          },
+          {
+            "fraction": 0.1,
+            "surface_intersections": 0
+          },
+          {
+            "fraction": 0.2,
+            "surface_intersections": 0
+          },
+          {
+            "fraction": 0.3,
+            "surface_intersections": 0
+          },
+          {
+            "fraction": 0.4,
+            "surface_intersections": 0
+          },
+          {
+            "fraction": 0.5,
+            "surface_intersections": 0
+          },
+          {
+            "fraction": 0.6,
+            "surface_intersections": 0
+          },
+          {
+            "fraction": 0.7,
+            "surface_intersections": 0
+          },
+          {
+            "fraction": 0.8,
+            "surface_intersections": 0
+          },
+          {
+            "fraction": 0.9,
+            "surface_intersections": 0
+          },
+          {
+            "fraction": 1.0,
+            "surface_intersections": 0
+          }
+        ]
+      }
+    ],
+    "production_runtime_tested": false,
+    "render": "backend\\assets\\models\\photo_washing_machine_v7_runtime_check.png"
+  }
+}

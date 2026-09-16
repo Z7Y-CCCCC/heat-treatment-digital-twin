@@ -3,6 +3,7 @@ using System.IO;
 using System.Net;
 using System.Net.Http;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using GLTFast.Loading;
 using UnityEngine;
@@ -26,18 +27,24 @@ namespace HeatTreatment.DigitalTwin.Backend
         };
 
         private readonly DefaultDownloadProvider _defaultProvider = new DefaultDownloadProvider();
+        private readonly CancellationToken _cancellationToken;
+
+        public LoopbackDownloadProvider(CancellationToken cancellationToken = default)
+        {
+            _cancellationToken = cancellationToken;
+        }
 
         public Task<IDownload> Request(Uri url)
         {
             return ShouldBypassProxy(url)
-                ? RequestLoopback(url)
+                ? RequestLoopback(url, _cancellationToken)
                 : _defaultProvider.Request(url);
         }
 
         public Task<ITextureDownload> RequestTexture(Uri url, bool nonReadable)
         {
             return ShouldBypassProxy(url)
-                ? RequestLoopbackTexture(url, nonReadable)
+                ? RequestLoopbackTexture(url, nonReadable, _cancellationToken)
                 : _defaultProvider.RequestTexture(url, nonReadable);
         }
 
@@ -51,17 +58,17 @@ namespace HeatTreatment.DigitalTwin.Backend
                 || string.Equals(host, "::1", StringComparison.OrdinalIgnoreCase);
         }
 
-        private static async Task<IDownload> RequestLoopback(Uri url)
+        private static async Task<IDownload> RequestLoopback(Uri url, CancellationToken cancellationToken)
         {
             try
             {
                 if (url.IsFile)
                 {
-                    var data = await File.ReadAllBytesAsync(url.LocalPath);
+                    var data = await File.ReadAllBytesAsync(url.LocalPath, cancellationToken);
                     return new MemoryDownload(data, null, GuessBinary(data, null), null);
                 }
 
-                using var response = await LoopbackClient.GetAsync(url);
+                using var response = await LoopbackClient.GetAsync(url, cancellationToken);
                 var dataBytes = await response.Content.ReadAsByteArrayAsync();
                 var contentType = response.Content.Headers.ContentType?.MediaType;
                 if (!response.IsSuccessStatusCode)
@@ -75,23 +82,25 @@ namespace HeatTreatment.DigitalTwin.Backend
                 }
                 return new MemoryDownload(dataBytes, contentType, GuessBinary(dataBytes, contentType), null);
             }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
             catch (Exception exception)
             {
                 return new MemoryDownload(Array.Empty<byte>(), null, null, exception.Message);
             }
         }
 
-        private static async Task<ITextureDownload> RequestLoopbackTexture(Uri url, bool nonReadable)
+        private static async Task<ITextureDownload> RequestLoopbackTexture(Uri url, bool nonReadable, CancellationToken cancellationToken)
         {
-            var download = await RequestLoopback(url) as MemoryDownload;
+            var download = await RequestLoopback(url, cancellationToken) as MemoryDownload;
             if (download == null || !download.Success)
             {
                 return new MemoryTextureDownload(download, null);
             }
 
+            Texture2D texture = null;
             try
             {
-                var texture = new Texture2D(2, 2, TextureFormat.RGBA32, false, false)
+                texture = new Texture2D(2, 2, TextureFormat.RGBA32, false, false)
                 {
                     name = Path.GetFileName(url.LocalPath)
                 };
@@ -104,6 +113,7 @@ namespace HeatTreatment.DigitalTwin.Backend
             }
             catch (Exception exception)
             {
+                if (texture != null) UnityEngine.Object.Destroy(texture);
                 return new MemoryTextureDownload(download, null, exception.Message);
             }
         }

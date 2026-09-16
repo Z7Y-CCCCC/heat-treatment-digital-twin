@@ -1,10 +1,12 @@
 const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
+const http = require('http');
+const { stopOwnedSmokeProcess } = require('./smoke-sandbox.cjs');
 
 const desktopDir = path.resolve(__dirname, '..');
 const projectDir = path.resolve(desktopDir, '..');
-const hostExecutable = path.join(
+const hostExecutable = process.env.ADMIN_HOST_TEST_EXECUTABLE || path.join(
     projectDir,
     'unity-client',
     'Builds',
@@ -41,33 +43,42 @@ function waitForExit(child, timeoutMs) {
 async function main() {
     if (!fs.existsSync(hostExecutable)) throw new Error(`找不到后台宿主：${hostExecutable}`);
     fs.mkdirSync(outputDir, { recursive: true });
-
-    const parent = spawn(process.execPath, ['-e', 'setTimeout(function () {}, 6000)'], {
-        windowsHide: true,
-        stdio: 'ignore'
+    const server = http.createServer((request, response) => {
+        response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+        response.end('<!doctype html><title>Isolated parent lifecycle test</title>');
     });
-    await waitForSpawn(parent);
-
-    const host = spawn(hostExecutable, [
-        '--url', 'http://127.0.0.1:3001/admin?embedded=unity',
-        '--parent-pid', String(parent.pid),
-        '--parent-hwnd', '0',
-        '--user-data', path.join(outputDir, 'webview2'),
-        '--dashboard-mode'
-    ], {
-        cwd: path.dirname(hostExecutable),
-        windowsHide: true,
-        stdio: 'ignore'
+    await new Promise((resolve, reject) => {
+        server.once('error', reject);
+        server.listen(0, '127.0.0.1', resolve);
     });
-    await waitForSpawn(host);
+    const testUrl = `http://127.0.0.1:${server.address().port}/admin?embedded=unity`;
 
-    let parentExit;
-    let hostExit;
+    let parent;
+    let host;
     try {
+        parent = spawn(process.execPath, ['-e', 'setTimeout(function () {}, 6000)'], {
+            windowsHide: true,
+            stdio: 'ignore'
+        });
+        await waitForSpawn(parent);
+
+        host = spawn(hostExecutable, [
+            '--url', testUrl,
+            '--parent-pid', String(parent.pid),
+            '--parent-hwnd', '0',
+            '--user-data', path.join(outputDir, 'webview2'),
+            '--dashboard-mode'
+        ], {
+            cwd: path.dirname(hostExecutable),
+            windowsHide: true,
+            stdio: 'ignore'
+        });
+        await waitForSpawn(host);
+
         await new Promise(resolve => setTimeout(resolve, 1000));
         const runningWhileParentAlive = host.exitCode === null && host.signalCode === null;
-        parentExit = await waitForExit(parent, 15000);
-        hostExit = await waitForExit(host, 15000);
+        const parentExit = await waitForExit(parent, 15000);
+        const hostExit = await waitForExit(host, 15000);
         const checks = {
             hostStarted: runningWhileParentAlive,
             parentExitedCleanly: parentExit.code === 0,
@@ -78,8 +89,9 @@ async function main() {
         console.log(JSON.stringify(result, null, 2));
         if (failed.length) throw new Error(`AdminHost 父进程联动检查失败：${failed.join(', ')}`);
     } finally {
-        try { if (parent.exitCode === null) parent.kill(); } catch (error) { /* ignore */ }
-        try { if (host.exitCode === null) host.kill(); } catch (error) { /* ignore */ }
+        await Promise.all([stopOwnedSmokeProcess(host), stopOwnedSmokeProcess(parent)]);
+        server.closeAllConnections?.();
+        await new Promise(resolve => server.close(resolve));
     }
 }
 

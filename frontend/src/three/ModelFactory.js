@@ -6,6 +6,7 @@ import { FurnaceModel } from './FurnaceModel.js';
 import { buildDeviceLabelMarkup, updateDeviceLabelElements, applyDeviceLabelStyle } from '../runtime/uiConfig.js';
 import { getBackendOrigin } from '../runtime/backendEndpoint.js';
 import { enhanceModelMaterial, resolveModelOptimization } from '../runtime/modelOptimization.js';
+import { restoreGltfNodeNames } from './gltfNodeIdentity.js';
 
 const loader = new GLTFLoader();
 const modelCache = new Map();
@@ -22,6 +23,7 @@ export function loadGltf(url) {
     if (!modelCache.has(url)) {
         const promise = new Promise((resolve, reject) => {
             loader.load(url, (gltf) => {
+                restoreGltfNodeNames(gltf);
                 const root = gltf.scene || gltf.scenes?.[0];
                 if (!root) {
                     reject(new Error('模型文件中没有可用场景'));
@@ -554,6 +556,17 @@ class ImportedDeviceModel extends THREE.Group {
     }
 }
 
+function attachModelLoadError(model, deviceConfig, modelInfo, error, reason = '') {
+    const url = modelInfo?.file_path ? resolveBackendAssetUrl(modelInfo.file_path) : ''
+    model.userData.modelLoadError = {
+        modelId: String(modelInfo?.id || deviceConfig?.model_type || ''),
+        modelName: String(modelInfo?.name || deviceConfig?.name || deviceConfig?.model_type || '未命名模型'),
+        url,
+        reason: String(reason || error?.message || error || '未知模型加载错误')
+    }
+    return model
+}
+
 export async function createDeviceModel(deviceConfig, models = [], options = {}) {
     const modelInfo = models.find((item) => item.id === deviceConfig.model_type);
     if (deviceConfig.model_type === 'transfer_cart' && !modelInfo?.file_path) {
@@ -561,13 +574,29 @@ export async function createDeviceModel(deviceConfig, models = [], options = {})
     }
 
     if (!modelInfo || modelInfo.id === 'builtin_furnace' || !modelInfo.file_path) {
-        return new FurnaceModel(deviceConfig.id, deviceConfig.name, { labelConfig: options.labelConfig, instanceConfig: parseJson(deviceConfig.instance_config, {}) });
+        if (modelInfo?.id === 'builtin_furnace' || deviceConfig.model_type === 'builtin_furnace') {
+            return new FurnaceModel(deviceConfig.id, deviceConfig.name, { labelConfig: options.labelConfig, instanceConfig: parseJson(deviceConfig.instance_config, {}) });
+        }
+        return attachModelLoadError(
+            new FurnaceModel(deviceConfig.id, deviceConfig.name, { labelConfig: options.labelConfig, instanceConfig: parseJson(deviceConfig.instance_config, {}) }),
+            deviceConfig,
+            modelInfo,
+            null,
+            !modelInfo
+                ? `未找到模型资产：${deviceConfig.model_type || '未设置模型类型'}`
+                : `模型资产未配置文件：${modelInfo.id}`
+        );
     }
 
     try {
         return await new ImportedDeviceModel(deviceConfig, modelInfo, options).load();
     } catch (error) {
         console.warn(`[ModelFactory] 模型 ${modelInfo.id} 加载失败，回退到内置炉子模型:`, error);
-        return new FurnaceModel(deviceConfig.id, deviceConfig.name, { labelConfig: options.labelConfig, instanceConfig: parseJson(deviceConfig.instance_config, {}) });
+        return attachModelLoadError(
+            new FurnaceModel(deviceConfig.id, deviceConfig.name, { labelConfig: options.labelConfig, instanceConfig: parseJson(deviceConfig.instance_config, {}) }),
+            deviceConfig,
+            modelInfo,
+            error
+        );
     }
 }

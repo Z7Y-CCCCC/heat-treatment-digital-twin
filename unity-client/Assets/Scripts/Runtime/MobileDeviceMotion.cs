@@ -35,10 +35,13 @@ namespace HeatTreatment.DigitalTwin.Runtime
         private bool _enabled;
         private bool _stationMode;
         private bool _hasTarget;
+        private bool _hasPositionSample;
+        private bool _snapNextPositionSample;
         private Vector3 _targetPosition;
         private Transform _motionIndicator;
         private Material _motionIndicatorMaterial;
         private float _motionIndicatorUntil;
+        private float _lastLoggedPositionValue = float.NaN;
 
         private sealed class StationAnchor
         {
@@ -95,6 +98,14 @@ namespace HeatTreatment.DigitalTwin.Runtime
             }
             _targetPosition = _start;
             _hasTarget = false;
+            // The first valid PLC position after startup is the last known
+            //现场位置. It must establish the initial pose, not animate from
+            // station 1 (or the configured start point) to that pose.
+            _hasPositionSample = preserveCurrentPosition;
+            _snapNextPositionSample = !preserveCurrentPosition;
+            _lastLoggedPositionValue = float.NaN;
+
+            Debug.Log($"[MobileDeviceMotion] {_device?.Id ?? string.Empty} configured: enabled={_enabled}, mode={_valueMode}, stations={_stations.Count}, simulation={_simulationEnabled}, axis={ResolveRailAxis()}");
 
             if (!_enabled) return;
             if (!preserveCurrentPosition)
@@ -134,6 +145,26 @@ namespace HeatTreatment.DigitalTwin.Runtime
                     : Mathf.Clamp01(value > 1f && value <= 100f ? value / 100f : value);
                 _targetPosition = Vector3.LerpUnclamped(_start, _end, progress);
             }
+            if (!Mathf.Approximately(_lastLoggedPositionValue, value))
+            {
+                _lastLoggedPositionValue = value;
+                Debug.Log($"[MobileDeviceMotion] {_device?.Id ?? string.Empty} PLC position={value.ToString(CultureInfo.InvariantCulture)} target={_targetPosition}");
+            }
+
+            if (_snapNextPositionSample || !_hasPositionSample)
+            {
+                _hasPositionSample = true;
+                _snapNextPositionSample = false;
+                transform.localPosition = _targetPosition;
+                _motionSpeed = 0f;
+                _hasTarget = false;
+                _motionIndicatorUntil = 0f;
+                if (_motionIndicator != null) _motionIndicator.gameObject.SetActive(false);
+                Debug.Log($"[MobileDeviceMotion] {_device?.Id ?? string.Empty} initial position snapped to {_targetPosition}");
+                return;
+            }
+
+            _hasPositionSample = true;
             _hasTarget = true;
             ShowMotionIndicator();
             if (_stationMode && _simulationEnabled)
@@ -222,9 +253,29 @@ namespace HeatTreatment.DigitalTwin.Runtime
 
         private bool IsMobileCarrier()
         {
-            var role = _device?.InstanceConfigObject?.Value<string>("role") ?? string.Empty;
+            var config = _device?.InstanceConfigObject;
+            var role = config?.Value<string>("role") ?? string.Empty;
             return string.Equals(_device?.ModelType, "transfer_cart", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(role, "transfer_cart", StringComparison.OrdinalIgnoreCase);
+                || string.Equals(_device?.ModelType, "photo_transfer_cart_v6", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(role, "transfer_cart", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(role, "auxiliary", StringComparison.OrdinalIgnoreCase)
+                || config?.Value<string>("railId") != null
+                || config?.Value<string>("rail_id") != null
+                || config?.Value<string>("railLineId") != null
+                || config?.Value<string>("rail_line_id") != null;
+        }
+
+        private string ResolveRailAxis()
+        {
+            return Mathf.Abs(_end.x - _start.x) >= Mathf.Abs(_end.z - _start.z) ? "x" : "z";
+        }
+
+        private Vector3 NormalizeStationPosition(Vector3 source)
+        {
+            if (!IsMobileCarrier()) return source;
+            return ResolveRailAxis() == "z"
+                ? new Vector3(_start.x, _start.y, source.z)
+                : new Vector3(source.x, _start.y, _start.z);
         }
 
         private void ShowMotionIndicator()
@@ -254,7 +305,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 result.Add(new StationAnchor
                 {
                     Value = value,
-                    Position = ReadVector(position, _start),
+                    Position = NormalizeStationPosition(ReadVector(position, _start)),
                     DistanceMeters = ReadNumber(station["distanceMeters"] ?? station["distance_meters"], 0f)
                 });
             }

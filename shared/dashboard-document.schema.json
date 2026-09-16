@@ -79,7 +79,7 @@
       "required": ["id", "type", "title", "visible", "locked", "zIndex", "runtimeTarget", "frame", "content", "style", "data", "conditions", "animation", "events"],
       "properties": {
         "id": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$", "maxLength": 128 },
-        "type": { "enum": ["text", "value", "status", "trend", "alarm_list", "device_list", "image", "container", "metrics", "marquee", "navigation", "device_label", "diagnostics", "line_overview_cards"] },
+        "type": { "enum": ["text", "value", "status", "trend", "alarm_list", "device_list", "image", "container", "metrics", "marquee", "navigation", "return_button", "device_label", "diagnostics", "line_overview_cards"] },
         "title": { "type": "string", "maxLength": 255 },
         "visible": { "type": "boolean" },
         "locked": { "type": "boolean" },

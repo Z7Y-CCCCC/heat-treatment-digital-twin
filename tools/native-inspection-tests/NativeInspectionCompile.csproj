@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>netstandard2.1</TargetFramework>
+    <LangVersion>9.0</LangVersion>
+    <Nullable>disable</Nullable>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <DefineConstants>UNITY_STANDALONE_WIN;UNITY_2022_3_OR_NEWER</DefineConstants>
+    <UnityEditorPath Condition="'$(UnityEditorPath)' == ''">C:/Program Files/Unity 2022.3.34f1c1/Editor</UnityEditorPath>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(InspectionIncludeEditor)' == 'true'">
+    <DefineConstants>$(DefineConstants);UNITY_EDITOR</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../unity-client/Assets/Scripts/**/*.cs" />
+    <Reference Include="$(UnityEditorPath)/Data/Managed/UnityEngine/*.dll" />
+    <Reference Include="../../unity-client/Library/ScriptAssemblies/*.dll" Exclude="../../unity-client/Library/ScriptAssemblies/Assembly-CSharp*.dll" />
+    <Reference Include="../../unity-client/Library/PackageCache/com.unity.nuget.newtonsoft-json@3.2.1/Runtime/Newtonsoft.Json.dll" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(InspectionIncludeEditor)' == 'true'">
+    <Compile Include="../../unity-client/Assets/Editor/**/*.cs" />
+  </ItemGroup>
+</Project>

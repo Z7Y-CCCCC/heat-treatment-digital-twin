@@ -4,6 +4,7 @@ const fs = require('fs');
 const http = require('http');
 const multer = require('multer');
 const crypto = require('crypto');
+const { validateUploadedModelFile, modelScale } = require('./utils/modelUploadValidation');
 const {
     createCorsMiddleware,
     createOperationRateLimiter,
@@ -30,6 +31,7 @@ const {
 } = require('./db/database');
 const { getBuiltinModels, mergeBuiltinModels } = require('./services/builtinModels');
 const { stringifyModelMetadata } = require('./services/modelAssetMetadata');
+const { getInspectionPresets } = require('./services/inspectionPresets');
 const { publicProtocolDefinitions } = require('./services/plcProtocolConfig');
 const {
     createSiteBackup,
@@ -47,9 +49,10 @@ const {
     stopDataSourceMaintenance
 } = require('./services/dataSources');
 const { loadReleaseManifest } = require('./services/releaseManifest');
-const { getLicenseStatus } = require('./services/license');
+const { getLicenseStatus, isLicenseEnforced } = require('./services/license');
 
 const app = express();
+let databaseOperationBusy = false;
 app.disable('x-powered-by');
 const PORT = Number(process.env.PORT || 3001);
 const HOST = process.env.HOST || '127.0.0.1';
@@ -64,6 +67,7 @@ const assetModelsDir = path.join(assetsDir, 'models');
 const frontendDistDir = process.env.FRONTEND_DIST
     ? path.resolve(process.env.FRONTEND_DIST)
     : null;
+const deprecatedDashboardPage = path.join(__dirname, 'deprecated-dashboard.html');
 
 for (const dir of [uploadsDir, audioUploadsDir, assetModelsDir]) {
     if (!fs.existsSync(dir)) {
@@ -73,12 +77,38 @@ for (const dir of [uploadsDir, audioUploadsDir, assetModelsDir]) {
 
 app.use(securityHeaders);
 if (process.env.ENABLE_CORS !== 'false') app.use(createCorsMiddleware());
+// Authentication has its own local-only, CSRF and password-attempt checks.
+// Mount it before write protection so a locked engineer can still sign in.
+app.use('/api/admin-auth', express.json({ limit: '2kb', strict: true }), require('./routes/adminAuth')(), (error, req, res, next) => {
+    // Parser errors can contain fragments of the password body. Do not echo or
+    // log them through the generic HTTP error handler.
+    res.status(error.type === 'entity.too.large' ? 413 : 400).json({
+        success: false, code: 'ADMIN_INVALID_REQUEST', error: '后台安全请求格式不正确或内容过长，请重试'
+    });
+});
 app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || '5mb', strict: true }));
 app.use(protectManagementWrites);
+app.use((req, res, next) => {
+    // During a DB switch/restore no concurrent configuration, upload or external
+    // source backup may start. Reads, the display, authentication and shutdown
+    // remain available; an interrupted HTTP client does not release this guard.
+    if (databaseOperationBusy && req.path.toLowerCase().startsWith('/api/')
+        && !['GET', 'HEAD', 'OPTIONS'].includes(req.method)
+        && req.path.toLowerCase() !== '/api/internal/shutdown') {
+        res.status(409).json({ success: false, code: 'DATABASE_OPERATION_BUSY', error: '数据库或备份维护中，请完成后再保存或操作' });
+        return;
+    }
+    next();
+});
+async function ensureModelFilesRecovered(req, res, next) {
+    try { await recoverPendingModelDeletions(await getDb()); next(); }
+    catch (error) { next(error); }
+}
+app.use('/uploads/models', ensureModelFilesRecovered);
 app.use('/uploads', express.static(uploadsRootDir, { dotfiles: 'deny', index: false }));
 app.use('/assets', express.static(assetsDir, { dotfiles: 'deny', index: false }));
 
-app.use('/api/config', require('./routes/config'));
+app.use('/api/config', ensureModelFilesRecovered, require('./routes/config'));
 app.use('/api/workshops', require('./routes/workshops'));
 app.use('/api/lines', require('./routes/lines'));
 app.use('/api/devices', require('./routes/devices'));
@@ -136,6 +166,31 @@ const upload = multer({
 
 fs.mkdirSync(SITE_IMPORT_DIR, { recursive: true });
 const backupOperationLimiter = createOperationRateLimiter({ name: 'backup-operation', limit: 20 });
+function runDatabaseOperation(action) {
+    return async (req, res, next) => {
+        if (databaseOperationBusy) {
+            if (req.file?.path) {
+                try { fs.rmSync(req.file.path, { force: true }); } catch { /* preserve the in-progress operation */ }
+            }
+            res.status(409).json({ success: false, code: 'DATABASE_OPERATION_BUSY', error: '另一个数据库或备份操作正在进行，请完成后重试' });
+            return;
+        }
+        databaseOperationBusy = true;
+        try { await action(req, res, next); }
+        catch (error) { next(error); }
+        finally { databaseOperationBusy = false; }
+    };
+}
+async function stopMaintenanceForDatabaseChange(reason, { backup = true } = {}) {
+    await stopSiteBackupMaintenance();
+    await stopDataSourceMaintenance({ backup: false });
+    await stopDatabaseMaintenance({ backup, reason });
+}
+async function resumeMaintenanceAfterDatabaseChange() {
+    await startDatabaseMaintenance();
+    await startDataSourceMaintenance();
+    await startSiteBackupMaintenance(uploadsRootDir);
+}
 const siteBackupUpload = multer({
     dest: SITE_IMPORT_DIR,
     fileFilter: (req, file, cb) => {
@@ -179,32 +234,24 @@ function resolveModelFileDeletePlan(modelFilePath) {
     throw new Error('模型文件路径不合法');
 }
 
-function validateUploadedModelFile(file) {
-    const extension = path.extname(file?.filename || '').toLowerCase();
-    if (extension === '.glb') {
-        const handle = fs.openSync(file.path, 'r');
-        try {
-            const header = Buffer.alloc(12);
-            if (fs.readSync(handle, header, 0, header.length, 0) !== header.length
-                || header.toString('ascii', 0, 4) !== 'glTF'
-                || header.readUInt32LE(4) !== 2
-                || header.readUInt32LE(8) !== file.size) {
-                throw new Error('GLB 文件头或长度校验失败');
+let modelRecoveryPromise;
+function recoverPendingModelDeletions(db) {
+    modelRecoveryPromise ||= (async () => {
+        for (const entry of fs.readdirSync(uploadsDir, { withFileTypes: true })) {
+            if (!entry.isFile()) continue;
+            const match = /^(.*)\.pending-delete-[a-f0-9]{16}$/.exec(entry.name);
+            if (!match) continue;
+            const original = path.join(uploadsDir, match[1]);
+            const temporary = path.join(uploadsDir, entry.name);
+            const reference = await db.get('SELECT COUNT(*) AS cnt FROM models WHERE file_path = ?', [`/uploads/models/${match[1]}`]);
+            if (Number(reference?.cnt || 0) > 0) {
+                if (!fs.existsSync(original)) fs.renameSync(temporary, original);
+            } else {
+                fs.unlinkSync(temporary);
             }
-        } finally {
-            fs.closeSync(handle);
         }
-        return;
-    }
-    if (extension === '.gltf') {
-        let document;
-        try { document = JSON.parse(fs.readFileSync(file.path, 'utf8')); } catch (error) { throw new Error('GLTF 文件不是有效 JSON'); }
-        if (!document || typeof document !== 'object' || !String(document.asset?.version || '').startsWith('2')) {
-            throw new Error('仅支持 glTF 2.x 模型');
-        }
-        return;
-    }
-    throw new Error('模型文件扩展名不合法');
+    })().catch(error => { modelRecoveryPromise = null; throw error; });
+    return modelRecoveryPromise;
 }
 
 app.post('/api/models/upload', upload.single('modelFile'), async (req, res) => {
@@ -217,8 +264,10 @@ app.post('/api/models/upload', upload.single('modelFile'), async (req, res) => {
     const modelName = name || req.file.originalname;
 
     try {
+        if (databaseOperationBusy) throw Object.assign(new Error('数据库或备份维护中，请完成后重新上传模型'), { statusCode: 409 });
         validateUploadedModelFile(req.file);
         const db = await getDb();
+        if (databaseOperationBusy) throw Object.assign(new Error('数据库或备份维护中，请完成后重新上传模型'), { statusCode: 409 });
         const normalizedMetadata = stringifyModelMetadata(metadata || '{}', { name: modelName });
         await db.upsert('models', {
             id: id || req.file.filename.replace(/\.[^.]+$/, ''),
@@ -227,24 +276,29 @@ app.post('/api/models/upload', upload.single('modelFile'), async (req, res) => {
             asset_type: asset_type || 'model',
             tags: tags || '[]',
             thumbnail: null,
-            default_scale: Number.isFinite(Number(default_scale)) ? Number(default_scale) : 1.0,
+            default_scale: modelScale(default_scale),
             metadata: normalizedMetadata
         }, 'id');
         res.json({ success: true, filePath });
     } catch (e) {
         if (req.file?.path) fs.rmSync(req.file.path, { force: true });
-        res.status(400).json({ error: e.message });
+        res.status(e.statusCode || 400).json({ error: e.message });
     }
 });
 
 app.get('/api/models', async (req, res) => {
     try {
         const db = await getDb();
+        await recoverPendingModelDeletions(db);
         const models = await db.all('SELECT * FROM models');
         res.json(mergeBuiltinModels(models));
     } catch (e) {
         res.status(500).json({ error: e.message });
     }
+});
+
+app.get('/api/models/inspection-presets', (req, res) => {
+    res.json({ presets: getInspectionPresets() });
 });
 
 app.put('/api/models/:id', async (req, res) => {
@@ -274,9 +328,7 @@ app.put('/api/models/:id', async (req, res) => {
         const nextName = req.body.name ?? existing.name;
         const nextTags = req.body.tags ?? existing.tags ?? '[]';
         const nextMetadata = req.body.metadata ?? existing.metadata ?? '{}';
-        const nextScale = Number.isFinite(Number(req.body.default_scale))
-            ? Number(req.body.default_scale)
-            : Number(existing.default_scale || 1);
+        const nextScale = modelScale(req.body.default_scale, Number(existing.default_scale || 1));
         const normalizedMetadata = stringifyModelMetadata(nextMetadata, { name: nextName });
 
         await db.run(
@@ -285,6 +337,14 @@ app.put('/api/models/:id', async (req, res) => {
         );
 
         const updated = await db.get('SELECT * FROM models WHERE id = ?', [req.params.id]);
+        // Model metadata (including inspection/explosion authoring) is read by
+        // Unity when it builds the runtime scene. Notify only Unity clients so
+        // a saved model configuration is not stranded in an already-running
+        // player with the previous metadata snapshot.
+        global.wsServer?.broadcastToRole?.('model_metadata_changed', {
+            modelId: req.params.id,
+            timestamp: Date.now()
+        }, 'unity');
         res.json({ success: true, model: updated });
     } catch (e) {
         res.status(400).json({ error: e.message });
@@ -292,38 +352,47 @@ app.put('/api/models/:id', async (req, res) => {
 });
 
 app.delete('/api/models/:id', async (req, res) => {
+    let stagedFile;
     try {
         const db = await getDb();
-        const model = await db.get('SELECT * FROM models WHERE id = ?', [req.params.id]);
-        if (!model) {
-            return res.status(404).json({ error: '模型不存在' });
-        }
-
-        const usedByDevices = await db.get('SELECT COUNT(*) AS cnt FROM devices WHERE model_type = ?', [req.params.id]);
-        if (Number(usedByDevices?.cnt || 0) > 0) {
-            return res.status(409).json({ error: `该模型正在被 ${usedByDevices.cnt} 台设备使用，先修改这些设备的模型后再删除` });
-        }
-
-        let fileDeleted = false;
-        if (model.file_path) {
-            const deletePlan = resolveModelFileDeletePlan(model.file_path);
-            if (deletePlan?.deleteFile && fs.existsSync(deletePlan.fullPath)) {
-                const stat = fs.statSync(deletePlan.fullPath);
-                if (!stat.isFile()) {
-                    return res.status(400).json({ error: '模型文件路径不是文件，已拒绝删除' });
+        await recoverPendingModelDeletions(db);
+        await db.transaction(async tx => {
+            const model = await tx.get('SELECT * FROM models WHERE id = ?', [req.params.id]);
+            if (!model) throw Object.assign(new Error('模型不存在'), { statusCode: 404 });
+            const usedByDevices = await tx.get('SELECT COUNT(*) AS cnt FROM devices WHERE model_type = ? OR model_file = ?', [req.params.id, model.file_path]);
+            if (Number(usedByDevices?.cnt || 0) > 0) {
+                throw Object.assign(new Error(`该模型正在被 ${usedByDevices.cnt} 台设备使用，先修改这些设备的模型后再删除`), { statusCode: 409 });
+            }
+            if (model.file_path) {
+                const deletePlan = resolveModelFileDeletePlan(model.file_path);
+                const shared = await tx.get('SELECT COUNT(*) AS cnt FROM models WHERE file_path = ? AND id <> ?', [model.file_path, req.params.id]);
+                if (deletePlan?.deleteFile && !Number(shared?.cnt || 0) && fs.existsSync(deletePlan.fullPath)) {
+                    if (!fs.lstatSync(deletePlan.fullPath).isFile()) throw new Error('模型文件路径不是普通文件，已拒绝删除');
+                    const temporary = `${deletePlan.fullPath}.pending-delete-${crypto.randomBytes(8).toString('hex')}`;
+                    fs.renameSync(deletePlan.fullPath, temporary);
+                    stagedFile = { original: deletePlan.fullPath, temporary };
                 }
-                fs.unlinkSync(deletePlan.fullPath);
-                fileDeleted = true;
+            }
+            await tx.run('DELETE FROM models WHERE id = ?', [req.params.id]);
+            if (req.params.id === 'box_atmosphere_furnace') {
+                await tx.upsert('settings', { key: 'deleted_seed_model_box_atmosphere_furnace', value: '1' }, 'key');
+            }
+        });
+        let cleanupPending = false;
+        if (stagedFile) {
+            try { fs.unlinkSync(stagedFile.temporary); }
+            catch (error) {
+                cleanupPending = true;
+                console.warn('[Models] 已删除模型记录，暂存文件待清理:', stagedFile.temporary, error.message);
             }
         }
-
-        await db.run('DELETE FROM models WHERE id = ?', [req.params.id]);
-        if (req.params.id === 'box_atmosphere_furnace') {
-            await db.upsert('settings', { key: 'deleted_seed_model_box_atmosphere_furnace', value: '1' }, 'key');
-        }
-        res.json({ success: true, fileDeleted });
+        res.json({ success: true, fileDeleted: !!stagedFile && !cleanupPending, ...(cleanupPending ? { warning: '模型已删除，但暂存文件清理失败，请联系工程师清理' } : {}) });
     } catch (e) {
-        res.status(400).json({ error: e.message });
+        if (stagedFile) {
+            try { fs.renameSync(stagedFile.temporary, stagedFile.original); }
+            catch (restoreError) { console.error('[Models] 删除失败，原模型文件保留在:', stagedFile.temporary, restoreError.message); }
+        }
+        res.status(e.statusCode || 400).json({ error: e.message });
     }
 });
 
@@ -407,8 +476,12 @@ app.post('/api/engine/restart', async (req, res) => {
     if (!global.dataEngine) {
         return res.status(500).json({ error: '数据引擎未初始化' });
     }
-    await global.dataEngine.restart();
-    res.json({ success: true, message: '数据引擎正在重启...' });
+    try {
+        await global.dataEngine.restart();
+        res.json({ success: true, message: '数据引擎正在重启...' });
+    } catch (error) {
+        res.status(503).json({ success: false, error: `数据引擎重启失败: ${error.message}` });
+    }
 });
 
 app.get('/api/health', (req, res) => {
@@ -467,6 +540,15 @@ app.get('/api/health', (req, res) => {
     });
 });
 
+// The Three.js dashboard has been replaced by the Unity client. Keep the old
+// HTTP entry point explicit and visible as deprecated, instead of allowing the
+// browser to boot the legacy dashboard from a direct IP:port visit.
+app.get(['/', '/index.html'], (req, res, next) => {
+    if (!fs.existsSync(deprecatedDashboardPage)) return next();
+    res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.status(410).sendFile(deprecatedDashboardPage);
+});
+
 if (frontendDistDir && fs.existsSync(path.join(frontendDistDir, 'index.html'))) {
     app.use(express.static(frontendDistDir));
     app.get('*', (req, res, next) => {
@@ -490,20 +572,42 @@ app.post('/api/database/test', backupOperationLimiter, async (req, res) => {
     }
 });
 
-app.put('/api/database/config', backupOperationLimiter, async (req, res) => {
+app.put('/api/database/config', backupOperationLimiter, runDatabaseOperation(async (req, res) => {
+    const previousConfig = loadDatabaseConfig();
+    let saved = false;
+    let stopped = false;
     try {
-        await stopDatabaseMaintenance({ backup: true, reason: 'before-config-change' });
+        await testDatabaseConfig(req.body || {});
+        stopped = true;
+        await global.dataEngine?.stop();
+        await stopMaintenanceForDatabaseChange('before-config-change');
         const config = saveDatabaseConfig(req.body || {});
+        saved = true;
         await reconnectDb();
-        await startDatabaseMaintenance();
+        await resumeMaintenanceAfterDatabaseChange();
         if (global.dataEngine) {
-            await global.dataEngine.restart();
+            await global.dataEngine.start();
         }
         res.json({ success: true, config });
     } catch (e) {
-        res.status(400).json({ success: false, error: e.message });
+        let rollbackError;
+        if (stopped) {
+            try {
+                if (saved) {
+                    saveDatabaseConfig(previousConfig);
+                    await reconnectDb();
+                }
+                await resumeMaintenanceAfterDatabaseChange();
+                await global.dataEngine?.start();
+            } catch (error) { rollbackError = error; }
+        }
+        res.status(rollbackError ? 503 : 400).json({
+            success: false,
+            error: rollbackError ? `${e.message}；恢复原数据库连接失败: ${rollbackError.message}` : e.message,
+            ...(saved ? { rolledBack: !rollbackError } : {})
+        });
     }
-});
+}));
 
 app.get('/api/database/backups', (req, res) => {
     try {
@@ -513,23 +617,23 @@ app.get('/api/database/backups', (req, res) => {
     }
 });
 
-app.put('/api/database/backups/config', backupOperationLimiter, async (req, res) => {
+app.put('/api/database/backups/config', backupOperationLimiter, runDatabaseOperation(async (req, res) => {
     try {
         const result = await saveDatabaseBackupPolicy(req.body || {});
         res.json({ success: true, ...result });
     } catch (e) {
         res.status(400).json({ success: false, error: e.message });
     }
-});
+}));
 
-app.post('/api/database/backups', backupOperationLimiter, async (req, res) => {
+app.post('/api/database/backups', backupOperationLimiter, runDatabaseOperation(async (req, res) => {
     try {
         const backup = await createDatabaseBackup('manual');
         res.json({ success: true, backup, status: getDatabaseBackupStatus() });
     } catch (e) {
         res.status(400).json({ success: false, error: e.message });
     }
-});
+}));
 
 app.get('/api/database/backups/:filename/download', (req, res) => {
     try {
@@ -540,28 +644,33 @@ app.get('/api/database/backups/:filename/download', (req, res) => {
     }
 });
 
-app.post('/api/database/backups/:filename/restore', backupOperationLimiter, async (req, res) => {
+app.post('/api/database/backups/:filename/restore', backupOperationLimiter, runDatabaseOperation(async (req, res) => {
     const dataEngine = global.dataEngine;
     try {
-        dataEngine?.stop();
+        await dataEngine?.stop();
+        // restoreDatabaseBackup protects its selected source before making a
+        // rollback backup. An earlier backup could prune the selected source.
+        await stopMaintenanceForDatabaseChange('before-database-restore', { backup: false });
         const result = await restoreDatabaseBackup(req.params.filename);
+        await resumeMaintenanceAfterDatabaseChange();
         if (dataEngine) await dataEngine.start();
         res.json({ ...result, status: getDatabaseBackupStatus() });
     } catch (e) {
+        try { await resumeMaintenanceAfterDatabaseChange(); } catch (restartError) { /* report original restore error */ }
         if (dataEngine) {
             try { await dataEngine.start(); } catch (restartError) { /* report original restore error */ }
         }
         res.status(400).json({ success: false, error: e.message });
     }
-});
+}));
 
-app.delete('/api/database/backups/:filename', backupOperationLimiter, async (req, res) => {
+app.delete('/api/database/backups/:filename', backupOperationLimiter, runDatabaseOperation(async (req, res) => {
     try {
         res.json(await deleteDatabaseBackup(req.params.filename));
     } catch (e) {
         res.status(e.message === '备份文件不存在' ? 404 : 400).json({ success: false, error: e.message });
     }
-});
+}));
 
 app.get('/api/site-backups', (req, res) => {
     try {
@@ -579,7 +688,7 @@ app.get('/api/site-backups/config', (req, res) => {
     }
 });
 
-app.put('/api/site-backups/config', backupOperationLimiter, async (req, res) => {
+app.put('/api/site-backups/config', backupOperationLimiter, runDatabaseOperation(async (req, res) => {
     try {
         const config = saveSiteBackupConfig(req.body || {});
         await startSiteBackupMaintenance(uploadsRootDir);
@@ -587,16 +696,16 @@ app.put('/api/site-backups/config', backupOperationLimiter, async (req, res) => 
     } catch (e) {
         res.status(400).json({ success: false, error: e.message });
     }
-});
+}));
 
-app.post('/api/site-backups/export', backupOperationLimiter, async (req, res) => {
+app.post('/api/site-backups/export', backupOperationLimiter, runDatabaseOperation(async (req, res) => {
     try {
         const backup = await createSiteBackup(uploadsRootDir);
         res.json({ success: true, backup, status: getSiteBackupStatus() });
     } catch (e) {
         res.status(400).json({ success: false, error: e.message });
     }
-});
+}));
 
 app.get('/api/site-backups/:filename/download', (req, res) => {
     try {
@@ -607,22 +716,22 @@ app.get('/api/site-backups/:filename/download', (req, res) => {
     }
 });
 
-app.post('/api/site-backups/import', backupOperationLimiter, receiveSiteBackup, async (req, res) => {
+app.post('/api/site-backups/import', backupOperationLimiter, receiveSiteBackup, runDatabaseOperation(async (req, res) => {
     if (!req.file) return res.status(400).json({ success: false, error: '未收到整站备份文件' });
 
     const dataEngine = global.dataEngine;
     let result = null;
     let restoreError = null;
     try {
-        dataEngine?.stop();
-        await stopDatabaseMaintenance({ backup: true, reason: 'before-site-import' });
+        await dataEngine?.stop();
+        await stopMaintenanceForDatabaseChange('before-site-import');
         result = await restoreSiteBackup(req.file.path, uploadsRootDir);
     } catch (error) {
         restoreError = error;
     }
 
     try {
-        await startDatabaseMaintenance();
+        await resumeMaintenanceAfterDatabaseChange();
     } catch (error) {
         restoreError ||= error;
     }
@@ -636,7 +745,7 @@ app.post('/api/site-backups/import', backupOperationLimiter, receiveSiteBackup, 
         return;
     }
     res.json({ ...result, status: getSiteBackupStatus(), databaseStatus: getDatabaseBackupStatus() });
-});
+}));
 
 async function startServer() {
     const httpServer = http.createServer(app);
@@ -655,7 +764,15 @@ async function startServer() {
 
     const WsServer = require('./services/wsServer');
     const wsServer = new WsServer();
-    wsServer.attach(httpServer);
+    wsServer.attach(httpServer, {
+        verifyClient: (_info, done) => {
+            if (!isLicenseEnforced() || getLicenseStatus().valid) {
+                done(true);
+                return;
+            }
+            done(false, 402, 'License required');
+        }
+    });
     global.wsServer = wsServer;
     settingsController.wsServer = wsServer;
     nativePreviewController.wsServer = wsServer;
@@ -681,10 +798,10 @@ async function startServer() {
         shuttingDown = true;
         const forceExit = setTimeout(() => process.exit(1), 12000);
         forceExit.unref?.();
-        try { dataEngine.stop(); } catch (e) { /* ignore */ }
+        try { await dataEngine.stop(); } catch (e) { /* ignore */ }
         try { await screenCast.close(); } catch (e) { /* ignore */ }
         try { await lanDisplay.stop(); } catch (e) { /* ignore */ }
-        try { stopSiteBackupMaintenance(); } catch (e) { /* ignore */ }
+        try { await stopSiteBackupMaintenance(); } catch (e) { /* ignore */ }
         try { await stopDataSourceMaintenance({ backup: true, reason: 'shutdown' }); } catch (e) {
             console.error('[Shutdown] 退出备份失败:', e.message);
         }
@@ -739,7 +856,7 @@ async function startServer() {
             : (Number.isInteger(error?.statusCode) ? error.statusCode : 400);
         const message = status === 413
             ? '请求或上传文件超过大小限制'
-            : (error?.message || '请求处理失败');
+            : (error?.type === 'entity.parse.failed' ? '请求正文不是有效的 JSON' : (error?.message || '请求处理失败'));
         // 只记录服务端日志，不把堆栈、绝对路径和数据库连接细节返回给客户端。
         console.error(`[HTTP ${status}] ${req.method} ${req.originalUrl}: ${message}`);
         res.status(status).json({ success: false, error: message });
@@ -757,6 +874,7 @@ async function startServer() {
 
         setTimeout(() => {
             getDb()
+                .then(db => recoverPendingModelDeletions(db))
                 .then(() => startDatabaseMaintenance())
                 .then(() => startDataSourceMaintenance())
                 .then(() => lanDisplay.loadFromSettings())
@@ -770,7 +888,7 @@ async function startServer() {
             screenCast.resolveFfmpeg()
                 .then(found => {
                     if (found) console.log(`[投屏] 已找到屏幕编码器: ${found}`);
-                    else console.log('[投屏] 未找到 ffmpeg，DLNA 一键投屏不可用；二维码网页投屏不受影响。');
+                    else console.log('[投屏] 未找到 ffmpeg，Unity 大屏的 DLNA 一键投屏暂不可用。');
                 })
                 .catch(() => {});
             castDiscovery.scan({ timeoutMs: 3500 }).catch(() => {});

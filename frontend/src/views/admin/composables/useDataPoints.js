@@ -3,7 +3,7 @@
 // 依赖注入:devices(工厂树)、alert/confirm(弹窗)、storedAdminUiState(持久化初值)、
 // loadEngineStatus(引擎)、selectedDeviceForMonitor + loadRealtimePointValues(实时监视,保存后联动)。
 
-import { ref, reactive, computed, watch, nextTick } from 'vue'
+import { ref, reactive, computed, watch, nextTick, onScopeDispose } from 'vue'
 import { adminApi } from '../../../config/factoryConfig.js'
 import {
     getPlcAddressHint,
@@ -27,6 +27,10 @@ export function useDataPoints({
     const selectedDeviceForPoints = ref(storedAdminUiState.selectedDeviceForPoints || 'all')
     const dataPoints = ref([])
     const isPointsDirty = ref(false)
+    const pointsLoading = ref(false)
+    const pointsSaving = ref(false)
+    let loadedPointSelection = selectedDeviceForPoints.value
+    let pointsLoaded = false
     const showPointAdvancedFields = ref(!!storedAdminUiState.showPointAdvancedFields)
     const loadedPointDeviceIds = ref([])
     const alarmTextImportRaw = ref('')
@@ -40,6 +44,13 @@ export function useDataPoints({
     const voiceGeneratingRuleId = ref('')
     const voiceUploadingRuleId = ref('')
     const voicePreviewAnnouncer = createVoiceAnnouncer()
+    let pointLoadRequestSeq = 0
+    let pointsDisposed = false
+    onScopeDispose(() => {
+        pointsDisposed = true
+        pointLoadRequestSeq += 1
+        voicePreviewAnnouncer.dispose()
+    })
     const voiceTriggerOptions = [
         { value: 'change', label: '数值发生变化' },
         { value: 'rising', label: '由关变开 / 0→1' },
@@ -341,11 +352,35 @@ export function useDataPoints({
     }
 
     async function loadDataPoints() {
+        const requestSeq = ++pointLoadRequestSeq
+        const deviceId = selectedDeviceForPoints.value
         if (!selectedDeviceForPoints.value) { dataPoints.value = []; return }
-        const points = await adminApi.getDataPoints(selectedDeviceForPoints.value)
-        loadedPointDeviceIds.value = [...new Set(points.map(point => point.device_id).filter(Boolean))]
-        dataPoints.value = points.map(normalizeLoadedPoint)
-        isPointsDirty.value = false
+        pointsLoading.value = true
+        try {
+            if (isPointsDirty.value && deviceId !== loadedPointSelection) {
+                const discard = await confirm('当前设备有未保存的点位修改，切换设备将丢弃这些修改，确定继续？')
+                if (pointsDisposed || requestSeq !== pointLoadRequestSeq) return
+                if (!discard) {
+                    selectedDeviceForPoints.value = loadedPointSelection
+                    return
+                }
+            }
+            const points = await adminApi.getDataPoints(deviceId)
+            if (pointsDisposed || requestSeq !== pointLoadRequestSeq || deviceId !== selectedDeviceForPoints.value) return
+            if (!Array.isArray(points)) throw new Error(points?.error || '后端返回了无效的点位列表')
+            loadedPointDeviceIds.value = [...new Set(points.map(point => point.device_id).filter(Boolean))]
+            dataPoints.value = points.map(normalizeLoadedPoint)
+            isPointsDirty.value = false
+            loadedPointSelection = deviceId
+            pointsLoaded = true
+        } catch (error) {
+            if (!pointsDisposed && requestSeq === pointLoadRequestSeq && deviceId === selectedDeviceForPoints.value) {
+                selectedDeviceForPoints.value = loadedPointSelection
+                await alert(error.message || '点位读取失败', { title: '点位读取失败', type: 'danger' })
+            }
+        } finally {
+            if (requestSeq === pointLoadRequestSeq) pointsLoading.value = false
+        }
     }
 
     function addDataPoint(usage = 'normal') {
@@ -554,6 +589,7 @@ export function useDataPoints({
     }
 
     function composePlcAddressFromParts(point = {}) {
+        if (isBlank(point.db_number) || isBlank(point.db_byte_offset)) return ''
         const dbNumber = Number(point.db_number)
         const byteOffset = Number(point.db_byte_offset)
         if (!Number.isInteger(dbNumber) || dbNumber < 0 || !Number.isInteger(byteOffset) || byteOffset < 0) return ''
@@ -901,58 +937,79 @@ export function useDataPoints({
     }
 
     async function saveAllPoints() {
+        if (pointsSaving.value) return
+        if (pointsLoading.value || !pointsLoaded) return alert('请先成功读取当前设备的点位配置，再执行保存。', { title: '点位尚未就绪', type: 'warning' })
         if (!selectedDeviceForPoints.value) return alert('请先选择设备')
         const errors = validatePointRows(dataPoints.value)
         if (errors.length) {
             return alert(errors.slice(0, 8).join('\n'), { title: '点位配置未保存', type: 'warning' })
         }
 
-        const points = dataPoints.value.map(point => buildDataPointPayload(point, { includeId: true }))
+        const selection = selectedDeviceForPoints.value
+        const draftSnapshot = JSON.stringify(dataPoints.value)
+        const groups = isAllPointsMode.value
+            ? [...new Set([...loadedPointDeviceIds.value, ...dataPoints.value.map(point => point.device_id).filter(Boolean)])].map(deviceId => ({
+                deviceId,
+                rows: dataPoints.value.filter(point => point.device_id === deviceId).map(point => buildDataPointPayload(point, { includeId: true }))
+            }))
+            : [{ deviceId: selection, rows: dataPoints.value.map(point => buildDataPointPayload(point, { includeId: true })) }]
         const summary = { inserted: 0, updated: 0, deleted: 0, unchanged: 0, total: 0 }
-        if (isAllPointsMode.value) {
-            const deviceIds = new Set([...loadedPointDeviceIds.value, ...dataPoints.value.map(point => point.device_id).filter(Boolean)])
-            for (const deviceId of deviceIds) {
-                const rows = dataPoints.value
-                    .filter(point => point.device_id === deviceId)
-                    .map(point => buildDataPointPayload(point, { includeId: true }))
+        pointsSaving.value = true
+        try {
+            for (const { deviceId, rows } of groups) {
                 const result = await adminApi.syncDataPoints(deviceId, rows)
-                if (result?.error) return alert(result.error)
-                if (!result?.success) return alert('保存失败：后端没有返回成功状态', { title: '保存失败', type: 'danger' })
+                if (result?.error || !result?.success) throw new Error(result?.error || '后端没有返回成功状态')
                 mergePointSaveSummary(summary, result, rows.length)
             }
-        } else {
-            const result = await adminApi.syncDataPoints(selectedDeviceForPoints.value, points)
-            if (result?.error) return alert(result.error)
-            if (!result?.success) return alert('保存失败：后端没有返回成功状态', { title: '保存失败', type: 'danger' })
-            mergePointSaveSummary(summary, result, points.length)
+            if (pointsDisposed) return
+            const changed = summary.inserted + summary.updated + summary.deleted
+            await alert(pointSaveMessage(summary), {
+                title: changed > 0 ? '点位配置已保存' : '点位配置无变化',
+                type: changed > 0 ? 'success' : 'info'
+            })
+            // Edits made while the request or success dialog was open are a new
+            // draft, not part of the saved payload. Never discard that draft.
+            if (pointsDisposed || selection !== selectedDeviceForPoints.value || draftSnapshot !== JSON.stringify(dataPoints.value)) return
+            isPointsDirty.value = false
+            await loadDataPoints()
+            if (pointsDisposed) return
+            selectedDeviceForMonitor.value = selection
+            await loadRealtimePointValues()
+            if (changed > 0) setTimeout(() => { if (!pointsDisposed) loadEngineStatus() }, 800)
+        } catch (error) {
+            if (!pointsDisposed) await alert(`点位保存失败：${error.message || error}`, { title: '保存失败', type: 'danger' })
+        } finally {
+            pointsSaving.value = false
         }
-        const changed = summary.inserted + summary.updated + summary.deleted
-        await alert(pointSaveMessage(summary), {
-            title: changed > 0 ? '点位配置已保存' : '点位配置无变化',
-            type: changed > 0 ? 'success' : 'info'
-        })
-        isPointsDirty.value = false
-        await loadDataPoints()
-        selectedDeviceForMonitor.value = selectedDeviceForPoints.value
-        await loadRealtimePointValues()
-        if (changed > 0) setTimeout(() => loadEngineStatus(), 800)
     }
 
     // 扩展功能：从其他设备复制
     async function copyPointsFrom(sourceDeviceId) {
+        if (pointsSaving.value || pointsLoading.value) return
         if (isAllPointsMode.value) return alert('请先筛选到某一台设备，再从其他设备复制点位配置。')
         if (!sourceDeviceId || sourceDeviceId === selectedDeviceForPoints.value) return
         if (isPointsDirty.value && !(await confirm('当前有未保存的修改，复制将覆盖这些修改，确定继续？'))) return
 
-        const sourcePoints = await adminApi.getDataPoints(sourceDeviceId)
-        if (sourcePoints.length === 0) {
-            return alert('源设备没有点位配置')
-        }
+        const targetDeviceId = selectedDeviceForPoints.value
+        const requestSeq = ++pointLoadRequestSeq
+        pointsLoading.value = true
+        try {
+            const sourcePoints = await adminApi.getDataPoints(sourceDeviceId)
+            if (pointsDisposed || requestSeq !== pointLoadRequestSeq || targetDeviceId !== selectedDeviceForPoints.value) return
+            if (!Array.isArray(sourcePoints)) return alert(sourcePoints?.error || '读取源设备点位失败', { title: '点位复制失败', type: 'danger' })
+            if (sourcePoints.length === 0) {
+                return alert('源设备没有点位配置')
+            }
 
-        // 复制时去掉 id 相关的字段（如果后端有的话），保持干净的映射
-        dataPoints.value = sourcePoints.map(p => normalizeLoadedPoint({ ...p, id: undefined }))
-        isPointsDirty.value = true
-        alert(`已成功复制 ${sourcePoints.length} 个点位配置，请检查后点击保存。`)
+            // 复制时去掉 id 相关的字段（如果后端有的话），保持干净的映射
+            dataPoints.value = sourcePoints.map(p => normalizeLoadedPoint({ ...p, id: undefined, device_id: targetDeviceId, __originalDeviceId: targetDeviceId }))
+            isPointsDirty.value = true
+            alert(`已成功复制 ${sourcePoints.length} 个点位配置，请检查后点击保存。`)
+        } catch (error) {
+            if (!pointsDisposed && requestSeq === pointLoadRequestSeq) await alert(error.message || '读取源设备点位失败', { title: '点位复制失败', type: 'danger' })
+        } finally {
+            if (requestSeq === pointLoadRequestSeq) pointsLoading.value = false
+        }
     }
 
     // 扩展功能：同步到同产线其他设备
@@ -990,6 +1047,8 @@ export function useDataPoints({
         selectedDeviceForPoints,
         dataPoints,
         isPointsDirty,
+        pointsLoading,
+        pointsSaving,
         showPointAdvancedFields,
         loadedPointDeviceIds,
         alarmTextImportRaw,

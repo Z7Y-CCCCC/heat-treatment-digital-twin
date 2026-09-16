@@ -93,6 +93,45 @@ function defaultMotion(device = {}) {
     }
 }
 
+function isRailBoundDevice(device) {
+    const config = parseJson(device?.instance_config)
+    const role = String(config.role || '').toLowerCase()
+    return device?.model_type === 'transfer_cart'
+        || role === 'transfer_cart'
+        || role === 'auxiliary'
+        || Boolean(config.railId || config.rail_id || config.railLineId || config.rail_line_id)
+}
+
+function railAxisFor(device, movement = {}, stations = []) {
+    const start = positionOr(movement.start, defaultMotion(device).start)
+    const end = positionOr(movement.end, start)
+    const directX = Math.abs(end.x - start.x)
+    const directZ = Math.abs(end.z - start.z)
+    if (directX > 0.001 || directZ > 0.001) return directX >= directZ ? 'x' : 'z'
+
+    const positions = stations
+        .map(station => station?.position)
+        .filter(Boolean)
+    if (positions.length < 2) return 'x'
+    const xs = positions.map(position => numberOr(position.x))
+    const zs = positions.map(position => numberOr(position.z))
+    const xSpan = Math.max(...xs) - Math.min(...xs)
+    const zSpan = Math.max(...zs) - Math.min(...zs)
+    return xSpan >= zSpan ? 'x' : 'z'
+}
+
+// Fixed equipment supplies the station number and its longitudinal coordinate.
+// A mobile carrier must keep its own rail plane, otherwise importing a furnace's
+// Z coordinate would send the cart off its track.
+function projectStationPosition(device, position, movement = {}, stations = [], railDevice = device) {
+    const source = positionOr(position, defaultMotion(device).start)
+    if (!isRailBoundDevice(railDevice)) return source
+    const railOrigin = positionOr(movement.start, defaultMotion(device).start)
+    return railAxisFor(device, movement, stations) === 'z'
+        ? { x: railOrigin.x, y: railOrigin.y, z: source.z }
+        : { x: source.x, y: railOrigin.y, z: railOrigin.z }
+}
+
 function normalizeMotion(device) {
     const fallback = defaultMotion(device)
     const config = parseJson(device?.instance_config)
@@ -114,7 +153,12 @@ function normalizeMotion(device) {
         sceneUnitsPerMeter: Math.max(0.0001, numberOr(source.sceneUnitsPerMeter ?? source.scene_units_per_meter, fallback.sceneUnitsPerMeter)),
         start: positionOr(source.start, fallback.start),
         end: positionOr(source.end, fallback.end),
-        stations: Array.isArray(source.stations) ? normalizeStations(source.stations, fallback.stations) : []
+        stations: Array.isArray(source.stations)
+            ? normalizeStations(source.stations, fallback.stations).map(station => ({
+                ...station,
+                position: projectStationPosition(device, station.position, source, source.stations)
+            }))
+            : []
     }
 }
 
@@ -126,6 +170,7 @@ const loading = ref(false)
 const saving = ref(false)
 const message = ref('')
 const errorMessage = ref('')
+let loadGeneration = 0
 
 function isAuxiliaryDevice(device) {
     const config = parseJson(device?.instance_config)
@@ -160,7 +205,12 @@ function deviceLineInfo(device) {
 }
 
 const lineStationDevices = computed(() => {
+    const deviceConfig = parseJson(deviceDetail.value?.instance_config)
     const lineId = deviceDetail.value?.line_id
+        || deviceConfig.railLineId
+        || deviceConfig.rail_line_id
+        || deviceConfig.laneLineId
+        || deviceConfig.lane_line_id
     if (!lineId) return []
     const candidates = props.devices
         .filter(device => {
@@ -299,7 +349,9 @@ function pointPayload(point, selectedIds) {
 }
 
 async function loadDevice(deviceId) {
+    const requestGeneration = ++loadGeneration
     if (!deviceId) {
+        if (requestGeneration !== loadGeneration) return
         deviceDetail.value = null
         dataPoints.value = []
         motion.value = defaultMotion()
@@ -311,15 +363,17 @@ async function loadDevice(deviceId) {
     try {
         const detail = await adminApi.getDevice(deviceId)
         if (!detail || detail.error) throw new Error(detail?.error || '读取设备详情失败')
+        if (requestGeneration !== loadGeneration) return
         deviceDetail.value = detail
         dataPoints.value = Array.isArray(detail?.dataPoints) ? detail.dataPoints : []
         motion.value = normalizeMotion(detail)
     } catch (error) {
+        if (requestGeneration !== loadGeneration) return
         deviceDetail.value = null
         dataPoints.value = []
         errorMessage.value = error.message || '读取设备点位失败'
     } finally {
-        loading.value = false
+        if (requestGeneration === loadGeneration) loading.value = false
     }
 }
 
@@ -333,7 +387,10 @@ watch(mobileDevices, devices => {
     }
 }, { immediate: true })
 
-watch(selectedDeviceId, value => { loadDevice(value) })
+// The device picker assigns its first option before this watcher is registered.
+// Running once immediately guarantees that the initial selection also loads its
+// detail and PLC points instead of leaving the page blank until the user changes it.
+watch(selectedDeviceId, value => { loadDevice(value) }, { immediate: true })
 
 function addStation(deviceLineKey = '') {
     const stations = Array.isArray(motion.value.stations) ? motion.value.stations : []
@@ -372,11 +429,11 @@ function removeStation(station) {
 function applyStationAnchor(station) {
     const device = props.devices.find(item => String(item.id) === String(station.anchorDeviceId))
     if (!device) return
-    station.position = {
+    station.position = projectStationPosition(device, {
         x: numberOr(device.pos_x),
         y: numberOr(device.pos_y),
         z: numberOr(device.pos_z)
-    }
+    }, motion.value, motion.value.stations, deviceDetail.value)
 }
 
 function syncStationsFromLine() {
@@ -401,11 +458,17 @@ function syncStationsFromLine() {
             deviceLineKey: info.key,
             deviceLineName: info.name,
             distanceMeters: groupIndex === 0 ? 0 : (previousDistances.get(`${info.key}::${value}`) ?? ''),
-            position: {
+            position: projectStationPosition(device, {
                 x: numberOr(device.pos_x),
                 y: numberOr(device.pos_y),
                 z: numberOr(device.pos_z)
-            }
+            }, motion.value, lineStationDevices.value.map(item => ({
+                position: {
+                    x: numberOr(item.pos_x),
+                    y: numberOr(item.pos_y),
+                    z: numberOr(item.pos_z)
+                }
+            })), deviceDetail.value)
         }
     })
     message.value = `已按 ${deviceLineGroups.value.length} 条设备线导入 ${lineStationDevices.value.length} 个工位位置`
@@ -608,13 +671,22 @@ async function saveMotion() {
                     </select>
                 </label>
                 <span v-if="loading" class="motion-muted">正在读取点位…</span>
-                <span v-else class="motion-muted">{{ dataPoints.length }} 个点位可供绑定</span>
+                <span v-else-if="deviceDetail" class="motion-muted">{{ dataPoints.length }} 个点位可供绑定</span>
+                <span v-else class="motion-muted">设备配置尚未读取</span>
             </section>
 
             <div v-if="errorMessage" class="motion-alert motion-alert-error">{{ errorMessage }}</div>
             <div v-if="message" class="motion-alert motion-alert-success">{{ message }}</div>
 
-            <section v-if="deviceDetail" class="motion-card">
+            <section v-if="loading && !deviceDetail" class="motion-card motion-loading-state" aria-live="polite">
+                <div class="motion-loading-dot" aria-hidden="true"></div>
+                <div>
+                    <h3>正在读取设备配置</h3>
+                    <p>正在加载 PLC 点位和已保存的运动设置，请稍候。</p>
+                </div>
+            </section>
+
+            <section v-else-if="deviceDetail" class="motion-card">
                 <div class="motion-card-header">
                     <div>
                         <h3>移动控制</h3>
@@ -629,7 +701,8 @@ async function saveMotion() {
                 <section class="motion-step-card">
                     <div class="motion-step-title"><span>1</span><div><strong>绑定 PLC 位置点位</strong><small>PLC 只需要传 1、2、3… 这样的当前工位编号。</small></div></div>
                     <div class="motion-form-grid">
-                    <label>PLC 当前工位编号点位 <span class="motion-required">*</span>
+                    <label>
+                        <span class="motion-field-label">PLC 当前工位编号点位 <span class="motion-required">*</span></span>
                         <select v-model="motion.currentPositionPointId" class="input">
                             <option value="">请选择 PLC 数值点位</option>
                             <option v-for="point in numericPoints" :key="point.id" :value="String(point.id)">
@@ -638,7 +711,8 @@ async function saveMotion() {
                         </select>
                         <small>例如：PLC 当前值为 1，小车就停在 1 号工位；变为 2，就移动到 2 号工位。</small>
                     </label>
-                    <label>移动开始信号（可选）
+                    <label>
+                        <span class="motion-field-label">移动开始信号（可选）</span>
                         <select v-model="motion.startActionPointId" class="input">
                             <option value="">不绑定（收到编号就移动）</option>
                             <option v-for="point in actionPoints" :key="point.id" :value="String(point.id)">
@@ -770,6 +844,16 @@ async function saveMotion() {
                     </button>
                 </div>
             </section>
+
+            <section v-else-if="selectedDeviceId" class="motion-card motion-load-failed">
+                <div>
+                    <h3>设备配置未加载</h3>
+                    <p>暂时无法读取该设备的 PLC 点位与运动配置。请重新读取；若仍失败，请检查后台服务连接。</p>
+                </div>
+                <button type="button" class="btn btn-secondary" :disabled="loading" @click="loadDevice(selectedDeviceId)">
+                    重新读取配置
+                </button>
+            </section>
         </template>
     </div>
 </template>
@@ -809,6 +893,13 @@ async function saveMotion() {
 .motion-device-picker { background: #f8fafc; }
 .motion-device-select { flex: 1; max-width: 520px; gap: 8px; color: #344054; font-size: 13px; font-weight: 700; }
 .motion-muted, .motion-card-header p, .motion-card small { color: #778397; font-size: 12px; }
+.motion-loading-state, .motion-load-failed { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 108px; }
+.motion-loading-state { border-color: #dceafa; background: linear-gradient(135deg, #f7fbff, #fff); }
+.motion-loading-state h3, .motion-load-failed h3 { margin: 0 0 6px; color: #1d2939; font-size: 15px; }
+.motion-loading-state p, .motion-load-failed p { margin: 0; color: #778397; font-size: 13px; line-height: 1.6; }
+.motion-loading-dot { width: 18px; height: 18px; flex: 0 0 18px; border: 3px solid #cfe3fc; border-top-color: #2f80ed; border-radius: 50%; animation: motion-loading-spin .8s linear infinite; }
+.motion-load-failed { border-color: #f2d5b5; background: #fffdf9; }
+@keyframes motion-loading-spin { to { transform: rotate(360deg); } }
 .motion-card-header { align-items: flex-start; margin-bottom: 20px; }
 .motion-card-header h3 { margin: 0 0 6px; }
 .motion-card-header p { margin: 0; }
@@ -845,6 +936,7 @@ async function saveMotion() {
 .mobile-motion-page .input:disabled { background: #f2f4f7; color: #98a2b3; cursor: not-allowed; }
 .motion-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
 .motion-form-grid label, .motion-range-row label, .motion-coordinate-grid label { display: flex; flex-direction: column; gap: 7px; color: #344054; font-size: 13px; font-weight: 600; }
+.motion-field-label { display: inline-flex; align-items: center; min-height: 18px; gap: 4px; line-height: 1.4; }
 .motion-form-grid small { font-weight: 400; line-height: 1.5; }
 .motion-required { color: #d92d20; }
 .motion-range-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; margin-top: 18px; }
@@ -927,6 +1019,7 @@ async function saveMotion() {
 .empty-state { padding: 36px; border: 1px dashed #cfd7e3; border-radius: 12px; color: #667085; text-align: center; }
 @media (max-width: 760px) {
     .page-heading-row, .motion-card-header, .motion-device-picker { align-items: flex-start; flex-direction: column; }
+    .motion-loading-state, .motion-load-failed { align-items: flex-start; flex-direction: column; }
     .motion-form-grid, .motion-range-row, .motion-position-columns { grid-template-columns: 1fr; }
     .motion-section-heading { flex-direction: column; }
     .motion-simulation-fields { grid-template-columns: 1fr; margin-left: 0; }

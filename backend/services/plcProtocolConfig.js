@@ -122,8 +122,8 @@ function normalizePlcOptions(protocolValue, value, existingValue = {}) {
                 : 'Basic256Sha256');
         const requestedPassword = source.password;
         const password = requestedPassword === undefined || requestedPassword === MASKED_SECRET
-            ? limitedString(existing.password, 512)
-            : limitedString(requestedPassword, 512);
+            ? String(existing.password ?? '').slice(0, 512)
+            : String(requestedPassword ?? '').slice(0, 512);
         let endpointPath = limitedString(
             source.endpointPath === undefined ? existing.endpointPath : source.endpointPath,
             512
@@ -288,6 +288,8 @@ function parseModbusAddress(address, dataType, optionsValue = {}) {
     const type = canonicalDataType(dataType);
     const registerCount = ['coil', 'discrete'].includes(area)
         ? 1
+        : bit !== null || type === 'CHAR'
+            ? 1
         : type === 'LREAL'
             ? 4
             : ['DINT', 'DWORD', 'REAL', 'DT', 'DTZ', 'DTL', 'DTLZ'].includes(type)
@@ -295,6 +297,9 @@ function parseModbusAddress(address, dataType, optionsValue = {}) {
                 : ['STRING', 'CHAR'].includes(type)
                     ? Math.max(1, Math.ceil(stringLength / 2))
                     : 1;
+    if (addressNumber + registerCount > 65536) {
+        throw new Error('Modbus 点位读取范围超出 0-65535 寄存器地址范围');
+    }
 
     return { area, address: addressNumber, bit, type, registerCount, stringLength };
 }

@@ -188,6 +188,8 @@ export class VoiceAnnouncer {
     this.playing = false
     this.muted = options.muted === true
     this.maxQueue = options.maxQueue || 32
+    this.disposed = false
+    this.playbackCancels = new Set()
   }
 
   setFactoryPoints(workshops = []) {
@@ -236,8 +238,17 @@ export class VoiceAnnouncer {
     if (this.muted) {
       this.queue = []
       this.pendingKeys.clear()
-      if (typeof window !== 'undefined' && window.speechSynthesis) window.speechSynthesis.cancel()
+      for (const cancel of [...this.playbackCancels]) cancel()
     }
+  }
+
+  dispose() {
+    if (this.disposed) return
+    this.disposed = true
+    this.setMuted(true)
+    this.definitionsByDevice.clear()
+    this.previousValues.clear()
+    this.lastTriggeredAt.clear()
   }
 
   unlock() {
@@ -248,6 +259,7 @@ export class VoiceAnnouncer {
   }
 
   handleDeviceData(data) {
+    if (this.disposed) return
     const deviceId = data?.furnace_id
     if (!deviceId) return
     this.updateDefinitionsFromFrame(data)
@@ -283,7 +295,7 @@ export class VoiceAnnouncer {
   }
 
   enqueue(item) {
-    if (this.muted || !item?.rule) return
+    if (this.disposed || this.muted || !item?.rule) return
     if (this.pendingKeys.has(item.key)) return
     if (this.queue.length >= this.maxQueue) {
       const dropped = this.queue.shift()
@@ -295,6 +307,7 @@ export class VoiceAnnouncer {
   }
 
   async preview(rule, context = {}) {
+    if (this.disposed) return
     const normalized = normalizeVoiceRule(rule)
     return this._playItem({
       rule: normalized,
@@ -308,7 +321,7 @@ export class VoiceAnnouncer {
   }
 
   async _drainQueue() {
-    if (this.playing || this.muted || this.queue.length === 0) return
+    if (this.disposed || this.playing || this.muted || this.queue.length === 0) return
     this.playing = true
     const item = this.queue.shift()
     this.pendingKeys.delete(item.key)
@@ -318,6 +331,7 @@ export class VoiceAnnouncer {
   }
 
   async _playItem(item) {
+    if (this.disposed || this.muted) return
     const rule = item.rule
     const text = renderText(rule.text, item.context)
     const mode = rule.mode === 'auto' ? (rule.audio_url ? 'file' : 'tts') : rule.mode
@@ -329,6 +343,7 @@ export class VoiceAnnouncer {
         if (!text) throw error
       }
     }
+    if (this.disposed || this.muted) return
     await this._speak(text, rule)
   }
 
@@ -341,16 +356,26 @@ export class VoiceAnnouncer {
       const audio = new Audio(url)
       audio.volume = clamp(volume, 0, 1, 1)
       audio.preload = 'auto'
-      audio.onended = () => resolve()
-      audio.onerror = () => reject(new Error('语音文件播放失败'))
-      const timeout = setTimeout(() => {
+      let settled = false
+      let timeout
+      const cancel = () => finish(new Error('语音播放已停止'))
+      const finish = (error) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timeout)
+        this.playbackCancels.delete(cancel)
+        audio.onended = null
+        audio.onerror = null
         audio.pause()
-        reject(new Error('语音文件播放超时'))
-      }, 30000)
-      const finish = () => clearTimeout(timeout)
-      audio.addEventListener('ended', finish, { once: true })
-      audio.addEventListener('error', finish, { once: true })
-      audio.play().catch(error => { finish(); reject(error) })
+        audio.removeAttribute?.('src')
+        if (error) reject(error)
+        else resolve()
+      }
+      this.playbackCancels.add(cancel)
+      audio.onended = () => finish()
+      audio.onerror = () => finish(new Error('语音文件播放失败'))
+      timeout = setTimeout(() => finish(new Error('语音文件播放超时')), 30000)
+      try { Promise.resolve(audio.play()).catch(finish) } catch (error) { finish(error) }
     })
   }
 
@@ -369,17 +394,29 @@ export class VoiceAnnouncer {
         if (voice) utterance.voice = voice
       }
       let settled = false
+      let timeout
+      const cancel = () => {
+        finish(new Error('语音播放已停止'))
+        window.speechSynthesis.cancel()
+      }
       const finish = (error) => {
         if (settled) return
         settled = true
         clearTimeout(timeout)
+        this.playbackCancels.delete(cancel)
+        utterance.onend = null
+        utterance.onerror = null
         if (error) reject(error)
         else resolve()
       }
       utterance.onend = () => finish()
       utterance.onerror = event => finish(new Error(event?.error || '系统语音播放失败'))
-      const timeout = setTimeout(() => finish(new Error('系统语音播放超时')), Math.max(10000, text.length * 450))
-      window.speechSynthesis.speak(utterance)
+      this.playbackCancels.add(cancel)
+      timeout = setTimeout(() => {
+        finish(new Error('系统语音播放超时'))
+        window.speechSynthesis.cancel()
+      }, Math.max(10000, text.length * 450))
+      try { window.speechSynthesis.speak(utterance) } catch (error) { finish(error) }
     })
   }
 }

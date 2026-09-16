@@ -3,18 +3,17 @@ const path = require('path');
 const unzipper = require('unzipper');
 const {
     BACKEND_DIR,
-    REPO_DIR,
-    copySqliteDatabase,
+    createTestDatabase,
     createRunDirectory,
     findFreePort,
     forceStop,
     requestJson,
     startLoggedProcess,
+    testFetch,
     waitForExit,
     waitForHttp
 } = require('./integration-test-utils.cjs');
 
-const SOURCE_DB = path.join(REPO_DIR, 'desktop', 'resources', 'templates', 'factory-template.db');
 const SHUTDOWN_TOKEN = 'voice-feature-test-shutdown';
 
 async function stopBackend(backendOrigin, backend) {
@@ -45,7 +44,7 @@ async function main() {
     try {
         fs.mkdirSync(dataDir, { recursive: true });
         fs.mkdirSync(uploadsDir, { recursive: true });
-        await copySqliteDatabase(SOURCE_DB, databaseFile);
+        await createTestDatabase(databaseFile);
         fs.writeFileSync(path.join(dataDir, 'database-config.json'), JSON.stringify({
             type: 'sqlite',
             filename: databaseFile
@@ -127,7 +126,7 @@ async function main() {
 
         const exported = await requestJson(`${backendOrigin}/api/site-backups/export`, { method: 'POST' });
         if (!exported.success || !exported.backup?.filename) throw new Error('Site backup export failed');
-        const archiveResponse = await fetch(`${backendOrigin}/api/site-backups/${encodeURIComponent(exported.backup.filename)}/download`);
+        const archiveResponse = await testFetch(`${backendOrigin}/api/site-backups/${encodeURIComponent(exported.backup.filename)}/download`);
         const archiveFilename = path.join(runDirectory, exported.backup.filename);
         fs.writeFileSync(archiveFilename, Buffer.from(await archiveResponse.arrayBuffer()));
         const archive = await unzipper.Open.file(archiveFilename);

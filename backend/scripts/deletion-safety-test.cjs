@@ -7,6 +7,7 @@ const {
     forceStop,
     requestJson,
     startLoggedProcess,
+    testFetch,
     waitForExit,
     waitForHttp
 } = require('./integration-test-utils.cjs');
@@ -18,7 +19,7 @@ function associationCount(impact, key) {
 }
 
 async function requestStatus(url, options = {}) {
-    const response = await fetch(url, {
+    const response = await testFetch(url, {
         ...options,
         headers: {
             ...(options.body ? { 'content-type': 'application/json' } : {}),

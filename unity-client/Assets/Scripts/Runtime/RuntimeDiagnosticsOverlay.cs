@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using HeatTreatment.DigitalTwin.Rendering;
 using UnityEngine;
 
@@ -9,6 +10,8 @@ namespace HeatTreatment.DigitalTwin.Runtime
         private GUIStyle _titleStyle;
         private GUIStyle _lineStyle;
         private GUIStyle _mutedStyle;
+        private GUIStyle _errorTitleStyle;
+        private GUIStyle _errorStyle;
         private Texture2D _panelTexture;
         private Texture2D _loadingTexture;
         private float _smoothedFps;
@@ -19,6 +22,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
         private string _loadingStep = "正在初始化渲染";
         private float _lastReportedLoadingProgress = -1f;
         private string _lastReportedLoadingStep = string.Empty;
+        private readonly List<string> _modelErrors = new List<string>();
 
         public bool Visible { get; set; } = true;
         public string BackendState { get; set; } = "starting";
@@ -30,8 +34,23 @@ namespace HeatTreatment.DigitalTwin.Runtime
         public int TemplateCount { get; set; }
         public NativeQualityController QualityController { get; set; }
 
+        public void ClearModelErrors()
+        {
+            _modelErrors.Clear();
+        }
+
+        public void ReportModelError(string deviceName, string modelType, string reason)
+        {
+            var device = string.IsNullOrWhiteSpace(deviceName) ? "未命名设备" : deviceName;
+            var model = string.IsNullOrWhiteSpace(modelType) ? "未设置模型" : modelType;
+            var detail = string.IsNullOrWhiteSpace(reason) ? "未提供具体原因" : reason;
+            var message = $"{device} / {model}：{detail}";
+            if (!_modelErrors.Contains(message)) _modelErrors.Add(message);
+        }
+
         public void BeginLoading()
         {
+            ClearModelErrors();
             _loadingVisible = true;
             _loadingProgress = 0f;
             _loadingStep = "正在初始化渲染";
@@ -86,21 +105,52 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 DrawLoadingScreen();
                 return;
             }
-            if (!Visible) return;
+            if (!Visible && _modelErrors.Count == 0) return;
             EnsureStyles();
             var scale = Mathf.Clamp(Screen.height / 1080f, 0.78f, 1.25f);
             GUI.matrix = Matrix4x4.Scale(new Vector3(scale, scale, 1f));
-            var width = 410f;
-            var height = 224f;
-            GUI.DrawTexture(new Rect(18f, 18f, width, height), _panelTexture, ScaleMode.StretchToFill);
-            GUI.Label(new Rect(36f, 31f, width - 36f, 28f), "NATIVE DIGITAL TWIN", _titleStyle);
-            GUI.Label(new Rect(36f, 66f, width - 36f, 22f), $"FPS  {_smoothedFps:0}    GPU  {SystemInfo.graphicsDeviceName}", _lineStyle);
-            GUI.Label(new Rect(36f, 91f, width - 36f, 22f), $"Backend  {BackendState}    PLC  {PlcState}", _lineStyle);
-            GUI.Label(new Rect(36f, 116f, width - 36f, 22f), $"Devices  {ReadyDeviceCount}/{DeviceCount}    fallback  {FallbackDeviceCount}    templates  {TemplateCount}", _lineStyle);
-            GUI.Label(new Rect(36f, 141f, width - 36f, 22f), FrameText(), _lineStyle);
-            GUI.Label(new Rect(36f, 166f, width - 36f, 22f), $"Quality  {QualityController?.ActiveProfileName ?? "pending"} (full geometry)", _lineStyle);
-            GUI.Label(new Rect(36f, 193f, width - 36f, 20f), Activity, _mutedStyle);
-            GUI.Label(new Rect(36f, 217f, width - 36f, 18f), "F1/F2/F3 quality   F4 auto   F5 reload   Home frame   F9 hide", _mutedStyle);
+            if (Visible)
+            {
+                var width = 410f;
+                var height = 224f;
+                GUI.DrawTexture(new Rect(18f, 18f, width, height), _panelTexture, ScaleMode.StretchToFill);
+                GUI.Label(new Rect(36f, 31f, width - 36f, 28f), "NATIVE DIGITAL TWIN", _titleStyle);
+                GUI.Label(new Rect(36f, 66f, width - 36f, 22f), $"FPS  {_smoothedFps:0}    GPU  {SystemInfo.graphicsDeviceName}", _lineStyle);
+                GUI.Label(new Rect(36f, 91f, width - 36f, 22f), $"Backend  {BackendState}    PLC  {PlcState}", _lineStyle);
+                GUI.Label(new Rect(36f, 116f, width - 36f, 22f), $"Devices  {ReadyDeviceCount}/{DeviceCount}    fallback  {FallbackDeviceCount}    templates  {TemplateCount}", _lineStyle);
+                GUI.Label(new Rect(36f, 141f, width - 36f, 22f), FrameText(), _lineStyle);
+                GUI.Label(new Rect(36f, 166f, width - 36f, 22f), $"Quality  {QualityController?.ActiveProfileName ?? "pending"} (full geometry)", _lineStyle);
+                GUI.Label(new Rect(36f, 193f, width - 36f, 20f), Activity, _mutedStyle);
+                GUI.Label(new Rect(36f, 217f, width - 36f, 18f), "F1/F2/F3 quality   F4 auto   F5 reload   Home frame   F9 hide", _mutedStyle);
+            }
+            DrawModelErrors(Visible ? 258f : 18f);
+        }
+
+        private void DrawModelErrors(float top)
+        {
+            if (_modelErrors.Count == 0) return;
+            var width = Mathf.Min(760f, Mathf.Max(420f, Screen.width - 36f));
+            var visibleCount = Mathf.Min(4, _modelErrors.Count);
+            var extraLine = _modelErrors.Count > visibleCount ? 24f : 0f;
+            var height = 54f + visibleCount * 30f + extraLine;
+            GUI.color = new Color(0.28f, 0.035f, 0.03f, 0.94f);
+            GUI.DrawTexture(new Rect(18f, top, width, height), _panelTexture, ScaleMode.StretchToFill);
+            GUI.color = Color.white;
+            GUI.Label(new Rect(34f, top + 12f, width - 32f, 22f), "模型未加载（当前显示占位几何体）", _errorTitleStyle);
+            for (var index = 0; index < visibleCount; index += 1)
+            {
+                GUI.Label(new Rect(34f, top + 38f + index * 30f, width - 32f, 26f), TrimError(_modelErrors[index]), _errorStyle);
+            }
+            if (_modelErrors.Count > visibleCount)
+            {
+                GUI.Label(new Rect(34f, top + 38f + visibleCount * 30f, width - 32f, 22f), $"还有 {_modelErrors.Count - visibleCount} 个模型错误，请查看 Unity 日志。", _errorStyle);
+            }
+        }
+
+        private static string TrimError(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value)) return "未知模型错误";
+            return value.Length <= 150 ? value : value.Substring(0, 147) + "...";
         }
 
         private void DrawLoadingScreen()
@@ -159,6 +209,18 @@ namespace HeatTreatment.DigitalTwin.Runtime
             {
                 fontSize = 12,
                 normal = { textColor = new Color(0.55f, 0.68f, 0.74f) }
+            };
+            _errorTitleStyle = new GUIStyle(GUI.skin.label)
+            {
+                fontSize = 16,
+                fontStyle = FontStyle.Bold,
+                normal = { textColor = new Color(1f, 0.83f, 0.78f) }
+            };
+            _errorStyle = new GUIStyle(GUI.skin.label)
+            {
+                fontSize = 12,
+                wordWrap = true,
+                normal = { textColor = new Color(1f, 0.91f, 0.88f) }
             };
         }
     }

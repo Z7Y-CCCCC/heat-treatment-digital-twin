@@ -3,7 +3,7 @@ const os = require('os');
 const path = require('path');
 const {
     BACKEND_DIR,
-    copySqliteDatabase,
+    createTestDatabase,
     createRunDirectory,
     findFreePort,
     forceStop,
@@ -12,7 +12,6 @@ const {
     waitForHttp
 } = require('./integration-test-utils.cjs');
 
-const SOURCE_DB = path.join(BACKEND_DIR, 'data', 'factory.db');
 const SHUTDOWN_TOKEN = `production-readiness-${process.pid}-${Date.now()}`;
 let backend = null;
 let origin = null;
@@ -57,7 +56,7 @@ async function main() {
     try {
         const databaseFile = path.join(dataDir, 'factory.db');
         fs.mkdirSync(dataDir, { recursive: true });
-        await copySqliteDatabase(SOURCE_DB, databaseFile);
+        await createTestDatabase(databaseFile);
         fs.writeFileSync(path.join(dataDir, 'database-config.json'), JSON.stringify({
             type: 'sqlite',
             filename: databaseFile

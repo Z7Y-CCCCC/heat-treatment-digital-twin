@@ -26,7 +26,7 @@ const HEAT_TREATMENT_TEMPLATE_PACKS = Object.freeze([
         name: '多用炉 · 数字孪生标准包',
         version: '1.0.0',
         category: 'furnace',
-        modelType: 'photo_multipurpose_furnace_v5',
+        modelType: 'photo_multipurpose_furnace_v6',
         description: '适用于箱式气氛多用炉的实体、透视、拆解和部件详情展示。',
         pointPack: [
             { key: 'actual_temp', label: '实际温度', category: 'analog', valueRole: 'actual_temp', dataType: 'WORD', unit: '°C', accessType: 'READ' },
@@ -48,7 +48,7 @@ const HEAT_TREATMENT_TEMPLATE_PACKS = Object.freeze([
         name: '回火炉 · 数字孪生标准包',
         version: '1.0.0',
         category: 'furnace',
-        modelType: 'photo_multipurpose_furnace_v5',
+        modelType: 'photo_tempering_furnace_v6',
         description: '适用于回火炉，保留设备状态和温度曲线展示，不虚构碳势数据。',
         pointPack: [
             { key: 'actual_temp', label: '实际温度', category: 'analog', valueRole: 'actual_temp', dataType: 'WORD', unit: '°C', accessType: 'READ' },
@@ -67,7 +67,7 @@ const HEAT_TREATMENT_TEMPLATE_PACKS = Object.freeze([
         name: '清洗机 · 数字孪生标准包',
         version: '1.0.0',
         category: 'washer',
-        modelType: 'builtin_furnace',
+        modelType: 'photo_washing_machine_v7',
         description: '适用于清洗机的温度、运行、报警和设备状态展示。',
         pointPack: [
             { key: 'actual_temp', label: '清洗槽温度', category: 'analog', valueRole: 'actual_temp', dataType: 'WORD', unit: '°C', accessType: 'READ' },

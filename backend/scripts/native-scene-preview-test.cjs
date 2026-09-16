@@ -2,6 +2,11 @@ const WebSocket = require('ws');
 
 const port = Number(process.env.PORT || 3001);
 const baseUrl = `http://127.0.0.1:${port}`;
+const managementHeaders = {
+    'Content-Type': 'application/json',
+    ...(process.env.ADMIN_API_TOKEN ? { 'X-Admin-Token': process.env.ADMIN_API_TOKEN } : {}),
+    ...(process.env.MCP_API_TOKEN ? { 'X-MCP-Token': process.env.MCP_API_TOKEN } : {})
+};
 
 function waitForEvent(socket, type, timeoutMs = 5000) {
     return new Promise((resolve, reject) => {
@@ -70,7 +75,7 @@ async function main() {
     const eventPromise = waitForEvent(socket, 'native_scene_preview');
     const response = await fetch(`${baseUrl}/api/native-preview`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: managementHeaders,
         body: JSON.stringify({
             action: 'apply',
             sessionId: 'native-preview-test',
@@ -125,7 +130,7 @@ async function main() {
     const returnEventPromise = waitForEvent(socket, 'native_scene_preview');
     const returnResponse = await fetch(`${baseUrl}/api/native-preview`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: managementHeaders,
         body: JSON.stringify({
             action: 'focus',
             source: 'dashboard_overlay',

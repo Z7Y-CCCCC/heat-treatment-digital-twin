@@ -49,3 +49,7 @@ unity-client/*.user
 # Native admin host (WebView2) build output
 native-admin-host/bin/
 native-admin-host/obj/
+
+# Local .NET test build outputs
+tools/*/bin/
+tools/*/obj/

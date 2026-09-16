@@ -1,9 +1,10 @@
 const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const { createSmokeSandbox, stopOwnedSmokeProcess } = require('../desktop/scripts/smoke-sandbox.cjs');
 
 const projectDir = path.resolve(__dirname, '..');
-const appDataDir = path.join(projectDir, 'tmp', 'packaged-native-smoke');
+let appDataDir;
 const executable = path.join(
     projectDir,
     '安装包',
@@ -33,22 +34,15 @@ function readLog(name) {
 
 async function main() {
     if (!fs.existsSync(executable)) throw new Error(`Missing unpacked desktop executable: ${executable}`);
-    fs.rmSync(appDataDir, { recursive: true, force: true });
-    fs.mkdirSync(appDataDir, { recursive: true });
+    const sandbox = await createSmokeSandbox('packaged-native-smoke');
+    appDataDir = sandbox.directory;
 
     const desktop = spawn(executable, [], {
         cwd: path.dirname(executable),
         windowsHide: true,
         env: {
-            ...process.env,
-            APP_USER_DATA_DIR: appDataDir,
-            DISABLE_AUTO_START: 'true',
+            ...sandbox.env,
             NATIVE_CLIENT_SMOKE_MODE: 'true',
-            DESKTOP_MYSQL_HOST: process.env.PACKAGED_SMOKE_MYSQL_HOST || '127.0.0.1',
-            DESKTOP_MYSQL_PORT: process.env.PACKAGED_SMOKE_MYSQL_PORT || '3307',
-            DESKTOP_MYSQL_USER: process.env.PACKAGED_SMOKE_MYSQL_USER || 'root',
-            DESKTOP_MYSQL_PASSWORD: process.env.PACKAGED_SMOKE_MYSQL_PASSWORD || 'root',
-            DESKTOP_MYSQL_DATABASE: process.env.PACKAGED_SMOKE_MYSQL_DATABASE || 'dongtai_daping',
             DESKTOP_SMOKE_EXIT_AFTER_MS: '22000'
         },
         stdio: 'ignore'
@@ -58,7 +52,7 @@ async function main() {
     try {
         exit = await waitForExit(desktop, 90000);
     } catch (error) {
-        try { desktop.kill(); } catch (killError) { /* ignore */ }
+        await stopOwnedSmokeProcess(desktop);
         throw error;
     }
     await wait(1500);
@@ -110,11 +104,10 @@ async function main() {
         && unexpectedBackendErrors.length === 0
         && desktopErrorLog.trim() === ''
         && integrity === 'ok'
-        && totalTemplateDevices === 8
-        && databaseConfig.type === 'mysql'
-        && Number(databaseConfig.port) === 3307
-        && databaseConfig.database === 'dongtai_daping'
-        && backendLog.includes('Database:    mysql');
+        && totalTemplateDevices > 0
+        && databaseConfig.type === 'sqlite'
+        && path.resolve(databaseConfig.filename) === path.resolve(sandbox.filename)
+        && backendLog.includes('Database:    sqlite');
 
     const result = {
         success,

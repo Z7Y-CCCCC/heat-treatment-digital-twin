@@ -3,15 +3,32 @@ import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { useFactoryConfig } from '../config/factoryConfig.js'
 import { createDashboardDataStore } from '../runtime/DataStore.js'
 import { API_BASE } from '../runtime/backendEndpoint.js'
+import { createVoiceAnnouncer } from '../runtime/VoiceAnnouncer.js'
+import { resolveBackendAssetUrl } from '../three/ModelFactory.js'
 import WidgetRenderer from '../runtime/WidgetRenderer.vue'
+import { applyReferenceHudLayout } from '../runtime/referenceHudLayout.js'
+import { fitHudCanvas } from '../runtime/hudPresentation.js'
 import { applyVisibilityAction, widgetRuntimeVisible } from '../runtime/dashboardRules.js'
 
 const rootRef = ref(null)
+let overlayDisposed = false
+const overlayRequests = new AbortController()
+const voiceAnnouncer = createVoiceAnnouncer()
+let previousDocumentBackground = ''
+let previousBodyBackground = ''
+let databaseRequestSeq = 0
+let businessRequestSeq = 0
+let databaseInFlight = false
+let businessInFlight = false
 const selectedWidgetId = ref('')
 const hostConnected = ref(false)
-const lineReturnBusy = ref(false)
-const navigationRootReady = ref(false)
+const standalonePreview = ref(false)
+const overlayViewport = reactive({ width: 1920, height: 1080 })
+const parentReturnBusy = ref(false)
 const childNavigationEntered = ref(false)
+const inspectionCommandError = ref('')
+let inspectionProgressTimer = null
+let pendingInspectionProgress = null
 const databaseValues = reactive({})
 const businessData = reactive({
     status: 'idle',
@@ -22,7 +39,9 @@ const businessData = reactive({
 })
 const runtimeContext = reactive({
     viewId: 'factory_overview', viewMode: 'factory', sceneReady: false, sceneId: '', workshopId: '', lineId: '', deviceId: '',
-    inspectionStage: '', partId: '', partName: '', partDescription: '', partPointIds: [], partPointKeys: [], partDetailViewId: ''
+    inspectionStage: '', partId: '', partName: '', partDescription: '', partPointIds: [], partPointKeys: [], partDetailViewId: '',
+    inspectionEnabled: false, inspectionProgress: 0, inspectionAnimating: false, inspectionPhase: '', inspectionIsolated: false,
+    inspectionLabelsEnabled: false, inspectionLeaderLines: false, inspectionHoveredPartId: '', inspectionIssues: [], inspectionParts: []
 })
 const groupVisibility = reactive({})
 const widgetVisibility = reactive({})
@@ -34,21 +53,85 @@ const dataStore = createDashboardDataStore({
 })
 
 const {
+    config,
     loadConfig,
     getPlatform,
     getWorkshops
 } = useFactoryConfig()
 
+const modelLoadErrors = ref([])
+let modelProbeTimer = 0
+let modelProbeGeneration = 0
+
+function configuredModelDevices() {
+    return (getWorkshops() || []).flatMap(workshop => (workshop.lines || []).flatMap(line =>
+        (line.devices || []).map(device => ({
+            ...device,
+            lineName: line.name || line.id || '',
+            workshopName: workshop.name || workshop.id || ''
+        }))
+    ))
+}
+
+async function probeConfiguredModels() {
+    if (overlayDisposed) return
+    const generation = ++modelProbeGeneration
+    const devices = configuredModelDevices()
+    const models = Array.isArray(config.models) ? config.models : []
+    const groups = new Map()
+
+    for (const device of devices) {
+        const modelType = String(device.model_type || '').trim()
+        if (!modelType || modelType === 'builtin_furnace' || modelType === 'transfer_cart') continue
+        const model = models.find(item => String(item.id) === modelType)
+        const key = modelType || `missing:${device.id}`
+        if (!groups.has(key)) groups.set(key, { modelType, model, devices: [] })
+        groups.get(key).devices.push(device)
+    }
+
+    const checked = await Promise.all([...groups.values()].map(async group => {
+        if (!group.model) {
+            return { group, reason: `未找到模型资产：${group.modelType}`, url: '' }
+        }
+        if (!group.model.file_path) {
+            return { group, reason: `模型资产未配置文件：${group.model.id}`, url: '' }
+        }
+
+        const url = resolveBackendAssetUrl(group.model.file_path)
+        try {
+            const response = await fetch(url, { method: 'HEAD', cache: 'no-store', signal: overlayRequests.signal })
+            if (!response.ok) return { group, reason: `HTTP ${response.status} ${response.statusText || '请求失败'}`, url }
+            return null
+        } catch (error) {
+            return { group, reason: error?.message || '模型文件请求失败', url }
+        }
+    }))
+
+    if (overlayDisposed || generation !== modelProbeGeneration) return
+    modelLoadErrors.value = checked
+        .filter(Boolean)
+        .flatMap(item => item.group.devices.map(device => ({
+            deviceId: String(device.id || ''),
+            deviceName: device.name || device.id || '未命名设备',
+            modelName: item.group.model?.name || item.group.modelType,
+            reason: item.reason,
+            url: item.url
+        })))
+        .slice(0, 12)
+}
+
 const CONFIG_ONLY_WIDGET_TYPES = new Set([
     'device_label',
     'diagnostics',
     'line_overview_cards',
-    'navigation'
+    'navigation',
+    'return_button'
 ])
 
 const platform = computed(() => getPlatform() || {})
+const presentationDocument = computed(() => applyReferenceHudLayout(platform.value.document))
 const dashboardViews = computed(() => {
-    const views = platform.value.document?.scene?.views || platform.value.activeScene?.views || []
+    const views = presentationDocument.value?.scene?.views || platform.value.activeScene?.views || []
     return Array.isArray(views) && views.length
         ? views
         : [{ id: 'factory_overview', name: '全厂总览', mode: 'factory', targetType: 'factory', returnViewId: '' }]
@@ -56,21 +139,47 @@ const dashboardViews = computed(() => {
 const currentView = computed(() => dashboardViews.value.find(view => view.id === runtimeContext.viewId)
     || dashboardViews.value.find(view => view.mode === runtimeContext.viewMode)
     || dashboardViews.value[0])
-const defaultViewId = computed(() => platform.value.document?.scene?.defaultViewId
+const defaultViewId = computed(() => presentationDocument.value?.scene?.defaultViewId
     || platform.value.activeScene?.defaultViewId
     || 'factory_overview')
-const canReturnToParentView = computed(() => {
-    if (!childNavigationEntered.value) return false
-    if (runtimeContext.sceneReady === false) return false
-    const mode = String(runtimeContext.viewMode || currentView.value?.mode || 'factory').toLowerCase()
-    if (mode === 'factory' || runtimeContext.viewId === defaultViewId.value) return false
-    if (mode === 'device' && runtimeContext.inspectionStage && runtimeContext.inspectionStage !== 'solid') return true
-    if (!currentView.value?.returnViewId && !currentView.value?.parentViewId) return false
-    if (mode === 'device') return Boolean(runtimeContext.deviceId || currentView.value?.targetId)
+const canNavigateToParentView = computed(() => {
+    const targetType = String(currentView.value?.targetType || '').toLowerCase()
+    const mode = String(runtimeContext.viewMode || currentView.value?.mode || targetType || 'factory').toLowerCase()
+    const isDeviceView = mode === 'device' || targetType === 'device' || targetType === 'device_part'
+        || ['xray', 'exploded', 'part'].includes(String(runtimeContext.inspectionStage || '').toLowerCase())
+    // The native host can publish the inspection context a few frames after
+    // entering a part view. A known device/inspection view is still safely
+    // returnable during that hand-off.
+    if (runtimeContext.sceneReady === false && !isDeviceView) return false
+    if (!isDeviceView && (mode === 'factory' || runtimeContext.viewId === defaultViewId.value)) return false
+    if (isDeviceView && runtimeContext.inspectionStage && runtimeContext.inspectionStage !== 'solid') return true
+    if (isDeviceView && targetType === 'device_part') return true
+    if (!currentView.value?.returnViewId && !currentView.value?.parentViewId) {
+        // Older/custom documents may not have a return edge. Keep the
+        // standard hierarchy available as a safe runtime fallback.
+        return isDeviceView || ['line', 'workshop'].includes(mode)
+    }
+    if (isDeviceView) return Boolean(runtimeContext.deviceId || currentView.value?.targetId || runtimeContext.partId)
     if (mode === 'line') return Boolean(runtimeContext.lineId || currentView.value?.targetId)
     if (mode === 'workshop') return Boolean(runtimeContext.workshopId || currentView.value?.targetId)
     return true
 })
+// The return control must follow the actual navigation context. Depending on
+// a transient "this WebView saw the click" flag made it disappear when Unity
+// entered a deep view first or delivered its context update a frame later.
+const canReturnToParentView = computed(() => canNavigateToParentView.value)
+
+function parentViewIdForCurrent() {
+    const configured = currentView.value?.returnViewId || currentView.value?.parentViewId
+    if (configured) return configured
+    const targetType = String(currentView.value?.targetType || '').toLowerCase()
+    const mode = String(runtimeContext.viewMode || currentView.value?.mode || targetType || '').toLowerCase()
+    if (targetType === 'device_part') return 'device_exploded'
+    if (mode === 'device' || targetType === 'device') return 'line_overview'
+    if (mode === 'line') return 'workshop_overview'
+    if (mode === 'workshop') return 'factory_overview'
+    return ''
+}
 
 function runtimeContextIsRoot() {
     const configuredMode = dashboardViews.value.find(view => view.id === runtimeContext.viewId)?.mode
@@ -79,9 +188,11 @@ function runtimeContextIsRoot() {
 }
 
 function applyRuntimeContext(payload, { userNavigation = false } = {}) {
+    if (overlayDisposed) return
     if (!payload || typeof payload !== 'object') return
     const previousDataContext = [runtimeContext.viewId, runtimeContext.workshopId, runtimeContext.lineId, runtimeContext.deviceId, runtimeContext.partId].join('|')
     Object.assign(runtimeContext, payload)
+    nextTick(scheduleRegionReport)
     if (!Object.prototype.hasOwnProperty.call(payload, 'sceneReady')) runtimeContext.sceneReady = true
     const nextDataContext = [runtimeContext.viewId, runtimeContext.workshopId, runtimeContext.lineId, runtimeContext.deviceId, runtimeContext.partId].join('|')
     if (previousDataContext !== nextDataContext) {
@@ -91,13 +202,12 @@ function applyRuntimeContext(payload, { userNavigation = false } = {}) {
 
     if (runtimeContextIsRoot()) {
         childNavigationEntered.value = false
-        if (runtimeContext.sceneReady !== false) navigationRootReady.value = true
         return
     }
 
-    // 启动时后端可能短暂重放上次的下级视角。只有本次会话已经收到
-    // Unity 的总览就绪状态，或操作由用户在当前画面主动触发，才显示返回键。
-    if (userNavigation || (navigationRootReady.value && runtimeContext.sceneReady !== false)) {
+    // 启动时后端可能短暂重放上次的下级视角。只有本次会话中用户
+    // 主动点击了导航组件才显示返回键，历史上下文不能触发它。
+    if (userNavigation && runtimeContext.sceneReady !== false) {
         childNavigationEntered.value = true
     }
 }
@@ -105,7 +215,7 @@ const parentViewName = computed(() => {
     if (runtimeContext.inspectionStage === 'part') return '设备拆解视角'
     if (runtimeContext.inspectionStage === 'exploded') return '设备透视视角'
     if (runtimeContext.inspectionStage === 'xray') return '设备实体视角'
-    const parentId = currentView.value?.returnViewId || currentView.value?.parentViewId
+    const parentId = parentViewIdForCurrent()
     return dashboardViews.value.find(view => view.id === parentId)?.name || '上一级视角'
 })
 function viewComponentVisible(type, id = `widget_${type}`) {
@@ -115,7 +225,7 @@ function viewComponentVisible(type, id = `widget_${type}`) {
     if (state.show?.length && !candidates.some(candidate => state.show.includes(candidate))) return false
     return true
 }
-const dashboardCanvas = computed(() => platform.value.document?.canvas || platform.value.canvas || {
+const dashboardCanvas = computed(() => presentationDocument.value?.canvas || platform.value.canvas || {
     width: 1920,
     height: 1080,
     legacyGrid: { columns: 24, rows: 12 }
@@ -124,18 +234,52 @@ const grid = computed(() => ({
     columns: Math.max(1, Number(platform.value.activeScene?.layout?.grid?.columns) || 24),
     rows: Math.max(1, Number(platform.value.activeScene?.layout?.grid?.rows) || 12)
 }))
-const configuredWidgets = computed(() => {
-    const configured = Array.isArray(platform.value.document?.widgets)
-        ? platform.value.document.widgets
+const allConfiguredWidgets = computed(() => {
+    const configured = Array.isArray(presentationDocument.value?.widgets)
+        ? presentationDocument.value.widgets
         : (Array.isArray(platform.value.widgets) ? platform.value.widgets : [])
     return configured
-        .filter(widget => widget.visible !== 0 && widget.visible !== false)
         .filter(widget => !CONFIG_ONLY_WIDGET_TYPES.has(widget.type || widget.widget_type))
-        .filter(widget => widget.runtimeTarget !== 'unity')
         .sort((left, right) => Number(left.zIndex ?? left.sort_order ?? 0) - Number(right.zIndex ?? right.sort_order ?? 0))
 })
+const navigationWidget = computed(() => {
+    const configured = Array.isArray(presentationDocument.value?.widgets)
+        ? presentationDocument.value.widgets
+        : (Array.isArray(platform.value.widgets) ? platform.value.widgets : [])
+    return configured.find(widget => (widget.type || widget.widget_type) === 'navigation') || null
+})
+const returnButtonWidget = computed(() => {
+    const configured = Array.isArray(presentationDocument.value?.widgets)
+        ? presentationDocument.value.widgets
+        : (Array.isArray(platform.value.widgets) ? platform.value.widgets : [])
+    return configured.find(widget => (widget.type || widget.widget_type) === 'return_button') || null
+})
+const navigationEnabled = computed(() => {
+    const widget = navigationWidget.value
+    if (widget && (widget.visible === false || widget.visible === 0)) return false
+    return viewComponentVisible('navigation', widget?.id || 'widget_navigation')
+})
+const returnButtonEnabled = computed(() => {
+    const widget = returnButtonWidget.value
+    if (widget && (widget.visible === false || widget.visible === 0)) return false
+    return viewComponentVisible('return_button', widget?.id || 'widget_return_button')
+})
+const navigationStyle = computed(() => {
+    const widget = navigationWidget.value
+    if (widget?.frame) return widgetStyle(widget)
+    // Keep the legacy runtime position until a document containing the
+    // navigation component has been normalized by the designer/backend.
+    return { left: '34.38%', top: '1.67%', width: '31.25%', height: '3.89%' }
+})
+const returnButtonStyle = computed(() => {
+    const widget = returnButtonWidget.value
+    if (widget?.frame) return widgetStyle(widget)
+    return { left: '1.04%', top: '1.67%', width: '2.19%', height: '3.89%' }
+})
+const configuredWidgets = computed(() => allConfiguredWidgets.value
+    .filter(widget => widget.visible !== 0 && widget.visible !== false)
+    .filter(widget => widget.runtimeTarget !== 'unity'))
 const widgets = computed(() => {
-    if (runtimeContext.sceneReady === false) return []
     return configuredWidgets.value.filter(widget => {
     const state = currentView.value?.componentState || {}
     const groupId = widget.groupId ? `group:${widget.groupId}` : ''
@@ -192,7 +336,7 @@ function pointForContextKey(deviceId, key) {
             const device = (line.devices || []).find(item => String(item.id) === String(deviceId))
             if (!device) continue
             const point = (device.dataPoints || []).find(item => {
-                const pointCategory = String(item.category || 'analog')
+                const pointCategory = String(item.category || item.category_resolved || 'analog')
                 const pointField = String(item.value_role || item.name || '')
                 return (!category || pointCategory === category) && pointField === field
             })
@@ -222,12 +366,52 @@ const selectedPart = computed(() => {
     }
 })
 
+async function sendInspectionCommand(inspection) {
+    if (overlayDisposed || !runtimeContext.deviceId) return
+    inspectionCommandError.value = ''
+    try {
+        const response = await fetch(`${API_BASE}/native-preview/navigate`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: overlayRequests.signal,
+            body: JSON.stringify({ action: 'inspection', focus: { mode: 'device', deviceId: runtimeContext.deviceId }, inspection })
+        })
+        const result = await response.json()
+        if (!response.ok || !result.success || !result.sent) throw new Error(result.error || 'Unity 运行端未连接，操作未执行')
+    } catch (error) { if (!overlayDisposed && error.name !== 'AbortError') inspectionCommandError.value = error.message }
+}
+
+function handleInspectionCommand(command) {
+    if (command.command !== 'progress') {
+        clearTimeout(inspectionProgressTimer)
+        inspectionProgressTimer = null
+        pendingInspectionProgress = null
+        return sendInspectionCommand(command)
+    }
+    pendingInspectionProgress = command
+    if (inspectionProgressTimer) return
+    inspectionProgressTimer = setTimeout(() => {
+        inspectionProgressTimer = null
+        const next = pendingInspectionProgress
+        pendingInspectionProgress = null
+        if (next) sendInspectionCommand(next)
+    }, 60)
+}
+
 function runtimeValueForWidget(widget) {
     const binding = widget?.data || widget?.binding || {}
     if (binding.mode === 'database') return databaseValues[widget.id]?.value
     if (binding.mode === 'plc' || binding.pointId || binding.point_id) {
         const pointId = String(binding.pointId || binding.point_id || '')
-        const deviceId = String(binding.deviceId || binding.device_id || '')
+        const isCurrentDevice = binding.deviceScope === 'current'
+        const deviceId = String(isCurrentDevice ? runtimeContext.deviceId : (binding.deviceId || binding.device_id || ''))
+        if (isCurrentDevice && !deviceId) return undefined
+        if (isCurrentDevice && deviceId) {
+            const semanticPoint = pointForContextKey(deviceId, binding.pointKey || binding.path)
+            if (semanticPoint) return semanticPoint.value
+            // Never fall back to the unqualified point id for a current-device
+            // binding: ids may belong to another device and would show stale
+            // data in the wrong equipment view.
+            return pointValues.value[`${deviceId}:${pointId}`]?.value
+        }
         return pointValues.value[`${deviceId}:${pointId}`]?.value ?? pointValues.value[pointId]?.value
     }
     if (binding.mode === 'runtime') {
@@ -247,15 +431,19 @@ function runtimeValueForWidget(widget) {
 
 const projectName = computed(() => platform.value.activeProject?.name || '热处理数字孪生')
 const sceneName = computed(() => platform.value.activeScene?.name || '工厂总览')
+const navigationProjectLabel = computed(() => navigationWidget.value?.content?.projectLabel || `${projectName.value} · ${sceneName.value}`)
+const navigationStatusText = computed(() => navigationWidget.value?.content?.statusText || dataStore.plcStatusText.value)
 
 let resizeObserver = null
 let mutationObserver = null
 let regionFrame = 0
+let regionMotionUntil = 0
 let refreshTimer = 0
 let selectionTimer = 0
+let lastRegionSignature = ''
 
 function postHostMessage(message) {
-    if (!window.chrome?.webview) return
+    if (overlayDisposed || !window.chrome?.webview) return
     window.chrome.webview.postMessage(message)
 }
 
@@ -269,6 +457,7 @@ function widgetStyle(widget) {
             width: `${Number(widget.frame.width || 320) / canvasWidth * 100}%`,
             height: `${Number(widget.frame.height || 180) / canvasHeight * 100}%`,
             zIndex: Number(widget.zIndex || 0),
+            '--overlay-text-scale': Math.min(.48, (Number(widget.style?.fontSize) || 18) / Math.max(1, Number(widget.frame.height) || 40)),
             transform: `rotate(${Number(widget.frame.rotation || 0)}deg)`
         }
     }
@@ -287,11 +476,23 @@ function widgetStyle(widget) {
 }
 
 function scheduleRegionReport() {
-    if (regionFrame) return
+    if (overlayDisposed || regionFrame) return
+    if (rootRef.value) {
+        overlayViewport.width = rootRef.value.clientWidth || 1920
+        overlayViewport.height = rootRef.value.clientHeight || 1080
+    }
     regionFrame = window.requestAnimationFrame(() => {
         regionFrame = 0
         reportInteractionRegions()
+        if (performance.now() < regionMotionUntil) scheduleRegionReport()
     })
+}
+
+function trackHoverMotion() {
+    // ResizeObserver cannot see transforms. Track the complete 220ms
+    // transition (including leave/re-entry) and one settled frame.
+    regionMotionUntil = performance.now() + 280
+    scheduleRegionReport()
 }
 
 function reportInteractionRegions() {
@@ -310,10 +511,11 @@ function reportInteractionRegions() {
             const rect = target.getBoundingClientRect()
             if (rect.width < 1 || rect.height < 1) return null
             return {
-                x: Math.round(rect.left),
-                y: Math.round(rect.top),
-                width: Math.round(rect.width),
-                height: Math.round(rect.height),
+                // Preserve subpixel edges until the host converts to pixels.
+                x: rect.left,
+                y: rect.top,
+                width: rect.width,
+                height: rect.height,
                 radius: Math.max(
                     Number.parseFloat(targetStyle.borderTopLeftRadius) || 0,
                     Number.parseFloat(targetStyle.borderTopRightRadius) || 0,
@@ -324,13 +526,18 @@ function reportInteractionRegions() {
         })
         .filter(Boolean)
 
+    const viewport = {
+        width: Math.max(1, window.innerWidth),
+        height: Math.max(1, window.innerHeight),
+        devicePixelRatio: window.devicePixelRatio || 1
+    }
+    const signature = JSON.stringify({ viewport, regions })
+    if (signature === lastRegionSignature) return
+    lastRegionSignature = signature
+
     postHostMessage({
         type: 'overlay_regions',
-        viewport: {
-            width: Math.max(1, window.innerWidth),
-            height: Math.max(1, window.innerHeight),
-            devicePixelRatio: window.devicePixelRatio || 1
-        },
+        viewport,
         regions
     })
 }
@@ -366,29 +573,26 @@ function eventQueryConfig() {
 
 async function focusNativeScene(mode, event = {}) {
     const configuredView = viewFor(mode, event.viewId)
+    const focus = navigationFocus(mode, event, configuredView)
+    const inspectionStage = mode === 'device' ? inspectionStageForView(configuredView) : ''
+    if (inspectionStage) focus.inspectionStage = inspectionStage
     const nextContext = {
         viewId: configuredView?.id || event.viewId || runtimeContext.viewId,
         viewMode: mode,
-        deviceId: mode === 'device' ? (event.deviceId || '') : '',
-        lineId: mode === 'line' ? (event.lineId || runtimeContext.lineId || '') : (mode === 'device' ? runtimeContext.lineId : ''),
-        workshopId: mode === 'workshop' ? (event.workshopId || '') : (['line', 'device'].includes(mode) ? runtimeContext.workshopId : '')
-        ,inspectionStage: '', partId: ''
+        deviceId: mode === 'device' ? focus.deviceId : '',
+        lineId: mode === 'line' ? focus.lineId : (mode === 'device' ? runtimeContext.lineId : ''),
+        workshopId: mode === 'workshop' ? focus.workshopId : (['line', 'device'].includes(mode) ? runtimeContext.workshopId : '')
+        ,inspectionStage, partId: ''
     }
-    Object.assign(runtimeContext, nextContext)
     try {
-        const response = await fetch(`${API_BASE}/native-preview`, {
+        const response = await fetch(`${API_BASE}/native-preview/navigate`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 action: 'view',
                 source: 'dashboard_overlay',
                 viewId: configuredView?.id || event.viewId || '',
-                focus: {
-                    mode,
-                    deviceId: event.deviceId || '',
-                    lineId: event.lineId || '',
-                    workshopId: event.workshopId || ''
-                }
+                focus
             })
         })
         if (response.ok) applyRuntimeContext(nextContext, { userNavigation: true })
@@ -405,32 +609,56 @@ function viewFor(mode, viewId = '') {
         || dashboardViews.value[0]
 }
 
+function inspectionStageForView(view) {
+    const stage = String(view?.metadata?.inspectionStage || '').toLowerCase()
+    return ['solid', 'xray', 'exploded', 'part'].includes(stage) ? stage : ''
+}
+
+// A generic authored view (such as “产线视角”) normally has no fixed target.
+// Keep the target inherited from the current navigation context, otherwise a
+// device -> line -> workshop return loses the line/workshop it should focus.
+function navigationFocus(mode, event = {}, view = null) {
+    const targetType = String(view?.targetType || '').toLowerCase()
+    return {
+        mode,
+        deviceId: event.deviceId
+            || (targetType === 'device' ? view?.targetId : '')
+            || (mode === 'device' ? runtimeContext.deviceId : '')
+            || '',
+        lineId: event.lineId
+            || (targetType === 'line' ? view?.targetId : '')
+            || (mode === 'line' ? runtimeContext.lineId : '')
+            || '',
+        workshopId: event.workshopId
+            || (targetType === 'workshop' ? view?.targetId : '')
+            || (mode === 'workshop' ? runtimeContext.workshopId : '')
+            || ''
+    }
+}
+
 async function focusNativeView(viewId, event = {}) {
     const view = viewFor(event.mode || 'factory', viewId)
     const mode = view?.mode === 'custom' ? (view.targetType || 'factory') : (view?.mode || event.mode || 'factory')
+    const focus = navigationFocus(mode, event, view)
+    const inspectionStage = mode === 'device' ? inspectionStageForView(view) : ''
+    if (inspectionStage) focus.inspectionStage = inspectionStage
     const nextContext = {
         viewId: view?.id || viewId || runtimeContext.viewId,
         viewMode: mode,
-        deviceId: mode === 'device' ? (event.deviceId || view?.targetId || '') : '',
-        lineId: mode === 'line' ? (event.lineId || view?.targetId || runtimeContext.lineId || '') : (mode === 'device' ? runtimeContext.lineId : ''),
-        workshopId: mode === 'workshop' ? (event.workshopId || view?.targetId || '') : (['line', 'device'].includes(mode) ? runtimeContext.workshopId : '')
-        ,inspectionStage: '', partId: ''
+        deviceId: mode === 'device' ? focus.deviceId : '',
+        lineId: mode === 'line' ? focus.lineId : (mode === 'device' ? runtimeContext.lineId : ''),
+        workshopId: mode === 'workshop' ? focus.workshopId : (['line', 'device'].includes(mode) ? runtimeContext.workshopId : '')
+        ,inspectionStage, partId: ''
     }
-    Object.assign(runtimeContext, nextContext)
     try {
-        const response = await fetch(API_BASE + '/native-preview', {
+        const response = await fetch(API_BASE + '/native-preview/navigate', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 action: 'view',
                 source: 'dashboard_overlay',
                 viewId: view?.id || viewId || '',
-                focus: {
-                    mode,
-                    deviceId: event.deviceId || (view?.targetType === 'device' ? view.targetId : '') || '',
-                    lineId: event.lineId || (view?.targetType === 'line' ? view.targetId : '') || '',
-                    workshopId: event.workshopId || (view?.targetType === 'workshop' ? view.targetId : '') || ''
-                }
+                focus
             })
         })
         if (response.ok) applyRuntimeContext(nextContext, { userNavigation: true })
@@ -440,36 +668,52 @@ async function focusNativeView(viewId, event = {}) {
     }
 }
 
-async function returnToLineView() {
-    if (lineReturnBusy.value) return
-    lineReturnBusy.value = true
+async function returnToParentView() {
+    if (!canNavigateToParentView.value || parentReturnBusy.value) return
+    parentReturnBusy.value = true
     try {
-        if (runtimeContext.viewMode === 'device' && runtimeContext.inspectionStage && runtimeContext.inspectionStage !== 'solid') {
-            await fetch(`${API_BASE}/native-preview`, {
+        const targetType = String(currentView.value?.targetType || '').toLowerCase()
+        const mode = String(runtimeContext.viewMode || currentView.value?.mode || targetType || '').toLowerCase()
+        const isDeviceView = mode === 'device' || targetType === 'device' || targetType === 'device_part'
+        if (isDeviceView && runtimeContext.inspectionStage && runtimeContext.inspectionStage !== 'solid') {
+            const response = await fetch(`${API_BASE}/native-preview/navigate`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ action: 'inspection_back', source: 'dashboard_overlay', focus: { mode: 'device', deviceId: runtimeContext.deviceId } })
+                // viewId makes this idempotent if Unity and the WebView happen
+                // to receive the same Escape key during a focus transition.
+                body: JSON.stringify({
+                    action: 'inspection_back',
+                    source: 'dashboard_overlay',
+                    viewId: runtimeContext.viewId,
+                    focus: { mode: 'device', deviceId: runtimeContext.deviceId }
+                })
             })
+            if (!response.ok) return false
             return
         }
-        const parentId = currentView.value?.returnViewId || currentView.value?.parentViewId
-        if (parentId) await focusNativeView(parentId, { mode: 'factory' })
-        else await focusNativeScene('line')
+        const parentId = parentViewIdForCurrent()
+        if (parentId) await focusNativeView(parentId)
     } finally {
-        lineReturnBusy.value = false
+        parentReturnBusy.value = false
     }
 }
 
+function isEditableKeyboardTarget(target) {
+    if (!(target instanceof Element)) return false
+    return Boolean(target.closest('input, textarea, select, [contenteditable=""], [contenteditable="true"], [role="textbox"]'))
+}
+
+function handleOverlayKeydown(event) {
+    if (event.key !== 'Escape' && event.code !== 'Escape') return
+    if (event.defaultPrevented || event.isComposing) return
+    if (isEditableKeyboardTarget(event.target) || !canNavigateToParentView.value) return
+    event.preventDefault()
+    event.stopPropagation()
+    void returnToParentView()
+}
+
 function playVoice(event) {
-    if (event.audioUrl) {
-        const audio = new Audio(event.audioUrl)
-        audio.play().catch(() => {})
-        return
-    }
-    if (event.text && window.speechSynthesis) {
-        window.speechSynthesis.cancel()
-        window.speechSynthesis.speak(new SpeechSynthesisUtterance(event.text))
-    }
+    voiceAnnouncer.preview({ mode: 'auto', audio_url: event.audioUrl || '', text: event.text || '' }).catch(() => {})
 }
 
 function handleWidgetAction({ event }) {
@@ -495,6 +739,7 @@ function handleWidgetAction({ event }) {
 }
 
 async function handleRuntimeMessage(message) {
+    if (overlayDisposed) return
     if (message?.type === 'dashboard_context_changed') {
         const payload = message.payload || {}
         applyRuntimeContext(payload)
@@ -503,8 +748,10 @@ async function handleRuntimeMessage(message) {
     }
     if (message?.type === 'dashboard_release_changed') {
         await loadConfig()
+        if (overlayDisposed) return
+        probeConfiguredModels()
         runtimeContext.sceneId = platform.value.activeScene?.id || runtimeContext.sceneId
-        runtimeContext.viewId = platform.value.document?.scene?.defaultViewId || platform.value.activeScene?.defaultViewId || runtimeContext.viewId
+        runtimeContext.viewId = presentationDocument.value?.scene?.defaultViewId || platform.value.activeScene?.defaultViewId || runtimeContext.viewId
         runtimeContext.viewMode = dashboardViews.value.find(view => view.id === runtimeContext.viewId)?.mode || 'factory'
         dataStore.setEventQueryOptions(eventQueryConfig())
         await Promise.all([refreshDatabaseValues(true), refreshBusinessData(true)])
@@ -523,7 +770,10 @@ function handleHostMessage(event) {
 }
 
 async function refreshDatabaseValues(force = false) {
+    if (overlayDisposed || (!force && databaseInFlight)) return
     if (!force && !configuredWidgets.value.some(widget => widget.data?.mode === 'database')) return
+    const requestSeq = ++databaseRequestSeq
+    databaseInFlight = true
     try {
         const query = new URLSearchParams({
             view_id: runtimeContext.viewId || '',
@@ -532,14 +782,17 @@ async function refreshDatabaseValues(force = false) {
             device_id: runtimeContext.deviceId || '',
             part_id: runtimeContext.partId || ''
         })
-        const response = await fetch(`${API_BASE}/data-sources/runtime-values?${query}`)
+        const response = await fetch(`${API_BASE}/data-sources/runtime-values?${query}`, { signal: overlayRequests.signal })
         if (!response.ok) return
         const payload = await response.json()
+        if (overlayDisposed || requestSeq !== databaseRequestSeq) return
         const next = payload.values || {}
         Object.keys(databaseValues).forEach(key => { if (!(key in next)) delete databaseValues[key] })
         Object.assign(databaseValues, next)
     } catch {
         // 外部数据库短暂离线时保留上一次画面，质量状态由后端结果更新。
+    } finally {
+        if (requestSeq === databaseRequestSeq) databaseInFlight = false
     }
 }
 
@@ -553,6 +806,9 @@ function emptyBusinessSections(message) {
 }
 
 async function refreshBusinessData(force = false) {
+    if (overlayDisposed || (!force && businessInFlight)) return
+    const requestSeq = ++businessRequestSeq
+    businessInFlight = false
     if (!businessWidgets.value.length) return
     const connectionId = String(businessWidgets.value.find(widget => widget.data?.connectionId)?.data?.connectionId
         || businessWidgets.value.find(widget => widget.content?.connectionId)?.content?.connectionId || '').trim()
@@ -563,11 +819,14 @@ async function refreshBusinessData(force = false) {
         businessData.sections = emptyBusinessSections('请在设计器中为业务摘要组件配置外部只读数据库连接')
         return
     }
+    businessInFlight = true
+    businessData.status = 'loading'
     try {
         const params = new URLSearchParams({ connection_id: connectionId, limit: '200' })
         if (runtimeContext.deviceId) params.set('device_id', runtimeContext.deviceId)
-        const response = await fetch(`${API_BASE}/business-data/snapshot?${params.toString()}`, { cache: 'no-store' })
+        const response = await fetch(`${API_BASE}/business-data/snapshot?${params.toString()}`, { cache: 'no-store', signal: overlayRequests.signal })
         const payload = await response.json().catch(() => ({}))
+        if (overlayDisposed || requestSeq !== businessRequestSeq) return
         if (!response.ok || payload.success === false) throw new Error(payload.error || `业务数据读取失败：${response.status}`)
         businessData.status = 'ready'
         businessData.readOnly = payload.readOnly !== false
@@ -575,21 +834,31 @@ async function refreshBusinessData(force = false) {
         businessData.fetchedAt = payload.fetchedAt || new Date().toISOString()
         businessData.sections = payload.sections || {}
     } catch (error) {
+        if (overlayDisposed || requestSeq !== businessRequestSeq) return
         businessData.status = 'error'
         businessData.source = { connectionId }
         businessData.fetchedAt = null
         businessData.sections = emptyBusinessSections(error.message || '外部业务数据读取失败')
+    } finally {
+        if (requestSeq === businessRequestSeq) businessInFlight = false
     }
 }
 
 onMounted(async () => {
+    standalonePreview.value = !window.chrome?.webview
+    previousDocumentBackground = document.documentElement.style.background
+    previousBodyBackground = document.body.style.background
     document.documentElement.style.background = 'transparent'
     document.body.style.background = 'transparent'
+    scheduleRegionReport()
     window.chrome?.webview?.addEventListener('message', handleHostMessage)
+    window.addEventListener('keydown', handleOverlayKeydown, true)
 
     await loadConfig()
+    if (overlayDisposed) return
+    probeConfiguredModels()
     runtimeContext.sceneId = platform.value.activeScene?.id || ''
-    runtimeContext.viewId = platform.value.document?.scene?.defaultViewId || platform.value.activeScene?.defaultViewId || 'factory_overview'
+    runtimeContext.viewId = presentationDocument.value?.scene?.defaultViewId || platform.value.activeScene?.defaultViewId || 'factory_overview'
     runtimeContext.viewMode = dashboardViews.value.find(view => view.id === runtimeContext.viewId)?.mode || 'factory'
     if (!window.chrome?.webview) runtimeContext.sceneReady = true
     registerConfiguredDevices()
@@ -605,13 +874,28 @@ onMounted(async () => {
     ])
 
     await nextTick()
+    if (overlayDisposed || !rootRef.value) return
     resizeObserver = new ResizeObserver(scheduleRegionReport)
     resizeObserver.observe(rootRef.value)
     for (const element of rootRef.value.querySelectorAll('[data-overlay-hit="true"]')) {
         resizeObserver.observe(element)
     }
-    mutationObserver = new MutationObserver(scheduleRegionReport)
-    mutationObserver.observe(rootRef.value, { childList: true, subtree: true, attributes: true })
+    // Text/attribute updates are frequent in the live dashboard. They do not
+    // change the native hit rectangles, so observing them makes WebView2
+    // repeatedly recalculate its window region and can produce compositor
+    // flashes. ResizeObserver handles geometry changes; MutationObserver is
+    // limited to structural changes so newly mounted hit targets are picked up.
+    mutationObserver = new MutationObserver(mutations => {
+        for (const mutation of mutations) {
+            for (const node of mutation.addedNodes || []) {
+                if (node.nodeType !== Node.ELEMENT_NODE) continue
+                if (node.matches?.('[data-overlay-hit="true"]')) resizeObserver.observe(node)
+                node.querySelectorAll?.('[data-overlay-hit="true"]').forEach(element => resizeObserver.observe(element))
+            }
+        }
+        scheduleRegionReport()
+    })
+    mutationObserver.observe(rootRef.value, { childList: true, subtree: true })
     window.addEventListener('resize', scheduleRegionReport)
     refreshTimer = window.setInterval(() => {
         dataStore.refreshEvents()
@@ -620,6 +904,7 @@ onMounted(async () => {
         refreshDatabaseValues()
         refreshBusinessData()
     }, 5000)
+    modelProbeTimer = window.setInterval(probeConfiguredModels, 15000)
 
     hostConnected.value = true
     postHostMessage({ type: 'overlay_ready' })
@@ -627,56 +912,89 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+    overlayDisposed = true
+    clearTimeout(inspectionProgressTimer)
+    modelProbeGeneration += 1
+    overlayRequests.abort()
+    voiceAnnouncer.dispose()
+    document.documentElement.style.background = previousDocumentBackground
+    document.body.style.background = previousBodyBackground
     if (regionFrame) window.cancelAnimationFrame(regionFrame)
     window.clearInterval(refreshTimer)
+    window.clearInterval(modelProbeTimer)
     window.clearTimeout(selectionTimer)
+    lastRegionSignature = ''
     resizeObserver?.disconnect()
     mutationObserver?.disconnect()
     window.removeEventListener('resize', scheduleRegionReport)
+    window.removeEventListener('keydown', handleOverlayKeydown, true)
     window.chrome?.webview?.removeEventListener('message', handleHostMessage)
     dataStore.dispose()
 })
 </script>
 
 <template>
-    <div ref="rootRef" class="dashboard-overlay-root" :class="{ 'is-scene-ready': runtimeContext.sceneReady !== false }">
-        <div class="overlay-canvas">
-            <button
-                type="button"
-                v-if="canReturnToParentView && viewComponentVisible('navigation')"
-                class="overlay-line-return"
-                :class="{ 'is-busy': lineReturnBusy }"
-                :disabled="lineReturnBusy"
-                :aria-label="`返回${parentViewName}`"
-                :title="`返回${parentViewName}`"
+    <div ref="rootRef" class="dashboard-overlay-root" :class="{ 'is-scene-ready': runtimeContext.sceneReady !== false, 'standalone-preview': standalonePreview }">
+        <div class="overlay-canvas" :class="{ 'is-reference-canvas': presentationDocument?.metadata?.referenceHud === 1 && runtimeContext.viewId === 'factory_overview' }" :style="presentationDocument?.metadata?.referenceHud === 1 && runtimeContext.viewId === 'factory_overview' ? fitHudCanvas(dashboardCanvas, overlayViewport) : undefined">
+            <div v-if="navigationEnabled" class="overlay-navigation" :style="navigationStyle">
+                <button
+                    type="button"
+                    class="overlay-status"
+                    :class="{ online: dataStore.health.readiness.displayReady && hostConnected }"
+                    data-overlay-hit="true"
+                    :title="`后端：${dataStore.health.components.backend?.status || '未知'}；数据库：${dataStore.health.components.database?.status || '未知'}；Unity：${dataStore.health.components.unity?.status || '未知'}；数据：${dataStore.health.components.dataEngine?.fresh ? '新鲜' : '未就绪'}`"
+                    @click="selectWidget('overlay-status')"
+                >
+                    <span class="overlay-status-dot"></span>
+                    <span>{{ navigationProjectLabel }}</span>
+                    <strong>{{ navigationStatusText }}</strong>
+                </button>
+            </div>
+
+            <div v-if="returnButtonEnabled" class="overlay-return-widget" :style="returnButtonStyle">
+                <button
+                    type="button"
+                    v-if="canReturnToParentView"
+                    class="overlay-line-return"
+                    :class="{ 'is-busy': parentReturnBusy }"
+                    :disabled="parentReturnBusy"
+                    :aria-label="`返回${parentViewName}`"
+                    :title="`返回${parentViewName}`"
+                    data-overlay-hit="true"
+                    @pointerdown.stop
+                    @click.stop="returnToParentView"
+                >
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="M15.25 4.75 8 12l7.25 7.25" />
+                    </svg>
+                </button>
+            </div>
+
+            <div
+                v-if="modelLoadErrors.length"
+                class="overlay-model-errors"
+                role="alert"
                 data-overlay-hit="true"
                 @pointerdown.stop
-                @click.stop="returnToLineView"
             >
-                <svg viewBox="0 0 24 24" aria-hidden="true">
-                    <path d="M15.25 4.75 8 12l7.25 7.25" />
-                </svg>
-            </button>
-
-            <button
-                type="button"
-                class="overlay-status"
-                :class="{ online: dataStore.health.readiness.displayReady && hostConnected }"
-                data-overlay-hit="true"
-                :title="`后端：${dataStore.health.components.backend?.status || '未知'}；数据库：${dataStore.health.components.database?.status || '未知'}；Unity：${dataStore.health.components.unity?.status || '未知'}；数据：${dataStore.health.components.dataEngine?.fresh ? '新鲜' : '未就绪'}`"
-                @click="selectWidget('overlay-status')"
-            >
-                <span class="overlay-status-dot"></span>
-                <span>{{ projectName }} · {{ sceneName }}</span>
-                <strong>{{ dataStore.plcStatusText.value }}</strong>
-            </button>
+                <strong>模型未加载（当前显示占位几何体）</strong>
+                <div v-for="error in modelLoadErrors.slice(0, 4)" :key="`${error.deviceId}-${error.url}`" class="overlay-model-error-item">
+                    <span>{{ error.deviceName }}（{{ error.deviceId }}）</span>
+                    <small>{{ error.modelName }} · {{ error.reason }}</small>
+                    <code v-if="error.url">{{ error.url }}</code>
+                </div>
+                <em v-if="modelLoadErrors.length > 4">还有 {{ modelLoadErrors.length - 4 }} 个模型未加载</em>
+            </div>
 
             <div
                 v-for="widget in widgets"
                 :key="widget.id"
-                class="overlay-widget"
+                class="overlay-widget hud-widget"
+                @pointerenter="trackHoverMotion"
+                @pointerleave="trackHoverMotion"
                 :class="[
                     `widget-type-${widget.type || widget.widget_type}`,
+                    { 'is-panel-heading': String(widget.content?.text || '').trim().startsWith('▸') },
                     { 'is-selected': selectedWidgetId === widget.id }
                 ]"
                 :style="widgetStyle(widget)"
@@ -695,7 +1013,10 @@ onUnmounted(() => {
                     :database-values="databaseValues"
                     :business-data="businessData"
                     :runtime-context="runtimeContext"
-        :selected-part="selectedPart"
+                    :selected-part="selectedPart"
+                    overlay-mode
+                    :preview="true"
+                    :data-ready="dataStore.health.readiness.displayReady === true"
                     @action="handleWidgetAction"
                 />
             </div>
@@ -727,33 +1048,131 @@ body,
     background: transparent;
     pointer-events: none;
     user-select: none;
-    font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif;
+    font-family: var(--hud-font-text, "SF Pro Text", "Inter", "Segoe UI", "PingFang SC", "Microsoft YaHei UI", sans-serif);
+    font-synthesis: none;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    --overlay-ink: #061321;
+    --overlay-ink-deep: #020b16;
+    --overlay-blue: #6bd4ff;
+    --overlay-cyan: #55c7ff;
+    --overlay-violet: #8b8bff;
+    --overlay-green: #49df9d;
+    --overlay-warm: #ffc45f;
+    --overlay-muted: #8ea7ba;
+}
+
+/* In a normal desktop build Unity supplies the scene below this transparent
+   layer. The browser route has no host scene, so give it a proper art-directed
+   canvas for review and designer preview instead of falling back to white. */
+.dashboard-overlay-root.standalone-preview {
+    background:
+        radial-gradient(ellipse at 52% 44%, #333c57 0%, #1c2439 42%, #101624 80%);
+}
+
+.dashboard-overlay-root.standalone-preview::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    opacity: .34;
+    background:
+        linear-gradient(rgba(107, 212, 255, .045) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(107, 212, 255, .045) 1px, transparent 1px),
+        radial-gradient(ellipse at 50% 50%, transparent 22%, rgba(0, 5, 14, .42) 100%);
+    background-size: 44px 44px, 44px 44px, 100% 100%;
+}
+
+.dashboard-overlay-root.standalone-preview::after {
+    content: "";
+    position: absolute;
+    inset: 3.6%;
+    pointer-events: none;
+    border: 1px solid rgba(107, 212, 255, .13);
+    border-radius: 16px;
+    box-shadow: inset 0 0 70px rgba(42, 119, 173, .08);
+}
+
+/* Keep the browser-only review surface in the same 16:9 composition as the
+   reference dashboard. The hosted Unity overlay remains full-canvas. */
+.dashboard-overlay-root.standalone-preview .overlay-canvas {
+    inset: auto;
+    top: 50%;
+    left: 50%;
+    width: min(100%, 177.7778vh);
+    height: min(100%, 56.25vw);
+    aspect-ratio: 16 / 9;
+    transform: translate(-50%, -50%);
 }
 
 .overlay-canvas {
     position: absolute;
     inset: 0;
-    opacity: 0;
-    transition: opacity 240ms ease;
+    opacity: 1;
+    isolation: isolate;
+}
+.overlay-canvas.is-reference-canvas {
+    inset: auto;
+    top: 50%;
+    left: 50%;
+    transform-origin: center;
 }
 .dashboard-overlay-root.is-scene-ready .overlay-canvas { opacity: 1; }
 
+/* A restrained vignette makes the information layer read as one instrument
+   panel while leaving the center of the Unity scene open and bright. */
+.overlay-canvas::before,
+.overlay-canvas::after {
+    content: "";
+    position: absolute;
+    pointer-events: none;
+}
+
+.overlay-canvas::before {
+    inset: 0;
+    z-index: 0;
+    background:
+        radial-gradient(ellipse at 50% 42%, transparent 22%, rgba(2, 9, 19, .06) 65%, rgba(2, 8, 18, .34) 100%),
+        linear-gradient(180deg, rgba(2, 12, 24, .42), transparent 19%, transparent 78%, rgba(2, 9, 20, .34));
+}
+
+.overlay-canvas::after {
+    inset: 22px;
+    z-index: 0;
+    border: 1px solid rgba(112, 196, 238, .11);
+    border-radius: 18px;
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .025);
+}
+
+.overlay-navigation {
+    position: absolute;
+    pointer-events: none;
+}
+
+.overlay-return-widget {
+    position: absolute;
+    pointer-events: none;
+}
+
 .overlay-line-return {
     position: absolute;
-    top: 20px;
-    left: 20px;
+    top: 0;
+    left: 0;
     z-index: 35;
-    width: 42px;
-    height: 42px;
+    width: 44px;
+    height: 44px;
     display: grid;
     place-items: center;
     padding: 0;
-    border: 1px solid rgba(255, 255, 255, 0.14);
-    border-radius: 12px;
+    border: 1px solid rgba(105, 195, 240, 0.36);
+    border-radius: 11px;
     color: rgba(255, 255, 255, 0.94);
-    background: rgba(29, 29, 31, 0.72);
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.1);
-    backdrop-filter: blur(18px) saturate(140%);
+    background: linear-gradient(145deg, rgba(18, 51, 77, .94), rgba(3, 16, 30, .92));
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, .1), inset 0 -10px 22px rgba(0, 5, 16, .22);
+    -webkit-font-smoothing: antialiased;
+    -webkit-backface-visibility: hidden;
+    backface-visibility: hidden;
+    will-change: transform;
     pointer-events: auto;
     cursor: pointer;
     transition: transform 160ms ease, border-color 160ms ease, background 160ms ease, opacity 160ms ease;
@@ -761,8 +1180,9 @@ body,
 
 .overlay-line-return:hover:not(:disabled) {
     transform: translateY(-1px);
-    border-color: rgba(255, 255, 255, 0.24);
-    background: rgba(58, 58, 60, 0.82);
+    border-color: rgba(107, 212, 255, .78);
+    background: linear-gradient(145deg, rgba(31, 81, 114, .96), rgba(5, 25, 44, .94));
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, .16), inset 0 0 20px rgba(85, 199, 255, .14);
 }
 
 .overlay-line-return:active:not(:disabled) { transform: translateY(0) scale(0.97); }
@@ -795,15 +1215,22 @@ body,
     gap: 9px;
     padding: 7px 14px;
     transform: translateX(-50%);
-    border: 1px solid rgba(128, 185, 232, 0.28);
-    border-radius: 999px;
-    color: #c8d8e6;
-    background: linear-gradient(180deg, rgba(18, 35, 53, 0.86), rgba(8, 20, 34, 0.78));
-    box-shadow: 0 12px 32px rgba(0, 8, 18, 0.22), inset 0 1px 0 rgba(255, 255, 255, 0.06);
-    backdrop-filter: blur(12px);
+    border: 1px solid rgba(166, 179, 221, .16);
+    border-radius: 4px;
+    color: #d3e9f7;
+    background: rgba(19, 25, 43, .45);
+    box-shadow: inset 0 1px 0 rgba(209, 221, 255, .06);
+    letter-spacing: .025em;
     pointer-events: auto;
     cursor: pointer;
+    outline: none;
+    -webkit-tap-highlight-color: transparent;
+    transition: transform 180ms cubic-bezier(.22, 1, .36, 1), border-color 180ms ease, box-shadow 180ms ease, background 180ms ease;
 }
+
+.overlay-status:hover { transform: translateX(-50%) translateY(-1px); border-color: rgba(107, 212, 255, .72); box-shadow: inset 0 1px 0 rgba(255, 255, 255, .14), inset 0 0 20px rgba(85, 199, 255, .14); }
+.overlay-status:active { transform: translateX(-50%) scale(.985); }
+.overlay-status:focus-visible { outline: 2px solid rgba(99, 196, 255, 0.92); outline-offset: 2px; }
 
 .overlay-status span,
 .overlay-status strong {
@@ -813,8 +1240,8 @@ body,
     white-space: nowrap;
 }
 
-.overlay-status span { font-size: 12px; font-weight: 600; }
-.overlay-status strong { color: #f5b95e; font-size: 11px; font-weight: 600; }
+.overlay-status span { font-size: 11px; font-weight: 600; }
+.overlay-status strong { color: var(--overlay-warm); font-size: 10px; font-weight: 700; letter-spacing: .06em; }
 .overlay-status-dot {
     width: 8px;
     height: 8px;
@@ -828,188 +1255,38 @@ body,
     box-shadow: 0 0 0 4px rgba(79, 210, 154, 0.12), 0 0 14px rgba(79, 210, 154, 0.48);
 }
 
-.overlay-widget {
+.overlay-model-errors {
     position: absolute;
-    min-width: 0;
-    min-height: 0;
-    padding: 0;
-    overflow: visible;
-    pointer-events: auto;
-    cursor: default;
-    transition: filter 160ms ease, transform 160ms ease;
-}
-
-.overlay-widget.is-selected {
-    z-index: 20;
-    filter: drop-shadow(0 0 12px rgba(88, 184, 255, 0.72));
-    transform: translateY(-1px);
-}
-
-.overlay-widget .widget-shell {
-    width: 100%;
-    height: 100%;
-    min-height: 0;
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-    padding: 14px;
-    color: #edf6fc;
-    border: 1px solid rgba(144, 194, 232, 0.24);
-    border-radius: 12px;
-    background:
-        linear-gradient(145deg, rgba(24, 48, 70, 0.88), rgba(7, 22, 37, 0.78)),
-        rgba(10, 27, 43, 0.82);
-    box-shadow: 0 18px 46px rgba(0, 8, 18, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.055);
-    backdrop-filter: blur(12px) saturate(118%);
-}
-
-.overlay-widget .widget-title {
-    flex: 0 0 auto;
-    display: flex;
-    align-items: center;
-    gap: 9px;
-    margin-bottom: 10px;
-    color: #f5f9fc;
-    font-size: 14px;
-    font-weight: 700;
-    letter-spacing: 0.02em;
-}
-
-.overlay-widget .widget-title i {
-    width: 3px;
-    height: 16px;
-    display: inline-block;
-    border-radius: 999px;
-    background: linear-gradient(#6fc9ff, #308ee5);
-    box-shadow: 0 0 10px rgba(79, 173, 245, 0.52);
-}
-
-.overlay-widget .metrics-layout {
-    flex: 1;
-    min-height: 0;
+    left: 50%;
+    bottom: 22px;
+    z-index: 34;
+    width: min(720px, 70vw);
+    max-height: min(32vh, 260px);
     display: grid;
-    grid-template-columns: minmax(94px, 39%) minmax(0, 1fr);
-    gap: 12px;
-    align-items: center;
-}
-
-.overlay-widget .widget-chart {
-    width: 100%;
-    height: 100%;
-    min-height: 110px;
-}
-
-.overlay-widget .trend-chart { min-height: 150px; }
-.overlay-widget .metric-list { min-width: 0; display: grid; gap: 7px; }
-.overlay-widget .metric-row {
-    min-width: 0;
-    display: flex;
-    justify-content: space-between;
-    gap: 8px;
-    padding: 7px 9px;
-    border: 1px solid rgba(255, 255, 255, 0.055);
-    border-radius: 7px;
-    color: #aebfcd;
-    background: rgba(255, 255, 255, 0.045);
-    font-size: 12px;
-}
-.overlay-widget .metric-row span,
-.overlay-widget .metric-row strong {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-.overlay-widget .metric-row strong { color: #f3f8fc; }
-
-.overlay-widget .alarm-list {
-    flex: 1;
-    min-height: 0;
-    margin: 0;
-    padding: 0;
-    overflow: auto;
-    list-style: none;
-}
-.overlay-widget .alarm-list li {
-    min-height: 34px;
-    display: grid;
-    grid-template-columns: 24px minmax(0, 1fr) auto;
-    align-items: center;
-    gap: 8px;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.07);
-    color: #c7d4de;
-    font-size: 12px;
-}
-.overlay-widget .rank,
-.overlay-widget .tag {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    border-radius: 6px;
-    color: #fff;
-    background: #4c6273;
-}
-.overlay-widget .rank { width: 22px; height: 22px; }
-.overlay-widget .tag { min-height: 22px; padding: 2px 7px; font-size: 10px; }
-.overlay-widget .rank.critical,
-.overlay-widget .tag.critical { background: #a43e45; }
-.overlay-widget .rank.warning,
-.overlay-widget .tag.warning { background: #a6742e; }
-.overlay-widget .rank.info,
-.overlay-widget .tag.info { background: #36799f; }
-.overlay-widget .alarm-txt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-.overlay-widget.widget-type-marquee { padding: 0; }
-.overlay-widget.widget-type-marquee .widget-shell {
-    min-height: 0;
-    padding: 0 14px;
-    border-radius: 999px;
-}
-.overlay-widget.widget-type-marquee .widget-title { display: none; }
-.overlay-widget .marquee-content-wrap {
-    flex: 1;
-    min-height: 0;
-    overflow: hidden;
-    mask-image: linear-gradient(90deg, transparent, #000 4%, #000 96%, transparent);
-}
-.overlay-widget .marquee-content {
-    height: 100%;
-    display: flex;
-    align-items: center;
-    white-space: nowrap;
-    animation: overlayMarquee 30s linear infinite;
-}
-.overlay-widget .marquee-item { margin-right: 38px; color: #d5e0e8; font-size: 12px; }
-.overlay-widget .marquee-item.critical { color: #ff9696; }
-.overlay-widget .marquee-item.warning { color: #ffd27e; }
-.overlay-widget .marquee-item.info { color: #8ed4ff; }
-
-.overlay-widget .text-widget-body {
-    flex: 1;
-    min-height: 0;
-    display: grid;
-    align-content: center;
     gap: 7px;
-    color: #d5e2eb;
+    padding: 14px 16px;
+    transform: translateX(-50%);
+    overflow: auto;
+    overscroll-behavior: contain;
+    touch-action: pan-y;
+    pointer-events: auto;
+    color: #fff2ef;
+    background: linear-gradient(135deg, rgba(91, 30, 27, .96), rgba(53, 18, 23, .96));
+    border: 1px solid rgba(255, 173, 159, .66);
+    border-left: 4px solid #ff725f;
+    border-radius: 12px;
+    box-shadow: 0 16px 38px rgba(17, 5, 8, .36);
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255, 190, 178, .8) rgba(255, 255, 255, .1);
 }
-.overlay-widget .text-widget-body p { margin: 0; }
-
-@keyframes overlayMarquee {
-    from { transform: translateX(0); }
-    to { transform: translateX(-50%); }
-}
-
-@keyframes overlayReturnPulse {
-    from { opacity: 0.45; }
-    to { opacity: 1; }
-}
-
-@media (max-width: 1180px), (max-height: 680px) {
-    .overlay-canvas { inset: 12px 16px 16px; }
-    .overlay-widget .widget-shell { padding: 10px; border-radius: 10px; }
-    .overlay-widget .widget-title { margin-bottom: 7px; font-size: 12px; }
-    .overlay-widget .metric-row { padding: 5px 7px; font-size: 11px; }
-    .overlay-status { min-height: 30px; padding: 5px 10px; }
-    .overlay-line-return { top: 0; left: 0; width: 38px; height: 38px; border-radius: 10px; }
-}
+.overlay-model-errors::-webkit-scrollbar { width: 10px; }
+.overlay-model-errors::-webkit-scrollbar-track { background: rgba(255, 255, 255, .08); border-radius: 999px; }
+.overlay-model-errors::-webkit-scrollbar-thumb { background: rgba(255, 190, 178, .82); border: 2px solid rgba(91, 30, 27, .94); border-radius: 999px; }
+.overlay-model-errors > strong { color: #ffd3cc; font-size: 14px; }
+.overlay-model-error-item { display: grid; gap: 2px; padding-top: 7px; border-top: 1px solid rgba(255, 255, 255, .14); }
+.overlay-model-error-item span { color: #fff5f2; font-size: 12px; font-weight: 700; }
+.overlay-model-error-item small,
+.overlay-model-error-item code,
+.overlay-model-errors > em { color: #ffdcd5; font-size: 11px; line-height: 1.4; overflow-wrap: anywhere; }
+.overlay-model-error-item code { font-family: SFMono-Regular, Consolas, Monaco, monospace; }
 </style>

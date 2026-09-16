@@ -110,10 +110,14 @@ function sha256File(filename) {
     });
 }
 
+function isManagedSiteBackup(filename) {
+    return /^heat-treatment-site-backup-\d{8}T\d{9}Z\.zip$/i.test(String(filename || ''));
+}
+
 function pruneMirrorBackups(directory) {
     if (!fs.existsSync(directory)) return;
     const files = fs.readdirSync(directory, { withFileTypes: true })
-        .filter(entry => entry.isFile() && entry.name.toLowerCase().endsWith('.zip'))
+        .filter(entry => entry.isFile() && isManagedSiteBackup(entry.name))
         .map(entry => {
             const filename = path.join(directory, entry.name);
             return { filename, stat: fs.statSync(filename) };
@@ -185,10 +189,10 @@ function listSiteBackups() {
 }
 
 function pruneSiteBackups() {
-    for (const backup of listSiteBackups().slice(SITE_BACKUP_RETENTION)) {
+    for (const backup of listSiteBackups().filter(backup => isManagedSiteBackup(backup.filename)).slice(SITE_BACKUP_RETENTION)) {
         fs.rmSync(path.join(SITE_BACKUP_DIR, backup.filename), { force: true });
     }
-    const retained = listSiteBackups();
+    const retained = listSiteBackups().filter(backup => isManagedSiteBackup(backup.filename));
     let totalBytes = retained.reduce((sum, backup) => sum + Number(backup.size || 0), 0);
     for (const backup of retained.slice(1).reverse()) {
         if (totalBytes <= SITE_BACKUP_MAX_TOTAL_BYTES) break;
@@ -240,7 +244,8 @@ async function runSiteBackupOperation(name, callback) {
     const operation = { name };
     activeSiteBackupOperation = operation;
     try {
-        return await callback();
+        operation.promise = Promise.resolve().then(callback);
+        return await operation.promise;
     } finally {
         if (activeSiteBackupOperation === operation) activeSiteBackupOperation = null;
     }
@@ -375,6 +380,13 @@ function normalizeArchivePath(value) {
     if (normalized !== supplied || normalized === '..' || normalized.startsWith('../')) {
         throw new Error('备份包包含越界文件路径');
     }
+    // Backups are portable to Windows: reject device names, alternate data
+    // streams, and aliases such as "file." before any extraction takes place.
+    if (normalized.split('/').some(segment => /[<>:"|?*\x00-\x1f]/.test(segment)
+        || /[. ]$/.test(segment)
+        || /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i.test(segment))) {
+        throw new Error('备份包包含不安全的文件路径');
+    }
     return normalized;
 }
 
@@ -431,9 +443,12 @@ async function extractValidatedArchive(archiveFilename, stagingDirectory) {
     const entries = directory.files.filter(entry => entry.type === 'File');
     if (entries.length > MAX_ARCHIVE_ENTRIES) throw new Error('整站备份文件数量超过安全限制');
     const entryMap = new Map();
+    const portablePaths = new Set();
     for (const entry of entries) {
         const archivePath = normalizeArchivePath(entry.path);
-        if (entryMap.has(archivePath)) throw new Error(`整站备份包含重复文件: ${archivePath}`);
+        const portablePath = archivePath.toLowerCase();
+        if (portablePaths.has(portablePath)) throw new Error(`整站备份包含重复文件: ${archivePath}`);
+        portablePaths.add(portablePath);
         entryMap.set(archivePath, entry);
     }
 
@@ -467,7 +482,7 @@ async function extractValidatedArchive(archiveFilename, stagingDirectory) {
         throw new Error(`灾备包数据库类型为 ${databaseType}，当前现场配置为 ${activeDatabaseType}，请先切换数据库类型`);
     }
     const verification = databaseType === 'sqlite'
-        ? verifySqliteFile(databaseFilename)
+        ? verifySqliteFile(databaseFilename, { requireApplicationSchema: true })
         : await verifyDatabaseBackupFile(databaseFilename);
     if (!verification.valid) throw new Error(`整站备份数据库校验失败: ${verification.error}`);
     return { manifest, databaseFilename, configPaths };
@@ -532,6 +547,7 @@ async function restoreSiteBackupUnlocked(archiveFilename, uploadsRootDir) {
     let configMutationStarted = false;
     let uploadGroupsToRestore = ['models'];
     let configPathsToRestore = [];
+    let preserveStaging = false;
     ensureDirectory(stagingDirectory);
 
     try {
@@ -594,29 +610,44 @@ async function restoreSiteBackupUnlocked(archiveFilename, uploadsRootDir) {
             recovery: databaseRestore.recovery
         };
     } catch (error) {
+        const rollbackErrors = [];
         if (configMutationStarted) {
             for (const archivePath of configPathsToRestore) {
                 const descriptor = CONFIG_FILES.find(item => item.archivePath === archivePath);
                 if (!descriptor) continue;
                 const currentFilename = path.join(DATA_DIR, descriptor.filename);
                 const rollbackFilename = path.join(rollbackConfig, descriptor.filename);
-                fs.rmSync(currentFilename, { force: true });
-                if (fs.existsSync(rollbackFilename)) fs.copyFileSync(rollbackFilename, currentFilename);
+                try {
+                    fs.rmSync(currentFilename, { force: true });
+                    if (fs.existsSync(rollbackFilename)) fs.copyFileSync(rollbackFilename, currentFilename);
+                } catch (rollbackError) {
+                    rollbackErrors.push(`${descriptor.filename}: ${rollbackError.message}`);
+                }
             }
-            reloadDataSourceConfiguration();
+            try { reloadDataSourceConfiguration(); } catch (rollbackError) {
+                rollbackErrors.push(`数据源配置: ${rollbackError.message}`);
+            }
         }
         if (uploadsMutationStarted) {
             for (const group of uploadGroupsToRestore) {
                 const currentDirectory = path.join(uploadsRoot, group);
                 const rollbackDirectory = path.join(rollbackUploads, group);
-                fs.rmSync(currentDirectory, { recursive: true, force: true });
-                if (fs.existsSync(rollbackDirectory)) fs.cpSync(rollbackDirectory, currentDirectory, { recursive: true });
-                ensureDirectory(currentDirectory);
+                try {
+                    fs.rmSync(currentDirectory, { recursive: true, force: true });
+                    if (fs.existsSync(rollbackDirectory)) fs.cpSync(rollbackDirectory, currentDirectory, { recursive: true });
+                    ensureDirectory(currentDirectory);
+                } catch (rollbackError) {
+                    rollbackErrors.push(`${group}: ${rollbackError.message}`);
+                }
             }
+        }
+        if (rollbackErrors.length) {
+            preserveStaging = true;
+            throw new Error(`${error.message}；自动回滚未完成：${rollbackErrors.join('；')}。原始文件保留于 ${stagingDirectory}`);
         }
         throw error;
     } finally {
-        fs.rmSync(stagingDirectory, { recursive: true, force: true });
+        if (!preserveStaging) fs.rmSync(stagingDirectory, { recursive: true, force: true });
     }
 }
 
@@ -671,12 +702,15 @@ async function startSiteBackupMaintenance(uploadsRootDir) {
     return getSiteBackupStatus();
 }
 
-function stopSiteBackupMaintenance() {
+async function stopSiteBackupMaintenance() {
     if (siteBackupTimer) clearInterval(siteBackupTimer);
     if (siteBackupInitialTimer) clearTimeout(siteBackupInitialTimer);
     siteBackupTimer = null;
     siteBackupInitialTimer = null;
     maintenanceUploadsRootDir = null;
+    if (activeSiteBackupOperation?.promise) {
+        await activeSiteBackupOperation.promise.catch(() => {});
+    }
 }
 
 module.exports = {

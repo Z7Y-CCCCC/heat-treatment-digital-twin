@@ -3,9 +3,11 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
+const { execFileSync } = require('child_process');
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'digital-twin-license-'));
 process.env.APP_DATA_DIR = dataDir;
+process.env.LICENSE_MACHINE_STATE_FILE = path.join(dataDir, 'machine-identity.json');
 process.env.LICENSE_ENFORCE = 'true';
 
 const { privateKey, publicKey } = crypto.generateKeyPairSync('ed25519');
@@ -17,7 +19,8 @@ const {
     getLicenseStatus,
     installLicense,
     signLicensePayload,
-    assertLicenseForWrite
+    assertLicenseForWrite,
+    getLocalMachineId
 } = require('../services/license');
 
 function payload(overrides = {}) {
@@ -39,6 +42,25 @@ try {
     assert.equal(valid.status, 'valid');
     assert.equal(valid.valid, true);
     assert.deepEqual(valid.features, ['business-readonly', 'dashboard']);
+
+    const localMachine = getLocalMachineId();
+    assert.equal(localMachine.available, true);
+    assert.equal(getLocalMachineId().id, localMachine.id);
+    fs.writeFileSync(process.env.LICENSE_MACHINE_STATE_FILE, '{ interrupted write', 'utf8');
+    const recoveredMachineId = execFileSync(process.execPath, ['-e', "console.log(require('./services/license').getLocalMachineId().id)"], {
+        cwd: path.resolve(__dirname, '..'),
+        env: { ...process.env },
+        encoding: 'utf8'
+    }).trim();
+    assert.equal(recoveredMachineId, localMachine.id);
+    const machineBound = signLicensePayload(payload({ machineId: localMachine.id }), privateKey);
+    assert.equal(evaluateLicense(machineBound).status, 'valid');
+    if (localMachine.aliases?.length) {
+        const legacyBound = signLicensePayload(payload({ machineId: localMachine.aliases[0] }), privateKey);
+        assert.equal(evaluateLicense(legacyBound).status, 'valid');
+    }
+    const mismatchedMachine = signLicensePayload(payload({ machineId: 'machine-00000000000000000000000000000000' }), privateKey);
+    assert.equal(evaluateLicense(mismatchedMachine).status, 'machine_mismatch');
 
     const tampered = { ...signed, payload: { ...signed.payload, customer: '篡改客户' } };
     assert.equal(evaluateLicense(tampered).status, 'invalid');
@@ -67,6 +89,7 @@ try {
         installed: installed.licenseId,
         tamperRejected: true,
         expiryRejected: true,
+        anchorBackupRecovery: true,
         strictModeBlocksUnverified: true
     }, null, 2));
 } finally {

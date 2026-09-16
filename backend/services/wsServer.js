@@ -23,6 +23,33 @@ function shortTextArray(value, maxItems = 64, maxLength = 128) {
         : [];
 }
 
+function projectedPoint(value) {
+    const valid = value && Number.isFinite(value.x) && Number.isFinite(value.y);
+    return { x: valid ? Math.max(0, Math.min(1, value.x)) : 0, y: valid ? Math.max(0, Math.min(1, value.y)) : 0, visible: !!valid && value.visible === true };
+}
+
+function inspectionContext(source, mode) {
+    const active = mode === 'device' && source.inspectionEnabled === true;
+    return {
+        inspectionEnabled: active,
+        inspectionProgress: active && Number.isFinite(source.inspectionProgress) ? Math.max(0, Math.min(1, source.inspectionProgress)) : 0,
+        inspectionAnimating: active && source.inspectionAnimating === true,
+        inspectionPhase: active ? shortText(source.inspectionPhase, 32) : '',
+        inspectionIsolated: active && source.inspectionIsolated === true,
+        inspectionLabelsEnabled: active && source.inspectionLabelsEnabled === true,
+        inspectionLeaderLines: active && source.inspectionLeaderLines === true,
+        inspectionHoveredPartId: active ? shortText(source.inspectionHoveredPartId, 128) : '',
+        inspectionIssues: active && Array.isArray(source.inspectionIssues) ? source.inspectionIssues.slice(0, 100).map(issue => typeof issue === 'string' ? { message: shortText(issue, 2000) } : {
+            code: shortText(issue?.code, 80), partId: shortText(issue?.partId, 128), message: shortText(issue?.message, 2000), severity: issue?.severity === 'error' ? 'error' : 'warning'
+        }) : [],
+        inspectionParts: active && Array.isArray(source.inspectionParts) ? source.inspectionParts.slice(0, 64).filter(part => part && typeof part === 'object').map(part => ({
+            id: shortText(part.id, 128), name: shortText(part.name, 180), group: shortText(part.group, 180), description: shortText(part.description, 2000),
+            pointIds: shortTextArray(part.pointIds, 256), pointKeys: shortTextArray(part.pointKeys, 256), selected: part.selected === true,
+            anchor: projectedPoint(part.anchor), label: projectedPoint(part.label)
+        })) : []
+    };
+}
+
 class WsServer {
     constructor() {
         this.wss = null;
@@ -72,6 +99,11 @@ class WsServer {
                     } else if (data.type === 'dashboard_context' && ws.clientRole === 'unity') {
                         const source = data.payload && typeof data.payload === 'object' ? data.payload : {};
                         const mode = ['factory', 'workshop', 'line', 'device', 'custom'].includes(source.viewMode) ? source.viewMode : 'factory';
+                        if (mode !== 'device') {
+                            for (const key of ['inspectionStage', 'partId', 'partName', 'partDescription', 'partDetailViewId']) source[key] = '';
+                            source.partPointIds = [];
+                            source.partPointKeys = [];
+                        }
                         this.dashboardContext = {
                             viewId: shortText(source.viewId, 128),
                             // 新版 Unity 在模型/数据准备完成前明确发送 false；旧版客户端
@@ -90,9 +122,10 @@ class WsServer {
                             partId: shortText(source.partId, 128),
                             partName: shortText(source.partName, 180),
                             partDescription: shortText(source.partDescription, 2000),
-                            partPointIds: shortTextArray(source.partPointIds),
-                            partPointKeys: shortTextArray(source.partPointKeys),
+                            partPointIds: shortTextArray(source.partPointIds, 256),
+                            partPointKeys: shortTextArray(source.partPointKeys, 256),
                             partDetailViewId: shortText(source.partDetailViewId, 128),
+                            ...inspectionContext(source, mode),
                             timestamp: Date.now()
                         };
                         this.broadcastToRole('dashboard_context_changed', this.dashboardContext, 'web');

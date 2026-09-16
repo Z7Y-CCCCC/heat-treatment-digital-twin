@@ -11,6 +11,15 @@ const {
 const { normalizeProtocol, sanitizePlcOptions } = require('../services/plcProtocolConfig');
 const { getHeatTreatmentTemplatePacks } = require('../services/heatTreatmentTemplates');
 
+const LEGACY_WEB_SETTING_KEYS = new Set([
+    'display_mode',
+    'render_profile',
+    'render_target_fps',
+    'render_scale',
+    'render_antialias',
+    'render_label_fps'
+]);
+
 function safeJsonParse(value, fallback) {
     if (!value) return fallback;
     if (typeof value === 'object') return value;
@@ -35,7 +44,9 @@ router.get('/', async (req, res) => {
 
         const settingsRows = await db.all('SELECT * FROM settings');
         const settings = {};
-        settingsRows.forEach(r => { settings[r.key] = r.value; });
+        settingsRows.forEach(r => {
+            if (!LEGACY_WEB_SETTING_KEYS.has(r.key)) settings[r.key] = r.value;
+        });
 
         const workshops = await db.all('SELECT * FROM workshops ORDER BY sort_order ASC');
         const lines = await db.all('SELECT * FROM `lines` ORDER BY sort_order ASC');

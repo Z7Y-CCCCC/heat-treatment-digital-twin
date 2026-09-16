@@ -1,0 +1,813 @@
+/* ==========================================================================
+   Deep Industrial Digital Twin HUD Art Style
+   Strictly aligned with Reference Design (Blue-violet / Slate / Ultra-Translucent Cyber Glass)
+   ========================================================================== */
+
+:root {
+    /* Apple-like type hierarchy with Windows-safe fallbacks. SF Pro is used
+       automatically on Apple hosts; the Segoe UI fallback keeps the same
+       clean proportions inside the Windows WebView2 runtime. */
+    --hud-font-display: "SF Pro Display", "Inter Variable", "Inter", "Noto Sans SC Variable", "Segoe UI", "PingFang SC", "Microsoft YaHei UI", sans-serif;
+    --hud-font-text: "SF Pro Text", "Inter Variable", "Inter", "Noto Sans SC Variable", "Segoe UI", "PingFang SC", "Microsoft YaHei UI", sans-serif;
+    --hud-font-number: "SF Pro Display", "Inter Variable", "Inter", "Segoe UI", "Bahnschrift", sans-serif;
+    --hud-action-blue: #2997ff;
+    --hud-glass-bg: linear-gradient(135deg, rgba(16, 24, 48, 0.16) 0%, rgba(10, 14, 28, 0.08) 100%);
+    --hud-glass-bg-subtle: linear-gradient(135deg, rgba(22, 30, 58, 0.14) 0%, rgba(12, 16, 34, 0.06) 100%);
+    --hud-border-line: rgba(141, 152, 203, 0.10);
+    --hud-border-glow: rgba(129, 140, 248, 0.28);
+    --hud-text-bright: #edf2f9;
+    --hud-text-main: #d0d7e6;
+    --hud-text-dim: #7f8ca5;
+    --hud-color-primary: #818cf8;
+    --hud-color-cyan: #38bdf8;
+    --hud-color-teal: #2dd4bf;
+    --hud-color-success: #34d399;
+    --hud-color-warning: #fbbf24;
+    --hud-color-danger: #f87171;
+}
+
+/* Base HUD Container Wrapper */
+.hud-widget {
+    position: absolute;
+    min-width: 0;
+    min-height: 0;
+    padding: 0;
+    overflow: visible;
+    pointer-events: auto;
+    cursor: default;
+}
+
+.hud-widget.is-selected {
+    z-index: 20;
+}
+
+/* ==========================================================================
+   Panel Shell: Ultra-Translucent Dark Glass Surface (~90% Visible 3D Scene)
+   Allows Unity 3D factory scene to be clearly and brilliantly seen through
+   ========================================================================== */
+.hud-widget .widget-shell {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    padding: 10px 14px;
+    border: 1px solid var(--hud-border-line) !important;
+    border-radius: 3px;
+    color: var(--hud-text-bright);
+    background: var(--hud-glass-bg) !important;
+    box-shadow: inset 0 1px 0 rgba(210, 225, 255, 0.06) !important;
+    font-family: var(--hud-font-text);
+    font-synthesis: none;
+    font-variant-numeric: tabular-nums;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    isolation: isolate;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+    transition: border-color 180ms ease, box-shadow 180ms ease;
+}
+
+/* Top Edge Accent Glow Line on HUD panels */
+.hud-widget .widget-shell::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+    background: linear-gradient(90deg, rgba(129, 140, 248, 0.28) 0%, rgba(147, 171, 231, 0.10) 38%, transparent 75%) top left / 100% 1px no-repeat;
+    opacity: 0.85;
+}
+
+.hud-widget .widget-shell::before {
+    display: none;
+}
+
+.hud-widget .widget-shell > * {
+    position: relative;
+    z-index: 1;
+}
+
+.hud-widget:hover .widget-shell {
+    border-color: rgba(129, 140, 248, 0.32) !important;
+    box-shadow: inset 0 1px 0 rgba(210, 225, 255, 0.12) !important;
+}
+
+.hud-widget.is-selected .widget-shell {
+    border-color: rgba(129, 140, 248, 0.75) !important;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.2), 0 0 16px rgba(129, 140, 248, 0.25) !important;
+}
+
+.hud-widget .widget-shell.quality-stale {
+    border-color: rgba(251, 191, 36, 0.38) !important;
+}
+
+.hud-widget .widget-shell.quality-bad {
+    border-color: rgba(248, 113, 113, 0.38) !important;
+}
+
+/* ==========================================================================
+   Panel Headings (Text widgets starting with ▸)
+   Must be 100% transparent, tightly vertically centered, never cut off
+   ========================================================================== */
+.hud-widget.is-panel-heading {
+    overflow: visible;
+}
+
+.hud-widget .hud-heading {
+    padding: 0 4px !important;
+    background: transparent !important;
+    border: 0 !important;
+    box-shadow: none !important;
+    overflow: visible;
+}
+
+.hud-widget .hud-heading::after {
+    display: none !important;
+}
+
+.hud-widget .hud-heading .text-widget-body {
+    display: flex;
+    align-items: center;
+    height: 100%;
+    color: #e2e8f0;
+    font-size: var(--hud-text-size, 13px);
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    line-height: 1;
+}
+
+.hud-widget .hud-heading .text-widget-body p {
+    margin: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* ==========================================================================
+   Embedded Children: Embedded text and trend inside containers
+   ========================================================================== */
+.hud-widget .widget-kind-text:not(.text-is-kpi):not(.hud-brand):not(.hud-heading),
+.hud-widget.widget-type-trend .widget-shell {
+    background: transparent !important;
+    border-color: transparent !important;
+    border-radius: 0;
+    box-shadow: none !important;
+    padding: 0 4px !important;
+    overflow: visible;
+}
+
+.hud-widget .widget-kind-text:not(.text-is-kpi):not(.hud-brand):not(.hud-heading)::after,
+.hud-widget.widget-type-trend .widget-shell::after {
+    display: none !important;
+}
+
+.hud-widget .widget-kind-text:not(.text-is-kpi):not(.hud-brand):not(.hud-heading) .text-widget-body {
+    display: flex;
+    align-items: center;
+    height: 100%;
+    font-size: var(--hud-text-size, 12px);
+    line-height: 1.2;
+    color: inherit;
+}
+
+.hud-widget .widget-kind-text:not(.text-is-kpi):not(.hud-brand):not(.hud-heading) .text-widget-body p {
+    margin: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* Text widget body default sizing */
+.hud-widget .text-widget-body {
+    color: inherit;
+    line-height: 1.35;
+    gap: 4px;
+}
+
+/* ==========================================================================
+   Widget Titles (For widgets that render internal title)
+   ========================================================================== */
+.hud-widget .widget-title {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 20px;
+    margin-bottom: 8px;
+    color: var(--hud-text-bright);
+    font-size: 13px;
+    font-weight: 600;
+    font-family: var(--hud-font-display);
+    letter-spacing: 0.04em;
+}
+
+.hud-widget .widget-title i {
+    width: 3px;
+    height: 12px;
+    border-radius: 1px;
+    transform: none;
+    background: var(--hud-color-primary);
+    box-shadow: 0 0 8px rgba(129, 140, 248, 0.6);
+}
+
+.hud-widget .widget-title::after {
+    content: "";
+    flex: 1 1 auto;
+    height: 1px;
+    margin-left: 6px;
+    background: linear-gradient(90deg, rgba(129, 140, 248, 0.22), transparent 70%);
+}
+
+.hud-widget .widget-title span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* ==========================================================================
+   Brand Header (Top-Left): Replicating Ref 1 & 2 Header Banner
+   ========================================================================== */
+.hud-widget .hud-brand {
+    border: 0 !important;
+    border-bottom: 1px solid rgba(130, 150, 250, 0.5) !important;
+    border-radius: 3px 3px 22px 3px;
+    padding: 7px 22px 10px 62px !important;
+    background: var(--hud-brand-bg, linear-gradient(105deg, rgba(18, 23, 43, 0.38) 0%, rgba(14, 18, 36, 0.14) 70%, transparent 100%)) !important;
+    box-shadow: 0 2px 8px rgba(114, 128, 245, 0.12) !important;
+}
+
+.hud-widget .hud-brand::before {
+    content: "";
+    display: block;
+    position: absolute;
+    left: 20px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 27px;
+    height: 32px;
+    background: linear-gradient(145deg, #c7d2fe 0%, #818cf8 38%, #4338ca 100%);
+    clip-path: polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%);
+    box-shadow: 0 0 14px rgba(129, 140, 248, 0.5);
+    z-index: 1;
+}
+
+.hud-widget .hud-brand::after {
+    display: none !important;
+}
+
+.hud-widget .hud-brand .text-widget-body {
+    display: grid;
+    align-content: center;
+    justify-items: start;
+    gap: 5px;
+    overflow: visible;
+}
+
+.hud-widget .hud-brand p:first-child {
+    color: #f1f5f9;
+    font-size: 22px;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    line-height: 1.2;
+    white-space: nowrap;
+    text-shadow: 0 0 12px rgba(129, 140, 248, 0.18);
+}
+
+.hud-widget .hud-brand p:last-child {
+    color: #818ea8;
+    font-size: 10px;
+    letter-spacing: 0.20em;
+    line-height: 1.3;
+    white-space: nowrap;
+    text-transform: uppercase;
+    font-family: var(--hud-font-text);
+}
+
+/* ==========================================================================
+   Top KPI Cards (text-is-kpi): High-Value Metrics (Energy / Output)
+   ========================================================================== */
+.hud-widget .text-is-kpi {
+    padding: 6px 14px !important;
+    border: 1px solid var(--hud-border-line) !important;
+    border-radius: 3px;
+    background: var(--hud-glass-bg-subtle) !important;
+    box-shadow: inset 0 1px 0 rgba(210, 225, 255, 0.06) !important;
+}
+
+.hud-widget .text-is-kpi .text-widget-body {
+    display: grid;
+    align-content: center;
+    justify-items: start;
+    text-align: left !important;
+    gap: 5px;
+}
+
+.hud-widget .text-is-kpi p:first-child {
+    font-size: 11px;
+    color: var(--hud-text-dim);
+    letter-spacing: 0.06em;
+    line-height: 1.25;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.hud-widget .hud-kpi-label svg { width: 13px; height: 13px; fill: #9babe8; opacity: .85; }
+
+.hud-widget .text-is-kpi p:last-child {
+    font-family: "Bahnschrift", "DIN Alternate", "Segoe UI", sans-serif;
+    font-size: 20px;
+    font-weight: 600;
+    color: #f8fafc;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.02em;
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    white-space: nowrap;
+    line-height: 1.15;
+}
+
+.hud-widget .hud-kpi-value small { color: #929db5; font-size: 10px; font-weight: 400; letter-spacing: 0; }
+
+/* ==========================================================================
+   State Text Badges (text-is-state)
+   ========================================================================== */
+.hud-widget .text-is-state {
+    font-size: 12px;
+    color: var(--hud-color-success);
+}
+
+.hud-widget .text-is-state p::before {
+    content: "";
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    margin-right: 6px;
+    vertical-align: middle;
+    background: currentColor;
+    box-shadow: 0 0 5px rgba(129, 140, 248, .2);
+}
+
+/* ==========================================================================
+   Metrics Layout & Ring Widget
+   ========================================================================== */
+.hud-widget .metrics-layout {
+    flex: 1;
+    min-height: 0;
+    display: grid;
+    grid-template-columns: minmax(96px, 38%) minmax(0, 1fr);
+    gap: 12px;
+    align-items: center;
+}
+
+.hud-widget .widget-chart {
+    width: 100%;
+    height: 100%;
+    min-height: 0;
+}
+
+.hud-widget .trend-chart {
+    flex: 1;
+    min-height: 0;
+}
+
+.hud-widget .metric-list {
+    min-width: 0;
+    display: grid;
+    gap: 5px;
+}
+
+.hud-widget .metric-row {
+    min-width: 0;
+    position: relative;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 4px;
+    border: 0;
+    border-bottom: 1px solid rgba(130, 150, 210, 0.08);
+    border-radius: 0;
+    color: var(--hud-text-dim);
+    background: transparent;
+    font-size: 12px;
+}
+
+.hud-widget .metric-row span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: #8c98b2;
+}
+
+.hud-widget .metric-row strong {
+    color: var(--hud-text-bright);
+    font-family: var(--hud-font-number);
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.02em;
+}
+
+.hud-widget .hud-ring-only {
+    padding: 0 !important;
+    background: transparent !important;
+    border: 0 !important;
+    box-shadow: none !important;
+}
+
+.hud-widget .hud-ring-only::after {
+    display: none !important;
+}
+
+.hud-widget .hud-ring-only .metrics-layout {
+    display: block;
+}
+
+.hud-widget .hud-ring-only .metric-list {
+    display: none;
+}
+
+/* ==========================================================================
+   Device List (Running Devices Panel)
+   ========================================================================== */
+.hud-widget .device-list {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    display: grid;
+    align-content: start;
+    gap: 2px;
+    scrollbar-width: none;
+}
+
+.hud-widget .device-list::-webkit-scrollbar {
+    display: none;
+}
+
+.hud-widget .device-list-row {
+    display: grid;
+    grid-template-columns: 8px minmax(0, 1fr) auto;
+    gap: 10px;
+    align-items: center;
+    min-height: 32px;
+    padding: 2px 6px;
+    border-bottom: 1px solid rgba(130, 150, 210, 0.08);
+    border-radius: 2px;
+    transition: background 140ms ease;
+}
+
+.hud-widget .device-list-row:hover {
+    background: rgba(129, 140, 248, 0.06);
+}
+
+.hud-widget .device-list-row > i {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--hud-color-success);
+    box-shadow: 0 0 7px rgba(52, 211, 153, 0.6);
+}
+
+.hud-widget .device-list-row.quality-bad > i {
+    background: #64748b;
+    box-shadow: none;
+}
+
+.hud-widget .device-list-row.alarm > i {
+    background: var(--hud-color-danger);
+    box-shadow: 0 0 8px rgba(248, 113, 113, 0.7);
+}
+
+.hud-widget .device-list-row span strong {
+    color: #e2e8f0;
+    font-size: 12px;
+    font-family: var(--hud-font-text);
+    font-weight: 600;
+}
+
+.hud-widget .device-list-row span small {
+    color: #78859e;
+    font-size: 10px;
+    margin-top: 1px;
+}
+
+.hud-widget .device-list-row > b {
+    color: #cbd5e1;
+    font-size: 11px;
+    font-family: var(--hud-font-number);
+    font-variant-numeric: tabular-nums;
+}
+
+/* ==========================================================================
+   Alarm History List
+   ========================================================================== */
+.hud-widget .alarm-list {
+    flex: 1;
+    min-height: 0;
+    margin: 0;
+    padding: 0;
+    overflow: auto;
+    list-style: none;
+    display: grid;
+    align-content: start;
+    gap: 2px;
+    scrollbar-width: none;
+}
+
+.hud-widget .alarm-list::-webkit-scrollbar {
+    display: none;
+}
+
+.hud-widget .alarm-list li {
+    min-height: 32px;
+    display: grid;
+    grid-template-columns: 22px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 8px;
+    padding: 2px 4px;
+    border-bottom: 1px solid rgba(130, 150, 210, 0.08);
+    color: #afb8cb;
+    font-size: 11px;
+}
+
+.hud-widget .rank {
+    width: 20px;
+    height: 20px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 2px;
+    color: #a5b4fc;
+    background: rgba(129, 140, 248, 0.12);
+    font-size: 10px;
+    font-weight: 600;
+    font-family: Consolas, monospace;
+}
+
+.hud-widget .tag {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 18px;
+    padding: 1px 6px;
+    border-radius: 2px;
+    font-size: 9px;
+    text-transform: uppercase;
+    background: rgba(129, 140, 248, 0.1);
+    color: #a5b4fc;
+}
+
+.hud-widget .rank.critical,
+.hud-widget .tag.critical {
+    color: #fca5a5;
+    background: rgba(239, 68, 68, 0.15);
+}
+
+.hud-widget .rank.warning,
+.hud-widget .tag.warning {
+    color: #fde047;
+    background: rgba(234, 179, 8, 0.14);
+}
+
+.hud-widget .alarm-txt {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: #cbd5e1;
+}
+
+.hud-widget .alarm-txt small {
+    margin-right: 6px;
+    color: #6b778f;
+    font-size: 10px;
+}
+
+/* ==========================================================================
+   Event Marquee (Bottom Notification Ticker)
+   ========================================================================== */
+.hud-widget.widget-type-marquee {
+    padding: 0;
+}
+
+.hud-widget.widget-type-marquee .widget-shell {
+    min-height: 0;
+    padding: 0 16px;
+    border-radius: 3px;
+    background: var(--hud-marquee-bg, rgba(12, 16, 32, 0.22)) !important;
+    border: 1px solid rgba(110, 130, 200, 0.14) !important;
+    box-shadow: inset 0 1px 0 rgba(210, 225, 255, 0.05) !important;
+}
+
+.hud-widget.widget-type-marquee .widget-title {
+    display: none;
+}
+
+.hud-widget .marquee-content-wrap {
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+    mask-image: linear-gradient(90deg, transparent 0%, #000 2%, #000 98%, transparent 100%);
+}
+
+.hud-widget .marquee-content {
+    height: 100%;
+    display: flex;
+    align-items: center;
+    white-space: nowrap;
+    animation: overlayMarquee 30s linear infinite;
+}
+
+.hud-widget .marquee-item {
+    margin-right: 36px;
+    color: #94a3b8;
+    font-size: 11px;
+    letter-spacing: 0.02em;
+}
+
+.hud-widget .marquee-item.critical { color: #f87171; }
+.hud-widget .marquee-item.warning { color: #fbbf24; }
+.hud-widget .marquee-item.info { color: #93c5fd; }
+
+/* ==========================================================================
+   Value & Status Widgets
+   ========================================================================== */
+.hud-widget .value-widget-body {
+    flex: 1;
+    min-height: 0;
+    display: grid;
+    align-content: center;
+    gap: 4px;
+}
+
+.hud-widget .value-widget-body > span {
+    color: var(--hud-text-dim);
+    font-size: 11px;
+    letter-spacing: 0.04em;
+}
+
+.hud-widget .value-widget-body strong {
+    font-family: var(--hud-font-number);
+    font-size: clamp(20px, 2.2vw, 38px);
+    font-weight: 600;
+    color: #f1f5f9;
+    text-shadow: none;
+    letter-spacing: 0.02em;
+}
+
+.hud-widget .value-widget-body strong small {
+    margin-left: 6px;
+    color: #7b88a0;
+    font-size: 0.4em;
+    font-weight: 400;
+}
+
+/* The live overview uses a quiet 300/400/600/700 ladder. Avoid the heavy
+   dashboard-card look produced by 500/800 defaults and keep all readings
+   optically aligned even when their values change length. */
+.hud-widget .hud-brand p:first-child,
+.hud-widget .hud-kpi-value,
+.hud-widget .hud-kpi-value span,
+.hud-widget .value-widget-body strong,
+.hud-widget .metric-row strong,
+.hud-widget .device-list-row > b {
+    font-family: var(--hud-font-number);
+    font-variant-numeric: tabular-nums lining-nums;
+    font-feature-settings: "tnum" 1, "lnum" 1;
+}
+
+.hud-widget .hud-brand p:first-child,
+.hud-widget .widget-title,
+.hud-widget .hud-heading .text-widget-body,
+.hud-widget .hud-kpi-value,
+.hud-widget .value-widget-body strong {
+    font-weight: 600;
+}
+
+/* Apple-inspired type rhythm: keep section labels confident, body text calm,
+   and large readings light instead of using a heavy admin-template weight. */
+.hud-widget .hud-brand p:first-child {
+    letter-spacing: -0.02em;
+}
+
+.hud-widget .hud-kpi-value,
+.hud-widget .value-widget-body strong {
+    font-weight: 400;
+    letter-spacing: -0.015em;
+}
+
+.hud-widget .hud-kpi-value small,
+.hud-widget .value-widget-body strong small {
+    font-weight: 400;
+    letter-spacing: 0;
+}
+
+.hud-widget .text-widget-body,
+.hud-widget .metric-row,
+.hud-widget .alarm-list,
+.hud-widget .device-list,
+.hud-widget .business-summary,
+.hud-widget .marquee-content {
+    letter-spacing: 0;
+}
+
+.hud-widget .text-widget-body,
+.hud-widget .metric-row,
+.hud-widget .alarm-list,
+.hud-widget .device-list,
+.hud-widget .business-summary,
+.hud-widget .marquee-content {
+    font-family: var(--hud-font-text);
+    font-synthesis: none;
+    -webkit-font-smoothing: antialiased;
+}
+
+.hud-widget .status-widget-body {
+    gap: 12px;
+}
+
+.hud-widget .status-lamp {
+    width: 36px;
+    height: 36px;
+    border: 1px solid rgba(129, 140, 248, 0.2);
+    background: radial-gradient(circle, rgba(129, 140, 248, 0.12), transparent 70%);
+}
+
+.hud-widget .status-lamp i {
+    width: 10px;
+    height: 10px;
+    box-shadow: 0 0 0 4px rgba(129, 140, 248, 0.1);
+}
+
+.hud-widget .business-row {
+    border-bottom: 1px solid rgba(130, 150, 210, 0.08);
+}
+
+/* Animations */
+@keyframes overlayMarquee {
+    from { transform: translateX(0); }
+    to { transform: translateX(-50%); }
+}
+
+@keyframes overlayReturnPulse {
+    from { opacity: 0.45; }
+    to { opacity: 1; }
+}
+
+/* Designer Stage Integration */
+.designer-canvas-stage {
+    background-color: #121829;
+}
+
+/* Ensure live Unity overlay canvas remains 100% transparent without muddy vignettes */
+.dashboard-overlay-root:not(.standalone-preview) .overlay-canvas::before,
+.dashboard-overlay-root:not(.standalone-preview) .overlay-canvas::after {
+    display: none !important;
+}
+
+/* System widgets contain their visible control inside a transparent shell.
+   Keep those controls on the same designer-controlled alpha contract. */
+.hud-widget .navigation-preview-status {
+    background: var(--hud-navigation-bg, linear-gradient(180deg, rgba(18, 35, 53, 0.86), rgba(8, 20, 34, 0.78))) !important;
+    box-shadow: 0 12px 32px rgba(0, 8, 18, calc(var(--hud-panel-opacity, .12) * .9)) !important;
+}
+
+.hud-widget .return-button-widget-preview {
+    background: var(--hud-return-bg, rgba(29, 29, 31, 0.96)) !important;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, calc(var(--hud-panel-opacity, .12) * .9)) !important;
+}
+
+/* Header status capsule art direction */
+.overlay-status {
+    background: rgba(16, 23, 44, 0.32) !important;
+    border: 1px solid rgba(110, 135, 205, 0.22) !important;
+    box-shadow: inset 0 1px 0 rgba(210, 225, 255, 0.08) !important;
+    border-radius: 999px !important;
+}
+
+.overlay-status:hover {
+    border-color: color-mix(in srgb, var(--hud-action-blue) 70%, transparent) !important;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.15), 0 0 16px rgba(129, 140, 248, 0.2) !important;
+}
+
+/* Line return button art direction */
+.overlay-line-return {
+    background: linear-gradient(135deg, rgba(24, 33, 62, 0.65) 0%, rgba(14, 18, 36, 0.5) 100%) !important;
+    border: 1px solid rgba(110, 135, 205, 0.28) !important;
+    box-shadow: inset 0 1px 0 rgba(210, 225, 255, 0.12) !important;
+    border-radius: 6px !important;
+}
+
+.overlay-line-return:hover:not(:disabled) {
+    border-color: color-mix(in srgb, var(--hud-action-blue) 82%, transparent) !important;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.2), 0 0 16px rgba(129, 140, 248, 0.25) !important;
+}
+
+/* The reference overview and designer scale the same authored canvas. Do not
+   change typography at browser breakpoints: that would double-scale previews. */

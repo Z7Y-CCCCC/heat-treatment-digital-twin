@@ -2,6 +2,9 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
+using System.IO;
+using System.Threading.Tasks;
+using GLTFast;
 using HeatTreatment.DigitalTwin.Backend;
 using HeatTreatment.DigitalTwin.Rendering;
 using Newtonsoft.Json;
@@ -36,40 +39,46 @@ namespace HeatTreatment.DigitalTwin.Runtime
         private sealed class NativeEnvironmentConfig
         {
             [JsonProperty("version")] public int Version { get; set; } = 3;
-            [JsonProperty("preset")] public string Preset { get; set; } = "bright_industrial";
-            [JsonProperty("sceneBrightness")] public float SceneBrightness { get; set; } = 1.2f;
-            [JsonProperty("ambientIntensity")] public float AmbientIntensity { get; set; } = 1.25f;
-            [JsonProperty("keyLightIntensity")] public float KeyLightIntensity { get; set; } = 1.4f;
-            [JsonProperty("fillLightIntensity")] public float FillLightIntensity { get; set; } = 0.82f;
-            [JsonProperty("reflectionIntensity")] public float ReflectionIntensity { get; set; } = 1.08f;
-            [JsonProperty("postExposure")] public float PostExposure { get; set; } = 0.6f;
-            [JsonProperty("contrast")] public float Contrast { get; set; } = 2f;
-            [JsonProperty("saturation")] public float Saturation { get; set; } = 3f;
-            [JsonProperty("bloomIntensity")] public float BloomIntensity { get; set; } = 0.06f;
-            [JsonProperty("vignetteIntensity")] public float VignetteIntensity { get; set; } = 0.035f;
+            [JsonProperty("preset")] public string Preset { get; set; } = "neutral_factory";
+            [JsonProperty("sceneBrightness")] public float SceneBrightness { get; set; } = 1.05f;
+            [JsonProperty("ambientIntensity")] public float AmbientIntensity { get; set; } = 1.05f;
+            [JsonProperty("keyLightIntensity")] public float KeyLightIntensity { get; set; } = 1.25f;
+            [JsonProperty("fillLightIntensity")] public float FillLightIntensity { get; set; } = 0.58f;
+            [JsonProperty("reflectionIntensity")] public float ReflectionIntensity { get; set; } = 0.96f;
+            [JsonProperty("postExposure")] public float PostExposure { get; set; } = 0.34f;
+            [JsonProperty("contrast")] public float Contrast { get; set; } = 1f;
+            [JsonProperty("saturation")] public float Saturation { get; set; } = 0f;
+            [JsonProperty("bloomIntensity")] public float BloomIntensity { get; set; } = 0.02f;
+            [JsonProperty("vignetteIntensity")] public float VignetteIntensity { get; set; } = 0.02f;
             [JsonProperty("fogEnabled")] public bool FogEnabled { get; set; } = true;
-            [JsonProperty("fogStart")] public float FogStart { get; set; } = 95f;
-            [JsonProperty("fogEnd")] public float FogEnd { get; set; } = 360f;
+            [JsonProperty("fogStart")] public float FogStart { get; set; } = 120f;
+            [JsonProperty("fogEnd")] public float FogEnd { get; set; } = 430f;
             [JsonProperty("showGrid")] public bool ShowGrid { get; set; } = true;
             // Kept only so version-1 configuration can still be read. The old fixed
             // two-wall factory backdrop is intentionally no longer generated.
             [JsonProperty("showBackdrop")] public bool LegacyShowBackdrop { get; set; }
-            [JsonProperty("showWalls")] public bool ShowWalls { get; set; }
+            [JsonProperty("showWalls")] public bool ShowWalls { get; set; } = false;
             [JsonProperty("wallEditorWidth")] public float WallEditorWidth { get; set; } = 100f;
             [JsonProperty("wallEditorDepth")] public float WallEditorDepth { get; set; } = 80f;
             [JsonProperty("walls")] public List<WallSegmentConfig> Walls { get; set; } = new List<WallSegmentConfig>();
-            [JsonProperty("skyColor")] public string SkyColor { get; set; } = "#607FAF";
-            [JsonProperty("horizonColor")] public string HorizonColor { get; set; } = "#354A6A";
-            [JsonProperty("fogColor")] public string FogColor { get; set; } = "#26364F";
-            [JsonProperty("keyLightColor")] public string KeyLightColor { get; set; } = "#FFF0DC";
-            [JsonProperty("fillLightColor")] public string FillLightColor { get; set; } = "#B5D2FF";
-            [JsonProperty("floorColor")] public string FloorColor { get; set; } = "#263442";
-            [JsonProperty("gridColor")] public string GridColor { get; set; } = "#1D4759";
-            [JsonProperty("wallColor")] public string WallColor { get; set; } = "#283B59";
-            [JsonProperty("frameColor")] public string FrameColor { get; set; } = "#526A86";
+            [JsonProperty("skyColor")] public string SkyColor { get; set; } = "#696969";
+            [JsonProperty("horizonColor")] public string HorizonColor { get; set; } = "#464646";
+            [JsonProperty("fogColor")] public string FogColor { get; set; } = "#565656";
+            [JsonProperty("keyLightColor")] public string KeyLightColor { get; set; } = "#F2F2F2";
+            [JsonProperty("fillLightColor")] public string FillLightColor { get; set; } = "#EAEAEA";
+            [JsonProperty("floorColor")] public string FloorColor { get; set; } = "#5B5B5B";
+            [JsonProperty("gridColor")] public string GridColor { get; set; } = "#777777";
+            [JsonProperty("wallColor")] public string WallColor { get; set; } = "#5A5A5A";
+            [JsonProperty("frameColor")] public string FrameColor { get; set; } = "#9A9A9A";
         }
 
         private Transform _environmentRoot;
+        private readonly List<GltfImport> _hallImports = new List<GltfImport>();
+        private int _hallGeneration;
+        public Task HallReady { get; private set; } = Task.CompletedTask;
+        public Bounds EnvironmentBounds { get; private set; } = new Bounds(Vector3.zero, new Vector3(54f, 12f, 54f));
+        public bool HasFactoryHall => _hallImports.Count > 0;
+        private bool HasHallAsset => File.Exists(Path.Combine(Application.streamingAssetsPath, "Environment", "factory_hall_lowpoly.glb"));
         private readonly Dictionary<string, Transform> _workshopEnvironmentRoots = new Dictionary<string, Transform>();
         private readonly Dictionary<string, Transform> _lineEnvironmentRoots = new Dictionary<string, Transform>();
         private readonly List<GameObject> _gridObjects = new List<GameObject>();
@@ -98,7 +107,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 camera = cameraObject.AddComponent<Camera>();
             }
             camera.clearFlags = CameraClearFlags.Skybox;
-            camera.backgroundColor = new Color(0.12f, 0.17f, 0.26f);
+            camera.backgroundColor = new Color(0.18f, 0.18f, 0.17f);
             camera.fieldOfView = 42f;
             camera.nearClipPlane = 0.08f;
             camera.farClipPlane = 600f;
@@ -146,7 +155,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
             fillObject.transform.rotation = Quaternion.Euler(32f, 142f, 0f);
             _fillLight = fillObject.GetComponent<Light>() ?? fillObject.AddComponent<Light>();
             _fillLight.type = LightType.Directional;
-            _fillLight.color = new Color(0.7f, 0.82f, 1f);
+            _fillLight.color = new Color(0.92f, 0.92f, 0.92f);
             _fillLight.shadows = LightShadows.None;
 
             var volume = FindObjectOfType<Volume>();
@@ -209,6 +218,9 @@ namespace HeatTreatment.DigitalTwin.Runtime
             bool createReflectionProbe = true)
         {
             _factoryConfig = config;
+            _hallGeneration++;
+            foreach (var importer in _hallImports) importer.Dispose();
+            _hallImports.Clear();
             if (_environmentRoot != null) Destroy(_environmentRoot.gameObject);
             var root = new GameObject("FactoryEnvironment");
             root.transform.SetParent(transform, false);
@@ -263,12 +275,12 @@ namespace HeatTreatment.DigitalTwin.Runtime
 
             CreateLineLayouts(config);
             RebuildCustomWalls();
-            var environmentBounds = CalculateRendererBounds(_environmentRoot);
+            EnvironmentBounds = CalculateRendererBounds(_environmentRoot);
             if (createReflectionProbe)
             {
-                var probeCenter = environmentBounds.center;
-                probeCenter.y = Mathf.Max(4f, environmentBounds.center.y + 2f);
-                var probeSize = environmentBounds.size;
+                var probeCenter = EnvironmentBounds.center;
+                probeCenter.y = Mathf.Max(4f, EnvironmentBounds.center.y + 2f);
+                var probeSize = EnvironmentBounds.size;
                 probeSize.x = Mathf.Max(54f, probeSize.x + 12f);
                 probeSize.y = Mathf.Max(12f, probeSize.y + 8f);
                 probeSize.z = Mathf.Max(54f, probeSize.z + 12f);
@@ -276,6 +288,60 @@ namespace HeatTreatment.DigitalTwin.Runtime
             }
             ApplyVisualProfile();
             ApplyEnvironmentVisibility();
+            HallReady = LoadFactoryHallsAsync(_hallGeneration);
+        }
+
+        private async Task LoadFactoryHallsAsync(int generation)
+        {
+            if (!HasHallAsset) return;
+            foreach (var workshop in _factoryConfig?.Workshops ?? new List<WorkshopDto>())
+            {
+                if (!_workshopEnvironmentRoots.TryGetValue(workshop.Id, out var parent)) continue;
+                if (workshop.LayoutObject["boundary"]?.Value<bool?>("enabled") == false) continue;
+                var importer = new GltfImport();
+                GameObject hall = null;
+                try
+                {
+                    var uri = new Uri(Path.Combine(Application.streamingAssetsPath, "Environment", "factory_hall_lowpoly.glb")).AbsoluteUri;
+                    if (!await importer.Load(uri)) throw new InvalidOperationException("Factory hall GLB load failed");
+                    if (generation != _hallGeneration || parent == null) { importer.Dispose(); return; }
+                    hall = new GameObject("Factory Hall Architecture");
+                    hall.transform.SetParent(parent, false);
+                    if (!await importer.InstantiateMainSceneAsync(hall.transform)) throw new InvalidOperationException("Factory hall instantiation failed");
+                    if (generation != _hallGeneration || parent == null)
+                    {
+                        if (hall != null) Destroy(hall);
+                        importer.Dispose();
+                        return;
+                    }
+                    var size = workshop.LayoutObject["size"] as JObject;
+                    hall.transform.localScale = new Vector3(
+                        Mathf.Clamp(size?.Value<float?>("width") ?? 100f, 10f, 5000f) / 100f,
+                        1f,
+                        Mathf.Clamp(size?.Value<float?>("depth") ?? 80f, 10f, 5000f) / 80f);
+                    ApplyFactoryHallPresentation(hall);
+                    // Hide only the replaced surfaces, retaining rails and live equipment.
+                    foreach (Transform child in parent)
+                        if (child.name == "Factory Floor" || child.name == "Factory Grid" || child.name.StartsWith("Custom Walls")) child.gameObject.SetActive(false);
+                    _hallImports.Add(importer);
+                    EnvironmentBounds = CalculateRendererBounds(_environmentRoot);
+                    RefreshReflectionProbe();
+                    Debug.Log($"[FactoryEnvironment] Factory hall loaded for {workshop.Id}");
+                }
+                catch (Exception error)
+                {
+                    if (hall != null) Destroy(hall);
+                    importer.Dispose();
+                    Debug.LogWarning($"[FactoryEnvironment] Hall unavailable; retaining fallback floor: {error.Message}");
+                }
+            }
+        }
+
+        private void OnDestroy()
+        {
+            _hallGeneration++;
+            foreach (var importer in _hallImports) importer.Dispose();
+            _hallImports.Clear();
         }
 
         public void RefreshReflectionProbe()
@@ -358,15 +424,19 @@ namespace HeatTreatment.DigitalTwin.Runtime
         {
             var config = _environmentConfig ?? new NativeEnvironmentConfig();
             var brightness = config.SceneBrightness;
-            var skyColor = ParseColor(config.SkyColor, new Color(0.38f, 0.5f, 0.69f));
-            var horizonColor = ParseColor(config.HorizonColor, new Color(0.21f, 0.29f, 0.42f));
-            var fogColor = ParseColor(config.FogColor, new Color(0.15f, 0.21f, 0.31f));
+            var hallPresentation = HasHallAsset;
+            var presentationBrightness = hallPresentation
+                ? Mathf.Clamp(brightness * 0.98f, 0.9f, 1.4f)
+                : brightness;
+            var skyColor = ParseColor(config.SkyColor, new Color(0.41f, 0.41f, 0.41f));
+            var horizonColor = ParseColor(config.HorizonColor, new Color(0.275f, 0.275f, 0.275f));
+            var fogColor = ParseColor(config.FogColor, new Color(0.34f, 0.34f, 0.34f));
             if (_skyMaterial != null)
             {
                 _skyMaterial.SetFloat("_AtmosphereThickness", 0.95f);
                 _skyMaterial.SetColor("_SkyTint", skyColor);
                 _skyMaterial.SetColor("_GroundColor", horizonColor);
-                _skyMaterial.SetFloat("_Exposure", 1.18f * brightness);
+                _skyMaterial.SetFloat("_Exposure", (hallPresentation ? 0.92f : 1.18f) * presentationBrightness);
             }
 
             // Trilight ambient light makes the underside and rear faces of any imported
@@ -374,11 +444,13 @@ namespace HeatTreatment.DigitalTwin.Runtime
             RenderSettings.ambientMode = AmbientMode.Trilight;
             RenderSettings.ambientSkyColor = skyColor;
             RenderSettings.ambientEquatorColor = horizonColor;
-            RenderSettings.ambientGroundColor = Color.Lerp(Color.black, horizonColor, 0.58f);
-            RenderSettings.ambientIntensity = config.AmbientIntensity * brightness;
+            RenderSettings.ambientGroundColor = Color.Lerp(Color.black, horizonColor, hallPresentation ? 0.5f : 0.58f);
+            RenderSettings.ambientIntensity = config.AmbientIntensity * presentationBrightness * (hallPresentation ? 0.92f : 1f);
             RenderSettings.reflectionIntensity = config.ReflectionIntensity;
             RenderSettings.defaultReflectionMode = DefaultReflectionMode.Skybox;
             RenderSettings.fog = config.FogEnabled;
+            // Keep the distant atmosphere neutral graphite. The hall must not be
+            // recolored by a blue fog layer when its authored materials are gray.
             RenderSettings.fogColor = fogColor;
             RenderSettings.fogMode = FogMode.Linear;
             RenderSettings.fogStartDistance = config.FogStart;
@@ -386,28 +458,35 @@ namespace HeatTreatment.DigitalTwin.Runtime
 
             if (_keyLight != null)
             {
-                _keyLight.color = ParseColor(config.KeyLightColor, new Color(1f, 0.94f, 0.86f));
-                _keyLight.intensity = config.KeyLightIntensity * brightness;
+                _keyLight.color = ParseColor(config.KeyLightColor, Color.white);
+                _keyLight.intensity = config.KeyLightIntensity * presentationBrightness * (hallPresentation ? 1.0f : 1f);
+                _keyLight.shadowStrength = hallPresentation ? 0.7f : 0.7f;
             }
             if (_fillLight != null)
             {
-                _fillLight.color = ParseColor(config.FillLightColor, new Color(0.71f, 0.82f, 1f));
-                _fillLight.intensity = config.FillLightIntensity * brightness;
+                _fillLight.color = ParseColor(config.FillLightColor, new Color(0.92f, 0.92f, 0.92f));
+                _fillLight.intensity = config.FillLightIntensity * presentationBrightness * (hallPresentation ? 0.85f : 1f);
             }
             if (_colorAdjustments != null)
             {
                 _colorAdjustments.postExposure.Override(
-                    config.PostExposure + Mathf.Log(Mathf.Max(0.01f, brightness), 2f) * 0.45f
+                    config.PostExposure
+                    + Mathf.Log(Mathf.Max(0.01f, presentationBrightness), 2f) * 0.45f
+                    + (hallPresentation ? 0.02f : 0f)
                 );
-                _colorAdjustments.contrast.Override(config.Contrast);
-                _colorAdjustments.saturation.Override(config.Saturation);
+                _colorAdjustments.contrast.Override(config.Contrast + (hallPresentation ? 3f : 0f));
+                _colorAdjustments.saturation.Override(config.Saturation + (hallPresentation ? -1f : 0f));
             }
-            if (_bloom != null) _bloom.intensity.Override(config.BloomIntensity);
-            if (_vignette != null) _vignette.intensity.Override(config.VignetteIntensity);
+            if (_bloom != null) _bloom.intensity.Override(hallPresentation ? Mathf.Max(config.BloomIntensity, 0.055f) : config.BloomIntensity);
+            if (_vignette != null) _vignette.intensity.Override(hallPresentation ? Mathf.Max(config.VignetteIntensity, 0.045f) : config.VignetteIntensity);
             if (_reflectionProbe != null) _reflectionProbe.intensity = config.ReflectionIntensity;
 
             var camera = Camera.main;
-            if (camera != null) camera.backgroundColor = horizonColor;
+            if (camera != null)
+            {
+                camera.backgroundColor = horizonColor;
+                if (hallPresentation) camera.fieldOfView = 38f;
+            }
             UpdateEnvironmentMaterials();
         }
 
@@ -420,14 +499,88 @@ namespace HeatTreatment.DigitalTwin.Runtime
             SetMaterialColor(_frameMaterial, FrameColor());
         }
 
+        private static void ApplyFactoryHallPresentation(GameObject hall)
+        {
+            if (hall == null) return;
+
+            // The hall is an authored architectural backdrop. Keep its materials
+            // neutral so the imported asset is not recolored blue by the runtime.
+            foreach (var renderer in hall.GetComponentsInChildren<Renderer>(true))
+            {
+                var materials = renderer.materials;
+                for (var index = 0; index < materials.Length; index += 1)
+                {
+                    var material = materials[index];
+                    if (material == null) continue;
+                    var materialName = material.name.ToLowerInvariant();
+                    var color = new Color(0.38f, 0.38f, 0.38f, 1f);
+                    var metallic = 0.18f;
+                    var smoothness = 0.48f;
+                    var emission = Color.black;
+
+                    if (materialName.Contains("floor"))
+                    {
+                        color = new Color(0.42f, 0.42f, 0.42f, 1f);
+                        metallic = 0.28f;
+                        smoothness = 0.66f;
+                    }
+                    else if (materialName.Contains("road"))
+                    {
+                        color = new Color(0.2f, 0.2f, 0.2f, 1f);
+                        metallic = 0.08f;
+                        smoothness = 0.4f;
+                    }
+                    else if (materialName.Contains("wall"))
+                    {
+                        color = new Color(0.3f, 0.3f, 0.3f, 1f);
+                        metallic = 0.14f;
+                        smoothness = 0.52f;
+                    }
+                    else if (materialName.Contains("glass"))
+                    {
+                        color = new Color(0.5f, 0.5f, 0.5f, 1f);
+                        metallic = 0.1f;
+                        smoothness = 0.72f;
+                    }
+                    else if (materialName.Contains("steel"))
+                    {
+                        color = new Color(0.56f, 0.56f, 0.56f, 1f);
+                        metallic = 0.25f;
+                        smoothness = 0.28f;
+                    }
+                    else if (materialName.Contains("trim"))
+                    {
+                        color = new Color(0.4f, 0.4f, 0.4f, 1f);
+                        metallic = 0.12f;
+                        smoothness = 0.25f;
+                    }
+                    else if (materialName.Contains("mark"))
+                    {
+                        color = new Color(0.72f, 0.72f, 0.72f, 1f);
+                        metallic = 0.16f;
+                        smoothness = 0.54f;
+                    }
+
+                    SetMaterialColor(material, color);
+                    if (material.HasProperty("_Metallic")) material.SetFloat("_Metallic", metallic);
+                    if (material.HasProperty("_Smoothness")) material.SetFloat("_Smoothness", smoothness);
+                    // glTFast shaders use glTF factors instead of URP Lit names.
+                    if (material.HasProperty("metallicFactor")) material.SetFloat("metallicFactor", metallic);
+                    if (material.HasProperty("roughnessFactor")) material.SetFloat("roughnessFactor", 1f - smoothness);
+                    if (material.HasProperty("_EmissionColor")) material.SetColor("_EmissionColor", emission);
+                }
+                renderer.materials = materials;
+            }
+        }
+
         private Color GroundColor()
         {
-            return ParseColor(_environmentConfig?.FloorColor, new Color(0.15f, 0.2f, 0.26f));
+            return ParseColor(_environmentConfig?.FloorColor, new Color(0.36f, 0.36f, 0.36f));
         }
 
         private Color GridColor()
         {
-            var color = ParseColor(_environmentConfig?.GridColor, new Color(0.11f, 0.28f, 0.35f));
+            var color = ParseColor(_environmentConfig?.GridColor, new Color(0.46f, 0.46f, 0.46f));
             return ScaleColor(color, Mathf.Lerp(0.88f, 1.12f, Mathf.InverseLerp(0.8f, 1.6f, _environmentConfig.SceneBrightness)));
         }
 
@@ -438,23 +591,23 @@ namespace HeatTreatment.DigitalTwin.Runtime
 
         private Color WallColor()
         {
-            return ParseColor(_environmentConfig?.WallColor, new Color(0.16f, 0.23f, 0.35f));
+            return ParseColor(_environmentConfig?.WallColor, new Color(0.34f, 0.34f, 0.34f));
         }
 
         private Color FrameColor()
         {
-            return ParseColor(_environmentConfig?.FrameColor, new Color(0.32f, 0.42f, 0.53f));
+            return ParseColor(_environmentConfig?.FrameColor, new Color(0.54f, 0.54f, 0.54f));
         }
 
         private void ApplyEnvironmentVisibility()
         {
             foreach (var grid in _gridObjects.Where(item => item != null))
             {
-                grid.SetActive(_environmentConfig.ShowGrid);
+                grid.SetActive(_environmentConfig.ShowGrid && grid.transform.parent.Find("Factory Hall Architecture") == null);
             }
             foreach (var wallsRoot in _wallsRoots.Where(item => item != null))
             {
-                wallsRoot.SetActive(_environmentConfig.ShowWalls);
+                wallsRoot.SetActive(_environmentConfig.ShowWalls && wallsRoot.transform.parent.Find("Factory Hall Architecture") == null);
             }
         }
 

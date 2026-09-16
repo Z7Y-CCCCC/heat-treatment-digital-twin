@@ -3,17 +3,18 @@ const path = require('path');
 const {
     BACKEND_DIR,
     copySqliteDatabase,
+    createTestDatabase,
     createRunDirectory,
     findFreePort,
     forceStop,
     requestJson,
     startLoggedProcess,
+    testFetch,
     waitForExit,
     waitForHttp,
     waitUntil
 } = require('./integration-test-utils.cjs');
 
-const SOURCE_DB = path.join(BACKEND_DIR, 'data', 'factory.db');
 const SHUTDOWN_TOKEN = `database-retention-${process.pid}-${Date.now()}`;
 let backend = null;
 let origin = null;
@@ -44,7 +45,7 @@ async function main() {
 
     try {
         fs.mkdirSync(backupDir, { recursive: true });
-        await copySqliteDatabase(SOURCE_DB, databaseFile);
+        await createTestDatabase(databaseFile);
         fs.writeFileSync(path.join(dataDir, 'database-config.json'), JSON.stringify({
             type: 'sqlite',
             filename: databaseFile,
@@ -63,7 +64,7 @@ async function main() {
         ];
         for (const backup of seededBackups) {
             const destination = path.join(backupDir, backup.filename);
-            await copySqliteDatabase(SOURCE_DB, destination);
+            await copySqliteDatabase(databaseFile, destination);
             setAge(destination, backup.ageDays);
         }
         const orphanTemporary = path.join(backupDir, 'factory-orphan.db.999.tmp-wal');
@@ -110,7 +111,7 @@ async function main() {
         const status1 = policy1.status;
         const storedConfig = JSON.parse(fs.readFileSync(path.join(dataDir, 'database-config.json'), 'utf8'));
 
-        const invalidResponse = await fetch(`${origin}/api/database/backups/config`, {
+        const invalidResponse = await testFetch(`${origin}/api/database/backups/config`, {
             method: 'PUT',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ retentionDays: 0 })
@@ -123,11 +124,11 @@ async function main() {
         const deleted = await requestJson(`${origin}/api/database/backups/${encodeURIComponent(createdFilename)}`, {
             method: 'DELETE'
         });
-        const deleteAgainResponse = await fetch(
+        const deleteAgainResponse = await testFetch(
             `${origin}/api/database/backups/${encodeURIComponent(createdFilename)}`,
             { method: 'DELETE' }
         );
-        const invalidDeleteResponse = await fetch(`${origin}/api/database/backups/not-a-backup.txt`, {
+        const invalidDeleteResponse = await testFetch(`${origin}/api/database/backups/not-a-backup.txt`, {
             method: 'DELETE'
         });
 

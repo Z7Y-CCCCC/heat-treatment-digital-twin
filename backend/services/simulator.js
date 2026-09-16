@@ -26,17 +26,29 @@ class Simulator {
         this.onData = null;
         this.onStatusChange = null;
         this.devices = [];
+        this.runVersion = 0;
+        this.stopped = true;
         // 每台设备的持久状态（模拟真实运行时的渐变效果）
-        this.deviceStates = {};
+        this.deviceStates = Object.create(null);
     }
 
     async start(onData, onStatusChange) {
+        const runVersion = ++this.runVersion;
+        if (this.pollTimer) clearInterval(this.pollTimer);
+        this.pollTimer = null;
+        this.stopped = false;
         this.onData = onData;
         this.onStatusChange = onStatusChange;
 
         // 从数据库加载设备列表
         const db = await getDb();
-        this.devices = await db.all('SELECT * FROM devices');
+        if (this.stopped || runVersion !== this.runVersion) return;
+        const devices = await db.all('SELECT * FROM devices');
+        if (this.stopped || runVersion !== this.runVersion) return;
+        const settingsRows = await db.all('SELECT * FROM settings');
+        if (this.stopped || runVersion !== this.runVersion) return;
+        this.devices = devices;
+        this.deviceStates = Object.create(null);
 
         // 为每台设备初始化模拟状态
         this.devices.forEach(device => {
@@ -78,17 +90,25 @@ class Simulator {
         }
 
         // 读取轮询间隔
-        const settingsRows = await db.all('SELECT * FROM settings');
         const settings = {};
         settingsRows.forEach(r => { settings[r.key] = r.value; });
-        const interval = parseInt(settings.simulation_interval_ms || '2000');
+        const configuredInterval = Number(settings.simulation_interval_ms);
+        const interval = Number.isFinite(configuredInterval) && configuredInterval >= 100 && configuredInterval <= 60000
+            ? Math.round(configuredInterval)
+            : 2000;
 
         // 开始模拟
+        if (this.stopped || runVersion !== this.runVersion) return;
         this._tick();
-        this.pollTimer = setInterval(() => this._tick(), interval);
+        if (this.stopped || runVersion !== this.runVersion) return;
+        this.pollTimer = setInterval(() => {
+            if (!this.stopped && runVersion === this.runVersion) this._tick();
+        }, interval);
     }
 
     stop() {
+        this.stopped = true;
+        this.runVersion += 1;
         if (this.pollTimer) {
             clearInterval(this.pollTimer);
             this.pollTimer = null;
@@ -105,6 +125,7 @@ class Simulator {
     }
 
     _tick() {
+        if (this.stopped) return;
         const deviceDataArray = [];
 
         this.devices.forEach(device => {
@@ -141,9 +162,10 @@ class Simulator {
             this._updateGasState(state);
 
             // 偶尔随机报警（每次 tick 有 0.5% 概率触发报警，持续约 10 秒）
+            if (state.alarm && Date.now() >= (state.alarmUntil || 0)) state.alarm = false;
             if (Math.random() < 0.005) {
                 state.alarm = true;
-                setTimeout(() => { state.alarm = false; }, 10000);
+                state.alarmUntil = Date.now() + 10000;
             }
 
             deviceDataArray.push({

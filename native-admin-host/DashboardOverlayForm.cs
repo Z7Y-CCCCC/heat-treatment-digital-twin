@@ -1,37 +1,39 @@
 using System.Text.Json;
-using System.Drawing.Drawing2D;
 using System.Diagnostics;
+using System.Threading;
+using System.Windows.Forms;
 using Microsoft.Web.WebView2.Core;
-using Microsoft.Web.WebView2.WinForms;
+using System.Runtime.InteropServices;
 
 namespace HeatTreatmentAdminHost;
 
 /// <summary>
-/// Transparent WebView2 data layer rendered above the Unity client. The native
-/// window region is reduced to the rectangles reported by Vue, so all empty
-/// space remains genuine Unity input space instead of an invisible HTML window.
+/// Transparent WebView2 data layer rendered above the Unity client. It remains
+/// an owned popup instead of a cross-process Unity child window: DirectComposition
+/// preserves per-pixel alpha for owned top-level windows but can flatten it when
+/// a WebView2 surface is reparented across processes. Vue-reported rectangles
+/// are used only for pointer hit testing.
 /// </summary>
 internal sealed class DashboardOverlayForm : Form
 {
-    // Keep the native hit-test region tight. A windowed WebView2 paints its
-    // transparent margins as an opaque strip on some Edge runtimes; expanding
-    // the region beyond the actual widget would therefore create visible
-    // rectangles over the Unity scene.
-    private const int InteractionPadding = 0;
     private readonly HostOptions _options;
-    private readonly WebView2 _webView = new();
-    private readonly List<CssInteractionRegion> _cssRegions = new();
-    private readonly List<AppliedInteractionRegion> _appliedRegions = new();
+    private CoreWebView2CompositionController? _webView;
+    private OverlayCompositionSurface? _compositionSurface;
+    private readonly List<RectangleF> _cssRegions = new();
+    private readonly List<Rectangle> _appliedRegions = new();
     private SizeF _cssViewport = new(1f, 1f);
+    private Point _lastParentClientOrigin = new(int.MinValue, int.MinValue);
     private IntPtr _parentHandle;
-    private Region? _interactionRegion;
     private Size _lastParentClientSize = Size.Empty;
     private int _lastChromeHeight;
     private uint _lastDpi = 96;
     private bool _attached;
     private bool _initialized;
+    private bool _navigationReady;
     private bool _visibleRequested;
     private bool _presentationMode;
+    private bool _forwardingMouse;
+    private int _escapeDispatchPending;
 
     public DashboardOverlayForm(HostOptions options)
     {
@@ -44,42 +46,144 @@ internal sealed class DashboardOverlayForm : Form
         MinimizeBox = false;
         MaximizeBox = false;
         MinimumSize = Size.Empty;
-        BackColor = Color.FromArgb(8, 18, 30);
-
-        _webView.Dock = DockStyle.Fill;
-        _webView.DefaultBackgroundColor = Color.Transparent;
-        _webView.Visible = false;
-        Controls.Add(_webView);
+        SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.StandardDoubleClick, true);
 
         ApplyEmptyInteractionRegion();
     }
 
     protected override bool ShowWithoutActivation => true;
 
+    protected override CreateParams CreateParams
+    {
+        get
+        {
+            var parameters = base.CreateParams;
+            parameters.ExStyle |= OverlayCompositionSurface.NoRedirectionBitmap;
+            return parameters;
+        }
+    }
+
+    // There must be no WinForms/GDI backing plate beneath the composition tree.
+    protected override void OnPaintBackground(PaintEventArgs e) { }
+    protected override void OnPaint(PaintEventArgs e) { }
+
     public async Task InitializeAsync(CoreWebView2Environment environment)
     {
         if (_initialized || IsDisposed) return;
-        await _webView.EnsureCoreWebView2Async(environment);
+        var controller = await environment.CreateCoreWebView2CompositionControllerAsync(Handle);
+        if (IsDisposed || Disposing)
+        {
+            controller.Close();
+            return;
+        }
+        _webView = controller;
+        _webView.IsVisible = false;
         _webView.DefaultBackgroundColor = Color.Transparent;
+        _webView.BoundsMode = CoreWebView2BoundsMode.UseRawPixels;
+        _webView.ShouldDetectMonitorScaleChanges = false;
+        _webView.RasterizationScale = 1d;
+        _webView.ZoomFactor = 1d;
+        _compositionSurface = new OverlayCompositionSurface(Handle);
+        _webView.RootVisualTarget = _compositionSurface.RootVisual;
+        _compositionSurface.Commit();
+        _webView.AcceleratorKeyPressed += HandleAcceleratorKey;
+        _webView.CursorChanged += HandleCursorChanged;
         _webView.CoreWebView2.Settings.AreDevToolsEnabled = true;
         _webView.CoreWebView2.Settings.IsStatusBarEnabled = false;
         _webView.CoreWebView2.Settings.AreDefaultContextMenusEnabled = false;
         _webView.CoreWebView2.Settings.IsZoomControlEnabled = false;
-        ApplyDpiCompensatedZoom();
+        UpdateDpiState();
+        UpdateWebViewBounds();
         _webView.CoreWebView2.NewWindowRequested += (_, args) => args.Handled = true;
+        _webView.CoreWebView2.NavigationStarting += (_, args) =>
+        {
+            args.Cancel = !WebContentPolicy.IsSameOrigin(args.Uri, _options.Url);
+            if (args.Cancel || _webView == null) return;
+            _navigationReady = false;
+            _webView.IsVisible = false;
+            ApplyEmptyInteractionRegion();
+        };
         _webView.CoreWebView2.WebMessageReceived += HandleWebMessage;
         _webView.CoreWebView2.NavigationCompleted += (_, args) =>
         {
+            if (IsDisposed || Disposing || _webView == null) return;
             if (!args.IsSuccess)
             {
                 WriteOverlayError($"透明数据层导航失败：{args.WebErrorStatus}");
                 return;
             }
+            // Do not expose the native WebView2 surface while it still has a
+            // blank navigation frame. Showing it only after the first
+            // successful navigation prevents the white compositor flash seen
+            // at dashboard startup.
+            _navigationReady = true;
+            _webView.IsVisible = _visibleRequested;
+            UpdateWebViewBounds();
             PostHostState();
+            _ = OverlayPresentationDiagnostics.CaptureAsync(_webView);
         };
         _webView.CoreWebView2.Navigate(BuildOverlayUrl(_options.Url));
-        _webView.Visible = true;
         _initialized = true;
+    }
+
+    private void HandleAcceleratorKey(object? sender, CoreWebView2AcceleratorKeyPressedEventArgs args)
+    {
+        if (args.VirtualKey != (uint)Keys.Escape) return;
+        args.Handled = true;
+        if (args.KeyEventKind is CoreWebView2KeyEventKind.KeyDown or CoreWebView2KeyEventKind.SystemKeyDown)
+            DispatchEscapeIntoPage();
+    }
+
+    private void HandleCursorChanged(object? sender, object args)
+    {
+        if (_webView != null && Visible && ClientRectangle.Contains(PointToClient(MousePosition)))
+            SetCursor(_webView.Cursor);
+    }
+
+    protected override bool ProcessCmdKey(ref Message message, Keys keyData)
+    {
+        if ((keyData & Keys.KeyCode) == Keys.Escape)
+        {
+            DispatchEscapeIntoPage();
+            return true;
+        }
+        return base.ProcessCmdKey(ref message, keyData);
+    }
+
+    /// <summary>
+    /// The transparent WebView2 is a child of the Unity window. When it owns
+    /// keyboard focus, replay Escape into the page so the same hierarchy-aware
+    /// Vue handler is used regardless of which child owns focus.
+    /// </summary>
+    private void DispatchEscapeIntoPage()
+    {
+        if (Interlocked.Exchange(ref _escapeDispatchPending, 1) != 0) return;
+        try
+        {
+            BeginInvoke(new Action(async () =>
+            {
+                try
+                {
+                    if (_webView?.CoreWebView2 == null || IsDisposed) return;
+                    await _webView.CoreWebView2.ExecuteScriptAsync(
+                        "(function(){const target=document.activeElement||document.body;target.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',code:'Escape',keyCode:27,which:27,bubbles:true,cancelable:true}));})();"
+                    );
+                }
+                catch
+                {
+                    // The WebView can be navigating or closing. Unity still
+                    // has its own native keyboard fallback for this case.
+                }
+                finally
+                {
+                    Interlocked.Exchange(ref _escapeDispatchPending, 0);
+                }
+            }));
+        }
+        catch
+        {
+            Interlocked.Exchange(ref _escapeDispatchPending, 0);
+        }
     }
 
     public void ShowForParent(IntPtr parentHandle)
@@ -89,7 +193,9 @@ internal sealed class DashboardOverlayForm : Form
         AttachToParent(parentHandle);
         UpdateParentBounds(force: true);
         if (!Visible) Show();
+        NativeMethods.EnableWindow(Handle, true);
         NativeMethods.ShowWindow(Handle, NativeMethods.SwShow);
+        if (_webView != null) _webView.IsVisible = _navigationReady;
         PostHostState();
     }
 
@@ -97,6 +203,9 @@ internal sealed class DashboardOverlayForm : Form
     {
         if (IsDisposed) return;
         _visibleRequested = false;
+        Capture = false;
+        if (IsHandleCreated) NativeMethods.EnableWindow(Handle, false);
+        if (_webView != null) _webView.IsVisible = false;
         if (IsHandleCreated) NativeMethods.ShowWindow(Handle, NativeMethods.SwHide);
         Hide();
         PostHostState();
@@ -104,8 +213,10 @@ internal sealed class DashboardOverlayForm : Form
 
     public void Reload()
     {
-        if (IsDisposed || _webView.CoreWebView2 == null) return;
+        if (IsDisposed || _webView?.CoreWebView2 == null) return;
         ApplyEmptyInteractionRegion();
+        _navigationReady = false;
+        _webView.IsVisible = false;
         _webView.CoreWebView2.Reload();
     }
 
@@ -131,55 +242,290 @@ internal sealed class DashboardOverlayForm : Form
         var chromeHeight = _presentationMode
             ? 0
             : DashboardChromeForm.GetChromeHeightPixels(_parentHandle);
-        ApplyDpiCompensatedZoom();
-        if (!force && clientSize == _lastParentClientSize && chromeHeight == _lastChromeHeight) return;
+        var origin = new NativeMethods.Point { X = 0, Y = chromeHeight };
+        if (!NativeMethods.ClientToScreen(_parentHandle, ref origin)) return;
+        UpdateDpiState();
+        var parentOrigin = new Point(origin.X, origin.Y);
+        if (!force
+            && clientSize == _lastParentClientSize
+            && chromeHeight == _lastChromeHeight
+            && parentOrigin == _lastParentClientOrigin) return;
         _lastParentClientSize = clientSize;
         _lastChromeHeight = chromeHeight;
+        _lastParentClientOrigin = parentOrigin;
 
         var height = Math.Max(1, clientSize.Height - chromeHeight);
-        var flags = NativeMethods.SwpFrameChanged | NativeMethods.SwpNoActivate;
+
+        // The overlay is already owned by Unity. Re-applying HwndTop on every
+        // movement tick causes unnecessary z-order churn while the parent is
+        // being dragged, which presents as a subtle HUD wobble. Keep its
+        // existing order and only update its screen position/size.
+        var flags = NativeMethods.SwpFrameChanged
+            | NativeMethods.SwpNoActivate
+            | NativeMethods.SwpNoZOrder;
         if (_visibleRequested) flags |= NativeMethods.SwpShowWindow;
         NativeMethods.SetWindowPos(
             Handle,
             NativeMethods.HwndTop,
-            0,
-            chromeHeight,
+            origin.X,
+            origin.Y,
             clientSize.Width,
             height,
             flags
         );
+        UpdateWebViewBounds();
         UpdateInteractionRegion();
         PostHostState();
     }
 
     /// <summary>
-    /// The Unity player is rendered in physical pixels while this transparent
-    /// WebView is authored in CSS pixels. WebView2 keeps the page at a 1.0
-    /// zoom on a scaled monitor unless the host compensates for the monitor
-    /// DPI, which makes the overlay visibly larger than the Unity viewport.
-    /// Keep the effective physical size stable by applying the inverse scale.
+    /// The composition controller uses physical pixel bounds, with one CSS
+    /// pixel per Unity pixel. Do not combine implicit WebView monitor scaling
+    /// with inverse browser zoom: that used two differently sized surfaces at
+    /// 125/150% DPI and exposed white strips after native region clipping.
     /// </summary>
-    private void ApplyDpiCompensatedZoom()
+    private void UpdateDpiState()
     {
-        if (_webView.CoreWebView2 == null || IsDisposed) return;
+        if (_webView == null || IsDisposed) return;
         var dpi = _parentHandle != IntPtr.Zero
             ? NativeMethods.GetDpiForWindow(_parentHandle)
             : (uint)Math.Max(96, DeviceDpi);
         if (dpi == 0) dpi = 96;
-        var zoom = Math.Clamp(96d / dpi, 0.5d, 1d);
-        if (_lastDpi == dpi && Math.Abs(_webView.ZoomFactor - zoom) < 0.005d) return;
         _lastDpi = dpi;
-        try
-        {
-            _webView.ZoomFactor = zoom;
-        }
-        catch
-        {
-            // WebView2 may be between controller creation and navigation.
-            // NavigationCompleted calls this method again through the next
-            // bounds update, so a transient failure is harmless.
-        }
     }
+
+    private void UpdateWebViewBounds()
+    {
+        if (_webView == null || IsDisposed || Disposing) return;
+        var bounds = new Rectangle(0, 0, Math.Max(1, ClientSize.Width), Math.Max(1, ClientSize.Height));
+        if (_webView.Bounds == bounds) return;
+        _webView.Bounds = bounds;
+        _webView.NotifyParentWindowPositionChanged();
+    }
+
+    protected override void OnResize(EventArgs e)
+    {
+        base.OnResize(e);
+        UpdateWebViewBounds();
+        UpdateInteractionRegion();
+    }
+
+    private static CoreWebView2MouseEventVirtualKeys MouseKeyState()
+    {
+        var keys = CoreWebView2MouseEventVirtualKeys.None;
+        if ((MouseButtons & MouseButtons.Left) != 0) keys |= CoreWebView2MouseEventVirtualKeys.LeftButton;
+        if ((MouseButtons & MouseButtons.Right) != 0) keys |= CoreWebView2MouseEventVirtualKeys.RightButton;
+        if ((MouseButtons & MouseButtons.Middle) != 0) keys |= CoreWebView2MouseEventVirtualKeys.MiddleButton;
+        if ((MouseButtons & MouseButtons.XButton1) != 0) keys |= CoreWebView2MouseEventVirtualKeys.XButton1;
+        if ((MouseButtons & MouseButtons.XButton2) != 0) keys |= CoreWebView2MouseEventVirtualKeys.XButton2;
+        if ((ModifierKeys & Keys.Control) != 0) keys |= CoreWebView2MouseEventVirtualKeys.Control;
+        if ((ModifierKeys & Keys.Shift) != 0) keys |= CoreWebView2MouseEventVirtualKeys.Shift;
+        return keys;
+    }
+
+    protected override void OnMouseMove(MouseEventArgs e)
+    {
+        base.OnMouseMove(e);
+        // Once a drag starts on the Unity scene, keep the entire gesture on
+        // Unity even when the pointer crosses a HUD widget. Switching the
+        // destination based on the current hit-test rectangle makes orbiting
+        // stutter or stop as soon as the cursor reaches a panel.
+        if (_forwardingMouse)
+        {
+            ForwardMouseMessage(NativeMethods.WmMouseMove, e.Button, e.Location);
+            return;
+        }
+        if (Capture || IsInteractivePoint(e.Location))
+            _webView?.SendMouseInput(CoreWebView2MouseEventKind.Move, MouseKeyState(), 0, e.Location);
+        else
+            ForwardMouseMessage(NativeMethods.WmMouseMove, e.Button, e.Location);
+    }
+
+    protected override void OnMouseLeave(EventArgs e)
+    {
+        base.OnMouseLeave(e);
+        _webView?.SendMouseInput(CoreWebView2MouseEventKind.Leave, CoreWebView2MouseEventVirtualKeys.None, 0, Point.Empty);
+    }
+
+    protected override void OnMouseDown(MouseEventArgs e)
+    {
+        base.OnMouseDown(e);
+        if (_webView == null) return;
+        if (!IsInteractivePoint(e.Location))
+        {
+            _forwardingMouse = true;
+            // The transparent overlay is a full-size owned popup. Without
+            // capture, a drag can be retargeted when it crosses one of the
+            // interactive HUD rectangles (or briefly leaves the client area).
+            Capture = true;
+            ForwardMouseMessage(MouseDownMessage(e.Button, e.Clicks > 1), e.Button, e.Location, buttonIsDown: true);
+            return;
+        }
+        Capture = true;
+        _webView.MoveFocus(CoreWebView2MoveFocusReason.Programmatic);
+        var kind = e.Button switch
+        {
+            MouseButtons.Right => e.Clicks > 1 ? CoreWebView2MouseEventKind.RightButtonDoubleClick : CoreWebView2MouseEventKind.RightButtonDown,
+            MouseButtons.Middle => e.Clicks > 1 ? CoreWebView2MouseEventKind.MiddleButtonDoubleClick : CoreWebView2MouseEventKind.MiddleButtonDown,
+            MouseButtons.XButton1 or MouseButtons.XButton2 => e.Clicks > 1 ? CoreWebView2MouseEventKind.XButtonDoubleClick : CoreWebView2MouseEventKind.XButtonDown,
+            _ => e.Clicks > 1 ? CoreWebView2MouseEventKind.LeftButtonDoubleClick : CoreWebView2MouseEventKind.LeftButtonDown
+        };
+        _webView.SendMouseInput(kind, MouseKeyState(), XButtonData(e.Button), e.Location);
+    }
+
+    protected override void OnMouseUp(MouseEventArgs e)
+    {
+        base.OnMouseUp(e);
+        if (_forwardingMouse)
+        {
+            ForwardMouseMessage(MouseUpMessage(e.Button), e.Button, e.Location, buttonIsDown: false);
+            _forwardingMouse = false;
+            Capture = false;
+            return;
+        }
+        var kind = e.Button switch
+        {
+            MouseButtons.Right => CoreWebView2MouseEventKind.RightButtonUp,
+            MouseButtons.Middle => CoreWebView2MouseEventKind.MiddleButtonUp,
+            MouseButtons.XButton1 or MouseButtons.XButton2 => CoreWebView2MouseEventKind.XButtonUp,
+            _ => CoreWebView2MouseEventKind.LeftButtonUp
+        };
+        _webView?.SendMouseInput(kind, MouseKeyState(), XButtonData(e.Button), e.Location);
+        if (MouseButtons == MouseButtons.None) Capture = false;
+    }
+
+    private static uint XButtonData(MouseButtons button) => button switch
+    {
+        MouseButtons.XButton1 => 1u,
+        MouseButtons.XButton2 => 2u,
+        _ => 0u
+    };
+
+    protected override void OnMouseWheel(MouseEventArgs e)
+    {
+        // The composition WebView has no HWND to receive wheel messages.
+        if (IsInteractivePoint(e.Location))
+            _webView?.SendMouseInput(CoreWebView2MouseEventKind.Wheel, MouseKeyState(), unchecked((uint)e.Delta), e.Location);
+        else
+            ForwardMouseWheel(NativeMethods.WmMouseWheel, e.Delta, e.Location);
+    }
+
+    private void ForwardMouseMessage(uint message, MouseButtons button, Point overlayPoint, bool? buttonIsDown = null)
+    {
+        if (_parentHandle == IntPtr.Zero || !NativeMethods.IsWindow(_parentHandle)) return;
+        if (!TryGetParentClientPoint(overlayPoint, out var parentPoint)) return;
+        if (message is NativeMethods.WmLButtonDown
+            or NativeMethods.WmRButtonDown
+            or NativeMethods.WmMButtonDown
+            or NativeMethods.WmXButtonDown)
+        {
+            NativeMethods.SetForegroundWindow(_parentHandle);
+        }
+        var buttonState = MouseMessageKeyState(button, buttonIsDown ?? true);
+        var xButton = button switch
+        {
+            MouseButtons.XButton1 => 1,
+            MouseButtons.XButton2 => 2,
+            _ => 0
+        };
+        var wParam = buttonState | (xButton << 16);
+        NativeMethods.PostMessage(
+            _parentHandle,
+            message,
+            new IntPtr(wParam),
+            NativeMethods.PackClientPoint(parentPoint.X, parentPoint.Y)
+        );
+    }
+
+    private void ForwardMouseWheel(uint message, int delta, Point overlayPoint)
+    {
+        if (_parentHandle == IntPtr.Zero || !NativeMethods.IsWindow(_parentHandle)) return;
+        var screenPoint = PointToScreen(overlayPoint);
+        var wParam = (MouseMessageKeyState(MouseButtons.None) & 0xffff)
+            | (unchecked((ushort)delta) << 16);
+        NativeMethods.PostMessage(
+            _parentHandle,
+            message,
+            new IntPtr(wParam),
+            NativeMethods.PackScreenPoint(screenPoint.X, screenPoint.Y)
+        );
+    }
+
+    private bool TryGetParentClientPoint(Point overlayPoint, out NativeMethods.Point parentPoint)
+    {
+        var screenPoint = PointToScreen(overlayPoint);
+        parentPoint = new NativeMethods.Point { X = screenPoint.X, Y = screenPoint.Y };
+        return NativeMethods.ScreenToClient(_parentHandle, ref parentPoint);
+    }
+
+    private static int MouseMessageKeyState(MouseButtons button, bool buttonIsDown = true)
+    {
+        var buttons = MouseButtons;
+        if (buttonIsDown) buttons |= button;
+        else buttons &= ~button;
+        var keys = 0;
+        if ((buttons & MouseButtons.Left) != 0) keys |= NativeMethods.MkLButton;
+        if ((buttons & MouseButtons.Right) != 0) keys |= NativeMethods.MkRButton;
+        if ((buttons & MouseButtons.Middle) != 0) keys |= NativeMethods.MkMButton;
+        if ((buttons & MouseButtons.XButton1) != 0) keys |= NativeMethods.MkXButton1;
+        if ((buttons & MouseButtons.XButton2) != 0) keys |= NativeMethods.MkXButton2;
+        if ((ModifierKeys & Keys.Control) != 0) keys |= NativeMethods.MkControl;
+        if ((ModifierKeys & Keys.Shift) != 0) keys |= NativeMethods.MkShift;
+        return keys;
+    }
+
+    private static uint MouseDownMessage(MouseButtons button, bool doubleClick) => button switch
+    {
+        MouseButtons.Right => NativeMethods.WmRButtonDown,
+        MouseButtons.Middle => NativeMethods.WmMButtonDown,
+        MouseButtons.XButton1 or MouseButtons.XButton2 => NativeMethods.WmXButtonDown,
+        _ => doubleClick ? NativeMethods.WmLButtonDblClk : NativeMethods.WmLButtonDown
+    };
+
+    private static uint MouseUpMessage(MouseButtons button) => button switch
+    {
+        MouseButtons.Right => NativeMethods.WmRButtonUp,
+        MouseButtons.Middle => NativeMethods.WmMButtonUp,
+        MouseButtons.XButton1 or MouseButtons.XButton2 => NativeMethods.WmXButtonUp,
+        _ => NativeMethods.WmLButtonUp
+    };
+
+    protected override void WndProc(ref Message message)
+    {
+        // This is a cross-process owned popup. HTTRANSPARENT only searches
+        // windows on the same UI thread, so returning it here would drop
+        // clicks instead of passing them to Unity. Mouse messages are routed
+        // explicitly by the handlers below; the composition surface remains
+        // a full rectangle and is never clipped by Form.Region.
+        if (message.Msg == 0x0014) // WM_ERASEBKGND: no opaque backing surface.
+        {
+            message.Result = new IntPtr(1);
+            return;
+        }
+        if (message.Msg == 0x0020 && _webView?.Cursor is { } cursor && cursor != IntPtr.Zero)
+        {
+            SetCursor(cursor);
+            message.Result = new IntPtr(1);
+            return;
+        }
+        if (message.Msg == 0x020E && _webView != null) // WM_MOUSEHWHEEL
+        {
+            var packed = message.LParam.ToInt64();
+            var screenPoint = new Point(unchecked((short)packed), unchecked((short)(packed >> 16)));
+            var point = PointToClient(screenPoint);
+            var delta = unchecked((short)(message.WParam.ToInt64() >> 16));
+            if (IsInteractivePoint(point))
+                _webView.SendMouseInput(CoreWebView2MouseEventKind.HorizontalWheel, MouseKeyState(), unchecked((uint)delta), point);
+            else
+                ForwardMouseWheel(0x020E, delta, point);
+            message.Result = IntPtr.Zero;
+            return;
+        }
+        base.WndProc(ref message);
+    }
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr SetCursor(IntPtr cursor);
 
     private void AttachToParent(IntPtr parentHandle)
     {
@@ -187,29 +533,29 @@ internal sealed class DashboardOverlayForm : Form
         _parentHandle = parentHandle;
 
         var style = NativeMethods.GetWindowStyle(Handle, NativeMethods.GwlStyle);
-        style &= ~(NativeMethods.WsPopup
+        style &= ~(NativeMethods.WsChild
             | NativeMethods.WsCaption
             | NativeMethods.WsThickFrame
             | NativeMethods.WsMinimizeBox
             | NativeMethods.WsMaximizeBox
             | NativeMethods.WsSysMenu);
-        style |= NativeMethods.WsChild
-            | NativeMethods.WsVisible
-            | NativeMethods.WsClipChildren
-            | NativeMethods.WsClipSiblings;
+        style |= NativeMethods.WsPopup | NativeMethods.WsVisible;
         NativeMethods.SetWindowStyle(Handle, NativeMethods.GwlStyle, style);
 
         var exStyle = NativeMethods.GetWindowStyle(Handle, NativeMethods.GwlExStyle);
         exStyle &= ~NativeMethods.WsExAppWindow;
         exStyle |= NativeMethods.WsExToolWindow;
         NativeMethods.SetWindowStyle(Handle, NativeMethods.GwlExStyle, exStyle);
-        NativeMethods.SetParent(Handle, _parentHandle);
+        // Setting an owner keeps the HUD above Unity and hides it with Unity,
+        // without turning the DirectComposition target into a child HWND.
+        NativeMethods.SetWindowOwner(Handle, _parentHandle);
         _attached = true;
         _lastParentClientSize = Size.Empty;
     }
 
     private void HandleWebMessage(object? sender, CoreWebView2WebMessageReceivedEventArgs args)
     {
+        if (!WebContentPolicy.IsSameOrigin(args.Source, _options.Url)) return;
         try
         {
             using var document = JsonDocument.Parse(args.WebMessageAsJson);
@@ -263,8 +609,7 @@ internal sealed class DashboardOverlayForm : Form
                 var width = ReadPositiveSingle(item, "width", 0f);
                 var height = ReadPositiveSingle(item, "height", 0f);
                 if (width < 1f || height < 1f) continue;
-                var radius = Math.Max(0f, ReadSingle(item, "radius", 0f));
-                _cssRegions.Add(new CssInteractionRegion(new RectangleF(x, y, width, height), radius));
+                _cssRegions.Add(new RectangleF(x, y, width, height));
             }
         }
         UpdateInteractionRegion();
@@ -289,80 +634,30 @@ internal sealed class DashboardOverlayForm : Form
             return;
         }
 
-        var scaleX = ClientSize.Width / Math.Max(1f, _cssViewport.Width);
-        var scaleY = ClientSize.Height / Math.Max(1f, _cssViewport.Height);
-        var clientBounds = new Rectangle(Point.Empty, ClientSize);
-        var pixelRegions = new List<AppliedInteractionRegion>();
+        var pixelRegions = new List<Rectangle>();
         foreach (var item in _cssRegions)
         {
-            var left = (int)Math.Floor((item.Bounds.Left - InteractionPadding) * scaleX);
-            var top = (int)Math.Floor((item.Bounds.Top - InteractionPadding) * scaleY);
-            var right = (int)Math.Ceiling((item.Bounds.Right + InteractionPadding) * scaleX);
-            var bottom = (int)Math.Ceiling((item.Bounds.Bottom + InteractionPadding) * scaleY);
-            var clipped = Rectangle.Intersect(
-                clientBounds,
-                Rectangle.FromLTRB(left, top, right, bottom)
-            );
-            if (clipped.Width <= 0 || clipped.Height <= 0) continue;
-            var radius = (int)Math.Round(item.Radius * Math.Min(scaleX, scaleY));
-            radius = Math.Clamp(radius, 0, Math.Min(clipped.Width, clipped.Height) / 2);
-            pixelRegions.Add(new AppliedInteractionRegion(clipped, radius));
+            var bounds = OverlayInteractionGeometry.ToPixels(item, _cssViewport, ClientSize);
+            if (!bounds.IsEmpty) pixelRegions.Add(bounds);
         }
 
         if (_appliedRegions.SequenceEqual(pixelRegions)) return;
         _appliedRegions.Clear();
         _appliedRegions.AddRange(pixelRegions);
 
-        var nextRegion = new Region();
-        nextRegion.MakeEmpty();
-        foreach (var item in pixelRegions)
-        {
-            if (item.Radius <= 1)
-            {
-                nextRegion.Union(item.Bounds);
-                continue;
-            }
-            using var path = CreateRoundedRectanglePath(item.Bounds, item.Radius);
-            nextRegion.Union(path);
-        }
-        if (pixelRegions.Count == 0) nextRegion.Union(new Rectangle(-4, -4, 1, 1));
-
-        var previous = _interactionRegion;
-        _interactionRegion = nextRegion;
-        Region = nextRegion;
-        previous?.Dispose();
     }
 
     private void ApplyEmptyInteractionRegion()
     {
         _cssRegions.Clear();
         _appliedRegions.Clear();
-        var nextRegion = new Region(new Rectangle(-4, -4, 1, 1));
-        var previous = _interactionRegion;
-        _interactionRegion = nextRegion;
-        Region = nextRegion;
-        previous?.Dispose();
     }
 
-    private static GraphicsPath CreateRoundedRectanglePath(Rectangle bounds, int radius)
-    {
-        var path = new GraphicsPath();
-        var diameter = Math.Max(2, radius * 2);
-        var arc = new Rectangle(bounds.X, bounds.Y, diameter, diameter);
-        path.AddArc(arc, 180, 90);
-        arc.X = bounds.Right - diameter;
-        path.AddArc(arc, 270, 90);
-        arc.Y = bounds.Bottom - diameter;
-        path.AddArc(arc, 0, 90);
-        arc.X = bounds.Left;
-        path.AddArc(arc, 90, 90);
-        path.CloseFigure();
-        return path;
-    }
+    private bool IsInteractivePoint(Point point) => OverlayInteractionGeometry.ContainsPoint(_appliedRegions, point);
 
     private void PostHostState()
     {
-        if (!_initialized || _webView.CoreWebView2 == null || IsDisposed) return;
+        if (!_initialized || _webView?.CoreWebView2 == null || IsDisposed) return;
         try
         {
             _webView.CoreWebView2.PostWebMessageAsJson(JsonSerializer.Serialize(new
@@ -374,6 +669,7 @@ internal sealed class DashboardOverlayForm : Form
                 height = ClientSize.Height,
                 dpi = _lastDpi,
                 zoomFactor = _webView.ZoomFactor,
+                renderer = "direct-composition",
                 presentationMode = _presentationMode
             }));
         }
@@ -405,11 +701,7 @@ internal sealed class DashboardOverlayForm : Form
     {
         try
         {
-            var directory = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-                "heat-treatment-digital-twin-desktop",
-                "logs"
-            );
+            var directory = Program.LogDirectory;
             Directory.CreateDirectory(directory);
             File.AppendAllText(
                 Path.Combine(directory, "admin-host.log"),
@@ -426,21 +718,26 @@ internal sealed class DashboardOverlayForm : Form
     {
         if (disposing)
         {
-            _interactionRegion?.Dispose();
-            _interactionRegion = null;
-            try { Controls.Remove(_webView); } catch { /* best-effort detach */ }
             try
             {
-                _webView.Dispose();
+                var controller = _webView;
+                _webView = null;
+                if (controller != null)
+                {
+                    controller.AcceleratorKeyPressed -= HandleAcceleratorKey;
+                    controller.CursorChanged -= HandleCursorChanged;
+                    try { controller.RootVisualTarget = null; }
+                    finally { controller.Close(); }
+                }
             }
             catch (Exception exception)
             {
                 WriteOverlayError("透明数据层 WebView2 已提前关闭", exception);
             }
+            try { _compositionSurface?.Dispose(); }
+            catch (Exception exception) { WriteOverlayError("透明数据层合成资源已提前关闭", exception); }
+            finally { _compositionSurface = null; }
         }
         base.Dispose(disposing);
     }
-
-    private readonly record struct CssInteractionRegion(RectangleF Bounds, float Radius);
-    private readonly record struct AppliedInteractionRegion(Rectangle Bounds, int Radius);
 }

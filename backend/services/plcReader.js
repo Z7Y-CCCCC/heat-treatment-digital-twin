@@ -44,15 +44,19 @@ class PlcReader {
         this.offlineAfterMs = this._resolveOfflineAfterMs(options.offlineAfterMs);
         this.statusHeartbeatTimer = null;
         this.stopped = true;
+        this.runVersion = 0;
         this.driverFactory = options.driverFactory || createProtocolDriver;
     }
 
     async start(onData, onStatusChange) {
+        if (!this.stopped) this.stop();
+        const runVersion = ++this.runVersion;
         this.onData = onData;
         this.onStatusChange = onStatusChange;
         this.stopped = false;
 
-        await this._loadDataPoints();
+        await this._loadDataPoints(runVersion);
+        if (this.stopped || runVersion !== this.runVersion) return;
 
         if (this.tasks.size === 0) {
             this._notifyAggregateStatus(true);
@@ -68,11 +72,13 @@ class PlcReader {
 
     stop() {
         this.stopped = true;
+        this.runVersion += 1;
         if (this.statusHeartbeatTimer) {
             clearInterval(this.statusHeartbeatTimer);
             this.statusHeartbeatTimer = null;
         }
         for (const task of this.tasks.values()) {
+            task.connectionGeneration += 1;
             this._clearTaskTimers(task);
             this._dropTaskConnection(task);
             task.status = 'stopped';
@@ -122,10 +128,13 @@ class PlcReader {
         };
     }
 
-    async _loadDataPoints() {
+    async _loadDataPoints(runVersion = this.runVersion) {
         const db = await getDb();
+        if (this.stopped || runVersion !== this.runVersion) return;
         const devices = await db.all('SELECT * FROM devices ORDER BY line_id, sort_order ASC');
+        if (this.stopped || runVersion !== this.runVersion) return;
         const allPoints = await db.all('SELECT * FROM data_points ORDER BY device_id, id ASC');
+        if (this.stopped || runVersion !== this.runVersion) return;
         const pointsByDevice = new Map();
         allPoints.forEach(point => {
             if (!pointsByDevice.has(point.device_id)) pointsByDevice.set(point.device_id, []);
@@ -220,9 +229,9 @@ class PlcReader {
             endpointKey: this._endpointKey(plc),
             endpoint: plc,
             interval,
-            tags: {},
+            tags: Object.create(null),
             points: [],
-            devices: {},
+            devices: Object.create(null),
             conn: null,
             driver: null,
             timer: null,
@@ -270,10 +279,14 @@ class PlcReader {
         }, connectTimeout);
 
         if (task.endpoint.protocol === 'S7') {
-            task.conn = new nodes7();
+            const connection = new nodes7();
+            task.conn = connection;
             const { ip, port, rack, slot, timeout } = task.endpoint;
-            task.conn.initiateConnection({ host: ip, port, rack, slot, timeout }, (err) => {
-                if (this.stopped || generation !== task.connectionGeneration) return;
+            const onConnected = (err) => {
+                if (this.stopped || generation !== task.connectionGeneration || task.conn !== connection) {
+                    try { connection.dropConnection(); } catch (error) { /* connection already stopped */ }
+                    return;
+                }
                 if (err) {
                     this._handleTaskFailure(task, err, '连接失败');
                     return;
@@ -281,29 +294,44 @@ class PlcReader {
 
                 try {
                     const tagNames = Object.keys(task.tags);
-                    task.conn.setTranslationCB(tag => task.tags[tag]);
-                    task.conn.addItems(tagNames);
+                    connection.setTranslationCB(tag => task.tags[tag]);
+                    connection.addItems(tagNames);
                     this._markTaskConnected(task, `${this._formatEndpoint(task.endpoint)} 已连接，${tagNames.length} 点，${task.interval}ms`);
                     this._startTaskPolling(task);
                 } catch (e) {
                     this._handleTaskFailure(task, e, '点位注册失败');
                 }
-            });
+            };
+            try {
+                connection.initiateConnection({ host: ip, port, rack, slot, timeout }, onConnected);
+            } catch (error) {
+                this._handleTaskFailure(task, error, '连接失败');
+            }
             return;
         }
 
+        let driver;
         Promise.resolve()
             .then(() => {
-                task.driver = this.driverFactory(task.endpoint);
-                return task.driver.connect();
-            })
-            .then(() => {
                 if (this.stopped || generation !== task.connectionGeneration) return;
+                driver = this.driverFactory(task.endpoint);
+                task.driver = driver;
+                return driver.connect();
+            })
+            .then(async () => {
+                if (!driver) return;
+                if (this.stopped || generation !== task.connectionGeneration || task.driver !== driver) {
+                    await this._disconnectDriver(driver, task.id);
+                    return;
+                }
                 this._markTaskConnected(task, `${this._formatEndpoint(task.endpoint)} 已连接，${task.points.length} 点，${task.interval}ms`);
                 this._startTaskPolling(task);
             })
             .catch(error => {
-                if (this.stopped || generation !== task.connectionGeneration) return;
+                if (this.stopped || generation !== task.connectionGeneration) {
+                    if (driver) this._disconnectDriver(driver, task.id);
+                    return;
+                }
                 this._handleTaskFailure(task, error, '连接失败');
             });
     }
@@ -324,7 +352,9 @@ class PlcReader {
     }
 
     _startTaskPolling(task) {
+        const generation = task.connectionGeneration;
         this._readTask(task);
+        if (this.stopped || generation !== task.connectionGeneration || task.status !== 'connected') return;
         task.timer = setInterval(() => this._readTask(task), task.interval);
     }
 
@@ -334,28 +364,36 @@ class PlcReader {
         task.reading = true;
         const generation = task.connectionGeneration;
         if (task.endpoint.protocol === 'S7') {
-            connection.readAllItems((err, values) => {
+            const onRead = (err, values) => {
+                if (this.stopped || generation !== task.connectionGeneration || task.conn !== connection) return;
                 task.reading = false;
-                if (this.stopped || generation !== task.connectionGeneration) return;
                 if (err) {
                     this._handleTaskFailure(task, err, '读取失败');
                     return;
                 }
                 this._handleTaskReadSuccess(task, values || {});
-            });
+            };
+            try {
+                connection.readAllItems(onRead);
+            } catch (error) {
+                onRead(error);
+            }
             return;
         }
 
         Promise.resolve()
-            .then(() => connection.read(task.points))
+            .then(() => {
+                if (this.stopped || generation !== task.connectionGeneration || task.driver !== connection) return;
+                return connection.read(task.points);
+            })
             .then(values => {
+                if (this.stopped || generation !== task.connectionGeneration || task.driver !== connection) return;
                 task.reading = false;
-                if (this.stopped || generation !== task.connectionGeneration) return;
                 this._handleTaskReadSuccess(task, values || {});
             })
             .catch(error => {
+                if (this.stopped || generation !== task.connectionGeneration || task.driver !== connection) return;
                 task.reading = false;
-                if (this.stopped || generation !== task.connectionGeneration) return;
                 this._handleTaskFailure(task, error, '读取失败');
             });
     }
@@ -426,7 +464,7 @@ class PlcReader {
             const value = this._applyExpression(scaledValue, point);
             const category = this._resolveCategory(point);
             const fieldName = point.value_role || point.name;
-            const quality = this._resolveQuality(rawValue, point);
+            const quality = this._resolveQuality(value, point);
 
             data[category][fieldName] = value;
             data.quality[category][fieldName] = quality;
@@ -829,6 +867,7 @@ class PlcReader {
 
     _resolveQuality(rawValue, point) {
         if (rawValue === undefined || rawValue === null) return 'bad';
+        if (typeof rawValue === 'number' && !Number.isFinite(rawValue)) return 'bad';
         const configured = String(point.quality || '').trim().toLowerCase();
         if (['good', 'stale', 'bad'].includes(configured)) return configured;
         return 'good';
@@ -866,13 +905,15 @@ class PlcReader {
     }
 
     _applyScaleOffset(value, point) {
-        if (typeof value !== 'number' || Number.isNaN(value)) return value;
+        if (typeof value !== 'number') return value;
+        if (!Number.isFinite(value)) return null;
 
         const scale = Number(point.scale ?? 1);
         const offset = Number(point.offset ?? 0);
         const safeScale = Number.isFinite(scale) ? scale : 1;
         const safeOffset = Number.isFinite(offset) ? offset : 0;
-        return parseFloat((value * safeScale + safeOffset).toFixed(3));
+        const result = value * safeScale + safeOffset;
+        return Number.isFinite(result) ? parseFloat(result.toFixed(3)) : null;
     }
 
     _applyExpression(value, point) {
@@ -891,17 +932,30 @@ class PlcReader {
         if (rawValue === undefined || rawValue === null) return null;
         const type = this._canonicalDataType(dataType);
         switch (type) {
-            case 'BOOL':
-                return !!rawValue;
+            case 'BOOL': {
+                if (typeof rawValue === 'boolean') return rawValue;
+                if (typeof rawValue === 'number') return Number.isFinite(rawValue) ? rawValue !== 0 : null;
+                const value = String(rawValue).trim().toLowerCase();
+                if (['1', 'true'].includes(value)) return true;
+                if (['0', 'false'].includes(value)) return false;
+                return null;
+            }
             case 'REAL':
-            case 'LREAL':
-                return parseFloat(Number(rawValue).toFixed(2));
+            case 'LREAL': {
+                const value = String(rawValue).trim() === '' ? NaN : Number(rawValue);
+                // Preserve raw PLC precision until engineering scale/offset are
+                // applied. Rounding here turns 0.125 into 0.13 and can erase a
+                // small signal entirely before a large scale factor is applied.
+                return Number.isFinite(value) ? value : null;
+            }
             case 'INT':
             case 'WORD':
             case 'DINT':
             case 'DWORD':
-            case 'BYTE':
-                return parseInt(rawValue, 10);
+            case 'BYTE': {
+                const value = String(rawValue).trim() === '' ? NaN : Number(rawValue);
+                return Number.isFinite(value) ? Math.trunc(value) : null;
+            }
             case 'STRING':
             case 'CHAR':
             case 'DT':
@@ -942,10 +996,14 @@ class PlcReader {
         if (task.driver) {
             const driver = task.driver;
             task.driver = null;
-            Promise.resolve(driver.disconnect?.()).catch(error => {
-                console.warn(`[PlcReader] ${task.id} 协议连接清理失败: ${error.message}`);
-            });
+            this._disconnectDriver(driver, task.id);
         }
+    }
+
+    _disconnectDriver(driver, taskId) {
+        return Promise.resolve().then(() => driver.disconnect?.()).catch(error => {
+            console.warn(`[PlcReader] ${taskId} 协议连接清理失败: ${error.message}`);
+        });
     }
 
     _isTruthy(value) {

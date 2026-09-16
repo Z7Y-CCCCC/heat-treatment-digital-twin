@@ -19,7 +19,7 @@ namespace HeatTreatment.DigitalTwin.Rendering
         }
 
         private readonly List<BindingState> _states = new List<BindingState>();
-        private readonly MaterialPropertyBlock _propertyBlock = new MaterialPropertyBlock();
+        private MaterialPropertyBlock _propertyBlock;
 
         public void Configure(IEnumerable<PartBindingDto> bindings)
         {
@@ -92,6 +92,7 @@ namespace HeatTreatment.DigitalTwin.Rendering
         private void ApplyColor(Transform target, string htmlColor)
         {
             if (!ColorUtility.TryParseHtmlString(htmlColor, out var color)) return;
+            _propertyBlock ??= new MaterialPropertyBlock();
             foreach (var renderer in target.GetComponentsInChildren<Renderer>(true))
             {
                 renderer.GetPropertyBlock(_propertyBlock);

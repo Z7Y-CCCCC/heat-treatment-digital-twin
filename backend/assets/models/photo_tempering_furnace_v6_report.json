@@ -1,0 +1,194 @@
+{
+  "valid": true,
+  "expected_root": "photo_tempering_furnace_v6_root",
+  "stats": {
+    "file_bytes": 2898412,
+    "nodes": 81,
+    "meshes": 65,
+    "materials": 19,
+    "triangles": 68495,
+    "unique_mesh_triangles": 68495,
+    "mesh_instance_triangles": 68495,
+    "primitive_counts_by_mode": {
+      "4": 65
+    },
+    "scenes": 1
+  },
+  "limits": {
+    "max_triangles": 200000,
+    "max_nodes": 800
+  },
+  "metadata_checked": true,
+  "binding_targets": [
+    "temper_v6_node_door_front_lift",
+    "temper_v6_node_door_drive_shaft_rotate",
+    "temper_v6_node_circulation_fan_rotate"
+  ],
+  "errors": [],
+  "model_id": "photo_tempering_furnace_v6",
+  "family": "回火炉",
+  "editable_objects": 530,
+  "production_runtime_tested": false,
+  "original_assets_modified": false,
+  "functional_groups": [
+    "chassis",
+    "thermal_shell",
+    "refractory_chamber",
+    "door_front_lift",
+    "door_guides",
+    "door_drive_housing",
+    "door_drive_shaft_rotate",
+    "sloped_exhaust_hood",
+    "front_shallow_tray",
+    "service_platform",
+    "ladder_cage",
+    "electrical_cabinet",
+    "pipe_services",
+    "circulation_drive_housing",
+    "circulation_fan_rotate"
+  ],
+  "dimensional_accuracy": "visual_estimate_not_measured",
+  "binding_axes": [
+    {
+      "node": "temper_v6_node_door_front_lift",
+      "axis": "y",
+      "action": "translate"
+    },
+    {
+      "node": "temper_v6_node_door_drive_shaft_rotate",
+      "axis": "x",
+      "action": "rotate_speed"
+    },
+    {
+      "node": "temper_v6_node_circulation_fan_rotate",
+      "axis": "y",
+      "action": "rotate_speed"
+    }
+  ],
+  "roundtrip": {
+    "status": "passed",
+    "nodes": 81,
+    "triangles": 68495,
+    "bounds_max_error_m": 0.0,
+    "bounds_blender_xyz": [
+      -1.537500023841858,
+      -1.9670000076293945,
+      0.032499998807907104,
+      2.304828405380249,
+      1.9199999570846558,
+      4.841000080108643
+    ],
+    "binding_checks": [
+      {
+        "node": "temper_v6_node_door_front_lift",
+        "action": "translate",
+        "axis_gltf": "y",
+        "axis_blender": "z",
+        "unrelated_meshes_fixed": true
+      },
+      {
+        "node": "temper_v6_node_door_drive_shaft_rotate",
+        "action": "rotate_speed",
+        "axis_gltf": "x",
+        "axis_blender": "x",
+        "unrelated_meshes_fixed": true
+      },
+      {
+        "node": "temper_v6_node_circulation_fan_rotate",
+        "action": "rotate_speed",
+        "axis_gltf": "y",
+        "axis_blender": "z",
+        "unrelated_meshes_fixed": true
+      }
+    ],
+    "door_ray_checks": [
+      {
+        "node": "temper_v6_node_door_front_lift.001",
+        "closed_hit": "temper_v6_door_front_lift_temper_door.001",
+        "opened_hit": "temper_v6_refractory_chamber_temper_lining.001",
+        "ray_clear": true,
+        "travel": 1.64,
+        "sweep_samples": [
+          {
+            "fraction": 0.0,
+            "surface_intersections": 0
+          },
+          {
+            "fraction": 0.1,
+            "surface_intersections": 0
+          },
+          {
+            "fraction": 0.2,
+            "surface_intersections": 0
+          },
+          {
+            "fraction": 0.3,
+            "surface_intersections": 0
+          },
+          {
+            "fraction": 0.4,
+            "surface_intersections": 0
+          },
+          {
+            "fraction": 0.5,
+            "surface_intersections": 0
+          },
+          {
+            "fraction": 0.6,
+            "surface_intersections": 0
+          },
+          {
+            "fraction": 0.7,
+            "surface_intersections": 0
+          },
+          {
+            "fraction": 0.8,
+            "surface_intersections": 0
+          },
+          {
+            "fraction": 0.9,
+            "surface_intersections": 0
+          },
+          {
+            "fraction": 1.0,
+            "surface_intersections": 0
+          }
+        ]
+      }
+    ],
+    "production_runtime_tested": false,
+    "render": "backend\\assets\\models\\photo_tempering_furnace_v6_runtime_check.png"
+  },
+  "geometry_audit": {
+    "valid": true,
+    "scope": "mesh-local geometry, counted per primitive; node instances/transforms and deformations excluded",
+    "stats": {
+      "file_bytes": 2898412,
+      "meshes": 65,
+      "primitives": 65,
+      "non_triangle_primitives": 0,
+      "triangles": 68495,
+      "non_finite_positions": 0,
+      "non_finite_normals": 0,
+      "non_unit_normals": 0,
+      "degenerate_triangles": 0,
+      "reversed_triangles": 0,
+      "invalid_index_triangles": 0,
+      "non_finite_triangles": 0
+    },
+    "thresholds": {
+      "normal_length_tolerance": 0.0001,
+      "degenerate_cross_length_lte": 1e-12,
+      "reversed_cross_dot_average_normal_lt": -1e-07
+    },
+    "counting_notes": [
+      "Vertex anomalies count VEC3 elements, including unused elements, per primitive reference.",
+      "Non-finite normals are excluded from the non-unit normal count.",
+      "Non-finite/invalid-index triangles are counted but excluded from degeneracy and winding tests.",
+      "Only meshes with anomalies are listed in mesh_issues and reversed_triangles_by_mesh."
+    ],
+    "reversed_triangles_by_mesh": [],
+    "mesh_issues": [],
+    "errors": []
+  }
+}

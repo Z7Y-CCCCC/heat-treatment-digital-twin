@@ -1,14 +1,18 @@
 {
   "name": "mock-server",
   "version": "1.0.0",
-  "main": "index.js",
+  "main": "mqtt-simulator.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node mqtt-simulator.js",
+    "test": "node scripts/mqtt-simulator-test.cjs"
+  },
+  "engines": {
+    "node": ">=22.12.0"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "description": "",
+  "description": "仅用于本机或显式指定 MQTT broker 的离线模拟数据辅助脚本",
   "dependencies": {
     "mqtt": "^5.15.1"
   }

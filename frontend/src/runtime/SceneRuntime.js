@@ -255,10 +255,25 @@ export class SceneRuntime {
         this.containerElement = containerElement;
         this.options = options;
         this.furnaces = new Map();
+        this.modelErrors = [];
         this.sceneManager = null;
+        this.disposed = false;
+        this.startPromise = null;
+        this.pendingModels = new Set();
     }
 
-    async start() {
+    start() {
+        if (this.disposed) return Promise.resolve(this);
+        if (!this.startPromise) {
+            this.startPromise = this.initialize().catch(error => {
+                this.dispose();
+                throw error;
+            });
+        }
+        return this.startPromise;
+    }
+
+    async initialize() {
         const {
             workshops,
             models,
@@ -269,6 +284,8 @@ export class SceneRuntime {
             onDeviceRegistered,
             interactionOptions
         } = this.options;
+
+        this.modelErrors = [];
 
         this.sceneManager = new SceneManager(
             this.containerElement,
@@ -301,6 +318,10 @@ export class SceneRuntime {
                     group.items.map(item => item.definition),
                     { labelConfig: this.options.deviceLabelConfig || {} }
                 );
+                if (this.disposed) {
+                    batch.batchRenderer.dispose();
+                    return this;
+                }
                 this.sceneManager.addBatchRenderer(batch.batchRenderer);
                 group.items.forEach((item, localIndex) => {
                     results[item.index] = {
@@ -310,19 +331,38 @@ export class SceneRuntime {
                     batchedIndexes.add(item.index);
                 });
             } catch (error) {
+                if (this.disposed) return this;
                 console.warn(`[SceneRuntime] 模型 ${group.modelInfo.id} 自动优化失败，使用原始渲染:`, error);
             }
         }
 
         await Promise.all(definitions.map(async (definition, index) => {
             if (batchedIndexes.has(index)) return;
+            const deviceModel = await createConfiguredDeviceModel(definition, models || [], { labelConfig: this.options.deviceLabelConfig || {} });
+            if (this.disposed) {
+                deviceModel.dispose?.();
+                return;
+            }
+            this.pendingModels.add(deviceModel);
             results[index] = {
                 ...definition,
-                deviceModel: await createConfiguredDeviceModel(definition, models || [], { labelConfig: this.options.deviceLabelConfig || {} })
+                deviceModel
             };
         }));
+        if (this.disposed) return this;
 
         results.forEach(({ deviceCfg, deviceModel, wsIdx, gLineIdx, lineId, isLineMember }) => {
+            const diagnostic = deviceModel?.userData?.modelLoadError;
+            if (diagnostic) {
+                this.modelErrors.push({
+                    device: deviceCfg?.name || deviceCfg?.id || '未命名设备',
+                    deviceId: deviceCfg?.id || '',
+                    model: diagnostic.modelName || deviceCfg?.model_type || '未命名模型',
+                    modelId: diagnostic.modelId || deviceCfg?.model_type || '',
+                    reason: diagnostic.reason || '未知模型加载错误',
+                    url: diagnostic.url || ''
+                });
+            }
             Object.assign(deviceModel.userData, {
                 workshopIdx: wsIdx,
                 globalLineIndex: gLineIdx,
@@ -331,6 +371,7 @@ export class SceneRuntime {
                 runtimeModelKey: runtimeModelKey(deviceCfg, models || [])
             });
             this.sceneManager.addFurnace(deviceModel);
+            this.pendingModels.delete(deviceModel);
             this.furnaces.set(deviceCfg.id, deviceModel);
             if (onDeviceRegistered) onDeviceRegistered(deviceCfg);
         });
@@ -338,6 +379,10 @@ export class SceneRuntime {
         this.sceneManager.setTopologyConfig(workshops || [], cameraMode || 'auto');
         this.sceneManager.animate();
         return this;
+    }
+
+    getModelErrors() {
+        return this.modelErrors.slice();
     }
 
     updateDeviceLayout(workshops, deviceId, models = this.options.models || []) {
@@ -404,6 +449,10 @@ export class SceneRuntime {
     }
 
     dispose() {
+        if (this.disposed) return;
+        this.disposed = true;
+        this.pendingModels.forEach(model => model.dispose?.());
+        this.pendingModels.clear();
         this.sceneManager?.dispose();
         this.sceneManager = null;
         this.furnaces.clear();

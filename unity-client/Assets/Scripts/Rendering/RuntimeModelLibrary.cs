@@ -19,6 +19,7 @@ namespace HeatTreatment.DigitalTwin.Rendering
         public DeviceInspectionConfigDto Inspection { get; internal set; }
         public RuntimeModelOptimizationReport OptimizationReport { get; internal set; }
         public bool IsFallback { get; internal set; }
+        public string LoadError { get; internal set; }
     }
 
     /// <summary>
@@ -36,6 +37,7 @@ namespace HeatTreatment.DigitalTwin.Rendering
             public RuntimeModelOptimizationReport OptimizationReport;
             public GltfImport Importer;
             public bool IsFallback;
+            public string LoadError;
         }
 
         private readonly Dictionary<string, ModelAssetDto> _assets = new Dictionary<string, ModelAssetDto>();
@@ -43,18 +45,31 @@ namespace HeatTreatment.DigitalTwin.Rendering
         private string _backendBaseUrl;
         private float _loadTimeoutSeconds = 30f;
         private Transform _templateContainer;
+        private bool _destroyed;
 
         public int LoadedTemplateCount => _templates.Count;
 
         public void Configure(string backendBaseUrl, IEnumerable<ModelAssetDto> assets, float loadTimeoutSeconds)
         {
+            var previousBaseUrl = _backendBaseUrl;
             _backendBaseUrl = (backendBaseUrl ?? string.Empty).TrimEnd('/');
-            _loadTimeoutSeconds = Mathf.Max(5f, loadTimeoutSeconds);
+            _loadTimeoutSeconds = float.IsNaN(loadTimeoutSeconds) || float.IsInfinity(loadTimeoutSeconds)
+                ? 30f : Mathf.Max(5f, loadTimeoutSeconds);
             _assets.Clear();
             foreach (var asset in assets ?? Enumerable.Empty<ModelAssetDto>())
             {
                 if (asset == null || string.IsNullOrWhiteSpace(asset.Id)) continue;
                 _assets[asset.Id] = asset;
+            }
+            // A configuration reload is also the retry boundary for transient
+            // model failures. Do not keep an offline placeholder forever, nor
+            // reuse bindings/scale from an older metadata revision.
+            var currentKeys = new HashSet<string>(_assets.Values.Select(asset => CacheKey(asset, asset.Id)));
+            foreach (var entry in _templates.ToArray())
+            {
+                if (previousBaseUrl == _backendBaseUrl && !entry.Value.IsFallback && currentKeys.Contains(entry.Key)) continue;
+                DisposeTemplate(entry.Value);
+                _templates.Remove(entry.Key);
             }
 
             if (_templateContainer == null)
@@ -72,12 +87,25 @@ namespace HeatTreatment.DigitalTwin.Rendering
             CancellationToken cancellationToken)
         {
             if (device == null) throw new ArgumentNullException(nameof(device));
+            cancellationToken.ThrowIfCancellationRequested();
+            if (_destroyed) throw new ObjectDisposedException(nameof(RuntimeModelLibrary));
             var asset = ResolveAsset(device.ModelType);
             var key = CacheKey(asset, device.ModelType);
             if (!_templates.TryGetValue(key, out var template))
             {
                 template = await LoadTemplateSafeAsync(asset, device.ModelType, cancellationToken);
-                _templates[key] = template;
+                if (cancellationToken.IsCancellationRequested || _destroyed)
+                {
+                    DisposeTemplate(template);
+                    cancellationToken.ThrowIfCancellationRequested();
+                    throw new ObjectDisposedException(nameof(RuntimeModelLibrary));
+                }
+                if (_templates.TryGetValue(key, out var existing))
+                {
+                    DisposeTemplate(template);
+                    template = existing;
+                }
+                else _templates[key] = template;
             }
 
             var clone = Instantiate(template.Root, parent, false);
@@ -94,7 +122,8 @@ namespace HeatTreatment.DigitalTwin.Rendering
                 Bindings = template.Bindings,
                 Inspection = InspectionConfigResolver.Resolve(template.Asset, device),
                 OptimizationReport = template.OptimizationReport,
-                IsFallback = template.IsFallback
+                IsFallback = template.IsFallback,
+                LoadError = template.LoadError
             };
         }
 
@@ -111,23 +140,34 @@ namespace HeatTreatment.DigitalTwin.Rendering
         {
             if (asset == null || string.IsNullOrWhiteSpace(asset.FilePath))
             {
-                return CreateFallbackTemplate(asset, requestedModelType, null);
+                var reason = asset == null
+                    ? $"未找到模型资产：{requestedModelType ?? "未设置模型类型"}"
+                    : $"模型资产未配置文件：{asset.Id}";
+                return CreateFallbackTemplate(asset, requestedModelType, reason);
             }
 
             try
             {
                 return await LoadGltfTemplateAsync(asset, cancellationToken);
             }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                // F5/configuration reload is not a failed model. Propagate it
+                // so the obsolete load cannot cache or instantiate a fallback.
+                throw;
+            }
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
             {
-                var message = $"Model load timed out after {_loadTimeoutSeconds:0}s: {asset.Id}";
+                var message = $"模型加载超时（{_loadTimeoutSeconds:0} 秒）：{asset.Id}，地址：{ResolveAssetUrl(asset.FilePath)}";
                 Debug.LogError($"[RuntimeModelLibrary] {message}");
                 return CreateFallbackTemplate(asset, requestedModelType, message);
             }
             catch (Exception exception)
             {
+                cancellationToken.ThrowIfCancellationRequested();
+                var message = $"模型加载失败：{asset.Id}，地址：{ResolveAssetUrl(asset.FilePath)}；{exception.Message}";
                 Debug.LogError($"[RuntimeModelLibrary] Failed to load {asset.Id}: {exception}");
-                return CreateFallbackTemplate(asset, requestedModelType, exception.Message);
+                return CreateFallbackTemplate(asset, requestedModelType, message);
             }
         }
 
@@ -138,51 +178,70 @@ namespace HeatTreatment.DigitalTwin.Rendering
 
             var root = new GameObject($"template_{asset.Id}");
             root.transform.SetParent(_templateContainer, false);
-            var importer = new GltfImport(new LoopbackDownloadProvider());
-            var settings = new ImportSettings
+            GltfImport importer = null;
+            var completed = false;
+            try
             {
-                GenerateMipMaps = true,
-                AnisotropicFilterLevel = 4,
-                NodeNameMethod = NameImportMethod.Original
-            };
+                importer = new GltfImport(new LoopbackDownloadProvider(timeout.Token));
+                var settings = new ImportSettings
+                {
+                    GenerateMipMaps = true,
+                    AnisotropicFilterLevel = 4,
+                    NodeNameMethod = NameImportMethod.Original
+                };
+                var url = ResolveAssetUrl(asset.FilePath);
+                var loaded = await importer.Load(url, settings, timeout.Token);
+                timeout.Token.ThrowIfCancellationRequested();
+                if (!loaded)
+                {
+                    throw new InvalidOperationException($"glTFast rejected model '{asset.Id}' from {url}");
+                }
 
-            var url = ResolveAssetUrl(asset.FilePath);
-            var loaded = await importer.Load(url, settings, timeout.Token);
-            if (!loaded)
-            {
-                importer.Dispose();
-                Destroy(root);
-                throw new InvalidOperationException($"glTFast rejected model '{asset.Id}' from {url}");
+                // Match the authoring scene-root path convention for single AND multi-root GLBs.
+                var instantiator = new GameObjectInstantiator(importer, root.transform,
+                    settings: new InstantiationSettings { SceneObjectCreation = SceneObjectCreation.Never });
+                var instantiated = await importer.InstantiateMainSceneAsync(instantiator, timeout.Token);
+                timeout.Token.ThrowIfCancellationRequested();
+                if (!instantiated)
+                {
+                    throw new InvalidOperationException($"glTFast could not instantiate model '{asset.Id}'");
+                }
+
+                var bindings = ReadBindings(asset.MetadataObject);
+                var inspection = InspectionConfigResolver.Resolve(asset, null);
+                var options = ModelOptimizationOptions.FromMetadata(asset.MetadataObject);
+                var report = RuntimeModelOptimizer.Optimize(
+                    root,
+                    // Engineer preview may select any GLB node, including one that was
+                    // not in the saved preset. Material merging destroys those boundaries.
+                    // Preserve hierarchy for inspectable assets while retaining material
+                    // preparation/instancing; non-inspectable assets still batch normally.
+                    inspection.Enabled ? root.GetComponentsInChildren<Transform>(true).Select(node => node.name)
+                        : ProtectedNodeNames(bindings, inspection),
+                    options
+                );
+                root.SetActive(false);
+                Debug.Log($"[RuntimeModelLibrary] Loaded {asset.Id}: {report}");
+                completed = true;
+                return new TemplateEntry
+                {
+                    Asset = asset,
+                    Root = root,
+                    Bindings = bindings,
+                    Inspection = inspection,
+                    OptimizationReport = report,
+                    Importer = importer,
+                    IsFallback = false
+                };
             }
-
-            var instantiated = await importer.InstantiateMainSceneAsync(root.transform, timeout.Token);
-            if (!instantiated)
+            finally
             {
-                importer.Dispose();
-                Destroy(root);
-                throw new InvalidOperationException($"glTFast could not instantiate model '{asset.Id}'");
+                if (!completed)
+                {
+                    try { importer?.Dispose(); }
+                    finally { if (root != null) Destroy(root); }
+                }
             }
-
-            var bindings = ReadBindings(asset.MetadataObject);
-            var inspection = InspectionConfigResolver.Resolve(asset, null);
-            var options = ModelOptimizationOptions.FromMetadata(asset.MetadataObject);
-            var report = RuntimeModelOptimizer.Optimize(
-                root,
-                ProtectedNodeNames(bindings, inspection),
-                options
-            );
-            root.SetActive(false);
-            Debug.Log($"[RuntimeModelLibrary] Loaded {asset.Id}: {report}");
-            return new TemplateEntry
-            {
-                Asset = asset,
-                Root = root,
-                Bindings = bindings,
-                Inspection = inspection,
-                OptimizationReport = report,
-                Importer = importer,
-                IsFallback = false
-            };
         }
 
         private TemplateEntry CreateFallbackTemplate(ModelAssetDto asset, string requestedModelType, string reason)
@@ -215,7 +274,8 @@ namespace HeatTreatment.DigitalTwin.Rendering
                 Bindings = ReadBindings(effectiveAsset.MetadataObject),
                 Inspection = InspectionConfigResolver.Resolve(effectiveAsset, null),
                 OptimizationReport = new RuntimeModelOptimizationReport(),
-                IsFallback = true
+                IsFallback = true,
+                LoadError = reason
             };
         }
 
@@ -247,7 +307,7 @@ namespace HeatTreatment.DigitalTwin.Rendering
         {
             return asset == null
                 ? $"fallback:{modelType}"
-                : $"{asset.Id}:{asset.FilePath}";
+                : $"{asset.Id}:{asset.FilePath}:{asset.DefaultScale.ToString("R", System.Globalization.CultureInfo.InvariantCulture)}:{asset.MetadataObject.ToString(Newtonsoft.Json.Formatting.None)}";
         }
 
         private static List<PartBindingDto> ReadBindings(JObject metadata)
@@ -280,13 +340,15 @@ namespace HeatTreatment.DigitalTwin.Rendering
             {
                 AddNodeName(names, part?.NodeName);
                 AddPathLeafName(names, part?.NodePath);
+                foreach (var name in part?.NodeNames ?? new List<string>()) AddNodeName(names, name);
+                foreach (var path in part?.NodePaths ?? new List<string>()) AddPathLeafName(names, path);
             }
             return names;
         }
 
         private static void AddNodeName(ISet<string> names, string value)
         {
-            if (!string.IsNullOrWhiteSpace(value)) names.Add(value.Trim());
+            if (!string.IsNullOrWhiteSpace(value)) names.Add(value);
         }
 
         private static void AddPathLeafName(ISet<string> names, string path)
@@ -375,12 +437,18 @@ namespace HeatTreatment.DigitalTwin.Rendering
 
         private void OnDestroy()
         {
+            _destroyed = true;
             foreach (var template in _templates.Values)
             {
-                if (template.Root != null) Destroy(template.Root);
-                template.Importer?.Dispose();
+                DisposeTemplate(template);
             }
             _templates.Clear();
+        }
+
+        private static void DisposeTemplate(TemplateEntry template)
+        {
+            if (template.Root != null) Destroy(template.Root);
+            template.Importer?.Dispose();
         }
     }
 }

@@ -26,6 +26,8 @@ const topLevel = ref(0)
 
 let sceneRuntime = null
 let clockTimer = null
+let dashboardDisposed = false
+const startupError = ref('')
 
 const dataStore = createDashboardDataStore()
 const voiceAnnouncer = createVoiceAnnouncer()
@@ -268,49 +270,59 @@ onMounted(async () => {
   updateTime()
   clockTimer = setInterval(updateTime, 1000)
   await loadConfig()
+  if (dashboardDisposed || !threeContainer.value) return
   voiceAnnouncer.setFactoryPoints(factoryConfig.workshops)
 
   const sceneCamera = getSceneCamera(platform.value)
   dataStore.setStaleMs(getSetting('realtime_stale_ms', sceneCamera.staleMs || 6000))
   dataStore.setEventQueryOptions(getEventQueryConfig())
 
-  sceneRuntime = new SceneRuntime(threeContainer.value, {
-    workshops: getWorkshops(),
-    models: factoryConfig.models || [],
-    cameraMode: getSetting('camera_mode', sceneCamera.mode || 'auto'),
-    renderOptions: normalizeRenderSettings(factoryConfig.settings),
-    deviceLabelConfig: deviceLabelConfig.value,
-    onLevelChange: level => { currentLevel.value = level },
-    onDeviceSelect: deviceId => dataStore.selectDevice(deviceId),
-    onDeviceRegistered: deviceCfg => dataStore.registerDevice(deviceCfg)
-  })
+  try {
+    sceneRuntime = new SceneRuntime(threeContainer.value, {
+      workshops: getWorkshops(),
+      models: factoryConfig.models || [],
+      cameraMode: getSetting('camera_mode', sceneCamera.mode || 'auto'),
+      renderOptions: normalizeRenderSettings(factoryConfig.settings),
+      deviceLabelConfig: deviceLabelConfig.value,
+      onLevelChange: level => { currentLevel.value = level },
+      onDeviceSelect: deviceId => dataStore.selectDevice(deviceId),
+      onDeviceRegistered: deviceCfg => dataStore.registerDevice(deviceCfg)
+    })
 
-  await sceneRuntime.start()
-  exposeDevRuntime()
-  topLevel.value = sceneRuntime.sceneManager?.topLevel ?? 0
-  if (topLevel.value === 1) {
-    selectWorkshop(0)
-  } else {
-    selectGlobal()
+    await sceneRuntime.start()
+    if (dashboardDisposed) return
+    exposeDevRuntime()
+    topLevel.value = sceneRuntime.sceneManager?.topLevel ?? 0
+    if (topLevel.value === 1) {
+      selectWorkshop(0)
+    } else {
+      selectGlobal()
+    }
+    dataStore.setDeviceDataHandler(data => {
+      sceneRuntime.applyDeviceData(data)
+      voiceAnnouncer.handleDeviceData(data)
+    })
+    dataStore.connect()
+    dataStore.refreshEvents(true)
+    dataStore.refreshMetrics(true)
+
+    window.addEventListener('workshop-selected', handleWorkshopSelected)
+    window.addEventListener('line-selected', handleLineSelected)
+    window.addEventListener('factory-selected', handleFactorySelected)
+    window.addEventListener('keydown', handleKeydown)
+    window.addEventListener('pointerdown', unlockVoicePlayback, { passive: true })
+  } catch (error) {
+    sceneRuntime?.dispose()
+    sceneRuntime = null
+    if (!dashboardDisposed) startupError.value = `三维场景启动失败：${error.message || error}`
   }
-  dataStore.setDeviceDataHandler(data => {
-    sceneRuntime.applyDeviceData(data)
-    voiceAnnouncer.handleDeviceData(data)
-  })
-  dataStore.connect()
-  dataStore.refreshEvents(true)
-  dataStore.refreshMetrics(true)
-
-  window.addEventListener('workshop-selected', handleWorkshopSelected)
-  window.addEventListener('line-selected', handleLineSelected)
-  window.addEventListener('factory-selected', handleFactorySelected)
-  window.addEventListener('keydown', handleKeydown)
-  window.addEventListener('pointerdown', unlockVoicePlayback, { passive: true })
 })
 
 onUnmounted(() => {
+  dashboardDisposed = true
   if (clockTimer) clearInterval(clockTimer)
   dataStore.dispose()
+  voiceAnnouncer.dispose()
   sceneRuntime?.dispose()
   sceneRuntime = null
   clearDevRuntime()
@@ -325,6 +337,7 @@ onUnmounted(() => {
 <template>
   <div class="dashboard-container">
     <div ref="threeContainer" class="three-layer"></div>
+    <div v-if="startupError" class="dashboard-startup-error" role="alert">{{ startupError }}，请检查模型和显卡支持后刷新重试。</div>
 
     <div class="ui-layer" :class="'level-' + currentLevel">
       <header class="header">
@@ -451,6 +464,16 @@ onUnmounted(() => {
 </template>
 
 <style>
+.dashboard-startup-error {
+  position: absolute;
+  z-index: 100;
+  inset: 80px 20px auto;
+  padding: 16px 20px;
+  border: 1px solid #d96060;
+  border-radius: 8px;
+  background: #321c25;
+  color: #ffe2e2;
+}
 html, body { margin: 0; padding: 0; }
 html, body, #app { width: 100%; height: 100%; overscroll-behavior: none; }
 
@@ -534,8 +557,9 @@ html, body, #app { width: 100%; height: 100%; overscroll-behavior: none; }
 .header-right { justify-self: end; display: flex; align-items: center; gap: 16px; }
 .time { font-family: Consolas, monospace; color: #f2b85b; font-size: 20px; white-space: nowrap; }
 .time span { margin-right: 12px; color: #b7c0bd; font-size: 13px; }
-.icon-btn { width: 44px; height: 44px; border: 1px solid rgba(218,224,222,.25); background: rgba(255,255,255,.055); color: #e8ecef; cursor: pointer; font-size: 21px; touch-action: manipulation; }
-.icon-btn:hover { background: rgba(242,184,91,.16); border-color: rgba(242,184,91,.52); }
+.icon-btn { width: 44px; height: 44px; border: 1px solid rgba(218,224,222,.25); border-radius: 10px; background: linear-gradient(145deg, rgba(255,255,255,.12), rgba(255,255,255,.035)); color: #e8ecef; cursor: pointer; font-size: 21px; touch-action: manipulation; box-shadow: 0 5px 14px rgba(0,0,0,.12); transition: transform .18s cubic-bezier(.22,1,.36,1), background .18s ease, border-color .18s ease, box-shadow .18s ease; }
+.icon-btn:hover { background: linear-gradient(145deg, rgba(255, 211, 128, .28), rgba(242, 184, 91, .08)); border-color: rgba(242,184,91,.66); box-shadow: 0 9px 20px rgba(0,0,0,.2); transform: translateY(-2px); }
+.icon-btn:active { transform: translateY(0) scale(.96); }
 
 .connection-pill {
   display: inline-flex;
@@ -544,7 +568,7 @@ html, body, #app { width: 100%; height: 100%; overscroll-behavior: none; }
   flex: 0 0 auto;
   padding: 7px 10px;
   border: 1px solid rgba(218,224,222,.18);
-  background: rgba(0, 0, 0, .2);
+  background: linear-gradient(135deg, rgba(255,255,255,.09), rgba(0, 0, 0, .24));
   color: #c5cfcb;
   font-size: 12px;
 }
@@ -572,13 +596,14 @@ html, body, #app { width: 100%; height: 100%; overscroll-behavior: none; }
   color: #d7dedb;
   cursor: pointer;
   border-left: 3px solid transparent;
+  border-radius: 10px;
   background: rgba(255, 255, 255, .045);
   touch-action: manipulation;
-  transition: background .18s ease, border-color .18s ease, color .18s ease;
+  transition: background .18s ease, border-color .18s ease, color .18s ease, box-shadow .18s ease, transform .18s cubic-bezier(.22,1,.36,1);
 }
-.menu-item:hover { background: rgba(255, 255, 255, .08); }
+.menu-item:hover { background: rgba(255, 255, 255, .1); box-shadow: 0 6px 16px rgba(0, 0, 0, .12); transform: translateX(3px); }
 .line-item { margin-left: 16px; color: #b4bdb9; }
-.menu-item.active { border-left-color: #f2b85b; background: rgba(242, 184, 91, .16); color: #fff; }
+.menu-item.active { border-left-color: #f2b85b; background: rgba(242, 184, 91, .18); color: #fff; box-shadow: inset 3px 0 0 #f2b85b, 0 7px 18px rgba(0, 0, 0, .16); }
 .menu-icon { width: 22px; color: #f2b85b; text-align: center; }
 
 .widget-shell { padding: 14px; min-height: 150px; }
@@ -627,7 +652,8 @@ html, body, #app { width: 100%; height: 100%; overscroll-behavior: none; }
 
 .bottom-drawer-panel { position: absolute; bottom: 18px; left: 50%; transform: translateX(-50%); width: min(1220px, 92vw); transition: transform .35s; }
 .bottom-drawer-panel.drawer-closed { transform: translateX(-50%) translateY(calc(100% - 44px)); }
-.drawer-handle { height: 42px; display: flex; align-items: center; justify-content: center; cursor: pointer; border-bottom: 1px solid rgba(255,255,255,.1); color: #f2b85b; font-size: 14px; letter-spacing: .5px; touch-action: manipulation; }
+.drawer-handle { height: 42px; display: flex; align-items: center; justify-content: center; cursor: pointer; border-bottom: 1px solid rgba(255,255,255,.1); color: #f2b85b; font-size: 14px; letter-spacing: .5px; touch-action: manipulation; transition: background .18s ease, color .18s ease, letter-spacing .18s ease; }
+.drawer-handle:hover { color: #ffd487; background: rgba(242,184,91,.08); letter-spacing: .8px; }
 .drawer-content { padding: 16px 24px 22px; max-height: 43vh; overflow: auto; overscroll-behavior: contain; }
 .drawer-content h2 { text-align: center; margin: 0 0 16px; font-size: 18px; color: #f5f7f6; }
 .diagnostic-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; }
@@ -638,9 +664,10 @@ html, body, #app { width: 100%; height: 100%; overscroll-behavior: none; }
 .diag-row em { color: #b9c3bf; font-style: normal; font-size: 12px; }
 
 .camera-controls { position: absolute; right: 28px; top: 50%; transform: translateY(-50%); display: grid; gap: 10px; }
-.tool-btn { width: 52px; height: 52px; border: 1px solid rgba(218,224,222,.25); background: rgba(18,22,24,.86); color: #f2b85b; cursor: pointer; font-size: 23px; touch-action: manipulation; }
-.tool-btn:hover, .back-btn:hover { background: rgba(242,184,91,.16); border-color: rgba(242,184,91,.52); }
-.back-btn { position: absolute; top: 106px; left: 24px; min-height: 44px; padding: 9px 20px; border: 1px solid rgba(218,224,222,.25); background: rgba(18,22,24,.86); color: #f4f7f6; cursor: pointer; font-size: 14px; touch-action: manipulation; }
+.tool-btn { width: 52px; height: 52px; border: 1px solid rgba(218,224,222,.25); border-radius: 10px; background: linear-gradient(145deg, rgba(42, 62, 76, .96), rgba(10, 20, 29, .94)); color: #f2b85b; cursor: pointer; font-size: 23px; touch-action: manipulation; transition: transform .18s cubic-bezier(.22,1,.36,1), background .18s ease, border-color .18s ease, box-shadow .18s ease; }
+.tool-btn:hover, .back-btn:hover { background: linear-gradient(145deg, rgba(242,184,91,.28), rgba(53, 39, 20, .88)); border-color: rgba(242,184,91,.68); box-shadow: 0 9px 20px rgba(0,0,0,.22); transform: translateY(-2px); }
+.tool-btn:active, .back-btn:active { transform: translateY(0) scale(.97); }
+.back-btn { position: absolute; top: 106px; left: 24px; min-height: 44px; padding: 9px 20px; border: 1px solid rgba(218,224,222,.25); border-radius: 10px; background: linear-gradient(145deg, rgba(42, 62, 76, .96), rgba(10, 20, 29, .94)); color: #f4f7f6; cursor: pointer; font-size: 14px; touch-action: manipulation; transition: transform .18s cubic-bezier(.22,1,.36,1), background .18s ease, border-color .18s ease, box-shadow .18s ease; }
 
 .device-overview-bar { position: absolute; left: 50%; bottom: 72px; transform: translateX(-50%); display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; width: min(1120px, 88vw); }
 .device-mini-card { width: 148px; min-height: 70px; padding: 11px 13px; touch-action: manipulation; }

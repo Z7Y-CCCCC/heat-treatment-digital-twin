@@ -5,12 +5,16 @@ const fs = require('fs');
 const http = require('http');
 const net = require('net');
 const path = require('path');
+const { hasProcessExited, terminateProcess } = require('./processLifecycle.cjs');
 const {
     cleanupLogArchives,
     createRotatingLogWriter
 } = require('./logManager.cjs');
 
 const APP_NAME = '热处理数字孪生大屏';
+const backendOnlySmokeMode = !app.isPackaged
+    && process.env.NATIVE_CLIENT_SMOKE_MODE === 'true'
+    && process.env.DESKTOP_SMOKE_BACKEND_ONLY === 'true';
 // 现场大屏需要在无人值守时自动播报，Electron 默认的 Chromium 音频自动播放限制会阻止这一点。
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 if (process.env.APP_USER_DATA_DIR) {
@@ -20,6 +24,9 @@ let mainWindow = null;
 let tray = null;
 let backendProcess = null;
 let nativeProcess = null;
+const managedProcesses = new Set();
+let backendStopPromise = null;
+let nativeStopPromise = null;
 let backendLogStream = null;
 let backendErrorLogStream = null;
 let nativeLogStream = null;
@@ -76,6 +83,15 @@ function ensureDirectory(directory) {
 
 function delay(milliseconds) {
     return new Promise(resolve => setTimeout(resolve, milliseconds));
+}
+
+function trackManagedProcess(child) {
+    managedProcesses.add(child);
+    child.once('exit', () => managedProcesses.delete(child));
+    child.once('error', () => {
+        if (!child.pid) managedProcesses.delete(child);
+    });
+    return child;
 }
 
 function sendStartupState() {
@@ -177,8 +193,10 @@ async function createStartupWindow() {
     });
     await startupWindow.loadFile(path.join(__dirname, 'assets', 'startup.html'));
     if (!startupWindow || startupWindow.isDestroyed()) throw new Error('启动加载页面创建失败');
-    startupWindow.show();
-    startupWindow.focus();
+    if (!backendOnlySmokeMode) {
+        startupWindow.show();
+        startupWindow.focus();
+    }
     sendStartupState();
     await delay(120);
     return startupWindow;
@@ -203,6 +221,10 @@ function persistStartupFailure(error) {
 
 async function showStartupFailure(error) {
     startupFailureLogPath = persistStartupFailure(error);
+    if (backendOnlySmokeMode) {
+        app.quit();
+        return;
+    }
     const current = startupState.steps.find(step => step.status === 'running');
     if (current) current.status = 'error';
     startupState.status = 'error';
@@ -328,7 +350,9 @@ function initializeWritableData() {
     if (!fs.existsSync(databaseFile)) {
         fs.copyFileSync(path.join(templateRoot, 'factory-template.db'), databaseFile);
     }
-    copyMissingDirectoryContents(path.join(templateRoot, 'uploads'), uploadsDir);
+    if (process.env.DESKTOP_SMOKE_ISOLATED !== 'true') {
+        copyMissingDirectoryContents(path.join(templateRoot, 'uploads'), uploadsDir);
+    }
     ensureDirectory(path.join(uploadsDir, 'models'));
     ensureDirectory(path.join(uploadsDir, 'audio'));
 
@@ -710,6 +734,8 @@ function clearBackendRestartTimers() {
 
 function scheduleBackendRestart(writable, port, reason) {
     if (isQuitting || backendRestartTimer) return;
+    if (backendRestartResetTimer) clearTimeout(backendRestartResetTimer);
+    backendRestartResetTimer = null;
     if (backendRestartAttempts >= BACKEND_RESTART_DELAYS_MS.length) {
         const message = `本地数据服务连续 ${backendRestartAttempts} 次自动恢复失败`;
         logDesktopError('backend-restart-exhausted', new Error(`${message}：${reason || '未知原因'}`));
@@ -729,8 +755,9 @@ function scheduleBackendRestart(writable, port, reason) {
         if (isQuitting) return;
         backendRestartInProgress = true;
         backendHealthFailures = 0;
+        let restartedProcess;
         try {
-            const restartedProcess = await startBackend(port, writable);
+            restartedProcess = await startBackend(port, writable);
             await waitForHealth(`${applicationOrigin}/api/health`, 60000, restartedProcess);
             if (backendProcess !== restartedProcess || restartedProcess.exitCode !== null) {
                 throw new Error('后端进程在健康探测完成前已退出');
@@ -745,6 +772,16 @@ function scheduleBackendRestart(writable, port, reason) {
             backendRestartResetTimer.unref?.();
         } catch (error) {
             logDesktopError('backend-restart-failed', error);
+            // Health can time out while the process is still alive and holding
+            // the port. Reap that exact attempt before spawning a replacement.
+            try {
+                await terminateProcess(restartedProcess);
+            } catch (stopError) {
+                logDesktopError('backend-restart-cleanup-failed', stopError);
+                backendRestartInProgress = false;
+                app.quit();
+                return;
+            }
             backendRestartInProgress = false;
             scheduleBackendRestart(writable, port, error.message);
             return;
@@ -896,6 +933,7 @@ function monitorNativeStartup(child, onUpdate, timeoutMs = 300000) {
 }
 
 async function startNativeClient(origin, writable, startupProgressCallback = null) {
+    if (isQuitting) throw new Error('程序正在退出，已取消三维大屏启动');
     if (nativeProcess) return { process: nativeProcess, ready: Promise.resolve() };
     const clientDir = nativeClientDirectory();
     const executable = path.join(clientDir, 'HeatTreatmentDigitalTwin.exe');
@@ -907,6 +945,10 @@ async function startNativeClient(origin, writable, startupProgressCallback = nul
         createRotatingLogWriter(writable.logsDir, 'native-client.log'),
         createRotatingLogWriter(writable.logsDir, 'native-client-error.log')
     ]);
+    if (isQuitting) {
+        logStreams.forEach(stream => stream.end());
+        throw new Error('程序正在退出，已取消三维大屏启动');
+    }
     nativeLogStream = guardLogStream(logStreams[0], '原生客户端日志');
     nativeErrorLogStream = guardLogStream(logStreams[1], '原生客户端错误日志');
 
@@ -929,7 +971,7 @@ async function startNativeClient(origin, writable, startupProgressCallback = nul
             '-screen-height', '900',
             '-logFile', '-'
         ];
-    const child = spawn(executable, nativeArgs, {
+    const child = trackManagedProcess(spawn(executable, nativeArgs, {
         cwd: clientDir,
         windowsHide: false,
         env: {
@@ -949,7 +991,7 @@ async function startNativeClient(origin, writable, startupProgressCallback = nul
             DIGITAL_TWIN_MAXIMIZE_WINDOW: 'true'
         },
         stdio: ['ignore', 'pipe', 'pipe']
-    });
+    }));
     nativeHostReady = false;
     nativeProcess = child;
     child.stdout?.pipe(nativeLogStream, { end: false });
@@ -958,7 +1000,7 @@ async function startNativeClient(origin, writable, startupProgressCallback = nul
         const wasCurrent = nativeProcess === child;
         if (wasCurrent) nativeProcess = null;
         if (wasCurrent) nativeHostReady = false;
-        closeNativeLogStreams();
+        if (wasCurrent) closeNativeLogStreams();
         updateTrayMenu();
         if (!isQuitting && wasCurrent) {
             if (code !== 0 && applicationReadyForInteraction) {
@@ -972,10 +1014,16 @@ async function startNativeClient(origin, writable, startupProgressCallback = nul
             if (applicationReadyForInteraction) showAdminWindow();
         }
     });
-    await new Promise((resolve, reject) => {
-        child.once('spawn', resolve);
-        child.once('error', reject);
-    });
+    try {
+        await new Promise((resolve, reject) => {
+            child.once('spawn', resolve);
+            child.once('error', reject);
+        });
+    } catch (error) {
+        if (nativeProcess === child) nativeProcess = null;
+        closeNativeLogStreams();
+        throw error;
+    }
     updateTrayMenu();
     const timeoutMs = Math.max(30000, Number(process.env.DESKTOP_NATIVE_STARTUP_TIMEOUT_MS || 300000));
     return {
@@ -987,30 +1035,15 @@ async function startNativeClient(origin, writable, startupProgressCallback = nul
 }
 
 function stopNativeClient() {
+    if (nativeStopPromise) return nativeStopPromise;
     const processToStop = nativeProcess;
     nativeProcess = null;
     updateTrayMenu();
-    if (!processToStop || processToStop.killed) {
+    nativeStopPromise = terminateProcess(processToStop).finally(() => {
         closeNativeLogStreams();
-        return Promise.resolve();
-    }
-
-    return new Promise(resolve => {
-        let settled = false;
-        const finish = () => {
-            if (settled) return;
-            settled = true;
-            clearTimeout(forceTimer);
-            closeNativeLogStreams();
-            resolve();
-        };
-        const forceTimer = setTimeout(() => {
-            try { processToStop.kill(); } catch (error) { /* ignore */ }
-            finish();
-        }, 5000);
-        processToStop.once('exit', finish);
-        try { processToStop.kill(); } catch (error) { finish(); }
+        nativeStopPromise = null;
     });
+    return nativeStopPromise;
 }
 
 async function restartNativeClient() {
@@ -1026,6 +1059,10 @@ async function restartNativeClient() {
 }
 
 async function startBackend(port, writable) {
+    if (isQuitting) throw new Error('程序正在退出，已取消数据服务启动');
+    if (backendProcess && !hasProcessExited(backendProcess)) {
+        throw new Error('旧数据服务仍在运行，不能启动重复进程');
+    }
     const backendDir = app.isPackaged
         ? resourcePath('backend')
         : path.resolve(__dirname, '..', 'backend');
@@ -1039,10 +1076,14 @@ async function startBackend(port, writable) {
         createRotatingLogWriter(writable.logsDir, 'backend.log'),
         createRotatingLogWriter(writable.logsDir, 'backend-error.log')
     ]);
+    if (isQuitting) {
+        logStreams.forEach(stream => stream.end());
+        throw new Error('程序正在退出，已取消数据服务启动');
+    }
     backendLogStream = guardLogStream(logStreams[0], '运行日志');
     backendErrorLogStream = guardLogStream(logStreams[1], '后端错误日志');
 
-    const child = spawn(nodeBinary, [path.join(backendDir, 'server.js')], {
+    const child = trackManagedProcess(spawn(nodeBinary, [path.join(backendDir, 'server.js')], {
         cwd: backendDir,
         windowsHide: true,
         env: {
@@ -1055,9 +1096,21 @@ async function startBackend(port, writable) {
             FRONTEND_DIST: frontendDir,
             ENABLE_CORS: 'false',
             DESKTOP_PACKAGED: app.isPackaged ? 'true' : 'false',
+            // A packaged delivery is always locked. The issuer's public key is
+            // safe to ship with the customer; the private key stays in the
+            // separate license-generator tool. Dev-only overrides are not
+            // inherited by the packaged app.
+            LICENSE_ENFORCE: app.isPackaged ? 'true' : (process.env.LICENSE_ENFORCE ?? 'false'),
+            LICENSE_PUBLIC_KEY_FILE: app.isPackaged
+                ? path.join(writable.dataDir, 'license-public-key.pem')
+                : (process.env.LICENSE_PUBLIC_KEY_FILE ?? path.join(writable.dataDir, 'license-public-key.pem')),
+            LICENSE_MACHINE_ID: app.isPackaged ? '' : (process.env.LICENSE_MACHINE_ID ?? ''),
+            LICENSE_MACHINE_STATE_FILE: app.isPackaged
+                ? path.join(process.env.PROGRAMDATA || app.getPath('appData'), 'HeatTreatmentDigitalTwin', 'machine-identity.json')
+                : (process.env.LICENSE_MACHINE_STATE_FILE ?? ''),
             DESKTOP_AUTO_START_SUPPORTED: app.isPackaged && process.platform === 'win32' && process.env.DISABLE_AUTO_START !== 'true' ? 'true' : 'false',
-            SQLITE_RECOVERY_TEMPLATE: resourcePath('templates', 'factory-template.db'),
-            SQLITE_UPGRADE_TEMPLATE: resourcePath('templates', 'factory-template.db'),
+            SQLITE_RECOVERY_TEMPLATE: process.env.SQLITE_RECOVERY_TEMPLATE ?? resourcePath('templates', 'factory-template.db'),
+            SQLITE_UPGRADE_TEMPLATE: process.env.SQLITE_UPGRADE_TEMPLATE ?? resourcePath('templates', 'factory-template.db'),
             DESKTOP_SHUTDOWN_TOKEN: backendShutdownToken,
             DESKTOP_CONTROL_URL: desktopControlOrigin || '',
             DESKTOP_CONTROL_TOKEN: desktopControlToken || '',
@@ -1066,7 +1119,7 @@ async function startBackend(port, writable) {
             NODE_PATH: writable.dependenciesDir || resourcePath('backend-dependencies')
         },
         stdio: ['ignore', 'pipe', 'pipe']
-    });
+    }));
 
     backendProcess = child;
     child.stdout.pipe(backendLogStream, { end: false });
@@ -1126,6 +1179,7 @@ function requestBackendShutdown(port, token) {
 }
 
 function stopBackend() {
+    if (backendStopPromise) return backendStopPromise;
     clearBackendRestartTimers();
     backendRestartAttempts = 0;
     backendHealthFailures = 0;
@@ -1136,29 +1190,13 @@ function stopBackend() {
     backendProcess = null;
     backendPort = null;
     backendShutdownToken = null;
-    if (!processToStop || processToStop.killed) {
+    backendStopPromise = terminateProcess(processToStop, {
+        gracefulShutdown: () => requestBackendShutdown(port, token)
+    }).finally(() => {
         closeBackendLogStreams();
-        return Promise.resolve();
-    }
-
-    return new Promise(resolve => {
-        let settled = false;
-        const finish = () => {
-            if (settled) return;
-            settled = true;
-            clearTimeout(forceTimer);
-            closeBackendLogStreams();
-            resolve();
-        };
-        const forceTimer = setTimeout(() => {
-            try { processToStop.kill(); } catch (error) { /* ignore */ }
-            finish();
-        }, 14000);
-        processToStop.once('exit', finish);
-        requestBackendShutdown(port, token).catch(() => {
-            try { processToStop.kill(); } catch (error) { finish(); }
-        });
+        backendStopPromise = null;
     });
+    return backendStopPromise;
 }
 
 function showAdminWindow() {
@@ -1244,7 +1282,9 @@ function createMainWindow(origin, showInitially = false) {
         return { action: 'deny' };
     });
     mainWindow.webContents.on('will-navigate', (event, targetUrl) => {
-        if (!targetUrl.startsWith(origin)) event.preventDefault();
+        try {
+            if (new URL(targetUrl).origin !== new URL(origin).origin) event.preventDefault();
+        } catch (error) { event.preventDefault(); }
     });
     mainWindow.webContents.session.on('will-download', async (event, item, webContents) => {
         if (webContents !== mainWindow?.webContents) return;
@@ -1326,6 +1366,13 @@ async function launchApplication() {
     await waitForHealth(`${origin}/api/health`, 60000, initialBackendProcess);
     updateStartupProgress('settings', 59, '正在读取系统设置', '同步开机自启、日志、备份和运行参数');
     await startDesktopSettingsSync();
+    if (backendOnlySmokeMode) {
+        applicationReadyForInteraction = true;
+        completeStartupProgress();
+        closeStartupWindow();
+        scheduleSmokeTimers();
+        return;
+    }
     updateStartupProgress('tray', 65, '正在创建系统托盘', '初始化后台常驻与安全退出功能');
     createTray();
     updateStartupProgress('unity-process', 69, '正在启动三维大屏', '创建 Unity 渲染进程');
@@ -1350,6 +1397,10 @@ async function launchApplication() {
     completeStartupProgress();
     await delay(420);
     closeStartupWindow();
+    scheduleSmokeTimers();
+}
+
+function scheduleSmokeTimers() {
     const smokeCrashBackendAfterMs = Number(process.env.DESKTOP_SMOKE_CRASH_BACKEND_AFTER_MS || 0);
     if (Number.isFinite(smokeCrashBackendAfterMs) && smokeCrashBackendAfterMs > 0) {
         setTimeout(() => {
@@ -1392,12 +1443,19 @@ if (!app.requestSingleInstanceLock()) {
     app.on('before-quit', (event) => {
         if (quitReady) return;
         event.preventDefault();
+        if (isQuitting) return;
         isQuitting = true;
+        // A quit request may still need to wait for Unity/WebView2 and the
+        // backend to release resources. Hide the user-facing window first so
+        // slow cleanup is never perceived as a stuck exit button.
+        if (mainWindow && !mainWindow.isDestroyed()) mainWindow.hide();
+        if (startupWindow && !startupWindow.isDestroyed()) startupWindow.hide();
         if (!applicationShutdownForceTimer) {
             applicationShutdownForceTimer = setTimeout(() => {
                 logDesktopError('forced-shutdown', new Error('安全退出超过 25 秒，强制结束残留进程'));
-                try { backendProcess?.kill(); } catch (error) { /* ignore */ }
-                try { nativeProcess?.kill(); } catch (error) { /* ignore */ }
+                for (const child of managedProcesses) {
+                    try { child.kill(); } catch (error) { /* ignore */ }
+                }
                 try { desktopControlServer?.closeIdleConnections?.(); } catch (error) { /* ignore */ }
                 try { desktopControlServer?.closeAllConnections?.(); } catch (error) { /* ignore */ }
                 app.exit(0);
@@ -1406,10 +1464,10 @@ if (!app.requestSingleInstanceLock()) {
         clearBackendRestartTimers();
         if (desktopSettingsTimer) clearInterval(desktopSettingsTimer);
         desktopSettingsTimer = null;
-        stopNativeClient().then(() => Promise.all([
+        stopNativeClient().catch(error => logDesktopError('native-client-shutdown', error)).then(() => Promise.all([
             stopDesktopControlServer(),
             stopBackend()
-        ])).finally(() => {
+        ])).catch(error => logDesktopError('application-shutdown', error)).finally(() => {
             if (applicationShutdownForceTimer) clearTimeout(applicationShutdownForceTimer);
             applicationShutdownForceTimer = null;
             if (logCleanupTimer) clearInterval(logCleanupTimer);
@@ -1418,6 +1476,9 @@ if (!app.requestSingleInstanceLock()) {
             tray = null;
             desktopErrorLogStream?.end();
             desktopErrorLogStream = null;
+            for (const child of managedProcesses) {
+                try { child.kill(); } catch (error) { /* already logged by shutdown */ }
+            }
             quitReady = true;
             // All managed children and local servers are already stopped.  Exit
             // directly so stray Chromium/Node handles cannot keep the tray process

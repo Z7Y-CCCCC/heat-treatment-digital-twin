@@ -99,7 +99,9 @@ namespace HeatTreatment.DigitalTwin.Rendering
             foreach (var cameraData in FindObjectsOfType<UniversalAdditionalCameraData>(true))
             {
                 cameraData.renderPostProcessing = values.PostProcessing;
-                cameraData.antialiasing = AntialiasingMode.None;
+                // MSAA covers geometry edges; FXAA also softens subpixel
+                // specular highlights along distant architectural trim.
+                cameraData.antialiasing = AntialiasingMode.FastApproximateAntialiasing;
             }
             foreach (var volume in FindObjectsOfType<Volume>(true)) volume.enabled = values.PostProcessing;
 

@@ -1,11 +1,11 @@
-import { computed, reactive, ref } from 'vue'
+import { computed, reactive, ref, onScopeDispose } from 'vue'
 import { adminApi } from '../../../config/factoryConfig.js'
 
 /**
  * 局域网电视发现与一键投屏。
  *
  * 交互模型对齐手机投屏：后台直接列出局域网里电视的名字，点“投屏”就把大屏画面
- * 推过去，点“停止投屏”收回。二维码网页投屏保留为没有 DLNA 的电视的备选方案。
+ * 推过去，点“停止投屏”收回。当前大屏画面统一来自 Unity 原生客户端。
  */
 export function useCastDevices({ alert, confirm } = {}) {
     const castState = reactive({
@@ -27,12 +27,16 @@ export function useCastDevices({ alert, confirm } = {}) {
     const castBusyDeviceId = ref('')
     const castMessage = ref('')
     let castRefreshTimer = null
+    let castRequestSeq = 0
+    let castLoading = false
+    let castDisposed = false
 
     const castingDeviceId = computed(() => castState.session?.deviceId || '')
     const castingDeviceName = computed(() => castState.session?.deviceName || '')
 
     function applyPayload(result) {
-        if (!result) return
+        if (castDisposed || !result) return
+        if (result.error && !Array.isArray(result.devices)) throw new Error(result.error)
         castState.devices = Array.isArray(result.devices) ? result.devices : []
         castState.interfaces = Array.isArray(result.interfaces) ? result.interfaces : []
         castState.scanning = result.scanning === true
@@ -73,15 +77,25 @@ export function useCastDevices({ alert, confirm } = {}) {
     }
 
     async function loadCastDevices({ silent = true } = {}) {
+        if (castDisposed || (silent && castLoading)) return
+        const requestSeq = ++castRequestSeq
+        castLoading = true
         try {
-            applyPayload(await adminApi.getCastDevices())
+            const result = await adminApi.getCastDevices()
+            if (castDisposed || requestSeq !== castRequestSeq) return
+            applyPayload(result)
         } catch (error) {
+            if (castDisposed || requestSeq !== castRequestSeq) return
             const message = `读取电视列表失败：${error.message || error}`
             if (!silent || !castState.loaded) castMessage.value = message
+        } finally {
+            if (requestSeq === castRequestSeq) castLoading = false
         }
     }
 
     async function refreshCastDevices() {
+        castRequestSeq += 1
+        castLoading = false
         castState.scanning = true
         castMessage.value = '正在搜索局域网内的电视...'
         try {
@@ -114,6 +128,8 @@ export function useCastDevices({ alert, confirm } = {}) {
             return
         }
         castBusyDeviceId.value = device.id
+        castRequestSeq += 1
+        castLoading = false
         castMessage.value = `正在把大屏推送到「${deviceLabel(device)}」...`
         try {
             const result = await adminApi.startCast(device.id)
@@ -132,6 +148,8 @@ export function useCastDevices({ alert, confirm } = {}) {
         const name = castingDeviceName.value
         if (name && confirm && !(await confirm(`确定停止向「${name}」投屏吗？`))) return
         castBusyDeviceId.value = castingDeviceId.value || 'stopping'
+        castRequestSeq += 1
+        castLoading = false
         castMessage.value = '正在停止投屏...'
         try {
             applyPayload(await adminApi.stopCast())
@@ -152,7 +170,14 @@ export function useCastDevices({ alert, confirm } = {}) {
     function stopCastRefresh() {
         if (castRefreshTimer) clearInterval(castRefreshTimer)
         castRefreshTimer = null
+        castRequestSeq += 1
+        castLoading = false
     }
+
+    onScopeDispose(() => {
+        castDisposed = true
+        stopCastRefresh()
+    })
 
     return {
         castState,

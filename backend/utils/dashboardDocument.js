@@ -12,13 +12,13 @@ const DEFAULT_CANVAS = Object.freeze({
 
 const ALLOWED_WIDGET_TYPES = new Set([
     'text', 'value', 'status', 'trend', 'alarm_list', 'device_list', 'image',
-    'container', 'metrics', 'marquee', 'navigation', 'device_label',
+    'container', 'metrics', 'marquee', 'navigation', 'return_button', 'device_label',
     'diagnostics', 'line_overview_cards', 'business_summary'
 ]);
-const UNITY_WIDGET_TYPES = new Set(['navigation', 'device_label', 'diagnostics', 'line_overview_cards']);
+const UNITY_WIDGET_TYPES = new Set(['navigation', 'return_button', 'device_label', 'diagnostics', 'line_overview_cards']);
 const SYSTEM_VIEW_COMPONENT_IDS = new Set([
-    'widget_navigation', 'widget_device_label', 'widget_diagnostics', 'widget_line_overview_cards',
-    'navigation', 'device_label', 'diagnostics', 'line_overview_cards'
+    'widget_navigation', 'widget_return_button', 'widget_device_label', 'widget_diagnostics', 'widget_line_overview_cards',
+    'navigation', 'return_button', 'device_label', 'diagnostics', 'line_overview_cards'
 ]);
 const ALLOWED_EVENT_ACTIONS = new Set([
     'enter_device', 'focus_factory', 'focus_line', 'focus_workshop',
@@ -170,12 +170,19 @@ function normalizeDataBinding(source, legacyBinding = {}) {
     const legacyDataset = normalizeDatabaseDataset(data, binding, 0);
     const rawDatasets = Array.isArray(data.datasets) && data.datasets.length ? data.datasets : [legacyDataset];
     const datasets = rawDatasets.slice(0, 12).map((item, index) => normalizeDatabaseDataset(item, legacyDataset, index));
+    const rawDeviceId = data.deviceId ?? data.device_id ?? binding.deviceId ?? binding.device_id ?? '';
+    const requestedDeviceScope = String(data.deviceScope ?? data.device_scope ?? binding.deviceScope ?? '').toLowerCase();
+    const deviceScope = requestedDeviceScope === 'current' || requestedDeviceScope === 'fixed'
+        ? requestedDeviceScope
+        : (rawDeviceId ? 'fixed' : 'current');
     return {
         ...binding,
         ...data,
         mode,
-        deviceId: shortText(data.deviceId ?? binding.deviceId ?? binding.device_id, '', 128),
+        deviceScope,
+        deviceId: shortText(rawDeviceId, '', 128),
         pointId: shortText(data.pointId ?? binding.pointId ?? binding.point_id, '', 128),
+        pointKey: shortText(data.pointKey ?? data.point_key ?? binding.pointKey ?? binding.point_key, '', 255),
         path: mode === 'static' ? '' : shortText(data.path ?? binding.path, '', 255),
         source: mode === 'static' ? '' : shortText(data.source ?? binding.source, '', 128),
         connectionId: shortText(data.connectionId ?? binding.connectionId ?? binding.connection_id, '', 80),
@@ -284,6 +291,28 @@ function normalizeDashboardViews(scene) {
     const defaultViewId = ids.has(String(input.defaultViewId || ''))
         ? String(input.defaultViewId)
         : (views[0]?.id || 'factory_overview');
+
+    // Keep malformed custom view graphs navigable after a save/reopen. A
+    // missing/self parent becomes a root; an invalid return edge falls back
+    // to the repaired parent edge.
+    views.forEach(view => {
+        if (view.parentViewId === view.id || (view.parentViewId && !ids.has(view.parentViewId))) view.parentViewId = '';
+        if (view.returnViewId === view.id || (view.returnViewId && !ids.has(view.returnViewId))) view.returnViewId = view.parentViewId || '';
+    });
+    views.forEach(start => {
+        const visited = new Set();
+        let cursor = start;
+        while (cursor?.parentViewId) {
+            if (visited.has(cursor.id)) {
+                start.parentViewId = '';
+                if (start.returnViewId === cursor.id) start.returnViewId = '';
+                break;
+            }
+            visited.add(cursor.id);
+            cursor = views.find(view => view.id === cursor.parentViewId);
+            if (!cursor) break;
+        }
+    });
     return { views, defaultViewId };
 }
 
@@ -309,6 +338,79 @@ function normalizeVisibility(value) {
     };
 }
 
+function navigationFrames(canvas = DEFAULT_CANVAS) {
+    const width = Math.max(220, Math.min(600, Math.round(Number(canvas.width || 1920) * 0.32)));
+    return {
+        navigation: { x: Math.round((Number(canvas.width || 1920) - width) / 2), y: 18, width, height: 42, rotation: 0 },
+        returnButton: { x: 20, y: 18, width: 42, height: 42, rotation: 0 }
+    };
+}
+
+function defaultNavigationWidget(canvas = DEFAULT_CANVAS) {
+    const frames = navigationFrames(canvas);
+    return {
+        id: 'widget_navigation',
+        type: 'navigation',
+        title: '顶部导航状态',
+        frame: frames.navigation,
+        content: {
+            showTitle: false,
+            projectLabel: '热处理车间项目 · 南区热处理车间智能监控大屏',
+            statusText: '模拟数据正常'
+        },
+        style: { background: 'transparent', color: '#eef7ff', borderColor: 'transparent', borderRadius: 0 },
+        runtimeTarget: 'unity',
+        zIndex: 1000,
+        visible: true
+    };
+}
+
+function defaultReturnButtonWidget(canvas = DEFAULT_CANVAS) {
+    return {
+        id: 'widget_return_button',
+        type: 'return_button',
+        title: '返回键',
+        frame: navigationFrames(canvas).returnButton,
+        content: { showTitle: false },
+        style: { background: 'transparent', color: '#eef7ff', borderColor: 'transparent', borderRadius: 0 },
+        runtimeTarget: 'unity',
+        zIndex: 1001,
+        visible: true
+    };
+}
+
+function ensureNavigationWidgets(rawWidgets, canvas) {
+    const widgets = Array.isArray(rawWidgets) ? rawWidgets.slice(0, 500) : [];
+    const frames = navigationFrames(canvas);
+    let navigationIndex = widgets.findIndex(widget => String(objectValue(widget, {}).type ?? objectValue(widget, {}).widget_type ?? '').toLowerCase() === 'navigation');
+    let returnIndex = widgets.findIndex(widget => String(objectValue(widget, {}).type ?? objectValue(widget, {}).widget_type ?? '').toLowerCase() === 'return_button');
+    const missingCount = (navigationIndex < 0 ? 1 : 0) + (returnIndex < 0 ? 1 : 0);
+    if (widgets.length + missingCount > 500) {
+        let removeCount = widgets.length + missingCount - 500;
+        for (let index = widgets.length - 1; index >= 0 && removeCount > 0; index -= 1) {
+            const type = String(objectValue(widgets[index], {}).type ?? objectValue(widgets[index], {}).widget_type ?? '').toLowerCase();
+            if (type === 'navigation' || type === 'return_button') continue;
+            widgets.splice(index, 1);
+            removeCount -= 1;
+        }
+        navigationIndex = widgets.findIndex(widget => String(objectValue(widget, {}).type ?? objectValue(widget, {}).widget_type ?? '').toLowerCase() === 'navigation');
+        returnIndex = widgets.findIndex(widget => String(objectValue(widget, {}).type ?? objectValue(widget, {}).widget_type ?? '').toLowerCase() === 'return_button');
+    }
+
+    if (navigationIndex < 0) {
+        widgets.push(defaultNavigationWidget(canvas));
+    } else if (returnIndex < 0) {
+        // The old navigation item represented both the status pill and the
+        // return button. Once split, keep its content but use the status frame.
+        widgets[navigationIndex] = { ...widgets[navigationIndex], type: 'navigation', frame: frames.navigation };
+    }
+
+    if (returnIndex < 0) {
+        widgets.push(defaultReturnButtonWidget(canvas));
+    }
+    return widgets;
+}
+
 function normalizeWidget(source, canvas, index = 0) {
     const widget = objectValue(source, {});
     const legacyType = widget.widget_type;
@@ -323,6 +425,11 @@ function normalizeWidget(source, canvas, index = 0) {
     const events = arrayValue(widget.events, arrayValue(config.events, [])).slice(0, 12).map(normalizeEvent);
     const visibility = normalizeVisibility(widget.visibility ?? config.visibility);
     const designer = objectValue(config.__designer, {});
+    const hasCanonicalFrame = widget.frame && typeof widget.frame === 'object'
+        && (widget.frame.width !== undefined || widget.frame.height !== undefined);
+    const legacyNavigationSeed = type === 'navigation' && !hasCanonicalFrame
+        && Number(widget.x || 0) === 0 && Number(widget.y || 0) === 0
+        && Number(widget.w || 0) === 5 && Number(widget.h || 0) === 5;
     return {
         id: cleanId(widget.id, `widget_${type}_${index + 1}`),
         type,
@@ -334,7 +441,9 @@ function normalizeWidget(source, canvas, index = 0) {
             ? widget.runtimeTarget
             : (UNITY_WIDGET_TYPES.has(type) ? 'unity' : 'overlay'),
         groupId: cleanId(widget.groupId ?? designer.groupId, ''),
-        frame: normalizeFrame(widget.frame, canvas, legacyType ? widget : null),
+        frame: legacyNavigationSeed
+            ? { x: 660, y: 18, width: 600, height: 42, rotation: 0 }
+            : normalizeFrame(widget.frame, canvas, legacyType ? widget : null),
         content,
         style,
         data: normalizeDataBinding(widget.data, binding),
@@ -364,9 +473,20 @@ function viewComponentTargetExists(target, widgets) {
 function pruneDocumentReferences(widgets, sceneViews) {
     const widgetIds = new Set(widgets.map(widget => widget.id));
     const groupIds = new Set(widgets.map(widget => widget.groupId).filter(Boolean));
+    const viewIds = new Set(sceneViews.views.map(view => view.id));
+    const fallbackViewId = sceneViews.defaultViewId || sceneViews.views[0]?.id || '';
     const cleanedWidgets = widgets.map(widget => ({
         ...widget,
-        events: (widget.events || []).filter(event => {
+        visibility: {
+            ...widget.visibility,
+            viewIds: (widget.visibility?.viewIds || []).filter(viewId => viewIds.has(String(viewId)))
+        },
+        events: (widget.events || []).map(event => {
+            if (event?.action === 'switch_view' && event.viewId && !viewIds.has(String(event.viewId))) {
+                return { ...event, viewId: fallbackViewId };
+            }
+            return event;
+        }).filter(event => {
             if (!['set_visibility', 'toggle_visibility'].includes(event?.action)) return true;
             if (event.targetType === 'widget') return widgetIds.has(event.targetId);
             if (event.targetType === 'group') return groupIds.has(event.targetId);
@@ -414,7 +534,7 @@ function createEmptyDocument(context = {}) {
             theme: objectValue(scene.theme ?? scene.theme_json, {}),
             ...sceneViews
         },
-        widgets: [],
+        widgets: [defaultNavigationWidget(canvas), defaultReturnButtonWidget(canvas)],
         metadata: {
             updatedAt: new Date().toISOString(),
             source: shortText(context.source, 'designer', 64)
@@ -425,11 +545,15 @@ function createEmptyDocument(context = {}) {
 function normalizeDocument(input, context = {}) {
     const source = objectValue(input, {});
     const base = createEmptyDocument({ ...context, canvas: source.canvas, theme: source.theme });
-    const widgets = Array.isArray(source.widgets)
+    const rawWidgets = Array.isArray(source.widgets)
         ? source.widgets
         : (Array.isArray(context.widgets) ? context.widgets : []);
     const sceneSource = objectValue(source.scene, base.scene);
     const canvas = normalizeCanvas(source.canvas, sceneSource.layout || base.scene.layout);
+    // Older drafts rendered the navigation bar and return control outside the
+    // document, or stored both as one item. Migrate them into two authored
+    // components so each can be positioned, hidden and locked independently.
+    const widgets = ensureNavigationWidgets(rawWidgets, canvas);
     const normalizedWidgets = widgets.slice(0, 500).map((widget, index) => normalizeWidget(widget, canvas, index));
     const normalizedReferences = pruneDocumentReferences(normalizedWidgets, normalizeDashboardViews(sceneSource));
     const sceneViews = normalizedReferences.sceneViews;
@@ -520,8 +644,11 @@ function validateDocument(document, options = {}) {
         if (!ALLOWED_WIDGET_TYPES.has(widget?.type)) errors.push(`${label} 类型不支持：${widget?.type}`);
         if (!widget?.frame || Number(widget.frame.width) < 20 || Number(widget.frame.height) < 20) errors.push(`${label} 尺寸不合法`);
         if (widget?.data?.readOnly === false) errors.push(`${label} 禁止启用 PLC 写入`);
-        if (widget?.data?.mode === 'plc' && (!widget.data.deviceId || !widget.data.pointId)) {
-            errors.push(`${label} 的 PLC 绑定必须同时选择设备和只读点位`);
+        if (widget?.data?.mode === 'plc') {
+            const currentDeviceScope = widget.data.deviceScope === 'current';
+            if ((!currentDeviceScope && !widget.data.deviceId) || !widget.data.pointId) {
+                errors.push(`${label} 的 PLC 绑定必须选择点位${currentDeviceScope ? '' : '和设备'}`);
+            }
         }
         if (widget?.data?.mode === 'business' && !widget.data.connectionId) {
             errors.push(`${label} 的业务只读组件必须选择外部数据库连接`);

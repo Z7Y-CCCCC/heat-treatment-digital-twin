@@ -1,0 +1,316 @@
+{
+  "schema_version": 1,
+  "model_id": "photo_multipurpose_furnace_v6",
+  "version": "v6",
+  "source": "photo_reference_geometry_study",
+  "batchable": true,
+  "optimization": {
+    "mode": "auto",
+    "mergeStatic": false,
+    "instanceRepeated": true,
+    "preserveAnimated": true,
+    "materialEnhancement": "original",
+    "contactShadow": true
+  },
+  "runtime": {
+    "enableGenericBindings": true,
+    "showStatusLight": true
+  },
+  "assetSpec": {
+    "version": "6.0.0",
+    "device_family": "箱式气氛多用炉 / 照片参考 V6 样板",
+    "unit": "m",
+    "axis_rule": "Y-up; furnace mouth +X; operator side +Z",
+    "max_triangles": 200000,
+    "max_nodes": 800,
+    "max_texture_size": 2048,
+    "lod_policy": "LOD0 visual review draft",
+    "delivery_status": "review",
+    "notes": "尺寸为照片估算。炉内、后方连接及运动行程为示意，须实测确认。未替换生产V5资产。"
+  },
+  "partBindings": [
+    {
+      "id": "front_door_open",
+      "name": "front_door_open",
+      "node_name": "door_front_lift",
+      "node_path": "",
+      "source_group": "doors",
+      "source_key": "front_door_open",
+      "action": "translate",
+      "axis": "y",
+      "input_min": 0,
+      "input_max": 1,
+      "output_min": 0,
+      "output_max": 1.5,
+      "invert": false
+    },
+    {
+      "id": "middle_door_open",
+      "name": "middle_door_open",
+      "node_name": "door_middle_lift",
+      "node_path": "",
+      "source_group": "doors",
+      "source_key": "middle_door_open",
+      "action": "translate",
+      "axis": "y",
+      "input_min": 0,
+      "input_max": 1,
+      "output_min": 0,
+      "output_max": 1.38,
+      "invert": false
+    },
+    {
+      "id": "rear_fan_speed",
+      "name": "rear_fan_speed",
+      "node_name": "fan_rear_rotate",
+      "node_path": "",
+      "source_group": "motors",
+      "source_key": "rear_fan_speed",
+      "action": "rotate_speed",
+      "axis": "y",
+      "input_min": 0,
+      "input_max": 100,
+      "output_min": 0,
+      "output_max": 360,
+      "speed_factor": 0.10471975511965977,
+      "invert": false
+    },
+    {
+      "id": "front_fan_speed",
+      "name": "front_fan_speed",
+      "node_name": "fan_front_rotate",
+      "node_path": "",
+      "source_group": "motors",
+      "source_key": "front_fan_speed",
+      "action": "rotate_speed",
+      "axis": "y",
+      "input_min": 0,
+      "input_max": 100,
+      "output_min": 0,
+      "output_max": 360,
+      "speed_factor": 0.10471975511965977,
+      "invert": false
+    },
+    {
+      "id": "oil_stir_1_speed",
+      "name": "oil_stir_1_speed",
+      "node_name": "agitator_oil_01_rotate",
+      "node_path": "",
+      "source_group": "motors",
+      "source_key": "oil_stir_1_speed",
+      "action": "rotate_speed",
+      "axis": "y",
+      "input_min": 0,
+      "input_max": 100,
+      "output_min": 0,
+      "output_max": 360,
+      "speed_factor": 0.10471975511965977,
+      "invert": false
+    },
+    {
+      "id": "oil_stir_2_speed",
+      "name": "oil_stir_2_speed",
+      "node_name": "agitator_oil_02_rotate",
+      "node_path": "",
+      "source_group": "motors",
+      "source_key": "oil_stir_2_speed",
+      "action": "rotate_speed",
+      "axis": "y",
+      "input_min": 0,
+      "input_max": 100,
+      "output_min": 0,
+      "output_max": 360,
+      "speed_factor": 0.10471975511965977,
+      "invert": false
+    },
+    {
+      "id": "oil_stir_3_speed",
+      "name": "oil_stir_3_speed",
+      "node_name": "agitator_oil_03_rotate",
+      "node_path": "",
+      "source_group": "motors",
+      "source_key": "oil_stir_3_speed",
+      "action": "rotate_speed",
+      "axis": "y",
+      "input_min": 0,
+      "input_max": 100,
+      "output_min": 0,
+      "output_max": 360,
+      "speed_factor": 0.10471975511965977,
+      "invert": false
+    },
+    {
+      "id": "oil_stir_4_speed",
+      "name": "oil_stir_4_speed",
+      "node_name": "agitator_oil_04_rotate",
+      "node_path": "",
+      "source_group": "motors",
+      "source_key": "oil_stir_4_speed",
+      "action": "rotate_speed",
+      "axis": "y",
+      "input_min": 0,
+      "input_max": 100,
+      "output_min": 0,
+      "output_max": 360,
+      "speed_factor": 0.10471975511965977,
+      "invert": false
+    }
+  ],
+  "inspection": {
+    "enabled": true,
+    "shell": {
+      "node_names": [
+        "shell_lower",
+        "shell_rear",
+        "shell_front"
+      ],
+      "node_paths": [],
+      "opacity": 0.16,
+      "wireframe": false
+    },
+    "animation_duration": 0.72,
+    "parts": [
+      {
+        "id": "front_door_open",
+        "name": "front_door_open",
+        "node_name": "door_front_lift",
+        "explode_offset": [
+          0,
+          0.4,
+          0
+        ],
+        "point_keys": [
+          "doors.front_door_open"
+        ]
+      },
+      {
+        "id": "middle_door_open",
+        "name": "middle_door_open",
+        "node_name": "door_middle_lift",
+        "explode_offset": [
+          0,
+          0.4,
+          0
+        ],
+        "point_keys": [
+          "doors.middle_door_open"
+        ]
+      },
+      {
+        "id": "rear_fan_speed",
+        "name": "rear_fan_speed",
+        "node_name": "fan_rear_rotate",
+        "explode_offset": [
+          0,
+          0.4,
+          0
+        ],
+        "point_keys": [
+          "motors.rear_fan_speed"
+        ]
+      },
+      {
+        "id": "front_fan_speed",
+        "name": "front_fan_speed",
+        "node_name": "fan_front_rotate",
+        "explode_offset": [
+          0,
+          0.4,
+          0
+        ],
+        "point_keys": [
+          "motors.front_fan_speed"
+        ]
+      },
+      {
+        "id": "oil_stir_1_speed",
+        "name": "oil_stir_1_speed",
+        "node_name": "agitator_oil_01_rotate",
+        "explode_offset": [
+          0,
+          0.4,
+          0
+        ],
+        "point_keys": [
+          "motors.oil_stir_1_speed"
+        ]
+      },
+      {
+        "id": "oil_stir_2_speed",
+        "name": "oil_stir_2_speed",
+        "node_name": "agitator_oil_02_rotate",
+        "explode_offset": [
+          0,
+          0.4,
+          0
+        ],
+        "point_keys": [
+          "motors.oil_stir_2_speed"
+        ]
+      },
+      {
+        "id": "oil_stir_3_speed",
+        "name": "oil_stir_3_speed",
+        "node_name": "agitator_oil_03_rotate",
+        "explode_offset": [
+          0,
+          0.4,
+          0
+        ],
+        "point_keys": [
+          "motors.oil_stir_3_speed"
+        ]
+      },
+      {
+        "id": "oil_stir_4_speed",
+        "name": "oil_stir_4_speed",
+        "node_name": "agitator_oil_04_rotate",
+        "explode_offset": [
+          0,
+          0.4,
+          0
+        ],
+        "point_keys": [
+          "motors.oil_stir_4_speed"
+        ]
+      }
+    ]
+  },
+  "reference": {
+    "photos": [
+      "多用炉/mmexport1783325193551.jpg",
+      "多用炉/mmexport1783325195041.jpg"
+    ],
+    "dimensional_accuracy": "visual_estimate_not_measured",
+    "unseen_internals": "illustrative_only"
+  },
+  "release": {
+    "version": "6.0.0",
+    "status": "draft",
+    "published_at": "",
+    "history": []
+  },
+  "acceptance": {
+    "status": "review",
+    "stats": {
+      "file_bytes": 4971248,
+      "nodes": 104,
+      "meshes": 82,
+      "materials": 18,
+      "triangles": 121211,
+      "unique_mesh_triangles": 121211,
+      "mesh_instance_triangles": 121211,
+      "primitive_counts_by_mode": {
+        "4": 82
+      },
+      "scenes": 1
+    },
+    "checks": [
+      "GLB structural validation",
+      "unique binding targets",
+      "only equipment root exported"
+    ],
+    "production_runtime_tested": false,
+    "roundtrip_verified": true
+  }
+}

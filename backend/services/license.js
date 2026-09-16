@@ -1,14 +1,23 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const os = require('os');
+const { execFileSync } = require('child_process');
 
 const DATA_DIR = process.env.APP_DATA_DIR
     ? path.resolve(process.env.APP_DATA_DIR)
     : path.join(__dirname, '..', 'data');
 const LICENSE_FILE = path.resolve(process.env.LICENSE_FILE || path.join(DATA_DIR, 'license.json'));
+const MACHINE_STATE_FILE = path.resolve(process.env.LICENSE_MACHINE_STATE_FILE || (
+    process.platform === 'win32'
+        ? path.join(process.env.PROGRAMDATA || path.join(os.homedir(), 'AppData', 'Local'), 'HeatTreatmentDigitalTwin', 'machine-identity.json')
+        : path.join(DATA_DIR, 'machine-identity.json')
+));
+const MACHINE_STATE_BACKUP_FILE = `${MACHINE_STATE_FILE}.bak`;
 const LICENSE_FORMAT = 'heat-treatment-digital-twin-license';
 const LICENSE_VERSION = 1;
 const LICENSE_ALGORITHM = 'ed25519';
+let localMachineCache = null;
 
 function base64UrlEncode(value) {
     return Buffer.from(value).toString('base64')
@@ -46,6 +55,118 @@ function normalizePayload(payload = {}) {
     };
 }
 
+function readHardwareIdentities() {
+    const identities = [];
+    const add = (value, source) => {
+        const normalized = String(value || '').trim();
+        if (normalized && !identities.some(item => item.value === normalized)) identities.push({ value: normalized, source });
+    };
+    try {
+        if (process.platform === 'win32') {
+            const output = execFileSync('reg', [
+                'query', 'HKLM\\SOFTWARE\\Microsoft\\Cryptography', '/v', 'MachineGuid'
+            ], { encoding: 'utf8', timeout: 3000, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });
+            const match = output.match(/MachineGuid\s+REG_SZ\s+([^\r\n]+)/i);
+            if (match?.[1]?.trim()) add(match[1], 'Windows MachineGuid');
+        }
+        if (process.platform === 'linux') {
+            add(fs.readFileSync('/etc/machine-id', 'utf8'), 'Linux machine-id');
+        }
+        if (process.platform === 'darwin') {
+            const output = execFileSync('ioreg', ['-rd1', '-c', 'IOPlatformExpertDevice'], {
+                encoding: 'utf8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore']
+            });
+            const match = output.match(/IOPlatformUUID"\s*=\s*"([^"]+)"/);
+            if (match?.[1]?.trim()) add(match[1], 'macOS IOPlatformUUID');
+        }
+    } catch (error) {
+        // Hardware queries are best-effort. The persistent installation anchor
+        // below is the primary binding, so a transient query failure does not
+        // invalidate an otherwise healthy installation.
+    }
+    add([os.hostname(), os.platform(), os.arch()].filter(Boolean).join('|'), '本机环境回退标识');
+    return identities;
+}
+
+function readInstallationIdFile(filename) {
+    try {
+        const parsed = JSON.parse(fs.readFileSync(filename, 'utf8'));
+        if (parsed?.version === 1 && typeof parsed.installationId === 'string' && parsed.installationId.trim()) {
+            return parsed.installationId.trim();
+        }
+    } catch (error) {
+        // The caller tries the atomic backup before generating a new anchor.
+    }
+    return null;
+}
+
+function writeInstallationIdFile(filename, installationId) {
+    const state = JSON.stringify({ version: 1, installationId, createdAt: new Date().toISOString() }, null, 2) + '\n';
+    const temporary = `${filename}.${process.pid}.tmp`;
+    fs.writeFileSync(temporary, state, { encoding: 'utf8', mode: 0o600 });
+    fs.renameSync(temporary, filename);
+}
+
+function readPersistentInstallationId() {
+    const primary = readInstallationIdFile(MACHINE_STATE_FILE);
+    if (primary) {
+        try {
+            if (!readInstallationIdFile(MACHINE_STATE_BACKUP_FILE)) writeInstallationIdFile(MACHINE_STATE_BACKUP_FILE, primary);
+        } catch (error) {
+            // The primary identity is still valid if the backup cannot be refreshed.
+        }
+        return primary;
+    }
+    const backup = readInstallationIdFile(MACHINE_STATE_BACKUP_FILE);
+    if (backup) {
+        try {
+            fs.mkdirSync(path.dirname(MACHINE_STATE_FILE), { recursive: true });
+            writeInstallationIdFile(MACHINE_STATE_FILE, backup);
+        } catch (error) {
+            // Keep using the backup in memory if the primary cannot be restored.
+        }
+        return backup;
+    }
+
+    const installationId = crypto.randomUUID();
+    try {
+        fs.mkdirSync(path.dirname(MACHINE_STATE_FILE), { recursive: true });
+        writeInstallationIdFile(MACHINE_STATE_BACKUP_FILE, installationId);
+        writeInstallationIdFile(MACHINE_STATE_FILE, installationId);
+        return installationId;
+    } catch (error) {
+        const recovered = readInstallationIdFile(MACHINE_STATE_FILE) || readInstallationIdFile(MACHINE_STATE_BACKUP_FILE);
+        if (recovered) return recovered;
+        // Fall back to hardware identifiers when the OS-level state store is
+        // unavailable. This keeps the app diagnosable on restricted PCs.
+        return null;
+    }
+}
+
+function hashMachineValue(value) {
+    return `machine-${crypto.createHash('sha256').update(String(value)).digest('hex').slice(0, 32)}`;
+}
+
+function getLocalMachineId() {
+    const configured = String(process.env.LICENSE_MACHINE_ID || '').trim();
+    if (!configured && localMachineCache && localMachineCache.expiresAt > Date.now()) return localMachineCache.value;
+    if (configured) return { id: hashMachineValue(configured), source: '环境变量', available: true, aliases: [] };
+
+    const installationId = readPersistentInstallationId();
+    const hardware = readHardwareIdentities();
+    const primaryValue = installationId ? `installation:${installationId}` : hardware[0]?.value;
+    const primary = primaryValue ? hashMachineValue(primaryValue) : null;
+    const aliases = hardware.map(item => hashMachineValue(item.value)).filter(id => id && id !== primary);
+    const result = {
+        id: primary || null,
+        source: installationId ? '持久安装锚点（兼容硬件指纹）' : (hardware[0]?.source || '本机环境回退标识'),
+        available: Boolean(primary),
+        aliases: [...new Set(aliases)]
+    };
+    localMachineCache = { value: result, expiresAt: Date.now() + 60 * 1000 };
+    return result;
+}
+
 function readPublicKey() {
     const configuredFile = String(process.env.LICENSE_PUBLIC_KEY_FILE || '').trim();
     const configuredValue = String(process.env.LICENSE_PUBLIC_KEY || '').trim();
@@ -78,6 +199,7 @@ function evaluateLicense(raw = loadRawLicense(), options = {}) {
         ? Boolean(options.enforce)
         : process.env.LICENSE_ENFORCE === 'true';
     const publicKey = options.publicKey || readPublicKey();
+    const localMachine = getLocalMachineId();
     const result = {
         format: LICENSE_FORMAT,
         version: LICENSE_VERSION,
@@ -93,6 +215,9 @@ function evaluateLicense(raw = loadRawLicense(), options = {}) {
         expiresAt: null,
         features: [],
         machineBound: false,
+        machineId: localMachine.id,
+        machineIdSource: localMachine.source,
+        machineIdAvailable: localMachine.available,
         checkedAt: new Date().toISOString()
     };
     if (!raw) return result;
@@ -158,8 +283,13 @@ function evaluateLicense(raw = loadRawLicense(), options = {}) {
         result.reason = '许可证已过期';
         return result;
     }
-    const expectedMachine = String(process.env.LICENSE_MACHINE_ID || '').trim();
-    if (payload.machineId && expectedMachine && payload.machineId !== expectedMachine) {
+    const expectedMachines = new Set([localMachine.id, ...(localMachine.aliases || [])].filter(Boolean));
+    if (payload.machineId && !expectedMachines.size) {
+        result.status = 'machine_unavailable';
+        result.reason = '无法读取本机授权指纹，暂不能验证机器绑定许可证';
+        return result;
+    }
+    if (payload.machineId && !expectedMachines.has(payload.machineId)) {
         result.status = 'machine_mismatch';
         result.reason = '许可证未授权当前安装实例';
         return result;
@@ -224,5 +354,6 @@ module.exports = {
     isLicenseEnforced,
     assertLicenseForWrite,
     signLicensePayload,
-    normalizePayload
+    normalizePayload,
+    getLocalMachineId
 };

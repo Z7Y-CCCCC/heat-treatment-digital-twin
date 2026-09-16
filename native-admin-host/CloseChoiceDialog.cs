@@ -18,8 +18,9 @@ internal sealed class CloseChoiceDialog : Form
     {
         Text = "热处理数字孪生大屏";
         FormBorderStyle = FormBorderStyle.None;
-        StartPosition = FormStartPosition.CenterParent;
+        StartPosition = FormStartPosition.CenterScreen;
         ShowInTaskbar = false;
+        TopMost = true;
         MinimizeBox = false;
         MaximizeBox = false;
         ControlBox = false;
@@ -139,6 +140,9 @@ internal sealed class CloseChoiceDialog : Form
         Shown += (_, _) =>
         {
             ApplyRoundedWindow();
+            Activate();
+            BringToFront();
+            if (IsHandleCreated) NativeMethods.SetForegroundWindow(Handle);
             _minimizeCard.Focus();
         };
         Resize += (_, _) => ApplyRoundedWindow();
@@ -258,14 +262,61 @@ internal sealed class CloseChoiceDialog : Form
         }
     }
 
-    private sealed class ChromeCloseButton : Control
+    private abstract class ClickableControl : Control
+    {
+        private bool _pressed;
+
+        protected ClickableControl()
+        {
+            SetStyle(ControlStyles.Selectable, true);
+        }
+
+        protected override void OnMouseDown(MouseEventArgs e)
+        {
+            if (e.Button == MouseButtons.Left)
+            {
+                _pressed = true;
+                Capture = true;
+                Focus();
+                Invalidate();
+            }
+            base.OnMouseDown(e);
+        }
+
+        protected override void OnMouseUp(MouseEventArgs e)
+        {
+            var shouldClick = _pressed
+                && e.Button == MouseButtons.Left
+                && ClientRectangle.Contains(e.Location);
+            _pressed = false;
+            Capture = false;
+            Invalidate();
+            base.OnMouseUp(e);
+            if (shouldClick && !IsDisposed) OnClick(EventArgs.Empty);
+        }
+
+        protected override void OnMouseCaptureChanged(EventArgs e)
+        {
+            if (!Capture) _pressed = false;
+            Invalidate();
+            base.OnMouseCaptureChanged(e);
+        }
+    }
+
+    private sealed class ChromeCloseButton : ClickableControl
     {
         private bool _hovered;
 
         public ChromeCloseButton()
         {
             Cursor = Cursors.Hand;
-            SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint | ControlStyles.Selectable, true);
+            SetStyle(
+                ControlStyles.AllPaintingInWmPaint
+                | ControlStyles.OptimizedDoubleBuffer
+                | ControlStyles.UserPaint
+                | ControlStyles.Selectable,
+                true
+            );
             TabStop = true;
             BackColor = Color.FromArgb(226, 234, 242);
         }
@@ -354,7 +405,7 @@ internal sealed class CloseChoiceDialog : Form
         }
     }
 
-    private sealed class ChoiceCard : Control
+    private sealed class ChoiceCard : ClickableControl
     {
         private readonly string _title;
         private readonly string _description;
@@ -520,7 +571,7 @@ internal sealed class CloseChoiceDialog : Form
         }
     }
 
-    private sealed class RoundedActionButton : Control
+    private sealed class RoundedActionButton : ClickableControl
     {
         private bool _hovered;
 
@@ -529,7 +580,13 @@ internal sealed class CloseChoiceDialog : Form
             Cursor = Cursors.Hand;
             TabStop = true;
             AccessibleRole = AccessibleRole.PushButton;
-            SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint | ControlStyles.Selectable, true);
+            SetStyle(
+                ControlStyles.AllPaintingInWmPaint
+                | ControlStyles.OptimizedDoubleBuffer
+                | ControlStyles.UserPaint
+                | ControlStyles.Selectable,
+                true
+            );
         }
 
         protected override void OnMouseEnter(EventArgs e)

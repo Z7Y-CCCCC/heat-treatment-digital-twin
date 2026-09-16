@@ -1,7 +1,7 @@
 // 点位实时监视模块:实时点位值轮询、分页、设备状态汇总与自动刷新。
 // 独立读取实时接口(不依赖点位映射的编辑态),仅依赖注入的 devices 列表。
 
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onScopeDispose } from 'vue'
 import { adminApi } from '../../../config/factoryConfig.js'
 
 export function usePointMonitor({ devices, storedAdminUiState }) {
@@ -81,7 +81,7 @@ export function usePointMonitor({ devices, storedAdminUiState }) {
     })
 
     function ensurePointMonitorDevice() {
-        if (selectedDeviceForMonitor.value) return
+        if (selectedDeviceForMonitor.value === 'all' || devices.value.some(device => device.id === selectedDeviceForMonitor.value)) return
         selectedDeviceForMonitor.value = 'all'
     }
 
@@ -131,12 +131,15 @@ export function usePointMonitor({ devices, storedAdminUiState }) {
             realtimePointDeviceStatus.value = result.deviceStatus || null
             realtimePointDeviceStatuses.value = result.deviceStatuses || []
             realtimePointSnapshotAt.value = result.snapshotTimestamp || null
-            if (!silent) realtimePointError.value = ''
+            realtimePointError.value = ''
         } catch (e) {
+            if (requestSeq !== realtimePointRequestSeq) return
             if (!silent || !realtimePointRows.value.length) realtimePointError.value = e.message || '读取实时点位失败'
         } finally {
-            if (requestSeq === realtimePointRequestSeq) realtimePointInFlight = false
-            if (!silent) realtimePointLoading.value = false
+            if (requestSeq === realtimePointRequestSeq) {
+                realtimePointInFlight = false
+                realtimePointLoading.value = false
+            }
         }
     }
 
@@ -150,11 +153,16 @@ export function usePointMonitor({ devices, storedAdminUiState }) {
     }
 
     function stopPointMonitor() {
+        realtimePointRequestSeq += 1
+        realtimePointInFlight = false
+        realtimePointLoading.value = false
         if (pointMonitorTimer) {
             clearInterval(pointMonitorTimer)
             pointMonitorTimer = null
         }
     }
+
+    onScopeDispose(stopPointMonitor)
 
     return {
         selectedDeviceForMonitor,

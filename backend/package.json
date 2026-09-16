@@ -3,10 +3,21 @@
   "version": "1.0.0",
   "description": "数字孪生大屏后端配置管理 + 数据引擎服务",
   "main": "server.js",
+  "engines": {
+    "node": ">=22.12.0"
+  },
   "scripts": {
+    "test": "node scripts/run-tests.cjs",
+    "test:concurrency": "node scripts/backend-concurrency-test.cjs",
+    "test:recovery-edge": "node scripts/backend-recovery-edge-test.cjs",
+    "test:service-failures": "node scripts/backend-service-failure-test.cjs",
+    "test:http-integrity": "node scripts/http-integrity-test.cjs",
     "start": "node server.js",
     "dev": "node server.js",
+    "test:admin-auth": "node scripts/admin-auth-test.cjs",
+    "test:admin-integration": "node scripts/admin-auth-integration-test.cjs",
     "test:plc": "node scripts/plc-integration-test.cjs",
+    "test:plc-precision": "node scripts/plc-value-precision-test.cjs",
     "test:plc-simulator-protocols": "node scripts/plc-simulator-protocol-integration-test.cjs",
     "test:recovery": "node scripts/power-recovery-test.cjs",
     "test:mysql-backup": "node scripts/mysql-backup-test.cjs",
@@ -18,17 +29,23 @@
     "test:runtime": "node scripts/runtime-display-test.cjs",
     "test:native-dashboard": "node scripts/native-dashboard-config-test.cjs",
     "test:native-preview": "node scripts/native-scene-preview-test.cjs",
+    "test:inspection": "node scripts/inspection-platform-test.cjs",
     "test:mcp": "node scripts/mcp-interface-test.cjs",
     "test:spatial": "node scripts/spatial-hierarchy-test.cjs",
     "test:cast": "node scripts/cast-discovery-test.cjs",
     "test:designer": "node scripts/dashboard-designer-test.cjs",
     "test:data-sources": "node scripts/data-source-test.cjs",
+    "test:data-sources-http": "node scripts/data-source-http-regression-test.cjs",
+    "test:data-source-designer": "node scripts/data-source-designer-test.cjs",
     "test:business-data": "node scripts/business-data-test.cjs",
     "test:license": "node scripts/license-test.cjs",
     "test:release-package": "node scripts/release-package-test.cjs",
     "test:datapoints-sync": "node scripts/data-point-sync-test.cjs",
     "test:deletion-safety": "node scripts/deletion-safety-test.cjs",
     "test:plc-protocols": "node scripts/plc-protocol-test.cjs"
+  },
+  "overrides": {
+    "qs": "^6.15.4"
   },
   "dependencies": {
     "archiver": "^7.0.1",

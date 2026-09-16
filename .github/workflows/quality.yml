@@ -24,13 +24,7 @@ jobs:
           cache: npm
           cache-dependency-path: backend/package-lock.json
       - run: npm ci
-      - run: npm run test:license
-      - run: npm run test:release-package
-      - run: npm run test:business-data
-      - run: npm run test:data-sources
-      - run: npm run test:designer
-      - run: npm run test:production-readiness
-      - run: npm run test:spatial
+      - run: npm test
 
   frontend:
     name: Frontend production build
@@ -46,4 +40,45 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci
+      - run: npm test
       - run: npm run build
+
+  desktop:
+    name: Windows desktop and native runtime regressions
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            backend/package-lock.json
+            desktop/package-lock.json
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - run: npm --prefix backend ci
+      - run: npm --prefix desktop ci --ignore-scripts
+      - run: npm --prefix desktop run test:logs
+      - run: npm --prefix desktop run test:processes
+      - run: npm --prefix desktop run test:resources
+      - run: dotnet run --project tools/native-runtime-tests/NativeRuntimeTests.csproj --configuration Release --artifacts-path output/native-runtime-tests
+      - run: dotnet run --project tools/native-inspection-tests/NativeInspectionTests.csproj --configuration Release --artifacts-path output/native-inspection-tests
+      - run: dotnet build native-admin-host/HeatTreatmentAdminHost.csproj --configuration Release --artifacts-path output/native-host
+
+  mock-server:
+    name: Isolated MQTT simulator regressions
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mock-server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: mock-server/package-lock.json
+      - run: npm ci
+      - run: npm test

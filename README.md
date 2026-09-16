@@ -51,7 +51,7 @@ docs/                       项目文档
 
 ## 环境要求
 
-- Node.js：建议 18+，最低 16+。
+- Node.js：使用 **22 LTS（至少 22.12.0）或更新的兼容 LTS**。当前 Vite 与 SQLite 原生依赖不支持旧文档所写的 Node 16/18。
 - MySQL 或 MariaDB：默认连接参数如下：
   - Host：`127.0.0.1`
   - Port：`3307`
@@ -144,6 +144,34 @@ npm run dev
 - 大屏：`http://localhost:5173/`
 - 后台：`http://localhost:5173/admin`
 
+## 后台密码与工程师解锁
+
+后台默认受密码保护，实时大屏、设备数据采集和普通视角导航不需要解锁。
+
+1. **首次交付**：由工程师在现场电脑打开“后台管理”，设置 8–128 个字符的后台密码。系统没有通用默认密码；请完成设置后再交给普通用户。
+2. **日常配置**：输入密码后进入后台。有效会话内切回大屏、重新进入或刷新后台，都不用重复输入密码。
+3. **自动锁定**：进入“系统设置 → 后台安全”，设置“自动锁定时间（分钟）”，支持 **1–480 分钟**，默认 **30 分钟**，点击“保存自动锁定设置”后生效并持久保存。只有后台里的人工操作会续期，数据刷新、动画和轮询不会让后台一直保持解锁。
+4. **离开现场**：先保存编辑内容，再点击后台顶部或“后台安全”页的 **立即锁定**。桌面版顶部页签栏也提供相同按钮，切到实时大屏后仍可使用。此操作立即撤销所有工程师会话，关闭后台编辑界面，大屏继续展示；再次进入需要密码。
+5. **修改密码**：在同一页面输入原密码、新密码和确认密码。修改成功后当前窗口继续工作，其他工程师会话失效。
+
+单次解锁最长 8 小时；重启后端或软件会使全部会话失效，需要重新输入密码。锁定会关闭未保存的编辑界面，请先保存。若锁定时服务无法连接，页面会明确提示“服务器尚未确认”，应恢复连接并重试锁定，确认成功后再离开。
+
+密码只在后端以随机盐 + scrypt 散列保存，不写入前端代码或浏览器存储；会话使用 HttpOnly / SameSite=Strict Cookie，并对修改请求校验 CSRF。直接调用修改接口、直接打开 `/admin`、刷新或后退，都不能绕过后台权限校验。数据库连接信息、数据库备份和整站灾备的读取/下载也要求解锁。
+
+密码散列和自动锁定设置保存在应用数据目录的 `admin-security.json`（开发环境为 `backend/data/admin-security.json`，安装版为 `%APPDATA%\heat-treatment-digital-twin-desktop\data\admin-security.json`，或由 `APP_DATA_DIR` 指定）。它独立于业务数据库，切换数据库不会解除密码保护。损坏的安全配置会阻止后台解锁，不会自动重置为首次设置状态；大屏只读展示仍可运行。请限制现场 Windows 账号的文件修改权限；后台密码不能阻止拥有本机文件控制权的人改动程序。
+
+自动化接口可通过后端环境变量 `ADMIN_API_TOKEN` 配置管理凭据；MCP 工具可使用 `MCP_API_TOKEN`。这些凭据仅供可信工程工具使用，不能放到前端。即使从本机请求，也不能再匿名修改配置。
+
+验证后台访问保护：
+
+```bash
+cd backend
+npm run test:admin-auth
+npm run test:admin-integration
+```
+
+测试使用 `output/` 下的隔离数据，不会更改现场密码、自动锁定设置或业务数据。
+
 ## 大屏渲染性能档位
 
 后台“系统设置 → 大屏渲染性能”可以按部署电脑配置选择：
@@ -187,9 +215,9 @@ npm run dev
 
 ## 离线授权与许可证
 
-许可证是离线 JSON 文件，由交付方使用 Ed25519 私钥签名，现场只保存许可证和公钥，不保存私钥，也不会因断网失效。后端提供只读状态接口 `GET /api/license` 和契约接口 `GET /api/license/contract`；安装新许可证使用本机管理接口 `PUT /api/license`。
+许可证是离线 JSON 文件，由交付方使用 Ed25519 私钥签名，现场只保存许可证和公钥，不保存私钥，也不会因断网失效。后端提供只读状态接口 `GET /api/license` 和契约接口 `GET /api/license/contract`；安装新许可证使用本机管理接口 `PUT /api/license`。后台“授权与版本”页面会显示本机授权指纹，签发方可把许可证绑定到指定电脑。
 
-正式安装包建议通过环境变量或启动器注入：
+独立运行后端或自定义部署可以通过环境变量指定许可证文件：
 
 ```text
 LICENSE_PUBLIC_KEY_FILE=C:\ProgramData\HeatTreatment\license-public-key.pem
@@ -197,7 +225,9 @@ LICENSE_FILE=%APPDATA%\heat-treatment-digital-twin-desktop\data\license.json
 LICENSE_ENFORCE=true
 ```
 
-`LICENSE_ENFORCE=true` 时，许可证无效会阻止配置修改，但仍允许读取状态、安装替换许可证和安全退出，避免现场被锁死。开发/演示模式默认不强制授权。许可证的 `features` 用于后续按客户开通只读业务数据、设备数量或高级视角能力。
+桌面正式安装包默认开启 `LICENSE_ENFORCE=true`；没有有效许可证时，普通业务 API 会返回 `402 LICENSE_REQUIRED`，因此只复制程序文件不能直接运行。许可证状态、安装替换许可证、健康检查、发布校验和安全退出接口仍保持可用，避免现场无法补授权。源码开发/演示模式默认不强制授权，所以当前开发电脑没有许可证也能打开，这是有意保留的开发体验。
+
+签发方可运行 `node tools/license-generator/license-generator.cjs` 打开本地 GUI。工具会在 `tools/license-generator` 下生成密钥并把签发文件保存到 `issued`：私钥只留在签发方，客户机只部署公钥。建议交付流程为“客户复制机器指纹 → 签发方填写指纹和有效期 → 生成签名 JSON → 客户粘贴安装”。离线授权能可靠防止普通复制和误用，但无法承诺抵抗对客户电脑拥有管理员权限、可以修改程序本身的攻击者；高价值部署还应配合安装包签名、系统权限和现场网络隔离。许可证的 `features` 用于后续按客户开通只读业务数据、设备数量或高级视角能力。
 
 ## 离线升级与回滚
 
@@ -339,6 +369,15 @@ http://127.0.0.1:3001/api/mcp
 接口支持 `initialize`、`tools/list` 和 `tools/call`，内置工具包括：
 
 - `get_project_state`：读取完整项目、空间、设备、点位和设计稿状态
+- `get_model_inspection`：读取一个或全部模型的拆解、镜头、外壳、部件和点位绑定
+- `get_model_inspection_presets`：读取软件内置的模型拆解模板
+- `apply_model_inspection_preset`：把指定内置模板应用到模型并通知 Unity 热加载
+- `validate_model_inspection`：校验拆解节点、部件重复/重叠和配置结构
+- `save_model_inspection`：完整保存一个模型的拆解配置并通知 Unity 热加载
+- `update_model_inspection`：增量修改拆解参数、部件、顺序，或添加/删除部件
+- `apply_model_inspection_layout`：按比例缩放现有拆解布局，或重新生成网格布局
+- `update_model_part_bindings`：整组替换或增量维护模型部件与 PLC/数据库点位绑定
+- `update_model_metadata`：增量修改模型交付规范、优化、拆解、绑定和运行元数据
 - `configure_demo_site`：幂等创建南区热处理示范车间并发布运行版本
 - `upsert_workshop` / `upsert_line` / `upsert_device` / `sync_device_points`：受控写入现场配置
 - `save_dashboard_draft` / `publish_dashboard`：保存或发布低代码大屏
@@ -346,7 +385,23 @@ http://127.0.0.1:3001/api/mcp
 - `set_data_mode`：切换模拟数据或现场 PLC
 - `run_acceptance_checks`：执行数据库、引擎、模型、视角和部件面板验收
 
-接口默认只允许本机访问；需要远程 agent 时，设置 `MCP_API_TOKEN`，并通过 `Authorization: Bearer <token>` 或 `X-MCP-Token` 访问。示例验收：
+例如，后续需要把某个模型的拆解整体放大 20%，可直接调用 `tools/call`：
+
+```json
+{
+  "name": "apply_model_inspection_layout",
+  "arguments": {
+    "modelId": "photo_tempering_furnace_v6",
+    "strategy": "scale",
+    "spacing": 1.2,
+    "preserveGround": true
+  }
+}
+```
+
+保存类模型工具会复用后台的模型保存接口，自动保留其它元数据并向 Unity 广播 `model_metadata_changed`，因此不需要再打开设计器逐个点击。
+
+接口不再允许本机匿名修改。可信 agent 需设置后端 `MCP_API_TOKEN`，并通过 `Authorization: Bearer <token>` 或 `X-MCP-Token` 访问；也可使用 `ADMIN_API_TOKEN`。已经解锁的浏览器调用时须携带会话 Cookie 和 CSRF 头。示例验收（测试进程同样需设置对应令牌环境变量）：
 
 ```bash
 cd backend
@@ -418,7 +473,24 @@ npm run test:recovery
 npm run test:site-backup
 ```
 
-PLC 测试默认从相邻的 `排产/PLC仿真调试器` 启动 Snap7 服务，所有数据库与日志均写入项目的 `output/` 隔离目录。
+PLC 测试从相邻的 `PLC仿真调试器`（也兼容 `排产/PLC仿真调试器`）启动本机模拟服务。默认测试数据库由代码生成，不读取 `backend/data` 或现场数据库；所有数据库与日志写入项目的 `output/` 隔离目录。
+
+完整的常规隔离回归：
+
+```bash
+npm --prefix backend test
+npm --prefix frontend test
+npm --prefix frontend run build
+npm --prefix desktop run test:logs
+npm --prefix desktop run test:processes
+npm --prefix desktop run test:resources
+```
+
+如已安装相邻的 PLC 仿真调试器及其 Python 运行依赖，可额外执行 `node backend/scripts/run-tests.cjs --with-plc-simulators`。测试仅连接本机模拟端口；它不能代替现场 PLC、GPU、多屏和真实断电验收。MySQL 灾备测试不再自动读取本机配置，必须显式指定 `ALLOW_MYSQL_TEST=true` 和专用测试服务的 `TEST_MYSQL_HOST/PORT/USER/PASSWORD`。
+
+故障回归包括数据库事务隔离、配置失败回滚、恢复源保护、设计器并发保存、模型文件异常恢复、采集器启停、后台会话、进程监督及资源准备。详情见 [2026-09-11 软件排查报告](docs/software-audit-2026-09-11.md)。CI 运行常规隔离回归；不会连接真实 PLC 或现场数据库。
+
+依赖审计请使用支持 audit API 的源，例如 `npm audit --registry=https://registry.npmjs.org`。部分镜像返回“不支持 audit”并不代表没有漏洞。后端对 `qs` 使用兼容的安全版本 override，避免 Express 的固定间接依赖重新引入已知漏洞。
 
 Windows 客户安装包：
 

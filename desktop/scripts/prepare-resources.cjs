@@ -1,20 +1,16 @@
 const { execFileSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const { prepareResourceDirectory, copySqliteSnapshot } = require('./resource-preparation.cjs');
 
 const desktopDir = path.resolve(__dirname, '..');
 const projectDir = path.resolve(desktopDir, '..');
 const resourcesDir = path.join(desktopDir, 'resources');
-const runtimeDir = path.join(resourcesDir, 'runtime');
-const templatesDir = path.join(resourcesDir, 'templates');
-const backendDependenciesTar = path.join(resourcesDir, 'backend-dependencies.tar');
 const nativeClientSourceDir = path.join(projectDir, 'unity-client', 'Builds', 'Windows');
-const nativeClientOutputDir = path.join(resourcesDir, 'native-client');
 const explicitSourceDb = String(process.env.DESKTOP_TEMPLATE_SOURCE_DB || '').trim();
 const sourceUploads = path.resolve(
     process.env.DESKTOP_TEMPLATE_SOURCE_UPLOADS || path.join(projectDir, 'backend', 'uploads')
 );
-const outputDb = path.join(templatesDir, 'factory-template.db');
 const nodeBinary = process.execPath;
 const backendNodeModules = path.join(projectDir, 'backend', 'node_modules');
 const configurationTables = [
@@ -168,8 +164,8 @@ async function exportMysqlConfiguration(destination) {
     }
 }
 
-async function prepareDatabaseTemplate() {
-    const generatedDataDir = path.join(resourcesDir, '.template-build');
+async function prepareDatabaseTemplate(stagingDirectory, outputDb) {
+    const generatedDataDir = path.join(stagingDirectory, '.template-build');
     const generatedDb = path.join(generatedDataDir, 'factory.db');
     let templateSource;
     let sourceLabel;
@@ -186,51 +182,49 @@ async function prepareDatabaseTemplate() {
     }
 
     const Database = require(path.join(backendNodeModules, 'better-sqlite3'));
-    const db = new Database(templateSource);
-    db.pragma('wal_checkpoint(TRUNCATE)');
-    const integrity = db.pragma('quick_check', { simple: true });
-    db.close();
-    if (integrity !== 'ok') throw new Error(`数据库模板完整性检查失败：${integrity}`);
-
-    fs.copyFileSync(templateSource, outputDb);
+    await copySqliteSnapshot(templateSource, outputDb, Database);
     fs.rmSync(generatedDataDir, { recursive: true, force: true });
     return { sourceLabel, exportResult };
 }
 
 async function main() {
-    fs.rmSync(resourcesDir, { recursive: true, force: true });
-    fs.mkdirSync(runtimeDir, { recursive: true });
-    fs.mkdirSync(templatesDir, { recursive: true });
-
     for (const required of ['HeatTreatmentDigitalTwin.exe', 'UnityPlayer.dll', 'HeatTreatmentDigitalTwin_Data']) {
         if (!fs.existsSync(path.join(nativeClientSourceDir, required))) {
             throw new Error(`找不到 Unity 原生客户端产物：${path.join(nativeClientSourceDir, required)}`);
         }
     }
 
-    const databaseSource = await prepareDatabaseTemplate();
-    fs.copyFileSync(nodeBinary, path.join(runtimeDir, 'node.exe'));
-    execFileSync('tar', ['-cf', backendDependenciesTar, '-C', path.join(projectDir, 'backend', 'node_modules'), '.'], { windowsHide: true });
-    if (!fs.existsSync(backendDependenciesTar) || fs.statSync(backendDependenciesTar).size < 1024 * 1024) {
-        throw new Error(`后端依赖包生成失败或文件异常：${backendDependenciesTar}`);
-    }
-    fs.cpSync(nativeClientSourceDir, nativeClientOutputDir, {
-        recursive: true,
-        filter: source => !path.basename(source).includes('BurstDebugInformation_DoNotShip')
+    const databaseSource = await prepareResourceDirectory(resourcesDir, async stagingDirectory => {
+        const runtimeDir = path.join(stagingDirectory, 'runtime');
+        const templatesDir = path.join(stagingDirectory, 'templates');
+        const backendDependenciesTar = path.join(stagingDirectory, 'backend-dependencies.tar');
+        fs.mkdirSync(runtimeDir, { recursive: true });
+        fs.mkdirSync(templatesDir, { recursive: true });
+        const result = await prepareDatabaseTemplate(stagingDirectory, path.join(templatesDir, 'factory-template.db'));
+        fs.copyFileSync(nodeBinary, path.join(runtimeDir, 'node.exe'));
+        execFileSync('tar', ['-cf', backendDependenciesTar, '-C', backendNodeModules, '.'], { windowsHide: true });
+        if (!fs.existsSync(backendDependenciesTar) || fs.statSync(backendDependenciesTar).size < 1024 * 1024) {
+            throw new Error(`后端依赖包生成失败或文件异常：${backendDependenciesTar}`);
+        }
+        fs.cpSync(nativeClientSourceDir, path.join(stagingDirectory, 'native-client'), {
+            recursive: true,
+            filter: source => !path.basename(source).includes('BurstDebugInformation_DoNotShip')
+        });
+        if (fs.existsSync(sourceUploads)) {
+            fs.cpSync(sourceUploads, path.join(templatesDir, 'uploads'), { recursive: true });
+        }
+        return result;
     });
-    if (fs.existsSync(sourceUploads)) {
-        fs.cpSync(sourceUploads, path.join(templatesDir, 'uploads'), { recursive: true });
-    }
 
-    console.log(`已准备数据库模板：${outputDb}（来源：${databaseSource.sourceLabel}）`);
+    console.log(`已准备数据库模板：${path.join(resourcesDir, 'templates', 'factory-template.db')}（来源：${databaseSource.sourceLabel}）`);
     if (databaseSource.exportResult) {
         console.log(`已迁移现场配置：${JSON.stringify(databaseSource.exportResult.counts)}`);
         console.log(`运行历史：${databaseSource.exportResult.includeHistory ? '已包含' : '已清空（仅交付配置）'}`);
     }
     console.log(`已准备上传资源：${fs.existsSync(sourceUploads) ? sourceUploads : '无'}`);
     console.log(`已准备 Node.js 运行时：${nodeBinary}`);
-    console.log(`已准备后端运行依赖包：${backendDependenciesTar}`);
-    console.log(`已准备 Unity 原生客户端：${nativeClientOutputDir}`);
+    console.log(`已准备后端运行依赖包：${path.join(resourcesDir, 'backend-dependencies.tar')}`);
+    console.log(`已准备 Unity 原生客户端：${path.join(resourcesDir, 'native-client')}`);
 }
 
 main().catch(error => {
