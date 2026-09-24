@@ -12,6 +12,8 @@
  */
 
 const { WebSocketServer } = require('ws');
+const { normalizeSceneProjection } = require('../utils/sceneProjection');
+const { getAdminAuth } = require('./adminAuth');
 
 function shortText(value, maxLength = 160) {
     return String(value || '').trim().slice(0, maxLength);
@@ -57,6 +59,8 @@ class WsServer {
         this.clients = new Set();
         this.sequence = 0;
         this.dashboardContext = null;
+        this.sceneProjection = null;
+        this.sceneProjectionOwner = null;
     }
 
     /**
@@ -83,6 +87,14 @@ class WsServer {
             const clientIp = req.socket.remoteAddress;
             console.log(`[WebSocket] 客户端已连接: ${clientIp} (当前 ${this.clients.size + 1} 个连接)`);
             this.clients.add(ws);
+            if (req.adminSessionToken) {
+                ws.sessionCheckTimer = setInterval(() => {
+                    if (!getAdminAuth().status(req.adminSessionToken).authenticated) {
+                        try { ws.close(4401, 'Session expired'); } catch { ws.terminate(); }
+                    }
+                }, 5000);
+                ws.sessionCheckTimer.unref?.();
+            }
             options.onConnection?.(ws, req);
 
             ws.on('message', (msg) => {
@@ -96,7 +108,27 @@ class WsServer {
                         if (ws.clientRole === 'web' && this.dashboardContext && ws.readyState === 1) {
                             ws.send(JSON.stringify({ type: 'dashboard_context_changed', payload: this.dashboardContext }));
                         }
+                        if (ws.clientRole === 'unity') this.sendProjectionSubscription(ws);
+                        else this.updateProjectionSubscriptions();
+                    } else if (data.type === 'scene_projection_subscribe' && ws.clientRole === 'web') {
+                        ws.sceneProjectionSubscribed = data.enabled === true;
+                        this.updateProjectionSubscriptions();
+                        if (ws.sceneProjectionSubscribed && this.sceneProjection && Date.now()-this.sceneProjection.receivedAt < 1500) {
+                            ws.send(JSON.stringify({ type:'scene_projection', payload:this.sceneProjection }));
+                        }
+                    } else if (data.type === 'scene_projection' && ws.clientRole === 'unity') {
+                        const now=Date.now();
+                        if (ws.lastSceneProjectionAt && now-ws.lastSceneProjectionAt < 65) return;
+                        if (this.sceneProjectionOwner && this.sceneProjectionOwner !== ws) return;
+                        const frame=normalizeSceneProjection(data.payload,now);
+                        if (!frame) return;
+                        if (this.sceneProjection?.streamId===frame.streamId && frame.seq<=this.sceneProjection.seq) return;
+                        ws.lastSceneProjectionAt=now;
+                        this.sceneProjectionOwner=ws;
+                        this.sceneProjection=frame;
+                        this.broadcastProjection(frame);
                     } else if (data.type === 'dashboard_context' && ws.clientRole === 'unity') {
+                        if(this.sceneProjectionOwner!==ws){this.sceneProjectionOwner=ws;this.sceneProjection=null;}
                         const source = data.payload && typeof data.payload === 'object' ? data.payload : {};
                         const mode = ['factory', 'workshop', 'line', 'device', 'custom'].includes(source.viewMode) ? source.viewMode : 'factory';
                         if (mode !== 'device') {
@@ -129,17 +161,22 @@ class WsServer {
                             timestamp: Date.now()
                         };
                         this.broadcastToRole('dashboard_context_changed', this.dashboardContext, 'web');
+                        if(this.dashboardContext.sceneReady===false){this.sceneProjection=null;this.broadcastProjection({available:false,receivedAt:Date.now()});}
                     }
                 } catch (e) { /* 忽略非 JSON 消息 */ }
             });
 
             ws.on('close', () => {
+                if (ws.sessionCheckTimer) clearInterval(ws.sessionCheckTimer);
                 this.clients.delete(ws);
+                if(this.sceneProjectionOwner===ws){this.sceneProjectionOwner=null;this.sceneProjection=null;this.broadcastProjection({available:false,receivedAt:Date.now()});}
+                this.updateProjectionSubscriptions();
                 options.onClose?.(ws, req);
                 console.log(`[WebSocket] 客户端断开: ${clientIp} (剩余 ${this.clients.size} 个连接)`);
             });
 
             ws.on('error', (err) => {
+                if (ws.sessionCheckTimer) clearInterval(ws.sessionCheckTimer);
                 console.error(`[WebSocket] 客户端错误:`, err.message);
                 this.clients.delete(ws);
             });
@@ -153,6 +190,27 @@ class WsServer {
 
         console.log('[WebSocket] 服务已启动，等待客户端连接 (路径: /ws)');
         return wss;
+    }
+
+    sendProjectionSubscription(client) {
+        if(client.readyState!==1 || client.clientRole!=='unity') return;
+        const enabled=[...this.clients].some(peer=>peer.readyState===1 && peer.clientRole==='web' && peer.sceneProjectionSubscribed);
+        if(client.sceneProjectionEnabled===enabled) return;
+        client.sceneProjectionEnabled=enabled;
+        client.send(JSON.stringify({type:'scene_projection_subscription',payload:{enabled}}));
+    }
+
+    updateProjectionSubscriptions() {
+        this.clients.forEach(client=>this.sendProjectionSubscription(client));
+    }
+
+    broadcastProjection(payload) {
+        const message=JSON.stringify({type:'scene_projection',payload});
+        this.clients.forEach(client=>{
+            // Slow previews skip intermediate frames rather than queuing seconds
+            // of stale camera motion. Normal telemetry/event streams are intact.
+            if(client.readyState===1 && client.clientRole==='web' && client.sceneProjectionSubscribed && client.bufferedAmount<512*1024) client.send(message);
+        });
     }
 
     detach(wss) {
@@ -246,6 +304,8 @@ class WsServer {
         this.wssInstances.clear();
         this.wss = null;
         this.clients.clear();
+        this.sceneProjection=null;
+        this.sceneProjectionOwner=null;
         console.log('[WebSocket] 服务已关闭');
     }
 }

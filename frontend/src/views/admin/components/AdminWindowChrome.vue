@@ -1,11 +1,12 @@
 <script setup>
 import { computed, reactive, onMounted, onUnmounted, watch } from 'vue'
 import { adminSession } from '../../../runtime/adminSession.js'
+import { isNativeUnitySurface } from '../../../runtime/nativeSurfaceBridge.js'
 
-const emit = defineEmits(['state', 'before-dashboard'])
+const emit = defineEmits(['state', 'before-dashboard', 'before-admin'])
 
-const isUnityEmbedded = new URLSearchParams(window.location.search).get('embedded') === 'unity'
-const unityHostState = reactive({ attached: true, maximized: false, dockReady: false, adminVisible: true })
+const isUnityEmbedded = isNativeUnitySurface(new URLSearchParams(window.location.search).get('embedded'), window.chrome?.webview)
+const unityHostState = reactive({ attached: true, maximized: false, dockReady: false, adminVisible: true, returnToDashboardAfterUnlock: false, dashboardAccessError: '' })
 const isAdminLocked = computed(() => adminSession.ready && !adminSession.authenticated)
 let unityHostDragActive = false
 let unityHostDragTarget = 'admin'
@@ -23,6 +24,8 @@ function handleUnityHostMessage(event) {
     unityHostState.maximized = event.data.maximized === true
     unityHostState.dockReady = event.data.dockReady === true
     unityHostState.adminVisible = event.data.adminVisible !== false
+    unityHostState.returnToDashboardAfterUnlock = event.data.returnToDashboardAfterUnlock === true
+    unityHostState.dashboardAccessError = String(event.data.dashboardAccessError || '')
 }
 
 function requestUnityHostAction(action) {
@@ -114,6 +117,7 @@ function showUnityDashboard() {
 }
 
 function showUnityAdmin() {
+    emit('before-admin')
     requestUnityHostAction('show_admin')
 }
 
@@ -150,12 +154,8 @@ watch(unityHostState, state => emit('state', { ...state }), { immediate: true })
                     class="unity-browser-tab unity-screen-tab"
                     :class="{ 'is-active': !unityHostState.adminVisible }"
                     title="实时大屏"
-                    @pointerdown.stop="beginUnityHostDrag($event, 'dashboard')"
-                    @pointermove.stop="continueUnityHostDrag"
-                    @pointerup.stop="endUnityHostDrag"
-                    @pointercancel.stop="endUnityHostDrag"
-                    @lostpointercapture.stop="endUnityHostDrag"
-                    @click="showUnityDashboard"
+                    @pointerdown.stop
+                    @click.stop="showUnityDashboard"
                 >
                     <svg viewBox="0 0 24 24" aria-hidden="true">
                         <rect x="3.5" y="4.5" width="17" height="12" rx="2" />
@@ -164,18 +164,13 @@ watch(unityHostState, state => emit('state', { ...state }), { immediate: true })
                     <span>实时大屏</span>
                 </button>
 
-                <div
+                <button
                     class="unity-browser-tab unity-admin-tab"
                     :class="{ 'is-active': !unityHostState.attached || unityHostState.adminVisible }"
-                    role="tab"
-                    aria-selected="true"
+                    type="button"
                     title="后台管理"
-                    @pointerdown.stop="beginUnityHostDrag($event, 'admin')"
-                    @pointermove.stop="continueUnityHostDrag"
-                    @pointerup.stop="endUnityHostDrag"
-                    @pointercancel.stop="endUnityHostDrag"
-                    @lostpointercapture.stop="endUnityHostDrag"
-                    @click="showUnityAdmin"
+                    @pointerdown.stop
+                    @click.stop="showUnityAdmin"
                 >
                     <svg viewBox="0 0 24 24" aria-hidden="true">
                         <path d="M4 7h10M18 7h2M4 12h2M10 12h10M4 17h7M15 17h5" />
@@ -191,9 +186,12 @@ watch(unityHostState, state => emit('state', { ...state }), { immediate: true })
                         </svg>
                     </span>
                     <i v-else class="unity-tab-online" aria-hidden="true"></i>
-                </div>
+                </button>
 
             </div>
+
+            <div v-if="unityHostState.adminVisible && unityHostState.dashboardAccessError"
+                class="unity-tab-feedback" role="alert">{{ unityHostState.dashboardAccessError }}</div>
 
             <div class="unity-window-actions" @pointerdown.stop>
                 <button
@@ -267,6 +265,20 @@ watch(unityHostState, state => emit('state', { ...state }), { immediate: true })
     z-index: 500;
 }
 .unity-window-chrome:active { cursor: grabbing; }
+.unity-tab-feedback {
+    position: fixed;
+    top: 54px;
+    left: 12px;
+    z-index: 2000;
+    max-width: min(520px, calc(100vw - 24px));
+    padding: 9px 14px;
+    color: #8a3417;
+    background: #fff7ed;
+    border: 1px solid #f5c793;
+    border-radius: 9px;
+    box-shadow: 0 8px 24px rgba(40, 40, 40, .14);
+    cursor: default;
+}
 .unity-tab-strip {
     min-width: 0;
     flex: 1;
@@ -304,11 +316,11 @@ watch(unityHostState, state => emit('state', { ...state }), { immediate: true })
 }
 .unity-screen-tab {
     background: transparent;
-    cursor: grab;
-    touch-action: none;
+    cursor: pointer;
+    touch-action: auto;
     transition: color 0.16s ease, background 0.16s ease;
 }
-.unity-screen-tab:active { cursor: grabbing; }
+.unity-screen-tab:active { cursor: pointer; }
 .unity-screen-tab:hover {
     color: #175cd3;
     background: rgba(255, 255, 255, 0.58);
@@ -316,13 +328,13 @@ watch(unityHostState, state => emit('state', { ...state }), { immediate: true })
 .unity-admin-tab {
     min-width: 178px;
     background: transparent;
-    cursor: grab;
-    touch-action: none;
+    cursor: pointer;
+    touch-action: auto;
     position: relative;
     transition: color 0.16s ease, background 0.16s ease, border-color 0.16s ease, box-shadow 0.16s ease;
 }
 .unity-admin-tab:hover { background: rgba(255, 255, 255, 0.58); }
-.unity-admin-tab:active { cursor: grabbing; }
+.unity-admin-tab:active { cursor: pointer; }
 .unity-browser-tab.is-active {
     color: #172b3f;
     background: #f8fafc;

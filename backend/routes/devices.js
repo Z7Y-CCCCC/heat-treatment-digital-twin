@@ -41,6 +41,22 @@ function parseJson(value) {
     }
 }
 
+async function deviceBelongsToFactory(db, device, factoryId) {
+    if (!device) return false;
+    if (device.line_id) {
+        return Boolean(await db.get(`SELECT 1 FROM \`lines\` l JOIN workshops w ON w.id = l.workshop_id
+            WHERE l.id = ? AND w.factory_id = ?`, [device.line_id, factoryId]));
+    }
+    const config = parseJson(device.instance_config);
+    const workshopId = config.workshop_id || config.workshopId;
+    return Boolean(workshopId && await db.get('SELECT 1 FROM workshops WHERE id = ? AND factory_id = ?', [workshopId, factoryId]));
+}
+
+async function lineBelongsToFactory(db, lineId, factoryId) {
+    return !lineId || Boolean(await db.get(`SELECT 1 FROM \`lines\` l JOIN workshops w ON w.id = l.workshop_id
+        WHERE l.id = ? AND w.factory_id = ?`, [lineId, factoryId]));
+}
+
 function normalizeProtocolValue(value) {
     const protocol = normalizeProtocol(value || 'S7');
     if (!getProtocolDefinition(protocol)) throw new Error(`不支持的 PLC 协议：${protocol}`);
@@ -93,10 +109,14 @@ router.get('/', async (req, res) => {
     try {
         const db = await getDb();
         const { line_id } = req.query;
-        const devices = line_id
-            ? await db.all('SELECT * FROM devices WHERE line_id = ? ORDER BY sort_order ASC', [line_id])
-            : await db.all('SELECT * FROM devices ORDER BY line_id, sort_order ASC');
-        res.json(devices.map(publicDevice));
+        if (line_id && !await lineBelongsToFactory(db, line_id, req.factoryId)) return res.json([]);
+        const rows = await db.all('SELECT * FROM devices ORDER BY line_id, sort_order ASC');
+        const owned = [];
+        for (const device of rows) {
+            if (line_id && String(device.line_id || '') !== String(line_id)) continue;
+            if (await deviceBelongsToFactory(db, device, req.factoryId)) owned.push(device);
+        }
+        res.json(owned.map(publicDevice));
     } catch (e) {
         res.status(500).json({ error: e.message });
     }
@@ -104,7 +124,10 @@ router.get('/', async (req, res) => {
 
 router.get('/:id/deletion-impact', async (req, res) => {
     try {
-        const impact = await getDeviceDeletionImpact(await getDb(), req.params.id);
+        const db = await getDb();
+        const device = await db.get('SELECT * FROM devices WHERE id = ?', [req.params.id]);
+        if (!await deviceBelongsToFactory(db, device, req.factoryId)) return res.status(404).json({ error: '设备不存在，可能已经被删除或 ID 未正确编码' });
+        const impact = await getDeviceDeletionImpact(db, req.params.id);
         if (!impact) return res.status(404).json({ error: '设备不存在，可能已经被删除或 ID 未正确编码' });
         res.json(publicDeletionImpact(impact));
     } catch (e) {
@@ -116,7 +139,7 @@ router.get('/:id', async (req, res) => {
     try {
         const db = await getDb();
         const device = await db.get('SELECT * FROM devices WHERE id = ?', [req.params.id]);
-        if (!device) return res.status(404).json({ error: '设备不存在' });
+        if (!await deviceBelongsToFactory(db, device, req.factoryId)) return res.status(404).json({ error: '设备不存在' });
 
         const dataPoints = await db.all('SELECT * FROM data_points WHERE device_id = ?', [req.params.id]);
         res.json({ ...publicDevice(device), dataPoints });
@@ -141,6 +164,14 @@ router.post('/', async (req, res) => {
     }
     try {
         const db = await getDb();
+        if (!await lineBelongsToFactory(db, line_id, req.factoryId)) return res.status(400).json({ error: '所选产线不属于当前工厂' });
+        if (!line_id) {
+            const config = parseJson(instance_config);
+            const workshopId = config.workshop_id || config.workshopId;
+            if (!workshopId || !await db.get('SELECT 1 FROM workshops WHERE id = ? AND factory_id = ?', [workshopId, req.factoryId])) {
+                return res.status(400).json({ error: '车间级设备必须选择当前工厂内的所属车间' });
+            }
+        }
         const protocol = normalizeProtocolValue(plc_protocol || 'S7');
         const normalizedOptions = normalizePlcOptionsValue(protocol, plc_options);
         await db.run(`INSERT INTO devices (
@@ -199,7 +230,7 @@ router.put('/:id', async (req, res) => {
     try {
         const db = await getDb();
         const existing = await db.get('SELECT * FROM devices WHERE id = ?', [req.params.id]);
-        if (!existing) return res.status(404).json({ error: '设备不存在，可能已经被删除或 ID 未正确编码' });
+        if (!await deviceBelongsToFactory(db, existing, req.factoryId)) return res.status(404).json({ error: '设备不存在，可能已经被删除或 ID 未正确编码' });
         const nextLineId = line_id === undefined ? existing.line_id : (line_id || null);
         const nextModelType = model_type ?? existing.model_type;
         const nextInstanceConfig = instance_config ?? existing.instance_config;
@@ -211,6 +242,14 @@ router.put('/:id', async (req, res) => {
         );
         if (!isAuxiliaryDevice(nextModelType, nextInstanceConfig) && !nextLineId) {
             return res.status(400).json({ error: '普通设备必须选择所属产线' });
+        }
+        if (!await lineBelongsToFactory(db, nextLineId, req.factoryId)) return res.status(400).json({ error: '所选产线不属于当前工厂' });
+        if (!nextLineId) {
+            const config = parseJson(nextInstanceConfig);
+            const workshopId = config.workshop_id || config.workshopId;
+            if (!workshopId || !await db.get('SELECT 1 FROM workshops WHERE id = ? AND factory_id = ?', [workshopId, req.factoryId])) {
+                return res.status(400).json({ error: '车间级设备必须选择当前工厂内的所属车间' });
+            }
         }
         const nextCoordinateSpace = ['line_local', 'workshop_local'].includes(coordinate_space)
             ? coordinate_space
@@ -258,6 +297,12 @@ router.delete('/:id', async (req, res) => {
     try {
         const db = await getDb();
         const deletedImpact = await db.transaction(async (tx) => {
+            const device = await tx.get('SELECT * FROM devices WHERE id = ?', [req.params.id]);
+            if (!await deviceBelongsToFactory(tx, device, req.factoryId)) {
+                const error = new Error('设备不存在，可能已经被删除或 ID 未正确编码');
+                error.statusCode = 404;
+                throw error;
+            }
             const impact = await getDeviceDeletionImpact(tx, req.params.id);
             if (!impact) {
                 const error = new Error('设备不存在，可能已经被删除或 ID 未正确编码');

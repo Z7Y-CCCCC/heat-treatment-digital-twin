@@ -21,6 +21,7 @@
     "test:resources": "node --test scripts/resource-preparation-test.cjs",
     "test:supervisor": "node scripts/backend-supervisor-test.cjs",
     "test:admin-host-parent": "node scripts/admin-host-parent-test.cjs",
+    "test:admin-host-retry": "node scripts/admin-host-retry-test.cjs",
     "dist": "npm run build:frontend && npm run build:unity && npm run build:admin-host && npm run prepare:resources && electron-builder --win nsis --x64"
   },
   "devDependencies": {

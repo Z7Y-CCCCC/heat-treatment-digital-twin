@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.IO;
+using System.Net;
 using System.Net.WebSockets;
 using System.Text;
 using System.Threading;
@@ -22,7 +23,7 @@ namespace HeatTreatment.DigitalTwin.Backend
         public event Action<JObject> MessageReceived;
         public event Action<string> ConnectionStateChanged;
 
-        public void StartClient(string endpoint, float reconnectSeconds)
+        public void StartClient(string endpoint, float reconnectSeconds, CookieContainer sessionCookies = null)
         {
             StopClient();
             var uri = new Uri(endpoint);
@@ -32,7 +33,7 @@ namespace HeatTreatment.DigitalTwin.Backend
                 ? 2f
                 : Mathf.Max(0.5f, reconnectSeconds);
             _lifetime = new CancellationTokenSource();
-            _ = RunLoopAsync(uri, retry, _lifetime, _generation);
+            _ = RunLoopAsync(uri, retry, _lifetime, _generation, sessionCookies);
         }
 
         public void StopClient()
@@ -48,7 +49,7 @@ namespace HeatTreatment.DigitalTwin.Backend
             // The loop owns its CTS and disposes it after cancellation unwinds.
         }
 
-        private async Task RunLoopAsync(Uri endpoint, float reconnectSeconds, CancellationTokenSource lifetime, int generation)
+        private async Task RunLoopAsync(Uri endpoint, float reconnectSeconds, CancellationTokenSource lifetime, int generation, CookieContainer sessionCookies)
         {
             var cancellationToken = lifetime.Token;
             try
@@ -61,6 +62,7 @@ namespace HeatTreatment.DigitalTwin.Backend
                         socket = new ClientWebSocket();
                         _socket = socket;
                         socket.Options.KeepAliveInterval = TimeSpan.FromSeconds(15);
+                        if (sessionCookies != null) socket.Options.Cookies = sessionCookies;
                         QueueState("connecting", generation);
                         await socket.ConnectAsync(endpoint, cancellationToken);
                         await SendHelloAsync(socket, cancellationToken);
@@ -124,7 +126,12 @@ namespace HeatTreatment.DigitalTwin.Backend
             _ = SendMessageAsync(message);
         }
 
-        private async Task SendMessageAsync(JObject message)
+        public void SendTransientMessage(JObject message)
+        {
+            if (message != null) _ = SendMessageAsync(message, true);
+        }
+
+        private async Task SendMessageAsync(JObject message, bool dropIfBusy = false)
         {
             var socket = _socket;
             var cancellationToken = _lifetime?.Token ?? CancellationToken.None;
@@ -132,8 +139,16 @@ namespace HeatTreatment.DigitalTwin.Backend
             var lockTaken = false;
             try
             {
-                await _sendLock.WaitAsync(cancellationToken);
-                lockTaken = true;
+                if (dropIfBusy)
+                {
+                    lockTaken = _sendLock.Wait(0);
+                    if (!lockTaken) return;
+                }
+                else
+                {
+                    await _sendLock.WaitAsync(cancellationToken);
+                    lockTaken = true;
+                }
                 // A queued message belongs to the captured connection, not a
                 // replacement session that appeared while waiting for the lock.
                 if (!ReferenceEquals(socket, _socket) || socket.State != WebSocketState.Open) return;

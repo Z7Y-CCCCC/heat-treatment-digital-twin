@@ -2,12 +2,21 @@
 import { computed, defineAsyncComponent, nextTick, onActivated, onDeactivated, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { adminSession, refreshAdminSession, startAdminSessionTracking, stopAdminSessionTracking, unlockAdmin, lockAdmin } from '../runtime/adminSession.js'
 import AdminWindowChrome from './admin/components/AdminWindowChrome.vue'
+import { isNativeUnitySurface } from '../runtime/nativeSurfaceBridge.js'
+import { canResumeDashboardAfterLogin } from '../runtime/nativeAdminNavigation.js'
+import { useRoute, useRouter } from 'vue-router'
 
 defineOptions({ name: 'AdminAccess' })
 const AdminPanel = defineAsyncComponent(() => import('./AdminPanel.vue'))
-const isUnityEmbedded = new URLSearchParams(window.location.search).get('embedded') === 'unity'
-const hostState = reactive({ attached: true, adminVisible: true })
+const isUnityEmbedded = isNativeUnitySurface(new URLSearchParams(window.location.search).get('embedded'), window.chrome?.webview)
+const route = useRoute()
+const router = useRouter()
+const hostState = reactive({ attached: true, adminVisible: true, returnToDashboardAfterUnlock: false })
+function handleNativeHostState(event) {
+    if (event.data?.type === 'host_state') Object.assign(hostState, event.data)
+}
 const password = ref('')
+const username = ref('admin')
 const confirmation = ref('')
 const passwordInput = ref(null)
 const busy = ref(false)
@@ -17,6 +26,8 @@ const now = ref(Date.now())
 const retrySeconds = computed(() => Math.max(0, Math.ceil((retryAt.value - now.value) / 1000)))
 const setup = computed(() => adminSession.ready && !adminSession.configured)
 let clockTimer = null
+let dashboardReturnTimer = 0
+let dashboardReturnScheduled = false
 
 function startClock() {
     if (!clockTimer) clockTimer = window.setInterval(() => { now.value = Date.now() }, 500)
@@ -41,7 +52,7 @@ async function submit() {
     }
     busy.value = true
     try {
-        await unlockAdmin(password.value, setup.value)
+        await unlockAdmin(password.value, setup.value, username.value)
         password.value = ''
         confirmation.value = ''
     } catch (caught) {
@@ -53,27 +64,113 @@ async function submit() {
     } finally { busy.value = false }
 }
 
+function scheduleDashboardReturn() {
+    if (!isUnityEmbedded || !canResumeDashboardAfterLogin({
+        pending: hostState.returnToDashboardAfterUnlock,
+        authenticated: adminSession.authenticated,
+        permissions: adminSession.permissions
+    })) {
+        if (!hostState.returnToDashboardAfterUnlock) dashboardReturnScheduled = false
+        return false
+    }
+    if (dashboardReturnScheduled) return true
+    dashboardReturnScheduled = true
+    dashboardReturnTimer = window.setTimeout(() => {
+        dashboardReturnTimer = 0
+        if (!canResumeDashboardAfterLogin({
+            pending: hostState.returnToDashboardAfterUnlock,
+            authenticated: adminSession.authenticated,
+            permissions: adminSession.permissions
+        })) {
+            dashboardReturnScheduled = false
+            return
+        }
+        window.chrome?.webview?.postMessage({ type: 'host_action', action: 'show_dashboard' })
+    }, 180)
+    return true
+}
+
+function continueAfterLogin() {
+    if (scheduleDashboardReturn()) return
+    const candidate = typeof route.query.redirect === 'string' ? route.query.redirect : ''
+    let requested = ''
+    if (candidate.startsWith('/') && !candidate.startsWith('//') && !candidate.includes('\\')) {
+        try {
+            const destination = new URL(candidate, window.location.origin)
+            const allowed = ['/', '/group', '/overlay', '/hud-preview', '/customer']
+            if (destination.origin === window.location.origin && allowed.includes(destination.pathname)) {
+                requested = `${destination.pathname === '/' ? '/group' : destination.pathname}${destination.search}${destination.hash}`
+            }
+        } catch { /* Ignore malformed or external return paths. */ }
+    }
+
+    if (adminSession.permissions.edit) {
+        if (requested) void router.replace(requested)
+        return
+    }
+
+    const requestedPath = requested ? new URL(requested, window.location.origin).pathname : ''
+    if (requestedPath === '/customer' && (adminSession.permissions.cast || adminSession.permissions.backup)) {
+        void router.replace(requested)
+        return
+    }
+    if (['/group', '/overlay', '/hud-preview'].includes(requestedPath) && adminSession.permissions.view) {
+        void router.replace(requested)
+        return
+    }
+    void router.replace({ path: adminSession.permissions.cast || adminSession.permissions.backup ? '/customer' : '/group' })
+}
+
 watch(() => adminSession.authenticated, authenticated => {
     password.value = ''
     confirmation.value = ''
     error.value = ''
     if (!authenticated) focusPassword()
+    else continueAfterLogin()
 })
+watch(() => [hostState.returnToDashboardAfterUnlock, adminSession.authenticated,
+    adminSession.permissions.launch, adminSession.permissions.view], () => {
+    if (!hostState.returnToDashboardAfterUnlock) {
+        window.clearTimeout(dashboardReturnTimer)
+        dashboardReturnTimer = 0
+        dashboardReturnScheduled = false
+        return
+    }
+    scheduleDashboardReturn()
+}, { flush: 'post' })
 watch(() => hostState.adminVisible, visible => { if (visible) refreshAdminSession() })
 onMounted(async () => {
+    if (isUnityEmbedded) {
+        window.chrome.webview.addEventListener('message', handleNativeHostState)
+        window.chrome.webview.postMessage({ type: 'host_action', action: 'state' })
+    }
     startAdminSessionTracking()
     startClock()
     await refreshAdminSession()
     focusPassword()
+    if (adminSession.authenticated) continueAfterLogin()
 })
-onActivated(() => { startClock(); refreshAdminSession() })
-onDeactivated(stopClock)
-onUnmounted(() => { stopClock(); stopAdminSessionTracking() })
+onActivated(() => { startClock(); startAdminSessionTracking(); refreshAdminSession() })
+onDeactivated(() => { stopClock(); stopAdminSessionTracking() })
+onUnmounted(() => {
+    if (isUnityEmbedded) window.chrome.webview.removeEventListener('message', handleNativeHostState)
+    stopClock()
+    stopAdminSessionTracking()
+    window.clearTimeout(dashboardReturnTimer)
+})
 </script>
 
 <template>
     <div class="admin-access-root">
-        <AdminPanel v-if="adminSession.authenticated" />
+        <AdminPanel v-if="adminSession.authenticated && adminSession.permissions.edit" />
+        <div v-else-if="adminSession.authenticated" class="admin-locked-shell">
+            <AdminWindowChrome v-if="isUnityEmbedded" @state="Object.assign(hostState, $event)" />
+            <main class="admin-unlock-page"><section class="admin-unlock-card">
+                <h1>{{ adminSession.user?.displayName || '现场查看账户' }}</h1>
+                <p class="unlock-description">当前账户仅可登录查看大屏，不能进入现场操作中心或配置后台。需要相应权限时，请联系系统管理员调整角色。</p>
+                <button class="unlock-submit" type="button" @click="lockAdmin">退出当前账户</button>
+            </section></main>
+        </div>
         <div v-else class="admin-locked-shell">
             <AdminWindowChrome v-if="isUnityEmbedded" @state="Object.assign(hostState, $event)" />
             <main v-show="!isUnityEmbedded || !hostState.attached || hostState.adminVisible" class="admin-unlock-page">
@@ -83,6 +180,10 @@ onUnmounted(() => { stopClock(); stopAdminSessionTracking() })
                     <p v-if="!adminSession.ready" class="unlock-description" role="status">正在连接后台安全服务…</p>
                     <p v-else-if="setup" class="unlock-description">首次使用请由工程师设置后台密码，再将软件交给普通用户。设置完成后，只有知道密码的人才能修改配置。</p>
                     <form v-if="adminSession.ready" @submit.prevent="submit">
+                        <template v-if="!setup">
+                            <label for="admin-unlock-username">账号</label>
+                            <input id="admin-unlock-username" v-model.trim="username" autocomplete="username" maxlength="32" required placeholder="admin 或管理员创建的账号" />
+                        </template>
                         <label for="admin-unlock-password">{{ setup ? '设置后台密码' : '后台密码' }}</label>
                         <input id="admin-unlock-password" ref="passwordInput" v-model="password" type="password" :autocomplete="setup ? 'new-password' : 'current-password'" minlength="8" maxlength="128" required :disabled="busy" :placeholder="setup ? '请设置 8–128 个字符的密码' : '请输入后台密码'" />
                         <template v-if="setup">

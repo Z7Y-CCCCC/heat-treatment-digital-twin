@@ -8,9 +8,13 @@ const { validateUploadedModelFile, modelScale } = require('./utils/modelUploadVa
 const {
     createCorsMiddleware,
     createOperationRateLimiter,
+    adminSessionCookieName,
+    isLoopbackAddress,
+    isTrustedAdminOrigin,
     protectManagementWrites,
     securityHeaders
 } = require('./middleware/security');
+const { getAdminAuth } = require('./services/adminAuth');
 const {
     getDb,
     closeDb,
@@ -50,6 +54,7 @@ const {
 } = require('./services/dataSources');
 const { loadReleaseManifest } = require('./services/releaseManifest');
 const { getLicenseStatus, isLicenseEnforced } = require('./services/license');
+const { factoryContext } = require('./services/factoryContext');
 
 const app = express();
 let databaseOperationBusy = false;
@@ -64,9 +69,14 @@ const uploadsDir = path.join(uploadsRootDir, 'models');
 const audioUploadsDir = path.join(uploadsRootDir, 'audio');
 const assetsDir = path.join(__dirname, 'assets');
 const assetModelsDir = path.join(assetsDir, 'models');
+// Keep the standalone `node server.js` development entry point consistent
+// with the packaged desktop launcher.  The desktop launcher supplies
+// FRONTEND_DIST explicitly, but a native Unity/WebView host may start this
+// server directly; in that case the sibling frontend build is still the
+// authoritative UI instead of leaving /admin and /overlay as 404s.
 const frontendDistDir = process.env.FRONTEND_DIST
     ? path.resolve(process.env.FRONTEND_DIST)
-    : null;
+    : path.resolve(__dirname, '..', 'frontend', 'dist');
 const deprecatedDashboardPage = path.join(__dirname, 'deprecated-dashboard.html');
 
 for (const dir of [uploadsDir, audioUploadsDir, assetModelsDir]) {
@@ -108,27 +118,28 @@ app.use('/uploads/models', ensureModelFilesRecovered);
 app.use('/uploads', express.static(uploadsRootDir, { dotfiles: 'deny', index: false }));
 app.use('/assets', express.static(assetsDir, { dotfiles: 'deny', index: false }));
 
-app.use('/api/config', ensureModelFilesRecovered, require('./routes/config'));
-app.use('/api/workshops', require('./routes/workshops'));
-app.use('/api/lines', require('./routes/lines'));
-app.use('/api/devices', require('./routes/devices'));
-app.use('/api/datapoints', require('./routes/datapoints'));
+app.use('/api/factories', require('./routes/factories'));
+app.use('/api/config', factoryContext, ensureModelFilesRecovered, require('./routes/config'));
+app.use('/api/workshops', factoryContext, require('./routes/workshops'));
+app.use('/api/lines', factoryContext, require('./routes/lines'));
+app.use('/api/devices', factoryContext, require('./routes/devices'));
+app.use('/api/datapoints', factoryContext, require('./routes/datapoints'));
 app.use('/api/voice', require('./routes/voice'));
 const settingsController = { wsServer: null };
-app.use('/api/settings', require('./routes/settings')(settingsController));
+app.use('/api/settings', factoryContext, require('./routes/settings')(settingsController));
 const nativePreviewController = { wsServer: null };
-app.use('/api/native-preview', require('./routes/nativePreview')(nativePreviewController));
-app.use('/api/platform', require('./routes/platform'));
-app.use('/api/data-sources', require('./routes/dataSources'));
+app.use('/api/native-preview', factoryContext, require('./routes/nativePreview')(nativePreviewController));
+app.use('/api/platform', factoryContext, require('./routes/platform'));
+app.use('/api/data-sources', factoryContext, require('./routes/dataSources'));
 // 外部排产/生产数据库只读适配层：供数字孪生大屏读取批次、工艺和统计数据。
-app.use('/api/business-data', require('./routes/businessData'));
+app.use('/api/business-data', factoryContext, require('./routes/businessData'));
 // 热处理行业模板、点位包、报警规则和部件绑定清单（只读蓝图）。
 app.use('/api/template-library', require('./routes/templateLibrary'));
 app.use('/api/acceptance-report', require('./routes/acceptanceReport'));
 app.use('/api/license', require('./routes/license'));
 app.use('/api/release', require('./routes/release'));
 // 受控的本机 MCP 接口：让设计/验收 agent 通过 JSON-RPC 操作现场配置。
-app.use('/api/mcp', require('./routes/mcp')({ port: PORT }));
+app.use('/api/mcp', factoryContext, require('./routes/mcp')({ port: PORT }));
 
 app.get('/api/version', (req, res) => {
     res.json({ success: true, readOnly: true, ...loadReleaseManifest(), license: getLicenseStatus() });
@@ -188,7 +199,8 @@ async function stopMaintenanceForDatabaseChange(reason, { backup = true } = {}) 
 }
 async function resumeMaintenanceAfterDatabaseChange() {
     await startDatabaseMaintenance();
-    await startDataSourceMaintenance();
+    const activeFactory = await getDb().then(db => db.get('SELECT value FROM settings WHERE `key` = ?', ['active_factory_id']));
+    await startDataSourceMaintenance(activeFactory?.value || 'factory_default');
     await startSiteBackupMaintenance(uploadsRootDir);
 }
 const siteBackupUpload = multer({
@@ -408,22 +420,35 @@ app.get('/api/plc/protocols', (req, res) => {
     res.json({ protocols: publicProtocolDefinitions() });
 });
 
+app.use('/api/plc/points', factoryContext);
 app.get('/api/plc/points/realtime', async (req, res) => {
     try {
         const deviceId = String(req.query.device_id || '').trim();
 
         const db = await getDb();
-        const devices = deviceId
-            ? [await db.get('SELECT * FROM devices WHERE id = ?', [deviceId])]
+        const workshops = await db.all('SELECT id FROM workshops WHERE factory_id = ?', [req.factoryId]);
+        const workshopIds = new Set(workshops.map(row => String(row.id)));
+        const lines = await db.all(`SELECT l.id FROM \`lines\` l JOIN workshops w ON w.id = l.workshop_id WHERE w.factory_id = ?`, [req.factoryId]);
+        const lineIds = new Set(lines.map(row => String(row.id)));
+        const candidates = deviceId
+            ? [await db.get('SELECT * FROM devices WHERE id = ?', [deviceId])].filter(Boolean)
             : await db.all('SELECT * FROM devices ORDER BY line_id, sort_order ASC');
+        const devices = candidates.filter(device => {
+            if (lineIds.has(String(device.line_id || ''))) return true;
+            if (device.line_id) return false;
+            let config = {};
+            try { config = typeof device.instance_config === 'object' ? device.instance_config : JSON.parse(device.instance_config || '{}'); } catch { /* invalid legacy configuration */ }
+            return workshopIds.has(String(config.workshop_id || config.workshopId || ''));
+        });
 
-        if (deviceId && !devices[0]) {
+        if (deviceId && !devices.length) {
             return res.status(404).json({ error: '设备不存在' });
         }
 
-        const allPoints = deviceId
-            ? await db.all('SELECT * FROM data_points WHERE device_id = ? ORDER BY id ASC', [deviceId])
-            : await db.all('SELECT * FROM data_points ORDER BY device_id, id ASC');
+        const scopedDeviceIds = devices.map(device => String(device.id));
+        const allPoints = scopedDeviceIds.length
+            ? await db.all(`SELECT * FROM data_points WHERE device_id IN (${scopedDeviceIds.map(() => '?').join(',')}) ORDER BY device_id, id ASC`, scopedDeviceIds)
+            : [];
         const pointsByDevice = new Map();
         allPoints.forEach(point => {
             if (!pointsByDevice.has(point.device_id)) pointsByDevice.set(point.device_id, []);
@@ -765,9 +790,27 @@ async function startServer() {
     const WsServer = require('./services/wsServer');
     const wsServer = new WsServer();
     wsServer.attach(httpServer, {
-        verifyClient: (_info, done) => {
+        verifyClient: (info, done) => {
             if (!isLicenseEnforced() || getLicenseStatus().valid) {
-                done(true);
+                const request = info?.req;
+                const cookieName = `${adminSessionCookieName()}=`;
+                const cookie = String(request?.headers?.cookie || '').split(';').map(value => value.trim()).find(value => value.startsWith(cookieName));
+                const token = cookie ? cookie.slice(cookieName.length) : '';
+                const session = getAdminAuth().status(token);
+                const authenticated = session.authenticated && session.permissions?.view === true;
+                const castAuthorized = lanDisplay.isValidDisplaySocket(request);
+                const hasBrowserOrigin = Boolean(request?.headers?.origin);
+                const trustedOrigin = !hasBrowserOrigin || isTrustedAdminOrigin({
+                    get: header => request?.headers?.[String(header || '').toLowerCase()]
+                });
+                const trustedNativeClient = !hasBrowserOrigin && isLoopbackAddress(request?.socket?.remoteAddress);
+                if ((authenticated && trustedOrigin) || trustedNativeClient || castAuthorized) {
+                    request.adminSessionToken = authenticated ? token : '';
+                    request.castAuthorized = castAuthorized;
+                    done(true);
+                } else {
+                    done(false, 401, 'Authentication required');
+                }
                 return;
             }
             done(false, 402, 'License required');
@@ -876,7 +919,11 @@ async function startServer() {
             getDb()
                 .then(db => recoverPendingModelDeletions(db))
                 .then(() => startDatabaseMaintenance())
-                .then(() => startDataSourceMaintenance())
+                .then(async () => {
+                    const db = await getDb();
+                    const activeFactory = await db.get('SELECT value FROM settings WHERE `key` = ?', ['active_factory_id']);
+                    return startDataSourceMaintenance(activeFactory?.value || 'factory_default');
+                })
                 .then(() => lanDisplay.loadFromSettings())
                 .then(() => startSiteBackupMaintenance(uploadsRootDir))
                 .then(() => dataEngine.start())

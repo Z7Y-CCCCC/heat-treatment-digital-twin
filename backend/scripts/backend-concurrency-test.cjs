@@ -185,7 +185,10 @@ async function main() {
             stop() {}
         }
         const DataEngine = requireWithStubs('../services/dataEngine', {
-            '../db/database': { getDb: async () => ({ all: async () => { entered.resolve(); return release.promise; } }) },
+            '../db/database': { getDb: async () => ({
+                get: async () => ({ value: 'factory_default' }),
+                all: async () => { entered.resolve(); return release.promise; }
+            }) },
             '../services/simulator': FakeSimulator
         });
         const engine = new DataEngine({ broadcastStatus() {} });
@@ -210,7 +213,10 @@ async function main() {
             stop() { if (this.active) { this.active = false; activeSources -= 1; } }
         }
         const DataEngine = requireWithStubs('../services/dataEngine', {
-            '../db/database': { getDb: async () => ({ all: async () => [{ key: 'data_mode', value: 'simulation' }] }) },
+            '../db/database': { getDb: async () => ({
+                get: async () => ({ value: 'factory_default' }),
+                all: async () => [{ key: 'data_mode', value: 'simulation' }]
+            }) },
             '../services/simulator': FakeSimulator
         });
         const engine = new DataEngine({ broadcastStatus() {} });
@@ -231,12 +237,17 @@ async function main() {
     await check('alarm writes preserve transitions without duplicate concurrent events', async () => {
         const events = [];
         const DataEngine = requireWithStubs('../services/dataEngine', {
-            '../db/database': { getDb: async () => ({ run: async (sql, values) => { await nextTurn(); events.push(values); } }) }
+            '../db/database': {
+                getDb: async () => ({
+                    get: async () => ({ value: 'factory_default' }),
+                    run: async (sql, values) => { await nextTurn(); events.push(values); }
+                })
+            }
         });
         const engine = new DataEngine({});
         const alarm = value => [{ furnace_id: 'alarm-device', status: { alarm: value }, quality: { status: { alarm: 'good' } } }];
         await Promise.all([engine._recordAlarmEvents(alarm(true)), engine._recordAlarmEvents(alarm(true)), engine._recordAlarmEvents(alarm(false))]);
-        assert.deepEqual(events.map(event => event[5]), ['true', 'false']);
+        assert.deepEqual(events.map(event => event[6]), ['true', 'false']);
         engine.alarmState.set('alarm-device', true);
         await engine._recordAlarmEvents([{ furnace_id: 'alarm-device', status: { alarm: null }, quality: { status: { alarm: 'bad' } } }]);
         assert.equal(events.length, 2);

@@ -38,22 +38,18 @@ function settingsFixture(t) {
     return scoped(t, () => useSystemSettings({ alert: async () => {}, confirm: async () => true }))
 }
 
-test('runtime polling refreshes status without clobbering unsaved settings', async t => {
+test('runtime polling refreshes capabilities without clobbering the unsaved auto-start setting', async t => {
     const settings = settingsFixture(t)
     t.mock.method(adminApi, 'getRuntimeSettings', async () => runtimePayload())
     await settings.loadRuntimeSettings()
-    settings.runtimeSettings.lan_display_port = 9991
-    settings.runtimeSettings.lan_display_pin = 'draft-pin'
-    settings.runtimeSettings.lan_display_enabled = true
+    settings.runtimeSettings.auto_start_enabled = false
     t.mock.method(adminApi, 'getRuntimeSettings', async () => runtimePayload({
-        auto_start_enabled: false, lan_display: { clients: 4, urls: [], pairingUrls: [] }
+        auto_start_enabled: true, auto_start_supported: false, packaged: true
     }))
     await settings.loadRuntimeSettings({ silent: true })
-    assert.equal(settings.runtimeSettings.lan_display_port, 9991)
-    assert.equal(settings.runtimeSettings.lan_display_pin, 'draft-pin')
-    assert.equal(settings.runtimeSettings.lan_display_enabled, true)
     assert.equal(settings.runtimeSettings.auto_start_enabled, false)
-    assert.equal(settings.runtimeStatus.clients, 4)
+    assert.equal(settings.runtimeSettings.auto_start_supported, false)
+    assert.equal(settings.runtimeSettings.packaged, true)
 })
 
 test('an older runtime poll cannot roll back a successful save', async t => {
@@ -63,24 +59,24 @@ test('an older runtime poll cannot roll back a successful save', async t => {
     const old = deferred()
     t.mock.method(adminApi, 'getRuntimeSettings', () => old.promise)
     const poll = settings.loadRuntimeSettings({ silent: true })
-    settings.runtimeSettings.lan_display_port = 9991
-    t.mock.method(adminApi, 'saveRuntimeSettings', async () => runtimePayload({ lan_display_port: 9991 }))
+    settings.runtimeSettings.auto_start_enabled = false
+    t.mock.method(adminApi, 'saveRuntimeSettings', async () => runtimePayload({ auto_start_enabled: false }))
     await settings.saveRuntimeSettings()
     old.resolve(runtimePayload())
     await poll
-    assert.equal(settings.runtimeSettings.lan_display_port, 9991)
+    assert.equal(settings.runtimeSettings.auto_start_enabled, false)
 })
 
 test('editing during a save keeps the newer draft', async t => {
     const settings = settingsFixture(t)
     const response = deferred()
     t.mock.method(adminApi, 'saveRuntimeSettings', () => response.promise)
-    settings.runtimeSettings.lan_display_port = 9991
+    settings.runtimeSettings.auto_start_enabled = false
     const save = settings.saveRuntimeSettings()
-    settings.runtimeSettings.lan_display_port = 9992
-    response.resolve(runtimePayload({ lan_display_port: 9991 }))
+    settings.runtimeSettings.auto_start_enabled = true
+    response.resolve(runtimePayload({ auto_start_enabled: false }))
     await save
-    assert.equal(settings.runtimeSettings.lan_display_port, 9992)
+    assert.equal(settings.runtimeSettings.auto_start_enabled, true)
 })
 
 function pointsFixture(t) {

@@ -7,6 +7,9 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="../../native-admin-host/NavigationRetryPolicy.cs" Link="NavigationRetryPolicy.cs" />
+    <Compile Include="../../native-admin-host/WebContentPolicy.cs" Link="WebContentPolicy.cs" />
+    <Compile Include="../../native-admin-host/DashboardAccessPolicy.cs" Link="DashboardAccessPolicy.cs" />
     <Compile Include="../../native-admin-host/OverlayInteractionGeometry.cs" Link="OverlayInteractionGeometry.cs" />
     <Compile Include="../../native-admin-host/OverlayCompositionSurface.cs" Link="OverlayCompositionSurface.cs" />
   </ItemGroup>

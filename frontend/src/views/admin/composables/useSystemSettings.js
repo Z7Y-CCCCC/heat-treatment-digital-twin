@@ -48,7 +48,7 @@ const NATIVE_ENVIRONMENT_PRESETS = [
         value: 'neutral_factory',
         label: '中性真实厂房',
         tag: '现场监控',
-        description: '开放式低饱和灰蓝环境，颜色更自然，默认不显示围墙，适合长时间运行和现场监控。',
+        description: '开放式中性灰环境，导入厂房保留原始材质，默认不显示程序围墙，适合长时间运行和现场监控。',
         config: {
             ...createDefaultNativeEnvironmentConfig(),
             preset: 'neutral_factory',

@@ -41,6 +41,7 @@ async function main() {
     for (const [title, value] of [['recent UTC fixture', recentEventTime], ['old UTC fixture', oldEventTime]]) {
         seed.prepare('INSERT INTO event_logs (event_type, title, occurred_at) VALUES (?, ?, ?)').run('audit_time', title, value.replace('T', ' '));
     }
+    seed.prepare("UPDATE factory_settings SET value = 'simulation' WHERE factory_id = 'factory_default' AND key = 'data_mode'").run();
     for (const [id, filename] of [['blocked-model', 'blocked.glb'], ['shared-one', 'shared.glb'], ['shared-two', 'shared.glb']]) {
         fs.writeFileSync(path.join(models, filename), valid);
         seed.prepare('INSERT INTO models (id, name, file_path) VALUES (?, ?, ?)').run(id, id, `/uploads/models/${filename}`);

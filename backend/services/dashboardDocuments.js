@@ -8,7 +8,8 @@ const {
     validateDocument,
     documentToLegacyWidgets,
     documentToRuntimeWidgets,
-    isCanonicalDocument
+    isCanonicalDocument,
+    assertNoForbiddenWriteIntent
 } = require('../utils/dashboardDocument');
 const { resolveConnection } = require('./dataSources');
 
@@ -32,9 +33,12 @@ function scenePayload(row) {
     };
 }
 
-async function getProjectAndScene(db, sceneId = '') {
+async function getProjectAndScene(db, sceneId = '', factoryId = '') {
+    const scoped = String(factoryId || '').trim();
     let scene = sceneId
-        ? await db.get('SELECT * FROM scenes WHERE id = ?', [sceneId])
+        ? await db.get(scoped
+            ? 'SELECT s.* FROM scenes s JOIN projects p ON p.id = s.project_id WHERE s.id = ? AND p.factory_id = ?'
+            : 'SELECT * FROM scenes WHERE id = ?', scoped ? [sceneId, scoped] : [sceneId])
         : null;
     if (sceneId && !scene) return { project: null, scene: null };
     let project = scene
@@ -42,8 +46,10 @@ async function getProjectAndScene(db, sceneId = '') {
         : null;
     if (sceneId && !project) return { project: null, scene };
     if (!project) {
-        project = await db.get('SELECT * FROM projects WHERE is_active = 1 ORDER BY created_at ASC LIMIT 1')
-            || await db.get('SELECT * FROM projects ORDER BY created_at ASC LIMIT 1');
+        project = scoped
+            ? await db.get('SELECT * FROM projects WHERE factory_id = ? ORDER BY is_active DESC, created_at ASC LIMIT 1', [scoped])
+            : await db.get('SELECT * FROM projects WHERE is_active = 1 ORDER BY created_at ASC LIMIT 1')
+                || await db.get('SELECT * FROM projects ORDER BY created_at ASC LIMIT 1');
     }
     if (!scene && project) {
         scene = await db.get('SELECT * FROM scenes WHERE project_id = ? AND is_active = 1 ORDER BY sort_order ASC LIMIT 1', [project.id])
@@ -170,8 +176,8 @@ async function syncLegacyWidgets(tx, document) {
     }
 }
 
-async function saveDraft(db, { sceneId, document: input, expectedRevision }) {
-    const { project, scene } = await getProjectAndScene(db, sceneId);
+async function saveDraft(db, { sceneId, document: input, expectedRevision, factoryId = '' }) {
+    const { project, scene } = await getProjectAndScene(db, sceneId, factoryId);
     if (!project || !scene) throw new Error('场景不存在');
     const currentRevision = Number(scene.draft_revision || 0);
     if (expectedRevision !== undefined && expectedRevision !== null
@@ -181,6 +187,7 @@ async function saveDraft(db, { sceneId, document: input, expectedRevision }) {
         error.status = 409;
         throw error;
     }
+    assertNoForbiddenWriteIntent(input);
     const document = normalizeDocument(input, { project, scene, source: 'designer' });
     // Normalize first so deleting a view can repair legacy visibility/event
     // references before validation instead of returning one error per widget.
@@ -236,9 +243,10 @@ function releaseId() {
     return `release_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
-async function publishDraft(db, { sceneId, version, notes }) {
-    const { project, scene } = await getProjectAndScene(db, sceneId);
+async function publishDraft(db, { sceneId, version, notes, factoryId = '' }) {
+    const { project, scene } = await getProjectAndScene(db, sceneId, factoryId);
     if (!project || !scene) throw new Error('场景不存在');
+    assertNoForbiddenWriteIntent(safeJsonParse(scene.draft_json, null));
     const document = await loadDraftDocument(db, project, scene);
     await validatePlcBindings(db, document);
     const releases = await db.all('SELECT * FROM releases WHERE project_id = ? ORDER BY created_at DESC', [project.id]);
@@ -271,12 +279,15 @@ async function publishDraft(db, { sceneId, version, notes }) {
     return { release: releasePayload(release), document: snapshot };
 }
 
-async function activateRelease(db, releaseIdValue) {
-    const release = await db.get('SELECT * FROM releases WHERE id = ?', [releaseIdValue]);
+async function activateRelease(db, releaseIdValue, factoryId = '') {
+    const release = await db.get(String(factoryId || '').trim()
+        ? 'SELECT r.* FROM releases r JOIN projects p ON p.id = r.project_id WHERE r.id = ? AND p.factory_id = ?'
+        : 'SELECT * FROM releases WHERE id = ?', String(factoryId || '').trim() ? [releaseIdValue, factoryId] : [releaseIdValue]);
     if (!release) throw new Error('发布版本不存在');
     const snapshot = safeJsonParse(release.snapshot_json, null);
     if (!isCanonicalDocument(snapshot)) throw new Error('该版本不是完整快照，无法恢复');
-    const { project, scene } = await getProjectAndScene(db, release.scene_id || snapshot.sceneId);
+    assertNoForbiddenWriteIntent(snapshot);
+    const { project, scene } = await getProjectAndScene(db, release.scene_id || snapshot.sceneId, factoryId);
     if (!project || !scene || String(project.id) !== String(release.project_id)) throw new Error('发布版本对应的场景不存在');
     const document = normalizeDocument(snapshot, { project, scene, source: 'release' });
     await validatePlcBindings(db, document);
@@ -290,17 +301,20 @@ async function activateRelease(db, releaseIdValue) {
     return { release: releasePayload({ ...release, is_current: 1 }), document };
 }
 
-async function activateLatestSceneRelease(db, sceneId) {
-    const release = await db.get(
-        'SELECT * FROM releases WHERE scene_id = ? ORDER BY created_at DESC LIMIT 1',
-        [sceneId]
-    );
+async function activateLatestSceneRelease(db, sceneId, factoryId = '') {
+    const release = await db.get(String(factoryId || '').trim()
+        ? 'SELECT r.* FROM releases r JOIN projects p ON p.id = r.project_id WHERE r.scene_id = ? AND p.factory_id = ? ORDER BY r.created_at DESC LIMIT 1'
+        : 'SELECT * FROM releases WHERE scene_id = ? ORDER BY created_at DESC LIMIT 1',
+    String(factoryId || '').trim() ? [sceneId, factoryId] : [sceneId]);
     if (!release) throw new Error('该场景还没有可运行的发布版本');
-    return activateRelease(db, release.id);
+    return activateRelease(db, release.id, factoryId);
 }
 
-async function deleteRelease(db, releaseIdValue) {
-    const release = await db.get('SELECT * FROM releases WHERE id = ?', [releaseIdValue]);
+async function deleteRelease(db, releaseIdValue, factoryId = '') {
+    const release = await db.get(String(factoryId || '').trim()
+        ? 'SELECT r.* FROM releases r JOIN projects p ON p.id = r.project_id WHERE r.id = ? AND p.factory_id = ?'
+        : 'SELECT * FROM releases WHERE id = ?',
+    String(factoryId || '').trim() ? [releaseIdValue, factoryId] : [releaseIdValue]);
     if (!release) throw new Error('发布版本不存在');
     if (release.is_current) throw new Error('当前正在运行的版本不能删除');
     const deleted = await db.run('DELETE FROM releases WHERE id = ? AND is_current = 0', [release.id]);
@@ -308,8 +322,8 @@ async function deleteRelease(db, releaseIdValue) {
     return { success: true };
 }
 
-async function loadDesignerState(db, sceneId = '') {
-    const { project, scene } = await getProjectAndScene(db, sceneId);
+async function loadDesignerState(db, sceneId = '', factoryId = '') {
+    const { project, scene } = await getProjectAndScene(db, sceneId, factoryId);
     const document = await loadDraftDocument(db, project, scene);
     const releases = project
         ? await db.all('SELECT * FROM releases WHERE project_id = ? ORDER BY created_at DESC', [project.id])
@@ -327,7 +341,15 @@ async function loadDesignerState(db, sceneId = '') {
 }
 
 function runtimePlatformPayload({ project, scene, document, release }) {
-    const publishedScene = objectValue(document.scene, {});
+    // A factory created while the backend is already running has no published
+    // release yet. Normalize its deliberately sparse empty document before
+    // projecting widgets; raw seed widgets do not contain every runtime field.
+    const runtimeDocument = normalizeDocument(document || createEmptyDocument({ project, scene }), {
+        project,
+        scene,
+        source: release ? 'release' : 'runtime'
+    });
+    const publishedScene = objectValue(runtimeDocument.scene, {});
     const runtimeScene = scene ? {
         id: scene.id,
         project_id: scene.project_id,
@@ -347,10 +369,10 @@ function runtimePlatformPayload({ project, scene, document, release }) {
     return {
         activeProject: project || null,
         activeScene: runtimeScene,
-        canvas: document.canvas,
-        theme: document.theme,
-        document,
-        widgets: documentToRuntimeWidgets(document),
+        canvas: runtimeDocument.canvas,
+        theme: runtimeDocument.theme,
+        document: runtimeDocument,
+        widgets: documentToRuntimeWidgets(runtimeDocument),
         currentRelease: release
     };
 }

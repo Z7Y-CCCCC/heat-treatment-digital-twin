@@ -75,3 +75,23 @@ test('an empty or malformed data-source response does not break designer loading
     assert.deepEqual(state.dataSources, [])
     assert.notEqual(state.status.tone, 'danger')
 })
+
+test('HUD preset adds an isolated view without changing the existing view or default', async t => {
+    const { instance } = fixture(t, [])
+    await settle()
+    await nextTick()
+    const state = instance.value.$.setupState
+    const beforeWidgets = JSON.stringify(state.documentModel.widgets)
+    const beforeViews = JSON.stringify(state.documentModel.scene.views)
+    const defaultView = state.documentModel.scene.defaultViewId
+    state.addWidgetPreset({ id: 'factory_hud_modules', label: '工厂总览 HUD 模块' })
+    assert.equal(state.documentModel.scene.defaultViewId, defaultView)
+    assert.equal(JSON.stringify(state.documentModel.widgets.slice(0,-4)), beforeWidgets)
+    assert.equal(JSON.stringify(state.documentModel.scene.views.slice(0,-1)), beforeViews)
+    const view = state.documentModel.scene.views.at(-1)
+    assert.equal(view.id, 'factory_hud_modules')
+    assert.deepEqual(view.componentState.show, state.documentModel.widgets.slice(-4).map(widget => widget.id))
+    const count = state.documentModel.widgets.length
+    state.addWidgetPreset({ id: 'factory_hud_modules', label: '工厂总览 HUD 模块' })
+    assert.equal(state.documentModel.widgets.length, count, 'repeated click should focus, not duplicate')
+})

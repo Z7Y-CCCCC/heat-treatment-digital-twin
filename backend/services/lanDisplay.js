@@ -248,6 +248,10 @@ class LanDisplayService {
         return secureTokenEqual(queryToken, this.pin) || secureTokenEqual(cookieToken, this.pin);
     }
 
+    isValidDisplaySocket(req) {
+        return this.verifyWebSocket(req);
+    }
+
     isAllowedPath(pathname) {
         if (pathname === '/ws') return true;
         if (pathname === '/admin' || pathname.startsWith('/admin/')) return false;
@@ -308,6 +312,7 @@ class LanDisplayService {
             }
         }
 
+        req.castAuthorized = true;
         req.url = `${parsed.pathname || '/'}${parsed.search || ''}`;
         this.app(req, res);
     }

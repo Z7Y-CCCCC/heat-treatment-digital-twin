@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, onActivated, onDeactiva
 import { adminApi } from '../../../config/factoryConfig.js'
 import WidgetRenderer from '../../../runtime/WidgetRenderer.vue'
 import { applyReferenceHudLayout } from '../../../runtime/referenceHudLayout.js'
+import { applyFactoryHudModules } from '../../../runtime/factoryHudModules.js'
 import { applyVisibilityAction, matchesRule, widgetRuntimeVisible } from '../../../runtime/dashboardRules.js'
 import ColorField from './ColorField.vue'
 import {
@@ -600,7 +601,7 @@ async function loadDesigner({ allowLocal = true } = {}) {
     revision.value = Number(designer.revision || 0)
     const serverDocument = normalizeDashboardDocument(designer.document || {})
     const localDocument = allowLocal ? readLocalDraft(serverDocument.sceneId, revision.value) : null
-    documentModel.value = applyReferenceHudLayout(localDocument || serverDocument)
+    documentModel.value = applyFactoryHudModules(applyReferenceHudLayout(localDocument || serverDocument))
     releases.value = designer.releases || []
     currentRelease.value = designer.currentRelease || null
     devices.value = Array.isArray(deviceRows) ? deviceRows : []
@@ -1058,6 +1059,35 @@ function addWidget(type, position = {}) {
 
 function addWidgetPreset(preset) {
   if (!preset?.id) return
+  if (preset.id === 'factory_hud_modules') {
+    const targetViewId = 'factory_hud_modules'
+    const existing = views.value.find(view => view.id === targetViewId)
+    if (existing) { selectView(targetViewId); return setStatus('已定位到工厂 HUD 方案', 'success') }
+    if (views.value.length >= 50 || documentModel.value.widgets.length + 4 > 500) return setStatus('视角或组件数量已达上限，请先移除不用的内容', 'warning')
+    const base = views.value.find(view => view.id === 'factory_overview') || views.value[0]
+    const modules = createDashboardWidgetPreset(preset.id, { canvas: canvas.value, viewIds: [targetViewId], baseZ: 10 })
+    // New view only: the currently published view and its authored widgets
+    // remain intact until the user explicitly chooses and publishes this one.
+    const view = deepClone(base)
+    view.id = targetViewId
+    view.name = '工厂总览 · HUD 方案'
+    view.mode = 'factory'
+    view.targetType = 'factory'
+    view.targetId = ''
+    view.parentViewId = base.id
+    view.returnViewId = base.id
+    view.metadata = { hudModules: true }
+    view.componentState = { show: modules.map(widget => widget.id), hide: [], hideNonTargetDevices: false }
+    documentModel.value.scene.views.push(view)
+    documentModel.value.widgets.push(...modules)
+    selectView(targetViewId)
+    selectedIds.value = [modules[0].id]
+    inspectorTab.value = 'content'
+    revealRightPanel()
+    commitHistory('加入工厂 HUD 方案')
+    setStatus('已加入独立 HUD 方案视角；原布局未改动。可预览、编辑后保存并发布。', 'success')
+    return
+  }
   const groupId = preset.id === 'device_part_detail' ? 'group_device_part_detail' : `group_${preset.id}`
   const existing = documentModel.value.widgets.filter(widget => widget.groupId === groupId)
   const partViews = views.value.filter(view => view.id === 'device_part' || view.metadata?.inspectionStage === 'part')
@@ -1323,7 +1353,7 @@ function removeWidgetFromCurrentView(widget) {
 
 function applyChartPalette() {
   const widget = selectedWidget.value
-  if (!widget || widget.type !== 'trend') return
+  if (!widget || !['trend', 'hud_chart_dock'].includes(widget.type)) return
   const palette = chartPalettes.find(item => item.id === widget.content.chartPalette) || chartPalettes[0]
   widget.content.lineColor = palette.colors[0]
   ensureDatabaseDatasets(widget).forEach((dataset, index) => {
@@ -2019,6 +2049,7 @@ onBeforeUnmount(() => {
         <button type="button" @click="setZoom(zoom + .1)">＋</button>
       </div>
       <div class="designer-toolbar-actions">
+        <RouterLink :to="{path:'/hud-preview',query:{embedded:$route.query.embedded}}" class="hud-review-link">同源场景预览</RouterLink>
         <select v-if="previewMode" :value="selectedViewId" title="模拟 Unity 当前视角" @change="selectView($event.target.value, { enterPreview: true })">
           <option v-for="view in views" :key="view.id" :value="view.id">{{ view.name }}</option>
         </select>
@@ -2326,15 +2357,33 @@ onBeforeUnmount(() => {
                 <label>填充方式<select v-model="selectedWidget.content.fit" @change="recordProperty()"><option value="contain">完整显示</option><option value="cover">铺满裁切</option><option value="fill">拉伸填充</option></select></label>
                 <label>替代文字<input v-model="selectedWidget.content.alt" @change="recordProperty()" /></label>
               </template>
-              <template v-if="['alarm_list','device_list'].includes(selectedWidget.type)">
+              <template v-if="['alarm_list','device_list','hud_alarm_panel','hud_device_status'].includes(selectedWidget.type)">
                 <label>最多显示<input v-model.number="selectedWidget.content.limit" type="number" min="1" max="100" @change="recordProperty()" /></label>
+              </template>
+              <template v-if="selectedWidget.type.startsWith('hud_')">
+                <div class="readonly-banner compact"><span>共享 HUD 模块</span>内部为流式排版，背景不叠加；设计器和实时大屏使用同一个渲染器。</div>
+                <label>英文眉题<input v-model="selectedWidget.content.eyebrow" @change="recordProperty('修改模块眉题')" /></label>
+                <label v-if="selectedWidget.type === 'hud_device_status'" class="visibility-bound-device"><input v-model="selectedWidget.content.showTemperature" type="checkbox" @change="recordProperty()" /> 显示设备温度</label>
+                <template v-if="selectedWidget.type === 'hud_kpi_panel'">
+                  <label>圆环名称<input v-model="selectedWidget.content.chartLabel" @change="recordProperty()" /></label>
+                  <label>圆环指标路径<input v-model="selectedWidget.content.chartPath" placeholder="metrics.overall_oee" @change="recordProperty()" /></label>
+                  <div v-for="(item,index) in selectedWidget.content.items" :key="index" class="inspector-section">
+                    <label>指标 {{ index + 1 }} 名称<input v-model="item.label" @change="recordProperty()" /></label>
+                    <label>数据路径<input v-model="item.path" placeholder="metrics.total_devices" @change="recordProperty()" /></label>
+                    <label>单位<input v-model="item.unit" @change="recordProperty()" /></label>
+                  </div>
+                </template>
+                <template v-if="selectedWidget.type === 'hud_chart_dock'">
+                  <label>读数名称<input v-model="selectedWidget.content.statLabel" @change="recordProperty()" /></label>
+                  <label>读数单位<input v-model="selectedWidget.content.statUnit" @change="recordProperty()" /></label>
+                </template>
               </template>
               <template v-if="selectedWidget.type === 'business_summary'">
                 <label>业务区块<select v-model="selectedWidget.content.section" @change="selectedWidget.data.businessSection = selectedWidget.content.section; recordProperty('选择业务区块')"><option value="batches">批次与工艺执行</option><option value="compliance">温度 / 碳势合规</option><option value="oee">设备运行统计</option><option value="energy">单批次能耗</option><option value="maintenance">维护记录</option></select></label>
                 <label>最多显示<input v-model.number="selectedWidget.content.limit" type="number" min="1" max="50" @change="recordProperty('修改业务记录数')" /></label>
                 <label class="visibility-bound-device"><input v-model="selectedWidget.content.showSource" type="checkbox" @change="recordProperty('显示数据源')" /> 显示外部数据源</label>
               </template>
-              <template v-if="selectedWidget.type === 'trend'">
+              <template v-if="['trend','hud_chart_dock'].includes(selectedWidget.type)">
                 <label>图表形式<select v-model="selectedWidget.content.chartType" @change="recordProperty('修改图表形式')"><option value="line">折线图</option><option value="area">面积图</option><option value="bar">柱状图</option><option value="stackedBar">堆叠柱状图</option><option value="scatter">散点图</option><option value="pie">饼图</option><option value="donut">环形图</option><option value="gauge">仪表盘</option></select></label>
                 <label>配色预设<select v-model="selectedWidget.content.chartPalette" @change="applyChartPalette"><option v-for="palette in chartPalettes" :key="palette.id" :value="palette.id">{{ palette.label }}</option></select></label>
                 <label>图表名称<input v-model="selectedWidget.content.seriesName" @change="recordProperty()" /></label>
@@ -2372,7 +2421,7 @@ onBeforeUnmount(() => {
                 <ColorField v-model="selectedWidget.style.offColor" label="停止 / 关闭颜色" :presets="textColorPresets" @commit="recordProperty('修改样式')" />
                 <ColorField v-model="selectedWidget.style.alarmColor" label="报警颜色" :presets="textColorPresets" @commit="recordProperty('修改样式')" />
               </template>
-              <template v-if="selectedWidget.type === 'trend'">
+              <template v-if="['trend','hud_chart_dock','hud_kpi_panel'].includes(selectedWidget.type)">
                 <ColorField v-model="selectedWidget.content.lineColor" label="曲线颜色" :presets="textColorPresets" @commit="recordProperty('修改样式')" />
                 <ColorField v-model="selectedWidget.content.areaColor" label="曲线填充颜色" :presets="borderColorPresets" @commit="recordProperty('修改样式')" />
               </template>

@@ -27,13 +27,20 @@ class DataEngine {
     async start() {
         const runVersion = ++this.runVersion;
         this._stopSources();
+        this.deviceSnapshots.clear();
+        this.alarmState.clear();
+        this.lastMetricSnapshotAt = 0;
         this.currentMode = null;
         const db = await getDb();
         if (runVersion !== this.runVersion) return;
+        const activeFactory = await db.get('SELECT value FROM settings WHERE `key` = ?', ['active_factory_id']);
+        this.activeFactoryId = String(activeFactory?.value || 'factory_default');
         const rows = await db.all('SELECT * FROM settings');
         if (runVersion !== this.runVersion) return;
         const settings = {};
         rows.forEach(r => { settings[r.key] = r.value; });
+        const factoryRows = await db.all('SELECT `key`, value FROM factory_settings WHERE factory_id = ?', [this.activeFactoryId]);
+        factoryRows.forEach(row => { settings[row.key] = row.value; });
 
         const mode = this._normalizeMode(settings.data_mode);
         this.currentMode = mode;
@@ -157,6 +164,7 @@ class DataEngine {
 
         const db = await getDb();
         if (runVersion !== this.runVersion) return;
+        const factoryId = this.activeFactoryId || 'factory_default';
         const totalDevices = deviceDataArray.length;
         const runningDevices = deviceDataArray.filter(d => !!d.status?.running).length;
         const alarmDevices = deviceDataArray.filter(d => !!d.status?.alarm).length;
@@ -168,9 +176,10 @@ class DataEngine {
         const energyConsumption = Math.round((avgTemp || 0) * Math.max(runningDevices, 1) * 0.72);
 
         await db.run(`INSERT INTO metric_snapshots (
-            current_output, daily_target, overall_oee, energy_consumption,
+            factory_id, current_output, daily_target, overall_oee, energy_consumption,
             running_devices, alarm_devices, online_devices, total_devices
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, [
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
+            factoryId,
             currentOutput,
             dailyTarget,
             parseFloat(overallOee.toFixed(1)),
@@ -193,6 +202,8 @@ class DataEngine {
         if (runVersion !== this.runVersion) return;
         const db = await getDb();
         if (runVersion !== this.runVersion) return;
+        const activeFactory = await db.get('SELECT value FROM settings WHERE `key` = ?', ['active_factory_id']);
+        const factoryId = String(activeFactory?.value || 'factory_default');
         for (const deviceData of deviceDataArray) {
             if (runVersion !== this.runVersion) return;
             const id = deviceData.furnace_id;
@@ -203,8 +214,9 @@ class DataEngine {
 
             if (alarm !== previous) {
                 await db.run(`INSERT INTO event_logs (
-                    event_type, level, source_id, title, message, value, quality
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)`, [
+                    factory_id, event_type, level, source_id, title, message, value, quality
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, [
+                    factoryId,
                     'alarm',
                     alarm ? 'critical' : 'info',
                     id,
@@ -243,7 +255,7 @@ class DataEngine {
             devices: 0
         };
 
-        const plcReader = new PlcReader({ profile: 'low_latency' });
+        const plcReader = new PlcReader({ profile: 'low_latency', factoryId: this.activeFactoryId });
         this.plcReader = plcReader;
         await plcReader.start(
             (deviceDataArray) => {
@@ -268,7 +280,7 @@ class DataEngine {
         console.log('[DataEngine] 模拟模式: 生成模拟数据 -> WebSocket');
         const runVersion = this.runVersion;
 
-        const simulator = new Simulator();
+        const simulator = new Simulator({ factoryId: this.activeFactoryId });
         this.simulator = simulator;
         await simulator.start(
             (deviceDataArray) => {

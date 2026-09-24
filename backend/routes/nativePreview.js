@@ -96,8 +96,8 @@ module.exports = function createNativePreviewRouter(controller) {
         });
     });
 
-    // A separate viewing-only endpoint keeps ordinary dashboard navigation
-    // working while admin is locked, without exposing layout/apply commands.
+    // This endpoint only accepts runtime view commands. Authentication and the
+    // launch permission are enforced by protectManagementWrites middleware.
     router.post('/navigate', (req, res) => {
         const action = req.body?.action;
         if (!['camera', 'focus', 'view', 'inspection_back', 'inspection'].includes(action)) {

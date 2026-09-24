@@ -19,6 +19,8 @@ internal sealed class DashboardOverlayForm : Form
     private readonly HostOptions _options;
     private CoreWebView2CompositionController? _webView;
     private OverlayCompositionSurface? _compositionSurface;
+    private WebViewNavigationRetry? _navigationRetry;
+    private DashboardReloadCoverForm? _reloadCover;
     private readonly List<RectangleF> _cssRegions = new();
     private readonly List<Rectangle> _appliedRegions = new();
     private SizeF _cssViewport = new(1f, 1f);
@@ -30,10 +32,14 @@ internal sealed class DashboardOverlayForm : Form
     private bool _attached;
     private bool _initialized;
     private bool _navigationReady;
+    private bool _pageReportedReady;
+    private int _navigationVersion;
     private bool _visibleRequested;
     private bool _presentationMode;
     private bool _forwardingMouse;
     private int _escapeDispatchPending;
+
+    public event Action<string?, bool>? AdminRequested;
 
     public DashboardOverlayForm(HostOptions options)
     {
@@ -92,6 +98,7 @@ internal sealed class DashboardOverlayForm : Form
         _webView.CoreWebView2.Settings.IsStatusBarEnabled = false;
         _webView.CoreWebView2.Settings.AreDefaultContextMenusEnabled = false;
         _webView.CoreWebView2.Settings.IsZoomControlEnabled = false;
+        await _webView.CoreWebView2.AddScriptToExecuteOnDocumentCreatedAsync(DashboardLoadingExperience.DocumentCreatedScript);
         UpdateDpiState();
         UpdateWebViewBounds();
         _webView.CoreWebView2.NewWindowRequested += (_, args) => args.Handled = true;
@@ -99,17 +106,24 @@ internal sealed class DashboardOverlayForm : Form
         {
             args.Cancel = !WebContentPolicy.IsSameOrigin(args.Uri, _options.Url);
             if (args.Cancel || _webView == null) return;
+            if (_visibleRequested && _navigationReady) ShowReloadCover();
+            _navigationVersion++;
             _navigationReady = false;
+            _pageReportedReady = false;
             _webView.IsVisible = false;
             ApplyEmptyInteractionRegion();
         };
         _webView.CoreWebView2.WebMessageReceived += HandleWebMessage;
+        _navigationRetry = new WebViewNavigationRetry(_webView.CoreWebView2, BuildOverlayUrl(_options.Url),
+            attempt => WriteOverlayError($"透明数据层正在自动重连（{attempt}）"));
         _webView.CoreWebView2.NavigationCompleted += (_, args) =>
         {
             if (IsDisposed || Disposing || _webView == null) return;
-            if (!args.IsSuccess)
+            if (_navigationRetry?.IsCurrentNavigation(args.NavigationId) != true) return;
+            if (!WebViewNavigationRetry.IsUsable(args))
             {
                 WriteOverlayError($"透明数据层导航失败：{args.WebErrorStatus}");
+                _reloadCover?.ShowFailure($"现场画面载入失败：{args.WebErrorStatus}。请检查现场服务连接，或点击顶部刷新重试。");
                 return;
             }
             // Do not expose the native WebView2 surface while it still has a
@@ -120,6 +134,7 @@ internal sealed class DashboardOverlayForm : Form
             _webView.IsVisible = _visibleRequested;
             UpdateWebViewBounds();
             PostHostState();
+            if (_pageReportedReady) _ = FinishLoadingAsync();
             _ = OverlayPresentationDiagnostics.CaptureAsync(_webView);
         };
         _webView.CoreWebView2.Navigate(BuildOverlayUrl(_options.Url));
@@ -196,6 +211,7 @@ internal sealed class DashboardOverlayForm : Form
         NativeMethods.EnableWindow(Handle, true);
         NativeMethods.ShowWindow(Handle, NativeMethods.SwShow);
         if (_webView != null) _webView.IsVisible = _navigationReady;
+        if (!_pageReportedReady) ShowReloadCover();
         PostHostState();
     }
 
@@ -203,6 +219,7 @@ internal sealed class DashboardOverlayForm : Form
     {
         if (IsDisposed) return;
         _visibleRequested = false;
+        _reloadCover?.HideCover();
         Capture = false;
         if (IsHandleCreated) NativeMethods.EnableWindow(Handle, false);
         if (_webView != null) _webView.IsVisible = false;
@@ -214,10 +231,34 @@ internal sealed class DashboardOverlayForm : Form
     public void Reload()
     {
         if (IsDisposed || _webView?.CoreWebView2 == null) return;
-        ApplyEmptyInteractionRegion();
+        if (_visibleRequested) ShowReloadCover();
+        _navigationVersion++;
         _navigationReady = false;
+        _pageReportedReady = false;
         _webView.IsVisible = false;
+        ApplyEmptyInteractionRegion();
         _webView.CoreWebView2.Reload();
+    }
+
+    public void OpenMapAtTopLevel()
+    {
+        if (IsDisposed || _webView?.CoreWebView2 == null) return;
+        if (!Uri.TryCreate(_options.Url, UriKind.Absolute, out var source)) return;
+        var mapUrl = new UriBuilder(source)
+        {
+            Path = "/group",
+            Query = "embedded=unity&surface=overlay&level=world"
+        }.Uri.AbsoluteUri;
+        if (_visibleRequested) ShowReloadCover();
+        _webView.CoreWebView2.Navigate(mapUrl);
+    }
+
+    private void ShowReloadCover()
+    {
+        if (!_visibleRequested || _parentHandle == IntPtr.Zero || !NativeMethods.IsWindow(_parentHandle)) return;
+        _reloadCover ??= new DashboardReloadCoverForm();
+        var chromeHeight = _presentationMode ? 0 : DashboardChromeForm.GetChromeHeightPixels(_parentHandle);
+        _reloadCover.ShowForParent(_parentHandle, chromeHeight);
     }
 
     /// <summary>
@@ -255,6 +296,7 @@ internal sealed class DashboardOverlayForm : Form
         _lastParentClientOrigin = parentOrigin;
 
         var height = Math.Max(1, clientSize.Height - chromeHeight);
+        _reloadCover?.UpdateParentBounds(chromeHeight);
 
         // The overlay is already owned by Unity. Re-applying HwndTop on every
         // movement tick causes unnecessary z-order churn while the parent is
@@ -562,8 +604,22 @@ internal sealed class DashboardOverlayForm : Form
             var root = document.RootElement;
             if (!root.TryGetProperty("type", out var typeElement)) return;
             var type = typeElement.GetString();
+            if (type == "host_action"
+                && root.TryGetProperty("action", out var actionElement)
+                && actionElement.GetString() == "show_admin")
+            {
+                var focus = root.TryGetProperty("focus", out var focusElement)
+                    ? focusElement.GetString()
+                    : null;
+                var returnToDashboard = root.TryGetProperty("returnToDashboard", out var returnElement)
+                    && returnElement.ValueKind == JsonValueKind.True;
+                AdminRequested?.Invoke(focus, returnToDashboard);
+                return;
+            }
             if (type == "overlay_ready")
             {
+                _pageReportedReady = true;
+                if (_navigationReady) _ = FinishLoadingAsync();
                 PostHostState();
                 return;
             }
@@ -573,6 +629,24 @@ internal sealed class DashboardOverlayForm : Form
         catch (Exception exception)
         {
             WriteOverlayError("透明数据层消息解析失败", exception);
+        }
+    }
+
+    private async Task FinishLoadingAsync()
+    {
+        if (_webView?.CoreWebView2 == null || IsDisposed || !_navigationReady) return;
+        var navigationVersion = _navigationVersion;
+        try
+        {
+            var result = await _webView.CoreWebView2.ExecuteScriptAsync(
+                "(function(){if(typeof window.__DIGITAL_TWIN_FINISH_LOADING__!=='function')return false;window.__DIGITAL_TWIN_FINISH_LOADING__();return true;})()"
+            );
+            if (result == "true" && !IsDisposed && _navigationReady && navigationVersion == _navigationVersion)
+                _reloadCover?.HideCover();
+        }
+        catch (Exception exception)
+        {
+            WriteOverlayError("透明数据层加载画面结束失败", exception);
         }
     }
 
@@ -687,13 +761,13 @@ internal sealed class DashboardOverlayForm : Form
             var builder = new UriBuilder(source)
             {
                 Path = "/overlay",
-                Query = "embedded=unity&release=current"
+                Query = "embedded=unity&surface=overlay&release=current"
             };
             return builder.Uri.AbsoluteUri;
         }
         catch
         {
-            return "http://127.0.0.1:3001/overlay?embedded=unity&release=current";
+            return "http://127.0.0.1:3001/overlay?embedded=unity&surface=overlay&release=current";
         }
     }
 
@@ -718,6 +792,9 @@ internal sealed class DashboardOverlayForm : Form
     {
         if (disposing)
         {
+            _reloadCover?.Dispose();
+            _reloadCover = null;
+            _navigationRetry?.Dispose();
             try
             {
                 var controller = _webView;

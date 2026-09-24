@@ -44,6 +44,39 @@ test('a late 401 from an older login cannot invalidate a newer session', async t
     assert.equal(session.adminSession.authenticated, true)
 })
 
+test('account sessions can be added and switched using in-memory CSRF tokens', async t => {
+    const session = await fixture(t)
+    const calls = []
+    const slotId = '0123456789abcdef01234567'
+    t.mock.method(session.browser, 'fetch', async (url, options = {}) => {
+        calls.push({ url: String(url), options })
+        if (String(url).endsWith('/accounts/login')) return json({ ...signedIn('viewer-csrf'), accountSlotId: slotId, user: { username: 'viewer_one', role: 'viewer' } })
+        if (String(url).endsWith('/accounts/activate')) return json({ ...signedIn('owner-csrf-2'), accountSlotId: 'main', user: { username: 'admin', role: 'owner' } })
+        if (String(url).endsWith('/login')) return json({ ...signedIn('owner-csrf'), accountSlotId: 'main', user: { username: 'admin', role: 'owner' } })
+        return json({ accounts: [] })
+    })
+
+    await session.unlockAdmin('owner-password')
+    await session.addAdminAccount(slotId, 'viewer_one', 'viewer-password')
+    assert.equal(session.adminSession.accountSlotId, slotId)
+    await session.activateAdminAccount('main', 'owner-csrf')
+    assert.equal(session.adminSession.accountSlotId, 'main')
+    const activation = calls.find(call => call.url.endsWith('/accounts/activate'))
+    assert.equal(activation.options.headers['X-CSRF-Token'], 'owner-csrf')
+    assert.equal(calls.some(call => JSON.stringify(call.options.body || '').includes('viewer-password')), true)
+})
+
+test('signing out one account clears the active identity without erasing saved account slots', async t => {
+    const session = await fixture(t)
+    t.mock.method(session.browser, 'fetch', async url => String(url).endsWith('/accounts/logout')
+        ? json({ configured: true, authenticated: false, accountSlotId: 'none' })
+        : json({ ...signedIn('viewer-csrf'), accountSlotId: 'a'.repeat(24), user: { username: 'viewer_one', role: 'viewer' } }))
+    await session.unlockAdmin('viewer-password')
+    await session.logoutCurrentAdminAccount()
+    assert.equal(session.adminSession.authenticated, false)
+    assert.equal(session.adminSession.accountSlotId, 'none')
+})
+
 test('an expired-cookie lock refusal permits re-authentication without claiming success', async t => {
     const session = await fixture(t)
     t.mock.method(session.browser, 'fetch', async url => {

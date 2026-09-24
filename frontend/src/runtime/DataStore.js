@@ -1,5 +1,6 @@
 import { reactive, ref } from 'vue';
 import { API_BASE, getWebSocketUrl } from './backendEndpoint.js';
+import { adminFetch } from './adminSession.js';
 
 function getDeviceQuality(data) {
     const groups = data?.quality || {};
@@ -95,7 +96,7 @@ export function createDashboardDataStore(options = {}) {
         pendingRequests.add(controller);
         const timeout = setTimeout(() => controller.abort(), 10000);
         try {
-            const response = await fetch(url, { ...options, signal: controller.signal });
+            const response = await adminFetch(url, { ...options, signal: controller.signal });
             if (!response.ok) throw new Error(`HTTP ${response.status}`);
             return await response.json();
         } finally {
@@ -467,6 +468,9 @@ export function createDashboardDataStore(options = {}) {
             wsConnected.value = true;
             plcStatusText.value = '通信正常';
             try { socket.send(JSON.stringify({ type: 'client_hello', role: 'web', client: 'dashboard-overlay' })); } catch (e) { /* ignore */ }
+            if(options.sceneProjection===true) {
+                try {socket.send(JSON.stringify({type:'scene_projection_subscribe',enabled:true}));} catch { /* reconnect retries the subscription */ }
+            }
         };
 
         socket.onmessage = (event) => {

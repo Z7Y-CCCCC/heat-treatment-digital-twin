@@ -37,7 +37,7 @@ function handleError(res, error, status = 400) {
 router.get('/runtime-values', async (req, res) => {
     try {
         const db = await getDb();
-        const { project, scene } = await getProjectAndScene(db, String(req.query.scene_id || ''));
+        const { project, scene } = await getProjectAndScene(db, String(req.query.scene_id || ''), req.factoryId);
         const { document, release } = await loadPublishedDocument(db, project, scene);
         const values = await readRuntimeBindings(document.widgets || [], {
             viewId: String(req.query.view_id || ''),

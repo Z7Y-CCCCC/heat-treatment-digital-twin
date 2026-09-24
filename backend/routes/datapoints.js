@@ -69,6 +69,20 @@ function roleFromUsage(usage, internalName) {
     return internalName;
 }
 
+async function deviceInFactory(db, deviceId, factoryId) {
+    const device = await db.get('SELECT * FROM devices WHERE id = ?', [deviceId]);
+    if (!device) return null;
+    if (device.line_id) {
+        const owner = await db.get(`SELECT w.id FROM \`lines\` l JOIN workshops w ON w.id = l.workshop_id
+            WHERE l.id = ? AND w.factory_id = ?`, [device.line_id, factoryId]);
+        return owner ? device : null;
+    }
+    let config = {};
+    try { config = typeof device.instance_config === 'object' ? device.instance_config : JSON.parse(device.instance_config || '{}'); } catch { /* invalid legacy config */ }
+    const workshopId = config.workshop_id || config.workshopId;
+    return workshopId && await db.get('SELECT id FROM workshops WHERE id = ? AND factory_id = ?', [workshopId, factoryId]) ? device : null;
+}
+
 function parseVoiceConfig(value) {
     if (value === undefined || value === null || value === '') return { enabled: false, rules: [] };
     if (typeof value === 'object') return value || { enabled: false, rules: [] };
@@ -323,10 +337,15 @@ router.get('/', async (req, res) => {
     try {
         const db = await getDb();
         const { device_id } = req.query;
+        if (device_id && !await deviceInFactory(db, device_id, req.factoryId)) return res.json([]);
         const points = device_id
             ? await db.all('SELECT * FROM data_points WHERE device_id = ?', [device_id])
             : await db.all('SELECT * FROM data_points ORDER BY device_id');
-        res.json(points);
+        if (device_id) return res.json(points);
+        const ownedDeviceIds = new Set();
+        const devices = await db.all('SELECT id FROM devices');
+        for (const device of devices) if (await deviceInFactory(db, device.id, req.factoryId)) ownedDeviceIds.add(String(device.id));
+        res.json(points.filter(point => ownedDeviceIds.has(String(point.device_id))));
     } catch (e) {
         res.status(500).json({ error: e.message });
     }
@@ -340,7 +359,7 @@ router.post('/', async (req, res) => {
     const point = normalizePointPayload(req.body, device_id);
     try {
         const db = await getDb();
-        const device = await db.get('SELECT plc_protocol, plc_options FROM devices WHERE id = ?', [device_id]);
+        const device = await deviceInFactory(db, device_id, req.factoryId);
         if (!device) return res.status(404).json({ error: '设备不存在，无法保存点位' });
         const validationErrors = validatePointPayload(
             req.body,
@@ -393,10 +412,10 @@ router.post('/', async (req, res) => {
 router.put('/:id', async (req, res) => {
     try {
         const db = await getDb();
-        const existing = await db.get(`SELECT p.*, d.plc_protocol, d.plc_options
+        const existing = await db.get(`SELECT p.*, d.plc_protocol, d.plc_options, d.id AS owner_device_id
             FROM data_points p LEFT JOIN devices d ON d.id = p.device_id
             WHERE p.id = ?`, [req.params.id]);
-        if (!existing) return res.status(404).json({ error: '点位不存在，可能已经被删除或 ID 未正确编码' });
+        if (!existing || !await deviceInFactory(db, existing.owner_device_id || existing.device_id, req.factoryId)) return res.status(404).json({ error: '点位不存在，可能已经被删除或 ID 未正确编码' });
         const validationErrors = validatePointPayload(
             req.body,
             '点位',
@@ -412,7 +431,7 @@ router.put('/:id', async (req, res) => {
             access_type=?, db_number=?, db_byte_offset=?, bit_offset=?,
             point_kind=?, alarm_record_role=?, alarm_text=?, alarm_level=?, alarm_condition=?,
             voice_config=?, alarm_high=?, alarm_low=?
-            WHERE id=?`, [
+            WHERE id=? AND device_id=?`, [
             point.name,
             point.label,
             point.plc_tag,
@@ -438,7 +457,8 @@ router.put('/:id', async (req, res) => {
             point.voice_config,
             point.alarm_high,
             point.alarm_low,
-            req.params.id
+            req.params.id,
+            existing.device_id
         ]);
         restartDataEngineSoon('update data point');
         res.json({ success: true });
@@ -450,10 +470,10 @@ router.put('/:id', async (req, res) => {
 router.delete('/:id', async (req, res) => {
     try {
         const db = await getDb();
-        const existing = await db.get('SELECT id FROM data_points WHERE id = ?', [req.params.id]);
-        if (!existing) return res.status(404).json({ error: '点位不存在，可能已经被删除或 ID 未正确编码' });
+        const existing = await db.get('SELECT id, device_id FROM data_points WHERE id = ?', [req.params.id]);
+        if (!existing || !await deviceInFactory(db, existing.device_id, req.factoryId)) return res.status(404).json({ error: '点位不存在，可能已经被删除或 ID 未正确编码' });
 
-        await db.run('DELETE FROM data_points WHERE id = ?', [req.params.id]);
+        await db.run('DELETE FROM data_points WHERE id = ? AND device_id = ?', [req.params.id, existing.device_id]);
         restartDataEngineSoon('delete data point');
         res.json({ success: true });
     } catch (e) {
@@ -471,7 +491,7 @@ router.post('/sync', async (req, res) => {
 
     try {
         const db = await getDb();
-        const deviceConfig = await db.get('SELECT id, plc_protocol, plc_options FROM devices WHERE id = ?', [device_id]);
+        const deviceConfig = await deviceInFactory(db, device_id, req.factoryId);
         if (!deviceConfig) return res.status(404).json({ error: '设备不存在，无法保存点位配置' });
         const protocolOptions = normalizePlcOptions(deviceConfig.plc_protocol, deviceConfig.plc_options);
         const validationErrors = [];
@@ -480,7 +500,7 @@ router.post('/sync', async (req, res) => {
         });
         if (validationErrors.length) return res.status(400).json({ error: validationErrors.join('\n') });
         const result = await db.transaction(async (tx) => {
-            const device = await tx.get('SELECT id FROM devices WHERE id = ?', [device_id]);
+            const device = await deviceInFactory(tx, device_id, req.factoryId);
             if (!device) {
                 const error = new Error('设备不存在，无法保存点位配置');
                 error.statusCode = 404;
@@ -559,7 +579,7 @@ router.post('/batch', async (req, res) => {
 
     try {
         const db = await getDb();
-        const device = await db.get('SELECT id, plc_protocol, plc_options FROM devices WHERE id = ?', [device_id]);
+        const device = await deviceInFactory(db, device_id, req.factoryId);
         if (!device) return res.status(404).json({ error: '设备不存在，无法保存点位配置' });
         const protocolOptions = normalizePlcOptions(device.plc_protocol, device.plc_options);
         const validationErrors = [];

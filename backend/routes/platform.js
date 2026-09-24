@@ -69,9 +69,9 @@ function publicEvents(rows) {
     });
 }
 
-async function loadPlatformSnapshot() {
+async function loadPlatformSnapshot(factoryId) {
     const db = await getDb();
-    const projects = await db.all('SELECT * FROM projects ORDER BY is_active DESC, created_at ASC');
+    const projects = await db.all('SELECT * FROM projects WHERE factory_id = ? ORDER BY is_active DESC, created_at ASC', [factoryId]);
     const activeProject = projects.find(p => p.is_active) || projects[0] || null;
     const scenes = activeProject
         ? await db.all('SELECT * FROM scenes WHERE project_id = ? ORDER BY is_active DESC, sort_order ASC', [activeProject.id])
@@ -94,8 +94,8 @@ async function loadPlatformSnapshot() {
     const assets = await db.all('SELECT * FROM models ORDER BY created_at DESC');
     const deviceTemplates = await db.all('SELECT * FROM device_templates ORDER BY created_at ASC');
     const datapointTemplates = await db.all('SELECT * FROM datapoint_templates ORDER BY device_template_id, sort_order ASC');
-    const recentEvents = publicEvents(await db.all('SELECT * FROM event_logs ORDER BY occurred_at DESC, id DESC LIMIT 20'));
-    const latestMetrics = await db.get('SELECT * FROM metric_snapshots ORDER BY snapshot_time DESC, id DESC LIMIT 1');
+    const recentEvents = publicEvents(await db.all('SELECT * FROM event_logs WHERE factory_id = ? ORDER BY occurred_at DESC, id DESC LIMIT 20', [factoryId]));
+    const latestMetrics = await db.get('SELECT * FROM metric_snapshots WHERE factory_id = ? ORDER BY snapshot_time DESC, id DESC LIMIT 1', [factoryId]);
 
     return {
         projects,
@@ -145,7 +145,7 @@ async function loadPlatformSnapshot() {
 
 router.get('/', async (req, res) => {
     try {
-        res.json(await loadPlatformSnapshot());
+        res.json(await loadPlatformSnapshot(req.factoryId));
     } catch (e) {
         res.status(500).json({ error: e.message });
     }
@@ -153,7 +153,7 @@ router.get('/', async (req, res) => {
 
 router.get('/designer', async (req, res) => {
     try {
-        res.json(await loadDesignerState(await getDb(), String(req.query.scene_id || '')));
+        res.json(await loadDesignerState(await getDb(), String(req.query.scene_id || ''), req.factoryId));
     } catch (e) {
         res.status(500).json({ error: e.message });
     }
@@ -164,7 +164,8 @@ router.put('/designer/draft', async (req, res) => {
         const result = await saveDraft(await getDb(), {
             sceneId: req.body?.sceneId || req.body?.scene_id,
             document: req.body?.document,
-            expectedRevision: req.body?.expectedRevision ?? req.body?.expected_revision
+            expectedRevision: req.body?.expectedRevision ?? req.body?.expected_revision,
+            factoryId: req.factoryId
         });
         res.json({ success: true, document: result.document, revision: result.revision });
     } catch (e) {
@@ -177,7 +178,8 @@ router.post('/releases', async (req, res) => {
         const result = await publishDraft(await getDb(), {
             sceneId: req.body?.sceneId || req.body?.scene_id,
             version: req.body?.version,
-            notes: req.body?.notes
+            notes: req.body?.notes,
+            factoryId: req.factoryId
         });
         global.wsServer?.broadcast?.('dashboard_release_changed', {
             releaseId: result.release.id,
@@ -193,7 +195,7 @@ router.post('/releases', async (req, res) => {
 
 router.post('/releases/:id/activate', async (req, res) => {
     try {
-        const result = await activateRelease(await getDb(), req.params.id);
+        const result = await activateRelease(await getDb(), req.params.id, req.factoryId);
         global.wsServer?.broadcast?.('dashboard_release_changed', {
             releaseId: result.release.id,
             version: result.release.version,
@@ -208,7 +210,7 @@ router.post('/releases/:id/activate', async (req, res) => {
 
 router.post('/scenes/:id/activate-latest-release', async (req, res) => {
     try {
-        const result = await activateLatestSceneRelease(await getDb(), req.params.id);
+        const result = await activateLatestSceneRelease(await getDb(), req.params.id, req.factoryId);
         global.wsServer?.broadcast?.('dashboard_release_changed', {
             releaseId: result.release.id,
             version: result.release.version,
@@ -223,7 +225,7 @@ router.post('/scenes/:id/activate-latest-release', async (req, res) => {
 
 router.delete('/releases/:id', async (req, res) => {
     try {
-        res.json(await deleteRelease(await getDb(), req.params.id));
+        res.json(await deleteRelease(await getDb(), req.params.id, req.factoryId));
     } catch (e) {
         res.status(400).json({ error: e.message });
     }
@@ -233,7 +235,8 @@ router.put('/scenes/:id', async (req, res) => {
     const { name, scene_type, layout, camera, theme, is_active, sort_order } = req.body;
     try {
         const db = await getDb();
-        const scene = await db.get('SELECT * FROM scenes WHERE id = ?', [req.params.id]);
+        const scene = await db.get(`SELECT s.* FROM scenes s JOIN projects p ON p.id = s.project_id
+            WHERE s.id = ? AND p.factory_id = ?`, [req.params.id, req.factoryId]);
         if (!scene) return res.status(404).json({ error: '场景不存在' });
 
         await db.transaction(async (tx) => {
@@ -272,7 +275,8 @@ router.put('/scenes/:id', async (req, res) => {
         await saveDraft(db, {
             sceneId: updatedScene.id,
             document: draft,
-            expectedRevision: Number(updatedScene.draft_revision || 0)
+            expectedRevision: Number(updatedScene.draft_revision || 0),
+            factoryId: req.factoryId
         });
         res.json({ success: true });
     } catch (e) {
@@ -286,7 +290,8 @@ router.put('/widgets/:id', async (req, res) => {
     } = req.body;
     try {
         const db = await getDb();
-        const widget = await db.get('SELECT * FROM widgets WHERE id = ?', [req.params.id]);
+        const widget = await db.get(`SELECT w.* FROM widgets w JOIN scenes s ON s.id = w.scene_id
+            JOIN projects p ON p.id = s.project_id WHERE w.id = ? AND p.factory_id = ?`, [req.params.id, req.factoryId]);
         if (!widget) return res.status(404).json({ error: '组件不存在' });
 
         await db.run(`UPDATE widgets SET
@@ -324,7 +329,8 @@ router.post('/widgets', async (req, res) => {
 
     try {
         const db = await getDb();
-        const scene = await db.get('SELECT * FROM scenes WHERE id = ?', [scene_id]);
+        const scene = await db.get(`SELECT s.* FROM scenes s JOIN projects p ON p.id = s.project_id
+            WHERE s.id = ? AND p.factory_id = ?`, [scene_id, req.factoryId]);
         if (!scene) return res.status(404).json({ error: '场景不存在' });
 
         await db.run(`INSERT INTO widgets (
@@ -354,7 +360,8 @@ router.post('/widgets', async (req, res) => {
 router.delete('/widgets/:id', async (req, res) => {
     try {
         const db = await getDb();
-        const widget = await db.get('SELECT id, scene_id FROM widgets WHERE id = ?', [req.params.id]);
+        const widget = await db.get(`SELECT w.id, w.scene_id FROM widgets w JOIN scenes s ON s.id = w.scene_id
+            JOIN projects p ON p.id = s.project_id WHERE w.id = ? AND p.factory_id = ?`, [req.params.id, req.factoryId]);
         if (!widget) return res.status(404).json({ error: '组件不存在，可能已经被删除或 ID 未正确编码' });
 
         await db.run('DELETE FROM widgets WHERE id = ?', [req.params.id]);
@@ -383,8 +390,9 @@ router.post('/events', async (req, res) => {
     try {
         const db = await getDb();
         const result = await db.run(`INSERT INTO event_logs (
-            event_type, level, source_id, title, message, value, quality
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)`, [
+            factory_id, event_type, level, source_id, title, message, value, quality
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, [
+            req.factoryId,
             event_type || 'manual',
             level || 'info',
             source_id || '',
@@ -407,8 +415,8 @@ router.get('/events', async (req, res) => {
         const eventType = String(req.query.event_type || req.query.eventType || '').trim();
         const level = String(req.query.level || '').trim();
 
-        const where = [];
-        const params = [];
+        const where = ['factory_id = ?'];
+        const params = [req.factoryId];
         if (windowHours > 0) {
             where.push('occurred_at >= ?');
             params.push(formatSqlDateTime(new Date(Date.now() - windowHours * 3600000)));
@@ -433,7 +441,7 @@ router.get('/events', async (req, res) => {
 router.get('/metrics/latest', async (req, res) => {
     try {
         const db = await getDb();
-        const metrics = await db.get('SELECT * FROM metric_snapshots ORDER BY snapshot_time DESC, id DESC LIMIT 1');
+        const metrics = await db.get('SELECT * FROM metric_snapshots WHERE factory_id = ? ORDER BY snapshot_time DESC, id DESC LIMIT 1', [req.factoryId]);
         res.json(metrics || {});
     } catch (e) {
         res.status(500).json({ error: e.message });

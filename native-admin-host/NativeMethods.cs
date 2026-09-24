@@ -181,6 +181,9 @@ internal static class NativeMethods
     internal static extern uint GetDpiForWindow(IntPtr handle);
 
     [DllImport("dwmapi.dll", PreserveSig = true)]
+    internal static extern int DwmFlush();
+
+    [DllImport("dwmapi.dll", PreserveSig = true)]
     internal static extern int DwmSetWindowAttribute(
         IntPtr handle,
         int attribute,

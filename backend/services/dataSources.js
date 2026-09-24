@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const zlib = require('zlib');
 const crypto = require('crypto');
+const { AsyncLocalStorage } = require('async_hooks');
 const { validateHeaderName, validateHeaderValue } = require('http');
 const { Readable } = require('stream');
 const { pipeline } = require('stream/promises');
@@ -16,6 +17,7 @@ const DATA_DIR = process.env.APP_DATA_DIR
     ? path.resolve(process.env.APP_DATA_DIR)
     : path.join(__dirname, '..', 'data');
 const CONFIG_PATH = path.join(DATA_DIR, 'data-sources.json');
+const factoryScope = new AsyncLocalStorage();
 const BACKUP_ROOT = path.resolve(process.env.DATA_SOURCE_BACKUP_DIR || path.join(DATA_DIR, 'data-source-backups'));
 const PRIMARY_ID = 'primary';
 const MASKED_PASSWORD = '******';
@@ -46,6 +48,7 @@ let sqliteDriver;
 let maintenanceTimer = null;
 let startupBackupHandle = null;
 let maintenanceStarted = false;
+let maintenanceFactoryId = 'factory_default';
 let backupPromise = null;
 const activeConnectionBackups = new Map();
 let lastBackupRun = null;
@@ -218,15 +221,31 @@ function normalizeBackupConfig(source = {}) {
     };
 }
 
+function activeFactoryId(value = '') {
+    return safeId(value || factoryScope.getStore() || 'factory_default', 'factory_default');
+}
+
+function withFactoryScope(factoryId, callback) {
+    return factoryScope.run(activeFactoryId(factoryId), callback);
+}
+
+function configPathForFactory(factoryId = activeFactoryId()) {
+    const id = activeFactoryId(factoryId);
+    return id === 'factory_default'
+        ? CONFIG_PATH
+        : path.join(DATA_DIR, `data-sources.${id}.json`);
+}
+
 function defaultConfig() {
     return { version: 1, connections: [], backup: { ...DEFAULT_BACKUP_CONFIG } };
 }
 
-function loadStoredConfig() {
+function loadStoredConfig(factoryId = activeFactoryId()) {
+    const filename = configPathForFactory(factoryId);
     ensureDirectory(DATA_DIR);
-    if (!fs.existsSync(CONFIG_PATH)) return defaultConfig();
+    if (!fs.existsSync(filename)) return defaultConfig();
     try {
-        const raw = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+        const raw = JSON.parse(fs.readFileSync(filename, 'utf8'));
         const connections = Array.isArray(raw.connections)
             ? raw.connections.map(item => normalizeConnection(item, item)).filter(item => item.id && item.id !== PRIMARY_ID)
             : [];
@@ -240,11 +259,12 @@ function loadStoredConfig() {
     }
 }
 
-function saveStoredConfig(config) {
+function saveStoredConfig(config, factoryId = activeFactoryId()) {
+    const filename = configPathForFactory(factoryId);
     ensureDirectory(DATA_DIR);
-    const temporary = `${CONFIG_PATH}.${process.pid}.tmp`;
+    const temporary = `${filename}.${process.pid}.tmp`;
     fs.writeFileSync(temporary, JSON.stringify(config, null, 2), { encoding: 'utf8', mode: 0o600 });
-    fs.renameSync(temporary, CONFIG_PATH);
+    fs.renameSync(temporary, filename);
 }
 
 function publicConnection(connection, extra = {}) {
@@ -290,18 +310,18 @@ function primaryConnection() {
     };
 }
 
-function listDataSources() {
-    const stored = loadStoredConfig();
+function listDataSources(factoryId = activeFactoryId()) {
+    const stored = loadStoredConfig(factoryId);
     return {
         connections: [publicConnection(primaryConnection(), { primary: true }), ...stored.connections.map(item => publicConnection(item))],
         backup: stored.backup
     };
 }
 
-function resolveConnection(id) {
+function resolveConnection(id, factoryId = activeFactoryId()) {
     const normalizedId = safeId(id);
     if (normalizedId === PRIMARY_ID) return primaryConnection();
-    const connection = loadStoredConfig().connections.find(item => item.id === normalizedId);
+    const connection = loadStoredConfig(factoryId).connections.find(item => item.id === normalizedId);
     if (!connection) throw new Error('数据源连接不存在');
     if (!connection.enabled) throw new Error('数据源连接已停用');
     return connection;
@@ -352,8 +372,9 @@ function issueHealthToken(connection, health) {
     return token;
 }
 
-function saveDataSource(input = {}) {
-    const stored = loadStoredConfig();
+function saveDataSource(input = {}, factoryId = activeFactoryId()) {
+    factoryId = activeFactoryId(factoryId);
+    const stored = loadStoredConfig(factoryId);
     const requestedId = safeId(input.id, `source_${crypto.randomUUID()}`);
     if (requestedId === PRIMARY_ID) throw new Error('主业务数据库请在上方专用区域修改');
     const index = stored.connections.findIndex(item => item.id === requestedId);
@@ -375,28 +396,29 @@ function saveDataSource(input = {}) {
     if (index >= 0) stored.connections[index] = next;
     else stored.connections.push(next);
     if (isHttpApiSource(next)) stored.backup.selectedConnectionIds = stored.backup.selectedConnectionIds.filter(id => id !== requestedId);
-    saveStoredConfig(stored);
+    saveStoredConfig(stored, factoryId);
     runtimeCache.clear();
     return publicConnection(next);
 }
 
-function deleteDataSource(id) {
+function deleteDataSource(id, factoryId = activeFactoryId()) {
     const normalizedId = safeId(id);
     if (!normalizedId || normalizedId === PRIMARY_ID) throw new Error('主业务数据库不能在这里删除');
-    const stored = loadStoredConfig();
+    factoryId = activeFactoryId(factoryId);
+    const stored = loadStoredConfig(factoryId);
     const before = stored.connections.length;
     stored.connections = stored.connections.filter(item => item.id !== normalizedId);
     if (stored.connections.length === before) throw new Error('数据源连接不存在');
     stored.backup.selectedConnectionIds = stored.backup.selectedConnectionIds.filter(item => item !== normalizedId);
-    saveStoredConfig(stored);
-    latestHealthChecks.delete(normalizedId);
+    saveStoredConfig(stored, factoryId);
+    latestHealthChecks.delete(`${factoryId}:${normalizedId}`);
     runtimeCache.clear();
     return { success: true };
 }
 
-function resolveInputConnection(input = {}) {
+function resolveInputConnection(input = {}, factoryId = activeFactoryId()) {
     const id = safeId(input.id);
-    const current = id === PRIMARY_ID ? primaryConnection() : (id ? loadStoredConfig().connections.find(item => item.id === id) : null);
+    const current = id === PRIMARY_ID ? primaryConnection() : (id ? loadStoredConfig(factoryId).connections.find(item => item.id === id) : null);
     // Manual tests may check a disabled connection, but never lose its masked credentials.
     if (current) return normalizeConnection({ ...input, id }, current);
     if (id && !input.sourceType && !input.type && !input.dbType) throw new Error('数据源连接不存在');
@@ -500,17 +522,18 @@ async function testHttpApiSource(connection, checkedAt) {
     return health;
 }
 
-function persistHealth(connection, health, checkId) {
+function persistHealth(connection, health, checkId, factoryId = activeFactoryId()) {
     const normalizedId = safeId(connection.id);
-    if (!normalizedId || normalizedId === PRIMARY_ID || latestHealthChecks.get(normalizedId) !== checkId) return null;
-    const stored = loadStoredConfig();
+    const checkKey = `${activeFactoryId(factoryId)}:${normalizedId}`;
+    if (!normalizedId || normalizedId === PRIMARY_ID || latestHealthChecks.get(checkKey) !== checkId) return null;
+    const stored = loadStoredConfig(factoryId);
     const index = stored.connections.findIndex(item => item.id === normalizedId);
     if (index < 0) return null;
     const current = stored.connections[index];
     if (current.configRevision !== connection.configRevision || current.createdAt !== connection.createdAt
         || connectionFingerprint(current) !== connectionFingerprint(connection)) return null;
     stored.connections[index] = { ...current, health: normalizeHealth(health) };
-    saveStoredConfig(stored);
+    saveStoredConfig(stored, factoryId);
     return stored.connections[index];
 }
 
@@ -617,7 +640,7 @@ async function executeRows(handle, sql, params = []) {
  * Keep this guard at the shared connector boundary so future business-data
  * adapters cannot accidentally introduce INSERT/UPDATE/DELETE statements.
  */
-async function executeReadOnlyQuery(connectionId, sql, params = []) {
+async function executeReadOnlyQuery(connectionId, sql, params = [], factoryId = activeFactoryId()) {
     const statement = String(sql || '').trim();
     if (!statement) throw new Error('只读查询不能为空');
     if (!/^(select|with)\b/i.test(statement)) throw new Error('外部业务数据只允许 SELECT 查询');
@@ -625,15 +648,17 @@ async function executeReadOnlyQuery(connectionId, sql, params = []) {
     if (/\b(insert|update|delete|drop|alter|create|truncate|replace|grant|revoke|call|set)\b/i.test(statement)) {
         throw new Error('只读查询包含被禁止的写入或管理关键字');
     }
-    const connection = resolveConnection(connectionId);
+    const connection = resolveConnection(connectionId, factoryId);
     return withConnection(connection, handle => executeRows(handle, statement, params));
 }
 
-async function testDataSource(input = {}) {
-    const connection = resolveInputConnection(input);
+async function testDataSource(input = {}, factoryId = activeFactoryId()) {
+    factoryId = activeFactoryId(factoryId);
+    const connection = resolveInputConnection(input, factoryId);
     const checkId = crypto.randomUUID();
     const persistedId = input.id ? safeId(input.id) : '';
-    if (persistedId) latestHealthChecks.set(persistedId, checkId);
+    const checkKey = `${factoryId}:${persistedId}`;
+    if (persistedId) latestHealthChecks.set(checkKey, checkId);
     lastHealthCheckTime = Math.max(Date.now(), lastHealthCheckTime + 1);
     const checkedAt = new Date(lastHealthCheckTime).toISOString();
     const startedAt = Date.now();
@@ -671,7 +696,7 @@ async function testDataSource(input = {}) {
                 };
             }
         }
-        if (persistedId) persistHealth(connection, health, checkId);
+        if (persistedId) persistHealth(connection, health, checkId, factoryId);
         return {
             success: health.status === 'healthy',
             health,
@@ -681,12 +706,12 @@ async function testDataSource(input = {}) {
             error: health.status === 'healthy' ? undefined : health.message
         };
     } finally {
-        if (latestHealthChecks.get(persistedId) === checkId) latestHealthChecks.delete(persistedId);
+        if (latestHealthChecks.get(checkKey) === checkId) latestHealthChecks.delete(checkKey);
     }
 }
 
-async function listTables(id) {
-    const connection = resolveConnection(id);
+async function listTables(id, factoryId = activeFactoryId()) {
+    const connection = resolveConnection(id, factoryId);
     return withConnection(connection, async handle => {
         let rows;
         if (handle.type === 'sqlite') {
@@ -710,8 +735,8 @@ async function listTables(id) {
     });
 }
 
-async function listColumns(id, schema, table) {
-    const connection = resolveConnection(id);
+async function listColumns(id, schema, table, factoryId = activeFactoryId()) {
+    const connection = resolveConnection(id, factoryId);
     const tableName = shortText(table, '', 255);
     if (!tableName) throw new Error('请选择数据库表');
     return withConnection(connection, async handle => {
@@ -895,7 +920,7 @@ async function queryCompositeBinding(source = {}, context = {}) {
     const composite = normalizeCompositeBinding(source);
     if (!composite.datasets.length) throw new Error('请至少添加一个数据项');
     const results = await Promise.all(composite.datasets.map(binding => {
-        const connection = resolveConnection(binding.connectionId);
+        const connection = resolveConnection(binding.connectionId, context.factoryId);
         return withConnection(connection, handle => queryBindingWithHandle(handle, binding, context));
     }));
     return composeBindingResult(composite, results);
@@ -905,8 +930,8 @@ async function previewBinding(source = {}) {
     return queryCompositeBinding(source, source.context || {});
 }
 
-function cacheKey(binding) {
-    return JSON.stringify(binding);
+function cacheKey(binding, factoryId = activeFactoryId()) {
+    return JSON.stringify({ factoryId: activeFactoryId(factoryId), binding });
 }
 
 async function readRuntimeBindings(widgets = [], context = {}) {
@@ -918,7 +943,7 @@ async function readRuntimeBindings(widgets = [], context = {}) {
     const now = Date.now();
     const pending = [];
     targets.forEach(target => {
-        const key = cacheKey({ binding: target.binding, context });
+        const key = cacheKey({ binding: target.binding, context }, activeFactoryId(context.factoryId));
         const cached = runtimeCache.get(key);
         if (cached && cached.expiresAt > now) {
             values[target.widgetId] = cached.value;
@@ -935,7 +960,7 @@ async function readRuntimeBindings(widgets = [], context = {}) {
 
     await Promise.all([...jobsByConnection.entries()].map(async ([connectionId, jobs]) => {
         try {
-            const connection = resolveConnection(connectionId);
+            const connection = resolveConnection(connectionId, context.factoryId);
             await withConnection(connection, async handle => {
                 for (const job of jobs) {
                     try {
@@ -966,8 +991,9 @@ async function readRuntimeBindings(widgets = [], context = {}) {
     return values;
 }
 
-function saveBackupConfig(input = {}) {
-    const stored = loadStoredConfig();
+function saveBackupConfig(input = {}, factoryId = activeFactoryId()) {
+    factoryId = activeFactoryId(factoryId);
+    const stored = loadStoredConfig(factoryId);
     const validIds = new Set([
         PRIMARY_ID,
         ...stored.connections.filter(item => !isHttpApiSource(item)).map(item => item.id)
@@ -975,7 +1001,7 @@ function saveBackupConfig(input = {}) {
     const next = normalizeBackupConfig(input);
     next.selectedConnectionIds = next.selectedConnectionIds.filter(id => validIds.has(id));
     stored.backup = next;
-    saveStoredConfig(stored);
+    saveStoredConfig(stored, factoryId);
     restartMaintenanceTimer();
     return next;
 }
@@ -984,14 +1010,17 @@ function timestampToken(date = new Date()) {
     return date.toISOString().replace(/[-:]/g, '').replace('T', '-').replace(/\.\d{3}Z$/, 'Z');
 }
 
-function backupDirectory(connectionId) {
-    const directory = path.join(BACKUP_ROOT, safeId(connectionId, 'unknown'));
+function backupDirectory(connectionId, factoryId = activeFactoryId()) {
+    const scope = activeFactoryId(factoryId);
+    const directory = scope === 'factory_default'
+        ? path.join(BACKUP_ROOT, safeId(connectionId, 'unknown'))
+        : path.join(BACKUP_ROOT, scope, safeId(connectionId, 'unknown'));
     ensureDirectory(directory);
     return directory;
 }
 
-function listConnectionBackups(connectionId) {
-    const directory = backupDirectory(connectionId);
+function listConnectionBackups(connectionId, factoryId = activeFactoryId()) {
+    const directory = backupDirectory(connectionId, factoryId);
     return fs.readdirSync(directory, { withFileTypes: true })
         .filter(entry => entry.isFile() && /\.(sql|json|db)\.gz$/i.test(entry.name))
         .map(entry => {
@@ -1002,9 +1031,9 @@ function listConnectionBackups(connectionId) {
         .sort((left, right) => new Date(right.createdAt) - new Date(left.createdAt));
 }
 
-function pruneConnectionBackups(connectionId, retention) {
-    const directory = backupDirectory(connectionId);
-    listConnectionBackups(connectionId).slice(retention).forEach(item => {
+function pruneConnectionBackups(connectionId, retention, factoryId = activeFactoryId()) {
+    const directory = backupDirectory(connectionId, factoryId);
+    listConnectionBackups(connectionId, factoryId).slice(retention).forEach(item => {
         fs.rmSync(path.join(directory, item.filename), { force: true });
     });
 }
@@ -1068,9 +1097,9 @@ async function listTablesWithHandle(handle) {
     return rows.map(row => ({ schema: String(row.table_schema || ''), name: String(row.table_name || '') }));
 }
 
-async function createExternalBackup(connection, reason) {
+async function createExternalBackup(connection, reason, factoryId = activeFactoryId()) {
     if (isHttpApiSource(connection)) throw new Error('HTTP API 数据源不参与数据库备份');
-    const directory = backupDirectory(connection.id);
+    const directory = backupDirectory(connection.id, factoryId);
     const type = normalizeType(connection.type);
     const mysqlDumpAvailable = type === 'mysql' && resolveMysqlTools().available;
     const extension = type === 'mysql' && mysqlDumpAvailable ? '.sql.gz' : (type === 'sqlite' ? '.db.gz' : '.json.gz');
@@ -1101,41 +1130,44 @@ async function createExternalBackup(connection, reason) {
             await genericCompressedBackup(connection, temporary);
         }
         fs.renameSync(temporary, destination);
-        pruneConnectionBackups(connection.id, loadStoredConfig().backup.retention);
+        pruneConnectionBackups(connection.id, loadStoredConfig(factoryId).backup.retention, factoryId);
         return { connectionId: connection.id, connectionName: connection.name, filename, size: fs.statSync(destination).size, createdAt: new Date().toISOString(), reason };
     } finally {
         fs.rmSync(temporary, { force: true });
     }
 }
 
-async function createConnectionBackup(connectionId, reason = 'manual') {
+async function createConnectionBackup(connectionId, reason = 'manual', factoryId = activeFactoryId()) {
+    factoryId = activeFactoryId(factoryId);
     const id = safeId(connectionId);
-    const connection = id === PRIMARY_ID ? null : resolveConnection(id);
+    const connection = id === PRIMARY_ID ? null : resolveConnection(id, factoryId);
     if (isHttpApiSource(connection)) throw new Error('HTTP API 数据源不参与数据库备份');
-    if (activeConnectionBackups.has(id)) return activeConnectionBackups.get(id);
+    const backupKey = `${factoryId}:${id}`;
+    if (activeConnectionBackups.has(backupKey)) return activeConnectionBackups.get(backupKey);
     const pending = (async () => {
         if (id === PRIMARY_ID) {
             const backup = await createDatabaseBackup(reason);
             return { ...backup, connectionId: PRIMARY_ID, connectionName: '主业务数据库' };
         }
-        return createExternalBackup(connection, reason);
+        return createExternalBackup(connection, reason, factoryId);
     })();
-    activeConnectionBackups.set(id, pending);
+    activeConnectionBackups.set(backupKey, pending);
     try {
         return await pending;
     } finally {
-        if (activeConnectionBackups.get(id) === pending) activeConnectionBackups.delete(id);
+        if (activeConnectionBackups.get(backupKey) === pending) activeConnectionBackups.delete(backupKey);
     }
 }
 
-async function runSelectedBackups(reason = 'scheduled') {
+async function runSelectedBackups(reason = 'scheduled', factoryId = maintenanceFactoryId) {
+    factoryId = activeFactoryId(factoryId);
     if (backupPromise) return backupPromise;
-    const config = loadStoredConfig();
+    const config = loadStoredConfig(factoryId);
     backupPromise = (async () => {
         const results = [];
         for (const connectionId of config.backup.selectedConnectionIds) {
             try {
-                results.push({ success: true, backup: await createConnectionBackup(connectionId, reason) });
+                results.push({ success: true, backup: await createConnectionBackup(connectionId, reason, factoryId) });
             } catch (error) {
                 results.push({ success: false, connectionId, error: error.message });
             }
@@ -1153,33 +1185,35 @@ function restartMaintenanceTimer() {
     if (maintenanceTimer) clearInterval(maintenanceTimer);
     maintenanceTimer = null;
     if (!maintenanceStarted) return;
-    const backup = loadStoredConfig().backup;
+    const backup = loadStoredConfig(maintenanceFactoryId).backup;
     if (!backup.scheduledEnabled) return;
     maintenanceTimer = setInterval(() => {
-        runSelectedBackups('scheduled').catch(error => console.error('[DataSources] 定时备份失败:', error.message));
+        runSelectedBackups('scheduled', maintenanceFactoryId).catch(error => console.error('[DataSources] 定时备份失败:', error.message));
     }, backup.intervalHours * 60 * 60 * 1000);
     maintenanceTimer.unref?.();
 }
 
-function startDataSourceMaintenance() {
+function startDataSourceMaintenance(factoryId = 'factory_default') {
+    maintenanceFactoryId = activeFactoryId(factoryId);
     maintenanceStarted = true;
     if (startupBackupHandle) clearImmediate(startupBackupHandle);
     startupBackupHandle = null;
     restartMaintenanceTimer();
-    const backup = loadStoredConfig().backup;
+    const backup = loadStoredConfig(maintenanceFactoryId).backup;
     if (backup.startupEnabled) {
         startupBackupHandle = setImmediate(() => {
             startupBackupHandle = null;
-            if (maintenanceStarted) runSelectedBackups('startup').catch(error => console.error('[DataSources] 启动备份失败:', error.message));
+            if (maintenanceStarted) runSelectedBackups('startup', maintenanceFactoryId).catch(error => console.error('[DataSources] 启动备份失败:', error.message));
         });
     }
     return getBackupStatus();
 }
 
-function reloadDataSourceConfiguration() {
+function reloadDataSourceConfiguration(factoryId = maintenanceFactoryId) {
+    maintenanceFactoryId = activeFactoryId(factoryId);
     runtimeCache.clear();
     restartMaintenanceTimer();
-    return listDataSources();
+    return listDataSources(maintenanceFactoryId);
 }
 
 async function stopDataSourceMaintenance(options = {}) {
@@ -1190,15 +1224,16 @@ async function stopDataSourceMaintenance(options = {}) {
     maintenanceTimer = null;
     if (backupPromise) await backupPromise;
     await Promise.allSettled([...activeConnectionBackups.values()]);
-    const backup = loadStoredConfig().backup;
+    const backup = loadStoredConfig(maintenanceFactoryId).backup;
     if (options.backup === true && backup.shutdownEnabled) {
-        return runSelectedBackups(options.reason || 'shutdown');
+        return runSelectedBackups(options.reason || 'shutdown', maintenanceFactoryId);
     }
     return [];
 }
 
-function getBackupStatus() {
-    const stored = loadStoredConfig();
+function getBackupStatus(factoryId = activeFactoryId()) {
+    factoryId = activeFactoryId(factoryId);
+    const stored = loadStoredConfig(factoryId);
     return {
         ...stored.backup,
         running: !!backupPromise,
@@ -1209,7 +1244,7 @@ function getBackupStatus() {
             name: connection.name,
             type: normalizeType(connection.type),
             selected: stored.backup.selectedConnectionIds.includes(connection.id),
-            backups: connection.id === PRIMARY_ID ? [] : listConnectionBackups(connection.id).slice(0, 5)
+            backups: connection.id === PRIMARY_ID ? [] : listConnectionBackups(connection.id, factoryId).slice(0, 5)
         }))
     };
 }
@@ -1233,5 +1268,6 @@ module.exports = {
     saveDataSource,
     startDataSourceMaintenance,
     stopDataSourceMaintenance,
-    testDataSource
+    testDataSource,
+    withFactoryScope
 };

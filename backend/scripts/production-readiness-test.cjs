@@ -1,6 +1,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const crypto = require('crypto');
 const {
     BACKEND_DIR,
     createTestDatabase,
@@ -13,6 +14,7 @@ const {
 } = require('./integration-test-utils.cjs');
 
 const SHUTDOWN_TOKEN = `production-readiness-${process.pid}-${Date.now()}`;
+const ADMIN_API_TOKEN = crypto.randomBytes(32).toString('hex');
 let backend = null;
 let origin = null;
 
@@ -72,6 +74,7 @@ async function main() {
                 HOST: '0.0.0.0',
                 PORT: String(port),
                 APP_DATA_DIR: dataDir,
+                ADMIN_API_TOKEN,
                 FRONTEND_DIST: path.resolve(BACKEND_DIR, '..', 'frontend', 'dist'),
                 ENABLE_CORS: 'true',
                 DB_BACKUP_INTERVAL_MS: String(24 * 60 * 60 * 1000),
@@ -87,7 +90,9 @@ async function main() {
         const license = await fetchResult(`${origin}/api/license`);
         const licenseContract = await fetchResult(`${origin}/api/license/contract`);
         const release = await fetchResult(`${origin}/api/release`);
-        const acceptance = await fetchResult(`${origin}/api/acceptance-report`);
+        const acceptance = await fetchResult(`${origin}/api/acceptance-report`, {
+            headers: { 'X-Admin-Token': ADMIN_API_TOKEN }
+        });
         const headers = health.response.headers;
         const disallowedCors = await fetchResult(`${origin}/api/health`, {
             headers: { Origin: 'https://attacker.invalid' }

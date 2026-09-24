@@ -49,7 +49,8 @@ function fixture(t) {
     const renderer = createRenderer({
         createElement: type => node(type), createText: text => node('#text', text), createComment: text => node('#comment', text),
         setText: (element, text) => { element.text = text }, setElementText: (element, text) => { element.text = text; element.children = [] },
-        parentNode: element => element.parent, nextSibling: () => null,
+        parentNode: element => element.parent,
+        nextSibling: element => element.parent?.children[element.parent.children.indexOf(element) + 1] || null,
         patchProp: (element, key, _previous, value) => { element.props[key] = value },
         insert(element, parent, anchor = null) {
             if (element.parent) element.parent.children = element.parent.children.filter(child => child !== element)
@@ -59,8 +60,8 @@ function fixture(t) {
             else parent.children.splice(index, 0, element)
         },
         remove(element) {
-            if (element.parent) element.parent.children = element.parent.children.filter(child => child !== element)
-            element.parent = null
+            if (element?.parent) element.parent.children = element.parent.children.filter(child => child !== element)
+            if (element) element.parent = null
         }
     })
     const root = node('root')
@@ -73,6 +74,55 @@ function fixture(t) {
 
 const textContent = root => [root.text, ...root.children.map(textContent)].join(' ')
 const findNode = (root, match) => match(root) ? root : root.children.map(child => findNode(child, match)).find(Boolean)
+
+test('HUD module ring preserves missing readings and clamps only its graphic', async t => {
+    const view = fixture(t)
+    const widget = { type: 'hud_kpi_panel', title: '生产运行参数', content: { chartPath: 'metrics.overall_oee', items: [] } }
+    await view.render({ widget, overlayMode: true, metrics: {} })
+    assert.match(textContent(view.root), /—/)
+    await view.render({ widget, overlayMode: true, metrics: { overall_oee: 0 } })
+    assert.equal(findNode(view.root, e => e.props.class === 'ring-progress').props['stroke-dasharray'], '0 100')
+    await view.render({ widget, overlayMode: true, metrics: { overall_oee: 135 } })
+    assert.equal(findNode(view.root, e => e.props.class === 'ring-progress').props['stroke-dasharray'], '100 100')
+    assert.match(textContent(view.root), /135/)
+})
+
+test('HUD device module emits the existing device action and distinguishes stale/offline states', async t => {
+    const view = fixture(t)
+    const actions = []
+    await view.render({ widget: { type: 'hud_device_status', content: { limit: 1 } }, overlayMode: true,
+        deviceStatusMap: { first: { name: '设备一', online: true, running: true, quality: 'stale' }, second: { name: '设备二', online: false } },
+        onAction: action => actions.push(action) })
+    assert.match(textContent(view.root), /数据延迟/)
+    assert.doesNotMatch(textContent(view.root), /运行中/)
+    const button = findNode(view.root, e => e.type === 'button')
+    button.props.onClick({ stopPropagation() {} })
+    assert.deepEqual(actions[0].event, { action: 'enter_device', deviceId: 'first' })
+    assert.match(textContent(view.root), /\/ 2/)
+})
+
+test('HUD alarm module keeps an honest empty state and normalizes event severity', async t => {
+    const view = fixture(t)
+    const widget = { type: 'hud_alarm_panel', content: { limit: 3 } }
+    await view.render({ widget, overlayMode: true, events: [] })
+    assert.match(textContent(view.root), /暂无事件记录/)
+    await view.render({ widget, overlayMode: true, events: [{ id: 1, level: 'CRITICAL', occurred_at: '2026-09-17T14:32:08', message: '温度异常' }] })
+    assert.match(textContent(view.root), /14:32:08/)
+    assert.match(textContent(view.root), /温度异常/)
+    assert.equal(findNode(view.root, e => e.type === 'li').props.class, 'critical')
+})
+
+test('HUD chart dock reads the same samples and preserves zero/missing samples', async t => {
+    const view = fixture(t)
+    await view.render({ overlayMode: true, preview: true, widget: { type: 'hud_chart_dock', content: { chartType: 'area' } },
+        trendPoints: [{ time: '10:00', value: 0 }, { time: '10:01', value: 42 }, { time: '10:02', value: null }] })
+    const chart = charts.at(-1).options.at(-1)[0]
+    assert.deepEqual(chart.series[0].data, [0, 42, null])
+    assert.equal(chart.yAxis.scale, true)
+    assert.equal(chart.animationDurationUpdate, 450)
+    assert.equal(chart.animation, true)
+    assert.match(textContent(view.root), /42/)
+})
 
 test('HUD KPIs keep the live value and unit in separate typography elements', async t => {
     const view = fixture(t)

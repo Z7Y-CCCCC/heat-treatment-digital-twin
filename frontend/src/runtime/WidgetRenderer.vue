@@ -49,6 +49,8 @@ const animation = computed(() => objectValue(props.widget.animation, objectValue
 const widgetEvents = computed(() => Array.isArray(props.widget.events) ? props.widget.events : (Array.isArray(props.widget.config?.events) ? props.widget.config.events : []))
 const widgetTitle = computed(() => props.widget.title || content.value.title || '')
 const overlayMode = computed(() => props.overlayMode === true)
+const isHudModule = computed(() => ['hud_kpi_panel', 'hud_device_status', 'hud_alarm_panel', 'hud_chart_dock'].includes(type.value))
+const isTrend = computed(() => ['trend', 'hud_chart_dock'].includes(type.value))
 
 const progressPercent = computed(() => {
   const target = Number(props.metrics.daily_target || props.metrics.dailyTarget || 1)
@@ -94,7 +96,7 @@ const businessUnavailable = computed(() => businessSectionMeta.value.available =
 const businessLoading = computed(() => ['idle', 'loading'].includes(String(props.businessData?.status || 'idle')))
 
 const dataDrivenWidget = computed(() => {
-  if (['metrics', 'trend', 'alarm_list', 'marquee', 'device_list', 'business_summary'].includes(type.value)) return true
+  if (isHudModule.value || ['metrics', 'trend', 'alarm_list', 'marquee', 'device_list', 'business_summary'].includes(type.value)) return true
   const binding = dataBinding.value
   return Boolean(binding.mode || binding.path || binding.source || binding.pointId || binding.point_id)
 })
@@ -272,6 +274,7 @@ const shellStyle = computed(() => {
     '--widget-off-color': style.offColor || '#7c8d9d',
     '--widget-alarm-color': style.alarmColor || '#ff625f',
     '--widget-line-color': content.value.lineColor || '#55c7ff',
+    '--module-accent': content.value.lineColor || '#a2a7ed',
     animationDuration: `${Number(animation.value.duration || 1.2)}s`,
     animationDelay: `${Number(animation.value.delay || 0)}s`,
     animationIterationCount: animation.value.iteration || 'infinite'
@@ -286,7 +289,7 @@ const metricItems = computed(() => {
     { label: '在线设备', path: 'metrics.online_devices', suffixPath: 'metrics.total_devices', separator: '/' }
   ]
   return items.map(item => {
-    const rawValue = getWidgetValue(item.path)
+    const rawValue = item.path ? getWidgetValue(item.path) : item.value
     const suffix = item.suffixPath ? getWidgetValue(item.suffixPath) : undefined
     const dynamicLabel = item.labelPath ? getWidgetValue(item.labelPath) : undefined
     const dynamicUnit = item.unitPath ? getWidgetValue(item.unitPath) : undefined
@@ -369,7 +372,56 @@ const statusText = computed(() => {
 
 const deviceRows = computed(() => Object.entries(props.deviceStatusMap)
   .map(([id, value]) => ({ id, ...value }))
+  .filter(device => !Array.isArray(content.value.deviceIds) || !content.value.deviceIds.length || content.value.deviceIds.includes(device.id))
+  .sort((a,b) => Array.isArray(content.value.deviceIds) ? content.value.deviceIds.indexOf(a.id) - content.value.deviceIds.indexOf(b.id) : 0)
   .slice(0, Number(content.value.limit || 12)))
+
+// An unknown measurement stays unknown: do not draw an invented zero or a
+// healthy-looking state while a source is disconnected or still loading.
+const hudRingValue = computed(() => numericValue(getWidgetValue(content.value.chartPath || 'metrics.overall_oee')))
+const hudRingPercent = computed(() => Math.max(0, Math.min(100, hudRingValue.value ?? 0)))
+const hudDeviceCounts = computed(() => {
+  const rows = Object.values(props.deviceStatusMap)
+  return { total: rows.length, online: rows.filter(device => device.online && device.quality !== 'bad').length, alarms: rows.filter(device => device.alarm).length }
+})
+function hudDeviceState(device) {
+  if (!device.online || device.quality === 'bad') return { tone: 'offline', label: '离线' }
+  if (device.quality === 'stale') return { tone: 'delayed', label: '数据延迟' }
+  if (device.alarm) return { tone: 'alarm', label: '报警' }
+  return device.running ? { tone: 'running', label: '运行中' } : { tone: 'idle', label: '待机' }
+}
+function hudEventTone(event) {
+  const level = String(event.level || '').toLowerCase()
+  return ['critical', 'error', 'alarm'].includes(level) ? 'critical' : ['warning', 'warn'].includes(level) ? 'warning' : 'info'
+}
+function hudEventTime(event) {
+  const time = String(event.time || event.occurred_at || '')
+  return time.match(/\d{1,2}:\d{2}(?::\d{2})?/)?.[0] || time || '时间未提供'
+}
+function enterHudDevice(device, domEvent) {
+  if (dataPending.value) return
+  const configured = content.value.deviceActions?.[device.id]?.filter(event => (event.trigger || 'click') === 'click') || []
+  const actions = configured.length ? configured : [{ action: 'enter_device', deviceId: device.id }]
+  actions.forEach(event => emit('action', { event, widget: props.widget, domEvent }))
+}
+const hudTrendReading = computed(() => {
+  const valueField = content.value.valueField || 'value'
+  const samples = trendRows.value.map(row => numericValue(row[valueField])).filter(value => value !== null)
+  const current = content.value.statPath ? numericValue(getWidgetValue(content.value.statPath)) : (numericValue(boundValue.value) ?? samples.at(-1) ?? null)
+  return { current, min: samples.length ? Math.min(...samples) : null, max: samples.length ? Math.max(...samples) : null }
+})
+function hudNumber(value, decimals = 1) {
+  const number = numericValue(value)
+  return number === null ? '—' : number.toLocaleString('zh-CN', { maximumFractionDigits: decimals })
+}
+
+function chartColorWithAlpha(color, alpha) {
+  const match = String(color || '').trim().match(/^#([\da-f]{3}|[\da-f]{6})$/i)
+  if (!match) return `rgba(137, 149, 245, ${alpha})`
+  const hex = match[1].length === 3 ? [...match[1]].map(value => value + value).join('') : match[1]
+  const channels = [0, 2, 4].map(offset => Number.parseInt(hex.slice(offset, offset + 2), 16))
+  return `rgba(${channels.join(', ')}, ${alpha})`
+}
 
 function resizeChart() { chart?.resize() }
 function disposeChart() { if (chart) { chart.dispose(); chart = null } }
@@ -391,16 +443,39 @@ function presentChart(option) {
       if (axis.splitLine) axis.splitLine = { lineStyle: { color: 'rgba(173,185,224,.09)', type: 'dashed' } }
     }
     for (const [index, series] of option.series.entries()) {
-      const color = palette[index % palette.length]
+      const color = isHudModule.value ? (chartSeries.value[index]?.color || palette[index % palette.length]) : palette[index % palette.length]
       if (['line', 'bar', 'scatter'].includes(series.type)) {
-        series.lineStyle = { color, width: 1.4 }
+        series.lineStyle = {
+          ...series.lineStyle,
+          color,
+          width: isHudModule.value ? Number(content.value.lineWidth || 1.4) : 1.4,
+          ...(isHudModule.value && series.type === 'line' ? { shadowBlur: 7, shadowColor: chartColorWithAlpha(color, .28) } : {})
+        }
         series.itemStyle = { ...series.itemStyle, color, borderRadius: series.type === 'bar' ? [2, 2, 0, 0] : 0 }
-        series.symbolSize = 4
+        series.symbolSize = isHudModule.value ? 3 : 4
         if (series.type === 'bar') series.barMaxWidth = 12
-        if (series.areaStyle) series.areaStyle = { opacity: 1, color: {
+        if (series.areaStyle) series.areaStyle = { ...series.areaStyle, opacity: 1, color: {
           type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
-          colorStops: [{ offset: 0, color: 'rgba(137,149,245,.22)' }, { offset: 1, color: 'rgba(137,149,245,0)' }]
+          colorStops: [
+            { offset: 0, color: chartColorWithAlpha(color, .24) },
+            { offset: .52, color: chartColorWithAlpha(color, .085) },
+            { offset: 1, color: chartColorWithAlpha(color, .008) }
+          ]
         } }
+        if (isHudModule.value && series.type === 'line' && Array.isArray(series.data)) {
+          let lastIndex = series.data.length - 1
+          while (lastIndex >= 0 && numericValue(series.data[lastIndex]) === null) lastIndex -= 1
+          if (lastIndex >= 0) {
+            series.markPoint = {
+              ...series.markPoint,
+              symbol: 'circle',
+              symbolSize: 7,
+              label: { show: false },
+              itemStyle: { color, borderColor: 'rgba(241, 244, 255, .9)', borderWidth: 1.4, shadowBlur: 9, shadowColor: chartColorWithAlpha(color, .5) },
+              data: [{ xAxis: lastIndex, yAxis: series.data[lastIndex] }]
+            }
+          }
+        }
       } else if (series.type === 'pie') {
         const ring = Array.isArray(series.radius) && series.radius[0] !== '0%'
         if (ring) series.radius = ['73%', '81%']
@@ -426,11 +501,11 @@ function presentChart(option) {
 
 function renderChart() {
   if (widgetDisposed) return
-  if (!['trend', 'metrics'].includes(type.value)) { disposeChart(); return }
+  if (!isTrend.value && type.value !== 'metrics') { disposeChart(); return }
   if (type.value === 'metrics' && content.value.layout === 'list') { disposeChart(); return }
   if (!chartRef.value) return
   if (!chart) chart = echarts.init(chartRef.value)
-  if (type.value === 'trend') {
+  if (isTrend.value) {
     const timeField = content.value.timeField || 'time'
     const valueField = content.value.valueField || 'value'
     const chartType = content.value.chartType || 'line'
@@ -445,7 +520,9 @@ function renderChart() {
       textStyle: { color: '#9fb5c6', fontSize: 10, fontFamily: HUD_FONT_TEXT }
     }
     const common = {
-      animation: !props.preview,
+      animation: isHudModule.value || !props.preview,
+      animationDuration: 500,
+      animationDurationUpdate: 450,
       color: sourceSeries.map(series => series.color),
       tooltip: { trigger: ['pie', 'donut', 'gauge'].includes(chartType) ? 'item' : 'axis', backgroundColor: 'rgba(8,20,32,.94)', borderColor: 'rgba(86,181,238,.3)', textStyle: { color: '#fff', fontFamily: HUD_FONT_TEXT } },
       legend
@@ -477,7 +554,7 @@ function renderChart() {
       ...common,
       grid: { left: content.value.showAxis === false ? 12 : 45, right: legendPosition === 'right' && legend.show ? 90 : 18, bottom: legendPosition === 'bottom' && legend.show ? 34 : 28, top: legendPosition === 'top' && legend.show ? 30 : 18 },
       xAxis: { show: content.value.showAxis !== false, type: 'category', boundaryGap: isBar, data: rowsForAxis.map(point => point[timeField]), axisLine: { lineStyle: { color: 'rgba(180,215,238,.18)' } }, axisLabel: { color: '#8fa6b8' } },
-      yAxis: { show: content.value.showAxis !== false, type: 'value', axisLabel: { color: '#8fa6b8' }, splitLine: { lineStyle: { color: 'rgba(180,215,238,.08)' } } },
+      yAxis: { show: content.value.showAxis !== false, type: 'value', scale: isHudModule.value, splitNumber: isHudModule.value ? 3 : 5, axisLabel: { color: '#8fa6b8' }, splitLine: { lineStyle: { color: 'rgba(180,215,238,.08)' } } },
       series: sourceSeries.map(series => ({
         name: series.name,
         type: isBar ? 'bar' : (chartType === 'scatter' ? 'scatter' : 'line'),
@@ -562,6 +639,8 @@ onUnmounted(() => {
       { 'hud-heading': overlayMode && type === 'text' && textLines[0]?.trim().startsWith('▸') },
       { 'text-is-state': overlayMode && type === 'text' && textLines.length === 1 && ['正常', '运行中', '在线', '报警', '离线', '停止', '待机'].includes(textLines[0]) },
       { 'data-pending': dataPending },
+      { 'hud-module-shell': isHudModule },
+      { 'hud-module-compact': isHudModule && content.compact },
       animationClass,
       `quality-${boundQuality}`,
       { interactive: widgetEvents.length > 0 }
@@ -570,18 +649,75 @@ onUnmounted(() => {
     @click="triggerEvents('click', $event)"
     @dblclick="triggerEvents('doubleClick', $event)"
   >
-    <div v-if="widgetTitle && content.showTitle !== false && !['image', 'navigation', 'return_button'].includes(type)" class="widget-title"><i></i><span>{{ widgetTitle }}</span></div>
+    <div v-if="widgetTitle && content.showTitle !== false && !isHudModule && !['image', 'navigation', 'return_button'].includes(type)" class="widget-title"><i></i><span>{{ widgetTitle }}</span></div>
+
+    <header v-if="isHudModule && content.showTitle !== false" class="hud-module-heading">
+      <span><small>{{ content.eyebrow || ({ hud_kpi_panel: 'PRODUCTION', hud_device_status: 'EQUIPMENT', hud_alarm_panel: 'EVENT LOG', hud_chart_dock: 'PROCESS TREND' })[type] }}</small><strong>{{ widgetTitle }}</strong></span>
+      <svg class="hud-module-icon" :class="`icon-${type}`" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <path v-if="type === 'hud_alarm_panel'" d="M12 3 2.8 19h18.4L12 3Zm0 5.5v5.3m0 2.7v.2"/>
+        <path v-else-if="type === 'hud_device_status'" d="M3.5 5.5h17v11h-17zM8 20.5h8m-4-4v4m-5-8h3l1.8-3 2.7 5.7 1.6-3.2H19"/>
+        <g v-else-if="type === 'hud_kpi_panel'"><path d="M3.7 15.8a8.4 8.4 0 1 1 16.6 0"/><path d="M12 13.8 16.4 9.6M6.6 15.8h10.8"/><circle cx="12" cy="14" r="1.1"/></g>
+        <path v-else d="M3.5 19.5h17m-16-3 4.2-4.6 3.6 2.6 6.7-8m-3.8 0H19v4.2"/>
+      </svg>
+    </header>
 
     <Transition name="widget-data-fade">
-      <div v-if="dataPending" key="data-loading" class="widget-data-placeholder" aria-live="polite">
-        <span class="widget-skeleton-line is-wide"></span>
-        <span class="widget-skeleton-line"></span>
-        <span class="widget-skeleton-line is-short"></span>
-        <small>正在接收实时数据</small>
+      <div v-if="dataPending" key="data-loading" :class="['widget-data-placeholder', { 'hud-loading-skeleton': isHudModule }, `loading-${type}`]" aria-live="polite">
+        <template v-if="isHudModule && type === 'hud_kpi_panel'">
+          <div class="hud-skeleton-kpi"><i class="hud-skeleton-ring"></i><span><i></i><i></i><i></i></span></div>
+        </template>
+        <template v-else-if="isHudModule && type === 'hud_device_status'">
+          <div class="hud-skeleton-rows"><i v-for="index in 4" :key="index"><b></b><span></span><em></em></i></div>
+        </template>
+        <template v-else-if="isHudModule && type === 'hud_alarm_panel'">
+          <div class="hud-skeleton-events"><i v-for="index in 3" :key="index"><b></b><span><em></em><em></em></span></i></div>
+        </template>
+        <template v-else-if="isHudModule && type === 'hud_chart_dock'">
+          <div class="hud-skeleton-trend"><span></span><svg viewBox="0 0 320 92" preserveAspectRatio="none" aria-hidden="true"><path d="M0 70 C22 66 24 47 46 53 S75 73 96 56 124 45 144 51 164 64 188 46 216 54 236 37 265 40 280 27 305 33 320 14" /></svg></div>
+        </template>
+        <template v-else>
+          <span class="widget-skeleton-line is-wide"></span>
+          <span class="widget-skeleton-line"></span>
+          <span class="widget-skeleton-line is-short"></span>
+        </template>
+        <small>正在同步当前数据</small>
       </div>
     </Transition>
 
-    <template v-if="type === 'navigation'">
+    <template v-if="type === 'hud_kpi_panel'">
+      <div class="hud-module-kpis" :class="{ 'without-ring': content.showRing === false }">
+        <div v-if="content.showRing !== false" class="hud-module-ring" :aria-label="`${content.chartLabel || '综合效率'} ${hudRingValue === null ? '暂无数据' : hudNumber(hudRingValue) + '%'}`">
+          <svg viewBox="0 0 120 120" aria-hidden="true"><circle class="ring-halo" cx="60" cy="60" r="53"/><g class="ring-ticks"><line v-for="tick in 48" :key="tick" x1="60" :y1="tick % 6 === 1 ? 1.5 : 3.5" x2="60" :y2="tick % 6 === 1 ? 7.5 : 6.5" :class="{'ring-tick-major':tick % 6 === 1}" :transform="`rotate(${(tick - 1) * 7.5} 60 60)`"/></g><circle class="ring-track" cx="60" cy="60" r="44"/><circle class="ring-progress" cx="60" cy="60" r="44" pathLength="100" :stroke-dasharray="`${hudRingPercent} 100`" transform="rotate(-90 60 60)"/><circle class="ring-inner" cx="60" cy="60" r="36"/></svg>
+          <span class="hud-module-ring-copy"><strong>{{ hudNumber(hudRingValue) }}<small v-if="hudRingValue !== null">%</small></strong><em>{{ content.chartLabel || '综合效率' }}</em></span>
+        </div>
+        <dl class="hud-module-stat-list"><div v-for="(item,index) in metricItems" :key="index"><dt><i :class="`stat-dot-${index % 3}`"></i>{{ item.label }}</dt><dd>{{ item.value }}</dd></div></dl>
+      </div>
+      <p v-if="content.note" class="hud-module-note">{{ content.note }}</p>
+    </template>
+
+    <template v-else-if="type === 'hud_device_status'">
+      <div class="hud-module-summary"><span>在线 <b>{{ dataPending ? '—' : hudDeviceCounts.online }}</b><small>/ {{ hudDeviceCounts.total }}</small></span><span class="hud-alarm-summary">报警 <b>{{ dataPending ? '—' : hudDeviceCounts.alarms }}</b></span></div>
+      <div class="hud-module-devices">
+        <button v-for="(device,index) in deviceRows" :key="device.id" type="button" :class="['hud-module-device', `state-${hudDeviceState(device).tone}`]" :disabled="dataPending" :aria-label="`查看${device.name || device.id}设备详情`" @click.stop="enterHudDevice(device,$event)">
+          <span class="hud-device-index">{{ String(index + 1).padStart(2,'0') }}</span><span class="hud-device-name">{{ device.name || device.id }}</span>
+          <span v-if="content.showTemperature" class="hud-device-temp">{{ hudNumber(device.temp) }}<small> °C</small></span>
+          <span class="hud-device-state"><i></i>{{ hudDeviceState(device).label }}</span><span class="hud-device-chevron">›</span>
+        </button>
+        <div v-if="!deviceRows.length && !dataPending" class="hud-module-empty">尚未接入设备<small>接入后自动显示运行状态</small></div>
+      </div>
+    </template>
+
+    <template v-else-if="type === 'hud_alarm_panel'">
+      <ol class="hud-module-events"><li v-for="(event,index) in eventRows.slice(0, content.limit || 6)" :key="event.id || `${event.time}-${index}`" :class="hudEventTone(event)"><i class="hud-event-dot"></i><div><time v-if="content.showTime !== false">{{ hudEventTime(event) }}</time><p>{{ event.msg || event.title || event.message || '事件记录' }}</p></div><span v-if="content.showLevel !== false" class="hud-event-level">{{ ({ critical:'报警', warning:'警告', info:'事件' })[hudEventTone(event)] }}</span></li></ol>
+      <div v-if="!eventRows.length && !dataPending" class="hud-module-empty">暂无事件记录<small>新事件将在此自动更新</small></div>
+    </template>
+
+    <template v-else-if="type === 'hud_chart_dock'">
+      <div class="hud-module-reading"><span>{{ content.statLabel || '当前值' }}<strong>{{ hudNumber(hudTrendReading.current) }}<small>{{ content.statUnit || dataBinding.unit }}</small></strong></span><span class="hud-trend-range"><small>区间最低 / 最高</small>{{ hudNumber(hudTrendReading.min) }} <i>/</i> {{ hudNumber(hudTrendReading.max) }}</span></div>
+      <div class="hud-module-chart"><div ref="chartRef" class="widget-chart"></div><span v-if="!dataPending && !hasTrendData" class="hud-chart-empty">等待趋势采样</span></div>
+    </template>
+
+    <template v-else-if="type === 'navigation'">
       <div class="navigation-widget-preview">
         <div class="navigation-preview-status">
           <span class="navigation-preview-dot"></span>
@@ -663,7 +799,7 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
- .widget-shell{box-sizing:border-box;position:relative;width:100%;height:100%;min-width:0;min-height:0;display:flex;flex-direction:column;overflow:hidden;padding:14px;border:1px solid rgba(91,169,219,.24);border-radius:14px;color:#edf7ff;background:rgba(10,24,38,.82);box-shadow:0 14px 34px rgba(0,8,18,.22);font-family:"SF Pro Text","Inter","Segoe UI Variable","Segoe UI","PingFang SC","Microsoft YaHei UI",sans-serif;font-synthesis:none;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;transition:border-color .18s,filter .18s,transform .18s,opacity .42s ease}.widget-shell.interactive{cursor:pointer}.widget-shell.quality-bad{filter:saturate(.72)}
+ .widget-shell{box-sizing:border-box;position:relative;width:100%;height:100%;min-width:0;min-height:0;display:flex;flex-direction:column;overflow:hidden;padding:14px;border:1px solid rgba(91,169,219,.24);border-radius:14px;color:#edf7ff;background:transparent;box-shadow:none;font-family:"SF Pro Text","Inter","Segoe UI Variable","Segoe UI","PingFang SC","Microsoft YaHei UI",sans-serif;font-synthesis:none;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;transition:border-color .18s,filter .18s,transform .18s,opacity .42s ease}.widget-shell.interactive{cursor:pointer}.widget-shell.quality-bad{filter:saturate(.72)}
  .widget-shell.data-pending> :not(.widget-title):not(.widget-data-placeholder){opacity:.18;filter:blur(1.2px);transition:opacity .42s ease,filter .42s ease}
  .widget-data-placeholder{position:absolute;z-index:4;inset:34px 12px 10px;display:grid;align-content:center;justify-items:center;gap:9px;pointer-events:none}
  .widget-skeleton-line{width:62%;height:8px;border-radius:99px;background:linear-gradient(90deg,rgba(141,160,207,.12),rgba(190,202,238,.35),rgba(141,160,207,.12));background-size:220% 100%;animation:widgetSkeletonShimmer 1.8s ease-in-out infinite}.widget-skeleton-line.is-wide{width:82%;height:10px}.widget-skeleton-line.is-short{width:42%;height:6px}.widget-data-placeholder small{margin-top:2px;color:rgba(187,201,231,.62);font-size:10px;letter-spacing:.04em}.widget-data-empty{position:absolute;inset:50% 0 auto;transform:translateY(-50%);color:rgba(167,183,214,.72);font-size:11px;text-align:center;pointer-events:none}.widget-data-fade-enter-active,.widget-data-fade-leave-active{transition:opacity .38s ease,transform .38s ease}.widget-data-fade-enter-from,.widget-data-fade-leave-to{opacity:0;transform:translateY(3px)}
@@ -690,3 +826,4 @@ onUnmounted(() => {
 @keyframes widgetMarquee{to{transform:translateX(-50%)}}@keyframes widgetFadeIn{from{opacity:0}to{opacity:1}}@keyframes widgetSlideUp{from{opacity:0;transform:translateY(18px)}to{opacity:1;transform:translateY(0)}}@keyframes widgetPulse{50%{transform:scale(1.018)}}@keyframes widgetBreathe{50%{filter:brightness(1.14);box-shadow:0 0 30px rgba(63,182,255,.22)}}@keyframes widgetFloat{50%{transform:translateY(-5px)}}@keyframes widgetBlink{50%{opacity:.45}}@keyframes widgetSkeletonShimmer{0%{background-position:120% 0}100%{background-position:-120% 0}}
 </style>
 <style src="./hudWidgets.css"></style>
+<style src="./hudModules.css"></style>

@@ -174,6 +174,11 @@ export function useFactoryConfig() {
 
 // Admin API helpers
 export const adminApi = {
+    // 集团/工厂层级
+    async listFactories() { return readApiJson(await fetch(`${API_BASE}/factories`), '读取工厂列表失败') },
+    async createFactory(data) { return readApiJson(await fetch(`${API_BASE}/factories`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) }), '创建工厂失败') },
+    async updateFactory(id, data) { return readApiJson(await fetch(`${API_BASE}/factories/${pathId(id)}`, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) }), '保存工厂失败') },
+    async activateFactory(id) { return readApiJson(await fetch(`${API_BASE}/factories/${pathId(id)}/activate`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' }), '切换运行工厂失败') },
     // PLC 协议能力清单
     async getPlcProtocols() { return readApiJson(await fetch(`${API_BASE}/plc/protocols`), '读取 PLC 协议清单失败') },
     // 车间

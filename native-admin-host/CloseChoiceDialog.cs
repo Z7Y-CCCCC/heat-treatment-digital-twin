@@ -24,7 +24,7 @@ internal sealed class CloseChoiceDialog : Form
         MinimizeBox = false;
         MaximizeBox = false;
         ControlBox = false;
-        ClientSize = new Size(260, 150);
+        ClientSize = new Size(230, 150);
         MinimumSize = ClientSize;
         MaximumSize = ClientSize;
         AutoScaleMode = AutoScaleMode.Dpi;
@@ -43,7 +43,7 @@ internal sealed class CloseChoiceDialog : Form
         var title = new Label
         {
             Dock = DockStyle.Left,
-            Width = 190,
+            Width = 160,
             Text = "热处理数字孪生大屏",
             TextAlign = ContentAlignment.MiddleLeft,
             ForeColor = Color.FromArgb(23, 43, 63),
@@ -83,7 +83,7 @@ internal sealed class CloseChoiceDialog : Form
         var heading = new Label
         {
             Location = new Point(28, 0),
-            Size = new Size(200, 22),
+            Size = new Size(180, 22),
             Text = "请选择关闭方式",
             ForeColor = Color.FromArgb(16, 42, 67),
             Font = new Font("Microsoft YaHei UI", 10f, FontStyle.Bold),
@@ -108,18 +108,16 @@ internal sealed class CloseChoiceDialog : Form
         _minimizeCard = new ChoiceCard(
             "最小化到系统托盘",
             string.Empty,
-            recommended: true,
             danger: false
         )
         {
             Dock = DockStyle.Fill,
             Margin = new Padding(0, 0, 0, 2),
-            AccessibleName = "最小化到系统托盘（推荐）"
+            AccessibleName = "最小化到系统托盘"
         };
         var exitCard = new ChoiceCard(
             "完全退出程序",
             string.Empty,
-            recommended: false,
             danger: true
         )
         {
@@ -409,18 +407,15 @@ internal sealed class CloseChoiceDialog : Form
     {
         private readonly string _title;
         private readonly string _description;
-        private readonly bool _recommended;
         private readonly bool _danger;
         private readonly Font _titleFont = new("Microsoft YaHei UI", 10.5f, FontStyle.Bold);
         private readonly Font _descriptionFont = new("Microsoft YaHei UI", 8.7f, FontStyle.Regular);
-        private readonly Font _badgeFont = new("Microsoft YaHei UI", 7.8f, FontStyle.Bold);
         private bool _hovered;
 
-        public ChoiceCard(string title, string description, bool recommended, bool danger)
+        public ChoiceCard(string title, string description, bool danger)
         {
             _title = title;
             _description = description;
-            _recommended = recommended;
             _danger = danger;
             Cursor = Cursors.Hand;
             TabStop = true;
@@ -519,23 +514,6 @@ internal sealed class CloseChoiceDialog : Form
                 _danger ? Color.FromArgb(145, 32, 24) : Color.FromArgb(16, 42, 67),
                 TextFormatFlags.NoPadding | TextFormatFlags.SingleLine
             );
-            if (_recommended)
-            {
-                var titleWidth = TextRenderer.MeasureText(_title, _titleFont, Size.Empty, TextFormatFlags.NoPadding | TextFormatFlags.SingleLine).Width;
-                var badge = new Rectangle(titleX + titleWidth + 6, titleY, 36, 19);
-                using var badgePath = RoundedPath(badge, 9);
-                using var badgeFill = new SolidBrush(Color.FromArgb(220, 235, 255));
-                e.Graphics.FillPath(badgeFill, badgePath);
-                TextRenderer.DrawText(
-                    e.Graphics,
-                    "推荐",
-                    _badgeFont,
-                    badge,
-                    Color.FromArgb(23, 92, 211),
-                    TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding
-                );
-            }
-
             if (hasDescription)
             {
                 TextRenderer.DrawText(
@@ -565,7 +543,6 @@ internal sealed class CloseChoiceDialog : Form
             {
                 _titleFont.Dispose();
                 _descriptionFont.Dispose();
-                _badgeFont.Dispose();
             }
             base.Dispose(disposing);
         }

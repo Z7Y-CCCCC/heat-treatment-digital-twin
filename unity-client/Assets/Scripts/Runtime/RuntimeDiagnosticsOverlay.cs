@@ -14,14 +14,17 @@ namespace HeatTreatment.DigitalTwin.Runtime
         private GUIStyle _errorStyle;
         private Texture2D _panelTexture;
         private Texture2D _loadingTexture;
+        private Texture2D _loadingFactoryTexture;
         private float _smoothedFps;
         private long _lastFrameTimestamp;
         private int _lastFrameDevices;
         private bool _loadingVisible;
         private float _loadingProgress;
         private string _loadingStep = "正在初始化渲染";
+        private string _loadingDetail = string.Empty;
         private float _lastReportedLoadingProgress = -1f;
         private string _lastReportedLoadingStep = string.Empty;
+        private string _lastReportedLoadingDetail = string.Empty;
         private readonly List<string> _modelErrors = new List<string>();
 
         public bool Visible { get; set; } = true;
@@ -33,6 +36,33 @@ namespace HeatTreatment.DigitalTwin.Runtime
         public int FallbackDeviceCount { get; set; }
         public int TemplateCount { get; set; }
         public NativeQualityController QualityController { get; set; }
+        public void RequireAuthentication(string message = null)
+        {
+            _loadingVisible = true;
+            _loadingProgress = 0.01f;
+            _loadingStep = "等待后台账户授权";
+            _loadingDetail = string.IsNullOrWhiteSpace(message)
+                ? "正在切换到后台管理登录页…"
+                : message.Trim();
+            ReportLoadingProgress();
+        }
+
+        public void SetLoginBusy(bool busy)
+        {
+            if (!busy) return;
+            _loadingVisible = true;
+            _loadingProgress = Mathf.Max(_loadingProgress, 0.06f);
+            _loadingStep = "正在验证后台授权";
+            _loadingDetail = "正在安全同步账户会话…";
+            ReportLoadingProgress();
+        }
+
+        public void SetLoginError(string message)
+        {
+            RequireAuthentication(string.IsNullOrWhiteSpace(message)
+                ? "后台授权同步失败，请重试或检查本地服务。"
+                : $"后台授权同步失败：{message.Trim()}");
+        }
 
         public void ClearModelErrors()
         {
@@ -54,16 +84,19 @@ namespace HeatTreatment.DigitalTwin.Runtime
             _loadingVisible = true;
             _loadingProgress = 0f;
             _loadingStep = "正在初始化渲染";
+            _loadingDetail = string.Empty;
             _lastReportedLoadingProgress = -1f;
             _lastReportedLoadingStep = string.Empty;
+            _lastReportedLoadingDetail = string.Empty;
             ReportLoadingProgress();
         }
 
-        public void UpdateLoading(float progress, string step)
+        public void UpdateLoading(float progress, string step, string detail = null)
         {
             _loadingVisible = true;
             _loadingProgress = Mathf.Clamp01(progress);
             if (!string.IsNullOrWhiteSpace(step)) _loadingStep = step;
+            _loadingDetail = string.IsNullOrWhiteSpace(detail) ? string.Empty : detail.Trim();
             ReportLoadingProgress();
         }
 
@@ -71,6 +104,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
         {
             _loadingProgress = 1f;
             _loadingStep = "场景已就绪";
+            _loadingDetail = string.Empty;
             ReportLoadingProgress();
             _loadingVisible = false;
         }
@@ -78,11 +112,15 @@ namespace HeatTreatment.DigitalTwin.Runtime
         private void ReportLoadingProgress()
         {
             if (Mathf.Abs(_lastReportedLoadingProgress - _loadingProgress) < 0.001f &&
-                string.Equals(_lastReportedLoadingStep, _loadingStep, StringComparison.Ordinal)) return;
+                string.Equals(_lastReportedLoadingStep, _loadingStep, StringComparison.Ordinal) &&
+                string.Equals(_lastReportedLoadingDetail, _loadingDetail, StringComparison.Ordinal)) return;
             _lastReportedLoadingProgress = _loadingProgress;
             _lastReportedLoadingStep = _loadingStep;
+            _lastReportedLoadingDetail = _loadingDetail;
             var safeStep = (_loadingStep ?? string.Empty).Replace('\r', ' ').Replace('\n', ' ').Replace('|', ' ');
-            Debug.Log($"[StartupProgress] {Mathf.RoundToInt(_loadingProgress * 100f)}|{safeStep}");
+            var safeDetail = (_loadingDetail ?? string.Empty).Replace('\r', ' ').Replace('\n', ' ').Replace('|', ' ');
+            var progressText = string.IsNullOrEmpty(safeDetail) ? safeStep : $"{safeStep} · 原因：{safeDetail}";
+            Debug.Log($"[StartupProgress] {Mathf.RoundToInt(_loadingProgress * 100f)}|{progressText}");
         }
 
         public void RecordRealtimeFrame(long timestamp, int deviceCount)
@@ -159,25 +197,75 @@ namespace HeatTreatment.DigitalTwin.Runtime
             if (_loadingTexture == null)
             {
                 _loadingTexture = new Texture2D(1, 1, TextureFormat.RGBA32, false);
-                _loadingTexture.SetPixel(0, 0, new Color(0.018f, 0.024f, 0.032f, 1f));
+                _loadingTexture.SetPixel(0, 0, new Color(0.145f, 0.145f, 0.15f, 1f));
                 _loadingTexture.Apply();
             }
+            if (_loadingFactoryTexture == null) _loadingFactoryTexture = Resources.Load<Texture2D>("Loading/industrial-factory");
             GUI.DrawTexture(new Rect(0f, 0f, Screen.width, Screen.height), _loadingTexture, ScaleMode.StretchToFill);
             var scale = Mathf.Clamp(Screen.height / 1080f, 0.8f, 1.35f);
             var center = new Vector2(Screen.width * .5f, Screen.height * .5f);
-            var title = new GUIStyle(_titleStyle) { alignment = TextAnchor.MiddleCenter, fontSize = Mathf.RoundToInt(28f * scale) };
-            var step = new GUIStyle(_lineStyle) { alignment = TextAnchor.MiddleCenter, fontSize = Mathf.RoundToInt(15f * scale) };
-            GUI.Label(new Rect(0f, center.y - 92f * scale, Screen.width, 42f * scale), "正在启动数字孪生大屏", title);
-            GUI.Label(new Rect(0f, center.y - 42f * scale, Screen.width, 30f * scale), _loadingStep, step);
-            var barWidth = Mathf.Min(620f * scale, Screen.width * .72f);
-            var bar = new Rect(center.x - barWidth * .5f, center.y + 12f * scale, barWidth, 8f * scale);
-            GUI.color = new Color(.18f, .22f, .27f, 1f);
+            var panelWidth = Mathf.Min(1080f * scale, Screen.width * .9f);
+            var panelHeight = Mathf.Min(700f * scale, Screen.height * .9f);
+            var panel = new Rect(center.x - panelWidth * .5f, center.y - panelHeight * .5f, panelWidth, panelHeight);
+            GUI.color = Color.white;
+            GUI.DrawTexture(panel, _panelTexture, ScaleMode.StretchToFill);
+            GUI.color = new Color(.72f, .75f, .71f, .5f);
+            GUI.DrawTexture(new Rect(panel.x + 1f, panel.y + 1f, panel.width - 2f, 1f * scale), _loadingTexture, ScaleMode.StretchToFill);
+            GUI.color = Color.white;
+
+            var eyebrow = new GUIStyle(_mutedStyle) { alignment = TextAnchor.MiddleCenter, fontSize = Mathf.RoundToInt(11f * scale) };
+            var title = new GUIStyle(_titleStyle) { alignment = TextAnchor.MiddleCenter, fontSize = Mathf.RoundToInt(27f * scale), normal = { textColor = new Color(.92f, .92f, .89f) } };
+            var step = new GUIStyle(_lineStyle) { alignment = TextAnchor.MiddleCenter, fontSize = Mathf.RoundToInt(14f * scale), normal = { textColor = new Color(.78f, .8f, .77f) } };
+            GUI.Label(new Rect(panel.x + 24f * scale, panel.y + 24f * scale, panel.width - 48f * scale, 22f * scale), "HEAT TREATMENT  /  DIGITAL TWIN", eyebrow);
+            GUI.Label(new Rect(panel.x + 24f * scale, panel.y + 48f * scale, panel.width - 48f * scale, 42f * scale), "正在准备生产现场", title);
+
+            var imageWidth = Mathf.Min(panel.width * .72f, 820f * scale);
+            var imageHeight = panel.height * .43f;
+            var imageRect = new Rect(center.x - imageWidth * .5f, panel.y + 100f * scale, imageWidth, imageHeight);
+            if (_loadingFactoryTexture != null)
+            {
+                GUI.color = Color.white;
+                GUI.DrawTexture(imageRect, _loadingFactoryTexture, ScaleMode.ScaleToFit, true);
+            }
+            var stepRect = new Rect(panel.x + 24f * scale, imageRect.yMax + 4f * scale, panel.width - 48f * scale, 28f * scale);
+            GUI.Label(stepRect, _loadingStep, step);
+
+            var detailHeight = string.IsNullOrWhiteSpace(_loadingDetail) ? 0f : 36f * scale;
+            if (detailHeight > 0f)
+            {
+                var detailRect = new Rect(panel.x + panel.width * .16f, stepRect.yMax + 1f * scale, panel.width * .68f, detailHeight);
+                var detailStyle = new GUIStyle(_mutedStyle)
+                {
+                    alignment = TextAnchor.MiddleCenter,
+                    wordWrap = true,
+                    fontSize = Mathf.RoundToInt(11f * scale),
+                    normal = { textColor = new Color(.9f, .69f, .57f) }
+                };
+                GUI.Label(detailRect, $"原因  {_loadingDetail}", detailStyle);
+            }
+
+            var barWidth = Mathf.Min(700f * scale, panel.width * .72f);
+            var bar = new Rect(center.x - barWidth * .5f, stepRect.yMax + detailHeight + 13f * scale, barWidth, 7f * scale);
+            GUI.color = new Color(.32f, .32f, .33f, 1f);
             GUI.DrawTexture(bar, _panelTexture, ScaleMode.StretchToFill);
-            GUI.color = new Color(.25f, .75f, .96f, 1f);
+            GUI.color = new Color(.55f, .78f, .7f, 1f);
             GUI.DrawTexture(new Rect(bar.x, bar.y, bar.width * _loadingProgress, bar.height), _panelTexture, ScaleMode.StretchToFill);
             GUI.color = Color.white;
-            var percent = new GUIStyle(_mutedStyle) { alignment = TextAnchor.MiddleCenter, fontSize = Mathf.RoundToInt(12f * scale) };
-            GUI.Label(new Rect(0f, bar.y + 18f * scale, Screen.width, 24f * scale), $"{Mathf.RoundToInt(_loadingProgress * 100f)}%", percent);
+            var labels = new[] { "现场配置", "三维场景", "设备模型", "实时数据" };
+            var currentPhase = Mathf.Min(labels.Length - 1, Mathf.FloorToInt(_loadingProgress * labels.Length));
+            var phaseStyle = new GUIStyle(_mutedStyle) { alignment = TextAnchor.MiddleCenter, fontSize = Mathf.RoundToInt(10f * scale) };
+            var phaseY = bar.yMax + 11f * scale;
+            var phaseWidth = bar.width / labels.Length;
+            for (var index = 0; index < labels.Length; index += 1)
+            {
+                var phaseRect = new Rect(bar.x + phaseWidth * index, phaseY, phaseWidth, 20f * scale);
+                phaseStyle.normal.textColor = index < currentPhase
+                    ? new Color(.67f, .79f, .7f)
+                    : index == currentPhase ? new Color(.85f, .76f, .59f) : new Color(.48f, .49f, .47f);
+                GUI.Label(phaseRect, $"{(index < currentPhase ? "✓" : "·")}  {labels[index]}", phaseStyle);
+            }
+            var percent = new GUIStyle(_mutedStyle) { alignment = TextAnchor.MiddleRight, fontSize = Mathf.RoundToInt(10f * scale) };
+            GUI.Label(new Rect(bar.x, phaseY + 21f * scale, bar.width, 17f * scale), $"{Mathf.RoundToInt(_loadingProgress * 100f)}%", percent);
         }
 
         private string FrameText()
@@ -192,23 +280,23 @@ namespace HeatTreatment.DigitalTwin.Runtime
         {
             if (_panelTexture != null) return;
             _panelTexture = new Texture2D(1, 1, TextureFormat.RGBA32, false);
-            _panelTexture.SetPixel(0, 0, new Color(0.025f, 0.045f, 0.06f, 0.91f));
+            _panelTexture.SetPixel(0, 0, new Color(0.17f, 0.17f, 0.18f, 0.96f));
             _panelTexture.Apply();
             _titleStyle = new GUIStyle(GUI.skin.label)
             {
                 fontSize = 19,
                 fontStyle = FontStyle.Bold,
-                normal = { textColor = new Color(0.39f, 0.88f, 1f) }
+                normal = { textColor = new Color(0.86f, 0.88f, 0.84f) }
             };
             _lineStyle = new GUIStyle(GUI.skin.label)
             {
                 fontSize = 14,
-                normal = { textColor = new Color(0.88f, 0.94f, 0.97f) }
+                normal = { textColor = new Color(0.82f, 0.83f, 0.8f) }
             };
             _mutedStyle = new GUIStyle(GUI.skin.label)
             {
                 fontSize = 12,
-                normal = { textColor = new Color(0.55f, 0.68f, 0.74f) }
+                normal = { textColor = new Color(0.62f, 0.63f, 0.61f) }
             };
             _errorTitleStyle = new GUIStyle(GUI.skin.label)
             {

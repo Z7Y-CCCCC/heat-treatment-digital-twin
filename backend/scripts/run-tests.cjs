@@ -13,7 +13,7 @@ const scripts = [
     'spatial-hierarchy-test.cjs', 'cast-discovery-test.cjs',
     'backend-concurrency-test.cjs', 'backend-recovery-edge-test.cjs',
     'backend-service-failure-test.cjs',
-    'admin-auth-integration-test.cjs', 'production-readiness-test.cjs',
+    'admin-auth-integration-test.cjs', 'factory-isolation-test.cjs', 'production-readiness-test.cjs',
     'data-point-sync-test.cjs', 'deletion-safety-test.cjs',
     'native-dashboard-config-test.cjs', 'plc-protocol-test.cjs',
     'plc-value-precision-test.cjs',

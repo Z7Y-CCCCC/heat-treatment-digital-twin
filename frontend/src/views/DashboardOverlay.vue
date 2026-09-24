@@ -1,16 +1,25 @@
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from 'vue'
+import { useRoute } from 'vue-router'
+import LoadingExperience from '../components/LoadingExperience.vue'
 import { useFactoryConfig } from '../config/factoryConfig.js'
 import { createDashboardDataStore } from '../runtime/DataStore.js'
 import { API_BASE } from '../runtime/backendEndpoint.js'
+import { adminFetch, startAdminSessionTracking, stopAdminSessionTracking } from '../runtime/adminSession.js'
 import { createVoiceAnnouncer } from '../runtime/VoiceAnnouncer.js'
 import { resolveBackendAssetUrl } from '../three/ModelFactory.js'
 import WidgetRenderer from '../runtime/WidgetRenderer.vue'
 import { applyReferenceHudLayout } from '../runtime/referenceHudLayout.js'
+import { applyFactoryHudModules } from '../runtime/factoryHudModules.js'
+import { createNativeViewNavigator } from '../runtime/nativeViewNavigation.js'
 import { fitHudCanvas } from '../runtime/hudPresentation.js'
 import { applyVisibilityAction, widgetRuntimeVisible } from '../runtime/dashboardRules.js'
+import { createGroupHierarchyPath } from '../runtime/groupHierarchyPath.js'
 
 const rootRef = ref(null)
+const route = useRoute()
+const startupLoading = ref(true), startupProgress = ref(6), startupPhase = ref(0), startupStep = ref('正在读取现场配置')
+const nativeLoadingManaged = ref(Boolean(window.__DIGITAL_TWIN_NATIVE_LOADING__))
 let overlayDisposed = false
 const overlayRequests = new AbortController()
 const voiceAnnouncer = createVoiceAnnouncer()
@@ -23,6 +32,17 @@ let businessInFlight = false
 const selectedWidgetId = ref('')
 const hostConnected = ref(false)
 const standalonePreview = ref(false)
+const hierarchyBusy = ref(false)
+const hierarchyError = ref('')
+const viewNavigator = createNativeViewNavigator(async target => {
+    const response = await adminFetch(`${API_BASE}/native-preview/navigate`, {
+        method:'POST',headers:{'Content-Type':'application/json'},signal:overlayRequests.signal,
+        body:JSON.stringify({action:'view',source:'dashboard_overlay',viewId:target.viewId,focus:target.focus})
+    })
+    const result = await response.json()
+    if(!response.ok) throw new Error(result.error || '视角切换失败')
+    return result
+})
 const overlayViewport = reactive({ width: 1920, height: 1080 })
 const parentReturnBusy = ref(false)
 const childNavigationEntered = ref(false)
@@ -58,6 +78,52 @@ const {
     getPlatform,
     getWorkshops
 } = useFactoryConfig()
+
+const hierarchyWorkshops = computed(() => getWorkshops() || [])
+const hierarchyLines = computed(() => hierarchyWorkshops.value
+    .filter(workshop => !runtimeContext.workshopId || workshop.id === runtimeContext.workshopId)
+    .flatMap(workshop => workshop.lines || []))
+const hierarchyDevices = computed(() => {
+    const all = hierarchyWorkshops.value.flatMap(workshop => [
+        ...(workshop.lines || []).flatMap(line => (line.devices || []).map(device => ({...device,line_id:line.id}))),
+        ...(workshop.devices || [])
+    ])
+    return [...new Map(all.filter(device => !runtimeContext.lineId || device.line_id === runtimeContext.lineId).map(device => [device.id,device])).values()]
+})
+const hierarchyTrail = computed(() => {
+    const mode = String(runtimeContext.viewMode || 'factory').toLowerCase()
+    const includesWorkshop = ['workshop','line','device'].includes(mode)
+    const includesLine = ['line','device'].includes(mode)
+    const trail = createGroupHierarchyPath({
+        scope:route.query.scope,
+        fromGroup:route.query.fromGroup,
+        embedded:route.query.embedded,
+        location:config.settings?.factory_location || {},
+        factoryName:config.settings?.factory_name || '全厂总览'
+    })
+    const workshop = hierarchyWorkshops.value.find(item => String(item.id) === String(runtimeContext.workshopId))
+    if (includesWorkshop && runtimeContext.workshopId) {
+        trail.push({ key:'workshop', label:workshop?.name || currentView.value?.name || '车间', mode:'workshop', focus:{workshopId:runtimeContext.workshopId} })
+    }
+    const line = hierarchyLines.value.find(item => String(item.id) === String(runtimeContext.lineId))
+    if (includesLine && runtimeContext.lineId) {
+        trail.push({ key:'line', label:line?.name || currentView.value?.name || '产线', mode:'line', focus:{lineId:runtimeContext.lineId} })
+    }
+    const device = hierarchyDevices.value.find(item => String(item.id) === String(runtimeContext.deviceId))
+    if (mode === 'device' && runtimeContext.deviceId) {
+        trail.push({ key:'device', label:device?.name || currentView.value?.name || '设备', mode:'device', focus:{deviceId:runtimeContext.deviceId} })
+    }
+    const stage = String(runtimeContext.inspectionStage || '').toLowerCase()
+    if (runtimeContext.partId || stage === 'part') {
+        trail.push({ key:'part', label:runtimeContext.partName || '部件详情', mode:'device', focus:{deviceId:runtimeContext.deviceId} })
+    } else if (['xray','exploded'].includes(stage)) {
+        trail.push({ key:stage, label:stage === 'exploded' ? '拆解视图':'透视视图', mode:'device', focus:{deviceId:runtimeContext.deviceId} })
+    }
+    if (trail.length === 1 && mode !== 'factory') {
+        trail.push({ key:mode, label:currentView.value?.name || '当前视角', mode, focus:{} })
+    }
+    return trail.map((segment,index) => ({...segment,active:index===trail.length-1}))
+})
 
 const modelLoadErrors = ref([])
 let modelProbeTimer = 0
@@ -99,7 +165,7 @@ async function probeConfiguredModels() {
 
         const url = resolveBackendAssetUrl(group.model.file_path)
         try {
-            const response = await fetch(url, { method: 'HEAD', cache: 'no-store', signal: overlayRequests.signal })
+            const response = await adminFetch(url, { method: 'HEAD', cache: 'no-store', signal: overlayRequests.signal })
             if (!response.ok) return { group, reason: `HTTP ${response.status} ${response.statusText || '请求失败'}`, url }
             return null
         } catch (error) {
@@ -129,7 +195,7 @@ const CONFIG_ONLY_WIDGET_TYPES = new Set([
 ])
 
 const platform = computed(() => getPlatform() || {})
-const presentationDocument = computed(() => applyReferenceHudLayout(platform.value.document))
+const presentationDocument = computed(() => applyFactoryHudModules(applyReferenceHudLayout(platform.value.document)))
 const dashboardViews = computed(() => {
     const views = presentationDocument.value?.scene?.views || platform.value.activeScene?.views || []
     return Array.isArray(views) && views.length
@@ -370,7 +436,7 @@ async function sendInspectionCommand(inspection) {
     if (overlayDisposed || !runtimeContext.deviceId) return
     inspectionCommandError.value = ''
     try {
-        const response = await fetch(`${API_BASE}/native-preview/navigate`, {
+        const response = await adminFetch(`${API_BASE}/native-preview/navigate`, {
             method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: overlayRequests.signal,
             body: JSON.stringify({ action: 'inspection', focus: { mode: 'device', deviceId: runtimeContext.deviceId }, inspection })
         })
@@ -561,7 +627,7 @@ function registerConfiguredDevices() {
 
 function eventQueryConfig() {
     const marqueeWidget = widgets.value.find(widget => (widget.type || widget.widget_type) === 'marquee')
-    const alarmWidget = widgets.value.find(widget => (widget.type || widget.widget_type) === 'alarm_list')
+    const alarmWidget = widgets.value.find(widget => ['alarm_list','hud_alarm_panel'].includes(widget.type || widget.widget_type))
     const marquee = marqueeWidget?.content || marqueeWidget?.config || {}
     const alarms = alarmWidget?.content || alarmWidget?.config || {}
     return {
@@ -572,35 +638,30 @@ function eventQueryConfig() {
 }
 
 async function focusNativeScene(mode, event = {}) {
+    if(hierarchyBusy.value) return false
+    hierarchyBusy.value = true
+    hierarchyError.value = ''
     const configuredView = viewFor(mode, event.viewId)
     const focus = navigationFocus(mode, event, configuredView)
     const inspectionStage = mode === 'device' ? inspectionStageForView(configuredView) : ''
     if (inspectionStage) focus.inspectionStage = inspectionStage
-    const nextContext = {
-        viewId: configuredView?.id || event.viewId || runtimeContext.viewId,
-        viewMode: mode,
-        deviceId: mode === 'device' ? focus.deviceId : '',
-        lineId: mode === 'line' ? focus.lineId : (mode === 'device' ? runtimeContext.lineId : ''),
-        workshopId: mode === 'workshop' ? focus.workshopId : (['line', 'device'].includes(mode) ? runtimeContext.workshopId : '')
-        ,inspectionStage, partId: ''
-    }
     try {
-        const response = await fetch(`${API_BASE}/native-preview/navigate`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                action: 'view',
-                source: 'dashboard_overlay',
-                viewId: configuredView?.id || event.viewId || '',
-                focus
-            })
-        })
-        if (response.ok) applyRuntimeContext(nextContext, { userNavigation: true })
-        return response.ok
-    } catch {
-        // Unity 不在线时不影响数据组件本身。
+        const confirmed = await viewNavigator.go({viewId:configuredView?.id || event.viewId || '',focus,
+            ...(mode==='device' ? {deviceId:focus.deviceId} : mode==='line' ? {lineId:focus.lineId} : mode==='workshop' ? {workshopId:focus.workshopId} : {})})
+        if(overlayDisposed)return false
+        // Unity resolves the device's real workshop/line ancestry. Do not
+        // overwrite that acknowledgement with the previous view's scope.
+        applyRuntimeContext(confirmed, { userNavigation: true })
+        return true
+    } catch (error) {
+        if(!overlayDisposed) hierarchyError.value = error.message
         return false
-    }
+    } finally {hierarchyBusy.value = false}
+}
+
+function navigateHierarchy(segment) {
+    if (!segment || segment.active || hierarchyBusy.value) return
+    return focusNativeScene(segment.mode, segment.focus)
 }
 
 function viewFor(mode, viewId = '') {
@@ -639,33 +700,7 @@ function navigationFocus(mode, event = {}, view = null) {
 async function focusNativeView(viewId, event = {}) {
     const view = viewFor(event.mode || 'factory', viewId)
     const mode = view?.mode === 'custom' ? (view.targetType || 'factory') : (view?.mode || event.mode || 'factory')
-    const focus = navigationFocus(mode, event, view)
-    const inspectionStage = mode === 'device' ? inspectionStageForView(view) : ''
-    if (inspectionStage) focus.inspectionStage = inspectionStage
-    const nextContext = {
-        viewId: view?.id || viewId || runtimeContext.viewId,
-        viewMode: mode,
-        deviceId: mode === 'device' ? focus.deviceId : '',
-        lineId: mode === 'line' ? focus.lineId : (mode === 'device' ? runtimeContext.lineId : ''),
-        workshopId: mode === 'workshop' ? focus.workshopId : (['line', 'device'].includes(mode) ? runtimeContext.workshopId : '')
-        ,inspectionStage, partId: ''
-    }
-    try {
-        const response = await fetch(API_BASE + '/native-preview/navigate', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                action: 'view',
-                source: 'dashboard_overlay',
-                viewId: view?.id || viewId || '',
-                focus
-            })
-        })
-        if (response.ok) applyRuntimeContext(nextContext, { userNavigation: true })
-        return response.ok
-    } catch {
-        return false
-    }
+    return focusNativeScene(mode, { ...event, viewId:view?.id || viewId })
 }
 
 async function returnToParentView() {
@@ -676,7 +711,7 @@ async function returnToParentView() {
         const mode = String(runtimeContext.viewMode || currentView.value?.mode || targetType || '').toLowerCase()
         const isDeviceView = mode === 'device' || targetType === 'device' || targetType === 'device_part'
         if (isDeviceView && runtimeContext.inspectionStage && runtimeContext.inspectionStage !== 'solid') {
-            const response = await fetch(`${API_BASE}/native-preview/navigate`, {
+            const response = await adminFetch(`${API_BASE}/native-preview/navigate`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 // viewId makes this idempotent if Unity and the WebView happen
@@ -734,7 +769,7 @@ function handleWidgetAction({ event }) {
         else window.open(event.url, '_blank', 'noopener,noreferrer')
     }
     if (event.action === 'switch_scene' && event.sceneId) {
-        fetch(`${API_BASE}/platform/scenes/${encodeURIComponent(event.sceneId)}/activate-latest-release`, { method: 'POST' }).catch(() => {})
+        adminFetch(`${API_BASE}/platform/scenes/${encodeURIComponent(event.sceneId)}/activate-latest-release`, { method: 'POST' }).catch(() => {})
     }
 }
 
@@ -742,6 +777,7 @@ async function handleRuntimeMessage(message) {
     if (overlayDisposed) return
     if (message?.type === 'dashboard_context_changed') {
         const payload = message.payload || {}
+        viewNavigator.accept(payload)
         applyRuntimeContext(payload)
         scheduleRegionReport()
         return
@@ -782,7 +818,7 @@ async function refreshDatabaseValues(force = false) {
             device_id: runtimeContext.deviceId || '',
             part_id: runtimeContext.partId || ''
         })
-        const response = await fetch(`${API_BASE}/data-sources/runtime-values?${query}`, { signal: overlayRequests.signal })
+        const response = await adminFetch(`${API_BASE}/data-sources/runtime-values?${query}`, { signal: overlayRequests.signal })
         if (!response.ok) return
         const payload = await response.json()
         if (overlayDisposed || requestSeq !== databaseRequestSeq) return
@@ -824,7 +860,7 @@ async function refreshBusinessData(force = false) {
     try {
         const params = new URLSearchParams({ connection_id: connectionId, limit: '200' })
         if (runtimeContext.deviceId) params.set('device_id', runtimeContext.deviceId)
-        const response = await fetch(`${API_BASE}/business-data/snapshot?${params.toString()}`, { cache: 'no-store', signal: overlayRequests.signal })
+        const response = await adminFetch(`${API_BASE}/business-data/snapshot?${params.toString()}`, { cache: 'no-store', signal: overlayRequests.signal })
         const payload = await response.json().catch(() => ({}))
         if (overlayDisposed || requestSeq !== businessRequestSeq) return
         if (!response.ok || payload.success === false) throw new Error(payload.error || `业务数据读取失败：${response.status}`)
@@ -845,7 +881,17 @@ async function refreshBusinessData(force = false) {
 }
 
 onMounted(async () => {
+    startAdminSessionTracking()
+    const startupBegan = performance.now()
     standalonePreview.value = !window.chrome?.webview
+    nativeLoadingManaged.value = Boolean(window.__DIGITAL_TWIN_NATIVE_LOADING__)
+    const reportStartup = (progress, phase, step) => {
+        startupProgress.value = progress
+        startupPhase.value = phase
+        startupStep.value = step
+        window.dispatchEvent(new CustomEvent('digital-twin-loading-progress', { detail: { progress, phase, step } }))
+    }
+    reportStartup(8, 0, '正在读取现场配置')
     previousDocumentBackground = document.documentElement.style.background
     previousBodyBackground = document.body.style.background
     document.documentElement.style.background = 'transparent'
@@ -856,6 +902,7 @@ onMounted(async () => {
 
     await loadConfig()
     if (overlayDisposed) return
+    reportStartup(31, 1, '正在构建设备与车间层级')
     probeConfiguredModels()
     runtimeContext.sceneId = platform.value.activeScene?.id || ''
     runtimeContext.viewId = presentationDocument.value?.scene?.defaultViewId || platform.value.activeScene?.defaultViewId || 'factory_overview'
@@ -865,7 +912,8 @@ onMounted(async () => {
     dataStore.setEventQueryOptions(eventQueryConfig())
     dataStore.setMessageHandler(handleRuntimeMessage)
     dataStore.connect()
-    await Promise.all([
+    reportStartup(67, 2, '正在同步实时生产数据')
+    await Promise.allSettled([
         dataStore.refreshEvents(true),
         dataStore.refreshMetrics(true),
         dataStore.refreshHealth(true),
@@ -907,15 +955,22 @@ onMounted(async () => {
     modelProbeTimer = window.setInterval(probeConfiguredModels, 15000)
 
     hostConnected.value = true
+    reportStartup(100, 3, '生产现场已就绪')
+    const startupDwell = Math.max(0, 760 - (performance.now() - startupBegan))
+    if (startupDwell) await new Promise(resolve => setTimeout(resolve, startupDwell))
+    if (overlayDisposed) return
     postHostMessage({ type: 'overlay_ready' })
+    startupLoading.value = false
     scheduleRegionReport()
 })
 
 onUnmounted(() => {
+    stopAdminSessionTracking()
     overlayDisposed = true
     clearTimeout(inspectionProgressTimer)
     modelProbeGeneration += 1
     overlayRequests.abort()
+    viewNavigator.dispose()
     voiceAnnouncer.dispose()
     document.documentElement.style.background = previousDocumentBackground
     document.body.style.background = previousBodyBackground
@@ -934,7 +989,30 @@ onUnmounted(() => {
 </script>
 
 <template>
+    <LoadingExperience v-if="startupLoading && !nativeLoadingManaged" :show="startupLoading" :progress="startupProgress" :phase="startupPhase" :step="startupStep" />
     <div ref="rootRef" class="dashboard-overlay-root" :class="{ 'is-scene-ready': runtimeContext.sceneReady !== false, 'standalone-preview': standalonePreview }">
+        <RouterLink v-if="runtimeContext.viewMode === 'factory' && presentationDocument?.metadata?.referenceHud !== 1" class="group-map-return" data-overlay-hit="true" :to="{path:'/group',query:{embedded:$route.query.embedded,region:$route.query.fromGroup,scope:$route.query.scope}}">‹ 集团分布</RouterLink>
+        <nav v-if="presentationDocument?.metadata?.referenceHud === 1" class="overlay-hierarchy" aria-label="逐级浏览" data-overlay-hit="true" @pointerdown.stop>
+            <div class="overlay-hierarchy-path" aria-label="当前层级路径">
+                <template v-for="(segment,index) in hierarchyTrail" :key="segment.key">
+                    <i v-if="index" class="overlay-hierarchy-separator" aria-hidden="true">›</i>
+                    <RouterLink v-if="segment.to" class="overlay-hierarchy-ancestor" :to="segment.to">{{ segment.label }}</RouterLink>
+                    <strong v-else-if="segment.active" class="overlay-hierarchy-current" aria-current="location">{{ segment.label }}</strong>
+                    <button v-else type="button" class="overlay-hierarchy-ancestor" :disabled="hierarchyBusy" @click="navigateHierarchy(segment)">{{ segment.label }}</button>
+                </template>
+            </div>
+            <div class="overlay-hierarchy-controls">
+                <select v-if="runtimeContext.viewMode === 'factory'" aria-label="选择车间" value="" :disabled="hierarchyBusy" @change="focusNativeScene('workshop',{workshopId:$event.target.value})"><option disabled value="">进入车间</option><option v-for="workshop in hierarchyWorkshops" :key="workshop.id" :value="workshop.id">{{ workshop.name }}</option></select>
+                <select v-else-if="runtimeContext.viewMode === 'workshop'" aria-label="选择产线" value="" :disabled="hierarchyBusy" @change="focusNativeScene('line',{lineId:$event.target.value})"><option disabled value="">进入产线</option><option v-for="line in hierarchyLines" :key="line.id" :value="line.id">{{ line.name }}</option></select>
+                <select v-else-if="runtimeContext.viewMode === 'line'" aria-label="选择设备" value="" :disabled="hierarchyBusy" @change="focusNativeScene('device',{deviceId:$event.target.value})"><option disabled value="">进入设备</option><option v-for="device in hierarchyDevices" :key="device.id" :value="device.id">{{ device.name }}</option></select>
+                <template v-else-if="runtimeContext.viewMode === 'device' && runtimeContext.inspectionEnabled">
+                    <button type="button" class="overlay-hierarchy-action" @click="sendInspectionCommand({command:'stage',stage:'xray'})">透视</button>
+                    <button type="button" class="overlay-hierarchy-action" @click="sendInspectionCommand({command:'stage',stage:'exploded'})">拆解</button>
+                    <select v-if="runtimeContext.inspectionParts?.length" aria-label="选择部件" :value="runtimeContext.partId || ''" @change="sendInspectionCommand({command:'select',partId:$event.target.value})"><option disabled value="">查看部件</option><option v-for="part in runtimeContext.inspectionParts" :key="part.id" :value="part.id">{{ part.name || part.id }}</option></select>
+                </template>
+                <small v-if="hierarchyBusy" class="overlay-hierarchy-status"><i></i>正在切换</small><small v-if="hierarchyError || inspectionCommandError" class="hierarchy-error" role="alert">{{ hierarchyError || inspectionCommandError }}</small>
+            </div>
+        </nav>
         <div class="overlay-canvas" :class="{ 'is-reference-canvas': presentationDocument?.metadata?.referenceHud === 1 && runtimeContext.viewId === 'factory_overview' }" :style="presentationDocument?.metadata?.referenceHud === 1 && runtimeContext.viewId === 'factory_overview' ? fitHudCanvas(dashboardCanvas, overlayViewport) : undefined">
             <div v-if="navigationEnabled" class="overlay-navigation" :style="navigationStyle">
                 <button
@@ -1025,6 +1103,8 @@ onUnmounted(() => {
 </template>
 
 <style>
+.group-map-return{position:absolute;pointer-events:auto;left:24px;top:100px;z-index:1002;padding:7px 11px;border:1px solid #8598c333;border-radius:16px;color:#aebddd;background:#151d2b44;text-decoration:none;font-size:11px}
+.overlay-hierarchy{position:absolute;left:145px;top:100px;z-index:1002;display:flex;align-items:center;gap:11px;max-width:74%;padding:5px 7px;border:1px solid rgba(157,177,219,.17);border-radius:10px;background:linear-gradient(115deg,rgba(15,22,37,.78),rgba(24,30,47,.56));box-shadow:0 8px 25px rgba(2,8,18,.16),inset 0 1px 0 rgba(228,235,255,.06);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);color:#aebddd;font-size:10px;pointer-events:auto}.overlay-hierarchy-path,.overlay-hierarchy-controls{display:flex;align-items:center;gap:4px;min-width:0}.overlay-hierarchy-path{overflow:hidden}.overlay-hierarchy-separator{padding:0 2px;color:#65758f;font-style:normal}.overlay-hierarchy-current,.overlay-hierarchy-ancestor{max-width:180px;overflow:hidden;padding:5px 7px;border:0;border-radius:6px;text-overflow:ellipsis;white-space:nowrap;font:inherit}.overlay-hierarchy-current{color:#edf2ff;background:linear-gradient(110deg,rgba(129,151,220,.17),rgba(129,151,220,.06));box-shadow:inset 0 0 0 1px rgba(165,184,235,.12)}.overlay-hierarchy-ancestor{color:#91a1bd;background:transparent;cursor:pointer;transition:color .16s ease,background .16s ease}.overlay-hierarchy-ancestor:hover:not(:disabled){color:#e2eaff;background:rgba(140,161,220,.1)}.overlay-hierarchy-ancestor:disabled{opacity:.55;cursor:wait}.overlay-hierarchy-controls{flex-shrink:0;padding-left:8px;border-left:1px solid rgba(159,175,212,.14)}.overlay-hierarchy select,.overlay-hierarchy-action{max-width:180px;padding:5px 22px 5px 9px;border:1px solid rgba(153,172,214,.18);border-radius:6px;color:#cfdaef;background-color:rgba(28,37,57,.74);font:inherit;cursor:pointer}.overlay-hierarchy select{appearance:none;background-image:linear-gradient(45deg,transparent 50%,#91a3c4 50%),linear-gradient(135deg,#91a3c4 50%,transparent 50%);background-position:calc(100% - 10px) 50%,calc(100% - 6px) 50%;background-size:4px 4px;background-repeat:no-repeat}.overlay-hierarchy select:disabled,.overlay-hierarchy-action:disabled{opacity:.55;cursor:wait}.overlay-hierarchy-action{padding:5px 8px}.overlay-hierarchy-action:hover{border-color:rgba(164,185,234,.4);background-color:rgba(59,75,111,.54)}.overlay-hierarchy-status{display:flex;align-items:center;gap:5px;color:#aebddd}.overlay-hierarchy-status i{width:5px;height:5px;border-radius:50%;background:#65d7b0;box-shadow:0 0 7px rgba(101,215,176,.65);animation:hierarchy-pulse 1.2s ease-in-out infinite}.overlay-hierarchy .hierarchy-error{color:#ef9caa;max-width:240px}@keyframes hierarchy-pulse{50%{opacity:.38;transform:scale(.8)}}
 html,
 body,
 #app {
@@ -1289,4 +1369,9 @@ body,
 .overlay-model-error-item code,
 .overlay-model-errors > em { color: #ffdcd5; font-size: 11px; line-height: 1.4; overflow-wrap: anywhere; }
 .overlay-model-error-item code { font-family: SFMono-Regular, Consolas, Monaco, monospace; }
+.overlay-hierarchy{left:24px;top:100px;gap:8px;max-width:calc(100vw - 48px);padding:6px 9px;border-color:rgba(157,177,219,.2);border-radius:9px;background:linear-gradient(110deg,rgba(17,23,39,.78),rgba(24,30,48,.56) 72%,rgba(19,25,41,.46));box-shadow:0 12px 32px rgba(2,8,18,.2),inset 0 1px 0 rgba(232,238,255,.075)}
+.overlay-hierarchy-path{flex:0 1 auto;gap:2px;min-width:0}.overlay-hierarchy-separator{padding:0 1px;color:#72809b;font-size:12px}.overlay-hierarchy-current,.overlay-hierarchy-ancestor{display:inline-flex;align-items:center;gap:6px;min-width:0;max-width:clamp(62px,9vw,132px);padding:6px 7px;border-radius:6px;line-height:1.2}.overlay-hierarchy-ancestor{position:relative;flex:0 1 auto;color:#9aa8c2;text-decoration:none;transition:color .16s ease,background .16s ease,box-shadow .16s ease}.overlay-hierarchy-ancestor::before{content:"";width:3px;height:3px;flex:0 0 3px;border-radius:50%;background:#8f9db9;box-shadow:0 0 5px rgba(143,157,185,.2)}.overlay-hierarchy-ancestor:hover:not(:disabled){color:#e3eafa;background:rgba(140,161,220,.095);box-shadow:inset 0 0 0 1px rgba(157,177,225,.08)}.overlay-hierarchy-ancestor:focus-visible,.overlay-hierarchy-action:focus-visible,.overlay-hierarchy select:focus-visible{outline:1px solid rgba(178,194,255,.72);outline-offset:2px}.overlay-hierarchy-current{flex:0 1 auto;color:#edf2ff;background:linear-gradient(110deg,rgba(129,151,220,.2),rgba(129,151,220,.075));box-shadow:inset 0 0 0 1px rgba(165,184,235,.15)}.overlay-hierarchy-current::before{content:"";width:5px;height:5px;flex:0 0 5px;border-radius:50%;background:#a3abf5;box-shadow:0 0 8px rgba(151,161,245,.52)}
+.overlay-hierarchy-controls{gap:5px;padding-left:9px;border-left-color:rgba(159,175,212,.16)}.overlay-hierarchy select,.overlay-hierarchy-action{height:29px;max-width:min(180px,16vw);padding:5px 22px 5px 9px;border-color:rgba(153,172,214,.2);border-radius:6px;color:#d7e0f1;background-color:rgba(28,37,57,.76);transition:border-color .16s ease,background .16s ease,box-shadow .16s ease}.overlay-hierarchy select:hover,.overlay-hierarchy-action:hover{border-color:rgba(164,185,234,.38);background-color:rgba(49,63,94,.65);box-shadow:0 3px 10px rgba(4,8,18,.12)}.overlay-hierarchy select option{color:#e4eaf6;background:#1b2234}.overlay-hierarchy-action{padding-inline:9px}.overlay-hierarchy-status{white-space:nowrap}.overlay-hierarchy .hierarchy-error{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+@media(max-width:900px){.overlay-hierarchy{left:12px;top:88px;max-width:calc(100vw - 24px);gap:5px;padding:5px 6px}.overlay-hierarchy-path{gap:0}.overlay-hierarchy-current,.overlay-hierarchy-ancestor{max-width:clamp(46px,8vw,88px);padding-inline:5px;font-size:9px}.overlay-hierarchy-controls{gap:3px;padding-left:5px}.overlay-hierarchy select,.overlay-hierarchy-action{max-width:clamp(70px,13vw,120px);padding-left:6px;padding-right:17px;font-size:9px}.overlay-hierarchy-action{padding-inline:6px}.overlay-hierarchy-status{font-size:9px}}
+@media(prefers-reduced-motion:reduce){.overlay-hierarchy-ancestor,.overlay-hierarchy select,.overlay-hierarchy-action{transition:none}}
 </style>

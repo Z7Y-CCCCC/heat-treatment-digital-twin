@@ -25,7 +25,7 @@ function makeImpact(type, record, associations, internal = {}) {
     };
 }
 
-async function getWorkshopDeletionImpact(client, workshopId) {
+async function getWorkshopDeletionImpact(client, workshopId, factoryId = 'factory_default') {
     const workshop = await client.get('SELECT id, name FROM workshops WHERE id = ?', [workshopId]);
     if (!workshop) return null;
 
@@ -41,7 +41,7 @@ async function getWorkshopDeletionImpact(client, workshopId) {
         .map(device => String(device.id));
     const dataPointCount = await countDataPoints(client, deviceIds);
 
-    const environmentRow = await client.get('SELECT value FROM settings WHERE `key` = ?', ['native_environment_config']);
+    const environmentRow = await client.get('SELECT value FROM factory_settings WHERE factory_id = ? AND `key` = ?', [factoryId, 'native_environment_config']);
     const environment = safeObject(environmentRow?.value);
     const wallCount = (Array.isArray(environment.walls) ? environment.walls : []).filter(wall => (
         String(wall?.workshopId || wall?.workshop_id || '') === String(workshopId)

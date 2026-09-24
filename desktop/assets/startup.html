@@ -6,60 +6,71 @@
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
   <title>热处理数字孪生大屏 - 正在启动</title>
   <style>
-    :root { color-scheme: light; font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif; }
+    :root { color-scheme: dark; font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif; }
     * { box-sizing: border-box; }
-    html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: transparent; }
-    body { padding: 10px; color: #18212b; }
+    html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: #29292c; }
+    body { display: grid; place-items: center; padding: 24px; color: #eeeeea; }
     .shell {
-      width: 100%; height: 100%; padding: 30px 34px 24px; border: 1px solid rgba(17, 36, 54, .11);
-      border-radius: 24px; background: rgba(248, 250, 252, .985);
-      box-shadow: 0 24px 70px rgba(9, 24, 39, .28), 0 2px 10px rgba(9, 24, 39, .12);
-      display: flex; flex-direction: column; -webkit-app-region: drag;
+      width: min(900px, 100%); max-height: calc(100vh - 48px); padding: 28px 34px 24px;
+      border: 1px solid rgba(206, 207, 195, .13); border-radius: 13px;
+      background: linear-gradient(145deg, rgba(49,49,52,.98), rgba(38,38,41,.99));
+      box-shadow: 0 34px 100px rgba(0,0,0,.28), inset 0 1px 0 rgba(255,255,255,.045);
+      display: flex; flex-direction: column;
     }
-    .brand { display: flex; align-items: center; gap: 15px; }
-    .brand img { width: 54px; height: 54px; border-radius: 14px; box-shadow: 0 7px 18px rgba(20, 91, 104, .2); }
-    .brand h1 { margin: 0; font-size: 20px; font-weight: 650; letter-spacing: .2px; }
-    .brand p { margin: 5px 0 0; color: #7b8794; font-size: 13px; }
-    .progress-head { display: flex; align-items: flex-end; justify-content: space-between; margin-top: 27px; }
-    #title { font-size: 15px; font-weight: 650; line-height: 1.4; }
-    #percent { color: #177f8e; font-size: 14px; font-variant-numeric: tabular-nums; font-weight: 700; }
-    .track { height: 8px; margin-top: 10px; overflow: hidden; border-radius: 99px; background: #dfe6eb; }
+    .brand { display: flex; align-items: center; gap: 12px; color: #b8b9b2; }
+    .brand img { width: 22px; height: 22px; object-fit: contain; }
+    .brand h1 { margin: 0; font-size: 10px; font-weight: 600; letter-spacing: .17em; }
+    .brand p { margin: 0 0 0 auto; color: #92938d; font-size: 9px; letter-spacing: .12em; }
+    .brand p::before { content: '•'; margin-right: 7px; color: #91b4a3; }
+    .art { position: relative; display: grid; place-items: center; height: clamp(170px, 35vh, 310px); margin: 12px 0 4px; overflow: hidden; border-bottom: 1px solid rgba(202,205,192,.1); }
+    .art::before { position: absolute; inset: 0; z-index: 1; content: ''; background: linear-gradient(90deg,rgba(39,39,42,.68),transparent 24%,transparent 76%,rgba(39,39,42,.68)),linear-gradient(0deg,#29292c 0%,transparent 23%,transparent 84%,rgba(41,41,44,.4)); pointer-events: none; }
+    .art img { width: min(76%, 720px); height: 100%; object-fit: contain; user-select: none; cursor: grab; transform: perspective(950px) rotateX(var(--tilt-x, 0deg)) rotateY(var(--tilt-y, 0deg)) scale(var(--model-scale, 1)); transition: transform .22s cubic-bezier(.2,.75,.25,1); }
+    .art img.dragging { cursor: grabbing; transition: none; }
+    .art-caption { position: absolute; z-index: 2; bottom: 12px; left: 0; color: #8c8d87; font-size: 9px; letter-spacing: .12em; }
+    .progress-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 20px; margin-top: 12px; }
+    #title { font-size: 17px; font-weight: 500; line-height: 1.4; }
+    #percent { color: #d6d7cf; font-size: 22px; font-variant-numeric: tabular-nums; font-weight: 400; }
+    .track { height: 3px; margin-top: 13px; overflow: hidden; border-radius: 99px; background: rgba(220,221,210,.12); }
     #bar {
       position: relative; width: 0; height: 100%; border-radius: inherit;
-      background: linear-gradient(90deg, #176779, #2ca6a4); transition: width .32s cubic-bezier(.2,.72,.25,1);
+      background: linear-gradient(90deg,#7d9a8a,#b4c8b5 72%,#d0ad7a); transition: width .55s cubic-bezier(.22,.75,.3,1);
     }
-    #bar::after { content: ""; position: absolute; inset: 0; background: linear-gradient(105deg, transparent 20%, rgba(255,255,255,.52) 48%, transparent 74%); animation: sheen 1.45s linear infinite; }
+    #bar::after { content: ""; position: absolute; inset: 0; background: linear-gradient(105deg, transparent 20%, rgba(255,255,255,.25) 48%, transparent 74%); animation: sheen 1.45s linear infinite; }
     @keyframes sheen { from { transform: translateX(-100%); } to { transform: translateX(100%); } }
-    #detail { min-height: 20px; margin-top: 8px; color: #71808d; font-size: 12px; line-height: 1.55; }
-    .steps { flex: 1; min-height: 0; margin: 17px 0 0; padding: 0; list-style: none; overflow: hidden; }
-    .step { display: flex; align-items: center; gap: 10px; height: 27px; color: #8a96a1; font-size: 12px; transition: color .2s; }
-    .step-dot { width: 17px; height: 17px; border-radius: 50%; background: #e3e9ed; display: grid; place-items: center; flex: none; font-size: 10px; color: white; }
-    .step.running { color: #26343f; font-weight: 600; }
-    .step.running .step-dot { background: #278c98; box-shadow: 0 0 0 4px rgba(39,140,152,.12); }
-    .step.done .step-dot { background: #4ca57b; }
-    .step.error { color: #c94444; }
-    .step.error .step-dot { background: #d85252; }
-    .failure { display: none; margin-top: 14px; padding: 12px 14px; border: 1px solid #efcaca; border-radius: 12px; background: #fff4f4; -webkit-app-region: no-drag; }
-    .failure strong { display: block; color: #b93737; font-size: 12px; margin-bottom: 5px; }
-    #error { color: #782f2f; font-size: 12px; line-height: 1.45; max-height: 44px; overflow: auto; }
-    #logPath { margin-top: 5px; color: #987070; font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .actions { display: none; justify-content: flex-end; gap: 8px; margin-top: 13px; -webkit-app-region: no-drag; }
-    .button { min-width: 84px; padding: 8px 14px; border: 0; border-radius: 9px; color: #35424d; background: #e7ecef; font: inherit; font-size: 12px; cursor: pointer; }
+    #detail { min-height: 20px; margin-top: 7px; color: #9c9d96; font-size: 11px; line-height: 1.55; }
+    .steps { min-height: 0; max-height: 145px; margin: 14px 0 0; padding: 0; list-style: none; overflow: auto; }
+    .step { display: flex; align-items: center; gap: 10px; height: 24px; color: #85867f; font-size: 10px; transition: color .2s; }
+    .step-dot { width: 17px; height: 17px; border: 1px solid rgba(203,204,193,.17); border-radius: 50%; display: grid; place-items: center; flex: none; font-size: 10px; color: #a8c3b1; }
+    .step.running { color: #e1d1b1; }
+    .step.running .step-dot { border-color: rgba(201,174,130,.6); }
+    .step.done { color: #b1c4b5; }
+    .step.done .step-dot { border-color: rgba(143,179,158,.55); }
+    .step.error { color: #efb1a6; }
+    .step.error .step-dot { border-color: #bb6e63; }
+    .failure { display: none; margin-top: 14px; padding: 12px 14px; border: 1px solid rgba(235,131,116,.35); border-radius: 9px; background: rgba(127,41,35,.15); }
+    .failure strong { display: block; color: #f1afa1; font-size: 12px; margin-bottom: 5px; }
+    #error { color: #f3c7bd; font-size: 12px; line-height: 1.45; max-height: 64px; overflow: auto; }
+    #logPath { margin-top: 5px; color: #b4918d; font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .actions { display: none; justify-content: flex-end; gap: 8px; margin-top: 13px; }
+    .button { min-width: 84px; padding: 8px 14px; border: 1px solid rgba(206,207,195,.19); border-radius: 7px; color: #e8e8e2; background: #3e3f40; font: inherit; font-size: 12px; cursor: pointer; }
     .button:hover { filter: brightness(.97); }
-    .button.primary { color: white; background: #207e8b; }
+    .button.primary { color: #242623; background: #b4c8b5; }
     body.error .failure, body.error .actions { display: flex; }
     body.error .failure { flex-direction: column; }
     body.error .steps { display: none; }
-    body.error #bar { background: #d85252; }
+    body.error #bar { background: #bb6e63; }
     body.success #bar::after, body.error #bar::after { display: none; }
+    @media(max-height:650px) { .art { height: 23vh; } .steps { max-height: 95px; } }
   </style>
 </head>
 <body>
   <main class="shell">
     <header class="brand">
       <img src="./icon.png" alt="">
-      <div><h1>热处理数字孪生大屏</h1><p id="subtitle">正在安全启动现场运行环境</p></div>
+      <h1>HEAT TREATMENT / DIGITAL TWIN</h1>
+      <p id="subtitle">SYSTEM STARTUP</p>
     </header>
+    <div class="art"><img id="model" src="./loading-factory.png" alt="可拖动旋转查看的厂房示意图" draggable="false"><span class="art-caption">● FACTORY SYSTEMS INITIALIZING · 拖动旋转 · 滚轮缩放</span></div>
     <div class="progress-head"><span id="title">正在准备启动环境</span><span id="percent">0%</span></div>
     <div class="track"><div id="bar"></div></div>
     <div id="detail">正在检查程序组件</div>
@@ -80,13 +91,35 @@
     document.querySelectorAll('[data-action]').forEach(button => {
       button.addEventListener('click', () => { location.href = `startup-action://${button.dataset.action}`; });
     });
+    const model = byId('model');
+    let pointer = null, tiltX = 0, tiltY = 0, modelScale = 1;
+    const renderModel = () => {
+      model.style.setProperty('--tilt-x', `${tiltX}deg`);
+      model.style.setProperty('--tilt-y', `${tiltY}deg`);
+      model.style.setProperty('--model-scale', modelScale);
+    };
+    model.addEventListener('pointerdown', event => {
+      if (event.button !== 0) return;
+      pointer = { id: event.pointerId, x: event.clientX, y: event.clientY };
+      model.classList.add('dragging'); model.setPointerCapture(event.pointerId);
+    });
+    model.addEventListener('pointermove', event => {
+      if (!pointer || pointer.id !== event.pointerId) return;
+      tiltY = Math.max(-42, Math.min(42, tiltY + (event.clientX - pointer.x) * .34));
+      tiltX = Math.max(-22, Math.min(22, tiltX - (event.clientY - pointer.y) * .25));
+      pointer = { id: event.pointerId, x: event.clientX, y: event.clientY }; renderModel();
+    });
+    const endDrag = () => { pointer = null; model.classList.remove('dragging'); };
+    model.addEventListener('pointerup', endDrag); model.addEventListener('pointercancel', endDrag);
+    model.addEventListener('wheel', event => { event.preventDefault(); modelScale = Math.max(.88, Math.min(1.22, modelScale - Math.sign(event.deltaY) * .06)); renderModel(); }, { passive: false });
+    model.addEventListener('dblclick', () => { tiltX = 0; tiltY = 0; modelScale = 1; renderModel(); });
     window.updateStartup = state => {
       const progress = Math.max(0, Math.min(100, Number(state.progress) || 0));
       document.body.className = state.status || 'running';
       document.title = state.status === 'error'
         ? '热处理数字孪生大屏 - 启动失败'
         : state.status === 'success' ? '热处理数字孪生大屏 - 启动完成' : '热处理数字孪生大屏 - 正在启动';
-      byId('subtitle').textContent = state.status === 'error' ? '部分启动步骤未能完成' : '正在安全启动现场运行环境';
+      byId('subtitle').textContent = state.status === 'error' ? 'STARTUP ERROR' : 'SYSTEM STARTUP';
       byId('title').textContent = state.title || '正在启动';
       byId('detail').textContent = state.detail || '';
       byId('percent').textContent = `${Math.round(progress)}%`;

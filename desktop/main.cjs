@@ -35,6 +35,7 @@ let desktopErrorLogStream = null;
 let logCleanupTimer = null;
 let backendPort = null;
 let backendShutdownToken = null;
+let backendAdminToken = null;
 let applicationOrigin = null;
 let writablePaths = null;
 let desktopSettingsTimer = null;
@@ -126,7 +127,7 @@ function completeStartupProgress() {
     startupState.progress = 100;
     startupState.status = 'success';
     startupState.title = '启动完成';
-    startupState.detail = '三维场景、实时数据和顶部组件均已就绪';
+    startupState.detail = '登录入口与顶部组件已就绪';
     sendStartupState();
 }
 
@@ -153,14 +154,9 @@ async function createStartupWindow() {
     if (startupWindow && !startupWindow.isDestroyed()) return startupWindow;
     startupWindowClosingForSuccess = false;
     startupWindow = new BrowserWindow({
-        width: 620,
-        height: 430,
-        minWidth: 620,
-        minHeight: 430,
-        maxWidth: 620,
-        maxHeight: 430,
+        fullscreen: true,
         frame: false,
-        transparent: true,
+        transparent: false,
         resizable: false,
         maximizable: false,
         minimizable: false,
@@ -168,7 +164,7 @@ async function createStartupWindow() {
         center: true,
         alwaysOnTop: true,
         skipTaskbar: false,
-        backgroundColor: '#00000000',
+        backgroundColor: '#29292c',
         icon: path.join(__dirname, 'assets', 'icon.png'),
         webPreferences: {
             contextIsolation: true,
@@ -615,7 +611,7 @@ function readRuntimeSettings(port) {
             host: '127.0.0.1',
             port,
             path: '/api/system/runtime',
-            headers: { Accept: 'application/json' }
+            headers: { Accept: 'application/json', 'X-Admin-Token': backendAdminToken || '' }
         }, response => {
             let body = '';
             response.setEncoding('utf8');
@@ -885,6 +881,17 @@ function monitorNativeStartup(child, onUpdate, timeoutMs = 300000) {
             else resolve();
         };
         const parseLine = line => {
+            // Login is owned by the embedded admin WebView. The Unity scene
+            // cannot reach 100% until that account signs in, so waiting for a
+            // fully built factory here traps the user behind the startup window.
+            // The next startup gate waits for the actual admin WebView to load.
+            if (line.includes('[FactoryRuntime] Application tab chrome requested')) {
+                lastProgress = Math.max(lastProgress, 80);
+                lastStep = '登录入口已就绪';
+                onUpdate?.({ progress: lastProgress, step: lastStep, warning: lastWarning });
+                finish();
+                return;
+            }
             const progressMatch = line.match(/\[StartupProgress\]\s*(\d{1,3})\|(.+)/);
             if (progressMatch) {
                 lastProgress = Math.max(0, Math.min(100, Number(progressMatch[1])));
@@ -1072,6 +1079,7 @@ async function startBackend(port, writable) {
         : path.resolve(__dirname, '..', 'frontend', 'dist');
     backendPort = port;
     backendShutdownToken = crypto.randomBytes(32).toString('hex');
+    backendAdminToken = crypto.randomBytes(32).toString('hex');
     const logStreams = await Promise.all([
         createRotatingLogWriter(writable.logsDir, 'backend.log'),
         createRotatingLogWriter(writable.logsDir, 'backend-error.log')
@@ -1112,6 +1120,7 @@ async function startBackend(port, writable) {
             SQLITE_RECOVERY_TEMPLATE: process.env.SQLITE_RECOVERY_TEMPLATE ?? resourcePath('templates', 'factory-template.db'),
             SQLITE_UPGRADE_TEMPLATE: process.env.SQLITE_UPGRADE_TEMPLATE ?? resourcePath('templates', 'factory-template.db'),
             DESKTOP_SHUTDOWN_TOKEN: backendShutdownToken,
+            ADMIN_API_TOKEN: backendAdminToken,
             DESKTOP_CONTROL_URL: desktopControlOrigin || '',
             DESKTOP_CONTROL_TOKEN: desktopControlToken || '',
             FFMPEG_PATH: resourcePath('ffmpeg', 'ffmpeg.exe'),
@@ -1190,6 +1199,7 @@ function stopBackend() {
     backendProcess = null;
     backendPort = null;
     backendShutdownToken = null;
+    backendAdminToken = null;
     backendStopPromise = terminateProcess(processToStop, {
         gracefulShutdown: () => requestBackendShutdown(port, token)
     }).finally(() => {
@@ -1322,7 +1332,7 @@ function createMainWindow(origin, showInitially = false) {
                 type: 'question',
                 title: APP_NAME,
                 message: '请选择关闭方式',
-                buttons: ['最小化到系统托盘（推荐）', '完全退出程序'],
+                buttons: ['最小化到系统托盘', '完全退出程序'],
                 defaultId: 0,
                 cancelId: 0,
                 noLink: true
@@ -1393,7 +1403,7 @@ async function launchApplication() {
         pendingNativeAdminRequest = false;
         setTimeout(showNativeAdminPanel, 600).unref?.();
     }
-    updateStartupProgress('ready', 99, '正在完成启动', '确认三维场景、实时数据和顶部组件状态');
+    updateStartupProgress('ready', 99, '正在完成启动', '确认登录入口与顶部组件状态');
     completeStartupProgress();
     await delay(420);
     closeStartupWindow();

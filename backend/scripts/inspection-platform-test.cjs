@@ -7,7 +7,7 @@ const { normalizeInspection, validateInspection } = require('../../shared/inspec
 const { stringifyModelMetadata } = require('../services/modelAssetMetadata');
 const { getInspectionPresets, presetMetadata } = require('../services/inspectionPresets');
 const { getBuiltinModels } = require('../services/builtinModels');
-const { BACKEND_DIR, createRunDirectory, createTestDatabase, findFreePort, startLoggedProcess, forceStop, waitForHttp, requestJson, waitUntil } = require('./integration-test-utils.cjs');
+const { BACKEND_DIR, createRunDirectory, createTestDatabase, findFreePort, startLoggedProcess, forceStop, waitForHttp, requestJson, testFetch, waitUntil } = require('./integration-test-utils.cjs');
 
 let backend;
 const sockets = [];
@@ -109,18 +109,18 @@ async function socket(origin, role, messages) {
     const unchanged = (await requestJson(`${origin}/api/models`)).find(model => model.id === modelId);
     check('preview leaves saved model metadata unchanged', () => assert.equal(unchanged.metadata, result.model.metadata));
     for (const inspection of [{ command: 'stage', stage: 'exploded' }, { command: 'stage', stage: 'solid' }, { command: 'select', partId: saved.parts[0].id }, { command: 'progress', progress: .37 }, { command: 'isolate', enabled: true }, { command: 'labels', enabled: false }, { command: 'clear' }, { command: 'pause' }, { command: 'resume' }]) {
-        const response = await fetch(`${origin}/api/native-preview/navigate`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'inspection', focus: { mode: 'device', deviceId: 'fixture-device' }, inspection }) });
+        const response = await testFetch(`${origin}/api/native-preview/navigate`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'inspection', focus: { mode: 'device', deviceId: 'fixture-device' }, inspection }) });
         assert.equal(response.status, 200);
     }
     await waitUntil(() => unityMessages.filter(message => message.payload?.action === 'inspection').length === 9, 5000, 'view-only commands');
     checks.push('nine viewing-only inspection commands reach Unity while admin is locked');
-    const explodedView = await fetch(`${origin}/api/native-preview/navigate`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'view', viewId: 'device_exploded', focus: { mode: 'device', deviceId: 'fixture-device', inspectionStage: 'exploded' } }) });
+    const explodedView = await testFetch(`${origin}/api/native-preview/navigate`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'view', viewId: 'device_exploded', focus: { mode: 'device', deviceId: 'fixture-device', inspectionStage: 'exploded' } }) });
     check('device exploded view forwards its inspection stage to Unity', () => assert.equal(explodedView.status, 200));
     const explodedMessage = await waitUntil(() => unityMessages.find(message => message.type === 'native_scene_preview' && message.payload?.action === 'view' && message.payload?.focus?.inspectionStage === 'exploded'), 5000, 'exploded view stage');
     check('Unity navigation payload identifies the completed exploded stage', () => assert.equal(explodedMessage.payload.focus.inspectionStage, 'exploded'));
     const count = unityMessages.filter(message => message.type === 'native_scene_preview').length;
     for (const inspection of [{ command: 'delete' }, { command: 'stage', stage: 'bad' }, { command: 'progress', progress: -1 }, { command: 'isolate', enabled: 'false' }, { command: 'select' }]) {
-        const response = await fetch(`${origin}/api/native-preview/navigate`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'inspection', focus: { deviceId: 'fixture-device' }, inspection }) });
+        const response = await testFetch(`${origin}/api/native-preview/navigate`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'inspection', focus: { deviceId: 'fixture-device' }, inspection }) });
         assert.equal(response.status, 400);
     }
     check('invalid commands fail without broadcasting', () => assert.equal(unityMessages.filter(message => message.type === 'native_scene_preview').length, count));

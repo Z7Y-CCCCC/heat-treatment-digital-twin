@@ -26,6 +26,16 @@ test('connect is idempotent and dispose detaches every socket callback', t => {
     assert.equal(sockets.length, 1)
 })
 
+test('scene projection is opt-in and does not add traffic for normal dashboards',t=>{
+    const {store,sockets}=fixture(t,{sceneProjection:true})
+    store.connect();sockets[0].open()
+    assert.deepEqual(JSON.parse(sockets[0].sent[1]),{type:'scene_projection_subscribe',enabled:true})
+    const ordinary=createDashboardDataStore()
+    ordinary.connect();sockets[1].open()
+    assert.equal(sockets[1].sent.length,1)
+    ordinary.dispose()
+})
+
 test('new device frames replace selected data and offline devices leave live counts', async t => {
     const { store, sockets } = fixture(t)
     store.registerDevice({ id: 'A', name: 'A' })

@@ -25,6 +25,7 @@ namespace HeatTreatment.DigitalTwin.Rendering
         private bool _lastPrecise;
 
         public Vector3 Target => _target;
+        public Bounds FramedBounds => _lastBounds;
         public bool InteractionEnabled { get; set; } = true;
         public bool PointerInputBlocked { get; set; }
 

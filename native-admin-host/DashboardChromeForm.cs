@@ -171,7 +171,7 @@ internal sealed class DashboardChromeForm : Form
         {
             var rect = DashboardTabRect;
             using var path = RoundedPath(rect, ScaleMetric(9));
-            using var fill = new SolidBrush(Color.FromArgb(248, 250, 252));
+            using var fill = new SolidBrush(_hoverZone == 6 ? Color.White : Color.FromArgb(248, 250, 252));
             using var border = new Pen(Color.FromArgb(203, 213, 223), ScaleMetric(1f));
             graphics.FillPath(fill, path);
             graphics.DrawPath(border, path);
@@ -329,7 +329,9 @@ internal sealed class DashboardChromeForm : Form
         protected override void OnMouseMove(MouseEventArgs e)
         {
             base.OnMouseMove(e);
-            var zone = DetachedChipRect.Contains(e.Location)
+            var zone = DashboardTabRect.Contains(e.Location)
+                ? 6
+                : DetachedChipRect.Contains(e.Location)
                 ? 1
                 : RefreshRect.Contains(e.Location)
                     ? 5
@@ -373,7 +375,8 @@ internal sealed class DashboardChromeForm : Form
         {
             base.OnMouseUp(e);
             if (e.Button != MouseButtons.Left) return;
-            if (DetachedChipRect.Contains(e.Location)) _action("focus_admin", Cursor.Position.X, Cursor.Position.Y);
+            if (DashboardTabRect.Contains(e.Location)) _action("show_dashboard", Cursor.Position.X, Cursor.Position.Y);
+            else if (DetachedChipRect.Contains(e.Location)) _action("focus_admin", Cursor.Position.X, Cursor.Position.Y);
             else if (RefreshRect.Contains(e.Location)) _action("reload", Cursor.Position.X, Cursor.Position.Y);
             else if (MinimizeRect.Contains(e.Location)) _action("minimize", Cursor.Position.X, Cursor.Position.Y);
             else if (MaximizeRect.Contains(e.Location)) _action("maximize", Cursor.Position.X, Cursor.Position.Y);
@@ -382,7 +385,8 @@ internal sealed class DashboardChromeForm : Form
 
         private bool IsInteractiveZone(Point location)
         {
-            return DetachedChipRect.Contains(location)
+            return DashboardTabRect.Contains(location)
+                || DetachedChipRect.Contains(location)
                 || RefreshRect.Contains(location)
                 || MinimizeRect.Contains(location)
                 || MaximizeRect.Contains(location)

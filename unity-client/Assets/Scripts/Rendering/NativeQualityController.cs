@@ -36,6 +36,9 @@ namespace HeatTreatment.DigitalTwin.Rendering
 
         private NativeClientSettings _settings;
         private bool _hotkeysEnabled;
+        private Camera _shadowCamera;
+        private OrbitCameraController _shadowOrbit;
+        private float _minimumShadowDistance = 80f;
 
         public NativeQualityProfile ActiveProfile { get; private set; }
         public string ActiveProfileName => ToConfigName(ActiveProfile);
@@ -59,6 +62,9 @@ namespace HeatTreatment.DigitalTwin.Rendering
         {
             ActiveProfile = profile;
             var values = Values(profile);
+            _minimumShadowDistance = values.ShadowDistance;
+            _shadowCamera = Camera.main;
+            _shadowOrbit = _shadowCamera != null ? _shadowCamera.GetComponent<OrbitCameraController>() : null;
             Application.targetFrameRate = values.TargetFrameRate;
             QualitySettings.vSyncCount = 0;
             QualitySettings.antiAliasing = values.Msaa;
@@ -127,6 +133,22 @@ namespace HeatTreatment.DigitalTwin.Rendering
             else if (Input.GetKeyDown(KeyCode.F2)) Apply(NativeQualityProfile.Balanced, false);
             else if (Input.GetKeyDown(KeyCode.F3)) Apply(NativeQualityProfile.Showcase, false);
             else if (Input.GetKeyDown(KeyCode.F4)) ApplyAuto(false);
+        }
+
+        private void OnEnable() => RenderPipelineManager.beginCameraRendering += FitShadowCoverage;
+        private void OnDisable() => RenderPipelineManager.beginCameraRendering -= FitShadowCoverage;
+
+        private void FitShadowCoverage(ScriptableRenderContext context, Camera camera)
+        {
+            // Run after camera motion, before URP reads shadow settings. Reflection
+            // probe/preview cameras must not change the application's shadow range.
+            if (camera != _shadowCamera || _shadowOrbit == null) return;
+            var distance = SceneShadowCoverage.Distance(_shadowOrbit.FramedBounds,
+                camera.transform.position, camera.transform.forward, camera.farClipPlane, _minimumShadowDistance);
+            var pipeline = GraphicsSettings.currentRenderPipeline as UniversalRenderPipelineAsset;
+            if (pipeline != null && !Mathf.Approximately(pipeline.shadowDistance, distance))
+                pipeline.shadowDistance = distance;
+            QualitySettings.shadowDistance = distance;
         }
 
         private static NativeQualityProfile DetectProfile()

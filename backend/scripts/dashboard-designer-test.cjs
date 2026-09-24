@@ -74,7 +74,7 @@ async function main() {
             method: 'PUT',
             body: JSON.stringify({ sceneId: writeAttempt.sceneId, document: writeAttempt, expectedRevision: currentRevision })
         });
-        assert.equal(rejected.response.status, 400, 'PLC 写入意图没有被拒绝');
+        assert.equal(rejected.response.status, 400, `PLC 写入意图没有被拒绝：${JSON.stringify(rejected.body)}`);
         assert.match(rejected.body.error || '', /写入/);
 
         const testDocument = clone(originalDocument);

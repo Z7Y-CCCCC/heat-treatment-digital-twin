@@ -98,6 +98,46 @@ async function serviceChecks() {
     assert.equal((await restarted.login(replacementPassword, 'local')).status.authenticated, true);
     checks.push('password changes revoke old sessions; restart preserves settings but locks access');
 
+    const owner = await restarted.login(replacementPassword, 'owner-users');
+    const viewerAccount = await restarted.createUser(owner.token, owner.status.csrfToken,
+        { username: 'viewer_one', displayName: '值班查看员', role: 'viewer', password });
+    const customerAccount = await restarted.createUser(owner.token, owner.status.csrfToken,
+        { username: 'customer_one', displayName: '现场操作员', role: 'customer', password });
+    assert.equal(restarted.listUsers(owner.token, owner.status.csrfToken).length, 2);
+    assert.equal('password' in restarted.listUsers(owner.token, owner.status.csrfToken)[0], false);
+    const viewer = await restarted.login(password, 'viewer-login', '', 'viewer_one');
+    const customer = await restarted.login(password, 'customer-login', '', 'customer_one');
+    assert.equal(viewer.status.user.role, 'viewer');
+    assert.equal(customer.status.permissions.launch, true);
+    assert.throws(() => restarted.createNativeTicket(viewer.token, viewer.status.csrfToken), { code: 'ADMIN_PERMISSION_DENIED' });
+    assert.throws(() => restarted.requireSession(viewer.token, viewer.status.csrfToken, { permission: 'edit' }), { code: 'ADMIN_PERMISSION_DENIED' });
+    assert.throws(() => restarted.listUsers(customer.token, customer.status.csrfToken), { code: 'ADMIN_PERMISSION_DENIED' });
+    restarted.updateUser(owner.token, owner.status.csrfToken, viewerAccount.id,
+        { displayName: '现场操作员', role: 'customer', enabled: true });
+    assert.equal(restarted.status(viewer.token).authenticated, false);
+    const promoted = await restarted.login(password, 'viewer-login', '', 'viewer_one');
+    assert.equal(promoted.status.permissions.launch, true);
+    restarted.deleteUser(owner.token, owner.status.csrfToken, viewerAccount.id);
+    assert.equal(restarted.status(promoted.token).authenticated, false);
+    restarted.updateUser(owner.token, owner.status.csrfToken, customerAccount.id,
+        { displayName: '现场操作员', role: 'customer', enabled: false });
+    assert.equal(restarted.status(customer.token).authenticated, false);
+    await assert.rejects(restarted.login(password, 'disabled-login', '', 'customer_one'), { code: 'ADMIN_PASSWORD_INVALID' });
+    const nativeTicket = restarted.createNativeTicket(owner.token, owner.status.csrfToken);
+    assert.match(nativeTicket.ticket, /^[a-f0-9]{64}$/);
+    const nativeSession = restarted.exchangeNativeTicket(nativeTicket.ticket);
+    assert.equal(nativeSession.status.authenticated, true);
+    assert.equal(nativeSession.status.user.id, 'owner');
+    assert.throws(() => restarted.exchangeNativeTicket(nativeTicket.ticket), { code: 'NATIVE_TICKET_INVALID' });
+    const revokedTicket = restarted.createNativeTicket(owner.token, owner.status.csrfToken);
+    restarted.lock(owner.token, owner.status.csrfToken);
+    assert.throws(() => restarted.exchangeNativeTicket(revokedTicket.ticket), { code: 'ADMIN_AUTH_REQUIRED' });
+    checks.push('single-use short-lived native handoff tickets enforce launch permission and session revocation');
+    const persistedUsers = createAdminAuth({ dataDir, now: () => time });
+    const persistedOwner = await persistedUsers.login(replacementPassword, 'owner-after-restart');
+    assert.equal(persistedUsers.listUsers(persistedOwner.token, persistedOwner.status.csrfToken).length, 1);
+    checks.push('named users, viewer/customer permissions, revocation and persistence');
+
     for (let i = 0; i < 4; i++) {
         await assert.rejects(restarted.login('wrong-password', 'brute-force'), { code: 'ADMIN_PASSWORD_INVALID' });
     }
@@ -153,10 +193,22 @@ async function httpChecks() {
             ...(body ? { body: JSON.stringify(body) } : {})
         });
         const data = await response.json();
-        return { response, data, cookie: response.headers.get('set-cookie')?.split(';')[0] };
+        const cookieUpdates = response.headers.getSetCookie?.() || [response.headers.get('set-cookie')].filter(Boolean);
+        const cookieJar = new Map(String(cookie || '').split(';').map(value => {
+            const separator = value.indexOf('=');
+            return separator < 0 ? null : [value.slice(0, separator).trim(), value.slice(separator + 1).trim()];
+        }).filter(Boolean));
+        for (const update of cookieUpdates) {
+            const pair = update.split(';', 1)[0], separator = pair.indexOf('=');
+            if (separator < 0) continue;
+            const name = pair.slice(0, separator), value = pair.slice(separator + 1);
+            if (value) cookieJar.set(name, value);
+            else cookieJar.delete(name);
+        }
+        return { response, data, cookie: [...cookieJar].map(([name, value]) => `${name}=${value}`).join('; ') };
     }
     try {
-        assert.equal((await request('/config')).response.status, 200);
+        assert.equal((await request('/config')).response.status, 401, 'the live dashboard must require a signed-in account');
         assert.equal((await request('/settings', { method: 'PUT', body: {} })).response.status, 401);
         assert.equal((await request('/database/backups/test/download')).response.status, 401);
         const rejectedOrigin = await request('/admin-auth/setup', { method: 'POST', body: { password }, headers: { Origin: 'https://untrusted.invalid' } });
@@ -169,6 +221,56 @@ async function httpChecks() {
         assert.equal(setup.response.headers.get('cache-control'), 'no-store');
         const credentials = { cookie: setup.cookie, csrf: setup.data.csrfToken };
         assert.equal((await request('/admin-auth/session', credentials)).data.authenticated, true);
+        assert.equal((await request('/config', credentials)).response.status, 200);
+        assert.equal(setup.data.user.role, 'owner');
+        const nativeTicket = await request('/admin-auth/native-ticket', { method: 'POST', body: {}, ...credentials });
+        assert.equal(nativeTicket.response.status, 200);
+        assert.match(nativeTicket.data.ticket, /^[a-f0-9]{64}$/);
+        const nativeExchange = await request('/admin-auth/native-exchange', { method: 'POST', body: { ticket: nativeTicket.data.ticket } });
+        assert.equal(nativeExchange.response.status, 200);
+        assert.equal(nativeExchange.data.authenticated, true);
+        assert.ok(nativeExchange.response.headers.get('set-cookie').includes('Path=/api'));
+        assert.equal((await request('/admin-auth/session', { cookie: nativeExchange.cookie })).data.authenticated, true);
+        assert.equal((await request('/admin-auth/native-exchange', { method: 'POST', body: { ticket: nativeTicket.data.ticket } })).response.status, 401);
+        const createdViewer = await request('/admin-auth/users', { method: 'POST', body: {
+            username: 'shift_viewer', displayName: '值班查看员', role: 'viewer', password: replacementPassword
+        }, ...credentials });
+        assert.equal(createdViewer.response.status, 201);
+        const savedViewer = await request('/admin-auth/accounts/login', { method: 'POST', body: {
+            username: 'shift_viewer', password: replacementPassword, slotId: '0123456789abcdef01234567'
+        }, cookie: credentials.cookie });
+        assert.equal(savedViewer.response.status, 200);
+        assert.equal(savedViewer.data.accountSlotId, '0123456789abcdef01234567');
+        assert.equal((await request('/admin-auth/session', { cookie: savedViewer.cookie })).data.user.username, 'shift_viewer');
+        const accountList = await request('/admin-auth/accounts', { cookie: savedViewer.cookie });
+        assert.deepEqual(accountList.data.accounts.map(account => account.slotId).sort(), ['0123456789abcdef01234567', 'main']);
+        const switchedOwner = await request('/admin-auth/accounts/activate', { method: 'POST', body: { slotId: 'main' },
+            cookie: savedViewer.cookie, csrf: setup.data.csrfToken });
+        assert.equal(switchedOwner.data.user.role, 'owner');
+        const switchedViewer = await request('/admin-auth/accounts/activate', { method: 'POST', body: { slotId: '0123456789abcdef01234567' },
+            cookie: switchedOwner.cookie, csrf: savedViewer.data.csrfToken });
+        assert.equal((await request('/admin-auth/session', { cookie: switchedViewer.cookie })).data.user.username, 'shift_viewer');
+        const signedOutViewer = await request('/admin-auth/accounts/logout', { method: 'POST', cookie: switchedViewer.cookie,
+            csrf: savedViewer.data.csrfToken });
+        assert.equal(signedOutViewer.data.authenticated, false);
+        assert.equal(signedOutViewer.data.accountSlotId, 'none');
+        assert.deepEqual((await request('/admin-auth/accounts', { cookie: signedOutViewer.cookie })).data.accounts.map(account => account.slotId), ['main']);
+        const restoredOwner = await request('/admin-auth/accounts/activate', { method: 'POST', body: { slotId: 'main' },
+            cookie: signedOutViewer.cookie, csrf: setup.data.csrfToken });
+        assert.equal(restoredOwner.data.user.role, 'owner');
+        checks.push('multiple named HttpOnly account sessions switch without passwords and sign out independently');
+        const viewerLogin = await request('/admin-auth/login', { method: 'POST', body: {
+            username: 'shift_viewer', password: replacementPassword
+        } });
+        assert.equal(viewerLogin.data.user.role, 'viewer');
+        const viewerTicket = await request('/admin-auth/native-ticket', { method: 'POST', body: {}, cookie: viewerLogin.cookie,
+            csrf: viewerLogin.data.csrfToken });
+        assert.equal(viewerTicket.response.status, 403);
+        assert.equal((await request('/settings', { method: 'PUT', body: {}, cookie: viewerLogin.cookie,
+            csrf: viewerLogin.data.csrfToken })).response.status, 403);
+        assert.equal((await request('/database/backups/test/download', { cookie: viewerLogin.cookie })).response.status, 403);
+        assert.equal((await request('/admin-auth/users', { cookie: viewerLogin.cookie })).response.status, 403);
+        checks.push('viewer account is denied management writes, private reads and user administration over HTTP');
         assert.equal((await request('/settings', { method: 'PUT', body: {}, cookie: credentials.cookie })).response.status, 403);
         assert.equal((await request('/settings', { method: 'PUT', body: {}, ...credentials, headers: { Origin: 'https://untrusted.invalid' } })).response.status, 403);
         assert.equal((await request('/settings', { method: 'PUT', body: {}, ...credentials })).response.status, 200);
@@ -179,17 +281,17 @@ async function httpChecks() {
         assert.equal(devCors.response.headers.get('access-control-allow-credentials'), 'true');
         const otherLocalService = await request('/admin-auth/session', { headers: { Origin: 'http://localhost:49999' } });
         assert.equal(otherLocalService.response.headers.get('access-control-allow-credentials'), null);
-        checks.push('HTTP login cookie, CSRF/origin checks, private reads and settings endpoint');
+        checks.push('HTTP login cookie, one-time native session exchange, CSRF/origin checks and settings endpoint');
 
         const navigation = await request('/native-preview/navigate', { method: 'POST', body: {
             action: 'view', viewId: 'factory', devices: [{ id: 'injected' }], includeLayout: true, view: { malicious: true }
-        } });
+        }, ...credentials });
         assert.equal(navigation.response.status, 200);
         assert.equal('devices' in previewPayload, false);
         assert.equal('view' in previewPayload, false);
         assert.equal('includeLayout' in previewPayload, false);
-        assert.equal((await request('/native-preview/navigate', { method: 'POST', body: { action: 'apply' } })).response.status, 400);
-        assert.equal((await request('/native-preview/navigate', { method: 'POST', body: { action: 'view' }, headers: { Origin: 'https://untrusted.invalid' } })).response.status, 403);
+        assert.equal((await request('/native-preview/navigate', { method: 'POST', body: { action: 'apply' }, ...credentials })).response.status, 400);
+        assert.equal((await request('/native-preview/navigate', { method: 'POST', body: { action: 'view' }, ...credentials, headers: { Origin: 'https://untrusted.invalid' } })).response.status, 403);
         assert.equal((await request('/native-preview', { method: 'POST', body: { action: 'apply' } })).response.status, 401);
         checks.push('public viewing remains available without exposing layout mutation');
 

@@ -29,9 +29,7 @@ const SITE_BACKUP_MIRROR_RETENTION = positiveInteger(process.env.SITE_BACKUP_MIR
 const SITE_BACKUP_FORMAT = 'heat-treatment-digital-twin-site-backup';
 const SITE_BACKUP_VERSION = 3;
 const UPLOAD_GROUPS = ['models', 'audio'];
-const CONFIG_FILES = Object.freeze([
-    { filename: 'data-sources.json', archivePath: 'config/data-sources.json', sensitive: true }
-]);
+const LEGACY_DATA_SOURCE_CONFIG = 'data-sources.json';
 const MAX_MANIFEST_BYTES = 1024 * 1024;
 const MAX_ARCHIVE_ENTRIES = 10000;
 const MAX_ARCHIVE_FILE_BYTES = 512 * 1024 * 1024;
@@ -52,6 +50,30 @@ function positiveInteger(value, fallback) {
 function ensureDirectory(directory) {
     fs.mkdirSync(directory, { recursive: true });
     return directory;
+}
+
+function describeConfigFile(filename) {
+    const name = String(filename || '');
+    if (name === LEGACY_DATA_SOURCE_CONFIG
+        || /^data-sources\.[a-zA-Z0-9_-]{1,128}\.json$/.test(name)) {
+        return { filename: name, archivePath: `config/${name}`, sensitive: true };
+    }
+    return null;
+}
+
+function describeConfigArchivePath(archivePath) {
+    const normalized = String(archivePath || '');
+    if (!normalized.startsWith('config/')) return null;
+    const descriptor = describeConfigFile(normalized.slice('config/'.length));
+    return descriptor?.archivePath === normalized ? descriptor : null;
+}
+
+function listAvailableConfigFiles() {
+    let names = [LEGACY_DATA_SOURCE_CONFIG];
+    try {
+        names = [...names, ...fs.readdirSync(DATA_DIR).filter(name => /^data-sources\.[a-zA-Z0-9_-]{1,128}\.json$/.test(name))];
+    } catch { /* A fresh install may not have created its data directory yet. */ }
+    return [...new Set(names)].map(describeConfigFile).filter(Boolean);
 }
 
 function clampNumber(value, min, max, fallback) {
@@ -289,7 +311,7 @@ async function createSiteBackupUnlocked(uploadsRootDir) {
             fs.copyFileSync(source, filename);
             return { filename, relative };
         }));
-        const configFiles = CONFIG_FILES.flatMap(configFile => {
+        const configFiles = listAvailableConfigFiles().flatMap(configFile => {
             const source = path.join(DATA_DIR, configFile.filename);
             if (!fs.existsSync(source) || !fs.statSync(source).isFile()) return [];
             const filename = path.join(exportStaging, ...configFile.archivePath.split('/'));
@@ -407,10 +429,9 @@ function validateManifest(manifest) {
             throw new Error('整站备份上传目录清单不合法');
         }
     }
-    const allowedConfigPaths = new Set(CONFIG_FILES.map(file => file.archivePath));
     if (manifest.configFiles !== undefined) {
         if (!Array.isArray(manifest.configFiles)
-            || manifest.configFiles.some(configPath => !allowedConfigPaths.has(String(configPath)))) {
+            || manifest.configFiles.some(configPath => !describeConfigArchivePath(configPath))) {
             throw new Error('整站备份配置文件清单不合法');
         }
     }
@@ -426,7 +447,7 @@ function validateManifest(manifest) {
         }
         if (archivePath !== databasePath
             && !UPLOAD_GROUPS.some(group => archivePath.startsWith(`uploads/${group}/`))
-            && !allowedConfigPaths.has(archivePath)) {
+            && !describeConfigArchivePath(archivePath)) {
             throw new Error(`整站备份包含不允许恢复的文件: ${archivePath}`);
         }
         totalSize += size;
@@ -434,7 +455,7 @@ function validateManifest(manifest) {
         declared.set(archivePath, { path: archivePath, size, sha256 });
     }
     if (!declared.has(databasePath)) throw new Error('整站备份缺少数据库文件');
-    const configPaths = [...declared.keys()].filter(archivePath => allowedConfigPaths.has(archivePath));
+    const configPaths = [...declared.keys()].filter(archivePath => describeConfigArchivePath(archivePath));
     return { declared, databaseType, databasePath, configPaths };
 }
 
@@ -572,7 +593,7 @@ async function restoreSiteBackupUnlocked(archiveFilename, uploadsRootDir) {
         }
 
         for (const archivePath of configPathsToRestore) {
-            const descriptor = CONFIG_FILES.find(item => item.archivePath === archivePath);
+            const descriptor = describeConfigArchivePath(archivePath);
             if (!descriptor) continue;
             const currentFilename = path.join(DATA_DIR, descriptor.filename);
             const rollbackFilename = path.join(rollbackConfig, descriptor.filename);
@@ -583,7 +604,7 @@ async function restoreSiteBackupUnlocked(archiveFilename, uploadsRootDir) {
         }
         configMutationStarted = configPathsToRestore.length > 0;
         for (const archivePath of configPathsToRestore) {
-            const descriptor = CONFIG_FILES.find(item => item.archivePath === archivePath);
+            const descriptor = describeConfigArchivePath(archivePath);
             if (!descriptor) continue;
             const restoredFilename = path.join(stagingDirectory, ...archivePath.split('/'));
             const parsed = JSON.parse(fs.readFileSync(restoredFilename, 'utf8'));
@@ -613,7 +634,7 @@ async function restoreSiteBackupUnlocked(archiveFilename, uploadsRootDir) {
         const rollbackErrors = [];
         if (configMutationStarted) {
             for (const archivePath of configPathsToRestore) {
-                const descriptor = CONFIG_FILES.find(item => item.archivePath === archivePath);
+                const descriptor = describeConfigArchivePath(archivePath);
                 if (!descriptor) continue;
                 const currentFilename = path.join(DATA_DIR, descriptor.filename);
                 const rollbackFilename = path.join(rollbackConfig, descriptor.filename);

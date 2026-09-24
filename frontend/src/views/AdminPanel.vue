@@ -43,9 +43,12 @@ import { usePointMonitor } from './admin/composables/usePointMonitor.js'
 import { useDataPoints } from './admin/composables/useDataPoints.js'
 import { formatPointValue, formatQualityLabel, formatPointTime } from './admin/utils/points.js'
 import NativeEnvironmentSettings from './admin/components/NativeEnvironmentSettings.vue'
+import FactoryLocationSettings from './admin/components/FactoryLocationSettings.vue'
+import GroupPortalSettings from './admin/components/GroupPortalSettings.vue'
 import DashboardDesigner from './admin/components/DashboardDesigner.vue'
 import AdminWindowChrome from './admin/components/AdminWindowChrome.vue'
 import AdminSecuritySettings from './admin/components/AdminSecuritySettings.vue'
+import PlatformUsersSettings from './admin/components/PlatformUsersSettings.vue'
 import AdminHelpGuide from './admin/components/AdminHelpGuide.vue'
 import MobileDeviceMotion from './admin/components/MobileDeviceMotion.vue'
 import ModelInspectionEditor from './admin/components/ModelInspectionEditor.vue'
@@ -53,8 +56,10 @@ import ModelInspectionPreviewOverlay from './admin/components/ModelInspectionPre
 import { InspectionPreview, inspectionCameraPose } from '../runtime/InspectionPreview.js'
 import inspectionConfig from '../../../shared/inspectionConfig.mjs'
 import { adminSession, lockAdmin, refreshAdminSession } from '../runtime/adminSession.js'
+import { adminUiStateForFocus } from '../runtime/nativeAdminNavigation.js'
 import { normalizeWorkshopLayout } from '../utils/spatialLayout.js'
 import { summarizeDeviceConnections } from './admin/utils/connectionStatus.js'
+import { isNativeUnitySurface } from '../runtime/nativeSurfaceBridge.js'
 import {
     PLC_PROTOCOL_OPTIONS,
     getPlcAddressHint,
@@ -69,7 +74,7 @@ defineOptions({ name: 'AdminPanel' })
 const { createInspectionDefaults, normalizeInspection, validateInspection } = inspectionConfig
 
 const ADMIN_UI_STATE_KEY = 'digital_twin_admin_ui_state_v1'
-const isUnityEmbedded = new URLSearchParams(window.location.search).get('embedded') === 'unity'
+const isUnityEmbedded = isNativeUnitySurface(new URLSearchParams(window.location.search).get('embedded'), window.chrome?.webview)
 const unityHostState = reactive({ attached: true, maximized: false, dockReady: false, adminVisible: true })
 watch(() => unityHostState.adminVisible, visible => { if (visible) refreshAdminSession() })
 
@@ -81,7 +86,10 @@ function loadAdminUiState() {
     }
 }
 
-const storedAdminUiState = loadAdminUiState()
+const storedAdminUiState = adminUiStateForFocus(
+    loadAdminUiState(),
+    new URLSearchParams(window.location.search).get('focus')
+)
 
 const PLATFORM_SUBPAGES = [
     { key: 'designer', label: '大屏设计器', description: '拖拽组件、绑定数据并发布画面' },
@@ -96,6 +104,8 @@ const SETTINGS_SUBPAGES = [
     { key: 'data', label: '数据通路', description: 'PLC 实时采集或离线模拟模式' },
     { key: 'license', label: '授权与版本', description: '离线许可证、有效期与发布信息' }
 ]
+const visibleSettingsSubpages = computed(() => adminSession.permissions.manageUsers
+    ? SETTINGS_SUBPAGES : SETTINGS_SUBPAGES.filter(page => page.key !== 'security'))
 
 function restoreSubpage(value, options, fallback) {
     return options.some(option => option.key === value) ? value : fallback
@@ -105,6 +115,10 @@ function restoreSubpage(value, options, fallback) {
 const activeTab = ref(storedAdminUiState.activeTab || 'composer')
 const platformSubpage = ref(restoreSubpage(storedAdminUiState.platformSubpage, PLATFORM_SUBPAGES, 'designer'))
 const settingsSubpage = ref(restoreSubpage(storedAdminUiState.settingsSubpage, SETTINGS_SUBPAGES, 'runtime'))
+watch(() => adminSession.permissions.manageUsers, allowed => {
+    if (!allowed && settingsSubpage.value === 'security') settingsSubpage.value = 'runtime'
+    if (!allowed && activeTab.value === 'users') activeTab.value = 'settings'
+}, { immediate: true })
 const adminContentRef = ref(null)
 const isAdminNavCollapsed = ref(!!storedAdminUiState.isAdminNavCollapsed)
 const isFactoryMenuOpen = ref(true)
@@ -132,6 +146,8 @@ async function selectSettingsSubpage(key) {
 const navIconPaths = {
     composer: ['M4 5h16v14H4z', 'M8 9h8', 'M8 13h5', 'M16 13h1', 'M8 17h8'],
     factory: ['M4 20V9l4-3 4 3 4-3 4 3v11', 'M8 20v-6h3v6', 'M16 20v-6h3v6', 'M12 20V9'],
+    factories: ['M3 20V9l5-3 4 3 5-3 4 3v11', 'M8 20v-6h4v6', 'M16 11h2', 'M16 15h2'],
+    users: ['M16 20v-1.5a4.5 4.5 0 0 0-4.5-4.5h-3A4.5 4.5 0 0 0 4 18.5V20', 'M10 10a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7', 'M17 4.5a3.5 3.5 0 0 1 0 6.8', 'M20 20v-1.5a4.5 4.5 0 0 0-3-4.25'],
     workshops: ['M4 20V8l8-4 8 4v12', 'M8 20v-8h8v8', 'M10 8h4'],
     lines: ['M4 7h5', 'M15 7h5', 'M9 7c2 0 4 10 6 10', 'M4 17h5', 'M15 17h5'],
     devices: ['M6 8h12v8H6z', 'M9 8V5h6v3', 'M9 19h6', 'M12 16v3'],
@@ -4336,6 +4352,7 @@ function toggleAdminNavCollapsed() {
 }
 
 function selectAdminTab(tabKey) {
+    if (tabKey === 'users' && !adminSession.permissions.manageUsers) return
     activeTab.value = tabKey
     resizeComposerPreviewAfterLayout()
 }
@@ -6451,9 +6468,12 @@ const dataTabKeys = dataTabs.map(tab => tab.key)
 const mainTabs = [
     { key: 'composer', label: '现场编排器', icon: 'composer' },
     { key: 'models', label: '模型库', icon: 'models' },
+    { key: 'factories', label: '工厂与区域', icon: 'factories' },
     { key: 'platform', label: '组件配置', icon: 'platform' },
+    { key: 'users', label: '用户与权限', icon: 'users' },
     { key: 'settings', label: '系统设置', icon: 'settings' }
 ]
+const visibleMainTabs = computed(() => mainTabs.filter(tab => tab.key !== 'users' || adminSession.permissions.manageUsers))
 
 const adminSetupFlow = [
     { key: 'system', label: '系统', tab: 'settings', settingsSubpage: 'database', description: '确认数据库、运行服务与数据通路' },
@@ -6636,7 +6656,7 @@ async function openAdminSetupStep(step) {
                     </Transition>
                 </div>
                 <button
-                    v-for="tab in mainTabs.slice(1)"
+                    v-for="tab in visibleMainTabs.slice(1)"
                     :key="tab.key"
                     type="button"
                     class="nav-item"
@@ -8174,6 +8194,26 @@ async function openAdminSetupStep(step) {
                     </div>
                 </div>
 
+                <!-- ======== 工厂与区域管理 ======== -->
+                <div v-if="activeTab === 'factories'" class="tab-content factory-network-tab">
+                    <h2>工厂与区域</h2>
+                    <p class="desc">维护本机工厂的行政区归属及区域工厂。地图画面、分层组件与大屏 Logo 请在“画面组件配置 → 大屏设计器”中调整。</p>
+                    <section class="factory-hierarchy-note" aria-label="当前工厂数据层级说明">
+                        <div class="factory-hierarchy-chain"><span>集团 / 组织</span><i>→</i><span>工厂</span><i>→</i><span>车间</span><i>→</i><span>产线</span><i>→</i><span>设备</span></div>
+                        <p><strong>当前数据边界：</strong>数据库已将产线关联到车间、设备关联到产线；工厂登记簿目前只保存工厂名称和行政区，登记项尚未关联独立车间、产线或实时数据。项目/场景是大屏配置对象，不等于工厂。这里不会显示或伪造未接入工厂的生产指标。</p>
+                    </section>
+                    <div class="factory-network-panel">
+                        <FactoryLocationSettings />
+                    </div>
+                </div>
+
+                <!-- ======== 用户与权限 ======== -->
+                <div v-if="activeTab === 'users' && adminSession.permissions.manageUsers" class="tab-content users-management-tab">
+                    <h2>用户与权限</h2>
+                    <p class="desc">为现场账户分配大屏查看、启动、投屏和备份权限。账户通过独立列表管理，不再把每个账户的完整编辑表单铺在页面里。</p>
+                    <PlatformUsersSettings />
+                </div>
+
                 <!-- ======== 画面组件配置 ======== -->
                 <div v-if="activeTab === 'platform'" class="tab-content">
                     <h2>画面组件配置</h2>
@@ -8201,6 +8241,7 @@ async function openAdminSetupStep(step) {
                     </div>
 
                     <div v-show="platformSubpage === 'designer'" class="secondary-page-panel secondary-page-panel-designer">
+                        <details class="map-design-details"><summary>地图层级与大屏 Logo <span>全球 · 国家 · 省份 · 城市 · 区县</span></summary><GroupPortalSettings /></details>
                         <DashboardDesigner class="platform-designer-primary" @reload="loadPlatform" @preview-view="handleDashboardViewPreview" />
                     </div>
 
@@ -8887,7 +8928,7 @@ async function openAdminSetupStep(step) {
                     <div class="secondary-page-nav-shell">
                         <nav class="secondary-page-nav" aria-label="系统设置分类">
                             <button
-                                v-for="(item, index) in SETTINGS_SUBPAGES"
+                                v-for="(item, index) in visibleSettingsSubpages"
                                 :key="item.key"
                                 type="button"
                                 class="secondary-page-nav-item"
@@ -8905,7 +8946,7 @@ async function openAdminSetupStep(step) {
                         </nav>
                     </div>
 
-                    <AdminSecuritySettings v-if="settingsSubpage === 'security'" />
+                    <AdminSecuritySettings v-if="settingsSubpage === 'security' && adminSession.permissions.manageUsers" />
 
                     <!-- 引擎运行状态 -->
                     <div class="engine-status-card" :class="'status-' + engineStatus.plcStatus?.status">
@@ -10012,6 +10053,16 @@ async function openAdminSetupStep(step) {
 }
 .tab-content h2 { margin: 0 0 6px 0; font-size: 24px; color: #1d1d1f; font-weight: 600; letter-spacing: -0.5px; }
 .desc { color: #86868b; font-size: 14px; margin-bottom: 28px; }
+.factory-hierarchy-note { margin: 0 0 18px; padding: 15px 17px; background: #f7f9fc; border: 1px solid #e3e8ef; border-radius: 10px; }
+.factory-hierarchy-chain { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; color: #40536f; font-size: 11px; font-weight: 600; }
+.factory-hierarchy-chain span { padding: 6px 9px; background: #fff; border: 1px solid #e1e7ef; border-radius: 6px; }
+.factory-hierarchy-chain i { color: #9ba7b8; font-size: 12px; font-style: normal; }
+.factory-hierarchy-note p { margin: 10px 0 0; color: #7a879a; font-size: 11px; line-height: 1.65; }
+.factory-hierarchy-note p strong { color: #52637b; }
+.factory-network-panel { margin-top: 16px; padding: 22px; background: #fff; border: 1px solid #e2e7ee; border-radius: 11px; }
+.factory-network-appearance { margin-top: 18px; }
+.map-design-details{margin:0 0 16px;border:1px solid #d9dee7;border-radius:12px;background:#fff;overflow:hidden}.map-design-details>summary{display:flex;align-items:center;gap:14px;padding:15px 18px;color:#1d2939;font-weight:700;cursor:pointer;list-style:none}.map-design-details>summary::-webkit-details-marker{display:none}.map-design-details>summary::before{content:'▸';color:#667085;transition:transform .16s}.map-design-details[open]>summary::before{transform:rotate(90deg)}.map-design-details>summary span{color:#667085;font-size:12px;font-weight:400}.map-design-details .group-appearance-admin{margin:0;border:0;border-top:1px solid #e4e7ec;border-radius:0}
+.users-management-tab > .desc { margin-bottom: 18px; }
 .secondary-page-nav-shell {
     position: sticky;
     top: -32px;

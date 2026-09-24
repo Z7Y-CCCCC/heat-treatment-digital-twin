@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import inspectionConfig from '../../../../../shared/inspectionConfig.mjs'
 import { generateInspectionParts, inspectionTimeline, spreadInspectionParts } from '../../../runtime/InspectionPreview.js'
 import { API_BASE } from '../../../runtime/backendEndpoint.js'
+import { adminFetch } from '../../../runtime/adminSession.js'
 import InspectionVectorInput from './InspectionVectorInput.vue'
 import InspectionCameraFields from './InspectionCameraFields.vue'
 
@@ -168,7 +169,7 @@ async function loadPresets() {
     presetAbort?.abort()
     presetAbort = new AbortController()
     try {
-        const response = await fetch(`${API_BASE}/models/inspection-presets`, { signal: presetAbort.signal })
+        const response = await adminFetch(`${API_BASE}/models/inspection-presets`, { signal: presetAbort.signal })
         if (!response.ok) throw new Error(response.status === 404 ? '当前服务尚未提供模型预设，可直接手动编排。' : `读取预设失败：${response.status}`)
         const result = await response.json()
         presets.value = Array.isArray(result.presets) ? result.presets : []

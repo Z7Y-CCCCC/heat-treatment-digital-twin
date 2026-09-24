@@ -9,14 +9,17 @@ OUT.mkdir(parents=True, exist_ok=True)
 scene = bpy.data.scenes.new('Factory Hall Cutaway Study')
 bpy.context.window.scene = scene
 mats = {}
+# Author the architectural palette as neutral graphite in the asset itself.
+# Unity must import these PBR values unchanged: no scene-wide blue tint or
+# per-name material rewrite. Light glazing stays visibly brighter than concrete.
 for name, color, metal, rough in [
-    ('wall', (.30,.30,.30), .15,.65),
-    ('trim', (.46,.46,.46), .35,.4),
-    ('floor', (.50,.50,.50), .15,.38),
-    ('glass', (.49,.49,.49), .1,.28),
-    ('road', (.14,.14,.14), 0,.8),
-    ('mark', (.68,.68,.68), 0,.7),
-    ('steel', (.42,.42,.42), .6,.38),
+    ('wall', (.085,.085,.085), .12,.72),
+    ('trim', (.16,.16,.16), .28,.52),
+    ('floor', (.13,.13,.13), .08,.62),
+    ('glass', (.25,.25,.25), .05,.34),
+    ('road', (.055,.055,.055), 0,.86),
+    ('mark', (.52,.52,.52), 0,.7),
+    ('steel', (.19,.19,.19), .42,.48),
 ]:
     mat = bpy.data.materials.new('Hall_' + name)
     mat.diffuse_color = (*color,1)
@@ -26,8 +29,8 @@ for name, color, metal, rough in [
     bsdf.inputs['Metallic'].default_value = metal
     bsdf.inputs['Roughness'].default_value = rough
     if name == 'glass':
-        bsdf.inputs['Emission Color'].default_value = (.02,.02,.02,1)
-        bsdf.inputs['Emission Strength'].default_value = .04
+        bsdf.inputs['Emission Color'].default_value = (.16,.16,.16,1)
+        bsdf.inputs['Emission Strength'].default_value = .16
     mats[name] = mat
 
 def box(name, pos, size, mat='wall', bevel=.035):
@@ -112,6 +115,32 @@ def beam_between(name, start, end, width=.12):
     obj.rotation_euler = (b-a).to_track_quat('Z','Y').to_euler()
     return obj
 
+# Give the exposed supports a legible load path. The previous study had
+# unconnected-looking poles at the entrance and crane ends; add restrained
+# base/cap plates and knee braces without adding fence-like rails or blocking
+# the open production bay.
+for x in (-7.5,7.5):
+    box('Canopy column base plate',(x,-35,.2),(.95,1.0,.32),'trim')
+    box('Canopy column head plate',(x,-35,4.47),(.64,.64,.2),'trim')
+    beam_between('Canopy knee brace',(x,-35,3.25),(x-1.05,-35,4.28),.14)
+    beam_between('Canopy knee brace',(x,-35,3.25),(x+1.05,-35,4.28),.14)
+box('Canopy fascia beam',(0,-35,4.32),(15.1,.34,.28),'steel')
+
+for x in (-24,24):
+    box('Crane support base plate',(x,-12,.2),(1.05,1.05,.32),'trim')
+    box('Crane support cap plate',(x,-12,8.2),(1.0,.95,.24),'trim')
+    for direction in (-1,1):
+        beam_between('Crane support knee brace',(x,-12,7.2),(x,-12+direction*1.05,8.2),.13)
+
+for x in (-35,-21,-7,7,21,35):
+    box('Runway column base plate',(x,18,.2),(.96,1.05,.32),'trim')
+    box('Runway column cap plate',(x,18,8.48),(.98,.92,.24),'trim')
+    # Seat the crane runway into the roof truss instead of letting the columns
+    # stop just short of it; short knee braces make the exposed frame intentional.
+    box('Runway truss saddle',(x,18,8.77),(.88,.78,.28),'steel')
+    beam_between('Runway column knee brace',(x,18,6.7),(x-.82,18,8.1),.14)
+    beam_between('Runway column knee brace',(x,18,6.7),(x+.82,18,8.1),.14)
+
 # Restore the authored cutaway roof structure, retaining the open equipment bay.
 for y in (18,):
     box('Truss bottom chord',(0,y,9),(80,.24,.24),'steel')
@@ -148,15 +177,15 @@ bpy.ops.export_scene.gltf(filepath=str(OUT/'factory_hall_lowpoly.glb'),export_fo
 world = bpy.data.worlds.new('Hall studio world')
 world.use_nodes = True
 background = next(n for n in world.node_tree.nodes if n.type == 'BACKGROUND')
-background.inputs[0].default_value = (.16,.16,.16,1)
-background.inputs[1].default_value = .5
+background.inputs[0].default_value = (.10,.10,.10,1)
+background.inputs[1].default_value = .35
 scene.world = world
 def aim(obj,target):
     obj.rotation_euler = (Vector(target)-obj.location).to_track_quat('-Z','Y').to_euler()
 for name,pos,power,size,color in [
-    ('Key',(-25,-15,65),85000,50,(1,1,1)),
-    ('Fill',(45,15,40),45000,35,(.92,.92,.92)),
-    ('Rim',(-35,45,35),50000,30,(.90,.90,.90)),
+    ('Key',(-25,-15,65),24000,50,(1,1,1)),
+    ('Fill',(45,15,40),12000,35,(.94,.94,.94)),
+    ('Rim',(-35,45,35),16000,30,(.94,.94,.94)),
 ]:
     data=bpy.data.lights.new(name,'AREA'); data.energy=power; data.shape='DISK'; data.size=size; data.color=color
     obj=bpy.data.objects.new(name,data); scene.collection.objects.link(obj); obj.location=pos; aim(obj,(0,0,0))

@@ -21,7 +21,8 @@ const GAS_VALVE_KEYS = [
 ];
 
 class Simulator {
-    constructor() {
+    constructor(options = {}) {
+        this.options = options;
         this.pollTimer = null;
         this.onData = null;
         this.onStatusChange = null;
@@ -43,11 +44,23 @@ class Simulator {
         // 从数据库加载设备列表
         const db = await getDb();
         if (this.stopped || runVersion !== this.runVersion) return;
-        const devices = await db.all('SELECT * FROM devices');
+        const factoryId = String(this.options.factoryId || 'factory_default');
+        const workshops = await db.all('SELECT id FROM workshops WHERE factory_id = ?', [factoryId]);
+        const workshopIds = new Set(workshops.map(row => String(row.id)));
+        const lines = await db.all(`SELECT l.id FROM \`lines\` l JOIN workshops w ON w.id = l.workshop_id WHERE w.factory_id = ?`, [factoryId]);
+        const lineIds = new Set(lines.map(row => String(row.id)));
+        const devices = (await db.all('SELECT * FROM devices')).filter(device => {
+            if (lineIds.has(String(device.line_id || ''))) return true;
+            if (device.line_id) return false;
+            let config = {};
+            try { config = typeof device.instance_config === 'object' ? device.instance_config : JSON.parse(device.instance_config || '{}'); } catch { /* invalid legacy configuration */ }
+            return workshopIds.has(String(config.workshop_id || config.workshopId || ''));
+        });
         if (this.stopped || runVersion !== this.runVersion) return;
         const settingsRows = await db.all('SELECT * FROM settings');
         if (this.stopped || runVersion !== this.runVersion) return;
         this.devices = devices;
+        const factorySettings = await db.all('SELECT `key`, value FROM factory_settings WHERE factory_id = ?', [factoryId]);
         this.deviceStates = Object.create(null);
 
         // 为每台设备初始化模拟状态
@@ -92,6 +105,7 @@ class Simulator {
         // 读取轮询间隔
         const settings = {};
         settingsRows.forEach(r => { settings[r.key] = r.value; });
+        factorySettings.forEach(r => { settings[r.key] = r.value; });
         const configuredInterval = Number(settings.simulation_interval_ms);
         const interval = Number.isFinite(configuredInterval) && configuredInterval >= 100 && configuredInterval <= 60000
             ? Math.round(configuredInterval)

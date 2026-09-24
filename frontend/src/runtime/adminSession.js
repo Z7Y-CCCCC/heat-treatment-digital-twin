@@ -1,13 +1,17 @@
 import { reactive } from 'vue'
 import { API_BASE } from './backendEndpoint.js'
+import { getFactoryScope } from './factoryScope.js'
 
 export const adminSession = reactive({
     ready: false,
     configured: true,
     authenticated: false,
+    user: null,
+    permissions: { view: false, edit: false, manageUsers: false, launch: false, cast: false, backup: false },
     idleTimeoutMinutes: 30,
     maxSessionHours: 8,
     expiresAt: 0,
+    accountSlotId: '',
     lockPending: false,
     warning: ''
 })
@@ -28,14 +32,32 @@ let lockPromise = null
 let pollTimer = null
 let activityHandler = null
 
+function permissionsForRole(role) {
+    const administrator = role === 'owner'
+    const customer = role === 'customer' || role === 'editor'
+    return {
+        view: ['owner', 'customer', 'editor', 'viewer'].includes(role),
+        edit: administrator,
+        manageUsers: administrator,
+        launch: administrator || customer,
+        cast: administrator || customer,
+        backup: administrator || customer
+    }
+}
+
 function applySession(data, expectedGeneration = generation) {
     if (expectedGeneration !== generation) return
     adminSession.ready = true
     adminSession.configured = data.configured !== false
     adminSession.authenticated = data.authenticated === true
+    adminSession.user = data.authenticated ? data.user || null : null
+    const fallbackPermissions = data.authenticated ? permissionsForRole(data.user?.role) : null
+    adminSession.permissions = data.authenticated ? { ...fallbackPermissions, ...(data.permissions || {}) }
+        : { view: false, edit: false, manageUsers: false, launch: false, cast: false, backup: false }
     adminSession.idleTimeoutMinutes = data.idleTimeoutMinutes || 30
     adminSession.maxSessionHours = data.maxSessionHours || 8
     adminSession.expiresAt = data.expiresAt || 0
+    adminSession.accountSlotId = String(data.accountSlotId || (data.authenticated ? 'main' : ''))
     csrfToken = data.authenticated ? data.csrfToken || '' : ''
     adminSession.warning = ''
 }
@@ -44,7 +66,10 @@ function clearSession(message = '') {
     generation += 1
     csrfToken = ''
     adminSession.authenticated = false
+    adminSession.user = null
+    adminSession.permissions = { view: false, edit: false, manageUsers: false, launch: false, cast: false, backup: false }
     adminSession.expiresAt = 0
+    adminSession.accountSlotId = ''
     adminSession.warning = message
     window.clearTimeout(touchTimer)
     touchTimer = null
@@ -144,13 +169,49 @@ export async function refreshAdminSession() {
     return refreshPromise
 }
 
-export async function unlockAdmin(password, setup = false) {
+export async function unlockAdmin(password, setup = false, username = 'admin') {
     if (pendingLock && !(await confirmPendingLock()) && pendingLock) throw new Error(adminSession.warning)
     const expectedGeneration = ++generation
-    const data = await authRequest(setup ? '/setup' : '/login', { method: 'POST', body: { password } })
+    const data = await authRequest(setup ? '/setup' : '/login', { method: 'POST', body: { password, username } })
     applySession(data, expectedGeneration)
     lastTouchAt = Date.now()
     broadcast('changed')
+}
+
+export async function listAdminAccounts() {
+    return (await authRequest('/accounts')).accounts || []
+}
+
+export async function addAdminAccount(slotId, username, password) {
+    const expectedGeneration = ++generation
+    const data = await authRequest('/accounts/login', {
+        method: 'POST',
+        body: { slotId, username, password }
+    }, '')
+    applySession(data, expectedGeneration)
+    lastTouchAt = Date.now()
+    broadcast('changed')
+    return data
+}
+
+export async function activateAdminAccount(slotId, csrfForAccount) {
+    const expectedGeneration = ++generation
+    const data = await authRequest('/accounts/activate', {
+        method: 'POST',
+        body: { slotId }
+    }, csrfForAccount)
+    applySession(data, expectedGeneration)
+    lastTouchAt = Date.now()
+    broadcast('changed')
+    return data
+}
+
+export async function logoutCurrentAdminAccount() {
+    const expectedGeneration = ++generation
+    const data = await authRequest('/accounts/logout', { method: 'POST' })
+    applySession(data, expectedGeneration)
+    broadcast('changed')
+    return data
 }
 
 export async function lockAdmin() {
@@ -176,12 +237,35 @@ export async function changeAdminPassword(currentPassword, newPassword) {
     broadcast('changed')
 }
 
+export async function listPlatformUsers() {
+    return (await authRequest('/users')).users || []
+}
+
+export async function createPlatformUser(input) {
+    return (await authRequest('/users', { method: 'POST', body: input })).user
+}
+
+export async function updatePlatformUser(id, input) {
+    return (await authRequest(`/users/${encodeURIComponent(id)}`, { method: 'PUT', body: input })).user
+}
+
+export async function deletePlatformUser(id) {
+    return authRequest(`/users/${encodeURIComponent(id)}`, { method: 'DELETE' })
+}
+
+export async function issueNativeSessionTicket() {
+    const data = await authRequest('/native-ticket', { method: 'POST', body: {} })
+    return data.ticket
+}
+
 export async function adminFetch(input, options = {}) {
     const url = new URL(typeof input === 'string' || input instanceof URL ? input : input.url, window.location.href)
     const backend = new URL(API_BASE)
     if (url.origin !== backend.origin || !url.pathname.startsWith('/api/')) return window.fetch(input, options)
     const headers = new Headers(options.headers || (input instanceof Request ? input.headers : undefined))
     const method = String(options.method || (input instanceof Request ? input.method : 'GET')).toUpperCase()
+    const factoryId = getFactoryScope()
+    if (factoryId) headers.set('X-Factory-ID', factoryId)
     if (!['GET', 'HEAD', 'OPTIONS'].includes(method) && csrfToken) headers.set('X-CSRF-Token', csrfToken)
     const expectedGeneration = generation
     const response = await window.fetch(input, { ...options, headers, credentials: 'include' })
@@ -193,8 +277,10 @@ export async function adminFetch(input, options = {}) {
 }
 
 function workspaceIsVisible() {
+    if (document.visibilityState === 'hidden') return false
     const workspace = document.querySelector('[data-admin-workspace]')
-    return document.visibilityState !== 'hidden' && !!workspace && !workspace.classList.contains('unity-dashboard-tab')
+    if (workspace) return !workspace.classList.contains('unity-dashboard-tab')
+    return ['/group', '/overlay', '/hud-preview', '/customer'].includes(window.location.pathname)
 }
 
 async function touchSession() {

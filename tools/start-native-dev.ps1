@@ -153,15 +153,30 @@ if ($health) {
     Write-Host "Backend started at $origin (PID $($backendProcess.Id))."
 }
 
-$factory = Invoke-RestMethod -Uri "$origin/api/config" -TimeoutSec 10
+$factory = $null
+try {
+    $factory = Invoke-RestMethod -Uri "$origin/api/config" -TimeoutSec 10
+} catch {
+    # Runtime configuration is protected by the mandatory display login.
+    # The native Unity player now presents its own sign-in screen and fetches
+    # this document after authentication, so a locked service is an expected
+    # startup state rather than a reason to abort the launcher.
+    $authResponse = $_.ErrorDetails.Message
+    if ($authResponse -notmatch '"code"\s*:\s*"ADMIN_AUTH_REQUIRED"') { throw }
+    Write-Host 'Configuration is locked; Unity will request a user sign-in before loading the factory.'
+}
 $devices = @(
-    foreach ($workshop in @($factory.workshops)) {
-        foreach ($line in @($workshop.lines)) { @($line.devices) }
-        @($workshop.devices)
+    if ($factory) {
+        foreach ($workshop in @($factory.workshops)) {
+            foreach ($line in @($workshop.lines)) { @($line.devices) }
+            @($workshop.devices)
+        }
     }
 )
 $pointCount = (@($devices | ForEach-Object { @($_.dataPoints) }) | Measure-Object).Count
-Write-Host "Loaded original Web configuration: $($devices.Count) devices, $pointCount PLC data points."
+if ($factory) {
+    Write-Host "Loaded original Web configuration: $($devices.Count) devices, $pointCount PLC data points."
+}
 
 $frontendProcess = $null
 $adminUrl = "$origin/admin"

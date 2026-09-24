@@ -304,6 +304,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 {
                     var uri = new Uri(Path.Combine(Application.streamingAssetsPath, "Environment", "factory_hall_lowpoly.glb")).AbsoluteUri;
                     if (!await importer.Load(uri)) throw new InvalidOperationException("Factory hall GLB load failed");
+                    AuditImportedHallMaterials(importer);
                     if (generation != _hallGeneration || parent == null) { importer.Dispose(); return; }
                     hall = new GameObject("Factory Hall Architecture");
                     hall.transform.SetParent(parent, false);
@@ -334,6 +335,21 @@ namespace HeatTreatment.DigitalTwin.Runtime
                     importer.Dispose();
                     Debug.LogWarning($"[FactoryEnvironment] Hall unavailable; retaining fallback floor: {error.Message}");
                 }
+            }
+        }
+
+        private static void AuditImportedHallMaterials(GltfImport importer)
+        {
+            for (var index = 0; index < importer.MaterialCount; index++)
+            {
+                var material = importer.GetMaterial(index);
+                var source = importer.GetSourceMaterial(index);
+                if (material == null || source?.pbrMetallicRoughness == null) continue;
+                var property = material.HasProperty("baseColorFactor") ? "baseColorFactor" : "_BaseColor";
+                var color = material.HasProperty(property) ? material.GetColor(property) : Color.magenta;
+                Debug.Log($"[HallMaterial] {source.name}: shader={material.shader.name}, "
+                    + $"sourceLinear={source.pbrMetallicRoughness.BaseColor}, imported={color}, "
+                    + $"metallic={source.pbrMetallicRoughness.metallicFactor:0.000}, roughness={source.pbrMetallicRoughness.roughnessFactor:0.000}");
             }
         }
 
@@ -426,7 +442,10 @@ namespace HeatTreatment.DigitalTwin.Runtime
             var brightness = config.SceneBrightness;
             var hallPresentation = HasHallAsset;
             var presentationBrightness = hallPresentation
-                ? Mathf.Clamp(brightness * 0.98f, 0.9f, 1.4f)
+                // The imported architectural GLB has physically authored neutral
+                // gray PBR surfaces. The old 1.4x multiplier plus three broad
+                // lights and positive exposure clipped those mid-tones to white.
+                ? Mathf.Clamp(brightness * 0.8f, 0.68f, 1.0f)
                 : brightness;
             var skyColor = ParseColor(config.SkyColor, new Color(0.41f, 0.41f, 0.41f));
             var horizonColor = ParseColor(config.HorizonColor, new Color(0.275f, 0.275f, 0.275f));
@@ -445,7 +464,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
             RenderSettings.ambientSkyColor = skyColor;
             RenderSettings.ambientEquatorColor = horizonColor;
             RenderSettings.ambientGroundColor = Color.Lerp(Color.black, horizonColor, hallPresentation ? 0.5f : 0.58f);
-            RenderSettings.ambientIntensity = config.AmbientIntensity * presentationBrightness * (hallPresentation ? 0.92f : 1f);
+            RenderSettings.ambientIntensity = config.AmbientIntensity * presentationBrightness * (hallPresentation ? 0.78f : 1f);
             RenderSettings.reflectionIntensity = config.ReflectionIntensity;
             RenderSettings.defaultReflectionMode = DefaultReflectionMode.Skybox;
             RenderSettings.fog = config.FogEnabled;
@@ -459,20 +478,20 @@ namespace HeatTreatment.DigitalTwin.Runtime
             if (_keyLight != null)
             {
                 _keyLight.color = ParseColor(config.KeyLightColor, Color.white);
-                _keyLight.intensity = config.KeyLightIntensity * presentationBrightness * (hallPresentation ? 1.0f : 1f);
+                _keyLight.intensity = config.KeyLightIntensity * presentationBrightness * (hallPresentation ? 0.78f : 1f);
                 _keyLight.shadowStrength = hallPresentation ? 0.7f : 0.7f;
             }
             if (_fillLight != null)
             {
                 _fillLight.color = ParseColor(config.FillLightColor, new Color(0.92f, 0.92f, 0.92f));
-                _fillLight.intensity = config.FillLightIntensity * presentationBrightness * (hallPresentation ? 0.85f : 1f);
+                _fillLight.intensity = config.FillLightIntensity * presentationBrightness * (hallPresentation ? 0.65f : 1f);
             }
             if (_colorAdjustments != null)
             {
                 _colorAdjustments.postExposure.Override(
                     config.PostExposure
                     + Mathf.Log(Mathf.Max(0.01f, presentationBrightness), 2f) * 0.45f
-                    + (hallPresentation ? 0.02f : 0f)
+                    + (hallPresentation ? -0.08f : 0f)
                 );
                 _colorAdjustments.contrast.Override(config.Contrast + (hallPresentation ? 3f : 0f));
                 _colorAdjustments.saturation.Override(config.Saturation + (hallPresentation ? -1f : 0f));
@@ -503,73 +522,17 @@ namespace HeatTreatment.DigitalTwin.Runtime
         {
             if (hall == null) return;
 
-            // The hall is an authored architectural backdrop. Keep its materials
-            // neutral so the imported asset is not recolored blue by the runtime.
+            // glTFast already imports the author's base color, metallic,
+            // roughness, textures and emission. Rewriting those by material
+            // name made the same GLB look different in Blender/Web/Unity and
+            // cloned a material for every renderer. Configure only lighting
+            // participation here; never access renderer.materials or recolor.
             foreach (var renderer in hall.GetComponentsInChildren<Renderer>(true))
             {
-                var materials = renderer.materials;
-                for (var index = 0; index < materials.Length; index += 1)
-                {
-                    var material = materials[index];
-                    if (material == null) continue;
-                    var materialName = material.name.ToLowerInvariant();
-                    var color = new Color(0.38f, 0.38f, 0.38f, 1f);
-                    var metallic = 0.18f;
-                    var smoothness = 0.48f;
-                    var emission = Color.black;
-
-                    if (materialName.Contains("floor"))
-                    {
-                        color = new Color(0.42f, 0.42f, 0.42f, 1f);
-                        metallic = 0.28f;
-                        smoothness = 0.66f;
-                    }
-                    else if (materialName.Contains("road"))
-                    {
-                        color = new Color(0.2f, 0.2f, 0.2f, 1f);
-                        metallic = 0.08f;
-                        smoothness = 0.4f;
-                    }
-                    else if (materialName.Contains("wall"))
-                    {
-                        color = new Color(0.3f, 0.3f, 0.3f, 1f);
-                        metallic = 0.14f;
-                        smoothness = 0.52f;
-                    }
-                    else if (materialName.Contains("glass"))
-                    {
-                        color = new Color(0.5f, 0.5f, 0.5f, 1f);
-                        metallic = 0.1f;
-                        smoothness = 0.72f;
-                    }
-                    else if (materialName.Contains("steel"))
-                    {
-                        color = new Color(0.56f, 0.56f, 0.56f, 1f);
-                        metallic = 0.25f;
-                        smoothness = 0.28f;
-                    }
-                    else if (materialName.Contains("trim"))
-                    {
-                        color = new Color(0.4f, 0.4f, 0.4f, 1f);
-                        metallic = 0.12f;
-                        smoothness = 0.25f;
-                    }
-                    else if (materialName.Contains("mark"))
-                    {
-                        color = new Color(0.72f, 0.72f, 0.72f, 1f);
-                        metallic = 0.16f;
-                        smoothness = 0.54f;
-                    }
-
-                    SetMaterialColor(material, color);
-                    if (material.HasProperty("_Metallic")) material.SetFloat("_Metallic", metallic);
-                    if (material.HasProperty("_Smoothness")) material.SetFloat("_Smoothness", smoothness);
-                    // glTFast shaders use glTF factors instead of URP Lit names.
-                    if (material.HasProperty("metallicFactor")) material.SetFloat("metallicFactor", metallic);
-                    if (material.HasProperty("roughnessFactor")) material.SetFloat("roughnessFactor", 1f - smoothness);
-                    if (material.HasProperty("_EmissionColor")) material.SetColor("_EmissionColor", emission);
-                }
-                renderer.materials = materials;
+                renderer.shadowCastingMode = ShadowCastingMode.On;
+                renderer.receiveShadows = true;
+                renderer.lightProbeUsage = LightProbeUsage.BlendProbes;
+                renderer.reflectionProbeUsage = ReflectionProbeUsage.BlendProbes;
             }
         }
 

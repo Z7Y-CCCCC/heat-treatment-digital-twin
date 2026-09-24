@@ -124,7 +124,7 @@ function saveCustom() {
         <div class="environment-heading">
             <div>
                 <h3>Unity 场景与光效</h3>
-                <p>所有参数作用于当前及以后导入的模型。保存后通过 WebSocket 实时应用，不重载模型、不生成荧光描边。</p>
+                <p>灯光、曝光和雾效作用于整个场景；导入厂房保留模型原始材质。地面、墙面及钢结构颜色只控制程序生成的底板与围墙。保存后实时应用，不重载设备模型。</p>
             </div>
             <div class="environment-actions">
                 <div class="environment-action-buttons">

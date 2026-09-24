@@ -19,6 +19,11 @@ internal sealed class AdminPanelForm : Form
     private const int ResizeBorderThickness = 8;
     private const int RoundedCornerRadius = 12;
     private static readonly HttpClient DesktopControlClient = new() { Timeout = TimeSpan.FromSeconds(1.5) };
+    private static readonly HttpClient DashboardSessionClient = new(new HttpClientHandler
+    {
+        UseProxy = false,
+        UseCookies = false
+    }) { Timeout = TimeSpan.FromSeconds(6) };
     private readonly HostOptions _options;
     private readonly WebView2 _webView = new();
     private readonly Panel _header = new();
@@ -31,6 +36,7 @@ internal sealed class AdminPanelForm : Form
     private readonly CancellationTokenSource _pipeCancellation = new();
     private DashboardChromeForm? _dashboardChrome;
     private DashboardOverlayForm? _dashboardOverlay;
+    private WebViewNavigationRetry? _navigationRetry;
     private readonly Rectangle _defaultDetachedBounds;
     private Rectangle _embeddedBounds;
     private Rectangle _savedDetachedBounds;
@@ -41,6 +47,10 @@ internal sealed class AdminPanelForm : Form
     private bool _maximized;
     private bool _panelHidden;
     private bool _castPresentationMode;
+    private bool _dashboardAccessCheckInProgress;
+    private string _dashboardAccessError = string.Empty;
+    private bool _returnToDashboardAfterUnlock;
+    private bool _initialMapPending = true;
     private bool _dragging;
     private bool _draggingParentWindow;
     private bool _parentDragStarted;
@@ -58,6 +68,7 @@ internal sealed class AdminPanelForm : Form
     private bool _webViewDisposeAttempted;
     private bool _startupReadyReported;
     private bool _startupReadyReportInProgress;
+    private readonly TaskCompletionSource<bool> _adminPageReady = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private bool _exitRequested;
     private Task? _pipeTask;
 
@@ -224,6 +235,8 @@ internal sealed class AdminPanelForm : Form
             _webView.CoreWebView2.NewWindowRequested += HandleNewWindow;
             _webView.CoreWebView2.NavigationStarting += (_, args) =>
                 args.Cancel = !WebContentPolicy.IsSameOrigin(args.Uri, _options.Url);
+            _navigationRetry = new WebViewNavigationRetry(_webView.CoreWebView2, _options.Url,
+                attempt => _status.Text = $"正在重新连接现场服务（{attempt}）…");
             _webView.CoreWebView2.DownloadStarting += HandleDownload;
             _webView.CoreWebView2.WebMessageReceived += HandleWebMessage;
             _webView.CoreWebView2.NavigationCompleted += (_, args) =>
@@ -231,8 +244,10 @@ internal sealed class AdminPanelForm : Form
                 BeginInvoke(() =>
                 {
                     if (_closing || IsDisposed) return;
-                    if (!args.IsSuccess)
+                    if (_navigationRetry?.IsCurrentNavigation(args.NavigationId) != true) return;
+                    if (!WebViewNavigationRetry.IsUsable(args))
                     {
+                        _webView.Visible = false;
                         WriteHostError(
                             $"后台页面加载失败（{args.WebErrorStatus}）",
                             new InvalidOperationException($"WebView2 navigation failed: {args.WebErrorStatus}")
@@ -242,14 +257,16 @@ internal sealed class AdminPanelForm : Form
                     // 大屏模式只显示这个 WebView 的顶部 46px，承载“实时大屏 / 后台管理”页签。
                     // 不能按 _adminVisible 隐藏，否则只会剩下一条深色空白底。
                     _webView.Visible = !_panelHidden;
+                    _status.Text = "已连接现场服务";
                     SendHostState();
-                    _ = ReportStartupReadyAsync();
+                    _adminPageReady.TrySetResult(true);
                 });
             };
             _webView.CoreWebView2.Navigate(_options.Url);
             try
             {
                 _dashboardOverlay = new DashboardOverlayForm(_options);
+                _dashboardOverlay.AdminRequested += ShowAdminFromOverlay;
                 await _dashboardOverlay.InitializeAsync(environment);
                 if (_closing || IsDisposed)
                 {
@@ -257,6 +274,12 @@ internal sealed class AdminPanelForm : Form
                     _dashboardOverlay = null;
                     return;
                 }
+                // The dashboard-mode placement runs before WebView2 finishes
+                // initializing, so the first SyncDashboardOverlay call sees a
+                // null overlay and cannot show it. Re-sync immediately after
+                // the composition controller exists instead of waiting for a
+                // parent-timer tick (or leaving the overlay hidden forever).
+                SyncDashboardOverlay();
             }
             catch (Exception overlayException)
             {
@@ -265,6 +288,17 @@ internal sealed class AdminPanelForm : Form
                 _dashboardOverlay?.Dispose();
                 _dashboardOverlay = null;
             }
+            await _adminPageReady.Task;
+            if (_closing || IsDisposed) return;
+            // Complete the initial placement before the desktop startup cover
+            // is removed. An unsigned-in user must see the existing admin
+            // login, never a second login painted on the Unity scene.
+            if (!_adminVisible && !await HasDashboardLaunchPermissionAsync())
+            {
+                _returnToDashboardAfterUnlock = true;
+                ShowAdmin();
+            }
+            await ReportStartupReadyAsync();
             _status.Text = "已嵌入 Unity 大屏 · 可拖动后台管理页签";
         }
         catch (Exception exception)
@@ -344,10 +378,25 @@ internal sealed class AdminPanelForm : Form
                 else if (action == "minimize") MinimizeActiveWindow();
                 else if (action == "maximize") ToggleMaximize();
                 else if (action == "show_dashboard") ShowDashboard();
-                else if (action == "show_admin") ShowAdmin();
+                else if (action == "show_admin")
+                {
+                    if (root.TryGetProperty("returnToDashboard", out var returnToDashboard)
+                        && returnToDashboard.ValueKind == JsonValueKind.True)
+                        _returnToDashboardAfterUnlock = true;
+                    ShowAdmin();
+                }
                 else if (action == "reload_page") ReloadWebPages();
                 else if (action == "close_window") HandleCloseRequest();
                 else if (action == "close") HandleCloseRequest();
+                else if (action == "clear_unity_session") ForwardUnitySessionCommand("clear_unity_session");
+                else if (action == "sync_unity_session"
+                    && root.TryGetProperty("ticket", out var ticketElement)
+                    && ticketElement.ValueKind == JsonValueKind.String)
+                {
+                    var ticket = ticketElement.GetString();
+                    if (ticket is { Length: 64 } && ticket.All(Uri.IsHexDigit))
+                        ForwardUnitySessionCommand("sync_unity_session", ticket);
+                }
                 else if (action == "state") SendHostState();
                 SendHostState();
                 return;
@@ -381,6 +430,45 @@ internal sealed class AdminPanelForm : Form
         }
     }
 
+    private void ForwardUnitySessionCommand(string action, string? ticket = null)
+    {
+        if (_options.ParentProcessId <= 0 || _closing) return;
+        var message = JsonSerializer.Serialize(new { action, ticket });
+        _ = Task.Run(async () =>
+        {
+            var attempts = action == "sync_unity_session" ? 12 : 1;
+            for (var attempt = 0; attempt < attempts && !_pipeCancellation.IsCancellationRequested; attempt++)
+            {
+                try
+                {
+                    await using var pipe = new NamedPipeClientStream(
+                        ".",
+                        $"HeatTreatmentUnityAuth_{_options.ParentProcessId}",
+                        PipeDirection.Out,
+                        PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly
+                    );
+                    await pipe.ConnectAsync(350, _pipeCancellation.Token);
+                    await using var writer = new StreamWriter(pipe, new UTF8Encoding(false), 1024, leaveOpen: true);
+                    await writer.WriteLineAsync(message);
+                    await writer.FlushAsync();
+                    return;
+                }
+                catch (OperationCanceledException) when (_pipeCancellation.IsCancellationRequested)
+                {
+                    return;
+                }
+                catch
+                {
+                    if (attempt + 1 < attempts)
+                    {
+                        try { await Task.Delay(180, _pipeCancellation.Token); }
+                        catch (OperationCanceledException) { return; }
+                    }
+                }
+            }
+        });
+    }
+
     private static int ReadCoordinate(JsonElement element, string key)
     {
         return element.TryGetProperty(key, out var value) && value.TryGetInt32(out var coordinate)
@@ -399,7 +487,9 @@ internal sealed class AdminPanelForm : Form
                 attached = _attached,
                 maximized = _attached ? _parentMaximized : _maximized,
                 dockReady = _dockReady,
-                adminVisible = _adminVisible
+                adminVisible = _adminVisible,
+                returnToDashboardAfterUnlock = _returnToDashboardAfterUnlock,
+                dashboardAccessError = _dashboardAccessError
             }));
         }
         catch
@@ -418,20 +508,22 @@ internal sealed class AdminPanelForm : Form
         if (_closing || IsDisposed) return;
         try
         {
-            _webView.CoreWebView2?.Reload();
-        }
-        catch (Exception exception)
-        {
-            WriteHostError("后台页面刷新失败", exception);
-        }
-
-        try
-        {
+            // Paint the opaque Unity cover before either WebView starts a
+            // navigation. The admin reload can otherwise yield a frame first.
             _dashboardOverlay?.Reload();
         }
         catch (Exception exception)
         {
             WriteHostError("透明数据层刷新失败", exception);
+        }
+
+        try
+        {
+            _webView.CoreWebView2?.Reload();
+        }
+        catch (Exception exception)
+        {
+            WriteHostError("后台页面刷新失败", exception);
         }
     }
 
@@ -675,8 +767,36 @@ internal sealed class AdminPanelForm : Form
         SendHostState();
     }
 
-    private void ShowDashboard()
+    private async void ShowDashboard()
     {
+        if (_dashboardAccessCheckInProgress || _closing || IsDisposed) return;
+        _dashboardAccessCheckInProgress = true;
+        _dashboardAccessError = string.Empty;
+        var authorized = await HasDashboardLaunchPermissionAsync();
+        _dashboardAccessCheckInProgress = false;
+        if (_closing || IsDisposed) return;
+        if (!authorized)
+        {
+            // Unity is always running beneath this window. Keep the opaque
+            // login page in front until the local account has launch rights.
+            _returnToDashboardAfterUnlock = true;
+            _adminVisible = true;
+            if (_attached)
+            {
+                MinimumSize = Size.Empty;
+                SetEmbeddedBounds(GetDefaultEmbeddedBounds());
+            }
+            ShowPanel();
+            WriteHostInfo($"实时大屏切换被拒绝：{_dashboardAccessError}");
+            return;
+        }
+        WriteHostInfo("实时大屏切换已授权");
+        _returnToDashboardAfterUnlock = false;
+        if (_initialMapPending && _dashboardOverlay != null)
+        {
+            _dashboardOverlay?.OpenMapAtTopLevel();
+            _initialMapPending = false;
+        }
         _castPresentationMode = false;
         _dashboardOverlay?.SetPresentationMode(false);
         _adminVisible = false;
@@ -689,6 +809,56 @@ internal sealed class AdminPanelForm : Form
         ShowPanel(false);
         SyncDashboardOverlay();
         SendHostState();
+    }
+
+    private async Task<bool> HasDashboardLaunchPermissionAsync()
+    {
+        if (_webView.CoreWebView2 == null)
+        {
+            _dashboardAccessError = "后台登录页面尚未就绪，请稍后重试";
+            return false;
+        }
+        try
+        {
+            // ExecuteScriptAsync serializes the immediate JavaScript result; an
+            // async IIFE returns a Promise (which is serialized as null), so it
+            // falsely denies every authenticated user. Reuse the WebView's
+            // HttpOnly session cookie and ask the same-origin API directly.
+            if (!Uri.TryCreate(_options.Url, UriKind.Absolute, out var pageUri))
+            {
+                _dashboardAccessError = "后台服务地址无效";
+                return false;
+            }
+            var sessionUri = new Uri(pageUri, "/api/admin-auth/session");
+            var cookies = await _webView.CoreWebView2.CookieManager.GetCookiesAsync(sessionUri.AbsoluteUri);
+            var cookieHeader = string.Join("; ", cookies
+                .Where(cookie => !string.IsNullOrWhiteSpace(cookie.Name))
+                .Select(cookie => $"{cookie.Name}={cookie.Value}"));
+            if (string.IsNullOrWhiteSpace(cookieHeader))
+            {
+                _dashboardAccessError = "尚未登录或会话已失效，请在后台管理登录";
+                return false;
+            }
+
+            using var request = new HttpRequestMessage(HttpMethod.Get, sessionUri);
+            request.Headers.TryAddWithoutValidation("Cookie", cookieHeader);
+            using var response = await DashboardSessionClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
+            if (!response.IsSuccessStatusCode)
+            {
+                _dashboardAccessError = $"无法核验登录状态（HTTP {(int)response.StatusCode}），请刷新后台管理后重试";
+                return false;
+            }
+            var body = await response.Content.ReadAsStringAsync();
+            if (DashboardAccessPolicy.HasLaunchAndViewPermission(body)) return true;
+            _dashboardAccessError = "当前账户未登录或没有查看、启动大屏权限";
+            return false;
+        }
+        catch (Exception exception)
+        {
+            WriteHostError("实时大屏权限检查失败", exception);
+            _dashboardAccessError = "登录状态检查失败，请查看 admin-host.log 并重试";
+            return false;
+        }
     }
 
     private void PrepareCastPresentation()
@@ -738,6 +908,23 @@ internal sealed class AdminPanelForm : Form
         ShowPanel();
         SyncDashboardOverlay();
         SendHostState();
+    }
+
+    private void ShowAdminFromOverlay(string? focus, bool returnToDashboard)
+    {
+        if (returnToDashboard) _returnToDashboardAfterUnlock = true;
+        if (focus == "factory-location" && _webView.CoreWebView2 != null
+            && Uri.TryCreate(_options.Url, UriKind.Absolute, out var adminUri))
+        {
+            var builder = new UriBuilder(adminUri);
+            var query = builder.Query.TrimStart('?')
+                .Split('&', StringSplitOptions.RemoveEmptyEntries)
+                .Where(part => !part.StartsWith("focus=", StringComparison.OrdinalIgnoreCase))
+                .Append("focus=factory-location");
+            builder.Query = string.Join("&", query);
+            _webView.CoreWebView2.Navigate(builder.Uri.AbsoluteUri);
+        }
+        ShowAdmin();
     }
 
     private void SyncDashboardOverlay()
@@ -827,6 +1014,9 @@ internal sealed class AdminPanelForm : Form
     {
         switch (action)
         {
+            case "show_dashboard":
+                ShowDashboard();
+                break;
             case "focus_admin":
                 ShowPanel();
                 break;
@@ -1086,6 +1276,18 @@ internal sealed class AdminPanelForm : Form
 
     private bool HasDesktopControl => !string.IsNullOrWhiteSpace(_options.DesktopControlUrl)
         && !string.IsNullOrWhiteSpace(_options.DesktopControlToken);
+
+    private static void WriteHostInfo(string message)
+    {
+        try
+        {
+            var logDirectory = Program.LogDirectory;
+            Directory.CreateDirectory(logDirectory);
+            File.AppendAllText(Path.Combine(logDirectory, "admin-host.log"),
+                $"[{DateTimeOffset.Now:O}] {message}\n");
+        }
+        catch { /* Diagnostics must never block tab switching. */ }
+    }
 
     private static void WriteHostError(string message, Exception exception)
     {
@@ -1795,6 +1997,7 @@ internal sealed class AdminPanelForm : Form
     protected override void OnFormClosing(FormClosingEventArgs e)
     {
         _closing = true;
+        _navigationRetry?.Dispose();
         _parentTimer.Stop();
         _pipeCancellation.Cancel();
         try
@@ -1821,6 +2024,7 @@ internal sealed class AdminPanelForm : Form
         if (disposing && !_webViewDisposeAttempted)
         {
             _webViewDisposeAttempted = true;
+            _navigationRetry?.Dispose();
             try { Controls.Remove(_webView); } catch { /* best-effort detach */ }
             try
             {

@@ -1719,8 +1719,13 @@ async function ensureColumn(table, column, definitionSql) {
 async function ensureSchemaColumns() {
     const t = schemaTypes();
 
+    await ensureColumn('workshops', 'factory_id', `${t.string(128)} NULL`);
+    await ensureColumn('factories', 'is_enabled', `${t.bool} DEFAULT 1`);
     await ensureColumn('workshops', 'layout_json', `${t.json}`);
     await ensureColumn('lines', 'layout_json', `${t.json}`);
+    await ensureColumn('projects', 'factory_id', `${t.string(128)} NULL`);
+    await ensureColumn('event_logs', 'factory_id', `${t.string(128)} NULL`);
+    await ensureColumn('metric_snapshots', 'factory_id', `${t.string(128)} NULL`);
 
     await ensureColumn('devices', 'coordinate_space', `${t.string(32)} DEFAULT 'legacy_world'`);
     await ensureColumn('devices', 'plc_enabled', `${t.bool} DEFAULT 0`);
@@ -1766,8 +1771,25 @@ async function rawQuery(sql) {
 
 async function initTables() {
     const t = schemaTypes();
+    await createTable('factories', `
+        id ${t.string(128)} PRIMARY KEY,
+        name ${t.string(120)} NOT NULL,
+        location_json ${t.json},
+        is_enabled ${t.bool} DEFAULT 1,
+        sort_order ${t.int} DEFAULT 0,
+        created_at ${t.datetime} DEFAULT CURRENT_TIMESTAMP,
+        updated_at ${t.datetime} DEFAULT CURRENT_TIMESTAMP
+    `);
+    await createTable('factory_settings', `
+        factory_id ${t.string(128)} NOT NULL,
+        ${quoteIdentifier('key')} ${t.string(128)} NOT NULL,
+        value ${t.text} NOT NULL,
+        updated_at ${t.datetime} DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (factory_id, ${quoteIdentifier('key')})
+    `);
     await createTable('workshops', `
         id ${t.string(64)} PRIMARY KEY,
+        factory_id ${t.string(128)} NULL,
         name ${t.string(255)} NOT NULL,
         sort_order ${t.int} DEFAULT 0,
         layout_json ${t.json},
@@ -1850,6 +1872,7 @@ async function initTables() {
     `);
     await createTable('projects', `
         id ${t.string(128)} PRIMARY KEY,
+        factory_id ${t.string(128)} NULL,
         name ${t.string(255)} NOT NULL,
         description ${t.text},
         is_active ${t.bool} DEFAULT 0,
@@ -1953,6 +1976,12 @@ async function initTables() {
 
     await ensureSchemaColumns();
 
+    await createIndex('idx_workshops_factory', 'workshops', `${quoteIdentifier('factory_id')}, ${quoteIdentifier('sort_order')}`);
+    await createIndex('idx_factories_enabled_order', 'factories', `${quoteIdentifier('is_enabled')}, ${quoteIdentifier('sort_order')}`);
+    await createIndex('idx_projects_factory', 'projects', `${quoteIdentifier('factory_id')}, ${quoteIdentifier('is_active')}`);
+    await createIndex('idx_event_logs_factory_time', 'event_logs', `${quoteIdentifier('factory_id')}, ${quoteIdentifier('occurred_at')} DESC, ${quoteIdentifier('id')} DESC`);
+    await createIndex('idx_metrics_factory_time', 'metric_snapshots', `${quoteIdentifier('factory_id')}, ${quoteIdentifier('snapshot_time')} DESC, ${quoteIdentifier('id')} DESC`);
+    await createIndex('idx_factory_settings_key', 'factory_settings', `${quoteIdentifier('factory_id')}, ${quoteIdentifier('key')}`);
     await createIndex('idx_lines_workshop', 'lines', `${quoteIdentifier('workshop_id')}, ${quoteIdentifier('sort_order')}`);
     await createIndex('idx_devices_line', 'devices', `${quoteIdentifier('line_id')}, ${quoteIdentifier('sort_order')}`);
     await createIndex('idx_data_points_device', 'data_points', quoteIdentifier('device_id'));
@@ -1989,6 +2018,7 @@ async function seedDefaults() {
     const db = makeDbClient();
     const rows = [
         ['factory_name', '智能热处理数字孪生控制中心'],
+        ['active_factory_id', 'factory_default'],
         ['data_mode', 'integrated_plc'],
         ['simulation_interval_ms', '2000'],
         ['realtime_stale_ms', '6000'],
@@ -2043,6 +2073,7 @@ async function seedDefaults() {
         await db.insertIgnore('settings', { key, value }, 'key');
     }
 
+    await seedFactoryRegistry(db);
     await seedModelAssets(db);
     await seedFactoryDefaults(db);
     await migrateSpatialHierarchyV2(db);
@@ -2052,10 +2083,75 @@ async function seedDefaults() {
 
 const NATIVE_FURNACE_MODEL_ID = 'photo_multipurpose_furnace_v6';
 
+async function seedFactoryRegistry(db) {
+    const defaultId = 'factory_default';
+    const [legacyName, legacyLocation, legacyDirectory, migration, configuredActive] = await Promise.all([
+        db.get('SELECT value FROM settings WHERE `key` = ?', ['factory_name']),
+        db.get('SELECT value FROM settings WHERE `key` = ?', ['factory_location']),
+        db.get('SELECT value FROM settings WHERE `key` = ?', ['factory_directory']),
+        db.get('SELECT value FROM settings WHERE `key` = ?', ['migration_factory_registry_v1']),
+        db.get('SELECT value FROM settings WHERE `key` = ?', ['active_factory_id'])
+    ]);
+
+    await db.insertIgnore('factories', {
+        id: defaultId,
+        name: String(legacyName?.value || '本机工厂').trim().slice(0, 120) || '本机工厂',
+        location_json: JSON.stringify(parseJsonObject(legacyLocation?.value, { country: 'CHN' })),
+        sort_order: 0
+    }, 'id');
+
+    if (String(migration?.value || '') !== '1') {
+        const registry = parseJsonObject(legacyDirectory?.value, {});
+        const imported = [];
+        for (const site of Array.isArray(registry.sites) ? registry.sites.slice(0, 200) : []) {
+            const id = String(site?.id || ''), name = String(site?.name || '').trim();
+            if (!/^site_[a-zA-Z0-9_-]{1,80}$/.test(id) || !name || name.length > 120) continue;
+            await db.insertIgnore('factories', {
+                id,
+                name,
+                location_json: JSON.stringify(parseJsonObject(site.location, { country: 'CHN' })),
+                sort_order: imported.length + 1
+            }, 'id');
+            imported.push(id);
+        }
+
+        const legacySiteKeys = ['data_mode', 'simulation_interval_ms', 'realtime_stale_ms', 'native_environment_config', 'native_dashboard_config'];
+        const inherited = [];
+        for (const key of legacySiteKeys) {
+            const setting = await db.get('SELECT value FROM settings WHERE `key` = ?', [key]);
+            if (setting) inherited.push({ key, value: setting.value });
+        }
+        for (const { key, value } of inherited) {
+            await insertFactorySettingIfMissing(db, defaultId, key, value);
+            for (const id of imported) {
+                await insertFactorySettingIfMissing(db, id, key, value);
+            }
+        }
+        await db.upsert('settings', { key: 'migration_factory_registry_v1', value: '1' }, 'key');
+    }
+
+    await db.run('UPDATE workshops SET factory_id = ? WHERE factory_id IS NULL OR factory_id = ?', [defaultId, '']);
+    await db.run('UPDATE projects SET factory_id = ? WHERE factory_id IS NULL OR factory_id = ?', [defaultId, '']);
+    await db.run('UPDATE event_logs SET factory_id = ? WHERE factory_id IS NULL OR factory_id = ?', [defaultId, '']);
+    await db.run('UPDATE metric_snapshots SET factory_id = ? WHERE factory_id IS NULL OR factory_id = ?', [defaultId, '']);
+
+    const requestedId = String(configuredActive?.value || '');
+    if (!requestedId || !await db.get('SELECT id FROM factories WHERE id = ? AND is_enabled <> 0', [requestedId])) {
+        await db.upsert('settings', { key: 'active_factory_id', value: defaultId }, 'key');
+    }
+}
+
+async function insertFactorySettingIfMissing(db, factoryId, key, value) {
+    if (await db.get('SELECT 1 FROM factory_settings WHERE factory_id = ? AND `key` = ?', [factoryId, key])) return;
+    await db.run('INSERT INTO factory_settings (factory_id, `key`, value) VALUES (?, ?, ?)', [factoryId, key, value]);
+}
+
 async function seedFactoryDefaults(db) {
+    const activeFactory = await db.get('SELECT value FROM settings WHERE `key` = ?', ['active_factory_id']);
+    const factoryId = String(activeFactory?.value || 'factory_default');
     const workshopsCount = await db.get('SELECT COUNT(*) AS cnt FROM workshops');
     if (workshopsCount.cnt === 0) {
-        await db.insertIgnore('workshops', { id: 'ws_1', name: '默认车间 1', sort_order: 0 }, 'id');
+        await db.insertIgnore('workshops', { id: 'ws_1', factory_id: factoryId, name: '默认车间 1', sort_order: 0 }, 'id');
     }
 
     const linesCount = await db.get('SELECT COUNT(*) AS cnt FROM `lines`');
@@ -2122,10 +2218,12 @@ async function seedModelAssets(db) {
 }
 
 async function seedPlatformDefaults(db) {
+    const defaultId = 'factory_default';
     const projectCount = await db.get('SELECT COUNT(*) AS cnt FROM projects');
     if (projectCount.cnt === 0) {
         await db.insertIgnore('projects', {
             id: 'project_default',
+            factory_id: 'factory_default',
             name: '热处理车间大屏项目',
             description: '默认项目，可在现场编排器中继续扩展。',
             is_active: 1
@@ -2203,6 +2301,8 @@ async function seedPlatformDefaults(db) {
         ]);
     }
 
+    await db.run('UPDATE projects SET factory_id = ? WHERE factory_id IS NULL OR factory_id = ?', ['factory_default', '']);
+
     const releaseCount = await db.get('SELECT COUNT(*) AS cnt FROM releases');
     if (releaseCount.cnt === 0) {
         await db.insertIgnore('releases', {
@@ -2241,6 +2341,23 @@ async function seedPlatformDefaults(db) {
             currentRelease.id,
             'scene_factory_overview'
         ]);
+    }
+
+    const factories = await db.all('SELECT id, name FROM factories ORDER BY sort_order ASC, created_at ASC');
+    for (const factory of factories) {
+        if (String(factory.id) === defaultId) continue;
+        const project = await db.get('SELECT id FROM projects WHERE factory_id = ? ORDER BY created_at ASC LIMIT 1', [factory.id]);
+        if (project) continue;
+        const projectId = `project_${String(factory.id).replace(/[^a-zA-Z0-9_-]/g, '_')}`.slice(0, 120);
+        const sceneId = `${projectId}_overview`.slice(0, 128);
+        await db.insertIgnore('projects', {
+            id: projectId, factory_id: factory.id, name: `${factory.name}数字孪生项目`,
+            description: '按工厂独立维护的场景项目', is_active: 1
+        }, 'id');
+        await db.insertIgnore('scenes', {
+            id: sceneId, project_id: projectId, name: `${factory.name}总览`, scene_type: 'factory_overview',
+            layout_json: '{}', camera_json: '{}', theme_json: '{}', is_active: 1, sort_order: 0
+        }, 'id');
     }
 
     await ensureAllDashboardDocuments(db);

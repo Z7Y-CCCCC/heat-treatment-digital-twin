@@ -10,6 +10,31 @@ internal static class Program
     [STAThread]
     private static void Main()
     {
+        var retry = new NavigationRetryPolicy("http://127.0.0.1:3001/overlay?embedded=unity");
+        Check(retry.Started(1, "http://127.0.0.1:3001/overlay?embedded=unity"), "Local app navigation is retryable");
+        Check(retry.Completed(1, false, 0) == 1000, "Connection refusal schedules the first retry");
+        retry.Started(2, retry.Url);
+        Check(retry.Completed(1, false, 0) == null, "An old navigation failure cannot schedule a stale retry");
+        Check(retry.Completed(2, false, 0) == 2000, "Repeated failure backs off");
+        retry.Started(3, retry.Url);
+        Check(retry.Completed(3, true, 200) == null, "A successful document stops retrying");
+        retry.Started(4, retry.Url);
+        Check(retry.Completed(4, true, 503) == 1000, "HTTP 503 retries even when navigation transport succeeds");
+        retry.Started(5, retry.Url);
+        Check(retry.Completed(5, false, 0, cancelled: true) == null, "Cancelled navigations are not retried");
+        Check(!retry.Started(6, "https://example.com/"), "Retries cannot bypass the same-origin policy");
+        Check(!retry.Started(7, "http://user:secret@127.0.0.1:3001/admin"), "Credential URLs are not retained as retry targets");
+        Check(NavigationRetryPolicy.IsUsable(true, 401), "Authentication failures are left for user attention");
+        for (ulong id = 8; id < 18; id++) { retry.Started(id, retry.Url); Check(retry.Completed(id, false, 0) <= 15000, "Retry delay is bounded"); }
+
+        Check(DashboardAccessPolicy.HasLaunchAndViewPermission("{\"authenticated\":true,\"permissions\":{\"launch\":true,\"view\":true}}"),
+            "An authenticated launch/view account can switch to the dashboard");
+        Check(!DashboardAccessPolicy.HasLaunchAndViewPermission("{\"authenticated\":true,\"permissions\":{\"launch\":false,\"view\":true}}"),
+            "A signed-in account without launch permission remains blocked");
+        Check(!DashboardAccessPolicy.HasLaunchAndViewPermission("{\"authenticated\":false,\"permissions\":{\"launch\":true,\"view\":true}}"),
+            "A locked session cannot switch to the dashboard");
+        Check(!DashboardAccessPolicy.HasLaunchAndViewPermission("not-json"), "An invalid session response is denied safely");
+
         Check(OverlayInteractionGeometry.ToPixels(new(10.25f, 20.5f, 99.5f, 39.25f), new(1920,1080), new(1920,1080))
             == Rectangle.FromLTRB(10,20,110,60), "Subpixel borders are rounded out, not cut off");
         foreach (var scale in new[] { 1f, 1.25f, 1.5f, 2f })

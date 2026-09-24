@@ -13,7 +13,8 @@ const DEFAULT_CANVAS = Object.freeze({
 const ALLOWED_WIDGET_TYPES = new Set([
     'text', 'value', 'status', 'trend', 'alarm_list', 'device_list', 'image',
     'container', 'metrics', 'marquee', 'navigation', 'return_button', 'device_label',
-    'diagnostics', 'line_overview_cards', 'business_summary'
+    'diagnostics', 'line_overview_cards', 'business_summary', 'hud_kpi_panel',
+    'hud_device_status', 'hud_alarm_panel', 'hud_chart_dock'
 ]);
 const UNITY_WIDGET_TYPES = new Set(['navigation', 'return_button', 'device_label', 'diagnostics', 'line_overview_cards']);
 const SYSTEM_VIEW_COMPONENT_IDS = new Set([
@@ -719,6 +720,9 @@ function inspectForbiddenWriteIntent(value, path, errors, seen = new Set()) {
     }
     for (const [key, child] of Object.entries(value)) {
         const normalizedKey = String(key).replace(/[^a-z0-9]/gi, '').toLowerCase();
+        if (normalizedKey === 'readonly' && child === false) {
+            errors.push(`${path} 禁止启用 PLC 写入`);
+        }
         if (FORBIDDEN_WRITE_KEYS.has(normalizedKey)) {
             errors.push(`${path} 包含禁止的 PLC 写入字段：${key}`);
         }
@@ -727,6 +731,16 @@ function inspectForbiddenWriteIntent(value, path, errors, seen = new Set()) {
             errors.push(`${path} 包含禁止的 PLC 写入动作：${child}`);
         }
         inspectForbiddenWriteIntent(child, `${path}.${key}`, errors, seen);
+    }
+}
+
+function assertNoForbiddenWriteIntent(value) {
+    const errors = [];
+    inspectForbiddenWriteIntent(value, '文档', errors);
+    if (errors.length) {
+        const error = new Error(errors.join('；'));
+        error.validationErrors = errors;
+        throw error;
     }
 }
 
@@ -818,5 +832,6 @@ module.exports = {
     validateDocument,
     documentToLegacyWidgets,
     documentToRuntimeWidgets,
-    isCanonicalDocument
+    isCanonicalDocument,
+    assertNoForbiddenWriteIntent
 };

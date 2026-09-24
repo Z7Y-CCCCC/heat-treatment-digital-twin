@@ -2,6 +2,7 @@
 using System.IO;
 using System.Reflection;
 using HeatTreatment.DigitalTwin.Runtime;
+using HeatTreatment.DigitalTwin.Rendering;
 using UnityEditor;
 using UnityEditor.Build;
 using UnityEditor.Build.Reporting;
@@ -54,6 +55,8 @@ namespace HeatTreatment.DigitalTwin.Editor
         public static void BuildWindowsClient()
         {
             BootstrapProject();
+            ValidateAuthoredHallMaterials();
+            ValidateSceneShadowCoverage();
             EditorUserBuildSettings.SwitchActiveBuildTarget(BuildTargetGroup.Standalone, BuildTarget.StandaloneWindows64);
             var buildDirectory = Path.GetFullPath("Builds/Windows");
             Directory.CreateDirectory(buildDirectory);
@@ -72,6 +75,61 @@ namespace HeatTreatment.DigitalTwin.Editor
             }
             Debug.Log($"[Digital Twin] Windows build created: {options.locationPathName}");
             if (!Application.isBatchMode) EditorUtility.RevealInFinder(buildDirectory);
+        }
+
+        [MenuItem("Digital Twin/Validate Authored Hall Materials", priority = 19)]
+        public static void ValidateAuthoredHallMaterials()
+        {
+            var shader = Shader.Find("Universal Render Pipeline/Lit");
+            if (shader == null) throw new BuildFailedException("URP Lit is required for the hall material audit.");
+            var root = new GameObject("__AuthoredHallMaterialAudit") { hideFlags = HideFlags.HideAndDontSave };
+            var material = new Material(shader) { name = "Hall_floor", hideFlags = HideFlags.HideAndDontSave };
+            try
+            {
+                material.SetColor("_BaseColor", new Color(0.13f, 0.31f, 0.72f, 1f));
+                material.SetFloat("_Metallic", 0.91f);
+                material.SetFloat("_Smoothness", 0.17f);
+                material.SetColor("_EmissionColor", new Color(0.01f, 0.03f, 0.05f, 1f));
+                var originalColor = material.GetColor("_BaseColor");
+                var originalEmission = material.GetColor("_EmissionColor");
+                var renderer = root.AddComponent<MeshRenderer>();
+                renderer.sharedMaterial = material;
+                renderer.receiveShadows = false;
+                renderer.shadowCastingMode = ShadowCastingMode.Off;
+                var method = typeof(FactoryEnvironmentBuilder).GetMethod("ApplyFactoryHallPresentation", BindingFlags.Static | BindingFlags.NonPublic);
+                if (method == null) throw new BuildFailedException("Hall material preparation entry point not found.");
+                method.Invoke(null, new object[] { root });
+                if (renderer.sharedMaterial != material || material.GetColor("_BaseColor") != originalColor
+                    || material.GetColor("_EmissionColor") != originalEmission
+                    || !Mathf.Approximately(material.GetFloat("_Metallic"), 0.91f)
+                    || !Mathf.Approximately(material.GetFloat("_Smoothness"), 0.17f))
+                    throw new BuildFailedException("Hall presentation overwrote or cloned an authored material.");
+                if (!renderer.receiveShadows || renderer.shadowCastingMode != ShadowCastingMode.On)
+                    throw new BuildFailedException("Authored hall must retain shadow participation.");
+                Debug.Log("[Digital Twin] Authored hall material contract validated: no color/PBR/emission override or material clone.");
+            }
+            finally
+            {
+                Object.DestroyImmediate(root);
+                Object.DestroyImmediate(material);
+            }
+        }
+
+        public static void ValidateSceneShadowCoverage()
+        {
+            var hall = new Bounds(Vector3.zero, new Vector3(200f, 10f, 100f));
+            var distance = SceneShadowCoverage.Distance(hall, new Vector3(0, 0, -250), Vector3.forward, 600, 80);
+            if (distance < 377.5f || distance > 385f)
+                throw new BuildFailedException("Factory shadow range must cover distant receivers and fade margin.");
+            var detail = SceneShadowCoverage.Distance(new Bounds(Vector3.zero, Vector3.one * 3), new Vector3(0, 0, -8), Vector3.forward, 600, 80);
+            if (detail != 80f) throw new BuildFailedException("Device detail must return to the quality profile's smaller shadow range.");
+            var clipped = SceneShadowCoverage.Distance(hall, new Vector3(0, 0, -250), Vector3.forward, 200, 80);
+            if (clipped != 200f) throw new BuildFailedException("Shadow range exceeded the camera far plane.");
+            var behind = SceneShadowCoverage.Distance(hall, new Vector3(0, 0, 250), Vector3.forward, 600, 48);
+            if (behind != 50f) throw new BuildFailedException("Off-camera bounds enlarged shadow range.");
+            var rotated = SceneShadowCoverage.Distance(hall, new Vector3(-250, 0, 0), Vector3.right, 600, 80);
+            if (rotated < 440f || rotated > 445f) throw new BuildFailedException("Shadow range ignored camera orientation.");
+            Debug.Log("[Digital Twin] Scene shadow coverage validated: overview, detail, far clip, behind camera, rotation.");
         }
 
         private static void AutoBootstrap()

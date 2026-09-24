@@ -4,6 +4,10 @@ const { assertLicenseForWrite, getLicenseStatus, isLicenseEnforced } = require('
 const { getAdminAuth } = require('../services/adminAuth');
 
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+const CAST_READ_PATHS = [
+    '/api/config', '/api/engine/status', '/api/health', '/api/models',
+    '/api/platform/events', '/api/platform/metrics'
+];
 
 function isLoopbackAddress(address) {
     const value = String(address || '').trim().toLowerCase();
@@ -40,7 +44,7 @@ function createCorsMiddleware() {
             callback(null, false);
         },
         methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-        allowedHeaders: ['Content-Type', 'Authorization', 'X-Admin-Token', 'X-MCP-Token', 'X-Shutdown-Token', 'X-Admin-Request', 'X-CSRF-Token'],
+        allowedHeaders: ['Content-Type', 'Authorization', 'X-Admin-Token', 'X-MCP-Token', 'X-Shutdown-Token', 'X-Admin-Request', 'X-CSRF-Token', 'X-Factory-ID'],
         maxAge: 600,
         credentials: !!req.get('origin') && isTrustedAdminOrigin(req)
     }));
@@ -62,10 +66,51 @@ function adminSessionCookieName() {
     return `dt_admin_session_${Number(process.env.PORT || 3001)}`;
 }
 
+function adminAccountCookieName(slotId) {
+    if (!/^[a-f0-9]{24}$/.test(String(slotId || ''))) return '';
+    return `${adminSessionCookieName()}_account_${slotId}`;
+}
+
+function adminActiveAccountCookieName() {
+    return `${adminSessionCookieName()}_active`;
+}
+
+function requestCookies(req) {
+    return new Map(String(req.get('cookie') || '').split(';').map(value => {
+        const separator = value.indexOf('=');
+        return separator < 0 ? null : [value.slice(0, separator).trim(), value.slice(separator + 1).trim()];
+    }).filter(Boolean));
+}
+
+function activeAdminAccountSlot(req) {
+    const active = requestCookies(req).get(adminActiveAccountCookieName());
+    if (active === 'none') return 'none';
+    return /^[a-f0-9]{24}$/.test(active || '') ? active : 'main';
+}
+
+function suppliedAdminSessionForSlot(req, slotId) {
+    const cookies = requestCookies(req);
+    if (slotId === 'main') return cookies.get(adminSessionCookieName()) || '';
+    const name = adminAccountCookieName(slotId);
+    return name ? cookies.get(name) || '' : '';
+}
+
+function suppliedAdminAccounts(req, service) {
+    const cookies = requestCookies(req), base = adminSessionCookieName();
+    const slots = [{ slotId: 'main', token: cookies.get(base) || '' }];
+    const prefix = `${base}_account_`;
+    for (const [name, token] of cookies) {
+        if (!name.startsWith(prefix)) continue;
+        const slotId = name.slice(prefix.length);
+        if (/^[a-f0-9]{24}$/.test(slotId)) slots.push({ slotId, token });
+    }
+    return slots.filter(slot => slot.token).map(({ slotId, token }) => ({ slotId, ...service.status(token) }))
+        .filter(account => account.authenticated);
+}
+
 function suppliedAdminSession(req) {
-    const prefix = `${adminSessionCookieName()}=`;
-    const cookie = String(req.get('cookie') || '').split(';').map(value => value.trim()).find(value => value.startsWith(prefix));
-    return cookie ? cookie.slice(prefix.length) : '';
+    const slotId = activeAdminAccountSlot(req);
+    return slotId === 'none' ? '' : suppliedAdminSessionForSlot(req, slotId);
 }
 
 function securityHeaders(req, res, next) {
@@ -109,6 +154,39 @@ function suppliedAdminToken(req) {
         : '';
 }
 
+function backupOperationPermission(apiPath, method) {
+    if (apiPath === '/api/database/backups' || apiPath.startsWith('/api/database/backups/')) {
+        const adminOnly = apiPath.endsWith('/config') || apiPath.endsWith('/restore') || method === 'DELETE';
+        return adminOnly ? 'admin' : 'backup';
+    }
+    if (apiPath === '/api/site-backups' || apiPath.startsWith('/api/site-backups/')) {
+        const adminOnly = apiPath.endsWith('/config') || apiPath.endsWith('/import');
+        return adminOnly ? 'admin' : 'backup';
+    }
+    if (apiPath === '/api/data-sources/backups' || apiPath.startsWith('/api/data-sources/backups/')) {
+        return /\/status$/.test(apiPath) || /\/run$/.test(apiPath) ? 'backup' : 'admin';
+    }
+    return '';
+}
+
+function permissionForApi(apiPath, method) {
+    if (method === 'POST' && (apiPath === '/api/factories/activate'
+        || /^\/api\/factories\/[^/]+\/activate$/.test(apiPath)
+        || apiPath === '/api/native-preview/navigate'
+        || /^\/api\/platform\/scenes\/[^/]+\/activate-latest-release$/.test(apiPath))) return 'launch';
+    if (apiPath === '/api/system/cast' || apiPath.startsWith('/api/system/cast/')) return 'cast';
+    const backupPermission = backupOperationPermission(apiPath, method);
+    if (backupPermission) return backupPermission;
+    if (apiPath === '/api/database' || apiPath.startsWith('/api/database/')) return 'admin';
+    if (apiPath === '/api/platform' || apiPath.startsWith('/api/platform/')) return 'admin';
+    if ((apiPath === '/api/system' || apiPath.startsWith('/api/system/'))
+        && apiPath !== '/api/system/cast' && !apiPath.startsWith('/api/system/cast/')) return 'admin';
+    if ((apiPath === '/api/data-sources' || apiPath.startsWith('/api/data-sources/'))
+        && apiPath !== '/api/data-sources/runtime-values' && !apiPath.startsWith('/api/data-sources/runtime-values/')) return 'admin';
+    if (!SAFE_METHODS.has(method)) return 'admin';
+    return 'view';
+}
+
 function protectManagementWrites(req, res, next) {
     const apiPath = req.path.toLowerCase().replace(/\/+$/, '');
     const sensitiveRead = apiPath === '/api/database' || apiPath.startsWith('/api/database/')
@@ -116,7 +194,8 @@ function protectManagementWrites(req, res, next) {
         || ((apiPath === '/api/data-sources' || apiPath.startsWith('/api/data-sources/'))
             && apiPath !== '/api/data-sources/runtime-values');
     const writing = !SAFE_METHODS.has(req.method);
-    const displayNavigation = req.method === 'POST' && (apiPath === '/api/native-preview/navigate'
+    const displayNavigation = req.method === 'POST' && (/^\/api\/factories\/[^/]+\/activate$/.test(apiPath)
+        || apiPath === '/api/native-preview/navigate'
         || /^\/api\/platform\/scenes\/[^/]+\/activate-latest-release$/.test(apiPath));
     const shutdown = req.method === 'POST' && apiPath === '/api/internal/shutdown';
     const licenseExempt = apiPath.startsWith('/api/license')
@@ -145,8 +224,19 @@ function protectManagementWrites(req, res, next) {
         }
     }
 
+    // The LAN display has its own PIN-based, read-only authorization. Only
+    // LanDisplayService can mark the request after validating that PIN; a
+    // caller-controlled header cannot enter this path.
+    const castRead = req.castAuthorized === true
+        && SAFE_METHODS.has(req.method)
+        && CAST_READ_PATHS.some(prefix => apiPath === prefix || apiPath.startsWith(`${prefix}/`));
+    if (castRead) {
+        next();
+        return;
+    }
+
     if (sensitiveRead) res.setHeader('Cache-Control', 'no-store');
-    if (!apiPath.startsWith('/api/') || req.method === 'OPTIONS' || (!writing && !sensitiveRead)) {
+    if (!apiPath.startsWith('/api/') || req.method === 'OPTIONS' || licenseExempt) {
         next();
         return;
     }
@@ -160,7 +250,7 @@ function protectManagementWrites(req, res, next) {
     if (!loopback && !tokenAuthorized && !mcpAuthorized) {
         res.status(403).json({
             success: false,
-            error: '管理修改仅允许在现场电脑本机执行；远程管理需配置 ADMIN_API_TOKEN'
+            error: '现场服务仅允许在现场电脑本机登录和访问；远程管理需配置 ADMIN_API_TOKEN'
         });
         return;
     }
@@ -171,7 +261,7 @@ function protectManagementWrites(req, res, next) {
         res.status(403).json({ success: false, code: 'ADMIN_ORIGIN_INVALID', error: '拒绝跨站大屏导航请求' });
         return;
     }
-    if (!tokenAuthorized && !mcpAuthorized && !displayNavigation && !shutdown) {
+    if (!tokenAuthorized && !mcpAuthorized && !shutdown) {
         try {
             if (writing && !isTrustedAdminOrigin(req)) {
                 res.status(403).json({ success: false, code: 'ADMIN_ORIGIN_INVALID', error: '拒绝跨站后台修改请求' });
@@ -179,7 +269,9 @@ function protectManagementWrites(req, res, next) {
             }
             // Polling and background previews must never keep an idle engineer
             // session alive. Only the explicit user-activity endpoint does that.
-            getAdminAuth().requireSession(suppliedAdminSession(req), req.get('x-csrf-token'), { checkCsrf: writing });
+            getAdminAuth().requireSession(suppliedAdminSession(req), req.get('x-csrf-token'), {
+                checkCsrf: writing, permission: permissionForApi(apiPath, req.method)
+            });
         } catch (error) {
             res.status(error.statusCode || 503).json({ success: false, code: error.code || 'ADMIN_AUTH_ERROR', error: error.message });
             return;
@@ -223,6 +315,9 @@ function createOperationRateLimiter(options = {}) {
 }
 
 module.exports = {
+    activeAdminAccountSlot,
+    adminAccountCookieName,
+    adminActiveAccountCookieName,
     adminSessionCookieName,
     createCorsMiddleware,
     createOperationRateLimiter,
@@ -230,5 +325,7 @@ module.exports = {
     isTrustedAdminOrigin,
     protectManagementWrites,
     securityHeaders,
-    suppliedAdminSession
+    suppliedAdminAccounts,
+    suppliedAdminSession,
+    suppliedAdminSessionForSlot
 };

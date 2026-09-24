@@ -113,7 +113,11 @@ export const DASHBOARD_WIDGET_LIBRARY = [
   { type: 'trend', label: '通用图表', icon: '⌁', group: '数据', description: '折线、面积、柱状、饼图、环图和仪表盘' },
   { type: 'alarm_list', label: '报警表', icon: '!', group: '数据', description: '只读报警与事件履历' },
   { type: 'device_list', label: '设备列表', icon: '☷', group: '数据', description: '设备在线、运行和报警状态' },
-  { type: 'marquee', label: '滚动消息', icon: '↔', group: '数据', description: '实时日志和报警滚动条' }
+  { type: 'marquee', label: '滚动消息', icon: '↔', group: '数据', description: '实时日志和报警滚动条' },
+  { type: 'hud_kpi_panel', label: 'HUD 指标面板', icon: '◌', group: 'HUD 模块', description: '一体化综合效率、设备计数和生产指标模块' },
+  { type: 'hud_device_status', label: 'HUD 设备状态', icon: '⌁', group: 'HUD 模块', description: '一体化设备运行状态与在线统计模块' },
+  { type: 'hud_alarm_panel', label: 'HUD 报警履历', icon: '!', group: 'HUD 模块', description: '时间线式报警与事件履历模块' },
+  { type: 'hud_chart_dock', label: 'HUD 图表 Dock', icon: '⌁', group: 'HUD 模块', description: '指标摘要与平滑趋势图一体化底部模块' }
 ]
 
 export const DASHBOARD_WIDGET_PRESETS = [
@@ -123,6 +127,13 @@ export const DASHBOARD_WIDGET_PRESETS = [
     icon: '▤',
     group: '设备检查',
     description: '生成右侧部件名称、说明和实时参数面板，并绑定设备检查上下文'
+  },
+  {
+    id: 'factory_hud_modules',
+    label: '工厂总览 HUD 模块',
+    icon: '✦',
+    group: '工厂总览',
+    description: '一键加入指标、设备状态、报警和底部趋势四个一体化模块'
   }
 ]
 
@@ -198,6 +209,42 @@ const TYPE_DEFAULTS = {
       showSource: true
     },
     style: { background: 'rgba(10, 24, 38, .84)', color: '#eef7ff', borderColor: 'rgba(89, 178, 238, .32)', borderRadius: 14 }
+  },
+  hud_kpi_panel: {
+    size: [520, 260],
+    title: '生产运行参数',
+    content: {
+      chartPath: 'metrics.overall_oee',
+      chartLabel: '综合效率',
+      items: [
+        { label: '设备总数', path: 'metrics.total_devices', unit: ' 台' },
+        { label: '在线设备', path: 'metrics.online_devices', unit: ' 台' },
+        { label: '运行设备', path: 'metrics.running_devices', unit: ' 台' }
+      ]
+    },
+    style: { background: 'rgba(10, 18, 34, .12)', color: '#eef7ff', borderColor: 'rgba(137, 149, 245, .24)', borderRadius: 18, backgroundOpacity: .08, shadow: 'soft' }
+  },
+  hud_device_status: {
+    size: [560, 420],
+    title: '设备运行监测',
+    content: { limit: 8, showTemperature: false },
+    style: { background: 'rgba(10, 18, 34, .12)', color: '#eef7ff', borderColor: 'rgba(113, 203, 216, .2)', borderRadius: 18, backgroundOpacity: .08, shadow: 'soft' }
+  },
+  hud_alarm_panel: {
+    size: [560, 320],
+    title: '报警 / 事件履历',
+    content: { limit: 6, showLevel: true, showTime: true },
+    style: { background: 'rgba(10, 18, 34, .12)', color: '#eef7ff', borderColor: 'rgba(231, 127, 152, .2)', borderRadius: 18, backgroundOpacity: .08, shadow: 'soft' }
+  },
+  hud_chart_dock: {
+    size: [680, 280],
+    title: '实时趋势',
+    content: {
+      seriesName: '实时温度', chartType: 'area', lineColor: '#8995f5', areaColor: 'rgba(137,149,245,.18)',
+      historyLength: 60, showLegend: false, showAxis: true, showDataLabel: false, smooth: true, showSymbol: false, lineWidth: 1.5, areaOpacity: .2,
+      statLabel: '当前温度', statPath: '', statUnit: '°C'
+    },
+    style: { background: 'rgba(10, 18, 34, .12)', color: '#eef7ff', borderColor: 'rgba(137, 149, 245, .2)', borderRadius: 18, backgroundOpacity: .08, shadow: 'soft' }
   },
   marquee: {
     size: [1080, 76],
@@ -533,11 +580,61 @@ export function createDashboardWidget(type, index = 0, position = {}) {
 }
 
 export function createDashboardWidgetPreset(presetId, options = {}) {
-  if (presetId !== 'device_part_detail') return []
-
   const canvas = { ...DEFAULT_DASHBOARD_CANVAS, ...objectValue(options.canvas, {}) }
   const canvasWidth = Math.max(320, Number(canvas.width) || DEFAULT_DASHBOARD_CANVAS.width)
   const canvasHeight = Math.max(180, Number(canvas.height) || DEFAULT_DASHBOARD_CANVAS.height)
+
+  if (presetId === 'factory_hud_modules') {
+    const margin = Math.max(18, Math.round(Math.min(canvasWidth, canvasHeight) * .025))
+    const rightWidth = Math.min(canvasWidth - margin * 2, 420, Math.max(180, Math.round(canvasWidth * .179)))
+    const bottomY = Math.max(margin, canvasHeight - Math.max(80, Math.round(canvasHeight * .23)) - margin)
+    const groupId = String(options.groupId || 'group_factory_hud_modules').replace(/[^a-zA-Z0-9_-]/g, '_')
+    const viewIds = stringArray(options.viewIds).length ? stringArray(options.viewIds) : ['factory_overview', 'workshop_overview', 'line_overview']
+    const visibility = {
+      viewModes: ['factory', 'workshop', 'line'],
+      viewIds,
+      matchBoundDevice: false,
+      ruleMode: 'all',
+      rules: []
+    }
+    const baseZ = Math.max(0, Number(options.baseZ) || 0)
+    const panel = (source, offset) => normalizeDashboardWidget({
+      ...source,
+      groupId,
+      visibility: deepClone(visibility),
+      runtimeTarget: 'overlay',
+      zIndex: baseZ + offset
+    }, canvas, baseZ + offset)
+    return [
+      panel({
+        id: 'hud_factory_kpi', type: 'hud_kpi_panel', title: '生产运行参数',
+        frame: { x: canvasWidth - rightWidth - margin, y: Math.round(canvasHeight * .132), width: rightWidth, height: Math.round(canvasHeight * .181), rotation: 0 },
+        content: TYPE_DEFAULTS.hud_kpi_panel.content,
+        style: TYPE_DEFAULTS.hud_kpi_panel.style
+      }, 1),
+      panel({
+        id: 'hud_factory_devices', type: 'hud_device_status', title: '设备运行监测',
+        frame: { x: canvasWidth - rightWidth - margin, y: Math.round(canvasHeight * .328), width: rightWidth, height: Math.round(canvasHeight * .332), rotation: 0 },
+        content: TYPE_DEFAULTS.hud_device_status.content,
+        style: TYPE_DEFAULTS.hud_device_status.style
+      }, 2),
+      panel({
+        id: 'hud_factory_alarms', type: 'hud_alarm_panel', title: '报警 / 事件履历',
+        frame: { x: canvasWidth - rightWidth - margin, y: Math.round(canvasHeight * .674), width: rightWidth, height: Math.round(canvasHeight * .278), rotation: 0 },
+        content: TYPE_DEFAULTS.hud_alarm_panel.content,
+        style: TYPE_DEFAULTS.hud_alarm_panel.style
+      }, 3),
+      panel({
+        id: 'hud_factory_trend', type: 'hud_chart_dock', title: '实时趋势',
+        frame: { x: Math.round(canvasWidth * .233), y: bottomY, width: Math.round(canvasWidth * .318), height: canvasHeight - bottomY - margin, rotation: 0 },
+        content: TYPE_DEFAULTS.hud_chart_dock.content,
+        style: TYPE_DEFAULTS.hud_chart_dock.style
+      }, 4)
+    ]
+  }
+
+  if (presetId !== 'device_part_detail') return []
+
   const margin = Math.max(18, Math.round(Math.min(canvasWidth, canvasHeight) * .025))
   const panelWidth = Math.min(500, Math.max(380, canvasWidth * .28), canvasWidth - margin * 2)
   const panelHeight = Math.min(820, Math.max(560, canvasHeight * .76), canvasHeight - margin * 2)

@@ -1,9 +1,12 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Collections;
 using System.IO;
+using System.IO.Pipes;
 using System.Linq;
 using System.Net.Http;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using HeatTreatment.DigitalTwin.Backend;
@@ -42,6 +45,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
         private readonly Dictionary<string, string> _deviceWorkshopIds = new Dictionary<string, string>();
         private readonly Dictionary<string, int> _previewModelVersions = new Dictionary<string, int>();
         private readonly Dictionary<string, long> _previewSessionSequences = new Dictionary<string, long>();
+        private readonly ConcurrentQueue<string> _nativeAuthCommands = new ConcurrentQueue<string>();
 
         private NativeClientSettings _settings;
         private BackendApiClient _api;
@@ -55,6 +59,9 @@ namespace HeatTreatment.DigitalTwin.Runtime
         private FactoryConfigDto _config;
         private CancellationTokenSource _lifetime;
         private CancellationTokenSource _reload;
+        private Thread _nativeAuthPipeThread;
+        private CancellationToken _nativeAuthPipeToken;
+        private bool _nativeAuthPipeFailureReported;
         private JObject _lastDashboardContext = new JObject
         {
             ["viewId"] = "factory_overview",
@@ -69,9 +76,15 @@ namespace HeatTreatment.DigitalTwin.Runtime
         private Camera _camera;
         private OrbitCameraController _orbit;
         private bool _sceneReady;
+        private bool _authenticated;
+        private bool _loginInProgress;
+        private int _authGeneration;
         private int _lastBackNavigationFrame = -1;
         private float _lastBackNavigationAt = float.NegativeInfinity;
         private const float BackNavigationDebounceSeconds = 0.18f;
+        private bool _sceneProjectionRequested;
+        private readonly string _sceneProjectionStreamId = Guid.NewGuid().ToString("N");
+        private long _sceneProjectionSequence;
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         private static void EnsureRuntimeExists()
@@ -124,27 +137,224 @@ namespace HeatTreatment.DigitalTwin.Runtime
             _webSocket = GetOrAdd<RealtimeWebSocketClient>();
             _webSocket.MessageReceived += OnRealtimeMessage;
             _webSocket.ConnectionStateChanged += OnConnectionStateChanged;
-            try
-            {
-                _webSocket.StartClient(_settings.backendWebSocketUrl, _settings.autoReconnectSeconds);
-            }
-            catch (Exception exception)
-            {
-                _diagnostics.BackendState = "invalid websocket URL";
-                Debug.LogWarning($"[StartupWarning] 2|实时数据连接初始化失败：{ShortMessage(exception.Message)}");
-                Debug.LogError($"[FactoryRuntime] WebSocket startup failed: {exception}");
-            }
         }
 
         private void Start()
         {
-            BeginReload();
+            _nativeAuthPipeToken = _lifetime.Token;
+            _nativeAuthPipeThread = new Thread(ListenForNativeAuthCommands)
+            {
+                IsBackground = true,
+                Name = "DigitalTwinNativeAuthPipe"
+            };
+            _nativeAuthPipeThread.Start();
+            _diagnostics.RequireAuthentication();
             StartCoroutine(StartApplicationChromeCoroutine());
+            StartCoroutine(StreamSceneProjection());
+        }
+
+        private void ListenForNativeAuthCommands()
+        {
+            var pipeName = $"HeatTreatmentUnityAuth_{Process.GetCurrentProcess().Id}";
+            var currentUser = $"{Environment.UserDomainName}\\{Environment.UserName}";
+            while (!_nativeAuthPipeToken.IsCancellationRequested)
+            {
+                try
+                {
+                    using (var server = new NamedPipeServerStream(
+                        pipeName,
+                        PipeDirection.InOut,
+                        1,
+                        PipeTransmissionMode.Byte,
+                        PipeOptions.None))
+                    {
+                        server.WaitForConnection();
+                        using (var reader = new StreamReader(server, Encoding.UTF8))
+                        {
+                            var message = reader.ReadLine();
+                            if (string.IsNullOrWhiteSpace(message) || message.Length > 4096) continue;
+                            var clientUser = server.GetImpersonationUserName();
+                            if (!string.Equals(clientUser, Environment.UserName, StringComparison.OrdinalIgnoreCase)
+                                && !string.Equals(clientUser, currentUser, StringComparison.OrdinalIgnoreCase))
+                            {
+                                if (!_nativeAuthPipeFailureReported)
+                                {
+                                    _nativeAuthPipeFailureReported = true;
+                                    _nativeAuthCommands.Enqueue(new JObject
+                                    {
+                                        ["action"] = "pipe_error",
+                                        ["message"] = $"命名管道客户端身份不匹配（{clientUser} / {currentUser}）"
+                                    }.ToString(Formatting.None));
+                                }
+                                continue;
+                            }
+                            _nativeAuthCommands.Enqueue(message);
+                        }
+                    }
+                }
+                catch (Exception exception)
+                {
+                    if (_nativeAuthPipeToken.IsCancellationRequested) break;
+                    if (!_nativeAuthPipeFailureReported)
+                    {
+                        _nativeAuthPipeFailureReported = true;
+                        _nativeAuthCommands.Enqueue(new JObject
+                        {
+                            ["action"] = "pipe_error",
+                            ["message"] = ShortMessage(exception.Message)
+                        }.ToString(Formatting.None));
+                    }
+                    Thread.Sleep(250);
+                }
+            }
+        }
+
+        private void HandleNativeAuthCommand(string message)
+        {
+            try
+            {
+                var command = JObject.Parse(message);
+                var action = command.Value<string>("action");
+                if (action == "pipe_error")
+                {
+                    Debug.LogWarning($"[FactoryRuntime] Native auth handoff pipe unavailable: {ShortMessage(command.Value<string>("message"))}");
+                    return;
+                }
+                if (action == "clear_unity_session")
+                {
+                    ClearNativeSession("后台会话已锁定，请重新登录。");
+                    return;
+                }
+                if (action != "sync_unity_session") return;
+                var ticket = command.Value<string>("ticket");
+                if (string.IsNullOrEmpty(ticket) || ticket.Length != 64 || ticket.Any(character => !Uri.IsHexDigit(character))) return;
+                Debug.Log("[FactoryRuntime] Native dashboard session handoff received.");
+                _ = AuthenticateNativeTicketAsync(ticket);
+            }
+            catch
+            {
+                // Named-pipe messages are advisory; malformed payloads never affect the runtime.
+            }
+        }
+
+        private async Task AuthenticateNativeTicketAsync(string ticket)
+        {
+            if (_loginInProgress || _api == null || _diagnostics == null) return;
+            _loginInProgress = true;
+            var generation = ++_authGeneration;
+            _diagnostics.SetLoginBusy(true);
+            try
+            {
+                var session = await _api.ExchangeNativeTicketAsync(ticket, _lifetime.Token);
+                if (generation != _authGeneration) return;
+                ActivateAuthenticatedSession(session);
+            }
+            catch (Exception exception)
+            {
+                if (generation != _authGeneration) return;
+                _authenticated = false;
+                _api.ClearSession();
+                var message = exception is BackendRequestException requestException && requestException.StatusCode == 403
+                    ? requestException.Message
+                    : ShortMessage(exception.Message);
+                _diagnostics.SetLoginError(message);
+                Debug.LogWarning($"[FactoryRuntime] Shared dashboard login failed: {message}");
+            }
+            finally
+            {
+                if (generation == _authGeneration)
+                {
+                    _loginInProgress = false;
+                    _diagnostics.SetLoginBusy(false);
+                }
+            }
+        }
+
+        private void ClearNativeSession(string message)
+        {
+            _authGeneration++;
+            _loginInProgress = false;
+            _authenticated = false;
+            _reload?.Cancel();
+            _reload?.Dispose();
+            _reload = null;
+            _api?.ClearSession();
+            _webSocket?.StopClient();
+            DestroyCurrentFactory();
+            _sceneReady = false;
+            _diagnostics?.SetLoginBusy(false);
+            _diagnostics?.RequireAuthentication(message);
+        }
+
+        private static JArray ProjectionVector(Vector3 value) => new JArray(value.x, value.y, value.z);
+
+        private IEnumerator StreamSceneProjection()
+        {
+            var endOfFrame = new WaitForEndOfFrame();
+            var nextFrameAt = 0f;
+            while (true)
+            {
+                // OrbitCameraController and mobile equipment update later than
+                // this runtime. Capture AFTER all LateUpdate transforms.
+                yield return endOfFrame;
+                if (Time.unscaledTime < nextFrameAt) continue;
+                nextFrameAt = Time.unscaledTime + 0.1f;
+                if (!_sceneProjectionRequested || !_sceneReady || _camera == null
+                    || _camera.orthographic || _webSocket?.IsConnected != true) continue;
+
+                var devices = new JArray();
+                foreach (var pair in _deviceRoots)
+                {
+                    if (devices.Count >= 500) break;
+                    var root = pair.Value;
+                    if (root == null) continue;
+                    var matrix = root.localToWorldMatrix;
+                    var elements = new JArray();
+                    for (var column = 0; column < 4; column++)
+                        for (var row = 0; row < 4; row++) elements.Add(matrix[row, column]);
+                    var renderers = root.GetComponentsInChildren<Renderer>()
+                        .Where(renderer => renderer.enabled && renderer.gameObject.activeInHierarchy).ToArray();
+                    var bounds = renderers.Length > 0 ? renderers[0].bounds : new Bounds(root.position, Vector3.zero);
+                    for (var index = 1; index < renderers.Length; index++) bounds.Encapsulate(renderers[index].bounds);
+                    var anchor = bounds.center;
+                    anchor.y = bounds.max.y + Mathf.Max(0.5f, bounds.size.y * 0.08f);
+                    devices.Add(new JObject
+                    {
+                        ["id"] = pair.Key, ["matrix"] = elements,
+                        ["anchor"] = ProjectionVector(anchor), ["visible"] = renderers.Length > 0
+                    });
+                }
+                _webSocket.SendTransientMessage(new JObject
+                {
+                    ["type"] = "scene_projection",
+                    ["payload"] = new JObject
+                    {
+                        ["version"] = 1, ["streamId"] = _sceneProjectionStreamId,
+                        ["seq"] = ++_sceneProjectionSequence, ["sceneReady"] = true,
+                        ["sceneId"] = _lastDashboardContext.Value<string>("sceneId") ?? string.Empty,
+                        ["viewId"] = _dashboard?.ActiveViewId ?? "factory_overview",
+                        ["inspectionStage"] = _lastDashboardContext.Value<string>("inspectionStage") ?? string.Empty,
+                        ["timestamp"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                        ["camera"] = new JObject
+                        {
+                            ["position"] = ProjectionVector(_camera.transform.position),
+                            ["forward"] = ProjectionVector(_camera.transform.forward),
+                            ["up"] = ProjectionVector(_camera.transform.up),
+                            ["target"] = ProjectionVector(_orbit != null ? _orbit.Target : _camera.transform.position + _camera.transform.forward),
+                            ["fov"] = _camera.fieldOfView, ["aspect"] = _camera.aspect,
+                            ["near"] = _camera.nearClipPlane, ["far"] = _camera.farClipPlane
+                        },
+                        ["devices"] = devices
+                    }
+                });
+            }
         }
 
         private void Update()
         {
-            if (Input.GetKeyDown(KeyCode.F5)) BeginReload();
+            while (_nativeAuthCommands.TryDequeue(out var nativeAuthCommand))
+                HandleNativeAuthCommand(nativeAuthCommand);
+            if (Input.GetKeyDown(KeyCode.F5) && _authenticated) BeginReload();
             if (Input.GetKeyDown(KeyCode.Escape) || Input.GetKeyDown(KeyCode.Backspace))
             {
                 RequestDashboardBack("Update");
@@ -189,6 +399,11 @@ namespace HeatTreatment.DigitalTwin.Runtime
 
         private void BeginReload()
         {
+            if (!_authenticated)
+            {
+                _diagnostics?.RequireAuthentication();
+                return;
+            }
             _reload?.Cancel();
             _reload?.Dispose();
             _reload = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
@@ -216,17 +431,56 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 {
                     return;
                 }
+                catch (BackendRequestException exception) when (exception.StatusCode == 401 || exception.StatusCode == 403)
+                {
+                    _authenticated = false;
+                    _api.ClearSession();
+                    _webSocket.StopClient();
+                    DestroyCurrentFactory();
+                    _sceneReady = false;
+                    var message = exception.StatusCode == 403
+                        ? "当前账户没有查看大屏的权限，请联系管理员授权。"
+                        : "登录状态已失效，请重新登录。";
+                    _diagnostics.RequireAuthentication(message);
+                    Debug.LogWarning($"[FactoryRuntime] Native dashboard authorization ended: {exception.Code}");
+                    return;
+                }
                 catch (Exception exception)
                 {
                     _diagnostics.BackendState = "configuration offline";
-                    _diagnostics.UpdateLoading(0.08f, "现场服务暂不可用，正在重试…");
-                    _diagnostics.Activity = $"Config retry in {retry:0}s: {ShortMessage(exception.Message)}";
-                    Debug.LogWarning($"[StartupWarning] 8|现场配置读取失败：{ShortMessage(exception.Message)}");
+                    var reason = ShortMessage(exception.Message);
+                    _diagnostics.UpdateLoading(0.08f, "现场服务暂不可用，正在重试…", reason);
+                    _diagnostics.Activity = $"Config retry in {retry:0}s: {reason}";
+                    Debug.LogWarning($"[StartupWarning] 8|现场配置读取失败：{reason}");
                     Debug.LogWarning($"[FactoryRuntime] Configuration unavailable: {exception.Message}");
                     try { await Task.Delay(TimeSpan.FromSeconds(retry), cancellationToken); }
                     catch (OperationCanceledException) { return; }
                 }
             }
+        }
+
+        private void ActivateAuthenticatedSession(NativeLoginResult session)
+        {
+            if (session == null || !session.Authenticated)
+                throw new InvalidOperationException("后台没有建立有效登录会话，请重试。");
+            if (!session.CanLaunch)
+                throw new BackendRequestException(403, "ADMIN_PERMISSION_DENIED", "当前账户没有启动实时大屏的权限，请联系管理员授权。");
+            if (!session.CanView)
+                throw new BackendRequestException(403, "ADMIN_PERMISSION_DENIED", "当前账户没有查看大屏的权限，请联系管理员授权。");
+
+            _authenticated = true;
+            _diagnostics.BackendState = "authenticated";
+            try
+            {
+                _api.ScopeSessionForWebSocket(_settings.backendWebSocketUrl);
+                _webSocket.StartClient(_settings.backendWebSocketUrl, _settings.autoReconnectSeconds, _api.SessionCookies);
+            }
+            catch (Exception exception)
+            {
+                _diagnostics.BackendState = "realtime connection unavailable";
+                Debug.LogWarning($"[StartupWarning] 2|实时数据连接初始化失败：{ShortMessage(exception.Message)}");
+            }
+            BeginReload();
         }
 
         private async Task BuildFactoryAsync(FactoryConfigDto config, CancellationToken cancellationToken)
@@ -443,6 +697,10 @@ namespace HeatTreatment.DigitalTwin.Runtime
             else if (type == "native_scene_preview")
             {
                 ApplyNativeScenePreview(message["payload"] as JObject);
+            }
+            else if (type == "scene_projection_subscription")
+            {
+                _sceneProjectionRequested = message["payload"]?.Value<bool?>("enabled") == true;
             }
             else if (type == "dashboard_release_changed")
             {
