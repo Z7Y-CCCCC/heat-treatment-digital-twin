@@ -7,7 +7,9 @@ const JSON_OBJECT_SETTING_LABELS = {
     native_environment_config: 'Unity 场景与光效配置',
     factory_location: '工厂地理位置',
     factory_directory: '工厂登记簿',
-    group_portal_config: '集团首页外观'
+    group_portal_config: '集团首页外观',
+    site_scene_config: '工厂街道与建筑配置',
+    loading_experience_config: '加载画面配置'
 };
 const NATIVE_QUALITY_PROFILES = new Set(['auto', 'integrated_gpu', 'balanced', 'showcase']);
 const LEGACY_WEB_SETTING_KEYS = new Set([
@@ -20,7 +22,7 @@ const LEGACY_WEB_SETTING_KEYS = new Set([
 ]);
 const FACTORY_SETTING_KEYS = new Set([
     'data_mode', 'simulation_interval_ms', 'realtime_stale_ms', 'native_quality_profile',
-    'native_environment_config', 'native_dashboard_config'
+    'native_environment_config', 'native_dashboard_config', 'site_scene_config'
 ]);
 
 function normalizeSettingValue(key, value) {
@@ -59,9 +61,19 @@ function normalizeSettingValue(key, value) {
         const country = rawCountry === 'CN' ? 'CHN' : rawCountry;
         if (!/^[A-Z]{3}$/.test(country)) throw new Error('国家代码必须是三个字母，例如 CHN');
         const adcode = value => /^\d{6}$/.test(String(value || '').trim()) ? String(value).trim() : '';
+        const coordinate = (value, limit, label) => {
+            if (value === undefined || value === null || value === '') return null;
+            const number = Number(value);
+            if (typeof value === 'object' || !Number.isFinite(number) || Math.abs(number) > limit) throw new Error(`${label}必须在 ${-limit} 到 ${limit} 之间`);
+            return number;
+        };
+        const latitude = coordinate(parsed.latitude,90,'纬度');
+        const longitude = coordinate(parsed.longitude,180,'经度');
+        if ((latitude === null) !== (longitude === null)) throw new Error('工厂定位需要同时填写纬度和经度，或同时留空');
         return JSON.stringify({country,regionCode:adcode(parsed.regionCode),
             regionName:String(parsed.regionName || '').slice(0,100),cityCode:adcode(parsed.cityCode),city:String(parsed.city || '').slice(0,200),
-            districtCode:adcode(parsed.districtCode),districtName:String(parsed.districtName || '').slice(0,100)});
+            districtCode:adcode(parsed.districtCode),districtName:String(parsed.districtName || '').slice(0,100),
+            latitude,longitude});
     }
     if (key === 'factory_directory') {
         if (!Array.isArray(parsed.sites) || parsed.sites.length > 200) throw new Error('工厂登记簿必须包含 sites 数组，最多 200 项');
@@ -80,6 +92,38 @@ function normalizeSettingValue(key, value) {
         });
         return JSON.stringify({ version: 1, sites });
     }
+    if (key === 'site_scene_config') {
+        const imageUrl = String(parsed.streetImageUrl || '').trim();
+        if (imageUrl && !/^\/uploads\/appearance\/[a-f0-9]{32}\.(?:png|jpg|webp)$/.test(imageUrl))
+            throw new Error('街道背景图片必须通过设计器上传');
+        const text = (field, fallback, maxLength) => String(parsed[field] ?? fallback).trim().slice(0, maxLength) || fallback;
+        const visible = field => {
+            if (parsed[field] === undefined) return true;
+            if (typeof parsed[field] !== 'boolean') throw new Error(`${field} 必须为开关值`);
+            return parsed[field];
+        };
+        const accent = String(parsed.accent ?? '#aebaff').trim().toLowerCase();
+        if (!/^#[a-f0-9]{6}$/.test(accent)) throw new Error('街道与工厂强调色必须是六位十六进制颜色');
+        const slots = {}, occupied = new Set();
+        const entries = parsed.buildingSlots && typeof parsed.buildingSlots === 'object' && !Array.isArray(parsed.buildingSlots)
+            ? Object.entries(parsed.buildingSlots) : [];
+        if (entries.length > 40) throw new Error('车间建筑位最多 40 项');
+        for (const [workshopId, rawSlot] of entries) {
+            const slot = Number(rawSlot);
+            if (!/^[\w-]{1,120}$/.test(workshopId) || !Number.isInteger(slot) || slot < 0 || slot >= 40 || occupied.has(slot))
+                throw new Error('车间建筑位无效或重复');
+            occupied.add(slot); slots[workshopId] = slot;
+        }
+        const legacyFactoryDescription = '点击已配置的车间建筑进入 Unity 车间模型；办公与公辅建筑仅作园区示意。';
+        const defaultFactoryDescription = '点击厂区模型进入全厂总览，再从总览中选择具体车间。';
+        const factoryDescription = text('factoryDescription', defaultFactoryDescription, 240);
+        return JSON.stringify({version:1,streetImageUrl:imageUrl,buildingSlots:slots,
+            streetTitle:text('streetTitle','生产运营 · 街道视角',80),factoryTitle:text('factoryTitle','生产运营 · 工厂总览',80),
+            streetDescription:text('streetDescription','工厂园区包含车间、办公与公辅建筑。鼠标拖动可改变观察方向，点击园区继续下探。',240),
+            factoryDescription:[legacyFactoryDescription, '240'].includes(factoryDescription) ? defaultFactoryDescription : factoryDescription,
+            accent,showBrand:visible('showBrand'),showBreadcrumbs:visible('showBreadcrumbs'),
+            showInfoPanel:visible('showInfoPanel'),showBeacon:visible('showBeacon'),showFooter:visible('showFooter')});
+    }
     if (key === 'group_portal_config') {
         const textField = (name, fallback, limit) => String(parsed[name] ?? fallback).trim().slice(0, limit);
         const colorField = (name, fallback) => {
@@ -89,7 +133,9 @@ function normalizeSettingValue(key, value) {
         };
         const levelKeys = ['world', 'country', 'province', 'city', 'district'];
         const colorKeys = ['background', 'panelSurface', 'accent', 'text', 'mapBase', 'mapMuted', 'markerPrimary', 'markerTip'];
-        const toggleKeys = ['showFacts', 'showPanel', 'showDock', 'showHelp'];
+        const toggleKeys = ['showBrand', 'showFacts', 'showPanel', 'showDock', 'showHelp'];
+        const titleKeys = ['brandTitle', 'brandSubtitle', 'panelTitle', 'factsTitle', 'dockNetworkTitle', 'dockLocationTitle', 'dockHierarchyTitle'];
+        const validLogoUrl = url => !url || /^\/(?!\/)[\w/%.~+-]+$/.test(url) || /^https:\/\/[\w.-]+(?:\/[\w/%?&=.#~+-]*)?$/.test(url);
         const levels = {};
         for (const levelKey of levelKeys) {
             const source = parsed.levels?.[levelKey];
@@ -102,23 +148,44 @@ function normalizeSettingValue(key, value) {
                 if (!/^#[0-9a-fA-F]{6}$/.test(color)) throw new Error(`${levelKey}.${field} 必须是六位十六进制颜色`);
                 override[field] = color.toLowerCase();
             }
-            if (typeof source.panelTitle === 'string' && source.panelTitle.trim()) override.panelTitle = source.panelTitle.trim().slice(0, 60);
+            for (const field of titleKeys) if (typeof source[field] === 'string' && source[field].trim()) override[field] = source[field].trim().slice(0, 80);
+            if (source.logoUrl) {
+                const levelLogoUrl = String(source.logoUrl).trim().slice(0, 400);
+                if (!validLogoUrl(levelLogoUrl)) throw new Error(`${levelKey}.Logo 地址必须是站内路径或 HTTPS 图片地址`);
+                override.logoUrl = levelLogoUrl;
+            }
             if (source.mapZoom !== undefined) {
                 const zoom = Number(source.mapZoom);
                 if (!Number.isFinite(zoom) || zoom < 0.8 || zoom > 1.5) throw new Error(`${levelKey}.mapZoom 必须在 0.8–1.5 之间`);
                 override.mapZoom = zoom;
             }
+            if (source.layout && typeof source.layout === 'object' && !Array.isArray(source.layout)) {
+                const layout = {};
+                for (const key of ['brand', 'facts', 'panel', 'dock']) {
+                    const item = source.layout[key];
+                    if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+                    const x = Number(item.x), y = Number(item.y);
+                    if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || x > 95 || y < 0 || y > 95)
+                        throw new Error(`${levelKey}.${key} 布局位置无效`);
+                    layout[key] = { x, y };
+                }
+                override.layout = layout;
+            }
             levels[levelKey] = override;
         }
         const logoUrl = String(parsed.logoUrl || '').trim().slice(0, 400);
-        if (logoUrl && !/^\/(?!\/)[\w/%.~+-]+$/.test(logoUrl)
-            && !/^https:\/\/[\w.-]+(?:\/[\w/%?&=.#~+-]*)?$/.test(logoUrl)) throw new Error('大屏 Logo 地址必须是站内路径或 HTTPS 图片地址');
+        if (!validLogoUrl(logoUrl)) throw new Error('大屏 Logo 地址必须是站内路径或 HTTPS 图片地址');
         return JSON.stringify({
             brandTitle: textField('brandTitle', '生产运营 · 集团总览', 60),
             brandSubtitle: textField('brandSubtitle', 'GLOBAL PRODUCTION MANAGEMENT', 80),
             panelTitle: textField('panelTitle', 'OPERATING NETWORK', 60),
+            factsTitle: textField('factsTitle', '登记工厂', 60),
+            dockNetworkTitle: textField('dockNetworkTitle', '站点网络', 60),
+            dockLocationTitle: textField('dockLocationTitle', '行政区归属', 60),
+            dockHierarchyTitle: textField('dockHierarchyTitle', '本机现场配置', 60),
             logoUrl,
             levels,
+            showBrand: parsed.showBrand !== false,
             showFacts: parsed.showFacts !== false,
             showPanel: parsed.showPanel !== false,
             showDock: parsed.showDock !== false,
@@ -138,11 +205,42 @@ function normalizeSettingValue(key, value) {
             })()
         });
     }
+    if (key === 'loading_experience_config') {
+        const preset = String(parsed.preset || 'interactive');
+        if (!['interactive', 'quiet'].includes(preset)) throw new Error('加载画面方案无效');
+        const imageUrl = String(parsed.imageUrl || '').trim();
+        if (imageUrl && !/^\/uploads\/appearance\/[a-f0-9]{32}\.(?:png|jpg|webp)$/.test(imageUrl))
+            throw new Error('加载图片必须通过设计器上传');
+        const colors = {};
+        for (const [field, fallback] of [['background', '#28282b'], ['accent', '#a8c3b1']]) {
+            const color = String(parsed[field] || fallback).trim();
+            if (!/^#[0-9a-fA-F]{6}$/.test(color)) throw new Error(`加载画面 ${field} 颜色无效`);
+            colors[field] = color.toLowerCase();
+        }
+        return JSON.stringify({
+            preset,
+            title: String(parsed.title || '正在准备生产现场').trim().slice(0, 48),
+            kicker: String(parsed.kicker || 'HEAT TREATMENT / DIGITAL TWIN').trim().slice(0, 72),
+            imageUrl,
+            ...colors
+        });
+    }
     return JSON.stringify(parsed);
 }
 
 module.exports = function createSettingsRouter(controller = {}) {
     const router = express.Router();
+
+    router.get('/loading-experience', async (req, res) => {
+        try {
+            const db = await getDb();
+            const row = await db.get('SELECT value FROM settings WHERE `key` = ?', ['loading_experience_config']);
+            res.setHeader('Cache-Control', 'no-store');
+            res.json({ config: JSON.parse(normalizeSettingValue('loading_experience_config', row?.value || {})) });
+        } catch (error) {
+            res.status(500).json({ error: '加载画面配置暂不可用' });
+        }
+    });
 
     router.get('/', async (req, res) => {
         try {

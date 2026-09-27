@@ -29,6 +29,22 @@ export function openAdminSurface({ embedded, surface, webview, router, focus }) 
   return 'route'
 }
 
+// A customer page is opaque and belongs in the existing admin WebView, not in
+// the transparent dashboard overlay (which would show a second window frame).
+export function openCustomerOperations({ embedded, surface, webview, router }) {
+  if (isNativeUnitySurface(embedded, webview) && surface === 'overlay') {
+    webview.postMessage({ type: 'host_action', action: 'show_customer' })
+    return 'native'
+  }
+  router.push({
+    path: '/customer',
+    query: isNativeUnitySurface(embedded, webview)
+      ? { embedded: 'unity', surface: 'admin' }
+      : {}
+  })
+  return 'route'
+}
+
 export function adminUiStateForFocus(state, focus) {
   if (focus !== 'factory-location') return state
   return { ...state, activeTab: 'platform', platformSubpage: 'scene' }

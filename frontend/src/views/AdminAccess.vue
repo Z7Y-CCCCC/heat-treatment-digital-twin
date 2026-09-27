@@ -1,6 +1,6 @@
 <script setup>
 import { computed, defineAsyncComponent, nextTick, onActivated, onDeactivated, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
-import { adminSession, refreshAdminSession, startAdminSessionTracking, stopAdminSessionTracking, unlockAdmin, lockAdmin } from '../runtime/adminSession.js'
+import { adminSession, refreshAdminSession, startAdminSessionTracking, stopAdminSessionTracking, unlockAdmin, lockAdmin, logoutCurrentAdminAccount } from '../runtime/adminSession.js'
 import AdminWindowChrome from './admin/components/AdminWindowChrome.vue'
 import { isNativeUnitySurface } from '../runtime/nativeSurfaceBridge.js'
 import { canResumeDashboardAfterLogin } from '../runtime/nativeAdminNavigation.js'
@@ -97,7 +97,7 @@ function continueAfterLogin() {
     if (candidate.startsWith('/') && !candidate.startsWith('//') && !candidate.includes('\\')) {
         try {
             const destination = new URL(candidate, window.location.origin)
-            const allowed = ['/', '/group', '/overlay', '/hud-preview', '/customer']
+            const allowed = ['/', '/group', '/site', '/overlay', '/hud-preview', '/customer']
             if (destination.origin === window.location.origin && allowed.includes(destination.pathname)) {
                 requested = `${destination.pathname === '/' ? '/group' : destination.pathname}${destination.search}${destination.hash}`
             }
@@ -114,11 +114,14 @@ function continueAfterLogin() {
         void router.replace(requested)
         return
     }
-    if (['/group', '/overlay', '/hud-preview'].includes(requestedPath) && adminSession.permissions.view) {
+    if (['/group', '/site', '/overlay', '/hud-preview'].includes(requestedPath) && adminSession.permissions.view) {
         void router.replace(requested)
         return
     }
-    void router.replace({ path: adminSession.permissions.cast || adminSession.permissions.backup ? '/customer' : '/group' })
+    const path = adminSession.permissions.cast || adminSession.permissions.backup ? '/customer' : '/group'
+    void router.replace({ path, query: isUnityEmbedded
+        ? { embedded: 'unity', surface: path === '/customer' ? 'admin' : 'overlay' }
+        : {} })
 }
 
 watch(() => adminSession.authenticated, authenticated => {
@@ -168,7 +171,7 @@ onUnmounted(() => {
             <main class="admin-unlock-page"><section class="admin-unlock-card">
                 <h1>{{ adminSession.user?.displayName || '现场查看账户' }}</h1>
                 <p class="unlock-description">当前账户仅可登录查看大屏，不能进入现场操作中心或配置后台。需要相应权限时，请联系系统管理员调整角色。</p>
-                <button class="unlock-submit" type="button" @click="lockAdmin">退出当前账户</button>
+                <button class="unlock-submit" type="button" @click="logoutCurrentAdminAccount">退出当前账户</button>
             </section></main>
         </div>
         <div v-else class="admin-locked-shell">

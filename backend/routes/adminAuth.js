@@ -1,10 +1,12 @@
 const express = require('express');
-const { getAdminAuth, MAX_SESSION_MS } = require('../services/adminAuth');
+const { getAdminAuth } = require('../services/adminAuth');
+const DISPLAY_COOKIE_MS = 30 * 24 * 60 * 60 * 1000;
 const {
     activeAdminAccountSlot,
     adminAccountCookieName,
     adminActiveAccountCookieName,
     adminSessionCookieName,
+    adminWebSocketCookieName,
     isLoopbackAddress,
     isTrustedAdminOrigin,
     suppliedAdminAccounts,
@@ -33,10 +35,24 @@ module.exports = function createAdminAuthRouter(auth = getAdminAuth) {
         return { httpOnly: true, sameSite: 'strict', secure: req.secure, path: '/api' };
     }
 
+    // The dashboard socket is served at /ws, outside the /api cookie path.
+    // Mirror only the currently active session token to that narrow path so
+    // authenticated browser views can receive Unity scene acknowledgements.
+    function socketCookieOptions(req) {
+        return { ...cookieOptions(req), path: '/ws' };
+    }
+
+    function syncSocketCookie(req, res, token, status) {
+        if (token && status?.displayAuthenticated && status.permissions?.view === true)
+            res.cookie(adminWebSocketCookieName(), token, { ...socketCookieOptions(req), maxAge: DISPLAY_COOKIE_MS });
+        else res.clearCookie(adminWebSocketCookieName(), socketCookieOptions(req));
+    }
+
     function sendSession(req, res, result, slotId = 'main') {
-        const options = { ...cookieOptions(req), maxAge: MAX_SESSION_MS };
+        const options = { ...cookieOptions(req), maxAge: DISPLAY_COOKIE_MS };
         const sessionCookie = slotId === 'main' ? adminSessionCookieName() : adminAccountCookieName(slotId);
         res.cookie(sessionCookie, result.token, options);
+        syncSocketCookie(req, res, result.token, result.status);
         if (slotId === 'main') res.clearCookie(adminActiveAccountCookieName(), cookieOptions(req));
         else res.cookie(adminActiveAccountCookieName(), slotId, options);
         res.json({ ...result.status, accountSlotId: slotId });
@@ -57,10 +73,11 @@ module.exports = function createAdminAuthRouter(auth = getAdminAuth) {
         };
     }
 
-    router.get('/session', handle((req, res, service) => res.json({
-        ...service.status(suppliedAdminSession(req)),
-        accountSlotId: activeAdminAccountSlot(req)
-    })));
+    router.get('/session', handle((req, res, service) => {
+        const token = suppliedAdminSession(req), status = service.status(token);
+        syncSocketCookie(req, res, token, status);
+        res.json({ ...status, accountSlotId: activeAdminAccountSlot(req) });
+    }));
     router.get('/accounts', handle((req, res, service) => res.json({
         success: true,
         activeSlotId: activeAdminAccountSlot(req),
@@ -90,10 +107,12 @@ module.exports = function createAdminAuthRouter(auth = getAdminAuth) {
             return;
         }
         const token = suppliedAdminSessionForSlot(req, slotId);
-        service.requireSession(token, req.get('x-csrf-token'), { touch: true });
-        const options = { ...cookieOptions(req), maxAge: MAX_SESSION_MS };
+        service.requireSession(token, req.get('x-csrf-token'));
+        const options = { ...cookieOptions(req), maxAge: DISPLAY_COOKIE_MS };
         res.cookie(adminActiveAccountCookieName(), slotId, options);
-        res.json({ ...service.status(token), accountSlotId: slotId });
+        const status = service.status(token);
+        syncSocketCookie(req, res, token, status);
+        res.json({ ...status, accountSlotId: slotId });
     }));
     router.post('/accounts/logout', handle((req, res, service) => {
         const slotId = activeAdminAccountSlot(req);
@@ -105,7 +124,8 @@ module.exports = function createAdminAuthRouter(auth = getAdminAuth) {
         service.logout(token, req.get('x-csrf-token'));
         const sessionCookie = slotId === 'main' ? adminSessionCookieName() : adminAccountCookieName(slotId);
         res.clearCookie(sessionCookie, cookieOptions(req));
-        res.cookie(adminActiveAccountCookieName(), 'none', { ...cookieOptions(req), maxAge: MAX_SESSION_MS });
+        syncSocketCookie(req, res, '', null);
+        res.cookie(adminActiveAccountCookieName(), 'none', { ...cookieOptions(req), maxAge: DISPLAY_COOKIE_MS });
         res.json({ ...service.status(''), accountSlotId: 'none' });
     }));
     router.post('/native-ticket', handle((req, res, service) => {
@@ -126,22 +146,10 @@ module.exports = function createAdminAuthRouter(auth = getAdminAuth) {
         res.json(service.touch(suppliedAdminSession(req), req.get('x-csrf-token')));
     }));
     router.post('/lock', handle((req, res, service) => {
-        const slotId = activeAdminAccountSlot(req);
-        const accounts = suppliedAdminAccounts(req, service);
-        const isOwner = service.status(suppliedAdminSession(req)).user?.role === 'owner';
-        const result = service.lock(suppliedAdminSession(req), req.get('x-csrf-token'));
-        const ownerLockedAll = isOwner && !result.authenticated;
-        if (ownerLockedAll) {
-            for (const account of accounts) {
-                const name = account.slotId === 'main' ? adminSessionCookieName() : adminAccountCookieName(account.slotId);
-                res.clearCookie(name, cookieOptions(req));
-            }
-        } else {
-            const name = slotId === 'main' ? adminSessionCookieName() : adminAccountCookieName(slotId);
-            if (name) res.clearCookie(name, cookieOptions(req));
-        }
-        res.cookie(adminActiveAccountCookieName(), 'none', { ...cookieOptions(req), maxAge: MAX_SESSION_MS });
-        res.json({ ...result, accountSlotId: 'none' });
+        const token = suppliedAdminSession(req);
+        const result = service.lock(token, req.get('x-csrf-token'));
+        syncSocketCookie(req, res, token, result);
+        res.json({ ...result, accountSlotId: activeAdminAccountSlot(req) });
     }));
     router.put('/settings', handle((req, res, service) => {
         res.json(service.updateSettings(suppliedAdminSession(req), req.get('x-csrf-token'), req.body?.idleTimeoutMinutes));

@@ -8,7 +8,7 @@ const { validateUploadedModelFile, modelScale } = require('./utils/modelUploadVa
 const {
     createCorsMiddleware,
     createOperationRateLimiter,
-    adminSessionCookieName,
+    adminWebSocketCookieName,
     isLoopbackAddress,
     isTrustedAdminOrigin,
     protectManagementWrites,
@@ -127,6 +127,7 @@ app.use('/api/datapoints', factoryContext, require('./routes/datapoints'));
 app.use('/api/voice', require('./routes/voice'));
 const settingsController = { wsServer: null };
 app.use('/api/settings', factoryContext, require('./routes/settings')(settingsController));
+app.use('/api/appearance-assets', createOperationRateLimiter({ name: 'appearance-upload', limit: 30 }), require('./routes/appearanceAssets'));
 const nativePreviewController = { wsServer: null };
 app.use('/api/native-preview', factoryContext, require('./routes/nativePreview')(nativePreviewController));
 app.use('/api/platform', factoryContext, require('./routes/platform'));
@@ -793,11 +794,11 @@ async function startServer() {
         verifyClient: (info, done) => {
             if (!isLicenseEnforced() || getLicenseStatus().valid) {
                 const request = info?.req;
-                const cookieName = `${adminSessionCookieName()}=`;
+                const cookieName = `${adminWebSocketCookieName()}=`;
                 const cookie = String(request?.headers?.cookie || '').split(';').map(value => value.trim()).find(value => value.startsWith(cookieName));
                 const token = cookie ? cookie.slice(cookieName.length) : '';
                 const session = getAdminAuth().status(token);
-                const authenticated = session.authenticated && session.permissions?.view === true;
+                const authenticated = session.displayAuthenticated && session.permissions?.view === true;
                 const castAuthorized = lanDisplay.isValidDisplaySocket(request);
                 const hasBrowserOrigin = Boolean(request?.headers?.origin);
                 const trustedOrigin = !hasBrowserOrigin || isTrustedAdminOrigin({

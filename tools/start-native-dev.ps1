@@ -29,6 +29,9 @@ $backendErr = Join-Path $tmpDir 'native-dev-backend.err.log'
 $frontendOut = Join-Path $tmpDir 'native-dev-frontend.out.log'
 $frontendErr = Join-Path $tmpDir 'native-dev-frontend.err.log'
 $unityLog = Join-Path $tmpDir 'native-dev-unity.log'
+$shutdownWatcherOut = Join-Path $tmpDir 'native-dev-shutdown.out.log'
+$shutdownWatcherErr = Join-Path $tmpDir 'native-dev-shutdown.err.log'
+$shutdownToken = $null
 
 New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
 $node = Get-Command node -ErrorAction Stop
@@ -250,6 +253,32 @@ if (-not $BackendOnly) {
                 -PassThru
         }
         Write-Host "Unity development player started (PID $($unityProcess.Id)); log: $unityLog"
+    }
+
+    # The standalone Unity player is not supervised by Electron. Watch only
+    # the exact process instances started in this invocation, so "完全退出"
+    # also closes its Vite server and asks the backend to perform its normal
+    # shutdown backup. Reused backend/frontend processes are never touched.
+    if ($backendProcess -or $frontendProcess) {
+        $watchedUnity = if ($unityProcess) { $unityProcess } else { Get-Process -Id $existingUnity.ProcessId }
+        $watcherScript = Join-Path $PSScriptRoot 'watch-native-dev.ps1'
+        $watcherArguments = @(
+            '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
+            "`"$watcherScript`"",
+            '-UnityPid', [string]$watchedUnity.Id,
+            '-UnityStartTicks', [string]$watchedUnity.StartTime.ToUniversalTime().Ticks,
+            '-BackendPid', [string]$(if ($backendProcess) { $backendProcess.Id } else { 0 }),
+            '-BackendStartTicks', [string]$(if ($backendProcess) { $backendProcess.StartTime.ToUniversalTime().Ticks } else { 0 }),
+            '-FrontendPid', [string]$(if ($frontendProcess) { $frontendProcess.Id } else { 0 }),
+            '-FrontendStartTicks', [string]$(if ($frontendProcess) { $frontendProcess.StartTime.ToUniversalTime().Ticks } else { 0 }),
+            '-BackendUrl', $origin
+        )
+        Invoke-WithProcessEnvironment @{ DIGITAL_TWIN_DEV_SHUTDOWN_TOKEN = [string]$shutdownToken } {
+            $script:shutdownWatcher = Start-Process -FilePath (Get-Process -Id $PID).Path `
+                -ArgumentList $watcherArguments -WindowStyle Hidden `
+                -RedirectStandardOutput $shutdownWatcherOut -RedirectStandardError $shutdownWatcherErr -PassThru
+        }
+        Write-Host "Development shutdown watcher started (PID $($shutdownWatcher.Id))."
     }
 }
 

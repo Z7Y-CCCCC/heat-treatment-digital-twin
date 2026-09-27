@@ -8,7 +8,7 @@
   <style>
     :root { color-scheme: dark; font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif; }
     * { box-sizing: border-box; }
-    html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: #29292c; }
+    html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: var(--startup-background,#29292c); }
     body { display: grid; place-items: center; padding: 24px; color: #eeeeea; }
     .shell {
       width: min(900px, 100%); max-height: calc(100vh - 48px); padding: 28px 34px 24px;
@@ -33,7 +33,7 @@
     .track { height: 3px; margin-top: 13px; overflow: hidden; border-radius: 99px; background: rgba(220,221,210,.12); }
     #bar {
       position: relative; width: 0; height: 100%; border-radius: inherit;
-      background: linear-gradient(90deg,#7d9a8a,#b4c8b5 72%,#d0ad7a); transition: width .55s cubic-bezier(.22,.75,.3,1);
+      background: var(--startup-accent,#a8c3b1); transition: width .55s cubic-bezier(.22,.75,.3,1);
     }
     #bar::after { content: ""; position: absolute; inset: 0; background: linear-gradient(105deg, transparent 20%, rgba(255,255,255,.25) 48%, transparent 74%); animation: sheen 1.45s linear infinite; }
     @keyframes sheen { from { transform: translateX(-100%); } to { transform: translateX(100%); } }
@@ -60,6 +60,8 @@
     body.error .steps { display: none; }
     body.error #bar { background: #bb6e63; }
     body.success #bar::after, body.error #bar::after { display: none; }
+    body.quiet .art-caption { display: none; }
+    body.quiet .art img { cursor: default; filter: saturate(.65); }
     @media(max-height:650px) { .art { height: 23vh; } .steps { max-height: 95px; } }
   </style>
 </head>
@@ -113,13 +115,24 @@
     model.addEventListener('pointerup', endDrag); model.addEventListener('pointercancel', endDrag);
     model.addEventListener('wheel', event => { event.preventDefault(); modelScale = Math.max(.88, Math.min(1.22, modelScale - Math.sign(event.deltaY) * .06)); renderModel(); }, { passive: false });
     model.addEventListener('dblclick', () => { tiltX = 0; tiltY = 0; modelScale = 1; renderModel(); });
+    let startupAppearance = null;
+    window.configureStartup = config => {
+      startupAppearance = config;
+      document.documentElement.style.setProperty('--startup-background', config.background);
+      document.documentElement.style.setProperty('--startup-accent', config.accent);
+      byId('model').src = config.imageDataUrl || './loading-factory.png';
+      byId('model').style.pointerEvents = config.preset === 'quiet' ? 'none' : '';
+      byId('subtitle').textContent = config.title;
+      document.querySelector('.brand h1').textContent = config.kicker;
+      document.body.classList.toggle('quiet', config.preset === 'quiet');
+    };
     window.updateStartup = state => {
       const progress = Math.max(0, Math.min(100, Number(state.progress) || 0));
-      document.body.className = state.status || 'running';
+      document.body.className = `${state.status || 'running'}${startupAppearance?.preset === 'quiet' ? ' quiet' : ''}`;
       document.title = state.status === 'error'
         ? '热处理数字孪生大屏 - 启动失败'
         : state.status === 'success' ? '热处理数字孪生大屏 - 启动完成' : '热处理数字孪生大屏 - 正在启动';
-      byId('subtitle').textContent = state.status === 'error' ? 'STARTUP ERROR' : 'SYSTEM STARTUP';
+      byId('subtitle').textContent = state.status === 'error' ? 'STARTUP ERROR' : startupAppearance?.title || 'SYSTEM STARTUP';
       byId('title').textContent = state.title || '正在启动';
       byId('detail').textContent = state.detail || '';
       byId('percent').textContent = `${Math.round(progress)}%`;

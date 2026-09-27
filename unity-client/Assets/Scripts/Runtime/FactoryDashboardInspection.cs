@@ -76,6 +76,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
         }
 
         private readonly List<Rect> _inspectionHitRects = new List<Rect>();
+        private Material _inspectionOutlineMaterial;
 
         public bool RefitInspectionCamera()
         {
@@ -276,9 +277,12 @@ namespace HeatTreatment.DigitalTwin.Runtime
             var shells = new HashSet<Renderer>();
             foreach (var shell in shellNodes)
             {
-                if (claimed.Any(item => item.node == shell || item.node.IsChildOf(shell) || shell.IsChildOf(item.node)))
+                // A shell may be an assembly parent of configured parts. Its own
+                // meshes can disappear while retained part meshes remain visible.
+                // Only the same node or a shell nested *inside* a part is invalid.
+                if (claimed.Any(item => item.node == shell || shell.IsChildOf(item.node)))
                 {
-                    AddInspectionIssue(runtime, "shell_part_overlap", "", $"外壳节点 {shell.name} 与部件节点重复或存在父子包含关系；已跳过该外壳，避免内部组件被误隐藏。请在后台改选实际外壳网格/节点。", true);
+                    AddInspectionIssue(runtime, "shell_part_overlap", "", $"外壳节点 {shell.name} 与部件节点重复，或被部件包含；请在后台改选外壳节点。", true);
                     continue;
                 }
                 var children = shell.GetComponentsInChildren<Renderer>(true);
@@ -849,15 +853,45 @@ namespace HeatTreatment.DigitalTwin.Runtime
             var pointer = Input.mousePosition;
             var blocked = (!_webOverlayActive && IsPointerOverDashboard(ScreenToDesign(pointer)))
                 || (!_webOverlayActive && !Application.isFocused) || pointer.x < 0 || pointer.y < 0 || pointer.x > Screen.width || pointer.y > Screen.height;
-            runtime.HoveredPart = blocked || runtime.Stage == InspectionStage.Solid || runtime.Stage == InspectionStage.Xray
-                ? null : PickInspectionPart(runtime, _camera.ScreenPointToRay(pointer));
+            var hovered = blocked ? null : PickInspectionPart(runtime, _camera.ScreenPointToRay(pointer));
+            if (runtime.HoveredPart == hovered) return;
+            runtime.HoveredPart = hovered;
+            PublishInspectionContext(_selected);
         }
 
         private void LateUpdate()
         {
             var runtime = _selected?.Inspection;
             if (_mode != DashboardMode.Detail || runtime == null) return;
+            DrawInspectionHover(runtime);
             if (Time.unscaledTime >= runtime.NextContextAt) PublishInspectionContext(_selected);
+        }
+
+        private void DrawInspectionHover(DeviceInspectionRuntime runtime)
+        {
+            if (runtime.HoveredPart == null || _camera == null) return;
+            if (_inspectionOutlineMaterial == null)
+            {
+                var shader = Resources.Load<Shader>("RuntimeShaders/InspectionOutline");
+                if (shader == null) return;
+                _inspectionOutlineMaterial = new Material(shader)
+                {
+                    name = "Inspection hover outline",
+                    hideFlags = HideFlags.DontSave
+                };
+            }
+            foreach (var state in runtime.Renderers)
+            {
+                if (state.Part != runtime.HoveredPart || state.Surface == null) continue;
+                state.Surface.DrawOutline(_inspectionOutlineMaterial, _camera, new Color(.34f, .48f, 1f, .22f), 6f);
+                state.Surface.DrawOutline(_inspectionOutlineMaterial, _camera, new Color(.72f, .78f, 1f, .95f), 2.5f);
+            }
+        }
+
+        private void DisposeInspectionHighlight()
+        {
+            DestroyInspectionObject(_inspectionOutlineMaterial);
+            _inspectionOutlineMaterial = null;
         }
 
         private JObject InspectionProjection(Vector3 point, bool shown)
@@ -885,15 +919,16 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 var anchor = InspectionBounds(part.Renderers, runtime.ModelRoot.position).center;
                 var labelOffset = InspectionAuthorVector(runtime, part.Config.LabelOffset);
                 var labelBasis = runtime.Config.OffsetSpace == "model" ? runtime.ModelRoot : part.Targets.FirstOrDefault()?.Parent ?? runtime.ModelRoot;
-                var shown = runtime.Config.Enabled && runtime.Valid && runtime.LabelsEnabled
-                    && InspectionTimeline.PartProgress(runtime.Config, part.Config, part.EnabledIndex, runtime.Clock) > .02f
+                var shown = runtime.Config.Enabled && runtime.Valid
                     && part.Renderers.Any(renderer => renderer != null && renderer.enabled && !renderer.forceRenderingOff && renderer.gameObject.activeInHierarchy);
+                var labelShown = shown && runtime.LabelsEnabled
+                    && InspectionTimeline.PartProgress(runtime.Config, part.Config, part.EnabledIndex, runtime.Clock) > .02f;
                 parts.Add(new JObject
                 {
                     ["id"] = part.Config.Id, ["name"] = part.Config.Name, ["group"] = part.Config.Group, ["description"] = part.Config.Description,
                     ["pointIds"] = new JArray(part.Config.PointIds), ["pointKeys"] = new JArray(part.Config.PointKeys),
                     ["selected"] = part == runtime.SelectedPart,
-                    ["anchor"] = InspectionProjection(anchor, shown), ["label"] = InspectionProjection(anchor + labelBasis.TransformVector(labelOffset), shown)
+                    ["anchor"] = InspectionProjection(anchor, shown), ["label"] = InspectionProjection(anchor + labelBasis.TransformVector(labelOffset), labelShown)
                 });
             }
             var progressing = Mathf.Abs(runtime.Clock - runtime.TargetClock) > .0001f;

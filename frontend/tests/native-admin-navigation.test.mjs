@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { adminUiStateForFocus, canResumeDashboardAfterLogin, openAdminSurface } from '../src/runtime/nativeAdminNavigation.js'
+import { adminUiStateForFocus, canResumeDashboardAfterLogin, openAdminSurface, openCustomerOperations } from '../src/runtime/nativeAdminNavigation.js'
 import { isNativeOverlaySurface, isNativeUnitySurface } from '../src/runtime/nativeSurfaceBridge.js'
 
 test('embedded map asks the native host to reveal its existing admin window', () => {
@@ -15,6 +15,22 @@ test('embedded map asks the native host to reveal its existing admin window', ()
   assert.equal(result, 'native')
   assert.deepEqual(messages, [{ type: 'host_action', action: 'show_admin' }])
   assert.deepEqual(routes, [])
+})
+
+test('customer operations from transparent overlay opens in the existing opaque host', () => {
+  const messages = []
+  const result = openCustomerOperations({ embedded: 'unity', surface: 'overlay',
+    webview: { postMessage: message => messages.push(message) },
+    router: { push() { assert.fail('opaque customer UI must not enter overlay') } } })
+  assert.equal(result, 'native')
+  assert.deepEqual(messages, [{ type: 'host_action', action: 'show_customer' }])
+})
+
+test('customer operations in the admin WebView keeps exactly that one native chrome', () => {
+  const routes = []
+  openCustomerOperations({ embedded: 'unity', surface: 'admin', webview: { postMessage() {} },
+    router: { push: route => routes.push(route) } })
+  assert.deepEqual(routes, [{ path: '/customer', query: { embedded: 'unity', surface: 'admin' } }])
 })
 
 test('factory location shortcut sends a constrained focus target through the host bridge', () => {

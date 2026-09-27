@@ -51,6 +51,14 @@ internal sealed class DashboardChromeForm : Form
         NativeMethods.ShowWindow(Handle, NativeMethods.SwShow);
     }
 
+    public void DetachForShutdown()
+    {
+        if (IsDisposed) return;
+        Hide();
+        if (IsHandleCreated) NativeMethods.SetParent(Handle, IntPtr.Zero);
+        _parentHandle = IntPtr.Zero;
+    }
+
     public void UpdateParentBounds(bool force = false)
     {
         if (_parentHandle == IntPtr.Zero || !NativeMethods.IsWindow(_parentHandle)) return;

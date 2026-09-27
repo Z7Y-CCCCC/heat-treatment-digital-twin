@@ -10,7 +10,7 @@ internal static class DashboardLoadingExperience
 
           const style = document.createElement('style');
           style.textContent = `
-            #digital-twin-loading-root{position:fixed;z-index:2147483647;inset:0;display:grid;place-items:center;overflow:hidden;padding:30px;background:#28282b;color:#e8e8e4;font-family:Inter,"Noto Sans SC","Segoe UI","Microsoft YaHei UI",sans-serif;-webkit-font-smoothing:antialiased;pointer-events:none;opacity:1;transition:opacity .42s ease}
+            #digital-twin-loading-root{position:fixed;z-index:2147483647;inset:0;display:grid;place-items:center;overflow:hidden;padding:30px;background:var(--dtl-background,#28282b);color:#e8e8e4;font-family:Inter,"Noto Sans SC","Segoe UI","Microsoft YaHei UI",sans-serif;-webkit-font-smoothing:antialiased;pointer-events:none;opacity:1;transition:opacity .42s ease}
             #digital-twin-loading-root *{box-sizing:border-box}
             #digital-twin-loading-root.is-leaving{opacity:0}
             #digital-twin-loading-root .dtl-atmosphere{position:absolute;inset:0;background:radial-gradient(ellipse at 50% 38%,rgba(166,169,156,.1),transparent 52%),linear-gradient(135deg,rgba(255,255,255,.018),transparent 48%,rgba(0,0,0,.11))}
@@ -40,7 +40,8 @@ internal static class DashboardLoadingExperience
             #digital-twin-loading-root .dtl-smoke:after{animation-delay:1.4s}#digital-twin-loading-root .dtl-smoke.off{opacity:0}
             #digital-twin-loading-root .dtl-caption,#digital-twin-loading-root .dtl-index{position:absolute;z-index:2;bottom:13px;color:#8c8d87;font-size:8px;letter-spacing:.12em;pointer-events:none}#digital-twin-loading-root .dtl-caption{left:1px;display:flex;align-items:center;gap:8px}#digital-twin-loading-root .dtl-caption b{color:#b7b8b0;font-weight:500}#digital-twin-loading-root .dtl-index{right:1px;color:#878880;font-size:7px}
             #digital-twin-loading-root .dtl-status{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:14px 1px 13px}#digital-twin-loading-root .dtl-status h1{margin:0;color:#eeeeea;font-size:17px;font-weight:500;letter-spacing:.025em}#digital-twin-loading-root .dtl-status p{margin:6px 0 0;color:#9c9d96;font-size:11px}#digital-twin-loading-root .dtl-percent{color:#d6d7cf;font-size:22px;font-weight:400;font-variant-numeric:tabular-nums}#digital-twin-loading-root .dtl-percent small{margin-left:2px;color:#96978f;font-size:10px}
-            #digital-twin-loading-root .dtl-track{position:relative;height:3px;border-radius:99px;background:rgba(220,221,210,.12)}#digital-twin-loading-root .dtl-fill{position:absolute;inset:0 auto 0 0;width:8%;border-radius:inherit;background:linear-gradient(90deg,#7d9a8a,#b4c8b5 72%,#d0ad7a);transition:width .55s cubic-bezier(.22,.75,.3,1)}#digital-twin-loading-root .dtl-knob{position:absolute;top:50%;left:8%;width:9px;height:9px;border:2px solid #28282b;border-radius:50%;background:#cfb07e;box-shadow:0 0 12px rgba(207,176,126,.45);transform:translate(-50%,-50%);transition:left .55s cubic-bezier(.22,.75,.3,1)}
+            #digital-twin-loading-root .dtl-track{position:relative;height:3px;border-radius:99px;background:rgba(220,221,210,.12)}#digital-twin-loading-root .dtl-fill{position:absolute;inset:0 auto 0 0;width:8%;border-radius:inherit;background:var(--dtl-accent,#a8c3b1);transition:width .55s cubic-bezier(.22,.75,.3,1)}#digital-twin-loading-root .dtl-knob{position:absolute;top:50%;left:8%;width:9px;height:9px;border:2px solid #28282b;border-radius:50%;background:#cfb07e;box-shadow:0 0 12px rgba(207,176,126,.45);transform:translate(-50%,-50%);transition:left .55s cubic-bezier(.22,.75,.3,1)}
+            #digital-twin-loading-root.is-quiet [data-loading-effect],#digital-twin-loading-root.is-quiet .dtl-smoke,#digital-twin-loading-root.is-quiet .dtl-index,#digital-twin-loading-root.is-custom-artwork [data-loading-effect],#digital-twin-loading-root.is-custom-artwork .dtl-smoke{display:none}#digital-twin-loading-root.is-quiet .dtl-model-stage{animation:none}
             #digital-twin-loading-root .dtl-phases{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:18px 0 0;padding:0;list-style:none}#digital-twin-loading-root .dtl-phases li{display:flex;align-items:center;gap:9px;min-width:0;color:#767770}#digital-twin-loading-root .dtl-marker{display:grid;place-items:center;width:19px;height:19px;flex:0 0 19px;border:1px solid rgba(203,204,193,.17);border-radius:50%}#digital-twin-loading-root .dtl-marker i{width:4px;height:4px;border-radius:50%;background:#777871}#digital-twin-loading-root .dtl-copy{display:grid;gap:3px;min-width:0}#digital-twin-loading-root .dtl-copy strong{overflow:hidden;color:#85867f;font-size:9px;font-weight:500;text-overflow:ellipsis;white-space:nowrap}#digital-twin-loading-root .dtl-copy small{overflow:hidden;color:#656660;font-size:7px;letter-spacing:.08em;text-overflow:ellipsis;white-space:nowrap}
             #digital-twin-loading-root li.complete .dtl-marker{border-color:rgba(143,179,158,.55);background:rgba(143,179,158,.1)}#digital-twin-loading-root li.complete .dtl-marker i,#digital-twin-loading-root li.current .dtl-marker i{background:#a8c3b1}#digital-twin-loading-root li.complete .dtl-copy strong{color:#b1c4b5}#digital-twin-loading-root li.current .dtl-marker{border-color:rgba(201,174,130,.6);box-shadow:0 0 13px rgba(201,174,130,.14)}#digital-twin-loading-root li.current .dtl-marker i{background:#d1b17d;box-shadow:0 0 7px rgba(209,177,125,.55)}#digital-twin-loading-root li.current .dtl-copy strong{color:#e1d1b1}
             #digital-twin-loading-root .dtl-footer{position:absolute;bottom:23px;left:50%;display:flex;align-items:center;gap:10px;transform:translateX(-50%);color:#7f8079;font-size:8px;letter-spacing:.06em;white-space:nowrap}#digital-twin-loading-root .dtl-footer i{width:2px;height:2px;border-radius:50%;background:#b99c71}
@@ -127,6 +128,22 @@ internal static class DashboardLoadingExperience
           });
           if (!mount()) document.addEventListener('DOMContentLoaded', mount, { once: true });
           window.__DIGITAL_TWIN_LOADING_ROOT__ = root;
+
+          fetch('/api/settings/loading-experience', { credentials: 'same-origin', cache: 'no-store' })
+            .then(response => response.ok ? response.json() : null)
+            .then(data => {
+              const config = data?.config;
+              if (!config || typeof config !== 'object') return;
+              if (/^#[0-9a-fA-F]{6}$/.test(config.background || '')) root.style.setProperty('--dtl-background', config.background);
+              if (/^#[0-9a-fA-F]{6}$/.test(config.accent || '')) root.style.setProperty('--dtl-accent', config.accent);
+              if (typeof config.title === 'string' && config.title.trim()) root.querySelector('.dtl-status h1').textContent = config.title.slice(0, 48);
+              if (typeof config.kicker === 'string' && config.kicker.trim()) root.querySelector('.dtl-kicker').textContent = config.kicker.slice(0, 72);
+              if (typeof config.imageUrl === 'string' && /^\/uploads\/appearance\/[a-f0-9]{32}\.(?:png|jpg|webp)$/.test(config.imageUrl)) {
+                root.querySelector('.dtl-model-stage>img').src = config.imageUrl;
+                root.classList.add('is-custom-artwork');
+              }
+              root.classList.toggle('is-quiet', config.preset === 'quiet');
+            }).catch(() => {});
 
           const phases = ['正在读取现场配置', '正在构建三维场景', '正在装配设备模型', '正在连接实时数据'];
           const setProgress = (value, phase, step) => {

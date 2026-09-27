@@ -44,8 +44,7 @@ import { useDataPoints } from './admin/composables/useDataPoints.js'
 import { formatPointValue, formatQualityLabel, formatPointTime } from './admin/utils/points.js'
 import NativeEnvironmentSettings from './admin/components/NativeEnvironmentSettings.vue'
 import FactoryLocationSettings from './admin/components/FactoryLocationSettings.vue'
-import GroupPortalSettings from './admin/components/GroupPortalSettings.vue'
-import DashboardDesigner from './admin/components/DashboardDesigner.vue'
+import UnifiedDashboardDesigner from './admin/components/UnifiedDashboardDesigner.vue'
 import AdminWindowChrome from './admin/components/AdminWindowChrome.vue'
 import AdminSecuritySettings from './admin/components/AdminSecuritySettings.vue'
 import PlatformUsersSettings from './admin/components/PlatformUsersSettings.vue'
@@ -92,7 +91,7 @@ const storedAdminUiState = adminUiStateForFocus(
 )
 
 const PLATFORM_SUBPAGES = [
-    { key: 'designer', label: '大屏设计器', description: '拖拽组件、绑定数据并发布画面' },
+    { key: 'designer', label: '大屏设计器', description: '地图分层、Logo、加载画面与场景组件' },
     { key: 'scene', label: '项目与场景', description: '项目归属与场景基础信息' },
     { key: 'environment', label: '场景与光效', description: 'Unity 灯光、后处理、围墙与空间' }
 ]
@@ -8217,7 +8216,7 @@ async function openAdminSetupStep(step) {
                 <!-- ======== 画面组件配置 ======== -->
                 <div v-if="activeTab === 'platform'" class="tab-content">
                     <h2>画面组件配置</h2>
-                    <p class="desc">管理当前项目、场景、组件布局和发布版本。工程师后续通过这里调整画面，不再改源码。</p>
+                    <p class="desc">在设计器中配置地图分层、Logo、加载画面以及工厂到设备的场景组件；项目与场景页只保留基础身份信息。</p>
 
                     <div class="secondary-page-nav-shell">
                         <nav class="secondary-page-nav" aria-label="画面组件设置分类">
@@ -8241,8 +8240,7 @@ async function openAdminSetupStep(step) {
                     </div>
 
                     <div v-show="platformSubpage === 'designer'" class="secondary-page-panel secondary-page-panel-designer">
-                        <details class="map-design-details"><summary>地图层级与大屏 Logo <span>全球 · 国家 · 省份 · 城市 · 区县</span></summary><GroupPortalSettings /></details>
-                        <DashboardDesigner class="platform-designer-primary" @reload="loadPlatform" @preview-view="handleDashboardViewPreview" />
+                        <UnifiedDashboardDesigner @reload="loadPlatform" @preview-view="handleDashboardViewPreview" />
                     </div>
 
                     <div v-show="platformSubpage === 'scene'" v-if="platform.activeProject" class="settings-section secondary-page-panel">

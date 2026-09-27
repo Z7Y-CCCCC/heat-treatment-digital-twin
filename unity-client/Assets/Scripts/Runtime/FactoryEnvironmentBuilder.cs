@@ -73,11 +73,17 @@ namespace HeatTreatment.DigitalTwin.Runtime
         }
 
         private Transform _environmentRoot;
+        private bool _inspectionIsolation;
         private readonly List<GltfImport> _hallImports = new List<GltfImport>();
         private int _hallGeneration;
         public Task HallReady { get; private set; } = Task.CompletedTask;
         public Bounds EnvironmentBounds { get; private set; } = new Bounds(Vector3.zero, new Vector3(54f, 12f, 54f));
         public bool HasFactoryHall => _hallImports.Count > 0;
+        public void SetInspectionIsolation(bool isolated)
+        {
+            _inspectionIsolation = isolated;
+            if (_environmentRoot != null) _environmentRoot.gameObject.SetActive(!isolated);
+        }
         private bool HasHallAsset => File.Exists(Path.Combine(Application.streamingAssetsPath, "Environment", "factory_hall_lowpoly.glb"));
         private readonly Dictionary<string, Transform> _workshopEnvironmentRoots = new Dictionary<string, Transform>();
         private readonly Dictionary<string, Transform> _lineEnvironmentRoots = new Dictionary<string, Transform>();
@@ -225,6 +231,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
             var root = new GameObject("FactoryEnvironment");
             root.transform.SetParent(transform, false);
             _environmentRoot = root.transform;
+            _environmentRoot.gameObject.SetActive(!_inspectionIsolation);
             _workshopEnvironmentRoots.Clear();
             _lineEnvironmentRoots.Clear();
             _gridObjects.Clear();

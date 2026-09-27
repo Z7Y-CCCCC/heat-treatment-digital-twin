@@ -66,6 +66,10 @@ function adminSessionCookieName() {
     return `dt_admin_session_${Number(process.env.PORT || 3001)}`;
 }
 
+function adminWebSocketCookieName() {
+    return `${adminSessionCookieName()}_ws`;
+}
+
 function adminAccountCookieName(slotId) {
     if (!/^[a-f0-9]{24}$/.test(String(slotId || ''))) return '';
     return `${adminSessionCookieName()}_account_${slotId}`;
@@ -105,7 +109,7 @@ function suppliedAdminAccounts(req, service) {
         if (/^[a-f0-9]{24}$/.test(slotId)) slots.push({ slotId, token });
     }
     return slots.filter(slot => slot.token).map(({ slotId, token }) => ({ slotId, ...service.status(token) }))
-        .filter(account => account.authenticated);
+        .filter(account => account.authenticated || account.displayAuthenticated);
 }
 
 function suppliedAdminSession(req) {
@@ -319,6 +323,7 @@ module.exports = {
     adminAccountCookieName,
     adminActiveAccountCookieName,
     adminSessionCookieName,
+    adminWebSocketCookieName,
     createCorsMiddleware,
     createOperationRateLimiter,
     isLoopbackAddress,

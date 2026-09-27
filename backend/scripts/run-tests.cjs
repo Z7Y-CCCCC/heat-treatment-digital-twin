@@ -7,6 +7,7 @@ const { BACKEND_DIR, createRunDirectory } = require('./integration-test-utils.cj
 
 const scripts = [
     'test-isolation-test.cjs',
+    'group-portal-settings-test.cjs', 'appearance-assets-test.cjs',
     'admin-auth-test.cjs', 'license-test.cjs', 'release-package-test.cjs',
     'math-expression-test.cjs', 'business-data-test.cjs', 'data-source-test.cjs',
     'data-source-http-regression-test.cjs', 'data-source-designer-test.cjs',

@@ -73,10 +73,14 @@ function changeDistrict(value){const district=districts.value.find(item=>item.id
     <label v-else>区域名称<input :value="props.modelValue.regionName || ''" maxlength="100" @input="patch({regionName:$event.target.value})" /></label>
     <label>{{ country==='CHN'?'城市名称（自动）':'城市／地址说明' }}<input :value="props.modelValue.city || ''" :readonly="country==='CHN'" maxlength="200" @input="patch({city:$event.target.value})" /></label>
     <label v-if="country!=='CHN'">区县／区域<input :value="props.modelValue.districtName || ''" maxlength="100" @input="patch({districtName:$event.target.value})" /></label>
+    <label>纬度（工厂定位）<input type="number" step="any" min="-90" max="90" :value="props.modelValue.latitude ?? ''" placeholder="例如 39.123456" @input="patch({latitude:$event.target.value})" /></label>
+    <label>经度（工厂定位）<input type="number" step="any" min="-180" max="180" :value="props.modelValue.longitude ?? ''" placeholder="例如 117.123456" @input="patch({longitude:$event.target.value})" /></label>
+    <p class="geo-coordinate-note">仅用于区级地图上工厂光柱定位；留空时显示“位置待完善”，不影响车间内模型坐标。</p>
     <p v-if="geoError" class="factory-geo-error" role="status">{{ geoError }}</p>
   </div>
 </template>
 
 <style scoped>
 .factory-geo-fields{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.factory-geo-fields label{display:grid;gap:7px;min-width:0;font-size:12px;color:#505c73}.factory-geo-fields input,.factory-geo-fields select{box-sizing:border-box;width:100%;min-width:0;padding:9px;border:1px solid #d4dae3;border-radius:6px;background:#fff;color:#273246}.factory-geo-fields input[readonly]{background:#f3f5f8;color:#657188}.factory-geo-fields select:disabled{opacity:.62}.factory-geo-error{grid-column:1/-1;margin:0;color:#ad4050;font-size:11px}@media(max-width:900px){.factory-geo-fields{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.geo-coordinate-note{grid-column:1/-1;margin:0;color:#7b879a;font-size:11px}
 </style>

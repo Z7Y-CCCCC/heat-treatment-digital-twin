@@ -2,7 +2,7 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { adminApi } from '../config/factoryConfig.js'
-import { adminSession, startAdminSessionTracking, stopAdminSessionTracking, lockAdmin } from '../runtime/adminSession.js'
+import { adminSession, startAdminSessionTracking, stopAdminSessionTracking, logoutCurrentAdminAccount } from '../runtime/adminSession.js'
 import AdminWindowChrome from './admin/components/AdminWindowChrome.vue'
 
 const route = useRoute()
@@ -18,6 +18,16 @@ const failure = ref(false)
 const canCast = computed(() => adminSession.permissions.cast)
 const canBackup = computed(() => adminSession.permissions.backup)
 const embedded = computed(() => route.query.embedded === 'unity')
+const nativeAdminSurface = computed(() => embedded.value && route.query.surface !== 'overlay'
+    && typeof window.chrome?.webview?.postMessage === 'function')
+
+function returnToDashboard() {
+    if (nativeAdminSurface.value) {
+        window.chrome.webview.postMessage({ type: 'host_action', action: 'show_dashboard' })
+        return
+    }
+    router.push({ path: '/group' })
+}
 
 function showResult(text, isFailure = false) {
     message.value = text
@@ -86,7 +96,7 @@ function formatDate(value) {
 }
 
 async function signOut() {
-    await lockAdmin()
+    await logoutCurrentAdminAccount()
 }
 
 onMounted(async () => {
@@ -100,10 +110,11 @@ onUnmounted(stopAdminSessionTracking)
 </script>
 
 <template>
-    <main class="customer-ops" :class="{ embedded }">
-        <AdminWindowChrome v-if="embedded" @before-dashboard="router.push({ path: '/group', query: route.query })" @before-admin="router.push({ path: '/group', query: route.query })" />
+  <div class="customer-shell">
+    <AdminWindowChrome v-if="nativeAdminSurface" />
+    <main class="customer-ops" :class="{ embedded: nativeAdminSurface }">
         <header class="ops-header">
-            <button class="ops-back" type="button" @click="router.push({ path: '/group', query: route.query })">← <span>返回大屏</span></button>
+            <button class="ops-back" type="button" @click="returnToDashboard">← <span>返回大屏</span></button>
             <div class="ops-title"><small>ON-SITE OPERATIONS</small><h1>现场操作中心</h1><p>{{ adminSession.user?.displayName }} · {{ adminSession.user?.username }}</p></div>
             <button class="ops-signout" type="button" @click="signOut">退出登录</button>
         </header>
@@ -146,8 +157,10 @@ onUnmounted(stopAdminSessionTracking)
         <p v-if="message" class="ops-message" :class="{ failed: failure }" role="status">{{ message }}</p>
         <footer class="ops-footer">权限由系统管理员分配 · 所有数据操作在本机安全会话中执行</footer>
     </main>
+  </div>
 </template>
 
 <style scoped>
+.customer-shell{min-height:100vh;display:flex;flex-direction:column}.customer-shell>.customer-ops{flex:1}
 .customer-ops{box-sizing:border-box;min-height:100vh;padding:48px clamp(22px,6vw,96px) 28px;background:#efefec;color:#292b26;font-family:Inter,"Segoe UI","Microsoft YaHei UI",sans-serif}.customer-ops.embedded{min-height:calc(100vh - 46px);padding-top:36px}.ops-header{display:grid;grid-template-columns:1fr minmax(280px,2fr) 1fr;align-items:start;gap:20px;max-width:1180px;margin:0 auto 34px;padding-bottom:24px;border-bottom:1px solid rgba(65,67,58,.15)}.ops-back,.ops-signout{justify-self:start;padding:9px 12px;border:1px solid rgba(70,72,64,.18);border-radius:7px;background:rgba(255,255,255,.42);color:#53554d;font:inherit;font-size:11px;cursor:pointer}.ops-signout{justify-self:end}.ops-title small,.card-heading small{color:#8a8b80;font-size:9px;letter-spacing:.18em}.ops-title h1{margin:7px 0 5px;font-size:25px;font-weight:560;letter-spacing:.025em}.ops-title p{margin:0;color:#83847a;font-size:11px}.ops-card{max-width:1100px;margin:0 auto 18px;padding:24px 26px;border:1px solid rgba(67,69,61,.13);border-radius:12px;background:rgba(250,250,248,.82);box-shadow:0 9px 26px rgba(44,46,39,.045)}.card-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:20px}.card-heading h2{margin:7px 0;font-size:17px;font-weight:560}.card-heading p,.backup-kind-heading p{margin:0;color:#818279;font-size:11px;line-height:1.65}.state-indicator{padding:6px 9px;border:1px solid #d5d5ce;border-radius:99px;color:#77796e;font-size:10px;white-space:nowrap}.state-indicator.active{border-color:#9caf9f;color:#526c58;background:#ecf0eb}.cast-controls{display:grid;grid-template-columns:minmax(260px,1fr) auto auto auto;align-items:end;gap:9px;margin-top:24px}.cast-controls label{display:grid;gap:7px;color:#77796f;font-size:10px}.cast-controls select{box-sizing:border-box;height:39px;padding:0 11px;border:1px solid #d8d9d3;border-radius:6px;background:#fff;color:#383a34;font:inherit;font-size:11px}.primary-action,.secondary-action{height:39px;padding:0 14px;border:1px solid #44473f;border-radius:6px;background:#41443c;color:#f4f3ed;font:inherit;font-size:10px;cursor:pointer;white-space:nowrap}.secondary-action{border-color:#d0d1c9;background:rgba(255,255,255,.68);color:#55574f}.primary-action:disabled,.secondary-action:disabled{opacity:.5;cursor:wait}.cast-current{margin:15px 0 0;color:#71736a;font-size:10px}.cast-current span{margin-left:7px;color:#96978e}.backup-columns{display:grid;grid-template-columns:1fr 1fr;gap:15px;margin-top:20px}.backup-kind{min-width:0;padding:18px 17px;border:1px solid rgba(69,71,63,.12);border-radius:9px;background:rgba(245,245,241,.66)}.backup-kind-heading{display:flex;align-items:center;justify-content:space-between;gap:12px}.backup-kind-heading h3{margin:0 0 5px;font-size:13px;font-weight:560}.backup-kind-heading .primary-action{height:34px}.backup-list{margin-top:15px;border-top:1px solid rgba(69,71,63,.12)}.backup-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 0;border-bottom:1px solid rgba(69,71,63,.1)}.backup-row>span{display:grid;gap:4px;min-width:0}.backup-row strong{overflow:hidden;color:#4a4c44;font-size:10px;font-weight:500;text-overflow:ellipsis;white-space:nowrap}.backup-row small{color:#8b8c83;font-size:9px}.backup-row a{color:#657260;font-size:10px;text-decoration:none;white-space:nowrap}.backup-row a:hover{text-decoration:underline}.empty-list{margin:16px 0 2px;color:#95968e;font-size:10px}.ops-message{max-width:1100px;margin:15px auto 0;color:#61745e;font-size:11px}.ops-message.failed{color:#a44f44}.ops-footer{max-width:1100px;margin:24px auto 0;color:#96978d;font-size:9px;text-align:center}.ops-footer::before{content:"";display:block;width:34px;height:1px;margin:0 auto 14px;background:#b6b7ab}@media(max-width:760px){.customer-ops{padding:24px 15px}.ops-header{grid-template-columns:auto 1fr;gap:14px}.ops-title{grid-column:1/-1;grid-row:2}.ops-signout{grid-column:2;grid-row:1}.cast-controls{grid-template-columns:1fr 1fr}.cast-controls label{grid-column:1/-1}.backup-columns{grid-template-columns:1fr}.ops-card{padding:19px}}
 </style>

@@ -6,6 +6,7 @@ export const adminSession = reactive({
     ready: false,
     configured: true,
     authenticated: false,
+    displayAuthenticated: false,
     user: null,
     permissions: { view: false, edit: false, manageUsers: false, launch: false, cast: false, backup: false },
     idleTimeoutMinutes: 30,
@@ -50,15 +51,19 @@ function applySession(data, expectedGeneration = generation) {
     adminSession.ready = true
     adminSession.configured = data.configured !== false
     adminSession.authenticated = data.authenticated === true
-    adminSession.user = data.authenticated ? data.user || null : null
-    const fallbackPermissions = data.authenticated ? permissionsForRole(data.user?.role) : null
-    adminSession.permissions = data.authenticated ? { ...fallbackPermissions, ...(data.permissions || {}) }
+    adminSession.displayAuthenticated = data.displayAuthenticated === true
+        || (data.displayAuthenticated === undefined && data.authenticated === true)
+    adminSession.user = adminSession.displayAuthenticated || adminSession.authenticated ? data.user || null : null
+    const fallbackPermissions = adminSession.displayAuthenticated || adminSession.authenticated ? permissionsForRole(data.user?.role) : null
+    adminSession.permissions = fallbackPermissions ? { ...fallbackPermissions, ...(data.permissions || {}),
+        edit: adminSession.authenticated && (data.permissions?.edit ?? fallbackPermissions.edit),
+        manageUsers: adminSession.authenticated && (data.permissions?.manageUsers ?? fallbackPermissions.manageUsers) }
         : { view: false, edit: false, manageUsers: false, launch: false, cast: false, backup: false }
     adminSession.idleTimeoutMinutes = data.idleTimeoutMinutes || 30
     adminSession.maxSessionHours = data.maxSessionHours || 8
     adminSession.expiresAt = data.expiresAt || 0
-    adminSession.accountSlotId = String(data.accountSlotId || (data.authenticated ? 'main' : ''))
-    csrfToken = data.authenticated ? data.csrfToken || '' : ''
+    adminSession.accountSlotId = String(data.accountSlotId || (adminSession.displayAuthenticated || adminSession.authenticated ? 'main' : ''))
+    csrfToken = adminSession.displayAuthenticated || adminSession.authenticated ? data.csrfToken || '' : ''
     adminSession.warning = ''
 }
 
@@ -66,11 +71,20 @@ function clearSession(message = '') {
     generation += 1
     csrfToken = ''
     adminSession.authenticated = false
+    adminSession.displayAuthenticated = false
     adminSession.user = null
     adminSession.permissions = { view: false, edit: false, manageUsers: false, launch: false, cast: false, backup: false }
     adminSession.expiresAt = 0
     adminSession.accountSlotId = ''
     adminSession.warning = message
+    window.clearTimeout(touchTimer)
+    touchTimer = null
+}
+
+function clearAdminAccess() {
+    generation += 1
+    adminSession.authenticated = false
+    adminSession.permissions = { ...adminSession.permissions, edit: false, manageUsers: false }
     window.clearTimeout(touchTimer)
     touchTimer = null
 }
@@ -93,7 +107,10 @@ async function authRequest(path, { method = 'GET', body } = {}, csrf = csrfToken
             ...(body ? { body: JSON.stringify(body) } : {})
         })
         const data = await response.json().catch(() => ({}))
-        if (!response.ok && data.code === 'ADMIN_AUTH_REQUIRED' && requestGeneration === generation) clearSession('后台会话已失效，请重新输入密码')
+        if (!response.ok && data.code === 'ADMIN_AUTH_REQUIRED' && requestGeneration === generation) {
+            if (adminSession.displayAuthenticated) void refreshAdminSession()
+            else clearSession('后台会话已失效，请重新输入密码')
+        }
         if (!response.ok) throw Object.assign(new Error(data.error || '后台安全服务暂不可用'), {
             code: data.code,
             status: response.status,
@@ -124,12 +141,11 @@ async function performPendingLock() {
     try {
         // A concurrent window may have renewed the cookie before the lock request.
         const current = await authRequest('/session')
-        await authRequest('/lock', { method: 'POST' }, current.csrfToken || pendingLockCsrf)
+        const locked = await authRequest('/lock', { method: 'POST' }, current.csrfToken || pendingLockCsrf)
         pendingLock = false
         adminSession.lockPending = false
         pendingLockCsrf = ''
-        adminSession.warning = ''
-        adminSession.ready = true
+        applySession(locked)
         broadcast('locked')
         return true
     } catch (error) {
@@ -160,7 +176,8 @@ export async function refreshAdminSession() {
             return data
         } catch (error) {
             if (expectedGeneration === generation) {
-                clearSession(error.message)
+                if (adminSession.displayAuthenticated) adminSession.warning = error.message
+                else clearSession(error.message)
                 adminSession.ready = true
             }
             return null
@@ -218,7 +235,7 @@ export async function lockAdmin() {
     pendingLockCsrf = csrfToken || pendingLockCsrf
     pendingLock = true
     adminSession.lockPending = true
-    clearSession()
+    clearAdminAccess()
     broadcast('lock-pending')
     return confirmPendingLock()
 }
@@ -265,13 +282,16 @@ export async function adminFetch(input, options = {}) {
     const headers = new Headers(options.headers || (input instanceof Request ? input.headers : undefined))
     const method = String(options.method || (input instanceof Request ? input.method : 'GET')).toUpperCase()
     const factoryId = getFactoryScope()
-    if (factoryId) headers.set('X-Factory-ID', factoryId)
+    if (factoryId && !headers.has('X-Factory-ID')) headers.set('X-Factory-ID', factoryId)
     if (!['GET', 'HEAD', 'OPTIONS'].includes(method) && csrfToken) headers.set('X-CSRF-Token', csrfToken)
     const expectedGeneration = generation
     const response = await window.fetch(input, { ...options, headers, credentials: 'include' })
     if (response.status === 401) {
         const data = await response.clone().json().catch(() => ({}))
-        if (data.code === 'ADMIN_AUTH_REQUIRED' && generation === expectedGeneration) clearSession('后台会话已失效，请重新输入密码')
+        if (data.code === 'ADMIN_AUTH_REQUIRED' && generation === expectedGeneration) {
+            if (adminSession.displayAuthenticated) void refreshAdminSession()
+            else clearSession('后台会话已失效，请重新输入密码')
+        }
     }
     return response
 }
@@ -280,7 +300,7 @@ function workspaceIsVisible() {
     if (document.visibilityState === 'hidden') return false
     const workspace = document.querySelector('[data-admin-workspace]')
     if (workspace) return !workspace.classList.contains('unity-dashboard-tab')
-    return ['/group', '/overlay', '/hud-preview', '/customer'].includes(window.location.pathname)
+    return false
 }
 
 async function touchSession() {
@@ -306,12 +326,13 @@ export function startAdminSessionTracking() {
                 pendingLockCsrf = csrfToken || pendingLockCsrf
                 pendingLock = true
                 adminSession.lockPending = true
-                clearSession()
+                clearAdminAccess()
             } else if (data?.type === 'locked' || data?.type === 'lock-rejected') {
                 pendingLock = false
                 pendingLockCsrf = ''
                 adminSession.lockPending = false
-                clearSession(data.type === 'lock-rejected' ? String(data.warning || '请重新解锁后再次锁定后台') : '')
+                adminSession.warning = data.type === 'lock-rejected' ? String(data.warning || '请重新解锁后再次锁定后台') : ''
+                void refreshAdminSession()
             }
             else if (data?.type === 'changed') refreshAdminSession()
         }
@@ -328,7 +349,8 @@ export function startAdminSessionTracking() {
     document.addEventListener('visibilitychange', handleVisibilityChange)
     pollTimer = window.setInterval(() => {
         const now = Date.now()
-        if ((adminSession.authenticated || pendingLock) && (now - lastPollAt >= 10000 || now >= adminSession.expiresAt)) {
+        if ((adminSession.authenticated || adminSession.displayAuthenticated || pendingLock)
+            && (now - lastPollAt >= 10000 || (adminSession.authenticated && now >= adminSession.expiresAt))) {
             lastPollAt = now
             refreshAdminSession()
         }

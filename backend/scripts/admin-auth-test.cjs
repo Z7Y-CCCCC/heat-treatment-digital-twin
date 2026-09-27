@@ -41,7 +41,11 @@ async function serviceChecks() {
     }
     time += 10000;
     assert.equal(service.status(first.token).authenticated, false);
-    checks.push('configurable idle timeout; status polling cannot extend a session');
+    assert.equal(service.status(first.token).displayAuthenticated, true);
+    assert.equal(service.status(first.token).permissions.edit, false);
+    assert.doesNotThrow(() => service.requireSession(first.token, first.status.csrfToken, { permission: 'view' }));
+    assert.throws(() => service.requireSession(first.token, first.status.csrfToken, { permission: 'edit' }), { code: 'ADMIN_AUTH_REQUIRED' });
+    checks.push('idle timeout locks admin edits while the authenticated display remains visible');
 
     const active = await service.login(password, 'local');
     time += 4 * 60000;
@@ -58,14 +62,17 @@ async function serviceChecks() {
     }
     time = deadline;
     assert.equal(service.status(bounded.token).authenticated, false);
-    checks.push('real activity renews idle time; eight-hour absolute limit remains');
+    assert.equal(service.status(bounded.token).displayAuthenticated, true);
+    checks.push('real admin activity renews idle time; eight-hour admin limit does not blank display');
 
     const windowA = await service.login(password, 'local');
     const windowB = await service.login(password, 'local');
     service.lock(windowA.token, windowA.status.csrfToken);
     assert.equal(service.status(windowA.token).authenticated, false);
     assert.equal(service.status(windowB.token).authenticated, false);
-    checks.push('manual lock revokes every engineer window');
+    assert.equal(service.status(windowA.token).displayAuthenticated, true);
+    assert.equal(service.status(windowB.token).displayAuthenticated, true);
+    checks.push('manual lock removes admin privileges from every window, not display access');
 
     const lockOwner = await service.login(password, 'lock-race');
     const pendingLogin = service.login(password, 'pending-login');
@@ -131,7 +138,12 @@ async function serviceChecks() {
     assert.throws(() => restarted.exchangeNativeTicket(nativeTicket.ticket), { code: 'NATIVE_TICKET_INVALID' });
     const revokedTicket = restarted.createNativeTicket(owner.token, owner.status.csrfToken);
     restarted.lock(owner.token, owner.status.csrfToken);
-    assert.throws(() => restarted.exchangeNativeTicket(revokedTicket.ticket), { code: 'ADMIN_AUTH_REQUIRED' });
+    assert.throws(() => restarted.exchangeNativeTicket(revokedTicket.ticket), { code: 'NATIVE_TICKET_INVALID' });
+    assert.equal(restarted.status(nativeSession.token).displayAuthenticated, true);
+    const unlockedOwner = await restarted.login(replacementPassword, 'owner-unlock', owner.token);
+    assert.equal(restarted.status(nativeSession.token).displayAuthenticated, true);
+    restarted.logout(unlockedOwner.token, unlockedOwner.status.csrfToken);
+    assert.equal(restarted.status(nativeSession.token).displayAuthenticated, false);
     checks.push('single-use short-lived native handoff tickets enforce launch permission and session revocation');
     const persistedUsers = createAdminAuth({ dataDir, now: () => time });
     const persistedOwner = await persistedUsers.login(replacementPassword, 'owner-after-restart');
@@ -217,6 +229,8 @@ async function httpChecks() {
         assert.equal(setup.response.status, 200);
         const setCookie = setup.response.headers.get('set-cookie');
         assert.ok(setCookie.includes('HttpOnly') && setCookie.includes('SameSite=Strict') && setCookie.includes('Path=/api'));
+        assert.ok(setup.response.headers.getSetCookie().some(value => /_ws=/.test(value) && value.includes('Path=/ws') && value.includes('HttpOnly')),
+            'authenticated dashboard socket receives a narrow HttpOnly cookie');
         assert.equal(setCookie.includes('Secure'), false, 'loopback HTTP must remain usable');
         assert.equal(setup.response.headers.get('cache-control'), 'no-store');
         const credentials = { cookie: setup.cookie, csrf: setup.data.csrfToken };
@@ -250,10 +264,14 @@ async function httpChecks() {
         const switchedViewer = await request('/admin-auth/accounts/activate', { method: 'POST', body: { slotId: '0123456789abcdef01234567' },
             cookie: switchedOwner.cookie, csrf: savedViewer.data.csrfToken });
         assert.equal((await request('/admin-auth/session', { cookie: switchedViewer.cookie })).data.user.username, 'shift_viewer');
+        assert.ok(switchedViewer.response.headers.getSetCookie().some(value => /_ws=/.test(value) && value.includes('Path=/ws')),
+            'switching the active account refreshes the socket identity');
         const signedOutViewer = await request('/admin-auth/accounts/logout', { method: 'POST', cookie: switchedViewer.cookie,
             csrf: savedViewer.data.csrfToken });
         assert.equal(signedOutViewer.data.authenticated, false);
         assert.equal(signedOutViewer.data.accountSlotId, 'none');
+        assert.ok(signedOutViewer.response.headers.getSetCookie().some(value => /_ws=/.test(value) && value.includes('Path=/ws') && value.includes('Expires=')),
+            'sign-out clears the dashboard socket cookie');
         assert.deepEqual((await request('/admin-auth/accounts', { cookie: signedOutViewer.cookie })).data.accounts.map(account => account.slotId), ['main']);
         const restoredOwner = await request('/admin-auth/accounts/activate', { method: 'POST', body: { slotId: 'main' },
             cookie: signedOutViewer.cookie, csrf: setup.data.csrfToken });
@@ -299,7 +317,15 @@ async function httpChecks() {
         const locked = await request('/admin-auth/lock', { method: 'POST', ...credentials });
         assert.equal(locked.response.status, 200);
         assert.equal((await request('/admin-auth/session', { cookie: second.cookie })).data.authenticated, false);
+        assert.equal((await request('/admin-auth/session', { cookie: second.cookie })).data.displayAuthenticated, true);
+        assert.equal((await request('/config', credentials)).response.status, 200);
+        assert.ok(locked.response.headers.getSetCookie().some(value => /_ws=[a-f0-9]{64}/.test(value)),
+            'locking admin retains the dashboard socket cookie');
         assert.equal((await request('/settings', { method: 'PUT', body: {}, ...credentials })).response.status, 401);
+        const loggedOut = await request('/admin-auth/accounts/logout', { method: 'POST', ...credentials });
+        assert.equal(loggedOut.response.status, 200);
+        assert.equal((await request('/config', { cookie: loggedOut.cookie })).response.status, 401);
+        assert.equal((await request('/config', { cookie: second.cookie })).response.status, 200);
         assert.equal((await request('/SETTINGS', { method: 'PUT', body: {} })).response.status, 401);
         const upperApi = await fetch(`${origin}/API/settings`, { method: 'PUT' });
         assert.equal(upperApi.status, 401);

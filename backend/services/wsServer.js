@@ -89,7 +89,7 @@ class WsServer {
             this.clients.add(ws);
             if (req.adminSessionToken) {
                 ws.sessionCheckTimer = setInterval(() => {
-                    if (!getAdminAuth().status(req.adminSessionToken).authenticated) {
+                    if (!getAdminAuth().status(req.adminSessionToken).displayAuthenticated) {
                         try { ws.close(4401, 'Session expired'); } catch { ws.terminate(); }
                     }
                 }, 5000);

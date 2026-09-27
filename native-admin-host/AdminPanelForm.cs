@@ -267,6 +267,7 @@ internal sealed class AdminPanelForm : Form
             {
                 _dashboardOverlay = new DashboardOverlayForm(_options);
                 _dashboardOverlay.AdminRequested += ShowAdminFromOverlay;
+                _dashboardOverlay.CustomerOperationsRequested += ShowCustomerOperations;
                 await _dashboardOverlay.InitializeAsync(environment);
                 if (_closing || IsDisposed)
                 {
@@ -293,7 +294,15 @@ internal sealed class AdminPanelForm : Form
             // Complete the initial placement before the desktop startup cover
             // is removed. An unsigned-in user must see the existing admin
             // login, never a second login painted on the Unity scene.
-            if (!_adminVisible && !await HasDashboardLaunchPermissionAsync())
+            if (!_adminVisible && await HasDashboardLaunchPermissionAsync())
+            {
+                if (_dashboardOverlay != null)
+                {
+                    _dashboardOverlay.OpenMapAtTopLevel();
+                    _initialMapPending = false;
+                }
+            }
+            else if (!_adminVisible)
             {
                 _returnToDashboardAfterUnlock = true;
                 ShowAdmin();
@@ -378,6 +387,7 @@ internal sealed class AdminPanelForm : Form
                 else if (action == "minimize") MinimizeActiveWindow();
                 else if (action == "maximize") ToggleMaximize();
                 else if (action == "show_dashboard") ShowDashboard();
+                else if (action == "show_customer") ShowCustomerOperations();
                 else if (action == "show_admin")
                 {
                     if (root.TryGetProperty("returnToDashboard", out var returnToDashboard)
@@ -615,6 +625,11 @@ internal sealed class AdminPanelForm : Form
     private void MaintainParentWindow()
     {
         if (_closing || IsDisposed) return;
+        if (_exitRequested)
+        {
+            if (!IsParentProcessRunning()) RequestCloseAfterParentExit();
+            return;
+        }
         if (!IsParentProcessRunning())
         {
             RequestCloseAfterParentExit();
@@ -924,6 +939,14 @@ internal sealed class AdminPanelForm : Form
             builder.Query = string.Join("&", query);
             _webView.CoreWebView2.Navigate(builder.Uri.AbsoluteUri);
         }
+        ShowAdmin();
+    }
+
+    private void ShowCustomerOperations()
+    {
+        if (_closing || IsDisposed || _webView.CoreWebView2 == null) return;
+        if (!Uri.TryCreate(_options.Url, UriKind.Absolute, out var adminUri)) return;
+        _webView.CoreWebView2.Navigate(new Uri(adminUri, "/customer?embedded=unity&surface=admin").AbsoluteUri);
         ShowAdmin();
     }
 
@@ -1243,12 +1266,16 @@ internal sealed class AdminPanelForm : Form
 
         if (HasDesktopControl)
         {
+            var wasAttached = _attached;
+            HideForExit();
+            WriteHostInfo("已向桌面管理服务请求安全退出");
             if (await PostDesktopControlAsync("quit", TimeSpan.FromMilliseconds(900)))
             {
-                HideForExit();
+                WriteHostInfo("桌面管理服务已接受安全退出请求");
                 return;
             }
             _exitRequested = false;
+            RestoreAfterFailedExit(wasAttached);
             MessageBox.Show(
                 this,
                 "无法连接桌面管理服务。为避免绕过退出备份，本次没有强制结束程序；请稍后重试或从右下角托盘菜单退出。",
@@ -1261,17 +1288,67 @@ internal sealed class AdminPanelForm : Form
 
         if (TryResolveParentWindow())
         {
-            // WM_CLOSE can take a few frames while Unity releases its render
-            // resources. Hide the native controls immediately so the close
-            // choice never remains visible during that teardown.
+            // Detach WebView2's cross-process child/owner HWNDs while Unity is
+            // still alive. Once WM_CLOSE is posted, its window can disappear
+            // before this UI thread gets another turn.
+            var wasAttached = _attached;
+            var parentHandle = _parentHandle;
             HideForExit();
-            NativeMethods.PostMessage(_parentHandle, NativeMethods.WmClose, IntPtr.Zero, IntPtr.Zero);
+            if (!NativeMethods.PostMessage(parentHandle, NativeMethods.WmClose, IntPtr.Zero, IntPtr.Zero))
+            {
+                _exitRequested = false;
+                RestoreAfterFailedExit(wasAttached);
+                MessageBox.Show(this, "无法向 Unity 发送关闭请求，程序仍在运行。请重试。", "退出失败",
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return;
+            }
+            WriteHostInfo($"已请求 Unity 退出：PID {_options.ParentProcessId}");
+            _ = WatchStandaloneUnityExitAsync(_options.ParentProcessId, _parentProcessStartTimeUtc);
         }
         else
         {
             _exitRequested = false;
             Close();
         }
+    }
+
+    private void RestoreAfterFailedExit(bool wasAttached)
+    {
+        if (_closing || IsDisposed) return;
+        if (wasAttached)
+        {
+            if (TryResolveParentWindow()) AttachToParent(false);
+            else DetachFromParent(activate: false);
+        }
+        else
+        {
+            ShowDetachedDashboardChrome();
+            ShowAdmin();
+        }
+    }
+
+    private static async Task WatchStandaloneUnityExitAsync(int processId, DateTime? startTimeUtc)
+    {
+        if (!startTimeUtc.HasValue) return;
+        await Task.Run(() =>
+        {
+            try
+            {
+                using var process = Process.GetProcessById(processId);
+                if (process.StartTime.ToUniversalTime() != startTimeUtc.Value) return;
+                if (process.WaitForExit(8000)) return;
+                WriteHostInfo($"Unity 在关闭请求后 8 秒仍未退出，重试关闭主窗口：PID {processId}");
+                process.CloseMainWindow();
+                if (process.WaitForExit(4000)) return;
+                if (process.StartTime.ToUniversalTime() != startTimeUtc.Value) return;
+                WriteHostInfo($"Unity 在 12 秒后仍未退出，终止无响应的独立开发运行端：PID {processId}");
+                process.Kill(entireProcessTree: true);
+                process.WaitForExit(3000);
+            }
+            catch (ArgumentException) { /* Unity already exited. */ }
+            catch (InvalidOperationException) { /* Unity already exited. */ }
+            catch (Exception exception) { WriteHostError("独立运行端退出监视失败", exception); }
+        });
     }
 
     private bool HasDesktopControl => !string.IsNullOrWhiteSpace(_options.DesktopControlUrl)
@@ -1332,12 +1409,16 @@ internal sealed class AdminPanelForm : Form
     private void HideForExit()
     {
         _webView.Visible = false;
-        _dashboardOverlay?.HideOverlay();
+        _dashboardOverlay?.DetachForShutdown();
         if (_dashboardChrome != null && !_dashboardChrome.IsDisposed)
         {
-            NativeMethods.ShowWindow(_dashboardChrome.Handle, NativeMethods.SwHide);
-            _dashboardChrome.Hide();
+            _dashboardChrome.DetachForShutdown();
         }
+        // Unity and WebView2 run on different UI threads. Detach their HWNDs
+        // before Unity destroys its parent window to avoid cross-thread teardown
+        // waiting for each other during application exit.
+        if (_attached && IsHandleCreated) NativeMethods.SetParent(Handle, IntPtr.Zero);
+        _attached = false;
         NativeMethods.ShowWindow(Handle, NativeMethods.SwHide);
         Hide();
     }
@@ -1443,6 +1524,7 @@ internal sealed class AdminPanelForm : Form
     private void RequestCloseAfterParentExit()
     {
         if (_closing || IsDisposed) return;
+        WriteHostInfo("Unity 运行端已退出，开始关闭后台宿主");
         _closing = true;
         _parentTimer.Stop();
         try
@@ -1996,6 +2078,7 @@ internal sealed class AdminPanelForm : Form
 
     protected override void OnFormClosing(FormClosingEventArgs e)
     {
+        WriteHostInfo("后台宿主开始释放窗口资源");
         _closing = true;
         _navigationRetry?.Dispose();
         _parentTimer.Stop();
@@ -2016,6 +2099,7 @@ internal sealed class AdminPanelForm : Form
         {
             WriteHostError("透明数据层关闭失败", exception);
         }
+        WriteHostInfo("后台宿主窗口资源释放阶段结束");
         base.OnFormClosing(e);
     }
 

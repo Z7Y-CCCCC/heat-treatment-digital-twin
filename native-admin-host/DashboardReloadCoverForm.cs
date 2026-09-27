@@ -71,6 +71,13 @@ internal sealed class DashboardReloadCoverForm : Form
         Hide();
     }
 
+    public void DetachForShutdown()
+    {
+        HideCover();
+        if (IsHandleCreated && !IsDisposed) NativeMethods.SetParent(Handle, IntPtr.Zero);
+        _parentHandle = IntPtr.Zero;
+    }
+
     public void ShowFailure(string message)
     {
         if (IsDisposed) return;

@@ -77,6 +77,28 @@ test('signing out one account clears the active identity without erasing saved a
     assert.equal(session.adminSession.accountSlotId, 'none')
 })
 
+test('admin-only lock keeps display identity and CSRF for runtime actions', async t => {
+    const session = await fixture(t)
+    const locked = { configured: true, authenticated: false, displayAuthenticated: true,
+        user: { id: 'owner', role: 'owner', username: 'admin' },
+        permissions: { view: true, launch: true, cast: true, backup: true, edit: false, manageUsers: false },
+        csrfToken: 'display-csrf', accountSlotId: 'main' }
+    t.mock.method(session.browser, 'fetch', async url => json(String(url).endsWith('/login') ?
+        { ...signedIn('admin-csrf'), displayAuthenticated: true, user: locked.user } : locked))
+    await session.unlockAdmin('valid-password')
+    assert.equal(await session.lockAdmin(), true)
+    assert.equal(session.adminSession.authenticated, false)
+    assert.equal(session.adminSession.displayAuthenticated, true)
+    assert.equal(session.adminSession.permissions.edit, false)
+    let csrf = ''
+    t.mock.method(session.browser, 'fetch', async (_url, options) => {
+        csrf = new Headers(options.headers).get('X-CSRF-Token')
+        return json({ success: true })
+    })
+    await session.adminFetch('http://127.0.0.1:3001/api/factories/current/activate', { method: 'POST' })
+    assert.equal(csrf, 'display-csrf')
+})
+
 test('an expired-cookie lock refusal permits re-authentication without claiming success', async t => {
     const session = await fixture(t)
     t.mock.method(session.browser, 'fetch', async url => {
@@ -130,6 +152,7 @@ test('remote pending locks fail closed until a confirmed lock or explicit refusa
     const channel = session.channels[0]
     channel.onmessage({ data: { type: 'lock-pending' } })
     assert.equal(session.adminSession.authenticated, false)
+    assert.equal(session.adminSession.displayAuthenticated, true)
     assert.equal(session.adminSession.lockPending, true)
     channel.onmessage({ data: { type: 'lock-rejected', warning: '重新认证以确认锁定' } })
     assert.equal(session.adminSession.lockPending, false)

@@ -6,10 +6,10 @@ import { normalizeFactoryLocation,currentFactorySite,factoryDataModePresentation
 import { adminFeatureCenter,adminFeatureCode,adminFeatureName,clearChinaAdminMapCache,loadChinaAdminMap } from '../src/runtime/chinaAdminMaps.js'
 const require=createRequire(import.meta.url)
 const {normalizeSettingValue}=require('../../backend/routes/settings.js')
-test('administrative factory assignment ignores legacy point coordinates and never invents a region',()=>{
-  for(const value of [null,'',{},'{broken}',{longitude:'',latitude:''}])assert.deepEqual(normalizeFactoryLocation(value),{country:'CHN',regionCode:'',regionName:'',cityCode:'',city:'',districtCode:'',districtName:''})
-  const legacy=normalizeFactoryLocation({country:'CHN',regionCode:'510000',longitude:104.1,latitude:30.6})
-  assert.equal(legacy.regionCode,'510000');assert.equal('longitude' in legacy,false);assert.equal('latitude' in legacy,false)
+test('factory coordinates are optional and do not invent administrative assignment',()=>{
+  for(const value of [null,'',{},'{broken}',{longitude:'',latitude:''}])assert.deepEqual(normalizeFactoryLocation(value),{country:'CHN',regionCode:'',regionName:'',cityCode:'',city:'',districtCode:'',districtName:'',latitude:null,longitude:null})
+  const located=normalizeFactoryLocation({country:'CHN',regionCode:'510000',longitude:104.1,latitude:30.6})
+  assert.equal(located.regionCode,'510000');assert.equal(located.longitude,104.1);assert.equal(located.latitude,30.6)
 })
 test('factory card counts the configured hierarchy and does not invent other factories',()=>{
   const site=currentFactorySite({settings:{factory_name:'现场 A'},workshops:[{lines:[{devices:[{id:'f1'},{id:'f2'}]}],devices:[{id:'cart'},{id:'f1'}]}]})
@@ -26,11 +26,13 @@ test('native startup enters the map, while explicit scene entry and in-app navig
   assert.equal(isNativeMapEntry({name:'dashboard-overlay',query:{embedded:'unity'}},{name:'group-overview'}),false)
   assert.equal(isNativeMapEntry({name:'dashboard-overlay',query:{}},{}),false)
 })
-test('backend persists administrative assignment and discards legacy point coordinates',()=>{
+test('backend persists validated factory coordinates alongside administrative assignment',()=>{
   const empty=JSON.parse(normalizeSettingValue('factory_location',{country:'CHN',longitude:null,latitude:null}))
-  assert.deepEqual(Object.keys(empty).sort(),['city','cityCode','country','districtCode','districtName','regionCode','regionName'])
+  assert.deepEqual(Object.keys(empty).sort(),['city','cityCode','country','districtCode','districtName','latitude','longitude','regionCode','regionName'])
   const located=JSON.parse(normalizeSettingValue('factory_location',{country:'CHN',longitude:104,latitude:30,regionCode:'510000'}))
-  assert.equal(located.regionCode,'510000');assert.equal('longitude' in located,false);assert.equal('latitude' in located,false)
+  assert.equal(located.regionCode,'510000');assert.equal(located.longitude,104);assert.equal(located.latitude,30)
+  assert.throws(()=>normalizeSettingValue('factory_location',{longitude:181}),/经度/)
+  assert.throws(()=>normalizeSettingValue('factory_location',{latitude:-91}),/纬度/)
   const detailed=JSON.parse(normalizeSettingValue('factory_location',{country:'CHN',regionCode:'130000',cityCode:'130100',districtCode:'130102',districtName:'长安区'}))
   assert.deepEqual([detailed.regionCode,detailed.cityCode,detailed.districtCode,detailed.districtName],['130000','130100','130102','长安区'])
   const invalidCodes=JSON.parse(normalizeSettingValue('factory_location',{regionCode:'bad',cityCode:'abc',districtCode:'10000000'}))
@@ -69,12 +71,12 @@ test('backend registry validation rejects malformed IDs, duplicates and oversize
   assert.throws(()=>normalizeSettingValue('factory_directory',{sites:[{...valid,id:'project_default'}]}),/ID/)
   assert.throws(()=>normalizeSettingValue('factory_directory',{sites:[{...valid,name:' '}]}),/名称/)
   assert.throws(()=>normalizeSettingValue('factory_directory',{sites:Array(201).fill(valid)}),/200/)
-  const legacy=JSON.parse(normalizeSettingValue('factory_directory',{sites:[{...valid,location:{country:'CHN',longitude:[],latitude:[]}}]}))
-  assert.equal('longitude' in legacy.sites[0].location,false)
-  assert.equal('latitude' in legacy.sites[0].location,false)
+  const located=JSON.parse(normalizeSettingValue('factory_directory',{sites:[valid]}))
+  assert.equal(located.sites[0].location.longitude,104)
+  assert.equal(located.sites[0].location.latitude,30)
 })
 
-test('overview markers aggregate factories by administrative area without per-site coordinates',()=>{
+test('overview markers aggregate by area while preserving factory coordinates',()=>{
   const sites=factoryDirectorySites({settings:{factory_location:{country:'CHN',regionCode:'510000',longitude:104,latitude:30},factory_directory:{sites:[{id:'site_b',name:'登记 B',location:{country:'CHN',regionCode:'510000',longitude:105,latitude:31}}]}}})
   const overview=groupMapPoints(sites,'china')
   assert.equal(overview.length,1);assert.equal(overview[0].count,2);assert.equal(overview[0].localRuntimeCount,1)
@@ -83,7 +85,23 @@ test('overview markers aggregate factories by administrative area without per-si
   assert.equal(detail.length,1);assert.equal(detail[0].count,2)
   sites[1].location={...sites[0].location}
   const coincident=groupMapPoints(sites,'china','510000')
-  assert.equal(coincident.length,1);assert.equal(coincident[0].count,2);assert.equal('longitude' in coincident[0].location,false)
+  assert.equal(coincident.length,1);assert.equal(coincident[0].count,2);assert.equal(coincident[0].location.longitude,104)
+})
+
+test('district markers use each factory coordinate and label unlocated factories',()=>{
+  const feature={properties:{adcode:'120101',centroid:[117.2,39.12]},geometry:{type:'Polygon',coordinates:[[[117,39],[118,39],[118,40],[117,40],[117,39]]]}}
+  const sites=[
+    {id:'a',name:'A厂',runtime:'local',location:normalizeFactoryLocation({country:'CHN',regionCode:'120000',districtCode:'120101',latitude:39.11,longitude:117.19})},
+    {id:'b',name:'B厂',runtime:'local',location:normalizeFactoryLocation({country:'CHN',regionCode:'120000',districtCode:'120101',latitude:39.16,longitude:117.24})},
+    {id:'c',name:'C厂',runtime:'local',location:normalizeFactoryLocation({country:'CHN',regionCode:'120000',districtCode:'120101'})}
+  ]
+  const points=hierarchyMapPoints(sites,'district','120101',[feature])
+  assert.equal(points.length,3)
+  assert.deepEqual(points[0].location.mapCenter,[117.19,39.11])
+  assert.deepEqual(points[1].location.mapCenter,[117.24,39.16])
+  assert.equal(points[0].located,true)
+  assert.equal(points[2].located,false)
+  assert.deepEqual(points[2].location.mapCenter,[117.2,39.12])
 })
 
 test('the single China-centred map keeps China provinces and only promotes configured overseas countries',()=>{

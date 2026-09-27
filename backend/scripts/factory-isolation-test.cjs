@@ -130,6 +130,19 @@ async function verifyIsolation(databaseFile) {
         assert.equal(isolatedSettings.body.simulation_interval_ms, '3333');
         assert.notEqual(defaultSettings.body.simulation_interval_ms, '3333', 'factory settings must not bleed into the default factory');
 
+        const siteSceneWrite = await api('/api/settings', {
+            method: 'PUT', headers: inFactory(factoryId),
+            body: JSON.stringify({ site_scene_config: { version: 1, buildingSlots: { [workshopId]: 3 } } })
+        });
+        assert.equal(siteSceneWrite.response.status, 200, siteSceneWrite.body.error);
+        const [isolatedScene, defaultScene] = await Promise.all([
+            api('/api/settings', { headers: inFactory(factoryId) }),
+            api('/api/settings', { headers: inFactory('factory_default') })
+        ]);
+        assert.equal(JSON.parse(isolatedScene.body.site_scene_config).buildingSlots[workshopId], 3);
+        assert.notEqual(defaultScene.body.site_scene_config, isolatedScene.body.site_scene_config,
+            'street backgrounds and workshop building bindings must remain inside their factory');
+
         const addEvent = await api('/api/platform/events', {
             method: 'POST', headers: inFactory(factoryId),
             body: JSON.stringify({ title: '隔离测试事件', event_type: 'manual' })
@@ -154,7 +167,7 @@ async function verifyIsolation(databaseFile) {
         console.log(JSON.stringify({
             success: true,
             factoryId,
-            checks: ['independent hierarchy', 'cross-factory relation rejection', 'device and point isolation', 'project/scene isolation', 'per-factory external data-source catalog', 'per-factory settings', 'event isolation', 'runtime activation', 'invalid-scope rejection']
+            checks: ['independent hierarchy', 'cross-factory relation rejection', 'device and point isolation', 'project/scene isolation', 'per-factory external data-source catalog', 'per-factory settings', 'per-factory site scene', 'event isolation', 'runtime activation', 'invalid-scope rejection']
         }, null, 2));
     } finally {
         if (activated || originalActiveFactoryId !== 'factory_default') {

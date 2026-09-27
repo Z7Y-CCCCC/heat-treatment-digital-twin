@@ -68,6 +68,33 @@ test('ordinary city breadcrumbs remain a distinct level beneath their province',
   })
 
   assert.deepEqual(crumbs.map(({ level, label }) => [level, label]), [
-    ['world', '全球'], ['country', 'CHN'], ['province', '510000'], ['city', '成都市']
+    ['world', '全球'], ['country', '中国'], ['province', '510000'], ['city', '成都市']
   ])
+})
+
+test('workshop overlay resolves district code to named clickable municipality levels', () => {
+  const trail = createGroupHierarchyPath({
+    scope: 'china', fromGroup: '120101', embedded: 'unity',
+    location: { country:'CHN', regionCode:'120000', regionName:'天津市', cityCode:'120000', city:'天津市', districtCode:'120101', districtName:'和平区' },
+    factoryName: '热处理工厂'
+  })
+  assert.deepEqual(trail.map(({key,label}) => [key,label]), [
+    ['group','全国分布'], ['province','天津市'], ['district','和平区'], ['factory','热处理工厂']
+  ])
+  assert.deepEqual(trail[2].to.query, {
+    embedded:'unity', scope:'china', country:'CHN', countryName:'中国',
+    province:'120000', provinceName:'天津市', city:'120000', cityName:'天津市',
+    district:'120101', districtName:'和平区', level:'district', code:'120101'
+  })
+})
+
+test('workshop overlay keeps normal province, city and district navigation', () => {
+  const trail = createGroupHierarchyPath({
+    scope:'world', fromGroup:'510102',
+    query:{country:'CHN',countryName:'中华人民共和国',province:'510000',provinceName:'四川省',city:'510100',cityName:'成都市',district:'510102',districtName:'锦江区'},
+    factoryName:'成都工厂'
+  })
+  assert.deepEqual(trail.map(({label}) => label), ['全球分布','中华人民共和国','四川省','成都市','锦江区','成都工厂'])
+  assert.equal(trail[3].to.query.level,'city')
+  assert.equal(trail[3].to.query.code,'510100')
 })

@@ -995,12 +995,11 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 PrepareInspection(device);
             }
             device.Inspection.Stage = InspectionStage.Solid;
-            var hideOtherDevices = configuredView == null
-                || string.Equals(configuredView.Mode, "device", System.StringComparison.OrdinalIgnoreCase)
-                || configuredView.HideNonTargetDevices;
             foreach (var entry in _devices.Values)
             {
-                if (entry.Root != null) entry.Root.SetActive(entry == device || !hideOtherDevices);
+                // A device inspection is always a single-machine view, even
+                // when a custom view forgot to opt into non-target hiding.
+                if (entry.Root != null) entry.Root.SetActive(entry == device);
             }
             device.WorldBounds = CalculateBounds(device.Root);
             // Keep the same authored three-quarter view regardless of the device's
@@ -1588,6 +1587,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
         private void OnDestroy()
         {
             ClearFactory();
+            DisposeInspectionHighlight();
             if (_whiteTexture != null) Destroy(_whiteTexture);
             if (_buttonTexture != null) Destroy(_buttonTexture);
             if (_buttonHoverTexture != null) Destroy(_buttonHoverTexture);

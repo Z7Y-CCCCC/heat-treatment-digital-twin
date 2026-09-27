@@ -75,8 +75,8 @@ function createAdminAuth(options = {}) {
     const filename = path.join(path.resolve(dataDir), 'admin-security.json');
     const now = options.now || Date.now;
     const maxSessionMs = options.maxSessionMs || MAX_SESSION_MS;
-    // The desktop runs one backend process. Bounded, expiring sessions deliberately
-    // stay in memory: restarting the software revokes every engineer session.
+    // Admin privileges expire on inactivity. An already-authorized display may
+    // continue for the lifetime of this process, until logout/account revocation.
     const sessions = new Map();
     const attempts = new Map();
     const nativeTickets = new Map();
@@ -133,10 +133,15 @@ function createAdminAuth(options = {}) {
         return Math.min(session.absoluteExpiresAt, session.lastActivityAt + config.idleTimeoutMinutes * 60000);
     }
 
+    function adminActive(session) {
+        return !!session && !session.adminLocked && now() < sessionExpiry(session);
+    }
+
     function prune() {
         const time = now();
         for (const [key, session] of sessions) {
-            if (time >= sessionExpiry(session)) sessions.delete(key);
+            if (time >= sessionExpiry(session)) session.adminLocked = true;
+            if (session.parentSessionKey && !sessions.has(session.parentSessionKey)) sessions.delete(key);
         }
         for (const [key, attempt] of attempts) {
             if (time >= attempt.resetAt) attempts.delete(key);
@@ -151,6 +156,10 @@ function createAdminAuth(options = {}) {
         const key = tokenKey(token);
         const session = sessions.get(key);
         if (!session) return null;
+        if (session.parentSessionKey && !sessions.has(session.parentSessionKey)) {
+            sessions.delete(key);
+            return null;
+        }
         if (session.userId !== 'owner' && !config.users.some(user => user.id === session.userId && user.enabled !== false)) {
             sessions.delete(key);
             return null;
@@ -176,14 +185,17 @@ function createAdminAuth(options = {}) {
 
     function status(token) {
         const session = getSession(token);
+        const authenticated = adminActive(session);
+        const permissions = permissionsForSession(session);
         return {
             success: true,
             configured: !!config.password,
-            authenticated: !!session,
+            authenticated,
+            displayAuthenticated: !!session,
             ...settings(),
             ...(session ? {
                 user: principal(session),
-                permissions: permissionsForSession(session),
+                permissions: { ...permissions, edit: authenticated && permissions.edit, manageUsers: authenticated && permissions.manageUsers },
                 csrfToken: session.csrfToken,
                 expiresAt: sessionExpiry(session),
                 absoluteExpiresAt: session.absoluteExpiresAt
@@ -194,6 +206,9 @@ function createAdminAuth(options = {}) {
     function requireSession(token, csrfToken, { touch = false, checkCsrf = true, permission = 'view' } = {}) {
         const session = getSession(token);
         if (!session) throw authError(401, 'ADMIN_AUTH_REQUIRED', '后台已锁定，请输入后台密码解锁');
+        if (!adminActive(session) && (touch || !['view', 'launch', 'cast', 'backup'].includes(permission))) {
+            throw authError(401, 'ADMIN_AUTH_REQUIRED', '后台已锁定，请输入后台密码解锁');
+        }
         if (checkCsrf && !equalSecret(csrfToken, session.csrfToken)) {
             throw authError(403, 'ADMIN_CSRF_INVALID', '安全校验已失效，请刷新页面后重试');
         }
@@ -207,17 +222,28 @@ function createAdminAuth(options = {}) {
         return { ...session, role, userId: session.userId };
     }
 
-    function issueSession(previousToken, userId = 'owner') {
+    function issueSession(previousToken, userId = 'owner', parentToken = '') {
         prune();
-        sessions.delete(tokenKey(previousToken));
+        const previousKey = tokenKey(previousToken);
+        const previous = sessions.get(previousKey);
+        sessions.delete(previousKey);
         while (sessions.size >= 64) sessions.delete(sessions.keys().next().value);
         const token = crypto.randomBytes(32).toString('hex');
-        sessions.set(tokenKey(token), {
+        const key = tokenKey(token);
+        sessions.set(key, {
             userId,
+            ...(parentToken ? { parentSessionKey: tokenKey(parentToken) } : {}),
             csrfToken: crypto.randomBytes(32).toString('hex'),
             lastActivityAt: now(),
             absoluteExpiresAt: now() + maxSessionMs
         });
+        // Unlocking the same account must not interrupt an already-running
+        // native display that was handed off by the previous admin token.
+        for (const [childKey, child] of sessions) {
+            if (child.parentSessionKey !== previousKey) continue;
+            if (previous?.userId === userId) child.parentSessionKey = key;
+            else sessions.delete(childKey);
+        }
         return { token, status: status(token) };
     }
 
@@ -282,7 +308,7 @@ function createAdminAuth(options = {}) {
             if (!permissions.launch || !permissions.view) {
                 throw authError(403, 'ADMIN_PERMISSION_DENIED', '当前账户没有启动大屏的权限');
             }
-            return issueSession('', source.userId);
+            return issueSession('', source.userId, grant.sourceToken);
         },
         async setup(password, key, previousToken) {
             validatePassword(password);
@@ -314,23 +340,29 @@ function createAdminAuth(options = {}) {
             return status(token);
         },
         logout(token, csrfToken) {
-            requireSession(token, csrfToken);
-            sessions.delete(tokenKey(token));
+            const active = getSession(token);
+            if (!active) throw authError(401, 'ADMIN_AUTH_REQUIRED', '账户已退出，请重新登录');
+            if (!equalSecret(csrfToken, active.csrfToken)) throw authError(403, 'ADMIN_CSRF_INVALID', '安全校验已失效，请刷新页面后重试');
+            const key = tokenKey(token);
+            sessions.delete(key);
+            for (const [childKey, session] of sessions) if (session.parentSessionKey === key) sessions.delete(childKey);
             return status('');
         },
         lock(token, csrfToken) {
-            if (getSession(token)) {
+            const session = getSession(token);
+            if (session && adminActive(session)) {
                 requireSession(token, csrfToken);
                 // The owner can secure the entire console; other users only
-                // sign themselves out and cannot revoke colleagues' sessions.
-                if (principal(getSession(token)).role === 'owner') {
+                // lock their own admin access. Displays stay authorized.
+                if (principal(session).role === 'owner') {
                     sessionGeneration += 1;
-                    sessions.clear();
-                } else sessions.delete(tokenKey(token));
-            } else if (sessions.size > 0) {
+                    for (const active of sessions.values()) active.adminLocked = true;
+                } else session.adminLocked = true;
+                nativeTickets.clear();
+            } else if (sessions.size > 0 && [...sessions.values()].some(adminActive)) {
                 throw authError(401, 'ADMIN_AUTH_REQUIRED', '当前会话已失效，无法确认其他窗口已锁定；请重新解锁后再次锁定');
             }
-            return status('');
+            return status(token);
         },
         updateSettings(token, csrfToken, idleTimeoutMinutes) {
             validateIdleMinutes(idleTimeoutMinutes);

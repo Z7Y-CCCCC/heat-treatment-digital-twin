@@ -7,7 +7,7 @@ import { API_BASE } from '../runtime/backendEndpoint.js'
 import { createDashboardDataStore } from '../runtime/DataStore.js'
 import { createNativeViewNavigator } from '../runtime/nativeViewNavigation.js'
 import { setFactoryScope } from '../runtime/factoryScope.js'
-import { openAdminSurface } from '../runtime/nativeAdminNavigation.js'
+import { openAdminSurface, openCustomerOperations } from '../runtime/nativeAdminNavigation.js'
 import { adminFetch, adminSession, refreshAdminSession, startAdminSessionTracking, stopAdminSessionTracking, changeAdminPassword, listAdminAccounts, addAdminAccount, activateAdminAccount, logoutCurrentAdminAccount } from '../runtime/adminSession.js'
 import { currentFactorySite,factoryDirectorySites,configuredOverseasCountries,chinaRegionsWithFactories,sitesAtHierarchyLevel,groupHierarchyEntries,hierarchyMapPoints,worldHierarchyMapPoints } from '../runtime/groupTopology.js'
 import { loadChinaAdminMap } from '../runtime/chinaAdminMaps.js'
@@ -26,6 +26,11 @@ function reportMapLoading(progress,phase,step){mapLoadingProgress.value=progress
 const site=computed(()=>currentFactorySite(config.value || {}))
 const appearance=computed(()=>groupPortalAppearanceForLevel(config.value?.settings?.group_portal_config,level.value))
 const appearanceStyle=computed(()=>({'--group-background':appearance.value.background,'--group-surface':appearance.value.panelSurface,'--group-accent':appearance.value.accent,'--group-text':appearance.value.text}))
+function layoutStyle(key){
+  const point=appearance.value.layout?.[key]
+  if(!point)return undefined
+  return {left:`${point.x}%`,top:`${point.y}%`,right:'auto',bottom:'auto',...(key==='dock'?{width:'67%'}:{})}
+}
 const sites=computed(()=>config.value ? factoryDirectorySites(config.value) : [])
 const clearCountries=computed(()=>configuredOverseasCountries(sites.value))
 const factoryRegions=computed(()=>chinaRegionsWithFactories(sites.value))
@@ -60,7 +65,7 @@ const levelNames={world:'全球',country:'国家',province:'省份',city:'城市
 const hierarchyCrumbs=computed(()=>createGroupNavigationCrumbs({query:route.query,level:level.value,currentLabel:regionTitle.value}))
 const data=createDashboardDataStore()
 const configError=ref('')
-const accessStatus=computed(()=>!adminSession.ready?'读取账户状态…':!adminSession.configured?'首次设置密码':adminSession.authenticated?({owner:'系统管理员',customer:'现场客户',editor:'现场客户',viewer:'现场查看'}[adminSession.user?.role] || '已登录'):'未登录 · 需要登录')
+const accessStatus=computed(()=>!adminSession.ready?'读取账户状态…':!adminSession.configured?'首次设置密码':adminSession.displayAuthenticated?adminSession.authenticated?({owner:'系统管理员',customer:'现场客户',editor:'现场客户',viewer:'现场查看'}[adminSession.user?.role] || '已登录'):'后台已锁定 · 大屏展示中':'未登录 · 需要登录')
 const accountOpen=ref(false),accountBusy=ref(false),accountError=ref(''),accountNotice=ref(''),accountSessions=ref([]),accountAddOpen=ref(false),accountAddUsername=ref(''),accountAddPassword=ref(''),accountCurrentPassword=ref(''),accountNewPassword=ref(''),accountPasswordMode=ref(false)
 const visibleAccountSessions=computed(()=>[...accountSessions.value].sort((a,b)=>Number(b.slotId===adminSession.accountSlotId)-Number(a.slotId===adminSession.accountSlotId)))
 async function loadAccountSessions(){try{accountSessions.value=await listAdminAccounts()}catch(error){accountError.value=error.message}}
@@ -153,7 +158,7 @@ function hierarchyQuery(targetLevel,code='',name=''){
   return query
 }
 function navigateHierarchy(item){
-  if(item.level==='factory'){const target=item.site || sites.value.find(site=>site.id===item.code);if(target)enterFactory(target);return}
+  if(item.level==='factory'){const target=item.site || sites.value.find(site=>site.id===item.code);if(target)openFactoryStreet(target);return}
   selectedSiteId.value=''
   router.replace({path:'/group',query:hierarchyQuery(item.level,item.code,item.name || item.label)})
 }
@@ -173,10 +178,15 @@ function selectMarker(id){
     router.replace({path:'/group',query:groupQuery({level:'province',code:marker.worldProvinceCode,country:'CHN',countryName:'中华人民共和国',province:marker.worldProvinceCode,provinceName:marker.worldProvinceName})})
     return
   }
-  if(marker.factoryId){const target=sites.value.find(item=>item.id===marker.factoryId);if(target && (level.value==='district' || level.value==='country' && selected.value!=='CHN') && target.runtime==='local')enterFactory(target);else selectSite(marker.factoryId)}
+  if(marker.factoryId){const target=sites.value.find(item=>item.id===marker.factoryId);if(target && (level.value==='district' || level.value==='country' && selected.value!=='CHN') && target.runtime==='local')openFactoryStreet(target);else selectSite(marker.factoryId)}
   else selectRegion(marker.targetRegion || 'unassigned')
 }
 function clearRegion(){navigateHierarchy({level:'world',code:'',name:'全球'})}
+function openFactoryStreet(target){
+  if(!target || target.runtime!=='local')return
+  selectedSiteId.value=target.id
+  router.push({path:'/site',query:{...route.query,factoryId:target.id,stage:'street'}})
+}
 function highlightFactoryMarker(id=''){
   for(const marker of markerLabels.value)marker.setSelected?.(Boolean(id && marker.factoryId===id))
   dirty=true
@@ -498,8 +508,8 @@ async function buildMap({reframe=true}={}) {
       if(!coordinate)continue
       const projected=stageProject(coordinate),offset=point.mapOffset || [0,0],position=[projected[0]+offset[0],projected[1]+offset[1]]
       const markerOptions=stage==='country' && stageCode==='CHN'?{footprint:false,radiusScale:.24}:stage==='province' || stage==='city'?{footprint:false,radiusScale:.4}:stage==='world' && point.worldProvinceCode?{footprint:false,radiusScale:.12,beamScale:.28}:stage==='world'?{radiusScale:.62}:{}
-      const marker=createFactoryMapMarker(point,position,stage==='district' || stage==='country' && stageCode!=='CHN',{...markerOptions,primary:appearance.value.markerPrimary,tip:appearance.value.markerTip})
-      const markerScale=stage==='district'?visibleSites.value.length===1?3.2:visibleSites.value.length<=3?2:1.25:stage==='country' && stageCode==='CHN'?1.6:1
+      const marker=createFactoryMapMarker(point,position,stage==='country' && stageCode!=='CHN',{...markerOptions,...(stage==='district'?{footprint:false,radiusScale:.22,beamScale:.36}:{}),primary:appearance.value.markerPrimary,tip:appearance.value.markerTip})
+      const markerScale=stage==='district'?.64:stage==='country' && stageCode==='CHN'?1.6:1
       const markerBase=marker.root.position.y
       marker.root.scale.setScalar(markerScale)
       const markerGround=reliefDepth+(stage==='world' && point.worldProvinceCode ? .12 : .03)
@@ -619,17 +629,17 @@ onUnmounted(()=>{stopAdminSessionTracking();disposed=true;geometryGeneration++;r
 </script>
 
 <template>
-  <LoadingExperience v-if="!ready && !error && !nativeLoadingManaged" :show="!ready" :progress="mapLoadingProgress" :phase="mapLoadingPhase" :step="mapLoadingStep" />
+  <LoadingExperience v-if="!ready && !error && !nativeLoadingManaged" :show="!ready" :progress="mapLoadingProgress" :phase="mapLoadingPhase" :step="mapLoadingStep" :config="config?.settings?.loading_experience_config" />
   <main class="group-portal" :class="{'admin-surface':adminSurface,'no-panel':!appearance.showPanel,'no-facts':!appearance.showFacts,'no-dock':!appearance.showDock}" :style="appearanceStyle">
     <AdminWindowChrome v-if="adminSurface" @before-dashboard="router.replace({path:'/admin',query:{embedded:'unity'}})" @before-admin="returnToAdminWorkspace" />
     <div ref="mapHost" class="group-map" :class="{'group-map-detail':level==='province'||level==='city','group-map-national':level==='country' && selected==='CHN'}" aria-label="集团工厂分布地图，可拖拽旋转和滚轮缩放" @pointerdown="down=[$event.clientX,$event.clientY]" @pointermove="trackRegionHover" @pointerup="pick" @pointercancel="down=null" @pointerleave="hoverRegion('')">
-      <button v-for="marker in markerLabels" :key="marker.id" :ref="element=>{if(element){labelElements.set(marker.id,element);dirty=true}else labelElements.delete(marker.id)}" class="group-map-label" :class="{registered:marker.runtime==='registered','is-selected':Boolean(selectedSiteId && selectedSiteId===marker.factoryId)}" :data-site-id="marker.id" :aria-label="`定位 ${marker.name}`" :title="`${marker.name}；标记表示位置，不代表产量`" @pointerdown.stop @pointerup.stop @click.stop="selectMarker(marker.id)"><i></i><span>{{ marker.name }}</span><small>{{ marker.localRuntimeCount ? `${marker.localRuntimeCount} 个运行端`:'仅登记' }}</small></button>
+      <button v-for="marker in markerLabels" :key="marker.id" :ref="element=>{if(element){labelElements.set(marker.id,element);dirty=true}else labelElements.delete(marker.id)}" class="group-map-label" :class="{registered:marker.runtime==='registered','is-selected':Boolean(selectedSiteId && selectedSiteId===marker.factoryId)}" :data-site-id="marker.id" :aria-label="`定位 ${marker.name}`" :title="`${marker.name}；${marker.located===false?'位置待完善':'标记表示位置，不代表产量'}`" @pointerdown.stop @pointerup.stop @click.stop="selectMarker(marker.id)"><i></i><span>{{ marker.name }}</span><small>{{ marker.located===false?'位置待完善':marker.localRuntimeCount ? `${marker.localRuntimeCount} 个运行端`:'仅登记' }}</small></button>
     </div>
     <div class="group-vignette"></div>
-    <header class="group-brand"><img v-if="appearance.logoUrl" class="group-brand-image" :src="appearance.logoUrl" alt="大屏 Logo" /><i v-else></i><div><strong>{{ appearance.brandTitle }}</strong><small>{{ appearance.brandSubtitle }}</small></div></header>
-    <button class="group-user" type="button" :aria-label="`${accessStatus}，打开账户菜单`" :aria-expanded="accountOpen" @click="toggleAccount"><span class="group-user-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm-7 8a7 7 0 0 1 14 0" /></svg></span><span><strong>{{ adminSession.user?.displayName || (adminSession.configured ? '账户':'后台账户') }}</strong><small>{{ adminSession.authenticated ? accessStatus : '点击登录' }}</small></span><i class="group-user-state" :class="{verified:adminSession.authenticated}" aria-hidden="true"></i></button>
+    <header v-if="appearance.showBrand" class="group-brand" :style="layoutStyle('brand')"><img v-if="appearance.logoUrl" class="group-brand-image" :src="appearance.logoUrl" alt="大屏 Logo" /><i v-else></i><div><strong>{{ appearance.brandTitle }}</strong><small>{{ appearance.brandSubtitle }}</small></div></header>
+    <button class="group-user" type="button" :aria-label="`${accessStatus}，打开账户菜单`" :aria-expanded="accountOpen" @click="toggleAccount"><span class="group-user-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm-7 8a7 7 0 0 1 14 0" /></svg></span><span><strong>{{ adminSession.user?.displayName || (adminSession.configured ? '账户':'后台账户') }}</strong><small>{{ adminSession.displayAuthenticated ? accessStatus : '点击登录' }}</small></span><i class="group-user-state" :class="{verified:adminSession.displayAuthenticated}" aria-hidden="true"></i></button>
     <div v-if="accountOpen" class="group-account-menu" role="region" aria-label="账户设置">
-      <template v-if="!adminSession.authenticated">
+      <template v-if="!adminSession.displayAuthenticated">
         <header class="group-account-profile"><span class="group-account-avatar"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm-7 8a7 7 0 0 1 14 0" /></svg></span><span><strong>{{ accountSessions.length ? '选择账户' : '尚未登录' }}</strong><small>{{ accountSessions.length ? '本机已保存有效登录会话' : '请登录后查看生产大屏与现场数据' }}</small></span></header>
         <section v-if="accountSessions.length" class="group-account-list" aria-label="已登录账户"><small>已登录账户 · {{ accountSessions.length }}</small><button v-for="account in visibleAccountSessions" :key="account.slotId" type="button" :disabled="accountBusy" @click="switchAccount(account)"><span class="group-account-avatar small">{{ (account.user?.displayName || account.user?.username || '?').slice(0,1) }}</span><span><strong>{{ account.user?.displayName || account.user?.username }}</strong><small>{{ account.user?.username }} · {{ ({owner:'系统管理员',customer:'现场客户',viewer:'现场查看'}[account.user?.role] || '已登录') }}</small></span><i>切换 →</i></button></section>
         <p class="group-account-message">{{ adminSession.configured ? '请使用后台管理页登录；登录成功后将自动返回实时大屏。' : '首次使用请在后台管理页完成管理员初始化。' }}</p>
@@ -638,11 +648,12 @@ onUnmounted(()=>{stopAdminSessionTracking();disposed=true;geometryGeneration++;r
       <template v-else>
         <header class="group-account-profile"><span class="group-account-avatar"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm-7 8a7 7 0 0 1 14 0" /></svg></span><span><strong>{{ adminSession.user?.displayName }}</strong><small>{{ adminSession.user?.username }} · {{ accessStatus }}</small></span></header>
         <section v-if="accountSessions.length>1" class="group-account-list" aria-label="已登录账户"><small>已登录账户 · {{ accountSessions.length }}</small><button v-for="account in visibleAccountSessions" :key="account.slotId" type="button" :class="{active:account.slotId===adminSession.accountSlotId}" :disabled="accountBusy || account.slotId===adminSession.accountSlotId" @click="switchAccount(account)"><span class="group-account-avatar small">{{ (account.user?.displayName || account.user?.username || '?').slice(0,1) }}</span><span><strong>{{ account.user?.displayName || account.user?.username }}</strong><small>{{ account.user?.username }} · {{ ({owner:'系统管理员',customer:'现场客户',viewer:'现场查看'}[account.user?.role] || '已登录') }}</small></span><i>{{ account.slotId===adminSession.accountSlotId ? '当前账户':'切换 →' }}</i></button></section>
-        <button v-if="adminSession.permissions.edit" class="group-account-action group-account-primary" type="button" @click="openAdmin">设置页面 <span>→</span></button>
-        <button v-else-if="adminSession.permissions.cast || adminSession.permissions.backup" class="group-account-action group-account-primary" type="button" @click="router.push({path:'/customer',query:route.query})">现场操作中心 <span>→</span></button>
+        <button v-if="!adminSession.authenticated" class="group-account-action group-account-primary" type="button" @click="requestAdminLogin">解锁设置页面 <span>→</span></button>
+        <button v-else-if="adminSession.permissions.edit" class="group-account-action group-account-primary" type="button" @click="openAdmin">设置页面 <span>→</span></button>
+        <button v-else-if="adminSession.permissions.cast || adminSession.permissions.backup" class="group-account-action group-account-primary" type="button" @click="openCustomerOperations({embedded:route.query.embedded,surface:route.query.surface,webview:window.chrome?.webview,router})">现场操作中心 <span>→</span></button>
         <button class="group-account-action" type="button" :disabled="accountBusy || accountSessions.length>=8" @click="accountAddOpen=!accountAddOpen">{{ accountAddOpen ? '收起账户管理':'管理账户' }}<span>{{ accountAddOpen ? '−':'＋' }}</span></button>
         <form v-if="accountAddOpen" class="group-account-form" @submit.prevent="addAccount"><label>账号<input v-model.trim="accountAddUsername" autocomplete="username" required maxlength="32" /></label><label>密码<input v-model="accountAddPassword" type="password" autocomplete="current-password" required minlength="8" maxlength="128" /></label><button class="group-account-primary" type="submit" :disabled="accountBusy">{{ accountBusy ? '验证中…':'添加并切换' }}<span>→</span></button></form>
-        <button class="group-account-action" type="button" @click="accountPasswordMode=!accountPasswordMode">{{ accountPasswordMode ? '收起修改密码':'修改我的密码' }}<span>{{ accountPasswordMode ? '−':'＋' }}</span></button>
+        <button v-if="adminSession.authenticated" class="group-account-action" type="button" @click="accountPasswordMode=!accountPasswordMode">{{ accountPasswordMode ? '收起修改密码':'修改我的密码' }}<span>{{ accountPasswordMode ? '−':'＋' }}</span></button>
         <form v-if="accountPasswordMode" class="group-account-form" @submit.prevent="changeOwnPassword"><label>当前密码<input v-model="accountCurrentPassword" type="password" autocomplete="current-password" minlength="8" required /></label><label>新密码<input v-model="accountNewPassword" type="password" autocomplete="new-password" minlength="8" maxlength="128" required /></label><button class="group-account-primary" type="submit" :disabled="accountBusy">保存新密码<span>→</span></button></form>
         <button class="group-account-action group-account-exit" :disabled="accountBusy" type="button" @click="signOut">退出当前账户 <span>↗</span></button>
       </template>
@@ -650,13 +661,13 @@ onUnmounted(()=>{stopAdminSessionTracking();disposed=true;geometryGeneration++;r
       <p v-if="accountNotice" class="group-account-message" role="status">{{ accountNotice }}</p>
     </div>
     <GroupHierarchyCapsule :crumbs="hierarchyCrumbs" @navigate="navigateHierarchy" />
-    <aside v-if="appearance.showFacts" class="group-facts"><small>{{ level==='world' ? '全球':'当前区域' }}登记工厂</small><strong>{{ config ? visibleSites.length:'—' }} <em>座</em></strong><span>{{ visibleSites.filter(item=>item.runtime==='local').length }} 座运行端 · {{ visibleSites.filter(item=>item.runtime==='registered').length }} 座仅登记</span><small>本机现场设备配置数</small><strong>{{ visibleSites.some(item=>item.runtime==='local') ? site.devices:'—' }} <em>台</em></strong><span>配置数不代表设备实时在线</span></aside>
-    <aside v-if="appearance.showPanel" class="group-panel">
+    <aside v-if="appearance.showFacts" class="group-facts" :style="layoutStyle('facts')"><small>{{ appearance.factsTitle }}</small><strong>{{ config ? visibleSites.length:'—' }} <em>座</em></strong><span>{{ visibleSites.filter(item=>item.runtime==='local').length }} 座运行端 · {{ visibleSites.filter(item=>item.runtime==='registered').length }} 座仅登记</span><small>本机现场设备配置数</small><strong>{{ visibleSites.some(item=>item.runtime==='local') ? site.devices:'—' }} <em>台</em></strong><span>配置数不代表设备实时在线</span></aside>
+    <aside v-if="appearance.showPanel" class="group-panel" :style="layoutStyle('panel')">
       <small>{{ appearance.panelTitle }}</small>
       <Transition name="group-stage" mode="out-in">
         <div :key="`${level}-${selected}`" class="group-panel-stage">
           <h1>{{ regionTitle }}</h1>
-          <p>{{ level==='district' || level==='country' && selected!=='CHN' ? '点击工厂进入三维场景' : `点击地图进入下一级；点击上方地址返回对应层级` }}</p>
+          <p>{{ level==='district' || level==='country' && selected!=='CHN' ? '点击光柱进入街道示意视角' : `点击地图进入下一级；点击上方地址返回对应层级` }}</p>
           <div v-if="regionRows.length && level!=='district'" class="group-region-list">
             <button v-for="region in displayedRegionRows" :key="region.code" class="group-region-row" :class="{'is-map-hovered':hoveredRegionId===region.code,'is-empty':!region.count}" :aria-pressed="selected===region.code" @mouseenter="hoverRegion(region.code)" @mouseleave="hoverRegion('')" @focus="hoverRegion(region.code)" @blur="hoverRegion('')" @click="selectRegion(region.code)">
               <span class="group-region-copy">
@@ -678,24 +689,25 @@ onUnmounted(()=>{stopAdminSessionTracking();disposed=true;geometryGeneration++;r
             <dl v-if="factory.runtime==='local'"><div><dt>车间</dt><dd>{{ factory.workshops }}</dd></div><div><dt>产线</dt><dd>{{ factory.lines }}</dd></div><div><dt>设备</dt><dd>{{ factory.devices }}</dd></div></dl>
             <p v-else class="group-unconnected">未接入独立运行端，暂无生产指标。</p>
             <button v-if="factory.runtime==='local' && factory.location.country==='CHN' && !factory.location.districtCode" class="group-location-action" type="button" @click="openFactoryLocationSettings">补充行政区归属 →</button>
-            <button v-if="factory.runtime==='local'" :disabled="busy" @click="enterFactory(factory)">{{ busy ? '等待 Unity 场景就绪…':'进入工厂 →' }}</button>
+            <button v-if="level==='district' && factory.runtime==='local' && (factory.location.latitude===null || factory.location.longitude===null)" class="group-location-action" type="button" @click="openFactoryLocationSettings">补充工厂经纬度，精确定位光柱 →</button>
+            <button v-if="factory.runtime==='local'" @click="openFactoryStreet(factory)">进入街道视角 →</button>
             <button v-else disabled>运行端待接入</button>
           </div>
           <div v-for="factory in unassignedCitySites" :key="`unassigned_${factory.id}`" class="group-site group-site-unassigned" :data-factory-id="factory.id">
             <span class="group-site-tag">区县待归属</span>
             <h2>{{ factory.name }}</h2>
-            <p>当前按城市中心显示位置示意；补充区县后会落到对应区县，不使用经纬度。</p>
+            <p>当前按城市中心显示位置示意；补充区县后可再设置经纬度，精确定位区级工厂光柱。</p>
             <button v-if="factory.runtime==='local'" class="group-location-action" type="button" @click="openFactoryLocationSettings">补充区县归属 →</button>
           </div>
           <div v-if="level!=='world' && !visibleSites.length" class="group-empty">此区域暂无已登记工厂</div>
-          <p v-if="appearance.showHelp" class="group-help">在“工厂与区域”维护行政区归属，在“大屏设计器”配置各级地图外观；标记按所属行政区中心示意。</p>
+          <p v-if="appearance.showHelp" class="group-help">在“工厂与区域”维护归属和工厂经纬度；区级光柱按坐标定位，未定位站点仅作区中心示意。</p>
         </div>
       </Transition>
       <p v-if="error || configError" class="group-error" role="alert">{{ error || configError }}</p>
     </aside>
-    <div v-if="appearance.showDock" class="group-dock" :aria-label="`${regionTitle}工厂网络摘要`">
+    <div v-if="appearance.showDock" class="group-dock" :style="layoutStyle('dock')" :aria-label="`${regionTitle}工厂网络摘要`">
       <section class="group-dock-network">
-        <small>FACTORY NETWORK</small><h2>站点网络</h2>
+        <small>FACTORY NETWORK</small><h2>{{ appearance.dockNetworkTitle }}</h2>
         <div class="group-dock-number"><strong>{{ config ? visibleSites.length : '—' }}</strong><span>座登记工厂</span></div>
         <div class="group-dock-composition" role="img" :aria-label="`${visibleLocalSites.length} 座本机运行端，${visibleSites.length-visibleLocalSites.length} 座仅登记`">
           <i class="local" :style="{width:`${visibleSites.length ? visibleLocalSites.length / visibleSites.length * 100 : 0}%`}"></i>
@@ -704,14 +716,14 @@ onUnmounted(()=>{stopAdminSessionTracking();disposed=true;geometryGeneration++;r
         <div class="group-dock-legend"><span><i class="local"></i>本机运行端 <b>{{ visibleLocalSites.length }}</b></span><span><i class="registered"></i>仅登记 <b>{{ visibleSites.length-visibleLocalSites.length }}</b></span></div>
       </section>
       <section class="group-dock-location">
-        <small>AREA ASSIGNMENT</small><h2>行政区归属</h2>
+        <small>AREA ASSIGNMENT</small><h2>{{ appearance.dockLocationTitle }}</h2>
         <div class="group-dock-location-body">
           <div class="group-dock-location-ring" :style="{'--coverage':`${districtCoverage ?? 0}%`}" role="img" :aria-label="`行政区归属 ${districtCoverage ?? '未知'}%，已补充区县 ${districtAssignedSites.length} 座，共 ${visibleSites.length} 座`"><strong>{{ districtCoverage ?? '—' }}<em v-if="districtCoverage !== null">%</em></strong></div>
-          <div class="group-dock-location-copy"><strong>{{ districtAssignedSites.length }}<i>/</i>{{ visibleSites.length }} <small>座已归属到区县</small></strong><p>地图按行政区中心放置示意标记</p></div>
+          <div class="group-dock-location-copy"><strong>{{ districtAssignedSites.length }}<i>/</i>{{ visibleSites.length }} <small>座已归属到区县</small></strong><p>区级光柱按工厂坐标定位</p></div>
         </div>
       </section>
       <section class="group-dock-hierarchy">
-        <small>LOCAL SITE STRUCTURE</small><h2>本机现场配置</h2>
+        <small>LOCAL SITE STRUCTURE</small><h2>{{ appearance.dockHierarchyTitle }}</h2>
         <dl><div><dt>车间</dt><dd>{{ visibleLocalSites.length ? site.workshops : '—' }}</dd></div><div><dt>产线</dt><dd>{{ visibleLocalSites.length ? site.lines : '—' }}</dd></div><div><dt>设备</dt><dd>{{ visibleLocalSites.length ? site.devices : '—' }}</dd></div></dl>
         <p>配置数量 · 不代表实时在线</p>
       </section>

@@ -11,7 +11,7 @@ internal enum CloseChoice
 
 internal sealed class CloseChoiceDialog : Form
 {
-    private const int CornerRadius = 14;
+    private const int CornerRadius = 18;
     private readonly ChoiceCard _minimizeCard;
 
     public CloseChoiceDialog()
@@ -24,12 +24,12 @@ internal sealed class CloseChoiceDialog : Form
         MinimizeBox = false;
         MaximizeBox = false;
         ControlBox = false;
-        ClientSize = new Size(230, 150);
+        ClientSize = new Size(270, 252);
         MinimumSize = ClientSize;
         MaximumSize = ClientSize;
         AutoScaleMode = AutoScaleMode.Dpi;
-        BackColor = Color.FromArgb(248, 250, 252);
-        ForeColor = Color.FromArgb(29, 41, 57);
+        BackColor = Color.FromArgb(40, 41, 43);
+        ForeColor = Color.FromArgb(234, 235, 229);
         Font = new Font("Microsoft YaHei UI", 9f, FontStyle.Regular);
         DoubleBuffered = true;
         KeyPreview = true;
@@ -37,23 +37,23 @@ internal sealed class CloseChoiceDialog : Form
         var header = new ChromeHeader
         {
             Dock = DockStyle.Top,
-            Height = 32,
-            Padding = new Padding(10, 0, 4, 0)
+            Height = 37,
+            Padding = new Padding(26, 0, 8, 0)
         };
         var title = new Label
         {
             Dock = DockStyle.Left,
-            Width = 160,
-            Text = "热处理数字孪生大屏",
+            Width = 205,
+            Text = "HEAT TREATMENT  /  SYSTEM",
             TextAlign = ContentAlignment.MiddleLeft,
-            ForeColor = Color.FromArgb(23, 43, 63),
-            Font = new Font("Microsoft YaHei UI", 9f, FontStyle.Bold),
+            ForeColor = Color.FromArgb(166, 177, 169),
+            Font = new Font("Segoe UI", 7.5f, FontStyle.Bold),
             BackColor = Color.Transparent
         };
         var closeButton = new ChromeCloseButton
         {
             Dock = DockStyle.Right,
-            Width = 32,
+            Width = 27,
             AccessibleName = "关闭弹窗"
         };
         closeButton.Click += (_, _) => CancelAndClose();
@@ -62,36 +62,46 @@ internal sealed class CloseChoiceDialog : Form
         BindWindowDrag(header);
         BindWindowDrag(title);
 
-        var content = new Panel
+        var content = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
-            Padding = new Padding(10, 6, 10, 8),
-            BackColor = Color.FromArgb(248, 250, 252)
+            ColumnCount = 1,
+            RowCount = 3,
+            Padding = new Padding(14, 6, 14, 10),
+            BackColor = Color.FromArgb(40, 41, 43)
         };
+        content.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
+        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 55f));
+        content.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));
+        content.RowStyles.Add(new RowStyle(SizeType.Absolute, 23f));
 
         var hero = new Panel
         {
-            Dock = DockStyle.Top,
-            Height = 24,
+            Dock = DockStyle.Fill,
             BackColor = Color.Transparent
-        };
-        var info = new InfoGlyph
-        {
-            Location = new Point(0, 2),
-            Size = new Size(20, 20)
         };
         var heading = new Label
         {
-            Location = new Point(28, 0),
-            Size = new Size(180, 22),
-            Text = "请选择关闭方式",
-            ForeColor = Color.FromArgb(16, 42, 67),
-            Font = new Font("Microsoft YaHei UI", 10f, FontStyle.Bold),
+            Dock = DockStyle.Top,
+            Height = 29,
+            Text = "要离开大屏吗？",
+            ForeColor = Color.FromArgb(239, 240, 235),
+            Font = new Font("Microsoft YaHei UI", 14f, FontStyle.Bold),
             TextAlign = ContentAlignment.MiddleLeft,
             BackColor = Color.Transparent
         };
-        hero.Controls.Add(info);
+        var subtitle = new Label
+        {
+            Dock = DockStyle.Bottom,
+            Height = 23,
+            Text = "选择接下来的运行方式",
+            ForeColor = Color.FromArgb(158, 161, 158),
+            Font = new Font("Microsoft YaHei UI", 8.5f),
+            TextAlign = ContentAlignment.MiddleLeft,
+            BackColor = Color.Transparent
+        };
         hero.Controls.Add(heading);
+        hero.Controls.Add(subtitle);
 
         var options = new TableLayoutPanel
         {
@@ -106,23 +116,23 @@ internal sealed class CloseChoiceDialog : Form
         options.RowStyles.Add(new RowStyle(SizeType.Percent, 50f));
 
         _minimizeCard = new ChoiceCard(
-            "最小化到系统托盘",
-            string.Empty,
+            "收起到系统托盘",
+            "后台运行，可随时恢复",
             danger: false
         )
         {
             Dock = DockStyle.Fill,
-            Margin = new Padding(0, 0, 0, 2),
+            Margin = new Padding(0, 0, 0, 4),
             AccessibleName = "最小化到系统托盘"
         };
         var exitCard = new ChoiceCard(
             "完全退出程序",
-            string.Empty,
+            "安全结束，并按设置备份",
             danger: true
         )
         {
             Dock = DockStyle.Fill,
-            Margin = new Padding(0, 2, 0, 0),
+            Margin = new Padding(0, 4, 0, 0),
             AccessibleName = "完全退出程序"
         };
         _minimizeCard.Click += (_, _) => Complete(CloseChoice.MinimizeToTray);
@@ -130,8 +140,18 @@ internal sealed class CloseChoiceDialog : Form
         options.Controls.Add(_minimizeCard, 0, 0);
         options.Controls.Add(exitCard, 0, 1);
 
-        content.Controls.Add(options);
-        content.Controls.Add(hero);
+        var footer = new Label
+        {
+            Dock = DockStyle.Fill,
+            Text = "ESC  ·  继续使用大屏",
+            TextAlign = ContentAlignment.BottomLeft,
+            ForeColor = Color.FromArgb(130, 136, 133),
+            Font = new Font("Microsoft YaHei UI", 7.5f),
+            BackColor = Color.Transparent
+        };
+        content.Controls.Add(hero, 0, 0);
+        content.Controls.Add(options, 0, 1);
+        content.Controls.Add(footer, 0, 2);
         Controls.Add(content);
         Controls.Add(header);
 
@@ -170,7 +190,7 @@ internal sealed class CloseChoiceDialog : Form
         if (ClientSize.Width < 2 || ClientSize.Height < 2) return;
         e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
         using var path = RoundedPath(new Rectangle(0, 0, ClientSize.Width - 1, ClientSize.Height - 1), CornerRadius);
-        using var pen = new Pen(Color.FromArgb(203, 213, 223));
+        using var pen = new Pen(Color.FromArgb(84, 87, 86));
         e.Graphics.DrawPath(pen, path);
     }
 
@@ -250,12 +270,14 @@ internal sealed class CloseChoiceDialog : Form
             if (ClientRectangle.Width <= 0 || ClientRectangle.Height <= 0) return;
             using var background = new LinearGradientBrush(
                 ClientRectangle,
-                Color.FromArgb(237, 242, 247),
-                Color.FromArgb(223, 231, 239),
-                LinearGradientMode.Vertical
+                Color.FromArgb(48, 49, 51),
+                Color.FromArgb(42, 43, 45),
+                LinearGradientMode.Horizontal
             );
             e.Graphics.FillRectangle(background, ClientRectangle);
-            using var border = new Pen(Color.FromArgb(203, 213, 223));
+            using var accent = new SolidBrush(Color.FromArgb(152, 189, 169));
+            e.Graphics.FillRectangle(accent, 14, 12, 2, 11);
+            using var border = new Pen(Color.FromArgb(70, 73, 73));
             e.Graphics.DrawLine(border, 0, Height - 1, Width, Height - 1);
         }
     }
@@ -316,7 +338,7 @@ internal sealed class CloseChoiceDialog : Form
                 true
             );
             TabStop = true;
-            BackColor = Color.FromArgb(226, 234, 242);
+            BackColor = Color.FromArgb(43, 44, 46);
         }
 
         protected override void OnPaintBackground(PaintEventArgs e)
@@ -354,52 +376,19 @@ internal sealed class CloseChoiceDialog : Form
             e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
             if (_hovered)
             {
-                using var fill = new SolidBrush(Color.FromArgb(229, 72, 77));
-                using var path = RoundedPath(new Rectangle(4, 7, Width - 8, Height - 14), 7);
+                using var fill = new SolidBrush(Color.FromArgb(68, 70, 71));
+                using var path = RoundedPath(new Rectangle(1, 5, Width - 2, Height - 10), 8);
                 e.Graphics.FillPath(fill, path);
             }
-            using var pen = new Pen(_hovered ? Color.White : Color.FromArgb(71, 84, 103), 1.5f)
+            using var pen = new Pen(_hovered ? Color.FromArgb(241, 242, 237) : Color.FromArgb(162, 166, 163), 1.4f)
             {
                 StartCap = LineCap.Round,
                 EndCap = LineCap.Round
             };
             var centerX = Width / 2;
             var centerY = Height / 2;
-            e.Graphics.DrawLine(pen, centerX - 6, centerY - 6, centerX + 6, centerY + 6);
-            e.Graphics.DrawLine(pen, centerX + 6, centerY - 6, centerX - 6, centerY + 6);
-        }
-    }
-
-    private sealed class InfoGlyph : Control
-    {
-        public InfoGlyph()
-        {
-            SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint, true);
-            BackColor = Color.FromArgb(248, 250, 252);
-        }
-
-        protected override void OnPaintBackground(PaintEventArgs e)
-        {
-            base.OnPaintBackground(e);
-        }
-
-        protected override void OnPaint(PaintEventArgs e)
-        {
-            if (Width < 12 || Height < 12) return;
-            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-            using var halo = new SolidBrush(Color.FromArgb(232, 242, 255));
-            using var circle = new SolidBrush(Color.FromArgb(21, 112, 239));
-            e.Graphics.FillEllipse(halo, 0, 0, Width, Height);
-            e.Graphics.FillEllipse(circle, 6, 6, Width - 12, Height - 12);
-            using var font = new Font("Segoe UI", 9f, FontStyle.Bold);
-            TextRenderer.DrawText(
-                e.Graphics,
-                "i",
-                font,
-                ClientRectangle,
-                Color.White,
-                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding
-            );
+            e.Graphics.DrawLine(pen, centerX - 4, centerY - 4, centerX + 4, centerY + 4);
+            e.Graphics.DrawLine(pen, centerX + 4, centerY - 4, centerX - 4, centerY + 4);
         }
     }
 
@@ -408,8 +397,8 @@ internal sealed class CloseChoiceDialog : Form
         private readonly string _title;
         private readonly string _description;
         private readonly bool _danger;
-        private readonly Font _titleFont = new("Microsoft YaHei UI", 10.5f, FontStyle.Bold);
-        private readonly Font _descriptionFont = new("Microsoft YaHei UI", 8.7f, FontStyle.Regular);
+        private readonly Font _titleFont = new("Microsoft YaHei UI", 9.5f, FontStyle.Bold);
+        private readonly Font _descriptionFont = new("Microsoft YaHei UI", 7.8f, FontStyle.Regular);
         private bool _hovered;
 
         public ChoiceCard(string title, string description, bool danger)
@@ -417,6 +406,7 @@ internal sealed class CloseChoiceDialog : Form
             _title = title;
             _description = description;
             _danger = danger;
+            BackColor = Color.FromArgb(40, 41, 43);
             Cursor = Cursors.Hand;
             TabStop = true;
             AccessibleRole = AccessibleRole.PushButton;
@@ -468,73 +458,69 @@ internal sealed class CloseChoiceDialog : Form
 
         protected override void OnPaint(PaintEventArgs e)
         {
+            if (Width < 48 || Height < 30) return;
             e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-            var bounds = new Rectangle(1, 1, Math.Max(1, Width - 3), Math.Max(1, Height - 3));
+            var bounds = new Rectangle(1, 1, Width - 3, Height - 3);
             var fillColor = _danger
-                ? (_hovered ? Color.FromArgb(255, 247, 245) : Color.White)
-                : (_hovered ? Color.FromArgb(238, 246, 255) : Color.FromArgb(246, 250, 255));
+                ? (_hovered ? Color.FromArgb(62, 54, 52) : Color.FromArgb(48, 47, 48))
+                : (_hovered ? Color.FromArgb(55, 61, 57) : Color.FromArgb(49, 52, 51));
             var borderColor = _danger
-                ? (_hovered ? Color.FromArgb(253, 162, 155) : Color.FromArgb(208, 213, 221))
-                : (_hovered || Focused ? Color.FromArgb(82, 139, 255) : Color.FromArgb(178, 204, 255));
-            using var path = RoundedPath(bounds, 10);
+                ? (_hovered || Focused ? Color.FromArgb(166, 126, 109) : Color.FromArgb(81, 74, 72))
+                : (_hovered || Focused ? Color.FromArgb(138, 175, 154) : Color.FromArgb(77, 86, 81));
+            using var path = RoundedPath(bounds, 9);
             using var fill = new SolidBrush(fillColor);
-            using var border = new Pen(borderColor, Focused ? 1.8f : 1.2f);
+            using var border = new Pen(borderColor, Focused ? 1.6f : 1f);
             e.Graphics.FillPath(fill, path);
             e.Graphics.DrawPath(border, path);
 
-            var iconSize = Math.Clamp(Height - 12, 18, 24);
-            var iconBounds = new Rectangle(10, Math.Max(4, (Height - iconSize) / 2), iconSize, iconSize);
-            using var iconFill = new SolidBrush(_danger ? Color.FromArgb(255, 235, 232) : Color.FromArgb(21, 112, 239));
+            var iconBounds = new Rectangle(11, (Height - 25) / 2, 25, 25);
+            using var iconFill = new SolidBrush(_danger ? Color.FromArgb(76, 61, 56) : Color.FromArgb(59, 77, 67));
             e.Graphics.FillEllipse(iconFill, iconBounds);
-            using var iconPen = new Pen(_danger ? Color.FromArgb(217, 45, 32) : Color.White, 1.7f)
+            using var iconPen = new Pen(_danger ? Color.FromArgb(220, 167, 142) : Color.FromArgb(168, 207, 184), 1.6f)
             {
                 StartCap = LineCap.Round,
                 EndCap = LineCap.Round
             };
             if (_danger)
             {
-                e.Graphics.DrawArc(iconPen, iconBounds.Left + 6, iconBounds.Top + 7, 15, 14, -48, 276);
-                e.Graphics.DrawLine(iconPen, iconBounds.Left + 14, iconBounds.Top + 5, iconBounds.Left + 14, iconBounds.Top + 14);
+                e.Graphics.DrawArc(iconPen, iconBounds.Left + 7, iconBounds.Top + 7, 11, 11, -48, 276);
+                e.Graphics.DrawLine(iconPen, iconBounds.Left + 12.5f, iconBounds.Top + 5, iconBounds.Left + 12.5f, iconBounds.Top + 13);
             }
             else
             {
-                e.Graphics.DrawLine(iconPen, iconBounds.Left + 7, iconBounds.Top + 14, iconBounds.Left + 19, iconBounds.Top + 14);
-                e.Graphics.DrawLine(iconPen, iconBounds.Left + 14, iconBounds.Top + 8, iconBounds.Left + 20, iconBounds.Top + 14);
-                e.Graphics.DrawLine(iconPen, iconBounds.Left + 14, iconBounds.Top + 20, iconBounds.Left + 20, iconBounds.Top + 14);
+                e.Graphics.DrawLine(iconPen, iconBounds.Left + 7, iconBounds.Top + 17, iconBounds.Left + 18, iconBounds.Top + 17);
+                e.Graphics.DrawLine(iconPen, iconBounds.Left + 12.5f, iconBounds.Top + 7, iconBounds.Left + 12.5f, iconBounds.Top + 14);
+                e.Graphics.DrawLine(iconPen, iconBounds.Left + 9.5f, iconBounds.Top + 11, iconBounds.Left + 12.5f, iconBounds.Top + 14);
+                e.Graphics.DrawLine(iconPen, iconBounds.Left + 15.5f, iconBounds.Top + 11, iconBounds.Left + 12.5f, iconBounds.Top + 14);
             }
 
-            var titleX = 42;
-            var hasDescription = !string.IsNullOrWhiteSpace(_description);
-            var titleY = hasDescription ? 8 : Math.Max(5, (Height - 22) / 2);
+            const int titleX = 47;
             TextRenderer.DrawText(
                 e.Graphics,
                 _title,
                 _titleFont,
-                new Point(titleX, titleY),
-                _danger ? Color.FromArgb(145, 32, 24) : Color.FromArgb(16, 42, 67),
-                TextFormatFlags.NoPadding | TextFormatFlags.SingleLine
+                new Rectangle(titleX, 7, Width - titleX - 24, 20),
+                Color.FromArgb(232, 234, 229),
+                TextFormatFlags.NoPadding | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis
             );
-            if (hasDescription)
-            {
-                TextRenderer.DrawText(
-                    e.Graphics,
-                    _description,
-                    _descriptionFont,
-                    new Rectangle(titleX, 42, Math.Max(40, Width - titleX - 48), Math.Max(24, Height - 48)),
-                    Color.FromArgb(102, 112, 133),
-                    TextFormatFlags.WordBreak | TextFormatFlags.NoPadding | TextFormatFlags.Top
-                );
-            }
+            TextRenderer.DrawText(
+                e.Graphics,
+                _description,
+                _descriptionFont,
+                new Rectangle(titleX, 27, Width - titleX - 24, 18),
+                Color.FromArgb(153, 159, 155),
+                TextFormatFlags.NoPadding | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis
+            );
 
-            var chevronX = Width - 15;
+            var chevronX = Width - 16;
             var chevronY = Height / 2;
-            using var chevron = new Pen(_danger ? Color.FromArgb(217, 45, 32) : Color.FromArgb(21, 112, 239), 1.8f)
+            using var chevron = new Pen(_hovered ? Color.FromArgb(218, 227, 218) : Color.FromArgb(130, 140, 133), 1.4f)
             {
                 StartCap = LineCap.Round,
                 EndCap = LineCap.Round
             };
-            e.Graphics.DrawLine(chevron, chevronX - 4, chevronY - 6, chevronX + 2, chevronY);
-            e.Graphics.DrawLine(chevron, chevronX + 2, chevronY, chevronX - 4, chevronY + 6);
+            e.Graphics.DrawLine(chevron, chevronX - 3, chevronY - 4, chevronX + 1, chevronY);
+            e.Graphics.DrawLine(chevron, chevronX + 1, chevronY, chevronX - 3, chevronY + 4);
         }
 
         protected override void Dispose(bool disposing)

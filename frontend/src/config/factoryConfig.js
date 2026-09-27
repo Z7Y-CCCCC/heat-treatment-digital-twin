@@ -243,6 +243,11 @@ export const adminApi = {
     // 设置
     async getSettings() { return (await fetch(`${API_BASE}/settings`)).json() },
     async saveSettings(data) { return readApiJson(await fetch(`${API_BASE}/settings`, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) }), '保存设置失败') },
+    async uploadAppearanceImage(file) {
+        const body = new FormData()
+        body.append('image', file)
+        return readApiJson(await fetch(`${API_BASE}/appearance-assets`, { method: 'POST', body }), '上传图片失败')
+    },
     async getRuntimeSettings() { return readApiJson(await fetch(`${API_BASE}/system/runtime`), '读取运行配置失败') },
     async saveRuntimeSettings(data) { return readApiJson(await fetch(`${API_BASE}/system/runtime`, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) }), '保存运行配置失败') },
     async getCastDevices() { return readApiJson(await fetch(`${API_BASE}/system/cast/devices`), '读取局域网电视列表失败') },

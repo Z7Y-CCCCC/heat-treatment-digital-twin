@@ -1,12 +1,15 @@
 <script setup>
 import { computed, ref } from 'vue'
+import { normalizeLoadingExperience } from '../runtime/loadingExperienceConfig.js'
 
 const props = defineProps({
   show: { type: Boolean, default: true },
   progress: { type: Number, default: 8 },
   phase: { type: Number, default: 0 },
-  step: { type: String, default: '正在读取现场配置' }
+  step: { type: String, default: '正在读取现场配置' },
+  config: { type: [Object, String], default: null }
 })
+const appearance = computed(() => normalizeLoadingExperience(props.config))
 
 const phases = [
   { label: '现场配置', caption: 'CONFIGURATION' },
@@ -82,12 +85,12 @@ function resetModelView() {
 
 <template>
   <Transition name="loading-experience">
-    <section v-if="show" class="loading-experience" role="status" aria-live="polite" aria-label="大屏正在加载">
+    <section v-if="show" class="loading-experience" :class="{quiet:appearance.preset==='quiet','custom-artwork':!!appearance.imageUrl}" :style="{'--loading-background':appearance.background,'--loading-accent':appearance.accent}" role="status" aria-live="polite" aria-label="大屏正在加载">
       <div class="loading-atmosphere" aria-hidden="true"></div>
       <div class="loading-card">
         <header class="loading-heading">
           <span class="loading-mark" aria-hidden="true"><i></i><i></i><i></i></span>
-          <span class="loading-kicker">HEAT TREATMENT <i>/</i> DIGITAL TWIN</span>
+          <span class="loading-kicker">{{ appearance.kicker }}</span>
           <span class="loading-live"><i></i> SYSTEM STARTUP</span>
         </header>
 
@@ -107,7 +110,7 @@ function resetModelView() {
             @dblclick.prevent="resetModelView"
           >
             <div class="loading-model-stage">
-              <img src="/loading/industrial-factory.png" alt="热处理生产现场三维示意图" draggable="false" />
+              <img :src="appearance.imageUrl || '/loading/industrial-factory.png'" alt="热处理生产现场三维示意图" draggable="false" />
               <span
                 v-for="(stack, index) in loadingSmokeStacks"
                 :key="stack.label"
@@ -165,7 +168,7 @@ function resetModelView() {
 
         <div class="loading-status-row">
           <div>
-            <h1>正在准备生产现场</h1>
+            <h1>{{ appearance.title }}</h1>
             <p>{{ step }}</p>
           </div>
           <strong class="loading-percent">{{ percentage }}<small>%</small></strong>
@@ -189,7 +192,7 @@ function resetModelView() {
 </template>
 
 <style scoped>
-.loading-experience{position:fixed;inset:0;z-index:10000;display:grid;place-items:center;overflow:hidden;padding:30px;background:#28282b;color:#e8e8e4;font-family:Inter,"Noto Sans SC","Segoe UI","Microsoft YaHei UI",sans-serif;font-synthesis:none;-webkit-font-smoothing:antialiased}
+.loading-experience{position:fixed;inset:0;z-index:10000;display:grid;place-items:center;overflow:hidden;padding:30px;background:var(--loading-background,#28282b);color:#e8e8e4;font-family:Inter,"Noto Sans SC","Segoe UI","Microsoft YaHei UI",sans-serif;font-synthesis:none;-webkit-font-smoothing:antialiased}
 .loading-atmosphere{position:absolute;inset:0;background:radial-gradient(ellipse at 50% 38%,rgba(166,169,156,.1),transparent 52%),linear-gradient(135deg,rgba(255,255,255,.018),transparent 48%,rgba(0,0,0,.11));pointer-events:none}
 .loading-card{position:relative;width:min(900px,92vw);padding:27px 34px 24px;border:1px solid rgba(206,207,195,.13);border-radius:13px;background:linear-gradient(145deg,rgba(49,49,52,.97),rgba(38,38,41,.98));box-shadow:0 34px 100px rgba(0,0,0,.28),inset 0 1px 0 rgba(255,255,255,.045)}
 .loading-heading{display:flex;align-items:center;gap:11px;color:#b8b9b2}.loading-mark{position:relative;display:flex;align-items:flex-end;gap:3px;width:18px;height:18px;padding:3px;border:1px solid rgba(204,209,195,.28);border-radius:5px}.loading-mark i{width:3px;border-radius:2px;background:#a9c3b5}.loading-mark i:nth-child(1){height:5px}.loading-mark i:nth-child(2){height:9px}.loading-mark i:nth-child(3){height:7px;background:#d2a66c}.loading-kicker{font-size:9px;font-weight:600;letter-spacing:.17em}.loading-kicker i{padding:0 5px;color:#777871;font-style:normal}.loading-live{display:flex;align-items:center;gap:7px;margin-left:auto;color:#92938d;font-size:8px;letter-spacing:.12em}.loading-live i,.loading-art-caption i{width:5px;height:5px;border-radius:50%;background:#91b4a3;box-shadow:0 0 9px rgba(145,180,163,.46);animation:loading-pulse 1.8s ease-in-out infinite}
@@ -199,6 +202,7 @@ function resetModelView() {
 .loading-phases{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:18px 0 0;padding:0;list-style:none}.loading-phases li{display:flex;align-items:center;gap:9px;min-width:0;color:#767770}.loading-phase-marker{display:grid;place-items:center;width:19px;height:19px;flex:0 0 19px;border:1px solid rgba(203,204,193,.17);border-radius:50%}.loading-phase-marker i{width:4px;height:4px;border-radius:50%;background:#777871}.loading-phase-copy{display:grid;gap:3px;min-width:0}.loading-phase-copy strong{overflow:hidden;color:#85867f;font-size:9px;font-weight:500;text-overflow:ellipsis;white-space:nowrap}.loading-phase-copy small{overflow:hidden;color:#656660;font-size:7px;letter-spacing:.08em;text-overflow:ellipsis;white-space:nowrap}.loading-phases li.complete .loading-phase-marker{border-color:rgba(143,179,158,.55);background:rgba(143,179,158,.1)}.loading-phases li.complete .loading-phase-marker i,.loading-phases li.current .loading-phase-marker i{background:#a8c3b1}.loading-phases li.complete .loading-phase-copy strong{color:#b1c4b5}.loading-phases li.current .loading-phase-marker{border-color:rgba(201,174,130,.6);box-shadow:0 0 13px rgba(201,174,130,.14)}.loading-phases li.current .loading-phase-marker i{background:#d1b17d;box-shadow:0 0 7px rgba(209,177,125,.55)}.loading-phases li.current .loading-phase-copy strong{color:#e1d1b1}
 .loading-footer{position:absolute;bottom:23px;left:50%;display:flex;align-items:center;gap:10px;transform:translateX(-50%);color:#7f8079;font-size:8px;letter-spacing:.06em;white-space:nowrap}.loading-footer i{width:2px;height:2px;border-radius:50%;background:#b99c71}
 .loading-experience-enter-active,.loading-experience-leave-active{transition:opacity .38s ease,transform .38s ease}.loading-experience-enter-from,.loading-experience-leave-to{opacity:0;transform:scale(1.006)}
+.loading-experience .loading-progress-track i{background:var(--loading-accent,#a8c3b1)}.loading-experience.quiet .loading-hotspot,.loading-experience.quiet .loading-smoke,.loading-experience.custom-artwork .loading-hotspot,.loading-experience.custom-artwork .loading-smoke{display:none}.loading-experience.quiet .loading-model-stage{animation:none}.loading-experience.quiet .loading-art-index{display:none}
 @keyframes loading-float{0%,100%{transform:translateY(2px)}50%{transform:translateY(-5px)}}@keyframes loading-pulse{50%{opacity:.42;box-shadow:0 0 3px rgba(145,180,163,.18)}}@keyframes loading-lamp-breathe{0%,100%{opacity:.62;transform:scale(.8)}50%{opacity:1;transform:scale(1.2)}}@keyframes loading-fire-breathe{0%,100%{opacity:.75;transform:scale(.8)}45%{opacity:1;transform:scale(1.25)}}@keyframes loading-smoke-rise{0%{opacity:0;transform:translate(-50%,3px) scale(.45)}22%{opacity:.7}100%{opacity:0;transform:translate(30%,-36px) scale(1.9)}}
 @media(max-width:640px){.loading-experience{padding:14px}.loading-card{width:100%;padding:20px 18px 18px}.loading-artwork{height:clamp(160px,45vw,235px)}.loading-phases{gap:5px}.loading-phases li{gap:5px}.loading-phase-marker{width:15px;height:15px;flex-basis:15px}.loading-phase-copy strong{font-size:8px}.loading-phase-copy small{font-size:6px}.loading-live{font-size:7px}.loading-footer{bottom:10px;font-size:7px}}
 @media(prefers-reduced-motion:reduce){.loading-model-stage,.loading-live i,.loading-hotspot i,.loading-smoke::before,.loading-smoke::after{animation:none}.loading-experience-enter-active,.loading-experience-leave-active{transition:none}}

@@ -67,7 +67,7 @@ async function savePassword() {
         <div class="security-grid">
             <form class="security-card" @submit.prevent="savePolicy">
                 <h4>无操作自动锁定</h4>
-                <p>解锁后反复进入后台无需重复输入密码；超过设定时间没有操作，会自动收回修改权限。</p>
+                <p>超过设定时间未操作后台时，只锁定后台管理和修改权限；已授权的实时大屏继续展示。</p>
                 <label for="admin-idle-minutes">自动锁定时间（分钟）</label>
                 <div class="timeout-input-row">
                     <input id="admin-idle-minutes" v-model.number="idleMinutes" type="number" min="1" max="480" step="1" required :disabled="saving" />
@@ -77,7 +77,7 @@ async function savePassword() {
                     <button v-for="minutes in [5, 15, 30, 60, 120]" :key="minutes" type="button" :class="{ selected: idleMinutes === minutes }" :disabled="saving" @click="idleMinutes = minutes">{{ minutes }} 分钟</button>
                 </div>
                 <p class="security-note">可设置 1–480 分钟，当前生效：{{ adminSession.idleTimeoutMinutes }} 分钟。数据刷新、设备动画和后台轮询不计为人工操作。</p>
-                <p class="security-note">单次解锁最长 {{ adminSession.maxSessionHours }} 小时；重启软件后需要重新输入密码。</p>
+                <p class="security-note">单次后台解锁最长 {{ adminSession.maxSessionHours }} 小时。主动退出、修改密码或重启服务会撤销大屏登录。</p>
                 <div class="security-action-row">
                     <button type="submit" class="security-primary" :disabled="saving" :aria-busy="saving">
                         <svg v-if="saving" class="button-status-icon is-spinning" viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3a7 7 0 1 1-5.2 2.3" /></svg>

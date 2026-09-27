@@ -40,6 +40,7 @@ internal sealed class DashboardOverlayForm : Form
     private int _escapeDispatchPending;
 
     public event Action<string?, bool>? AdminRequested;
+    public event Action? CustomerOperationsRequested;
 
     public DashboardOverlayForm(HostOptions options)
     {
@@ -228,6 +229,16 @@ internal sealed class DashboardOverlayForm : Form
         PostHostState();
     }
 
+    public void DetachForShutdown()
+    {
+        if (IsDisposed) return;
+        HideOverlay();
+        _reloadCover?.DetachForShutdown();
+        if (IsHandleCreated) NativeMethods.SetWindowOwner(Handle, IntPtr.Zero);
+        _attached = false;
+        _parentHandle = IntPtr.Zero;
+    }
+
     public void Reload()
     {
         if (IsDisposed || _webView?.CoreWebView2 == null) return;
@@ -243,13 +254,13 @@ internal sealed class DashboardOverlayForm : Form
     public void OpenMapAtTopLevel()
     {
         if (IsDisposed || _webView?.CoreWebView2 == null) return;
-        if (!Uri.TryCreate(_options.Url, UriKind.Absolute, out var source)) return;
-        var mapUrl = new UriBuilder(source)
-        {
-            Path = "/group",
-            Query = "embedded=unity&surface=overlay&level=world"
-        }.Uri.AbsoluteUri;
+        var mapUrl = DashboardMapEntry.BuildUrl(_options.Url);
         if (_visibleRequested) ShowReloadCover();
+        _navigationVersion++;
+        _navigationReady = false;
+        _pageReportedReady = false;
+        _webView.IsVisible = false;
+        ApplyEmptyInteractionRegion();
         _webView.CoreWebView2.Navigate(mapUrl);
     }
 
@@ -614,6 +625,13 @@ internal sealed class DashboardOverlayForm : Form
                 var returnToDashboard = root.TryGetProperty("returnToDashboard", out var returnElement)
                     && returnElement.ValueKind == JsonValueKind.True;
                 AdminRequested?.Invoke(focus, returnToDashboard);
+                return;
+            }
+            if (type == "host_action"
+                && root.TryGetProperty("action", out var customerAction)
+                && customerAction.GetString() == "show_customer")
+            {
+                CustomerOperationsRequested?.Invoke();
                 return;
             }
             if (type == "overlay_ready")

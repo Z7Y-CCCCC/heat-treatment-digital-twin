@@ -57,6 +57,7 @@ let applicationReadyForInteraction = false;
 let pendingNativeAdminRequest = false;
 let startupWindow = null;
 let startupWindowClosingForSuccess = false;
+let startupAppearance = null;
 let startupFailureLogPath = null;
 let nativeHostReady = false;
 const nativeHostReadyWaiters = new Set();
@@ -99,6 +100,48 @@ function sendStartupState() {
     if (!startupWindow || startupWindow.isDestroyed() || startupWindow.webContents.isLoading()) return;
     const serialized = JSON.stringify(startupState).replace(/</g, '\\u003c');
     startupWindow.webContents.executeJavaScript(`window.updateStartup?.(${serialized})`, true).catch(() => {});
+}
+
+function normalizeStartupAppearance(raw = {}) {
+    const color = (value, fallback) => /^#[0-9a-fA-F]{6}$/.test(value || '') ? value : fallback;
+    const imageUrl = String(raw.imageUrl || '');
+    return {
+        preset: raw.preset === 'quiet' ? 'quiet' : 'interactive',
+        title: String(raw.title || '正在准备生产现场').slice(0, 48),
+        kicker: String(raw.kicker || 'HEAT TREATMENT / DIGITAL TWIN').slice(0, 72),
+        background: color(raw.background, '#28282b'),
+        accent: color(raw.accent, '#a8c3b1'),
+        imageUrl: /^\/uploads\/appearance\/[a-f0-9]{32}\.(?:png|jpg|webp)$/.test(imageUrl) ? imageUrl : ''
+    };
+}
+
+function applyStartupAppearance(raw, persist = false) {
+    startupAppearance = normalizeStartupAppearance(raw);
+    if (persist) {
+        try {
+            fs.writeFileSync(path.join(app.getPath('userData'), 'startup-appearance.json'), JSON.stringify(startupAppearance), 'utf8');
+        } catch (error) { logDesktopError('startup-appearance-cache', error); }
+    }
+    if (!startupWindow || startupWindow.isDestroyed() || startupWindow.webContents.isLoading()) return;
+    const appearanceForWindow = { ...startupAppearance };
+    if (startupAppearance.imageUrl) {
+        try {
+            const filename = path.basename(startupAppearance.imageUrl);
+            const file = path.join(app.getPath('userData'), 'uploads', 'appearance', filename);
+            const bytes = fs.readFileSync(file);
+            if (bytes.length <= 5 * 1024 * 1024) {
+                const mime = filename.endsWith('.png') ? 'image/png' : filename.endsWith('.webp') ? 'image/webp' : 'image/jpeg';
+                appearanceForWindow.imageDataUrl = `data:${mime};base64,${bytes.toString('base64')}`;
+            }
+        } catch { /* A missing optional artwork falls back to the bundled model. */ }
+    }
+    const serialized = JSON.stringify(appearanceForWindow).replace(/</g, '\\u003c');
+    startupWindow.webContents.executeJavaScript(`window.configureStartup?.(${serialized})`, true).catch(() => {});
+}
+
+function readCachedStartupAppearance() {
+    try { return JSON.parse(fs.readFileSync(path.join(app.getPath('userData'), 'startup-appearance.json'), 'utf8')); }
+    catch { return null; }
 }
 
 function updateStartupProgress(id, progress, title, detail = '') {
@@ -189,6 +232,7 @@ async function createStartupWindow() {
     });
     await startupWindow.loadFile(path.join(__dirname, 'assets', 'startup.html'));
     if (!startupWindow || startupWindow.isDestroyed()) throw new Error('启动加载页面创建失败');
+    applyStartupAppearance(startupAppearance || readCachedStartupAppearance() || {});
     if (!backendOnlySmokeMode) {
         startupWindow.show();
         startupWindow.focus();
@@ -631,6 +675,42 @@ function readRuntimeSettings(port) {
         request.setTimeout(2500, () => request.destroy(new Error('读取运行配置超时')));
         request.on('error', reject);
     });
+}
+
+function readStartupAppearance(port) {
+    return new Promise((resolve, reject) => {
+        const request = http.get({
+            host: '127.0.0.1', port, path: '/api/settings/loading-experience',
+            headers: { Accept: 'application/json', 'X-Admin-Token': backendAdminToken || '' }
+        }, response => {
+            let body = '';
+            response.setEncoding('utf8');
+            response.on('data', chunk => { if (body.length < 128 * 1024) body += chunk; });
+            response.on('end', () => {
+                if (response.statusCode !== 200) return reject(new Error(`加载画面配置 HTTP ${response.statusCode}`));
+                try {
+                    const raw = JSON.parse(body).config || {};
+                    resolve(normalizeStartupAppearance(raw));
+                } catch (error) { reject(error); }
+            });
+        });
+        request.setTimeout(4000, () => request.destroy(new Error('加载画面配置读取超时')));
+        request.on('error', reject);
+    });
+}
+
+async function refreshStartupAppearanceWhenReady(port) {
+    let lastError;
+    for (let attempt = 0; attempt < 5 && !isQuitting; attempt += 1) {
+        try {
+            applyStartupAppearance(await readStartupAppearance(port), true);
+            return;
+        } catch (error) {
+            lastError = error;
+            await delay(1500 * (attempt + 1));
+        }
+    }
+    if (lastError && !isQuitting) logDesktopError('startup-appearance', lastError);
 }
 
 function probeBackendHealth(port) {
@@ -1375,6 +1455,7 @@ async function launchApplication() {
     updateStartupProgress('backend-health', 50, '正在检查数据服务', `等待本地接口 ${origin} 就绪`);
     await waitForHealth(`${origin}/api/health`, 60000, initialBackendProcess);
     updateStartupProgress('settings', 59, '正在读取系统设置', '同步开机自启、日志、备份和运行参数');
+    void refreshStartupAppearanceWhenReady(port);
     await startDesktopSettingsSync();
     if (backendOnlySmokeMode) {
         applicationReadyForInteraction = true;

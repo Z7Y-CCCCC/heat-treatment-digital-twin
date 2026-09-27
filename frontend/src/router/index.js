@@ -10,6 +10,11 @@ const routes = [
         meta: {title:'生产运营 · 集团分布',stableInstance:true}
     },
     {
+        name: 'factory-drilldown', path: '/site',
+        component: () => import('../views/FactoryDrilldown.vue'),
+        meta: {title:'生产运营 · 工厂下钻',stableInstance:true}
+    },
+    {
         name: 'factory-hud-preview',
         path: '/hud-preview',
         component: () => import('../views/FactoryHudPreview.vue'),
@@ -46,7 +51,7 @@ const router = createRouter({
     routes
 })
 
-const protectedPaths = new Set(['/', '/group', '/overlay', '/hud-preview', '/customer'])
+const protectedPaths = new Set(['/', '/group', '/site', '/overlay', '/hud-preview', '/customer'])
 
 router.beforeEach(async (to, from) => {
     if (!adminSession.ready) await refreshAdminSession()
@@ -55,16 +60,20 @@ router.beforeEach(async (to, from) => {
     // while signed out instead of redirecting it to /admin and drawing a
     // second copy of that chrome above the host window.
     const nativeOverlay = isNativeOverlaySurface(to.query?.embedded, to.query?.surface, window.chrome?.webview)
-    if (nativeOverlay && !adminSession.authenticated) return true
+    if (nativeOverlay && !adminSession.displayAuthenticated) return true
+    if (nativeOverlay && to.path === '/customer') {
+        window.chrome.webview.postMessage({ type: 'host_action', action: 'show_customer' })
+        return { path: '/group', query: to.query, replace: true }
+    }
     if (isNativeMapEntry(to, from)) return { path: '/group', query: { ...to.query, embedded: 'unity' } }
-    if (protectedPaths.has(to.path) && !adminSession.authenticated) {
+    if (protectedPaths.has(to.path) && !adminSession.displayAuthenticated) {
         const redirect = to.path === '/' ? '/group' : to.fullPath
         return { path: '/admin', query: { ...to.query, redirect }, replace: true }
     }
     if (to.path === '/admin' && adminSession.authenticated && !adminSession.permissions.edit) {
         return { path: '/customer', query: to.query }
     }
-    if (to.path === '/customer' && adminSession.authenticated
+    if (to.path === '/customer' && adminSession.displayAuthenticated
         && !adminSession.permissions.cast && !adminSession.permissions.backup) {
         return { path: '/group', query: to.query }
     }

@@ -11,7 +11,7 @@ internal static class DashboardAccessPolicy
             using var document = JsonDocument.Parse(json);
             var root = document.RootElement;
             return root.ValueKind == JsonValueKind.Object
-                && root.TryGetProperty("authenticated", out var authenticated)
+                && root.TryGetProperty("displayAuthenticated", out var authenticated)
                 && authenticated.ValueKind == JsonValueKind.True
                 && root.TryGetProperty("permissions", out var permissions)
                 && permissions.ValueKind == JsonValueKind.Object

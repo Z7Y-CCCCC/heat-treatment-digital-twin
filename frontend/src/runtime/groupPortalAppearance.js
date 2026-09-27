@@ -2,7 +2,11 @@ export const DEFAULT_GROUP_PORTAL_APPEARANCE = Object.freeze({
     brandTitle: '生产运营 · 集团总览',
     brandSubtitle: 'GLOBAL PRODUCTION MANAGEMENT',
     panelTitle: 'OPERATING NETWORK',
-    showFacts: true, showPanel: true, showDock: true, showHelp: true,
+    factsTitle: '登记工厂',
+    dockNetworkTitle: '站点网络',
+    dockLocationTitle: '行政区归属',
+    dockHierarchyTitle: '本机现场配置',
+    showBrand: true, showFacts: true, showPanel: true, showDock: true, showHelp: true,
     background: '#303134', panelSurface: '#3d3d40', accent: '#9caaff', text: '#e5e3de',
     mapBase: '#747682', mapMuted: '#494b52', markerPrimary: '#376ff0', markerTip: '#bbfff0', mapZoom: 1.12,
     logoUrl: '', levels: {}
@@ -18,7 +22,22 @@ export const GROUP_MAP_LEVELS = Object.freeze([
 
 const LEVEL_KEYS = new Set(GROUP_MAP_LEVELS.map(level => level.key))
 const COLOR_KEYS = ['background', 'panelSurface', 'accent', 'text', 'mapBase', 'mapMuted', 'markerPrimary', 'markerTip']
-const TOGGLE_KEYS = ['showFacts', 'showPanel', 'showDock', 'showHelp']
+const TOGGLE_KEYS = ['showBrand', 'showFacts', 'showPanel', 'showDock', 'showHelp']
+const LAYOUT_KEYS = ['brand', 'facts', 'panel', 'dock']
+const TITLE_KEYS = ['brandTitle', 'brandSubtitle', 'panelTitle', 'factsTitle', 'dockNetworkTitle', 'dockLocationTitle', 'dockHierarchyTitle']
+
+function normalizeLayout(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
+    const result = {}
+    for (const key of LAYOUT_KEYS) {
+        const item = value[key]
+        if (!item || typeof item !== 'object' || Array.isArray(item)) continue
+        const x = Number(item.x), y = Number(item.y)
+        if (Number.isFinite(x) && Number.isFinite(y) && x >= 0 && x <= 95 && y >= 0 && y <= 95)
+            result[key] = { x, y }
+    }
+    return result
+}
 
 export function normalizeGroupLogoUrl(value) {
     const url = typeof value === 'string' ? value.trim().slice(0, 400) : ''
@@ -33,8 +52,13 @@ function normalizeLevelOverrides(value) {
         const level = {}
         for (const field of TOGGLE_KEYS) if (typeof raw[field] === 'boolean') level[field] = raw[field]
         for (const field of COLOR_KEYS) if (typeof raw[field] === 'string' && /^#[0-9a-fA-F]{6}$/.test(raw[field])) level[field] = raw[field].toLowerCase()
-        if (typeof raw.panelTitle === 'string' && raw.panelTitle.trim()) level.panelTitle = raw.panelTitle.trim().slice(0, 60)
+        for (const field of TITLE_KEYS) if (typeof raw[field] === 'string' && raw[field].trim()) level[field] = raw[field].trim().slice(0, 80)
+        if (raw.logoUrl) {
+            const logoUrl = normalizeGroupLogoUrl(raw.logoUrl)
+            if (logoUrl) level.logoUrl = logoUrl
+        }
         if (Number.isFinite(Number(raw.mapZoom)) && Number(raw.mapZoom) >= 0.8 && Number(raw.mapZoom) <= 1.5) level.mapZoom = Number(raw.mapZoom)
+        if (raw.layout !== undefined) level.layout = normalizeLayout(raw.layout)
         result[key] = level
     }
     return result
@@ -47,7 +71,7 @@ export function normalizeGroupPortalAppearance(raw) {
     }
     if (!value || typeof value !== 'object' || Array.isArray(value)) return { ...DEFAULT_GROUP_PORTAL_APPEARANCE }
     const result = { ...DEFAULT_GROUP_PORTAL_APPEARANCE }
-    for (const key of ['brandTitle', 'brandSubtitle', 'panelTitle']) {
+    for (const key of TITLE_KEYS) {
         if (typeof value[key] === 'string' && value[key].trim()) result[key] = value[key].trim().slice(0, 80)
     }
     for (const key of TOGGLE_KEYS) {
@@ -64,5 +88,6 @@ export function normalizeGroupPortalAppearance(raw) {
 
 export function groupPortalAppearanceForLevel(raw, level) {
     const appearance = normalizeGroupPortalAppearance(raw)
-    return { ...appearance, ...(appearance.levels[level] || {}) }
+    const override = appearance.levels[level] || {}
+    return { ...appearance, ...override, factsTitle: override.factsTitle || `${level === 'world' ? '全球' : '当前区域'}${appearance.factsTitle}` }
 }

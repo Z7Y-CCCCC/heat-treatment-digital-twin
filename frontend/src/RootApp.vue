@@ -1,36 +1,42 @@
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import { RouterView, useRoute, useRouter } from 'vue-router'
-import { adminSession, issueNativeSessionTicket, lockAdmin, refreshAdminSession } from './runtime/adminSession.js'
+import { adminSession, issueNativeSessionTicket, logoutCurrentAdminAccount, refreshAdminSession } from './runtime/adminSession.js'
 import { isNativeOverlaySurface } from './runtime/nativeSurfaceBridge.js'
+import { openCustomerOperations } from './runtime/nativeAdminNavigation.js'
 
 const route = useRoute()
 const router = useRouter()
-const protectedPaths = new Set(['/', '/group', '/overlay', '/hud-preview', '/customer'])
+const protectedPaths = new Set(['/', '/group', '/site', '/overlay', '/hud-preview', '/customer'])
 const isNativeOverlaySurfaceRoute = computed(() => isNativeOverlaySurface(
     route.query.embedded, route.query.surface, window.chrome?.webview))
 const isNativeAdminSurfaceRoute = computed(() => route.query.embedded === 'unity'
     && route.query.surface !== 'overlay'
     && typeof window.chrome?.webview?.postMessage === 'function')
 const nativeSessionIdentity = computed(() => {
-    if (!isNativeAdminSurfaceRoute.value || !adminSession.ready || !adminSession.authenticated
+    if (!isNativeAdminSurfaceRoute.value || !adminSession.ready || !adminSession.displayAuthenticated
         || !adminSession.permissions.launch || !adminSession.permissions.view) return ''
     return `${adminSession.accountSlotId}:${adminSession.user?.id || adminSession.user?.username || ''}`
 })
 const waitingForNativeOverlayAuth = computed(() => isNativeOverlaySurfaceRoute.value
-    && adminSession.ready && !adminSession.authenticated)
+    && adminSession.ready && !adminSession.displayAuthenticated)
 const showPermissionDenied = computed(() => protectedPaths.has(route.path)
-    && adminSession.authenticated && !adminSession.permissions.view && route.path !== '/customer')
+    && adminSession.displayAuthenticated && !adminSession.permissions.view && route.path !== '/customer')
 const hasCustomerOperations = computed(() => adminSession.permissions.cast || adminSession.permissions.backup)
 let overlayAuthPoll = 0
 const originalDocumentBackground = document.documentElement.style.backgroundColor
 const originalBodyBackground = document.body.style.backgroundColor
 
 async function signOutFromDeniedPage() {
-    await lockAdmin()
+    await logoutCurrentAdminAccount()
 }
 
-watch(() => adminSession.authenticated, authenticated => {
+function showCustomerOperations() {
+    openCustomerOperations({ embedded: route.query.embedded, surface: route.query.surface,
+        webview: window.chrome?.webview, router })
+}
+
+watch(() => adminSession.displayAuthenticated, authenticated => {
     if (!authenticated && protectedPaths.has(route.path)) {
         if (isNativeOverlaySurfaceRoute.value) return
         void router.replace({ path: '/admin', query: { redirect: route.fullPath } })
@@ -100,12 +106,12 @@ onUnmounted(() => window.clearInterval(overlayAuthPoll))
             <p class="access-eyebrow">ACCOUNT PERMISSIONS</p>
             <h1 id="denied-title">此账户没有大屏查看权限</h1>
             <p class="access-copy">请联系系统管理员调整您的功能权限。当前账号仅能访问已获授权的现场操作。</p>
-            <button v-if="hasCustomerOperations" type="button" class="denied-action" @click="router.replace({ path: '/customer', query: route.query })">进入现场操作中心<span aria-hidden="true">→</span></button>
+            <button v-if="hasCustomerOperations" type="button" class="denied-action" @click="showCustomerOperations">进入现场操作中心<span aria-hidden="true">→</span></button>
             <button v-else type="button" class="denied-action" @click="signOutFromDeniedPage">退出当前账户<span aria-hidden="true">→</span></button>
         </section>
     </main>
     <RouterView v-else v-slot="{ Component, route: activeRoute }">
-        <Transition name="route-fade" mode="out-in">
+        <Transition name="route-fade">
             <KeepAlive include="AdminAccess">
                 <component
                     :is="Component"

@@ -76,6 +76,10 @@ namespace HeatTreatment.DigitalTwin.Runtime
         private Camera _camera;
         private OrbitCameraController _orbit;
         private bool _sceneReady;
+        private bool _inspectionIsolated;
+        private CameraClearFlags _inspectionPreviousClearFlags;
+        private Color _inspectionPreviousBackground;
+        private bool _inspectionPreviousFog;
         private bool _authenticated;
         private bool _loginInProgress;
         private int _authGeneration;
@@ -487,6 +491,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
         {
             cancellationToken.ThrowIfCancellationRequested();
             _diagnostics.UpdateLoading(0.18f, "正在构建设备层级");
+            SetInspectionSceneIsolation(false);
             DestroyCurrentFactory();
             _config = config;
             var root = new GameObject("RuntimeFactory");
@@ -1101,6 +1106,8 @@ namespace HeatTreatment.DigitalTwin.Runtime
 
         private void OnDashboardViewContextChanged(string mode, string deviceId)
         {
+            if (!string.Equals(mode, "device", StringComparison.OrdinalIgnoreCase))
+                SetInspectionSceneIsolation(false);
             var view = _dashboard?.GetConfiguredView(_dashboard?.ActiveViewId ?? string.Empty, mode);
             var effectiveMode = view?.Mode == "custom"
                 ? (view.TargetType ?? "factory")
@@ -1173,6 +1180,8 @@ namespace HeatTreatment.DigitalTwin.Runtime
         private void OnInspectionContextChanged(JObject payload)
         {
             if (payload == null) return;
+            var stage = payload.Value<string>("inspectionStage") ?? string.Empty;
+            SetInspectionSceneIsolation(stage == "exploded" || stage == "part");
             var context = _lastDashboardContext.DeepClone() as JObject ?? new JObject();
             foreach (var property in payload.Properties()) context[property.Name] = property.Value.DeepClone();
             context["sceneReady"] = _sceneReady;
@@ -1184,9 +1193,33 @@ namespace HeatTreatment.DigitalTwin.Runtime
             });
         }
 
+        private void SetInspectionSceneIsolation(bool isolated)
+        {
+            if (_inspectionIsolated == isolated) return;
+            _inspectionIsolated = isolated;
+            _environment?.SetInspectionIsolation(isolated);
+            if (_camera == null) return;
+            if (isolated)
+            {
+                _inspectionPreviousClearFlags = _camera.clearFlags;
+                _inspectionPreviousBackground = _camera.backgroundColor;
+                _inspectionPreviousFog = RenderSettings.fog;
+                _camera.clearFlags = CameraClearFlags.SolidColor;
+                _camera.backgroundColor = new Color(.125f, .13f, .145f, 1f);
+                RenderSettings.fog = false;
+            }
+            else
+            {
+                _camera.clearFlags = _inspectionPreviousClearFlags;
+                _camera.backgroundColor = _inspectionPreviousBackground;
+                RenderSettings.fog = _inspectionPreviousFog;
+            }
+        }
+
         private void PublishDashboardContext(string mode, string deviceId = "", string lineId = "", string workshopId = "", string viewId = "")
         {
             var normalizedMode = string.IsNullOrWhiteSpace(mode) ? "factory" : mode.ToLowerInvariant();
+            if (normalizedMode != "device") SetInspectionSceneIsolation(false);
             if (!string.IsNullOrWhiteSpace(deviceId))
             {
                 if (string.IsNullOrWhiteSpace(lineId)) _deviceLineIds.TryGetValue(deviceId, out lineId);

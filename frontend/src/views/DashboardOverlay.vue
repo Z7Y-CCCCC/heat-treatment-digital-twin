@@ -1,5 +1,5 @@
 <script setup>
-import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import LoadingExperience from '../components/LoadingExperience.vue'
 import { useFactoryConfig } from '../config/factoryConfig.js'
@@ -15,6 +15,7 @@ import { createNativeViewNavigator } from '../runtime/nativeViewNavigation.js'
 import { fitHudCanvas } from '../runtime/hudPresentation.js'
 import { applyVisibilityAction, widgetRuntimeVisible } from '../runtime/dashboardRules.js'
 import { createGroupHierarchyPath } from '../runtime/groupHierarchyPath.js'
+import { inspectionHoverDetails, inspectionPointText } from '../runtime/inspectionHover.js'
 
 const rootRef = ref(null)
 const route = useRoute()
@@ -34,6 +35,8 @@ const hostConnected = ref(false)
 const standalonePreview = ref(false)
 const hierarchyBusy = ref(false)
 const hierarchyError = ref('')
+const hierarchyPathRef = ref(null)
+let receivedRuntimeContext = false
 const viewNavigator = createNativeViewNavigator(async target => {
     const response = await adminFetch(`${API_BASE}/native-preview/navigate`, {
         method:'POST',headers:{'Content-Type':'application/json'},signal:overlayRequests.signal,
@@ -81,7 +84,7 @@ const {
 
 const hierarchyWorkshops = computed(() => getWorkshops() || [])
 const hierarchyLines = computed(() => hierarchyWorkshops.value
-    .filter(workshop => !runtimeContext.workshopId || workshop.id === runtimeContext.workshopId)
+    .filter(workshop => !runtimeContext.workshopId || String(workshop.id) === String(runtimeContext.workshopId))
     .flatMap(workshop => workshop.lines || []))
 const hierarchyDevices = computed(() => {
     const all = hierarchyWorkshops.value.flatMap(workshop => [
@@ -99,7 +102,8 @@ const hierarchyTrail = computed(() => {
         fromGroup:route.query.fromGroup,
         embedded:route.query.embedded,
         location:config.settings?.factory_location || {},
-        factoryName:config.settings?.factory_name || '全厂总览'
+        factoryName:config.settings?.factory_name || '全厂总览',
+        query:route.query
     })
     const workshop = hierarchyWorkshops.value.find(item => String(item.id) === String(runtimeContext.workshopId))
     if (includesWorkshop && runtimeContext.workshopId) {
@@ -122,8 +126,15 @@ const hierarchyTrail = computed(() => {
     if (trail.length === 1 && mode !== 'factory') {
         trail.push({ key:mode, label:currentView.value?.name || '当前视角', mode, focus:{} })
     }
-    return trail.map((segment,index) => ({...segment,active:index===trail.length-1}))
+    return trail.map((segment,index) => ({
+        ...segment,
+        active:index===trail.length-1,
+        displayLabel:segment.key === 'factory' ? String(segment.label).split(/[·•]/)[0].trim() || segment.label : segment.label
+    }))
 })
+watch(hierarchyTrail, () => nextTick(() => {
+    if (hierarchyPathRef.value) hierarchyPathRef.value.scrollLeft = hierarchyPathRef.value.scrollWidth
+}), { flush:'post' })
 
 const modelLoadErrors = ref([])
 let modelProbeTimer = 0
@@ -256,6 +267,7 @@ function runtimeContextIsRoot() {
 function applyRuntimeContext(payload, { userNavigation = false } = {}) {
     if (overlayDisposed) return
     if (!payload || typeof payload !== 'object') return
+    receivedRuntimeContext = true
     const previousDataContext = [runtimeContext.viewId, runtimeContext.workshopId, runtimeContext.lineId, runtimeContext.deviceId, runtimeContext.partId].join('|')
     Object.assign(runtimeContext, payload)
     nextTick(scheduleRegionReport)
@@ -431,6 +443,7 @@ const selectedPart = computed(() => {
         stage: runtimeContext.inspectionStage || ''
     }
 })
+const hoveredInspectionPart = computed(() => inspectionHoverDetails(runtimeContext, pointValues.value, pointForContextKey))
 
 async function sendInspectionCommand(inspection) {
     if (overlayDisposed || !runtimeContext.deviceId) return
@@ -904,9 +917,13 @@ onMounted(async () => {
     if (overlayDisposed) return
     reportStartup(31, 1, '正在构建设备与车间层级')
     probeConfiguredModels()
-    runtimeContext.sceneId = platform.value.activeScene?.id || ''
-    runtimeContext.viewId = presentationDocument.value?.scene?.defaultViewId || platform.value.activeScene?.defaultViewId || 'factory_overview'
-    runtimeContext.viewMode = dashboardViews.value.find(view => view.id === runtimeContext.viewId)?.mode || 'factory'
+    // The host can send an already-focused workshop before config finishes.
+    // Do not replace that live context with the authored default view.
+    if (!receivedRuntimeContext) {
+        runtimeContext.sceneId = platform.value.activeScene?.id || ''
+        runtimeContext.viewId = presentationDocument.value?.scene?.defaultViewId || platform.value.activeScene?.defaultViewId || 'factory_overview'
+        runtimeContext.viewMode = dashboardViews.value.find(view => view.id === runtimeContext.viewId)?.mode || 'factory'
+    }
     if (!window.chrome?.webview) runtimeContext.sceneReady = true
     registerConfiguredDevices()
     dataStore.setEventQueryOptions(eventQueryConfig())
@@ -989,16 +1006,16 @@ onUnmounted(() => {
 </script>
 
 <template>
-    <LoadingExperience v-if="startupLoading && !nativeLoadingManaged" :show="startupLoading" :progress="startupProgress" :phase="startupPhase" :step="startupStep" />
+    <LoadingExperience v-if="startupLoading && !nativeLoadingManaged" :show="startupLoading" :progress="startupProgress" :phase="startupPhase" :step="startupStep" :config="config.settings?.loading_experience_config" />
     <div ref="rootRef" class="dashboard-overlay-root" :class="{ 'is-scene-ready': runtimeContext.sceneReady !== false, 'standalone-preview': standalonePreview }">
         <RouterLink v-if="runtimeContext.viewMode === 'factory' && presentationDocument?.metadata?.referenceHud !== 1" class="group-map-return" data-overlay-hit="true" :to="{path:'/group',query:{embedded:$route.query.embedded,region:$route.query.fromGroup,scope:$route.query.scope}}">‹ 集团分布</RouterLink>
         <nav v-if="presentationDocument?.metadata?.referenceHud === 1" class="overlay-hierarchy" aria-label="逐级浏览" data-overlay-hit="true" @pointerdown.stop>
-            <div class="overlay-hierarchy-path" aria-label="当前层级路径">
+            <div ref="hierarchyPathRef" class="overlay-hierarchy-path" aria-label="当前层级路径">
                 <template v-for="(segment,index) in hierarchyTrail" :key="segment.key">
                     <i v-if="index" class="overlay-hierarchy-separator" aria-hidden="true">›</i>
-                    <RouterLink v-if="segment.to" class="overlay-hierarchy-ancestor" :to="segment.to">{{ segment.label }}</RouterLink>
-                    <strong v-else-if="segment.active" class="overlay-hierarchy-current" aria-current="location">{{ segment.label }}</strong>
-                    <button v-else type="button" class="overlay-hierarchy-ancestor" :disabled="hierarchyBusy" @click="navigateHierarchy(segment)">{{ segment.label }}</button>
+                    <RouterLink v-if="segment.to" class="overlay-hierarchy-ancestor" :to="segment.to" :title="`返回${segment.label}`" :aria-label="`返回${segment.label}`"><span>{{ segment.displayLabel }}</span></RouterLink>
+                    <strong v-else-if="segment.active" class="overlay-hierarchy-current" :title="segment.label" aria-current="location" :aria-label="segment.label"><span>{{ segment.displayLabel }}</span></strong>
+                    <button v-else type="button" class="overlay-hierarchy-ancestor" :title="`返回${segment.label}`" :aria-label="`返回${segment.label}`" :disabled="hierarchyBusy" @click="navigateHierarchy(segment)"><span>{{ segment.displayLabel }}</span></button>
                 </template>
             </div>
             <div class="overlay-hierarchy-controls">
@@ -1099,6 +1116,17 @@ onUnmounted(() => {
                 />
             </div>
         </div>
+        <aside v-if="hoveredInspectionPart" class="inspection-hover-card" :style="hoveredInspectionPart.style" aria-label="悬停部件详情">
+            <span class="inspection-hover-eyebrow">COMPONENT / 部件</span>
+            <strong>{{ hoveredInspectionPart.name || hoveredInspectionPart.id }}</strong>
+            <small v-if="hoveredInspectionPart.group" class="inspection-hover-group">{{ hoveredInspectionPart.group }}</small>
+            <p>{{ hoveredInspectionPart.description || '已配置的设备部件' }}</p>
+            <div v-for="point in hoveredInspectionPart.points" :key="point.id || point.name" class="inspection-hover-point">
+                <span>{{ point.display_name || point.name || point.value_role || point.id }}</span>
+                <b>{{ inspectionPointText(point) }}</b>
+            </div>
+            <small class="inspection-hover-hint">{{ ['exploded', 'part'].includes(runtimeContext.inspectionStage) ? '点击部件查看完整详情' : '点击部件继续查看拆解结构' }}</small>
+        </aside>
     </div>
 </template>
 
@@ -1191,6 +1219,23 @@ body,
     opacity: 1;
     isolation: isolate;
 }
+.inspection-hover-card{
+    position:absolute;z-index:1001;width:min(280px,24vw);min-width:220px;
+    padding:15px 17px 13px;display:flex;flex-direction:column;gap:5px;
+    border:1px solid rgba(184,194,246,.32);border-left:2px solid #a7b4ff;
+    border-radius:8px;background:linear-gradient(140deg,rgba(34,38,54,.96),rgba(22,25,37,.94));
+    box-shadow:0 16px 42px rgba(7,9,18,.35),inset 0 1px rgba(255,255,255,.07);
+    backdrop-filter:blur(15px);-webkit-backdrop-filter:blur(15px);
+    pointer-events:none;color:#e8eaf5;transform:translateY(-8px);
+}
+.inspection-hover-card::before{content:"";position:absolute;left:-5px;top:20px;width:7px;height:7px;border-radius:50%;background:#aebaff;box-shadow:0 0 12px #9daaff}
+.inspection-hover-eyebrow{font-size:9px;letter-spacing:.16em;color:#aeb9d4}
+.inspection-hover-card>strong{font-size:16px;font-weight:600;line-height:1.35}
+.inspection-hover-group{color:#9ca9cb;font-size:10px}
+.inspection-hover-card p{margin:5px 0 8px;color:#c4c9dc;font-size:11px;line-height:1.55}
+.inspection-hover-point{display:flex;justify-content:space-between;gap:10px;padding:6px 0;border-top:1px solid rgba(191,202,245,.13);font-size:10px;color:#abb5d1}
+.inspection-hover-point b{color:#e7eaff;font-weight:600;text-align:right}
+.inspection-hover-hint{margin-top:5px;color:#aebaff;font-size:10px}
 .overlay-canvas.is-reference-canvas {
     inset: auto;
     top: 50%;
@@ -1369,9 +1414,10 @@ body,
 .overlay-model-error-item code,
 .overlay-model-errors > em { color: #ffdcd5; font-size: 11px; line-height: 1.4; overflow-wrap: anywhere; }
 .overlay-model-error-item code { font-family: SFMono-Regular, Consolas, Monaco, monospace; }
-.overlay-hierarchy{left:24px;top:100px;gap:8px;max-width:calc(100vw - 48px);padding:6px 9px;border-color:rgba(157,177,219,.2);border-radius:9px;background:linear-gradient(110deg,rgba(17,23,39,.78),rgba(24,30,48,.56) 72%,rgba(19,25,41,.46));box-shadow:0 12px 32px rgba(2,8,18,.2),inset 0 1px 0 rgba(232,238,255,.075)}
-.overlay-hierarchy-path{flex:0 1 auto;gap:2px;min-width:0}.overlay-hierarchy-separator{padding:0 1px;color:#72809b;font-size:12px}.overlay-hierarchy-current,.overlay-hierarchy-ancestor{display:inline-flex;align-items:center;gap:6px;min-width:0;max-width:clamp(62px,9vw,132px);padding:6px 7px;border-radius:6px;line-height:1.2}.overlay-hierarchy-ancestor{position:relative;flex:0 1 auto;color:#9aa8c2;text-decoration:none;transition:color .16s ease,background .16s ease,box-shadow .16s ease}.overlay-hierarchy-ancestor::before{content:"";width:3px;height:3px;flex:0 0 3px;border-radius:50%;background:#8f9db9;box-shadow:0 0 5px rgba(143,157,185,.2)}.overlay-hierarchy-ancestor:hover:not(:disabled){color:#e3eafa;background:rgba(140,161,220,.095);box-shadow:inset 0 0 0 1px rgba(157,177,225,.08)}.overlay-hierarchy-ancestor:focus-visible,.overlay-hierarchy-action:focus-visible,.overlay-hierarchy select:focus-visible{outline:1px solid rgba(178,194,255,.72);outline-offset:2px}.overlay-hierarchy-current{flex:0 1 auto;color:#edf2ff;background:linear-gradient(110deg,rgba(129,151,220,.2),rgba(129,151,220,.075));box-shadow:inset 0 0 0 1px rgba(165,184,235,.15)}.overlay-hierarchy-current::before{content:"";width:5px;height:5px;flex:0 0 5px;border-radius:50%;background:#a3abf5;box-shadow:0 0 8px rgba(151,161,245,.52)}
-.overlay-hierarchy-controls{gap:5px;padding-left:9px;border-left-color:rgba(159,175,212,.16)}.overlay-hierarchy select,.overlay-hierarchy-action{height:29px;max-width:min(180px,16vw);padding:5px 22px 5px 9px;border-color:rgba(153,172,214,.2);border-radius:6px;color:#d7e0f1;background-color:rgba(28,37,57,.76);transition:border-color .16s ease,background .16s ease,box-shadow .16s ease}.overlay-hierarchy select:hover,.overlay-hierarchy-action:hover{border-color:rgba(164,185,234,.38);background-color:rgba(49,63,94,.65);box-shadow:0 3px 10px rgba(4,8,18,.12)}.overlay-hierarchy select option{color:#e4eaf6;background:#1b2234}.overlay-hierarchy-action{padding-inline:9px}.overlay-hierarchy-status{white-space:nowrap}.overlay-hierarchy .hierarchy-error{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-@media(max-width:900px){.overlay-hierarchy{left:12px;top:88px;max-width:calc(100vw - 24px);gap:5px;padding:5px 6px}.overlay-hierarchy-path{gap:0}.overlay-hierarchy-current,.overlay-hierarchy-ancestor{max-width:clamp(46px,8vw,88px);padding-inline:5px;font-size:9px}.overlay-hierarchy-controls{gap:3px;padding-left:5px}.overlay-hierarchy select,.overlay-hierarchy-action{max-width:clamp(70px,13vw,120px);padding-left:6px;padding-right:17px;font-size:9px}.overlay-hierarchy-action{padding-inline:6px}.overlay-hierarchy-status{font-size:9px}}
+.overlay-hierarchy{left:24px;top:100px;gap:8px;box-sizing:border-box;max-width:min(900px,calc(100vw - 48px));padding:4px 6px 4px 12px;border:1px solid rgba(220,220,213,.19);border-radius:999px;background:rgba(39,40,43,.88);box-shadow:0 12px 30px rgba(0,0,0,.18),inset 0 1px rgba(255,255,255,.045);color:#d5d6d2;backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px)}
+.overlay-hierarchy-path{flex:0 1 auto;gap:2px;min-width:0;overflow-x:auto;overflow-y:hidden;scrollbar-width:none;overscroll-behavior-inline:contain;white-space:nowrap}.overlay-hierarchy-path::-webkit-scrollbar{display:none}.overlay-hierarchy-separator{flex:0 0 auto;padding:0 2px;color:#777c7b;font-size:13px}.overlay-hierarchy-current,.overlay-hierarchy-ancestor{display:inline-flex;align-items:center;flex:0 0 auto;min-width:0;max-width:158px;padding:6px 8px;border-radius:999px;line-height:1.2;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.overlay-hierarchy-ancestor{color:#b9bfbb;text-decoration:none;transition:color .16s ease,background .16s ease}.overlay-hierarchy-ancestor:first-child{color:#a7c8b8}.overlay-hierarchy-ancestor:hover:not(:disabled){color:#f2f4ef;background:rgba(255,255,255,.09)}.overlay-hierarchy-ancestor:focus-visible,.overlay-hierarchy-action:focus-visible,.overlay-hierarchy select:focus-visible{outline:2px solid #a6d7c1;outline-offset:1px}.overlay-hierarchy-current{max-width:185px;color:#f4f5f1;background:rgba(227,228,220,.105);box-shadow:inset 0 0 0 1px rgba(224,227,218,.08)}.overlay-hierarchy-current::before{content:"";width:5px;height:5px;flex:0 0 5px;margin-right:7px;border-radius:50%;background:#8fc7ac;box-shadow:0 0 8px rgba(143,199,172,.5)}
+.overlay-hierarchy-current>span,.overlay-hierarchy-ancestor>span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.overlay-hierarchy-controls{gap:5px;flex:0 0 auto;padding-left:8px;border-left:1px solid rgba(220,220,213,.16)}.overlay-hierarchy select,.overlay-hierarchy-action{height:28px;max-width:150px;padding:5px 22px 5px 11px;border:1px solid rgba(220,220,213,.18);border-radius:999px;color:#e7e9e5;background-color:rgba(255,255,255,.055);transition:border-color .16s ease,background .16s ease}.overlay-hierarchy select:hover,.overlay-hierarchy-action:hover{border-color:rgba(174,213,193,.5);background-color:rgba(255,255,255,.1);box-shadow:none}.overlay-hierarchy select option{color:#f3f4ef;background:#292a2b}.overlay-hierarchy-action{padding-inline:10px}.overlay-hierarchy-status{white-space:nowrap}.overlay-hierarchy .hierarchy-error{max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+@media(max-width:900px){.overlay-hierarchy{left:12px;top:88px;max-width:calc(100vw - 24px);gap:5px;padding:4px 5px 4px 7px}.overlay-hierarchy-current,.overlay-hierarchy-ancestor{max-width:124px;padding-inline:6px}.overlay-hierarchy-controls{padding-left:5px}.overlay-hierarchy select,.overlay-hierarchy-action{max-width:110px;padding-left:8px;padding-right:17px}}
 @media(prefers-reduced-motion:reduce){.overlay-hierarchy-ancestor,.overlay-hierarchy select,.overlay-hierarchy-action{transition:none}}
 </style>
