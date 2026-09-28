@@ -32,6 +32,7 @@ function fixture(t, connections) {
     for (const method of ['getDevices', 'getDataPoints', 'getWorkshops', 'getLines']) t.mock.method(adminApi, method, async () => [])
     t.mock.method(adminApi, 'getRealtimePointValues', async () => ({ points: [] }))
     t.mock.method(adminApi, 'getDataSources', async () => ({ connections }))
+    t.mock.method(adminApi, 'getSettings', async () => ({}))
     const renderer = createRenderer({
         createElement: () => ({}), createText: () => ({}), createComment: () => ({}),
         setText() {}, setElementText() {}, parentNode: () => null, nextSibling: () => null,
@@ -59,12 +60,14 @@ test('designer keeps all database types but excludes both HTTP API discriminator
     assert.equal(state.loading, false)
     assert.notEqual(state.status.tone, 'danger')
     assert.deepEqual(state.dataSources.map(source => source.id), ['primary', 'legacy_mysql', 'legacy_postgres', 'legacy_sqlserver', 'legacy_sqlite'])
+    assert.deepEqual(state.httpApiSources.map(source => source.id), ['api', 'api_type_only', 'api_source_type_only'])
     assert.equal(sources.length, 8, 'filtering must not mutate the API result')
 
     // Both ordinary datasets and business components share this filtered list.
     const selectors = descriptor.template.content.match(/<select\b[^>]*v-model="(?:dataset|selectedWidget\.data)\.connectionId"[^>]*>[\s\S]*?<\/select>/g)
-    assert.equal(selectors?.length, 2)
-    assert.ok(selectors.every(selector => selector.includes('v-for="source in dataSources"')))
+    assert.equal(selectors?.length, 3)
+    assert.equal(selectors.filter(selector => selector.includes('v-for="source in dataSources"')).length, 2)
+    assert.equal(selectors.filter(selector => selector.includes('v-for="source in httpApiSources"')).length, 1)
 })
 
 test('an empty or malformed data-source response does not break designer loading', async t => {

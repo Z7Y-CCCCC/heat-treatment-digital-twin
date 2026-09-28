@@ -6,10 +6,10 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { API_BASE } from '../runtime/backendEndpoint.js'
 import { createDashboardDataStore } from '../runtime/DataStore.js'
 import { createNativeViewNavigator } from '../runtime/nativeViewNavigation.js'
-import { setFactoryScope } from '../runtime/factoryScope.js'
 import { openAdminSurface, openCustomerOperations } from '../runtime/nativeAdminNavigation.js'
 import { adminFetch, adminSession, refreshAdminSession, startAdminSessionTracking, stopAdminSessionTracking, changeAdminPassword, listAdminAccounts, addAdminAccount, activateAdminAccount, logoutCurrentAdminAccount } from '../runtime/adminSession.js'
-import { currentFactorySite,factoryDirectorySites,configuredOverseasCountries,chinaRegionsWithFactories,sitesAtHierarchyLevel,groupHierarchyEntries,hierarchyMapPoints,worldHierarchyMapPoints } from '../runtime/groupTopology.js'
+import { factoryDirectorySites,configuredOverseasCountries,sitesAtHierarchyLevel,groupHierarchyEntries,hierarchyMapPoints,worldHierarchyMapPoints } from '../runtime/groupTopology.js'
+import { streetEntryStatus } from '../runtime/factoryNavigationReadiness.js'
 import { loadChinaAdminMap } from '../runtime/chinaAdminMaps.js'
 import { createFactoryMapMarker } from '../runtime/groupMapMarkers.js'
 import { createGroupNavigationCrumbs } from '../runtime/groupHierarchyPath.js'
@@ -17,13 +17,13 @@ import { isNativeUnitySurface, NATIVE_SURFACE_CHANNEL, requestNativeSceneSurface
 import AdminWindowChrome from './admin/components/AdminWindowChrome.vue'
 import GroupHierarchyCapsule from './GroupHierarchyCapsule.vue'
 import LoadingExperience from '../components/LoadingExperience.vue'
+import MapSurfaceWidgets from './MapSurfaceWidgets.vue'
 import { disposeSceneObject } from '../runtime/ConfiguredFactoryScene.js'
 import { groupPortalAppearanceForLevel } from '../runtime/groupPortalAppearance.js'
 
 const route=useRoute(),router=useRouter(),mapHost=ref(null),config=ref(null),error=ref(''),busy=ref(false),ready=ref(false),loadingStage=ref(false),features=ref([])
 const nativeLoadingManaged=ref(Boolean(window.__DIGITAL_TWIN_NATIVE_LOADING__)),mapLoadingProgress=ref(7),mapLoadingPhase=ref(0),mapLoadingStep=ref('正在读取工厂与区域资料')
 function reportMapLoading(progress,phase,step){mapLoadingProgress.value=progress;mapLoadingPhase.value=phase;mapLoadingStep.value=step;window.dispatchEvent(new CustomEvent('digital-twin-loading-progress',{detail:{progress,phase,step}}))}
-const site=computed(()=>currentFactorySite(config.value || {}))
 const appearance=computed(()=>groupPortalAppearanceForLevel(config.value?.settings?.group_portal_config,level.value))
 const appearanceStyle=computed(()=>({'--group-background':appearance.value.background,'--group-surface':appearance.value.panelSurface,'--group-accent':appearance.value.accent,'--group-text':appearance.value.text}))
 function layoutStyle(key){
@@ -32,14 +32,17 @@ function layoutStyle(key){
   return {left:`${point.x}%`,top:`${point.y}%`,right:'auto',bottom:'auto',...(key==='dock'?{width:'67%'}:{})}
 }
 const sites=computed(()=>config.value ? factoryDirectorySites(config.value) : [])
+const factorySummaries=ref({})
+const factorySummary=factoryId=>factorySummaries.value[String(factoryId)] || null
+const visibleTotals=computed(()=>visibleSites.value.reduce((totals,item)=>({workshops:totals.workshops+Number(item.workshops||0),lines:totals.lines+Number(item.lines||0),devices:totals.devices+Number(item.devices||0)}),{workshops:0,lines:0,devices:0}))
 const clearCountries=computed(()=>configuredOverseasCountries(sites.value))
-const factoryRegions=computed(()=>chinaRegionsWithFactories(sites.value))
 const level=computed(()=>{
   if(['world','country','province','city','district'].includes(String(route.query.level || '')))return String(route.query.level)
   const legacy=String(route.query.region || '')
   return legacy ? /^\d{6}$/.test(legacy) ? 'province' : 'country' : 'world'
 })
 const selected=computed(()=>String(route.query.code || route.query.region || ''))
+const navigationNotice=computed(()=>String(route.query.navigationNotice || '').slice(0,180))
 const visibleSites=computed(()=>sitesAtHierarchyLevel(sites.value,level.value,selected.value))
 const unassignedCitySites=computed(()=>level.value==='city' ? visibleSites.value.filter(item=>!item.location.districtCode && !item.location.districtName) : [])
 const visibleLocalSites=computed(()=>visibleSites.value.filter(item=>item.runtime==='local'))
@@ -50,13 +53,41 @@ const labelElements=new Map()
 const selectedFeature=computed(()=>features.value.find(feature=>String(feature.properties.adcode ?? feature.properties.ADM0_A3)===selected.value))
 const regionTitle=computed(()=>level.value==='world' ? '工厂分布' : String(route.query[`${level.value}Name`] || selectedFeature.value?.properties?.name || selectedFeature.value?.properties?.NAME_ZH || selectedFeature.value?.properties?.ADMIN || selected.value || '区域总览'))
 const selectedFactory=computed(()=>visibleSites.value.find(item=>item.id===selectedSiteId.value))
+const mapValues=ref({})
+const mapValuesLevel=ref('')
+let mapValueRequestId=0
+function mapNumber(key,fallback,maximum=1000000){
+  if(mapValuesLevel.value!==level.value)return fallback
+  const entry=mapValues.value[key]
+  if(entry?.quality!=='good')return fallback
+  const value=Number(entry.value)
+  return Number.isFinite(value) && value>=0 && value<=maximum ? Math.round(value) : fallback
+}
+function hasMapMetric(key){return mapValuesLevel.value===level.value && mapValues.value[key]?.quality==='good'}
+const factsFactoryCount=computed(()=>mapNumber('factsFactoryCount',visibleSites.value.length))
+const factsLocalCount=computed(()=>mapNumber('factsLocalCount',visibleLocalSites.value.length))
+const dockFactoryCount=computed(()=>mapNumber('dockFactoryCount',visibleSites.value.length))
+const dockLocalCount=computed(()=>Math.min(dockFactoryCount.value,mapNumber('dockLocalCount',visibleLocalSites.value.length)))
+const dockAssignedCount=computed(()=>mapNumber('dockAssignedCount',districtAssignedSites.value.length))
+const dockCoverageValue=computed(()=>mapNumber('dockCoverage',districtCoverage.value,100))
 const regionRows=computed(()=>{
+  const overrides=mapValuesLevel.value===level.value && mapValues.value.panelRegionRows?.quality==='good'
+    ? new Map((mapValues.value.panelRegionRows.rows || []).filter(row=>row && typeof row==='object' && !Array.isArray(row) && row.code != null).map(row=>[String(row.code),row]))
+    : new Map()
+  const merge=rows=>rows.map(row=>{
+    const source=overrides.get(String(row.code))
+    if(!source)return row
+    const next={...row}
+    for(const field of ['count','localCount','registeredCount','districtAssignedCount']){
+      const value=Number(source[field])
+      if(source[field]!==undefined && Number.isFinite(value) && value>=0 && value<=1000000)next[field]=Math.round(value)
+    }
+    return next
+  }).sort((a,b)=>b.count-a.count || a.name.localeCompare(b.name,'zh-CN'))
   if(level.value==='province' && municipalityLevel.value){
-    return groupHierarchyEntries(sites.value,'city',selected.value,childFeatures.value)
-      .sort((a,b)=>b.count-a.count || a.name.localeCompare(b.name,'zh-CN'))
+    return merge(groupHierarchyEntries(sites.value,'city',selected.value,childFeatures.value))
   }
-  return groupHierarchyEntries(sites.value,level.value,selected.value,childFeatures.value)
-    .sort((a,b)=>b.count-a.count || a.name.localeCompare(b.name,'zh-CN'))
+  return merge(groupHierarchyEntries(sites.value,level.value,selected.value,childFeatures.value))
 })
 const showAllRegions=ref(false)
 const displayedRegionRows=computed(()=>showAllRegions.value?regionRows.value:regionRows.value.filter(row=>row.count>0))
@@ -77,7 +108,7 @@ async function switchAccount(account){if(account.slotId===adminSession.accountSl
 async function signOut(){accountBusy.value=true;accountError.value='';accountNotice.value='';try{await logoutCurrentAdminAccount();accountPasswordMode.value=false;accountAddOpen.value=false;await loadAccountSessions();accountNotice.value=accountSessions.value.length?'当前账户已退出，可从下方切换到其他已登录账户':'当前账户已退出'}catch(error){accountError.value=error.message}finally{accountBusy.value=false}}
 async function changeOwnPassword(){accountBusy.value=true;accountError.value='';try{await changeAdminPassword(accountCurrentPassword.value,accountNewPassword.value);accountCurrentPassword.value='';accountNewPassword.value='';accountPasswordMode.value=false;accountError.value='密码已更新，其他会话已退出'}catch(error){accountError.value=error.message}finally{accountBusy.value=false}}
 const mapConfigSignature=value=>JSON.stringify({sites:factoryDirectorySites(value || {}).map(({id,name,location,runtime})=>({id,name,location,runtime})),appearance:value?.settings?.group_portal_config})
-let renderer,scene,camera,controls,mapRoot,observer,raf,pollTimer,focusFrame=0,disposed=false,dirty=true,geometryGeneration=0,request,down,surfaceChannel,configLoading=false,mapMotionEnabled=true,lastMarkerFrame=0,regionVisuals=new Map(),mapTransition=null,activeProject=null
+let renderer,scene,camera,controls,mapRoot,observer,raf,pollTimer,summaryPollTimer,focusFrame=0,disposed=false,dirty=true,geometryGeneration=0,request,down,surfaceChannel,configLoading=false,mapMotionEnabled=true,lastMarkerFrame=0,regionVisuals=new Map(),mapTransition=null,activeProject=null
 const adminSurface=computed(()=>isNativeUnitySurface(route.query.embedded,window.chrome?.webview) && route.query.surface==='admin')
 const sources={china:'/maps/china-provinces.geojson',world:'/maps/world-countries.geojson'},cache={}
 const mapScale=2.7,chinaLongitude=104
@@ -138,7 +169,7 @@ function reportRegions() {window.chrome?.webview?.postMessage({type:'overlay_reg
 function hostMessage(event){if(event.data?.type==='overlay_host_state')reportRegions()}
 function groupQuery(extra={}){
   const query={...route.query}
-  for(const key of ['scope','region','level','code','country','countryName','province','provinceName','city','cityName','district','districtName'])delete query[key]
+  for(const key of ['scope','region','level','code','country','countryName','province','provinceName','city','cityName','district','districtName','navigationNotice'])delete query[key]
   return {...query,...extra}
 }
 function hierarchyQuery(targetLevel,code='',name=''){
@@ -162,6 +193,24 @@ function navigateHierarchy(item){
   selectedSiteId.value=''
   router.replace({path:'/group',query:hierarchyQuery(item.level,item.code,item.name || item.label)})
 }
+function navigateDesignedSurface(viewId){
+  const targetLevel=String(viewId || '').replace(/^map_/,'')
+  const ancestor=hierarchyCrumbs.value.find(item=>item.level===targetLevel)
+  if(ancestor){navigateHierarchy(ancestor);return}
+  if(viewId==='site_street'){
+    const target=visibleSites.value.find(site=>site.id===selectedSiteId.value && site.runtime==='local')
+    if(target)openFactoryStreet(target)
+  }
+}
+function handleMapEscape(event){
+  if(event.key!=='Escape' || event.defaultPrevented || event.isComposing)return
+  if(event.target instanceof Element && event.target.closest('input,textarea,select,[contenteditable="true"],[role="textbox"]'))return
+  if(accountOpen.value){accountOpen.value=false;event.preventDefault();return}
+  const ancestors=hierarchyCrumbs.value
+  if(ancestors.length<2)return
+  event.preventDefault()
+  navigateHierarchy(ancestors[ancestors.length-2])
+}
 function selectRegion(id){const row=regionRows.value.find(item=>item.code===id);if(row)navigateHierarchy(row)}
 function selectSite(id){
   const target=sites.value.find(item=>item.id===id)
@@ -173,17 +222,18 @@ function selectSite(id){
 function selectMarker(id){
   const marker=markerLabels.value.find(item=>item.id===id)
   if(!marker)return
-  if(level.value==='world' && marker.worldProvinceCode){
-    selectedSiteId.value=''
-    router.replace({path:'/group',query:groupQuery({level:'province',code:marker.worldProvinceCode,country:'CHN',countryName:'中华人民共和国',province:marker.worldProvinceCode,provinceName:marker.worldProvinceName})})
-    return
-  }
   if(marker.factoryId){const target=sites.value.find(item=>item.id===marker.factoryId);if(target && (level.value==='district' || level.value==='country' && selected.value!=='CHN') && target.runtime==='local')openFactoryStreet(target);else selectSite(marker.factoryId)}
   else selectRegion(marker.targetRegion || 'unassigned')
 }
 function clearRegion(){navigateHierarchy({level:'world',code:'',name:'全球'})}
 function openFactoryStreet(target){
-  if(!target || target.runtime!=='local')return
+  const status=streetEntryStatus(target)
+  if(!status.allowed){
+    if(target){selectedSiteId.value=target.id;highlightFactoryMarker(target.id)}
+    error.value=status.message
+    return
+  }
+  error.value=''
   selectedSiteId.value=target.id
   router.push({path:'/site',query:{...route.query,factoryId:target.id,stage:'street'}})
 }
@@ -396,7 +446,7 @@ async function buildMap({reframe=true}={}) {
       const code=String(feature.properties?.adcode ?? feature.properties?.ADM0_A3 ?? '')
       const targetCode=code
       const count=counts.get(targetCode) || 0
-      const active=(count>0 && !(stage==='world' && code==='CHN')) || stage==='district'
+      const active=count>0 || stage==='district'
       const isChina=code==='CHN' || stage==='country' && stageCode==='CHN'
       const surfaceColor=stage==='world' ? active ? mapBase.getHex():code==='CHN'?mapBase.clone().multiplyScalar(.82).getHex():mapMuted.getHex() : active ? mapBase.clone().lerp(activeAccent,.12).getHex() : isChina ? mapBase.clone().multiplyScalar(.84).getHex() : mapMuted.clone().lerp(mapBase,.42).getHex()
       const surfaceOpacity=stage==='world' ? (active ? .78 : code==='CHN' ? .56 : .38) : active ? .65 : .39
@@ -434,12 +484,11 @@ async function buildMap({reframe=true}={}) {
       nextRegionVisuals.set(targetCode,visuals);group.add(region)
     }
     if(stage==='world'){
-      // Provincial outlines remain visible in the China-centred first view.
-      // They are decorative here: navigation still follows the country →
-      // province hierarchy, while only configured provinces receive a glow.
+      // Provincial outlines are decorative on the world map. The sole
+      // interactive China beacon belongs to the country, not its provinces.
       const provinces=new THREE.Group()
       for(const feature of chinaMap.features.filter(isChinaAdminFeature)){
-        const assigned=factoryRegions.value.has(String(feature.properties.adcode))
+        const assigned=false
         const polygons=feature.geometry.type==='Polygon'?[feature.geometry.coordinates]:feature.geometry.type==='MultiPolygon'?feature.geometry.coordinates:[]
         for(const rings of polygons){
           if(!rings[0]?.length)continue
@@ -468,10 +517,20 @@ async function buildMap({reframe=true}={}) {
     const frameBounds=new THREE.Box3()
     for(const region of group.children.filter(child=>child.userData.isRegionGeometry))frameBounds.expandByObject(region)
     if(stage==='world'){
-      // Keep the entire world geometry draggable, but frame the first view on
-      // China and nearby countries instead of shrinking the factory to a dot.
+      // Keep the initial China emphasis, but widen the frame for configured
+      // overseas sites so their country beacons are not outside the viewport.
       const focusBounds=new THREE.Box3()
       for(const coordinate of [[62,4],[147,64]]){
+        const [x,y]=stageProject(coordinate)
+        focusBounds.expandByPoint(new THREE.Vector3(x,reliefDepth,-y))
+      }
+      for(const site of sites.value.filter(item=>item.location.country!=='CHN')){
+        const country=worldFeatures.find(feature=>feature.properties?.ADM0_A3===site.location.country)
+        const props=country?.properties || {}
+        const coordinate=Number.isFinite(props.LABEL_X) && Number.isFinite(props.LABEL_Y)
+          ? [props.LABEL_X,props.LABEL_Y] : site.location.longitude!==null && site.location.latitude!==null
+            ? [site.location.longitude,site.location.latitude] : null
+        if(!coordinate)continue
         const [x,y]=stageProject(coordinate)
         focusBounds.expandByPoint(new THREE.Vector3(x,reliefDepth,-y))
       }
@@ -493,7 +552,7 @@ async function buildMap({reframe=true}={}) {
     const pointFeatures=stage==='district' || stage==='country' && stageCode!=='CHN' ? mapFeatures : nextChildFeatures
     const pointLevel=stage==='province' && municipality ? 'city' : stage
     const points=stage==='world'
-      ? worldHierarchyMapPoints(sites.value,worldFeatures,chinaMap.features.filter(isChinaAdminFeature))
+      ? worldHierarchyMapPoints(sites.value,worldFeatures)
       : hierarchyMapPoints(sites.value,pointLevel,stageCode,pointFeatures)
     if(stage==='city'){
       const represented=new Set(points.map(point=>point.factoryId).filter(Boolean))
@@ -507,12 +566,12 @@ async function buildMap({reframe=true}={}) {
       const coordinate=point.location?.mapCenter
       if(!coordinate)continue
       const projected=stageProject(coordinate),offset=point.mapOffset || [0,0],position=[projected[0]+offset[0],projected[1]+offset[1]]
-      const markerOptions=stage==='country' && stageCode==='CHN'?{footprint:false,radiusScale:.24}:stage==='province' || stage==='city'?{footprint:false,radiusScale:.4}:stage==='world' && point.worldProvinceCode?{footprint:false,radiusScale:.12,beamScale:.28}:stage==='world'?{radiusScale:.62}:{}
+      const markerOptions=stage==='country' && stageCode==='CHN'?{footprint:false,radiusScale:.24}:stage==='province' || stage==='city'?{footprint:false,radiusScale:.4}:stage==='world'?{radiusScale:.62}:{}
       const marker=createFactoryMapMarker(point,position,stage==='country' && stageCode!=='CHN',{...markerOptions,...(stage==='district'?{footprint:false,radiusScale:.22,beamScale:.36}:{}),primary:appearance.value.markerPrimary,tip:appearance.value.markerTip})
       const markerScale=stage==='district'?.64:stage==='country' && stageCode==='CHN'?1.6:1
       const markerBase=marker.root.position.y
       marker.root.scale.setScalar(markerScale)
-      const markerGround=reliefDepth+(stage==='world' && point.worldProvinceCode ? .12 : .03)
+      const markerGround=reliefDepth+.03
       marker.root.position.y=markerGround
       marker.anchor.y=markerGround+(marker.anchor.y-markerBase)*markerScale
       marker.pin.y=markerGround+(marker.pin.y-markerBase)*markerScale
@@ -542,6 +601,25 @@ async function refreshConfig() {
     if(changed && scene)buildMap({reframe:!ready.value})
   }catch(e){if(!disposed && e.name!=='AbortError')configError.value=e.message}finally{configLoading=false}
 }
+async function refreshMapValues(){
+  const requestedLevel=level.value
+  const requestId=++mapValueRequestId
+  try{
+    const response=await adminFetch(`${API_BASE}/data-sources/map-values?level=${encodeURIComponent(requestedLevel)}`,{cache:'no-store'})
+    if(!response.ok)throw new Error('地图数据暂不可用')
+    const result=await response.json()
+    if(disposed || requestId!==mapValueRequestId || requestedLevel!==level.value)return
+    mapValues.value=result.values || {};mapValuesLevel.value=requestedLevel
+  }catch{if(!disposed && requestId===mapValueRequestId && requestedLevel===level.value){mapValues.value={};mapValuesLevel.value=requestedLevel}}
+}
+async function refreshFactorySummaries(){
+  try{
+    const response=await adminFetch(`${API_BASE}/factories/live-summaries`,{cache:'no-store'})
+    if(!response.ok)throw new Error('实时摘要不可用')
+    const result=await response.json()
+    if(!disposed)factorySummaries.value=Object.fromEntries((result.summaries||[]).map(item=>[String(item.factoryId),item]))
+  }catch{if(!disposed)factorySummaries.value={}}
+}
 const navigator=createNativeViewNavigator(async target=>{
   const response=await adminFetch(API_BASE+'/native-preview/navigate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'view',viewId:target.viewId,focus:{mode:'factory'}})})
   if(!response.ok)throw new Error('进入工厂请求失败')
@@ -555,11 +633,10 @@ async function enterFactory(target) {
     const activate=await adminFetch(`${API_BASE}/factories/${encodeURIComponent(target.id)}/activate`,{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'})
     const activation=await activate.json().catch(()=>({}))
     if(!activate.ok)throw new Error(activation.error || '切换运行工厂失败')
-    setFactoryScope(target.id)
     await navigator.go({viewId:'factory_overview',deviceId:''})
     if(disposed)return
     if(adminSurface.value && window.chrome?.webview){requestNativeSceneSurface();await router.replace({path:'/admin',query:{embedded:'unity'}});window.chrome.webview.postMessage({type:'host_action',action:'show_dashboard'})}
-    else await router.push({path:'/overlay',query:{...route.query,scene:'1',fromGroup:selected.value || 'unassigned'}})
+    else await router.push({path:'/overlay',query:{...route.query,factoryId:target.id,scene:'1',fromGroup:selected.value || 'unassigned'}})
   }
   catch(e){if(!disposed)error.value=e.message}finally{busy.value=false}
 }
@@ -580,8 +657,9 @@ function pick(event) {
   else if(smallRegion || regionHit)selectRegion(smallRegion || regionHit.object.userData.code)
   else if(country)selectRegion(country)
 }
-watch([level,selected],()=>{showAllRegions.value=false;if(scene)buildMap()})
+watch([level,selected],()=>{showAllRegions.value=false;mapValues.value={};void refreshMapValues();if(scene)buildMap()})
 onMounted(async()=>{
+  window.addEventListener('keydown',handleMapEscape,true)
   nativeLoadingManaged.value=Boolean(window.__DIGITAL_TWIN_NATIVE_LOADING__)
   startAdminSessionTracking()
   void refreshAdminSession()
@@ -619,13 +697,13 @@ onMounted(async()=>{
       }
       raf=requestAnimationFrame(render)
     };render()
-    await refreshConfig();await buildMap();pollTimer=setInterval(refreshConfig,15000)
+    await refreshConfig();await Promise.all([buildMap(),refreshMapValues(),refreshFactorySummaries()]);pollTimer=setInterval(()=>{void refreshConfig();void refreshMapValues()},15000);summaryPollTimer=setInterval(()=>void refreshFactorySummaries(),5000)
     data.setMessageHandler(message=>{if(message.type==='configuration_changed')refreshConfig();if(message.type==='dashboard_context_changed')navigator.accept(message.payload)})
     if(typeof BroadcastChannel!=='undefined' && !adminSurface.value){surfaceChannel=new BroadcastChannel(NATIVE_SURFACE_CHANNEL);surfaceChannel.onmessage=event=>{if(event.data?.type==='show_native_scene' && route.query.embedded==='unity')router.replace({path:'/overlay',query:{...route.query,scene:'1'}})}}
     data.connect();window.chrome?.webview?.addEventListener('message',hostMessage);window.chrome?.webview?.postMessage({type:'overlay_ready'});reportRegions()
   }catch(e){error.value=e.message;window.chrome?.webview?.postMessage({type:'overlay_ready'})}
 })
-onUnmounted(()=>{stopAdminSessionTracking();disposed=true;geometryGeneration++;request?.abort();surfaceChannel?.close();clearInterval(pollTimer);cancelAnimationFrame(raf);cancelMapFlight();navigator.dispose();data.dispose();observer?.disconnect();controls?.removeEventListener('start',cancelMapFlight);controls?.dispose();disposeSceneObject(scene);renderer?.dispose();window.chrome?.webview?.removeEventListener('message',hostMessage);window.chrome?.webview?.postMessage({type:'overlay_regions',viewport:{width:innerWidth,height:innerHeight},regions:[]})})
+onUnmounted(()=>{window.removeEventListener('keydown',handleMapEscape,true);stopAdminSessionTracking();disposed=true;mapValueRequestId++;geometryGeneration++;request?.abort();surfaceChannel?.close();clearInterval(pollTimer);clearInterval(summaryPollTimer);cancelAnimationFrame(raf);cancelMapFlight();navigator.dispose();data.dispose();observer?.disconnect();controls?.removeEventListener('start',cancelMapFlight);controls?.dispose();disposeSceneObject(scene);renderer?.dispose();window.chrome?.webview?.removeEventListener('message',hostMessage);window.chrome?.webview?.postMessage({type:'overlay_regions',viewport:{width:innerWidth,height:innerHeight},regions:[]})})
 </script>
 
 <template>
@@ -633,7 +711,7 @@ onUnmounted(()=>{stopAdminSessionTracking();disposed=true;geometryGeneration++;r
   <main class="group-portal" :class="{'admin-surface':adminSurface,'no-panel':!appearance.showPanel,'no-facts':!appearance.showFacts,'no-dock':!appearance.showDock}" :style="appearanceStyle">
     <AdminWindowChrome v-if="adminSurface" @before-dashboard="router.replace({path:'/admin',query:{embedded:'unity'}})" @before-admin="returnToAdminWorkspace" />
     <div ref="mapHost" class="group-map" :class="{'group-map-detail':level==='province'||level==='city','group-map-national':level==='country' && selected==='CHN'}" aria-label="集团工厂分布地图，可拖拽旋转和滚轮缩放" @pointerdown="down=[$event.clientX,$event.clientY]" @pointermove="trackRegionHover" @pointerup="pick" @pointercancel="down=null" @pointerleave="hoverRegion('')">
-      <button v-for="marker in markerLabels" :key="marker.id" :ref="element=>{if(element){labelElements.set(marker.id,element);dirty=true}else labelElements.delete(marker.id)}" class="group-map-label" :class="{registered:marker.runtime==='registered','is-selected':Boolean(selectedSiteId && selectedSiteId===marker.factoryId)}" :data-site-id="marker.id" :aria-label="`定位 ${marker.name}`" :title="`${marker.name}；${marker.located===false?'位置待完善':'标记表示位置，不代表产量'}`" @pointerdown.stop @pointerup.stop @click.stop="selectMarker(marker.id)"><i></i><span>{{ marker.name }}</span><small>{{ marker.located===false?'位置待完善':marker.localRuntimeCount ? `${marker.localRuntimeCount} 个运行端`:'仅登记' }}</small></button>
+      <button v-for="marker in markerLabels" :key="marker.id" :ref="element=>{if(element){labelElements.set(marker.id,element);dirty=true}else labelElements.delete(marker.id)}" class="group-map-label" :class="{registered:marker.runtime==='registered','is-selected':Boolean(selectedSiteId && selectedSiteId===marker.factoryId)}" :data-site-id="marker.id" :aria-label="`定位 ${marker.name}`" :title="`${marker.name}；${marker.located===false?'位置待完善':'标记表示位置，不代表产量'}`" @pointerdown.stop @pointerup.stop @click.stop="selectMarker(marker.id)"><i></i><span>{{ marker.name }}</span><small>{{ marker.factoryId ? factorySummary(marker.factoryId)?.status==='live' ? `${factorySummary(marker.factoryId).runningDevices}/${factorySummary(marker.factoryId).totalDevices} 台运行${factorySummary(marker.factoryId).mode==='simulation'?' · 模拟':''}` : '实时数据待接入' : marker.located===false?'位置待完善':`${marker.count} 座工厂` }}</small></button>
     </div>
     <div class="group-vignette"></div>
     <header v-if="appearance.showBrand" class="group-brand" :style="layoutStyle('brand')"><img v-if="appearance.logoUrl" class="group-brand-image" :src="appearance.logoUrl" alt="大屏 Logo" /><i v-else></i><div><strong>{{ appearance.brandTitle }}</strong><small>{{ appearance.brandSubtitle }}</small></div></header>
@@ -661,7 +739,7 @@ onUnmounted(()=>{stopAdminSessionTracking();disposed=true;geometryGeneration++;r
       <p v-if="accountNotice" class="group-account-message" role="status">{{ accountNotice }}</p>
     </div>
     <GroupHierarchyCapsule :crumbs="hierarchyCrumbs" @navigate="navigateHierarchy" />
-    <aside v-if="appearance.showFacts" class="group-facts" :style="layoutStyle('facts')"><small>{{ appearance.factsTitle }}</small><strong>{{ config ? visibleSites.length:'—' }} <em>座</em></strong><span>{{ visibleSites.filter(item=>item.runtime==='local').length }} 座运行端 · {{ visibleSites.filter(item=>item.runtime==='registered').length }} 座仅登记</span><small>本机现场设备配置数</small><strong>{{ visibleSites.some(item=>item.runtime==='local') ? site.devices:'—' }} <em>台</em></strong><span>配置数不代表设备实时在线</span></aside>
+    <aside v-if="appearance.showFacts" class="group-facts" :style="layoutStyle('facts')"><small>{{ appearance.factsTitle }}</small><strong>{{ config ? factsFactoryCount:'—' }} <em>座</em></strong><span>{{ factsLocalCount }} 座已接入 · {{ Math.max(0,factsFactoryCount-factsLocalCount) }} 座仅登记</span><small>现场设备配置数</small><strong>{{ visibleLocalSites.length || hasMapMetric('factsDeviceCount') ? mapNumber('factsDeviceCount',visibleTotals.devices):'—' }} <em>台</em></strong><span>配置数不代表设备实时在线</span></aside>
     <aside v-if="appearance.showPanel" class="group-panel" :style="layoutStyle('panel')">
       <small>{{ appearance.panelTitle }}</small>
       <Transition name="group-stage" mode="out-in">
@@ -673,7 +751,7 @@ onUnmounted(()=>{stopAdminSessionTracking();disposed=true;geometryGeneration++;r
               <span class="group-region-copy">
                 <strong>{{ region.name }}</strong>
                 <small>{{ region.count ? '已登记工厂所在区域':'暂无登记工厂' }}</small>
-                <small v-if="region.count" class="group-region-meta">{{ region.districtAssignedCount }} 区县已归属 <i>·</i> {{ region.localCount }} 本机运行端 <i>·</i> {{ region.registeredCount }} 仅登记</small>
+                <small v-if="region.count" class="group-region-meta">{{ region.districtAssignedCount }} 区县已归属 <i>·</i> {{ region.localCount }} 已接入工厂 <i>·</i> {{ region.registeredCount }} 仅登记</small>
                 <span v-if="region.count" class="group-region-meters" aria-hidden="true">
                   <span><small>区县</small><i><b :style="{width:`${region.count ? region.districtAssignedCount / region.count * 100 : 0}%`}"></b></i><em>{{ region.count ? Math.round(region.districtAssignedCount / region.count * 100) : 0 }}%</em></span>
                   <span><small>运行</small><i class="runtime"><b :style="{width:`${region.count ? region.localCount / region.count * 100 : 0}%`}"></b></i><em>{{ region.count ? Math.round(region.localCount / region.count * 100) : 0 }}%</em></span>
@@ -684,13 +762,16 @@ onUnmounted(()=>{stopAdminSessionTracking();disposed=true;geometryGeneration++;r
           </div>
           <button v-if="unregisteredRegionCount && level!=='district'" class="group-region-more" type="button" :aria-expanded="showAllRegions" @click="showAllRegions=!showAllRegions">{{ showAllRegions ? '收起未登记区域' : `查看其他 ${unregisteredRegionCount} 个区域` }}<span aria-hidden="true">{{ showAllRegions ? '↑':'↓' }}</span></button>
           <div v-for="factory in (level==='district' || level==='country' && selected!=='CHN' ? visibleSites : [])" :key="factory.id" class="group-site" :class="{selected:selectedSiteId===factory.id}" :data-factory-id="factory.id">
-            <span class="group-site-tag" :class="{registered:factory.runtime==='registered'}">{{ factory.runtime==='local' ? '本机运行端':'仅登记 · 运行端未接入' }}</span>
+            <span class="group-site-tag" :class="{registered:factory.runtime==='registered'}">{{ factory.runtime==='local' ? '中控库已接入':'仅登记 · 运行端未接入' }}</span>
             <h2><button class="group-site-focus" type="button" :aria-label="`选择并聚焦${factory.name}`" @click="selectSite(factory.id)"><span>{{ factory.name }}</span><small>区域视角 ↗</small></button></h2><p>{{ factory.location.districtName || factory.location.city || factory.location.regionName || factory.location.country }}</p>
             <dl v-if="factory.runtime==='local'"><div><dt>车间</dt><dd>{{ factory.workshops }}</dd></div><div><dt>产线</dt><dd>{{ factory.lines }}</dd></div><div><dt>设备</dt><dd>{{ factory.devices }}</dd></div></dl>
+            <p v-if="factorySummary(factory.id)?.status==='live'" class="group-site-live">{{ factorySummary(factory.id).mode==='simulation'?'模拟数据':'实时采集' }} · 运行 {{ factorySummary(factory.id).runningDevices }}/{{ factorySummary(factory.id).totalDevices }} 台 · 在线 {{ factorySummary(factory.id).onlineDevices }} 台 · 报警 {{ factorySummary(factory.id).alarmDevices }} 台 · OEE {{ factorySummary(factory.id).overallOee }}%</p>
+            <p v-else-if="factory.runtime==='local'" class="group-site-live is-stale">实时数据未更新；以上仅为配置数量</p>
             <p v-else class="group-unconnected">未接入独立运行端，暂无生产指标。</p>
             <button v-if="factory.runtime==='local' && factory.location.country==='CHN' && !factory.location.districtCode" class="group-location-action" type="button" @click="openFactoryLocationSettings">补充行政区归属 →</button>
             <button v-if="level==='district' && factory.runtime==='local' && (factory.location.latitude===null || factory.location.longitude===null)" class="group-location-action" type="button" @click="openFactoryLocationSettings">补充工厂经纬度，精确定位光柱 →</button>
-            <button v-if="factory.runtime==='local'" @click="openFactoryStreet(factory)">进入街道视角 →</button>
+            <button v-if="factory.runtime==='local'" :disabled="!streetEntryStatus(factory).allowed" :title="streetEntryStatus(factory).message" @click="openFactoryStreet(factory)">{{ streetEntryStatus(factory).allowed ? '进入街道视角 →' : '车间待配置' }}</button>
+            <p v-if="factory.runtime==='local' && !streetEntryStatus(factory).allowed" class="group-unconnected">{{ streetEntryStatus(factory).message }}</p>
             <button v-else disabled>运行端待接入</button>
           </div>
           <div v-for="factory in unassignedCitySites" :key="`unassigned_${factory.id}`" class="group-site group-site-unassigned" :data-factory-id="factory.id">
@@ -703,33 +784,34 @@ onUnmounted(()=>{stopAdminSessionTracking();disposed=true;geometryGeneration++;r
           <p v-if="appearance.showHelp" class="group-help">在“工厂与区域”维护归属和工厂经纬度；区级光柱按坐标定位，未定位站点仅作区中心示意。</p>
         </div>
       </Transition>
-      <p v-if="error || configError" class="group-error" role="alert">{{ error || configError }}</p>
+      <p v-if="error || configError || navigationNotice" class="group-error" role="alert">{{ error || configError || navigationNotice }}</p>
     </aside>
     <div v-if="appearance.showDock" class="group-dock" :style="layoutStyle('dock')" :aria-label="`${regionTitle}工厂网络摘要`">
       <section class="group-dock-network">
         <small>FACTORY NETWORK</small><h2>{{ appearance.dockNetworkTitle }}</h2>
-        <div class="group-dock-number"><strong>{{ config ? visibleSites.length : '—' }}</strong><span>座登记工厂</span></div>
-        <div class="group-dock-composition" role="img" :aria-label="`${visibleLocalSites.length} 座本机运行端，${visibleSites.length-visibleLocalSites.length} 座仅登记`">
-          <i class="local" :style="{width:`${visibleSites.length ? visibleLocalSites.length / visibleSites.length * 100 : 0}%`}"></i>
-          <i class="registered" :style="{width:`${visibleSites.length ? (visibleSites.length-visibleLocalSites.length) / visibleSites.length * 100 : 0}%`}"></i>
+        <div class="group-dock-number"><strong>{{ config ? dockFactoryCount : '—' }}</strong><span>座登记工厂</span></div>
+        <div class="group-dock-composition" role="img" :aria-label="`${dockLocalCount} 座已接入工厂，${dockFactoryCount-dockLocalCount} 座仅登记`">
+          <i class="local" :style="{width:`${dockFactoryCount ? dockLocalCount / dockFactoryCount * 100 : 0}%`}"></i>
+          <i class="registered" :style="{width:`${dockFactoryCount ? (dockFactoryCount-dockLocalCount) / dockFactoryCount * 100 : 0}%`}"></i>
         </div>
-        <div class="group-dock-legend"><span><i class="local"></i>本机运行端 <b>{{ visibleLocalSites.length }}</b></span><span><i class="registered"></i>仅登记 <b>{{ visibleSites.length-visibleLocalSites.length }}</b></span></div>
+        <div class="group-dock-legend"><span><i class="local"></i>已接入 <b>{{ dockLocalCount }}</b></span><span><i class="registered"></i>仅登记 <b>{{ dockFactoryCount-dockLocalCount }}</b></span></div>
       </section>
       <section class="group-dock-location">
         <small>AREA ASSIGNMENT</small><h2>{{ appearance.dockLocationTitle }}</h2>
         <div class="group-dock-location-body">
-          <div class="group-dock-location-ring" :style="{'--coverage':`${districtCoverage ?? 0}%`}" role="img" :aria-label="`行政区归属 ${districtCoverage ?? '未知'}%，已补充区县 ${districtAssignedSites.length} 座，共 ${visibleSites.length} 座`"><strong>{{ districtCoverage ?? '—' }}<em v-if="districtCoverage !== null">%</em></strong></div>
-          <div class="group-dock-location-copy"><strong>{{ districtAssignedSites.length }}<i>/</i>{{ visibleSites.length }} <small>座已归属到区县</small></strong><p>区级光柱按工厂坐标定位</p></div>
+          <div class="group-dock-location-ring" :style="{'--coverage':`${dockCoverageValue ?? 0}%`}" role="img" :aria-label="`行政区归属 ${dockCoverageValue ?? '未知'}%，已补充区县 ${dockAssignedCount} 座，共 ${dockFactoryCount} 座`"><strong>{{ dockCoverageValue ?? '—' }}<em v-if="dockCoverageValue !== null">%</em></strong></div>
+          <div class="group-dock-location-copy"><strong>{{ dockAssignedCount }}<i>/</i>{{ dockFactoryCount }} <small>座已归属到区县</small></strong><p>区级光柱按工厂坐标定位</p></div>
         </div>
       </section>
       <section class="group-dock-hierarchy">
         <small>LOCAL SITE STRUCTURE</small><h2>{{ appearance.dockHierarchyTitle }}</h2>
-        <dl><div><dt>车间</dt><dd>{{ visibleLocalSites.length ? site.workshops : '—' }}</dd></div><div><dt>产线</dt><dd>{{ visibleLocalSites.length ? site.lines : '—' }}</dd></div><div><dt>设备</dt><dd>{{ visibleLocalSites.length ? site.devices : '—' }}</dd></div></dl>
+        <dl><div><dt>车间</dt><dd>{{ visibleLocalSites.length || hasMapMetric('dockWorkshops') ? mapNumber('dockWorkshops',visibleTotals.workshops) : '—' }}</dd></div><div><dt>产线</dt><dd>{{ visibleLocalSites.length || hasMapMetric('dockLines') ? mapNumber('dockLines',visibleTotals.lines) : '—' }}</dd></div><div><dt>设备</dt><dd>{{ visibleLocalSites.length || hasMapMetric('dockDevices') ? mapNumber('dockDevices',visibleTotals.devices) : '—' }}</dd></div></dl>
         <p>配置数量 · 不代表实时在线</p>
       </section>
     </div>
     <div class="group-map-controls"><button aria-label="复位地图视角" title="复位地图视角" @click="frameMap">⌖</button></div>
     <div v-if="loadingStage && ready" class="group-stage-loading" role="status">正在进入{{ levelNames[level] }}地图…</div>
+    <MapSurfaceWidgets :document="config?.platform?.document" :view-id="`map_${level}`" :factory-id="config?.factoryId || ''" :config="config" :data-store="data" @navigate="navigateDesignedSurface" />
   </main>
 </template>
 
@@ -872,4 +954,6 @@ onUnmounted(()=>{stopAdminSessionTracking();disposed=true;geometryGeneration++;r
 .group-facts>small,.group-facts>span{color:#b5b4b8}
 .group-brand-image{width:36px;height:36px;flex:none;object-fit:contain}
 .group-map-controls button{border-color:rgba(224,222,215,.23);background:color-mix(in srgb,var(--group-surface) 68%,transparent)}
+.group-site .group-site-live{margin:10px 0;padding:8px 10px;border:1px solid #53cbaa38;border-radius:5px;background:#53cbaa0d;color:#98e3cf;font-size:10px;line-height:1.55}
+.group-site .group-site-live.is-stale{border-color:#8290aa30;background:#8290aa0d;color:#9aa5b7}
 </style>

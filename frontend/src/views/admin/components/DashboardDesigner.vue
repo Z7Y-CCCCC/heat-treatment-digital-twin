@@ -6,10 +6,18 @@ import { applyReferenceHudLayout } from '../../../runtime/referenceHudLayout.js'
 import { applyFactoryHudModules } from '../../../runtime/factoryHudModules.js'
 import { applyVisibilityAction, matchesRule, widgetRuntimeVisible } from '../../../runtime/dashboardRules.js'
 import ColorField from './ColorField.vue'
+import MapGeometryPreview from './MapGeometryPreview.vue'
+import { normalizeFactoryLocation } from '../../../runtime/groupTopology.js'
+import { DEFAULT_STREET_IMAGE, normalizeSiteSceneConfig } from '../../../runtime/siteSceneConfig.js'
+import { groupPortalAppearanceForLevel } from '../../../runtime/groupPortalAppearance.js'
+import { getFactoryScope } from '../../../runtime/factoryScope.js'
+import { cacheFactoryDraft, clearFactoryDraft, readFactoryDraft } from '../../../runtime/factoryDraftCache.js'
 import {
   DASHBOARD_WIDGET_LIBRARY,
   DASHBOARD_WIDGET_PRESETS,
   DASHBOARD_VIEW_MODES,
+  MAP_SURFACE_VIEWS,
+  MAP_SURFACE_VIEW_IDS,
   SYSTEM_WIDGET_TYPES,
   createDashboardWidget,
   createDashboardWidgetPreset,
@@ -21,9 +29,11 @@ import {
   widgetTypeLabel
 } from '../../../runtime/dashboardSchema.js'
 
-const emit = defineEmits(['reload', 'preview-view'])
+const props = defineProps({ initialViewId: { type: String, default: 'factory_overview' } })
+const emit = defineEmits(['reload', 'preview-view', 'view-change', 'edit-map-module'])
 
 const viewportRef = ref(null)
+const draftFactoryId = getFactoryScope()
 const documentModel = ref(normalizeDashboardDocument())
 const revision = ref(0)
 const releases = ref([])
@@ -47,6 +57,10 @@ const points = ref([])
 const workshops = ref([])
 const lines = ref([])
 const dataSources = ref([])
+const httpApiSources = ref([])
+const httpFields = ref([])
+const httpFieldBusy = ref(false)
+const httpInspectedKey = ref('')
 const databaseTables = ref([])
 const databaseColumns = ref([])
 const databaseMetadataLoading = ref(false)
@@ -82,6 +96,9 @@ const releaseDialog = ref(null)
 const layersCollapsed = ref(false)
 const canvasPreset = ref('1920x1080')
 const selectedViewId = ref('factory_overview')
+const mapPreviewLocation = ref(normalizeFactoryLocation())
+const mapAppearanceSource = ref(null)
+const sitePreviewImage = ref(DEFAULT_STREET_IMAGE)
 // This is an editor/preview context only. It lets the user choose which
 // device's data is used while editing a device view without cloning widgets.
 const editorDeviceId = ref('')
@@ -206,7 +223,33 @@ const views = computed(() => Array.isArray(documentModel.value.scene?.views) && 
   ? documentModel.value.scene.views
   : createDefaultDashboardViews())
 const currentView = computed(() => views.value.find(view => view.id === selectedViewId.value) || views.value[0] || null)
-const viewModeLabel = computed(() => DASHBOARD_VIEW_MODES.find(item => item.id === currentView.value?.mode)?.label || '自定义视角')
+const currentViewIsMapSurface = computed(() => MAP_SURFACE_VIEW_IDS.has(currentView.value?.id))
+const currentMapLevel = computed(() => MAP_SURFACE_VIEWS.find(view => view.id === currentView.value?.id)?.level || '')
+const mapBuiltIns = computed(() => {
+  if (!String(currentView.value?.id || '').startsWith('map_')) return []
+  const appearance = groupPortalAppearanceForLevel(mapAppearanceSource.value, currentMapLevel.value)
+  return [
+    { key: 'brand', name: '标题与 Logo', visible: appearance.showBrand, x: 3, y: 5, width: 30, height: 11, detail: appearance.brandTitle },
+    { key: 'facts', name: '工厂统计', visible: appearance.showFacts, x: 3, y: 26, width: 19, height: 28, detail: appearance.factsTitle },
+    { key: 'panel', name: '区域与工厂面板', visible: appearance.showPanel, x: 73, y: 17, width: 23, height: 48, detail: appearance.panelTitle },
+    { key: 'dock', name: '底部网络摘要', visible: appearance.showDock, x: 3, y: 76, width: 65, height: 13, detail: appearance.dockNetworkTitle }
+  ].filter(item => item.visible).map(item => ({ ...item, x: appearance.layout?.[item.key]?.x ?? item.x, y: appearance.layout?.[item.key]?.y ?? item.y }))
+})
+function mapBuiltInStyle(item) {
+  return { left: `${item.x}%`, top: `${item.y}%`, width: `${item.width}%`, height: `${item.height}%` }
+}
+defineExpose({
+  setMapAppearance: value => { mapAppearanceSource.value = value },
+  savePending: async () => {
+    if (loading.value) throw new Error('大屏设计器仍在读取当前工厂配置，请稍后重试切换')
+    if (!isDirty.value) return true
+    await saveDraft()
+    if (isDirty.value) throw new Error('大屏设计器草稿保存失败，仍停留在原工厂')
+    return true
+  },
+  discardPending: () => clearLocalDraft()
+})
+const viewModeLabel = computed(() => currentViewIsMapSurface.value ? '地图 / 厂区画面' : (DASHBOARD_VIEW_MODES.find(item => item.id === currentView.value?.mode)?.label || '自定义视角'))
 const collapsedViewIds = reactive(new Set())
 const viewTreeRows = computed(() => {
   const allViews = views.value
@@ -221,7 +264,7 @@ const viewTreeRows = computed(() => {
     } else byParent.get('').push(view)
     if (!byParent.has(view.id)) byParent.set(view.id, [])
   })
-  const roots = byParent.get('')
+  const roots = [...byParent.get('')].sort((a, b) => Number(b.id === 'map_world') - Number(a.id === 'map_world'))
   const reachable = new Set()
   const markReachable = view => {
     if (!view || reachable.has(view.id)) return
@@ -279,7 +322,7 @@ const currentViewUsesDevice = computed(() => ['device', 'device_part'].includes(
 const editorDevice = computed(() => devices.value.find(device => String(device.id) === String(editorDeviceId.value)) || null)
 const designerVisibilityContext = computed(() => {
   const view = currentView.value
-  const viewMode = view?.mode === 'custom' ? (view.targetType || 'factory') : (view?.mode || 'factory')
+  const viewMode = MAP_SURFACE_VIEW_IDS.has(view?.id) ? 'custom' : view?.mode === 'custom' ? (view.targetType || 'factory') : (view?.mode || 'factory')
   return {
     ...previewContext,
     viewId: view?.id || previewContext.viewId || '',
@@ -300,13 +343,16 @@ const currentViewTargetLabel = computed(() => {
   const view = currentView.value
   if (!view) return '未选择视角'
   const targetType = String(view.targetType || view.mode || 'factory').toLowerCase()
+  if (MAP_SURFACE_VIEW_IDS.has(view.id)) return view.name
   if (targetType === 'device') return editorDevice.value?.name || view.targetId || '当前预览设备'
   if (targetType === 'device_part') return `部件 ${view.targetId || '自动选择'} · ${editorDevice.value?.name || '当前预览设备'}`
   if (targetType === 'line') return lines.value.find(item => String(item.id) === String(view.targetId))?.name || view.targetId || '当前产线'
   if (targetType === 'workshop') return workshops.value.find(item => String(item.id) === String(view.targetId))?.name || view.targetId || '当前车间'
   return '全厂'
 })
-const designerScopeHint = computed(() => currentViewUsesDevice.value
+const designerScopeHint = computed(() => currentViewIsMapSurface.value
+  ? '地图与厂区新增组件只在当前层级显示；预设地图模块仍可在下方“底图与内置模块”中调整。'
+  : currentViewUsesDevice.value
   ? '画布和图层按当前设备视角 + 预览设备过滤；不匹配当前设备的组件不会显示。'
   : '这是公共视角，所有设备共用；画布和图层只按当前全厂、车间或产线视角过滤。')
 const currentViewWidgets = computed(() => overlayWidgets.value.filter(widget => widgetAllowedInCurrentView(widget)))
@@ -373,7 +419,7 @@ function widgetMatchesCurrentView(widget) {
   const view = currentView.value
   if (!view) return false
   if (widget.visibility?.viewIds?.length && !widget.visibility.viewIds.includes(view.id)) return false
-  const effectiveMode = view.mode === 'custom' ? (view.targetType || 'factory') : view.mode
+  const effectiveMode = MAP_SURFACE_VIEW_IDS.has(view.id) ? 'custom' : view.mode === 'custom' ? (view.targetType || 'factory') : view.mode
   if (widget.visibility?.viewModes?.length && !widget.visibility.viewModes.includes(effectiveMode)) return false
   const visibility = widget.visibility || {}
   if (visibility.matchBoundDevice) {
@@ -396,6 +442,7 @@ function widgetAllowedInCurrentView(widget) {
   const view = currentView.value
   if (!view) return false
   const state = view.componentState || {}
+  if (MAP_SURFACE_VIEW_IDS.has(view.id) && !state.show?.includes(widget.id) && !state.show?.includes(`group:${widget.groupId}`)) return false
   if (state.hide?.includes(widget.id) || state.hide?.includes(`group:${widget.groupId}`)) return false
   if (state.show?.length && !state.show.includes(widget.id) && !state.show.includes(`group:${widget.groupId}`)) return false
   return true
@@ -588,37 +635,45 @@ async function loadDesigner({ allowLocal = true } = {}) {
   const pendingEditorState = editorStateBeforeReload
   loading.value = true
   try {
-    const [designer, deviceRows, pointRows, dataSourceResult, workshopRows, lineRows] = await Promise.all([
+    const [designer, deviceRows, pointRows, dataSourceResult, workshopRows, lineRows, settings] = await Promise.all([
       adminApi.getDashboardDesigner(),
       adminApi.getDevices(),
       adminApi.getDataPoints('all'),
       adminApi.getDataSources().catch(() => ({ connections: [] })),
       adminApi.getWorkshops().catch(() => []),
-      adminApi.getLines().catch(() => [])
+      adminApi.getLines().catch(() => []),
+      adminApi.getSettings().catch(() => ({}))
     ])
     if (designerDisposed) return
     if (designer?.error) throw new Error(designer.error)
     revision.value = Number(designer.revision || 0)
     const serverDocument = normalizeDashboardDocument(designer.document || {})
-    const localDocument = allowLocal ? readLocalDraft(serverDocument.sceneId, revision.value) : null
+    const cached = allowLocal ? readFactoryDraft(draftFactoryId, `dashboard:${serverDocument.sceneId}`) : null
+    const localDocument = cached && Number(cached.revision) === revision.value
+      ? cached.document
+      : allowLocal ? readLocalDraft(serverDocument.sceneId, revision.value) : null
     documentModel.value = applyFactoryHudModules(applyReferenceHudLayout(localDocument || serverDocument))
     releases.value = designer.releases || []
     currentRelease.value = designer.currentRelease || null
     devices.value = Array.isArray(deviceRows) ? deviceRows : []
     points.value = (Array.isArray(pointRows) ? pointRows : []).filter(point => String(point.access_type || 'READ').toUpperCase() === 'READ')
-    // HTTP API sources currently support health checks only, not table/field or
-    // business-data bindings. Keep legacy database entries without sourceType.
-    dataSources.value = (Array.isArray(dataSourceResult?.connections) ? dataSourceResult.connections : [])
+    const connections = Array.isArray(dataSourceResult?.connections) ? dataSourceResult.connections : []
+    dataSources.value = connections
       .filter(source => source.sourceType !== 'http_api' && source.type !== 'http_api')
+    httpApiSources.value = connections.filter(source => source.sourceType === 'http_api' || source.type === 'http_api')
     workshops.value = Array.isArray(workshopRows) ? workshopRows : []
     lines.value = Array.isArray(lineRows) ? lineRows : []
+    mapPreviewLocation.value = normalizeFactoryLocation(settings.factory_location)
+    mapAppearanceSource.value = settings.group_portal_config
+    sitePreviewImage.value = normalizeSiteSceneConfig(settings.site_scene_config).streetImageUrl || DEFAULT_STREET_IMAGE
     // The reference HUD is a presentation migration applied on load. Treat
     // that derived layout as the editor baseline so opening the designer does
     // not falsely report an unsaved change before the user edits anything.
-    lastSavedSnapshot.value = snapshot(documentModel.value)
+    lastSavedSnapshot.value = snapshot(applyFactoryHudModules(applyReferenceHudLayout(serverDocument)))
     resetHistory()
     const savedEditorState = pendingEditorState || readEditorState(serverDocument.sceneId)
     restoreEditorState(savedEditorState)
+    if (views.value.some(view => view.id === props.initialViewId)) selectView(props.initialViewId)
     setStatus(localDocument ? '已恢复本机未保存的编辑内容' : `草稿修订 ${revision.value}，运行中版本 ${designer.currentRelease?.version || '未发布'}`, localDocument ? 'warning' : 'success')
     await nextTick()
     fitCanvas('comfortable')
@@ -635,7 +690,7 @@ function syncPreviewContextFromView() {
   const view = currentView.value
   if (!view) return
   previewContext.viewId = view.id
-  previewContext.viewMode = view.mode === 'custom' ? (view.targetType || 'factory') : view.mode
+  previewContext.viewMode = MAP_SURFACE_VIEW_IDS.has(view.id) ? 'custom' : view.mode === 'custom' ? (view.targetType || 'factory') : view.mode
   if (currentViewUsesDevice.value) {
     editorDeviceId.value = view.targetType === 'device' && view.targetId
       ? String(view.targetId)
@@ -657,6 +712,7 @@ function emitCurrentViewPreview({ immediate = false } = {}) {
   if (designerDisposed || !designerActive || loading.value) return
   const view = currentView.value
   if (!view?.id) return
+  if (MAP_SURFACE_VIEW_IDS.has(view.id)) return
   emit('preview-view', {
     viewId: String(view.id),
     view: deepClone(view),
@@ -693,6 +749,7 @@ function toggleViewTreeNode(viewId) {
 function selectView(viewId, { enterPreview = false } = {}) {
   if (!views.value.some(view => view.id === viewId)) return
   selectedViewId.value = viewId
+  emit('view-change', viewId)
   selectedIds.value = []
   syncPreviewContextFromView()
   scheduleCurrentViewPreview({ immediate: true })
@@ -729,6 +786,7 @@ function duplicateView() {
 }
 
 function removeView() {
+  if (MAP_SURFACE_VIEW_IDS.has(selectedViewId.value)) return setStatus('地图与厂区层级是固定画面，组件可以自由添加或删除', 'warning')
   if (!currentView.value || views.value.length <= 1) return setStatus('至少保留一个视角', 'warning')
   const removed = currentView.value.id
   const remainingViews = views.value.filter(view => view.id !== removed)
@@ -767,6 +825,7 @@ function removeView() {
 
 function setDefaultView() {
   if (!currentView.value) return
+  if (currentViewIsMapSurface.value) return
   documentModel.value.scene.defaultViewId = currentView.value.id
   commitHistory('设置默认视角')
 }
@@ -788,7 +847,7 @@ function toggleViewComponent(view, id, visible) {
   state.hide = state.hide.filter(item => item !== id)
   state.show = state.show.filter(item => item !== id)
   if (!visible) state.hide.push(id)
-  else if (state.show.length) state.show.push(id)
+  else if (MAP_SURFACE_VIEW_IDS.has(view.id) || state.show.length) state.show.push(id)
   commitHistory(visible ? '视角显示组件' : '视角隐藏组件')
 }
 
@@ -885,7 +944,7 @@ function handleCanvasWheel(event) {
 
 function previewValueForWidget(widget) {
   const binding = widget.data || {}
-  if (binding.mode === 'database') return databasePreviewValues[widget.id]?.value
+  if (binding.mode === 'database' || binding.mode === 'http_api') return databasePreviewValues[widget.id]?.value
   if (binding.mode === 'plc') {
     const isCurrentDevice = binding.deviceScope === 'current'
     const deviceId = isCurrentDevice
@@ -1646,6 +1705,45 @@ async function previewDatabaseBinding(widget = selectedWidget.value, silent = fa
   }
 }
 
+async function previewHttpBinding(widget = selectedWidget.value, silent = false) {
+  if (!widget || widget.data?.mode !== 'http_api') return
+  if (!widget.data.connectionId || !widget.data.apiPath || !widget.data.jsonPath) {
+    if (!silent) setStatus('请先选择 HTTP 连接，并填写相对接口路径与 JSON 字段路径', 'warning')
+    return
+  }
+  try {
+    const result = await adminApi.previewHttpDataSource(widget.data)
+    databasePreviewValues[widget.id] = result.result
+    if (!silent) setStatus(`接口预览：${result.result?.value ?? '空值'}`, 'success')
+  } catch (error) {
+    databasePreviewValues[widget.id] = { value: null, rows: [], quality: 'bad', error: error.message }
+    if (!silent) setStatus(`接口预览失败：${error.message || error}`, 'danger')
+  }
+}
+
+async function inspectHttpFields() {
+  const widget = selectedWidget.value
+  if (!widget?.data?.connectionId || !widget.data.apiPath) return setStatus('请先选择接口连接并填写 GET 路径', 'warning')
+  httpFieldBusy.value = true
+  httpFields.value = []
+  const key = `${widget.data.connectionId}|${widget.data.apiPath}`
+  try {
+    const result = await adminApi.inspectHttpDataSource(widget.data)
+    if (`${selectedWidget.value?.data?.connectionId}|${selectedWidget.value?.data?.apiPath}` !== key) return
+    httpFields.value = result.result?.fields || []
+    httpInspectedKey.value = key
+    setStatus(httpFields.value.length ? `已读取 ${httpFields.value.length} 个可选字段` : '接口已连通，但未发现可直接绑定的字段', httpFields.value.length ? 'success' : 'warning')
+  } catch (error) { setStatus(`读取接口字段失败：${error.message || error}`, 'danger') }
+  finally { httpFieldBusy.value = false }
+}
+
+function selectHttpField(path) {
+  if (!selectedWidget.value) return
+  selectedWidget.value.data.jsonPath = path
+  recordProperty('选择接口字段')
+  void previewHttpBinding()
+}
+
 function changeBindingMode() {
   const widget = selectedWidget.value
   if (!widget) return
@@ -1674,13 +1772,25 @@ function changeBindingMode() {
     widget.data.timeField = ''
     widget.data.orderBy = ''
   } else if (widget.data.mode === 'database') {
+    if (httpApiSources.value.some(source => source.id === widget.data.connectionId)) widget.data.connectionId = dataSources.value[0]?.id || ''
     const datasets = ensureDatabaseDatasets(widget)
+    datasets.forEach(dataset => { if (httpApiSources.value.some(source => source.id === dataset.connectionId)) Object.assign(dataset, { connectionId: dataSources.value[0]?.id || '', schema: '', table: '', field: '' }) })
     if (['trend', 'alarm_list', 'device_list', 'marquee'].includes(widget.type)) {
       datasets.forEach(dataset => { if (!dataset.table) dataset.valueMode = 'list' })
     }
     datasets.forEach((dataset, index) => loadDatasetTables(dataset, index))
   }
+  if (widget.data.mode === 'http_api') {
+    widget.data.connectionId = httpApiSources.value[0]?.id || ''
+    widget.data.apiPath = ''
+    widget.data.jsonPath = ''
+    widget.data.refreshMs = 30000
+  } else {
+    widget.data.apiPath = ''
+    widget.data.jsonPath = ''
+  }
   if (widget.data.mode === 'business') {
+    if (httpApiSources.value.some(source => source.id === widget.data.connectionId)) widget.data.connectionId = dataSources.value[0]?.id || ''
     widget.data.schema = ''
     widget.data.table = ''
     widget.data.field = ''
@@ -1731,7 +1841,8 @@ function enterPreviewMode() {
   syncPreviewContextFromView()
   Object.keys(previewGroupVisibility).forEach(key => delete previewGroupVisibility[key])
   Object.keys(previewWidgetVisibility).forEach(key => delete previewWidgetVisibility[key])
-  return Promise.all(overlayWidgets.value.filter(widget => widget.data?.mode === 'database').map(widget => previewDatabaseBinding(widget, true)))
+  return Promise.all(overlayWidgets.value.map(widget => widget.data?.mode === 'http_api'
+    ? previewHttpBinding(widget, true) : previewDatabaseBinding(widget, true)))
 }
 
 async function toggleFullscreenPreview() {
@@ -1846,6 +1957,7 @@ async function saveDraft() {
     lastSavedSnapshot.value = snapshot()
     resetHistory()
     clearLocalDraft()
+    clearFactoryDraft(draftFactoryId, `dashboard:${documentModel.value.sceneId}`)
     restoreEditorState(editorState)
     setStatus(`草稿已保存，修订 ${revision.value}；现场仍运行已发布版本`, 'success')
     emit('reload')
@@ -1981,6 +2093,10 @@ function deactivateDesigner() {
   viewportObserver?.disconnect()
 }
 
+watch(() => props.initialViewId, viewId => {
+  if (viewId && !loading.value) selectView(viewId)
+})
+
 onMounted(() => {
   loadDesigner()
   viewportObserver = new ResizeObserver(() => {
@@ -1996,6 +2112,17 @@ onMounted(() => {
 onActivated(activateDesigner)
 onDeactivated(deactivateDesigner)
 onBeforeUnmount(() => {
+  if (!loading.value && isDirty.value && documentModel.value?.sceneId) {
+    persistLocalDraft()
+    cacheFactoryDraft(draftFactoryId, `dashboard:${documentModel.value.sceneId}`, 'dashboard', {
+      sceneId: documentModel.value.sceneId,
+      revision: revision.value,
+      document: JSON.parse(JSON.stringify(documentModel.value))
+    })
+  } else if (!loading.value && documentModel.value?.sceneId) {
+    clearLocalDraft()
+    clearFactoryDraft(draftFactoryId, `dashboard:${documentModel.value.sceneId}`)
+  }
   designerDisposed = true
   document.removeEventListener('fullscreenchange', handleFullscreenChange)
   if (document.fullscreenElement === designerShellRef.value) document.exitFullscreen().catch(() => {})
@@ -2085,7 +2212,7 @@ onBeforeUnmount(() => {
     <div class="designer-main" :class="{ 'is-left-panel-collapsed': panelLayout.leftCollapsed, 'is-right-panel-collapsed': panelLayout.rightCollapsed }">
       <aside :id="leftPanelId" v-show="!panelLayout.leftCollapsed" class="designer-left-panel" aria-label="视角与组件面板">
         <div class="view-panel-heading" @click="viewPanelCollapsed = !viewPanelCollapsed">
-          <div><strong>视角编排</strong><small>Unity 镜头与组件状态</small></div><span>{{ viewPanelCollapsed ? '展开' : '收起' }}</span>
+          <div><strong>视角编排</strong><small>{{ currentViewIsMapSurface ? '地图层级与组件状态' : 'Unity 镜头与组件状态' }}</small></div><span>{{ viewPanelCollapsed ? '展开' : '收起' }}</span>
         </div>
         <div v-if="!viewPanelCollapsed" class="view-list">
           <div class="view-tree" role="tree" aria-label="视角层级">
@@ -2103,8 +2230,8 @@ onBeforeUnmount(() => {
           </div>
           <div class="view-list-actions"><button type="button" @click="addView">＋ 新视角</button><button type="button" :disabled="!currentView" @click="duplicateView">复制</button></div>
         </div>
-        <div class="designer-panel-heading"><strong>场景组件组</strong><small>一次加入完整交互区域</small></div>
-        <div class="scene-preset-list">
+        <div v-if="!currentViewIsMapSurface" class="designer-panel-heading"><strong>场景组件组</strong><small>一次加入完整交互区域</small></div>
+        <div v-if="!currentViewIsMapSurface" class="scene-preset-list">
           <button v-for="preset in DASHBOARD_WIDGET_PRESETS" :key="preset.id" type="button" @click="addWidgetPreset(preset)">
             <span>{{ preset.icon }}</span>
             <div><strong>{{ preset.label }}</strong><small>{{ preset.description }}</small></div>
@@ -2131,9 +2258,12 @@ onBeforeUnmount(() => {
         </div>
 
         <div class="layer-heading" @click="layersCollapsed = !layersCollapsed">
-          <strong>当前视角组件（{{ currentViewWidgets.length }}）</strong><span>{{ layersCollapsed ? '展开' : '收起' }}</span>
+          <strong>当前视角组件（{{ currentViewWidgets.length + mapBuiltIns.length }}）</strong><span>{{ layersCollapsed ? '展开' : '收起' }}</span>
         </div>
         <div v-if="!layersCollapsed" class="layer-list">
+          <button v-for="item in mapBuiltIns" :key="`built-in-${item.key}`" type="button" class="map-built-in-layer" @click="emit('edit-map-module', item.key)">
+            <span class="layer-type">图</span><span class="layer-copy"><strong class="layer-name">{{ item.name }}</strong><small class="layer-value">内置地图模块 · {{ item.detail }}</small></span><i>编辑</i>
+          </button>
           <button
             v-for="widget in [...currentViewWidgets].reverse()"
             :key="widget.id"
@@ -2149,7 +2279,7 @@ onBeforeUnmount(() => {
             <i title="显示/隐藏" @click.stop="toggleLayerVisibility(widget)">{{ widget.visible ? '◉' : '○' }}</i>
             <i title="锁定/解锁" @click.stop="toggleLayerLock(widget)">{{ widget.locked ? '◆' : '◇' }}</i>
           </button>
-          <p v-if="!currentViewWidgets.length">当前视角没有组件，从左侧拖入组件到画布</p>
+          <p v-if="!currentViewIsMapSurface && !currentViewWidgets.length && !mapBuiltIns.length">当前视角没有组件，从左侧拖入组件到画布</p>
           <details v-if="currentViewHiddenWidgets.length" class="layer-hidden-components">
             <summary>本视角已隐藏（{{ currentViewHiddenWidgets.length }}）</summary>
             <button v-for="item in currentViewHiddenWidgets" :key="`hidden-layer-${item.id}`" type="button" @click="toggleViewComponent(currentView, item.id, true)">
@@ -2203,6 +2333,9 @@ onBeforeUnmount(() => {
         <div v-else class="designer-canvas-scroll" @wheel="handleCanvasWheel">
           <div class="designer-canvas-spacer" :style="canvasOuterStyle">
             <div class="designer-canvas-stage" :style="canvasTransformStyle" @pointerdown.stop="beginMarqueeSelection">
+              <MapGeometryPreview v-if="currentMapLevel && !currentMapLevel.startsWith('site_') && currentMapLevel !== 'street'" :level="currentMapLevel" :location="mapPreviewLocation" class="designer-map-background" />
+              <div v-if="currentMapLevel === 'street' || currentMapLevel === 'site_factory'" class="designer-site-background" :style="{ backgroundImage: `linear-gradient(90deg,rgba(12,17,31,.2),rgba(12,17,31,.35)),url('${sitePreviewImage}')` }"><span>{{ currentView?.name }}</span></div>
+              <button v-for="item in mapBuiltIns" :key="`map-preview-${item.key}`" type="button" class="designer-map-built-in" :style="mapBuiltInStyle(item)" :title="`编辑${item.name}`" @pointerdown.stop @click.stop="emit('edit-map-module', item.key)"><span>{{ item.name }}</span><strong>{{ item.detail }}</strong></button>
               <div class="canvas-safe-area" :style="{ inset: `${canvas.safeArea}px` }"></div>
               <div v-for="x in guides.x" :key="`gx-${x}`" class="alignment-guide vertical" :style="{ left: `${x}px` }"></div>
               <div v-for="y in guides.y" :key="`gy-${y}`" class="alignment-guide horizontal" :style="{ top: `${y}px` }"></div>
@@ -2298,7 +2431,7 @@ onBeforeUnmount(() => {
                 </button>
               </div>
 
-              <div v-if="!canvasWidgets.length" class="empty-canvas-hint">
+              <div v-if="!currentViewIsMapSurface && !canvasWidgets.length" class="empty-canvas-hint">
                 <strong>{{ overlayWidgets.length ? '当前视角没有可见组件' : '把组件拖到这里' }}</strong><span>画布为 {{ canvas.width }} × {{ canvas.height }}，运行时按屏幕等比缩放</span>
               </div>
             </div>
@@ -2442,7 +2575,7 @@ onBeforeUnmount(() => {
 
             <section v-else-if="inspectorTab === 'data'" class="inspector-section">
               <div class="readonly-banner"><span>只读</span>所有外部数据源和 PLC 点位只用于展示，发布校验会拦截任何写入配置。</div>
-              <label>数据来源<select v-model="selectedWidget.data.mode" @change="changeBindingMode"><option value="static">静态 / 组件默认数据</option><option value="plc">PLC 只读点位</option><option value="database">通用数据库连接</option><option value="business">排产业务只读适配层</option><option value="runtime">设备检查上下文</option></select></label>
+              <label>数据来源<select v-model="selectedWidget.data.mode" @change="changeBindingMode"><option value="static">静态 / 组件默认数据</option><option value="plc">PLC 只读点位</option><option value="database">通用数据库连接</option><option value="http_api">ERP / MES 等只读 REST / OData 接口</option><option value="business">排产业务只读适配层</option><option value="runtime">设备检查上下文</option></select></label>
               <template v-if="selectedWidget.data.mode === 'plc'">
                 <label>设备范围<select v-model="selectedWidget.data.deviceScope" @change="changeDeviceScope"><option value="current">当前设备（跟随视角）</option><option value="fixed">指定设备</option></select></label>
                 <p v-if="selectedWidget.data.deviceScope === 'current'" class="field-hint">同一个组件可用于所有设备，运行时自动读取当前视角设备的同名点位，不需要复制组件。</p>
@@ -2474,6 +2607,17 @@ onBeforeUnmount(() => {
                 <p v-else class="field-hint">运行时按当前视角设备读取；一个组件即可覆盖多台设备。</p>
                 <button type="button" class="inspector-preview-button" :disabled="databaseMetadataLoading" @click="previewDatabaseBinding()">刷新数据预览</button>
                 <div v-if="databasePreviewValues[selectedWidget.id]" class="binding-summary"><span>预览值</span><strong>{{ databasePreviewValues[selectedWidget.id]?.value ?? '--' }} {{ selectedWidget.data.unit }}</strong><span>数据项</span><code>{{ databasePreviewValues[selectedWidget.id]?.series?.map(item => `${item.label}: ${item.value ?? '--'}`).join(' · ') || '--' }}</code><span>状态</span><strong>{{ databasePreviewValues[selectedWidget.id]?.error || '读取正常' }}</strong></div>
+              </template>
+              <template v-else-if="selectedWidget.data.mode === 'http_api'">
+                <label>已登记的接口连接<select v-model="selectedWidget.data.connectionId" @change="recordProperty('选择 HTTP 接口')"><option value="">请选择接口连接</option><option v-for="source in httpApiSources" :key="`http-${source.id}`" :value="source.id">{{ source.name }} · {{ source.health?.status === 'healthy' ? '已连通' : '待验证' }}</option></select></label>
+                <p v-if="!httpApiSources.length" class="field-hint">还没有接口连接。先在「系统设置 → 数据连接与备份 → 外部数据源」登记根地址、响应格式和认证方式；密钥只保存在后端。</p>
+                <label>只读 GET 接口路径<input v-model.trim="selectedWidget.data.apiPath" placeholder="例如 /orders?limit=1" maxlength="1024" @change="recordProperty('修改接口路径')" /><small class="field-hint">相对于已登记根地址；支持 JSON、OData JSON、XML、CSV，不允许跨域或跳转。</small></label>
+                <button type="button" class="inspector-preview-button" :disabled="httpFieldBusy" @click="inspectHttpFields">{{ httpFieldBusy ? '正在读取接口字段…' : '① 读取并选择接口字段' }}</button>
+                <div v-if="httpInspectedKey===`${selectedWidget.data.connectionId}|${selectedWidget.data.apiPath}` && httpFields.length" class="http-field-list" aria-label="可绑定的接口字段"><button v-for="field in httpFields" :key="field.path" type="button" :class="{selected:selectedWidget.data.jsonPath===field.path}" @click="selectHttpField(field.path)"><code>{{ field.path }}</code><small>{{ field.kind }} · {{ field.sample }}</small></button></div>
+                <label>响应字段路径<input v-model.trim="selectedWidget.data.jsonPath" placeholder="点击上方字段填入，或手动输入 value[0].quantity" maxlength="255" @change="recordProperty('修改接口字段')" /><small class="field-hint">可选数值、文本或数组；含空格或中文的字段会自动使用方括号路径。</small></label>
+                <label>刷新周期（秒）<input :value="Math.round(selectedWidget.data.refreshMs/1000)" type="number" min="5" max="3600" @change="selectedWidget.data.refreshMs=Math.max(5000,Number($event.target.value||30)*1000);recordProperty('修改接口刷新周期')" /><small class="field-hint">建议 30 秒以上，避免频繁请求 ERP / MES。</small></label>
+                <button type="button" class="inspector-preview-button" @click="previewHttpBinding()">② 测试字段并预览</button>
+                <div v-if="databasePreviewValues[selectedWidget.id]" class="binding-summary"><span>预览值</span><strong>{{ databasePreviewValues[selectedWidget.id]?.value ?? '--' }} {{ selectedWidget.data.unit }}</strong><span>状态</span><strong>{{ databasePreviewValues[selectedWidget.id]?.error || '读取正常' }}</strong></div>
               </template>
               <template v-else-if="selectedWidget.data.mode === 'business'">
                 <label>外部业务数据库<select v-model="selectedWidget.data.connectionId" @change="recordProperty('选择业务数据库')"><option value="">请选择只读连接</option><option v-for="source in dataSources" :key="`business-${source.id}`" :value="source.id">{{ source.name }} · {{ source.type }}</option></select></label>
@@ -2545,7 +2689,7 @@ onBeforeUnmount(() => {
         <template v-else-if="currentView">
           <div class="selected-widget-heading view-inspector-heading">
             <div><span>视角配置 · {{ viewModeLabel }}</span><strong>{{ currentView.name }}</strong><small>{{ currentView.id }}</small></div>
-            <button type="button" @click="setDefaultView">{{ documentModel.scene.defaultViewId === currentView.id ? '默认视角' : '设为默认' }}</button>
+            <button v-if="!currentViewIsMapSurface" type="button" @click="setDefaultView">{{ documentModel.scene.defaultViewId === currentView.id ? '默认视角' : '设为默认' }}</button>
           </div>
           <nav class="inspector-tabs view-inspector-tabs">
             <button v-for="tab in [{id:'camera',label:'镜头'},{id:'components',label:'组件状态'},{id:'flow',label:'层级关系'}]" :key="tab.id" type="button" :class="{ active: viewInspectorTab === tab.id }" @click="viewInspectorTab = tab.id">{{ tab.label }}</button>
@@ -2553,6 +2697,8 @@ onBeforeUnmount(() => {
           <div class="inspector-body">
             <section v-if="viewInspectorTab === 'camera'" class="inspector-section">
               <label>视角名称<input v-model="currentView.name" @change="commitHistory('修改视角名称')" /></label>
+              <p v-if="currentViewIsMapSurface" class="readonly-banner">地图和厂区镜头由运行画面控制；这里使用与 07 相同的组件库、画布、拖拽、数据绑定和发布流程。</p>
+              <template v-else>
               <div class="property-grid two"><label>类型<select v-model="currentView.mode" @change="commitHistory('修改视角类型'); syncPreviewContextFromView()"><option v-for="mode in DASHBOARD_VIEW_MODES" :key="mode.id" :value="mode.id">{{ mode.label }}</option></select></label><label>目标类型<select v-model="currentView.targetType" @change="updateViewTarget(currentView)"><option value="factory">全厂</option><option value="workshop">车间</option><option value="line">产线</option><option value="device">设备</option><option value="device_part">指定部件</option></select></label></div>
               <label v-if="currentView.targetType === 'workshop'">目标车间<select v-model="currentView.targetId" @change="updateViewTarget(currentView)"><option value="">自动按当前上下文</option><option v-for="workshop in workshops" :key="workshop.id" :value="String(workshop.id)">{{ workshop.name || workshop.id }}</option></select></label>
               <label v-if="currentView.targetType === 'line'">目标产线<select v-model="currentView.targetId" @change="updateViewTarget(currentView)"><option value="">自动按当前上下文</option><option v-for="line in lines" :key="line.id" :value="String(line.id)">{{ line.name || line.id }}</option></select></label>
@@ -2562,12 +2708,13 @@ onBeforeUnmount(() => {
               <div class="property-grid two"><label>目标偏移 X<input v-model.number="currentView.camera.targetOffset[0]" type="number" step=".1" @change="commitHistory('修改视角目标')" /></label><label>目标偏移 Y<input v-model.number="currentView.camera.targetOffset[1]" type="number" step=".1" @change="commitHistory('修改视角目标')" /></label><label>目标偏移 Z<input v-model.number="currentView.camera.targetOffset[2]" type="number" step=".1" @change="commitHistory('修改视角目标')" /></label></div>
               <label class="visibility-bound-device"><input v-model="currentView.camera.relativeToTarget" type="checkbox" @change="commitHistory('修改相机朝向参考')" /> 设备视角跟随设备朝向（适合不同设备旋转角度）</label>
               <button type="button" class="view-delete-button" @click="removeView" :disabled="views.length <= 1">删除当前视角</button>
+              </template>
             </section>
             <section v-else-if="viewInspectorTab === 'components'" class="inspector-section">
               <div class="readonly-banner"><span>所见即所得</span>下面列出当前视角画布中的组件；顶部导航状态和返回键是两个独立组件，可分别删除 / 隐藏 / 锁定。Unity 诊断面板、设备浮标等运行时系统项不占画布。取消勾选可暂时隐藏，隐藏后可在“已隐藏组件”中恢复。</div>
               <label class="visibility-bound-device"><input v-model="currentView.componentState.hideNonTargetDevices" type="checkbox" @change="commitHistory('修改目标设备显隐')" /> 只显示目标范围内的设备</label>
               <div v-if="viewComponents.length" class="view-component-list"><label v-for="item in viewComponents" :key="item.id"><input type="checkbox" checked @change="toggleViewComponent(currentView, item.id, $event.target.checked)" /><span>{{ item.label }}</span><small>{{ item.type === 'navigation' ? '顶部导航' : item.type === 'return_button' ? '返回键' : widgetTypeLabel(item.type) }}</small></label></div>
-              <p v-else class="empty-inspector">当前视角还没有显示组件，请从左侧拖入组件到画布。</p>
+              <p v-else-if="!currentViewIsMapSurface" class="empty-inspector">当前视角还没有显示组件，请从左侧拖入组件到画布。</p>
               <details v-if="hiddenViewComponents.length" class="view-hidden-components">
                 <summary>已隐藏组件（{{ hiddenViewComponents.length }}）</summary>
                 <div class="view-component-list"><label v-for="item in hiddenViewComponents" :key="item.id"><input type="checkbox" :checked="false" @change="toggleViewComponent(currentView, item.id, $event.target.checked)" /><span>{{ item.label }}</span><small>{{ item.type === 'navigation' ? '顶部导航' : item.type === 'return_button' ? '返回键' : widgetTypeLabel(item.type) }}</small></label></div>
@@ -2722,6 +2869,7 @@ onBeforeUnmount(() => {
 .layer-hidden-components button { display:grid; grid-template-columns:24px minmax(0,1fr) 20px; align-items:center; width:100%; min-height:32px; padding:3px 6px; border:0; border-top:1px solid #ededee; color:#6e6e73; background:transparent; text-align:left; cursor:pointer; }
 .layer-hidden-components button:hover { background:#f0f0f2; }
 .layer-hidden-components button i { color:#176b3a; font-style:normal; text-align:center; }
+.designer-map-built-in{position:absolute;z-index:1;display:grid;align-content:start;gap:8px;padding:16px;border:1px solid #98a8d4a0;border-radius:6px;background:#22273cce;color:#f4f6ff;text-align:left;cursor:pointer;box-shadow:0 8px 24px #0004}.designer-map-built-in:hover{border-color:#cad6ff;background:#333b5aef}.designer-map-built-in span{font-size:14px;color:#aebde8}.designer-map-built-in strong{overflow:hidden;font-size:19px;text-overflow:ellipsis;white-space:nowrap}.map-built-in-layer i{font-size:10px;white-space:nowrap}
 .designer-canvas > .designer-canvas-scroll { position:relative; inset:auto; flex:1; min-height:0; height:auto; }
 @media(max-width:1100px) { .designer-scope-bar { gap:9px; padding-inline:10px; } .designer-scope-hint { display:none; } .designer-device-picker { grid-template-columns:1fr; gap:3px!important; } }
 .designer-toolbar { min-height: 62px; padding-block: 10px; }
@@ -2731,6 +2879,7 @@ onBeforeUnmount(() => {
 .fullscreen-exit-button{position:fixed;z-index:13000;top:18px;right:18px;display:grid;place-items:center;width:38px;height:38px;padding:0;border:1px solid rgba(255,255,255,.6);border-radius:10px;color:#fff;background:rgba(15,23,31,.78);box-shadow:0 8px 24px rgba(0,0,0,.25);cursor:pointer;backdrop-filter:blur(12px)}.fullscreen-exit-button:hover{background:rgba(29,29,31,.94);transform:translateY(-1px)}
 .dashboard-designer-shell.is-fullscreen{width:100vw;height:100vh;min-height:100vh;border:0;border-radius:0;overflow:hidden;background:#e9e9ec}.dashboard-designer-shell.is-fullscreen .designer-toolbar,.dashboard-designer-shell.is-fullscreen .designer-left-panel,.dashboard-designer-shell.is-fullscreen .designer-right-panel,.dashboard-designer-shell.is-fullscreen .designer-panel-toggle-rail,.dashboard-designer-shell.is-fullscreen .designer-statusbar{display:none}.dashboard-designer-shell.is-fullscreen .designer-main{grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(0,1fr)}.dashboard-designer-shell.is-fullscreen .designer-main>.designer-canvas{grid-area:1 / 1}.dashboard-designer-shell.is-fullscreen .designer-canvas-scroll{padding:0;display:grid;place-items:center}.dashboard-designer-shell.is-fullscreen .designer-canvas-spacer{margin:auto}.dashboard-designer-shell.is-fullscreen .designer-canvas-stage{box-shadow:none}
 .dashboard-designer-shell.is-fullscreen .designer-canvas-stage::before{display:none}.dashboard-designer-shell.is-fullscreen .designer-canvas-stage{background:radial-gradient(ellipse at 52% 44%,#333c57 0%,#1c2439 42%,#101624 80%)!important}
+.designer-map-background{z-index:0;--preview-map-base:#747682;--preview-accent:#9caaff;--preview-text:#dfe5f3}.designer-site-background{position:absolute;inset:0;z-index:0;display:grid;place-items:center;background-size:cover;background-position:center;pointer-events:none}.designer-site-background span{padding:8px 14px;border:1px solid #aebaff66;border-radius:5px;background:#121827bb;color:#e5ecff;font-size:22px}.designer-canvas-stage>.designer-widget{z-index:2}
 .designer-statusbar { min-height: 42px; padding-block: 8px; }
 .designer-status { min-width: 0; }
 
@@ -2800,4 +2949,9 @@ onBeforeUnmount(() => {
 .panel-opacity-setting .field-hint {
   margin: 0;
 }
+.http-field-list{display:grid;gap:5px;max-height:190px;overflow:auto;padding:7px;border:1px solid #dedee3;border-radius:9px;background:#f7f8fb}
+.http-field-list button{display:grid;gap:3px;min-width:0;padding:8px 9px;border:1px solid transparent;border-radius:7px;background:#fff;color:#1d2939;text-align:left;cursor:pointer}
+.http-field-list button:hover,.http-field-list button.selected{border-color:#7d9be2;background:#edf3ff}
+.http-field-list code{overflow:hidden;font-size:11px;text-overflow:ellipsis;white-space:nowrap}
+.http-field-list small{overflow:hidden;color:#667085;font-size:10px;text-overflow:ellipsis;white-space:nowrap}
 </style>

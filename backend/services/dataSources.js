@@ -12,6 +12,7 @@ const {
 } = require('../db/database');
 const { createMysqlDump, resolveMysqlTools } = require('./mysqlBackup');
 const { evaluateVariableExpression } = require('../utils/mathExpression');
+const { parseDataPath, readDataPath, appendDataPath, parseExternalPayload } = require('../utils/externalDataPayload');
 
 const DATA_DIR = process.env.APP_DATA_DIR
     ? path.resolve(process.env.APP_DATA_DIR)
@@ -32,7 +33,8 @@ const DEFAULT_BACKUP_CONFIG = Object.freeze({
 });
 const SUPPORTED_TYPES = new Set(['mysql', 'postgres', 'sqlserver', 'sqlite']);
 const SUPPORTED_SOURCE_TYPES = new Set(['database', 'http_api']);
-const SUPPORTED_HTTP_AUTH_TYPES = new Set(['none', 'api_key', 'bearer', 'basic']);
+const SUPPORTED_HTTP_AUTH_TYPES = new Set(['none', 'api_key', 'bearer', 'basic', 'oauth2_client_credentials']);
+const SUPPORTED_RESPONSE_FORMATS = new Set(['auto', 'json', 'xml', 'csv']);
 const HEALTH_STATUSES = new Set(['unknown', 'healthy', 'auth_failed', 'http_error', 'network_error', 'timeout', 'config_error']);
 const FORBIDDEN_AUTH_HEADERS = new Set(['host', 'connection', 'content-length', 'transfer-encoding', 'upgrade', 'trailer', 'te', 'keep-alive', 'expect']);
 const HEALTH_TOKEN_TTL_MS = 15 * 60 * 1000;
@@ -54,6 +56,7 @@ const activeConnectionBackups = new Map();
 let lastBackupRun = null;
 let lastBackupError = null;
 const runtimeCache = new Map();
+const oauthTokenCache = new Map();
 
 function ensureDirectory(directory) {
     fs.mkdirSync(directory, { recursive: true });
@@ -171,12 +174,19 @@ function normalizeConnection(source = {}, current = {}) {
             baseUrl: shortText(source.baseUrl ?? previous.baseUrl, '', 2048),
             healthPath: shortText(source.healthPath ?? previous.healthPath, '/health', 1024),
             method: 'GET',
+            responseFormat: SUPPORTED_RESPONSE_FORMATS.has(source.responseFormat ?? previous.responseFormat)
+                ? (source.responseFormat ?? previous.responseFormat) : 'auto',
             authType,
             apiKeyHeader: authType === 'api_key' ? shortText(source.apiKeyHeader ?? credentials.apiKeyHeader, 'X-API-Key', 100) : 'X-API-Key',
             apiKey: authType === 'api_key' ? normalizeSecret(source.apiKey, credentials.apiKey) : '',
             token: authType === 'bearer' ? normalizeSecret(source.token, credentials.token) : '',
             user: authType === 'basic' ? shortText(source.user ?? credentials.user, '', 255) : '',
             password: authType === 'basic' ? normalizeSecret(source.password, credentials.password) : '',
+            tokenUrl: authType === 'oauth2_client_credentials' ? shortText(source.tokenUrl ?? credentials.tokenUrl, '', 2048) : '',
+            clientId: authType === 'oauth2_client_credentials' ? shortText(source.clientId ?? credentials.clientId, '', 255) : '',
+            clientSecret: authType === 'oauth2_client_credentials' ? normalizeSecret(source.clientSecret, credentials.clientSecret) : '',
+            scope: authType === 'oauth2_client_credentials' ? shortText(source.scope ?? credentials.scope, '', 512) : '',
+            tokenAuthMethod: authType === 'oauth2_client_credentials' && (source.tokenAuthMethod ?? credentials.tokenAuthMethod) === 'basic' ? 'basic' : 'body',
             requestTimeoutMs: finiteInteger(source.requestTimeoutMs ?? previous.requestTimeoutMs, 8000, 1000, 60000)
         };
     }
@@ -281,6 +291,7 @@ function publicConnection(connection, extra = {}) {
     if (connection.sourceType === 'http_api') {
         publicValue.apiKey = connection.apiKey ? MASKED_PASSWORD : '';
         publicValue.token = connection.token ? MASKED_PASSWORD : '';
+        publicValue.clientSecret = connection.clientSecret ? MASKED_PASSWORD : '';
         publicValue.baseUrl = publicHttpUrl(connection.baseUrl);
         publicValue.healthPath = publicHttpUrl(connection.healthPath);
     }
@@ -333,14 +344,14 @@ function isHttpApiSource(connection) {
 
 function connectionFingerprint(connection) {
     const fields = isHttpApiSource(connection)
-        ? ['sourceType', 'type', 'enabled', 'baseUrl', 'healthPath', 'method', 'authType', 'apiKeyHeader', 'apiKey', 'token', 'user', 'password', 'requestTimeoutMs']
+        ? ['sourceType', 'type', 'enabled', 'baseUrl', 'healthPath', 'method', 'responseFormat', 'authType', 'apiKeyHeader', 'apiKey', 'token', 'user', 'password', 'tokenUrl', 'clientId', 'clientSecret', 'scope', 'tokenAuthMethod', 'requestTimeoutMs']
         : ['sourceType', 'type', 'enabled', 'host', 'port', 'user', 'password', 'database', 'filename', 'defaultSchema', 'encrypt', 'trustServerCertificate', 'queryTimeoutMs'];
     return crypto.createHash('sha256').update(JSON.stringify(fields.map(field => connection[field]))).digest('hex');
 }
 
 function redactCredentials(message, connection) {
     let safe = String(message || '');
-    const secrets = [connection.apiKey, connection.token, connection.password].filter(Boolean).sort((left, right) => right.length - left.length);
+    const secrets = [connection.apiKey, connection.token, connection.password, connection.clientSecret].filter(Boolean).sort((left, right) => right.length - left.length);
     for (const secret of secrets) safe = safe.split(secret).join(MASKED_PASSWORD);
     return safe.slice(0, 500);
 }
@@ -398,6 +409,7 @@ function saveDataSource(input = {}, factoryId = activeFactoryId()) {
     if (isHttpApiSource(next)) stored.backup.selectedConnectionIds = stored.backup.selectedConnectionIds.filter(id => id !== requestedId);
     saveStoredConfig(stored, factoryId);
     runtimeCache.clear();
+    oauthTokenCache.clear();
     return publicConnection(next);
 }
 
@@ -413,6 +425,7 @@ function deleteDataSource(id, factoryId = activeFactoryId()) {
     saveStoredConfig(stored, factoryId);
     latestHealthChecks.delete(`${factoryId}:${normalizedId}`);
     runtimeCache.clear();
+    oauthTokenCache.clear();
     return { success: true };
 }
 
@@ -450,10 +463,98 @@ function normalizeHttpUrl(baseUrl, healthPath) {
     return { base, target };
 }
 
+function oauthTokenUrl(connection) {
+    const raw = String(connection.tokenUrl || '').trim();
+    let url;
+    try { url = new URL(raw); } catch { throw new Error('OAuth2 令牌地址格式不正确'); }
+    const loopback = ['127.0.0.1', '[::1]', 'localhost'].includes(url.hostname);
+    if (url.protocol !== 'https:' && !(url.protocol === 'http:' && loopback))
+        throw new Error('OAuth2 令牌地址必须使用 HTTPS（本机测试除外）');
+    if (url.username || url.password || url.search || url.hash || /[\u0000-\u001f\u007f]/.test(raw))
+        throw new Error('OAuth2 令牌地址不能包含账号、密码、查询参数、片段或控制字符');
+    return url;
+}
+
+async function readLimitedResponse(response, limit, label) {
+    if (Number(response.headers.get('content-length')) > limit) throw new Error(`${label}超过大小上限`);
+    if (!response.body) throw new Error(`${label}没有返回内容`);
+    const reader = response.body.getReader();
+    const chunks = [];
+    let size = 0;
+    try {
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            size += value.byteLength;
+            if (size > limit) throw new Error(`${label}超过大小上限`);
+            chunks.push(Buffer.from(value));
+        }
+    } finally { await reader.cancel().catch(() => {}); }
+    return Buffer.concat(chunks).toString('utf8');
+}
+
+async function oauthAccessToken(connection, factoryId) {
+    const key = `${activeFactoryId(factoryId)}:${connection.id}:${connectionFingerprint(connection)}`;
+    const cached = oauthTokenCache.get(key);
+    if (cached?.expiresAt > Date.now()) return cached.token;
+    if (cached?.pending) return cached.pending;
+    const pending = (async () => {
+        const parameters = new URLSearchParams({ grant_type: 'client_credentials' });
+        if (connection.scope) parameters.set('scope', connection.scope);
+        const headers = { Accept: 'application/json', 'Content-Type': 'application/x-www-form-urlencoded' };
+        if (connection.tokenAuthMethod === 'basic') {
+            headers.Authorization = `Basic ${Buffer.from(`${connection.clientId}:${connection.clientSecret}`, 'utf8').toString('base64')}`;
+        } else {
+            parameters.set('client_id', connection.clientId);
+            parameters.set('client_secret', connection.clientSecret);
+        }
+        let response;
+        try {
+            response = await fetch(oauthTokenUrl(connection), {
+                method: 'POST', headers, body: parameters, redirect: 'manual',
+                signal: AbortSignal.timeout(connection.requestTimeoutMs)
+            });
+            if (!response.ok) {
+                const error = new Error(`OAuth2 令牌接口返回 HTTP ${response.status}`);
+                error.oauthAuthFailure = response.status === 400 || response.status === 401 || response.status === 403;
+                throw error;
+            }
+            let result;
+            try { result = JSON.parse(await readLimitedResponse(response, 16384, 'OAuth2 令牌响应')); }
+            catch (error) { if (/^OAuth2/.test(error.message)) throw error; throw new Error('OAuth2 令牌响应不是有效 JSON'); }
+            if (result.token_type && String(result.token_type).toLowerCase() !== 'bearer') throw new Error('OAuth2 只支持 Bearer 访问令牌');
+            const token = String(result.access_token || '');
+            if (!token || token.length > 8192 || /[\u0000-\u001f\u007f]/.test(token)) throw new Error('OAuth2 令牌响应缺少有效 access_token');
+            const seconds = Number(result.expires_in);
+            const lifetime = Number.isFinite(seconds) && seconds > 0 ? Math.min(seconds, 86400) : 300;
+            const expiresAt = Date.now() + Math.max(1000, (lifetime - Math.min(60, lifetime * .1)) * 1000);
+            oauthTokenCache.set(key, { token, expiresAt });
+            return token;
+        } catch (error) {
+            if (error?.oauthAuthFailure || /^OAuth2/.test(error?.message || '')) throw error;
+            if (error?.name === 'TimeoutError' || error?.name === 'AbortError') throw new Error('OAuth2 令牌请求超时');
+            throw new Error('OAuth2 令牌接口无法访问');
+        } finally {
+            if (response?.body && !response.body.locked) await response.body.cancel().catch(() => {});
+        }
+    })();
+    oauthTokenCache.set(key, { pending });
+    try { return await pending; }
+    catch (error) { oauthTokenCache.delete(key); throw error; }
+}
+
 function httpAuthHeaders(connection) {
     const authType = normalizeHttpAuthType(connection.authType);
     if (!SUPPORTED_HTTP_AUTH_TYPES.has(authType)) throw new Error('不支持的 HTTP API 认证方式');
     if (authType === 'none') return {};
+    if (authType === 'oauth2_client_credentials') {
+        oauthTokenUrl(connection);
+        if (!String(connection.clientId || '').trim() || !String(connection.clientSecret || '').trim())
+            throw new Error('OAuth2 必须填写 Client ID 和 Client Secret');
+        if (connection.tokenAuthMethod === 'basic' && /[:\u0000-\u001f\u007f]/.test(connection.clientId))
+            throw new Error('OAuth2 Basic 模式的 Client ID 不能包含冒号或控制字符');
+        return {};
+    }
     if (authType === 'api_key') {
         if (!String(connection.apiKey || '').trim()) throw new Error('API Key 认证未填写密钥');
         const header = String(connection.apiKeyHeader || 'X-API-Key').trim();
@@ -474,6 +575,14 @@ function httpAuthHeaders(connection) {
     return { Authorization: `Basic ${Buffer.from(`${connection.user}:${connection.password}`, 'utf8').toString('base64')}` };
 }
 
+async function requestAuthHeaders(connection, factoryId) {
+    const headers = httpAuthHeaders(connection);
+    if (normalizeHttpAuthType(connection.authType) === 'oauth2_client_credentials') {
+        headers.Authorization = `Bearer ${await oauthAccessToken(connection, factoryId)}`;
+    }
+    return headers;
+}
+
 async function testHttpApiSource(connection, checkedAt) {
     const { target } = normalizeHttpUrl(connection.baseUrl, connection.healthPath);
     // Validation belongs outside the network catch; malformed headers must be
@@ -489,6 +598,7 @@ async function testHttpApiSource(connection, checkedAt) {
         checkedAt
     };
     try {
+        for (const [name, value] of Object.entries(await requestAuthHeaders(connection))) headers.set(name, value);
         const response = await fetch(target, {
             method: 'GET',
             headers,
@@ -514,12 +624,83 @@ async function testHttpApiSource(connection, checkedAt) {
         if (response.body) await response.body.cancel().catch(() => {});
     } catch (error) {
         health.responseTimeMs = Date.now() - startedAt;
-        health.status = error?.name === 'TimeoutError' || error?.name === 'AbortError' ? 'timeout' : 'network_error';
-        health.message = health.status === 'timeout'
+        health.status = error?.oauthAuthFailure ? 'auth_failed'
+            : error?.name === 'TimeoutError' || error?.name === 'AbortError' || /OAuth2.*超时/.test(error?.message || '') ? 'timeout' : 'network_error';
+        health.message = error?.oauthAuthFailure ? 'OAuth2 令牌接口拒绝访问，请检查 Client ID、Client Secret 与 Scope。'
+            : health.status === 'timeout'
             ? `接口请求超过 ${connection.requestTimeoutMs}ms 未响应。`
             : '接口无法访问，请检查地址、网络、证书及目标服务是否运行。';
     }
     return health;
+}
+
+function normalizeHttpBinding(input = {}, requireJsonPath = true) {
+    const connectionId = safeId(input.connectionId);
+    const apiPath = shortText(input.apiPath, '', 1024);
+    const jsonPath = shortText(input.jsonPath, '', 255);
+    if (!connectionId || !apiPath || (requireJsonPath && !jsonPath))
+        throw new Error(requireJsonPath ? 'HTTP 接口绑定必须选择连接、接口路径和 JSON 字段路径' : '请先选择 HTTP 连接并填写接口路径');
+    if (apiPath.startsWith('//') || /[\\\u0000-\u001f\u007f]/.test(apiPath) || /(^|\/)\.\.(\/|$)/.test(apiPath))
+        throw new Error('HTTP 接口路径只能是当前连接下的只读相对路径');
+    if (jsonPath) parseDataPath(jsonPath);
+    return { connectionId, apiPath, jsonPath, refreshMs: finiteInteger(input.refreshMs, 30000, 5000, 3600000) };
+}
+
+async function fetchHttpApiPayload(binding, factoryId) {
+    const connection = resolveConnection(binding.connectionId, factoryId);
+    if (!isHttpApiSource(connection)) throw new Error('所选连接不是 HTTP API 数据源');
+    const { base, target } = normalizeHttpUrl(connection.baseUrl, binding.apiPath);
+    const prefix = base.pathname.endsWith('/') ? base.pathname : `${base.pathname}/`;
+    if (!target.pathname.startsWith(prefix)) throw new Error('接口路径不能超出已登记的 API 根地址');
+    const headers = new Headers({ Accept: 'application/json, application/xml, text/xml, text/csv, */*' });
+    for (const [name, value] of Object.entries(httpAuthHeaders(connection))) headers.set(name, value);
+    let response;
+    try {
+        for (const [name, value] of Object.entries(await requestAuthHeaders(connection, factoryId))) headers.set(name, value);
+        response = await fetch(target, { method: 'GET', headers, redirect: 'manual', signal: AbortSignal.timeout(connection.requestTimeoutMs) });
+        if (!response.ok) throw new Error(`接口返回 HTTP ${response.status}`);
+        const body = await readLimitedResponse(response, 262144, '接口响应（256 KB）');
+        return parseExternalPayload(body, connection.responseFormat, response.headers.get('content-type') || '');
+    } catch (error) {
+        if (error?.name === 'TimeoutError' || error?.name === 'AbortError') throw new Error('接口读取超时');
+        if (/^(?:接口|请选择|HTTP|OAuth2|XML|CSV|不支持|字段)/.test(error?.message || '')) throw error;
+        throw new Error('接口读取失败，请检查目标服务和连接配置');
+    } finally {
+        if (response?.body && !response.body.locked) await response.body.cancel().catch(() => {});
+    }
+}
+
+async function readHttpApiBinding(input = {}, factoryId = activeFactoryId()) {
+    const binding = normalizeHttpBinding(input);
+    const payload = await fetchHttpApiPayload(binding, factoryId);
+    const selected = readDataPath(payload, binding.jsonPath);
+    if (selected === undefined) throw new Error('接口响应中找不到配置的字段');
+    if (selected !== null && typeof selected === 'object' && !Array.isArray(selected)) throw new Error('请选择标量或数组字段');
+    const rows = Array.isArray(selected) ? selected.slice(0, 100) : [];
+    const series = rows.map((item, index) => ({ label: String(item?.label ?? index + 1), value: item?.value ?? item })).filter(item => ['number', 'string', 'boolean'].includes(typeof item.value));
+    return { value: Array.isArray(selected) ? (series[0]?.value ?? null) : selected, rows, series, quality: 'good', error: '', fetchedAt: new Date().toISOString() };
+}
+
+async function inspectHttpApiResponse(input = {}, factoryId = activeFactoryId()) {
+    const binding = normalizeHttpBinding({ ...input, jsonPath: '' }, false);
+    const payload = await fetchHttpApiPayload(binding, factoryId);
+    const fields = [];
+    function collect(value, path = '', depth = 0) {
+        if (fields.length >= 80 || depth > 5 || value === null) return;
+        if (Array.isArray(value)) {
+            if (path) fields.push({ path, kind: 'array', sample: `${value.length} 项` });
+            if (value.length) collect(value[0], appendDataPath(path, 0), depth + 1);
+        } else if (typeof value === 'object') {
+            for (const [key, item] of Object.entries(value).slice(0, 40)) {
+                const nextPath = appendDataPath(path, key);
+                if (nextPath && nextPath.length <= 255) collect(item, nextPath, depth + 1);
+            }
+        } else if (path) {
+            fields.push({ path, kind: typeof value, sample: String(value).slice(0, 80) });
+        }
+    }
+    collect(payload);
+    return { fields, fetchedAt: new Date().toISOString() };
 }
 
 function persistHealth(connection, health, checkId, factoryId = activeFactoryId()) {
@@ -988,6 +1169,25 @@ async function readRuntimeBindings(widgets = [], context = {}) {
             values[target.widgetId] = { value: null, rows: [], series: [], quality: 'bad', error: error.message, fetchedAt: new Date().toISOString() };
         }
     });
+    const httpTargets = widgets.filter(widget => widget?.data?.mode === 'http_api').slice(0, 30);
+    let nextHttpTarget = 0;
+    async function readHttpTargets() {
+        while (nextHttpTarget < httpTargets.length) {
+            const widget = httpTargets[nextHttpTarget++];
+            const widgetId = String(widget.id);
+            const key = cacheKey({ binding: widget.data, context }, activeFactoryId(context.factoryId));
+            const cached = runtimeCache.get(key);
+            if (cached && cached.expiresAt > Date.now()) { values[widgetId] = cached.value; continue; }
+            try {
+                const result = await readHttpApiBinding(widget.data, context.factoryId);
+                values[widgetId] = result;
+                runtimeCache.set(key, { value: result, expiresAt: Date.now() + finiteInteger(widget.data.refreshMs, 30000, 5000, 3600000) });
+            } catch (error) {
+                values[widgetId] = { value: null, rows: [], series: [], quality: 'bad', error: error.message, fetchedAt: new Date().toISOString() };
+            }
+        }
+    }
+    await Promise.all(Array.from({ length: Math.min(4, httpTargets.length) }, () => readHttpTargets()));
     return values;
 }
 
@@ -1212,6 +1412,7 @@ function startDataSourceMaintenance(factoryId = 'factory_default') {
 function reloadDataSourceConfiguration(factoryId = maintenanceFactoryId) {
     maintenanceFactoryId = activeFactoryId(factoryId);
     runtimeCache.clear();
+    oauthTokenCache.clear();
     restartMaintenanceTimer();
     return listDataSources(maintenanceFactoryId);
 }
@@ -1260,6 +1461,8 @@ module.exports = {
     listDataSources,
     listTables,
     previewBinding,
+    inspectHttpApiResponse,
+    readHttpApiBinding,
     readRuntimeBindings,
     reloadDataSourceConfiguration,
     resolveConnection,

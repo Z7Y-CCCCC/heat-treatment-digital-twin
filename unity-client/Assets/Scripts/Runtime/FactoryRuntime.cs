@@ -1205,7 +1205,9 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 _inspectionPreviousBackground = _camera.backgroundColor;
                 _inspectionPreviousFog = RenderSettings.fog;
                 _camera.clearFlags = CameraClearFlags.SolidColor;
-                _camera.backgroundColor = new Color(.125f, .13f, .145f, 1f);
+                // A muted slate backdrop separates black metal from empty space
+                // without bringing the surrounding workshop back into the view.
+                _camera.backgroundColor = new Color(.29f, .33f, .39f, 1f);
                 RenderSettings.fog = false;
             }
             else

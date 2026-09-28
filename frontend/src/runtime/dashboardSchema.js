@@ -30,6 +30,23 @@ export const DASHBOARD_VIEW_MODES = [
   { id: 'custom', label: '自定义视角', description: '按工程师设置的目标和组件状态展示' }
 ]
 
+export const MAP_SURFACE_VIEWS = Object.freeze([
+  { id: 'map_world', name: '01 全球地图', level: 'world', targetType: 'map_world', parentViewId: '' },
+  { id: 'map_country', name: '02 国家地图', level: 'country', targetType: 'map_country', parentViewId: 'map_world' },
+  { id: 'map_province', name: '03 省份 / 直辖市地图', level: 'province', targetType: 'map_province', parentViewId: 'map_country' },
+  { id: 'map_city', name: '04 城市地图', level: 'city', targetType: 'map_city', parentViewId: 'map_province' },
+  { id: 'map_district', name: '05 区县地图', level: 'district', targetType: 'map_district', parentViewId: 'map_city' },
+  { id: 'site_street', name: '06 街道示意', level: 'street', targetType: 'site_street', parentViewId: 'map_district' },
+  { id: 'site_factory', name: '07 工厂建筑', level: 'site_factory', targetType: 'site_factory', parentViewId: 'site_street' }
+])
+export const MAP_SURFACE_VIEW_IDS = new Set(MAP_SURFACE_VIEWS.map(view => view.id))
+const mapSurfaceViewDefinition = view => ({
+  id: view.id, name: view.name, mode: 'custom', targetType: view.targetType,
+  parentViewId: view.parentViewId, returnViewId: view.parentViewId,
+  camera: { yaw: 0, pitch: 35, distanceScale: 1, transitionSeconds: 0 },
+  componentState: { show: [], hide: [], hideNonTargetDevices: false }
+})
+
 const DEFAULT_VIEW_DEFINITIONS = [
   { id: 'factory_overview', name: '全厂总览', mode: 'factory', targetType: 'factory', parentViewId: '', camera: { yaw: -39, pitch: 33, distanceScale: 1.08, transitionSeconds: .8 } },
   { id: 'workshop_overview', name: '车间视角', mode: 'workshop', targetType: 'workshop', parentViewId: 'factory_overview', camera: { yaw: -39, pitch: 36, distanceScale: 1.08, transitionSeconds: .7 } },
@@ -37,7 +54,8 @@ const DEFAULT_VIEW_DEFINITIONS = [
   { id: 'device_detail', name: '设备实体视角', mode: 'device', targetType: 'device', parentViewId: 'line_overview', camera: { yaw: 238, pitch: 19, distanceScale: 1.12, transitionSeconds: .55, relativeToTarget: true }, metadata: { inspectionStage: 'solid' } },
   { id: 'device_xray', name: '设备透视视角', mode: 'device', targetType: 'device', parentViewId: 'device_detail', camera: { yaw: 238, pitch: 19, distanceScale: 1.08, transitionSeconds: .65, relativeToTarget: true }, metadata: { inspectionStage: 'xray' } },
   { id: 'device_exploded', name: '设备拆解视角', mode: 'device', targetType: 'device', parentViewId: 'device_xray', camera: { yaw: 238, pitch: 22, distanceScale: 1.22, transitionSeconds: .7, relativeToTarget: true }, metadata: { inspectionStage: 'exploded' } },
-  { id: 'device_part', name: '部件详情视角', mode: 'device', targetType: 'device_part', parentViewId: 'device_exploded', camera: { yaw: 238, pitch: 18, distanceScale: 1.35, transitionSeconds: .55, relativeToTarget: true }, metadata: { inspectionStage: 'part' } }
+  { id: 'device_part', name: '部件详情视角', mode: 'device', targetType: 'device_part', parentViewId: 'device_exploded', camera: { yaw: 238, pitch: 18, distanceScale: 1.35, transitionSeconds: .55, relativeToTarget: true }, metadata: { inspectionStage: 'part' } },
+  ...MAP_SURFACE_VIEWS.map(mapSurfaceViewDefinition)
 ]
 
 function normalizeDashboardView(source = {}, index = 0) {
@@ -48,9 +66,11 @@ function normalizeDashboardView(source = {}, index = 0) {
   const mode = allowedModes.has(String(source.mode)) ? String(source.mode) : fallback.mode
   const parentValue = source.parentViewId ?? source.parent_view_id
   const returnValue = source.returnViewId ?? source.return_view_id
+  const viewId = String(source.id || fallback.id || `view_${index + 1}`).replace(/[^a-zA-Z0-9_-]/g, '_')
+  const authoredName = String(source.name || fallback.name || `视角 ${index + 1}`)
   return {
-    id: String(source.id || fallback.id || `view_${index + 1}`).replace(/[^a-zA-Z0-9_-]/g, '_'),
-    name: String(source.name || fallback.name || `视角 ${index + 1}`),
+    id: viewId,
+    name: viewId === 'site_factory' && authoredName.trim() === '06 工厂建筑' ? '07 工厂建筑' : authoredName,
     mode,
     targetType: String(source.targetType || fallback.targetType || (mode === 'custom' ? 'factory' : mode)),
     targetId: String(source.targetId || source.target_id || ''),
@@ -84,7 +104,8 @@ export function normalizeDashboardViews(scene = {}) {
   const raw = Array.isArray(source.views) && source.views.length ? source.views : createDefaultDashboardViews()
   const existingIds = new Set(raw.map(view => String(view?.id || '')))
   const inspectionDefaults = createDefaultDashboardViews().filter(view => view.id.startsWith('device_') && !existingIds.has(view.id))
-  const views = [...raw, ...inspectionDefaults].slice(0, 50).map((view, index) => normalizeDashboardView(view, index))
+  const mapDefaults = MAP_SURFACE_VIEWS.map(mapSurfaceViewDefinition).filter(view => !existingIds.has(view.id))
+  const views = [...raw, ...inspectionDefaults, ...mapDefaults].slice(0, 50).map((view, index) => normalizeDashboardView(view, index))
   const ids = new Set(views.map(view => view.id))
   const defaultViewId = ids.has(String(source.defaultViewId || '')) ? String(source.defaultViewId) : (views[0]?.id || 'factory_overview')
 
@@ -336,7 +357,7 @@ export function normalizeDashboardWidget(source = {}, canvas = DEFAULT_DASHBOARD
     && Number(source.w || 0) === 5 && Number(source.h || 0) === 5
   const data = objectValue(source.data, objectValue(source.binding, {}))
   const requestedMode = String(data.mode || '')
-  const normalizedMode = requestedMode === 'plc' || requestedMode === 'database' || requestedMode === 'runtime' || requestedMode === 'business'
+  const normalizedMode = requestedMode === 'plc' || requestedMode === 'database' || requestedMode === 'http_api' || requestedMode === 'runtime' || requestedMode === 'business'
     ? requestedMode
     : 'static'
   const resolvedDataMode = normalizedMode === 'static'
@@ -397,6 +418,8 @@ export function normalizeDashboardWidget(source = {}, canvas = DEFAULT_DASHBOARD
       path: resolvedDataMode === 'static' ? '' : String(data.path || ''),
       source: resolvedDataMode === 'static' ? '' : String(data.source || ''),
       connectionId: String(data.connectionId || data.connection_id || ''),
+      apiPath: String(data.apiPath || '').slice(0, 1024),
+      jsonPath: String(data.jsonPath || '').slice(0, 255),
       businessSection: ['batches', 'compliance', 'oee', 'energy', 'maintenance'].includes(String(data.businessSection || data.business_section))
         ? String(data.businessSection || data.business_section)
         : (['batches', 'compliance', 'oee', 'energy', 'maintenance'].includes(String(config.section)) ? String(config.section) : 'batches'),

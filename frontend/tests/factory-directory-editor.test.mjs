@@ -38,10 +38,10 @@ function fixture(t){
   return {instance,storage,reloads,confirmations,list,create,activate}
 }
 
-test('loads real factory rows with hierarchy counts and active configuration scope',async t=>{
+test('loads all factory rows with their independent hierarchy counts',async t=>{
   const view=fixture(t);await settle();await nextTick()
   const state=view.instance.value.$.setupState
-  assert.equal(state.factories.length,2);assert.equal(state.scopeId,'factory_default');assert.equal(state.activeId,'factory_default')
+  assert.equal(state.factories.length,2)
   assert.equal(state.factories[0].deviceCount,6)
 })
 
@@ -55,23 +55,21 @@ test('new factory creation calls the central factory API and explains its isolat
   assert.match(state.message,/独立维护/)
 })
 
-test('switching the configuration scope prompts then persists and reloads the admin workspace',async t=>{
+test('the factory directory no longer gates configuration or live display',async t=>{
   const view=fixture(t);await settle();await nextTick()
   const state=view.instance.value.$.setupState
-  state.selectScope(state.factories[1])
-  assert.equal(view.confirmations.length,1)
-  assert.equal(view.storage.get('digital_twin_factory_scope_v1'),'factory_north')
-  assert.equal(view.reloads.count,1)
+  assert.equal(typeof state.selectScope,'undefined')
+  assert.equal(typeof state.activate,'undefined')
+  assert.equal(view.confirmations.length,0)
+  assert.equal(view.reloads.count,0)
 })
 
-test('activating a factory is a separate explicit action from changing the admin configuration scope',async t=>{
+test('editing a factory changes only its identity and location',async t=>{
   const view=fixture(t);await settle();await nextTick()
   const state=view.instance.value.$.setupState
-  state.selectScope(state.factories[1])
-  const storedScope=view.storage.get('digital_twin_factory_scope_v1')
-  await state.activate(state.factories[1])
-  assert.equal(view.activate.mock.callCount(),1)
-  assert.equal(view.activate.mock.calls[0].arguments[0],'factory_north')
-  assert.equal(state.activeId,'factory_north')
-  assert.equal(view.storage.get('digital_twin_factory_scope_v1'),storedScope)
+  state.openEdit(state.factories[1])
+  assert.equal(state.editingId,'factory_north')
+  assert.equal(state.newName,'北方基地')
+  assert.equal(view.activate.mock.callCount(),0)
+  assert.equal(view.storage.size,0)
 })

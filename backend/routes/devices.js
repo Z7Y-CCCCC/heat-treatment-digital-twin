@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { getDb } = require('../db/database');
+const { getBuiltinModels } = require('../services/builtinModels');
 const {
     defaultPortForProtocol,
     getProtocolDefinition,
@@ -55,6 +56,14 @@ async function deviceBelongsToFactory(db, device, factoryId) {
 async function lineBelongsToFactory(db, lineId, factoryId) {
     return !lineId || Boolean(await db.get(`SELECT 1 FROM \`lines\` l JOIN workshops w ON w.id = l.workshop_id
         WHERE l.id = ? AND w.factory_id = ?`, [lineId, factoryId]));
+}
+
+async function modelAvailableToFactory(db, modelType, modelFile, factoryId) {
+    if (getBuiltinModels().some(item => (item.id === modelType || (modelFile && item.file_path === modelFile)) && item.placement_level !== 'device')) return false;
+    const matches = [];
+    if (modelType) matches.push(await db.get('SELECT factory_id, placement_level FROM models WHERE id = ?', [modelType]));
+    if (modelFile) matches.push(await db.get('SELECT factory_id, placement_level FROM models WHERE file_path = ? LIMIT 1', [modelFile]));
+    return matches.every(model => !model || ((model.factory_id === null || model.factory_id === factoryId) && (model.placement_level || 'device') === 'device'));
 }
 
 function normalizeProtocolValue(value) {
@@ -172,6 +181,9 @@ router.post('/', async (req, res) => {
                 return res.status(400).json({ error: '车间级设备必须选择当前工厂内的所属车间' });
             }
         }
+        if (!await modelAvailableToFactory(db, nextModelType, model_file, req.factoryId)) {
+            return res.status(400).json({ error: '所选模型不属于当前工厂，或不是设备级模型' });
+        }
         const protocol = normalizeProtocolValue(plc_protocol || 'S7');
         const normalizedOptions = normalizePlcOptionsValue(protocol, plc_options);
         await db.run(`INSERT INTO devices (
@@ -250,6 +262,9 @@ router.put('/:id', async (req, res) => {
             if (!workshopId || !await db.get('SELECT 1 FROM workshops WHERE id = ? AND factory_id = ?', [workshopId, req.factoryId])) {
                 return res.status(400).json({ error: '车间级设备必须选择当前工厂内的所属车间' });
             }
+        }
+        if (!await modelAvailableToFactory(db, nextModelType, model_file ?? existing.model_file, req.factoryId)) {
+            return res.status(400).json({ error: '所选模型不属于当前工厂，或不是设备级模型' });
         }
         const nextCoordinateSpace = ['line_local', 'workshop_local'].includes(coordinate_space)
             ? coordinate_space

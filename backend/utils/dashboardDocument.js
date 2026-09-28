@@ -1,4 +1,5 @@
 const { evaluateVariableExpression } = require('./mathExpression');
+const { parseDataPath } = require('./externalDataPayload');
 
 const SCHEMA_VERSION = 3;
 const SUPPORTED_SCHEMA_VERSIONS = new Set([1, 2, 3]);
@@ -161,7 +162,7 @@ function normalizeDataBinding(source, legacyBinding = {}) {
     const data = objectValue(source, {});
     const binding = objectValue(legacyBinding, {});
     let mode = shortText(data.mode, '', 32);
-    if (!['static', 'plc', 'database', 'runtime', 'business'].includes(mode)) {
+    if (!['static', 'plc', 'database', 'http_api', 'runtime', 'business'].includes(mode)) {
         mode = (data.connectionId || binding.connectionId || binding.connection_id)
             ? 'database'
             : (data.pointId || binding.pointId || binding.point_id)
@@ -187,6 +188,8 @@ function normalizeDataBinding(source, legacyBinding = {}) {
         path: mode === 'static' ? '' : shortText(data.path ?? binding.path, '', 255),
         source: mode === 'static' ? '' : shortText(data.source ?? binding.source, '', 128),
         connectionId: shortText(data.connectionId ?? binding.connectionId ?? binding.connection_id, '', 80),
+        apiPath: shortText(data.apiPath ?? binding.apiPath, '', 1024),
+        jsonPath: shortText(data.jsonPath ?? binding.jsonPath, '', 255),
         businessSection: ['batches', 'compliance', 'oee', 'energy', 'maintenance'].includes(String(data.businessSection ?? binding.businessSection))
             ? String(data.businessSection ?? binding.businessSection)
             : 'batches',
@@ -235,7 +238,17 @@ const DEFAULT_VIEW_DEFINITIONS = [
     { id: 'device_detail', name: '设备实体视角', mode: 'device', targetType: 'device', parentViewId: 'line_overview', camera: { yaw: 238, pitch: 19, distanceScale: 1.12, transitionSeconds: 0.55, relativeToTarget: true }, metadata: { inspectionStage: 'solid' } },
     { id: 'device_xray', name: '设备透视视角', mode: 'device', targetType: 'device', parentViewId: 'device_detail', camera: { yaw: 238, pitch: 19, distanceScale: 1.08, transitionSeconds: 0.65, relativeToTarget: true }, metadata: { inspectionStage: 'xray' } },
     { id: 'device_exploded', name: '设备拆解视角', mode: 'device', targetType: 'device', parentViewId: 'device_xray', camera: { yaw: 238, pitch: 22, distanceScale: 1.22, transitionSeconds: 0.7, relativeToTarget: true }, metadata: { inspectionStage: 'exploded' } },
-    { id: 'device_part', name: '部件详情视角', mode: 'device', targetType: 'device_part', parentViewId: 'device_exploded', camera: { yaw: 238, pitch: 18, distanceScale: 1.35, transitionSeconds: 0.55, relativeToTarget: true }, metadata: { inspectionStage: 'part' } }
+    { id: 'device_part', name: '部件详情视角', mode: 'device', targetType: 'device_part', parentViewId: 'device_exploded', camera: { yaw: 238, pitch: 18, distanceScale: 1.35, transitionSeconds: 0.55, relativeToTarget: true }, metadata: { inspectionStage: 'part' } },
+    ...[
+        ['map_world', '01 全球地图', ''], ['map_country', '02 国家地图', 'map_world'],
+        ['map_province', '03 省份 / 直辖市地图', 'map_country'], ['map_city', '04 城市地图', 'map_province'],
+        ['map_district', '05 区县地图', 'map_city'], ['site_street', '06 街道示意', 'map_district'],
+        ['site_factory', '07 工厂建筑', 'site_street']
+    ].map(([id, name, parentViewId]) => ({
+        id, name, mode: 'custom', targetType: id, parentViewId, returnViewId: parentViewId,
+        camera: { yaw: 0, pitch: 35, distanceScale: 1, transitionSeconds: 0 },
+        componentState: { show: [], hide: [], hideNonTargetDevices: false }
+    }))
 ];
 
 function defaultDashboardViews() {
@@ -251,9 +264,11 @@ function normalizeDashboardView(source, index = 0) {
     const mode = allowedModes.has(String(input.mode)) ? String(input.mode) : fallback.mode;
     const parentValue = input.parentViewId ?? input.parent_view_id;
     const returnValue = input.returnViewId ?? input.return_view_id;
+    const viewId = cleanId(input.id, fallback.id || `view_${index + 1}`);
+    const authoredName = shortText(input.name, fallback.name || `视角 ${index + 1}`, 128);
     return {
-        id: cleanId(input.id, fallback.id || `view_${index + 1}`),
-        name: shortText(input.name, fallback.name || `视角 ${index + 1}`, 128),
+        id: viewId,
+        name: viewId === 'site_factory' && authoredName.trim() === '06 工厂建筑' ? '07 工厂建筑' : authoredName,
         mode,
         targetType: shortText(input.targetType, fallback.targetType || mode, 32),
         targetId: shortText(input.targetId ?? input.target_id, '', 128),
@@ -286,8 +301,8 @@ function normalizeDashboardViews(scene) {
     const input = objectValue(scene, {});
     const raw = Array.isArray(input.views) && input.views.length ? input.views : defaultDashboardViews();
     const existingIds = new Set(raw.map(view => String(view?.id || '')));
-    const inspectionDefaults = defaultDashboardViews().filter(view => view.id.startsWith('device_') && !existingIds.has(view.id));
-    const views = [...raw, ...inspectionDefaults].slice(0, 50).map((view, index) => normalizeDashboardView(view, index));
+    const missingDefaults = defaultDashboardViews().filter(view => (view.id.startsWith('device_') || view.id.startsWith('map_') || view.id.startsWith('site_')) && !existingIds.has(view.id));
+    const views = [...raw, ...missingDefaults].slice(0, 50).map((view, index) => normalizeDashboardView(view, index));
     const ids = new Set(views.map(view => view.id));
     const defaultViewId = ids.has(String(input.defaultViewId || ''))
         ? String(input.defaultViewId)
@@ -653,6 +668,14 @@ function validateDocument(document, options = {}) {
         }
         if (widget?.data?.mode === 'business' && !widget.data.connectionId) {
             errors.push(`${label} 的业务只读组件必须选择外部数据库连接`);
+        }
+        if (widget?.data?.mode === 'http_api') {
+            if (!widget.data.connectionId || !widget.data.apiPath || !widget.data.jsonPath)
+                errors.push(`${label} 的 HTTP 接口绑定必须选择连接、接口路径和 JSON 字段`);
+            if (String(widget.data.apiPath || '').startsWith('//') || /(^|\/)\.\.(\/|$)/.test(String(widget.data.apiPath || '')))
+                errors.push(`${label} 的 HTTP 接口路径必须位于已登记的根地址下`);
+            try { parseDataPath(widget.data.jsonPath); }
+            catch { errors.push(`${label} 的接口字段路径格式不正确`); }
         }
         if (widget?.data?.mode === 'database') {
             const datasets = Array.isArray(widget.data.datasets) && widget.data.datasets.length

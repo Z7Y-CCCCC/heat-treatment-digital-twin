@@ -74,6 +74,12 @@ namespace HeatTreatment.DigitalTwin.Runtime
 
         private Transform _environmentRoot;
         private bool _inspectionIsolation;
+        private Light _inspectionFillLight;
+        private AmbientMode _inspectionPreviousAmbientMode;
+        private Color _inspectionPreviousAmbientSky;
+        private Color _inspectionPreviousAmbientEquator;
+        private Color _inspectionPreviousAmbientGround;
+        private float _inspectionPreviousAmbientIntensity;
         private readonly List<GltfImport> _hallImports = new List<GltfImport>();
         private int _hallGeneration;
         public Task HallReady { get; private set; } = Task.CompletedTask;
@@ -81,8 +87,56 @@ namespace HeatTreatment.DigitalTwin.Runtime
         public bool HasFactoryHall => _hallImports.Count > 0;
         public void SetInspectionIsolation(bool isolated)
         {
+            if (_inspectionIsolation == isolated) return;
             _inspectionIsolation = isolated;
             if (_environmentRoot != null) _environmentRoot.gameObject.SetActive(!isolated);
+            if (isolated)
+            {
+                // The factory remains hidden in the exploded/part views. Give the
+                // detached, often dark metallic pieces their own shadowless studio
+                // fill instead of restoring the hall or recoloring model materials.
+                _inspectionPreviousAmbientMode = RenderSettings.ambientMode;
+                _inspectionPreviousAmbientSky = RenderSettings.ambientSkyColor;
+                _inspectionPreviousAmbientEquator = RenderSettings.ambientEquatorColor;
+                _inspectionPreviousAmbientGround = RenderSettings.ambientGroundColor;
+                _inspectionPreviousAmbientIntensity = RenderSettings.ambientIntensity;
+                ApplyInspectionAmbient();
+                EnsureInspectionFillLight();
+                if (_inspectionFillLight != null) _inspectionFillLight.gameObject.SetActive(true);
+            }
+            else
+            {
+                if (_inspectionFillLight != null) _inspectionFillLight.gameObject.SetActive(false);
+                RenderSettings.ambientMode = _inspectionPreviousAmbientMode;
+                RenderSettings.ambientSkyColor = _inspectionPreviousAmbientSky;
+                RenderSettings.ambientEquatorColor = _inspectionPreviousAmbientEquator;
+                RenderSettings.ambientGroundColor = _inspectionPreviousAmbientGround;
+                RenderSettings.ambientIntensity = _inspectionPreviousAmbientIntensity;
+            }
+        }
+
+        private void EnsureInspectionFillLight()
+        {
+            if (_inspectionFillLight != null) return;
+            var camera = Camera.main;
+            if (camera == null) return;
+            var lightObject = new GameObject("Inspection Studio Fill");
+            lightObject.transform.SetParent(camera.transform, false);
+            lightObject.transform.localRotation = Quaternion.Euler(22f, -28f, 0f);
+            _inspectionFillLight = lightObject.AddComponent<Light>();
+            _inspectionFillLight.type = LightType.Directional;
+            _inspectionFillLight.color = new Color(.86f, .93f, 1f);
+            _inspectionFillLight.intensity = 1.35f;
+            _inspectionFillLight.shadows = LightShadows.None;
+        }
+
+        private static void ApplyInspectionAmbient()
+        {
+            RenderSettings.ambientMode = AmbientMode.Trilight;
+            RenderSettings.ambientSkyColor = new Color(.62f, .68f, .76f);
+            RenderSettings.ambientEquatorColor = new Color(.47f, .54f, .63f);
+            RenderSettings.ambientGroundColor = new Color(.34f, .40f, .48f);
+            RenderSettings.ambientIntensity = 1.12f;
         }
         private bool HasHallAsset => File.Exists(Path.Combine(Application.streamingAssetsPath, "Environment", "factory_hall_lowpoly.glb"));
         private readonly Dictionary<string, Transform> _workshopEnvironmentRoots = new Dictionary<string, Transform>();
@@ -362,6 +416,8 @@ namespace HeatTreatment.DigitalTwin.Runtime
 
         private void OnDestroy()
         {
+            if (_inspectionIsolation) SetInspectionIsolation(false);
+            if (_inspectionFillLight != null) Destroy(_inspectionFillLight.gameObject);
             _hallGeneration++;
             foreach (var importer in _hallImports) importer.Dispose();
             _hallImports.Clear();
@@ -510,9 +566,10 @@ namespace HeatTreatment.DigitalTwin.Runtime
             var camera = Camera.main;
             if (camera != null)
             {
-                camera.backgroundColor = horizonColor;
+                if (!_inspectionIsolation) camera.backgroundColor = horizonColor;
                 if (hallPresentation) camera.fieldOfView = 38f;
             }
+            if (_inspectionIsolation) ApplyInspectionAmbient();
             UpdateEnvironmentMaterials();
         }
 

@@ -70,7 +70,7 @@ async function main() {
             })]
         ];
         for (const [name, document] of invalidDocuments) {
-            await assert.rejects(saveDraft(db, { sceneId: initial.scene.id, document, expectedRevision: revision }), /HTTP API.*健康检查/);
+            await assert.rejects(saveDraft(db, { sceneId: initial.scene.id, document, expectedRevision: revision }), /HTTP API/);
             const state = await loadDesignerState(db, initial.scene.id);
             assert.equal(state.revision, revision, `${name}: rejected draft must not change revision`);
             assert.equal(state.document.widgets[0].data.connectionId, 'legacy_sqlite');
@@ -80,7 +80,7 @@ async function main() {
         const invalidDocument = invalidDocuments[0][1];
         await db.run('UPDATE scenes SET draft_json = ? WHERE id = ?', [JSON.stringify(invalidDocument), initial.scene.id]);
         const releaseCount = (await db.all('SELECT id FROM releases')).length;
-        await assert.rejects(publishDraft(db, { sceneId: initial.scene.id }), /HTTP API.*健康检查/);
+        await assert.rejects(publishDraft(db, { sceneId: initial.scene.id }), /HTTP API/);
         assert.equal((await db.all('SELECT id FROM releases')).length, releaseCount);
         checks.push('a manually edited/imported invalid draft cannot publish');
 
@@ -88,10 +88,22 @@ async function main() {
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
             'invalid_api_release', initial.project.id, initial.scene.id, '99.0.0', JSON.stringify(invalidDocument), 0, '', 3, revision
         ]);
-        await assert.rejects(activateRelease(db, 'invalid_api_release'), /HTTP API.*健康检查/);
+        await assert.rejects(activateRelease(db, 'invalid_api_release'), /HTTP API/);
         const active = await db.get('SELECT id FROM releases WHERE project_id = ? AND is_current = 1', [initial.project.id]);
         assert.equal(active.id, published.release.id);
         checks.push('an imported API-bound release cannot replace the active release');
+        const httpDocument = makeDocument({ mode: 'http_api', connectionId: 'api', apiPath: '/metrics', jsonPath: 'value[0].quantity', refreshMs: 30000 });
+        httpDocument.scene.views.find(view => view.id === 'map_city').componentState.show.push('source_binding_test');
+        const httpDraft = await saveDraft(db, { sceneId: initial.scene.id, document: httpDocument, expectedRevision: revision });
+        revision = httpDraft.revision;
+        const httpRelease = await publishDraft(db, { sceneId: initial.scene.id });
+        assert.equal(httpRelease.document.widgets[0].data.mode, 'http_api');
+        assert.deepEqual(httpRelease.document.scene.views.find(view => view.id === 'map_city').componentState.show, ['source_binding_test']);
+        assert.deepEqual(httpRelease.document.scene.views.find(view => view.id === 'map_district').componentState.show, []);
+        checks.push('a valid HTTP JSON binding saves and publishes');
+        checks.push('published map widgets retain isolated view membership');
+        await assert.rejects(saveDraft(db, { sceneId: initial.scene.id, document: makeDocument({ ...httpDocument.widgets[0].data, connectionId: 'legacy_sqlite' }), expectedRevision: revision }), /HTTP 接口组件必须选择/);
+        checks.push('HTTP widgets cannot bind database connections');
         console.log(JSON.stringify({ success: true, checks }, null, 2));
     } finally {
         await database.closeDb();

@@ -1,9 +1,15 @@
 <script setup>
-import { onMounted, ref } from 'vue'
+import { onMounted, onUnmounted, ref } from 'vue'
 import { adminApi } from '../../../config/factoryConfig.js'
 import { normalizeLoadingExperience } from '../../../runtime/loadingExperienceConfig.js'
+import { getFactoryScope } from '../../../runtime/factoryScope.js'
+import { cacheFactoryDraft, clearFactoryDraft, readFactoryDraft } from '../../../runtime/factoryDraftCache.js'
 
 const form = ref(normalizeLoadingExperience())
+const draftFactoryId = getFactoryScope()
+let savedSnapshot = ''
+const formSnapshot = () => JSON.stringify(form.value)
+defineExpose({ savePending: async () => { if (!savedSnapshot || formSnapshot() === savedSnapshot) return true; await save(); if (failed.value) throw new Error(message.value || '加载画面保存失败'); return true } })
 const busy = ref(false)
 const uploading = ref(false)
 const message = ref('')
@@ -13,6 +19,9 @@ onMounted(async () => {
   try {
     const settings = await adminApi.getSettings()
     form.value = normalizeLoadingExperience(settings.loading_experience_config)
+    savedSnapshot = formSnapshot()
+    const pending = readFactoryDraft(draftFactoryId, 'loading-experience')
+    if (pending?.value) form.value = normalizeLoadingExperience(pending.value)
   } catch (error) { failed.value = true; message.value = error.message || '读取加载画面失败' }
 })
 
@@ -21,10 +30,14 @@ async function save() {
   try {
     const result = await adminApi.saveSettings({ loading_experience_config: form.value })
     if (result.error) throw new Error(result.error)
+    savedSnapshot = formSnapshot()
+    clearFactoryDraft(draftFactoryId, 'loading-experience')
     message.value = '已保存；下一次启动或刷新大屏时生效。'
   } catch (error) { failed.value = true; message.value = error.message || '保存失败' }
   finally { busy.value = false }
 }
+
+onUnmounted(() => { if (!savedSnapshot) return; if (formSnapshot() !== savedSnapshot) cacheFactoryDraft(draftFactoryId, 'loading-experience', 'setting', { key: 'loading_experience_config', value: JSON.parse(formSnapshot()) }); else clearFactoryDraft(draftFactoryId, 'loading-experience') })
 
 async function uploadImage(event) {
   const file = event.target.files?.[0]

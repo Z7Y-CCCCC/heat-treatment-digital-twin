@@ -205,6 +205,9 @@ internal sealed class DashboardOverlayForm : Form
     public void ShowForParent(IntPtr parentHandle)
     {
         if (IsDisposed || parentHandle == IntPtr.Zero || !NativeMethods.IsWindow(parentHandle)) return;
+        // Parent maintenance runs every 33 ms. Re-showing an unchanged overlay
+        // would force bounds, z-order, cover and WebView host-state work each tick.
+        if (_visibleRequested && _attached && _parentHandle == parentHandle && Visible) return;
         _visibleRequested = true;
         AttachToParent(parentHandle);
         UpdateParentBounds(force: true);
@@ -219,6 +222,7 @@ internal sealed class DashboardOverlayForm : Form
     public void HideOverlay()
     {
         if (IsDisposed) return;
+        if (!_visibleRequested && !Visible) return;
         _visibleRequested = false;
         _reloadCover?.HideCover();
         Capture = false;

@@ -52,6 +52,7 @@ import AdminHelpGuide from './admin/components/AdminHelpGuide.vue'
 import MobileDeviceMotion from './admin/components/MobileDeviceMotion.vue'
 import ModelInspectionEditor from './admin/components/ModelInspectionEditor.vue'
 import ModelInspectionPreviewOverlay from './admin/components/ModelInspectionPreviewOverlay.vue'
+import AssetHierarchyBar from './admin/components/AssetHierarchyBar.vue'
 import { InspectionPreview, inspectionCameraPose } from '../runtime/InspectionPreview.js'
 import inspectionConfig from '../../../shared/inspectionConfig.mjs'
 import { adminSession, lockAdmin, refreshAdminSession } from '../runtime/adminSession.js'
@@ -59,6 +60,8 @@ import { adminUiStateForFocus } from '../runtime/nativeAdminNavigation.js'
 import { normalizeWorkshopLayout } from '../utils/spatialLayout.js'
 import { summarizeDeviceConnections } from './admin/utils/connectionStatus.js'
 import { isNativeUnitySurface } from '../runtime/nativeSurfaceBridge.js'
+import { getFactoryScope } from '../runtime/factoryScope.js'
+import { discardFactoryDrafts, saveFactoryDrafts } from '../runtime/factoryDraftCache.js'
 import {
     PLC_PROTOCOL_OPTIONS,
     getPlcAddressHint,
@@ -98,7 +101,7 @@ const PLATFORM_SUBPAGES = [
 const SETTINGS_SUBPAGES = [
     { key: 'security', label: '后台安全', description: '后台密码、无操作自动锁定与立即锁定' },
     { key: 'runtime', label: '运行与投屏', description: '自启动、电视投屏与本地运行服务' },
-    { key: 'database', label: '数据库与备份', description: '连接、外部数据源、备份与恢复' },
+    { key: 'database', label: '数据连接与备份', description: '数据库、ERP / MES 接口、备份与恢复' },
     { key: 'performance', label: '客户端性能', description: 'Unity 画质' },
     { key: 'data', label: '数据通路', description: 'PLC 实时采集或离线模拟模式' },
     { key: 'license', label: '授权与版本', description: '离线许可证、有效期与发布信息' }
@@ -159,6 +162,81 @@ const navIconPaths = {
 }
 
 const { appDialog, openAppDialog, closeAppDialog, alert, confirm } = useAppDialog()
+const unifiedDesignerRef = ref(null)
+const mobileMotionRef = ref(null)
+let factorySwitchApproved = false
+
+async function requestFactorySwitch({ factoryName }) {
+    const choice = await openAppDialog({
+        title: '切换工厂配置',
+        message: `即将切换到「${factoryName}」。请选择如何处理当前工厂在各页面尚未保存的修改。`,
+        type: 'warning',
+        showCancel: true,
+        cancelText: '取消',
+        secondaryText: '不保存并切换',
+        confirmText: '保存并切换'
+    })
+    if (choice !== true && choice !== 'secondary') return false
+    const currentFactoryId = getFactoryScope()
+    if (choice === 'secondary') {
+        unifiedDesignerRef.value?.discardPending?.()
+        mobileMotionRef.value?.discardPending?.()
+        discardFactoryDrafts(currentFactoryId)
+        factorySwitchApproved = true
+        return true
+    }
+    try {
+        await savePendingSystemSettings()
+        await mobileMotionRef.value?.savePending?.()
+        await saveCurrentFactoryPageDrafts()
+        await unifiedDesignerRef.value?.savePending?.()
+        await saveFactoryDrafts(currentFactoryId, {
+            setting: async ({ key, value }) => {
+                const result = await adminApi.saveSettings({ [key]: value })
+                if (result?.error || !result?.success) throw new Error(result?.error || `${key} 保存失败`)
+            },
+            dashboard: async ({ sceneId, document, revision }) => {
+                const result = await adminApi.saveDashboardDraft(sceneId, document, revision)
+                if (result?.error || !result?.success) throw new Error(result?.error || '大屏画面保存失败')
+            },
+            'mobile-motion': async ({ deviceId, motion, devicePayload, selectedPointIds, missingStationDistances }) => {
+                if (motion?.enabled && !motion.currentPositionPointId) throw new Error(`设备「${deviceId}」未绑定当前位置点位`)
+                if (motion?.valueMode === 'range' && Number(motion.valueMax) <= Number(motion.valueMin)) throw new Error(`设备「${deviceId}」的输入范围无效`)
+                if (motion?.valueMode === 'station') {
+                    const ids = (motion.stations || []).map(station => Number(station.value))
+                    if (!ids.length || ids.some(id => !Number.isFinite(id)) || new Set(ids).size !== ids.length) throw new Error(`设备「${deviceId}」的工位编号无效`)
+                    if (motion.simulationEnabled && Number(missingStationDistances) > 0) throw new Error(`设备「${deviceId}」的工位间距尚未填写完整`)
+                    if (motion.simulationEnabled && Number(motion.acceleration) <= 0) throw new Error(`设备「${deviceId}」的加速度无效`)
+                }
+                const latest = await adminApi.getDevice(deviceId)
+                if (!latest || latest.error) throw new Error(latest?.error || `设备「${deviceId}」读取失败`)
+                const config = { ...parseInstanceConfig(latest.instance_config), movement: devicePayload.instance_config.movement }
+                const payload = buildDevicePayloadForSave({ ...latest, instance_config: config }, getDeviceWorkshopId(latest))
+                const result = await adminApi.updateDevice(deviceId, payload)
+                if (result?.error || !result?.success) throw new Error(result?.error || `设备「${deviceId}」运动配置保存失败`)
+                const selected = new Set((selectedPointIds || []).map(String))
+                if (selected.size && Array.isArray(latest.dataPoints) && latest.dataPoints.length) {
+                    const pointResult = await adminApi.syncDataPoints(deviceId, latest.dataPoints.map(point => ({
+                        ...point, sample_interval_ms: selected.has(String(point.id)) ? 100 : point.sample_interval_ms
+                    })))
+                    if (pointResult?.error || !pointResult?.success) throw new Error(pointResult?.error || `设备「${deviceId}」点位周期保存失败`)
+                }
+            },
+            'factory-record': async ({ id, name, location }) => {
+                if (!String(name || '').trim()) throw new Error('工厂名称未填写，不能保存新工厂')
+                const result = id
+                    ? await adminApi.updateFactory(id, { name: name.trim(), location })
+                    : await adminApi.createFactory({ name: name.trim(), location })
+                if (result?.error || !result?.factory) throw new Error(result?.error || `工厂「${name}」保存失败`)
+            }
+        })
+        factorySwitchApproved = true
+        return true
+    } catch (error) {
+        await alert(`当前工厂的修改未全部保存，已取消切换。\n${error.message || error}`, { title: '保存并切换失败', type: 'danger' })
+        return false
+    }
+}
 
 const {
     settings,
@@ -236,7 +314,8 @@ const {
     saveDatabaseConnection,
     loadEngineStatus,
     formatEngineMode,
-    saveSettings
+    saveSettings,
+    savePendingSystemSettings
 } = useSystemSettings({
     alert,
     confirm,
@@ -294,6 +373,7 @@ function getDbStatusBadgeClass(statusText) {
 
 // ============ 车间管理 ============
 const workshops = ref([])
+const savedWorkshopLayoutSnapshots = ref({})
 const licenseStatus = reactive({
     status: 'loading',
     reason: '正在读取授权状态…',
@@ -366,6 +446,7 @@ async function loadWorkshops() {
     const result = await adminApi.getWorkshops()
     if (!Array.isArray(result)) throw new Error(result?.error || '车间列表读取失败')
     workshops.value = result.map(normalizeWorkshopRecord)
+    savedWorkshopLayoutSnapshots.value = Object.fromEntries(workshops.value.map(workshop => [workshop.id, JSON.stringify(normalizeWorkshopLayout(getWorkshopLayout(workshop)))]))
     if (!workshops.value.some(workshop => workshop.id === selectedWorkshopEditorId.value)) {
         selectedWorkshopEditorId.value = workshops.value[0]?.id || ''
     }
@@ -565,6 +646,7 @@ const lines = ref([])
 const newLine = reactive({ id: '', name: '', workshop_id: '' })
 const selectedLineEditorId = ref(storedAdminUiState.selectedLineEditorId || '')
 const savedLineLayoutSnapshots = ref({})
+const savedLineRecordSnapshots = ref({})
 const savedLinePlacementSnapshots = ref({})
 const placedLines = computed(() => lines.value.filter(line => !isLinePlacementPending(line)))
 const isLinePlannerEditorCollapsed = ref(!!storedAdminUiState.isLinePlannerEditorCollapsed)
@@ -871,6 +953,9 @@ async function loadLines() {
     lines.value = normalizedLines
     savedLineLayoutSnapshots.value = Object.fromEntries(
         normalizedLines.map(line => [line.id, lineLayoutSnapshot(line)])
+    )
+    savedLineRecordSnapshots.value = Object.fromEntries(
+        normalizedLines.map(line => [line.id, lineRecordSnapshot(line)])
     )
     savedLinePlacementSnapshots.value = Object.fromEntries(
         normalizedLines.map(line => [line.id, linePlacementSnapshot(line)])
@@ -1385,6 +1470,7 @@ function defaultModelMetadataText() {
 const modelImportForm = reactive({
     id: '',
     name: '',
+    placement_level: 'device',
     default_scale: 1,
     metadata: defaultModelMetadataText()
 })
@@ -1396,7 +1482,7 @@ const fallbackModelOptions = [
 const availableModelOptions = computed(() => {
     const merged = new Map(fallbackModelOptions.map(model => [model.id, model]))
     models.value
-        .filter(model => !isEnvironmentModel(model))
+        .filter(model => !isEnvironmentModel(model) && (model.placement_level || 'device') === 'device')
         .forEach(model => merged.set(model.id, { ...model }))
     return Array.from(merged.values())
 })
@@ -1433,6 +1519,7 @@ const modelPreviewStats = reactive({
 const modelPartBindings = ref([])
 const modelAssetSpec = reactive({ ...defaultModelAssetSpec })
 const modelOptimization = reactive({ ...defaultModelOptimization })
+const savedModelEditorSnapshot = ref('')
 const modelInspection = reactive(JSON.parse(JSON.stringify(defaultModelInspection)))
 const modelInspectionParts = ref([])
 const inspectionPreviewStage = ref('solid')
@@ -1615,6 +1702,11 @@ function countUnresolvedModelBindings() {
 }
 
 const activePreviewModel = computed(() => getActivePreviewModel())
+const modelLevelLabels = { factory: '工厂', workshop: '车间', line: '产线', device: '设备' }
+const modelLevelFilter = ref('all')
+const modelPlacementDraft = ref('device')
+const modelPlacementSaving = ref(false)
+const visibleModels = computed(() => models.value.filter(model => modelLevelFilter.value === 'all' || (model.placement_level || 'device') === modelLevelFilter.value))
 function isEnvironmentModel(model) {
     if (!model) return false
     if (String(model.asset_type || '').toLowerCase() === 'environment') return true
@@ -1804,6 +1896,7 @@ async function loadModels() {
     }
     if (selected && !modelPreviewModel) {
         modelPreviewModel = selected
+        modelPlacementDraft.value = selected.placement_level || 'device'
         loadModelBindingState(selected)
     }
 }
@@ -2974,6 +3067,11 @@ function loadModelBindingState(model) {
         ? `已读取 ${modelPartBindings.value.length} 条部位绑定${rawBindings.length !== modelPartBindings.value.length ? `，已合并 ${rawBindings.length - modelPartBindings.value.length} 条重复绑定` : ''}`
         : '内置程序化模型不可编辑部位绑定'
     resetModelBindingForm()
+    savedModelEditorSnapshot.value = modelEditorSnapshot()
+}
+
+function modelEditorSnapshot() {
+    return snapshotJson({ assetSpec: modelAssetSpec, optimization: modelOptimization, inspection: modelInspection, partBindings: modelPartBindings.value })
 }
 
 function selectPreviewNode(path) {
@@ -3261,6 +3359,7 @@ function resetModelImportForm(file) {
     const modelId = makeModelIdFromFileName(file.name)
     modelImportForm.id = modelId
     modelImportForm.name = file.name.replace(/\.[^.]+$/, '')
+    modelImportForm.placement_level = 'device'
     modelImportForm.default_scale = 1
     const metadata = createDefaultModelMetadata()
     metadata.assetSpec.device_family = modelImportForm.name
@@ -3301,6 +3400,7 @@ function clearSelectedModelFile() {
     resetModelBindingForm()
     modelImportForm.id = ''
     modelImportForm.name = ''
+    modelImportForm.placement_level = 'device'
     modelImportForm.default_scale = 1
     modelImportForm.metadata = defaultModelMetadataText()
     if (modelFileInputRef.value) modelFileInputRef.value.value = ''
@@ -3324,6 +3424,7 @@ async function uploadModel() {
     fd.append('modelFile', file)
     fd.append('id', modelImportForm.id)
     fd.append('name', modelImportForm.name)
+    fd.append('placement_level', modelImportForm.placement_level)
     fd.append('default_scale', Number(modelImportForm.default_scale) || 1)
     fd.append('metadata', modelImportForm.metadata || '{}')
 
@@ -3357,6 +3458,7 @@ async function previewExistingModel(model) {
         selectedModelObjectUrl = ''
     }
     selectedPreviewModelId.value = model.id
+    modelPlacementDraft.value = model.placement_level || 'device'
     if (isEnvironmentModel(model) && modelLibraryStepRequiresModel(modelLibraryStep.value)) {
         modelLibraryStep.value = 'library'
     }
@@ -3365,6 +3467,26 @@ async function previewExistingModel(model) {
         ? { url: resolveBackendAssetUrl(model.file_path), label: model.name || model.id }
         : null
     await renderSelectedModelPreview()
+}
+
+async function saveModelPlacement() {
+    const model = activePreviewModel.value
+    if (!model || modelPlacementSaving.value) return
+    if (isEnvironmentModel(model) && modelPlacementDraft.value !== 'factory') {
+        return alert('工厂环境模型只能归类为工厂级。')
+    }
+    if (model.factory_id === null && !await confirm('这是集团共享模型，调整适用层级会影响所有工厂。确定继续吗？')) return
+    modelPlacementSaving.value = true
+    try {
+        const result = await adminApi.updateModel(model.id, { placement_level: modelPlacementDraft.value })
+        if (result?.error) throw new Error(result.error)
+        await loadModels()
+        modelBindingStatus.value = `已归类为${modelLevelLabels[modelPlacementDraft.value]}级模型`
+    } catch (e) {
+        await alert(`保存模型层级失败：${e.message || e}`, { title: '保存失败', type: 'danger' })
+    } finally {
+        modelPlacementSaving.value = false
+    }
 }
 
 async function deleteModel(id) {
@@ -3403,6 +3525,8 @@ async function deleteModel(id) {
 
 // ============ 现场编排器 ============
 const platform = ref({ scenes: [], widgets: [], activeScene: null, activeProject: null })
+const savedSceneSnapshot = ref('')
+const savedWidgetSnapshots = ref({})
 const selectedWidgetPreviewId = ref(storedAdminUiState.selectedWidgetPreviewId || '')
 const widgetPreviewHover = reactive({
     visible: false,
@@ -3795,6 +3919,8 @@ async function loadPlatform() {
         ...data,
         widgets: (data.widgets || []).map(normalizeWidgetEditor)
     }
+    savedSceneSnapshot.value = platform.value.activeScene ? snapshotJson(platform.value.activeScene) : ''
+    savedWidgetSnapshots.value = Object.fromEntries(platform.value.widgets.map(widget => [widget.id, snapshotJson(widget)]))
     if (!selectedWidgetPreviewId.value || !platform.value.widgets.some(widget => widget.id === selectedWidgetPreviewId.value)) {
         selectedWidgetPreviewId.value = platform.value.widgets[0]?.id || ''
     }
@@ -3977,6 +4103,34 @@ function getDeviceWorkshopId(device) {
         || config.workshopId
         || lines.value.find(line => line.id === device?.line_id)?.workshop_id
         || ''
+}
+
+const assetHierarchyTabs = new Set(['platform', 'composer', 'workshops', 'lines', 'devices', 'mobile-devices', 'points', 'point-monitor', 'models', 'settings'])
+const assetHierarchyDeviceId = computed(() => {
+    if (activeTab.value === 'composer') return selectedComposerDeviceId.value
+    if (activeTab.value === 'devices' && showDeviceForm.value) return deviceFormTargetId.value
+    if (activeTab.value === 'points' && selectedDeviceForPoints.value !== 'all') return selectedDeviceForPoints.value
+    if (activeTab.value === 'point-monitor' && selectedDeviceForMonitor.value !== 'all') return selectedDeviceForMonitor.value
+    return ''
+})
+const assetHierarchyLineId = computed(() => {
+    if (activeTab.value === 'composer') return selectedComposerLineId.value
+    if (activeTab.value === 'lines') return selectedLineEditorId.value
+    if (activeTab.value === 'devices' && showDeviceForm.value) return editingDevice.line_id
+    return ''
+})
+const assetHierarchyWorkshopId = computed(() => {
+    if (activeTab.value === 'workshops') return selectedWorkshopEditorId.value
+    if (activeTab.value === 'devices' && showDeviceForm.value && isAuxiliaryDeviceConfig(editingDevice)) return editingDeviceWorkshopId.value
+    const device = devices.value.find(item => item.id === assetHierarchyDeviceId.value)
+    if (device) return getDeviceWorkshopId(device)
+    return ''
+})
+
+function deviceHierarchyLabel(device) {
+    const workshop = workshops.value.find(item => item.id === getDeviceWorkshopId(device))
+    const line = lines.value.find(item => item.id === device.line_id)
+    return [workshop?.name || '未分配车间', line?.name || '车间级', device.name || device.id || '未知设备'].join(' / ')
 }
 
 function buildDevicePayloadForSave(device, workshopId) {
@@ -4354,6 +4508,14 @@ function selectAdminTab(tabKey) {
     if (tabKey === 'users' && !adminSession.permissions.manageUsers) return
     activeTab.value = tabKey
     resizeComposerPreviewAfterLayout()
+}
+
+async function openDesignerDataSources() {
+    settingsSubpage.value = 'database'
+    isExternalDataSourcesOpen.value = true
+    selectAdminTab('settings')
+    await nextTick()
+    document.querySelector('.external-data-source-manager')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
 }
 
 function toggleComposerPreviewWide() {
@@ -4998,6 +5160,10 @@ function lineLayoutSnapshot(line) {
     return snapshotJson(normalizeLineLayout(getLineLayout(line)))
 }
 
+function lineRecordSnapshot(line) {
+    return snapshotJson({ name: line.name, workshop_id: line.workshop_id, sort_order: line.sort_order })
+}
+
 function linePlacementSnapshot(line) {
     const layout = normalizeLineLayout(getLineLayout(line))
     return snapshotJson({
@@ -5048,6 +5214,7 @@ function lineHasUnsavedDeviceLayout(line) {
 function lineHasUnsavedLayout(line) {
     if (!line?.id) return false
     return lineLayoutSnapshot(line) !== savedLineLayoutSnapshots.value[line.id]
+        || lineRecordSnapshot(line) !== savedLineRecordSnapshots.value[line.id]
         || lineHasUnsavedDeviceLayout(line)
 }
 
@@ -5055,6 +5222,7 @@ const dirtyLineIds = computed(() => lines.value.filter(lineHasUnsavedLayout).map
 const lineLayoutDirty = computed(() => lineHasUnsavedLayout(selectedLineEditor.value))
 
 function handleUnsavedCanvasBeforeUnload(event) {
+    if (factorySwitchApproved) return
     if (!dirtyLineIds.value.length && !modelInspectionDirty.value) return
     event.preventDefault()
     event.returnValue = ''
@@ -5518,6 +5686,178 @@ async function saveLineBoundDevices(deviceIds, line = selectedLineEditor.value) 
         return { success: true, saved: ids.length }
     } finally {
         lineDeviceSavingId.value = ''
+    }
+}
+
+// Factory switching saves the live parent editors without reloading their lists:
+// reloading after the first item would overwrite drafts on the other pages.
+async function saveCurrentFactoryPageDrafts() {
+    if (newWorkshop.id || newWorkshop.name) {
+        if (!newWorkshop.id || !newWorkshop.name) throw new Error('新建车间草稿缺少 ID 或名称')
+        const layout = normalizeWorkshopLayout(null)
+        const previous = sortByOrder(workshops.value)[workshops.value.length - 1]
+        if (previous) {
+            const previousLayout = getWorkshopLayout(previous)
+            layout.transform.x = numberOrDefault(previousLayout.transform.x, 0)
+                + numberOrDefault(previousLayout.size.width, 100) * 0.5 + layout.size.width * 0.5 + 20
+        }
+        const result = await adminApi.createWorkshop({ id: newWorkshop.id, name: newWorkshop.name, sort_order: workshops.value.length, layout })
+        if (result?.error || !result?.success) throw new Error(`新建车间保存失败：${result?.error || '后端未确认保存'}`)
+        const created = normalizeWorkshopRecord({ id: newWorkshop.id, name: newWorkshop.name, sort_order: workshops.value.length, layout })
+        workshops.value.push(created)
+        savedWorkshopLayoutSnapshots.value[created.id] = JSON.stringify(layout)
+        newWorkshop.id = ''
+        newWorkshop.name = ''
+    }
+    if (newLine.id || newLine.name) {
+        if (!newLine.id || !newLine.name || !newLine.workshop_id) throw new Error('新建产线草稿缺少 ID、名称或所属车间')
+        const layout = defaultLineLayout()
+        layout.placementPending = lines.value.some(line => line.workshop_id === newLine.workshop_id)
+        const result = await adminApi.createLine({
+            id: newLine.id, name: newLine.name, workshop_id: newLine.workshop_id,
+            sort_order: lines.value.length, layout_json: serializeLineLayout(layout)
+        })
+        if (result?.error || !result?.success) throw new Error(`新建产线保存失败：${result?.error || '后端未确认保存'}`)
+        const created = normalizeLineRecord({ id: newLine.id, name: newLine.name, workshop_id: newLine.workshop_id, sort_order: lines.value.length, layout })
+        lines.value.push(created)
+        savedLineLayoutSnapshots.value[created.id] = lineLayoutSnapshot(created)
+        savedLineRecordSnapshots.value[created.id] = lineRecordSnapshot(created)
+        savedLinePlacementSnapshots.value[created.id] = linePlacementSnapshot(created)
+        newLine.id = ''
+        newLine.name = ''
+    }
+    if (isPointsDirty.value) {
+        await saveAllPoints()
+        if (isPointsDirty.value) throw new Error('数据采集点位仍有未保存的修改')
+    }
+
+    for (const workshop of workshops.value) {
+        const layout = normalizeWorkshopLayout(getWorkshopLayout(workshop))
+        const snapshot = JSON.stringify(layout)
+        if (snapshot === savedWorkshopLayoutSnapshots.value[workshop.id]) continue
+        const result = await adminApi.updateWorkshop(workshop.id, {
+            name: workshop.name, sort_order: workshop.sort_order,
+            layout, layout_json: snapshot
+        })
+        if (result?.error || !result?.success) throw new Error(`车间「${workshop.name}」保存失败：${result?.error || '后端未确认保存'}`)
+        savedWorkshopLayoutSnapshots.value[workshop.id] = snapshot
+    }
+
+    for (const line of lines.value.filter(lineHasUnsavedLayout)) {
+        const layout = normalizeLineLayout(getLineLayout(line))
+        const boundDeviceIds = syncLineBoundDevicesToLayout(line)
+        const result = await adminApi.updateLine(line.id, {
+            name: line.name, workshop_id: line.workshop_id, sort_order: line.sort_order,
+            layout, layout_json: JSON.stringify(layout)
+        })
+        if (result?.error || !result?.success) throw new Error(`产线「${line.name}」保存失败：${result?.error || '后端未确认保存'}`)
+        const deviceResult = await saveLineBoundDevices(boundDeviceIds, line)
+        if (deviceResult?.error || !deviceResult?.success) throw new Error(`产线「${line.name}」设备位置保存失败：${deviceResult?.error || '后端未确认保存'}`)
+        savedLineLayoutSnapshots.value[line.id] = lineLayoutSnapshot(line)
+        savedLineRecordSnapshots.value[line.id] = lineRecordSnapshot(line)
+        savedLinePlacementSnapshots.value[line.id] = linePlacementSnapshot(line)
+        for (const id of boundDeviceIds) {
+            const device = devices.value.find(item => item.id === id)
+            if (device) savedDeviceLayoutSnapshots.value[id] = deviceLayoutSnapshot(device)
+        }
+    }
+    if (dirtyLineIds.value.length) throw new Error('仍有产线布局或设备位置未保存')
+
+    if (showDeviceForm.value) {
+        if (deviceFormStatus.value !== 'ready') throw new Error('设备表单尚未准备完成，请检查设备详情后重试')
+        await saveDevice()
+        if (showDeviceForm.value) throw new Error('设备表单未能保存')
+    }
+
+    if (composerDraft.id) {
+        const device = devices.value.find(item => item.id === composerDraft.id)
+        if (device) {
+            const keys = Object.keys(composerDraft)
+            const persisted = normalizeDeviceConfig(device)
+            const original = Object.fromEntries(keys.map(key => [key, persisted[key]]))
+            const current = Object.fromEntries(keys.map(key => [key, composerDraft[key]]))
+            if (snapshotJson(current) !== snapshotJson(original)) {
+                const parsed = { ...getDeviceDefaultInstanceConfig(composerDraft), ...parseInstanceConfig(composerDraft.instance_config) }
+                const payload = buildDevicePayloadForSave({ ...composerDraft, instance_config: parsed }, getDeviceWorkshopId(composerDraft) || selectedComposerWorkshop.value?.id || workshops.value[0]?.id || '')
+                const result = await adminApi.updateDevice(composerDraft.id, payload)
+                if (result?.error || !result?.success) throw new Error(`现场编排器设备保存失败：${result?.error || '后端未确认保存'}`)
+                devices.value = devices.value.map(item => item.id === composerDraft.id ? { ...item, ...payload } : item)
+            }
+        }
+    }
+
+    const model = activePreviewModel.value
+    const editingBinding = selectedModelBindingIndex.value >= 0
+        ? modelPartBindings.value[selectedModelBindingIndex.value] : null
+    const bindingFormChanged = editingBinding
+        ? snapshotJson(normalizeModelBinding(modelBindingForm)) !== snapshotJson(normalizeModelBinding(editingBinding))
+        : Boolean(modelBindingForm.source_key)
+    if (model?.id && bindingFormChanged) {
+        if (!modelBindingForm.node_path || !modelBindingForm.source_key)
+            throw new Error('模型部位绑定表单缺少节点或点位字段')
+        saveModelBindingDraft()
+    }
+    if (model?.id && savedModelEditorSnapshot.value && modelEditorSnapshot() !== savedModelEditorSnapshot.value) {
+        if (!canEditModelBindings.value) throw new Error('当前模型没有编辑权限，模型库修改尚未保存')
+        const metadata = buildCurrentModelMetadata(model)
+        const validation = validateInspection(metadata.inspection || createInspectionDefaults(), modelPreviewNodes.value)
+        if (!validation.valid) throw new Error(`模型拆解配置不完整：${validation.errors.map(item => item.message).join('；')}`)
+        const result = await adminApi.updateModel(model.id, {
+            name: model.name, tags: model.tags, default_scale: model.default_scale,
+            metadata: JSON.stringify(metadata)
+        })
+        if (result?.error || !result?.success) throw new Error(`模型库保存失败：${result?.error || '后端未确认保存'}`)
+        savedModelEditorSnapshot.value = modelEditorSnapshot()
+    }
+    if (model?.id && modelPlacementDraft.value !== (model.placement_level || 'device')) {
+        const result = await adminApi.updateModel(model.id, { placement_level: modelPlacementDraft.value })
+        if (result?.error || !result?.success) throw new Error(`模型适用层级保存失败：${result?.error || '后端未确认保存'}`)
+        model.placement_level = modelPlacementDraft.value
+    }
+
+    const scene = platform.value.activeScene
+    if (scene && savedSceneSnapshot.value && snapshotJson(scene) !== savedSceneSnapshot.value) {
+        const result = await adminApi.updateScene(scene.id, {
+            name: scene.name, scene_type: scene.scene_type, layout: scene.layout,
+            camera: scene.camera, theme: scene.theme, is_active: true, sort_order: scene.sort_order
+        })
+        if (result?.error || !result?.success) throw new Error(`场景信息保存失败：${result?.error || '后端未确认保存'}`)
+        savedSceneSnapshot.value = snapshotJson(scene)
+    }
+    for (const widget of platform.value.widgets) {
+        if (snapshotJson(widget) === savedWidgetSnapshots.value[widget.id]) continue
+        let config, binding
+        try {
+            config = parseJsonText(widget.configText || '{}')
+            binding = parseJsonText(widget.bindingText || '{}')
+        } catch { throw new Error(`组件「${widget.title || widget.id}」的配置或数据绑定不是有效 JSON`) }
+        const result = await adminApi.updateWidget(widget.id, {
+            widget_type: widget.widget_type, title: widget.title, config, binding,
+            x: widget.x, y: widget.y, w: widget.w, h: widget.h,
+            sort_order: widget.sort_order, visible: !!widget.visible
+        })
+        if (result?.error || !result?.success) throw new Error(`组件「${widget.title || widget.id}」保存失败：${result?.error || '后端未确认保存'}`)
+        savedWidgetSnapshots.value[widget.id] = snapshotJson(widget)
+    }
+    if (showCreateWidgetModal.value) {
+        if (!newWidget.id || !newWidget.widget_type || !scene?.id) throw new Error('新建组件草稿缺少组件 ID、类型或场景')
+        let config, binding
+        try { config = parseJsonText(newWidget.configText || '{}'); binding = parseJsonText(newWidget.bindingText || '{}') }
+        catch { throw new Error('新建组件的配置或数据绑定不是有效 JSON') }
+        const result = await adminApi.createWidget({
+            id: newWidget.id, scene_id: scene.id, widget_type: newWidget.widget_type,
+            title: newWidget.title, config, binding,
+            x: newWidget.x, y: newWidget.y, w: newWidget.w, h: newWidget.h,
+            sort_order: newWidget.sort_order, visible: !!newWidget.visible
+        })
+        if (result?.error || !result?.success) throw new Error(`新建组件保存失败：${result?.error || '后端未确认保存'}`)
+        showCreateWidgetModal.value = false
+    }
+    if (selectedModelFile.value) {
+        await uploadModel()
+        if (selectedModelFile.value) throw new Error('模型文件尚未上传成功')
+    } else if (modelImportForm.id || modelImportForm.name) {
+        throw new Error('模型导入表单没有选择文件，无法保存；请先选择文件或清空表单')
     }
 }
 
@@ -6465,9 +6805,9 @@ const dataTabs = [
 ]
 const dataTabKeys = dataTabs.map(tab => tab.key)
 const mainTabs = [
+    { key: 'factories', label: '工厂与区域', icon: 'factories' },
     { key: 'composer', label: '现场编排器', icon: 'composer' },
     { key: 'models', label: '模型库', icon: 'models' },
-    { key: 'factories', label: '工厂与区域', icon: 'factories' },
     { key: 'platform', label: '组件配置', icon: 'platform' },
     { key: 'users', label: '用户与权限', icon: 'users' },
     { key: 'settings', label: '系统设置', icon: 'settings' }
@@ -6683,6 +7023,17 @@ async function openAdminSetupStep(step) {
 
             <!-- 右侧内容区 -->
             <main ref="adminContentRef" class="admin-content">
+                <AssetHierarchyBar
+                    v-if="assetHierarchyTabs.has(activeTab) && (activeTab !== 'settings' || ['database', 'performance', 'data'].includes(settingsSubpage))"
+                    :workshops="workshops"
+                    :lines="lines"
+                    :devices="devices"
+                    :workshop-id="assetHierarchyWorkshopId"
+                    :line-id="assetHierarchyLineId"
+                    :device-id="assetHierarchyDeviceId"
+                    :model-library="activeTab === 'models'"
+                    :request-switch="requestFactorySwitch"
+                />
                 <Transition name="tab-switch" mode="out-in">
                     <div :key="activeTab" class="tab-transition-host">
 
@@ -7720,7 +8071,7 @@ async function openAdminSetupStep(step) {
 
                     <!-- 设备列表 -->
                     <div v-for="line in lines" :key="line.id" class="device-group">
-                        <h3 class="group-title">{{ line.name }}</h3>
+                        <h3 class="group-title">{{ workshops.find(item => item.id === line.workshop_id)?.name || '未分配车间' }} / {{ line.name }}</h3>
                         <table class="data-table">
                             <thead>
                                 <tr><th>ID</th><th>名称</th><th>模型</th><th>PLC</th><th>操作</th></tr>
@@ -7792,6 +8143,7 @@ async function openAdminSetupStep(step) {
                 <!-- ======== 设备运动配置 ======== -->
                 <MobileDeviceMotion
                     v-if="activeTab === 'mobile-devices'"
+                    ref="mobileMotionRef"
                     :devices="devices"
                     @saved="loadDevices"
                 />
@@ -7841,6 +8193,11 @@ async function openAdminSetupStep(step) {
                             <div v-if="selectedModelFile" class="model-import-form">
                                 <label>模型 ID<input v-model="modelImportForm.id" class="input" /></label>
                                 <label>模型名称<input v-model="modelImportForm.name" class="input" /></label>
+                                <label>适用层级
+                                    <select v-model="modelImportForm.placement_level" class="input">
+                                        <option v-for="(label, level) in modelLevelLabels" :key="level" :value="level">{{ label }}级</option>
+                                    </select>
+                                </label>
                                 <label>默认缩放<input v-model.number="modelImportForm.default_scale" type="number" min="0.01" step="0.05" class="input" /></label>
                                 <label class="model-metadata-field">元数据 JSON<textarea v-model="modelImportForm.metadata" class="input model-metadata"></textarea></label>
                                 <div class="model-import-actions">
@@ -7855,37 +8212,58 @@ async function openAdminSetupStep(step) {
                             <section v-show="modelLibraryStep === 'library'" class="model-library-step-panel">
                                 <div class="model-step-heading">
                                     <div><h3>已有模型资产</h3><p>先选择需要查看或配置的模型，再进入优化验收或部位绑定。</p></div>
-                                    <span>{{ models.length }} 个模型</span>
+                                    <span>{{ visibleModels.length }} / {{ models.length }} 个模型</span>
                                 </div>
-                            <table class="data-table model-table">
-                                <thead>
-                                    <tr><th>ID</th><th>名称</th><th>交付状态</th><th>绑定数</th><th>文件路径</th><th>操作</th></tr>
-                                </thead>
-                                <tbody>
-                                    <tr
-                                        v-for="m in models"
-                                        :key="m.id"
-                                        :class="{ active: selectedPreviewModelId === m.id }"
-                                        @click="previewExistingModel(m)"
-                                    >
-                                        <td><code>{{ m.id }}</code></td>
-                                        <td>{{ m.name }}</td>
-                                        <td><span class="asset-status-pill" :class="'asset-status-' + getModelAssetStatus(m)">{{ formatAssetStatus(getModelAssetStatus(m)) }}</span></td>
-                                        <td>{{ getModelBindingCount(m) }}</td>
-                                        <td>{{ m.file_path || '（内置）' }}</td>
-                                        <td>
-                                            <button v-if="!m.is_builtin || DELETABLE_RETIRED_MODEL_IDS.has(m.id)" @click.stop="deleteModel(m.id)" class="btn btn-danger btn-sm">删除</button>
-                                            <span v-else style="color:#888">系统内置</span>
-                                        </td>
-                                    </tr>
-                                </tbody>
-                            </table>
+                            <div class="form-row" style="margin-bottom:12px;align-items:center;gap:10px">
+                                <label for="model-level-filter">适用层级</label>
+                                <select id="model-level-filter" v-model="modelLevelFilter" class="input" style="max-width:150px">
+                                    <option value="all">全部层级</option>
+                                    <option v-for="(label, level) in modelLevelLabels" :key="level" :value="level">{{ label }}级</option>
+                                </select>
+                            </div>
+                            <div class="table-scroll model-table-scroll">
+                                <table class="data-table model-table">
+                                    <colgroup>
+                                        <col style="width:16%" /><col style="width:18%" /><col style="width:8%" /><col style="width:9%" />
+                                        <col style="width:9%" /><col style="width:7%" /><col style="width:23%" /><col style="width:10%" />
+                                    </colgroup>
+                                    <thead>
+                                        <tr><th>ID</th><th>名称</th><th>归属</th><th>适用层级</th><th>交付状态</th><th>绑定数</th><th>文件路径</th><th>操作</th></tr>
+                                    </thead>
+                                    <tbody>
+                                        <tr
+                                            v-for="m in visibleModels"
+                                            :key="m.id"
+                                            :class="{ active: selectedPreviewModelId === m.id }"
+                                            @click="previewExistingModel(m)"
+                                        >
+                                            <td :title="m.id"><code>{{ m.id }}</code></td>
+                                            <td :title="m.name">{{ m.name }}</td>
+                                            <td>{{ m.factory_id ? '当前工厂' : '集团共享' }}</td>
+                                            <td>{{ modelLevelLabels[m.placement_level || 'device'] || '设备' }}级</td>
+                                            <td><span class="asset-status-pill" :class="'asset-status-' + getModelAssetStatus(m)">{{ formatAssetStatus(getModelAssetStatus(m)) }}</span></td>
+                                            <td>{{ getModelBindingCount(m) }}</td>
+                                            <td :title="m.file_path || '（内置）'">{{ m.file_path || '（内置）' }}</td>
+                                            <td>
+                                                <button v-if="!m.is_builtin || DELETABLE_RETIRED_MODEL_IDS.has(m.id)" @click.stop="deleteModel(m.id)" class="btn btn-danger btn-sm">删除</button>
+                                                <span v-else style="color:#888">系统内置</span>
+                                            </td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
                                 <div v-if="activePreviewModel" class="model-selection-actions">
                                     <div>
                                         <span>当前模型</span>
                                         <strong>{{ activePreviewModel.name || activePreviewModel.id }}</strong>
                                         <small v-if="activePreviewIsEnvironment" class="model-environment-note">环境模型 · 仅用于工厂总览，不参与拆解、点位绑定或 PLC 动画</small>
                                     </div>
+                                    <label style="display:flex;align-items:center;gap:6px;white-space:nowrap">适用层级
+                                        <select v-model="modelPlacementDraft" class="input" :disabled="activePreviewIsEnvironment || modelPlacementSaving" style="width:95px">
+                                            <option v-for="(label, level) in modelLevelLabels" :key="level" :value="level">{{ label }}级</option>
+                                        </select>
+                                    </label>
+                                    <button v-if="!activePreviewIsEnvironment" class="btn" type="button" :disabled="modelPlacementSaving || modelPlacementDraft === (activePreviewModel.placement_level || 'device')" @click="saveModelPlacement">保存层级</button>
                                     <template v-if="!activePreviewIsEnvironment">
                                         <button class="btn" type="button" @click="selectModelLibraryStep('optimization')">优化与验收</button>
                                         <button class="btn" type="button" @click="selectModelLibraryStep('inspection')">拆解检查</button>
@@ -8196,11 +8574,7 @@ async function openAdminSetupStep(step) {
                 <!-- ======== 工厂与区域管理 ======== -->
                 <div v-if="activeTab === 'factories'" class="tab-content factory-network-tab">
                     <h2>工厂与区域</h2>
-                    <p class="desc">维护本机工厂的行政区归属及区域工厂。地图画面、分层组件与大屏 Logo 请在“画面组件配置 → 大屏设计器”中调整。</p>
-                    <section class="factory-hierarchy-note" aria-label="当前工厂数据层级说明">
-                        <div class="factory-hierarchy-chain"><span>集团 / 组织</span><i>→</i><span>工厂</span><i>→</i><span>车间</span><i>→</i><span>产线</span><i>→</i><span>设备</span></div>
-                        <p><strong>当前数据边界：</strong>数据库已将产线关联到车间、设备关联到产线；工厂登记簿目前只保存工厂名称和行政区，登记项尚未关联独立车间、产线或实时数据。项目/场景是大屏配置对象，不等于工厂。这里不会显示或伪造未接入工厂的生产指标。</p>
-                    </section>
+                    <p class="desc">查看和切换工厂；新工厂的名称与地理位置在“新建工厂”弹窗中填写。</p>
                     <div class="factory-network-panel">
                         <FactoryLocationSettings />
                     </div>
@@ -8240,7 +8614,7 @@ async function openAdminSetupStep(step) {
                     </div>
 
                     <div v-show="platformSubpage === 'designer'" class="secondary-page-panel secondary-page-panel-designer">
-                        <UnifiedDashboardDesigner @reload="loadPlatform" @preview-view="handleDashboardViewPreview" />
+                        <UnifiedDashboardDesigner ref="unifiedDesignerRef" @reload="loadPlatform" @preview-view="handleDashboardViewPreview" @open-data-sources="openDesignerDataSources" />
                     </div>
 
                     <div v-show="platformSubpage === 'scene'" v-if="platform.activeProject" class="settings-section secondary-page-panel">
@@ -8488,7 +8862,7 @@ async function openAdminSetupStep(step) {
                             <label style="font-size:12px; color:#86868b; display:block; margin-bottom:5px;">筛选设备</label>
                             <select v-model="selectedDeviceForPoints" @change="loadDataPoints" :disabled="pointsSaving" class="input" style="width:250px">
                                 <option value="all">全部设备</option>
-                                <option v-for="d in devices" :key="d.id" :value="d.id">{{ d.name }} ({{ d.id }})</option>
+                                <option v-for="d in devices" :key="d.id" :value="d.id">{{ deviceHierarchyLabel(d) }}</option>
                             </select>
                         </div>
                         <div v-if="selectedDeviceForPoints" style="display:flex; gap:10px; margin-left: 20px;">
@@ -8496,7 +8870,7 @@ async function openAdminSetupStep(step) {
                             <div v-if="!isAllPointsMode" style="position: relative; display: inline-block;">
                                 <select @change="copyPointsFrom($event.target.value); $event.target.value=''" :disabled="pointsLoading || pointsSaving" class="input" style="width: 180px;">
                                     <option value="">从其他设备复制...</option>
-                                    <option v-for="d in devices.filter(x => x.id !== selectedDeviceForPoints)" :key="d.id" :value="d.id">复制自: {{ d.name }}</option>
+                                    <option v-for="d in devices.filter(x => x.id !== selectedDeviceForPoints)" :key="d.id" :value="d.id">复制自: {{ deviceHierarchyLabel(d) }}</option>
                                 </select>
                             </div>
                             <button v-if="!isAllPointsMode" @click="syncToLine" :disabled="pointsLoading || pointsSaving" class="btn">应用到同产线</button>
@@ -8527,7 +8901,7 @@ async function openAdminSetupStep(step) {
                                         <td v-if="isAllPointsMode">
                                             <select v-model="p.device_id" @change="markPointsDirty" class="input input-sm device-point-select">
                                                 <option value="">选择设备</option>
-                                                <option v-for="d in devices" :key="d.id" :value="d.id">{{ d.name }} ({{ d.id }})</option>
+                                                <option v-for="d in devices" :key="d.id" :value="d.id">{{ deviceHierarchyLabel(d) }}</option>
                                             </select>
                                         </td>
                                         <td><input v-model="p.label" @input="markPointsDirty" class="input input-sm point-name-input" placeholder="实际温度 / bj1" /></td>
@@ -8802,7 +9176,7 @@ async function openAdminSetupStep(step) {
                             <label style="font-size:12px; color:#86868b; display:block; margin-bottom:5px;">筛选设备</label>
                             <select v-model="selectedDeviceForMonitor" class="input" style="width:280px">
                                 <option value="all">全部设备</option>
-                                <option v-for="d in devices" :key="d.id" :value="d.id">{{ d.name }} ({{ d.id }})</option>
+                                <option v-for="d in devices" :key="d.id" :value="d.id">{{ deviceHierarchyLabel(d) }}</option>
                             </select>
                         </div>
                         <button @click="loadRealtimePointValues" class="btn" :disabled="realtimePointLoading">
@@ -8859,7 +9233,7 @@ async function openAdminSetupStep(step) {
                             </thead>
                             <tbody>
                                 <tr v-for="point in paginatedRealtimePointRows" :key="point.__runtimeKey">
-                                    <td>{{ point.device_name || point.device_id || '-' }}</td>
+                                    <td>{{ deviceHierarchyLabel(devices.find(device => device.id === point.device_id) || { id: point.device_id, name: point.device_name }) }}</td>
                                     <td>{{ pointDisplayName(point) || '-' }}</td>
                                     <td>{{ formatPointUsage(point) }}</td>
                                     <td class="point-value-cell">{{ formatPointValue(point) }}</td>
@@ -9093,7 +9467,7 @@ async function openAdminSetupStep(step) {
                                                 <span><strong>{{ connection.name }}</strong><small>{{ isHttpDataSource(connection) ? `${connection.method || 'GET'} · ${connection.baseUrl || '未填写地址'}` : `${connection.type} · ${connection.database || connection.filename}` }}</small></span>
                                                 <em :class="{ unhealthy: connection.health && !['healthy', 'unknown'].includes(connection.health.status), unchecked: !connection.health || connection.health.status === 'unknown', disabled: !connection.enabled }">{{ connection.enabled ? '启用' : '停用' }}<small>{{ dataSourceHealthLabel(connection.health?.status) }}</small></em>
                                             </button>
-                                            <p v-if="!dataSourceConnections.some(item => !item.primary)" class="empty-hint">尚未添加外部数据源。数据库可在设计器中选择“连接 → 表 → 字段”；HTTP API 的数据接口和字段映射将在后续配置。</p>
+                                            <p v-if="!dataSourceConnections.some(item => !item.primary)" class="empty-hint">尚未添加外部数据源。数据库可在设计器中选择“连接 → 表 → 字段”；REST / OData 接口可选择连接、GET 路径与响应字段。</p>
                                         </div>
 
                                         <div class="external-data-source-editor">
@@ -9126,12 +9500,14 @@ async function openAdminSetupStep(step) {
                                             <label class="external-data-source-wide">API 根地址<input v-model="dataSourceEditor.baseUrl" class="input" placeholder="例如：https://mes.example.com/api" /></label>
                                             <label>健康检查地址<input v-model="dataSourceEditor.healthPath" class="input" placeholder="例如：/health" /></label>
                                             <label>请求方式<select v-model="dataSourceEditor.method" class="input" disabled><option value="GET">GET</option></select></label>
+                                            <label>响应格式<select v-model="dataSourceEditor.responseFormat" class="input"><option value="auto">自动识别（推荐）</option><option value="json">JSON / OData JSON</option><option value="xml">XML</option><option value="csv">CSV</option></select></label>
                                             <label>认证方式
                                                 <select v-model="dataSourceEditor.authType" class="input">
                                                     <option value="none">无认证</option>
                                                     <option value="api_key">API Key</option>
                                                     <option value="bearer">Bearer Token</option>
                                                     <option value="basic">Basic 用户名密码</option>
+                                                    <option value="oauth2_client_credentials">OAuth2 客户端凭据（自动续令牌）</option>
                                                 </select>
                                             </label>
                                             <label v-if="dataSourceEditor.authType === 'api_key'">API Key 请求头<input v-model="dataSourceEditor.apiKeyHeader" class="input" placeholder="X-API-Key" /></label>
@@ -9139,8 +9515,15 @@ async function openAdminSetupStep(step) {
                                             <label v-if="dataSourceEditor.authType === 'bearer'" class="external-data-source-wide">Bearer Token<input v-model="dataSourceEditor.token" type="password" autocomplete="new-password" class="input" placeholder="请输入令牌" /></label>
                                             <label v-if="dataSourceEditor.authType === 'basic'">用户名<input v-model="dataSourceEditor.user" class="input" /></label>
                                             <label v-if="dataSourceEditor.authType === 'basic'">密码<input v-model="dataSourceEditor.password" type="password" autocomplete="new-password" class="input" /></label>
+                                            <template v-if="dataSourceEditor.authType === 'oauth2_client_credentials'">
+                                                <label class="external-data-source-wide">令牌地址（HTTPS）<input v-model="dataSourceEditor.tokenUrl" class="input" placeholder="https://login.example.com/oauth2/v2.0/token" /></label>
+                                                <label>Client ID<input v-model="dataSourceEditor.clientId" class="input" autocomplete="off" /></label>
+                                                <label>Client Secret<input v-model="dataSourceEditor.clientSecret" type="password" autocomplete="new-password" class="input" placeholder="只保存在后端" /></label>
+                                                <label>Scope（可选）<input v-model="dataSourceEditor.scope" class="input" placeholder="api://resource/.default" /></label>
+                                                <label>客户端认证方式<select v-model="dataSourceEditor.tokenAuthMethod" class="input"><option value="body">表单参数（常用）</option><option value="basic">HTTP Basic</option></select></label>
+                                            </template>
                                             <label>请求超时（毫秒）<input v-model.number="dataSourceEditor.requestTimeoutMs" type="number" min="1000" max="60000" class="input" /></label>
-                                            <p class="external-data-source-wide external-data-source-help">健康检查只证明接口当前可访问、认证正确且返回 2xx，不代表业务数据已经可用。后续再配置数据接口地址和 JSON 字段映射。</p>
+                                            <p class="external-data-source-wide external-data-source-help">健康检查只证明接口当前可访问、认证正确且返回 2xx，不代表业务数据已经可用。REST / OData 的 JSON、XML、CSV 响应可在设计器中读取字段并绑定；始终只请求 GET 数据接口。</p>
                                             </template>
                                             <p v-if="dataSourceEditor.sourceType === 'database' ? dataSourceEditor.type !== 'sqlite' : dataSourceEditor.authType !== 'none'" class="external-data-source-wide external-data-source-help">已有凭据以掩码显示：不修改则保留，输入新值可替换，删除全部内容表示清空。切换数据源类型或认证方式后需重新填写凭据。</p>
                                             <label class="checkbox-line"><input v-model="dataSourceEditor.enabled" type="checkbox" /> 启用此连接</label>
@@ -9605,6 +9988,9 @@ async function openAdminSetupStep(step) {
                     <div class="app-dialog-actions">
                         <button v-if="appDialog.showCancel" type="button" class="btn" @click="closeAppDialog(false)">
                             {{ appDialog.cancelText }}
+                        </button>
+                        <button v-if="appDialog.secondaryText" type="button" class="btn btn-discard-switch" @click="closeAppDialog('secondary')">
+                            {{ appDialog.secondaryText }}
                         </button>
                         <button
                             type="button"
@@ -13000,6 +13386,8 @@ button:enabled:active {
     gap: 10px;
     margin-top: 20px;
 }
+.app-dialog-actions .btn-discard-switch { border-color: #efd0b5; background: #fff8f1; color: #9a551d; }
+.app-dialog-actions .btn-discard-switch:hover { border-color: #dfac7b; background: #fff0e1; }
 
 .upload-area {
     margin-bottom: 28px; padding: 32px; border: 2px dashed rgba(0, 0, 0, 0.1);
@@ -13076,6 +13464,17 @@ button:enabled:active {
     gap: 10px;
     justify-content: flex-end;
 }
+.model-table-scroll { max-width: 100%; }
+.model-table-scroll .model-table { min-width: 1010px; table-layout: fixed; font-size: 12px; }
+.model-table th,
+.model-table td { padding: 11px 9px; vertical-align: middle; white-space: nowrap; }
+.model-table th { font-size: 11px; }
+.model-table td:nth-child(2),
+.model-table td:nth-child(7) { overflow: hidden; text-overflow: ellipsis; }
+.model-table td:nth-child(3),
+.model-table td:nth-child(4) { font-size: 12px; white-space: nowrap; }
+.model-table code { display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 2px 5px; font-size: 10px; vertical-align: middle; }
+.model-table .asset-status-pill { min-width: 0; font-size: 11px; }
 .model-table tbody tr {
     cursor: pointer;
 }

@@ -281,7 +281,11 @@ export async function adminFetch(input, options = {}) {
     if (url.origin !== backend.origin || !url.pathname.startsWith('/api/')) return window.fetch(input, options)
     const headers = new Headers(options.headers || (input instanceof Request ? input.headers : undefined))
     const method = String(options.method || (input instanceof Request ? input.method : 'GET')).toUpperCase()
-    const factoryId = getFactoryScope()
+    const surfacePath = window.location.pathname
+    const displaySurface = surfacePath === '/overlay' || surfacePath === '/site'
+    const factoryId = displaySurface
+        ? new URLSearchParams(window.location.search).get('factoryId') || ''
+        : getFactoryScope()
     if (factoryId && !headers.has('X-Factory-ID')) headers.set('X-Factory-ID', factoryId)
     if (!['GET', 'HEAD', 'OPTIONS'].includes(method) && csrfToken) headers.set('X-CSRF-Token', csrfToken)
     const expectedGeneration = generation

@@ -206,6 +206,10 @@ export function useSystemSettings({
     }
     const settings = reactive({ ...defaultSettings })
     const nativeEnvironmentConfig = reactive(createDefaultNativeEnvironmentConfig())
+    const initialSettingsFingerprint = JSON.stringify({ data_mode: settings.data_mode, native_quality_profile: settings.native_quality_profile })
+    const initialEnvironmentFingerprint = JSON.stringify(normalizeNativeEnvironmentConfig(nativeEnvironmentConfig))
+    let savedSettingsFingerprint = ''
+    let savedEnvironmentFingerprint = ''
     const nativeEnvironmentSaving = ref(false)
     const nativeEnvironmentMessage = ref('')
     const nativeEnvironmentPresetOptions = NATIVE_ENVIRONMENT_PRESETS.map(({ value, label, tag, description, config }) => ({
@@ -342,6 +346,8 @@ export function useSystemSettings({
         if (!['auto', 'integrated_gpu', 'balanced', 'showcase'].includes(String(settings.native_quality_profile))) {
             settings.native_quality_profile = 'auto'
         }
+        savedSettingsFingerprint = JSON.stringify({ data_mode: settings.data_mode, native_quality_profile: settings.native_quality_profile })
+        savedEnvironmentFingerprint = JSON.stringify(normalizeNativeEnvironmentConfig(nativeEnvironmentConfig))
         await loadRuntimeSettings({ silent: true })
         await loadDatabaseConfig()
         // 同时获取引擎状态
@@ -417,12 +423,15 @@ export function useSystemSettings({
         encrypt: false,
         trustServerCertificate: true
     })
+    const initialDatabaseFingerprint = JSON.stringify(databaseConfig)
+    let savedDatabaseFingerprint = ''
     const databaseTestStatus = ref('')
     const databaseSaving = ref(false)
     const databaseBackupBusy = ref(false)
     const databaseBackupPolicySaving = ref(false)
     const databaseBackupMessage = ref('')
     const databaseBackupPolicy = reactive({ retentionDays: 30 })
+    let savedRetentionDays = 30
     const databaseBackupRetentionPresets = [7, 30, 90, 180, 365]
     const databaseBackupStatus = reactive({
         supported: false,
@@ -446,7 +455,11 @@ export function useSystemSettings({
     function assignDatabaseBackupStatus(status = {}) {
         Object.assign(databaseBackupStatus, status, { backups: status.backups || [] })
         const retentionDays = Number(status.retentionDays)
-        if (Number.isFinite(retentionDays)) databaseBackupPolicy.retentionDays = retentionDays
+        if (Number.isFinite(retentionDays)) {
+            const pendingDraft = Number(databaseBackupPolicy.retentionDays) !== savedRetentionDays
+            if (!pendingDraft) databaseBackupPolicy.retentionDays = retentionDays
+            savedRetentionDays = retentionDays
+        }
     }
     const siteBackupFileInput = ref(null)
     const siteBackupBusy = ref(false)
@@ -462,6 +475,8 @@ export function useSystemSettings({
         intervalHours: 24,
         mirrorDirectory: ''
     })
+    const initialSiteBackupFingerprint = JSON.stringify(siteBackupConfig)
+    let savedSiteBackupFingerprint = ''
     const siteBackupConfigSaving = ref(false)
     const databaseDefaultPorts = {
         mysql: 3307,
@@ -473,8 +488,8 @@ export function useSystemSettings({
             id: '', name: '', sourceType: 'database', type: 'mysql', host: '127.0.0.1', port: 3306,
             user: '', password: '', database: '', filename: '', defaultSchema: '',
             encrypt: false, trustServerCertificate: true, enabled: true, queryTimeoutMs: 8000,
-            baseUrl: '', healthPath: '/health', method: 'GET', authType: 'none',
-            apiKeyHeader: 'X-API-Key', apiKey: '', token: '', requestTimeoutMs: 8000
+            baseUrl: '', healthPath: '/health', method: 'GET', responseFormat: 'auto', authType: 'none',
+            apiKeyHeader: 'X-API-Key', apiKey: '', token: '', tokenUrl: '', clientId: '', clientSecret: '', scope: '', tokenAuthMethod: 'body', requestTimeoutMs: 8000
         }
     }
     const emptyDataSourceHealth = () => ({
@@ -503,6 +518,8 @@ export function useSystemSettings({
         retention: 10,
         selectedConnectionIds: ['primary']
     })
+    const initialDataSourceBackupFingerprint = JSON.stringify(dataSourceBackupConfig)
+    let savedDataSourceBackupFingerprint = ''
     const dataSourceBackupStatus = reactive({
         running: false,
         connections: [],
@@ -518,8 +535,9 @@ export function useSystemSettings({
         // Only submit editable fields belonging to this source/auth type. In particular,
         // metadata and credentials from a previously selected source must never leak in.
         const fields = draft.sourceType === 'http_api'
-            ? ['baseUrl', 'healthPath', 'method', 'authType', 'requestTimeoutMs', ...({
-                api_key: ['apiKeyHeader', 'apiKey'], bearer: ['token'], basic: ['user', 'password']
+            ? ['baseUrl', 'healthPath', 'method', 'responseFormat', 'authType', 'requestTimeoutMs', ...({
+                api_key: ['apiKeyHeader', 'apiKey'], bearer: ['token'], basic: ['user', 'password'],
+                oauth2_client_credentials: ['tokenUrl', 'clientId', 'clientSecret', 'scope', 'tokenAuthMethod']
             }[draft.authType] || [])]
             : ['host', 'port', 'user', 'password', 'database', 'filename', 'defaultSchema',
                 'encrypt', 'trustServerCertificate', 'queryTimeoutMs']
@@ -588,6 +606,7 @@ export function useSystemSettings({
             dataSourceConnections.value = result.connections
             if (connectionsOnly) return
             Object.assign(dataSourceBackupConfig, result.backup || {})
+            savedDataSourceBackupFingerprint = JSON.stringify(dataSourceBackupConfig)
             Object.assign(dataSourceBackupStatus, result.backupStatus || {}, {
                 connections: result.backupStatus?.connections || []
             })
@@ -731,6 +750,7 @@ export function useSystemSettings({
             const result = await adminApi.saveDataSourceBackupConfig({ ...dataSourceBackupConfig })
             if (!result?.success) throw new Error(result?.error || '保存失败')
             Object.assign(dataSourceBackupConfig, result.config || {})
+            savedDataSourceBackupFingerprint = JSON.stringify(dataSourceBackupConfig)
             Object.assign(dataSourceBackupStatus, result.status || {}, { connections: result.status?.connections || [] })
             dataSourceBackupMessage.value = '数据库自动压缩备份配置已保存。'
         } catch (e) {
@@ -764,6 +784,7 @@ export function useSystemSettings({
         try {
             const config = await adminApi.getDatabaseConfig()
             Object.assign(databaseConfig, config)
+            savedDatabaseFingerprint = JSON.stringify(databaseConfig)
             await Promise.all([loadDatabaseBackups(), loadSiteBackups(), loadDataSources()])
         } catch (e) {
             databaseTestStatus.value = '数据库配置读取失败'
@@ -776,6 +797,7 @@ export function useSystemSettings({
             if (status?.error) throw new Error(status.error)
             Object.assign(siteBackupStatus, status, { backups: status.backups || [] })
             if (status.config) Object.assign(siteBackupConfig, status.config)
+            savedSiteBackupFingerprint = JSON.stringify(siteBackupConfig)
         } catch (e) {
             siteBackupMessage.value = `整站灾备状态读取失败：${e.message || e}`
         }
@@ -788,6 +810,7 @@ export function useSystemSettings({
             const result = await adminApi.saveSiteBackupConfig(siteBackupConfig)
             if (result?.error || !result?.success) throw new Error(result?.error || '后端没有返回成功状态')
             Object.assign(siteBackupConfig, result.config || {})
+            savedSiteBackupFingerprint = JSON.stringify(siteBackupConfig)
             Object.assign(siteBackupStatus, result.status || {}, { backups: result.status?.backups || [] })
             siteBackupMessage.value = siteBackupConfig.mirrorDirectory
                 ? `自动灾备已保存，将同步到：${siteBackupConfig.mirrorDirectory}`
@@ -891,6 +914,7 @@ export function useSystemSettings({
             const result = await adminApi.saveDatabaseBackupPolicy({ retentionDays })
             if (!result?.success) throw new Error(result?.error || '保存失败')
             assignDatabaseBackupStatus(result.status || {})
+            savedRetentionDays = Number(databaseBackupPolicy.retentionDays)
             const deletedCount = Number(result.cleanup?.deletedCount || 0)
             const failedCount = Array.isArray(result.cleanup?.errors) ? result.cleanup.errors.length : 0
             databaseBackupMessage.value = failedCount
@@ -1000,6 +1024,7 @@ export function useSystemSettings({
                 return
             }
             Object.assign(databaseConfig, result.config || databaseConfig)
+            savedDatabaseFingerprint = JSON.stringify(databaseConfig)
             databaseTestStatus.value = '保存成功，数据库已重新连接'
             await loadDatabaseBackups()
             await Promise.all([loadSettings(), loadWorkshops(), loadLines(), loadDevices(), loadModels(), loadPlatform()])
@@ -1051,7 +1076,7 @@ export function useSystemSettings({
 
     watch(() => dataSourceEditor.authType, (type, oldType) => {
         if (dataSourceEditorHydrating || dataSourceEditor.sourceType !== 'http_api' || type === oldType) return
-        Object.assign(dataSourceEditor, { apiKey: '', token: '', user: '', password: '' })
+        Object.assign(dataSourceEditor, { apiKey: '', token: '', user: '', password: '', tokenUrl: '', clientId: '', clientSecret: '', scope: '', tokenAuthMethod: 'body' })
     }, { flush: 'sync' })
 
     watch(dataSourceDraftFingerprint, () => {
@@ -1090,6 +1115,8 @@ export function useSystemSettings({
         })
         if (result?.error) return alert(result.error, { title: '设置保存失败', type: 'danger' })
         if (!result?.success) return alert('设置保存失败：后端没有返回成功状态', { title: '设置保存失败', type: 'danger' })
+        savedSettingsFingerprint = JSON.stringify({ data_mode: settings.data_mode, native_quality_profile: settings.native_quality_profile })
+        savedEnvironmentFingerprint = JSON.stringify(normalizeNativeEnvironmentConfig(nativeEnvironmentConfig))
         // 保存后自动重启数据引擎
         try {
             const response = await fetch(`${API_BASE}/engine/restart`, { method: 'POST' })
@@ -1116,6 +1143,7 @@ export function useSystemSettings({
             if (!result?.success) throw new Error('后端没有返回成功状态')
             for (const key of Object.keys(nativeEnvironmentConfig)) delete nativeEnvironmentConfig[key]
             Object.assign(nativeEnvironmentConfig, normalized)
+            savedEnvironmentFingerprint = JSON.stringify(normalized)
             nativeEnvironmentMessage.value = '场景与光效已保存，并实时应用到正在运行的 Unity。'
             return true
         } catch (error) {
@@ -1154,6 +1182,80 @@ export function useSystemSettings({
         for (const key of Object.keys(nativeEnvironmentConfig)) delete nativeEnvironmentConfig[key]
         Object.assign(nativeEnvironmentConfig, defaults)
         nativeEnvironmentMessage.value = '已恢复“中性真实厂房”默认值，围墙已关闭；点击“立即应用”后推送到 Unity。'
+    }
+
+    async function savePendingSystemSettings() {
+        // Database reconnection and backup retention cleanup have wider effects than
+        // a factory switch. Never silently execute or discard those drafts.
+        if (savedDatabaseFingerprint && JSON.stringify(databaseConfig) !== savedDatabaseFingerprint)
+            throw new Error('数据库连接配置有未保存修改；请先在“数据连接与备份”中单独保存或恢复')
+        if (!savedDatabaseFingerprint && JSON.stringify(databaseConfig) !== initialDatabaseFingerprint)
+            throw new Error('数据库连接配置尚未读取成功，请先检查并单独保存')
+        if (Number(databaseBackupPolicy.retentionDays) !== savedRetentionDays)
+            throw new Error('备份保留策略有未保存修改；请先单独保存或恢复，以免切换时触发备份清理')
+        if (!savedSettingsFingerprint && JSON.stringify({ data_mode: settings.data_mode, native_quality_profile: settings.native_quality_profile }) !== initialSettingsFingerprint)
+            throw new Error('系统设置尚未读取成功，当前修改不能确认保存')
+        if (!savedEnvironmentFingerprint && JSON.stringify(normalizeNativeEnvironmentConfig(nativeEnvironmentConfig)) !== initialEnvironmentFingerprint)
+            throw new Error('场景光效尚未读取成功，当前修改不能确认保存')
+        if (!savedSiteBackupFingerprint && JSON.stringify(siteBackupConfig) !== initialSiteBackupFingerprint)
+            throw new Error('整站灾备配置尚未读取成功，当前修改不能确认保存')
+        if (!savedDataSourceBackupFingerprint && JSON.stringify(dataSourceBackupConfig) !== initialDataSourceBackupFingerprint)
+            throw new Error('数据源备份配置尚未读取成功，当前修改不能确认保存')
+        if (dataSourceBusy.value || databaseSaving.value || siteBackupConfigSaving.value || dataSourceBackupBusy.value)
+            throw new Error('有设置正在保存，请等待完成后再切换工厂')
+
+        const sourceFingerprint = dataSourceDraftFingerprint()
+        const sourceDefault = JSON.stringify(dataSourcePayload(defaultDataSourceDraft()))
+        const sourceDirty = sourceFingerprint !== dataSourceSavedFingerprint
+            && (Boolean(dataSourceEditor.id) || sourceFingerprint !== sourceDefault)
+        if (sourceDirty && !String(dataSourceEditor.name || '').trim())
+            throw new Error('外部数据源草稿缺少连接名称；请补全后再切换工厂')
+        if (sourceDirty && dataSourceTimeoutError())
+            throw new Error(dataSourceTimeoutError())
+
+        const nextSettings = JSON.stringify({ data_mode: settings.data_mode, native_quality_profile: settings.native_quality_profile })
+        const nextEnvironment = JSON.stringify(normalizeNativeEnvironmentConfig(nativeEnvironmentConfig))
+        if ((savedSettingsFingerprint && nextSettings !== savedSettingsFingerprint)
+            || (savedEnvironmentFingerprint && nextEnvironment !== savedEnvironmentFingerprint)) {
+            const previousMode = JSON.parse(savedSettingsFingerprint || '{}').data_mode
+            const result = await adminApi.saveSettings({
+                data_mode: settings.data_mode,
+                native_quality_profile: settings.native_quality_profile,
+                native_environment_config: nextEnvironment
+            })
+            if (result?.error || !result?.success) throw new Error(result?.error || '数据通路或场景光效保存失败')
+            savedSettingsFingerprint = nextSettings
+            savedEnvironmentFingerprint = nextEnvironment
+            if (previousMode && previousMode !== settings.data_mode) {
+                const response = await fetch(`${API_BASE}/engine/restart`, { method: 'POST' })
+                const restarted = await response.json().catch(() => ({}))
+                if (!response.ok || restarted.success === false) throw new Error(restarted.error || '数据模式已保存，但数据引擎重启失败；请先检查状态')
+            }
+        }
+        if (runtimeSettings.auto_start_enabled !== runtimeSavedSnapshot.auto_start_enabled) {
+            const result = await adminApi.saveRuntimeSettings({ auto_start_enabled: runtimeSettings.auto_start_enabled })
+            if (result?.error) throw new Error(result.error)
+            applyRuntimePayload(result, { ...runtimeSettings })
+        }
+        if (sourceDirty) {
+            const result = await adminApi.saveDataSource({
+                ...dataSourcePayload(),
+                healthToken: dataSourceTestFingerprint === sourceFingerprint ? dataSourceHealthToken : ''
+            })
+            if (result?.error || !result?.success) throw new Error(result?.error || '外部数据源保存失败')
+            dataSourceSavedFingerprint = sourceFingerprint
+        }
+        if (savedDataSourceBackupFingerprint && JSON.stringify(dataSourceBackupConfig) !== savedDataSourceBackupFingerprint) {
+            const result = await adminApi.saveDataSourceBackupConfig({ ...dataSourceBackupConfig })
+            if (result?.error || !result?.success) throw new Error(result?.error || '数据库自动备份配置保存失败')
+            savedDataSourceBackupFingerprint = JSON.stringify(dataSourceBackupConfig)
+        }
+        if (savedSiteBackupFingerprint && JSON.stringify(siteBackupConfig) !== savedSiteBackupFingerprint) {
+            const result = await adminApi.saveSiteBackupConfig({ ...siteBackupConfig })
+            if (result?.error || !result?.success) throw new Error(result?.error || '整站灾备配置保存失败')
+            savedSiteBackupFingerprint = JSON.stringify(siteBackupConfig)
+        }
+        return true
     }
 
     return {
@@ -1233,6 +1335,7 @@ export function useSystemSettings({
         saveDatabaseConnection,
         loadEngineStatus,
         formatEngineMode,
-        saveSettings
+        saveSettings,
+        savePendingSystemSettings
     }
 }

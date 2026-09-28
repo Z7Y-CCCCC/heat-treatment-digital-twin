@@ -122,7 +122,7 @@ router.get('/', async (req, res) => {
             return { ...ws, layout, layout_json: JSON.stringify(layout), lines: wsLines, devices };
         });
 
-        const models = mergeBuiltinModels(await db.all('SELECT * FROM models'));
+        const models = mergeBuiltinModels(await db.all('SELECT * FROM models WHERE factory_id IS NULL OR factory_id = ?', [req.factoryId]));
         const { project: activeProject, scene: activeScene } = await getProjectAndScene(db, '', req.factoryId);
         const published = await loadPublishedDocument(db, activeProject, activeScene);
         const runtimeScene = published.document?.sceneId && published.document.sceneId !== activeScene?.id

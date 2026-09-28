@@ -176,6 +176,7 @@ export function useFactoryConfig() {
 export const adminApi = {
     // 集团/工厂层级
     async listFactories() { return readApiJson(await fetch(`${API_BASE}/factories`), '读取工厂列表失败') },
+    async searchFactoryPlace(countryCode, query) { return readApiJson(await fetch(`${API_BASE}/factories/place-search`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ countryCode, query }) }), '查询海外地点失败') },
     async createFactory(data) { return readApiJson(await fetch(`${API_BASE}/factories`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) }), '创建工厂失败') },
     async updateFactory(id, data) { return readApiJson(await fetch(`${API_BASE}/factories/${pathId(id)}`, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) }), '保存工厂失败') },
     async activateFactory(id) { return readApiJson(await fetch(`${API_BASE}/factories/${pathId(id)}/activate`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' }), '切换运行工厂失败') },
@@ -273,6 +274,8 @@ export const adminApi = {
         return readApiJson(await fetch(`${API_BASE}/data-sources/connections/${pathId(id)}/columns?${params}`), '读取数据库字段失败')
     },
     async previewDataSource(binding) { return readApiJson(await fetch(`${API_BASE}/data-sources/preview`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(binding) }), '预览数据失败') },
+    async previewHttpDataSource(binding) { return readApiJson(await fetch(`${API_BASE}/data-sources/preview-http`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(binding) }), '预览接口数据失败') },
+    async inspectHttpDataSource(binding) { return readApiJson(await fetch(`${API_BASE}/data-sources/inspect-http`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(binding) }), '读取接口字段失败') },
     async getDataSourceBackupStatus() { return readApiJson(await fetch(`${API_BASE}/data-sources/backups/status`), '读取数据库自动备份配置失败') },
     async saveDataSourceBackupConfig(config) { return readApiJson(await fetch(`${API_BASE}/data-sources/backups/config`, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(config) }), '保存数据库自动备份配置失败') },
     async runDataSourceBackups(connectionId = '') { return readApiJson(await fetch(`${API_BASE}/data-sources/backups/run`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ connectionId }) }), '创建数据库备份失败') },

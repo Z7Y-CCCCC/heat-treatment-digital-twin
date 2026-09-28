@@ -49,9 +49,17 @@ async function runRegressionTests() {
         const redirectOrigin = await listen(redirectTarget);
         const heldResponses = new Map();
         const observedPaths = [];
+        let oauthTokenRequests = 0;
         let openStreams = 0;
         const upstream = http.createServer((req, res) => {
             observedPaths.push(req.url);
+            if (req.url === '/oauth/token' && req.method === 'POST') {
+                oauthTokenRequests += 1;
+                const basic = `Basic ${Buffer.from('fixture-client:fixture-client-secret').toString('base64')}`;
+                res.writeHead(req.headers.authorization === basic ? 200 : 401, { 'Content-Type':'application/json' });
+                res.end(JSON.stringify({ access_token:'fixture-oauth-access', token_type:'Bearer', expires_in:3600 }));
+                return;
+            }
             if (req.method !== 'GET') {
                 res.writeHead(405);
                 res.end();
@@ -71,9 +79,39 @@ async function runRegressionTests() {
                 res.write('still streaming');
                 return;
             }
-            if (req.url === '/redirect') {
+            if (req.url === '/redirect' || req.url === '/v1/redirect') {
                 res.writeHead(302, { Location: `${redirectOrigin}/receive` });
                 res.end();
+                return;
+            }
+            if (req.url === '/v1/metrics') {
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ value: [{ quantity: 42, label: '产量' }] }));
+                return;
+            }
+            if (req.url === '/v1/oauth-metrics') {
+                res.writeHead(req.headers.authorization === 'Bearer fixture-oauth-access' ? 200 : 401, { 'Content-Type':'application/json' });
+                res.end(JSON.stringify({ metrics:{ quantity:88 } }));
+                return;
+            }
+            if (req.url === '/v1/xml-metrics') {
+                res.writeHead(200, { 'Content-Type':'application/xml' });
+                res.end('<root><metrics><quantity>63</quantity></metrics></root>');
+                return;
+            }
+            if (req.url === '/v1/csv-metrics') {
+                res.writeHead(200, { 'Content-Type':'text/csv; charset=utf-8' });
+                res.end('工厂,产量\r\n天津,"17"\r\n');
+                return;
+            }
+            if (req.url === '/v1/metrics-protected') {
+                res.writeHead(req.headers.authorization === 'Bearer fixture-bearer-token' ? 200 : 401, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ current: { quantity: 73 } }));
+                return;
+            }
+            if (req.url === '/v1/large') {
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ value: 'x'.repeat(262145) }));
                 return;
             }
             const authExpected = {
@@ -149,6 +187,73 @@ async function runRegressionTests() {
                     assert.ok(observedPaths.at(-1).startsWith('/v1/health'));
                 }
             }
+        });
+        await check('designer HTTP binding reads JSON fields with saved credentials and a scoped path', async () => {
+            service.saveDataSource(draft('metrics_api', { baseUrl: `${origin}/v1`, authType: 'bearer', token: 'fixture-bearer-token' }));
+            const first = await service.readHttpApiBinding({ connectionId: 'metrics_api', apiPath: '/metrics', jsonPath: 'value[0].quantity' });
+            assert.equal(first.value, 42);
+            assert.equal(first.quality, 'good');
+            const second = await service.readHttpApiBinding({ connectionId: 'metrics_api', apiPath: '/metrics-protected', jsonPath: 'current.quantity' });
+            assert.equal(second.value, 73);
+            assert.equal(observedPaths.at(-1), '/v1/metrics-protected');
+            assert.equal(JSON.stringify(second).includes('fixture-bearer-token'), false);
+            const inspected = await service.inspectHttpApiResponse({ connectionId: 'metrics_api', apiPath: '/metrics' });
+            assert.ok(inspected.fields.some(field => field.path === 'value[0].quantity' && field.sample === '42'));
+            assert.equal(JSON.stringify(inspected).includes('fixture-bearer-token'), false);
+        });
+        await check('XML and CSV responses support discovered read-only field paths', async () => {
+            service.saveDataSource(draft('xml_api', { baseUrl:`${origin}/v1`, responseFormat:'auto' }));
+            assert.equal((await service.readHttpApiBinding({ connectionId:'xml_api', apiPath:'/xml-metrics', jsonPath:'root.metrics.quantity' })).value, 63);
+            service.saveDataSource(draft('csv_api', { baseUrl:`${origin}/v1`, responseFormat:'csv' }));
+            assert.equal((await service.readHttpApiBinding({ connectionId:'csv_api', apiPath:'/csv-metrics', jsonPath:'rows[0]["产量"]' })).value, 17);
+            const inspected = await service.inspectHttpApiResponse({ connectionId:'csv_api', apiPath:'/csv-metrics' });
+            assert.ok(inspected.fields.some(field => field.path === 'rows[0]["产量"]'));
+        });
+        await check('OAuth2 client credentials use a cached bearer token without exposing client secret', async () => {
+            const saved = service.saveDataSource(draft('oauth_api', {
+                baseUrl:`${origin}/v1`, healthPath:'/oauth-metrics', authType:'oauth2_client_credentials',
+                tokenUrl:`${origin}/oauth/token`, clientId:'fixture-client', clientSecret:'fixture-client-secret',
+                tokenAuthMethod:'basic'
+            }));
+            assert.equal(JSON.stringify(saved).includes('fixture-client-secret'), false);
+            const binding = { connectionId:'oauth_api', apiPath:'/oauth-metrics', jsonPath:'metrics.quantity' };
+            assert.equal((await service.readHttpApiBinding(binding)).value, 88);
+            assert.equal((await service.readHttpApiBinding(binding)).value, 88);
+            assert.equal(oauthTokenRequests, 1);
+            assert.equal((await service.testDataSource({ id:'oauth_api' })).health.status, 'healthy');
+            assert.equal(oauthTokenRequests, 1);
+        });
+        await check('map-level metrics read only saved bindings and preserve independent levels', async () => {
+            const db = await require('../db/database').getDb();
+            await db.upsert('settings', { key:'group_portal_config', value:JSON.stringify({ levels:{ province:{
+                dataBindings:{ factsFactoryCount:{ mode:'http_api', factoryId:'factory_default', connectionId:'metrics_api', apiPath:'/metrics', jsonPath:'value[0].quantity', refreshMs:30000 } }
+            } } }) }, 'key');
+            const express = require('express');
+            const app = express();
+            app.use('/api/data-sources', require('../routes/dataSources'));
+            const api = http.createServer(app);
+            servers.push(api);
+            const apiOrigin = await listen(api);
+            const province = await (await fetch(`${apiOrigin}/api/data-sources/map-values?level=province`)).json();
+            const world = await (await fetch(`${apiOrigin}/api/data-sources/map-values?level=world`)).json();
+            assert.equal(province.values.factsFactoryCount.value, 42);
+            assert.deepEqual(world.values, {});
+            assert.equal((await fetch(`${apiOrigin}/api/data-sources/map-values?level=invalid`)).status, 400);
+        });
+        await check('designer HTTP binding rejects missing fields, traversal, redirects and oversized replies', async () => {
+            const binding = { connectionId: 'metrics_api', apiPath: '/metrics', jsonPath: 'value[0].quantity' };
+            await assert.rejects(service.readHttpApiBinding({ ...binding, jsonPath: 'missing.value' }), /找不到/);
+            await assert.rejects(service.readHttpApiBinding({ ...binding, apiPath: '../health' }), /只读相对路径/);
+            await assert.rejects(service.readHttpApiBinding({ ...binding, apiPath: '/large' }), /256 KB/);
+            await assert.rejects(service.readHttpApiBinding({ ...binding, apiPath: '/redirect' }), /HTTP 302/);
+            assert.equal(leakedRequests, 0);
+        });
+        await check('runtime HTTP binding uses the response cache', async () => {
+            const widget = { id: 'output', data: { mode: 'http_api', connectionId: 'metrics_api', apiPath: '/metrics', jsonPath: 'value[0].quantity', refreshMs: 30000 } };
+            const before = observedPaths.length;
+            assert.equal((await service.readRuntimeBindings([widget])).output.value, 42);
+            assert.equal((await service.readRuntimeBindings([widget])).output.value, 42);
+            assert.equal(observedPaths.length - before, 1);
         });
         await check('redirects are not followed and never forward API keys', async () => {
             const result = await service.testDataSource(draft('', {
@@ -366,6 +471,10 @@ async function runRegressionTests() {
                 const saved = await request('/connections', draft(`route_${config.authType}`, config));
                 await request('/test', saved.connection);
             }
+            const inspected = await request('/inspect-http', { connectionId: 'metrics_api', apiPath: '/metrics' });
+            assert.ok(inspected.result.fields.some(field => field.path === 'value[0].quantity'));
+            const previewed = await request('/preview-http', { connectionId: 'metrics_api', apiPath: '/metrics', jsonPath: 'value[0].quantity' });
+            assert.equal(previewed.result.value, 42);
             await request('');
         });
         await check('MCP rejects failed database tests without saving, rebinding or publishing', async () => {

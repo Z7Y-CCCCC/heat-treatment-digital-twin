@@ -8,6 +8,16 @@ const { test } = require('node:test');
 const tick = () => new Promise(resolve => setImmediate(resolve));
 const desktopDir = path.resolve(__dirname, '..');
 
+test('pre-Unity status is compact and has no competing loading artwork or progress bar', () => {
+    const html = fs.readFileSync(path.join(desktopDir, 'assets', 'startup.html'), 'utf8');
+    assert.match(html, /<body class="launch-status">/);
+    assert.match(html, /id="title"/);
+    assert.match(html, /id="elapsed"/);
+    assert.match(html, /body\.launch-status\s*\{\s*padding:\s*0;/);
+    assert.match(html, /body\.launch-status \.shell\s*\{[^}]*border-radius:\s*0;/);
+    assert.doesNotMatch(html, /loading-factory\.png|id="bar"|id="percent"|@keyframes/);
+});
+
 class Child extends EventEmitter {
     pid = 12345;
     exitCode = null;
@@ -71,6 +81,66 @@ function loadDesktop({ createLog } = {}) {
     };
 }
 
+test('normal startup shows an immediate status window before service initialization', async () => {
+    const desktop = loadDesktop();
+    desktop.run(`
+        testSplashCreations = 0;
+        createStartupWindow = async () => { testSplashCreations += 1; };
+        process.env.DESKTOP_SMOKE_FORCE_STARTUP_ERROR = 'startup probe';
+    `);
+    await assert.rejects(desktop.run('launchApplication()'), /startup probe/);
+    assert.equal(desktop.run('testSplashCreations'), 1);
+});
+
+test('static startup status yields to Unity before waiting for the embedded admin host', async () => {
+    const desktop = loadDesktop();
+    desktop.run(`
+        startupOrder = [];
+        createStartupWindow = async () => { startupOrder.push('status'); };
+        initializeWritableData = () => ({ logsDir: 'unit-test-logs' });
+        guardLogStream = stream => stream;
+        startLogMaintenance = () => {};
+        findAvailablePort = async () => 3001;
+        startDesktopControlServer = async () => {};
+        startBackend = async () => { startupOrder.push('backend'); return {}; };
+        waitForHealth = async () => {};
+        refreshStartupAppearanceWhenReady = async () => {};
+        startDesktopSettingsSync = async () => {};
+        createTray = () => {};
+        startNativeClient = async () => ({ ready: Promise.resolve() });
+        closeStartupWindow = () => { startupOrder.push('handoff'); };
+        waitForNativeHostReady = async () => { startupOrder.push('host'); };
+        scheduleSmokeTimers = () => {};
+    `);
+    await desktop.run('launchApplication()');
+    assert.deepEqual(Array.from(desktop.run('startupOrder')), ['status', 'backend', 'handoff', 'host', 'handoff']);
+});
+
+test('startup failures restore an actionable, enlarged status window after handoff', async () => {
+    const desktop = loadDesktop();
+    desktop.run(`
+        failureWindowEvents = [];
+        persistStartupFailure = () => 'test-startup-error.log';
+        createStartupWindow = async () => {
+            startupWindow = {
+                isDestroyed: () => false,
+                webContents: { isLoading: () => false, executeJavaScript: async () => {} },
+                setSize: (width, height) => failureWindowEvents.push(['size', width, height]),
+                center: () => failureWindowEvents.push(['center']),
+                setSkipTaskbar: value => failureWindowEvents.push(['taskbar', value]),
+                show: () => failureWindowEvents.push(['show']),
+                focus: () => failureWindowEvents.push(['focus'])
+            };
+        };
+    `);
+    await desktop.run('showStartupFailure(new Error("backend unavailable"))');
+    assert.equal(desktop.run('startupState.status'), 'error');
+    assert.equal(desktop.run('startupState.error'), 'backend unavailable');
+    assert.deepEqual(Array.from(desktop.run('failureWindowEvents')).map(event => Array.from(event)), [
+        ['size', 620, 360], ['center'], ['taskbar', false], ['show'], ['focus']
+    ]);
+});
+
 test('a health-timeout recovery reaps the failed attempt before scheduling another', async () => {
     const desktop = loadDesktop();
     const child = new Child();
@@ -126,6 +196,25 @@ test('repeated before-quit does not bypass pending child cleanup', async () => {
     await tick();
     assert.deepEqual(desktop.exits, []);
     child.exit();
+    await tick();
+    assert.deepEqual(desktop.exits, [0]);
+});
+
+test('before-quit starts Unity and backend shutdown concurrently and waits for both', async () => {
+    const desktop = loadDesktop();
+    desktop.run(`
+        shutdownStarted = [];
+        let finishNative, finishBackend;
+        stopNativeClient = () => { shutdownStarted.push('native'); return new Promise(resolve => { finishNative = resolve; }); };
+        stopBackend = () => { shutdownStarted.push('backend'); return new Promise(resolve => { finishBackend = resolve; }); };
+        stopDesktopControlServer = () => Promise.resolve();
+    `);
+    desktop.app.emit('before-quit', { preventDefault() {} });
+    assert.deepEqual(Array.from(desktop.run('shutdownStarted')), ['native', 'backend']);
+    desktop.run('finishNative()');
+    await tick();
+    assert.deepEqual(desktop.exits, []);
+    desktop.run('finishBackend()');
     await tick();
     assert.deepEqual(desktop.exits, [0]);
 });

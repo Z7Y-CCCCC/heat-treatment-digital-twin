@@ -1,5 +1,6 @@
 const express = require('express');
 const { getDb } = require('../db/database');
+const { parseDataPath } = require('../utils/externalDataPayload');
 
 const MAX_DASHBOARD_CONFIG_BYTES = 256 * 1024;
 const JSON_OBJECT_SETTING_LABELS = {
@@ -61,6 +62,8 @@ function normalizeSettingValue(key, value) {
         const country = rawCountry === 'CN' ? 'CHN' : rawCountry;
         if (!/^[A-Z]{3}$/.test(country)) throw new Error('国家代码必须是三个字母，例如 CHN');
         const adcode = value => /^\d{6}$/.test(String(value || '').trim()) ? String(value).trim() : '';
+        const overseasRegion = value => /^[A-Z]{2}-[A-Z0-9]{1,5}$/.test(String(value || '').trim().toUpperCase()) ? String(value).trim().toUpperCase() : '';
+        const overseasCity = value => /^\d{1,8}$/.test(String(value || '').trim()) ? String(value).trim() : '';
         const coordinate = (value, limit, label) => {
             if (value === undefined || value === null || value === '') return null;
             const number = Number(value);
@@ -70,9 +73,9 @@ function normalizeSettingValue(key, value) {
         const latitude = coordinate(parsed.latitude,90,'纬度');
         const longitude = coordinate(parsed.longitude,180,'经度');
         if ((latitude === null) !== (longitude === null)) throw new Error('工厂定位需要同时填写纬度和经度，或同时留空');
-        return JSON.stringify({country,regionCode:adcode(parsed.regionCode),
-            regionName:String(parsed.regionName || '').slice(0,100),cityCode:adcode(parsed.cityCode),city:String(parsed.city || '').slice(0,200),
-            districtCode:adcode(parsed.districtCode),districtName:String(parsed.districtName || '').slice(0,100),
+        return JSON.stringify({country,regionCode:country === 'CHN' ? adcode(parsed.regionCode) : overseasRegion(parsed.regionCode),
+            regionName:String(parsed.regionName || '').slice(0,100),cityCode:country === 'CHN' ? adcode(parsed.cityCode) : overseasCity(parsed.cityCode),city:String(parsed.city || '').slice(0,200),
+            districtCode:country === 'CHN' ? adcode(parsed.districtCode) : '',districtName:String(parsed.districtName || '').slice(0,100),
             latitude,longitude});
     }
     if (key === 'factory_directory') {
@@ -122,7 +125,8 @@ function normalizeSettingValue(key, value) {
             streetDescription:text('streetDescription','工厂园区包含车间、办公与公辅建筑。鼠标拖动可改变观察方向，点击园区继续下探。',240),
             factoryDescription:[legacyFactoryDescription, '240'].includes(factoryDescription) ? defaultFactoryDescription : factoryDescription,
             accent,showBrand:visible('showBrand'),showBreadcrumbs:visible('showBreadcrumbs'),
-            showInfoPanel:visible('showInfoPanel'),showBeacon:visible('showBeacon'),showFooter:visible('showFooter')});
+            showInfoPanel:visible('showInfoPanel'),showBeacon:visible('showBeacon'),showFooter:visible('showFooter'),
+            showViewControls:visible('showViewControls'),showBuildingTooltip:visible('showBuildingTooltip'),showHoverGlow:visible('showHoverGlow')});
     }
     if (key === 'group_portal_config') {
         const textField = (name, fallback, limit) => String(parsed[name] ?? fallback).trim().slice(0, limit);
@@ -135,6 +139,7 @@ function normalizeSettingValue(key, value) {
         const colorKeys = ['background', 'panelSurface', 'accent', 'text', 'mapBase', 'mapMuted', 'markerPrimary', 'markerTip'];
         const toggleKeys = ['showBrand', 'showFacts', 'showPanel', 'showDock', 'showHelp'];
         const titleKeys = ['brandTitle', 'brandSubtitle', 'panelTitle', 'factsTitle', 'dockNetworkTitle', 'dockLocationTitle', 'dockHierarchyTitle'];
+        const mapDataKeys = new Set(['factsFactoryCount','factsLocalCount','factsDeviceCount','panelRegionRows','dockFactoryCount','dockLocalCount','dockAssignedCount','dockCoverage','dockWorkshops','dockLines','dockDevices']);
         const validLogoUrl = url => !url || /^\/(?!\/)[\w/%.~+-]+$/.test(url) || /^https:\/\/[\w.-]+(?:\/[\w/%?&=.#~+-]*)?$/.test(url);
         const levels = {};
         for (const levelKey of levelKeys) {
@@ -170,6 +175,27 @@ function normalizeSettingValue(key, value) {
                     layout[key] = { x, y };
                 }
                 override.layout = layout;
+            }
+            if (source.dataBindings !== undefined) {
+                if (!source.dataBindings || typeof source.dataBindings !== 'object' || Array.isArray(source.dataBindings))
+                    throw new Error(`${levelKey}.dataBindings 必须是对象`);
+                const bindings = {};
+                for (const [field, raw] of Object.entries(source.dataBindings)) {
+                    if (!mapDataKeys.has(field) || !raw || raw.mode !== 'http_api') throw new Error(`${levelKey}.${field} 数据绑定无效`);
+                    const connectionId = String(raw.connectionId || '').trim();
+                    const factoryId = String(raw.factoryId || '').trim();
+                    const apiPath = String(raw.apiPath || '').trim();
+                    const jsonPath = String(raw.jsonPath || '').trim();
+                    const refreshMs = Number(raw.refreshMs ?? 30000);
+                    if (!/^[a-zA-Z0-9_-]{1,80}$/.test(connectionId) || (factoryId && !/^[a-zA-Z0-9_-]{1,80}$/.test(factoryId)) || !apiPath || apiPath.length > 1024
+                        || apiPath.startsWith('//') || /[\\\u0000-\u001f\u007f]/.test(apiPath)
+                        || /(^|\/)\.\.(\/|$)/.test(apiPath) || !jsonPath || jsonPath.length > 255
+                        || !Number.isInteger(refreshMs) || refreshMs < 5000 || refreshMs > 3600000)
+                        throw new Error(`${levelKey}.${field} 的连接、接口路径或刷新周期无效`);
+                    parseDataPath(jsonPath);
+                    bindings[field] = { mode:'http_api', factoryId, connectionId, apiPath, jsonPath, refreshMs };
+                }
+                override.dataBindings = bindings;
             }
             levels[levelKey] = override;
         }

@@ -1724,6 +1724,9 @@ async function ensureSchemaColumns() {
     await ensureColumn('workshops', 'layout_json', `${t.json}`);
     await ensureColumn('lines', 'layout_json', `${t.json}`);
     await ensureColumn('projects', 'factory_id', `${t.string(128)} NULL`);
+    await ensureColumn('models', 'factory_id', `${t.string(128)} NULL`);
+    await ensureColumn('models', 'placement_level', `${t.string(32)} DEFAULT 'device'`);
+    await rawQuery("UPDATE models SET placement_level = 'factory' WHERE asset_type = 'environment' AND (placement_level IS NULL OR placement_level <> 'factory')");
     await ensureColumn('event_logs', 'factory_id', `${t.string(128)} NULL`);
     await ensureColumn('metric_snapshots', 'factory_id', `${t.string(128)} NULL`);
 
@@ -1863,6 +1866,8 @@ async function initTables() {
         id ${t.string(128)} PRIMARY KEY,
         name ${t.string(255)} NOT NULL,
         file_path ${t.text} NOT NULL,
+        factory_id ${t.string(128)} NULL,
+        placement_level ${t.string(32)} DEFAULT 'device',
         asset_type ${t.string(64)} DEFAULT 'model',
         tags ${t.json},
         thumbnail ${t.text},
@@ -1979,6 +1984,7 @@ async function initTables() {
     await createIndex('idx_workshops_factory', 'workshops', `${quoteIdentifier('factory_id')}, ${quoteIdentifier('sort_order')}`);
     await createIndex('idx_factories_enabled_order', 'factories', `${quoteIdentifier('is_enabled')}, ${quoteIdentifier('sort_order')}`);
     await createIndex('idx_projects_factory', 'projects', `${quoteIdentifier('factory_id')}, ${quoteIdentifier('is_active')}`);
+    await createIndex('idx_models_factory_level', 'models', `${quoteIdentifier('factory_id')}, ${quoteIdentifier('placement_level')}`);
     await createIndex('idx_event_logs_factory_time', 'event_logs', `${quoteIdentifier('factory_id')}, ${quoteIdentifier('occurred_at')} DESC, ${quoteIdentifier('id')} DESC`);
     await createIndex('idx_metrics_factory_time', 'metric_snapshots', `${quoteIdentifier('factory_id')}, ${quoteIdentifier('snapshot_time')} DESC, ${quoteIdentifier('id')} DESC`);
     await createIndex('idx_factory_settings_key', 'factory_settings', `${quoteIdentifier('factory_id')}, ${quoteIdentifier('key')}`);

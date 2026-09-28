@@ -3,9 +3,10 @@ import { parseSpatialObject } from '../utils/spatialLayout.js'
 export function normalizeFactoryLocation(value) {
   const raw=parseSpatialObject(value)
   const adcode=value=>/^\d{6}$/.test(String(value ?? '').trim()) ? String(value).trim() : ''
-  const country=String(raw.country || 'CHN').trim().toUpperCase()
+  const rawCountry=String(raw.country || 'CHN').trim().toUpperCase()
+  const country=rawCountry==='CN' ? 'CHN' : rawCountry
   const coordinate=(value,limit)=>value === '' || value === null || value === undefined || !Number.isFinite(Number(value)) || Math.abs(Number(value))>limit ? null : Number(value)
-  return {country:country==='CN' ? 'CHN':country,regionCode:adcode(raw.regionCode),regionName:String(raw.regionName || ''),cityCode:adcode(raw.cityCode),city:String(raw.city || ''),districtCode:adcode(raw.districtCode),districtName:String(raw.districtName || ''),
+  return {country,regionCode:country==='CHN'?adcode(raw.regionCode):/^[A-Z]{2}-[A-Z0-9]{1,5}$/.test(String(raw.regionCode || '').toUpperCase())?String(raw.regionCode).toUpperCase():'',regionName:String(raw.regionName || ''),cityCode:country==='CHN'?adcode(raw.cityCode):/^\d{1,8}$/.test(String(raw.cityCode || ''))?String(raw.cityCode):'',city:String(raw.city || ''),districtCode:country==='CHN'?adcode(raw.districtCode):'',districtName:String(raw.districtName || ''),
     latitude:coordinate(raw.latitude,90),longitude:coordinate(raw.longitude,180),
     }
 }
@@ -73,9 +74,7 @@ export function groupRegionEntries(sites, scope) {
   return [...groups.values()]
 }
 
-// The group overview is one China-centred map. China is always represented
-// by province codes; overseas countries appear only when a factory is in the
-// backend directory for that country.
+// Overseas countries appear only when a factory is configured there.
 export function configuredOverseasCountries(sites) {
   return new Set(sites.map(site=>site.location.country).filter(country=>country && country!=='CHN'))
 }
@@ -154,7 +153,7 @@ export function groupHierarchyEntries(sites, level, parentCode, childFeatures = 
     return childFeatures.flatMap(feature=>{
       const code=String(feature.properties?.ADM0_A3 || feature.properties?.adcode || ''),rows=counts.get(code) || []
       if(!code || !rows.length)return []
-      return [summarizeHierarchyRows(code,feature.properties?.NAME_ZH || feature.properties?.name || feature.properties?.ADMIN || code,childLevel,rows)]
+      return [summarizeHierarchyRows(code,code==='CHN'?'中国':code==='KOR'?'韩国':feature.properties?.NAME_ZH || feature.properties?.name || feature.properties?.ADMIN || code,childLevel,rows)]
     }).concat([...counts.entries()].filter(([code])=>!childFeatures.some(feature=>String(feature.properties?.ADM0_A3 || feature.properties?.adcode)===code)).map(([code,rows])=>summarizeHierarchyRows(code,rows[0]?.location.countryName || code,childLevel,rows)))
   }
   return childFeatures.map(feature=>{
@@ -201,26 +200,20 @@ export function hierarchyMapPoints(sites, level, code, childFeatures = []) {
   }).filter(Boolean)
 }
 
-// The opening map is global, but a China beacon must identify the province
-// containing the registered site. Never place a province-assigned factory at
-// China's geographical centre. Overseas sites remain grouped by country.
-export function worldHierarchyMapPoints(sites, worldFeatures = [], chinaProvinceFeatures = []) {
-  const countries = hierarchyMapPoints(sites, 'world', '', worldFeatures)
-    .filter(point => point.targetRegion !== 'CHN')
-  const provinces = hierarchyMapPoints(sites, 'country', 'CHN', chinaProvinceFeatures)
-    .map(point => ({
-      ...point,
-      id: `world_${point.id}`,
-      worldProvinceCode: point.targetRegion,
-      worldProvinceName: point.name.split(' · ')[0]
-    }))
-  return [...countries, ...provinces]
+// Each world beacon represents one country. Provinces are only visible after
+// entering that country, so counts and marker sizes use the same hierarchy.
+export function worldHierarchyMapPoints(sites, worldFeatures = []) {
+  return hierarchyMapPoints(sites, 'world', '', worldFeatures)
 }
 
 function areaFactoryPoints(sites,code,features) {
   const feature=features.find(item=>String(item.properties?.ADM0_A3 || item.properties?.adcode)===String(code)),center=adminMapCenter(feature)
   if(!center)return []
-  return sites.map((site,index)=>({id:`site_${site.id}`,factoryId:site.id,targetRegion:code,name:site.name,count:1,localRuntimeCount:site.runtime==='local'?1:0,runtime:site.runtime,location:{mapCenter:center},mapOffset:[(index%3-1)*5,Math.floor(index/3)*5]}))
+  return sites.map((site,index)=>{
+    const located=site.location.latitude!==null && site.location.longitude!==null
+    return {id:`site_${site.id}`,factoryId:site.id,targetRegion:code,name:site.name,count:1,localRuntimeCount:site.runtime==='local'?1:0,runtime:site.runtime,located,
+      location:{mapCenter:located?[site.location.longitude,site.location.latitude]:center},mapOffset:located?[0,0]:[(index%3-1)*5,Math.floor(index/3)*5]}
+  })
 }
 
 // The overview aggregates by region/country; a drilled region shows factories.

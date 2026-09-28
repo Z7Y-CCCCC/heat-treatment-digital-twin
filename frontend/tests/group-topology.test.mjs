@@ -4,6 +4,7 @@ import { createRequire } from 'node:module'
 import { readFileSync } from 'node:fs'
 import { normalizeFactoryLocation,currentFactorySite,factoryDataModePresentation,isNativeMapEntry,factoryDirectorySites,sitesInMapScope,groupRegionEntries,groupMapPoints,configuredOverseasCountries,chinaRegionsWithFactories,sitesInUnifiedMap,groupUnifiedRegionEntries,groupUnifiedMapPoints,sitesAtHierarchyLevel,groupHierarchyEntries,hierarchyMapPoints,worldHierarchyMapPoints } from '../src/runtime/groupTopology.js'
 import { adminFeatureCenter,adminFeatureCode,adminFeatureName,clearChinaAdminMapCache,loadChinaAdminMap } from '../src/runtime/chinaAdminMaps.js'
+import { clearOverseasAdminCatalogCache, loadOverseasAdminCatalog, OVERSEAS_CATALOG_COUNTRIES } from '../src/runtime/overseasAdminCatalog.js'
 const require=createRequire(import.meta.url)
 const {normalizeSettingValue}=require('../../backend/routes/settings.js')
 test('factory coordinates are optional and do not invent administrative assignment',()=>{
@@ -104,6 +105,18 @@ test('district markers use each factory coordinate and label unlocated factories
   assert.deepEqual(points[2].location.mapCenter,[117.2,39.12])
 })
 
+test('overseas country view places factories at their own coordinates and flags missing locations',()=>{
+  const feature={properties:{ADM0_A3:'KOR',LABEL_X:127.5,LABEL_Y:36.5}}
+  const sites=[
+    {id:'seoul',name:'首尔工厂',runtime:'local',location:normalizeFactoryLocation({country:'KOR',regionName:'首尔',latitude:37.56,longitude:126.98})},
+    {id:'busan',name:'釜山工厂',runtime:'local',location:normalizeFactoryLocation({country:'KOR',regionName:'釜山',latitude:35.18,longitude:129.07})},
+    {id:'pending',name:'待定位工厂',runtime:'local',location:normalizeFactoryLocation({country:'KOR'})}
+  ]
+  const points=hierarchyMapPoints(sites,'country','KOR',[feature])
+  assert.deepEqual(points.map(point=>point.location.mapCenter),[[126.98,37.56],[129.07,35.18],[127.5,36.5]])
+  assert.deepEqual(points.map(point=>point.located),[true,true,false])
+})
+
 test('the single China-centred map keeps China provinces and only promotes configured overseas countries',()=>{
   const sites=factoryDirectorySites({settings:{factory_location:{country:'CHN',regionCode:'510000',longitude:104,latitude:30},factory_directory:{sites:[
     {id:'site_japan',name:'日本工厂',location:{country:'JPN',longitude:139,latitude:36}},
@@ -149,27 +162,47 @@ test('global to district hierarchy groups configured countries and exact China a
   assert.equal(point.targetRegion,'130102');assert.deepEqual(point.location.mapCenter,[114.55,38.05])
 })
 
-test('global beacons sit on configured China provinces, never at China country centre',()=>{
+test('the world map shows one country beacon for all Chinese factories',()=>{
   const sites=factoryDirectorySites({settings:{factory_location:{country:'CHN',regionCode:'120000',regionName:'天津市'},factory_directory:{sites:[
     {id:'site_hebei',name:'河北厂',location:{country:'CHN',regionCode:'130000',regionName:'河北省'}},
     {id:'site_japan',name:'日本厂',location:{country:'JPN'}}
   ]}}})
   const countries=[{properties:{ADM0_A3:'CHN',NAME_ZH:'中国',centroid:[104,35]}},{properties:{ADM0_A3:'JPN',NAME_ZH:'日本',centroid:[138,37]}}]
   const provinces=[{properties:{adcode:'120000',name:'天津市',centroid:[117.2,39.1]}},{properties:{adcode:'130000',name:'河北省',centroid:[114.5,38]}}]
-  const points=worldHierarchyMapPoints(sites,countries,provinces)
-  assert.deepEqual(points.map(point=>point.targetRegion).sort(),['120000','130000','JPN'])
-  assert.deepEqual(points.find(point=>point.worldProvinceCode==='120000').location.mapCenter,[117.2,39.1])
-  assert.equal(points.some(point=>point.location.mapCenter?.[0]===104),false)
-  assert.equal(points.find(point=>point.targetRegion==='JPN').worldProvinceCode,undefined)
+  const points=worldHierarchyMapPoints(sites,countries)
+  assert.deepEqual(points.map(point=>point.targetRegion).sort(),['CHN','JPN'])
+  assert.equal(points.find(point=>point.targetRegion==='CHN').count,2)
+  assert.equal(points.find(point=>point.targetRegion==='CHN').name,'中国 · 2 座')
+  assert.deepEqual(points.find(point=>point.targetRegion==='CHN').location.mapCenter,[104,35])
+  const inChina=hierarchyMapPoints(sites,'country','CHN',provinces)
+  assert.deepEqual(inChina.map(point=>point.targetRegion).sort(),['120000','130000'])
 })
 
-test('the configured Tianjin site resolves to the actual Tianjin province geometry',()=>{
+test('a Chinese province marker appears only after entering China',()=>{
   const map=JSON.parse(readFileSync(new URL('../public/maps/china-provinces.geojson',import.meta.url),'utf8'))
   const tianjin=map.features.find(feature=>String(feature.properties?.adcode)==='120000')
   const sites=factoryDirectorySites({settings:{factory_location:{country:'CHN',regionCode:'120000',regionName:'天津市'}}})
-  const [point]=worldHierarchyMapPoints(sites,[{properties:{ADM0_A3:'CHN',centroid:[104,35]}}],map.features)
-  assert.equal(point.worldProvinceCode,'120000')
+  const [point]=hierarchyMapPoints(sites,'country','CHN',map.features)
+  assert.equal(point.targetRegion,'120000')
   assert.deepEqual(point.location.mapCenter,tianjin.properties.centroid)
+})
+
+test('overseas selector offers offline state and city choices and keeps stable codes',async()=>{
+  assert.equal(OVERSEAS_CATALOG_COUNTRIES.size,20)
+  const korea=JSON.parse(readFileSync(new URL('../public/maps/overseas-admin/KOR.json',import.meta.url),'utf8'))
+  const seoul=korea.states.find(state=>state.name==='Seoul')
+  assert.ok(seoul?.cities.length)
+  const saved=JSON.parse(normalizeSettingValue('factory_location',{country:'KOR',regionCode:seoul.code,regionName:seoul.name,cityCode:seoul.cities[0].id,city:seoul.cities[0].name,latitude:seoul.cities[0].latitude,longitude:seoul.cities[0].longitude}))
+  assert.equal(saved.regionCode,seoul.code)
+  assert.equal(saved.cityCode,seoul.cities[0].id)
+  assert.equal(normalizeFactoryLocation(saved).regionCode,seoul.code)
+  clearOverseasAdminCatalogCache()
+  let calls=0
+  const fetcher=async url=>{calls++;assert.equal(url,'/maps/overseas-admin/KOR.json');return {ok:true,json:async()=>korea}}
+  assert.equal((await loadOverseasAdminCatalog('KOR',fetcher)).states.length,korea.states.length)
+  assert.equal((await loadOverseasAdminCatalog('KOR',fetcher)).states.length,korea.states.length)
+  assert.equal(calls,1)
+  assert.equal(await loadOverseasAdminCatalog('ZZZ',fetcher),null)
 })
 
 test('local China admin maps validate level/codes and retry after a failed load',async()=>{

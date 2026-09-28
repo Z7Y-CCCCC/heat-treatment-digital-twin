@@ -206,7 +206,7 @@ async function main() {
         }
     });
 
-    await check('overlapping DataEngine restarts leave only one live source', async () => {
+    await check('overlapping DataEngine restarts leave one live source per enabled factory', async () => {
         let activeSources = 0;
         class FakeSimulator {
             async start() { this.active = true; activeSources += 1; }
@@ -215,16 +215,20 @@ async function main() {
         const DataEngine = requireWithStubs('../services/dataEngine', {
             '../db/database': { getDb: async () => ({
                 get: async () => ({ value: 'factory_default' }),
-                all: async () => [{ key: 'data_mode', value: 'simulation' }]
+                all: async sql => sql.includes('FROM factories')
+                    ? [{ id: 'factory_default' }, { id: 'factory_north' }]
+                    : [{ key: 'data_mode', value: 'simulation' }]
             }) },
             '../services/simulator': FakeSimulator
         });
         const engine = new DataEngine({ broadcastStatus() {} });
         try {
             await Promise.all([engine.start(), engine.start()]);
-            assert.equal(activeSources, 1);
+            assert.equal(activeSources, 2);
+            assert.deepEqual(Object.keys(engine.getFactoryStatuses()).sort(), ['factory_default', 'factory_north']);
             await Promise.all([engine.restart(), engine.restart()]);
-            assert.equal(activeSources, 1);
+            assert.equal(activeSources, 2);
+            assert.deepEqual(Object.keys(engine.getFactoryStatuses()).sort(), ['factory_default', 'factory_north']);
             const restarting = engine.restart();
             engine.stop();
             await restarting;
@@ -266,6 +270,21 @@ async function main() {
         assert.equal(engine.collectorStatus.devices, 2);
         assert.deepEqual(samples[1].map(device => device.furnace_id), ['A', 'B']);
         engine.stop();
+    });
+
+    await check('secondary factory metrics remain isolated and expose only fresh in-memory summaries', async () => {
+        const writes = [];
+        const DataEngine = requireWithStubs('../services/dataEngine', {
+            '../db/database': { getDb: async () => ({ run: async (sql, values) => { writes.push(values); } }) }
+        });
+        const engine = new DataEngine({ broadcastDeviceData() {}, broadcastStatus() {} }, { factoryId: 'factory_north', isSecondary: true });
+        engine.activeFactoryId = 'factory_north';
+        await engine._recordMetrics([{ furnace_id: 'north_device', status: { running: true, alarm: false }, quality: { status: { running: 'good' } }, analog: { actual_temp: 840 } }]);
+        assert.equal(writes.length, 1);
+        assert.equal(writes[0][0], 'factory_north');
+        assert.equal(engine.getFactoryStatuses().factory_north.metricSummary.runningDevices, 1);
+        engine.stop();
+        assert.equal(engine.metricSummary, null);
     });
 
     const PlcReader = require('../services/plcReader');

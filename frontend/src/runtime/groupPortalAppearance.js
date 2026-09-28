@@ -5,7 +5,7 @@ export const DEFAULT_GROUP_PORTAL_APPEARANCE = Object.freeze({
     factsTitle: '登记工厂',
     dockNetworkTitle: '站点网络',
     dockLocationTitle: '行政区归属',
-    dockHierarchyTitle: '本机现场配置',
+    dockHierarchyTitle: '集团现场配置',
     showBrand: true, showFacts: true, showPanel: true, showDock: true, showHelp: true,
     background: '#303134', panelSurface: '#3d3d40', accent: '#9caaff', text: '#e5e3de',
     mapBase: '#747682', mapMuted: '#494b52', markerPrimary: '#376ff0', markerTip: '#bbfff0', mapZoom: 1.12,
@@ -20,11 +20,48 @@ export const GROUP_MAP_LEVELS = Object.freeze([
     { key: 'district', label: '区县' }
 ])
 
+export const GROUP_MAP_DATA_FIELDS = Object.freeze({
+    facts: [
+        { key: 'factsFactoryCount', label: '登记工厂数' },
+        { key: 'factsLocalCount', label: '本机运行端数' },
+        { key: 'factsDeviceCount', label: '现场设备配置数' }
+    ],
+    panel: [{ key: 'panelRegionRows', label: '区域列表（按 code 对应地图区域）' }],
+    dock: [
+        { key: 'dockFactoryCount', label: '登记工厂数' },
+        { key: 'dockLocalCount', label: '本机运行端数' },
+        { key: 'dockAssignedCount', label: '已归属区县工厂数' },
+        { key: 'dockCoverage', label: '行政区归属率 %' },
+        { key: 'dockWorkshops', label: '车间数' },
+        { key: 'dockLines', label: '产线数' },
+        { key: 'dockDevices', label: '设备数' }
+    ]
+})
+
 const LEVEL_KEYS = new Set(GROUP_MAP_LEVELS.map(level => level.key))
 const COLOR_KEYS = ['background', 'panelSurface', 'accent', 'text', 'mapBase', 'mapMuted', 'markerPrimary', 'markerTip']
 const TOGGLE_KEYS = ['showBrand', 'showFacts', 'showPanel', 'showDock', 'showHelp']
 const LAYOUT_KEYS = ['brand', 'facts', 'panel', 'dock']
 const TITLE_KEYS = ['brandTitle', 'brandSubtitle', 'panelTitle', 'factsTitle', 'dockNetworkTitle', 'dockLocationTitle', 'dockHierarchyTitle']
+const DATA_KEYS = new Set(Object.values(GROUP_MAP_DATA_FIELDS).flat().map(field => field.key))
+
+function normalizeDataBindings(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
+    const result = {}
+    for (const [key, binding] of Object.entries(value)) {
+        if (!DATA_KEYS.has(key) || !binding || typeof binding !== 'object' || Array.isArray(binding)) continue
+        if (binding.mode !== 'http_api') continue
+        result[key] = {
+            mode: 'http_api',
+            factoryId: String(binding.factoryId || '').slice(0, 80),
+            connectionId: String(binding.connectionId || '').slice(0, 80),
+            apiPath: String(binding.apiPath || '').slice(0, 1024),
+            jsonPath: String(binding.jsonPath || '').slice(0, 255),
+            refreshMs: Math.max(5000, Math.min(3600000, Number(binding.refreshMs) || 30000))
+        }
+    }
+    return result
+}
 
 function normalizeLayout(value) {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
@@ -59,6 +96,7 @@ function normalizeLevelOverrides(value) {
         }
         if (Number.isFinite(Number(raw.mapZoom)) && Number(raw.mapZoom) >= 0.8 && Number(raw.mapZoom) <= 1.5) level.mapZoom = Number(raw.mapZoom)
         if (raw.layout !== undefined) level.layout = normalizeLayout(raw.layout)
+        if (raw.dataBindings !== undefined) level.dataBindings = normalizeDataBindings(raw.dataBindings)
         result[key] = level
     }
     return result

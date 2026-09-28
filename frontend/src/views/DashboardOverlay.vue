@@ -1,6 +1,6 @@
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import LoadingExperience from '../components/LoadingExperience.vue'
 import { useFactoryConfig } from '../config/factoryConfig.js'
 import { createDashboardDataStore } from '../runtime/DataStore.js'
@@ -16,9 +16,11 @@ import { fitHudCanvas } from '../runtime/hudPresentation.js'
 import { applyVisibilityAction, widgetRuntimeVisible } from '../runtime/dashboardRules.js'
 import { createGroupHierarchyPath } from '../runtime/groupHierarchyPath.js'
 import { inspectionHoverDetails, inspectionPointText } from '../runtime/inspectionHover.js'
+import { overviewEntryStatus } from '../runtime/factoryNavigationReadiness.js'
 
 const rootRef = ref(null)
 const route = useRoute()
+const router = useRouter()
 const startupLoading = ref(true), startupProgress = ref(6), startupPhase = ref(0), startupStep = ref('正在读取现场配置')
 const nativeLoadingManaged = ref(Boolean(window.__DIGITAL_TWIN_NATIVE_LOADING__))
 let overlayDisposed = false
@@ -79,6 +81,7 @@ const {
     config,
     loadConfig,
     getPlatform,
+    error: configLoadError,
     getWorkshops
 } = useFactoryConfig()
 
@@ -367,7 +370,7 @@ const widgets = computed(() => {
     }).filter(widget => widgetRuntimeVisible(widget, {
     context: runtimeContext,
     dataValue: runtimeValueForWidget(widget),
-    dataRecord: widget.data?.mode === 'database' ? databaseValues[widget.id] : null,
+    dataRecord: ['database', 'http_api'].includes(widget.data?.mode) ? databaseValues[widget.id] : null,
     groupVisibility,
     widgetVisibility
     }))
@@ -477,7 +480,7 @@ function handleInspectionCommand(command) {
 
 function runtimeValueForWidget(widget) {
     const binding = widget?.data || widget?.binding || {}
-    if (binding.mode === 'database') return databaseValues[widget.id]?.value
+    if (binding.mode === 'database' || binding.mode === 'http_api') return databaseValues[widget.id]?.value
     if (binding.mode === 'plc' || binding.pointId || binding.point_id) {
         const pointId = String(binding.pointId || binding.point_id || '')
         const isCurrentDevice = binding.deviceScope === 'current'
@@ -717,9 +720,14 @@ async function focusNativeView(viewId, event = {}) {
 }
 
 async function returnToParentView() {
-    if (!canNavigateToParentView.value || parentReturnBusy.value) return
+    if ((!canNavigateToParentView.value && !runtimeContextIsRoot()) || parentReturnBusy.value) return
     parentReturnBusy.value = true
     try {
+        if (runtimeContextIsRoot()) {
+            const mapSegment = [...hierarchyTrail.value].reverse().find(segment => segment.to?.path === '/group')
+            await router.push(mapSegment?.to || { path:'/group', query:{ embedded:route.query.embedded } })
+            return
+        }
         const targetType = String(currentView.value?.targetType || '').toLowerCase()
         const mode = String(runtimeContext.viewMode || currentView.value?.mode || targetType || '').toLowerCase()
         const isDeviceView = mode === 'device' || targetType === 'device' || targetType === 'device_part'
@@ -754,7 +762,7 @@ function isEditableKeyboardTarget(target) {
 function handleOverlayKeydown(event) {
     if (event.key !== 'Escape' && event.code !== 'Escape') return
     if (event.defaultPrevented || event.isComposing) return
-    if (isEditableKeyboardTarget(event.target) || !canNavigateToParentView.value) return
+    if (isEditableKeyboardTarget(event.target) || (!canNavigateToParentView.value && !runtimeContextIsRoot())) return
     event.preventDefault()
     event.stopPropagation()
     void returnToParentView()
@@ -820,7 +828,7 @@ function handleHostMessage(event) {
 
 async function refreshDatabaseValues(force = false) {
     if (overlayDisposed || (!force && databaseInFlight)) return
-    if (!force && !configuredWidgets.value.some(widget => widget.data?.mode === 'database')) return
+    if (!force && !configuredWidgets.value.some(widget => ['database', 'http_api'].includes(widget.data?.mode))) return
     const requestSeq = ++databaseRequestSeq
     databaseInFlight = true
     try {
@@ -915,6 +923,15 @@ onMounted(async () => {
 
     await loadConfig()
     if (overlayDisposed) return
+    const overviewReadiness = overviewEntryStatus(getWorkshops())
+    if (!configLoadError.value && !overviewReadiness.allowed) {
+        const query = { ...route.query, navigationNotice: overviewReadiness.message }
+        delete query.scene
+        delete query.factoryId
+        delete query.fromGroup
+        await router.replace({ path: '/group', query })
+        return
+    }
     reportStartup(31, 1, '正在构建设备与车间层级')
     probeConfiguredModels()
     // The host can send an already-focused workshop before config finishes.
@@ -1019,9 +1036,7 @@ onUnmounted(() => {
                 </template>
             </div>
             <div class="overlay-hierarchy-controls">
-                <select v-if="runtimeContext.viewMode === 'factory'" aria-label="选择车间" value="" :disabled="hierarchyBusy" @change="focusNativeScene('workshop',{workshopId:$event.target.value})"><option disabled value="">进入车间</option><option v-for="workshop in hierarchyWorkshops" :key="workshop.id" :value="workshop.id">{{ workshop.name }}</option></select>
-                <select v-else-if="runtimeContext.viewMode === 'workshop'" aria-label="选择产线" value="" :disabled="hierarchyBusy" @change="focusNativeScene('line',{lineId:$event.target.value})"><option disabled value="">进入产线</option><option v-for="line in hierarchyLines" :key="line.id" :value="line.id">{{ line.name }}</option></select>
-                <select v-else-if="runtimeContext.viewMode === 'line'" aria-label="选择设备" value="" :disabled="hierarchyBusy" @change="focusNativeScene('device',{deviceId:$event.target.value})"><option disabled value="">进入设备</option><option v-for="device in hierarchyDevices" :key="device.id" :value="device.id">{{ device.name }}</option></select>
+                <select v-if="runtimeContext.viewMode === 'line'" aria-label="选择设备" value="" :disabled="hierarchyBusy" @change="focusNativeScene('device',{deviceId:$event.target.value})"><option disabled value="">进入设备</option><option v-for="device in hierarchyDevices" :key="device.id" :value="device.id">{{ device.name }}</option></select>
                 <template v-else-if="runtimeContext.viewMode === 'device' && runtimeContext.inspectionEnabled">
                     <button type="button" class="overlay-hierarchy-action" @click="sendInspectionCommand({command:'stage',stage:'xray'})">透视</button>
                     <button type="button" class="overlay-hierarchy-action" @click="sendInspectionCommand({command:'stage',stage:'exploded'})">拆解</button>

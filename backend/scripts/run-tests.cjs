@@ -6,7 +6,7 @@ const { spawn } = require('child_process');
 const { BACKEND_DIR, createRunDirectory } = require('./integration-test-utils.cjs');
 
 const scripts = [
-    'test-isolation-test.cjs',
+    'test-isolation-test.cjs', 'map-surface-schema-test.cjs',
     'group-portal-settings-test.cjs', 'appearance-assets-test.cjs',
     'admin-auth-test.cjs', 'license-test.cjs', 'release-package-test.cjs',
     'math-expression-test.cjs', 'business-data-test.cjs', 'data-source-test.cjs',
@@ -14,7 +14,7 @@ const scripts = [
     'spatial-hierarchy-test.cjs', 'cast-discovery-test.cjs',
     'backend-concurrency-test.cjs', 'backend-recovery-edge-test.cjs',
     'backend-service-failure-test.cjs',
-    'admin-auth-integration-test.cjs', 'factory-isolation-test.cjs', 'production-readiness-test.cjs',
+    'admin-auth-integration-test.cjs', 'factory-isolation-test.cjs', 'factory-geocoder-test.cjs', 'production-readiness-test.cjs',
     'data-point-sync-test.cjs', 'deletion-safety-test.cjs',
     'native-dashboard-config-test.cjs', 'plc-protocol-test.cjs',
     'plc-value-precision-test.cjs',

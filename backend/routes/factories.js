@@ -2,8 +2,18 @@ const express = require('express');
 const crypto = require('crypto');
 const { getDb } = require('../db/database');
 const { normalizeSettingValue } = require('./settings');
+const { searchFactoryPlace } = require('../services/factoryGeocoder');
 
 const router = express.Router();
+
+router.post('/place-search', async (req, res) => {
+    try {
+        const results = await searchFactoryPlace(req.body?.countryCode, req.body?.query);
+        res.json({ results, attribution: '© OpenStreetMap contributors' });
+    } catch (error) {
+        res.status(/请选择海外国家/.test(error.message) ? 400 : 502).json({ error: error.message || '地点查询失败' });
+    }
+});
 
 function parseLocation(value) {
     if (!value) return {};
@@ -39,6 +49,37 @@ router.get('/', async (req, res) => {
             ORDER BY f.sort_order ASC, f.name ASC`);
         const active = await db.get('SELECT value FROM settings WHERE `key` = ?', ['active_factory_id']);
         res.json({ factories: rows.map(publicFactory), activeFactoryId: String(active?.value || 'factory_default') });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+router.get('/live-summaries', async (req, res) => {
+    try {
+        const db = await getDb();
+        const factories = await db.all('SELECT id FROM factories WHERE is_enabled <> 0 ORDER BY sort_order ASC');
+        const statuses = global.dataEngine?.getFactoryStatuses?.() || {};
+        const now = Date.now();
+        const summaries = factories.map(factory => {
+            const factoryId = String(factory.id);
+            const latest = statuses[factoryId]?.metricSummary || null;
+            const collector = statuses[factoryId]?.collectorStatus || {};
+            const frameAt = Number(collector.lastFrameAt) || 0;
+            const savedAt = Number(statuses[factoryId]?.lastMetricSavedAt) || 0;
+            const fresh = !!latest && collector.status === 'connected' && frameAt > 0 && savedAt > 0 && now - frameAt < 15000 && now - savedAt < 15000;
+            return {
+                factoryId,
+                status: fresh ? 'live' : latest ? 'stale' : 'no_data',
+                mode: statuses[factoryId]?.mode || '',
+                updatedAt: fresh ? frameAt : null,
+                runningDevices: fresh ? Number(latest.runningDevices || 0) : null,
+                onlineDevices: fresh ? Number(latest.onlineDevices || 0) : null,
+                alarmDevices: fresh ? Number(latest.alarmDevices || 0) : null,
+                totalDevices: fresh ? Number(latest.totalDevices || 0) : null,
+                overallOee: fresh ? Number(latest.overallOee || 0) : null
+            };
+        });
+        res.json({ timestamp: now, summaries });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
@@ -100,6 +141,17 @@ router.post('/:id/activate', async (req, res) => {
         const db = await getDb();
         const factory = await db.get('SELECT id, name FROM factories WHERE id = ? AND is_enabled <> 0', [req.params.id]);
         if (!factory) return res.status(404).json({ error: '工厂不存在或已停用' });
+        const hierarchy = await db.get(`SELECT
+            (SELECT COUNT(*) FROM workshops WHERE factory_id = ?) AS workshop_count,
+            (SELECT COUNT(*) FROM \`lines\` l JOIN workshops w ON w.id = l.workshop_id WHERE w.factory_id = ?) AS line_count,
+            (SELECT COUNT(*) FROM devices d JOIN \`lines\` l ON l.id = d.line_id JOIN workshops w ON w.id = l.workshop_id WHERE w.factory_id = ?) AS device_count`,
+            [factory.id, factory.id, factory.id]);
+        const missing = !Number(hierarchy?.workshop_count) ? '车间' : !Number(hierarchy?.line_count) ? '产线' : !Number(hierarchy?.device_count) ? '设备' : '';
+        if (missing) return res.status(409).json({ error: `该工厂尚未配置${missing}，请先在后台完成配置，暂不能进入三维总览`, missingLevel: missing });
+        const active = await db.get('SELECT value FROM settings WHERE `key` = ?', ['active_factory_id']);
+        if (String(active?.value || '') === String(factory.id)) {
+            return res.json({ success: true, activeFactoryId: String(factory.id), factoryName: factory.name });
+        }
         await db.upsert('settings', { key: 'active_factory_id', value: String(factory.id) }, 'key');
         require('../services/dataSources').reloadDataSourceConfiguration(String(factory.id));
         global.dataEngine?.restart?.().catch(error => console.warn('[Factories] 切换工厂后重启采集器失败:', error.message));

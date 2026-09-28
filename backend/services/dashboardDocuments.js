@@ -97,7 +97,7 @@ async function loadPublishedDocument(db, project, scene) {
 async function validatePlcBindings(db, document) {
     validateDocument(document);
     const databaseConnectionIds = [...new Set(document.widgets
-        .filter(widget => widget.data?.mode === 'database' || widget.data?.mode === 'business')
+        .filter(widget => ['database', 'business', 'http_api'].includes(widget.data?.mode))
         .flatMap(widget => (widget.data.mode === 'database' && Array.isArray(widget.data.datasets) && widget.data.datasets.length
             ? widget.data.datasets
             : [widget.data]))
@@ -106,8 +106,14 @@ async function validatePlcBindings(db, document) {
     for (const connectionId of databaseConnectionIds) {
         const connection = resolveConnection(connectionId);
         if (connection.sourceType === 'http_api' || connection.type === 'http_api') {
-            throw new Error('HTTP API 数据源目前仅支持健康检查，数据库和业务数据组件请选择数据库连接');
+            const usedForHttp = document.widgets.some(widget => widget.data?.mode === 'http_api' && widget.data.connectionId === connectionId);
+            const usedForDatabase = document.widgets.some(widget => ['database', 'business'].includes(widget.data?.mode)
+                && (widget.data.connectionId === connectionId || widget.data.datasets?.some(dataset => dataset.connectionId === connectionId)));
+            if (usedForHttp && !usedForDatabase) continue;
+            throw new Error('数据库和业务数据组件不能绑定 HTTP API，请改用 HTTP 接口组件或数据库连接');
         }
+        if (document.widgets.some(widget => widget.data?.mode === 'http_api' && widget.data.connectionId === connectionId))
+            throw new Error('HTTP 接口组件必须选择 HTTP API 数据源');
     }
     const bindings = document.widgets
         .filter(widget => widget.data?.mode === 'plc')

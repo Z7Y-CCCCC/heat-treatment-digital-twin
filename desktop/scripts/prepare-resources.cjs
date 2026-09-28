@@ -8,6 +8,7 @@ const projectDir = path.resolve(desktopDir, '..');
 const resourcesDir = path.join(desktopDir, 'resources');
 const nativeClientSourceDir = path.join(projectDir, 'unity-client', 'Builds', 'Windows');
 const explicitSourceDb = String(process.env.DESKTOP_TEMPLATE_SOURCE_DB || '').trim();
+const emptyTemplate = enabled(process.env.DESKTOP_TEMPLATE_EMPTY, false);
 const sourceUploads = path.resolve(
     process.env.DESKTOP_TEMPLATE_SOURCE_UPLOADS || path.join(projectDir, 'backend', 'uploads')
 );
@@ -171,7 +172,15 @@ async function prepareDatabaseTemplate(stagingDirectory, outputDb) {
     let sourceLabel;
     let exportResult = null;
 
-    if (explicitSourceDb) {
+    if (emptyTemplate && explicitSourceDb) {
+        throw new Error('DESKTOP_TEMPLATE_EMPTY 与 DESKTOP_TEMPLATE_SOURCE_DB 不能同时设置');
+    }
+
+    if (emptyTemplate) {
+        await createEmptySqliteDatabase(generatedDataDir, generatedDb);
+        templateSource = generatedDb;
+        sourceLabel = '内置初始模板（未包含本机现场数据）';
+    } else if (explicitSourceDb) {
         templateSource = path.resolve(explicitSourceDb);
         if (!fs.existsSync(templateSource)) throw new Error(`指定的数据库模板不存在：${templateSource}`);
         sourceLabel = templateSource;
@@ -210,7 +219,7 @@ async function main() {
             recursive: true,
             filter: source => !path.basename(source).includes('BurstDebugInformation_DoNotShip')
         });
-        if (fs.existsSync(sourceUploads)) {
+        if (!emptyTemplate && fs.existsSync(sourceUploads)) {
             fs.cpSync(sourceUploads, path.join(templatesDir, 'uploads'), { recursive: true });
         }
         return result;
@@ -221,7 +230,7 @@ async function main() {
         console.log(`已迁移现场配置：${JSON.stringify(databaseSource.exportResult.counts)}`);
         console.log(`运行历史：${databaseSource.exportResult.includeHistory ? '已包含' : '已清空（仅交付配置）'}`);
     }
-    console.log(`已准备上传资源：${fs.existsSync(sourceUploads) ? sourceUploads : '无'}`);
+    console.log(`已准备上传资源：${!emptyTemplate && fs.existsSync(sourceUploads) ? sourceUploads : '无'}`);
     console.log(`已准备 Node.js 运行时：${nodeBinary}`);
     console.log(`已准备后端运行依赖包：${path.join(resourcesDir, 'backend-dependencies.tar')}`);
     console.log(`已准备 Unity 原生客户端：${path.join(resourcesDir, 'native-client')}`);

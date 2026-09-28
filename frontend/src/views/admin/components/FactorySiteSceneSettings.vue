@@ -1,10 +1,17 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { adminApi } from '../../../config/factoryConfig.js'
 import { DEFAULT_STREET_IMAGE, normalizeSiteSceneConfig, orderedSiteWorkshops } from '../../../runtime/siteSceneConfig.js'
+import { getFactoryScope } from '../../../runtime/factoryScope.js'
+import { cacheFactoryDraft, clearFactoryDraft, readFactoryDraft } from '../../../runtime/factoryDraftCache.js'
 
 const loading=ref(true),saving=ref(false),uploading=ref(false),error=ref(''),message=ref(''),page=ref(0)
 const form=ref(normalizeSiteSceneConfig()),workshops=ref([]),order=ref([])
+const draftFactoryId=getFactoryScope()
+let savedSnapshot=''
+const draftPayload=()=>({...form.value,version:1,buildingSlots:Object.fromEntries(order.value.map((id,index)=>[id,index]))})
+const draftSnapshot=()=>JSON.stringify(draftPayload())
+defineExpose({savePending:async()=>{if(!savedSnapshot || draftSnapshot()===savedSnapshot)return true;await save();if(error.value)throw new Error(error.value);return true}})
 const pageCount=computed(()=>Math.max(1,Math.ceil(order.value.length/6)))
 const current=computed(()=>order.value.slice(page.value*6,page.value*6+6))
 const previewImage=computed(()=>form.value.streetImageUrl || DEFAULT_STREET_IMAGE)
@@ -14,6 +21,9 @@ onMounted(async()=>{
     form.value=normalizeSiteSceneConfig(settings.site_scene_config)
     workshops.value=Array.isArray(rows)?rows:Array.isArray(rows.workshops)?rows.workshops:[]
     order.value=orderedSiteWorkshops(workshops.value,form.value).map(item=>String(item.id))
+    savedSnapshot=draftSnapshot()
+    const pending=readFactoryDraft(draftFactoryId,'site-scene')
+    if(pending?.value){form.value=normalizeSiteSceneConfig(pending.value);order.value=orderedSiteWorkshops(workshops.value,form.value).map(item=>String(item.id))}
   }catch(cause){error.value=cause.message || '工厂视角配置读取失败'}finally{loading.value=false}
 })
 function workshop(id){return workshops.value.find(item=>String(item.id)===id)}
@@ -30,9 +40,10 @@ async function save(){
     const buildingSlots=Object.fromEntries(order.value.map((id,index)=>[id,index]))
     const result=await adminApi.saveSettings({site_scene_config:{...form.value,version:1,buildingSlots}})
     if(result.error)throw new Error(result.error)
-    form.value={...form.value,buildingSlots};message.value='已保存。街道背景和厂区建筑顺序在该工厂视角生效。'
+    form.value={...form.value,buildingSlots};savedSnapshot=draftSnapshot();clearFactoryDraft(draftFactoryId,'site-scene');message.value='已保存。街道背景和厂区建筑顺序在该工厂视角生效。'
   }catch(cause){error.value=cause.message || '保存失败'}finally{saving.value=false}
 }
+onUnmounted(()=>{if(!savedSnapshot)return;if(draftSnapshot()!==savedSnapshot)cacheFactoryDraft(draftFactoryId,'site-scene','setting',{key:'site_scene_config',value:JSON.parse(draftSnapshot())});else clearFactoryDraft(draftFactoryId,'site-scene')})
 </script>
 
 <template>
@@ -44,7 +55,7 @@ async function save(){
     </div>
     <section class="scene-components"><h3>两级画面组件</h3><p>街道和工厂视角共用这套组件开关；名称、说明、主色独立于 Unity 车间模型。</p>
       <div class="scene-fields"><label>街道页标题<input v-model="form.streetTitle" maxlength="80" /></label><label>工厂页标题<input v-model="form.factoryTitle" maxlength="80" /></label><label>强调色<input v-model="form.accent" type="color" /></label><label>街道页说明<textarea v-model="form.streetDescription" maxlength="240" rows="2"></textarea></label><label>工厂页说明<textarea v-model="form.factoryDescription" maxlength="240" rows="2"></textarea></label></div>
-      <div class="scene-toggles"><label><input v-model="form.showBrand" type="checkbox" /> 页眉标题</label><label><input v-model="form.showBreadcrumbs" type="checkbox" /> 地图层级导航</label><label><input v-model="form.showInfoPanel" type="checkbox" /> 右侧信息面板</label><label><input v-model="form.showBeacon" type="checkbox" /> 工厂光标</label><label><input v-model="form.showFooter" type="checkbox" /> 底部操作提示</label></div>
+      <div class="scene-toggles"><label><input v-model="form.showBrand" type="checkbox" /> 页眉标题</label><label><input v-model="form.showBreadcrumbs" type="checkbox" /> 地图层级导航</label><label><input v-model="form.showInfoPanel" type="checkbox" /> 右侧信息面板</label><label><input v-model="form.showBeacon" type="checkbox" /> 工厂光标</label><label><input v-model="form.showFooter" type="checkbox" /> 底部操作提示</label><label><input v-model="form.showViewControls" type="checkbox" /> 视角罗盘 / 缩放 / 放大</label><label><input v-model="form.showHoverGlow" type="checkbox" /> 建筑悬停底座高光</label><label><input v-model="form.showBuildingTooltip" type="checkbox" /> 建筑悬停详情卡</label></div>
     </section>
     <footer><button type="button" :disabled="loading || saving || uploading" @click="save">{{ saving?'保存中…':'保存当前工厂视角' }}</button><span v-if="message" role="status">{{ message }}</span><span v-if="error" class="error" role="alert">{{ error }}</span></footer>
   </section>

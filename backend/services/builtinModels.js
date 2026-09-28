@@ -7,7 +7,7 @@ const BUILTIN_MODELS = [
         ['photo_transfer_cart_v6', '转运小车 V6 · 可配置拆解样板'],
         ['photo_washing_machine_v7', '清洗机 V7 · 可配置拆解样板']
     ].map(([id, name, fileId = id]) => ({
-        id, name, file_path: `/assets/models/${fileId}.glb`, asset_type: 'model',
+        id, name, file_path: `/assets/models/${fileId}.glb`, asset_type: 'model', placement_level: 'device', factory_id: null,
         tags: JSON.stringify(['packaged', 'inspection_v2', 'assembly_demo']), thumbnail: `/assets/models/${id}_preview.png`,
         default_scale: 1, metadata: JSON.stringify(presetMetadata(id)), is_builtin: true
     })),
@@ -16,6 +16,8 @@ const BUILTIN_MODELS = [
         name: '厂房环境 · 开放式总览模型',
         file_path: '/assets/models/factory_hall_study/factory_hall_lowpoly.glb',
         asset_type: 'environment',
+        placement_level: 'factory',
+        factory_id: null,
         tags: JSON.stringify(['packaged', 'environment', 'factory_overview']),
         thumbnail: '/assets/models/factory_hall_study/preview.png',
         default_scale: 1,
@@ -63,6 +65,7 @@ function mergeBuiltinModels(models = []) {
         merged.set(model.id, {
             ...(builtin || {}),
             ...model,
+            placement_level: (model.asset_type || builtin?.asset_type) === 'environment' ? 'factory' : (model.placement_level || builtin?.placement_level || 'device'),
             is_builtin: !!builtin || !!model.is_builtin
         });
     });

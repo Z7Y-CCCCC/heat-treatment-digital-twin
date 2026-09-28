@@ -146,7 +146,7 @@ function businessRowValue(row) {
 
 const boundValue = computed(() => {
   const binding = dataBinding.value
-  if (binding.mode === 'database') return databaseRecord.value?.value ?? content.value.value
+  if (binding.mode === 'database' || binding.mode === 'http_api') return databaseRecord.value?.value ?? content.value.value
   if (binding.mode === 'plc' || binding.pointId || binding.point_id) {
     if (pointRecord.value && pointRecord.value.value !== undefined) return pointRecord.value.value
     const deviceId = binding.deviceId || binding.device_id
@@ -163,7 +163,7 @@ const boundValue = computed(() => {
 })
 
 const boundQuality = computed(() => {
-  if (dataBinding.value.mode === 'database') return databaseRecord.value?.quality || (databaseRecord.value?.error ? 'bad' : 'stale')
+  if (['database', 'http_api'].includes(dataBinding.value.mode)) return databaseRecord.value?.quality || (databaseRecord.value?.error ? 'bad' : 'stale')
   const binding = dataBinding.value
   const deviceId = binding.deviceId || binding.device_id
   const quality = pointRecord.value?.quality
@@ -309,14 +309,14 @@ const metricItems = computed(() => {
 })
 
 const eventRows = computed(() => {
-  if (dataBinding.value.mode === 'database' && Array.isArray(databaseRecord.value?.rows)) return databaseRecord.value.rows
+  if (['database', 'http_api'].includes(dataBinding.value.mode) && Array.isArray(databaseRecord.value?.rows)) return databaseRecord.value.rows
   const source = dataBinding.value.source || dataBinding.value.path
   const bound = source ? getWidgetValue(source) : null
   return Array.isArray(bound) ? bound : props.events
 })
 
 const trendRows = computed(() => {
-  if (dataBinding.value.mode === 'database' && Array.isArray(databaseRecord.value?.rows)) return databaseRecord.value.rows
+  if (['database', 'http_api'].includes(dataBinding.value.mode) && Array.isArray(databaseRecord.value?.rows)) return databaseRecord.value.rows
   const source = dataBinding.value.source
   const bound = source ? getWidgetValue(source) : null
   if (Array.isArray(bound)) return bound
@@ -326,7 +326,7 @@ const trendRows = computed(() => {
 
 const chartSeries = computed(() => {
   const recordSeries = databaseRecord.value?.series
-  if (dataBinding.value.mode === 'database' && Array.isArray(recordSeries) && recordSeries.length) {
+  if (['database', 'http_api'].includes(dataBinding.value.mode) && Array.isArray(recordSeries) && recordSeries.length) {
     return recordSeries.map((series, index) => ({
       id: series.id || `series_${index + 1}`,
       name: series.label || series.id || `数据项 ${index + 1}`,

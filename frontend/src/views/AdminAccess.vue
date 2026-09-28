@@ -4,6 +4,7 @@ import { adminSession, refreshAdminSession, startAdminSessionTracking, stopAdmin
 import AdminWindowChrome from './admin/components/AdminWindowChrome.vue'
 import { isNativeUnitySurface } from '../runtime/nativeSurfaceBridge.js'
 import { canResumeDashboardAfterLogin } from '../runtime/nativeAdminNavigation.js'
+import { FACTORY_SCOPE_CHANGE_EVENT, getFactoryScope } from '../runtime/factoryScope.js'
 import { useRoute, useRouter } from 'vue-router'
 
 defineOptions({ name: 'AdminAccess' })
@@ -12,6 +13,8 @@ const isUnityEmbedded = isNativeUnitySurface(new URLSearchParams(window.location
 const route = useRoute()
 const router = useRouter()
 const hostState = reactive({ attached: true, adminVisible: true, returnToDashboardAfterUnlock: false })
+const factoryScopeKey = ref(getFactoryScope())
+function onFactoryScopeChanged() { factoryScopeKey.value = getFactoryScope() }
 function handleNativeHostState(event) {
     if (event.data?.type === 'host_state') Object.assign(hostState, event.data)
 }
@@ -143,6 +146,7 @@ watch(() => [hostState.returnToDashboardAfterUnlock, adminSession.authenticated,
 }, { flush: 'post' })
 watch(() => hostState.adminVisible, visible => { if (visible) refreshAdminSession() })
 onMounted(async () => {
+    window.addEventListener(FACTORY_SCOPE_CHANGE_EVENT, onFactoryScopeChanged)
     if (isUnityEmbedded) {
         window.chrome.webview.addEventListener('message', handleNativeHostState)
         window.chrome.webview.postMessage({ type: 'host_action', action: 'state' })
@@ -156,6 +160,7 @@ onMounted(async () => {
 onActivated(() => { startClock(); startAdminSessionTracking(); refreshAdminSession() })
 onDeactivated(() => { stopClock(); stopAdminSessionTracking() })
 onUnmounted(() => {
+    window.removeEventListener(FACTORY_SCOPE_CHANGE_EVENT, onFactoryScopeChanged)
     if (isUnityEmbedded) window.chrome.webview.removeEventListener('message', handleNativeHostState)
     stopClock()
     stopAdminSessionTracking()
@@ -165,7 +170,7 @@ onUnmounted(() => {
 
 <template>
     <div class="admin-access-root">
-        <AdminPanel v-if="adminSession.authenticated && adminSession.permissions.edit" />
+        <AdminPanel v-if="adminSession.authenticated && adminSession.permissions.edit" :key="factoryScopeKey" />
         <div v-else-if="adminSession.authenticated" class="admin-locked-shell">
             <AdminWindowChrome v-if="isUnityEmbedded" @state="Object.assign(hostState, $event)" />
             <main class="admin-unlock-page"><section class="admin-unlock-card">

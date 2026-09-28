@@ -267,12 +267,13 @@ function recoverPendingModelDeletions(db) {
     return modelRecoveryPromise;
 }
 
+app.use('/api/models', factoryContext);
 app.post('/api/models/upload', upload.single('modelFile'), async (req, res) => {
     if (!req.file) {
         return res.status(400).json({ error: '未收到文件' });
     }
 
-    const { id, name, asset_type, tags, metadata, default_scale } = req.body;
+    const { id, name, asset_type, tags, metadata, default_scale, placement_level } = req.body;
     const filePath = `/uploads/models/${req.file.filename}`;
     const modelName = name || req.file.originalname;
 
@@ -281,11 +282,25 @@ app.post('/api/models/upload', upload.single('modelFile'), async (req, res) => {
         validateUploadedModelFile(req.file);
         const db = await getDb();
         if (databaseOperationBusy) throw Object.assign(new Error('数据库或备份维护中，请完成后重新上传模型'), { statusCode: 409 });
+        const modelId = id || req.file.filename.replace(/\.[^.]+$/, '');
+        if (getBuiltinModels().some(model => model.id === modelId)) {
+            throw Object.assign(new Error('系统内置模型 ID 不能被上传文件覆盖'), { statusCode: 409 });
+        }
+        const existing = await db.get('SELECT factory_id FROM models WHERE id = ?', [modelId]);
+        if (existing && existing.factory_id !== req.factoryId) {
+            throw Object.assign(new Error('该模型 ID 已属于共享库或其他工厂，请换一个 ID'), { statusCode: 409 });
+        }
+        const level = asset_type === 'environment' ? 'factory' : String(placement_level || 'device');
+        if (!['factory', 'workshop', 'line', 'device'].includes(level)) {
+            throw Object.assign(new Error('模型适用层级无效'), { statusCode: 400 });
+        }
         const normalizedMetadata = stringifyModelMetadata(metadata || '{}', { name: modelName });
         await db.upsert('models', {
-            id: id || req.file.filename.replace(/\.[^.]+$/, ''),
+            id: modelId,
             name: modelName,
             file_path: filePath,
+            factory_id: req.factoryId,
+            placement_level: level,
             asset_type: asset_type || 'model',
             tags: tags || '[]',
             thumbnail: null,
@@ -303,7 +318,7 @@ app.get('/api/models', async (req, res) => {
     try {
         const db = await getDb();
         await recoverPendingModelDeletions(db);
-        const models = await db.all('SELECT * FROM models');
+        const models = await db.all('SELECT * FROM models WHERE factory_id IS NULL OR factory_id = ?', [req.factoryId]);
         res.json(mergeBuiltinModels(models));
     } catch (e) {
         res.status(500).json({ error: e.message });
@@ -317,7 +332,7 @@ app.get('/api/models/inspection-presets', (req, res) => {
 app.put('/api/models/:id', async (req, res) => {
     try {
         const db = await getDb();
-        let existing = await db.get('SELECT * FROM models WHERE id = ?', [req.params.id]);
+        let existing = await db.get('SELECT * FROM models WHERE id = ? AND (factory_id IS NULL OR factory_id = ?)', [req.params.id, req.factoryId]);
         if (!existing) {
             const builtin = getBuiltinModels().find(model => model.id === req.params.id);
             if (builtin?.file_path) {
@@ -325,6 +340,8 @@ app.put('/api/models/:id', async (req, res) => {
                     id: builtin.id,
                     name: builtin.name,
                     file_path: builtin.file_path,
+                    factory_id: null,
+                    placement_level: builtin.placement_level || 'device',
                     asset_type: builtin.asset_type || 'model',
                     tags: builtin.tags || '[]',
                     thumbnail: builtin.thumbnail || null,
@@ -342,11 +359,17 @@ app.put('/api/models/:id', async (req, res) => {
         const nextTags = req.body.tags ?? existing.tags ?? '[]';
         const nextMetadata = req.body.metadata ?? existing.metadata ?? '{}';
         const nextScale = modelScale(req.body.default_scale, Number(existing.default_scale || 1));
+        const nextLevel = existing.asset_type === 'environment' ? 'factory' : String(req.body.placement_level ?? existing.placement_level ?? 'device');
+        if (!['factory', 'workshop', 'line', 'device'].includes(nextLevel)) return res.status(400).json({ error: '模型适用层级无效' });
+        if (nextLevel !== 'device' && (existing.placement_level || 'device') === 'device') {
+            const usage = await db.get('SELECT COUNT(*) AS cnt FROM devices WHERE model_type = ? OR model_file = ?', [existing.id, existing.file_path]);
+            if (Number(usage?.cnt || 0) > 0) return res.status(409).json({ error: `该模型正被 ${usage.cnt} 台设备使用，请先更换这些设备的模型` });
+        }
         const normalizedMetadata = stringifyModelMetadata(nextMetadata, { name: nextName });
 
         await db.run(
-            'UPDATE models SET name = ?, tags = ?, default_scale = ?, metadata = ? WHERE id = ?',
-            [nextName, nextTags, nextScale, normalizedMetadata, req.params.id]
+            'UPDATE models SET name = ?, tags = ?, default_scale = ?, metadata = ?, placement_level = ? WHERE id = ?',
+            [nextName, nextTags, nextScale, normalizedMetadata, nextLevel, req.params.id]
         );
 
         const updated = await db.get('SELECT * FROM models WHERE id = ?', [req.params.id]);
@@ -370,7 +393,7 @@ app.delete('/api/models/:id', async (req, res) => {
         const db = await getDb();
         await recoverPendingModelDeletions(db);
         await db.transaction(async tx => {
-            const model = await tx.get('SELECT * FROM models WHERE id = ?', [req.params.id]);
+            const model = await tx.get('SELECT * FROM models WHERE id = ? AND (factory_id IS NULL OR factory_id = ?)', [req.params.id, req.factoryId]);
             if (!model) throw Object.assign(new Error('模型不存在'), { statusCode: 404 });
             const usedByDevices = await tx.get('SELECT COUNT(*) AS cnt FROM devices WHERE model_type = ? OR model_file = ?', [req.params.id, model.file_path]);
             if (Number(usedByDevices?.cnt || 0) > 0) {

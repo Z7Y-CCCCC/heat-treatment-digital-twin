@@ -62,6 +62,7 @@ internal sealed class AdminPanelForm : Form
     private Point _dragPointerOffset;
     private Rectangle _dragStartBounds;
     private IntPtr _parentHandle;
+    private readonly Process? _parentProcess;
     private readonly DateTime? _parentProcessStartTimeUtc;
     private bool _waitingForParentWindow;
     private bool _closing;
@@ -76,7 +77,7 @@ internal sealed class AdminPanelForm : Form
     {
         _options = options;
         _parentHandle = options.ParentWindowHandle;
-        _parentProcessStartTimeUtc = ReadProcessStartTimeUtc(options.ParentProcessId);
+        (_parentProcess, _parentProcessStartTimeUtc) = OpenParentProcess(options.ParentProcessId);
         _defaultDetachedBounds = new Rectangle(120, 90, 1320, 820);
         _embeddedBounds = Rectangle.Empty;
         _savedDetachedBounds = _defaultDetachedBounds;
@@ -567,44 +568,44 @@ internal sealed class AdminPanelForm : Form
         if (_options.ParentProcessId > 0) _parentTimer.Start();
     }
 
-    private static DateTime? ReadProcessStartTimeUtc(int processId)
+    private static (Process? Process, DateTime? StartTimeUtc) OpenParentProcess(int processId)
     {
-        if (processId <= 0) return null;
+        if (processId <= 0) return (null, null);
+        Process? process = null;
         try
         {
-            using var process = Process.GetProcessById(processId);
-            if (process.HasExited) return null;
-            return process.StartTime.ToUniversalTime();
+            process = Process.GetProcessById(processId);
+            if (!process.HasExited) return (process, process.StartTime.ToUniversalTime());
         }
         catch
         {
-            return null;
+            // The parent may have exited before the host opened its handle.
         }
+        process?.Dispose();
+        return (null, null);
     }
 
     private bool IsParentProcessRunning()
     {
-        // If the original process could not be identified, never accept a later
-        // process that happens to reuse that PID as our parent.
-        if (!_parentProcessStartTimeUtc.HasValue) return false;
-        var currentStartTime = ReadProcessStartTimeUtc(_options.ParentProcessId);
-        if (!currentStartTime.HasValue) return false;
-        return currentStartTime.Value == _parentProcessStartTimeUtc.Value;
+        // Keep a handle to the original process so a reused PID is never accepted.
+        if (_parentProcess == null) return false;
+        try { return !_parentProcess.HasExited; }
+        catch { return false; }
     }
 
-    private bool TryResolveParentWindow()
+    private bool TryResolveParentWindow(bool parentAlreadyChecked = false)
     {
         if (_options.ParentProcessId <= 0) return false;
-        if (!IsParentProcessRunning()) return false;
+        if (!parentAlreadyChecked && !IsParentProcessRunning()) return false;
         if (IsOwnedParentWindow(_parentHandle)) return true;
         _parentHandle = IntPtr.Zero;
         try
         {
-            using var process = Process.GetProcessById(_options.ParentProcessId);
-            process.Refresh();
-            if (IsOwnedParentWindow(process.MainWindowHandle))
+            _parentProcess?.Refresh();
+            var mainWindow = _parentProcess?.MainWindowHandle ?? IntPtr.Zero;
+            if (IsOwnedParentWindow(mainWindow))
             {
-                _parentHandle = process.MainWindowHandle;
+                _parentHandle = mainWindow;
                 return true;
             }
         }
@@ -635,7 +636,7 @@ internal sealed class AdminPanelForm : Form
             RequestCloseAfterParentExit();
             return;
         }
-        if (!TryResolveParentWindow())
+        if (!TryResolveParentWindow(parentAlreadyChecked: true))
         {
             // Unity can take several seconds to create its main HWND (and smoke/
             // batch mode may never create one).  Keep monitoring the process at a
@@ -657,17 +658,17 @@ internal sealed class AdminPanelForm : Form
         if (_castPresentationMode)
         {
             // 投屏展示模式下，后台宿主保持隐藏；只维护透明数据层的尺寸。
-            SyncDashboardOverlay();
+            SyncDashboardOverlay(parentAlreadyChecked: true);
             return;
         }
         if (!_attached)
         {
             _dashboardChrome?.UpdateParentBounds();
-            SyncDashboardOverlay();
+            SyncDashboardOverlay(parentAlreadyChecked: true);
             return;
         }
         SetEmbeddedBounds(_adminVisible ? GetDefaultEmbeddedBounds() : GetDashboardChromeBounds());
-        SyncDashboardOverlay();
+        SyncDashboardOverlay(parentAlreadyChecked: true);
     }
 
     private void RefreshParentWindowState()
@@ -950,10 +951,10 @@ internal sealed class AdminPanelForm : Form
         ShowAdmin();
     }
 
-    private void SyncDashboardOverlay()
+    private void SyncDashboardOverlay(bool parentAlreadyChecked = false)
     {
         if (_dashboardOverlay == null || _dashboardOverlay.IsDisposed) return;
-        if (!TryResolveParentWindow())
+        if (!TryResolveParentWindow(parentAlreadyChecked))
         {
             _dashboardOverlay.HideOverlay();
             return;
@@ -1336,13 +1337,18 @@ internal sealed class AdminPanelForm : Form
             {
                 using var process = Process.GetProcessById(processId);
                 if (process.StartTime.ToUniversalTime() != startTimeUtc.Value) return;
-                if (process.WaitForExit(8000)) return;
-                WriteHostInfo($"Unity 在关闭请求后 8 秒仍未退出，重试关闭主窗口：PID {processId}");
+                if (process.WaitForExit(2500)) return;
+                WriteHostInfo($"Unity 在关闭请求后 2.5 秒仍未退出，重试关闭主窗口：PID {processId}");
                 process.CloseMainWindow();
-                if (process.WaitForExit(4000)) return;
+                if (process.WaitForExit(1500)) return;
                 if (process.StartTime.ToUniversalTime() != startTimeUtc.Value) return;
-                WriteHostInfo($"Unity 在 12 秒后仍未退出，终止无响应的独立开发运行端：PID {processId}");
-                process.Kill(entireProcessTree: true);
+                // The embedded AdminHost is Unity's child. Killing the entire
+                // process tree would terminate this very watcher before it can
+                // report completion (and can hold the shell in its closing state).
+                // Terminate only the verified Unity PID; the host and backend
+                // complete their own orderly teardown and database backup.
+                WriteHostInfo($"Unity 在 4 秒后仍未退出，终止无响应的运行端：PID {processId}");
+                process.Kill();
                 process.WaitForExit(3000);
             }
             catch (ArgumentException) { /* Unity already exited. */ }
@@ -2120,6 +2126,7 @@ internal sealed class AdminPanelForm : Form
                 // The host must still terminate cleanly instead of leaving an orphan process.
                 WriteHostError("后台 WebView2 关闭失败（已安全忽略）", exception);
             }
+            _parentProcess?.Dispose();
         }
         base.Dispose(disposing);
     }

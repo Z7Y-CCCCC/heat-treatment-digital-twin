@@ -10,6 +10,20 @@ const {
 let baseUrl = String(process.env.TEST_BASE_URL || 'http://127.0.0.1:3001').replace(/\/$/, '');
 let token = String(process.env.ADMIN_API_TOKEN || '');
 
+function minimalGlb() {
+    const json = Buffer.from(JSON.stringify({ asset: { version: '2.0' }, scenes: [{}], scene: 0 }));
+    const padded = Buffer.alloc(Math.ceil(json.length / 4) * 4, 0x20);
+    json.copy(padded);
+    const result = Buffer.alloc(20 + padded.length);
+    result.write('glTF');
+    result.writeUInt32LE(2, 4);
+    result.writeUInt32LE(result.length, 8);
+    result.writeUInt32LE(padded.length, 12);
+    result.writeUInt32LE(0x4e4f534a, 16);
+    padded.copy(result, 20);
+    return result;
+}
+
 async function api(path, options = {}) {
     const response = await fetch(`${baseUrl}${path}`, {
         ...options,
@@ -42,9 +56,23 @@ async function verifyIsolation(databaseFile) {
     });
     assert.equal(createResponse.status, 201, created.error);
     const factoryId = created.factory.id;
+    const overseas = await api('/api/factories', {
+        method: 'POST',
+        body: JSON.stringify({ name: '首尔测试工厂', location: { country: 'KOR', regionName: '首尔特别市', city: '首尔', districtName: '江南区', latitude: 37.50, longitude: 127.03 } })
+    });
+    assert.equal(overseas.response.status, 201, overseas.body.error);
+    assert.deepEqual(overseas.body.factory.location, { country: 'KOR', regionCode: '', regionName: '首尔特别市', cityCode: '', city: '首尔', districtCode: '', districtName: '江南区', latitude: 37.50, longitude: 127.03 });
+    const withOverseas = await api('/api/factories');
+    assert.equal(withOverseas.response.status, 200);
+    assert.ok(withOverseas.body.factories.some(factory => factory.id === overseas.body.factory.id && factory.location.country === 'KOR'));
+    const emptyActivation = await api(`/api/factories/${encodeURIComponent(overseas.body.factory.id)}/activate`, { method: 'POST', body: '{}' });
+    assert.equal(emptyActivation.response.status, 409, 'an empty factory must not replace the running scene');
+    assert.equal(emptyActivation.body.missingLevel, '车间');
+    assert.equal((await api('/api/factories')).body.activeFactoryId, originalActiveFactoryId);
     const workshopId = `isolation_ws_${Date.now()}`;
     const lineId = `isolation_line_${Date.now()}`;
     const deviceId = `isolation_device_${Date.now()}`;
+    const modelId = `isolation_model_${Date.now()}`;
     let activated = false;
 
     try {
@@ -63,6 +91,41 @@ async function verifyIsolation(databaseFile) {
             'factory projects/scenes must be independent');
         assert.equal(newFactoryConfig.body.factoryId, factoryId);
         assert.deepEqual(newFactoryConfig.body.workshops, []);
+        const liveDirectory = await api('/api/factories/live-summaries');
+        assert.equal(liveDirectory.response.status, 200, liveDirectory.body.error);
+        assert.ok(liveDirectory.body.summaries.some(item => item.factoryId === 'factory_default'));
+        const newFactoryLive = liveDirectory.body.summaries.find(item => item.factoryId === factoryId);
+        assert.ok(newFactoryLive, 'a new factory is visible in the simultaneous overview without activation');
+        assert.equal(newFactoryLive.status, 'no_data');
+        assert.equal(newFactoryLive.runningDevices, null, 'missing telemetry must not be shown as live zero');
+
+        const uploadForm = new FormData();
+        uploadForm.append('modelFile', new Blob([minimalGlb()], { type: 'model/gltf-binary' }), `${modelId}.glb`);
+        uploadForm.append('id', modelId);
+        uploadForm.append('name', '新厂车间模型');
+        uploadForm.append('placement_level', 'workshop');
+        const uploadResponse = await fetch(`${baseUrl}/api/models/upload`, {
+            method: 'POST', headers: inFactory(factoryId, { 'X-Admin-Token': token }), body: uploadForm
+        });
+        const uploadBody = await uploadResponse.json();
+        assert.equal(uploadResponse.status, 200, uploadBody.error);
+        const [newFactoryModels, defaultFactoryModels, newConfigAfterUpload, defaultConfigAfterUpload] = await Promise.all([
+            api('/api/models', { headers: inFactory(factoryId) }),
+            api('/api/models', { headers: inFactory('factory_default') }),
+            api('/api/config', { headers: inFactory(factoryId) }),
+            api('/api/config', { headers: inFactory('factory_default') })
+        ]);
+        assert.equal(newFactoryModels.body.find(model => model.id === modelId)?.placement_level, 'workshop');
+        assert.ok(!defaultFactoryModels.body.some(model => model.id === modelId), 'model library must be scoped by factory');
+        assert.ok(newConfigAfterUpload.body.models.some(model => model.id === modelId));
+        assert.ok(!defaultConfigAfterUpload.body.models.some(model => model.id === modelId), 'runtime config must not expose another factory model');
+        const foreignModelUpdate = await api(`/api/models/${modelId}`, { method: 'PUT', headers: inFactory('factory_default'), body: JSON.stringify({ placement_level: 'device' }) });
+        assert.equal(foreignModelUpdate.response.status, 404, 'foreign model metadata must not be editable');
+        const foreignModelDelete = await api(`/api/models/${modelId}`, { method: 'DELETE', headers: inFactory('factory_default') });
+        assert.equal(foreignModelDelete.response.status, 404, 'foreign model must not be deletable');
+        const reclassifyModel = await api(`/api/models/${modelId}`, { method: 'PUT', headers: inFactory(factoryId), body: JSON.stringify({ placement_level: 'factory' }) });
+        assert.equal(reclassifyModel.response.status, 200, reclassifyModel.body.error);
+        assert.equal(reclassifyModel.body.model.placement_level, 'factory');
 
         for (const [scopeId, name] of [['factory_default', '默认厂数据源'], [factoryId, '新厂数据源']]) {
             const source = await api('/api/data-sources/connections', {
@@ -84,6 +147,9 @@ async function verifyIsolation(databaseFile) {
             body: JSON.stringify({ id: workshopId, name: '隔离测试车间', sort_order: 0 })
         });
         assert.equal(addWorkshop.response.status, 200, addWorkshop.body.error);
+        const workshopOnlyActivation = await api(`/api/factories/${encodeURIComponent(factoryId)}/activate`, { method: 'POST', body: '{}' });
+        assert.equal(workshopOnlyActivation.response.status, 409);
+        assert.equal(workshopOnlyActivation.body.missingLevel, '产线');
 
         const rejectForeignLine = await api('/api/lines', {
             method: 'POST', headers: inFactory(factoryId),
@@ -96,6 +162,20 @@ async function verifyIsolation(databaseFile) {
             body: JSON.stringify({ id: lineId, name: '隔离测试产线', workshop_id: workshopId, sort_order: 0 })
         });
         assert.equal(addLine.response.status, 200, addLine.body.error);
+        const lineOnlyActivation = await api(`/api/factories/${encodeURIComponent(factoryId)}/activate`, { method: 'POST', body: '{}' });
+        assert.equal(lineOnlyActivation.response.status, 409);
+        assert.equal(lineOnlyActivation.body.missingLevel, '设备');
+
+        const rejectFactoryModelOnDevice = await api('/api/devices', {
+            method: 'POST', headers: inFactory(factoryId),
+            body: JSON.stringify({ id: `${deviceId}_wrong_model_level`, name: '错误层级设备', line_id: lineId, model_type: modelId, plc_enabled: false })
+        });
+        assert.equal(rejectFactoryModelOnDevice.response.status, 400, 'factory-level model must not be assigned to a device');
+        const rejectFactoryModelFileOnDevice = await api('/api/devices', {
+            method: 'POST', headers: inFactory(factoryId),
+            body: JSON.stringify({ id: `${deviceId}_wrong_model_file`, name: '错误模型文件', line_id: lineId, model_type: 'builtin_furnace', model_file: uploadBody.filePath, plc_enabled: false })
+        });
+        assert.equal(rejectFactoryModelFileOnDevice.response.status, 400, 'a valid model ID must not hide a non-device model file');
 
         const addDevice = await api('/api/devices', {
             method: 'POST', headers: inFactory(factoryId),
@@ -167,7 +247,7 @@ async function verifyIsolation(databaseFile) {
         console.log(JSON.stringify({
             success: true,
             factoryId,
-            checks: ['independent hierarchy', 'cross-factory relation rejection', 'device and point isolation', 'project/scene isolation', 'per-factory external data-source catalog', 'per-factory settings', 'per-factory site scene', 'event isolation', 'runtime activation', 'invalid-scope rejection']
+            checks: ['independent hierarchy', 'cross-factory relation rejection', 'device and point isolation', 'project/scene isolation', 'model library isolation and levels', 'per-factory external data-source catalog', 'per-factory settings', 'per-factory site scene', 'event isolation', 'runtime activation', 'invalid-scope rejection']
         }, null, 2));
     } finally {
         if (activated || originalActiveFactoryId !== 'factory_default') {

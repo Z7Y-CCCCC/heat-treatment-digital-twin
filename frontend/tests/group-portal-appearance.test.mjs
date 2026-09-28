@@ -47,3 +47,11 @@ test('invalid appearance colors and malformed JSON cannot reach CSS', () => {
     assert.deepEqual(normalizeGroupPortalAppearance({ levels: { world: { layout: { brand: { x: -1, y: 3 }, facts: { x: 12, y: 20 } } } } }).levels.world.layout,
         { facts: { x: 12, y: 20 } })
 })
+
+test('map metrics keep independent per-level HTTP bindings', () => {
+    const binding = { mode:'http_api', connectionId:'erp_api', apiPath:'/stats', jsonPath:'data.factories', refreshMs:30000 }
+    const source = { levels:{ province:{ dataBindings:{ factsFactoryCount:binding } }, city:{ dataBindings:{} } } }
+    assert.deepEqual(groupPortalAppearanceForLevel(source,'province').dataBindings.factsFactoryCount,{...binding,factoryId:''})
+    assert.deepEqual(groupPortalAppearanceForLevel(source,'city').dataBindings,{})
+    assert.equal(groupPortalAppearanceForLevel(source,'world').dataBindings,undefined)
+})

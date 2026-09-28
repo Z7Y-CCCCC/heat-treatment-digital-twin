@@ -5,12 +5,13 @@ const { createSmokeSandbox, stopOwnedSmokeProcess } = require('../desktop/script
 
 const projectDir = path.resolve(__dirname, '..');
 let appDataDir;
-const executable = path.join(
+const defaultExecutable = path.join(
     projectDir,
     '安装包',
     'win-unpacked',
     '热处理数字孪生大屏.exe'
 );
+const executable = path.resolve(process.argv[2] || defaultExecutable);
 const wait = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
 
 function waitForExit(child, timeoutMs) {

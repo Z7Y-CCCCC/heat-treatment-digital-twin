@@ -7,9 +7,12 @@ const MUNICIPALITY_CODES = new Set(['110000', '120000', '310000', '500000'])
 
 export function createGroupNavigationCrumbs({ query = {}, level = 'world', currentLabel = '' } = {}) {
   const crumbs = [{ key: 'world', label: '全球', level: 'world', code: '' }]
+  const legacyRegion = String(query.region || '')
+  const activeCode = String(query.code || legacyRegion)
+  const chinaSubregion = ['province', 'city', 'district'].includes(level) && /^\d{6}$/.test(activeCode)
 
   for (const name of ['country', 'province', 'city', 'district']) {
-    const code = String(query[name] || (level === name ? query.code : '') || '')
+    const code = String(query[name] || (name === 'country' && chinaSubregion ? 'CHN' : '') || (level === name ? activeCode : '') || '')
     if (!code) break
 
     // A municipality's districts are stored beneath the province code for

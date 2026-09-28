@@ -30,6 +30,24 @@ test('admin fetch attaches cookie and CSRF only to the backend API', async t => 
     assert.equal(calls.at(-1).options.headers, undefined)
 })
 
+test('display navigation scopes its own factory without changing the admin editor scope', async t => {
+    const session = await fixture(t)
+    session.browser.localStorage = { getItem: () => 'factory_editor' }
+    const headers = []
+    t.mock.method(session.browser, 'fetch', async (_url, options = {}) => {
+        headers.push(new Headers(options.headers).get('X-Factory-ID'))
+        return json({})
+    })
+    await session.adminFetch('http://127.0.0.1:3001/api/config')
+    assert.equal(headers.at(-1), 'factory_editor')
+    session.browser.location = new URL('http://127.0.0.1:3001/site?factoryId=factory_display')
+    await session.adminFetch('http://127.0.0.1:3001/api/config')
+    assert.equal(headers.at(-1), 'factory_display')
+    session.browser.location = new URL('http://127.0.0.1:3001/overlay')
+    await session.adminFetch('http://127.0.0.1:3001/api/config')
+    assert.equal(headers.at(-1), null)
+})
+
 test('a late 401 from an older login cannot invalidate a newer session', async t => {
     const session = await fixture(t)
     const old = deferred()

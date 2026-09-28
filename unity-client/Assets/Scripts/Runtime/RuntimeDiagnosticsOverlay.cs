@@ -15,6 +15,21 @@ namespace HeatTreatment.DigitalTwin.Runtime
         private Texture2D _panelTexture;
         private Texture2D _loadingTexture;
         private Texture2D _loadingFactoryTexture;
+        private Texture2D _loadingCardTexture;
+        private Texture2D _loadingGlowTexture;
+        private Texture2D _loadingDotTexture;
+        private GUIStyle _loadingCardStyle;
+        private GUIStyle _loadingKickerStyle;
+        private GUIStyle _loadingTinyStyle;
+        private GUIStyle _loadingCaptionStyle;
+        private GUIStyle _loadingFooterStyle;
+        private GUIStyle _loadingHeadingStyle;
+        private GUIStyle _loadingStepStyle;
+        private GUIStyle _loadingPercentStyle;
+        private GUIStyle _loadingPhaseStyle;
+        private GUIStyle _loadingPhaseCaptionStyle;
+        private static readonly string[] LoadingPhases = { "现场配置", "三维场景", "设备模型", "实时数据" };
+        private static readonly string[] LoadingPhaseCaptions = { "CONFIGURATION", "3D SCENE", "EQUIPMENT", "LIVE DATA" };
         private float _smoothedFps;
         private long _lastFrameTimestamp;
         private int _lastFrameDevices;
@@ -194,78 +209,150 @@ namespace HeatTreatment.DigitalTwin.Runtime
         private void DrawLoadingScreen()
         {
             EnsureStyles();
+            EnsureLoadingStyles();
             if (_loadingTexture == null)
             {
                 _loadingTexture = new Texture2D(1, 1, TextureFormat.RGBA32, false);
-                _loadingTexture.SetPixel(0, 0, new Color(0.145f, 0.145f, 0.15f, 1f));
+                _loadingTexture.SetPixel(0, 0, new Color(0.152f, 0.152f, 0.164f, 1f));
                 _loadingTexture.Apply();
             }
             if (_loadingFactoryTexture == null) _loadingFactoryTexture = Resources.Load<Texture2D>("Loading/industrial-factory");
+            var previousColor = GUI.color;
+            var previousMatrix = GUI.matrix;
+            GUI.color = Color.white;
             GUI.DrawTexture(new Rect(0f, 0f, Screen.width, Screen.height), _loadingTexture, ScaleMode.StretchToFill);
-            var scale = Mathf.Clamp(Screen.height / 1080f, 0.8f, 1.35f);
-            var center = new Vector2(Screen.width * .5f, Screen.height * .5f);
-            var panelWidth = Mathf.Min(1080f * scale, Screen.width * .9f);
-            var panelHeight = Mathf.Min(700f * scale, Screen.height * .9f);
-            var panel = new Rect(center.x - panelWidth * .5f, center.y - panelHeight * .5f, panelWidth, panelHeight);
-            GUI.color = Color.white;
-            GUI.DrawTexture(panel, _panelTexture, ScaleMode.StretchToFill);
-            GUI.color = new Color(.72f, .75f, .71f, .5f);
-            GUI.DrawTexture(new Rect(panel.x + 1f, panel.y + 1f, panel.width - 2f, 1f * scale), _loadingTexture, ScaleMode.StretchToFill);
-            GUI.color = Color.white;
+            var scale = Mathf.Min(1f, (Screen.width - 32f) / 900f, (Screen.height - 52f) / 518f);
+            scale = Mathf.Max(.35f, scale);
+            GUI.matrix = Matrix4x4.Scale(new Vector3(scale, scale, 1f));
+            var canvasWidth = Screen.width / scale;
+            var canvasHeight = Screen.height / scale;
+            var panel = new Rect((canvasWidth - 900f) * .5f, (canvasHeight - 518f) * .5f, 900f, 518f);
+            var x = panel.x;
+            var y = panel.y;
 
-            var eyebrow = new GUIStyle(_mutedStyle) { alignment = TextAnchor.MiddleCenter, fontSize = Mathf.RoundToInt(11f * scale) };
-            var title = new GUIStyle(_titleStyle) { alignment = TextAnchor.MiddleCenter, fontSize = Mathf.RoundToInt(27f * scale), normal = { textColor = new Color(.92f, .92f, .89f) } };
-            var step = new GUIStyle(_lineStyle) { alignment = TextAnchor.MiddleCenter, fontSize = Mathf.RoundToInt(14f * scale), normal = { textColor = new Color(.78f, .8f, .77f) } };
-            GUI.Label(new Rect(panel.x + 24f * scale, panel.y + 24f * scale, panel.width - 48f * scale, 22f * scale), "HEAT TREATMENT  /  DIGITAL TWIN", eyebrow);
-            GUI.Label(new Rect(panel.x + 24f * scale, panel.y + 48f * scale, panel.width - 48f * scale, 42f * scale), "正在准备生产现场", title);
+            // Match the WebView loading card used after sign-in. This native
+            // fallback must exist before the WebView/login page is available.
+            GUI.color = new Color(.3f, .3f, .32f, .22f);
+            GUI.DrawTexture(new Rect(x - 210f, y - 145f, 1320f, 800f), _loadingGlowTexture);
+            GUI.color = new Color(0f, 0f, 0f, .28f);
+            GUI.Box(new Rect(x + 8f, y + 20f, 900f, 518f), GUIContent.none, _loadingCardStyle);
+            GUI.color = Color.white;
+            GUI.Box(panel, GUIContent.none, _loadingCardStyle);
 
-            var imageWidth = Mathf.Min(panel.width * .72f, 820f * scale);
-            var imageHeight = panel.height * .43f;
-            var imageRect = new Rect(center.x - imageWidth * .5f, panel.y + 100f * scale, imageWidth, imageHeight);
+            DrawLoadingBlock(new Rect(x + 35f, y + 28f, 18f, 18f), new Color(.43f, .46f, .45f, .65f));
+            DrawLoadingBlock(new Rect(x + 36f, y + 29f, 16f, 16f), new Color(.18f, .19f, .2f));
+            DrawLoadingBlock(new Rect(x + 40f, y + 38f, 2f, 4f), new Color(.62f, .77f, .69f));
+            DrawLoadingBlock(new Rect(x + 44f, y + 34f, 2f, 8f), new Color(.62f, .77f, .69f));
+            DrawLoadingBlock(new Rect(x + 48f, y + 36f, 2f, 6f), new Color(.82f, .66f, .43f));
+            GUI.Label(new Rect(x + 64f, y + 27f, 420f, 20f), "HEAT TREATMENT  /  DIGITAL TWIN", _loadingKickerStyle);
+            DrawLoadingDot(new Rect(x + 774f, y + 34f, 6f, 6f), new Color(.56f, .72f, .63f));
+            GUI.Label(new Rect(x + 784f, y + 28f, 90f, 18f), "SYSTEM STARTUP", _loadingTinyStyle);
+
+            var pulse = .85f + .15f * Mathf.Sin(Time.realtimeSinceStartup * 1.5f);
+            GUI.color = new Color(.63f, .7f, .68f, .17f * pulse);
+            GUI.DrawTexture(new Rect(x + 235f, y + 95f, 430f, 270f), _loadingGlowTexture);
             if (_loadingFactoryTexture != null)
             {
                 GUI.color = Color.white;
-                GUI.DrawTexture(imageRect, _loadingFactoryTexture, ScaleMode.ScaleToFit, true);
+                var floatOffset = Mathf.Sin(Time.realtimeSinceStartup * 1.35f) * 3f;
+                GUI.DrawTexture(new Rect(x + 160f, y + 66f + floatOffset, 580f, 286f), _loadingFactoryTexture, ScaleMode.ScaleToFit, true);
             }
-            var stepRect = new Rect(panel.x + 24f * scale, imageRect.yMax + 4f * scale, panel.width - 48f * scale, 28f * scale);
-            GUI.Label(stepRect, _loadingStep, step);
-
-            var detailHeight = string.IsNullOrWhiteSpace(_loadingDetail) ? 0f : 36f * scale;
-            if (detailHeight > 0f)
+            DrawLoadingDot(new Rect(x + 35f, y + 347f, 6f, 6f), new Color(.54f, .72f, .63f));
+            GUI.Label(new Rect(x + 47f, y + 340f, 265f, 19f), "FACTORY SYSTEMS  INITIALIZING", _loadingCaptionStyle);
+            if (!string.IsNullOrWhiteSpace(_loadingDetail))
             {
-                var detailRect = new Rect(panel.x + panel.width * .16f, stepRect.yMax + 1f * scale, panel.width * .68f, detailHeight);
-                var detailStyle = new GUIStyle(_mutedStyle)
-                {
-                    alignment = TextAnchor.MiddleCenter,
-                    wordWrap = true,
-                    fontSize = Mathf.RoundToInt(11f * scale),
-                    normal = { textColor = new Color(.9f, .69f, .57f) }
-                };
-                GUI.Label(detailRect, $"原因  {_loadingDetail}", detailStyle);
+                GUI.Label(new Rect(x + 385f, y + 340f, 478f, 20f), _loadingDetail, _loadingTinyStyle);
             }
+            DrawLoadingBlock(new Rect(x + 35f, y + 367f, 830f, 1f), new Color(.59f, .61f, .59f, .16f));
 
-            var barWidth = Mathf.Min(700f * scale, panel.width * .72f);
-            var bar = new Rect(center.x - barWidth * .5f, stepRect.yMax + detailHeight + 13f * scale, barWidth, 7f * scale);
-            GUI.color = new Color(.32f, .32f, .33f, 1f);
-            GUI.DrawTexture(bar, _panelTexture, ScaleMode.StretchToFill);
-            GUI.color = new Color(.55f, .78f, .7f, 1f);
-            GUI.DrawTexture(new Rect(bar.x, bar.y, bar.width * _loadingProgress, bar.height), _panelTexture, ScaleMode.StretchToFill);
+            GUI.Label(new Rect(x + 35f, y + 387f, 690f, 25f), "正在准备生产现场", _loadingHeadingStyle);
+            GUI.Label(new Rect(x + 35f, y + 413f, 700f, 18f), _loadingStep, _loadingStepStyle);
+            GUI.Label(new Rect(x + 785f, y + 386f, 80f, 34f), $"{Mathf.RoundToInt(_loadingProgress * 100f)}%", _loadingPercentStyle);
+            DrawLoadingBlock(new Rect(x + 35f, y + 446f, 830f, 3f), new Color(.57f, .59f, .59f, .24f));
+            DrawLoadingBlock(new Rect(x + 35f, y + 446f, 830f * _loadingProgress, 3f), new Color(.66f, .78f, .69f));
+            var knobX = x + 35f + 830f * Mathf.Clamp01(_loadingProgress);
+            DrawLoadingDot(new Rect(knobX - 5f, y + 442.5f, 10f, 10f), new Color(.82f, .68f, .47f));
+
+            var currentPhase = Mathf.Min(LoadingPhases.Length - 1, Mathf.FloorToInt(_loadingProgress * LoadingPhases.Length));
+            for (var index = 0; index < LoadingPhases.Length; index += 1)
+            {
+                var phaseX = x + 35f + index * 210f;
+                var markerColor = index < currentPhase
+                    ? new Color(.58f, .76f, .65f)
+                    : index == currentPhase ? new Color(.83f, .69f, .46f) : new Color(.43f, .45f, .45f);
+                DrawLoadingDot(new Rect(phaseX, y + 473f, 18f, 18f), markerColor);
+                DrawLoadingDot(new Rect(phaseX + 6f, y + 479f, 6f, 6f), new Color(.16f, .17f, .18f));
+                GUI.Label(new Rect(phaseX + 27f, y + 468f, 165f, 17f), LoadingPhases[index], _loadingPhaseStyle);
+                GUI.Label(new Rect(phaseX + 27f, y + 484f, 165f, 15f), LoadingPhaseCaptions[index], _loadingPhaseCaptionStyle);
+            }
+            GUI.Label(new Rect((canvasWidth - 440f) * .5f, canvasHeight - 22f, 440f, 16f),
+                "PRODUCTION OPERATIONS    ·    请稍候，正在同步现场状态", _loadingFooterStyle);
+            GUI.matrix = previousMatrix;
+            GUI.color = previousColor;
+        }
+
+        private static void DrawLoadingBlock(Rect rect, Color color)
+        {
+            GUI.color = color;
+            GUI.DrawTexture(rect, Texture2D.whiteTexture);
             GUI.color = Color.white;
-            var labels = new[] { "现场配置", "三维场景", "设备模型", "实时数据" };
-            var currentPhase = Mathf.Min(labels.Length - 1, Mathf.FloorToInt(_loadingProgress * labels.Length));
-            var phaseStyle = new GUIStyle(_mutedStyle) { alignment = TextAnchor.MiddleCenter, fontSize = Mathf.RoundToInt(10f * scale) };
-            var phaseY = bar.yMax + 11f * scale;
-            var phaseWidth = bar.width / labels.Length;
-            for (var index = 0; index < labels.Length; index += 1)
+        }
+
+        private void DrawLoadingDot(Rect rect, Color color)
+        {
+            GUI.color = color;
+            GUI.DrawTexture(rect, _loadingDotTexture);
+            GUI.color = Color.white;
+        }
+
+        private void EnsureLoadingStyles()
+        {
+            if (_loadingCardStyle != null) return;
+            _loadingCardTexture = new Texture2D(32, 32, TextureFormat.RGBA32, false);
+            for (var y = 0; y < 32; y += 1)
+            for (var x = 0; x < 32; x += 1)
             {
-                var phaseRect = new Rect(bar.x + phaseWidth * index, phaseY, phaseWidth, 20f * scale);
-                phaseStyle.normal.textColor = index < currentPhase
-                    ? new Color(.67f, .79f, .7f)
-                    : index == currentPhase ? new Color(.85f, .76f, .59f) : new Color(.48f, .49f, .47f);
-                GUI.Label(phaseRect, $"{(index < currentPhase ? "✓" : "·")}  {labels[index]}", phaseStyle);
+                var dx = x - Mathf.Clamp(x, 8, 23);
+                var dy = y - Mathf.Clamp(y, 8, 23);
+                var distance = Mathf.Sqrt(dx * dx + dy * dy);
+                var opacity = Mathf.Clamp01(8.5f - distance);
+                var border = distance > 7f;
+                var color = border ? new Color(.33f, .34f, .35f, opacity) : new Color(.177f, .179f, .19f, opacity);
+                _loadingCardTexture.SetPixel(x, y, color);
             }
-            var percent = new GUIStyle(_mutedStyle) { alignment = TextAnchor.MiddleRight, fontSize = Mathf.RoundToInt(10f * scale) };
-            GUI.Label(new Rect(bar.x, phaseY + 21f * scale, bar.width, 17f * scale), $"{Mathf.RoundToInt(_loadingProgress * 100f)}%", percent);
+            _loadingCardTexture.Apply();
+            _loadingCardStyle = new GUIStyle(GUI.skin.box)
+            {
+                normal = { background = _loadingCardTexture },
+                border = new RectOffset(8, 8, 8, 8),
+                padding = new RectOffset(0, 0, 0, 0)
+            };
+            _loadingGlowTexture = new Texture2D(128, 128, TextureFormat.RGBA32, false);
+            for (var y = 0; y < 128; y += 1)
+            for (var x = 0; x < 128; x += 1)
+            {
+                var radius = Vector2.Distance(new Vector2(x, y), new Vector2(63.5f, 63.5f)) / 64f;
+                var alpha = Mathf.Pow(Mathf.Clamp01(1f - radius), 2f);
+                _loadingGlowTexture.SetPixel(x, y, new Color(1f, 1f, 1f, alpha));
+            }
+            _loadingGlowTexture.Apply();
+            _loadingDotTexture = new Texture2D(16, 16, TextureFormat.RGBA32, false);
+            for (var y = 0; y < 16; y += 1)
+            for (var x = 0; x < 16; x += 1)
+            {
+                var radius = Vector2.Distance(new Vector2(x, y), new Vector2(7.5f, 7.5f));
+                _loadingDotTexture.SetPixel(x, y, new Color(1f, 1f, 1f, Mathf.Clamp01(8f - radius)));
+            }
+            _loadingDotTexture.Apply();
+            _loadingKickerStyle = new GUIStyle(GUI.skin.label) { fontSize = 9, fontStyle = FontStyle.Bold, normal = { textColor = new Color(.76f, .76f, .72f) } };
+            _loadingTinyStyle = new GUIStyle(GUI.skin.label) { fontSize = 8, alignment = TextAnchor.MiddleRight, normal = { textColor = new Color(.55f, .56f, .55f) } };
+            _loadingCaptionStyle = new GUIStyle(_loadingTinyStyle) { alignment = TextAnchor.MiddleLeft };
+            _loadingFooterStyle = new GUIStyle(_loadingTinyStyle) { alignment = TextAnchor.MiddleCenter };
+            _loadingHeadingStyle = new GUIStyle(GUI.skin.label) { fontSize = 17, fontStyle = FontStyle.Bold, normal = { textColor = new Color(.93f, .94f, .93f) } };
+            _loadingStepStyle = new GUIStyle(GUI.skin.label) { fontSize = 11, normal = { textColor = new Color(.65f, .66f, .63f) } };
+            _loadingPercentStyle = new GUIStyle(GUI.skin.label) { fontSize = 22, alignment = TextAnchor.MiddleRight, normal = { textColor = new Color(.87f, .86f, .82f) } };
+            _loadingPhaseStyle = new GUIStyle(GUI.skin.label) { fontSize = 9, normal = { textColor = new Color(.76f, .76f, .72f) } };
+            _loadingPhaseCaptionStyle = new GUIStyle(GUI.skin.label) { fontSize = 7, normal = { textColor = new Color(.43f, .45f, .44f) } };
         }
 
         private string FrameText()

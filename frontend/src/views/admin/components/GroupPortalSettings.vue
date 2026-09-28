@@ -1,12 +1,20 @@
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { adminApi } from '../../../config/factoryConfig.js'
-import { GROUP_MAP_LEVELS, groupPortalAppearanceForLevel, normalizeGroupLogoUrl, normalizeGroupPortalAppearance } from '../../../runtime/groupPortalAppearance.js'
+import { GROUP_MAP_DATA_FIELDS, GROUP_MAP_LEVELS, groupPortalAppearanceForLevel, normalizeGroupLogoUrl, normalizeGroupPortalAppearance } from '../../../runtime/groupPortalAppearance.js'
+import { API_BASE } from '../../../runtime/backendEndpoint.js'
+import { adminFetch } from '../../../runtime/adminSession.js'
 import { normalizeFactoryLocation } from '../../../runtime/groupTopology.js'
 import MapGeometryPreview from './MapGeometryPreview.vue'
+import { getFactoryScope } from '../../../runtime/factoryScope.js'
+import { cacheFactoryDraft, clearFactoryDraft, readFactoryDraft } from '../../../runtime/factoryDraftCache.js'
 
 const props = defineProps({ activeLevel: { type: String, default: 'world' }, designerMode: { type: Boolean, default: false } })
+const emit = defineEmits(['saved'])
 const form = ref(normalizeGroupPortalAppearance())
+const draftFactoryId = getFactoryScope()
+let savedFormSnapshot = ''
+const formSnapshot = () => JSON.stringify(form.value)
 const busy = ref(false)
 const uploading = ref(false)
 const message = ref('')
@@ -18,6 +26,25 @@ const levelPreview = computed(() => groupPortalAppearanceForLevel(form.value, se
 const layoutStage = ref(null)
 const activeDrag = ref(null)
 const selectedComponent = ref('panel')
+defineExpose({
+    selectComponent: key => { selectedComponent.value = key },
+    savePending: async () => {
+        if (!savedFormSnapshot || formSnapshot() === savedFormSnapshot) return true
+        await save()
+        if (failed.value) throw new Error(message.value || '地图组件保存失败')
+        return true
+    }
+})
+const selectedMetric = ref('panelRegionRows')
+const apiSources = ref([])
+const sourceFactoryId = ref('factory_default')
+const discoveredFields = ref([])
+const bindingMessage = ref('')
+const bindingBusy = ref(false)
+const availableMetrics = computed(() => GROUP_MAP_DATA_FIELDS[selectedComponent.value] || [])
+const currentBinding = computed(() => levelPreview.value.dataBindings?.[selectedMetric.value] || null)
+watch(selectedComponent, () => { selectedMetric.value = availableMetrics.value[0]?.key || ''; discoveredFields.value = []; bindingMessage.value = '' })
+watch(selectedLevel, () => { discoveredFields.value = []; bindingMessage.value = '' })
 const mapComponents = [
     { key: 'brand', label: '大屏 Logo / 标题', toggle: 'showBrand' },
     { key: 'facts', label: '区域统计', toggle: 'showFacts' },
@@ -80,6 +107,50 @@ function resetLevel() {
     form.value.levels = levels
 }
 
+function setMapBinding(field, value) {
+    const bindings = { ...(form.value.levels[selectedLevel.value]?.dataBindings || {}) }
+    if (field === 'mode' && value !== 'http_api') delete bindings[selectedMetric.value]
+    else bindings[selectedMetric.value] = {
+        mode: 'http_api', factoryId: sourceFactoryId.value, connectionId: '', apiPath: '', jsonPath: '', refreshMs: 30000,
+        ...(bindings[selectedMetric.value] || {}), [field]: value,
+        ...(field === 'connectionId' ? { factoryId: sourceFactoryId.value } : {})
+    }
+    setLevelField('dataBindings', bindings)
+    bindingMessage.value = ''
+}
+
+async function inspectMapBinding() {
+    if (!currentBinding.value?.connectionId || !currentBinding.value?.apiPath) { bindingMessage.value = '请先选择连接并填写 GET 路径'; return }
+    bindingBusy.value = true; bindingMessage.value = ''; discoveredFields.value = []
+    try {
+        const response = await adminFetch(`${API_BASE}/data-sources/inspect-http`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(currentBinding.value)
+        })
+        const body = await response.json()
+        if (!response.ok) throw new Error(body.error || '读取字段失败')
+        discoveredFields.value = body.result?.fields || []
+        bindingMessage.value = `已发现 ${discoveredFields.value.length} 个字段`
+    } catch (error) { bindingMessage.value = error.message }
+    finally { bindingBusy.value = false }
+}
+
+async function testMapBinding() {
+    if (!currentBinding.value?.jsonPath) { bindingMessage.value = '请先选择字段路径'; return }
+    bindingBusy.value = true; bindingMessage.value = ''
+    try {
+        const response = await adminFetch(`${API_BASE}/data-sources/preview-http`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(currentBinding.value)
+        })
+        const body = await response.json()
+        if (!response.ok) throw new Error(body.error || '数据预览失败')
+        bindingMessage.value = Array.isArray(body.result?.rows) && body.result.rows.length
+            ? `读取成功：${body.result.rows.length} 行` : `读取成功：${String(body.result?.value ?? '空值').slice(0, 120)}`
+    } catch (error) { bindingMessage.value = error.message }
+    finally { bindingBusy.value = false }
+}
+
 async function uploadLogo(event, scope = 'global') {
     const file = event.target.files?.[0]
     if (!file) return
@@ -96,8 +167,17 @@ async function uploadLogo(event, scope = 'global') {
 
 async function load() {
     try {
-        const settings = await adminApi.getSettings()
+        const [settings, sources, factories] = await Promise.all([
+            adminApi.getSettings(),
+            adminApi.getDataSources().catch(() => ({ connections: [] })),
+            adminApi.listFactories().catch(() => ({ activeFactoryId:'factory_default' }))
+        ])
         form.value = normalizeGroupPortalAppearance(settings.group_portal_config)
+        savedFormSnapshot = formSnapshot()
+        const pending = readFactoryDraft(draftFactoryId, 'group-portal')
+        if (pending?.value) form.value = normalizeGroupPortalAppearance(pending.value)
+        sourceFactoryId.value = getFactoryScope() || factories.activeFactoryId || 'factory_default'
+        apiSources.value = (sources.connections || []).filter(source => source.sourceType === 'http_api' || source.type === 'http_api')
         previewLocation.value = normalizeFactoryLocation(settings.factory_location)
     } catch (error) { failed.value = true; message.value = error.message || '读取集团首页外观失败' }
 }
@@ -108,12 +188,21 @@ async function save() {
         if (form.value.logoUrl && !normalizeGroupLogoUrl(form.value.logoUrl)) throw new Error('Logo 请填写站内路径或 HTTPS 图片地址')
         const result = await adminApi.saveSettings({ group_portal_config: form.value })
         if (result.error) throw new Error(result.error)
+        savedFormSnapshot = formSnapshot()
+        clearFactoryDraft(draftFactoryId, 'group-portal')
         message.value = '已保存。地图页将在下一次配置同步时更新。'
+        emit('saved', form.value)
     } catch (error) { failed.value = true; message.value = error.message || '保存失败' }
     finally { busy.value = false }
 }
 
 onMounted(load)
+onUnmounted(() => {
+    if (!savedFormSnapshot) return
+    if (formSnapshot() !== savedFormSnapshot)
+        cacheFactoryDraft(draftFactoryId, 'group-portal', 'setting', { key: 'group_portal_config', value: JSON.parse(formSnapshot()) })
+    else clearFactoryDraft(draftFactoryId, 'group-portal')
+})
 </script>
 
 <template>
@@ -156,6 +245,22 @@ onMounted(load)
                     <div class="map-component-copy" v-else-if="selectedComponent==='facts'"><label>统计标题<input :value="levelPreview.factsTitle" maxlength="60" @change="setLevelField('factsTitle',$event.target.value)" /></label></div>
                     <div class="map-component-copy" v-else-if="selectedComponent==='panel'"><label>分布栏目标题<input :value="levelPreview.panelTitle" maxlength="60" @change="setLevelField('panelTitle',$event.target.value)" /></label></div>
                     <div class="map-component-copy" v-else><label>站点网络标题<input :value="levelPreview.dockNetworkTitle" maxlength="60" @change="setLevelField('dockNetworkTitle',$event.target.value)" /></label><label>行政区归属标题<input :value="levelPreview.dockLocationTitle" maxlength="60" @change="setLevelField('dockLocationTitle',$event.target.value)" /></label><label>现场配置标题<input :value="levelPreview.dockHierarchyTitle" maxlength="60" @change="setLevelField('dockHierarchyTitle',$event.target.value)" /></label></div>
+                    <div v-if="availableMetrics.length" class="map-data-binding">
+                        <strong>本层组件数据来源</strong>
+                        <p>每项数据可独立选择系统工厂资料或外部只读接口；外部接口故障时保留本机统计。</p>
+                        <label>配置项<select v-model="selectedMetric"><option v-for="field in availableMetrics" :key="field.key" :value="field.key">{{ field.label }}</option></select></label>
+                        <label>来源<select :value="currentBinding?'http_api':'built_in'" @change="setMapBinding('mode',$event.target.value)"><option value="built_in">系统工厂资料</option><option value="http_api">外部 HTTP API</option></select></label>
+                        <template v-if="currentBinding">
+                            <label>只读接口连接（当前工厂配置范围）<select :value="currentBinding.connectionId" @change="setMapBinding('connectionId',$event.target.value)"><option value="">选择已登记连接</option><option v-for="source in apiSources" :key="source.id" :value="source.id">{{ source.name }}</option></select></label>
+                            <label>GET 相对路径<input :value="currentBinding.apiPath" placeholder="/api/v1/production/summary" @change="setMapBinding('apiPath',$event.target.value.trim())" /></label>
+                            <label>字段路径<input :value="currentBinding.jsonPath" :placeholder="selectedMetric==='panelRegionRows'?'regions':'data.factoryCount'" @change="setMapBinding('jsonPath',$event.target.value.trim())" /></label>
+                            <label>刷新间隔（秒）<input type="number" min="5" max="3600" :value="currentBinding.refreshMs/1000" @change="setMapBinding('refreshMs',Math.round(Number($event.target.value)*1000))" /></label>
+                            <div class="map-binding-actions"><button type="button" :disabled="bindingBusy" @click="inspectMapBinding">读取字段</button><button type="button" :disabled="bindingBusy" @click="testMapBinding">测试数值</button></div>
+                            <select v-if="discoveredFields.length" aria-label="选取接口字段" :value="currentBinding.jsonPath" @change="setMapBinding('jsonPath',$event.target.value)"><option value="">选择发现的字段</option><option v-for="field in discoveredFields" :key="field.path" :value="field.path">{{ field.path }} · {{ field.kind }}</option></select>
+                            <small v-if="selectedMetric==='panelRegionRows'">区域列表需为对象数组，至少包含与地图对应的 code；可覆盖 count、localCount、registeredCount、districtAssignedCount。</small>
+                            <small v-if="bindingMessage" role="status">{{ bindingMessage }}</small>
+                        </template>
+                    </div>
                     <div class="map-coordinate-fields"><label>水平 X %<input type="number" min="0" :max="100-layoutWidths[selectedComponent]" step="0.1" :value="layoutPoint(selectedComponent).x" @change="setLayoutCoordinate(selectedComponent,'x',$event.target.value)" /></label><label>垂直 Y %<input type="number" min="0" :max="selectedComponent==='dock'?78:85" step="0.1" :value="layoutPoint(selectedComponent).y" @change="setLayoutCoordinate(selectedComponent,'y',$event.target.value)" /></label></div>
                     <label class="map-help-toggle"><input type="checkbox" :checked="levelPreview.showHelp" @change="setLevelField('showHelp',$event.target.checked)" />右侧操作说明</label>
                 </div>
@@ -182,4 +287,5 @@ onMounted(load)
 .appearance-global-settings{padding:15px 18px;border:1px solid #e4e7ec;border-radius:10px;background:#fff}.appearance-global-settings>summary{display:flex;align-items:center;gap:12px;font-size:14px;font-weight:650;cursor:pointer}.appearance-global-settings>summary small{color:#667085;font-size:11px;font-weight:400}.appearance-global-settings>summary::-webkit-details-marker{display:none}.appearance-global-settings[open]>summary{margin-bottom:17px}.designer-mode{margin:0;padding:14px;border-top:0;border-radius:0 0 12px 12px;background:#f4f5f7}.designer-mode>header{display:none}.designer-mode form{display:flex;flex-direction:column;gap:13px}.designer-mode .appearance-level-editor{order:1;display:grid;grid-template-columns:minmax(0,2.65fr) minmax(230px,1fr);grid-template-areas:'heading heading' 'canvas-heading fields' 'canvas fields' 'canvas toggles' 'canvas reset';gap:11px 16px;align-items:start;margin:0;padding:14px;background:#fff}.designer-mode .appearance-level-heading{grid-area:heading;display:grid;gap:4px}.designer-mode .appearance-level-heading strong{font-size:17px}.designer-mode .appearance-level-heading span{font-size:12px}.designer-mode .layout-heading{grid-area:canvas-heading;margin:0}.designer-mode .layout-stage{grid-area:canvas;max-height:none;min-height:240px;align-self:start}.designer-mode .appearance-level-fields{grid-area:fields;grid-template-columns:repeat(2,minmax(0,1fr));align-content:start;max-height:440px;overflow:auto;padding:12px;border:1px solid #e4e7ec;border-radius:9px;background:#f9fafb}.designer-mode .appearance-level-fields>label:nth-child(-n+2){grid-column:1/-1}.designer-mode .appearance-level-fields input:not([type=color]){padding:6px;font-size:11px}.designer-mode .appearance-toggles{grid-area:toggles;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px;margin:0;padding:12px;border:1px solid #e4e7ec;border-radius:9px;background:#f9fafb}.designer-mode .appearance-reset-level{grid-area:reset;justify-self:start;margin:0}.designer-mode .appearance-global-settings{order:2}.designer-mode form>button[type=submit]{order:3;align-self:start}.designer-mode form>.appearance-message{order:4;margin:0}.designer-mode .appearance-preview{margin-top:18px}@media(max-width:980px){.designer-mode .appearance-level-editor{display:flex;flex-direction:column}.designer-mode .layout-stage{width:100%}.designer-mode .appearance-level-fields{width:100%;max-height:none;box-sizing:border-box}.designer-mode .appearance-toggles{width:100%;box-sizing:border-box}}
 .map-component-panel{display:grid;gap:7px;padding:12px;border:1px solid #e4e7ec;border-radius:9px;background:#f9fafb}.map-component-panel>strong{font-size:13px}.map-component-panel>p{margin:0 0 4px;color:#667085;font-size:11px;line-height:1.5}.map-component-row{display:flex;align-items:center;justify-content:space-between;gap:6px;min-height:35px;padding:4px;border:1px solid #e4e7ec;border-radius:7px;background:#fff}.map-component-row.active{border-color:#98afd9;background:#edf3ff}.group-appearance-admin .map-component-row>button{flex:1;padding:5px 7px;color:#344054;background:transparent;text-align:left;font-size:11px}.map-component-row label{display:flex;align-items:center;gap:4px;flex:none;font-size:10px}.map-coordinate-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px;margin-top:5px}.map-component-panel .map-help-toggle{display:flex;align-items:center;gap:5px;margin-top:6px}.layout-card.selected{outline:2px solid var(--preview-accent);outline-offset:2px}.designer-mode .map-component-panel{grid-area:toggles}.designer-mode .appearance-level-editor{grid-template-areas:'heading heading' 'canvas-heading fields' 'canvas fields' 'canvas toggles' 'canvas reset'}@media(max-width:980px){.designer-mode .map-component-panel{width:100%;box-sizing:border-box}}
 .map-component-copy{display:grid;gap:8px;margin:5px 0;padding:10px;border:1px solid #dde3ed;border-radius:7px;background:#fff}.map-component-copy label{font-size:10px}.map-component-copy input{min-height:30px}.layout-brand img{width:20px;height:20px;object-fit:contain;flex:none}.designer-mode .appearance-level-fields{max-height:250px}.designer-mode .map-component-panel{max-height:390px;overflow:auto}
+.map-data-binding{display:grid;gap:8px;margin-top:5px;padding:12px;border:1px solid #dce5f2;border-radius:8px;background:#fff}.map-data-binding>strong{font-size:12px;color:#344054}.map-data-binding>p,.map-data-binding>small{margin:0;color:#667085;font-size:10px;line-height:1.5}.map-data-binding label{font-size:10px}.map-data-binding select{width:100%;min-height:32px;padding:6px;border:1px solid #d0d5dd;border-radius:6px;background:#fff;color:#344054}.map-binding-actions{display:flex;gap:7px}.group-appearance-admin .map-binding-actions button{padding:7px 10px;font-size:10px}
 </style>

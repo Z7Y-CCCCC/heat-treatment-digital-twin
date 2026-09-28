@@ -72,6 +72,26 @@ test('ordinary city breadcrumbs remain a distinct level beneath their province',
   ])
 })
 
+test('legacy overseas country routes retain a parent for Escape navigation', () => {
+  const crumbs = createGroupNavigationCrumbs({
+    query: { scope: 'world', region: 'KOR' }, level: 'country', currentLabel: '大韩民国'
+  })
+  assert.deepEqual(crumbs.map(({ level, code, label }) => [level, code, label]), [
+    ['world', '', '全球'], ['country', 'KOR', '大韩民国']
+  ])
+  assert.equal(crumbs.at(-2).level, 'world')
+})
+
+test('legacy China province routes can step back to the country map', () => {
+  const crumbs = createGroupNavigationCrumbs({
+    query: { region: '120000' }, level: 'province', currentLabel: '天津市'
+  })
+  assert.deepEqual(crumbs.map(({ level, code }) => [level, code]), [
+    ['world', ''], ['country', 'CHN'], ['province', '120000']
+  ])
+  assert.equal(crumbs.at(-2).level, 'country')
+})
+
 test('workshop overlay resolves district code to named clickable municipality levels', () => {
   const trail = createGroupHierarchyPath({
     scope: 'china', fromGroup: '120101', embedded: 'unity',

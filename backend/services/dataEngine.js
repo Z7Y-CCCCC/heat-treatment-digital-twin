@@ -3,8 +3,11 @@ const PlcReader = require('./plcReader');
 const Simulator = require('./simulator');
 
 class DataEngine {
-    constructor(wsServer) {
+    constructor(wsServer, options = {}) {
         this.wsServer = wsServer;
+        this.fixedFactoryId = String(options.factoryId || '');
+        this.isSecondary = options.isSecondary === true;
+        this.factoryEngines = new Map();
         this.plcReader = null;
         this.simulator = null;
         this.currentMode = null;
@@ -20,21 +23,26 @@ class DataEngine {
         this.alarmWriteQueue = Promise.resolve();
         this.deviceSnapshots = new Map();
         this.lastMetricSnapshotAt = 0;
+        this.lastMetricSavedAt = 0;
+        this.metricSummary = null;
         this.metricSnapshotIntervalMs = 5000;
         this.runVersion = 0;
     }
 
     async start() {
         const runVersion = ++this.runVersion;
+        this._stopSecondaryEngines();
         this._stopSources();
         this.deviceSnapshots.clear();
         this.alarmState.clear();
         this.lastMetricSnapshotAt = 0;
+        this.lastMetricSavedAt = 0;
+        this.metricSummary = null;
         this.currentMode = null;
         const db = await getDb();
         if (runVersion !== this.runVersion) return;
-        const activeFactory = await db.get('SELECT value FROM settings WHERE `key` = ?', ['active_factory_id']);
-        this.activeFactoryId = String(activeFactory?.value || 'factory_default');
+        const activeFactory = this.fixedFactoryId ? null : await db.get('SELECT value FROM settings WHERE `key` = ?', ['active_factory_id']);
+        this.activeFactoryId = this.fixedFactoryId || String(activeFactory?.value || 'factory_default');
         const rows = await db.all('SELECT * FROM settings');
         if (runVersion !== this.runVersion) return;
         const settings = {};
@@ -65,6 +73,33 @@ class DataEngine {
             }
             throw error;
         }
+        if (!this.isSecondary && runVersion === this.runVersion) await this._startSecondaryEngines(db, runVersion);
+    }
+
+    async _startSecondaryEngines(db, runVersion) {
+        const factories = await db.all('SELECT id FROM factories WHERE is_enabled <> 0');
+        if (runVersion !== this.runVersion) return;
+        const silentWs = { broadcastDeviceData() {}, broadcastStatus() {} };
+        await Promise.all(factories.filter(factory => String(factory.id) !== this.activeFactoryId).map(async factory => {
+            const id = String(factory.id);
+            const engine = new DataEngine(silentWs, { factoryId: id, isSecondary: true });
+            this.factoryEngines.set(id, engine);
+            try { await engine.start(); }
+            catch (error) { console.warn(`[DataEngine] 工厂 ${id} 采集启动失败:`, error.message); }
+            if (runVersion !== this.runVersion) engine.stop();
+        }));
+    }
+
+    _stopSecondaryEngines() {
+        for (const engine of this.factoryEngines.values()) engine.stop();
+        this.factoryEngines.clear();
+    }
+
+    getFactoryStatuses() {
+        const result = {};
+        if (this.activeFactoryId) result[this.activeFactoryId] = { ...this.getStatus(), lastMetricSavedAt: this.lastMetricSavedAt, metricSummary: this.metricSummary };
+        for (const [id, engine] of this.factoryEngines) result[id] = { ...engine.getStatus(), lastMetricSavedAt: engine.lastMetricSavedAt, metricSummary: engine.metricSummary };
+        return result;
     }
 
     _stopSources() {
@@ -77,10 +112,13 @@ class DataEngine {
         this.deviceSnapshots.clear();
         this.alarmState.clear();
         this.lastMetricSnapshotAt = 0;
+        this.lastMetricSavedAt = 0;
+        this.metricSummary = null;
     }
 
     stop() {
         this.runVersion += 1;
+        this._stopSecondaryEngines();
         this._stopSources();
         this.currentMode = null;
         this.plcStatus = { status: 'stopped', message: '采集器已停止', timestamp: Date.now() };
@@ -189,6 +227,10 @@ class DataEngine {
             onlineDevices,
             totalDevices
         ]);
+        if (runVersion === this.runVersion) {
+            this.lastMetricSavedAt = Date.now();
+            this.metricSummary = { currentOutput, dailyTarget, overallOee: parseFloat(overallOee.toFixed(1)), energyConsumption, runningDevices, alarmDevices, onlineDevices, totalDevices };
+        }
     }
 
     _recordAlarmEvents(deviceDataArray) {
@@ -202,8 +244,7 @@ class DataEngine {
         if (runVersion !== this.runVersion) return;
         const db = await getDb();
         if (runVersion !== this.runVersion) return;
-        const activeFactory = await db.get('SELECT value FROM settings WHERE `key` = ?', ['active_factory_id']);
-        const factoryId = String(activeFactory?.value || 'factory_default');
+        const factoryId = this.activeFactoryId || 'factory_default';
         for (const deviceData of deviceDataArray) {
             if (runVersion !== this.runVersion) return;
             const id = deviceData.furnace_id;

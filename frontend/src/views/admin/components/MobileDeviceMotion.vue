@@ -1,6 +1,8 @@
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, onUnmounted, ref, watch } from 'vue'
 import { adminApi } from '../../../config/factoryConfig.js'
+import { getFactoryScope } from '../../../runtime/factoryScope.js'
+import { cacheFactoryDraft, clearFactoryDraft, readFactoryDraft } from '../../../runtime/factoryDraftCache.js'
 
 defineOptions({ name: 'MobileDeviceMotion' })
 
@@ -171,6 +173,9 @@ const saving = ref(false)
 const message = ref('')
 const errorMessage = ref('')
 let loadGeneration = 0
+const draftFactoryId = getFactoryScope()
+let savedMotionSnapshot = ''
+const motionSnapshot = () => JSON.stringify(motion.value)
 
 function isAuxiliaryDevice(device) {
     const config = parseJson(device?.instance_config)
@@ -348,6 +353,94 @@ function pointPayload(point, selectedIds) {
     return payload
 }
 
+function motionDraftPayload() {
+    const detail = deviceDetail.value
+    if (!detail?.id) return null
+    const existingConfig = parseJson(detail.instance_config)
+    const stations = stationGroups.value
+        .flatMap(group => group.stations.map((station, index) => ({
+            value: numberOr(station.value),
+            label: String(station.label || `${numberOr(station.value)}号工位`),
+            anchorDeviceId: pointIdOr(station.anchorDeviceId),
+            deviceLineKey: String(station.deviceLineKey || group.key || ''),
+            deviceLineName: String(station.deviceLineName || group.name || ''),
+            distanceMeters: index === 0 ? 0 : Math.max(0, numberOr(station.distanceMeters)),
+            position: {
+                x: numberOr(station.position?.x), y: numberOr(station.position?.y), z: numberOr(station.position?.z)
+            }
+        })))
+        .sort((left, right) => left.value - right.value)
+    const nextConfig = {
+        ...existingConfig,
+        movement: {
+            enabled: motion.value.enabled === true,
+            currentPositionPointId: pointIdOr(motion.value.currentPositionPointId),
+            startActionPointId: pointIdOr(motion.value.startActionPointId),
+            valueMode: ['range', 'station'].includes(motion.value.valueMode) ? motion.value.valueMode : 'normalized',
+            valueMin: numberOr(motion.value.valueMin), valueMax: numberOr(motion.value.valueMax, 100),
+            smoothingMs: Math.max(0, Math.min(1000, numberOr(motion.value.smoothingMs))),
+            simulationEnabled: motion.value.simulationEnabled === true,
+            speedMode: motion.value.speedMode === 'fixed' ? 'fixed' : 'auto',
+            maxSpeed: Math.max(0.01, numberOr(motion.value.maxSpeed, 2)),
+            acceleration: Math.max(0.01, numberOr(motion.value.acceleration, 1)),
+            sceneUnitsPerMeter: stationDistanceSummary.value.sceneUnitsPerMeter,
+            stations,
+            start: { x: numberOr(motion.value.start.x), y: numberOr(motion.value.start.y), z: numberOr(motion.value.start.z) },
+            end: { x: numberOr(motion.value.end.x), y: numberOr(motion.value.end.y), z: numberOr(motion.value.end.z) }
+        }
+    }
+    const selectedIds = new Set([
+        motion.value.currentPositionPointId, motion.value.startActionPointId
+    ].filter(Boolean).map(String))
+    return {
+        deviceId: detail.id,
+        motion: JSON.parse(motionSnapshot()),
+        selectedPointIds: [...selectedIds],
+        missingStationDistances: stationDistanceSummary.value.missingCount,
+        devicePayload: {
+            name: detail.name || detail.id,
+            line_id: detail.line_id || null,
+            model_type: detail.model_type || 'builtin_furnace',
+            model_file: detail.model_file || null,
+            template_id: detail.template_id || '',
+            instance_config: nextConfig,
+            pos_x: numberOr(detail.pos_x), pos_y: numberOr(detail.pos_y), pos_z: numberOr(detail.pos_z),
+            rotation_y: numberOr(detail.rotation_y), scale: numberOr(detail.scale, 1),
+            coordinate_space: detail.coordinate_space || 'line_local', sort_order: numberOr(detail.sort_order),
+            plc_enabled: detail.plc_enabled ? 1 : 0,
+            plc_protocol: detail.plc_protocol || 'S7', plc_ip: detail.plc_ip || '',
+            plc_port: numberOr(detail.plc_port, 102), plc_rack: numberOr(detail.plc_rack),
+            plc_slot: numberOr(detail.plc_slot, 1), plc_timeout: numberOr(detail.plc_timeout, 5000),
+            plc_retry_interval: numberOr(detail.plc_retry_interval, 10000),
+            plc_max_retries: numberOr(detail.plc_max_retries), plc_options: parseJson(detail.plc_options)
+        },
+        pointRows: selectedIds.size && dataPoints.value.length
+            ? dataPoints.value.map(point => pointPayload(point, selectedIds)) : []
+    }
+}
+
+function cacheCurrentMotionDraft() {
+    if (!deviceDetail.value?.id || !savedMotionSnapshot) return
+    if (motionSnapshot() === savedMotionSnapshot) {
+        clearFactoryDraft(draftFactoryId, `mobile-motion:${deviceDetail.value.id}`)
+        return
+    }
+    const payload = motionDraftPayload()
+    if (payload) cacheFactoryDraft(draftFactoryId, `mobile-motion:${payload.deviceId}`, 'mobile-motion', payload)
+}
+
+defineExpose({
+    savePending: async () => {
+        if (!deviceDetail.value?.id || !savedMotionSnapshot || motionSnapshot() === savedMotionSnapshot) return true
+        await saveMotion()
+        if (motionSnapshot() !== savedMotionSnapshot) throw new Error(errorMessage.value || '设备运动配置保存失败')
+        return true
+    },
+    discardPending: () => { if (deviceDetail.value?.id) clearFactoryDraft(draftFactoryId, `mobile-motion:${deviceDetail.value.id}`) }
+})
+
+onUnmounted(() => { cacheCurrentMotionDraft(); loadGeneration += 1 })
+
 async function loadDevice(deviceId) {
     const requestGeneration = ++loadGeneration
     if (!deviceId) {
@@ -355,6 +448,7 @@ async function loadDevice(deviceId) {
         deviceDetail.value = null
         dataPoints.value = []
         motion.value = defaultMotion()
+        savedMotionSnapshot = ''
         return
     }
     loading.value = true
@@ -367,6 +461,9 @@ async function loadDevice(deviceId) {
         deviceDetail.value = detail
         dataPoints.value = Array.isArray(detail?.dataPoints) ? detail.dataPoints : []
         motion.value = normalizeMotion(detail)
+        savedMotionSnapshot = motionSnapshot()
+        const pending = readFactoryDraft(draftFactoryId, `mobile-motion:${detail.id}`)
+        if (pending?.motion) motion.value = pending.motion
     } catch (error) {
         if (requestGeneration !== loadGeneration) return
         deviceDetail.value = null
@@ -390,7 +487,10 @@ watch(mobileDevices, devices => {
 // The device picker assigns its first option before this watcher is registered.
 // Running once immediately guarantees that the initial selection also loads its
 // detail and PLC points instead of leaving the page blank until the user changes it.
-watch(selectedDeviceId, value => { loadDevice(value) }, { immediate: true })
+watch(selectedDeviceId, (value, previous) => {
+    if (previous && String(deviceDetail.value?.id) === String(previous)) cacheCurrentMotionDraft()
+    loadDevice(value)
+}, { immediate: true })
 
 function addStation(deviceLineKey = '') {
     const stations = Array.isArray(motion.value.stations) ? motion.value.stations : []
@@ -549,97 +649,26 @@ async function saveMotion() {
     message.value = ''
     errorMessage.value = ''
     try {
-        const existingConfig = parseJson(deviceDetail.value.instance_config)
-        const stations = stationGroups.value
-            .flatMap(group => group.stations.map((station, index) => ({
-                value: numberOr(station.value),
-                label: String(station.label || `${numberOr(station.value)}号工位`),
-                anchorDeviceId: pointIdOr(station.anchorDeviceId),
-                deviceLineKey: String(station.deviceLineKey || group.key || ''),
-                deviceLineName: String(station.deviceLineName || group.name || ''),
-                distanceMeters: index === 0 ? 0 : Math.max(0, numberOr(station.distanceMeters)),
-                position: {
-                    x: numberOr(station.position?.x),
-                    y: numberOr(station.position?.y),
-                    z: numberOr(station.position?.z)
-                }
-            })))
-            .sort((left, right) => left.value - right.value)
-        const nextConfig = {
-            ...existingConfig,
-            movement: {
-                enabled: motion.value.enabled === true,
-                currentPositionPointId: pointIdOr(motion.value.currentPositionPointId),
-                startActionPointId: pointIdOr(motion.value.startActionPointId),
-                valueMode: ['range', 'station'].includes(motion.value.valueMode) ? motion.value.valueMode : 'normalized',
-                valueMin: numberOr(motion.value.valueMin),
-                valueMax: numberOr(motion.value.valueMax, 100),
-                smoothingMs: Math.max(0, Math.min(1000, numberOr(motion.value.smoothingMs))),
-                simulationEnabled: motion.value.simulationEnabled === true,
-                speedMode: motion.value.speedMode === 'fixed' ? 'fixed' : 'auto',
-                maxSpeed: Math.max(0.01, numberOr(motion.value.maxSpeed, 2)),
-                acceleration: Math.max(0.01, numberOr(motion.value.acceleration, 1)),
-                sceneUnitsPerMeter: stationDistanceSummary.value.sceneUnitsPerMeter,
-                stations,
-                start: {
-                    x: numberOr(motion.value.start.x),
-                    y: numberOr(motion.value.start.y),
-                    z: numberOr(motion.value.start.z)
-                },
-                end: {
-                    x: numberOr(motion.value.end.x),
-                    y: numberOr(motion.value.end.y),
-                    z: numberOr(motion.value.end.z)
-                }
-            }
-        }
-
         const detail = deviceDetail.value
-        const result = await adminApi.updateDevice(detail.id, {
-            name: detail.name || detail.id,
-            line_id: detail.line_id || null,
-            model_type: detail.model_type || 'builtin_furnace',
-            model_file: detail.model_file || null,
-            template_id: detail.template_id || '',
-            instance_config: nextConfig,
-            pos_x: numberOr(detail.pos_x),
-            pos_y: numberOr(detail.pos_y),
-            pos_z: numberOr(detail.pos_z),
-            rotation_y: numberOr(detail.rotation_y),
-            scale: numberOr(detail.scale, 1),
-            coordinate_space: detail.coordinate_space || 'line_local',
-            sort_order: numberOr(detail.sort_order),
-            plc_enabled: detail.plc_enabled ? 1 : 0,
-            plc_protocol: detail.plc_protocol || 'S7',
-            plc_ip: detail.plc_ip || '',
-            plc_port: numberOr(detail.plc_port, 102),
-            plc_rack: numberOr(detail.plc_rack),
-            plc_slot: numberOr(detail.plc_slot, 1),
-            plc_timeout: numberOr(detail.plc_timeout, 5000),
-            plc_retry_interval: numberOr(detail.plc_retry_interval, 10000),
-            plc_max_retries: numberOr(detail.plc_max_retries),
-            plc_options: parseJson(detail.plc_options)
-        })
+        const draft = motionDraftPayload()
+        if (!draft) throw new Error('设备运动配置尚未就绪')
+        const result = await adminApi.updateDevice(detail.id, draft.devicePayload)
         if (result?.error) throw new Error(result.error)
         if (!result?.success) throw new Error('后端没有返回成功状态')
 
-        const selectedIds = new Set([
-            motion.value.currentPositionPointId,
-            motion.value.startActionPointId
-        ].filter(Boolean).map(String))
-        if (selectedIds.size > 0 && dataPoints.value.length > 0) {
-            const pointResult = await adminApi.syncDataPoints(
-                detail.id,
-                dataPoints.value.map(point => pointPayload(point, selectedIds))
-            )
+        if (draft.pointRows.length) {
+            const pointResult = await adminApi.syncDataPoints(detail.id, draft.pointRows)
             if (pointResult?.error) throw new Error(pointResult.error)
             if (!pointResult?.success) throw new Error('点位采集周期保存失败')
+            const selectedIds = new Set([motion.value.currentPositionPointId, motion.value.startActionPointId].filter(Boolean).map(String))
             dataPoints.value = dataPoints.value.map(point => selectedIds.has(String(point.id))
                 ? { ...point, sample_interval_ms: 100 }
                 : point)
         }
 
-        deviceDetail.value = { ...detail, instance_config: nextConfig }
+        deviceDetail.value = { ...detail, instance_config: draft.devicePayload.instance_config }
+        savedMotionSnapshot = motionSnapshot()
+        clearFactoryDraft(draftFactoryId, `mobile-motion:${detail.id}`)
         message.value = '已保存。绑定点位采集周期已设为 100ms，Unity 将实时应用移动配置。'
         emit('saved', detail.id)
     } catch (error) {

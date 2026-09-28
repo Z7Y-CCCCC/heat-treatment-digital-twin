@@ -13,6 +13,8 @@ const {
     listDataSources,
     listTables,
     previewBinding,
+    inspectHttpApiResponse,
+    readHttpApiBinding,
     readRuntimeBindings,
     runSelectedBackups,
     saveBackupConfig,
@@ -21,6 +23,8 @@ const {
 } = require('../services/dataSources');
 
 const router = express.Router();
+const MAP_LEVELS = new Set(['world', 'country', 'province', 'city', 'district']);
+const MAP_DATA_KEYS = new Set(['factsFactoryCount','factsLocalCount','factsDeviceCount','panelRegionRows','dockFactoryCount','dockLocalCount','dockAssignedCount','dockCoverage','dockWorkshops','dockLines','dockDevices']);
 
 function localOnly(req, res, next) {
     if (isLoopbackAddress(req.socket.remoteAddress)) {
@@ -34,13 +38,53 @@ function handleError(res, error, status = 400) {
     res.status(status).json({ success: false, error: error.message || String(error) });
 }
 
+router.get('/map-values', async (req, res) => {
+    try {
+        const level = String(req.query.level || 'world');
+        if (!MAP_LEVELS.has(level)) return handleError(res, new Error('地图层级无效'));
+        const db = await getDb();
+        const row = await db.get('SELECT value FROM settings WHERE `key` = ?', ['group_portal_config']);
+        let config = {};
+        try { config = JSON.parse(row?.value || '{}'); } catch { /* Old configuration falls back to built-in data. */ }
+        const bindings = config.levels?.[level]?.dataBindings || {};
+        const widgets = Object.entries(bindings)
+            .filter(([key, binding]) => MAP_DATA_KEYS.has(key) && binding?.mode === 'http_api')
+            .map(([id, data]) => ({ id, data }));
+        const values = {};
+        const byFactory = new Map();
+        for (const widget of widgets) {
+            const factoryId = widget.data.factoryId || req.factoryId;
+            if (!byFactory.has(factoryId)) byFactory.set(factoryId, []);
+            byFactory.get(factoryId).push(widget);
+        }
+        await Promise.all([...byFactory].map(async ([factoryId, scopedWidgets]) => {
+            Object.assign(values, await readRuntimeBindings(scopedWidgets, { factoryId }));
+        }));
+        res.setHeader('Cache-Control', 'no-store');
+        res.json({ success: true, level, values, timestamp: new Date().toISOString() });
+    } catch (error) { handleError(res, error, 500); }
+});
+
 router.get('/runtime-values', async (req, res) => {
     try {
         const db = await getDb();
         const { project, scene } = await getProjectAndScene(db, String(req.query.scene_id || ''), req.factoryId);
         const { document, release } = await loadPublishedDocument(db, project, scene);
-        const values = await readRuntimeBindings(document.widgets || [], {
-            viewId: String(req.query.view_id || ''),
+        const viewId = String(req.query.view_id || '');
+        const mapSurface = /^(?:map_(?:world|country|province|city|district)|site_(?:street|factory))$/.test(viewId);
+        const mapView = mapSurface ? document.scene?.views?.find(view => view.id === viewId) : null;
+        const boundWidgets = mapSurface
+            ? (mapView ? (document.widgets || []).filter(widget => {
+                const shown = mapView.componentState?.show || [];
+                const hidden = mapView.componentState?.hide || [];
+                const group = widget.groupId ? `group:${widget.groupId}` : '';
+                return (shown.includes(widget.id) || (group && shown.includes(group)))
+                    && !hidden.includes(widget.id) && !(group && hidden.includes(group));
+            }) : [])
+            : (document.widgets || []);
+        const values = await readRuntimeBindings(boundWidgets, {
+            factoryId: req.factoryId,
+            viewId,
             workshopId: String(req.query.workshop_id || ''),
             lineId: String(req.query.line_id || ''),
             deviceId: String(req.query.device_id || ''),
@@ -101,6 +145,16 @@ router.get('/connections/:id/columns', localOnly, async (req, res) => {
 
 router.post('/preview', localOnly, async (req, res) => {
     try { res.json({ success: true, result: await previewBinding(req.body || {}) }); }
+    catch (error) { handleError(res, error); }
+});
+
+router.post('/preview-http', localOnly, async (req, res) => {
+    try { res.json({ success: true, result: await readHttpApiBinding(req.body || {}, req.factoryId) }); }
+    catch (error) { handleError(res, error); }
+});
+
+router.post('/inspect-http', localOnly, async (req, res) => {
+    try { res.json({ success: true, result: await inspectHttpApiResponse(req.body || {}, req.factoryId) }); }
     catch (error) { handleError(res, error); }
 });
 

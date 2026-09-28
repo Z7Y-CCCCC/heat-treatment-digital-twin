@@ -123,19 +123,7 @@ function applyStartupAppearance(raw, persist = false) {
         } catch (error) { logDesktopError('startup-appearance-cache', error); }
     }
     if (!startupWindow || startupWindow.isDestroyed() || startupWindow.webContents.isLoading()) return;
-    const appearanceForWindow = { ...startupAppearance };
-    if (startupAppearance.imageUrl) {
-        try {
-            const filename = path.basename(startupAppearance.imageUrl);
-            const file = path.join(app.getPath('userData'), 'uploads', 'appearance', filename);
-            const bytes = fs.readFileSync(file);
-            if (bytes.length <= 5 * 1024 * 1024) {
-                const mime = filename.endsWith('.png') ? 'image/png' : filename.endsWith('.webp') ? 'image/webp' : 'image/jpeg';
-                appearanceForWindow.imageDataUrl = `data:${mime};base64,${bytes.toString('base64')}`;
-            }
-        } catch { /* A missing optional artwork falls back to the bundled model. */ }
-    }
-    const serialized = JSON.stringify(appearanceForWindow).replace(/</g, '\\u003c');
+    const serialized = JSON.stringify(startupAppearance).replace(/</g, '\\u003c');
     startupWindow.webContents.executeJavaScript(`window.configureStartup?.(${serialized})`, true).catch(() => {});
 }
 
@@ -197,7 +185,8 @@ async function createStartupWindow() {
     if (startupWindow && !startupWindow.isDestroyed()) return startupWindow;
     startupWindowClosingForSuccess = false;
     startupWindow = new BrowserWindow({
-        fullscreen: true,
+        width: 440,
+        height: 200,
         frame: false,
         transparent: false,
         resizable: false,
@@ -206,7 +195,7 @@ async function createStartupWindow() {
         show: false,
         center: true,
         alwaysOnTop: true,
-        skipTaskbar: false,
+        skipTaskbar: true,
         backgroundColor: '#29292c',
         icon: path.join(__dirname, 'assets', 'icon.png'),
         webPreferences: {
@@ -273,6 +262,9 @@ async function showStartupFailure(error) {
     startupState.error = error?.message || String(error || '未知启动错误');
     startupState.logPath = startupFailureLogPath;
     if (!startupWindow || startupWindow.isDestroyed()) await createStartupWindow();
+    startupWindow?.setSize(620, 360);
+    startupWindow?.center();
+    startupWindow?.setSkipTaskbar(false);
     sendStartupState();
     startupWindow?.show();
     startupWindow?.focus();
@@ -1428,14 +1420,16 @@ function createMainWindow(origin, showInitially = false) {
 }
 
 async function launchApplication() {
-    await createStartupWindow();
+    // Show immediate, static startup status while the backend is unavailable.
+    // Unity owns the sole animated loading screen after its window appears.
+    if (!backendOnlySmokeMode) await createStartupWindow();
     updateStartupProgress('resources', 6, '正在准备程序资源', '检查运行目录、数据目录和模型资源');
     if (process.env.DESKTOP_SMOKE_FORCE_STARTUP_ERROR) {
         throw new Error(String(process.env.DESKTOP_SMOKE_FORCE_STARTUP_ERROR));
     }
     const writable = initializeWritableData();
     writablePaths = writable;
-    updateStartupProgress('logs', 18, '正在初始化日志系统', `日志目录：${writable.logsDir}`);
+    updateStartupProgress('logs', 18, '正在初始化日志系统', '准备启动与运行诊断信息');
     desktopErrorLogStream = guardLogStream(
         await createRotatingLogWriter(writable.logsDir, 'desktop-error.log'),
         '桌面错误日志'
@@ -1452,7 +1446,7 @@ async function launchApplication() {
     await startDesktopControlServer();
     updateStartupProgress('backend', 41, '正在启动数据服务', '连接配置数据库并载入现场配置');
     const initialBackendProcess = await startBackend(port, writable);
-    updateStartupProgress('backend-health', 50, '正在检查数据服务', `等待本地接口 ${origin} 就绪`);
+    updateStartupProgress('backend-health', 50, '正在检查数据服务', '等待本地数据服务响应');
     await waitForHealth(`${origin}/api/health`, 60000, initialBackendProcess);
     updateStartupProgress('settings', 59, '正在读取系统设置', '同步开机自启、日志、备份和运行参数');
     void refreshStartupAppearanceWhenReady(port);
@@ -1477,6 +1471,9 @@ async function launchApplication() {
         );
     });
     await nativeStartup.ready;
+    // Hand off as soon as Unity shows its chrome/login surface; do not keep a
+    // second startup window over Unity while the embedded WebView becomes ready.
+    closeStartupWindow();
     updateStartupProgress('admin-host', 94, '正在加载顶部栏和数据组件', '等待后台管理 WebView2 完成首屏渲染');
     await waitForNativeHostReady(45000);
     applicationReadyForInteraction = true;
@@ -1486,7 +1483,6 @@ async function launchApplication() {
     }
     updateStartupProgress('ready', 99, '正在完成启动', '确认登录入口与顶部组件状态');
     completeStartupProgress();
-    await delay(420);
     closeStartupWindow();
     scheduleSmokeTimers();
 }
@@ -1555,10 +1551,20 @@ if (!app.requestSingleInstanceLock()) {
         clearBackendRestartTimers();
         if (desktopSettingsTimer) clearInterval(desktopSettingsTimer);
         desktopSettingsTimer = null;
-        stopNativeClient().catch(error => logDesktopError('native-client-shutdown', error)).then(() => Promise.all([
-            stopDesktopControlServer(),
-            stopBackend()
-        ])).catch(error => logDesktopError('application-shutdown', error)).finally(() => {
+        // Unity and the backend are independent children. Start both shutdowns
+        // together so a slow Unity/WebView teardown cannot postpone the
+        // backend's safe database shutdown (or add its timeout to Unity's).
+        Promise.allSettled([
+            stopNativeClient(),
+            stopBackend(),
+            stopDesktopControlServer()
+        ]).then(results => {
+            for (const [index, result] of results.entries()) {
+                if (result.status === 'rejected') {
+                    logDesktopError(['native-client-shutdown', 'backend-shutdown', 'desktop-control-shutdown'][index], result.reason);
+                }
+            }
+        }).finally(() => {
             if (applicationShutdownForceTimer) clearTimeout(applicationShutdownForceTimer);
             applicationShutdownForceTimer = null;
             if (logCleanupTimer) clearInterval(logCleanupTimer);

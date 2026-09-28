@@ -23,7 +23,8 @@ export function normalizeSiteSceneConfig(value){
     streetDescription:text('streetDescription','工厂园区包含车间、办公与公辅建筑。鼠标拖动可改变观察方向，点击园区继续下探。',240),
     factoryDescription:[LEGACY_FACTORY_DESCRIPTION,'240'].includes(factoryDescription) ? DEFAULT_FACTORY_DESCRIPTION : factoryDescription,
     accent,showBrand:visible('showBrand'),showBreadcrumbs:visible('showBreadcrumbs'),
-    showInfoPanel:visible('showInfoPanel'),showBeacon:visible('showBeacon'),showFooter:visible('showFooter')}
+    showInfoPanel:visible('showInfoPanel'),showBeacon:visible('showBeacon'),showFooter:visible('showFooter'),
+    showViewControls:visible('showViewControls'),showBuildingTooltip:visible('showBuildingTooltip'),showHoverGlow:visible('showHoverGlow')}
 }
 
 export function orderedSiteWorkshops(workshops,configuration){
