@@ -208,6 +208,8 @@ function protectManagementWrites(req, res, next) {
         || apiPath === '/api/version'
         || apiPath === '/api/release'
         || apiPath === '/api/release/verify'
+        || apiPath === '/api/system/runtime'
+        || apiPath === '/api/settings/loading-experience'
         || shutdown;
 
     // In production mode an unlicensed installation may only reach the

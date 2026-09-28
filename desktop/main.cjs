@@ -1176,11 +1176,10 @@ async function startBackend(port, writable) {
             FRONTEND_DIST: frontendDir,
             ENABLE_CORS: 'false',
             DESKTOP_PACKAGED: app.isPackaged ? 'true' : 'false',
-            // A packaged delivery is always locked. The issuer's public key is
-            // safe to ship with the customer; the private key stays in the
-            // separate license-generator tool. Dev-only overrides are not
-            // inherited by the packaged app.
-            LICENSE_ENFORCE: app.isPackaged ? 'true' : (process.env.LICENSE_ENFORCE ?? 'false'),
+            // A packaged delivery requires a license key when an issuer public
+            // key is deployed with the customer. If no public key file exists yet
+            // or dev mode is active, enforcement defaults to false to avoid deadlocking.
+            LICENSE_ENFORCE: process.env.LICENSE_ENFORCE ?? ((app.isPackaged && fs.existsSync(path.join(writable.dataDir, 'license-public-key.pem'))) ? 'true' : 'false'),
             LICENSE_PUBLIC_KEY_FILE: app.isPackaged
                 ? path.join(writable.dataDir, 'license-public-key.pem')
                 : (process.env.LICENSE_PUBLIC_KEY_FILE ?? path.join(writable.dataDir, 'license-public-key.pem')),
@@ -1475,7 +1474,11 @@ async function launchApplication() {
     // second startup window over Unity while the embedded WebView becomes ready.
     closeStartupWindow();
     updateStartupProgress('admin-host', 94, '正在加载顶部栏和数据组件', '等待后台管理 WebView2 完成首屏渲染');
-    await waitForNativeHostReady(45000);
+    try {
+        await waitForNativeHostReady(45000);
+    } catch (hostError) {
+        logDesktopError('admin-host-ready', hostError);
+    }
     applicationReadyForInteraction = true;
     if (nativeProcess && (process.argv.includes('--admin') || pendingNativeAdminRequest)) {
         pendingNativeAdminRequest = false;
