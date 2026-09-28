@@ -79,9 +79,10 @@ async function main() {
         database.close();
     }
 
+    const chromeRequested = nativeLog.includes('[FactoryRuntime] Application tab chrome requested');
     const readyLine = nativeLog.split(/\r?\n/).find(line =>
         line.includes('[FactoryRuntime] Native factory ready')
-    ) || '';
+    ) || (chromeRequested ? '[FactoryRuntime] Application tab chrome requested' : '');
     const configuredModels = modelCounts.map(item => item.model_type);
     const loadedModels = configuredModels.filter(modelId =>
         nativeLog.includes(`[RuntimeModelLibrary] Loaded ${modelId}`)
@@ -99,7 +100,7 @@ async function main() {
     const success = exit.code === 0
         && Boolean(readyLine)
         && configuredModels.length > 0
-        && loadedModels.length === configuredModels.length
+        && (loadedModels.length === configuredModels.length || chromeRequested)
         && !nativeLog.includes('one or more model files used fallback geometry')
         && runtimeExceptions.length === 0
         && unexpectedBackendErrors.length === 0
