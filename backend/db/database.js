@@ -587,6 +587,13 @@ function saveDatabaseConfig(input) {
         ...input,
         password: input.password === '******' ? current.password : (input.password ?? current.password)
     });
+    // A deliberate switch to an external database must not be overwritten by
+    // the private desktop MySQL bootstrap on the next application launch.
+    if (current.managedBy === 'desktop-mysql' && ['type', 'host', 'port', 'user', 'password', 'database']
+        .some(key => String(next[key] ?? '') !== String(current[key] ?? ''))) {
+        delete next.managedBy;
+        delete next.instanceId;
+    }
     writeDatabaseConfig(next);
     return publicDatabaseConfig(next);
 }
@@ -803,6 +810,35 @@ async function initDb() {
     await initTables();
     await seedDefaults();
     lastInitError = null;
+}
+
+// Used only by the desktop first-install importer. Reuse the application schema,
+// but do not create demo/default records before copying the delivery snapshot.
+async function initializeEmptyMysqlSchema(connection, config) {
+    if (pool || sqliteDb || initPromise || closePromise) {
+        throw new Error('Schema initialization requires an isolated database module');
+    }
+    if (String(config?.type || 'mysql') !== 'mysql' || !config?.database) {
+        throw new Error('Schema initialization requires a MySQL database');
+    }
+    const [tables] = await connection.query(
+        'SELECT TABLE_NAME AS name FROM information_schema.tables WHERE table_schema = ?',
+        [config.database]
+    );
+    for (const { name } of tables) {
+        if (name === '_desktop_seed_state') continue;
+        const [rows] = await connection.query(`SELECT 1 FROM ${quoteIdentifier(name, { type: 'mysql' })} LIMIT 1`);
+        if (rows.length) throw new Error(`Refusing to initialize populated table: ${name}`);
+    }
+    const previousConfig = activeConfig;
+    activeConfig = { ...config, type: 'mysql' };
+    pool = connection;
+    try {
+        await initTables();
+    } finally {
+        pool = undefined;
+        activeConfig = previousConfig;
+    }
 }
 
 async function getDb() {
@@ -2710,6 +2746,7 @@ async function mergeWidgetDefaultConfig(db, widgetId, defaults) {
 }
 
 module.exports = {
+    initializeEmptyMysqlSchema,
     getDb,
     closeDb,
     reconnectDb,

@@ -37,7 +37,7 @@ async function rpc(id, method, params = {}) {
     }
 
     const state = await rpc(3, 'tools/call', { name: 'get_project_state', arguments: {} });
-    assert.equal(state.result.isError, false);
+    assert.equal(state.result.isError, false, JSON.stringify(state.result.content));
     assert(state.result.structuredContent.designer.document.scene.views.some(view => view.id === 'device_part'));
 
     const inspections = await rpc(31, 'tools/call', { name: 'get_model_inspection', arguments: { includeMetadata: false } });
@@ -50,7 +50,7 @@ async function rpc(id, method, params = {}) {
     assert(presets.result.structuredContent.count > 0, '模型拆解模板为空');
 
     const checks = await rpc(4, 'tools/call', { name: 'run_acceptance_checks', arguments: {} });
-    assert.equal(checks.result.structuredContent.success, true);
+    assert.equal(checks.result.structuredContent.success, true, JSON.stringify(checks.result.structuredContent));
     assert(checks.result.structuredContent.checks.every(check => check.passed), '存在未通过的 MCP 验收项');
 
     const license = await rpc(5, 'tools/call', { name: 'get_license_status', arguments: {} });

@@ -5,6 +5,7 @@ import { getFactoryScope } from '../../../runtime/factoryScope.js'
 import { cacheFactoryDraft, clearFactoryDraft, readFactoryDraft } from '../../../runtime/factoryDraftCache.js'
 import FactoryGeoFields from './FactoryGeoFields.vue'
 import FactoryDistributionPreview from './FactoryDistributionPreview.vue'
+import ProjectBundleTransfer from './ProjectBundleTransfer.vue'
 
 const props=defineProps({provinces:{type:Array,default:()=>[]},countries:{type:Array,default:()=>[]}})
 const factories=ref([]),loading=ref(true),saving=ref(false),error=ref(''),message=ref('')
@@ -78,6 +79,7 @@ async function createFactory(){
     </div>
     <p v-if="message" class="registry-message" role="status">{{ message }}</p>
     <p v-if="error && factories.length" class="registry-message error" role="alert">{{ error }}</p>
+    <ProjectBundleTransfer :factories="factories" @imported="load" />
 
     <Teleport to="body">
       <div v-if="createOpen" class="factory-modal-backdrop" @click.self="closeEditor" @keydown.esc="closeEditor">

@@ -97,7 +97,7 @@ function normalizeSettingValue(key, value) {
     }
     if (key === 'site_scene_config') {
         const imageUrl = String(parsed.streetImageUrl || '').trim();
-        if (imageUrl && !/^\/uploads\/appearance\/[a-f0-9]{32}\.(?:png|jpg|webp)$/.test(imageUrl))
+        if (imageUrl && !/^\/uploads\/(?:projects\/[a-f0-9]{24}\/uploads\/)*appearance\/[a-f0-9]{32}\.(?:png|jpg|webp)$/.test(imageUrl))
             throw new Error('街道背景图片必须通过设计器上传');
         const text = (field, fallback, maxLength) => String(parsed[field] ?? fallback).trim().slice(0, maxLength) || fallback;
         const visible = field => {
@@ -235,7 +235,7 @@ function normalizeSettingValue(key, value) {
         const preset = String(parsed.preset || 'interactive');
         if (!['interactive', 'quiet'].includes(preset)) throw new Error('加载画面方案无效');
         const imageUrl = String(parsed.imageUrl || '').trim();
-        if (imageUrl && !/^\/uploads\/appearance\/[a-f0-9]{32}\.(?:png|jpg|webp)$/.test(imageUrl))
+        if (imageUrl && !/^\/uploads\/(?:projects\/[a-f0-9]{24}\/uploads\/)*appearance\/[a-f0-9]{32}\.(?:png|jpg|webp)$/.test(imageUrl))
             throw new Error('加载图片必须通过设计器上传');
         const colors = {};
         for (const [field, fallback] of [['background', '#28282b'], ['accent', '#a8c3b1']]) {

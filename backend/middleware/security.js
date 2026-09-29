@@ -187,6 +187,7 @@ function permissionForApi(apiPath, method) {
         && apiPath !== '/api/system/cast' && !apiPath.startsWith('/api/system/cast/')) return 'admin';
     if ((apiPath === '/api/data-sources' || apiPath.startsWith('/api/data-sources/'))
         && apiPath !== '/api/data-sources/runtime-values' && !apiPath.startsWith('/api/data-sources/runtime-values/')) return 'admin';
+    if (apiPath === '/api/project-bundles' || apiPath.startsWith('/api/project-bundles/')) return 'admin';
     if (!SAFE_METHODS.has(method)) return 'admin';
     return 'view';
 }
@@ -194,6 +195,7 @@ function permissionForApi(apiPath, method) {
 function protectManagementWrites(req, res, next) {
     const apiPath = req.path.toLowerCase().replace(/\/+$/, '');
     const sensitiveRead = apiPath === '/api/database' || apiPath.startsWith('/api/database/')
+        || apiPath === '/api/project-bundles' || apiPath.startsWith('/api/project-bundles/')
         || apiPath === '/api/site-backups' || apiPath.startsWith('/api/site-backups/')
         || ((apiPath === '/api/data-sources' || apiPath.startsWith('/api/data-sources/'))
             && apiPath !== '/api/data-sources/runtime-values');

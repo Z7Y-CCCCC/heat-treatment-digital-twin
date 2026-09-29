@@ -1,4 +1,10 @@
 const assert = require('node:assert/strict');
+const path = require('node:path');
+const crypto = require('node:crypto');
+const {
+    BACKEND_DIR, createRunDirectory, createTestDatabase, findFreePort,
+    startLoggedProcess, waitForHttp, forceStop
+} = require('./integration-test-utils.cjs');
 const {
     buildDocumentFromLegacy,
     normalizeDocument,
@@ -6,14 +12,15 @@ const {
     isCanonicalDocument
 } = require('../utils/dashboardDocument');
 
-const baseUrl = String(process.env.TEST_BASE_URL || 'http://127.0.0.1:3001').replace(/\/$/, '');
+let baseUrl = String(process.env.TEST_BASE_URL || '').replace(/\/$/, '');
+let adminToken = process.env.ADMIN_API_TOKEN || '';
 
 async function api(path, options = {}) {
     const response = await fetch(`${baseUrl}${path}`, {
         ...options,
         headers: {
             'Content-Type': 'application/json',
-            ...(process.env.ADMIN_API_TOKEN ? { 'X-Admin-Token': process.env.ADMIN_API_TOKEN } : {}),
+            ...(adminToken ? { 'X-Admin-Token': adminToken } : {}),
             ...(options.headers || {})
         }
     });
@@ -50,6 +57,37 @@ async function main() {
     assert.equal(repairedDocument.scene.views[0].componentState.hide.includes('widget_already_deleted'), false, '旧视角残留组件引用没有清理');
     assert.equal(repairedDocument.widgets[0].events.some(event => event.targetId === 'widget_already_deleted'), false, '旧事件残留组件引用没有清理');
     validateDocument(repairedDocument);
+
+    const secondaryInput = clone(legacy);
+    secondaryInput.sceneId = 'secondary_scene';
+    secondaryInput.scene.id = 'secondary_scene';
+    secondaryInput.widgets.find(widget => widget.type === 'navigation').id = 'widget_navigation';
+    secondaryInput.scene.views[0].componentState.hide = ['widget_navigation'];
+    secondaryInput.widgets[0].events = [{ trigger: 'click', action: 'toggle_visibility', targetType: 'widget', targetId: 'widget_navigation' }];
+    const secondaryDocument = normalizeDocument(secondaryInput);
+    const secondaryNavigationId = secondaryDocument.widgets.find(widget => widget.type === 'navigation').id;
+    assert.notEqual(secondaryNavigationId, 'widget_navigation', '第二场景不能复用全局默认组件 ID');
+    assert.ok(secondaryDocument.scene.views[0].componentState.hide.includes(secondaryNavigationId));
+    assert.equal(secondaryDocument.widgets[0].events[0].targetId, secondaryNavigationId);
+    assert.equal(normalizeDocument(secondaryDocument).widgets.find(widget => widget.type === 'navigation').id, secondaryNavigationId);
+
+    for (const views of [
+        [{ id: 'a', parentViewId: 'b' }, { id: 'b', parentViewId: 'a' }],
+        [{ id: 'a', returnViewId: 'b' }, { id: 'b', returnViewId: 'a' }],
+        [{ id: 'a', returnViewId: 'b' }, { id: 'b', parentViewId: 'a', returnViewId: '' }]
+    ]) {
+        const normalized = normalizeDocument({ ...clone(legacy), scene: { ...legacy.scene, views } });
+        for (const start of normalized.scene.views) {
+            const visited = new Set();
+            let cursor = start;
+            while (cursor) {
+                assert.equal(visited.has(cursor.id), false, '视角返回导航不能包含循环');
+                visited.add(cursor.id);
+                cursor = normalized.scene.views.find(view => view.id === (cursor.returnViewId || cursor.parentViewId));
+            }
+        }
+        validateDocument(normalized);
+    }
 
     const initial = await api('/api/platform/designer');
     assert.equal(initial.response.ok, true, initial.body.error);
@@ -164,7 +202,28 @@ async function main() {
     }
 }
 
-main().catch(error => {
+async function runIsolated() {
+    if (baseUrl) return main();
+    const directory = createRunDirectory('dashboard-designer');
+    const dataDir = path.join(directory, 'data');
+    await createTestDatabase(path.join(dataDir, 'factory.db'));
+    const port = await findFreePort();
+    baseUrl = `http://127.0.0.1:${port}`;
+    adminToken = crypto.randomBytes(32).toString('hex');
+    const backend = startLoggedProcess(process.execPath, [path.join(BACKEND_DIR, 'server.js')], {
+        cwd: BACKEND_DIR,
+        env: { ...process.env, NODE_ENV: 'test', HOST: '127.0.0.1', PORT: String(port), APP_DATA_DIR: dataDir, ADMIN_API_TOKEN: adminToken },
+        logFile: path.join(directory, 'backend.log')
+    });
+    try {
+        await waitForHttp(`${baseUrl}/api/health`, 30000);
+        await main();
+    } finally {
+        await forceStop(backend);
+    }
+}
+
+runIsolated().catch(error => {
     console.error(error.stack || error);
     process.exitCode = 1;
 });

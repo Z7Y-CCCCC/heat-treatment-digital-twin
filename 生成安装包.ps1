@@ -8,6 +8,8 @@ param(
     [switch]$IncludeHistory,
     [switch]$RefreshDependencies,
     [switch]$ForceUnityBuild,
+    [switch]$StarterTemplate,
+    [switch]$SkipSmokeTest,
     [switch]$NoPause
 )
 
@@ -16,7 +18,8 @@ Set-StrictMode -Version Latest
 
 $projectDirectory = $PSScriptRoot
 $desktopDirectory = Join-Path $projectDirectory 'desktop'
-$outputDirectory = Join-Path $projectDirectory '安装包'
+$outputRoot = Join-Path $projectDirectory '安装包'
+$outputDirectory = Join-Path $outputRoot ("release-{0}" -f (Get-Date -Format 'yyyyMMdd-HHmmss-fff'))
 $packageFile = Join-Path $desktopDirectory 'package.json'
 $unityVersionFile = Join-Path $projectDirectory 'unity-client\ProjectSettings\ProjectVersion.txt'
 
@@ -53,7 +56,8 @@ function Invoke-CheckedCommand {
         Stop-Transcript | Out-Null
         $script:transcriptStarted = $false
     }
-    $exitCode = 0
+    $exitCode = -1
+    $stageTimer = [Diagnostics.Stopwatch]::StartNew()
     $previousErrorActionPreference = $ErrorActionPreference
     try {
         # Windows PowerShell 5.1 wraps native stderr lines (including harmless
@@ -66,6 +70,9 @@ function Invoke-CheckedCommand {
             Out-File -FilePath $script:buildLogPath -Append -Encoding UTF8 -ErrorAction Stop
         $exitCode = $LASTEXITCODE
     } finally {
+        $stageTimer.Stop()
+        $stageSeconds = [Math]::Round($stageTimer.Elapsed.TotalSeconds, 3)
+        $script:buildStages.Add([ordered]@{ name = $Label; seconds = $stageSeconds; exitCode = $exitCode })
         $ErrorActionPreference = $previousErrorActionPreference
         try {
             Start-Transcript -LiteralPath $script:buildLogPath -Append | Out-Null
@@ -73,6 +80,7 @@ function Invoke-CheckedCommand {
         } catch {
             Write-Host "无法继续写入 PowerShell 构建日志：$($_.Exception.Message)" -ForegroundColor Yellow
         }
+        Write-Host "[$Label] 耗时 $stageSeconds 秒" -ForegroundColor Cyan
     }
     if ($exitCode -ne 0) {
         throw "$Label 失败（退出码 $exitCode）。"
@@ -92,9 +100,14 @@ function Ensure-NodeDependencies {
     )
 
     $nodeModules = Join-Path $Directory 'node_modules'
+    $dependencyStateScript = Join-Path $desktopDirectory 'scripts\dependency-state.cjs'
     if ((Test-Path -LiteralPath $nodeModules) -and -not $RefreshDependencies) {
-        Write-Host "[$Label] 已检测到依赖，直接复用。"
-        return
+        & $node $dependencyStateScript 'check' $Directory
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "[$Label] 依赖锁文件、安装记录和 Node 运行时未变化，直接复用。"
+            return
+        }
+        Write-Host "[$Label] 依赖或运行时变化，或尚无成功安装记录，重新安装后建立记录。"
     }
 
     $installCommand = if (Test-Path -LiteralPath (Join-Path $Directory 'package-lock.json')) { 'ci' } else { 'install' }
@@ -103,6 +116,8 @@ function Ensure-NodeDependencies {
         $Directory,
         $installCommand
     )
+    & $node $dependencyStateScript 'record' $Directory
+    if ($LASTEXITCODE -ne 0) { throw "$Label 依赖安装状态记录失败。" }
 }
 
 function Resolve-UnityEditor {
@@ -147,6 +162,9 @@ function Assert-ApplicationIsClosed {
 }
 
 $buildFailed = $false
+$buildStartedAt = (Get-Date).ToString('o')
+$buildTimer = [Diagnostics.Stopwatch]::StartNew()
+$buildStages = New-Object 'System.Collections.Generic.List[object]'
 $transcriptStarted = $false
 $buildLogPath = $null
 
@@ -168,7 +186,7 @@ try {
     Write-Host "无法启动 PowerShell 构建日志：$($_.Exception.Message)" -ForegroundColor Yellow
 }
 
-$node = Resolve-RequiredCommand -Names @('node.exe', 'node') -InstallHint '未找到 Node.js，请先安装 Node.js 18 或更高版本。'
+$node = Resolve-RequiredCommand -Names @('node.exe', 'node') -InstallHint '未找到 Node.js，请先安装 Node.js 22.12 或更高版本。'
 $npm = Resolve-RequiredCommand -Names @('npm.cmd', 'npm') -InstallHint '未找到 npm，请重新安装包含 npm 的 Node.js。'
 $null = Resolve-RequiredCommand -Names @('dotnet.exe', 'dotnet') -InstallHint '未找到 .NET SDK，请先安装支持 .NET 8 的 SDK。'
 $unityEditor = Resolve-UnityEditor
@@ -179,12 +197,6 @@ if ([string]::IsNullOrWhiteSpace($version)) {
 }
 
 Assert-ApplicationIsClosed
-
-$iconCacheDir = Join-Path $outputDirectory '.icon-ico'
-if (Test-Path -LiteralPath $iconCacheDir) {
-    Write-Host '清理图标缓存...' -ForegroundColor Yellow
-    Remove-Item -LiteralPath $iconCacheDir -Recurse -Force
-}
 
 Write-Host '热处理数字孪生大屏：安装包构建' -ForegroundColor Green
 Write-Host "项目目录：$projectDirectory"
@@ -209,6 +221,9 @@ $environmentNames = @(
     'DESKTOP_MYSQL_PASSWORD',
     'DESKTOP_MYSQL_DATABASE',
     'DESKTOP_TEMPLATE_INCLUDE_HISTORY',
+    'DESKTOP_TEMPLATE_EMPTY',
+    'DESKTOP_TEMPLATE_SOURCE_DB',
+    'DESKTOP_TEMPLATE_SOURCE_UPLOADS',
     'DESKTOP_FORCE_UNITY_REBUILD'
 )
 $previousEnvironment = @{}
@@ -224,24 +239,22 @@ try {
     $env:DESKTOP_MYSQL_PASSWORD = $DatabasePassword
     $env:DESKTOP_MYSQL_DATABASE = $DatabaseName
     $env:DESKTOP_TEMPLATE_INCLUDE_HISTORY = if ($IncludeHistory) { 'true' } else { 'false' }
+    $env:DESKTOP_TEMPLATE_EMPTY = if ($StarterTemplate) { 'true' } else { 'false' }
+    Remove-Item Env:DESKTOP_TEMPLATE_SOURCE_DB -ErrorAction SilentlyContinue
+    Remove-Item Env:DESKTOP_TEMPLATE_SOURCE_UPLOADS -ErrorAction SilentlyContinue
     $env:DESKTOP_FORCE_UNITY_REBUILD = if ($ForceUnityBuild) { 'true' } else { 'false' }
 
     $installerName = "热处理数字孪生大屏-安装包-$version-x64.exe"
-    foreach ($oldOutput in @(
-        (Join-Path $outputDirectory $installerName),
-        (Join-Path $outputDirectory "$installerName.blockmap"),
-        (Join-Path $outputDirectory "$installerName.sha256.txt")
-    )) {
-        if (Test-Path -LiteralPath $oldOutput) {
-            Remove-Item -LiteralPath $oldOutput -Force
-        }
+    foreach ($buildStep in @('build:frontend', 'build:unity', 'build:admin-host', 'prepare:resources')) {
+        Invoke-CheckedCommand -Label $buildStep -Executable $npm -ArgumentList @('--prefix', $desktopDirectory, 'run', $buildStep)
     }
-
-    Invoke-CheckedCommand -Label '生成 Windows x64 客户安装包' -Executable $npm -ArgumentList @(
-        '--prefix',
-        $desktopDirectory,
-        'run',
-        'dist'
+    $builderCli = Join-Path $desktopDirectory 'node_modules/electron-builder/out/cli/cli.js'
+    Invoke-CheckedCommand -Label '生成可验证的 Windows x64 程序目录' -Executable $node -ArgumentList @(
+        $builderCli,
+        '--projectDir', $desktopDirectory,
+        '--dir', '--win', '--x64',
+        "--config.directories.output=$outputDirectory",
+        '--config.compression=normal'
     )
 } finally {
     foreach ($name in $environmentNames) {
@@ -249,19 +262,64 @@ try {
     }
 }
 
+$unpacked = Join-Path (Join-Path $outputDirectory 'win-unpacked') "$($desktopPackage.build.productName).exe"
+if (-not (Test-Path -LiteralPath $unpacked)) { throw "缺少解包验证程序：$unpacked" }
+if (-not $SkipSmokeTest) {
+    Invoke-CheckedCommand -Label '首次运行随包 MySQL 验证' -Executable $node -ArgumentList @(
+        (Join-Path $projectDirectory 'tools/packaged-mysql-smoke-test.cjs'),
+        $unpacked
+    )
+    Invoke-CheckedCommand -Label '随包 MySQL 项目迁移与回滚验证' -Executable $node -ArgumentList @(
+        (Join-Path $projectDirectory 'tools/packaged-project-bundle-mysql-test.cjs'),
+        $unpacked
+    )
+} else {
+    Write-Warning '本次已明确跳过首次运行和项目迁移 MySQL 验证，不应宣称已通过新电脑验证。'
+}
+
+$previousCompressionLevel = [Environment]::GetEnvironmentVariable('ELECTRON_BUILDER_COMPRESSION_LEVEL', 'Process')
+$effectiveCompressionLevel = if ([string]::IsNullOrWhiteSpace($previousCompressionLevel)) { '1' } else { $previousCompressionLevel }
+if ($effectiveCompressionLevel -notmatch '^[0-9]$') {
+    throw 'ELECTRON_BUILDER_COMPRESSION_LEVEL 必须为 0 到 9 的单个数字。'
+}
+try {
+    $env:ELECTRON_BUILDER_COMPRESSION_LEVEL = $effectiveCompressionLevel
+    Write-Host "ZIP 压缩级别：$effectiveCompressionLevel（默认 1，可通过 ELECTRON_BUILDER_COMPRESSION_LEVEL 覆盖）"
+    Invoke-CheckedCommand -Label '压缩已验证的程序并生成 NSIS 安装包' -Executable $node -ArgumentList @(
+        $builderCli,
+        '--projectDir', $desktopDirectory,
+        '--prepackaged', (Join-Path $outputDirectory 'win-unpacked'),
+        '--win', 'nsis', '--x64',
+        "--config.directories.output=$outputDirectory",
+        '--config.compression=normal'
+    )
+} finally {
+    [Environment]::SetEnvironmentVariable('ELECTRON_BUILDER_COMPRESSION_LEVEL', $previousCompressionLevel, 'Process')
+}
 $installerPath = Join-Path $outputDirectory $installerName
 if (-not (Test-Path -LiteralPath $installerPath)) {
     throw "构建命令已结束，但没有找到预期安装包：$installerPath"
 }
-
 $installer = Get-Item -LiteralPath $installerPath
-if ($installer.Length -le 0) {
-    throw "安装包文件为空：$installerPath"
-}
+if ($installer.Length -le 0) { throw "安装包文件为空：$installerPath" }
 
 $hash = Get-FileHash -LiteralPath $installerPath -Algorithm SHA256
 $checksumPath = "$installerPath.sha256.txt"
 Set-Content -LiteralPath $checksumPath -Encoding UTF8 -Value "$($hash.Hash.ToLowerInvariant())  $installerName"
+$releaseManifest = [ordered]@{
+    version = $version
+    createdAt = (Get-Date).ToString('o')
+    installer = $installerPath
+    size = $installer.Length
+    sha256 = $hash.Hash.ToLowerInvariant()
+    mysqlBundled = $true
+    smokeTest = if ($SkipSmokeTest) { 'skipped' } else { 'passed' }
+    includeHistory = [bool]$IncludeHistory
+    starterTemplate = [bool]$StarterTemplate
+    compressionLevel = $effectiveCompressionLevel
+    buildLog = $buildLogPath
+}
+$releaseManifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $outputDirectory 'release-manifest.json') -Encoding UTF8
 
 Write-Host "`n安装包生成完成。" -ForegroundColor Green
 Write-Host "安装包：$installerPath"
@@ -276,6 +334,26 @@ Write-Host "校验文件：$checksumPath"
     Write-Host $_.ScriptStackTrace -ForegroundColor DarkYellow
     Write-Host "====================================================" -ForegroundColor Red
 } finally {
+    $buildTimer.Stop()
+    try {
+        if (Test-Path -LiteralPath $outputDirectory) {
+            $timingPath = Join-Path $outputDirectory 'build-timings.json'
+            $timingReport = [ordered]@{
+                startedAt = $buildStartedAt
+                success = -not $buildFailed
+                totalSeconds = [Math]::Round($buildTimer.Elapsed.TotalSeconds, 3)
+                stages = @($buildStages.ToArray())
+            }
+            $timingJson = $timingReport | ConvertTo-Json -Depth 5
+            $timingJson | Set-Content -LiteralPath $timingPath -Encoding UTF8
+            $timingCache = Join-Path $desktopDirectory '.cache'
+            New-Item -ItemType Directory -Force -Path $timingCache | Out-Null
+            $timingJson | Set-Content -LiteralPath (Join-Path $timingCache 'build-timings.json') -Encoding UTF8
+            Write-Host "构建耗时记录：$timingPath" -ForegroundColor Cyan
+        }
+    } catch {
+        Write-Warning "无法保存构建耗时报告：$($_.Exception.Message)"
+    }
     if ($transcriptStarted) {
         try { Stop-Transcript | Out-Null } catch { }
     }

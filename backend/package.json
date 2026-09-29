@@ -21,6 +21,7 @@
     "test:plc-simulator-protocols": "node scripts/plc-simulator-protocol-integration-test.cjs",
     "test:recovery": "node scripts/power-recovery-test.cjs",
     "test:mysql-backup": "node scripts/mysql-backup-test.cjs",
+    "test:mysql-seed": "node scripts/mysql-seed-test.cjs",
     "test:production-readiness": "node scripts/production-readiness-test.cjs",
     "test:math-expression": "node scripts/math-expression-test.cjs",
     "test:site-backup": "node scripts/site-backup-test.cjs",

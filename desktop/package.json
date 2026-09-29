@@ -11,18 +11,19 @@
   },
   "scripts": {
     "prepare:ffmpeg": "node scripts/prepare-ffmpeg.cjs",
+    "prepare:mysql": "node scripts/prepare-mysql-runtime.cjs",
     "prepare:resources": "node scripts/prepare-resources.cjs && npm run prepare:ffmpeg && node scripts/generate-third-party-notices.cjs",
-    "build:frontend": "npm --prefix ../frontend run build",
+    "build:frontend": "node scripts/build-frontend.cjs",
     "build:unity": "node scripts/build-unity-client.cjs",
     "build:unity:force": "node scripts/build-unity-client.cjs --force",
     "build:admin-host": "node scripts/build-native-admin-host.cjs",
     "test:logs": "node scripts/log-manager-test.cjs",
     "test:processes": "node --test scripts/process-lifecycle-test.cjs scripts/desktop-supervisor-unit-test.cjs",
-    "test:resources": "node --test scripts/resource-preparation-test.cjs",
+    "test:resources": "node --test scripts/resource-preparation-test.cjs scripts/runtime-cache-test.cjs scripts/dependency-cache-test.cjs scripts/directory-publish-test.cjs",
     "test:supervisor": "node scripts/backend-supervisor-test.cjs",
     "test:admin-host-parent": "node scripts/admin-host-parent-test.cjs",
     "test:admin-host-retry": "node scripts/admin-host-retry-test.cjs",
-    "dist": "npm run build:frontend && npm run build:unity && npm run build:admin-host && npm run prepare:resources && electron-builder --win nsis --x64"
+    "dist": "node scripts/build-release.cjs"
   },
   "devDependencies": {
     "electron": "43.1.1",
@@ -39,17 +40,24 @@
       "main.cjs",
       "logManager.cjs",
       "processLifecycle.cjs",
+      "mysqlRuntime.cjs",
+      "directoryPublish.cjs",
       "package.json",
       "assets/**/*"
     ],
     "extraResources": [
+      {
+        "from": "resources/mysql",
+        "to": "mysql",
+        "filter": ["**/*"]
+      },
       {
         "from": "../shared",
         "to": "shared",
         "filter": ["*.cjs", "*.mjs"]
       },
       {
-        "from": "../frontend/dist",
+        "from": ".cache/frontend-dist",
         "to": "frontend",
         "filter": [
           "**/*"
@@ -124,6 +132,8 @@
     },
     "nsis": {
       "oneClick": false,
+      "differentialPackage": false,
+      "useZip": true,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,

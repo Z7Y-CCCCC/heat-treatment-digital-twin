@@ -1,7 +1,7 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { adminApi } from '../../../config/factoryConfig.js'
-import { getFactoryScope, setFactoryScope } from '../../../runtime/factoryScope.js'
+import { getFactoryScope, setFactoryScope, FACTORY_DIRECTORY_CHANGE_EVENT } from '../../../runtime/factoryScope.js'
 
 const props = defineProps({
   workshops: { type: Array, default: () => [] },
@@ -18,7 +18,7 @@ const factoryId = ref(getFactoryScope())
 const error = ref('')
 const switching = ref(false)
 
-onMounted(async () => {
+async function reloadFactories() {
   try {
     const result = await adminApi.listFactories()
     if (result.error) throw new Error(result.error)
@@ -27,7 +27,9 @@ onMounted(async () => {
       factoryId.value = result.activeFactoryId || factories.value[0]?.id || ''
     }
   } catch (cause) { error.value = cause.message || '工厂列表读取失败' }
-})
+}
+onMounted(() => { reloadFactories(); window.addEventListener(FACTORY_DIRECTORY_CHANGE_EVENT, reloadFactories) })
+onUnmounted(() => window.removeEventListener(FACTORY_DIRECTORY_CHANGE_EVENT, reloadFactories))
 
 const currentFactory = computed(() => factories.value.find(factory => factory.id === factoryId.value))
 const currentDevice = computed(() => props.devices.find(device => device.id === props.deviceId))

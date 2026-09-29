@@ -118,6 +118,23 @@ export function normalizeDashboardViews(scene = {}) {
       view.returnViewId = view.parentViewId || ''
     }
   })
+  const byId = new Map(views.map(view => [view.id, view]))
+  for (const effectiveReturn of [false, true]) {
+    views.forEach(start => {
+      const visited = new Set()
+      let cursor = start
+      while (cursor) {
+        if (visited.has(cursor.id)) {
+          start.parentViewId = ''
+          if (effectiveReturn) start.returnViewId = ''
+          break
+        }
+        visited.add(cursor.id)
+        const nextId = effectiveReturn ? cursor.returnViewId || cursor.parentViewId : cursor.parentViewId
+        cursor = byId.get(nextId)
+      }
+    })
+  }
   return { views, defaultViewId }
 }
 

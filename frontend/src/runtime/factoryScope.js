@@ -17,3 +17,4 @@ export function setFactoryScope(factoryId) {
 }
 
 export const FACTORY_SCOPE_CHANGE_EVENT = CHANGE_EVENT
+export const FACTORY_DIRECTORY_CHANGE_EVENT = 'digital-twin-factory-directory-changed'

@@ -5,6 +5,29 @@ import { MAP_SURFACE_VIEWS, createDashboardWidget, normalizeDashboardDocument } 
 
 const source = async path => readFile(new URL(path, import.meta.url), 'utf8')
 
+test('parent, return and mixed navigation cycles become terminating paths', () => {
+  for (const views of [
+    [{ id: 'a', parentViewId: 'b' }, { id: 'b', parentViewId: 'a' }],
+    [{ id: 'a', returnViewId: 'b' }, { id: 'b', returnViewId: 'a' }],
+    [{ id: 'a', returnViewId: 'b' }, { id: 'b', parentViewId: 'a', returnViewId: '' }]
+  ]) {
+    const document = normalizeDashboardDocument({ scene: { views } })
+    const byId = new Map(document.scene.views.map(view => [view.id, view]))
+    for (const start of document.scene.views) {
+      for (const useReturn of [false, true]) {
+        const visited = new Set()
+        let cursor = start
+        while (cursor) {
+          assert.equal(visited.has(cursor.id), false, `cycle from ${start.id}`)
+          visited.add(cursor.id)
+          cursor = byId.get(useReturn ? cursor.returnViewId || cursor.parentViewId : cursor.parentViewId)
+        }
+      }
+    }
+    assert.deepEqual(normalizeDashboardDocument(document), document, 'repair must be stable across save/reopen')
+  }
+})
+
 test('older authored dashboards gain the seven map and site canvases without changing the original default', () => {
   const document = normalizeDashboardDocument({
     scene: { defaultViewId: 'factory_overview', views: [{ id: 'factory_overview', name: '原全厂', mode: 'factory' }] },

@@ -470,6 +470,62 @@ async function main() {
         assert.equal((await db.get('SELECT draft_revision FROM scenes WHERE id = ?', [state.scene.id])).draft_revision, state.revision);
     });
 
+    await check('concurrent publications allocate distinct automatic versions', async () => {
+        const state = await documents.loadDesignerState(db);
+        const gate = deferred();
+        let entered = 0;
+        const racingDb = { ...db, async transaction(callback) {
+            if (++entered === 2) gate.resolve();
+            await gate.promise;
+            return db.transaction(callback);
+        } };
+        const releases = await Promise.all([1, 2].map(() => documents.publishDraft(racingDb, { sceneId: state.scene.id })));
+        assert.equal(new Set(releases.map(item => item.release.version)).size, 2);
+        assert.equal((await db.all('SELECT id FROM releases WHERE project_id = ? AND is_current = 1', [state.project.id])).length, 1);
+    });
+
+    await check('concurrent publications cannot reuse an explicit version', async () => {
+        const state = await documents.loadDesignerState(db);
+        const gate = deferred();
+        let entered = 0;
+        const racingDb = { ...db, async transaction(callback) {
+            if (++entered === 2) gate.resolve();
+            await gate.promise;
+            return db.transaction(callback);
+        } };
+        const attempts = await Promise.allSettled([1, 2].map(() => documents.publishDraft(racingDb, { sceneId: state.scene.id, version: '97.0.0' })));
+        assert.equal(attempts.filter(item => item.status === 'fulfilled').length, 1);
+        assert.match(attempts.find(item => item.status === 'rejected').reason.message, /已存在/);
+    });
+
+    await check('running the latest scene release does not select an older same-second publication', async () => {
+        const state = await documents.loadDesignerState(db);
+        const first = await documents.publishDraft(db, { sceneId: state.scene.id });
+        const second = await documents.publishDraft(db, { sceneId: state.scene.id });
+        // Database timestamp columns may have only second precision. Force the
+        // collision so this regression does not depend on wall-clock timing.
+        await db.run('UPDATE releases SET created_at = ? WHERE project_id = ?', ['2026-01-01 00:00:00', state.project.id]);
+        await documents.activateRelease(db, first.release.id);
+        const activated = await documents.activateLatestSceneRelease(db, state.scene.id);
+        assert.equal(activated.release.id, second.release.id);
+        assert.equal((await documents.loadDesignerState(db)).releases[0].id, second.release.id);
+    });
+
+    await check('publishing rejects a draft changed after the publication read', async () => {
+        const state = await documents.loadDesignerState(db);
+        const racingDb = { ...db, async transaction(callback) {
+            await documents.saveDraft(db, { sceneId: state.scene.id, document: state.document, expectedRevision: state.revision });
+            return db.transaction(callback);
+        } };
+        await assert.rejects(documents.publishDraft(racingDb, { sceneId: state.scene.id }), error => error.code === 'DRAFT_CONFLICT');
+    });
+
+    await check('runtime projection accepts a missing document for an unpublished scene', async () => {
+        const state = await documents.loadDesignerState(db);
+        const payload = documents.runtimePlatformPayload({ project: state.project, scene: state.scene, document: null, release: null });
+        assert.ok(payload.document && payload.activeScene);
+    });
+
     async function inactiveRelease(id) {
         const state = await documents.loadDesignerState(db);
         await db.run(`INSERT INTO releases (id, project_id, scene_id, version, snapshot_json, is_current, schema_version, draft_revision)

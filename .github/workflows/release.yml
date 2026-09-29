@@ -1,0 +1,130 @@
+name: Windows installer
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-release
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Only release main or a version tag already merged into main
+        env:
+          RUNNER_ENABLED: ${{ vars.WINDOWS_RELEASE_RUNNER_ENABLED }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" != refs/heads/main && "$GITHUB_REF" != refs/tags/v* ]]; then
+            echo 'Run this workflow on main or a vX.Y.Z tag.' >&2
+            exit 1
+          fi
+          git merge-base --is-ancestor HEAD origin/main
+          node tools/ci/check-release.cjs
+          if [[ "$RUNNER_ENABLED" != true ]]; then
+            echo 'Windows runner is not enabled. Run tools/ci/setup-windows-runner.ps1; then set WINDOWS_RELEASE_RUNNER_ENABLED=true.' >&2
+            exit 1
+          fi
+
+  quality:
+    needs: preflight
+    uses: ./.github/workflows/quality.yml
+
+  package:
+    needs: [preflight, quality]
+    runs-on: [self-hosted, Windows, X64, digital-twin-release]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          clean: true
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.13.1
+          cache: npm
+          cache-dependency-path: |
+            backend/package-lock.json
+            frontend/package-lock.json
+            desktop/package-lock.json
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Check native build prerequisites
+        shell: powershell
+        run: ./tools/ci/setup-windows-runner.ps1 -CheckOnly
+      - uses: actions/cache@v4
+        with:
+          path: |
+            unity-client/Library
+            unity-client/Builds
+            desktop/.cache
+          key: release-windows-${{ runner.name }}-${{ hashFiles('unity-client/ProjectSettings/ProjectVersion.txt', '**/package-lock.json') }}-${{ github.sha }}
+          restore-keys: |
+            release-windows-${{ runner.name }}-${{ hashFiles('unity-client/ProjectSettings/ProjectVersion.txt', '**/package-lock.json') }}-
+            release-windows-${{ runner.name }}-
+      - name: Build, verify first launch and restart, then package
+        shell: powershell
+        run: ./生成安装包.ps1 -StarterTemplate -NoPause
+      - name: Verify native overlay in the interactive Windows session
+        shell: powershell
+        run: dotnet run --project tools/native-overlay-tests/NativeOverlayTests.csproj --configuration Release
+      - name: Collect this build's verified installer
+        shell: powershell
+        run: node tools/ci/collect-release.cjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer-${{ github.run_number }}
+          path: output/ci-release/*
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-build-logs-${{ github.run_number }}
+          path: |
+            安装包/release-*/构建日志-*.txt
+            安装包/release-*/build-timings.json
+            output/packaged-project-bundle-mysql-*/result.json
+            output/packaged-project-bundle-mysql-*/mysqld.log
+            unity-client/Logs/desktop-package-build.log
+          retention-days: 14
+
+  draft-release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: package
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-installer-${{ github.run_number }}
+          path: release
+      - name: Create draft release with verified installer and checksums
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            test "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = true
+          else
+            gh release create "$RELEASE_TAG" --verify-tag --draft --title "$RELEASE_TAG" --notes 'Windows x64 installer. Automated quality checks and isolated first-launch/restart verification passed. Includes starter configuration, not customer data.'
+          fi
+          gh release upload "$RELEASE_TAG" release/* --clobber

@@ -474,8 +474,23 @@ function createMcpRouter({ port = 3001 } = {}) {
         for (const name of ['authorization', 'x-admin-token', 'x-mcp-token', 'cookie', 'x-csrf-token']) {
             if (req.get(name)) headers[name] = req.get(name);
         }
+        headers['x-factory-id'] = req.factoryId;
         requestAuthorization.run(headers, next);
     });
+
+    function currentFactoryId() {
+        return requestAuthorization.getStore()?.['x-factory-id'] || '';
+    }
+
+    function currentEngineStatus() {
+        return global.dataEngine?.getFactoryStatuses?.()[currentFactoryId()] || null;
+    }
+
+    function demoId(id) {
+        const factoryId = currentFactoryId();
+        return !factoryId || factoryId === 'factory_default'
+            ? id : `${id}_${crypto.createHash('sha256').update(factoryId).digest('hex').slice(0, 12)}`;
+    }
 
     async function localApi(path, options = {}) {
         const response = await fetch(`http://127.0.0.1:${port}${path}`, {
@@ -493,7 +508,7 @@ function createMcpRouter({ port = 3001 } = {}) {
 
     async function loadModels() {
         const db = await getDb();
-        const rows = await db.all('SELECT * FROM models ORDER BY id ASC');
+        const rows = await db.all('SELECT * FROM models WHERE factory_id IS NULL OR factory_id = ? ORDER BY id ASC', [currentFactoryId()]);
         return mergeBuiltinModels(rows);
     }
 
@@ -743,21 +758,21 @@ function createMcpRouter({ port = 3001 } = {}) {
 
     async function loadState() {
         const db = await getDb();
+        const factoryId = currentFactoryId();
         const [workshops, lines, devices, points, models, settings, designer] = await Promise.all([
-            db.all('SELECT * FROM workshops ORDER BY sort_order ASC, id ASC'),
-            db.all('SELECT * FROM `lines` ORDER BY sort_order ASC, id ASC'),
-            db.all('SELECT * FROM devices ORDER BY line_id, sort_order ASC, id ASC'),
-            db.all('SELECT * FROM data_points ORDER BY device_id, id ASC'),
-            db.all('SELECT * FROM models ORDER BY id ASC'),
-            db.all('SELECT * FROM settings ORDER BY `key` ASC'),
-            loadDesignerState(db)
+            db.all('SELECT * FROM workshops WHERE factory_id = ? ORDER BY sort_order ASC, id ASC', [factoryId]),
+            db.all('SELECT l.* FROM `lines` l JOIN workshops w ON w.id = l.workshop_id WHERE w.factory_id = ? ORDER BY l.sort_order ASC, l.id ASC', [factoryId]),
+            localApi('/api/devices'),
+            localApi('/api/datapoints'),
+            loadModels(),
+            localApi('/api/settings'),
+            loadDesignerState(db, '', factoryId)
         ]);
-        const settingsObject = {};
-        settings.forEach(row => { settingsObject[row.key] = row.value; });
         return {
+            factoryId,
             db: getDbStatus(),
-            engine: global.dataEngine?.getStatus?.() || null,
-            settings: settingsObject,
+            engine: currentEngineStatus(),
+            settings,
             workshops: workshops.map(row => ({ ...row, layout: normalizeWorkshopLayout(row.layout_json) })),
             lines: lines.map(row => ({ ...row, layout: normalizeLineLayout(row.layout_json) })),
             devices,
@@ -787,13 +802,14 @@ function createMcpRouter({ port = 3001 } = {}) {
         if (!name) throw new Error('车间名称不能为空');
         const db = await getDb();
         const layout = normalizeWorkshopLayout(args.layout);
-        await db.upsert('workshops', {
+        const current = await db.get('SELECT id FROM workshops WHERE id = ? AND factory_id = ?', [id, currentFactoryId()]);
+        await localApi(current ? `/api/workshops/${encodeURIComponent(id)}` : '/api/workshops', { method: current ? 'PUT' : 'POST', body: JSON.stringify({
             id,
             name,
             sort_order: numberOr(args.sortOrder, 0),
             layout_json: JSON.stringify(layout)
-        }, 'id');
-        return { success: true, workshop: await db.get('SELECT * FROM workshops WHERE id = ?', [id]) };
+        }) });
+        return { success: true, workshop: await db.get('SELECT * FROM workshops WHERE id = ? AND factory_id = ?', [id, currentFactoryId()]) };
     }
 
     async function upsertLine(args) {
@@ -802,17 +818,18 @@ function createMcpRouter({ port = 3001 } = {}) {
         const name = text(args.name);
         if (!name) throw new Error('产线名称不能为空');
         const db = await getDb();
-        if (!await db.get('SELECT id FROM workshops WHERE id = ?', [workshopId])) {
+        if (!await db.get('SELECT id FROM workshops WHERE id = ? AND factory_id = ?', [workshopId, currentFactoryId()])) {
             throw new Error(`车间不存在：${workshopId}`);
         }
         const layout = normalizeLineLayout(args.layout);
-        await db.upsert('lines', {
+        const current = await db.get('SELECT l.id FROM `lines` l JOIN workshops w ON w.id = l.workshop_id WHERE l.id = ? AND w.factory_id = ?', [id, currentFactoryId()]);
+        await localApi(current ? `/api/lines/${encodeURIComponent(id)}` : '/api/lines', { method: current ? 'PUT' : 'POST', body: JSON.stringify({
             id,
             name,
             workshop_id: workshopId,
             layout_json: JSON.stringify(layout),
             sort_order: numberOr(args.sortOrder, 0)
-        }, 'id');
+        }) });
         return { success: true, line: await db.get('SELECT * FROM `lines` WHERE id = ?', [id]) };
     }
 
@@ -870,14 +887,14 @@ function createMcpRouter({ port = 3001 } = {}) {
     async function setDataMode(args) {
         const mode = text(args.mode).toLowerCase();
         if (!['simulation', 'integrated_plc'].includes(mode)) throw new Error('mode 只能是 simulation 或 integrated_plc');
-        const db = await getDb();
-        await db.upsert('settings', { key: 'data_mode', value: mode }, 'key');
+        const changed = { data_mode: mode };
         if (args.simulationIntervalMs !== undefined) {
             const interval = Math.max(250, Math.min(60000, Math.round(numberOr(args.simulationIntervalMs, 2000))));
-            await db.upsert('settings', { key: 'simulation_interval_ms', value: String(interval) }, 'key');
+            changed.simulation_interval_ms = String(interval);
         }
+        await localApi('/api/settings', { method: 'PUT', body: JSON.stringify(changed) });
         if (global.dataEngine?.restart) await global.dataEngine.restart();
-        return { success: true, mode, engine: global.dataEngine?.getStatus?.() || null };
+        return { success: true, mode, engine: currentEngineStatus() };
     }
 
     async function saveDashboardDraft(args) {
@@ -885,7 +902,8 @@ function createMcpRouter({ port = 3001 } = {}) {
         const saved = await saveDraft(db, {
             sceneId: args.sceneId || '',
             document: args.document,
-            expectedRevision: args.expectedRevision
+            expectedRevision: args.expectedRevision,
+            factoryId: currentFactoryId()
         });
         return { success: true, revision: saved.revision, document: saved.document };
     }
@@ -895,7 +913,8 @@ function createMcpRouter({ port = 3001 } = {}) {
         const published = await publishDraft(db, {
             sceneId: args.sceneId || '',
             version: args.version,
-            notes: args.notes || 'MCP 现场样板验收发布'
+            notes: args.notes || 'MCP 现场样板验收发布',
+            factoryId: currentFactoryId()
         });
         global.wsServer?.broadcast?.('dashboard_release_changed', {
             releaseId: published.release.id,
@@ -931,45 +950,45 @@ function createMcpRouter({ port = 3001 } = {}) {
             lanes: [{ id: 'demo_lane_b', name: '回火清洗线', type: 'device_lane', offsetZ: 0, length: 68, sort_order: 0 }],
             rails: []
         };
-        await upsertWorkshop({ id: 'ws_demo_south', name: '南区热处理示范车间', sortOrder: 10, layout: workshopLayout });
-        await upsertLine({ id: 'line_demo_quench', name: '1# 淬火线', workshopId: 'ws_demo_south', sortOrder: 0, layout: lineOneLayout });
-        await upsertLine({ id: 'line_demo_temper', name: '2# 回火清洗线', workshopId: 'ws_demo_south', sortOrder: 1, layout: lineTwoLayout });
+        await upsertWorkshop({ id: demoId('ws_demo_south'), name: '南区热处理示范车间', sortOrder: 10, layout: workshopLayout });
+        await upsertLine({ id: demoId('line_demo_quench'), name: '1# 淬火线', workshopId: demoId('ws_demo_south'), sortOrder: 0, layout: lineOneLayout });
+        await upsertLine({ id: demoId('line_demo_temper'), name: '2# 回火清洗线', workshopId: demoId('ws_demo_south'), sortOrder: 1, layout: lineTwoLayout });
 
         const furnaceConfig = {
             labelY: 3.6,
             caption: '示范炉',
             laneId: 'demo_lane_a',
             laneName: '淬火设备线',
-            laneLineId: 'line_demo_quench',
+            laneLineId: demoId('line_demo_quench'),
             dataProfile: 'heat_treatment',
             animationProfile: 'multipurpose_furnace_native_v1',
             scaleMultiplier: 1,
             statusLightY: 3.0
         };
         await upsertDevice({
-            id: 'demo_furnace_01', name: '南区 1# 箱式气氛炉', lineId: 'line_demo_quench',
+            id: demoId('demo_furnace_01'), name: '南区 1# 箱式气氛炉', lineId: demoId('line_demo_quench'),
             modelType: 'photo_multipurpose_furnace_v5', instanceConfig: { ...furnaceConfig, caption: '南区 1# 箱式气氛炉' },
             position: { x: -22, y: 0, z: 0 }, rotationY: 0, scale: 2, sortOrder: 0,
             plcEnabled: false, plcIp: '127.0.0.1', plcPort: 1102
         });
         await upsertDevice({
-            id: 'demo_furnace_02', name: '南区 2# 箱式气氛炉', lineId: 'line_demo_quench',
+            id: demoId('demo_furnace_02'), name: '南区 2# 箱式气氛炉', lineId: demoId('line_demo_quench'),
             modelType: 'photo_multipurpose_furnace_v5', instanceConfig: { ...furnaceConfig, caption: '南区 2# 箱式气氛炉' },
             position: { x: 2, y: 0, z: 0 }, rotationY: 0, scale: 2, sortOrder: 1,
             plcEnabled: false, plcIp: '127.0.0.1', plcPort: 1102
         });
         await upsertDevice({
-            id: 'demo_washer_01', name: '南区清洗机', lineId: 'line_demo_temper',
+            id: demoId('demo_washer_01'), name: '南区清洗机', lineId: demoId('line_demo_temper'),
             modelType: 'builtin_furnace', instanceConfig: {
                 labelY: 2.8, caption: '南区清洗机', laneId: 'demo_lane_b', laneName: '回火清洗线',
-                laneLineId: 'line_demo_temper', dataProfile: 'heat_treatment', animationProfile: 'furnace', scaleMultiplier: 0.9
+                laneLineId: demoId('line_demo_temper'), dataProfile: 'heat_treatment', animationProfile: 'furnace', scaleMultiplier: 0.9
             },
             position: { x: -5, y: 0, z: 0 }, rotationY: 0, scale: 1.4, sortOrder: 0,
             plcEnabled: false, plcIp: '127.0.0.1', plcPort: 1102
         });
 
         await syncDevicePoints({
-            deviceId: 'demo_furnace_01',
+            deviceId: demoId('demo_furnace_01'),
             points: [
                 { name: 'actual_temp', label: '实际温度', plc_tag: 'DB20.DBW0', data_type: 'WORD', category: 'analog', unit: '°C', sample_interval_ms: 500, access_type: 'READ' },
                 { name: 'setpoint_temp', label: '设定温度', plc_tag: 'DB20.DBW2', data_type: 'WORD', category: 'analog', unit: '°C', sample_interval_ms: 500, access_type: 'READ' },
@@ -981,7 +1000,7 @@ function createMcpRouter({ port = 3001 } = {}) {
             ]
         });
         await syncDevicePoints({
-            deviceId: 'demo_furnace_02',
+            deviceId: demoId('demo_furnace_02'),
             points: [
                 { name: 'actual_temp', label: '实际温度', plc_tag: 'DB21.DBW0', data_type: 'WORD', category: 'analog', unit: '°C', sample_interval_ms: 500, access_type: 'READ' },
                 { name: 'actual_carbon', label: '实际碳势', plc_tag: 'DB21.DBW4', data_type: 'REAL', category: 'analog', unit: '%', sample_interval_ms: 1000, access_type: 'READ' },
@@ -990,7 +1009,7 @@ function createMcpRouter({ port = 3001 } = {}) {
             ]
         });
         await syncDevicePoints({
-            deviceId: 'demo_washer_01',
+            deviceId: demoId('demo_washer_01'),
             points: [
                 { name: 'actual_temp', label: '清洗槽温度', plc_tag: 'DB22.DBW0', data_type: 'WORD', category: 'analog', unit: '°C', sample_interval_ms: 1000, access_type: 'READ' },
                 { name: 'running', label: '运行状态', plc_tag: 'DB22.DBX4.0', data_type: 'BOOL', category: 'status', sample_interval_ms: 500, access_type: 'READ' }
@@ -998,7 +1017,7 @@ function createMcpRouter({ port = 3001 } = {}) {
         });
 
         const db = await getDb();
-        const designer = await loadDesignerState(db);
+        const designer = await loadDesignerState(db, '', currentFactoryId());
         const document = designer.document;
         document.name = '南区热处理示范车间巡检大屏';
         document.scene = {
@@ -1017,17 +1036,40 @@ function createMcpRouter({ port = 3001 } = {}) {
             })
         };
         document.theme = { ...document.theme, title: '南区热处理示范车间 · 设备巡检中心', accentColor: '#42a5f5' };
+        if (!document.widgets.some(widget => widget.data?.mode === 'runtime' && String(widget.data.path || '').startsWith('selectedPart.'))) {
+            const width = Number(document.canvas.width);
+            const height = Number(document.canvas.height);
+            const common = {
+                groupId: 'group_device_part_detail', runtimeTarget: 'overlay', visible: true,
+                visibility: { viewIds: ['device_part'], viewModes: ['device'], rules: [{ source: 'context', path: 'inspectionStage', operator: '==', value: 'part' }] },
+                style: { background: 'rgba(7, 22, 36, .94)', color: '#eef7ff', borderColor: 'rgba(91, 193, 255, .35)', borderRadius: 14, padding: 16 }
+            };
+            for (const [index, item] of [
+                { type: 'text', title: '已选部件', path: 'selectedPart.name', content: { text: '{value}', align: 'left' }, y: .1, height: .11 },
+                { type: 'text', title: '部件说明', path: 'selectedPart.description', content: { text: '{value}', align: 'left' }, y: .23, height: .16 },
+                { type: 'metrics', title: '实时参数 / 运行状况', path: 'selectedPart.points.0.value', content: {
+                    layout: 'list', hideEmptyItems: true, emptyText: '该部件暂未关联实时点位',
+                    items: Array.from({ length: 6 }, (_, i) => ({ label: `参数 ${i + 1}`, labelPath: `selectedPart.points.${i}.label`, path: `selectedPart.points.${i}.value`, unitPath: `selectedPart.points.${i}.unit`, decimals: 2 }))
+                }, y: .41, height: .43 }
+            ].entries()) {
+                document.widgets.push({ ...common, id: `${document.sceneId}_mcp_part_${index}`, type: item.type, title: item.title,
+                    zIndex: 900 + index, frame: { x: width * .7, y: height * item.y, width: width * .28, height: height * item.height },
+                    content: item.content, data: { mode: 'runtime', path: item.path, readOnly: true } });
+            }
+        }
         document.metadata = { ...parseJson(document.metadata, {}), scenario: 'south-area-heat-treatment-demo', configuredBy: 'mcp-agent' };
         const draft = await saveDraft(db, {
             sceneId: designer.scene?.id,
             document,
-            expectedRevision: designer.revision
+            expectedRevision: designer.revision,
+            factoryId: currentFactoryId()
         });
         let release = null;
         if (args.publish !== false) {
             release = (await publishDraft(db, {
                 sceneId: designer.scene?.id,
-                notes: 'MCP 自动配置的南区热处理示范车间现场样板'
+                notes: 'MCP 自动配置的南区热处理示范车间现场样板',
+                factoryId: currentFactoryId()
             })).release;
         }
         await setDataMode({ mode: 'simulation', simulationIntervalMs: args.simulationIntervalMs || 1000 });
@@ -1040,12 +1082,12 @@ function createMcpRouter({ port = 3001 } = {}) {
         return {
             success: true,
             scenario: 'south-area-heat-treatment-demo',
-            workshopId: 'ws_demo_south',
-            lineIds: ['line_demo_quench', 'line_demo_temper'],
-            deviceIds: ['demo_furnace_01', 'demo_furnace_02', 'demo_washer_01'],
+            workshopId: demoId('ws_demo_south'),
+            lineIds: [demoId('line_demo_quench'), demoId('line_demo_temper')],
+            deviceIds: [demoId('demo_furnace_01'), demoId('demo_furnace_02'), demoId('demo_washer_01')],
             draftRevision: draft.revision,
             release,
-            engine: global.dataEngine?.getStatus?.() || null
+            engine: currentEngineStatus()
         };
     }
 
@@ -1055,13 +1097,13 @@ function createMcpRouter({ port = 3001 } = {}) {
         const checks = [
             { id: 'database', label: '数据库连接', passed: !!state.db.connected, detail: state.db.type },
             { id: 'engine', label: '数据引擎', passed: ['simulation', 'integrated_plc'].includes(state.engine?.mode), detail: state.engine?.mode || '未启动' },
-            { id: 'workshop', label: '空间车间', passed: state.workshops.some(item => item.id === 'ws_demo_south'), detail: `${state.workshops.length} 个车间` },
-            { id: 'lines', label: '示范产线', passed: ['line_demo_quench', 'line_demo_temper'].every(id => state.lines.some(item => item.id === id)), detail: `${state.lines.length} 条产线` },
-            { id: 'devices', label: '示范设备', passed: ['demo_furnace_01', 'demo_furnace_02', 'demo_washer_01'].every(id => state.devices.some(item => item.id === id)), detail: `${state.devices.length} 台设备` },
-            { id: 'model', label: '原生 PBR 模型', passed: state.devices.some(item => item.id === 'demo_furnace_01' && item.model_type === 'photo_multipurpose_furnace_v5'), detail: 'photo_multipurpose_furnace_v5' },
-            { id: 'points', label: '关键点位', passed: state.dataPoints.filter(item => item.device_id === 'demo_furnace_01').length >= 6, detail: `${state.dataPoints.filter(item => item.device_id === 'demo_furnace_01').length} 个点位` },
+            { id: 'workshop', label: '空间车间', passed: state.workshops.some(item => item.id === demoId('ws_demo_south')), detail: `${state.workshops.length} 个车间` },
+            { id: 'lines', label: '示范产线', passed: [demoId('line_demo_quench'), demoId('line_demo_temper')].every(id => state.lines.some(item => item.id === id)), detail: `${state.lines.length} 条产线` },
+            { id: 'devices', label: '示范设备', passed: [demoId('demo_furnace_01'), demoId('demo_furnace_02'), demoId('demo_washer_01')].every(id => state.devices.some(item => item.id === id)), detail: `${state.devices.length} 台设备` },
+            { id: 'model', label: '原生 PBR 模型', passed: state.devices.some(item => item.id === demoId('demo_furnace_01') && item.model_type === 'photo_multipurpose_furnace_v5'), detail: 'photo_multipurpose_furnace_v5' },
+            { id: 'points', label: '关键点位', passed: state.dataPoints.filter(item => item.device_id === demoId('demo_furnace_01')).length >= 6, detail: `${state.dataPoints.filter(item => item.device_id === demoId('demo_furnace_01')).length} 个点位` },
             { id: 'views', label: '多级视角链路', passed: ['device_detail', 'device_xray', 'device_exploded', 'device_part'].every(id => views.some(view => view.id === id)), detail: views.map(view => view.id).join(' → ') },
-            { id: 'part-panel', label: '部件详情面板', passed: state.designer.document?.widgets?.some(widget => widget.id === 'widget_device_part_panel' || widget.groupId === 'group_device_part_detail'), detail: 'selectedPart 上下文' },
+            { id: 'part-panel', label: '部件详情面板', passed: state.designer.document?.widgets?.some(widget => widget.data?.mode === 'runtime' && String(widget.data.path || '').startsWith('selectedPart.')), detail: 'selectedPart 上下文' },
             (() => { const license = getLicenseStatus(); return { id: 'license', label: '离线授权', passed: !license.enforce || license.valid, detail: license.reason }; })(),
             { id: 'release', label: '运行版本', passed: !!state.designer.currentRelease, detail: state.designer.currentRelease?.version || '未发布' }
         ];

@@ -28,7 +28,7 @@ class Child extends EventEmitter {
     exit() { this.exitCode = 0; this.emit('exit', 0, null); }
 }
 
-function loadDesktop({ createLog } = {}) {
+function loadDesktop({ createLog, spawnProcess, userDataPath } = {}) {
     const app = new EventEmitter();
     const timers = [];
     const exits = [];
@@ -40,7 +40,7 @@ function loadDesktop({ createLog } = {}) {
     app.whenReady = () => new Promise(() => {});
     app.quit = () => {};
     app.exit = code => exits.push(code);
-    app.getPath = () => 'unused-unit-test-path';
+    app.getPath = () => userDataPath || 'unused-unit-test-path';
     const context = vm.createContext({
         process: { env: {}, platform: 'win32', pid: 99, argv: [] },
         __dirname: desktopDir,
@@ -57,8 +57,14 @@ function loadDesktop({ createLog } = {}) {
         clearInterval() {},
         require: name => {
             if (name === 'electron') return { app, dialog: { showErrorBox() {} } };
-            if (name === 'child_process') return { spawn: () => { spawnCalls += 1; throw new Error('unexpected spawn'); } };
+            if (name === 'child_process') return { spawn: (...args) => {
+                spawnCalls += 1;
+                if (spawnProcess) return spawnProcess(...args);
+                throw new Error('unexpected spawn');
+            } };
             if (name === './processLifecycle.cjs') return require('../processLifecycle.cjs');
+            if (name === './mysqlRuntime.cjs') return require('../mysqlRuntime.cjs');
+            if (name === './directoryPublish.cjs') return require('../directoryPublish.cjs');
             if (name === './logManager.cjs') return {
                 cleanupLogArchives() {},
                 createRotatingLogWriter: createLog || (async () => {
@@ -80,6 +86,50 @@ function loadDesktop({ createLog } = {}) {
         get spawnCalls() { return spawnCalls; }
     };
 }
+
+test('first-run dependency extraction yields to the event loop', async () => {
+    const outputDir = path.resolve(desktopDir, '..', 'output');
+    fs.mkdirSync(outputDir, { recursive: true });
+    const userDataPath = fs.mkdtempSync(path.join(outputDir, 'async-dependencies-test-'));
+    const tarFile = path.join(userDataPath, 'backend-dependencies.tar');
+    fs.writeFileSync(tarFile, 'test archive');
+    let extractor;
+    try {
+        const desktop = loadDesktop({
+            userDataPath,
+            spawnProcess: () => {
+                extractor = new EventEmitter();
+                return extractor;
+            }
+        });
+        desktop.context.testResourcePath = name => path.join(userDataPath, name);
+        desktop.run('resourcePath = testResourcePath; backendDependenciesReady = () => true; updateStartupProgress = () => {};');
+        const pending = desktop.run('ensureBackendDependencies()');
+        let earlyFailure;
+        pending.catch(error => { earlyFailure = error; });
+        const deadline = Date.now() + 10000;
+        while (!extractor && !earlyFailure && Date.now() < deadline) {
+            await new Promise(resolve => setTimeout(resolve, 25));
+        }
+        if (earlyFailure) throw earlyFailure;
+        assert.ok(extractor, 'the asynchronous extractor must start');
+        let eventLoopTurned = false;
+        setImmediate(() => { eventLoopTurned = true; });
+        await tick();
+        assert.equal(eventLoopTurned, true);
+        let settled = false;
+        pending.then(() => { settled = true; });
+        await tick();
+        assert.equal(settled, false, 'extraction must not block the UI thread');
+        extractor.emit('exit', 0, null);
+        await tick();
+        assert.equal(settled, false, 'publication must wait for extractor handles to close');
+        extractor.emit('close', 0, null);
+        assert.equal(await pending, path.join(userDataPath, 'backend-dependencies'));
+    } finally {
+        fs.rmSync(userDataPath, { recursive: true, force: true });
+    }
+});
 
 test('normal startup shows an immediate status window before service initialization', async () => {
     const desktop = loadDesktop();

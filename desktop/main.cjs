@@ -6,6 +6,8 @@ const http = require('http');
 const net = require('net');
 const path = require('path');
 const { hasProcessExited, terminateProcess } = require('./processLifecycle.cjs');
+const { MysqlRuntime } = require('./mysqlRuntime.cjs');
+const { retryFilesystem, publishDirectory } = require('./directoryPublish.cjs');
 const {
     cleanupLogArchives,
     createRotatingLogWriter
@@ -24,6 +26,7 @@ let mainWindow = null;
 let tray = null;
 let backendProcess = null;
 let nativeProcess = null;
+let mysqlRuntime = null;
 const managedProcesses = new Set();
 let backendStopPromise = null;
 let nativeStopPromise = null;
@@ -292,10 +295,10 @@ function waitForNativeHostReady(timeoutMs = 30000) {
     });
 }
 
-function copyMissingDirectoryContents(source, destination) {
+async function copyMissingDirectoryContents(source, destination) {
     if (!fs.existsSync(source)) return;
     ensureDirectory(destination);
-    fs.cpSync(source, destination, {
+    await fs.promises.cp(source, destination, {
         recursive: true,
         force: false,
         errorOnExist: false
@@ -310,7 +313,7 @@ function backendDependenciesReady(directory) {
     ].every(filename => fs.existsSync(filename));
 }
 
-function ensureBackendDependencies() {
+async function ensureBackendDependencies() {
     const tarFile = resourcePath('backend-dependencies.tar');
     const uncompressedDir = resourcePath('backend-dependencies');
 
@@ -344,22 +347,30 @@ function ensureBackendDependencies() {
     }
 
     if (needsExtract) {
+        updateStartupProgress('resources', 10, '正在准备首次运行环境', '正在解压后端依赖，窗口保持可响应');
         try {
-            const { execFileSync } = require('child_process');
-            fs.rmSync(stagingDir, { recursive: true, force: true });
-            ensureDirectory(stagingDir);
-            execFileSync('tar', ['-xf', tarFile, '-C', stagingDir], { windowsHide: true });
+            await retryFilesystem(() => fs.promises.rm(stagingDir, { recursive: true, force: true }));
+            await fs.promises.mkdir(stagingDir, { recursive: true });
+            await new Promise((resolve, reject) => {
+                const extractor = spawn('tar', ['-xf', tarFile, '-C', stagingDir], {
+                    windowsHide: true,
+                    stdio: 'ignore'
+                });
+                extractor.once('error', reject);
+                extractor.once('close', (code, signal) => {
+                    if (code === 0) resolve();
+                    else reject(new Error(`依赖包解压失败（代码 ${code ?? signal ?? '未知'}）`));
+                });
+            });
             if (!backendDependenciesReady(stagingDir)) {
                 throw new Error('依赖包解压完成，但关键模块不完整');
             }
-            fs.rmSync(targetDir, { recursive: true, force: true });
-            fs.renameSync(stagingDir, targetDir);
-            fs.writeFileSync(markerFile, new Date().toISOString(), 'utf8');
+            await fs.promises.writeFile(path.join(stagingDir, '.prepared'), new Date().toISOString(), 'utf8');
+            await publishDirectory(stagingDir, targetDir);
         } catch (error) {
-            fs.rmSync(stagingDir, { recursive: true, force: true });
-            if (!backendDependenciesReady(targetDir)) {
-                throw new Error(`首次启动资源准备失败：${error.message}`);
-            }
+            try { await retryFilesystem(() => fs.promises.rm(stagingDir, { recursive: true, force: true })); }
+            catch (cleanupError) { console.warn(`依赖暂存目录清理延后：${cleanupError.message}`); }
+            throw new Error(`首次启动资源准备失败：${error.message}`);
         }
     }
 
@@ -369,39 +380,45 @@ function ensureBackendDependencies() {
     return targetDir;
 }
 
-function initializeWritableData() {
+async function initializeWritableData() {
     const root = app.getPath('userData');
     const dataDir = ensureDirectory(path.join(root, 'data'));
     const uploadsDir = path.join(root, 'uploads');
     const logsDir = ensureDirectory(path.join(root, 'logs'));
     const databaseFile = path.join(dataDir, 'factory.db');
-    const databaseConfigFile = path.join(dataDir, 'database-config.json');
     const templateRoot = resourcePath('templates');
-    const dependenciesDir = ensureBackendDependencies();
+    const dependenciesDir = await ensureBackendDependencies();
+    if (isQuitting) throw new Error('程序正在退出，已取消初始化');
 
     if (!fs.existsSync(databaseFile)) {
-        fs.copyFileSync(path.join(templateRoot, 'factory-template.db'), databaseFile);
+        await fs.promises.copyFile(path.join(templateRoot, 'factory-template.db'), databaseFile);
     }
     if (process.env.DESKTOP_SMOKE_ISOLATED !== 'true') {
-        copyMissingDirectoryContents(path.join(templateRoot, 'uploads'), uploadsDir);
+        await copyMissingDirectoryContents(path.join(templateRoot, 'uploads'), uploadsDir);
     }
     ensureDirectory(path.join(uploadsDir, 'models'));
     ensureDirectory(path.join(uploadsDir, 'audio'));
 
-    if (!fs.existsSync(databaseConfigFile)) {
-        fs.writeFileSync(databaseConfigFile, JSON.stringify({
-            type: 'mysql',
-            host: process.env.DESKTOP_MYSQL_HOST || process.env.MYSQL_HOST || '127.0.0.1',
-            port: Number(process.env.DESKTOP_MYSQL_PORT || process.env.MYSQL_PORT || 3307),
-            user: process.env.DESKTOP_MYSQL_USER || process.env.MYSQL_USER || 'root',
-            password: process.env.DESKTOP_MYSQL_PASSWORD || process.env.MYSQL_PASSWORD || 'root',
-            database: process.env.DESKTOP_MYSQL_DATABASE || process.env.MYSQL_DATABASE || 'dongtai_daping',
-            // 保留随安装包生成的 SQLite 快照，供离线应急、迁移或人工切换时使用。
-            filename: databaseFile
-        }, null, 2), 'utf8');
-    }
-
-    return { dataDir, uploadsDir, logsDir, dependenciesDir };
+    if (isQuitting) throw new Error('程序正在退出，已取消初始化');
+    mysqlRuntime = new MysqlRuntime({
+        root,
+        runtimeDir: resourcePath('mysql'),
+        nodeBinary: resourcePath('runtime', 'node.exe'),
+        hostScript: app.isPackaged ? resourcePath('backend', 'services', 'privateMysqlHost.js')
+            : path.resolve(__dirname, '..', 'backend', 'services', 'privateMysqlHost.js'),
+        dependenciesDir,
+        templateFile: path.join(templateRoot, 'factory-template.db'),
+        onProgress: detail => updateStartupProgress('database', 16, '正在准备本机 MySQL', detail),
+        onUnexpectedExit: error => {
+            if (isQuitting) return;
+            logDesktopError('mysql-runtime', error);
+            showStartupFailure(error).catch(displayError => logDesktopError('mysql-error-ui', displayError));
+        }
+    });
+    const managedMysql = await mysqlRuntime.start();
+    if (mysqlRuntime.child) trackManagedProcess(mysqlRuntime.child);
+    if (isQuitting) { await mysqlRuntime.stop(); throw new Error('程序正在退出，已取消初始化'); }
+    return { dataDir, uploadsDir, logsDir, dependenciesDir, managedMysql: Boolean(managedMysql) };
 }
 
 function configureAutoStart(enabled) {
@@ -1142,6 +1159,14 @@ async function startBackend(port, writable) {
     if (backendProcess && !hasProcessExited(backendProcess)) {
         throw new Error('旧数据服务仍在运行，不能启动重复进程');
     }
+    const backendEnvironment = { ...process.env };
+    if (writable.managedMysql) {
+        for (const key of Object.keys(backendEnvironment)) {
+            if (/^(MYSQL_(HOST|PORT|USER|PASSWORD|DATABASE)|DB_(TYPE|HOST|PORT|USER|PASSWORD|NAME)|SQLITE_FILE)$/i.test(key)) {
+                delete backendEnvironment[key];
+            }
+        }
+    }
     const backendDir = app.isPackaged
         ? resourcePath('backend')
         : path.resolve(__dirname, '..', 'backend');
@@ -1167,7 +1192,7 @@ async function startBackend(port, writable) {
         cwd: backendDir,
         windowsHide: true,
         env: {
-            ...process.env,
+            ...backendEnvironment,
             NODE_ENV: 'production',
             HOST: '127.0.0.1',
             PORT: String(port),
@@ -1196,7 +1221,11 @@ async function startBackend(port, writable) {
             DESKTOP_CONTROL_TOKEN: desktopControlToken || '',
             FFMPEG_PATH: resourcePath('ffmpeg', 'ffmpeg.exe'),
             CAST_WINDOW_TITLE: process.env.CAST_WINDOW_TITLE || 'Heat Treatment Digital Twin',
-            NODE_PATH: writable.dependenciesDir || resourcePath('backend-dependencies')
+            NODE_PATH: writable.dependenciesDir || resourcePath('backend-dependencies'),
+            ...(writable.managedMysql ? {
+                MYSQLDUMP_PATH: resourcePath('mysql', 'bin', 'mysqldump.exe'),
+                MYSQL_CLIENT_PATH: resourcePath('mysql', 'bin', 'mysql.exe')
+            } : {})
         },
         stdio: ['ignore', 'pipe', 'pipe']
     }));
@@ -1426,7 +1455,7 @@ async function launchApplication() {
     if (process.env.DESKTOP_SMOKE_FORCE_STARTUP_ERROR) {
         throw new Error(String(process.env.DESKTOP_SMOKE_FORCE_STARTUP_ERROR));
     }
-    const writable = initializeWritableData();
+    const writable = await initializeWritableData();
     writablePaths = writable;
     updateStartupProgress('logs', 18, '正在初始化日志系统', '准备启动与运行诊断信息');
     desktopErrorLogStream = guardLogStream(
@@ -1478,6 +1507,9 @@ async function launchApplication() {
         await waitForNativeHostReady(45000);
     } catch (hostError) {
         logDesktopError('admin-host-ready', hostError);
+        // If WebView2 cannot show the embedded login, expose the same local
+        // admin page in Electron instead of leaving a blank Unity surface.
+        showAdminWindow();
     }
     applicationReadyForInteraction = true;
     if (nativeProcess && (process.argv.includes('--admin') || pendingNativeAdminRequest)) {
@@ -1542,14 +1574,15 @@ if (!app.requestSingleInstanceLock()) {
         if (startupWindow && !startupWindow.isDestroyed()) startupWindow.hide();
         if (!applicationShutdownForceTimer) {
             applicationShutdownForceTimer = setTimeout(() => {
-                logDesktopError('forced-shutdown', new Error('安全退出超过 25 秒，强制结束残留进程'));
+                logDesktopError('forced-shutdown', new Error('安全退出超过 40 秒，强制结束残留进程'));
                 for (const child of managedProcesses) {
+                    if (child === mysqlRuntime?.child) continue;
                     try { child.kill(); } catch (error) { /* ignore */ }
                 }
                 try { desktopControlServer?.closeIdleConnections?.(); } catch (error) { /* ignore */ }
                 try { desktopControlServer?.closeAllConnections?.(); } catch (error) { /* ignore */ }
-                app.exit(0);
-            }, 25000);
+                Promise.resolve(mysqlRuntime?.forceStop()).finally(() => app.exit(0));
+            }, 40000);
         }
         clearBackendRestartTimers();
         if (desktopSettingsTimer) clearInterval(desktopSettingsTimer);
@@ -1559,7 +1592,7 @@ if (!app.requestSingleInstanceLock()) {
         // backend's safe database shutdown (or add its timeout to Unity's).
         Promise.allSettled([
             stopNativeClient(),
-            stopBackend(),
+            stopBackend().finally(() => mysqlRuntime?.stop()),
             stopDesktopControlServer()
         ]).then(results => {
             for (const [index, result] of results.entries()) {

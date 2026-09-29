@@ -7,11 +7,14 @@ import { applyFactoryHudModules } from '../../../runtime/factoryHudModules.js'
 import { applyVisibilityAction, matchesRule, widgetRuntimeVisible } from '../../../runtime/dashboardRules.js'
 import ColorField from './ColorField.vue'
 import MapGeometryPreview from './MapGeometryPreview.vue'
+import TemplateFieldMapper from './TemplateFieldMapper.vue'
+import { templateFieldBindings, remapCopiedWidgetEvents } from '../../../runtime/templateFieldMapping.js'
 import { normalizeFactoryLocation } from '../../../runtime/groupTopology.js'
 import { DEFAULT_STREET_IMAGE, normalizeSiteSceneConfig } from '../../../runtime/siteSceneConfig.js'
 import { groupPortalAppearanceForLevel } from '../../../runtime/groupPortalAppearance.js'
 import { getFactoryScope } from '../../../runtime/factoryScope.js'
 import { cacheFactoryDraft, clearFactoryDraft, readFactoryDraft } from '../../../runtime/factoryDraftCache.js'
+import { exportDashboardTemplate, importDashboardTemplate, dashboardTemplateReferences, rebindDashboardTemplate, MAX_TEMPLATE_BYTES } from '../../../runtime/dashboardTemplate.js'
 import {
   DASHBOARD_WIDGET_LIBRARY,
   DASHBOARD_WIDGET_PRESETS,
@@ -33,6 +36,12 @@ const props = defineProps({ initialViewId: { type: String, default: 'factory_ove
 const emit = defineEmits(['reload', 'preview-view', 'view-change', 'edit-map-module'])
 
 const viewportRef = ref(null)
+const templateFileRef = ref(null)
+const templateImport = ref(null)
+const templateFieldImport = ref(null)
+const templateMapping = reactive({})
+const templateKinds = { devices: '设备', points: '点位', connections: '数据源', workshops: '车间', lines: '产线' }
+const templateCatalog = computed(() => ({ devices: devices.value, points: points.value, connections: [...dataSources.value, ...httpApiSources.value], workshops: workshops.value, lines: lines.value }))
 const draftFactoryId = getFactoryScope()
 const documentModel = ref(normalizeDashboardDocument())
 const revision = ref(0)
@@ -1423,9 +1432,11 @@ function applyChartPalette() {
 }
 
 function copySelected() {
+  const idMap = Object.create(null)
   const copies = selectedWidgets.value.filter(widget => !SYSTEM_WIDGET_TYPES.has(widget.type)).map((widget, index) => {
     const copy = deepClone(widget)
     copy.id = `${widget.id}_copy_${Date.now()}_${index}`
+    idMap[widget.id] = copy.id
     copy.title = `${widget.title || widgetTypeLabel(widget.type)} 副本`
     copy.frame.x = Math.min(canvas.value.width - copy.frame.width, copy.frame.x + 24)
     copy.frame.y = Math.min(canvas.value.height - copy.frame.height, copy.frame.y + 24)
@@ -1434,6 +1445,7 @@ function copySelected() {
     return copy
   })
   if (!copies.length) return
+  remapCopiedWidgetEvents(copies, idMap)
   documentModel.value.widgets.push(...copies)
   // Copies are authored in the current view only. Without this membership
   // update a copied widget is stored globally but is invisible in a view that
@@ -1930,6 +1942,101 @@ function applyCanvasPreset() {
   nextTick(fitCanvas)
 }
 
+function downloadTemplate() {
+  const url = URL.createObjectURL(new Blob([exportDashboardTemplate(documentModel.value)], { type: 'application/json' }))
+  const link = document.createElement('a')
+  link.href = url
+  link.download = `${(documentModel.value.name || '大屏').replace(/[\\/:*?"<>|]/g, '_')}.dashboard.json`
+  link.click()
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+  setStatus('模板已导出：包含布局、视角和绑定引用；不包含模型文件及数据源账号', 'success')
+}
+
+async function loadTemplateFile(event) {
+  const input = event.target
+  const file = input.files?.[0]
+  if (!file || saving.value || publishing.value) return
+  const before = snapshot()
+  try {
+    if (file.size > MAX_TEMPLATE_BYTES) throw new Error('模板不能超过 5 MB')
+    const imported = importDashboardTemplate(await file.text(), documentModel.value)
+    if (designerDisposed) return
+    if (snapshot() !== before || saving.value || publishing.value) throw new Error('读取模板期间草稿已改变，请重新导入')
+    const references = dashboardTemplateReferences(imported)
+    if (references.length) {
+      Object.keys(templateMapping).forEach(key => delete templateMapping[key])
+      templateImport.value = { document: imported, references, before, error: '' }
+    } else beginTemplateFieldImport(imported, before)
+  } catch (error) {
+    setStatus(error.message || '模板导入失败', 'danger')
+  } finally {
+    input.value = ''
+  }
+}
+
+function applyImportedTemplate(imported) {
+  commitHistory('导入前草稿')
+  documentModel.value = imported
+  selectedIds.value = []
+  selectView(imported.scene.defaultViewId)
+  commitHistory('导入设计模板')
+  nextTick(fitCanvas)
+  setStatus('模板已载入草稿，可撤销。请预览数据并核对表字段和资产，再保存并发布。', 'warning')
+}
+
+function confirmTemplateImport() {
+  const pending = templateImport.value
+  if (!pending) return
+  try {
+    if (saving.value || publishing.value || snapshot() !== pending.before) throw new Error('当前草稿已改变，请取消并重新导入模板')
+    const imported = rebindDashboardTemplate(pending.document, templateMapping, templateCatalog.value)
+    beginTemplateFieldImport(imported, pending.before)
+    templateImport.value = null
+  } catch (error) { pending.error = error.message || '绑定检查失败' }
+}
+
+function rebindCurrentTemplate() {
+  if (loading.value || saving.value || publishing.value) return
+  const imported = deepClone(documentModel.value)
+  const before = snapshot()
+  const references = dashboardTemplateReferences(imported)
+  Object.keys(templateMapping).forEach(key => delete templateMapping[key])
+  for (const reference of references) {
+    if ((templateCatalog.value[reference.kind] || []).some(target => String(target.id) === reference.id)) templateMapping[reference.key] = reference.id
+  }
+  if (references.length) templateImport.value = { document: imported, references, before, error: '' }
+  else if (templateFieldBindings(imported).length) beginTemplateFieldImport(imported, before)
+  else setStatus('当前草稿没有需要重绑定的外部引用', 'success')
+}
+
+function beginTemplateFieldImport(imported, before) {
+  if (templateFieldBindings(imported).length) templateFieldImport.value = { document: imported, before }
+  else applyImportedTemplate(imported)
+}
+
+function confirmTemplateFieldImport(imported) {
+  const pending = templateFieldImport.value
+  if (!pending) return
+  if (saving.value || publishing.value || snapshot() !== pending.before) {
+    templateFieldImport.value = null
+    setStatus('字段映射期间草稿已改变，请重新导入模板', 'danger')
+    return
+  }
+  applyImportedTemplate(imported)
+  templateFieldImport.value = null
+  setStatus('字段映射与数据预览已确认，模板已载入草稿。保存并发布后运行端使用新绑定。', 'success')
+}
+
+function templateTargetLabel(kind, target) {
+  const label = target.label || target.name || target.id
+  if (kind !== 'points') return `${label} · ${target.id}`
+  const deviceId = String(target.device_id || target.deviceId || '')
+  const device = devices.value.find(item => String(item.id) === deviceId)
+  const deviceLabel = device?.name || device?.label || deviceId || '未指定设备'
+  const key = target.value_role || target.field_name || target.name || ''
+  return `${deviceLabel}（${deviceId || '无设备 ID'}） / ${label}${key && key !== label ? `（${key}）` : ''} · 点位 ${target.id}`
+}
+
 function applyPublishedRelease(release) {
   if (!release?.id) return
   const releaseId = String(release.id)
@@ -1945,36 +2052,47 @@ function applyPublishedRelease(release) {
 }
 
 async function saveDraft() {
-  if (saving.value) return
+  if (saving.value) return false
   const editorState = rememberEditorState()
   saving.value = true
   try {
     documentModel.value.widgets.forEach(widget => { widget.data.readOnly = true })
-    const result = await adminApi.saveDashboardDraft(documentModel.value.sceneId, documentModel.value, revision.value)
+    const submitted = deepClone(documentModel.value)
+    const submittedSnapshot = snapshot(submitted)
+    const result = await adminApi.saveDashboardDraft(submitted.sceneId, submitted, revision.value)
     if (result?.error) throw new Error(result.error)
-    documentModel.value = normalizeDashboardDocument(result.document)
+    if (designerDisposed) return false
+    const editedDuringSave = snapshot() !== submittedSnapshot
+    const savedDocument = normalizeDashboardDocument(result.document)
     revision.value = Number(result.revision || revision.value + 1)
-    lastSavedSnapshot.value = snapshot()
-    resetHistory()
-    clearLocalDraft()
-    clearFactoryDraft(draftFactoryId, `dashboard:${documentModel.value.sceneId}`)
-    restoreEditorState(editorState)
-    setStatus(`草稿已保存，修订 ${revision.value}；现场仍运行已发布版本`, 'success')
+    lastSavedSnapshot.value = snapshot(savedDocument)
+    if (editedDuringSave) {
+      persistLocalDraft()
+      setStatus(`修订 ${revision.value} 已保存；保存期间的新修改仍在草稿中，请再次保存`, 'warning')
+    } else {
+      documentModel.value = savedDocument
+      resetHistory()
+      clearLocalDraft()
+      clearFactoryDraft(draftFactoryId, `dashboard:${documentModel.value.sceneId}`)
+      restoreEditorState(editorState)
+      setStatus(`草稿已保存，修订 ${revision.value}；现场仍运行已发布版本`, 'success')
+    }
     emit('reload')
+    return true
   } catch (error) {
     setStatus(error.message || '草稿保存失败', 'danger')
-    if (/修订|刷新/.test(error.message || '')) await loadDesigner({ allowLocal: true })
+    persistLocalDraft()
+    return false
   } finally {
     saving.value = false
   }
 }
 
 async function publishVersion() {
-  if (publishing.value) return
+  if (publishing.value || saving.value) return
   rememberEditorState()
   if (isDirty.value) {
-    await saveDraft()
-    if (isDirty.value) return
+    if (!await saveDraft() || isDirty.value) return
   }
   publishing.value = true
   try {
@@ -1983,7 +2101,7 @@ async function publishVersion() {
     // 发布接口已经返回新版本信息。设计器当前内存中的文档就是刚刚保存
     // 的草稿，不需要再次请求草稿、设备、点位和数据源，避免整块画布闪回加载态。
     applyPublishedRelease(result.release)
-    setStatus(`版本 ${result.release.version} 已发布，Unity 与数据层已收到更新`, 'success')
+    setStatus(`版本 ${result.release.version} 已发布，运行端连接后将加载此版本`, 'success')
     emit('reload')
   } catch (error) {
     setStatus(error.message || '发布失败', 'danger')
@@ -2030,6 +2148,7 @@ function nudgeSelected(dx, dy) {
 }
 
 function handleKeydown(event) {
+  if (templateImport.value || templateFieldImport.value || releaseDialog.value) return
   const target = event.target
   if (target?.matches?.('input, textarea, select, [contenteditable="true"]')) return
   const ctrl = event.ctrlKey || event.metaKey
@@ -2047,6 +2166,9 @@ function handleKeydown(event) {
 }
 
 watch(documentModel, scheduleLocalPersist, { deep: true })
+watch(() => [canvas.value.width, canvas.value.height], ([width, height]) => {
+  canvasPreset.value = `${width}x${height}`
+}, { immediate: true, flush: 'sync' })
 watch(currentView, () => {
   // Camera fields are edited with v-model.number. A deep watcher keeps every
   // view parameter on the same live-preview path, including target offsets and
@@ -2176,6 +2298,10 @@ onBeforeUnmount(() => {
         <button type="button" @click="setZoom(zoom + .1)">＋</button>
       </div>
       <div class="designer-toolbar-actions">
+        <input ref="templateFileRef" type="file" accept=".json,application/json" hidden @change="loadTemplateFile" />
+        <button type="button" :disabled="loading" title="导出布局、视角和数据绑定引用" @click="downloadTemplate">导出模板</button>
+        <button type="button" :disabled="loading || saving || publishing" title="替换当前草稿，可通过撤销恢复；不会自动发布" @click="templateFileRef?.click()">导入模板</button>
+        <button type="button" :disabled="loading || saving || publishing" title="迁移项目后选择新数据源，核对字段并预览实际数据" @click="rebindCurrentTemplate">重绑定数据</button>
         <RouterLink :to="{path:'/hud-preview',query:{embedded:$route.query.embedded}}" class="hud-review-link">同源场景预览</RouterLink>
         <select v-if="previewMode" :value="selectedViewId" title="模拟 Unity 当前视角" @change="selectView($event.target.value, { enterPreview: true })">
           <option v-for="view in views" :key="view.id" :value="view.id">{{ view.name }}</option>
@@ -2748,6 +2874,27 @@ onBeforeUnmount(() => {
       <div class="release-strip"><strong>发布记录</strong><button v-for="release in releases.slice(0, 5)" :key="release.id" type="button" :class="{ current: release.id === currentReleaseId }" @click="requestActivateRelease(release)">{{ release.version }}<small>{{ release.id === currentReleaseId ? '运行中' : '可恢复' }}</small></button></div>
     </footer>
 
+    <div v-if="templateImport" class="designer-dialog-backdrop">
+      <div class="designer-dialog template-import-dialog" role="dialog" aria-modal="true" aria-label="模板引用重绑定">
+        <h3>模板引用重绑定</h3>
+        <p>为模板中的每项引用选择当前工厂的目标。全部匹配后才载入草稿；取消会保留原布局。</p>
+        <div class="template-reference-list">
+          <label v-for="reference in templateImport.references" :key="reference.key">
+            <span>{{ templateKinds[reference.kind] }} · {{ reference.id }} <small>{{ reference.uses.length }} 处引用</small></span>
+            <select v-model="templateMapping[reference.key]" :aria-label="`${templateKinds[reference.kind]} ${reference.id}`">
+              <option :value="undefined" disabled>请选择目标{{ templateKinds[reference.kind] }}</option>
+              <option v-for="target in templateCatalog[reference.kind]" :key="target.id" :value="String(target.id)">{{ templateTargetLabel(reference.kind, target) }}</option>
+            </select>
+            <small v-if="!templateCatalog[reference.kind].length">当前工厂暂无可选目标，请先配置后再导入。</small>
+          </label>
+        </div>
+        <p v-if="templateImport.error" role="alert">{{ templateImport.error }}</p>
+        <div><button type="button" @click="templateImport = null">取消</button><button type="button" class="primary" @click="confirmTemplateImport">完成引用绑定，核对字段</button></div>
+      </div>
+    </div>
+    <div v-if="templateFieldImport" class="designer-dialog-backdrop">
+      <TemplateFieldMapper :document="templateFieldImport.document" :context="previewContext" @apply="confirmTemplateFieldImport" @cancel="templateFieldImport = null" />
+    </div>
     <Transition name="designer-dialog">
       <div v-if="releaseDialog" class="designer-dialog-backdrop" @click.self="releaseDialog = null">
         <div class="designer-dialog compact">
@@ -2762,6 +2909,7 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+.template-import-dialog{width:min(720px,90vw)!important;max-height:85vh;overflow:auto}.template-reference-list{display:grid;gap:12px;max-height:48vh;overflow:auto;text-align:left}.template-reference-list label{display:grid;gap:5px}.template-reference-list select{width:100%;padding:8px;border:1px solid #9ab1c7;border-radius:6px;color:#1d2939;background:white}.template-reference-list small{font-size:11px;opacity:.75}
 .dashboard-designer-shell { --panel:#0d1724; --panel2:#111f2f; --line:rgba(130,184,226,.16); --text:#eaf4ff; --muted:#8fa5ba; --accent:#42a5f5; display:flex; flex-direction:column; height:clamp(720px,calc(100vh - 150px),1080px); min-height:720px; overflow-x:auto; overflow-y:hidden; border:1px solid rgba(53,105,148,.26); border-radius:16px; color:var(--text); background:#08111c; box-shadow:0 22px 52px rgba(9,22,34,.18); scrollbar-color:#29445e #08111b; scrollbar-width:thin; font-family:var(--hud-font-text,"SF Pro Text","Inter","Segoe UI","PingFang SC","Microsoft YaHei UI",sans-serif); font-synthesis:none; -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility; }
 .designer-toolbar { flex:0 0 58px; display:flex; align-items:center; gap:14px; min-width:1180px; padding:0 14px; border-bottom:1px solid var(--line); background:linear-gradient(180deg,#142335,#0d1927); }
 .designer-brand { display:flex; align-items:center; gap:10px; width:42px; flex:0 0 42px; }

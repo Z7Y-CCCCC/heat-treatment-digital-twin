@@ -4,17 +4,22 @@
 
 1. 双击安装包并完成安装。
 2. 从桌面或开始菜单打开“热处理数字孪生大屏”。
-3. 正式生产默认连接 MySQL / MariaDB（默认 `127.0.0.1:3307`）；现场需预先安装并启动数据库服务。Node.js、浏览器和 Unity 运行时均由安装包提供。
+3. 首次安装会自动准备随包 MySQL、创建独立数据库，并导入开发时的工厂、设备、点位、场景和组件配置。MySQL、Node.js、浏览器宿主和 Unity 运行时均由安装包提供，无需另行安装或手动配置数据库。
 4. 安装版会注册为当前 Windows 用户登录后自动启动。
+
+随包 MySQL 仅监听本机，使用独立数据目录和程序生成的账号密码，随软件启动和退出；端口冲突时自动选择可用端口。它不注册或替换电脑已有的 MySQL Windows 服务。已有 `database-config.json` 的安装继续使用原数据库连接，不会自动覆盖、清空或切换现场数据库。首次准备数据库比后续启动耗时长，启动窗口会显示当前步骤。
+
+安装包包含开发过程中使用的模型、上传音频和工厂配置；备份目录及备份文件不随包分发。运行历史默认不打包。现场可在现有配置上继续添加内容，再次启动不会重新导入模板。
 
 正式现场不要使用 MySQL `root` 账号。应创建仅限 `localhost`、仅拥有本项目数据库权限的专用账号，并在 MySQL `my.ini` 中设置 `bind-address=127.0.0.1`。数据库端口不得通过路由器端口映射、云安全组或 Windows 防火墙暴露到公网。
 
 ## 数据位置
 
-客户配置、SQLite 数据库、上传模型和运行日志保存在当前 Windows 用户的应用数据目录中，卸载软件默认不会删除客户数据。
+客户配置、随包 MySQL 数据、上传模型和运行日志保存在当前 Windows 用户的应用数据目录中，卸载软件默认不会删除客户数据。随包 SQLite 文件作为首次导入快照和恢复资源，不是新安装的默认运行数据库。
 
 ```text
 %APPDATA%\heat-treatment-digital-twin-desktop\data\database-config.json
+%APPDATA%\heat-treatment-digital-twin-desktop\mysql\（随包 MySQL 的独立数据与配置）
 %APPDATA%\heat-treatment-digital-twin-desktop\data\factory.db（离线应急快照）
 %APPDATA%\heat-treatment-digital-twin-desktop\data\backups\
 %APPDATA%\heat-treatment-digital-twin-desktop\data\recovery\
@@ -126,6 +131,6 @@ Modbus 的 `HR/IR/C/DI` 分别表示保持寄存器、输入寄存器、线圈�
 - 软件默认只监听本机回环地址，不应直接暴露到公网。
 - 当前版本已通过仿真 PLC、MySQL/SQLite 灾备恢复、进程强杀和生产安全边界测试。
 - 仿真测试不能替代客户现场 PLC 型号、网络、点表和断电来电流程验收，正式上线仍需按现场点表逐点确认。
-- MySQL 生产备份要求现场存在兼容版本的 `mysqldump.exe` 和 `mysql.exe`。标准 MySQL Server 安装会同时提供；若安装在非标准目录，可配置 `MYSQLDUMP_PATH` 与 `MYSQL_CLIENT_PATH`。
+- 随包 MySQL 同时提供 `mysqldump.exe` 和 `mysql.exe` 用于本机备份恢复。手动连接其他版本的外部 MySQL 时，应使用对应版本的客户端工具；非标准目录可通过 `MYSQLDUMP_PATH` 与 `MYSQL_CLIENT_PATH` 指定。
 - PostgreSQL 和 SQL Server 仍需使用数据库服务器自身的备份体系；后台会明确显示“不支持”，不会伪装成已备份。
 - 离线升级包必须先通过后台发布契约校验（签名 + SHA-256 + 版本顺序），再执行安装；禁止直接覆盖安装目录。升级前导出整站灾备，升级后运行“自动验收”，失败时恢复灾备并安装上一版签名包。

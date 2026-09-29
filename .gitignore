@@ -53,3 +53,7 @@ native-admin-host/obj/
 # Local .NET test build outputs
 tools/*/bin/
 tools/*/obj/
+
+# Temporary preparing directories
+desktop/.*.preparing*
+.*.preparing*

@@ -1,7 +1,8 @@
-const { execFileSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const { prepareResourceDirectory, copySqliteSnapshot } = require('./resource-preparation.cjs');
+const { prepareMysqlRuntime } = require('./prepare-mysql-runtime.cjs');
+const { prepareDependencyArchive } = require('./dependency-archive.cjs');
 
 const desktopDir = path.resolve(__dirname, '..');
 const projectDir = path.resolve(desktopDir, '..');
@@ -16,6 +17,8 @@ const nodeBinary = process.execPath;
 const backendNodeModules = path.join(projectDir, 'backend', 'node_modules');
 const configurationTables = [
     'settings',
+    'factories',
+    'factory_settings',
     'workshops',
     'lines',
     'devices',
@@ -97,6 +100,17 @@ async function exportMysqlConfiguration(destination) {
             const sqliteTables = db.prepare(
                 "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
             ).all().map(row => row.name);
+            const classifiedTables = new Set([...configurationTables, 'event_logs', 'metric_snapshots']);
+            const unclassifiedTables = sqliteTables.filter(table => !classifiedTables.has(table));
+            if (unclassifiedTables.length) {
+                throw new Error(`发现尚未分类的业务表，不能静默遗漏：${unclassifiedTables.join(', ')}`);
+            }
+            const missingTables = configurationTables.filter(table =>
+                !mysqlTables.has(table) || !sqliteTables.includes(table)
+            );
+            if (missingTables.length) {
+                throw new Error(`交付所需配置表不存在：${missingTables.join(', ')}`);
+            }
 
             const copy = db.transaction((tableRows) => {
                 for (const table of sqliteTables) {
@@ -211,7 +225,7 @@ async function main() {
         fs.mkdirSync(templatesDir, { recursive: true });
         const result = await prepareDatabaseTemplate(stagingDirectory, path.join(templatesDir, 'factory-template.db'));
         fs.copyFileSync(nodeBinary, path.join(runtimeDir, 'node.exe'));
-        execFileSync('tar', ['-cf', backendDependenciesTar, '-C', backendNodeModules, '.'], { windowsHide: true });
+        await prepareDependencyArchive(backendNodeModules, path.join(desktopDir, '.cache', 'backend-dependencies'), backendDependenciesTar);
         if (!fs.existsSync(backendDependenciesTar) || fs.statSync(backendDependenciesTar).size < 1024 * 1024) {
             throw new Error(`后端依赖包生成失败或文件异常：${backendDependenciesTar}`);
         }
@@ -220,8 +234,12 @@ async function main() {
             filter: source => !path.basename(source).includes('BurstDebugInformation_DoNotShip')
         });
         if (!emptyTemplate && fs.existsSync(sourceUploads)) {
-            fs.cpSync(sourceUploads, path.join(templatesDir, 'uploads'), { recursive: true });
+            fs.cpSync(sourceUploads, path.join(templatesDir, 'uploads'), {
+                recursive: true,
+                filter: source => !/^(?:backups?|site-backups|recovery)$/i.test(path.basename(source))
+            });
         }
+        await prepareMysqlRuntime(path.join(stagingDirectory, 'mysql'));
         return result;
     });
 

@@ -1,5 +1,6 @@
 const { evaluateVariableExpression } = require('./mathExpression');
 const { parseDataPath } = require('./externalDataPayload');
+const { createHash } = require('node:crypto');
 
 const SCHEMA_VERSION = 3;
 const SUPPORTED_SCHEMA_VERSIONS = new Set([1, 2, 3]);
@@ -329,6 +330,21 @@ function normalizeDashboardViews(scene) {
             if (!cursor) break;
         }
     });
+    // Runtime return navigation prefers returnViewId and otherwise uses the
+    // parent. Repair that effective graph as well as the ancestry graph.
+    views.forEach(start => {
+        const visited = new Set();
+        let cursor = start;
+        while (cursor && (cursor.returnViewId || cursor.parentViewId)) {
+            if (visited.has(cursor.id)) {
+                start.returnViewId = '';
+                start.parentViewId = '';
+                break;
+            }
+            visited.add(cursor.id);
+            cursor = views.find(view => view.id === (cursor.returnViewId || cursor.parentViewId));
+        }
+    });
     return { views, defaultViewId };
 }
 
@@ -571,7 +587,30 @@ function normalizeDocument(input, context = {}) {
     // components so each can be positioned, hidden and locked independently.
     const widgets = ensureNavigationWidgets(rawWidgets, canvas);
     const normalizedWidgets = widgets.slice(0, 500).map((widget, index) => normalizeWidget(widget, canvas, index));
-    const normalizedReferences = pruneDocumentReferences(normalizedWidgets, normalizeDashboardViews(sceneSource));
+    const sceneId = shortText(context.scene?.id ?? source.sceneId, base.sceneId, 128);
+    const sceneViewState = normalizeDashboardViews(sceneSource);
+    // Widget IDs are global database keys. Default controls from an empty
+    // second scene must not reuse the first scene's legacy IDs.
+    if (sceneId !== 'scene_factory_overview') {
+        const suffix = createHash('sha256').update(sceneId).digest('hex').slice(0, 16);
+        const remapped = new Map();
+        for (const widget of normalizedWidgets) {
+            if ((widget.id === 'widget_navigation' && widget.type === 'navigation')
+                || (widget.id === 'widget_return_button' && widget.type === 'return_button')) {
+                remapped.set(widget.id, `${widget.id}_${suffix}`);
+                widget.id = remapped.get(widget.id);
+            }
+        }
+        for (const view of sceneViewState.views) {
+            for (const key of ['show', 'hide']) view.componentState[key] = view.componentState[key].map(id => remapped.get(id) || id);
+        }
+        for (const widget of normalizedWidgets) {
+            for (const event of widget.events) {
+                if (event.targetType === 'widget' && remapped.has(event.targetId)) event.targetId = remapped.get(event.targetId);
+            }
+        }
+    }
+    const normalizedReferences = pruneDocumentReferences(normalizedWidgets, sceneViewState);
     const sceneViews = normalizedReferences.sceneViews;
     return {
         ...base,

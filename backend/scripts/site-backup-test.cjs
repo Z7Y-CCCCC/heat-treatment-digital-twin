@@ -93,6 +93,12 @@ async function main() {
             filename: databaseFile
         }, null, 2));
         fs.writeFileSync(path.join(modelsDir, MODEL_FILENAME), ORIGINAL_MODEL);
+        const migratedAsset = path.join(uploadsDir, 'projects', 'test-project', 'model.glb');
+        const appearanceAsset = path.join(uploadsDir, 'appearance', 'test-image.png');
+        for (const filename of [migratedAsset, appearanceAsset]) {
+            fs.mkdirSync(path.dirname(filename), { recursive: true });
+            fs.writeFileSync(filename, ORIGINAL_MODEL);
+        }
 
         const port = await findFreePort(3301);
         backendOrigin = `http://127.0.0.1:${port}`;
@@ -181,6 +187,8 @@ async function main() {
 
         await putSetting(MUTATED_SETTING);
         fs.writeFileSync(path.join(modelsDir, MODEL_FILENAME), MUTATED_MODEL);
+        fs.writeFileSync(migratedAsset, MUTATED_MODEL);
+        fs.writeFileSync(appearanceAsset, MUTATED_MODEL);
         await requestJson(`${backendOrigin}/api/data-sources/connections/${encodeURIComponent(DATA_SOURCE_ID)}`, { method: 'DELETE' });
         await requestJson(`${backendOrigin}/api/data-sources/backups/config`, {
             method: 'PUT',
@@ -218,6 +226,8 @@ async function main() {
                 && manifest.containsSensitiveConfiguration === true,
             databaseSettingRestored: settingAfterRestore === ORIGINAL_SETTING && databaseAfterRestore.setting === ORIGINAL_SETTING,
             uploadedModelRestored: modelAfterRestore.equals(ORIGINAL_MODEL),
+            migratedProjectAssetRestored: fs.readFileSync(migratedAsset).equals(ORIGINAL_MODEL),
+            appearanceAssetRestored: fs.readFileSync(appearanceAsset).equals(ORIGINAL_MODEL),
             dataSourceConnectionRestored: dataSourcesAfterRestore.connections?.some(item => item.id === DATA_SOURCE_ID) === true,
             scopedDataSourceConnectionRestored: scopedSourcesAfterRestore.connections?.some(item => item.id === SCOPED_DATA_SOURCE_ID) === true,
             dataSourceBackupSelectionRestored: dataSourcesAfterRestore.backup?.intervalHours === 12

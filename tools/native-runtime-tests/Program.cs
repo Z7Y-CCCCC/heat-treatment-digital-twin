@@ -53,7 +53,7 @@ internal static class Program
         await sendLock.WaitAsync();
         try
         {
-            var sending = (Task)Invoke(client, "SendMessageAsync", new JObject { ["type"] = "test" });
+            var sending = (Task)Invoke(client, "SendMessageAsync", new JObject { ["type"] = "test" }, false);
             lifetime.Cancel();
             await sending.WaitAsync(TimeSpan.FromSeconds(5));
             Check(sendLock.CurrentCount == 0, "Cancelled waiter released the lock held by a different sender.");
@@ -75,7 +75,7 @@ internal static class Program
         Field("_lifetime").SetValue(client, lifetime);
         var sendLock = (SemaphoreSlim)Field("_sendLock").GetValue(client)!;
         await sendLock.WaitAsync();
-        var sending = (Task)Invoke(client, "SendMessageAsync", new JObject { ["type"] = "old-session-message" });
+        var sending = (Task)Invoke(client, "SendMessageAsync", new JObject { ["type"] = "old-session-message" }, false);
         Field("_socket").SetValue(client, replacement.Client);
         sendLock.Release();
         await sending.WaitAsync(TimeSpan.FromSeconds(5));

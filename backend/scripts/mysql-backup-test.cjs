@@ -72,6 +72,12 @@ async function main() {
         fs.mkdirSync(path.join(uploadsDir, 'models'), { recursive: true });
         fs.mkdirSync(path.join(uploadsDir, 'audio'), { recursive: true });
         fs.writeFileSync(path.join(uploadsDir, 'models', MODEL_FILENAME), ORIGINAL_MODEL);
+        const migratedAsset = path.join(uploadsDir, 'projects', 'mysql-migrated-project', 'model.glb');
+        const appearanceAsset = path.join(uploadsDir, 'appearance', 'mysql-site-background.png');
+        for (const filename of [migratedAsset, appearanceAsset]) {
+            fs.mkdirSync(path.dirname(filename), { recursive: true });
+            fs.writeFileSync(filename, ORIGINAL_MODEL);
+        }
         fs.mkdirSync(dataDir, { recursive: true });
         fs.writeFileSync(path.join(dataDir, 'database-config.json'), JSON.stringify({
             ...source,
@@ -129,6 +135,8 @@ async function main() {
             body: JSON.stringify({ [MARKER]: 'mutated-before-site-restore' })
         });
         fs.writeFileSync(path.join(uploadsDir, 'models', MODEL_FILENAME), MUTATED_MODEL);
+        fs.writeFileSync(migratedAsset, MUTATED_MODEL);
+        fs.writeFileSync(appearanceAsset, MUTATED_MODEL);
         const form = new FormData();
         form.append('backup', new Blob([fs.readFileSync(siteArchive)], { type: 'application/zip' }), path.basename(siteArchive));
         const siteRestoreResponse = await testFetch(`${origin}/api/site-backups/import`, { method: 'POST', body: form });
@@ -145,7 +153,9 @@ async function main() {
             siteManifestValid: manifest.databaseType === 'mysql' && manifest.databasePath === 'database/mysql.sql.gz',
             siteRestoreSucceeded: siteRestoreResponse.ok && siteRestoreBody.success === true,
             siteDatabaseRestored: siteSettings[MARKER] === 'before-backup',
-            siteUploadRestored: siteModel.equals(ORIGINAL_MODEL)
+            siteUploadRestored: siteModel.equals(ORIGINAL_MODEL),
+            migratedProjectAssetRestored: fs.readFileSync(migratedAsset).equals(ORIGINAL_MODEL),
+            sharedAppearanceAssetRestored: fs.readFileSync(appearanceAsset).equals(ORIGINAL_MODEL)
         };
         const failed = Object.entries(checks).filter(([, passed]) => !passed).map(([name]) => name);
         if (failed.length) throw new Error(`MySQL 灾备检查失败：${failed.join(', ')}`);

@@ -16,10 +16,10 @@ const scripts = [
     'backend-service-failure-test.cjs',
     'admin-auth-integration-test.cjs', 'factory-isolation-test.cjs', 'factory-geocoder-test.cjs', 'production-readiness-test.cjs',
     'data-point-sync-test.cjs', 'deletion-safety-test.cjs',
-    'native-dashboard-config-test.cjs', 'plc-protocol-test.cjs',
+    'native-dashboard-config-test.cjs', 'dashboard-designer-test.cjs', 'mcp-platform-integration-test.cjs', 'plc-protocol-test.cjs',
     'plc-value-precision-test.cjs',
     'inspection-platform-test.cjs',
-    'database-retention-test.cjs', 'site-backup-test.cjs',
+    'database-retention-test.cjs', 'site-backup-test.cjs', 'project-bundle-test.cjs',
     'power-recovery-test.cjs', 'runtime-display-test.cjs', 'http-integrity-test.cjs'
 ];
 if (process.platform === 'win32') scripts.push('voice-feature-test.cjs');
@@ -48,6 +48,7 @@ async function run(script) {
     const logPath = path.join(directory, script.replace(/\.cjs$/, '.log'));
     const log = fs.createWriteStream(logPath);
     const env = { ...process.env };
+    delete env.TEST_BASE_URL;
     for (const name of ['ADMIN_API_TOKEN', 'MCP_API_TOKEN', 'DB_TYPE', 'SQLITE_FILE', 'MYSQL_HOST', 'MYSQL_PORT', 'MYSQL_USER', 'MYSQL_PASSWORD', 'MYSQL_DATABASE', 'DB_HOST', 'DB_PORT', 'DB_USER', 'DB_PASSWORD', 'DB_NAME', 'APP_DATA_DIR', 'UPLOADS_DIR', 'DB_BACKUP_DIR', 'DB_RECOVERY_DIR', 'SITE_BACKUP_DIR', 'SITE_IMPORT_DIR', 'SITE_BACKUP_MIRROR_DIR', 'DATA_SOURCE_BACKUP_DIR', 'LICENSE_FILE', 'LICENSE_PUBLIC_KEY', 'LICENSE_PUBLIC_KEY_FILE', 'SQLITE_RECOVERY_TEMPLATE', 'SQLITE_UPGRADE_TEMPLATE']) delete env[name];
     let timedOut = false;
     let spawnError;

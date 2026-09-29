@@ -110,6 +110,10 @@ function readFfmpegNotice() {
 }
 
 const ffmpeg = readFfmpegNotice();
+const mysqlDirectory = path.join(desktopDir, 'resources', 'mysql');
+const mysqlMetadata = JSON.parse(fs.readFileSync(path.join(mysqlDirectory, 'MYSQL_METADATA.json'), 'utf8'));
+const mysqlLicense = fs.readFileSync(path.join(mysqlDirectory, 'LICENSE'), 'utf8').trim();
+const mysqlSource = fs.readFileSync(path.join(mysqlDirectory, 'SOURCE.txt'), 'utf8').trim();
 
 const lines = [
     'THIRD-PARTY SOFTWARE NOTICES',
@@ -121,6 +125,15 @@ const lines = [
     '',
     'BUNDLED NATIVE COMPONENT',
     '------------------------',
+    '',
+    `${mysqlMetadata.name} ${mysqlMetadata.version}`,
+    `License: ${mysqlMetadata.license}`,
+    `Bundled Microsoft Visual C++ runtime DLLs: ${mysqlMetadata.msvcDependencies.join(', ')}`,
+    mysqlSource,
+    '',
+    '----- BEGIN MYSQL UPSTREAM LICENSE TEXT -----',
+    mysqlLicense,
+    '----- END MYSQL UPSTREAM LICENSE TEXT -----',
     '',
     `${ffmpeg.metadata.name} ${ffmpeg.metadata.version}`,
     `License: ${ffmpeg.metadata.license}`,

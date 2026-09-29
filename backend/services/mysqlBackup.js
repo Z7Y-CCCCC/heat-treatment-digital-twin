@@ -86,18 +86,19 @@ function resolveMysqlTools(preferredVersion = '') {
         executableOnPath('mysql'),
         ...commonToolCandidates('mysql')
     ].filter(Boolean);
-    const dump = chooseCandidate(dumpCandidates, preferredVersion);
+    const dump = explicitDump ? path.resolve(explicitDump) : chooseCandidate(dumpCandidates, preferredVersion);
     let client = null;
     if (dump) {
         const sibling = path.join(path.dirname(dump), executableName('mysql'));
         if (fs.existsSync(sibling)) client = sibling;
     }
-    client ||= chooseCandidate(clientCandidates, preferredVersion);
+    client = explicitClient ? path.resolve(explicitClient) : (client || chooseCandidate(clientCandidates, preferredVersion));
+    const available = Boolean(dump && client && fs.existsSync(dump) && fs.existsSync(client));
     return {
-        available: Boolean(dump && client),
+        available,
         dump,
         client,
-        error: dump && client ? null : '未找到 MySQL 客户端工具 mysqldump/mysql；可配置 MYSQLDUMP_PATH 和 MYSQL_CLIENT_PATH'
+        error: available ? null : '未找到 MySQL 客户端工具 mysqldump/mysql；可配置 MYSQLDUMP_PATH 和 MYSQL_CLIENT_PATH'
     };
 }
 
@@ -171,6 +172,7 @@ async function createMysqlDump(config, destination, options = {}) {
         const args = [
             `--defaults-extra-file=${defaultsFile.replace(/\\/g, '/')}`,
             '--single-transaction',
+            '--no-tablespaces',
             '--quick',
             '--routines',
             '--events',
@@ -182,6 +184,7 @@ async function createMysqlDump(config, destination, options = {}) {
             String(config.database)
         ];
         const child = spawn(tools.dump, args, {
+            argv0: path.basename(tools.dump),
             windowsHide: true,
             stdio: ['ignore', 'pipe', 'pipe'],
             env: childEnvironment
@@ -257,6 +260,7 @@ async function restoreMysqlDump(config, filename, options = {}) {
             '--binary-mode',
             String(config.database)
         ], {
+            argv0: path.basename(tools.client),
             windowsHide: true,
             stdio: ['pipe', 'ignore', 'pipe'],
             env: childEnvironment

@@ -13,6 +13,17 @@ const {
 } = require('../utils/dashboardDocument');
 const { resolveConnection } = require('./dataSources');
 
+function releaseTimestamp(row) {
+    const publishedAt = safeJsonParse(row?.snapshot_json, {})?.metadata?.publishedAt;
+    return Date.parse(publishedAt) || Date.parse(row?.created_at) || 0;
+}
+
+function sortReleasesNewestFirst(releases) {
+    return releases.map(row => ({ row, timestamp: releaseTimestamp(row) }))
+        .sort((a, b) => b.timestamp - a.timestamp || String(b.row.id).localeCompare(String(a.row.id)))
+        .map(item => item.row);
+}
+
 function releasePayload(row) {
     if (!row) return null;
     return {
@@ -255,22 +266,36 @@ async function publishDraft(db, { sceneId, version, notes, factoryId = '' }) {
     assertNoForbiddenWriteIntent(safeJsonParse(scene.draft_json, null));
     const document = await loadDraftDocument(db, project, scene);
     await validatePlcBindings(db, document);
-    const releases = await db.all('SELECT * FROM releases WHERE project_id = ? ORDER BY created_at DESC', [project.id]);
-    const normalizedVersion = normalizeVersion(version, releases);
-    if (releases.some(item => String(item.version) === normalizedVersion)) {
-        throw new Error(`版本 ${normalizedVersion} 已存在`);
-    }
     const id = releaseId();
     const snapshot = normalizeDocument(document, { project, scene, source: 'release' });
     snapshot.metadata = {
         ...objectValue(snapshot.metadata, {}),
         revision: Number(scene.draft_revision || 0),
-        version: normalizedVersion,
         publishedAt: new Date().toISOString(),
         source: 'release'
     };
 
     await db.transaction(async (tx) => {
+        // Lock the project before allocating a version, including on databases
+        // that allow concurrent transactions (MySQL/Postgres/SQL Server).
+        await tx.run('UPDATE projects SET is_active = is_active WHERE id = ?', [project.id]);
+        await tx.run('UPDATE scenes SET draft_revision = draft_revision WHERE id = ?', [scene.id]);
+        const latestScene = await tx.get('SELECT draft_revision FROM scenes WHERE id = ?', [scene.id]);
+        if (!latestScene || Number(latestScene.draft_revision || 0) !== Number(scene.draft_revision || 0)) {
+            const error = new Error('草稿已在发布过程中更新或删除，请刷新后重试');
+            error.code = 'DRAFT_CONFLICT';
+            error.status = 409;
+            throw error;
+        }
+        const releases = await tx.all('SELECT * FROM releases WHERE project_id = ? ORDER BY created_at DESC', [project.id]);
+        const normalizedVersion = normalizeVersion(version, releases);
+        if (releases.some(item => String(item.version) === normalizedVersion)) {
+            throw new Error(`版本 ${normalizedVersion} 已存在`);
+        }
+        snapshot.metadata.version = normalizedVersion;
+        // SQL timestamp columns can round to whole seconds. Preserve a strict
+        // publication order in the snapshot while holding the project lock.
+        snapshot.metadata.publishedAt = new Date(releases.reduce((latest, row) => Math.max(latest, releaseTimestamp(row) + 1), Date.now())).toISOString();
         await tx.run('UPDATE releases SET is_current = 0 WHERE project_id = ?', [project.id]);
         await tx.run(`INSERT INTO releases (
             id, project_id, scene_id, version, snapshot_json, is_current,
@@ -298,6 +323,7 @@ async function activateRelease(db, releaseIdValue, factoryId = '') {
     const document = normalizeDocument(snapshot, { project, scene, source: 'release' });
     await validatePlcBindings(db, document);
     await db.transaction(async (tx) => {
+        await tx.run('UPDATE projects SET is_active = is_active WHERE id = ?', [release.project_id]);
         await tx.run('UPDATE releases SET is_current = 0 WHERE project_id = ?', [release.project_id]);
         const activated = await tx.run('UPDATE releases SET is_current = 1 WHERE id = ?', [release.id]);
         if (!Number(activated.changes)) throw new Error('发布版本已被删除，无法切换');
@@ -308,10 +334,11 @@ async function activateRelease(db, releaseIdValue, factoryId = '') {
 }
 
 async function activateLatestSceneRelease(db, sceneId, factoryId = '') {
-    const release = await db.get(String(factoryId || '').trim()
-        ? 'SELECT r.* FROM releases r JOIN projects p ON p.id = r.project_id WHERE r.scene_id = ? AND p.factory_id = ? ORDER BY r.created_at DESC LIMIT 1'
-        : 'SELECT * FROM releases WHERE scene_id = ? ORDER BY created_at DESC LIMIT 1',
+    const releases = await db.all(String(factoryId || '').trim()
+        ? 'SELECT r.* FROM releases r JOIN projects p ON p.id = r.project_id WHERE r.scene_id = ? AND p.factory_id = ?'
+        : 'SELECT * FROM releases WHERE scene_id = ?',
     String(factoryId || '').trim() ? [sceneId, factoryId] : [sceneId]);
+    const release = sortReleasesNewestFirst(releases)[0];
     if (!release) throw new Error('该场景还没有可运行的发布版本');
     return activateRelease(db, release.id, factoryId);
 }
@@ -341,7 +368,7 @@ async function loadDesignerState(db, sceneId = '', factoryId = '') {
         scene: scenePayload(scene),
         revision: Number(scene?.draft_revision || 0),
         document,
-        releases: releases.map(releasePayload),
+        releases: sortReleasesNewestFirst(releases).map(releasePayload),
         currentRelease: releasePayload(currentRelease)
     };
 }
@@ -370,7 +397,7 @@ function runtimePlatformPayload({ project, scene, document, release }) {
         camera: objectValue(publishedScene.camera, {}),
         views: Array.isArray(publishedScene.views) ? publishedScene.views : [],
         defaultViewId: publishedScene.defaultViewId || publishedScene.views?.[0]?.id || 'factory_overview',
-        theme: { ...objectValue(publishedScene.theme, {}), ...objectValue(document.theme, {}) }
+        theme: { ...objectValue(publishedScene.theme, {}), ...objectValue(runtimeDocument.theme, {}) }
     } : null;
     return {
         activeProject: project || null,
@@ -384,6 +411,7 @@ function runtimePlatformPayload({ project, scene, document, release }) {
 }
 
 module.exports = {
+    sortReleasesNewestFirst,
     releasePayload,
     scenePayload,
     getProjectAndScene,

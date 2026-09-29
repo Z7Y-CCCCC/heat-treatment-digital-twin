@@ -2,6 +2,8 @@ const { execFileSync } = require('child_process');
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const { createFileManifest, verifyFileManifest } = require('./runtime-cache.cjs');
+const { prepareResourceDirectory } = require('./resource-preparation.cjs');
 
 /**
  * 随 Windows 安装包准备固定版本的 LGPL FFmpeg。
@@ -14,8 +16,9 @@ const path = require('path');
  */
 
 const desktopDir = path.resolve(__dirname, '..');
-const outputDir = path.join(desktopDir, 'resources', 'ffmpeg');
 const cacheDir = path.resolve(process.env.FFMPEG_CACHE_DIR || path.join(desktopDir, '.cache', 'ffmpeg'));
+const outputDir = path.join(cacheDir, 'runtime');
+const distributionDir = path.join(desktopDir, 'resources', 'ffmpeg');
 
 const build = Object.freeze({
     version: 'n7.1.5-12-g1fdbca85aa-20260805',
@@ -165,7 +168,8 @@ function writeMetadata(runtimeFiles, versionLine) {
         versionLine,
         dynamicallyLinked: true,
         encoder: 'h264_mf (Windows Media Foundation)',
-        runtimeFiles
+        runtimeFiles,
+        fileManifest: createFileManifest(outputDir, [...runtimeFiles, 'LICENSE.txt'])
     };
     fs.writeFileSync(
         path.join(outputDir, 'FFMPEG_METADATA.json'),
@@ -195,11 +199,25 @@ function writeMetadata(runtimeFiles, versionLine) {
     );
 }
 
-function main() {
+async function main() {
     if (process.platform !== 'win32') {
         throw new Error('当前交付包只支持 Windows，FFmpeg 资源准备脚本必须在 Windows 上运行');
     }
     const archive = ensureArchive();
+    let cached;
+    try { cached = JSON.parse(fs.readFileSync(path.join(outputDir, 'FFMPEG_METADATA.json'), 'utf8')); } catch { }
+    if (cached?.archiveSha256 === build.sha256
+        && Array.isArray(cached.fileManifest)
+        && Array.isArray(cached.runtimeFiles) && cached.runtimeFiles.includes('ffmpeg.exe')
+        && cached.runtimeFiles.every(name => cached.fileManifest?.some(entry => entry.name === name))
+        && cached.fileManifest?.some(entry => entry.name === 'LICENSE.txt')
+        && verifyFileManifest(outputDir, cached.fileManifest)) {
+        const versionLine = verifyRuntime();
+        writeMetadata(cached.runtimeFiles, versionLine);
+        console.log('FFmpeg 运行时内容校验通过，复用已解压缓存。');
+        await publishRuntime();
+        return;
+    }
     const extractionDir = path.join(cacheDir, `.extract-${process.pid}`);
     try {
         extractArchive(archive, extractionDir);
@@ -209,14 +227,19 @@ function main() {
         writeMetadata(runtimeFiles, versionLine);
         console.log(`已准备 FFmpeg 投屏编码器：${path.join(outputDir, 'ffmpeg.exe')}`);
         console.log(`已验证编码器：h264_mf；运行文件：${runtimeFiles.length} 个`);
+        await publishRuntime();
     } finally {
         fs.rmSync(extractionDir, { recursive: true, force: true });
     }
 }
 
-try {
-    main();
-} catch (error) {
+async function publishRuntime() {
+    await prepareResourceDirectory(distributionDir, async staging => {
+        fs.cpSync(outputDir, staging, { recursive: true });
+    });
+}
+
+main().catch(error => {
     console.error(error.stack || error.message || error);
     process.exitCode = 1;
-}
+});

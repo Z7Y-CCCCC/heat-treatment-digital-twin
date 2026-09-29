@@ -119,6 +119,7 @@ app.use('/uploads', express.static(uploadsRootDir, { dotfiles: 'deny', index: fa
 app.use('/assets', express.static(assetsDir, { dotfiles: 'deny', index: false }));
 
 app.use('/api/factories', require('./routes/factories'));
+app.use('/api/project-bundles', require('./routes/projectBundles')({ uploadsRoot: uploadsRootDir, assetsRoot: assetsDir }));
 app.use('/api/config', factoryContext, ensureModelFilesRecovered, require('./routes/config'));
 app.use('/api/workshops', factoryContext, require('./routes/workshops'));
 app.use('/api/lines', factoryContext, require('./routes/lines'));
@@ -235,10 +236,16 @@ function resolveModelFileDeletePlan(modelFilePath) {
         ? path.resolve(uploadsRootDir, relativePath.slice('uploads/'.length))
         : path.resolve(__dirname, relativePath);
     const uploadRoot = path.resolve(uploadsDir);
+    const importedRoot = path.resolve(uploadsRootDir, 'projects');
     const assetRoot = path.resolve(assetModelsDir);
 
     if (fullPath.startsWith(uploadRoot + path.sep)) {
         return { fullPath, deleteFile: true };
+    }
+    // A project bundle may share meshes/textures across models and published
+    // scenes. Removing one library entry must retain that immutable asset set.
+    if (fullPath.startsWith(importedRoot + path.sep)) {
+        return { fullPath, deleteFile: false };
     }
     if (fullPath.startsWith(assetRoot + path.sep)) {
         return { fullPath, deleteFile: false };

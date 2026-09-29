@@ -3,6 +3,7 @@ const router = express.Router();
 const { getDb, getDbStatus } = require('../db/database');
 const {
     releasePayload,
+    sortReleasesNewestFirst,
     loadDraftDocument,
     loadDesignerState,
     saveDraft,
@@ -85,7 +86,7 @@ async function loadPlatformSnapshot(factoryId) {
         ? await db.all(`SELECT * FROM bindings WHERE widget_id IN (${widgetIds.map(() => '?').join(',')})`, widgetIds)
         : [];
     const releases = activeProject
-        ? await db.all('SELECT * FROM releases WHERE project_id = ? ORDER BY created_at DESC', [activeProject.id])
+        ? sortReleasesNewestFirst(await db.all('SELECT * FROM releases WHERE project_id = ?', [activeProject.id]))
         : [];
     const currentRelease = releases.find(r => r.is_current) || releases[0] || null;
     const draftDocument = activeScene
