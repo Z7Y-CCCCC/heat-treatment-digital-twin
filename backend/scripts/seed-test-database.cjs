@@ -17,6 +17,7 @@ const { getDb, closeDb } = require('../db/database');
 (async () => {
     const db = await getDb();
     await db.upsert('settings', { key: 'data_mode', value: 'simulation' }, 'key');
+    await db.run("UPDATE factory_settings SET value = 'simulation' WHERE `key` = 'data_mode'");
     await db.upsert('settings', { key: 'lan_display_enabled', value: 'false' }, 'key');
     await db.run('UPDATE devices SET plc_enabled = 0');
     if (Number((await db.get('SELECT COUNT(*) AS count FROM data_points')).count) === 0) {

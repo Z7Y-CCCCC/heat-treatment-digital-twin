@@ -75,6 +75,7 @@ export function createDashboardDataStore(options = {}) {
     const latestDeviceDataMap = new Map();
     const lastSeenMap = new Map();
     let wsClient = null;
+    let connectedOnce = false;
     let reconnectTimer = null;
     let staleTimer = null;
     let disposed = false;
@@ -471,6 +472,15 @@ export function createDashboardDataStore(options = {}) {
             if(options.sceneProjection===true) {
                 try {socket.send(JSON.stringify({type:'scene_projection_subscribe',enabled:true}));} catch { /* reconnect retries the subscription */ }
             }
+            if (connectedOnce) {
+                // A bounded server queue may disconnect before a configuration
+                // event is delivered. Reload authoritative state on reconnect.
+                try {
+                    Promise.resolve(onMessage?.({ type: 'realtime_resync_required', payload: { reason: 'websocket_reconnect' } }))
+                        .catch(error => console.warn('[DataStore] 重连配置同步失败:', error));
+                } catch (error) { console.warn('[DataStore] 重连配置同步失败:', error); }
+            }
+            connectedOnce = true;
         };
 
         socket.onmessage = (event) => {

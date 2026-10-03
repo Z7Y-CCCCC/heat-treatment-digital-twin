@@ -7,16 +7,22 @@ using HeatTreatment.DigitalTwin.Backend;
 using HeatTreatmentAdminHost;
 using Newtonsoft.Json.Linq;
 
-internal static class Program
+internal static partial class Program
 {
     private static async Task Main()
     {
         var tests = new (string Name, Func<Task> Run)[]
         {
+            ("realtime receive progresses while the render synchronization context is idle", ReceiveDoesNotWaitForRender),
             ("cancelled send cannot release another owner's semaphore", CancelledSendKeepsLock),
             ("stale queued send cannot move to a replacement session", QueuedSendKeepsSession),
+            ("queued outbound messages snapshot their JSON before waiting", QueuedSendSnapshotsMessage),
             ("old cancelled connection loop cannot dispose its replacement", RestartKeepsNewSocket),
             ("old connection state messages cannot overwrite a new session", StaleStateIsIgnored),
+            ("inbound queue merges PLC patches and preserves control/fault barriers", InboundQueuePreservesOrder),
+            ("inbound queue enforces byte/count limits and session isolation", InboundQueueLimits),
+            ("real websocket fragments remain bounded and reject oversized messages", InboundFragmentsAreBounded),
+            ("real websocket overflow reconnects and requests authoritative resync", InboundOverflowResyncs),
             ("model timeout cancels its in-flight loopback HTTP download", ModelDownloadRespectsCancellation),
             ("WebView native bridge and navigation require exact app origin", CheckWebOrigins)
         };

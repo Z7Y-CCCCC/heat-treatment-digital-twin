@@ -5,6 +5,7 @@ const net = require('node:net');
 const { spawn } = require('node:child_process');
 const mysql = require('mysql2/promise');
 const { seedMysql } = require('./mysqlSeed');
+const { BoundedProcessLog } = require('../utils/boundedProcessLog');
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const quote = value => `\`${String(value).replace(/`/g, '``')}\``;
@@ -72,9 +73,13 @@ async function freePort(preferred) {
 
 function launch(executable, args, logFile) {
     checkRunning();
-    const log = fs.openSync(logFile, 'a');
-    try { server = spawn(executable, args, { windowsHide: true, argv0: 'mysqld.exe', cwd: path.dirname(executable), stdio: ['ignore', log, log] }); }
-    finally { fs.closeSync(log); }
+    const log = new BoundedProcessLog(logFile);
+    log.on('error', error => console.error(`MySQL server log: ${error.message}`));
+    try {
+        server = spawn(executable, args, { windowsHide: true, argv0: 'mysqld.exe', cwd: path.dirname(executable), stdio: ['ignore', 'pipe', 'pipe'] });
+        server.stdout.pipe(log, { end: false }); server.stderr.pipe(log, { end: false });
+        server.once('close', () => log.end());
+    } catch (error) { log.end(); throw error; }
     serverExit = new Promise((resolve, reject) => {
         server.once('error', reject);
         server.once('exit', (code, signal) => resolve({ code, signal }));

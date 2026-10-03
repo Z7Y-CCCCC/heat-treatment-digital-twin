@@ -9,6 +9,7 @@ const DEFAULT_RETENTION_DAYS = 30;
 const DEFAULT_MAX_ARCHIVES = 60;
 const DEFAULT_MAX_TOTAL_BYTES = 250 * 1024 * 1024;
 let archiveSequence = 0;
+const cleanupTasks = new Map();
 
 function positiveInteger(value, fallback) {
     const parsed = Number(value);
@@ -37,144 +38,144 @@ function archiveOptions(options = {}) {
     };
 }
 
-function cleanupLogArchives(directory, options = {}) {
-    fs.mkdirSync(directory, { recursive: true });
+async function cleanupArchives(directory, options) {
+    await fs.promises.mkdir(directory, { recursive: true });
     const { retentionDays, maxArchives, maxTotalBytes } = archiveOptions(options);
     const cutoff = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
-    const archives = fs.readdirSync(directory, { withFileTypes: true })
-        .filter(entry => entry.isFile() && entry.name.toLowerCase().endsWith('.log.gz'))
-        .map(entry => {
+    const archives = [];
+    for (const entry of await fs.promises.readdir(directory, { withFileTypes: true })) {
+        if (entry.isFile() && entry.name.toLowerCase().endsWith('.log.gz')) {
             const filename = path.join(directory, entry.name);
-            return { filename, stat: fs.statSync(filename) };
-        });
-
+            try {
+                const stat = await fs.promises.stat(filename);
+                if (stat.mtimeMs < cutoff) await fs.promises.rm(filename, { force: true });
+                else archives.push({ filename, stat });
+            } catch (error) { if (error.code !== 'ENOENT') throw error; }
+        }
+    }
+    archives.sort((a, b) => b.stat.mtimeMs - a.stat.mtimeMs || b.filename.localeCompare(a.filename));
+    let retainedCount = 0;
+    let totalBytes = 0;
     for (const archive of archives) {
-        if (archive.stat.mtimeMs < cutoff) fs.rmSync(archive.filename, { force: true });
-    }
-
-    const retained = archives
-        .filter(archive => fs.existsSync(archive.filename))
-        .sort((a, b) => b.stat.mtimeMs - a.stat.mtimeMs);
-    for (const archive of retained.slice(maxArchives)) {
-        fs.rmSync(archive.filename, { force: true });
-    }
-
-    const capped = retained
-        .filter(archive => fs.existsSync(archive.filename))
-        .sort((a, b) => b.stat.mtimeMs - a.stat.mtimeMs);
-    let totalBytes = capped.reduce((sum, archive) => sum + archive.stat.size, 0);
-    // 始终保留最新一份压缩日志；其余按时间从旧到新删除，避免异常刷屏吃满现场磁盘。
-    for (const archive of capped.slice(1).reverse()) {
-        if (totalBytes <= maxTotalBytes) break;
-        fs.rmSync(archive.filename, { force: true });
-        totalBytes -= archive.stat.size;
+        // Preserve the historical newest-archive exception to the byte quota.
+        if (retainedCount === 0 || (retainedCount < maxArchives && totalBytes + archive.stat.size <= maxTotalBytes)) {
+            retainedCount += 1;
+            totalBytes += archive.stat.size;
+        } else await fs.promises.rm(archive.filename, { force: true });
     }
 }
 
+function cleanupLogArchives(directory, options = {}) {
+    const key = path.resolve(directory);
+    const previous = cleanupTasks.get(key) || Promise.resolve();
+    const task = previous.catch(() => {}).then(() => cleanupArchives(key, options));
+    cleanupTasks.set(key, task);
+    // Existing timer callers intentionally do not await this optional maintenance.
+    // Attach a rejection handler without hiding errors from callers that DO await.
+    task.then(() => { if (cleanupTasks.get(key) === task) cleanupTasks.delete(key); }, () => {
+        if (cleanupTasks.get(key) === task) cleanupTasks.delete(key);
+    });
+    return task;
+}
+
 async function archiveExistingLog(filename) {
-    if (!fs.existsSync(filename)) return null;
-    if (fs.statSync(filename).size === 0) {
-        fs.rmSync(filename, { force: true });
+    let stat;
+    try { stat = await fs.promises.stat(filename); }
+    catch (error) { if (error.code === 'ENOENT') return null; throw error; }
+    if (stat.size === 0) {
+        await fs.promises.rm(filename, { force: true });
         return null;
     }
 
     const destination = archiveFilename(filename);
     const temporary = `${destination}.tmp`;
-    fs.rmSync(temporary, { force: true });
     try {
         await pipeline(
             fs.createReadStream(filename),
             zlib.createGzip({ level: 6 }),
             fs.createWriteStream(temporary, { flags: 'wx' })
         );
-        fs.renameSync(temporary, destination);
-        fs.rmSync(filename, { force: true });
+        await fs.promises.rename(temporary, destination);
+        await fs.promises.rm(filename, { force: true });
         return destination;
     } finally {
-        fs.rmSync(temporary, { force: true });
-    }
-}
-
-function archiveCurrentLogSync(filename) {
-    if (!fs.existsSync(filename) || fs.statSync(filename).size === 0) return null;
-    const destination = archiveFilename(filename);
-    const temporary = `${destination}.tmp`;
-    fs.rmSync(temporary, { force: true });
-    try {
-        fs.writeFileSync(temporary, zlib.gzipSync(fs.readFileSync(filename), { level: 6 }), { flag: 'wx' });
-        fs.renameSync(temporary, destination);
-        fs.rmSync(filename, { force: true });
-        return destination;
-    } finally {
-        fs.rmSync(temporary, { force: true });
+        await fs.promises.rm(temporary, { force: true });
     }
 }
 
 class RotatingLogWriter extends Writable {
     constructor(directory, filename, options = {}) {
-        super();
-        fs.mkdirSync(directory, { recursive: true });
+        super({ highWaterMark: positiveInteger(options.highWaterMark, 64 * 1024) });
         this.directory = directory;
         this.filename = path.join(directory, filename);
         this.maxBytes = positiveInteger(options.maxBytes ?? process.env.LOG_MAX_BYTES, DEFAULT_MAX_BYTES);
         this.retentionDays = positiveInteger(options.retentionDays ?? process.env.LOG_RETENTION_DAYS, DEFAULT_RETENTION_DAYS);
         this.maxArchives = positiveInteger(options.maxArchives ?? process.env.LOG_MAX_ARCHIVES, DEFAULT_MAX_ARCHIVES);
         this.maxTotalBytes = positiveInteger(options.maxTotalBytes ?? process.env.LOG_MAX_TOTAL_BYTES, DEFAULT_MAX_TOTAL_BYTES);
-        this.fd = null;
+        this.handle = null;
         this.bytes = 0;
-        this.open();
+        this.operation = Promise.resolve();
     }
 
-    open() {
-        this.fd = fs.openSync(this.filename, 'a');
-        this.bytes = fs.fstatSync(this.fd).size;
+    async open() {
+        this.handle = await fs.promises.open(this.filename, 'a');
+        this.bytes = (await this.handle.stat()).size;
     }
 
-    close() {
-        if (this.fd === null) return;
-        fs.closeSync(this.fd);
-        this.fd = null;
+    async close() {
+        const handle = this.handle;
+        this.handle = null;
+        if (handle) await handle.close();
     }
 
-    rotate() {
-        this.close();
-        archiveCurrentLogSync(this.filename);
-        cleanupLogArchives(this.directory, this);
-        this.open();
+    async rotate() {
+        await this.close();
+        await archiveExistingLog(this.filename);
+        await cleanupLogArchives(this.directory, this);
+        await this.open();
+    }
+
+    async writeBuffer(buffer) {
+        let offset = 0;
+        if (this.bytes > 0 && buffer.length <= this.maxBytes && this.bytes + buffer.length > this.maxBytes) {
+            await this.rotate();
+        }
+        while (offset < buffer.length && !this.destroyed) {
+            if (this.bytes >= this.maxBytes) await this.rotate();
+            const length = Math.min(buffer.length - offset, this.maxBytes - this.bytes);
+            const { bytesWritten } = await this.handle.write(buffer, offset, length);
+            if (bytesWritten === 0) throw new Error('Log write made no progress');
+            offset += bytesWritten;
+            this.bytes += bytesWritten;
+        }
     }
 
     _write(chunk, encoding, callback) {
-        try {
-            const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, encoding);
-            if (this.bytes > 0 && this.bytes + buffer.length > this.maxBytes) this.rotate();
-            fs.writeSync(this.fd, buffer);
-            this.bytes += buffer.length;
-            callback();
-        } catch (error) {
-            callback(error);
-        }
+        const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, encoding);
+        this.operation = this.writeBuffer(buffer);
+        this.operation.then(() => callback(), callback);
     }
 
     _final(callback) {
-        try {
-            this.close();
-            callback();
-        } catch (error) {
-            callback(error);
-        }
+        this.operation = this.close();
+        this.operation.then(() => callback(), callback);
     }
 
     _destroy(error, callback) {
-        try { this.close(); } catch (closeError) { error ||= closeError; }
-        callback(error);
+        // Never close a file handle underneath an in-flight asynchronous write.
+        this.operation.catch(() => {}).then(() => this.close()).then(
+            () => callback(error), closeError => callback(error || closeError));
     }
 }
 
 async function createRotatingLogWriter(directory, filename, options = {}) {
-    fs.mkdirSync(directory, { recursive: true });
+    await fs.promises.mkdir(directory, { recursive: true });
     await archiveExistingLog(path.join(directory, filename));
-    cleanupLogArchives(directory, options);
-    return new RotatingLogWriter(directory, filename, options);
+    await cleanupLogArchives(directory, options);
+    const writer = new RotatingLogWriter(directory, filename, options);
+    try { await writer.open(); }
+    catch (error) { await writer.close(); throw error; }
+    return writer;
 }
 
 module.exports = {

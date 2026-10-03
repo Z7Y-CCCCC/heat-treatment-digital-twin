@@ -890,6 +890,7 @@ export function useSystemSettings({
     async function loadDatabaseBackups() {
         try {
             const status = await adminApi.getDatabaseBackups()
+            if (status?.error || status?.success === false || !Array.isArray(status?.backups)) throw new Error(status?.error || '备份列表响应无效')
             assignDatabaseBackupStatus(status)
         } catch (e) {
             databaseBackupMessage.value = `备份状态读取失败：${e.message || e}`
@@ -932,6 +933,7 @@ export function useSystemSettings({
         databaseBackupMessage.value = '正在创建一致性备份...'
         try {
             const result = await adminApi.createDatabaseBackup()
+            if (!result?.success || !Array.isArray(result.status?.backups)) throw new Error(result?.error || '备份响应无效')
             assignDatabaseBackupStatus(result.status || {})
             databaseBackupMessage.value = `备份完成：${result.backup?.filename || ''}`
         } catch (e) {
@@ -947,6 +949,7 @@ export function useSystemSettings({
         databaseBackupMessage.value = '正在校验并恢复备份...'
         try {
             const result = await adminApi.restoreDatabaseBackup(backup.filename)
+            if (!result?.success || !Array.isArray(result.status?.backups)) throw new Error(result?.error || '恢复响应无效')
             assignDatabaseBackupStatus(result.status || {})
             databaseBackupMessage.value = `已恢复：${backup.filename}`
             await Promise.all([loadSettings(), loadWorkshops(), loadLines(), loadDevices(), loadModels(), loadPlatform()])

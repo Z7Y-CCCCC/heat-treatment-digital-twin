@@ -45,6 +45,9 @@ namespace HeatTreatment.DigitalTwin.Runtime
             public InspectionPartState Part;
             public InspectionTargetState Target;
             public InspectionMeshSurface Surface;
+            public Matrix4x4 HoverMatrix;
+            public Mesh HoverGeometry;
+            public bool HoverVisible;
         }
 
         private sealed class DeviceInspectionRuntime
@@ -70,7 +73,14 @@ namespace HeatTreatment.DigitalTwin.Runtime
             public float XrayAmount;
             public float XrayTarget;
             public float NextContextAt;
+            public InspectionContextCache ContextCache;
             public float NextHoverAt;
+            public bool HoverSnapshotValid;
+            public Vector3 HoverPointer;
+            public Matrix4x4 HoverCameraView, HoverCameraProjection;
+            public Rect HoverCameraRect;
+            public float HoverClock, HoverXray;
+            public bool HoverBlocked;
             public Bounds ShellLocalBounds;
             public bool TransitionActive => !Paused && (Mathf.Abs(Clock - TargetClock) > .0001f || Mathf.Abs(XrayAmount - XrayTarget) > .0001f);
         }
@@ -458,6 +468,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
             runtime.Stage = stage;
             runtime.Isolated = false;
             runtime.HoveredPart = null;
+            runtime.HoverSnapshotValid = false;
             runtime.Paused = false;
             runtime.TargetClock = stage == InspectionStage.Exploded || stage == InspectionStage.PartDetail ? runtime.TotalDuration : 0f;
             runtime.XrayTarget = stage == InspectionStage.Xray ? 1f : 0f;
@@ -657,6 +668,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
             runtime.Clock = runtime.TargetClock = runtime.XrayAmount = runtime.XrayTarget = 0f;
             runtime.Paused = runtime.Isolated = false;
             runtime.SelectedPart = runtime.HoveredPart = null;
+            runtime.HoverSnapshotValid = false;
             runtime.Stage = InspectionStage.Solid;
             foreach (var state in runtime.Renderers)
             {
@@ -844,6 +856,34 @@ namespace HeatTreatment.DigitalTwin.Runtime
             if (closest != null) SetInspectionStage(_selected, InspectionStage.PartDetail, false, closest.Config.Id);
         }
 
+        private bool InspectionHoverChanged(DeviceInspectionRuntime runtime, Vector3 pointer, bool blocked)
+        {
+            var changed = !runtime.HoverSnapshotValid || !runtime.HoverPointer.Equals(pointer)
+                || !runtime.HoverCameraView.Equals(_camera.worldToCameraMatrix)
+                || !runtime.HoverCameraProjection.Equals(_camera.projectionMatrix)
+                || !runtime.HoverCameraRect.Equals(_camera.pixelRect)
+                || runtime.HoverBlocked != blocked || runtime.HoverClock != runtime.Clock
+                || runtime.HoverXray != runtime.XrayAmount;
+            runtime.HoverPointer = pointer;
+            runtime.HoverCameraView = _camera.worldToCameraMatrix;
+            runtime.HoverCameraProjection = _camera.projectionMatrix;
+            runtime.HoverCameraRect = _camera.pixelRect;
+            runtime.HoverBlocked = blocked; runtime.HoverClock = runtime.Clock; runtime.HoverXray = runtime.XrayAmount;
+            foreach (var state in runtime.Renderers)
+            {
+                var visible = state.Surface.IsVisible;
+                var matrix = state.Renderer != null ? state.Renderer.localToWorldMatrix : Matrix4x4.identity;
+                var geometry = state.Surface.Geometry;
+                changed |= visible != state.HoverVisible || !matrix.Equals(state.HoverMatrix)
+                    || !ReferenceEquals(geometry, state.HoverGeometry)
+                    // Skinned deformation may change even with a stationary transform.
+                    || (visible && state.Surface.HasDynamicGeometry);
+                state.HoverVisible = visible; state.HoverMatrix = matrix; state.HoverGeometry = geometry;
+            }
+            runtime.HoverSnapshotValid = true;
+            return changed;
+        }
+
         private void UpdateInspectionHover()
         {
             var runtime = _selected?.Inspection;
@@ -853,6 +893,9 @@ namespace HeatTreatment.DigitalTwin.Runtime
             var pointer = Input.mousePosition;
             var blocked = (!_webOverlayActive && IsPointerOverDashboard(ScreenToDesign(pointer)))
                 || (!_webOverlayActive && !Application.isFocused) || pointer.x < 0 || pointer.y < 0 || pointer.x > Screen.width || pointer.y > Screen.height;
+            // Keep drawing the last outline every frame. Only the expensive
+            // exact picking is skipped when every input to the pick is unchanged.
+            if (!InspectionHoverChanged(runtime, pointer, blocked)) return;
             var hovered = blocked ? null : PickInspectionPart(runtime, _camera.ScreenPointToRay(pointer));
             if (runtime.HoveredPart == hovered) return;
             runtime.HoveredPart = hovered;
@@ -894,17 +937,26 @@ namespace HeatTreatment.DigitalTwin.Runtime
             _inspectionOutlineMaterial = null;
         }
 
-        private JObject InspectionProjection(Vector3 point, bool shown)
+        private sealed class InspectionContextCache
+        {
+            public JObject Context;
+            public InspectionPartState SelectedPart;
+        }
+
+        private static void SetInspectionContextValue(JObject target, string key, object value)
+        {
+            if (target[key] is JValue token) token.Value = value;
+            else target[key] = new JValue(value);
+        }
+
+        private void UpdateInspectionProjection(JObject projection, Vector3 point, bool shown)
         {
             var viewport = _camera != null ? _camera.WorldToViewportPoint(point) : new Vector3(0f, 0f, -1f);
             var finite = float.IsFinite(viewport.x) && float.IsFinite(viewport.y) && float.IsFinite(viewport.z);
-            return new JObject
-            {
-                ["x"] = finite ? viewport.x : 0f,
-                ["y"] = finite ? 1f - viewport.y : 0f,
-                ["visible"] = shown && finite && viewport.z > (_camera?.nearClipPlane ?? .01f)
-                    && viewport.x >= 0f && viewport.x <= 1f && viewport.y >= 0f && viewport.y <= 1f
-            };
+            SetInspectionContextValue(projection, "x", finite ? viewport.x : 0f);
+            SetInspectionContextValue(projection, "y", finite ? 1f - viewport.y : 0f);
+            SetInspectionContextValue(projection, "visible", shown && finite && viewport.z > (_camera?.nearClipPlane ?? .01f)
+                && viewport.x >= 0f && viewport.x <= 1f && viewport.y >= 0f && viewport.y <= 1f);
         }
 
         private void PublishInspectionContext(DeviceView device)
@@ -912,10 +964,32 @@ namespace HeatTreatment.DigitalTwin.Runtime
             if (device?.Inspection == null || _selected != device || _mode != DashboardMode.Detail) return;
             var runtime = device.Inspection;
             runtime.NextContextAt = Time.unscaledTime + .1f;
-            var selected = runtime.SelectedPart?.Config;
-            var parts = new JArray();
-            foreach (var part in runtime.Parts)
+            var cache = runtime.ContextCache;
+            if (cache == null)
             {
+                var descriptors = new JArray();
+                foreach (var part in runtime.Parts)
+                    descriptors.Add(new JObject
+                    {
+                        ["id"] = part.Config.Id, ["name"] = part.Config.Name, ["group"] = part.Config.Group, ["description"] = part.Config.Description,
+                        ["pointIds"] = new JArray(part.Config.PointIds), ["pointKeys"] = new JArray(part.Config.PointKeys),
+                        ["selected"] = false, ["anchor"] = new JObject(), ["label"] = new JObject()
+                    });
+                cache = runtime.ContextCache = new InspectionContextCache { Context = new JObject
+                {
+                    ["viewMode"] = "device", ["deviceId"] = device.Device?.Id ?? string.Empty,
+                    ["inspectionEnabled"] = runtime.Config.Enabled, ["inspectionLeaderLines"] = runtime.Config.Labels.LeaderLines,
+                    ["inspectionParts"] = descriptors,
+                    ["partId"] = string.Empty, ["partName"] = string.Empty, ["partDescription"] = string.Empty,
+                    ["partPointIds"] = new JArray(), ["partPointKeys"] = new JArray(), ["partDetailViewId"] = string.Empty
+                } };
+            }
+            var context = cache.Context;
+            var parts = (JArray)context["inspectionParts"];
+            for (var index = 0; index < runtime.Parts.Count; index++)
+            {
+                var part = runtime.Parts[index];
+                var descriptor = (JObject)parts[index];
                 var anchor = InspectionBounds(part.Renderers, runtime.ModelRoot.position).center;
                 var labelOffset = InspectionAuthorVector(runtime, part.Config.LabelOffset);
                 var labelBasis = runtime.Config.OffsetSpace == "model" ? runtime.ModelRoot : part.Targets.FirstOrDefault()?.Parent ?? runtime.ModelRoot;
@@ -923,33 +997,41 @@ namespace HeatTreatment.DigitalTwin.Runtime
                     && part.Renderers.Any(renderer => renderer != null && renderer.enabled && !renderer.forceRenderingOff && renderer.gameObject.activeInHierarchy);
                 var labelShown = shown && runtime.LabelsEnabled
                     && InspectionTimeline.PartProgress(runtime.Config, part.Config, part.EnabledIndex, runtime.Clock) > .02f;
-                parts.Add(new JObject
-                {
-                    ["id"] = part.Config.Id, ["name"] = part.Config.Name, ["group"] = part.Config.Group, ["description"] = part.Config.Description,
-                    ["pointIds"] = new JArray(part.Config.PointIds), ["pointKeys"] = new JArray(part.Config.PointKeys),
-                    ["selected"] = part == runtime.SelectedPart,
-                    ["anchor"] = InspectionProjection(anchor, shown), ["label"] = InspectionProjection(anchor + labelBasis.TransformVector(labelOffset), labelShown)
-                });
+                SetInspectionContextValue(descriptor, "selected", part == runtime.SelectedPart);
+                UpdateInspectionProjection((JObject)descriptor["anchor"], anchor, shown);
+                UpdateInspectionProjection((JObject)descriptor["label"], anchor + labelBasis.TransformVector(labelOffset), labelShown);
             }
             var progressing = Mathf.Abs(runtime.Clock - runtime.TargetClock) > .0001f;
             var pending = progressing || Mathf.Abs(runtime.XrayAmount - runtime.XrayTarget) > .0001f;
             var phase = runtime.Paused && pending ? "paused" : !runtime.TransitionActive ? "idle"
                 : runtime.Clock <= runtime.Config.ShellDuration && progressing ? "shell"
                 : runtime.TargetClock >= runtime.Clock && progressing ? "exploding" : progressing ? "assembling" : "xray";
-            InspectionContextChanged?.Invoke(new JObject
+            if (cache.SelectedPart != runtime.SelectedPart)
             {
-                ["viewId"] = _activeViewId ?? string.Empty, ["viewMode"] = "device", ["deviceId"] = device.Device?.Id ?? string.Empty,
-                ["inspectionEnabled"] = runtime.Config.Enabled,
-                ["inspectionStage"] = InspectionStageKey(runtime.Stage),
-                ["inspectionProgress"] = Mathf.Clamp01(runtime.Clock / runtime.TotalDuration),
-                ["inspectionAnimating"] = runtime.TransitionActive, ["inspectionPhase"] = phase,
-                ["inspectionIsolated"] = runtime.Isolated, ["inspectionLabelsEnabled"] = runtime.LabelsEnabled,
-                ["inspectionLeaderLines"] = runtime.Config.Labels.LeaderLines, ["inspectionHoveredPartId"] = runtime.HoveredPart?.Config.Id ?? string.Empty,
-                ["inspectionIssues"] = runtime.Issues.DeepClone(), ["inspectionParts"] = parts,
-                ["partId"] = selected?.Id ?? string.Empty, ["partName"] = selected?.Name ?? string.Empty,
-                ["partDescription"] = selected?.Description ?? string.Empty, ["partPointIds"] = new JArray(selected?.PointIds ?? new List<string>()),
-                ["partPointKeys"] = new JArray(selected?.PointKeys ?? new List<string>()), ["partDetailViewId"] = selected?.DetailViewId ?? string.Empty
-            });
+                cache.SelectedPart = runtime.SelectedPart;
+                var selected = runtime.SelectedPart?.Config;
+                SetInspectionContextValue(context, "partId", selected?.Id ?? string.Empty);
+                SetInspectionContextValue(context, "partName", selected?.Name ?? string.Empty);
+                SetInspectionContextValue(context, "partDescription", selected?.Description ?? string.Empty);
+                SetInspectionContextValue(context, "partDetailViewId", selected?.DetailViewId ?? string.Empty);
+                context["partPointIds"] = selected == null ? new JArray() : new JArray(selected.PointIds);
+                context["partPointKeys"] = selected == null ? new JArray() : new JArray(selected.PointKeys);
+            }
+            if (!JToken.DeepEquals(context["inspectionIssues"], runtime.Issues))
+            {
+                context["inspectionIssues"] = runtime.Issues.DeepClone();
+            }
+            SetInspectionContextValue(context, "viewId", _activeViewId ?? string.Empty);
+            SetInspectionContextValue(context, "inspectionStage", InspectionStageKey(runtime.Stage));
+            SetInspectionContextValue(context, "inspectionProgress", Mathf.Clamp01(runtime.Clock / runtime.TotalDuration));
+            SetInspectionContextValue(context, "inspectionAnimating", runtime.TransitionActive);
+            SetInspectionContextValue(context, "inspectionPhase", phase);
+            SetInspectionContextValue(context, "inspectionIsolated", runtime.Isolated);
+            SetInspectionContextValue(context, "inspectionLabelsEnabled", runtime.LabelsEnabled);
+            SetInspectionContextValue(context, "inspectionHoveredPartId", runtime.HoveredPart?.Config.Id ?? string.Empty);
+            // Synchronous borrowed context: the runtime subscriber clones it before
+            // storing/sending. A replacement inspection plan owns a fresh cache.
+            InspectionContextChanged?.Invoke(context);
         }
 
         private void DrawInspectionControlsAndLabels(DeviceView device)

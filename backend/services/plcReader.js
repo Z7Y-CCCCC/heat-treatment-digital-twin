@@ -9,6 +9,7 @@
  */
 
 const nodes7 = require('nodes7');
+const { protectS7Reads } = require('./s7ReadSafety');
 const { getDb } = require('../db/database');
 const { evaluateMathExpression } = require('../utils/mathExpression');
 const { createProtocolDriver } = require('./plcProtocolDrivers');
@@ -250,6 +251,7 @@ class PlcReader {
             driver: null,
             timer: null,
             connectTimer: null,
+            readTimer: null,
             retryTimer: null,
             reading: false,
             status: 'idle',
@@ -293,8 +295,13 @@ class PlcReader {
         }, connectTimeout);
 
         if (task.endpoint.protocol === 'S7') {
-            const connection = new nodes7();
+            const connection = new nodes7({ silent: true });
             task.conn = connection;
+            protectS7Reads(connection, error => {
+                if (!this.stopped && generation === task.connectionGeneration && task.conn === connection) {
+                    this._handleTaskFailure(task, error, 'S7 响应解析失败');
+                }
+            });
             const { ip, port, rack, slot, timeout } = task.endpoint;
             const onConnected = (err) => {
                 if (this.stopped || generation !== task.connectionGeneration || task.conn !== connection) {
@@ -377,10 +384,22 @@ class PlcReader {
         if (this.stopped || task.reading || task.status !== 'connected' || !connection) return;
         task.reading = true;
         const generation = task.connectionGeneration;
+        // Some driver callbacks/promises can remain pending after a broken
+        // socket. An independent deadline releases the task and rejects late
+        // results from that connection generation.
+        const readTimeout = this._clampInteger(task.endpoint.timeout, 1000, 30000, 5000);
+        task.readTimer = setTimeout(() => {
+            task.readTimer = null;
+            if (this.stopped || generation !== task.connectionGeneration || !task.reading) return;
+            this._handleTaskFailure(task, new Error(`${readTimeout}ms 内未完成读取`), '读取超时');
+        }, readTimeout);
+        const finishRead = () => {
+            clearTimeout(task.readTimer); task.readTimer = null; task.reading = false;
+        };
         if (task.endpoint.protocol === 'S7') {
             const onRead = (err, values) => {
                 if (this.stopped || generation !== task.connectionGeneration || task.conn !== connection) return;
-                task.reading = false;
+                finishRead();
                 if (err) {
                     this._handleTaskFailure(task, err, '读取失败');
                     return;
@@ -402,12 +421,12 @@ class PlcReader {
             })
             .then(values => {
                 if (this.stopped || generation !== task.connectionGeneration || task.driver !== connection) return;
-                task.reading = false;
+                finishRead();
                 this._handleTaskReadSuccess(task, values || {});
             })
             .catch(error => {
                 if (this.stopped || generation !== task.connectionGeneration || task.driver !== connection) return;
-                task.reading = false;
+                finishRead();
                 this._handleTaskFailure(task, error, '读取失败');
             });
     }
@@ -456,7 +475,8 @@ class PlcReader {
             return;
         }
 
-        const retryInterval = this._clampInteger(task.endpoint.retryInterval, 1000, 120000, 10000);
+        const retryBase = this._clampInteger(task.endpoint.retryInterval, 1000, 120000, 10000);
+        const retryInterval = Math.min(120000, retryBase * 2 ** Math.min(task.retryCount - 1, 7));
         task.lastError = message;
         task.nextRetryAt = Date.now() + retryInterval;
         this._setTaskStatus(task, 'retrying', `${message}，${Math.round(retryInterval / 1000)} 秒后重连`);
@@ -983,6 +1003,10 @@ class PlcReader {
     }
 
     _clearTaskTimers(task) {
+        if (task.readTimer) {
+            clearTimeout(task.readTimer);
+            task.readTimer = null;
+        }
         if (task.timer) {
             clearInterval(task.timer);
             task.timer = null;

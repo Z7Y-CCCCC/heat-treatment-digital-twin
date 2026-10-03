@@ -1,7 +1,7 @@
 const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
-const { createSmokeSandbox, stopOwnedSmokeProcess } = require('../desktop/scripts/smoke-sandbox.cjs');
+const { createSmokeSandbox, stopOwnedSmokeProcess, createSmokeSession, authorizeSmokeUnity } = require('../desktop/scripts/smoke-sandbox.cjs');
 const { findFreePort, startLoggedProcess, testFetch: fetch } = require('../backend/scripts/integration-test-utils.cjs');
 
 const projectDir = path.resolve(__dirname, '..');
@@ -110,6 +110,7 @@ async function main() {
             }
         });
         await waitForHealth(`${origin}/api/health`, backend);
+        const session = await createSmokeSession(origin, sandbox);
 
         const configResponse = await fetch(`${origin}/api/config`);
         if (!configResponse.ok) throw new Error(`Config HTTP ${configResponse.status}`);
@@ -156,6 +157,7 @@ async function main() {
             },
             stdio: 'ignore'
         });
+        await authorizeSmokeUnity(origin, unity, session);
         let unityText = await waitForUnityReady(unity);
         const loadedModels = deviceModels.filter(modelId => unityText.includes(`[RuntimeModelLibrary] Loaded ${modelId}`));
         const readyLine = unityText.split(/\r?\n/).find(line =>

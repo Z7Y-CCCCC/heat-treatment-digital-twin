@@ -26,12 +26,14 @@ async function inspect(row) {
     if (row.kind === 'http') {
       const response = await adminApi.inspectHttpDataSource(row.target)
       if (disposed || row.generation !== generation) return
+      if (response.error || response.success === false) throw new Error(response.error || '读取接口字段失败')
       row.fields = response.result?.fields || []
       // Preserve the original HTTP path even if absent in a sparse sample; a real
       // preview is required and will reject a path absent from the actual response.
     } else {
       const response = await adminApi.getDataSourceTables(row.target.connectionId)
       if (disposed || row.generation !== generation) return
+      if (response.error || response.success === false) throw new Error(response.error || '读取数据表失败')
       row.tables = response.tables || []
       const exact = row.tables.find(table => table.name === row.target.table && (table.schema || '') === (row.target.schema || ''))
       if (!exact) { row.target.table = ''; row.target.schema = ''; DATABASE_FIELD_ROLES.forEach(role => { row.target[role] = '' }); return }
@@ -43,6 +45,7 @@ async function inspect(row) {
 async function loadColumns(row, generation) {
   const response = await adminApi.getDataSourceColumns(row.target.connectionId, row.target.schema || '', row.target.table)
   if (disposed || row.generation !== generation) return
+  if (response.error || response.success === false) throw new Error(response.error || '读取数据列失败')
   row.fields = response.columns || []
   DATABASE_FIELD_ROLES.forEach(role => {
     if (!row.source[role]) { row.target[role] = ''; return }
@@ -76,6 +79,7 @@ async function preview(row) {
       ? await adminApi.previewHttpDataSource(row.target)
       : await adminApi.previewDataSource({ ...widget.data, datasets: [row.target], formula: '', context })
     if (disposed || generation !== row.generation) return
+    if (response.error || response.success === false) throw new Error(response.error || '数据预览失败')
     if (!response.result || response.result.quality === 'bad' || response.result.error) throw new Error(response.result?.error || '数据预览失败')
     row.preview = response.result
   } catch (failure) { if (!disposed && generation === row.generation) row.error = failure.message || '数据预览失败' }

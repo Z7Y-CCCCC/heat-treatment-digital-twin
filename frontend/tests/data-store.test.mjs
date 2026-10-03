@@ -36,6 +36,22 @@ test('scene projection is opt-in and does not add traffic for normal dashboards'
     ordinary.dispose()
 })
 
+test('reconnect requests authoritative resync once and stale sockets cannot trigger it', t => {
+    t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] })
+    const { store, sockets } = fixture(t, { sceneProjection: true })
+    const messages = []
+    store.setMessageHandler(message => messages.push(message))
+    store.connect(); sockets[0].open()
+    assert.equal(messages.length, 0)
+    sockets[0].close()
+    t.mock.timers.tick(5000)
+    sockets[1].open()
+    assert.deepEqual(messages, [{ type: 'realtime_resync_required', payload: { reason: 'websocket_reconnect' } }])
+    assert.deepEqual(sockets[1].sent.map(value => JSON.parse(value).type), ['client_hello', 'scene_projection_subscribe'])
+    sockets[0].open()
+    assert.equal(messages.length, 1)
+})
+
 test('new device frames replace selected data and offline devices leave live counts', async t => {
     const { store, sockets } = fixture(t)
     store.registerDevice({ id: 'A', name: 'A' })

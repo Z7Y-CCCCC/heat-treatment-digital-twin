@@ -110,6 +110,13 @@ async function main() {
         });
         const status1 = policy1.status;
         const storedConfig = JSON.parse(fs.readFileSync(path.join(dataDir, 'database-config.json'), 'utf8'));
+        const lastGoodName = status1.backups.find(backup => backup.valid)?.filename;
+        const corruptNewest = path.join(backupDir, 'factory-20260901T000000000Z-corrupt.db');
+        fs.writeFileSync(corruptNewest, 'not a sqlite database');
+        setAge(corruptNewest, 89);
+        const corruptPolicy = await requestJson(`${origin}/api/database/backups/config`, {
+            method: 'PUT', body: JSON.stringify({ retentionDays: 1 })
+        });
 
         const invalidResponse = await testFetch(`${origin}/api/database/backups/config`, {
             method: 'PUT',
@@ -133,6 +140,8 @@ async function main() {
         });
 
         const checks = {
+            legacyDefaultBudgetMigrated: status30.maxTotalBytes === 2 * 1024 ** 3
+                && status30.storagePolicy?.source === 'default-migrated',
             retentionDaysSaved: status30.retentionDays === 30 && storedConfig.backupRetentionDays === 1,
             expiredBackupsDeleted: !names30.has(seededBackups[0].filename)
                 && !names30.has(seededBackups[1].filename)
@@ -143,6 +152,8 @@ async function main() {
                 && !fs.existsSync(orphanTemporary),
             latestValidBackupProtected: status1.backups.length === 1
                 && status1.backups[0].valid === true,
+            corruptNewestCannotDisplaceLastRecoveryPoint: corruptPolicy.status.backups
+                .some(backup => backup.filename === lastGoodName && backup.valid === true),
             statusStatisticsCorrect: status1.totalBackupBytes === status1.backups[0].size
                 && status1.oldestBackup?.filename === status1.newestBackup?.filename,
             invalidRetentionRejected: invalidResponse.status === 400

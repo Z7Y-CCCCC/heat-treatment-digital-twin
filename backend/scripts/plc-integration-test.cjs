@@ -54,6 +54,7 @@ function configureTestDatabase(filename, s7Port) {
     try {
         const configure = db.transaction(() => {
             db.prepare("INSERT INTO settings (key, value) VALUES ('data_mode', 'integrated_plc') ON CONFLICT(key) DO UPDATE SET value=excluded.value").run();
+            db.prepare("UPDATE factory_settings SET value='integrated_plc' WHERE `key`='data_mode'").run();
             db.prepare('UPDATE devices SET plc_enabled=0').run();
             db.prepare(`UPDATE devices SET
                 plc_enabled=1, plc_protocol='S7', plc_ip='127.0.0.1', plc_port=?,

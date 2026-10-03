@@ -17,9 +17,11 @@
     "build:unity": "node scripts/build-unity-client.cjs",
     "build:unity:force": "node scripts/build-unity-client.cjs --force",
     "build:admin-host": "node scripts/build-native-admin-host.cjs",
+    "build:collector-service": "node scripts/build-collector-service.cjs",
     "test:logs": "node scripts/log-manager-test.cjs",
     "test:processes": "node --test scripts/process-lifecycle-test.cjs scripts/desktop-supervisor-unit-test.cjs",
     "test:resources": "node --test scripts/resource-preparation-test.cjs scripts/runtime-cache-test.cjs scripts/dependency-cache-test.cjs scripts/directory-publish-test.cjs",
+    "test:deployment": "node --test scripts/deployment-test.cjs scripts/desktop-supervisor-unit-test.cjs",
     "test:supervisor": "node scripts/backend-supervisor-test.cjs",
     "test:admin-host-parent": "node scripts/admin-host-parent-test.cjs",
     "test:admin-host-retry": "node scripts/admin-host-retry-test.cjs",
@@ -42,10 +44,13 @@
       "processLifecycle.cjs",
       "mysqlRuntime.cjs",
       "directoryPublish.cjs",
+      "deployment.cjs",
+      "deployment-preload.cjs",
       "package.json",
       "assets/**/*"
     ],
     "extraResources": [
+      { "from": ".cache/collector-service", "to": "collector-service", "filter": ["**/*"] },
       {
         "from": "resources/mysql",
         "to": "mysql",
@@ -118,6 +123,11 @@
         "to": "THIRD_PARTY_NOTICES.txt"
       }
     ],
+    "extraFiles": [
+      { "from": "部署与连接.cmd", "to": "部署与连接.cmd" },
+      { "from": "安装采集服务.ps1", "to": "安装采集服务.ps1" },
+      { "from": "现场部署选项.ps1", "to": "现场部署选项.ps1" }
+    ],
     "win": {
       "target": [
         {
@@ -131,6 +141,8 @@
       "artifactName": "热处理数字孪生大屏-安装包-${version}-${arch}.${ext}"
     },
     "nsis": {
+      "perMachine": true,
+      "include": "service-installer.nsh",
       "oneClick": false,
       "differentialPackage": false,
       "useZip": true,

@@ -38,6 +38,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
         private readonly Dictionary<string, MobileDeviceMotion> _motions = new Dictionary<string, MobileDeviceMotion>();
         private readonly Dictionary<string, JObject> _latestDeviceFrames = new Dictionary<string, JObject>();
         private readonly Dictionary<string, Transform> _deviceRoots = new Dictionary<string, Transform>();
+        private readonly Dictionary<string, Renderer[]> _projectionRenderers = new Dictionary<string, Renderer[]>();
         private readonly Dictionary<string, Transform> _workshopRoots = new Dictionary<string, Transform>();
         private readonly Dictionary<string, Transform> _lineRoots = new Dictionary<string, Transform>();
         private readonly Dictionary<string, string> _deviceModelTypes = new Dictionary<string, string>();
@@ -316,16 +317,28 @@ namespace HeatTreatment.DigitalTwin.Runtime
                     var elements = new JArray();
                     for (var column = 0; column < 4; column++)
                         for (var row = 0; row < 4; row++) elements.Add(matrix[row, column]);
-                    var renderers = root.GetComponentsInChildren<Renderer>()
-                        .Where(renderer => renderer.enabled && renderer.gameObject.activeInHierarchy).ToArray();
-                    var bounds = renderers.Length > 0 ? renderers[0].bounds : new Bounds(root.position, Vector3.zero);
-                    for (var index = 1; index < renderers.Length; index++) bounds.Encapsulate(renderers[index].bounds);
+                    if (!_projectionRenderers.TryGetValue(pair.Key, out var renderers))
+                    {
+                        renderers = root.GetComponentsInChildren<Renderer>(true);
+                        _projectionRenderers[pair.Key] = renderers;
+                    }
+                    // Membership is stable through inspection reparenting. Bounds
+                    // and visibility remain live for PLC animations and isolation.
+                    var bounds = new Bounds(root.position, Vector3.zero);
+                    var visible = false;
+                    foreach (var renderer in renderers)
+                    {
+                        if (renderer == null || !renderer.enabled || renderer.forceRenderingOff || !renderer.gameObject.activeInHierarchy) continue;
+                        if (!visible) bounds = renderer.bounds;
+                        else bounds.Encapsulate(renderer.bounds);
+                        visible = true;
+                    }
                     var anchor = bounds.center;
                     anchor.y = bounds.max.y + Mathf.Max(0.5f, bounds.size.y * 0.08f);
                     devices.Add(new JObject
                     {
                         ["id"] = pair.Key, ["matrix"] = elements,
-                        ["anchor"] = ProjectionVector(anchor), ["visible"] = renderers.Length > 0
+                        ["anchor"] = ProjectionVector(anchor), ["visible"] = visible
                     });
                 }
                 _webSocket.SendTransientMessage(new JObject
@@ -539,6 +552,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
                     _visuals[device.Id] = visual;
                     _motions[device.Id] = motion;
                     _deviceRoots[device.Id] = instance.Root.transform;
+                    _projectionRenderers[device.Id] = instance.Root.GetComponentsInChildren<Renderer>(true);
                     _deviceModelTypes[device.Id] = device.ModelType ?? string.Empty;
                     _deviceLineIds[device.Id] = placement.LineId ?? device.LineId ?? string.Empty;
                     _deviceWorkshopIds[device.Id] = placement.WorkshopId ?? string.Empty;
@@ -896,6 +910,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 _visuals[device.Id] = visual;
                 _motions[device.Id] = motion;
                 _deviceRoots[device.Id] = root.transform;
+                _projectionRenderers[device.Id] = root.GetComponentsInChildren<Renderer>(true);
                 _deviceModelTypes[device.Id] = device.ModelType ?? string.Empty;
                 _dashboard.ApplyPreviewDevice(device, root, instance.Inspection);
                 if (_latestDeviceFrames.TryGetValue(device.Id, out var latest))
@@ -1182,14 +1197,18 @@ namespace HeatTreatment.DigitalTwin.Runtime
             if (payload == null) return;
             var stage = payload.Value<string>("inspectionStage") ?? string.Empty;
             SetInspectionSceneIsolation(stage == "exploded" || stage == "part");
-            var context = _lastDashboardContext.DeepClone() as JObject ?? new JObject();
+            var context = new JObject();
+            if (_lastDashboardContext != null)
+                foreach (var property in _lastDashboardContext.Properties())
+                    if (payload.Property(property.Name) == null) context[property.Name] = property.Value.DeepClone();
             foreach (var property in payload.Properties()) context[property.Name] = property.Value.DeepClone();
             context["sceneReady"] = _sceneReady;
             _lastDashboardContext = context;
             _webSocket?.SendMessage(new JObject
             {
                 ["type"] = "dashboard_context",
-                ["payload"] = context.DeepClone()
+                // SendMessage snapshots JSON synchronously before its first await.
+                ["payload"] = context
             });
         }
 
@@ -1323,16 +1342,16 @@ namespace HeatTreatment.DigitalTwin.Runtime
             try
             {
                 var currentProcess = Process.GetCurrentProcess();
+                var userDataRoot = Environment.GetEnvironmentVariable("APP_USER_DATA_DIR");
+                userDataRoot = string.IsNullOrWhiteSpace(userDataRoot)
+                    ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "heat-treatment-digital-twin-desktop")
+                    : Path.GetFullPath(userDataRoot);
                 var arguments = string.Join(" ", new[]
                 {
                     "--url", QuoteProcessArgument(AppendEmbeddedFlag(adminUrl)),
                     "--parent-pid", currentProcess.Id.ToString(),
                     "--parent-hwnd", currentProcess.MainWindowHandle.ToInt64().ToString(),
-                    "--user-data", QuoteProcessArgument(Path.Combine(
-                        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-                        "heat-treatment-digital-twin-desktop",
-                        "webview2"
-                    ))
+                    "--user-data", QuoteProcessArgument(Path.Combine(userDataRoot, "webview2"))
                 });
                 if (!string.IsNullOrWhiteSpace(_settings?.adminHostFixedRuntimeFolder))
                 {
@@ -1541,6 +1560,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
             _visuals.Clear();
             _motions.Clear();
             _deviceRoots.Clear();
+            _projectionRenderers.Clear();
             _workshopRoots.Clear();
             _lineRoots.Clear();
             _deviceModelTypes.Clear();

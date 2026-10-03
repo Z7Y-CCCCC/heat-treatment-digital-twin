@@ -245,7 +245,7 @@ try {
     $env:DESKTOP_FORCE_UNITY_REBUILD = if ($ForceUnityBuild) { 'true' } else { 'false' }
 
     $installerName = "热处理数字孪生大屏-安装包-$version-x64.exe"
-    foreach ($buildStep in @('build:frontend', 'build:unity', 'build:admin-host', 'prepare:resources')) {
+    foreach ($buildStep in @('build:frontend', 'build:unity', 'build:admin-host', 'build:collector-service', 'prepare:resources')) {
         Invoke-CheckedCommand -Label $buildStep -Executable $npm -ArgumentList @('--prefix', $desktopDirectory, 'run', $buildStep)
     }
     $builderCli = Join-Path $desktopDirectory 'node_modules/electron-builder/out/cli/cli.js'
@@ -265,6 +265,10 @@ try {
 $unpacked = Join-Path (Join-Path $outputDirectory 'win-unpacked') "$($desktopPackage.build.productName).exe"
 if (-not (Test-Path -LiteralPath $unpacked)) { throw "缺少解包验证程序：$unpacked" }
 if (-not $SkipSmokeTest) {
+    Invoke-CheckedCommand -Label '独立采集服务：无 Unity 采集、重启持久化与安全停库验证' -Executable $node -ArgumentList @(
+        (Join-Path $projectDirectory 'tools/collector-service-smoke-test.cjs'),
+        (Join-Path $outputDirectory 'win-unpacked/resources')
+    )
     Invoke-CheckedCommand -Label '首次运行随包 MySQL 验证' -Executable $node -ArgumentList @(
         (Join-Path $projectDirectory 'tools/packaged-mysql-smoke-test.cjs'),
         $unpacked

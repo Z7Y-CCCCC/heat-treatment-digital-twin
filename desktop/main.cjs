@@ -1,13 +1,15 @@
-const { app, BrowserWindow, dialog, Menu, shell, Tray } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, Menu, powerSaveBlocker, shell, Tray } = require('electron');
 const { spawn } = require('child_process');
 const crypto = require('crypto');
 const fs = require('fs');
 const http = require('http');
+const https = require('https');
 const net = require('net');
 const path = require('path');
 const { hasProcessExited, terminateProcess } = require('./processLifecycle.cjs');
 const { MysqlRuntime } = require('./mysqlRuntime.cjs');
 const { retryFilesystem, publishDirectory } = require('./directoryPublish.cjs');
+const { deploymentFile, resolveDeployment, saveDeployment } = require('./deployment.cjs');
 const {
     cleanupLogArchives,
     createRotatingLogWriter
@@ -27,6 +29,10 @@ let tray = null;
 let backendProcess = null;
 let nativeProcess = null;
 let mysqlRuntime = null;
+let deployment = { mode: 'local' };
+let displayPowerRequest = null;
+let deploymentWindow = null;
+let deploymentHandlersRegistered = false;
 const managedProcesses = new Set();
 let backendStopPromise = null;
 let nativeStopPromise = null;
@@ -181,6 +187,7 @@ function startupAction(url) {
         app.quit();
         return;
     }
+    if (action === 'configure') { void showDeploymentWindow(); return; }
     if (action === 'exit') app.quit();
 }
 
@@ -382,6 +389,10 @@ async function ensureBackendDependencies() {
 
 async function initializeWritableData() {
     const root = app.getPath('userData');
+    // A display PC never seeds a database or becomes a second PLC collector.
+    if (deployment.mode === 'client') {
+        return { logsDir: ensureDirectory(path.join(root, 'logs')) };
+    }
     const dataDir = ensureDirectory(path.join(root, 'data'));
     const uploadsDir = path.join(root, 'uploads');
     const logsDir = ensureDirectory(path.join(root, 'logs'));
@@ -470,20 +481,35 @@ function waitForHealth(url, timeoutMs = 30000, processToWatch = null) {
                 reject(new Error('后端进程在健康探测完成前已退出'));
                 return;
             }
-            const request = http.get(url, (response) => {
-                response.resume();
-                if (response.statusCode === 200) {
-                    resolve();
-                    return;
-                }
-                retry();
+            const transport = new URL(url).protocol === 'https:' ? https : http;
+            const request = transport.get(url, (response) => {
+                let body = '';
+                response.setEncoding('utf8');
+                response.on('data', chunk => {
+                    body += chunk;
+                    if (body.length > 1024 * 1024) request.destroy(new Error('健康响应超过大小限制'));
+                });
+                response.on('error', retry);
+                response.on('end', () => {
+                    try {
+                        const health = JSON.parse(body);
+                        // HTTP listening is not database readiness: startup
+                        // migrations may still be importing large documents.
+                        if (response.statusCode === 200 && health.status === 'ok' && health.db?.connected === true) {
+                            resolve(); return;
+                        }
+                    } catch { /* Retry incomplete or invalid responses. */ }
+                    retry();
+                });
             });
             request.setTimeout(1500, () => request.destroy());
             request.on('error', retry);
         };
         const retry = () => {
             if (Date.now() >= deadline) {
-                reject(new Error('本地服务启动超时'));
+                reject(new Error(deployment.mode === 'client'
+                    ? `无法连接采集服务 ${url}，请检查服务端是否运行、地址与防火墙设置`
+                    : '本地服务启动超时'));
                 return;
             }
             setTimeout(check, 300);
@@ -1200,6 +1226,8 @@ async function startBackend(port, writable) {
             UPLOADS_DIR: writable.uploadsDir,
             FRONTEND_DIST: frontendDir,
             ENABLE_CORS: 'false',
+            REMOTE_ACCESS_ENABLED: 'false',
+            PUBLIC_ORIGIN: '',
             DESKTOP_PACKAGED: app.isPackaged ? 'true' : 'false',
             // A packaged delivery requires a license key when an issuer public
             // key is deployed with the customer. If no public key file exists yet
@@ -1349,6 +1377,7 @@ function updateTrayMenu() {
             label: '打开软件',
             click: showNativeDashboard
         },
+        { label: '部署与连接…', click: () => showDeploymentWindow().catch(error => dialog.showErrorBox(APP_NAME, error.message)) },
         {
             label: '退出',
             click: () => app.quit()
@@ -1362,6 +1391,48 @@ function createTray() {
     tray.setToolTip(APP_NAME);
     tray.on('double-click', showNativeDashboard);
     updateTrayMenu();
+}
+
+async function showDeploymentWindow() {
+    if (deploymentWindow && !deploymentWindow.isDestroyed()) { deploymentWindow.show(); deploymentWindow.focus(); return; }
+    if (!deploymentHandlersRegistered) {
+        const assertSender = event => {
+            if (!deploymentWindow || event.sender !== deploymentWindow.webContents
+                || event.senderFrame !== deploymentWindow.webContents.mainFrame) throw new Error('拒绝访问部署配置');
+        };
+        ipcMain.handle('deployment:load', event => {
+            assertSender(event);
+            try {
+                const config = resolveDeployment(app.getPath('userData'), { packaged: app.isPackaged });
+                return { config: config.mode === 'client' ? config : { mode: 'client', backendOrigin: 'http://127.0.0.1:3001' } };
+            }
+            catch (error) { return { config: { mode: 'client', backendOrigin: 'http://127.0.0.1:3001' }, error: error.message }; }
+        });
+        ipcMain.handle('deployment:save', async (event, raw) => {
+            assertSender(event);
+            try {
+                await saveDeployment(deploymentFile(app.getPath('userData')), raw);
+                app.relaunch({ args: process.argv.slice(1).filter(value => value !== '--configure-deployment') });
+                setImmediate(() => app.quit());
+                return { success: true };
+            } catch (error) { return { success: false, error: error.message }; }
+        });
+        deploymentHandlersRegistered = true;
+    }
+    deploymentWindow = new BrowserWindow({
+        title: '部署与连接', width: 740, height: 655, resizable: false,
+        autoHideMenuBar: true, backgroundColor: '#f4f6fa',
+        icon: path.join(__dirname, 'assets', 'icon.png'),
+        webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true,
+            preload: path.join(__dirname, 'deployment-preload.cjs') }
+    });
+    deploymentWindow.webContents.on('will-navigate', event => event.preventDefault());
+    deploymentWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+    deploymentWindow.on('closed', () => {
+        deploymentWindow = null;
+        if (!applicationReadyForInteraction && !startupWindow && !isQuitting) app.quit();
+    });
+    await deploymentWindow.loadFile(path.join(__dirname, 'assets', 'deployment.html'));
 }
 
 function createMainWindow(origin, showInitially = false) {
@@ -1448,6 +1519,11 @@ function createMainWindow(origin, showInitially = false) {
 }
 
 async function launchApplication() {
+    if (process.argv.includes('--configure-deployment')) { await showDeploymentWindow(); return; }
+    deployment = resolveDeployment(app.getPath('userData'), { packaged: app.isPackaged });
+    // Temporary runtime request, not a permanent modification of power plans.
+    if (!backendOnlySmokeMode && powerSaveBlocker)
+        displayPowerRequest = powerSaveBlocker.start('prevent-display-sleep');
     // Show immediate, static startup status while the backend is unavailable.
     // Unity owns the sole animated loading screen after its window appears.
     if (!backendOnlySmokeMode) await createStartupWindow();
@@ -1463,9 +1539,10 @@ async function launchApplication() {
         '桌面错误日志'
     );
     startLogMaintenance(writable.logsDir);
-    updateStartupProgress('network', 25, '正在分配本地服务端口', '检测端口占用和本机通信环境');
-    const port = await findAvailablePort();
-    const origin = `http://127.0.0.1:${port}`;
+    updateStartupProgress('network', 25, deployment.mode === 'client' ? '正在连接采集服务' : '正在准备服务端口',
+        deployment.mode === 'client' ? deployment.backendOrigin : '检测端口占用和通信环境');
+    const port = deployment.mode === 'client' ? null : await findAvailablePort();
+    const origin = deployment.mode === 'client' ? deployment.backendOrigin : `http://127.0.0.1:${port}`;
     applicationOrigin = origin;
     // The backend needs this loopback channel in its environment so a DLNA
     // cast can switch the embedded host back to the Unity dashboard before
@@ -1473,12 +1550,17 @@ async function launchApplication() {
     updateStartupProgress('control', 32, '正在启动桌面控制服务', '准备 Unity、后台管理与系统托盘之间的通信');
     await startDesktopControlServer();
     updateStartupProgress('backend', 41, '正在启动数据服务', '连接配置数据库并载入现场配置');
-    const initialBackendProcess = await startBackend(port, writable);
-    updateStartupProgress('backend-health', 50, '正在检查数据服务', '等待本地数据服务响应');
-    await waitForHealth(`${origin}/api/health`, 60000, initialBackendProcess);
+    const initialBackendProcess = deployment.mode === 'client' ? null : await startBackend(port, writable);
+    updateStartupProgress('backend-health', 50, '正在检查数据服务', `等待 ${origin} 响应`);
+    await waitForHealth(`${origin}/api/health`, deployment.mode === 'client' ? 15000 : 60000, initialBackendProcess);
     updateStartupProgress('settings', 59, '正在读取系统设置', '同步开机自启、日志、备份和运行参数');
-    void refreshStartupAppearanceWhenReady(port);
-    await startDesktopSettingsSync();
+    if (deployment.mode !== 'client') {
+        void refreshStartupAppearanceWhenReady(port);
+        await startDesktopSettingsSync();
+    } else {
+        // Autostart and supervision belong to this PC, not the remote collector.
+        configureAutoStart(true);
+    }
     if (backendOnlySmokeMode) {
         applicationReadyForInteraction = true;
         completeStartupProgress();
@@ -1539,7 +1621,8 @@ function scheduleSmokeTimers() {
 if (!app.requestSingleInstanceLock()) {
     app.quit();
 } else {
-    app.on('second-instance', () => {
+    app.on('second-instance', (event, argv) => {
+        if (argv?.includes('--configure-deployment')) { void showDeploymentWindow(); return; }
         if (startupWindow && !startupWindow.isDestroyed() && !applicationReadyForInteraction) {
             startupWindow.show();
             startupWindow.focus();
@@ -1563,6 +1646,10 @@ if (!app.requestSingleInstanceLock()) {
     // Windows 上关闭后台窗口只隐藏到托盘，Unity 大屏和后端继续运行。
     app.on('window-all-closed', () => {});
     app.on('before-quit', (event) => {
+        if (displayPowerRequest !== null) {
+            powerSaveBlocker?.stop(displayPowerRequest);
+            displayPowerRequest = null;
+        }
         if (quitReady) return;
         event.preventDefault();
         if (isQuitting) return;

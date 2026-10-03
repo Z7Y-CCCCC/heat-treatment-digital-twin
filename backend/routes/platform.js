@@ -72,14 +72,15 @@ function publicEvents(rows) {
 
 async function loadPlatformSnapshot(factoryId) {
     const db = await getDb();
-    const projects = await db.all('SELECT * FROM projects WHERE factory_id = ? ORDER BY is_active DESC, created_at ASC', [factoryId]);
+    const { orderedRows } = require('../utils/orderedReleases');
+    const projects = await orderedRows(db, 'projects', 'SELECT id FROM projects WHERE factory_id = ? ORDER BY is_active DESC, created_at ASC', [factoryId]);
     const activeProject = projects.find(p => p.is_active) || projects[0] || null;
     const scenes = activeProject
-        ? await db.all('SELECT * FROM scenes WHERE project_id = ? ORDER BY is_active DESC, sort_order ASC', [activeProject.id])
+        ? await orderedRows(db, 'scenes', 'SELECT id FROM scenes WHERE project_id = ? ORDER BY is_active DESC, sort_order ASC', [activeProject.id])
         : [];
     const activeScene = scenes.find(s => s.is_active) || scenes[0] || null;
     const widgets = activeScene
-        ? await db.all('SELECT * FROM widgets WHERE scene_id = ? ORDER BY sort_order ASC', [activeScene.id])
+        ? await orderedRows(db, 'widgets', 'SELECT id FROM widgets WHERE scene_id = ? ORDER BY sort_order ASC', [activeScene.id])
         : [];
     const widgetIds = widgets.map(w => w.id);
     const bindings = widgetIds.length

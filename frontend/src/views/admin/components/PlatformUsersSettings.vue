@@ -9,6 +9,12 @@ const permissionChoices = [
   { key: 'backup', label: '备份操作', detail: '创建与下载备份' }
 ]
 const defaultPermissions = role => ({ view: true, launch: role === 'customer', cast: role === 'customer', backup: role === 'customer' })
+function editablePermissions(role, permissions = {}) {
+  const defaults = defaultPermissions(role)
+  return Object.fromEntries(permissionChoices.map(({ key }) => [key,
+    typeof permissions[key] === 'boolean' ? permissions[key] : defaults[key]
+  ]))
+}
 const createDraft = () => ({ username: '', displayName: '', role: 'customer', password: '', enabled: true, permissions: defaultPermissions('customer') })
 const users = ref([])
 const busy = ref(false)
@@ -29,7 +35,7 @@ async function loadUsers() {
   try {
     users.value = (await listPlatformUsers()).map(user => ({
       ...user,
-      permissions: { ...defaultPermissions(user.role), ...(user.permissions || {}) }
+      permissions: editablePermissions(user.role, user.permissions || {})
     }))
     failed.value = false
   } catch (error) {
@@ -55,7 +61,7 @@ function openEdit(user) {
     displayName: user.displayName,
     role: user.role,
     enabled: Boolean(user.enabled),
-    permissions: { ...defaultPermissions(user.role), ...(user.permissions || {}) }
+    permissions: editablePermissions(user.role, user.permissions || {})
   }
   replacementPassword.value = ''
   pendingDelete.value = false
@@ -78,14 +84,14 @@ async function saveEditor() {
   message.value = ''
   try {
     if (editorMode.value === 'create') {
-      await createPlatformUser({ ...editor.value, permissions: { ...editor.value.permissions } })
+      await createPlatformUser({ ...editor.value, permissions: editablePermissions(editor.value.role, editor.value.permissions) })
       message.value = '账户已创建。请让用户首次登录后修改密码。'
     } else {
       await updatePlatformUser(editingId.value, {
         displayName: editor.value.displayName,
         role: editor.value.role,
         enabled: editor.value.enabled,
-        permissions: { ...editor.value.permissions },
+        permissions: editablePermissions(editor.value.role, editor.value.permissions),
         ...(replacementPassword.value ? { password: replacementPassword.value } : {})
       })
       message.value = `${editor.value.username} 已更新；其旧会话已失效。`

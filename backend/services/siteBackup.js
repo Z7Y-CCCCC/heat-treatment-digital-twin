@@ -6,11 +6,16 @@ const { pipeline } = require('stream/promises');
 const archiver = require('archiver');
 const unzipper = require('unzipper');
 const {
+    GiB, resolveBackupBudget, exists, listFiles, hashingTransform,
+    copyAndHash, ensureDiskSpace, shouldStore
+} = require('../utils/backupStorage');
+const {
     createDatabaseBackup,
     importDatabaseBackupFile,
     restoreDatabaseBackup,
     resolveDatabaseBackupPath,
     getDatabaseBackupStatus,
+    getDatabaseBackupSpaceEstimate,
     verifyDatabaseBackupFile,
     verifySqliteFile,
     loadDatabaseConfig
@@ -24,7 +29,13 @@ const SITE_BACKUP_DIR = path.resolve(process.env.SITE_BACKUP_DIR || path.join(DA
 const SITE_IMPORT_DIR = path.resolve(process.env.SITE_IMPORT_DIR || path.join(DATA_DIR, 'site-imports'));
 const SITE_BACKUP_CONFIG_PATH = path.join(DATA_DIR, 'site-backup-config.json');
 const SITE_BACKUP_RETENTION = positiveInteger(process.env.SITE_BACKUP_RETENTION, 5);
-const SITE_BACKUP_MAX_TOTAL_BYTES = positiveInteger(process.env.SITE_BACKUP_MAX_TOTAL_BYTES, 20 * 1024 * 1024 * 1024);
+const SITE_BACKUP_STORAGE_POLICY = resolveBackupBudget({
+    dataDir: DATA_DIR, directory: SITE_BACKUP_DIR, kind: 'site',
+    envValue: process.env.SITE_BACKUP_MAX_TOTAL_BYTES, defaultBytes: 4 * GiB,
+    matches: name => isManagedSiteBackup(name)
+});
+const SITE_BACKUP_MAX_TOTAL_BYTES = SITE_BACKUP_STORAGE_POLICY.maxTotalBytes;
+const SITE_BACKUP_MIN_FREE_BYTES = positiveInteger(process.env.SITE_BACKUP_MIN_FREE_BYTES, 512 * 1024 * 1024);
 const SITE_BACKUP_MIRROR_RETENTION = positiveInteger(process.env.SITE_BACKUP_MIRROR_RETENTION, 30);
 const SITE_BACKUP_FORMAT = 'heat-treatment-digital-twin-site-backup';
 const SITE_BACKUP_VERSION = 3;
@@ -136,35 +147,49 @@ function isManagedSiteBackup(filename) {
     return /^heat-treatment-site-backup-\d{8}T\d{9}Z\.zip$/i.test(String(filename || ''));
 }
 
-function pruneMirrorBackups(directory) {
-    if (!fs.existsSync(directory)) return;
-    const files = fs.readdirSync(directory, { withFileTypes: true })
-        .filter(entry => entry.isFile() && isManagedSiteBackup(entry.name))
-        .map(entry => {
-            const filename = path.join(directory, entry.name);
-            return { filename, stat: fs.statSync(filename) };
-        })
-        .sort((a, b) => b.stat.mtimeMs - a.stat.mtimeMs);
-    for (const item of files.slice(SITE_BACKUP_MIRROR_RETENTION)) fs.rmSync(item.filename, { force: true });
+async function managedBackupFiles(directory) {
+    const entries = await fs.promises.readdir(directory, { withFileTypes: true });
+    const files = [];
+    for (const entry of entries.filter(item => item.isFile() && isManagedSiteBackup(item.name))) {
+        const filename = path.join(directory, entry.name);
+        files.push({ filename, stat: await fs.promises.stat(filename) });
+    }
+    return files.sort((a, b) => b.stat.mtimeMs - a.stat.mtimeMs);
 }
 
-async function mirrorSiteBackup(filename, mirrorDirectory) {
+async function pruneMirrorBackups(directory, protectedFilename) {
+    const files = await managedBackupFiles(directory);
+    for (const item of files.slice(SITE_BACKUP_MIRROR_RETENTION)) {
+        if (item.filename !== protectedFilename) await fs.promises.rm(item.filename, { force: true });
+    }
+}
+
+function validateMirrorDirectory(mirrorDirectory) {
     const targetRoot = path.resolve(mirrorDirectory);
     const localRoot = path.resolve(SITE_BACKUP_DIR);
-    if (!targetRoot || targetRoot === localRoot || targetRoot.startsWith(`${localRoot}${path.sep}`)) {
+    const compare = value => process.platform === 'win32' ? value.toLowerCase() : value;
+    if (compare(targetRoot) === compare(localRoot) || compare(targetRoot).startsWith(`${compare(localRoot)}${path.sep}`)) {
         throw new Error('异地灾备目录不能位于软件本机灾备目录内部');
     }
-    ensureDirectory(targetRoot);
+    return targetRoot;
+}
+
+async function mirrorSiteBackup(filename, mirrorDirectory, expectedSha256) {
+    const targetRoot = validateMirrorDirectory(mirrorDirectory);
+    const sourceSize = (await fs.promises.stat(filename)).size;
+    await ensureDiskSpace([{ directory: targetRoot, bytes: sourceSize }], SITE_BACKUP_MIN_FREE_BYTES);
+    await fs.promises.mkdir(targetRoot, { recursive: true });
     const destination = path.join(targetRoot, path.basename(filename));
     const temporary = `${destination}.${process.pid}.tmp`;
-    fs.rmSync(temporary, { force: true });
+    await fs.promises.rm(temporary, { force: true });
     try {
-        fs.copyFileSync(filename, temporary);
-        const sourceHash = await sha256File(filename);
+        const copied = await copyAndHash(filename, temporary, sourceSize);
+        const sourceHash = copied.sha256;
+        if (expectedSha256 && sourceHash !== expectedSha256) throw new Error('本机灾备文件哈希校验失败');
         const copiedHash = await sha256File(temporary);
         if (sourceHash !== copiedHash) throw new Error('异地灾备副本哈希校验失败');
-        fs.renameSync(temporary, destination);
-        pruneMirrorBackups(targetRoot);
+        await fs.promises.rename(temporary, destination);
+        await pruneMirrorBackups(targetRoot, destination);
         lastMirrorCopy = {
             at: new Date().toISOString(),
             directory: targetRoot,
@@ -173,23 +198,8 @@ async function mirrorSiteBackup(filename, mirrorDirectory) {
         };
         return lastMirrorCopy;
     } finally {
-        fs.rmSync(temporary, { force: true });
+        await fs.promises.rm(temporary, { force: true });
     }
-}
-
-function listFiles(directory) {
-    if (!fs.existsSync(directory)) return [];
-    const files = [];
-    const visit = current => {
-        for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
-            const filename = path.join(current, entry.name);
-            if (entry.isSymbolicLink()) continue;
-            if (entry.isDirectory()) visit(filename);
-            if (entry.isFile()) files.push(filename);
-        }
-    };
-    visit(directory);
-    return files.sort((a, b) => a.localeCompare(b));
 }
 
 function backupDescriptor(filename) {
@@ -210,16 +220,21 @@ function listSiteBackups() {
         .map(backupDescriptor);
 }
 
-function pruneSiteBackups() {
-    for (const backup of listSiteBackups().filter(backup => isManagedSiteBackup(backup.filename)).slice(SITE_BACKUP_RETENTION)) {
-        fs.rmSync(path.join(SITE_BACKUP_DIR, backup.filename), { force: true });
+async function pruneSiteBackups(protectedFilename) {
+    const files = await managedBackupFiles(SITE_BACKUP_DIR);
+    const retained = [];
+    for (let index = 0; index < files.length; index++) {
+        const item = files[index];
+        if (index >= SITE_BACKUP_RETENTION && item.filename !== protectedFilename) {
+            await fs.promises.rm(item.filename, { force: true });
+        } else retained.push(item);
     }
-    const retained = listSiteBackups().filter(backup => isManagedSiteBackup(backup.filename));
-    let totalBytes = retained.reduce((sum, backup) => sum + Number(backup.size || 0), 0);
+    let totalBytes = retained.reduce((sum, backup) => sum + backup.stat.size, 0);
     for (const backup of retained.slice(1).reverse()) {
         if (totalBytes <= SITE_BACKUP_MAX_TOTAL_BYTES) break;
-        fs.rmSync(path.join(SITE_BACKUP_DIR, backup.filename), { force: true });
-        totalBytes -= Number(backup.size || 0);
+        if (backup.filename === protectedFilename) continue;
+        await fs.promises.rm(backup.filename, { force: true });
+        totalBytes -= backup.stat.size;
     }
 }
 
@@ -237,7 +252,7 @@ function resolveSiteBackupPath(filename) {
 }
 
 function getSiteBackupStatus() {
-    const databaseStatus = getDatabaseBackupStatus();
+    const databaseStatus = getDatabaseBackupStatus({ validate: false });
     const config = loadSiteBackupConfig();
     return {
         supported: databaseStatus.supported,
@@ -246,6 +261,8 @@ function getSiteBackupStatus() {
         version: SITE_BACKUP_VERSION,
         retention: SITE_BACKUP_RETENTION,
         maxTotalBytes: SITE_BACKUP_MAX_TOTAL_BYTES,
+        storagePolicy: SITE_BACKUP_STORAGE_POLICY,
+        minFreeBytes: SITE_BACKUP_MIN_FREE_BYTES,
         localDirectory: SITE_BACKUP_DIR,
         externalCopyRequired: true,
         config,
@@ -273,61 +290,85 @@ async function runSiteBackupOperation(name, callback) {
     }
 }
 
-async function addArchiveFile(manifestFiles, archivePath, filename) {
-    const stat = fs.statSync(filename);
-    manifestFiles.push({
-        path: archivePath,
-        size: stat.size,
-        sha256: await sha256File(filename)
-    });
-}
-
 async function createSiteBackup(uploadsRootDir) {
     return runSiteBackupOperation('导出', () => createSiteBackupUnlocked(uploadsRootDir));
 }
 
 async function createSiteBackupUnlocked(uploadsRootDir) {
-    if (!getSiteBackupStatus().supported) {
-        throw new Error(getSiteBackupStatus().toolError || '当前数据库不支持整站灾备导出');
+    const databaseStatus = getDatabaseBackupStatus({ validate: false });
+    if (!databaseStatus.supported) {
+        throw new Error(databaseStatus.toolError || '当前数据库不支持整站灾备导出');
     }
-
-    ensureDirectory(SITE_BACKUP_DIR);
-    const databaseBackup = await createDatabaseBackup('site-export');
-    const databaseFilename = resolveDatabaseBackupPath(databaseBackup.filename);
     const databaseType = String(loadDatabaseConfig().type || '').toLowerCase();
     const databaseArchivePath = databaseType === 'mysql'
         ? 'database/mysql.sql.gz'
         : 'database/factory.db';
     const uploadsRoot = path.resolve(uploadsRootDir);
-    ensureDirectory(SITE_IMPORT_DIR);
+    const sources = [];
+    for (const group of UPLOAD_GROUPS) {
+        for (const source of await listFiles(path.join(uploadsRoot, group))) {
+            const relative = path.relative(uploadsRoot, source.filename).split(path.sep).join('/');
+            sources.push({ ...source, archivePath: `uploads/${relative}`, relative });
+        }
+    }
+    let configNames = [];
+    try { configNames = await fs.promises.readdir(DATA_DIR); }
+    catch (error) { if (error.code !== 'ENOENT') throw error; }
+    for (const name of configNames) {
+        const descriptor = describeConfigFile(name);
+        if (!descriptor) continue;
+        const filename = path.join(DATA_DIR, name);
+        const stat = await fs.promises.lstat(filename);
+        if (stat.isFile()) sources.push({ ...descriptor, filename, size: stat.size });
+    }
+    const config = loadSiteBackupConfig();
+    if (config.mirrorDirectory) validateMirrorDirectory(config.mirrorDirectory);
+    const sourceBytes = sources.reduce((sum, file) => sum + file.size, 0);
+    const portablePaths = new Set();
+    for (const source of sources) {
+        const portablePath = normalizeArchivePath(source.archivePath).toLowerCase();
+        if (portablePaths.has(portablePath)) throw new Error(`整站备份包含重复文件: ${source.archivePath}`);
+        portablePaths.add(portablePath);
+        if (source.size > MAX_ARCHIVE_FILE_BYTES) throw new Error(`整站备份文件超过安全限制: ${source.archivePath}`);
+    }
+    if (sourceBytes > MAX_ARCHIVE_CONTENT_BYTES || sources.length + 2 > MAX_ARCHIVE_ENTRIES) {
+        throw new Error('整站备份内容超过安全限制');
+    }
+    const databaseEstimate = await getDatabaseBackupSpaceEstimate();
+    const zipAllowance = bytes => Math.ceil(bytes * 1.02) + MAX_MANIFEST_BYTES + (sources.length + 2) * 1024;
+    async function reserveSpace(databaseBytes, includeDump) {
+        const requests = [
+            { directory: SITE_IMPORT_DIR, bytes: sourceBytes + databaseBytes },
+            { directory: SITE_BACKUP_DIR, bytes: zipAllowance(sourceBytes + databaseBytes) }
+        ];
+        if (includeDump) requests.push({ directory: process.env.DB_BACKUP_DIR || path.join(DATA_DIR, 'backups'), bytes: databaseBytes });
+        if (config.mirrorDirectory) requests.push({ directory: config.mirrorDirectory, bytes: zipAllowance(sourceBytes + databaseBytes) });
+        await ensureDiskSpace(requests, SITE_BACKUP_MIN_FREE_BYTES);
+    }
+    // Reject before generating any new dump/staging/.tmp; never delete old
+    // backups to make room. Account for all coexisting temporary files.
+    await reserveSpace(databaseEstimate, true);
+    const databaseBackup = await createDatabaseBackup('site-export');
+    const databaseFilename = resolveDatabaseBackupPath(databaseBackup.filename);
+    const databaseSize = (await fs.promises.stat(databaseFilename)).size;
+    await reserveSpace(databaseSize, false);
+    await fs.promises.mkdir(SITE_BACKUP_DIR, { recursive: true });
+    await fs.promises.mkdir(SITE_IMPORT_DIR, { recursive: true });
     const exportStaging = path.join(SITE_IMPORT_DIR, `export-${timestampToken()}-${process.pid}-${crypto.randomBytes(4).toString('hex')}`);
     let temporary = null;
 
     try {
-        const uploadedFiles = UPLOAD_GROUPS.flatMap(group => listFiles(path.join(uploadsRoot, group)).map(source => {
-            const relative = path.relative(uploadsRoot, source).split(path.sep).join('/');
-            const filename = path.join(exportStaging, ...relative.split('/'));
-            ensureDirectory(path.dirname(filename));
-            fs.copyFileSync(source, filename);
-            return { filename, relative };
-        }));
-        const configFiles = listAvailableConfigFiles().flatMap(configFile => {
-            const source = path.join(DATA_DIR, configFile.filename);
-            if (!fs.existsSync(source) || !fs.statSync(source).isFile()) return [];
-            const filename = path.join(exportStaging, ...configFile.archivePath.split('/'));
-            ensureDirectory(path.dirname(filename));
-            fs.copyFileSync(source, filename);
-            return [{ ...configFile, filename }];
-        });
         const manifestFiles = [];
-        await addArchiveFile(manifestFiles, databaseArchivePath, databaseFilename);
-
-        for (const file of uploadedFiles) {
-            await addArchiveFile(manifestFiles, `uploads/${file.relative}`, file.filename);
+        const snapshotFiles = [];
+        for (const source of [{ filename: databaseFilename, archivePath: databaseArchivePath, size: databaseSize }, ...sources]) {
+            normalizeArchivePath(source.archivePath);
+            const filename = path.join(exportStaging, ...source.archivePath.split('/'));
+            const copied = await copyAndHash(source.filename, filename, source.size);
+            manifestFiles.push({ path: source.archivePath, ...copied });
+            snapshotFiles.push({ ...source, filename });
         }
-        for (const file of configFiles) {
-            await addArchiveFile(manifestFiles, file.archivePath, file.filename);
-        }
+        const uploadedFiles = snapshotFiles.filter(file => file.relative);
+        const configFiles = snapshotFiles.filter(file => file.sensitive);
 
         const createdAt = new Date();
         const manifest = {
@@ -345,40 +386,41 @@ async function createSiteBackupUnlocked(uploadsRootDir) {
         const filename = `heat-treatment-site-backup-${timestampToken(createdAt)}.zip`;
         const destination = path.join(SITE_BACKUP_DIR, filename);
         temporary = `${destination}.${process.pid}.tmp`;
-        fs.rmSync(temporary, { force: true });
-
-        await new Promise((resolve, reject) => {
-            const output = fs.createWriteStream(temporary);
-            const archive = archiver('zip', { zlib: { level: 6 } });
-            output.once('close', resolve);
-            output.once('error', reject);
-            archive.once('error', reject);
-            archive.on('warning', error => {
-                if (error.code !== 'ENOENT') reject(error);
-            });
-            archive.pipe(output);
-            archive.file(databaseFilename, { name: databaseArchivePath });
-            for (const file of uploadedFiles) {
-                archive.file(file.filename, { name: `uploads/${file.relative}` });
-            }
-            for (const file of configFiles) {
-                archive.file(file.filename, { name: file.archivePath });
-            }
-            archive.append(JSON.stringify(manifest, null, 2), { name: 'manifest.json' });
-            archive.finalize().catch(reject);
-        });
-        fs.renameSync(temporary, destination);
-        pruneSiteBackups();
+        // Never publish a package the restore safety limits would reject.
+        validateManifest(manifest);
+        const manifestJson = JSON.stringify(manifest, null, 2);
+        if (Buffer.byteLength(manifestJson) > MAX_MANIFEST_BYTES || snapshotFiles.length + 1 > MAX_ARCHIVE_ENTRIES) {
+            throw new Error('整站备份清单超过安全限制');
+        }
+        const archive = archiver('zip', { zlib: { level: 6 } });
+        const archiveHasher = hashingTransform();
+        archive.on('warning', error => archive.destroy(error));
+        const writing = pipeline(archive, archiveHasher.stream, fs.createWriteStream(temporary, { flags: 'wx' }));
+        // Observe the write failure immediately while finalization is pending.
+        writing.catch(() => {});
+        for (const file of snapshotFiles) {
+            archive.file(file.filename, { name: file.archivePath, store: shouldStore(file.archivePath) });
+        }
+        archive.append(manifestJson, { name: 'manifest.json' });
+        try {
+            await Promise.all([archive.finalize(), writing]);
+        } catch (error) {
+            archive.destroy(error);
+            await writing.catch(() => {});
+            throw error;
+        }
+        const archiveResult = archiveHasher.result();
+        await fs.promises.rename(temporary, destination);
+        await pruneSiteBackups(destination);
         const backup = {
             ...backupDescriptor(destination),
-            sha256: await sha256File(destination),
+            sha256: archiveResult.sha256,
             uploadedFileCount: uploadedFiles.length,
             manifestCreatedAt: manifest.createdAt
         };
-        const config = loadSiteBackupConfig();
         if (config.mirrorDirectory) {
             try {
-                backup.mirror = await mirrorSiteBackup(destination, config.mirrorDirectory);
+                backup.mirror = await mirrorSiteBackup(destination, config.mirrorDirectory, backup.sha256);
                 lastSiteBackupError = null;
             } catch (error) {
                 lastSiteBackupError = { at: new Date().toISOString(), operation: '异地复制', error: error.message };
@@ -388,8 +430,8 @@ async function createSiteBackupUnlocked(uploadsRootDir) {
         }
         return backup;
     } finally {
-        if (temporary) fs.rmSync(temporary, { force: true });
-        fs.rmSync(exportStaging, { recursive: true, force: true });
+        if (temporary) await fs.promises.rm(temporary, { force: true });
+        await fs.promises.rm(exportStaging, { recursive: true, force: true });
     }
 }
 
@@ -436,12 +478,15 @@ function validateManifest(manifest) {
         }
     }
     const declared = new Map();
+    const portablePaths = new Set();
     let totalSize = 0;
     for (const file of manifest.files) {
         const archivePath = normalizeArchivePath(file?.path);
         const size = Number(file?.size);
         const sha256 = String(file?.sha256 || '').toLowerCase();
-        if (declared.has(archivePath)) throw new Error(`整站备份清单存在重复文件: ${archivePath}`);
+        const portablePath = archivePath.toLowerCase();
+        if (portablePaths.has(portablePath)) throw new Error(`整站备份清单存在重复文件: ${archivePath}`);
+        portablePaths.add(portablePath);
         if (!Number.isSafeInteger(size) || size < 0 || size > MAX_ARCHIVE_FILE_BYTES || !/^[a-f0-9]{64}$/.test(sha256)) {
             throw new Error(`整站备份文件校验信息无效: ${archivePath}`);
         }
@@ -459,7 +504,7 @@ function validateManifest(manifest) {
     return { declared, databaseType, databasePath, configPaths };
 }
 
-async function extractValidatedArchive(archiveFilename, stagingDirectory) {
+async function extractValidatedArchive(archiveFilename, stagingDirectory, reserveSpace) {
     const directory = await unzipper.Open.file(archiveFilename);
     const entries = directory.files.filter(entry => entry.type === 'File');
     if (entries.length > MAX_ARCHIVE_ENTRIES) throw new Error('整站备份文件数量超过安全限制');
@@ -479,6 +524,7 @@ async function extractValidatedArchive(archiveFilename, stagingDirectory) {
     }
     const manifest = JSON.parse((await readEntryBuffer(manifestEntry, MAX_MANIFEST_BYTES)).toString('utf8'));
     const { declared, databaseType, databasePath, configPaths } = validateManifest(manifest);
+    if (reserveSpace) await reserveSpace({ declared, configPaths });
 
     for (const archivePath of entryMap.keys()) {
         if (archivePath !== 'manifest.json' && !declared.has(archivePath)) {
@@ -493,7 +539,7 @@ async function extractValidatedArchive(archiveFilename, stagingDirectory) {
             throw new Error(`整站备份文件大小校验失败: ${file.path}`);
         }
         const destination = path.join(stagingDirectory, ...file.path.split('/'));
-        ensureDirectory(path.dirname(destination));
+        await fs.promises.mkdir(path.dirname(destination), { recursive: true });
         await streamEntryToFile(entry, destination, file.size, file.sha256);
     }
 
@@ -545,7 +591,7 @@ async function streamEntryToFile(entry, destination, expectedSize, expectedSha25
         await pipeline(entry.stream(), verifier, fs.createWriteStream(destination));
         if (hash.digest('hex') !== expectedSha256) throw new Error(`整站备份文件校验失败: ${destination}`);
     } catch (error) {
-        fs.rmSync(destination, { force: true });
+        await fs.promises.rm(destination, { force: true });
         throw error;
     }
 }
@@ -559,7 +605,7 @@ async function restoreSiteBackupUnlocked(archiveFilename, uploadsRootDir) {
         throw new Error(getSiteBackupStatus().toolError || '当前数据库不支持整站灾备恢复');
     }
 
-    ensureDirectory(SITE_IMPORT_DIR);
+    await fs.promises.mkdir(SITE_IMPORT_DIR, { recursive: true });
     const stagingDirectory = path.join(SITE_IMPORT_DIR, `restore-${timestampToken()}-${process.pid}`);
     const uploadsRoot = path.resolve(uploadsRootDir);
     const rollbackUploads = path.join(stagingDirectory, 'rollback-uploads');
@@ -569,10 +615,28 @@ async function restoreSiteBackupUnlocked(archiveFilename, uploadsRootDir) {
     let uploadGroupsToRestore = ['models'];
     let configPathsToRestore = [];
     let preserveStaging = false;
-    ensureDirectory(stagingDirectory);
+    await fs.promises.mkdir(stagingDirectory, { recursive: true });
 
     try {
-        const { manifest, databaseFilename, configPaths } = await extractValidatedArchive(path.resolve(archiveFilename), stagingDirectory);
+        const { manifest, databaseFilename, configPaths } = await extractValidatedArchive(path.resolve(archiveFilename), stagingDirectory, async ({ declared, configPaths }) => {
+            let rollbackBytes = 0;
+            for (const group of UPLOAD_GROUPS) {
+                rollbackBytes += (await listFiles(path.join(uploadsRoot, group))).reduce((sum, file) => sum + file.size, 0);
+            }
+            for (const archivePath of configPaths) {
+                const current = path.join(DATA_DIR, describeConfigArchivePath(archivePath).filename);
+                if (await exists(current)) rollbackBytes += (await fs.promises.stat(current)).size;
+            }
+            const files = [...declared.values()];
+            const extractedBytes = files.reduce((sum, file) => sum + file.size, 0);
+            const databaseBytes = files.filter(file => file.path.startsWith('database/')).reduce((sum, file) => sum + file.size, 0);
+            await ensureDiskSpace([
+                { directory: SITE_IMPORT_DIR, bytes: extractedBytes + rollbackBytes },
+                { directory: uploadsRoot, bytes: files.filter(file => file.path.startsWith('uploads/')).reduce((sum, file) => sum + file.size, 0) },
+                { directory: DATA_DIR, bytes: databaseBytes + await getDatabaseBackupSpaceEstimate() },
+                { directory: process.env.DB_BACKUP_DIR || path.join(DATA_DIR, 'backups'), bytes: databaseBytes + await getDatabaseBackupSpaceEstimate() }
+            ], SITE_BACKUP_MIN_FREE_BYTES);
+        });
         uploadGroupsToRestore = Array.isArray(manifest.uploadGroups)
             ? [...new Set(manifest.uploadGroups.filter(group => UPLOAD_GROUPS.includes(group)))]
             : ['models'];
@@ -580,16 +644,16 @@ async function restoreSiteBackupUnlocked(archiveFilename, uploadsRootDir) {
         for (const group of uploadGroupsToRestore) {
             const currentDirectory = path.join(uploadsRoot, group);
             const rollbackDirectory = path.join(rollbackUploads, group);
-            if (fs.existsSync(currentDirectory)) fs.cpSync(currentDirectory, rollbackDirectory, { recursive: true });
+            if (await exists(currentDirectory)) await fs.promises.cp(currentDirectory, rollbackDirectory, { recursive: true });
         }
 
         uploadsMutationStarted = true;
         for (const group of uploadGroupsToRestore) {
             const currentDirectory = path.join(uploadsRoot, group);
             const restoredDirectory = path.join(stagingDirectory, 'uploads', group);
-            fs.rmSync(currentDirectory, { recursive: true, force: true });
-            if (fs.existsSync(restoredDirectory)) fs.cpSync(restoredDirectory, currentDirectory, { recursive: true });
-            ensureDirectory(currentDirectory);
+            await fs.promises.rm(currentDirectory, { recursive: true, force: true });
+            if (await exists(restoredDirectory)) await fs.promises.cp(restoredDirectory, currentDirectory, { recursive: true });
+            await fs.promises.mkdir(currentDirectory, { recursive: true });
         }
 
         for (const archivePath of configPathsToRestore) {
@@ -597,9 +661,9 @@ async function restoreSiteBackupUnlocked(archiveFilename, uploadsRootDir) {
             if (!descriptor) continue;
             const currentFilename = path.join(DATA_DIR, descriptor.filename);
             const rollbackFilename = path.join(rollbackConfig, descriptor.filename);
-            if (fs.existsSync(currentFilename)) {
-                ensureDirectory(path.dirname(rollbackFilename));
-                fs.copyFileSync(currentFilename, rollbackFilename);
+            if (await exists(currentFilename)) {
+                await fs.promises.mkdir(path.dirname(rollbackFilename), { recursive: true });
+                await fs.promises.copyFile(currentFilename, rollbackFilename);
             }
         }
         configMutationStarted = configPathsToRestore.length > 0;
@@ -607,16 +671,20 @@ async function restoreSiteBackupUnlocked(archiveFilename, uploadsRootDir) {
             const descriptor = describeConfigArchivePath(archivePath);
             if (!descriptor) continue;
             const restoredFilename = path.join(stagingDirectory, ...archivePath.split('/'));
-            const parsed = JSON.parse(fs.readFileSync(restoredFilename, 'utf8'));
+            const parsed = JSON.parse(await fs.promises.readFile(restoredFilename, 'utf8'));
             if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.connections)) {
                 throw new Error(`整站备份中的配置文件无效：${descriptor.filename}`);
             }
             const currentFilename = path.join(DATA_DIR, descriptor.filename);
-            ensureDirectory(path.dirname(currentFilename));
+            await fs.promises.mkdir(path.dirname(currentFilename), { recursive: true });
             const temporary = `${currentFilename}.${process.pid}.restore.tmp`;
-            fs.rmSync(temporary, { force: true });
-            fs.copyFileSync(restoredFilename, temporary);
-            fs.renameSync(temporary, currentFilename);
+            await fs.promises.rm(temporary, { force: true });
+            try {
+                await fs.promises.copyFile(restoredFilename, temporary);
+                await fs.promises.rename(temporary, currentFilename);
+            } finally {
+                await fs.promises.rm(temporary, { force: true });
+            }
         }
         if (configMutationStarted) reloadDataSourceConfiguration();
 
@@ -639,8 +707,8 @@ async function restoreSiteBackupUnlocked(archiveFilename, uploadsRootDir) {
                 const currentFilename = path.join(DATA_DIR, descriptor.filename);
                 const rollbackFilename = path.join(rollbackConfig, descriptor.filename);
                 try {
-                    fs.rmSync(currentFilename, { force: true });
-                    if (fs.existsSync(rollbackFilename)) fs.copyFileSync(rollbackFilename, currentFilename);
+                    await fs.promises.rm(currentFilename, { force: true });
+                    if (await exists(rollbackFilename)) await fs.promises.copyFile(rollbackFilename, currentFilename);
                 } catch (rollbackError) {
                     rollbackErrors.push(`${descriptor.filename}: ${rollbackError.message}`);
                 }
@@ -654,9 +722,9 @@ async function restoreSiteBackupUnlocked(archiveFilename, uploadsRootDir) {
                 const currentDirectory = path.join(uploadsRoot, group);
                 const rollbackDirectory = path.join(rollbackUploads, group);
                 try {
-                    fs.rmSync(currentDirectory, { recursive: true, force: true });
-                    if (fs.existsSync(rollbackDirectory)) fs.cpSync(rollbackDirectory, currentDirectory, { recursive: true });
-                    ensureDirectory(currentDirectory);
+                    await fs.promises.rm(currentDirectory, { recursive: true, force: true });
+                    if (await exists(rollbackDirectory)) await fs.promises.cp(rollbackDirectory, currentDirectory, { recursive: true });
+                    await fs.promises.mkdir(currentDirectory, { recursive: true });
                 } catch (rollbackError) {
                     rollbackErrors.push(`${group}: ${rollbackError.message}`);
                 }
@@ -668,7 +736,7 @@ async function restoreSiteBackupUnlocked(archiveFilename, uploadsRootDir) {
         }
         throw error;
     } finally {
-        if (!preserveStaging) fs.rmSync(stagingDirectory, { recursive: true, force: true });
+        if (!preserveStaging) await fs.promises.rm(stagingDirectory, { recursive: true, force: true });
     }
 }
 

@@ -95,6 +95,9 @@ async function main() {
         fs.writeFileSync(path.join(modelsDir, MODEL_FILENAME), ORIGINAL_MODEL);
         const migratedAsset = path.join(uploadsDir, 'projects', 'test-project', 'model.glb');
         const appearanceAsset = path.join(uploadsDir, 'appearance', 'test-image.png');
+        const largeModel = path.join(modelsDir, 'large-backup-test.glb');
+        const largeModelBytes = Buffer.alloc(8 * 1024 * 1024, 0x5a);
+        fs.writeFileSync(largeModel, largeModelBytes);
         for (const filename of [migratedAsset, appearanceAsset]) {
             fs.mkdirSync(path.dirname(filename), { recursive: true });
             fs.writeFileSync(filename, ORIGINAL_MODEL);
@@ -184,11 +187,19 @@ async function main() {
         if (!manifestEntry) throw new Error('Exported archive does not contain manifest.json');
         const manifest = JSON.parse((await manifestEntry.buffer()).toString('utf8'));
         const archivePaths = new Set(archive.files.filter(entry => entry.type === 'File').map(entry => entry.path));
+        let manifestHashesMatch = true;
+        for (const file of manifest.files) {
+            const bytes = await archive.files.find(entry => entry.path === file.path).buffer();
+            if (bytes.length !== file.size || crypto.createHash('sha256').update(bytes).digest('hex') !== file.sha256) {
+                manifestHashesMatch = false;
+            }
+        }
 
         await putSetting(MUTATED_SETTING);
         fs.writeFileSync(path.join(modelsDir, MODEL_FILENAME), MUTATED_MODEL);
         fs.writeFileSync(migratedAsset, MUTATED_MODEL);
         fs.writeFileSync(appearanceAsset, MUTATED_MODEL);
+        fs.writeFileSync(largeModel, MUTATED_MODEL);
         await requestJson(`${backendOrigin}/api/data-sources/connections/${encodeURIComponent(DATA_SOURCE_ID)}`, { method: 'DELETE' });
         await requestJson(`${backendOrigin}/api/data-sources/backups/config`, {
             method: 'PUT',
@@ -226,6 +237,10 @@ async function main() {
                 && manifest.containsSensitiveConfiguration === true,
             databaseSettingRestored: settingAfterRestore === ORIGINAL_SETTING && databaseAfterRestore.setting === ORIGINAL_SETTING,
             uploadedModelRestored: modelAfterRestore.equals(ORIGINAL_MODEL),
+            largeResourceRestoredWithoutQualityChanges: fs.readFileSync(largeModel).equals(largeModelBytes),
+            everyManifestHashMatchesArchiveContent: manifestHashesMatch,
+            alreadyCompressedAssetsStored: archive.files.find(entry => entry.path === 'uploads/appearance/test-image.png')?.compressionMethod === 0,
+            geometryStillCompressed: archive.files.find(entry => entry.path === 'uploads/models/large-backup-test.glb')?.compressionMethod === 8,
             migratedProjectAssetRestored: fs.readFileSync(migratedAsset).equals(ORIGINAL_MODEL),
             appearanceAssetRestored: fs.readFileSync(appearanceAsset).equals(ORIGINAL_MODEL),
             dataSourceConnectionRestored: dataSourcesAfterRestore.connections?.some(item => item.id === DATA_SOURCE_ID) === true,
@@ -241,7 +256,9 @@ async function main() {
             externalMirrorHashMatches: fs.existsSync(mirroredArchive)
                 && crypto.createHash('sha256').update(fs.readFileSync(mirroredArchive)).digest('hex') === exported.backup.sha256,
             externalMirrorAtomic: fs.existsSync(mirrorDir)
-                && !fs.readdirSync(mirrorDir).some(name => name.endsWith('.tmp'))
+                && !fs.readdirSync(mirrorDir).some(name => name.endsWith('.tmp')),
+            stagingCleanAfterSuccessAndRejectedRestore: !fs.readdirSync(path.join(dataDir, 'site-imports'))
+                .some(name => name.startsWith('export-') || name.startsWith('restore-'))
         };
         const failed = Object.entries(checks).filter(([, passed]) => !passed).map(([name]) => name);
         if (failed.length) throw new Error(`Site backup checks failed: ${failed.join(', ')}`);

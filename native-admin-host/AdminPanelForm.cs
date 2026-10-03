@@ -1364,10 +1364,7 @@ internal sealed class AdminPanelForm : Form
     {
         try
         {
-            var logDirectory = Program.LogDirectory;
-            Directory.CreateDirectory(logDirectory);
-            File.AppendAllText(Path.Combine(logDirectory, "admin-host.log"),
-                $"[{DateTimeOffset.Now:O}] {message}\n");
+            AdminHostLog.Write(message);
         }
         catch { /* Diagnostics must never block tab switching. */ }
     }
@@ -1376,12 +1373,7 @@ internal sealed class AdminPanelForm : Form
     {
         try
         {
-            var logDirectory = Program.LogDirectory;
-            Directory.CreateDirectory(logDirectory);
-            File.AppendAllText(
-                Path.Combine(logDirectory, "admin-host.log"),
-                $"[{DateTimeOffset.Now:O}] {message}: {exception}\n"
-            );
+            AdminHostLog.Write($"{message}: {exception}");
         }
         catch
         {

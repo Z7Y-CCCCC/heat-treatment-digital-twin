@@ -1,6 +1,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { spawn, execFile } = require('node:child_process');
+const { createRotatingLogWriter } = require('./logManager.cjs');
 
 // The bundled Node host owns mysqld and observes IPC disconnect, so an unexpected
 // Electron exit also shuts down only this application's private database.
@@ -20,14 +21,18 @@ class MysqlRuntime {
         await fs.promises.mkdir(path.join(root, 'logs'), { recursive: true });
         const requestFile = path.join(root, 'mysql', 'host-config.json');
         await fs.promises.writeFile(requestFile, JSON.stringify({ root, runtimeDir, templateFile }), { mode: 0o600 });
-        const log = fs.openSync(path.join(root, 'logs', 'mysql-host.log'), 'a');
+        const log = await createRotatingLogWriter(path.join(root, 'logs'), 'mysql-host.log');
+        log.on('error', error => console.error(`MySQL host log: ${error.message}`));
         try {
             this.child = spawn(nodeBinary, [hostScript, '--config', requestFile], {
                 windowsHide: true,
                 env: { ...process.env, NODE_PATH: dependenciesDir },
-                stdio: ['ignore', log, log, 'ipc']
+                stdio: ['ignore', 'pipe', 'pipe', 'ipc']
             });
-        } finally { fs.closeSync(log); }
+            this.child.stdout.pipe(log, { end: false });
+            this.child.stderr.pipe(log, { end: false });
+            this.child.once('close', () => log.end());
+        } catch (error) { log.end(); throw error; }
         const child = this.child;
         child.on('error', () => {});
         this.completion = new Promise(resolve => {

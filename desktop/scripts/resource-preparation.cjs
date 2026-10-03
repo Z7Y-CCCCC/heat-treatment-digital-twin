@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const { publishDirectory, retryFilesystem } = require('../directoryPublish.cjs');
 
 async function prepareResourceDirectory(destination, build) {
     const target = path.resolve(destination);
@@ -7,30 +8,14 @@ async function prepareResourceDirectory(destination, build) {
     if (target === parent) throw new Error('A filesystem root cannot be a resource output directory');
     fs.mkdirSync(parent, { recursive: true });
     const staging = fs.mkdtempSync(path.join(parent, `.${path.basename(target)}.preparing-`));
-    const previous = `${staging}.previous`;
-    let movedPrevious = false;
     try {
         const result = await build(staging);
-        if (fs.existsSync(target)) {
-            fs.renameSync(target, previous);
-            movedPrevious = true;
-        }
-        try {
-            fs.renameSync(staging, target);
-        } catch (error) {
-            if (movedPrevious && !fs.existsSync(target)) {
-                fs.renameSync(previous, target);
-                movedPrevious = false;
-            }
-            if (movedPrevious) error.message += `; previous resources preserved at ${previous}`;
-            throw error;
-        }
-        // All deleted paths were either created here or are the exact previous
-        // generated resource directory renamed above; no source tree is removed.
-        if (movedPrevious) fs.rmSync(previous, { recursive: true, force: true });
+        // Antivirus/indexing can briefly lock a complete Windows staging tree.
+        // Use the same retry and rollback semantics as runtime publication.
+        await publishDirectory(staging, target);
         return result;
     } finally {
-        fs.rmSync(staging, { recursive: true, force: true });
+        await retryFilesystem(() => fs.promises.rm(staging, { recursive: true, force: true }));
     }
 }
 

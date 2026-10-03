@@ -42,6 +42,9 @@ namespace HeatTreatment.DigitalTwin.Runtime
         private Material _motionIndicatorMaterial;
         private float _motionIndicatorUntil;
         private float _lastLoggedPositionValue = float.NaN;
+        private bool _diagnosticLogging;
+        private float _diagnosticIntervalSeconds = 5f;
+        private float _nextDiagnosticLogAt;
 
         private sealed class StationAnchor
         {
@@ -61,6 +64,10 @@ namespace HeatTreatment.DigitalTwin.Runtime
             EnsureMotionIndicator();
             var fallback = new Vector3(device?.PositionX ?? 0f, device?.PositionY ?? 0f, device?.PositionZ ?? 0f);
             var movement = device?.InstanceConfigObject?["movement"] as JObject;
+            // Explicit opt-in diagnostics; sampling never gates position/animation updates.
+            _diagnosticLogging = movement?.Value<bool?>("diagnosticLogging") == true
+                || string.Equals(Environment.GetEnvironmentVariable("MOBILE_DEVICE_MOTION_DIAGNOSTICS"), "1", StringComparison.Ordinal);
+            _diagnosticIntervalSeconds = Mathf.Clamp(ReadNumber(movement?["diagnosticIntervalSeconds"], 5f), 1f, 60f);
             _enabled = movement?.Value<bool?>("enabled") == true;
             _currentPointId = ReadId(movement?["currentPositionPointId"] ?? movement?["current_position_point_id"]);
             _startActionPointId = ReadId(movement?["startActionPointId"] ?? movement?["start_action_point_id"]);
@@ -104,8 +111,10 @@ namespace HeatTreatment.DigitalTwin.Runtime
             _hasPositionSample = preserveCurrentPosition;
             _snapNextPositionSample = !preserveCurrentPosition;
             _lastLoggedPositionValue = float.NaN;
+            _nextDiagnosticLogAt = 0f;
 
-            Debug.Log($"[MobileDeviceMotion] {_device?.Id ?? string.Empty} configured: enabled={_enabled}, mode={_valueMode}, stations={_stations.Count}, simulation={_simulationEnabled}, axis={ResolveRailAxis()}");
+            if (_diagnosticLogging)
+                Debug.Log($"[MobileDeviceMotion] {_device?.Id ?? string.Empty} configured: enabled={_enabled}, mode={_valueMode}, stations={_stations.Count}, simulation={_simulationEnabled}, axis={ResolveRailAxis()}");
 
             if (!_enabled) return;
             if (!preserveCurrentPosition)
@@ -145,8 +154,10 @@ namespace HeatTreatment.DigitalTwin.Runtime
                     : Mathf.Clamp01(value > 1f && value <= 100f ? value / 100f : value);
                 _targetPosition = Vector3.LerpUnclamped(_start, _end, progress);
             }
-            if (!Mathf.Approximately(_lastLoggedPositionValue, value))
+            if (_diagnosticLogging && Time.unscaledTime >= _nextDiagnosticLogAt
+                && !Mathf.Approximately(_lastLoggedPositionValue, value))
             {
+                _nextDiagnosticLogAt = Time.unscaledTime + _diagnosticIntervalSeconds;
                 _lastLoggedPositionValue = value;
                 Debug.Log($"[MobileDeviceMotion] {_device?.Id ?? string.Empty} PLC position={value.ToString(CultureInfo.InvariantCulture)} target={_targetPosition}");
             }
@@ -160,7 +171,8 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 _hasTarget = false;
                 _motionIndicatorUntil = 0f;
                 if (_motionIndicator != null) _motionIndicator.gameObject.SetActive(false);
-                Debug.Log($"[MobileDeviceMotion] {_device?.Id ?? string.Empty} initial position snapped to {_targetPosition}");
+                if (_diagnosticLogging)
+                    Debug.Log($"[MobileDeviceMotion] {_device?.Id ?? string.Empty} initial position snapped to {_targetPosition}");
                 return;
             }
 

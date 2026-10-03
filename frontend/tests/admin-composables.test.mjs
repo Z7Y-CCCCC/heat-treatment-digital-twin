@@ -38,6 +38,40 @@ function settingsFixture(t) {
     return scoped(t, () => useSystemSettings({ alert: async () => {}, confirm: async () => true }))
 }
 
+test('database backup errors preserve the known list and never report a successful mutation', async t => {
+    const settings = settingsFixture(t)
+    settings.databaseBackupStatus.backups = [{ filename: 'known.sql.gz', valid: true }]
+    t.mock.method(adminApi, 'getDatabaseBackups', async () => ({ error: 'list unavailable' }))
+    t.mock.method(adminApi, 'createDatabaseBackup', async () => ({ success: false, error: 'disk full' }))
+    t.mock.method(adminApi, 'restoreDatabaseBackup', async () => ({ error: 'restore refused' }))
+    let refreshes = 0
+    t.mock.method(adminApi, 'getSettings', async () => { refreshes++; return {} })
+    await settings.loadDatabaseBackups()
+    assert.match(settings.databaseBackupMessage.value, /读取失败.*list unavailable/)
+    await settings.createDatabaseBackup()
+    assert.match(settings.databaseBackupMessage.value, /备份失败.*disk full/)
+    await settings.restoreDatabaseBackup({ filename: 'known.sql.gz' })
+    assert.match(settings.databaseBackupMessage.value, /恢复失败.*restore refused/)
+    assert.deepEqual(settings.databaseBackupStatus.backups, [{ filename: 'known.sql.gz', valid: true }])
+    assert.equal(refreshes, 0, 'failed restore must not reload downstream configuration')
+    assert.equal(settings.databaseBackupBusy.value, false)
+})
+
+test('database backup malformed responses cannot erase the list and a valid create updates it', async t => {
+    const settings = settingsFixture(t)
+    settings.databaseBackupStatus.backups = [{ filename: 'known.sql.gz' }]
+    t.mock.method(adminApi, 'getDatabaseBackups', async () => ({}))
+    t.mock.method(adminApi, 'restoreDatabaseBackup', async () => ({ success: true, status: {} }))
+    await settings.loadDatabaseBackups()
+    await settings.restoreDatabaseBackup({ filename: 'known.sql.gz' })
+    assert.deepEqual(settings.databaseBackupStatus.backups, [{ filename: 'known.sql.gz' }])
+    assert.match(settings.databaseBackupMessage.value, /恢复失败.*响应无效/)
+    t.mock.method(adminApi, 'createDatabaseBackup', async () => ({ success: true, backup: { filename: 'new.sql.gz' }, status: { backups: [{ filename: 'new.sql.gz' }] } }))
+    await settings.createDatabaseBackup()
+    assert.deepEqual(settings.databaseBackupStatus.backups, [{ filename: 'new.sql.gz' }])
+    assert.match(settings.databaseBackupMessage.value, /备份完成.*new.sql.gz/)
+})
+
 test('runtime polling refreshes capabilities without clobbering the unsaved auto-start setting', async t => {
     const settings = settingsFixture(t)
     t.mock.method(adminApi, 'getRuntimeSettings', async () => runtimePayload())

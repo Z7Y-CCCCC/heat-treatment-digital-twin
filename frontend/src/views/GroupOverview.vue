@@ -698,7 +698,7 @@ onMounted(async()=>{
       raf=requestAnimationFrame(render)
     };render()
     await refreshConfig();await Promise.all([buildMap(),refreshMapValues(),refreshFactorySummaries()]);pollTimer=setInterval(()=>{void refreshConfig();void refreshMapValues()},15000);summaryPollTimer=setInterval(()=>void refreshFactorySummaries(),5000)
-    data.setMessageHandler(message=>{if(message.type==='configuration_changed')refreshConfig();if(message.type==='dashboard_context_changed')navigator.accept(message.payload)})
+    data.setMessageHandler(message=>{if(['configuration_changed','realtime_resync_required'].includes(message.type))return refreshConfig();if(message.type==='dashboard_context_changed')navigator.accept(message.payload)})
     if(typeof BroadcastChannel!=='undefined' && !adminSurface.value){surfaceChannel=new BroadcastChannel(NATIVE_SURFACE_CHANNEL);surfaceChannel.onmessage=event=>{if(event.data?.type==='show_native_scene' && route.query.embedded==='unity')router.replace({path:'/overlay',query:{...route.query,scene:'1'}})}}
     data.connect();window.chrome?.webview?.addEventListener('message',hostMessage);window.chrome?.webview?.postMessage({type:'overlay_ready'});reportRegions()
   }catch(e){error.value=e.message;window.chrome?.webview?.postMessage({type:'overlay_ready'})}

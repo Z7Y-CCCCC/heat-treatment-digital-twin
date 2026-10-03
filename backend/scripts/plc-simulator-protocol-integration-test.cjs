@@ -74,6 +74,7 @@ function configureDatabase(filename, modbusPort, opcuaPort) {
         if (!deviceColumns.has('plc_options')) db.exec("ALTER TABLE devices ADD COLUMN plc_options TEXT DEFAULT '{}'");
         db.transaction(() => {
             db.prepare("INSERT INTO settings (key, value) VALUES ('data_mode', 'integrated_plc') ON CONFLICT(key) DO UPDATE SET value=excluded.value").run();
+            db.prepare("UPDATE factory_settings SET value='integrated_plc' WHERE `key`='data_mode'").run();
             db.prepare('UPDATE devices SET plc_enabled=0').run();
             db.prepare(`UPDATE devices SET
                 plc_enabled=1, plc_protocol='MODBUS_TCP', plc_ip='127.0.0.1', plc_port=?,

@@ -15,6 +15,10 @@ const siteBackups = ref([])
 const busy = ref('')
 const message = ref('')
 const failure = ref(false)
+let disposed = false
+let backupReadSequence = 0
+let databaseBackupRevision = 0
+let siteBackupRevision = 0
 const canCast = computed(() => adminSession.permissions.cast)
 const canBackup = computed(() => adminSession.permissions.backup)
 const embedded = computed(() => route.query.embedded === 'unity')
@@ -35,17 +39,18 @@ function showResult(text, isFailure = false) {
 }
 
 async function perform(key, task, successText) {
-    if (busy.value) return
+    if (disposed || busy.value) return
     busy.value = key
     message.value = ''
     try {
         const result = await task()
+        if (disposed) return
         if (result?.error || result?.success === false) throw new Error(result.error || '操作失败')
         if (result?.cast) castStatus.value = result.cast
         showResult(successText)
         return result
     } catch (error) {
-        showResult(error.message || '操作失败，请重试', true)
+        if (!disposed) showResult(error.message || '操作失败，请重试', true)
     } finally {
         busy.value = ''
     }
@@ -71,23 +76,35 @@ async function stopCasting() {
 }
 
 async function loadBackups() {
+    if (disposed) return
+    const sequence = ++backupReadSequence
+    const revisions = [databaseBackupRevision, siteBackupRevision]
     const outcomes = await Promise.allSettled([adminApi.getDatabaseBackups(), adminApi.getSiteBackups()])
-    if (outcomes[0].status === 'fulfilled') databaseBackups.value = outcomes[0].value.backups || []
-    if (outcomes[1].status === 'fulfilled') siteBackups.value = outcomes[1].value.backups || []
-    const failed = outcomes.find(item => item.status === 'rejected' || item.value?.error)
+    if (disposed || sequence !== backupReadSequence) return
+    const current = [databaseBackupRevision, siteBackupRevision]
+    const valid = item => item.status === 'fulfilled' && item.value?.success !== false && !item.value?.error && Array.isArray(item.value?.backups)
+    const lists = [databaseBackups, siteBackups]
+    outcomes.forEach((item, index) => {
+        if (revisions[index] === current[index] && valid(item)) lists[index].value = item.value.backups
+    })
+    const failed = outcomes.find((item, index) => revisions[index] === current[index] && !valid(item))
     if (failed) showResult(failed.reason?.message || failed.value?.error || '读取备份清单失败', true)
 }
 
 async function createDatabaseBackup() {
     const result = await perform('database-backup', () => adminApi.createDatabaseBackup(), '数据库备份已创建')
     if (result) {
+        databaseBackupRevision++
         databaseBackups.value = result.status?.backups || [result.backup, ...databaseBackups.value].filter(Boolean)
     }
 }
 
 async function createSiteBackup() {
     const result = await perform('site-backup', () => adminApi.createSiteBackup(), '整站备份包已创建')
-    if (result) siteBackups.value = result.status?.backups || [result.backup, ...siteBackups.value].filter(Boolean)
+    if (result) {
+        siteBackupRevision++
+        siteBackups.value = result.status?.backups || [result.backup, ...siteBackups.value].filter(Boolean)
+    }
 }
 
 function formatDate(value) {
@@ -106,7 +123,7 @@ onMounted(async () => {
     if (canBackup.value) tasks.push(loadBackups())
     await Promise.all(tasks)
 })
-onUnmounted(stopAdminSessionTracking)
+onUnmounted(() => { disposed = true; backupReadSequence++; stopAdminSessionTracking() })
 </script>
 
 <template>

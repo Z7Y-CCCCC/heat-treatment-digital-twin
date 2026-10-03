@@ -111,3 +111,33 @@ test('copy remaps selected internal visibility targets and retains external targ
   remapCopiedWidgetEvents(copies, { a: 'a2', b: 'b2' })
   assert.deepEqual(copies[0].events.map(event => event.targetId), ['b2', 'outside', 'b'])
 })
+
+test('HTTP mapper surfaces fulfilled API errors for inspection and preview', async t => {
+  t.mock.method(adminApi, 'inspectHttpDataSource', async () => ({ error: 'HTTP 404: old endpoint' }))
+  t.mock.method(adminApi, 'previewHttpDataSource', async () => ({ success: false, error: 'HTTP 502: upstream unavailable' }))
+  const { state, applied } = fixture(t, documentFor({ mode: 'http_api', connectionId: 'api', apiPath: '/old', jsonPath: 'value' }))
+  await settle()
+  const row = state.rows[0]
+  assert.equal(row.error, 'HTTP 404: old endpoint')
+  assert.equal(row.busy, false)
+  assert.equal(state.ready, false)
+  await state.preview(row)
+  assert.equal(row.error, 'HTTP 502: upstream unavailable')
+  assert.equal(row.preview, null)
+  state.apply()
+  assert.equal(applied.length, 0)
+})
+
+test('database mapper distinguishes failed table and column discovery from empty schema', async t => {
+  t.mock.method(adminApi, 'getDataSourceTables', async () => ({ error: 'database offline' }))
+  t.mock.method(adminApi, 'getDataSourceColumns', async () => ({ success: false, error: 'column access denied' }))
+  const { state } = fixture(t, documentFor({ mode: 'database', datasets: [{ connectionId: 'db', table: 'metrics', field: 'temperature' }] }))
+  await settle()
+  const row = state.rows[0]
+  assert.equal(row.error, 'database offline')
+  assert.equal(row.target.table, 'metrics', 'failed discovery must not erase the original binding')
+  await state.changeTable(row, '\u0001measurements')
+  assert.equal(row.error, 'column access denied')
+  assert.equal(row.busy, false)
+  assert.equal(state.ready, false)
+})

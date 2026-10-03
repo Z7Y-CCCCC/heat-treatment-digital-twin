@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const zlib = require('zlib');
 const crypto = require('crypto');
+const { writeJsonAtomicSync } = require('../utils/atomicJsonFile');
 const { AsyncLocalStorage } = require('async_hooks');
 const { validateHeaderName, validateHeaderValue } = require('http');
 const { Readable } = require('stream');
@@ -271,10 +272,7 @@ function loadStoredConfig(factoryId = activeFactoryId()) {
 
 function saveStoredConfig(config, factoryId = activeFactoryId()) {
     const filename = configPathForFactory(factoryId);
-    ensureDirectory(DATA_DIR);
-    const temporary = `${filename}.${process.pid}.tmp`;
-    fs.writeFileSync(temporary, JSON.stringify(config, null, 2), { encoding: 'utf8', mode: 0o600 });
-    fs.renameSync(temporary, filename);
+    writeJsonAtomicSync(filename, config);
 }
 
 function publicConnection(connection, extra = {}) {

@@ -4,7 +4,7 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 const Database = require('../backend/node_modules/better-sqlite3');
 const { WebSocket } = require('../backend/node_modules/ws');
-const { createSmokeSandbox, stopOwnedSmokeProcess } = require('../desktop/scripts/smoke-sandbox.cjs');
+const { createSmokeSandbox, stopOwnedSmokeProcess, createSmokeSession, authorizeSmokeUnity } = require('../desktop/scripts/smoke-sandbox.cjs');
 const { BACKEND_DIR, findFreePort, startLoggedProcess, requestJson, waitForHttp, waitUntil } = require('../backend/scripts/integration-test-utils.cjs');
 const { getInspectionPresets } = require('../backend/services/inspectionPresets');
 
@@ -27,8 +27,9 @@ let backend, unity, web;
     const logFile = path.join(sandbox.directory, 'unity.log');
     backend = startLoggedProcess(process.execPath, ['server.js'], { cwd: BACKEND_DIR, env: { ...sandbox.env, PORT: String(port), HOST: '127.0.0.1', FRONTEND_DIST: path.join(root, 'frontend/dist') }, logFile: path.join(sandbox.directory, 'backend.log') });
     await waitForHttp(`${origin}/api/health`);
+    const session = await createSmokeSession(origin, sandbox);
     const contexts = [];
-    web = new WebSocket(origin.replace('http:', 'ws:') + '/ws');
+    web = new WebSocket(origin.replace('http:', 'ws:') + '/ws', { headers: { Cookie: session.cookie } });
     web.on('message', raw => { const message = JSON.parse(String(raw)); if (message.type === 'dashboard_context_changed') contexts.push(message.payload); });
     await new Promise((resolve, reject) => { web.once('open', resolve); web.once('error', reject); });
     web.send(JSON.stringify({ type: 'client_hello', role: 'web' }));
@@ -36,6 +37,7 @@ let backend, unity, web;
         cwd: path.dirname(executable), windowsHide: true, stdio: 'ignore',
         env: { ...sandbox.env, NO_PROXY: '127.0.0.1,localhost', DIGITAL_TWIN_BACKEND_HTTP_URL: origin, DIGITAL_TWIN_BACKEND_WEBSOCKET_URL: origin.replace('http:', 'ws:') + '/ws' }
     });
+    await authorizeSmokeUnity(origin, unity, session);
     const log = () => fs.existsSync(logFile) ? fs.readFileSync(logFile, 'utf8') : '';
     await waitUntil(() => { if (unity.exitCode !== null) throw new Error(`Unity exited: ${unity.exitCode}`); return log().includes('[FactoryRuntime] Native factory ready'); }, 120000, 'real Unity models ready');
     const results = [];

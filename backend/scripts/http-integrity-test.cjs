@@ -74,6 +74,24 @@ async function main() {
         await waitForHttp(`${origin}/api/health`);
         await requestJson(`${origin}/api/settings`);
 
+        await check('HTTP security headers allow local Blob model preview without opening remote HTTP or script sources', async () => {
+            // Check the actual HTML response consumed by the model preview as
+            // well as an API response, rather than matching middleware source.
+            for (const route of ['/admin', '/api/health']) {
+                const response = await testFetch(`${origin}${route}`);
+                assert.equal(response.status, 200, route);
+                const policy = response.headers.get('content-security-policy');
+                assert.ok(policy, `${route} is missing CSP`);
+                const directives = Object.fromEntries(policy.split(';').map(part => part.trim().split(/\s+/)).filter(parts => parts[0])
+                    .map(([name, ...sources]) => [name, sources]));
+                assert.deepEqual([...directives['connect-src']].sort(), ["'self'", 'blob:', 'ws:', 'wss:'].sort());
+                assert.deepEqual(directives['default-src'], ["'self'"]);
+                assert.deepEqual(directives['script-src'], ["'self'"]);
+                assert.deepEqual(directives['object-src'], ["'none'"]);
+                assert.equal(response.headers.get('x-content-type-options'), 'nosniff');
+            }
+        });
+
         await check('SQLite events expose UTC explicitly and a one-hour filter uses UTC storage time', async () => {
             const rows = await requestJson(`${origin}/api/platform/events?event_type=audit_time&window_hours=1`);
             assert.equal(rows.length, 1);

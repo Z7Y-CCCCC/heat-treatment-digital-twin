@@ -12,7 +12,7 @@ function createContinuityClock({ monotonic = () => performance.now(), wall = () 
         largestGapMs = Math.max(largestGapMs, monoGap, wallGap);
         const valid = monoGap >= 0 && wallGap >= 0 && monoGap <= maxGapMs && wallGap <= maxGapMs && clockSkew <= maxClockSkewMs;
         if (valid) observedMs += monoGap;
-        else { violations++; if (failures.length < 100) failures.push({ monoGapMs: monoGap, wallGapMs: wallGap, clockSkewMs: clockSkew }); }
+        else { violations++; if (failures.length < 100) failures.push({ timestamp: nextWall, previousTimestamp: lastWall, monoGapMs: monoGap, wallGapMs: wallGap, clockSkewMs: clockSkew }); }
         lastMono = nextMono; lastWall = nextWall; samples++;
         return valid;
     }

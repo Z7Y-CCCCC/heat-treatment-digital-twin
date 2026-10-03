@@ -79,6 +79,10 @@ async function main() {
             fs.writeFileSync(filename, ORIGINAL_MODEL);
         }
         fs.mkdirSync(dataDir, { recursive: true });
+        fs.writeFileSync(path.join(dataDir, 'data-sources.json'), JSON.stringify({
+            connections: [],
+            backup: { autoEnabled: false, intervalHours: 24, retention: 5, selectedConnectionIds: [] }
+        }));
         fs.writeFileSync(path.join(dataDir, 'database-config.json'), JSON.stringify({
             ...source,
             database: databaseName
@@ -143,6 +147,23 @@ async function main() {
         const siteRestoreBody = await siteRestoreResponse.json();
         const siteSettings = await requestJson(`${origin}/api/settings`);
         const siteModel = fs.readFileSync(path.join(uploadsDir, 'models', MODEL_FILENAME));
+        const backupDirectory = path.join(dataDir, 'backups');
+        const existingDumps = fs.readdirSync(backupDirectory).filter(name => name.endsWith('.sql.gz'))
+            .sort((a, b) => fs.statSync(path.join(backupDirectory, b)).mtimeMs - fs.statSync(path.join(backupDirectory, a)).mtimeMs);
+        const latestGood = existingDumps[0];
+        for (const [index, name] of existingDumps.entries()) {
+            const old = new Date(Date.now() - (90 + index) * 24 * 60 * 60 * 1000);
+            fs.utimesSync(path.join(backupDirectory, name), old, old);
+        }
+        const damagedDump = path.join(backupDirectory, 'factory-20260901T000000000Z-corrupt.sql.gz');
+        const damagedBytes = Buffer.alloc(64);
+        damagedBytes[0] = 0x1f; damagedBytes[1] = 0x8b;
+        fs.writeFileSync(damagedDump, damagedBytes);
+        const corruptAge = new Date(Date.now() - 89 * 24 * 60 * 60 * 1000);
+        fs.utimesSync(damagedDump, corruptAge, corruptAge);
+        const pruned = await requestJson(`${origin}/api/database/backups/config`, {
+            method: 'PUT', body: JSON.stringify({ retentionDays: 1 })
+        });
 
         const checks = {
             backupSupported: status.supported === true && status.type === 'mysql' && status.toolAvailable === true,
@@ -155,7 +176,11 @@ async function main() {
             siteDatabaseRestored: siteSettings[MARKER] === 'before-backup',
             siteUploadRestored: siteModel.equals(ORIGINAL_MODEL),
             migratedProjectAssetRestored: fs.readFileSync(migratedAsset).equals(ORIGINAL_MODEL),
-            sharedAppearanceAssetRestored: fs.readFileSync(appearanceAsset).equals(ORIGINAL_MODEL)
+            sharedAppearanceAssetRestored: fs.readFileSync(appearanceAsset).equals(ORIGINAL_MODEL),
+            corruptGzipCannotDisplaceLastRecoveryPoint: pruned.status.backups.some(item => item.filename === latestGood)
+                && fs.existsSync(path.join(backupDirectory, latestGood)),
+            corruptGzipIsReportedInvalid: pruned.status.backups.find(item => item.filename === path.basename(damagedDump))?.valid === false,
+            compressedDatabaseStoredWithoutDoubleCompression: archive.files.find(entry => entry.path === 'database/mysql.sql.gz')?.compressionMethod === 0
         };
         const failed = Object.entries(checks).filter(([, passed]) => !passed).map(([name]) => name);
         if (failed.length) throw new Error(`MySQL 灾备检查失败：${failed.join(', ')}`);

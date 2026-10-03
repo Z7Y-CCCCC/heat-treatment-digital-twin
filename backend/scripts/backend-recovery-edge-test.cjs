@@ -137,24 +137,54 @@ async function main() {
         await assert.rejects(database.restoreDatabaseBackup('missing-backup.db'), /不存在/);
     });
 
+    await check('low disk space rejects export before new snapshots and preserves existing backups', async () => {
+        const beforeDatabase = fs.readdirSync(process.env.DB_BACKUP_DIR).sort();
+        const beforeSite = fs.readdirSync(process.env.SITE_BACKUP_DIR).sort();
+        const originalStatfs = fs.promises.statfs;
+        fs.promises.statfs = async () => ({ bavail: 0, bsize: 4096 });
+        try { await assert.rejects(siteBackup.createSiteBackup(uploadsRoot), /可用空间不足/); }
+        finally { fs.promises.statfs = originalStatfs; }
+        assert.deepEqual(fs.readdirSync(process.env.DB_BACKUP_DIR).sort(), beforeDatabase);
+        assert.deepEqual(fs.readdirSync(process.env.SITE_BACKUP_DIR).sort(), beforeSite);
+        assert.equal(fs.readdirSync(process.env.SITE_IMPORT_DIR).length, 0);
+    });
+
+    await check('archive write failure cleans staging without replacing the last site backup', async () => {
+        const originalArchive = fs.readFileSync(validArchive);
+        const originalCreateWriteStream = fs.createWriteStream;
+        fs.createWriteStream = function(filename, ...args) {
+            if (path.dirname(filename) === process.env.SITE_BACKUP_DIR && filename.endsWith('.tmp')) {
+                return new (require('stream').Writable)({
+                    write(chunk, encoding, callback) { callback(new Error('injected archive disk write failure')); }
+                });
+            }
+            return originalCreateWriteStream.call(this, filename, ...args);
+        };
+        try { await assert.rejects(siteBackup.createSiteBackup(uploadsRoot), /injected archive disk write failure/); }
+        finally { fs.createWriteStream = originalCreateWriteStream; }
+        assert.ok(fs.readFileSync(validArchive).equals(originalArchive));
+        assert.equal(fs.readdirSync(process.env.SITE_IMPORT_DIR).length, 0);
+        assert.ok(!fs.readdirSync(process.env.SITE_BACKUP_DIR).some(name => name.endsWith('.tmp')));
+    });
+
     await check('failed automatic rollback preserves original upload files for recovery', async () => {
         assert.ok(validArchive, 'a valid site archive is required');
         const originalFile = path.join(uploadsRoot, 'models', 'original-before-restore.glb');
         fs.writeFileSync(originalFile, 'irreplaceable original fixture');
-        const originalCopy = fs.cpSync;
-        fs.cpSync = function(source, destination, options) {
+        const originalCopy = fs.promises.cp;
+        fs.promises.cp = async function(source, destination, options) {
             const resolvedSource = path.resolve(String(source));
             const resolvedDestination = path.resolve(String(destination));
             if (resolvedSource.startsWith(`${process.env.SITE_IMPORT_DIR}${path.sep}`)
                 && resolvedDestination === path.join(uploadsRoot, 'models')) {
                 throw new Error('injected restore and rollback copy failure');
             }
-            return originalCopy.call(fs, source, destination, options);
+            return originalCopy.call(fs.promises, source, destination, options);
         };
         try {
             await assert.rejects(siteBackup.restoreSiteBackup(validArchive, uploadsRoot), /原始文件保留于/);
         } finally {
-            fs.cpSync = originalCopy;
+            fs.promises.cp = originalCopy;
         }
         const preserved = fs.readdirSync(process.env.SITE_IMPORT_DIR)
             .map(name => path.join(process.env.SITE_IMPORT_DIR, name, 'rollback-uploads', 'models', path.basename(originalFile)))

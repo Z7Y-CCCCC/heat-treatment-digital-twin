@@ -797,12 +797,7 @@ internal sealed class DashboardOverlayForm : Form
     {
         try
         {
-            var directory = Program.LogDirectory;
-            Directory.CreateDirectory(directory);
-            File.AppendAllText(
-                Path.Combine(directory, "admin-host.log"),
-                $"[{DateTimeOffset.Now:O}] {message}{(exception == null ? string.Empty : $": {exception}")}\n"
-            );
+            AdminHostLog.Write($"{message}{(exception == null ? string.Empty : $": {exception}")}");
         }
         catch
         {

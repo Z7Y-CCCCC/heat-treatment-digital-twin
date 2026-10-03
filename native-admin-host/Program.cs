@@ -91,6 +91,7 @@ internal static class Program
             return;
         }
 
+        AdminHostLog.Configure(LogDirectory);
         ApplicationConfiguration.Initialize();
         Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
         Application.ThreadException += (_, eventArgs) => LogUnhandledException("UI 线程异常", eventArgs.Exception);
@@ -99,10 +100,15 @@ internal static class Program
             if (eventArgs.ExceptionObject is Exception exception)
             {
                 LogUnhandledException("未处理的宿主异常", exception);
+                if (eventArgs.IsTerminating) AdminHostLog.Complete(TimeSpan.FromMilliseconds(500));
             }
         };
-        using var form = new AdminPanelForm(options);
-        Application.Run(form);
+        try
+        {
+            using var form = new AdminPanelForm(options);
+            Application.Run(form);
+        }
+        finally { AdminHostLog.Complete(TimeSpan.FromSeconds(2)); }
     }
 
     private static void EnablePerMonitorDpiAwareness()
@@ -141,12 +147,7 @@ internal static class Program
     {
         try
         {
-            var directory = LogDirectory;
-            Directory.CreateDirectory(directory);
-            File.AppendAllText(
-                Path.Combine(directory, "admin-host.log"),
-                $"[{DateTimeOffset.Now:O}] {prefix}: {exception}\n"
-            );
+            AdminHostLog.Write($"{prefix}: {exception}");
         }
         catch
         {

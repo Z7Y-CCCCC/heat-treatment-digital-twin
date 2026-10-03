@@ -5,10 +5,11 @@ const net = require('node:net');
 const { spawn } = require('node:child_process');
 const { once } = require('node:events');
 const { stopOwnedSmokeProcess } = require('./smoke-sandbox.cjs');
+const { createRunDirectory } = require('../../backend/scripts/integration-test-utils.cjs');
 
 const root = path.resolve(__dirname, '../..');
 const executable = process.env.ADMIN_HOST_TEST_EXECUTABLE || path.join(root, 'unity-client/Builds/Windows/AdminHost/HeatTreatmentAdminHost.exe');
-const directory = path.join(root, 'tmp', `admin-retry-${Date.now()}-${process.pid}`);
+const directory = createRunDirectory('admin-retry');
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(check, label, timeout = 20000) {
     const end = Date.now() + timeout;

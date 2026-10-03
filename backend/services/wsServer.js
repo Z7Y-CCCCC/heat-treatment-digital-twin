@@ -14,6 +14,7 @@
 const { WebSocketServer } = require('ws');
 const { normalizeSceneProjection } = require('../utils/sceneProjection');
 const { getAdminAuth } = require('./adminAuth');
+const { WsOutboundQueue, defaults: queueDefaults } = require('../utils/wsOutboundQueue');
 
 function shortText(value, maxLength = 160) {
     return String(value || '').trim().slice(0, maxLength);
@@ -53,7 +54,9 @@ function inspectionContext(source, mode) {
 }
 
 class WsServer {
-    constructor() {
+    constructor(queueOptions = {}) {
+        this.queueOptions = queueOptions;
+        this.outbound = new Map();
         this.wss = null;
         this.wssInstances = new Set();
         this.clients = new Set();
@@ -71,6 +74,7 @@ class WsServer {
         const wss = new WebSocketServer({
             server: httpServer,
             path: '/ws',
+            maxPayload: queueDefaults.maxMessageBytes,
             verifyClient: options.verifyClient
         });
         this.wss = this.wss || wss;
@@ -87,6 +91,7 @@ class WsServer {
             const clientIp = req.socket.remoteAddress;
             console.log(`[WebSocket] 客户端已连接: ${clientIp} (当前 ${this.clients.size + 1} 个连接)`);
             this.clients.add(ws);
+            this.outbound.set(ws, new WsOutboundQueue(ws, this.queueOptions));
             if (req.adminSessionToken) {
                 ws.sessionCheckTimer = setInterval(() => {
                     if (!getAdminAuth().status(req.adminSessionToken).displayAuthenticated) {
@@ -101,12 +106,12 @@ class WsServer {
                 try {
                     const data = JSON.parse(msg);
                     if (data.type === 'ping') {
-                        ws.send(JSON.stringify({ type: 'pong', timestamp: Date.now() }));
+                        this.send(ws, { type: 'pong', timestamp: Date.now() });
                     } else if (data.type === 'client_hello') {
                         const role = String(data.role || data.payload?.role || '').trim().toLowerCase();
                         ws.clientRole = ['unity', 'web', 'admin'].includes(role) ? role : '';
                         if (ws.clientRole === 'web' && this.dashboardContext && ws.readyState === 1) {
-                            ws.send(JSON.stringify({ type: 'dashboard_context_changed', payload: this.dashboardContext }));
+                            this.send(ws, { type: 'dashboard_context_changed', payload: this.dashboardContext });
                         }
                         if (ws.clientRole === 'unity') this.sendProjectionSubscription(ws);
                         else this.updateProjectionSubscriptions();
@@ -114,7 +119,7 @@ class WsServer {
                         ws.sceneProjectionSubscribed = data.enabled === true;
                         this.updateProjectionSubscriptions();
                         if (ws.sceneProjectionSubscribed && this.sceneProjection && Date.now()-this.sceneProjection.receivedAt < 1500) {
-                            ws.send(JSON.stringify({ type:'scene_projection', payload:this.sceneProjection }));
+                            this.send(ws, { type:'scene_projection', payload:this.sceneProjection });
                         }
                     } else if (data.type === 'scene_projection' && ws.clientRole === 'unity') {
                         const now=Date.now();
@@ -166,26 +171,31 @@ class WsServer {
                 } catch (e) { /* 忽略非 JSON 消息 */ }
             });
 
-            ws.on('close', () => {
+            ws.on('close', (code, reason) => {
+                const outbound = this.outbound.get(ws);
+                const diagnostic = { at: new Date().toISOString(), code, reason: shortText(reason), role: ws.clientRole || '',
+                    failure: shortText(outbound?.failure, 320), stats: outbound ? { ...outbound.stats } : null };
                 if (ws.sessionCheckTimer) clearInterval(ws.sessionCheckTimer);
                 this.clients.delete(ws);
+                outbound?.dispose(); this.outbound.delete(ws);
                 if(this.sceneProjectionOwner===ws){this.sceneProjectionOwner=null;this.sceneProjection=null;this.broadcastProjection({available:false,receivedAt:Date.now()});}
                 this.updateProjectionSubscriptions();
                 options.onClose?.(ws, req);
-                console.log(`[WebSocket] 客户端断开: ${clientIp} (剩余 ${this.clients.size} 个连接)`);
+                console.log(`[WebSocket] 客户端断开: ${clientIp} (剩余 ${this.clients.size} 个连接) ${JSON.stringify(diagnostic)}`);
             });
 
             ws.on('error', (err) => {
                 if (ws.sessionCheckTimer) clearInterval(ws.sessionCheckTimer);
                 console.error(`[WebSocket] 客户端错误:`, err.message);
                 this.clients.delete(ws);
+                this.outbound.get(ws)?.fail(`socket error: ${err.message}`);
             });
 
             // 连接成功后立即发送一条欢迎消息
-            ws.send(JSON.stringify({
+            this.send(ws, {
                 type: 'welcome',
                 payload: { message: '数字孪生 WebSocket 通道已建立', timestamp: Date.now() }
-            }));
+            });
         });
 
         console.log('[WebSocket] 服务已启动，等待客户端连接 (路径: /ws)');
@@ -197,7 +207,14 @@ class WsServer {
         const enabled=[...this.clients].some(peer=>peer.readyState===1 && peer.clientRole==='web' && peer.sceneProjectionSubscribed);
         if(client.sceneProjectionEnabled===enabled) return;
         client.sceneProjectionEnabled=enabled;
-        client.send(JSON.stringify({type:'scene_projection_subscription',payload:{enabled}}));
+        this.send(client, {type:'scene_projection_subscription',payload:{enabled}});
+    }
+
+    send(client, message, serialized) {
+        if (client.readyState !== 1) return false;
+        let queue = this.outbound.get(client);
+        if (!queue) { queue = new WsOutboundQueue(client, this.queueOptions); this.outbound.set(client, queue); }
+        return queue.enqueue(message, serialized);
     }
 
     updateProjectionSubscriptions() {
@@ -205,11 +222,10 @@ class WsServer {
     }
 
     broadcastProjection(payload) {
-        const message=JSON.stringify({type:'scene_projection',payload});
+        const message={type:'scene_projection',payload};
+        const serialized=JSON.stringify(message);
         this.clients.forEach(client=>{
-            // Slow previews skip intermediate frames rather than queuing seconds
-            // of stale camera motion. Normal telemetry/event streams are intact.
-            if(client.readyState===1 && client.clientRole==='web' && client.sceneProjectionSubscribed && client.bufferedAmount<512*1024) client.send(message);
+            if(client.readyState===1 && client.clientRole==='web' && client.sceneProjectionSubscribed) this.send(client, message, serialized);
         });
     }
 
@@ -228,18 +244,19 @@ class WsServer {
         if (this.clients.size === 0) return;
         if (!Array.isArray(deviceDataArray) || deviceDataArray.length === 0) return;
 
-        const message = JSON.stringify({
+        const message = {
             type: 'realtime_frame',
             payload: {
                 seq: ++this.sequence,
                 timestamp: Date.now(),
                 devices: deviceDataArray
             }
-        });
+        };
 
+        const serialized = JSON.stringify(message);
         this.clients.forEach(client => {
             if (client.readyState === 1) { // WebSocket.OPEN
-                client.send(message);
+                this.send(client, message, serialized);
             }
         });
     }
@@ -258,12 +275,12 @@ class WsServer {
     broadcast(type, payload = {}) {
         if (this.clients.size === 0) return 0;
 
-        const message = JSON.stringify({ type, payload });
+        const message = { type, payload };
+        const serialized = JSON.stringify(message);
         let sent = 0;
         this.clients.forEach(client => {
             if (client.readyState === 1) {
-                client.send(message);
-                sent += 1;
+                if (this.send(client, message, serialized)) sent += 1;
             }
         });
         return sent;
@@ -272,13 +289,13 @@ class WsServer {
     broadcastToRole(type, payload = {}, role = '') {
         if (this.clients.size === 0) return 0;
         const normalizedRole = String(role || '').trim().toLowerCase();
-        const message = JSON.stringify({ type, payload });
+        const message = { type, payload };
+        const serialized = JSON.stringify(message);
         let sent = 0;
         this.clients.forEach(client => {
             if (client.readyState !== 1) return;
             if (normalizedRole && client.clientRole !== normalizedRole) return;
-            client.send(message);
-            sent += 1;
+            if (this.send(client, message, serialized)) sent += 1;
         });
         return sent;
     }
@@ -298,6 +315,12 @@ class WsServer {
      * 关闭 WebSocket 服务
      */
     close() {
+        for (const client of this.clients) {
+            if (client.sessionCheckTimer) clearInterval(client.sessionCheckTimer);
+            this.outbound.get(client)?.dispose();
+            try { client.terminate(); } catch {}
+        }
+        this.outbound.clear();
         for (const wss of this.wssInstances) {
             try { wss.close(); } catch (error) { /* ignore */ }
         }

@@ -803,13 +803,15 @@ async function handleRuntimeMessage(message) {
         scheduleRegionReport()
         return
     }
-    if (message?.type === 'dashboard_release_changed') {
+    if (message?.type === 'dashboard_release_changed' || message?.type === 'realtime_resync_required') {
         await loadConfig()
         if (overlayDisposed) return
         probeConfiguredModels()
         runtimeContext.sceneId = platform.value.activeScene?.id || runtimeContext.sceneId
-        runtimeContext.viewId = presentationDocument.value?.scene?.defaultViewId || platform.value.activeScene?.defaultViewId || runtimeContext.viewId
-        runtimeContext.viewMode = dashboardViews.value.find(view => view.id === runtimeContext.viewId)?.mode || 'factory'
+        if (message.type === 'dashboard_release_changed') {
+            runtimeContext.viewId = presentationDocument.value?.scene?.defaultViewId || platform.value.activeScene?.defaultViewId || runtimeContext.viewId
+            runtimeContext.viewMode = dashboardViews.value.find(view => view.id === runtimeContext.viewId)?.mode || 'factory'
+        }
         dataStore.setEventQueryOptions(eventQueryConfig())
         await Promise.all([refreshDatabaseValues(true), refreshBusinessData(true)])
         await nextTick()

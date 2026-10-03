@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { createRunDirectory } = require('../backend/scripts/integration-test-utils.cjs');
-const { stopOwnedSmokeProcess } = require('../desktop/scripts/smoke-sandbox.cjs');
+const { stopOwnedSmokeProcess, createSmokeProgramData } = require('../desktop/scripts/smoke-sandbox.cjs');
 const mysql = require('../backend/node_modules/mysql2/promise');
 const Database = require('../backend/node_modules/better-sqlite3');
 
@@ -56,6 +56,7 @@ async function main() {
         if (/^(MYSQL_|DESKTOP_MYSQL_|DB_|SQLITE_|APP_DATA_DIR$|APP_USER_DATA_DIR$|UPLOADS_DIR$|DESKTOP_SMOKE_|NODE_OPTIONS$)/i.test(key)) delete env[key];
     }
     Object.assign(env, {
+        ...createSmokeProgramData(directory),
         APP_USER_DATA_DIR: directory,
         APP_DATA_DIR: dataDir,
         UPLOADS_DIR: path.join(directory, 'uploads'),
@@ -65,6 +66,7 @@ async function main() {
         LICENSE_FILE: path.join(dataDir, 'license.json'),
         DISABLE_AUTO_START: 'true',
         NATIVE_CLIENT_SMOKE_MODE: 'true',
+        DESKTOP_SMOKE_STANDALONE: 'true',
         DESKTOP_SMOKE_EXIT_AFTER_MS: '22000'
     });
     assert.equal(fs.existsSync(configPath), false, 'First launch must begin without a pre-created database configuration.');
@@ -159,7 +161,7 @@ async function main() {
             if (!exited) await stopOwnedSmokeProcess(child);
         }
     }
-    const report = { success: true, executable, userDataDirectory: directory, launches };
+    const report = { success: true, executable, userDataDirectory: directory, programData: env.ProgramData, launches };
     fs.writeFileSync(path.join(directory, 'smoke-result.json'), JSON.stringify(report, null, 2));
     console.log(JSON.stringify(report, null, 2));
 }

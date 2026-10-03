@@ -3,6 +3,8 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const assert = require('node:assert/strict');
 const { createContinuityClock } = require('./endurance-continuity.cjs');
+const { createMemorySummaryReader } = require('./endurance-memory.cjs');
+const { writeReportFile } = require('./endurance-report-io.cjs');
 const WebSocket = require('ws');
 const { BACKEND_DIR, createRunDirectory, createTestDatabase, findFreePort, startLoggedProcess, waitForHttp, forceStop } = require('./integration-test-utils.cjs');
 
@@ -32,6 +34,7 @@ limits.mysqlRssGrowthMb = argument('max-mysql-rss-growth-mb', 512);
 const directory = createRunDirectory('endurance');
 const dataDir = path.join(directory, 'data');
 const memoryFile = path.join(directory, 'memory.jsonl');
+const memoryReader = createMemorySummaryReader(memoryFile);
 const stopFile = path.join(directory, 'STOP');
 const token = crypto.randomBytes(32).toString('hex');
 const startedAt = Date.now();
@@ -45,9 +48,16 @@ let revision = 0, document, publishedReleaseId = '', cycles = 0, restarts = 0, r
 let requestCount = 0, requestErrors = 0, maxLatency = 0;
 const latencyBins = new Array(1201).fill(0); // 10 ms buckets, bounded memory for 72 h.
 const errors = [];
+let eventWrites = Promise.resolve(), observationPhase = 'setup';
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
-function log(type, detail = {}) { fs.appendFileSync(path.join(directory, 'events.jsonl'), JSON.stringify({ ...detail, timestamp: Date.now(), type }) + '\n'); }
-function error(reason) { errors.push({ timestamp: Date.now(), reason: String(reason) }); log('failure', { reason: String(reason) }); }
+function log(type, detail = {}) {
+    const line = JSON.stringify({ ...detail, timestamp: Date.now(), type }) + '\n';
+    eventWrites = eventWrites.then(() => fs.promises.appendFile(path.join(directory, 'events.jsonl'), line)).catch(failure => {
+        errors.push({ timestamp: Date.now(), reason: `Event log write failed: ${failure.message}` });
+        stop('event log write failed');
+    });
+}
+function error(reason, detail = {}) { errors.push({ timestamp: Date.now(), reason: String(reason), ...detail }); log('failure', { reason: String(reason), ...detail }); }
 function stop(reason) { stopped = true; stopReason = reason; }
 process.on('SIGINT', () => stop('SIGINT'));
 process.on('SIGTERM', () => stop('SIGTERM'));
@@ -72,22 +82,20 @@ function p95() {
     for (let index = 0; index < latencyBins.length; index++) { cumulative += latencyBins[index]; if (cumulative >= requestCount * .95) return index * 10; }
     return 0;
 }
-function memorySummary() {
-    const rows = fs.existsSync(memoryFile) ? fs.readFileSync(memoryFile, 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line)) : [];
-    const byPid = new Map();
-    for (const row of rows) { if (!byPid.has(row.pid)) byPid.set(row.pid, []); byPid.get(row.pid).push(row); }
-    const generations = [...byPid].map(([pid, samples]) => {
-        const warm = samples.filter(row => row.uptime >= 60);
-        const first = warm[0] || samples[0];
-        const last = samples.at(-1);
-        return { pid, samples: samples.length, peakRssMb: Math.max(...samples.map(row => row.rss)) / 1048576, rssGrowthMb: (last.rss - first.rss) / 1048576, baselineAfterWarmup: warm.length > 0 };
-    });
-    return { samples: rows.length, generations, peakRssMb: Math.max(0, ...generations.map(row => row.peakRssMb)), maxRssGrowthMb: Math.max(0, ...generations.map(row => row.rssGrowthMb)) };
-}
-function report(final = false) {
+async function report(final = false) {
+    const preparationStarted = monotonicNow();
+    observationPhase = 'report-backend-memory';
+    try { await memoryReader.refresh({ final }); }
+    catch (failure) { error(`Backend memory evidence failed: ${failure.message}`); }
+    const memoryReadMs = monotonicNow() - preparationStarted;
+    observationPhase = 'report-mysql-memory';
+    if (!final) await privateMysql?.sampleMemory();
+    await eventWrites;
+    const databaseEngine = privateMysql?.summary();
+    const reporting = { memoryReadMs, preparationMs: monotonicNow() - preparationStarted };
     const elapsedMs = finishedElapsedMs ?? continuity?.elapsedMs() ?? 0;
-    const memory = memorySummary();
-    const mysqlMemory = privateMysql?.summary().memory;
+    const memory = memoryReader.summary();
+    const mysqlMemory = databaseEngine?.memory;
     const checks = {
         durationCompleted: elapsedMs >= durationMs && !stopped,
         continuousObservation: continuity?.summary().continuous === true,
@@ -103,10 +111,13 @@ function report(final = false) {
         publishedDatabaseBindingVerified: runtimeBinding.checks > 1 && runtimeBinding.freshFetches > 1
     };
     const status = !final ? 'running' : stopped || !checks.durationCompleted ? 'incomplete' : Object.values(checks).every(Boolean) ? 'passed' : 'failed';
-    const result = { status, startedAt: new Date(startedAt).toISOString(), workloadStartedAt, reportedAt: new Date().toISOString(), requestedSeconds: durationMs / 1000, actualSeconds: elapsedMs / 1000, qualifiesAs72Hours: status === 'passed' && elapsedMs >= 72 * 3600000, stopReason, runnerPid: process.pid, backendPid: backend?.pid, restartPolicy, databaseEngine: privateMysql ? privateMysql.summary() : { type: 'sqlite', filename: path.join(dataDir, 'factory.db') }, isolation: { database: databaseType === 'mysql' ? privateMysql?.database : path.join(dataDir, 'factory.db'), baseUrl, simulationOnly: true, physicalPlcEnabled: false }, thresholds: limits, checks, runtimeBinding, cycles, restarts, reconnects, frames, requests: { count: requestCount, errors: requestErrors, p95UpperBoundMs: p95(), maxMs: maxLatency }, memory, errors: errors.slice(-100), artifacts: { directory, stopFile, memoryFile } };
+    const result = { status, startedAt: new Date(startedAt).toISOString(), workloadStartedAt, reportedAt: new Date().toISOString(), requestedSeconds: durationMs / 1000, actualSeconds: elapsedMs / 1000, qualifiesAs72Hours: status === 'passed' && elapsedMs >= 72 * 3600000, stopReason, runnerPid: process.pid, backendPid: backend?.pid, restartPolicy, databaseEngine: databaseEngine || { type: 'sqlite', filename: path.join(dataDir, 'factory.db') }, isolation: { database: databaseType === 'mysql' ? privateMysql?.database : path.join(dataDir, 'factory.db'), baseUrl, simulationOnly: true, physicalPlcEnabled: false }, thresholds: limits, checks, runtimeBinding, cycles, restarts, reconnects, frames, requests: { count: requestCount, errors: requestErrors, p95UpperBoundMs: p95(), maxMs: maxLatency }, memory, errors: errors.slice(-100), artifacts: { directory, stopFile, memoryFile } };
+    result.reporting = reporting;
     result.continuity = continuity?.summary() || { continuous: false, samples: 0 };
-    fs.writeFileSync(path.join(directory, 'report.json'), JSON.stringify(result, null, 2));
-    fs.writeFileSync(path.join(directory, 'report.md'), `# 隔离耐久测试\n\n- 状态：${status}\n- 计划 / 实际：${durationMs / 1000} / ${(elapsedMs / 1000).toFixed(1)} 秒\n- 完整 72 小时：${result.qualifiesAs72Hours ? '是' : '否'}\n- 循环 / 重启恢复 / 客户端重连：${cycles} / ${restarts} / ${reconnects}\n- 重启策略：${restartPolicy.mode}；首次 ${restartPolicy.firstAfterSeconds} 秒；重复间隔 ${restartPolicy.repeatIntervalSeconds ?? '无'} 秒\n- 数据库引擎：${databaseType}${privateMysql?.version ? ` ${privateMysql.version}` : ''}\n- 已发布数据库字段检查：${runtimeBinding.checks} 次；新查询结果 ${runtimeBinding.freshFetches} 次；固定值 ${runtimeBinding.expectedValue}\n- 模拟实时帧：${frames}\n- HTTP：${requestCount} 次，错误 ${requestErrors}，p95 上界 ${p95()} ms\n- 内存峰值：${memory.peakRssMb.toFixed(1)} MB；单进程代内存增长：${memory.maxRssGrowthMb.toFixed(1)} MB\n- 停止原因：${stopReason || '无'}\n\n## 判定\n\n${Object.entries(checks).map(([key, value]) => `- ${key}: ${value}`).join('\n')}\n\n## 限定\n\n隔离 ${databaseType} 与模拟采集，不连接现场数据库或 PLC；没有启动 Unity/电视/浏览器渲染。本报告不能替代现场显卡、投屏、PLC、数据库兼容和 72 小时验收。内存增长按每次进程启动 60 秒后基线计算，不代表已经证明无内存泄漏。\n\n## 错误\n\n${errors.slice(-100).map(item => `- ${item.reason}`).join('\n') || '无记录'}\n`);
+    observationPhase = 'report-write';
+    await writeReportFile(path.join(directory, 'report.json'), JSON.stringify(result, null, 2));
+    await writeReportFile(path.join(directory, 'report.md'), `# 隔离耐久测试\n\n- 状态：${status}\n- 计划 / 实际：${durationMs / 1000} / ${(elapsedMs / 1000).toFixed(1)} 秒\n- 完整 72 小时：${result.qualifiesAs72Hours ? '是' : '否'}\n- 循环 / 重启恢复 / 客户端重连：${cycles} / ${restarts} / ${reconnects}\n- 重启策略：${restartPolicy.mode}；首次 ${restartPolicy.firstAfterSeconds} 秒；重复间隔 ${restartPolicy.repeatIntervalSeconds ?? '无'} 秒\n- 数据库引擎：${databaseType}${privateMysql?.version ? ` ${privateMysql.version}` : ''}\n- 已发布数据库字段检查：${runtimeBinding.checks} 次；新查询结果 ${runtimeBinding.freshFetches} 次；固定值 ${runtimeBinding.expectedValue}\n- 模拟实时帧：${frames}\n- HTTP：${requestCount} 次，错误 ${requestErrors}，p95 上界 ${p95()} ms\n- 内存峰值：${memory.peakRssMb.toFixed(1)} MB；单进程代内存增长：${memory.maxRssGrowthMb.toFixed(1)} MB\n- 停止原因：${stopReason || '无'}\n\n## 判定\n\n${Object.entries(checks).map(([key, value]) => `- ${key}: ${value}`).join('\n')}\n\n## 限定\n\n隔离 ${databaseType} 与模拟采集，不连接现场数据库或 PLC；没有启动 Unity/电视/浏览器渲染。本报告不能替代现场显卡、投屏、PLC、数据库兼容和 72 小时验收。内存增长按每次进程启动 60 秒后基线计算，不代表已经证明无内存泄漏。\n\n## 错误\n\n${errors.slice(-100).map(item => `- ${item.reason}`).join('\n') || '无记录'}\n`);
+    observationPhase = final ? 'finished' : 'workload';
     return result;
 }
 async function connect() {
@@ -116,7 +127,7 @@ async function connect() {
     active.on('error', failure => { if (active === socket && !restarting && !stopped && !finishing) error(`WebSocket error: ${failure.message}`); });
     active.on('close', () => { if (active === socket && !restarting && !stopped && !finishing) error('Unexpected WebSocket close'); });
     active.on('message', raw => {
-        try { const message = JSON.parse(raw); if (message.type === 'realtime_frame' && Array.isArray(message.payload?.devices) && message.payload.devices.length) { const now = monotonicNow(); if (continuity && !restarting && lastFrameAt && now - lastFrameAt > limits.wsSilenceMs) error('WebSocket frame gap exceeded limit before stream recovered'); frames++; lastFrameAt = now; } } catch (failure) { error(`Invalid WebSocket message: ${failure.message}`); }
+        try { const message = JSON.parse(raw); if (message.type === 'realtime_frame' && Array.isArray(message.payload?.devices) && message.payload.devices.length) { const now = monotonicNow(); if (continuity && !restarting && lastFrameAt && now - lastFrameAt > limits.wsSilenceMs) error('WebSocket frame gap exceeded limit before stream recovered', { gapMs: now - lastFrameAt, observationPhase }); frames++; lastFrameAt = now; } } catch (failure) { error(`Invalid WebSocket message: ${failure.message}`); }
     });
     await new Promise((resolve, reject) => { const timer = setTimeout(() => reject(new Error('WebSocket connection timeout')), 10000); active.once('open', () => { clearTimeout(timer); active.send(JSON.stringify({ type: 'client_hello', role: 'web' })); resolve(); }); active.once('error', failure => { clearTimeout(timer); reject(failure); }); });
     const deadline = Date.now() + limits.wsSilenceMs;
@@ -192,18 +203,21 @@ async function main() {
         const { EnduranceMysql } = require('./endurance-mysql.cjs');
         privateMysql = new EnduranceMysql(directory, mysqlRuntimeDir);
         await privateMysql.initialize(path.join(dataDir, 'factory.db'), path.join(dataDir, 'database-config.json'));
+        await privateMysql.sampleMemory(true);
         log('private-mysql-ready', privateMysql.summary());
     }
     const port = await findFreePort();
     baseUrl = `http://127.0.0.1:${port}`;
     await launch(port);
     workloadStartedAt = Date.now();
+    observationPhase = 'workload';
     continuity = createContinuityClock();
     continuityTimer = setInterval(() => continuity.sample(), 1000);
     console.log(JSON.stringify({ backendPid: backend.pid, baseUrl, workloadStartedAt }));
     let nextCycle = 0, nextReconnect = monotonicNow() + Math.min(120000, durationMs / 4), nextRestart = monotonicNow() + restartPolicy.firstAfterSeconds * 1000, nextReport = 0;
     while (!stopped && continuity.elapsedMs() < durationMs) {
-        if (fs.existsSync(stopFile)) { stop('STOP file'); break; }
+        const stopRequested = await fs.promises.access(stopFile).then(() => true, failure => { if (failure.code === 'ENOENT') return false; throw failure; });
+        if (stopRequested) { stop('STOP file'); break; }
         try {
             if (monotonicNow() >= nextRestart) {
                 // Schedule before attempting: a failed one-shot restart must not
@@ -212,7 +226,7 @@ async function main() {
                 restarting = true;
                 socket?.terminate();
                 await forceStop(backend);
-                if (privateMysql) { await privateMysql.restart(); log('private-mysql-restarted', privateMysql.summary()); }
+                if (privateMysql) { await privateMysql.restart(); await privateMysql.sampleMemory(true); log('private-mysql-restarted', privateMysql.summary()); }
                 await launch(port);
                 const recovered = await api('/api/platform/designer');
                 assert.equal(recovered.revision, revision, 'Revision lost after restart');
@@ -228,7 +242,7 @@ async function main() {
             await verifyRuntimeBinding();
             assert.ok(monotonicNow() - lastFrameAt <= limits.wsSilenceMs, 'WebSocket simulation stream stalled');
         } catch (failure) { restarting = false; error(failure.stack || failure.message); }
-        if (monotonicNow() >= nextReport) { const current = report(); console.log(JSON.stringify({ status: current.status, seconds: Math.round(current.actualSeconds), cycles, frames, errors: errors.length, backendPid: backend.pid })); nextReport = monotonicNow() + 60000; }
+        if (monotonicNow() >= nextReport) { const current = await report(); console.log(JSON.stringify({ status: current.status, seconds: Math.round(current.actualSeconds), cycles, frames, errors: errors.length, backendPid: backend.pid })); nextReport = monotonicNow() + 60000; }
         await sleep(Math.min(intervalMs, Math.max(0, durationMs - continuity.elapsedMs())));
     }
 }
@@ -239,12 +253,13 @@ main().catch(failure => { error(failure.stack || failure.message); stopReason = 
     clearInterval(continuityTimer);
     if (continuity && !restarting && monotonicNow() - lastFrameAt > limits.wsSilenceMs) error('WebSocket simulation stream stalled at test completion');
     finishing = true;
-    privateMysql?.sampleMemory(true);
+    await privateMysql?.sampleMemory(true);
     socket?.terminate();
     await forceStop(backend);
     if (backend && backend.exitCode === null && backend.signalCode === null) error('Owned backend process did not exit during cleanup');
     if (privateMysql) await privateMysql.stop().catch(failure => error(`Private MySQL cleanup: ${failure.message}`));
-    const result = report(true);
+    await eventWrites;
+    const result = await report(true);
     console.log(JSON.stringify({ status: result.status, actualSeconds: result.actualSeconds, report: path.join(directory, 'report.json') }));
     process.exitCode = result.status === 'passed' ? 0 : result.status === 'incomplete' ? 2 : 1;
 });

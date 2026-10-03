@@ -5,12 +5,14 @@ const os = require('node:os');
 const crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
 const { createRunDirectory, findFreePort } = require('../backend/scripts/integration-test-utils.cjs');
+const { createSmokeProgramData } = require('../desktop/scripts/smoke-sandbox.cjs');
 const mysql = require('../backend/node_modules/mysql2/promise');
 
 const executable = path.resolve(process.argv[2] || '安装包/win-unpacked/热处理数字孪生大屏.exe');
 const resources = path.join(path.dirname(executable), 'resources');
 const packageBackend = path.join(resources, 'backend');
 const directory = createRunDirectory('packaged-project-bundle-mysql');
+Object.assign(process.env, createSmokeProgramData(directory));
 const dataDir = path.join(directory, 'mysql-data');
 const aliasRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'dt-bundle-mysql-'));
 const runtimeAlias = path.join(aliasRoot, 'runtime');
@@ -67,6 +69,17 @@ function launch(args) {
     closeDb = databaseModule.closeDb;
     const db = await databaseModule.getDb();
     assert.equal(databaseModule.getDbStatus().type, 'mysql');
+    const { HistoryRetention } = require(path.join(packageBackend, 'services/historyRetention'));
+    const history = new HistoryRetention({ database: async () => db });
+    const oldMetric = await db.run("INSERT INTO metric_snapshots (snapshot_time) VALUES ('2020-01-01 00:00:00')");
+    const oldEvent = await db.run("INSERT INTO event_logs (title, occurred_at) VALUES ('retention-preserve-event', '2020-01-01 00:00:00')");
+    history.start();
+    try {
+        await history.run();
+        assert.equal(await db.get('SELECT id FROM metric_snapshots WHERE id = ?', [oldMetric.insertId]), null);
+        assert.ok(await db.get('SELECT id FROM event_logs WHERE id = ?', [oldEvent.insertId]));
+        checks.mysqlMetricRetentionPreservesEvents = true;
+    } finally { await history.stop(); }
     const { exportBundle, inspectBundle, importBundle } = require(path.join(packageBackend, 'services/projectBundle'));
     const { createEmptyDocument } = require(path.join(packageBackend, 'utils/dashboardDocument'));
     const { saveDraft, publishDraft, loadPublishedDocument } = require(path.join(packageBackend, 'services/dashboardDocuments'));
@@ -128,7 +141,7 @@ function launch(args) {
     assert.deepEqual(fs.readdirSync(path.join(process.env.UPLOADS_DIR, 'projects')).sort(), beforeFiles);
     assert.deepEqual(JSON.parse((await db.get('SELECT value FROM settings WHERE `key` = ?', ['loading_experience_config'])).value), loading);
     checks.mysqlTransactionAndAssetRollback = true;
-    const report = { success: true, executable, module: path.join(packageBackend, 'services/projectBundle.js'), moduleSha256: crypto.createHash('sha256').update(fs.readFileSync(path.join(packageBackend, 'services/projectBundle.js'))).digest('hex'), mysqlVersion: identity.version, mysqlPort: port, directory, checks, importedFactoryId: imported.factoryId, importedSceneId: importedScene.id, sourcePointId: point.insertId, importedPointId: targetPoint.id };
+    const report = { success: true, executable, module: path.join(packageBackend, 'services/projectBundle.js'), moduleSha256: crypto.createHash('sha256').update(fs.readFileSync(path.join(packageBackend, 'services/projectBundle.js'))).digest('hex'), mysqlVersion: identity.version, mysqlPort: port, directory, programData: process.env.ProgramData, checks, importedFactoryId: imported.factoryId, importedSceneId: importedScene.id, sourcePointId: point.insertId, importedPointId: targetPoint.id };
     fs.writeFileSync(resultFile, JSON.stringify(report, null, 2));
     console.log(JSON.stringify({ ...report, resultFile }, null, 2));
 })().catch(error => {

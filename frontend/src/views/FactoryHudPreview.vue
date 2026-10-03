@@ -230,7 +230,7 @@ onMounted(async()=>{
     store.setMessageHandler(message=>{
       if(message.type==='scene_projection' && projectionReceiver.accept(message.payload)){if(message.payload?.available)hadProjection=true}
       if(message.type==='dashboard_context_changed') nativeNavigator.accept(message.payload)
-      if(['configuration_changed','device_configuration_changed','dashboard_release_changed'].includes(message.type)) scheduleSync()
+      if(['configuration_changed','device_configuration_changed','dashboard_release_changed','realtime_resync_required'].includes(message.type)) scheduleSync()
     })
     store.connect()
     await syncConfiguration()

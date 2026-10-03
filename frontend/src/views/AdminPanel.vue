@@ -9683,11 +9683,11 @@ async function openAdminSetupStep(step) {
                                             <strong>{{ backup.filename }}</strong>
                                             <span>{{ formatBackupTime(backup.createdAt) }} · {{ formatBackupSize(backup.size) }}</span>
                                         </div>
-                                        <span class="backup-validity" :class="backup.valid ? 'is-valid' : 'is-invalid'">
-                                            {{ backup.valid ? '校验通过' : '已损坏' }}
+                                        <span class="backup-validity" :class="backup.valid === true ? 'is-valid' : backup.valid === false ? 'is-invalid' : 'is-unverified'">
+                                            {{ backup.valid === true ? '已校验' : backup.valid === false ? '已损坏' : '恢复时校验' }}
                                         </span>
-                                        <button @click="downloadDatabaseBackup(backup)" class="btn btn-small" :disabled="!backup.valid">下载</button>
-                                        <button @click="restoreDatabaseBackup(backup)" class="btn btn-small" :disabled="databaseBackupBusy || !backup.valid">恢复</button>
+                                        <button @click="downloadDatabaseBackup(backup)" class="btn btn-small" :disabled="backup.valid === false">下载</button>
+                                        <button @click="restoreDatabaseBackup(backup)" class="btn btn-small" :disabled="databaseBackupBusy || backup.valid === false">恢复</button>
                                         <button @click="deleteDatabaseBackup(backup)" class="btn btn-small btn-danger backup-delete-button" :disabled="databaseBackupBusy">删除</button>
                                     </div>
                                     <div v-if="databaseBackupStatus.backups.length === 0" class="empty-hint">暂无备份</div>
@@ -14190,6 +14190,7 @@ button:enabled:active {
 .backup-validity { white-space: nowrap; }
 .backup-validity.is-valid { color: #16713a; }
 .backup-validity.is-invalid { color: #b42318; }
+.backup-validity.is-unverified { color: #805d16; }
 .btn-small { min-height: 32px; padding: 5px 10px; font-size: 12px; }
 .site-backup-panel { margin-top: 26px; padding-top: 24px; border-top: 1px solid #d7d7da; }
 .site-backup-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }

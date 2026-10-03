@@ -28,7 +28,7 @@ class Child extends EventEmitter {
     exit() { this.exitCode = 0; this.emit('exit', 0, null); }
 }
 
-function loadDesktop({ createLog, spawnProcess, userDataPath } = {}) {
+function loadDesktop({ createLog, spawnProcess, userDataPath, deploymentConfig } = {}) {
     const app = new EventEmitter();
     const timers = [];
     const exits = [];
@@ -65,6 +65,8 @@ function loadDesktop({ createLog, spawnProcess, userDataPath } = {}) {
             if (name === './processLifecycle.cjs') return require('../processLifecycle.cjs');
             if (name === './mysqlRuntime.cjs') return require('../mysqlRuntime.cjs');
             if (name === './directoryPublish.cjs') return require('../directoryPublish.cjs');
+            if (name === './deployment.cjs') return { ...require('../deployment.cjs'),
+                ...(deploymentConfig ? { resolveDeployment: () => deploymentConfig } : {}) };
             if (name === './logManager.cjs') return {
                 cleanupLogArchives() {},
                 createRotatingLogWriter: createLog || (async () => {
@@ -189,6 +191,33 @@ test('startup failures restore an actionable, enlarged status window after hando
     assert.deepEqual(Array.from(desktop.run('failureWindowEvents')).map(event => Array.from(event)), [
         ['size', 620, 360], ['center'], ['taskbar', false], ['show'], ['focus']
     ]);
+});
+
+test('service-connected Unity startup and exit never own or stop the collector', async () => {
+    const desktop = loadDesktop({ deploymentConfig: { mode: 'client', backendOrigin: 'http://127.0.0.1:3901' } });
+    desktop.run(`
+        createStartupWindow = async () => {};
+        initializeWritableData = () => ({ logsDir: 'unit-test-logs' });
+        guardLogStream = stream => stream;
+        startLogMaintenance = () => {};
+        configureAutoStart = () => {};
+        startDesktopControlServer = async () => {};
+        createTray = () => {};
+        startBackend = () => { throw new Error('client must not collect'); };
+        findAvailablePort = () => { throw new Error('client must not allocate backend ports'); };
+        startDesktopSettingsSync = () => { throw new Error('client must not supervise server'); };
+        waitForHealth = async url => { remoteHealthUrl = url; };
+        startNativeClient = async origin => { remoteNativeOrigin = origin; return { ready: Promise.resolve() }; };
+        waitForNativeHostReady = async () => {};
+        closeStartupWindow = () => {};
+        scheduleSmokeTimers = () => {};
+        requestBackendShutdown = () => { throw new Error('client must never shut down remote collector'); };
+    `);
+    await desktop.run('launchApplication()');
+    assert.equal(desktop.run('remoteNativeOrigin'), 'http://127.0.0.1:3901');
+    assert.equal(desktop.run('remoteHealthUrl'), 'http://127.0.0.1:3901/api/health');
+    await desktop.run('stopBackend()');
+    assert.equal(desktop.spawnCalls, 0);
 });
 
 test('a health-timeout recovery reaps the failed attempt before scheduling another', async () => {

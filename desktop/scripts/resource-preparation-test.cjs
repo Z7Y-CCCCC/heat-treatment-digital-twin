@@ -34,6 +34,25 @@ test('a complete build replaces resources only after all components succeed', as
     assert.deepEqual(fs.readdirSync(fixture), ['resources']);
 });
 
+test('resource publication retries a transient Windows staging lock without losing the complete build', async () => {
+    const fixture = fs.mkdtempSync(path.join(output, 'resource-lock-'));
+    const target = path.join(fixture, 'resources');
+    const rename = fs.promises.rename;
+    let publicationAttempts = 0;
+    fs.promises.rename = async (source, destination) => {
+        if (destination === target && path.basename(source).startsWith('.resources.preparing-') && ++publicationAttempts === 1) {
+            throw Object.assign(new Error('simulated indexing lock'), { code: 'EPERM' });
+        }
+        return rename(source, destination);
+    };
+    try {
+        await prepareResourceDirectory(target, async staging => fs.writeFileSync(path.join(staging, 'complete.txt'), 'verified'));
+    } finally { fs.promises.rename = rename; }
+    assert.equal(publicationAttempts, 2);
+    assert.equal(fs.readFileSync(path.join(target, 'complete.txt'), 'utf8'), 'verified');
+    assert.deepEqual(fs.readdirSync(fixture), ['resources']);
+});
+
 test('SQLite snapshot includes committed WAL pages without checkpointing the source', async () => {
     const Database = require('../../backend/node_modules/better-sqlite3');
     const fixture = fs.mkdtempSync(path.join(output, 'resource-snapshot-'));

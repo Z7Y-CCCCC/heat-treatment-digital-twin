@@ -1,4 +1,5 @@
 using System;
+using System.Runtime.CompilerServices;
 using UnityEngine;
 using UnityEngine.Rendering;
 
@@ -12,8 +13,8 @@ namespace HeatTreatment.DigitalTwin.Rendering
         private readonly SkinnedMeshRenderer _skinned;
         private Mesh _baked;
         private Mesh _cachedMesh;
-        private Vector3[] _vertices;
-        private int[] _triangles;
+        private static readonly ConditionalWeakTable<Mesh, TriangleRayIndex> StaticIndexes = new ConditionalWeakTable<Mesh, TriangleRayIndex>();
+        private TriangleRayIndex _index;
         private int _bakedFrame = -1;
         private bool _unreadableReported;
         private readonly MaterialPropertyBlock _outlineProperties = new MaterialPropertyBlock();
@@ -26,6 +27,9 @@ namespace HeatTreatment.DigitalTwin.Rendering
         }
 
         public bool IsVisible => Renderer != null && Renderer.enabled && !Renderer.forceRenderingOff && Renderer.gameObject.activeInHierarchy;
+        public bool HasDynamicGeometry => _skinned != null;
+        public Mesh Geometry => _skinned != null ? _skinned.sharedMesh : _filter?.sharedMesh;
+        public int LastTriangleTests => _index?.LastTriangleTests ?? 0;
 
         public Bounds LocalBounds => _skinned != null ? _skinned.localBounds : _filter?.sharedMesh?.bounds ?? new Bounds(Vector3.zero, Vector3.zero);
 
@@ -37,7 +41,7 @@ namespace HeatTreatment.DigitalTwin.Rendering
             {
                 _skinned.BakeMesh(_baked);
                 _bakedFrame = Time.frameCount;
-                _vertices = null;
+                _index = null;
             }
             return _baked;
         }
@@ -57,38 +61,23 @@ namespace HeatTreatment.DigitalTwin.Rendering
                 }
                 return false;
             }
-            if (_cachedMesh != mesh || _vertices == null)
+            if (_cachedMesh != mesh || _index == null)
             {
                 _cachedMesh = mesh;
-                _vertices = mesh.vertices;
-                _triangles = mesh.triangles;
+                // Imported static geometry is shared between instances. A weak
+                // mesh key releases the acceleration data with the model cache.
+                // Deforming meshes stay exact and never reuse stale geometry.
+                _index = _skinned != null
+                    ? new TriangleRayIndex(mesh.vertices, mesh.triangles, false)
+                    : StaticIndexes.GetValue(mesh, source => new TriangleRayIndex(source.vertices, source.triangles));
             }
             // Do not normalize this direction: its parameter remains a world-ray distance,
             // including mirrored or non-unit-scaled equipment instances.
             var inverse = Renderer.localToWorldMatrix.inverse;
             var origin = inverse.MultiplyPoint3x4(ray.origin);
             var direction = inverse.MultiplyVector(ray.direction);
-            for (var index = 0; index + 2 < _triangles.Length; index += 3)
-            {
-                var a = _vertices[_triangles[index]];
-                var edge1 = _vertices[_triangles[index + 1]] - a;
-                var edge2 = _vertices[_triangles[index + 2]] - a;
-                var cross = Vector3.Cross(direction, edge2);
-                var determinant = Vector3.Dot(edge1, cross);
-                if (Mathf.Abs(determinant) < 1e-10f) continue;
-                var reciprocal = 1f / determinant;
-                var fromA = origin - a;
-                var u = Vector3.Dot(fromA, cross) * reciprocal;
-                if (u < 0f || u > 1f) continue;
-                var q = Vector3.Cross(fromA, edge1);
-                var v = Vector3.Dot(direction, q) * reciprocal;
-                if (v < 0f || u + v > 1f) continue;
-                var hit = Vector3.Dot(edge2, q) * reciprocal;
-                if (hit < 0f || hit >= distance) continue;
-                if (acceptWorldPoint != null && !acceptWorldPoint(ray.GetPoint(hit))) continue;
-                distance = hit;
-            }
-            return !float.IsPositiveInfinity(distance);
+            return _index.Raycast(origin, direction, out distance,
+                acceptWorldPoint == null ? (Func<float, bool>)null : hit => acceptWorldPoint(ray.GetPoint(hit)));
         }
 
         public void DrawOutline(Material material, Camera camera, Color color, float widthPixels)
@@ -114,8 +103,8 @@ namespace HeatTreatment.DigitalTwin.Rendering
                 UnityEngine.Object.Destroy(_baked);
             }
             _baked = null;
-            _vertices = null;
-            _triangles = null;
+            _index = null;
+            _cachedMesh = null;
         }
     }
 }

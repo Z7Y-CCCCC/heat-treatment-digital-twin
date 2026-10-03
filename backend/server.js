@@ -55,6 +55,7 @@ const {
 const { loadReleaseManifest } = require('./services/releaseManifest');
 const { getLicenseStatus, isLicenseEnforced } = require('./services/license');
 const { factoryContext } = require('./services/factoryContext');
+const { historyRetention } = require('./services/historyRetention');
 
 const app = express();
 let databaseOperationBusy = false;
@@ -195,6 +196,7 @@ function runDatabaseOperation(action) {
     };
 }
 async function stopMaintenanceForDatabaseChange(reason, { backup = true } = {}) {
+    await historyRetention.stop();
     await stopSiteBackupMaintenance();
     await stopDataSourceMaintenance({ backup: false });
     await stopDatabaseMaintenance({ backup, reason });
@@ -204,6 +206,7 @@ async function resumeMaintenanceAfterDatabaseChange() {
     const activeFactory = await getDb().then(db => db.get('SELECT value FROM settings WHERE `key` = ?', ['active_factory_id']));
     await startDataSourceMaintenance(activeFactory?.value || 'factory_default');
     await startSiteBackupMaintenance(uploadsRootDir);
+    historyRetention.start();
 }
 const siteBackupUpload = multer({
     dest: SITE_IMPORT_DIR,
@@ -566,6 +569,7 @@ app.get('/api/health', (req, res) => {
         version: { ...loadReleaseManifest(), license },
         db: dbStatus,
         engine: engineStatus,
+        historyRetention: historyRetention.status(),
         components: {
             backend: { status: 'healthy' },
             database: { status: databaseReady ? 'healthy' : 'error', connected: databaseReady, error: dbStatus.error || null },
@@ -873,6 +877,7 @@ async function startServer() {
         const forceExit = setTimeout(() => process.exit(1), 12000);
         forceExit.unref?.();
         try { await dataEngine.stop(); } catch (e) { /* ignore */ }
+        try { await historyRetention.stop(); } catch (e) { console.error('[Shutdown] History retention:', e.message); }
         try { await screenCast.close(); } catch (e) { /* ignore */ }
         try { await lanDisplay.stop(); } catch (e) { /* ignore */ }
         try { await stopSiteBackupMaintenance(); } catch (e) { /* ignore */ }
@@ -958,6 +963,7 @@ async function startServer() {
                 .then(() => lanDisplay.loadFromSettings())
                 .then(() => startSiteBackupMaintenance(uploadsRootDir))
                 .then(() => dataEngine.start())
+                .then(() => { if (!shuttingDown) historyRetention.start(); })
                 .catch((error) => {
                     console.error('[DataEngine] 启动失败:', error.message);
                     console.error('[DataEngine] 可在后台“数据库连接”中修改并测试数据库配置。');

@@ -246,6 +246,42 @@ async function testConnectingTimeoutWatchdog() {
     reader.stop();
 }
 
+async function testReadingTimeoutWatchdog() {
+    // Exercise both a missing S7 callback and a hung promise-based driver.
+    for (const protocol of ['S7', 'MODBUS_TCP']) {
+        const reader = new PlcReader();
+        reader.stopped = false;
+        const task = reader._getOrCreateTask(`hung-read-${protocol}`, {
+            protocol, ip: '127.0.0.1', port: 65000, timeout: 1000,
+            retryInterval: 1000, maxRetries: 0
+        }, 1000);
+        task.status = 'connected';
+        let lateRead, disconnects = 0, updates = 0;
+        reader.onData = () => { updates++; };
+        if (protocol === 'S7') {
+            task.conn = { readAllItems: callback => { lateRead = () => callback(null, {}); },
+                dropConnection: () => { disconnects++; } };
+        } else {
+            task.driver = { read: () => new Promise(resolve => { lateRead = () => resolve({}); }),
+                disconnect: async () => { disconnects++; } };
+        }
+        try {
+            reader._readTask(task);
+            await new Promise(resolve => setTimeout(resolve, 1100));
+            assert.equal(task.status, 'retrying');
+            assert.equal(task.reading, false);
+            assert.equal(task.readTimer, null);
+            assert.match(task.lastError, /读取超时/);
+            assert.equal(disconnects, 1);
+            lateRead();
+            await new Promise(resolve => setImmediate(resolve));
+            assert.equal(updates, 0, 'late data from discarded connection must not publish');
+            reader._handleTaskFailure(task, new Error('offline again'), '连接失败');
+            assert.ok(task.nextRetryAt - Date.now() > 1800, 'second failure uses exponential backoff');
+        } finally { reader.stop(); }
+    }
+}
+
 function createLegacyDatabase(filename) {
     fs.mkdirSync(path.dirname(filename), { recursive: true });
     const db = new Database(filename);
@@ -443,6 +479,7 @@ async function main() {
     await testOpcUaFailedSessionCleanup();
     testOverdueRetryWatchdog();
     await testConnectingTimeoutWatchdog();
+    await testReadingTimeoutWatchdog();
     await testProtocolApiAndMigration();
     console.log(JSON.stringify({ success: true, protocols: ['S7', 'MODBUS_TCP', 'OPC_UA'], modbusTcp: true, opcUa: true }, null, 2));
 }

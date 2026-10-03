@@ -12,6 +12,7 @@ const {
     assertNoForbiddenWriteIntent
 } = require('../utils/dashboardDocument');
 const { resolveConnection } = require('./dataSources');
+const { orderedReleases, orderedRows } = require('../utils/orderedReleases');
 
 function releaseTimestamp(row) {
     const publishedAt = safeJsonParse(row?.snapshot_json, {})?.metadata?.publishedAt;
@@ -58,20 +59,20 @@ async function getProjectAndScene(db, sceneId = '', factoryId = '') {
     if (sceneId && !project) return { project: null, scene };
     if (!project) {
         project = scoped
-            ? await db.get('SELECT * FROM projects WHERE factory_id = ? ORDER BY is_active DESC, created_at ASC LIMIT 1', [scoped])
-            : await db.get('SELECT * FROM projects WHERE is_active = 1 ORDER BY created_at ASC LIMIT 1')
-                || await db.get('SELECT * FROM projects ORDER BY created_at ASC LIMIT 1');
+            ? (await orderedRows(db, 'projects', 'SELECT id FROM projects WHERE factory_id = ? ORDER BY is_active DESC, created_at ASC LIMIT 1', [scoped]))[0]
+            : (await orderedRows(db, 'projects', 'SELECT id FROM projects WHERE is_active = 1 ORDER BY created_at ASC LIMIT 1'))[0]
+                || (await orderedRows(db, 'projects', 'SELECT id FROM projects ORDER BY created_at ASC LIMIT 1'))[0];
     }
     if (!scene && project) {
-        scene = await db.get('SELECT * FROM scenes WHERE project_id = ? AND is_active = 1 ORDER BY sort_order ASC LIMIT 1', [project.id])
-            || await db.get('SELECT * FROM scenes WHERE project_id = ? ORDER BY sort_order ASC LIMIT 1', [project.id]);
+        scene = (await orderedRows(db, 'scenes', 'SELECT id FROM scenes WHERE project_id = ? AND is_active = 1 ORDER BY sort_order ASC LIMIT 1', [project.id]))[0]
+            || (await orderedRows(db, 'scenes', 'SELECT id FROM scenes WHERE project_id = ? ORDER BY sort_order ASC LIMIT 1', [project.id]))[0];
     }
     return { project, scene };
 }
 
 async function buildLegacyDocument(db, project, scene) {
     if (!project || !scene) return createEmptyDocument({ project, scene });
-    const widgets = await db.all('SELECT * FROM widgets WHERE scene_id = ? ORDER BY sort_order ASC', [scene.id]);
+    const widgets = await orderedRows(db, 'widgets', 'SELECT id FROM widgets WHERE scene_id = ? ORDER BY sort_order ASC', [scene.id]);
     return buildDocumentFromLegacy({ project, scene, widgets });
 }
 
@@ -86,10 +87,7 @@ async function loadDraftDocument(db, project, scene) {
 
 async function loadPublishedDocument(db, project, scene) {
     if (!project) return { document: createEmptyDocument({ project, scene, source: 'unpublished' }), release: null };
-    let release = await db.get(
-        'SELECT * FROM releases WHERE project_id = ? AND is_current = 1 ORDER BY created_at DESC LIMIT 1',
-        [project.id]
-    );
+    let release = (await orderedReleases(db, project.id, { currentOnly: true, limit: 1 }))[0];
     if (!release && scene?.published_release_id) {
         release = await db.get('SELECT * FROM releases WHERE id = ? AND project_id = ?', [scene.published_release_id, project.id]);
     }
@@ -287,7 +285,7 @@ async function publishDraft(db, { sceneId, version, notes, factoryId = '' }) {
             error.status = 409;
             throw error;
         }
-        const releases = await tx.all('SELECT * FROM releases WHERE project_id = ? ORDER BY created_at DESC', [project.id]);
+        const releases = await orderedReleases(tx, project.id);
         const normalizedVersion = normalizeVersion(version, releases);
         if (releases.some(item => String(item.version) === normalizedVersion)) {
             throw new Error(`版本 ${normalizedVersion} 已存在`);
@@ -359,7 +357,7 @@ async function loadDesignerState(db, sceneId = '', factoryId = '') {
     const { project, scene } = await getProjectAndScene(db, sceneId, factoryId);
     const document = await loadDraftDocument(db, project, scene);
     const releases = project
-        ? await db.all('SELECT * FROM releases WHERE project_id = ? ORDER BY created_at DESC', [project.id])
+        ? await orderedReleases(db, project.id)
         : [];
     const currentRelease = releases.find(row => !!row.is_current) || null;
     return {

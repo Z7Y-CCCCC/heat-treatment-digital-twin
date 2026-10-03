@@ -8,6 +8,11 @@ const CAST_READ_PATHS = [
     '/api/config', '/api/engine/status', '/api/health', '/api/models',
     '/api/platform/events', '/api/platform/metrics'
 ];
+// These exact runtime endpoints return displayed values/events, not designer
+// drafts, connection definitions, credentials, or arbitrary query previews.
+const DISPLAY_READ_PATHS = new Set([
+    '/api/platform/metrics/latest', '/api/platform/events', '/api/data-sources/map-values'
+]);
 
 function isLoopbackAddress(address) {
     const value = String(address || '').trim().toLowerCase();
@@ -132,7 +137,10 @@ function securityHeaders(req, res, next) {
         "img-src 'self' data: blob: https:",
         "font-src 'self' data:",
         "media-src 'self' data: blob:",
-        "connect-src 'self' ws: wss:",
+        // Three.js fetches local File previews through URL.createObjectURL.
+        // blob: permits those browser-owned URLs, without adding arbitrary
+        // HTTP(S) origins or allowing Blob content as executable scripts.
+        "connect-src 'self' blob: ws: wss:",
         "worker-src 'self' blob:"
     ].join('; '));
     if (process.env.NODE_ENV === 'production') {
@@ -174,6 +182,7 @@ function backupOperationPermission(apiPath, method) {
 }
 
 function permissionForApi(apiPath, method) {
+    if ((method === 'GET' || method === 'HEAD') && DISPLAY_READ_PATHS.has(apiPath)) return 'view';
     if (method === 'POST' && (apiPath === '/api/factories/activate'
         || /^\/api\/factories\/[^/]+\/activate$/.test(apiPath)
         || apiPath === '/api/native-preview/navigate'

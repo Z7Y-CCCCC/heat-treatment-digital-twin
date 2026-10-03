@@ -395,6 +395,26 @@ async function runRegressionTests() {
             service.saveDataSource({ id, password: '' });
             assert.equal(rawStored(id).password, '');
         });
+        await check('temporary Windows file locks retry atomically; persistent locks preserve the old connection', async () => {
+            const id = 'locked_file_api';
+            service.saveDataSource(draft(id, { name: 'original' }));
+            const originalRename = fs.renameSync;
+            let failures = 2;
+            fs.renameSync = function(source, destination) {
+                if (path.basename(destination) === 'data-sources.json' && failures-- > 0) {
+                    throw Object.assign(new Error('injected sharing violation'), { code: 'EPERM' });
+                }
+                return originalRename.call(this, source, destination);
+            };
+            try {
+                service.saveDataSource({ id, name: 'retry committed' });
+                assert.equal(stored(id).name, 'retry committed');
+                failures = 100;
+                assert.throws(() => service.saveDataSource({ id, name: 'must not commit' }), /sharing violation/);
+                assert.equal(stored(id).name, 'retry committed');
+                assert.ok(!fs.readdirSync(root).some(name => name.startsWith('data-sources.json.') && name.endsWith('.tmp')));
+            } finally { fs.renameSync = originalRename; }
+        });
         await check('disabled connections can be tested without losing their masked credentials', async () => {
             const config = service.saveDataSource(draft('disabled_api', {
                 enabled: false, healthPath: '/auth/bearer', authType: 'bearer', token: 'fixture-bearer-token'

@@ -2,6 +2,8 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { AsyncLocalStorage } = require('async_hooks');
+const { resolveBackupBudget, GiB, copyAndHash, ensureDiskSpace } = require('../utils/backupStorage');
+const { orderedReleases, orderedRows } = require('../utils/orderedReleases');
 const {
     buildDocumentFromLegacy,
     isCanonicalDocument,
@@ -48,7 +50,12 @@ const BACKUP_RETENTION_DAYS_DEFAULT = boundedInteger(
 );
 // 兼容旧部署中的“保留份数”环境变量，同时把默认上限放宽；主清理策略改为按天数。
 const BACKUP_RETENTION = positiveInteger(process.env.DB_BACKUP_RETENTION, 1000);
-const BACKUP_MAX_TOTAL_BYTES = positiveInteger(process.env.DB_BACKUP_MAX_TOTAL_BYTES, 20 * 1024 * 1024 * 1024);
+const BACKUP_STORAGE_POLICY = resolveBackupBudget({
+    dataDir: DATA_DIR, directory: BACKUP_DIR, kind: 'database',
+    envValue: process.env.DB_BACKUP_MAX_TOTAL_BYTES, defaultBytes: 2 * GiB,
+    matches: name => /\.(db|sql\.gz)$/i.test(name)
+});
+const BACKUP_MAX_TOTAL_BYTES = BACKUP_STORAGE_POLICY.maxTotalBytes;
 const BACKUP_MIN_FREE_BYTES = positiveInteger(process.env.DB_BACKUP_MIN_FREE_BYTES, 512 * 1024 * 1024);
 const BACKUP_PRUNE_INTERVAL_MS = positiveInteger(process.env.DB_BACKUP_PRUNE_INTERVAL_MS, 6 * 60 * 60 * 1000);
 const BACKUP_ORPHAN_GRACE_MS = positiveInteger(process.env.DB_BACKUP_ORPHAN_GRACE_MS, 60 * 60 * 1000);
@@ -76,6 +83,9 @@ let closePromise;
 let sqliteOperationQueue = Promise.resolve();
 const sqliteTransactionContext = new AsyncLocalStorage();
 let lastInitError = null;
+let databaseReady = false;
+let backupCleanupPromise = Promise.resolve();
+const verifiedBackupStates = new Map();
 let mysqlDriver;
 let pgDriver;
 let sqlserverDriver;
@@ -190,6 +200,22 @@ function backupDescriptor(filename, options = {}) {
     };
 }
 
+function rememberBackupVerification(filename, verification) {
+    const stat = fs.statSync(filename);
+    verifiedBackupStates.delete(filename);
+    verifiedBackupStates.set(filename, { size: stat.size, mtimeMs: stat.mtimeMs, ctimeMs: stat.ctimeMs, verification });
+    if (verifiedBackupStates.size > 256) verifiedBackupStates.delete(verifiedBackupStates.keys().next().value);
+}
+
+function knownMysqlBackupVerification(filename) {
+    const basic = verifyMysqlDumpFileSync(filename);
+    if (!basic.valid) return basic;
+    const stat = fs.statSync(filename);
+    const known = verifiedBackupStates.get(filename);
+    return known && ['size', 'mtimeMs', 'ctimeMs'].every(key => known[key] === stat[key])
+        ? known.verification : { valid: null, error: null };
+}
+
 function backupExtension(config = activeConfig || loadDatabaseConfig()) {
     return dialectName(config) === 'mysql' ? '.sql.gz' : '.db';
 }
@@ -199,18 +225,24 @@ function backupMatchesConfig(filename, config = activeConfig || loadDatabaseConf
     return lower.endsWith(backupExtension(config));
 }
 
-function ensureBackupDiskSpace(directory) {
-    if (typeof fs.statfsSync !== 'function') return;
-    try {
-        const stats = fs.statfsSync(directory);
-        const available = Number(stats.bavail || 0) * Number(stats.bsize || 0);
-        if (available > 0 && available < BACKUP_MIN_FREE_BYTES) {
-            throw new Error(`备份磁盘可用空间不足（至少需要 ${Math.round(BACKUP_MIN_FREE_BYTES / 1024 / 1024)} MB）`);
-        }
-    } catch (error) {
-        if (error.message.includes('可用空间不足')) throw error;
-        // 某些 Windows 文件系统不提供 statfs，不能因此阻断备份。
+function ensureBackupDiskSpace(directory, pendingBytes = 0) {
+    return ensureDiskSpace([{ directory, bytes: pendingBytes }], BACKUP_MIN_FREE_BYTES);
+}
+
+async function getDatabaseBackupSpaceEstimate() {
+    const db = await getDb();
+    const config = activeConfig || loadDatabaseConfig();
+    if (dialectName(config) === 'sqlite') {
+        const stat = await fs.promises.stat(config.filename);
+        let walBytes = 0;
+        try { walBytes = (await fs.promises.stat(`${config.filename}-wal`)).size; }
+        catch (error) { if (error.code !== 'ENOENT') throw error; }
+        return Math.max(1024 * 1024, (stat.size + walBytes) * 2);
     }
+    // SQL dumps expand binary/text escaping. Use a conservative uncompressed
+    // allowance instead of assuming yesterday's compressed dump is sufficient.
+    const row = await db.get('SELECT COALESCE(SUM(data_length + index_length), 0) AS bytes FROM information_schema.tables WHERE table_schema = ?', [config.database]);
+    return Math.max(16 * 1024 * 1024, Number(row?.bytes || 0) * 4);
 }
 
 function databaseBackupArtifactPaths(filename) {
@@ -282,7 +314,7 @@ function listDatabaseBackups({ validate = true } = {}) {
         .sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs)
         .map(filename => {
             const verification = validate
-                ? (backupExtension() === '.db' ? verifySqliteFile(filename) : verifyMysqlDumpFileSync(filename))
+                ? (backupExtension() === '.db' ? verifySqliteFile(filename) : knownMysqlBackupVerification(filename))
                 : { valid: null, error: null };
             return backupDescriptor(filename, verification);
         });
@@ -340,19 +372,18 @@ function removeSqliteSidecars(filename) {
     }
 }
 
-function installSqliteCopy(source, destination) {
-    ensureDirectory(path.dirname(destination));
+async function installSqliteCopy(source, destination) {
+    await fs.promises.mkdir(path.dirname(destination), { recursive: true });
     const temporary = `${destination}.restore-${process.pid}-${Date.now()}.tmp`;
-    fs.copyFileSync(source, temporary);
-    const verification = verifySqliteFile(temporary);
-    if (!verification.valid) {
+    try {
+        await copyAndHash(source, temporary, (await fs.promises.stat(source)).size);
+        const verification = verifySqliteFile(temporary);
+        if (!verification.valid) throw new Error(`恢复源无效: ${verification.error}`);
+        removeSqliteSidecars(destination);
+        await fs.promises.rename(temporary, destination);
+    } finally {
         removeDatabaseBackupArtifacts(temporary);
-        throw new Error(`恢复源无效: ${verification.error}`);
     }
-    removeSqliteSidecars(destination);
-    removeDatabaseBackupArtifacts(destination);
-    fs.renameSync(temporary, destination);
-    removeDatabaseBackupArtifacts(temporary);
 }
 
 function quarantineSqliteFiles(filename, label = 'corrupt') {
@@ -442,7 +473,7 @@ async function upgradeLegacyDemoDatabase(filename) {
     }
     fs.renameSync(temporaryBackup, backupPath);
     removeDatabaseBackupArtifacts(temporaryBackup);
-    installSqliteCopy(template, filename);
+    await installSqliteCopy(template, filename);
     const migration = {
         reason: 'legacy_demo_upgrade',
         sourceType: 'delivery_template',
@@ -462,7 +493,7 @@ async function openSqliteWithRecovery(filename) {
     if (!fs.existsSync(resolved)) {
         const recoverySource = latestRecoverySource();
         if (recoverySource) {
-            installSqliteCopy(recoverySource.filename, resolved);
+            await installSqliteCopy(recoverySource.filename, resolved);
             lastRecovery = {
                 reason: 'database_missing',
                 sourceType: recoverySource.type,
@@ -493,7 +524,7 @@ async function openSqliteWithRecovery(filename) {
         }
 
         const quarantined = quarantineSqliteFiles(resolved, 'corrupt');
-        installSqliteCopy(recoverySource.filename, resolved);
+        await installSqliteCopy(recoverySource.filename, resolved);
         db = configureSqlite(new Database(resolved));
         lastRecovery = {
             reason: 'integrity_failure',
@@ -627,7 +658,7 @@ async function saveDatabaseBackupPolicy(input = {}) {
     }
     writeDatabaseConfig(next);
     if (activeConfig) activeConfig = { ...activeConfig, backupRetentionDays: retentionDays };
-    const cleanup = pruneDatabaseBackups({ retentionDays, reason: 'policy-save' });
+    const cleanup = await pruneDatabaseBackups({ retentionDays, reason: 'policy-save' });
     return {
         config: { retentionDays },
         cleanup,
@@ -764,6 +795,7 @@ function sqlServerConnectionConfig(config, database = config.database) {
 }
 
 async function initDb() {
+    databaseReady = false;
     activeConfig = loadDatabaseConfig();
     await createDatabaseIfNeeded(activeConfig);
 
@@ -810,6 +842,7 @@ async function initDb() {
     await initTables();
     await seedDefaults();
     lastInitError = null;
+    databaseReady = true;
 }
 
 // Used only by the desktop first-install importer. Reuse the application schema,
@@ -845,6 +878,7 @@ async function getDb() {
     if (closePromise) await closePromise;
     if (!initPromise) {
         initPromise = initDb().catch(async (error) => {
+            databaseReady = false;
             lastInitError = error;
             try { await disposeDatabaseConnections(); } catch (closeError) {
                 console.warn('[DB] 初始化失败后的连接清理失败:', closeError.message);
@@ -862,7 +896,8 @@ function getDbStatus() {
     return {
         type: dialectName(activeConfig || loadDatabaseConfig()),
         config: publicDatabaseConfig(activeConfig || loadDatabaseConfig()),
-        connected: !!(pool || sqliteDb) && !lastInitError,
+        connected: !!(pool || sqliteDb) && databaseReady && !lastInitError,
+        initializing: !!initPromise && !databaseReady && !lastInitError,
         error: lastInitError ? lastInitError.message : null
     };
 }
@@ -886,6 +921,7 @@ async function closeDb() {
 }
 
 async function disposeDatabaseConnections() {
+    databaseReady = false;
     if (pool) {
         const connectionPool = pool;
         pool = null;
@@ -924,6 +960,12 @@ function protectedDatabaseBackupNames(backups) {
 }
 
 function pruneDatabaseBackups(options = {}) {
+    const cleanup = backupCleanupPromise.catch(() => {}).then(() => pruneDatabaseBackupsUnlocked(options));
+    backupCleanupPromise = cleanup;
+    return cleanup;
+}
+
+async function pruneDatabaseBackupsUnlocked(options = {}) {
     const retentionDays = boundedInteger(
         options.retentionDays,
         databaseBackupRetentionDays(),
@@ -931,15 +973,31 @@ function pruneDatabaseBackups(options = {}) {
         BACKUP_RETENTION_DAYS_MAX
     );
     const cutoffMs = Date.now() - retentionDays * DAY_MS;
-    const backups = listDatabaseBackups({ validate: true });
+    const backups = listDatabaseBackups({ validate: false });
+    // A gzip header alone cannot prove a recovery point is usable. Fully verify
+    // newest candidates, stopping at the first good file instead of scanning all
+    // historical backups on every export. Newly written backups are already verified.
+    for (const backup of backups) {
+        const filename = path.join(BACKUP_DIR, backup.filename);
+        const verification = backup.filename === options.verifiedFilename
+            ? { valid: true, error: null }
+            : (backupExtension() === '.db' ? verifySqliteFile(filename) : await verifyMysqlDumpFile(filename));
+        backup.valid = verification.valid;
+        backup.error = verification.error || null;
+        if (backupExtension() !== '.db' && fs.existsSync(filename)) rememberBackupVerification(filename, verification);
+        if (verification.valid) break;
+    }
     const protectedNames = protectedDatabaseBackupNames(backups);
+    if (!backups.some(backup => backup.valid === true)) {
+        for (const backup of backups) protectedNames.add(backup.filename);
+    }
     const deletedNames = new Set();
     const deleted = [];
     const errors = [];
 
     const remainingBackups = () => backups.filter(backup => !deletedNames.has(backup.filename));
     const removeBackup = (backup, cause) => {
-        if (!backup || protectedNames.has(backup.filename) || deletedNames.has(backup.filename)) return false;
+        if (!backup || protectedNames.has(backup.filename) || protectedBackupFiles.has(backup.filename) || deletedNames.has(backup.filename)) return false;
         const removed = removeDatabaseBackupArtifacts(path.join(BACKUP_DIR, backup.filename));
         if (!removed.primaryExists) {
             deletedNames.add(backup.filename);
@@ -996,7 +1054,7 @@ async function createDatabaseBackup(reason = 'manual') {
     backupPromise = (async () => {
         await getDb();
         ensureDirectory(BACKUP_DIR);
-        ensureBackupDiskSpace(BACKUP_DIR);
+        await ensureBackupDiskSpace(BACKUP_DIR, await getDatabaseBackupSpaceEstimate());
         const safeReason = sanitizeBackupReason(reason);
         const isMysql = dialectName() === 'mysql';
         if (!isMysql && (dialectName() !== 'sqlite' || !sqliteDb)) {
@@ -1020,7 +1078,8 @@ async function createDatabaseBackup(reason = 'manual') {
             }
             if (!verification.valid) throw new Error(verification.error);
             fs.renameSync(temporary, destination);
-            pruneDatabaseBackups({ reason: `backup-${safeReason}` });
+            if (isMysql) rememberBackupVerification(destination, verification);
+            await pruneDatabaseBackups({ reason: `backup-${safeReason}`, verifiedFilename: filename });
             lastBackup = {
                 ...backupDescriptor(destination, { valid: true }),
                 reason: safeReason
@@ -1052,11 +1111,9 @@ async function importDatabaseBackupFile(sourceFilename, reason = 'site-import') 
     if (!source.toLowerCase().endsWith(expectedExtension)) {
         throw new Error(`导入备份格式与当前 ${isMysql ? 'MySQL' : 'SQLite'} 数据库不匹配`);
     }
-    const verification = isMysql ? await verifyMysqlDumpFile(source) : verifySqliteFile(source);
-    if (!verification.valid) throw new Error(`导入数据库完整性检查失败: ${verification.error}`);
-
     ensureDirectory(BACKUP_DIR);
-    ensureBackupDiskSpace(BACKUP_DIR);
+    const sourceSize = (await fs.promises.stat(source)).size;
+    await ensureBackupDiskSpace(BACKUP_DIR, sourceSize);
     const safeReason = sanitizeBackupReason(reason);
     const filename = `factory-${timestampToken()}-${safeReason}${expectedExtension}`;
     const destination = path.join(BACKUP_DIR, filename);
@@ -1064,11 +1121,12 @@ async function importDatabaseBackupFile(sourceFilename, reason = 'site-import') 
     fs.rmSync(temporary, { force: true });
 
     try {
-        fs.copyFileSync(source, temporary);
+        await copyAndHash(source, temporary, sourceSize);
         const copiedVerification = isMysql ? await verifyMysqlDumpFile(temporary) : verifySqliteFile(temporary);
-        if (!copiedVerification.valid) throw new Error(copiedVerification.error);
+        if (!copiedVerification.valid) throw new Error(`导入数据库完整性检查失败: ${copiedVerification.error}`);
         fs.renameSync(temporary, destination);
-        pruneDatabaseBackups({ reason: `import-${safeReason}` });
+        if (isMysql) rememberBackupVerification(destination, copiedVerification);
+        await pruneDatabaseBackups({ reason: `import-${safeReason}`, verifiedFilename: filename });
         return {
             ...backupDescriptor(destination, { valid: true }),
             reason: safeReason
@@ -1080,17 +1138,19 @@ async function importDatabaseBackupFile(sourceFilename, reason = 'site-import') 
 
 async function restoreMysqlDatabaseBackup(filename) {
     const source = resolveDatabaseBackupPath(filename);
-    const verification = await verifyMysqlDumpFile(source);
-    if (!verification.valid) throw new Error(`备份完整性检查失败: ${verification.error}`);
-
     const config = { ...activeConfig };
     ensureDirectory(RECOVERY_DIR);
+    const sourceSize = (await fs.promises.stat(source)).size;
+    await ensureDiskSpace([
+        { directory: RECOVERY_DIR, bytes: sourceSize },
+        { directory: BACKUP_DIR, bytes: await getDatabaseBackupSpaceEstimate() }
+    ], BACKUP_MIN_FREE_BYTES);
     const restoreSource = path.join(RECOVERY_DIR, `restore-source-${timestampToken()}-${process.pid}.sql.gz`);
     fs.rmSync(restoreSource, { force: true });
     let protectedRollbackName;
 
     try {
-        fs.copyFileSync(source, restoreSource);
+        await copyAndHash(source, restoreSource, sourceSize);
         const copiedVerification = await verifyMysqlDumpFile(restoreSource);
         if (!copiedVerification.valid) throw new Error(`恢复源复制后校验失败: ${copiedVerification.error}`);
 
@@ -1143,11 +1203,14 @@ async function restoreDatabaseBackup(filename) {
 
         if (backupPromise) await backupPromise;
         const source = resolveDatabaseBackupPath(filename);
-        const verification = verifySqliteFile(source, { requireApplicationSchema: true });
-        if (!verification.valid) throw new Error(`备份完整性检查失败: ${verification.error}`);
-
         const target = path.resolve(activeConfig.filename || DEFAULT_CONFIG.filename);
         ensureDirectory(RECOVERY_DIR);
+        const sourceSize = (await fs.promises.stat(source)).size;
+        await ensureDiskSpace([
+            { directory: RECOVERY_DIR, bytes: sourceSize },
+            { directory: path.dirname(target), bytes: sourceSize },
+            { directory: BACKUP_DIR, bytes: await getDatabaseBackupSpaceEstimate() }
+        ], BACKUP_MIN_FREE_BYTES);
         const restoreSource = path.join(RECOVERY_DIR, `restore-source-${timestampToken()}-${process.pid}.db`);
         fs.rmSync(restoreSource, { force: true });
 
@@ -1155,8 +1218,8 @@ async function restoreDatabaseBackup(filename) {
             // Keep the selected source outside the rotating backup directory. With a
             // retention of 1, creating the rollback backup below would otherwise
             // prune the very file we are about to restore.
-            fs.copyFileSync(source, restoreSource);
-            const copiedVerification = verifySqliteFile(restoreSource);
+            await copyAndHash(source, restoreSource, sourceSize);
+            const copiedVerification = verifySqliteFile(restoreSource, { requireApplicationSchema: true });
             if (!copiedVerification.valid) throw new Error(`恢复源复制后校验失败: ${copiedVerification.error}`);
 
             const rollback = await createDatabaseBackup('before-restore');
@@ -1166,7 +1229,7 @@ async function restoreDatabaseBackup(filename) {
 
             try {
                 quarantineSqliteFiles(target, 'before-restore');
-                installSqliteCopy(restoreSource, target);
+                await installSqliteCopy(restoreSource, target);
                 await getDb();
                 lastRecovery = {
                     reason: 'manual_restore',
@@ -1177,7 +1240,7 @@ async function restoreDatabaseBackup(filename) {
                 return { success: true, recovery: lastRecovery, rollback };
             } catch (error) {
                 await closeDb();
-                installSqliteCopy(path.join(BACKUP_DIR, rollback.filename), target);
+                await installSqliteCopy(path.join(BACKUP_DIR, rollback.filename), target);
                 await getDb();
                 throw error;
             }
@@ -1191,13 +1254,13 @@ async function restoreDatabaseBackup(filename) {
     }
 }
 
-function getDatabaseBackupStatus() {
+function getDatabaseBackupStatus(options = {}) {
     const config = activeConfig || loadDatabaseConfig();
     const type = dialectName(config);
     const mysqlTools = type === 'mysql' ? resolveMysqlTools() : null;
     const supported = type === 'sqlite' || (type === 'mysql' && mysqlTools.available);
     const retentionDays = databaseBackupRetentionDays(config);
-    const backups = supported ? listDatabaseBackups({ validate: true }) : [];
+    const backups = supported ? listDatabaseBackups({ validate: options.validate !== false }) : [];
     const totalBackupBytes = backups.reduce((sum, backup) => sum + Number(backup.size || 0), 0);
     const cutoffMs = Date.now() - retentionDays * DAY_MS;
     const protectedNames = protectedDatabaseBackupNames(backups);
@@ -1216,6 +1279,7 @@ function getDatabaseBackupStatus() {
         retentionDaysMax: BACKUP_RETENTION_DAYS_MAX,
         cleanupIntervalMs: BACKUP_PRUNE_INTERVAL_MS,
         maxTotalBytes: BACKUP_MAX_TOTAL_BYTES,
+        storagePolicy: BACKUP_STORAGE_POLICY,
         totalBackupBytes,
         expiredCount,
         newestBackup: backups[0] || null,
@@ -1244,13 +1308,11 @@ async function startDatabaseMaintenance() {
     if (backupTimer) clearInterval(backupTimer);
     backupTimer = null;
     if (dialectName() === 'sqlite' || dialectName() === 'mysql') {
-        pruneDatabaseBackups({ reason: 'startup' });
+        await pruneDatabaseBackups({ reason: 'startup' });
         backupTimer = setInterval(() => {
-            try {
-                pruneDatabaseBackups({ reason: 'scheduled' });
-            } catch (error) {
+            pruneDatabaseBackups({ reason: 'scheduled' }).catch(error => {
                 console.error('[DB] 定时清理过期备份失败:', error.message);
-            }
+            });
         }, BACKUP_PRUNE_INTERVAL_MS);
         backupTimer.unref?.();
     }
@@ -1278,6 +1340,7 @@ async function stopDatabaseMaintenance(options = {}) {
         }
     }
     if (backupPromise) await backupPromise;
+    await backupCleanupPromise.catch(() => {});
 }
 
 async function testDatabaseConfig(input) {
@@ -2328,7 +2391,7 @@ async function seedPlatformDefaults(db) {
 
     const platformProject = await db.get('SELECT * FROM projects WHERE id = ?', ['project_default']);
     const platformScene = await db.get('SELECT * FROM scenes WHERE id = ?', ['scene_factory_overview']);
-    const platformWidgets = await db.all('SELECT * FROM widgets WHERE scene_id = ? ORDER BY sort_order ASC', ['scene_factory_overview']);
+    const platformWidgets = await orderedRows(db, 'widgets', 'SELECT id FROM widgets WHERE scene_id = ? ORDER BY sort_order ASC', ['scene_factory_overview']);
     const platformDocument = buildDocumentFromLegacy({
         project: platformProject,
         scene: platformScene,
@@ -2360,13 +2423,8 @@ async function seedPlatformDefaults(db) {
         }, 'id');
     }
 
-    const currentRelease = await db.get(
-        'SELECT * FROM releases WHERE project_id = ? AND is_current = 1 ORDER BY created_at DESC LIMIT 1',
-        ['project_default']
-    ) || await db.get(
-        'SELECT * FROM releases WHERE project_id = ? ORDER BY created_at DESC LIMIT 1',
-        ['project_default']
-    );
+    const currentRelease = (await orderedReleases(db, 'project_default', { currentOnly: true, limit: 1 }))[0]
+        || (await orderedReleases(db, 'project_default', { limit: 1 }))[0];
     if (currentRelease) {
         const releaseDocument = parseDashboardJson(currentRelease.snapshot_json, {});
         if (!isCanonicalDocument(releaseDocument)) {
@@ -2406,11 +2464,11 @@ async function seedPlatformDefaults(db) {
 }
 
 async function ensureAllDashboardDocuments(db) {
-    const projects = await db.all('SELECT * FROM projects ORDER BY created_at ASC');
+    const projects = await orderedRows(db, 'projects', 'SELECT id FROM projects ORDER BY created_at ASC');
     for (const project of projects) {
-        const scenes = await db.all('SELECT * FROM scenes WHERE project_id = ? ORDER BY is_active DESC, sort_order ASC', [project.id]);
+        const scenes = await orderedRows(db, 'scenes', 'SELECT id FROM scenes WHERE project_id = ? ORDER BY is_active DESC, sort_order ASC', [project.id]);
         for (const scene of scenes) {
-            const widgets = await db.all('SELECT * FROM widgets WHERE scene_id = ? ORDER BY sort_order ASC', [scene.id]);
+            const widgets = await orderedRows(db, 'widgets', 'SELECT id FROM widgets WHERE scene_id = ? ORDER BY sort_order ASC', [scene.id]);
             const legacyDocument = buildDocumentFromLegacy({ project, scene, widgets });
             const storedDraft = parseDashboardJson(scene.draft_json, null);
             if (!isCanonicalDocument(storedDraft)) {
@@ -2426,11 +2484,11 @@ async function ensureAllDashboardDocuments(db) {
 
         const activeScene = scenes.find(scene => !!scene.is_active) || scenes[0];
         if (!activeScene) continue;
-        const activeWidgets = await db.all('SELECT * FROM widgets WHERE scene_id = ? ORDER BY sort_order ASC', [activeScene.id]);
+        const activeWidgets = await orderedRows(db, 'widgets', 'SELECT id FROM widgets WHERE scene_id = ? ORDER BY sort_order ASC', [activeScene.id]);
         const activeDocument = isCanonicalDocument(activeScene.draft_json)
             ? parseDashboardJson(activeScene.draft_json, {})
             : buildDocumentFromLegacy({ project, scene: activeScene, widgets: activeWidgets });
-        const releases = await db.all('SELECT * FROM releases WHERE project_id = ? ORDER BY created_at DESC', [project.id]);
+        const releases = await orderedReleases(db, project.id);
         let current = releases.find(release => !!release.is_current) || null;
         if (!current) {
             let patch = releases.length;
@@ -2756,6 +2814,7 @@ module.exports = {
     restoreDatabaseBackup,
     deleteDatabaseBackup,
     getDatabaseBackupStatus,
+    getDatabaseBackupSpaceEstimate,
     saveDatabaseBackupPolicy,
     resolveDatabaseBackupPath,
     startDatabaseMaintenance,
