@@ -1,4 +1,5 @@
 <script setup>
+import { permissionDirective as vPermission } from '../../../runtime/pagePermissionUi.js'
 import InspectionVectorInput from './InspectionVectorInput.vue'
 const props = defineProps({ modelValue: { type: Object, required: true }, label: { type: String, default: '镜头' } })
 const emit = defineEmits(['update:modelValue', 'capture'])
@@ -8,12 +9,12 @@ function set(key, value) { emit('update:modelValue', { ...props.modelValue, [key
 <template>
     <div class="inspection-camera-fields">
         <div class="camera-numbers">
-            <label>水平角 °<input type="number" step="1" :aria-label="`${label}水平角`" :value="modelValue.yaw" @input="set('yaw', Number($event.target.value))" /></label>
-            <label>俯仰角 °<input type="number" min="-89" max="89" step="1" :aria-label="`${label}俯仰角`" :value="modelValue.pitch" @input="set('pitch', Number($event.target.value))" /></label>
-            <label>距离倍率<input type="number" min="0.05" max="20" step="0.05" :aria-label="`${label}距离倍率`" :value="modelValue.distance_scale" @input="set('distance_scale', Number($event.target.value))" /></label>
+            <label>水平角 °<input type="number" step="1" :aria-label="`${label}水平角`" :value="modelValue.yaw" @input="set('yaw', Number($event.target.value))"  v-permission="{ page: 'models', action: 'edit' }"/></label>
+            <label>俯仰角 °<input type="number" min="-89" max="89" step="1" :aria-label="`${label}俯仰角`" :value="modelValue.pitch" @input="set('pitch', Number($event.target.value))"  v-permission="{ page: 'models', action: 'edit' }"/></label>
+            <label>距离倍率<input type="number" min="0.05" max="20" step="0.05" :aria-label="`${label}距离倍率`" :value="modelValue.distance_scale" @input="set('distance_scale', Number($event.target.value))"  v-permission="{ page: 'models', action: 'edit' }"/></label>
         </div>
         <InspectionVectorInput :model-value="modelValue.target_offset" label="观察中心偏移" @update:model-value="set('target_offset', $event)" />
-        <button class="camera-capture" type="button" @click="emit('capture')">记录当前预览镜头</button>
+        <button class="camera-capture" type="button" @click="emit('capture')" v-permission="{ page: 'models', action: 'edit' }">记录当前预览镜头</button>
     </div>
 </template>
 

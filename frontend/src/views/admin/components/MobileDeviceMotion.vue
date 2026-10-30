@@ -1,4 +1,5 @@
 <script setup>
+import { permissionDirective as vPermission } from '../../../runtime/pagePermissionUi.js'
 import { computed, onUnmounted, ref, watch } from 'vue'
 import { adminApi } from '../../../config/factoryConfig.js'
 import { getFactoryScope } from '../../../runtime/factoryScope.js'
@@ -652,14 +653,12 @@ async function saveMotion() {
         const detail = deviceDetail.value
         const draft = motionDraftPayload()
         if (!draft) throw new Error('设备运动配置尚未就绪')
-        const result = await adminApi.updateDevice(detail.id, draft.devicePayload)
+        const selectedPointIds = [motion.value.currentPositionPointId, motion.value.startActionPointId].filter(Boolean)
+        const result = await adminApi.updateDeviceMovement(detail.id, draft.devicePayload.instance_config.movement, selectedPointIds)
         if (result?.error) throw new Error(result.error)
         if (!result?.success) throw new Error('后端没有返回成功状态')
 
         if (draft.pointRows.length) {
-            const pointResult = await adminApi.syncDataPoints(detail.id, draft.pointRows)
-            if (pointResult?.error) throw new Error(pointResult.error)
-            if (!pointResult?.success) throw new Error('点位采集周期保存失败')
             const selectedIds = new Set([motion.value.currentPositionPointId, motion.value.startActionPointId].filter(Boolean).map(String))
             dataPoints.value = dataPoints.value.map(point => selectedIds.has(String(point.id))
                 ? { ...point, sample_interval_ms: 100 }
@@ -722,7 +721,7 @@ async function saveMotion() {
                         <p>推荐流程：绑定 PLC 的当前工位编号 → 导入产线工位 → 填写现场间距 → 保存。你不需要填写 Unity 坐标。</p>
                     </div>
                     <label class="motion-switch">
-                        <input v-model="motion.enabled" type="checkbox" />
+                        <input v-model="motion.enabled" type="checkbox"  v-permission="{ page: 'mobile-devices', action: 'edit' }"/>
                         启用移动同步
                     </label>
                 </div>
@@ -732,7 +731,7 @@ async function saveMotion() {
                     <div class="motion-form-grid">
                     <label>
                         <span class="motion-field-label">PLC 当前工位编号点位 <span class="motion-required">*</span></span>
-                        <select v-model="motion.currentPositionPointId" class="input">
+                        <select v-model="motion.currentPositionPointId" class="input" v-permission="{ page: 'mobile-devices', action: 'edit' }">
                             <option value="">请选择 PLC 数值点位</option>
                             <option v-for="point in numericPoints" :key="point.id" :value="String(point.id)">
                                 {{ pointLabel(point) }}
@@ -742,7 +741,7 @@ async function saveMotion() {
                     </label>
                     <label>
                         <span class="motion-field-label">移动开始信号（可选）</span>
-                        <select v-model="motion.startActionPointId" class="input">
+                        <select v-model="motion.startActionPointId" class="input" v-permission="{ page: 'mobile-devices', action: 'edit' }">
                             <option value="">不绑定（收到编号就移动）</option>
                             <option v-for="point in actionPoints" :key="point.id" :value="String(point.id)">
                                 {{ pointLabel(point) }}
@@ -757,20 +756,20 @@ async function saveMotion() {
                     <summary>高级兼容设置（普通工位编号模式无需修改）</summary>
                     <div class="motion-form-grid">
                         <label>位置值模式
-                            <select v-model="motion.valueMode" class="input">
+                            <select v-model="motion.valueMode" class="input" v-permission="{ page: 'mobile-devices', action: 'edit' }">
                                 <option value="station">工位编号（推荐）</option>
                                 <option value="normalized">归一化进度（旧配置）</option>
                                 <option value="range">输入范围映射（旧配置）</option>
                             </select>
                         </label>
                         <label>视觉平滑时间（ms）
-                            <input v-model.number="motion.smoothingMs" type="number" min="0" max="1000" step="10" class="input" />
+                            <input v-model.number="motion.smoothingMs" type="number" min="0" max="1000" step="10" class="input"  v-permission="{ page: 'mobile-devices', action: 'edit' }"/>
                             <small>只影响画面跟手程度，不是现场速度。0 表示延迟最低。</small>
                         </label>
                     </div>
                     <div v-if="motion.valueMode === 'range'" class="motion-range-row">
-                        <label>输入最小值<input v-model.number="motion.valueMin" type="number" class="input" /></label>
-                        <label>输入最大值<input v-model.number="motion.valueMax" type="number" class="input" /></label>
+                        <label>输入最小值<input v-model.number="motion.valueMin" type="number" class="input"  v-permission="{ page: 'mobile-devices', action: 'edit' }"/></label>
+                        <label>输入最大值<input v-model.number="motion.valueMax" type="number" class="input"  v-permission="{ page: 'mobile-devices', action: 'edit' }"/></label>
                     </div>
                     <p class="motion-advanced-note">只有 PLC 不是传工位编号，而是传连续进度或其他数值时，才需要使用这里的旧模式。</p>
                 </details>
@@ -780,7 +779,7 @@ async function saveMotion() {
                         <div class="motion-step-title"><span>2</span><div><strong>导入现场工位</strong><small>设备在画布中的位置由系统自动读取，不需要手动填写 X / Y / Z。</small></div></div>
                         <div class="motion-section-actions">
                             <button type="button" class="btn btn-secondary motion-add-station" :disabled="!lineStationDevices.length" @click="syncStationsFromLine">从当前产线导入 {{ lineStationDevices.length }} 个</button>
-                            <button type="button" class="btn btn-secondary motion-add-station" @click="addStation()">+ 添加待分组工位</button>
+                            <button type="button" class="btn btn-secondary motion-add-station" @click="addStation()" v-permission="{ page: 'mobile-devices', action: 'edit' }">+ 添加待分组工位</button>
                         </div>
                     </div>
                     <div class="motion-distance-summary" :class="{ warning: stationDistanceSummary.missingCount > 0 }">
@@ -796,16 +795,16 @@ async function saveMotion() {
                                     <strong>{{ group.name }}</strong>
                                     <small>{{ group.devices.length ? `${group.devices.length} 个固定设备` : '还没有导入工位' }} · 相邻间距只在本设备线内计算</small>
                                 </div>
-                                <button type="button" class="btn btn-secondary motion-add-station" @click="addStation(group.key)">+ 添加到此设备线</button>
+                                <button type="button" class="btn btn-secondary motion-add-station" @click="addStation(group.key)" v-permission="{ page: 'mobile-devices', action: 'edit' }">+ 添加到此设备线</button>
                             </div>
                             <div v-if="group.stations.length" class="motion-station-list">
                                 <div v-for="(station, index) in group.stations" :key="station.anchorDeviceId || `${group.key}-${station.value}-${index}`" class="motion-station-row">
                                     <div class="motion-station-order">{{ index + 1 }}</div>
-                                    <label>PLC 编号<input v-model.number="station.value" type="number" step="1" class="input" /></label>
-                                    <label>工位名称（可选）<input v-model="station.label" type="text" class="input" placeholder="例如：1号工位" /></label>
-                                    <label v-if="index > 0" class="motion-distance-field">与本设备线上一站间距（米）<input v-model.number="station.distanceMeters" type="number" min="0.01" step="0.1" class="input" placeholder="例如 8.5" /></label>
+                                    <label>PLC 编号<input v-model.number="station.value" type="number" step="1" class="input"  v-permission="{ page: 'mobile-devices', action: 'edit' }"/></label>
+                                    <label>工位名称（可选）<input v-model="station.label" type="text" class="input" placeholder="例如：1号工位"  v-permission="{ page: 'mobile-devices', action: 'edit' }"/></label>
+                                    <label v-if="index > 0" class="motion-distance-field">与本设备线上一站间距（米）<input v-model.number="station.distanceMeters" type="number" min="0.01" step="0.1" class="input" placeholder="例如 8.5"  v-permission="{ page: 'mobile-devices', action: 'edit' }"/></label>
                                     <div v-else class="motion-start-station"><strong>本设备线首站</strong><small>不需要填写跨线间距</small></div>
-                                    <button v-if="motion.stations.length > 1" type="button" class="motion-remove-station" title="删除工位" @click="removeStation(station)">删除</button>
+                                    <button v-if="motion.stations.length > 1" type="button" class="motion-remove-station" title="删除工位" @click="removeStation(station)" v-permission="{ page: 'mobile-devices', action: 'edit' }">删除</button>
                                 </div>
                             </div>
                             <div v-else class="motion-device-line-empty">点击“添加到此设备线”，或先从当前产线导入现场工位。</div>
@@ -818,23 +817,23 @@ async function saveMotion() {
                 <section v-if="motion.valueMode === 'station'" class="motion-step-card motion-simulation-panel">
                     <div class="motion-step-title"><span>3</span><div><strong>选择移动效果</strong><small>你只需要提供小车加速度；最大速度可以由系统按现场间距自动估算。</small></div></div>
                     <label class="motion-switch motion-simulation-switch">
-                        <input v-model="motion.simulationEnabled" type="checkbox" />
+                        <input v-model="motion.simulationEnabled" type="checkbox"  v-permission="{ page: 'mobile-devices', action: 'edit' }"/>
                         开启运动细节模拟
                     </label>
                     <div v-if="motion.simulationEnabled" class="motion-simulation-fields">
                         <label>小车加速度（米 / 秒²）
-                            <input v-model.number="motion.acceleration" type="number" min="0.01" step="0.1" class="input" />
+                            <input v-model.number="motion.acceleration" type="number" min="0.01" step="0.1" class="input"  v-permission="{ page: 'mobile-devices', action: 'edit' }"/>
                             <small>向电气工程人员要这个参数即可。</small>
                         </label>
                         <label>速度计算方式
-                            <select v-model="motion.speedMode" class="input">
+                            <select v-model="motion.speedMode" class="input" v-permission="{ page: 'mobile-devices', action: 'edit' }">
                                 <option value="auto">自动估算（推荐）</option>
                                 <option value="fixed">我知道现场最大速度</option>
                             </select>
                             <small>自动估算会根据相邻工位间距和加速度计算，不需要填写最大速度。</small>
                         </label>
                         <label v-if="motion.speedMode === 'fixed'">现场最大速度（米 / 秒）
-                            <input v-model.number="motion.maxSpeed" type="number" min="0.01" step="0.1" class="input" />
+                            <input v-model.number="motion.maxSpeed" type="number" min="0.01" step="0.1" class="input"  v-permission="{ page: 'mobile-devices', action: 'edit' }"/>
                         </label>
                     </div>
                     <p class="motion-simulation-note">关闭模拟时，小车收到新编号后直接切换到目标工位，并显示短暂的“移动中”提示；这是无法取得完整现场参数时的保底方式。</p>
@@ -846,17 +845,17 @@ async function saveMotion() {
                         <div>
                             <strong>起始位置</strong>
                             <div class="motion-coordinate-grid">
-                                <label>X<input v-model.number="motion.start.x" type="number" step="0.1" class="input" /></label>
-                                <label>Y<input v-model.number="motion.start.y" type="number" step="0.1" class="input" /></label>
-                                <label>Z<input v-model.number="motion.start.z" type="number" step="0.1" class="input" /></label>
+                                <label>X<input v-model.number="motion.start.x" type="number" step="0.1" class="input"  v-permission="{ page: 'mobile-devices', action: 'edit' }"/></label>
+                                <label>Y<input v-model.number="motion.start.y" type="number" step="0.1" class="input"  v-permission="{ page: 'mobile-devices', action: 'edit' }"/></label>
+                                <label>Z<input v-model.number="motion.start.z" type="number" step="0.1" class="input"  v-permission="{ page: 'mobile-devices', action: 'edit' }"/></label>
                             </div>
                         </div>
                         <div>
                             <strong>终点位置</strong>
                             <div class="motion-coordinate-grid">
-                                <label>X<input v-model.number="motion.end.x" type="number" step="0.1" class="input" /></label>
-                                <label>Y<input v-model.number="motion.end.y" type="number" step="0.1" class="input" /></label>
-                                <label>Z<input v-model.number="motion.end.z" type="number" step="0.1" class="input" /></label>
+                                <label>X<input v-model.number="motion.end.x" type="number" step="0.1" class="input"  v-permission="{ page: 'mobile-devices', action: 'edit' }"/></label>
+                                <label>Y<input v-model.number="motion.end.y" type="number" step="0.1" class="input"  v-permission="{ page: 'mobile-devices', action: 'edit' }"/></label>
+                                <label>Z<input v-model.number="motion.end.z" type="number" step="0.1" class="input"  v-permission="{ page: 'mobile-devices', action: 'edit' }"/></label>
                             </div>
                         </div>
                     </div>
@@ -868,7 +867,7 @@ async function saveMotion() {
                 </div>
 
                 <div class="modal-actions motion-actions">
-                    <button type="button" class="btn btn-primary" :disabled="saving || loading" @click="saveMotion">
+                    <button type="button" class="btn btn-primary" :disabled="saving || loading" @click="saveMotion" v-permission="{ page: 'mobile-devices', action: 'edit' }">
                         {{ saving ? '保存中…' : '保存移动配置' }}
                     </button>
                 </div>

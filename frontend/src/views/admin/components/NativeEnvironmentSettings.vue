@@ -1,4 +1,5 @@
 <script setup>
+import { permissionDirective as vPermission } from '../../../runtime/pagePermissionUi.js'
 import { computed, onUnmounted, ref, watch } from 'vue'
 import NativeWallEditor from './NativeWallEditor.vue'
 
@@ -136,7 +137,7 @@ function saveCustom() {
                         :disabled="saving"
                         :aria-busy="saving"
                         @click="emit('save', {})"
-                    >
+                     v-permission="{ page: 'platform.environment', action: 'edit' }">
                         <span v-if="saving" class="env-btn-spinner" aria-hidden="true"></span>
                         <span>{{ saving ? '正在应用...' : appliedFeedback ? '已应用到 Unity ✓' : '立即应用到 Unity' }}</span>
                     </button>
@@ -162,7 +163,7 @@ function saveCustom() {
                     <strong>视觉预设</strong>
                     <p>{{ presetDescription }}</p>
                 </div>
-                <label class="check-line"><input v-model="config.showGrid" type="checkbox" @change="saveCustom" /> 显示地面网格</label>
+                <label class="check-line"><input v-model="config.showGrid" type="checkbox" @change="saveCustom"  v-permission="{ page: 'platform.environment', action: 'edit' }"/> 显示地面网格</label>
             </div>
 
             <div class="preset-gallery" role="radiogroup" aria-label="Unity 场景视觉预设">
@@ -236,19 +237,19 @@ function saveCustom() {
                 <h4>总体亮度与照明</h4>
                 <div class="control-list">
                     <label>全局亮度 <span>{{ Math.round(config.sceneBrightness * 100) }}%</span>
-                        <input v-model.number="config.sceneBrightness" type="range" min="0.8" max="1.6" step="0.05" @change="saveCustom" />
+                        <input v-model.number="config.sceneBrightness" type="range" min="0.8" max="1.6" step="0.05" @change="saveCustom"  v-permission="{ page: 'platform.environment', action: 'edit' }"/>
                     </label>
                     <label>环境光强度 <span>{{ Number(config.ambientIntensity).toFixed(2) }}</span>
-                        <input v-model.number="config.ambientIntensity" type="range" min="0.2" max="2.5" step="0.05" @change="saveCustom" />
+                        <input v-model.number="config.ambientIntensity" type="range" min="0.2" max="2.5" step="0.05" @change="saveCustom"  v-permission="{ page: 'platform.environment', action: 'edit' }"/>
                     </label>
                     <label>主光强度 <span>{{ Number(config.keyLightIntensity).toFixed(2) }}</span>
-                        <input v-model.number="config.keyLightIntensity" type="range" min="0" max="3" step="0.05" @change="saveCustom" />
+                        <input v-model.number="config.keyLightIntensity" type="range" min="0" max="3" step="0.05" @change="saveCustom"  v-permission="{ page: 'platform.environment', action: 'edit' }"/>
                     </label>
                     <label>补光强度 <span>{{ Number(config.fillLightIntensity).toFixed(2) }}</span>
-                        <input v-model.number="config.fillLightIntensity" type="range" min="0" max="2.5" step="0.05" @change="saveCustom" />
+                        <input v-model.number="config.fillLightIntensity" type="range" min="0" max="2.5" step="0.05" @change="saveCustom"  v-permission="{ page: 'platform.environment', action: 'edit' }"/>
                     </label>
                     <label>环境反射 <span>{{ Number(config.reflectionIntensity).toFixed(2) }}</span>
-                        <input v-model.number="config.reflectionIntensity" type="range" min="0" max="2" step="0.05" @change="saveCustom" />
+                        <input v-model.number="config.reflectionIntensity" type="range" min="0" max="2" step="0.05" @change="saveCustom"  v-permission="{ page: 'platform.environment', action: 'edit' }"/>
                     </label>
                 </div>
             </section>
@@ -257,19 +258,19 @@ function saveCustom() {
                 <h4>后处理</h4>
                 <div class="control-list">
                     <label>曝光 <span>{{ Number(config.postExposure).toFixed(2) }}</span>
-                        <input v-model.number="config.postExposure" type="range" min="-1.5" max="2" step="0.05" @change="saveCustom" />
+                        <input v-model.number="config.postExposure" type="range" min="-1.5" max="2" step="0.05" @change="saveCustom"  v-permission="{ page: 'platform.environment', action: 'edit' }"/>
                     </label>
                     <label>对比度 <span>{{ Math.round(config.contrast) }}</span>
-                        <input v-model.number="config.contrast" type="range" min="-30" max="30" step="1" @change="saveCustom" />
+                        <input v-model.number="config.contrast" type="range" min="-30" max="30" step="1" @change="saveCustom"  v-permission="{ page: 'platform.environment', action: 'edit' }"/>
                     </label>
                     <label>饱和度 <span>{{ Math.round(config.saturation) }}</span>
-                        <input v-model.number="config.saturation" type="range" min="-30" max="30" step="1" @change="saveCustom" />
+                        <input v-model.number="config.saturation" type="range" min="-30" max="30" step="1" @change="saveCustom"  v-permission="{ page: 'platform.environment', action: 'edit' }"/>
                     </label>
                     <label>高光柔化（Bloom） <span>{{ Number(config.bloomIntensity).toFixed(2) }}</span>
-                        <input v-model.number="config.bloomIntensity" type="range" min="0" max="1" step="0.01" @change="saveCustom" />
+                        <input v-model.number="config.bloomIntensity" type="range" min="0" max="1" step="0.01" @change="saveCustom"  v-permission="{ page: 'platform.environment', action: 'edit' }"/>
                     </label>
                     <label>画面暗角 <span>{{ Number(config.vignetteIntensity).toFixed(2) }}</span>
-                        <input v-model.number="config.vignetteIntensity" type="range" min="0" max="0.5" step="0.01" @change="saveCustom" />
+                        <input v-model.number="config.vignetteIntensity" type="range" min="0" max="0.5" step="0.01" @change="saveCustom"  v-permission="{ page: 'platform.environment', action: 'edit' }"/>
                     </label>
                 </div>
             </section>
@@ -278,13 +279,13 @@ function saveCustom() {
                 <div class="card-heading">
                     <h4>雾效与空间层次</h4>
                     <label class="switch">
-                        <input v-model="config.fogEnabled" type="checkbox" @change="saveCustom" />
+                        <input v-model="config.fogEnabled" type="checkbox" @change="saveCustom"  v-permission="{ page: 'platform.environment', action: 'edit' }"/>
                         <span></span>
                     </label>
                 </div>
                 <div class="number-grid">
-                    <label>雾效起始距离<input v-model.number="config.fogStart" class="env-input" type="number" min="0" max="500" @change="saveCustom" /></label>
-                    <label>雾效结束距离<input v-model.number="config.fogEnd" class="env-input" type="number" min="10" max="1000" @change="saveCustom" /></label>
+                    <label>雾效起始距离<input v-model.number="config.fogStart" class="env-input" type="number" min="0" max="500" @change="saveCustom"  v-permission="{ page: 'platform.environment', action: 'edit' }"/></label>
+                    <label>雾效结束距离<input v-model.number="config.fogEnd" class="env-input" type="number" min="10" max="1000" @change="saveCustom"  v-permission="{ page: 'platform.environment', action: 'edit' }"/></label>
                 </div>
                 <p class="help">关闭雾效可获得最清晰的设备边缘；开启后更接近大型厂房的空间纵深。</p>
             </section>
@@ -294,7 +295,7 @@ function saveCustom() {
                 <div class="color-grid">
                     <label v-for="item in colorItems" :key="item[0]">
                         <span>{{ item[1] }}</span>
-                        <input v-model="config[item[0]]" type="color" @change="saveCustom" />
+                        <input v-model="config[item[0]]" type="color" @change="saveCustom"  v-permission="{ page: 'platform.environment', action: 'edit' }"/>
                         <code>{{ config[item[0]] }}</code>
                     </label>
                 </div>

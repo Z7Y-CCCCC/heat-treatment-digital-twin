@@ -1,4 +1,5 @@
 <script setup>
+import { permissionDirective as vPermission } from '../../../runtime/pagePermissionUi.js'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { adminApi } from '../../../config/factoryConfig.js'
 import { GROUP_MAP_DATA_FIELDS, GROUP_MAP_LEVELS, groupPortalAppearanceForLevel, normalizeGroupLogoUrl, normalizeGroupPortalAppearance } from '../../../runtime/groupPortalAppearance.js'
@@ -208,27 +209,27 @@ onUnmounted(() => {
 <template>
     <section class="group-appearance-admin" :class="{'designer-mode':designerMode}" aria-labelledby="group-appearance-title">
         <header><div><h3 id="group-appearance-title">地图层级与品牌组件</h3><p>配置全球、国家、省份、城市、区县各级地图的组件、颜色和镜头。工厂、车间、产线与设备视角在下方画布编排。</p></div><span>WORLD → FACTORY</span></header>
-        <form @submit.prevent="save">
+        <form @submit.prevent="save" v-permission="{ page: 'platform.designer', action: 'edit' }">
             <details class="appearance-global-settings" :open="!designerMode"><summary>通用品牌与主题 <small>Logo · 标题 · 颜色 · 全层默认组件</small></summary>
             <div class="appearance-fields">
-                <label>大屏 Logo / 标题<input v-model.trim="form.brandTitle" maxlength="60" required /></label>
-                <label>英文副标题<input v-model.trim="form.brandSubtitle" maxlength="80" required /></label>
-                <label>右侧栏目标题<input v-model.trim="form.panelTitle" maxlength="60" required /></label>
-                <label>区域统计标题<input v-model.trim="form.factsTitle" maxlength="60" required /></label>
-                <label>底部站点标题<input v-model.trim="form.dockNetworkTitle" maxlength="60" required /></label>
-                <label>底部归属标题<input v-model.trim="form.dockLocationTitle" maxlength="60" required /></label>
-                <label>底部配置标题<input v-model.trim="form.dockHierarchyTitle" maxlength="60" required /></label>
+                <label>大屏 Logo / 标题<input v-model.trim="form.brandTitle" maxlength="60" required  v-permission="{ page: 'platform.designer', action: 'edit' }"/></label>
+                <label>英文副标题<input v-model.trim="form.brandSubtitle" maxlength="80" required  v-permission="{ page: 'platform.designer', action: 'edit' }"/></label>
+                <label>右侧栏目标题<input v-model.trim="form.panelTitle" maxlength="60" required  v-permission="{ page: 'platform.designer', action: 'edit' }"/></label>
+                <label>区域统计标题<input v-model.trim="form.factsTitle" maxlength="60" required  v-permission="{ page: 'platform.designer', action: 'edit' }"/></label>
+                <label>底部站点标题<input v-model.trim="form.dockNetworkTitle" maxlength="60" required  v-permission="{ page: 'platform.designer', action: 'edit' }"/></label>
+                <label>底部归属标题<input v-model.trim="form.dockLocationTitle" maxlength="60" required  v-permission="{ page: 'platform.designer', action: 'edit' }"/></label>
+                <label>底部配置标题<input v-model.trim="form.dockHierarchyTitle" maxlength="60" required  v-permission="{ page: 'platform.designer', action: 'edit' }"/></label>
             </div>
-            <label class="appearance-logo-url">Logo 图片地址（可选，留空使用默认标识）<input v-model.trim="form.logoUrl" maxlength="400" placeholder="/uploads/brand/logo.png 或 https://..." /><small>图片与标题同属大屏品牌组件；请使用站内路径或 HTTPS 图片。</small></label>
-            <label class="appearance-logo-upload">上传 Logo 图片<input type="file" accept="image/png,image/jpeg,image/webp" :disabled="uploading" @change="uploadLogo" /><small>PNG、JPEG、WebP，最大 5 MB；上传后仍需保存外观。</small></label>
+            <label class="appearance-logo-url">Logo 图片地址（可选，留空使用默认标识）<input v-model.trim="form.logoUrl" maxlength="400" placeholder="/uploads/brand/logo.png 或 https://..."  v-permission="{ page: 'platform.designer', action: 'edit' }"/><small>图片与标题同属大屏品牌组件；请使用站内路径或 HTTPS 图片。</small></label>
+            <label class="appearance-logo-upload">上传 Logo 图片<input type="file" accept="image/png,image/jpeg,image/webp" :disabled="uploading" @change="uploadLogo"  v-permission="{ page: 'platform.designer', action: 'edit' }"/><small>PNG、JPEG、WebP，最大 5 MB；上传后仍需保存外观。</small></label>
             <div class="appearance-colors">
                 <label v-for="item in [{key:'background',name:'画布底色'},{key:'panelSurface',name:'组件底色'},{key:'accent',name:'区域高光'},{key:'text',name:'主文字色'},{key:'mapBase',name:'中国及区域底色'},{key:'mapMuted',name:'周边弱化底色'},{key:'markerPrimary',name:'位置光束主色'},{key:'markerTip',name:'光束顶端颜色'}]" :key="item.key">
-                    {{ item.name }}<span><input v-model="form[item.key]" type="color" /><input v-model.trim="form[item.key]" pattern="#[0-9a-fA-F]{6}" maxlength="7" required /></span>
+                    {{ item.name }}<span><input v-model="form[item.key]" type="color"  v-permission="{ page: 'platform.designer', action: 'edit' }"/><input v-model.trim="form[item.key]" pattern="#[0-9a-fA-F]{6}" maxlength="7" required  v-permission="{ page: 'platform.designer', action: 'edit' }"/></span>
                 </label>
             </div>
-            <label class="appearance-zoom">地图初始镜头倍率 <span><input v-model.number="form.mapZoom" type="range" min="0.8" max="1.5" step="0.01" />{{ form.mapZoom.toFixed(2) }}×</span><small>仅影响重置视角时的距离；拖拽和滚轮仍可自由调整。</small></label>
+            <label class="appearance-zoom">地图初始镜头倍率 <span><input v-model.number="form.mapZoom" type="range" min="0.8" max="1.5" step="0.01"  v-permission="{ page: 'platform.designer', action: 'edit' }"/>{{ form.mapZoom.toFixed(2) }}×</span><small>仅影响重置视角时的距离；拖拽和滚轮仍可自由调整。</small></label>
             <div class="appearance-preview" :style="{'--preview-background':levelPreview.background,'--preview-surface':levelPreview.panelSurface,'--preview-accent':levelPreview.accent,'--preview-text':levelPreview.text}"><span class="preview-map">◇</span><div><img v-if="form.logoUrl && normalizeGroupLogoUrl(form.logoUrl)" :src="form.logoUrl" alt="Logo 预览" class="appearance-logo-preview" /><small>{{ form.brandSubtitle }}</small><strong>{{ form.brandTitle }}</strong></div><aside><small>{{ levelPreview.panelTitle }}</small><i></i><i></i><i></i></aside></div>
-            <div class="appearance-toggles"><label><input v-model="form.showBrand" type="checkbox" />大屏 Logo</label><label><input v-model="form.showFacts" type="checkbox" />左侧统计</label><label><input v-model="form.showPanel" type="checkbox" />右侧分布面板</label><label><input v-model="form.showDock" type="checkbox" />底部概览</label><label><input v-model="form.showHelp" type="checkbox" />操作说明</label></div>
+            <div class="appearance-toggles"><label><input v-model="form.showBrand" type="checkbox"  v-permission="{ page: 'platform.designer', action: 'edit' }"/>大屏 Logo</label><label><input v-model="form.showFacts" type="checkbox"  v-permission="{ page: 'platform.designer', action: 'edit' }"/>左侧统计</label><label><input v-model="form.showPanel" type="checkbox"  v-permission="{ page: 'platform.designer', action: 'edit' }"/>右侧分布面板</label><label><input v-model="form.showDock" type="checkbox"  v-permission="{ page: 'platform.designer', action: 'edit' }"/>底部概览</label><label><input v-model="form.showHelp" type="checkbox"  v-permission="{ page: 'platform.designer', action: 'edit' }"/>操作说明</label></div>
             </details>
             <section class="appearance-level-editor" aria-label="地图分层配置">
                 <div class="appearance-level-heading"><strong>{{ GROUP_MAP_LEVELS.find(item=>item.key===selectedLevel)?.label }}地图画面</strong><span>左侧统计、右侧分布、底部概览和 Logo 可在下方画布中拖动；本层设置仅作用于当前地图。</span></div>
@@ -241,7 +242,7 @@ onUnmounted(() => {
                 </div>
                 <div class="map-component-panel"><strong>本层画面组件</strong><p>点选组件后可拖动或输入精确位置；关闭显示不删除配置。</p>
                     <div v-for="item in mapComponents" :key="item.key" class="map-component-row" :class="{active:selectedComponent===item.key}"><button type="button" @click="selectedComponent=item.key">{{ item.label }}</button><label><input type="checkbox" :checked="levelPreview[item.toggle]" @change="setLevelField(item.toggle,$event.target.checked)" />显示</label></div>
-                    <div class="map-component-copy" v-if="selectedComponent==='brand'"><label>本层大屏标题<input :value="levelPreview.brandTitle" maxlength="60" @change="setLevelField('brandTitle',$event.target.value)" /></label><label>英文副标题<input :value="levelPreview.brandSubtitle" maxlength="80" @change="setLevelField('brandSubtitle',$event.target.value)" /></label><label>本层 Logo 地址<input :value="levelPreview.logoUrl" maxlength="400" placeholder="留空继承通用 Logo" @change="setLevelField('logoUrl',$event.target.value)" /></label><label>上传本层 Logo<input type="file" accept="image/png,image/jpeg,image/webp" :disabled="uploading" @change="uploadLogo($event,'level')" /></label></div>
+                    <div class="map-component-copy" v-if="selectedComponent==='brand'"><label>本层大屏标题<input :value="levelPreview.brandTitle" maxlength="60" @change="setLevelField('brandTitle',$event.target.value)" /></label><label>英文副标题<input :value="levelPreview.brandSubtitle" maxlength="80" @change="setLevelField('brandSubtitle',$event.target.value)" /></label><label>本层 Logo 地址<input :value="levelPreview.logoUrl" maxlength="400" placeholder="留空继承通用 Logo" @change="setLevelField('logoUrl',$event.target.value)" /></label><label>上传本层 Logo<input type="file" accept="image/png,image/jpeg,image/webp" :disabled="uploading" @change="uploadLogo($event,'level')"  v-permission="{ page: 'platform.designer', action: 'edit' }"/></label></div>
                     <div class="map-component-copy" v-else-if="selectedComponent==='facts'"><label>统计标题<input :value="levelPreview.factsTitle" maxlength="60" @change="setLevelField('factsTitle',$event.target.value)" /></label></div>
                     <div class="map-component-copy" v-else-if="selectedComponent==='panel'"><label>分布栏目标题<input :value="levelPreview.panelTitle" maxlength="60" @change="setLevelField('panelTitle',$event.target.value)" /></label></div>
                     <div class="map-component-copy" v-else><label>站点网络标题<input :value="levelPreview.dockNetworkTitle" maxlength="60" @change="setLevelField('dockNetworkTitle',$event.target.value)" /></label><label>行政区归属标题<input :value="levelPreview.dockLocationTitle" maxlength="60" @change="setLevelField('dockLocationTitle',$event.target.value)" /></label><label>现场配置标题<input :value="levelPreview.dockHierarchyTitle" maxlength="60" @change="setLevelField('dockHierarchyTitle',$event.target.value)" /></label></div>

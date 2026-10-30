@@ -24,7 +24,7 @@ test.mock.module('three/examples/jsm/controls/OrbitControls.js', { namedExports:
 test.mock.module('three/examples/jsm/postprocessing/EffectComposer.js', { namedExports: { EffectComposer: Composer } })
 for (const name of ['RenderPass', 'SSAOPass', 'OutputPass']) test.mock.module(`three/examples/jsm/postprocessing/${name}.js`, { namedExports: { [name]: Pass } })
 test.mock.module('../src/runtime/adminSession.js', { namedExports: {
-    adminFetch: (...args) => globalThis.fetch(...args), adminSession: Vue.reactive({}), refreshAdminSession: async () => {},
+    adminFetch: (...args) => globalThis.fetch(...args), adminSession: Vue.reactive({}), refreshAdminSession: async () => {}, canOpenAdmin: () => false,
     startAdminSessionTracking() {}, stopAdminSessionTracking() {}, changeAdminPassword() {}, listAdminAccounts() {},
     addAdminAccount() {}, activateAdminAccount() {}, logoutCurrentAdminAccount() {}
 } })

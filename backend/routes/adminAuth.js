@@ -107,7 +107,7 @@ module.exports = function createAdminAuthRouter(auth = getAdminAuth) {
             return;
         }
         const token = suppliedAdminSessionForSlot(req, slotId);
-        service.requireSession(token, req.get('x-csrf-token'));
+        service.requireSession(token, req.get('x-csrf-token'), { permission: 'account' });
         const options = { ...cookieOptions(req), maxAge: DISPLAY_COOKIE_MS };
         res.cookie(adminActiveAccountCookieName(), slotId, options);
         const status = service.status(token);

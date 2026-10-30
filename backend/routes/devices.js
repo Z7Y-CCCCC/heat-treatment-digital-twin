@@ -4,6 +4,70 @@ const { getDb, getDbStatus } = require('../db/database');
 const { loadDeviceInspection, publicInspection, patchDeviceInspectionLayout,
     saveDeviceInspectionLayout } = require('../services/deviceInspection');
 const { getBuiltinModels } = require('../services/builtinModels');
+const { TRANSFORM_FIELDS, LAYOUT_CONFIG_FIELDS } = require('../../shared/deviceAuthoring.mjs');
+
+// Narrow authoring endpoints deliberately preserve model identity, PLC network
+// configuration and inspection metadata. Never reuse the full device PUT for
+// a user granted only scene placement or movement authoring.
+router.put('/:id/transform', async (req, res) => {
+    try {
+        const body = req.body;
+        if (!body || Array.isArray(body) || Object.keys(body).some(key => ![...TRANSFORM_FIELDS, 'layoutConfig'].includes(key))) throw new Error('布局包含不可修改字段');
+        const layout = body.layoutConfig || {};
+        if (typeof layout !== 'object' || Array.isArray(layout) || Object.keys(layout).some(key => !LAYOUT_CONFIG_FIELDS.includes(key)
+            || layout[key] !== null && !['string', 'number', 'boolean'].includes(typeof layout[key])
+            || typeof layout[key] === 'string' && layout[key].length > 160
+            || typeof layout[key] === 'number' && !Number.isFinite(layout[key]))) throw new Error('布局配置格式无效');
+        for (const key of TRANSFORM_FIELDS.filter(k => !['line_id', 'coordinate_space'].includes(k))) {
+            if (body[key] !== undefined && (typeof body[key] !== 'number' || !Number.isFinite(body[key]) || Math.abs(body[key]) > 100000
+                || key === 'scale' && (body[key] <= 0 || body[key] > 1000))) throw new Error('布局数值无效');
+        }
+        if (body.line_id !== undefined && body.line_id !== null && (typeof body.line_id !== 'string' || body.line_id.length > 120)) throw new Error('产线 ID 无效');
+        if (body.coordinate_space !== undefined && !['line_local', 'workshop_local'].includes(body.coordinate_space)) throw new Error('坐标空间无效');
+        const db = await getDb();
+        const config = await db.transaction(async tx => {
+            const device = await tx.get('SELECT * FROM devices WHERE id = ?', [req.params.id]);
+            if (!await deviceBelongsToFactory(tx, device, req.factoryId)) throw Object.assign(new Error('设备不存在'), { statusCode: 404 });
+            const lineId = body.line_id === undefined ? device.line_id : body.line_id;
+            if (!await lineBelongsToFactory(tx, lineId, req.factoryId) || !lineId && !isAuxiliaryDevice(device.model_type, device.instance_config)) throw new Error('产线不属于当前工厂');
+            const config = parseJson(device.instance_config);
+            for (const [key, value] of Object.entries(layout)) { if (value === null) delete config[key]; else config[key] = value; }
+            for (const key of ['workshop_id', 'workshopId']) if (config[key] && !await tx.get('SELECT id FROM workshops WHERE id = ? AND factory_id = ?', [config[key], req.factoryId])) throw new Error('车间不属于当前工厂');
+            const fields = TRANSFORM_FIELDS.filter(key => body[key] !== undefined);
+            await tx.run(`UPDATE devices SET ${fields.map(key => `${key}=?`).concat('instance_config=?').join(',')} WHERE id=?`,
+                [...fields.map(key => body[key]), JSON.stringify(config), req.params.id]);
+            return config;
+        });
+        broadcastDeviceConfigurationChanged(req.params.id, config);
+        res.json({ success: true });
+    } catch (error) { res.status(error.statusCode || 400).json({ error: error.message }); }
+});
+
+router.put('/:id/movement', async (req, res) => {
+    try {
+        const body = req.body;
+        if (!body || Array.isArray(body) || Object.keys(body).some(key => !['movement', 'pointIds'].includes(key))
+            || !body.movement || typeof body.movement !== 'object' || Array.isArray(body.movement)
+            || Buffer.byteLength(JSON.stringify(body.movement)) > 32768) throw new Error('设备运动配置格式无效');
+        const ids = body.pointIds || [];
+        if (!Array.isArray(ids) || ids.length > 2 || ids.some(id => !['string', 'number'].includes(typeof id) || String(id).length > 120)) throw new Error('运动点位无效');
+        const db = await getDb();
+        const config = await db.transaction(async tx => {
+            const device = await tx.get('SELECT * FROM devices WHERE id = ?', [req.params.id]);
+            if (!await deviceBelongsToFactory(tx, device, req.factoryId)) throw Object.assign(new Error('设备不存在'), { statusCode: 404 });
+            const config = { ...parseJson(device.instance_config), movement: body.movement };
+            for (const id of new Set(ids.map(String))) {
+                if (!await tx.get('SELECT id FROM data_points WHERE id = ? AND device_id = ?', [id, device.id])) throw new Error('运动点位不属于此设备');
+                await tx.run('UPDATE data_points SET sample_interval_ms = ? WHERE id = ? AND device_id = ?', [100, id, device.id]);
+            }
+            await tx.run('UPDATE devices SET instance_config=? WHERE id=?', [JSON.stringify(config), device.id]);
+            return config;
+        });
+        if (ids.length) restartDataEngineSoon('update movement sampling');
+        broadcastDeviceConfigurationChanged(req.params.id, config);
+        res.json({ success: true });
+    } catch (error) { res.status(error.statusCode || 400).json({ error: error.message }); }
+});
 const {
     defaultPortForProtocol,
     getProtocolDefinition,

@@ -1,4 +1,5 @@
 <script setup>
+import { PAGE_PERMISSIONS, PAGE_ACTIONS, normalizePagePermissions } from '../../../../../shared/pagePermissions.mjs'
 import { computed, onMounted, ref } from 'vue'
 import { createPlatformUser, deletePlatformUser, listPlatformUsers, updatePlatformUser } from '../../../runtime/adminSession.js'
 
@@ -15,7 +16,22 @@ function editablePermissions(role, permissions = {}) {
     typeof permissions[key] === 'boolean' ? permissions[key] : defaults[key]
   ]))
 }
-const createDraft = () => ({ username: '', displayName: '', role: 'customer', password: '', enabled: true, permissions: defaultPermissions('customer') })
+const createDraft = () => ({ username: '', displayName: '', role: 'customer', password: '', enabled: true, permissions: defaultPermissions('customer'), pagePermissions: normalizePagePermissions() })
+const pageActions = Object.keys(PAGE_ACTIONS)
+function changePageView(page) {
+  if (!editor.value.pagePermissions[page.key].view) {
+    for (const action of page.actions) editor.value.pagePermissions[page.key][action] = false
+  }
+}
+function changePageAction(page, action) {
+  if (action === 'view') changePageView(page)
+  if (page.key === 'models' && !editor.value.pagePermissions.models.edit) editor.value.pagePermissions.models.publish = false
+}
+function setPagePreset(mode) {
+  editor.value.pagePermissions = Object.fromEntries(PAGE_PERMISSIONS.map(page => [page.key,
+    Object.fromEntries(page.actions.map(action => [action, !page.ownerOnly && (mode === 'all' || mode === 'view' && action === 'view')]))
+  ]))
+}
 const users = ref([])
 const busy = ref(false)
 const loading = ref(true)
@@ -28,13 +44,14 @@ const editingId = ref('')
 const replacementPassword = ref('')
 const pendingDelete = ref(false)
 
-const editorTitle = computed(() => editorMode.value === 'create' ? '新增现场账户' : `编辑账户 · ${editor.value.username}`)
+const editorTitle = computed(() => editorMode.value === 'create' ? '新增账户' : `编辑账户 · ${editor.value.username}`)
 
 async function loadUsers() {
   loading.value = true
   try {
     users.value = (await listPlatformUsers()).map(user => ({
       ...user,
+      pagePermissions: normalizePagePermissions(user.pagePermissions),
       permissions: editablePermissions(user.role, user.permissions || {})
     }))
     failed.value = false
@@ -61,6 +78,7 @@ function openEdit(user) {
     displayName: user.displayName,
     role: user.role,
     enabled: Boolean(user.enabled),
+    pagePermissions: normalizePagePermissions(user.pagePermissions),
     permissions: editablePermissions(user.role, user.permissions || {})
   }
   replacementPassword.value = ''
@@ -92,6 +110,7 @@ async function saveEditor() {
         role: editor.value.role,
         enabled: editor.value.enabled,
         permissions: editablePermissions(editor.value.role, editor.value.permissions),
+        pagePermissions: normalizePagePermissions(editor.value.pagePermissions),
         ...(replacementPassword.value ? { password: replacementPassword.value } : {})
       })
       message.value = `${editor.value.username} 已更新；其旧会话已失效。`
@@ -131,7 +150,8 @@ function roleLabel(role) {
 }
 
 function permissionSummary(user) {
-  return permissionChoices.filter(choice => user.permissions?.[choice.key]).map(choice => choice.label)
+  return [...permissionChoices.filter(choice => user.permissions?.[choice.key]).map(choice => choice.label),
+    ...PAGE_PERMISSIONS.filter(page => user.pagePermissions?.[page.key]?.view).map(page => page.label)]
 }
 
 onMounted(loadUsers)
@@ -140,7 +160,7 @@ onMounted(loadUsers)
 <template>
   <section class="users-settings" aria-labelledby="platform-users-title">
     <header class="users-heading">
-      <div><h3 id="platform-users-title">用户与权限</h3><p>按账户分配大屏查看、启动、投屏与备份权限。系统配置和用户管理仅限管理员。</p></div>
+      <div><h3 id="platform-users-title">用户与权限</h3><p>按账户分配页面查看、新增修改、删除和发布权限。用户管理与后台安全仅限系统管理员。</p></div>
       <button type="button" class="users-primary" @click="openCreate">＋ 新增账户</button>
     </header>
 
@@ -167,7 +187,7 @@ onMounted(loadUsers)
       <Transition name="user-editor">
         <div v-if="editorOpen" class="user-editor-backdrop" @click.self="closeEditor" @keydown.esc="closeEditor">
           <section class="user-editor-dialog" role="dialog" aria-modal="true" aria-labelledby="user-editor-title">
-            <header><div><h4 id="user-editor-title">{{ editorTitle }}</h4><p>{{ editorMode === 'create' ? '账户创建后即可按已授权功能使用现场大屏。' : '修改权限会重置勾选项；也可在下方按此用户职责微调。' }}</p></div><button type="button" class="editor-close" aria-label="关闭" :disabled="busy" @click="closeEditor">×</button></header>
+            <header><div><h4 id="user-editor-title">{{ editorTitle }}</h4><p>{{ editorMode === 'create' ? '账户创建后即可按已授权页面和功能工作。' : '切换角色模板仅重置现场功能；后台页面权限独立设置。' }}</p></div><button type="button" class="editor-close" aria-label="关闭" :disabled="busy" @click="closeEditor">×</button></header>
             <form class="editor-form" @submit.prevent="saveEditor">
               <label v-if="editorMode === 'create'">登录账号<input v-model.trim="editor.username" autocomplete="off" minlength="3" maxlength="32" pattern="[a-zA-Z][a-zA-Z0-9_-]{2,31}" required placeholder="例如 workshop_a" /></label>
               <label v-else>登录账号<input :value="editor.username" disabled /></label>
@@ -177,7 +197,28 @@ onMounted(loadUsers)
               <label v-else>重设密码<input v-model="replacementPassword" type="password" autocomplete="new-password" minlength="8" maxlength="128" placeholder="留空则不修改" /></label>
               <label v-if="editorMode === 'edit'" class="editor-enabled"><input v-model="editor.enabled" type="checkbox" />启用此账户</label>
               <fieldset class="capability-fieldset"><legend>功能权限</legend><label v-for="choice in permissionChoices" :key="choice.key" class="capability-option"><input v-model="editor.permissions[choice.key]" type="checkbox" /><span><strong>{{ choice.label }}</strong><small>{{ choice.detail }}</small></span></label></fieldset>
-              <p class="editor-hint">未登录用户不能查看大屏；客户账户只获得这里勾选的现场功能。</p>
+              <fieldset class="page-permission-fieldset">
+                <legend>后台页面权限</legend>
+                <div class="page-permission-presets">
+                  <button type="button" @click="setPagePreset('view')">业务页面全部只读</button>
+                  <button type="button" @click="setPagePreset('all')">业务页面全部操作</button>
+                  <button type="button" @click="setPagePreset('none')">清空后台授权</button>
+                </div>
+                <div class="page-permission-scroll"><table class="page-permission-table">
+                  <thead><tr><th>页面</th><th v-for="action in pageActions" :key="action">{{ PAGE_ACTIONS[action] }}</th></tr></thead>
+                  <tbody><tr v-for="page in PAGE_PERMISSIONS" :key="page.key">
+                    <th scope="row">{{ page.label }}</th>
+                    <td v-for="action in pageActions" :key="action">
+                      <input v-if="page.actions.includes(action)" v-model="editor.pagePermissions[page.key][action]" type="checkbox"
+                        :aria-label="`${page.label} · ${PAGE_ACTIONS[action]}`"
+                        :disabled="busy || page.ownerOnly || action !== 'view' && !editor.pagePermissions[page.key].view || page.key === 'models' && action === 'publish' && !editor.pagePermissions.models.edit"
+                        @change="changePageAction(page, action)" />
+                      <span v-else aria-hidden="true">—</span>
+                    </td>
+                  </tr></tbody>
+                </table></div>
+              </fieldset>
+              <p class="editor-hint">操作权限必须先勾选查看。导入属于新增 / 修改，导出属于查看；删除和发布独立授权。授权与版本页只读，许可证安装、备份恢复与项目包导入导出仅管理员可操作。旧账户默认无后台权限；保存修改后该用户需重新登录。</p>
               <p v-if="failed" class="editor-error" role="alert">{{ message }}</p>
               <footer>
                 <button v-if="editorMode === 'edit'" type="button" class="editor-delete" :disabled="busy" @click="removeEditorUser">{{ pendingDelete ? '确认删除此账户' : '删除账户' }}</button>
@@ -194,5 +235,6 @@ onMounted(loadUsers)
 </template>
 
 <style scoped>
+.page-permission-fieldset{grid-column:1/-1;margin:0;border:1px solid #e3e8ef;border-radius:8px;padding:12px;min-width:0}.page-permission-fieldset legend{font-size:12px;color:#43526a}.page-permission-presets{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px}.page-permission-presets button{background:#f4f7fc;border:1px solid #d5ddea;border-radius:6px;padding:6px 8px;color:#405879;font-size:11px;cursor:pointer}.page-permission-scroll{overflow:auto}.page-permission-table{width:100%;border-collapse:collapse;font-size:11px;min-width:490px}.page-permission-table th,.page-permission-table td{padding:8px 5px;border-bottom:1px solid #edf0f4;text-align:center}.page-permission-table th:first-child{text-align:left;font-weight:500}.page-permission-table thead{color:#63728a;background:#f7f9fc}.page-permission-table input{width:16px;height:16px}.page-permission-table input:disabled{opacity:.4}
 .users-settings{padding:24px 26px;background:#fff;border:1px solid #e1e6ee;border-radius:12px;color:#263349}.users-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:18px}.users-heading h3{margin:0 0 7px;font-size:19px}.users-heading p{margin:0;color:#758198;font-size:12px;line-height:1.7}.users-primary,.editor-cancel,.users-edit,.users-toolbar button,.editor-delete{border:1px solid #d5ddea;border-radius:7px;padding:8px 12px;background:#fff;color:#405879;font:inherit;font-size:12px;cursor:pointer;white-space:nowrap}.users-primary{border-color:#316cda;background:#316cda;color:white}.users-primary:hover{background:#245cc4}.users-primary:disabled,.editor-cancel:disabled,.editor-delete:disabled{opacity:.55;cursor:wait}.users-toolbar{display:flex;justify-content:space-between;align-items:center;margin:21px 0 9px;color:#758198;font-size:11px}.users-toolbar button{padding:6px 9px}.users-table-wrap{overflow:auto;border:1px solid #e5e9f0;border-radius:8px}.users-table{width:100%;border-collapse:collapse;text-align:left}.users-table th{padding:10px 13px;background:#f7f9fc;color:#758198;font-size:10px;font-weight:600;white-space:nowrap}.users-table td{padding:11px 13px;border-top:1px solid #edf0f4;font-size:12px;vertical-align:middle}.users-table td:first-child strong,.users-table td:first-child small{display:block}.users-table td:first-child strong{font-weight:600}.users-table td:first-child small{margin-top:3px;color:#8c97a9;font-size:10px}.role-badge{padding:4px 7px;border-radius:5px;background:#f2f5fa;color:#5f6e84;font-size:10px}.permission-tags{display:flex;gap:4px;flex-wrap:wrap}.permission-tags span{padding:3px 6px;border:1px solid #e6ebf2;border-radius:4px;color:#63728a;font-size:9px;white-space:nowrap}.permission-tags em{color:#9aa3b1;font-size:10px;font-style:normal}.account-state{display:inline-flex;align-items:center;gap:5px;color:#27845c;font-size:10px;white-space:nowrap}.account-state i{width:6px;height:6px;border-radius:50%;background:#4fb78b}.account-state.disabled{color:#9b6670}.account-state.disabled i{background:#d08a92}.users-edit{padding:6px 9px}.users-state{padding:30px 12px;text-align:center;color:#8792a4;font-size:12px}.users-message{margin:12px 0 0;color:#18774f;font-size:12px}.users-message.failed,.editor-error{color:#b42318}.sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap}.user-editor-backdrop{position:fixed;inset:0;z-index:10000;display:grid;place-items:center;padding:20px;background:rgba(20,29,43,.38);backdrop-filter:blur(3px)}.user-editor-dialog{width:min(640px,100%);max-height:min(780px,calc(100vh - 40px));overflow:auto;border:1px solid #dbe1ea;border-radius:14px;background:#fff;box-shadow:0 26px 80px rgba(20,29,43,.24)}.user-editor-dialog>header{display:flex;justify-content:space-between;gap:16px;padding:21px 24px 17px;border-bottom:1px solid #edf0f4}.user-editor-dialog h4{margin:0 0 5px;font-size:16px}.user-editor-dialog header p{margin:0;color:#7a8699;font-size:11px;line-height:1.6}.editor-close{width:30px;height:30px;border:0;border-radius:6px;background:#f4f6f9;color:#68778c;font-size:20px;line-height:1;cursor:pointer}.editor-form{display:grid;grid-template-columns:1fr 1fr;gap:14px;padding:19px 24px 22px}.editor-form>label{display:grid;gap:6px;color:#58677d;font-size:11px}.editor-form input:not([type=checkbox]),.editor-form select{box-sizing:border-box;width:100%;min-width:0;padding:9px 10px;border:1px solid #d5dce6;border-radius:6px;background:#fff;color:#263349;font:inherit;font-size:12px}.editor-form input:disabled{background:#f5f6f8;color:#8b95a6}.editor-form input[type=checkbox]{accent-color:#386dca}.editor-enabled{display:flex!important;align-items:center;gap:7px!important}.capability-fieldset{grid-column:1/-1;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:0;padding:12px;border:1px solid #e3e8ef;border-radius:8px}.capability-fieldset legend{padding:0 5px;color:#69778c;font-size:10px}.capability-option{display:flex!important;align-items:flex-start;gap:8px!important;padding:9px;border:1px solid #e9edf3;border-radius:6px;background:#fff}.capability-option input{margin:2px 0 0}.capability-option span{display:grid;gap:3px}.capability-option strong{color:#43526a;font-size:11px;font-weight:600}.capability-option small{color:#98a2b1;font-size:10px}.editor-hint,.editor-error{grid-column:1/-1;margin:0;color:#8290a3;font-size:10px;line-height:1.6}.editor-error{font-size:12px}.editor-form footer{grid-column:1/-1;display:flex;align-items:center;gap:8px;padding-top:7px}.editor-spacer{flex:1}.editor-delete{border-color:#f0d0d2;color:#a34149}.user-editor-enter-active,.user-editor-leave-active{transition:opacity .16s ease}.user-editor-enter-active .user-editor-dialog,.user-editor-leave-active .user-editor-dialog{transition:transform .16s ease}.user-editor-enter-from,.user-editor-leave-to{opacity:0}.user-editor-enter-from .user-editor-dialog,.user-editor-leave-to .user-editor-dialog{transform:translateY(7px)}@media(max-width:650px){.users-settings{padding:18px}.users-table{min-width:650px}.editor-form{grid-template-columns:1fr}.capability-fieldset,.editor-hint,.editor-error,.editor-form footer{grid-column:1}.capability-fieldset{grid-template-columns:1fr}}
 </style>

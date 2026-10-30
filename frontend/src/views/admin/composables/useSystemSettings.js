@@ -5,7 +5,7 @@
 import { ref, reactive, computed, watch, nextTick, onScopeDispose } from 'vue'
 import { adminApi } from '../../../config/factoryConfig.js'
 import { API_BASE } from '../../../runtime/backendEndpoint.js'
-import { adminFetch as fetch } from '../../../runtime/adminSession.js'
+import { adminFetch as fetch, canAdminApi, canAdminPage } from '../../../runtime/adminSession.js'
 import { normalizePlcOptions, normalizePlcProtocol } from '../../../config/plcProtocols.js'
 
 function createDefaultNativeEnvironmentConfig() {
@@ -268,6 +268,7 @@ export function useSystemSettings({
     }
 
     async function loadRuntimeSettings({ silent = false } = {}) {
+        if (!canAdminPage('settings.runtime')) return null
         if (runtimeSettingsDisposed || runtimeSaving.value || (silent && runtimeLoadInFlight)) return null
         const requestSeq = ++runtimeRequestSeq
         runtimeLoadInFlight = true
@@ -308,6 +309,7 @@ export function useSystemSettings({
     }
 
     function startRuntimeRefresh() {
+        if (!canAdminPage('settings.runtime')) return
         if (runtimeRefreshTimer) clearInterval(runtimeRefreshTimer)
         runtimeRefreshTimer = setInterval(() => loadRuntimeSettings({ silent: true }), 5000)
         runtimeRefreshTimer.unref?.()
@@ -349,7 +351,8 @@ export function useSystemSettings({
         savedSettingsFingerprint = JSON.stringify({ data_mode: settings.data_mode, native_quality_profile: settings.native_quality_profile })
         savedEnvironmentFingerprint = JSON.stringify(normalizeNativeEnvironmentConfig(nativeEnvironmentConfig))
         await loadRuntimeSettings({ silent: true })
-        await loadDatabaseConfig()
+        if (canAdminPage('settings.database')) await loadDatabaseConfig()
+        else if (canAdminPage('platform.designer')) await loadDataSources({ connectionsOnly: true })
         // 同时获取引擎状态
         loadEngineStatus()
     }
@@ -1091,6 +1094,7 @@ export function useSystemSettings({
     }, { flush: 'sync' })
 
     async function loadEngineStatus() {
+        if (!canAdminApi('/api/engine/status')) return
         try {
             const res = await fetch(`${API_BASE}/engine/status`)
             const data = await res.json()
@@ -1110,17 +1114,18 @@ export function useSystemSettings({
         return labels[mode] || '未启动'
     }
 
-    async function saveSettings() {
+    async function saveSettings(pageKey) {
         const result = await adminApi.saveSettings({
-            data_mode: settings.data_mode,
-            native_quality_profile: settings.native_quality_profile,
-            native_environment_config: JSON.stringify(normalizeNativeEnvironmentConfig(nativeEnvironmentConfig))
+            ...(!pageKey || pageKey === 'settings.data' ? { data_mode: settings.data_mode } : {}),
+            ...(!pageKey || pageKey === 'settings.performance' ? { native_quality_profile: settings.native_quality_profile } : {}),
+            ...(!pageKey || pageKey === 'platform.environment' ? { native_environment_config: JSON.stringify(normalizeNativeEnvironmentConfig(nativeEnvironmentConfig)) } : {})
         })
         if (result?.error) return alert(result.error, { title: '设置保存失败', type: 'danger' })
         if (!result?.success) return alert('设置保存失败：后端没有返回成功状态', { title: '设置保存失败', type: 'danger' })
         savedSettingsFingerprint = JSON.stringify({ data_mode: settings.data_mode, native_quality_profile: settings.native_quality_profile })
         savedEnvironmentFingerprint = JSON.stringify(normalizeNativeEnvironmentConfig(nativeEnvironmentConfig))
         // 保存后自动重启数据引擎
+        if (pageKey && pageKey !== 'settings.data') return alert('设置已保存。', { title: '保存成功', type: 'success' })
         try {
             const response = await fetch(`${API_BASE}/engine/restart`, { method: 'POST' })
             const data = await response.json().catch(() => ({}))
@@ -1221,11 +1226,13 @@ export function useSystemSettings({
         if ((savedSettingsFingerprint && nextSettings !== savedSettingsFingerprint)
             || (savedEnvironmentFingerprint && nextEnvironment !== savedEnvironmentFingerprint)) {
             const previousMode = JSON.parse(savedSettingsFingerprint || '{}').data_mode
-            const result = await adminApi.saveSettings({
-                data_mode: settings.data_mode,
-                native_quality_profile: settings.native_quality_profile,
-                native_environment_config: nextEnvironment
-            })
+            const savedSettings = JSON.parse(savedSettingsFingerprint || '{}')
+            const changes = {
+                ...(savedSettings.data_mode !== settings.data_mode ? { data_mode: settings.data_mode } : {}),
+                ...(savedSettings.native_quality_profile !== settings.native_quality_profile ? { native_quality_profile: settings.native_quality_profile } : {}),
+                ...(savedEnvironmentFingerprint !== nextEnvironment ? { native_environment_config: nextEnvironment } : {})
+            }
+            const result = await adminApi.saveSettings(changes)
             if (result?.error || !result?.success) throw new Error(result?.error || '数据通路或场景光效保存失败')
             savedSettingsFingerprint = nextSettings
             savedEnvironmentFingerprint = nextEnvironment

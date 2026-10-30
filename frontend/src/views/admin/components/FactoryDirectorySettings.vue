@@ -1,4 +1,5 @@
 <script setup>
+import { permissionDirective as vPermission } from '../../../runtime/pagePermissionUi.js'
 import { onMounted, onUnmounted, ref } from 'vue'
 import { adminApi } from '../../../config/factoryConfig.js'
 import { getFactoryScope } from '../../../runtime/factoryScope.js'
@@ -85,10 +86,10 @@ async function createFactory(){
       <div v-if="createOpen" class="factory-modal-backdrop" @click.self="closeEditor" @keydown.esc="closeEditor">
         <section class="factory-modal" role="dialog" aria-modal="true" aria-labelledby="new-factory-title">
           <header><div><h3 id="new-factory-title">{{ editingId?'编辑工厂资料':'新建工厂' }}</h3><p>{{ editingId?'修改名称与地理位置，不会改动车间、产线和设备空间坐标。':'将创建独立场景；层级设备配置从空白开始。' }}</p></div><button type="button" aria-label="关闭" @click="closeEditor">×</button></header>
-          <label class="factory-name-field">工厂名称<input v-model="newName" maxlength="120" autofocus placeholder="例如：天津热处理基地" /></label>
+          <label class="factory-name-field">工厂名称<input v-model="newName" maxlength="120" autofocus placeholder="例如：天津热处理基地"  v-permission="{ page: 'factories', action: 'edit' }"/></label>
           <FactoryGeoFields :model-value="newLocation" :provinces="props.provinces" :countries="props.countries" @update:model-value="newLocation=$event" />
           <p v-if="error" class="registry-message error" role="alert">{{ error }}</p>
-          <footer><button type="button" :disabled="saving" @click="closeEditor">取消</button><button type="button" class="primary-action" :disabled="saving" @click="createFactory">{{ saving?'保存中…':editingId?'保存资料':'创建工厂' }}</button></footer>
+          <footer><button type="button" :disabled="saving" @click="closeEditor">取消</button><button type="button" class="primary-action" :disabled="saving" @click="createFactory" v-permission="{ page: 'factories', action: 'edit' }">{{ saving?'保存中…':editingId?'保存资料':'创建工厂' }}</button></footer>
         </section>
       </div>
     </Teleport>

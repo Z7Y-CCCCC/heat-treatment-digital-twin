@@ -1,6 +1,6 @@
 <script setup>
 import { computed, defineAsyncComponent, nextTick, onActivated, onDeactivated, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
-import { adminSession, refreshAdminSession, startAdminSessionTracking, stopAdminSessionTracking, unlockAdmin, lockAdmin, logoutCurrentAdminAccount } from '../runtime/adminSession.js'
+import { adminSession, refreshAdminSession, startAdminSessionTracking, stopAdminSessionTracking, unlockAdmin, lockAdmin, logoutCurrentAdminAccount, canOpenAdmin } from '../runtime/adminSession.js'
 import AdminWindowChrome from './admin/components/AdminWindowChrome.vue'
 import { isNativeUnitySurface } from '../runtime/nativeSurfaceBridge.js'
 import { canResumeDashboardAfterLogin } from '../runtime/nativeAdminNavigation.js'
@@ -107,7 +107,7 @@ function continueAfterLogin() {
         } catch { /* Ignore malformed or external return paths. */ }
     }
 
-    if (adminSession.permissions.edit) {
+    if (canOpenAdmin()) {
         if (requested) void router.replace(requested)
         return
     }
@@ -170,7 +170,7 @@ onUnmounted(() => {
 
 <template>
     <div class="admin-access-root">
-        <AdminPanel v-if="adminSession.authenticated && adminSession.permissions.edit" :key="factoryScopeKey" />
+        <AdminPanel v-if="canOpenAdmin()" :key="`${factoryScopeKey}:${adminSession.user?.id}`" />
         <div v-else-if="adminSession.authenticated" class="admin-locked-shell">
             <AdminWindowChrome v-if="isUnityEmbedded" @state="Object.assign(hostState, $event)" />
             <main class="admin-unlock-page"><section class="admin-unlock-card">

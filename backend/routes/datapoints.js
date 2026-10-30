@@ -541,6 +541,11 @@ router.post('/sync', async (req, res) => {
             });
 
             const deletes = existingRows.filter(row => !retainedIds.has(String(row.id)));
+            if (deletes.length && !req.managementAutomationAuthorized) {
+                const { getAdminAuth } = require('../services/adminAuth');
+                const { suppliedAdminSession } = require('../middleware/security');
+                getAdminAuth().requireSession(suppliedAdminSession(req), req.get('x-csrf-token'), { permission: 'page:points:delete' });
+            }
             for (const row of deletes) {
                 await tx.run('DELETE FROM data_points WHERE id = ? AND device_id = ?', [row.id, device_id]);
             }

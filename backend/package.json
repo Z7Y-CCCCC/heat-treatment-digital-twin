@@ -16,6 +16,7 @@
     "dev": "node server.js",
     "test:admin-auth": "node scripts/admin-auth-test.cjs",
     "test:admin-integration": "node scripts/admin-auth-integration-test.cjs",
+    "test:page-permissions": "node scripts/page-permissions-test.cjs && node scripts/page-permissions-integration-test.cjs",
     "test:plc": "node scripts/plc-integration-test.cjs",
     "test:plc-precision": "node scripts/plc-value-precision-test.cjs",
     "test:plc-simulator-protocols": "node scripts/plc-simulator-protocol-integration-test.cjs",

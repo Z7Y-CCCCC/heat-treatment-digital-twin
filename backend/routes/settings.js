@@ -274,7 +274,7 @@ module.exports = function createSettingsRouter(controller = {}) {
             const rows = await db.all('SELECT * FROM settings');
             const settings = {};
             rows.forEach(r => {
-                if (LEGACY_WEB_SETTING_KEYS.has(r.key) || r.key === 'factory_directory') return;
+                if (LEGACY_WEB_SETTING_KEYS.has(r.key) || r.key === 'factory_directory' || r.key === 'lan_display_pin') return;
                 settings[r.key] = ['factory_location','factory_directory'].includes(r.key)
                     ? normalizeSettingValue(r.key, r.value)
                     : r.value;

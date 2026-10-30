@@ -2,11 +2,13 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createRouter, createMemoryHistory } from 'vue-router'
 import { installBrowser } from './helpers.mjs'
+import { canAccessAdmin, normalizePagePermissions } from '../../shared/pagePermissions.mjs'
 
 const session = { ready: true, authenticated: false, displayAuthenticated: false, permissions: {} }
 let refreshes = 0
 test.mock.module('../src/runtime/adminSession.js', { namedExports: {
-    adminSession: session, refreshAdminSession: async () => { refreshes++; session.ready = true }
+    adminSession: session, refreshAdminSession: async () => { refreshes++; session.ready = true },
+    canOpenAdmin: () => session.authenticated && canAccessAdmin(session.pagePermissions)
 } })
 test.mock.module('vue-router', { namedExports: {
     createWebHistory: createMemoryHistory,
@@ -17,7 +19,7 @@ test.mock.module('vue-router', { namedExports: {
 let sequence = 0
 async function fixture(t, overrides = {}) {
     const environment = installBrowser(t)
-    Object.assign(session, { ready: true, authenticated: false, displayAuthenticated: false, permissions: {} }, overrides)
+    Object.assign(session, { ready: true, authenticated: false, displayAuthenticated: false, permissions: {}, pagePermissions: normalizePagePermissions() }, overrides)
     refreshes = 0
     const { default: router } = await import(`../src/router/index.js?access-test=${++sequence}`)
     return { router, environment }
@@ -44,11 +46,11 @@ test('view-only accounts cannot enter admin or customer operations', async t => 
     await router.push('/customer')
     assert.equal(router.currentRoute.value.path, '/group')
 })
-test('cast and backup accounts can enter customer operations and editors retain admin access', async t => {
+test('cast and backup accounts can enter customer operations and page-authorized users retain admin access', async t => {
     const { router } = await fixture(t, { authenticated: true, displayAuthenticated: true, permissions: { backup: true } })
     await router.push('/admin')
     assert.equal(router.currentRoute.value.path, '/customer')
-    session.permissions = { edit: true }
+    session.pagePermissions = normalizePagePermissions({ models: { view: true } })
     await router.push('/admin')
     assert.equal(router.currentRoute.value.path, '/admin')
 })

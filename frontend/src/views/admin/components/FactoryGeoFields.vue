@@ -1,4 +1,5 @@
 <script setup>
+import { permissionDirective as vPermission } from '../../../runtime/pagePermissionUi.js'
 import { computed, ref, watch } from 'vue'
 import { loadChinaAdminMap } from '../../../runtime/chinaAdminMaps.js'
 import { loadOverseasAdminCatalog, OVERSEAS_CATALOG_COUNTRIES } from '../../../runtime/overseasAdminCatalog.js'
@@ -129,30 +130,30 @@ function selectPlace(place){
 
 <template>
   <div class="factory-geo-fields">
-    <label>国家／地区<select :value="country" @change="changeCountry($event.target.value)"><option value="CHN">中国</option><option v-for="item in countries.filter(row=>row.id!=='CHN')" :key="item.id" :value="item.id">{{ item.name }}</option></select></label>
+    <label>国家／地区<select :value="country" @change="changeCountry($event.target.value)" v-permission="{ page: 'factories', action: 'edit' }"><option value="CHN">中国</option><option v-for="item in countries.filter(row=>row.id!=='CHN')" :key="item.id" :value="item.id">{{ item.name }}</option></select></label>
     <template v-if="country==='CHN'">
-      <label>省级区域<select :value="provinceCode" @change="changeProvince($event.target.value)"><option value="">待定位</option><option v-for="item in provinces" :key="item.id" :value="item.id">{{ item.name }}</option></select></label>
-      <label>{{ directMunicipality?'市辖区':'城市' }}<select :value="cityCode" :disabled="!provinceCode || loadingCities || !cities.length" @change="changeCity($event.target.value)"><option value="">{{ loadingCities?'载入城市…':'请选择' }}</option><option v-for="item in cities" :key="item.id" :value="item.id">{{ item.name }}</option></select></label>
-      <label>区／县<select :value="props.modelValue.districtCode || ''" :disabled="!cityCode || loadingDistricts || !districts.length" @change="changeDistrict($event.target.value)"><option value="">{{ loadingDistricts?'载入区县…':cityCode?'可选':'请先选城市' }}</option><option v-for="item in districts" :key="item.id" :value="item.id">{{ item.name }}</option></select></label>
+      <label>省级区域<select :value="provinceCode" @change="changeProvince($event.target.value)" v-permission="{ page: 'factories', action: 'edit' }"><option value="">待定位</option><option v-for="item in provinces" :key="item.id" :value="item.id">{{ item.name }}</option></select></label>
+      <label>{{ directMunicipality?'市辖区':'城市' }}<select :value="cityCode" :disabled="!provinceCode || loadingCities || !cities.length" @change="changeCity($event.target.value)" v-permission="{ page: 'factories', action: 'edit' }"><option value="">{{ loadingCities?'载入城市…':'请选择' }}</option><option v-for="item in cities" :key="item.id" :value="item.id">{{ item.name }}</option></select></label>
+      <label>区／县<select :value="props.modelValue.districtCode || ''" :disabled="!cityCode || loadingDistricts || !districts.length" @change="changeDistrict($event.target.value)" v-permission="{ page: 'factories', action: 'edit' }"><option value="">{{ loadingDistricts?'载入区县…':cityCode?'可选':'请先选城市' }}</option><option v-for="item in districts" :key="item.id" :value="item.id">{{ item.name }}</option></select></label>
     </template>
     <template v-else-if="hasOverseasCatalog && !manualOverseas">
-      <label>省／州／行政区<select :value="selectedOverseasRegion?.code || ''" :disabled="loadingOverseas || !overseasCatalog" @change="changeOverseasRegion($event.target.value)"><option value="">{{ loadingOverseas?'载入行政区…':'请选择' }}</option><option v-for="item in overseasRegions" :key="item.code" :value="item.code">{{ item.name }}</option></select></label>
-      <label>城市／市辖区<span class="overseas-city-picker"><input v-model="cityFilter" type="search" :disabled="!selectedOverseasRegion" placeholder="筛选城市名称" aria-label="筛选城市" /><select :value="selectedOverseasCity?.id || ''" :disabled="!selectedOverseasRegion || !overseasCities.length" @change="changeOverseasCity($event.target.value)"><option value="">{{ selectedOverseasRegion?'请选择城市':'请先选行政区' }}</option><option v-for="item in filteredOverseasCities" :key="item.id" :value="item.id">{{ item.name }}</option></select></span></label>
-      <label>区县／详细区域（可选）<input :value="props.modelValue.districtName || ''" maxlength="100" @input="patch({districtCode:'',districtName:$event.target.value})" /></label>
+      <label>省／州／行政区<select :value="selectedOverseasRegion?.code || ''" :disabled="loadingOverseas || !overseasCatalog" @change="changeOverseasRegion($event.target.value)" v-permission="{ page: 'factories', action: 'edit' }"><option value="">{{ loadingOverseas?'载入行政区…':'请选择' }}</option><option v-for="item in overseasRegions" :key="item.code" :value="item.code">{{ item.name }}</option></select></label>
+      <label>城市／市辖区<span class="overseas-city-picker"><input v-model="cityFilter" type="search" :disabled="!selectedOverseasRegion" placeholder="筛选城市名称" aria-label="筛选城市"  /><select :value="selectedOverseasCity?.id || ''" :disabled="!selectedOverseasRegion || !overseasCities.length" @change="changeOverseasCity($event.target.value)" v-permission="{ page: 'factories', action: 'edit' }"><option value="">{{ selectedOverseasRegion?'请选择城市':'请先选行政区' }}</option><option v-for="item in filteredOverseasCities" :key="item.id" :value="item.id">{{ item.name }}</option></select></span></label>
+      <label>区县／详细区域（可选）<input :value="props.modelValue.districtName || ''" maxlength="100" @input="patch({districtCode:'',districtName:$event.target.value})"  v-permission="{ page: 'factories', action: 'edit' }"/></label>
     </template>
     <div v-if="country!=='CHN'" class="overseas-place-search">
-      <label>查找海外地点<input v-model="placeQuery" maxlength="160" placeholder="输入城市、区县或详细地址" @keydown.enter.prevent="searchPlace" /></label>
-      <button type="button" :disabled="searching || !selectedCountry?.isoA2" @click="searchPlace">{{ searching?'查询中…':'查找地点' }}</button>
+      <label>查找海外地点<input v-model="placeQuery" maxlength="160" placeholder="输入城市、区县或详细地址" @keydown.enter.prevent="searchPlace"  v-permission="{ page: 'factories', action: 'edit' }"/></label>
+      <button type="button" :disabled="searching || !selectedCountry?.isoA2" @click="searchPlace" v-permission="{ page: 'factories', action: 'edit' }">{{ searching?'查询中…':'查找地点' }}</button>
       <p class="place-search-note">{{ hasOverseasCatalog?'城市下拉框填入的是城市中心近似坐标，请按厂区实际位置修正；':'此国家暂未提供离线行政区下拉框，可搜索或手填。' }}仅点击查找时向 OpenStreetMap 发送查询词，不自动附带工厂名称。地图数据 © OpenStreetMap contributors。</p>
       <div v-if="placeResults.length" class="place-search-results" role="listbox" aria-label="地点查询结果"><button v-for="(place,index) in placeResults" :key="index" type="button" role="option" :aria-selected="false" @click="selectPlace(place)"><strong>{{ place.displayName }}</strong><small>{{ place.latitude.toFixed(5) }}, {{ place.longitude.toFixed(5) }}</small></button></div>
       <p v-if="lookupError" class="place-search-feedback" role="status">{{ lookupError }}</p>
     </div>
     <button v-if="hasOverseasCatalog" type="button" class="overseas-manual-toggle" @click="manualOverseas=!manualOverseas">{{ manualOverseas?'返回行政区下拉选择':'找不到地点？手动填写' }}</button>
-    <label v-if="country!=='CHN' && (!hasOverseasCatalog || manualOverseas)">区域名称<input :value="props.modelValue.regionName || ''" maxlength="100" @input="patch({regionCode:'',regionName:$event.target.value,cityCode:'',latitude:null,longitude:null})" /></label>
-    <label v-if="country==='CHN' || !hasOverseasCatalog || manualOverseas">{{ country==='CHN'?'城市名称（自动）':'城市／地址说明' }}<input :value="props.modelValue.city || ''" :readonly="country==='CHN'" maxlength="200" @input="patch({cityCode:'',city:$event.target.value,latitude:null,longitude:null})" /></label>
-    <label v-if="country!=='CHN' && (!hasOverseasCatalog || manualOverseas)">区县／区域<input :value="props.modelValue.districtName || ''" maxlength="100" @input="patch({districtCode:'',districtName:$event.target.value})" /></label>
-    <label>纬度（工厂定位）<input type="number" step="any" min="-90" max="90" :value="props.modelValue.latitude ?? ''" placeholder="例如 39.123456" @input="patch({latitude:$event.target.value})" /></label>
-    <label>经度（工厂定位）<input type="number" step="any" min="-180" max="180" :value="props.modelValue.longitude ?? ''" placeholder="例如 117.123456" @input="patch({longitude:$event.target.value})" /></label>
+    <label v-if="country!=='CHN' && (!hasOverseasCatalog || manualOverseas)">区域名称<input :value="props.modelValue.regionName || ''" maxlength="100" @input="patch({regionCode:'',regionName:$event.target.value,cityCode:'',latitude:null,longitude:null})"  v-permission="{ page: 'factories', action: 'edit' }"/></label>
+    <label v-if="country==='CHN' || !hasOverseasCatalog || manualOverseas">{{ country==='CHN'?'城市名称（自动）':'城市／地址说明' }}<input :value="props.modelValue.city || ''" :readonly="country==='CHN'" maxlength="200" @input="patch({cityCode:'',city:$event.target.value,latitude:null,longitude:null})"  v-permission="{ page: 'factories', action: 'edit' }"/></label>
+    <label v-if="country!=='CHN' && (!hasOverseasCatalog || manualOverseas)">区县／区域<input :value="props.modelValue.districtName || ''" maxlength="100" @input="patch({districtCode:'',districtName:$event.target.value})"  v-permission="{ page: 'factories', action: 'edit' }"/></label>
+    <label>纬度（工厂定位）<input type="number" step="any" min="-90" max="90" :value="props.modelValue.latitude ?? ''" placeholder="例如 39.123456" @input="patch({latitude:$event.target.value})"  v-permission="{ page: 'factories', action: 'edit' }"/></label>
+    <label>经度（工厂定位）<input type="number" step="any" min="-180" max="180" :value="props.modelValue.longitude ?? ''" placeholder="例如 117.123456" @input="patch({longitude:$event.target.value})"  v-permission="{ page: 'factories', action: 'edit' }"/></label>
     <p class="geo-coordinate-note">经纬度用于工厂定位；海外城市下拉选择仅给出城市中心坐标，保存前请调整到实际厂区，或使用地点搜索。留空时显示“位置待完善”，不影响车间模型坐标。行政区目录 © Countries States Cities Database contributors（ODbL 1.0）。</p>
     <p v-if="geoError" class="factory-geo-error" role="status">{{ geoError }}</p>
   </div>

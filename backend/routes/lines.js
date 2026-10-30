@@ -2,6 +2,24 @@ const express = require('express');
 const router = express.Router();
 const { getDb } = require('../db/database');
 const { normalizeLineLayout } = require('../utils/spatialLayout');
+
+router.put('/:id/placement', async (req, res) => {
+    try {
+        const body = req.body;
+        if (!body || Array.isArray(body) || Object.keys(body).some(key => !['transform', 'placementPending'].includes(key))
+            || typeof body.placementPending !== 'boolean' || !body.transform || typeof body.transform !== 'object'
+            || Array.isArray(body.transform) || Object.keys(body.transform).some(key => !['x', 'y', 'z', 'rotationY'].includes(key)
+                || typeof body.transform[key] !== 'number' || !Number.isFinite(body.transform[key]))) throw new Error('产线位置格式无效');
+        const db = await getDb();
+        await db.transaction(async tx => {
+            const line = await tx.get('SELECT l.* FROM `lines` l JOIN workshops w ON w.id=l.workshop_id WHERE l.id=? AND w.factory_id=?', [req.params.id, req.factoryId]);
+            if (!line) throw Object.assign(new Error('产线不存在'), { statusCode: 404 });
+            const layout = normalizeLineLayout({ ...normalizeLineLayout(line.layout_json), ...body });
+            await tx.run('UPDATE `lines` SET layout_json=? WHERE id=?', [JSON.stringify(layout), line.id]);
+        });
+        res.json({ success: true });
+    } catch (error) { res.status(error.statusCode || 400).json({ error: error.message }); }
+});
 const {
     assertDeletionConfirmation,
     getLineDeletionImpact,

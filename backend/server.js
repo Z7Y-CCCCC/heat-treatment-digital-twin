@@ -37,6 +37,7 @@ const {
 } = require('./db/database');
 const { getBuiltinModels, mergeBuiltinModels } = require('./services/builtinModels');
 const { stringifyModelMetadata } = require('./services/modelAssetMetadata');
+const { assertModelPublishPermission } = require('./services/modelPublicationPermission');
 const { getInspectionPresets } = require('./services/inspectionPresets');
 const { publicProtocolDefinitions } = require('./services/plcProtocolConfig');
 const {
@@ -102,7 +103,7 @@ app.use((req, res, next) => {
 });
 // Authentication has its own local-only, CSRF and password-attempt checks.
 // Mount it before write protection so a locked engineer can still sign in.
-app.use('/api/admin-auth', express.json({ limit: '2kb', strict: true }), require('./routes/adminAuth')(), (error, req, res, next) => {
+app.use('/api/admin-auth', express.json({ limit: '16kb', strict: true }), require('./routes/adminAuth')(), (error, req, res, next) => {
     // Parser errors can contain fragments of the password body. Do not echo or
     // log them through the generic HTTP error handler.
     res.status(error.type === 'entity.too.large' ? 413 : 400).json({
@@ -324,6 +325,7 @@ app.post('/api/models/upload', upload.single('modelFile'), async (req, res) => {
             throw Object.assign(new Error('模型适用层级无效'), { statusCode: 400 });
         }
         const normalizedMetadata = stringifyModelMetadata(metadata || '{}', { name: modelName });
+        assertModelPublishPermission(req, {}, normalizedMetadata);
         await db.upsert('models', {
             id: modelId,
             name: modelName,
@@ -395,6 +397,7 @@ app.put('/api/models/:id', async (req, res) => {
             if (Number(usage?.cnt || 0) > 0) return res.status(409).json({ error: `该模型正被 ${usage.cnt} 台设备使用，请先更换这些设备的模型` });
         }
         const normalizedMetadata = stringifyModelMetadata(nextMetadata, { name: nextName });
+        assertModelPublishPermission(req, existing.metadata, normalizedMetadata);
 
         await db.run(
             'UPDATE models SET name = ?, tags = ?, default_scale = ?, metadata = ?, placement_level = ? WHERE id = ?',
@@ -412,7 +415,7 @@ app.put('/api/models/:id', async (req, res) => {
         }, 'unity');
         res.json({ success: true, model: updated });
     } catch (e) {
-        res.status(400).json({ error: e.message });
+        res.status(e.statusCode || 400).json({ error: e.message });
     }
 });
 

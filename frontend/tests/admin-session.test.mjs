@@ -4,7 +4,7 @@ import 'vue'
 import { deferred, installBrowser, json, settle } from './helpers.mjs'
 
 let moduleId = 0
-const signedIn = csrfToken => ({ configured: true, authenticated: true, csrfToken, expiresAt: Date.now() + 600000 })
+const signedIn = csrfToken => ({ configured: true, authenticated: true, user: { id: 'owner', role: 'owner' }, csrfToken, expiresAt: Date.now() + 600000 })
 
 async function fixture(t) {
     const environment = installBrowser(t)

@@ -1,6 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { isNativeMapEntry } from '../runtime/groupTopology.js'
-import { adminSession, refreshAdminSession } from '../runtime/adminSession.js'
+import { adminSession, refreshAdminSession, canOpenAdmin } from '../runtime/adminSession.js'
 import { isNativeOverlaySurface } from '../runtime/nativeSurfaceBridge.js'
 
 const routes = [
@@ -70,7 +70,7 @@ router.beforeEach(async (to, from) => {
         const redirect = to.path === '/' ? '/group' : to.fullPath
         return { path: '/admin', query: { ...to.query, redirect }, replace: true }
     }
-    if (to.path === '/admin' && adminSession.authenticated && !adminSession.permissions.edit) {
+    if (to.path === '/admin' && adminSession.authenticated && !canOpenAdmin()) {
         return { path: '/customer', query: to.query }
     }
     if (to.path === '/customer' && adminSession.displayAuthenticated

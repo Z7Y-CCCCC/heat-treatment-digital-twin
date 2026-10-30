@@ -1,4 +1,5 @@
 <script setup>
+import { permissionDirective as vPermission } from '../../../runtime/pagePermissionUi.js'
 import { onUnmounted, ref, watch } from 'vue'
 import { API_BASE } from '../../../runtime/backendEndpoint.js'
 import { adminFetch } from '../../../runtime/adminSession.js'
@@ -71,18 +72,18 @@ async function request(operation) {
 <template>
   <section class="project-transfer" aria-label="项目与资产迁移">
     <header><div><h3>项目与资产迁移</h3><p>将所选工厂的已保存画面、场景配置、设备拓扑和引用资产打成一个包，在这里导入复用。</p></div>
-      <button type="button" :disabled="!!busy" @click="request('export')">{{ busy === 'export' ? '正在导出…' : '导出所选工厂项目包' }}</button></header>
+      <button type="button" :disabled="!!busy" @click="request('export')" v-permission="{ page: 'settings.security', action: 'edit' }">{{ busy === 'export' ? '正在导出…' : '导出所选工厂项目包' }}</button></header>
     <p>导入会创建新工厂，保留现有工厂。连接凭据不随包迁移，设备采集默认关闭；完成连接与点位验收后再启用。</p>
     <label v-if="factories.length" class="file-label">导出来源工厂<select v-model="exportFactoryId" :disabled="!!busy"><option v-for="factory in factories" :key="factory.id" :value="factory.id">{{ factory.name }}</option></select></label>
-    <label class="file-label">选择项目迁移 ZIP<input type="file" accept=".zip,application/zip" :disabled="!!busy" @change="chooseFile" /></label>
-    <button type="button" :disabled="!!busy || !selectedFile" @click="request('inspect')">{{ busy === 'inspect' ? '正在校验…' : '校验并预览项目包' }}</button>
+    <label class="file-label">选择项目迁移 ZIP<input type="file" accept=".zip,application/zip" :disabled="!!busy" @change="chooseFile"  v-permission="{ page: 'settings.security', action: 'edit' }"/></label>
+    <button type="button" :disabled="!!busy || !selectedFile" @click="request('inspect')" v-permission="{ page: 'settings.security', action: 'edit' }">{{ busy === 'inspect' ? '正在校验…' : '校验并预览项目包' }}</button>
     <div v-if="inspection" class="inspection" aria-label="迁移预检结果">
       <strong>来源：{{ inspection.factoryName }}</strong>
       <dl><template v-for="(label, key) in labels" :key="key"><dt>{{ label }}</dt><dd>{{ inspection.counts?.[key] || 0 }}</dd></template><dt>资产文件</dt><dd>{{ inspection.assetCount }} 个（{{ (inspection.assetBytes / 1024 / 1024).toFixed(1) }} MiB）</dd></dl>
       <ul v-if="inspection.warnings?.length"><li v-for="warning in inspection.warnings" :key="warning">{{ warning }}</li></ul>
       <label>新工厂名称<input v-model="newName" maxlength="120" :disabled="!!busy" /></label>
       <label v-if="inspection.sharedAppearance?.available"><span><input v-model="applySharedAppearance" type="checkbox" :disabled="!!busy" /> 同时应用包中的集团地图外观和加载画面（影响所有工厂）</span><small>默认只导入新工厂。勾选后将替换当前集团的共享外观设置。</small></label>
-      <button type="button" :disabled="!!busy || !newName.trim()" @click="request('import')">{{ busy === 'import' ? '正在创建并导入…' : '创建新工厂并导入' }}</button>
+      <button type="button" :disabled="!!busy || !newName.trim()" @click="request('import')" v-permission="{ page: 'settings.security', action: 'edit' }">{{ busy === 'import' ? '正在创建并导入…' : '创建新工厂并导入' }}</button>
     </div>
     <p v-if="error" role="alert" class="error">{{ error }}</p>
     <p v-if="message" role="status">{{ message }}</p>

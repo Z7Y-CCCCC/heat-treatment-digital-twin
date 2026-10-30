@@ -10,6 +10,12 @@ const MAX_SESSION_MS = 8 * 60 * 60 * 1000;
 const USER_ROLES = new Set(['customer', 'viewer', 'editor']);
 const ASSIGNABLE_USER_ROLES = new Set(['customer', 'viewer']);
 const DELEGABLE_PERMISSIONS = ['view', 'launch', 'cast', 'backup'];
+const { normalizePagePermissions, canAccessAdmin, allowsRequirement } = require('../../shared/pagePermissions.cjs');
+
+function userPagePermissions(value) {
+    try { return normalizePagePermissions(value); }
+    catch { throw authError(400, 'ADMIN_PAGE_PERMISSIONS_FORMAT', '页面权限无效；操作权限需同时勾选查看，用户管理和后台安全不可委派'); }
+}
 
 function publicRole(role) {
     // Existing installations may still contain editor accounts. They no
@@ -94,7 +100,8 @@ function createAdminAuth(options = {}) {
                 || stored.users.some(user => !/^[a-zA-Z][a-zA-Z0-9_-]{2,31}$/.test(user.username || '')
                     || !USER_ROLES.has(user.role) || !/^[a-f0-9]{32}$/.test(user.password?.salt || '')
                     || !/^[a-f0-9]{128}$/.test(user.password?.hash || '')
-                    || !storedUserPermissionsAreValid(user.permissions)))) throw new Error('Invalid users');
+                    || !storedUserPermissionsAreValid(user.permissions)
+                    || !userPagePermissions(user.pagePermissions)))) throw new Error('Invalid users');
             config = { ...stored, users: stored.users || [] };
         } catch {
             // Never turn a damaged credential file into an unprotected first run.
@@ -187,11 +194,17 @@ function createAdminAuth(options = {}) {
         const session = getSession(token);
         const authenticated = adminActive(session);
         const permissions = permissionsForSession(session);
+        const pagePermissions = normalizePagePermissions(session?.userId === 'owner' ? undefined
+            : config.users.find(user => user.id === session?.userId)?.pagePermissions,
+            { owner: authenticated && session?.userId === 'owner' });
+        const activePagePermissions = authenticated ? pagePermissions : normalizePagePermissions();
         return {
             success: true,
             configured: !!config.password,
             authenticated,
             displayAuthenticated: !!session,
+            pagePermissions: activePagePermissions,
+            canAccessAdmin: authenticated && canAccessAdmin(activePagePermissions),
             ...settings(),
             ...(session ? {
                 user: principal(session),
@@ -206,7 +219,7 @@ function createAdminAuth(options = {}) {
     function requireSession(token, csrfToken, { touch = false, checkCsrf = true, permission = 'view' } = {}) {
         const session = getSession(token);
         if (!session) throw authError(401, 'ADMIN_AUTH_REQUIRED', '后台已锁定，请输入后台密码解锁');
-        if (!adminActive(session) && (touch || !['view', 'launch', 'cast', 'backup'].includes(permission))) {
+        if (!adminActive(session) && touch) {
             throw authError(401, 'ADMIN_AUTH_REQUIRED', '后台已锁定，请输入后台密码解锁');
         }
         if (checkCsrf && !equalSecret(csrfToken, session.csrfToken)) {
@@ -214,9 +227,12 @@ function createAdminAuth(options = {}) {
         }
         const role = principal(session)?.role;
         const permissions = permissionsForSession(session);
-        if ((permission === 'owner' || permission === 'admin' || permission === 'edit') && role !== 'owner'
-            || ['launch', 'cast', 'backup', 'view'].includes(permission) && !permissions[permission]) {
-            throw authError(403, 'ADMIN_PERMISSION_DENIED', '当前账户没有执行此操作的权限');
+        const active = adminActive(session);
+        const pagePermissions = normalizePagePermissions(session.userId === 'owner' ? undefined
+            : config.users.find(user => user.id === session.userId)?.pagePermissions, { owner: session.userId === 'owner' });
+        if (!allowsRequirement(permission, { owner: role === 'owner', active, permissions, pagePermissions })) {
+            if (!active) throw authError(401, 'ADMIN_AUTH_REQUIRED', '后台已锁定，请输入后台密码解锁');
+            throw authError(403, 'ADMIN_PERMISSION_DENIED', '当前账户没有执行此页面操作的权限');
         }
         if (touch) session.lastActivityAt = now();
         return { ...session, role, userId: session.userId };
@@ -336,7 +352,7 @@ function createAdminAuth(options = {}) {
             });
         },
         touch(token, csrfToken) {
-            requireSession(token, csrfToken, { touch: true });
+            requireSession(token, csrfToken, { touch: true, permission: 'session' });
             return status(token);
         },
         logout(token, csrfToken) {
@@ -351,7 +367,7 @@ function createAdminAuth(options = {}) {
         lock(token, csrfToken) {
             const session = getSession(token);
             if (session && adminActive(session)) {
-                requireSession(token, csrfToken);
+                requireSession(token, csrfToken, { permission: 'session' });
                 // The owner can secure the entire console; other users only
                 // lock their own admin access. Displays stay authorized.
                 if (principal(session).role === 'owner') {
@@ -374,13 +390,13 @@ function createAdminAuth(options = {}) {
             validatePassword(currentPassword);
             validatePassword(newPassword);
             if (currentPassword === newPassword) throw authError(400, 'ADMIN_PASSWORD_UNCHANGED', '新密码不能与原密码相同');
-            const session = requireSession(token, csrfToken);
+            const session = requireSession(token, csrfToken, { permission: 'session' });
             return passwordOperation(key, async () => {
                 const user = session.userId === 'owner' ? null : config.users.find(item => item.id === session.userId);
                 await verifyPassword(currentPassword, key, user?.password || config.password);
                 const credential = await hashPassword(newPassword);
                 // Locking in another window while hashing must cancel this change.
-                requireSession(token, csrfToken);
+                requireSession(token, csrfToken, { permission: 'session' });
                 if (user) {
                     saveConfig({ ...config, users: config.users.map(item => item.id === user.id ? { ...item, password: credential } : item) });
                     for (const [sessionKey, active] of sessions) if (active.userId === user.id) sessions.delete(sessionKey);
@@ -397,6 +413,7 @@ function createAdminAuth(options = {}) {
             return config.users.map(({ password: _password, ...user }) => ({
                 ...user,
                 role: publicRole(user.role),
+                pagePermissions: userPagePermissions(user.pagePermissions),
                 permissions: permissionsForSession({ userId: user.id })
             }));
         },
@@ -410,13 +427,14 @@ function createAdminAuth(options = {}) {
             }
             validatePassword(input?.password);
             const permissions = normalizeUserPermissions(role, input?.permissions);
+            const pagePermissions = userPagePermissions(input?.pagePermissions);
             if (config.users.length >= 64 || config.users.some(user => user.username.toLowerCase() === username)) {
                 throw authError(409, 'ADMIN_USER_EXISTS', '账号已存在或达到 64 个账户上限');
             }
             const credential = await hashPassword(input.password);
             requireSession(token, csrfToken, { permission: 'owner' });
             if (config.users.some(user => user.username.toLowerCase() === username)) throw authError(409, 'ADMIN_USER_EXISTS', '账号已存在');
-            const user = { id: crypto.randomBytes(12).toString('hex'), username, displayName, role, permissions, enabled: true, password: credential };
+            const user = { id: crypto.randomBytes(12).toString('hex'), username, displayName, role, permissions, pagePermissions, enabled: true, password: credential };
             saveConfig({ ...config, users: [...config.users, user] });
             const { password: _password, ...publicUser } = user;
             return publicUser;
@@ -436,8 +454,9 @@ function createAdminAuth(options = {}) {
                     : normalizeUserPermissions(role)
                 : normalizeUserPermissions(role, input.permissions);
             const password = input?.password ? (validatePassword(input.password), await hashPassword(input.password)) : existing.password;
+            const pagePermissions = userPagePermissions(input?.pagePermissions === undefined ? existing.pagePermissions : input.pagePermissions);
             requireSession(token, csrfToken, { permission: 'owner' });
-            const updated = { ...existing, role, permissions, displayName, enabled: input.enabled, password };
+            const updated = { ...existing, role, permissions, pagePermissions, displayName, enabled: input.enabled, password };
             saveConfig({ ...config, users: config.users.map(user => user.id === id ? updated : user) });
             for (const [sessionKey, active] of sessions) if (active.userId === id) sessions.delete(sessionKey);
             const { password: _password, ...publicUser } = updated;

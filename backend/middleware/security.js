@@ -2,6 +2,7 @@ const crypto = require('crypto');
 const cors = require('cors');
 const { assertLicenseForWrite, getLicenseStatus, isLicenseEnforced } = require('../services/license');
 const { getAdminAuth } = require('../services/adminAuth');
+const { apiPermission } = require('../../shared/apiPermissions.cjs');
 
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 const CAST_READ_PATHS = [
@@ -166,41 +167,6 @@ function suppliedAdminToken(req) {
         : '';
 }
 
-function backupOperationPermission(apiPath, method) {
-    if (apiPath === '/api/database/backups' || apiPath.startsWith('/api/database/backups/')) {
-        const adminOnly = apiPath.endsWith('/config') || apiPath.endsWith('/restore') || method === 'DELETE';
-        return adminOnly ? 'admin' : 'backup';
-    }
-    if (apiPath === '/api/site-backups' || apiPath.startsWith('/api/site-backups/')) {
-        const adminOnly = apiPath.endsWith('/config') || apiPath.endsWith('/import');
-        return adminOnly ? 'admin' : 'backup';
-    }
-    if (apiPath === '/api/data-sources/backups' || apiPath.startsWith('/api/data-sources/backups/')) {
-        return /\/status$/.test(apiPath) || /\/run$/.test(apiPath) ? 'backup' : 'admin';
-    }
-    return '';
-}
-
-function permissionForApi(apiPath, method) {
-    if ((method === 'GET' || method === 'HEAD') && DISPLAY_READ_PATHS.has(apiPath)) return 'view';
-    if (method === 'POST' && (apiPath === '/api/factories/activate'
-        || /^\/api\/factories\/[^/]+\/activate$/.test(apiPath)
-        || apiPath === '/api/native-preview/navigate'
-        || /^\/api\/platform\/scenes\/[^/]+\/activate-latest-release$/.test(apiPath))) return 'launch';
-    if (apiPath === '/api/system/cast' || apiPath.startsWith('/api/system/cast/')) return 'cast';
-    const backupPermission = backupOperationPermission(apiPath, method);
-    if (backupPermission) return backupPermission;
-    if (apiPath === '/api/database' || apiPath.startsWith('/api/database/')) return 'admin';
-    if (apiPath === '/api/platform' || apiPath.startsWith('/api/platform/')) return 'admin';
-    if ((apiPath === '/api/system' || apiPath.startsWith('/api/system/'))
-        && apiPath !== '/api/system/cast' && !apiPath.startsWith('/api/system/cast/')) return 'admin';
-    if ((apiPath === '/api/data-sources' || apiPath.startsWith('/api/data-sources/'))
-        && apiPath !== '/api/data-sources/runtime-values' && !apiPath.startsWith('/api/data-sources/runtime-values/')) return 'admin';
-    if (apiPath === '/api/project-bundles' || apiPath.startsWith('/api/project-bundles/')) return 'admin';
-    if (!SAFE_METHODS.has(method)) return 'admin';
-    return 'view';
-}
-
 function protectManagementWrites(req, res, next) {
     const apiPath = req.path.toLowerCase().replace(/\/+$/, '');
     const sensitiveRead = apiPath === '/api/database' || apiPath.startsWith('/api/database/')
@@ -253,7 +219,11 @@ function protectManagementWrites(req, res, next) {
     }
 
     if (sensitiveRead) res.setHeader('Cache-Control', 'no-store');
-    if (!apiPath.startsWith('/api/') || req.method === 'OPTIONS' || licenseExempt) {
+    // License exemption permits recovery on expired installations, not
+    // anonymous configuration writes. Read-only status remains public.
+    const authenticationExempt = shutdown || apiPath.startsWith('/api/admin-auth')
+        || licenseExempt && !writing && apiPath !== '/api/system/runtime';
+    if (!apiPath.startsWith('/api/') || req.method === 'OPTIONS' || authenticationExempt) {
         next();
         return;
     }
@@ -264,6 +234,7 @@ function protectManagementWrites(req, res, next) {
     const mcpToken = String(process.env.MCP_API_TOKEN || '');
     const mcpAuthorized = mcpToken && (loopback || apiPath === '/api/mcp')
         && safeTokenEqual(req.get('x-mcp-token') || suppliedAdminToken(req), mcpToken);
+    req.managementAutomationAuthorized = Boolean(tokenAuthorized || mcpAuthorized);
     if (!loopback && !tokenAuthorized && !mcpAuthorized) {
         res.status(403).json({
             success: false,
@@ -287,7 +258,7 @@ function protectManagementWrites(req, res, next) {
             // Polling and background previews must never keep an idle engineer
             // session alive. Only the explicit user-activity endpoint does that.
             getAdminAuth().requireSession(suppliedAdminSession(req), req.get('x-csrf-token'), {
-                checkCsrf: writing, permission: permissionForApi(apiPath, req.method)
+                checkCsrf: writing, permission: apiPermission(apiPath, req.method, req.body)
             });
         } catch (error) {
             res.status(error.statusCode || 503).json({ success: false, code: error.code || 'ADMIN_AUTH_ERROR', error: error.message });

@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises'
 import { createRenderer, h, ref } from 'vue'
 import { parse, compileScript, compileTemplate } from 'vue/compiler-sfc'
 import { settle } from './helpers.mjs'
+import { normalizePagePermissions } from '../../shared/pagePermissions.mjs'
 
 const url = new URL('../src/views/admin/components/PlatformUsersSettings.vue', import.meta.url)
 const { descriptor, errors } = parse(await readFile(url, 'utf8'))
@@ -12,6 +13,7 @@ assert.deepEqual(compileTemplate({ source: descriptor.template.content, filename
 let compiled = compileScript(descriptor, { id: 'users' }).content
 compiled = compiled.replace(/import\s*\{([^}]+)\}\s*from\s*['"]\.\.\/\.\.\/\.\.\/runtime\/adminSession\.js['"]/, 'const {$1} = globalThis.__platformUsersFixtureApi')
 compiled = compiled.replace("from 'vue'", `from ${JSON.stringify(import.meta.resolve('vue'))}`)
+compiled = compiled.replace("from '../../../../../shared/pagePermissions.mjs'", `from ${JSON.stringify(new URL('../../shared/pagePermissions.mjs', import.meta.url).href)}`)
 let fixtureId = 0
 async function fixture(t, api) {
   globalThis.__platformUsersFixtureApi = api
@@ -36,7 +38,7 @@ test('editing a returned account only submits delegable permissions and preserve
   state.editor.enabled = false
   state.replacementPassword = 'Changed-2026!'
   await state.saveEditor()
-  assert.deepEqual(requests, [{ id: 'u1', body: { displayName: 'Updated', role: 'viewer', enabled: false, password: 'Changed-2026!', permissions: { view: true, launch: false, cast: false, backup: false } } }])
+  assert.deepEqual(requests, [{ id: 'u1', body: { displayName: 'Updated', role: 'viewer', enabled: false, password: 'Changed-2026!', permissions: { view: true, launch: false, cast: false, backup: false }, pagePermissions: normalizePagePermissions() } }])
   assert.equal(state.editorOpen, false)
 })
 
@@ -49,4 +51,25 @@ test('failed account edit keeps the editor and draft visible with the backend re
   assert.equal(state.message, 'account disabled by policy')
   assert.equal(state.failed, true)
   assert.equal(state.busy, false)
+})
+
+test('page matrix supports read-only templates, view dependencies and saved per-user grants', async t => {
+  const requests = []
+  const state = await fixture(t, { listPlatformUsers: async () => [], updatePlatformUser: async (id, body) => requests.push(body) })
+  state.openEdit({ id: 'u1', username: 'author', role: 'viewer', displayName: 'Author', enabled: true,
+    pagePermissions: { models: { view: true, edit: true } } })
+  assert.equal(state.editor.pagePermissions.models.edit, true)
+  state.setPagePreset('view')
+  assert.equal(state.editor.pagePermissions.models.view, true)
+  assert.equal(state.editor.pagePermissions.models.edit, false)
+  assert.equal(state.editor.pagePermissions.users.view, false)
+  state.editor.pagePermissions.models.edit = true
+  state.editor.pagePermissions.models.view = false
+  state.changePageView({ key: 'models', actions: ['view', 'edit', 'delete'] })
+  assert.equal(state.editor.pagePermissions.models.edit, false)
+  state.setPagePreset('none')
+  state.editor.pagePermissions.devices.view = true
+  await state.saveEditor()
+  assert.equal(requests[0].pagePermissions.devices.view, true)
+  assert.equal(requests[0].pagePermissions.models.view, false)
 })

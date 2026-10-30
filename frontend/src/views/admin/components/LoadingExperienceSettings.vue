@@ -1,4 +1,5 @@
 <script setup>
+import { permissionDirective as vPermission } from '../../../runtime/pagePermissionUi.js'
 import { onMounted, onUnmounted, ref } from 'vue'
 import { adminApi } from '../../../config/factoryConfig.js'
 import { normalizeLoadingExperience } from '../../../runtime/loadingExperienceConfig.js'
@@ -56,14 +57,14 @@ async function uploadImage(event) {
 <template>
   <section class="loading-settings">
     <div class="loading-settings-head"><h3>加载画面</h3><p>桌面启动页和大屏加载页共用这一套标题、配色与方案。互动厂房保留旋转和设备热点；简洁方案保留厂房图片但弱化动效。</p></div>
-    <form @submit.prevent="save">
+    <form @submit.prevent="save" v-permission="{ page: 'platform.designer', action: 'edit' }">
       <div class="loading-settings-grid">
-        <label>画面方案<select v-model="form.preset"><option value="interactive">互动厂房</option><option value="quiet">简洁厂房</option></select></label>
-        <label>主标题<input v-model.trim="form.title" maxlength="48" required /></label>
-        <label>英文标识<input v-model.trim="form.kicker" maxlength="72" required /></label>
-        <label>背景色<input v-model="form.background" type="color" /></label>
-        <label>进度强调色<input v-model="form.accent" type="color" /></label>
-        <label>厂房展示图片<input type="file" accept="image/png,image/jpeg,image/webp" :disabled="uploading" @change="uploadImage" /><small>建议 3:2 透明背景图，最大 5 MB；上传后保存。自定义图不会套用默认灯光热点。</small></label>
+        <label>画面方案<select v-model="form.preset" v-permission="{ page: 'platform.designer', action: 'edit' }"><option value="interactive">互动厂房</option><option value="quiet">简洁厂房</option></select></label>
+        <label>主标题<input v-model.trim="form.title" maxlength="48" required  v-permission="{ page: 'platform.designer', action: 'edit' }"/></label>
+        <label>英文标识<input v-model.trim="form.kicker" maxlength="72" required  v-permission="{ page: 'platform.designer', action: 'edit' }"/></label>
+        <label>背景色<input v-model="form.background" type="color"  v-permission="{ page: 'platform.designer', action: 'edit' }"/></label>
+        <label>进度强调色<input v-model="form.accent" type="color"  v-permission="{ page: 'platform.designer', action: 'edit' }"/></label>
+        <label>厂房展示图片<input type="file" accept="image/png,image/jpeg,image/webp" :disabled="uploading" @change="uploadImage"  v-permission="{ page: 'platform.designer', action: 'edit' }"/><small>建议 3:2 透明背景图，最大 5 MB；上传后保存。自定义图不会套用默认灯光热点。</small></label>
       </div>
       <div class="loading-settings-preview" :style="{background:form.background,'--loading-preview-accent':form.accent}">
         <small>{{ form.kicker }}</small><img :src="form.imageUrl || '/loading/industrial-factory.png'" alt="厂房加载画面预览" /><strong>{{ form.title }}</strong><i></i><span>{{ form.preset==='interactive'?'可旋转 · 灯光与烟囱可互动':'简洁展示 · 低干扰动效' }}</span>

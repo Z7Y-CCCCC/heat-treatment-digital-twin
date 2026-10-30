@@ -1,5 +1,6 @@
 import { computed, reactive, ref, onScopeDispose } from 'vue'
 import { adminApi } from '../../../config/factoryConfig.js'
+import { canAdminApi } from '../../../runtime/adminSession.js'
 
 /**
  * 局域网电视发现与一键投屏。
@@ -77,6 +78,7 @@ export function useCastDevices({ alert, confirm } = {}) {
     }
 
     async function loadCastDevices({ silent = true } = {}) {
+        if (!canAdminApi('/api/system/cast')) return
         if (castDisposed || (silent && castLoading)) return
         const requestSeq = ++castRequestSeq
         castLoading = true
@@ -162,6 +164,7 @@ export function useCastDevices({ alert, confirm } = {}) {
     }
 
     function startCastRefresh() {
+        if (!canAdminApi('/api/system/cast')) return
         if (castRefreshTimer) clearInterval(castRefreshTimer)
         castRefreshTimer = setInterval(() => loadCastDevices({ silent: true }), 6000)
         castRefreshTimer.unref?.()

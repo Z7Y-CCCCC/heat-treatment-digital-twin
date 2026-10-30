@@ -57,7 +57,8 @@ import ModelInspectionPreviewOverlay from './admin/components/ModelInspectionPre
 import AssetHierarchyBar from './admin/components/AssetHierarchyBar.vue'
 import { InspectionPreview, inspectionCameraPose } from '../runtime/InspectionPreview.js'
 import inspectionConfig from '../../../shared/inspectionConfig.mjs'
-import { adminSession, lockAdmin, refreshAdminSession } from '../runtime/adminSession.js'
+import { adminSession, lockAdmin, refreshAdminSession, canAdminPage, canAdminApi } from '../runtime/adminSession.js'
+import { permissionDirective as vPermission } from '../runtime/pagePermissionUi.js'
 import { adminUiStateForFocus } from '../runtime/nativeAdminNavigation.js'
 import { normalizeWorkshopLayout } from '../utils/spatialLayout.js'
 import { summarizeDeviceConnections } from './admin/utils/connectionStatus.js'
@@ -108,8 +109,13 @@ const SETTINGS_SUBPAGES = [
     { key: 'data', label: '数据通路', description: 'PLC 实时采集或离线模拟模式' },
     { key: 'license', label: '授权与版本', description: '离线许可证、有效期与发布信息' }
 ]
-const visibleSettingsSubpages = computed(() => adminSession.permissions.manageUsers
-    ? SETTINGS_SUBPAGES : SETTINGS_SUBPAGES.filter(page => page.key !== 'security'))
+const visibleSettingsSubpages = computed(() => SETTINGS_SUBPAGES.filter(page => canAdminPage(`settings.${page.key}`)))
+const visiblePlatformSubpages = computed(() => PLATFORM_SUBPAGES.filter(page => canAdminPage(`platform.${page.key}`)))
+function canSelectTab(key) {
+    if (key === 'platform') return visiblePlatformSubpages.value.length > 0
+    if (key === 'settings') return visibleSettingsSubpages.value.length > 0
+    return canAdminPage(key)
+}
 
 function restoreSubpage(value, options, fallback) {
     return options.some(option => option.key === value) ? value : fallback
@@ -119,10 +125,15 @@ function restoreSubpage(value, options, fallback) {
 const activeTab = ref(storedAdminUiState.activeTab || 'composer')
 const platformSubpage = ref(restoreSubpage(storedAdminUiState.platformSubpage, PLATFORM_SUBPAGES, 'designer'))
 const settingsSubpage = ref(restoreSubpage(storedAdminUiState.settingsSubpage, SETTINGS_SUBPAGES, 'runtime'))
-watch(() => adminSession.permissions.manageUsers, allowed => {
-    if (!allowed && settingsSubpage.value === 'security') settingsSubpage.value = 'runtime'
-    if (!allowed && activeTab.value === 'users') activeTab.value = 'settings'
-}, { immediate: true })
+const currentPermissionPage = computed(() => activeTab.value === 'platform' ? `platform.${platformSubpage.value}`
+    : activeTab.value === 'settings' ? `settings.${settingsSubpage.value}` : activeTab.value)
+const controlPermissionPage = computed(() => currentPermissionPage.value === 'settings.license' ? 'settings.security' : currentPermissionPage.value)
+// Saved tab/focus state is navigation data, never an authorization grant.
+watch(() => adminSession.pagePermissions, () => {
+    if (!canAdminPage(`platform.${platformSubpage.value}`)) platformSubpage.value = visiblePlatformSubpages.value[0]?.key || ''
+    if (!canAdminPage(`settings.${settingsSubpage.value}`)) settingsSubpage.value = visibleSettingsSubpages.value[0]?.key || ''
+    if (!canSelectTab(activeTab.value)) activeTab.value = ['factories', 'workshops', 'lines', 'devices', 'mobile-devices', 'disassembly-layout', 'composer', 'models', 'points', 'point-monitor', 'platform', 'settings', 'users'].find(canSelectTab) || ''
+}, { immediate: true, deep: true })
 const adminContentRef = ref(null)
 const isAdminNavCollapsed = ref(!!storedAdminUiState.isAdminNavCollapsed)
 const isFactoryMenuOpen = ref(true)
@@ -131,7 +142,7 @@ const isExternalDataSourcesOpen = ref(!!storedAdminUiState.isExternalDataSources
 const isAlarmConfigOpen = ref(!!storedAdminUiState.isAlarmConfigOpen)
 
 async function selectPlatformSubpage(key) {
-    if (!PLATFORM_SUBPAGES.some(option => option.key === key)) return
+    if (!canAdminPage(`platform.${key}`)) return
     platformSubpage.value = key
     await nextTick()
     adminContentRef.value?.scrollTo({ top: 0, behavior: 'smooth' })
@@ -141,7 +152,7 @@ async function selectPlatformSubpage(key) {
 }
 
 async function selectSettingsSubpage(key) {
-    if (!SETTINGS_SUBPAGES.some(option => option.key === key)) return
+    if (!canAdminPage(`settings.${key}`)) return
     settingsSubpage.value = key
     await nextTick()
     adminContentRef.value?.scrollTo({ top: 0, behavior: 'smooth' })
@@ -217,15 +228,9 @@ async function requestFactorySwitch({ factoryName }) {
                 if (!latest || latest.error) throw new Error(latest?.error || `设备「${deviceId}」读取失败`)
                 const config = { ...parseInstanceConfig(latest.instance_config), movement: devicePayload.instance_config.movement }
                 const payload = buildDevicePayloadForSave({ ...latest, instance_config: config }, getDeviceWorkshopId(latest))
-                const result = await adminApi.updateDevice(deviceId, payload)
+                const result = await adminApi.updateDeviceMovement(deviceId, config.movement, (selectedPointIds || []).filter(Boolean))
                 if (result?.error || !result?.success) throw new Error(result?.error || `设备「${deviceId}」运动配置保存失败`)
                 const selected = new Set((selectedPointIds || []).map(String))
-                if (selected.size && Array.isArray(latest.dataPoints) && latest.dataPoints.length) {
-                    const pointResult = await adminApi.syncDataPoints(deviceId, latest.dataPoints.map(point => ({
-                        ...point, sample_interval_ms: selected.has(String(point.id)) ? 100 : point.sample_interval_ms
-                    })))
-                    if (pointResult?.error || !pointResult?.success) throw new Error(pointResult?.error || `设备「${deviceId}」点位周期保存失败`)
-                }
             },
             'factory-record': async ({ id, name, location }) => {
                 if (!String(name || '').trim()) throw new Error('工厂名称未填写，不能保存新工厂')
@@ -827,12 +832,13 @@ async function refreshNativeScenePreviewStatus() {
 
 async function refreshAdminConnectionStatus() {
     await Promise.allSettled([
-        refreshNativeScenePreviewStatus(),
-        loadEngineStatus()
+        ...(canAdminApi('/api/native-preview/status') ? [refreshNativeScenePreviewStatus()] : []),
+        ...(canAdminApi('/api/engine/status') ? [loadEngineStatus()] : [])
     ])
 }
 
 async function sendNativeScenePreview(payload, { quiet = false } = {}) {
+    if (!canAdminApi('/api/native-preview', 'POST')) return { success: false, error: '当前账户无草稿预览操作权限' }
     const sequence = ++nativeScenePreviewSequence
     nativeScenePreviewBusy.value = true
     if (!quiet) nativeScenePreviewStatus.value = '正在实时应用到 Unity...'
@@ -886,6 +892,7 @@ async function flushDashboardViewPreview() {
 }
 
 function scheduleNativeScenePreview({ source = activeTab.value, includeLayout = false, deviceOverride } = {}) {
+    if (!canAdminPage(source === 'spatial' ? 'workshops' : source, 'edit')) return
     if (!['composer', 'lines', 'spatial'].includes(source)) return
     nativeScenePreviewPending = {
         source,
@@ -3964,7 +3971,6 @@ async function saveActiveScene() {
         layout: scene.layout,
         camera: scene.camera,
         theme: scene.theme,
-        is_active: true,
         sort_order: scene.sort_order
     })
     if (result?.error) return alert(result.error, { title: '场景保存失败', type: 'danger' })
@@ -4496,7 +4502,7 @@ async function flipSelectedComposerLine() {
             nextDevice[mirrorAxis] = roundComposerNumber((mirrorCenter * 2) - numberOrDefault(nextDevice[mirrorAxis], 0))
             nextDevice.rotation_y = normalizeComposerAngle(numberOrDefault(nextDevice.rotation_y, 0) + Math.PI)
             nextDevice.sort_order = sortOrders[sortOrders.length - 1 - index] ?? nextDevice.sort_order
-            return adminApi.updateDevice(nextDevice.id, nextDevice)
+            return adminApi.updateDeviceTransform(nextDevice.id, nextDevice)
         }))
         const failed = results.find(result => result?.error || !result?.success)
         if (failed) {
@@ -4534,7 +4540,7 @@ function toggleAdminNavCollapsed() {
 }
 
 async function selectAdminTab(tabKey) {
-    if (tabKey === 'users' && !adminSession.permissions.manageUsers) return
+    if (!canSelectTab(tabKey)) return
     if (activeTab.value === 'disassembly-layout' && tabKey !== activeTab.value && !await manualDisassemblyPage.canLeave()) return
     activeTab.value = tabKey
     resizeComposerPreviewAfterLayout()
@@ -4697,7 +4703,7 @@ async function renderComposerPreview() {
             },
             onDeviceRegistered: () => {},
             interactionOptions: {
-                enableDeviceDrag: true,
+                enableDeviceDrag: canAdminPage('composer', 'edit'),
                 canDragDevice: deviceId => isComposerTransferCart(deviceId),
                 onDeviceDragStart: handleComposerDeviceDragStart,
                 onDeviceDrag: handleComposerDeviceDrag,
@@ -4791,7 +4797,7 @@ async function saveComposerDevice() {
             { ...composerDraft, instance_config: parsedInstanceConfig },
             getDeviceWorkshopId(composerDraft) || selectedComposerWorkshop.value?.id || workshops.value[0]?.id || ''
         )
-        const result = await adminApi.updateDevice(composerDraft.id, payload)
+        const result = await adminApi.updateDeviceTransform(composerDraft.id, payload)
         if (result?.error) return alert(result.error, { title: '设备布局保存失败', type: 'danger' })
         if (!result?.success) return alert('设备布局保存失败：后端没有返回成功状态', { title: '设备布局保存失败', type: 'danger' })
         await loadDevices()
@@ -4975,12 +4981,19 @@ let adminPanelDisposed = false
 let adminPanelActive = true
 async function initializeAdminPanel() {
     window.addEventListener('beforeunload', handleUnsavedCanvasBeforeUnload)
-    await loadWorkshops()
+    if (canAdminApi('/api/workshops')) await loadWorkshops()
     if (adminPanelDisposed) return
-    await Promise.all([loadLines(), loadDevices(), loadSettings(), loadModels(), loadPlatform(), loadLicenseStatus(), loadReleaseStatus()])
+    await Promise.all([
+        ...(canAdminApi('/api/lines') ? [loadLines()] : []),
+        ...(canAdminApi('/api/devices') ? [loadDevices()] : []),
+        ...(canAdminApi('/api/settings') ? [loadSettings()] : []),
+        ...(canAdminApi('/api/models') ? [loadModels()] : []),
+        ...(canAdminApi('/api/platform') ? [loadPlatform()] : []),
+        ...(canAdminPage('settings.license') ? [loadLicenseStatus(), loadReleaseStatus()] : [])
+    ])
     if (adminPanelDisposed || !adminPanelActive) return
     startRuntimeRefresh()
-    loadCastDevices({ silent: true })
+    if (canAdminApi('/api/system/cast')) loadCastDevices({ silent: true })
     startCastRefresh()
     if (!newLine.workshop_id && workshops.value.length > 0) {
         newLine.workshop_id = workshops.value[0].id
@@ -5617,7 +5630,7 @@ async function saveLineStationNumber(device) {
     lineDeviceSavingId.value = device.id
     try {
         const payload = buildDevicePayloadForSave({ ...device, ...patch, instance_config: config }, line.workshop_id)
-        const result = await adminApi.updateDevice(device.id, payload)
+        const result = await adminApi.updateDeviceTransform(device.id, payload)
         if (result?.error) {
             await loadDevices()
             return alert(result.error, { title: '保存工位编号失败', type: 'danger' })
@@ -5715,7 +5728,7 @@ async function saveLineBoundDevices(deviceIds, line = selectedLineEditor.value) 
             if (!device) continue
             lineDeviceSavingId.value = device.id
             const payload = buildDevicePayloadForSave(device, getDeviceWorkshopId(device) || line?.workshop_id)
-            const result = await adminApi.updateDevice(device.id, payload)
+            const result = await adminApi.updateDeviceTransform(device.id, payload)
             if (result?.error) return { error: result.error, device }
         }
         return { success: true, saved: ids.length }
@@ -5814,7 +5827,7 @@ async function saveCurrentFactoryPageDrafts() {
             if (snapshotJson(current) !== snapshotJson(original)) {
                 const parsed = { ...getDeviceDefaultInstanceConfig(composerDraft), ...parseInstanceConfig(composerDraft.instance_config) }
                 const payload = buildDevicePayloadForSave({ ...composerDraft, instance_config: parsed }, getDeviceWorkshopId(composerDraft) || selectedComposerWorkshop.value?.id || workshops.value[0]?.id || '')
-                const result = await adminApi.updateDevice(composerDraft.id, payload)
+                const result = await adminApi.updateDeviceTransform(composerDraft.id, payload)
                 if (result?.error || !result?.success) throw new Error(`现场编排器设备保存失败：${result?.error || '后端未确认保存'}`)
                 devices.value = devices.value.map(item => item.id === composerDraft.id ? { ...item, ...payload } : item)
             }
@@ -5979,6 +5992,7 @@ function previewClientXToUnits(clientX, state) {
 }
 
 function startLinePreviewDrag(type, itemId, mode, event) {
+    if (!canAdminPage('lines', 'edit')) return
     if (!selectedLineEditor.value || event.button !== 0) return
     const item = findLineLayoutItem(type, itemId)
     const stage = event.currentTarget.closest?.('.line-preview-stage')
@@ -6127,6 +6141,7 @@ function findLineDeviceAlignment(deviceId, x, bounds) {
 }
 
 function startLineDeviceDrag(deviceId, event) {
+    if (!canAdminPage('lines', 'edit')) return
     if (!selectedLineEditor.value || event.button !== 0) return
     const device = getLineDeviceById(deviceId)
     const stage = linePreviewStageRef.value || event.currentTarget.closest?.('.line-preview-stage')
@@ -6290,7 +6305,7 @@ async function placeLineDeviceOnTarget(drag) {
     lineDeviceSavingId.value = device.id
     try {
         const payload = buildDevicePayloadForSave({ ...device, ...patch, instance_config: config }, line.workshop_id)
-        const result = await adminApi.updateDevice(device.id, payload)
+        const result = await adminApi.updateDeviceTransform(device.id, payload)
         if (result?.error) {
             await loadDevices()
             return alert(result.error, { title: '设备归位失败', type: 'danger' })
@@ -6328,7 +6343,7 @@ async function removeDeviceFromLineCanvas(device) {
     lineDeviceSavingId.value = device.id
     try {
         const payload = buildDevicePayloadForSave({ ...device, ...patch, instance_config: config }, line.workshop_id)
-        const result = await adminApi.updateDevice(device.id, payload)
+        const result = await adminApi.updateDeviceTransform(device.id, payload)
         if (result?.error) {
             await loadDevices()
             return alert(result.error, { title: '移出画布失败', type: 'danger' })
@@ -6688,6 +6703,7 @@ function endWorkshopPendingLineDrag(event) {
 }
 
 function startWorkshopPendingLineDrag(event, line) {
+    if (!canAdminPage('workshops', 'edit')) return
     if (event.button !== 0 || !line?.id || !isLinePlacementPending(line)) return
     finishWorkshopPendingLineDrag()
     event.preventDefault()
@@ -6755,6 +6771,7 @@ function finishWorkshopMapLineDrag() {
 }
 
 function startWorkshopMapLineDrag(event, line) {
+    if (!canAdminPage('workshops', 'edit')) return
     if (event.button !== 0 || !line || isLinePlacementPending(line)) return
     const stage = workshopMapStageRef.value
     const workshop = selectedWorkshopEditor.value
@@ -6791,13 +6808,7 @@ async function saveWorkshopMapLayout() {
     try {
         for (const line of targetLines) {
             const layout = normalizeLineLayout(getLineLayout(line))
-            const result = await adminApi.updateLine(line.id, {
-                name: line.name,
-                workshop_id: line.workshop_id,
-                sort_order: line.sort_order,
-                layout,
-                layout_json: JSON.stringify(layout)
-            })
+            const result = await adminApi.updateLinePlacement(line.id, layout)
             if (result?.error || !result?.success) throw new Error(result?.error || `${line.name} 保存失败`)
         }
         await loadLines()
@@ -6848,7 +6859,9 @@ const mainTabs = [
     { key: 'users', label: '用户与权限', icon: 'users' },
     { key: 'settings', label: '系统设置', icon: 'settings' }
 ]
-const visibleMainTabs = computed(() => mainTabs.filter(tab => tab.key !== 'users' || adminSession.permissions.manageUsers))
+const visibleMainTabs = computed(() => mainTabs.filter(tab => canSelectTab(tab.key)))
+const visibleFactoryTabs = computed(() => factoryTabs.filter(tab => canSelectTab(tab.key)))
+const visibleDataTabs = computed(() => dataTabs.filter(tab => canSelectTab(tab.key)))
 
 const adminSetupFlow = [
     { key: 'system', label: '系统', tab: 'settings', settingsSubpage: 'database', description: '确认数据库、运行服务与数据通路' },
@@ -6863,7 +6876,9 @@ const adminSetupFlow = [
 ]
 
 async function openAdminSetupStep(step) {
-    if (!step?.tab) return
+    if (!step?.tab || !canSelectTab(step.tab)
+        || step.settingsSubpage && !canAdminPage(`settings.${step.settingsSubpage}`)
+        || step.platformSubpage && !canAdminPage(`platform.${step.platformSubpage}`)) return
     if (factoryTabKeys.includes(step.tab)) isFactoryMenuOpen.value = true
     if (dataTabKeys.includes(step.tab)) isDataMenuOpen.value = true
     if (step.settingsSubpage) settingsSubpage.value = step.settingsSubpage
@@ -6895,7 +6910,7 @@ async function openAdminSetupStep(step) {
             <nav class="admin-setup-flow" aria-label="推荐配置顺序">
                 <span class="admin-setup-flow-title">配置顺序</span>
                 <div class="admin-setup-flow-track">
-                    <template v-for="(step, index) in adminSetupFlow" :key="step.key">
+                    <template v-for="(step, index) in adminSetupFlow.filter(step => canSelectTab(step.tab) && (!step.platformSubpage || canAdminPage(`platform.${step.platformSubpage}`)) && (!step.settingsSubpage || canAdminPage(`settings.${step.settingsSubpage}`)))" :key="step.key">
                         <button
                             type="button"
                             class="admin-setup-step"
@@ -6941,7 +6956,7 @@ async function openAdminSetupStep(step) {
             <!-- 左侧 Tab 导航 -->
             <nav class="admin-nav">
                 <button
-                    v-for="tab in mainTabs.slice(0, 1)"
+                    v-for="tab in mainTabs.slice(0, 1).filter(tab => canSelectTab(tab.key))"
                     :key="tab.key"
                     type="button"
                     class="nav-item"
@@ -6956,7 +6971,7 @@ async function openAdminSetupStep(step) {
                     </span>
                     <span class="nav-label">{{ tab.label }}</span>
                 </button>
-                <div class="nav-group" :class="{ active: factoryTabKeys.includes(activeTab), open: isFactoryMenuOpen }">
+                <div v-if="visibleFactoryTabs.length" class="nav-group" :class="{ active: factoryTabKeys.includes(activeTab), open: isFactoryMenuOpen }">
                     <button
                         type="button"
                         class="nav-item nav-group-toggle"
@@ -6975,7 +6990,7 @@ async function openAdminSetupStep(step) {
                     <Transition name="nav-submenu">
                         <div v-if="isFactoryMenuOpen || isAdminNavCollapsed" class="nav-submenu">
                             <button
-                                v-for="tab in factoryTabs"
+                                v-for="tab in visibleFactoryTabs"
                                 :key="tab.key"
                                 type="button"
                                 class="nav-item nav-subitem"
@@ -6993,7 +7008,7 @@ async function openAdminSetupStep(step) {
                         </div>
                     </Transition>
                 </div>
-                <div class="nav-group" :class="{ active: dataTabKeys.includes(activeTab), open: isDataMenuOpen }">
+                <div v-if="visibleDataTabs.length" class="nav-group" :class="{ active: dataTabKeys.includes(activeTab), open: isDataMenuOpen }">
                     <button
                         type="button"
                         class="nav-item nav-group-toggle"
@@ -7012,7 +7027,7 @@ async function openAdminSetupStep(step) {
                     <Transition name="nav-submenu">
                         <div v-if="isDataMenuOpen || isAdminNavCollapsed" class="nav-submenu">
                             <button
-                                v-for="tab in dataTabs"
+                                v-for="tab in visibleDataTabs"
                                 :key="tab.key"
                                 type="button"
                                 class="nav-item nav-subitem"
@@ -7031,7 +7046,7 @@ async function openAdminSetupStep(step) {
                     </Transition>
                 </div>
                 <button
-                    v-for="tab in visibleMainTabs.slice(1)"
+                    v-for="tab in visibleMainTabs.filter(tab => tab.key !== 'factories')"
                     :key="tab.key"
                     type="button"
                     class="nav-item"
@@ -7071,7 +7086,8 @@ async function openAdminSetupStep(step) {
                     :request-switch="requestFactorySwitch"
                 />
                 <Transition name="tab-switch" mode="out-in">
-                    <div :key="activeTab" class="tab-transition-host">
+                    <div v-if="canSelectTab(activeTab)" :key="activeTab" class="tab-transition-host">
+                        <p v-if="!canAdminPage(controlPermissionPage, 'edit')" class="page-readonly-notice" role="status">此页面为只读权限；可查看和预览，修改与导入操作已禁用。</p>
 
                 <!-- ======== 现场编排器 ======== -->
                 <div v-if="activeTab === 'composer'" class="tab-content composer-tab" :class="{ 'preview-wide': isComposerPreviewWide }">
@@ -7110,7 +7126,7 @@ async function openAdminSetupStep(step) {
                                 </button>
                             </div>
                             <div class="composer-action-row">
-                                <button class="btn btn-sm" type="button" @click="flipSelectedComposerLine" :disabled="composerBulkSaving || !selectedComposerDevices.length">
+                                <button class="btn btn-sm" type="button" @click="flipSelectedComposerLine" :disabled="composerBulkSaving || !selectedComposerDevices.length" v-permission="{ page: controlPermissionPage, action: 'edit' }">
                                     产线反向
                                 </button>
                             </div>
@@ -7160,22 +7176,22 @@ async function openAdminSetupStep(step) {
                                 <button type="button" title="取消选中" aria-label="取消选中设备" @pointerdown.stop @click.stop="clearComposerDeviceSelection">×</button>
                             </div>
                             <div class="composer-device-layout-float-body">
-                            <label>设备名称<input v-model="composerDraft.name" class="input" /></label>
+                            <label>设备名称<input v-model="composerDraft.name" class="input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
                             <label>{{ isAuxiliaryDeviceConfig(composerDraft) ? '参考产线' : '所属产线' }}
-                                <select v-model="composerDraft.line_id" class="input">
+                                <select v-model="composerDraft.line_id" class="input" v-permission="{ page: controlPermissionPage, action: 'edit' }">
                                     <option v-if="isAuxiliaryDeviceConfig(composerDraft)" value="">不挂产线，作为车间级设备</option>
                                     <option v-for="line in lines" :key="line.id" :value="line.id">{{ line.name }}</option>
                                 </select>
                             </label>
                             <label>模型
-                                <select v-model="composerDraft.model_type" class="input">
+                                <select v-model="composerDraft.model_type" class="input" v-permission="{ page: controlPermissionPage, action: 'edit' }">
                                     <option v-for="m in availableModelOptions" :key="m.id" :value="m.id">{{ m.name }}</option>
                                 </select>
                             </label>
                             <div class="composer-grid-3">
-                                <label>X<input v-model.number="composerDraft.pos_x" type="number" class="input" /></label>
-                                <label>Y<input v-model.number="composerDraft.pos_y" type="number" class="input" /></label>
-                                <label>Z<input v-model.number="composerDraft.pos_z" type="number" class="input" /></label>
+                                <label>X<input v-model.number="composerDraft.pos_x" type="number" class="input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
+                                <label>Y<input v-model.number="composerDraft.pos_y" type="number" class="input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
+                                <label>Z<input v-model.number="composerDraft.pos_z" type="number" class="input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
                             </div>
                             <div class="composer-rotation-control">
                                 <div class="composer-control-header">
@@ -7199,7 +7215,7 @@ async function openAdminSetupStep(step) {
                                         type="button"
                                         class="btn btn-sm"
                                         @click="nudgeComposerRotationDegrees(delta)"
-                                    >{{ delta > 0 ? `+${delta}°` : `${delta}°` }}</button>
+                                     v-permission="{ page: controlPermissionPage, action: 'edit' }">{{ delta > 0 ? `+${delta}°` : `${delta}°` }}</button>
                                 </div>
                             </div>
                             <div class="composer-mirror-control">
@@ -7217,7 +7233,7 @@ async function openAdminSetupStep(step) {
                                 </button>
                             </div>
                             <label v-if="isComposerTransferCart(composerDraft.id)">小车导轨
-                                <select v-model="composerDraftRailKey" class="input">
+                                <select v-model="composerDraftRailKey" class="input" v-permission="{ page: controlPermissionPage, action: 'edit' }">
                                     <option value="" disabled>选择小车导轨</option>
                                     <option v-for="rail in composerRailOptions" :key="railOptionKey(rail)" :value="railOptionKey(rail)">
                                         {{ rail.lineName }} / {{ rail.name }}
@@ -7225,16 +7241,16 @@ async function openAdminSetupStep(step) {
                                 </select>
                             </label>
                             <div class="composer-grid-2">
-                                <label>缩放<input v-model.number="composerDraft.scale" type="number" step="0.05" min="0.1" class="input" /></label>
-                                <label>排序<input v-model.number="composerDraft.sort_order" type="number" class="input" /></label>
+                                <label>缩放<input v-model.number="composerDraft.scale" type="number" step="0.05" min="0.1" class="input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
+                                <label>排序<input v-model.number="composerDraft.sort_order" type="number" class="input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
                             </div>
                             <div class="nudge-pad">
-                                <button class="btn" @click="nudgeComposerDevice(0, -2)">上移</button>
-                                <button class="btn" @click="nudgeComposerDevice(-2, 0)">左移</button>
-                                <button class="btn" @click="nudgeComposerDevice(2, 0)">右移</button>
-                                <button class="btn" @click="nudgeComposerDevice(0, 2)">下移</button>
+                                <button class="btn" @click="nudgeComposerDevice(0, -2)" v-permission="{ page: controlPermissionPage, action: 'edit' }">上移</button>
+                                <button class="btn" @click="nudgeComposerDevice(-2, 0)" v-permission="{ page: controlPermissionPage, action: 'edit' }">左移</button>
+                                <button class="btn" @click="nudgeComposerDevice(2, 0)" v-permission="{ page: controlPermissionPage, action: 'edit' }">右移</button>
+                                <button class="btn" @click="nudgeComposerDevice(0, 2)" v-permission="{ page: controlPermissionPage, action: 'edit' }">下移</button>
                             </div>
-                            <button class="btn btn-primary composer-save" @click="saveComposerDevice" :disabled="composerSaving">
+                            <button class="btn btn-primary composer-save" @click="saveComposerDevice" :disabled="composerSaving" v-permission="{ page: controlPermissionPage, action: 'edit' }">
                                 {{ composerSaving ? '保存中...' : '保存设备布局' }}
                             </button>
                             <small class="native-live-help">位置、朝向、缩放、镜像和模型切换会先实时显示在 Unity；点击保存后才写入数据库。</small>
@@ -7319,9 +7335,9 @@ async function openAdminSetupStep(step) {
                         </div>
 
                         <div class="form-row workshop-create-row">
-                            <input v-model="newWorkshop.id" placeholder="车间ID（如 ws_a）" class="input" />
-                            <input v-model="newWorkshop.name" placeholder="车间名称（如 压铸车间）" class="input" />
-                            <button @click="createWorkshop" class="btn btn-primary">+ 添加车间</button>
+                            <input v-model="newWorkshop.id" placeholder="车间ID（如 ws_a）" class="input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/>
+                            <input v-model="newWorkshop.name" placeholder="车间名称（如 压铸车间）" class="input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/>
+                            <button @click="createWorkshop" class="btn btn-primary" v-permission="{ page: controlPermissionPage, action: 'edit' }">+ 添加车间</button>
                         </div>
 
                         <table class="data-table">
@@ -7336,7 +7352,7 @@ async function openAdminSetupStep(step) {
                                     <td>{{ getWorkshopLayout(ws).size.width }} × {{ getWorkshopLayout(ws).size.depth }} 米</td>
                                     <td>{{ (linesByWorkshop[ws.id] || []).length }} 条</td>
                                     <td>
-                                        <button @click="deleteWorkshop(ws.id)" class="btn btn-danger btn-sm">删除</button>
+                                        <button @click="deleteWorkshop(ws.id)" class="btn btn-danger btn-sm" v-permission="{ page: controlPermissionPage, action: 'delete' }">删除</button>
                                     </td>
                                 </tr>
                             </tbody>
@@ -7364,20 +7380,20 @@ async function openAdminSetupStep(step) {
                                 </div>
                                 <div class="line-native-actions">
                                     <button type="button" class="btn" @click="restoreSavedNativeScenePreview">撤销未保存预览</button>
-                                    <button type="button" class="btn btn-primary" :disabled="workshopSavingId === selectedWorkshopEditor.id" @click="saveWorkshopSpatialLayout()">
+                                    <button type="button" class="btn btn-primary" :disabled="workshopSavingId === selectedWorkshopEditor.id" @click="saveWorkshopSpatialLayout()" v-permission="{ page: controlPermissionPage, action: 'edit' }">
                                         {{ workshopSavingId === selectedWorkshopEditor.id ? '保存中...' : '保存车间空间' }}
                                     </button>
                                 </div>
                             </div>
                             <div class="workshop-spatial-grid" @input="previewWorkshopSpatialLayout" @change="previewWorkshopSpatialLayout">
-                                <label>车间世界 X（米）<input v-model.number="getWorkshopLayout(selectedWorkshopEditor).transform.x" type="number" step="0.5" class="input" /></label>
-                                <label>车间世界 Y（米）<input v-model.number="getWorkshopLayout(selectedWorkshopEditor).transform.y" type="number" step="0.1" class="input" /></label>
-                                <label>车间世界 Z（米）<input v-model.number="getWorkshopLayout(selectedWorkshopEditor).transform.z" type="number" step="0.5" class="input" /></label>
-                                <label>车间朝向（°）<input v-model.number="getWorkshopLayout(selectedWorkshopEditor).transform.rotationY" type="number" min="-180" max="180" step="1" class="input" /></label>
-                                <label>车间宽度 X（米）<input v-model.number="getWorkshopLayout(selectedWorkshopEditor).size.width" type="number" min="10" max="5000" step="1" class="input" /></label>
-                                <label>车间深度 Z（米）<input v-model.number="getWorkshopLayout(selectedWorkshopEditor).size.depth" type="number" min="10" max="5000" step="1" class="input" /></label>
-                                <label>参考高度（米）<input v-model.number="getWorkshopLayout(selectedWorkshopEditor).size.height" type="number" min="1" max="200" step="0.5" class="input" /></label>
-                                <label class="workshop-boundary-toggle"><input v-model="getWorkshopLayout(selectedWorkshopEditor).boundary.enabled" type="checkbox" /> 启用车间地面与边界</label>
+                                <label>车间世界 X（米）<input v-model.number="getWorkshopLayout(selectedWorkshopEditor).transform.x" type="number" step="0.5" class="input"  /></label>
+                                <label>车间世界 Y（米）<input v-model.number="getWorkshopLayout(selectedWorkshopEditor).transform.y" type="number" step="0.1" class="input"  /></label>
+                                <label>车间世界 Z（米）<input v-model.number="getWorkshopLayout(selectedWorkshopEditor).transform.z" type="number" step="0.5" class="input"  /></label>
+                                <label>车间朝向（°）<input v-model.number="getWorkshopLayout(selectedWorkshopEditor).transform.rotationY" type="number" min="-180" max="180" step="1" class="input"  /></label>
+                                <label>车间宽度 X（米）<input v-model.number="getWorkshopLayout(selectedWorkshopEditor).size.width" type="number" min="10" max="5000" step="1" class="input"  /></label>
+                                <label>车间深度 Z（米）<input v-model.number="getWorkshopLayout(selectedWorkshopEditor).size.depth" type="number" min="10" max="5000" step="1" class="input"  /></label>
+                                <label>参考高度（米）<input v-model.number="getWorkshopLayout(selectedWorkshopEditor).size.height" type="number" min="1" max="200" step="0.5" class="input"  /></label>
+                                <label class="workshop-boundary-toggle"><input v-model="getWorkshopLayout(selectedWorkshopEditor).boundary.enabled" type="checkbox"  /> 启用车间地面与边界</label>
                             </div>
                             <div class="workshop-step-footer">
                                 <span>下一步将在 {{ getWorkshopLayout(selectedWorkshopEditor).size.width }} × {{ getWorkshopLayout(selectedWorkshopEditor).size.depth }} 米范围内按比例展示产线。</span>
@@ -7411,7 +7427,7 @@ async function openAdminSetupStep(step) {
                                 </div>
                                 <div class="line-native-actions">
                                     <button type="button" class="btn" :disabled="workshopMapSaving || !workshopMapDirty" @click="resetWorkshopMapLayout">放弃修改</button>
-                                    <button type="button" class="btn btn-primary" :disabled="workshopMapSaving || !workshopMapDirty || !placedWorkshopMapLines.length" @click="saveWorkshopMapLayout">
+                                    <button type="button" class="btn btn-primary" :disabled="workshopMapSaving || !workshopMapDirty || !placedWorkshopMapLines.length" @click="saveWorkshopMapLayout" v-permission="{ page: controlPermissionPage, action: 'edit' }">
                                         {{ workshopMapSaving ? '保存中...' : '保存全部产线位置' }}
                                     </button>
                                 </div>
@@ -7425,7 +7441,7 @@ async function openAdminSetupStep(step) {
                                 </div>
                                 <div class="canvas-save-reminder-actions">
                                     <button type="button" class="btn btn-sm" :disabled="workshopMapSaving" @click="resetWorkshopMapLayout">放弃修改</button>
-                                    <button type="button" class="btn btn-primary btn-sm" :disabled="workshopMapSaving" @click="saveWorkshopMapLayout">
+                                    <button type="button" class="btn btn-primary btn-sm" :disabled="workshopMapSaving" @click="saveWorkshopMapLayout" v-permission="{ page: controlPermissionPage, action: 'edit' }">
                                         {{ workshopMapSaving ? '保存中...' : '立即保存布局' }}
                                     </button>
                                 </div>
@@ -7529,10 +7545,10 @@ async function openAdminSetupStep(step) {
                                             <small>{{ getLineLayout(selectedWorkshopMapLine).lanes.length }} 条设备线 · {{ getLineLayout(selectedWorkshopMapLine).rails.length }} 条导轨</small>
                                         </div>
                                         <div class="workshop-map-input-grid" @input="previewWorkshopMapLine()" @change="previewWorkshopMapLine()">
-                                            <label>相对车间 X<input v-model.number="getLineLayout(selectedWorkshopMapLine).transform.x" type="number" step="0.5" class="input" /></label>
-                                            <label>相对车间 Z<input v-model.number="getLineLayout(selectedWorkshopMapLine).transform.z" type="number" step="0.5" class="input" /></label>
-                                            <label>离地 Y<input v-model.number="getLineLayout(selectedWorkshopMapLine).transform.y" type="number" step="0.1" class="input" /></label>
-                                            <label>朝向<input v-model.number="getLineLayout(selectedWorkshopMapLine).transform.rotationY" type="number" min="-180" max="180" step="1" class="input" /></label>
+                                            <label>相对车间 X<input v-model.number="getLineLayout(selectedWorkshopMapLine).transform.x" type="number" step="0.5" class="input"  /></label>
+                                            <label>相对车间 Z<input v-model.number="getLineLayout(selectedWorkshopMapLine).transform.z" type="number" step="0.5" class="input"  /></label>
+                                            <label>离地 Y<input v-model.number="getLineLayout(selectedWorkshopMapLine).transform.y" type="number" step="0.1" class="input"  /></label>
+                                            <label>朝向<input v-model.number="getLineLayout(selectedWorkshopMapLine).transform.rotationY" type="number" min="-180" max="180" step="1" class="input"  /></label>
                                         </div>
                                         <div v-if="selectedWorkshopMapMetrics" class="workshop-map-metrics">
                                             <h4>距车间边界</h4>
@@ -7568,7 +7584,7 @@ async function openAdminSetupStep(step) {
                             </div>
                             <div class="line-native-actions">
                                 <button type="button" class="btn" :disabled="!lineLayoutDirty || lineLayoutSaving" @click="resetSelectedLineLayout">放弃画布修改</button>
-                                <button class="btn btn-primary" @click="saveSelectedLineLayout" :disabled="lineLayoutSaving || !selectedLineEditor">
+                                <button class="btn btn-primary" @click="saveSelectedLineLayout" :disabled="lineLayoutSaving || !selectedLineEditor" v-permission="{ page: controlPermissionPage, action: 'edit' }">
                                     {{ lineLayoutSaving ? '保存中...' : '保存产线结构' }}
                                 </button>
                             </div>
@@ -7589,7 +7605,7 @@ async function openAdminSetupStep(step) {
                                 </div>
                                 <div class="canvas-save-reminder-actions">
                                     <button type="button" class="btn btn-sm" :disabled="lineLayoutSaving" @click="resetSelectedLineLayout">放弃修改</button>
-                                    <button type="button" class="btn btn-primary btn-sm" :disabled="lineLayoutSaving" @click="saveSelectedLineLayout">
+                                    <button type="button" class="btn btn-primary btn-sm" :disabled="lineLayoutSaving" @click="saveSelectedLineLayout" v-permission="{ page: controlPermissionPage, action: 'edit' }">
                                         {{ lineLayoutSaving ? '保存中...' : '立即保存产线' }}
                                     </button>
                                 </div>
@@ -7604,13 +7620,13 @@ async function openAdminSetupStep(step) {
                                         <span>结构先建，设备后摆</span>
                                     </div>
                                     <div class="line-create-row">
-                                        <input v-model="newLine.id" placeholder="产线ID，如 line_e" class="input" />
-                                        <input v-model="newLine.name" placeholder="产线名称，如 E 产线" class="input" />
-                                        <select v-model="newLine.workshop_id" class="input">
+                                        <input v-model="newLine.id" placeholder="产线ID，如 line_e" class="input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/>
+                                        <input v-model="newLine.name" placeholder="产线名称，如 E 产线" class="input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/>
+                                        <select v-model="newLine.workshop_id" class="input" v-permission="{ page: controlPermissionPage, action: 'edit' }">
                                             <option value="" disabled>选择所属车间</option>
                                             <option v-for="ws in workshops" :key="ws.id" :value="ws.id">{{ ws.name }}</option>
                                         </select>
-                                        <button @click="createLine" class="btn btn-primary">+ 添加产线</button>
+                                        <button @click="createLine" class="btn btn-primary" v-permission="{ page: controlPermissionPage, action: 'edit' }">+ 添加产线</button>
                                     </div>
                                 </div>
 
@@ -7635,12 +7651,12 @@ async function openAdminSetupStep(step) {
                                                 </span>
                                             </button>
                                             <div class="line-card-fields" v-if="selectedLineEditorId === line.id">
-                                                <input v-model="line.name" class="input input-sm" placeholder="产线名称" />
-                                                <select v-model="line.workshop_id" class="input input-sm">
+                                                <input v-model="line.name" class="input input-sm" placeholder="产线名称"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/>
+                                                <select v-model="line.workshop_id" class="input input-sm" v-permission="{ page: controlPermissionPage, action: 'edit' }">
                                                     <option v-for="ws in workshops" :key="ws.id" :value="ws.id">{{ ws.name }}</option>
                                                 </select>
-                                                <input v-model.number="line.sort_order" type="number" class="input input-sm" title="排序" />
-                                                <button class="btn btn-danger btn-sm" type="button" @click="deleteLine(line.id)">删除</button>
+                                                <input v-model.number="line.sort_order" type="number" class="input input-sm" title="排序"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/>
+                                                <button class="btn btn-danger btn-sm" type="button" @click="deleteLine(line.id)" v-permission="{ page: controlPermissionPage, action: 'delete' }">删除</button>
                                             </div>
                                         </div>
                                     </div>
@@ -7650,26 +7666,26 @@ async function openAdminSetupStep(step) {
                                     <div class="line-structure-section">
                                         <div class="line-structure-title">
                                             <strong>设备线</strong>
-                                            <button class="btn btn-sm" type="button" @click="addLineLayoutItem('lane')">+ 设备线</button>
+                                            <button class="btn btn-sm" type="button" @click="addLineLayoutItem('lane')" v-permission="{ page: controlPermissionPage, action: 'edit' }">+ 设备线</button>
                                         </div>
                                         <div class="line-layout-row" v-for="lane in selectedLineLayout.lanes" :key="lane.id">
-                                            <input v-model="lane.name" class="input input-sm" />
-                                            <label>偏移Z<input v-model.number="lane.offsetZ" type="number" class="input input-sm" /></label>
-                                            <label>长度<input v-model.number="lane.length" type="number" min="1" class="input input-sm" /></label>
-                                            <button class="btn btn-danger btn-sm" type="button" @click="removeLineLayoutItem('lane', lane.id)">删除</button>
+                                            <input v-model="lane.name" class="input input-sm"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/>
+                                            <label>偏移Z<input v-model.number="lane.offsetZ" type="number" class="input input-sm"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
+                                            <label>长度<input v-model.number="lane.length" type="number" min="1" class="input input-sm"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
+                                            <button class="btn btn-danger btn-sm" type="button" @click="removeLineLayoutItem('lane', lane.id)" v-permission="{ page: controlPermissionPage, action: 'edit' }">删除</button>
                                         </div>
                                     </div>
 
                                     <div class="line-structure-section">
                                         <div class="line-structure-title">
                                             <strong>小车导轨</strong>
-                                            <button class="btn btn-sm" type="button" @click="addLineLayoutItem('rail')">+ 小车导轨</button>
+                                            <button class="btn btn-sm" type="button" @click="addLineLayoutItem('rail')" v-permission="{ page: controlPermissionPage, action: 'edit' }">+ 小车导轨</button>
                                         </div>
                                         <div class="line-layout-row" v-for="rail in selectedLineLayout.rails" :key="rail.id">
-                                            <input v-model="rail.name" class="input input-sm" />
-                                            <label>偏移Z<input v-model.number="rail.offsetZ" type="number" class="input input-sm" /></label>
-                                            <label>长度<input v-model.number="rail.length" type="number" min="1" class="input input-sm" /></label>
-                                            <button class="btn btn-danger btn-sm" type="button" @click="removeLineLayoutItem('rail', rail.id)">删除</button>
+                                            <input v-model="rail.name" class="input input-sm"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/>
+                                            <label>偏移Z<input v-model.number="rail.offsetZ" type="number" class="input input-sm"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
+                                            <label>长度<input v-model.number="rail.length" type="number" min="1" class="input input-sm"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
+                                            <button class="btn btn-danger btn-sm" type="button" @click="removeLineLayoutItem('rail', rail.id)" v-permission="{ page: controlPermissionPage, action: 'edit' }">删除</button>
                                         </div>
                                         <div v-if="!selectedLineLayout.rails.length" class="composer-empty">当前产线还没有小车导轨</div>
                                     </div>
@@ -7791,8 +7807,8 @@ async function openAdminSetupStep(step) {
                                                     aria-label="工位编号"
                                                     @keydown.enter.prevent.stop="saveLineStationNumber(device)"
                                                     @keydown.esc.prevent.stop="cancelLineStationEdit"
-                                                />
-                                                <button type="button" class="line-map-station-action" title="保存编号" @click.stop="saveLineStationNumber(device)">✓</button>
+                                                 v-permission="{ page: controlPermissionPage, action: 'edit' }"/>
+                                                <button type="button" class="line-map-station-action" title="保存编号" @click.stop="saveLineStationNumber(device)" v-permission="{ page: controlPermissionPage, action: 'edit' }">✓</button>
                                                 <button type="button" class="line-map-station-action cancel" title="取消修改" @click.stop="cancelLineStationEdit">×</button>
                                             </template>
                                             <button v-else type="button" class="line-map-station-trigger" @click.stop="startLineStationEdit(device)">
@@ -7808,7 +7824,7 @@ async function openAdminSetupStep(step) {
                                             title="从画布移出，回到设备池"
                                             @pointerdown.stop
                                             @click.stop="removeDeviceFromLineCanvas(device)"
-                                        >
+                                         v-permission="{ page: controlPermissionPage, action: 'edit' }">
                                             移出
                                         </button>
                                     </div>
@@ -7829,7 +7845,7 @@ async function openAdminSetupStep(step) {
                                             title="从画布移出，回到设备池"
                                             @pointerdown.stop
                                             @click.stop="removeDeviceFromLineCanvas(cart)"
-                                        >
+                                         v-permission="{ page: controlPermissionPage, action: 'edit' }">
                                             移出
                                         </button>
                                     </div>
@@ -7898,13 +7914,13 @@ async function openAdminSetupStep(step) {
                     <p class="desc">管理工厂车间的产线划分。每条产线可包含多台设备。</p>
 
                     <div class="form-row">
-                        <input v-model="newLine.id" placeholder="产线ID（如 line_e）" class="input" />
-                        <input v-model="newLine.name" placeholder="产线名称（如 E 产线）" class="input" />
-                        <select v-model="newLine.workshop_id" class="input" style="min-width: 150px">
+                        <input v-model="newLine.id" placeholder="产线ID（如 line_e）" class="input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/>
+                        <input v-model="newLine.name" placeholder="产线名称（如 E 产线）" class="input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/>
+                        <select v-model="newLine.workshop_id" class="input" style="min-width: 150px" v-permission="{ page: controlPermissionPage, action: 'edit' }">
                             <option value="" disabled>选择所属车间</option>
                             <option v-for="ws in workshops" :key="ws.id" :value="ws.id">{{ ws.name }}</option>
                         </select>
-                        <button @click="createLine" class="btn btn-primary">+ 添加产线</button>
+                        <button @click="createLine" class="btn btn-primary" v-permission="{ page: controlPermissionPage, action: 'edit' }">+ 添加产线</button>
                     </div>
 
                     <table class="data-table">
@@ -7918,7 +7934,7 @@ async function openAdminSetupStep(step) {
                                 <td>{{ workshops.find(w => w.id === line.workshop_id)?.name || line.workshop_id }}</td>
                                 <td>{{ (lineMemberDevicesByLine[line.id] || []).length }} 台</td>
                                 <td>
-                                    <button @click="deleteLine(line.id)" class="btn btn-danger btn-sm">删除</button>
+                                    <button @click="deleteLine(line.id)" class="btn btn-danger btn-sm" v-permission="{ page: controlPermissionPage, action: 'delete' }">删除</button>
                                 </td>
                             </tr>
                         </tbody>
@@ -7930,7 +7946,7 @@ async function openAdminSetupStep(step) {
                     <h2>设备管理</h2>
                     <p class="desc">管理所有设备，包括设备名称、所属产线、使用模型和数据连接。</p>
 
-                    <button @click="openCreateDevice" class="btn btn-primary" style="margin-bottom:20px">+ 添加设备</button>
+                    <button @click="openCreateDevice" class="btn btn-primary" style="margin-bottom:20px" v-permission="{ page: controlPermissionPage, action: 'edit' }">+ 添加设备</button>
 
                     <!-- 设备表单弹窗 -->
                     <Transition name="modal-fade">
@@ -7945,37 +7961,37 @@ async function openAdminSetupStep(step) {
                             <div v-else-if="deviceFormStatus === 'error'" class="device-form-state device-form-error" role="alert">
                                 <strong>设备详情加载失败</strong>
                                 <small>{{ deviceFormError }}</small>
-                                <button type="button" class="btn btn-primary btn-sm" @click="openEditDevice({ id: deviceFormTargetId })">重新加载</button>
+                                <button type="button" class="btn btn-primary btn-sm" @click="openEditDevice({ id: deviceFormTargetId })" v-permission="{ page: controlPermissionPage, action: 'edit' }">重新加载</button>
                             </div>
                             <template v-else>
                             <div class="form-grid">
-                                <label>设备 ID<input v-model="editingDevice.id" :disabled="isEditMode" class="input" placeholder="如 Furnace_21" /></label>
-                                <label>设备名称<input v-model="editingDevice.name" class="input" placeholder="如 21# 多用炉" /></label>
+                                <label>设备 ID<input v-model="editingDevice.id" :disabled="isEditMode" class="input" placeholder="如 Furnace_21"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
+                                <label>设备名称<input v-model="editingDevice.name" class="input" placeholder="如 21# 多用炉"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
                                 <label>设备类型
-                                    <select v-model="editingDeviceType" class="input" @change="setEditingDeviceType($event.target.value)">
+                                    <select v-model="editingDeviceType" class="input" @change="setEditingDeviceType($event.target.value)" v-permission="{ page: controlPermissionPage, action: 'edit' }">
                                         <option value="fixed">固定设备</option>
                                         <option value="auxiliary">辅助设备</option>
                                     </select>
                                     <small class="field-hint">辅助设备可选择任意模型；固定设备用于产线上的标准设备。</small>
                                 </label>
                                 <label v-if="isAuxiliaryDeviceConfig(editingDevice)">所在车间
-                                    <select v-model="editingDeviceWorkshopId" class="input">
+                                    <select v-model="editingDeviceWorkshopId" class="input" v-permission="{ page: controlPermissionPage, action: 'edit' }">
                                         <option v-for="ws in workshops" :key="ws.id" :value="ws.id">{{ ws.name }}</option>
                                     </select>
                                 </label>
                                 <label>{{ isAuxiliaryDeviceConfig(editingDevice) ? '参考产线（可选）' : '所属产线' }}
-                                    <select v-model="editingDevice.line_id" class="input">
+                                    <select v-model="editingDevice.line_id" class="input" v-permission="{ page: controlPermissionPage, action: 'edit' }">
                                         <option v-if="isAuxiliaryDeviceConfig(editingDevice)" value="">不挂产线，作为车间级设备</option>
                                         <option v-for="l in deviceFormLines" :key="l.id" :value="l.id">{{ l.name }}</option>
                                     </select>
                                 </label>
                                 <label>使用模型
-                                    <select v-model="editingDevice.model_type" class="input">
+                                    <select v-model="editingDevice.model_type" class="input" v-permission="{ page: controlPermissionPage, action: 'edit' }">
                                         <option v-for="m in editingModelOptions" :key="m.id" :value="m.id">{{ m.name }}</option>
                                     </select>
                                 </label>
                                 <label>设备模板
-                                    <select v-model="editingDevice.template_id" class="input">
+                                    <select v-model="editingDevice.template_id" class="input" v-permission="{ page: controlPermissionPage, action: 'edit' }">
                                         <option value="">不使用模板</option>
                                         <option v-for="tpl in platform.deviceTemplates || []" :key="tpl.id" :value="tpl.id">{{ tpl.name }}</option>
                                     </select>
@@ -7986,7 +8002,7 @@ async function openAdminSetupStep(step) {
                                         <span>型号通常共用模型库配置；只有少数设备结构不同或不允许拆解时才需要覆盖。</span>
                                     </div>
                                     <label>配置策略
-                                        <select v-model="editingDeviceInspectionMode" class="input">
+                                        <select v-model="editingDeviceInspectionMode" class="input" v-permission="{ page: controlPermissionPage, action: 'edit' }">
                                             <option value="inherit">使用模型默认配置（推荐）</option>
                                             <option value="disabled">仅此设备禁用逐层检查</option>
                                             <option value="override">仅此设备使用自定义覆盖</option>
@@ -7998,7 +8014,7 @@ async function openAdminSetupStep(step) {
                                             <button class="btn btn-sm" type="button" @click="copyModelInspectionToDevice">复制当前模型配置</button>
                                         </div>
                                         <label class="wide-form-section">拆解检查覆盖 JSON
-                                            <textarea v-model="editingDeviceInspectionJson" class="input model-metadata" rows="8" spellcheck="false"></textarea>
+                                            <textarea v-model="editingDeviceInspectionJson" class="input model-metadata" rows="8" spellcheck="false" v-permission="{ page: controlPermissionPage, action: 'edit' }"></textarea>
                                         </label>
                                     </template>
                                 </div>
@@ -8008,7 +8024,7 @@ async function openAdminSetupStep(step) {
                                         <span>每台设备可以连接不同 PLC；料车等辅助设备可保持未启用。</span>
                                     </div>
                                     <label class="inline-check">
-                                        <input v-model="editingDevice.plc_enabled" type="checkbox" :true-value="1" :false-value="0" />
+                                        <input v-model="editingDevice.plc_enabled" type="checkbox" :true-value="1" :false-value="0"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/>
                                         启用此设备直连 PLC 采集
                                     </label>
                                     <div class="form-grid compact-form-grid" v-if="Number(editingDevice.plc_enabled || 0)">
@@ -8018,16 +8034,16 @@ async function openAdminSetupStep(step) {
                                             </select>
                                         </label>
                                         <label>{{ plcEndpointFieldLabel() }}
-                                            <input v-model="editingDevice.plc_ip" class="input" :placeholder="plcEndpointPlaceholder()" />
+                                            <input v-model="editingDevice.plc_ip" class="input" :placeholder="plcEndpointPlaceholder()"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/>
                                         </label>
                                         <label>端口
-                                            <input v-model.number="editingDevice.plc_port" type="number" class="input" :placeholder="String(editingPlcProtocolDefinition.defaultPort)" />
+                                            <input v-model.number="editingDevice.plc_port" type="number" class="input" :placeholder="String(editingPlcProtocolDefinition.defaultPort)"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/>
                                         </label>
                                         <label v-if="editingPlcUsesRackSlot">Rack
-                                            <input v-model.number="editingDevice.plc_rack" type="number" class="input" placeholder="0" />
+                                            <input v-model.number="editingDevice.plc_rack" type="number" class="input" placeholder="0"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/>
                                         </label>
                                         <label v-if="editingPlcUsesRackSlot">Slot
-                                            <input v-model.number="editingDevice.plc_slot" type="number" class="input" placeholder="1" />
+                                            <input v-model.number="editingDevice.plc_slot" type="number" class="input" placeholder="1"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/>
                                         </label>
                                         <template v-if="editingPlcUsesModbusOptions">
                                             <label>Unit ID
@@ -8082,13 +8098,13 @@ async function openAdminSetupStep(step) {
                                             </label>
                                         </template>
                                         <label>连接超时(ms)
-                                            <input v-model.number="editingDevice.plc_timeout" type="number" class="input" placeholder="5000" />
+                                            <input v-model.number="editingDevice.plc_timeout" type="number" class="input" placeholder="5000"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/>
                                         </label>
                                         <label>重连间隔(ms)
-                                            <input v-model.number="editingDevice.plc_retry_interval" type="number" class="input" placeholder="10000" />
+                                            <input v-model.number="editingDevice.plc_retry_interval" type="number" class="input" placeholder="10000"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/>
                                         </label>
                                         <label>最大重试次数
-                                            <input v-model.number="editingDevice.plc_max_retries" type="number" class="input" placeholder="0 表示一直重试" />
+                                            <input v-model.number="editingDevice.plc_max_retries" type="number" class="input" placeholder="0 表示一直重试"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/>
                                         </label>
                                         <p class="plc-protocol-hint" style="grid-column:1 / -1">
                                             {{ editingPlcProtocolDefinition.addressHint }} 点位地址请在“PLC 点位映射”中按所选协议填写；当前采集器为只读模式，不会向 PLC 写入。
@@ -8097,7 +8113,7 @@ async function openAdminSetupStep(step) {
                                 </div>
                             </div>
                             <div class="modal-actions">
-                                <button @click="saveDevice" class="btn btn-primary">保存</button>
+                                <button @click="saveDevice" class="btn btn-primary" v-permission="{ page: controlPermissionPage, action: 'edit' }">保存</button>
                                 <button @click="closeDeviceForm" class="btn">取消</button>
                             </div>
                             </template>
@@ -8131,8 +8147,8 @@ async function openAdminSetupStep(step) {
                                         </div>
                                     </td>
                                     <td>
-                                        <button @click="openEditDevice(d)" class="btn btn-sm">编辑</button>
-                                        <button @click="deleteDevice(d.id)" class="btn btn-danger btn-sm">删除</button>
+                                        <button @click="openEditDevice(d)" class="btn btn-sm" v-permission="{ page: controlPermissionPage, action: 'edit' }">编辑</button>
+                                        <button @click="deleteDevice(d.id)" class="btn btn-danger btn-sm" v-permission="{ page: controlPermissionPage, action: 'delete' }">删除</button>
                                     </td>
                                 </tr>
                                 <tr v-if="! (devicesByLine[line.id] || []).length">
@@ -8167,8 +8183,8 @@ async function openAdminSetupStep(step) {
                                         </div>
                                     </td>
                                     <td>
-                                        <button @click="openEditDevice(d)" class="btn btn-sm">编辑</button>
-                                        <button @click="deleteDevice(d.id)" class="btn btn-danger btn-sm">删除</button>
+                                        <button @click="openEditDevice(d)" class="btn btn-sm" v-permission="{ page: controlPermissionPage, action: 'edit' }">编辑</button>
+                                        <button @click="deleteDevice(d.id)" class="btn btn-danger btn-sm" v-permission="{ page: controlPermissionPage, action: 'delete' }">删除</button>
                                     </td>
                                 </tr>
                             </tbody>
@@ -8251,17 +8267,17 @@ async function openAdminSetupStep(step) {
                             </div>
 
                             <div v-if="selectedModelFile" class="model-import-form">
-                                <label>模型 ID<input v-model="modelImportForm.id" class="input" /></label>
-                                <label>模型名称<input v-model="modelImportForm.name" class="input" /></label>
+                                <label>模型 ID<input v-model="modelImportForm.id" class="input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
+                                <label>模型名称<input v-model="modelImportForm.name" class="input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
                                 <label>适用层级
-                                    <select v-model="modelImportForm.placement_level" class="input">
+                                    <select v-model="modelImportForm.placement_level" class="input" v-permission="{ page: controlPermissionPage, action: 'edit' }">
                                         <option v-for="(label, level) in modelLevelLabels" :key="level" :value="level">{{ label }}级</option>
                                     </select>
                                 </label>
-                                <label>默认缩放<input v-model.number="modelImportForm.default_scale" type="number" min="0.01" step="0.05" class="input" /></label>
-                                <label class="model-metadata-field">元数据 JSON<textarea v-model="modelImportForm.metadata" class="input model-metadata"></textarea></label>
+                                <label>默认缩放<input v-model.number="modelImportForm.default_scale" type="number" min="0.01" step="0.05" class="input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
+                                <label class="model-metadata-field">元数据 JSON<textarea v-model="modelImportForm.metadata" class="input model-metadata" v-permission="{ page: controlPermissionPage, action: 'edit' }"></textarea></label>
                                 <div class="model-import-actions">
-                                    <button class="btn btn-primary" type="button" @click="uploadModel" :disabled="modelUploading">
+                                    <button class="btn btn-primary" type="button" @click="uploadModel" :disabled="modelUploading" v-permission="{ page: controlPermissionPage, action: 'edit' }">
                                         {{ modelUploading ? '上传中...' : '上传并入库' }}
                                     </button>
                                     <button class="btn" type="button" @click="clearSelectedModelFile" :disabled="modelUploading">取消</button>
@@ -8276,7 +8292,7 @@ async function openAdminSetupStep(step) {
                                 </div>
                             <div class="form-row" style="margin-bottom:12px;align-items:center;gap:10px">
                                 <label for="model-level-filter">适用层级</label>
-                                <select id="model-level-filter" v-model="modelLevelFilter" class="input" style="max-width:150px">
+                                <select id="model-level-filter" v-model="modelLevelFilter" class="input" style="max-width:150px" >
                                     <option value="all">全部层级</option>
                                     <option v-for="(label, level) in modelLevelLabels" :key="level" :value="level">{{ label }}级</option>
                                 </select>
@@ -8305,7 +8321,7 @@ async function openAdminSetupStep(step) {
                                             <td>{{ getModelBindingCount(m) }}</td>
                                             <td :title="m.file_path || '（内置）'">{{ m.file_path || '（内置）' }}</td>
                                             <td>
-                                                <button v-if="!m.is_builtin || DELETABLE_RETIRED_MODEL_IDS.has(m.id)" @click.stop="deleteModel(m.id)" class="btn btn-danger btn-sm">删除</button>
+                                                <button v-if="!m.is_builtin || DELETABLE_RETIRED_MODEL_IDS.has(m.id)" @click.stop="deleteModel(m.id)" class="btn btn-danger btn-sm" v-permission="{ page: controlPermissionPage, action: 'delete' }">删除</button>
                                                 <span v-else style="color:#888">系统内置</span>
                                             </td>
                                         </tr>
@@ -8319,11 +8335,11 @@ async function openAdminSetupStep(step) {
                                         <small v-if="activePreviewIsEnvironment" class="model-environment-note">环境模型 · 仅用于工厂总览，不参与拆解、点位绑定或 PLC 动画</small>
                                     </div>
                                     <label style="display:flex;align-items:center;gap:6px;white-space:nowrap">适用层级
-                                        <select v-model="modelPlacementDraft" class="input" :disabled="activePreviewIsEnvironment || modelPlacementSaving" style="width:95px">
+                                        <select v-model="modelPlacementDraft" class="input" :disabled="activePreviewIsEnvironment || modelPlacementSaving" style="width:95px" v-permission="{ page: controlPermissionPage, action: 'edit' }">
                                             <option v-for="(label, level) in modelLevelLabels" :key="level" :value="level">{{ label }}级</option>
                                         </select>
                                     </label>
-                                    <button v-if="!activePreviewIsEnvironment" class="btn" type="button" :disabled="modelPlacementSaving || modelPlacementDraft === (activePreviewModel.placement_level || 'device')" @click="saveModelPlacement">保存层级</button>
+                                    <button v-if="!activePreviewIsEnvironment" class="btn" type="button" :disabled="modelPlacementSaving || modelPlacementDraft === (activePreviewModel.placement_level || 'device')" @click="saveModelPlacement" v-permission="{ page: controlPermissionPage, action: 'edit' }">保存层级</button>
                                     <template v-if="!activePreviewIsEnvironment">
                                         <button class="btn" type="button" @click="selectModelLibraryStep('optimization')">优化与验收</button>
                                         <button class="btn" type="button" @click="selectModelLibraryStep('inspection')">拆解检查</button>
@@ -8340,10 +8356,10 @@ async function openAdminSetupStep(step) {
                                         <p>当前状态：<span class="asset-status-pill" :class="'asset-status-' + modelAssetSpec.delivery_status">{{ formatAssetStatus(modelAssetSpec.delivery_status) }}</span></p>
                                     </div>
                                     <div class="model-governance-actions">
-                                        <button class="btn" type="button" @click="saveModelAssetSpec" :disabled="!canEditModelBindings || modelBindingSaving">保存规范</button>
+                                        <button class="btn" type="button" @click="saveModelAssetSpec" :disabled="!canEditModelBindings || modelBindingSaving" v-permission="{ page: controlPermissionPage, action: 'edit' }">保存规范</button>
                                         <button class="btn" type="button" @click="submitModelAssetReview" :disabled="!canEditModelBindings || modelBindingSaving">提交验收</button>
                                         <button class="btn btn-primary" type="button" @click="markModelAssetAccepted" :disabled="!canAcceptModelAsset || modelBindingSaving">标记验收通过</button>
-                                        <button class="btn btn-primary" type="button" @click="publishModelAsset" :disabled="!canPublishModelAsset || modelBindingSaving">发布模型</button>
+                                        <button class="btn btn-primary" type="button" @click="publishModelAsset" :disabled="!canPublishModelAsset || modelBindingSaving" v-permission="{ page: controlPermissionPage, action: 'publish', also: 'edit' }">发布模型</button>
                                     </div>
                                 </div>
 
@@ -8377,51 +8393,51 @@ async function openAdminSetupStep(step) {
                                         </div>
                                         <div class="model-spec-form model-optimization-form">
                                             <label>优化策略
-                                                <select v-model="modelOptimization.mode" class="input">
+                                                <select v-model="modelOptimization.mode" class="input" v-permission="{ page: controlPermissionPage, action: 'edit' }">
                                                     <option value="auto">自动优化（推荐）</option>
                                                     <option value="off">关闭，使用模型原始结构</option>
                                                 </select>
                                             </label>
                                             <label>无贴图材质
-                                                <select v-model="modelOptimization.materialEnhancement" class="input" :disabled="modelOptimization.mode === 'off'">
+                                                <select v-model="modelOptimization.materialEnhancement" class="input" :disabled="modelOptimization.mode === 'off'" v-permission="{ page: controlPermissionPage, action: 'edit' }">
                                                     <option value="auto">自动识别金属 / 油漆 / 橡胶</option>
                                                     <option value="original">保持原始材质参数</option>
                                                 </select>
                                             </label>
                                             <label>环境反射强度
-                                                <input v-model.number="modelOptimization.environmentIntensity" type="number" min="0" max="2" step="0.05" class="input" :disabled="modelOptimization.mode === 'off'" />
+                                                <input v-model.number="modelOptimization.environmentIntensity" type="number" min="0" max="2" step="0.05" class="input" :disabled="modelOptimization.mode === 'off'"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/>
                                             </label>
-                                            <label class="checkbox-line"><input v-model="modelOptimization.mergeStatic" type="checkbox" :disabled="modelOptimization.mode === 'off'" /> 静态网格按材质合并</label>
-                                            <label class="checkbox-line"><input v-model="modelOptimization.instanceRepeated" type="checkbox" :disabled="modelOptimization.mode === 'off'" /> 同型多台实例化</label>
-                                            <label class="checkbox-line"><input v-model="modelOptimization.contactShadow" type="checkbox" :disabled="modelOptimization.mode === 'off'" /> 低成本接触阴影</label>
+                                            <label class="checkbox-line"><input v-model="modelOptimization.mergeStatic" type="checkbox" :disabled="modelOptimization.mode === 'off'"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/> 静态网格按材质合并</label>
+                                            <label class="checkbox-line"><input v-model="modelOptimization.instanceRepeated" type="checkbox" :disabled="modelOptimization.mode === 'off'"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/> 同型多台实例化</label>
+                                            <label class="checkbox-line"><input v-model="modelOptimization.contactShadow" type="checkbox" :disabled="modelOptimization.mode === 'off'"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/> 低成本接触阴影</label>
                                         </div>
                                         <p class="model-optimization-estimate">{{ modelOptimizationEstimate }}。骨骼、Morph 或单网格多材质等不适合的模型会自动回退，不会强行破坏。</p>
                                     </div>
 
                                     <div class="model-spec-form">
-                                        <label>资产版本<input v-model="modelAssetSpec.version" class="input" /></label>
-                                        <label>设备类型<input v-model="modelAssetSpec.device_family" class="input" placeholder="如 箱式气氛多用炉" /></label>
+                                        <label>资产版本<input v-model="modelAssetSpec.version" class="input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
+                                        <label>设备类型<input v-model="modelAssetSpec.device_family" class="input" placeholder="如 箱式气氛多用炉"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
                                         <label>尺寸单位
-                                            <select v-model="modelAssetSpec.unit" class="input">
+                                            <select v-model="modelAssetSpec.unit" class="input" v-permission="{ page: controlPermissionPage, action: 'edit' }">
                                                 <option value="m">m</option>
                                                 <option value="mm">mm</option>
                                             </select>
                                         </label>
-                                        <label>坐标规范<input v-model="modelAssetSpec.axis_rule" class="input" /></label>
-                                        <label>最大三角面<input v-model.number="modelAssetSpec.max_triangles" type="number" min="1000" step="1000" class="input" /></label>
-                                        <label>最大节点数<input v-model.number="modelAssetSpec.max_nodes" type="number" min="1" step="10" class="input" /></label>
-                                        <label>最大贴图尺寸<input v-model.number="modelAssetSpec.max_texture_size" type="number" min="256" step="256" class="input" /></label>
+                                        <label>坐标规范<input v-model="modelAssetSpec.axis_rule" class="input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
+                                        <label>最大三角面<input v-model.number="modelAssetSpec.max_triangles" type="number" min="1000" step="1000" class="input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
+                                        <label>最大节点数<input v-model.number="modelAssetSpec.max_nodes" type="number" min="1" step="10" class="input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
+                                        <label>最大贴图尺寸<input v-model.number="modelAssetSpec.max_texture_size" type="number" min="256" step="256" class="input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
                                         <label>交付状态
-                                            <select v-model="modelAssetSpec.delivery_status" class="input">
+                                            <select v-model="modelAssetSpec.delivery_status" class="input" v-permission="{ page: controlPermissionPage, action: 'edit' }">
                                                 <option value="draft">草稿</option>
                                                 <option value="review">待验收</option>
                                                 <option value="accepted">验收通过</option>
                                                 <option value="released">已发布</option>
                                             </select>
                                         </label>
-                                        <label class="wide-form-section">节点命名规则<input v-model="modelAssetSpec.node_naming_rule" class="input" /></label>
-                                        <label class="wide-form-section">LOD 策略<input v-model="modelAssetSpec.lod_policy" class="input" /></label>
-                                        <label class="wide-form-section">交付备注<textarea v-model="modelAssetSpec.notes" class="input model-metadata"></textarea></label>
+                                        <label class="wide-form-section">节点命名规则<input v-model="modelAssetSpec.node_naming_rule" class="input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
+                                        <label class="wide-form-section">LOD 策略<input v-model="modelAssetSpec.lod_policy" class="input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
+                                        <label class="wide-form-section">交付备注<textarea v-model="modelAssetSpec.notes" class="input model-metadata" v-permission="{ page: controlPermissionPage, action: 'edit' }"></textarea></label>
                                     </div>
 
                                     <div class="model-acceptance-summary" :class="{ ready: modelAcceptanceSummary.ready }">
@@ -8498,7 +8514,7 @@ async function openAdminSetupStep(step) {
                                         <h3>部位与点位绑定</h3>
                                         <p>{{ canEditModelBindings ? '选择模型节点，把 PLC 实时点位映射成旋转、平移、显隐或变色动作。' : '内置程序化模型不可编辑部位绑定，请使用上传的完整 GLB/GLTF 模型。' }}</p>
                                     </div>
-                                    <button class="btn btn-primary" type="button" @click="saveModelPartBindings" :disabled="!canEditModelBindings || modelBindingSaving">
+                                    <button class="btn btn-primary" type="button" @click="saveModelPartBindings" :disabled="!canEditModelBindings || modelBindingSaving" v-permission="{ page: controlPermissionPage, action: 'edit' }">
                                         {{ modelBindingSaving ? '保存中...' : '保存绑定' }}
                                     </button>
                                 </div>
@@ -8507,9 +8523,9 @@ async function openAdminSetupStep(step) {
                                     <div class="model-binding-form">
                                         <label class="model-node-picker">模型部位
                                             <div class="model-node-tools">
-                                                <input v-model="modelNodeSearchText" class="input" placeholder="搜索节点名称 / 路径" />
+                                                <input v-model="modelNodeSearchText" class="input" placeholder="搜索节点名称 / 路径"  />
                                                 <span class="inline-toggle node-filter-toggle">
-                                                    <input v-model="showOnlyBindableNodes" type="checkbox" />
+                                                    <input v-model="showOnlyBindableNodes" type="checkbox"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/>
                                                     只看可绑定网格
                                                 </span>
                                             </div>
@@ -8521,38 +8537,38 @@ async function openAdminSetupStep(step) {
                                             </select>
                                             <small class="field-hint">当前显示 {{ filteredModelPreviewNodes.length }} / {{ modelPreviewNodes.length }} 个节点。若列表全是 bolt、chain 这类名字，说明模型导出时节点命名还没按资产规范整理。</small>
                                         </label>
-                                        <label>绑定名称<input v-model="modelBindingForm.name" class="input" placeholder="如 后室循环风扇" /></label>
+                                        <label>绑定名称<input v-model="modelBindingForm.name" class="input" placeholder="如 后室循环风扇"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
                                         <label>数据分组
-                                            <select v-model="modelBindingForm.source_group" class="input">
+                                            <select v-model="modelBindingForm.source_group" class="input" v-permission="{ page: controlPermissionPage, action: 'edit' }">
                                                 <option v-for="group in modelSourceGroups" :key="group.value" :value="group.value">{{ group.label }}</option>
                                             </select>
                                         </label>
-                                        <label>点位字段<input v-model="modelBindingForm.source_key" class="input" placeholder="如 rear_fan_rpm" /></label>
+                                        <label>点位字段<input v-model="modelBindingForm.source_key" class="input" placeholder="如 rear_fan_rpm"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
                                         <label>动作
-                                            <select v-model="modelBindingForm.action" class="input">
+                                            <select v-model="modelBindingForm.action" class="input" v-permission="{ page: controlPermissionPage, action: 'edit' }">
                                                 <option v-for="action in modelBindingActions" :key="action.value" :value="action.value">{{ action.label }}</option>
                                             </select>
                                         </label>
                                         <label>轴向
-                                            <select v-model="modelBindingForm.axis" class="input">
+                                            <select v-model="modelBindingForm.axis" class="input" v-permission="{ page: controlPermissionPage, action: 'edit' }">
                                                 <option v-for="axis in modelBindingAxes" :key="axis.value" :value="axis.value">{{ axis.label }}</option>
                                             </select>
                                         </label>
-                                        <label>输入最小<input v-model.number="modelBindingForm.input_min" type="number" class="input" /></label>
-                                        <label>输入最大<input v-model.number="modelBindingForm.input_max" type="number" class="input" /></label>
-                                        <label>输出最小<input v-model.number="modelBindingForm.output_min" type="number" class="input" /></label>
-                                        <label>输出最大<input v-model.number="modelBindingForm.output_max" type="number" class="input" /></label>
-                                        <label>转速系数<input v-model.number="modelBindingForm.speed_factor" type="number" step="0.001" class="input" /></label>
+                                        <label>输入最小<input v-model.number="modelBindingForm.input_min" type="number" class="input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
+                                        <label>输入最大<input v-model.number="modelBindingForm.input_max" type="number" class="input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
+                                        <label>输出最小<input v-model.number="modelBindingForm.output_min" type="number" class="input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
+                                        <label>输出最大<input v-model.number="modelBindingForm.output_max" type="number" class="input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
+                                        <label>转速系数<input v-model.number="modelBindingForm.speed_factor" type="number" step="0.001" class="input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
                                         <label>反向
-                                            <select v-model="modelBindingForm.invert" class="input">
+                                            <select v-model="modelBindingForm.invert" class="input" v-permission="{ page: controlPermissionPage, action: 'edit' }">
                                                 <option :value="false">否</option>
                                                 <option :value="true">是</option>
                                             </select>
                                         </label>
-                                        <label>开启颜色<input v-model="modelBindingForm.on_color" type="color" class="input color-input" /></label>
-                                        <label>关闭颜色<input v-model="modelBindingForm.off_color" type="color" class="input color-input" /></label>
+                                        <label>开启颜色<input v-model="modelBindingForm.on_color" type="color" class="input color-input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
+                                        <label>关闭颜色<input v-model="modelBindingForm.off_color" type="color" class="input color-input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
                                         <div class="model-binding-actions">
-                                            <button class="btn btn-primary" type="button" @click="saveModelBindingDraft">
+                                            <button class="btn btn-primary" type="button" @click="saveModelBindingDraft" v-permission="{ page: controlPermissionPage, action: 'edit' }">
                                                 {{ selectedModelBindingIndex >= 0 ? '更新此绑定' : '加入绑定列表' }}
                                             </button>
                                             <button class="btn" type="button" @click="resetModelBindingForm">清空表单</button>
@@ -8577,7 +8593,7 @@ async function openAdminSetupStep(step) {
                                                 <td>{{ formatModelAxis(binding.axis) }}</td>
                                                 <td>
                                                     <button class="btn btn-sm" type="button" @click.stop="editModelBinding(index)">编辑</button>
-                                                    <button class="btn btn-danger btn-sm" type="button" @click.stop="removeModelBinding(index)">删除</button>
+                                                    <button class="btn btn-danger btn-sm" type="button" @click.stop="removeModelBinding(index)" v-permission="{ page: controlPermissionPage, action: 'edit' }">删除</button>
                                                 </td>
                                             </tr>
                                             <tr v-if="!modelPartBindings.length">
@@ -8587,7 +8603,7 @@ async function openAdminSetupStep(step) {
                                     </table>
                                     <div class="model-binding-bottom-actions">
                                         <span>修改绑定后请保存；删除操作会自动保存。</span>
-                                        <button class="btn btn-primary" type="button" @click="saveModelPartBindings" :disabled="modelBindingSaving">
+                                        <button class="btn btn-primary" type="button" @click="saveModelPartBindings" :disabled="modelBindingSaving" v-permission="{ page: controlPermissionPage, action: 'edit' }">
                                             {{ modelBindingSaving ? '保存中...' : '保存绑定' }}
                                         </button>
                                     </div>
@@ -8655,7 +8671,7 @@ async function openAdminSetupStep(step) {
                     <div class="secondary-page-nav-shell">
                         <nav class="secondary-page-nav" aria-label="画面组件设置分类">
                             <button
-                                v-for="(item, index) in PLATFORM_SUBPAGES"
+                                v-for="(item, index) in visiblePlatformSubpages"
                                 :key="item.key"
                                 type="button"
                                 class="secondary-page-nav-item"
@@ -8685,10 +8701,10 @@ async function openAdminSetupStep(step) {
                                 <input :value="platform.activeProject.name" disabled class="input" />
                             </label>
                             <label>场景名称
-                                <input v-model="platform.activeScene.name" class="input" />
+                                <input v-model="platform.activeScene.name" class="input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/>
                             </label>
                         </div>
-                        <button @click="saveActiveScene" class="btn btn-primary" style="margin-top:16px;">保存场景名称</button>
+                        <button @click="saveActiveScene" class="btn btn-primary" style="margin-top:16px;" v-permission="{ page: controlPermissionPage, action: 'edit' }">保存场景名称</button>
                     </div>
 
                     <div v-show="platformSubpage === 'environment'" class="secondary-page-panel">
@@ -8709,7 +8725,7 @@ async function openAdminSetupStep(step) {
                     <div v-if="false" class="settings-section" style="margin-top:24px;">
                         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
                             <h3 class="section-title" style="margin: 0;">组件布局</h3>
-                            <button @click="openCreateWidgetModal" class="btn btn-primary">+ 添加新组件</button>
+                            <button @click="openCreateWidgetModal" class="btn btn-primary" v-permission="{ page: controlPermissionPage, action: 'edit' }">+ 添加新组件</button>
                         </div>
                         <div class="widget-layout-editor">
                             <div class="widget-layout-form">
@@ -8732,30 +8748,30 @@ async function openAdminSetupStep(step) {
                                                 @mousemove="moveWidgetPreviewPopover($event)"
                                                 @mouseleave="hideWidgetPreview"
                                             >
-                                                <td><input v-model="widget.visible" type="checkbox" /></td>
+                                                <td><input v-model="widget.visible" type="checkbox"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></td>
                                                 <td><code>{{ widget.id }}</code></td>
                                                 <td>
-                                                    <select v-model="widget.widget_type" @change="applyWidgetDefaults(widget)" class="input input-sm">
+                                                    <select v-model="widget.widget_type" @change="applyWidgetDefaults(widget)" class="input input-sm" v-permission="{ page: controlPermissionPage, action: 'edit' }">
                                                         <option v-for="type in widgetTypeOptions" :key="type.value" :value="type.value">{{ type.label }}</option>
                                                     </select>
                                                 </td>
-                                                <td><input v-model="widget.title" class="input input-sm" /></td>
-                                                <td><input v-model.number="widget.x" type="number" class="input input-sm coord-input" /></td>
-                                                <td><input v-model.number="widget.y" type="number" class="input input-sm coord-input" /></td>
-                                                <td><input v-model.number="widget.w" type="number" class="input input-sm coord-input" /></td>
-                                                <td><input v-model.number="widget.h" type="number" class="input input-sm coord-input" /></td>
-                                                <td><input v-model.number="widget.sort_order" type="number" class="input input-sm coord-input" /></td>
+                                                <td><input v-model="widget.title" class="input input-sm"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></td>
+                                                <td><input v-model.number="widget.x" type="number" class="input input-sm coord-input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></td>
+                                                <td><input v-model.number="widget.y" type="number" class="input input-sm coord-input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></td>
+                                                <td><input v-model.number="widget.w" type="number" class="input input-sm coord-input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></td>
+                                                <td><input v-model.number="widget.h" type="number" class="input input-sm coord-input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></td>
+                                                <td><input v-model.number="widget.sort_order" type="number" class="input input-sm coord-input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></td>
                                                 <td class="widget-editor-cell">
                                                     <button type="button" @click.stop="widget.configText = formatJsonForEditor(getWidgetDefaultConfig(widget.widget_type))" class="btn btn-sm widget-default-btn">默认</button>
-                                                    <textarea v-model="widget.configText" class="input widget-json widget-json-large" spellcheck="false"></textarea>
+                                                    <textarea v-model="widget.configText" class="input widget-json widget-json-large" spellcheck="false" v-permission="{ page: controlPermissionPage, action: 'edit' }"></textarea>
                                                 </td>
                                                 <td class="widget-editor-cell">
                                                     <button type="button" @click.stop="widget.bindingText = formatJsonForEditor(getWidgetDefaultBinding(widget.widget_type))" class="btn btn-sm widget-default-btn">默认</button>
-                                                    <textarea v-model="widget.bindingText" class="input widget-json widget-json-large" spellcheck="false"></textarea>
+                                                    <textarea v-model="widget.bindingText" class="input widget-json widget-json-large" spellcheck="false" v-permission="{ page: controlPermissionPage, action: 'edit' }"></textarea>
                                                 </td>
                                                 <td class="widget-action-cell" @mouseenter.stop="hideWidgetPreview" @mousemove.stop="hideWidgetPreview">
-                                                    <button @click.stop="saveWidget(widget)" class="btn btn-primary btn-sm">保存</button>
-                                                    <button @click.stop="deleteWidget(widget.id)" class="btn btn-danger btn-sm">删除</button>
+                                                    <button @click.stop="saveWidget(widget)" class="btn btn-primary btn-sm" v-permission="{ page: controlPermissionPage, action: 'edit' }">保存</button>
+                                                    <button @click.stop="deleteWidget(widget.id)" class="btn btn-danger btn-sm" v-permission="{ page: controlPermissionPage, action: 'delete' }">删除</button>
                                                 </td>
                                             </tr>
                                         </tbody>
@@ -8860,15 +8876,15 @@ async function openAdminSetupStep(step) {
                                 </div>
                                 <div class="form-grid" style="grid-template-columns: 1fr 1fr; gap: 14px;">
                                     <label>组件 ID
-                                        <input v-model="newWidget.id" class="input" placeholder="如 widget_text_notice" />
+                                        <input v-model="newWidget.id" class="input" placeholder="如 widget_text_notice"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/>
                                     </label>
                                     <label>组件类型
-                                        <select v-model="newWidget.widget_type" @change="applyNewWidgetDefaults" class="input">
+                                        <select v-model="newWidget.widget_type" @change="applyNewWidgetDefaults" class="input" v-permission="{ page: controlPermissionPage, action: 'edit' }">
                                             <option v-for="type in widgetTypeOptions.filter(item => item.value !== 'navigation')" :key="type.value" :value="type.value">{{ type.label }}</option>
                                         </select>
                                     </label>
                                     <label style="grid-column: span 2;">组件标题
-                                        <input v-model="newWidget.title" class="input" placeholder="如 生产指标概览" />
+                                        <input v-model="newWidget.title" class="input" placeholder="如 生产指标概览"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/>
                                     </label>
                                     <div class="form-section" style="grid-column: span 2; margin: 4px 0 0;">
                                         <div class="form-section-header">
@@ -8876,17 +8892,17 @@ async function openAdminSetupStep(step) {
                                             <span>网格列数与行数配置</span>
                                         </div>
                                         <div class="form-grid compact-form-grid" style="grid-template-columns: repeat(4, 1fr); gap: 10px;">
-                                            <label>左 (X)<input v-model.number="newWidget.x" type="number" class="input" placeholder="0" /></label>
-                                            <label>上 (Y)<input v-model.number="newWidget.y" type="number" class="input" placeholder="0" /></label>
-                                            <label>宽 (W)<input v-model.number="newWidget.w" type="number" class="input" placeholder="6" /></label>
-                                            <label>高 (H)<input v-model.number="newWidget.h" type="number" class="input" placeholder="4" /></label>
+                                            <label>左 (X)<input v-model.number="newWidget.x" type="number" class="input" placeholder="0"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
+                                            <label>上 (Y)<input v-model.number="newWidget.y" type="number" class="input" placeholder="0"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
+                                            <label>宽 (W)<input v-model.number="newWidget.w" type="number" class="input" placeholder="6"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
+                                            <label>高 (H)<input v-model.number="newWidget.h" type="number" class="input" placeholder="4"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
                                         </div>
                                     </div>
                                     <label style="grid-column: span 2;">组件配置 JSON
-                                        <textarea v-model="newWidget.configText" class="input widget-json-textarea" placeholder="配置 JSON" spellcheck="false" style="height: 90px; font-family: SFMono-Regular, Consolas, monospace; font-size: 12px;"></textarea>
+                                        <textarea v-model="newWidget.configText" class="input widget-json-textarea" placeholder="配置 JSON" spellcheck="false" style="height: 90px; font-family: SFMono-Regular, Consolas, monospace; font-size: 12px;" v-permission="{ page: controlPermissionPage, action: 'edit' }"></textarea>
                                     </label>
                                     <label style="grid-column: span 2;">数据绑定 JSON
-                                        <textarea v-model="newWidget.bindingText" class="input widget-json-textarea" placeholder="数据绑定 JSON" spellcheck="false" style="height: 70px; font-family: SFMono-Regular, Consolas, monospace; font-size: 12px;"></textarea>
+                                        <textarea v-model="newWidget.bindingText" class="input widget-json-textarea" placeholder="数据绑定 JSON" spellcheck="false" style="height: 70px; font-family: SFMono-Regular, Consolas, monospace; font-size: 12px;" v-permission="{ page: controlPermissionPage, action: 'edit' }"></textarea>
                                     </label>
                                 </div>
                                 <div class="modal-actions" style="margin-top: 20px; display: flex; justify-content: flex-end; gap: 12px;">
@@ -8959,19 +8975,19 @@ async function openAdminSetupStep(step) {
                                 <tbody>
                                     <tr v-for="(p, idx) in paginatedDataPoints" :key="p.name || p.plc_tag || idx">
                                         <td v-if="isAllPointsMode">
-                                            <select v-model="p.device_id" @change="markPointsDirty" class="input input-sm device-point-select">
+                                            <select v-model="p.device_id" @change="markPointsDirty" class="input input-sm device-point-select" v-permission="{ page: controlPermissionPage, action: 'edit' }">
                                                 <option value="">选择设备</option>
                                                 <option v-for="d in devices" :key="d.id" :value="d.id">{{ deviceHierarchyLabel(d) }}</option>
                                             </select>
                                         </td>
-                                        <td><input v-model="p.label" @input="markPointsDirty" class="input input-sm point-name-input" placeholder="实际温度 / bj1" /></td>
+                                        <td><input v-model="p.label" @input="markPointsDirty" class="input input-sm point-name-input" placeholder="实际温度 / bj1"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></td>
                                         <td>
-                                            <select v-model="p.__usage" @change="setPointUsage(p, p.__usage)" class="input input-sm point-usage-input">
+                                            <select v-model="p.__usage" @change="setPointUsage(p, p.__usage)" class="input input-sm point-usage-input" v-permission="{ page: controlPermissionPage, action: 'edit' }">
                                                 <option v-for="item in pointUsageOptions" :key="item.value" :value="item.value">{{ item.label }}</option>
                                             </select>
                                         </td>
                                         <td>
-                                            <select v-model="p.data_type" @change="handlePointDataTypeChange(p)" class="input input-sm point-datatype-select">
+                                            <select v-model="p.data_type" @change="handlePointDataTypeChange(p)" class="input input-sm point-datatype-select" v-permission="{ page: controlPermissionPage, action: 'edit' }">
                                                 <option v-for="type in pointDataTypes" :key="type.value" :value="type.value">{{ type.label }}</option>
                                             </select>
                                         </td>
@@ -8981,7 +8997,7 @@ async function openAdminSetupStep(step) {
                                                        class="input input-sm plc-address-input" 
                                                        :class="{ 'has-warning': !!getPlcAddressWarning(p), 'has-duplicate': !!getPlcDuplicateWarning(p) }"
                                                        :title="getPlcDuplicateWarning(p) || getPlcAddressWarning(p) || getPointAddressTitle(p)"
-                                                       :placeholder="getPointAddressPlaceholder(p)" />
+                                                       :placeholder="getPointAddressPlaceholder(p)"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/>
                                                 <span v-if="getPlcDuplicateWarning(p)" class="plc-warning-icon plc-duplicate-icon" :title="getPlcDuplicateWarning(p)">
                                                     <svg viewBox="0 0 16 16" width="14" height="14" fill="none">
                                                         <rect x="1" y="1" width="10" height="10" rx="2" stroke="#ff3b30" stroke-width="1.3" fill="rgba(255, 59, 48, 0.1)"/>
@@ -8997,20 +9013,20 @@ async function openAdminSetupStep(step) {
                                                 </span>
                                             </div>
                                         </td>
-                                        <td><input v-model.number="p.sample_interval_ms" @input="markPointsDirty" type="number" min="100" step="50" class="input input-sm sample-input" placeholder="1000" /></td>
+                                        <td><input v-model.number="p.sample_interval_ms" @input="markPointsDirty" type="number" min="100" step="50" class="input input-sm sample-input" placeholder="1000"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></td>
                                         <td>
-                                            <select v-model="p.access_type" @change="markPointsDirty" class="input input-sm access-input">
+                                            <select v-model="p.access_type" @change="markPointsDirty" class="input input-sm access-input" v-permission="{ page: controlPermissionPage, action: 'edit' }">
                                                 <option value="READ">读</option>
                                                 <option value="READ_WRITE">读写</option>
                                                 <option value="WRITE">仅写</option>
                                             </select>
                                         </td>
-                                        <td v-if="showPointAdvancedFields"><input v-model.number="p.scale" @input="markPointsDirty" type="number" step="0.001" class="input input-sm number-input" placeholder="1" title="PLC 原始值乘以这个数，例如原始值 253、倍率 0.1，得到 25.3" /></td>
-                                        <td v-if="showPointAdvancedFields"><input v-model.number="p.offset" @input="markPointsDirty" type="number" step="0.001" class="input input-sm number-input" placeholder="0" title="倍率换算后再加上的修正值，例如传感器整体偏低 2 度就填 2" /></td>
-                                        <td v-if="showPointAdvancedFields"><input v-model="p.display_format" @input="markPointsDirty" class="input input-sm unit-input" placeholder="如 0.0" title="控制画面显示的小数位，例如 0 表示整数，0.0 表示 1 位小数，0.00 表示 2 位小数" /></td>
-                                        <td><input v-model="p.unit" @input="markPointsDirty" class="input input-sm unit-input" :disabled="isBoolPoint(p)" :placeholder="isBoolPoint(p) ? '无' : '°C'" /></td>
+                                        <td v-if="showPointAdvancedFields"><input v-model.number="p.scale" @input="markPointsDirty" type="number" step="0.001" class="input input-sm number-input" placeholder="1" title="PLC 原始值乘以这个数，例如原始值 253、倍率 0.1，得到 25.3"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></td>
+                                        <td v-if="showPointAdvancedFields"><input v-model.number="p.offset" @input="markPointsDirty" type="number" step="0.001" class="input input-sm number-input" placeholder="0" title="倍率换算后再加上的修正值，例如传感器整体偏低 2 度就填 2"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></td>
+                                        <td v-if="showPointAdvancedFields"><input v-model="p.display_format" @input="markPointsDirty" class="input input-sm unit-input" placeholder="如 0.0" title="控制画面显示的小数位，例如 0 表示整数，0.0 表示 1 位小数，0.00 表示 2 位小数"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></td>
+                                        <td><input v-model="p.unit" @input="markPointsDirty" class="input input-sm unit-input" :disabled="isBoolPoint(p)" :placeholder="isBoolPoint(p) ? '无' : '°C'"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></td>
                                         <td>
-                                            <input v-if="normalizePointUsage(p) === 'alarm_trigger'" v-model="p.alarm_text" @input="markPointsDirty" class="input input-sm alarm-text-input" placeholder="报警说明" />
+                                            <input v-if="normalizePointUsage(p) === 'alarm_trigger'" v-model="p.alarm_text" @input="markPointsDirty" class="input input-sm alarm-text-input" placeholder="报警说明"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/>
                                             <span v-else class="muted-cell">-</span>
                                         </td>
                                         <td>
@@ -9018,7 +9034,7 @@ async function openAdminSetupStep(step) {
                                                 {{ enabledVoiceRuleCount(p) > 0 ? `${enabledVoiceRuleCount(p)} 条` : '配置' }}
                                             </button>
                                         </td>
-                                        <td><button @click="removeDataPoint(p)" class="btn btn-danger btn-sm">✕</button></td>
+                                        <td><button @click="removeDataPoint(p)" class="btn btn-danger btn-sm" v-permission="{ page: controlPermissionPage, action: 'edit' }">✕</button></td>
                                     </tr>
                                     <tr v-if="dataPoints.length === 0">
                                         <td :colspan="(showPointAdvancedFields ? 13 : 10) + (isAllPointsMode ? 1 : 0)" style="text-align:center; padding: 20px; color: #86868b;">暂无点位配置，请手动添加或从其他设备复制。</td>
@@ -9036,7 +9052,7 @@ async function openAdminSetupStep(step) {
                             <div class="pagination-controls">
                                 <div class="page-size-selector">
                                     <span class="selector-label">每页显示：</span>
-                                    <select v-model.number="pointsPageSize" class="input input-sm page-size-select">
+                                    <select v-model.number="pointsPageSize" class="input input-sm page-size-select" v-permission="{ page: controlPermissionPage, action: 'edit' }">
                                         <option :value="10">10 条/页</option>
                                         <option :value="20">20 条/页</option>
                                         <option :value="50">50 条/页</option>
@@ -9086,10 +9102,10 @@ async function openAdminSetupStep(step) {
                                     <div v-for="(rule, ruleIndex) in pointVoiceRules(selectedVoicePoint)" :key="rule.id" class="voice-rule-card">
                                         <div class="voice-rule-card-header">
                                             <label class="inline-check">
-                                                <input v-model="rule.enabled" type="checkbox" @change="markPointsDirty" />
+                                                <input v-model="rule.enabled" type="checkbox" @change="markPointsDirty"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/>
                                                 启用第 {{ ruleIndex + 1 }} 条规则
                                             </label>
-                                            <button @click="removeVoiceRule(selectedVoicePoint, ruleIndex)" class="btn btn-danger btn-sm rule-delete-icon-btn" title="删除规则">
+                                            <button @click="removeVoiceRule(selectedVoicePoint, ruleIndex)" class="btn btn-danger btn-sm rule-delete-icon-btn" title="删除规则" v-permission="{ page: controlPermissionPage, action: 'edit' }">
                                                 <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor">
                                                     <path d="M5.5 5.5A.5.5 0 0 1 6 6v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5zm2.5 0a.5.5 0 0 1 .5.5v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5zm3 .5a.5.5 0 0 0-1 0v6a.5.5 0 0 0 1 0V6z"/>
                                                     <path fill-rule="evenodd" d="M14.5 3a1 1 0 0 1-1 1H13v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V4h-.5a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1H6a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1h3.5a1 1 0 0 1 1 1v1zM4.118 4 4 4.059V13a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1V4.059L11.882 4H4.118zM2.5 3V2h11v1h-11z"/>
@@ -9099,22 +9115,22 @@ async function openAdminSetupStep(step) {
 
                                         <div class="voice-rule-grid">
                                             <label>触发方式
-                                                <select v-model="rule.trigger" @change="markPointsDirty" class="input">
+                                                <select v-model="rule.trigger" @change="markPointsDirty" class="input" v-permission="{ page: controlPermissionPage, action: 'edit' }">
                                                     <option v-for="item in voiceTriggerOptions" :key="item.value" :value="item.value">{{ item.label }}</option>
                                                 </select>
                                             </label>
                                             <label v-if="voiceRuleNeedsThreshold(rule)">触发阈值
-                                                <input v-model.number="rule.threshold" @input="markPointsDirty" type="number" step="0.001" class="input" placeholder="例如 850" />
+                                                <input v-model.number="rule.threshold" @input="markPointsDirty" type="number" step="0.001" class="input" placeholder="例如 850"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/>
                                             </label>
                                             <label>播放方式
-                                                <select v-model="rule.mode" @change="markPointsDirty" class="input">
+                                                <select v-model="rule.mode" @change="markPointsDirty" class="input" v-permission="{ page: controlPermissionPage, action: 'edit' }">
                                                     <option value="auto">自动（文件优先，无则转语音）</option>
                                                     <option value="tts">系统文字转语音</option>
                                                     <option value="file">固定语音文件</option>
                                                 </select>
                                             </label>
                                             <label>系统声音
-                                                <select v-model="rule.voice_name" @change="markPointsDirty" class="input">
+                                                <select v-model="rule.voice_name" @change="markPointsDirty" class="input" v-permission="{ page: controlPermissionPage, action: 'edit' }">
                                                     <option value="">系统默认声音</option>
                                                     <option v-for="voice in systemVoices" :key="voice.name" :value="voice.name">{{ voice.name }}（{{ voice.culture || '系统' }}）</option>
                                                 </select>
@@ -9123,19 +9139,19 @@ async function openAdminSetupStep(step) {
                                                 <input :value="Number(rule.cooldown_ms || 0) / 1000" @input="updateVoiceCooldown(rule, $event.target.value)" type="number" min="0" max="3600" step="1" class="input" />
                                             </label>
                                             <label>语速（0.5-2）
-                                                <input v-model.number="rule.rate" @input="markPointsDirty" type="number" min="0.5" max="2" step="0.1" class="input" />
+                                                <input v-model.number="rule.rate" @input="markPointsDirty" type="number" min="0.5" max="2" step="0.1" class="input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/>
                                             </label>
                                             <label>音量（0-1）
-                                                <input v-model.number="rule.volume" @input="markPointsDirty" type="number" min="0" max="1" step="0.1" class="input" />
+                                                <input v-model.number="rule.volume" @input="markPointsDirty" type="number" min="0" max="1" step="0.1" class="input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/>
                                             </label>
                                             <label class="inline-check voice-startup-check">
-                                                <input v-model="rule.announce_on_start" type="checkbox" @change="markPointsDirty" />
+                                                <input v-model="rule.announce_on_start" type="checkbox" @change="markPointsDirty"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/>
                                                 <span>软件启动时若条件成立，也播报一次</span>
                                             </label>
                                         </div>
 
                                         <label class="voice-text-label">播报文字
-                                            <textarea v-model="rule.text" @input="markPointsDirty" class="input voice-rule-text" placeholder="例如：{设备} 循环风扇冷却水流量低，请检查。"></textarea>
+                                            <textarea v-model="rule.text" @input="markPointsDirty" class="input voice-rule-text" placeholder="例如：{设备} 循环风扇冷却水流量低，请检查。" v-permission="{ page: controlPermissionPage, action: 'edit' }"></textarea>
                                         </label>
 
                                         <div class="voice-file-row">
@@ -9156,7 +9172,7 @@ async function openAdminSetupStep(step) {
                                     </div>
 
                                     <div class="modal-actions voice-modal-actions">
-                                        <button @click="addVoiceRule(selectedVoicePoint)" class="btn btn-primary">+ 添加播报规则</button>
+                                        <button @click="addVoiceRule(selectedVoicePoint)" class="btn btn-primary" v-permission="{ page: controlPermissionPage, action: 'edit' }">+ 添加播报规则</button>
                                         <button @click="closeVoiceConfig" class="btn">完成配置</button>
                                     </div>
                                     <input ref="voiceFileInput" type="file" accept=".wav,.mp3,.ogg,.m4a,audio/*" style="display:none" @change="handleVoiceFileChange" />
@@ -9166,11 +9182,11 @@ async function openAdminSetupStep(step) {
 
                         <div style="margin-top:15px;display:flex; justify-content: space-between; align-items: center;">
                             <div style="display:flex; gap:10px; flex-wrap:wrap;">
-                                <button @click="addDataPoint('normal')" class="btn">+ 添加点位</button>
+                                <button @click="addDataPoint('normal')" class="btn" v-permission="{ page: controlPermissionPage, action: 'edit' }">+ 添加点位</button>
                             </div>
                             <div style="display:flex; align-items: center; gap: 15px;">
                                 <span v-if="isPointsDirty" style="color: #ff9500; font-size: 13px;">存在未保存的修改</span>
-                                <button @click="saveAllPoints" class="btn btn-primary" :disabled="pointsLoading || pointsSaving || (!isPointsDirty && dataPoints.length > 0)">{{ pointsLoading ? '正在读取点位…' : pointsSaving ? '正在保存…' : isAllPointsMode ? '保存全部设备配置' : '保存当前设备配置' }}</button>
+                                <button @click="saveAllPoints" class="btn btn-primary" :disabled="pointsLoading || pointsSaving || (!isPointsDirty && dataPoints.length > 0)" v-permission="{ page: controlPermissionPage, action: 'edit' }">{{ pointsLoading ? '正在读取点位…' : pointsSaving ? '正在保存…' : isAllPointsMode ? '保存全部设备配置' : '保存当前设备配置' }}</button>
                             </div>
                         </div>
 
@@ -9204,11 +9220,11 @@ async function openAdminSetupStep(step) {
                                         <textarea v-model="alarmTextImportRaw" class="input alarm-textarea" placeholder="例如：
 1 => &quot;循环风扇冷却水流量低故障&quot;,
 2 => &quot;油搅拌1不运行&quot;,
-3 => &quot;内推链电机空开跌落&quot;," />
+3 => &quot;内推链电机空开跌落&quot;,"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/>
                                         <div class="alarm-import-side">
                                             <button @click="fillAlarmTextTemplate" class="btn" :disabled="isAllPointsMode">生成当前报警模板</button>
                                             <button @click="triggerAlarmTextFileSelect" class="btn" :disabled="isAllPointsMode">导入文本文件</button>
-                                            <button @click="applyAlarmTextImport" class="btn btn-primary" :disabled="isAllPointsMode">匹配到报警点位</button>
+                                            <button @click="applyAlarmTextImport" class="btn btn-primary" :disabled="isAllPointsMode" v-permission="{ page: controlPermissionPage, action: 'edit' }">匹配到报警点位</button>
                                             <input ref="alarmTextFileInput" type="file" accept=".txt,.csv" style="display:none" @change="handleAlarmTextFileChange" />
                                             <div class="alarm-preview">
                                                 <strong>解析预览</strong>
@@ -9324,7 +9340,7 @@ async function openAdminSetupStep(step) {
                         <div class="pagination-controls">
                             <div class="page-size-selector">
                                 <span class="selector-label">每页显示：</span>
-                                <select v-model.number="monitorPageSize" class="input input-sm page-size-select">
+                                <select v-model.number="monitorPageSize" class="input input-sm page-size-select" v-permission="{ page: controlPermissionPage, action: 'edit' }">
                                     <option :value="10">10 条/页</option>
                                     <option :value="20">20 条/页</option>
                                     <option :value="50">50 条/页</option>
@@ -9426,10 +9442,10 @@ async function openAdminSetupStep(step) {
                         <p class="license-reason" :class="{ warning: !licenseStatus.valid && licenseStatus.enforce }">{{ licenseStatus.reason }}</p>
                         <div class="license-install-card">
                             <label>安装或替换许可证 JSON
-                                <textarea v-model="licenseText" class="input license-textarea" rows="8" spellcheck="false" placeholder="粘贴交付方提供的签名许可证 JSON"></textarea>
+                                <textarea v-model="licenseText" class="input license-textarea" rows="8" spellcheck="false" placeholder="粘贴交付方提供的签名许可证 JSON" v-permission="{ page: controlPermissionPage, action: 'edit' }"></textarea>
                             </label>
                             <div class="form-row license-actions">
-                                <button type="button" class="btn btn-primary" :disabled="licenseBusy || !licenseText.trim()" @click="installLicenseFromText">
+                                <button type="button" class="btn btn-primary" :disabled="licenseBusy || !licenseText.trim()" @click="installLicenseFromText" v-permission="{ page: 'settings.security', action: 'edit' }">
                                     {{ licenseBusy ? '校验中…' : '校验并安装' }}
                                 </button>
                                 <button type="button" class="btn" :disabled="licenseBusy" @click="loadLicenseStatus">刷新状态</button>
@@ -9445,7 +9461,7 @@ async function openAdminSetupStep(step) {
                             <h3 class="section-title">主业务数据库</h3>
                             <div class="settings-grid">
                                 <label>数据库类型
-                                    <select v-model="databaseConfig.type" class="input">
+                                    <select v-model="databaseConfig.type" class="input" v-permission="{ page: controlPermissionPage, action: 'edit' }">
                                         <option value="mysql">MySQL / MariaDB</option>
                                         <option value="postgres">PostgreSQL</option>
                                         <option value="sqlserver">SQL Server</option>
@@ -9453,28 +9469,28 @@ async function openAdminSetupStep(step) {
                                     </select>
                                 </label>
                                 <label v-if="databaseConfig.type !== 'sqlite'">数据库名
-                                    <input v-model="databaseConfig.database" class="input" placeholder="dongtai_daping" />
+                                    <input v-model="databaseConfig.database" class="input" placeholder="dongtai_daping"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/>
                                 </label>
                                 <label v-if="databaseConfig.type !== 'sqlite'">主机
-                                    <input v-model="databaseConfig.host" class="input" placeholder="127.0.0.1" />
+                                    <input v-model="databaseConfig.host" class="input" placeholder="127.0.0.1"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/>
                                 </label>
                                 <label v-if="databaseConfig.type !== 'sqlite'">端口
-                                    <input v-model.number="databaseConfig.port" type="number" class="input" placeholder="3307" />
+                                    <input v-model.number="databaseConfig.port" type="number" class="input" placeholder="3307"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/>
                                 </label>
                                 <label v-if="databaseConfig.type !== 'sqlite'">用户名
-                                    <input v-model="databaseConfig.user" class="input" placeholder="root" />
+                                    <input v-model="databaseConfig.user" class="input" placeholder="root"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/>
                                 </label>
                                 <label v-if="databaseConfig.type !== 'sqlite'">密码
-                                    <input v-model="databaseConfig.password" type="password" class="input" placeholder="留空或输入新密码" />
+                                    <input v-model="databaseConfig.password" type="password" class="input" placeholder="留空或输入新密码"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/>
                                 </label>
                                 <label v-if="databaseConfig.type === 'sqlite'" style="grid-column: 1 / -1">SQLite 文件
-                                    <input v-model="databaseConfig.filename" class="input" placeholder="backend/data/factory.db" />
+                                    <input v-model="databaseConfig.filename" class="input" placeholder="backend/data/factory.db"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/>
                                 </label>
                                 <label v-if="databaseConfig.type === 'sqlserver'">
-                                    <span><input v-model="databaseConfig.encrypt" type="checkbox" /> 启用加密连接</span>
+                                    <span><input v-model="databaseConfig.encrypt" type="checkbox"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/> 启用加密连接</span>
                                 </label>
                                 <label v-if="databaseConfig.type === 'sqlserver'">
-                                    <span><input v-model="databaseConfig.trustServerCertificate" type="checkbox" /> 信任服务器证书</span>
+                                    <span><input v-model="databaseConfig.trustServerCertificate" type="checkbox"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/> 信任服务器证书</span>
                                 </label>
                             </div>
                             <p v-if="databaseConfig.type === 'mysql'" class="database-production-notice">
@@ -9484,8 +9500,8 @@ async function openAdminSetupStep(step) {
                                 SQLite 只建议用于离线应急、迁移交换或临时演示，不再作为正式现场的长期主数据库。
                             </p>
                             <div class="form-row" style="margin-top:16px; margin-bottom:0; display:flex; align-items:center; gap:12px;">
-                                <button @click="testDatabaseConnection" class="btn">测试连接</button>
-                                <button @click="saveDatabaseConnection" class="btn btn-primary" :disabled="databaseSaving">保存数据库连接</button>
+                                <button @click="testDatabaseConnection" class="btn" v-permission="{ page: controlPermissionPage, action: 'edit' }">测试连接</button>
+                                <button @click="saveDatabaseConnection" class="btn btn-primary" :disabled="databaseSaving" v-permission="{ page: controlPermissionPage, action: 'edit' }">保存数据库连接</button>
                                 <span v-if="databaseTestStatus" class="db-status-badge" :class="getDbStatusBadgeClass(databaseTestStatus)">
                                     <span class="db-status-dot"></span>
                                     {{ databaseTestStatus }}
@@ -9532,37 +9548,37 @@ async function openAdminSetupStep(step) {
 
                                         <div class="external-data-source-editor">
                                             <label>数据源类型
-                                                <select v-model="dataSourceEditor.sourceType" class="input">
+                                                <select v-model="dataSourceEditor.sourceType" class="input" v-permission="{ page: controlPermissionPage, action: 'edit' }">
                                                     <option value="database">数据库</option>
                                                     <option value="http_api">HTTP API</option>
                                                 </select>
                                             </label>
-                                            <label>数据源名称<input v-model="dataSourceEditor.name" class="input" placeholder="例如：MES 生产数据库 / 现场接口" /></label>
+                                            <label>数据源名称<input v-model="dataSourceEditor.name" class="input" placeholder="例如：MES 生产数据库 / 现场接口"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
                                             <template v-if="dataSourceEditor.sourceType === 'database'">
                                             <label>数据库类型
-                                                <select v-model="dataSourceEditor.type" class="input">
+                                                <select v-model="dataSourceEditor.type" class="input" v-permission="{ page: controlPermissionPage, action: 'edit' }">
                                                     <option value="mysql">MySQL / MariaDB</option>
                                                     <option value="postgres">PostgreSQL</option>
                                                     <option value="sqlserver">SQL Server</option>
                                                     <option value="sqlite">SQLite 文件</option>
                                                 </select>
                                             </label>
-                                            <label v-if="dataSourceEditor.type !== 'sqlite'">主机<input v-model="dataSourceEditor.host" class="input" placeholder="127.0.0.1" /></label>
-                                            <label v-if="dataSourceEditor.type !== 'sqlite'">端口<input v-model.number="dataSourceEditor.port" type="number" class="input" /></label>
-                                            <label v-if="dataSourceEditor.type !== 'sqlite'">数据库名<input v-model="dataSourceEditor.database" class="input" /></label>
-                                            <label v-if="dataSourceEditor.type !== 'sqlite'">默认 Schema<input v-model="dataSourceEditor.defaultSchema" class="input" placeholder="PostgreSQL: public / SQL Server: dbo" /></label>
-                                            <label v-if="dataSourceEditor.type !== 'sqlite'">只读账号<input v-model="dataSourceEditor.user" class="input" /></label>
-                                            <label v-if="dataSourceEditor.type !== 'sqlite'">密码<input v-model="dataSourceEditor.password" type="password" autocomplete="new-password" class="input" /></label>
-                                            <label v-else class="external-data-source-wide">SQLite 文件<input v-model="dataSourceEditor.filename" class="input" placeholder="完整 .db 文件路径" /></label>
-                                            <label>查询超时（毫秒）<input v-model.number="dataSourceEditor.queryTimeoutMs" type="number" min="1000" max="60000" class="input" /></label>
+                                            <label v-if="dataSourceEditor.type !== 'sqlite'">主机<input v-model="dataSourceEditor.host" class="input" placeholder="127.0.0.1"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
+                                            <label v-if="dataSourceEditor.type !== 'sqlite'">端口<input v-model.number="dataSourceEditor.port" type="number" class="input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
+                                            <label v-if="dataSourceEditor.type !== 'sqlite'">数据库名<input v-model="dataSourceEditor.database" class="input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
+                                            <label v-if="dataSourceEditor.type !== 'sqlite'">默认 Schema<input v-model="dataSourceEditor.defaultSchema" class="input" placeholder="PostgreSQL: public / SQL Server: dbo"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
+                                            <label v-if="dataSourceEditor.type !== 'sqlite'">只读账号<input v-model="dataSourceEditor.user" class="input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
+                                            <label v-if="dataSourceEditor.type !== 'sqlite'">密码<input v-model="dataSourceEditor.password" type="password" autocomplete="new-password" class="input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
+                                            <label v-else class="external-data-source-wide">SQLite 文件<input v-model="dataSourceEditor.filename" class="input" placeholder="完整 .db 文件路径"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
+                                            <label>查询超时（毫秒）<input v-model.number="dataSourceEditor.queryTimeoutMs" type="number" min="1000" max="60000" class="input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
                                             </template>
                                             <template v-else>
-                                            <label class="external-data-source-wide">API 根地址<input v-model="dataSourceEditor.baseUrl" class="input" placeholder="例如：https://mes.example.com/api" /></label>
-                                            <label>健康检查地址<input v-model="dataSourceEditor.healthPath" class="input" placeholder="例如：/health" /></label>
-                                            <label>请求方式<select v-model="dataSourceEditor.method" class="input" disabled><option value="GET">GET</option></select></label>
-                                            <label>响应格式<select v-model="dataSourceEditor.responseFormat" class="input"><option value="auto">自动识别（推荐）</option><option value="json">JSON / OData JSON</option><option value="xml">XML</option><option value="csv">CSV</option></select></label>
+                                            <label class="external-data-source-wide">API 根地址<input v-model="dataSourceEditor.baseUrl" class="input" placeholder="例如：https://mes.example.com/api"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
+                                            <label>健康检查地址<input v-model="dataSourceEditor.healthPath" class="input" placeholder="例如：/health"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
+                                            <label>请求方式<select v-model="dataSourceEditor.method" class="input" disabled v-permission="{ page: controlPermissionPage, action: 'edit' }"><option value="GET">GET</option></select></label>
+                                            <label>响应格式<select v-model="dataSourceEditor.responseFormat" class="input" v-permission="{ page: controlPermissionPage, action: 'edit' }"><option value="auto">自动识别（推荐）</option><option value="json">JSON / OData JSON</option><option value="xml">XML</option><option value="csv">CSV</option></select></label>
                                             <label>认证方式
-                                                <select v-model="dataSourceEditor.authType" class="input">
+                                                <select v-model="dataSourceEditor.authType" class="input" v-permission="{ page: controlPermissionPage, action: 'edit' }">
                                                     <option value="none">无认证</option>
                                                     <option value="api_key">API Key</option>
                                                     <option value="bearer">Bearer Token</option>
@@ -9570,23 +9586,23 @@ async function openAdminSetupStep(step) {
                                                     <option value="oauth2_client_credentials">OAuth2 客户端凭据（自动续令牌）</option>
                                                 </select>
                                             </label>
-                                            <label v-if="dataSourceEditor.authType === 'api_key'">API Key 请求头<input v-model="dataSourceEditor.apiKeyHeader" class="input" placeholder="X-API-Key" /></label>
-                                            <label v-if="dataSourceEditor.authType === 'api_key'">API Key<input v-model="dataSourceEditor.apiKey" type="password" autocomplete="new-password" class="input" placeholder="请输入密钥" /></label>
-                                            <label v-if="dataSourceEditor.authType === 'bearer'" class="external-data-source-wide">Bearer Token<input v-model="dataSourceEditor.token" type="password" autocomplete="new-password" class="input" placeholder="请输入令牌" /></label>
-                                            <label v-if="dataSourceEditor.authType === 'basic'">用户名<input v-model="dataSourceEditor.user" class="input" /></label>
-                                            <label v-if="dataSourceEditor.authType === 'basic'">密码<input v-model="dataSourceEditor.password" type="password" autocomplete="new-password" class="input" /></label>
+                                            <label v-if="dataSourceEditor.authType === 'api_key'">API Key 请求头<input v-model="dataSourceEditor.apiKeyHeader" class="input" placeholder="X-API-Key"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
+                                            <label v-if="dataSourceEditor.authType === 'api_key'">API Key<input v-model="dataSourceEditor.apiKey" type="password" autocomplete="new-password" class="input" placeholder="请输入密钥"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
+                                            <label v-if="dataSourceEditor.authType === 'bearer'" class="external-data-source-wide">Bearer Token<input v-model="dataSourceEditor.token" type="password" autocomplete="new-password" class="input" placeholder="请输入令牌"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
+                                            <label v-if="dataSourceEditor.authType === 'basic'">用户名<input v-model="dataSourceEditor.user" class="input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
+                                            <label v-if="dataSourceEditor.authType === 'basic'">密码<input v-model="dataSourceEditor.password" type="password" autocomplete="new-password" class="input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
                                             <template v-if="dataSourceEditor.authType === 'oauth2_client_credentials'">
-                                                <label class="external-data-source-wide">令牌地址（HTTPS）<input v-model="dataSourceEditor.tokenUrl" class="input" placeholder="https://login.example.com/oauth2/v2.0/token" /></label>
-                                                <label>Client ID<input v-model="dataSourceEditor.clientId" class="input" autocomplete="off" /></label>
-                                                <label>Client Secret<input v-model="dataSourceEditor.clientSecret" type="password" autocomplete="new-password" class="input" placeholder="只保存在后端" /></label>
-                                                <label>Scope（可选）<input v-model="dataSourceEditor.scope" class="input" placeholder="api://resource/.default" /></label>
-                                                <label>客户端认证方式<select v-model="dataSourceEditor.tokenAuthMethod" class="input"><option value="body">表单参数（常用）</option><option value="basic">HTTP Basic</option></select></label>
+                                                <label class="external-data-source-wide">令牌地址（HTTPS）<input v-model="dataSourceEditor.tokenUrl" class="input" placeholder="https://login.example.com/oauth2/v2.0/token"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
+                                                <label>Client ID<input v-model="dataSourceEditor.clientId" class="input" autocomplete="off"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
+                                                <label>Client Secret<input v-model="dataSourceEditor.clientSecret" type="password" autocomplete="new-password" class="input" placeholder="只保存在后端"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
+                                                <label>Scope（可选）<input v-model="dataSourceEditor.scope" class="input" placeholder="api://resource/.default"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
+                                                <label>客户端认证方式<select v-model="dataSourceEditor.tokenAuthMethod" class="input" v-permission="{ page: controlPermissionPage, action: 'edit' }"><option value="body">表单参数（常用）</option><option value="basic">HTTP Basic</option></select></label>
                                             </template>
-                                            <label>请求超时（毫秒）<input v-model.number="dataSourceEditor.requestTimeoutMs" type="number" min="1000" max="60000" class="input" /></label>
+                                            <label>请求超时（毫秒）<input v-model.number="dataSourceEditor.requestTimeoutMs" type="number" min="1000" max="60000" class="input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
                                             <p class="external-data-source-wide external-data-source-help">健康检查只证明接口当前可访问、认证正确且返回 2xx，不代表业务数据已经可用。REST / OData 的 JSON、XML、CSV 响应可在设计器中读取字段并绑定；始终只请求 GET 数据接口。</p>
                                             </template>
                                             <p v-if="dataSourceEditor.sourceType === 'database' ? dataSourceEditor.type !== 'sqlite' : dataSourceEditor.authType !== 'none'" class="external-data-source-wide external-data-source-help">已有凭据以掩码显示：不修改则保留，输入新值可替换，删除全部内容表示清空。切换数据源类型或认证方式后需重新填写凭据。</p>
-                                            <label class="checkbox-line"><input v-model="dataSourceEditor.enabled" type="checkbox" /> 启用此连接</label>
+                                            <label class="checkbox-line"><input v-model="dataSourceEditor.enabled" type="checkbox"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/> 启用此连接</label>
                                         </div>
                                         <div v-if="dataSourceTestHealth.status" class="external-data-source-health" :class="dataSourceTestHealth.status">
                                             <div><strong>最近健康检查：{{ dataSourceHealthLabel(dataSourceTestHealth.status) }}</strong><span>{{ dataSourceTestHealth.message }}</span></div>
@@ -9596,9 +9612,9 @@ async function openAdminSetupStep(step) {
                                         </div>
                                         <div v-else class="external-data-source-health unknown"><div><strong>当前配置未检查</strong><span>测试后将显示健康状态、响应时间和最后检查时间；修改配置后需重新测试。</span></div></div>
                                         <div class="external-data-source-actions">
-                                            <button type="button" class="btn" :disabled="dataSourceBusy" @click="testExternalDataSource">{{ dataSourceEditor.sourceType === 'http_api' ? '测试接口健康度' : '测试数据库连接' }}</button>
-                                            <button type="button" class="btn btn-primary" :disabled="dataSourceBusy" @click="saveExternalDataSource">保存数据源</button>
-                                            <button v-if="dataSourceEditor.id" type="button" class="btn btn-danger" :disabled="dataSourceBusy" @click="removeExternalDataSource({ ...dataSourceEditor })">删除</button>
+                                            <button type="button" class="btn" :disabled="dataSourceBusy" @click="testExternalDataSource" v-permission="{ page: controlPermissionPage, action: 'edit' }">{{ dataSourceEditor.sourceType === 'http_api' ? '测试接口健康度' : '测试数据库连接' }}</button>
+                                            <button type="button" class="btn btn-primary" :disabled="dataSourceBusy" @click="saveExternalDataSource" v-permission="{ page: controlPermissionPage, action: 'edit' }">保存数据源</button>
+                                            <button v-if="dataSourceEditor.id" type="button" class="btn btn-danger" :disabled="dataSourceBusy" @click="removeExternalDataSource({ ...dataSourceEditor })" v-permission="{ page: controlPermissionPage, action: 'delete' }">删除</button>
                                         </div>
                                     </div>
                                 </Transition>
@@ -9615,7 +9631,7 @@ async function openAdminSetupStep(step) {
                                 </div>
                                 <div class="database-backup-trigger-grid">
                                     <label class="database-backup-trigger-card" :class="{ active: dataSourceBackupConfig.startupEnabled }">
-                                        <input v-model="dataSourceBackupConfig.startupEnabled" type="checkbox" />
+                                        <input v-model="dataSourceBackupConfig.startupEnabled" type="checkbox"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/>
                                         <span class="database-backup-trigger-index">01</span>
                                         <span class="database-backup-trigger-copy">
                                             <strong>软件启动</strong>
@@ -9624,7 +9640,7 @@ async function openAdminSetupStep(step) {
                                         <span class="database-backup-trigger-switch" aria-hidden="true"><i></i></span>
                                     </label>
                                     <label class="database-backup-trigger-card" :class="{ active: dataSourceBackupConfig.scheduledEnabled }">
-                                        <input v-model="dataSourceBackupConfig.scheduledEnabled" type="checkbox" />
+                                        <input v-model="dataSourceBackupConfig.scheduledEnabled" type="checkbox"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/>
                                         <span class="database-backup-trigger-index">02</span>
                                         <span class="database-backup-trigger-copy">
                                             <strong>持续运行</strong>
@@ -9633,7 +9649,7 @@ async function openAdminSetupStep(step) {
                                         <span class="database-backup-trigger-switch" aria-hidden="true"><i></i></span>
                                     </label>
                                     <label class="database-backup-trigger-card" :class="{ active: dataSourceBackupConfig.shutdownEnabled }">
-                                        <input v-model="dataSourceBackupConfig.shutdownEnabled" type="checkbox" />
+                                        <input v-model="dataSourceBackupConfig.shutdownEnabled" type="checkbox"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/>
                                         <span class="database-backup-trigger-index">03</span>
                                         <span class="database-backup-trigger-copy">
                                             <strong>正常退出</strong>
@@ -9643,9 +9659,9 @@ async function openAdminSetupStep(step) {
                                     </label>
                                 </div>
                                 <div class="database-auto-backup-controls">
-                                    <label>持续运行备份间隔（小时）<input v-model.number="dataSourceBackupConfig.intervalHours" type="number" min="1" max="168" class="input input-small" :disabled="!dataSourceBackupConfig.scheduledEnabled" /></label>
-                                    <label>外部连接保留份数<input v-model.number="dataSourceBackupConfig.retention" type="number" min="1" max="100" class="input input-small" /></label>
-                                    <button type="button" class="btn btn-small" :disabled="dataSourceBackupBusy" @click="saveDataSourceBackupConfiguration">保存备份规则</button>
+                                    <label>持续运行备份间隔（小时）<input v-model.number="dataSourceBackupConfig.intervalHours" type="number" min="1" max="168" class="input input-small" :disabled="!dataSourceBackupConfig.scheduledEnabled"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
+                                    <label>外部连接保留份数<input v-model.number="dataSourceBackupConfig.retention" type="number" min="1" max="100" class="input input-small"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
+                                    <button type="button" class="btn btn-small" :disabled="dataSourceBackupBusy" @click="saveDataSourceBackupConfiguration" v-permission="{ page: controlPermissionPage, action: 'edit' }">保存备份规则</button>
                                 </div>
                                 <div class="database-backup-protection-note">
                                     <span>按需保护</span>
@@ -9653,7 +9669,7 @@ async function openAdminSetupStep(step) {
                                 </div>
                                 <div class="database-backup-source-grid">
                                     <label v-for="connection in dataSourceConnections.filter(item => !isHttpDataSource(item))" :key="`backup-${connection.id}`" class="database-backup-source-option">
-                                        <input v-model="dataSourceBackupConfig.selectedConnectionIds" type="checkbox" :value="connection.id" />
+                                        <input v-model="dataSourceBackupConfig.selectedConnectionIds" type="checkbox" :value="connection.id"  />
                                         <span><strong>{{ connection.name }}</strong><small>{{ connection.type }} · {{ connection.database || connection.filename }}</small></span>
                                     </label>
                                 </div>
@@ -9706,7 +9722,7 @@ async function openAdminSetupStep(step) {
                                                     :max="databaseBackupStatus.retentionDaysMax || 3650"
                                                     step="1"
                                                     inputmode="numeric"
-                                                />
+                                                 v-permission="{ page: controlPermissionPage, action: 'edit' }"/>
                                                 <em>天</em>
                                             </span>
                                         </label>
@@ -9715,7 +9731,7 @@ async function openAdminSetupStep(step) {
                                             class="btn btn-primary database-retention-save"
                                             :disabled="databaseBackupPolicySaving"
                                             @click="saveDatabaseBackupPolicy"
-                                        >
+                                         v-permission="{ page: controlPermissionPage, action: 'edit' }">
                                             {{ databaseBackupPolicySaving ? '保存中…' : '保存策略' }}
                                         </button>
                                     </div>
@@ -9748,7 +9764,7 @@ async function openAdminSetupStep(step) {
                                         </span>
                                         <button @click="downloadDatabaseBackup(backup)" class="btn btn-small" :disabled="backup.valid === false">下载</button>
                                         <button @click="restoreDatabaseBackup(backup)" class="btn btn-small" :disabled="databaseBackupBusy || backup.valid === false">恢复</button>
-                                        <button @click="deleteDatabaseBackup(backup)" class="btn btn-small btn-danger backup-delete-button" :disabled="databaseBackupBusy">删除</button>
+                                        <button @click="deleteDatabaseBackup(backup)" class="btn btn-small btn-danger backup-delete-button" :disabled="databaseBackupBusy" v-permission="{ page: controlPermissionPage, action: 'delete' }">删除</button>
                                     </div>
                                     <div v-if="databaseBackupStatus.backups.length === 0" class="empty-hint">暂无备份</div>
                                 </div>
@@ -9767,8 +9783,8 @@ async function openAdminSetupStep(step) {
                                     </div>
                                     <div class="site-backup-actions">
                                         <button @click="exportSiteBackup" class="btn btn-primary" :disabled="siteBackupBusy">导出整站备份</button>
-                                        <button @click="chooseSiteBackupFile" class="btn" :disabled="siteBackupBusy">从整站备份恢复</button>
-                                        <input ref="siteBackupFileInput" class="site-backup-file-input" type="file" accept=".zip,application/zip" @change="restoreSiteBackupFromFile" />
+                                        <button @click="chooseSiteBackupFile" class="btn" :disabled="siteBackupBusy" v-permission="{ page: 'settings.security', action: 'edit' }">从整站备份恢复</button>
+                                        <input ref="siteBackupFileInput" class="site-backup-file-input" type="file" accept=".zip,application/zip" @change="restoreSiteBackupFromFile"  v-permission="{ page: 'settings.security', action: 'edit' }"/>
                                     </div>
                                 </div>
                                 <p class="site-backup-external-notice">
@@ -9776,16 +9792,16 @@ async function openAdminSetupStep(step) {
                                 </p>
                                 <div class="site-backup-auto-config">
                                     <label class="site-backup-auto-toggle">
-                                        <input v-model="siteBackupConfig.autoEnabled" type="checkbox" />
+                                        <input v-model="siteBackupConfig.autoEnabled" type="checkbox"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/>
                                         自动整站备份
                                     </label>
                                     <label>间隔（小时）
-                                        <input v-model.number="siteBackupConfig.intervalHours" class="input input-small" type="number" min="1" max="168" />
+                                        <input v-model.number="siteBackupConfig.intervalHours" class="input input-small" type="number" min="1" max="168"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/>
                                     </label>
                                     <label class="site-backup-mirror-field">外部备份目录（U 盘 / NAS）
-                                        <input v-model="siteBackupConfig.mirrorDirectory" class="input" placeholder="例如 E:\\数字孪生备份 或 \\\\NAS\\factory-backup" />
+                                        <input v-model="siteBackupConfig.mirrorDirectory" class="input" placeholder="例如 E:\\数字孪生备份 或 \\\\NAS\\factory-backup"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/>
                                     </label>
-                                    <button type="button" class="btn btn-small" :disabled="siteBackupConfigSaving" @click="saveSiteBackupConfiguration">保存自动灾备</button>
+                                    <button type="button" class="btn btn-small" :disabled="siteBackupConfigSaving" @click="saveSiteBackupConfiguration" v-permission="{ page: controlPermissionPage, action: 'edit' }">保存自动灾备</button>
                                 </div>
                                 <p v-if="siteBackupStatus.lastAutomaticBackup" class="database-backup-message">
                                     最近自动备份：{{ siteBackupStatus.lastAutomaticBackup.filename }}
@@ -9919,14 +9935,14 @@ async function openAdminSetupStep(step) {
                                         </span>
                                     </div>
                                     <label class="runtime-toggle-row">
-                                        <input v-model="runtimeSettings.auto_start_enabled" type="checkbox" :disabled="!runtimeSettings.auto_start_supported" />
+                                        <input v-model="runtimeSettings.auto_start_enabled" type="checkbox" :disabled="!runtimeSettings.auto_start_supported"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/>
                                         <span class="runtime-toggle-track"><span></span></span>
                                         <span>{{ runtimeSettings.auto_start_enabled ? '已开启' : '已关闭' }}</span>
                                     </label>
                                     <p class="runtime-help">
                                         安装版保存后由桌面程序立即同步到 Windows 登录项；开发环境只保存配置，不会修改当前电脑的自启动项。
                                     </p>
-                                    <button class="btn btn-primary runtime-save-button" type="button" @click="saveRuntimeSettings" :disabled="runtimeSaving">
+                                    <button class="btn btn-primary runtime-save-button" type="button" @click="saveRuntimeSettings" :disabled="runtimeSaving" v-permission="{ page: controlPermissionPage, action: 'edit' }">
                                         {{ runtimeSaving ? '保存中...' : '保存运行配置' }}
                                     </button>
                                     <p v-if="runtimeMessage" class="runtime-message">{{ runtimeMessage }}</p>
@@ -9939,7 +9955,7 @@ async function openAdminSetupStep(step) {
                             <h3 class="section-title">Unity 原生客户端画质</h3>
                             <div class="settings-grid">
                                 <label>现场电脑画质档位
-                                    <select v-model="settings.native_quality_profile" class="input">
+                                    <select v-model="settings.native_quality_profile" class="input" v-permission="{ page: controlPermissionPage, action: 'edit' }">
                                         <option value="auto">自动识别（推荐）</option>
                                         <option value="integrated_gpu">核显稳定档</option>
                                         <option value="balanced">均衡专业档</option>
@@ -9971,7 +9987,7 @@ async function openAdminSetupStep(step) {
                         <div v-show="settingsSubpage === 'data'" class="settings-section secondary-page-panel">
                             <h3 class="section-title">数据通路模式</h3>
                             <label>选择数据采集方式
-                                <select v-model="settings.data_mode" class="input">
+                                <select v-model="settings.data_mode" class="input" v-permission="{ page: controlPermissionPage, action: 'edit' }">
                                     <option value="integrated_plc">内置低延迟采集（推荐）</option>
                                     <option value="simulation">模拟数据（离线演示用）</option>
                                 </select>
@@ -9990,9 +10006,9 @@ async function openAdminSetupStep(step) {
 
                         <button
                             v-if="settingsSubpage === 'performance' || settingsSubpage === 'data'"
-                            @click="saveSettings"
+                            @click="saveSettings(currentPermissionPage)"
                             class="btn btn-primary secondary-page-save"
-                        >保存当前参数</button>
+                         v-permission="{ page: controlPermissionPage, action: 'edit' }">保存当前参数</button>
                     </div>
                 </div>
 
@@ -10041,7 +10057,7 @@ async function openAdminSetupStep(step) {
                                 spellcheck="false"
                                 :placeholder="appDialog.verificationText"
                                 @keydown.enter.prevent="closeAppDialog(true)"
-                            />
+                             v-permission="{ page: controlPermissionPage, action: 'edit' }"/>
                             <small>需要输入：<strong>{{ appDialog.verificationText }}</strong></small>
                         </label>
                     </div>

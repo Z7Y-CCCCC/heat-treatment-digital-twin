@@ -1,0 +1,88 @@
+import { PAGE_PERMISSIONS, pagePermission as p } from './pagePermissions.mjs'
+const any = (...grants) => ({ any: grants })
+const all = (...grants) => ({ all: grants })
+const read = (pages, display = false) => any('admin', ...(display ? ['view'] : []), ...pages.map(k => p(k)))
+const spatial = ['factories', 'workshops', 'lines', 'devices', 'composer', 'mobile-devices', 'disassembly-layout', 'models', 'points', 'point-monitor', 'platform.scene', 'platform.designer', 'platform.environment']
+export const SETTING_PAGES = {
+  data_mode: 'settings.data', simulation_interval_ms: 'settings.data', realtime_stale_ms: 'settings.data',
+  native_quality_profile: 'settings.performance', native_environment_config: 'platform.environment',
+  native_dashboard_config: 'platform.designer', loading_experience_config: 'platform.designer',
+  group_portal_config: 'platform.designer', site_scene_config: 'platform.designer',
+  factory_location: 'factories', factory_directory: 'factories', factory_name: 'factories'
+}
+
+// The server chooses the policy from the actual URL/method/body, never from a
+// caller-provided page name. Display-safe reads intentionally remain shared.
+export function apiPermission(path, method = 'GET', body) {
+  path = String(path).toLowerCase().replace(/\/+$/, '')
+  method = String(method).toUpperCase()
+  const safe = ['GET', 'HEAD'].includes(method)
+  const action = safe ? 'view' : method === 'DELETE' ? 'delete' : 'edit'
+  const resource = prefix => path === `/api/${prefix}` || path.startsWith(`/api/${prefix}/`)
+  if (safe && ['/api/platform/metrics/latest', '/api/platform/events', '/api/data-sources/map-values'].includes(path)) return 'view'
+  if (method === 'POST' && (/^\/api\/factories\/(?:[^/]+\/)?activate$/.test(path)
+    || path === '/api/native-preview/navigate' || /^\/api\/platform\/scenes\/[^/]+\/activate-latest-release$/.test(path))) return 'launch'
+  if (resource('mcp')) return 'admin' // nested tool calls stay owner-only
+  if (resource('system/cast')) return any('cast', p('settings.runtime', action))
+  if (resource('system/runtime')) return safe ? read(['settings.runtime']) : any('admin', p('settings.runtime', 'edit'))
+  if (resource('database/backups') || resource('site-backups') || resource('data-sources/backups')) {
+    if (/\/(restore|import)$/.test(path) && !safe) return 'admin' // restoring changes all pages, not just backup settings
+    const destructive = method === 'DELETE' || /\/(restore|import|config)$/.test(path)
+    return any('admin', ...(!destructive ? ['backup'] : []), p('settings.database', action))
+  }
+  if (resource('database') || resource('data-sources')) {
+    if (safe && path === '/api/data-sources/runtime-values') return read(['points', 'point-monitor', 'platform.designer'], true)
+    const pages = ['settings.database', 'platform.designer']
+    if (safe) return read(pages)
+    if (method === 'POST' && /\/(preview|preview-http|inspect-http)$/.test(path)) return read(pages)
+    return any('admin', p('settings.database', action))
+  }
+  if (resource('project-bundles')) return 'admin' // whole-project import/export affects every page
+  if (resource('settings')) {
+    if (safe) return read(PAGE_PERMISSIONS.filter(p => !p.ownerOnly).map(p => p.key), true)
+    if (method !== 'PUT' || path !== '/api/settings' || !body || typeof body !== 'object' || Array.isArray(body) || !Object.keys(body).length) return 'admin'
+    return any('admin', all(...Object.keys(body).map(key => SETTING_PAGES[key] ? p(SETTING_PAGES[key], 'edit') : 'admin')))
+  }
+  if (resource('platform')) {
+    if (safe) return read(['platform.designer', 'platform.scene', 'platform.environment'])
+    if (resource('platform/releases')) return any('admin', p('platform.designer', method === 'DELETE' ? 'delete' : 'publish'))
+    if (/^\/api\/platform\/scenes\/[^/]+$/.test(path) && method === 'PUT') {
+      // Activation is a distinct capability; plain scene edits omit is_active.
+      return any('admin', all(p('platform.scene', 'edit'), ...(Object.hasOwn(body || {}, 'is_active') ? [p('platform.designer', 'publish')] : [])))
+    }
+    if (resource('platform/designer') || resource('platform/widgets')) return any('admin', p('platform.designer', action))
+    return 'admin'
+  }
+  if (resource('native-preview')) {
+    const previewPages = ['composer', 'workshops', 'lines', 'models', 'disassembly-layout', 'platform.environment', 'platform.designer']
+    // Draft previews are ephemeral, but require an authoring grant. Status is read-only.
+    return safe ? read(previewPages) : any('admin', ...previewPages.map(k => p(k, 'edit')))
+  }
+  if (resource('devices')) {
+    if (safe) return read(spatial, true)
+    if (/\/inspection$/.test(path)) return any('admin', p('disassembly-layout', 'edit'))
+    if (/\/transform$/.test(path)) return any('admin', p('composer', 'edit'), p('lines', 'edit'))
+    if (/\/movement$/.test(path)) return any('admin', p('mobile-devices', 'edit'))
+    return any('admin', p('devices', action))
+  }
+  if (resource('lines')) {
+    if (safe) return read(spatial, true)
+    if (/\/placement$/.test(path)) return any('admin', p('workshops', 'edit'))
+    return any('admin', p('lines', action))
+  }
+  if (resource('workshops')) return safe ? read(spatial, true) : any('admin', p('workshops', action))
+  if (resource('models')) return safe ? read(spatial, true) : any('admin', p('models', action))
+  if (resource('factories')) return safe ? read(PAGE_PERMISSIONS.map(p => p.key), true) : any('admin', p('factories', 'edit'))
+  if (resource('datapoints')) {
+    if (path === '/api/datapoints/batch' && !safe) return any('admin', all(p('points', 'edit'), p('points', 'delete')))
+    return safe ? read(['points', 'point-monitor', 'mobile-devices', 'platform.designer'], true) : any('admin', p('points', action))
+  }
+  if (resource('plc') || resource('engine/status')) return safe ? read(['points', 'point-monitor', 'mobile-devices', 'settings.data'], true) : 'admin'
+  if (path === '/api/engine/restart') return any('admin', p('settings.data', 'edit'))
+  if (resource('appearance-assets')) return safe ? read(['platform.designer', 'factories'], true) : any('admin', p('platform.designer', action))
+  if (resource('template-library') || resource('config') || resource('business-data')) return safe ? read(spatial, true) : 'admin'
+  if (resource('acceptance-report')) return safe ? read(['models', 'platform.designer']) : 'admin'
+  // Preserve existing display audio reads; system speech/control is administrative.
+  if (resource('voice')) return safe ? read(['settings.runtime'], true) : any('admin', p('settings.runtime', 'edit'))
+  return 'admin'
+}

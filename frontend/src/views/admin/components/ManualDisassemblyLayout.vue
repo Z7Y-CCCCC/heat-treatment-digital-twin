@@ -1,4 +1,6 @@
 <script setup>
+import { permissionDirective as vPermission } from '../../../runtime/pagePermissionUi.js'
+import { canAdminPage } from '../../../runtime/adminSession.js'
 import { computed, nextTick, onActivated, onDeactivated, onMounted, onUnmounted, ref, watch } from 'vue'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
@@ -33,7 +35,7 @@ function sync(runtime) {
 function attachGizmo() {
     if (!session) return
     const { runtime, proxy, transform } = session
-    if (!active || !runtime.selectedPart || runtime.assembled || props.saving) { transform.detach(); return }
+    if (!active || !canAdminPage('disassembly-layout', 'edit') || !runtime.selectedPart || runtime.assembled || props.saving) { transform.detach(); return }
     proxy.position.copy(runtime.selectedCenter()); proxy.updateMatrixWorld(true)
     transform.attach(proxy)
 }
@@ -59,6 +61,7 @@ function fit(selectedOnly = false) {
     camera.updateProjectionMatrix(); orbit.update()
 }
 function setAxis(index, value) {
+    if (!canAdminPage('disassembly-layout', 'edit')) return
     if (!session || props.saving || dragging.value || assembled.value) return
     const next = [...offsets.value]; next[index] = Number(value)
     if (!session.runtime.setOffset(selectedId.value, next)) message.value = '请输入三个有效的位移数值。'
@@ -103,6 +106,10 @@ function pickPart(event) {
     return ''
 }
 function capturePointerDown(event) {
+    if (!canAdminPage('disassembly-layout', 'edit')) {
+        if (session && event.button === 0) { const id = pickPart(event); if (id) choose(id) }
+        return
+    }
     // The canvas is not focusable by default. Move focus into the editor even
     // for gizmo drags, otherwise Escape/undo stay on a previously used control.
     if (session) viewport.value?.closest('.manual-layout')?.focus({ preventScroll: true })
@@ -257,10 +264,10 @@ defineExpose({ dirty, getDraft: () => session?.runtime.getDraft() || props.inspe
     <section class="manual-layout" data-testid="manual-disassembly-layout" tabindex="0" @keydown="keyboard">
         <header class="layout-heading">
             <div><span class="eyebrow">PER-DEVICE / 手工空间布局</span><h3>{{ device.name || device.id }} · 部件摆放</h3><p>直接拖动部件，或使用三轴与平面手柄。只保存本台设备的位置，不改变同型号其他设备。</p></div>
-            <div class="save-area"><span class="dirty-pill" :class="{ dirty }">{{ dirty ? '有未保存的位置' : '已载入保存位置' }}</span><button class="primary" type="button" data-testid="save-manual-layout" :disabled="saving || loading || !partRows.length || dragging || !!error" @click="save">{{ saving ? '保存中…' : '保存本台设备布局' }}</button></div>
+            <div class="save-area"><span class="dirty-pill" :class="{ dirty }">{{ dirty ? '有未保存的位置' : '已载入保存位置' }}</span><button class="primary" type="button" data-testid="save-manual-layout" :disabled="saving || loading || !partRows.length || dragging || !!error" @click="save" v-permission="{ page: 'disassembly-layout', action: 'edit' }">{{ saving ? '保存中…' : '保存本台设备布局' }}</button></div>
         </header>
         <div class="layout-toolbar">
-            <button type="button" :disabled="!canUndo || saving || dragging" @click="undo">↶ 撤销</button><button type="button" :disabled="!canRedo || saving || dragging" @click="redo">↷ 重做</button>
+            <button type="button" :disabled="!canUndo || saving || dragging" @click="undo" v-permission="{ page: 'disassembly-layout', action: 'edit' }">↶ 撤销</button><button type="button" :disabled="!canRedo || saving || dragging" @click="redo" v-permission="{ page: 'disassembly-layout', action: 'edit' }">↷ 重做</button>
             <span class="toolbar-divider"></span><button type="button" :disabled="loading || !!error || dragging" @click="fit()">完整视图</button><button type="button" :disabled="!selected || dragging" @click="fit(true)">聚焦选中部件</button>
             <button type="button" :class="{ active: assembled }" :disabled="loading || !!error || dragging" @click="toggleAssembly">{{ assembled ? '返回手工拆解布局' : '查看装配原位' }}</button>
             <button type="button" :disabled="!dirty || saving || dragging" @click="restoreSaved">恢复已保存位置</button>
@@ -269,12 +276,12 @@ defineExpose({ dirty, getDraft: () => session?.runtime.getDraft() || props.inspe
         <div class="layout-body">
             <aside class="part-sidebar">
                 <div class="part-list-heading"><strong>可拖拽部件</strong><span>{{ partRows.length }}</span></div>
-                <input v-model="query" class="part-search" aria-label="搜索手工布局部件" placeholder="搜索部件名称…" />
+                <input v-model="query" class="part-search" aria-label="搜索手工布局部件" placeholder="搜索部件名称…"  v-permission="{ page: 'disassembly-layout', action: 'edit' }"/>
                 <div class="part-list" role="listbox" aria-label="布局部件">
                     <button v-for="part in visibleParts" :key="part.id" type="button" role="option" :aria-selected="part.id === selectedId" :class="{ selected: part.id === selectedId }" :disabled="dragging || saving" @click="choose(part.id)"><i></i><span>{{ part.name || part.id }}<small>{{ part.id }}</small></span></button>
                     <p v-if="!partRows.length && !loading" class="list-empty">模型未配置可编辑部件。请先在模型拆解编排中绑定真实节点。</p>
                 </div>
-                <div class="offset-editor"><strong>{{ selected?.name || '请选择部件' }}</strong><small>{{ parentSpace ? '父级坐标位移' : '模型坐标位移' }} · 模型单位</small><div class="offset-fields"><label v-for="(axis,index) in ['X','Y','Z']" :key="axis" :class="axis.toLowerCase()"><span>{{ axis }}</span><input type="number" step="0.01" :aria-label="`${axis}轴拆解位移`" :value="Number(offsets[index]).toFixed(4)" :disabled="!selected || assembled || saving || dragging" @change="setAxis(index, $event.target.value)" /></label></div><button type="button" :disabled="!selected || assembled || saving || dragging" @click="resetSelected">选中部件位移归零</button><p>保留原来的部件旋转、时序与 PLC 绑定。</p></div>
+                <div class="offset-editor"><strong>{{ selected?.name || '请选择部件' }}</strong><small>{{ parentSpace ? '父级坐标位移' : '模型坐标位移' }} · 模型单位</small><div class="offset-fields"><label v-for="(axis,index) in ['X','Y','Z']" :key="axis" :class="axis.toLowerCase()"><span>{{ axis }}</span><input type="number" step="0.01" :aria-label="`${axis}轴拆解位移`" :value="Number(offsets[index]).toFixed(4)" :disabled="!selected || assembled || saving || dragging" @change="setAxis(index, $event.target.value)"  v-permission="{ page: 'disassembly-layout', action: 'edit' }"/></label></div><button type="button" :disabled="!selected || assembled || saving || dragging" @click="resetSelected" v-permission="{ page: 'disassembly-layout', action: 'edit' }">选中部件位移归零</button><p>保留原来的部件旋转、时序与 PLC 绑定。</p></div>
             </aside>
             <div class="viewport-shell"><div ref="viewport" class="layout-viewport" data-testid="manual-layout-canvas"></div>
                 <div v-if="loading || error" class="viewport-state" :class="{ failure: error }"><strong>{{ error ? '无法打开手工布局' : '正在加载真实三维模型…' }}</strong><p v-if="error">{{ error }}</p><button v-if="error" type="button" @click="load">重新加载</button></div>

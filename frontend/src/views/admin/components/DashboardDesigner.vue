@@ -1,4 +1,5 @@
 <script setup>
+import { permissionDirective as vPermission } from '../../../runtime/pagePermissionUi.js'
 import { computed, nextTick, onBeforeUnmount, onMounted, onActivated, onDeactivated, reactive, ref, useId, watch } from 'vue'
 import { adminApi } from '../../../config/factoryConfig.js'
 import WidgetRenderer from '../../../runtime/WidgetRenderer.vue'
@@ -2284,7 +2285,7 @@ onBeforeUnmount(() => {
             <path d="M16 8V5.5A1.5 1.5 0 0 0 14.5 4h-9A1.5 1.5 0 0 0 4 5.5v9A1.5 1.5 0 0 0 5.5 16H8"></path>
           </svg>
         </button>
-        <button type="button" class="designer-icon-button" title="从当前视角移除 Delete" aria-label="从当前视角移除选中组件" :disabled="!selectedIds.length" @click="deleteSelected">
+        <button type="button" class="designer-icon-button" title="从当前视角移除 Delete" aria-label="从当前视角移除选中组件" :disabled="!selectedIds.length" @click="deleteSelected" v-permission="{ page: 'platform.designer', action: 'edit' }">
           <svg viewBox="0 0 24 24" aria-hidden="true">
             <path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13M10 11v5M14 11v5"></path>
           </svg>
@@ -2303,7 +2304,7 @@ onBeforeUnmount(() => {
         <button type="button" title="取消组合 Ctrl+Shift+G" :disabled="!selectedWidgets.some(item => item.groupId)" @click="ungroupSelected">解组</button>
       </div>
       <div class="designer-toolbar-group canvas-tools">
-        <select v-model="canvasPreset" title="基准分辨率" @change="applyCanvasPreset">
+        <select v-model="canvasPreset" title="基准分辨率" @change="applyCanvasPreset" v-permission="{ page: 'platform.designer', action: 'edit' }">
           <option value="1920x1080">1920 × 1080</option>
           <option value="2560x1440">2560 × 1440</option>
           <option value="3840x2160">3840 × 2160</option>
@@ -2335,8 +2336,8 @@ onBeforeUnmount(() => {
           <svg v-if="!previewMode" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H3v5M16 3h5v5M8 21H3v-5M21 16v5h-5"></path></svg>
           <svg v-else viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3v6H3M15 3v6h6M9 21v-6H3M21 15h-6v6"></path></svg>
         </button>
-        <button type="button" class="save-button" :disabled="saving || !isDirty" @click="saveDraft">{{ saving ? '保存中...' : '保存草稿' }}</button>
-        <button type="button" class="publish-button" :disabled="publishing || saving" @click="publishVersion">{{ publishing ? '发布中...' : '保存并发布' }}</button>
+        <button type="button" class="save-button" :disabled="saving || !isDirty" @click="saveDraft" v-permission="{ page: 'platform.designer', action: 'edit' }">{{ saving ? '保存中...' : '保存草稿' }}</button>
+        <button type="button" class="publish-button" :disabled="publishing || saving" @click="publishVersion" v-permission="{ page: 'platform.designer', action: 'publish' }">{{ publishing ? '发布中...' : '保存并发布' }}</button>
       </div>
     </header>
 
@@ -2370,11 +2371,11 @@ onBeforeUnmount(() => {
               </button>
             </div>
           </div>
-          <div class="view-list-actions"><button type="button" @click="addView">＋ 新视角</button><button type="button" :disabled="!currentView" @click="duplicateView">复制</button></div>
+          <div class="view-list-actions"><button type="button" @click="addView" v-permission="{ page: 'platform.designer', action: 'edit' }">＋ 新视角</button><button type="button" :disabled="!currentView" @click="duplicateView">复制</button></div>
         </div>
         <div v-if="!currentViewIsMapSurface" class="designer-panel-heading"><strong>场景组件组</strong><small>一次加入完整交互区域</small></div>
         <div v-if="!currentViewIsMapSurface" class="scene-preset-list">
-          <button v-for="preset in DASHBOARD_WIDGET_PRESETS" :key="preset.id" type="button" @click="addWidgetPreset(preset)">
+          <button v-for="preset in DASHBOARD_WIDGET_PRESETS" :key="preset.id" type="button" @click="addWidgetPreset(preset)" v-permission="{ page: 'platform.designer', action: 'edit' }">
             <span>{{ preset.icon }}</span>
             <div><strong>{{ preset.label }}</strong><small>{{ preset.description }}</small></div>
             <em>{{ documentModel.widgets.some(widget => widget.groupId === `group_${preset.id}` || (preset.id === 'device_part_detail' && widget.groupId === 'group_device_part_detail')) ? '已加入' : '一键加入' }}</em>
@@ -2464,7 +2465,7 @@ onBeforeUnmount(() => {
           </div>
           <label v-if="currentViewUsesDevice" class="designer-device-picker">
             <span>预览设备</span>
-            <select v-model="editorDeviceId" @change="updateEditorDevice">
+            <select v-model="editorDeviceId" @change="updateEditorDevice" v-permission="{ page: 'platform.designer', action: 'edit' }">
               <option value="">请选择设备</option>
               <option v-for="device in devices" :key="`preview-${device.id}`" :value="String(device.id)">{{ device.name || device.id }}（{{ device.id }}）</option>
             </select>
@@ -2551,7 +2552,7 @@ onBeforeUnmount(() => {
                   :title="selectedHasUnlocked ? '从当前视角删除选中组件' : '锁定组件不能删除'"
                   :disabled="!selectedHasUnlocked"
                   @click="deleteSelected"
-                >
+                 v-permission="{ page: 'platform.designer', action: 'edit' }">
                   <svg viewBox="0 0 24 24" aria-hidden="true">
                     <path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13M10 11v5M14 11v5"></path>
                   </svg>
@@ -2643,9 +2644,9 @@ onBeforeUnmount(() => {
                   <label>圆环名称<input v-model="selectedWidget.content.chartLabel" @change="recordProperty()" /></label>
                   <label>圆环指标路径<input v-model="selectedWidget.content.chartPath" placeholder="metrics.overall_oee" @change="recordProperty()" /></label>
                   <div v-for="(item,index) in selectedWidget.content.items" :key="index" class="inspector-section">
-                    <label>指标 {{ index + 1 }} 名称<input v-model="item.label" @change="recordProperty()" /></label>
-                    <label>数据路径<input v-model="item.path" placeholder="metrics.total_devices" @change="recordProperty()" /></label>
-                    <label>单位<input v-model="item.unit" @change="recordProperty()" /></label>
+                    <label>指标 {{ index + 1 }} 名称<input v-model="item.label" @change="recordProperty()"  v-permission="{ page: 'platform.designer', action: 'edit' }"/></label>
+                    <label>数据路径<input v-model="item.path" placeholder="metrics.total_devices" @change="recordProperty()"  v-permission="{ page: 'platform.designer', action: 'edit' }"/></label>
+                    <label>单位<input v-model="item.unit" @change="recordProperty()"  v-permission="{ page: 'platform.designer', action: 'edit' }"/></label>
                   </div>
                 </template>
                 <template v-if="selectedWidget.type === 'hud_chart_dock'">
@@ -2660,7 +2661,7 @@ onBeforeUnmount(() => {
               </template>
               <template v-if="['trend','hud_chart_dock'].includes(selectedWidget.type)">
                 <label>图表形式<select v-model="selectedWidget.content.chartType" @change="recordProperty('修改图表形式')"><option value="line">折线图</option><option value="area">面积图</option><option value="bar">柱状图</option><option value="stackedBar">堆叠柱状图</option><option value="scatter">散点图</option><option value="pie">饼图</option><option value="donut">环形图</option><option value="gauge">仪表盘</option></select></label>
-                <label>配色预设<select v-model="selectedWidget.content.chartPalette" @change="applyChartPalette"><option v-for="palette in chartPalettes" :key="palette.id" :value="palette.id">{{ palette.label }}</option></select></label>
+                <label>配色预设<select v-model="selectedWidget.content.chartPalette" @change="applyChartPalette" ><option v-for="palette in chartPalettes" :key="palette.id" :value="palette.id">{{ palette.label }}</option></select></label>
                 <label>图表名称<input v-model="selectedWidget.content.seriesName" @change="recordProperty()" /></label>
                 <label>保留数据点<input v-model.number="selectedWidget.content.historyLength" type="number" min="8" max="600" @change="recordProperty()" /></label>
                 <label class="visibility-bound-device"><input v-model="selectedWidget.content.showLegend" type="checkbox" @change="recordProperty('修改图例')" /> 显示多数据项图例</label>
@@ -2726,20 +2727,20 @@ onBeforeUnmount(() => {
                 <div class="binding-summary" v-if="selectedWidget.data.pointId"><span>路径</span><code>{{ selectedWidget.data.path }}</code><span>实时值</span><strong>{{ previewValueForWidget(selectedWidget) ?? '--' }} {{ selectedWidget.data.unit }}</strong></div>
               </template>
               <template v-else-if="selectedWidget.data.mode === 'database'">
-                <div class="section-action-heading"><div><strong>数据项</strong><small>每项可来自不同数据库和表，别名用于下方公式</small></div><button type="button" @click="addDatabaseDataset">＋ 数据项</button></div>
+                <div class="section-action-heading"><div><strong>数据项</strong><small>每项可来自不同数据库和表，别名用于下方公式</small></div><button type="button" @click="addDatabaseDataset" v-permission="{ page: 'platform.designer', action: 'edit' }">＋ 数据项</button></div>
                 <details v-for="(dataset, datasetIndex) in ensureDatabaseDatasets(selectedWidget)" :key="`${selectedWidget.id}-${datasetIndex}`" class="dataset-card" :open="datasetIndex === 0">
                   <summary><i :style="{background:dataset.color}"></i><strong>{{ dataset.alias.toUpperCase() }} · {{ dataset.label }}</strong><span>{{ dataset.table || '未选择表' }}</span></summary>
                   <div class="dataset-card-body">
-                    <div class="property-grid two"><label>公式别名<input v-model="dataset.alias" placeholder="a" @change="dataset.alias = dataset.alias.replace(/[^a-zA-Z0-9_]/g,'_').toLowerCase(); recordProperty('修改数据别名')" /></label><label>图例名称<input v-model="dataset.label" @change="recordProperty('修改数据名称')" /></label></div>
+                    <div class="property-grid two"><label>公式别名<input v-model="dataset.alias" placeholder="a" @change="dataset.alias = dataset.alias.replace(/[^a-zA-Z0-9_]/g,'_').toLowerCase(); recordProperty('修改数据别名')"  v-permission="{ page: 'platform.designer', action: 'edit' }"/></label><label>图例名称<input v-model="dataset.label" @change="recordProperty('修改数据名称')"  v-permission="{ page: 'platform.designer', action: 'edit' }"/></label></div>
                     <ColorField v-model="dataset.color" label="数据项颜色" :presets="textColorPresets" @commit="recordProperty('修改数据颜色')" />
-                    <label>数据库连接<select v-model="dataset.connectionId" @change="changeDatasetConnection(dataset, datasetIndex)"><option value="">请选择连接</option><option v-for="source in dataSources" :key="source.id" :value="source.id">{{ source.name }} · {{ source.type }}</option></select></label>
+                    <label>数据库连接<select v-model="dataset.connectionId" @change="changeDatasetConnection(dataset, datasetIndex)" v-permission="{ page: 'platform.designer', action: 'edit' }"><option value="">请选择连接</option><option v-for="source in dataSources" :key="source.id" :value="source.id">{{ source.name }} · {{ source.type }}</option></select></label>
                     <label>数据表<select :value="datasetTableKey(dataset)" :disabled="!dataset.connectionId || databaseMetadataLoading" @change="changeDatasetTable(dataset, datasetIndex, $event.target.value)"><option value="">{{ databaseMetadataLoading ? '正在读取...' : '请选择表' }}</option><option v-for="table in datasetTables(datasetIndex)" :key="`${table.schema}.${table.name}`" :value="`${table.schema || ''}\u0001${table.name}`">{{ table.schema ? `${table.schema}.` : '' }}{{ table.name }}</option></select></label>
-                    <label v-if="dataset.valueMode !== 'count'">数值字段<select v-model="dataset.field" :disabled="!dataset.table" @change="recordProperty('选择数据字段'); previewDatabaseBinding()"><option value="">请选择字段</option><option v-for="column in datasetColumns(datasetIndex)" :key="column.name" :value="column.name">{{ column.name }} · {{ column.dataType }}</option></select></label>
-                    <label>读取方式<select v-model="dataset.valueMode" @change="recordProperty('修改读取方式'); previewDatabaseBinding()"><option value="latest">最新一条</option><option value="first">第一条</option><option value="list">序列（图表 / 列表）</option><option value="count">记录数量</option><option value="sum">合计</option><option value="avg">平均值</option><option value="min">最小值</option><option value="max">最大值</option></select></label>
-                    <template v-if="['latest','first','list'].includes(dataset.valueMode)"><label>时间 / 排序字段<select v-model="dataset.orderBy" @change="dataset.timeField=dataset.orderBy; recordProperty('修改排序')"><option value="">不指定</option><option v-for="column in datasetColumns(datasetIndex)" :key="`order-${column.name}`" :value="column.name">{{ column.name }}</option></select></label><label>排序方向<select v-model="dataset.orderDirection" @change="recordProperty('修改排序')"><option value="desc">新到旧</option><option value="asc">旧到新</option></select></label></template>
-                    <div class="property-grid two"><label v-if="dataset.valueMode === 'list'">读取行数<input v-model.number="dataset.rowLimit" type="number" min="1" max="500" @change="recordProperty('修改读取行数')" /></label><label>刷新周期（秒）<input :value="Math.round(dataset.refreshMs/1000)" type="number" min="1" max="3600" @change="dataset.refreshMs=Math.max(1000,Number($event.target.value||5)*1000);recordProperty('修改刷新周期')" /></label></div>
-                    <div class="dataset-context"><label>按当前对象过滤<select v-model="dataset.contextKey" @change="recordProperty('修改上下文过滤')"><option value="">不过滤</option><option value="deviceId">当前设备 ID</option><option value="partId">当前部件 ID</option><option value="lineId">当前产线 ID</option><option value="workshopId">当前车间 ID</option><option value="viewId">当前视角 ID</option></select></label><label v-if="dataset.contextKey">表中对应字段<select v-model="dataset.contextField" @change="recordProperty('修改上下文字段')"><option value="">请选择</option><option v-for="column in datasetColumns(datasetIndex)" :key="`context-${column.name}`" :value="column.name">{{ column.name }}</option></select></label></div>
-                    <button v-if="ensureDatabaseDatasets(selectedWidget).length > 1" type="button" class="danger-link" @click="removeDatabaseDataset(datasetIndex)">删除这个数据项</button>
+                    <label v-if="dataset.valueMode !== 'count'">数值字段<select v-model="dataset.field" :disabled="!dataset.table" @change="recordProperty('选择数据字段'); previewDatabaseBinding()" v-permission="{ page: 'platform.designer', action: 'edit' }"><option value="">请选择字段</option><option v-for="column in datasetColumns(datasetIndex)" :key="column.name" :value="column.name">{{ column.name }} · {{ column.dataType }}</option></select></label>
+                    <label>读取方式<select v-model="dataset.valueMode" @change="recordProperty('修改读取方式'); previewDatabaseBinding()" v-permission="{ page: 'platform.designer', action: 'edit' }"><option value="latest">最新一条</option><option value="first">第一条</option><option value="list">序列（图表 / 列表）</option><option value="count">记录数量</option><option value="sum">合计</option><option value="avg">平均值</option><option value="min">最小值</option><option value="max">最大值</option></select></label>
+                    <template v-if="['latest','first','list'].includes(dataset.valueMode)"><label>时间 / 排序字段<select v-model="dataset.orderBy" @change="dataset.timeField=dataset.orderBy; recordProperty('修改排序')" v-permission="{ page: 'platform.designer', action: 'edit' }"><option value="">不指定</option><option v-for="column in datasetColumns(datasetIndex)" :key="`order-${column.name}`" :value="column.name">{{ column.name }}</option></select></label><label>排序方向<select v-model="dataset.orderDirection" @change="recordProperty('修改排序')" v-permission="{ page: 'platform.designer', action: 'edit' }"><option value="desc">新到旧</option><option value="asc">旧到新</option></select></label></template>
+                    <div class="property-grid two"><label v-if="dataset.valueMode === 'list'">读取行数<input v-model.number="dataset.rowLimit" type="number" min="1" max="500" @change="recordProperty('修改读取行数')"  v-permission="{ page: 'platform.designer', action: 'edit' }"/></label><label>刷新周期（秒）<input :value="Math.round(dataset.refreshMs/1000)" type="number" min="1" max="3600" @change="dataset.refreshMs=Math.max(1000,Number($event.target.value||5)*1000);recordProperty('修改刷新周期')" /></label></div>
+                    <div class="dataset-context"><label>按当前对象过滤<select v-model="dataset.contextKey" @change="recordProperty('修改上下文过滤')" v-permission="{ page: 'platform.designer', action: 'edit' }"><option value="">不过滤</option><option value="deviceId">当前设备 ID</option><option value="partId">当前部件 ID</option><option value="lineId">当前产线 ID</option><option value="workshopId">当前车间 ID</option><option value="viewId">当前视角 ID</option></select></label><label v-if="dataset.contextKey">表中对应字段<select v-model="dataset.contextField" @change="recordProperty('修改上下文字段')" v-permission="{ page: 'platform.designer', action: 'edit' }"><option value="">请选择</option><option v-for="column in datasetColumns(datasetIndex)" :key="`context-${column.name}`" :value="column.name">{{ column.name }}</option></select></label></div>
+                    <button v-if="ensureDatabaseDatasets(selectedWidget).length > 1" type="button" class="danger-link" @click="removeDatabaseDataset(datasetIndex)" v-permission="{ page: 'platform.designer', action: 'edit' }">删除这个数据项</button>
                   </div>
                 </details>
                 <label>计算公式（可选）<input v-model="selectedWidget.data.formula" placeholder="例如：(a / b) * 100" @change="recordProperty('修改计算公式'); previewDatabaseBinding()" /><small class="field-hint">仅支持别名、数字、+ − × ÷ 和括号，不执行 SQL 或脚本。</small></label>
@@ -2777,21 +2778,21 @@ onBeforeUnmount(() => {
             </section>
 
             <section v-else-if="inspectorTab === 'condition'" class="inspector-section">
-              <div class="section-action-heading"><div><strong>显隐规则</strong><small>可按当前对象或数据值决定组件出现 / 消失</small></div><button @click="addVisibilityRule">＋ 添加</button></div>
+              <div class="section-action-heading"><div><strong>显隐规则</strong><small>可按当前对象或数据值决定组件出现 / 消失</small></div><button @click="addVisibilityRule" v-permission="{ page: 'platform.designer', action: 'edit' }">＋ 添加</button></div>
               <label v-if="selectedWidget.visibility.rules.length">多条规则<select v-model="selectedWidget.visibility.ruleMode" @change="recordProperty('修改显隐规则')"><option value="all">全部满足</option><option value="any">任意满足</option></select></label>
               <div v-for="(rule, index) in selectedWidget.visibility.rules" :key="`visible-${index}`" class="condition-card">
-                <div class="property-grid two"><label>来源<select v-model="rule.source" @change="rule.path = rule.source === 'data' ? 'value' : 'viewMode'; recordProperty()"><option value="context">Unity 上下文</option><option value="data">组件数据值</option></select></label><label>字段<select v-if="rule.source === 'context'" v-model="rule.path" @change="recordProperty()"><option value="viewMode">当前视角</option><option value="viewId">当前视角 ID</option><option value="workshopId">车间 ID</option><option value="lineId">产线 ID</option><option value="deviceId">设备 ID</option><option value="inspectionStage">检查阶段</option><option value="partId">部件 ID</option><option value="partName">部件名称</option></select><input v-else v-model="rule.path" placeholder="value" @change="recordProperty()" /></label></div>
-                <div class="property-grid two"><label>判断<select v-model="rule.operator" @change="recordProperty()"><option value="==">等于</option><option value="!=">不等于</option><option value=">">大于</option><option value=">=">大于等于</option><option value="<">小于</option><option value="<=">小于等于</option><option value="truthy">为真</option><option value="falsy">为假</option><option value="contains">包含</option></select></label><label>目标值<input v-model="rule.value" @change="recordProperty()" /></label></div>
-                <button class="danger-link" @click="removeVisibilityRule(index)">删除显隐规则</button>
+                <div class="property-grid two"><label>来源<select v-model="rule.source" @change="rule.path = rule.source === 'data' ? 'value' : 'viewMode'; recordProperty()" v-permission="{ page: 'platform.designer', action: 'edit' }"><option value="context">Unity 上下文</option><option value="data">组件数据值</option></select></label><label>字段<select v-if="rule.source === 'context'" v-model="rule.path" @change="recordProperty()" v-permission="{ page: 'platform.designer', action: 'edit' }"><option value="viewMode">当前视角</option><option value="viewId">当前视角 ID</option><option value="workshopId">车间 ID</option><option value="lineId">产线 ID</option><option value="deviceId">设备 ID</option><option value="inspectionStage">检查阶段</option><option value="partId">部件 ID</option><option value="partName">部件名称</option></select><input v-else v-model="rule.path" placeholder="value" @change="recordProperty()"  v-permission="{ page: 'platform.designer', action: 'edit' }"/></label></div>
+                <div class="property-grid two"><label>判断<select v-model="rule.operator" @change="recordProperty()" v-permission="{ page: 'platform.designer', action: 'edit' }"><option value="==">等于</option><option value="!=">不等于</option><option value=">">大于</option><option value=">=">大于等于</option><option value="<">小于</option><option value="<=">小于等于</option><option value="truthy">为真</option><option value="falsy">为假</option><option value="contains">包含</option></select></label><label>目标值<input v-model="rule.value" @change="recordProperty()"  v-permission="{ page: 'platform.designer', action: 'edit' }"/></label></div>
+                <button class="danger-link" @click="removeVisibilityRule(index)" v-permission="{ page: 'platform.designer', action: 'edit' }">删除显隐规则</button>
               </div>
 
-              <div class="section-action-heading"><div><strong>条件样式</strong><small>按实时值切换颜色或闪烁</small></div><button @click="addCondition">＋ 添加</button></div>
+              <div class="section-action-heading"><div><strong>条件样式</strong><small>按实时值切换颜色或闪烁</small></div><button @click="addCondition" v-permission="{ page: 'platform.designer', action: 'edit' }">＋ 添加</button></div>
               <div v-for="(condition, index) in selectedWidget.conditions" :key="index" class="condition-card">
-                <div class="property-grid two"><label>判断<select v-model="condition.operator" @change="recordProperty()"><option value=">">大于</option><option value=">=">大于等于</option><option value="<">小于</option><option value="<=">小于等于</option><option value="==">等于</option><option value="!=">不等于</option><option value="truthy">为真</option><option value="falsy">为假</option></select></label><label>阈值<input v-model="condition.value" @change="recordProperty()" /></label></div>
+                <div class="property-grid two"><label>判断<select v-model="condition.operator" @change="recordProperty()" v-permission="{ page: 'platform.designer', action: 'edit' }"><option value=">">大于</option><option value=">=">大于等于</option><option value="<">小于</option><option value="<=">小于等于</option><option value="==">等于</option><option value="!=">不等于</option><option value="truthy">为真</option><option value="falsy">为假</option></select></label><label>阈值<input v-model="condition.value" @change="recordProperty()"  v-permission="{ page: 'platform.designer', action: 'edit' }"/></label></div>
                 <ColorField v-model="condition.color" label="文字颜色" :presets="textColorPresets" @commit="recordProperty('修改条件颜色')" />
                 <ColorField v-model="condition.background" label="背景颜色" :presets="backgroundColorPresets" @commit="recordProperty('修改条件颜色')" />
-                <label>效果<select v-model="condition.animation" @change="recordProperty()"><option value="none">无</option><option value="blink">闪烁</option><option value="pulse">脉冲</option></select></label>
-                <button class="danger-link" @click="removeCondition(index)">删除条件</button>
+                <label>效果<select v-model="condition.animation" @change="recordProperty()" v-permission="{ page: 'platform.designer', action: 'edit' }"><option value="none">无</option><option value="blink">闪烁</option><option value="pulse">脉冲</option></select></label>
+                <button class="danger-link" @click="removeCondition(index)" v-permission="{ page: 'platform.designer', action: 'edit' }">删除条件</button>
               </div>
               <p v-if="!selectedWidget.conditions.length" class="empty-inspector">尚未添加条件。组件会一直使用普通样式。</p>
             </section>
@@ -2803,25 +2804,25 @@ onBeforeUnmount(() => {
             </section>
 
             <section v-else class="inspector-section">
-              <div class="section-action-heading"><div><strong>交互事件</strong><small>导航、语音、链接和组件 / 分组显隐；始终禁止数据写入</small></div><button @click="addEvent">＋ 添加</button></div>
+              <div class="section-action-heading"><div><strong>交互事件</strong><small>导航、语音、链接和组件 / 分组显隐；始终禁止数据写入</small></div><button @click="addEvent" v-permission="{ page: 'platform.designer', action: 'edit' }">＋ 添加</button></div>
               <div v-for="(event, index) in selectedWidget.events" :key="index" class="condition-card">
-                <label>触发<select v-model="event.trigger" @change="recordProperty()"><option value="click">单击</option><option value="doubleClick">双击</option></select></label>
-                <label>动作<select v-model="event.action" @change="recordProperty()"><option value="enter_device">进入设备</option><option value="focus_factory">返回工厂总览</option><option value="focus_line">聚焦产线</option><option value="focus_workshop">聚焦车间</option><option value="switch_view">切换到指定视角</option><option value="set_visibility">显示 / 隐藏目标</option><option value="toggle_visibility">切换目标显隐</option><option value="play_voice">播放语音</option><option value="open_link">打开链接</option><option value="switch_scene">切换场景</option></select></label>
-                <label v-if="event.action === 'enter_device'">设备<select v-model="event.deviceId" @change="recordProperty()"><option value="">请选择</option><option v-for="device in devices" :key="device.id" :value="String(device.id)">{{ device.name }}</option></select></label>
-                <label v-if="event.action === 'focus_line'">产线<select v-model="event.lineId" @change="recordProperty()"><option value="">当前设备所属产线</option><option v-for="line in lines" :key="line.id" :value="String(line.id)">{{ line.name }}</option></select></label>
-                <label v-if="event.action === 'focus_workshop'">车间<select v-model="event.workshopId" @change="recordProperty()"><option value="">请选择</option><option v-for="workshop in workshops" :key="workshop.id" :value="String(workshop.id)">{{ workshop.name }}</option></select></label>
-                <label v-if="event.action === 'switch_view'">目标视角<select v-model="event.viewId" @change="recordProperty('设置目标视角')"><option value="">请选择</option><option v-for="view in views" :key="view.id" :value="view.id">{{ view.name }} · {{ DASHBOARD_VIEW_MODES.find(item => item.id === view.mode)?.label || '自定义' }}</option></select></label>
+                <label>触发<select v-model="event.trigger" @change="recordProperty()" v-permission="{ page: 'platform.designer', action: 'edit' }"><option value="click">单击</option><option value="doubleClick">双击</option></select></label>
+                <label>动作<select v-model="event.action" @change="recordProperty()" v-permission="{ page: 'platform.designer', action: 'edit' }"><option value="enter_device">进入设备</option><option value="focus_factory">返回工厂总览</option><option value="focus_line">聚焦产线</option><option value="focus_workshop">聚焦车间</option><option value="switch_view">切换到指定视角</option><option value="set_visibility">显示 / 隐藏目标</option><option value="toggle_visibility">切换目标显隐</option><option value="play_voice">播放语音</option><option value="open_link">打开链接</option><option value="switch_scene">切换场景</option></select></label>
+                <label v-if="event.action === 'enter_device'">设备<select v-model="event.deviceId" @change="recordProperty()" v-permission="{ page: 'platform.designer', action: 'edit' }"><option value="">请选择</option><option v-for="device in devices" :key="device.id" :value="String(device.id)">{{ device.name }}</option></select></label>
+                <label v-if="event.action === 'focus_line'">产线<select v-model="event.lineId" @change="recordProperty()" v-permission="{ page: 'platform.designer', action: 'edit' }"><option value="">当前设备所属产线</option><option v-for="line in lines" :key="line.id" :value="String(line.id)">{{ line.name }}</option></select></label>
+                <label v-if="event.action === 'focus_workshop'">车间<select v-model="event.workshopId" @change="recordProperty()" v-permission="{ page: 'platform.designer', action: 'edit' }"><option value="">请选择</option><option v-for="workshop in workshops" :key="workshop.id" :value="String(workshop.id)">{{ workshop.name }}</option></select></label>
+                <label v-if="event.action === 'switch_view'">目标视角<select v-model="event.viewId" @change="recordProperty('设置目标视角')" v-permission="{ page: 'platform.designer', action: 'edit' }"><option value="">请选择</option><option v-for="view in views" :key="view.id" :value="view.id">{{ view.name }} · {{ DASHBOARD_VIEW_MODES.find(item => item.id === view.mode)?.label || '自定义' }}</option></select></label>
                 <template v-if="['set_visibility','toggle_visibility'].includes(event.action)">
-                  <label>目标类型<select v-model="event.targetType" @change="normalizeVisibilityEventTarget(event)"><option value="group">组件分组</option><option value="widget">单个组件</option></select></label>
-                  <label v-if="event.targetType === 'group'">目标分组<select v-model="event.targetId" @change="recordProperty()"><option value="">请选择分组</option><option v-for="group in groupOptions" :key="group.id" :value="group.id">{{ group.label }} · {{ group.id }}</option></select></label>
-                  <label v-else>目标组件<select v-model="event.targetId" @change="recordProperty()"><option value="">请选择组件</option><option v-for="item in eventWidgetOptions" :key="item.id" :value="item.id">{{ item.label }}</option></select></label>
-                  <label v-if="event.action === 'set_visibility'">目标状态<select v-model="event.visibility" @change="recordProperty()"><option value="show">显示</option><option value="hide">隐藏</option></select></label>
+                  <label>目标类型<select v-model="event.targetType" @change="normalizeVisibilityEventTarget(event)" v-permission="{ page: 'platform.designer', action: 'edit' }"><option value="group">组件分组</option><option value="widget">单个组件</option></select></label>
+                  <label v-if="event.targetType === 'group'">目标分组<select v-model="event.targetId" @change="recordProperty()" v-permission="{ page: 'platform.designer', action: 'edit' }"><option value="">请选择分组</option><option v-for="group in groupOptions" :key="group.id" :value="group.id">{{ group.label }} · {{ group.id }}</option></select></label>
+                  <label v-else>目标组件<select v-model="event.targetId" @change="recordProperty()" v-permission="{ page: 'platform.designer', action: 'edit' }"><option value="">请选择组件</option><option v-for="item in eventWidgetOptions" :key="item.id" :value="item.id">{{ item.label }}</option></select></label>
+                  <label v-if="event.action === 'set_visibility'">目标状态<select v-model="event.visibility" @change="recordProperty()" v-permission="{ page: 'platform.designer', action: 'edit' }"><option value="show">显示</option><option value="hide">隐藏</option></select></label>
                 </template>
-                <label v-if="event.action === 'switch_scene'">场景 ID<input v-model="event.sceneId" @change="recordProperty()" /></label>
-                <label v-if="event.action === 'play_voice'">语音文件<input v-model="event.audioUrl" placeholder="/uploads/audio/..." @change="recordProperty()" /></label>
-                <label v-if="event.action === 'play_voice'">无文件时播报文字<textarea v-model="event.text" rows="2" @change="recordProperty()"></textarea></label>
-                <label v-if="event.action === 'open_link'">链接地址<input v-model="event.url" placeholder="https://..." @change="recordProperty()" /></label>
-                <button class="danger-link" @click="removeEvent(index)">删除事件</button>
+                <label v-if="event.action === 'switch_scene'">场景 ID<input v-model="event.sceneId" @change="recordProperty()"  v-permission="{ page: 'platform.designer', action: 'edit' }"/></label>
+                <label v-if="event.action === 'play_voice'">语音文件<input v-model="event.audioUrl" placeholder="/uploads/audio/..." @change="recordProperty()"  v-permission="{ page: 'platform.designer', action: 'edit' }"/></label>
+                <label v-if="event.action === 'play_voice'">无文件时播报文字<textarea v-model="event.text" rows="2" @change="recordProperty()" v-permission="{ page: 'platform.designer', action: 'edit' }"></textarea></label>
+                <label v-if="event.action === 'open_link'">链接地址<input v-model="event.url" placeholder="https://..." @change="recordProperty()"  v-permission="{ page: 'platform.designer', action: 'edit' }"/></label>
+                <button class="danger-link" @click="removeEvent(index)" v-permission="{ page: 'platform.designer', action: 'edit' }">删除事件</button>
               </div>
               <p v-if="!selectedWidget.events.length" class="empty-inspector">没有点击事件，组件只负责展示。</p>
             </section>
@@ -2838,18 +2839,18 @@ onBeforeUnmount(() => {
           </nav>
           <div class="inspector-body">
             <section v-if="viewInspectorTab === 'camera'" class="inspector-section">
-              <label>视角名称<input v-model="currentView.name" @change="commitHistory('修改视角名称')" /></label>
+              <label>视角名称<input v-model="currentView.name" @change="commitHistory('修改视角名称')"  v-permission="{ page: 'platform.designer', action: 'edit' }"/></label>
               <p v-if="currentViewIsMapSurface" class="readonly-banner">地图和厂区镜头由运行画面控制；这里使用与 07 相同的组件库、画布、拖拽、数据绑定和发布流程。</p>
               <template v-else>
-              <div class="property-grid two"><label>类型<select v-model="currentView.mode" @change="commitHistory('修改视角类型'); syncPreviewContextFromView()"><option v-for="mode in DASHBOARD_VIEW_MODES" :key="mode.id" :value="mode.id">{{ mode.label }}</option></select></label><label>目标类型<select v-model="currentView.targetType" @change="updateViewTarget(currentView)"><option value="factory">全厂</option><option value="workshop">车间</option><option value="line">产线</option><option value="device">设备</option><option value="device_part">指定部件</option></select></label></div>
-              <label v-if="currentView.targetType === 'workshop'">目标车间<select v-model="currentView.targetId" @change="updateViewTarget(currentView)"><option value="">自动按当前上下文</option><option v-for="workshop in workshops" :key="workshop.id" :value="String(workshop.id)">{{ workshop.name || workshop.id }}</option></select></label>
-              <label v-if="currentView.targetType === 'line'">目标产线<select v-model="currentView.targetId" @change="updateViewTarget(currentView)"><option value="">自动按当前上下文</option><option v-for="line in lines" :key="line.id" :value="String(line.id)">{{ line.name || line.id }}</option></select></label>
-              <label v-if="currentView.targetType === 'device'">目标设备<select v-model="currentView.targetId" @change="updateViewTarget(currentView)"><option value="">自动按当前上下文</option><option v-for="device in devices" :key="device.id" :value="String(device.id)">{{ device.name || device.id }}</option></select></label>
-              <label v-if="currentView.targetType === 'device_part'">部件 ID<input v-model="currentView.targetId" placeholder="如 front_door_open" @change="commitHistory('修改目标部件')" /></label>
-              <div class="property-grid two"><label>水平角（°）<input v-model.number="currentView.camera.yaw" type="number" min="-360" max="360" step="1" @change="commitHistory('修改视角水平角')" /></label><label>俯仰角（°）<input v-model.number="currentView.camera.pitch" type="number" min="-89" max="89" step="1" @change="commitHistory('修改视角俯仰角')" /></label><label>距离比例<input v-model.number="currentView.camera.distanceScale" type="number" min=".1" max="10" step=".01" @change="commitHistory('修改视角距离')" /></label><label>过渡时间（秒）<input v-model.number="currentView.camera.transitionSeconds" type="number" min="0" max="10" step=".1" @change="commitHistory('修改视角过渡')" /></label></div>
-              <div class="property-grid two"><label>目标偏移 X<input v-model.number="currentView.camera.targetOffset[0]" type="number" step=".1" @change="commitHistory('修改视角目标')" /></label><label>目标偏移 Y<input v-model.number="currentView.camera.targetOffset[1]" type="number" step=".1" @change="commitHistory('修改视角目标')" /></label><label>目标偏移 Z<input v-model.number="currentView.camera.targetOffset[2]" type="number" step=".1" @change="commitHistory('修改视角目标')" /></label></div>
-              <label class="visibility-bound-device"><input v-model="currentView.camera.relativeToTarget" type="checkbox" @change="commitHistory('修改相机朝向参考')" /> 设备视角跟随设备朝向（适合不同设备旋转角度）</label>
-              <button type="button" class="view-delete-button" @click="removeView" :disabled="views.length <= 1">删除当前视角</button>
+              <div class="property-grid two"><label>类型<select v-model="currentView.mode" @change="commitHistory('修改视角类型'); syncPreviewContextFromView()" v-permission="{ page: 'platform.designer', action: 'edit' }"><option v-for="mode in DASHBOARD_VIEW_MODES" :key="mode.id" :value="mode.id">{{ mode.label }}</option></select></label><label>目标类型<select v-model="currentView.targetType" @change="updateViewTarget(currentView)" v-permission="{ page: 'platform.designer', action: 'edit' }"><option value="factory">全厂</option><option value="workshop">车间</option><option value="line">产线</option><option value="device">设备</option><option value="device_part">指定部件</option></select></label></div>
+              <label v-if="currentView.targetType === 'workshop'">目标车间<select v-model="currentView.targetId" @change="updateViewTarget(currentView)" v-permission="{ page: 'platform.designer', action: 'edit' }"><option value="">自动按当前上下文</option><option v-for="workshop in workshops" :key="workshop.id" :value="String(workshop.id)">{{ workshop.name || workshop.id }}</option></select></label>
+              <label v-if="currentView.targetType === 'line'">目标产线<select v-model="currentView.targetId" @change="updateViewTarget(currentView)" v-permission="{ page: 'platform.designer', action: 'edit' }"><option value="">自动按当前上下文</option><option v-for="line in lines" :key="line.id" :value="String(line.id)">{{ line.name || line.id }}</option></select></label>
+              <label v-if="currentView.targetType === 'device'">目标设备<select v-model="currentView.targetId" @change="updateViewTarget(currentView)" v-permission="{ page: 'platform.designer', action: 'edit' }"><option value="">自动按当前上下文</option><option v-for="device in devices" :key="device.id" :value="String(device.id)">{{ device.name || device.id }}</option></select></label>
+              <label v-if="currentView.targetType === 'device_part'">部件 ID<input v-model="currentView.targetId" placeholder="如 front_door_open" @change="commitHistory('修改目标部件')"  v-permission="{ page: 'platform.designer', action: 'edit' }"/></label>
+              <div class="property-grid two"><label>水平角（°）<input v-model.number="currentView.camera.yaw" type="number" min="-360" max="360" step="1" @change="commitHistory('修改视角水平角')"  v-permission="{ page: 'platform.designer', action: 'edit' }"/></label><label>俯仰角（°）<input v-model.number="currentView.camera.pitch" type="number" min="-89" max="89" step="1" @change="commitHistory('修改视角俯仰角')"  v-permission="{ page: 'platform.designer', action: 'edit' }"/></label><label>距离比例<input v-model.number="currentView.camera.distanceScale" type="number" min=".1" max="10" step=".01" @change="commitHistory('修改视角距离')"  v-permission="{ page: 'platform.designer', action: 'edit' }"/></label><label>过渡时间（秒）<input v-model.number="currentView.camera.transitionSeconds" type="number" min="0" max="10" step=".1" @change="commitHistory('修改视角过渡')"  v-permission="{ page: 'platform.designer', action: 'edit' }"/></label></div>
+              <div class="property-grid two"><label>目标偏移 X<input v-model.number="currentView.camera.targetOffset[0]" type="number" step=".1" @change="commitHistory('修改视角目标')"  v-permission="{ page: 'platform.designer', action: 'edit' }"/></label><label>目标偏移 Y<input v-model.number="currentView.camera.targetOffset[1]" type="number" step=".1" @change="commitHistory('修改视角目标')"  v-permission="{ page: 'platform.designer', action: 'edit' }"/></label><label>目标偏移 Z<input v-model.number="currentView.camera.targetOffset[2]" type="number" step=".1" @change="commitHistory('修改视角目标')"  v-permission="{ page: 'platform.designer', action: 'edit' }"/></label></div>
+              <label class="visibility-bound-device"><input v-model="currentView.camera.relativeToTarget" type="checkbox" @change="commitHistory('修改相机朝向参考')"  v-permission="{ page: 'platform.designer', action: 'edit' }"/> 设备视角跟随设备朝向（适合不同设备旋转角度）</label>
+              <button type="button" class="view-delete-button" @click="removeView" :disabled="views.length <= 1" v-permission="{ page: 'platform.designer', action: 'edit' }">删除当前视角</button>
               </template>
             </section>
             <section v-else-if="viewInspectorTab === 'components'" class="inspector-section">
@@ -2870,7 +2871,7 @@ onBeforeUnmount(() => {
                   <label><input type="checkbox" :checked="deviceTooltipConfig.showHint" @change="updateDeviceTooltip('showHint', $event.target.checked)" /> 显示“点击进入设备”提示</label>
                 </template>
               </fieldset>
-              <label class="visibility-bound-device"><input v-model="currentView.componentState.hideNonTargetDevices" type="checkbox" @change="commitHistory('修改目标设备显隐')" /> 只显示目标范围内的设备</label>
+              <label class="visibility-bound-device"><input v-model="currentView.componentState.hideNonTargetDevices" type="checkbox" @change="commitHistory('修改目标设备显隐')"  v-permission="{ page: 'platform.designer', action: 'edit' }"/> 只显示目标范围内的设备</label>
               <div v-if="viewComponents.length" class="view-component-list"><label v-for="item in viewComponents" :key="item.id"><input type="checkbox" checked @change="toggleViewComponent(currentView, item.id, $event.target.checked)" /><span>{{ item.label }}</span><small>{{ item.type === 'navigation' ? '顶部导航' : item.type === 'return_button' ? '返回键' : widgetTypeLabel(item.type) }}</small></label></div>
               <p v-else-if="!currentViewIsMapSurface" class="empty-inspector">当前视角还没有显示组件，请从左侧拖入组件到画布。</p>
               <details v-if="hiddenViewComponents.length" class="view-hidden-components">
@@ -2879,8 +2880,8 @@ onBeforeUnmount(() => {
               </details>
             </section>
             <section v-else class="inspector-section">
-              <label>返回上一级视角<select v-model="currentView.returnViewId" @change="commitHistory('修改返回视角')"><option value="">不返回</option><option v-for="view in views.filter(item => item.id !== currentView.id)" :key="view.id" :value="view.id">{{ view.name }}</option></select></label>
-              <label>父级视角<select v-model="currentView.parentViewId" @change="commitHistory('修改父级视角')"><option value="">无</option><option v-for="view in views.filter(item => item.id !== currentView.id)" :key="view.id" :value="view.id">{{ view.name }}</option></select></label>
+              <label>返回上一级视角<select v-model="currentView.returnViewId" @change="commitHistory('修改返回视角')" v-permission="{ page: 'platform.designer', action: 'edit' }"><option value="">不返回</option><option v-for="view in views.filter(item => item.id !== currentView.id)" :key="view.id" :value="view.id">{{ view.name }}</option></select></label>
+              <label>父级视角<select v-model="currentView.parentViewId" @change="commitHistory('修改父级视角')" v-permission="{ page: 'platform.designer', action: 'edit' }"><option value="">无</option><option v-for="view in views.filter(item => item.id !== currentView.id)" :key="view.id" :value="view.id">{{ view.name }}</option></select></label>
               <p class="visibility-hint">点击设备或组件时，可在右侧“事件”中选择“切换到指定视角”。返回按钮会优先使用这里配置的上一级视角。</p>
             </section>
           </div>
@@ -2889,9 +2890,9 @@ onBeforeUnmount(() => {
         <template v-else>
           <div class="designer-panel-heading"><strong>画布设置</strong><small>未选择组件</small></div>
           <div class="inspector-body inspector-section">
-            <label>大屏名称<input v-model="documentModel.name" @change="commitHistory('修改大屏名称')" /></label>
-            <div class="property-grid two"><label>宽度<input v-model.number="canvas.width" type="number" min="320" max="7680" @change="commitHistory('修改画布')" /></label><label>高度<input v-model.number="canvas.height" type="number" min="180" max="4320" @change="commitHistory('修改画布')" /></label></div>
-            <div class="property-grid two"><label>吸附网格<input v-model.number="canvas.gridSize" type="number" min="1" max="200" @change="commitHistory('修改画布')" /></label><label>安全边距<input v-model.number="canvas.safeArea" type="number" min="0" max="400" @change="commitHistory('修改画布')" /></label></div>
+            <label>大屏名称<input v-model="documentModel.name" @change="commitHistory('修改大屏名称')"  v-permission="{ page: 'platform.designer', action: 'edit' }"/></label>
+            <div class="property-grid two"><label>宽度<input v-model.number="canvas.width" type="number" min="320" max="7680" @change="commitHistory('修改画布')"  v-permission="{ page: 'platform.designer', action: 'edit' }"/></label><label>高度<input v-model.number="canvas.height" type="number" min="180" max="4320" @change="commitHistory('修改画布')"  v-permission="{ page: 'platform.designer', action: 'edit' }"/></label></div>
+            <div class="property-grid two"><label>吸附网格<input v-model.number="canvas.gridSize" type="number" min="1" max="200" @change="commitHistory('修改画布')"  v-permission="{ page: 'platform.designer', action: 'edit' }"/></label><label>安全边距<input v-model.number="canvas.safeArea" type="number" min="0" max="400" @change="commitHistory('修改画布')"  v-permission="{ page: 'platform.designer', action: 'edit' }"/></label></div>
             <ColorField v-model="canvas.background" label="画布背景" :presets="backgroundColorPresets" @commit="commitHistory('修改画布')" />
             <ColorField v-model="documentModel.theme.accentColor" label="主题色" :presets="textColorPresets" @commit="commitHistory('修改主题')" />
           </div>
@@ -2913,7 +2914,7 @@ onBeforeUnmount(() => {
         <div class="template-reference-list">
           <label v-for="reference in templateImport.references" :key="reference.key">
             <span>{{ templateKinds[reference.kind] }} · {{ reference.id }} <small>{{ reference.uses.length }} 处引用</small></span>
-            <select v-model="templateMapping[reference.key]" :aria-label="`${templateKinds[reference.kind]} ${reference.id}`">
+            <select v-model="templateMapping[reference.key]" :aria-label="`${templateKinds[reference.kind]} ${reference.id}`" v-permission="{ page: 'platform.designer', action: 'edit' }">
               <option :value="undefined" disabled>请选择目标{{ templateKinds[reference.kind] }}</option>
               <option v-for="target in templateCatalog[reference.kind]" :key="target.id" :value="String(target.id)">{{ templateTargetLabel(reference.kind, target) }}</option>
             </select>
@@ -2933,7 +2934,7 @@ onBeforeUnmount(() => {
           <div class="dialog-icon restore">↶</div>
           <h3>恢复版本 {{ releaseDialog.version }}</h3>
           <p>现场运行画面会切换到该发布快照，当前草稿不会被覆盖。</p>
-          <div><button type="button" @click="releaseDialog = null">取消</button><button class="primary" :disabled="publishing" @click="activateRelease">确认恢复</button></div>
+          <div><button type="button" @click="releaseDialog = null">取消</button><button class="primary" :disabled="publishing" @click="activateRelease" v-permission="{ page: 'platform.designer', action: 'publish' }">确认恢复</button></div>
         </div>
       </div>
     </Transition>

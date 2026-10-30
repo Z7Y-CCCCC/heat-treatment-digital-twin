@@ -16,7 +16,8 @@ assert.ok(row, 'Database backup row was not found')
 async function renderBackup(valid, busy = false) {
     return renderToString(createSSRApp({
         template: row.loc.source,
-        data: () => ({ databaseBackupStatus: { backups: [{ filename: 'fixture.sql.gz', valid, size: 1 }] }, databaseBackupBusy: busy }),
+        directives: { permission: { getSSRProps: () => ({}) } }, // validity rendering is independent of access grants
+        data: () => ({ controlPermissionPage: 'settings.database', databaseBackupStatus: { backups: [{ filename: 'fixture.sql.gz', valid, size: 1 }] }, databaseBackupBusy: busy }),
         methods: {
             formatBackupTime: () => 'time', formatBackupSize: () => 'size',
             downloadDatabaseBackup() {}, restoreDatabaseBackup() {}, deleteDatabaseBackup() {}

@@ -1,4 +1,5 @@
 <script setup>
+import { permissionDirective as vPermission } from '../../../runtime/pagePermissionUi.js'
 defineProps({ modelValue: { type: Array, default: () => [0, 0, 0] }, label: { type: String, default: '' }, step: { type: Number, default: 0.1 }, unit: { type: String, default: '' } })
 const emit = defineEmits(['update:modelValue'])
 function update(value, index, current) {
@@ -13,7 +14,7 @@ function update(value, index, current) {
         <legend>{{ label }}<small v-if="unit"> · {{ unit }}</small></legend>
         <label v-for="(axis, index) in ['X', 'Y', 'Z']" :key="axis">
             <span>{{ axis }}</span>
-            <input type="number" :step="step" :aria-label="`${label} ${axis}`" :value="modelValue[index]" @input="update($event.target.value, index, modelValue)" />
+            <input type="number" :step="step" :aria-label="`${label} ${axis}`" :value="modelValue[index]" @input="update($event.target.value, index, modelValue)"  v-permission="{ page: 'models', action: 'edit' }"/>
         </label>
     </fieldset>
 </template>

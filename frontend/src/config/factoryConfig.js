@@ -1,6 +1,7 @@
 import { reactive, ref } from 'vue'
 import { API_BASE } from '../runtime/backendEndpoint.js'
 import { adminFetch as fetch } from '../runtime/adminSession.js'
+import { deviceTransformPayload } from '../../../shared/deviceAuthoring.mjs'
 
 // 全局响应式配置状态
 const factoryConfig = reactive({
@@ -290,6 +291,9 @@ export const adminApi = {
 
     // 模型
     async getModels() { return (await fetch(`${API_BASE}/models`)).json() },
+    async updateDeviceTransform(id, data) { return readApiJson(await fetch(`${API_BASE}/devices/${pathId(id)}/transform`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(deviceTransformPayload(data)) }), '保存设备布局失败') },
+    async updateDeviceMovement(id, movement, pointIds = []) { return readApiJson(await fetch(`${API_BASE}/devices/${pathId(id)}/movement`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ movement, pointIds }) }), '保存设备运动失败') },
+    async updateLinePlacement(id, layout) { return readApiJson(await fetch(`${API_BASE}/lines/${pathId(id)}/placement`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ transform: layout.transform, placementPending: layout.placementPending }) }), '保存产线位置失败') },
     async uploadModel(formData) { return readApiJson(await fetch(`${API_BASE}/models/upload`, { method: 'POST', body: formData }), '上传模型失败') },
     async updateModel(id, data) { return readApiJson(await fetch(`${API_BASE}/models/${pathId(id)}`, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) }), '保存模型失败') },
     async deleteModel(id) {

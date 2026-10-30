@@ -1,6 +1,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { effectScope, ref } from 'vue'
+import { adminSession } from '../src/runtime/adminSession.js'
+import { normalizePagePermissions } from '../../shared/pagePermissions.mjs'
 import { adminApi } from '../src/config/factoryConfig.js'
 import { useSystemSettings } from '../src/views/admin/composables/useSystemSettings.js'
 import { useDataPoints } from '../src/views/admin/composables/useDataPoints.js'
@@ -29,6 +31,9 @@ test('simulation status is labelled separately from physical PLC connections', (
 
 function scoped(t, factory) {
     installBrowser(t)
+    const previousSession = { ...adminSession }
+    Object.assign(adminSession, { authenticated: true, user: { id: 'owner', role: 'owner' }, pagePermissions: normalizePagePermissions(undefined, { owner: true }) })
+    t.after(() => Object.assign(adminSession, previousSession))
     const scope = effectScope()
     t.after(() => scope.stop())
     return scope.run(factory)

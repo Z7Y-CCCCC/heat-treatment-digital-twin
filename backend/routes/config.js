@@ -46,7 +46,7 @@ router.get('/', async (req, res) => {
         const settingsRows = await db.all('SELECT * FROM settings');
         const settings = {};
         settingsRows.forEach(r => {
-            if (LEGACY_WEB_SETTING_KEYS.has(r.key) || r.key === 'factory_directory') return;
+            if (LEGACY_WEB_SETTING_KEYS.has(r.key) || r.key === 'factory_directory' || r.key === 'lan_display_pin') return;
             settings[r.key] = ['factory_location','factory_directory'].includes(r.key)
                 ? normalizeSettingValue(r.key, r.value)
                 : r.value;

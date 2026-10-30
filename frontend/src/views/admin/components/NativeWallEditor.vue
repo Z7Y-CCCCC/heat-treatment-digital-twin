@@ -1,4 +1,6 @@
 <script setup>
+import { permissionDirective as vPermission } from '../../../runtime/pagePermissionUi.js'
+import { canAdminPage } from '../../../runtime/adminSession.js'
 import { computed, reactive, ref, watch } from 'vue'
 import { normalizeLineLayout } from '../utils/lineLayout.js'
 import {
@@ -252,6 +254,7 @@ const deviceMarkers = computed(() => {
 })
 
 function beginDrag(event, wall) {
+    if (!canAdminPage('platform.environment', 'edit')) return
     if (!props.config.showWalls || !wall.enabled || !canvasRef.value) return
     selectedId.value = wall.id
     const rect = canvasRef.value.getBoundingClientRect()
@@ -296,10 +299,10 @@ function endDrag(event) {
             </div>
             <div class="wall-heading-actions">
                 <label class="wall-master-switch">
-                    <input v-model="config.showWalls" type="checkbox" @change="emitChange" />
+                    <input v-model="config.showWalls" type="checkbox" @change="emitChange"  v-permission="{ page: 'platform.environment', action: 'edit' }"/>
                     <span>{{ config.showWalls ? '围墙已显示' : '围墙已关闭' }}</span>
                 </label>
-                <button type="button" class="wall-btn primary" :disabled="!selectedWorkshop" @click="addWall">+ 新增围墙</button>
+                <button type="button" class="wall-btn primary" :disabled="!selectedWorkshop" @click="addWall" v-permission="{ page: 'platform.environment', action: 'edit' }">+ 新增围墙</button>
             </div>
         </div>
 
@@ -371,30 +374,30 @@ function endDrag(event) {
                                 <option v-for="wall in scopedWalls" :key="wall.id" :value="wall.id">{{ wall.name }}</option>
                             </select>
                         </label>
-                        <label class="wall-enabled-line"><input v-model="selectedWall.enabled" type="checkbox" @change="emitChange" /> 启用</label>
+                        <label class="wall-enabled-line"><input v-model="selectedWall.enabled" type="checkbox" @change="emitChange"  v-permission="{ page: 'platform.environment', action: 'edit' }"/> 启用</label>
                     </div>
 
                     <div class="wall-field-grid">
-                        <label class="wide">名称<input v-model.trim="selectedWall.name" type="text" @change="emitChange" /></label>
+                        <label class="wide">名称<input v-model.trim="selectedWall.name" type="text" @change="emitChange"  v-permission="{ page: 'platform.environment', action: 'edit' }"/></label>
                         <label class="wide">所属车间
                             <select :value="selectedWall.workshopId || selectedWorkshop.id" @change="reassignSelectedWall($event.target.value)">
                                 <option v-for="workshop in workshops" :key="workshop.id" :value="workshop.id">{{ workshop.name }}</option>
                             </select>
                         </label>
                         <label>样式
-                            <select v-model="selectedWall.style" @change="emitChange">
+                            <select v-model="selectedWall.style" @change="emitChange" v-permission="{ page: 'platform.environment', action: 'edit' }">
                                 <option value="solid">实体墙</option>
                                 <option value="frame">钢结构框架</option>
                                 <option value="solid_frame">实体墙 + 钢架</option>
                             </select>
                         </label>
-                        <label>相对车间角度（°）<input v-model.number="selectedWall.rotationY" type="number" min="-180" max="180" step="1" @change="selectedWall.rotationY = normalizeAngle(selectedWall.rotationY); emitChange()" /></label>
-                        <label>相对车间 X（米）<input v-model.number="selectedWall.x" type="number" step="0.1" @change="emitChange" /></label>
-                        <label>相对车间 Z（米）<input v-model.number="selectedWall.z" type="number" step="0.1" @change="emitChange" /></label>
-                        <label>离地高度（米）<input v-model.number="selectedWall.baseY" type="number" min="-10" max="50" step="0.1" @change="emitChange" /></label>
-                        <label>墙体长度（米）<input v-model.number="selectedWall.length" type="number" min="1" max="500" step="0.5" @change="emitChange" /></label>
-                        <label>墙体高度（米）<input v-model.number="selectedWall.height" type="number" min="0.5" max="100" step="0.5" @change="emitChange" /></label>
-                        <label>墙体厚度（米）<input v-model.number="selectedWall.thickness" type="number" min="0.05" max="5" step="0.05" @change="emitChange" /></label>
+                        <label>相对车间角度（°）<input v-model.number="selectedWall.rotationY" type="number" min="-180" max="180" step="1" @change="selectedWall.rotationY = normalizeAngle(selectedWall.rotationY); emitChange()"  v-permission="{ page: 'platform.environment', action: 'edit' }"/></label>
+                        <label>相对车间 X（米）<input v-model.number="selectedWall.x" type="number" step="0.1" @change="emitChange"  v-permission="{ page: 'platform.environment', action: 'edit' }"/></label>
+                        <label>相对车间 Z（米）<input v-model.number="selectedWall.z" type="number" step="0.1" @change="emitChange"  v-permission="{ page: 'platform.environment', action: 'edit' }"/></label>
+                        <label>离地高度（米）<input v-model.number="selectedWall.baseY" type="number" min="-10" max="50" step="0.1" @change="emitChange"  v-permission="{ page: 'platform.environment', action: 'edit' }"/></label>
+                        <label>墙体长度（米）<input v-model.number="selectedWall.length" type="number" min="1" max="500" step="0.5" @change="emitChange"  v-permission="{ page: 'platform.environment', action: 'edit' }"/></label>
+                        <label>墙体高度（米）<input v-model.number="selectedWall.height" type="number" min="0.5" max="100" step="0.5" @change="emitChange"  v-permission="{ page: 'platform.environment', action: 'edit' }"/></label>
+                        <label>墙体厚度（米）<input v-model.number="selectedWall.thickness" type="number" min="0.05" max="5" step="0.05" @change="emitChange"  v-permission="{ page: 'platform.environment', action: 'edit' }"/></label>
                     </div>
 
                     <div class="wall-color-row">
@@ -405,7 +408,7 @@ function endDrag(event) {
                     <div class="wall-inspector-actions">
                         <button type="button" class="wall-btn" @click="rotateWall">旋转 90°</button>
                         <button type="button" class="wall-btn" @click="duplicateWall">复制墙段</button>
-                        <button type="button" class="wall-btn danger" @click="removeWall">删除墙段</button>
+                        <button type="button" class="wall-btn danger" @click="removeWall" v-permission="{ page: 'platform.environment', action: 'edit' }">删除墙段</button>
                     </div>
                 </template>
                 <div v-else class="wall-inspector-empty">在当前车间新增或选择墙段后，可在这里调整具体参数。</div>

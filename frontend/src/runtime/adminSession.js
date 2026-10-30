@@ -1,6 +1,19 @@
 import { reactive } from 'vue'
 import { API_BASE } from './backendEndpoint.js'
 import { getFactoryScope } from './factoryScope.js'
+import { canPage, canAccessAdmin, normalizePagePermissions, allowsRequirement } from '../../../shared/pagePermissions.mjs'
+import { apiPermission } from '../../../shared/apiPermissions.mjs'
+
+export function canAdminPage(key, action = 'view') {
+    return adminSession.authenticated && canPage(adminSession.pagePermissions, key, action)
+}
+export function canOpenAdmin() { return adminSession.authenticated && canAccessAdmin(adminSession.pagePermissions) }
+export function canAdminApi(path, method = 'GET', body) {
+    return allowsRequirement(apiPermission(path, method, body), {
+        owner: adminSession.user?.role === 'owner', active: adminSession.authenticated,
+        permissions: adminSession.permissions, pagePermissions: adminSession.pagePermissions
+    })
+}
 
 export const adminSession = reactive({
     ready: false,
@@ -8,6 +21,7 @@ export const adminSession = reactive({
     authenticated: false,
     displayAuthenticated: false,
     user: null,
+    pagePermissions: normalizePagePermissions(),
     permissions: { view: false, edit: false, manageUsers: false, launch: false, cast: false, backup: false },
     idleTimeoutMinutes: 30,
     maxSessionHours: 8,
@@ -54,6 +68,10 @@ function applySession(data, expectedGeneration = generation) {
     adminSession.displayAuthenticated = data.displayAuthenticated === true
         || (data.displayAuthenticated === undefined && data.authenticated === true)
     adminSession.user = adminSession.displayAuthenticated || adminSession.authenticated ? data.user || null : null
+    try {
+        adminSession.pagePermissions = adminSession.authenticated
+            ? normalizePagePermissions(data.pagePermissions, { owner: data.user?.role === 'owner' }) : normalizePagePermissions()
+    } catch { adminSession.pagePermissions = normalizePagePermissions() }
     const fallbackPermissions = adminSession.displayAuthenticated || adminSession.authenticated ? permissionsForRole(data.user?.role) : null
     adminSession.permissions = fallbackPermissions ? { ...fallbackPermissions, ...(data.permissions || {}),
         edit: adminSession.authenticated && (data.permissions?.edit ?? fallbackPermissions.edit),
@@ -73,6 +91,7 @@ function clearSession(message = '') {
     adminSession.authenticated = false
     adminSession.displayAuthenticated = false
     adminSession.user = null
+    adminSession.pagePermissions = normalizePagePermissions()
     adminSession.permissions = { view: false, edit: false, manageUsers: false, launch: false, cast: false, backup: false }
     adminSession.expiresAt = 0
     adminSession.accountSlotId = ''
@@ -84,6 +103,7 @@ function clearSession(message = '') {
 function clearAdminAccess() {
     generation += 1
     adminSession.authenticated = false
+    adminSession.pagePermissions = normalizePagePermissions()
     adminSession.permissions = { ...adminSession.permissions, edit: false, manageUsers: false }
     window.clearTimeout(touchTimer)
     touchTimer = null
@@ -281,6 +301,16 @@ export async function adminFetch(input, options = {}) {
     if (url.origin !== backend.origin || !url.pathname.startsWith('/api/')) return window.fetch(input, options)
     const headers = new Headers(options.headers || (input instanceof Request ? input.headers : undefined))
     const method = String(options.method || (input instanceof Request ? input.method : 'GET')).toUpperCase()
+    // UX preflight only; the server independently enforces the same policy.
+    // Never send a draft from a stale page after its permission was revoked.
+    if (adminSession.ready && !['GET', 'HEAD', 'OPTIONS'].includes(method)
+        && !url.pathname.startsWith('/api/admin-auth') && !url.pathname.startsWith('/api/license')) {
+        let body
+        try { if (typeof options.body === 'string') body = JSON.parse(options.body) } catch { /* server validates malformed JSON */ }
+        if (!canAdminApi(url.pathname, method, body)) return new Response(JSON.stringify({
+            success: false, code: 'ADMIN_PERMISSION_DENIED', error: '当前账户没有此页面的操作权限'
+        }), { status: adminSession.authenticated ? 403 : 401, headers: { 'Content-Type': 'application/json' } })
+    }
     const surfacePath = window.location.pathname
     const displaySurface = surfacePath === '/overlay' || surfacePath === '/site'
     const factoryId = displaySurface
