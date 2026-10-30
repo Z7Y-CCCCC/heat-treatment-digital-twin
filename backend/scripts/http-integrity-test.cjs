@@ -28,6 +28,13 @@ async function main() {
     const databaseFile = path.join(dataDir, 'factory.db');
     const uploads = path.join(directory, 'uploads');
     const models = path.join(uploads, 'models');
+    // A clean clone intentionally has no frontend/dist. Serve a dedicated HTML
+    // fixture through the real static/SPA routes, rather than depending on a
+    // developer's previous Vite build or an inherited FRONTEND_DIST setting.
+    const frontend = path.join(directory, 'frontend-fixture');
+    const fixtureHtml = '<!doctype html><html><head><title>HTTP security fixture</title></head><body>isolated-http-security-fixture</body></html>';
+    fs.mkdirSync(frontend, { recursive: true });
+    fs.writeFileSync(path.join(frontend, 'index.html'), fixtureHtml);
     const results = [];
     let backend;
     let blockedConnection;
@@ -68,7 +75,7 @@ async function main() {
     });
     try {
         backend = startLoggedProcess(process.execPath, [path.join(BACKEND_DIR, 'server.js')], {
-            cwd: BACKEND_DIR, env: { ...process.env, APP_DATA_DIR: dataDir, UPLOADS_DIR: uploads, PORT: String(port), HOST: '127.0.0.1', DB_BACKUP_RETENTION: '1', TZ: 'Asia/Hong_Kong' },
+            cwd: BACKEND_DIR, env: { ...process.env, APP_DATA_DIR: dataDir, UPLOADS_DIR: uploads, FRONTEND_DIST: frontend, PORT: String(port), HOST: '127.0.0.1', DB_BACKUP_RETENTION: '1', TZ: 'Asia/Hong_Kong' },
             logFile: path.join(directory, 'backend.log')
         });
         await waitForHttp(`${origin}/api/health`);
@@ -89,6 +96,10 @@ async function main() {
                 assert.deepEqual(directives['script-src'], ["'self'"]);
                 assert.deepEqual(directives['object-src'], ["'none'"]);
                 assert.equal(response.headers.get('x-content-type-options'), 'nosniff');
+                if (route === '/admin') {
+                    assert.match(response.headers.get('content-type'), /^text\/html\b/);
+                    assert.equal(await response.text(), fixtureHtml, 'HTML must come from this run, not a local build');
+                }
             }
         });
 
