@@ -799,7 +799,10 @@ function sqlServerConnectionConfig(config, database = config.database) {
 async function initDb() {
     databaseReady = false;
     activeConfig = loadDatabaseConfig();
-    await createDatabaseIfNeeded(activeConfig);
+    const collectorConnection = process.env.COLLECTOR_DATABASE_CONNECT_ONLY === 'true' && typeof process.send === 'function';
+    // The API owns schema, seed and recovery. Collector restarts only reconnect
+    // to an already commissioned database and must never recreate/restore it.
+    if (!collectorConnection) await createDatabaseIfNeeded(activeConfig);
 
     const dialect = dialectName(activeConfig);
     if (dialect === 'mysql') {
@@ -835,14 +838,24 @@ async function initDb() {
         pool = new sqlserver.ConnectionPool(sqlServerConnectionConfig(activeConfig));
         await pool.connect();
     } else if (dialect === 'sqlite') {
-        ensureDataDir();
-        sqliteDb = await openSqliteWithRecovery(activeConfig.filename || DEFAULT_CONFIG.filename);
+        if (collectorConnection) {
+            const Database = getSqliteDatabase();
+            sqliteDb = configureSqlite(new Database(activeConfig.filename || DEFAULT_CONFIG.filename, { fileMustExist: true }));
+        } else {
+            ensureDataDir();
+            sqliteDb = await openSqliteWithRecovery(activeConfig.filename || DEFAULT_CONFIG.filename);
+        }
     } else {
         throw new Error(`不支持的数据库类型: ${activeConfig.type}`);
     }
 
-    await initTables();
-    await seedDefaults();
+    if (collectorConnection) {
+        await makeDbClient().get('SELECT value FROM settings LIMIT 1');
+        await makeDbClient().get('SELECT id FROM metric_snapshots LIMIT 1');
+    } else {
+        await initTables();
+        await seedDefaults();
+    }
     lastInitError = null;
     databaseReady = true;
 }

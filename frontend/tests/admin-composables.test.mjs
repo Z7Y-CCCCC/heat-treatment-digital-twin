@@ -43,6 +43,14 @@ function settingsFixture(t) {
     return scoped(t, () => useSystemSettings({ alert: async () => {}, confirm: async () => true }))
 }
 
+test('collector isolation status is separate from API connection state', t => {
+    const settings = settingsFixture(t)
+    assert.equal(settings.formatEngineMode('integrated_plc'), '独立进程低延迟采集')
+    assert.equal(settings.formatCollectorProcessStatus('running'), '运行中')
+    assert.equal(settings.formatCollectorProcessStatus('recovering'), '自动恢复中')
+    assert.equal(settings.formatCollectorProcessStatus('unresponsive'), '无响应')
+})
+
 test('database backup errors preserve the known list and never report a successful mutation', async t => {
     const settings = settingsFixture(t)
     settings.databaseBackupStatus.backups = [{ filename: 'known.sql.gz', valid: true }]

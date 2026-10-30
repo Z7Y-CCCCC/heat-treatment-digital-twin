@@ -324,6 +324,7 @@ const {
     saveDatabaseConnection,
     loadEngineStatus,
     formatEngineMode,
+    formatCollectorProcessStatus,
     saveSettings,
     savePendingSystemSettings
 } = useSystemSettings({
@@ -9405,6 +9406,7 @@ async function openAdminSetupStep(step) {
                         <div class="engine-status-body">
                             <span>运行模式：{{ formatEngineMode(engineStatus.mode) }}</span>
                             <span>数据状态：{{ engineStatus.plcStatus?.message || '未知' }}</span>
+                            <span v-if="engineStatus.process?.isolation">采集隔离：独立进程 · {{ formatCollectorProcessStatus(engineStatus.process.status) }}<template v-if="engineStatus.process.pid"> · PID {{ engineStatus.process.pid }}</template> · 自动恢复 {{ engineStatus.process.restartCount || 0 }} 次</span>
                             <span v-if="engineStatus.collectorStatus?.lastFrameAt">最近帧：{{ new Date(engineStatus.collectorStatus.lastFrameAt).toLocaleTimeString() }}</span>
                         </div>
                     </div>
@@ -9988,13 +9990,14 @@ async function openAdminSetupStep(step) {
                             <h3 class="section-title">数据通路模式</h3>
                             <label>选择数据采集方式
                                 <select v-model="settings.data_mode" class="input" v-permission="{ page: controlPermissionPage, action: 'edit' }">
-                                    <option value="integrated_plc">内置低延迟采集（推荐）</option>
+                                    <option value="integrated_plc">独立进程低延迟采集（推荐）</option>
                                     <option value="simulation">模拟数据（离线演示用）</option>
                                 </select>
                             </label>
                             <div class="mode-hint">
                                 <template v-if="settings.data_mode === 'integrated_plc'">
-                                    <p><strong>推荐主链路：</strong>PLC → 大屏后端内置采集器 → WebSocket → 前台 3D。</p>
+                                    <p><strong>推荐主链路：</strong>PLC → 独立采集进程 → 管理 API / WebSocket → 前台 3D。</p>
+                                    <p style="color:#86868b; font-size:12px;">采集与管理接口进程隔离；采集异常独立重启，界面关闭不停止 Windows 服务采集。</p>
                                     <p style="color:#86868b; font-size:12px;">PLC 连接参数在“设备管理”里按设备配置，变量采集周期在“点位映射”里按点位配置。</p>
                                 </template>
                                 <template v-else>

@@ -511,16 +511,17 @@ app.get('/api/plc/points/realtime', async (req, res) => {
             pointsByDevice.get(point.device_id).push(point);
         });
 
-        const runtimeDevices = devices.filter(Boolean).map(device => {
+        const runtimeDevices = [];
+        for (const device of devices.filter(Boolean)) {
             const points = pointsByDevice.get(device.id) || [];
             const runtime = global.dataEngine?.getPointRuntimeValues
-                ? global.dataEngine.getPointRuntimeValues(device.id, points)
+                ? await global.dataEngine.getPointRuntimeValues(device.id, points, req.factoryId)
                 : {
                     deviceStatus: null,
                     snapshotTimestamp: null,
                     points: points.map(point => ({ ...point, value: null, quality: 'bad' }))
                 };
-            return {
+            runtimeDevices.push({
                 device,
                 deviceStatus: runtime.deviceStatus,
                 snapshotTimestamp: runtime.snapshotTimestamp,
@@ -530,8 +531,8 @@ app.get('/api/plc/points/realtime', async (req, res) => {
                     device_name: device.name,
                     device_status: runtime.deviceStatus?.status || null
                 }))
-            };
-        });
+            });
+        }
 
         const latestSnapshot = runtimeDevices
             .map(item => Number(item.snapshotTimestamp || 0))
@@ -895,8 +896,8 @@ async function startServer() {
     castController.discovery = castDiscovery;
     castController.screenCast = screenCast;
 
-    const DataEngine = require('./services/dataEngine');
-    const dataEngine = new DataEngine(wsServer);
+    const CollectorProcess = require('./services/collectorProcess');
+    const dataEngine = new CollectorProcess(wsServer);
     global.dataEngine = dataEngine;
 
     let shuttingDown = false;
@@ -905,7 +906,7 @@ async function startServer() {
         shuttingDown = true;
         const forceExit = setTimeout(() => process.exit(1), 12000);
         forceExit.unref?.();
-        try { await dataEngine.stop(); } catch (e) { /* ignore */ }
+        try { await dataEngine.dispose(); } catch (e) { /* ignore */ }
         try { closeAlarmOutbox(); } catch (e) { console.error('[Shutdown] Alarm outbox:', e.message); }
         try { await historyRetention.stop(); } catch (e) { console.error('[Shutdown] History retention:', e.message); }
         try { await screenCast.close(); } catch (e) { /* ignore */ }
@@ -992,7 +993,11 @@ async function startServer() {
                 })
                 .then(() => lanDisplay.loadFromSettings())
                 .then(() => startSiteBackupMaintenance(uploadsRootDir))
-                .then(() => dataEngine.start())
+                .then(() => dataEngine.start().catch(error => {
+                    // Collection has its own recovery loop. It must not prevent
+                    // the API's maintenance and management tools from running.
+                    console.error('[CollectorProcess] 独立采集启动失败，自动恢复中:', error.message);
+                }))
                 .then(() => { if (!shuttingDown) historyRetention.start(); })
                 .catch((error) => {
                     console.error('[DataEngine] 启动失败:', error.message);

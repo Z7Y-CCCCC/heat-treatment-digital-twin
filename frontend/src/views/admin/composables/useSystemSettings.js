@@ -1103,15 +1103,22 @@ export function useSystemSettings({
         } catch (e) {
             engineStatus.mode = null
             engineStatus.plcStatus = { status: 'error', message: '无法连接后端' }
+            engineStatus.collectorStatus = { status: 'error', lastFrameAt: null }
+            engineStatus.process = null
         }
     }
 
     function formatEngineMode(mode) {
         const labels = {
-            integrated_plc: '内置低延迟采集模式',
+            integrated_plc: '独立进程低延迟采集',
             simulation: '模拟模式'
         }
         return labels[mode] || '未启动'
+    }
+
+    function formatCollectorProcessStatus(status) {
+        return ({ idle: '未启动', starting: '启动中', running: '运行中', recovering: '自动恢复中',
+            unresponsive: '无响应', stopping: '停止中', stopped: '已停止' })[status] || '未知'
     }
 
     async function saveSettings(pageKey) {
@@ -1345,6 +1352,7 @@ export function useSystemSettings({
         saveDatabaseConnection,
         loadEngineStatus,
         formatEngineMode,
+        formatCollectorProcessStatus,
         saveSettings,
         savePendingSystemSettings
     }

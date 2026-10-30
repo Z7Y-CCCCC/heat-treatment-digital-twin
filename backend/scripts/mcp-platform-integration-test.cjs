@@ -5,7 +5,7 @@ const crypto = require('node:crypto');
 const { spawnSync } = require('node:child_process');
 const {
     BACKEND_DIR, createRunDirectory, createTestDatabase, findFreePort,
-    startLoggedProcess, waitForHttp, forceStop
+    startLoggedProcess, waitForHttp, forceStop, waitUntil
 } = require('./integration-test-utils.cjs');
 
 async function main() {
@@ -73,13 +73,20 @@ async function main() {
         assert.equal(otherState.devices.length, 3);
         assert.equal(otherState.designer.document.widgets.filter(widget => widget.groupId === 'group_device_part_detail').length, 3);
         assert.equal((await rpc('get_project_state')).designer.currentRelease.id, after.designer.currentRelease.id);
-        // Device/point changes queue collector restarts; wait for the completed
-        // mode switch rather than checking in the middle of its debounce.
-        for (let attempt = 0; attempt < 50; attempt += 1) {
-            const state = await rpc('get_project_state');
-            if (state.engine?.mode === 'simulation') break;
-            await new Promise(resolve => setTimeout(resolve, 100));
-        }
+        // A factory can already report simulation while another factory is
+        // loading or a debounced config restart is pending. Verify the whole
+        // collector is running and quiet before asserting acceptance results.
+        let stableSince = 0, stablePid = null;
+        await waitUntil(async () => {
+            const state = await api('/api/engine/status');
+            if (state.mode !== 'simulation' || state.process?.status !== 'running' || state.process.pendingCommands) {
+                stableSince = 0; return false;
+            }
+            if (!stableSince || stablePid !== state.process.pid) {
+                stableSince = Date.now(); stablePid = state.process.pid;
+            }
+            return Date.now() - stableSince >= 750;
+        }, 30000, 'completed and stable collector configuration', 100);
         for (const script of ['mcp-interface-test.cjs', 'native-scene-preview-test.cjs']) {
             const result = spawnSync(process.execPath, [path.join(__dirname, script)], { cwd: BACKEND_DIR, env, windowsHide: true, encoding: 'utf8', timeout: 45000 });
             fs.writeFileSync(path.join(directory, `${script}.log`), `${result.stdout || ''}\n${result.stderr || ''}`);

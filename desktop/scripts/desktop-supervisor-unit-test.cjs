@@ -66,6 +66,9 @@ function loadDesktop({ createLog, spawnProcess, userDataPath, deploymentConfig, 
             if (name === './processLifecycle.cjs') return require('../processLifecycle.cjs');
             if (name === './mysqlRuntime.cjs') return require('../mysqlRuntime.cjs');
             if (name === './directoryPublish.cjs') return require('../directoryPublish.cjs');
+            // This VM tests supervision with fake paths/filesystems. Template
+            // seeding has dedicated tests and must not touch the real disk here.
+            if (name === './templateData.cjs') return { seedTemplateConfiguration: async () => {} };
             if (name === './deployment.cjs') return { ...require('../deployment.cjs'),
                 ...(deploymentConfig ? { resolveDeployment: () => deploymentConfig } : {}) };
             if (name === './logManager.cjs') return {
