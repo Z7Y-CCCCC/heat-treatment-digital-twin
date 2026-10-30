@@ -6,17 +6,19 @@ const { TextDecoder } = require('node:util');
 function createMemorySummaryReader(filename, { chunkBytes = 64 * 1024, maxLineBytes = 1024 * 1024 } = {}) {
     if (!Number.isSafeInteger(chunkBytes) || chunkBytes < 1 || !Number.isSafeInteger(maxLineBytes) || maxLineBytes < 1) throw new Error('Invalid memory reader buffer limits');
     const byPid = new Map();
+    const processGenerations = [];
     const decoder = new TextDecoder('utf-8', { fatal: true });
     let samples = 0, offset = 0, pending = Buffer.alloc(0), identity, failure, inFlight;
 
     function summary() {
         const generations = [];
         let peakRssMb = 0, maxRssGrowthMb = 0;
-        for (const [pid, state] of byPid) {
-            const item = { pid, samples: state.samples, peakRssMb: state.peak / 1048576, rssGrowthMb: (state.last - (state.warm ?? state.first)) / 1048576, baselineAfterWarmup: state.warm !== undefined };
+        for (const state of processGenerations) {
+            const baseline = state.warm ?? state.first;
+            const item = { pid: state.pid, generation: state.generation, samples: state.samples, peakRssMb: state.peak / 1048576, rssGrowthMb: (state.last - baseline) / 1048576, peakRssGrowthMb: Math.max(0, (state.warmPeak ?? state.peak) - baseline) / 1048576, baselineAfterWarmup: state.warm !== undefined };
             generations.push(item);
             peakRssMb = Math.max(peakRssMb, item.peakRssMb);
-            maxRssGrowthMb = Math.max(maxRssGrowthMb, item.rssGrowthMb);
+            maxRssGrowthMb = Math.max(maxRssGrowthMb, item.peakRssGrowthMb);
         }
         return { samples, generations, peakRssMb, maxRssGrowthMb };
     }
@@ -27,11 +29,19 @@ function createMemorySummaryReader(filename, { chunkBytes = 64 * 1024, maxLineBy
         const row = JSON.parse(text);
         if (!Number.isSafeInteger(row?.pid) || row.pid <= 0 || !Number.isFinite(row.rss) || row.rss < 0 || !Number.isFinite(row.uptime) || row.uptime < 0) throw new Error('Invalid memory telemetry sample');
         let state = byPid.get(row.pid);
-        if (!state) { state = { samples: 0, first: row.rss, peak: row.rss }; byPid.set(row.pid, state); }
+        // Windows can reuse a PID after a restart. Uptime is the generation
+        // boundary; the new process must never inherit its predecessor's RSS.
+        if (!state || row.uptime < state.uptime) {
+            state = { pid: row.pid, generation: (state?.generation || 0) + 1, samples: 0, first: row.rss, peak: row.rss };
+            byPid.set(row.pid, state);
+            processGenerations.push(state);
+        }
         state.samples++;
         state.last = row.rss;
+        state.uptime = row.uptime;
         state.peak = Math.max(state.peak, row.rss);
         if (state.warm === undefined && row.uptime >= 60) state.warm = row.rss;
+        if (state.warm !== undefined) state.warmPeak = Math.max(state.warmPeak ?? state.warm, row.rss);
         samples++;
     }
     async function readAppended(final) {

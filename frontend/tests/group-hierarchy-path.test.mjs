@@ -118,3 +118,10 @@ test('workshop overlay keeps normal province, city and district navigation', () 
   assert.equal(trail[3].to.query.level,'city')
   assert.equal(trail[3].to.query.code,'510100')
 })
+
+
+test('Xi’an pit factory resolves normal province/city/district path just like the Tianjin municipality', () => {
+  const trail=createGroupHierarchyPath({scope:'china',fromGroup:'610112',factoryName:'井式炉工厂',location:{country:'CHN',regionCode:'610000',regionName:'陕西省',cityCode:'610100',city:'西安市',districtCode:'610112',districtName:'未央区'}})
+  assert.deepEqual(trail.map(crumb=>crumb.label),['全国分布','陕西省','西安市','未央区','井式炉工厂'])
+  assert.equal(trail[3].to.query.code,'610112')
+})

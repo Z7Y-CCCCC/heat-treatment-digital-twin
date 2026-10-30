@@ -325,12 +325,17 @@ module.exports = function createSettingsRouter(controller = {}) {
                     }
                 }
             });
-            controller.wsServer?.broadcast('configuration_changed', {
-                keys: Object.keys(changed),
-                settings: changed,
-                factoryId: req.factoryId,
-                timestamp: Date.now()
-            });
+            // Shared appearance is global, but another factory's local settings
+            // must never overwrite the running factory. Split mixed saves.
+            const scopedKey = key => FACTORY_SETTING_KEYS.has(key) || key === 'factory_name' || key === 'factory_location';
+            for (const scoped of [true, false]) {
+                const settings = Object.fromEntries(Object.entries(changed).filter(([key]) => scopedKey(key) === scoped));
+                if (!Object.keys(settings).length) continue;
+                controller.wsServer?.broadcast('configuration_changed', {
+                    keys: Object.keys(settings), settings,
+                    ...(scoped ? { factoryId: req.factoryId } : {}), timestamp: Date.now()
+                });
+            }
             res.json({ success: true, changedKeys: Object.keys(changed) });
         } catch (e) {
             res.status(400).json({ error: e.message });

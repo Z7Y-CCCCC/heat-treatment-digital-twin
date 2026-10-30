@@ -34,6 +34,13 @@ function publicFactory(row) {
     };
 }
 
+function notifyFactoryDirectory(factoryId) {
+    global.wsServer?.broadcast?.('configuration_changed', {
+        factoryId: String(factoryId), resource: 'factories', reloadRequired: true,
+        keys: ['factory_name', 'factory_location'], timestamp: Date.now()
+    });
+}
+
 router.get('/', async (req, res) => {
     try {
         const db = await getDb();
@@ -107,6 +114,7 @@ router.post('/', async (req, res) => {
                 await tx.run('INSERT INTO factory_settings (factory_id, `key`, value) VALUES (?, ?, ?)', [factoryId, setting.key, setting.value]);
             }
         });
+        notifyFactoryDirectory(factoryId);
         res.status(201).json({ success: true, factory: publicFactory({ id: factoryId, name, location_json: location, is_enabled: 1, sort_order: Number(maxOrder?.max_order ?? -1) + 1 }) });
     } catch (error) {
         res.status(400).json({ error: error.message });
@@ -130,6 +138,7 @@ router.put('/:id', async (req, res) => {
         }
         await db.run('UPDATE factories SET name = ?, location_json = ?, is_enabled = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
             [name, location, enabled ? 1 : 0, req.params.id]);
+        notifyFactoryDirectory(req.params.id);
         res.json({ success: true, factory: publicFactory({ ...current, name, location_json: location, is_enabled: enabled ? 1 : 0 }) });
     } catch (error) {
         res.status(400).json({ error: error.message });

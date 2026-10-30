@@ -31,6 +31,7 @@
     "test:native-dashboard": "node scripts/native-dashboard-config-test.cjs",
     "test:native-preview": "node scripts/native-scene-preview-test.cjs",
     "test:inspection": "node scripts/inspection-platform-test.cjs",
+    "test:inspection-layout": "node scripts/device-inspection-layout-test.cjs",
     "test:mcp": "node scripts/mcp-interface-test.cjs",
     "test:spatial": "node scripts/spatial-hierarchy-test.cjs",
     "test:cast": "node scripts/cast-discovery-test.cjs",

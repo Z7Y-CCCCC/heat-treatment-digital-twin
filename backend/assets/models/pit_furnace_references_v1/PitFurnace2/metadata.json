@@ -1,0 +1,31 @@
+{
+  "model_id": "pit_furnace_2_v1",
+  "display_name": "井式炉2",
+  "reference": "codex-clipboard-b0bac913-73be-4e15-80bb-2f45c8fc5a4e.png",
+  "reference_priority": "latest five original CAD screenshots only",
+  "estimated_size_m_blender_xyz": [
+    3.5880000591278076,
+    1.6175000667572021,
+    5.0
+  ],
+  "dimensional_accuracy": "visual reconstruction, not dimensioned manufacturing CAD",
+  "depth_is_estimated": true,
+  "partBindings": [],
+  "groups": [
+    "well_structure",
+    "upper_shoulder_chamber",
+    "external_cover_front",
+    "lid_hood_shell",
+    "external_cover_hood",
+    "left_lid_lift_standard",
+    "right_upper_air_duct",
+    "upper_internal_support_bridge",
+    "suspended_fixture",
+    "bottom_circulation_fan",
+    "bottom_circulation_impeller",
+    "left_service_feed"
+  ],
+  "cover_visibility": "Hide external_cover groups to expose the explicitly modelled chamber and suspended fixture.",
+  "material_source": "C:\\Users\\27323\\OneDrive\\Desktop\\大屏\\backend\\assets\\models\\photo_equipment_models_v6_study.blend",
+  "original_assets_modified": false
+}

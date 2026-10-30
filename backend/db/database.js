@@ -4,6 +4,7 @@ const crypto = require('crypto');
 const { AsyncLocalStorage } = require('async_hooks');
 const { resolveBackupBudget, GiB, copyAndHash, ensureDiskSpace } = require('../utils/backupStorage');
 const { orderedReleases, orderedRows } = require('../utils/orderedReleases');
+const { acquireMysqlConnection, MysqlSession } = require('../utils/mysqlRuntimeSafety');
 const {
     buildDocumentFromLegacy,
     isCanonicalDocument,
@@ -83,6 +84,7 @@ let closePromise;
 let sqliteOperationQueue = Promise.resolve();
 const sqliteTransactionContext = new AsyncLocalStorage();
 let lastInitError = null;
+let lastRuntimeDatabaseError = null;
 let databaseReady = false;
 let backupCleanupPromise = Promise.resolve();
 const verifiedBackupStates = new Map();
@@ -810,11 +812,11 @@ async function initDb() {
             connectTimeout: databaseConnectionTimeout(activeConfig),
             database: activeConfig.database,
             waitForConnections: true,
-            connectionLimit: Number(activeConfig.connectionLimit || 10),
-            queueLimit: 0,
+            connectionLimit: boundedInteger(activeConfig.connectionLimit, 10, 1, 100),
+            queueLimit: boundedInteger(activeConfig.queueLimit ?? process.env.DB_MYSQL_QUEUE_LIMIT, 256, 1, 10000),
             charset: 'utf8mb4'
         });
-        await pool.query('SET time_zone = "+08:00"');
+        await queryMysql('SET time_zone = "+08:00"');
     } else if (dialect === 'postgres') {
         const PgPool = getPgPool();
         pool = new PgPool({
@@ -854,13 +856,15 @@ async function initializeEmptyMysqlSchema(connection, config) {
     if (String(config?.type || 'mysql') !== 'mysql' || !config?.database) {
         throw new Error('Schema initialization requires a MySQL database');
     }
-    const [tables] = await connection.query(
-        'SELECT TABLE_NAME AS name FROM information_schema.tables WHERE table_schema = ?',
+    const session = new MysqlSession(connection, databaseQueryTimeout(config), { pooled: false });
+    const [tables] = await session.deadline('schema preflight', () => connection.query(
+        { sql: 'SELECT TABLE_NAME AS name FROM information_schema.tables WHERE table_schema = ?', timeout: databaseQueryTimeout(config) },
         [config.database]
-    );
+    ));
     for (const { name } of tables) {
         if (name === '_desktop_seed_state') continue;
-        const [rows] = await connection.query(`SELECT 1 FROM ${quoteIdentifier(name, { type: 'mysql' })} LIMIT 1`);
+        const [rows] = await session.deadline('schema preflight', () => connection.query({
+            sql: `SELECT 1 FROM ${quoteIdentifier(name, { type: 'mysql' })} LIMIT 1`, timeout: databaseQueryTimeout(config) }));
         if (rows.length) throw new Error(`Refusing to initialize populated table: ${name}`);
     }
     const previousConfig = activeConfig;
@@ -896,9 +900,9 @@ function getDbStatus() {
     return {
         type: dialectName(activeConfig || loadDatabaseConfig()),
         config: publicDatabaseConfig(activeConfig || loadDatabaseConfig()),
-        connected: !!(pool || sqliteDb) && databaseReady && !lastInitError,
+        connected: !!(pool || sqliteDb) && databaseReady && !lastInitError && !lastRuntimeDatabaseError,
         initializing: !!initPromise && !databaseReady && !lastInitError,
-        error: lastInitError ? lastInitError.message : null
+        error: (lastInitError || lastRuntimeDatabaseError)?.message || null
     };
 }
 
@@ -921,8 +925,8 @@ async function closeDb() {
 }
 
 async function disposeDatabaseConnections() {
-    databaseReady = false;
     if (pool) {
+        databaseReady = false;
         const connectionPool = pool;
         pool = null;
         const dialect = dialectName();
@@ -930,6 +934,7 @@ async function disposeDatabaseConnections() {
         if (dialect === 'sqlserver') await connectionPool.close();
     }
     await enqueueSqliteOperation(() => {
+        databaseReady = false;
         if (sqliteDb) {
             sqliteDb.close();
             sqliteDb = null;
@@ -1148,6 +1153,7 @@ async function restoreMysqlDatabaseBackup(filename) {
     const restoreSource = path.join(RECOVERY_DIR, `restore-source-${timestampToken()}-${process.pid}.sql.gz`);
     fs.rmSync(restoreSource, { force: true });
     let protectedRollbackName;
+    let mutationStarted = false;
 
     try {
         await copyAndHash(source, restoreSource, sourceSize);
@@ -1163,6 +1169,7 @@ async function restoreMysqlDatabaseBackup(filename) {
         await closeDb();
 
         try {
+            mutationStarted = true;
             await restoreMysqlDump(config, restoreSource, { serverVersion });
             await getDb();
             const requiredTable = await makeDbClient().get('SELECT COUNT(*) AS cnt FROM settings');
@@ -1182,8 +1189,12 @@ async function restoreMysqlDatabaseBackup(filename) {
             } catch (rollbackError) {
                 throw new Error(`${error.message}；自动回滚也失败：${rollbackError.message}`);
             }
+            error.databaseRollbackCompleted = true;
             throw error;
         }
+    } catch (error) {
+        if (!mutationStarted) error.databaseRollbackCompleted = true;
+        throw error;
     } finally {
         if (protectedRollbackName) protectedBackupFiles.delete(protectedRollbackName);
         fs.rmSync(restoreSource, { force: true });
@@ -1195,6 +1206,7 @@ async function restoreDatabaseBackup(filename) {
     databaseRestoreActive = true;
     const protectedName = path.basename(String(filename || ''));
     let protectedRollbackName;
+    let mutationStarted = false;
     if (protectedName && protectedName === filename) protectedBackupFiles.add(protectedName);
     try {
         await getDb();
@@ -1228,6 +1240,7 @@ async function restoreDatabaseBackup(filename) {
             await closeDb();
 
             try {
+                mutationStarted = true;
                 quarantineSqliteFiles(target, 'before-restore');
                 await installSqliteCopy(restoreSource, target);
                 await getDb();
@@ -1242,11 +1255,15 @@ async function restoreDatabaseBackup(filename) {
                 await closeDb();
                 await installSqliteCopy(path.join(BACKUP_DIR, rollback.filename), target);
                 await getDb();
+                error.databaseRollbackCompleted = true;
                 throw error;
             }
         } finally {
             fs.rmSync(restoreSource, { force: true });
         }
+    } catch (error) {
+        if (!mutationStarted && dialectName() !== 'mysql') error.databaseRollbackCompleted = true;
+        throw error;
     } finally {
         if (protectedName) protectedBackupFiles.delete(protectedName);
         if (protectedRollbackName) protectedBackupFiles.delete(protectedRollbackName);
@@ -1301,6 +1318,40 @@ function databaseConnectionTimeout(config) {
 
 function databaseQueryTimeout(config) {
     return boundedInteger(config.queryTimeoutMs ?? process.env.DB_QUERY_TIMEOUT_MS, 10000, 1000, 60000);
+}
+
+function databaseTransactionTimeout(config) {
+    return boundedInteger(config.transactionTimeoutMs ?? process.env.DB_TRANSACTION_TIMEOUT_MS, 60000, 1000, 300000);
+}
+
+async function mysqlSession() {
+    try {
+        const owningPool = pool;
+        const pooled = typeof owningPool.getConnection === 'function';
+        const connection = pooled ? await acquireMysqlConnection(owningPool, databaseConnectionTimeout(activeConfig)) : owningPool;
+        return new MysqlSession(connection, databaseQueryTimeout(activeConfig), { pooled });
+    } catch (error) { recordMysqlRuntimeError(error); throw error; }
+}
+
+function recordMysqlRuntimeError(error) {
+    if (['MYSQL_OPERATION_TIMEOUT', 'MYSQL_CONNECTION_QUEUE_FULL', 'PROTOCOL_SEQUENCE_TIMEOUT', 'PROTOCOL_CONNECTION_LOST',
+        'ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'EPIPE', 'ENOTFOUND', 'ER_ACCESS_DENIED_ERROR'].includes(error?.code) || error?.fatal === true) {
+        lastRuntimeDatabaseError = error;
+    }
+}
+
+async function executeMysql(sql, params) {
+    const session = await mysqlSession();
+    try { const result = await session.execute(sql, params); lastRuntimeDatabaseError = null; return result; }
+    catch (error) { recordMysqlRuntimeError(error); throw error; }
+    finally { session.release(); }
+}
+
+async function queryMysql(sql, params) {
+    const session = await mysqlSession();
+    try { const result = await session.deadline('query', () => session.connection.query({ sql, timeout: session.timeoutMs }, params)); lastRuntimeDatabaseError = null; return result; }
+    catch (error) { recordMysqlRuntimeError(error); throw error; }
+    finally { session.release(); }
 }
 
 async function startDatabaseMaintenance() {
@@ -1471,7 +1522,7 @@ async function executeAll(sql, params = []) {
     const dialect = dialectName();
     const normalized = normalizeSql(sql, params);
     if (dialect === 'mysql') {
-        const [rows] = await pool.execute(normalized.text, normalized.params);
+        const [rows] = await executeMysql(normalized.text, normalized.params);
         return rows;
     }
     if (dialect === 'postgres') {
@@ -1496,7 +1547,7 @@ async function executeRun(sql, params = []) {
     const dialect = dialectName();
     const normalized = normalizeSql(sql, params);
     if (dialect === 'mysql') {
-        const [result] = await pool.execute(normalized.text, normalized.params);
+        const [result] = await executeMysql(normalized.text, normalized.params);
         return normalizeRunResult(result);
     }
     if (dialect === 'postgres') {
@@ -1528,18 +1579,28 @@ function normalizeRunResult(result) {
 async function transaction(callback) {
     const dialect = dialectName();
     if (dialect === 'mysql') {
-        const connection = await pool.getConnection();
+        const session = await mysqlSession();
+        const connection = session.connection;
         try {
-            await connection.beginTransaction();
-            const tx = makeConnectionClient(connection);
-            const result = await callback(tx);
-            await connection.commit();
+            const result = await session.deadline('transaction', async () => {
+                await session.deadline('begin transaction', () => connection.beginTransaction());
+                const tx = makeConnectionClient(connection, session);
+                const result = await callback(tx);
+                session.assertActive();
+                await session.deadline('commit', () => connection.commit());
+                return result;
+            }, databaseTransactionTimeout(activeConfig));
+            lastRuntimeDatabaseError = null;
             return result;
         } catch (error) {
-            await connection.rollback();
+            recordMysqlRuntimeError(error);
+            if (session.active && !session.destroyed) {
+                try { await session.deadline('rollback', () => connection.rollback()); }
+                catch (rollbackError) { console.error('[DB] MySQL rollback failed:', rollbackError.message); }
+            }
             throw error;
         } finally {
-            connection.release();
+            session.release();
         }
     }
     if (dialect === 'postgres') {
@@ -1591,13 +1652,13 @@ async function transaction(callback) {
     }
 }
 
-function makeConnectionClient(connection) {
+function makeConnectionClient(connection, session) {
     const client = {
         async all(sql, params = []) {
             const dialect = dialectName();
             const normalized = normalizeSql(sql, params);
             if (dialect === 'mysql') {
-                const [rows] = await connection.execute(normalized.text, normalized.params);
+                const [rows] = await session.execute(normalized.text, normalized.params);
                 return rows;
             }
             const result = await connection.query(normalized.text, normalized.params);
@@ -1611,7 +1672,7 @@ function makeConnectionClient(connection) {
             const dialect = dialectName();
             const normalized = normalizeSql(sql, params);
             if (dialect === 'mysql') {
-                const [result] = await connection.execute(normalized.text, normalized.params);
+                const [result] = await session.execute(normalized.text, normalized.params);
                 return normalizeRunResult(result);
             }
             const result = await connection.query(normalized.text, normalized.params);
@@ -1784,7 +1845,7 @@ async function createTable(name, bodySql) {
 async function columnExists(table, column) {
     const dialect = dialectName();
     if (dialect === 'mysql') {
-        const [rows] = await pool.query(
+        const [rows] = await queryMysql(
             `SELECT COUNT(*) AS cnt FROM information_schema.columns
              WHERE table_schema = ? AND table_name = ? AND column_name = ?`,
             [activeConfig.database, table, column]
@@ -1827,6 +1888,7 @@ async function ensureSchemaColumns() {
     await ensureColumn('models', 'placement_level', `${t.string(32)} DEFAULT 'device'`);
     await rawQuery("UPDATE models SET placement_level = 'factory' WHERE asset_type = 'environment' AND (placement_level IS NULL OR placement_level <> 'factory')");
     await ensureColumn('event_logs', 'factory_id', `${t.string(128)} NULL`);
+    await ensureColumn('event_logs', 'collector_event_id', `${t.string(80)} NULL`);
     await ensureColumn('metric_snapshots', 'factory_id', `${t.string(128)} NULL`);
 
     await ensureColumn('devices', 'coordinate_space', `${t.string(32)} DEFAULT 'legacy_world'`);
@@ -1865,7 +1927,7 @@ async function ensureSchemaColumns() {
 
 async function rawQuery(sql) {
     const dialect = dialectName();
-    if (dialect === 'mysql') return pool.query(sql);
+    if (dialect === 'mysql') return queryMysql(sql);
     if (dialect === 'postgres') return pool.query(sql);
     if (dialect === 'sqlserver') return pool.request().query(sql);
     return withSqliteConnection(connection => connection.exec(sql));
@@ -2085,6 +2147,7 @@ async function initTables() {
     await createIndex('idx_projects_factory', 'projects', `${quoteIdentifier('factory_id')}, ${quoteIdentifier('is_active')}`);
     await createIndex('idx_models_factory_level', 'models', `${quoteIdentifier('factory_id')}, ${quoteIdentifier('placement_level')}`);
     await createIndex('idx_event_logs_factory_time', 'event_logs', `${quoteIdentifier('factory_id')}, ${quoteIdentifier('occurred_at')} DESC, ${quoteIdentifier('id')} DESC`);
+    await createIndex('idx_event_logs_collector_event', 'event_logs', quoteIdentifier('collector_event_id'), { unique: true });
     await createIndex('idx_metrics_factory_time', 'metric_snapshots', `${quoteIdentifier('factory_id')}, ${quoteIdentifier('snapshot_time')} DESC, ${quoteIdentifier('id')} DESC`);
     await createIndex('idx_factory_settings_key', 'factory_settings', `${quoteIdentifier('factory_id')}, ${quoteIdentifier('key')}`);
     await createIndex('idx_lines_workshop', 'lines', `${quoteIdentifier('workshop_id')}, ${quoteIdentifier('sort_order')}`);
@@ -2096,10 +2159,10 @@ async function initTables() {
     await createIndex('idx_metric_snapshots_time', 'metric_snapshots', `${quoteIdentifier('snapshot_time')} DESC, ${quoteIdentifier('id')} DESC`);
 }
 
-async function createIndex(indexName, table, columnsSql) {
+async function createIndex(indexName, table, columnsSql, options = {}) {
     const dialect = dialectName();
     if (dialect === 'mysql') {
-        const [rows] = await pool.query(
+        const [rows] = await queryMysql(
             `SELECT COUNT(*) AS cnt FROM information_schema.statistics WHERE table_schema = ? AND table_name = ? AND index_name = ?`,
             [activeConfig.database, table, indexName]
         );
@@ -2116,7 +2179,8 @@ async function createIndex(indexName, table, columnsSql) {
         const row = sqliteDb.prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?").get(indexName);
         if (row) return;
     }
-    await rawQuery(`CREATE INDEX ${quoteIdentifier(indexName)} ON ${tableName(table)} (${columnsSql})`);
+    const filter = options.unique && dialect === 'sqlserver' ? ` WHERE ${columnsSql} IS NOT NULL` : '';
+    await rawQuery(`CREATE ${options.unique ? 'UNIQUE ' : ''}INDEX ${quoteIdentifier(indexName)} ON ${tableName(table)} (${columnsSql})${filter}`);
 }
 
 async function seedDefaults() {

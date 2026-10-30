@@ -4,7 +4,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { createRunDirectory } = require('../backend/scripts/integration-test-utils.cjs');
-const { stopOwnedSmokeProcess, createSmokeProgramData } = require('../desktop/scripts/smoke-sandbox.cjs');
+const { stopOwnedSmokeProcess, createSmokeEnvironment } = require('../desktop/scripts/smoke-sandbox.cjs');
+const { snapshotTree, verifyTree } = require('./package-resource-integrity.cjs');
 const mysql = require('../backend/node_modules/mysql2/promise');
 const Database = require('../backend/node_modules/better-sqlite3');
 
@@ -42,6 +43,7 @@ async function main() {
     assert.ok(fs.existsSync(executable), `Missing packaged executable: ${executable}`);
     assert.ok(fs.existsSync(path.join(resources, 'mysql', 'bin', 'mysqld.exe')), 'The MySQL runtime must be packaged.');
     const directory = createRunDirectory('packaged-mysql-smoke');
+    const resourcesBefore = await snapshotTree(resources);
     const dataDir = path.join(directory, 'data');
     const configPath = path.join(dataDir, 'database-config.json');
     const template = new Database(path.join(resources, 'templates', 'factory-template.db'), { readonly: true, fileMustExist: true });
@@ -51,12 +53,7 @@ async function main() {
         for (const table of configurationTables) expectedCounts[table] = template.prepare(`SELECT COUNT(*) AS n FROM \`${table}\``).get().n;
     } finally { template.close(); }
 
-    const env = { ...process.env };
-    for (const key of Object.keys(env)) {
-        if (/^(MYSQL_|DESKTOP_MYSQL_|DB_|SQLITE_|APP_DATA_DIR$|APP_USER_DATA_DIR$|UPLOADS_DIR$|DESKTOP_SMOKE_|NODE_OPTIONS$)/i.test(key)) delete env[key];
-    }
-    Object.assign(env, {
-        ...createSmokeProgramData(directory),
+    const env = createSmokeEnvironment(directory, {
         APP_USER_DATA_DIR: directory,
         APP_DATA_DIR: dataDir,
         UPLOADS_DIR: path.join(directory, 'uploads'),
@@ -161,7 +158,8 @@ async function main() {
             if (!exited) await stopOwnedSmokeProcess(child);
         }
     }
-    const report = { success: true, executable, userDataDirectory: directory, programData: env.ProgramData, launches };
+    const resourceIntegrity = await verifyTree(resources, resourcesBefore);
+    const report = { success: true, executable, userDataDirectory: directory, programData: env.ProgramData, resourceIntegrity, launches };
     fs.writeFileSync(path.join(directory, 'smoke-result.json'), JSON.stringify(report, null, 2));
     console.log(JSON.stringify(report, null, 2));
 }

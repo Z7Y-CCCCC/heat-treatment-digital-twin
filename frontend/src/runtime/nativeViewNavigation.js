@@ -24,7 +24,7 @@ export function createNativeViewNavigator(send,timeoutMs=10000) {
     },
     accept(context) {
       if(!pending || context?.sceneReady===false || context?.viewId!==pending.target.viewId) return
-      if(['deviceId','lineId','workshopId'].some(key=>pending.target[key]!==undefined && String(context?.[key] || '')!==String(pending.target[key] || '')))return
+      if(['factoryId','deviceId','lineId','workshopId'].some(key=>pending.target[key]!==undefined && String(context?.[key] || '')!==String(pending.target[key] || '')))return
       pending.context=context
       if(pending.delivered) finish()
     },

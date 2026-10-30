@@ -58,6 +58,8 @@ const DEFAULT_VIEW_DEFINITIONS = [
   ...MAP_SURFACE_VIEWS.map(mapSurfaceViewDefinition)
 ]
 
+import { normalizeViewTooltipMetadata } from '../../../shared/deviceTooltip.mjs'
+
 function normalizeDashboardView(source = {}, index = 0) {
   const fallback = DEFAULT_VIEW_DEFINITIONS[index] || DEFAULT_VIEW_DEFINITIONS[0]
   const camera = objectValue(source.camera, {})
@@ -91,7 +93,7 @@ function normalizeDashboardView(source = {}, index = 0) {
       hide: stringArray(componentState.hide),
       hideNonTargetDevices: !!componentState.hideNonTargetDevices
     },
-    metadata: deepClone(objectValue(source.metadata, {}))
+    metadata: normalizeViewTooltipMetadata(deepClone(objectValue(source.metadata, {})))
   }
 }
 

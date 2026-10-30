@@ -17,4 +17,10 @@ async function writeReportFile(filename, contents, io = fs) {
         }
     } finally { await io.unlink(temporary).catch(failure => { if (failure.code !== 'ENOENT') throw failure; }); }
 }
-module.exports = { writeReportFile };
+// JSON is the authoritative verdict. Publish it last so failure while writing
+// the human-readable companion cannot leave a newly published "passed" verdict.
+async function writeReportPair(jsonFilename, jsonContents, markdownFilename, markdownContents, io = fs) {
+    await writeReportFile(markdownFilename, markdownContents, io);
+    await writeReportFile(jsonFilename, jsonContents, io);
+}
+module.exports = { writeReportFile, writeReportPair };

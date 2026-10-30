@@ -913,6 +913,7 @@ function nativeAdminHostExecutable() {
 }
 
 function launchNativeAdminHost(showAdmin) {
+    if (isQuitting) return;
     const executable = nativeAdminHostExecutable();
     const nativeRunning = nativeProcess
         && nativeProcess.exitCode === null
@@ -1118,22 +1119,30 @@ async function startNativeClient(origin, writable, startupProgressCallback = nul
     nativeProcess = child;
     child.stdout?.pipe(nativeLogStream, { end: false });
     child.stderr?.pipe(nativeErrorLogStream, { end: false });
-    child.once('exit', code => {
+    child.once('exit', (code, signal) => {
         const wasCurrent = nativeProcess === child;
         if (wasCurrent) nativeProcess = null;
         if (wasCurrent) nativeHostReady = false;
         if (wasCurrent) closeNativeLogStreams();
         updateTrayMenu();
-        if (!isQuitting && wasCurrent) {
-            if (code !== 0 && applicationReadyForInteraction) {
-                const error = new Error(`Unity 原生大屏异常退出（代码 ${code}）`);
-                logDesktopError('native-client-exit', error);
+        if (!isQuitting && wasCurrent && applicationReadyForInteraction) {
+            const error = code !== 0
+                ? new Error(`Unity 原生大屏异常退出（代码 ${code ?? signal ?? '未知'}）`)
+                : null;
+            if (error) logDesktopError('native-client-exit', error);
+            // Unity owns the dashboard. Losing it must close the client, not
+            // silently promote the hidden settings window into a standalone app.
+            // Start shutdown before the modal error box: before-quit hides any
+            // existing admin window and blocks late tray/pipe fallback requests.
+            // Controlled restarts clear nativeProcess first and never enter here;
+            // startup failures still use the actionable startup error window.
+            app.quit();
+            if (error) {
                 dialog.showErrorBox(
                     APP_NAME,
                     `${error.message}。\n错误日志：${path.join(writable.logsDir, 'native-client-error.log')}`
                 );
             }
-            if (applicationReadyForInteraction) showAdminWindow();
         }
     });
     try {
@@ -1169,7 +1178,7 @@ function stopNativeClient() {
 }
 
 async function restartNativeClient() {
-    if (!applicationOrigin || !writablePaths) return;
+    if (isQuitting || !applicationOrigin || !writablePaths) return;
     try {
         await stopNativeClient();
         await startNativeClient(applicationOrigin, writablePaths);
@@ -1186,6 +1195,11 @@ async function startBackend(port, writable) {
         throw new Error('旧数据服务仍在运行，不能启动重复进程');
     }
     const backendEnvironment = { ...process.env };
+    if (app.isPackaged) {
+        for (const key of Object.keys(backendEnvironment)) {
+            if (/^(APP_DATA_DIR|UPLOADS_DIR|DB_BACKUP_DIR|DB_RECOVERY_DIR|SITE_BACKUP_DIR|SITE_IMPORT_DIR|SITE_BACKUP_MIRROR_DIR|DATA_SOURCE_BACKUP_DIR|LICENSE_FILE)$/i.test(key)) delete backendEnvironment[key];
+        }
+    }
     if (writable.managedMysql) {
         for (const key of Object.keys(backendEnvironment)) {
             if (/^(MYSQL_(HOST|PORT|USER|PASSWORD|DATABASE)|DB_(TYPE|HOST|PORT|USER|PASSWORD|NAME)|SQLITE_FILE)$/i.test(key)) {
@@ -1224,6 +1238,15 @@ async function startBackend(port, writable) {
             PORT: String(port),
             APP_DATA_DIR: writable.dataDir,
             UPLOADS_DIR: writable.uploadsDir,
+            ...(app.isPackaged ? {
+                DB_BACKUP_DIR: path.join(writable.dataDir, 'backups'),
+                DB_RECOVERY_DIR: path.join(writable.dataDir, 'recovery'),
+                SITE_BACKUP_DIR: path.join(writable.dataDir, 'site-backups'),
+                SITE_IMPORT_DIR: path.join(writable.dataDir, 'site-imports'),
+                SITE_BACKUP_MIRROR_DIR: '',
+                DATA_SOURCE_BACKUP_DIR: path.join(writable.dataDir, 'data-source-backups'),
+                LICENSE_FILE: path.join(writable.dataDir, 'license.json')
+            } : {}),
             FRONTEND_DIST: frontendDir,
             ENABLE_CORS: 'false',
             REMOTE_ACCESS_ENABLED: 'false',
@@ -1338,6 +1361,7 @@ function stopBackend() {
 }
 
 function showAdminWindow() {
+    if (isQuitting) return;
     if (!mainWindow || mainWindow.isDestroyed()) {
         if (applicationOrigin) createMainWindow(applicationOrigin, true);
         return;
@@ -1467,11 +1491,13 @@ function createMainWindow(origin, showInitially = false) {
             if (new URL(targetUrl).origin !== new URL(origin).origin) event.preventDefault();
         } catch (error) { event.preventDefault(); }
     });
-    mainWindow.webContents.session.on('will-download', async (event, item, webContents) => {
-        if (webContents !== mainWindow?.webContents) return;
+    const downloadWindow = mainWindow;
+    const downloadSession = downloadWindow.webContents.session;
+    const onDownload = async (event, item, webContents) => {
+        if (downloadWindow.isDestroyed() || webContents !== downloadWindow.webContents) return;
         item.pause();
         try {
-            const result = await dialog.showSaveDialog(mainWindow, {
+            const result = await dialog.showSaveDialog(downloadWindow, {
                 title: '保存备份文件',
                 defaultPath: item.getFilename(),
                 filters: [
@@ -1479,7 +1505,7 @@ function createMainWindow(origin, showInitially = false) {
                     { name: '所有文件', extensions: ['*'] }
                 ]
             });
-            if (result.canceled || !result.filePath) {
+            if (downloadWindow.isDestroyed() || result.canceled || !result.filePath) {
                 item.cancel();
                 return;
             }
@@ -1489,7 +1515,8 @@ function createMainWindow(origin, showInitially = false) {
             item.cancel();
             dialog.showErrorBox(APP_NAME, `备份文件保存失败：${error.message}`);
         }
-    });
+    };
+    downloadSession.on('will-download', onDownload);
     mainWindow.once('ready-to-show', () => {
         if (showInitially) showAdminWindow();
     });
@@ -1514,7 +1541,10 @@ function createMainWindow(origin, showInitially = false) {
             mainWindowClosePromptActive = false;
         }
     });
-    mainWindow.on('closed', () => { mainWindow = null; });
+    mainWindow.on('closed', () => {
+        downloadSession.off('will-download', onDownload);
+        if (mainWindow === downloadWindow) mainWindow = null;
+    });
     mainWindow.loadURL(adminUrl);
 }
 

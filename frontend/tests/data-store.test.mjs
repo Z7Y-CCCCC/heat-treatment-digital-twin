@@ -52,6 +52,21 @@ test('reconnect requests authoritative resync once and stale sockets cannot trig
     assert.equal(messages.length, 1)
 })
 
+test('an unfinished websocket upgrade times out and reconnects without keeping stale callbacks', t => {
+    t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] })
+    const { store, sockets } = fixture(t)
+    store.connect()
+    t.mock.timers.tick(15000)
+    assert.equal(sockets[0].readyState, 3)
+    assert.equal(sockets[0].onclose, null)
+    t.mock.timers.tick(5000)
+    assert.equal(sockets.length, 2)
+    sockets[1].open()
+    t.mock.timers.tick(15000)
+    assert.equal(sockets.length, 2)
+    assert.equal(store.wsConnected.value, true)
+})
+
 test('new device frames replace selected data and offline devices leave live counts', async t => {
     const { store, sockets } = fixture(t)
     store.registerDevice({ id: 'A', name: 'A' })
@@ -65,6 +80,47 @@ test('new device frames replace selected data and offline devices leave live cou
     assert.equal(store.metrics.online_devices, 0)
     assert.equal(store.metrics.running_devices, 0)
     assert.equal(store.metrics.alarm_devices, 0)
+    await settle()
+})
+
+test('authoritative device reload removes retired devices and rejects their late frames', async t => {
+    const { store, sockets } = fixture(t)
+    store.connect()
+    sockets[0].emit('device_data', { furnace_id: 'old', status: { running: true } })
+    store.selectDevice('old')
+    store.syncDevices([{ id: 'current', name: 'Current device' }])
+    sockets[0].emit('device_data', { furnace_id: 'old', status: { running: true } })
+    sockets[0].emit('plc_status', { devices: [{ deviceId: 'old', status: 'connected' }] })
+    assert.deepEqual(Object.keys(store.deviceStatusMap), ['current'])
+    assert.equal(store.latestDeviceDataMap.has('old'), false)
+    assert.equal('old' in store.deviceDataMap, false)
+    assert.equal(store.selectedDeviceId.value, null)
+    assert.deepEqual(Object.keys(store.selectedDeviceData), [])
+    assert.equal(store.metrics.total_devices, 1)
+    await settle()
+})
+
+test('repeated configuration synchronization preserves current data and bounds device state', async t => {
+    t.mock.timers.enable({ apis: ['setTimeout', 'setInterval', 'Date'], now: 1700000000000 })
+    const { store, sockets } = fixture(t)
+    store.connect()
+    const updates = []
+    store.setDeviceDataHandler(data => updates.push(data))
+    for (let index = 0; index < 200; index++) {
+        const id = `device-${index}`
+        store.syncDevices([{ id, name: id }])
+        sockets[0].emit('device_data', { furnace_id: id, furnace_name: id, analog: { actual_temp: 612 }, status: { running: true } })
+    }
+    store.syncDevices([{ id: 'device-199', name: 'Renamed' }])
+    assert.equal(store.deviceStatusMap['device-199'].running, true)
+    assert.equal(store.deviceStatusMap['device-199'].name, 'Renamed')
+    assert.equal(store.latestDeviceDataMap.size, 1)
+    assert.equal(Object.keys(store.deviceDataMap).length, 1)
+    store.syncDevices([])
+    const lastUpdateCount = updates.length
+    t.mock.timers.tick(20000)
+    assert.equal(updates.length, lastUpdateCount)
+    assert.equal(store.metrics.total_devices, 0)
     await settle()
 })
 

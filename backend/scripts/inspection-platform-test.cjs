@@ -98,7 +98,10 @@ async function socket(origin, role, messages) {
     const models = await requestJson(`${origin}/api/models`);
     check('model GET reloads the same saved authoring', () => assert.deepEqual(JSON.parse(models.find(model => model.id === modelId).metadata).inspection, saved));
     const listed = await requestJson(`${origin}/api/models/inspection-presets`);
-    check('preset endpoint supplies all four editable equipment examples', () => assert.equal(listed.presets.length, 4));
+    check('preset endpoint supplies existing equipment and all five pit furnace presets', () => {
+        assert.deepEqual(listed.presets.map(preset => preset.modelId).sort(), presets.map(preset => preset.modelId).sort());
+        assert.equal(listed.presets.filter(preset => /^pit_furnace_[1-5]_v1$/.test(preset.modelId)).length, 5);
+    });
     const draft = structuredClone(saved); draft.parts[0].explode_offset = [2, 3, 4];
     const preview = { action: 'inspection_preview', focus: { mode: 'device', deviceId: 'fixture-device' }, inspectionConfig: draft };
     const denied = await fetch(`${origin}/api/native-preview`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(preview) });

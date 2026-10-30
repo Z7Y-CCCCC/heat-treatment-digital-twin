@@ -227,12 +227,19 @@ export class InspectionPreview {
         })
         for (const part of this.parts) {
             const assemblyBounds = new THREE.Box3()
+            const assemblyWorldBounds = new THREE.Box3()
             for (const target of part.targets) target.traverse(mesh => {
                 if (!mesh.isMesh || !mesh.geometry) return
                 mesh.geometry.computeBoundingBox()
                 assemblyBounds.union(mesh.geometry.boundingBox.clone().applyMatrix4(inverseRoot.clone().multiply(mesh.matrixWorld)))
+                assemblyWorldBounds.union(mesh.geometry.boundingBox.clone().applyMatrix4(mesh.matrixWorld))
             })
-            const assemblyPivot = assemblyBounds.getCenter(new THREE.Vector3())
+            // Native legacy-parent inspection used the union of renderer world
+            // AABBs as its pivot. Preserve that authored behavior; model mode
+            // intentionally uses an instance-independent model-local pivot.
+            const assemblyPivot = this.config.offset_space === 'parent'
+                ? assemblyWorldBounds.getCenter(new THREE.Vector3()).applyMatrix4(inverseRoot)
+                : assemblyBounds.getCenter(new THREE.Vector3())
             for (const target of part.targets) {
                 const parent = target.parent
                 if (!parent) continue
@@ -286,9 +293,19 @@ export class InspectionPreview {
                 entry.parent.updateWorldMatrix(true, false)
                 const rootToParent = entry.parent.matrixWorld.clone().invert().multiply(rootWorld)
                 const pivot = this.config.offset_space === 'model' ? entry.pivot : entry.pivot.clone().applyMatrix4(rootToParent)
-                const delta = new THREE.Matrix4().makeTranslation(...vector(entry.part.explode_offset).multiplyScalar(amount).toArray())
+                const offset = vector(entry.part.explode_offset).multiplyScalar(amount)
+                const angles = entry.part.explode_rotation.map(value => THREE.MathUtils.degToRad(value) * amount)
+                const parentSpace = this.config.offset_space === 'parent'
+                // Legacy parent coordinates were authored directly for Unity.
+                // Mirror X back into Three's glTF basis and conjugate Unity's
+                // ZXY Quaternion.Euler rotation (Ry * Rx * Rz), not Three's XYZ.
+                if (parentSpace) offset.x = -offset.x
+                const rotation = parentSpace
+                    ? new THREE.Euler(angles[0], -angles[1], -angles[2], 'YXZ')
+                    : new THREE.Euler(...angles, 'XYZ')
+                const delta = new THREE.Matrix4().makeTranslation(...offset.toArray())
                 delta.multiply(new THREE.Matrix4().makeTranslation(...pivot.toArray()))
-                delta.multiply(new THREE.Matrix4().makeRotationFromEuler(new THREE.Euler(...entry.part.explode_rotation.map(value => THREE.MathUtils.degToRad(value) * amount), 'XYZ')))
+                delta.multiply(new THREE.Matrix4().makeRotationFromEuler(rotation))
                 delta.multiply(new THREE.Matrix4().makeTranslation(...pivot.clone().negate().toArray()))
                 if (this.config.offset_space === 'model') entry.wrapper.matrix.copy(rootToParent).multiply(delta).multiply(rootToParent.clone().invert())
                 else entry.wrapper.matrix.copy(delta)

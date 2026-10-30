@@ -116,6 +116,8 @@ async function main() {
         assert.match(rejected.body.error || '', /写入/);
 
         const testDocument = clone(originalDocument);
+        testDocument.scene.views.find(view => view.mode === 'workshop').metadata.deviceTooltip = { enabled: false, title: '车间提示', fields: ['id'], pointKeys: [] };
+        testDocument.scene.views.find(view => view.mode === 'line').metadata.deviceTooltip = { enabled: true, title: '产线提示', fields: ['name', 'model'], pointKeys: ['analog.actual_temp'], showHint: false };
         testDocument.widgets.push({
             id: testWidgetId, type: 'text', title: '发布隔离自动测试', visible: true, locked: false,
             zIndex: 999, runtimeTarget: 'overlay', groupId: '',
@@ -152,6 +154,11 @@ async function main() {
         assert.equal(afterPublish.response.ok, true, afterPublish.body.error);
         assert.equal(afterPublish.body.platform.widgets.some(widget => widget.id === testWidgetId), true, '发布后运行时没有读取新快照');
         assert.equal(afterPublish.body.platform.currentRelease.id, testReleaseId);
+        const publishedViews = afterPublish.body.platform.document.scene.views;
+        assert.equal(publishedViews.find(view => view.mode === 'workshop').metadata.deviceTooltip.enabled, false);
+        assert.deepEqual(publishedViews.find(view => view.mode === 'line').metadata.deviceTooltip.fields, ['name', 'model']);
+        assert.deepEqual(publishedViews.find(view => view.mode === 'line').metadata.deviceTooltip.pointKeys, ['analog.actual_temp']);
+        assert.equal(publishedViews.find(view => view.mode === 'line').metadata.deviceTooltip.showHint, false);
 
         const rolledBack = await api(`/api/platform/releases/${encodeURIComponent(originalReleaseId)}/activate`, { method: 'POST', body: '{}' });
         assert.equal(rolledBack.response.ok, true, rolledBack.body.error);

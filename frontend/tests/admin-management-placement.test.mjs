@@ -4,6 +4,21 @@ import { readFile } from 'node:fs/promises'
 
 const source = async path => readFile(new URL(path, import.meta.url), 'utf8')
 
+test('manual layout keeps offset fields reachable in short and narrow desktop windows', async () => {
+  const panel = await source('../src/views/AdminPanel.vue')
+  assert.match(panel, /\.manual-disassembly-tab :deep\(\.part-sidebar\)\s*\{[^}]*overflow-y: auto/)
+  assert.match(panel, /@media \(max-height: 800px\)/)
+  assert.match(panel, /@media \(max-height: 600px\), \(max-width: 1050px\)\s*\{[\s\S]*?\.admin-content\s*\{ overflow-y: auto; \}/)
+})
+
+test('canvas pointer input focuses the manual editor before handling mesh or gizmo drags', async () => {
+  const editor = await source('../src/views/admin/components/ManualDisassemblyLayout.vue')
+  const pointerStart = editor.slice(editor.indexOf('function capturePointerDown(event)'), editor.indexOf('function pointerMove(event)'))
+  assert.match(pointerStart, /closest\('\.manual-layout'\)\?\.focus\(\{ preventScroll: true \}\)/)
+  assert.ok(pointerStart.indexOf('?.focus(') < pointerStart.indexOf('session.transform.axis'))
+  assert.match(editor, /event\.key === 'Escape'[\s\S]*?endDrag\(true\)/)
+})
+
 test('factory distribution preview is local and cannot route to the heavy group dashboard', async () => {
   const location = await source('../src/views/admin/components/FactoryDirectorySettings.vue')
   const preview = await source('../src/views/admin/components/FactoryDistributionPreview.vue')
@@ -58,7 +73,7 @@ test('factory hierarchy is visible in asset editors and model levels cannot be a
   const panel = await source('../src/views/AdminPanel.vue')
   const hierarchy = await source('../src/views/admin/components/AssetHierarchyBar.vue')
   assert.match(panel, /<AssetHierarchyBar[\s\S]*?:model-library="activeTab === 'models'"/)
-  assert.match(panel, /assetHierarchyTabs = new Set\(\['platform', 'composer', 'workshops', 'lines', 'devices', 'mobile-devices', 'points', 'point-monitor', 'models', 'settings'\]\)/)
+  assert.match(panel, /assetHierarchyTabs = new Set\(\['platform', 'composer', 'workshops', 'lines', 'devices', 'mobile-devices', 'disassembly-layout', 'points', 'point-monitor', 'models', 'settings'\]\)/)
   assert.match(hierarchy, /工厂 → 车间 → 产线 → 设备/)
   assert.doesNotMatch(hierarchy, /管理工厂<\/button>/)
   assert.match(hierarchy, /accepted = await props\.requestSwitch/)

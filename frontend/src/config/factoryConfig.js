@@ -4,6 +4,8 @@ import { adminFetch as fetch } from '../runtime/adminSession.js'
 
 // 全局响应式配置状态
 const factoryConfig = reactive({
+    factoryId: '',
+    factories: [],
     settings: {},
     workshops: [],
     lines: [],
@@ -15,6 +17,8 @@ const factoryConfig = reactive({
 
 const loading = ref(false)
 const error = ref(null)
+let configRequestId = 0
+let configRequest = null
 
 async function readApiJson(resp, fallbackMessage = '请求失败', preserveFailureDetails = false) {
     const data = await resp.json().catch(() => ({}))
@@ -32,119 +36,57 @@ function pathId(id) {
 /**
  * 从后端拉取完整工厂配置
  */
-async function loadConfig() {
+async function loadConfig(factoryId = '') {
+    const requestId = ++configRequestId
+    configRequest?.abort()
+    const controller = new AbortController()
+    configRequest = controller
+    const timeout = setTimeout(() => controller.abort(), 10000)
     loading.value = true
     error.value = null
     try {
-        const resp = await fetch(`${API_BASE}/config`)
+        const resp = await fetch(`${API_BASE}/config`, { signal: controller.signal, cache: 'no-store',
+            ...(factoryId ? { headers: { 'X-Factory-ID': factoryId } } : {}) })
         if (!resp.ok) throw new Error(`配置加载失败: ${resp.status}`)
         const data = await resp.json()
+        if (requestId !== configRequestId) return false
+        if (!data || !Array.isArray(data.workshops) || (data.models != null && !Array.isArray(data.models))) {
+            throw new Error('配置格式无效：车间或模型列表缺失')
+        }
+        const lines = data.workshops.flatMap(workshop => {
+            if (!workshop || (workshop.lines != null && !Array.isArray(workshop.lines))) throw new Error('配置格式无效：产线列表无效')
+            return workshop.lines || []
+        })
         
+        factoryConfig.factoryId = data.factoryId || ''
+        factoryConfig.factories = data.factories || []
         factoryConfig.settings = data.settings || {}
         factoryConfig.workshops = data.workshops || []
         
         // 为了兼容性，我们可以从 workshops 拍平 lines，或者直接取 data.workshops 下挂载的 lines。
         // 由于 config.js 返回的是 workshops -> lines，我们把它拍平赋给 factoryConfig.lines 方便原有逻辑使用
-        factoryConfig.lines = factoryConfig.workshops.flatMap(ws => ws.lines)
+        factoryConfig.lines = lines
         factoryConfig.models = data.models || []
         factoryConfig.templatePacks = data.templatePacks || []
         factoryConfig.platform = data.platform || {}
         factoryConfig.loaded = true
         
         console.log(`✅ 工厂配置加载完成: ${factoryConfig.workshops.length} 个车间, ${factoryConfig.lines.length} 条产线`)
+        return true
     } catch (e) {
+        if (requestId !== configRequestId) return false
         error.value = e.message
         console.error('❌ 加载工厂配置失败:', e)
-        // 回退到默认配置
-        useFallbackConfig()
+        // A transient outage must retain the last valid scene. On first load the
+        // empty state remains visible; configuration failures never invent devices.
+        return false
     } finally {
-        loading.value = false
-    }
-}
-
-/**
- * 当后端不可用时的回退配置
- */
-function useFallbackConfig() {
-    factoryConfig.settings = {
-        factory_name: '智能热处理数字孪生控制中心',
-        data_mode: 'integrated_plc'
-    }
-    
-    const lineNames = ['A 产线', 'B 产线', 'C 产线', 'D 产线']
-    const fallbackLines = lineNames.map((name, li) => {
-        const lineId = `line_${String.fromCharCode(97 + li)}`
-        const devices = []
-        for (let di = 0; di < 5; di++) {
-            const globalIdx = li * 5 + di
-            devices.push({
-                id: `Furnace_${String(globalIdx + 1).padStart(2, '0')}`,
-                name: `${globalIdx + 1}# 多用炉`,
-                line_id: lineId,
-                model_type: 'builtin_furnace',
-                model_file: null,
-                pos_x: (di - 2) * 14,
-                pos_y: 0,
-                pos_z: 0,
-                rotation_y: 0,
-                scale: 1.0,
-                coordinate_space: 'line_local',
-                sort_order: di,
-                dataPoints: []
-            })
+        clearTimeout(timeout)
+        if (requestId === configRequestId) {
+            loading.value = false
+            configRequest = null
         }
-        return {
-            id: lineId,
-            name,
-            workshop_id: 'ws_1',
-            sort_order: li,
-            layout: {
-                version: 2,
-                coordinateSpace: 'workshop_local',
-                transform: { x: 0, y: 0, z: 24 - li * 16, rotationY: 0 },
-                flowDirection: 'right',
-                lanes: [{ id: 'lane_1', name: '设备线 1', type: 'device_lane', offsetZ: 0, length: 60, sort_order: 0 }],
-                rails: []
-            },
-            devices
-        }
-    })
-    
-    factoryConfig.workshops = [{
-        id: 'ws_1',
-        name: '默认车间 1',
-        sort_order: 0,
-        layout: {
-            version: 2,
-            coordinateSpace: 'factory_world',
-            transform: { x: 0, y: 0, z: -24, rotationY: 0 },
-            size: { width: 100, depth: 100, height: 8 },
-            boundary: { enabled: true }
-        },
-        lines: fallbackLines
-    }]
-    factoryConfig.lines = fallbackLines
-    
-    factoryConfig.models = []
-    factoryConfig.templatePacks = []
-    factoryConfig.platform = {
-        activeProject: { id: 'project_default', name: '离线演示项目' },
-        activeScene: {
-            id: 'scene_factory_overview',
-            name: '工厂总览',
-            camera: { mode: 'auto', staleMs: 6000 },
-            theme: { preset: 'industrial_twin' }
-        },
-        widgets: [
-            { id: 'widget_navigation', widget_type: 'navigation', title: '层级导航', visible: 1 },
-            { id: 'widget_metrics', widget_type: 'metrics', title: '生产指标', visible: 1, config: { compact: true } },
-            { id: 'widget_trend', widget_type: 'trend', title: '历史趋势', visible: 1, config: { metric: 'avg_temp' } },
-            { id: 'widget_alarms', widget_type: 'alarm_list', title: '报警履历', visible: 1, config: { limit: 5 } },
-            { id: 'widget_marquee', widget_type: 'marquee', title: '实时日志', visible: 1, config: { speed: 30, limit: 20, eventWindowHours: 24 } }
-        ]
     }
-    factoryConfig.loaded = true
-    console.warn('⚠️ 使用回退配置（后端不可用）')
 }
 
 /**
@@ -202,6 +144,8 @@ export const adminApi = {
         return (await fetch(url)).json() 
     },
     async getDevice(id) { return readApiJson(await fetch(`${API_BASE}/devices/${pathId(id)}`), '读取设备失败') },
+    async getDeviceInspection(id) { return readApiJson(await fetch(`${API_BASE}/devices/${pathId(id)}/inspection`, { cache: 'no-store' }), '读取设备拆解布局失败', true) },
+    async saveDeviceInspection(id, data) { return readApiJson(await fetch(`${API_BASE}/devices/${pathId(id)}/inspection`, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) }), '保存设备拆解布局失败', true) },
     async createDevice(data) { return readApiJson(await fetch(`${API_BASE}/devices`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) }), '创建设备失败') },
     async updateDevice(id, data) { return readApiJson(await fetch(`${API_BASE}/devices/${pathId(id)}`, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) }), '保存设备失败') },
     async getDeviceDeletionImpact(id) { return readApiJson(await fetch(`${API_BASE}/devices/${pathId(id)}/deletion-impact`), '读取设备关联项失败') },

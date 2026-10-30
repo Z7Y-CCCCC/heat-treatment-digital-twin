@@ -1,0 +1,31 @@
+{
+  "model_id": "pit_furnace_5_v1",
+  "display_name": "井式炉5",
+  "reference": "codex-clipboard-3147396e-26e3-4f06-8b06-908810ca93e3.png",
+  "reference_priority": "Latest verbal correction requires a cabinet-depth furnace; the colored reference defines its front elevation only",
+  "estimated_size_m_blender_xyz": [
+    3.140000104904175,
+    2.062999963760376,
+    5.047999858856201
+  ],
+  "dimensional_accuracy": "visual reconstruction, not dimensioned manufacturing CAD",
+  "depth_is_estimated": true,
+  "partBindings": [],
+  "groups": [
+    "f5_two_column_panel_frame",
+    "f5_opaque_solid_main_body",
+    "f5_suspended_solid_inner_plate",
+    "f5_exposed_upper_spring_and_slide",
+    "f5_panel_fasteners",
+    "f5_insulated_cabinet_shell",
+    "f5_cabinet_support_base"
+  ],
+  "cover_visibility": "The complete cabinet remains visible in both inspection views; the second view is a rear-side inspection, not a cutaway.",
+  "material_source": "C:\\Users\\27323\\OneDrive\\Desktop\\大屏\\backend\\assets\\models\\photo_equipment_models_v6_study.blend",
+  "original_assets_modified": false,
+  "reference_correction": "codex-clipboard-2c8fda05-bb20-44a6-a48f-6d2e85812a06.jpg",
+  "body_interpretation": "Solid enclosed cabinet furnace with insulated side/rear/top/bottom walls and reference-derived front assembly",
+  "latest_user_correction": "Cabinet-depth furnace body, not a freestanding door/panel",
+  "cabinet_depth_m": 1.65,
+  "cabinet_depth_basis": "Estimated proportional depth; no measured side or plan CAD supplied"
+}

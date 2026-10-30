@@ -18,17 +18,41 @@ function transform(root,value) {
   root.scale.set(...value.scale)
 }
 
+export function loadConfiguredGltf(url,{signal,timeoutMs=30000,loaderFactory=manager=>new GLTFLoader(manager)}={}) {
+  const manager=new THREE.LoadingManager()
+  return new Promise((resolve,reject)=>{
+    let settled=false,timer
+    const finish=(error,gltf)=>{
+      if(settled){if(gltf)disposeSceneObject(gltf.scene || gltf.scenes?.[0]);return}
+      settled=true;clearTimeout(timer);signal?.removeEventListener('abort',abort)
+      if(error)reject(error);else resolve(gltf)
+    }
+    const abort=()=>{
+      manager.abort()
+      const error=new Error('模型加载已取消');error.name='AbortError';finish(error)
+    }
+    if(signal?.aborted){abort();return}
+    signal?.addEventListener('abort',abort,{once:true})
+    timer=setTimeout(()=>{manager.abort();finish(new Error('模型加载超时'))},timeoutMs)
+    // A loader/parser can complete after cancellation. Reclaim that detached
+    // scene instead of letting late textures/geometry outlive the page.
+    Promise.resolve().then(()=>loaderFactory(manager).loadAsync(url)).then(gltf=>finish(null,gltf),error=>finish(error))
+  })
+}
+
 // Build off-screen, then swap a complete generation. This prevents refreshes
 // from leaving a half-built factory or late requests reviving deleted devices.
-export async function buildConfiguredFactoryScene(plan,{load=url=>new GLTFLoader().loadAsync(url),cancelled=()=>false}={}) {
+export async function buildConfiguredFactoryScene(plan,{load=loadConfiguredGltf,cancelled=()=>false,signal}={}) {
   const root=new THREE.Group(),workshops=new Map(),lines=new Map(),devices=new Map(),errors=[],templates=new Map()
+  const isCancelled=()=>signal?.aborted || cancelled()
   const getAsset=async url=>{
     if(!url) throw new Error('模型库未配置资产文件')
-    if(!templates.has(url)) templates.set(url,Promise.resolve().then(()=>load(url)).then(gltf=>gltf.scene))
+    if(!templates.has(url)) templates.set(url,Promise.resolve().then(()=>load(url,{signal})).then(gltf=>gltf.scene))
     return clone(await templates.get(url))
   }
   try {
     for(const ws of plan.workshops) {
+      if(isCancelled()) break
       const group=new THREE.Group();group.name=ws.name;transform(group,ws.transform);root.add(group);workshops.set(ws.id,group)
       if(ws.hall) {
         try { const hall=await getAsset(ws.hall.url);hall.scale.multiply(new THREE.Vector3(...ws.hall.scale));group.add(hall) }
@@ -39,7 +63,7 @@ export async function buildConfiguredFactoryScene(plan,{load=url=>new GLTFLoader
       const group=new THREE.Group();group.name=line.name;transform(group,line.transform);workshops.get(line.workshopId)?.add(group);lines.set(line.id,group)
     }
     for(const row of plan.devices) {
-      if(cancelled()) break
+      if(isCancelled()) break
       const group=new THREE.Group();group.name=row.name;group.userData.deviceId=row.id;transform(group,row.transform)
       ;(lines.get(row.lineId)||workshops.get(row.workshopId))?.add(group)
       try { group.add(await getAsset(row.url)) }
@@ -63,7 +87,7 @@ export async function buildConfiguredFactoryScene(plan,{load=url=>new GLTFLoader
     // Disposing the attached clones below also frees the shared template
     // geometries/materials; no global cache survives a configuration revision.
     const dispose=()=>disposeSceneObject(root)
-    if(cancelled()){dispose();return null}
+    if(isCancelled()){dispose();return null}
     return {root,devices,anchors,bounds,errors,hasHall:plan.workshops.some(ws=>!!ws.hall),dispose}
   } catch(error) {disposeSceneObject(root);throw error}
 }

@@ -15,6 +15,8 @@ const hostExecutable = process.env.ADMIN_HOST_TEST_EXECUTABLE || path.join(
     'HeatTreatmentAdminHost.exe'
 );
 const outputDir = path.join(projectDir, 'output', `admin-host-parent-${Date.now()}-${process.pid}`);
+const forceParentExit = process.argv.includes('--force-parent-exit')
+    || process.env.ADMIN_HOST_TEST_FORCE_PARENT_EXIT === 'true';
 
 function waitForSpawn(child) {
     return new Promise((resolve, reject) => {
@@ -56,7 +58,7 @@ async function main() {
     let parent;
     let host;
     try {
-        parent = spawn(process.execPath, ['-e', 'setTimeout(function () {}, 6000)'], {
+        parent = spawn(process.execPath, ['-e', `setTimeout(function () {}, ${forceParentExit ? 60000 : 6000})`], {
             windowsHide: true,
             stdio: 'ignore'
         });
@@ -77,15 +79,21 @@ async function main() {
 
         await new Promise(resolve => setTimeout(resolve, 1000));
         const runningWhileParentAlive = host.exitCode === null && host.signalCode === null;
-        const parentExit = await waitForExit(parent, 15000);
+        const parentExitPromise = waitForExit(parent, 15000);
+        // Kill only the isolated test-owned parent, reproducing Task Manager's
+        // forced Unity termination without touching a user's running dashboard.
+        if (forceParentExit) parent.kill();
+        const parentExit = await parentExitPromise;
         const hostExit = await waitForExit(host, 15000);
         const checks = {
             hostStarted: runningWhileParentAlive,
-            parentExitedCleanly: parentExit.code === 0,
+            parentExitMatchesScenario: forceParentExit
+                ? parentExit.code !== 0 || parentExit.signal !== null
+                : parentExit.code === 0,
             hostExitedAfterParent: hostExit.code === 0
         };
         const failed = Object.entries(checks).filter(([, passed]) => !passed).map(([name]) => name);
-        const result = { success: failed.length === 0, checks, parentExit, hostExit, outputDir };
+        const result = { success: failed.length === 0, forceParentExit, checks, parentExit, hostExit, outputDir };
         console.log(JSON.stringify(result, null, 2));
         if (failed.length) throw new Error(`AdminHost 父进程联动检查失败：${failed.join(', ')}`);
     } finally {

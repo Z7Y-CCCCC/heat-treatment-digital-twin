@@ -20,6 +20,7 @@ namespace HeatTreatment.DigitalTwin.Rendering
         private readonly Vector3[] _vertices;
         private readonly int[] _triangles;
         private readonly int[] _order;
+        private Vector3[] _buildCenters;
         private readonly List<Node> _nodes;
         public int LastTriangleTests { get; private set; }
 
@@ -28,9 +29,11 @@ namespace HeatTreatment.DigitalTwin.Rendering
             _vertices = vertices; _triangles = triangles;
             if (!indexed || triangles.Length <= 64 * 3) return;
             _order = new int[triangles.Length / 3];
-            for (var i = 0; i < _order.Length; i++) _order[i] = i;
+            _buildCenters = new Vector3[_order.Length];
+            for (var i = 0; i < _order.Length; i++) { _order[i] = i; _buildCenters[i] = Center(i); }
             _nodes = new List<Node>(_order.Length / 4);
             Build(0, _order.Length);
+            _buildCenters = null; // Build-only storage must not increase the retained model cache.
         }
 
         private Vector3 Center(int triangle)
@@ -52,7 +55,7 @@ namespace HeatTreatment.DigitalTwin.Rendering
                     var point = _vertices[_triangles[triangle + vertex]];
                     min = Vector3.Min(min, point); max = Vector3.Max(max, point);
                 }
-                var center = Center(_order[i]);
+                var center = _buildCenters[_order[i]];
                 centerMin = Vector3.Min(centerMin, center); centerMax = Vector3.Max(centerMax, center);
             }
             var node = new Node { Min = min, Max = max, Start = start, Count = count };
@@ -60,29 +63,52 @@ namespace HeatTreatment.DigitalTwin.Rendering
             var span = centerMax - centerMin;
             var axis = span.x >= span.y && span.x >= span.z ? 0 : span.y >= span.z ? 1 : 2;
             if (count <= 12 || span[axis] <= 1e-12f) return index;
-            Array.Sort(_order, start, count, Comparer<int>.Create((a, b) => Center(a)[axis].CompareTo(Center(b)[axis])));
             var middle = count / 2;
+            PartitionAt(start, start + count - 1, start + middle, axis);
             node.Count = 0;
             node.Left = Build(start, middle); node.Right = Build(start + middle, count - middle);
             _nodes[index] = node;
             return index;
         }
 
-        public bool Raycast(Vector3 origin, Vector3 direction, out float distance, Func<float, bool> acceptDistance = null)
+        // Median partition, not a full sort at every BVH level. Precomputed
+        // centroids avoid repeatedly loading three vertices per comparison.
+        private void PartitionAt(int left, int right, int median, int axis)
+        {
+            while (left < right)
+            {
+                var pivot = _buildCenters[_order[left + (right - left) / 2]][axis];
+                var i = left; var j = right;
+                while (i <= j)
+                {
+                    while (i <= right && _buildCenters[_order[i]][axis] < pivot) i++;
+                    while (j >= left && _buildCenters[_order[j]][axis] > pivot) j--;
+                    if (i > j) break;
+                    var value = _order[i]; _order[i] = _order[j]; _order[j] = value;
+                    i++; j--;
+                }
+                if (median <= j) right = j;
+                else if (median >= i) left = i;
+                else return;
+            }
+        }
+
+        public bool Raycast(Vector3 origin, Vector3 direction, out float distance, Func<float, bool> acceptDistance = null, float maxDistance = float.PositiveInfinity)
         {
             // UnityEngine.Ray's constructor normalizes its direction. Keep the
             // inverse-transformed direction unnormalized for world distances.
             var localRay = new ParametricRay(origin, direction);
             LastTriangleTests = 0;
-            var nearest = float.PositiveInfinity;
+            var nearest = maxDistance;
             if (_nodes == null)
             {
                 for (var triangle = 0; triangle + 2 < _triangles.Length; triangle += 3)
                     TestTriangle(triangle, localRay, acceptDistance, ref nearest);
             }
             else Visit(0, localRay, acceptDistance, ref nearest);
-            distance = nearest;
-            return !float.IsPositiveInfinity(distance);
+            var hit = nearest < maxDistance;
+            distance = hit ? nearest : float.PositiveInfinity;
+            return hit;
         }
 
         private static bool Intersects(Node node, ParametricRay ray, float nearest, out double entry)

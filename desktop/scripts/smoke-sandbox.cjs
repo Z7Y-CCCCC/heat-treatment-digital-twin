@@ -19,6 +19,23 @@ function createSmokeProgramData(directory) {
         LICENSE_MACHINE_STATE_FILE: path.join(programData, 'HeatTreatmentDigitalTwin', 'machine-identity.json') };
 }
 
+function createSmokeEnvironment(directory, overrides = {}, inherited = process.env) {
+    requireTestPath(directory);
+    const env = { ...inherited };
+    for (const key of Object.keys(env)) {
+        if (/^(MYSQL_|DESKTOP_MYSQL_|DB_|SQLITE_|APP_DATA_DIR$|APP_USER_DATA_DIR$|UPLOADS_DIR$|SITE_BACKUP_|SITE_IMPORT_DIR$|DATA_SOURCE_BACKUP_DIR$|LICENSE_|DESKTOP_SMOKE_|DIGITAL_TWIN_|ADMIN_API_TOKEN$|MCP_API_TOKEN$|NODE_OPTIONS$)/i.test(key)) delete env[key];
+    }
+    const dataDir = path.join(directory, 'data');
+    return { ...env, ...createSmokeProgramData(directory),
+        APP_USER_DATA_DIR: directory, APP_DATA_DIR: dataDir,
+        UPLOADS_DIR: path.join(directory, 'uploads'),
+        DB_BACKUP_DIR: path.join(dataDir, 'backups'), DB_RECOVERY_DIR: path.join(dataDir, 'recovery'),
+        SITE_BACKUP_DIR: path.join(dataDir, 'site-backups'), SITE_IMPORT_DIR: path.join(dataDir, 'site-imports'),
+        SITE_BACKUP_MIRROR_DIR: '', DATA_SOURCE_BACKUP_DIR: path.join(dataDir, 'data-source-backups'),
+        LICENSE_FILE: path.join(dataDir, 'license.json'), LICENSE_ENFORCE: 'false',
+        DISABLE_AUTO_START: 'true', ...overrides };
+}
+
 async function createSmokeSandbox(prefix) {
     const directory = createRunDirectory(prefix);
     const dataDir = path.join(directory, 'data');
@@ -26,8 +43,7 @@ async function createSmokeSandbox(prefix) {
     const filename = await createTestDatabase(path.join(dataDir, 'factory.db'));
     fs.mkdirSync(uploadsDir, { recursive: true });
     const env = {
-        ...process.env,
-        ...createSmokeProgramData(directory),
+        ...createSmokeEnvironment(directory),
         APP_USER_DATA_DIR: directory,
         APP_DATA_DIR: dataDir,
         UPLOADS_DIR: uploadsDir,
@@ -111,4 +127,4 @@ async function authorizeSmokeUnity(origin, child, session) {
     throw new Error('Unity authentication pipe did not become available');
 }
 
-module.exports = { createSmokeSandbox, createSmokeProgramData, stopOwnedSmokeProcess, createSmokeSession, authorizeSmokeUnity };
+module.exports = { createSmokeSandbox, createSmokeProgramData, createSmokeEnvironment, stopOwnedSmokeProcess, createSmokeSession, authorizeSmokeUnity };

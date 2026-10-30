@@ -1,0 +1,35 @@
+{
+  "model_id": "pit_furnace_1_v1",
+  "display_name": "井式炉1",
+  "reference": "codex-clipboard-b823ec57-da7b-4cef-b295-90e2bc5899dd.png",
+  "reference_priority": "latest five original CAD screenshots only",
+  "estimated_size_m_blender_xyz": [
+    5.958000183105469,
+    2.194000244140625,
+    6.772500038146973
+  ],
+  "dimensional_accuracy": "visual reconstruction, not dimensioned manufacturing CAD",
+  "depth_is_estimated": true,
+  "partBindings": [],
+  "groups": [
+    "mobile_chassis",
+    "wheel_00",
+    "wheel_01",
+    "wheel_02",
+    "wheel_03",
+    "transfer_extension",
+    "base_guardrails",
+    "insulated_casing",
+    "external_cover_front",
+    "lifting_lugs",
+    "refractory_lining",
+    "top_lift_drive",
+    "upper_spring_bridge",
+    "suspended_fixture",
+    "fixture_hangers",
+    "gas_and_service_pipework"
+  ],
+  "cover_visibility": "Hide external_cover groups to expose the explicitly modelled chamber and suspended fixture.",
+  "material_source": "C:\\Users\\27323\\OneDrive\\Desktop\\大屏\\backend\\assets\\models\\photo_equipment_models_v6_study.blend",
+  "original_assets_modified": false
+}

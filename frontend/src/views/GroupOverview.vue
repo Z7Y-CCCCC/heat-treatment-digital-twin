@@ -5,6 +5,7 @@ import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { API_BASE } from '../runtime/backendEndpoint.js'
 import { createDashboardDataStore } from '../runtime/DataStore.js'
+import { createJsonPollingScope } from '../runtime/pollingRequests.js'
 import { createNativeViewNavigator } from '../runtime/nativeViewNavigation.js'
 import { openAdminSurface, openCustomerOperations } from '../runtime/nativeAdminNavigation.js'
 import { adminFetch, adminSession, refreshAdminSession, startAdminSessionTracking, stopAdminSessionTracking, changeAdminPassword, listAdminAccounts, addAdminAccount, activateAdminAccount, logoutCurrentAdminAccount } from '../runtime/adminSession.js'
@@ -22,6 +23,7 @@ import { disposeSceneObject } from '../runtime/ConfiguredFactoryScene.js'
 import { groupPortalAppearanceForLevel } from '../runtime/groupPortalAppearance.js'
 
 const route=useRoute(),router=useRouter(),mapHost=ref(null),config=ref(null),error=ref(''),busy=ref(false),ready=ref(false),loadingStage=ref(false),features=ref([])
+const pollingRequests=createJsonPollingScope(adminFetch)
 const nativeLoadingManaged=ref(Boolean(window.__DIGITAL_TWIN_NATIVE_LOADING__)),mapLoadingProgress=ref(7),mapLoadingPhase=ref(0),mapLoadingStep=ref('正在读取工厂与区域资料')
 function reportMapLoading(progress,phase,step){mapLoadingProgress.value=progress;mapLoadingPhase.value=phase;mapLoadingStep.value=step;window.dispatchEvent(new CustomEvent('digital-twin-loading-progress',{detail:{progress,phase,step}}))}
 const appearance=computed(()=>groupPortalAppearanceForLevel(config.value?.settings?.group_portal_config,level.value))
@@ -108,7 +110,7 @@ async function switchAccount(account){if(account.slotId===adminSession.accountSl
 async function signOut(){accountBusy.value=true;accountError.value='';accountNotice.value='';try{await logoutCurrentAdminAccount();accountPasswordMode.value=false;accountAddOpen.value=false;await loadAccountSessions();accountNotice.value=accountSessions.value.length?'当前账户已退出，可从下方切换到其他已登录账户':'当前账户已退出'}catch(error){accountError.value=error.message}finally{accountBusy.value=false}}
 async function changeOwnPassword(){accountBusy.value=true;accountError.value='';try{await changeAdminPassword(accountCurrentPassword.value,accountNewPassword.value);accountCurrentPassword.value='';accountNewPassword.value='';accountPasswordMode.value=false;accountError.value='密码已更新，其他会话已退出'}catch(error){accountError.value=error.message}finally{accountBusy.value=false}}
 const mapConfigSignature=value=>JSON.stringify({sites:factoryDirectorySites(value || {}).map(({id,name,location,runtime})=>({id,name,location,runtime})),appearance:value?.settings?.group_portal_config})
-let renderer,scene,camera,controls,mapRoot,observer,raf,pollTimer,summaryPollTimer,focusFrame=0,disposed=false,dirty=true,geometryGeneration=0,request,down,surfaceChannel,configLoading=false,mapMotionEnabled=true,lastMarkerFrame=0,regionVisuals=new Map(),mapTransition=null,activeProject=null
+let renderer,scene,camera,controls,mapRoot,observer,raf,pollTimer,summaryPollTimer,focusFrame=0,disposed=false,dirty=true,geometryGeneration=0,down,surfaceChannel,configLoading=false,configRefreshPending=false,mapMotionEnabled=true,lastMarkerFrame=0,regionVisuals=new Map(),mapTransition=null,activeProject=null
 const adminSurface=computed(()=>isNativeUnitySurface(route.query.embedded,window.chrome?.webview) && route.query.surface==='admin')
 const sources={china:'/maps/china-provinces.geojson',world:'/maps/world-countries.geojson'},cache={}
 const mapScale=2.7,chinaLongitude=104
@@ -589,39 +591,36 @@ async function buildMap({reframe=true}={}) {
   } catch(e){if(!disposed && generation===geometryGeneration){error.value=e.message;loadingStage.value=false}}
 }
 async function refreshConfig() {
-  if(configLoading || disposed)return
+  if(disposed)return
+  if(configLoading){configRefreshPending=true;return}
   configLoading=true
-  request=new AbortController()
   try {
-    const result=await adminFetch(API_BASE+'/config',{signal:request.signal,cache:'no-store'})
-    if(!result.ok)throw new Error('后台配置暂不可用')
-    const next=await result.json(),changed=mapConfigSignature(next)!==mapConfigSignature(config.value)
+    const next=await pollingRequests.read('config',API_BASE+'/config',{cache:'no-store'}),changed=mapConfigSignature(next)!==mapConfigSignature(config.value)
     if(disposed)return
     config.value=next;configError.value=''
     if(changed && scene)buildMap({reframe:!ready.value})
-  }catch(e){if(!disposed && e.name!=='AbortError')configError.value=e.message}finally{configLoading=false}
+  }catch(e){if(!disposed && e.name!=='AbortError')configError.value=e.message}finally{
+    configLoading=false
+    if(configRefreshPending && !disposed){configRefreshPending=false;void refreshConfig()}
+  }
 }
 async function refreshMapValues(){
   const requestedLevel=level.value
   const requestId=++mapValueRequestId
   try{
-    const response=await adminFetch(`${API_BASE}/data-sources/map-values?level=${encodeURIComponent(requestedLevel)}`,{cache:'no-store'})
-    if(!response.ok)throw new Error('地图数据暂不可用')
-    const result=await response.json()
+    const result=await pollingRequests.read(`map:${requestedLevel}`,`${API_BASE}/data-sources/map-values?level=${encodeURIComponent(requestedLevel)}`,{cache:'no-store'})
     if(disposed || requestId!==mapValueRequestId || requestedLevel!==level.value)return
     mapValues.value=result.values || {};mapValuesLevel.value=requestedLevel
   }catch{if(!disposed && requestId===mapValueRequestId && requestedLevel===level.value){mapValues.value={};mapValuesLevel.value=requestedLevel}}
 }
 async function refreshFactorySummaries(){
   try{
-    const response=await adminFetch(`${API_BASE}/factories/live-summaries`,{cache:'no-store'})
-    if(!response.ok)throw new Error('实时摘要不可用')
-    const result=await response.json()
+    const result=await pollingRequests.read('summaries',`${API_BASE}/factories/live-summaries`,{cache:'no-store'})
     if(!disposed)factorySummaries.value=Object.fromEntries((result.summaries||[]).map(item=>[String(item.factoryId),item]))
   }catch{if(!disposed)factorySummaries.value={}}
 }
 const navigator=createNativeViewNavigator(async target=>{
-  const response=await adminFetch(API_BASE+'/native-preview/navigate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'view',viewId:target.viewId,focus:{mode:'factory'}})})
+  const response=await adminFetch(API_BASE+'/native-preview/navigate',{method:'POST',headers:{'Content-Type':'application/json','X-Factory-ID':target.factoryId},body:JSON.stringify({action:'view',viewId:target.viewId,focus:{mode:'factory'}})})
   if(!response.ok)throw new Error('进入工厂请求失败')
   return response.json()
 })
@@ -633,7 +632,7 @@ async function enterFactory(target) {
     const activate=await adminFetch(`${API_BASE}/factories/${encodeURIComponent(target.id)}/activate`,{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'})
     const activation=await activate.json().catch(()=>({}))
     if(!activate.ok)throw new Error(activation.error || '切换运行工厂失败')
-    await navigator.go({viewId:'factory_overview',deviceId:''})
+    await navigator.go({viewId:'factory_overview',deviceId:'',factoryId:target.id})
     if(disposed)return
     if(adminSurface.value && window.chrome?.webview){requestNativeSceneSurface();await router.replace({path:'/admin',query:{embedded:'unity'}});window.chrome.webview.postMessage({type:'host_action',action:'show_dashboard'})}
     else await router.push({path:'/overlay',query:{...route.query,factoryId:target.id,scene:'1',fromGroup:selected.value || 'unassigned'}})
@@ -697,13 +696,17 @@ onMounted(async()=>{
       }
       raf=requestAnimationFrame(render)
     };render()
-    await refreshConfig();await Promise.all([buildMap(),refreshMapValues(),refreshFactorySummaries()]);pollTimer=setInterval(()=>{void refreshConfig();void refreshMapValues()},15000);summaryPollTimer=setInterval(()=>void refreshFactorySummaries(),5000)
+    await refreshConfig()
+    if(disposed)return
+    await Promise.all([buildMap(),refreshMapValues(),refreshFactorySummaries()])
+    if(disposed)return
+    pollTimer=setInterval(()=>{void refreshConfig();void refreshMapValues()},15000);summaryPollTimer=setInterval(()=>void refreshFactorySummaries(),5000)
     data.setMessageHandler(message=>{if(['configuration_changed','realtime_resync_required'].includes(message.type))return refreshConfig();if(message.type==='dashboard_context_changed')navigator.accept(message.payload)})
     if(typeof BroadcastChannel!=='undefined' && !adminSurface.value){surfaceChannel=new BroadcastChannel(NATIVE_SURFACE_CHANNEL);surfaceChannel.onmessage=event=>{if(event.data?.type==='show_native_scene' && route.query.embedded==='unity')router.replace({path:'/overlay',query:{...route.query,scene:'1'}})}}
     data.connect();window.chrome?.webview?.addEventListener('message',hostMessage);window.chrome?.webview?.postMessage({type:'overlay_ready'});reportRegions()
   }catch(e){error.value=e.message;window.chrome?.webview?.postMessage({type:'overlay_ready'})}
 })
-onUnmounted(()=>{window.removeEventListener('keydown',handleMapEscape,true);stopAdminSessionTracking();disposed=true;mapValueRequestId++;geometryGeneration++;request?.abort();surfaceChannel?.close();clearInterval(pollTimer);clearInterval(summaryPollTimer);cancelAnimationFrame(raf);cancelMapFlight();navigator.dispose();data.dispose();observer?.disconnect();controls?.removeEventListener('start',cancelMapFlight);controls?.dispose();disposeSceneObject(scene);renderer?.dispose();window.chrome?.webview?.removeEventListener('message',hostMessage);window.chrome?.webview?.postMessage({type:'overlay_regions',viewport:{width:innerWidth,height:innerHeight},regions:[]})})
+onUnmounted(()=>{window.removeEventListener('keydown',handleMapEscape,true);stopAdminSessionTracking();disposed=true;mapValueRequestId++;geometryGeneration++;pollingRequests.dispose();surfaceChannel?.close();clearInterval(pollTimer);clearInterval(summaryPollTimer);cancelAnimationFrame(raf);cancelMapFlight();navigator.dispose();data.dispose();observer?.disconnect();controls?.removeEventListener('start',cancelMapFlight);controls?.dispose();disposeSceneObject(scene);renderer?.dispose();window.chrome?.webview?.removeEventListener('message',hostMessage);window.chrome?.webview?.postMessage({type:'overlay_regions',viewport:{width:innerWidth,height:innerHeight},regions:[]})})
 </script>
 
 <template>

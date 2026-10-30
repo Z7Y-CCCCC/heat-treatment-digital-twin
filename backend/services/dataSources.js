@@ -14,6 +14,7 @@ const {
 const { createMysqlDump, resolveMysqlTools } = require('./mysqlBackup');
 const { evaluateVariableExpression } = require('../utils/mathExpression');
 const { parseDataPath, readDataPath, appendDataPath, parseExternalPayload } = require('../utils/externalDataPayload');
+const { BoundedTtlCache } = require('../utils/boundedTtlCache');
 
 const DATA_DIR = process.env.APP_DATA_DIR
     ? path.resolve(process.env.APP_DATA_DIR)
@@ -56,7 +57,7 @@ let backupPromise = null;
 const activeConnectionBackups = new Map();
 let lastBackupRun = null;
 let lastBackupError = null;
-const runtimeCache = new Map();
+const runtimeCache = new BoundedTtlCache();
 const oauthTokenCache = new Map();
 
 function ensureDirectory(directory) {
@@ -1114,18 +1115,18 @@ function cacheKey(binding, factoryId = activeFactoryId()) {
 }
 
 async function readRuntimeBindings(widgets = [], context = {}) {
+    const cacheVersion = runtimeCache.version;
     const targets = widgets
         .filter(widget => widget?.data?.mode === 'database')
         .slice(0, 100)
         .map(widget => ({ widgetId: String(widget.id), binding: normalizeCompositeBinding(widget.data) }));
     const values = {};
-    const now = Date.now();
     const pending = [];
     targets.forEach(target => {
         const key = cacheKey({ binding: target.binding, context }, activeFactoryId(context.factoryId));
         const cached = runtimeCache.get(key);
-        if (cached && cached.expiresAt > now) {
-            values[target.widgetId] = cached.value;
+        if (cached) {
+            values[target.widgetId] = cached;
             return;
         }
         pending.push({ ...target, key, results: new Array(target.binding.datasets.length), error: null });
@@ -1159,10 +1160,7 @@ async function readRuntimeBindings(widgets = [], context = {}) {
             if (target.error) throw target.error;
             const result = composeBindingResult(target.binding, target.results);
             values[target.widgetId] = result;
-            runtimeCache.set(target.key, {
-                value: result,
-                expiresAt: Date.now() + target.binding.refreshMs
-            });
+            runtimeCache.set(target.key, result, Date.now() + target.binding.refreshMs, cacheVersion);
         } catch (error) {
             values[target.widgetId] = { value: null, rows: [], series: [], quality: 'bad', error: error.message, fetchedAt: new Date().toISOString() };
         }
@@ -1175,11 +1173,11 @@ async function readRuntimeBindings(widgets = [], context = {}) {
             const widgetId = String(widget.id);
             const key = cacheKey({ binding: widget.data, context }, activeFactoryId(context.factoryId));
             const cached = runtimeCache.get(key);
-            if (cached && cached.expiresAt > Date.now()) { values[widgetId] = cached.value; continue; }
+            if (cached) { values[widgetId] = cached; continue; }
             try {
                 const result = await readHttpApiBinding(widget.data, context.factoryId);
                 values[widgetId] = result;
-                runtimeCache.set(key, { value: result, expiresAt: Date.now() + finiteInteger(widget.data.refreshMs, 30000, 5000, 3600000) });
+                runtimeCache.set(key, result, Date.now() + finiteInteger(widget.data.refreshMs, 30000, 5000, 3600000), cacheVersion);
             } catch (error) {
                 values[widgetId] = { value: null, rows: [], series: [], quality: 'bad', error: error.message, fetchedAt: new Date().toISOString() };
             }

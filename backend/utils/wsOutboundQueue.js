@@ -42,7 +42,9 @@ class WsOutboundQueue {
             const size = Buffer.byteLength(text);
             if (size > this.options.maxMessageBytes) return this.fail('message size limit', true);
             const kind = message.type === 'realtime_frame' && !message.payload.devices.some(d => hasFault(d.quality))
-                ? 'realtime' : message.type === 'scene_projection' ? 'projection' : 'reliable';
+                ? 'realtime' : message.type === 'scene_projection' ? 'projection'
+                    : message.type === 'inspection_hover_changed' ? 'hover'
+                        : message.type === 'device_hover_changed' ? 'device-hover' : 'reliable';
             const tail = this.queue[this.queue.length - 1];
             let entry = { message, text, size, kind };
             // Reliable entries are barriers: never move a patch across a control/fault event.

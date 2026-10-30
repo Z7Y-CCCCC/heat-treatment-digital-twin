@@ -1,6 +1,8 @@
 const { getDb } = require('../db/database');
 const PlcReader = require('./plcReader');
 const Simulator = require('./simulator');
+const { getAlarmOutbox } = require('./alarmOutbox');
+const { assertNoPendingSiteRecovery } = require('./siteRecoveryIntent');
 
 class DataEngine {
     constructor(wsServer, options = {}) {
@@ -20,17 +22,27 @@ class DataEngine {
             devices: 0
         };
         this.alarmState = new Map();
-        this.alarmWriteQueue = Promise.resolve();
+        this.alarmOutboxProvider = options.alarmOutbox || getAlarmOutbox;
+        this.alarmWritePending = null;
+        this.alarmRetryTimer = null;
+        this.alarmRetryCount = 0;
+        this.alarmStorageStopped = false;
+        this.eventStorageStatus = { status: 'idle', pendingEvents: 0, lastError: null };
         this.deviceSnapshots = new Map();
         this.lastMetricSnapshotAt = 0;
         this.lastMetricSavedAt = 0;
         this.metricSummary = null;
         this.metricSnapshotIntervalMs = 5000;
+        this.metricWritePending = null;
         this.runVersion = 0;
     }
 
     async start() {
+        assertNoPendingSiteRecovery();
         const runVersion = ++this.runVersion;
+        this.alarmStorageStopped = false;
+        clearTimeout(this.alarmRetryTimer);
+        this.alarmRetryTimer = null;
         this._stopSecondaryEngines();
         this._stopSources();
         this.deviceSnapshots.clear();
@@ -42,13 +54,17 @@ class DataEngine {
         const db = await getDb();
         if (runVersion !== this.runVersion) return;
         const activeFactory = this.fixedFactoryId ? null : await db.get('SELECT value FROM settings WHERE `key` = ?', ['active_factory_id']);
-        this.activeFactoryId = this.fixedFactoryId || String(activeFactory?.value || 'factory_default');
+        if (runVersion !== this.runVersion) return;
+        const factoryId = this.fixedFactoryId || String(activeFactory?.value || 'factory_default');
+        this.activeFactoryId = factoryId;
         const rows = await db.all('SELECT * FROM settings');
         if (runVersion !== this.runVersion) return;
         const settings = {};
         rows.forEach(r => { settings[r.key] = r.value; });
-        const factoryRows = await db.all('SELECT `key`, value FROM factory_settings WHERE factory_id = ?', [this.activeFactoryId]);
+        const factoryRows = await db.all('SELECT `key`, value FROM factory_settings WHERE factory_id = ?', [factoryId]);
+        if (runVersion !== this.runVersion) return;
         factoryRows.forEach(row => { settings[row.key] = row.value; });
+        this._drainAlarmEvents().catch(() => {});
 
         const mode = this._normalizeMode(settings.data_mode);
         this.currentMode = mode;
@@ -91,8 +107,9 @@ class DataEngine {
     }
 
     _stopSecondaryEngines() {
-        for (const engine of this.factoryEngines.values()) engine.stop();
+        const stopping = [...this.factoryEngines.values()].map(engine => engine.stop());
         this.factoryEngines.clear();
+        return Promise.allSettled(stopping);
     }
 
     getFactoryStatuses() {
@@ -118,12 +135,16 @@ class DataEngine {
 
     stop() {
         this.runVersion += 1;
-        this._stopSecondaryEngines();
+        this.alarmStorageStopped = true;
+        clearTimeout(this.alarmRetryTimer);
+        this.alarmRetryTimer = null;
+        const secondaryStopping = this._stopSecondaryEngines();
         this._stopSources();
         this.currentMode = null;
         this.plcStatus = { status: 'stopped', message: '采集器已停止', timestamp: Date.now() };
         this.collectorStatus = { ...this.collectorStatus, ...this.plcStatus };
         console.log('[DataEngine] 所有数据源已停止');
+        return Promise.allSettled([secondaryStopping, this.alarmWritePending, this.metricWritePending]);
     }
 
     async restart() {
@@ -139,7 +160,8 @@ class DataEngine {
         return {
             mode: this.currentMode,
             plcStatus: this.plcStatus,
-            collectorStatus: this.collectorStatus
+            collectorStatus: this.collectorStatus,
+            eventStorageStatus: { ...this.eventStorageStatus }
         };
     }
 
@@ -188,13 +210,23 @@ class DataEngine {
         this._recordMetrics(snapshots).catch(e => {
             console.warn('[DataEngine] 指标快照写入失败:', e.message);
         });
-        this._recordAlarmEvents(deviceDataArray).catch(e => {
-            console.warn('[DataEngine] 事件履历写入失败:', e.message);
-        });
+        this._recordAlarmEvents(deviceDataArray).catch(() => {});
         this.wsServer.broadcastDeviceData(deviceDataArray);
     }
 
-    async _recordMetrics(deviceDataArray) {
+    _recordMetrics(deviceDataArray) {
+        // A slow/unavailable database must not create one pending write per
+        // snapshot interval. The next live frame retries after this write ends.
+        if (this.metricWritePending) return Promise.resolve();
+        const pending = this._writeMetrics(deviceDataArray);
+        this.metricWritePending = pending.finally(() => {
+            if (this.metricWritePending === tracked) this.metricWritePending = null;
+        });
+        const tracked = this.metricWritePending;
+        return tracked;
+    }
+
+    async _writeMetrics(deviceDataArray) {
         const runVersion = this.runVersion;
         const now = Date.now();
         if (now - this.lastMetricSnapshotAt < this.metricSnapshotIntervalMs) return;
@@ -234,41 +266,91 @@ class DataEngine {
     }
 
     _recordAlarmEvents(deviceDataArray) {
-        const runVersion = this.runVersion;
-        const pending = this.alarmWriteQueue.then(() => this._writeAlarmEvents(deviceDataArray, runVersion));
-        this.alarmWriteQueue = pending.catch(() => {});
-        return pending;
+        if (this.alarmStorageStopped) return Promise.resolve();
+        try { assertNoPendingSiteRecovery(); }
+        catch (error) { this._alarmStorageFailure(error, 'recovery'); return Promise.reject(error); }
+        const factoryId = this.activeFactoryId || this.fixedFactoryId || 'factory_default';
+        try {
+            const records = [];
+            for (const device of deviceDataArray) {
+                if (!device.furnace_id || device.status?.alarm == null || ['bad', 'stale'].includes(device.quality?.status?.alarm)) continue;
+                if (this.alarmState.has(device.furnace_id) && this.alarmState.get(device.furnace_id) === !!device.status.alarm) continue;
+                records.push({ deviceId: String(device.furnace_id), deviceName: String(device.furnace_name || device.furnace_id).slice(0, 180),
+                    alarm: !!device.status.alarm, quality: this._deviceQuality(device), occurredAt: Date.now() });
+            }
+            if (!records.length) return Promise.resolve();
+            const outbox = this.alarmOutboxProvider();
+            const added = outbox.record(factoryId, records);
+            for (const record of records) this.alarmState.set(record.deviceId, record.alarm);
+            this.eventStorageStatus.pendingEvents = outbox.pending(factoryId);
+            // Unchanged samples never create pending Promise chains or retain
+            // full PLC frames while the business database is blocked.
+            if (!added || this.alarmWritePending || this.alarmRetryTimer) return Promise.resolve();
+            return this._drainAlarmEvents();
+        } catch (error) {
+            this._alarmStorageFailure(error, 'journal');
+            return Promise.reject(error);
+        }
     }
 
-    async _writeAlarmEvents(deviceDataArray, runVersion) {
-        if (runVersion !== this.runVersion) return;
-        const db = await getDb();
-        if (runVersion !== this.runVersion) return;
-        const factoryId = this.activeFactoryId || 'factory_default';
-        for (const deviceData of deviceDataArray) {
-            if (runVersion !== this.runVersion) return;
-            const id = deviceData.furnace_id;
-            if (!id || deviceData.status?.alarm === null || deviceData.status?.alarm === undefined
-                || ['bad', 'stale'].includes(deviceData.quality?.status?.alarm)) continue;
-            const alarm = !!deviceData.status?.alarm;
-            const previous = this.alarmState.get(id) || false;
+    _alarmStorageFailure(error, stage) {
+        const message = `${stage}: ${error.message}`;
+        if (this.eventStorageStatus.lastError !== message) console.warn('[DataEngine] 报警事件持久化降级:', message);
+        this.eventStorageStatus = { ...this.eventStorageStatus, status: 'error', lastError: message, failedAt: Date.now() };
+    }
 
-            if (alarm !== previous) {
-                await db.run(`INSERT INTO event_logs (
-                    factory_id, event_type, level, source_id, title, message, value, quality
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, [
-                    factoryId,
-                    'alarm',
-                    alarm ? 'critical' : 'info',
-                    id,
-                    alarm ? `${deviceData.furnace_name || id} 报警触发` : `${deviceData.furnace_name || id} 报警恢复`,
-                    alarm ? '设备实时数据出现报警状态' : '报警状态已恢复',
-                    String(alarm),
-                    this._deviceQuality(deviceData)
-                ]);
-                if (runVersion === this.runVersion) this.alarmState.set(id, alarm);
+    _drainAlarmEvents() {
+        if (this.alarmStorageStopped || this.alarmWritePending || this.alarmRetryTimer) return Promise.resolve();
+        try { assertNoPendingSiteRecovery(); }
+        catch (error) { this._alarmStorageFailure(error, 'recovery'); return Promise.reject(error); }
+        const runVersion = this.runVersion;
+        const factoryId = this.activeFactoryId || 'factory_default';
+        let outbox;
+        const pending = (async () => {
+            outbox = this.alarmOutboxProvider();
+            while (!this.alarmStorageStopped && runVersion === this.runVersion) {
+                const batch = outbox.batch(factoryId, 32);
+                if (!batch.length) break;
+                const db = await getDb();
+                for (const event of batch) {
+                    if (this.alarmStorageStopped || runVersion !== this.runVersion) return;
+                    const existing = await db.get('SELECT collector_event_id FROM event_logs WHERE collector_event_id = ?', [event.eventKey]);
+                    if (this.alarmStorageStopped || runVersion !== this.runVersion) return;
+                    if (existing?.collector_event_id !== event.eventKey) {
+                        // The unique collector key handles a commit followed by
+                        // a lost response/crash before the local acknowledgement.
+                        await db.run(`INSERT INTO event_logs (
+                            factory_id, event_type, level, source_id, title, message, value, quality, collector_event_id, occurred_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
+                            event.factoryId, 'alarm', event.alarm ? 'critical' : 'info', event.deviceId,
+                            `${event.deviceName} ${event.alarm ? '报警触发' : '报警恢复'}`,
+                            event.alarm ? '设备实时数据出现报警状态' : '报警状态已恢复', String(event.alarm), event.quality, event.eventKey,
+                            new Date(event.occurredAt + 8 * 3600000).toISOString().slice(0, 19).replace('T', ' ')
+                        ]);
+                    }
+                    outbox.acknowledge(event);
+                }
+                await new Promise(resolve => setImmediate(resolve));
             }
-        }
+            this.alarmRetryCount = 0;
+            this.eventStorageStatus = { status: 'healthy', pendingEvents: outbox.pending(factoryId), lastError: null, lastSavedAt: Date.now() };
+        })().catch(error => {
+            this._alarmStorageFailure(error, outbox ? 'delivery' : 'journal');
+            if (!this.alarmStorageStopped && runVersion === this.runVersion) {
+                const delay = Math.min(60000, 1000 * 2 ** Math.min(this.alarmRetryCount++, 6));
+                this.alarmRetryTimer = setTimeout(() => {
+                    this.alarmRetryTimer = null;
+                    this._drainAlarmEvents().catch(() => {});
+                }, delay);
+                this.alarmRetryTimer.unref?.();
+            }
+            throw error;
+        }).finally(() => {
+            if (this.alarmWritePending === pending) this.alarmWritePending = null;
+            if (!this.alarmStorageStopped && runVersion !== this.runVersion) this._drainAlarmEvents().catch(() => {});
+        });
+        this.alarmWritePending = pending;
+        return pending;
     }
 
     _deviceQuality(deviceData) {

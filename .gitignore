@@ -27,9 +27,43 @@ yarn-error.log*
 .DS_Store
 Thumbs.db
 tmp/
+temp/
 __pycache__/
 *.py[cod]
 *.blend1
+*.blend2
+*_working.blend
+*.tmp
+*.bak
+*.unitypackage
+
+# Local credentials, databases and recovery/export files (never project source)
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+*.sql.gz
+*.dump
+*.pfx
+*.p12
+*.key
+*.pem
+**/database-config.json
+**/license.json
+**/admin-auth.json
+**/credentials.json
+!.env.example
+!.env.sample
+
+# Model recovery copies and generated verification evidence
+backend/assets/models/**/backup-before-*/
+backend/assets/models/**/*_runtime_check.png
+backend/assets/models/pit_furnace_references_v1/**/geometry-validation.json
+unity-client/Assets/Equipment/PitFurnaceReferences/**/verification.json*
+unity-client/Assets/Equipment/PitFurnaceReferences/overview-verification.json*
+unity-client/Assets/Equipment/PitFurnaceReferences/**/unity-preview.png*
+unity-client/Assets/Equipment/PitFurnaceReferences/overview-preview.png*
 
 # Unity native client generated files
 unity-client/[Ll]ibrary/

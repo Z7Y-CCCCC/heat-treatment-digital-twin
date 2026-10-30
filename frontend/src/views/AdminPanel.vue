@@ -50,6 +50,8 @@ import AdminSecuritySettings from './admin/components/AdminSecuritySettings.vue'
 import PlatformUsersSettings from './admin/components/PlatformUsersSettings.vue'
 import AdminHelpGuide from './admin/components/AdminHelpGuide.vue'
 import MobileDeviceMotion from './admin/components/MobileDeviceMotion.vue'
+import ManualDisassemblyLayout from './admin/components/ManualDisassemblyLayout.vue'
+import { useManualDisassemblyPage } from './admin/composables/useManualDisassemblyPage.js'
 import ModelInspectionEditor from './admin/components/ModelInspectionEditor.vue'
 import ModelInspectionPreviewOverlay from './admin/components/ModelInspectionPreviewOverlay.vue'
 import AssetHierarchyBar from './admin/components/AssetHierarchyBar.vue'
@@ -164,6 +166,7 @@ const navIconPaths = {
 const { appDialog, openAppDialog, closeAppDialog, alert, confirm } = useAppDialog()
 const unifiedDesignerRef = ref(null)
 const mobileMotionRef = ref(null)
+const manualDisassemblyRef = ref(null)
 let factorySwitchApproved = false
 
 async function requestFactorySwitch({ factoryName }) {
@@ -181,6 +184,7 @@ async function requestFactorySwitch({ factoryName }) {
     if (choice === 'secondary') {
         unifiedDesignerRef.value?.discardPending?.()
         mobileMotionRef.value?.discardPending?.()
+        manualDisassemblyPage.discard()
         discardFactoryDrafts(currentFactoryId)
         factorySwitchApproved = true
         return true
@@ -188,6 +192,7 @@ async function requestFactorySwitch({ factoryName }) {
     try {
         await savePendingSystemSettings()
         await mobileMotionRef.value?.savePending?.()
+        if (!await manualDisassemblyPage.savePending()) throw new Error(manualDisassemblyStatus.value || '拆解布局未保存')
         await saveCurrentFactoryPageDrafts()
         await unifiedDesignerRef.value?.savePending?.()
         await saveFactoryDrafts(currentFactoryId, {
@@ -1900,6 +1905,28 @@ async function loadModels() {
         loadModelBindingState(selected)
     }
 }
+
+// Device-local manual placement is deliberately separate from model-wide
+// authoring and generic device updates (which also carry PLC/layout fields).
+const manualDisassemblyPage = useManualDisassemblyPage({ devices, models, api: adminApi,
+    ask: openAppDialog, initialDeviceId: String(storedAdminUiState.manualDisassemblyDeviceId || '') })
+const { selectedDeviceId: manualDisassemblyDeviceId, device: manualDisassemblyDevice,
+    model: manualDisassemblyModel, choices: manualDisassemblyChoices, inspection: manualDisassemblyInspection,
+    source: manualDisassemblySource, loading: manualDisassemblyLoading, saving: manualDisassemblySaving,
+    dirty: manualDisassemblyDirty, status: manualDisassemblyStatus, saveRevision: manualDisassemblySaveRevision } = manualDisassemblyPage
+manualDisassemblyPage.setEditorGetter(() => manualDisassemblyRef.value)
+
+async function changeManualDisassemblyDevice(event) {
+    await manualDisassemblyPage.selectDevice(event.target.value)
+    event.target.value = manualDisassemblyDeviceId.value
+}
+
+watch([devices, models], () => {
+    if (activeTab.value === 'disassembly-layout' && !manualDisassemblySaving.value && !manualDisassemblyDirty.value
+        && (!manualDisassemblyInspection.value || !manualDisassemblyDevice.value || !manualDisassemblyModel.value)) {
+        void manualDisassemblyPage.ensureSelection()
+    }
+})
 
 function makeModelIdFromFileName(fileName) {
     return fileName.replace(/\.[^.]+$/, '').replace(/[^\w-]+/g, '_')
@@ -4105,8 +4132,9 @@ function getDeviceWorkshopId(device) {
         || ''
 }
 
-const assetHierarchyTabs = new Set(['platform', 'composer', 'workshops', 'lines', 'devices', 'mobile-devices', 'points', 'point-monitor', 'models', 'settings'])
+const assetHierarchyTabs = new Set(['platform', 'composer', 'workshops', 'lines', 'devices', 'mobile-devices', 'disassembly-layout', 'points', 'point-monitor', 'models', 'settings'])
 const assetHierarchyDeviceId = computed(() => {
+    if (activeTab.value === 'disassembly-layout') return manualDisassemblyDeviceId.value
     if (activeTab.value === 'composer') return selectedComposerDeviceId.value
     if (activeTab.value === 'devices' && showDeviceForm.value) return deviceFormTargetId.value
     if (activeTab.value === 'points' && selectedDeviceForPoints.value !== 'all') return selectedDeviceForPoints.value
@@ -4114,6 +4142,7 @@ const assetHierarchyDeviceId = computed(() => {
     return ''
 })
 const assetHierarchyLineId = computed(() => {
+    if (activeTab.value === 'disassembly-layout') return manualDisassemblyDevice.value?.line_id || ''
     if (activeTab.value === 'composer') return selectedComposerLineId.value
     if (activeTab.value === 'lines') return selectedLineEditorId.value
     if (activeTab.value === 'devices' && showDeviceForm.value) return editingDevice.line_id
@@ -4504,8 +4533,9 @@ function toggleAdminNavCollapsed() {
     resizeComposerPreviewAfterLayout()
 }
 
-function selectAdminTab(tabKey) {
+async function selectAdminTab(tabKey) {
     if (tabKey === 'users' && !adminSession.permissions.manageUsers) return
+    if (activeTab.value === 'disassembly-layout' && tabKey !== activeTab.value && !await manualDisassemblyPage.canLeave()) return
     activeTab.value = tabKey
     resizeComposerPreviewAfterLayout()
 }
@@ -4839,6 +4869,7 @@ watch([workshops, lines, devices, models], () => {
 watch(modelInspection, scheduleInspectionDraftPreview, { deep: true })
 
 watch(activeTab, async (tab) => {
+    if (tab === 'disassembly-layout') await manualDisassemblyPage.ensureSelection()
     if (tab === 'composer') {
         ensureComposerSelection()
         if (!composerDraft.id || composerDraft.id !== selectedComposerDeviceId.value) {
@@ -4902,6 +4933,7 @@ watch([
     workshopMapSelectedLineId,
     modelLibraryStep,
     selectedPreviewModelId,
+    manualDisassemblyDeviceId,
     selectedWidgetPreviewId,
     isLinePlannerEditorCollapsed,
     isLineDevicePoolCollapsed,
@@ -4926,6 +4958,7 @@ watch([
         workshopMapSelectedLineId: workshopMapSelectedLineId.value,
         modelLibraryStep: modelLibraryStep.value,
         selectedPreviewModelId: selectedPreviewModelId.value,
+        manualDisassemblyDeviceId: manualDisassemblyDeviceId.value,
         selectedWidgetPreviewId: selectedWidgetPreviewId.value,
         isLinePlannerEditorCollapsed: isLinePlannerEditorCollapsed.value,
         isLineDevicePoolCollapsed: isLineDevicePoolCollapsed.value,
@@ -4978,6 +5011,7 @@ async function initializeAdminPanel() {
         scheduleNativeScenePreview({ source: 'spatial', includeLayout: true })
     }
     if (activeTab.value === 'models') await renderSelectedModelPreview()
+    if (activeTab.value === 'disassembly-layout') await manualDisassemblyPage.ensureSelection()
 }
 
 onMounted(() => initializeAdminPanel().catch(error => {
@@ -5023,6 +5057,7 @@ onDeactivated(() => {
 
 onUnmounted(() => {
     adminPanelDisposed = true
+    manualDisassemblyPage.dispose()
     adminPanelActive = false
     window.removeEventListener('beforeunload', handleUnsavedCanvasBeforeUnload)
     if (nativeScenePreviewTimer) clearTimeout(nativeScenePreviewTimer)
@@ -5223,7 +5258,7 @@ const lineLayoutDirty = computed(() => lineHasUnsavedLayout(selectedLineEditor.v
 
 function handleUnsavedCanvasBeforeUnload(event) {
     if (factorySwitchApproved) return
-    if (!dirtyLineIds.value.length && !modelInspectionDirty.value) return
+    if (!dirtyLineIds.value.length && !modelInspectionDirty.value && !manualDisassemblyDirty.value) return
     event.preventDefault()
     event.returnValue = ''
 }
@@ -6796,7 +6831,8 @@ const factoryTabs = [
     { key: 'workshops', label: '车间管理', icon: 'workshops' },
     { key: 'lines', label: '产线管理', icon: 'lines' },
     { key: 'devices', label: '设备管理', icon: 'devices' },
-    { key: 'mobile-devices', label: '设备运动配置', icon: 'mobile' }
+    { key: 'mobile-devices', label: '设备运动配置', icon: 'mobile' },
+    { key: 'disassembly-layout', label: '拆解布局', icon: 'models' }
 ]
 const factoryTabKeys = factoryTabs.map(tab => tab.key)
 const dataTabs = [
@@ -6842,7 +6878,7 @@ async function openAdminSetupStep(step) {
 </script>
 
 <template>
-    <div class="admin-container" data-admin-workspace :class="{ 'unity-embedded': isUnityEmbedded, 'unity-dashboard-tab': isUnityEmbedded && unityHostState.attached && !unityHostState.adminVisible, 'nav-collapsed': isAdminNavCollapsed, 'composer-active': activeTab === 'composer', 'line-planner-active': activeTab === 'lines' }">
+    <div class="admin-container" data-admin-workspace :class="{ 'unity-embedded': isUnityEmbedded, 'unity-dashboard-tab': isUnityEmbedded && unityHostState.attached && !unityHostState.adminVisible, 'nav-collapsed': isAdminNavCollapsed, 'composer-active': activeTab === 'composer', 'line-planner-active': activeTab === 'lines', 'manual-layout-active': activeTab === 'disassembly-layout' }">
         <AdminWindowChrome v-if="isUnityEmbedded" @state="Object.assign(unityHostState, $event)" @before-dashboard="flushDashboardViewPreview" />
         <!-- 顶部标题栏 -->
         <header class="admin-header">
@@ -8147,6 +8183,30 @@ async function openAdminSetupStep(step) {
                     :devices="devices"
                     @saved="loadDevices"
                 />
+
+                <!-- ======== 模型库 ======== -->
+                <section v-if="activeTab === 'disassembly-layout'" class="manual-disassembly-tab" data-testid="manual-disassembly-page">
+                    <header class="manual-layout-page-heading">
+                        <div><h2>拆解布局</h2><p>每台设备单独摆放部件。直接手工拖拽，不按统一距离或比例自动散开。</p></div>
+                        <label>编辑设备
+                            <select :value="manualDisassemblyDeviceId" aria-label="选择拆解布局设备" :disabled="manualDisassemblySaving || manualDisassemblyLoading" @change="changeManualDisassemblyDevice">
+                                <option v-if="!manualDisassemblyChoices.length" value="">没有关联三维模型的设备</option>
+                                <option v-for="item in manualDisassemblyChoices" :key="item.id" :value="item.id">{{ deviceHierarchyLabel(item) }}</option>
+                            </select>
+                        </label>
+                    </header>
+                    <div v-if="manualDisassemblyLoading" class="manual-layout-page-state" role="status">正在读取本设备的拆解布局…</div>
+                    <ManualDisassemblyLayout v-else-if="manualDisassemblyDevice && manualDisassemblyModel && manualDisassemblyInspection"
+                        :key="`${manualDisassemblyDevice.id}:${manualDisassemblyModel.id}`" ref="manualDisassemblyRef"
+                        :device="manualDisassemblyDevice" :model="manualDisassemblyModel" :inspection="manualDisassemblyInspection"
+                        :saving="manualDisassemblySaving" :save-revision="manualDisassemblySaveRevision" :status="manualDisassemblyStatus"
+                        @save="manualDisassemblyPage.save($event)" @dirty-change="manualDisassemblyDirty = $event" />
+                    <div v-else class="manual-layout-page-state">
+                        <strong>{{ manualDisassemblyStatus || '先为设备关联三维模型，再在这里拖拽摆放拆解部件。' }}</strong>
+                        <button v-if="manualDisassemblyDevice" type="button" class="btn" @click="manualDisassemblyPage.loadSelected()">重新读取布局</button>
+                    </div>
+                    <p class="manual-layout-page-note">{{ manualDisassemblySource === 'device' ? '当前为本设备独立布局。' : '初始位置沿用模型配置；保存后成为本设备独立布局。' }} 保存后启用本设备的手工拆解，不改同型号其他设备、模型文件或 PLC 绑定。</p>
+                </section>
 
                 <!-- ======== 模型库 ======== -->
                 <div v-if="activeTab === 'models'" class="tab-content">
@@ -10308,7 +10368,7 @@ async function openAdminSetupStep(step) {
     flex-direction: column;
     gap: 4px;
     padding-left: 16px;
-    max-height: 180px;
+    max-height: 420px;
     transform-origin: top;
 }
 .nav-submenu-enter-active,
@@ -10435,6 +10495,52 @@ async function openAdminSetupStep(step) {
     border: 1px solid rgba(0, 0, 0, 0.04);
     min-height: calc(100% - 10px);
 }
+
+.admin-container.manual-layout-active { height: 100vh; }
+.manual-layout-active .admin-content { display: flex; flex-direction: column; padding: 12px 14px; overflow: hidden; }
+.manual-layout-active .tab-transition-host { display: flex; flex: 1; flex-direction: column; min-height: 0; }
+.manual-disassembly-tab { display: flex; flex-direction: column; gap: 10px; flex: 1; min-height: 0; }
+.manual-layout-page-heading { display: flex; flex: 0 0 auto; align-items: center; justify-content: space-between; gap: 18px; padding: 6px 4px; }
+.manual-layout-page-heading h2 { margin: 0 0 4px; font-size: 22px; }
+.manual-layout-page-heading p, .manual-layout-page-note { margin: 0; font-size: 12px; color: #697b8d; line-height: 1.6; }
+.manual-layout-page-heading label { display: grid; gap: 5px; font-size: 11px; color: #52687d; min-width: 230px; max-width: 430px; }
+.manual-layout-page-heading select { max-width: 100%; padding: 9px 12px; border: 1px solid #d5dfea; border-radius: 8px; background: white; color: #293d52; }
+.manual-layout-page-note { flex: 0 0 auto; padding: 0 4px; }
+.manual-layout-page-state { flex: 1; display: flex; flex-direction: column; gap: 16px; align-items: center; justify-content: center; padding: 24px; border-radius: 14px; background: #fff; color: #637b90; text-align: center; }
+.manual-disassembly-tab :deep(.manual-layout) { display: flex; flex: 1; flex-direction: column; min-height: 0; }
+.manual-disassembly-tab :deep(.layout-heading) { padding: 12px 18px; flex: 0 0 auto; }
+.manual-disassembly-tab :deep(.layout-heading .eyebrow), .manual-disassembly-tab :deep(.layout-heading p) { display: none; }
+.manual-disassembly-tab :deep(.layout-heading h3) { font-size: 17px; margin: 0; }
+.manual-disassembly-tab :deep(.layout-toolbar) { padding: 9px 18px; flex: 0 0 auto; }
+.manual-disassembly-tab :deep(.layout-body) { flex: 1; min-height: 0; overflow: hidden; }
+.manual-disassembly-tab :deep(.viewport-shell) { min-height: 0; }
+.manual-disassembly-tab :deep(.part-sidebar) { min-height: 0; overflow-y: auto; }
+.manual-disassembly-tab :deep(.part-list) { flex: 1; height: auto; min-height: 40px; }
+.manual-disassembly-tab :deep(.offset-editor) { flex: 0 0 auto; padding: 12px 14px; }
+.manual-disassembly-tab :deep(.offset-fields) { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; }
+.manual-disassembly-tab :deep(.offset-fields label) { flex-direction: column; align-items: stretch; gap: 4px; }
+.manual-disassembly-tab :deep(.offset-fields input) { box-sizing: border-box; padding: 6px 4px; }
+.manual-disassembly-tab :deep(.offset-editor p) { display: none; }
+.manual-disassembly-tab :deep(.layout-footer) { flex: 0 0 auto; padding: 9px 18px; }
+/* Short desktop windows must not crop the position inputs behind the footer. */
+@media (max-height: 800px) {
+    .manual-layout-active :deep(.asset-hierarchy-bar) { padding: 8px 12px; margin-bottom: 10px; }
+    .manual-layout-active :deep(.asset-hierarchy-heading), .manual-layout-active :deep(.asset-hierarchy-note) { display: none; }
+    .manual-layout-page-heading { padding: 2px 4px; }
+    .manual-disassembly-tab :deep(.layout-heading) { padding: 9px 18px; }
+    .manual-disassembly-tab :deep(.layout-toolbar) { padding: 7px 18px; }
+    .manual-disassembly-tab :deep(.part-list-heading) { padding: 10px 14px 8px; }
+    .manual-disassembly-tab :deep(.part-search) { margin-bottom: 8px; padding: 6px 10px; }
+    .manual-disassembly-tab :deep(.offset-editor) { padding: 8px 14px; }
+    .manual-disassembly-tab :deep(.offset-editor > small) { margin-bottom: 8px; }
+    .manual-disassembly-tab :deep(.offset-editor button) { margin-top: 8px; }
+}
+@media (max-height: 600px), (max-width: 1050px) {
+    .manual-layout-active .admin-content { overflow-y: auto; }
+    .manual-layout-active .tab-transition-host { flex-shrink: 0; }
+    .manual-disassembly-tab { min-height: 550px; }
+}
+@media (max-width: 900px) { .manual-layout-page-heading { align-items: stretch; flex-direction: column; gap: 7px; } }
 .tab-content h2 { margin: 0 0 6px 0; font-size: 24px; color: #1d1d1f; font-weight: 600; letter-spacing: -0.5px; }
 .desc { color: #86868b; font-size: 14px; margin-bottom: 28px; }
 .factory-hierarchy-note { margin: 0 0 18px; padding: 15px 17px; background: #f7f9fc; border: 1px solid #e3e8ef; border-radius: 10px; }

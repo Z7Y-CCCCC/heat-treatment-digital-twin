@@ -60,6 +60,8 @@ namespace HeatTreatment.DigitalTwin.Runtime
         private FactoryConfigDto _config;
         private CancellationTokenSource _lifetime;
         private CancellationTokenSource _reload;
+        private int _configurationReloadVersion;
+        private JObject _pendingFactoryNavigation;
         private Thread _nativeAuthPipeThread;
         private CancellationToken _nativeAuthPipeToken;
         private bool _nativeAuthPipeFailureReported;
@@ -136,6 +138,8 @@ namespace HeatTreatment.DigitalTwin.Runtime
             );
             _dashboard.ViewContextChanged += OnDashboardViewContextChanged;
             _dashboard.InspectionContextChanged += OnInspectionContextChanged;
+            _dashboard.InspectionHoverUpdated += OnInspectionHoverUpdated;
+            _dashboard.DeviceHoverUpdated += OnDeviceHoverUpdated;
             _dashboard.ParentNavigationRequested += NavigateToParentCamera;
 
             _modelLibrary = GetOrAdd<RuntimeModelLibrary>();
@@ -171,9 +175,19 @@ namespace HeatTreatment.DigitalTwin.Runtime
                         PipeDirection.InOut,
                         1,
                         PipeTransmissionMode.Byte,
-                        PipeOptions.None))
+                        PipeOptions.Asynchronous))
+                    using (_nativeAuthPipeToken.Register(() =>
                     {
-                        server.WaitForConnection();
+                        // Cancellation must also release a client that connected
+                        // but never completed ReadLine. The local registration
+                        // cannot close a replacement listener's pipe.
+                        try { server.Dispose(); }
+                        catch (ObjectDisposedException) { }
+                        catch (IOException) { }
+                    }))
+                    {
+                        server.WaitForConnectionAsync(_nativeAuthPipeToken).GetAwaiter().GetResult();
+                        _nativeAuthPipeToken.ThrowIfCancellationRequested();
                         using (var reader = new StreamReader(server, Encoding.UTF8))
                         {
                             var message = reader.ReadLine();
@@ -416,6 +430,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
 
         private void BeginReload()
         {
+            ++_configurationReloadVersion;
             if (!_authenticated)
             {
                 _diagnostics?.RequireAuthentication();
@@ -429,6 +444,20 @@ namespace HeatTreatment.DigitalTwin.Runtime
             if (_webSocket != null) PublishDashboardContext("factory", viewId: "factory_overview");
             DestroyCurrentFactory();
             _ = LoadConfigurationLoopAsync(_reload.Token);
+        }
+
+        private async void QueueConfigurationReload()
+        {
+            var version = ++_configurationReloadVersion;
+            try
+            {
+                // Bulk layout saves generate several committed writes. Read the
+                // final authoritative config once, rather than rebuilding per row.
+                await Task.Delay(180, _lifetime.Token);
+                if (version != _configurationReloadVersion) return;
+                BeginReload();
+            }
+            catch (OperationCanceledException) { }
         }
 
         private async Task LoadConfigurationLoopAsync(CancellationToken cancellationToken)
@@ -542,7 +571,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 }
                 var driver = instance.Root.GetComponent<ModelBindingDriver>();
                 var visual = instance.Root.AddComponent<DeviceStatusVisual>();
-                visual.Initialize(device);
+                visual.Initialize(device, instance.Asset);
                 var motion = instance.Root.AddComponent<MobileDeviceMotion>();
                 motion.Initialize(device);
                 _dashboard.RegisterDevice(device, instance.Root, instance.Inspection);
@@ -591,6 +620,10 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 $"[FactoryRuntime] {_diagnostics.Activity}: devices={_diagnostics.ReadyDeviceCount}, "
                 + $"fallback={_diagnostics.FallbackDeviceCount}, templates={_diagnostics.TemplateCount}"
             );
+            var navigation = _pendingFactoryNavigation;
+            _pendingFactoryNavigation = null;
+            if (navigation != null && ConfigurationSyncPolicy.MatchesFactory(navigation, _config?.FactoryId))
+                ApplyNativeScenePreview(navigation);
         }
 
         private List<DevicePlacement> CreateHierarchy(FactoryConfigDto config, Transform root)
@@ -698,7 +731,10 @@ namespace HeatTreatment.DigitalTwin.Runtime
             }
             else if (type == "configuration_changed")
             {
-                ApplyLiveSettings(message["payload"] as JObject);
+                var payload = message["payload"] as JObject;
+                var action = ConfigurationSyncPolicy.ChangeAction(payload, _config?.FactoryId);
+                if (action == "reload") QueueConfigurationReload();
+                else if (action == "settings") ApplyLiveSettings(payload);
             }
             else if (type == "device_configuration_changed")
             {
@@ -730,6 +766,15 @@ namespace HeatTreatment.DigitalTwin.Runtime
 
         private async void ApplyNativeScenePreview(JObject payload)
         {
+            if (payload != null && payload.Value<string>("source") == "dashboard_overlay"
+                && (!ConfigurationSyncPolicy.MatchesFactory(payload, _config?.FactoryId) || !_sceneReady))
+            {
+                _pendingFactoryNavigation = (JObject)payload.DeepClone();
+                // A view command is not proof that its factory has been built.
+                // Never acknowledge the previous factory's identically named view.
+                if (_sceneReady) BeginReload();
+                return;
+            }
             if (payload == null || _config == null || _factoryRoot == null) return;
             var sessionId = payload.Value<string>("sessionId") ?? "admin";
             var sequence = payload.Value<long?>("sequence") ?? 0L;
@@ -903,7 +948,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 root.SetActive(wasActive);
                 var driver = root.GetComponent<ModelBindingDriver>();
                 var visual = root.AddComponent<DeviceStatusVisual>();
-                visual.Initialize(device);
+                visual.Initialize(device, instance.Asset);
                 var motion = root.AddComponent<MobileDeviceMotion>();
                 motion.Initialize(device);
                 _drivers[device.Id] = driver;
@@ -1192,6 +1237,20 @@ namespace HeatTreatment.DigitalTwin.Runtime
             _diagnostics.Activity = $"Returned to {parent.Name}";
         }
 
+        private void OnDeviceHoverUpdated(JObject payload)
+        {
+            if (payload == null) return;
+            payload["factoryId"] = _config?.FactoryId ?? string.Empty;
+            _webSocket?.SendMessage(new JObject { ["type"] = "device_hover", ["payload"] = payload });
+        }
+
+        private void OnInspectionHoverUpdated(JObject payload)
+        {
+            if (payload == null) return;
+            payload["factoryId"] = _config?.FactoryId ?? string.Empty;
+            _webSocket?.SendMessage(new JObject { ["type"] = "inspection_hover", ["payload"] = payload });
+        }
+
         private void OnInspectionContextChanged(JObject payload)
         {
             if (payload == null) return;
@@ -1248,6 +1307,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
             }
             _lastDashboardContext = new JObject
             {
+                ["factoryId"] = _config?.FactoryId ?? string.Empty,
                 ["viewId"] = viewId ?? string.Empty,
                 ["sceneReady"] = _sceneReady,
                 ["viewMode"] = normalizedMode,
@@ -1628,11 +1688,17 @@ namespace HeatTreatment.DigitalTwin.Runtime
             }
             if (_dashboard != null) _dashboard.ViewContextChanged -= OnDashboardViewContextChanged;
             if (_dashboard != null) _dashboard.InspectionContextChanged -= OnInspectionContextChanged;
+            if (_dashboard != null) _dashboard.InspectionHoverUpdated -= OnInspectionHoverUpdated;
+            if (_dashboard != null) _dashboard.DeviceHoverUpdated -= OnDeviceHoverUpdated;
             if (_dashboard != null) _dashboard.ParentNavigationRequested -= NavigateToParentCamera;
             if (_windowMenu != null) _windowMenu.SettingsRequested -= OpenAdminSettings;
             _reload?.Cancel();
             _reload?.Dispose();
             _lifetime?.Cancel();
+            var listener = _nativeAuthPipeThread;
+            if (listener != null && listener != Thread.CurrentThread && listener.IsAlive && !listener.Join(500))
+                Debug.LogWarning("[FactoryRuntime] Native authentication listener exceeded the bounded shutdown wait.");
+            _nativeAuthPipeThread = null;
             _lifetime?.Dispose();
         }
     }
@@ -1643,9 +1709,14 @@ namespace HeatTreatment.DigitalTwin.Runtime
         private Material _material;
         private Color _lastColor = Color.clear;
 
-        public void Initialize(DeviceDto device)
+        public void Initialize(DeviceDto device, ModelAssetDto asset = null)
         {
+            ClearBeacon();
             var config = device?.InstanceConfigObject ?? new JObject();
+            // Match the web renderer: a synthetic marker is opt-in, never a
+            // mandatory part of every imported CAD model. Height alone is not opt-in.
+            var enabled = config["showStatusLight"] ?? asset?.MetadataObject?["runtime"]?["showStatusLight"];
+            if (enabled?.Type != JTokenType.Boolean || !enabled.Value<bool>()) return;
             var labelY = config.Value<float?>("statusLightY") ?? config.Value<float?>("labelY") ?? 3.2f;
             var marker = GameObject.CreatePrimitive(PrimitiveType.Sphere);
             marker.name = "Runtime Status Beacon";
@@ -1659,6 +1730,24 @@ namespace HeatTreatment.DigitalTwin.Runtime
             _material.EnableKeyword("_EMISSION");
             _renderer.sharedMaterial = _material;
             SetColor(new Color(0.28f, 0.32f, 0.35f));
+        }
+
+        private void ClearBeacon()
+        {
+            if (_renderer != null)
+            {
+                _renderer.gameObject.SetActive(false);
+                if (Application.isPlaying) Destroy(_renderer.gameObject);
+                else DestroyImmediate(_renderer.gameObject);
+            }
+            if (_material != null)
+            {
+                if (Application.isPlaying) Destroy(_material);
+                else DestroyImmediate(_material);
+            }
+            _renderer = null;
+            _material = null;
+            _lastColor = Color.clear;
         }
 
         public void ApplyRealtime(JObject data)
@@ -1704,7 +1793,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
 
         private void OnDestroy()
         {
-            if (_material != null) Destroy(_material);
+            ClearBeacon();
         }
     }
 }

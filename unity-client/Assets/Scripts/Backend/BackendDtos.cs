@@ -8,6 +8,9 @@ namespace HeatTreatment.DigitalTwin.Backend
 {
     public sealed class FactoryConfigDto
     {
+        [JsonProperty("factoryId")]
+        public string FactoryId { get; set; } = string.Empty;
+
         [JsonProperty("settings")]
         public Dictionary<string, string> Settings { get; set; } = new Dictionary<string, string>();
 

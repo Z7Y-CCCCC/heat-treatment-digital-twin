@@ -203,6 +203,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
         public string ActiveViewId => _activeViewId;
         public event Action<string, string> ViewContextChanged;
         public event Action<JObject> InspectionContextChanged;
+        public event Action<JObject> InspectionHoverUpdated;
         public event Action ParentNavigationRequested;
 
         /// <summary>
@@ -459,6 +460,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
             };
             PrepareInspection(view);
             _devices[device.Id] = view;
+            _deviceHoverView = string.Empty;
         }
 
         public void ApplyPreviewDevice(DeviceDto device, GameObject root, DeviceInspectionConfigDto inspection = null)
@@ -472,6 +474,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 existing.WorldBounds = CalculateBounds(root);
                 existing.Inspection = new DeviceInspectionRuntime { Config = inspection ?? ResolveInspectionConfig(device) };
                 PrepareInspection(existing);
+                _deviceHoverView = string.Empty;
                 return;
             }
             RegisterDevice(device, root, inspection);
@@ -554,6 +557,9 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 if (entry.Root != null) entry.Root.SetActive(true);
             }
             _devices.Clear();
+            _deviceHoverView = string.Empty;
+            _hoveredDeviceId = string.Empty;
+            _deviceHoverCount = -1;
             _selected = null;
             _mode = DashboardMode.Overview;
             _deviceScroll = Vector2.zero;
@@ -564,7 +570,6 @@ namespace HeatTreatment.DigitalTwin.Runtime
         {
             UpdateCanvasMetrics();
             UpdateInspectionTransition();
-            UpdateInspectionHover();
             _uiBlend = Mathf.MoveTowards(_uiBlend, 1f, Time.unscaledDeltaTime * 4.2f);
             var pointer = ScreenToDesign(Input.mousePosition);
             var legacyDashboardBlocksPointer = !_webOverlayActive && IsPointerOverDashboard(pointer);
@@ -1061,21 +1066,18 @@ namespace HeatTreatment.DigitalTwin.Runtime
         private void SelectFromWorld(Vector3 screenPosition)
         {
             if (_camera == null) return;
-            var ray = _camera.ScreenPointToRay(screenPosition);
-            if (_mode == DashboardMode.Detail && _selected != null)
+            if (!_webOverlayActive && IsPointerOverDashboard(ScreenToDesign(screenPosition))) return;
+            // Once inside a device, world clicks belong to its inspection
+            // state machine. Re-entering ShowDetail here resets disassembly,
+            // materials, camera framing and the entire overlay on every click.
+            if (_mode == DashboardMode.Detail)
             {
-                SelectInspectionTarget(ray);
+                SelectInspectionTargetAt(screenPosition);
                 return;
             }
-            DeviceView closest = null;
-            var distance = float.PositiveInfinity;
-            foreach (var device in _devices.Values)
-            {
-                if (device.Root == null || !device.Root.activeInHierarchy) continue;
-                if (!device.WorldBounds.IntersectRay(ray, out var hitDistance) || hitDistance >= distance) continue;
-                closest = device;
-                distance = hitDistance;
-            }
+            // Click and hover share the same exact visible geometry; a rear
+            // device seen through a CAD gap must not open a front device's box.
+            var closest = PickOverviewDevice(screenPosition);
             if (closest != null) ShowDetail(closest);
         }
 

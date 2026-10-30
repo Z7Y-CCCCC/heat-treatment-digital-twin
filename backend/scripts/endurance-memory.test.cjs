@@ -17,12 +17,13 @@ function reference(rows) {
     for (const row of rows) { if (!byPid.has(row.pid)) byPid.set(row.pid, []); byPid.get(row.pid).push(row); }
     const generations = [...byPid].map(([pid, values]) => {
         const warm = values.filter(row => row.uptime >= 60);
-        return { pid, samples: values.length, peakRssMb: Math.max(...values.map(row => row.rss)) / 1048576, rssGrowthMb: (values.at(-1).rss - (warm[0] || values[0]).rss) / 1048576, baselineAfterWarmup: warm.length > 0 };
+        const baseline = (warm[0] || values[0]).rss;
+        return { pid, generation: 1, samples: values.length, peakRssMb: Math.max(...values.map(row => row.rss)) / 1048576, rssGrowthMb: (values.at(-1).rss - baseline) / 1048576, peakRssGrowthMb: Math.max(0, Math.max(...(warm.length ? warm : values).map(row => row.rss)) - baseline) / 1048576, baselineAfterWarmup: warm.length > 0 };
     });
-    return { samples: rows.length, generations, peakRssMb: Math.max(0, ...generations.map(row => row.peakRssMb)), maxRssGrowthMb: Math.max(0, ...generations.map(row => row.rssGrowthMb)) };
+    return { samples: rows.length, generations, peakRssMb: Math.max(0, ...generations.map(row => row.peakRssMb)), maxRssGrowthMb: Math.max(0, ...generations.map(row => row.peakRssGrowthMb)) };
 }
 
-test('historical replay and incremental refresh match original per-PID warmup semantics', async t => {
+test('historical replay and incremental refresh preserve warmup baselines and peak growth', async t => {
     const { filename, reader } = await fixture(t);
     assert.deepEqual(await reader.refresh(), reference([]));
     const rows = Array.from({ length: 12000 }, (_, i) => ({ pid: i < 6000 ? 10 : 20, uptime: i % 6000, rss: (80 + Math.sin(i / 30) * 15) * 1048576 }));
@@ -111,4 +112,25 @@ test('large historical logs leave timers live and retain constant per-PID aggreg
     assert.equal(result.peakRssMb, 100);
     assert.equal(result.maxRssGrowthMb, 0);
     assert.equal((await reader.refresh()).samples, 300000);
+});
+
+test('memory growth keeps a post-warmup spike even after RSS recovers', async t => {
+    const { filename, reader } = await fixture(t);
+    await fs.writeFile(filename, line(31, 1, 120 * 1048576) + line(31, 60, 100 * 1048576) + line(31, 90, 400 * 1048576));
+    assert.equal((await reader.refresh()).maxRssGrowthMb, 300);
+    await fs.appendFile(filename, line(31, 120, 105 * 1048576));
+    const result = await reader.refresh({ final: true });
+    assert.equal(result.generations[0].rssGrowthMb, 5);
+    assert.equal(result.generations[0].peakRssGrowthMb, 300);
+    assert.equal(result.maxRssGrowthMb, 300, 'a recovered spike must still fail the growth budget');
+});
+
+test('PID reuse starts a new uptime generation with its own warmup baseline', async t => {
+    const { filename, reader } = await fixture(t);
+    await fs.writeFile(filename, line(41, 60, 100 * 1048576) + line(41, 100, 110 * 1048576) + line(41, 1, 200 * 1048576) + line(41, 60, 220 * 1048576) + line(41, 100, 230 * 1048576));
+    const result = await reader.refresh({ final: true });
+    assert.equal(result.generations.length, 2, 'reused process IDs must not share a baseline');
+    assert.deepEqual(result.generations.map(row => row.rssGrowthMb), [10, 10]);
+    assert.deepEqual(result.generations.map(row => row.generation), [1, 2]);
+    assert.equal(result.maxRssGrowthMb, 10);
 });

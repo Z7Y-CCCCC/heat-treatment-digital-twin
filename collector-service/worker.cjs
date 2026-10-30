@@ -103,15 +103,19 @@ async function main() {
     const environment = { ...process.env };
     // Services never inherit the developer/user's database or automation tokens.
     for (const key of Object.keys(environment)) {
-        if (/^(MYSQL_|DB_|SQLITE_|ADMIN_API_TOKEN$|MCP_API_TOKEN$|NODE_OPTIONS$|DESKTOP_CONTROL_|APP_DATA_DIR$|UPLOADS_DIR$)/i.test(key)) delete environment[key];
+        if (/^(MYSQL_|DB_|SQLITE_|ADMIN_API_TOKEN$|MCP_API_TOKEN$|NODE_OPTIONS$|DESKTOP_CONTROL_|APP_DATA_DIR$|APP_USER_DATA_DIR$|UPLOADS_DIR$|SITE_BACKUP_DIR$|SITE_BACKUP_MIRROR_DIR$|SITE_IMPORT_DIR$|DATA_SOURCE_BACKUP_DIR$|LICENSE_FILE$)/i.test(key)) delete environment[key];
     }
     backend = spawn(path.join(resources, 'runtime', 'node.exe'), [path.join(resources, 'backend', 'server.js')], {
         cwd: path.join(resources, 'backend'), windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
         env: { ...environment, NODE_ENV: 'production', HOST: '127.0.0.1', PORT: String(port),
             APP_DATA_DIR: dataDir, UPLOADS_DIR: uploadsDir, FRONTEND_DIST: path.join(resources, 'frontend'),
+            DB_BACKUP_DIR: path.join(dataDir, 'backups'), DB_RECOVERY_DIR: path.join(dataDir, 'recovery'),
+            SITE_BACKUP_DIR: path.join(dataDir, 'site-backups'), SITE_IMPORT_DIR: path.join(dataDir, 'site-imports'),
+            SITE_BACKUP_MIRROR_DIR: '', DATA_SOURCE_BACKUP_DIR: path.join(dataDir, 'data-source-backups'),
             NODE_PATH: dependencies, REMOTE_ACCESS_ENABLED: 'false', ENABLE_CORS: 'false',
             DESKTOP_AUTO_START_SUPPORTED: 'false', DESKTOP_SHUTDOWN_TOKEN: shutdownToken,
             LICENSE_ENFORCE: fs.existsSync(path.join(dataDir, 'license-public-key.pem')) ? 'true' : 'false',
+            LICENSE_FILE: path.join(dataDir, 'license.json'),
             LICENSE_PUBLIC_KEY_FILE: path.join(dataDir, 'license-public-key.pem'),
             LICENSE_MACHINE_STATE_FILE: path.join(root, 'machine-identity.json'),
             FFMPEG_PATH: path.join(resources, 'ffmpeg', 'ffmpeg.exe'),

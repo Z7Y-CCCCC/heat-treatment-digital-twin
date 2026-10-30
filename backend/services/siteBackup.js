@@ -21,6 +21,8 @@ const {
     loadDatabaseConfig
 } = require('../db/database');
 const { reloadDataSourceConfiguration } = require('./dataSources');
+const { getAlarmOutbox, snapshotAlarmOutbox, verifyAlarmOutboxSnapshot } = require('./alarmOutbox');
+const { siteRecoveryStatus, assertNoPendingSiteRecovery, beginSiteRecoveryIntent, updateSiteRecoveryIntent, finishSiteRecoveryIntent } = require('./siteRecoveryIntent');
 
 const DATA_DIR = process.env.APP_DATA_DIR
     ? path.resolve(process.env.APP_DATA_DIR)
@@ -38,7 +40,8 @@ const SITE_BACKUP_MAX_TOTAL_BYTES = SITE_BACKUP_STORAGE_POLICY.maxTotalBytes;
 const SITE_BACKUP_MIN_FREE_BYTES = positiveInteger(process.env.SITE_BACKUP_MIN_FREE_BYTES, 512 * 1024 * 1024);
 const SITE_BACKUP_MIRROR_RETENTION = positiveInteger(process.env.SITE_BACKUP_MIRROR_RETENTION, 30);
 const SITE_BACKUP_FORMAT = 'heat-treatment-digital-twin-site-backup';
-const SITE_BACKUP_VERSION = 3;
+const SITE_BACKUP_VERSION = 4;
+const ALARM_OUTBOX_ARCHIVE_PATH = 'runtime/alarm-outbox.db';
 const UPLOAD_GROUPS = ['models', 'audio', 'appearance', 'projects'];
 const LEGACY_DATA_SOURCE_CONFIG = 'data-sources.json';
 const MAX_MANIFEST_BYTES = 1024 * 1024;
@@ -277,6 +280,7 @@ function getSiteBackupStatus() {
 }
 
 async function runSiteBackupOperation(name, callback) {
+    assertNoPendingSiteRecovery();
     if (activeSiteBackupOperation) {
         throw new Error(`整站灾备正在${activeSiteBackupOperation.name}，请稍后再试`);
     }
@@ -321,6 +325,13 @@ async function createSiteBackupUnlocked(uploadsRootDir) {
         const stat = await fs.promises.lstat(filename);
         if (stat.isFile()) sources.push({ ...descriptor, filename, size: stat.size });
     }
+    const alarmOutboxFilename = path.join(DATA_DIR, 'alarm-outbox.db');
+    if (await exists(alarmOutboxFilename)) {
+        let size = (await fs.promises.stat(alarmOutboxFilename)).size;
+        try { size += (await fs.promises.stat(`${alarmOutboxFilename}-wal`)).size; }
+        catch (error) { if (error.code !== 'ENOENT') throw error; }
+        sources.push({ filename: alarmOutboxFilename, archivePath: ALARM_OUTBOX_ARCHIVE_PATH, size, alarmOutbox: true });
+    }
     const config = loadSiteBackupConfig();
     if (config.mirrorDirectory) validateMirrorDirectory(config.mirrorDirectory);
     const sourceBytes = sources.reduce((sum, file) => sum + file.size, 0);
@@ -348,22 +359,33 @@ async function createSiteBackupUnlocked(uploadsRootDir) {
     // Reject before generating any new dump/staging/.tmp; never delete old
     // backups to make room. Account for all coexisting temporary files.
     await reserveSpace(databaseEstimate, true);
-    const databaseBackup = await createDatabaseBackup('site-export');
-    const databaseFilename = resolveDatabaseBackupPath(databaseBackup.filename);
-    const databaseSize = (await fs.promises.stat(databaseFilename)).size;
-    await reserveSpace(databaseSize, false);
     await fs.promises.mkdir(SITE_BACKUP_DIR, { recursive: true });
     await fs.promises.mkdir(SITE_IMPORT_DIR, { recursive: true });
     const exportStaging = path.join(SITE_IMPORT_DIR, `export-${timestampToken()}-${process.pid}-${crypto.randomBytes(4).toString('hex')}`);
     let temporary = null;
 
     try {
+        // Snapshot the reliable outbox first. An event delivered/acknowledged
+        // while the business dump runs then exists in at least one snapshot.
+        const alarmSource = sources.find(source => source.alarmOutbox);
+        if (alarmSource) {
+            const destination = path.join(exportStaging, ...alarmSource.archivePath.split('/'));
+            await fs.promises.mkdir(path.dirname(destination), { recursive: true });
+            await snapshotAlarmOutbox(alarmSource.filename, destination);
+        }
+        const databaseBackup = await createDatabaseBackup('site-export');
+        const databaseFilename = resolveDatabaseBackupPath(databaseBackup.filename);
+        const databaseSize = (await fs.promises.stat(databaseFilename)).size;
+        await reserveSpace(databaseSize, false);
         const manifestFiles = [];
         const snapshotFiles = [];
         for (const source of [{ filename: databaseFilename, archivePath: databaseArchivePath, size: databaseSize }, ...sources]) {
             normalizeArchivePath(source.archivePath);
             const filename = path.join(exportStaging, ...source.archivePath.split('/'));
-            const copied = await copyAndHash(source.filename, filename, source.size);
+            let copied;
+            if (source.alarmOutbox) {
+                copied = { size: (await fs.promises.stat(filename)).size, sha256: await sha256File(filename) };
+            } else copied = await copyAndHash(source.filename, filename, source.size);
             manifestFiles.push({ path: source.archivePath, ...copied });
             snapshotFiles.push({ ...source, filename });
         }
@@ -455,7 +477,7 @@ function normalizeArchivePath(value) {
 }
 
 function validateManifest(manifest) {
-    if (!manifest || manifest.format !== SITE_BACKUP_FORMAT || ![1, 2, SITE_BACKUP_VERSION].includes(Number(manifest.version))) {
+    if (!manifest || manifest.format !== SITE_BACKUP_FORMAT || ![1, 2, 3, SITE_BACKUP_VERSION].includes(Number(manifest.version))) {
         throw new Error('不是受支持的整站备份包');
     }
     if (!['sqlite', 'mysql'].includes(String(manifest.databaseType || '').toLowerCase()) || !Array.isArray(manifest.files)) {
@@ -491,6 +513,7 @@ function validateManifest(manifest) {
             throw new Error(`整站备份文件校验信息无效: ${archivePath}`);
         }
         if (archivePath !== databasePath
+            && !(Number(manifest.version) >= 4 && archivePath === ALARM_OUTBOX_ARCHIVE_PATH)
             && !UPLOAD_GROUPS.some(group => archivePath.startsWith(`uploads/${group}/`))
             && !describeConfigArchivePath(archivePath)) {
             throw new Error(`整站备份包含不允许恢复的文件: ${archivePath}`);
@@ -552,7 +575,10 @@ async function extractValidatedArchive(archiveFilename, stagingDirectory, reserv
         ? verifySqliteFile(databaseFilename, { requireApplicationSchema: true })
         : await verifyDatabaseBackupFile(databaseFilename);
     if (!verification.valid) throw new Error(`整站备份数据库校验失败: ${verification.error}`);
-    return { manifest, databaseFilename, configPaths };
+    const alarmOutboxFilename = declared.has(ALARM_OUTBOX_ARCHIVE_PATH)
+        ? path.join(stagingDirectory, ...ALARM_OUTBOX_ARCHIVE_PATH.split('/')) : null;
+    if (alarmOutboxFilename) verifyAlarmOutboxSnapshot(alarmOutboxFilename);
+    return { manifest, databaseFilename, configPaths, alarmOutboxFilename };
 }
 
 async function readEntryBuffer(entry, maxBytes) {
@@ -615,10 +641,14 @@ async function restoreSiteBackupUnlocked(archiveFilename, uploadsRootDir) {
     let uploadGroupsToRestore = ['models'];
     let configPathsToRestore = [];
     let preserveStaging = false;
+    let alarmImport = null;
+    let recoveryIntent = null;
+    let businessRestoreAttempted = false;
+    let businessRestored = false;
     await fs.promises.mkdir(stagingDirectory, { recursive: true });
 
     try {
-        const { manifest, databaseFilename, configPaths } = await extractValidatedArchive(path.resolve(archiveFilename), stagingDirectory, async ({ declared, configPaths }) => {
+        const { manifest, databaseFilename, configPaths, alarmOutboxFilename } = await extractValidatedArchive(path.resolve(archiveFilename), stagingDirectory, async ({ declared, configPaths }) => {
             let rollbackBytes = 0;
             for (const group of UPLOAD_GROUPS) {
                 rollbackBytes += (await listFiles(path.join(uploadsRoot, group))).reduce((sum, file) => sum + file.size, 0);
@@ -629,11 +659,12 @@ async function restoreSiteBackupUnlocked(archiveFilename, uploadsRootDir) {
             }
             const files = [...declared.values()];
             const extractedBytes = files.reduce((sum, file) => sum + file.size, 0);
-            const databaseBytes = files.filter(file => file.path.startsWith('database/')).reduce((sum, file) => sum + file.size, 0);
+            const databaseBytes = files.filter(file => file.path.startsWith('database/') || file.path === ALARM_OUTBOX_ARCHIVE_PATH).reduce((sum, file) => sum + file.size, 0);
+            const archiveBytes = (await fs.promises.stat(archiveFilename)).size;
             await ensureDiskSpace([
                 { directory: SITE_IMPORT_DIR, bytes: extractedBytes + rollbackBytes },
                 { directory: uploadsRoot, bytes: files.filter(file => file.path.startsWith('uploads/')).reduce((sum, file) => sum + file.size, 0) },
-                { directory: DATA_DIR, bytes: databaseBytes + await getDatabaseBackupSpaceEstimate() },
+                { directory: DATA_DIR, bytes: databaseBytes + archiveBytes + 2 * await getDatabaseBackupSpaceEstimate() },
                 { directory: process.env.DB_BACKUP_DIR || path.join(DATA_DIR, 'backups'), bytes: databaseBytes + await getDatabaseBackupSpaceEstimate() }
             ], SITE_BACKUP_MIN_FREE_BYTES);
         });
@@ -647,6 +678,20 @@ async function restoreSiteBackupUnlocked(archiveFilename, uploadsRootDir) {
             if (await exists(currentDirectory)) await fs.promises.cp(currentDirectory, rollbackDirectory, { recursive: true });
         }
 
+        for (const archivePath of configPathsToRestore) {
+            const descriptor = describeConfigArchivePath(archivePath);
+            const currentFilename = path.join(DATA_DIR, descriptor.filename);
+            const rollbackFilename = path.join(rollbackConfig, descriptor.filename);
+            if (await exists(currentFilename)) {
+                await fs.promises.mkdir(path.dirname(rollbackFilename), { recursive: true });
+                await fs.promises.copyFile(currentFilename, rollbackFilename);
+            }
+        }
+        const beforeRestore = await createDatabaseBackup('before-site-recovery-intent');
+        recoveryIntent = await beginSiteRecoveryIntent({ archiveFilename: path.resolve(archiveFilename), alarmSnapshotFilename: alarmOutboxFilename,
+            rollbackDatabaseFilename: resolveDatabaseBackupPath(beforeRestore.filename), stagingDirectory, uploadsRoot,
+            databaseType: manifest.databaseType });
+
         uploadsMutationStarted = true;
         for (const group of uploadGroupsToRestore) {
             const currentDirectory = path.join(uploadsRoot, group);
@@ -656,16 +701,6 @@ async function restoreSiteBackupUnlocked(archiveFilename, uploadsRootDir) {
             await fs.promises.mkdir(currentDirectory, { recursive: true });
         }
 
-        for (const archivePath of configPathsToRestore) {
-            const descriptor = describeConfigArchivePath(archivePath);
-            if (!descriptor) continue;
-            const currentFilename = path.join(DATA_DIR, descriptor.filename);
-            const rollbackFilename = path.join(rollbackConfig, descriptor.filename);
-            if (await exists(currentFilename)) {
-                await fs.promises.mkdir(path.dirname(rollbackFilename), { recursive: true });
-                await fs.promises.copyFile(currentFilename, rollbackFilename);
-            }
-        }
         configMutationStarted = configPathsToRestore.length > 0;
         for (const archivePath of configPathsToRestore) {
             const descriptor = describeConfigArchivePath(archivePath);
@@ -689,17 +724,35 @@ async function restoreSiteBackupUnlocked(archiveFilename, uploadsRootDir) {
         if (configMutationStarted) reloadDataSourceConfiguration();
 
         const imported = await importDatabaseBackupFile(databaseFilename, 'site-import');
+        await updateSiteRecoveryIntent(recoveryIntent, 'before-business-restore', { importedBackup: imported.filename });
+        // The collector is stopped by the restore caller. Keep the merge in an
+        // independent local transaction until the business restore succeeds.
+        if (alarmOutboxFilename) alarmImport = getAlarmOutbox().beginImportSnapshot(alarmOutboxFilename);
+        businessRestoreAttempted = true;
         const databaseRestore = await restoreDatabaseBackup(imported.filename);
+        businessRestored = true;
+        await updateSiteRecoveryIntent(recoveryIntent, 'business-restored', { rollbackBackup: databaseRestore.rollback?.filename });
+        alarmImport?.commit();
+        alarmImport = null;
+        const cleanup = await finishSiteRecoveryIntent(recoveryIntent, 'spool-committed');
+        recoveryIntent = null;
         return {
             success: true,
             manifestCreatedAt: manifest.createdAt,
             uploadedFileCount: manifest.uploadedFileCount || 0,
             databaseBackup: imported,
             rollback: databaseRestore.rollback,
-            recovery: databaseRestore.recovery
+            recovery: databaseRestore.recovery,
+            ...cleanup
         };
     } catch (error) {
         const rollbackErrors = [];
+        if (!recoveryIntent && error.recoveryIntent) recoveryIntent = error.recoveryIntent;
+        try { alarmImport?.rollback(); } catch (rollbackError) { rollbackErrors.push(`报警事件队列: ${rollbackError.message}`); }
+        if (businessRestored || (businessRestoreAttempted && error.databaseRollbackCompleted !== true)) {
+            preserveStaging = true;
+            throw new Error(`${error.message}；跨库恢复状态尚未确认，已暂停自动采集与维护。保留恢复意图及证据于 ${recoveryIntent?.evidenceDirectory || stagingDirectory}`);
+        }
         if (configMutationStarted) {
             for (const archivePath of configPathsToRestore) {
                 const descriptor = describeConfigArchivePath(archivePath);
@@ -734,9 +787,22 @@ async function restoreSiteBackupUnlocked(archiveFilename, uploadsRootDir) {
             preserveStaging = true;
             throw new Error(`${error.message}；自动回滚未完成：${rollbackErrors.join('；')}。原始文件保留于 ${stagingDirectory}`);
         }
+        if (recoveryIntent) {
+            try {
+                const cleanup = await finishSiteRecoveryIntent(recoveryIntent, 'rolled-back');
+                if (cleanup.cleanupWarning) error.message += `；恢复证据清理失败: ${cleanup.cleanupWarning}`;
+                recoveryIntent = null;
+            } catch (cleanupError) {
+                preserveStaging = true;
+                throw new Error(`${error.message}；恢复意图清理失败: ${cleanupError.message}`);
+            }
+        }
         throw error;
     } finally {
-        if (!preserveStaging) await fs.promises.rm(stagingDirectory, { recursive: true, force: true });
+        const pendingRecovery = siteRecoveryStatus();
+        if (!preserveStaging && !(pendingRecovery.pending && pendingRecovery.stagingDirectory === stagingDirectory)) {
+            await fs.promises.rm(stagingDirectory, { recursive: true, force: true });
+        }
     }
 }
 

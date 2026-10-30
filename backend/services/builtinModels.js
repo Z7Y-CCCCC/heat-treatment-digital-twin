@@ -1,4 +1,5 @@
 const { presetMetadata } = require('./inspectionPresets');
+const { getPitFurnaceModels } = require('./pitFurnaceModels');
 
 const BUILTIN_MODELS = [
     ...[
@@ -11,6 +12,7 @@ const BUILTIN_MODELS = [
         tags: JSON.stringify(['packaged', 'inspection_v2', 'assembly_demo']), thumbnail: `/assets/models/${id}_preview.png`,
         default_scale: 1, metadata: JSON.stringify(presetMetadata(id)), is_builtin: true
     })),
+    ...getPitFurnaceModels(),
     {
         id: 'factory_hall_lowpoly',
         name: '厂房环境 · 开放式总览模型',

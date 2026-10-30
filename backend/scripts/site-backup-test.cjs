@@ -229,7 +229,7 @@ async function main() {
         const corruptedImport = await importArchive(corruptedArchive);
 
         const checks = {
-            manifestFormatValid: manifest.format === 'heat-treatment-digital-twin-site-backup' && manifest.version === 3,
+            manifestFormatValid: manifest.format === 'heat-treatment-digital-twin-site-backup' && manifest.version === 4,
             databaseIncluded: archivePaths.has('database/factory.db'),
             uploadedModelIncluded: archivePaths.has(`uploads/models/${MODEL_FILENAME}`),
             dataSourceConfigIncluded: archivePaths.has('config/data-sources.json')

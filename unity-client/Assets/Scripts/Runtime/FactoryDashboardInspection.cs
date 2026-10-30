@@ -48,6 +48,12 @@ namespace HeatTreatment.DigitalTwin.Runtime
             public Matrix4x4 HoverMatrix;
             public Mesh HoverGeometry;
             public bool HoverVisible;
+            public bool PickProjectionValid, PickProjectionFine;
+            public Matrix4x4 PickProjectionMatrix;
+            public Mesh PickProjectionGeometry;
+            public Rect PickScreenBounds;
+            public Vector2 PickNarrowNormal;
+            public float PickNormalMin, PickNormalMax, PickTangentMin, PickTangentMax;
         }
 
         private sealed class DeviceInspectionRuntime
@@ -74,13 +80,17 @@ namespace HeatTreatment.DigitalTwin.Runtime
             public float XrayTarget;
             public float NextContextAt;
             public InspectionContextCache ContextCache;
-            public float NextHoverAt;
             public bool HoverSnapshotValid;
             public Vector3 HoverPointer;
             public Matrix4x4 HoverCameraView, HoverCameraProjection;
             public Rect HoverCameraRect;
             public float HoverClock, HoverXray;
             public bool HoverBlocked;
+            public bool HoverHitsSurface;
+            public int PickQueryCount;
+            public bool PickCameraValid;
+            public Matrix4x4 PickCameraView, PickCameraProjection;
+            public Rect PickCameraRect;
             public Bounds ShellLocalBounds;
             public bool TransitionActive => !Paused && (Mathf.Abs(Clock - TargetClock) > .0001f || Mathf.Abs(XrayAmount - XrayTarget) > .0001f);
         }
@@ -371,6 +381,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
         {
             runtime.Prepared = true;
             if (!runtime.Valid || !runtime.Config.Enabled) return;
+            foreach (var state in runtime.Renderers) state.Surface.PrepareForPicking();
             foreach (var part in runtime.Parts)
             {
                 part.WorldBounds = InspectionBounds(part.Renderers, runtime.ModelRoot.position, true);
@@ -462,9 +473,15 @@ namespace HeatTreatment.DigitalTwin.Runtime
             var runtime = device?.Inspection;
             if (runtime == null) return;
             if (!runtime.Config.Enabled || !runtime.Valid) stage = InspectionStage.Solid;
-            runtime.SelectedPart = stage == InspectionStage.PartDetail
+            var selectedPart = stage == InspectionStage.PartDetail
                 ? runtime.Parts.FirstOrDefault(part => string.Equals(part.Config.Id, partId, StringComparison.Ordinal)) : null;
-            if (stage == InspectionStage.PartDetail && runtime.SelectedPart == null) stage = InspectionStage.Exploded;
+            if (stage == InspectionStage.PartDetail && selectedPart == null) stage = InspectionStage.Exploded;
+            // Selecting the already focused part is not a new transition.
+            // Preserve its pause/isolation state and the user's camera instead
+            // of restarting animation, geometry picking and overlay traffic.
+            if (!immediate && stage == InspectionStage.PartDetail && runtime.Stage == stage
+                && runtime.SelectedPart == selectedPart) return;
+            runtime.SelectedPart = selectedPart;
             runtime.Stage = stage;
             runtime.Isolated = false;
             runtime.HoveredPart = null;
@@ -821,39 +838,185 @@ namespace HeatTreatment.DigitalTwin.Runtime
 
         private InspectionPartState PickInspectionPart(DeviceInspectionRuntime runtime, Ray ray)
         {
+            return PickInspectionSurface(runtime, ray, out _, out _);
+        }
+
+        private InspectionPartState PickInspectionSurface(DeviceInspectionRuntime runtime, Ray ray, out float distance, out InspectionRendererState hitState)
+        {
+            runtime.PickQueryCount++;
             InspectionPartState closest = null;
-            var distance = float.PositiveInfinity;
+            distance = float.PositiveInfinity;
+            hitState = null;
             var reveal = InspectionTimeline.ShellProgress(runtime.Config, runtime.Clock);
+            Func<Vector3, bool> acceptShell = null;
+            if (runtime.Config.Shell.Transition == "clip" && reveal > 0f)
+            {
+                var inverse = runtime.ModelRoot.worldToLocalMatrix;
+                var axis = runtime.Config.Shell.Axis == "x" ? 0 : runtime.Config.Shell.Axis == "z" ? 2 : 1;
+                var minimum = runtime.ShellLocalBounds.min[axis];
+                var maximum = runtime.ShellLocalBounds.max[axis];
+                var forward = InspectionShellDirection(runtime) > 0;
+                acceptShell = world => {
+                    var normalized = Mathf.InverseLerp(minimum, maximum, inverse.MultiplyPoint3x4(world)[axis]);
+                    return (forward ? normalized : 1f - normalized) >= reveal;
+                };
+            }
             foreach (var state in runtime.Renderers)
             {
-                if (!state.Surface.IsVisible) continue;
-                bool AcceptShell(Vector3 world)
-                {
-                    if (!state.IsShell || runtime.Config.Shell.Transition != "clip" || reveal <= 0f) return true;
-                    var local = runtime.ModelRoot.InverseTransformPoint(world);
-                    var axis = runtime.Config.Shell.Axis == "x" ? 0 : runtime.Config.Shell.Axis == "z" ? 2 : 1;
-                    var normalized = Mathf.InverseLerp(runtime.ShellLocalBounds.min[axis], runtime.ShellLocalBounds.max[axis], local[axis]);
-                    return (InspectionShellDirection(runtime) > 0 ? normalized : 1f - normalized) >= reveal;
-                }
-                if (!state.Surface.Raycast(ray, out var hit, AcceptShell) || hit >= distance) continue;
+                if (!state.Surface.Raycast(ray, out var hit, state.IsShell ? acceptShell : null, distance)) continue;
                 distance = hit;
+                hitState = state;
                 closest = state.Part; // An unselectable visible mesh correctly occludes a part behind it.
             }
             return closest;
         }
 
-        private void SelectInspectionTarget(Ray ray)
+        private static readonly Vector2[] InspectionPickOffsets = {
+            new Vector2(3, 0), new Vector2(-3, 0), new Vector2(0, 3), new Vector2(0, -3),
+            new Vector2(6, 0), new Vector2(-6, 0), new Vector2(0, 6), new Vector2(0, -6),
+            new Vector2(4.25f, 4.25f), new Vector2(-4.25f, 4.25f),
+            new Vector2(4.25f, -4.25f), new Vector2(-4.25f, -4.25f)
+        };
+
+        private InspectionPartState PickInspectionPartAt(DeviceInspectionRuntime runtime, Vector3 pointer)
+        {
+            var exact = PickInspectionSurface(runtime, _camera.ScreenPointToRay(pointer), out var distance, out var exactState);
+            runtime.HoverHitsSurface = !float.IsPositiveInfinity(distance);
+            // An exact thin part wins. An unselectable visible surface is an
+            // occluder, not empty space through which to select hidden parts.
+            if (exact == null && !float.IsPositiveInfinity(distance)) return null;
+            var rect = _camera.pixelRect;
+            if (!rect.Contains(pointer)) return null;
+            RefreshInspectionPickProjections(runtime);
+            if (exactState?.PickProjectionFine == true) return exact;
+            var candidateNearby = false;
+            foreach (var state in runtime.Renderers)
+            {
+                if (state.Part == null || !state.PickProjectionValid || (exact != null && !state.PickProjectionFine)) continue;
+                var area = state.PickScreenBounds;
+                area.xMin -= 6.1f; area.xMax += 6.1f; area.yMin -= 6.1f; area.yMax += 6.1f;
+                if (area.Contains(pointer)) { candidateNearby = true; break; }
+            }
+            if (!candidateNearby) return exact;
+            // Aim at the projected thin strip itself, rather than hoping that
+            // a fixed angular sampling pattern happens to cross a diagonal pipe.
+            InspectionRendererState first = null, second = null;
+            for (var attempt = 0; attempt < 3; attempt++)
+            {
+                InspectionRendererState candidate = null; var target = Vector2.zero; var nearest = 6.1f;
+                foreach (var state in runtime.Renderers)
+                {
+                    if (state == first || state == second || state.Part == null || !state.PickProjectionValid || !state.PickProjectionFine) continue;
+                    var normal = state.PickNarrowNormal; var tangent = new Vector2(-normal.y, normal.x);
+                    var point = normal * ((state.PickNormalMin + state.PickNormalMax) * .5f)
+                        + tangent * Mathf.Clamp(Vector2.Dot(tangent, pointer), state.PickTangentMin + .001f, state.PickTangentMax - .001f);
+                    var delta = Vector2.Distance(point, pointer);
+                    if (delta >= nearest) continue;
+                    nearest = delta; candidate = state; target = point;
+                }
+                if (candidate == null) break;
+                var part = PickInspectionSurface(runtime, _camera.ScreenPointToRay(target), out var hitDistance, out var hitState);
+                if (part != null && hitState.PickProjectionFine && (exact == null || hitDistance <= distance * 1.002f + .0001f))
+                {
+                    runtime.HoverHitsSurface = true;
+                    return part;
+                }
+                if (attempt == 0) first = candidate; else second = candidate;
+            }
+            if (exact != null) return exact;
+            // Small, bounded screen-pixel assistance only when the center ray
+            // missed. Every sample still has to hit a real visible triangle.
+            foreach (var offset in InspectionPickOffsets)
+            {
+                var point = pointer + new Vector3(offset.x, offset.y, 0);
+                if (!rect.Contains(point)) continue;
+                var nearby = PickInspectionSurface(runtime, _camera.ScreenPointToRay(point), out var nearbyDistance, out var nearbyState);
+                if (nearby == null || nearby == exact) continue;
+                if (exact == null || (nearbyState.PickProjectionFine && nearbyDistance <= distance * 1.002f + .0001f))
+                {
+                    runtime.HoverHitsSurface = true;
+                    return nearby;
+                }
+            }
+            return exact;
+        }
+
+        private readonly Vector2[] _inspectionPickCorners = new Vector2[8];
+        private static readonly int[] InspectionBoxEdges = { 0,1, 0,2, 0,4, 1,3, 1,5, 2,3, 2,6, 3,7, 4,5, 4,6, 5,7, 6,7 };
+
+        private void RefreshInspectionPickProjections(DeviceInspectionRuntime runtime)
+        {
+            var view = _camera.worldToCameraMatrix; var projection = _camera.projectionMatrix; var rect = _camera.pixelRect;
+            var cameraChanged = !runtime.PickCameraValid || !runtime.PickCameraView.Equals(view)
+                || !runtime.PickCameraProjection.Equals(projection) || !runtime.PickCameraRect.Equals(rect);
+            runtime.PickCameraValid = true; runtime.PickCameraView = view; runtime.PickCameraProjection = projection; runtime.PickCameraRect = rect;
+            foreach (var state in runtime.Renderers)
+            {
+                if (state.Part == null || !state.Surface.IsVisible) { state.PickProjectionValid = false; continue; }
+                var matrix = state.Renderer.localToWorldMatrix; var mesh = state.Surface.Geometry;
+                if (!cameraChanged && state.PickProjectionValid && state.PickProjectionMatrix.Equals(matrix)
+                    && ReferenceEquals(mesh, state.PickProjectionGeometry) && !state.Surface.HasDynamicGeometry) continue;
+                state.PickProjectionMatrix = matrix; state.PickProjectionGeometry = mesh;
+                state.PickProjectionValid = false; state.PickProjectionFine = false;
+                var bounds = state.Surface.LocalBounds; var cameraLocal = view * matrix; var clipLocal = projection * cameraLocal;
+                var min = new Vector2(float.PositiveInfinity, float.PositiveInfinity);
+                var max = new Vector2(float.NegativeInfinity, float.NegativeInfinity);
+                var valid = true;
+                for (var index = 0; index < 8; index++)
+                {
+                    var local = bounds.center + Vector3.Scale(bounds.extents,
+                        new Vector3((index & 1) == 0 ? -1 : 1, (index & 2) == 0 ? -1 : 1, (index & 4) == 0 ? -1 : 1));
+                    if (-cameraLocal.MultiplyPoint3x4(local).z <= _camera.nearClipPlane) { valid = false; break; }
+                    var clip = clipLocal * new Vector4(local.x, local.y, local.z, 1);
+                    if (Mathf.Abs(clip.w) < 1e-6f) { valid = false; break; }
+                    var point = new Vector2(rect.x + (clip.x / clip.w + 1) * rect.width * .5f,
+                        rect.y + (clip.y / clip.w + 1) * rect.height * .5f);
+                    _inspectionPickCorners[index] = point; min = Vector2.Min(min, point); max = Vector2.Max(max, point);
+                }
+                if (!valid) continue;
+                state.PickScreenBounds = Rect.MinMaxRect(min.x, min.y, max.x, max.y);
+                var narrowest = Mathf.Min(max.x - min.x, max.y - min.y);
+                var narrowNormal = max.x - min.x <= max.y - min.y ? Vector2.right : Vector2.up;
+                var normalMin = narrowNormal.x > 0 ? min.x : min.y;
+                var normalMax = narrowNormal.x > 0 ? max.x : max.y;
+                // Check oriented widths too: a diagonal pipe must not be
+                // mistaken for a large part just because its axis-aligned box is wide.
+                for (var edge = 0; edge < InspectionBoxEdges.Length; edge += 2)
+                {
+                    var direction = _inspectionPickCorners[InspectionBoxEdges[edge + 1]] - _inspectionPickCorners[InspectionBoxEdges[edge]];
+                    if (direction.sqrMagnitude < .01f) continue;
+                    var normal = new Vector2(-direction.y, direction.x).normalized;
+                    var low = float.PositiveInfinity; var high = float.NegativeInfinity;
+                    for (var index = 0; index < 8; index++) { var d = Vector2.Dot(normal, _inspectionPickCorners[index]); low = Mathf.Min(low, d); high = Mathf.Max(high, d); }
+                    if (high - low < narrowest) { narrowest = high - low; narrowNormal = normal; normalMin = low; normalMax = high; }
+                }
+                state.PickProjectionFine = narrowest <= 12f;
+                state.PickNarrowNormal = narrowNormal; state.PickNormalMin = normalMin; state.PickNormalMax = normalMax;
+                var along = new Vector2(-narrowNormal.y, narrowNormal.x);
+                var alongMin = float.PositiveInfinity; var alongMax = float.NegativeInfinity;
+                for (var index = 0; index < 8; index++) { var d = Vector2.Dot(along, _inspectionPickCorners[index]); alongMin = Mathf.Min(alongMin, d); alongMax = Mathf.Max(alongMax, d); }
+                state.PickTangentMin = alongMin; state.PickTangentMax = alongMax;
+                state.PickProjectionValid = true;
+            }
+        }
+
+        private void SelectInspectionTargetAt(Vector3 pointer)
         {
             var runtime = _selected?.Inspection;
-            if (runtime == null || !runtime.Valid || !runtime.Config.Enabled) return;
+            if (_camera == null || runtime == null || !runtime.Valid || !runtime.Config.Enabled
+                || !_camera.pixelRect.Contains(pointer)) return;
+            // Validate the cached rendered hover against pointer/camera/PLC
+            // transforms. A stationary click reuses it instead of repeating up
+            // to sixteen full-model ray queries and then a fallback query.
+            UpdateInspectionHoverAt(pointer, false);
+            var part = runtime.HoveredPart;
             if (runtime.Stage == InspectionStage.Solid || runtime.Stage == InspectionStage.Xray)
             {
-                if (runtime.Renderers.Any(state => state.Surface.Raycast(ray, out _)))
+                if (runtime.HoverHitsSurface)
                     SetInspectionStage(_selected, runtime.Stage == InspectionStage.Solid ? InspectionStage.Xray : InspectionStage.Exploded);
                 return;
             }
-            var closest = PickInspectionPart(runtime, ray);
-            if (closest != null) SetInspectionStage(_selected, InspectionStage.PartDetail, false, closest.Config.Id);
+            if (part != null) SetInspectionStage(_selected, InspectionStage.PartDetail, false, part.Config.Id);
         }
 
         private bool InspectionHoverChanged(DeviceInspectionRuntime runtime, Vector3 pointer, bool blocked)
@@ -888,24 +1051,49 @@ namespace HeatTreatment.DigitalTwin.Runtime
         {
             var runtime = _selected?.Inspection;
             if (_mode != DashboardMode.Detail || runtime == null || _camera == null || !runtime.Valid) return;
-            if (Time.unscaledTime < runtime.NextHoverAt) return;
-            runtime.NextHoverAt = Time.unscaledTime + .05f;
             var pointer = Input.mousePosition;
             var blocked = (!_webOverlayActive && IsPointerOverDashboard(ScreenToDesign(pointer)))
                 || (!_webOverlayActive && !Application.isFocused) || pointer.x < 0 || pointer.y < 0 || pointer.x > Screen.width || pointer.y > Screen.height;
+            UpdateInspectionHoverAt(pointer, blocked);
+        }
+
+        private void UpdateInspectionHoverAt(Vector3 pointer, bool blocked)
+        {
+            var runtime = _selected?.Inspection;
+            if (_mode != DashboardMode.Detail || runtime == null || _camera == null || !runtime.Valid) return;
             // Keep drawing the last outline every frame. Only the expensive
             // exact picking is skipped when every input to the pick is unchanged.
+            var previousPointer = runtime.HoverPointer;
             if (!InspectionHoverChanged(runtime, pointer, blocked)) return;
-            var hovered = blocked ? null : PickInspectionPart(runtime, _camera.ScreenPointToRay(pointer));
-            if (runtime.HoveredPart == hovered) return;
+            if (blocked) runtime.HoverHitsSurface = false;
+            var hovered = blocked ? null : PickInspectionPartAt(runtime, pointer);
+            var partChanged = runtime.HoveredPart != hovered;
             runtime.HoveredPart = hovered;
-            PublishInspectionContext(_selected);
+            if (!partChanged && (hovered == null || previousPointer.Equals(pointer))) return;
+            InspectionHoverUpdated?.Invoke(new JObject {
+                ["viewId"] = _activeViewId ?? string.Empty, ["deviceId"] = _selected.Device?.Id ?? string.Empty,
+                ["inspectionStage"] = InspectionStageKey(runtime.Stage),
+                ["inspectionHoveredPartId"] = hovered?.Config.Id ?? string.Empty,
+                ["inspectionHoverPointer"] = HoverPointerProjection(runtime)
+            });
+        }
+
+        private static JObject HoverPointerProjection(DeviceInspectionRuntime runtime)
+        {
+            return new JObject { ["x"] = runtime.HoverPointer.x / Mathf.Max(1, Screen.width),
+                ["y"] = 1f - runtime.HoverPointer.y / Mathf.Max(1, Screen.height),
+                ["visible"] = runtime.HoveredPart != null && !runtime.HoverBlocked };
         }
 
         private void LateUpdate()
         {
+            if (_mode == DashboardMode.Overview) { UpdateDeviceHover(); return; }
+            UpdateDeviceHoverAt(Input.mousePosition, true);
             var runtime = _selected?.Inspection;
-            if (_mode != DashboardMode.Detail || runtime == null) return;
+            if (runtime == null) return;
+            // This controller executes after OrbitCameraController. Pick against
+            // the camera/animated part transforms that will be rendered now.
+            UpdateInspectionHover();
             DrawInspectionHover(runtime);
             if (Time.unscaledTime >= runtime.NextContextAt) PublishInspectionContext(_selected);
         }
@@ -1029,6 +1217,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
             SetInspectionContextValue(context, "inspectionIsolated", runtime.Isolated);
             SetInspectionContextValue(context, "inspectionLabelsEnabled", runtime.LabelsEnabled);
             SetInspectionContextValue(context, "inspectionHoveredPartId", runtime.HoveredPart?.Config.Id ?? string.Empty);
+            context["inspectionHoverPointer"] = HoverPointerProjection(runtime);
             // Synchronous borrowed context: the runtime subscriber clones it before
             // storing/sending. A replacement inspection plan owns a fresh cache.
             InspectionContextChanged?.Invoke(context);

@@ -1,5 +1,7 @@
 using System;
 using System.Runtime.CompilerServices;
+using System.Threading;
+using System.Threading.Tasks;
 using UnityEngine;
 using UnityEngine.Rendering;
 
@@ -46,7 +48,42 @@ namespace HeatTreatment.DigitalTwin.Rendering
             return _baked;
         }
 
-        public bool Raycast(Ray ray, out float distance, Func<Vector3, bool> acceptWorldPoint = null)
+        public void PrepareForPicking()
+        {
+            // Static CAD indexes are prepared while the device is loading, not
+            // lazily on the first hover. Animated/skinned meshes stay per-frame.
+            if (_skinned != null) return;
+            EnsureIndex(_filter?.sharedMesh);
+        }
+
+        public static async Task PrepareStaticIndexesAsync(GameObject root, CancellationToken cancellationToken)
+        {
+            // Copy Unity mesh data on its owning thread. Only the CPU-only BVH
+            // build runs on a worker, keeping the loading screen responsive.
+            foreach (var filter in root.GetComponentsInChildren<MeshFilter>(true))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (filter == null) continue;
+                var mesh = filter.sharedMesh;
+                if (mesh == null || !mesh.isReadable || StaticIndexes.TryGetValue(mesh, out _)) continue;
+                var vertices = mesh.vertices;
+                var triangles = mesh.triangles;
+                var index = await Task.Run(() => new TriangleRayIndex(vertices, triangles), cancellationToken);
+                cancellationToken.ThrowIfCancellationRequested();
+                if (mesh != null) StaticIndexes.GetValue(mesh, _ => index);
+            }
+        }
+
+        private void EnsureIndex(Mesh mesh)
+        {
+            if (mesh == null || !mesh.isReadable || (_cachedMesh == mesh && _index != null)) return;
+            _cachedMesh = mesh;
+            _index = _skinned != null
+                ? new TriangleRayIndex(mesh.vertices, mesh.triangles, false)
+                : StaticIndexes.GetValue(mesh, source => new TriangleRayIndex(source.vertices, source.triangles));
+        }
+
+        public bool Raycast(Ray ray, out float distance, Func<Vector3, bool> acceptWorldPoint = null, float maxDistance = float.PositiveInfinity)
         {
             distance = float.PositiveInfinity;
             if (!IsVisible || !Renderer.bounds.IntersectRay(ray)) return false;
@@ -61,23 +98,14 @@ namespace HeatTreatment.DigitalTwin.Rendering
                 }
                 return false;
             }
-            if (_cachedMesh != mesh || _index == null)
-            {
-                _cachedMesh = mesh;
-                // Imported static geometry is shared between instances. A weak
-                // mesh key releases the acceleration data with the model cache.
-                // Deforming meshes stay exact and never reuse stale geometry.
-                _index = _skinned != null
-                    ? new TriangleRayIndex(mesh.vertices, mesh.triangles, false)
-                    : StaticIndexes.GetValue(mesh, source => new TriangleRayIndex(source.vertices, source.triangles));
-            }
+            EnsureIndex(mesh);
             // Do not normalize this direction: its parameter remains a world-ray distance,
             // including mirrored or non-unit-scaled equipment instances.
             var inverse = Renderer.localToWorldMatrix.inverse;
             var origin = inverse.MultiplyPoint3x4(ray.origin);
             var direction = inverse.MultiplyVector(ray.direction);
             return _index.Raycast(origin, direction, out distance,
-                acceptWorldPoint == null ? (Func<float, bool>)null : hit => acceptWorldPoint(ray.GetPoint(hit)));
+                acceptWorldPoint == null ? (Func<float, bool>)null : hit => acceptWorldPoint(ray.GetPoint(hit)), maxDistance);
         }
 
         public void DrawOutline(Material material, Camera camera, Color color, float widthPixels)

@@ -575,9 +575,10 @@ async function main() {
         });
         await entered.promise;
         const closing = database.closeDb();
-        await nextTurn();
-        assert.equal(database.getDbStatus().connected, true);
-        release.resolve();
+        try {
+            await nextTurn();
+            assert.equal(database.getDbStatus().connected, true);
+        } finally { release.resolve(); }
         await transaction;
         await closing;
         const reopened = await database.getDb();

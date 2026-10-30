@@ -1,4 +1,5 @@
 const { createInspectionDefaults, normalizeInspection } = require('../../shared/inspectionConfig.cjs');
+const { getPitFurnaceModels, getPitInspectionPresets } = require('./pitFurnaceModels');
 
 // Asset-authored, editable examples. Renderers contain no equipment-specific logic.
 // These are presentation arrangements, not verified maintenance/disassembly procedures.
@@ -87,8 +88,10 @@ const PRESETS = [
     ], 38)
 ];
 
-function getInspectionPresets() { return JSON.parse(JSON.stringify(PRESETS)); }
+function getInspectionPresets() { return JSON.parse(JSON.stringify([...PRESETS, ...getPitInspectionPresets()])); }
 function presetMetadata(modelId) {
+    const pit = getPitFurnaceModels().find(model => model.id === modelId);
+    if (pit) return JSON.parse(pit.metadata);
     const item = PRESETS.find(item => item.modelId === modelId);
     if (!item) return null;
     return JSON.parse(JSON.stringify({ ...assetMetadata[modelId], inspection: item.inspection }));

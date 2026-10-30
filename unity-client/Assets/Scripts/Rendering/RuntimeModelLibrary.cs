@@ -108,6 +108,10 @@ namespace HeatTreatment.DigitalTwin.Rendering
                 else _templates[key] = template;
             }
 
+            var inspection = InspectionConfigResolver.Resolve(template.Asset, device);
+            await InspectionMeshSurface.PrepareStaticIndexesAsync(template.Root, cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+            if (_destroyed) throw new ObjectDisposedException(nameof(RuntimeModelLibrary));
             var clone = Instantiate(template.Root, parent, false);
             clone.name = string.IsNullOrWhiteSpace(device.Name) ? device.Id : device.Name;
             ApplyDeviceTransform(clone.transform, device, template.Asset);
@@ -120,7 +124,7 @@ namespace HeatTreatment.DigitalTwin.Rendering
                 Root = clone,
                 Asset = template.Asset,
                 Bindings = template.Bindings,
-                Inspection = InspectionConfigResolver.Resolve(template.Asset, device),
+                Inspection = inspection,
                 OptimizationReport = template.OptimizationReport,
                 IsFallback = template.IsFallback,
                 LoadError = template.LoadError

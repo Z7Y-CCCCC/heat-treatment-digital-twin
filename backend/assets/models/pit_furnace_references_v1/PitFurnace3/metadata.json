@@ -1,0 +1,30 @@
+{
+  "model_id": "pit_furnace_3_v1",
+  "display_name": "井式炉3",
+  "reference": "codex-clipboard-141f63ef-ad6c-4ffa-8de8-b2ddb70fbb21.png",
+  "reference_priority": "latest five original CAD screenshots only",
+  "estimated_size_m_blender_xyz": [
+    3.2874999046325684,
+    1.9063999652862549,
+    4.617000102996826
+  ],
+  "dimensional_accuracy": "visual reconstruction, not dimensioned manufacturing CAD",
+  "depth_is_estimated": true,
+  "partBindings": [],
+  "groups": [
+    "f3_fixed_base_and_tower_frame",
+    "f3_T_shoulder_enclosure",
+    "f3_suspended_inner_workpiece_cage",
+    "external_cover_f3_front_shell",
+    "external_cover_f3_reservoir_front",
+    "f3_thick_section_walls_and_rear_lining",
+    "f3_upper_internal_guide",
+    "f3_low_left_reservoir_and_pump",
+    "f3_exposed_process_pipework",
+    "f3_upper_right_double_gauge",
+    "f3_lower_center_pump"
+  ],
+  "cover_visibility": "Hide external_cover groups to expose the explicitly modelled chamber and suspended fixture.",
+  "material_source": "C:\\Users\\27323\\OneDrive\\Desktop\\大屏\\backend\\assets\\models\\photo_equipment_models_v6_study.blend",
+  "original_assets_modified": false
+}

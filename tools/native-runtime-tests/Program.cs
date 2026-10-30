@@ -13,11 +13,13 @@ internal static partial class Program
     {
         var tests = new (string Name, Func<Task> Run)[]
         {
+            ("factory activation and scoped configuration changes select reload or live update correctly", ConfigurationChangesAreScoped),
             ("realtime receive progresses while the render synchronization context is idle", ReceiveDoesNotWaitForRender),
             ("cancelled send cannot release another owner's semaphore", CancelledSendKeepsLock),
             ("stale queued send cannot move to a replacement session", QueuedSendKeepsSession),
             ("queued outbound messages snapshot their JSON before waiting", QueuedSendSnapshotsMessage),
             ("old cancelled connection loop cannot dispose its replacement", RestartKeepsNewSocket),
+            ("unanswered websocket upgrades time out without stopping the client lifetime", UnansweredUpgradeTimesOut),
             ("old connection state messages cannot overwrite a new session", StaleStateIsIgnored),
             ("inbound queue merges PLC patches and preserves control/fault barriers", InboundQueuePreservesOrder),
             ("inbound queue enforces byte/count limits and session isolation", InboundQueueLimits),
@@ -32,6 +34,22 @@ internal static partial class Program
             Console.WriteLine($"PASS: {test.Name}");
         }
         Console.WriteLine($"Passed {tests.Length}/{tests.Length} isolated native runtime checks.");
+    }
+
+    private static Task ConfigurationChangesAreScoped()
+    {
+        var oldFactory = "factory_default";
+        var newFactory = "factory_pit_furnaces_v1";
+        Check(ConfigurationSyncPolicy.ChangeAction(new JObject { ["activeFactoryId"] = newFactory }, oldFactory) == "reload", "Activation without settings was silently ignored.");
+        Check(ConfigurationSyncPolicy.ChangeAction(new JObject { ["activeFactoryId"] = newFactory }, newFactory) == "ignore", "An already loaded factory need not rebuild.");
+        Check(ConfigurationSyncPolicy.ChangeAction(new JObject { ["factoryId"] = oldFactory, ["reloadRequired"] = true }, newFactory) == "ignore", "Another factory's save invalidated this scene.");
+        Check(ConfigurationSyncPolicy.ChangeAction(new JObject { ["factoryId"] = newFactory, ["reloadRequired"] = true }, newFactory) == "reload", "Committed layout save did not rebuild.");
+        Check(ConfigurationSyncPolicy.ChangeAction(new JObject { ["factoryId"] = newFactory, ["settings"] = new JObject { ["factory_name"] = "New name" } }, newFactory) == "settings", "Ordinary settings should update live.");
+        Check(ConfigurationSyncPolicy.ChangeAction(new JObject { ["settings"] = new JObject { ["native_environment_config"] = "{}" } }, newFactory) == "reload", "Environment hierarchy was not rebuilt.");
+        Check(ConfigurationSyncPolicy.ChangeAction(new JObject { ["keys"] = new JArray("layout") }, newFactory) == "reload", "Legacy invalidation without settings was lost.");
+        Check(!ConfigurationSyncPolicy.MatchesFactory(new JObject { ["factoryId"] = newFactory }, oldFactory), "An old scene can acknowledge navigation to a different factory.");
+        Check(ConfigurationSyncPolicy.MatchesFactory(new JObject { ["factoryId"] = newFactory }, newFactory), "Target factory cannot acknowledge its own navigation.");
+        return Task.CompletedTask;
     }
 
     private static FieldInfo Field(string name) => typeof(RealtimeWebSocketClient)
@@ -140,6 +158,29 @@ internal static partial class Program
         InvokeVoid(client, "Update");
         Check(states.SequenceEqual(new[] { "connected" }), "Stale state escaped generation filtering.");
         return Task.CompletedTask;
+    }
+
+    private static async Task UnansweredUpgradeTimesOut()
+    {
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        using var socket = new ClientWebSocket();
+        socket.Options.Proxy = null;
+        using var lifetime = new CancellationTokenSource();
+        var client = new RealtimeWebSocketClient();
+        var connecting = (Task)Invoke(client, "ConnectAndHelloAsync", socket,
+            new Uri($"ws://127.0.0.1:{((IPEndPoint)listener.LocalEndpoint).Port}/"), lifetime.Token, TimeSpan.FromMilliseconds(100));
+        using var accepted = await listener.AcceptTcpClientAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        try
+        {
+            await connecting.WaitAsync(TimeSpan.FromSeconds(5));
+            throw new InvalidOperationException("Unanswered HTTP upgrade never hit the connection deadline.");
+        }
+        catch (TimeoutException error)
+        {
+            Check(error.Message.Contains("connect/hello"), "The test wait expired instead of the connection deadline.");
+        }
+        Check(!lifetime.IsCancellationRequested, "A connect timeout cancelled the entire reconnect lifetime.");
     }
 
     private static Task CheckWebOrigins()

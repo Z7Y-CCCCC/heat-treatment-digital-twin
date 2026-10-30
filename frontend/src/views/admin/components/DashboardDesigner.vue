@@ -6,6 +6,7 @@ import { applyReferenceHudLayout } from '../../../runtime/referenceHudLayout.js'
 import { applyFactoryHudModules } from '../../../runtime/factoryHudModules.js'
 import { applyVisibilityAction, matchesRule, widgetRuntimeVisible } from '../../../runtime/dashboardRules.js'
 import ColorField from './ColorField.vue'
+import { DEVICE_TOOLTIP_FIELDS, normalizeDeviceTooltip, validDeviceTooltipPointKey } from '../../../../../shared/deviceTooltip.mjs'
 import MapGeometryPreview from './MapGeometryPreview.vue'
 import TemplateFieldMapper from './TemplateFieldMapper.vue'
 import { templateFieldBindings, remapCopiedWidgetEvents } from '../../../runtime/templateFieldMapping.js'
@@ -112,6 +113,21 @@ const sitePreviewImage = ref(DEFAULT_STREET_IMAGE)
 // device's data is used while editing a device view without cloning widgets.
 const editorDeviceId = ref('')
 const viewInspectorTab = ref('camera')
+const deviceTooltipSupported = computed(() => ['factory', 'workshop', 'line'].includes(currentView.value?.mode))
+const deviceTooltipConfig = computed(() => normalizeDeviceTooltip(currentView.value?.metadata?.deviceTooltip))
+const deviceTooltipPointOptions = computed(() => [...new Map(points.value.map(point => {
+  const key = `${point.category || point.category_resolved || 'analog'}.${point.value_role || point.name || ''}`
+  return [key, { key, label: `${point.label || point.name || key}${point.unit ? ` (${point.unit})` : ''}` }]
+}).filter(([key]) => validDeviceTooltipPointKey(key))).values()])
+function updateDeviceTooltip(key, value) {
+  if (!deviceTooltipSupported.value) return
+  currentView.value.metadata = { ...currentView.value.metadata, deviceTooltip: normalizeDeviceTooltip({ ...deviceTooltipConfig.value, [key]: value }) }
+  commitHistory('修改设备悬浮提示')
+}
+function toggleDeviceTooltipItem(key, value, enabled) {
+  const items = deviceTooltipConfig.value[key]
+  updateDeviceTooltip(key, enabled ? [...items, value] : items.filter(item => item !== value))
+}
 const viewPanelCollapsed = ref(false)
 const PANEL_LAYOUT_KEY = 'dashboard-designer-panel-layout-v1'
 const panelLayout = reactive(readPanelLayout())
@@ -2838,6 +2854,22 @@ onBeforeUnmount(() => {
             </section>
             <section v-else-if="viewInspectorTab === 'components'" class="inspector-section">
               <div class="readonly-banner"><span>所见即所得</span>下面列出当前视角画布中的组件；顶部导航状态和返回键是两个独立组件，可分别删除 / 隐藏 / 锁定。Unity 诊断面板、设备浮标等运行时系统项不占画布。取消勾选可暂时隐藏，隐藏后可在“已隐藏组件”中恢复。</div>
+              <fieldset v-if="deviceTooltipSupported" class="device-tooltip-settings">
+                <legend>设备悬浮提示</legend>
+                <p class="readonly-banner">仅作用于当前全厂 / 车间 / 产线视角。保存并发布后自动同步到大屏；不影响点击设备及下层部件提示。</p>
+                <label><input type="checkbox" :checked="deviceTooltipConfig.enabled" @change="updateDeviceTooltip('enabled', $event.target.checked)" /> 开启设备悬浮提示</label>
+                <template v-if="deviceTooltipConfig.enabled">
+                  <label>提示标题<input :value="deviceTooltipConfig.title" maxlength="80" @change="updateDeviceTooltip('title', $event.target.value)" /></label>
+                  <label>补充说明<textarea :value="deviceTooltipConfig.description" maxlength="500" @change="updateDeviceTooltip('description', $event.target.value)"></textarea></label>
+                  <strong>显示信息</strong>
+                  <div class="device-tooltip-field-options"><label v-for="field in DEVICE_TOOLTIP_FIELDS" :key="field.id"><input type="checkbox" :checked="deviceTooltipConfig.fields.includes(field.id)" @change="toggleDeviceTooltipItem('fields', field.id, $event.target.checked)" /> {{ field.label }}</label></div>
+                  <details><summary>实时点位（最多 8 项，按当前设备匹配）</summary>
+                    <p v-if="!deviceTooltipPointOptions.length">暂无已配置点位</p>
+                    <label v-for="point in deviceTooltipPointOptions" :key="point.key"><input type="checkbox" :checked="deviceTooltipConfig.pointKeys.includes(point.key)" :disabled="!deviceTooltipConfig.pointKeys.includes(point.key) && deviceTooltipConfig.pointKeys.length >= 8" @change="toggleDeviceTooltipItem('pointKeys', point.key, $event.target.checked)" /> {{ point.label }} <small>{{ point.key }}</small></label>
+                  </details>
+                  <label><input type="checkbox" :checked="deviceTooltipConfig.showHint" @change="updateDeviceTooltip('showHint', $event.target.checked)" /> 显示“点击进入设备”提示</label>
+                </template>
+              </fieldset>
               <label class="visibility-bound-device"><input v-model="currentView.componentState.hideNonTargetDevices" type="checkbox" @change="commitHistory('修改目标设备显隐')" /> 只显示目标范围内的设备</label>
               <div v-if="viewComponents.length" class="view-component-list"><label v-for="item in viewComponents" :key="item.id"><input type="checkbox" checked @change="toggleViewComponent(currentView, item.id, $event.target.checked)" /><span>{{ item.label }}</span><small>{{ item.type === 'navigation' ? '顶部导航' : item.type === 'return_button' ? '返回键' : widgetTypeLabel(item.type) }}</small></label></div>
               <p v-else-if="!currentViewIsMapSurface" class="empty-inspector">当前视角还没有显示组件，请从左侧拖入组件到画布。</p>
@@ -2909,6 +2941,7 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+.device-tooltip-settings{display:grid;gap:10px;margin:0 0 18px;padding:14px;border:1px solid #dce4f2;border-radius:10px}.device-tooltip-settings legend{font-weight:700}.device-tooltip-settings label{display:flex;gap:7px;align-items:center;flex-wrap:wrap}.device-tooltip-settings input:not([type=checkbox]),.device-tooltip-settings textarea{width:100%}.device-tooltip-settings input[type=checkbox]{width:auto}.device-tooltip-settings details label{margin-top:8px}
 .template-import-dialog{width:min(720px,90vw)!important;max-height:85vh;overflow:auto}.template-reference-list{display:grid;gap:12px;max-height:48vh;overflow:auto;text-align:left}.template-reference-list label{display:grid;gap:5px}.template-reference-list select{width:100%;padding:8px;border:1px solid #9ab1c7;border-radius:6px;color:#1d2939;background:white}.template-reference-list small{font-size:11px;opacity:.75}
 .dashboard-designer-shell { --panel:#0d1724; --panel2:#111f2f; --line:rgba(130,184,226,.16); --text:#eaf4ff; --muted:#8fa5ba; --accent:#42a5f5; display:flex; flex-direction:column; height:clamp(720px,calc(100vh - 150px),1080px); min-height:720px; overflow-x:auto; overflow-y:hidden; border:1px solid rgba(53,105,148,.26); border-radius:16px; color:var(--text); background:#08111c; box-shadow:0 22px 52px rgba(9,22,34,.18); scrollbar-color:#29445e #08111b; scrollbar-width:thin; font-family:var(--hud-font-text,"SF Pro Text","Inter","Segoe UI","PingFang SC","Microsoft YaHei UI",sans-serif); font-synthesis:none; -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility; }
 .designer-toolbar { flex:0 0 58px; display:flex; align-items:center; gap:14px; min-width:1180px; padding:0 14px; border-bottom:1px solid var(--line); background:linear-gradient(180deg,#142335,#0d1927); }
@@ -3102,4 +3135,10 @@ onBeforeUnmount(() => {
 .http-field-list button:hover,.http-field-list button.selected{border-color:#7d9be2;background:#edf3ff}
 .http-field-list code{overflow:hidden;font-size:11px;text-overflow:ellipsis;white-space:nowrap}
 .http-field-list small{overflow:hidden;color:#667085;font-size:10px;text-overflow:ellipsis;white-space:nowrap}
+.inspector-section .device-tooltip-settings label{display:grid;gap:5px;margin:0}
+.inspector-section .device-tooltip-settings label:has(input[type="checkbox"]){display:flex;flex-direction:row;justify-content:flex-start;align-items:center;gap:7px;min-height:22px}
+.inspector-section .device-tooltip-settings input[type="checkbox"]{width:14px;height:14px;min-width:14px;margin:0;padding:0;flex:0 0 14px}
+.inspector-section .device-tooltip-settings textarea{min-height:48px;resize:vertical}
+.inspector-section .device-tooltip-settings .readonly-banner{margin:0;font-size:11px}
+.inspector-section .device-tooltip-field-options{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
 </style>

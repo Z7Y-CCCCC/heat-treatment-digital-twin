@@ -6,20 +6,20 @@ const { spawn } = require('child_process');
 const { BACKEND_DIR, createRunDirectory } = require('./integration-test-utils.cjs');
 
 const scripts = [
-    'endurance-continuity.test.cjs', 'endurance-memory.test.cjs', 'endurance-mysql-memory.test.cjs', 'endurance-report-io.test.cjs',
+    'endurance-continuity.test.cjs', 'endurance-memory.test.cjs', 'endurance-mysql-memory.test.cjs', 'endurance-mysql-cleanup.test.cjs', 'endurance-report-io.test.cjs',
     'test-isolation-test.cjs', 'database-readiness-test.cjs', 'bounded-process-log-test.cjs', 'history-retention-test.cjs', 'map-surface-schema-test.cjs',
     'group-portal-settings-test.cjs', 'appearance-assets-test.cjs',
-    'admin-auth-test.cjs', 'license-test.cjs', 'release-package-test.cjs',
+    'admin-auth-test.cjs', 'license-test.cjs', 'release-package-test.cjs', 'package-resource-isolation-test.cjs',
     'math-expression-test.cjs', 'business-data-test.cjs', 'data-source-test.cjs',
     'data-source-http-regression-test.cjs', 'data-source-designer-test.cjs',
     'spatial-hierarchy-test.cjs', 'cast-discovery-test.cjs',
-    'backend-concurrency-test.cjs', 'backend-recovery-edge-test.cjs',
-    'backend-service-failure-test.cjs', 'ws-queue-test.cjs',
-    'admin-auth-integration-test.cjs', 'factory-isolation-test.cjs', 'factory-geocoder-test.cjs', 'production-readiness-test.cjs',
+    'backend-concurrency-test.cjs', 'backend-long-runtime-test.cjs', 'backend-recovery-edge-test.cjs',
+    'backend-service-failure-test.cjs', 'alarm-outbox-test.cjs', 'mysql-runtime-safety-test.cjs', 'site-recovery-intent-test.cjs', 'ws-queue-test.cjs',
+    'admin-auth-integration-test.cjs', 'factory-isolation-test.cjs', 'configuration-sync-test.cjs', 'factory-geocoder-test.cjs', 'production-readiness-test.cjs',
     'data-point-sync-test.cjs', 'deletion-safety-test.cjs',
-    'native-dashboard-config-test.cjs', 'dashboard-designer-test.cjs', 'mcp-platform-integration-test.cjs', 'plc-protocol-test.cjs',
+    'native-dashboard-config-test.cjs', 'inspection-hover-test.cjs', 'device-hover-test.cjs', 'dashboard-designer-test.cjs', 'mcp-platform-integration-test.cjs', 'plc-protocol-test.cjs',
     'plc-value-precision-test.cjs', 's7-read-safety-test.cjs',
-    'inspection-platform-test.cjs',
+    'inspection-platform-test.cjs', 'device-inspection-layout-test.cjs',
     'database-retention-test.cjs', 'site-backup-test.cjs', 'backup-storage-test.cjs', 'project-bundle-test.cjs',
     'power-recovery-test.cjs', 'runtime-display-test.cjs', 'http-integrity-test.cjs'
 ];

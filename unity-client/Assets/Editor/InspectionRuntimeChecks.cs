@@ -190,6 +190,26 @@ namespace HeatTreatment.DigitalTwin.Editor
                 Check(HoverChanged(), "replaced mesh invalidates hover picking even at the same transform");
                 a.GetComponent<MeshFilter>().sharedMesh = mesh; HoverChanged();
                 var publishContext = typeof(FactoryDashboardController).GetMethod("PublishInspectionContext", BindingFlags.Instance | BindingFlags.NonPublic);
+                var hoverAt = typeof(FactoryDashboardController).GetMethod("UpdateInspectionHoverAt", BindingFlags.Instance | BindingFlags.NonPublic);
+                JObject hoverMessage = null;
+                var hoverMessages = 0;
+                dashboard.InspectionHoverUpdated += value => { hoverMessage = value; hoverMessages++; };
+                var rendererForHover = a.GetComponent<Renderer>();
+                camera.transform.position = rendererForHover.bounds.center + Vector3.back * 5f;
+                camera.transform.LookAt(rendererForHover.bounds.center);
+                pointer = camera.WorldToScreenPoint(rendererForHover.bounds.center);
+                inspectionFixture.GetType().GetField("HoverSnapshotValid").SetValue(inspectionFixture, false);
+                hoverAt.Invoke(dashboard, new object[] { pointer, false });
+                Check(hoverMessage != null && !string.IsNullOrEmpty(hoverMessage.Value<string>("inspectionHoveredPartId")), "hover enters in the current rendered frame without a 50ms timer");
+                var beforeHoverMessages = hoverMessages;
+                pointer.x += .01f;
+                hoverAt.Invoke(dashboard, new object[] { pointer, false });
+                Check(hoverMessages == beforeHoverMessages + 1 && hoverMessage["inspectionHoverPointer"].Value<bool>("visible"), "same-part pointer movement emits only a compact hover update in the same frame");
+                hoverAt.Invoke(dashboard, new object[] { pointer, true });
+                Check(hoverMessage.Value<string>("inspectionHoveredPartId") == "" && !hoverMessage["inspectionHoverPointer"].Value<bool>("visible"), "hover clears immediately when the pointer is blocked, without waiting for context polling");
+                beforeHoverMessages = hoverMessages;
+                hoverAt.Invoke(dashboard, new object[] { pointer, true });
+                Check(hoverMessages == beforeHoverMessages, "stationary blocked pointer generates no hover traffic");
                 var cachedParts = context["inspectionParts"];
                 var cachedPointIds = cachedParts[0]["pointIds"];
                 var cachedAnchor = cachedParts[0]["anchor"];
@@ -245,6 +265,7 @@ namespace HeatTreatment.DigitalTwin.Editor
                     Check(surface.Raycast(new Ray(worldPoint - normal * 7, normal), out hit) && Math.Abs(hit - 7) < .001f,
                         "mirrored nonuniform model scale preserves exact world hit distance");
                 }
+                CheckFinePartAssistance(mesh, material, scene, Check);
                 Check(runtimeErrors.Count == 0, $"no Unity error/exception logs: {string.Join("; ", runtimeErrors)}");
                 Debug.Log($"[InspectionChecks] ALL {checks} native checks passed; no database/PLC or saved-scene writes.");
             }
@@ -254,6 +275,138 @@ namespace HeatTreatment.DigitalTwin.Editor
                 if (dashboard != null) dashboard.ClearFactory();
                 EditorSceneManager.ClosePreviewScene(scene);
                 foreach (var fixture in fixtures) if (fixture != null) Object.DestroyImmediate(fixture);
+            }
+        }
+
+        private static void CheckFinePartAssistance(Mesh mesh, Material material, Scene scene, Action<bool, string> check)
+        {
+            var root = new GameObject("fine-part-fixture");
+            var cameraRoot = new GameObject("fine-part-camera");
+            var dashboardRoot = new GameObject("fine-part-dashboard");
+            SceneManager.MoveGameObjectToScene(root, scene);
+            SceneManager.MoveGameObjectToScene(cameraRoot, scene);
+            SceneManager.MoveGameObjectToScene(dashboardRoot, scene);
+            var dashboard = dashboardRoot.AddComponent<FactoryDashboardController>();
+            try
+            {
+                GameObject Box(string name, Vector3 position, Vector3 scale)
+                {
+                    var box = new GameObject(name); box.transform.SetParent(root.transform, false);
+                    box.transform.localPosition = position; box.transform.localScale = scale;
+                    box.AddComponent<MeshFilter>().sharedMesh = mesh;
+                    box.AddComponent<MeshRenderer>().sharedMaterial = material;
+                    return box;
+                }
+                var needle = Box("FineNeedle", Vector3.zero, new Vector3(.006f, .9f, .05f));
+                var body = Box("Body", new Vector3(0, 0, 1), new Vector3(2, 2, .1f)).GetComponent<Renderer>();
+                var shield = Box("Occluder", new Vector3(0, 0, -1), new Vector3(2, 2, .1f)).GetComponent<Renderer>();
+                shield.forceRenderingOff = true;
+                var camera = cameraRoot.AddComponent<Camera>();
+                camera.orthographic = true; camera.orthographicSize = 5;
+                camera.pixelRect = new Rect(0, 0, 1600, 900); camera.aspect = 16f / 9f;
+                camera.transform.position = new Vector3(0, 0, -10); camera.transform.LookAt(Vector3.zero);
+                var orbit = cameraRoot.AddComponent<OrbitCameraController>(); orbit.enabled = false;
+                dashboard.Initialize(camera, orbit, null); dashboard.BeginFactory(new FactoryConfigDto());
+                dashboard.SetWebOverlayActive(true);
+                JObject context = null; var contextMessages = 0;
+                dashboard.InspectionContextChanged += value => { context = value; contextMessages++; };
+                var device = new DeviceDto { Id = "fine", Name = "Fine", Scale = 1 };
+                dashboard.RegisterDevice(device, root, new DeviceInspectionConfigDto { Enabled = true,
+                    Parts = new List<DeviceInspectionPartDto> {
+                        new DeviceInspectionPartDto { Id = "needle", Name = "Needle", NodeName = "FineNeedle" },
+                        new DeviceInspectionPartDto { Id = "body", Name = "Body", NodeName = "Body" } } });
+                dashboard.ApplyInspectionCommand(device.Id, new JObject { ["command"] = "stage", ["stage"] = "exploded" }, out _);
+                dashboard.ApplyInspectionCommand(device.Id, new JObject { ["command"] = "progress", ["progress"] = 1f }, out _);
+                // Capture Body as originally visible. Temporary test hiding
+                // must not make later un-isolation restore it as permanently off.
+                body.forceRenderingOff = true;
+                var flags = BindingFlags.Instance | BindingFlags.NonPublic;
+                var selected = typeof(FactoryDashboardController).GetField("_selected", flags).GetValue(dashboard);
+                var runtime = selected.GetType().GetField("Inspection").GetValue(selected);
+                var exact = typeof(FactoryDashboardController).GetMethod("PickInspectionPart", flags);
+                var assisted = typeof(FactoryDashboardController).GetMethod("PickInspectionPartAt", flags);
+                var center = camera.WorldToScreenPoint(needle.GetComponent<Renderer>().bounds.center);
+                var nearby = center + Vector3.right * 3;
+                check(exact.Invoke(dashboard, new object[] { runtime, camera.ScreenPointToRay(nearby) }) == null, "subpixel-thin part fixture is missed by the exact center ray");
+                check(assisted.Invoke(dashboard, new object[] { runtime, nearby }) != null, "screen-pixel assistance acquires a thin part three pixels away");
+                check(assisted.Invoke(dashboard, new object[] { runtime, center + Vector3.right * 14 }) == null, "bounded assistance does not select a distant part");
+                string PickId(Vector3 point) {
+                    var value = assisted.Invoke(dashboard, new object[] { runtime, point });
+                    return (value?.GetType().GetField("Config").GetValue(value) as DeviceInspectionPartDto)?.Id;
+                }
+                body.forceRenderingOff = false;
+                check(PickId(nearby) == "needle", "visible thin foreground part is easy to acquire even against a large selectable body");
+                check(PickId(center + Vector3.right * 14) == "body", "assistance does not steal a large part when the thin part is far away");
+                needle.transform.localRotation = Quaternion.Euler(0, 0, 45);
+                var diagonalPointer = center + new Vector3(-2.12132f, 2.12132f, 0);
+                check(PickId(diagonalPointer) == "needle", "projected strip assistance handles a diagonal subpixel-thin part");
+                needle.transform.localRotation = Quaternion.identity;
+                shield.forceRenderingOff = false;
+                check(assisted.Invoke(dashboard, new object[] { runtime, nearby }) == null, "visible unselectable geometry blocks assistance to a hidden part");
+                shield.forceRenderingOff = true;
+                // The public input loop calls SelectFromWorld. Testing a private
+                // picker alone did not catch the missing Detail routing branch.
+                var click = typeof(FactoryDashboardController).GetMethod("SelectFromWorld", flags);
+                click.Invoke(dashboard, new object[] { nearby });
+                var part = runtime.GetType().GetField("SelectedPart").GetValue(runtime);
+                check((part?.GetType().GetField("Config").GetValue(part) as DeviceInspectionPartDto)?.Id == "needle", "click and hover share the same assisted target");
+                check(context.Value<string>("inspectionStage") == "part", "actual world-click route selects a part instead of reopening solid device detail");
+                dashboard.ApplyInspectionCommand(device.Id, new JObject { ["command"] = "pause" }, out _);
+                dashboard.ApplyInspectionCommand(device.Id, new JObject { ["command"] = "isolate", ["enabled"] = true }, out _);
+                var hover = typeof(FactoryDashboardController).GetMethod("UpdateInspectionHoverAt", flags);
+                hover.Invoke(dashboard, new object[] { nearby, false });
+                var queries = (int)runtime.GetType().GetField("PickQueryCount").GetValue(runtime);
+                var messages = contextMessages;
+                var desiredTarget = typeof(OrbitCameraController).GetField("_desiredTarget", flags).GetValue(orbit);
+                var desiredDistance = typeof(OrbitCameraController).GetField("_desiredDistance", flags).GetValue(orbit);
+                for (var repeated = 0; repeated < 200; repeated++) click.Invoke(dashboard, new object[] { nearby });
+                check((int)runtime.GetType().GetField("PickQueryCount").GetValue(runtime) == queries,
+                    "200 stationary world clicks reuse the validated rendered hover without new ray queries");
+                check(contextMessages == messages && (bool)runtime.GetType().GetField("Paused").GetValue(runtime)
+                    && (bool)runtime.GetType().GetField("Isolated").GetValue(runtime),
+                    "repeated same-part clicks preserve pause/isolation and generate no full-context traffic");
+                check(Equals(desiredTarget, typeof(OrbitCameraController).GetField("_desiredTarget", flags).GetValue(orbit))
+                    && Equals(desiredDistance, typeof(OrbitCameraController).GetField("_desiredDistance", flags).GetValue(orbit)),
+                    "repeated same-part clicks do not reframe the camera");
+                var needlePosition = needle.transform.localPosition;
+                needle.transform.localPosition += Vector3.right * 2f;
+                click.Invoke(dashboard, new object[] { nearby });
+                var movedQueries = (int)runtime.GetType().GetField("PickQueryCount").GetValue(runtime);
+                var movedHovered = runtime.GetType().GetField("HoveredPart").GetValue(runtime);
+                var movedHoveredId = (movedHovered?.GetType().GetField("Config").GetValue(movedHovered) as DeviceInspectionPartDto)?.Id ?? "<none>";
+                check(movedQueries > queries, $"moving geometry forces a fresh world-click query (before={queries}, after={movedQueries}, hovered={movedHoveredId})");
+                check(movedHovered == null && context.Value<string>("partId") == "needle",
+                    $"moving part geometry cannot select a stale triangle (hovered={movedHoveredId}, selected={context.Value<string>("partId")}, pointer={nearby}, projected={camera.WorldToScreenPoint(needle.transform.position)})");
+                needle.transform.localPosition = needlePosition;
+                click.Invoke(dashboard, new object[] { nearby });
+                click.Invoke(dashboard, new object[] { new Vector3(1400, 800, 0) });
+                check(contextMessages == messages && context.Value<string>("partId") == "needle",
+                    "empty-space world clicks preserve the current part detail");
+                dashboard.SetWebOverlayActive(false);
+                // Native GUI panels may contain the fixture pointer at this
+                // resolution; add an explicit hit rectangle to test obstruction.
+                var designPointer = (Vector2)typeof(FactoryDashboardController).GetMethod("ScreenToDesign", flags).Invoke(dashboard, new object[] { nearby });
+                var hitRects = (List<Rect>)typeof(FactoryDashboardController).GetField("_inspectionHitRects", flags).GetValue(dashboard);
+                hitRects.Add(new Rect(designPointer.x - 5, designPointer.y - 5, 10, 10));
+                queries = (int)runtime.GetType().GetField("PickQueryCount").GetValue(runtime);
+                click.Invoke(dashboard, new object[] { nearby });
+                check((int)runtime.GetType().GetField("PickQueryCount").GetValue(runtime) == queries
+                    && context.Value<string>("partId") == "needle", "dashboard-locked world clicks perform no geometry picking or navigation");
+                hitRects.Clear(); dashboard.SetWebOverlayActive(true);
+                dashboard.ApplyInspectionCommand(device.Id, new JObject { ["command"] = "isolate", ["enabled"] = false }, out _);
+                click.Invoke(dashboard, new object[] { center + Vector3.right * 30 });
+                check(context.Value<string>("partId") == "body" && context.Value<string>("inspectionStage") == "part",
+                    "a different visible part can still be selected through the actual world-click route");
+                dashboard.ApplyInspectionCommand(device.Id, new JObject { ["command"] = "stage", ["stage"] = "solid" }, out _);
+                click.Invoke(dashboard, new object[] { center });
+                check(context.Value<string>("inspectionStage") == "xray", "solid world click enters xray rather than resetting detail");
+                click.Invoke(dashboard, new object[] { center });
+                check(context.Value<string>("inspectionStage") == "exploded", "second world click advances xray into disassembly");
+            }
+            finally
+            {
+                dashboard.ClearFactory(); Object.DestroyImmediate(dashboardRoot);
+                Object.DestroyImmediate(cameraRoot); Object.DestroyImmediate(root);
             }
         }
 
@@ -286,6 +439,11 @@ namespace HeatTreatment.DigitalTwin.Editor
                 peakTests = Math.Max(peakTests, accelerated.LastTriangleTests);
             }
             check(exact, "BVH matches brute-force exact triangles for hits/misses and non-unit ray directions");
+            check(typeof(TriangleRayIndex).GetField("_buildCenters", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(accelerated) == null,
+                "BVH releases temporary centroid storage after construction");
+            check(!accelerated.Raycast(new Vector3(10.25f,10.25f,-5), Vector3.forward, out _, null, 4f), "nearest-distance culling does not invent a hit at the distance cap");
+            check(accelerated.Raycast(new Vector3(10.25f,10.25f,-5), Vector3.forward, out var boundedHit, null, 6f)
+                && Math.Abs(boundedHit - 5f) < .001f, "nearest-distance culling retains an exact hit inside the cap");
             check(peakTests < 128, $"8192-triangle fixture visits at most {peakTests} triangles instead of scanning the mesh");
             // These values reproduce a rounded vertex hit whose float slab
             // entry exceeded exit. Other triangles broaden the renderer bounds

@@ -1,12 +1,20 @@
 # 动态大屏 / 热处理数字孪生控制中心
 
-这是一个面向热处理车间的 3D 数字孪生大屏与后台组态系统。项目包含前端大屏、管理后台、Node.js 后端、MySQL 配置库、PLC 采集链路、模拟数据链路、3D 模型资产管理、组件配置和报警/指标展示。
+这是一个面向热处理车间的数字孪生大屏与后台组态系统。正式客户端使用 **Unity 原生三维大屏 + Electron 桌面宿主 + WebView2/Vue 后台**；Node.js 后端提供配置、PLC/模拟数据、模型资产和报警/指标服务。
 
-仓库地址：[https://github.com/Z7Y-CCCCC/dongtaidaping](https://github.com/Z7Y-CCCCC/dongtaidaping)
+仓库地址：[heat-treatment-digital-twin](https://github.com/Z7Y-CCCCC/heat-treatment-digital-twin)，协作基线为 **main**。
+
+## 新同事接手
+
+先阅读 [开发交接与仓库约定](docs/开发交接与仓库约定.md)：安装依赖、隔离数据库、启动后台、构建 Unity/桌面客户端、运行测试，以及哪些文件不能提交。
+
+仓库只包含源码、锁文件、可编辑模型与必要运行资产；**不包含依赖目录、构建 EXE/安装包、Unity 缓存、现场数据库、密码或测试输出**。刚克隆时不能直接双击「启动大屏.cmd」，需先按交接说明构建。
+
+最新功能包括五台井式炉模型、按设备手工拖拽拆解布局、部件点击/悬浮改进、配置同步与异常退出清理。旧网页 `/` 大屏已弃用；后台开发访问 `/admin`，完整三维运行使用 Unity 客户端。
 
 ## 功能概览
 
-- **3D 大屏**：基于 Vue 3 + Three.js 展示工厂、车间、产线、设备层级。
+- **3D 大屏**：Unity 原生运行；Vue/Three.js 用于后台模型预览、手工拆解与组态编辑。
 - **设备模型动画**：支持将 PLC 点位绑定到炉门、风扇、油搅拌等模型动作。
 - **PLC 数据采集**：后端内置 nodes7 S7 采集器，通过 WebSocket 推送实时数据。
 - **离线演示/模拟数据**：后台可切换到模拟模式，不接 PLC 也能演示。
@@ -24,7 +32,7 @@
 | 前端 | Vue 3、Vite、Three.js、GSAP、ECharts |
 | 后端 | Node.js、Express、WebSocket(ws)、nodes7 |
 | 开发默认数据库 | MySQL/MariaDB |
-| Windows 安装版数据库 | 本地 SQLite（WAL + 全同步写入） |
+| Windows 安装版数据库 | 桌面宿主管理的私有 MySQL，兼容既有 SQLite 配置 |
 | 可选数据库 | PostgreSQL、SQL Server |
 | 工具 | Blender Python 建模脚本、PLC 模拟脚本 |
 
@@ -39,7 +47,7 @@ backend/                    后端服务
   services/                 数据引擎、PLC 采集器、模拟器、WebSocket
   server.js                 后端入口
 frontend/                   Vue 3 大屏与管理后台
-  src/App.vue               大屏入口
+  src/RootApp.vue           网页与后台入口
   src/views/AdminPanel.vue  管理后台
   src/runtime/              实时数据、组件渲染、运行时配置
   src/three/                3D 场景和模型渲染
@@ -92,8 +100,8 @@ mysql -uroot -proot -P3307 < backend/db/init-mysql.sql
 ### 1. 克隆项目
 
 ```bash
-git clone https://github.com/Z7Y-CCCCC/dongtaidaping.git
-cd dongtaidaping
+git clone https://github.com/Z7Y-CCCCC/heat-treatment-digital-twin.git
+cd heat-treatment-digital-twin
 ```
 
 ### 2. 准备 MySQL/MariaDB
@@ -141,7 +149,7 @@ npm run dev
 
 打开：
 
-- 大屏：`http://localhost:5173/`
+- 完整三维大屏：按交接说明构建并启动 Unity 客户端（旧网页 `/` 已弃用）
 - 后台：`http://localhost:5173/admin`
 
 ## 后台密码与工程师解锁

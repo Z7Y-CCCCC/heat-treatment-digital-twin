@@ -3,6 +3,19 @@ import assert from 'node:assert/strict'
 import { createNativeViewNavigator } from '../src/runtime/nativeViewNavigation.js'
 const target={viewId:'device_detail',deviceId:'f1'}
 const tick=()=>new Promise(resolve=>setImmediate(resolve))
+
+test('factory entry rejects the old factory even when it has the same ready overview view',async()=>{
+  const nav=createNativeViewNavigator(async()=>({success:true,sent:1}))
+  let complete=false
+  const pending=nav.go({viewId:'factory_overview',factoryId:'factory_pit_furnaces_v1'}).then(()=>{complete=true})
+  await tick()
+  nav.accept({viewId:'factory_overview',factoryId:'factory_default',sceneReady:true})
+  await tick();assert.equal(complete,false)
+  nav.accept({viewId:'factory_overview',factoryId:'factory_pit_furnaces_v1',sceneReady:false})
+  await tick();assert.equal(complete,false)
+  nav.accept({viewId:'factory_overview',factoryId:'factory_pit_furnaces_v1',sceneReady:true})
+  await pending;assert.equal(complete,true);nav.dispose()
+})
 test('same-window navigation waits for Unity acknowledgement, not just message delivery',async()=>{
   const nav=createNativeViewNavigator(async()=>({success:true,sent:1}))
   let complete=false

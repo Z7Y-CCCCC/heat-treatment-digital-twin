@@ -41,6 +41,7 @@ const navigator=createNativeViewNavigator(async target=>{
 },25000)
 
 let renderer,scene,camera,controls,observer,frame=0,root,disposed=false,down=null,renderDirty=true
+let configRequest=null,configRequestId=0,configSignature='',configTimer=null,refreshTimer=null
 const hitMeshes=[]
 const hoverBases=new Map(),raycaster=new THREE.Raycaster(),pointer=new THREE.Vector2()
 function scheduleRender(){
@@ -280,7 +281,7 @@ async function enterFactoryOverview(){
     const response=await adminFetch(`${API_BASE}/factories/${encodeURIComponent(factoryId.value)}/activate`,{method:'POST',headers:{'Content-Type':'application/json','X-Factory-ID':factoryId.value},body:'{}'})
     const result=await response.json().catch(()=>({}))
     if(!response.ok)throw new Error(result.error || '切换运行工厂失败')
-    await navigator.go({viewId:'factory_overview'})
+    await navigator.go({viewId:'factory_overview',factoryId:factoryId.value})
     if(disposed)return
     if(adminSurface.value && window.chrome?.webview){requestNativeSceneSurface();await router.replace({path:'/admin',query:{embedded:'unity'}});window.chrome.webview.postMessage({type:'host_action',action:'show_dashboard'})}
     else await router.push({path:'/overlay',query:{...mapQuery(),factoryId:factoryId.value,scene:'1',fromGroup:String(route.query.code || '')}})
@@ -297,25 +298,42 @@ function pick(event){
   else void enterFactoryOverview()
 }
 async function load(){
-  loading.value=true;error.value=''
+  const requestedFactoryId=factoryId.value,requestId=++configRequestId
+  configRequest?.abort()
+  const controller=new AbortController();configRequest=controller
+  const timeout=setTimeout(()=>controller.abort(),10000)
+  loading.value=!config.value;error.value=''
   try{
-    if(!factoryId.value)throw new Error('缺少工厂标识，请返回区级地图重新选择。')
+    if(!requestedFactoryId)throw new Error('缺少工厂标识，请返回区级地图重新选择。')
     const [directory,details]=await Promise.all([
-      adminFetch(`${API_BASE}/factories`,{cache:'no-store'}),
-      adminFetch(`${API_BASE}/config`,{cache:'no-store',headers:{'X-Factory-ID':factoryId.value}})
+      adminFetch(`${API_BASE}/factories`,{cache:'no-store',signal:controller.signal}),
+      adminFetch(`${API_BASE}/config`,{cache:'no-store',signal:controller.signal,headers:{'X-Factory-ID':requestedFactoryId}})
     ])
     const listing=await directory.json(),payload=await details.json()
+    if(disposed || requestId!==configRequestId || requestedFactoryId!==factoryId.value)return
     if(!directory.ok || !details.ok)throw new Error(payload.error || listing.error || '工厂资料读取失败')
-    const selected=listing.factories?.find(item=>String(item.id)===factoryId.value)
+    const selected=listing.factories?.find(item=>String(item.id)===requestedFactoryId)
     if(!selected || !selected.enabled)throw new Error('工厂不存在或已停用')
     if(!Array.isArray(payload.workshops) || !payload.workshops.length){
       const notice=streetEntryStatus({name:selected.name,runtime:'local',workshops:0}).message
       await router.replace({path:'/group',query:{...mapQuery(),navigationNotice:notice}})
       return
     }
-    factory.value=selected;config.value=payload;rebuild()
-  }catch(cause){error.value=cause.message}finally{loading.value=false;window.chrome?.webview?.postMessage({type:'overlay_ready'});reportRegions()}
+    const signature=JSON.stringify([selected,payload])
+    factory.value=selected;config.value=payload
+    page.value=Math.min(page.value,pageCount.value-1)
+    if(signature!==configSignature){configSignature=signature;rebuild()}
+  }catch(cause){if(!disposed && requestId===configRequestId && cause.name!=='AbortError')error.value=cause.message}
+  finally{
+    clearTimeout(timeout)
+    if(!disposed && requestId===configRequestId){configRequest=null;loading.value=false;window.chrome?.webview?.postMessage({type:'overlay_ready'});reportRegions()}
+  }
 }
+function scheduleConfigRefresh(message){
+  if(message?.payload?.factoryId && String(message.payload.factoryId)!==factoryId.value && message.payload.resource!=='factories')return
+  clearTimeout(refreshTimer);refreshTimer=setTimeout(()=>{if(!disposed)void load()},180)
+}
+watch(factoryId,()=>{configSignature='';config.value=null;page.value=0;if(renderer)void load()})
 watch([stage,page],()=>rebuild())
 onMounted(()=>{
   window.addEventListener('keydown',handleSiteEscape,true)
@@ -328,12 +346,16 @@ onMounted(()=>{
   controls.addEventListener('change',onControlsChange)
   observer=new ResizeObserver(()=>{if(!host.value)return;const width=host.value.clientWidth,height=host.value.clientHeight;renderer.setSize(width,height,false);const aspect=width/Math.max(height,1);camera.left=-8.7*aspect;camera.right=8.7*aspect;camera.top=8.7;camera.bottom=-8.7;camera.updateProjectionMatrix();renderDirty=true;scheduleRender()});observer.observe(host.value)
   scheduleRender()
-  data.setMessageHandler(message=>{if(message.type==='dashboard_context_changed')navigator.accept(message.payload)})
+  data.setMessageHandler(message=>{
+    if(message.type==='dashboard_context_changed')navigator.accept(message.payload)
+    else if(['configuration_changed','device_configuration_changed','dashboard_release_changed','realtime_resync_required'].includes(message.type))scheduleConfigRefresh(message)
+  })
+  configTimer=setInterval(()=>void load(),15000)
   data.connect()
   window.chrome?.webview?.addEventListener('message',onHostMessage)
   void load()
 })
-onUnmounted(()=>{window.removeEventListener('keydown',handleSiteEscape,true);disposed=true;cancelAnimationFrame(frame);navigator.dispose();data.dispose();observer?.disconnect();controls?.removeEventListener('change',onControlsChange);controls?.dispose();disposeRoot();sharedMaterials.forEach(item=>item.dispose());wallTexture.dispose();roofTexture.dispose();renderer?.dispose();window.chrome?.webview?.removeEventListener('message',onHostMessage);window.chrome?.webview?.postMessage({type:'overlay_regions',viewport:{width:innerWidth,height:innerHeight},regions:[]})})
+onUnmounted(()=>{window.removeEventListener('keydown',handleSiteEscape,true);disposed=true;configRequestId++;configRequest?.abort();clearInterval(configTimer);clearTimeout(refreshTimer);cancelAnimationFrame(frame);navigator.dispose();data.dispose();observer?.disconnect();controls?.removeEventListener('change',onControlsChange);controls?.dispose();disposeRoot();sharedMaterials.forEach(item=>item.dispose());wallTexture.dispose();roofTexture.dispose();renderer?.dispose();window.chrome?.webview?.removeEventListener('message',onHostMessage);window.chrome?.webview?.postMessage({type:'overlay_regions',viewport:{width:innerWidth,height:innerHeight},regions:[]})})
 </script>
 
 <template>

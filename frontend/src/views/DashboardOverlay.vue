@@ -15,7 +15,8 @@ import { createNativeViewNavigator } from '../runtime/nativeViewNavigation.js'
 import { fitHudCanvas } from '../runtime/hudPresentation.js'
 import { applyVisibilityAction, widgetRuntimeVisible } from '../runtime/dashboardRules.js'
 import { createGroupHierarchyPath } from '../runtime/groupHierarchyPath.js'
-import { inspectionHoverDetails, inspectionPointText } from '../runtime/inspectionHover.js'
+import { applyInspectionHover, inspectionHoverDetails, inspectionPointText } from '../runtime/inspectionHover.js'
+import { applyDeviceHover, deviceHoverDetails, tooltipDevices } from '../runtime/deviceHover.js'
 import { overviewEntryStatus } from '../runtime/factoryNavigationReadiness.js'
 
 const rootRef = ref(null)
@@ -63,7 +64,8 @@ const businessData = reactive({
     sections: {}
 })
 const runtimeContext = reactive({
-    viewId: 'factory_overview', viewMode: 'factory', sceneReady: false, sceneId: '', workshopId: '', lineId: '', deviceId: '',
+    hoveredDeviceId: '', deviceHoverPointer: { visible: false },
+    factoryId: '', viewId: 'factory_overview', viewMode: 'factory', sceneReady: false, sceneId: '', workshopId: '', lineId: '', deviceId: '',
     inspectionStage: '', partId: '', partName: '', partDescription: '', partPointIds: [], partPointKeys: [], partDetailViewId: '',
     inspectionEnabled: false, inspectionProgress: 0, inspectionAnimating: false, inspectionPhase: '', inspectionIsolated: false,
     inspectionLabelsEnabled: false, inspectionLeaderLines: false, inspectionHoveredPartId: '', inspectionIssues: [], inspectionParts: []
@@ -272,6 +274,11 @@ function applyRuntimeContext(payload, { userNavigation = false } = {}) {
     if (!payload || typeof payload !== 'object') return
     receivedRuntimeContext = true
     const previousDataContext = [runtimeContext.viewId, runtimeContext.workshopId, runtimeContext.lineId, runtimeContext.deviceId, runtimeContext.partId].join('|')
+    const hoverScope = ['factoryId', 'viewId', 'viewMode', 'workshopId', 'lineId']
+    if (payload.sceneReady === false || hoverScope.some(key => Object.hasOwn(payload, key) && String(payload[key] || '') !== String(runtimeContext[key] || ''))) {
+        runtimeContext.hoveredDeviceId = ''
+        runtimeContext.deviceHoverPointer = { visible: false }
+    }
     Object.assign(runtimeContext, payload)
     nextTick(scheduleRegionReport)
     if (!Object.prototype.hasOwnProperty.call(payload, 'sceneReady')) runtimeContext.sceneReady = true
@@ -446,7 +453,13 @@ const selectedPart = computed(() => {
         stage: runtimeContext.inspectionStage || ''
     }
 })
-const hoveredInspectionPart = computed(() => inspectionHoverDetails(runtimeContext, pointValues.value, pointForContextKey))
+const deviceHoverCatalog = computed(() => tooltipDevices(getWorkshops() || [], config.models || []))
+const hoveredOverviewDevice = computed(() => deviceHoverDetails(runtimeContext, currentView.value, deviceHoverCatalog.value,
+    dataStore.deviceStatusMap, dataStore.deviceDataMap, overlayViewport))
+watch(dataStore.wsConnected, connected => {
+    if (!connected) { runtimeContext.hoveredDeviceId = ''; runtimeContext.deviceHoverPointer = { visible: false } }
+})
+const hoveredInspectionPart = computed(() => inspectionHoverDetails(runtimeContext, pointValues.value, pointForContextKey, overlayViewport))
 
 async function sendInspectionCommand(inspection) {
     if (overlayDisposed || !runtimeContext.deviceId) return
@@ -634,11 +647,10 @@ function selectWidget(widgetId) {
 }
 
 function registerConfiguredDevices() {
-    for (const workshop of getWorkshops() || []) {
-        for (const line of workshop.lines || []) {
-            for (const device of line.devices || []) dataStore.registerDevice(device)
-        }
-    }
+    dataStore.syncDevices((getWorkshops() || []).flatMap(workshop => [
+        ...(workshop.devices || []),
+        ...(workshop.lines || []).flatMap(line => line.devices || [])
+    ]))
 }
 
 function eventQueryConfig() {
@@ -796,6 +808,14 @@ function handleWidgetAction({ event }) {
 
 async function handleRuntimeMessage(message) {
     if (overlayDisposed) return
+    if (message?.type === 'device_hover_changed') {
+        applyDeviceHover(runtimeContext, message.payload, deviceHoverCatalog.value)
+        return
+    }
+    if (message?.type === 'inspection_hover_changed') {
+        applyInspectionHover(runtimeContext, message.payload)
+        return
+    }
     if (message?.type === 'dashboard_context_changed') {
         const payload = message.payload || {}
         viewNavigator.accept(payload)
@@ -803,9 +823,18 @@ async function handleRuntimeMessage(message) {
         scheduleRegionReport()
         return
     }
-    if (message?.type === 'dashboard_release_changed' || message?.type === 'realtime_resync_required') {
-        await loadConfig()
-        if (overlayDisposed) return
+    if (['dashboard_release_changed', 'realtime_resync_required', 'configuration_changed', 'device_configuration_changed'].includes(message?.type)) {
+        const activated = String(message.payload?.activeFactoryId || '')
+        const changedFactory = String(message.payload?.factoryId || '')
+        if (!activated && changedFactory && config.factoryId && changedFactory !== config.factoryId) return
+        if (activated && route.query.factoryId && String(route.query.factoryId) !== activated) {
+            await router.replace({query:{...route.query,factoryId:activated}})
+        }
+        runtimeContext.hoveredDeviceId = ''
+        runtimeContext.deviceHoverPointer = { visible: false }
+        const loaded = await loadConfig(activated)
+        if (overlayDisposed || !loaded) return
+        registerConfiguredDevices()
         probeConfiguredModels()
         runtimeContext.sceneId = platform.value.activeScene?.id || runtimeContext.sceneId
         if (message.type === 'dashboard_release_changed') {
@@ -1027,8 +1056,7 @@ onUnmounted(() => {
 <template>
     <LoadingExperience v-if="startupLoading && !nativeLoadingManaged" :show="startupLoading" :progress="startupProgress" :phase="startupPhase" :step="startupStep" :config="config.settings?.loading_experience_config" />
     <div ref="rootRef" class="dashboard-overlay-root" :class="{ 'is-scene-ready': runtimeContext.sceneReady !== false, 'standalone-preview': standalonePreview }">
-        <RouterLink v-if="runtimeContext.viewMode === 'factory' && presentationDocument?.metadata?.referenceHud !== 1" class="group-map-return" data-overlay-hit="true" :to="{path:'/group',query:{embedded:$route.query.embedded,region:$route.query.fromGroup,scope:$route.query.scope}}">‹ 集团分布</RouterLink>
-        <nav v-if="presentationDocument?.metadata?.referenceHud === 1" class="overlay-hierarchy" aria-label="逐级浏览" data-overlay-hit="true" @pointerdown.stop>
+        <nav class="overlay-hierarchy" aria-label="逐级浏览" data-overlay-hit="true" @pointerdown.stop>
             <div ref="hierarchyPathRef" class="overlay-hierarchy-path" aria-label="当前层级路径">
                 <template v-for="(segment,index) in hierarchyTrail" :key="segment.key">
                     <i v-if="index" class="overlay-hierarchy-separator" aria-hidden="true">›</i>
@@ -1133,6 +1161,13 @@ onUnmounted(() => {
                 />
             </div>
         </div>
+        <aside v-if="hoveredOverviewDevice" class="inspection-hover-card device-hover-card" :style="hoveredOverviewDevice.style" aria-label="悬停设备详情">
+            <span v-if="hoveredOverviewDevice.title" class="inspection-hover-eyebrow">{{ hoveredOverviewDevice.title }}</span>
+            <strong v-if="hoveredOverviewDevice.name">{{ hoveredOverviewDevice.name }}</strong>
+            <p v-if="hoveredOverviewDevice.description">{{ hoveredOverviewDevice.description }}</p>
+            <div v-for="row in hoveredOverviewDevice.rows" :key="row.key" class="inspection-hover-point"><span>{{ row.label }}</span><b>{{ row.value }}<small v-if="row.quality"> · {{ row.quality }}</small></b></div>
+            <small v-if="hoveredOverviewDevice.showHint" class="inspection-hover-hint">点击进入设备</small>
+        </aside>
         <aside v-if="hoveredInspectionPart" class="inspection-hover-card" :style="hoveredInspectionPart.style" aria-label="悬停部件详情">
             <span class="inspection-hover-eyebrow">COMPONENT / 部件</span>
             <strong>{{ hoveredInspectionPart.name || hoveredInspectionPart.id }}</strong>
@@ -1148,6 +1183,7 @@ onUnmounted(() => {
 </template>
 
 <style>
+.device-hover-card{max-height:calc(100vh - 24px);overflow:auto}.device-hover-card .inspection-hover-point b{overflow-wrap:anywhere}
 .group-map-return{position:absolute;pointer-events:auto;left:24px;top:100px;z-index:1002;padding:7px 11px;border:1px solid #8598c333;border-radius:16px;color:#aebddd;background:#151d2b44;text-decoration:none;font-size:11px}
 .overlay-hierarchy{position:absolute;left:145px;top:100px;z-index:1002;display:flex;align-items:center;gap:11px;max-width:74%;padding:5px 7px;border:1px solid rgba(157,177,219,.17);border-radius:10px;background:linear-gradient(115deg,rgba(15,22,37,.78),rgba(24,30,47,.56));box-shadow:0 8px 25px rgba(2,8,18,.16),inset 0 1px 0 rgba(228,235,255,.06);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);color:#aebddd;font-size:10px;pointer-events:auto}.overlay-hierarchy-path,.overlay-hierarchy-controls{display:flex;align-items:center;gap:4px;min-width:0}.overlay-hierarchy-path{overflow:hidden}.overlay-hierarchy-separator{padding:0 2px;color:#65758f;font-style:normal}.overlay-hierarchy-current,.overlay-hierarchy-ancestor{max-width:180px;overflow:hidden;padding:5px 7px;border:0;border-radius:6px;text-overflow:ellipsis;white-space:nowrap;font:inherit}.overlay-hierarchy-current{color:#edf2ff;background:linear-gradient(110deg,rgba(129,151,220,.17),rgba(129,151,220,.06));box-shadow:inset 0 0 0 1px rgba(165,184,235,.12)}.overlay-hierarchy-ancestor{color:#91a1bd;background:transparent;cursor:pointer;transition:color .16s ease,background .16s ease}.overlay-hierarchy-ancestor:hover:not(:disabled){color:#e2eaff;background:rgba(140,161,220,.1)}.overlay-hierarchy-ancestor:disabled{opacity:.55;cursor:wait}.overlay-hierarchy-controls{flex-shrink:0;padding-left:8px;border-left:1px solid rgba(159,175,212,.14)}.overlay-hierarchy select,.overlay-hierarchy-action{max-width:180px;padding:5px 22px 5px 9px;border:1px solid rgba(153,172,214,.18);border-radius:6px;color:#cfdaef;background-color:rgba(28,37,57,.74);font:inherit;cursor:pointer}.overlay-hierarchy select{appearance:none;background-image:linear-gradient(45deg,transparent 50%,#91a3c4 50%),linear-gradient(135deg,#91a3c4 50%,transparent 50%);background-position:calc(100% - 10px) 50%,calc(100% - 6px) 50%;background-size:4px 4px;background-repeat:no-repeat}.overlay-hierarchy select:disabled,.overlay-hierarchy-action:disabled{opacity:.55;cursor:wait}.overlay-hierarchy-action{padding:5px 8px}.overlay-hierarchy-action:hover{border-color:rgba(164,185,234,.4);background-color:rgba(59,75,111,.54)}.overlay-hierarchy-status{display:flex;align-items:center;gap:5px;color:#aebddd}.overlay-hierarchy-status i{width:5px;height:5px;border-radius:50%;background:#65d7b0;box-shadow:0 0 7px rgba(101,215,176,.65);animation:hierarchy-pulse 1.2s ease-in-out infinite}.overlay-hierarchy .hierarchy-error{color:#ef9caa;max-width:240px}@keyframes hierarchy-pulse{50%{opacity:.38;transform:scale(.8)}}
 html,

@@ -13,6 +13,7 @@ import { createDashboardWidgetPreset } from '../runtime/dashboardSchema.js'
 import { API_BASE, getBackendOrigin } from '../runtime/backendEndpoint.js'
 import { adminFetch, startAdminSessionTracking, stopAdminSessionTracking } from '../runtime/adminSession.js'
 import { createDashboardDataStore } from '../runtime/DataStore.js'
+import { createJsonPollingScope } from '../runtime/pollingRequests.js'
 import { buildFactoryScenePlan, factorySceneSignature, nativeCameraPose } from '../runtime/factorySceneConfig.js'
 import { buildConfiguredFactoryScene, disposeSceneObject } from '../runtime/ConfiguredFactoryScene.js'
 import { createNativeViewNavigator } from '../runtime/nativeViewNavigation.js'
@@ -25,11 +26,13 @@ const empty=ref(false),loadingReplay=ref(false),sceneError=ref(''),sceneLoading=
 const config=ref(null),anchors=ref([]),assetErrors=ref([]),syncedAt=ref('')
 const notice=ref('正在读取与 Unity 共用的现场配置')
 const store=createDashboardDataStore({sceneProjection:true})
+const pollingRequests=createJsonPollingScope(adminFetch)
 const followUnityCamera=ref(true),projectionStatus=ref('waiting'),projectionDeviceCount=ref(0)
 const projectionReceiver=createProjectionReceiver()
 const projectionLabel=computed(()=>({waiting:'等待 Unity 实时位姿',live:'Unity 整机位姿已同步',stale:'Unity 位姿同步已暂停',parts:'拆解动画请在原生画面查看',switching:'等待匹配的场景配置'})[projectionStatus.value])
 const navigating=ref(false)
 const navigationRequest=new AbortController()
+const sceneRequest=new AbortController()
 const nativeNavigator=createNativeViewNavigator(async target=>{
   const response=await adminFetch(API_BASE+'/native-preview/navigate',{method:'POST',headers:{'Content-Type':'application/json'},signal:navigationRequest.signal,
     body:JSON.stringify({action:'view',viewId:target.viewId,focus:{mode:'device',deviceId:target.deviceId}})})
@@ -60,7 +63,7 @@ const anchorElements=new Map()
 const isEmbedded=computed(()=>isNativeUnitySurface(route.query.embedded,window.chrome?.webview))
 const embeddedQuery=computed(()=>isEmbedded.value ? {embedded:'unity'} : {})
 let renderer,scene,camera,controls,composer,scenePass,aoPass,outputPass,resizeObserver,animationFrame,ground,keyLight
-let disposed=false,timer,pollTimer,refreshTimer,request,sceneState,signature='',cameraSignature='',refreshAgain=false
+let disposed=false,timer,pollTimer,refreshTimer,sceneState,signature='',cameraSignature='',refreshAgain=false
 let renderNeeded=true
 let renderRect=projectionViewport(1920/1080),lastPoseKey='',wasFollowing=false,hadProjection=false
 
@@ -92,29 +95,20 @@ async function syncConfiguration() {
   if(disposed) return
   if(syncing.value) {refreshAgain=true;return}
   syncing.value=true
-  request=new AbortController()
   try {
-    const response=await adminFetch(API_BASE+'/config',{cache:'no-store',signal:request.signal})
-    if(!response.ok) throw new Error('读取现场配置失败（'+response.status+'）')
-    const next=await response.json()
+    const next=await pollingRequests.read('config',API_BASE+'/config',{cache:'no-store'})
     if(!Array.isArray(next.workshops) || !Array.isArray(next.models)) throw new Error('现场配置缺少车间或模型库')
     if(disposed) return
     const plan=buildFactoryScenePlan(next,getBackendOrigin()),nextSignature=factorySceneSignature(plan)
     if(nextSignature!==signature) {
       sceneLoading.value=!sceneState
-      const nextScene=await buildConfiguredFactoryScene(plan,{cancelled:()=>disposed})
+      const nextScene=await buildConfiguredFactoryScene(plan,{cancelled:()=>disposed,signal:sceneRequest.signal})
       if(!nextScene || disposed) return
       const previous=sceneState
       scene.add(nextScene.root);sceneState=nextScene
       if(previous){scene.remove(previous.root);previous.dispose()}
       signature=nextSignature;anchors.value=nextScene.anchors;assetErrors.value=nextScene.errors
       lastPoseKey=''
-      const ids=new Set(plan.devices.map(row=>row.id))
-      for(const id of Object.keys(deviceStatus)) if(!ids.has(id)){delete deviceStatus[id];delete store.deviceDataMap[id];store.latestDeviceDataMap.delete(id)}
-      for(const row of plan.devices) {
-        if(!deviceStatus[row.id]) store.registerDevice(row.config)
-        else deviceStatus[row.id].name=row.name
-      }
       if(!nextScene.bounds.isEmpty()) {
         const center=nextScene.bounds.getCenter(new THREE.Vector3()),size=nextScene.bounds.getSize(new THREE.Vector3()),span=Math.max(size.x,size.z,30)
         ground.position.set(center.x,nextScene.bounds.min.y-.1,center.z)
@@ -128,6 +122,7 @@ async function syncConfiguration() {
       renderNeeded=true
       renderer.shadowMap.needsUpdate=true
     }
+    store.syncDevices(plan.devices.map(row=>({...row.config,name:row.name})))
     config.value=next
     const nextCamera=JSON.stringify(configuredView.value.camera)
     if(nextCamera!==cameraSignature){resetCamera();cameraSignature=nextCamera}
@@ -234,13 +229,14 @@ onMounted(async()=>{
     })
     store.connect()
     await syncConfiguration()
+    if(disposed)return
     pollTimer=setInterval(()=>{if(!syncing.value)syncConfiguration()},5000)
     document.addEventListener('visibilitychange',onVisibility)
   } catch(error) {sceneError.value='场景初始化失败：'+error.message;sceneLoading.value=false}
 })
 onUnmounted(()=>{
   stopAdminSessionTracking()
-  disposed=true;request?.abort();navigationRequest.abort();nativeNavigator.dispose();clearTimeout(timer);clearTimeout(refreshTimer);clearInterval(pollTimer);cancelAnimationFrame(animationFrame)
+  disposed=true;pollingRequests.dispose();sceneRequest.abort();navigationRequest.abort();nativeNavigator.dispose();clearTimeout(timer);clearTimeout(refreshTimer);clearInterval(pollTimer);cancelAnimationFrame(animationFrame)
   document.removeEventListener('visibilitychange',onVisibility);projectionReceiver.clear();store.dispose();resizeObserver?.disconnect();controls?.dispose()
   scenePass?.dispose();aoPass?.dispose();outputPass?.dispose();composer?.dispose();disposeSceneObject(scene);renderer?.dispose()
 })

@@ -15,6 +15,8 @@ const {
     securityHeaders
 } = require('./middleware/security');
 const { getAdminAuth } = require('./services/adminAuth');
+const { closeAlarmOutbox } = require('./services/alarmOutbox');
+const { siteRecoveryStatus, assertNoPendingSiteRecovery } = require('./services/siteRecoveryIntent');
 const {
     getDb,
     closeDb,
@@ -88,6 +90,16 @@ for (const dir of [uploadsDir, audioUploadsDir, assetModelsDir]) {
 
 app.use(securityHeaders);
 if (process.env.ENABLE_CORS !== 'false') app.use(createCorsMiddleware());
+app.use((req, res, next) => {
+    const requestPath = req.path.toLowerCase();
+    const diagnostic = ['/api/health', '/api/engine/status', '/api/internal/shutdown'].includes(requestPath)
+        || requestPath.startsWith('/api/admin-auth');
+    if (siteRecoveryStatus().pending && !diagnostic && (requestPath.startsWith('/api/') || requestPath.startsWith('/uploads/models'))) {
+        res.status(503).json({ success: false, code: 'SITE_RECOVERY_PENDING', error: '整站恢复状态待确认，自动采集、维护及业务接口已暂停，恢复证据完整保留' });
+        return;
+    }
+    next();
+});
 // Authentication has its own local-only, CSRF and password-attempt checks.
 // Mount it before write protection so a locked engineer can still sign in.
 app.use('/api/admin-auth', express.json({ limit: '2kb', strict: true }), require('./routes/adminAuth')(), (error, req, res, next) => {
@@ -122,10 +134,11 @@ app.use('/assets', express.static(assetsDir, { dotfiles: 'deny', index: false })
 app.use('/api/factories', require('./routes/factories'));
 app.use('/api/project-bundles', require('./routes/projectBundles')({ uploadsRoot: uploadsRootDir, assetsRoot: assetsDir }));
 app.use('/api/config', factoryContext, ensureModelFilesRecovered, require('./routes/config'));
-app.use('/api/workshops', factoryContext, require('./routes/workshops'));
-app.use('/api/lines', factoryContext, require('./routes/lines'));
-app.use('/api/devices', factoryContext, require('./routes/devices'));
-app.use('/api/datapoints', factoryContext, require('./routes/datapoints'));
+const { configurationMutation } = require('./services/configurationSync');
+app.use('/api/workshops', factoryContext, configurationMutation('workshops'), require('./routes/workshops'));
+app.use('/api/lines', factoryContext, configurationMutation('lines'), require('./routes/lines'));
+app.use('/api/devices', factoryContext, configurationMutation('devices'), require('./routes/devices'));
+app.use('/api/datapoints', factoryContext, configurationMutation('datapoints'), require('./routes/datapoints'));
 app.use('/api/voice', require('./routes/voice'));
 const settingsController = { wsServer: null };
 app.use('/api/settings', factoryContext, require('./routes/settings')(settingsController));
@@ -182,6 +195,11 @@ fs.mkdirSync(SITE_IMPORT_DIR, { recursive: true });
 const backupOperationLimiter = createOperationRateLimiter({ name: 'backup-operation', limit: 20 });
 function runDatabaseOperation(action) {
     return async (req, res, next) => {
+        if (siteRecoveryStatus().pending) {
+            if (req.file?.path) fs.rmSync(req.file.path, { force: true });
+            res.status(409).json({ success: false, code: 'SITE_RECOVERY_PENDING', error: '待决整站恢复需要先确认；恢复证据与报警队列已保留' });
+            return;
+        }
         if (databaseOperationBusy) {
             if (req.file?.path) {
                 try { fs.rmSync(req.file.path, { force: true }); } catch { /* preserve the in-progress operation */ }
@@ -202,6 +220,7 @@ async function stopMaintenanceForDatabaseChange(reason, { backup = true } = {}) 
     await stopDatabaseMaintenance({ backup, reason });
 }
 async function resumeMaintenanceAfterDatabaseChange() {
+    assertNoPendingSiteRecovery();
     await startDatabaseMaintenance();
     const activeFactory = await getDb().then(db => db.get('SELECT value FROM settings WHERE `key` = ?', ['active_factory_id']));
     await startDataSourceMaintenance(activeFactory?.value || 'factory_default');
@@ -557,12 +576,17 @@ app.get('/api/health', (req, res) => {
     const engineReady = !!engineStatus?.mode && ['connected', 'simulating'].includes(String(collector.status || '').toLowerCase());
     const nativeSceneReady = unityClients > 0;
     const licenseReady = !license.enforce || license.valid;
+    const recoveryIntent = siteRecoveryStatus();
+    const alarmStorageFailures = Object.entries(global.dataEngine?.getFactoryStatuses?.() || {})
+        .filter(([, status]) => status.eventStorageStatus?.status === 'error').map(([factoryId]) => factoryId);
     const readinessFailures = [];
     if (!databaseReady) readinessFailures.push('database');
     if (!engineReady) readinessFailures.push('data_engine');
     if (!dataFresh) readinessFailures.push('data_freshness');
     if (!nativeSceneReady) readinessFailures.push('unity');
     if (!licenseReady) readinessFailures.push('license');
+    if (alarmStorageFailures.length) readinessFailures.push('event_storage');
+    if (recoveryIntent.pending) readinessFailures.push('site_recovery');
     res.json({
         status: 'ok',
         timestamp: new Date().toISOString(),
@@ -573,6 +597,8 @@ app.get('/api/health', (req, res) => {
         components: {
             backend: { status: 'healthy' },
             database: { status: databaseReady ? 'healthy' : 'error', connected: databaseReady, error: dbStatus.error || null },
+            eventStorage: { status: alarmStorageFailures.length ? 'error' : 'healthy', failedFactories: alarmStorageFailures },
+            siteRecovery: { status: recoveryIntent.pending ? 'requires_recovery' : 'healthy', ...recoveryIntent },
             dataEngine: {
                 status: engineReady ? 'healthy' : (engineStatus ? 'degraded' : 'error'),
                 mode: engineStatus?.mode || null,
@@ -594,7 +620,7 @@ app.get('/api/health', (req, res) => {
         },
         readiness: {
             status: readinessFailures.length ? 'degraded' : 'ready',
-            displayReady: databaseReady && engineReady && dataFresh && nativeSceneReady && licenseReady,
+            displayReady: readinessFailures.length === 0,
             failures: readinessFailures
         }
     });
@@ -877,11 +903,12 @@ async function startServer() {
         const forceExit = setTimeout(() => process.exit(1), 12000);
         forceExit.unref?.();
         try { await dataEngine.stop(); } catch (e) { /* ignore */ }
+        try { closeAlarmOutbox(); } catch (e) { console.error('[Shutdown] Alarm outbox:', e.message); }
         try { await historyRetention.stop(); } catch (e) { console.error('[Shutdown] History retention:', e.message); }
         try { await screenCast.close(); } catch (e) { /* ignore */ }
         try { await lanDisplay.stop(); } catch (e) { /* ignore */ }
         try { await stopSiteBackupMaintenance(); } catch (e) { /* ignore */ }
-        try { await stopDataSourceMaintenance({ backup: true, reason: 'shutdown' }); } catch (e) {
+        try { await stopDataSourceMaintenance({ backup: !siteRecoveryStatus().pending, reason: 'shutdown' }); } catch (e) {
             console.error('[Shutdown] 退出备份失败:', e.message);
         }
         try { wsServer.close(); } catch (e) { /* ignore */ }
@@ -952,7 +979,7 @@ async function startServer() {
         console.log(`   WebSocket:   ws://${HOST}:${PORT}/ws\n`);
 
         setTimeout(() => {
-            getDb()
+            Promise.resolve().then(() => assertNoPendingSiteRecovery()).then(() => getDb())
                 .then(db => recoverPendingModelDeletions(db))
                 .then(() => startDatabaseMaintenance())
                 .then(async () => {

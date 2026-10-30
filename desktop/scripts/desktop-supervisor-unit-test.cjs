@@ -25,10 +25,10 @@ class Child extends EventEmitter {
     killed = false;
     killCalls = 0;
     kill() { this.killed = true; this.killCalls += 1; return true; }
-    exit() { this.exitCode = 0; this.emit('exit', 0, null); }
+    exit(code = 0, signal = null) { this.exitCode = code; this.signalCode = signal; this.emit('exit', code, signal); }
 }
 
-function loadDesktop({ createLog, spawnProcess, userDataPath, deploymentConfig } = {}) {
+function loadDesktop({ createLog, spawnProcess, userDataPath, deploymentConfig, fileSystem, electron = {} } = {}) {
     const app = new EventEmitter();
     const timers = [];
     const exits = [];
@@ -56,7 +56,8 @@ function loadDesktop({ createLog, spawnProcess, userDataPath, deploymentConfig }
         setInterval: () => ({ unref() {} }),
         clearInterval() {},
         require: name => {
-            if (name === 'electron') return { app, dialog: { showErrorBox() {} } };
+            if (name === 'electron') return { app, dialog: { showErrorBox() {} }, ...electron };
+            if (name === 'fs' && fileSystem) return fileSystem;
             if (name === 'child_process') return { spawn: (...args) => {
                 spawnCalls += 1;
                 if (spawnProcess) return spawnProcess(...args);
@@ -88,6 +89,64 @@ function loadDesktop({ createLog, spawnProcess, userDataPath, deploymentConfig }
         get spawnCalls() { return spawnCalls; }
     };
 }
+
+function downloadWindowFixture() {
+    const session = new EventEmitter(), windows = [], saves = [];
+    class Window extends EventEmitter {
+        destroyed = false;
+        webContents = Object.assign(new EventEmitter(), { session, setWindowOpenHandler() {} });
+        constructor() { super(); windows.push(this); }
+        isDestroyed() { return this.destroyed; }
+        loadURL() {}
+        destroy() { this.destroyed = true; this.emit('closed'); }
+    }
+    const desktop = loadDesktop({ electron: {
+        BrowserWindow: Window,
+        dialog: { showErrorBox() {}, showSaveDialog(owner) {
+            const save = { owner };
+            save.promise = new Promise(resolve => { save.resolve = resolve; });
+            saves.push(save);
+            return save.promise;
+        } }
+    } });
+    const item = () => ({ paused: 0, resumed: 0, cancelled: 0,
+        pause() { this.paused++; }, resume() { this.resumed++; }, cancel() { this.cancelled++; },
+        getFilename: () => 'backup.zip', setSavePath() {} });
+    return { desktop, session, windows, saves, item };
+}
+
+test('recreating admin windows releases the shared-session download listener', async () => {
+    const { desktop, windows, session, saves, item } = downloadWindowFixture();
+    for (let index = 0; index < 25; index++) {
+        desktop.run("createMainWindow('http://127.0.0.1:3001')");
+        assert.equal(session.listenerCount('will-download'), 1);
+        windows.at(-1).destroy();
+        assert.equal(session.listenerCount('will-download'), 0);
+    }
+    desktop.run("createMainWindow('http://127.0.0.1:3001')");
+    const download = item();
+    session.emit('will-download', {}, download, windows.at(-1).webContents);
+    assert.equal(saves.length, 1);
+    saves[0].resolve({ filePath: 'selected.zip' });
+    await tick();
+    assert.equal(download.resumed, 1);
+    windows.at(-1).destroy();
+});
+
+test('pending download dialogs cannot resume a closed window download in its replacement', async () => {
+    const { desktop, windows, session, saves, item } = downloadWindowFixture();
+    desktop.run("createMainWindow('http://127.0.0.1:3001')");
+    const original = windows[0], download = item();
+    session.emit('will-download', {}, download, original.webContents);
+    original.destroy();
+    desktop.run("createMainWindow('http://127.0.0.1:3001')");
+    saves[0].resolve({ filePath: 'selected.zip' });
+    await tick();
+    assert.equal(saves[0].owner, original);
+    assert.equal(download.resumed, 0);
+    assert.equal(download.cancelled, 1);
+    windows.at(-1).destroy();
+});
 
 test('first-run dependency extraction yields to the event loop', async () => {
     const outputDir = path.resolve(desktopDir, '..', 'output');
@@ -277,6 +336,93 @@ test('repeated before-quit does not bypass pending child cleanup', async () => {
     child.exit();
     await tick();
     assert.deepEqual(desktop.exits, [0]);
+});
+
+async function nativeExitFixture({ ready = true } = {}) {
+    const child = new Child();
+    const events = [];
+    const desktop = loadDesktop({
+        fileSystem: { ...fs, existsSync: () => true },
+        spawnProcess: () => {
+            setImmediate(() => child.emit('spawn'));
+            return child;
+        },
+        electron: { dialog: { showErrorBox(title, message) {
+            events.push(['error', message]);
+            assert.equal(desktop.run('isQuitting'), true, 'shutdown must begin before the modal error');
+        } } }
+    });
+    desktop.app.quit = () => {
+        events.push(['quit']);
+        desktop.app.emit('before-quit', { preventDefault() {} });
+    };
+    desktop.context.lifecycleEvents = events;
+    desktop.run(`
+        applicationOrigin = 'http://127.0.0.1:3001';
+        writablePaths = { logsDir: 'unit-test-logs' };
+        applicationReadyForInteraction = ${ready};
+        updateTrayMenu = () => {};
+        createMainWindow = () => lifecycleEvents.push(['create-admin']);
+        mainWindow = { isDestroyed: () => false, hide: () => lifecycleEvents.push(['hide-admin']) };
+        stopBackend = () => Promise.resolve();
+        stopDesktopControlServer = () => Promise.resolve();
+    `);
+    await desktop.run('startNativeClient(applicationOrigin, writablePaths)');
+    return { desktop, child, events };
+}
+
+test('forced Unity exit closes the client before its error dialog and never opens standalone admin', async () => {
+    const { desktop, child, events } = await nativeExitFixture();
+    child.exit(1);
+    assert.deepEqual(events.map(([name]) => name), ['quit', 'hide-admin', 'error']);
+    assert.match(events[2][1], /Unity 原生大屏异常退出（代码 1）/);
+    assert.match(events[2][1], /native-client-error\.log/);
+    assert.equal(desktop.run('nativeProcess'), null);
+    assert.equal(desktop.run('nativeHostReady'), false);
+    assert.equal(desktop.logStreams.every(stream => stream.ended), true);
+    // A tray click, delayed ready-to-show, pipe request or queued restart may
+    // arrive while the modal is up / child cleanup is still pending.
+    desktop.run('showAdminWindow(); showNativeAdminPanel(); showNativeDashboard();');
+    await desktop.run('restartNativeClient()');
+    await tick();
+    assert.equal(desktop.spawnCalls, 1);
+    assert.equal(events.some(([name]) => name === 'create-admin'), false);
+    assert.deepEqual(desktop.exits, [0]);
+});
+
+test('normal Unity exit also closes the client without an error or standalone admin', async () => {
+    const { desktop, child, events } = await nativeExitFixture();
+    child.exit(0);
+    await tick();
+    assert.deepEqual(events.map(([name]) => name), ['quit', 'hide-admin']);
+    assert.deepEqual(desktop.exits, [0]);
+});
+
+test('signal termination reports the signal rather than an empty exit code', async () => {
+    const { desktop, child, events } = await nativeExitFixture();
+    child.exit(null, 'SIGTERM');
+    await tick();
+    assert.match(events.find(([name]) => name === 'error')[1], /代码 SIGTERM/);
+    assert.deepEqual(desktop.exits, [0]);
+});
+
+test('controlled Unity stop does not quit the client or create a fallback admin window', async () => {
+    const { desktop, child, events } = await nativeExitFixture();
+    const stopping = desktop.run('stopNativeClient()');
+    child.exit(1);
+    await stopping;
+    assert.deepEqual(events, []);
+    assert.equal(desktop.run('isQuitting'), false);
+    assert.deepEqual(desktop.exits, []);
+});
+
+test('Unity exit during startup remains owned by the startup failure UI', async () => {
+    const { desktop, child, events } = await nativeExitFixture({ ready: false });
+    child.exit(1);
+    await tick();
+    assert.deepEqual(events, []);
+    assert.equal(desktop.run('isQuitting'), false);
+    assert.deepEqual(desktop.exits, []);
 });
 
 test('before-quit starts Unity and backend shutdown concurrently and waits for both', async () => {

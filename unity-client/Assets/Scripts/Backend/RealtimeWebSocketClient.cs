@@ -68,8 +68,7 @@ namespace HeatTreatment.DigitalTwin.Backend
                         socket.Options.KeepAliveInterval = TimeSpan.FromSeconds(15);
                         if (sessionCookies != null) socket.Options.Cookies = sessionCookies;
                         QueueState("connecting", generation);
-                        await socket.ConnectAsync(endpoint, cancellationToken);
-                        await SendHelloAsync(socket, cancellationToken);
+                        await ConnectAndHelloAsync(socket, endpoint, cancellationToken, TimeSpan.FromSeconds(15));
                         QueueState("connected", generation);
                         // A disconnect may have interrupted reliable configuration events.
                         // Existing runtime handles this message by fetching authoritative state.
@@ -129,6 +128,21 @@ namespace HeatTreatment.DigitalTwin.Backend
                 await socket.SendAsync(new ArraySegment<byte>(payload), WebSocketMessageType.Text, true, cancellationToken);
             }
             finally { _sendLock.Release(); }
+        }
+
+        private async Task ConnectAndHelloAsync(ClientWebSocket socket, Uri endpoint, CancellationToken cancellationToken, TimeSpan timeout)
+        {
+            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            deadline.CancelAfter(timeout);
+            try
+            {
+                await socket.ConnectAsync(endpoint, deadline.Token);
+                await SendHelloAsync(socket, deadline.Token);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                throw new TimeoutException("WebSocket connect/hello timed out; reconnect and resync");
+            }
         }
 
         public void SendMessage(JObject message)

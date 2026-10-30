@@ -194,7 +194,10 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 keyObject.transform.SetParent(transform, false);
             }
             keyObject.transform.rotation = Quaternion.Euler(46f, -38f, 0f);
-            _keyLight = keyObject.GetComponent<Light>() ?? keyObject.AddComponent<Light>();
+            _keyLight = keyObject.GetComponent<Light>();
+            // Unity's destroyed-component handles are not C# null references.
+            // Scene reloads must replace them before touching native properties.
+            if (_keyLight == null) _keyLight = keyObject.AddComponent<Light>();
             _keyLight.type = LightType.Directional;
             _keyLight.color = new Color(1f, 0.94f, 0.86f);
             _keyLight.shadows = LightShadows.Soft;
@@ -213,7 +216,8 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 fillObject.transform.SetParent(transform, false);
             }
             fillObject.transform.rotation = Quaternion.Euler(32f, 142f, 0f);
-            _fillLight = fillObject.GetComponent<Light>() ?? fillObject.AddComponent<Light>();
+            _fillLight = fillObject.GetComponent<Light>();
+            if (_fillLight == null) _fillLight = fillObject.AddComponent<Light>();
             _fillLight.type = LightType.Directional;
             _fillLight.color = new Color(0.92f, 0.92f, 0.92f);
             _fillLight.shadows = LightShadows.None;

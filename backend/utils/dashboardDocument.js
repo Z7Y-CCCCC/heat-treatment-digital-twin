@@ -2,6 +2,8 @@ const { evaluateVariableExpression } = require('./mathExpression');
 const { parseDataPath } = require('./externalDataPayload');
 const { createHash } = require('node:crypto');
 
+const { normalizeViewTooltipMetadata } = require('../../shared/deviceTooltip.mjs');
+
 const SCHEMA_VERSION = 3;
 const SUPPORTED_SCHEMA_VERSIONS = new Set([1, 2, 3]);
 const DEFAULT_CANVAS = Object.freeze({
@@ -294,7 +296,7 @@ function normalizeDashboardView(source, index = 0) {
             hide: arrayValue(components.hide, []).map(value => cleanId(value, '')).filter(Boolean).slice(0, 500),
             hideNonTargetDevices: booleanValue(components.hideNonTargetDevices, false)
         },
-        metadata: objectValue(input.metadata, {})
+        metadata: normalizeViewTooltipMetadata(objectValue(input.metadata, {}))
     };
 }
 

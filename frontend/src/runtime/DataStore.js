@@ -74,9 +74,11 @@ export function createDashboardDataStore(options = {}) {
 
     const latestDeviceDataMap = new Map();
     const lastSeenMap = new Map();
+    let configuredDeviceIds = null;
     let wsClient = null;
     let connectedOnce = false;
     let reconnectTimer = null;
+    let connectionTimer = null;
     let staleTimer = null;
     let disposed = false;
     let onDeviceData = null;
@@ -140,7 +142,11 @@ export function createDashboardDataStore(options = {}) {
     }
 
     function registerDevice(deviceCfg) {
-        if (!deviceCfg?.id) return;
+        if (disposed || !deviceCfg?.id) return;
+        if (deviceStatusMap[deviceCfg.id]) {
+            deviceStatusMap[deviceCfg.id].name = deviceCfg.name;
+            return;
+        }
         deviceStatusMap[deviceCfg.id] = {
             name: deviceCfg.name,
             temp: '--',
@@ -155,6 +161,26 @@ export function createDashboardDataStore(options = {}) {
         recomputeMetricsFromRuntime();
     }
 
+    function syncDevices(devices) {
+        if (disposed) return;
+        const configured = (Array.isArray(devices) ? devices : []).filter(device => device?.id);
+        configuredDeviceIds = new Set(configured.map(device => String(device.id)));
+        for (const deviceId of new Set([...Object.keys(deviceStatusMap), ...Object.keys(deviceDataMap), ...latestDeviceDataMap.keys(), ...lastSeenMap.keys()])) {
+            if (configuredDeviceIds.has(String(deviceId))) continue;
+            delete deviceStatusMap[deviceId];
+            delete deviceDataMap[deviceId];
+            latestDeviceDataMap.delete(deviceId);
+            lastSeenMap.delete(deviceId);
+        }
+        if (selectedDeviceId.value != null && !configuredDeviceIds.has(String(selectedDeviceId.value))) selectDevice(null);
+        configured.forEach(registerDevice);
+        recomputeMetricsFromRuntime();
+    }
+
+    function acceptsDevice(deviceId) {
+        return configuredDeviceIds === null || configuredDeviceIds.has(String(deviceId));
+    }
+
     function selectDevice(deviceId) {
         selectedDeviceId.value = deviceId;
         const cachedData = latestDeviceDataMap.get(deviceId);
@@ -163,7 +189,7 @@ export function createDashboardDataStore(options = {}) {
     }
 
     function applyDeviceRealtimeData(data) {
-        if (disposed || !data?.furnace_id) return;
+        if (disposed || !data?.furnace_id || !acceptsDevice(data.furnace_id)) return;
 
         lastRealtimeFrameAt = Date.now();
         latestDeviceDataMap.set(data.furnace_id, data);
@@ -232,10 +258,11 @@ export function createDashboardDataStore(options = {}) {
     }
 
     function applyPlcStatus(payload) {
+        if (disposed) return;
         plcStatusText.value = payload?.message || payload?.status || '状态未知';
         (Array.isArray(payload?.devices) ? payload.devices : []).forEach((deviceStatus) => {
             const deviceId = deviceStatus.deviceId;
-            if (!deviceId) return;
+            if (!deviceId || !acceptsDevice(deviceId)) return;
             const quality = deviceStatus.quality || qualityFromPlcStatus(deviceStatus.status);
             const previous = deviceStatusMap[deviceId] || {};
             deviceStatusMap[deviceId] = {
@@ -293,7 +320,7 @@ export function createDashboardDataStore(options = {}) {
     }
 
     function applyFrame(payload) {
-        const devices = Array.isArray(payload?.devices) ? payload.devices : [];
+        const devices = (Array.isArray(payload?.devices) ? payload.devices : []).filter(device => acceptsDevice(device?.furnace_id));
         devices.forEach(applyDeviceRealtimeData);
         updateRollingTrend(devices);
         recomputeMetricsFromRuntime();
@@ -460,59 +487,84 @@ export function createDashboardDataStore(options = {}) {
             reconnectTimer = null;
         }
 
-        const wsUrl = getWebSocketUrl('/ws');
-        const socket = new WebSocket(wsUrl);
-        wsClient = socket;
-
-        socket.onopen = () => {
-            if (disposed || wsClient !== socket) return;
-            wsConnected.value = true;
-            plcStatusText.value = '通信正常';
-            try { socket.send(JSON.stringify({ type: 'client_hello', role: 'web', client: 'dashboard-overlay' })); } catch (e) { /* ignore */ }
-            if(options.sceneProjection===true) {
-                try {socket.send(JSON.stringify({type:'scene_projection_subscribe',enabled:true}));} catch { /* reconnect retries the subscription */ }
-            }
-            if (connectedOnce) {
-                // A bounded server queue may disconnect before a configuration
-                // event is delivered. Reload authoritative state on reconnect.
-                try {
-                    Promise.resolve(onMessage?.({ type: 'realtime_resync_required', payload: { reason: 'websocket_reconnect' } }))
-                        .catch(error => console.warn('[DataStore] 重连配置同步失败:', error));
-                } catch (error) { console.warn('[DataStore] 重连配置同步失败:', error); }
-            }
-            connectedOnce = true;
+        const detachSocket = socket => {
+            socket.onopen = null;
+            socket.onmessage = null;
+            socket.onclose = null;
+            socket.onerror = null;
         };
-
-        socket.onmessage = (event) => {
-            if (disposed || wsClient !== socket) return;
-            try {
-                const msg = JSON.parse(event.data);
-                if (msg.type === 'realtime_frame') {
-                    applyFrame(msg.payload);
-                } else if (msg.type === 'device_data') {
-                    applyDeviceRealtimeData(msg.payload);
-                    refreshMetrics();
-                } else if (msg.type === 'plc_status') {
-                    applyPlcStatus(msg.payload);
-                }
-                Promise.resolve(onMessage?.(msg)).catch(error => console.warn('[DataStore] 实时消息处理失败:', error));
-            } catch (e) {
-                // 忽略非 JSON 消息。
+        const retry = socket => {
+            if (disposed || (socket && wsClient !== socket)) return;
+            clearTimeout(connectionTimer);
+            connectionTimer = null;
+            if (socket) {
+                detachSocket(socket);
+                try { socket.close(); } catch { /* failed connections can already be closed */ }
             }
-        };
-
-        socket.onclose = () => {
-            if (disposed || wsClient !== socket) return;
             wsClient = null;
             wsConnected.value = false;
             plcStatusText.value = '连接断开，重连中...';
             reconnectTimer = setTimeout(() => connect(), 5000);
         };
 
-        socket.onerror = () => {
-            if (disposed || wsClient !== socket) return;
-            wsConnected.value = false;
-        };
+        let socket;
+        try { socket = new WebSocket(getWebSocketUrl('/ws')); }
+        catch { retry(); }
+        if (socket) {
+            wsClient = socket;
+            // A TCP connection whose upgrade never completes must not hold the
+            // dashboard in CONNECTING forever and suppress all future attempts.
+            connectionTimer = setTimeout(() => retry(socket), 15000);
+
+            socket.onopen = () => {
+                if (disposed || wsClient !== socket) return;
+                clearTimeout(connectionTimer);
+                connectionTimer = null;
+                wsConnected.value = true;
+                plcStatusText.value = '通信正常';
+                try { socket.send(JSON.stringify({ type: 'client_hello', role: 'web', client: 'dashboard-overlay' })); } catch (e) { /* ignore */ }
+                if(options.sceneProjection===true) {
+                    try {socket.send(JSON.stringify({type:'scene_projection_subscribe',enabled:true}));} catch { /* reconnect retries the subscription */ }
+                }
+                if (connectedOnce) {
+                    // A bounded server queue may disconnect before a configuration
+                    // event is delivered. Reload authoritative state on reconnect.
+                    try {
+                        Promise.resolve(onMessage?.({ type: 'realtime_resync_required', payload: { reason: 'websocket_reconnect' } }))
+                            .catch(error => console.warn('[DataStore] 重连配置同步失败:', error));
+                    } catch (error) { console.warn('[DataStore] 重连配置同步失败:', error); }
+                }
+                connectedOnce = true;
+            };
+
+            socket.onmessage = (event) => {
+                if (disposed || wsClient !== socket) return;
+                try {
+                    const msg = JSON.parse(event.data);
+                    if (msg.type === 'realtime_frame') {
+                        applyFrame(msg.payload);
+                    } else if (msg.type === 'device_data') {
+                        applyDeviceRealtimeData(msg.payload);
+                        refreshMetrics();
+                    } else if (msg.type === 'plc_status') {
+                        applyPlcStatus(msg.payload);
+                    }
+                    Promise.resolve(onMessage?.(msg)).catch(error => console.warn('[DataStore] 实时消息处理失败:', error));
+                } catch (e) {
+                    // 忽略非 JSON 消息。
+                }
+            };
+
+            socket.onclose = () => {
+                if (disposed || wsClient !== socket) return;
+                retry(socket);
+            };
+
+            socket.onerror = () => {
+                if (disposed || wsClient !== socket) return;
+                wsConnected.value = false;
+            };
+        }
 
         if (!staleTimer) {
             staleTimer = setInterval(() => {
@@ -533,6 +585,7 @@ export function createDashboardDataStore(options = {}) {
         onDeviceData = null;
         onMessage = null;
         if (reconnectTimer) clearTimeout(reconnectTimer);
+        if (connectionTimer) clearTimeout(connectionTimer);
         if (staleTimer) clearInterval(staleTimer);
         if (wsClient) {
             wsClient.onopen = null;
@@ -542,6 +595,7 @@ export function createDashboardDataStore(options = {}) {
             wsClient.close();
         }
         reconnectTimer = null;
+        connectionTimer = null;
         staleTimer = null;
         wsClient = null;
     }
@@ -564,6 +618,7 @@ export function createDashboardDataStore(options = {}) {
         setDeviceDataHandler,
         setMessageHandler,
         registerDevice,
+        syncDevices,
         selectDevice,
         connect,
         dispose,

@@ -59,9 +59,12 @@ test('slow sample permits timers, deduplicates concurrent calls, summary perform
     const first = instance.sampleMemory(true);
     assert.strictEqual(instance.sampleMemory(true), first);
     let ticks = 0;
-    const timer = setInterval(() => ticks++, 5);
-    await new Promise(resolve => setTimeout(resolve, 35));
-    clearInterval(timer);
+    let recordTicks;
+    const observed = new Promise(resolve => { recordTicks = resolve; });
+    const timer = setInterval(() => { ticks++; if (ticks >= 2) recordTicks(); }, 5);
+    let deadline;
+    try { await Promise.race([observed, new Promise((_, reject) => { deadline = setTimeout(() => reject(new Error('sampling blocked observation timers')), 5000); })]); }
+    finally { clearInterval(timer); clearTimeout(deadline); }
     assert.ok(ticks >= 2, 'in-flight sampling must not block the event loop');
     assert.equal(instance.summary().memory.samples, 0);
     assert.equal(calls, 1);
@@ -97,9 +100,10 @@ test('real asynchronous subprocess timeout records failure while timers keep run
     assert.equal(instance.summary().memory.errors.length, 1);
     assert.equal(instance.summary().memory.samples, 0);
 });
-test('old synchronous sampler breaks continuity; same delayed async subprocess preserves it', async t => {
-    // Only this regression uses a 200 ms observation limit; production remains
-    // 15 seconds. The 350 ms child delay deliberately exceeds the test limit.
+test('old synchronous sampler starves observations; async sampling keeps the production guard live', async t => {
+    // A 200 ms guard amplifies starvation only in the old-path demonstration.
+    // Check the asynchronous path against the real 15 s budget: unrelated OS
+    // scheduling/parallel builds may delay a timer by 200 ms without blocking JS.
     const childScript = `setTimeout(() => process.stdout.write(${JSON.stringify(JSON.stringify(rows()))}), 350)`;
     const oldClock = createContinuityClock({ maxGapMs: 200 });
     let oldTicks = 0;
@@ -114,7 +118,7 @@ test('old synchronous sampler breaks continuity; same delayed async subprocess p
 
     const run = promisify(execFile);
     const { instance } = fixture(t, { execFile: (_file, _args, options) => run(process.execPath, ['-e', childScript], options) });
-    const newClock = createContinuityClock({ maxGapMs: 200 });
+    const newClock = createContinuityClock();
     let newTicks = 0;
     const newTimer = setInterval(() => { newTicks++; newClock.sample(); }, 20);
     try { await instance.sampleMemory(true); newClock.sample(); }
@@ -155,4 +159,22 @@ test('rejects sample if generation exits during async collection', async t => {
     await pending;
     assert.equal(instance.summary().memory.errors.length, 1);
     assert.equal(instance.summary().memory.samples, 0);
+});
+
+test('MySQL growth budget retains a warmup spike after memory returns to baseline', async t => {
+    let now = base + 62000;
+    const input = rows();
+    const { instance } = fixture(t, { now: () => now, execFile: async () => ({ stdout: JSON.stringify(input) }) });
+    await instance.sampleMemory(true);
+    now += 60000;
+    input[1].rss = 680 * 1048576;
+    await instance.sampleMemory(true);
+    assert.equal(instance.summary().memory.maxRssGrowthMb, 600);
+    now += 60000;
+    input[1].rss = 85 * 1048576;
+    await instance.sampleMemory(true);
+    const result = instance.summary();
+    assert.equal(result.generations[0].rssGrowthMb, 5);
+    assert.equal(result.generations[0].peakRssGrowthMb, 600);
+    assert.equal(result.memory.maxRssGrowthMb, 600, 'later recovery must not erase a failed memory budget');
 });

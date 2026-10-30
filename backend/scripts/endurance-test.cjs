@@ -4,7 +4,7 @@ const crypto = require('node:crypto');
 const assert = require('node:assert/strict');
 const { createContinuityClock } = require('./endurance-continuity.cjs');
 const { createMemorySummaryReader } = require('./endurance-memory.cjs');
-const { writeReportFile } = require('./endurance-report-io.cjs');
+const { writeReportPair } = require('./endurance-report-io.cjs');
 const WebSocket = require('ws');
 const { BACKEND_DIR, createRunDirectory, createTestDatabase, findFreePort, startLoggedProcess, waitForHttp, forceStop } = require('./integration-test-utils.cjs');
 
@@ -45,6 +45,7 @@ let continuity, continuityTimer, finishedElapsedMs, finishing = false;
 const monotonicNow = () => performance.now();
 const runtimeBinding = { widgetId: 'endurance_primary_metric', connectionId: 'primary', table: 'endurance_metrics', field: 'actual', expectedValue: 42.25, checks: 0, freshFetches: 0, lastFetchedAt: null };
 let revision = 0, document, publishedReleaseId = '', cycles = 0, restarts = 0, reconnects = 0, frames = 0, lastFrameAt = 0;
+const websocketEvidence = { connections: 0, maxReceiveGapMs: 0, maxDeliveryAgeMs: 0, sequenceErrors: 0, lastFrame: null };
 let requestCount = 0, requestErrors = 0, maxLatency = 0;
 const latencyBins = new Array(1201).fill(0); // 10 ms buckets, bounded memory for 72 h.
 const errors = [];
@@ -113,21 +114,43 @@ async function report(final = false) {
     const status = !final ? 'running' : stopped || !checks.durationCompleted ? 'incomplete' : Object.values(checks).every(Boolean) ? 'passed' : 'failed';
     const result = { status, startedAt: new Date(startedAt).toISOString(), workloadStartedAt, reportedAt: new Date().toISOString(), requestedSeconds: durationMs / 1000, actualSeconds: elapsedMs / 1000, qualifiesAs72Hours: status === 'passed' && elapsedMs >= 72 * 3600000, stopReason, runnerPid: process.pid, backendPid: backend?.pid, restartPolicy, databaseEngine: databaseEngine || { type: 'sqlite', filename: path.join(dataDir, 'factory.db') }, isolation: { database: databaseType === 'mysql' ? privateMysql?.database : path.join(dataDir, 'factory.db'), baseUrl, simulationOnly: true, physicalPlcEnabled: false }, thresholds: limits, checks, runtimeBinding, cycles, restarts, reconnects, frames, requests: { count: requestCount, errors: requestErrors, p95UpperBoundMs: p95(), maxMs: maxLatency }, memory, errors: errors.slice(-100), artifacts: { directory, stopFile, memoryFile } };
     result.reporting = reporting;
+    result.websocketEvidence = { ...websocketEvidence };
     result.continuity = continuity?.summary() || { continuous: false, samples: 0 };
     observationPhase = 'report-write';
-    await writeReportFile(path.join(directory, 'report.json'), JSON.stringify(result, null, 2));
-    await writeReportFile(path.join(directory, 'report.md'), `# 隔离耐久测试\n\n- 状态：${status}\n- 计划 / 实际：${durationMs / 1000} / ${(elapsedMs / 1000).toFixed(1)} 秒\n- 完整 72 小时：${result.qualifiesAs72Hours ? '是' : '否'}\n- 循环 / 重启恢复 / 客户端重连：${cycles} / ${restarts} / ${reconnects}\n- 重启策略：${restartPolicy.mode}；首次 ${restartPolicy.firstAfterSeconds} 秒；重复间隔 ${restartPolicy.repeatIntervalSeconds ?? '无'} 秒\n- 数据库引擎：${databaseType}${privateMysql?.version ? ` ${privateMysql.version}` : ''}\n- 已发布数据库字段检查：${runtimeBinding.checks} 次；新查询结果 ${runtimeBinding.freshFetches} 次；固定值 ${runtimeBinding.expectedValue}\n- 模拟实时帧：${frames}\n- HTTP：${requestCount} 次，错误 ${requestErrors}，p95 上界 ${p95()} ms\n- 内存峰值：${memory.peakRssMb.toFixed(1)} MB；单进程代内存增长：${memory.maxRssGrowthMb.toFixed(1)} MB\n- 停止原因：${stopReason || '无'}\n\n## 判定\n\n${Object.entries(checks).map(([key, value]) => `- ${key}: ${value}`).join('\n')}\n\n## 限定\n\n隔离 ${databaseType} 与模拟采集，不连接现场数据库或 PLC；没有启动 Unity/电视/浏览器渲染。本报告不能替代现场显卡、投屏、PLC、数据库兼容和 72 小时验收。内存增长按每次进程启动 60 秒后基线计算，不代表已经证明无内存泄漏。\n\n## 错误\n\n${errors.slice(-100).map(item => `- ${item.reason}`).join('\n') || '无记录'}\n`);
+
+    const markdown = `# 隔离耐久测试\n\n- 状态：${status}\n- 计划 / 实际：${durationMs / 1000} / ${(elapsedMs / 1000).toFixed(1)} 秒\n- 完整 72 小时：${result.qualifiesAs72Hours ? '是' : '否'}\n- 循环 / 重启恢复 / 客户端重连：${cycles} / ${restarts} / ${reconnects}\n- 重启策略：${restartPolicy.mode}；首次 ${restartPolicy.firstAfterSeconds} 秒；重复间隔 ${restartPolicy.repeatIntervalSeconds ?? '无'} 秒\n- 数据库引擎：${databaseType}${privateMysql?.version ? ` ${privateMysql.version}` : ''}\n- 已发布数据库字段检查：${runtimeBinding.checks} 次；新查询结果 ${runtimeBinding.freshFetches} 次；固定值 ${runtimeBinding.expectedValue}\n- 模拟实时帧：${frames}\n- HTTP：${requestCount} 次，错误 ${requestErrors}，p95 上界 ${p95()} ms\n- 内存峰值：${memory.peakRssMb.toFixed(1)} MB；单进程代预热后峰值增长：${memory.maxRssGrowthMb.toFixed(1)} MB\n- 停止原因：${stopReason || '无'}\n\n## 判定\n\n${Object.entries(checks).map(([key, value]) => `- ${key}: ${value}`).join('\n')}\n\n## 限定\n\n隔离 ${databaseType} 与模拟采集，不连接现场数据库或 PLC；没有启动 Unity/电视/浏览器渲染。本报告不能替代现场显卡、投屏、PLC、数据库兼容和 72 小时验收。内存增长保留每次进程启动 60 秒后基线与后续峰值之差；不足 60 秒时用启动基线，不代表已经证明无内存泄漏。\n\n## 错误\n\n${errors.slice(-100).map(item => `- ${item.reason}`).join('\n') || '无记录'}\n`;
+    await writeReportPair(path.join(directory, 'report.json'), JSON.stringify(result, null, 2), path.join(directory, 'report.md'), markdown);
     observationPhase = final ? 'finished' : 'workload';
     return result;
 }
 async function connect() {
     socket?.terminate();
     const active = new WebSocket(baseUrl.replace('http:', 'ws:') + '/ws', { headers: { 'X-Admin-Token': token } });
+    const connection = ++websocketEvidence.connections;
+    let previousSeq = 0, previousFrameAt = 0;
     socket = active;
     active.on('error', failure => { if (active === socket && !restarting && !stopped && !finishing) error(`WebSocket error: ${failure.message}`); });
     active.on('close', () => { if (active === socket && !restarting && !stopped && !finishing) error('Unexpected WebSocket close'); });
     active.on('message', raw => {
-        try { const message = JSON.parse(raw); if (message.type === 'realtime_frame' && Array.isArray(message.payload?.devices) && message.payload.devices.length) { const now = monotonicNow(); if (continuity && !restarting && lastFrameAt && now - lastFrameAt > limits.wsSilenceMs) error('WebSocket frame gap exceeded limit before stream recovered', { gapMs: now - lastFrameAt, observationPhase }); frames++; lastFrameAt = now; } } catch (failure) { error(`Invalid WebSocket message: ${failure.message}`); }
+        // Delayed callbacks from a replaced socket cannot satisfy the new
+        // connection's data-readiness check or refresh its silence deadline.
+        if (active !== socket) return;
+        try {
+            const message = JSON.parse(raw);
+            if (message.type !== 'realtime_frame' || !Array.isArray(message.payload?.devices) || !message.payload.devices.length) return;
+            const { seq, timestamp } = message.payload;
+            if (!Number.isSafeInteger(seq) || seq <= previousSeq || !Number.isFinite(timestamp)) {
+                websocketEvidence.sequenceErrors++;
+                throw new Error(`Invalid realtime frame sequence/timestamp: ${seq} after ${previousSeq}`);
+            }
+            const now = monotonicNow(), receivedAt = Date.now();
+            if (previousFrameAt && !restarting) websocketEvidence.maxReceiveGapMs = Math.max(websocketEvidence.maxReceiveGapMs, now - previousFrameAt);
+            websocketEvidence.maxDeliveryAgeMs = Math.max(websocketEvidence.maxDeliveryAgeMs, receivedAt - timestamp);
+            websocketEvidence.lastFrame = { connection, backendPid: backend?.pid, seq, sentAt: timestamp, receivedAt, observationPhase };
+            if (continuity && !restarting && lastFrameAt && now - lastFrameAt > limits.wsSilenceMs) error('WebSocket frame gap exceeded limit before stream recovered', { gapMs: now - lastFrameAt, observationPhase, previousSeq, seq, sentAt: timestamp, receivedAt });
+            previousSeq = seq; previousFrameAt = now;
+            frames++; lastFrameAt = now;
+        } catch (failure) { error(`Invalid WebSocket message: ${failure.message}`); }
     });
     await new Promise((resolve, reject) => { const timer = setTimeout(() => reject(new Error('WebSocket connection timeout')), 10000); active.once('open', () => { clearTimeout(timer); active.send(JSON.stringify({ type: 'client_hello', role: 'web' })); resolve(); }); active.once('error', failure => { clearTimeout(timer); reject(failure); }); });
     const deadline = Date.now() + limits.wsSilenceMs;
@@ -237,7 +260,11 @@ async function main() {
                 restarting = false;
             }
             if (monotonicNow() >= nextReconnect) { await connect(); reconnects++; nextReconnect = monotonicNow() + 120000; }
-            await Promise.all([api('/api/health'), api('/api/plc/points/realtime'), api('/api/data-sources')]);
+            const [health] = await Promise.all([api('/api/health'), api('/api/plc/points/realtime'), api('/api/data-sources')]);
+            assert.equal(health.components?.database?.status, 'healthy', 'Database component is degraded despite HTTP 200');
+            assert.equal(health.components?.dataEngine?.status, 'healthy', 'Data engine is degraded despite HTTP 200');
+            assert.equal(health.components?.dataEngine?.fresh, true, 'Collector data is stale despite HTTP 200');
+            assert.equal(health.components?.eventStorage?.status, 'healthy', 'Reliable alarm storage is degraded despite HTTP 200');
             if (monotonicNow() >= nextCycle) { await cycle(); nextCycle = monotonicNow() + 30000; }
             await verifyRuntimeBinding();
             assert.ok(monotonicNow() - lastFrameAt <= limits.wsSilenceMs, 'WebSocket simulation stream stalled');
@@ -257,7 +284,7 @@ main().catch(failure => { error(failure.stack || failure.message); stopReason = 
     socket?.terminate();
     await forceStop(backend);
     if (backend && backend.exitCode === null && backend.signalCode === null) error('Owned backend process did not exit during cleanup');
-    if (privateMysql) await privateMysql.stop().catch(failure => error(`Private MySQL cleanup: ${failure.message}`));
+    if (privateMysql) await privateMysql.dispose().catch(failure => error(`Private MySQL cleanup: ${failure.message}`));
     await eventWrites;
     const result = await report(true);
     console.log(JSON.stringify({ status: result.status, actualSeconds: result.actualSeconds, report: path.join(directory, 'report.json') }));

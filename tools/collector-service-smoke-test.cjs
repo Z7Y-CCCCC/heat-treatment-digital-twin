@@ -5,7 +5,8 @@ const { spawn } = require('node:child_process');
 const mysql = require('../backend/node_modules/mysql2/promise');
 const Database = require('../backend/node_modules/better-sqlite3');
 const { createRunDirectory, findFreePort, waitUntil, waitForExit } = require('../backend/scripts/integration-test-utils.cjs');
-const { stopOwnedSmokeProcess, createSmokeProgramData } = require('../desktop/scripts/smoke-sandbox.cjs');
+const { stopOwnedSmokeProcess, createSmokeEnvironment } = require('../desktop/scripts/smoke-sandbox.cjs');
+const { snapshotTree, verifyTree } = require('./package-resource-integrity.cjs');
 
 const source = path.resolve(process.argv[2] || 'desktop/resources');
 const project = path.resolve(__dirname, '..');
@@ -14,7 +15,8 @@ const sourceHost = fs.existsSync(path.join(source, 'collector-service', 'HeatTre
 let child;
 (async () => {
     const run = createRunDirectory('collector-service-smoke'), resources = path.join(run, 'resources'), root = path.join(run, 'machine-data');
-    const machineEnv = createSmokeProgramData(run);
+    const machineEnv = createSmokeEnvironment(run);
+    const resourcesBefore = await snapshotTree(source);
     console.log(`Collector smoke workspace: ${run}`);
     fs.mkdirSync(resources);
     for (const name of ['runtime', 'mysql', 'ffmpeg', 'frontend', 'backend', 'shared']) {
@@ -48,7 +50,7 @@ let child;
         console.log(`Collector smoke: ${phase}`);
         let stdout = '', stderr = '';
         child = spawn(path.join(sourceHost, 'HeatTreatmentCollector.exe'), ['--console', '--no-power-request', '--config', filename],
-            { cwd: run, windowsHide: true, env: { ...process.env, ...machineEnv }, stdio: ['pipe', 'pipe', 'pipe'] });
+            { cwd: run, windowsHide: true, env: machineEnv, stdio: ['pipe', 'pipe', 'pipe'] });
         child.stdout.on('data', chunk => { stdout += chunk; }); child.stderr.on('data', chunk => { stderr += chunk; });
         try {
             await waitUntil(() => {
@@ -77,7 +79,7 @@ let child;
             const frames = health.engine.collectorStatus.frames;
             if (phase === 'first-start' && fs.existsSync(desktopExe)) {
                 const frontendRoot = path.join(run, 'frontend-user');
-                const env = { ...process.env, ...machineEnv, APP_USER_DATA_DIR: frontendRoot,
+                const env = { ...machineEnv, APP_USER_DATA_DIR: frontendRoot,
                     DIGITAL_TWIN_COLLECTOR_CONFIG: filename, NATIVE_CLIENT_SMOKE_MODE: 'true',
                     DESKTOP_SMOKE_EXIT_AFTER_MS: '5000', DISABLE_AUTO_START: 'true' };
                 delete env.DESKTOP_SMOKE_STANDALONE;
@@ -121,8 +123,9 @@ let child;
             if (child?.exitCode === null) await stopOwnedSmokeProcess(child);
         }
     }
+    const resourceIntegrity = await verifyTree(source, resourcesBefore);
     const report = { success: true, consoleServiceHost: true, packagedFrontendVerified, windowsScmInstallTest: 'requires-elevation',
-        launches, source, directory: run, programData: machineEnv.ProgramData };
+        launches, source, directory: run, programData: machineEnv.ProgramData, resourceIntegrity };
     fs.writeFileSync(path.join(run, 'result.json'), JSON.stringify(report, null, 2));
     console.log(JSON.stringify(report, null, 2));
 })().catch(error => { console.error(error); process.exitCode = 1; }).finally(async () => {

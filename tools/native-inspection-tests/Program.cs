@@ -82,4 +82,35 @@ var inferred = InspectionConfigResolver.Resolve(asset, null);
 Check(inferred.Parts.Count == 1 && inferred.Parts[0].Id == "fan-run" && inferred.Parts[0].PointKeys.Count == 2, "fallback merges same-node PLC bindings without inventing duplicate assemblies");
 asset.MetadataObject["inspection"] = new JObject { ["parts"] = new JArray() };
 Check(InspectionConfigResolver.Resolve(asset, null).Parts.Count == 0, "explicitly empty authoring is not repopulated from PLC bindings");
+
+var layoutSource = JObject.Parse(@"{
+    'version':2,'offset_space':'model','shell_duration':0.25,'easing':'linear',
+    'parts':[
+        {'id':'assembly','node_names':['A','B'],'explode_offset':[0.7,-0.8,0.9],'explode_rotation':[23,-37,51],'point_ids':['retained-plc']},
+        {'id':'other','node_name':'C','explode_offset':[0.5,0.25,-0.75]}
+    ]
+}");
+var layoutAsset = new ModelAssetDto { Metadata = new JObject { ["inspection"] = layoutSource } };
+var modelLayoutBefore = layoutAsset.MetadataObject.ToString();
+var deviceLayout = (JObject)layoutSource.DeepClone();
+deviceLayout["parts"][0]["explode_offset"] = new JArray(3.125, -.875, 1.75);
+var deviceWithLayout = new DeviceDto { Id = "device-a", InstanceConfig = new JValue(new JObject {
+    ["inspection"] = deviceLayout, ["unrelated"] = "retained-setting"
+}.ToString(Formatting.None)) };
+var deviceWithoutLayout = new DeviceDto { Id = "device-b", InstanceConfig = new JObject { ["unrelated"] = "another-setting" } };
+var resolvedLayout = InspectionConfigResolver.Resolve(layoutAsset, deviceWithLayout);
+Check(resolvedLayout.OffsetSpace == "model" && resolvedLayout.Parts.Count == 2, "device JSON-string override inherits the model coordinate contract and complete parts");
+Check(resolvedLayout.Parts[0].ExplodeOffset.SequenceEqual(new[] { 3.125f, -.875f, 1.75f }), "device saved drag coordinates survive DTO vector defaults without array concatenation");
+Check(resolvedLayout.Parts[0].ExplodeRotation.SequenceEqual(new[] { 23f, -37f, 51f })
+    && resolvedLayout.Parts[0].PointIds.SequenceEqual(new[] { "retained-plc" }), "device layout preserves authored rotation and PLC associations");
+Check(resolvedLayout.Parts[1].ExplodeOffset.SequenceEqual(new[] { .5f, .25f, -.75f }), "saving the complete device layout retains untouched assembly locations");
+Check(InspectionConfigResolver.Resolve(layoutAsset, deviceWithoutLayout).Parts[0].ExplodeOffset.SequenceEqual(new[] { .7f, -.8f, .9f }), "another device of the same model keeps model defaults");
+Check(layoutAsset.MetadataObject.ToString() == modelLayoutBefore, "resolving a device override never mutates shared model metadata");
+var deviceReloaded = JsonConvert.DeserializeObject<DeviceDto>(JsonConvert.SerializeObject(deviceWithLayout));
+Check(JToken.DeepEquals(JObject.FromObject(resolvedLayout), JObject.FromObject(InspectionConfigResolver.Resolve(layoutAsset, deviceReloaded))), "save/reload of the device retains canonical native inspection behavior");
+var partialPartsDevice = new DeviceDto { InstanceConfig = JObject.Parse(@"{'inspection':{'parts':[{'id':'only','node_name':'A','explode_offset':[5,6,7]}]}}") };
+Check(InspectionConfigResolver.Resolve(layoutAsset, partialPartsDevice).Parts.Count == 1, "parts overrides intentionally replace the whole array: layout APIs must merge offsets into complete effective parts before saving");
+var disabledDevice = new DeviceDto { InstanceConfig = JObject.Parse(@"{'inspection':{'enabled':false}}") };
+Check(!InspectionConfigResolver.Resolve(layoutAsset, disabledDevice).Enabled && InspectionConfigResolver.Resolve(layoutAsset, disabledDevice).Parts.Count == 2,
+    "partial enabled override inherits existing parts rather than changing device layout");
 Console.WriteLine($"Native inspection contract: {passed} checks passed.");

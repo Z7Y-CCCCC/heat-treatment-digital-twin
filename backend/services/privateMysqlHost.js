@@ -119,6 +119,19 @@ async function main() {
     if (process.argv[2] !== '--config' || !process.argv[3]) throw new Error('Private MySQL host requires --config');
     const options = readJson(process.argv[3]);
     const root = path.resolve(options.root);
+    // This CLI owns exactly one private runtime. Bind paths before seedMysql
+    // imports database.js (which persists its backup policy at module load),
+    // including when the host is launched without MysqlRuntime's environment.
+    Object.assign(process.env, {
+        APP_DATA_DIR: path.join(root, 'data'), UPLOADS_DIR: path.join(root, 'uploads'),
+        DB_BACKUP_DIR: path.join(root, 'data', 'backups'),
+        DB_RECOVERY_DIR: path.join(root, 'data', 'recovery'),
+        SITE_BACKUP_DIR: path.join(root, 'data', 'site-backups'),
+        SITE_IMPORT_DIR: path.join(root, 'data', 'site-imports'),
+        SITE_BACKUP_MIRROR_DIR: '',
+        DATA_SOURCE_BACKUP_DIR: path.join(root, 'data', 'data-source-backups'),
+        SQLITE_FILE: path.join(root, 'data', 'factory.db')
+    });
     const mysqlRoot = path.join(root, 'mysql');
     const dataDir = path.join(mysqlRoot, 'data');
     const stateFile = path.join(mysqlRoot, 'runtime.json');

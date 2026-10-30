@@ -10,6 +10,7 @@ import { restoreGltfNodeNames } from './gltfNodeIdentity.js';
 
 const loader = new GLTFLoader();
 const modelCache = new Map();
+const MAX_CACHED_MODELS = 32;
 
 export function resolveBackendAssetUrl(filePath) {
     if (!filePath) return '';
@@ -20,22 +21,36 @@ export function resolveBackendAssetUrl(filePath) {
 }
 
 export function loadGltf(url) {
-    if (!modelCache.has(url)) {
-        const promise = new Promise((resolve, reject) => {
-            loader.load(url, (gltf) => {
-                restoreGltfNodeNames(gltf);
-                const root = gltf.scene || gltf.scenes?.[0];
-                if (!root) {
-                    reject(new Error('模型文件中没有可用场景'));
-                    return;
-                }
-                normalizeModelRoot(root);
-                resolve(root);
-            }, undefined, reject);
-        });
-        modelCache.set(url, promise);
+    if (modelCache.has(url)) {
+        const cached = modelCache.get(url);
+        modelCache.delete(url);
+        modelCache.set(url, cached);
+        return cached;
     }
-    return modelCache.get(url);
+    const promise = new Promise((resolve, reject) => {
+        loader.load(url, (gltf) => {
+            restoreGltfNodeNames(gltf);
+            const root = gltf.scene || gltf.scenes?.[0];
+            if (!root) {
+                reject(new Error('模型文件中没有可用场景'));
+                return;
+            }
+            normalizeModelRoot(root);
+            resolve(root);
+        }, undefined, reject);
+    }).catch(error => {
+        // A failed download must be retryable when the backend returns.
+        // An evicted attempt cannot delete a newer request for the same URL.
+        if (modelCache.get(url) === promise) modelCache.delete(url);
+        throw error;
+    });
+    modelCache.set(url, promise);
+    while (modelCache.size > MAX_CACHED_MODELS) {
+        // Active clones share the template's geometry and textures. Drop
+        // only this cache reference; their owning scenes still dispose them.
+        modelCache.delete(modelCache.keys().next().value);
+    }
+    return promise;
 }
 
 function normalizeModelRoot(root) {

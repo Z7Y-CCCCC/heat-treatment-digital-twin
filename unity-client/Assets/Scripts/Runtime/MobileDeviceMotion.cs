@@ -245,6 +245,15 @@ namespace HeatTreatment.DigitalTwin.Runtime
 
         private void EnsureMotionIndicator()
         {
+            // This was previously created for every carrier at a hard-coded
+            // height, producing an intermittent floating dot during motion.
+            // Real model lamps and PLC movement are independent of this debug marker.
+            var enabled = _device?.InstanceConfigObject?["movement"]?["showMotionIndicator"];
+            if (enabled?.Type != JTokenType.Boolean || !enabled.Value<bool>() || !IsMobileCarrier())
+            {
+                ClearMotionIndicator();
+                return;
+            }
             if (_motionIndicator != null || !IsMobileCarrier()) return;
             var marker = GameObject.CreatePrimitive(PrimitiveType.Sphere);
             marker.name = "移动中提示";
@@ -261,6 +270,24 @@ namespace HeatTreatment.DigitalTwin.Runtime
             marker.GetComponent<Renderer>().sharedMaterial = _motionIndicatorMaterial;
             marker.SetActive(false);
             _motionIndicator = marker.transform;
+        }
+
+        private void ClearMotionIndicator()
+        {
+            if (_motionIndicator != null)
+            {
+                _motionIndicator.gameObject.SetActive(false);
+                if (Application.isPlaying) Destroy(_motionIndicator.gameObject);
+                else DestroyImmediate(_motionIndicator.gameObject);
+            }
+            if (_motionIndicatorMaterial != null)
+            {
+                if (Application.isPlaying) Destroy(_motionIndicatorMaterial);
+                else DestroyImmediate(_motionIndicatorMaterial);
+            }
+            _motionIndicator = null;
+            _motionIndicatorMaterial = null;
+            _motionIndicatorUntil = 0f;
         }
 
         private bool IsMobileCarrier()
@@ -419,7 +446,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
 
         private void OnDestroy()
         {
-            if (_motionIndicatorMaterial != null) Destroy(_motionIndicatorMaterial);
+            ClearMotionIndicator();
         }
     }
 }

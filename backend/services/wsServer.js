@@ -15,6 +15,8 @@ const { WebSocketServer } = require('ws');
 const { normalizeSceneProjection } = require('../utils/sceneProjection');
 const { getAdminAuth } = require('./adminAuth');
 const { WsOutboundQueue, defaults: queueDefaults } = require('../utils/wsOutboundQueue');
+const { normalizeInspectionHover } = require('../utils/inspectionHover');
+const { normalizeDeviceHover } = require('../utils/deviceHover');
 
 function shortText(value, maxLength = 160) {
     return String(value || '').trim().slice(0, maxLength);
@@ -42,6 +44,7 @@ function inspectionContext(source, mode) {
         inspectionLabelsEnabled: active && source.inspectionLabelsEnabled === true,
         inspectionLeaderLines: active && source.inspectionLeaderLines === true,
         inspectionHoveredPartId: active ? shortText(source.inspectionHoveredPartId, 128) : '',
+        inspectionHoverPointer: projectedPoint(active ? source.inspectionHoverPointer : null),
         inspectionIssues: active && Array.isArray(source.inspectionIssues) ? source.inspectionIssues.slice(0, 100).map(issue => typeof issue === 'string' ? { message: shortText(issue, 2000) } : {
             code: shortText(issue?.code, 80), partId: shortText(issue?.partId, 128), message: shortText(issue?.message, 2000), severity: issue?.severity === 'error' ? 'error' : 'warning'
         }) : [],
@@ -132,6 +135,12 @@ class WsServer {
                         this.sceneProjectionOwner=ws;
                         this.sceneProjection=frame;
                         this.broadcastProjection(frame);
+                    } else if (data.type === 'device_hover' && ws.clientRole === 'unity') {
+                        const hover = normalizeDeviceHover(data.payload, this.dashboardContext);
+                        if (hover) this.broadcastToRole('device_hover_changed', hover, 'web');
+                    } else if (data.type === 'inspection_hover' && ws.clientRole === 'unity') {
+                        const hover = normalizeInspectionHover(data.payload, this.dashboardContext);
+                        if (hover) this.broadcastToRole('inspection_hover_changed', hover, 'web');
                     } else if (data.type === 'dashboard_context' && ws.clientRole === 'unity') {
                         if(this.sceneProjectionOwner!==ws){this.sceneProjectionOwner=ws;this.sceneProjection=null;}
                         const source = data.payload && typeof data.payload === 'object' ? data.payload : {};
@@ -142,6 +151,7 @@ class WsServer {
                             source.partPointKeys = [];
                         }
                         this.dashboardContext = {
+                            factoryId: shortText(source.factoryId, 128),
                             viewId: shortText(source.viewId, 128),
                             // 新版 Unity 在模型/数据准备完成前明确发送 false；旧版客户端
                             // 没有该字段时按已就绪兼容，避免透明层永久隐藏。

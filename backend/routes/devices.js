@@ -1,6 +1,8 @@
 const express = require('express');
 const router = express.Router();
-const { getDb } = require('../db/database');
+const { getDb, getDbStatus } = require('../db/database');
+const { loadDeviceInspection, publicInspection, patchDeviceInspectionLayout,
+    saveDeviceInspectionLayout } = require('../services/deviceInspection');
 const { getBuiltinModels } = require('../services/builtinModels');
 const {
     defaultPortForProtocol,
@@ -141,6 +143,40 @@ router.get('/:id/deletion-impact', async (req, res) => {
         res.json(publicDeletionImpact(impact));
     } catch (e) {
         res.status(500).json({ error: e.message });
+    }
+});
+
+router.get('/:id/inspection', async (req, res) => {
+    try {
+        const db = await getDb();
+        const device = await db.get('SELECT * FROM devices WHERE id = ?', [req.params.id]);
+        if (!await deviceBelongsToFactory(db, device, req.factoryId)) return res.status(404).json({ error: '设备不存在' });
+        res.setHeader('Cache-Control', 'no-store');
+        res.json(publicInspection(await loadDeviceInspection(db, device, req.factoryId)));
+    } catch (error) {
+        res.status(error.statusCode || 500).json({ error: error.message, code: error.code });
+    }
+});
+
+router.put('/:id/inspection', async (req, res) => {
+    try {
+        const db = await getDb();
+        const saved = await db.transaction(async tx => {
+            const device = await tx.get('SELECT * FROM devices WHERE id = ?', [req.params.id]);
+            if (!await deviceBelongsToFactory(tx, device, req.factoryId)) {
+                throw Object.assign(new Error('设备不存在'), { statusCode: 404 });
+            }
+            const loaded = await loadDeviceInspection(tx, device, req.factoryId);
+            const next = patchDeviceInspectionLayout(loaded, req.body);
+            return saveDeviceInspectionLayout(tx, device, loaded, next, req.factoryId, getDbStatus().type);
+        });
+        // No PLC/data-engine restart: only this device's display authoring changed.
+        // configurationMutation('devices') also emits a scoped scene invalidation
+        // after the successful HTTP response, never for failed/stale drafts.
+        broadcastDeviceConfigurationChanged(req.params.id, saved.instance);
+        res.json({ success: true, ...publicInspection(saved) });
+    } catch (error) {
+        res.status(error.statusCode || 400).json({ error: error.message, code: error.code });
     }
 });
 

@@ -113,6 +113,7 @@ module.exports = function createNativePreviewRouter(controller) {
         }
         const payload = {
             version: 2,
+            factoryId: req.factoryId,
             action,
             source: 'dashboard_overlay',
             viewId: shortText(req.body?.viewId, 128),

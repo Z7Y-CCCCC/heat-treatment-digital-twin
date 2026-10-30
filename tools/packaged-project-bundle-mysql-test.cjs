@@ -1,53 +1,84 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const os = require('node:os');
 const crypto = require('node:crypto');
-const { spawn } = require('node:child_process');
 const { createRunDirectory, findFreePort } = require('../backend/scripts/integration-test-utils.cjs');
-const { createSmokeProgramData } = require('../desktop/scripts/smoke-sandbox.cjs');
+const { EnduranceMysql } = require('../backend/scripts/endurance-mysql.cjs');
+const { createSmokeEnvironment } = require('../desktop/scripts/smoke-sandbox.cjs');
+const { snapshotTree, verifyTree } = require('./package-resource-integrity.cjs');
 const mysql = require('../backend/node_modules/mysql2/promise');
 
 const executable = path.resolve(process.argv[2] || '安装包/win-unpacked/热处理数字孪生大屏.exe');
 const resources = path.join(path.dirname(executable), 'resources');
 const packageBackend = path.join(resources, 'backend');
 const directory = createRunDirectory('packaged-project-bundle-mysql');
-Object.assign(process.env, createSmokeProgramData(directory));
+const isolatedEnvironment = createSmokeEnvironment(directory);
+for (const key of Object.keys(process.env)) if (!(key in isolatedEnvironment)) delete process.env[key];
+Object.assign(process.env, isolatedEnvironment);
 const dataDir = path.join(directory, 'mysql-data');
-const aliasRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'dt-bundle-mysql-'));
-const runtimeAlias = path.join(aliasRoot, 'runtime');
-const dataAlias = path.join(aliasRoot, 'data');
+let aliasRoot, runtimeAlias, dataAlias;
 const logFile = path.join(directory, 'mysqld.log');
 const resultFile = path.join(directory, 'result.json');
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
-let server, admin, closeDb;
+let server, admin, closeDb, privateMysql;
+let cleanupPromise;
 const checks = {};
+const cleanupEvidence = { complete: false, identifiedProcesses: [], remainingOwnedProcesses: null, errors: [] };
+
+function cleanup() {
+    if (cleanupPromise) return cleanupPromise;
+    cleanupPromise = (async () => {
+        const errors = [];
+        if (closeDb) { try { await closeDb(); } catch (error) { errors.push(error); } }
+        // Reuse the fixture's verified root + server ownership tracking. Killing
+        // only mysqld's Windows supervisor can leave its server child running.
+        try { admin?.destroy(); } catch (error) { errors.push(error); }
+        if (privateMysql) {
+            try {
+                await privateMysql.dispose();
+                cleanupEvidence.remainingOwnedProcesses = await privateMysql.captureOwnedProcesses();
+                assert.deepEqual(cleanupEvidence.remainingOwnedProcesses, [], 'Final ownership snapshot must be empty');
+                cleanupEvidence.aliasRootRemoved = !fs.existsSync(aliasRoot);
+                assert.equal(cleanupEvidence.aliasRootRemoved, true, 'Private aliases must be removed only after the server exits');
+            } catch (error) { errors.push(error); }
+        }
+        assert.ok(!server || server.exitCode !== null || server.signalCode !== null, 'Private MySQL cleanup must finish before success');
+        cleanupEvidence.supervisorExited = !server || server.exitCode !== null || server.signalCode !== null;
+        cleanupEvidence.errors = errors.map(error => error.message);
+        if (errors.length) throw new AggregateError(errors, 'Private MySQL smoke cleanup failed');
+        cleanupEvidence.complete = true;
+    })();
+    return cleanupPromise;
+}
 
 function launch(args) {
-    const log = fs.openSync(logFile, 'a');
-    const child = spawn(path.join(runtimeAlias, 'bin', 'mysqld.exe'), args, { cwd: aliasRoot, windowsHide: true, stdio: ['ignore', log, log] });
-    fs.closeSync(log);
-    return child;
+    return privateMysql.launch(args);
 }
 
 (async () => {
     assert.ok(fs.existsSync(executable));
     assert.ok(fs.existsSync(path.join(resources, 'mysql/bin/mysqld.exe')));
-    fs.mkdirSync(dataDir);
-    fs.symlinkSync(path.join(resources, 'mysql'), runtimeAlias, 'junction');
-    fs.symlinkSync(dataDir, dataAlias, 'junction');
+    const resourcesBefore = await snapshotTree(resources);
+    privateMysql = new EnduranceMysql(directory, path.join(resources, 'mysql'));
+    // Use the fixture's creator as well as its disposer. Its namespace, target
+    // validation and unique datadir together are the ownership contract.
+    privateMysql.prepareAliases();
+    ({ aliasRoot, runtimeAlias, dataAlias } = privateMysql);
+    privateMysql.password = '';
+    assert.equal(privateMysql.dataDir, dataDir);
+    assert.equal(path.join(privateMysql.directory, 'mysqld.log'), logFile);
+    Object.assign(cleanupEvidence, { aliasRoot, runtimeAlias, dataAlias,
+        runtimeDir: privateMysql.runtimeDir, dataDir: privateMysql.dataDir,
+        aliasTargets: { runtime: fs.realpathSync(runtimeAlias), data: fs.realpathSync(dataAlias) } });
     // Load the exact shipped application modules with test-machine dependencies;
     // the packaged runtime itself normally extracts the same dependency archive.
     process.env.NODE_PATH = path.resolve(__dirname, '../backend/node_modules');
     require('node:module').Module._initPaths();
-    for (const key of Object.keys(process.env)) if (/^(MYSQL_|DB_|SQLITE_|APP_DATA_DIR$|UPLOADS_DIR$)/i.test(key)) delete process.env[key];
-    process.env.APP_DATA_DIR = path.join(directory, 'app-data');
-    process.env.UPLOADS_DIR = path.join(directory, 'uploads');
-    process.env.LICENSE_ENFORCE = 'false';
     const init = launch(['--no-defaults', '--initialize-insecure', `--basedir=${runtimeAlias}`, `--datadir=${dataAlias}`, '--console']);
     const initCode = await new Promise((resolve, reject) => { init.once('error', reject); init.once('exit', resolve); });
     assert.equal(initCode, 0, `Private MySQL initialization failed; ${logFile}`);
     const port = await findFreePort();
+    privateMysql.port = port;
     server = launch(['--no-defaults', `--basedir=${runtimeAlias}`, `--datadir=${dataAlias}`, '--bind-address=127.0.0.1', `--port=${port}`, '--mysqlx=0', '--max-allowed-packet=64M', '--console']);
     const credentials = { host: '127.0.0.1', port, user: 'root', password: '' };
     for (let i = 0; i < 150; i++) {
@@ -58,6 +89,7 @@ function launch(args) {
     const [[identity]] = await admin.query('SELECT @@version AS version, @@datadir AS datadir, @@port AS port');
     assert.equal(fs.realpathSync(identity.datadir).replace(/[\\/]+$/, ''), fs.realpathSync(dataDir));
     assert.equal(Number(identity.port), port);
+    cleanupEvidence.identifiedProcesses = await privateMysql.captureOwnedProcesses();
     checks.privateMysqlOwnership = true;
     const config = { ...credentials, type: 'mysql', database: 'bundle_isolation_test' };
     fs.mkdirSync(process.env.APP_DATA_DIR, { recursive: true });
@@ -141,14 +173,12 @@ function launch(args) {
     assert.deepEqual(fs.readdirSync(path.join(process.env.UPLOADS_DIR, 'projects')).sort(), beforeFiles);
     assert.deepEqual(JSON.parse((await db.get('SELECT value FROM settings WHERE `key` = ?', ['loading_experience_config'])).value), loading);
     checks.mysqlTransactionAndAssetRollback = true;
-    const report = { success: true, executable, module: path.join(packageBackend, 'services/projectBundle.js'), moduleSha256: crypto.createHash('sha256').update(fs.readFileSync(path.join(packageBackend, 'services/projectBundle.js'))).digest('hex'), mysqlVersion: identity.version, mysqlPort: port, directory, programData: process.env.ProgramData, checks, importedFactoryId: imported.factoryId, importedSceneId: importedScene.id, sourcePointId: point.insertId, importedPointId: targetPoint.id };
+    await cleanup();
+    const resourceIntegrity = await verifyTree(resources, resourcesBefore);
+    const report = { success: true, executable, module: path.join(packageBackend, 'services/projectBundle.js'), moduleSha256: crypto.createHash('sha256').update(fs.readFileSync(path.join(packageBackend, 'services/projectBundle.js'))).digest('hex'), mysqlVersion: identity.version, mysqlPort: port, directory, programData: process.env.ProgramData, resourceIntegrity, cleanupComplete: true, cleanupEvidence, checks, importedFactoryId: imported.factoryId, importedSceneId: importedScene.id, sourcePointId: point.insertId, importedPointId: targetPoint.id };
     fs.writeFileSync(resultFile, JSON.stringify(report, null, 2));
     console.log(JSON.stringify({ ...report, resultFile }, null, 2));
 })().catch(error => {
-    fs.writeFileSync(resultFile, JSON.stringify({ success: false, checks, directory, error: error.stack }, null, 2));
+    fs.writeFileSync(resultFile, JSON.stringify({ success: false, checks, directory, cleanupEvidence, error: error.stack }, null, 2));
     console.error(error.stack); console.error(`Evidence: ${resultFile}`); process.exitCode = 1;
-}).finally(async () => {
-    if (closeDb) await closeDb().catch(() => {});
-    if (admin) { try { await admin.query('SHUTDOWN'); } catch {} try { await admin.end(); } catch {} }
-    if (server && server.exitCode === null) { await Promise.race([new Promise(resolve => server.once('exit', resolve)), sleep(10000)]); if (server.exitCode === null) server.kill(); }
-});
+}).finally(cleanup).catch(error => { console.error(error.stack); process.exitCode = 1; });

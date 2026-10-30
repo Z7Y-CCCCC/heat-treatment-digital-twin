@@ -61,6 +61,7 @@ class Simulator {
         if (this.stopped || runVersion !== this.runVersion) return;
         this.devices = devices;
         const factorySettings = await db.all('SELECT `key`, value FROM factory_settings WHERE factory_id = ?', [factoryId]);
+        if (this.stopped || runVersion !== this.runVersion) return;
         this.deviceStates = Object.create(null);
 
         // 为每台设备初始化模拟状态

@@ -4,7 +4,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const { setTimeout: delay } = require('node:timers/promises');
 const { createRunDirectory } = require('./integration-test-utils.cjs');
-const { writeReportFile } = require('./endurance-report-io.cjs');
+const { writeReportFile, writeReportPair } = require('./endurance-report-io.cjs');
 
 test('slow publication leaves the previous JSON readable and timers active', async () => {
     const file = path.join(createRunDirectory('report-io'), 'report.json');
@@ -36,4 +36,21 @@ test('Windows transient rename lock retries without blocking, permanent lock fai
     assert.equal(attempts, 3);
     await assert.rejects(writeReportFile(file, '{"version":2}', { ...fs, rename: async () => { throw Object.assign(new Error('permanent lock'), { code: 'EPERM' }); } }), /permanent lock/);
     assert.equal(JSON.parse(await fs.readFile(file, 'utf8')).version, 1);
+});
+
+test('companion report failure cannot publish a passed authoritative verdict', async () => {
+    const directory = createRunDirectory('report-pair-failure');
+    const json = path.join(directory, 'report.json'), markdown = path.join(directory, 'report.md');
+    await fs.writeFile(json, '{"status":"running"}');
+    await fs.writeFile(markdown, 'running');
+    const io = { ...fs, writeFile: async (filename, ...args) => {
+        if (path.basename(filename).startsWith('.report.md.')) throw new Error('companion disk failure');
+        return fs.writeFile(filename, ...args);
+    } };
+    await assert.rejects(writeReportPair(json, '{"status":"passed"}', markdown, 'passed', io), /companion disk failure/);
+    assert.equal(JSON.parse(await fs.readFile(json, 'utf8')).status, 'running');
+    assert.equal(await fs.readFile(markdown, 'utf8'), 'running');
+    await writeReportPair(json, '{"status":"passed"}', markdown, 'passed');
+    assert.equal(JSON.parse(await fs.readFile(json, 'utf8')).status, 'passed');
+    assert.equal(await fs.readFile(markdown, 'utf8'), 'passed');
 });

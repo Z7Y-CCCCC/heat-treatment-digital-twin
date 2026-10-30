@@ -23,10 +23,25 @@ class MysqlRuntime {
         await fs.promises.writeFile(requestFile, JSON.stringify({ root, runtimeDir, templateFile }), { mode: 0o600 });
         const log = await createRotatingLogWriter(path.join(root, 'logs'), 'mysql-host.log');
         log.on('error', error => console.error(`MySQL host log: ${error.message}`));
+        const hostEnvironment = { ...process.env };
+        for (const key of Object.keys(hostEnvironment)) {
+            if (/^(APP_DATA_DIR|UPLOADS_DIR|DB_BACKUP_DIR|DB_RECOVERY_DIR|SITE_BACKUP_DIR|SITE_IMPORT_DIR|SITE_BACKUP_MIRROR_DIR|DATA_SOURCE_BACKUP_DIR|SQLITE_FILE)$/i.test(key)) delete hostEnvironment[key];
+        }
         try {
             this.child = spawn(nodeBinary, [hostScript, '--config', requestFile], {
                 windowsHide: true,
-                env: { ...process.env, NODE_PATH: dependenciesDir },
+                // The collector has not launched its backend yet. Never let the
+                // seeder's database module default to the installed resource
+                // directory or inherit another application's writable paths.
+                env: { ...hostEnvironment, NODE_PATH: dependenciesDir,
+                    APP_DATA_DIR: path.join(root, 'data'), UPLOADS_DIR: path.join(root, 'uploads'),
+                    DB_BACKUP_DIR: path.join(root, 'data', 'backups'),
+                    DB_RECOVERY_DIR: path.join(root, 'data', 'recovery'),
+                    SITE_BACKUP_DIR: path.join(root, 'data', 'site-backups'),
+                    SITE_IMPORT_DIR: path.join(root, 'data', 'site-imports'),
+                    SITE_BACKUP_MIRROR_DIR: '',
+                    DATA_SOURCE_BACKUP_DIR: path.join(root, 'data', 'data-source-backups'),
+                    SQLITE_FILE: path.join(root, 'data', 'factory.db') },
                 stdio: ['ignore', 'pipe', 'pipe', 'ipc']
             });
             this.child.stdout.pipe(log, { end: false });

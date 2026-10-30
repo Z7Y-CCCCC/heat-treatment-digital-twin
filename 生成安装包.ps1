@@ -264,6 +264,14 @@ try {
 
 $unpacked = Join-Path (Join-Path $outputDirectory 'win-unpacked') "$($desktopPackage.build.productName).exe"
 if (-not (Test-Path -LiteralPath $unpacked)) { throw "缺少解包验证程序：$unpacked" }
+if (Test-Path -LiteralPath (Join-Path $outputDirectory 'win-unpacked/resources/backend/data')) {
+    throw '候选程序包含 backend/data 运行数据，拒绝执行验证或生成安装包。'
+}
+$resourceGuard = Join-Path $projectDirectory 'tools/package-resource-integrity.cjs'
+$resourceBaseline = Join-Path $outputDirectory 'installation-resource-baseline.json'
+Invoke-CheckedCommand -Label '记录安装资源不可变基线' -Executable $node -ArgumentList @(
+    $resourceGuard, '--snapshot', (Join-Path $outputDirectory 'win-unpacked'), $resourceBaseline
+)
 if (-not $SkipSmokeTest) {
     Invoke-CheckedCommand -Label '独立采集服务：无 Unity 采集、重启持久化与安全停库验证' -Executable $node -ArgumentList @(
         (Join-Path $projectDirectory 'tools/collector-service-smoke-test.cjs'),
@@ -280,6 +288,10 @@ if (-not $SkipSmokeTest) {
 } else {
     Write-Warning '本次已明确跳过首次运行和项目迁移 MySQL 验证，不应宣称已通过新电脑验证。'
 }
+Invoke-CheckedCommand -Label '验证运行测试未改写安装资源' -Executable $node -ArgumentList @(
+    $resourceGuard, '--verify', (Join-Path $outputDirectory 'win-unpacked'), $resourceBaseline,
+    (Join-Path $outputDirectory 'installation-resource-verification.json')
+)
 
 $previousCompressionLevel = [Environment]::GetEnvironmentVariable('ELECTRON_BUILDER_COMPRESSION_LEVEL', 'Process')
 $effectiveCompressionLevel = if ([string]::IsNullOrWhiteSpace($previousCompressionLevel)) { '1' } else { $previousCompressionLevel }
