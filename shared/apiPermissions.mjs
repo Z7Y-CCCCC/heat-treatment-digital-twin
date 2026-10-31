@@ -71,7 +71,11 @@ export function apiPermission(path, method = 'GET', body) {
     return any('admin', p('lines', action))
   }
   if (resource('workshops')) return safe ? read(spatial, true) : any('admin', p('workshops', action))
-  if (resource('models')) return safe ? read(spatial, true) : any('admin', p('models', action))
+  if (resource('models')) {
+    if (safe) return read(spatial, true)
+    if (/^\/api\/models\/[^/]+\/inspection$/.test(path) && method === 'PUT') return any('admin', p('disassembly-layout', 'edit'))
+    return any('admin', p('models', action))
+  }
   if (resource('factories')) return safe ? read(PAGE_PERMISSIONS.map(p => p.key), true) : any('admin', p('factories', 'edit'))
   if (resource('datapoints')) {
     if (path === '/api/datapoints/batch' && !safe) return any('admin', all(p('points', 'edit'), p('points', 'delete')))

@@ -10,7 +10,7 @@ import { restoreGltfNodeNames } from '../../../three/gltfNodeIdentity.js'
 import { resolveBackendAssetUrl } from '../../../three/ModelFactory.js'
 import { createManualLayoutRenderLoop, ManualDisassemblyLayoutRuntime } from '../../../runtime/manualDisassemblyLayout.js'
 
-const props = defineProps({ device: { type: Object, required: true }, model: { type: Object, required: true },
+const props = defineProps({ device: { type: Object, default: null }, model: { type: Object, required: true }, scope: { type: String, default: 'device' },
     inspection: { type: Object, required: true }, saving: Boolean, saveRevision: { type: Number, default: 0 }, status: { type: String, default: '' } })
 const emit = defineEmits(['save', 'reload', 'selection-change', 'dirty-change'])
 const viewport = ref(null), loading = ref(false), error = ref(''), message = ref(''), query = ref('')
@@ -19,11 +19,13 @@ const partRows = ref([]), offsets = ref([0, 0, 0]), dragging = ref(false)
 const visibleParts = computed(() => partRows.value.filter(part => `${part.name} ${part.id}`.toLowerCase().includes(query.value.toLowerCase())))
 const selected = computed(() => partRows.value.find(part => part.id === selectedId.value))
 const parentSpace = computed(() => props.inspection.offset_space === 'parent')
+const modelScope = computed(() => props.scope === 'model')
+const target = computed(() => modelScope.value ? props.model : props.device)
 const editable = computed(() => canAdminPage('disassembly-layout', 'edit'))
 let session, abort, generation = 0, resizeObserver, mounted = false, active = true, lastRevision = props.saveRevision
 let directDrag, activePointerId = null, previousOrbit = true
 const raycaster = new THREE.Raycaster(), ndc = new THREE.Vector2(), dragPlane = new THREE.Plane()
-const assetUrl = computed(() => resolveBackendAssetUrl(props.model.file_path || props.model.filePath || props.model.url || props.device.model_file || ''))
+const assetUrl = computed(() => resolveBackendAssetUrl(props.model.file_path || props.model.filePath || props.model.url || props.device?.model_file || ''))
 
 function sync(runtime) {
     dirty.value = runtime.dirty; canUndo.value = runtime.canUndo; canRedo.value = runtime.canRedo
@@ -71,7 +73,7 @@ function setAxis(index, value) {
 function resetSelected() { if (editable.value && session && !props.saving && !dragging.value && !assembled.value) { session.runtime.setOffset(selectedId.value, [0, 0, 0]); changed() } }
 function restoreSaved() {
     if (!session || props.saving) return
-    session.runtime.restoreSaved(); changed(); message.value = '已恢复该设备最近保存的部件位置；可撤销。'
+    session.runtime.restoreSaved(); changed(); message.value = modelScope.value ? '已恢复模型保存位置。' : '已恢复该设备最近保存的部件位置；可撤销。'
 }
 function toggleAssembly() { if (session && !dragging.value) { session.runtime.setAssembled(!assembled.value); changed(); fit() } }
 function undo() { if (editable.value && session && !dragging.value && !props.saving) { session.runtime.undo(); changed() } }
@@ -82,8 +84,8 @@ function save() {
 }
 function exportDraft() {
     if (!session || dragging.value) return
-    const url = URL.createObjectURL(new Blob([JSON.stringify({ deviceId: props.device.id, inspection: session.runtime.getDraft() }, null, 2)], { type: 'application/json' }))
-    const link = document.createElement('a'); link.href = url; link.download = `disassembly-${String(props.device.id).replace(/[^a-z0-9_-]/gi, '_')}.json`; link.click()
+    const url = URL.createObjectURL(new Blob([JSON.stringify({ [modelScope.value ? 'modelId' : 'deviceId']: target.value.id, inspection: session.runtime.getDraft() }, null, 2)], { type: 'application/json' }))
+    const link = document.createElement('a'); link.href = url; link.download = `disassembly-${String(target.value.id).replace(/[^a-z0-9_-]/gi, '_')}.json`; link.click()
     setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
 function keyboard(event) {
@@ -267,7 +269,7 @@ async function load() {
         }
     } finally { if (current === generation || error.value) loading.value = false }
 }
-watch([() => props.device.id, () => props.model.id, () => assetUrl.value], () => {
+watch([() => props.device?.id, () => props.model.id, () => assetUrl.value], () => {
     if (mounted && active) void load()
     else if (mounted) disposeSession()
 })
@@ -308,10 +310,10 @@ defineExpose({ dirty, dragging, getDraft: () => session?.runtime.getDraft() || p
 </script>
 
 <template>
-    <section class="manual-layout" data-testid="manual-disassembly-layout" :data-device-id="device.id" tabindex="0" @keydown="keyboard">
+    <section class="manual-layout" data-testid="manual-disassembly-layout" :data-device-id="device?.id" :data-model-id="model.id" tabindex="0" @keydown="keyboard">
         <header class="layout-heading">
-            <div><span class="eyebrow">PER-DEVICE / 手工空间布局</span><h3>{{ device.name || device.id }} · 部件摆放</h3><p>直接拖动部件，或使用三轴与平面手柄。只保存本台设备的位置，不改变同型号其他设备。</p></div>
-            <div class="save-area"><span class="dirty-pill" :class="{ dirty }">{{ dirty ? '有未保存的位置' : '已载入保存位置' }}</span><button class="primary" type="button" data-testid="save-manual-layout" :disabled="saving || loading || !partRows.length || dragging || !!error" @click="save" v-permission="{ page: 'disassembly-layout', action: 'edit' }">{{ saving ? '保存中…' : '保存本台设备布局' }}</button></div>
+            <div><span class="eyebrow">{{ modelScope ? '模型布局' : '手工空间布局' }}</span><h3>{{ target?.name || target?.id }} · 部件摆放</h3><p v-if="!modelScope">直接拖动部件，或使用三轴与平面手柄。</p></div>
+            <div class="save-area"><span class="dirty-pill" :class="{ dirty }">{{ dirty ? '有未保存的位置' : '已载入保存位置' }}</span><button class="primary" type="button" data-testid="save-manual-layout" :disabled="saving || loading || !partRows.length || dragging || !!error" @click="save" v-permission="{ page: 'disassembly-layout', action: 'edit' }">{{ saving ? '保存中…' : modelScope ? '保存模型布局' : '保存本台设备布局' }}</button></div>
         </header>
         <div class="layout-toolbar">
             <button type="button" :disabled="!canUndo || saving || dragging" @click="undo" v-permission="{ page: 'disassembly-layout', action: 'edit' }">↶ 撤销</button><button type="button" :disabled="!canRedo || saving || dragging" @click="redo" v-permission="{ page: 'disassembly-layout', action: 'edit' }">↷ 重做</button>
@@ -337,7 +339,7 @@ defineExpose({ dirty, dragging, getDraft: () => session?.runtime.getDraft() || p
                 <div v-else class="viewport-hint"><span class="hint-dot"></span>{{ assembled ? '装配原位预览 · 返回拆解布局后可拖动' : dragging ? '正在移动部件 · 松开完成，Esc 取消' : '左键拖动部件／三轴／平面 · 空白处旋转 · 右键平移 · 滚轮缩放' }}</div>
             </div>
         </div>
-        <footer class="layout-footer"><span>{{ status || message || '位置只在点击保存后写入该设备；关闭或切换前请保存。' }}</span><span>Ctrl / ⌘ + Z 撤销 · Shift + Z 重做</span></footer>
+        <footer class="layout-footer"><span>{{ status || message || (modelScope ? '拖动部件后保存模型布局。' : '关闭或切换前请保存。') }}</span><span>Ctrl / ⌘ + Z 撤销 · Shift + Z 重做</span></footer>
     </section>
 </template>
 

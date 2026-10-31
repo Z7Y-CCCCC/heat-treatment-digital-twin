@@ -55,6 +55,15 @@ test('transform payload excludes PLC identity, model identity, movement and insp
   assert.equal(Object.hasOwn(payload.layoutConfig, 'inspection'), false)
 })
 
+test('model layout authoring is restricted to positions and does not grant generic model editing', t => {
+  fixture(t, { 'disassembly-layout': { view: true, edit: true } })
+  assert.equal(canAdminApi('/api/models/type/inspection', 'GET'), true)
+  assert.equal(canAdminApi('/api/models/type/inspection', 'PUT'), true)
+  assert.equal(canAdminApi('/api/models/type', 'PUT'), false)
+  assert.equal(canAdminApi('/api/models/upload', 'POST'), false)
+  assert.equal(canAdminApi('/api/models/type', 'DELETE'), false)
+})
+
 test('page-specific settings save submits only the current authorized group', async t => {
   fixture(t, { 'settings.data': { view: true, edit: true } })
   const { effectScope } = await import('vue')

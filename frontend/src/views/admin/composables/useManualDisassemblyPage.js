@@ -12,7 +12,7 @@ const frameKey = inspection => JSON.stringify([inspection?.offset_space, inspect
 const sameOffset = (a, b) => JSON.stringify(a) === JSON.stringify(b)
 
 export function manualLayoutPayload(inspection, revision) {
-    if (!revision) throw new Error('布局版本尚未读取，请重新加载设备')
+    if (!revision) throw new Error('布局版本尚未读取，请重新加载布局')
     if (!Array.isArray(inspection?.parts) || !inspection.parts.length) throw new Error('没有可保存的部件，请先配置模型拆解部件')
     const ids = new Set()
     const parts = inspection.parts.map(part => {
@@ -29,8 +29,9 @@ export function manualLayoutPayload(inspection, revision) {
     return { revision, parts, enabled: true }
 }
 
-export function useManualDisassemblyPage({ devices, models, api, ask, initialDeviceId = '' }) {
-    const selectedDeviceId = ref(initialDeviceId)
+export function useManualDisassemblyPage({ devices = ref([]), models, api, ask, initialDeviceId = '', initialModelId = '', scope = 'device' }) {
+    const modelScope = scope === 'model'
+    const selectedDeviceId = ref(modelScope ? initialModelId : initialDeviceId)
     const inspection = ref(null)
     const revision = ref('')
     const assetRevision = ref('')
@@ -46,18 +47,23 @@ export function useManualDisassemblyPage({ devices, models, api, ask, initialDev
     let leavePending = false
     let editor = () => null
 
-    const frozenContext = computed(() => loadedContext.value && String(loadedContext.value.device.id) === selectedDeviceId.value
+    const frozenContext = computed(() => loadedContext.value && loadedContext.value.id === selectedDeviceId.value
         && (dirty.value || saving.value || editor()?.dragging) ? loadedContext.value : null)
     const device = computed(() => frozenContext.value?.device || devices.value.find(item => String(item.id) === selectedDeviceId.value) || null)
     const model = computed(() => {
         if (frozenContext.value) return frozenContext.value.model
+        if (modelScope) return models.value.find(item => String(item.id) === selectedDeviceId.value) || null
         const current = device.value
         if (!current) return null
         const asset = models.value.find(item => item.id === current.model_type)
         if (!asset) return null
         return current.model_file ? { ...asset, file_path: current.model_file } : asset
     })
-    const choices = computed(() => devices.value.filter(item => models.value.some(asset => asset.id === item.model_type && (item.model_file || asset.file_path))))
+    const choices = computed(() => modelScope
+        ? models.value.filter(item => (item.placement_level || 'device') === 'device' && item.asset_type !== 'environment' && item.file_path)
+        : devices.value.filter(item => models.value.some(asset => asset.id === item.model_type && (item.model_file || asset.file_path))))
+    const read = id => modelScope ? api.getModelInspection(id) : api.getDeviceInspection(id)
+    const write = (id, payload) => modelScope ? api.saveModelInspection(id, payload) : api.saveDeviceInspection(id, payload)
 
     async function loadSelected() {
         if (disposed) return
@@ -69,15 +75,15 @@ export function useManualDisassemblyPage({ devices, models, api, ask, initialDev
         dirty.value = false
         status.value = ''
         loading.value = false
-        if (!device.value || !model.value) return
+        if (!model.value || !modelScope && !device.value) return
         const id = selectedDeviceId.value
         loading.value = true
         try {
-            const result = await api.getDeviceInspection(id)
+            const result = await read(id)
             if (disposed || sequence !== requestSequence) return
             if (result?.error || !result?.inspection || !result.revision) throw new Error(result?.error || '设备拆解配置读取失败')
-            if (result.modelId && result.modelId !== device.value?.model_type) throw new Error('设备模型已变化，请刷新设备列表后重试')
-            loadedContext.value = { device: copy(device.value), model: copy(model.value) }
+            if (result.modelId && result.modelId !== (modelScope ? id : device.value?.model_type)) throw new Error('模型已变化，请刷新列表后重试')
+            loadedContext.value = { id, device: copy(device.value), model: copy(model.value) }
             inspection.value = copy(result.inspection)
             revision.value = result.revision
             assetRevision.value = result.assetRevision || ''
@@ -91,20 +97,20 @@ export function useManualDisassemblyPage({ devices, models, api, ask, initialDev
     }
 
     async function save(draft = editor()?.getDraft?.()) {
-        if (disposed || saving.value || loading.value || !device.value) return false
+        if (disposed || saving.value || loading.value || !model.value || !modelScope && !device.value) return false
         if (editor()?.dragging) { status.value = '请先完成或取消当前拖拽，再保存。'; return false }
         const id = selectedDeviceId.value
         const sequence = requestSequence
         const baseline = copy(inspection.value)
         saving.value = true
-        status.value = '正在保存本设备的部件位置…'
+        status.value = modelScope ? '正在保存模型布局…' : '正在保存本设备的部件位置…'
         try {
             const payload = manualLayoutPayload(draft, revision.value)
-            let result = await api.saveDeviceInspection(id, payload)
-            if (result?.code === 'DEVICE_INSPECTION_CONFLICT') {
+            let result = await write(id, payload)
+            if (['DEVICE_INSPECTION_CONFLICT', 'MODEL_INSPECTION_CONFLICT'].includes(result?.code)) {
                 // Rebase ONLY locally edited positions. Unchanged parts and all
                 // latest timings, bindings and unrelated device fields survive.
-                const latest = await api.getDeviceInspection(id)
+                const latest = await read(id)
                 if (disposed || sequence !== requestSequence || id !== selectedDeviceId.value) return false
                 if (latest?.error || !latest?.inspection || !latest.revision) throw new Error(latest?.error || '无法读取最新布局，请稍后重试')
                 if (!assetRevision.value || latest.assetRevision !== assetRevision.value || frameKey(latest.inspection) !== frameKey(baseline)) {
@@ -121,23 +127,25 @@ export function useManualDisassemblyPage({ devices, models, api, ask, initialDev
                     status.value = '未覆盖其他修改，当前草稿已保留。'; return false
                 }
                 if (disposed || sequence !== requestSequence || id !== selectedDeviceId.value) return false
-                result = await api.saveDeviceInspection(id, { ...payload, revision: latest.revision, parts: edits })
+                result = await write(id, { ...payload, revision: latest.revision, parts: edits })
             }
             if (result?.error || result?.success !== true || !result.inspection || !result.revision) throw new Error(result?.error || '后端未确认保存')
-            const existing = devices.value.find(item => String(item.id) === id)
+            const existing = (modelScope ? models : devices).value.find(item => String(item.id) === id)
             if (existing) {
-                const config = { ...parse(existing.instance_config), inspection: copy(result.inspection) }
-                existing.instance_config = typeof existing.instance_config === 'string' ? JSON.stringify(config) : config
+                const key = modelScope ? 'metadata' : 'instance_config'
+                const config = { ...parse(existing[key]), inspection: copy(result.inspection) }
+                existing[key] = modelScope && result.model?.metadata !== undefined ? copy(result.model.metadata)
+                    : typeof existing[key] === 'string' ? JSON.stringify(config) : config
             }
             if (disposed || sequence !== requestSequence || id !== selectedDeviceId.value) return true
-            if (existing) loadedContext.value = { device: copy(existing), model: copy(model.value) }
+            if (existing) loadedContext.value = { id, device: modelScope ? null : copy(existing), model: copy(modelScope ? existing : model.value) }
             inspection.value = copy(result.inspection)
             revision.value = result.revision
             assetRevision.value = result.assetRevision || assetRevision.value
             source.value = result.source || 'device'
             dirty.value = false
             saveRevision.value += 1
-            status.value = '设备布局已保存；仅影响本设备，运行端将同步新的拆解位置。'
+            status.value = modelScope ? '模型布局已保存。' : '设备布局已保存；仅影响本设备，运行端将同步新的拆解位置。'
             return true
         } catch (error) {
             if (!disposed && sequence === requestSequence) status.value = `保存失败，拖拽草稿仍保留：${error.message}`
@@ -171,7 +179,7 @@ export function useManualDisassemblyPage({ devices, models, api, ask, initialDev
         leavePending = true
         try {
             const choice = await ask({
-                title: '拆解布局尚未保存', message: '当前设备的部件位置已调整，如何处理后再切换？',
+                title: '拆解布局尚未保存', message: modelScope ? '模型布局已修改，如何处理？' : '当前设备的部件位置已调整，如何处理后再切换？',
                 type: 'warning', showCancel: true, cancelText: '继续编辑',
                 secondaryText: '放弃修改并切换', confirmText: '保存并切换'
             })
@@ -208,6 +216,7 @@ export function useManualDisassemblyPage({ devices, models, api, ask, initialDev
 
     function dispose() { disposed = true; requestSequence += 1 }
     return { selectedDeviceId, device, model, choices, inspection, revision, source, loading, saving, dirty,
+        selectedModelId: selectedDeviceId, selectModel: selectDevice,
         status, saveRevision, loadSelected, reloadSelected, ensureSelection, selectDevice, save, discard, canLeave, dispose,
         setEditorGetter: getter => { editor = getter }, savePending: () => dirty.value ? save() : Promise.resolve(true) }
 }

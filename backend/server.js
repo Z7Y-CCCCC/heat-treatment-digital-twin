@@ -297,7 +297,7 @@ function recoverPendingModelDeletions(db) {
     return modelRecoveryPromise;
 }
 
-app.use('/api/models', factoryContext);
+app.use('/api/models', factoryContext, require('./routes/modelInspection'));
 app.post('/api/models/upload', upload.single('modelFile'), async (req, res) => {
     if (!req.file) {
         return res.status(400).json({ error: '未收到文件' });

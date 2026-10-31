@@ -1,6 +1,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const Database = require('../backend/node_modules/better-sqlite3');
+const { getBuiltinModels } = require('../backend/services/builtinModels');
 const { createSmokeSandbox, createSmokeSession, stopOwnedSmokeProcess } = require('../desktop/scripts/smoke-sandbox.cjs');
 const { BACKEND_DIR, findFreePort, startLoggedProcess, waitForHttp, requireTestPath } = require('../backend/scripts/integration-test-utils.cjs');
 
@@ -15,11 +16,16 @@ process.once('SIGINT', stop); process.once('SIGTERM', stop);
     const database = new Database(sandbox.filename);
     const targets = database.prepare('SELECT id,instance_config FROM devices ORDER BY id LIMIT 2').all();
     if (targets.length !== 2) throw new Error('Two isolated fixture devices are required');
+    const template = getBuiltinModels().find(model => model.id === 'pit_furnace_2_v1');
+    const modelIds = ['layout_model_a', 'layout_model_b'];
+    modelIds.forEach((id, index) => database.prepare('INSERT INTO models (id,name,file_path,metadata,placement_level,asset_type) VALUES (?,?,?,?,?,?)')
+        .run(id, index ? '井式炉2 · 型号B' : '井式炉2 · 型号A', template.file_path, template.metadata, 'device', 'model'));
     targets.forEach((device, index) => {
         const config = JSON.parse(device.instance_config || '{}');
+        delete config.inspection; // These two fixture instances inherit one library model.
         config.manualLayoutUnrelatedMarker = { preserve: true, device: index };
         database.prepare('UPDATE devices SET name=?, model_type=?,model_file=NULL,rotation_y=?,scale=?,instance_config=? WHERE id=?')
-            .run(index ? '井式炉2 · 独立布局B' : '井式炉2 · 手工布局A', 'pit_furnace_2_v1', index ? -60 : 35,
+            .run(index ? '现场设备B' : '现场设备A', modelIds[0], index ? -60 : 35,
                 index ? .8 : 1, JSON.stringify(config), device.id);
     });
     database.close();
@@ -31,7 +37,7 @@ process.once('SIGINT', stop); process.once('SIGTERM', stop);
     await waitForHttp(`${origin}/api/health`);
     await createSmokeSession(origin, sandbox);
     const info = { origin, directory: sandbox.directory, username: 'admin', password: sandbox.password,
-        devices: targets.map(device => device.id), database: sandbox.filename, backendPid: backend.pid };
+        devices: targets.map(device => device.id), models: modelIds, database: sandbox.filename, backendPid: backend.pid };
     const infoFile = requireTestPath(process.env.MANUAL_LAYOUT_UI_INFO_FILE || path.join(root, 'output/manual-disassembly-ui-server.json'));
     fs.writeFileSync(infoFile, JSON.stringify(info, null, 2));
     console.log(JSON.stringify(info, null, 2));

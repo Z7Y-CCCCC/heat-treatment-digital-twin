@@ -1915,24 +1915,27 @@ async function loadModels() {
     }
 }
 
-// Device-local manual placement is deliberately separate from model-wide
-// authoring and generic device updates (which also carry PLC/layout fields).
-const manualDisassemblyPage = useManualDisassemblyPage({ devices, models, api: adminApi,
-    ask: openAppDialog, initialDeviceId: String(storedAdminUiState.manualDisassemblyDeviceId || '') })
-const { selectedDeviceId: manualDisassemblyDeviceId, device: manualDisassemblyDevice,
+// Manual placement edits the model-library defaults, never a site instance.
+const manualDisassemblyPage = useManualDisassemblyPage({ models, api: adminApi, scope: 'model',
+    ask: openAppDialog, initialModelId: String(storedAdminUiState.manualDisassemblyModelId || storedAdminUiState.selectedPreviewModelId || '') })
+const { selectedModelId: manualDisassemblyModelId,
     model: manualDisassemblyModel, choices: manualDisassemblyChoices, inspection: manualDisassemblyInspection,
-    source: manualDisassemblySource, loading: manualDisassemblyLoading, saving: manualDisassemblySaving,
+    loading: manualDisassemblyLoading, saving: manualDisassemblySaving,
     dirty: manualDisassemblyDirty, status: manualDisassemblyStatus, saveRevision: manualDisassemblySaveRevision } = manualDisassemblyPage
 manualDisassemblyPage.setEditorGetter(() => manualDisassemblyRef.value)
+watch(manualDisassemblySaveRevision, () => {
+    if (!manualDisassemblyDirty.value && !modelInspectionDirty.value
+        && activePreviewModel.value?.id === manualDisassemblyModelId.value) loadModelInspectionState(activePreviewModel.value)
+})
 
-async function changeManualDisassemblyDevice(event) {
-    await manualDisassemblyPage.selectDevice(event.target.value)
-    event.target.value = manualDisassemblyDeviceId.value
+async function changeManualDisassemblyModel(event) {
+    await manualDisassemblyPage.selectModel(event.target.value)
+    event.target.value = manualDisassemblyModelId.value
 }
 
-watch([devices, models], () => {
+watch(models, () => {
     if (activeTab.value === 'disassembly-layout' && !manualDisassemblySaving.value && !manualDisassemblyDirty.value
-        && (!manualDisassemblyInspection.value || !manualDisassemblyDevice.value || !manualDisassemblyModel.value)) {
+        && (!manualDisassemblyInspection.value || !manualDisassemblyModel.value)) {
         void manualDisassemblyPage.ensureSelection()
     }
 })
@@ -4140,9 +4143,8 @@ function getDeviceWorkshopId(device) {
         || ''
 }
 
-const assetHierarchyTabs = new Set(['platform', 'composer', 'workshops', 'lines', 'devices', 'mobile-devices', 'disassembly-layout', 'points', 'point-monitor', 'models', 'settings'])
+const assetHierarchyTabs = new Set(['platform', 'composer', 'workshops', 'lines', 'devices', 'mobile-devices', 'points', 'point-monitor', 'models', 'settings'])
 const assetHierarchyDeviceId = computed(() => {
-    if (activeTab.value === 'disassembly-layout') return manualDisassemblyDeviceId.value
     if (activeTab.value === 'composer') return selectedComposerDeviceId.value
     if (activeTab.value === 'devices' && showDeviceForm.value) return deviceFormTargetId.value
     if (activeTab.value === 'points' && selectedDeviceForPoints.value !== 'all') return selectedDeviceForPoints.value
@@ -4150,7 +4152,6 @@ const assetHierarchyDeviceId = computed(() => {
     return ''
 })
 const assetHierarchyLineId = computed(() => {
-    if (activeTab.value === 'disassembly-layout') return manualDisassemblyDevice.value?.line_id || ''
     if (activeTab.value === 'composer') return selectedComposerLineId.value
     if (activeTab.value === 'lines') return selectedLineEditorId.value
     if (activeTab.value === 'devices' && showDeviceForm.value) return editingDevice.line_id
@@ -4942,7 +4943,7 @@ watch([
     workshopMapSelectedLineId,
     modelLibraryStep,
     selectedPreviewModelId,
-    manualDisassemblyDeviceId,
+    manualDisassemblyModelId,
     selectedWidgetPreviewId,
     isLinePlannerEditorCollapsed,
     isLineDevicePoolCollapsed,
@@ -4967,7 +4968,7 @@ watch([
         workshopMapSelectedLineId: workshopMapSelectedLineId.value,
         modelLibraryStep: modelLibraryStep.value,
         selectedPreviewModelId: selectedPreviewModelId.value,
-        manualDisassemblyDeviceId: manualDisassemblyDeviceId.value,
+        manualDisassemblyModelId: manualDisassemblyModelId.value,
         selectedWidgetPreviewId: selectedWidgetPreviewId.value,
         isLinePlannerEditorCollapsed: isLinePlannerEditorCollapsed.value,
         isLineDevicePoolCollapsed: isLineDevicePoolCollapsed.value,
@@ -7114,7 +7115,6 @@ async function openAdminSetupStep(step) {
                 />
                 <Transition name="tab-switch" mode="out-in">
                     <div v-if="canSelectTab(activeTab)" :key="activeTab" class="tab-transition-host">
-                        <p v-if="!canAdminPage(controlPermissionPage, 'edit')" class="page-readonly-notice" role="status">此页面为只读权限；可查看和预览，修改与导入操作已禁用。</p>
 
                 <!-- ======== 现场编排器 ======== -->
                 <div v-if="activeTab === 'composer'" class="tab-content composer-tab" :class="{ 'preview-wide': isComposerPreviewWide }">
@@ -8230,25 +8230,25 @@ async function openAdminSetupStep(step) {
                 <!-- ======== 模型库 ======== -->
                 <section v-if="activeTab === 'disassembly-layout'" class="manual-disassembly-tab" data-testid="manual-disassembly-page">
                     <header class="manual-layout-page-heading">
-                        <div><h2>拆解布局</h2><p>每台设备单独摆放部件。直接手工拖拽，不按统一距离或比例自动散开。</p></div>
-                        <label>编辑设备
-                            <select :value="manualDisassemblyDeviceId" aria-label="选择拆解布局设备" :disabled="manualDisassemblySaving || manualDisassemblyLoading" @change="changeManualDisassemblyDevice">
-                                <option v-if="!manualDisassemblyChoices.length" value="">没有关联三维模型的设备</option>
-                                <option v-for="item in manualDisassemblyChoices" :key="item.id" :value="item.id">{{ deviceHierarchyLabel(item) }}</option>
+                        <div><h2>拆解布局</h2><p>按模型型号摆放部件。</p></div>
+                        <label>选择模型
+                            <select :value="manualDisassemblyModelId" aria-label="选择拆解布局模型" :disabled="manualDisassemblySaving || manualDisassemblyLoading" @change="changeManualDisassemblyModel">
+                                <option v-if="!manualDisassemblyChoices.length" value="">模型库暂无设备模型</option>
+                                <option v-for="item in manualDisassemblyChoices" :key="item.id" :value="item.id">{{ item.name || item.id }}</option>
                             </select>
                         </label>
                     </header>
-                    <div v-if="manualDisassemblyLoading" class="manual-layout-page-state" role="status">正在读取本设备的拆解布局…</div>
-                    <ManualDisassemblyLayout v-else-if="manualDisassemblyDevice && manualDisassemblyModel && manualDisassemblyInspection"
-                        :key="`${manualDisassemblyDevice.id}:${manualDisassemblyModel.id}`" ref="manualDisassemblyRef"
-                        :device="manualDisassemblyDevice" :model="manualDisassemblyModel" :inspection="manualDisassemblyInspection"
+                    <div v-if="manualDisassemblyLoading" class="manual-layout-page-state" role="status">正在读取模型布局…</div>
+                    <ManualDisassemblyLayout v-else-if="manualDisassemblyModel && manualDisassemblyInspection"
+                        :key="manualDisassemblyModel.id" ref="manualDisassemblyRef" scope="model"
+                        :model="manualDisassemblyModel" :inspection="manualDisassemblyInspection"
                         :saving="manualDisassemblySaving" :save-revision="manualDisassemblySaveRevision" :status="manualDisassemblyStatus"
                         @save="manualDisassemblyPage.save($event)" @reload="manualDisassemblyPage.reloadSelected()" @dirty-change="manualDisassemblyDirty = $event" />
                     <div v-else class="manual-layout-page-state">
-                        <strong>{{ manualDisassemblyStatus || '先为设备关联三维模型，再在这里拖拽摆放拆解部件。' }}</strong>
-                        <button v-if="manualDisassemblyDevice" type="button" class="btn" @click="manualDisassemblyPage.loadSelected()">重新读取布局</button>
+                        <strong>{{ manualDisassemblyStatus || '请先在模型库导入设备模型。' }}</strong>
+                        <button v-if="manualDisassemblyModel" type="button" class="btn" @click="manualDisassemblyPage.loadSelected()">重新读取布局</button>
                     </div>
-                    <p class="manual-layout-page-note">{{ manualDisassemblySource === 'device' ? '当前为本设备独立布局。' : '初始位置沿用模型配置；保存后成为本设备独立布局。' }} 保存后启用本设备的手工拆解，不改同型号其他设备、模型文件或 PLC 绑定。</p>
+                    <p class="manual-layout-page-note">保存为该型号的默认布局；已有单机覆盖配置保留。</p>
                 </section>
 
                 <!-- ======== 模型库 ======== -->

@@ -8,6 +8,7 @@ const { createSmokeProgramData } = require('../desktop/scripts/smoke-sandbox.cjs
 const { createRunDirectory, requireTestPath } = require('../backend/scripts/integration-test-utils.cjs');
 const { loadDeviceInspection, publicInspection, patchDeviceInspectionLayout, saveDeviceInspectionLayout } = require('../backend/services/deviceInspection');
 const { presetMetadata } = require('../backend/services/inspectionPresets');
+const { loadModelInspection, patchModelInspectionLayout, saveModelInspectionLayout } = require('../backend/services/modelInspection');
 const root = path.resolve(__dirname, '..');
 let runtime, connection;
 (async () => {
@@ -67,7 +68,18 @@ let runtime, connection;
         const saved = await saveDeviceInspectionLayout(tx, row, loaded, next, factory.factory_id, 'mysql');
         assert.equal(saved.revision, (await loadDeviceInspection(tx, await tx.get('SELECT * FROM devices WHERE id=?', [device.id]), factory.factory_id)).revision);
     }
-    const result = { success: true, repeatedSaveAndReload: true, unchangedSave: true, caseSensitiveConflict: true,
+    const devicesBefore = await tx.all('SELECT * FROM devices ORDER BY id');
+    let modelLayout = await loadModelInspection(tx, 'photo_multipurpose_furnace_v6', factory.factory_id);
+    for (const offset of [[5, 6, 7], [8, 9, 10], [8, 9, 10]]) {
+        const next = patchModelInspectionLayout(modelLayout, { revision: modelLayout.revision, parts: [{ id: target, explode_offset: offset }] });
+        const saved = await saveModelInspectionLayout(tx, modelLayout, next, factory.factory_id, 'mysql');
+        modelLayout = await loadModelInspection(tx, modelLayout.modelId, factory.factory_id);
+        assert.equal(saved.revision, modelLayout.revision);
+        assert.deepEqual(modelLayout.inspection.parts[0].explode_offset, offset);
+    }
+    assert.deepEqual(await tx.all('SELECT * FROM devices ORDER BY id'), devicesBefore);
+    const result = { success: true, modelDefaultSaveReload: true, modelSavePreservesAllDeviceRows: true,
+        repeatedSaveAndReload: true, unchangedSave: true, caseSensitiveConflict: true,
         jsonNullAndSqlNull: true, nativeJsonComparisons: comparisons, parts: publicInspection(loaded).inspection.parts.length, directory };
     fs.writeFileSync(path.join(directory, 'result.json'), JSON.stringify(result, null, 2));
     console.log(JSON.stringify(result, null, 2));

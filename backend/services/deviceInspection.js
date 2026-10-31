@@ -196,4 +196,4 @@ async function saveDeviceInspectionLayout(tx, device, loaded, nextInstance, fact
 }
 
 module.exports = { loadDeviceInspection, publicInspection, patchDeviceInspectionLayout,
-    saveDeviceInspectionLayout, effectiveInspection, exactTextEquals, exactJsonEquals };
+    saveDeviceInspectionLayout, effectiveInspection, exactTextEquals, exactJsonEquals, canonicalJson };
