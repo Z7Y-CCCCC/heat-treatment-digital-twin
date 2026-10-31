@@ -1092,8 +1092,6 @@ const editingDevice = reactive({
     pos_x: 0, pos_y: 0, pos_z: 0, rotation_y: 0, scale: 1.0, coordinate_space: 'line_local', sort_order: 0,
     ...defaultPlcConnectionConfig()
 })
-const editingDeviceInspectionMode = ref('inherit')
-const editingDeviceInspectionJson = ref('{}')
 const isEditMode = ref(false)
 const plcProtocolOptions = PLC_PROTOCOL_OPTIONS
 const editingPlcProtocolDefinition = computed(() => getPlcProtocolDefinition(editingDevice.plc_protocol))
@@ -1129,32 +1127,6 @@ function setPlcOption(key, value) {
     editingDevice.plc_options = { ...editingPlcOptions.value, [key]: value }
 }
 
-function syncEditingDeviceInspectionState() {
-    const inspection = parseInstanceConfig(editingDevice.instance_config).inspection
-    if (!inspection || typeof inspection !== 'object' || Array.isArray(inspection)) {
-        editingDeviceInspectionMode.value = 'inherit'
-        editingDeviceInspectionJson.value = '{}'
-        return
-    }
-    if (inspection.enabled === false && Object.keys(inspection).length === 1) {
-        editingDeviceInspectionMode.value = 'disabled'
-        editingDeviceInspectionJson.value = JSON.stringify(inspection, null, 2)
-        return
-    }
-    editingDeviceInspectionMode.value = 'override'
-    editingDeviceInspectionJson.value = JSON.stringify(inspection, null, 2)
-}
-
-function copyModelInspectionToDevice() {
-    const model = models.value.find(item => item.id === editingDevice.model_type)
-    const inspection = parseModelMetadata(model).inspection
-    if (!inspection || typeof inspection !== 'object') {
-        return alert('当前模型还没有拆解检查配置，请先到“模型库 → 拆解检查”中配置')
-    }
-    editingDeviceInspectionMode.value = 'override'
-    editingDeviceInspectionJson.value = JSON.stringify(normalizeModelInspection(inspection), null, 2)
-}
-
 async function loadDevices() {
     const result = await adminApi.getDevices()
     if (!Array.isArray(result)) throw new Error(result?.error || '设备列表读取失败')
@@ -1178,7 +1150,6 @@ function openCreateDevice() {
         pos_x: 0, pos_y: 0, pos_z: 0, rotation_y: 0, scale: 1.0, coordinate_space: 'line_local', sort_order: devices.value.length,
         ...defaultPlcConnectionConfig()
     })
-    syncEditingDeviceInspectionState()
     showDeviceForm.value = true
 }
 
@@ -1231,7 +1202,6 @@ async function openEditDevice(d) {
         Object.assign(editingDevice, { ...defaultPlcConnectionConfig(), ...normalized, line_id: normalized.line_id || '' })
         editingDeviceType.value = isAuxiliaryDeviceConfig(normalized) ? 'auxiliary' : 'fixed'
         editingDeviceWorkshopId.value = getDeviceWorkshopId(editingDevice) || workshops.value[0]?.id || ''
-        syncEditingDeviceInspectionState()
         deviceFormStatus.value = 'ready'
     } catch (error) {
         if (requestToken !== deviceFormRequestToken) return
@@ -1264,24 +1234,6 @@ async function saveDevice() {
         delete parsedInstanceConfig.role
         delete parsedInstanceConfig.workshop_id
         delete parsedInstanceConfig.workshopId
-    }
-    if (!isAuxiliary) {
-        if (editingDeviceInspectionMode.value === 'inherit') {
-            delete parsedInstanceConfig.inspection
-        } else if (editingDeviceInspectionMode.value === 'disabled') {
-            parsedInstanceConfig.inspection = { enabled: false }
-        } else {
-            let inspectionOverride
-            try {
-                inspectionOverride = JSON.parse(editingDeviceInspectionJson.value || '{}')
-            } catch (e) {
-                return alert('设备拆解覆盖 JSON 格式不正确')
-            }
-            if (!inspectionOverride || typeof inspectionOverride !== 'object' || Array.isArray(inspectionOverride)) {
-                return alert('设备拆解覆盖必须是 JSON 对象')
-            }
-            parsedInstanceConfig.inspection = inspectionOverride
-        }
     }
     const payload = buildDevicePayloadForSave({ ...editingDevice, instance_config: parsedInstanceConfig }, editingDeviceWorkshopId.value)
     let result
@@ -8183,28 +8135,6 @@ async function openAdminSetupStep(step) {
                                         <option v-for="m in editingModelOptions" :key="m.id" :value="m.id">{{ m.name }}</option>
                                     </select>
                                 </label>
-                                <div v-if="!isAuxiliaryDeviceConfig(editingDevice)" class="form-section wide-form-section">
-                                    <div class="form-section-header">
-                                        <strong>设备逐层检查</strong>
-                                        <span>型号通常共用模型库配置；只有少数设备结构不同或不允许拆解时才需要覆盖。</span>
-                                    </div>
-                                    <label>配置策略
-                                        <select v-model="editingDeviceInspectionMode" class="input" v-permission="{ page: controlPermissionPage, action: 'edit' }">
-                                            <option value="inherit">使用模型默认配置（推荐）</option>
-                                            <option value="disabled">仅此设备禁用逐层检查</option>
-                                            <option value="override">仅此设备使用自定义覆盖</option>
-                                        </select>
-                                    </label>
-                                    <template v-if="editingDeviceInspectionMode === 'override'">
-                                        <div class="device-inspection-override-toolbar">
-                                            <span>覆盖内容会与模型配置合并；数组字段会以本设备内容为准。</span>
-                                            <button class="btn btn-sm" type="button" @click="copyModelInspectionToDevice">复制当前模型配置</button>
-                                        </div>
-                                        <label class="wide-form-section">拆解检查覆盖 JSON
-                                            <textarea v-model="editingDeviceInspectionJson" class="input model-metadata" rows="8" spellcheck="false" v-permission="{ page: controlPermissionPage, action: 'edit' }"></textarea>
-                                        </label>
-                                    </template>
-                                </div>
                                 <div class="form-section wide-form-section">
                                     <div class="form-section-header">
                                         <strong>PLC 连接配置</strong>
@@ -14054,7 +13984,6 @@ button:enabled:active {
 .inspection-camera-grid .inspection-config-card { display: grid; gap: 10px; }
 .property-grid.three { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
 .inspection-part-form .wide-form-section { grid-column: 1 / -1; }
-.device-inspection-override-toolbar { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; gap: 12px; color: #667085; font-size: 12px; }
 .model-binding-table td > strong,
 .model-binding-table td > small { display: block; }
 .model-binding-table td > small { margin-top: 3px; color: #86868b; }

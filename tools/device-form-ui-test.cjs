@@ -27,7 +27,11 @@ let server, browser, page;
         await form.getByLabel(/^使用模型/).waitFor();
         assert.equal(await form.getByText('设备模板', { exact: true }).count(), 0);
         assert.equal(await form.getByText('不使用模板', { exact: true }).count(), 0);
+        assert.equal(await form.getByText('设备逐层检查', { exact: true }).count(), 0);
+        assert.equal(await form.getByText('配置策略', { exact: true }).count(), 0);
+        assert.equal(await form.getByText('拆解检查覆盖 JSON', { exact: true }).count(), 0);
         assert.ok(await form.getByLabel(/^使用模型/).isVisible());
+        assert.ok(await form.getByText('PLC 连接配置', { exact: true }).isVisible());
     };
     await page.getByRole('button', { name: '+ 添加设备', exact: true }).click(); await noTemplate();
     const newId = 'without_template_fixture';
@@ -41,16 +45,18 @@ let server, browser, page;
     await form.waitFor({ state: 'hidden' });
     const read = async id => (await page.request.get(info.origin + '/api/devices/' + id)).json();
     const added = await read(newId); assert.equal(added.template_id, ''); assert.equal(added.model_type, info.models[0]);
-    check('new-device form has no template selector and still saves the selected model successfully');
+    assert.equal('inspection' in JSON.parse(added.instance_config), false);
+    check('new-device form omits template and inspection controls, saves normally, and inherits model inspection without creating an override');
 
     // Mark an existing isolated fixture with a legacy template reference. The
     // removed UI must not wipe that value or its model, points and PLC settings.
     await page.reload(); await page.getByRole('heading', { name: '设备管理', exact: true }).waitFor();
     const previous = await read(info.devices[0]);
     const session = await (await page.request.get(info.origin + '/api/admin-auth/session')).json();
+    const inspection = { enabled: true, layoutMode: 'manual', manualPartOffsets: { fixture_part: [1, 2, 3] }, preserveFixture: 'instance-inspection' };
     const marked = await page.request.put(info.origin + '/api/devices/' + previous.id, {
         headers: { Origin: info.origin, 'X-Admin-Request': '1', 'X-CSRF-Token': session.csrfToken },
-        data: { ...previous, template_id: 'tpl_multipurpose_furnace' } });
+        data: { ...previous, template_id: 'tpl_multipurpose_furnace', instance_config: JSON.stringify({ ...JSON.parse(previous.instance_config), inspection }) } });
     assert.equal(marked.status(), 200);
     await page.locator('.device-group tbody tr').filter({ has: page.getByText(previous.id, { exact: true }) }).getByRole('button', { name: '编辑', exact: true }).click();
     await form.getByLabel('设备名称', { exact: true }).waitFor(); await noTemplate();
@@ -61,7 +67,8 @@ let server, browser, page;
     for (const key of ['model_type', 'model_file', 'line_id', 'plc_enabled', 'plc_protocol', 'plc_ip', 'plc_port']) assert.equal(saved[key], previous[key], key);
     assert.deepEqual(saved.dataPoints, previous.dataPoints);
     assert.deepEqual(JSON.parse(saved.instance_config).manualLayoutUnrelatedMarker, JSON.parse(previous.instance_config).manualLayoutUnrelatedMarker);
-    check('editing also hides the template selector and preserves legacy references, model, points, PLC configuration and unrelated instance data');
+    assert.deepEqual(JSON.parse(saved.instance_config).inspection, inspection);
+    check('editing hides both retired sections and preserves legacy inspection overrides, template references, model, points, PLC configuration and unrelated data');
     assert.deepEqual(errors, []);
     const result = { success: true, checks, browserErrors: errors, directory };
     fs.writeFileSync(path.join(directory, 'result.json'), JSON.stringify(result, null, 2)); console.log(JSON.stringify(result, null, 2));

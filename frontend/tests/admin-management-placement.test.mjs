@@ -4,6 +4,17 @@ import { readFile } from 'node:fs/promises'
 
 const source = async path => readFile(new URL(path, import.meta.url), 'utf8')
 
+test('device form omits the instance inspection card and saves existing inspection data untouched', async () => {
+  const panel = await source('../src/views/AdminPanel.vue')
+  const save = panel.slice(panel.indexOf('async function saveDevice()'), panel.indexOf('async function deleteDevice('))
+  assert.doesNotMatch(panel, /设备逐层检查|editingDeviceInspection|syncEditingDeviceInspectionState|copyModelInspectionToDevice/)
+  assert.match(save, /parseEditableInstanceConfig\(editingDevice\.instance_config\)/)
+  assert.match(save, /buildDevicePayloadForSave\(\{ \.\.\.editingDevice, instance_config: parsedInstanceConfig \}/)
+  assert.doesNotMatch(save, /delete parsedInstanceConfig\.inspection|parsedInstanceConfig\.inspection\s*=/)
+  assert.match(panel, /<strong>PLC 连接配置<\/strong>/)
+  assert.match(panel, /modelInspectionDirty = computed/)
+})
+
 test('device form removes the unfinished template selector without clearing legacy device data', async () => {
   const panel = await source('../src/views/AdminPanel.vue')
   const template = panel.slice(panel.indexOf('<template>'))
