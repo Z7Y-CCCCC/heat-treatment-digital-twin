@@ -2,7 +2,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const Database = require('../backend/node_modules/better-sqlite3');
 const { createSmokeSandbox, createSmokeSession, stopOwnedSmokeProcess } = require('../desktop/scripts/smoke-sandbox.cjs');
-const { BACKEND_DIR, findFreePort, startLoggedProcess, waitForHttp } = require('../backend/scripts/integration-test-utils.cjs');
+const { BACKEND_DIR, findFreePort, startLoggedProcess, waitForHttp, requireTestPath } = require('../backend/scripts/integration-test-utils.cjs');
 
 let backend;
 async function stop() { await stopOwnedSmokeProcess(backend); process.exit(0); }
@@ -32,7 +32,8 @@ process.once('SIGINT', stop); process.once('SIGTERM', stop);
     await createSmokeSession(origin, sandbox);
     const info = { origin, directory: sandbox.directory, username: 'admin', password: sandbox.password,
         devices: targets.map(device => device.id), database: sandbox.filename, backendPid: backend.pid };
-    fs.writeFileSync(path.join(root, 'output/manual-disassembly-ui-server.json'), JSON.stringify(info, null, 2));
+    const infoFile = requireTestPath(process.env.MANUAL_LAYOUT_UI_INFO_FILE || path.join(root, 'output/manual-disassembly-ui-server.json'));
+    fs.writeFileSync(infoFile, JSON.stringify(info, null, 2));
     console.log(JSON.stringify(info, null, 2));
     backend.once('exit', code => { console.error(`Isolated backend exited: ${code}`); process.exit(code || 1); });
 })().catch(async error => { console.error(error); await stopOwnedSmokeProcess(backend); process.exit(1); });

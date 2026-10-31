@@ -105,6 +105,7 @@ export class ManualDisassemblyLayoutRuntime {
     }
 
     select(id) {
+        if (this.drag || this.disposed) return false
         if (!this.parts.some(part => part.config.id === id)) return false
         this.selectedId = id
         this.apply()
@@ -122,19 +123,23 @@ export class ManualDisassemblyLayoutRuntime {
     }
 
     beginDrag(worldPosition = this.selectedCenter()) {
-        if (!this.selectedPart || this.assembled) return false
+        if (this.drag || this.disposed || !this.selectedPart || this.assembled
+            || !worldPosition?.isVector3 || !worldPosition.toArray().every(Number.isFinite)) return false
+        const matrix = this.authorMatrix().clone()
+        if (!matrix.elements.every(Number.isFinite) || Math.abs(matrix.determinant()) < 1e-12) return false
         this.drag = { start: worldPosition.clone(), offset: [...this.draft.parts.find(part => part.id === this.selectedId).explode_offset],
-            matrix: this.authorMatrix().clone(), before: clone(this.draft) }
+            matrix, before: clone(this.draft) }
         return true
     }
 
     dragTo(worldPosition) {
-        if (!this.drag) return
+        if (!this.drag || this.disposed || !worldPosition?.isVector3 || !worldPosition.toArray().every(Number.isFinite)) return false
         const delta = worldDeltaToInspectionOffset(worldPosition.clone().sub(this.drag.start), this.drag.matrix, this.draft.offset_space)
         const offset = this.drag.offset.map((value, index) => value + delta.getComponent(index))
-        if (!offset.every(Number.isFinite)) throw new Error('拖拽坐标无效，未写入布局')
+        if (!offset.every(Number.isFinite)) return false
         this.draft.parts.find(part => part.id === this.selectedId).explode_offset = offset
         this.apply()
+        return true
     }
 
     endDrag(cancel = false) {

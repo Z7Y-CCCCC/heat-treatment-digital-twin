@@ -131,6 +131,32 @@ test('assembled preview changes no saved offsets and prevents dragging until ret
     runtime.setAssembled(false); assert.equal(runtime.beginDrag(), true); runtime.endDrag()
 })
 
+test('a second pointer cannot replace an active drag or change its selected part', t => {
+    const { runtime } = fixture(t)
+    const before = runtime.getDraft(), start = runtime.selectedCenter()
+    assert.equal(runtime.beginDrag(start), true)
+    runtime.dragTo(start.clone().add(new THREE.Vector3(1, 0, 0)))
+    assert.equal(runtime.beginDrag(runtime.selectedCenter()), false)
+    assert.equal(runtime.select('b'), false)
+    runtime.endDrag(true)
+    assert.deepEqual(runtime.getDraft(), before)
+    assert.equal(runtime.canUndo, false, 'cancelled interaction adds no history entry')
+})
+
+test('invalid drag bases and positions fail without corrupting the draft', t => {
+    const { runtime, root } = fixture(t)
+    const before = runtime.getDraft()
+    assert.equal(runtime.beginDrag(new THREE.Vector3(NaN, 0, 0)), false)
+    const start = runtime.selectedCenter()
+    assert.equal(runtime.beginDrag(start), true)
+    assert.equal(runtime.dragTo(new THREE.Vector3(Infinity, 0, 0)), false)
+    assert.deepEqual(runtime.getDraft(), before)
+    runtime.endDrag(true)
+    root.scale.x = 0
+    assert.equal(runtime.beginDrag(start), false)
+    assert.deepEqual(runtime.getDraft(), before)
+})
+
 test('dispose restores original parent/order/material and is idempotent', t => {
     const { runtime, a, b, originals } = fixture(t)
     assert.notEqual(a.parent, originals.parentA); assert.notEqual(a.material, originals.material)
@@ -207,14 +233,20 @@ test('real component KeepAlive cancels unfinished loads and reclaims late scenes
         remove(node) { if (node.parent) node.parent.children = node.parent.children.filter(child => child !== node); node.parent = null }
     })
     const shown = ref(true), instance = ref(null), container = element('root')
+    const device = ref({ id: 'd' }), model = ref({ id: 'm', file_path: '/model.glb' })
     const app = renderer.createApp({ setup: () => () => h(KeepAlive, null, { default: () => shown.value
-        ? h(Component, { key: 'manual', ref: instance, device: { id: 'd' }, model: { id: 'm', file_path: '/model.glb' }, inspection: { enabled: true, parts: [] } })
+        ? h(Component, { key: 'manual', ref: instance, device: device.value, model: model.value, inspection: { enabled: true, parts: [] } })
         : h('div', { key: 'other' }) }) })
     let unmounted = false
     environment.beforeRestore(() => { if (!unmounted) app.unmount() })
     const flush = async () => { await nextTick(); await nextTick(); await settle() }
     app.mount(container); await flush()
     assert.equal(loads.length, 1, 'initial KeepAlive activation does not duplicate the load')
+    device.value = { id: 'd', name: 'device cache refreshed' }
+    model.value = { id: 'm', file_path: '/model.glb', metadata: { refreshed: true } }
+    await flush()
+    assert.equal(loads.length, 1, 'equivalent device/model identity must not abort and reload a live editor')
+    assert.equal(loads[0].signal.aborted, false)
     shown.value = false; await flush()
     assert.equal(loads[0].signal.aborted, true, 'deactivation cancels its pending model request')
     shown.value = true; await flush()

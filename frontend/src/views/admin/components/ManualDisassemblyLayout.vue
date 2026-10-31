@@ -19,8 +19,9 @@ const partRows = ref([]), offsets = ref([0, 0, 0]), dragging = ref(false)
 const visibleParts = computed(() => partRows.value.filter(part => `${part.name} ${part.id}`.toLowerCase().includes(query.value.toLowerCase())))
 const selected = computed(() => partRows.value.find(part => part.id === selectedId.value))
 const parentSpace = computed(() => props.inspection.offset_space === 'parent')
+const editable = computed(() => canAdminPage('disassembly-layout', 'edit'))
 let session, abort, generation = 0, resizeObserver, mounted = false, active = true, lastRevision = props.saveRevision
-let directDrag, previousOrbit = true
+let directDrag, activePointerId = null, previousOrbit = true
 const raycaster = new THREE.Raycaster(), ndc = new THREE.Vector2(), dragPlane = new THREE.Plane()
 const assetUrl = computed(() => resolveBackendAssetUrl(props.model.file_path || props.model.filePath || props.model.url || props.device.model_file || ''))
 
@@ -67,23 +68,23 @@ function setAxis(index, value) {
     if (!session.runtime.setOffset(selectedId.value, next)) message.value = '请输入三个有效的位移数值。'
     changed()
 }
-function resetSelected() { if (session && !props.saving) { session.runtime.setOffset(selectedId.value, [0, 0, 0]); changed() } }
+function resetSelected() { if (editable.value && session && !props.saving && !dragging.value && !assembled.value) { session.runtime.setOffset(selectedId.value, [0, 0, 0]); changed() } }
 function restoreSaved() {
     if (!session || props.saving) return
     session.runtime.restoreSaved(); changed(); message.value = '已恢复该设备最近保存的部件位置；可撤销。'
 }
 function toggleAssembly() { if (session && !dragging.value) { session.runtime.setAssembled(!assembled.value); changed(); fit() } }
-function undo() { if (session && !dragging.value && !props.saving) { session.runtime.undo(); changed() } }
-function redo() { if (session && !dragging.value && !props.saving) { session.runtime.redo(); changed() } }
+function undo() { if (editable.value && session && !dragging.value && !props.saving) { session.runtime.undo(); changed() } }
+function redo() { if (editable.value && session && !dragging.value && !props.saving) { session.runtime.redo(); changed() } }
 function save() {
-    if (!session?.runtime?.parts.length || props.saving || dragging.value || error.value) return
+    if (!editable.value || !session?.runtime?.parts.length || props.saving || dragging.value || error.value) return
     emit('save', session.runtime.getDraft())
 }
 function keyboard(event) {
+    if (event.key === 'Escape' && cancelDrag()) { event.preventDefault(); return }
     if (/INPUT|TEXTAREA|SELECT/.test(event.target?.tagName || '')) return
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z') { event.preventDefault(); event.shiftKey ? redo() : undo() }
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'y') { event.preventDefault(); redo() }
-    if (event.key === 'Escape' && session && dragging.value) { session.runtime.endDrag(true); session.transform.reset(); session.transform.dragging = false; finishDirect(); changed() }
 }
 function beforeUnload(event) { if (dirty.value) { event.preventDefault(); event.returnValue = '' } }
 function setPointer(event) {
@@ -106,6 +107,8 @@ function pickPart(event) {
     return ''
 }
 function capturePointerDown(event) {
+    if (dragging.value) { event.preventDefault(); event.stopImmediatePropagation(); return }
+    if (event.isPrimary === false) return
     if (!canAdminPage('disassembly-layout', 'edit')) {
         if (session && event.button === 0) { const id = pickPart(event); if (id) choose(id) }
         return
@@ -113,7 +116,19 @@ function capturePointerDown(event) {
     // The canvas is not focusable by default. Move focus into the editor even
     // for gizmo drags, otherwise Escape/undo stay on a previously used control.
     if (session) viewport.value?.closest('.manual-layout')?.focus({ preventScroll: true })
-    if (!session || props.saving || assembled.value || event.button !== 0 || session.transform.axis) return
+    if (!session || props.saving || assembled.value || event.button !== 0) return
+    setPointer(event)
+    // Own the entire pointer lifecycle for gizmos too. Letting OrbitControls
+    // start first leaves its pointer state stuck after cancellation/blur.
+    session.transform.pointerHover({ x: ndc.x, y: ndc.y, button: event.button })
+    if (session.transform.axis) {
+        event.preventDefault(); event.stopImmediatePropagation()
+        activePointerId = event.pointerId
+        session.transform.pointerDown({ x: ndc.x, y: ndc.y, button: event.button })
+        if (session.transform.dragging) session.renderer.domElement.setPointerCapture(event.pointerId)
+        else activePointerId = null
+        return
+    }
     const id = pickPart(event)
     if (!id) return // Empty canvas remains an orbit/pan surface.
     event.preventDefault(); event.stopImmediatePropagation()
@@ -124,12 +139,14 @@ function capturePointerDown(event) {
     const hit = raycaster.ray.intersectPlane(dragPlane, new THREE.Vector3())
     if (!hit || !session.runtime.beginDrag(start)) return
     directDrag = { id: event.pointerId, start, hit }
+    activePointerId = event.pointerId
     previousOrbit = session.orbit.enabled; session.orbit.enabled = false; session.transform.enabled = false
     dragging.value = true; session.renderer.domElement.setPointerCapture(event.pointerId)
 }
 function pointerMove(event) {
-    if (!session || !directDrag || event.pointerId !== directDrag.id) return
+    if (!session || !dragging.value || event.pointerId !== activePointerId) return
     event.preventDefault(); event.stopImmediatePropagation(); setPointer(event)
+    if (!directDrag) { session.transform.pointerMove({ x: ndc.x, y: ndc.y, button: -1 }); return }
     const hit = raycaster.ray.intersectPlane(dragPlane, new THREE.Vector3())
     if (hit) {
         const position = directDrag.start.clone().add(hit.sub(directDrag.hit))
@@ -139,21 +156,41 @@ function pointerMove(event) {
 function finishDirect() {
     if (!session) return
     const element = session.renderer.domElement
-    if (directDrag && element.hasPointerCapture?.(directDrag.id)) element.releasePointerCapture(directDrag.id)
-    directDrag = null; dragging.value = false
+    const pointerId = activePointerId
+    // Clear ownership before releasing: lostpointercapture can be synchronous.
+    directDrag = null; activePointerId = null; dragging.value = false
+    if (pointerId !== null && element.hasPointerCapture?.(pointerId)) element.releasePointerCapture(pointerId)
     if (session.orbit) session.orbit.enabled = previousOrbit
-    if (session.transform) session.transform.enabled = !props.saving
+    if (session.transform) session.transform.enabled = active && editable.value && !props.saving
 }
 function pointerUp(event) {
-    if (!session || !directDrag || event.pointerId !== directDrag.id) return
+    if (!session || !dragging.value || event.pointerId !== activePointerId) return
     event.preventDefault(); event.stopImmediatePropagation()
-    session.runtime.endDrag(event.type === 'pointercancel'); finishDirect(); changed()
+    if (event.type === 'pointercancel') { cancelDrag(); return }
+    if (directDrag) session.runtime.endDrag()
+    else session.transform.pointerUp({ button: 0 })
+    finishDirect(); changed()
+}
+function cancelDrag() {
+    if (!session || !dragging.value) return false
+    session.runtime.endDrag(true)
+    if (session.transform.dragging) { session.transform.reset(); session.transform.pointerUp({ button: 0 }) }
+    session.transform.axis = null
+    finishDirect(); changed()
+    return true
+}
+function lostPointerCapture(event) {
+    if (event.pointerId === activePointerId) cancelDrag()
+}
+function hidden() {
+    if (document.visibilityState === 'hidden') cancelDrag()
 }
 
 function disposeSession() {
     abort?.abort(); generation++; resizeObserver?.disconnect()
     if (!session) return
     session.loop?.dispose()
+    cancelDrag()
     finishDirect()
     const { runtime, transform, orbit, renderer, scene, listeners } = session
     for (const [name, handler, capture] of listeners) renderer.domElement.removeEventListener(name, handler, capture)
@@ -194,13 +231,16 @@ async function load() {
         session.runtime = runtime; sync(runtime); attachGizmo()
         const draggingChanged = event => {
             if (directDrag) return
-            dragging.value = event.value
-            if (event.value) { previousOrbit = orbit.enabled; orbit.enabled = false; runtime.beginDrag(proxy.position) }
-            else { runtime.endDrag(); orbit.enabled = previousOrbit; changed() }
+            if (event.value) {
+                if (activePointerId === null || !editable.value || !runtime.beginDrag(proxy.position)) {
+                    transform.pointerUp({ button: 0 }); return
+                }
+                previousOrbit = orbit.enabled; orbit.enabled = false; dragging.value = true
+            } else { runtime.endDrag(); dragging.value = false; orbit.enabled = previousOrbit; changed() }
         }
         const objectChange = () => { if (!directDrag && dragging.value) runtime.dragTo(proxy.position) }
         transform.addEventListener('dragging-changed', draggingChanged); transform.addEventListener('objectChange', objectChange)
-        session.listeners = [['pointerdown', capturePointerDown, true], ['pointermove', pointerMove, true], ['pointerup', pointerUp, true], ['pointercancel', pointerUp, true]]
+        session.listeners = [['pointerdown', capturePointerDown, true], ['pointermove', pointerMove, true], ['pointerup', pointerUp, true], ['pointercancel', pointerUp, true], ['lostpointercapture', lostPointerCapture, true]]
         for (const [name, handler, capture] of session.listeners) renderer.domElement.addEventListener(name, handler, capture)
         const resize = () => {
             if (!active || !session || current !== generation) return
@@ -221,22 +261,23 @@ async function load() {
         }
     } finally { if (current === generation || error.value) loading.value = false }
 }
-watch(() => [props.device.id, props.model.id, assetUrl.value], () => {
+watch([() => props.device.id, () => props.model.id, () => assetUrl.value], () => {
     if (mounted && active) void load()
     else if (mounted) disposeSession()
 })
-watch(() => [props.saveRevision, JSON.stringify(props.inspection)], () => {
+watch([() => props.saveRevision, () => JSON.stringify(props.inspection)], () => {
     if (!session?.runtime) return
     if (props.saveRevision !== lastRevision || !dirty.value) {
         session.runtime.markSaved(props.inspection); lastRevision = props.saveRevision; changed()
     }
 })
-watch(() => props.saving, value => { if (session?.transform) { session.transform.enabled = active && !value; attachGizmo() } })
+watch(() => props.saving, value => { if (value) cancelDrag(); if (session?.transform) { session.transform.enabled = active && editable.value && !value; attachGizmo() } })
+watch(editable, value => { if (!value) cancelDrag(); attachGizmo() })
 onDeactivated(() => {
     active = false; resizeObserver?.disconnect()
     if (session) {
         session.loop?.pause()
-        if (dragging.value) { session.runtime.endDrag(true); session.transform.reset(); session.transform.dragging = false; finishDirect(); changed() }
+        cancelDrag()
         session.orbitBeforeSuspend = session.orbit.enabled
         session.orbit.enabled = false; session.transform.enabled = false
     } else {
@@ -255,9 +296,9 @@ onActivated(async () => {
         resizeObserver?.observe(viewport.value); session.resize?.(); session.loop?.start()
     } else await load()
 })
-onMounted(async () => { mounted = true; window.addEventListener('beforeunload', beforeUnload); await nextTick(); await load() })
-onUnmounted(() => { mounted = false; window.removeEventListener('beforeunload', beforeUnload); disposeSession() })
-defineExpose({ dirty, getDraft: () => session?.runtime.getDraft() || props.inspection, discardChanges: restoreSaved })
+onMounted(async () => { mounted = true; window.addEventListener('beforeunload', beforeUnload); window.addEventListener('blur', cancelDrag); document.addEventListener('visibilitychange', hidden); await nextTick(); await load() })
+onUnmounted(() => { mounted = false; window.removeEventListener('beforeunload', beforeUnload); window.removeEventListener('blur', cancelDrag); document.removeEventListener('visibilitychange', hidden); disposeSession() })
+defineExpose({ dirty, dragging, getDraft: () => session?.runtime.getDraft() || props.inspection, discardChanges: restoreSaved })
 </script>
 
 <template>
@@ -276,7 +317,7 @@ defineExpose({ dirty, getDraft: () => session?.runtime.getDraft() || props.inspe
         <div class="layout-body">
             <aside class="part-sidebar">
                 <div class="part-list-heading"><strong>可拖拽部件</strong><span>{{ partRows.length }}</span></div>
-                <input v-model="query" class="part-search" aria-label="搜索手工布局部件" placeholder="搜索部件名称…"  v-permission="{ page: 'disassembly-layout', action: 'edit' }"/>
+                <input v-model="query" class="part-search" aria-label="搜索手工布局部件" placeholder="搜索部件名称…"/>
                 <div class="part-list" role="listbox" aria-label="布局部件">
                     <button v-for="part in visibleParts" :key="part.id" type="button" role="option" :aria-selected="part.id === selectedId" :class="{ selected: part.id === selectedId }" :disabled="dragging || saving" @click="choose(part.id)"><i></i><span>{{ part.name || part.id }}<small>{{ part.id }}</small></span></button>
                     <p v-if="!partRows.length && !loading" class="list-empty">模型未配置可编辑部件。请先在模型拆解编排中绑定真实节点。</p>

@@ -108,6 +108,66 @@ test('ensureSelection chooses the first available device only when the current I
     assert.deepEqual(f.calls.reads, ['a'])
 })
 
+test('resuming the page cannot reload over an unsaved or in-flight layout', async () => {
+    const f = fixture()
+    await f.load(); f.edit([12, 34, 56])
+    const reads = f.calls.reads.length, draft = f.draft(), revision = f.state.saveRevision.value
+    await f.state.ensureSelection()
+    assert.equal(f.calls.reads.length, reads)
+    assert.deepEqual(f.draft(), draft)
+    assert.equal(f.state.dirty.value, true)
+    assert.equal(f.state.saveRevision.value, revision)
+    f.state.dirty.value = false; f.state.saving.value = true
+    await f.state.ensureSelection()
+    assert.equal(f.calls.reads.length, reads)
+})
+
+test('duplicate activation reads do not remount a clean model; changed configuration still reloads', async () => {
+    const f = fixture(), pending = deferred()
+    f.api.getDeviceInspection = id => { f.calls.reads.push(id); return pending.promise }
+    const first = f.state.ensureSelection()
+    await f.state.ensureSelection()
+    assert.deepEqual(f.calls.reads, ['a'], 'bootstrap and activation share the pending read')
+    pending.resolve(snapshot('a')); await first
+    await f.state.ensureSelection()
+    assert.deepEqual(f.calls.reads, ['a'], 'a loaded, unchanged layout does not reload behind the user')
+    f.models.value[0].metadata.inspection = { enabled: false }
+    await f.state.ensureSelection()
+    assert.deepEqual(f.calls.reads, ['a', 'a'], 'external model changes invalidate the clean context')
+    f.devices.value[0].instance_config = JSON.stringify({ inspection: { enabled: true } })
+    await f.state.ensureSelection()
+    assert.deepEqual(f.calls.reads, ['a', 'a', 'a'], 'external instance changes also invalidate it')
+})
+
+test('external asset replacement or device removal cannot unmount and silently discard an edited model', async () => {
+    const f = fixture()
+    await f.load(); f.edit([12, 34, 56])
+    const original = clone(f.state.model.value), draft = f.draft()
+    f.models.value[0].file_path = '/replaced-under-same-model-id.glb'
+    assert.equal(f.state.model.value.file_path, original.file_path)
+    f.models.value.push({ id: 'model_2', file_path: '/different-model.glb' })
+    f.devices.value[0].model_type = 'model_2'
+    assert.equal(f.state.device.value.model_type, 'model_1')
+    assert.equal(f.state.model.value.id, 'model_1')
+    f.devices.value = f.devices.value.filter(d => d.id !== 'a')
+    assert.equal(f.state.device.value.id, 'a', 'the active draft keeps its originally loaded geometry context')
+    await f.state.ensureSelection(); await f.state.loadSelected()
+    assert.equal(f.calls.reads.length, 1)
+    assert.deepEqual(f.draft(), draft)
+    assert.equal(f.state.dirty.value, true)
+})
+
+test('saving or switching during an unfinished drag never commits a partial gesture', async () => {
+    const f = fixture()
+    await f.load(); f.edit([4, 5, 6]); f.editor.dragging = true
+    assert.equal(await f.state.save(), false)
+    assert.equal(await f.state.selectDevice('b'), false)
+    assert.equal(f.state.selectedDeviceId.value, 'a')
+    assert.equal(f.state.dirty.value, true)
+    assert.equal(f.calls.saves.length, 0)
+    assert.equal(f.calls.asks.length, 0)
+})
+
 for (const rejectOld of [false, true]) test(`late old read ${rejectOld ? 'failure' : 'success'} cannot overwrite the new device`, async () => {
     const f = fixture(), old = deferred(), current = deferred()
     f.api.getDeviceInspection = id => { f.calls.reads.push(id); return id === 'a' ? old.promise : current.promise }
