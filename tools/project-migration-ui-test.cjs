@@ -1,0 +1,119 @@
+// Owned fixture only; exercises real bundle export, inspection, import and navigation.
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const playwright = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
+const { createRunDirectory, startLoggedProcess, waitUntil } = require('../backend/scripts/integration-test-utils.cjs');
+const { stopOwnedSmokeProcess } = require('../desktop/scripts/smoke-sandbox.cjs');
+const directory = createRunDirectory('project-migration-ui'), checks = [], errors = [];
+const check = name => { checks.push(name); console.log('PASS ' + name); };
+let server, browser, page;
+(async () => {
+    const infoFile = path.join(directory, 'server.json');
+    server = startLoggedProcess(process.execPath, [path.join(__dirname, 'manual-disassembly-ui-server.cjs')], {
+        cwd: path.resolve(__dirname, '..'), env: { ...process.env, MANUAL_LAYOUT_UI_INFO_FILE: infoFile }, logFile: path.join(directory, 'server.log') });
+    await waitUntil(() => { assert.equal(server.exitCode, null); return fs.existsSync(infoFile); }, 60000, 'owned UI server');
+    const info = JSON.parse(fs.readFileSync(infoFile));
+    browser = await playwright.chromium.launch({ headless: true,
+        ...(process.env.BROWSER_EXECUTABLE ? { executablePath: process.env.BROWSER_EXECUTABLE } : {}), args: ['--enable-unsafe-swiftshader'] });
+    const makePage = async (state = { activeTab: 'factories', settingsSubpage: 'runtime' }) => {
+        const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, acceptDownloads: true });
+        await context.addInitScript(state => {
+            if (!localStorage.getItem('digital_twin_admin_ui_state_v1')) localStorage.setItem('digital_twin_admin_ui_state_v1', JSON.stringify(state));
+        }, state);
+        const target = await context.newPage(); target.setDefaultTimeout(30000); target.on('pageerror', e => errors.push(e.message)); return target;
+    };
+    const login = async (target, username) => {
+        await target.goto(info.origin + '/admin'); await target.getByRole('textbox', { name: '账号', exact: true }).fill(username);
+        await target.getByLabel('后台密码', { exact: true }).fill(info.password);
+        await target.getByRole('button', { name: '解锁后台', exact: true }).click();
+    };
+    page = await makePage(); await login(page, info.username); await page.locator('.factory-table tbody tr').first().waitFor();
+    assert.equal(await page.getByRole('region', { name: '项目与资产迁移', exact: true }).count(), 0);
+    await page.getByRole('button', { name: '系统设置', exact: true }).click();
+    const nav = page.getByRole('navigation', { name: '系统设置分类' });
+    const destination = nav.getByRole('button', { name: /项目迁移/ });
+    await destination.click();
+    const migration = page.getByTestId('project-migration-settings'), transfer = migration.getByRole('region', { name: '项目与资产迁移', exact: true });
+    await transfer.waitFor(); const source = transfer.getByRole('combobox', { name: '来源工厂', exact: true });
+    await waitUntil(() => source.inputValue().then(value => !!value), 10000, 'source factory list');
+    assert.equal(await destination.getAttribute('aria-current'), 'page');
+    assert.equal(await page.locator('.engine-status-card').count(), 0);
+    const sourceId = await source.inputValue(), originalScope = await page.evaluate(() => localStorage.getItem('digital_twin_factory_scope_v1'));
+    const originalDevices = await (await page.request.get(info.origin + '/api/devices', { headers: { 'X-Factory-ID': sourceId } })).json();
+    const catalog = await (await page.request.get(info.origin + '/api/admin-auth/page-catalog')).json();
+    assert.equal(catalog.pages.find(p => p.key === 'settings.migration')?.ownerOnly, true);
+    check('migration has its own registered Settings tab and no longer appears under Group Factories or beside engine-status content');
+    const exportButton = transfer.getByRole('button', { name: '导出项目包', exact: true }), fileButton = transfer.getByRole('button', { name: '选择 ZIP 文件', exact: true });
+    await waitUntil(() => exportButton.evaluate(el => !el.disabled && getComputedStyle(el).color === 'rgb(255, 255, 255)'), 10000, 'enabled primary control transition');
+    const styles = await exportButton.evaluate(el => { const s = getComputedStyle(el); return { radius: s.borderRadius, background: s.backgroundImage, color: s.color, fontSize: s.fontSize, height: el.getBoundingClientRect().height }; });
+    assert.equal(styles.radius, '9px'); assert.match(styles.background, /gradient/); assert.equal(styles.color, 'rgb(255, 255, 255)'); assert.equal(styles.fontSize, '14px'); assert.ok(styles.height >= 38);
+    const selectStyle = await source.evaluate(el => { const s = getComputedStyle(el); return { radius: s.borderRadius, background: s.backgroundColor, fontSize: s.fontSize, height: el.getBoundingClientRect().height }; });
+    assert.deepEqual({ ...selectStyle, height: undefined }, { radius: '8px', background: 'rgb(251, 251, 253)', fontSize: '14px', height: undefined });
+    assert.ok(selectStyle.height >= 38 && selectStyle.height <= 42);
+    assert.equal(await transfer.locator('input[type=file]').isVisible(), false);
+    assert.ok(await fileButton.isVisible());
+    await transfer.screenshot({ path: path.join(directory, '01-migration.png') });
+    await page.screenshot({ path: path.join(directory, '00-settings-location.png'), fullPage: true });
+    check('dropdown, file-picker button and primary/secondary actions use the shared admin controls instead of native browser chrome');
+    const downloadEvent = page.waitForEvent('download');
+    const exportResponse = page.waitForResponse(r => r.url().endsWith('/api/project-bundles/export'));
+    await exportButton.click(); const exported = await exportResponse; assert.equal(exported.status(), 200);
+    assert.equal(exported.request().headers()['x-factory-id'], sourceId);
+    const download = await downloadEvent, archive = path.join(directory, 'exported.zip'); await download.saveAs(archive);
+    assert.ok(fs.statSync(archive).size > 100);
+    await transfer.getByRole('status').waitFor(); check('export downloads a real ZIP for the chosen source without switching the editing factory');
+    const fileName = '项目迁移包-用于验证较长文件名不会挤出按钮或卡片边界-20261031.zip';
+    await transfer.getByLabel('选择项目迁移 ZIP', { exact: true }).setInputFiles({ name: fileName, mimeType: 'application/zip', buffer: fs.readFileSync(archive) });
+    assert.equal(await transfer.locator('.transfer-file-name').textContent(), fileName);
+    let release; const hold = new Promise(resolve => { release = resolve; });
+    await page.route('**/api/project-bundles/inspect', async route => { await hold; await route.continue(); });
+    const inspectionResponse = page.waitForResponse(r => r.url().endsWith('/api/project-bundles/inspect'));
+    await transfer.getByRole('button', { name: '校验并预览', exact: true }).click();
+    assert.ok(await fileButton.isDisabled()); assert.ok(await exportButton.isDisabled()); assert.ok(await source.isDisabled());
+    release(); assert.equal((await inspectionResponse).status(), 200); await page.unroute('**/api/project-bundles/inspect');
+    const preview = transfer.getByRole('region', { name: '迁移预检结果', exact: true }); await preview.waitFor();
+    const newName = preview.getByRole('textbox', { name: '新工厂名称', exact: true });
+    assert.equal(await newName.evaluate(el => getComputedStyle(el).borderRadius), selectStyle.radius);
+    const appearance = preview.getByRole('checkbox'); if (await appearance.count()) assert.equal(await appearance.isChecked(), false);
+    await newName.fill('迁移界面验收副本');
+    await migration.screenshot({ path: path.join(directory, '02-preview.png') });
+    check('real ZIP inspection unlocks the consistently styled destination name; busy controls block concurrent actions and shared appearance remains opt-in');
+    const importedResponse = page.waitForResponse(r => r.url().endsWith('/api/project-bundles/import'));
+    await preview.getByRole('button', { name: '创建新工厂并导入', exact: true }).click();
+    const importedHttp = await importedResponse; assert.equal(importedHttp.status(), 201, await importedHttp.text()); const imported = await importedHttp.json();
+    await transfer.getByRole('status').getByText(/已创建工厂/).waitFor();
+    assert.equal(await preview.count(), 0); assert.equal(await transfer.locator('.transfer-file-name').textContent(), '未选择文件');
+    assert.equal(await source.inputValue(), sourceId);
+    assert.equal(await page.evaluate(() => localStorage.getItem('digital_twin_factory_scope_v1')), originalScope);
+    assert.deepEqual(await (await page.request.get(info.origin + '/api/devices', { headers: { 'X-Factory-ID': sourceId } })).json(), originalDevices);
+    const factories = await (await page.request.get(info.origin + '/api/factories')).json();
+    assert.ok(factories.factories.some(f => f.id === imported.factoryId && f.name === '迁移界面验收副本'));
+    check('import creates a separate factory, refreshes source choices, clears the file and preserves the current editing scope and all source devices');
+    await page.reload(); await migration.waitFor(); assert.equal(await nav.getByRole('button', { name: /项目迁移/ }).getAttribute('aria-current'), 'page');
+    await page.setViewportSize({ width: 780, height: 900 });
+    await migration.getByRole('region', { name: '项目与资产迁移', exact: true }).waitFor();
+    const box = await migration.boundingBox(); assert.ok(box.x + box.width <= 780);
+    await migration.screenshot({ path: path.join(directory, '03-compact.png') });
+    await page.getByRole('button', { name: '工厂与区域', exact: true }).click();
+    await page.getByText('迁移界面验收副本', { exact: true }).first().waitFor();
+    assert.equal(await page.getByRole('region', { name: '项目与资产迁移', exact: true }).count(), 0);
+    check('the selected Settings tab survives reload; cards stack in narrow windows and imported factories are managed only in the factory directory');
+    const session = await (await page.request.get(info.origin + '/api/admin-auth/session')).json();
+    const created = await page.request.post(info.origin + '/api/admin-auth/users', { headers: {
+        Origin: info.origin, 'X-Admin-Request': '1', 'X-CSRF-Token': session.csrfToken }, data: {
+        username: 'migration_reader', password: info.password, role: 'viewer', permissions: { view: false }, pagePermissions: { 'settings.runtime': { view: true }, factories: { view: true } } } });
+    assert.equal(created.status(), 201, await created.text());
+    const reader = await makePage({ activeTab: 'settings', settingsSubpage: 'migration' }); await login(reader, 'migration_reader');
+    await reader.getByRole('navigation', { name: '系统设置分类' }).waitFor();
+    assert.equal(await reader.getByRole('navigation', { name: '系统设置分类' }).getByRole('button', { name: /项目迁移/ }).count(), 0);
+    assert.equal(await reader.getByTestId('project-migration-settings').count(), 0);
+    assert.equal((await reader.request.get(info.origin + '/api/project-bundles/export')).status(), 403);
+    check('non-administrators cannot see or invoke migration, even with restored navigation state; moving the UI does not widen import/export permissions');
+    assert.deepEqual(errors, []);
+    const result = { success: true, checks, browserErrors: errors, directory }; fs.writeFileSync(path.join(directory, 'result.json'), JSON.stringify(result, null, 2)); console.log(JSON.stringify(result, null, 2));
+})().catch(async error => {
+    await page?.screenshot({ path: path.join(directory, 'failure.png'), fullPage: true }).catch(() => {});
+    fs.writeFileSync(path.join(directory, 'failure.json'), JSON.stringify({ error: error.stack, checks, errors }, null, 2)); console.error(error); process.exitCode = 1;
+}).finally(async () => { await browser?.close(); await stopOwnedSmokeProcess(server); });
+

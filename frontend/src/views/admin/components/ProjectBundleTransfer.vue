@@ -14,6 +14,7 @@ watch(() => props.factories, factories => {
 const busy = ref(''), error = ref(''), message = ref('')
 const selectedFile = ref(null), inspection = ref(null), inspectedSha256 = ref(''), newName = ref('')
 const applySharedAppearance = ref(false)
+const fileInput = ref(null)
 const labels = { workshops: '车间', lines: '产线', devices: '设备', data_points: '点位', models: '模型', projects: '项目', scenes: '场景', widgets: '组件', releases: '发布版本' }
 let controller
 let generation = 0
@@ -21,6 +22,7 @@ onUnmounted(() => { generation++; controller?.abort() })
 function chooseFile(event) {
   generation++; controller?.abort(); busy.value = ''
   selectedFile.value = event.target.files?.[0] || null
+  event.target.value = ''
   inspection.value = null; inspectedSha256.value = ''; newName.value = ''; error.value = ''; message.value = ''
   applySharedAppearance.value = false
 }
@@ -48,7 +50,7 @@ async function request(operation) {
       const link = document.createElement('a'); link.href = url; link.download = '工厂项目迁移.zip'
       document.body.appendChild(link); link.click(); link.remove()
       setTimeout(() => URL.revokeObjectURL(url), 1000)
-      message.value = '项目包已导出。包含已保存配置与引用资产；未保存编辑请先保存后重新导出。'
+      message.value = '项目包已导出（仅含已保存内容）。'
     } else {
       const result = await response.json()
       if (current !== generation) return
@@ -58,7 +60,7 @@ async function request(operation) {
         newName.value = `${result.inspection.factoryName}（副本）`
         applySharedAppearance.value = false
       } else {
-        message.value = `已创建工厂“${result.name}”。可从上方工厂列表进入检查；当前编辑工厂未切换。切换到新工厂后，在系统设置配置数据源，再到画面设计器点击“重绑定数据”核对字段并保存发布。`
+        message.value = `已创建工厂“${result.name}”。当前编辑工厂未切换；请在“工厂与区域”查看，并重新配置采集连接。`
         inspection.value = null; inspectedSha256.value = ''; selectedFile.value = null
         window.dispatchEvent(new CustomEvent(FACTORY_DIRECTORY_CHANGE_EVENT))
         emit('imported', result)
@@ -70,26 +72,72 @@ async function request(operation) {
 </script>
 
 <template>
-  <section class="project-transfer" aria-label="项目与资产迁移">
-    <header><div><h3>项目与资产迁移</h3><p>将所选工厂的已保存画面、场景配置、设备拓扑和引用资产打成一个包，在这里导入复用。</p></div>
-      <button type="button" :disabled="!!busy" @click="request('export')" v-permission="{ page: 'settings.security', action: 'edit' }">{{ busy === 'export' ? '正在导出…' : '导出所选工厂项目包' }}</button></header>
-    <p>导入会创建新工厂，保留现有工厂。连接凭据不随包迁移，设备采集默认关闭；完成连接与点位验收后再启用。</p>
-    <label v-if="factories.length" class="file-label">导出来源工厂<select v-model="exportFactoryId" :disabled="!!busy"><option v-for="factory in factories" :key="factory.id" :value="factory.id">{{ factory.name }}</option></select></label>
-    <label class="file-label">选择项目迁移 ZIP<input type="file" accept=".zip,application/zip" :disabled="!!busy" @change="chooseFile"  v-permission="{ page: 'settings.security', action: 'edit' }"/></label>
-    <button type="button" :disabled="!!busy || !selectedFile" @click="request('inspect')" v-permission="{ page: 'settings.security', action: 'edit' }">{{ busy === 'inspect' ? '正在校验…' : '校验并预览项目包' }}</button>
-    <div v-if="inspection" class="inspection" aria-label="迁移预检结果">
-      <strong>来源：{{ inspection.factoryName }}</strong>
-      <dl><template v-for="(label, key) in labels" :key="key"><dt>{{ label }}</dt><dd>{{ inspection.counts?.[key] || 0 }}</dd></template><dt>资产文件</dt><dd>{{ inspection.assetCount }} 个（{{ (inspection.assetBytes / 1024 / 1024).toFixed(1) }} MiB）</dd></dl>
-      <ul v-if="inspection.warnings?.length"><li v-for="warning in inspection.warnings" :key="warning">{{ warning }}</li></ul>
-      <label>新工厂名称<input v-model="newName" maxlength="120" :disabled="!!busy" /></label>
-      <label v-if="inspection.sharedAppearance?.available"><span><input v-model="applySharedAppearance" type="checkbox" :disabled="!!busy" /> 同时应用包中的集团地图外观和加载画面（影响所有工厂）</span><small>默认只导入新工厂。勾选后将替换当前集团的共享外观设置。</small></label>
-      <button type="button" :disabled="!!busy || !newName.trim()" @click="request('import')" v-permission="{ page: 'settings.security', action: 'edit' }">{{ busy === 'import' ? '正在创建并导入…' : '创建新工厂并导入' }}</button>
+  <section class="project-transfer" aria-labelledby="project-transfer-title" :aria-busy="!!busy">
+    <header class="transfer-heading">
+      <h3 id="project-transfer-title">项目与资产迁移</h3>
+      <p>迁移已保存的配置和引用资产，不覆盖现有工厂。</p>
+    </header>
+    <div class="transfer-grid">
+      <section class="transfer-card" aria-labelledby="project-export-title">
+        <h4 id="project-export-title">导出项目</h4>
+        <label class="transfer-field">来源工厂
+          <select v-model="exportFactoryId" class="input" :disabled="!!busy || !factories.length">
+            <option v-if="!factories.length" value="">暂无可导出的工厂</option>
+            <option v-for="factory in factories" :key="factory.id" :value="factory.id">{{ factory.name }}</option>
+          </select>
+        </label>
+        <button type="button" class="btn btn-primary" :disabled="!!busy || !exportFactoryId || !factories.length" @click="request('export')" v-permission="{ page: 'settings.migration', action: 'edit' }">{{ busy === 'export' ? '正在导出…' : '导出项目包' }}</button>
+      </section>
+      <section class="transfer-card" aria-labelledby="project-import-title">
+        <h4 id="project-import-title">导入项目</h4>
+        <div class="transfer-file-row">
+          <button type="button" class="btn" :disabled="!!busy" @click="fileInput?.click()" v-permission="{ page: 'settings.migration', action: 'edit' }">选择 ZIP 文件</button>
+          <span class="transfer-file-name" :title="selectedFile?.name || ''">{{ selectedFile?.name || '未选择文件' }}</span>
+          <input ref="fileInput" hidden type="file" aria-label="选择项目迁移 ZIP" accept=".zip,application/zip" :disabled="!!busy" @change="chooseFile" v-permission="{ page: 'settings.migration', action: 'edit' }" />
+        </div>
+        <button type="button" class="btn" :disabled="!!busy || !selectedFile" @click="request('inspect')" v-permission="{ page: 'settings.migration', action: 'edit' }">{{ busy === 'inspect' ? '正在校验…' : '校验并预览' }}</button>
+        <p class="transfer-note">导入为新工厂；连接凭据需重新配置，采集默认关闭。</p>
+      </section>
     </div>
-    <p v-if="error" role="alert" class="error">{{ error }}</p>
-    <p v-if="message" role="status">{{ message }}</p>
+    <section v-if="inspection" class="inspection" aria-label="迁移预检结果">
+      <h4>预检结果 · {{ inspection.factoryName }}</h4>
+      <dl><template v-for="(label, key) in labels" :key="key"><dt>{{ label }}</dt><dd>{{ inspection.counts?.[key] || 0 }}</dd></template><dt>资产文件</dt><dd>{{ inspection.assetCount }} 个（{{ (inspection.assetBytes / 1024 / 1024).toFixed(1) }} MiB）</dd></dl>
+      <details v-if="inspection.warnings?.length"><summary>注意事项（{{ inspection.warnings.length }}）</summary><ul><li v-for="warning in inspection.warnings" :key="warning">{{ warning }}</li></ul></details>
+      <label class="transfer-field transfer-name">新工厂名称<input v-model="newName" class="input" maxlength="120" :disabled="!!busy" /></label>
+      <label v-if="inspection.sharedAppearance?.available" class="transfer-appearance"><input v-model="applySharedAppearance" type="checkbox" :disabled="!!busy" /> 同时替换集团地图外观和加载画面（影响所有工厂）</label>
+      <button type="button" class="btn btn-primary" :disabled="!!busy || !newName.trim()" @click="request('import')" v-permission="{ page: 'settings.migration', action: 'edit' }">{{ busy === 'import' ? '正在导入…' : '创建新工厂并导入' }}</button>
+    </section>
+    <p v-if="error" role="alert" class="transfer-feedback error">{{ error }}</p>
+    <p v-if="message" role="status" class="transfer-feedback">{{ message }}</p>
   </section>
 </template>
 
+<style scoped src="../styles/form-controls.css"></style>
 <style scoped>
-.project-transfer{margin-top:24px;padding:20px;border:1px solid #dce3ed;border-radius:12px;background:#f8fafc;color:#34435d;font-size:13px}.project-transfer header{display:flex;align-items:center;justify-content:space-between;gap:16px}.project-transfer h3{margin:0;font-size:16px}.project-transfer p{line-height:1.65;color:#65748b}.project-transfer button{padding:9px 14px;border:1px solid #bacde9;border-radius:7px;background:#fff;color:#245d9f;cursor:pointer}.project-transfer button:disabled{opacity:.5;cursor:default}.file-label{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:14px 0}.inspection{margin-top:16px;padding:16px;background:white;border-radius:8px}.inspection dl{display:grid;grid-template-columns:repeat(2,minmax(90px,1fr) minmax(60px,1fr));gap:8px}.inspection dd{margin:0}.inspection label{display:grid;gap:7px;margin:16px 0}.inspection input{padding:9px;border:1px solid #cbd5e1;border-radius:6px}.error{color:#b42318!important}@media(max-width:700px){.project-transfer header{align-items:flex-start;flex-direction:column}.inspection dl{grid-template-columns:1fr 1fr}}
+.project-transfer { padding: 24px 0; color: #344054; font-size: 13px; }
+.transfer-heading h3 { margin: 0; font-size: 21px; color: #1d2939; }
+.transfer-heading p { margin: 8px 0 20px; color: #7b879a; line-height: 1.6; }
+.transfer-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+.transfer-card, .inspection { min-width: 0; padding: 22px; background: #fff; border: 1px solid #e0e5ed; border-radius: 12px; }
+.project-transfer h4 { margin: 0 0 18px; color: #253149; font-size: 16px; }
+.transfer-field { display: grid; gap: 8px; margin-bottom: 18px; color: #515154; font-size: 13px; font-weight: 500; }
+.transfer-field .input { box-sizing: border-box; width: 100%; min-width: 0; min-height: 38px; font-family: inherit; }
+.transfer-file-row { display: flex; align-items: center; gap: 10px; min-height: 38px; margin-bottom: 18px; }
+.transfer-file-row .btn { flex-shrink: 0; }
+.transfer-file-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #7b879a; }
+.project-transfer .btn { min-height: 38px; font-family: inherit; }
+.transfer-note { margin: 14px 0 0; color: #7b879a; font-size: 12px; line-height: 1.6; }
+.inspection { margin-top: 18px; }
+.inspection dl { display: grid; grid-template-columns: repeat(2, minmax(70px, 1fr) minmax(60px, 1fr)); gap: 10px; margin: 0 0 18px; font-size: 13px; }
+.inspection dt { color: #7b879a; }
+.inspection dd { margin: 0; }
+.inspection details { margin: 16px 0; color: #65748b; line-height: 1.7; }
+.inspection summary { cursor: pointer; }
+.transfer-name { max-width: 520px; }
+.transfer-appearance { display: flex; align-items: center; gap: 8px; margin: 0 0 18px; font-size: 12px; color: #65748b; }
+.transfer-appearance input { flex-shrink: 0; accent-color: var(--ui-accent); }
+.transfer-feedback { margin: 18px 0 0; padding: 10px 14px; border-radius: 8px; color: #067647; background: #ecfdf3; line-height: 1.6; }
+.transfer-feedback.error { color: #b42318; background: #fef3f2; }
+@media (max-width: 850px) { .transfer-grid { grid-template-columns: 1fr; } }
+@media (max-width: 600px) { .transfer-card, .inspection { padding: 16px; } .inspection dl { grid-template-columns: 1fr 1fr; } .project-transfer .btn { font-size: 13px; } }
 </style>

@@ -44,6 +44,28 @@ test('factory distribution preview is local and cannot route to the heavy group 
   assert.doesNotMatch(preview, /GroupOverview|SceneRuntime|three/i)
 })
 
+test('project migration is an independent owner-only maintenance tab, not part of the factory directory', async () => {
+  const panel = await source('../src/views/AdminPanel.vue')
+  const directory = await source('../src/views/admin/components/FactoryDirectorySettings.vue')
+  const transfer = await source('../src/views/admin/components/ProjectBundleTransfer.vue')
+  const { adminSubpages } = await import('../../shared/adminPages.mjs')
+  const migration = adminSubpages('settings').find(page => page.key === 'migration')
+  assert.equal(migration.label, '项目迁移')
+  assert.equal(migration.permissionKey, 'settings.migration')
+  assert.equal(migration.ownerOnly, true)
+  assert.doesNotMatch(directory, /ProjectBundleTransfer|项目与资产迁移/)
+  assert.match(panel, /<ProjectMigrationSettings v-if="settingsSubpage === 'migration' && canAdminPage\('settings.migration'\)"/)
+  assert.match(panel, /v-if="settingsSubpage !== 'migration'" class="engine-status-card"/)
+  assert.match(panel, /scoped src="\.\/admin\/styles\/form-controls\.css"/)
+  assert.match(transfer, /scoped src="\.\.\/styles\/form-controls\.css"/)
+  assert.doesNotMatch(transfer, /settings.security|上方工厂列表/)
+  const controls = await source('../src/views/admin/styles/form-controls.css')
+  assert.match(controls, /\.input:focus\s*\{/)
+  assert.match(controls, /\.btn-primary\s*\{/)
+  assert.doesNotMatch(controls, /line-preview|line-map|line-create-row/)
+  assert.match(panel, /\.line-create-row \.btn\s*\{/)
+})
+
 test('factory controls and account permissions occupy standalone admin pages', async () => {
   const panel = await source('../src/views/AdminPanel.vue')
   const security = await source('../src/views/admin/components/AdminSecuritySettings.vue')

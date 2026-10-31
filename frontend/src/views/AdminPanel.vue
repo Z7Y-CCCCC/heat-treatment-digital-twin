@@ -48,6 +48,7 @@ import FactoryLocationSettings from './admin/components/FactoryLocationSettings.
 import UnifiedDashboardDesigner from './admin/components/UnifiedDashboardDesigner.vue'
 import AdminWindowChrome from './admin/components/AdminWindowChrome.vue'
 import AdminSecuritySettings from './admin/components/AdminSecuritySettings.vue'
+import ProjectMigrationSettings from './admin/components/ProjectMigrationSettings.vue'
 import PlatformUsersSettings from './admin/components/PlatformUsersSettings.vue'
 import AdminHelpGuide from './admin/components/AdminHelpGuide.vue'
 import MobileDeviceMotion from './admin/components/MobileDeviceMotion.vue'
@@ -9505,7 +9506,7 @@ async function openAdminSetupStep(step) {
                 <!-- ======== 系统设置 ======== -->
                 <div v-if="activeTab === 'settings'" class="tab-content">
                     <h2>系统设置</h2>
-                    <p class="desc">配置后台安全、Unity 大屏画质、数据通路和运行服务。</p>
+                    <p class="desc">配置运行、数据连接和系统维护。</p>
 
                     <div class="secondary-page-nav-shell">
                         <nav class="secondary-page-nav" aria-label="系统设置分类">
@@ -9530,8 +9531,10 @@ async function openAdminSetupStep(step) {
 
                     <AdminSecuritySettings v-if="settingsSubpage === 'security' && adminSession.permissions.manageUsers" />
 
+                    <ProjectMigrationSettings v-if="settingsSubpage === 'migration' && canAdminPage('settings.migration')" />
+
                     <!-- 引擎运行状态 -->
-                    <div class="engine-status-card" :class="'status-' + engineStatus.plcStatus?.status">
+                    <div v-if="settingsSubpage !== 'migration'" class="engine-status-card" :class="'status-' + engineStatus.plcStatus?.status">
                         <div class="engine-status-header">
                             <span class="engine-dot"></span>
                             <strong>数据引擎状态</strong>
@@ -10218,6 +10221,8 @@ async function openAdminSetupStep(step) {
         </Transition>
     </div>
 </template>
+
+<style scoped src="./admin/styles/form-controls.css"></style>
 
 <style scoped>
 * { box-sizing: border-box; }
@@ -12417,21 +12422,6 @@ async function openAdminSetupStep(step) {
 }
 
 /* 表单元素 */
-.input {
-    border: 1px solid rgba(0, 0, 0, 0.15); padding: 8px 12px; border-radius: 8px; font-size: 14px; outline: none;
-    transition: all 0.2s cubic-bezier(0.25, 0.8, 0.25, 1); background: #fbfbfd; color: #1d1d1f;
-}
-.input::placeholder { color: #86868b; }
-.input:hover { border-color: rgba(0, 0, 0, 0.3); }
-.input:focus {
-    border-color: #4f8fe8; background: #ffffff;
-    box-shadow: 0 0 0 4px rgba(37, 99, 235, .13), 0 4px 12px rgba(37, 99, 235, .06);
-}
-.input:disabled {
-    background: #e8e8ed; color: #86868b; border-color: rgba(0, 0, 0, 0.05);
-    cursor: not-allowed;
-}
-.input-sm { padding: 5px 10px; font-size: 13px; border-radius: 6px; }
 
 .form-row { display: flex; gap: 12px; align-items: center; margin-bottom: 28px; }
 .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin: 24px 0; }
@@ -12469,22 +12459,6 @@ async function openAdminSetupStep(step) {
 .settings-form label { display: flex; flex-direction: column; gap: 8px; font-size: 13px; color: #515154; font-weight: 500; }
 
 /* 按钮 */
-.btn {
-    position: relative;
-    overflow: hidden;
-    padding: 8px 16px; border: 1px solid #d5d9e1; border-radius: 9px;
-    background: linear-gradient(180deg, #ffffff 0%, #f3f7fc 100%); color: #2457a6; cursor: pointer; font-size: 14px;
-    font-weight: 600; box-shadow: 0 1px 2px rgba(15, 23, 42, .05);
-    transition: color var(--ui-motion-fast) var(--ui-ease), background var(--ui-motion-fast) var(--ui-ease), border-color var(--ui-motion-fast) var(--ui-ease), box-shadow var(--ui-motion-fast) var(--ui-ease), transform var(--ui-motion-fast) var(--ui-ease);
-}
-.btn:not(:disabled):hover { background: linear-gradient(135deg, #f9fcff 0%, #e8f1ff 100%); color: #174ea6; border-color: #8bb8f8; transform: translateY(-2px); box-shadow: 0 8px 18px rgba(37, 99, 235, .12); }
-.btn:not(:disabled):active { transform: translateY(0) scale(.985); box-shadow: inset 0 2px 4px rgba(15, 23, 42, .1); }
-.btn:disabled { background: #f5f6f8; color: #a1a1a6; border-color: #e4e7ec; cursor: not-allowed; box-shadow: none; }
-.btn-primary { background: linear-gradient(135deg, #4f8df7 0%, #2563eb 56%, #1d4ed8 100%); border-color: #2563eb; color: #ffffff; box-shadow: 0 5px 12px rgba(37, 99, 235, .2); }
-.btn-primary:not(:disabled):hover { background: linear-gradient(135deg, #63a4ff 0%, #1d4ed8 62%, #1e40af 100%); border-color: #1d4ed8; color: #ffffff; box-shadow: 0 9px 20px rgba(37, 99, 235, .26); }
-.btn-danger { background: linear-gradient(135deg, #fff8f7 0%, #ffeceb 100%); border-color: #f0b5af; color: #b42318; }
-.btn-danger:not(:disabled):hover { background: linear-gradient(135deg, #fff4f2 0%, #ffdeda 100%); border-color: #e8897f; color: #9f1d17; box-shadow: 0 7px 16px rgba(180, 35, 24, .13); }
-.btn-sm { padding: 5px 12px; font-size: 12px; border-radius: 6px; }
 
 button:enabled:active {
     filter: brightness(0.96);

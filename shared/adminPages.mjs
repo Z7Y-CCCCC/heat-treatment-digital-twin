@@ -20,6 +20,7 @@ export const ADMIN_PAGES = [
   page('settings.security', '后台安全（仅管理员）', { container: 'settings', subpage: 'security', tabLabel: '后台安全', description: '后台密码、无操作自动锁定与立即锁定', ownerOnly: true }),
   page('settings.runtime', '系统设置 · 运行与投屏', { container: 'settings', subpage: 'runtime', tabLabel: '运行与投屏', description: '自启动、电视投屏与本地运行服务' }),
   page('settings.database', '系统设置 · 数据连接与备份', { container: 'settings', subpage: 'database', tabLabel: '数据连接与备份', description: '数据库、ERP / MES 接口、备份与恢复', actions: ['view', 'edit', 'delete'] }),
+  page('settings.migration', '系统设置 · 项目迁移（仅管理员）', { container: 'settings', subpage: 'migration', tabLabel: '项目迁移', description: '项目包与引用资产的导入、导出', ownerOnly: true }),
   page('settings.performance', '系统设置 · 客户端性能', { container: 'settings', subpage: 'performance', tabLabel: '客户端性能', description: 'Unity 画质' }),
   page('settings.data', '系统设置 · 数据通路', { container: 'settings', subpage: 'data', tabLabel: '数据通路', description: 'PLC 实时采集或离线模拟模式' }),
   page('settings.license', '系统设置 · 授权与版本', { container: 'settings', subpage: 'license', tabLabel: '授权与版本', description: '离线许可证、有效期与发布信息', actions: ['view'] }),
