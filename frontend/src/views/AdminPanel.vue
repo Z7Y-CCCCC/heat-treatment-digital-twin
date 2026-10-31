@@ -7062,8 +7062,8 @@ async function openAdminSetupStep(step) {
 <template>
     <div class="admin-container" data-admin-workspace :class="{ 'unity-embedded': isUnityEmbedded, 'unity-dashboard-tab': isUnityEmbedded && unityHostState.attached && !unityHostState.adminVisible, 'nav-collapsed': isAdminNavCollapsed, 'composer-active': activeTab === 'composer', 'line-planner-active': activeTab === 'lines', 'manual-layout-active': activeTab === 'disassembly-layout' }">
         <AdminWindowChrome v-if="isUnityEmbedded" @state="Object.assign(unityHostState, $event)" @before-dashboard="flushDashboardViewPreview" />
-        <!-- 顶部标题栏 -->
-        <header class="admin-header">
+        <!-- 顶部工具栏 -->
+        <header class="admin-header" aria-label="后台工具栏">
             <div class="header-logo-section">
                 <span class="header-logo-mark" aria-hidden="true">
                     <svg viewBox="0 0 24 24">
@@ -7072,7 +7072,6 @@ async function openAdminSetupStep(step) {
                         <path d="M10 8h4" />
                     </svg>
                 </span>
-                <h1>数字孪生后台配置管理</h1>
             </div>
             <nav class="admin-setup-flow" aria-label="推荐配置顺序">
                 <span class="admin-setup-flow-title">配置顺序</span>
@@ -7095,11 +7094,6 @@ async function openAdminSetupStep(step) {
                 </div>
             </nav>
             <div class="admin-connection-strip" aria-label="系统连接状态" aria-live="polite">
-                <AdminHelpGuide @navigate="openAdminSetupStep" />
-                <button type="button" class="admin-lock-button" :title="`工程师已解锁 · ${adminSession.idleTimeoutMinutes} 分钟无操作后自动锁定；离开前请先保存并锁定`" @click="lockAdmin">
-                    <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3M12 14v3"/></svg>
-                    立即锁定
-                </button>
                 <span
                     class="admin-connection-pill"
                     :class="nativeScenePreviewStatusClass"
@@ -7116,6 +7110,10 @@ async function openAdminSetupStep(step) {
                     <i aria-hidden="true"></i>
                     {{ deviceConnectionSummary.label }}
                 </span>
+                <button type="button" class="admin-lock-button" aria-label="立即锁定" :title="`立即锁定 · ${adminSession.idleTimeoutMinutes} 分钟无操作后自动锁定；离开前请先保存`" @click="lockAdmin">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3M12 14v3"/></svg>
+                </button>
+                <AdminHelpGuide @navigate="openAdminSetupStep" />
             </div>
         </header>
 
@@ -10289,8 +10287,8 @@ async function openAdminSetupStep(step) {
     backdrop-filter: blur(18px) saturate(1.1); z-index: 100;
 }
 .admin-lock-button {
-    display: inline-flex; align-items: center; justify-content: center; gap: 6px;
-    flex: 0 0 auto; padding: 8px 12px; border: 1px solid #344054; border-radius: 8px;
+    display: inline-flex; align-items: center; justify-content: center;
+    flex: 0 0 36px; width: 36px; height: 36px; padding: 0; border: 1px solid #344054; border-radius: 8px;
     background: linear-gradient(135deg, #344054 0%, #1d2939 100%); color: #fff; font: inherit; font-size: 12px; font-weight: 600;
     white-space: nowrap; cursor: pointer;
     box-shadow: 0 6px 14px rgba(29, 41, 57, .18);
@@ -10299,7 +10297,7 @@ async function openAdminSetupStep(step) {
 .admin-lock-button:hover { background: linear-gradient(135deg, #475467 0%, #182230 100%); transform: translateY(-1px); box-shadow: 0 10px 22px rgba(29, 41, 57, .24); }
 .admin-lock-button:active { transform: translateY(0) scale(.985); }
 .admin-lock-button:focus-visible { outline: 2px solid #84caff; outline-offset: 2px; }
-.admin-lock-button svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; }
+.admin-lock-button svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; }
 .header-logo-section {
     display: flex;
     align-items: center;
@@ -10327,7 +10325,6 @@ async function openAdminSetupStep(step) {
     stroke-linecap: round;
     stroke-linejoin: round;
 }
-.admin-header h1 { margin: 0; font-size: 19px; color: #1d1d1f; font-weight: 600; letter-spacing: -0.2px; }
 .admin-setup-flow {
     display: flex;
     flex: 1 1 860px;
@@ -14614,7 +14611,6 @@ button:enabled:active {
     .database-retention-save { justify-self: start; }
     .secondary-page-nav-item { min-height: 58px; }
     .admin-header { padding: 0 16px; }
-    .admin-header h1 { font-size: 16px; }
     .admin-connection-strip { gap: 6px; margin-left: 10px; }
     .admin-connection-pill { padding: 5px 8px; font-size: 11px; }
     .admin-container.line-planner-active .admin-content {

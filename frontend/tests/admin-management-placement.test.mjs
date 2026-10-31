@@ -4,6 +4,19 @@ import { readFile } from 'node:fs/promises'
 
 const source = async path => readFile(new URL(path, import.meta.url), 'utf8')
 
+test('header removes the long title and ends with an accessible icon-only lock followed by the guide', async () => {
+  const panel = await source('../src/views/AdminPanel.vue')
+  const header = panel.slice(panel.indexOf('<header class="admin-header"'), panel.indexOf('</header>', panel.indexOf('<header class="admin-header"')))
+  assert.doesNotMatch(header, /数字孪生后台配置管理|<h1/)
+  assert.match(header, /deviceConnectionSummary\.label[\s\S]*class="admin-lock-button" aria-label="立即锁定"[\s\S]*<AdminHelpGuide[^>]*\/\s*>\s*<\/div>\s*$/)
+  const lock = header.match(/<button[^>]*class="admin-lock-button"[\s\S]*?<\/button>/)?.[0]
+  assert.ok(lock)
+  assert.match(lock, /@click="lockAdmin"/)
+  assert.match(lock, /<svg[^>]*aria-hidden="true"/)
+  assert.equal(lock.replace(/<[^>]*>/g, '').trim(), '')
+  assert.match(panel, /\.admin-lock-button\s*\{[^}]*width: 36px; height: 36px; padding: 0/)
+})
+
 test('manual layout keeps offset fields reachable in short and narrow desktop windows', async () => {
   const panel = await source('../src/views/AdminPanel.vue')
   assert.match(panel, /\.manual-disassembly-tab :deep\(\.part-sidebar\)\s*\{[^}]*overflow-y: auto/)

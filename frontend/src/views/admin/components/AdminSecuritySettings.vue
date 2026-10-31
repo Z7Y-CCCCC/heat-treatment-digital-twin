@@ -98,7 +98,7 @@ async function savePassword() {
                 </span>
                 <h4>离开前，立即锁定</h4>
                 <p>立即锁定所有已解锁的后台窗口。实时大屏继续显示，重新进入后台需要密码。</p>
-                <p class="security-note">请先保存正在编辑的内容，锁定会关闭后台编辑界面。顶部也始终提供“立即锁定”入口。</p>
+                <p class="security-note">请先保存正在编辑的内容，锁定会关闭后台编辑界面。顶部系统向导左侧也有锁图标入口。</p>
                 <button type="button" class="security-lock" @click="lockAdmin">立即锁定</button>
             </div>
         </div>

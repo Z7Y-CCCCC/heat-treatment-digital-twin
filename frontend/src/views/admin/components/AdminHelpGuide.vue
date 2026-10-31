@@ -103,10 +103,10 @@ const articles = [
     },
     {
         id: 'security-4', category: 'security',
-        title: '为什么顶部有“立即锁定”按钮？',
+        title: '顶部的锁图标有什么用？',
         answer: '顶部按钮用于离开电脑前立即收回后台编辑权限。锁定不会关闭实时大屏，重新进入后台需要密码。正在编辑的内容应先保存，否则未保存的页面状态可能不会写入后端。',
-        steps: ['先保存当前正在编辑的页面。', '确认保存成功提示出现。', '点击顶部“立即锁定”，再验证实时大屏仍可显示。'],
-        target: { tab: 'settings', settingsSubpage: 'security' }, tags: ['立即锁定', '权限']
+        steps: ['先保存当前正在编辑的页面。', '确认保存成功提示出现。', '点击系统向导左侧的锁图标，再验证实时大屏仍可显示。'],
+        target: { tab: 'settings', settingsSubpage: 'security' }, tags: ['立即锁定', '锁图标', '权限']
     },
     {
         id: 'security-5', category: 'security',
