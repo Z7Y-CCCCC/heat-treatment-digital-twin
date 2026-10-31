@@ -4,6 +4,12 @@ import { readFile } from 'node:fs/promises'
 
 const source = async path => readFile(new URL(path, import.meta.url), 'utf8')
 
+test('PLC connection checkbox has the concise enable label without changing its binding', async () => {
+  const panel = await source('../src/views/AdminPanel.vue')
+  assert.doesNotMatch(panel, /启用此设备直连 PLC 采集/)
+  assert.match(panel, /<input v-model="editingDevice\.plc_enabled"[^>]*\/>\s*启用\s*<\/label>/)
+})
+
 test('device form omits the instance inspection card and saves existing inspection data untouched', async () => {
   const panel = await source('../src/views/AdminPanel.vue')
   const save = panel.slice(panel.indexOf('async function saveDevice()'), panel.indexOf('async function deleteDevice('))

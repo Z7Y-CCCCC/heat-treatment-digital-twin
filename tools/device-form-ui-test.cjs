@@ -32,6 +32,8 @@ let server, browser, page;
         assert.equal(await form.getByText('拆解检查覆盖 JSON', { exact: true }).count(), 0);
         assert.ok(await form.getByLabel(/^使用模型/).isVisible());
         assert.ok(await form.getByText('PLC 连接配置', { exact: true }).isVisible());
+        assert.ok(await form.getByRole('checkbox', { name: '启用', exact: true }).isVisible());
+        assert.equal(await form.getByText('启用此设备直连 PLC 采集', { exact: true }).count(), 0);
     };
     await page.getByRole('button', { name: '+ 添加设备', exact: true }).click(); await noTemplate();
     const newId = 'without_template_fixture';

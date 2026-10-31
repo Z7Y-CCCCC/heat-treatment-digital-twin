@@ -8142,7 +8142,7 @@ async function openAdminSetupStep(step) {
                                     </div>
                                     <label class="inline-check">
                                         <input v-model="editingDevice.plc_enabled" type="checkbox" :true-value="1" :false-value="0"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/>
-                                        启用此设备直连 PLC 采集
+                                        启用
                                     </label>
                                     <div class="form-grid compact-form-grid" v-if="Number(editingDevice.plc_enabled || 0)">
                                         <label>协议
