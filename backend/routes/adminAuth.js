@@ -1,5 +1,6 @@
 const express = require('express');
 const { getAdminAuth } = require('../services/adminAuth');
+const { getAdminPageCatalog } = require('../../shared/adminPages.mjs');
 const DISPLAY_COOKIE_MS = 30 * 24 * 60 * 60 * 1000;
 const {
     activeAdminAccountSlot,
@@ -167,6 +168,10 @@ module.exports = function createAdminAuthRouter(auth = getAdminAuth) {
             }
             sendSession(req, res, result);
         } else sendSession(req, res, result, slotId);
+    }));
+    router.get('/page-catalog', handle((req, res, service) => {
+        service.requireSession(suppliedAdminSession(req), '', { permission: 'owner', checkCsrf: false });
+        res.json({ success: true, pages: getAdminPageCatalog() });
     }));
     router.get('/users', handle((req, res, service) => {
         res.json({ success: true, users: service.listUsers(suppliedAdminSession(req), req.get('x-csrf-token')) });

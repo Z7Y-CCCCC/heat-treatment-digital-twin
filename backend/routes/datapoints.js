@@ -483,6 +483,39 @@ router.delete('/:id', async (req, res) => {
 
 // 保存后台编辑器中的目标状态，但只对实际发生变化的行执行 INSERT / UPDATE / DELETE。
 // 与 /batch 的“整台设备覆盖”语义分开，避免普通编辑时重建全部点位和改变已有 ID。
+// Alarm-page authors may update existing trigger texts, never point definitions,
+// PLC addresses, ordinary values or another factory's records.
+router.post('/alarm-texts', async (req, res) => {
+    try {
+        const body = req.body;
+        if (!body || Object.keys(body).some(k => !['device_id', 'points'].includes(k)) || typeof body.device_id !== 'string' || !body.device_id || body.device_id.length > 128
+            || !Array.isArray(body.points) || body.points.length > 2000) throw new Error('报警文本格式无效');
+        const ids = new Set();
+        for (const point of body.points) {
+            if (!point || Object.keys(point).some(k => !['id', 'alarm_text'].includes(k)) || !['number', 'string'].includes(typeof point.id) || !Number.isSafeInteger(Number(point.id))
+                || Number(point.id) <= 0 || typeof point.alarm_text !== 'string' || point.alarm_text.length > 4000
+                || ids.has(String(point.id))) throw new Error('报警点位或文本无效');
+            ids.add(String(point.id));
+        }
+        const db = await getDb();
+        const updated = await db.transaction(async tx => {
+            if (!await deviceInFactory(tx, body.device_id, req.factoryId)) throw Object.assign(new Error('设备不存在'), { statusCode: 404 });
+            const rows = await tx.all('SELECT * FROM data_points WHERE device_id = ?', [body.device_id]);
+            let count = 0;
+            for (const patch of body.points) {
+                const existing = rows.find(row => String(row.id) === String(patch.id));
+                if (!existing || normalizeUsage(existing) !== 'alarm_trigger') throw new Error('只能修改本设备已有的报警触发点位文本');
+                if ((existing.alarm_text || '') === patch.alarm_text) continue;
+                await tx.run('UPDATE data_points SET alarm_text = ? WHERE id = ? AND device_id = ?', [patch.alarm_text, existing.id, body.device_id]);
+                count++;
+            }
+            return count;
+        });
+        if (updated) restartDataEngineSoon('update alarm texts');
+        res.json({ success: true, updated });
+    } catch (error) { res.status(error.statusCode || 400).json({ error: error.message }); }
+});
+
 router.post('/sync', async (req, res) => {
     const { device_id, points } = req.body;
     if (!device_id || !Array.isArray(points)) {

@@ -1,8 +1,27 @@
-import { reactive } from 'vue'
+import { reactive, shallowRef } from 'vue'
 import { API_BASE } from './backendEndpoint.js'
 import { getFactoryScope } from './factoryScope.js'
 import { canPage, canAccessAdmin, normalizePagePermissions, allowsRequirement } from '../../../shared/pagePermissions.mjs'
 import { apiPermission } from '../../../shared/apiPermissions.mjs'
+import { getAdminPageCatalog as localPageCatalog, mergeAdminPageCatalog } from '../../../shared/adminPages.mjs'
+
+export const adminPageCatalog = shallowRef(localPageCatalog())
+export function applyAdminPageCatalog(pages) {
+    if (mergeAdminPageCatalog(pages)) {
+        adminPageCatalog.value = localPageCatalog()
+        const old = adminSession.pagePermissions
+        const current = Object.fromEntries(adminPageCatalog.value.map(page => [page.key,
+            Object.fromEntries(page.actions.map(action => [action, !page.ownerOnly && old[page.key]?.view === true && old[page.key]?.[action] === true]))
+        ]))
+        adminSession.pagePermissions = normalizePagePermissions(current, { owner: adminSession.user?.role === 'owner' && adminSession.authenticated })
+    }
+    return adminPageCatalog.value
+}
+export async function getAdminPageCatalog() {
+    const expectedGeneration = generation
+    const data = await authRequest('/page-catalog')
+    return expectedGeneration === generation ? applyAdminPageCatalog(data.pages) : adminPageCatalog.value
+}
 
 export function canAdminPage(key, action = 'view') {
     return adminSession.authenticated && canPage(adminSession.pagePermissions, key, action)
@@ -62,6 +81,7 @@ function permissionsForRole(role) {
 
 function applySession(data, expectedGeneration = generation) {
     if (expectedGeneration !== generation) return
+    if (data.pageCatalog) applyAdminPageCatalog(data.pageCatalog)
     adminSession.ready = true
     adminSession.configured = data.configured !== false
     adminSession.authenticated = data.authenticated === true

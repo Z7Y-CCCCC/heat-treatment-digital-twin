@@ -1,7 +1,9 @@
 <script setup>
-import { PAGE_PERMISSIONS, PAGE_ACTIONS, normalizePagePermissions } from '../../../../../shared/pagePermissions.mjs'
-import { computed, onMounted, ref } from 'vue'
-import { createPlatformUser, deletePlatformUser, listPlatformUsers, updatePlatformUser } from '../../../runtime/adminSession.js'
+import { PAGE_ACTIONS, normalizePagePermissions } from '../../../../../shared/pagePermissions.mjs'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { adminPageCatalog, getAdminPageCatalog, createPlatformUser, deletePlatformUser, listPlatformUsers, updatePlatformUser } from '../../../runtime/adminSession.js'
+
+const pages = computed(() => adminPageCatalog.value)
 
 const permissionChoices = [
   { key: 'view', label: '查看大屏', detail: '实时大屏与区域分布' },
@@ -28,7 +30,7 @@ function changePageAction(page, action) {
   if (page.key === 'models' && !editor.value.pagePermissions.models.edit) editor.value.pagePermissions.models.publish = false
 }
 function setPagePreset(mode) {
-  editor.value.pagePermissions = Object.fromEntries(PAGE_PERMISSIONS.map(page => [page.key,
+  editor.value.pagePermissions = Object.fromEntries(pages.value.map(page => [page.key,
     Object.fromEntries(page.actions.map(action => [action, !page.ownerOnly && (mode === 'all' || mode === 'view' && action === 'view')]))
   ]))
 }
@@ -43,12 +45,39 @@ const editor = ref(createDraft())
 const editingId = ref('')
 const replacementPassword = ref('')
 const pendingDelete = ref(false)
+const catalogError = ref('')
+let catalogRequest = null
+let catalogTimer = null
+let disposed = false
+
+// Refresh metadata only: never reload an account over unsaved checkbox changes.
+function reconcilePageDraft() {
+  const old = editor.value.pagePermissions
+  editor.value.pagePermissions = Object.fromEntries(pages.value.map(page => [page.key,
+    Object.fromEntries(page.actions.map(action => [action, !page.ownerOnly && old[page.key]?.view === true && old[page.key]?.[action] === true]))
+  ]))
+}
+watch(adminPageCatalog, reconcilePageDraft, { flush: 'sync' })
+async function refreshPageCatalog() {
+  if (disposed) return
+  if (catalogRequest) return catalogRequest
+  catalogRequest = (async () => {
+    try { await getAdminPageCatalog(); if (!disposed) catalogError.value = '' }
+    catch { if (!disposed) catalogError.value = '页面目录暂未更新，正在重试' }
+    finally { catalogRequest = null }
+  })()
+  return catalogRequest
+}
+function refreshVisibleCatalog() {
+  if (editorOpen.value && !globalThis.document?.hidden) void refreshPageCatalog()
+}
 
 const editorTitle = computed(() => editorMode.value === 'create' ? '新增账户' : `编辑账户 · ${editor.value.username}`)
 
 async function loadUsers() {
   loading.value = true
   try {
+    await refreshPageCatalog()
     users.value = (await listPlatformUsers()).map(user => ({
       ...user,
       pagePermissions: normalizePagePermissions(user.pagePermissions),
@@ -68,6 +97,7 @@ function openCreate() {
   replacementPassword.value = ''
   pendingDelete.value = false
   editorOpen.value = true
+  void refreshPageCatalog()
 }
 
 function openEdit(user) {
@@ -84,6 +114,7 @@ function openEdit(user) {
   replacementPassword.value = ''
   pendingDelete.value = false
   editorOpen.value = true
+  void refreshPageCatalog()
 }
 
 function closeEditor() {
@@ -151,16 +182,27 @@ function roleLabel(role) {
 
 function permissionSummary(user) {
   return [...permissionChoices.filter(choice => user.permissions?.[choice.key]).map(choice => choice.label),
-    ...PAGE_PERMISSIONS.filter(page => user.pagePermissions?.[page.key]?.view).map(page => page.label)]
+    ...pages.value.filter(page => user.pagePermissions?.[page.key]?.view).map(page => page.label)]
 }
 
-onMounted(loadUsers)
+onMounted(() => {
+  void loadUsers()
+  catalogTimer = globalThis.window?.setInterval(refreshVisibleCatalog, 5000)
+  globalThis.window?.addEventListener('focus', refreshVisibleCatalog)
+  globalThis.document?.addEventListener('visibilitychange', refreshVisibleCatalog)
+})
+onUnmounted(() => {
+  disposed = true
+  globalThis.window?.clearInterval(catalogTimer)
+  globalThis.window?.removeEventListener('focus', refreshVisibleCatalog)
+  globalThis.document?.removeEventListener('visibilitychange', refreshVisibleCatalog)
+})
 </script>
 
 <template>
   <section class="users-settings" aria-labelledby="platform-users-title">
     <header class="users-heading">
-      <div><h3 id="platform-users-title">用户与权限</h3><p>按账户分配页面查看、新增修改、删除和发布权限。用户管理与后台安全仅限系统管理员。</p></div>
+      <div><h3 id="platform-users-title">用户与权限</h3><p>按账户分配页面与操作权限。</p></div>
       <button type="button" class="users-primary" @click="openCreate">＋ 新增账户</button>
     </header>
 
@@ -206,7 +248,7 @@ onMounted(loadUsers)
                 </div>
                 <div class="page-permission-scroll"><table class="page-permission-table">
                   <thead><tr><th>页面</th><th v-for="action in pageActions" :key="action">{{ PAGE_ACTIONS[action] }}</th></tr></thead>
-                  <tbody><tr v-for="page in PAGE_PERMISSIONS" :key="page.key">
+                  <tbody><tr v-for="page in pages" :key="page.key">
                     <th scope="row">{{ page.label }}</th>
                     <td v-for="action in pageActions" :key="action">
                       <input v-if="page.actions.includes(action)" v-model="editor.pagePermissions[page.key][action]" type="checkbox"
@@ -217,8 +259,9 @@ onMounted(loadUsers)
                     </td>
                   </tr></tbody>
                 </table></div>
+                <p v-if="catalogError" class="editor-error" role="status">{{ catalogError }}</p>
               </fieldset>
-              <p class="editor-hint">操作权限必须先勾选查看。导入属于新增 / 修改，导出属于查看；删除和发布独立授权。授权与版本页只读，许可证安装、备份恢复与项目包导入导出仅管理员可操作。旧账户默认无后台权限；保存修改后该用户需重新登录。</p>
+              <p class="editor-hint">先勾选查看，再分配操作权限。修改后该账户需重新登录。</p>
               <p v-if="failed" class="editor-error" role="alert">{{ message }}</p>
               <footer>
                 <button v-if="editorMode === 'edit'" type="button" class="editor-delete" :disabled="busy" @click="removeEditorUser">{{ pendingDelete ? '确认删除此账户' : '删除账户' }}</button>

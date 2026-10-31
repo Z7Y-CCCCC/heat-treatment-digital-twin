@@ -19,7 +19,7 @@ test('mapping and alarms are peer tabpanels sharing the device filter and save a
   assert.match(page, /<section id="points-panel-mapping" role="tabpanel"[^>]*v-show="pointsSubpage === 'mapping'"/)
   assert.match(page, /<\/section>\s*<section id="points-panel-alarms" role="tabpanel"[^>]*v-show="pointsSubpage === 'alarms'"/)
   assert.equal((page.match(/aria-label="筛选点位设备"/g) || []).length, 1)
-  assert.equal((page.match(/@click="saveAllPoints"/g) || []).length, 1)
+  assert.equal((page.match(/@click="savePointsPage"/g) || []).length, 1)
   assert.match(page, /<header class="alarm-config-header">/)
   assert.doesNotMatch(panel, /isAlarmConfigOpen/)
   assert.match(panel, /pointsSubpage: pointsSubpage\.value/)
@@ -29,8 +29,8 @@ test('tab keyboard navigation wraps, focuses and never reloads the point draft',
   const body = panel.match(/async function pointsTabKeydown\(event\) \{[\s\S]*?\n\}/)?.[0]
   assert.ok(body)
   const tabs = [{ key: 'mapping' }, { key: 'alarms' }], state = { value: 'mapping' }, focus = []
-  const keydown = new Function('POINTS_SUBPAGES', 'pointsSubpage', 'selectPointsSubpage', 'nextTick', 'document', `return (${body})`)(
-    tabs, state, key => { state.value = key }, async () => {}, { getElementById: id => ({ focus: () => focus.push(id) }) })
+  const keydown = new Function('visiblePointsSubpages', 'pointsSubpage', 'selectPointsSubpage', 'nextTick', 'document', `return (${body})`)(
+    { value: tabs }, state, key => { state.value = key }, async () => {}, { getElementById: id => ({ focus: () => focus.push(id) }) })
   let prevented = 0
   for (const [key, target] of [['ArrowRight', 'alarms'], ['ArrowRight', 'mapping'], ['ArrowLeft', 'alarms'], ['Home', 'mapping'], ['End', 'alarms']]) {
     await keydown({ key, preventDefault() { prevented++ } })
@@ -40,6 +40,6 @@ test('tab keyboard navigation wraps, focuses and never reloads the point draft',
   assert.equal(prevented, 5)
   const select = panel.match(/function selectPointsSubpage\(key\) \{[\s\S]*?\n\}/)?.[0]
   assert.ok(select); assert.doesNotMatch(select, /loadDataPoints|saveAllPoints|dataPoints\./)
-  new Function('POINTS_SUBPAGES', 'pointsSubpage', `return (${select})`)(tabs, state)('invalid')
+  new Function('visiblePointsSubpages', 'pointsSubpage', `return (${select})`)({ value: tabs }, state)('invalid')
   assert.equal(state.value, 'alarms')
 })

@@ -1,37 +1,15 @@
 // Shared policy vocabulary. Missing grants are always false; editing one page
 // never turns a user into the legacy owner/admin role.
-export const PAGE_ACTIONS = { view: '查看', edit: '新增 / 修改 / 导入', delete: '删除', publish: '发布 / 启用版本' }
-const page = (key, label, actions = ['view', 'edit'], ownerOnly = false) => ({ key, label, actions, ownerOnly })
-export const PAGE_PERMISSIONS = [
-  page('factories', '工厂与区域'),
-  page('workshops', '车间管理', ['view', 'edit', 'delete']),
-  page('lines', '产线管理', ['view', 'edit', 'delete']),
-  page('devices', '设备管理', ['view', 'edit', 'delete']),
-  page('mobile-devices', '设备运动配置'),
-  page('disassembly-layout', '拆解布局'),
-  page('composer', '现场编排器'),
-  page('models', '模型库', ['view', 'edit', 'delete', 'publish']),
-  page('points', '点位映射', ['view', 'edit', 'delete']),
-  page('point-monitor', '点位监视', ['view']),
-  page('platform.designer', '组件配置 · 大屏设计器', ['view', 'edit', 'delete', 'publish']),
-  page('platform.scene', '组件配置 · 项目与场景'),
-  page('platform.environment', '组件配置 · 场景与光效'),
-  page('settings.runtime', '系统设置 · 运行与投屏'),
-  page('settings.database', '系统设置 · 数据连接与备份', ['view', 'edit', 'delete']),
-  page('settings.performance', '系统设置 · 客户端性能'),
-  page('settings.data', '系统设置 · 数据通路'),
-  page('settings.license', '系统设置 · 授权与版本', ['view']),
-  page('users', '用户与权限（仅管理员）', ['view', 'edit', 'delete'], true),
-  page('settings.security', '后台安全（仅管理员）', ['view', 'edit'], true)
-]
-const registry = new Map(PAGE_PERMISSIONS.map(p => [p.key, p]))
+import { ADMIN_PAGES, PAGE_ACTIONS } from './adminPages.mjs'
+export { PAGE_ACTIONS }
+export const PAGE_PERMISSIONS = ADMIN_PAGES
 const plainObject = value => value !== null && typeof value === 'object' && !Array.isArray(value)
 
 export function normalizePagePermissions(value, { owner = false } = {}) {
   if (value !== undefined) {
     if (!plainObject(value)) throw new TypeError('页面权限必须是对象')
     for (const [key, grants] of Object.entries(value)) {
-      const definition = registry.get(key)
+      const definition = PAGE_PERMISSIONS.find(p => p.key === key)
       if (!definition || !plainObject(grants)) throw new TypeError('未知页面或页面权限格式无效')
       for (const [action, enabled] of Object.entries(grants)) {
         if (!definition.actions.includes(action) || typeof enabled !== 'boolean'
@@ -48,7 +26,7 @@ export function normalizePagePermissions(value, { owner = false } = {}) {
 }
 
 export function canPage(grants, key, action = 'view') {
-  const definition = registry.get(key)
+  const definition = PAGE_PERMISSIONS.find(p => p.key === key)
   return !!definition && definition.actions.includes(action)
     && grants?.[key]?.view === true && grants?.[key]?.[action] === true
 }

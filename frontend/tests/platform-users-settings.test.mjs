@@ -3,7 +3,8 @@ import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import { createRenderer, h, ref } from 'vue'
 import { parse, compileScript, compileTemplate } from 'vue/compiler-sfc'
-import { settle } from './helpers.mjs'
+import { getAdminPageCatalog as localCatalog } from '../../shared/adminPages.mjs'
+import { settle, deferred } from './helpers.mjs'
 import { normalizePagePermissions } from '../../shared/pagePermissions.mjs'
 
 const url = new URL('../src/views/admin/components/PlatformUsersSettings.vue', import.meta.url)
@@ -16,7 +17,7 @@ compiled = compiled.replace("from 'vue'", `from ${JSON.stringify(import.meta.res
 compiled = compiled.replace("from '../../../../../shared/pagePermissions.mjs'", `from ${JSON.stringify(new URL('../../shared/pagePermissions.mjs', import.meta.url).href)}`)
 let fixtureId = 0
 async function fixture(t, api) {
-  globalThis.__platformUsersFixtureApi = api
+  globalThis.__platformUsersFixtureApi = { adminPageCatalog: ref(localCatalog()), getAdminPageCatalog: async () => localCatalog(), ...api }
   const { default: Component } = await import(`data:text/javascript;base64,${Buffer.from(compiled + '\n// fixture ' + fixtureId++).toString('base64')}`)
   delete globalThis.__platformUsersFixtureApi
   Component.render = () => null
@@ -72,4 +73,46 @@ test('page matrix supports read-only templates, view dependencies and saved per-
   await state.saveEditor()
   assert.equal(requests[0].pagePermissions.devices.view, true)
   assert.equal(requests[0].pagePermissions.models.view, false)
+})
+
+test('an open permission editor learns new pages without resetting unsaved account fields or grants', async t => {
+  const catalog = ref(localCatalog())
+  let response = null
+  const state = await fixture(t, { adminPageCatalog: catalog, listPlatformUsers: async () => [],
+    getAdminPageCatalog: async () => { if (response) catalog.value = await response.promise } })
+  state.openCreate()
+  await settle()
+  state.editor.displayName = '尚未保存的账户名称'
+  state.editor.pagePermissions.models.view = true
+  state.editor.pagePermissions.models.edit = true
+  response = deferred()
+  const pending = state.refreshPageCatalog()
+  state.editor.pagePermissions.devices.view = true
+  response.resolve([...catalog.value, { key: 'new-page', label: '新增页面', actions: ['view', 'edit'], ownerOnly: false }])
+  await pending
+  assert.ok(state.pages.some(p => p.key === 'new-page'))
+  assert.deepEqual(state.editor.pagePermissions['new-page'], { view: false, edit: false })
+  assert.equal(state.editor.pagePermissions.models.edit, true)
+  assert.equal(state.editor.pagePermissions.devices.view, true)
+  assert.equal(state.editor.displayName, '尚未保存的账户名称')
+  assert.equal(state.editorOpen, true)
+  state.setPagePreset('view')
+  assert.equal(state.editor.pagePermissions['new-page'].view, true)
+  assert.equal(state.editor.pagePermissions['new-page'].edit, false)
+})
+
+test('a failed metadata refresh retains the permission draft and can retry', async t => {
+  let fail = false
+  const state = await fixture(t, { listPlatformUsers: async () => [], getAdminPageCatalog: async () => { if (fail) throw new Error('offline') } })
+  state.openCreate()
+  await settle()
+  state.editor.pagePermissions.models.view = true
+  fail = true
+  await state.refreshPageCatalog()
+  assert.match(state.catalogError, /重试/)
+  assert.equal(state.editor.pagePermissions.models.view, true)
+  fail = false
+  await state.refreshPageCatalog()
+  assert.equal(state.catalogError, '')
+  assert.equal(state.editor.pagePermissions.models.view, true)
 })

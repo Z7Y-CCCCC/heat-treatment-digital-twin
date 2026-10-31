@@ -11,6 +11,7 @@ const USER_ROLES = new Set(['customer', 'viewer', 'editor']);
 const ASSIGNABLE_USER_ROLES = new Set(['customer', 'viewer']);
 const DELEGABLE_PERMISSIONS = ['view', 'launch', 'cast', 'backup'];
 const { normalizePagePermissions, canAccessAdmin, allowsRequirement } = require('../../shared/pagePermissions.cjs');
+const { getAdminPageCatalog } = require('../../shared/adminPages.mjs');
 
 function userPagePermissions(value) {
     try { return normalizePagePermissions(value); }
@@ -204,6 +205,7 @@ function createAdminAuth(options = {}) {
             authenticated,
             displayAuthenticated: !!session,
             pagePermissions: activePagePermissions,
+            ...(authenticated ? { pageCatalog: getAdminPageCatalog() } : {}),
             canAccessAdmin: authenticated && canAccessAdmin(activePagePermissions),
             ...settings(),
             ...(session ? {

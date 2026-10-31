@@ -22,6 +22,8 @@ let backend;
     originalConfig.permissionFixture = 'must-survive';
     await db.run('UPDATE devices SET instance_config=? WHERE id=?', [JSON.stringify(originalConfig), device.id]);
     await db.run('INSERT INTO data_points (device_id,name,label,plc_tag) VALUES (?,?,?,?)', [device.id, 'permission_point', '权限测试点', 'DB1.DBD0']);
+    await db.run("INSERT INTO data_points (device_id,name,label,plc_tag,data_type,point_kind,alarm_text) VALUES (?,?,?,?,?,?,?)",
+        [device.id, 'bj81', 'bj81', 'DB1.DBX90.0', 'BOOL', 'alarm', '原始报警文本']);
     await db.run('INSERT INTO models (id,name,file_path,metadata) VALUES (?,?,?,?)', ['permission_model', '权限测试模型', '/assets/models/test.glb', '{}']);
     await closeDb();
     const origin = `http://127.0.0.1:${process.env.PORT}`;
@@ -29,16 +31,16 @@ let backend;
         env: process.env, logFile: path.join(directory, 'backend.log') });
     await waitForHttp(`${origin}/api/health`);
     let checks = 0;
-    async function request(route, { method = 'GET', session, body, expected } = {}) {
+    async function request(route, { method = 'GET', session, body, expected, noCsrf = false } = {}) {
         const response = await fetch(`${origin}/api${route}`, { method,
             headers: { Origin: origin, 'X-Admin-Request': '1', 'X-Factory-ID': workshop.factory_id,
-                ...(session ? { Cookie: session.cookie, 'X-CSRF-Token': session.csrfToken } : {}),
+                ...(session ? { Cookie: session.cookie, ...(!noCsrf ? { 'X-CSRF-Token': session.csrfToken } : {}) } : {}),
                 ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
             ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
         const data = await response.json();
         if (expected !== undefined) { assert.equal(response.status, expected, `${method} ${route}: ${JSON.stringify(data).slice(0,500)}`); checks++; }
         const cookies = response.headers.getSetCookie().map(value => value.split(';', 1)[0]).join('; ');
-        return { data, cookie: cookies || session?.cookie, csrfToken: data.csrfToken || session?.csrfToken };
+        return { data, cacheControl: response.headers.get('cache-control'), cookie: cookies || session?.cookie, csrfToken: data.csrfToken || session?.csrfToken };
     }
     const password = crypto.randomBytes(24).toString('base64url');
     const owner = await request('/admin-auth/setup', { method: 'POST', body: { password }, expected: 200 });
@@ -49,6 +51,33 @@ let backend;
         return { ...session, userId: result.data.user.id };
     }
     const reader = await account('model_reader', { models: { view: true } });
+    const catalog = await request('/admin-auth/page-catalog', { session: owner, noCsrf: true, expected: 200 });
+    assert.equal(catalog.cacheControl, 'no-store');
+    assert.deepEqual(catalog.data.pages, require('../../shared/adminPages.mjs').getAdminPageCatalog());
+    assert.ok(catalog.data.pages.some(p => p.key === 'points.alarms'));
+    assert.ok(owner.data.pageCatalog.some(p => p.key === 'points.alarms'));
+    await request('/admin-auth/page-catalog', { session: reader, expected: 403 });
+    await request('/admin-auth/page-catalog', { expected: 401 });
+    const alarmEditor = await account('alarm_text_editor', { 'points.alarms': { view: true, edit: true } });
+    assert.equal(alarmEditor.data.pagePermissions.points.view, false);
+    const originalPoints = (await request(`/datapoints?device_id=${device.id}`, { session: alarmEditor, expected: 200 })).data;
+    const trigger = originalPoints.find(p => p.name === 'bj81');
+    const normal = originalPoints.find(p => p.name === 'permission_point');
+    await request('/devices', { session: alarmEditor, expected: 200 });
+    const alarmPatch = { device_id: device.id, points: [{ id: trigger.id, alarm_text: '新报警文本' }] };
+    await request('/datapoints/alarm-texts', { method: 'POST', session: alarmEditor, body: alarmPatch, noCsrf: true, expected: 403 });
+    await request('/datapoints/sync', { method: 'POST', session: alarmEditor, body: { device_id: device.id, points: [] }, expected: 403 });
+    await request('/datapoints/alarm-texts', { method: 'POST', session: reader, body: alarmPatch, expected: 403 });
+    await request('/datapoints/alarm-texts', { method: 'POST', session: alarmEditor,
+        body: { ...alarmPatch, points: [{ ...alarmPatch.points[0], plc_tag: 'DB9.DBX0.0' }] }, expected: 400 });
+    await request('/datapoints/alarm-texts', { method: 'POST', session: alarmEditor,
+        body: { ...alarmPatch, points: [...alarmPatch.points, { id: normal.id, alarm_text: '不应生效' }] }, expected: 400 });
+    const unchanged = (await request(`/datapoints?device_id=${device.id}`, { session: alarmEditor, expected: 200 })).data;
+    assert.deepEqual(unchanged, originalPoints, 'an invalid patch must roll back every text update');
+    await request('/datapoints/alarm-texts', { method: 'POST', session: alarmEditor, body: { ...alarmPatch, device_id: 'not-a-device' }, expected: 404 });
+    await request('/datapoints/alarm-texts', { method: 'POST', session: alarmEditor, body: alarmPatch, expected: 200 });
+    const updatedPoints = (await request(`/datapoints?device_id=${device.id}`, { session: alarmEditor, expected: 200 })).data;
+    assert.deepEqual(updatedPoints, originalPoints.map(p => p.id === trigger.id ? { ...p, alarm_text: '新报警文本' } : p));
     await request('/models', { session: reader, expected: 200 });
     await request('/platform/designer', { session: reader, expected: 403 });
     await request('/database/config', { session: reader, expected: 403 });

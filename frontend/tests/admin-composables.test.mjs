@@ -137,6 +137,45 @@ function pointsFixture(t) {
     return { points, messages }
 }
 
+test('text-only alarm save cannot clear or silently save point-definition drafts', async t => {
+    const { points, messages } = pointsFixture(t)
+    t.mock.method(adminApi, 'getDataPoints', async () => [{ id: 1, device_id: 'A', name: 'bj1', data_type: 'BOOL', plc_tag: 'DB1.DBX0.0', alarm_text: 'old' }])
+    const save = t.mock.method(adminApi, 'saveAlarmTexts', async () => ({ success: true, updated: 1 }))
+    await points.loadDataPoints()
+    points.dataPoints.value[0].plc_tag = 'DB1.DBX0.1'
+    points.isPointsDirty.value = true
+    await points.saveAlarmTexts()
+    assert.equal(save.mock.callCount(), 0)
+    assert.equal(points.isPointsDirty.value, true)
+    assert.match(messages.at(-1), /点位定义未保存/)
+    points.dataPoints.value[0].plc_tag = 'DB1.DBX0.0'
+    points.dataPoints.value[0].alarm_text = 'new'
+    await points.saveAlarmTexts()
+    assert.equal(save.mock.callCount(), 1)
+    assert.deepEqual(save.mock.calls[0].arguments, ['A', [{ id: 1, alarm_text: 'new' }]])
+    assert.equal(points.isPointsDirty.value, false)
+})
+
+test('alarm save errors and concurrent typing preserve the latest dirty draft', async t => {
+    const { points } = pointsFixture(t)
+    t.mock.method(adminApi, 'getDataPoints', async () => [{ id: 1, name: 'bj1', device_id: 'A', alarm_text: 'old' }])
+    const response = deferred()
+    t.mock.method(adminApi, 'saveAlarmTexts', () => response.promise)
+    await points.loadDataPoints()
+    points.dataPoints.value[0].alarm_text = 'first'
+    points.isPointsDirty.value = true
+    const pending = points.saveAlarmTexts()
+    points.dataPoints.value[0].alarm_text = 'second'
+    response.resolve({ success: true, updated: 1 })
+    await pending
+    assert.equal(points.dataPoints.value[0].alarm_text, 'second')
+    assert.equal(points.isPointsDirty.value, true)
+    t.mock.method(adminApi, 'saveAlarmTexts', async () => { throw new Error('offline') })
+    await points.saveAlarmTexts()
+    assert.equal(points.isPointsDirty.value, true)
+    assert.equal(points.dataPoints.value[0].alarm_text, 'second')
+})
+
 test('blank PLC DB fields stay blank instead of turning into DB0.DBW0', t => {
     const { points } = pointsFixture(t)
     assert.equal(points.composePlcAddressFromParts({ db_number: null, db_byte_offset: null, data_type: 'WORD' }), '')

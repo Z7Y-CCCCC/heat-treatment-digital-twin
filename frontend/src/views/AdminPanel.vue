@@ -57,7 +57,8 @@ import ModelInspectionPreviewOverlay from './admin/components/ModelInspectionPre
 import AssetHierarchyBar from './admin/components/AssetHierarchyBar.vue'
 import { InspectionPreview, inspectionCameraPose } from '../runtime/InspectionPreview.js'
 import inspectionConfig from '../../../shared/inspectionConfig.mjs'
-import { adminSession, lockAdmin, refreshAdminSession, canAdminPage, canAdminApi } from '../runtime/adminSession.js'
+import { adminSession, adminPageCatalog, lockAdmin, refreshAdminSession, canAdminPage, canAdminApi } from '../runtime/adminSession.js'
+import { adminNavPages, adminMainTabs, adminSubpages } from '../../../shared/adminPages.mjs'
 import { permissionDirective as vPermission } from '../runtime/pagePermissionUi.js'
 import { adminUiStateForFocus } from '../runtime/nativeAdminNavigation.js'
 import { normalizeWorkshopLayout } from '../utils/spatialLayout.js'
@@ -96,28 +97,16 @@ const storedAdminUiState = adminUiStateForFocus(
     new URLSearchParams(window.location.search).get('focus')
 )
 
-const PLATFORM_SUBPAGES = [
-    { key: 'designer', label: '大屏设计器', description: '地图分层、Logo、加载画面与场景组件' },
-    { key: 'scene', label: '项目与场景', description: '项目归属与场景基础信息' },
-    { key: 'environment', label: '场景与光效', description: 'Unity 灯光、后处理、围墙与空间' }
-]
-const POINTS_SUBPAGES = [
-    { key: 'mapping', label: 'PLC 点位映射' },
-    { key: 'alarms', label: '报警配置' }
-]
-const SETTINGS_SUBPAGES = [
-    { key: 'security', label: '后台安全', description: '后台密码、无操作自动锁定与立即锁定' },
-    { key: 'runtime', label: '运行与投屏', description: '自启动、电视投屏与本地运行服务' },
-    { key: 'database', label: '数据连接与备份', description: '数据库、ERP / MES 接口、备份与恢复' },
-    { key: 'performance', label: '客户端性能', description: 'Unity 画质' },
-    { key: 'data', label: '数据通路', description: 'PLC 实时采集或离线模拟模式' },
-    { key: 'license', label: '授权与版本', description: '离线许可证、有效期与发布信息' }
-]
-const visibleSettingsSubpages = computed(() => SETTINGS_SUBPAGES.filter(page => canAdminPage(`settings.${page.key}`)))
-const visiblePlatformSubpages = computed(() => PLATFORM_SUBPAGES.filter(page => canAdminPage(`platform.${page.key}`)))
+const PLATFORM_SUBPAGES = computed(() => adminSubpages('platform', adminPageCatalog.value))
+const POINTS_SUBPAGES = computed(() => adminSubpages('points', adminPageCatalog.value))
+const SETTINGS_SUBPAGES = computed(() => adminSubpages('settings', adminPageCatalog.value))
+const visibleSettingsSubpages = computed(() => SETTINGS_SUBPAGES.value.filter(page => canAdminPage(page.permissionKey)))
+const visiblePlatformSubpages = computed(() => PLATFORM_SUBPAGES.value.filter(page => canAdminPage(page.permissionKey)))
+const visiblePointsSubpages = computed(() => POINTS_SUBPAGES.value.filter(page => canAdminPage(page.permissionKey)))
 function canSelectTab(key) {
     if (key === 'platform') return visiblePlatformSubpages.value.length > 0
     if (key === 'settings') return visibleSettingsSubpages.value.length > 0
+    if (key === 'points') return visiblePointsSubpages.value.length > 0
     return canAdminPage(key)
 }
 
@@ -127,16 +116,19 @@ function restoreSubpage(value, options, fallback) {
 
 // 当前选中的 Tab
 const activeTab = ref(storedAdminUiState.activeTab || 'composer')
-const platformSubpage = ref(restoreSubpage(storedAdminUiState.platformSubpage, PLATFORM_SUBPAGES, 'designer'))
-const settingsSubpage = ref(restoreSubpage(storedAdminUiState.settingsSubpage, SETTINGS_SUBPAGES, 'runtime'))
+const platformSubpage = ref(restoreSubpage(storedAdminUiState.platformSubpage, PLATFORM_SUBPAGES.value, 'designer'))
+const settingsSubpage = ref(restoreSubpage(storedAdminUiState.settingsSubpage, SETTINGS_SUBPAGES.value, 'runtime'))
+const pointsSubpage = ref(restoreSubpage(storedAdminUiState.pointsSubpage, POINTS_SUBPAGES.value, 'mapping'))
 const currentPermissionPage = computed(() => activeTab.value === 'platform' ? `platform.${platformSubpage.value}`
-    : activeTab.value === 'settings' ? `settings.${settingsSubpage.value}` : activeTab.value)
+    : activeTab.value === 'settings' ? `settings.${settingsSubpage.value}`
+    : activeTab.value === 'points' ? POINTS_SUBPAGES.value.find(page => page.key === pointsSubpage.value)?.permissionKey || '' : activeTab.value)
 const controlPermissionPage = computed(() => currentPermissionPage.value === 'settings.license' ? 'settings.security' : currentPermissionPage.value)
 // Saved tab/focus state is navigation data, never an authorization grant.
-watch(() => adminSession.pagePermissions, () => {
+watch([() => adminSession.pagePermissions, adminPageCatalog], () => {
     if (!canAdminPage(`platform.${platformSubpage.value}`)) platformSubpage.value = visiblePlatformSubpages.value[0]?.key || ''
     if (!canAdminPage(`settings.${settingsSubpage.value}`)) settingsSubpage.value = visibleSettingsSubpages.value[0]?.key || ''
-    if (!canSelectTab(activeTab.value)) activeTab.value = ['factories', 'workshops', 'lines', 'devices', 'mobile-devices', 'disassembly-layout', 'composer', 'models', 'points', 'point-monitor', 'platform', 'settings', 'users'].find(canSelectTab) || ''
+    if (!visiblePointsSubpages.value.some(page => page.key === pointsSubpage.value)) pointsSubpage.value = visiblePointsSubpages.value[0]?.key || ''
+    if (!canSelectTab(activeTab.value)) activeTab.value = [...new Set(adminPageCatalog.value.map(page => page.container || page.key))].find(canSelectTab) || ''
 }, { immediate: true, deep: true })
 const adminContentRef = ref(null)
 const isAdminNavCollapsed = ref(!!storedAdminUiState.isAdminNavCollapsed)
@@ -144,18 +136,18 @@ const isFactoryMenuOpen = ref(true)
 const isDataMenuOpen = ref(true)
 const isModelsMenuOpen = ref(true)
 const isExternalDataSourcesOpen = ref(!!storedAdminUiState.isExternalDataSourcesOpen)
-const pointsSubpage = ref(restoreSubpage(storedAdminUiState.pointsSubpage, POINTS_SUBPAGES, 'mapping'))
 
 function selectPointsSubpage(key) {
-    if (POINTS_SUBPAGES.some(page => page.key === key)) pointsSubpage.value = key
+    if (visiblePointsSubpages.value.some(page => page.key === key)) pointsSubpage.value = key
 }
 async function pointsTabKeydown(event) {
-    const index = POINTS_SUBPAGES.findIndex(page => page.key === pointsSubpage.value)
-    const next = { ArrowRight: (index + 1) % POINTS_SUBPAGES.length,
-        ArrowLeft: (index + POINTS_SUBPAGES.length - 1) % POINTS_SUBPAGES.length,
-        Home: 0, End: POINTS_SUBPAGES.length - 1 }[event.key]
+    if (!visiblePointsSubpages.value.length) return
+    const index = visiblePointsSubpages.value.findIndex(page => page.key === pointsSubpage.value)
+    const next = { ArrowRight: (index + 1) % visiblePointsSubpages.value.length,
+        ArrowLeft: (index + visiblePointsSubpages.value.length - 1) % visiblePointsSubpages.value.length,
+        Home: 0, End: visiblePointsSubpages.value.length - 1 }[event.key]
     if (next === undefined) return
-    event.preventDefault(); selectPointsSubpage(POINTS_SUBPAGES[next].key)
+    event.preventDefault(); selectPointsSubpage(visiblePointsSubpages.value[next].key)
     await nextTick(); document.getElementById(`points-tab-${pointsSubpage.value}`)?.focus()
 }
 
@@ -1401,6 +1393,7 @@ const {
     validatePointRows,
     buildDataPointPayload,
     saveAllPoints,
+    saveAlarmTexts,
     copyPointsFrom,
     syncToLine
 } = useDataPoints({
@@ -5796,7 +5789,7 @@ async function saveCurrentFactoryPageDrafts() {
         newLine.name = ''
     }
     if (isPointsDirty.value) {
-        await saveAllPoints()
+        await savePointsPage()
         if (isPointsDirty.value) throw new Error('数据采集点位仍有未保存的修改')
     }
 
@@ -6859,35 +6852,21 @@ function openSelectedWorkshopLineEditor() {
     selectAdminTab('lines')
 }
 
-const factoryTabs = [
-    { key: 'workshops', label: '车间管理', icon: 'workshops' },
-    { key: 'lines', label: '产线管理', icon: 'lines' },
-    { key: 'devices', label: '设备管理', icon: 'devices' },
-    { key: 'mobile-devices', label: '设备运动配置', icon: 'mobile' }
-]
-const factoryTabKeys = factoryTabs.map(tab => tab.key)
-const dataTabs = [
-    { key: 'points', label: '点位映射', icon: 'points' },
-    { key: 'point-monitor', label: '点位监视', icon: 'points' }
-]
-const dataTabKeys = dataTabs.map(tab => tab.key)
-const modelTabs = [
-    { key: 'models', label: '模型管理', icon: 'models' },
-    { key: 'disassembly-layout', label: '拆解布局', icon: 'models' }
-]
-const modelTabKeys = modelTabs.map(tab => tab.key)
-const visibleModelTabs = computed(() => modelTabs.filter(tab => canSelectTab(tab.key)))
-const mainTabs = [
-    { key: 'factories', label: '工厂与区域', icon: 'factories' },
-    { key: 'composer', label: '现场编排器', icon: 'composer' },
-    { key: 'models', label: '模型库', icon: 'models' },
-    { key: 'platform', label: '组件配置', icon: 'platform' },
-    { key: 'users', label: '用户与权限', icon: 'users' },
-    { key: 'settings', label: '系统设置', icon: 'settings' }
-]
-const visibleMainTabs = computed(() => mainTabs.filter(tab => tab.key === 'models' ? visibleModelTabs.value.length > 0 : canSelectTab(tab.key)))
-const visibleFactoryTabs = computed(() => factoryTabs.filter(tab => canSelectTab(tab.key)))
-const visibleDataTabs = computed(() => dataTabs.filter(tab => canSelectTab(tab.key)))
+const factoryTabs = computed(() => adminNavPages('factory', adminPageCatalog.value))
+const factoryTabKeys = computed(() => factoryTabs.value.map(tab => tab.key))
+const dataTabs = computed(() => adminNavPages('data', adminPageCatalog.value))
+const dataTabKeys = computed(() => dataTabs.value.map(tab => tab.key))
+const modelTabs = computed(() => adminNavPages('models', adminPageCatalog.value))
+const modelTabKeys = computed(() => modelTabs.value.map(tab => tab.key))
+const visibleModelTabs = computed(() => modelTabs.value.filter(tab => canSelectTab(tab.key)))
+const mainTabs = computed(() => adminMainTabs(adminPageCatalog.value))
+const visibleMainTabs = computed(() => mainTabs.value.filter(tab => tab.key === 'models' ? visibleModelTabs.value.length > 0 : canSelectTab(tab.key)))
+const visibleFactoryTabs = computed(() => factoryTabs.value.filter(tab => canSelectTab(tab.key)))
+const visibleDataTabs = computed(() => dataTabs.value.filter(tab => canSelectTab(tab.key)))
+
+function savePointsPage() {
+    return canAdminPage('points', 'edit') ? saveAllPoints() : saveAlarmTexts()
+}
 
 const adminSetupFlow = [
     { key: 'system', label: '系统', tab: 'settings', settingsSubpage: 'database', description: '确认数据库、运行服务与数据通路' },
@@ -6905,8 +6884,8 @@ async function openAdminSetupStep(step) {
     if (!step?.tab || !canSelectTab(step.tab)
         || step.settingsSubpage && !canAdminPage(`settings.${step.settingsSubpage}`)
         || step.platformSubpage && !canAdminPage(`platform.${step.platformSubpage}`)) return
-    if (factoryTabKeys.includes(step.tab)) isFactoryMenuOpen.value = true
-    if (dataTabKeys.includes(step.tab)) isDataMenuOpen.value = true
+    if (factoryTabKeys.value.includes(step.tab)) isFactoryMenuOpen.value = true
+    if (dataTabKeys.value.includes(step.tab)) isDataMenuOpen.value = true
     if (step.settingsSubpage) settingsSubpage.value = step.settingsSubpage
     if (step.platformSubpage) platformSubpage.value = step.platformSubpage
     selectAdminTab(step.tab)
@@ -8975,7 +8954,7 @@ async function openAdminSetupStep(step) {
                 <!-- ======== 点位映射 ======== -->
                 <div v-if="activeTab === 'points'" class="tab-content" data-testid="points-workspace">
                     <nav class="points-subpage-tabs" role="tablist" aria-label="点位配置">
-                        <button v-for="page in POINTS_SUBPAGES" :key="page.key" :id="`points-tab-${page.key}`"
+                        <button v-for="page in visiblePointsSubpages" :key="page.key" :id="`points-tab-${page.key}`"
                             type="button" role="tab" :aria-selected="pointsSubpage === page.key" :aria-controls="`points-panel-${page.key}`"
                             :tabindex="pointsSubpage === page.key ? 0 : -1" :class="{ active: pointsSubpage === page.key }"
                             @click="selectPointsSubpage(page.key)" @keydown="pointsTabKeydown">{{ page.label }}</button>
@@ -9277,7 +9256,7 @@ async function openAdminSetupStep(step) {
                         <div class="points-savebar" data-testid="points-savebar">
                             <div style="display:flex; align-items: center; gap: 15px;">
                                 <span v-if="isPointsDirty" style="color: #ff9500; font-size: 13px;">存在未保存的修改</span>
-                                <button @click="saveAllPoints" class="btn btn-primary" :disabled="pointsLoading || pointsSaving || (!isPointsDirty && dataPoints.length > 0)" v-permission="{ page: controlPermissionPage, action: 'edit' }">{{ pointsLoading ? '正在读取点位…' : pointsSaving ? '正在保存…' : isAllPointsMode ? '保存全部设备配置' : '保存当前设备配置' }}</button>
+                                <button @click="savePointsPage" class="btn btn-primary" :disabled="pointsLoading || pointsSaving || (!isPointsDirty && dataPoints.length > 0)" v-permission="{ page: controlPermissionPage, action: 'edit' }">{{ pointsLoading ? '正在读取点位…' : pointsSaving ? '正在保存…' : isAllPointsMode ? '保存全部设备配置' : '保存当前设备配置' }}</button>
                             </div>
                         </div>
 

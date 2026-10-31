@@ -157,6 +157,7 @@ export const adminApi = {
         const suffix = deviceId && deviceId !== 'all' ? `?device_id=${encodeURIComponent(deviceId)}` : ''
         return (await fetch(`${API_BASE}/datapoints${suffix}`)).json()
     },
+    async saveAlarmTexts(deviceId, points) { return readApiJson(await fetch(`${API_BASE}/datapoints/alarm-texts`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ device_id: deviceId, points }) }), '保存报警文本失败') },
     async saveDataPointsBatch(deviceId, points) { 
         return readApiJson(await fetch(`${API_BASE}/datapoints/batch`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ device_id: deviceId, points }) }), '保存点位失败')
     },

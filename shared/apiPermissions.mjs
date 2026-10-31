@@ -2,7 +2,7 @@ import { PAGE_PERMISSIONS, pagePermission as p } from './pagePermissions.mjs'
 const any = (...grants) => ({ any: grants })
 const all = (...grants) => ({ all: grants })
 const read = (pages, display = false) => any('admin', ...(display ? ['view'] : []), ...pages.map(k => p(k)))
-const spatial = ['factories', 'workshops', 'lines', 'devices', 'composer', 'mobile-devices', 'disassembly-layout', 'models', 'points', 'point-monitor', 'platform.scene', 'platform.designer', 'platform.environment']
+const spatial = ['factories', 'workshops', 'lines', 'devices', 'composer', 'mobile-devices', 'disassembly-layout', 'models', 'points', 'points.alarms', 'point-monitor', 'platform.scene', 'platform.designer', 'platform.environment']
 export const SETTING_PAGES = {
   data_mode: 'settings.data', simulation_interval_ms: 'settings.data', realtime_stale_ms: 'settings.data',
   native_quality_profile: 'settings.performance', native_environment_config: 'platform.environment',
@@ -31,7 +31,7 @@ export function apiPermission(path, method = 'GET', body) {
     return any('admin', ...(!destructive ? ['backup'] : []), p('settings.database', action))
   }
   if (resource('database') || resource('data-sources')) {
-    if (safe && path === '/api/data-sources/runtime-values') return read(['points', 'point-monitor', 'platform.designer'], true)
+    if (safe && path === '/api/data-sources/runtime-values') return read(['points', 'points.alarms', 'point-monitor', 'platform.designer'], true)
     const pages = ['settings.database', 'platform.designer']
     if (safe) return read(pages)
     if (method === 'POST' && /\/(preview|preview-http|inspect-http)$/.test(path)) return read(pages)
@@ -78,10 +78,11 @@ export function apiPermission(path, method = 'GET', body) {
   }
   if (resource('factories')) return safe ? read(PAGE_PERMISSIONS.map(p => p.key), true) : any('admin', p('factories', 'edit'))
   if (resource('datapoints')) {
+    if (path === '/api/datapoints/alarm-texts' && method === 'POST') return any('admin', p('points.alarms', 'edit'))
     if (path === '/api/datapoints/batch' && !safe) return any('admin', all(p('points', 'edit'), p('points', 'delete')))
-    return safe ? read(['points', 'point-monitor', 'mobile-devices', 'platform.designer'], true) : any('admin', p('points', action))
+    return safe ? read(['points', 'points.alarms', 'point-monitor', 'mobile-devices', 'platform.designer'], true) : any('admin', p('points', action))
   }
-  if (resource('plc') || resource('engine/status')) return safe ? read(['points', 'point-monitor', 'mobile-devices', 'settings.data'], true) : 'admin'
+  if (resource('plc') || resource('engine/status')) return safe ? read(['points', 'points.alarms', 'point-monitor', 'mobile-devices', 'settings.data'], true) : 'admin'
   if (path === '/api/engine/restart') return any('admin', p('settings.data', 'edit'))
   if (resource('appearance-assets')) return safe ? read(['platform.designer', 'factories'], true) : any('admin', p('platform.designer', action))
   if (resource('template-library') || resource('config') || resource('business-data')) return safe ? read(spatial, true) : 'admin'

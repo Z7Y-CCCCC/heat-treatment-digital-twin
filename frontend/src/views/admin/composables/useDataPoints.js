@@ -31,6 +31,8 @@ export function useDataPoints({
     const pointsSaving = ref(false)
     let loadedPointSelection = selectedDeviceForPoints.value
     let pointsLoaded = false
+    let loadedDefinitionSnapshot = ''
+    const definitionSnapshot = rows => JSON.stringify(rows.map(({ alarm_text, ...point }) => point))
     const showPointAdvancedFields = ref(!!storedAdminUiState.showPointAdvancedFields)
     const loadedPointDeviceIds = ref([])
     const alarmTextImportRaw = ref('')
@@ -370,6 +372,7 @@ export function useDataPoints({
             if (!Array.isArray(points)) throw new Error(points?.error || '后端返回了无效的点位列表')
             loadedPointDeviceIds.value = [...new Set(points.map(point => point.device_id).filter(Boolean))]
             dataPoints.value = points.map(normalizeLoadedPoint)
+            loadedDefinitionSnapshot = definitionSnapshot(dataPoints.value)
             isPointsDirty.value = false
             loadedPointSelection = deviceId
             pointsLoaded = true
@@ -936,6 +939,24 @@ export function useDataPoints({
         return `保存成功：${parts.join('，')}。${skipped}`
     }
 
+    async function saveAlarmTexts() {
+        if (pointsSaving.value) return
+        if (pointsLoading.value || !pointsLoaded || isAllPointsMode.value) return alert('请先选择并读取一台设备的报警点位。')
+        if (definitionSnapshot(dataPoints.value) !== loadedDefinitionSnapshot) return alert('还有点位定义未保存，请先在 PLC 点位映射中保存。', { title: '点位定义未保存', type: 'warning' })
+        const selection = selectedDeviceForPoints.value, snapshot = JSON.stringify(dataPoints.value)
+        const points = currentAlarmTriggerPoints.value.map(({ point }) => ({ id: point.id, alarm_text: point.alarm_text || '' }))
+        if (points.some(point => !point.id)) return alert('请先在 PLC 点位映射中保存新增的报警点位。')
+        pointsSaving.value = true
+        try {
+            const result = await adminApi.saveAlarmTexts(selection, points)
+            if (result?.error || !result?.success) throw new Error(result?.error || '后端未确认保存')
+            await alert(`已保存 ${result.updated || 0} 条报警文本。`, { title: '报警文本已保存', type: 'success' })
+            if (pointsDisposed || selection !== selectedDeviceForPoints.value || snapshot !== JSON.stringify(dataPoints.value)) return
+            isPointsDirty.value = false; await loadDataPoints()
+        } catch (error) { if (!pointsDisposed) await alert(error.message || '保存报警文本失败', { title: '保存失败', type: 'danger' }) }
+        finally { if (!pointsDisposed) pointsSaving.value = false }
+    }
+
     async function saveAllPoints() {
         if (pointsSaving.value) return
         if (pointsLoading.value || !pointsLoaded) return alert('请先成功读取当前设备的点位配置，再执行保存。', { title: '点位尚未就绪', type: 'warning' })
@@ -1125,6 +1146,7 @@ export function useDataPoints({
         validatePointRows,
         buildDataPointPayload,
         saveAllPoints,
+        saveAlarmTexts,
         copyPointsFrom,
         syncToLine
     }

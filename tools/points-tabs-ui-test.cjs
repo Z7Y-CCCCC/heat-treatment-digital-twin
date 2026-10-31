@@ -100,7 +100,7 @@ const check = name => { checks.push(name); console.log('PASS ' + name); };
     const session = await (await page.request.get(info.origin + '/api/admin-auth/session')).json();
     const created = await page.request.post(info.origin + '/api/admin-auth/users', { headers: {
         Origin: info.origin, 'X-Admin-Request': '1', 'X-CSRF-Token': session.csrfToken
-    }, data: { username: 'points_reader', password: info.password, role: 'viewer', permissions: { view: false }, pagePermissions: { points: { view: true } } } });
+    }, data: { username: 'points_reader', password: info.password, role: 'viewer', permissions: { view: false }, pagePermissions: { points: { view: true }, 'points.alarms': { view: true } } } });
     assert.equal(created.status(), 201, await created.text());
     const reader = await makePage(); await reader.goto(info.origin + '/admin');
     await reader.getByRole('textbox', { name: '账号', exact: true }).fill('points_reader');
@@ -112,6 +112,60 @@ const check = name => { checks.push(name); console.log('PASS ' + name); };
     assert.ok(await reader.getByRole('button', { name: '匹配到报警点位', exact: true }).isDisabled());
     assert.equal(await reader.locator('.page-readonly-notice').count(), 0);
     check('read-only users can switch both tabs but cannot add, import or save edits');
+    const alarmAccount = await page.request.post(info.origin + '/api/admin-auth/users', { headers: {
+        Origin: info.origin, 'X-Admin-Request': '1', 'X-CSRF-Token': session.csrfToken
+    }, data: { username: 'alarm_editor', password: info.password, role: 'viewer', permissions: { view: false }, pagePermissions: { 'points.alarms': { view: true, edit: true } } } });
+    assert.equal(alarmAccount.status(), 201, await alarmAccount.text());
+    const alarmOnly = await makePage(); await alarmOnly.goto(info.origin + '/admin');
+    await alarmOnly.getByRole('textbox', { name: '账号', exact: true }).fill('alarm_editor');
+    await alarmOnly.getByLabel('后台密码', { exact: true }).fill(info.password);
+    await alarmOnly.getByRole('button', { name: '解锁后台', exact: true }).click();
+    await alarmOnly.getByTestId('points-workspace').waitFor();
+    assert.equal(await alarmOnly.getByRole('tab', { name: 'PLC 点位映射', exact: true }).count(), 0);
+    assert.equal(await alarmOnly.getByRole('tab', { name: '报警配置', exact: true }).getAttribute('aria-selected'), 'true');
+    await alarmOnly.locator('.alarm-textarea').fill('1 => "仅报警编辑验收"');
+    await alarmOnly.getByRole('button', { name: '匹配到报警点位', exact: true }).click();
+    await alarmOnly.getByRole('heading', { name: '报警文本已导入', exact: true }).waitFor();
+    await alarmOnly.getByRole('button', { name: '确定', exact: true }).click();
+    const alarmResponse = alarmOnly.waitForResponse(response => new URL(response.url()).pathname === '/api/datapoints/alarm-texts' && response.request().method() === 'POST');
+    await alarmOnly.getByTestId('points-savebar').getByRole('button', { name: '保存当前设备配置', exact: true }).click();
+    assert.equal((await alarmResponse).status(), 200);
+    await alarmOnly.getByRole('heading', { name: '报警文本已保存', exact: true }).waitFor();
+    await alarmOnly.getByRole('button', { name: '确定', exact: true }).click();
+    const alarmSaved = await (await page.request.get(info.origin + `/api/datapoints?device_id=${encodeURIComponent(deviceId)}`)).json();
+    assert.deepEqual(alarmSaved, points.map(p => p.name === 'bj1' ? { ...p, alarm_text: '仅报警编辑验收' } : p));
+    check('alarm-only account sees only its authorized tab and saves text without changing PLC definitions');
+
+    // Simulate the next server page registration while a real editor is open.
+    // Only the test response is extended; no live registry or user grants are written.
+    let registerNewPage = false, catalogReads = 0;
+    await page.route('**/api/admin-auth/page-catalog', async route => {
+        const response = await route.fetch(), body = await response.json(); catalogReads++;
+        if (registerNewPage) body.pages.push({ key: 'points.qa-page', label: '点位映射 · 新增验收标签', ownerOnly: false,
+            actions: ['view', 'edit'], container: 'points', subpage: 'qa-page', tabLabel: '新增验收标签' });
+        await route.fulfill({ response, json: body });
+    });
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await page.getByRole('button', { name: '用户与权限', exact: true }).click();
+    await page.getByRole('button', { name: '管理账户', exact: true }).first().click();
+    const matrix = page.locator('.page-permission-table');
+    const liveCatalog = await (await page.request.get(info.origin + '/api/admin-auth/page-catalog')).json();
+    assert.equal(await matrix.locator('tbody tr').count(), liveCatalog.pages.length);
+    assert.ok(await matrix.getByRole('rowheader', { name: '点位映射 · 报警配置', exact: true }).isVisible());
+    const modelView = page.getByRole('checkbox', { name: '模型库 · 模型管理 · 查看', exact: true });
+    await modelView.check();
+    const readsBeforeRegistration = catalogReads;
+    registerNewPage = true;
+    const addedView = page.getByRole('checkbox', { name: '点位映射 · 新增验收标签 · 查看', exact: true });
+    await addedView.waitFor({ timeout: 12000 });
+    assert.ok(catalogReads > readsBeforeRegistration, 'the editor polls without a manual refresh');
+    assert.ok(!await addedView.isChecked());
+    assert.ok(await page.getByRole('checkbox', { name: '点位映射 · 新增验收标签 · 新增 / 修改 / 导入', exact: true }).isDisabled());
+    assert.ok(await modelView.isChecked(), 'unsaved permissions survive the catalog update');
+    await addedView.scrollIntoViewIfNeeded();
+    await page.screenshot({ path: path.join(directory, '04-live-permission-catalog.png') });
+    await page.getByRole('button', { name: '取消', exact: true }).click();
+    check('an open permissions matrix automatically adds registered subpages, defaults to deny and preserves unsaved checkbox edits');
     assert.deepEqual(errors, []);
     const result = { success: true, checks, browserErrors: errors, directory };
     fs.writeFileSync(path.join(directory, 'result.json'), JSON.stringify(result, null, 2)); console.log(JSON.stringify(result, null, 2));
