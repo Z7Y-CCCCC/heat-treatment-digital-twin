@@ -89,9 +89,10 @@ test('each map-level layout editor is wired to the actual dashboard components',
 test('factory hierarchy is visible in asset editors and model levels cannot be assigned as device models', async () => {
   const panel = await source('../src/views/AdminPanel.vue')
   const hierarchy = await source('../src/views/admin/components/AssetHierarchyBar.vue')
-  assert.match(panel, /<AssetHierarchyBar[\s\S]*?:model-library="activeTab === 'models'"/)
+  assert.match(panel, /<AssetHierarchyBar[\s\S]*?:workshop-id="assetHierarchyWorkshopId"[\s\S]*?:device-id="assetHierarchyDeviceId"/)
   assert.match(panel, /assetHierarchyTabs = new Set\(\['platform', 'composer', 'workshops', 'lines', 'devices', 'mobile-devices', 'points', 'point-monitor', 'models', 'settings'\]\)/)
-  assert.match(hierarchy, /工厂 → 车间 → 产线 → 设备/)
+  assert.match(hierarchy, /aria-label="当前编辑范围"/)
+  assert.doesNotMatch(hierarchy, /资产归属|工厂 → 车间 → 产线 → 设备|asset-hierarchy-note|modelLibrary/)
   assert.doesNotMatch(hierarchy, /管理工厂<\/button>/)
   assert.match(hierarchy, /accepted = await props\.requestSwitch/)
   assert.match(hierarchy, /if \(!accepted\)[\s\S]*?return[\s\S]*?setFactoryScope\(next\)[\s\S]*?window\.location\.reload\(\)/)

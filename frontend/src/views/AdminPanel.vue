@@ -7106,7 +7106,6 @@ async function openAdminSetupStep(step) {
                     :workshop-id="assetHierarchyWorkshopId"
                     :line-id="assetHierarchyLineId"
                     :device-id="assetHierarchyDeviceId"
-                    :model-library="activeTab === 'models'"
                     :request-switch="requestFactorySwitch"
                 />
                 <Transition name="tab-switch" mode="out-in">
