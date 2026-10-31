@@ -1,4 +1,5 @@
 <script setup>
+import { MIN_PASSWORD_LENGTH, MAX_PASSWORD_LENGTH } from '../../../../../shared/accountPolicy.mjs'
 import { ref, watch } from 'vue'
 import { adminSession, saveAdminSecuritySettings, changeAdminPassword, lockAdmin } from '../../../runtime/adminSession.js'
 
@@ -104,11 +105,11 @@ async function savePassword() {
 
         <form class="security-card password-card" @submit.prevent="savePassword">
             <h4>修改后台密码</h4>
-            <p>修改前需要验证原密码。请使用 8–128 个字符的密码，并只交给负责配置的工程师。</p>
+            <p>密码至少 {{ MIN_PASSWORD_LENGTH }} 位，修改前需验证原密码。</p>
             <div class="password-fields">
-                <label>原后台密码<input v-model="currentPassword" type="password" autocomplete="current-password" minlength="8" maxlength="128" required /></label>
-                <label>新后台密码<input v-model="newPassword" type="password" autocomplete="new-password" minlength="8" maxlength="128" required /></label>
-                <label>确认新密码<input v-model="confirmPassword" type="password" autocomplete="new-password" minlength="8" maxlength="128" required /></label>
+                <label>原后台密码<input v-model="currentPassword" type="password" autocomplete="current-password" :minlength="MIN_PASSWORD_LENGTH" :maxlength="MAX_PASSWORD_LENGTH" required /></label>
+                <label>新后台密码<input v-model="newPassword" type="password" autocomplete="new-password" :minlength="MIN_PASSWORD_LENGTH" :maxlength="MAX_PASSWORD_LENGTH" required /></label>
+                <label>确认新密码<input v-model="confirmPassword" type="password" autocomplete="new-password" :minlength="MIN_PASSWORD_LENGTH" :maxlength="MAX_PASSWORD_LENGTH" required /></label>
             </div>
             <button type="submit" class="security-secondary" :disabled="changingPassword">{{ changingPassword ? '修改中…' : '修改后台密码' }}</button>
         </form>

@@ -1,4 +1,5 @@
 <script setup>
+import { MIN_PASSWORD_LENGTH, MAX_PASSWORD_LENGTH, MIN_USERNAME_LENGTH, MAX_USERNAME_LENGTH, USERNAME_PATTERN } from '../../../../../shared/accountPolicy.mjs'
 import { PAGE_ACTIONS, normalizePagePermissions } from '../../../../../shared/pagePermissions.mjs'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { adminPageCatalog, getAdminPageCatalog, createPlatformUser, deletePlatformUser, listPlatformUsers, updatePlatformUser } from '../../../runtime/adminSession.js'
@@ -243,12 +244,12 @@ onUnmounted(() => {
           <section class="user-editor-dialog" role="dialog" aria-modal="true" aria-labelledby="user-editor-title">
             <header><div><h4 id="user-editor-title">{{ editorTitle }}</h4><p>{{ editorMode === 'create' ? '账户创建后即可按已授权页面和功能工作。' : '切换角色模板仅重置现场功能；后台页面权限独立设置。' }}</p></div><button type="button" class="editor-close" aria-label="关闭" :disabled="busy" @click="closeEditor">×</button></header>
             <form class="editor-form" @submit.prevent="saveEditor">
-              <label v-if="editorMode === 'create'">登录账号<input v-model.trim="editor.username" autocomplete="off" minlength="3" maxlength="32" pattern="[a-zA-Z][a-zA-Z0-9_-]{2,31}" required placeholder="例如 workshop_a" /></label>
+              <label v-if="editorMode === 'create'">登录账号<input v-model.trim="editor.username" autocomplete="off" :minlength="MIN_USERNAME_LENGTH" :maxlength="MAX_USERNAME_LENGTH" :pattern="USERNAME_PATTERN" required placeholder="例如 普通用户1" /></label>
               <label v-else>登录账号<input :value="editor.username" disabled /></label>
               <label>显示名称<input v-model.trim="editor.displayName" maxlength="60" required placeholder="例如 车间值班员" /></label>
               <label>角色模板<select v-model="editor.role" @change="applyRolePreset"><option value="customer">现场客户</option><option value="viewer">现场查看</option></select></label>
-              <label v-if="editorMode === 'create'">初始密码<input v-model="editor.password" type="password" autocomplete="new-password" minlength="8" maxlength="128" required placeholder="至少 8 位" /></label>
-              <label v-else>重设密码<input v-model="replacementPassword" type="password" autocomplete="new-password" minlength="8" maxlength="128" placeholder="留空则不修改" /></label>
+              <label v-if="editorMode === 'create'">初始密码<input v-model="editor.password" type="password" autocomplete="new-password" :minlength="MIN_PASSWORD_LENGTH" :maxlength="MAX_PASSWORD_LENGTH" required :placeholder="`至少 ${MIN_PASSWORD_LENGTH} 位`" /></label>
+              <label v-else>重设密码<input v-model="replacementPassword" type="password" autocomplete="new-password" :minlength="MIN_PASSWORD_LENGTH" :maxlength="MAX_PASSWORD_LENGTH" placeholder="留空则不修改" /></label>
               <label v-if="editorMode === 'edit'" class="editor-enabled"><input v-model="editor.enabled" type="checkbox" />启用此账户</label>
               <fieldset class="capability-fieldset"><legend>功能权限</legend><label v-for="choice in permissionChoices" :key="choice.key" class="capability-option"><input v-model="editor.permissions[choice.key]" type="checkbox" /><span><strong>{{ choice.label }}</strong><small>{{ choice.detail }}</small></span></label></fieldset>
               <fieldset class="page-permission-fieldset">

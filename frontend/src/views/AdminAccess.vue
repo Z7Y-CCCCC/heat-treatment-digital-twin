@@ -1,4 +1,5 @@
 <script setup>
+import { MIN_PASSWORD_LENGTH, MAX_PASSWORD_LENGTH } from '../../../shared/accountPolicy.mjs'
 import { computed, defineAsyncComponent, nextTick, onActivated, onDeactivated, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { adminSession, refreshAdminSession, startAdminSessionTracking, stopAdminSessionTracking, unlockAdmin, lockAdmin, logoutCurrentAdminAccount, canOpenAdmin } from '../runtime/adminSession.js'
 import AdminWindowChrome from './admin/components/AdminWindowChrome.vue'
@@ -200,7 +201,7 @@ onUnmounted(() => {
                         </template>
                         <label for="admin-unlock-password">{{ setup ? '设置后台密码' : '后台密码' }}</label>
                         <div class="unlock-password-field">
-                            <input id="admin-unlock-password" ref="passwordInput" v-model="password" :type="showPassword ? 'text' : 'password'" :autocomplete="setup ? 'new-password' : 'current-password'" minlength="8" maxlength="128" required :disabled="busy" :placeholder="setup ? '请设置 8–128 个字符的密码' : '请输入后台密码'" />
+                            <input id="admin-unlock-password" ref="passwordInput" v-model="password" :type="showPassword ? 'text' : 'password'" :autocomplete="setup ? 'new-password' : 'current-password'" :minlength="MIN_PASSWORD_LENGTH" :maxlength="MAX_PASSWORD_LENGTH" required :disabled="busy" :placeholder="setup ? `请设置 ${MIN_PASSWORD_LENGTH}–${MAX_PASSWORD_LENGTH} 个字符的密码` : '请输入后台密码'" />
                             <button type="button" class="unlock-password-toggle" :aria-label="showPassword ? '隐藏后台密码' : '显示后台密码'" :aria-pressed="showPassword" aria-controls="admin-unlock-password" :disabled="busy" @mousedown.prevent @click="showPassword = !showPassword">
                                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"/><circle cx="12" cy="12" r="2.5"/><path v-if="showPassword" d="m4 4 16 16"/></svg>
                             </button>
@@ -208,7 +209,7 @@ onUnmounted(() => {
                         <template v-if="setup">
                             <label for="admin-unlock-confirm">确认后台密码</label>
                             <div class="unlock-password-field">
-                                <input id="admin-unlock-confirm" v-model="confirmation" :type="showConfirmation ? 'text' : 'password'" autocomplete="new-password" minlength="8" maxlength="128" required :disabled="busy" placeholder="请再次输入后台密码" />
+                                <input id="admin-unlock-confirm" v-model="confirmation" :type="showConfirmation ? 'text' : 'password'" autocomplete="new-password" :minlength="MIN_PASSWORD_LENGTH" :maxlength="MAX_PASSWORD_LENGTH" required :disabled="busy" placeholder="请再次输入后台密码" />
                                 <button type="button" class="unlock-password-toggle" :aria-label="showConfirmation ? '隐藏确认密码' : '显示确认密码'" :aria-pressed="showConfirmation" aria-controls="admin-unlock-confirm" :disabled="busy" @mousedown.prevent @click="showConfirmation = !showConfirmation">
                                     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"/><circle cx="12" cy="12" r="2.5"/><path v-if="showConfirmation" d="m4 4 16 16"/></svg>
                                 </button>

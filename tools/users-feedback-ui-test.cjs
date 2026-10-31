@@ -100,7 +100,7 @@ let server, browser, page;
     await page.route('**/api/admin-auth/users', async route => {
         if (rejectCreate && route.request().method() === 'POST') {
             const body = route.request().postDataJSON();
-            const response = await route.fetch({ postData: JSON.stringify({ ...body, username: '无效用户名' }) });
+            const response = await route.fetch({ postData: JSON.stringify({ ...body, username: '无效 用户名' }) });
             assert.equal(response.status(), 400);
             backendValidation = (await response.json()).error;
             await route.fulfill({ response });

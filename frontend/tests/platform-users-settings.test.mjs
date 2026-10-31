@@ -14,6 +14,7 @@ assert.deepEqual(compileTemplate({ source: descriptor.template.content, filename
 let compiled = compileScript(descriptor, { id: 'users' }).content
 compiled = compiled.replace(/import\s*\{([^}]+)\}\s*from\s*['"]\.\.\/\.\.\/\.\.\/runtime\/adminSession\.js['"]/, 'const {$1} = globalThis.__platformUsersFixtureApi')
 compiled = compiled.replace("from 'vue'", `from ${JSON.stringify(import.meta.resolve('vue'))}`)
+compiled = compiled.replace("from '../../../../../shared/accountPolicy.mjs'", `from ${JSON.stringify(new URL('../../shared/accountPolicy.mjs', import.meta.url).href)}`)
 compiled = compiled.replace("from '../../../../../shared/pagePermissions.mjs'", `from ${JSON.stringify(new URL('../../shared/pagePermissions.mjs', import.meta.url).href)}`)
 let fixtureId = 0
 async function fixture(t, api) {
@@ -57,7 +58,7 @@ test('creation errors pop up without closing or resetting the draft; retry repla
   let reject = true, creates = 0
   const state = await fixture(t, { listPlatformUsers: async () => [], createPlatformUser: async () => {
     creates++
-    if (reject) throw new Error('账号需为 3–32 位字母、数字或下划线，且名称和角色必须有效')
+    if (reject) throw new Error('账号需为 2–32 位中文、字母、数字、下划线或短横线，以中文或字母开头；名称和角色须有效')
   } })
   state.openCreate()
   Object.assign(state.editor, { username: 'fixture', displayName: '尚未保存', password: 'FixturePassword-2026!' })

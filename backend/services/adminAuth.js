@@ -12,6 +12,7 @@ const ASSIGNABLE_USER_ROLES = new Set(['customer', 'viewer']);
 const DELEGABLE_PERMISSIONS = ['view', 'launch', 'cast', 'backup'];
 const { normalizePagePermissions, canAccessAdmin, allowsRequirement } = require('../../shared/pagePermissions.cjs');
 const { getAdminPageCatalog } = require('../../shared/adminPages.mjs');
+const { isValidUsername, normalizeUsername, isValidPassword, MIN_PASSWORD_LENGTH, MAX_PASSWORD_LENGTH } = require('../../shared/accountPolicy.mjs');
 
 function userPagePermissions(value) {
     try { return normalizePagePermissions(value); }
@@ -65,8 +66,8 @@ function equalSecret(left, right) {
 }
 
 function validatePassword(password) {
-    if (typeof password !== 'string' || password.length < 8 || password.length > 128 || !password.trim()) {
-        throw authError(400, 'ADMIN_PASSWORD_FORMAT', '后台密码需为 8–128 个字符，不能全为空格');
+    if (!isValidPassword(password)) {
+        throw authError(400, 'ADMIN_PASSWORD_FORMAT', `密码需为 ${MIN_PASSWORD_LENGTH}–${MAX_PASSWORD_LENGTH} 个字符，不能全为空格`);
     }
 }
 
@@ -98,7 +99,7 @@ function createAdminAuth(options = {}) {
                 || !/^[a-f0-9]{128}$/.test(stored.password?.hash || '')) throw new Error('Invalid credential');
             validateIdleMinutes(stored.idleTimeoutMinutes);
             if (stored.users !== undefined && (!Array.isArray(stored.users) || stored.users.length > 64
-                || stored.users.some(user => !/^[a-zA-Z][a-zA-Z0-9_-]{2,31}$/.test(user.username || '')
+                || stored.users.some(user => !isValidUsername(user.username)
                     || !USER_ROLES.has(user.role) || !/^[a-f0-9]{32}$/.test(user.password?.salt || '')
                     || !/^[a-f0-9]{128}$/.test(user.password?.hash || '')
                     || !storedUserPermissionsAreValid(user.permissions)
@@ -342,9 +343,9 @@ function createAdminAuth(options = {}) {
             return passwordOperation(key, async () => {
                 if (!config.password) throw authError(409, 'ADMIN_SETUP_REQUIRED', '请先由工程师设置后台密码');
                 const generation = sessionGeneration;
-                const normalizedName = String(username || 'admin').trim().toLowerCase();
+                const normalizedName = normalizeUsername(username || 'admin');
                 const user = normalizedName === 'admin' ? null
-                    : config.users.find(item => item.username.toLowerCase() === normalizedName && item.enabled !== false);
+                    : config.users.find(item => normalizeUsername(item.username) === normalizedName && item.enabled !== false);
                 await verifyPassword(password, key, normalizedName === 'admin' ? config.password : user?.password || config.password);
                 if (normalizedName !== 'admin' && !user) throw authError(401, 'ADMIN_PASSWORD_INVALID', '账号或密码不正确');
                 if (generation !== sessionGeneration) {
@@ -421,21 +422,21 @@ function createAdminAuth(options = {}) {
         },
         async createUser(token, csrfToken, input) {
             requireSession(token, csrfToken, { permission: 'owner' });
-            const username = String(input?.username || '').trim().toLowerCase();
+            const username = normalizeUsername(input?.username);
             const displayName = String(input?.displayName || username).trim();
             const role = String(input?.role || 'customer');
-            if (!/^[a-z][a-z0-9_-]{2,31}$/.test(username) || username === 'admin' || !displayName || displayName.length > 60 || !ASSIGNABLE_USER_ROLES.has(role)) {
-                throw authError(400, 'ADMIN_USER_FORMAT', '账号需为 3–32 位字母、数字或下划线，且名称和角色必须有效');
+            if (!isValidUsername(username) || username === 'admin' || !displayName || displayName.length > 60 || !ASSIGNABLE_USER_ROLES.has(role)) {
+                throw authError(400, 'ADMIN_USER_FORMAT', '账号需为 2–32 位中文、字母、数字、下划线或短横线，以中文或字母开头；名称和角色须有效');
             }
             validatePassword(input?.password);
             const permissions = normalizeUserPermissions(role, input?.permissions);
             const pagePermissions = userPagePermissions(input?.pagePermissions);
-            if (config.users.length >= 64 || config.users.some(user => user.username.toLowerCase() === username)) {
+            if (config.users.length >= 64 || config.users.some(user => normalizeUsername(user.username) === username)) {
                 throw authError(409, 'ADMIN_USER_EXISTS', '账号已存在或达到 64 个账户上限');
             }
             const credential = await hashPassword(input.password);
             requireSession(token, csrfToken, { permission: 'owner' });
-            if (config.users.some(user => user.username.toLowerCase() === username)) throw authError(409, 'ADMIN_USER_EXISTS', '账号已存在');
+            if (config.users.some(user => normalizeUsername(user.username) === username)) throw authError(409, 'ADMIN_USER_EXISTS', '账号已存在');
             const user = { id: crypto.randomBytes(12).toString('hex'), username, displayName, role, permissions, pagePermissions, enabled: true, password: credential };
             saveConfig({ ...config, users: [...config.users, user] });
             const { password: _password, ...publicUser } = user;

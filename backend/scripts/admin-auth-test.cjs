@@ -14,6 +14,57 @@ const password = crypto.randomBytes(24).toString('base64url');
 const replacementPassword = crypto.randomBytes(24).toString('base64url');
 const checks = [];
 
+async function chineseAccountChecks() {
+    const dataDir = path.join(runDirectory, 'chinese-account-data');
+    const service = createAdminAuth({ dataDir });
+    const six = crypto.randomBytes(3).toString('hex');
+    const changedSix = `${six.slice(0, 5)}${six[5] === 'a' ? 'b' : 'a'}`;
+    const owner = await service.setup(six, 'six-setup');
+    const create = input => service.createUser(owner.token, owner.status.csrfToken,
+        { username: '普通用户1', role: 'customer', password: six, ...input });
+    for (const username of ['张', '无效 用户', '车'.repeat(33), '1用户', '用户<script>', 'ADMIN']) {
+        await assert.rejects(create({ username }), { code: 'ADMIN_USER_FORMAT' });
+    }
+    for (const password of ['12345', '      ', 'x'.repeat(129)]) {
+        await assert.rejects(create({ password }), { code: 'ADMIN_PASSWORD_FORMAT' });
+    }
+    const user = await create({ username: ' 普通用户1 ' });
+    assert.equal(user.username, '普通用户1');
+    await create({ username: '张三' });
+    await create({ username: '车'.repeat(32) });
+    await create({ username: 'Workshop_A' });
+    await create({ username: '值班员_A-1' });
+    await assert.rejects(create({ username: ' 普通用户1 ' }), { code: 'ADMIN_USER_EXISTS' });
+    await assert.rejects(create({ username: 'workshop_A' }), { code: 'ADMIN_USER_EXISTS' });
+    await assert.rejects(create({ username: '值班员_a-1' }), { code: 'ADMIN_USER_EXISTS' });
+    const login = await service.login(six, 'chinese-login', '', '普通用户1');
+    assert.equal(login.status.user.id, user.id);
+    assert.equal(login.status.user.role, 'customer');
+    assert.equal(login.status.permissions.manageUsers, false);
+    assert.throws(() => service.listUsers(login.token, login.status.csrfToken), { code: 'ADMIN_PERMISSION_DENIED' });
+    assert.equal((await service.login(six, 'ascii-login', '', 'WORKSHOP_A')).status.user.username, 'workshop_a');
+    assert.equal((await service.login(six, 'mixed-login', '', '值班员_A-1')).status.user.username, '值班员_a-1');
+    await assert.rejects(service.login('12345', 'short-login', '', '普通用户1'), { code: 'ADMIN_PASSWORD_FORMAT' });
+    await assert.rejects(service.changePassword(login.token, login.status.csrfToken, six, '12345', 'short-change'), { code: 'ADMIN_PASSWORD_FORMAT' });
+    const changed = await service.changePassword(login.token, login.status.csrfToken, six, changedSix, 'six-change');
+    assert.equal(changed.status.user.username, '普通用户1');
+    assert.equal(service.status(login.token).authenticated, false);
+    await assert.rejects(service.login(six, 'old-six', '', '普通用户1'), { code: 'ADMIN_PASSWORD_INVALID' });
+    await assert.rejects(service.updateUser(owner.token, owner.status.csrfToken, user.id,
+        { enabled: true, password: '12345' }), { code: 'ADMIN_PASSWORD_FORMAT' });
+    // Re-read the credential file, not just in-memory accounts. Chinese names
+    // must never make the next service start reject its security configuration.
+    const reloaded = createAdminAuth({ dataDir });
+    assert.equal((await reloaded.login(changedSix, 'reloaded-chinese', '', '普通用户1')).status.user.id, user.id);
+    const reloadedOwner = await reloaded.login(six, 'reloaded-owner');
+    await reloaded.updateUser(reloadedOwner.token, reloadedOwner.status.csrfToken, user.id, { enabled: true, password: six });
+    assert.equal((await reloaded.login(six, 'reset-six', '', '普通用户1')).status.authenticated, true);
+    await assert.rejects(reloaded.login(changedSix, 'pre-reset-six', '', '普通用户1'), { code: 'ADMIN_PASSWORD_INVALID' });
+    const saved = fs.readFileSync(path.join(dataDir, 'admin-security.json'), 'utf8');
+    assert.equal(saved.includes(`"password": "${six}"`), false);
+    checks.push('Chinese, mixed and legacy ASCII accounts: six-character setup/create/login/change/reset, duplicate checks and credential reload');
+}
+
 async function serviceChecks() {
     let time = 100000;
     const dataDir = path.join(runDirectory, 'service-data');
@@ -347,6 +398,7 @@ async function httpChecks() {
 }
 
 (async () => {
+    await chineseAccountChecks();
     await serviceChecks();
     await httpChecks();
     const result = { success: true, checks, artifacts: runDirectory };
