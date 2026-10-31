@@ -1,0 +1,122 @@
+// Real UI/HTTP verification against an owned output/ fixture, never the live site.
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const Database = require('../backend/node_modules/better-sqlite3');
+const playwright = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
+const { createRunDirectory, requireTestPath, startLoggedProcess, waitUntil } = require('../backend/scripts/integration-test-utils.cjs');
+const { stopOwnedSmokeProcess } = require('../desktop/scripts/smoke-sandbox.cjs');
+const root = path.resolve(__dirname, '..');
+let server, browser, page;
+const directory = createRunDirectory('points-tabs-ui'), checks = [], errors = [];
+const check = name => { checks.push(name); console.log('PASS ' + name); };
+(async () => {
+    const infoFile = path.join(directory, 'server.json');
+    server = startLoggedProcess(process.execPath, [path.join(__dirname, 'manual-disassembly-ui-server.cjs')], {
+        cwd: root, env: { ...process.env, MANUAL_LAYOUT_UI_INFO_FILE: infoFile }, logFile: path.join(directory, 'server.log') });
+    await waitUntil(() => { assert.equal(server.exitCode, null); return fs.existsSync(infoFile); }, 60000, 'isolated UI server');
+    const info = JSON.parse(fs.readFileSync(infoFile)); requireTestPath(info.database);
+    assert.match(info.origin, /^http:\/\/127\.0\.0\.1:\d+$/);
+    const deviceId = info.devices[0], db = new Database(info.database);
+    db.prepare('DELETE FROM data_points WHERE device_id=?').run(deviceId);
+    db.prepare("UPDATE devices SET plc_protocol='S7',plc_enabled=0 WHERE id=?").run(deviceId);
+    const insert = db.prepare(`INSERT INTO data_points (device_id,name,label,plc_tag,data_type,sample_interval_ms,access_type,point_kind,alarm_text)
+        VALUES (?,?,?,?,?,1000,'READ',?,?)`);
+    for (let i = 1; i <= 28; i++) insert.run(deviceId, `qa_normal_${i}`, `验收点位 ${i}`, `DB10.DBW${i * 2}`, 'WORD', 'normal', '');
+    for (let i = 1; i <= 2; i++) insert.run(deviceId, `bj${i}`, `bj${i}`, `DB10.DBX0.${i - 1}`, 'BOOL', 'alarm', `原报警 ${i}`);
+    db.close();
+    browser = await playwright.chromium.launch({ headless: true,
+        ...(process.env.BROWSER_EXECUTABLE ? { executablePath: process.env.BROWSER_EXECUTABLE } : {}), args: ['--enable-unsafe-swiftshader'] });
+    const makePage = async () => {
+        const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
+        await context.addInitScript(({ deviceId }) => {
+            if (!localStorage.getItem('digital_twin_admin_ui_state_v1')) localStorage.setItem('digital_twin_admin_ui_state_v1', JSON.stringify({
+                activeTab: 'points', selectedDeviceForPoints: deviceId, pointsSubpage: 'mapping'
+            }));
+        }, { deviceId });
+        const target = await context.newPage(); target.setDefaultTimeout(30000); target.on('pageerror', error => errors.push(error.message));
+        return target;
+    };
+    const login = async (target, username) => {
+        await target.goto(info.origin + '/admin');
+        await target.getByRole('textbox', { name: '账号', exact: true }).fill(username);
+        await target.getByLabel('后台密码', { exact: true }).fill(info.password);
+        await target.getByRole('button', { name: '解锁后台', exact: true }).click();
+        await target.getByTestId('points-workspace').waitFor();
+        await target.locator('.points-pagination-bar').first().getByText('30', { exact: true }).waitFor();
+    };
+    page = await makePage(); await login(page, info.username);
+    const workspace = page.getByTestId('points-workspace'), add = page.getByTestId('add-data-point');
+    const mapping = page.getByRole('tab', { name: 'PLC 点位映射', exact: true }), alarms = page.getByRole('tab', { name: '报警配置', exact: true });
+    const filter = page.getByLabel('筛选点位设备', { exact: true });
+    let reads = 0; page.on('request', request => { if (request.method() === 'GET' && new URL(request.url()).pathname === '/api/datapoints') reads++; });
+    const addBox = await add.boundingBox(), tableBox = await page.locator('.points-table').boundingBox(), filterBox = await filter.boundingBox();
+    assert.ok(addBox && tableBox && filterBox && addBox.y < tableBox.y && Math.abs(addBox.y - filterBox.y) < 16);
+    assert.equal(await add.count(), 1); assert.ok(!await add.isDisabled());
+    assert.equal(await page.getByRole('tablist', { name: '点位配置' }).getByRole('tab').count(), 2);
+    assert.equal(await mapping.getAttribute('aria-selected'), 'true');
+    await workspace.screenshot({ path: path.join(directory, '01-mapping.png') });
+    check('add-point action is above the table beside the device filter; mapping and alarms are peer tabs');
+    await add.click(); await page.locator('.points-pagination-bar').first().getByText('31', { exact: true }).waitFor();
+    const lastRow = page.locator('.points-table tbody tr').last();
+    await lastRow.locator('.point-name-input').fill('新增验收点位'); await lastRow.locator('.plc-address-input').fill('DB10.DBW100');
+    await page.getByRole('button', { name: '显示换算字段', exact: true }).click();
+    const readsBeforeTabs = reads;
+    await alarms.click();
+    assert.equal(await alarms.getAttribute('aria-selected'), 'true');
+    assert.ok(await page.getByRole('tabpanel', { name: '报警配置', exact: true }).isVisible());
+    assert.ok(!await page.locator('#points-panel-mapping').isVisible());
+    const text = '1 => "验收报警一"\n2 => "验收报警二"';
+    await page.locator('.alarm-textarea').fill(text);
+    await page.getByText('bj1：验收报警一', { exact: true }).waitFor();
+    await page.getByRole('button', { name: '匹配到报警点位', exact: true }).click();
+    await page.getByRole('heading', { name: '报警文本已导入', exact: true }).waitFor();
+    await page.getByRole('button', { name: '确定', exact: true }).click();
+    await mapping.click();
+    assert.equal(await filter.inputValue(), deviceId);
+    assert.equal(await page.locator('.points-table tbody tr').last().locator('.point-name-input').inputValue(), '新增验收点位');
+    assert.ok(await page.getByRole('button', { name: '收起换算字段', exact: true }).isVisible());
+    assert.equal(reads, readsBeforeTabs, 'switching tabs must not reload or discard the shared draft');
+    await alarms.click(); assert.equal(await page.locator('.alarm-textarea').inputValue(), text);
+    await workspace.screenshot({ path: path.join(directory, '02-alarms.png') });
+    check('normal-point and imported-alarm drafts, device selection, page and display state survive tab switching without extra reads');
+    await page.getByTestId('points-savebar').getByRole('button', { name: '保存当前设备配置', exact: true }).click();
+    await page.getByRole('heading', { name: '点位配置已保存', exact: true }).waitFor();
+    await page.getByRole('button', { name: '确定', exact: true }).click();
+    const points = await (await page.request.get(info.origin + `/api/datapoints?device_id=${encodeURIComponent(deviceId)}`)).json();
+    assert.equal(points.length, 31); assert.ok(points.some(p => p.label === '新增验收点位' && p.plc_tag === 'DB10.DBW100'));
+    assert.equal(points.find(p => p.name === 'bj1').alarm_text, '验收报警一');
+    assert.equal(points.find(p => p.name === 'bj2').alarm_text, '验收报警二');
+    await mapping.focus(); await page.keyboard.press('End'); assert.equal(await alarms.getAttribute('aria-selected'), 'true');
+    await page.keyboard.press('ArrowRight'); assert.equal(await mapping.getAttribute('aria-selected'), 'true');
+    await page.keyboard.press('ArrowLeft'); assert.equal(await alarms.getAttribute('aria-selected'), 'true');
+    await page.reload(); await workspace.waitFor();
+    assert.equal(await alarms.getAttribute('aria-selected'), 'true'); assert.equal(await filter.inputValue(), deviceId);
+    check('shared save persists normal points and alarm texts; keyboard navigation and selected-tab persistence work');
+    await mapping.click(); await page.setViewportSize({ width: 1000, height: 760 });
+    assert.ok(await add.isVisible()); assert.ok((await add.boundingBox()).y < (await page.locator('.points-table').boundingBox()).y);
+    await page.screenshot({ path: path.join(directory, '03-compact.png'), fullPage: true });
+    check('compact desktop keeps add-point above the table');
+    const session = await (await page.request.get(info.origin + '/api/admin-auth/session')).json();
+    const created = await page.request.post(info.origin + '/api/admin-auth/users', { headers: {
+        Origin: info.origin, 'X-Admin-Request': '1', 'X-CSRF-Token': session.csrfToken
+    }, data: { username: 'points_reader', password: info.password, role: 'viewer', permissions: { view: false }, pagePermissions: { points: { view: true } } } });
+    assert.equal(created.status(), 201, await created.text());
+    const reader = await makePage(); await reader.goto(info.origin + '/admin');
+    await reader.getByRole('textbox', { name: '账号', exact: true }).fill('points_reader');
+    await reader.getByLabel('后台密码', { exact: true }).fill(info.password);
+    await reader.getByRole('button', { name: '解锁后台', exact: true }).click(); await reader.getByTestId('points-workspace').waitFor();
+    assert.ok(await reader.getByTestId('add-data-point').isDisabled());
+    await reader.getByRole('tab', { name: '报警配置', exact: true }).click();
+    assert.ok(await reader.locator('.alarm-textarea').isDisabled());
+    assert.ok(await reader.getByRole('button', { name: '匹配到报警点位', exact: true }).isDisabled());
+    assert.equal(await reader.locator('.page-readonly-notice').count(), 0);
+    check('read-only users can switch both tabs but cannot add, import or save edits');
+    assert.deepEqual(errors, []);
+    const result = { success: true, checks, browserErrors: errors, directory };
+    fs.writeFileSync(path.join(directory, 'result.json'), JSON.stringify(result, null, 2)); console.log(JSON.stringify(result, null, 2));
+})().catch(async error => {
+    await page?.screenshot({ path: path.join(directory, 'failure.png'), fullPage: true }).catch(() => {});
+    fs.writeFileSync(path.join(directory, 'failure.json'), JSON.stringify({ error: error.stack, checks, errors }, null, 2));
+    console.error(error); process.exitCode = 1;
+}).finally(async () => { await browser?.close(); await stopOwnedSmokeProcess(server); });

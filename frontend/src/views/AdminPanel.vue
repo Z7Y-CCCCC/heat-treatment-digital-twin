@@ -101,6 +101,10 @@ const PLATFORM_SUBPAGES = [
     { key: 'scene', label: '项目与场景', description: '项目归属与场景基础信息' },
     { key: 'environment', label: '场景与光效', description: 'Unity 灯光、后处理、围墙与空间' }
 ]
+const POINTS_SUBPAGES = [
+    { key: 'mapping', label: 'PLC 点位映射' },
+    { key: 'alarms', label: '报警配置' }
+]
 const SETTINGS_SUBPAGES = [
     { key: 'security', label: '后台安全', description: '后台密码、无操作自动锁定与立即锁定' },
     { key: 'runtime', label: '运行与投屏', description: '自启动、电视投屏与本地运行服务' },
@@ -140,7 +144,20 @@ const isFactoryMenuOpen = ref(true)
 const isDataMenuOpen = ref(true)
 const isModelsMenuOpen = ref(true)
 const isExternalDataSourcesOpen = ref(!!storedAdminUiState.isExternalDataSourcesOpen)
-const isAlarmConfigOpen = ref(!!storedAdminUiState.isAlarmConfigOpen)
+const pointsSubpage = ref(restoreSubpage(storedAdminUiState.pointsSubpage, POINTS_SUBPAGES, 'mapping'))
+
+function selectPointsSubpage(key) {
+    if (POINTS_SUBPAGES.some(page => page.key === key)) pointsSubpage.value = key
+}
+async function pointsTabKeydown(event) {
+    const index = POINTS_SUBPAGES.findIndex(page => page.key === pointsSubpage.value)
+    const next = { ArrowRight: (index + 1) % POINTS_SUBPAGES.length,
+        ArrowLeft: (index + POINTS_SUBPAGES.length - 1) % POINTS_SUBPAGES.length,
+        Home: 0, End: POINTS_SUBPAGES.length - 1 }[event.key]
+    if (next === undefined) return
+    event.preventDefault(); selectPointsSubpage(POINTS_SUBPAGES[next].key)
+    await nextTick(); document.getElementById(`points-tab-${pointsSubpage.value}`)?.focus()
+}
 
 async function selectPlatformSubpage(key) {
     if (!canAdminPage(`platform.${key}`)) return
@@ -4948,7 +4965,7 @@ watch([
     isLinePlannerEditorCollapsed,
     isLineDevicePoolCollapsed,
     isExternalDataSourcesOpen,
-    isAlarmConfigOpen,
+    pointsSubpage,
     () => lineDevicePoolDock.x,
     () => lineDevicePoolDock.y
 ], () => {
@@ -4973,7 +4990,7 @@ watch([
         isLinePlannerEditorCollapsed: isLinePlannerEditorCollapsed.value,
         isLineDevicePoolCollapsed: isLineDevicePoolCollapsed.value,
         isExternalDataSourcesOpen: isExternalDataSourcesOpen.value,
-        isAlarmConfigOpen: isAlarmConfigOpen.value,
+        pointsSubpage: pointsSubpage.value,
         lineDevicePoolDockX: lineDevicePoolDock.x,
         lineDevicePoolDockY: lineDevicePoolDock.y
     }))
@@ -8956,19 +8973,25 @@ async function openAdminSetupStep(step) {
                 </div>
 
                 <!-- ======== 点位映射 ======== -->
-                <div v-if="activeTab === 'points'" class="tab-content">
-                    <h2>PLC 点位映射</h2>
-                    <p class="desc">为每台设备配置 PLC 点位名称、地址和采集周期。用户只需要维护现场点位，系统会自动生成大屏和模型绑定需要的内部标识。</p>
+                <div v-if="activeTab === 'points'" class="tab-content" data-testid="points-workspace">
+                    <nav class="points-subpage-tabs" role="tablist" aria-label="点位配置">
+                        <button v-for="page in POINTS_SUBPAGES" :key="page.key" :id="`points-tab-${page.key}`"
+                            type="button" role="tab" :aria-selected="pointsSubpage === page.key" :aria-controls="`points-panel-${page.key}`"
+                            :tabindex="pointsSubpage === page.key ? 0 : -1" :class="{ active: pointsSubpage === page.key }"
+                            @click="selectPointsSubpage(page.key)" @keydown="pointsTabKeydown">{{ page.label }}</button>
+                    </nav>
+                    <p class="desc">{{ pointsSubpage === 'mapping' ? '配置点位名称、PLC 地址和采集周期。' : '配置报警点位与报警文本。' }}</p>
 
-                    <div class="form-row" style="margin-bottom:20px; align-items: flex-end;">
+                    <div class="form-row points-filter-toolbar">
                         <div>
                             <label style="font-size:12px; color:#86868b; display:block; margin-bottom:5px;">筛选设备</label>
-                            <select v-model="selectedDeviceForPoints" @change="loadDataPoints" :disabled="pointsSaving" class="input" style="width:250px">
+                            <select v-model="selectedDeviceForPoints" aria-label="筛选点位设备" @change="loadDataPoints" :disabled="pointsSaving" class="input" style="width:250px">
                                 <option value="all">全部设备</option>
                                 <option v-for="d in devices" :key="d.id" :value="d.id">{{ deviceHierarchyLabel(d) }}</option>
                             </select>
                         </div>
-                        <div v-if="selectedDeviceForPoints" style="display:flex; gap:10px; margin-left: 20px;">
+                        <div v-if="selectedDeviceForPoints && pointsSubpage === 'mapping'" class="points-filter-actions">
+                            <button @click="addDataPoint('normal')" class="btn" data-testid="add-data-point" :disabled="pointsLoading || pointsSaving || !devices.length" v-permission="{ page: controlPermissionPage, action: 'edit' }">+ 添加点位</button>
                             <button @click="alert('点表导入会做成模板校验后批量导入，当前请先手动配置关键点位。', { title: '点表导入', type: 'info' })" class="btn">导入点表</button>
                             <div v-if="!isAllPointsMode" style="position: relative; display: inline-block;">
                                 <select @change="copyPointsFrom($event.target.value); $event.target.value=''" :disabled="pointsLoading || pointsSaving" class="input" style="width: 180px;">
@@ -8981,6 +9004,7 @@ async function openAdminSetupStep(step) {
                     </div>
 
                     <div v-if="selectedDeviceForPoints">
+                        <section id="points-panel-mapping" role="tabpanel" aria-labelledby="points-tab-mapping" v-show="pointsSubpage === 'mapping'">
                         <div class="point-toolbar">
                             <button @click="showPointAdvancedFields = !showPointAdvancedFields" class="btn btn-sm">
                                 {{ showPointAdvancedFields ? '收起换算字段' : '显示换算字段' }}
@@ -9106,6 +9130,49 @@ async function openAdminSetupStep(step) {
                             </div>
                         </div>
 
+                        </section>
+
+                        <section id="points-panel-alarms" role="tabpanel" aria-labelledby="points-tab-alarms" v-show="pointsSubpage === 'alarms'" class="alarm-config-card">
+                            <header class="alarm-config-header">
+                                <div>
+                                    <h3>报警点位与报警文本</h3>
+                                    <p>支持 bj1、bj2…编号，可按编号匹配或导入报警文本。</p>
+                                </div>
+                                <span class="alarm-config-header-actions">
+                                    <span class="alarm-config-count">{{ alarmTextImportSummary }}</span>
+                                </span>
+                            </header>
+                                <div class="collapsible-section-body">
+                                    <div class="alarm-record-status">
+                                        <div v-for="item in alarmRecordPointStatus.slice(0, 3)" :key="item.role" :class="{ configured: item.configured }">
+                                            <span>{{ item.label }}</span>
+                                            <strong>{{ item.configured ? '已配置' : '未配置' }}</strong>
+                                        </div>
+                                    </div>
+
+                                    <div class="alarm-import-layout">
+                                        <textarea v-model="alarmTextImportRaw" class="input alarm-textarea" placeholder="例如：
+1 => &quot;循环风扇冷却水流量低故障&quot;,
+2 => &quot;油搅拌1不运行&quot;,
+3 => &quot;内推链电机空开跌落&quot;,"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/>
+                                        <div class="alarm-import-side">
+                                            <button @click="fillAlarmTextTemplate" class="btn" :disabled="isAllPointsMode">生成当前报警模板</button>
+                                            <button @click="triggerAlarmTextFileSelect" class="btn" :disabled="isAllPointsMode">导入文本文件</button>
+                                            <button @click="applyAlarmTextImport" class="btn btn-primary" :disabled="isAllPointsMode" v-permission="{ page: controlPermissionPage, action: 'edit' }">匹配到报警点位</button>
+                                            <input ref="alarmTextFileInput" type="file" accept=".txt,.csv" style="display:none" @change="handleAlarmTextFileChange" />
+                                            <div class="alarm-preview">
+                                                <strong>解析预览</strong>
+                                                <div v-if="parsedAlarmTextEntries.length === 0" class="muted-cell">暂无可解析文本</div>
+                                                <div v-for="entry in parsedAlarmTextEntries.slice(0, 8)" :key="entry.number">
+                                                    bj{{ entry.number }}：{{ entry.text }}
+                                                </div>
+                                                <div v-if="parsedAlarmTextEntries.length > 8" class="muted-cell">还有 {{ parsedAlarmTextEntries.length - 8 }} 条...</div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                        </section>
+
                         <Transition name="modal-fade">
                             <div v-if="selectedVoicePoint" class="modal-overlay" @click.self="closeVoiceConfig">
                                 <div class="modal-box voice-config-modal">
@@ -9207,65 +9274,14 @@ async function openAdminSetupStep(step) {
                             </div>
                         </Transition>
 
-                        <div style="margin-top:15px;display:flex; justify-content: space-between; align-items: center;">
-                            <div style="display:flex; gap:10px; flex-wrap:wrap;">
-                                <button @click="addDataPoint('normal')" class="btn" v-permission="{ page: controlPermissionPage, action: 'edit' }">+ 添加点位</button>
-                            </div>
+                        <div class="points-savebar" data-testid="points-savebar">
                             <div style="display:flex; align-items: center; gap: 15px;">
                                 <span v-if="isPointsDirty" style="color: #ff9500; font-size: 13px;">存在未保存的修改</span>
                                 <button @click="saveAllPoints" class="btn btn-primary" :disabled="pointsLoading || pointsSaving || (!isPointsDirty && dataPoints.length > 0)" v-permission="{ page: controlPermissionPage, action: 'edit' }">{{ pointsLoading ? '正在读取点位…' : pointsSaving ? '正在保存…' : isAllPointsMode ? '保存全部设备配置' : '保存当前设备配置' }}</button>
                             </div>
                         </div>
 
-                        <section class="alarm-config-card" :class="{ open: isAlarmConfigOpen }">
-                            <button
-                                type="button"
-                                class="alarm-config-header"
-                                :aria-expanded="isAlarmConfigOpen"
-                                @click="isAlarmConfigOpen = !isAlarmConfigOpen"
-                            >
-                                <div>
-                                    <h3>报警点位与报警文本</h3>
-                                    <p>按排产软件习惯，报警触发点位建议命名为 bj1、bj2、bj3...，报警说明可粘贴 <code>1 =&gt; "报警内容"</code> 格式，也可以一行一条按顺序导入。</p>
-                                </div>
-                                <span class="alarm-config-header-actions">
-                                    <span class="alarm-config-count">{{ alarmTextImportSummary }}</span>
-                                    <svg class="collapse-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m7 10 5 5 5-5" /></svg>
-                                </span>
-                            </button>
 
-                            <Transition name="section-collapse">
-                                <div v-show="isAlarmConfigOpen" class="collapsible-section-body">
-                                    <div class="alarm-record-status">
-                                        <div v-for="item in alarmRecordPointStatus.slice(0, 3)" :key="item.role" :class="{ configured: item.configured }">
-                                            <span>{{ item.label }}</span>
-                                            <strong>{{ item.configured ? '已配置' : '未配置' }}</strong>
-                                        </div>
-                                    </div>
-
-                                    <div class="alarm-import-layout">
-                                        <textarea v-model="alarmTextImportRaw" class="input alarm-textarea" placeholder="例如：
-1 => &quot;循环风扇冷却水流量低故障&quot;,
-2 => &quot;油搅拌1不运行&quot;,
-3 => &quot;内推链电机空开跌落&quot;,"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/>
-                                        <div class="alarm-import-side">
-                                            <button @click="fillAlarmTextTemplate" class="btn" :disabled="isAllPointsMode">生成当前报警模板</button>
-                                            <button @click="triggerAlarmTextFileSelect" class="btn" :disabled="isAllPointsMode">导入文本文件</button>
-                                            <button @click="applyAlarmTextImport" class="btn btn-primary" :disabled="isAllPointsMode" v-permission="{ page: controlPermissionPage, action: 'edit' }">匹配到报警点位</button>
-                                            <input ref="alarmTextFileInput" type="file" accept=".txt,.csv" style="display:none" @change="handleAlarmTextFileChange" />
-                                            <div class="alarm-preview">
-                                                <strong>解析预览</strong>
-                                                <div v-if="parsedAlarmTextEntries.length === 0" class="muted-cell">暂无可解析文本</div>
-                                                <div v-for="entry in parsedAlarmTextEntries.slice(0, 8)" :key="entry.number">
-                                                    bj{{ entry.number }}：{{ entry.text }}
-                                                </div>
-                                                <div v-if="parsedAlarmTextEntries.length > 8" class="muted-cell">还有 {{ parsedAlarmTextEntries.length - 8 }} 条...</div>
-                                            </div>
-                                        </div>
-                                    </div>
-                                </div>
-                            </Transition>
-                        </section>
                     </div>
                 </div>
 
@@ -12704,8 +12720,15 @@ button:enabled:active {
 .voice-rule-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
 .voice-modal-actions { justify-content: space-between; }
 .muted-cell { color: #86868b; font-size: 12px; }
+.points-subpage-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; border-bottom: 1px solid #dce4ee; }
+.points-subpage-tabs button { padding: 10px 16px; border: 0; border-bottom: 3px solid transparent; background: transparent; color: #6e7d90; font: inherit; font-size: 20px; font-weight: 650; cursor: pointer; }
+.points-subpage-tabs button.active { color: #2459a2; border-bottom-color: #356bc4; background: #f1f6fe; }
+.points-subpage-tabs button:focus-visible { outline: 2px solid #356bc4; outline-offset: -2px; border-radius: 6px 6px 0 0; }
+.points-filter-toolbar { margin-bottom: 20px; align-items: flex-end; flex-wrap: wrap; gap: 12px; }
+.points-filter-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.points-savebar { display: flex; justify-content: flex-end; align-items: center; margin-top: 15px; }
 .alarm-config-card {
-    margin-top: 18px;
+    margin-top: 0;
     padding: 18px;
     background: #fff;
     border: 1px solid rgba(0, 0, 0, 0.08);
@@ -12722,9 +12745,8 @@ button:enabled:active {
     background: transparent;
     border: 0;
     text-align: left;
-    cursor: pointer;
+    margin-bottom: 14px;
 }
-.alarm-config-card.open .alarm-config-header { margin-bottom: 14px; }
 .alarm-config-header h3 { margin: 0 0 6px; font-size: 16px; color: #1d1d1f; }
 .alarm-config-header p { margin: 0; color: #6e6e73; font-size: 13px; line-height: 1.6; }
 .alarm-config-header-actions { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 9px; }
@@ -12737,7 +12759,6 @@ button:enabled:active {
     font-size: 12px;
 }
 .collapse-chevron { width: 18px; height: 18px; fill: none; stroke: #6e6e73; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; transition: transform 180ms ease; }
-.alarm-config-card.open .collapse-chevron,
 .external-data-source-manager.open .collapse-chevron { transform: rotate(180deg); }
 .section-collapse-enter-active,
 .section-collapse-leave-active { transition: opacity 170ms ease, transform 170ms ease; }
