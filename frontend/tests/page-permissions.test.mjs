@@ -98,6 +98,19 @@ test('model layout authoring is restricted to positions and does not grant gener
   assert.equal(canAdminApi('/api/models/type', 'DELETE'), false)
 })
 
+test('motion authors can save bindings without model publishing or disassembly rights', t => {
+  fixture(t, { 'model-animations': { view: true, edit: true } })
+  assert.equal(canAdminPage('model-animations'), true)
+  assert.equal(canAdminApi('/api/models', 'GET'), true)
+  assert.equal(canAdminApi('/api/models/type/bindings', 'PUT'), true)
+  for (const path of ['/api/models/type', '/api/models/type/inspection', '/api/models/type/name']) {
+    assert.equal(canAdminApi(path, 'PUT'), false)
+  }
+  assert.equal(canAdminApi('/api/models/upload', 'POST'), false)
+  adminSession.pagePermissions = normalizePagePermissions({ 'model-animations': { view: true } })
+  assert.equal(canAdminApi('/api/models/type/bindings', 'PUT'), false)
+})
+
 test('page-specific settings save submits only the current authorized group', async t => {
   fixture(t, { 'settings.data': { view: true, edit: true } })
   const { effectScope } = await import('vue')

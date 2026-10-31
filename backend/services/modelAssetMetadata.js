@@ -80,6 +80,7 @@ function normalizeBinding(binding = {}, index = 0) {
         output_min: numberOr(binding.output_min, 0),
         output_max: numberOr(binding.output_max, 90),
         speed_factor: numberOr(binding.speed_factor, 0.10472),
+        transition_duration: Math.max(0, Math.min(60, numberOr(binding.transition_duration, 0))),
         on_color: String(binding.on_color || '#00ff88'),
         off_color: String(binding.off_color || '#666666'),
         invert: !!binding.invert

@@ -457,6 +457,7 @@ namespace HeatTreatment.DigitalTwin.Backend
         [JsonProperty("output_min")] public float OutputMin { get; set; }
         [JsonProperty("output_max")] public float OutputMax { get; set; } = 90f;
         [JsonProperty("speed_factor")] public float SpeedFactor { get; set; } = 0.10472f;
+        [JsonProperty("transition_duration")] public float TransitionDuration { get; set; }
         [JsonProperty("on_color")] public string OnColor { get; set; } = "#00ff88";
         [JsonProperty("off_color")] public string OffColor { get; set; } = "#666666";
         [JsonProperty("invert")] public bool Invert { get; set; }
