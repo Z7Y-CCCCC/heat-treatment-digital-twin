@@ -63,6 +63,30 @@ let server, browser, page;
     await dialog.getByLabel('显示名称', { exact: true }).fill(displayName);
     await dialog.getByLabel('初始密码', { exact: true }).fill(info.password);
     await dialog.getByRole('checkbox', { name: '模型库 · 模型管理 · 查看', exact: true }).check();
+    const outsideSafe = async target => {
+        const box = await target.boundingBox(), heading = await target.getByRole('heading').boundingBox();
+        const y = heading.y + heading.height / 2, outsideX = box.x + box.width + 16;
+        // Reproduce down inside the dialog, select text, then release on the mask.
+        // Browsers dispatch the resulting click on their common ancestor (mask).
+        await page.mouse.move(heading.x + 2, y); await page.mouse.down();
+        await page.mouse.move(outsideX, y, { steps: 12 }); await page.mouse.up();
+        assert.equal(await page.locator('.user-editor-leave-active').count(), 0, 'selection must not start the close transition');
+        assert.ok(await target.isVisible(), 'dragging a text selection onto the backdrop must not dismiss the account editor');
+        assert.ok((await page.evaluate(() => window.getSelection()?.toString() || '')).trim(), 'text must remain selectable for copying');
+        await page.mouse.click(outsideX, y);
+        assert.equal(await page.locator('.user-editor-leave-active').count(), 0, 'empty-space clicks must not start closing');
+        assert.ok(await target.isVisible(), 'clicking empty space must not discard the account draft');
+        await page.mouse.move(outsideX, y); await page.mouse.down();
+        await page.mouse.move(heading.x + 4, y, { steps: 8 }); await page.mouse.up();
+        assert.ok(await target.isVisible(), 'dragging from the mask into the dialog must not dismiss it either');
+    };
+    await outsideSafe(dialog);
+    assert.equal(await dialog.getByLabel('登录账号', { exact: true }).inputValue(), username);
+    assert.equal(await dialog.getByLabel('显示名称', { exact: true }).inputValue(), displayName);
+    assert.equal(await dialog.getByLabel('初始密码', { exact: true }).inputValue(), info.password);
+    assert.ok(await dialog.getByRole('checkbox', { name: '模型库 · 模型管理 · 查看', exact: true }).isChecked());
+    check('text selection across the backdrop, reverse drags and empty-space clicks preserve the open create dialog and every draft field');
+
     await dialog.locator('.editor-form').evaluate(el => { el.scrollTop = el.scrollHeight; });
     assert.ok(await dialog.locator('.editor-form').evaluate(el => el.scrollTop > 0));
     const afterScroll = await chrome();
@@ -113,6 +137,9 @@ let server, browser, page;
     await accountRow.getByRole('button', { name: '管理账户', exact: true }).click();
     const edit = page.getByRole('dialog', { name: `编辑账户 · ${username}`, exact: true });
     await edit.getByLabel('显示名称', { exact: true }).fill('保留编辑草稿');
+    await outsideSafe(edit);
+    assert.equal(await edit.getByLabel('显示名称', { exact: true }).inputValue(), '保留编辑草稿');
+    check('the edit-account dialog uses the same explicit-dismiss policy and preserves unsaved changes while selecting text');
     await page.route('**/api/admin-auth/users/*', async route => {
         if (route.request().method() === 'PUT') await route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: '保存暂不可用，请重试' }) });
         else await route.continue();
@@ -136,6 +163,14 @@ let server, browser, page;
     await page.keyboard.press('Enter');
     await dialog.waitFor({ state: 'hidden' });
     check('compact windows retain the upper-right close button and keyboard activation');
+    await page.getByRole('button', { name: '＋ 新增账户', exact: true }).click();
+    await dialog.waitFor(); await dialog.getByLabel('登录账号', { exact: true }).focus();
+    await page.keyboard.press('Escape'); await dialog.waitFor({ state: 'hidden' });
+    await page.getByRole('button', { name: '＋ 新增账户', exact: true }).click();
+    await dialog.waitFor(); await dialog.getByRole('button', { name: '取消', exact: true }).click();
+    await dialog.waitFor({ state: 'hidden' });
+    check('Escape and the explicit Cancel button still close the dialog normally');
+
     assert.deepEqual(errors, []);
     const result = { success: true, checks, browserErrors: errors, directory };
     fs.writeFileSync(path.join(directory, 'result.json'), JSON.stringify(result, null, 2));

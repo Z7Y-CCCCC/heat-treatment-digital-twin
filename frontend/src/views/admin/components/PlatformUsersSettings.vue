@@ -238,7 +238,8 @@ onUnmounted(() => {
 
     <Teleport to="body">
       <Transition name="user-editor">
-        <div v-if="editorOpen" class="user-editor-backdrop" @click.self="closeEditor" @keydown.esc="closeEditor">
+        <!-- Selecting text may release the pointer over the mask; never dismiss on a backdrop click. -->
+        <div v-if="editorOpen" class="user-editor-backdrop" @keydown.esc.stop.prevent="closeEditor">
           <section class="user-editor-dialog" role="dialog" aria-modal="true" aria-labelledby="user-editor-title">
             <header><div><h4 id="user-editor-title">{{ editorTitle }}</h4><p>{{ editorMode === 'create' ? '账户创建后即可按已授权页面和功能工作。' : '切换角色模板仅重置现场功能；后台页面权限独立设置。' }}</p></div><button type="button" class="editor-close" aria-label="关闭" :disabled="busy" @click="closeEditor">×</button></header>
             <form class="editor-form" @submit.prevent="saveEditor">

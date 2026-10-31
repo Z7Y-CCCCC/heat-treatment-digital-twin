@@ -128,6 +128,15 @@ test('feedback is teleported above the editor; the close button is transparent a
   assert.match(css, /\.user-notice\{[^}]*z-index:10020/)
 })
 
+test('account editors dismiss only explicitly, never from backdrop clicks or text-selection pointer gestures', () => {
+  const backdrop = descriptor.template.content.match(/<div[^>]*class="user-editor-backdrop"[^>]*>/)?.[0]
+  assert.ok(backdrop)
+  assert.doesNotMatch(backdrop, /@(click|mouse\w*|pointer\w*|touch\w*)/)
+  assert.match(backdrop, /@keydown\.esc\.stop\.prevent="closeEditor"/)
+  assert.match(descriptor.template.content, /class="editor-close"[^>]*@click="closeEditor"/)
+  assert.match(descriptor.template.content, /class="editor-cancel"[^>]*@click="closeEditor"/)
+})
+
 test('page matrix supports read-only templates, view dependencies and saved per-user grants', async t => {
   const requests = []
   const state = await fixture(t, { listPlatformUsers: async () => [], updatePlatformUser: async (id, body) => requests.push(body) })
