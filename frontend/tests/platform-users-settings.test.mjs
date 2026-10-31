@@ -49,9 +49,83 @@ test('failed account edit keeps the editor and draft visible with the backend re
   await state.saveEditor()
   assert.equal(state.editorOpen, true)
   assert.equal(state.editor.displayName, 'Draft')
-  assert.equal(state.message, 'account disabled by policy')
-  assert.equal(state.failed, true)
+  assert.deepEqual(state.notice, { message: 'account disabled by policy', type: 'error' })
   assert.equal(state.busy, false)
+})
+
+test('creation errors pop up without closing or resetting the draft; retry replaces the stale error', async t => {
+  let reject = true, creates = 0
+  const state = await fixture(t, { listPlatformUsers: async () => [], createPlatformUser: async () => {
+    creates++
+    if (reject) throw new Error('账号需为 3–32 位字母、数字或下划线，且名称和角色必须有效')
+  } })
+  state.openCreate()
+  Object.assign(state.editor, { username: 'fixture', displayName: '尚未保存', password: 'FixturePassword-2026!' })
+  state.editor.pagePermissions.models.view = true
+  await state.saveEditor()
+  assert.equal(state.editorOpen, true)
+  assert.equal(state.editor.username, 'fixture')
+  assert.equal(state.editor.displayName, '尚未保存')
+  assert.equal(state.editor.password, 'FixturePassword-2026!')
+  assert.equal(state.editor.pagePermissions.models.view, true)
+  assert.equal(state.notice.type, 'error')
+  assert.match(state.notice.message, /账号需为/)
+  assert.equal(state.busy, false)
+  state.clearNotice()
+  assert.equal(state.notice, null)
+  assert.equal(state.editorOpen, true)
+  reject = false
+  await state.saveEditor()
+  assert.equal(creates, 2)
+  assert.deepEqual(state.notice, { message: '账户已创建', type: 'success' })
+  assert.equal(state.editorOpen, false)
+  state.openCreate()
+  assert.equal(state.notice, null, 'opening another editor must not carry stale feedback')
+})
+
+test('saving cannot be double-submitted or closed while pending', async t => {
+  const response = deferred()
+  let creates = 0
+  const state = await fixture(t, { listPlatformUsers: async () => [], createPlatformUser: async () => { creates++; await response.promise } })
+  state.openCreate()
+  const pending = state.saveEditor()
+  await state.saveEditor()
+  state.closeEditor()
+  assert.equal(creates, 1)
+  assert.equal(state.editorOpen, true)
+  response.reject(new Error('request unavailable'))
+  await pending
+  assert.equal(state.busy, false)
+  state.closeEditor()
+  assert.equal(state.editorOpen, false)
+  assert.equal(state.notice, null)
+})
+
+test('list and deletion failures use the popup rather than stale inline errors', async t => {
+  let listFails = false
+  const state = await fixture(t, { listPlatformUsers: async () => { if (listFails) throw new Error('list offline'); return [] },
+    deletePlatformUser: async () => { throw new Error('delete denied') } })
+  listFails = true
+  await state.loadUsers()
+  assert.deepEqual(state.notice, { message: 'list offline', type: 'error' })
+  state.openEdit({ id: 'u1', username: 'fixture', displayName: 'Keep me', role: 'viewer', enabled: true })
+  assert.equal(state.notice, null)
+  await state.removeEditorUser()
+  await state.removeEditorUser()
+  assert.deepEqual(state.notice, { message: 'delete denied', type: 'error' })
+  assert.equal(state.editorOpen, true)
+  assert.equal(state.editor.displayName, 'Keep me')
+})
+
+test('feedback is teleported above the editor; the close button is transparent at its upper-right corner', () => {
+  assert.doesNotMatch(descriptor.template.content, /users-message|v-if="failed"/)
+  assert.match(descriptor.template.content, /<Teleport to="body">\s*<Transition name="user-notice">/)
+  assert.match(descriptor.template.content, /:role="notice.type === 'error' \? 'alert' : 'status'"/)
+  const css = descriptor.styles.map(style => style.content).join('\n')
+  assert.match(css, /\.editor-close\{[^}]*position:absolute;top:8px;right:8px;[^}]*background:transparent/)
+  assert.match(css, /\.user-editor-dialog\{[^}]*display:flex;flex-direction:column;[^}]*overflow:hidden/)
+  assert.match(css, /\.editor-form\{[^}]*min-height:0;overflow-y:auto/)
+  assert.match(css, /\.user-notice\{[^}]*z-index:10020/)
 })
 
 test('page matrix supports read-only templates, view dependencies and saved per-user grants', async t => {
