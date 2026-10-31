@@ -4,6 +4,16 @@ import { readFile } from 'node:fs/promises'
 
 const source = async path => readFile(new URL(path, import.meta.url), 'utf8')
 
+test('device form removes the unfinished template selector without clearing legacy device data', async () => {
+  const panel = await source('../src/views/AdminPanel.vue')
+  const template = panel.slice(panel.indexOf('<template>'))
+  assert.doesNotMatch(template, /设备模板|不使用模板|v-model="editingDevice\.template_id"|platform\.deviceTemplates/)
+  assert.match(template, /<label>使用模型/)
+  assert.match(panel, /model_file: '', template_id: '', instance_config: '\{\}'/)
+  assert.match(panel, /Object\.assign\(editingDevice, \{ \.\.\.defaultPlcConnectionConfig\(\), \.\.\.normalized/)
+  assert.match(panel, /buildDevicePayloadForSave\(\{ \.\.\.editingDevice,/)
+})
+
 test('header removes the long title and ends with an accessible icon-only lock followed by the guide', async () => {
   const panel = await source('../src/views/AdminPanel.vue')
   const header = panel.slice(panel.indexOf('<header class="admin-header"'), panel.indexOf('</header>', panel.indexOf('<header class="admin-header"')))

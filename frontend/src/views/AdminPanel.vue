@@ -8183,12 +8183,6 @@ async function openAdminSetupStep(step) {
                                         <option v-for="m in editingModelOptions" :key="m.id" :value="m.id">{{ m.name }}</option>
                                     </select>
                                 </label>
-                                <label>设备模板
-                                    <select v-model="editingDevice.template_id" class="input" v-permission="{ page: controlPermissionPage, action: 'edit' }">
-                                        <option value="">不使用模板</option>
-                                        <option v-for="tpl in platform.deviceTemplates || []" :key="tpl.id" :value="tpl.id">{{ tpl.name }}</option>
-                                    </select>
-                                </label>
                                 <div v-if="!isAuxiliaryDeviceConfig(editingDevice)" class="form-section wide-form-section">
                                     <div class="form-section-header">
                                         <strong>设备逐层检查</strong>
