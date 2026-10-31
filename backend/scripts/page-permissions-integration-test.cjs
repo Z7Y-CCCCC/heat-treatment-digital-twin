@@ -93,6 +93,9 @@ let backend;
     await request('/admin-auth/touch', { method: 'POST', session: reader, body: {}, expected: 200 });
     const author = await account('model_editor', { models: { view: true, edit: true } });
     await request('/models/missing', { method: 'PUT', session: author, body: {}, expected: 404 });
+    await request('/models/permission_model/name', { method: 'PUT', session: reader, body: { name: '不应保存' }, expected: 403 });
+    await request('/models/permission_model/name', { method: 'PUT', session: author, body: { name: '权限编辑名称' }, expected: 200 });
+    await request('/models/permission_model/name', { method: 'PUT', session: author, body: { name: '禁止越权', metadata: '{}' }, expected: 400 });
     await request('/models/missing', { method: 'DELETE', session: author, expected: 403 });
     await request('/models/permission_model', { method: 'PUT', session: author,
         body: { metadata: { assetSpec: { delivery_status: 'released' }, release: { status: 'released', version: '1.0.0' } } }, expected: 403 });

@@ -66,6 +66,18 @@ test('project migration is an independent owner-only maintenance tab, not part o
   assert.match(panel, /\.line-create-row \.btn\s*\{/)
 })
 
+test('model importing is an asset-toolbar action, with no duplicate lower navigation and editable row names', async () => {
+  const panel = await source('../src/views/AdminPanel.vue')
+  const steps = panel.slice(panel.indexOf('const MODEL_LIBRARY_STEPS = ['), panel.indexOf('const modelLibraryStep = ref('))
+  assert.doesNotMatch(steps, /key: 'import'/)
+  assert.doesNotMatch(panel, /modelLibraryStep === 'import'|modelLibraryStep\.value = 'import'/)
+  assert.match(panel, /class="model-asset-heading-actions"[\s\S]*?modelFileInputRef\?\.click\(\)[\s\S]*?>导入模型<\/button>/)
+  assert.match(panel, /<ModelNameEditor :model="m"[\s\S]*?@renamed="applyModelName"/)
+  const actions = panel.slice(panel.indexOf('class="model-selection-actions"'), panel.indexOf('class="model-asset-governance'))
+  assert.doesNotMatch(actions, /selectModelLibraryStep\(/)
+  assert.match(actions, /saveModelPlacement/)
+})
+
 test('factory controls and account permissions occupy standalone admin pages', async () => {
   const panel = await source('../src/views/AdminPanel.vue')
   const security = await source('../src/views/admin/components/AdminSecuritySettings.vue')

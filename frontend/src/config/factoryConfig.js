@@ -300,6 +300,7 @@ export const adminApi = {
     async updateLinePlacement(id, layout) { return readApiJson(await fetch(`${API_BASE}/lines/${pathId(id)}/placement`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ transform: layout.transform, placementPending: layout.placementPending }) }), '保存产线位置失败') },
     async uploadModel(formData) { return readApiJson(await fetch(`${API_BASE}/models/upload`, { method: 'POST', body: formData }), '上传模型失败') },
     async updateModel(id, data) { return readApiJson(await fetch(`${API_BASE}/models/${pathId(id)}`, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) }), '保存模型失败') },
+    async renameModel(id, name) { return readApiJson(await fetch(`${API_BASE}/models/${pathId(id)}/name`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) }), '保存模型名称失败') },
     async deleteModel(id) {
         const resp = await fetch(`${API_BASE}/models/${pathId(id)}`, { method: 'DELETE' })
         const data = await resp.json().catch(() => ({}))

@@ -37,6 +37,7 @@ import {
     normalizeLineRecord
 } from './admin/utils/lineLayout.js'
 import { chooseLineDevices, planLineGroupMove, spaceLineDevices } from './admin/utils/lineDeviceSelection.js'
+import { buildModelDisplayIds, createShortModelId } from './admin/utils/modelIds.js'
 import { useAppDialog } from './admin/composables/useAppDialog.js'
 import { useSystemSettings } from './admin/composables/useSystemSettings.js'
 import { useCastDevices } from './admin/composables/useCastDevices.js'
@@ -55,6 +56,7 @@ import MobileDeviceMotion from './admin/components/MobileDeviceMotion.vue'
 import ManualDisassemblyLayout from './admin/components/ManualDisassemblyLayout.vue'
 import { useManualDisassemblyPage } from './admin/composables/useManualDisassemblyPage.js'
 import ModelInspectionEditor from './admin/components/ModelInspectionEditor.vue'
+import ModelNameEditor from './admin/components/ModelNameEditor.vue'
 import ModelInspectionPreviewOverlay from './admin/components/ModelInspectionPreviewOverlay.vue'
 import AssetHierarchyBar from './admin/components/AssetHierarchyBar.vue'
 import { InspectionPreview, inspectionCameraPose } from '../runtime/InspectionPreview.js'
@@ -1422,13 +1424,14 @@ function formatModelName(modelType) {
 
 // ============ 模型管理 ============
 const models = ref([])
+const modelDisplayIds = computed(() => buildModelDisplayIds(models.value.map(model => model.id)))
+const copiedModelId = ref('')
 const DELETABLE_RETIRED_MODEL_IDS = new Set(['builtin_furnace', 'photo_multipurpose_furnace_v5', 'transfer_cart'])
 const modelPreviewRef = ref(null)
 const modelFileInputRef = ref(null)
 const selectedModelFile = ref(null)
 const MODEL_LIBRARY_STEPS = [
     { key: 'library', label: '模型资产', description: '选择已有模型并查看交付状态' },
-    { key: 'import', label: '导入模型', description: '上传 GLB / GLTF 并填写基础信息' },
     { key: 'optimization', label: '优化与验收', description: '优化材质、规范并发布模型' },
     { key: 'inspection', label: '拆解检查', description: '配置外壳、关键部件、镜头与点位上下文' },
     { key: 'bindings', label: '部位绑定', description: '把模型节点绑定到实时点位' }
@@ -1442,6 +1445,7 @@ const selectedPreviewModelId = ref(storedAdminUiState.selectedPreviewModelId || 
 const modelPreviewStatus = ref('选择模型文件后在这里预览')
 const modelPreviewError = ref(null)
 const modelUploading = ref(false)
+const modelNameSaving = ref(false)
 const isModelPreviewActive = ref(false)
 const defaultModelAssetSpec = {
     version: '1.0.0',
@@ -1760,9 +1764,10 @@ function modelLibraryStepRequiresModel(step) {
 }
 
 function modelLibraryStepAvailable(step) {
+    if (modelNameSaving.value || modelUploading.value) return false
     if (!MODEL_LIBRARY_STEPS.some(item => item.key === step)) return false
     if (modelLibraryStepRequiresModel(step) && !activePreviewModel.value) return false
-    return !activePreviewIsEnvironment.value || step === 'library' || step === 'import'
+    return !activePreviewIsEnvironment.value || step === 'library'
 }
 
 async function selectModelLibraryStep(step) {
@@ -1959,8 +1964,19 @@ watch(models, () => {
     }
 })
 
-function makeModelIdFromFileName(fileName) {
-    return fileName.replace(/\.[^.]+$/, '').replace(/[^\w-]+/g, '_')
+async function copyModelId(id) {
+    try {
+        if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(id)
+        else {
+            const previous = document.activeElement, field = document.createElement('textarea')
+            field.value = id; field.readOnly = true
+            field.style.cssText = 'position:fixed;left:-9999px;top:0'
+            document.body.appendChild(field)
+            try { field.select(); if (!document.execCommand('copy')) throw new Error('复制未成功') }
+            finally { field.remove(); previous?.focus?.({ preventScroll: true }) }
+        }
+        copiedModelId.value = id
+    } catch { await alert(`无法自动复制，请手动复制完整 ID：${id}`, { title: '复制模型 ID', type: 'warning' }) }
 }
 
 function stripModelNodeIndex(name) {
@@ -3006,6 +3022,7 @@ function buildCurrentModelMetadata(model, overrides = {}) {
 }
 
 async function persistModelMetadata(model, metadata, successMessage) {
+    if (modelNameSaving.value) throw new Error('模型名称正在保存，请稍后重试')
     const inspectionValidation = validateInspection(metadata.inspection || createInspectionDefaults(), modelPreviewNodes.value)
     if (!inspectionValidation.valid) throw new Error(`拆解配置尚未通过校验：${inspectionValidation.errors.map(item => item.message).join('；')}`)
     const inspectionAtRequest = JSON.stringify(modelInspection)
@@ -3414,7 +3431,7 @@ async function restoreModelRelease(record) {
 }
 
 function resetModelImportForm(file) {
-    const modelId = makeModelIdFromFileName(file.name)
+    const modelId = createShortModelId(models.value.map(model => model.id))
     modelImportForm.id = modelId
     modelImportForm.name = file.name.replace(/\.[^.]+$/, '')
     modelImportForm.placement_level = 'device'
@@ -3429,11 +3446,12 @@ function resetModelImportForm(file) {
 }
 
 async function selectModelFile(event) {
+    if (!canAdminPage('models', 'edit') || modelUploading.value || modelNameSaving.value) { event.target.value = ''; return }
     const file = event.target.files[0]
     if (!file) return
     if (modelBindingSaving.value) { modelBindingStatus.value = '正在保存模型，请等待保存完成再切换文件。'; event.target.value = ''; return }
     if (modelInspectionDirty.value && !(await confirm('当前模型有未保存的拆解编排。选择新文件会丢弃这些拆解更改，是否继续？'))) { event.target.value = ''; return }
-    modelLibraryStep.value = 'import'
+    modelLibraryStep.value = 'library'
     selectedPreviewModelId.value = ''
     modelPreviewModel = null
     modelPartBindings.value = []
@@ -3469,6 +3487,7 @@ function clearSelectedModelFile() {
 }
 
 async function uploadModel() {
+    if (modelUploading.value || !canAdminPage('models', 'edit')) return
     const file = selectedModelFile.value
     if (!file) return alert('请先选择模型文件')
     if (!modelImportForm.id || !modelImportForm.name) return alert('请填写模型 ID 和名称')
@@ -3496,8 +3515,9 @@ async function uploadModel() {
         clearSelectedModelFile()
         await loadModels()
         const uploadedModel = models.value.find(model => model.id === uploadedId)
-        if (uploadedModel) await previewExistingModel(uploadedModel)
-        await selectModelLibraryStep('optimization')
+        if (uploadedModel) await previewExistingModel(uploadedModel, { afterUpload: true })
+        modelLibraryStep.value = 'library'
+        modelLevelFilter.value = 'all'
         modelPreviewStatus.value = `已上传：${uploadedName}`
         await alert(`模型「${uploadedName}」已上传`, { title: '上传成功', type: 'success' })
     } finally {
@@ -3505,8 +3525,8 @@ async function uploadModel() {
     }
 }
 
-async function previewExistingModel(model) {
-    if (modelBindingSaving.value) { modelBindingStatus.value = '正在保存模型，请等待保存完成再切换。'; return }
+async function previewExistingModel(model, { afterUpload = false } = {}) {
+    if (modelBindingSaving.value || modelNameSaving.value || (modelUploading.value && !afterUpload)) { modelBindingStatus.value = '正在保存模型，请等待保存完成再切换。'; return }
     if (modelInspectionDirty.value && !(await confirm('当前模型有未保存的拆解编排。切换模型会丢弃这些拆解更改，是否继续？'))) return
     selectedModelFile.value = null
     modelPreviewModel = model
@@ -3527,9 +3547,20 @@ async function previewExistingModel(model) {
     await renderSelectedModelPreview()
 }
 
+function applyModelName({ id, name }) {
+    const model = models.value.find(row => row.id === id)
+    const previousName = model?.name || id
+    if (model) model.name = name
+    if (modelPreviewModel?.id === id) modelPreviewModel.name = name
+    if (selectedPreviewModelId.value === id) {
+        if (modelPreviewSource) modelPreviewSource.label = name
+        modelPreviewStatus.value = modelPreviewStatus.value.replace(`预览：${previousName}`, `预览：${name}`)
+    }
+}
+
 async function saveModelPlacement() {
     const model = activePreviewModel.value
-    if (!model || modelPlacementSaving.value) return
+    if (!model || modelPlacementSaving.value || modelNameSaving.value) return
     if (isEnvironmentModel(model) && modelPlacementDraft.value !== 'factory') {
         return alert('工厂环境模型只能归类为工厂级。')
     }
@@ -8363,7 +8394,7 @@ async function openAdminSetupStep(step) {
                 <!-- ======== 模型库 ======== -->
                 <div v-if="activeTab === 'models'" class="tab-content">
                     <h2>3D 模型库</h2>
-                    <p class="desc">按资产选择、导入、优化验收和部位绑定的顺序管理模型；切换步骤时当前模型和未保存表单会继续保留。</p>
+                    <p class="desc">管理模型资产、优化验收与部位绑定。</p>
 
                     <div class="secondary-page-nav-shell model-step-nav-shell">
                         <nav class="secondary-page-nav" aria-label="模型库操作步骤">
@@ -8389,42 +8420,34 @@ async function openAdminSetupStep(step) {
 
                     <div class="model-library-layout" :class="{ 'inspection-workspace': modelLibraryStep === 'inspection' }">
                         <section class="model-library-main">
-                            <section v-show="modelLibraryStep === 'import'" class="model-library-step-panel">
-                                <div class="model-step-heading">
-                                    <div><h3>导入新模型</h3><p>支持 GLB / GLTF。选择文件后可先在右侧检查模型，再决定是否上传入库。</p></div>
-                                    <span>可选步骤</span>
-                                </div>
-                            <div class="upload-area">
-                                <label class="btn btn-primary" style="cursor:pointer">
-                                    📂 选择 .glb/.gltf 文件
-                                    <input ref="modelFileInputRef" type="file" accept=".glb,.gltf" @change="selectModelFile" hidden />
-                                </label>
-                                <span v-if="selectedModelFile" class="model-file-chip">{{ selectedModelFile.name }} · {{ selectedModelFileSizeText }}</span>
-                            </div>
-
-                            <div v-if="selectedModelFile" class="model-import-form">
-                                <label>模型 ID<input v-model="modelImportForm.id" class="input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
-                                <label>模型名称<input v-model="modelImportForm.name" class="input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
-                                <label>适用层级
-                                    <select v-model="modelImportForm.placement_level" class="input" v-permission="{ page: controlPermissionPage, action: 'edit' }">
-                                        <option v-for="(label, level) in modelLevelLabels" :key="level" :value="level">{{ label }}级</option>
-                                    </select>
-                                </label>
-                                <label>默认缩放<input v-model.number="modelImportForm.default_scale" type="number" min="0.01" step="0.05" class="input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
-                                <label class="model-metadata-field">元数据 JSON<textarea v-model="modelImportForm.metadata" class="input model-metadata" v-permission="{ page: controlPermissionPage, action: 'edit' }"></textarea></label>
-                                <div class="model-import-actions">
-                                    <button class="btn btn-primary" type="button" @click="uploadModel" :disabled="modelUploading" v-permission="{ page: controlPermissionPage, action: 'edit' }">
-                                        {{ modelUploading ? '上传中...' : '上传并入库' }}
-                                    </button>
-                                    <button class="btn" type="button" @click="clearSelectedModelFile" :disabled="modelUploading">取消</button>
-                                </div>
-                            </div>
-                            </section>
-
                             <section v-show="modelLibraryStep === 'library'" class="model-library-step-panel">
                                 <div class="model-step-heading">
-                                    <div><h3>已有模型资产</h3><p>先选择需要查看或配置的模型，再进入优化验收或部位绑定。</p></div>
-                                    <span>{{ visibleModels.length }} / {{ models.length }} 个模型</span>
+                                    <div><h3>模型资产</h3></div>
+                                    <div class="model-asset-heading-actions">
+                                        <span>{{ visibleModels.length }} / {{ models.length }} 个模型</span>
+                                        <button type="button" class="btn btn-primary" :disabled="modelUploading || modelBindingSaving || modelNameSaving" @click="modelFileInputRef?.click()" v-permission="{ page: 'models', action: 'edit' }">导入模型</button>
+                                    </div>
+                                </div>
+                                <input ref="modelFileInputRef" type="file" aria-label="选择模型文件" accept=".glb,.gltf" :disabled="modelUploading || modelBindingSaving || modelNameSaving" @change="selectModelFile" hidden v-permission="{ page: 'models', action: 'edit' }" />
+                                <div v-if="selectedModelFile" class="model-pending-import" role="region" aria-label="待导入模型">
+                                    <span class="model-file-chip">{{ selectedModelFile.name }} · {{ selectedModelFileSizeText }}</span>
+                                    <div class="model-import-form">
+                                        <label>模型 ID<input v-model="modelImportForm.id" class="input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
+                                        <label>模型名称<input v-model="modelImportForm.name" class="input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
+                                        <label>适用层级
+                                            <select v-model="modelImportForm.placement_level" class="input" v-permission="{ page: controlPermissionPage, action: 'edit' }">
+                                                <option v-for="(label, level) in modelLevelLabels" :key="level" :value="level">{{ label }}级</option>
+                                            </select>
+                                        </label>
+                                        <label>默认缩放<input v-model.number="modelImportForm.default_scale" type="number" min="0.01" step="0.05" class="input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
+                                        <label class="model-metadata-field">元数据 JSON<textarea v-model="modelImportForm.metadata" class="input model-metadata" v-permission="{ page: controlPermissionPage, action: 'edit' }"></textarea></label>
+                                        <div class="model-import-actions">
+                                            <button class="btn btn-primary" type="button" @click="uploadModel" :disabled="modelUploading" v-permission="{ page: controlPermissionPage, action: 'edit' }">
+                                                {{ modelUploading ? '上传中...' : '上传并入库' }}
+                                            </button>
+                                            <button class="btn" type="button" @click="clearSelectedModelFile" :disabled="modelUploading">取消</button>
+                                        </div>
+                                    </div>
                                 </div>
                             <div class="form-row" style="margin-bottom:12px;align-items:center;gap:10px">
                                 <label for="model-level-filter">适用层级</label>
@@ -8436,21 +8459,22 @@ async function openAdminSetupStep(step) {
                             <div class="table-scroll model-table-scroll">
                                 <table class="data-table model-table">
                                     <colgroup>
-                                        <col style="width:16%" /><col style="width:18%" /><col style="width:8%" /><col style="width:9%" />
-                                        <col style="width:9%" /><col style="width:7%" /><col style="width:23%" /><col style="width:10%" />
+                                        <col style="width:11%" /><col style="width:28%" /><col style="width:8%" /><col style="width:9%" />
+                                        <col style="width:9%" /><col style="width:7%" /><col style="width:18%" /><col style="width:10%" />
                                     </colgroup>
                                     <thead>
-                                        <tr><th>ID</th><th>名称</th><th>归属</th><th>适用层级</th><th>交付状态</th><th>绑定数</th><th>文件路径</th><th>操作</th></tr>
+                                        <tr><th title="短编号仅用于列表显示，点击可复制完整模型 ID">编号</th><th>名称</th><th>归属</th><th>适用层级</th><th>交付状态</th><th>绑定数</th><th>文件路径</th><th>操作</th></tr>
                                     </thead>
                                     <tbody>
                                         <tr
                                             v-for="m in visibleModels"
                                             :key="m.id"
                                             :class="{ active: selectedPreviewModelId === m.id }"
+                                            :data-model-id="m.id"
                                             @click="previewExistingModel(m)"
                                         >
-                                            <td :title="m.id"><code>{{ m.id }}</code></td>
-                                            <td :title="m.name">{{ m.name }}</td>
+                                            <td><button type="button" class="model-id-copy" :aria-label="`复制完整模型 ID：${m.id}`" :title="`${m.id}（点击复制完整 ID）`" @click.stop="copyModelId(m.id)"><code>{{ modelDisplayIds.get(m.id) }}</code><span v-if="copiedModelId === m.id" role="status" aria-label="模型 ID 已复制">✓</span></button></td>
+                                            <td><ModelNameEditor :model="m" :disabled="modelBindingSaving || modelUploading || modelPlacementSaving || modelNameSaving" @renamed="applyModelName" @saving="modelNameSaving = $event" @error="alert($event, { title: '保存模型名称失败', type: 'danger' })" /></td>
                                             <td>{{ m.factory_id ? '当前工厂' : '集团共享' }}</td>
                                             <td>{{ modelLevelLabels[m.placement_level || 'device'] || '设备' }}级</td>
                                             <td><span class="asset-status-pill" :class="'asset-status-' + getModelAssetStatus(m)">{{ formatAssetStatus(getModelAssetStatus(m)) }}</span></td>
@@ -8471,17 +8495,12 @@ async function openAdminSetupStep(step) {
                                         <small v-if="activePreviewIsEnvironment" class="model-environment-note">环境模型 · 仅用于工厂总览，不参与拆解、点位绑定或 PLC 动画</small>
                                     </div>
                                     <label style="display:flex;align-items:center;gap:6px;white-space:nowrap">适用层级
-                                        <select v-model="modelPlacementDraft" class="input" :disabled="activePreviewIsEnvironment || modelPlacementSaving" style="width:95px" v-permission="{ page: controlPermissionPage, action: 'edit' }">
+                                        <select v-model="modelPlacementDraft" class="input" :disabled="activePreviewIsEnvironment || modelPlacementSaving || modelNameSaving" style="width:95px" v-permission="{ page: controlPermissionPage, action: 'edit' }">
                                             <option v-for="(label, level) in modelLevelLabels" :key="level" :value="level">{{ label }}级</option>
                                         </select>
                                     </label>
-                                    <button v-if="!activePreviewIsEnvironment" class="btn" type="button" :disabled="modelPlacementSaving || modelPlacementDraft === (activePreviewModel.placement_level || 'device')" @click="saveModelPlacement" v-permission="{ page: controlPermissionPage, action: 'edit' }">保存层级</button>
-                                    <template v-if="!activePreviewIsEnvironment">
-                                        <button class="btn" type="button" @click="selectModelLibraryStep('optimization')">优化与验收</button>
-                                        <button class="btn" type="button" @click="selectModelLibraryStep('inspection')">拆解检查</button>
-                                        <button class="btn btn-primary" type="button" @click="selectModelLibraryStep('bindings')">部位绑定</button>
-                                    </template>
-                                    <span v-else class="model-environment-badge">静态环境资产</span>
+                                    <button v-if="!activePreviewIsEnvironment" class="btn" type="button" :disabled="modelPlacementSaving || modelNameSaving || modelPlacementDraft === (activePreviewModel.placement_level || 'device')" @click="saveModelPlacement" v-permission="{ page: controlPermissionPage, action: 'edit' }">保存层级</button>
+                                    <span v-if="activePreviewIsEnvironment" class="model-environment-badge">静态环境资产</span>
                                 </div>
                             </section>
 
@@ -8752,7 +8771,7 @@ async function openAdminSetupStep(step) {
                             <div class="model-preview-header">
                                 <div class="model-preview-title">
                                     <strong>模型预览</strong>
-                                    <span>{{ selectedModelFile ? '待上传模型' : selectedPreviewModelId || '未选择' }}</span>
+                                    <span :title="selectedModelFile?.name || activePreviewModel?.id || ''">{{ selectedModelFile ? modelImportForm.name || selectedModelFile.name : activePreviewModel?.name || '未选择' }}</span>
                                 </div>
                                 <span class="model-preview-mode-badge">{{ modelLibraryStep === 'inspection' ? '拆解预览' : modelLibraryStep === 'bindings' ? '绑定预览' : '模型预览' }}</span>
                             </div>
@@ -10726,9 +10745,6 @@ async function openAdminSetupStep(step) {
     display: grid;
     grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 7px;
-}
-@media (min-width: 1450px) {
-    .model-step-nav-shell .secondary-page-nav { grid-template-columns: repeat(5, minmax(0, 1fr)); }
 }
 .secondary-page-nav-item {
     display: grid;
@@ -13657,6 +13673,10 @@ button:enabled:active {
 .model-step-heading h3 { margin: 0; color: #1d1d1f; font-size: 17px; }
 .model-step-heading p { margin: 5px 0 0; color: #6e6e73; font-size: 12px; line-height: 1.55; }
 .model-step-heading > span { flex: 0 0 auto; padding: 5px 9px; color: #6e6e73; background: #f2f2f4; border-radius: 999px; font-size: 10px; }
+.model-asset-heading-actions { display: flex; align-items: center; justify-content: flex-end; gap: 12px; flex-wrap: wrap; }
+.model-asset-heading-actions > span { color: #7b879a; font-size: 11px; }
+.model-pending-import { margin-bottom: 18px; }
+.model-pending-import > .model-file-chip { display: inline-block; margin-bottom: 12px; }
 .model-selection-actions { display: flex; align-items: center; justify-content: flex-end; gap: 9px; margin-top: 14px; padding: 12px; background: #f7f7f9; border: 1px solid rgba(0, 0, 0, .055); border-radius: 10px; }
 .model-selection-actions > div { display: flex; min-width: 0; margin-right: auto; flex-direction: column; gap: 2px; }
 .model-selection-actions span { color: #86868b; font-size: 10px; }
@@ -13719,6 +13739,9 @@ button:enabled:active {
 .model-table td:nth-child(7) { overflow: hidden; text-overflow: ellipsis; }
 .model-table td:nth-child(3),
 .model-table td:nth-child(4) { font-size: 12px; white-space: nowrap; }
+.model-id-copy { display: inline-flex; align-items: center; gap: 3px; max-width: 100%; border: 0; border-radius: 5px; padding: 4px 0; background: transparent; cursor: copy; }
+.model-id-copy code { color: #64748b; background: #f1f5f9; }
+.model-id-copy > span { color: #16815b; font-size: 11px; }
 .model-table code { display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 2px 5px; font-size: 10px; vertical-align: middle; }
 .model-table .asset-status-pill { min-width: 0; font-size: 11px; }
 .model-table tbody tr {
