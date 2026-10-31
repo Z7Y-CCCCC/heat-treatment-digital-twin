@@ -11,6 +11,7 @@ export const ADMIN_PAGES = [
   page('composer', '现场编排器', { navGroup: 'main', icon: 'composer', menuOrder: 20 }),
   page('models', '模型库 · 模型管理', { navGroup: 'models', navLabel: '模型管理', icon: 'models', actions: ['view', 'edit', 'delete', 'publish'] }),
   page('disassembly-layout', '模型库 · 拆解布局', { navGroup: 'models', navLabel: '拆解布局', icon: 'models' }),
+  page('model-animations', '模型库 · 动作动画', { navGroup: 'models', navLabel: '动作动画', icon: 'animation' }),
   page('points', '点位映射 · PLC 点位映射', { navGroup: 'data', navLabel: '点位映射', icon: 'points', container: 'points', subpage: 'mapping', tabLabel: 'PLC 点位映射', actions: ['view', 'edit', 'delete'] }),
   page('points.alarms', '点位映射 · 报警配置', { container: 'points', subpage: 'alarms', tabLabel: '报警配置' }),
   page('point-monitor', '点位监视', { navGroup: 'data', icon: 'points', actions: ['view'] }),

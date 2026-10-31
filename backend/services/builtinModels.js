@@ -1,5 +1,6 @@
 const { presetMetadata } = require('./inspectionPresets');
 const { getPitFurnaceModels } = require('./pitFurnaceModels');
+const cleanerMetadata = require('../assets/models/ultrasonic_cleaner_cad_metadata.json');
 
 const BUILTIN_MODELS = [
     ...[
@@ -12,6 +13,12 @@ const BUILTIN_MODELS = [
         tags: JSON.stringify(['packaged', 'inspection_v2', 'assembly_demo']), thumbnail: `/assets/models/${id}_preview.png`,
         default_scale: 1, metadata: JSON.stringify(presetMetadata(id)), is_builtin: true
     })),
+    {
+        id: 'ultrasonic_cleaner_cad', name: 'ultrasonic_cleaner_cad',
+        file_path: '/assets/models/ultrasonic_cleaner_cad.glb', asset_type: 'model', placement_level: 'device', factory_id: null,
+        tags: JSON.stringify(['packaged', 'cad', 'assembly_demo']), thumbnail: null, default_scale: 1,
+        metadata: JSON.stringify(cleanerMetadata), is_builtin: true
+    },
     ...getPitFurnaceModels(),
     {
         id: 'factory_hall_lowpoly',

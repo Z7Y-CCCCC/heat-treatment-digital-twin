@@ -55,7 +55,7 @@ test('manual disassembly is a permission-filtered child of the model library, no
   const panel = await source('../src/views/AdminPanel.vue')
   const { adminNavPages } = await import('../../shared/adminPages.mjs')
   assert.ok(!adminNavPages('factory').some(page => page.key === 'disassembly-layout'))
-  assert.deepEqual(adminNavPages('models').map(({ key, label }) => ({ key, label })), [{ key: 'models', label: '模型管理' }, { key: 'disassembly-layout', label: '拆解布局' }])
+  assert.deepEqual(adminNavPages('models').map(({ key, label }) => ({ key, label })), [{ key: 'models', label: '模型管理' }, { key: 'disassembly-layout', label: '拆解布局' }, { key: 'model-animations', label: '动作动画' }])
   assert.match(panel, /adminNavPages\('models', adminPageCatalog\.value\)/)
   assert.match(panel, /visibleModelTabs = computed\(\(\) => modelTabs\.value\.filter\(tab => canSelectTab\(tab\.key\)\)\)/)
   assert.match(panel, /tab\.key === 'models' \? visibleModelTabs\.value\.length > 0/)

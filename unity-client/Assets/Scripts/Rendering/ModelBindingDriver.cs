@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using HeatTreatment.DigitalTwin.Backend;
 using Newtonsoft.Json.Linq;
@@ -16,6 +17,10 @@ namespace HeatTreatment.DigitalTwin.Rendering
             public Vector3 BasePosition;
             public Quaternion BaseRotation;
             public float AngularSpeedDegrees;
+            public float Offset;
+            public float TargetOffset;
+            public bool HasPose;
+            public bool Suspended;
         }
 
         private readonly List<BindingState> _states = new List<BindingState>();
@@ -51,22 +56,26 @@ namespace HeatTreatment.DigitalTwin.Rendering
             foreach (var state in _states)
             {
                 var binding = state.Binding;
-                var token = ReadBindingValue(deviceData, binding);
-                if (token == null || token.Type == JTokenType.Null) continue;
+                var token = ReadBindingValue(deviceData, binding, out var group);
+                state.Suspended = !IsUsable(deviceData, group, binding.SourceKey)
+                    || token == null || token.Type == JTokenType.Null;
+                if (state.Suspended) { state.AngularSpeedDegrees = 0; continue; }
                 var action = binding.Action ?? "rotate_speed";
+                var numeric = action == "rotate_speed" || action == "rotate_angle" || action == "translate";
+                var value = 0f;
+                if (numeric && !TryFloat(token, out value))
+                { state.Suspended = true; state.AngularSpeedDegrees = 0; continue; }
                 if (action == "rotate_speed")
                 {
-                    state.AngularSpeedDegrees = ToFloat(token) * binding.SpeedFactor * Mathf.Rad2Deg;
+                    state.AngularSpeedDegrees = value * binding.SpeedFactor * Mathf.Rad2Deg;
                 }
-                else if (action == "rotate_angle")
+                else if (action == "rotate_angle" || action == "translate")
                 {
-                    var degrees = Map(ToFloat(token), binding.InputMin, binding.InputMax, binding.OutputMin, binding.OutputMax);
-                    state.Target.localRotation = state.BaseRotation * Quaternion.AngleAxis(degrees, Axis(binding.Axis));
-                }
-                else if (action == "translate")
-                {
-                    var offset = Map(ToFloat(token), binding.InputMin, binding.InputMax, binding.OutputMin, binding.OutputMax);
-                    state.Target.localPosition = state.BasePosition + Axis(binding.Axis) * offset;
+                    state.TargetOffset = Map(value, binding.InputMin, binding.InputMax, binding.OutputMin, binding.OutputMax);
+                    // First acquisition establishes the observed pose, without replaying a fictitious opening.
+                    if (!state.HasPose || binding.TransitionDuration <= 0)
+                    { state.Offset = state.TargetOffset; ApplyPose(state); }
+                    state.HasPose = true;
                 }
                 else if (action == "visibility")
                 {
@@ -82,11 +91,33 @@ namespace HeatTreatment.DigitalTwin.Rendering
 
         private void Update()
         {
+            AdvanceMotion(Time.deltaTime);
+        }
+
+        public void AdvanceMotion(float deltaTime)
+        {
+            if (float.IsNaN(deltaTime) || float.IsInfinity(deltaTime) || deltaTime <= 0) return;
             foreach (var state in _states)
             {
-                if (state.Binding.Action != "rotate_speed" || Mathf.Abs(state.AngularSpeedDegrees) < 0.001f) continue;
-                state.Target.Rotate(Axis(state.Binding.Axis), state.AngularSpeedDegrees * Time.deltaTime, Space.Self);
+                if (state.Suspended || state.Target == null) continue;
+                if ((state.Binding.Action ?? "rotate_speed") == "rotate_speed")
+                    state.Target.Rotate(Axis(state.Binding.Axis), state.AngularSpeedDegrees * deltaTime, Space.Self);
+                else if (state.HasPose && state.Binding.TransitionDuration > 0)
+                {
+                    var range = Mathf.Abs(state.Binding.OutputMax - state.Binding.OutputMin);
+                    var duration = Mathf.Clamp(state.Binding.TransitionDuration, .001f, 60f);
+                    state.Offset = Mathf.MoveTowards(state.Offset, state.TargetOffset, range / duration * deltaTime);
+                    ApplyPose(state);
+                }
             }
+        }
+
+        private static void ApplyPose(BindingState state)
+        {
+            if (state.Binding.Action == "translate")
+                state.Target.localPosition = state.BasePosition + Axis(state.Binding.Axis) * state.Offset;
+            else
+                state.Target.localRotation = state.BaseRotation * Quaternion.AngleAxis(state.Offset, Axis(state.Binding.Axis));
         }
 
         private void ApplyColor(Transform target, string htmlColor)
@@ -110,10 +141,13 @@ namespace HeatTreatment.DigitalTwin.Rendering
             return Mathf.Lerp(outputMin, outputMax, t);
         }
 
-        private static float ToFloat(JToken token)
+        private static bool TryFloat(JToken token, out float value)
         {
-            if (token.Type == JTokenType.Boolean) return token.Value<bool>() ? 1f : 0f;
-            return token.Value<float>();
+            if (token.Type == JTokenType.Boolean) { value = token.Value<bool>() ? 1f : 0f; return true; }
+            if (token.Type != JTokenType.String && token.Type != JTokenType.Integer && token.Type != JTokenType.Float)
+            { value = 0; return false; }
+            return float.TryParse(token.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out value)
+                && !float.IsNaN(value) && !float.IsInfinity(value);
         }
 
         private static bool ToBool(JToken token)
@@ -129,17 +163,29 @@ namespace HeatTreatment.DigitalTwin.Rendering
             return axis == "x" ? Vector3.right : axis == "z" ? Vector3.forward : Vector3.up;
         }
 
-        private static JToken ReadBindingValue(JObject deviceData, PartBindingDto binding)
+        private static bool IsUsable(JObject data, string group, string key)
         {
+            if (string.IsNullOrWhiteSpace(key)) return false;
+            bool Invalid(JToken token) => token != null && token.Type == JTokenType.String
+                && !string.Equals(token.Value<string>(), "good", StringComparison.OrdinalIgnoreCase);
+            return data != null && !string.Equals(data["status"]?["online"]?.ToString(), "false", StringComparison.OrdinalIgnoreCase)
+                && !Invalid(data["status"]?["quality"])
+                && !Invalid(data["quality"] is JObject quality ? quality["overall"] : data["quality"])
+                && !Invalid(((data["quality"] as JObject)?[group] as JObject)?[key]);
+        }
+
+        private static JToken ReadBindingValue(JObject deviceData, PartBindingDto binding, out string sourceGroup)
+        {
+            sourceGroup = binding.SourceGroup ?? "analog";
             if (deviceData == null || string.IsNullOrWhiteSpace(binding.SourceKey)) return null;
-            var direct = deviceData[binding.SourceGroup]?[binding.SourceKey];
+            var direct = deviceData[sourceGroup]?[binding.SourceKey];
             if (direct != null) return direct;
 
             var groups = new[] { "analog", "motors", "doors", "gas", "mechanisms", "status" };
             foreach (var group in groups)
             {
                 var token = deviceData[group]?[binding.SourceKey];
-                if (token != null) return token;
+                if (token != null) { sourceGroup = group; return token; }
             }
             return null;
         }
