@@ -61,7 +61,7 @@ export function apiPermission(path, method = 'GET', body) {
   if (resource('devices')) {
     if (safe) return read(spatial, true)
     if (/\/inspection$/.test(path)) return any('admin', p('disassembly-layout', 'edit'))
-    if (/\/transform$/.test(path)) return any('admin', p('composer', 'edit'), p('lines', 'edit'))
+    if ((path === '/api/devices/transforms' && method === 'PUT') || /\/transform$/.test(path)) return any('admin', p('composer', 'edit'), p('lines', 'edit'))
     if (/\/movement$/.test(path)) return any('admin', p('mobile-devices', 'edit'))
     return any('admin', p('devices', action))
   }

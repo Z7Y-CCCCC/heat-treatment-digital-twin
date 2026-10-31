@@ -55,6 +55,17 @@ test('transform payload excludes PLC identity, model identity, movement and insp
   assert.equal(Object.hasOwn(payload.layoutConfig, 'inspection'), false)
 })
 
+test('atomic group transforms require line or scene placement editing, never model editing or read-only access', t => {
+  fixture(t, { lines: { view: true, edit: true } })
+  assert.equal(canAdminApi('/api/devices/transforms', 'PUT'), true)
+  adminSession.pagePermissions = normalizePagePermissions({ composer: { view: true, edit: true } })
+  assert.equal(canAdminApi('/api/devices/transforms', 'PUT'), true)
+  for (const grants of [{ lines: { view: true } }, { models: { view: true, edit: true } }]) {
+    adminSession.pagePermissions = normalizePagePermissions(grants)
+    assert.equal(canAdminApi('/api/devices/transforms', 'PUT'), false)
+  }
+})
+
 test('model layout authoring is restricted to positions and does not grant generic model editing', t => {
   fixture(t, { 'disassembly-layout': { view: true, edit: true } })
   assert.equal(canAdminApi('/api/models/type/inspection', 'GET'), true)

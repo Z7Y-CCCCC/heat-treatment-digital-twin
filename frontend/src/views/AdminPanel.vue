@@ -36,6 +36,7 @@ import {
     serializeLineLayout,
     normalizeLineRecord
 } from './admin/utils/lineLayout.js'
+import { chooseLineDevices, planLineGroupMove, spaceLineDevices } from './admin/utils/lineDeviceSelection.js'
 import { useAppDialog } from './admin/composables/useAppDialog.js'
 import { useSystemSettings } from './admin/composables/useSystemSettings.js'
 import { useCastDevices } from './admin/composables/useCastDevices.js'
@@ -687,6 +688,12 @@ let linePreviewDragState = null
 let lineDeviceDragState = null
 let lineDevicePoolMoveState = null
 const lineDeviceSavingId = ref('')
+const selectedLineDeviceIds = ref([])
+const lineGroupSaving = ref(false)
+const lineDeviceLayoutBusy = computed(() => lineGroupSaving.value || lineLayoutSaving.value || !!lineDeviceSavingId.value)
+const lineDeviceGap = ref(5)
+const lineSelectionFeedback = ref('')
+const lineDeviceGhosts = ref([])
 const lineFlowDirectionOptions = [
     { value: 'right', label: '向右' },
     { value: 'left', label: '向左' },
@@ -734,7 +741,8 @@ let nativeScenePreviewPending = null
 let dashboardDesignerPreviewPayload = null
 
 function nativePreviewDevicePayload(device, override = null) {
-    const source = override?.id === device?.id ? { ...device, ...override } : (device || {})
+    const patch = Array.isArray(override) ? override.find(row => row.id === device?.id) : override
+    const source = patch?.id === device?.id ? { ...device, ...patch } : (device || {})
     return {
         id: source.id,
         name: source.name,
@@ -4889,6 +4897,7 @@ watch([workshops, lines, devices, models], () => {
 watch(modelInspection, scheduleInspectionDraftPreview, { deep: true })
 
 watch(activeTab, async (tab) => {
+    if (tab !== 'lines') cancelLineDeviceDrag()
     if (tab === 'disassembly-layout') await manualDisassemblyPage.ensureSelection()
     if (tab === 'composer') {
         ensureComposerSelection()
@@ -5168,6 +5177,22 @@ const selectedLineEditorCarts = computed(() => {
         if (!isAuxiliaryDeviceConfig(device)) return false
         return resolveDeviceLayoutTarget(device, line, { allowFallback: false })?.type === 'rail'
     }))
+})
+
+const selectedLineDevices = computed(() => [...selectedLineEditorDevices.value, ...selectedLineEditorCarts.value]
+    .filter(device => selectedLineDeviceIds.value.includes(device.id)))
+const lineSelectionSameTarget = computed(() => {
+    const targets = selectedLineDevices.value.map(device => resolveDeviceLayoutTarget(device, selectedLineEditor.value, { allowFallback: false }))
+    return targets.length >= 2 && targets.every(target => target && target.type === targets[0]?.type && target.item.id === targets[0]?.item.id)
+})
+watch(() => selectedLineEditor.value?.id, () => {
+    cancelLineDeviceDrag()
+    selectedLineDeviceIds.value = []
+    lineSelectionFeedback.value = ''
+})
+watch(() => [...selectedLineEditorDevices.value, ...selectedLineEditorCarts.value].map(device => device.id), ids => {
+    selectedLineDeviceIds.value = selectedLineDeviceIds.value.filter(id => ids.includes(id))
+    if (lineDeviceDragState && lineDeviceDragState.rows.some(row => !ids.includes(row.id)) && !lineDeviceDragState.fromPool) cancelLineDeviceDrag()
 })
 
 const selectedLineWorkshopDevices = computed(() => {
@@ -5458,6 +5483,7 @@ function removeLineLayoutItem(type, itemId) {
 }
 
 async function saveSelectedLineLayout() {
+    if (lineDeviceLayoutBusy.value) return
     const line = selectedLineEditor.value
     if (!line) return
     lineLayoutSaving.value = true
@@ -5627,6 +5653,7 @@ function cancelLineStationEdit() {
 }
 
 async function saveLineStationNumber(device) {
+    if (lineDeviceLayoutBusy.value) return
     const line = selectedLineEditor.value
     const value = Number(lineStationDraft.value)
     if (!line || !device || !Number.isInteger(value) || value < 1) {
@@ -6006,6 +6033,7 @@ function previewClientXToUnits(clientX, state) {
 }
 
 function startLinePreviewDrag(type, itemId, mode, event) {
+    if (lineDeviceLayoutBusy.value || lineDeviceDragState) return
     if (!canAdminPage('lines', 'edit')) return
     if (!selectedLineEditor.value || event.button !== 0) return
     const item = findLineLayoutItem(type, itemId)
@@ -6056,6 +6084,7 @@ function finishLinePreviewDrag() {
 }
 
 function resetLineDeviceDrag() {
+    lineDeviceGhosts.value = []
     Object.assign(lineDeviceDrag, {
         active: false,
         deviceId: '',
@@ -6136,9 +6165,9 @@ function lineAlignmentGuideStyle() {
     }
 }
 
-function findLineDeviceAlignment(deviceId, x, bounds) {
+function findLineDeviceAlignment(deviceIds, x, bounds) {
     const candidates = [...selectedLineEditorDevices.value, ...selectedLineEditorCarts.value]
-        .filter(device => device.id !== deviceId)
+        .filter(device => !deviceIds.includes(device.id))
         .map(device => numberOrDefault(device.pos_x, 0))
         .filter(Number.isFinite)
     if (!candidates.length) return null
@@ -6154,121 +6183,193 @@ function findLineDeviceAlignment(deviceId, x, bounds) {
     }
 }
 
+function selectLineDeviceWithKeyboard(deviceId, event) {
+    if (event.target !== event.currentTarget || !['Enter', ' '].includes(event.key) || lineDeviceLayoutBusy.value) return
+    event.preventDefault()
+    selectedLineDeviceIds.value = chooseLineDevices(selectedLineDeviceIds.value, deviceId, event.ctrlKey || event.metaKey || event.shiftKey)
+}
+
+function clearLineDeviceSelection() {
+    if (lineDeviceLayoutBusy.value) return
+    cancelLineDeviceDrag()
+    selectedLineDeviceIds.value = []
+    lineSelectionFeedback.value = ''
+}
+
 function startLineDeviceDrag(deviceId, event) {
-    if (!canAdminPage('lines', 'edit')) return
-    if (!selectedLineEditor.value || event.button !== 0) return
+    if (!selectedLineEditor.value || event.button !== 0 || lineDeviceLayoutBusy.value) return
     const device = getLineDeviceById(deviceId)
     const stage = linePreviewStageRef.value || event.currentTarget.closest?.('.line-preview-stage')
     if (!device || !stage) return
     event.preventDefault()
     event.stopPropagation()
-
-    const rect = stage.getBoundingClientRect()
-    const bounds = linePreviewBounds(selectedLineEditor.value)
-    try {
-        event.currentTarget?.setPointerCapture?.(event.pointerId)
-    } catch (e) {
-        // 浏览器可能在按钮快速拖出时拒绝捕获，忽略即可。
+    cancelLineDeviceDrag()
+    const binding = resolveDeviceLayoutTarget(device, selectedLineEditor.value, { allowFallback: false })
+    const fromPool = !binding
+    const additive = !!(event.ctrlKey || event.metaKey || event.shiftKey)
+    const toggleOffOnClick = !fromPool && additive && selectedLineDeviceIds.value.includes(deviceId)
+    if (!fromPool && !toggleOffOnClick) {
+        if (additive && selectedLineDeviceIds.value.length >= 200 && !selectedLineDeviceIds.value.includes(deviceId)) {
+            return alert('最多同时选择 200 台设备', { type: 'warning' })
+        }
+        selectedLineDeviceIds.value = chooseLineDevices(selectedLineDeviceIds.value, deviceId, additive)
     }
-    lineDeviceDragState = { deviceId, rect, bounds, pointerTarget: event.currentTarget, pointerId: event.pointerId }
-    Object.assign(lineDeviceDrag, {
-        active: true,
-        deviceId,
-        x: numberOrDefault(device.pos_x, 0),
-        z: numberOrDefault(device.pos_z, 0) - bounds.baseZ,
-        left: linePreviewPercent(numberOrDefault(device.pos_x, 0), bounds.minX, bounds.maxX),
-        top: linePreviewPercent(numberOrDefault(device.pos_z, 0) - bounds.baseZ, bounds.minZ, bounds.maxZ),
-        targetType: '',
-        targetId: '',
-        targetName: '',
-        alignActive: false,
-        alignX: 0,
-        alignLeft: 0,
-        canDrop: false,
-        message: ''
-    })
-    document.body.classList.add('line-preview-dragging')
+    lineSelectionFeedback.value = ''
+    if (!canAdminPage('lines', 'edit')) {
+        if (!additive && !fromPool) selectedLineDeviceIds.value = [deviceId]
+        if (toggleOffOnClick) selectedLineDeviceIds.value = selectedLineDeviceIds.value.filter(id => id !== deviceId)
+        return
+    }
+    const rows = (fromPool ? [device] : selectedLineDevices.value).map(row => ({
+        id: row.id, x: numberOrDefault(row.pos_x, 0),
+        binding: resolveDeviceLayoutTarget(row, selectedLineEditor.value, { allowFallback: false })
+    }))
+    const rect = stage.getBoundingClientRect(), bounds = linePreviewBounds(selectedLineEditor.value)
+    lineDeviceDragState = { deviceId, lineId: selectedLineEditor.value.id, rows, fromPool, additive, toggleOffOnClick,
+        startX: event.clientX, startY: event.clientY, moved: false, plan: [], rect, bounds,
+        pointerTarget: event.currentTarget, pointerId: event.pointerId }
+    event.currentTarget?.focus?.({ preventScroll: true })
+    try { event.currentTarget?.setPointerCapture?.(event.pointerId) } catch { /* Capture may already be released. */ }
     window.addEventListener('pointermove', handleLineDeviceDrag)
-    window.addEventListener('pointerup', finishLineDeviceDrag, { once: true })
-    handleLineDeviceDrag(event)
+    window.addEventListener('pointerup', finishLineDeviceDrag)
+    window.addEventListener('pointercancel', cancelLineDevicePointer)
+    window.addEventListener('keydown', cancelLineDeviceWithEscape)
+    event.currentTarget?.addEventListener('lostpointercapture', cancelLineDevicePointer)
 }
 
 function handleLineDeviceDrag(event) {
     const state = lineDeviceDragState
-    if (!state || !selectedLineEditor.value) return
+    if (!state || event.pointerId !== state.pointerId || selectedLineEditor.value?.id !== state.lineId) return
     const device = getLineDeviceById(state.deviceId)
-    if (!device) return
-    const insideStage = event.clientX >= state.rect.left
-        && event.clientX <= state.rect.right
-        && event.clientY >= state.rect.top
-        && event.clientY <= state.rect.bottom
-    let x = previewClientXToUnits(event.clientX, state)
+    if (!device) return cancelLineDeviceDrag()
+    if (!state.moved && Math.hypot(event.clientX - state.startX, event.clientY - state.startY) < 4) return
+    state.moved = true
+    document.body.classList.add('line-preview-dragging')
+    const insideStage = event.clientX >= state.rect.left && event.clientX <= state.rect.right
+        && event.clientY >= state.rect.top && event.clientY <= state.rect.bottom
+    let x = state.fromPool ? previewClientXToUnits(event.clientX, state)
+        : state.rows.find(row => row.id === state.deviceId).x + previewDeltaXToUnits(event.clientX, state)
     const z = previewClientYToZ(event.clientY, state)
-    const elementTarget = findLineDropTargetFromPoint(device, event)
-    const target = elementTarget || (insideStage ? findNearestLineDropTarget(device, z) : null)
-    const targetZ = target ? numberOrDefault(target.item.offsetZ, 0) : z
-    const alignment = insideStage ? findLineDeviceAlignment(state.deviceId, x, state.bounds) : null
+    const target = insideStage ? findLineDropTargetFromPoint(device, event) || findNearestLineDropTarget(device, z) : null
+    const alignment = insideStage ? findLineDeviceAlignment(state.rows.map(row => row.id), x, state.bounds) : null
     if (alignment) x = alignment.x
+    let message = target ? `放到 ${target.item.name}` : insideStage ? '当前没有可用的设备线或导轨' : '拖回画布后松手'
+    state.plan = []
+    if (target) {
+        try {
+            state.plan = state.fromPool ? [{ id: device.id, x: Math.max(-target.item.length / 2, Math.min(target.item.length / 2, roundLineLayoutValue(x))), z: target.item.offsetZ, binding: target }]
+                : planLineGroupMove(state.rows, state.deviceId, x, target, [
+                    ...selectedLineLayout.value.lanes.map(item => ({ type: 'lane', item })),
+                    ...selectedLineLayout.value.rails.map(item => ({ type: 'rail', item }))
+                ])
+        } catch (error) { message = error.message }
+    }
+    const anchor = state.plan.find(row => row.id === state.deviceId)
+    Object.assign(lineDeviceDrag, { active: true, deviceId: state.deviceId, x: anchor?.x ?? x,
+        z: anchor?.z ?? z, targetType: target?.type || '', targetId: target?.item.id || '',
+        targetName: target?.item.name || '', alignActive: !!alignment && !!anchor && Math.abs(anchor.x - alignment.x) < .001,
+        alignX: alignment?.x || 0, alignLeft: alignment?.left || 0, canDrop: state.plan.length > 0, message })
+    lineDeviceGhosts.value = state.plan.length ? state.plan : [{ id: device.id, x, z, binding: null }]
+    scheduleNativeScenePreview({ source: 'lines', includeLayout: true,
+        deviceOverride: state.plan.length ? state.plan.map(row => ({ id: row.id, pos_x: row.x, pos_z: state.bounds.baseZ + row.z })) : null })
+}
 
-    lineDeviceDrag.x = x
-    lineDeviceDrag.z = targetZ
-    lineDeviceDrag.left = linePreviewPercent(x, state.bounds.minX, state.bounds.maxX)
-    lineDeviceDrag.top = linePreviewPercent(targetZ, state.bounds.minZ, state.bounds.maxZ)
-    lineDeviceDrag.targetType = target?.type || ''
-    lineDeviceDrag.targetId = target?.item?.id || ''
-    lineDeviceDrag.targetName = target?.item?.name || ''
-    lineDeviceDrag.alignActive = !!alignment
-    lineDeviceDrag.alignX = alignment?.x || 0
-    lineDeviceDrag.alignLeft = alignment?.left || 0
-    lineDeviceDrag.canDrop = !!target
-    lineDeviceDrag.message = target
-        ? `放到 ${target.item.name}`
-        : insideStage
-            ? (isAuxiliaryDeviceConfig(device) ? '当前产线没有小车导轨' : '当前产线没有设备线')
-            : '拖回预览区域后松手'
-    scheduleNativeScenePreview({
-        source: 'lines',
-        includeLayout: true,
-        deviceOverride: insideStage ? {
-            id: device.id,
-            pos_x: x,
-            pos_z: state.bounds.baseZ + targetZ
-        } : null
-    })
+function releaseLineDeviceDrag() {
+    const state = lineDeviceDragState
+    lineDeviceDragState = null
+    window.removeEventListener('pointermove', handleLineDeviceDrag)
+    window.removeEventListener('pointerup', finishLineDeviceDrag)
+    window.removeEventListener('pointercancel', cancelLineDevicePointer)
+    window.removeEventListener('keydown', cancelLineDeviceWithEscape)
+    state?.pointerTarget?.removeEventListener('lostpointercapture', cancelLineDevicePointer)
+    try { state?.pointerTarget?.releasePointerCapture?.(state.pointerId) } catch { /* Already released. */ }
+    document.body.classList.remove('line-preview-dragging')
+    resetLineDeviceDrag()
 }
 
 async function finishLineDeviceDrag(event) {
-    if (lineDeviceDragState && event) {
-        handleLineDeviceDrag(event)
-    }
-    const drag = { ...lineDeviceDrag }
-    try {
-        lineDeviceDragState?.pointerTarget?.releasePointerCapture?.(lineDeviceDragState.pointerId)
-    } catch (e) {
-        // 指针可能已被浏览器释放，忽略即可。
-    }
-    lineDeviceDragState = null
-    document.body.classList.remove('line-preview-dragging')
-    window.removeEventListener('pointermove', handleLineDeviceDrag)
-    resetLineDeviceDrag()
-    if (!drag.active || !drag.canDrop) {
-        scheduleNativeScenePreview({ source: 'lines', includeLayout: true, deviceOverride: null })
-        if (drag.active && drag.message) alert(drag.message, { type: 'warning' })
+    const state = lineDeviceDragState
+    if (!state || event.pointerId !== state.pointerId) return
+    handleLineDeviceDrag(event)
+    const drag = { ...lineDeviceDrag }, plan = state.plan
+    releaseLineDeviceDrag()
+    if (!state.moved) {
+        if (state.toggleOffOnClick) selectedLineDeviceIds.value = selectedLineDeviceIds.value.filter(id => id !== state.deviceId)
+        else if (!state.fromPool && !state.additive) selectedLineDeviceIds.value = [state.deviceId]
         return
     }
-    await placeLineDeviceOnTarget(drag)
+    if (!drag.canDrop) {
+        scheduleNativeScenePreview({ source: 'lines', includeLayout: true, deviceOverride: null })
+        return alert(drag.message, { type: 'warning' })
+    }
+    if (state.fromPool) await placeLineDeviceOnTarget(drag)
+    else await saveLineDevicePlan(plan, state.lineId)
 }
 
+function cancelLineDevicePointer(event) {
+    if (event.pointerId === lineDeviceDragState?.pointerId) cancelLineDeviceDrag()
+}
+function cancelLineDeviceWithEscape(event) {
+    if (event.key === 'Escape' && lineDeviceDragState) { event.preventDefault(); event.stopPropagation(); cancelLineDeviceDrag() }
+}
 function cancelLineDeviceDrag() {
+    const hadPreview = lineDeviceDragState?.moved
+    releaseLineDeviceDrag()
+    if (hadPreview) scheduleNativeScenePreview({ source: 'lines', includeLayout: true, deviceOverride: null })
+}
+
+function lineDeviceGroupGhostStyle(row) {
+    const bounds = lineDeviceDragState?.bounds || linePreviewBounds(selectedLineEditor.value)
+    return { left: `${linePreviewPercent(row.x, bounds.minX, bounds.maxX)}%`, top: `${linePreviewPercent(row.z, bounds.minZ, bounds.maxZ)}%` }
+}
+
+async function applyLineDeviceSpacing(manual = false) {
+    if (!canAdminPage('lines', 'edit') || lineDeviceLayoutBusy.value) return
+    cancelLineDeviceDrag()
     try {
-        lineDeviceDragState?.pointerTarget?.releasePointerCapture?.(lineDeviceDragState.pointerId)
-    } catch (e) {
-        // 指针可能已被浏览器释放，忽略即可。
+        const plan = spaceLineDevices(selectedLineDevices.value.map(device => ({ id: device.id, x: device.pos_x,
+            binding: resolveDeviceLayoutTarget(device, selectedLineEditor.value, { allowFallback: false }) })), manual ? lineDeviceGap.value : undefined)
+        await saveLineDevicePlan(plan, selectedLineEditor.value.id)
+    } catch (error) { alert(error.message, { type: 'warning' }) }
+}
+
+async function saveLineDevicePlan(plan, lineId) {
+    if (!plan.length || lineDeviceLayoutBusy.value || !canAdminPage('lines', 'edit')) return
+    const line = lines.value.find(row => row.id === lineId)
+    if (!line) return
+    const stations = getLineStationNumberMap(line)
+    const patches = plan.map(row => {
+        const device = getLineDeviceById(row.id), target = row.binding.item
+        const layoutConfig = row.binding.type === 'rail'
+            ? { railLineId: line.id, railId: target.id, railName: target.name, workshop_id: line.workshop_id, laneLineId: null, laneId: null, laneName: null }
+            : { laneLineId: line.id, laneId: target.id, laneName: target.name, stationNumber: stations.get(device.id), railLineId: null, railId: null, railName: null }
+        return { id: row.id, line_id: line.id, coordinate_space: 'line_local', pos_x: row.x, pos_z: getLineBaseZ(line.id) + row.z, layoutConfig }
+    })
+    lineGroupSaving.value = true
+    lineSelectionFeedback.value = '正在保存…'
+    try {
+        const result = await adminApi.updateDeviceTransforms(patches)
+        if (result?.error || !Array.isArray(result?.devices)) throw new Error(result?.error || '保存结果无效')
+        for (const saved of result.devices) {
+            const patch = patches.find(row => row.id === saved.id)
+            if (!patch) continue
+            const device = getLineDeviceById(saved.id)
+            if (!device) continue
+            const config = { ...parseInstanceConfig(device.instance_config) }
+            for (const [key, value] of Object.entries(patch.layoutConfig)) { if (value === null) delete config[key]; else config[key] = value }
+            patchDeviceLocally(saved.id, { line_id: saved.line_id, coordinate_space: saved.coordinate_space,
+                pos_x: saved.pos_x, pos_z: saved.pos_z, instance_config: JSON.stringify(config) })
+            savedDeviceLayoutSnapshots.value[saved.id] = deviceLayoutSnapshot(saved)
+        }
+        lineSelectionFeedback.value = '已保存'
+    } catch (error) {
+        lineSelectionFeedback.value = '保存失败'
+        scheduleNativeScenePreview({ source: 'lines', includeLayout: true, deviceOverride: null })
+        await alert(error.message || '保存失败，位置未改变', { title: '设备布局保存失败', type: 'danger' })
+    } finally {
+        lineGroupSaving.value = false
+        scheduleNativeScenePreview({ source: 'lines', includeLayout: true, deviceOverride: null })
     }
-    lineDeviceDragState = null
-    document.body.classList.remove('line-preview-dragging')
-    window.removeEventListener('pointermove', handleLineDeviceDrag)
-    resetLineDeviceDrag()
 }
 
 function patchDeviceLocally(deviceId, patch) {
@@ -6332,6 +6433,7 @@ async function placeLineDeviceOnTarget(drag) {
 }
 
 async function removeDeviceFromLineCanvas(device) {
+    if (lineDeviceLayoutBusy.value) return
     const line = selectedLineEditor.value
     if (!line || !device) return
     const config = {
@@ -7735,7 +7837,16 @@ async function openAdminSetupStep(step) {
                                         <span>{{ selectedLineEditorDevices.length }}/{{ selectedLineTotalDeviceCount }} 台设备</span>
                                     </div>
                                 </div>
-                                <div ref="linePreviewStageRef" class="line-preview-stage" v-if="selectedLineEditor">
+                                <div v-if="selectedLineEditor" class="line-selection-toolbar" role="toolbar" aria-label="设备多选与间距">
+                                    <span class="line-selection-hint">Ctrl / Shift 多选</span>
+                                    <span v-if="selectedLineDeviceIds.length">已选 {{ selectedLineDeviceIds.length }} 台</span>
+                                    <button type="button" :disabled="lineDeviceLayoutBusy || !lineSelectionSameTarget || selectedLineDeviceIds.length < 3" title="固定两端，平均分配所选设备的中心间距" @click="applyLineDeviceSpacing()" v-permission="{ page: 'lines', action: 'edit' }">等间距</button>
+                                    <label>间距(m) <input v-model.number="lineDeviceGap" aria-label="设备中心间距（米）" type="number" min="0.01" step="0.5" :disabled="lineDeviceLayoutBusy || !lineSelectionSameTarget" /></label>
+                                    <button type="button" :disabled="lineDeviceLayoutBusy || !lineSelectionSameTarget" @click="applyLineDeviceSpacing(true)" v-permission="{ page: 'lines', action: 'edit' }">应用间距</button>
+                                    <button v-if="selectedLineDeviceIds.length" type="button" :disabled="lineDeviceLayoutBusy" @click="clearLineDeviceSelection">取消选择</button>
+                                    <span role="status" aria-live="polite">{{ lineSelectionFeedback }}</span>
+                                </div>
+                                <div ref="linePreviewStageRef" class="line-preview-stage" v-if="selectedLineEditor" @pointerdown.self="clearLineDeviceSelection">
                                     <div class="line-preview-legend">
                                         <span><i class="legend-lane"></i>设备线</span>
                                         <span><i class="legend-rail"></i>小车导轨</span>
@@ -7812,9 +7923,11 @@ async function openAdminSetupStep(step) {
                                         v-for="device in selectedLineEditorDevices"
                                         :key="device.id"
                                         class="line-map-device"
-                                        :class="{ saving: lineDeviceSavingId === device.id, 'is-station-editing': lineStationEditingDeviceId === device.id }"
+                                        :class="{ saving: lineDeviceSavingId === device.id || (lineGroupSaving && selectedLineDeviceIds.includes(device.id)), selected: selectedLineDeviceIds.includes(device.id), 'group-dragging': lineDeviceDrag.active && selectedLineDeviceIds.includes(device.id), 'is-station-editing': lineStationEditingDeviceId === device.id }"
                                         :style="linePreviewDeviceStyle(device)"
-                                        title="拖到设备线重新归位"
+                                        role="button" tabindex="0" :aria-label="device.name" :aria-pressed="selectedLineDeviceIds.includes(device.id)" :data-device-id="device.id"
+                                        @keydown="selectLineDeviceWithKeyboard(device.id, $event)"
+                                        title="拖动设备；Ctrl / Shift 点击多选"
                                         @pointerdown="startLineDeviceDrag(device.id, $event)"
                                     >
                                         <span class="line-map-station-bubble" @pointerdown.stop @click.stop>
@@ -7854,9 +7967,11 @@ async function openAdminSetupStep(step) {
                                         v-for="cart in selectedLineEditorCarts"
                                         :key="cart.id"
                                         class="line-map-device line-map-cart"
-                                        :class="{ saving: lineDeviceSavingId === cart.id }"
+                                        :class="{ saving: lineDeviceSavingId === cart.id || (lineGroupSaving && selectedLineDeviceIds.includes(cart.id)), selected: selectedLineDeviceIds.includes(cart.id), 'group-dragging': lineDeviceDrag.active && selectedLineDeviceIds.includes(cart.id) }"
                                         :style="linePreviewDeviceStyle(cart)"
-                                        title="拖到小车导轨重新归位"
+                                        role="button" tabindex="0" :aria-label="cart.name" :aria-pressed="selectedLineDeviceIds.includes(cart.id)" :data-device-id="cart.id"
+                                        @keydown="selectLineDeviceWithKeyboard(cart.id, $event)"
+                                        title="拖动小车；Ctrl / Shift 点击多选"
                                         @pointerdown="startLineDeviceDrag(cart.id, $event)"
                                     >
                                         <strong>{{ cart.name }}</strong>
@@ -7871,13 +7986,11 @@ async function openAdminSetupStep(step) {
                                             移出
                                         </button>
                                     </div>
-                                    <div
-                                        v-if="lineDeviceDrag.active"
-                                        class="line-map-device line-device-ghost"
-                                        :class="{ 'line-map-cart': isAuxiliaryDeviceConfig(getLineDeviceById(lineDeviceDrag.deviceId) || {}) }"
-                                        :style="lineDeviceDragGhostStyle()"
-                                    >
-                                        <strong>{{ getLineDeviceById(lineDeviceDrag.deviceId)?.name || '设备' }}</strong>
+                                    <div v-for="ghost in lineDeviceGhosts" :key="`ghost-${ghost.id}`"
+                                        class="line-map-device line-device-ghost" aria-hidden="true"
+                                        :class="{ 'line-map-cart': isAuxiliaryDeviceConfig(getLineDeviceById(ghost.id) || {}) }"
+                                        :style="lineDeviceGroupGhostStyle(ghost)">
+                                        <strong>{{ getLineDeviceById(ghost.id)?.name || '设备' }}</strong>
                                         <small>{{ lineDeviceDrag.message }}</small>
                                     </div>
                                     <div v-if="!selectedLineEditorDevices.length && !selectedLineEditorCarts.length" class="line-preview-empty-state">
@@ -11129,6 +11242,15 @@ async function openAdminSetupStep(step) {
     border-radius: 999px;
     font-weight: 600;
 }
+.line-selection-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 18px 0; font-size: 12px; color: #526574; }
+.line-selection-toolbar button { padding: 5px 10px; min-height: 30px; border: 1px solid #cbd9e5; border-radius: 6px; background: #fff; color: #245f8b; cursor: pointer; }
+.line-selection-toolbar button:disabled { opacity: .45; cursor: not-allowed; }
+.line-selection-toolbar label { display: inline-flex; align-items: center; gap: 5px; }
+.line-selection-toolbar input { width: 70px; padding: 4px 6px; border: 1px solid #cbd9e5; border-radius: 5px; }
+.line-selection-hint { margin-right: 4px; color: #7b8b98; }
+.line-map-device.selected { outline: 3px solid #2689db; outline-offset: 3px; box-shadow: 0 0 0 6px rgba(38,137,219,.12); }
+.line-map-device.group-dragging { opacity: .35; }
+.line-map-device:focus-visible { outline: 3px solid #2689db; outline-offset: 3px; }
 .line-preview-stage {
     position: relative;
     align-self: stretch;

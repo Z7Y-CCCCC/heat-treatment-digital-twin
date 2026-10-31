@@ -110,6 +110,39 @@ let backend;
     assert.equal(afterTransform.plc_ip, device.plc_ip);
     assert.equal(afterTransform.model_type, device.model_type);
     assert.equal(JSON.parse(afterTransform.instance_config).permissionFixture, 'must-survive');
+    const lineEditor = await account('line_layout_editor', { lines: { view: true, edit: true } });
+    const lineReader = await account('line_layout_reader', { lines: { view: true } });
+    await request('/devices', { method: 'POST', session: owner,
+        body: { id: 'batch_layout_peer', name: '组布局验收设备', line_id: line.id }, expected: 200 });
+    const batch = { devices: [{ id: device.id, pos_x: 10.5, layoutConfig: { stationNumber: 4 } }, { id: 'batch_layout_peer', pos_x: 20.5 }] };
+    await request('/devices/transforms', { method: 'PUT', body: batch, expected: 401 });
+    await request('/devices/transforms', { method: 'PUT', session: lineReader, body: batch, expected: 403 });
+    await request('/devices/transforms', { method: 'PUT', session: author, body: batch, expected: 403 });
+    await request('/devices/transforms', { method: 'PUT', session: lineEditor, body: batch, noCsrf: true, expected: 403 });
+    for (const body of [{ devices: [] }, { devices: Array(201).fill(batch.devices[0]) },
+        { devices: [batch.devices[0], batch.devices[0]] }, { devices: [{ id: device.id, plc_ip: 'not-allowed' }] },
+        { devices: [{ id: device.id, layoutConfig: { inspection: {} } }] },
+        { devices: [{ id: device.id, pos_x: '5' }] }, { devices: [{ id: device.id, scale: 0 }] },
+        { devices: batch.devices, unexpected: true }]) {
+        await request('/devices/transforms', { method: 'PUT', session: lineEditor, body, expected: 400 });
+    }
+    // The first member is updated inside the transaction before the second fails.
+    for (const invalid of [{ id: 'not-a-device', pos_x: 4 },
+        { id: 'batch_layout_peer', line_id: 'foreign-or-missing-line' },
+        { id: 'batch_layout_peer', layoutConfig: { laneLineId: 'foreign-or-missing-line' } }]) {
+        await request('/devices/transforms', { method: 'PUT', session: lineEditor,
+            body: { devices: [batch.devices[0], invalid] }, expected: invalid.id === 'not-a-device' ? 404 : 400 });
+        const rollback = (await request(`/devices/${device.id}`, { session: owner, expected: 200 })).data;
+        assert.deepEqual(rollback, afterTransform, 'failed group placement must roll back every member');
+    }
+    const groupSaved = (await request('/devices/transforms', { method: 'PUT', session: lineEditor, body: batch, expected: 200 })).data;
+    assert.deepEqual(groupSaved.devices.map(row => row.pos_x), [10.5, 20.5]);
+    const actual = (await request(`/devices/${device.id}`, { session: owner, expected: 200 })).data;
+    const expectedConfig = { ...JSON.parse(afterTransform.instance_config), stationNumber: 4 };
+    assert.deepEqual(actual, { ...afterTransform, pos_x: 10.5, instance_config: JSON.stringify(expectedConfig) });
+    assert.deepEqual(groupSaved.devices[0].instance_config, actual.instance_config);
+    await request('/devices/transforms', { method: 'PUT', session: composer,
+        body: { devices: [{ id: device.id, pos_x: 17.5, layoutConfig: { stationNumber: null } }] }, expected: 200 });
     const movement = await account('movement_editor', { 'mobile-devices': { view: true, edit: true } });
     await request(`/devices/${device.id}/movement`, { method: 'PUT', session: movement, body: { movement: { enabled: false }, plc_ip: 'not-allowed' }, expected: 400 });
     await request(`/devices/${device.id}/movement`, { method: 'PUT', session: movement, body: { movement: { enabled: false } }, expected: 200 });

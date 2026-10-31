@@ -9,36 +9,60 @@ const { TRANSFORM_FIELDS, LAYOUT_CONFIG_FIELDS } = require('../../shared/deviceA
 // Narrow authoring endpoints deliberately preserve model identity, PLC network
 // configuration and inspection metadata. Never reuse the full device PUT for
 // a user granted only scene placement or movement authoring.
-router.put('/:id/transform', async (req, res) => {
+function validateTransform(body) {
+    if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some(key => ![...TRANSFORM_FIELDS, 'layoutConfig'].includes(key))) throw new Error('布局包含不可修改字段');
+    const layout = body.layoutConfig || {};
+    if (typeof layout !== 'object' || Array.isArray(layout) || Object.keys(layout).some(key => !LAYOUT_CONFIG_FIELDS.includes(key)
+        || layout[key] !== null && !['string', 'number', 'boolean'].includes(typeof layout[key])
+        || typeof layout[key] === 'string' && layout[key].length > 160
+        || typeof layout[key] === 'number' && !Number.isFinite(layout[key]))) throw new Error('布局配置格式无效');
+    for (const key of TRANSFORM_FIELDS.filter(k => !['line_id', 'coordinate_space'].includes(k))) {
+        if (body[key] !== undefined && (typeof body[key] !== 'number' || !Number.isFinite(body[key]) || Math.abs(body[key]) > 100000
+            || key === 'scale' && (body[key] <= 0 || body[key] > 1000))) throw new Error('布局数值无效');
+    }
+    if (body.line_id !== undefined && body.line_id !== null && (typeof body.line_id !== 'string' || body.line_id.length > 120)) throw new Error('产线 ID 无效');
+    if (body.coordinate_space !== undefined && !['line_local', 'workshop_local'].includes(body.coordinate_space)) throw new Error('坐标空间无效');
+}
+async function applyTransform(tx, id, body, factoryId) {
+    const device = await tx.get('SELECT * FROM devices WHERE id = ?', [id]);
+    if (!await deviceBelongsToFactory(tx, device, factoryId)) throw Object.assign(new Error('设备不存在'), { statusCode: 404 });
+    const lineId = body.line_id === undefined ? device.line_id : body.line_id;
+    if (!await lineBelongsToFactory(tx, lineId, factoryId) || !lineId && !isAuxiliaryDevice(device.model_type, device.instance_config)) throw new Error('产线不属于当前工厂');
+    const config = parseJson(device.instance_config);
+    for (const [key, value] of Object.entries(body.layoutConfig || {})) { if (value === null) delete config[key]; else config[key] = value; }
+    for (const key of ['workshop_id', 'workshopId']) if (config[key] && !await tx.get('SELECT id FROM workshops WHERE id = ? AND factory_id = ?', [config[key], factoryId])) throw new Error('车间不属于当前工厂');
+    for (const key of ['laneLineId', 'railLineId']) if (config[key] && !await lineBelongsToFactory(tx, config[key], factoryId)) throw new Error('绑定产线不属于当前工厂');
+    const fields = TRANSFORM_FIELDS.filter(key => body[key] !== undefined);
+    await tx.run(`UPDATE devices SET ${fields.map(key => `${key}=?`).concat('instance_config=?').join(',')} WHERE id=?`,
+        [...fields.map(key => body[key]), JSON.stringify(config), id]);
+    return { id, ...Object.fromEntries(TRANSFORM_FIELDS.map(key => [key, body[key] === undefined ? device[key] : body[key]])), instance_config: JSON.stringify(config) };
+}
+router.put('/transforms', async (req, res) => {
     try {
         const body = req.body;
-        if (!body || Array.isArray(body) || Object.keys(body).some(key => ![...TRANSFORM_FIELDS, 'layoutConfig'].includes(key))) throw new Error('布局包含不可修改字段');
-        const layout = body.layoutConfig || {};
-        if (typeof layout !== 'object' || Array.isArray(layout) || Object.keys(layout).some(key => !LAYOUT_CONFIG_FIELDS.includes(key)
-            || layout[key] !== null && !['string', 'number', 'boolean'].includes(typeof layout[key])
-            || typeof layout[key] === 'string' && layout[key].length > 160
-            || typeof layout[key] === 'number' && !Number.isFinite(layout[key]))) throw new Error('布局配置格式无效');
-        for (const key of TRANSFORM_FIELDS.filter(k => !['line_id', 'coordinate_space'].includes(k))) {
-            if (body[key] !== undefined && (typeof body[key] !== 'number' || !Number.isFinite(body[key]) || Math.abs(body[key]) > 100000
-                || key === 'scale' && (body[key] <= 0 || body[key] > 1000))) throw new Error('布局数值无效');
+        if (!body || Object.keys(body).some(key => key !== 'devices') || !Array.isArray(body.devices) || !body.devices.length || body.devices.length > 200) throw new Error('请选择 1–200 台设备');
+        const ids = new Set();
+        for (const row of body.devices) {
+            if (!row || typeof row.id !== 'string' || !row.id || row.id.length > 120 || ids.has(row.id)) throw new Error('设备 ID 无效或重复');
+            ids.add(row.id);
+            const { id, ...patch } = row; validateTransform(patch);
         }
-        if (body.line_id !== undefined && body.line_id !== null && (typeof body.line_id !== 'string' || body.line_id.length > 120)) throw new Error('产线 ID 无效');
-        if (body.coordinate_space !== undefined && !['line_local', 'workshop_local'].includes(body.coordinate_space)) throw new Error('坐标空间无效');
         const db = await getDb();
-        const config = await db.transaction(async tx => {
-            const device = await tx.get('SELECT * FROM devices WHERE id = ?', [req.params.id]);
-            if (!await deviceBelongsToFactory(tx, device, req.factoryId)) throw Object.assign(new Error('设备不存在'), { statusCode: 404 });
-            const lineId = body.line_id === undefined ? device.line_id : body.line_id;
-            if (!await lineBelongsToFactory(tx, lineId, req.factoryId) || !lineId && !isAuxiliaryDevice(device.model_type, device.instance_config)) throw new Error('产线不属于当前工厂');
-            const config = parseJson(device.instance_config);
-            for (const [key, value] of Object.entries(layout)) { if (value === null) delete config[key]; else config[key] = value; }
-            for (const key of ['workshop_id', 'workshopId']) if (config[key] && !await tx.get('SELECT id FROM workshops WHERE id = ? AND factory_id = ?', [config[key], req.factoryId])) throw new Error('车间不属于当前工厂');
-            const fields = TRANSFORM_FIELDS.filter(key => body[key] !== undefined);
-            await tx.run(`UPDATE devices SET ${fields.map(key => `${key}=?`).concat('instance_config=?').join(',')} WHERE id=?`,
-                [...fields.map(key => body[key]), JSON.stringify(config), req.params.id]);
-            return config;
+        const saved = await db.transaction(async tx => {
+            const rows = [];
+            for (const { id, ...patch } of body.devices) rows.push(await applyTransform(tx, id, patch, req.factoryId));
+            return rows;
         });
-        broadcastDeviceConfigurationChanged(req.params.id, config);
+        for (const row of saved) broadcastDeviceConfigurationChanged(row.id, row.instance_config);
+        res.json({ success: true, devices: saved });
+    } catch (error) { res.status(error.statusCode || 400).json({ error: error.message }); }
+});
+router.put('/:id/transform', async (req, res) => {
+    try {
+        validateTransform(req.body);
+        const db = await getDb();
+        const row = await db.transaction(tx => applyTransform(tx, req.params.id, req.body, req.factoryId));
+        broadcastDeviceConfigurationChanged(row.id, row.instance_config);
         res.json({ success: true });
     } catch (error) { res.status(error.statusCode || 400).json({ error: error.message }); }
 });
