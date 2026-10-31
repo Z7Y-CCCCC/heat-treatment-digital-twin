@@ -32,4 +32,3 @@
 .btn-danger { background: linear-gradient(135deg, #fff8f7 0%, #ffeceb 100%); border-color: #f0b5af; color: #b42318; }
 .btn-danger:not(:disabled):hover { background: linear-gradient(135deg, #fff4f2 0%, #ffdeda 100%); border-color: #e8897f; color: #9f1d17; box-shadow: 0 7px 16px rgba(180, 35, 24, .13); }
 .btn-sm { padding: 5px 12px; font-size: 12px; border-radius: 6px; }
-

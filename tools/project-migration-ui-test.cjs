@@ -64,7 +64,9 @@ let server, browser, page;
     assert.ok(fs.statSync(archive).size > 100);
     await transfer.getByRole('status').waitFor(); check('export downloads a real ZIP for the chosen source without switching the editing factory');
     const fileName = '项目迁移包-用于验证较长文件名不会挤出按钮或卡片边界-20261031.zip';
-    await transfer.getByLabel('选择项目迁移 ZIP', { exact: true }).setInputFiles({ name: fileName, mimeType: 'application/zip', buffer: fs.readFileSync(archive) });
+    const chooserEvent = page.waitForEvent('filechooser');
+    await fileButton.click();
+    await (await chooserEvent).setFiles({ name: fileName, mimeType: 'application/zip', buffer: fs.readFileSync(archive) });
     assert.equal(await transfer.locator('.transfer-file-name').textContent(), fileName);
     let release; const hold = new Promise(resolve => { release = resolve; });
     await page.route('**/api/project-bundles/inspect', async route => { await hold; await route.continue(); });
@@ -116,4 +118,3 @@ let server, browser, page;
     await page?.screenshot({ path: path.join(directory, 'failure.png'), fullPage: true }).catch(() => {});
     fs.writeFileSync(path.join(directory, 'failure.json'), JSON.stringify({ error: error.stack, checks, errors }, null, 2)); console.error(error); process.exitCode = 1;
 }).finally(async () => { await browser?.close(); await stopOwnedSmokeProcess(server); });
-
