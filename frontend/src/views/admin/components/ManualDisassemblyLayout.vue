@@ -12,7 +12,7 @@ import { createManualLayoutRenderLoop, ManualDisassemblyLayoutRuntime } from '..
 
 const props = defineProps({ device: { type: Object, required: true }, model: { type: Object, required: true },
     inspection: { type: Object, required: true }, saving: Boolean, saveRevision: { type: Number, default: 0 }, status: { type: String, default: '' } })
-const emit = defineEmits(['save', 'selection-change', 'dirty-change'])
+const emit = defineEmits(['save', 'reload', 'selection-change', 'dirty-change'])
 const viewport = ref(null), loading = ref(false), error = ref(''), message = ref(''), query = ref('')
 const selectedId = ref(''), dirty = ref(false), canUndo = ref(false), canRedo = ref(false), assembled = ref(false)
 const partRows = ref([]), offsets = ref([0, 0, 0]), dragging = ref(false)
@@ -79,6 +79,12 @@ function redo() { if (editable.value && session && !dragging.value && !props.sav
 function save() {
     if (!editable.value || !session?.runtime?.parts.length || props.saving || dragging.value || error.value) return
     emit('save', session.runtime.getDraft())
+}
+function exportDraft() {
+    if (!session || dragging.value) return
+    const url = URL.createObjectURL(new Blob([JSON.stringify({ deviceId: props.device.id, inspection: session.runtime.getDraft() }, null, 2)], { type: 'application/json' }))
+    const link = document.createElement('a'); link.href = url; link.download = `disassembly-${String(props.device.id).replace(/[^a-z0-9_-]/gi, '_')}.json`; link.click()
+    setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
 function keyboard(event) {
     if (event.key === 'Escape' && cancelDrag()) { event.preventDefault(); return }
@@ -302,7 +308,7 @@ defineExpose({ dirty, dragging, getDraft: () => session?.runtime.getDraft() || p
 </script>
 
 <template>
-    <section class="manual-layout" data-testid="manual-disassembly-layout" tabindex="0" @keydown="keyboard">
+    <section class="manual-layout" data-testid="manual-disassembly-layout" :data-device-id="device.id" tabindex="0" @keydown="keyboard">
         <header class="layout-heading">
             <div><span class="eyebrow">PER-DEVICE / 手工空间布局</span><h3>{{ device.name || device.id }} · 部件摆放</h3><p>直接拖动部件，或使用三轴与平面手柄。只保存本台设备的位置，不改变同型号其他设备。</p></div>
             <div class="save-area"><span class="dirty-pill" :class="{ dirty }">{{ dirty ? '有未保存的位置' : '已载入保存位置' }}</span><button class="primary" type="button" data-testid="save-manual-layout" :disabled="saving || loading || !partRows.length || dragging || !!error" @click="save" v-permission="{ page: 'disassembly-layout', action: 'edit' }">{{ saving ? '保存中…' : '保存本台设备布局' }}</button></div>
@@ -312,6 +318,8 @@ defineExpose({ dirty, dragging, getDraft: () => session?.runtime.getDraft() || p
             <span class="toolbar-divider"></span><button type="button" :disabled="loading || !!error || dragging" @click="fit()">完整视图</button><button type="button" :disabled="!selected || dragging" @click="fit(true)">聚焦选中部件</button>
             <button type="button" :class="{ active: assembled }" :disabled="loading || !!error || dragging" @click="toggleAssembly">{{ assembled ? '返回手工拆解布局' : '查看装配原位' }}</button>
             <button type="button" :disabled="!dirty || saving || dragging" @click="restoreSaved">恢复已保存位置</button>
+            <button type="button" :disabled="saving || loading || dragging" @click="emit('reload')">重新读取布局</button>
+            <button type="button" :disabled="saving || loading || dragging || !partRows.length" @click="exportDraft">导出草稿</button>
         </div>
         <p v-if="parentSpace" class="coordinate-note">旧版父级坐标：拖拽按选中部件首节点的父级基底换算；多节点跨父级时，各节点保持各自父坐标语义。</p>
         <div class="layout-body">

@@ -5,7 +5,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const WebSocket = require('ws');
 const { getInspectionPresets, presetMetadata } = require('../services/inspectionPresets');
-const { effectiveInspection, patchDeviceInspectionLayout, exactTextEquals } = require('../services/deviceInspection');
+const { effectiveInspection, patchDeviceInspectionLayout, exactTextEquals, exactJsonEquals, loadDeviceInspection, saveDeviceInspectionLayout } = require('../services/deviceInspection');
 const { BACKEND_DIR, createRunDirectory, createTestDatabase, findFreePort, startLoggedProcess,
     forceStop, waitForHttp, testFetch, waitUntil } = require('./integration-test-utils.cjs');
 
@@ -36,7 +36,24 @@ async function main() {
         assert.match(exactTextEquals('instance_config', 'mysql'), /AS BINARY/);
         assert.match(exactTextEquals('instance_config', 'sqlserver'), /varbinary/);
         assert.match(exactTextEquals('instance_config', 'sqlite'), /COLLATE BINARY/);
+        assert.match(exactJsonEquals('instance_config', 'mysql'), /JSON_EXTRACT.*= JSON_EXTRACT/);
     });
+
+    const fixtureModel = { id: getInspectionPresets()[0].modelId, file_path: '/fixture.glb', placement_level: 'device',
+        metadata: presetMetadata(getInspectionPresets()[0].modelId) };
+    const fixtureDevice = { id: 'json-driver', line_id: 'line', model_type: fixtureModel.id, model_file: null, instance_config: { z: 1, a: { Case: 'ABC' } } };
+    const fake = metadata => ({ all: async () => [{ ...fixtureModel, metadata }] });
+    const objectRead = await loadDeviceInspection(fake(fixtureModel.metadata), fixtureDevice, 'factory');
+    const stringRead = await loadDeviceInspection(fake(JSON.stringify(fixtureModel.metadata)), { ...fixtureDevice, instance_config: '{ "a": {"Case":"ABC"}, "z":1 }' }, 'factory');
+    assert.equal(objectRead.revision, stringRead.revision);
+    const changedCase = await loadDeviceInspection(fake(fixtureModel.metadata), { ...fixtureDevice, instance_config: { z: 1, a: { Case: 'abc' } } }, 'factory');
+    assert.notEqual(objectRead.revision, changedCase.revision);
+    assert.doesNotThrow(() => patchDeviceInspectionLayout(objectRead, { revision: objectRead.legacyRevision, parts: [] }));
+    const nextJson = patchDeviceInspectionLayout(objectRead, { revision: objectRead.revision, parts: [] });
+    const fakeSaved = await saveDeviceInspectionLayout({ run: async () => ({ affectedRows: 1 }) }, fixtureDevice, objectRead, nextJson, 'factory', 'mysql');
+    const reread = await loadDeviceInspection(fake(fixtureModel.metadata), { ...fixtureDevice, instance_config: nextJson }, 'factory');
+    assert.equal(fakeSaved.revision, reread.revision);
+    check('JSON object/text/key order produce one revision; save-read revisions agree and case-only changes conflict');
 
     const directory = createRunDirectory('device-inspection-layout');
     const dataDirectory = path.join(directory, 'data');
@@ -158,7 +175,7 @@ async function main() {
     await new Promise(resolve => setTimeout(resolve, 200));
     assert.equal(events.slice(rejectedOffset).filter(event => event.type === 'device_configuration_changed').length, 0);
     assert.deepEqual(await api(route, 'GET', undefined, factoryId), { inspection: saved.inspection,
-        revision: saved.revision, source: 'device', modelId });
+        revision: saved.revision, assetRevision: saved.assetRevision, source: 'device', modelId });
     check('invalid, stale and cross-factory writes neither persist nor broadcast');
 
     const current = await api(route, 'GET', undefined, factoryId);

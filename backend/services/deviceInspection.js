@@ -50,11 +50,24 @@ function effectiveInspection(metadata, instance) {
     return { raw, inspection };
 }
 
-function revisionFor(device, model) {
+function legacyRevisionFor(device, model) {
     return crypto.createHash('sha256').update(JSON.stringify([
         device.id, device.line_id, device.model_type, device.model_file, device.instance_config,
         model.id, model.file_path, model.metadata
     ])).digest('hex');
+}
+
+// MySQL JSON columns are decoded as objects and normalize key ordering/spacing.
+// Hash the JSON value, not a driver's object-vs-string representation.
+function canonicalJson(value) {
+    const parsed = parseObject(value, '拆解版本配置');
+    const sort = item => Array.isArray(item) ? item.map(sort) : isObject(item)
+        ? Object.fromEntries(Object.keys(item).sort().map(key => [key, sort(item[key])])) : item;
+    return JSON.stringify(sort(parsed));
+}
+function revisionFor(device, model) {
+    return legacyRevisionFor({ ...device, instance_config: canonicalJson(device.instance_config) },
+        { ...model, metadata: canonicalJson(model.metadata) });
 }
 
 async function loadDeviceInspection(db, device, factoryId) {
@@ -76,6 +89,9 @@ async function loadDeviceInspection(db, device, factoryId) {
         instance, raw, inspection, model,
         record: records.find(item => item.id === model.id) || null,
         revision: revisionFor(device, model),
+        // A currently open older frontend can finish its pending save safely.
+        legacyRevision: legacyRevisionFor(device, model),
+        assetRevision: crypto.createHash('sha256').update(JSON.stringify([model.id, device.model_file || model.file_path])).digest('hex'),
         source: isObject(instance.inspection) ? 'device' : 'model',
         modelId: model.id
     };
@@ -86,6 +102,7 @@ function publicInspection(loaded) {
         inspection: loaded.inspection,
         revision: loaded.revision,
         source: loaded.source,
+        assetRevision: loaded.assetRevision,
         modelId: loaded.modelId
     };
 }
@@ -98,7 +115,7 @@ function patchDeviceInspectionLayout(loaded, body) {
     if (typeof body.revision !== 'string' || !/^[a-f0-9]{64}$/.test(body.revision)) {
         throw inspectionError('保存需要读取时的 revision', 428, 'DEVICE_INSPECTION_REVISION_REQUIRED');
     }
-    if (body.revision !== loaded.revision) {
+    if (body.revision !== loaded.revision && body.revision !== loaded.legacyRevision) {
         throw inspectionError('设备或模型配置已更新，请重新加载后保存', 409, 'DEVICE_INSPECTION_CONFLICT');
     }
     if (!Array.isArray(body.parts) || body.parts.length > MAX_LAYOUT_PARTS) {
@@ -145,15 +162,26 @@ function exactTextEquals(column, dialect) {
     return `${value} = ?`;
 }
 
+function exactJsonEquals(column, dialect) {
+    if (dialect === 'mysql') {
+        // Native JSON equality preserves case and array order, but ignores
+        // display whitespace/key order and equal numeric forms (1.0 vs 1).
+        return `JSON_EXTRACT(COALESCE(NULLIF(NULLIF(CAST(${column} AS CHAR), ''), 'null'), '{}'), '$') = JSON_EXTRACT(?, '$')`;
+    }
+    if (dialect === 'postgres') return `COALESCE(NULLIF(${column}::jsonb, 'null'::jsonb), '{}'::jsonb) = CAST(? AS jsonb)`;
+    return exactTextEquals(column, dialect);
+}
+
 async function saveDeviceInspectionLayout(tx, device, loaded, nextInstance, factoryId, dialect) {
     const serialized = JSON.stringify(nextInstance);
     const columns = ['instance_config', 'model_type', 'model_file', 'line_id'];
-    const predicates = columns.map(column => exactTextEquals(column, dialect));
-    const params = [serialized, device.id, ...columns.map(column => device[column] ?? '')];
+    const predicates = columns.map(column => column === 'instance_config' ? exactJsonEquals(column, dialect) : exactTextEquals(column, dialect));
+    const jsonParameter = value => ['mysql', 'postgres'].includes(dialect) ? canonicalJson(value) : value ?? '';
+    const params = [serialized, device.id, ...columns.map(column => column === 'instance_config' ? jsonParameter(device[column]) : device[column] ?? '')];
     if (loaded.record) {
         predicates.push(`EXISTS (SELECT 1 FROM models WHERE id = ? AND (factory_id IS NULL OR factory_id = ?)
-            AND ${exactTextEquals('metadata', dialect)} AND ${exactTextEquals('file_path', dialect)})`);
-        params.push(loaded.model.id, factoryId, loaded.record.metadata ?? '', loaded.record.file_path ?? '');
+            AND ${exactJsonEquals('metadata', dialect)} AND ${exactTextEquals('file_path', dialect)})`);
+        params.push(loaded.model.id, factoryId, jsonParameter(loaded.record.metadata), loaded.record.file_path ?? '');
     } else {
         predicates.push('NOT EXISTS (SELECT 1 FROM models WHERE id = ? AND (factory_id IS NULL OR factory_id = ?))');
         params.push(loaded.model.id, factoryId);
@@ -168,4 +196,4 @@ async function saveDeviceInspectionLayout(tx, device, loaded, nextInstance, fact
 }
 
 module.exports = { loadDeviceInspection, publicInspection, patchDeviceInspectionLayout,
-    saveDeviceInspectionLayout, effectiveInspection, exactTextEquals };
+    saveDeviceInspectionLayout, effectiveInspection, exactTextEquals, exactJsonEquals };

@@ -17,7 +17,7 @@ const layout = id => ({ version: 2, enabled: true, offset_space: 'parent', anima
         { id: 'part_b', name: '部件 B', explode_offset: [-1, -2, -3], explode_rotation: [0, 0, 0],
             node_name: 'peer_mesh', duration: 1.1 }
     ] })
-const snapshot = id => ({ inspection: layout(id), revision: `${id}`.repeat(64), source: 'device', modelId: 'model_1' })
+const snapshot = id => ({ inspection: layout(id), revision: `${id}`.repeat(64), source: 'device', modelId: 'model_1', assetRevision: 'geometry-1' })
 
 function fixture({ answers = [], instanceAsString = true, initialDeviceId = 'a' } = {}) {
     const originalConfig = { workshop_id: 'workshop_1', movement: { path: [[1, 2, 3]] },
@@ -272,6 +272,77 @@ test('save-and-switch waits for the successful device-only write before loading 
     assert.equal(f.state.inspection.value.extension.owner, 'b')
     assert.equal(f.state.dirty.value, false)
     assert.equal(f.calls.discards, 0)
+})
+
+test('409 rebases only changed parts and preserves remote offsets, metadata and bindings', async () => {
+    const f = fixture(); await f.load(); f.edit([12, 34, 56])
+    const latest = clone(f.snapshots.get('a')); latest.revision = 'latest'
+    latest.inspection.parts[1].explode_offset = [70, 80, 90]
+    latest.inspection.parts[0].duration = 3.5
+    latest.inspection.parts[0].point_ids = ['new-point']
+    f.snapshots.set('a', latest)
+    const save = f.api.saveDeviceInspection, writes = []
+    f.api.saveDeviceInspection = async (id, payload) => {
+        writes.push(clone(payload))
+        return writes.length === 1 ? { error: '配置已更新', code: 'DEVICE_INSPECTION_CONFLICT' } : save(id, payload)
+    }
+    assert.equal(await f.state.save(), true)
+    assert.equal(writes.length, 2)
+    assert.equal(writes[1].revision, 'latest')
+    assert.deepEqual(writes[1].parts, [{ id: 'part_a', explode_offset: [12, 34, 56] }])
+    assert.deepEqual(f.state.inspection.value.parts[1].explode_offset, [70, 80, 90])
+    assert.equal(f.state.inspection.value.parts[0].duration, 3.5)
+    assert.deepEqual(f.state.inspection.value.parts[0].point_ids, ['new-point'])
+    assert.equal(f.calls.asks.length, 0)
+    assert.equal(f.state.dirty.value, false)
+    assert.equal(await f.state.canLeave(), true)
+})
+
+for (const confirm of [false, true]) test(`overlapping remote offset requires explicit confirmation (${confirm})`, async () => {
+    const f = fixture({ answers: [confirm] }); await f.load(); const draft = clone(f.edit())
+    const latest = clone(f.snapshots.get('a')); latest.revision = 'latest'
+    latest.inspection.parts[0].explode_offset = [101, 102, 103]; f.snapshots.set('a', latest)
+    const save = f.api.saveDeviceInspection; let writes = 0
+    f.api.saveDeviceInspection = (id, payload) => ++writes === 1
+        ? { error: '配置已更新', code: 'DEVICE_INSPECTION_CONFLICT' } : save(id, payload)
+    assert.equal(await f.state.save(), confirm)
+    assert.equal(writes, confirm ? 2 : 1)
+    assert.equal(f.calls.asks[0].confirmText, '使用当前拖拽位置')
+    assert.equal(f.state.dirty.value, !confirm)
+    if (!confirm) assert.deepEqual(f.draft(), draft)
+})
+
+for (const change of ['asset', 'nodes', 'coordinate-space']) test(`409 never transfers offsets onto a different ${change}`, async () => {
+    const f = fixture(); await f.load(); const draft = clone(f.edit())
+    const latest = clone(f.snapshots.get('a')); latest.revision = 'latest'
+    if (change === 'asset') latest.assetRevision = 'replacement-file'
+    if (change === 'nodes') latest.inspection.parts[0].node_name = 'replaced_mesh'
+    if (change === 'coordinate-space') latest.inspection.offset_space = 'model'
+    f.snapshots.set('a', latest)
+    let writes = 0
+    f.api.saveDeviceInspection = async () => { writes++; return { error: '配置已更新', code: 'DEVICE_INSPECTION_CONFLICT' } }
+    assert.equal(await f.state.save(), false); assert.equal(writes, 1)
+    assert.equal(f.state.dirty.value, true); assert.deepEqual(f.draft(), draft)
+    assert.match(f.state.status.value, /模型或部件结构已变化/)
+})
+
+test('a second 409 is bounded and keeps the original dirty draft', async () => {
+    const f = fixture(); await f.load(); const draft = clone(f.edit())
+    let writes = 0
+    f.api.saveDeviceInspection = async () => { writes++; return { error: '仍在更新', code: 'DEVICE_INSPECTION_CONFLICT' } }
+    assert.equal(await f.state.save(), false); assert.equal(writes, 2)
+    assert.equal(f.state.dirty.value, true); assert.deepEqual(f.draft(), draft)
+})
+
+test('explicit reload can cancel safely or discard and obtain a fresh revision', async () => {
+    const f = fixture({ answers: [false, true] }); await f.load(); const draft = clone(f.edit())
+    const latest = clone(f.snapshots.get('a')); latest.revision = 'fresh'; f.snapshots.set('a', latest)
+    assert.equal(await f.state.reloadSelected(), false)
+    assert.deepEqual(f.draft(), draft); assert.equal(f.calls.discards, 0)
+    assert.equal(await f.state.reloadSelected(), true)
+    assert.equal(f.calls.discards, 1); assert.equal(f.state.revision.value, 'fresh')
+    assert.equal(f.state.dirty.value, false)
+    assert.equal(await f.state.canLeave(), true)
 })
 
 test('discard-and-switch discards editor changes and never writes the old device', async () => {

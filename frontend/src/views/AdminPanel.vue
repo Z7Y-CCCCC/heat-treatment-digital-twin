@@ -138,6 +138,7 @@ const adminContentRef = ref(null)
 const isAdminNavCollapsed = ref(!!storedAdminUiState.isAdminNavCollapsed)
 const isFactoryMenuOpen = ref(true)
 const isDataMenuOpen = ref(true)
+const isModelsMenuOpen = ref(true)
 const isExternalDataSourcesOpen = ref(!!storedAdminUiState.isExternalDataSourcesOpen)
 const isAlarmConfigOpen = ref(!!storedAdminUiState.isAlarmConfigOpen)
 
@@ -4544,6 +4545,7 @@ async function selectAdminTab(tabKey) {
     if (!canSelectTab(tabKey)) return
     if (activeTab.value === 'disassembly-layout' && tabKey !== activeTab.value && !await manualDisassemblyPage.canLeave()) return
     activeTab.value = tabKey
+    if (['models', 'disassembly-layout'].includes(tabKey)) isModelsMenuOpen.value = true
     resizeComposerPreviewAfterLayout()
 }
 
@@ -6843,8 +6845,7 @@ const factoryTabs = [
     { key: 'workshops', label: '车间管理', icon: 'workshops' },
     { key: 'lines', label: '产线管理', icon: 'lines' },
     { key: 'devices', label: '设备管理', icon: 'devices' },
-    { key: 'mobile-devices', label: '设备运动配置', icon: 'mobile' },
-    { key: 'disassembly-layout', label: '拆解布局', icon: 'models' }
+    { key: 'mobile-devices', label: '设备运动配置', icon: 'mobile' }
 ]
 const factoryTabKeys = factoryTabs.map(tab => tab.key)
 const dataTabs = [
@@ -6852,6 +6853,12 @@ const dataTabs = [
     { key: 'point-monitor', label: '点位监视', icon: 'points' }
 ]
 const dataTabKeys = dataTabs.map(tab => tab.key)
+const modelTabs = [
+    { key: 'models', label: '模型管理', icon: 'models' },
+    { key: 'disassembly-layout', label: '拆解布局', icon: 'models' }
+]
+const modelTabKeys = modelTabs.map(tab => tab.key)
+const visibleModelTabs = computed(() => modelTabs.filter(tab => canSelectTab(tab.key)))
 const mainTabs = [
     { key: 'factories', label: '工厂与区域', icon: 'factories' },
     { key: 'composer', label: '现场编排器', icon: 'composer' },
@@ -6860,7 +6867,7 @@ const mainTabs = [
     { key: 'users', label: '用户与权限', icon: 'users' },
     { key: 'settings', label: '系统设置', icon: 'settings' }
 ]
-const visibleMainTabs = computed(() => mainTabs.filter(tab => canSelectTab(tab.key)))
+const visibleMainTabs = computed(() => mainTabs.filter(tab => tab.key === 'models' ? visibleModelTabs.value.length > 0 : canSelectTab(tab.key)))
 const visibleFactoryTabs = computed(() => factoryTabs.filter(tab => canSelectTab(tab.key)))
 const visibleDataTabs = computed(() => dataTabs.filter(tab => canSelectTab(tab.key)))
 
@@ -7046,9 +7053,27 @@ async function openAdminSetupStep(step) {
                         </div>
                     </Transition>
                 </div>
-                <button
-                    v-for="tab in visibleMainTabs.filter(tab => tab.key !== 'factories')"
-                    :key="tab.key"
+                <template v-for="tab in visibleMainTabs.filter(tab => tab.key !== 'factories')" :key="tab.key">
+                <div v-if="tab.key === 'models'" class="nav-group" data-testid="model-library-nav"
+                    :class="{ active: modelTabKeys.includes(activeTab), open: isModelsMenuOpen }">
+                    <button type="button" class="nav-item nav-group-toggle" title="模型库"
+                        :class="{ active: modelTabKeys.includes(activeTab) }"
+                        :aria-expanded="isModelsMenuOpen || isAdminNavCollapsed" aria-controls="model-library-submenu"
+                        @click="isModelsMenuOpen = !isModelsMenuOpen">
+                        <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path v-for="(path, index) in navIconPaths.models" :key="index" :d="path" /></svg></span>
+                        <span class="nav-label">模型库</span><span class="nav-chevron">⌄</span>
+                    </button>
+                    <Transition name="nav-submenu">
+                        <div v-if="isModelsMenuOpen || isAdminNavCollapsed" id="model-library-submenu" class="nav-submenu">
+                            <button v-for="child in visibleModelTabs" :key="child.key" type="button" class="nav-item nav-subitem"
+                                :class="{ active: activeTab === child.key }" :title="child.label" @click="selectAdminTab(child.key)">
+                                <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path v-for="(path, index) in navIconPaths[child.icon]" :key="index" :d="path" /></svg></span>
+                                <span class="nav-label">{{ child.label }}</span>
+                            </button>
+                        </div>
+                    </Transition>
+                </div>
+                <button v-else
                     type="button"
                     class="nav-item"
                     :class="{ active: activeTab === tab.key }"
@@ -7062,6 +7087,7 @@ async function openAdminSetupStep(step) {
                     </span>
                     <span class="nav-label">{{ tab.label }}</span>
                 </button>
+                </template>
             </nav>
             <button
                 class="nav-collapse-btn"
@@ -8217,7 +8243,7 @@ async function openAdminSetupStep(step) {
                         :key="`${manualDisassemblyDevice.id}:${manualDisassemblyModel.id}`" ref="manualDisassemblyRef"
                         :device="manualDisassemblyDevice" :model="manualDisassemblyModel" :inspection="manualDisassemblyInspection"
                         :saving="manualDisassemblySaving" :save-revision="manualDisassemblySaveRevision" :status="manualDisassemblyStatus"
-                        @save="manualDisassemblyPage.save($event)" @dirty-change="manualDisassemblyDirty = $event" />
+                        @save="manualDisassemblyPage.save($event)" @reload="manualDisassemblyPage.reloadSelected()" @dirty-change="manualDisassemblyDirty = $event" />
                     <div v-else class="manual-layout-page-state">
                         <strong>{{ manualDisassemblyStatus || '先为设备关联三维模型，再在这里拖拽摆放拆解部件。' }}</strong>
                         <button v-if="manualDisassemblyDevice" type="button" class="btn" @click="manualDisassemblyPage.loadSelected()">重新读取布局</button>

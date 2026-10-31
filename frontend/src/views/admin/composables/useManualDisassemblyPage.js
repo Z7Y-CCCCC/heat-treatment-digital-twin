@@ -7,6 +7,9 @@ const parse = value => {
 }
 const contextKey = (device, model) => JSON.stringify([device?.id, device?.line_id, device?.model_type,
     device?.model_file, device?.instance_config, model?.id, model?.file_path, model?.metadata])
+const frameKey = inspection => JSON.stringify([inspection?.offset_space, inspection?.parts?.map(part =>
+    [part.id, part.enabled, part.node_path, part.node_paths, part.node_name, part.node_names, part.pivot, part.explode_rotation])])
+const sameOffset = (a, b) => JSON.stringify(a) === JSON.stringify(b)
 
 export function manualLayoutPayload(inspection, revision) {
     if (!revision) throw new Error('布局版本尚未读取，请重新加载设备')
@@ -30,6 +33,7 @@ export function useManualDisassemblyPage({ devices, models, api, ask, initialDev
     const selectedDeviceId = ref(initialDeviceId)
     const inspection = ref(null)
     const revision = ref('')
+    const assetRevision = ref('')
     const source = ref('')
     const loading = ref(false)
     const saving = ref(false)
@@ -76,6 +80,7 @@ export function useManualDisassemblyPage({ devices, models, api, ask, initialDev
             loadedContext.value = { device: copy(device.value), model: copy(model.value) }
             inspection.value = copy(result.inspection)
             revision.value = result.revision
+            assetRevision.value = result.assetRevision || ''
             source.value = result.source || ''
             saveRevision.value += 1
         } catch (error) {
@@ -90,11 +95,34 @@ export function useManualDisassemblyPage({ devices, models, api, ask, initialDev
         if (editor()?.dragging) { status.value = '请先完成或取消当前拖拽，再保存。'; return false }
         const id = selectedDeviceId.value
         const sequence = requestSequence
+        const baseline = copy(inspection.value)
         saving.value = true
         status.value = '正在保存本设备的部件位置…'
         try {
             const payload = manualLayoutPayload(draft, revision.value)
-            const result = await api.saveDeviceInspection(id, payload)
+            let result = await api.saveDeviceInspection(id, payload)
+            if (result?.code === 'DEVICE_INSPECTION_CONFLICT') {
+                // Rebase ONLY locally edited positions. Unchanged parts and all
+                // latest timings, bindings and unrelated device fields survive.
+                const latest = await api.getDeviceInspection(id)
+                if (disposed || sequence !== requestSequence || id !== selectedDeviceId.value) return false
+                if (latest?.error || !latest?.inspection || !latest.revision) throw new Error(latest?.error || '无法读取最新布局，请稍后重试')
+                if (!assetRevision.value || latest.assetRevision !== assetRevision.value || frameKey(latest.inspection) !== frameKey(baseline)) {
+                    throw new Error('模型或部件结构已变化；草稿未丢失，请导出草稿后重新读取布局')
+                }
+                const edits = payload.parts.filter(part => !sameOffset(part.explode_offset, baseline.parts.find(p => p.id === part.id)?.explode_offset))
+                const overlaps = edits.filter(part => {
+                    const remote = latest.inspection.parts.find(p => p.id === part.id)?.explode_offset
+                    return !sameOffset(remote, baseline.parts.find(p => p.id === part.id)?.explode_offset) && !sameOffset(remote, part.explode_offset)
+                })
+                if (overlaps.length && await ask({ title: '部件位置发生冲突',
+                    message: `${overlaps.length} 个已拖动部件也被其他操作修改，是否使用当前拖拽位置？`,
+                    type: 'warning', showCancel: true, cancelText: '保留草稿', confirmText: '使用当前拖拽位置' }) !== true) {
+                    status.value = '未覆盖其他修改，当前草稿已保留。'; return false
+                }
+                if (disposed || sequence !== requestSequence || id !== selectedDeviceId.value) return false
+                result = await api.saveDeviceInspection(id, { ...payload, revision: latest.revision, parts: edits })
+            }
             if (result?.error || result?.success !== true || !result.inspection || !result.revision) throw new Error(result?.error || '后端未确认保存')
             const existing = devices.value.find(item => String(item.id) === id)
             if (existing) {
@@ -105,6 +133,7 @@ export function useManualDisassemblyPage({ devices, models, api, ask, initialDev
             if (existing) loadedContext.value = { device: copy(existing), model: copy(model.value) }
             inspection.value = copy(result.inspection)
             revision.value = result.revision
+            assetRevision.value = result.assetRevision || assetRevision.value
             source.value = result.source || 'device'
             dirty.value = false
             saveRevision.value += 1
@@ -123,6 +152,14 @@ export function useManualDisassemblyPage({ devices, models, api, ask, initialDev
         editor()?.discardChanges?.()
         dirty.value = false
         status.value = ''
+    }
+
+    async function reloadSelected() {
+        if (disposed || saving.value || loading.value || editor()?.dragging) return false
+        if (dirty.value && await ask({ title: '重新读取布局', message: '将放弃未保存的位置，载入服务器最新布局。',
+            type: 'warning', showCancel: true, cancelText: '继续编辑', confirmText: '放弃草稿并读取' }) !== true) return false
+        if (disposed) return false
+        discard(); await loadSelected(); return !!inspection.value
     }
 
     async function canLeave() {
@@ -171,6 +208,6 @@ export function useManualDisassemblyPage({ devices, models, api, ask, initialDev
 
     function dispose() { disposed = true; requestSequence += 1 }
     return { selectedDeviceId, device, model, choices, inspection, revision, source, loading, saving, dirty,
-        status, saveRevision, loadSelected, ensureSelection, selectDevice, save, discard, canLeave, dispose,
+        status, saveRevision, loadSelected, reloadSelected, ensureSelection, selectDevice, save, discard, canLeave, dispose,
         setEditorGetter: getter => { editor = getter }, savePending: () => dirty.value ? save() : Promise.resolve(true) }
 }

@@ -11,6 +11,20 @@ test('manual layout keeps offset fields reachable in short and narrow desktop wi
   assert.match(panel, /@media \(max-height: 600px\), \(max-width: 1050px\)\s*\{[\s\S]*?\.admin-content\s*\{ overflow-y: auto; \}/)
 })
 
+test('manual disassembly is a permission-filtered child of the model library, not factory modelling', async () => {
+  const panel = await source('../src/views/AdminPanel.vue')
+  const factoryTabs = panel.slice(panel.indexOf('const factoryTabs = ['), panel.indexOf('const factoryTabKeys'))
+  assert.doesNotMatch(factoryTabs, /disassembly-layout/)
+  assert.match(panel, /const modelTabs = \[[\s\S]*?key: 'models', label: '模型管理'[\s\S]*?key: 'disassembly-layout', label: '拆解布局'/)
+  assert.match(panel, /visibleModelTabs = computed\(\(\) => modelTabs\.filter\(tab => canSelectTab\(tab\.key\)\)\)/)
+  assert.match(panel, /tab\.key === 'models' \? visibleModelTabs\.value\.length > 0/)
+  const group = panel.slice(panel.indexOf('data-testid="model-library-nav"'), panel.indexOf('<button v-else', panel.indexOf('data-testid="model-library-nav"')))
+  assert.match(group, /modelTabKeys\.includes\(activeTab\)/)
+  assert.match(group, /v-for="child in visibleModelTabs"/)
+  assert.match(group, /@click="selectAdminTab\(child\.key\)"/)
+  assert.match(panel, /activeTab\.value === 'disassembly-layout'[\s\S]*?manualDisassemblyPage\.canLeave\(\)/)
+})
+
 test('canvas pointer input focuses the manual editor before handling mesh or gizmo drags', async () => {
   const editor = await source('../src/views/admin/components/ManualDisassemblyLayout.vue')
   const pointerStart = editor.slice(editor.indexOf('function capturePointerDown(event)'), editor.indexOf('function pointerMove(event)'))
