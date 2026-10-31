@@ -70,7 +70,10 @@ export function apiPermission(path, method = 'GET', body) {
     if (/\/placement$/.test(path)) return any('admin', p('workshops', 'edit'))
     return any('admin', p('lines', action))
   }
-  if (resource('workshops')) return safe ? read(spatial, true) : any('admin', p('workshops', action))
+  if (resource('workshops')) {
+    if (/\/ground$/.test(path) && method === 'PUT') return any('admin', p('composer', 'edit'))
+    return safe ? read(spatial, true) : any('admin', p('workshops', action))
+  }
   if (resource('models')) {
     if (safe) return read(spatial, true)
     if (/^\/api\/models\/[^/]+\/inspection$/.test(path) && method === 'PUT') return any('admin', p('disassembly-layout', 'edit'))

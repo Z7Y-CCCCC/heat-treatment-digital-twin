@@ -6,6 +6,8 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { adminApi } from '../config/factoryConfig.js'
 import { API_BASE } from '../runtime/backendEndpoint.js'
 import { SceneRuntime } from '../runtime/SceneRuntime.js'
+import WorkshopGroundEditor from './admin/components/WorkshopGroundEditor.vue'
+import { normalizeGround, normalizeDeviceGround } from '../../../shared/industrialGround.mjs'
 import { createVoiceAnnouncer, normalizeVoiceRule, parseVoiceConfig } from '../runtime/VoiceAnnouncer.js'
 import WidgetRenderer from '../runtime/WidgetRenderer.vue'
 import { createDeviceModel, resolveBackendAssetUrl } from '../three/ModelFactory.js'
@@ -204,6 +206,9 @@ async function openMapModule({ key, level }) {
     mapSettingsRef.value?.selectComponent?.(key, level)
 }
 
+const groundEditorRef = ref(null)
+const composerGroundPreviews = ref({})
+const composerGroundWarning = ref('')
 const mobileMotionRef = ref(null)
 const manualDisassemblyRef = ref(null)
 let factorySwitchApproved = false
@@ -224,6 +229,7 @@ async function requestFactorySwitch({ factoryName }) {
         unifiedDesignerRef.value?.discardPending?.()
         mobileMotionRef.value?.discardPending?.()
         manualDisassemblyPage.discard()
+        groundEditorRef.value?.discardPending?.()
         discardFactoryDrafts(currentFactoryId)
         factorySwitchApproved = true
         return true
@@ -232,6 +238,7 @@ async function requestFactorySwitch({ factoryName }) {
         await savePendingSystemSettings()
         await mobileMotionRef.value?.savePending?.()
         if (!await manualDisassemblyPage.savePending()) throw new Error(manualDisassemblyStatus.value || '拆解布局未保存')
+        await groundEditorRef.value?.savePending?.()
         await saveCurrentFactoryPageDrafts()
         await unifiedDesignerRef.value?.savePending?.()
         await mapSettingsRef.value?.savePending?.()
@@ -844,7 +851,7 @@ function buildNativePreviewLines() {
 function buildNativePreviewWorkshops() {
     return workshops.value.map(workshop => ({
         id: workshop.id,
-        layout: normalizeWorkshopLayout(getWorkshopLayout(workshop))
+        layout: effectiveGroundWorkshopLayout(workshop)
     }))
 }
 
@@ -949,6 +956,7 @@ function scheduleNativeScenePreview({ source = activeTab.value, includeLayout = 
             action: 'apply',
             source: pending.source,
             includeLayout: pending.includeLayout,
+            ...(pending.source === 'composer' && pending.includeLayout ? { groundOnly: true } : {}),
             devices: buildNativePreviewDevices(pending.source, pending.deviceOverride),
             lines: pending.includeLayout ? buildNativePreviewLines() : [],
             workshops: pending.includeLayout ? buildNativePreviewWorkshops() : [],
@@ -4268,9 +4276,78 @@ const composerStats = computed(() => ({
     selectedLineDevices: selectedComposerDevices.value.length
 }))
 const composerRotationDegrees = computed(() => formatComposerRotationDegrees(composerDraft.rotation_y))
+function effectiveGroundWorkshopLayout(workshop) {
+    const layout = normalizeWorkshopLayout(getWorkshopLayout(workshop))
+    const ground = composerGroundPreviews.value[workshop.id]
+    return ground ? { ...layout, ground } : layout
+}
+function previewComposerGround({ id, ground }) {
+    if (ground) composerGroundPreviews.value[id] = ground
+    else delete composerGroundPreviews.value[id]
+    composerRuntime?.updateGround?.(composerWorkshops.value)
+    composerGroundWarning.value = composerRuntime?.groundRenderer?.warning || ''
+    if (activeTab.value === 'composer') scheduleNativeScenePreview({ source: 'composer', includeLayout: true })
+}
+function composerGroundSaved({ id, ground, revision }) {
+    const workshop = workshops.value.find(ws => ws.id === id)
+    if (!workshop) return
+    getWorkshopLayout(workshop).ground = ground
+    workshop.layout_json = JSON.stringify(getWorkshopLayout(workshop)); workshop.groundRevision = revision
+    const saved = JSON.parse(savedWorkshopLayoutSnapshots.value[id] || '{}'); saved.ground = ground
+    savedWorkshopLayoutSnapshots.value[id] = JSON.stringify(saved)
+}
+function confirmGroundLeave() {
+    return openAppDialog({ title: '地面尚未保存', message: '是否保存当前地面修改？', type: 'warning', showCancel: true, cancelText: '取消', secondaryText: '不保存并切换', confirmText: '保存并切换' })
+}
+const composerDeviceElevation = computed({
+    get() {
+        const y = numberOrDefault(composerDraft.pos_y, 0)
+        if (composerDraft.coordinate_space === 'line_local') return y + numberOrDefault(getLineLayout(lines.value.find(l => l.id === composerDraft.line_id)).transform?.y, 0)
+        if (composerDraft.coordinate_space === 'workshop_local') return y
+        return y - numberOrDefault(getWorkshopLayout(selectedComposerWorkshop.value).transform?.y, 0)
+    },
+    set(value) {
+        const y = numberOrDefault(value, 0)
+        if (composerDraft.coordinate_space === 'line_local') composerDraft.pos_y = y - numberOrDefault(getLineLayout(lines.value.find(l => l.id === composerDraft.line_id)).transform?.y, 0)
+        else if (composerDraft.coordinate_space === 'workshop_local') composerDraft.pos_y = y
+        else composerDraft.pos_y = y + numberOrDefault(getWorkshopLayout(selectedComposerWorkshop.value).transform?.y, 0)
+    }
+})
+const composerDeviceGround = computed(() => normalizeDeviceGround(parseInstanceConfig(composerDraft.instance_config).ground))
+function setComposerDeviceGround(patch) {
+    if (!canAdminPage('composer', 'edit')) return
+    const config = parseInstanceConfig(composerDraft.instance_config)
+    config.ground = normalizeDeviceGround({ ...composerDeviceGround.value, ...patch })
+    composerDraft.instance_config = JSON.stringify(config, null, 2)
+}
+function fitComposerGround() {
+    const root = composerRuntime?.furnaces.get(composerDraft.id)
+    if (!root) return
+    root.updateWorldMatrix(true, true)
+    const inverse = root.matrixWorld.clone().invert(), bounds = new THREE.Box3()
+    root.traverse(node => {
+        if (!node.isMesh || !node.geometry) return
+        node.geometry.computeBoundingBox()
+        const box = node.geometry.boundingBox
+        if (!box) return
+        for (const x of [box.min.x, box.max.x]) for (const y of [box.min.y, box.max.y]) for (const z of [box.min.z, box.max.z]) bounds.expandByPoint(new THREE.Vector3(x, y, z).applyMatrix4(node.matrixWorld).applyMatrix4(inverse))
+    })
+    if (bounds.isEmpty()) return
+    const size = bounds.getSize(new THREE.Vector3()), scale = Math.abs(root.scale.x) / Math.max(.001, numberOrDefault(composerDraft.scale, 1))
+    setComposerDeviceGround({ width: Math.max(.2, roundComposerNumber(size.x * scale, 2)), depth: Math.max(.2, roundComposerNumber(size.z * scale, 2)) })
+}
+function ensureComposerDeviceGround() {
+    if (!Object.prototype.hasOwnProperty.call(parseInstanceConfig(composerDraft.instance_config), 'ground')) { setComposerDeviceGround({ enabled: true }); fitComposerGround() }
+}
+function nudgeComposerHeight(delta) {
+    composerDeviceElevation.value = roundComposerNumber(composerDeviceElevation.value + delta, 2)
+    ensureComposerDeviceGround()
+}
+
 
 const composerWorkshops = computed(() => sortByOrder(workshops.value).map(workshop => ({
     ...workshop,
+    layout: effectiveGroundWorkshopLayout(workshop),
     devices: sortByOrder(composerPreviewDevices.value.filter(device => {
         return isAuxiliaryDeviceConfig(device) && getDeviceWorkshopId(device) === workshop.id
     })),
@@ -4580,6 +4657,7 @@ function toggleAdminNavCollapsed() {
 async function selectAdminTab(tabKey) {
     if (!canSelectTab(tabKey)) return
     if (activeTab.value === 'disassembly-layout' && tabKey !== activeTab.value && !await manualDisassemblyPage.canLeave()) return
+    if (activeTab.value === 'composer' && tabKey !== activeTab.value && groundEditorRef.value && !await groundEditorRef.value.canLeave()) return
     activeTab.value = tabKey
     if (['models', 'disassembly-layout'].includes(tabKey)) isModelsMenuOpen.value = true
     resizeComposerPreviewAfterLayout()
@@ -4718,6 +4796,7 @@ async function renderComposerPreview() {
     try {
         runtime = new SceneRuntime(container, {
             workshops: composerWorkshops.value,
+            industrialGround: true,
             models: models.value || [],
             cameraMode: '4level',
             renderOptions: {
@@ -4752,6 +4831,7 @@ async function renderComposerPreview() {
             return
         }
         composerRuntime = runtime
+        composerGroundWarning.value = runtime.groundRenderer?.warning || ''
         composerPreviewErrors.value = runtime.getModelErrors?.() || []
         connectComposerResizeObserver(container)
         resizeComposerPreview()
@@ -4804,6 +4884,7 @@ function updateComposerPreviewFromDraft() {
         composerDraft.id,
         models.value || []
     )
+    composerGroundWarning.value = composerRuntime?.groundRenderer?.warning || ''
     if (updated && composerRuntime?.isRenderSurfaceHealthy?.()) {
         composerPreviewStatus.value = '预览已同步'
         return
@@ -7228,7 +7309,7 @@ async function openAdminSetupStep(step) {
                     <section class="composer-editor">
                         <div class="composer-section">
                             <h2>现场编排器</h2>
-                            <p class="desc">这里现在直接控制正在运行的 Unity。左侧调整会实时生效，右侧 Web 画面仅用于快速选取和操作定位。</p>
+                            <p class="desc">编排设备、标高与地面，实时预览，保存后同步大屏。</p>
                             <div class="native-live-row">
                                 <button type="button" class="btn btn-sm" @click="restoreSavedNativeScenePreview">恢复已保存布局</button>
                             </div>
@@ -7239,6 +7320,13 @@ async function openAdminSetupStep(step) {
                                 <div><span>当前线</span><strong>{{ composerStats.selectedLineDevices }}</strong></div>
                             </div>
                         </div>
+
+                        <details class="composer-section composer-ground-panel">
+                            <summary>地面与基坑 <small v-if="groundEditorRef?.dirty">未保存</small></summary>
+                            <WorkshopGroundEditor ref="groundEditorRef" :workshop="selectedComposerWorkshop || workshops[0]" :readonly="!canAdminPage('composer', 'edit')"
+                                :confirm-leave="confirmGroundLeave" @preview="previewComposerGround" @saved="composerGroundSaved" />
+                        </details>
+                        <p v-if="composerGroundWarning" class="composer-section" role="alert">{{ composerGroundWarning }}</p>
 
                         <div class="composer-section">
                             <h3>产线选择</h3>
@@ -7324,9 +7412,17 @@ async function openAdminSetupStep(step) {
                             </label>
                             <div class="composer-grid-3">
                                 <label>X<input v-model.number="composerDraft.pos_x" type="number" class="input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
-                                <label>Y<input v-model.number="composerDraft.pos_y" type="number" class="input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
+                                <label>标高 Y（米）<input v-model.number="composerDeviceElevation" type="number" step="0.1" @change="ensureComposerDeviceGround" class="input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
                                 <label>Z<input v-model.number="composerDraft.pos_z" type="number" class="input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
                             </div>
+                            <fieldset class="composer-ground-controls" :disabled="!canAdminPage('composer', 'edit')">
+                                <div class="composer-ground-buttons"><button type="button" class="btn btn-sm" @click="nudgeComposerHeight(-0.5)">↓ 下沉 0.5m</button><button type="button" class="btn btn-sm" @click="nudgeComposerHeight(0.5)">↑ 抬高 0.5m</button></div>
+                                <label class="inline-check"><input :checked="composerDeviceGround.enabled" type="checkbox" @change="setComposerDeviceGround({ enabled: $event.target.checked })" />地面跟随设备（基坑 / 高台）</label>
+                                <template v-if="composerDeviceGround.enabled">
+                                    <div class="composer-grid-3"><label>坑宽（米）<input :value="composerDeviceGround.width" type="number" min="0.2" max="500" step="0.1" class="input" @change="setComposerDeviceGround({ width: Number($event.target.value) })" /></label><label>坑长（米）<input :value="composerDeviceGround.depth" type="number" min="0.2" max="500" step="0.1" class="input" @change="setComposerDeviceGround({ depth: Number($event.target.value) })" /></label><label>净距（米）<input :value="composerDeviceGround.clearance" type="number" min="0" max="20" step="0.1" class="input" @change="setComposerDeviceGround({ clearance: Number($event.target.value) })" /></label></div>
+                                    <button type="button" class="btn btn-sm" @click="fitComposerGround">按模型尺寸</button>
+                                </template>
+                            </fieldset>
                             <div class="composer-rotation-control">
                                 <div class="composer-control-header">
                                     <span>朝向</span>
@@ -10179,6 +10275,8 @@ async function openAdminSetupStep(step) {
 <style scoped src="./admin/styles/form-controls.css"></style>
 
 <style scoped>
+.composer-ground-panel{padding:0!important}.composer-ground-panel summary{padding:14px 16px;cursor:pointer;font-size:13px;font-weight:600}.composer-ground-panel summary small{margin-left:8px;font-weight:400;color:#b76e00}
+.composer-ground-controls{border:0;padding:10px 0;margin:0;display:grid;gap:10px;min-width:0}.composer-ground-buttons{display:flex;gap:8px}.composer-ground-controls .inline-check{display:flex;align-items:center;gap:6px;font-size:12px}
 * { box-sizing: border-box; }
 
 .admin-container {

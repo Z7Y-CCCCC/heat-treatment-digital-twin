@@ -1,0 +1,50 @@
+const assert = require('node:assert/strict'), path = require('node:path');
+const Database = require('better-sqlite3');
+const { createSmokeSandbox, createSmokeSession, stopOwnedSmokeProcess } = require('../../desktop/scripts/smoke-sandbox.cjs');
+const { BACKEND_DIR, findFreePort, startLoggedProcess, waitForHttp } = require('./integration-test-utils.cjs');
+let backend;
+(async () => {
+    const sandbox = await createSmokeSandbox('industrial-ground'); sandbox.password = 'Isolated-ground-test-only!';
+    const db = new Database(sandbox.filename), workshop = db.prepare('SELECT * FROM workshops ORDER BY sort_order LIMIT 1').get();
+    const originalDevices = db.prepare('SELECT * FROM devices ORDER BY id').all();
+    db.prepare('INSERT INTO factories (id,name) VALUES (?,?)').run('ground_other_factory', '其他工厂');
+    db.prepare('INSERT INTO workshops (id,factory_id,name,layout_json) VALUES (?,?,?,?)').run('ground_foreign', 'ground_other_factory', '外厂车间', '{}'); db.close();
+    const origin = `http://127.0.0.1:${await findFreePort(3991)}`;
+    backend = startLoggedProcess(process.execPath, ['server.js'], { cwd: BACKEND_DIR, env: { ...sandbox.env, PORT: new URL(origin).port, HOST: '127.0.0.1' }, logFile: path.join(sandbox.directory, 'backend.log') });
+    await waitForHttp(origin + '/api/health'); const owner = await createSmokeSession(origin, sandbox); let checks = 0;
+    async function request(route, method = 'GET', body, session = owner, expected = 200) {
+        const response = await fetch(origin + '/api' + route, { method, headers: { Origin: origin, 'X-Admin-Request': '1', Cookie: session.cookie,
+            'X-CSRF-Token': session.csrfToken, 'X-Factory-ID': workshop.factory_id, ...(body ? { 'Content-Type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
+        const data = await response.json(); assert.equal(response.status, expected, JSON.stringify(data)); checks++; return { data, response };
+    }
+    const read = async () => (await request('/workshops')).data.find(w => w.id === workshop.id);
+    await request('/admin-auth/users', 'POST', { username: 'ground_editor', role: 'customer', password: sandbox.password, pagePermissions: { composer: { view: true, edit: true } } }, owner, 201);
+    const login = await request('/admin-auth/login', 'POST', { username: 'ground_editor', password: sandbox.password }, { cookie: '', csrfToken: '' });
+    const editor = { cookie: login.response.headers.getSetCookie().map(v => v.split(';')[0]).join('; '), csrfToken: login.data.csrfToken };
+    const initial = await read(), route = `/workshops/${workshop.id}/ground`;
+    const ground = { version: 1, elevation: 0, areas: [{ id: 'pit', name: '基坑', x: 0, z: 0, width: 4, depth: 6, elevation: -3 }] };
+    const saved = (await request(route, 'PUT', { ground, expectedRevision: initial.groundRevision }, editor)).data;
+    assert.deepEqual((await read()).layout.ground, ground); assert.notEqual(saved.revision, initial.groundRevision);
+    await request(route, 'PUT', { ground, expectedRevision: initial.groundRevision }, editor, 409);
+    await request(route, 'PUT', { ground, expectedRevision: saved.revision, name: '不可修改' }, editor, 400);
+    await request(route, 'PUT', { ground: { ...ground, elevation: null }, expectedRevision: saved.revision }, editor, 400);
+    await request(route, 'PUT', { ground: { ...ground, areas: Array(33).fill(ground.areas[0]) }, expectedRevision: saved.revision }, editor, 400);
+    await request('/workshops/ground_foreign/ground', 'PUT', { ground, expectedRevision: saved.revision }, editor, 404);
+    await request(`/workshops/${workshop.id}`, 'PUT', { name: '禁止越权' }, editor, 403);
+    const concurrent = await Promise.all([1, 2].map(elevation => fetch(origin + '/api' + route, { method: 'PUT', headers: { Origin: origin, 'X-Admin-Request': '1', Cookie: editor.cookie, 'X-CSRF-Token': editor.csrfToken, 'X-Factory-ID': workshop.factory_id, 'Content-Type': 'application/json' }, body: JSON.stringify({ ground: { ...ground, elevation }, expectedRevision: saved.revision }) })));
+    assert.deepEqual(concurrent.map(r => r.status).sort(), [200, 409]); checks++;
+    const latest = await read();
+    await request(`/workshops/${workshop.id}`, 'PUT', { layout: { ...latest.layout, ground: { ...ground, elevation: 99 } } });
+    assert.deepEqual((await read()).layout.ground, latest.layout.ground, 'broad layout endpoint cannot overwrite ground');
+    const device = originalDevices[0], before = (await request(`/devices/${device.id}`)).data;
+    const deviceGround = { enabled: true, width: 4, depth: 5, clearance: .5 };
+    await request(`/devices/${device.id}/transform`, 'PUT', { pos_y: -3, ground: deviceGround }, editor);
+    const after = (await request(`/devices/${device.id}`)).data;
+    assert.equal(after.pos_y, -3); assert.deepEqual(JSON.parse(after.instance_config).ground, deviceGround);
+    for (const key of ['plc_ip', 'plc_port', 'model_type', 'model_file', 'template_id']) assert.equal(after[key], before[key]);
+    await request(`/devices/${device.id}/transform`, 'PUT', { ground: { ...deviceGround, plc_ip: 'not-layout' } }, editor, 400);
+    await request(`/devices/${device.id}/transform`, 'PUT', { ground: { ...deviceGround, width: -1 } }, editor, 400);
+    await request(`/devices/${device.id}/transform`, 'PUT', { pos_x: after.pos_x + 1 }, editor);
+    assert.deepEqual(JSON.parse((await request(`/devices/${device.id}`)).data.instance_config).ground, deviceGround);
+    console.log(JSON.stringify({ success: true, checks, narrowWrites: true, conflicts: true, factoryIsolation: true, directory: sandbox.directory }, null, 2));
+})().catch(error => { console.error(error); process.exitCode = 1; }).finally(async () => { await stopOwnedSmokeProcess(backend); });

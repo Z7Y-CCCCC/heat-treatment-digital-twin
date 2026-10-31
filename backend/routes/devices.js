@@ -5,12 +5,18 @@ const { loadDeviceInspection, publicInspection, patchDeviceInspectionLayout,
     saveDeviceInspectionLayout } = require('../services/deviceInspection');
 const { getBuiltinModels } = require('../services/builtinModels');
 const { TRANSFORM_FIELDS, LAYOUT_CONFIG_FIELDS } = require('../../shared/deviceAuthoring.mjs');
+const { normalizeDeviceGround } = require('../../shared/industrialGround.mjs');
 
 // Narrow authoring endpoints deliberately preserve model identity, PLC network
 // configuration and inspection metadata. Never reuse the full device PUT for
 // a user granted only scene placement or movement authoring.
 function validateTransform(body) {
-    if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some(key => ![...TRANSFORM_FIELDS, 'layoutConfig'].includes(key))) throw new Error('布局包含不可修改字段');
+    if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some(key => ![...TRANSFORM_FIELDS, 'layoutConfig', 'ground'].includes(key))) throw new Error('布局包含不可修改字段');
+    if (body.ground !== undefined) {
+        const g = body.ground;
+        if (!g || Array.isArray(g) || typeof g.enabled !== 'boolean' || Object.keys(g).some(key => !['enabled', 'width', 'depth', 'clearance'].includes(key))
+            || ['width', 'depth', 'clearance'].some(key => typeof g[key] !== 'number' || !Number.isFinite(g[key]) || g[key] < (key === 'clearance' ? 0 : .2) || g[key] > (key === 'clearance' ? 20 : 500))) throw new Error('设备地面尺寸无效');
+    }
     const layout = body.layoutConfig || {};
     if (typeof layout !== 'object' || Array.isArray(layout) || Object.keys(layout).some(key => !LAYOUT_CONFIG_FIELDS.includes(key)
         || layout[key] !== null && !['string', 'number', 'boolean'].includes(typeof layout[key])
@@ -29,6 +35,7 @@ async function applyTransform(tx, id, body, factoryId) {
     const lineId = body.line_id === undefined ? device.line_id : body.line_id;
     if (!await lineBelongsToFactory(tx, lineId, factoryId) || !lineId && !isAuxiliaryDevice(device.model_type, device.instance_config)) throw new Error('产线不属于当前工厂');
     const config = parseJson(device.instance_config);
+    if (body.ground !== undefined) config.ground = normalizeDeviceGround(body.ground);
     for (const [key, value] of Object.entries(body.layoutConfig || {})) { if (value === null) delete config[key]; else config[key] = value; }
     for (const key of ['workshop_id', 'workshopId']) if (config[key] && !await tx.get('SELECT id FROM workshops WHERE id = ? AND factory_id = ?', [config[key], factoryId])) throw new Error('车间不属于当前工厂');
     for (const key of ['laneLineId', 'railLineId']) if (config[key] && !await lineBelongsToFactory(tx, config[key], factoryId)) throw new Error('绑定产线不属于当前工厂');

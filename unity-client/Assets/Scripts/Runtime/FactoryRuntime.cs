@@ -899,13 +899,16 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 ApplyPreviewDevice(device);
             }
 
-            if (includeLayout)
+            if (includeLayout && payload.Value<bool?>("groundOnly") != true)
             {
                 _environment.RebuildFactoryFloor(previewConfig, devices, reset);
                 await _environment.HallReady;
                 if (payload == null || _factoryRoot == null) return;
                 if (reset) _environment.RefreshReflectionProbe();
             }
+
+            if (!includeLayout || payload.Value<bool?>("groundOnly") == true)
+                _environment.UpdateFactoryGround(previewConfig ?? _config, devices);
 
             var factoryBounds = CalculateFactoryOverviewBounds();
             _dashboard.UpdatePreviewFactoryBounds(factoryBounds);

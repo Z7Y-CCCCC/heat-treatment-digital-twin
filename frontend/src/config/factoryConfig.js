@@ -128,6 +128,7 @@ export const adminApi = {
     // 车间
     async getWorkshops() { return (await fetch(`${API_BASE}/workshops`)).json() },
     async createWorkshop(data) { return readApiJson(await fetch(`${API_BASE}/workshops`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) }), '创建车间失败') },
+    async updateWorkshopGround(id, data) { return readApiJson(await fetch(`${API_BASE}/workshops/${pathId(id)}/ground`, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) }), '保存地面失败') },
     async updateWorkshop(id, data) { return readApiJson(await fetch(`${API_BASE}/workshops/${pathId(id)}`, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) }), '保存车间失败') },
     async getWorkshopDeletionImpact(id) { return readApiJson(await fetch(`${API_BASE}/workshops/${pathId(id)}/deletion-impact`), '读取车间关联项失败') },
     async deleteWorkshop(id, confirmationName) { return readApiJson(await fetch(`${API_BASE}/workshops/${pathId(id)}`, { method: 'DELETE', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ confirmationName }) }), '删除车间失败') },

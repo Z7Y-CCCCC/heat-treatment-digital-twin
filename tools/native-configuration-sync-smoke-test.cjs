@@ -69,6 +69,12 @@ async function main() {
         assert.match(log(), /Native factory ready: devices=5, fallback=0/);
         await saveAndConfirm('/api/workshops/ws_pit_sync', { name: '保存后自动同步车间' }, factory, 'workshop save rebuilds the running scene automatically');
         await saveAndConfirm('/api/devices/pit_sync_1', { name: '井式炉1已同步', line_id: 'line_pit_sync', model_type: 'pit_furnace_1_v1', pos_x: -24 }, factory, 'device layout save rebuilds the running scene automatically');
+        const groundWorkshop = (await api('/api/workshops', 'GET', undefined, factory)).find(w => w.id === 'ws_pit_sync');
+        await saveAndConfirm('/api/workshops/ws_pit_sync/ground', { expectedRevision: groundWorkshop.groundRevision, ground: { version: 1, elevation: 0, areas: [{ id: 'native_pit', name: '验收基坑', x: 0, z: 0, width: 12, depth: 8, elevation: -3 }] } }, factory, 'industrial ground save rebuilds the real Unity scene');
+        assert.match(log(), /\[IndustrialGround\] Built workshop=ws_pit_sync, areas=1/);
+        assert.match(log(), /\[IndustrialGround\] Hall floor replaced for ws_pit_sync: surfaces=[1-9]/);
+        await saveAndConfirm('/api/devices/pit_sync_1/transform', { pos_y: -3, ground: { enabled: true, width: 8, depth: 8, clearance: .5 } }, factory, 'underground device placement and its following pit rebuild in Unity together');
+        assert.match(log(), /\[IndustrialGround\] Built workshop=ws_pit_sync, areas=2/);
         const count = builds();
         const original = await api('/api/config', 'GET', undefined, 'factory_default');
         await api(`/api/workshops/${original.workshops[0].id}`, 'PUT', { name: '其他工厂隔离修改' }, 'factory_default');

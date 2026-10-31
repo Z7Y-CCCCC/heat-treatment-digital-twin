@@ -1,5 +1,6 @@
 const WORKSHOP_LAYOUT_VERSION = 2;
 const LINE_LAYOUT_VERSION = 2;
+const { normalizeGround } = require('../../shared/industrialGround.mjs');
 
 function safeObject(value) {
     if (!value) return {};
@@ -64,7 +65,8 @@ function normalizeWorkshopLayout(value) {
         },
         boundary: {
             enabled: boundary.enabled === undefined ? defaults.boundary.enabled : !!boundary.enabled
-        }
+        },
+        ...(source.ground === undefined ? {} : { ground: normalizeGround(source.ground) })
     };
 }
 

@@ -1,4 +1,5 @@
 import { SceneManager } from '../three/SceneManager.js';
+import { IndustrialGroundRenderer } from './IndustrialGroundRenderer.js';
 import { applyConfiguredDeviceTransform, applyRealtimeToDeviceModel, createConfiguredDeviceModel } from './DeviceRenderer.js';
 import { createBatchedDeviceRenderer, getBatchableModelInfo } from './BatchDeviceRenderer.js';
 import { shouldOptimizeModelGroup } from './modelOptimization.js';
@@ -377,12 +378,22 @@ export class SceneRuntime {
         });
 
         this.sceneManager.setTopologyConfig(workshops || [], cameraMode || 'auto');
+        this.groundRenderer = new IndustrialGroundRenderer(this.sceneManager);
+        this.updateGround(workshops || []);
         this.sceneManager.animate();
         return this;
     }
 
     getModelErrors() {
         return this.modelErrors.slice();
+    }
+
+    updateGround(workshops) {
+        const definitions = flattenDeviceDefinitions(workshops || []);
+        const visibleWorkshops = (workshops || []).map((workshop, index) => ({
+            ...workshop, lines: [], devices: definitions.filter(item => item.wsIdx === index).map(item => item.deviceCfg)
+        }));
+        this.groundRenderer?.update(visibleWorkshops, this.options.industrialGround === true);
     }
 
     updateDeviceLayout(workshops, deviceId, models = this.options.models || []) {
@@ -400,6 +411,7 @@ export class SceneRuntime {
             isLineMember: definition.isLineMember
         });
         this.sceneManager?.requestLabelRefresh?.(300);
+        this.updateGround(workshops);
         return true;
     }
 
@@ -453,6 +465,7 @@ export class SceneRuntime {
         this.disposed = true;
         this.pendingModels.forEach(model => model.dispose?.());
         this.pendingModels.clear();
+        this.groundRenderer?.dispose();
         this.sceneManager?.dispose();
         this.sceneManager = null;
         this.furnaces.clear();

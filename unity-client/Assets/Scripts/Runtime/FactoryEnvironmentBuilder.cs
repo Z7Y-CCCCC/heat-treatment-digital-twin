@@ -144,6 +144,9 @@ namespace HeatTreatment.DigitalTwin.Runtime
         private readonly List<GameObject> _gridObjects = new List<GameObject>();
         private readonly List<GameObject> _wallsRoots = new List<GameObject>();
         private FactoryConfigDto _factoryConfig;
+        private readonly Dictionary<string, Mesh> _industrialGroundMeshes = new Dictionary<string, Mesh>();
+        private readonly Dictionary<string, string> _industrialGroundSignatures = new Dictionary<string, string>();
+        private readonly Dictionary<string, bool> _industrialGroundEnabled = new Dictionary<string, bool>();
         private Material _groundMaterial;
         private Material _gridMaterial;
         private Material _railMaterial;
@@ -285,6 +288,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
             _hallGeneration++;
             foreach (var importer in _hallImports) importer.Dispose();
             _hallImports.Clear();
+            ClearIndustrialGroundMeshes();
             if (_environmentRoot != null) Destroy(_environmentRoot.gameObject);
             var root = new GameObject("FactoryEnvironment");
             root.transform.SetParent(transform, false);
@@ -340,6 +344,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
 
             CreateLineLayouts(config);
             RebuildCustomWalls();
+            UpdateFactoryGround(config, devices);
             EnvironmentBounds = CalculateRendererBounds(_environmentRoot);
             if (createReflectionProbe)
             {
@@ -386,6 +391,9 @@ namespace HeatTreatment.DigitalTwin.Runtime
                         1f,
                         Mathf.Clamp(size?.Value<float?>("depth") ?? 80f, 10f, 5000f) / 80f);
                     ApplyFactoryHallPresentation(hall);
+                    var customGround = _industrialGroundEnabled.TryGetValue(workshop.Id, out var custom) && custom;
+                    var floorSurfaces = SetHallFloorVisibility(hall.transform, !customGround);
+                    if (customGround) Debug.Log($"[IndustrialGround] Hall floor replaced for {workshop.Id}: surfaces={floorSurfaces}");
                     // Hide only the replaced surfaces, retaining rails and live equipment.
                     foreach (Transform child in parent)
                         if (child.name == "Factory Floor" || child.name == "Factory Grid" || child.name.StartsWith("Custom Walls")) child.gameObject.SetActive(false);
@@ -420,6 +428,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
 
         private void OnDestroy()
         {
+            ClearIndustrialGroundMeshes();
             if (_inspectionIsolation) SetInspectionIsolation(false);
             if (_inspectionFillLight != null) Destroy(_inspectionFillLight.gameObject);
             _hallGeneration++;
@@ -735,6 +744,61 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 Mathf.Clamp01(color.b * multiplier),
                 color.a
             );
+        }
+
+        private void ClearIndustrialGroundMeshes()
+        {
+            foreach (var mesh in _industrialGroundMeshes.Values) if (mesh != null) Destroy(mesh);
+            _industrialGroundMeshes.Clear(); _industrialGroundEnabled.Clear(); _industrialGroundSignatures.Clear();
+        }
+
+        private static int SetHallFloorVisibility(Transform hall, bool visible)
+        {
+            if (hall == null) return 0;
+            var count = 0;
+            foreach (var renderer in hall.GetComponentsInChildren<Renderer>(true))
+            {
+                var name = renderer.name.ToLowerInvariant();
+                var floor = name.Contains("floor") || name.Contains("ground") || name.Contains("apron")
+                    || renderer.sharedMaterials.Any(m => m != null && m.name.ToLowerInvariant().Contains("floor"));
+                if (floor) { renderer.enabled = visible; count++; }
+            }
+            return count;
+        }
+
+        public void UpdateFactoryGround(FactoryConfigDto config, IReadOnlyList<DeviceDto> devices)
+        {
+            foreach (var workshop in config?.Workshops ?? new List<WorkshopDto>())
+            {
+                if (!_workshopEnvironmentRoots.TryGetValue(workshop.Id, out var parent) || parent == null) continue;
+                var plan = IndustrialGroundPlan.Resolve(workshop, devices);
+                var enabled = plan.Custom && (workshop.LayoutObject["boundary"]?.Value<bool?>("enabled") ?? true);
+                var signature = enabled + ":" + plan.Width + ":" + plan.Depth + ":" + plan.Elevation + ":" + string.Join(";", plan.Areas.Select(a => $"{a.X:R},{a.Z:R},{a.Width:R},{a.Depth:R},{a.Y:R}"));
+                if (_industrialGroundSignatures.TryGetValue(workshop.Id, out var previousSignature) && previousSignature == signature) continue;
+                _industrialGroundSignatures[workshop.Id] = signature;
+                _industrialGroundEnabled[workshop.Id] = enabled;
+                var old = parent.Find("Industrial Ground");
+                if (old != null) { old.gameObject.SetActive(false); Destroy(old.gameObject); }
+                if (_industrialGroundMeshes.TryGetValue(workshop.Id, out var previous) && previous != null) Destroy(previous);
+                _industrialGroundMeshes.Remove(workshop.Id);
+                var hall = parent.Find("Factory Hall Architecture");
+                SetHallFloorVisibility(hall, !enabled);
+                foreach (Transform child in parent)
+                    if (child.name == "Factory Floor" || child.name == "Factory Grid") child.gameObject.SetActive(!enabled && hall == null);
+                if (!enabled) continue;
+                if (plan.Overflow > 0) Debug.LogWarning("[IndustrialGround] Automatic ground exceeds 64 devices; combine pits or split workshops.");
+                plan.Build();
+                var vertices = new Vector3[plan.Positions.Count / 3];
+                for (var i = 0; i < vertices.Length; i++) vertices[i] = new Vector3(plan.Positions[i * 3], plan.Positions[i * 3 + 1] - .01f, plan.Positions[i * 3 + 2]);
+                var mesh = new Mesh { name = "Industrial ground", indexFormat = UnityEngine.Rendering.IndexFormat.UInt32 };
+                mesh.vertices = vertices; mesh.SetTriangles(plan.Indices, 0); mesh.RecalculateNormals(); mesh.RecalculateBounds();
+                _industrialGroundMeshes[workshop.Id] = mesh;
+                var surface = new GameObject("Industrial Ground"); surface.transform.SetParent(parent, false);
+                surface.AddComponent<MeshFilter>().sharedMesh = mesh;
+                var renderer = surface.AddComponent<MeshRenderer>(); renderer.sharedMaterial = _groundMaterial;
+                renderer.receiveShadows = true;
+                Debug.Log($"[IndustrialGround] Built workshop={workshop.Id}, areas={plan.Areas.Count}, vertices={vertices.Length}");
+            }
         }
 
         private void CreateGround(Transform parent, Vector3 center, float width, float depth)

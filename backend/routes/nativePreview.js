@@ -180,6 +180,7 @@ module.exports = function createNativePreviewRouter(controller) {
             viewId: shortText(req.body?.viewId, 128),
             view: safeObject(req.body?.view),
             includeLayout: !!req.body?.includeLayout,
+            ...(req.body?.groundOnly === true ? { groundOnly: true } : {}),
             devices,
             lines,
             workshops,

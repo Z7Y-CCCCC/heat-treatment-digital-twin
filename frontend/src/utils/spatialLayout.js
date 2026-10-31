@@ -1,3 +1,5 @@
+import { normalizeGround } from '../../../shared/industrialGround.mjs'
+
 export function parseSpatialObject(value) {
     if (!value) return {}
     if (typeof value === 'object' && !Array.isArray(value)) return value
@@ -61,7 +63,8 @@ export function normalizeWorkshopLayout(value) {
         },
         boundary: {
             enabled: boundary.enabled === undefined ? true : !!boundary.enabled
-        }
+        },
+        ...(source.ground === undefined ? {} : { ground: normalizeGround(source.ground) })
     }
 }
 

@@ -13,6 +13,7 @@ internal static partial class Program
     {
         var tests = new (string Name, Func<Task> Run)[]
         {
+            ("industrial floor, pits, platforms and device heights match the shared Web/Unity contract", IndustrialGroundMatchesContract),
             ("factory activation and scoped configuration changes select reload or live update correctly", ConfigurationChangesAreScoped),
             ("realtime receive progresses while the render synchronization context is idle", ReceiveDoesNotWaitForRender),
             ("cancelled send cannot release another owner's semaphore", CancelledSendKeepsLock),

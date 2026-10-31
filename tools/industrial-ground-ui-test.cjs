@@ -1,0 +1,103 @@
+// Owned loopback fixture only. No live scene, account or collection changes.
+const assert = require('node:assert/strict'), fs = require('node:fs'), path = require('node:path');
+const playwright = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
+const { createRunDirectory, startLoggedProcess, waitUntil } = require('../backend/scripts/integration-test-utils.cjs');
+const { stopOwnedSmokeProcess } = require('../desktop/scripts/smoke-sandbox.cjs');
+const directory = createRunDirectory('industrial-ground-ui'), checks = [], errors = [];
+const check = name => { checks.push(name); console.log('PASS ' + name); };
+let server, browser, page;
+(async () => {
+    const infoFile = path.join(directory, 'server.json');
+    server = startLoggedProcess(process.execPath, [path.join(__dirname, 'manual-disassembly-ui-server.cjs')], { cwd: path.resolve(__dirname, '..'), env: { ...process.env, MANUAL_LAYOUT_UI_INFO_FILE: infoFile }, logFile: path.join(directory, 'server.log') });
+    await waitUntil(() => { assert.equal(server.exitCode, null); return fs.existsSync(infoFile); }, 60000, 'owned UI server');
+    const info = JSON.parse(fs.readFileSync(infoFile));
+    // Give the two owned fixture models valid lane bindings so the 3-D view
+    // exercises actual equipment, not just an empty workshop floor.
+    const login = await fetch(info.origin + '/api/admin-auth/login', { method: 'POST', headers: { Origin: info.origin, 'X-Admin-Request': '1', 'Content-Type': 'application/json' }, body: JSON.stringify({ username: info.username, password: info.password }) });
+    const loginData = await login.json(), headers = { Origin: info.origin, 'X-Admin-Request': '1', 'Content-Type': 'application/json', Cookie: login.headers.getSetCookie().map(c => c.split(';')[0]).join('; '), 'X-CSRF-Token': loginData.csrfToken };
+    const lines = await (await fetch(info.origin + '/api/lines', { headers })).json();
+    const mainLine = lines.find(l => l.id === lines[0].id), mainLayout = mainLine.layout || JSON.parse(mainLine.layout_json);
+    mainLayout.transform = { ...mainLayout.transform, y: 2 };
+    mainLine.layout = mainLayout; mainLine.layout_json = JSON.stringify(mainLayout);
+    const lineSaved = await fetch(info.origin + '/api/lines/' + mainLine.id, { method: 'PUT', headers, body: JSON.stringify({ ...mainLine, layout_json: mainLine.layout_json }) });
+    assert.ok(lineSaved.ok);
+    for (const id of info.devices) {
+        const detail = await (await fetch(info.origin + '/api/devices/' + id, { headers })).json();
+        const line = lines.find(l => l.id === detail.line_id), layout = line.layout || JSON.parse(line.layout_json), lane = layout.lanes[0];
+        const config = { ...JSON.parse(detail.instance_config), laneLineId: line.id, laneId: lane.id, layoutPlaced: true, placementPending: false };
+        const updated = await fetch(info.origin + '/api/devices/' + id, { method: 'PUT', headers, body: JSON.stringify({ ...detail, instance_config: JSON.stringify(config), pos_z: lane.offsetZ }) });
+        assert.ok(updated.ok);
+    }
+    browser = await playwright.chromium.launch({ headless: true, ...(process.env.BROWSER_EXECUTABLE ? { executablePath: process.env.BROWSER_EXECUTABLE } : {}), args: ['--enable-unsafe-swiftshader'] });
+    const context = await browser.newContext({ viewport: { width: 1680, height: 1100 } });
+    await context.addInitScript(() => localStorage.setItem('digital_twin_admin_ui_state_v1', JSON.stringify({ activeTab: 'composer' })));
+    page = await context.newPage(); page.setDefaultTimeout(30000); page.on('pageerror', e => errors.push(e.message));
+    await page.goto(info.origin + '/admin');
+    await page.getByRole('textbox', { name: '账号', exact: true }).fill(info.username);
+    await page.getByLabel('后台密码', { exact: true }).fill(info.password);
+    await page.getByRole('button', { name: '解锁后台', exact: true }).click();
+    await page.locator('.composer-ground-panel summary').click();
+    const editor = page.getByRole('region', { name: '车间地面编辑', exact: true }); await editor.waitFor();
+    await editor.getByRole('button', { name: '＋ 基坑', exact: true }).click();
+    await editor.getByLabel('宽（米）', { exact: true }).fill('12');
+    await editor.getByLabel('长（米）', { exact: true }).fill('8');
+    await editor.getByLabel('区域标高（米）', { exact: true }).fill('-3');
+    const rectangle = editor.locator('g[aria-label="移动区域 基坑"]'); await rectangle.focus(); await page.keyboard.press('ArrowRight');
+    assert.equal(await editor.getByLabel('X', { exact: true }).inputValue(), '0.5');
+    const rect = rectangle.locator('rect').first(); await rect.scrollIntoViewIfNeeded();
+    let box = await rect.boundingBox(); await page.mouse.move(box.x + box.width * .25, box.y + box.height * .25); await page.mouse.down(); await page.mouse.move(box.x + box.width * .25 + 8, box.y + box.height * .25 + 4, { steps: 4 }); await page.mouse.up();
+    assert.notEqual(await editor.getByLabel('X', { exact: true }).inputValue(), '0.5');
+    const handle = rectangle.locator('rect').last(); box = await handle.boundingBox(); await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2); await page.mouse.down(); await page.mouse.move(box.x + box.width / 2 + 5, box.y + box.height / 2 + 5, { steps: 4 }); await page.mouse.up();
+    assert.ok(Number(await editor.getByLabel('宽（米）', { exact: true }).inputValue()) > 12);
+    await editor.getByLabel('X', { exact: true }).fill('0'); await editor.getByLabel('Z', { exact: true }).fill('0'); await editor.getByLabel('宽（米）', { exact: true }).fill('12'); await editor.getByLabel('长（米）', { exact: true }).fill('8');
+    await editor.getByRole('button', { name: '＋ 高台', exact: true }).click();
+    await editor.getByLabel('X', { exact: true }).fill('15'); await editor.getByLabel('Z', { exact: true }).fill('8');
+    await editor.getByLabel('区域标高（米）', { exact: true }).fill('2');
+    let saved = page.waitForResponse(r => /\/api\/workshops\/[^/]+\/ground$/.test(r.url()) && r.request().method() === 'PUT');
+    await editor.getByRole('button', { name: '保存地面', exact: true }).click(); assert.equal((await saved).status(), 200);
+    await editor.getByText('地面已保存', { exact: true }).waitFor();
+    const workshops = await (await page.request.get(info.origin + '/api/workshops')).json(), workshop = workshops.find(w => w.layout.ground?.areas.length === 2);
+    assert.ok(workshop); assert.deepEqual(workshop.layout.ground.areas.map(a => a.elevation), [-3, 2]);
+    check('manual pits and platforms can be edited, moved with the keyboard, and saved through the narrow versioned API');
+
+    const panel = page.locator('.composer-device-layout-float');
+    if (!await panel.isVisible() || await panel.getByLabel('设备名称', { exact: true }).inputValue() !== '现场设备A') await page.locator('.device-pill').filter({ has: page.getByText('现场设备A', { exact: true }) }).click();
+    const height = panel.getByLabel('标高 Y（米）', { exact: true }); await height.fill('-3'); await height.press('Tab');
+    await waitUntil(() => panel.getByLabel('地面跟随设备（基坑 / 高台）', { exact: true }).isChecked(), 10000, 'automatic device pit');
+    await panel.getByLabel('坑宽（米）', { exact: true }).fill('8'); await panel.getByLabel('坑宽（米）', { exact: true }).press('Tab');
+    saved = page.waitForResponse(r => r.url().endsWith('/api/devices/' + info.devices[0] + '/transform') && r.request().method() === 'PUT');
+    await panel.getByRole('button', { name: '保存设备布局', exact: true }).click(); assert.equal((await saved).status(), 200);
+    const device = await (await page.request.get(info.origin + '/api/devices/' + info.devices[0])).json();
+    assert.equal(device.pos_y, -5, 'displayed workshop elevation -3 must subtract the line elevation +2'); assert.equal(JSON.parse(device.instance_config).ground.enabled, true); assert.equal(JSON.parse(device.instance_config).ground.width, 8);
+    await page.getByText('设备布局已保存', { exact: true }).waitFor();
+    await page.getByRole('button', { name: '确定', exact: true }).click();
+    await page.locator('.app-dialog').waitFor({ state: 'hidden' });
+    await waitUntil(async () => !(await panel.locator('.composer-save').isDisabled()), 10000, 'device save completed');
+    await page.screenshot({ path: path.join(directory, '01-underground-device-and-ground.png'), fullPage: true });
+    await panel.getByRole('button', { name: '取消选中设备', exact: true }).click();
+    await page.getByRole('button', { name: '车间', exact: true }).click();
+    await editor.getByLabel('地面标高（米）', { exact: true }).scrollIntoViewIfNeeded();
+    await page.waitForTimeout(1100);
+    await page.screenshot({ path: path.join(directory, '02-workshop-ground-overview.png'), fullPage: true });
+    check('negative device height automatically enables a following pit and persists together with placement');
+
+    await page.reload(); await page.locator('.composer-ground-panel summary').click(); await editor.waitFor();
+    assert.equal(await editor.locator('.ground-map g').count(), 2);
+    await editor.getByLabel('地面标高（米）', { exact: true }).fill('0.5');
+    await page.getByRole('button', { name: '设备管理', exact: true }).click();
+    await page.getByText('地面尚未保存', { exact: true }).waitFor();
+    await page.getByRole('button', { name: '取消', exact: true }).click(); assert.ok(await editor.isVisible());
+    await page.route('**/api/workshops/*/ground', route => route.fulfill({ status: 409, contentType: 'application/json', body: JSON.stringify({ error: '地面已被其他窗口修改，草稿保留' }) }));
+    await editor.getByRole('button', { name: '保存地面', exact: true }).click(); await editor.getByText('地面已被其他窗口修改，草稿保留', { exact: true }).waitFor();
+    assert.equal(await editor.getByLabel('地面标高（米）', { exact: true }).inputValue(), '0.5');
+    await page.unroute('**/api/workshops/*/ground');
+    await page.getByRole('button', { name: '设备管理', exact: true }).click();
+    await page.getByRole('button', { name: '保存并切换', exact: true }).click();
+    await page.getByRole('heading', { name: '设备管理', exact: true }).waitFor();
+    check('saved ground survives reload; navigation cancellation and conflict feedback preserve drafts, and save-and-switch completes normally');
+    assert.deepEqual(errors, []);
+    const result = { success: true, checks, browserErrors: errors, directory }; fs.writeFileSync(path.join(directory, 'result.json'), JSON.stringify(result, null, 2)); console.log(JSON.stringify(result, null, 2));
+})().catch(async error => {
+    await page?.screenshot({ path: path.join(directory, 'failure.png'), fullPage: true }).catch(() => {});
+    fs.writeFileSync(path.join(directory, 'failure.json'), JSON.stringify({ error: error.stack, checks, errors }, null, 2)); console.error(error); process.exitCode = 1;
+}).finally(async () => { await browser?.close(); await stopOwnedSmokeProcess(server); });

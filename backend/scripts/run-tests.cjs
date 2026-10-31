@@ -12,7 +12,7 @@ const scripts = [
     'admin-auth-test.cjs', 'page-permissions-test.cjs', 'page-permissions-integration-test.cjs', 'license-test.cjs', 'release-package-test.cjs', 'package-resource-isolation-test.cjs',
     'math-expression-test.cjs', 'business-data-test.cjs', 'data-source-test.cjs',
     'data-source-http-regression-test.cjs', 'data-source-designer-test.cjs',
-    'spatial-hierarchy-test.cjs', 'cast-discovery-test.cjs',
+    'spatial-hierarchy-test.cjs', 'industrial-ground-test.cjs', 'cast-discovery-test.cjs',
     'backend-concurrency-test.cjs', 'backend-long-runtime-test.cjs', 'backend-recovery-edge-test.cjs',
     'backend-service-failure-test.cjs', 'alarm-outbox-test.cjs', 'mysql-runtime-safety-test.cjs', 'site-recovery-intent-test.cjs', 'ws-queue-test.cjs',
     'admin-auth-integration-test.cjs', 'factory-isolation-test.cjs', 'configuration-sync-test.cjs', 'factory-geocoder-test.cjs', 'production-readiness-test.cjs',

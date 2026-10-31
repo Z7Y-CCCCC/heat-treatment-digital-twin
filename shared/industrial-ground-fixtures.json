@@ -1,0 +1,6 @@
+[
+  {"name":"flat floor","workshop":{"id":"w","layout_json":{"size":{"width":12,"depth":10}}},"samples":[[0,0,0],[5,4,0]]},
+  {"name":"hard pit and platform","workshop":{"id":"w","layout_json":{"size":{"width":12,"depth":10},"ground":{"elevation":0,"areas":[{"id":"pit","x":0,"z":0,"width":4,"depth":4,"elevation":-3},{"id":"platform","x":4,"z":-3,"width":2,"depth":2,"elevation":1}]}}},"samples":[[0,0,-3],[1.9,1.9,-3],[2.1,0,0],[4,-3,1],[-5,4,0]]},
+  {"name":"device follows rotated elevated line","workshop":{"id":"w","layout_json":{"transform":{"x":100,"y":5,"z":20,"rotationY":45},"size":{"width":30,"depth":20}},"lines":[{"id":"l","layout_json":{"transform":{"x":3,"y":2,"z":1,"rotationY":90}},"devices":[{"id":"d","line_id":"l","coordinate_space":"line_local","pos_x":2,"pos_y":-4,"pos_z":1,"scale":1,"rotation_y":0,"instance_config":{"ground":{"enabled":true,"width":4,"depth":6,"clearance":0}}}]}]},"samples":[[2,3,-2],[4.8,3,-2],[2,4.8,-2],[2,6,0]]},
+  {"name":"world position converts into workshop pit","workshop":{"id":"w","layout_json":{"transform":{"x":100,"y":5,"z":20,"rotationY":45},"size":{"width":20,"depth":20}},"devices":[{"id":"aux","coordinate_space":"factory_world","pos_x":100,"pos_y":2,"pos_z":20,"scale":1,"instance_config":{"ground":{"enabled":true,"width":4,"depth":4,"clearance":0}}}]},"samples":[[0,0,-3],[4,0,0]]}
+]
