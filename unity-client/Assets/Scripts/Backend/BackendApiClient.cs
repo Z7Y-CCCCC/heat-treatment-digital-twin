@@ -61,6 +61,16 @@ namespace HeatTreatment.DigitalTwin.Backend
             };
         }
 
+        public async Task<bool> HasActiveDisplaySessionAsync(CancellationToken cancellationToken)
+        {
+            using var response = await _client.GetAsync($"{_baseUrl}/api/admin-auth/session", cancellationToken);
+            if (!response.IsSuccessStatusCode) return false;
+            var document = ParseResponse(await response.Content.ReadAsStringAsync());
+            return document?.Value<bool?>("displayAuthenticated") == true
+                && document?["permissions"]?.Value<bool?>("view") == true
+                && document?["permissions"]?.Value<bool?>("launch") == true;
+        }
+
         public async Task<FactoryConfigDto> GetFactoryConfigAsync(CancellationToken cancellationToken)
         {
             var url = $"{_baseUrl}/api/config";

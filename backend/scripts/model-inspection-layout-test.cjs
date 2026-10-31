@@ -93,5 +93,44 @@ let backend, socket;
         assert.equal((await browser(`/api/models/${modelId}`, 'PUT', { name: 'must not rename' }, auth)).status, 403);
     }
     check('layout-only editors can save positions but cannot rename/import models; readers and missing CSRF cannot write');
+    const motionRoute = `/api/models/${modelId}/bindings`;
+    const motionBefore = (await api('/api/models')).find(model => model.id === modelId);
+    const motionMetadata = JSON.parse(motionBefore.metadata);
+    const binding = { id: 'motion_door', node_name: 'door', source_group: 'doors', source_key: 'front_door_open',
+        action: 'translate', axis: 'z', input_min: 0, input_max: 1, output_min: 0, output_max: .8, transition_duration: 3 };
+    const motionBody = { expectedBindings: motionMetadata.partBindings || [], partBindings: [binding] };
+    const motionSaved = await api(motionRoute, 'PUT', motionBody);
+    const motionAfter = JSON.parse(motionSaved.model.metadata);
+    assert.equal(motionAfter.partBindings[0].transition_duration, 3);
+    assert.equal(motionAfter.runtime.enableGenericBindings, true);
+    for (const key of Object.keys(motionMetadata)) {
+        if (!['partBindings', 'runtime'].includes(key)) assert.deepEqual(motionAfter[key], motionMetadata[key]);
+    }
+    assert.deepEqual({ ...motionAfter.runtime, enableGenericBindings: undefined }, { ...motionMetadata.runtime, enableGenericBindings: undefined });
+    for (const key of Object.keys(motionBefore)) if (key !== 'metadata') assert.deepEqual(motionSaved.model[key], motionBefore[key]);
+    assert.equal((await request(motionRoute, 'PUT', motionBody)).status, 409);
+    assert.equal((await request(motionRoute, 'PUT', { ...motionBody, metadata: {} })).status, 400);
+    assert.equal((await request(motionRoute, 'PUT', { ...motionBody, partBindings: [{ ...binding, output_max: null }] })).status, 400);
+    assert.equal((await request(`/api/models/${privateModel.id}/bindings`, 'PUT', motionBody)).status, 404);
+    assert.equal((await request('/api/models/factory_hall_lowpoly/bindings', 'PUT', motionBody)).status, 404);
+    check('motion saves preserve disassembly, releases and model fields; stale versions, invalid values and private assets are rejected');
+    for (const edit of [false, true]) {
+        const username = edit ? 'motion_editor' : 'motion_reader';
+        assert.equal((await browser('/api/admin-auth/users', 'POST', { username, password, role: 'viewer', permissions: { view: false },
+            pagePermissions: { 'model-animations': { view: true, edit } } }, credentials)).status, 201);
+        const login = await browser('/api/admin-auth/login', 'POST', { username, password });
+        assert.equal(login.status, 200);
+        const Cookie = login.response.headers.getSetCookie().map(value => value.split(';')[0]).join('; ');
+        const auth = { Cookie, 'X-CSRF-Token': login.body.csrfToken };
+        const current = await browser('/api/models', 'GET', undefined, auth);
+        assert.equal(current.status, 200);
+        const expectedBindings = JSON.parse(current.body.find(model => model.id === modelId).metadata).partBindings;
+        const payload = { expectedBindings, partBindings: [{ ...binding, output_max: 1.2 }] };
+        assert.equal((await browser(motionRoute, 'PUT', payload, { Cookie })).status, 403);
+        assert.equal((await browser(motionRoute, 'PUT', payload, auth)).status, edit ? 200 : 403);
+        assert.equal((await browser(`/api/models/${modelId}`, 'PUT', { name: 'forbidden rename' }, auth)).status, 403);
+        assert.equal((await browser(route, 'PUT', { revision: saved.revision, parts: [] }, auth)).status, 403);
+    }
+    check('animation-only editors can save motion with CSRF but cannot rename or alter disassembly; readers cannot write');
     const result = { success: true, checks, directory }; fs.writeFileSync(path.join(directory, 'result.json'), JSON.stringify(result, null, 2)); console.log(JSON.stringify(result, null, 2));
 })().catch(error => { console.error(error); process.exitCode = 1; }).finally(async () => { socket?.terminate(); await forceStop(backend); });

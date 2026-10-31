@@ -2,7 +2,7 @@ import { PAGE_PERMISSIONS, pagePermission as p } from './pagePermissions.mjs'
 const any = (...grants) => ({ any: grants })
 const all = (...grants) => ({ all: grants })
 const read = (pages, display = false) => any('admin', ...(display ? ['view'] : []), ...pages.map(k => p(k)))
-const spatial = ['factories', 'workshops', 'lines', 'devices', 'composer', 'mobile-devices', 'disassembly-layout', 'models', 'points', 'points.alarms', 'point-monitor', 'platform.scene', 'platform.designer', 'platform.environment']
+const spatial = ['factories', 'workshops', 'lines', 'devices', 'composer', 'mobile-devices', 'disassembly-layout', 'models', 'model-animations', 'points', 'points.alarms', 'point-monitor', 'platform.scene', 'platform.designer', 'platform.environment']
 export const SETTING_PAGES = {
   data_mode: 'settings.data', simulation_interval_ms: 'settings.data', realtime_stale_ms: 'settings.data',
   native_quality_profile: 'settings.performance', native_environment_config: 'platform.environment',
@@ -76,6 +76,7 @@ export function apiPermission(path, method = 'GET', body) {
   }
   if (resource('models')) {
     if (safe) return read(spatial, true)
+    if (/^\/api\/models\/[^/]+\/bindings$/.test(path) && method === 'PUT') return any('admin', p('models', 'edit'), p('model-animations', 'edit'))
     if (/^\/api\/models\/[^/]+\/inspection$/.test(path) && method === 'PUT') return any('admin', p('disassembly-layout', 'edit'))
     return any('admin', p('models', action))
   }

@@ -4,6 +4,43 @@ const { publicInspection } = require('../services/deviceInspection');
 const { loadModelInspection, patchModelInspectionLayout, saveModelInspectionLayout } = require('../services/modelInspection');
 const { configurationMutation } = require('../services/configurationSync');
 const { getBuiltinModels } = require('../services/builtinModels');
+const { normalizeModelMetadata } = require('../services/modelAssetMetadata');
+const { canonicalJson } = require('../services/deviceInspection');
+
+// Motion authors may change bindings, but cannot rename, publish or rewrite
+// inspection layouts. Merge into the latest metadata and retain the CAS guard.
+router.put('/:id/bindings', configurationMutation('models'), async (req, res) => {
+    try {
+        const body = req.body;
+        if (!body || Object.keys(body).some(key => !['partBindings', 'expectedBindings'].includes(key))
+            || !Array.isArray(body.partBindings) || !Array.isArray(body.expectedBindings) || body.partBindings.length > 2000) {
+            throw new Error('仅可提交动作绑定及原绑定版本');
+        }
+        for (const binding of body.partBindings) {
+            if (!binding || typeof binding !== 'object' || Array.isArray(binding)
+                || !(binding.node_path || binding.node_name) || !String(binding.source_key || '').trim()
+                || !['rotate_speed', 'rotate_angle', 'translate', 'visibility', 'color'].includes(binding.action)
+                || !['x', 'y', 'z'].includes(binding.axis)
+                || ['input_min', 'input_max', 'output_min', 'output_max', 'speed_factor', 'transition_duration']
+                    .some(key => binding[key] !== undefined && (typeof binding[key] !== 'number' || !Number.isFinite(binding[key])))) {
+                throw new Error('动作绑定的节点、信号或运动参数无效');
+            }
+        }
+        const partBindings = normalizeModelMetadata({ partBindings: body.partBindings }).partBindings;
+        const db = await getDb();
+        const saved = await db.transaction(async tx => {
+            const loaded = await loadModelInspection(tx, req.params.id, req.factoryId);
+            if (canonicalJson({ bindings: loaded.metadata.partBindings || [] }) !== canonicalJson({ bindings: body.expectedBindings })) {
+                throw Object.assign(new Error('动作绑定已更新，请重新读取模型后保存'), { statusCode: 409 });
+            }
+            const metadata = { ...loaded.metadata, partBindings,
+                runtime: { ...loaded.metadata.runtime, enableGenericBindings: partBindings.length > 0 } };
+            return saveModelInspectionLayout(tx, loaded, metadata, req.factoryId, getDbStatus().type);
+        });
+        global.wsServer?.broadcastToRole?.('model_metadata_changed', { modelId: req.params.id, timestamp: Date.now() }, 'unity');
+        res.json({ success: true, model: saved.model });
+    } catch (error) { res.status(error.statusCode || 400).json({ error: error.message, code: error.code }); }
+});
 
 // Renaming must not normalize or rewrite inspection, bindings or release state.
 router.put('/:id/name', configurationMutation('models'), async (req, res) => {

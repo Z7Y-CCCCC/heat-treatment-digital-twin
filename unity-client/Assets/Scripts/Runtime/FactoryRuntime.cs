@@ -65,6 +65,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
         private Thread _nativeAuthPipeThread;
         private CancellationToken _nativeAuthPipeToken;
         private bool _nativeAuthPipeFailureReported;
+        private string _lastSuccessfulNativeTicket;
         private JObject _lastDashboardContext = new JObject
         {
             ["viewId"] = "factory_overview",
@@ -261,6 +262,11 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 if (action != "sync_unity_session") return;
                 var ticket = command.Value<string>("ticket");
                 if (string.IsNullOrEmpty(ticket) || ticket.Length != 64 || ticket.Any(character => !Uri.IsHexDigit(character))) return;
+                if (_authenticated && string.Equals(ticket, _lastSuccessfulNativeTicket, StringComparison.Ordinal))
+                {
+                    Debug.Log("[FactoryRuntime] Ignored duplicate native session handoff.");
+                    return;
+                }
                 Debug.Log("[FactoryRuntime] Native dashboard session handoff received.");
                 _ = AuthenticateNativeTicketAsync(ticket);
             }
@@ -296,16 +302,34 @@ namespace HeatTreatment.DigitalTwin.Runtime
             if (_loginInProgress || _api == null || _diagnostics == null) return;
             _loginInProgress = true;
             var generation = ++_authGeneration;
+            var previouslyAuthenticated = _authenticated;
             _diagnostics.SetLoginBusy(true);
             try
             {
                 var session = await _api.ExchangeNativeTicketAsync(ticket, _lifetime.Token);
                 if (generation != _authGeneration) return;
                 ActivateAuthenticatedSession(session);
+                _lastSuccessfulNativeTicket = ticket;
             }
             catch (Exception exception)
             {
                 if (generation != _authGeneration) return;
+                // A delayed/replayed one-time ticket does not invalidate an existing
+                // display session. Retain it only after checking its current server permissions.
+                if (previouslyAuthenticated && exception is BackendRequestException staleTicket
+                    && staleTicket.Code == "NATIVE_TICKET_INVALID")
+                {
+                    var valid = false;
+                    try { valid = await _api.HasActiveDisplaySessionAsync(_lifetime.Token); }
+                    catch { /* fail closed when the current session cannot be verified */ }
+                    if (generation != _authGeneration) return;
+                    if (valid)
+                    {
+                        if (_sceneReady) _diagnostics.CompleteLoading();
+                        Debug.Log("[FactoryRuntime] Ignored stale handoff; active display session verified.");
+                        return;
+                    }
+                }
                 _authenticated = false;
                 _api.ClearSession();
                 var message = exception is BackendRequestException requestException && requestException.StatusCode == 403
@@ -1488,6 +1512,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
 
         private IEnumerator StartApplicationChromeCoroutine()
         {
+            if (_settings != null && !_settings.showApplicationChrome) yield break;
 #if UNITY_STANDALONE_WIN && !UNITY_EDITOR
             yield return new WaitForSecondsRealtime(0.35f);
             var adminUrl = string.IsNullOrWhiteSpace(_settings?.adminUrl)

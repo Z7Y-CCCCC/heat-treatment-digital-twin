@@ -16,6 +16,7 @@ namespace HeatTreatment.DigitalTwin.Core
         public string desktopControlUrl = "";
         public string desktopControlToken = "";
         public bool maximizeWindowOnStart = true;
+        public bool showApplicationChrome = true;
         public string qualityProfile = "auto";
         public float autoReconnectSeconds = 2f;
         public float configurationRetrySeconds = 3f;
@@ -83,6 +84,7 @@ namespace HeatTreatment.DigitalTwin.Core
                 "DIGITAL_TWIN_MAXIMIZE_WINDOW",
                 settings.maximizeWindowOnStart
             );
+            settings.showApplicationChrome = EnvironmentBoolean("DIGITAL_TWIN_APPLICATION_CHROME", settings.showApplicationChrome);
             settings.qualityProfile = EnvironmentValue(
                 "DIGITAL_TWIN_QUALITY_PROFILE",
                 settings.qualityProfile

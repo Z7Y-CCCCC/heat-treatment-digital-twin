@@ -7,6 +7,7 @@ import { buildDeviceLabelMarkup, updateDeviceLabelElements, applyDeviceLabelStyl
 import { getBackendOrigin } from '../runtime/backendEndpoint.js';
 import { enhanceModelMaterial, resolveModelOptimization } from '../runtime/modelOptimization.js';
 import { restoreGltfNodeNames } from './gltfNodeIdentity.js';
+import { bindingSampleUsable, setMotionTarget, advanceMotion } from './bindingMotion.js';
 
 const loader = new GLTFLoader();
 const modelCache = new Map();
@@ -503,7 +504,11 @@ class ImportedDeviceModel extends THREE.Group {
             const { binding, target, axis } = state;
             const action = binding.action || 'rotate_speed';
             const rawValue = readBindingValue(data, binding);
-            if (rawValue === undefined || rawValue === null) return;
+            const numeric = ['rotate_speed', 'rotate_angle', 'translate'].includes(action);
+            state.suspended = !bindingSampleUsable(data, binding) || rawValue == null
+                || (numeric && (!['number', 'boolean', 'string'].includes(typeof rawValue)
+                    || String(rawValue).trim() === '' || !Number.isFinite(Number(rawValue))));
+            if (state.suspended) { state.speed = 0; return; }
 
             if (action === 'rotate_speed') {
                 const rpm = toNumber(rawValue, 0);
@@ -520,7 +525,8 @@ class ImportedDeviceModel extends THREE.Group {
                     toNumber(binding.output_min, 0),
                     toNumber(binding.output_max, 90)
                 );
-                target.rotation[axis] = state.baseRotation[axis] + THREE.MathUtils.degToRad(angleDeg);
+                const offset = setMotionTarget(state, angleDeg, binding.transition_duration);
+                target.rotation[axis] = state.baseRotation[axis] + THREE.MathUtils.degToRad(offset);
                 return;
             }
 
@@ -532,7 +538,7 @@ class ImportedDeviceModel extends THREE.Group {
                     toNumber(binding.output_min, 0),
                     toNumber(binding.output_max, 1)
                 );
-                target.position[axis] = state.basePosition[axis] + offset;
+                target.position[axis] = state.basePosition[axis] + setMotionTarget(state, offset, binding.transition_duration);
                 return;
             }
 
@@ -554,8 +560,14 @@ class ImportedDeviceModel extends THREE.Group {
 
     update(delta) {
         this.bindingStates.forEach((state) => {
-            if (state.binding.action !== 'rotate_speed' || !state.speed) return;
-            state.target.rotation[state.axis] += delta * state.speed;
+            if (state.suspended) return;
+            if (state.binding.action === 'rotate_speed' && state.speed)
+                state.target.rotation[state.axis] += delta * state.speed;
+            else if (['translate', 'rotate_angle'].includes(state.binding.action) && state.offset != null) {
+                const offset = advanceMotion(state, state.binding, delta);
+                if (state.binding.action === 'translate') state.target.position[state.axis] = state.basePosition[state.axis] + offset;
+                else state.target.rotation[state.axis] = state.baseRotation[state.axis] + THREE.MathUtils.degToRad(offset);
+            }
         });
     }
 

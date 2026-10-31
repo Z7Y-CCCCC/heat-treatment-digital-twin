@@ -12,6 +12,7 @@ import { createVoiceAnnouncer, normalizeVoiceRule, parseVoiceConfig } from '../r
 import WidgetRenderer from '../runtime/WidgetRenderer.vue'
 import { createDeviceModel, resolveBackendAssetUrl } from '../three/ModelFactory.js'
 import { restoreGltfNodeNames } from '../three/gltfNodeIdentity.js'
+import { createMotionPreset } from '../three/bindingMotion.js'
 import {
     DEFAULT_DEVICE_LABEL_CONFIG,
     DEFAULT_DIAGNOSTIC_CONFIG,
@@ -55,6 +56,7 @@ import ProjectMigrationSettings from './admin/components/ProjectMigrationSetting
 import PlatformUsersSettings from './admin/components/PlatformUsersSettings.vue'
 import AdminHelpGuide from './admin/components/AdminHelpGuide.vue'
 import MobileDeviceMotion from './admin/components/MobileDeviceMotion.vue'
+import ModelTransferSequence from './admin/components/ModelTransferSequence.vue'
 import ManualDisassemblyLayout from './admin/components/ManualDisassemblyLayout.vue'
 import { useManualDisassemblyPage } from './admin/composables/useManualDisassemblyPage.js'
 import ModelInspectionEditor from './admin/components/ModelInspectionEditor.vue'
@@ -125,6 +127,7 @@ function restoreSubpage(value, options, fallback) {
 
 // 当前选中的 Tab
 const activeTab = ref(storedAdminUiState.activeTab || 'composer')
+const isModelWorkspace = computed(() => ['models', 'model-animations'].includes(activeTab.value))
 const platformSubpage = ref(restoreSubpage(storedAdminUiState.platformSubpage, PLATFORM_SUBPAGES.value, 'designer'))
 const settingsSubpage = ref(restoreSubpage(storedAdminUiState.settingsSubpage, SETTINGS_SUBPAGES.value, 'runtime'))
 const pointsSubpage = ref(restoreSubpage(storedAdminUiState.pointsSubpage, POINTS_SUBPAGES.value, 'mapping'))
@@ -187,6 +190,7 @@ const navIconPaths = {
     devices: ['M6 8h12v8H6z', 'M9 8V5h6v3', 'M9 19h6', 'M12 16v3'],
     mobile: ['M5 8h14v8H5z', 'M8 8V5h8v3', 'M8 16v3', 'M16 16v3', 'M2 12h3', 'M19 12h3'],
     models: ['M12 3l8 4.5v9L12 21l-8-4.5v-9L12 3z', 'M12 12l8-4.5', 'M12 12v9', 'M12 12L4 7.5'],
+    animation: ['M8 5l11 7-11 7z', 'M4 5v14'],
     platform: ['M5 5h6v6H5z', 'M13 5h6v6h-6z', 'M5 13h6v6H5z', 'M13 13h6v6h-6z'],
     data: ['M4 7h16', 'M4 12h16', 'M4 17h16', 'M7 7v10', 'M17 7v10'],
     points: ['M5 12h4', 'M15 12h4', 'M9 12a3 3 0 1 0 6 0a3 3 0 0 0-6 0', 'M12 5V3', 'M12 21v-2'],
@@ -1413,7 +1417,7 @@ const MODEL_LIBRARY_STEPS = [
     { key: 'bindings', label: '部位绑定', description: '把模型节点绑定到实时点位' }
 ]
 const modelLibraryStep = ref(
-    MODEL_LIBRARY_STEPS.some(step => step.key === storedAdminUiState.modelLibraryStep)
+    activeTab.value === 'model-animations' ? 'bindings' : MODEL_LIBRARY_STEPS.some(step => step.key === storedAdminUiState.modelLibraryStep)
         ? storedAdminUiState.modelLibraryStep
         : 'library'
 )
@@ -1562,6 +1566,44 @@ const modelNodeSearchText = ref('')
 const showOnlyBindableNodes = ref(true)
 const selectedModelBindingIndex = ref(-1)
 const previewModelBindingIndex = ref(-1)
+const canPreviewDoorEndpoints = computed(() => {
+    const binding = modelPartBindings.value[previewModelBindingIndex.value]
+    return binding?.source_group === 'doors' && ['translate', 'rotate_angle'].includes(binding.action)
+})
+const motionBindingPage = ref(1)
+const motionBindingPageSize = 4
+const motionBindingSearch = ref('')
+const motionEditorPanel = ref('list')
+const motionWorkspaceMode = ref('parts')
+const motionFormStep = ref('binding')
+const motionBindingEntries = computed(() => modelPartBindings.value.map((binding, index) => ({ binding, index }))
+    .filter(({ binding }) => `${formatModelBindingPartName(binding)} ${binding.source_group} ${binding.source_key}`.toLowerCase().includes(motionBindingSearch.value.trim().toLowerCase())))
+const motionBindingPageCount = computed(() => Math.max(1, Math.ceil(motionBindingEntries.value.length / motionBindingPageSize)))
+const motionBindingPageEntries = computed(() => motionBindingEntries.value.slice((motionBindingPage.value - 1) * motionBindingPageSize, motionBindingPage.value * motionBindingPageSize))
+watch([selectedPreviewModelId, motionBindingSearch], () => { motionBindingPage.value = 1 })
+watch(motionBindingPageCount, count => { motionBindingPage.value = Math.min(motionBindingPage.value, count) })
+
+function newMotionBinding() {
+    resetModelBindingForm()
+    motionEditorPanel.value = 'edit'
+    motionFormStep.value = 'binding'
+}
+
+function stopMotionPreview() {
+    clearModelPreviewAnimation()
+    previewModelBindingIndex.value = -1
+    modelBindingStatus.value = '已停止动画，部件恢复原位'
+}
+
+async function changeMotionWorkspace(mode) {
+    if (motionWorkspaceMode.value === mode) return
+    motionWorkspaceMode.value = mode
+    if (mode === 'transfer') disposeModelPreview()
+    else {
+        await nextTick()
+        await ensureMotionModelSelection()
+    }
+}
 const modelBindingSaving = ref(false)
 const modelBindingStatus = ref('')
 const modelBindingForm = reactive({
@@ -1577,6 +1619,7 @@ const modelBindingForm = reactive({
     output_min: 0,
     output_max: 90,
     speed_factor: 0.10472,
+    transition_duration: 1.5,
     on_color: '#00ff88',
     off_color: '#666666',
     invert: false
@@ -1734,6 +1777,24 @@ const activePreviewIsEnvironment = computed(() => isEnvironmentModel(activePrevi
 // A packaged built-in GLB is still a real configurable asset. Only procedural
 // placeholders (which have no model file) must remain read-only.
 const canEditModelBindings = computed(() => !!activePreviewModel.value?.file_path && !activePreviewIsEnvironment.value)
+const motionModelOptions = computed(() => models.value.filter(model => model.file_path && !isEnvironmentModel(model) && (model.placement_level || 'device') === 'device'))
+
+async function ensureMotionModelSelection() {
+    modelLibraryStep.value = 'bindings'
+    if (motionWorkspaceMode.value === 'transfer') return
+    const model = motionModelOptions.value.find(model => model.id === selectedPreviewModelId.value)
+        || motionModelOptions.value.find(model => model.id === manualDisassemblyModelId.value)
+        || motionModelOptions.value[0]
+    if (model?.id === selectedPreviewModelId.value && !selectedModelFile.value) await renderSelectedModelPreview()
+    else if (model) await previewExistingModel(model)
+    else disposeModelPreview()
+}
+
+async function changeMotionModel(event) {
+    const model = motionModelOptions.value.find(model => model.id === event.target.value)
+    if (model && model.id !== selectedPreviewModelId.value) await previewExistingModel(model)
+    event.target.value = selectedPreviewModelId.value
+}
 
 function modelLibraryStepRequiresModel(step) {
     return step === 'optimization' || step === 'inspection' || step === 'bindings'
@@ -2121,6 +2182,20 @@ function fitPreviewCamera(camera, controls, object) {
     const center = box.getCenter(new THREE.Vector3())
     const size = box.getSize(new THREE.Vector3())
     const maxDim = Math.max(size.x, size.y, size.z, 1)
+    if (activeTab.value === 'model-animations') {
+        object.updateMatrixWorld(true)
+        const localBounds = box.clone().applyMatrix4(object.matrixWorld.clone().invert())
+        const cameraConfig = parseModelMetadata(activePreviewModel.value).inspection?.solid?.camera || { distance_scale: 1.02 }
+        const pose = inspectionCameraPose(camera, localBounds, cameraConfig, object.matrixWorld)
+        camera.near = Math.max(0.001, maxDim / 1000)
+        camera.far = Math.max(1000, maxDim * 100)
+        camera.position.copy(pose.position)
+        controls.target.copy(pose.target)
+        camera.lookAt(pose.target)
+        camera.updateProjectionMatrix()
+        controls.update()
+        return
+    }
     const distance = maxDim * 1.75
     camera.near = Math.max(0.01, maxDim / 100)
     camera.far = Math.max(1000, maxDim * 20)
@@ -2249,6 +2324,10 @@ function clearModelPreviewSelectionBox() {
 
 function restoreModelPreviewHighlight() {
     if (!modelPreviewHighlightState) return
+    for (const { mesh, original, temporary } of modelPreviewHighlightState.meshes || []) {
+        mesh.material = original
+        temporary.forEach(material => material.dispose())
+    }
     modelPreviewHighlightState.materials.forEach((entry) => {
         const material = entry.material
         if (!material) return
@@ -2386,7 +2465,7 @@ function applyModelPreviewHighlight(target) {
 
     const targetMeshes = new Set(collectPreviewMeshes(target))
     const entries = previewMaterialEntries(root)
-    modelPreviewHighlightState = { materials: entries }
+    modelPreviewHighlightState = { materials: entries, meshes: [] }
     entries.forEach((entry) => {
         const material = entry.material
         if (!material) return
@@ -2396,7 +2475,13 @@ function applyModelPreviewHighlight(target) {
         material.needsUpdate = true
     })
     targetMeshes.forEach((mesh) => {
-        const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material]
+        // CAD meshes often share one enamel material. Clone only the selected
+        // meshes so the frame and aperture cannot turn opaque yellow as well.
+        const original = mesh.material
+        const materials = (Array.isArray(original) ? original : [original]).map(material => material?.clone()).filter(Boolean)
+        if (!materials.length) return
+        mesh.material = Array.isArray(original) ? materials : materials[0]
+        modelPreviewHighlightState.meshes.push({ mesh, original, temporary: materials })
         materials.filter(Boolean).forEach((material) => {
             material.transparent = false
             material.opacity = 1
@@ -2456,34 +2541,53 @@ function applyPreviewColorToTarget(target, colorValue) {
 
 function clearModelPreviewAnimation() {
     if (!modelPreviewAnimationState) return
-    const { target, basePosition, baseRotation, baseVisible, materials } = modelPreviewAnimationState
-    if (target) {
-        target.position.copy(basePosition)
-        target.rotation.copy(baseRotation)
-        target.visible = baseVisible
+    for (const { target, basePosition, baseRotation, baseVisible, materials } of modelPreviewAnimationState.entries) {
+        if (target) {
+            target.position.copy(basePosition)
+            target.rotation.copy(baseRotation)
+            target.visible = baseVisible
+        }
+        restorePreviewAnimationMaterials(materials)
     }
-    restorePreviewAnimationMaterials(materials)
     modelPreviewAnimationState = null
 }
 
 function startModelPreviewAnimation(binding, target) {
     clearModelPreviewAnimation()
     if (!binding || !target) return
-    modelPreviewAnimationState = {
-        binding: normalizeModelBinding(binding),
-        target,
-        axis: normalizePreviewAxis(binding.axis),
-        basePosition: target.position.clone(),
-        baseRotation: target.rotation.clone(),
-        baseVisible: target.visible,
-        materials: capturePreviewAnimationMaterials(target),
-        elapsed: 0
-    }
+    // Door mechanisms share one PLC signal. Preview their individual bindings
+    // together, just as the native runtime does, instead of moving only a plate.
+    const linked = binding.source_group === 'doors' && ['translate', 'rotate_angle'].includes(binding.action)
+        ? modelPartBindings.value.filter(item => item.source_group === binding.source_group && item.source_key === binding.source_key
+            && ['translate', 'rotate_angle'].includes(item.action)) : []
+    const entries = (linked.length ? linked : [binding]).map(item => {
+        const node = item === binding ? target : resolveModelBindingTarget(item)
+        if (!node) return null
+        return { binding: normalizeModelBinding(item), target: node, axis: normalizePreviewAxis(item.axis),
+            basePosition: node.position.clone(), baseRotation: node.rotation.clone(), baseVisible: node.visible,
+            materials: capturePreviewAnimationMaterials(node), elapsed: 0 }
+    }).filter(Boolean)
+    modelPreviewAnimationState = { entries, endpoint: null }
 }
 
 function updateModelPreviewAnimation(delta) {
     if (!modelPreviewAnimationState) return
-    const state = modelPreviewAnimationState
+    for (const state of modelPreviewAnimationState.entries) updateModelPreviewBinding(state, delta)
+    modelPreviewSelectionBox?.update()
+}
+
+function previewDoorEndpoint(open) {
+    if (!canPreviewDoorEndpoints.value) return
+    previewModelBinding(previewModelBindingIndex.value)
+    if (!modelPreviewAnimationState) return
+    modelPreviewAnimationState.endpoint = open ? 1 : 0
+    updateModelPreviewAnimation(0)
+    const target = resolveModelBindingTarget(modelPartBindings.value[previewModelBindingIndex.value])
+    if (target) focusPreviewCameraOnNode(target)
+    modelBindingStatus.value = open ? '开门到位：门板让开炉门口，联动机构同步就位' : '关门到位：门板覆盖炉门口，联动机构同步就位'
+}
+
+function updateModelPreviewBinding(state, delta) {
     const { binding, target, axis } = state
     state.elapsed += delta
     const action = binding.action || 'rotate_speed'
@@ -2498,7 +2602,8 @@ function updateModelPreviewAnimation(delta) {
         return
     }
 
-    const wave = (Math.sin(state.elapsed * Math.PI * 1.15) + 1) / 2
+    const phase = (state.elapsed / Math.max(0.1, binding.transition_duration || 1.5)) % 2
+    const wave = modelPreviewAnimationState.endpoint ?? (phase <= 1 ? phase : 2 - phase)
     const inputMin = toPreviewNumber(binding.input_min, 0)
     const inputMax = toPreviewNumber(binding.input_max, 100)
     const simulatedValue = inputMin + (inputMax - inputMin) * wave
@@ -2637,7 +2742,7 @@ function createModelPreviewRuntime(container) {
     const controls = new OrbitControls(camera, renderer.domElement)
     controls.enableDamping = true
     controls.dampingFactor = 0.08
-    controls.autoRotate = true
+    controls.autoRotate = activeTab.value !== 'model-animations'
     controls.autoRotateSpeed = 0.7
 
     scene.add(new THREE.HemisphereLight(0xffffff, 0x7d8582, 1.45))
@@ -2845,9 +2950,10 @@ function getActivePreviewModel() {
 }
 
 async function renderSelectedModelPreview() {
-    if (activeTab.value !== 'models') return
+    if (!isModelWorkspace.value) return
+    if (activeTab.value === 'model-animations' && motionWorkspaceMode.value === 'transfer') return
 
-    if (selectedModelFile.value && selectedModelObjectUrl) {
+    if (activeTab.value === 'models' && selectedModelFile.value && selectedModelObjectUrl) {
         await renderModelPreview({ url: selectedModelObjectUrl, label: selectedModelFile.value.name })
         return
     }
@@ -3036,6 +3142,7 @@ function normalizeModelBinding(binding = {}) {
         output_min: Number(binding.output_min ?? 0),
         output_max: Number(binding.output_max ?? 90),
         speed_factor: Number(binding.speed_factor ?? 0.10472),
+        transition_duration: Math.max(0, Math.min(60, Number(binding.transition_duration ?? 0) || 0)),
         on_color: binding.on_color || '#00ff88',
         off_color: binding.off_color || '#666666',
         invert: !!binding.invert
@@ -3100,12 +3207,22 @@ function resetModelBindingForm() {
         source_group: 'analog',
         source_key: '',
         action: 'rotate_speed',
+        transition_duration: 1.5,
         axis: 'y'
     }))
     selectedModelBindingIndex.value = -1
 }
 
+function applyMotionPreset(kind) {
+    Object.assign(modelBindingForm, createMotionPreset(kind))
+    modelBindingStatus.value = '已填入开关量示例。请选择模型节点、填写现场点位字段，并按模型校准方向及行程；保存部位绑定后生效。'
+}
+
 function loadModelBindingState(model) {
+    motionBindingSearch.value = ''
+    motionBindingPage.value = 1
+    motionEditorPanel.value = 'list'
+    motionFormStep.value = 'binding'
     loadModelAssetSpec(model)
     loadModelInspectionState(model)
     const metadata = parseModelMetadata(model)
@@ -3138,6 +3255,8 @@ function editModelBinding(index) {
     if (!binding) return
     Object.assign(modelBindingForm, normalizeModelBinding(binding))
     selectedModelBindingIndex.value = index
+    motionEditorPanel.value = 'edit'
+    motionFormStep.value = 'binding'
     previewModelBinding(index)
 }
 
@@ -3208,6 +3327,14 @@ function saveModelBindingDraft() {
         ? `绑定已更新，并合并 ${duplicateCount} 条重复项，保存后生效`
         : (selectedModelBindingIndex.value >= 0 ? '绑定已更新，保存后生效' : '绑定已加入，保存后生效')
     resetModelBindingForm()
+    if (activeTab.value === 'model-animations') {
+        motionEditorPanel.value = 'list'
+        motionBindingSearch.value = ''
+        nextTick(() => {
+            const index = modelPartBindings.value.findIndex(item => item.id === binding.id)
+            if (index >= 0) motionBindingPage.value = Math.floor(index / motionBindingPageSize) + 1
+        })
+    }
 }
 
 async function saveModelPartBindings(options = {}) {
@@ -3219,11 +3346,19 @@ async function saveModelPartBindings(options = {}) {
     modelBindingStatus.value = '正在保存部位绑定...'
     try {
         modelPartBindings.value = dedupeModelBindings(modelPartBindings.value)
-        const metadata = buildCurrentModelMetadata(model)
-        // Enabling live motion is intentional only when the engineer saves motion bindings.
-        metadata.runtime.enableGenericBindings = modelPartBindings.value.length > 0
         const successMessage = options.successMessage || `已保存 ${modelPartBindings.value.length} 条部位绑定`
-        await persistModelMetadata(model, metadata, successMessage)
+        const result = await adminApi.saveModelBindings(model.id, {
+            partBindings: modelPartBindings.value,
+            expectedBindings: parseModelMetadata(model).partBindings || []
+        })
+        if (result?.error || !result?.success) throw new Error(result?.error || '后端没有返回成功状态')
+        models.value = models.value.map(item => item.id === model.id ? result.model : item)
+        modelPreviewModel = result.model
+        modelPartBindings.value = dedupeModelBindings(parseModelMetadata(result.model).partBindings || [])
+        savedModelEditorSnapshot.value = snapshotJson({
+            ...JSON.parse(savedModelEditorSnapshot.value || '{}'), partBindings: modelPartBindings.value
+        })
+        modelBindingStatus.value = successMessage
         if (showAlert) await alert(successMessage, { title: '保存成功', type: 'success' })
         return true
     } catch (e) {
@@ -3503,6 +3638,11 @@ async function uploadModel() {
 
 async function previewExistingModel(model, { afterUpload = false } = {}) {
     if (modelBindingSaving.value || modelNameSaving.value || (modelUploading.value && !afterUpload)) { modelBindingStatus.value = '正在保存模型，请等待保存完成再切换。'; return }
+    if (activeTab.value === 'model-animations' && model.id !== selectedPreviewModelId.value && activePreviewModel.value) {
+        const savedBindings = dedupeModelBindings(parseModelMetadata(activePreviewModel.value).partBindings || [])
+        const dirty = snapshotJson(modelPartBindings.value) !== snapshotJson(savedBindings) || Boolean(modelBindingForm.source_key)
+        if (dirty && !(await confirm('当前模型有未保存的动作配置，切换模型会丢弃这些更改，是否继续？'))) return
+    }
     if (modelInspectionDirty.value && !(await confirm('当前模型有未保存的拆解编排。切换模型会丢弃这些拆解更改，是否继续？'))) return
     selectedModelFile.value = null
     modelPreviewModel = model
@@ -4659,7 +4799,7 @@ async function selectAdminTab(tabKey) {
     if (activeTab.value === 'disassembly-layout' && tabKey !== activeTab.value && !await manualDisassemblyPage.canLeave()) return
     if (activeTab.value === 'composer' && tabKey !== activeTab.value && groundEditorRef.value && !await groundEditorRef.value.canLeave()) return
     activeTab.value = tabKey
-    if (['models', 'disassembly-layout'].includes(tabKey)) isModelsMenuOpen.value = true
+    if (['models', 'disassembly-layout', 'model-animations'].includes(tabKey)) isModelsMenuOpen.value = true
     resizeComposerPreviewAfterLayout()
 }
 
@@ -5013,7 +5153,10 @@ watch(activeTab, async (tab) => {
         await nextTick()
         scheduleNativeScenePreview({ source: 'spatial', includeLayout: true })
     }
-    if (tab === 'models') {
+    if (tab === 'model-animations') {
+        await nextTick()
+        await ensureMotionModelSelection()
+    } else if (tab === 'models') {
         if (modelLibraryStepRequiresModel(modelLibraryStep.value) && !activePreviewModel.value) {
             modelLibraryStep.value = 'library'
         }
@@ -5139,7 +5282,8 @@ async function initializeAdminPanel() {
         ensureWorkshopMapLineSelection()
         scheduleNativeScenePreview({ source: 'spatial', includeLayout: true })
     }
-    if (activeTab.value === 'models') await renderSelectedModelPreview()
+    if (activeTab.value === 'model-animations') await ensureMotionModelSelection()
+    else if (activeTab.value === 'models') await renderSelectedModelPreview()
     if (activeTab.value === 'disassembly-layout') await manualDisassemblyPage.ensureSelection()
 }
 
@@ -5161,7 +5305,7 @@ onActivated(async () => {
         refreshAdminConnectionStatus()
         nativeScenePreviewStatusTimer = setInterval(refreshAdminConnectionStatus, 3000)
     }
-    if (activeTab.value === 'models') await renderSelectedModelPreview()
+    if (isModelWorkspace.value) await renderSelectedModelPreview()
     if (activeTab.value === 'point-monitor') startPointMonitor()
 })
 
@@ -5978,6 +6122,10 @@ async function saveCurrentFactoryPageDrafts() {
         if (!modelBindingForm.node_path || !modelBindingForm.source_key)
             throw new Error('模型部位绑定表单缺少节点或点位字段')
         saveModelBindingDraft()
+    }
+    if (model?.id && activeTab.value === 'model-animations' && savedModelEditorSnapshot.value
+        && modelEditorSnapshot() !== savedModelEditorSnapshot.value) {
+        if (!await saveModelPartBindings({ showAlert: false })) throw new Error(modelBindingStatus.value || '动作动画保存失败')
     }
     if (model?.id && savedModelEditorSnapshot.value && modelEditorSnapshot() !== savedModelEditorSnapshot.value) {
         if (!canEditModelBindings.value) throw new Error('当前模型没有编辑权限，模型库修改尚未保存')
@@ -7093,7 +7241,7 @@ async function openAdminSetupStep(step) {
 </script>
 
 <template>
-    <div class="admin-container" data-admin-workspace :class="{ 'unity-embedded': isUnityEmbedded, 'unity-dashboard-tab': isUnityEmbedded && unityHostState.attached && !unityHostState.adminVisible, 'nav-collapsed': isAdminNavCollapsed, 'composer-active': activeTab === 'composer', 'line-planner-active': activeTab === 'lines', 'manual-layout-active': activeTab === 'disassembly-layout' }">
+    <div class="admin-container" data-admin-workspace :class="{ 'unity-embedded': isUnityEmbedded, 'unity-dashboard-tab': isUnityEmbedded && unityHostState.attached && !unityHostState.adminVisible, 'nav-collapsed': isAdminNavCollapsed, 'composer-active': activeTab === 'composer', 'line-planner-active': activeTab === 'lines', 'manual-layout-active': activeTab === 'disassembly-layout', 'animation-active': activeTab === 'model-animations' }">
         <AdminWindowChrome v-if="isUnityEmbedded" @state="Object.assign(unityHostState, $event)" @before-dashboard="flushDashboardViewPreview" />
         <!-- 顶部工具栏 -->
         <header class="admin-header" aria-label="后台工具栏">
@@ -8438,12 +8586,30 @@ async function openAdminSetupStep(step) {
                 </section>
 
                 <!-- ======== 模型库 ======== -->
-                <div v-if="activeTab === 'models'" class="tab-content">
-                    <ModelPlacementMenu ref="modelPlacementMenuRef" :busy="modelPlacementSaving || modelNameSaving || modelUploading" @change="saveModelPlacement" />
-                    <h2>3D 模型库</h2>
-                    <p class="desc">管理模型资产、优化验收与部位绑定。</p>
+                <div v-if="isModelWorkspace" class="tab-content" :class="{ 'model-animation-workspace': activeTab === 'model-animations' }" :data-testid="activeTab === 'model-animations' ? 'model-animation-page' : 'model-management-page'">
+                    <template v-if="activeTab === 'model-animations'">
+                        <div class="manual-layout-page-heading">
+                            <div><h2>动作动画</h2><p class="desc">{{ motionWorkspaceMode === 'transfer' ? '料车、炉门、推链与物料按进料工序联动。' : '选择动作节点预览，在参数配置中调整部件运动。' }}</p></div>
+                            <label v-if="motionWorkspaceMode === 'parts'" class="manual-layout-model-picker">选择模型
+                                <select :value="selectedPreviewModelId" aria-label="选择动作动画模型" :disabled="modelBindingSaving || modelNameSaving" @change="changeMotionModel">
+                                    <option v-if="!motionModelOptions.length" value="">暂无可配置的设备模型</option>
+                                    <option v-for="model in motionModelOptions" :key="model.id" :value="model.id">{{ model.name || model.id }}</option>
+                                </select>
+                            </label>
+                        </div>
+                        <nav class="motion-workspace-modes" aria-label="动作动画模式">
+                            <button type="button" :class="{ active: motionWorkspaceMode === 'parts' }" :aria-pressed="motionWorkspaceMode === 'parts'" @click="changeMotionWorkspace('parts')">部件动作</button>
+                            <button type="button" :class="{ active: motionWorkspaceMode === 'transfer' }" :aria-pressed="motionWorkspaceMode === 'transfer'" @click="changeMotionWorkspace('transfer')">料车进料联动</button>
+                        </nav>
+                        <p v-if="!motionModelOptions.length" class="desc">请先在“模型管理”中导入设备 GLB / GLTF 模型。</p>
+                    </template>
+                    <template v-else>
+                        <ModelPlacementMenu ref="modelPlacementMenuRef" :busy="modelPlacementSaving || modelNameSaving || modelUploading" @change="saveModelPlacement" />
+                        <h2>3D 模型库</h2>
+                        <p class="desc">管理模型资产、优化验收与部位绑定。</p>
+                    </template>
 
-                    <div class="secondary-page-nav-shell model-step-nav-shell">
+                    <div v-if="activeTab === 'models'" class="secondary-page-nav-shell model-step-nav-shell">
                         <nav class="secondary-page-nav" aria-label="模型库操作步骤">
                             <button
                                 v-for="(step, index) in MODEL_LIBRARY_STEPS"
@@ -8465,9 +8631,10 @@ async function openAdminSetupStep(step) {
                         </nav>
                     </div>
 
-                    <div class="model-library-layout" :class="{ 'inspection-workspace': modelLibraryStep === 'inspection' }">
+                    <ModelTransferSequence v-if="activeTab === 'model-animations' && motionWorkspaceMode === 'transfer'" :models="models" />
+                    <div v-if="activeTab !== 'model-animations' || motionWorkspaceMode === 'parts'" class="model-library-layout" :class="{ 'inspection-workspace': modelLibraryStep === 'inspection', 'animation-workspace': activeTab === 'model-animations' }">
                         <section class="model-library-main">
-                            <section v-show="modelLibraryStep === 'library'" class="model-library-step-panel">
+                            <section v-if="activeTab === 'models'" v-show="modelLibraryStep === 'library'" class="model-library-step-panel">
                                 <div class="model-step-heading">
                                     <div><h3>模型资产</h3></div>
                                     <div class="model-asset-heading-actions">
@@ -8701,7 +8868,7 @@ async function openAdminSetupStep(step) {
                             <section v-if="activePreviewModel && !activePreviewIsEnvironment" v-show="modelLibraryStep === 'bindings'" class="model-binding-editor model-library-step-panel">
                                 <div class="model-binding-header">
                                     <div>
-                                        <h3>部位与点位绑定</h3>
+                                        <h3>{{ activeTab === 'model-animations' ? '部件动作' : '部位与点位绑定' }}</h3>
                                         <p>{{ canEditModelBindings ? '选择模型节点，把 PLC 实时点位映射成旋转、平移、显隐或变色动作。' : '内置程序化模型不可编辑部位绑定，请使用上传的完整 GLB/GLTF 模型。' }}</p>
                                     </div>
                                     <button class="btn btn-primary" type="button" @click="saveModelPartBindings" :disabled="!canEditModelBindings || modelBindingSaving" v-permission="{ page: controlPermissionPage, action: 'edit' }">
@@ -8710,7 +8877,52 @@ async function openAdminSetupStep(step) {
                                 </div>
 
                                 <template v-if="canEditModelBindings">
+                                    <nav v-if="activeTab === 'model-animations'" class="motion-panel-tabs" aria-label="动作编辑面板">
+                                        <button type="button" :class="{ active: motionEditorPanel === 'list' }" :aria-pressed="motionEditorPanel === 'list'" @click="motionEditorPanel = 'list'">动作节点 <span>{{ modelPartBindings.length }}</span></button>
+                                        <button type="button" :class="{ active: motionEditorPanel === 'edit' }" :aria-pressed="motionEditorPanel === 'edit'" @click="motionEditorPanel = 'edit'">参数配置</button>
+                                    </nav>
+                                    <section v-if="activeTab === 'model-animations' && motionEditorPanel === 'list'" class="motion-binding-browser" aria-label="动作节点列表">
+                                        <div class="motion-list-tools">
+                                            <input v-model="motionBindingSearch" class="input" aria-label="搜索动作节点" placeholder="搜索动作名称或信号…" />
+                                            <button class="btn" type="button" @click="newMotionBinding" v-permission="{ page: controlPermissionPage, action: 'edit' }">新增动作</button>
+                                        </div>
+                                        <div class="motion-binding-cards">
+                                            <article v-for="{ binding, index } in motionBindingPageEntries" :key="binding.id" class="motion-binding-card" :class="{ active: previewModelBindingIndex === index }">
+                                                <button type="button" class="motion-binding-select" :title="formatModelBindingPartName(binding)" @click="previewModelBinding(index)">
+                                                    <strong>{{ formatModelBindingPartName(binding) }}</strong>
+                                                    <code :title="`${binding.source_group}.${binding.source_key}`">{{ binding.source_group }}.{{ binding.source_key }}</code>
+                                                    <small>{{ formatModelBindingAction(binding.action) }} · {{ formatModelAxis(binding.axis) }} 轴</small>
+                                                </button>
+                                                <div class="motion-card-actions">
+                                                    <button type="button" class="btn btn-sm" @click="previewModelBinding(index)" :aria-label="`预览${formatModelBindingPartName(binding)}`">预览</button>
+                                                    <button type="button" class="btn btn-sm" @click="editModelBinding(index)" :aria-label="`编辑${formatModelBindingPartName(binding)}`">编辑</button>
+                                                    <button type="button" class="btn btn-danger btn-sm" @click="removeModelBinding(index)" :aria-label="`删除${formatModelBindingPartName(binding)}`" v-permission="{ page: controlPermissionPage, action: 'edit' }">删除</button>
+                                                </div>
+                                            </article>
+                                            <p v-if="!motionBindingPageEntries.length" class="motion-list-empty">{{ motionBindingSearch ? '没有匹配的动作节点' : '暂无动作，请新增并配置部件信号。' }}</p>
+                                        </div>
+                                        <nav class="motion-pagination" aria-label="动作节点分页">
+                                            <span aria-live="polite">{{ motionBindingEntries.length }} 项 · 第 {{ motionBindingPage }} / {{ motionBindingPageCount }} 页</span>
+                                            <div>
+                                                <button class="btn btn-sm" type="button" :disabled="motionBindingPage <= 1" @click="motionBindingPage--" aria-label="上一页动作节点">上一页</button>
+                                                <select v-model.number="motionBindingPage" aria-label="跳转动作节点页码"><option v-for="page in motionBindingPageCount" :key="page" :value="page">{{ page }}</option></select>
+                                                <button class="btn btn-sm" type="button" :disabled="motionBindingPage >= motionBindingPageCount" @click="motionBindingPage++" aria-label="下一页动作节点">下一页</button>
+                                            </div>
+                                        </nav>
+                                    </section>
+                                    <div v-show="activeTab !== 'model-animations' || motionEditorPanel === 'edit'" class="motion-editor-body">
+                                    <nav v-if="activeTab === 'model-animations'" class="motion-form-steps" aria-label="动作参数步骤">
+                                        <button class="btn btn-sm" type="button" :class="{ active: motionFormStep === 'binding' }" @click="motionFormStep = 'binding'">1 部件与信号</button>
+                                        <button class="btn btn-sm" type="button" :class="{ active: motionFormStep === 'motion' }" @click="motionFormStep = 'motion'">2 运动参数</button>
+                                    </nav>
+                                    <div class="model-binding-actions">
+                                        <button class="btn" type="button" @click="applyMotionPreset('door')" v-permission="{ page: controlPermissionPage, action: 'edit' }">炉门升降示例</button>
+                                        <button class="btn" type="button" @click="applyMotionPreset('valve')" v-permission="{ page: controlPermissionPage, action: 'edit' }">阀门开关示例</button>
+                                        <button class="btn" type="button" @click="applyMotionPreset('material')" v-permission="{ page: controlPermissionPage, action: 'edit' }">有料显示示例</button>
+                                        <small class="field-hint">仅使用开关量时，运动中间过程为示意，不代表实际开度。数据质量异常时保持最后姿态。</small>
+                                    </div>
                                     <div class="model-binding-form">
+                                        <template v-if="activeTab !== 'model-animations' || motionFormStep === 'binding'">
                                         <label class="model-node-picker">模型部位
                                             <div class="model-node-tools">
                                                 <input v-model="modelNodeSearchText" class="input" placeholder="搜索节点名称 / 路径"  />
@@ -8739,6 +8951,8 @@ async function openAdminSetupStep(step) {
                                                 <option v-for="action in modelBindingActions" :key="action.value" :value="action.value">{{ action.label }}</option>
                                             </select>
                                         </label>
+                                        </template>
+                                        <template v-if="activeTab !== 'model-animations' || motionFormStep === 'motion'">
                                         <label>轴向
                                             <select v-model="modelBindingForm.axis" class="input" v-permission="{ page: controlPermissionPage, action: 'edit' }">
                                                 <option v-for="axis in modelBindingAxes" :key="axis.value" :value="axis.value">{{ axis.label }}</option>
@@ -8748,15 +8962,17 @@ async function openAdminSetupStep(step) {
                                         <label>输入最大<input v-model.number="modelBindingForm.input_max" type="number" class="input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
                                         <label>输出最小<input v-model.number="modelBindingForm.output_min" type="number" class="input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
                                         <label>输出最大<input v-model.number="modelBindingForm.output_max" type="number" class="input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
-                                        <label>转速系数<input v-model.number="modelBindingForm.speed_factor" type="number" step="0.001" class="input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
+                                        <label v-if="activeTab !== 'model-animations' || modelBindingForm.action === 'rotate_speed'">转速系数<input v-model.number="modelBindingForm.speed_factor" type="number" step="0.001" class="input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
+                                        <label v-if="['translate', 'rotate_angle'].includes(modelBindingForm.action)">全行程时间（秒）<input v-model.number="modelBindingForm.transition_duration" type="number" min="0" max="60" step="0.1" class="input" v-permission="{ page: controlPermissionPage, action: 'edit' }"/><small class="field-hint">0 表示直接跟随开度；大于 0 按设定时间平滑运动。仅有开关信号时，中间过程为示意。</small></label>
                                         <label>反向
                                             <select v-model="modelBindingForm.invert" class="input" v-permission="{ page: controlPermissionPage, action: 'edit' }">
                                                 <option :value="false">否</option>
                                                 <option :value="true">是</option>
                                             </select>
                                         </label>
-                                        <label>开启颜色<input v-model="modelBindingForm.on_color" type="color" class="input color-input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
-                                        <label>关闭颜色<input v-model="modelBindingForm.off_color" type="color" class="input color-input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
+                                        <label v-if="activeTab !== 'model-animations' || modelBindingForm.action === 'color'">开启颜色<input v-model="modelBindingForm.on_color" type="color" class="input color-input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
+                                        <label v-if="activeTab !== 'model-animations' || modelBindingForm.action === 'color'">关闭颜色<input v-model="modelBindingForm.off_color" type="color" class="input color-input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
+                                        </template>
                                         <div class="model-binding-actions">
                                             <button class="btn btn-primary" type="button" @click="saveModelBindingDraft" v-permission="{ page: controlPermissionPage, action: 'edit' }">
                                                 {{ selectedModelBindingIndex >= 0 ? '更新此绑定' : '加入绑定列表' }}
@@ -8764,8 +8980,9 @@ async function openAdminSetupStep(step) {
                                             <button class="btn" type="button" @click="resetModelBindingForm">清空表单</button>
                                         </div>
                                     </div>
+                                    </div>
 
-                                    <table class="data-table model-binding-table">
+                                    <table v-if="activeTab !== 'model-animations'" class="data-table model-binding-table">
                                         <thead>
                                             <tr><th>部位</th><th>点位</th><th>动作</th><th>轴</th><th>操作</th></tr>
                                         </thead>
@@ -8782,6 +8999,7 @@ async function openAdminSetupStep(step) {
                                                 <td>{{ formatModelBindingAction(binding.action) }}</td>
                                                 <td>{{ formatModelAxis(binding.axis) }}</td>
                                                 <td>
+                                                    <button class="btn btn-sm" type="button" @click.stop="previewModelBinding(index)">预览</button>
                                                     <button class="btn btn-sm" type="button" @click.stop="editModelBinding(index)">编辑</button>
                                                     <button class="btn btn-danger btn-sm" type="button" @click.stop="removeModelBinding(index)" v-permission="{ page: controlPermissionPage, action: 'edit' }">删除</button>
                                                 </td>
@@ -8791,7 +9009,7 @@ async function openAdminSetupStep(step) {
                                             </tr>
                                         </tbody>
                                     </table>
-                                    <div class="model-binding-bottom-actions">
+                                    <div v-if="activeTab !== 'model-animations'" class="model-binding-bottom-actions">
                                         <span>修改绑定后请保存；删除操作会自动保存。</span>
                                         <button class="btn btn-primary" type="button" @click="saveModelPartBindings" :disabled="modelBindingSaving" v-permission="{ page: controlPermissionPage, action: 'edit' }">
                                             {{ modelBindingSaving ? '保存中...' : '保存绑定' }}
@@ -8805,10 +9023,15 @@ async function openAdminSetupStep(step) {
                         <aside class="model-preview-panel" :class="{ 'inspection-preview-panel': modelLibraryStep === 'inspection' }">
                             <div class="model-preview-header">
                                 <div class="model-preview-title">
-                                    <strong>模型预览</strong>
+                                    <strong>{{ activeTab === 'model-animations' ? '模型动画演示' : '模型预览' }}</strong>
                                     <span :title="selectedModelFile?.name || activePreviewModel?.id || ''">{{ selectedModelFile ? modelImportForm.name || selectedModelFile.name : activePreviewModel?.name || '未选择' }}</span>
                                 </div>
-                                <span class="model-preview-mode-badge">{{ modelLibraryStep === 'inspection' ? '拆解预览' : modelLibraryStep === 'bindings' ? '绑定预览' : '模型预览' }}</span>
+                                <div v-if="activeTab === 'model-animations'" class="motion-preview-tools">
+                                    <template v-if="canPreviewDoorEndpoints"><button class="btn btn-sm" type="button" @click="previewDoorEndpoint(false)">关门到位</button><button class="btn btn-sm" type="button" @click="previewDoorEndpoint(true)">开门到位</button></template>
+                                    <span v-else class="model-preview-mode-badge">演示预览</span>
+                                    <button class="btn btn-sm" type="button" :disabled="previewModelBindingIndex < 0" @click="stopMotionPreview">停止演示</button>
+                                </div>
+                                <span v-else class="model-preview-mode-badge">{{ modelLibraryStep === 'inspection' ? '拆解预览' : modelLibraryStep === 'bindings' ? '绑定预览' : '模型预览' }}</span>
                             </div>
                             <div ref="modelPreviewRef" class="model-preview-stage">
                                 <ModelInspectionPreviewOverlay v-if="modelLibraryStep === 'inspection' && isModelPreviewActive && !modelPreviewError" :state="inspectionPreviewSnapshot" @command="inspectionPreviewCommand" />
@@ -14219,6 +14442,76 @@ button:enabled:active {
     min-width: 0;
     background: #f3f4f5;
     overflow: hidden;
+}
+.admin-container.animation-active { height: 100vh; }
+.animation-active .admin-content { display: flex; flex-direction: column; overflow: hidden; padding: 14px 16px 16px; }
+.animation-active .tab-transition-host { display: flex; flex: 1; min-height: 0; }
+.model-animation-workspace.tab-content { display: flex; flex: 1; flex-direction: column; gap: 12px; min-height: 0; padding: 0; background: transparent; border: 0; box-shadow: none; }
+.model-animation-workspace .manual-layout-page-heading { padding: 2px 4px; }
+.animation-workspace.model-library-layout { flex: 1; min-height: 0; grid-template-columns: minmax(330px, .75fr) minmax(0, 1.35fr); gap: 14px; align-items: stretch; }
+.animation-workspace .model-library-main { display: flex; min-height: 0; }
+.animation-workspace .model-binding-editor { display: flex; flex: 1; flex-direction: column; gap: 10px; min-width: 0; min-height: 0; padding: 14px; overflow: hidden; }
+.animation-workspace .model-binding-header { flex: 0 0 auto; align-items: center; gap: 8px; margin: 0; }
+.animation-workspace .model-binding-header h3 { margin: 0; }
+.animation-workspace .model-binding-header p { display: none; }
+.animation-workspace .model-binding-header .btn { padding: 8px 12px; font-size: 12px; }
+.motion-panel-tabs { display: flex; flex: 0 0 auto; gap: 4px; padding: 4px; border-radius: 9px; background: #f0f3f8; }
+.motion-panel-tabs button { flex: 1; padding: 8px; border: 0; border-radius: 6px; background: transparent; color: #6a778b; font-size: 12px; font-weight: 600; cursor: pointer; }
+.motion-panel-tabs button.active { background: #fff; color: #2464d5; box-shadow: 0 1px 4px #243b5712; }
+.motion-panel-tabs span { margin-left: 5px; font-size: 11px; color: #7b8ca6; }
+.motion-binding-browser { display: flex; flex: 1; flex-direction: column; gap: 10px; min-height: 0; }
+.motion-list-tools { display: flex; flex: 0 0 auto; gap: 7px; }
+.motion-list-tools .input { flex: 1; min-width: 0; padding: 8px 10px; font-size: 12px; }
+.motion-list-tools .btn { flex: 0 0 auto; padding: 8px 10px; font-size: 12px; }
+.motion-binding-cards { display: grid; flex: 1; grid-template-rows: repeat(4, minmax(0, 1fr)); gap: 8px; min-height: 0; }
+.motion-binding-card { display: flex; min-width: 0; min-height: 0; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid #e3e9f0; border-radius: 10px; background: #fff; transition: background .15s, border-color .15s; }
+.motion-binding-card:hover { border-color: #a4bff3; }
+.motion-binding-card.active { background: #eef5ff; border-color: #6d9ded; box-shadow: inset 3px 0 #397ee5; }
+.motion-binding-select { display: grid; flex: 1; gap: 5px; min-width: 0; padding: 0; border: 0; background: transparent; text-align: left; color: #263950; cursor: pointer; }
+.motion-binding-select strong, .motion-binding-select code { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.motion-binding-select strong { font-size: 13px; font-weight: 600; }
+.motion-binding-select code { padding: 0; background: transparent; color: #71829a; font-size: 10px; }
+.motion-binding-select small { color: #7e8ba0; font-size: 10px; }
+.motion-card-actions { display: grid; grid-template-columns: repeat(2, auto); gap: 5px; flex: 0 0 auto; }
+.motion-card-actions .btn { padding: 5px 7px; font-size: 11px; }
+.motion-card-actions .btn-danger { grid-column: 2; }
+.motion-list-empty { grid-row: 1 / -1; align-self: center; text-align: center; color: #8390a2; font-size: 12px; }
+.motion-pagination { display: flex; flex: 0 0 auto; justify-content: space-between; align-items: center; gap: 8px; padding-top: 8px; border-top: 1px solid #edf0f5; }
+.motion-pagination > span { font-size: 11px; color: #7a899e; white-space: nowrap; }
+.motion-pagination > div { display: flex; align-items: center; gap: 5px; }
+.motion-pagination .btn { padding: 6px 8px; font-size: 11px; }
+.motion-pagination select { max-width: 52px; padding: 5px; border: 1px solid #d6e0ef; border-radius: 6px; background: white; color: #39526c; font-size: 12px; }
+.animation-workspace .model-binding-status { flex: 0 0 auto; min-height: 16px; max-height: 34px; overflow: hidden; font-size: 11px; line-height: 1.5; }
+.animation-workspace .motion-editor-body { flex: 1; min-height: 0; overflow: auto; padding-right: 3px; }
+.motion-form-steps { display: flex; gap: 6px; margin-bottom: 12px; }
+.motion-form-steps .btn { flex: 1; padding: 7px; }
+.motion-form-steps .active { color: #2464d5; background: #eef5ff; border-color: #9dbcf1; }
+.animation-workspace .model-binding-form { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.animation-workspace .model-binding-form .model-node-picker { grid-column: 1 / -1; }
+.animation-workspace .model-binding-form label { min-width: 0; }
+.animation-workspace .model-binding-form label:first-child { grid-column: auto; }
+.animation-workspace .model-binding-form label.model-node-picker { grid-column: 1 / -1; }
+.animation-workspace .model-binding-form .input { min-width: 0; padding: 8px; }
+.animation-workspace .model-binding-form .field-hint { font-size: 10px; }
+.animation-workspace .model-binding-actions { flex-wrap: wrap; justify-content: flex-start; gap: 6px; margin-bottom: 10px; }
+.animation-workspace .model-binding-actions .btn { padding: 7px 9px; font-size: 11px; }
+.animation-workspace .model-preview-panel { position: relative; display: flex; flex-direction: column; min-height: 0; }
+.animation-workspace .model-preview-header { flex: 0 0 auto; padding: 12px 16px; }
+.animation-workspace .model-preview-stage { flex: 1; height: auto; min-height: 320px; background: #edf1f5; }
+.animation-workspace .model-preview-footer { flex: 0 0 auto; padding: 10px 14px; font-size: 11px; }
+.animation-workspace .model-preview-node-card { max-width: min(300px, calc(100% - 120px)); }
+.motion-preview-tools { display: flex; align-items: center; gap: 8px; }
+.motion-workspace-modes { display: flex; flex: 0 0 auto; gap: 6px; padding: 3px; align-self: flex-start; border: 1px solid #e0e7f1; border-radius: 10px; background: #ecf0f6; }
+.motion-workspace-modes button { padding: 8px 18px; color: #7b8ca3; border: 0; border-radius: 7px; background: transparent; cursor: pointer; font-size: 12px; font-weight: 600; }
+.motion-workspace-modes .active { color: #3378d7; background: #fff; box-shadow: 0 2px 5px #253b5710; }
+@media (max-width: 1050px) {
+    .animation-active .admin-content { overflow-y: auto; }
+    .animation-active .tab-transition-host { flex-shrink: 0; }
+    .animation-workspace.model-library-layout { display: flex; flex-direction: column; }
+    .animation-workspace .model-preview-panel { order: -1; flex: 0 0 auto; }
+    .animation-workspace .model-preview-stage { height: 420px; flex: 0 0 auto; }
+    .animation-workspace .model-library-main { min-height: 530px; }
+    .model-animation-workspace .manual-layout-page-heading label { min-width: 0; }
 }
 .model-preview-node-card {
     position: absolute;
