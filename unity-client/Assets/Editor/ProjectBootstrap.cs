@@ -58,7 +58,8 @@ namespace HeatTreatment.DigitalTwin.Editor
             ValidateAuthoredHallMaterials();
             ValidateSceneShadowCoverage();
             EditorUserBuildSettings.SwitchActiveBuildTarget(BuildTargetGroup.Standalone, BuildTarget.StandaloneWindows64);
-            var buildDirectory = Path.GetFullPath("Builds/Windows");
+            var requestedOutput = System.Environment.GetEnvironmentVariable("DIGITAL_TWIN_UNITY_BUILD_DIR");
+            var buildDirectory = Path.GetFullPath(string.IsNullOrWhiteSpace(requestedOutput) ? "Builds/Windows" : requestedOutput);
             Directory.CreateDirectory(buildDirectory);
             var options = new BuildPlayerOptions
             {

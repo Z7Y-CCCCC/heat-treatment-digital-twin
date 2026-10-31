@@ -42,7 +42,12 @@ namespace HeatTreatment.DigitalTwin.Rendering
 
         public NativeQualityProfile ActiveProfile { get; private set; }
         public string ActiveProfileName => ToConfigName(ActiveProfile);
+        public bool IsAutomatic { get; private set; }
+        public bool HotkeysEnabled => _hotkeysEnabled;
+        public float ActiveRenderScale { get; private set; }
+        public int ActiveMsaa { get; private set; }
         public event Action<NativeQualityProfile> ProfileChanged;
+        public event Action<bool> ProfileStateChanged;
 
         public void Configure(NativeClientSettings settings)
         {
@@ -53,15 +58,23 @@ namespace HeatTreatment.DigitalTwin.Rendering
             else Apply(Parse(requested), false);
         }
 
-        public void ApplyAuto(bool persist = false)
+        public void ApplyAuto(bool persist = false, bool notify = false)
         {
-            Apply(DetectProfile(), persist);
+            ApplyProfile(DetectProfile(), persist, true, notify);
         }
 
-        public void Apply(NativeQualityProfile profile, bool persist = true)
+        public void Apply(NativeQualityProfile profile, bool persist = true, bool notify = false)
+        {
+            ApplyProfile(profile, persist, false, notify);
+        }
+
+        private void ApplyProfile(NativeQualityProfile profile, bool persist, bool automatic, bool notify)
         {
             ActiveProfile = profile;
             var values = Values(profile);
+            IsAutomatic = automatic;
+            ActiveRenderScale = values.RenderScale;
+            ActiveMsaa = values.Msaa;
             _minimumShadowDistance = values.ShadowDistance;
             _shadowCamera = Camera.main;
             _shadowOrbit = _shadowCamera != null ? _shadowCamera.GetComponent<OrbitCameraController>() : null;
@@ -114,25 +127,37 @@ namespace HeatTreatment.DigitalTwin.Rendering
             if (persist) PersistProfile(profile);
             ProfileChanged?.Invoke(profile);
             Debug.Log($"[NativeQuality] Applied {ActiveProfileName}; full model geometry retained.");
+            ProfileStateChanged?.Invoke(notify);
         }
 
-        public void Apply(string profile, bool persist = true)
+        public void Apply(string profile, bool persist = true, bool notify = false)
         {
             if (string.Equals(profile, "auto", StringComparison.OrdinalIgnoreCase))
             {
-                ApplyAuto(persist);
+                ApplyAuto(persist, notify);
                 return;
             }
-            Apply(Parse(profile), persist);
+            Apply(Parse(profile), persist, notify);
+        }
+
+        public bool ApplyTemporary(string profile, bool hotkey = false)
+        {
+            if (hotkey && !_hotkeysEnabled) return false;
+            if (profile != "integrated_gpu" && profile != "balanced" && profile != "showcase" && profile != "auto") return false;
+            Apply(profile, false, true);
+            return true;
         }
 
         private void Update()
         {
             if (!_hotkeysEnabled) return;
-            if (Input.GetKeyDown(KeyCode.F1)) Apply(NativeQualityProfile.IntegratedGpu, false);
-            else if (Input.GetKeyDown(KeyCode.F2)) Apply(NativeQualityProfile.Balanced, false);
-            else if (Input.GetKeyDown(KeyCode.F3)) Apply(NativeQualityProfile.Showcase, false);
-            else if (Input.GetKeyDown(KeyCode.F4)) ApplyAuto(false);
+            if (Input.GetKey(KeyCode.LeftAlt) || Input.GetKey(KeyCode.RightAlt)
+                || Input.GetKey(KeyCode.LeftControl) || Input.GetKey(KeyCode.RightControl)
+                || Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift)) return;
+            if (Input.GetKeyDown(KeyCode.F1)) ApplyTemporary("integrated_gpu", true);
+            else if (Input.GetKeyDown(KeyCode.F2)) ApplyTemporary("balanced", true);
+            else if (Input.GetKeyDown(KeyCode.F3)) ApplyTemporary("showcase", true);
+            else if (Input.GetKeyDown(KeyCode.F4)) ApplyTemporary("auto", true);
         }
 
         private void OnEnable() => RenderPipelineManager.beginCameraRendering += FitShadowCoverage;

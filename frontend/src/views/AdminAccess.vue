@@ -21,6 +21,8 @@ function handleNativeHostState(event) {
 const password = ref('')
 const username = ref('admin')
 const confirmation = ref('')
+const showPassword = ref(false)
+const showConfirmation = ref(false)
 const passwordInput = ref(null)
 const busy = ref(false)
 const error = ref('')
@@ -54,6 +56,8 @@ async function submit() {
         return
     }
     busy.value = true
+    showPassword.value = false
+    showConfirmation.value = false
     try {
         await unlockAdmin(password.value, setup.value, username.value)
         password.value = ''
@@ -128,6 +132,8 @@ function continueAfterLogin() {
 }
 
 watch(() => adminSession.authenticated, authenticated => {
+    showPassword.value = false
+    showConfirmation.value = false
     password.value = ''
     confirmation.value = ''
     error.value = ''
@@ -193,10 +199,20 @@ onUnmounted(() => {
                             <input id="admin-unlock-username" v-model.trim="username" autocomplete="username" maxlength="32" required placeholder="admin 或管理员创建的账号" />
                         </template>
                         <label for="admin-unlock-password">{{ setup ? '设置后台密码' : '后台密码' }}</label>
-                        <input id="admin-unlock-password" ref="passwordInput" v-model="password" type="password" :autocomplete="setup ? 'new-password' : 'current-password'" minlength="8" maxlength="128" required :disabled="busy" :placeholder="setup ? '请设置 8–128 个字符的密码' : '请输入后台密码'" />
+                        <div class="unlock-password-field">
+                            <input id="admin-unlock-password" ref="passwordInput" v-model="password" :type="showPassword ? 'text' : 'password'" :autocomplete="setup ? 'new-password' : 'current-password'" minlength="8" maxlength="128" required :disabled="busy" :placeholder="setup ? '请设置 8–128 个字符的密码' : '请输入后台密码'" />
+                            <button type="button" class="unlock-password-toggle" :aria-label="showPassword ? '隐藏后台密码' : '显示后台密码'" :aria-pressed="showPassword" aria-controls="admin-unlock-password" :disabled="busy" @mousedown.prevent @click="showPassword = !showPassword">
+                                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"/><circle cx="12" cy="12" r="2.5"/><path v-if="showPassword" d="m4 4 16 16"/></svg>
+                            </button>
+                        </div>
                         <template v-if="setup">
                             <label for="admin-unlock-confirm">确认后台密码</label>
-                            <input id="admin-unlock-confirm" v-model="confirmation" type="password" autocomplete="new-password" minlength="8" maxlength="128" required :disabled="busy" placeholder="请再次输入后台密码" />
+                            <div class="unlock-password-field">
+                                <input id="admin-unlock-confirm" v-model="confirmation" :type="showConfirmation ? 'text' : 'password'" autocomplete="new-password" minlength="8" maxlength="128" required :disabled="busy" placeholder="请再次输入后台密码" />
+                                <button type="button" class="unlock-password-toggle" :aria-label="showConfirmation ? '隐藏确认密码' : '显示确认密码'" :aria-pressed="showConfirmation" aria-controls="admin-unlock-confirm" :disabled="busy" @mousedown.prevent @click="showConfirmation = !showConfirmation">
+                                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"/><circle cx="12" cy="12" r="2.5"/><path v-if="showConfirmation" d="m4 4 16 16"/></svg>
+                                </button>
+                            </div>
                         </template>
                         <p v-if="error" class="unlock-error" role="alert">{{ error }}<span v-if="retrySeconds">（{{ retrySeconds }} 秒后重试）</span></p>
                         <button type="submit" class="unlock-submit" :disabled="busy || retrySeconds > 0">{{ busy ? '正在验证…' : setup ? '设置密码并进入后台' : '解锁后台' }}</button>
@@ -222,6 +238,13 @@ h1 { margin: 0 0 12px; font-size: 24px; font-weight: 650; }
 label { display: block; color: #344054; font-size: 13px; margin: 16px 0 8px; }
 input { width: 100%; box-sizing: border-box; padding: 12px 14px; border: 1px solid #d0d5dd; border-radius: 9px; font: inherit; font-size: 14px; color: #1d2939; background: #fff; }
 input:focus { outline: 2px solid #84caff; outline-offset: 2px; }
+.unlock-password-field { position: relative; }
+.unlock-password-field input { padding-right: 48px; }
+.unlock-password-field input::-ms-reveal, .unlock-password-field input::-ms-clear { display: none; }
+.unlock-password-toggle { position: absolute; top: 50%; right: 6px; transform: translateY(-50%); display: grid; place-items: center; width: 34px; height: 34px; padding: 0; border: 0; border-radius: 5px; background: transparent; color: #667085; }
+.unlock-password-toggle svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.unlock-password-toggle:hover { color: #344054; }
+.unlock-password-toggle:focus-visible { outline: 2px solid #84caff; outline-offset: 1px; }
 button { font: inherit; cursor: pointer; }
 button:disabled { opacity: .6; cursor: wait; }
 .unlock-submit { width: 100%; padding: 12px; margin-top: 24px; border: 1px solid #1d2939; border-radius: 9px; background: linear-gradient(135deg, #344054 0%, #182230 100%); color: #fff; font-size: 14px; font-weight: 600; box-shadow: 0 6px 14px rgba(29,41,57,.18); transition: transform .18s cubic-bezier(.22,1,.36,1), background .18s ease, box-shadow .18s ease; }

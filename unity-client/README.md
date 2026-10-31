@@ -22,6 +22,7 @@ backup/recovery, logging, voice events and configuration APIs.
 Runtime connection settings are stored in `Assets/StreamingAssets/runtime-config.json`.
 
 The quality profiles never decimate the imported mesh. `F1`, `F2`, and `F3` only tune render scale, shadows, anti-aliasing and post processing; `F4` performs hardware auto-detection.
+The account menu also offers a draggable three-position quality capsule: F1 / 流畅, F2 / 均衡, F3 / 高画质. These are temporary, local changes, not saved backend settings. The capsule and short-lived notification update only after Unity acknowledges the applied profile through the local named-pipe bridge; WebView keyboard focus does not disable the shortcuts.
 
 ## Build
 

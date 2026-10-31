@@ -124,6 +124,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
 
             _quality = GetOrAdd<NativeQualityController>();
             _quality.Configure(_settings);
+            _quality.ProfileStateChanged += PublishQualityState;
 
             _diagnostics = GetOrAdd<RuntimeDiagnosticsOverlay>();
             _diagnostics.Visible = _settings.showDiagnostics;
@@ -234,6 +235,19 @@ namespace HeatTreatment.DigitalTwin.Runtime
             {
                 var command = JObject.Parse(message);
                 var action = command.Value<string>("action");
+                if (action == "get_quality_profile")
+                {
+                    PublishQualityState(false, command.Value<string>("requestId"));
+                    return;
+                }
+                if (action == "set_quality_profile" || action == "quality_hotkey")
+                {
+                    if (!_authenticated || _quality == null) return;
+                    _qualityRequestId = command.Value<string>("requestId") ?? string.Empty;
+                    try { _quality.ApplyTemporary(command.Value<string>("profile"), action == "quality_hotkey"); }
+                    finally { _qualityRequestId = string.Empty; }
+                    return;
+                }
                 if (action == "pipe_error")
                 {
                     Debug.LogWarning($"[FactoryRuntime] Native auth handoff pipe unavailable: {ShortMessage(command.Value<string>("message"))}");
@@ -254,6 +268,27 @@ namespace HeatTreatment.DigitalTwin.Runtime
             {
                 // Named-pipe messages are advisory; malformed payloads never affect the runtime.
             }
+        }
+
+        private long _qualityStateRevision;
+        private string _qualityRequestId = string.Empty;
+        private void PublishQualityState(bool notify) => PublishQualityState(notify, _qualityRequestId);
+        private void PublishQualityState(bool notify, string requestId)
+        {
+            if (_quality == null) return;
+            NativeQualityBridge.Publish(Process.GetCurrentProcess().Id, new JObject
+            {
+                ["type"] = "native_quality_state",
+                ["revision"] = ++_qualityStateRevision,
+                ["profile"] = _quality.ActiveProfileName,
+                ["automatic"] = _quality.IsAutomatic,
+                ["renderScale"] = _quality.ActiveRenderScale,
+                ["msaa"] = _quality.ActiveMsaa,
+                ["hotkeysEnabled"] = _quality.HotkeysEnabled,
+                ["enabled"] = _authenticated,
+                ["notify"] = notify,
+                ["requestId"] = (requestId ?? string.Empty).Substring(0, Math.Min(80, (requestId ?? string.Empty).Length))
+            }.ToString(Formatting.None));
         }
 
         private async Task AuthenticateNativeTicketAsync(string ticket)

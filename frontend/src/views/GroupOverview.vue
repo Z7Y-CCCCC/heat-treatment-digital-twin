@@ -18,11 +18,15 @@ import { isNativeUnitySurface, NATIVE_SURFACE_CHANNEL, requestNativeSceneSurface
 import AdminWindowChrome from './admin/components/AdminWindowChrome.vue'
 import GroupHierarchyCapsule from './GroupHierarchyCapsule.vue'
 import LoadingExperience from '../components/LoadingExperience.vue'
+import QualityCapsule from '../components/QualityCapsule.vue'
+import QualityNotice from '../components/QualityNotice.vue'
+import { useNativeQuality } from '../runtime/nativeQuality.js'
 import MapSurfaceWidgets from './MapSurfaceWidgets.vue'
 import { disposeSceneObject } from '../runtime/ConfiguredFactoryScene.js'
 import { groupPortalAppearanceForLevel } from '../runtime/groupPortalAppearance.js'
 
 const route=useRoute(),router=useRouter(),mapHost=ref(null),config=ref(null),error=ref(''),busy=ref(false),ready=ref(false),loadingStage=ref(false),features=ref([])
+const { qualityState, setQuality, queryQuality } = useNativeQuality(() => route.path === '/group')
 const pollingRequests=createJsonPollingScope(adminFetch)
 const nativeLoadingManaged=ref(Boolean(window.__DIGITAL_TWIN_NATIVE_LOADING__)),mapLoadingProgress=ref(7),mapLoadingPhase=ref(0),mapLoadingStep=ref('正在读取工厂与区域资料')
 function reportMapLoading(progress,phase,step){mapLoadingProgress.value=progress;mapLoadingPhase.value=phase;mapLoadingStep.value=step;window.dispatchEvent(new CustomEvent('digital-twin-loading-progress',{detail:{progress,phase,step}}))}
@@ -710,6 +714,7 @@ onUnmounted(()=>{window.removeEventListener('keydown',handleMapEscape,true);stop
 </script>
 
 <template>
+  <QualityNotice :state="qualityState" />
   <LoadingExperience v-if="!ready && !error && !nativeLoadingManaged" :show="!ready" :progress="mapLoadingProgress" :phase="mapLoadingPhase" :step="mapLoadingStep" :config="config?.settings?.loading_experience_config" />
   <main class="group-portal" :class="{'admin-surface':adminSurface,'no-panel':!appearance.showPanel,'no-facts':!appearance.showFacts,'no-dock':!appearance.showDock}" :style="appearanceStyle">
     <AdminWindowChrome v-if="adminSurface" @before-dashboard="router.replace({path:'/admin',query:{embedded:'unity'}})" @before-admin="returnToAdminWorkspace" />
@@ -728,6 +733,7 @@ onUnmounted(()=>{window.removeEventListener('keydown',handleMapEscape,true);stop
       </template>
       <template v-else>
         <header class="group-account-profile"><span class="group-account-avatar"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm-7 8a7 7 0 0 1 14 0" /></svg></span><span><strong>{{ adminSession.user?.displayName }}</strong><small>{{ adminSession.user?.username }} · {{ accessStatus }}</small></span></header>
+        <QualityCapsule :state="qualityState" @select="setQuality" @query="queryQuality" />
         <section v-if="accountSessions.length>1" class="group-account-list" aria-label="已登录账户"><small>已登录账户 · {{ accountSessions.length }}</small><button v-for="account in visibleAccountSessions" :key="account.slotId" type="button" :class="{active:account.slotId===adminSession.accountSlotId}" :disabled="accountBusy || account.slotId===adminSession.accountSlotId" @click="switchAccount(account)"><span class="group-account-avatar small">{{ (account.user?.displayName || account.user?.username || '?').slice(0,1) }}</span><span><strong>{{ account.user?.displayName || account.user?.username }}</strong><small>{{ account.user?.username }} · {{ ({owner:'系统管理员',customer:'现场客户',viewer:'现场查看'}[account.user?.role] || '已登录') }}</small></span><i>{{ account.slotId===adminSession.accountSlotId ? '当前账户':'切换 →' }}</i></button></section>
         <button v-if="!adminSession.authenticated" class="group-account-action group-account-primary" type="button" @click="requestAdminLogin">解锁设置页面 <span>→</span></button>
         <button v-else-if="canOpenAdmin()" class="group-account-action group-account-primary" type="button" @click="openAdmin">设置页面 <span>→</span></button>

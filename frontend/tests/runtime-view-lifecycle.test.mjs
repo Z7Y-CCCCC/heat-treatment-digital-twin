@@ -70,7 +70,7 @@ for (let index = 0; index < views.length; index++) test(`${['map', 'HUD'][index]
     const state = instance.value.$.setupState, host = { clientWidth: 1920, clientHeight: 1080, appendChild() {} }
     if (index === 0) state.mapHost = host
     else { state.sceneHost = host; state.artboard = host }
-    const starting = mounted[0]()
+    const starting = Promise.all(mounted.map(callback => callback()))
     await settle()
     assert.ok(requestSignal, 'production mounted hook must reach config transport')
     app.unmount()

@@ -39,6 +39,13 @@ internal static class Program
         Check(DashboardMapEntry.BuildUrl("http://127.0.0.1:3002/admin?embedded=unity")
                 == "http://127.0.0.1:3002/group?embedded=unity&surface=overlay&level=world",
             "The first authorized dashboard view is the top-level world map");
+        Check(NativeQualityState.IsProfile("integrated_gpu") && NativeQualityState.IsProfile("balanced")
+            && NativeQualityState.IsProfile("showcase") && NativeQualityState.IsProfile("auto"), "Quality commands have exactly four supported modes");
+        Check(!NativeQualityState.IsProfile("ultra"), "Unknown quality commands cannot enter the native bridge");
+        Check(NativeQualityState.Parse("{\"type\":\"native_quality_state\",\"revision\":1,\"profile\":\"balanced\",\"renderScale\":1,\"msaa\":4}")?.profile == "balanced",
+            "Actual renderer quality acknowledgements are accepted");
+        Check(NativeQualityState.Parse("{\"type\":\"native_quality_state\",\"revision\":1,\"profile\":\"unknown\",\"renderScale\":1,\"msaa\":4}") == null,
+            "An invalid renderer profile cannot cause a false success message");
 
         Check(OverlayInteractionGeometry.ToPixels(new(10.25f, 20.5f, 99.5f, 39.25f), new(1920,1080), new(1920,1080))
             == Rectangle.FromLTRB(10,20,110,60), "Subpixel borders are rounded out, not cut off");

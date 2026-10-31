@@ -38,9 +38,13 @@ internal sealed class DashboardOverlayForm : Form
     private bool _presentationMode;
     private bool _forwardingMouse;
     private int _escapeDispatchPending;
+    private NativeQualityState? _qualityState;
+    private string _lastQualityHotkey = "";
+    private long _lastQualityHotkeyAt;
 
     public event Action<string?, bool>? AdminRequested;
     public event Action? CustomerOperationsRequested;
+    public event Action<string, string, string>? QualityRequested;
 
     public DashboardOverlayForm(HostOptions options)
     {
@@ -144,6 +148,13 @@ internal sealed class DashboardOverlayForm : Form
 
     private void HandleAcceleratorKey(object? sender, CoreWebView2AcceleratorKeyPressedEventArgs args)
     {
+        if (args.VirtualKey is >= (uint)Keys.F1 and <= (uint)Keys.F4 && ModifierKeys == Keys.None)
+        {
+            args.Handled = true; // In particular, do not open WebView help on F1.
+            if (args.KeyEventKind == CoreWebView2KeyEventKind.KeyDown && args.PhysicalKeyStatus.WasKeyDown == 0)
+                DispatchQualityHotkey((Keys)args.VirtualKey);
+            return;
+        }
         if (args.VirtualKey != (uint)Keys.Escape) return;
         args.Handled = true;
         if (args.KeyEventKind is CoreWebView2KeyEventKind.KeyDown or CoreWebView2KeyEventKind.SystemKeyDown)
@@ -158,12 +169,42 @@ internal sealed class DashboardOverlayForm : Form
 
     protected override bool ProcessCmdKey(ref Message message, Keys keyData)
     {
+        if (keyData is >= Keys.F1 and <= Keys.F4)
+        {
+            DispatchQualityHotkey(keyData);
+            return true;
+        }
         if ((keyData & Keys.KeyCode) == Keys.Escape)
         {
             DispatchEscapeIntoPage();
             return true;
         }
         return base.ProcessCmdKey(ref message, keyData);
+    }
+
+    private void DispatchQualityHotkey(Keys key)
+    {
+        if (!_visibleRequested || !Visible) return;
+        var profile = key switch { Keys.F1 => "integrated_gpu", Keys.F2 => "balanced", Keys.F3 => "showcase", _ => "auto" };
+        var now = Environment.TickCount64;
+        if (_lastQualityHotkey == profile && now - _lastQualityHotkeyAt < 120) return;
+        _lastQualityHotkey = profile; _lastQualityHotkeyAt = now;
+        QualityRequested?.Invoke("quality_hotkey", profile, "");
+    }
+
+    public void AcceptQualityState(string message)
+    {
+        var state = NativeQualityState.Parse(message);
+        if (state == null || state.revision <= (_qualityState?.revision ?? 0)) return;
+        _qualityState = state with { notify = false, requestId = "" };
+        PostQualityState(state with { notify = state.notify && _visibleRequested });
+    }
+
+    private void PostQualityState(NativeQualityState? state)
+    {
+        if (state == null || _webView?.CoreWebView2 == null || IsDisposed) return;
+        try { _webView.CoreWebView2.PostWebMessageAsJson(JsonSerializer.Serialize(state)); }
+        catch { /* A navigation will receive the cached, non-notifying snapshot. */ }
     }
 
     /// <summary>
@@ -672,10 +713,19 @@ internal sealed class DashboardOverlayForm : Form
         }
     }
 
-    private static void HandleDashboardAction(JsonElement root)
+    private void HandleDashboardAction(JsonElement root)
     {
         if (!root.TryGetProperty("action", out var actionElement)) return;
         var action = actionElement.GetString();
+        if (action is "get_quality_profile" or "set_quality_profile" or "quality_hotkey")
+        {
+            if (!_visibleRequested || !Visible) return;
+            var profile = root.TryGetProperty("profile", out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() : "";
+            var requestId = root.TryGetProperty("requestId", out var id) && id.ValueKind == JsonValueKind.String ? id.GetString() ?? "" : "";
+            if (requestId.Length > 80 || action != "get_quality_profile" && !NativeQualityState.IsProfile(profile)) return;
+            QualityRequested?.Invoke(action, profile ?? "", requestId);
+            return;
+        }
         if (action != "open_link" || !root.TryGetProperty("url", out var urlElement)) return;
         var url = urlElement.GetString();
         if (string.IsNullOrWhiteSpace(url)
@@ -768,6 +818,7 @@ internal sealed class DashboardOverlayForm : Form
                 renderer = "direct-composition",
                 presentationMode = _presentationMode
             }));
+            PostQualityState(_qualityState);
         }
         catch
         {

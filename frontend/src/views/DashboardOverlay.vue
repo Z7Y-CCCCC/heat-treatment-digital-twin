@@ -2,6 +2,8 @@
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import LoadingExperience from '../components/LoadingExperience.vue'
+import QualityNotice from '../components/QualityNotice.vue'
+import { useNativeQuality } from '../runtime/nativeQuality.js'
 import { useFactoryConfig } from '../config/factoryConfig.js'
 import { createDashboardDataStore } from '../runtime/DataStore.js'
 import { API_BASE } from '../runtime/backendEndpoint.js'
@@ -21,6 +23,7 @@ import { overviewEntryStatus } from '../runtime/factoryNavigationReadiness.js'
 
 const rootRef = ref(null)
 const route = useRoute()
+const { qualityState } = useNativeQuality(() => route.path === '/overlay')
 const router = useRouter()
 const startupLoading = ref(true), startupProgress = ref(6), startupPhase = ref(0), startupStep = ref('正在读取现场配置')
 const nativeLoadingManaged = ref(Boolean(window.__DIGITAL_TWIN_NATIVE_LOADING__))
@@ -1054,6 +1057,7 @@ onUnmounted(() => {
 </script>
 
 <template>
+    <QualityNotice :state="qualityState" />
     <LoadingExperience v-if="startupLoading && !nativeLoadingManaged" :show="startupLoading" :progress="startupProgress" :phase="startupPhase" :step="startupStep" :config="config.settings?.loading_experience_config" />
     <div ref="rootRef" class="dashboard-overlay-root" :class="{ 'is-scene-ready': runtimeContext.sceneReady !== false, 'standalone-preview': standalonePreview }">
         <nav class="overlay-hierarchy" aria-label="逐级浏览" data-overlay-hit="true" @pointerdown.stop>

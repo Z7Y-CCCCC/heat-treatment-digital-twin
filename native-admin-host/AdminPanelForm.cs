@@ -34,6 +34,7 @@ internal sealed class AdminPanelForm : Form
     private readonly Panel _resizeGrip = new();
     private readonly System.Windows.Forms.Timer _parentTimer = new() { Interval = 33 };
     private readonly CancellationTokenSource _pipeCancellation = new();
+    private readonly SemaphoreSlim _unityCommandSender = new(1, 1);
     private DashboardChromeForm? _dashboardChrome;
     private DashboardOverlayForm? _dashboardOverlay;
     private WebViewNavigationRetry? _navigationRetry;
@@ -269,6 +270,8 @@ internal sealed class AdminPanelForm : Form
                 _dashboardOverlay = new DashboardOverlayForm(_options);
                 _dashboardOverlay.AdminRequested += ShowAdminFromOverlay;
                 _dashboardOverlay.CustomerOperationsRequested += ShowCustomerOperations;
+                _dashboardOverlay.QualityRequested += (action, profile, requestId) =>
+                    ForwardUnitySessionCommand(action, profile: profile, requestId: requestId);
                 await _dashboardOverlay.InitializeAsync(environment);
                 if (_closing || IsDisposed)
                 {
@@ -441,12 +444,17 @@ internal sealed class AdminPanelForm : Form
         }
     }
 
-    private void ForwardUnitySessionCommand(string action, string? ticket = null)
+    private void ForwardUnitySessionCommand(string action, string? ticket = null, string? profile = null, string? requestId = null)
     {
         if (_options.ParentProcessId <= 0 || _closing) return;
-        var message = JsonSerializer.Serialize(new { action, ticket });
+        var message = JsonSerializer.Serialize(new { action, ticket, profile, requestId });
+        var turn = _unityCommandSender.WaitAsync(_pipeCancellation.Token);
         _ = Task.Run(async () =>
         {
+            try { await turn; }
+            catch (OperationCanceledException) { return; }
+            try
+            {
             var attempts = action == "sync_unity_session" ? 12 : 1;
             for (var attempt = 0; attempt < attempts && !_pipeCancellation.IsCancellationRequested; attempt++)
             {
@@ -455,21 +463,29 @@ internal sealed class AdminPanelForm : Form
                     await using var pipe = new NamedPipeClientStream(
                         ".",
                         $"HeatTreatmentUnityAuth_{_options.ParentProcessId}",
-                        PipeDirection.Out,
+                        PipeDirection.InOut,
                         PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly
                     );
                     await pipe.ConnectAsync(350, _pipeCancellation.Token);
                     await using var writer = new StreamWriter(pipe, new UTF8Encoding(false), 1024, leaveOpen: true);
                     await writer.WriteLineAsync(message);
                     await writer.FlushAsync();
+                    // Unity verifies the peer identity after ReadLine. Keep the
+                    // connection alive until its listener closes/acknowledges it;
+                    // closing immediately can make GetImpersonationUserName fail.
+                    using var receiptTimeout = CancellationTokenSource.CreateLinkedTokenSource(_pipeCancellation.Token);
+                    receiptTimeout.CancelAfter(TimeSpan.FromSeconds(2));
+                    using var receipt = new StreamReader(pipe, Encoding.UTF8, false, 1024, leaveOpen: true);
+                    await receipt.ReadLineAsync(receiptTimeout.Token);
                     return;
                 }
                 catch (OperationCanceledException) when (_pipeCancellation.IsCancellationRequested)
                 {
                     return;
                 }
-                catch
+                catch (Exception exception)
                 {
+                    if (action.Contains("quality", StringComparison.Ordinal)) WriteHostError("Unity 画质命令传递失败", exception);
                     if (attempt + 1 < attempts)
                     {
                         try { await Task.Delay(180, _pipeCancellation.Token); }
@@ -477,6 +493,8 @@ internal sealed class AdminPanelForm : Form
                     }
                 }
             }
+            }
+            finally { _unityCommandSender.Release(); }
         });
     }
 
@@ -1931,7 +1949,8 @@ internal sealed class AdminPanelForm : Form
                 {
                     BeginInvoke(() =>
                     {
-                        if (command.Equals("show", StringComparison.OrdinalIgnoreCase)) ShowAdmin();
+                        if (command.StartsWith("{", StringComparison.Ordinal) && command.Length <= 4096) _dashboardOverlay?.AcceptQualityState(command);
+                        else if (command.Equals("show", StringComparison.OrdinalIgnoreCase)) ShowAdmin();
                         else if (command.Equals("detach", StringComparison.OrdinalIgnoreCase) && _attached) DetachFromParent();
                         else if (command.Equals("attach", StringComparison.OrdinalIgnoreCase) && !_attached) AttachToParent(true);
                         else if (command.Equals("minimize", StringComparison.OrdinalIgnoreCase)) MinimizeActiveWindow();
