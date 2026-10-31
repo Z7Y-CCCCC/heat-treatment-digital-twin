@@ -150,11 +150,11 @@ async function serviceChecks() {
     assert.equal(service.status(other.token).authenticated, false);
     await assert.rejects(service.login(password, 'old-password-test'), { code: 'ADMIN_PASSWORD_INVALID' });
     const restarted = createAdminAuth({ dataDir, now: () => time });
-    assert.equal(restarted.status(changed.token).authenticated, false);
+    assert.equal(restarted.status(changed.token).authenticated, true);
     assert.equal(restarted.status('').configured, true);
     assert.equal(restarted.status('').idleTimeoutMinutes, 5);
     assert.equal((await restarted.login(replacementPassword, 'local')).status.authenticated, true);
-    checks.push('password changes revoke old sessions; restart preserves settings but locks access');
+    checks.push('password changes revoke old sessions; restart preserves settings and the valid replacement session');
 
     const owner = await restarted.login(replacementPassword, 'owner-users');
     const viewerAccount = await restarted.createUser(owner.token, owner.status.csrfToken,

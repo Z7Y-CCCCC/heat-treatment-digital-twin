@@ -291,43 +291,52 @@ namespace HeatTreatment.DigitalTwin.Runtime
             }.ToString(Formatting.None));
         }
 
+        private string _pendingNativeTicket;
         private async Task AuthenticateNativeTicketAsync(string ticket)
         {
+            _pendingNativeTicket = ticket;
+            ++_authGeneration;
             if (_loginInProgress || _api == null || _diagnostics == null) return;
             _loginInProgress = true;
-            var generation = ++_authGeneration;
             _diagnostics.SetLoginBusy(true);
             try
             {
-                var session = await _api.ExchangeNativeTicketAsync(ticket, _lifetime.Token);
-                if (generation != _authGeneration) return;
-                ActivateAuthenticatedSession(session);
-            }
-            catch (Exception exception)
-            {
-                if (generation != _authGeneration) return;
-                _authenticated = false;
-                _api.ClearSession();
-                var message = exception is BackendRequestException requestException && requestException.StatusCode == 403
-                    ? requestException.Message
-                    : ShortMessage(exception.Message);
-                _diagnostics.SetLoginError(message);
-                Debug.LogWarning($"[FactoryRuntime] Shared dashboard login failed: {message}");
+                // Serialize cookie-bearing exchanges. A rapid second switch
+                // replaces the pending ticket, instead of dropping it or letting
+                // an older response overwrite the newest account's cookies.
+                while (!string.IsNullOrEmpty(_pendingNativeTicket))
+                {
+                    var pending = _pendingNativeTicket;
+                    _pendingNativeTicket = null;
+                    var generation = _authGeneration;
+                    try
+                    {
+                        var session = await _api.ExchangeNativeTicketAsync(pending, _lifetime.Token);
+                        if (generation == _authGeneration) ActivateAuthenticatedSession(session);
+                    }
+                    catch (Exception exception)
+                    {
+                        if (generation != _authGeneration) continue;
+                        var message = ShortMessage(exception.Message);
+                        if (exception is BackendRequestException requestException
+                            && (requestException.StatusCode == 401 || requestException.StatusCode == 403))
+                            ClearNativeSession(message);
+                        else if (!_authenticated) _diagnostics.SetLoginError(message);
+                        Debug.LogWarning($"[FactoryRuntime] Shared dashboard login failed: {message}");
+                    }
+                }
             }
             finally
             {
-                if (generation == _authGeneration)
-                {
-                    _loginInProgress = false;
-                    _diagnostics.SetLoginBusy(false);
-                }
+                _loginInProgress = false;
+                _diagnostics.SetLoginBusy(false);
             }
         }
 
         private void ClearNativeSession(string message)
         {
             _authGeneration++;
-            _loginInProgress = false;
+            _pendingNativeTicket = null;
             _authenticated = false;
             _reload?.Cancel();
             _reload?.Dispose();
@@ -549,6 +558,10 @@ namespace HeatTreatment.DigitalTwin.Runtime
             if (!session.CanView)
                 throw new BackendRequestException(403, "ADMIN_PERMISSION_DENIED", "当前账户没有查看大屏的权限，请联系管理员授权。");
 
+            // Replacing an account renews transport authorization, not factory
+            // configuration. Preserve scene objects, camera, inspection and PLC
+            // animation state; only an actual configuration change rebuilds it.
+            var preserveScene = _authenticated && (_sceneReady || (_reload != null && !_reload.IsCancellationRequested));
             _authenticated = true;
             _diagnostics.BackendState = "authenticated";
             try
@@ -561,7 +574,8 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 _diagnostics.BackendState = "realtime connection unavailable";
                 Debug.LogWarning($"[StartupWarning] 2|实时数据连接初始化失败：{ShortMessage(exception.Message)}");
             }
-            BeginReload();
+            if (!preserveScene) BeginReload();
+            else Debug.Log("[FactoryRuntime] Account session replaced; existing scene preserved.");
         }
 
         private async Task BuildFactoryAsync(FactoryConfigDto config, CancellationToken cancellationToken)

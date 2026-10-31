@@ -119,6 +119,29 @@ async function main() {
                 actualCounts[table] = Number(row.n);
             }
             assert.deepEqual(actualCounts, expectedCounts, 'All delivered configuration tables must survive MySQL import.');
+            const [[seedRow]] = await connection.query('SELECT result_json FROM _desktop_seed_state WHERE id = 1');
+            const seedResult = JSON.parse(seedRow.result_json);
+            const snapshotDb = new Database(
+                path.join(resources, 'templates', 'factory-template.db'), { readonly: true, fileMustExist: true });
+            try {
+                for (const table of ['event_logs', 'metric_snapshots']) {
+                    const expected = snapshotDb.prepare(`SELECT COUNT(*) n FROM ${table}`).get().n;
+                    assert.equal(seedResult.counts[table], expected, `All delivered history must survive MySQL import: ${table}`);
+                }
+            } finally { snapshotDb.close(); }
+            const deliveredConfiguration = filesBelow(path.join(resources, 'templates', 'data'));
+            for (const name of deliveredConfiguration) {
+                const readJson = filename => JSON.parse(fs.readFileSync(filename, 'utf8').replace(/^\uFEFF/, ''));
+                const actual = readJson(path.join(dataDir, name));
+                const expected = readJson(path.join(resources, 'templates', 'data', name));
+                if (/^backup-storage-(?:database|site)\.json$/.test(name)) {
+                    // New installations intentionally refresh migration metadata;
+                    // the configured storage budget must remain unchanged.
+                    assert.equal(actual.maxTotalBytes, expected.maxTotalBytes, `Backup storage budget differs: ${name}`);
+                } else {
+                    assert.deepEqual(actual, expected, `Portable application configuration differs: ${name}`);
+                }
+            }
             if (phase === 'first-install') {
                 await connection.query('INSERT INTO settings (`key`, value) VALUES (?, ?)', ['packaged_smoke_persistence', persistenceToken]);
             } else {
@@ -131,7 +154,10 @@ async function main() {
             }
             await connection.end();
             connection = null;
-            const remaining = 60000;
+            // Health readiness precedes Unity/WebView startup. Account-protected
+            // installations also need the login chrome, then the 22s smoke run
+            // and up to 40s of safe shutdown; 60s truncated valid cold launches.
+            const remaining = 150000;
             let timeout;
             const exit = await Promise.race([
                 completion,
@@ -151,7 +177,9 @@ async function main() {
             while (processExists(mysqlPid) && Date.now() < stopDeadline) await delay(250);
             assert.equal(processExists(mysqlPid), false, 'The private MySQL process must exit with its desktop supervisor.');
             result = { phase, success: true, elapsedMs: Date.now() - started, mysqlVersion: server.version,
-                mysqlPort: Number(server.port), mysqlStopped: true, configurationCounts: actualCounts, uploadFilesVerified: uploadFiles.length };
+                mysqlPort: Number(server.port), mysqlStopped: true, configurationCounts: actualCounts, uploadFilesVerified: uploadFiles.length,
+                historyCountsImported: { event_logs: seedResult.counts.event_logs, metric_snapshots: seedResult.counts.metric_snapshots },
+                portableConfigurationFilesVerified: deliveredConfiguration.length };
             launches.push(result);
         } finally {
             if (connection) await connection.end().catch(() => {});

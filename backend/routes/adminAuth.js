@@ -133,7 +133,7 @@ module.exports = function createAdminAuthRouter(auth = getAdminAuth) {
         res.json({ success: true, ...service.createNativeTicket(suppliedAdminSession(req), req.get('x-csrf-token')) });
     }));
     router.post('/native-exchange', handle((req, res, service) => {
-        sendSession(req, res, service.exchangeNativeTicket(req.body?.ticket));
+        sendSession(req, res, service.exchangeNativeTicket(req.body?.ticket, suppliedAdminSessionForSlot(req, 'main')));
     }));
     router.post('/setup', handle(async (req, res, service) => {
         const result = await service.setup(req.body?.password, req.socket.remoteAddress, suppliedAdminSessionForSlot(req, 'main'));

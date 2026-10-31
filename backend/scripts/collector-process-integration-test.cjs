@@ -39,6 +39,13 @@ const { BACKEND_DIR, createRunDirectory, createTestDatabase, findFreePort,
         }, 30000, 'independent simulation collector');
         assert.notEqual(initial.engine.process.pid, backend.pid);
         collectorPid = initial.engine.process.pid;
+        assert.ok(Array.isArray(initial.collectorFactories) && initial.collectorFactories.length > 0,
+            'health includes multi-factory operations telemetry');
+        for (const factory of initial.collectorFactories) {
+            assert.ok(Array.isArray(factory.devices));
+            assert.equal(factory.mode, 'simulation');
+            assert.ok(!Object.hasOwn(factory, 'databaseConfig'));
+        }
         ws = new WebSocket(`${origin.replace('http:', 'ws:')}/ws`);
         await once(ws, 'open');
         ws.close();

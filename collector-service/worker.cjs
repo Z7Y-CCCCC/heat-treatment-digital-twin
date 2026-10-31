@@ -8,6 +8,7 @@ const { MysqlRuntime } = require('./mysqlRuntime.cjs');
 const { publishDirectory } = require('./directoryPublish.cjs');
 const { createRotatingLogWriter } = require('./logManager.cjs');
 const { terminateProcess } = require('./processLifecycle.cjs');
+const { seedTemplateConfiguration } = require('./templateData.cjs');
 
 let database, backend, stopping = false, stopPromise, watchdog;
 const logStreams = [];
@@ -84,6 +85,7 @@ async function main() {
     if (stopping) return;
     const template = path.join(resources, 'templates', 'factory-template.db');
     const snapshot = path.join(dataDir, 'factory.db');
+    await seedTemplateConfiguration(path.join(resources, 'templates'), dataDir);
     if (!fs.existsSync(snapshot)) await fs.promises.copyFile(template, snapshot);
     const sourceUploads = path.join(resources, 'templates', 'uploads');
     if (fs.existsSync(sourceUploads)) await fs.promises.cp(sourceUploads, uploadsDir,

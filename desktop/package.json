@@ -22,6 +22,9 @@
     "test:processes": "node --test scripts/process-lifecycle-test.cjs scripts/desktop-supervisor-unit-test.cjs",
     "test:resources": "node --test scripts/resource-preparation-test.cjs scripts/runtime-cache-test.cjs scripts/dependency-cache-test.cjs scripts/directory-publish-test.cjs",
     "test:deployment": "node --test scripts/deployment-test.cjs scripts/desktop-supervisor-unit-test.cjs",
+    "build:collector-center": "node scripts/build-collector-center.cjs",
+    "test:collector-center": "node scripts/native-collector-center-test.cjs && node scripts/native-point-client-test.cjs && node --test scripts/service-installer-test.cjs",
+    "collector-center": "node scripts/build-collector-center.cjs && start \"\" .cache\\collector-center\\HeatTreatmentCollectorCenter.exe",
     "test:supervisor": "node scripts/backend-supervisor-test.cjs",
     "test:admin-host-parent": "node scripts/admin-host-parent-test.cjs",
     "test:admin-host-retry": "node scripts/admin-host-retry-test.cjs",
@@ -44,12 +47,14 @@
       "processLifecycle.cjs",
       "mysqlRuntime.cjs",
       "directoryPublish.cjs",
+      "templateData.cjs",
       "deployment.cjs",
       "deployment-preload.cjs",
       "package.json",
       "assets/**/*"
     ],
     "extraResources": [
+      { "from": ".cache/collector-center", "to": "collector-center", "filter": ["**/*"] },
       { "from": ".cache/collector-service", "to": "collector-service", "filter": ["**/*"] },
       {
         "from": "resources/mysql",
@@ -125,6 +130,8 @@
     ],
     "extraFiles": [
       { "from": "部署与连接.cmd", "to": "部署与连接.cmd" },
+      { "from": "采集运行中心.cmd", "to": "采集运行中心.cmd" },
+      { "from": "collector-operations.ps1", "to": "collector-operations.ps1" },
       { "from": "安装采集服务.ps1", "to": "安装采集服务.ps1" },
       { "from": "现场部署选项.ps1", "to": "现场部署选项.ps1" }
     ],

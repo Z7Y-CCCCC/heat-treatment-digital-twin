@@ -1,4 +1,5 @@
 const crypto = require('crypto');
+const path = require('path');
 const cors = require('cors');
 const { assertLicenseForWrite, getLicenseStatus, isLicenseEnforced } = require('../services/license');
 const { getAdminAuth } = require('../services/adminAuth');
@@ -69,7 +70,11 @@ function isTrustedAdminOrigin(req) {
 }
 
 function adminSessionCookieName() {
-    return `dt_admin_session_${Number(process.env.PORT || 3001)}`;
+    // Cookies have no port scope. Isolate installations by data directory and
+    // keep the identity stable when the desktop chooses another free port.
+    const dataDir = path.resolve(process.env.APP_DATA_DIR || path.join(__dirname, '..', 'data'));
+    const scope = crypto.createHash('sha256').update(process.platform === 'win32' ? dataDir.toLowerCase() : dataDir).digest('hex').slice(0, 16);
+    return `dt_admin_session_${scope}`;
 }
 
 function adminWebSocketCookieName() {

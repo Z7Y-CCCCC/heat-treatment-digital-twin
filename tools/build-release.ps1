@@ -5,6 +5,7 @@ param(
     [string]$DatabaseUser = 'root',
     [string]$DatabasePassword = 'root',
     [string]$DatabaseName = 'dongtai_daping',
+    [string]$SourceUserDataDirectory,
     [switch]$IncludeHistory,
     [switch]$RefreshDependencies,
     [switch]$ForceUnityBuild,

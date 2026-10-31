@@ -388,7 +388,16 @@ export function startAdminSessionTracking() {
                 adminSession.warning = data.type === 'lock-rejected' ? String(data.warning || '请重新解锁后再次锁定后台') : ''
                 void refreshAdminSession()
             }
-            else if (data?.type === 'changed') refreshAdminSession()
+            else if (data?.type === 'changed') {
+                // Another WebView changed the active cookie. Discard an older
+                // in-flight poll, then fetch the newly selected identity.
+                generation += 1
+                const pending = refreshPromise
+                void (async () => {
+                    if (pending) await pending
+                    await refreshAdminSession()
+                })()
+            }
         }
     }
     activityHandler = event => {

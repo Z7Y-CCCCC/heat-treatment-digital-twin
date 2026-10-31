@@ -118,6 +118,22 @@ function downloadWindowFixture() {
     return { desktop, session, windows, saves, item };
 }
 
+test('collector-center compatibility entry hands off to native UI without database, backend, power request or Unity', async () => {
+    const desktop = loadDesktop();
+    desktop.run(`
+        process.argv = ['--collector-center'];
+        centerOpened = false;
+        showCollectorCenter = async () => { centerOpened = true; };
+        initializeWritableData = () => { throw new Error('must not initialize data'); };
+        startBackend = () => { throw new Error('must not spawn backend'); };
+        startNativeClient = () => { throw new Error('must not spawn Unity'); };
+    `);
+    await desktop.run('launchApplication()');
+    assert.equal(desktop.run('centerOpened'), true);
+    assert.equal(desktop.run('displayPowerRequest'), null);
+    assert.equal(desktop.spawnCalls, 0);
+});
+
 test('recreating admin windows releases the shared-session download listener', async () => {
     const { desktop, windows, session, saves, item } = downloadWindowFixture();
     for (let index = 0; index < 25; index++) {

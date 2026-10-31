@@ -16,6 +16,7 @@ compiled = compiled.replace(/import\s*\{([^}]+)\}\s*from\s*['"]\.\.\/\.\.\/\.\.\
 compiled = compiled.replace("from 'vue'", `from ${JSON.stringify(import.meta.resolve('vue'))}`)
 compiled = compiled.replace("from '../../../../../shared/accountPolicy.mjs'", `from ${JSON.stringify(new URL('../../shared/accountPolicy.mjs', import.meta.url).href)}`)
 compiled = compiled.replace("from '../../../../../shared/pagePermissions.mjs'", `from ${JSON.stringify(new URL('../../shared/pagePermissions.mjs', import.meta.url).href)}`)
+compiled = compiled.replace("from '../../../../../shared/accountTemplates.mjs'", `from ${JSON.stringify(new URL('../../shared/accountTemplates.mjs', import.meta.url).href)}`)
 let fixtureId = 0
 async function fixture(t, api) {
   globalThis.__platformUsersFixtureApi = { adminPageCatalog: ref(localCatalog()), getAdminPageCatalog: async () => localCatalog(), ...api }

@@ -29,6 +29,8 @@ let child;
     fs.mkdirSync(path.join(resources, 'templates'));
     const template = path.join(resources, 'templates', 'factory-template.db');
     fs.copyFileSync(path.join(source, 'templates', 'factory-template.db'), template);
+    if (fs.existsSync(path.join(source, 'templates', 'data')))
+        fs.cpSync(path.join(source, 'templates', 'data'), path.join(resources, 'templates', 'data'), { recursive: true });
     if (fs.existsSync(path.join(source, 'templates', 'uploads')))
         fs.symlinkSync(path.join(source, 'templates', 'uploads'), path.join(resources, 'templates', 'uploads'), 'junction');
     const fixture = new Database(template);

@@ -5,6 +5,7 @@ param(
     [string]$DatabaseUser = 'root',
     [string]$DatabasePassword = 'root',
     [string]$DatabaseName = 'dongtai_daping',
+    [string]$SourceUserDataDirectory,
     [switch]$IncludeHistory,
     [switch]$RefreshDependencies,
     [switch]$ForceUnityBuild,
@@ -198,6 +199,39 @@ if ([string]::IsNullOrWhiteSpace($version)) {
 
 Assert-ApplicationIsClosed
 
+# The development launcher stores its live uploads outside the source tree.
+# Resolve its database configuration and assets together when making a clone.
+$sourceTemplateDatabase = $null
+$sourceUploadsDirectory = $null
+if (-not [string]::IsNullOrWhiteSpace($SourceUserDataDirectory)) {
+    if ($StarterTemplate) { throw '当前软件完整数据与 StarterTemplate 空白模板不能同时选择。' }
+    $SourceUserDataDirectory = (Resolve-Path -LiteralPath $SourceUserDataDirectory).Path
+    $sourceConfigFile = Join-Path $SourceUserDataDirectory 'data\database-config.json'
+    if (-not (Test-Path -LiteralPath $sourceConfigFile)) { throw "当前软件数据库配置不存在：$sourceConfigFile" }
+    $sourceConfig = Get-Content -Raw -LiteralPath $sourceConfigFile -Encoding UTF8 | ConvertFrom-Json
+    if ($sourceConfig.type -eq 'mysql') {
+        $parameterMap = @{ DatabaseHost = 'host'; DatabasePort = 'port'; DatabaseUser = 'user'; DatabasePassword = 'password'; DatabaseName = 'database' }
+        foreach ($parameterName in $parameterMap.Keys) {
+            if (-not $PSBoundParameters.ContainsKey($parameterName)) {
+                $property = $sourceConfig.PSObject.Properties[$parameterMap[$parameterName]]
+                if (-not $property -or $null -eq $property.Value) { throw "当前 MySQL 配置缺少 $($parameterMap[$parameterName])。" }
+                Set-Variable -Name $parameterName -Value $property.Value
+            }
+        }
+    } elseif ($sourceConfig.type -eq 'sqlite') {
+        $filenameProperty = $sourceConfig.PSObject.Properties['filename']
+        $sourceTemplateDatabase = if ($filenameProperty -and $filenameProperty.Value) { [string]$filenameProperty.Value } else { 'factory.db' }
+        if (-not [IO.Path]::IsPathRooted($sourceTemplateDatabase)) {
+            $sourceTemplateDatabase = Join-Path (Join-Path $SourceUserDataDirectory 'data') $sourceTemplateDatabase
+        }
+        if (-not (Test-Path -LiteralPath $sourceTemplateDatabase)) { throw "当前 SQLite 数据库不存在：$sourceTemplateDatabase" }
+    } else {
+        throw "不支持的当前数据库类型：$($sourceConfig.type)"
+    }
+    $sourceUploadsDirectory = Join-Path $SourceUserDataDirectory 'uploads'
+    if (-not (Test-Path -LiteralPath $sourceUploadsDirectory -PathType Container)) { throw "当前软件上传资源目录不存在：$sourceUploadsDirectory" }
+}
+
 Write-Host '热处理数字孪生大屏：安装包构建' -ForegroundColor Green
 Write-Host "项目目录：$projectDirectory"
 Write-Host "软件版本：$version"
@@ -207,11 +241,15 @@ Write-Host "Unity 构建：$unityBuildMode"
 Write-Host "配置数据库：$DatabaseHost`:$DatabasePort/$DatabaseName"
 $historyText = if ($IncludeHistory) { '包含' } else { '不包含，仅交付现场配置' }
 Write-Host "运行历史：$historyText"
+if ($SourceUserDataDirectory) { Write-Host "当前软件数据来源：$SourceUserDataDirectory" }
 Write-Host "构建日志：$buildLogPath"
 
 Ensure-NodeDependencies -Directory (Join-Path $projectDirectory 'backend') -Label '后端' -NpmExecutable $npm
 Ensure-NodeDependencies -Directory (Join-Path $projectDirectory 'frontend') -Label '前端' -NpmExecutable $npm
 Ensure-NodeDependencies -Directory $desktopDirectory -Label '桌面端' -NpmExecutable $npm
+Invoke-CheckedCommand -Label '验证并恢复本地 Electron 启动宿主' -Executable $node -ArgumentList @(
+    (Join-Path $desktopDirectory 'scripts\ensure-electron-runtime.cjs')
+)
 
 $environmentNames = @(
     'UNITY_EDITOR_PATH',
@@ -224,6 +262,7 @@ $environmentNames = @(
     'DESKTOP_TEMPLATE_EMPTY',
     'DESKTOP_TEMPLATE_SOURCE_DB',
     'DESKTOP_TEMPLATE_SOURCE_UPLOADS',
+    'DESKTOP_TEMPLATE_SOURCE_DATA',
     'DESKTOP_FORCE_UNITY_REBUILD'
 )
 $previousEnvironment = @{}
@@ -242,10 +281,14 @@ try {
     $env:DESKTOP_TEMPLATE_EMPTY = if ($StarterTemplate) { 'true' } else { 'false' }
     Remove-Item Env:DESKTOP_TEMPLATE_SOURCE_DB -ErrorAction SilentlyContinue
     Remove-Item Env:DESKTOP_TEMPLATE_SOURCE_UPLOADS -ErrorAction SilentlyContinue
+    Remove-Item Env:DESKTOP_TEMPLATE_SOURCE_DATA -ErrorAction SilentlyContinue
+    if ($sourceTemplateDatabase) { $env:DESKTOP_TEMPLATE_SOURCE_DB = $sourceTemplateDatabase }
+    if ($sourceUploadsDirectory) { $env:DESKTOP_TEMPLATE_SOURCE_UPLOADS = $sourceUploadsDirectory }
+    if ($SourceUserDataDirectory) { $env:DESKTOP_TEMPLATE_SOURCE_DATA = Join-Path $SourceUserDataDirectory 'data' }
     $env:DESKTOP_FORCE_UNITY_REBUILD = if ($ForceUnityBuild) { 'true' } else { 'false' }
 
     $installerName = "热处理数字孪生大屏-安装包-$version-x64.exe"
-    foreach ($buildStep in @('build:frontend', 'build:unity', 'build:admin-host', 'build:collector-service', 'prepare:resources')) {
+    foreach ($buildStep in @('build:frontend', 'build:unity', 'build:admin-host', 'build:collector-service', 'build:collector-center', 'prepare:resources')) {
         Invoke-CheckedCommand -Label $buildStep -Executable $npm -ArgumentList @('--prefix', $desktopDirectory, 'run', $buildStep)
     }
     $builderCli = Join-Path $desktopDirectory 'node_modules/electron-builder/out/cli/cli.js'
@@ -332,6 +375,8 @@ $releaseManifest = [ordered]@{
     smokeTest = if ($SkipSmokeTest) { 'skipped' } else { 'passed' }
     includeHistory = [bool]$IncludeHistory
     starterTemplate = [bool]$StarterTemplate
+    sourceUserDataDirectory = $SourceUserDataDirectory
+    sourceUploadsDirectory = $sourceUploadsDirectory
     compressionLevel = $effectiveCompressionLevel
     buildLog = $buildLogPath
 }

@@ -597,6 +597,16 @@ app.get('/api/health', (req, res) => {
         version: { ...loadReleaseManifest(), license },
         db: dbStatus,
         engine: engineStatus,
+        // Compact, credential-free telemetry for the local operations window.
+        // A secondary factory failure must not be hidden by the active factory.
+        collectorFactories: Object.entries(global.dataEngine?.getFactoryStatuses?.() || {}).slice(0, 256).map(([factoryId, value]) => ({
+            factoryId, mode: value.mode, collectorStatus: value.collectorStatus,
+            devices: (Array.isArray(value.plcStatus?.devices) ? value.plcStatus.devices : []).slice(0, 2000).map(device => ({
+                deviceId: device.deviceId, name: device.deviceName || device.name, protocol: device.protocol,
+                status: device.status, quality: device.quality, lastReadAt: device.lastReadAt,
+                error: device.lastError || device.error || null
+            }))
+        })),
         historyRetention: historyRetention.status(),
         components: {
             backend: { status: 'healthy' },

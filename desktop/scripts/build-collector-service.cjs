@@ -9,6 +9,6 @@ const result = spawnSync('dotnet', ['publish', path.join(project, 'collector-ser
 if (result.error) throw result.error;
 if (result.status !== 0) throw new Error(`Collector service build failed: ${result.status}`);
 fs.copyFileSync(path.join(project, 'collector-service', 'worker.cjs'), path.join(output, 'worker.cjs'));
-for (const name of ['mysqlRuntime.cjs', 'directoryPublish.cjs', 'logManager.cjs', 'processLifecycle.cjs'])
+for (const name of ['mysqlRuntime.cjs', 'directoryPublish.cjs', 'logManager.cjs', 'processLifecycle.cjs', 'templateData.cjs'])
     fs.copyFileSync(path.join(desktop, name), path.join(output, name));
 console.log(`Windows collector service: ${output}`);

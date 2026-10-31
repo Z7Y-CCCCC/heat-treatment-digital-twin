@@ -43,18 +43,26 @@ async function saveDeployment(filename, value) {
 function resolveDeployment(root, options = {}) {
     const env = options.env || process.env, argv = options.argv || process.argv;
     const filename = deploymentFile(root, argv, env);
+    const machineFile = env.DIGITAL_TWIN_COLLECTOR_CONFIG || path.join(env.ProgramData || env.PROGRAMDATA || 'C:\\ProgramData',
+        'HeatTreatmentDigitalTwin', 'collector-service.json');
+    const machineClient = () => {
+        const service = JSON.parse(fs.readFileSync(machineFile, 'utf8').replace(/^\uFEFF/, ''));
+        return normalizeDeployment({ mode: 'client', backendOrigin: service.backendOrigin });
+    };
     if (fs.existsSync(filename)) {
         const config = readDeployment(filename);
+        // Once a machine collector is installed, development and packaged Unity
+        // must not silently edit a second local database. Smoke fixtures opt out.
+        if (config.mode === 'local' && env.DESKTOP_SMOKE_STANDALONE !== 'true' && fs.existsSync(machineFile)) return machineClient();
         if (options.packaged && config.mode !== 'client' && env.DESKTOP_SMOKE_STANDALONE !== 'true')
             throw new Error('安装版前端不再启动采集后端，请在“部署与连接”中选择 Windows 服务地址');
         return config;
     }
-    if (!options.packaged || env.DESKTOP_SMOKE_STANDALONE === 'true') return { mode: 'local' };
-    const machineFile = env.DIGITAL_TWIN_COLLECTOR_CONFIG || path.join(env.ProgramData || env.PROGRAMDATA || 'C:\\ProgramData',
-        'HeatTreatmentDigitalTwin', 'collector-service.json');
+    if (env.DESKTOP_SMOKE_STANDALONE === 'true') return { mode: 'local' };
+    if (fs.existsSync(machineFile)) return machineClient();
+    if (!options.packaged) return { mode: 'local' };
     if (!fs.existsSync(machineFile)) throw new Error('尚未安装 Windows 采集服务。请使用新版安装包，或以管理员身份运行安装目录中的 安装采集服务.ps1。');
-    const service = JSON.parse(fs.readFileSync(machineFile, 'utf8').replace(/^\uFEFF/, ''));
-    return normalizeDeployment({ mode: 'client', backendOrigin: service.backendOrigin });
+    return machineClient();
 }
 
 module.exports = { deploymentFile, httpOrigin, normalizeDeployment, readDeployment, resolveDeployment, saveDeployment };

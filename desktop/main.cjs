@@ -9,6 +9,7 @@ const path = require('path');
 const { hasProcessExited, terminateProcess } = require('./processLifecycle.cjs');
 const { MysqlRuntime } = require('./mysqlRuntime.cjs');
 const { retryFilesystem, publishDirectory } = require('./directoryPublish.cjs');
+const { seedTemplateConfiguration } = require('./templateData.cjs');
 const { deploymentFile, resolveDeployment, saveDeployment } = require('./deployment.cjs');
 const {
     cleanupLogArchives,
@@ -188,6 +189,7 @@ function startupAction(url) {
         return;
     }
     if (action === 'configure') { void showDeploymentWindow(); return; }
+    if (action === 'collector-center') { void showCollectorCenter(); return; }
     if (action === 'exit') app.quit();
 }
 
@@ -398,6 +400,7 @@ async function initializeWritableData() {
     const logsDir = ensureDirectory(path.join(root, 'logs'));
     const databaseFile = path.join(dataDir, 'factory.db');
     const templateRoot = resourcePath('templates');
+    await seedTemplateConfiguration(templateRoot, dataDir);
     const dependenciesDir = await ensureBackendDependencies();
     if (isQuitting) throw new Error('程序正在退出，已取消初始化');
 
@@ -1401,6 +1404,7 @@ function updateTrayMenu() {
             label: '打开软件',
             click: showNativeDashboard
         },
+        { label: '采集运行中心…', click: () => showCollectorCenter().catch(error => dialog.showErrorBox(APP_NAME, error.message)) },
         { label: '部署与连接…', click: () => showDeploymentWindow().catch(error => dialog.showErrorBox(APP_NAME, error.message)) },
         {
             label: '退出',
@@ -1415,6 +1419,17 @@ function createTray() {
     tray.setToolTip(APP_NAME);
     tray.on('double-click', showNativeDashboard);
     updateTrayMenu();
+}
+
+async function showCollectorCenter() {
+    const executable = app.isPackaged ? resourcePath('collector-center', 'HeatTreatmentCollectorCenter.exe')
+        : path.join(__dirname, '.cache', 'collector-center', 'HeatTreatmentCollectorCenter.exe');
+    if (!fs.existsSync(executable)) throw new Error('缺少原生采集运行中心，请重新构建或安装完整版本');
+    await new Promise((resolve, reject) => {
+        // Independent native process; do not supervise it as a display child.
+        const child = spawn(executable, [], { windowsHide: false, stdio: 'ignore', detached: true });
+        child.once('error', reject); child.once('spawn', () => { child.unref(); resolve(); });
+    });
 }
 
 async function showDeploymentWindow() {
@@ -1549,8 +1564,14 @@ function createMainWindow(origin, showInitially = false) {
 }
 
 async function launchApplication() {
+    // Offline-first local UI: never initialize MySQL, PLC drivers or Unity here.
+    if (process.argv.includes('--collector-center')) { await showCollectorCenter(); app.quit(); return; }
     if (process.argv.includes('--configure-deployment')) { await showDeploymentWindow(); return; }
-    deployment = resolveDeployment(app.getPath('userData'), { packaged: app.isPackaged });
+    try { deployment = resolveDeployment(app.getPath('userData'), { packaged: app.isPackaged }); }
+    catch (error) {
+        if (!app.isPackaged) throw error;
+        await showCollectorCenter(); app.quit(); return;
+    }
     // Temporary runtime request, not a permanent modification of power plans.
     if (!backendOnlySmokeMode && powerSaveBlocker)
         displayPowerRequest = powerSaveBlocker.start('prevent-display-sleep');
@@ -1652,6 +1673,7 @@ if (!app.requestSingleInstanceLock()) {
     app.quit();
 } else {
     app.on('second-instance', (event, argv) => {
+        if (argv?.includes('--collector-center')) { void showCollectorCenter(); return; }
         if (argv?.includes('--configure-deployment')) { void showDeploymentWindow(); return; }
         if (startupWindow && !startupWindow.isDestroyed() && !applicationReadyForInteraction) {
             startupWindow.show();

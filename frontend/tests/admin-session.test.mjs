@@ -84,6 +84,29 @@ test('account sessions can be added and switched using in-memory CSRF tokens', a
     assert.equal(calls.some(call => JSON.stringify(call.options.body || '').includes('viewer-password')), true)
 })
 
+test('another WebView account switch discards an in-flight poll and immediately reads the selected grants', async t => {
+    const session = await fixture(t), oldPoll = deferred()
+    let polls = 0
+    const customer = { ...signedIn('customer-csrf'), accountSlotId: 'a'.repeat(24),
+        user: { id: 'customer', username: '现场客户', role: 'customer' },
+        pagePermissions: { devices: { view: true }, 'point-monitor': { view: true } } }
+    t.mock.method(session.browser, 'fetch', async url => String(url).endsWith('/login')
+        ? json(signedIn('owner-csrf')) : ++polls === 1 ? oldPoll.promise : json(customer))
+    await session.unlockAdmin('owner-password')
+    session.startAdminSessionTracking()
+    const pending = session.refreshAdminSession()
+    session.channels[0].onmessage({ data: { type: 'changed' } })
+    oldPoll.resolve(json(signedIn('stale-owner')))
+    await pending
+    await settle()
+    assert.equal(polls, 2)
+    assert.equal(session.adminSession.user.id, 'customer')
+    assert.equal(session.canOpenAdmin(), true)
+    assert.equal(session.canAdminPage('devices'), true)
+    assert.equal(session.canAdminPage('devices', 'edit'), false)
+    assert.equal(session.canAdminPage('users'), false)
+})
+
 test('signing out one account clears the active identity without erasing saved account slots', async t => {
     const session = await fixture(t)
     t.mock.method(session.browser, 'fetch', async url => String(url).endsWith('/accounts/logout')

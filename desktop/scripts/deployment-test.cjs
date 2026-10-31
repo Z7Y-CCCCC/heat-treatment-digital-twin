@@ -27,3 +27,17 @@ test('saved deployment can be reloaded, never overwrites malformed settings impl
         assert.equal(fs.readFileSync(filename, 'utf8'), '{broken');
     } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
+
+test('Unity development and installed clients share the machine collector configuration, including after stop', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dt-single-collector-'));
+    try {
+        const machineFile = path.join(root, 'collector-service.json');
+        fs.writeFileSync(machineFile, JSON.stringify({ backendOrigin: 'http://127.0.0.1:4567' }));
+        const env = { DIGITAL_TWIN_COLLECTOR_CONFIG: machineFile };
+        for (const packaged of [true, false]) assert.deepEqual(resolveDeployment(root, { packaged, argv: [], env }),
+            { mode: 'client', backendOrigin: 'http://127.0.0.1:4567' });
+        await saveDeployment(path.join(root, 'deployment.json'), { mode: 'local' });
+        assert.equal(resolveDeployment(root, { packaged: false, argv: [], env }).mode, 'client');
+        assert.equal(resolveDeployment(root, { packaged: false, argv: [], env: { ...env, DESKTOP_SMOKE_STANDALONE: 'true' } }).mode, 'local');
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});

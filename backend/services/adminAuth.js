@@ -7,11 +7,13 @@ const scrypt = promisify(crypto.scrypt);
 const SCRYPT_OPTIONS = { N: 32768, r: 8, p: 1, maxmem: 64 * 1024 * 1024 };
 const DEFAULT_IDLE_MINUTES = 30;
 const MAX_SESSION_MS = 8 * 60 * 60 * 1000;
+const DISPLAY_SESSION_MS = 30 * 24 * 60 * 60 * 1000;
 const USER_ROLES = new Set(['customer', 'viewer', 'editor']);
 const ASSIGNABLE_USER_ROLES = new Set(['customer', 'viewer']);
 const DELEGABLE_PERMISSIONS = ['view', 'launch', 'cast', 'backup'];
 const { normalizePagePermissions, canAccessAdmin, allowsRequirement } = require('../../shared/pagePermissions.cjs');
 const { getAdminPageCatalog } = require('../../shared/adminPages.mjs');
+const { defaultAccountPagePermissions } = require('../../shared/accountTemplates.mjs');
 const { isValidUsername, normalizeUsername, isValidPassword, MIN_PASSWORD_LENGTH, MAX_PASSWORD_LENGTH } = require('../../shared/accountPolicy.mjs');
 
 function userPagePermissions(value) {
@@ -81,16 +83,18 @@ function validateIdleMinutes(value) {
 function createAdminAuth(options = {}) {
     const dataDir = options.dataDir || process.env.APP_DATA_DIR || path.join(__dirname, '..', 'data');
     const filename = path.join(path.resolve(dataDir), 'admin-security.json');
+    const sessionsFilename = path.join(path.resolve(dataDir), 'admin-sessions.json');
     const now = options.now || Date.now;
     const maxSessionMs = options.maxSessionMs || MAX_SESSION_MS;
     // Admin privileges expire on inactivity. An already-authorized display may
-    // continue for the lifetime of this process, until logout/account revocation.
+    // survive a local restart, but not logout, revocation or the 30-day deadline.
     const sessions = new Map();
     const attempts = new Map();
     const nativeTickets = new Map();
     let passwordOperationBusy = false;
     let sessionGeneration = 0;
     let config = { version: 1, idleTimeoutMinutes: DEFAULT_IDLE_MINUTES, password: null, users: [] };
+    let sessionsDirty = false;
 
     if (fs.existsSync(filename)) {
         try {
@@ -124,6 +128,63 @@ function createAdminAuth(options = {}) {
         }
     }
 
+    function sessionSignature(rows) {
+        const credentials = config.users.map(user => ({ id: user.id, enabled: user.enabled !== false, hash: user.password.hash }));
+        return crypto.createHmac('sha256', config.password?.hash || '')
+            .update(JSON.stringify({ credentials, rows })).digest('hex');
+    }
+
+    function saveSessions() {
+        if (!sessionsDirty) return;
+        // Only hashes of browser bearer tokens are stored. Native handoffs and
+        // single-use tickets are process-local and cannot be replayed on restart.
+        const rows = [...sessions].filter(([, session]) => !session.parentSessionKey);
+        const temporary = `${sessionsFilename}.${crypto.randomBytes(8).toString('hex')}.tmp`;
+        try {
+            fs.mkdirSync(path.dirname(sessionsFilename), { recursive: true });
+            fs.writeFileSync(temporary, JSON.stringify({ version: 1, rows, signature: sessionSignature(rows) }),
+                { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+            // Windows antivirus/OneDrive may briefly hold the previous file.
+            // Retry replacement, never unlink it and lose atomic revocation.
+            for (let attempt = 0; ; attempt += 1) {
+                try { fs.renameSync(temporary, sessionsFilename); break; }
+                catch (error) {
+                    if (!['EPERM', 'EACCES', 'EBUSY'].includes(error.code) || attempt >= 4) throw error;
+                    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10 * (attempt + 1));
+                }
+            }
+            sessionsDirty = false;
+        } catch {
+            try { fs.unlinkSync(temporary); } catch { /* no temporary file */ }
+            throw authError(503, 'ADMIN_SESSION_STORAGE_UNAVAILABLE', '无法保存本机登录状态，请检查应用数据目录的写入权限');
+        }
+    }
+
+    if (config.password && fs.existsSync(sessionsFilename)) {
+        try {
+            if (fs.statSync(sessionsFilename).size > 128 * 1024) throw new Error('Oversized session store');
+            const stored = JSON.parse(fs.readFileSync(sessionsFilename, 'utf8'));
+            if (stored.version !== 1 || !Array.isArray(stored.rows) || stored.rows.length > 64
+                || !equalSecret(stored.signature, sessionSignature(stored.rows))) throw new Error('Invalid session store');
+            for (const [key, session] of stored.rows) {
+                if (!/^[a-f0-9]{64}$/.test(key) || !session || session.parentSessionKey
+                    || !/^[a-f0-9]{64}$/.test(session.csrfToken)
+                    || ![session.issuedAt, session.lastActivityAt, session.absoluteExpiresAt, session.displayExpiresAt].every(Number.isFinite)
+                    || session.issuedAt > now() || session.lastActivityAt < session.issuedAt || session.lastActivityAt > now()
+                    || session.absoluteExpiresAt > session.issuedAt + maxSessionMs
+                    || session.displayExpiresAt !== session.issuedAt + DISPLAY_SESSION_MS
+                    || (session.userId !== 'owner' && !config.users.some(user => user.id === session.userId && user.enabled !== false))) {
+                    throw new Error('Invalid stored session');
+                }
+                if (now() < session.displayExpiresAt) sessions.set(key, { ...session,
+                    adminLocked: session.adminLocked === true || now() >= sessionExpiry(session) });
+            }
+        } catch {
+            // A damaged/copied/credential-mismatched store never unlocks access.
+            sessions.clear();
+        }
+    }
+
     function settings() {
         return {
             idleTimeoutMinutes: config.idleTimeoutMinutes,
@@ -149,8 +210,10 @@ function createAdminAuth(options = {}) {
     function prune() {
         const time = now();
         for (const [key, session] of sessions) {
-            if (time >= sessionExpiry(session)) session.adminLocked = true;
-            if (session.parentSessionKey && !sessions.has(session.parentSessionKey)) sessions.delete(key);
+            if (time >= sessionExpiry(session) && !session.adminLocked) { session.adminLocked = true; sessionsDirty = true; }
+            if (time >= session.displayExpiresAt || (session.parentSessionKey && !sessions.has(session.parentSessionKey))) {
+                sessions.delete(key); sessionsDirty = true;
+            }
         }
         for (const [key, attempt] of attempts) {
             if (time >= attempt.resetAt) attempts.delete(key);
@@ -158,6 +221,7 @@ function createAdminAuth(options = {}) {
         for (const [key, ticket] of nativeTickets) {
             if (time >= ticket.expiresAt) nativeTickets.delete(key);
         }
+        saveSessions();
     }
 
     function getSession(token) {
@@ -167,10 +231,14 @@ function createAdminAuth(options = {}) {
         if (!session) return null;
         if (session.parentSessionKey && !sessions.has(session.parentSessionKey)) {
             sessions.delete(key);
+            sessionsDirty = true;
+            saveSessions();
             return null;
         }
         if (session.userId !== 'owner' && !config.users.some(user => user.id === session.userId && user.enabled !== false)) {
             sessions.delete(key);
+            sessionsDirty = true;
+            saveSessions();
             return null;
         }
         return session;
@@ -237,7 +305,7 @@ function createAdminAuth(options = {}) {
             if (!active) throw authError(401, 'ADMIN_AUTH_REQUIRED', '后台已锁定，请输入后台密码解锁');
             throw authError(403, 'ADMIN_PERMISSION_DENIED', '当前账户没有执行此页面操作的权限');
         }
-        if (touch) session.lastActivityAt = now();
+        if (touch) { session.lastActivityAt = now(); sessionsDirty = true; saveSessions(); }
         return { ...session, role, userId: session.userId };
     }
 
@@ -249,12 +317,15 @@ function createAdminAuth(options = {}) {
         while (sessions.size >= 64) sessions.delete(sessions.keys().next().value);
         const token = crypto.randomBytes(32).toString('hex');
         const key = tokenKey(token);
+        const issuedAt = now();
         sessions.set(key, {
             userId,
             ...(parentToken ? { parentSessionKey: tokenKey(parentToken) } : {}),
             csrfToken: crypto.randomBytes(32).toString('hex'),
-            lastActivityAt: now(),
-            absoluteExpiresAt: now() + maxSessionMs
+            issuedAt,
+            lastActivityAt: issuedAt,
+            absoluteExpiresAt: issuedAt + maxSessionMs,
+            displayExpiresAt: issuedAt + DISPLAY_SESSION_MS
         });
         // Unlocking the same account must not interrupt an already-running
         // native display that was handed off by the previous admin token.
@@ -263,6 +334,8 @@ function createAdminAuth(options = {}) {
             if (previous?.userId === userId) child.parentSessionKey = key;
             else sessions.delete(childKey);
         }
+        sessionsDirty = true;
+        saveSessions();
         return { token, status: status(token) };
     }
 
@@ -313,7 +386,7 @@ function createAdminAuth(options = {}) {
             nativeTickets.set(tokenKey(ticket), { sourceToken: token, expiresAt: now() + 30000 });
             return { ticket, expiresAt: now() + 30000 };
         },
-        exchangeNativeTicket(ticket) {
+        exchangeNativeTicket(ticket, previousToken = '') {
             prune();
             const key = tokenKey(ticket);
             const grant = nativeTickets.get(key);
@@ -327,7 +400,8 @@ function createAdminAuth(options = {}) {
             if (!permissions.launch || !permissions.view) {
                 throw authError(403, 'ADMIN_PERMISSION_DENIED', '当前账户没有启动大屏的权限');
             }
-            return issueSession('', source.userId, grant.sourceToken);
+            const previous = sessions.get(tokenKey(previousToken));
+            return issueSession(previous?.parentSessionKey ? previousToken : '', source.userId, grant.sourceToken);
         },
         async setup(password, key, previousToken) {
             validatePassword(password);
@@ -365,6 +439,8 @@ function createAdminAuth(options = {}) {
             const key = tokenKey(token);
             sessions.delete(key);
             for (const [childKey, session] of sessions) if (session.parentSessionKey === key) sessions.delete(childKey);
+            sessionsDirty = true;
+            saveSessions();
             return status('');
         },
         lock(token, csrfToken) {
@@ -378,6 +454,8 @@ function createAdminAuth(options = {}) {
                     for (const active of sessions.values()) active.adminLocked = true;
                 } else session.adminLocked = true;
                 nativeTickets.clear();
+                sessionsDirty = true;
+                saveSessions();
             } else if (sessions.size > 0 && [...sessions.values()].some(adminActive)) {
                 throw authError(401, 'ADMIN_AUTH_REQUIRED', '当前会话已失效，无法确认其他窗口已锁定；请重新解锁后再次锁定');
             }
@@ -387,6 +465,8 @@ function createAdminAuth(options = {}) {
             validateIdleMinutes(idleTimeoutMinutes);
             requireSession(token, csrfToken, { touch: true, permission: 'owner' });
             saveConfig({ ...config, idleTimeoutMinutes });
+            sessionsDirty = true;
+            saveSessions();
             return status(token);
         },
         async changePassword(token, csrfToken, currentPassword, newPassword, key) {
@@ -430,7 +510,8 @@ function createAdminAuth(options = {}) {
             }
             validatePassword(input?.password);
             const permissions = normalizeUserPermissions(role, input?.permissions);
-            const pagePermissions = userPagePermissions(input?.pagePermissions);
+            const pagePermissions = input?.pagePermissions === undefined
+                ? defaultAccountPagePermissions(role) : userPagePermissions(input.pagePermissions);
             if (config.users.length >= 64 || config.users.some(user => normalizeUsername(user.username) === username)) {
                 throw authError(409, 'ADMIN_USER_EXISTS', '账号已存在或达到 64 个账户上限');
             }
@@ -439,6 +520,8 @@ function createAdminAuth(options = {}) {
             if (config.users.some(user => normalizeUsername(user.username) === username)) throw authError(409, 'ADMIN_USER_EXISTS', '账号已存在');
             const user = { id: crypto.randomBytes(12).toString('hex'), username, displayName, role, permissions, pagePermissions, enabled: true, password: credential };
             saveConfig({ ...config, users: [...config.users, user] });
+            sessionsDirty = true;
+            saveSessions();
             const { password: _password, ...publicUser } = user;
             return publicUser;
         },
@@ -462,6 +545,8 @@ function createAdminAuth(options = {}) {
             const updated = { ...existing, role, permissions, pagePermissions, displayName, enabled: input.enabled, password };
             saveConfig({ ...config, users: config.users.map(user => user.id === id ? updated : user) });
             for (const [sessionKey, active] of sessions) if (active.userId === id) sessions.delete(sessionKey);
+            sessionsDirty = true;
+            saveSessions();
             const { password: _password, ...publicUser } = updated;
             return publicUser;
         },
@@ -470,6 +555,8 @@ function createAdminAuth(options = {}) {
             if (!config.users.some(user => user.id === id)) throw authError(404, 'ADMIN_USER_NOT_FOUND', '账号不存在');
             saveConfig({ ...config, users: config.users.filter(user => user.id !== id) });
             for (const [sessionKey, active] of sessions) if (active.userId === id) sessions.delete(sessionKey);
+            sessionsDirty = true;
+            saveSessions();
             return { success: true };
         }
     };
@@ -481,4 +568,4 @@ function getAdminAuth() {
     return instance;
 }
 
-module.exports = { authError, createAdminAuth, equalSecret, getAdminAuth, MAX_SESSION_MS };
+module.exports = { authError, createAdminAuth, equalSecret, getAdminAuth, MAX_SESSION_MS, DISPLAY_SESSION_MS };

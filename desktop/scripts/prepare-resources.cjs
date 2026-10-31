@@ -3,6 +3,7 @@ const path = require('path');
 const { prepareResourceDirectory, copySqliteSnapshot } = require('./resource-preparation.cjs');
 const { prepareMysqlRuntime } = require('./prepare-mysql-runtime.cjs');
 const { prepareDependencyArchive } = require('./dependency-archive.cjs');
+const { CONFIGURATION_FILES } = require('../templateData.cjs');
 
 const desktopDir = path.resolve(__dirname, '..');
 const projectDir = path.resolve(desktopDir, '..');
@@ -10,6 +11,7 @@ const resourcesDir = path.join(desktopDir, 'resources');
 const nativeClientSourceDir = path.join(projectDir, 'unity-client', 'Builds', 'Windows');
 const explicitSourceDb = String(process.env.DESKTOP_TEMPLATE_SOURCE_DB || '').trim();
 const emptyTemplate = enabled(process.env.DESKTOP_TEMPLATE_EMPTY, false);
+const sourceData = String(process.env.DESKTOP_TEMPLATE_SOURCE_DATA || '').trim();
 const sourceUploads = path.resolve(
     process.env.DESKTOP_TEMPLATE_SOURCE_UPLOADS || path.join(projectDir, 'backend', 'uploads')
 );
@@ -224,6 +226,15 @@ async function main() {
         fs.mkdirSync(runtimeDir, { recursive: true });
         fs.mkdirSync(templatesDir, { recursive: true });
         const result = await prepareDatabaseTemplate(stagingDirectory, path.join(templatesDir, 'factory-template.db'));
+        if (!emptyTemplate && sourceData) {
+            for (const name of CONFIGURATION_FILES) {
+                const source = path.join(sourceData, name);
+                if (!fs.existsSync(source)) continue;
+                JSON.parse(fs.readFileSync(source, 'utf8').replace(/^\uFEFF/, ''));
+                fs.mkdirSync(path.join(templatesDir, 'data'), { recursive: true });
+                fs.copyFileSync(source, path.join(templatesDir, 'data', name));
+            }
+        }
         fs.copyFileSync(nodeBinary, path.join(runtimeDir, 'node.exe'));
         await prepareDependencyArchive(backendNodeModules, path.join(desktopDir, '.cache', 'backend-dependencies'), backendDependenciesTar);
         if (!fs.existsSync(backendDependenciesTar) || fs.statSync(backendDependenciesTar).size < 1024 * 1024) {

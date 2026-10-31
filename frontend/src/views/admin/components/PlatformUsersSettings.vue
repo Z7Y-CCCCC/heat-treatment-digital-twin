@@ -1,6 +1,7 @@
 <script setup>
 import { MIN_PASSWORD_LENGTH, MAX_PASSWORD_LENGTH, MIN_USERNAME_LENGTH, MAX_USERNAME_LENGTH, USERNAME_PATTERN } from '../../../../../shared/accountPolicy.mjs'
 import { PAGE_ACTIONS, normalizePagePermissions } from '../../../../../shared/pagePermissions.mjs'
+import { defaultAccountPagePermissions } from '../../../../../shared/accountTemplates.mjs'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { adminPageCatalog, getAdminPageCatalog, createPlatformUser, deletePlatformUser, listPlatformUsers, updatePlatformUser } from '../../../runtime/adminSession.js'
 
@@ -19,7 +20,7 @@ function editablePermissions(role, permissions = {}) {
     typeof permissions[key] === 'boolean' ? permissions[key] : defaults[key]
   ]))
 }
-const createDraft = () => ({ username: '', displayName: '', role: 'customer', password: '', enabled: true, permissions: defaultPermissions('customer'), pagePermissions: normalizePagePermissions() })
+const createDraft = () => ({ username: '', displayName: '', role: 'customer', password: '', enabled: true, permissions: defaultPermissions('customer'), pagePermissions: defaultAccountPagePermissions('customer') })
 const pageActions = Object.keys(PAGE_ACTIONS)
 function changePageView(page) {
   if (!editor.value.pagePermissions[page.key].view) {
@@ -139,6 +140,7 @@ function closeEditor() {
 
 function applyRolePreset() {
   editor.value.permissions = defaultPermissions(editor.value.role)
+  editor.value.pagePermissions = defaultAccountPagePermissions(editor.value.role)
 }
 
 async function saveEditor() {

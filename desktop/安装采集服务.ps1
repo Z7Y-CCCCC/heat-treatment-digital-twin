@@ -15,15 +15,15 @@ $installDirectory = (Resolve-Path -LiteralPath $InstallRoot).Path
 $machineDirectory = Join-Path $env:ProgramData 'HeatTreatmentDigitalTwin'
 $configFile = Join-Path $machineDirectory 'collector-service.json'
 $service = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
-if ($service -and $service.Status -ne 'Stopped') {
-    Stop-Service -Name $serviceName -ErrorAction Stop
-    $service.WaitForStatus([ServiceProcess.ServiceControllerStatus]::Stopped, [TimeSpan]::FromSeconds(60))
-}
 function Invoke-ServiceCommand([string[]]$Arguments) {
     & "$env:SystemRoot\System32\sc.exe" @Arguments
     if ($LASTEXITCODE -ne 0) { throw "Windows 服务配置失败（$LASTEXITCODE）" }
 }
 if ($Uninstall) {
+    if ($service -and $service.Status -ne 'Stopped') {
+        Stop-Service -Name $serviceName -ErrorAction Stop
+        $service.WaitForStatus([ServiceProcess.ServiceControllerStatus]::Stopped, [TimeSpan]::FromSeconds(60))
+    }
     if ($service) { Invoke-ServiceCommand @('delete', $serviceName) }
     Write-Host "已移除采集服务；现场数据保留在 $DataRoot，未删除。"
     exit 0
@@ -31,7 +31,9 @@ if ($Uninstall) {
 $resourcesDirectory = Join-Path $installDirectory 'resources'
 $hostExe = Join-Path $resourcesDirectory 'collector-service\HeatTreatmentCollector.exe'
 foreach ($required in @($hostExe, (Join-Path $resourcesDirectory 'collector-service\worker.cjs'),
-    (Join-Path $resourcesDirectory 'runtime\node.exe'), (Join-Path $resourcesDirectory 'backend-dependencies.tar'))) {
+    (Join-Path $resourcesDirectory 'runtime\node.exe'), (Join-Path $resourcesDirectory 'backend-dependencies.tar'),
+    (Join-Path $resourcesDirectory 'backend\server.js'), (Join-Path $resourcesDirectory 'templates\factory-template.db'),
+    (Join-Path $resourcesDirectory 'mysql\bin\mysqld.exe'))) {
     if (-not (Test-Path -LiteralPath $required)) { throw "缺少服务运行资源：$required" }
 }
 if (Test-Path -LiteralPath $configFile) {
@@ -41,6 +43,13 @@ if (Test-Path -LiteralPath $configFile) {
 }
 $dataDirectory = [IO.Path]::GetFullPath($DataRoot)
 if ($dataDirectory -eq [IO.Path]::GetPathRoot($dataDirectory)) { throw '服务数据目录不能是磁盘根目录。' }
+# Validate resources and configuration before stopping a working installation.
+if ($service -and $service.Status -ne 'Stopped') {
+    Stop-Service -Name $serviceName -ErrorAction Stop
+    $service.WaitForStatus([ServiceProcess.ServiceControllerStatus]::Stopped, [TimeSpan]::FromSeconds(60))
+}
+$probe = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, $Port)
+try { $probe.Start() } catch { throw "端口 $Port 已被占用，未注册新服务。请先处理端口冲突。" } finally { $probe.Stop() }
 New-Item -ItemType Directory -Force -Path $machineDirectory, $dataDirectory | Out-Null
 if ($ImportDataDirectory) {
     $source = (Resolve-Path -LiteralPath $ImportDataDirectory).Path
@@ -87,6 +96,22 @@ Invoke-ServiceCommand @('failureflag', $serviceName, '1')
 if (-not [Diagnostics.EventLog]::SourceExists($serviceName)) {
     New-EventLog -LogName Application -Source $serviceName
 }
+# Service metadata is machine-owned. A standard desktop user can discover
+# its port, but cannot redirect a later elevated diagnostics read elsewhere.
+$security = [Security.AccessControl.DirectorySecurity]::new()
+$security.SetAccessRuleProtection($true,$false)
+$inherit = [Security.AccessControl.InheritanceFlags]'ContainerInherit,ObjectInherit'
+$propagate = [Security.AccessControl.PropagationFlags]::None
+foreach($sid in @('S-1-5-18','S-1-5-32-544')) {
+    $security.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new([Security.Principal.SecurityIdentifier]::new($sid),
+        [Security.AccessControl.FileSystemRights]::FullControl,$inherit,$propagate,[Security.AccessControl.AccessControlType]::Allow))
+}
+$security.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new([Security.Principal.SecurityIdentifier]::new('S-1-5-32-545'),
+    [Security.AccessControl.FileSystemRights]::ReadAndExecute,$inherit,$propagate,[Security.AccessControl.AccessControlType]::Allow))
+$security.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new([Security.Principal.NTAccount]::new("NT SERVICE\$serviceName"),
+    [Security.AccessControl.FileSystemRights]::ReadAndExecute,$inherit,$propagate,[Security.AccessControl.AccessControlType]::Allow))
+$security.SetOwner([Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'))
+Set-Acl -LiteralPath $machineDirectory -AclObject $security
 $serviceGrant = 'NT SERVICE\{0}:(OI)(CI)M' -f $serviceName
 & "$env:SystemRoot\System32\icacls.exe" $dataDirectory '/inheritance:r' '/grant:r' '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' $serviceGrant
 if ($LASTEXITCODE -ne 0) { throw '无法设置服务数据目录权限。' }
