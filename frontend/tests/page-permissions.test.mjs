@@ -66,6 +66,29 @@ test('atomic group transforms require line or scene placement editing, never mod
   }
 })
 
+test('moved map and loading pages retain old designer grants but respect explicit independent denials', t => {
+  fixture(t, { 'platform.designer': { view: true, edit: true } })
+  assert.equal(canAdminPage('platform.map', 'edit'), true)
+  assert.equal(canAdminPage('platform.loading', 'edit'), true)
+  adminSession.pagePermissions = normalizePagePermissions({ 'platform.designer': { view: true, edit: true }, 'platform.map': { view: false, edit: false } })
+  assert.equal(canAdminPage('platform.map'), false)
+  assert.equal(canAdminApi('/api/settings', 'PUT', { group_portal_config: {} }), false)
+  assert.equal(canAdminApi('/api/settings', 'PUT', { loading_experience_config: {} }), true)
+})
+
+test('map and loading authors save only their own settings without obtaining designer or database editing', t => {
+  fixture(t, { 'platform.map': { view: true, edit: true } })
+  assert.equal(canAdminApi('/api/settings', 'PUT', { group_portal_config: {} }), true)
+  assert.equal(canAdminApi('/api/data-sources'), true)
+  for (const body of [{ loading_experience_config: {} }, { native_dashboard_config: {} }, { group_portal_config: {}, loading_experience_config: {} }]) assert.equal(canAdminApi('/api/settings', 'PUT', body), false)
+  assert.equal(canAdminApi('/api/platform/designer/draft', 'PUT'), false)
+  assert.equal(canAdminApi('/api/data-sources/connections', 'POST'), false)
+  adminSession.pagePermissions = normalizePagePermissions({ 'platform.loading': { view: true, edit: true } })
+  assert.equal(canAdminApi('/api/settings', 'PUT', { loading_experience_config: {} }), true)
+  assert.equal(canAdminApi('/api/settings', 'PUT', { group_portal_config: {} }), false)
+  assert.equal(canAdminApi('/api/platform/releases', 'POST'), false)
+})
+
 test('model layout authoring is restricted to positions and does not grant generic model editing', t => {
   fixture(t, { 'disassembly-layout': { view: true, edit: true } })
   assert.equal(canAdminApi('/api/models/type/inspection', 'GET'), true)

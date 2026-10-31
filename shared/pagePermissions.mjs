@@ -20,9 +20,12 @@ export function normalizePagePermissions(value, { owner = false } = {}) {
       }
     }
   }
-  return Object.fromEntries(PAGE_PERMISSIONS.map(p => [p.key,
-    Object.fromEntries(p.actions.map(a => [a, owner || (!p.ownerOnly && value?.[p.key]?.view === true && value?.[p.key]?.[a] === true)]))
-  ]))
+  return Object.fromEntries(PAGE_PERMISSIONS.map(p => {
+    // These settings already existed under the designer. Migrate old stored
+    // grants only when no explicit grant/denial exists for the moved page.
+    const grants = value?.[p.key] ?? (p.migratedFrom ? value?.[p.migratedFrom] : undefined)
+    return [p.key, Object.fromEntries(p.actions.map(a => [a, owner || (!p.ownerOnly && grants?.view === true && grants?.[a] === true)]))]
+  }))
 }
 
 export function canPage(grants, key, action = 'view') {

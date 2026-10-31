@@ -4,19 +4,20 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { adminApi } from '../../../config/factoryConfig.js'
 import { GROUP_MAP_DATA_FIELDS, GROUP_MAP_LEVELS, groupPortalAppearanceForLevel, normalizeGroupLogoUrl, normalizeGroupPortalAppearance } from '../../../runtime/groupPortalAppearance.js'
 import { API_BASE } from '../../../runtime/backendEndpoint.js'
-import { adminFetch } from '../../../runtime/adminSession.js'
+import { adminFetch, canAdminPage } from '../../../runtime/adminSession.js'
 import { normalizeFactoryLocation } from '../../../runtime/groupTopology.js'
 import MapGeometryPreview from './MapGeometryPreview.vue'
 import { getFactoryScope } from '../../../runtime/factoryScope.js'
 import { cacheFactoryDraft, clearFactoryDraft, readFactoryDraft } from '../../../runtime/factoryDraftCache.js'
 
-const props = defineProps({ activeLevel: { type: String, default: 'world' }, designerMode: { type: Boolean, default: false } })
+const props = defineProps({ activeLevel: { type: String, default: 'world' }, designerMode: { type: Boolean, default: false }, permissionPage: { type: String, default: 'platform.map' } })
 const emit = defineEmits(['saved'])
 const form = ref(normalizeGroupPortalAppearance())
 const draftFactoryId = getFactoryScope()
 let savedFormSnapshot = ''
 const formSnapshot = () => JSON.stringify(form.value)
 const busy = ref(false)
+const loading = ref(true)
 const uploading = ref(false)
 const message = ref('')
 const failed = ref(false)
@@ -28,7 +29,7 @@ const layoutStage = ref(null)
 const activeDrag = ref(null)
 const selectedComponent = ref('panel')
 defineExpose({
-    selectComponent: key => { selectedComponent.value = key },
+    selectComponent: (key, level) => { if (GROUP_MAP_LEVELS.some(item => item.key === level)) selectedLevel.value = level; selectedComponent.value = key },
     savePending: async () => {
         if (!savedFormSnapshot || formSnapshot() === savedFormSnapshot) return true
         await save()
@@ -181,6 +182,7 @@ async function load() {
         apiSources.value = (sources.connections || []).filter(source => source.sourceType === 'http_api' || source.type === 'http_api')
         previewLocation.value = normalizeFactoryLocation(settings.factory_location)
     } catch (error) { failed.value = true; message.value = error.message || '读取集团首页外观失败' }
+    finally { loading.value = false }
 }
 
 async function save() {
@@ -208,28 +210,29 @@ onUnmounted(() => {
 
 <template>
     <section class="group-appearance-admin" :class="{'designer-mode':designerMode}" aria-labelledby="group-appearance-title">
-        <header><div><h3 id="group-appearance-title">地图层级与品牌组件</h3><p>配置全球、国家、省份、城市、区县各级地图的组件、颜色和镜头。工厂、车间、产线与设备视角在下方画布编排。</p></div><span>WORLD → FACTORY</span></header>
-        <form @submit.prevent="save" v-permission="{ page: 'platform.designer', action: 'edit' }">
+        <header><div><h3 id="group-appearance-title">地图底图与内置模块</h3><p>配置各级地图的底图、品牌与统计模块。</p></div><span>WORLD → FACTORY</span></header>
+        <form @submit.prevent="save" v-permission="{ page: permissionPage, action: 'edit' }">
+      <fieldset class="appearance-edit-controls" :disabled="loading || !canAdminPage(permissionPage, 'edit')">
             <details class="appearance-global-settings" :open="!designerMode"><summary>通用品牌与主题 <small>Logo · 标题 · 颜色 · 全层默认组件</small></summary>
             <div class="appearance-fields">
-                <label>大屏 Logo / 标题<input v-model.trim="form.brandTitle" maxlength="60" required  v-permission="{ page: 'platform.designer', action: 'edit' }"/></label>
-                <label>英文副标题<input v-model.trim="form.brandSubtitle" maxlength="80" required  v-permission="{ page: 'platform.designer', action: 'edit' }"/></label>
-                <label>右侧栏目标题<input v-model.trim="form.panelTitle" maxlength="60" required  v-permission="{ page: 'platform.designer', action: 'edit' }"/></label>
-                <label>区域统计标题<input v-model.trim="form.factsTitle" maxlength="60" required  v-permission="{ page: 'platform.designer', action: 'edit' }"/></label>
-                <label>底部站点标题<input v-model.trim="form.dockNetworkTitle" maxlength="60" required  v-permission="{ page: 'platform.designer', action: 'edit' }"/></label>
-                <label>底部归属标题<input v-model.trim="form.dockLocationTitle" maxlength="60" required  v-permission="{ page: 'platform.designer', action: 'edit' }"/></label>
-                <label>底部配置标题<input v-model.trim="form.dockHierarchyTitle" maxlength="60" required  v-permission="{ page: 'platform.designer', action: 'edit' }"/></label>
+                <label>大屏 Logo / 标题<input v-model.trim="form.brandTitle" maxlength="60" required  v-permission="{ page: permissionPage, action: 'edit' }"/></label>
+                <label>英文副标题<input v-model.trim="form.brandSubtitle" maxlength="80" required  v-permission="{ page: permissionPage, action: 'edit' }"/></label>
+                <label>右侧栏目标题<input v-model.trim="form.panelTitle" maxlength="60" required  v-permission="{ page: permissionPage, action: 'edit' }"/></label>
+                <label>区域统计标题<input v-model.trim="form.factsTitle" maxlength="60" required  v-permission="{ page: permissionPage, action: 'edit' }"/></label>
+                <label>底部站点标题<input v-model.trim="form.dockNetworkTitle" maxlength="60" required  v-permission="{ page: permissionPage, action: 'edit' }"/></label>
+                <label>底部归属标题<input v-model.trim="form.dockLocationTitle" maxlength="60" required  v-permission="{ page: permissionPage, action: 'edit' }"/></label>
+                <label>底部配置标题<input v-model.trim="form.dockHierarchyTitle" maxlength="60" required  v-permission="{ page: permissionPage, action: 'edit' }"/></label>
             </div>
-            <label class="appearance-logo-url">Logo 图片地址（可选，留空使用默认标识）<input v-model.trim="form.logoUrl" maxlength="400" placeholder="/uploads/brand/logo.png 或 https://..."  v-permission="{ page: 'platform.designer', action: 'edit' }"/><small>图片与标题同属大屏品牌组件；请使用站内路径或 HTTPS 图片。</small></label>
-            <label class="appearance-logo-upload">上传 Logo 图片<input type="file" accept="image/png,image/jpeg,image/webp" :disabled="uploading" @change="uploadLogo"  v-permission="{ page: 'platform.designer', action: 'edit' }"/><small>PNG、JPEG、WebP，最大 5 MB；上传后仍需保存外观。</small></label>
+            <label class="appearance-logo-url">Logo 图片地址（可选，留空使用默认标识）<input v-model.trim="form.logoUrl" maxlength="400" placeholder="/uploads/brand/logo.png 或 https://..."  v-permission="{ page: permissionPage, action: 'edit' }"/><small>图片与标题同属大屏品牌组件；请使用站内路径或 HTTPS 图片。</small></label>
+            <label class="appearance-logo-upload">上传 Logo 图片<input type="file" accept="image/png,image/jpeg,image/webp" :disabled="uploading" @change="uploadLogo"  v-permission="{ page: permissionPage, action: 'edit' }"/><small>PNG、JPEG、WebP，最大 5 MB；上传后仍需保存外观。</small></label>
             <div class="appearance-colors">
                 <label v-for="item in [{key:'background',name:'画布底色'},{key:'panelSurface',name:'组件底色'},{key:'accent',name:'区域高光'},{key:'text',name:'主文字色'},{key:'mapBase',name:'中国及区域底色'},{key:'mapMuted',name:'周边弱化底色'},{key:'markerPrimary',name:'位置光束主色'},{key:'markerTip',name:'光束顶端颜色'}]" :key="item.key">
-                    {{ item.name }}<span><input v-model="form[item.key]" type="color"  v-permission="{ page: 'platform.designer', action: 'edit' }"/><input v-model.trim="form[item.key]" pattern="#[0-9a-fA-F]{6}" maxlength="7" required  v-permission="{ page: 'platform.designer', action: 'edit' }"/></span>
+                    {{ item.name }}<span><input v-model="form[item.key]" type="color"  v-permission="{ page: permissionPage, action: 'edit' }"/><input v-model.trim="form[item.key]" pattern="#[0-9a-fA-F]{6}" maxlength="7" required  v-permission="{ page: permissionPage, action: 'edit' }"/></span>
                 </label>
             </div>
-            <label class="appearance-zoom">地图初始镜头倍率 <span><input v-model.number="form.mapZoom" type="range" min="0.8" max="1.5" step="0.01"  v-permission="{ page: 'platform.designer', action: 'edit' }"/>{{ form.mapZoom.toFixed(2) }}×</span><small>仅影响重置视角时的距离；拖拽和滚轮仍可自由调整。</small></label>
+            <label class="appearance-zoom">地图初始镜头倍率 <span><input v-model.number="form.mapZoom" type="range" min="0.8" max="1.5" step="0.01"  v-permission="{ page: permissionPage, action: 'edit' }"/>{{ form.mapZoom.toFixed(2) }}×</span><small>仅影响重置视角时的距离；拖拽和滚轮仍可自由调整。</small></label>
             <div class="appearance-preview" :style="{'--preview-background':levelPreview.background,'--preview-surface':levelPreview.panelSurface,'--preview-accent':levelPreview.accent,'--preview-text':levelPreview.text}"><span class="preview-map">◇</span><div><img v-if="form.logoUrl && normalizeGroupLogoUrl(form.logoUrl)" :src="form.logoUrl" alt="Logo 预览" class="appearance-logo-preview" /><small>{{ form.brandSubtitle }}</small><strong>{{ form.brandTitle }}</strong></div><aside><small>{{ levelPreview.panelTitle }}</small><i></i><i></i><i></i></aside></div>
-            <div class="appearance-toggles"><label><input v-model="form.showBrand" type="checkbox"  v-permission="{ page: 'platform.designer', action: 'edit' }"/>大屏 Logo</label><label><input v-model="form.showFacts" type="checkbox"  v-permission="{ page: 'platform.designer', action: 'edit' }"/>左侧统计</label><label><input v-model="form.showPanel" type="checkbox"  v-permission="{ page: 'platform.designer', action: 'edit' }"/>右侧分布面板</label><label><input v-model="form.showDock" type="checkbox"  v-permission="{ page: 'platform.designer', action: 'edit' }"/>底部概览</label><label><input v-model="form.showHelp" type="checkbox"  v-permission="{ page: 'platform.designer', action: 'edit' }"/>操作说明</label></div>
+            <div class="appearance-toggles"><label><input v-model="form.showBrand" type="checkbox"  v-permission="{ page: permissionPage, action: 'edit' }"/>大屏 Logo</label><label><input v-model="form.showFacts" type="checkbox"  v-permission="{ page: permissionPage, action: 'edit' }"/>左侧统计</label><label><input v-model="form.showPanel" type="checkbox"  v-permission="{ page: permissionPage, action: 'edit' }"/>右侧分布面板</label><label><input v-model="form.showDock" type="checkbox"  v-permission="{ page: permissionPage, action: 'edit' }"/>底部概览</label><label><input v-model="form.showHelp" type="checkbox"  v-permission="{ page: permissionPage, action: 'edit' }"/>操作说明</label></div>
             </details>
             <section class="appearance-level-editor" aria-label="地图分层配置">
                 <div class="appearance-level-heading"><strong>{{ GROUP_MAP_LEVELS.find(item=>item.key===selectedLevel)?.label }}地图画面</strong><span>左侧统计、右侧分布、底部概览和 Logo 可在下方画布中拖动；本层设置仅作用于当前地图。</span></div>
@@ -242,7 +245,7 @@ onUnmounted(() => {
                 </div>
                 <div class="map-component-panel"><strong>本层画面组件</strong><p>点选组件后可拖动或输入精确位置；关闭显示不删除配置。</p>
                     <div v-for="item in mapComponents" :key="item.key" class="map-component-row" :class="{active:selectedComponent===item.key}"><button type="button" @click="selectedComponent=item.key">{{ item.label }}</button><label><input type="checkbox" :checked="levelPreview[item.toggle]" @change="setLevelField(item.toggle,$event.target.checked)" />显示</label></div>
-                    <div class="map-component-copy" v-if="selectedComponent==='brand'"><label>本层大屏标题<input :value="levelPreview.brandTitle" maxlength="60" @change="setLevelField('brandTitle',$event.target.value)" /></label><label>英文副标题<input :value="levelPreview.brandSubtitle" maxlength="80" @change="setLevelField('brandSubtitle',$event.target.value)" /></label><label>本层 Logo 地址<input :value="levelPreview.logoUrl" maxlength="400" placeholder="留空继承通用 Logo" @change="setLevelField('logoUrl',$event.target.value)" /></label><label>上传本层 Logo<input type="file" accept="image/png,image/jpeg,image/webp" :disabled="uploading" @change="uploadLogo($event,'level')"  v-permission="{ page: 'platform.designer', action: 'edit' }"/></label></div>
+                    <div class="map-component-copy" v-if="selectedComponent==='brand'"><label>本层大屏标题<input :value="levelPreview.brandTitle" maxlength="60" @change="setLevelField('brandTitle',$event.target.value)" /></label><label>英文副标题<input :value="levelPreview.brandSubtitle" maxlength="80" @change="setLevelField('brandSubtitle',$event.target.value)" /></label><label>本层 Logo 地址<input :value="levelPreview.logoUrl" maxlength="400" placeholder="留空继承通用 Logo" @change="setLevelField('logoUrl',$event.target.value)" /></label><label>上传本层 Logo<input type="file" accept="image/png,image/jpeg,image/webp" :disabled="uploading" @change="uploadLogo($event,'level')"  v-permission="{ page: permissionPage, action: 'edit' }"/></label></div>
                     <div class="map-component-copy" v-else-if="selectedComponent==='facts'"><label>统计标题<input :value="levelPreview.factsTitle" maxlength="60" @change="setLevelField('factsTitle',$event.target.value)" /></label></div>
                     <div class="map-component-copy" v-else-if="selectedComponent==='panel'"><label>分布栏目标题<input :value="levelPreview.panelTitle" maxlength="60" @change="setLevelField('panelTitle',$event.target.value)" /></label></div>
                     <div class="map-component-copy" v-else><label>站点网络标题<input :value="levelPreview.dockNetworkTitle" maxlength="60" @change="setLevelField('dockNetworkTitle',$event.target.value)" /></label><label>行政区归属标题<input :value="levelPreview.dockLocationTitle" maxlength="60" @change="setLevelField('dockLocationTitle',$event.target.value)" /></label><label>现场配置标题<input :value="levelPreview.dockHierarchyTitle" maxlength="60" @change="setLevelField('dockHierarchyTitle',$event.target.value)" /></label></div>
@@ -276,11 +279,13 @@ onUnmounted(() => {
                 <button type="button" class="appearance-reset-level" @click="resetLevel">本层恢复继承通用配置</button>
             </section>
             <button type="submit" :disabled="busy">{{ busy ? '保存中…':'保存集团首页外观' }}</button><span v-if="message" :class="['appearance-message',{failed}]" role="status">{{ message }}</span>
-        </form>
+        </fieldset>
+    </form>
     </section>
 </template>
 
 <style scoped>
+.appearance-edit-controls{display:contents;border:0;margin:0;padding:0;min-width:0}
 .group-appearance-admin{margin-top:24px;padding:24px;border:1px solid #e4e7ec;border-radius:14px;background:#fff;color:#1d2939}.group-appearance-admin header{display:flex;justify-content:space-between;gap:20px}.group-appearance-admin h3{margin:0 0 7px;font-size:19px}.group-appearance-admin p{margin:0 0 20px;color:#667085;font-size:13px;line-height:1.7}.group-appearance-admin header>span{color:#98a2b3;font-size:10px;letter-spacing:.14em}.appearance-fields,.appearance-colors{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin:15px 0}.appearance-colors{grid-template-columns:repeat(4,minmax(0,1fr))}.group-appearance-admin label{display:grid;gap:7px;color:#475467;font-size:12px}.group-appearance-admin input:not([type=color]):not([type=checkbox]){box-sizing:border-box;min-width:0;width:100%;padding:9px 10px;border:1px solid #d0d5dd;border-radius:7px;background:#fff;color:#1d2939;font:inherit}.appearance-colors label span{display:flex;align-items:center;gap:6px}.appearance-colors input[type=color]{width:36px;height:34px;padding:2px;border:1px solid #d0d5dd;border-radius:6px;background:#fff}.appearance-preview{position:relative;display:flex;align-items:center;justify-content:space-between;gap:25px;min-height:125px;padding:16px 24px;border-radius:10px;overflow:hidden;background:var(--preview-background);color:var(--preview-text)}.appearance-preview:before{position:absolute;inset:0;content:"";background:radial-gradient(circle at 48% 50%,color-mix(in srgb,var(--preview-accent) 20%,transparent),transparent 43%)}.appearance-preview>div,.appearance-preview aside{position:relative;z-index:1;display:grid;gap:7px}.appearance-preview small{font-size:9px;letter-spacing:.12em;opacity:.68}.appearance-preview strong{font-size:16px}.appearance-preview .preview-map{position:absolute;left:43%;top:20%;font-size:75px;color:var(--preview-accent);opacity:.5}.appearance-preview aside{width:125px;padding:13px;background:color-mix(in srgb,var(--preview-surface) 67%,transparent);border:1px solid color-mix(in srgb,var(--preview-accent) 26%,transparent);border-radius:7px}.appearance-preview aside i{height:3px;background:var(--preview-accent);opacity:.3}.appearance-preview aside i:nth-child(3){width:70%}.appearance-preview aside i:nth-child(4){width:42%}.appearance-toggles{display:flex;flex-wrap:wrap;gap:18px;margin:17px 0}.appearance-toggles label{display:flex;align-items:center;gap:6px}.group-appearance-admin button{padding:10px 16px;border:0;border-radius:7px;background:#344054;color:#fff;cursor:pointer}.group-appearance-admin button:disabled{opacity:.5}.appearance-message{margin-left:12px;color:#067647;font-size:12px}.appearance-message.failed{color:#b42318}@media(max-width:900px){.appearance-fields,.appearance-colors{grid-template-columns:repeat(2,minmax(0,1fr))}}
 .appearance-zoom{max-width:390px;margin:16px 0}.appearance-zoom span{display:flex;align-items:center;gap:12px;font-variant-numeric:tabular-nums}.group-appearance-admin .appearance-zoom input[type=range]{width:260px;max-width:100%;padding:0;border:0;accent-color:#6677c3}.appearance-zoom small{color:#98a2b3;font-size:11px}
 .appearance-logo-url{max-width:720px}.appearance-logo-url small{color:#98a2b3;font-size:11px}.appearance-logo-preview{max-width:100px;max-height:38px;object-fit:contain}.appearance-level-editor{margin:24px 0;padding:18px;border:1px solid #e4e7ec;border-radius:12px;background:#f8f9fb}.appearance-level-heading{display:flex;gap:12px;align-items:baseline}.appearance-level-heading strong{font-size:15px}.appearance-level-heading span{font-size:11px;color:#667085}.appearance-level-tabs{display:flex;flex-wrap:wrap;gap:7px;margin:14px 0}.group-appearance-admin .appearance-level-tabs button,.group-appearance-admin .appearance-reset-level{color:#344054;background:#fff;border:1px solid #d0d5dd}.group-appearance-admin .appearance-level-tabs button.active{color:#fff;background:#344054;border-color:#344054}.appearance-level-fields{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}.appearance-level-fields label span{display:flex;gap:6px;align-items:center}.appearance-level-fields input[type=color]{width:36px;height:34px;padding:2px;border:1px solid #d0d5dd;border-radius:6px;background:#fff}.group-appearance-admin .appearance-level-fields input[type=range]{padding:0;border:0;accent-color:#6677c3}.appearance-level-fields small{color:#667085}.group-appearance-admin .appearance-reset-level{margin-bottom:4px}@media(max-width:900px){.appearance-level-fields{grid-template-columns:repeat(2,minmax(0,1fr))}}

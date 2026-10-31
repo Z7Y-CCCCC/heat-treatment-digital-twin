@@ -47,7 +47,7 @@ export function openCustomerOperations({ embedded, surface, webview, router }) {
 
 export function adminUiStateForFocus(state, focus) {
   if (focus !== 'factory-location') return state
-  return { ...state, activeTab: 'platform', platformSubpage: 'scene' }
+  return { ...state, activeTab: 'factories' }
 }
 
 export function canResumeDashboardAfterLogin({ pending, authenticated, permissions } = {}) {

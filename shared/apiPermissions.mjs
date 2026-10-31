@@ -6,8 +6,8 @@ const spatial = ['factories', 'workshops', 'lines', 'devices', 'composer', 'mobi
 export const SETTING_PAGES = {
   data_mode: 'settings.data', simulation_interval_ms: 'settings.data', realtime_stale_ms: 'settings.data',
   native_quality_profile: 'settings.performance', native_environment_config: 'platform.environment',
-  native_dashboard_config: 'platform.designer', loading_experience_config: 'platform.designer',
-  group_portal_config: 'platform.designer', site_scene_config: 'platform.designer',
+  native_dashboard_config: 'platform.designer', loading_experience_config: 'platform.loading',
+  group_portal_config: 'platform.map', site_scene_config: 'platform.designer',
   factory_location: 'factories', factory_directory: 'factories', factory_name: 'factories'
 }
 
@@ -32,7 +32,7 @@ export function apiPermission(path, method = 'GET', body) {
   }
   if (resource('database') || resource('data-sources')) {
     if (safe && path === '/api/data-sources/runtime-values') return read(['points', 'points.alarms', 'point-monitor', 'platform.designer'], true)
-    const pages = ['settings.database', 'platform.designer']
+    const pages = ['settings.database', 'platform.designer', 'platform.map']
     if (safe) return read(pages)
     if (method === 'POST' && /\/(preview|preview-http|inspect-http)$/.test(path)) return read(pages)
     return any('admin', p('settings.database', action))
@@ -84,7 +84,7 @@ export function apiPermission(path, method = 'GET', body) {
   }
   if (resource('plc') || resource('engine/status')) return safe ? read(['points', 'points.alarms', 'point-monitor', 'mobile-devices', 'settings.data'], true) : 'admin'
   if (path === '/api/engine/restart') return any('admin', p('settings.data', 'edit'))
-  if (resource('appearance-assets')) return safe ? read(['platform.designer', 'factories'], true) : any('admin', p('platform.designer', action))
+  if (resource('appearance-assets')) return safe ? read(['platform.designer', 'platform.map', 'platform.loading', 'factories'], true) : any('admin', p('platform.designer', action), p('platform.map', action), p('platform.loading', action))
   if (resource('template-library') || resource('config') || resource('business-data')) return safe ? read(spatial, true) : 'admin'
   if (resource('acceptance-report')) return safe ? read(['models', 'platform.designer']) : 'admin'
   // Preserve existing display audio reads; system speech/control is administrative.

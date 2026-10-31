@@ -14,8 +14,10 @@ export const ADMIN_PAGES = [
   page('points', '点位映射 · PLC 点位映射', { navGroup: 'data', navLabel: '点位映射', icon: 'points', container: 'points', subpage: 'mapping', tabLabel: 'PLC 点位映射', actions: ['view', 'edit', 'delete'] }),
   page('points.alarms', '点位映射 · 报警配置', { container: 'points', subpage: 'alarms', tabLabel: '报警配置' }),
   page('point-monitor', '点位监视', { navGroup: 'data', icon: 'points', actions: ['view'] }),
-  page('platform.designer', '组件配置 · 大屏设计器', { container: 'platform', subpage: 'designer', tabLabel: '大屏设计器', description: '地图分层、Logo、加载画面与场景组件', actions: ['view', 'edit', 'delete', 'publish'] }),
-  page('platform.scene', '组件配置 · 项目与场景', { container: 'platform', subpage: 'scene', tabLabel: '项目与场景', description: '项目归属与场景基础信息' }),
+  page('platform.designer', '组件配置 · 大屏设计器', { container: 'platform', subpage: 'designer', tabLabel: '大屏设计器', description: '多级视角、图层与场景组件', actions: ['view', 'edit', 'delete', 'publish'] }),
+  page('platform.map', '组件配置 · 地图底图与内置模块', { container: 'platform', subpage: 'map', tabLabel: '地图底图与内置模块', description: '地图、Logo、标题与统计模块', migratedFrom: 'platform.designer' }),
+  page('platform.loading', '组件配置 · 加载画面', { container: 'platform', subpage: 'loading', tabLabel: '加载画面', description: '启动图片、配色与加载文案', migratedFrom: 'platform.designer' }),
+  page('platform.scene', '组件配置 · 场景名称（旧入口）', { container: 'platform', subpage: 'scene', retired: true }),
   page('platform.environment', '组件配置 · 场景与光效', { container: 'platform', subpage: 'environment', tabLabel: '场景与光效', description: 'Unity 灯光、后处理、围墙与空间' }),
   page('settings.security', '后台安全（仅管理员）', { container: 'settings', subpage: 'security', tabLabel: '后台安全', description: '后台密码、无操作自动锁定与立即锁定', ownerOnly: true }),
   page('settings.runtime', '系统设置 · 运行与投屏', { container: 'settings', subpage: 'runtime', tabLabel: '运行与投屏', description: '自启动、电视投屏与本地运行服务' }),
@@ -34,7 +36,7 @@ const groups = [
 export const getAdminPageCatalog = () => JSON.parse(JSON.stringify(ADMIN_PAGES))
 export const adminNavPages = (group, pages = ADMIN_PAGES) => pages.filter(p => p.navGroup === group).map(p => ({ ...p, label: p.navLabel || p.label }))
 export const adminMainTabs = (pages = ADMIN_PAGES) => [...adminNavPages('main', pages), ...groups].sort((a, b) => (a.menuOrder || 100) - (b.menuOrder || 100))
-export const adminSubpages = (container, pages = ADMIN_PAGES) => pages.filter(p => p.container === container).map(p => ({ ...p, permissionKey: p.key, key: p.subpage, label: p.tabLabel || p.label }))
+export const adminSubpages = (container, pages = ADMIN_PAGES) => pages.filter(p => p.container === container && !p.retired).map(p => ({ ...p, permissionKey: p.key, key: p.subpage, label: p.tabLabel || p.label }))
 
 export function mergeAdminPageCatalog(pages) {
   if (!Array.isArray(pages) || !pages.length || pages.length > 256) throw new TypeError('页面目录无效')
@@ -49,6 +51,7 @@ export function mergeAdminPageCatalog(pages) {
   const before = JSON.stringify(ADMIN_PAGES)
   for (const source of pages) {
     const value = JSON.parse(JSON.stringify(source)), index = ADMIN_PAGES.findIndex(p => p.key === value.key)
+    if (index >= 0 && ADMIN_PAGES[index].retired) value.retired = true
     if (index < 0) ADMIN_PAGES.push(value)
     else ADMIN_PAGES[index] = value
   }

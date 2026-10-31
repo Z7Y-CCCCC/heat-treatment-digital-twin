@@ -36,9 +36,8 @@ function triangleGlb() {
     const before = await (await page.request.get(info.origin + '/api/models')).json(), customId = info.models[0], builtinId = 'pit_furnace_2_v1';
     const originalDevices = await (await page.request.get(info.origin + '/api/devices')).json();
     await row(customId).locator('td').nth(2).click();
-    const actions = page.locator('.model-selection-actions'); await actions.waitFor();
-    assert.equal(await actions.getByRole('button').count(), 1); assert.equal(await actions.getByRole('button', { name: /优化与验收|拆解检查|部位绑定/ }).count(), 0);
-    assert.ok(await actions.getByRole('button', { name: '保存层级', exact: true }).isVisible());
+    assert.equal(await page.locator('.model-selection-actions').count(), 0);
+    await page.locator('.model-preview-title > span').getByText('井式炉2 · 型号A', { exact: true }).waitFor();
     await page.screenshot({ path: path.join(directory, '01-assets-and-import-action.png'), fullPage: true });
     check('import is a button inside Model Assets, not a step card; the three duplicate lower navigation buttons are removed and legacy import-tab state falls back to assets');
     const codes = await page.locator('.model-id-copy code').allTextContents();
@@ -55,7 +54,6 @@ function triangleGlb() {
     let input = await begin(customId, '  自定义设备型号  '), response = responseFor(customId);
     await input.press('Enter'); const renamed = await response; assert.equal(renamed.status(), 200); assert.deepEqual(renamed.request().postDataJSON(), { name: '自定义设备型号' });
     await row(customId).getByRole('status', { name: '模型名称已保存' }).waitFor();
-    await actions.getByText('自定义设备型号', { exact: true }).waitFor();
     assert.equal(await page.locator('.model-preview-title > span').textContent(), '自定义设备型号');
     const after = await (await page.request.get(info.origin + '/api/models')).json(); assert.deepEqual(after.find(m => m.id === customId), { ...before.find(m => m.id === customId), name: '自定义设备型号' });
     check('row names save with Enter via a name-only request; list, selection and preview update without changing IDs, files, bindings or metadata');

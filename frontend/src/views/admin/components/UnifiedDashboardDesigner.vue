@@ -1,26 +1,22 @@
 <script setup>
-import { computed, nextTick, ref } from 'vue'
+import { computed, ref } from 'vue'
 import { GROUP_MAP_LEVELS } from '../../../runtime/groupPortalAppearance.js'
-import GroupPortalSettings from './GroupPortalSettings.vue'
 import DashboardDesigner from './DashboardDesigner.vue'
-import LoadingExperienceSettings from './LoadingExperienceSettings.vue'
 import FactorySiteSceneSettings from './FactorySiteSceneSettings.vue'
 
-const emit = defineEmits(['reload', 'preview-view', 'open-data-sources'])
+const emit = defineEmits(['reload', 'preview-view', 'edit-map-module'])
 const activeSurface = ref('world')
 const siteViewId = ref('site_street')
 const dashboardDesigner = ref(null)
-const mapBaseSettings = ref(null)
-const groupPortalSettings = ref(null)
 const siteSceneSettings = ref(null)
-const loadingSettings = ref(null)
 defineExpose({
     savePending: async () => {
-        for (const editor of [dashboardDesigner.value, groupPortalSettings.value, siteSceneSettings.value, loadingSettings.value])
+        for (const editor of [dashboardDesigner.value, siteSceneSettings.value])
             await editor?.savePending?.()
         return true
     },
-    discardPending: () => dashboardDesigner.value?.discardPending?.()
+    discardPending: () => dashboardDesigner.value?.discardPending?.(),
+    setMapAppearance: value => dashboardDesigner.value?.setMapAppearance(value)
 })
 const showingMap = computed(() => GROUP_MAP_LEVELS.some(level=>level.key===activeSurface.value))
 const showingSite = computed(() => activeSurface.value==='site')
@@ -34,21 +30,16 @@ function syncSurface(viewId) {
     else if (String(viewId).startsWith('site_')) { siteViewId.value = viewId; activeSurface.value = 'site' }
     else activeSurface.value = 'factory'
 }
-async function editMapModule(key) {
-    if (!showingMap.value) return
-    mapBaseSettings.value.open = true
-    await nextTick()
-    groupPortalSettings.value?.selectComponent(key)
-    mapBaseSettings.value?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+function editMapModule(key) {
+    if (showingMap.value) emit('edit-map-module', { key, level: activeSurface.value })
 }
-function mapSettingsSaved(value) { dashboardDesigner.value?.setMapAppearance(value) }
 </script>
 
 <template>
     <section class="unified-dashboard-designer" aria-label="大屏画面设计器">
         <header class="unified-designer-header">
             <div><strong>大屏画面设计器</strong><small>01–07 共用组件库与自由画布。地图标题、统计、分布面板和底部摘要已列入图层；点击图层可直接打开该模块设置。</small></div>
-            <div class="unified-designer-actions"><span>MAP → SITE → WORKSHOP → LINE → DEVICE</span><button type="button" @click="emit('open-data-sources')">配置外部数据连接 ↗</button></div>
+            <div class="unified-designer-actions"><span>MAP → SITE → WORKSHOP → LINE → DEVICE</span></div>
         </header>
         <nav class="unified-designer-views" role="tablist" aria-label="选择大屏视角">
             <button v-for="(level,index) in GROUP_MAP_LEVELS" :key="level.key" type="button" role="tab" :aria-selected="activeSurface===level.key" :class="{active:activeSurface===level.key}" @click="selectSurface(level.key)"><i>{{ String(index+1).padStart(2,'0') }}</i>{{ level.label }}地图</button>
@@ -58,9 +49,7 @@ function mapSettingsSaved(value) { dashboardDesigner.value?.setMapAppearance(val
         <div class="unified-factory-workspace" role="tabpanel" aria-label="统一画面组件编辑">
             <DashboardDesigner ref="dashboardDesigner" :initial-view-id="designerViewId" @reload="emit('reload')" @preview-view="value=>emit('preview-view',value)" @view-change="syncSurface" @edit-map-module="editMapModule" />
         </div>
-        <details v-if="showingMap" ref="mapBaseSettings" class="unified-base-settings"><summary>地图底图与内置模块 <span>标题、统计、分布面板和底部摘要可调整位置、显隐和数据</span></summary><GroupPortalSettings ref="groupPortalSettings" :active-level="activeSurface" designer-mode @saved="mapSettingsSaved" /></details>
         <details v-if="showingSite" class="unified-base-settings"><summary>街道与工厂建筑底层配置 <span>背景、建筑展示顺序、光标与悬停效果</span></summary><FactorySiteSceneSettings ref="siteSceneSettings" /></details>
-        <details class="unified-loading-settings"><summary>加载画面 <span>启动页和大屏载入共用方案，可单独切换图片、颜色与文案</span></summary><LoadingExperienceSettings ref="loadingSettings" /></details>
     </section>
 </template>
 

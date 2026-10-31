@@ -30,6 +30,12 @@ test('one registration feeds navigation, nested tabs and the authorization matri
   assert.equal(new Set(PAGE_PERMISSIONS.map(p => p.key)).size, PAGE_PERMISSIONS.length)
 })
 
+test('map modules and loading are separate tabs; the retired identity tab remains compatible but hidden', () => {
+  assert.deepEqual(adminSubpages('platform').map(p => p.key), ['designer', 'map', 'loading', 'environment'])
+  assert.equal(ADMIN_PAGES.find(p => p.key === 'platform.scene').retired, true)
+  assert.equal(normalizePagePermissions({ 'platform.scene': { view: true, edit: true } })['platform.scene'].edit, true)
+})
+
 test('catalog refresh registers new tabs without granting new access or dropping existing grants', async t => {
   fixture(t)
   t.mock.method(window, 'fetch', async (url, options) => {

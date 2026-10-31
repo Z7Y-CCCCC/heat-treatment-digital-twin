@@ -77,7 +77,7 @@ test('factory location focus overrides only the destination and preserves other 
   const stored = { activeTab: 'models', platformSubpage: 'designer', selectedDeviceForPoints: 'device-a' }
   const focused = adminUiStateForFocus(stored, 'factory-location')
 
-  assert.deepEqual(focused, { activeTab: 'platform', platformSubpage: 'scene', selectedDeviceForPoints: 'device-a' })
+  assert.deepEqual(focused, { activeTab: 'factories', platformSubpage: 'designer', selectedDeviceForPoints: 'device-a' })
   assert.deepEqual(stored, { activeTab: 'models', platformSubpage: 'designer', selectedDeviceForPoints: 'device-a' })
   assert.equal(adminUiStateForFocus(stored, 'unknown'), stored)
 })

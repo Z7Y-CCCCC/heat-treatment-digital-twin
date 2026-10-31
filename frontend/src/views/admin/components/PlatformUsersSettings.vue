@@ -193,7 +193,7 @@ function roleLabel(role) {
 
 function permissionSummary(user) {
   return [...permissionChoices.filter(choice => user.permissions?.[choice.key]).map(choice => choice.label),
-    ...pages.value.filter(page => user.pagePermissions?.[page.key]?.view).map(page => page.label)]
+    ...pages.value.filter(page => !page.retired && user.pagePermissions?.[page.key]?.view).map(page => page.label)]
 }
 
 onMounted(() => {
@@ -260,7 +260,7 @@ onUnmounted(() => {
                 </div>
                 <div class="page-permission-scroll"><table class="page-permission-table">
                   <thead><tr><th>页面</th><th v-for="action in pageActions" :key="action">{{ PAGE_ACTIONS[action] }}</th></tr></thead>
-                  <tbody><tr v-for="page in pages" :key="page.key">
+                  <tbody><tr v-for="page in pages.filter(item => !item.retired)" :key="page.key">
                     <th scope="row">{{ page.label }}</th>
                     <td v-for="action in pageActions" :key="action">
                       <input v-if="page.actions.includes(action)" v-model="editor.pagePermissions[page.key][action]" type="checkbox"

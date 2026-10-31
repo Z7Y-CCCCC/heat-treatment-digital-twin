@@ -57,6 +57,9 @@ import ManualDisassemblyLayout from './admin/components/ManualDisassemblyLayout.
 import { useManualDisassemblyPage } from './admin/composables/useManualDisassemblyPage.js'
 import ModelInspectionEditor from './admin/components/ModelInspectionEditor.vue'
 import ModelNameEditor from './admin/components/ModelNameEditor.vue'
+import ModelPlacementMenu from './admin/components/ModelPlacementMenu.vue'
+import GroupPortalSettings from './admin/components/GroupPortalSettings.vue'
+import LoadingExperienceSettings from './admin/components/LoadingExperienceSettings.vue'
 import ModelInspectionPreviewOverlay from './admin/components/ModelInspectionPreviewOverlay.vue'
 import AssetHierarchyBar from './admin/components/AssetHierarchyBar.vue'
 import { InspectionPreview, inspectionCameraPose } from '../runtime/InspectionPreview.js'
@@ -105,7 +108,7 @@ const PLATFORM_SUBPAGES = computed(() => adminSubpages('platform', adminPageCata
 const POINTS_SUBPAGES = computed(() => adminSubpages('points', adminPageCatalog.value))
 const SETTINGS_SUBPAGES = computed(() => adminSubpages('settings', adminPageCatalog.value))
 const visibleSettingsSubpages = computed(() => SETTINGS_SUBPAGES.value.filter(page => canAdminPage(page.permissionKey)))
-const visiblePlatformSubpages = computed(() => PLATFORM_SUBPAGES.value.filter(page => canAdminPage(page.permissionKey)))
+const visiblePlatformSubpages = computed(() => PLATFORM_SUBPAGES.value.filter(page => canAdminPage(page.permissionKey) || page.key === 'designer' && canAdminPage('platform.scene')))
 const visiblePointsSubpages = computed(() => POINTS_SUBPAGES.value.filter(page => canAdminPage(page.permissionKey)))
 function canSelectTab(key) {
     if (key === 'platform') return visiblePlatformSubpages.value.length > 0
@@ -129,7 +132,7 @@ const currentPermissionPage = computed(() => activeTab.value === 'platform' ? `p
 const controlPermissionPage = computed(() => currentPermissionPage.value === 'settings.license' ? 'settings.security' : currentPermissionPage.value)
 // Saved tab/focus state is navigation data, never an authorization grant.
 watch([() => adminSession.pagePermissions, adminPageCatalog], () => {
-    if (!canAdminPage(`platform.${platformSubpage.value}`)) platformSubpage.value = visiblePlatformSubpages.value[0]?.key || ''
+    if (!visiblePlatformSubpages.value.some(page => page.key === platformSubpage.value)) platformSubpage.value = visiblePlatformSubpages.value[0]?.key || ''
     if (!canAdminPage(`settings.${settingsSubpage.value}`)) settingsSubpage.value = visibleSettingsSubpages.value[0]?.key || ''
     if (!visiblePointsSubpages.value.some(page => page.key === pointsSubpage.value)) pointsSubpage.value = visiblePointsSubpages.value[0]?.key || ''
     if (!canSelectTab(activeTab.value)) activeTab.value = [...new Set(adminPageCatalog.value.map(page => page.container || page.key))].find(canSelectTab) || ''
@@ -156,7 +159,7 @@ async function pointsTabKeydown(event) {
 }
 
 async function selectPlatformSubpage(key) {
-    if (!canAdminPage(`platform.${key}`)) return
+    if (!visiblePlatformSubpages.value.some(page => page.key === key)) return
     platformSubpage.value = key
     await nextTick()
     adminContentRef.value?.scrollTo({ top: 0, behavior: 'smooth' })
@@ -190,6 +193,17 @@ const navIconPaths = {
 
 const { appDialog, openAppDialog, closeAppDialog, alert, confirm } = useAppDialog()
 const unifiedDesignerRef = ref(null)
+const mapSettingsRef = ref(null), loadingSettingsRef = ref(null), modelPlacementMenuRef = ref(null)
+const mapSettingsLevel = ref('world')
+const visitedPlatformSubpages = ref(new Set([platformSubpage.value]))
+watch(platformSubpage, key => { visitedPlatformSubpages.value = new Set([...visitedPlatformSubpages.value, key]) })
+async function openMapModule({ key, level }) {
+    if (!canAdminPage('platform.map')) return
+    mapSettingsLevel.value = level
+    await selectPlatformSubpage('map')
+    mapSettingsRef.value?.selectComponent?.(key, level)
+}
+
 const mobileMotionRef = ref(null)
 const manualDisassemblyRef = ref(null)
 let factorySwitchApproved = false
@@ -220,6 +234,8 @@ async function requestFactorySwitch({ factoryName }) {
         if (!await manualDisassemblyPage.savePending()) throw new Error(manualDisassemblyStatus.value || '拆解布局未保存')
         await saveCurrentFactoryPageDrafts()
         await unifiedDesignerRef.value?.savePending?.()
+        await mapSettingsRef.value?.savePending?.()
+        await loadingSettingsRef.value?.savePending?.()
         await saveFactoryDrafts(currentFactoryId, {
             setting: async ({ key, value }) => {
                 const result = await adminApi.saveSettings({ [key]: value })
@@ -3558,24 +3574,41 @@ function applyModelName({ id, name }) {
     }
 }
 
-async function saveModelPlacement() {
-    const model = activePreviewModel.value
-    if (!model || modelPlacementSaving.value || modelNameSaving.value) return
-    if (isEnvironmentModel(model) && modelPlacementDraft.value !== 'factory') {
-        return alert('工厂环境模型只能归类为工厂级。')
-    }
+async function openModelPlacementMenu(model, event) {
+    if (event.target?.closest?.('input, textarea, select, [contenteditable="true"]')) return
+    if (!canAdminPage('models', 'edit') || modelPlacementSaving.value || modelNameSaving.value || modelUploading.value || modelBindingSaving.value) return
+    event.preventDefault()
+    const point = { clientX: event.clientX, clientY: event.clientY }
+    event.currentTarget?.focus?.({ preventScroll: true })
+    const pending = previewExistingModel(model)
+    await nextTick()
+    if (selectedPreviewModelId.value !== model.id) await pending
+    if (selectedPreviewModelId.value === model.id) modelPlacementMenuRef.value?.open?.(model, point)
+}
+function openModelMenuFromKeyboard(model, event) {
+    if (event.key !== 'ContextMenu' && !(event.key === 'F10' && event.shiftKey)) return
+    const box = event.currentTarget.getBoundingClientRect()
+    openModelPlacementMenu(model, { clientX: box.left + 30, clientY: box.top + box.height, currentTarget: event.currentTarget, preventDefault: () => event.preventDefault() })
+}
+const modelPlacementFeedback = ref('')
+async function saveModelPlacement({ id, level }) {
+    const model = models.value.find(row => row.id === id)
+    if (!canAdminPage('models', 'edit') || !model || modelPlacementSaving.value || modelNameSaving.value || modelBindingSaving.value || modelUploading.value || !modelLevelLabels[level]) return
+    if (isEnvironmentModel(model) && level !== 'factory') return alert('工厂环境模型只能归类为工厂级。')
+    if (level === (model.placement_level || 'device')) return
     if (model.factory_id === null && !await confirm('这是集团共享模型，调整适用层级会影响所有工厂。确定继续吗？')) return
     modelPlacementSaving.value = true
+    modelPlacementFeedback.value = '正在保存层级…'
     try {
-        const result = await adminApi.updateModel(model.id, { placement_level: modelPlacementDraft.value })
-        if (result?.error) throw new Error(result.error)
-        await loadModels()
-        modelBindingStatus.value = `已归类为${modelLevelLabels[modelPlacementDraft.value]}级模型`
-    } catch (e) {
-        await alert(`保存模型层级失败：${e.message || e}`, { title: '保存失败', type: 'danger' })
-    } finally {
-        modelPlacementSaving.value = false
-    }
+        const result = await adminApi.updateModel(id, { placement_level: level })
+        if (result?.error || !result?.success) throw new Error(result?.error || '后端未确认层级保存')
+        model.placement_level = result.model?.placement_level || level
+        if (selectedPreviewModelId.value === id) modelPlacementDraft.value = model.placement_level
+        modelPlacementFeedback.value = `已改为${modelLevelLabels[model.placement_level]}级`
+    } catch (error) {
+        modelPlacementFeedback.value = ''
+        await alert(error.message || '保存失败', { title: '模型层级保存失败', type: 'danger' })
+    } finally { modelPlacementSaving.value = false }
 }
 
 async function deleteModel(id) {
@@ -4600,13 +4633,6 @@ async function selectAdminTab(tabKey) {
     resizeComposerPreviewAfterLayout()
 }
 
-async function openDesignerDataSources() {
-    settingsSubpage.value = 'database'
-    isExternalDataSourcesOpen.value = true
-    selectAdminTab('settings')
-    await nextTick()
-    document.querySelector('.external-data-source-manager')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-}
 
 function toggleComposerPreviewWide() {
     isComposerPreviewWide.value = !isComposerPreviewWide.value
@@ -4929,6 +4955,8 @@ watch([workshops, lines, devices, models], () => {
 watch(modelInspection, scheduleInspectionDraftPreview, { deep: true })
 
 watch(activeTab, async (tab) => {
+    modelPlacementMenuRef.value?.close?.()
+    if (tab !== 'platform') visitedPlatformSubpages.value = new Set([platformSubpage.value])
     if (tab !== 'lines') cancelLineDeviceDrag()
     if (tab === 'disassembly-layout') await manualDisassemblyPage.ensureSelection()
     if (tab === 'composer') {
@@ -8393,6 +8421,7 @@ async function openAdminSetupStep(step) {
 
                 <!-- ======== 模型库 ======== -->
                 <div v-if="activeTab === 'models'" class="tab-content">
+                    <ModelPlacementMenu ref="modelPlacementMenuRef" :busy="modelPlacementSaving || modelNameSaving || modelUploading" @change="saveModelPlacement" />
                     <h2>3D 模型库</h2>
                     <p class="desc">管理模型资产、优化验收与部位绑定。</p>
 
@@ -8424,6 +8453,7 @@ async function openAdminSetupStep(step) {
                                 <div class="model-step-heading">
                                     <div><h3>模型资产</h3></div>
                                     <div class="model-asset-heading-actions">
+                                        <span v-if="modelPlacementFeedback" role="status">{{ modelPlacementFeedback }}</span>
                                         <span>{{ visibleModels.length }} / {{ models.length }} 个模型</span>
                                         <button type="button" class="btn btn-primary" :disabled="modelUploading || modelBindingSaving || modelNameSaving" @click="modelFileInputRef?.click()" v-permission="{ page: 'models', action: 'edit' }">导入模型</button>
                                     </div>
@@ -8470,7 +8500,8 @@ async function openAdminSetupStep(step) {
                                             v-for="m in visibleModels"
                                             :key="m.id"
                                             :class="{ active: selectedPreviewModelId === m.id }"
-                                            :data-model-id="m.id"
+                                            :data-model-id="m.id" tabindex="0" :aria-selected="selectedPreviewModelId === m.id"
+                                            @contextmenu="openModelPlacementMenu(m, $event)" @keydown="openModelMenuFromKeyboard(m, $event)"
                                             @click="previewExistingModel(m)"
                                         >
                                             <td><button type="button" class="model-id-copy" :aria-label="`复制完整模型 ID：${m.id}`" :title="`${m.id}（点击复制完整 ID）`" @click.stop="copyModelId(m.id)"><code>{{ modelDisplayIds.get(m.id) }}</code><span v-if="copiedModelId === m.id" role="status" aria-label="模型 ID 已复制">✓</span></button></td>
@@ -8488,20 +8519,6 @@ async function openAdminSetupStep(step) {
                                     </tbody>
                                 </table>
                             </div>
-                                <div v-if="activePreviewModel" class="model-selection-actions">
-                                    <div>
-                                        <span>当前模型</span>
-                                        <strong>{{ activePreviewModel.name || activePreviewModel.id }}</strong>
-                                        <small v-if="activePreviewIsEnvironment" class="model-environment-note">环境模型 · 仅用于工厂总览，不参与拆解、点位绑定或 PLC 动画</small>
-                                    </div>
-                                    <label style="display:flex;align-items:center;gap:6px;white-space:nowrap">适用层级
-                                        <select v-model="modelPlacementDraft" class="input" :disabled="activePreviewIsEnvironment || modelPlacementSaving || modelNameSaving" style="width:95px" v-permission="{ page: controlPermissionPage, action: 'edit' }">
-                                            <option v-for="(label, level) in modelLevelLabels" :key="level" :value="level">{{ label }}级</option>
-                                        </select>
-                                    </label>
-                                    <button v-if="!activePreviewIsEnvironment" class="btn" type="button" :disabled="modelPlacementSaving || modelNameSaving || modelPlacementDraft === (activePreviewModel.placement_level || 'device')" @click="saveModelPlacement" v-permission="{ page: controlPermissionPage, action: 'edit' }">保存层级</button>
-                                    <span v-if="activePreviewIsEnvironment" class="model-environment-badge">静态环境资产</span>
-                                </div>
                             </section>
 
                             <section v-if="activePreviewModel && !activePreviewIsEnvironment" v-show="modelLibraryStep === 'optimization'" class="model-asset-governance model-library-step-panel">
@@ -8821,7 +8838,7 @@ async function openAdminSetupStep(step) {
                 <!-- ======== 画面组件配置 ======== -->
                 <div v-if="activeTab === 'platform'" class="tab-content">
                     <h2>画面组件配置</h2>
-                    <p class="desc">在设计器中配置地图分层、Logo、加载画面以及工厂到设备的场景组件；项目与场景页只保留基础身份信息。</p>
+                    <p class="desc">配置画面、地图、加载画面与场景光效。</p>
 
                     <div class="secondary-page-nav-shell">
                         <nav class="secondary-page-nav" aria-label="画面组件设置分类">
@@ -8844,25 +8861,21 @@ async function openAdminSetupStep(step) {
                         </nav>
                     </div>
 
-                    <div v-show="platformSubpage === 'designer'" class="secondary-page-panel secondary-page-panel-designer">
-                        <UnifiedDashboardDesigner ref="unifiedDesignerRef" @reload="loadPlatform" @preview-view="handleDashboardViewPreview" @open-data-sources="openDesignerDataSources" />
+                    <div v-if="visitedPlatformSubpages.has('designer') && (canAdminPage('platform.designer') || canAdminPage('platform.scene'))" v-show="platformSubpage === 'designer'" class="secondary-page-panel secondary-page-panel-designer">
+                        <details v-if="platform.activeScene && canAdminPage('platform.scene')" class="designer-scene-info">
+                            <summary>场景信息</summary>
+                            <div><label>项目名称<input :value="platform.activeProject?.name" disabled class="input" /></label><label>场景名称<input v-model="platform.activeScene.name" class="input" v-permission="{ page: 'platform.scene', action: 'edit' }" /></label><button type="button" class="btn btn-sm" @click="saveActiveScene" v-permission="{ page: 'platform.scene', action: 'edit' }">保存名称</button></div>
+                        </details>
+                        <UnifiedDashboardDesigner v-if="canAdminPage('platform.designer')" ref="unifiedDesignerRef" @reload="loadPlatform" @preview-view="handleDashboardViewPreview" @edit-map-module="openMapModule" />
+                    </div>
+                    <div v-if="visitedPlatformSubpages.has('map') && canAdminPage('platform.map')" v-show="platformSubpage === 'map'" class="secondary-page-panel" data-testid="platform-map-panel">
+                        <GroupPortalSettings ref="mapSettingsRef" :active-level="mapSettingsLevel" permission-page="platform.map" @saved="unifiedDesignerRef?.setMapAppearance?.($event)" />
+                    </div>
+                    <div v-if="visitedPlatformSubpages.has('loading') && canAdminPage('platform.loading')" v-show="platformSubpage === 'loading'" class="secondary-page-panel" data-testid="platform-loading-panel">
+                        <LoadingExperienceSettings ref="loadingSettingsRef" />
                     </div>
 
-                    <div v-show="platformSubpage === 'scene'" v-if="platform.activeProject" class="settings-section secondary-page-panel">
-                        <h3 class="section-title">项目与当前场景</h3>
-                        <p class="scene-basic-note">这里只管理场景的基础身份信息。大屏名称、主题和多级视角请在“大屏设计器”中配置；灯光与环境请在“场景与光效”中配置。</p>
-                        <div class="settings-grid" v-if="platform.activeScene">
-                            <label>项目名称
-                                <input :value="platform.activeProject.name" disabled class="input" />
-                            </label>
-                            <label>场景名称
-                                <input v-model="platform.activeScene.name" class="input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/>
-                            </label>
-                        </div>
-                        <button @click="saveActiveScene" class="btn btn-primary" style="margin-top:16px;" v-permission="{ page: controlPermissionPage, action: 'edit' }">保存场景名称</button>
-                    </div>
-
-                    <div v-show="platformSubpage === 'environment'" class="secondary-page-panel">
+                    <div v-if="visitedPlatformSubpages.has('environment') && canAdminPage('platform.environment')" v-show="platformSubpage === 'environment'" class="secondary-page-panel">
                         <NativeEnvironmentSettings
                             :config="nativeEnvironmentConfig"
                             :saving="nativeEnvironmentSaving"
@@ -13677,6 +13690,10 @@ button:enabled:active {
 .model-asset-heading-actions > span { color: #7b879a; font-size: 11px; }
 .model-pending-import { margin-bottom: 18px; }
 .model-pending-import > .model-file-chip { display: inline-block; margin-bottom: 12px; }
+.designer-scene-info { margin: 0 0 10px; color: #748094; font-size: 12px; }
+.designer-scene-info summary { width: max-content; margin-left: auto; cursor: pointer; }
+.designer-scene-info > div { display: flex; align-items: end; justify-content: flex-end; gap: 10px; padding: 10px 0; }
+.designer-scene-info label { display: grid; gap: 5px; }
 .model-selection-actions { display: flex; align-items: center; justify-content: flex-end; gap: 9px; margin-top: 14px; padding: 12px; background: #f7f7f9; border: 1px solid rgba(0, 0, 0, .055); border-radius: 10px; }
 .model-selection-actions > div { display: flex; min-width: 0; margin-right: auto; flex-direction: column; gap: 2px; }
 .model-selection-actions span { color: #86868b; font-size: 10px; }
