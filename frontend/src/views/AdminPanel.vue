@@ -130,6 +130,32 @@ const activeTab = ref(storedAdminUiState.activeTab || 'composer')
 const isModelWorkspace = computed(() => ['models', 'model-animations'].includes(activeTab.value))
 const platformSubpage = ref(restoreSubpage(storedAdminUiState.platformSubpage, PLATFORM_SUBPAGES.value, 'designer'))
 const settingsSubpage = ref(restoreSubpage(storedAdminUiState.settingsSubpage, SETTINGS_SUBPAGES.value, 'runtime'))
+const databaseSection = ref('primary')
+const databaseSectionTabs = [
+    { key: 'primary', label: '主库连接' },
+    { key: 'sources', label: '外部数据源' },
+    { key: 'schedule', label: '自动备份' },
+    { key: 'history', label: '备份记录与保留' },
+    { key: 'site', label: '整站灾备' }
+]
+function selectDatabaseSection(key) {
+    if (!databaseSectionTabs.some(tab => tab.key === key)) return
+    databaseSection.value = key
+    if (key === 'sources') isExternalDataSourcesOpen.value = true
+}
+async function databaseTabKey(event, index) {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
+    event.preventDefault()
+    const count = databaseSectionTabs.length
+    const next = event.key === 'Home' ? 0 : event.key === 'End' ? count - 1
+        : (index + (event.key === 'ArrowRight' ? 1 : -1) + count) % count
+    selectDatabaseSection(databaseSectionTabs[next].key)
+    await nextTick()
+    const tab = document.getElementById(`database-tab-${databaseSection.value}`)
+    tab?.focus({ preventScroll: true })
+    tab?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+}
+
 const pointsSubpage = ref(restoreSubpage(storedAdminUiState.pointsSubpage, POINTS_SUBPAGES.value, 'mapping'))
 const currentPermissionPage = computed(() => activeTab.value === 'platform' ? `platform.${platformSubpage.value}`
     : activeTab.value === 'settings' ? `settings.${settingsSubpage.value}`
@@ -9812,7 +9838,7 @@ async function openAdminSetupStep(step) {
                 </div>
 
                 <!-- ======== 系统设置 ======== -->
-                <div v-if="activeTab === 'settings'" class="tab-content">
+                <div v-if="activeTab === 'settings'" class="tab-content" :class="{ 'settings-data-workspace': settingsSubpage === 'database' }">
                     <h2>系统设置</h2>
                     <p class="desc">配置运行、数据连接和系统维护。</p>
 
@@ -9842,7 +9868,7 @@ async function openAdminSetupStep(step) {
                     <ProjectMigrationSettings v-if="settingsSubpage === 'migration' && canAdminPage('settings.migration')" />
 
                     <!-- 引擎运行状态 -->
-                    <div v-if="settingsSubpage !== 'migration'" class="engine-status-card" :class="'status-' + engineStatus.plcStatus?.status">
+                    <div v-if="!['migration', 'database'].includes(settingsSubpage)" class="engine-status-card" :class="'status-' + engineStatus.plcStatus?.status">
                         <div class="engine-status-header">
                             <span class="engine-dot"></span>
                             <strong>数据引擎状态</strong>
@@ -9904,6 +9930,13 @@ async function openAdminSetupStep(step) {
 
                         <!-- ===== 数据库部署配置 ===== -->
                         <div v-show="settingsSubpage === 'database'" class="settings-section secondary-page-panel">
+                            <nav class="database-section-tabs" role="tablist" aria-label="数据连接与备份分类">
+                                <button v-for="(tab, index) in databaseSectionTabs" :id="`database-tab-${tab.key}`" :key="tab.key"
+                                    type="button" role="tab" :aria-selected="databaseSection === tab.key"
+                                    :aria-controls="`database-panel-${tab.key}`" :tabindex="databaseSection === tab.key ? 0 : -1"
+                                    @click="selectDatabaseSection(tab.key)" @keydown="databaseTabKey($event, index)">{{ tab.label }}</button>
+                            </nav>
+                            <section v-show="databaseSection === 'primary'" id="database-panel-primary" role="tabpanel" aria-labelledby="database-tab-primary">
                             <h3 class="section-title">主业务数据库</h3>
                             <div class="settings-grid">
                                 <label>数据库类型
@@ -9954,7 +9987,8 @@ async function openAdminSetupStep(step) {
                                 </span>
                             </div>
 
-                            <div class="external-data-source-manager" :class="{ open: isExternalDataSourcesOpen }">
+                            </section>
+                            <div v-show="databaseSection === 'sources'" id="database-panel-sources" role="tabpanel" aria-labelledby="database-tab-sources" class="external-data-source-manager" :class="{ open: isExternalDataSourcesOpen }">
                                 <div class="external-data-source-heading">
                                     <button
                                         type="button"
@@ -10067,11 +10101,11 @@ async function openAdminSetupStep(step) {
                                 <p v-if="dataSourceMessage" class="external-data-source-message" role="status" aria-live="polite">{{ dataSourceMessage }}</p>
                             </div>
 
-                            <div class="database-backup-panel database-auto-backup-panel">
+                            <div v-show="databaseSection === 'schedule'" id="database-panel-schedule" role="tabpanel" aria-labelledby="database-tab-schedule" class="database-backup-panel database-auto-backup-panel">
                                 <div class="database-backup-header">
                                     <div>
-                                        <strong>数据库自动压缩备份（仅防断电或数据库损坏）</strong>
-                                        <p>先选择需要保护的数据库，再分别决定软件启动、持续运行和正常退出时是否生成备份；默认全部开启。</p>
+                                        <strong>自动备份</strong>
+                                        <p>选择数据库，设置备份时机与间隔。</p>
                                     </div>
                                     <button type="button" class="btn" :disabled="dataSourceBackupBusy" @click="runSelectedDatabaseBackups()">立即备份已选</button>
                                 </div>
@@ -10123,11 +10157,11 @@ async function openAdminSetupStep(step) {
                                 <p v-if="dataSourceBackupStatus.lastError" class="database-recovery-notice">最近自动备份存在失败：{{ dataSourceBackupStatus.lastError.error }}</p>
                             </div>
 
-                            <div v-if="databaseBackupStatus.supported" class="database-backup-panel">
+                            <div v-if="databaseBackupStatus.supported" v-show="databaseSection === 'history'" id="database-panel-history" role="tabpanel" aria-labelledby="database-tab-history" class="database-backup-panel">
                                 <div class="database-backup-header">
                                     <div>
                                         <strong>主业务数据库备份与恢复</strong>
-                                        <p>{{ databaseBackupStatus.type === 'mysql' ? '使用一致性 mysqldump 并 gzip 压缩。' : '使用 SQLite 一致性文件备份。' }}启动、持续运行和正常退出规则由上方分别控制。</p>
+                                        <p>查看、下载或恢复备份；执行时机在“自动备份”标签中设置。</p>
                                     </div>
                                     <button @click="runSelectedDatabaseBackups('primary')" class="btn" :disabled="databaseBackupBusy || dataSourceBackupBusy">立即备份主库</button>
                                 </div>
@@ -10197,7 +10231,7 @@ async function openAdminSetupStep(step) {
                                 </p>
                                 <p v-if="databaseBackupMessage" class="database-backup-message">{{ databaseBackupMessage }}</p>
                                 <p class="database-local-only-notice">
-                                    这些备份仍保存在当前电脑内，电脑丢失或硬盘损坏时无法使用；整机灾难请使用下方“整站灾备”。
+                                    本机备份无法防止整机丢失；请在“整站灾备”标签中设置外部备份。
                                 </p>
                                 <div class="database-backup-list">
                                     <div v-for="backup in databaseBackupStatus.backups" :key="backup.filename" class="database-backup-row">
@@ -10215,13 +10249,13 @@ async function openAdminSetupStep(step) {
                                     <div v-if="databaseBackupStatus.backups.length === 0" class="empty-hint">暂无备份</div>
                                 </div>
                             </div>
-                            <div v-else-if="databaseConfig.type === 'mysql'" class="database-backup-panel">
+                            <div v-else v-show="databaseSection === 'history'" id="database-panel-history" role="tabpanel" aria-labelledby="database-tab-history" class="database-backup-panel">
                                 <p class="database-local-only-notice">
-                                    MySQL 已连接，但未找到 mysqldump/mysql 客户端工具，自动备份暂不可用。请安装 MySQL 客户端工具，或在服务环境配置 MYSQLDUMP_PATH、MYSQL_CLIENT_PATH 后重启软件。
+                                    未检测到可用的备份工具，请检查当前数据库及备份服务配置。
                                 </p>
                             </div>
 
-                            <div v-if="siteBackupStatus.supported" class="site-backup-panel">
+                            <div v-if="siteBackupStatus.supported" v-show="databaseSection === 'site'" id="database-panel-site" role="tabpanel" aria-labelledby="database-tab-site" class="site-backup-panel">
                                 <div class="site-backup-header">
                                     <div>
                                         <strong>整站灾备（防电脑丢失）</strong>
@@ -10272,6 +10306,7 @@ async function openAdminSetupStep(step) {
                                     </button>
                                 </div>
                             </div>
+                            <p v-if="databaseSection === 'site' && !siteBackupStatus.supported" id="database-panel-site" role="tabpanel" aria-labelledby="database-tab-site" class="empty-hint">当前整站灾备服务不可用。</p>
                         </div>
 
                         <!-- ===== 运行与投屏 ===== -->
@@ -10357,16 +10392,14 @@ async function openAdminSetupStep(step) {
                                 </div>
                                 <div v-else class="cast-empty">
                                     <strong>还没有搜到电视</strong>
-                                    <span>请确认：电视已开机并与本机连接同一路由器；电视设置里的“DLNA / 多屏互动”已打开；公司网络没有禁用组播。然后点“搜索电视”。</span>
+                                    <span>{{ castState.error || '确认电视已开机、连接同一局域网，并开启 DLNA / 多屏互动后重新搜索。' }}</span>
                                 </div>
 
-                                <p v-if="castMessage" class="runtime-message">{{ castMessage }}</p>
+                                <p v-if="castState.castError || (castMessage && castMessage !== castState.error)" :class="castState.castError ? 'runtime-error' : 'runtime-message'">{{ castState.castError || castMessage }}</p>
                                 <p v-if="castState.loaded && castState.interfaces.length" class="runtime-help">
                                     当前扫描网卡：{{ castState.interfaces.map(item => `${item.name} ${item.address}`).join(' · ') }}
                                 </p>
                                 <p v-if="castState.ignoredCount" class="runtime-help">已自动排除 {{ castState.ignoredCount }} 个本机或虚拟媒体设备。</p>
-                                <p v-if="castState.castError" class="runtime-error">{{ castState.castError }}</p>
-                                <p v-else-if="castState.error && !castState.devices.length" class="runtime-help">{{ castState.error }}</p>
                             </section>
 
                             <div class="runtime-settings-grid">
@@ -10533,6 +10566,38 @@ async function openAdminSetupStep(step) {
 <style scoped src="./admin/styles/form-controls.css"></style>
 
 <style scoped>
+.database-section-tabs {
+    position: sticky; top: 0; z-index: 5;
+    display: flex; gap: 6px; overflow-x: auto;
+    margin: 0 0 20px; padding: 7px;
+    border: 1px solid #e1e6ee; border-radius: 10px; background: #f6f8fb;
+}
+.database-section-tabs button {
+    flex: 0 0 auto; padding: 9px 15px;
+    border: 0; border-radius: 7px; background: transparent; color: #64748b;
+    font: inherit; font-size: 12px; white-space: nowrap; cursor: pointer;
+}
+.database-section-tabs button[aria-selected=true] {
+    background: #fff; color: #245dc5; box-shadow: 0 2px 8px #243c6420; font-weight: 600;
+}
+.database-section-tabs button:focus-visible { outline: 2px solid #84caff; outline-offset: 1px; }
+.settings-data-workspace > .desc { display: none; }
+.settings-data-workspace > .secondary-page-nav-shell { margin: 16px 0; }
+.settings-data-workspace > .secondary-page-nav-shell .secondary-page-nav {
+    display: flex; overflow-x: auto;
+}
+.settings-data-workspace > .secondary-page-nav-shell .secondary-page-nav-item {
+    flex: 1 0 auto; min-width: 0; padding: 10px 12px; min-height: 0;
+    display: flex; justify-content: center;
+}
+.settings-data-workspace > .secondary-page-nav-shell .secondary-page-number,
+.settings-data-workspace > .secondary-page-nav-shell small,
+.settings-data-workspace > .secondary-page-nav-shell svg { display: none; }
+[id^="database-panel-"] { margin-top: 0; }
+#database-panel-sources .external-data-source-list { max-height: 200px; overflow: auto; }
+#database-panel-history .database-backup-list { max-height: 360px; overflow: auto; }
+#database-panel-schedule .database-backup-source-grid { max-height: 280px; overflow: auto; }
+
 .composer-ground-panel{padding:0!important}.composer-ground-panel summary{padding:14px 16px;cursor:pointer;font-size:13px;font-weight:600}.composer-ground-panel summary small{margin-left:8px;font-weight:400;color:#b76e00}
 .composer-ground-controls{border:0;padding:10px 0;margin:0;display:grid;gap:10px;min-width:0}.composer-ground-buttons{display:flex;gap:8px}.composer-ground-controls .inline-check{display:flex;align-items:center;gap:6px;font-size:12px}
 * { box-sizing: border-box; }

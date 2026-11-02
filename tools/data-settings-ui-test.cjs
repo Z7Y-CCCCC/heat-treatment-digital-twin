@@ -1,0 +1,101 @@
+// Owned loopback fixture only; never changes the running display or production data.
+const assert = require('node:assert/strict'), fs = require('node:fs'), path = require('node:path');
+const playwright = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
+const { createRunDirectory, startLoggedProcess, waitUntil } = require('../backend/scripts/integration-test-utils.cjs');
+const { stopOwnedSmokeProcess } = require('../desktop/scripts/smoke-sandbox.cjs');
+const directory = createRunDirectory('data-settings-ui'), checks = [], errors = [], writes = [];
+const check = name => { checks.push(name); console.log('PASS ' + name); };
+let server, browser, page;
+(async () => {
+    const infoFile = path.join(directory, 'server.json');
+    server = startLoggedProcess(process.execPath, [path.join(__dirname, 'manual-disassembly-ui-server.cjs')], {
+        cwd: path.resolve(__dirname, '..'), env: { ...process.env, MANUAL_LAYOUT_UI_INFO_FILE: infoFile }, logFile: path.join(directory, 'server.log') });
+    await waitUntil(() => { assert.equal(server.exitCode, null); return fs.existsSync(infoFile); }, 60000, 'owned UI server');
+    const info = JSON.parse(fs.readFileSync(infoFile));
+    browser = await playwright.chromium.launch({ headless: true,
+        ...(process.env.BROWSER_EXECUTABLE ? { executablePath: process.env.BROWSER_EXECUTABLE } : {}), args: ['--enable-unsafe-swiftshader'] });
+    const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+    await context.addInitScript(() => localStorage.setItem('digital_twin_admin_ui_state_v1', JSON.stringify({ activeTab: 'settings', settingsSubpage: 'database' })));
+    page = await context.newPage(); page.setDefaultTimeout(30000); page.on('pageerror', e => errors.push(e.message));
+    page.on('request', r => { if (r.method() !== 'GET' && /\/api\/(database|data-sources|site-backups)(\/|$)/.test(r.url())) writes.push(r.url()); });
+    const backups = Array.from({ length: 32 }, (_, i) => ({ filename: `fixture-backup-${i}.db.gz`, createdAt: '2026-11-02T00:00:00Z', size: 1024, valid: true }));
+    let supported = true;
+    await page.route('**/api/database/backups', async route => {
+        if (route.request().method() !== 'GET') return route.continue();
+        await route.fulfill({ json: { supported, type: 'sqlite', retentionDays: 30, backups, totalBackupBytes: 32768 } });
+    });
+    await page.route('**/api/site-backups', route => route.fulfill({ json: { supported, backups: [], config: { autoEnabled: true, intervalHours: 24, mirrorDirectory: '' } } }));
+    const castWarning = '没有搜到支持 DLNA 投屏的电视。请确认电视已开机、和本机在同一个局域网，并在电视设置里打开“DLNA / 多屏互动”。';
+    const castPayload = { devices: [], interfaces: [{ name: 'WLAN', address: '192.0.2.1' }], error: castWarning, cast: {} };
+    await page.route('**/api/system/cast/devices', route => route.fulfill({ json: castPayload }));
+    await page.route('**/api/system/cast/refresh', route => route.fulfill({ json: castPayload }));
+    await page.goto(info.origin + '/admin');
+    await page.getByRole('textbox', { name: '账号', exact: true }).fill(info.username);
+    await page.getByLabel('后台密码', { exact: true }).fill(info.password);
+    await page.getByRole('button', { name: '解锁后台', exact: true }).click();
+    const nav = page.getByRole('tablist', { name: '数据连接与备份分类' }); await nav.waitFor();
+    const panel = key => page.locator('#database-panel-' + key);
+    const tab = name => nav.getByRole('tab', { name, exact: true });
+    const onlyPanel = async key => {
+        assert.deepEqual(await page.locator('[id^="database-panel-"]:visible').evaluateAll(nodes => nodes.map(n => n.id)), ['database-panel-' + key]);
+        assert.equal(await nav.getByRole('tab', { selected: true }).count(), 1);
+        assert.equal(await nav.getByRole('tab', { selected: true }).getAttribute('aria-controls'), 'database-panel-' + key);
+    };
+    assert.equal(await nav.getByRole('tab').count(), 5); await onlyPanel('primary');
+    await waitUntil(() => panel('primary').getByLabel('SQLite 文件', { exact: true }).inputValue().then(Boolean), 10000, 'connection loaded');
+    const filename = panel('primary').getByLabel('SQLite 文件', { exact: true });
+    const originalFilename = await filename.inputValue(); await filename.fill(originalFilename + '.draft');
+    const initialWrites = writes.length;
+    await page.screenshot({ path: path.join(directory, '01-primary-tab.png'), fullPage: true });
+    await tab('外部数据源').click(); await onlyPanel('sources');
+    const sourceName = panel('sources').getByLabel('数据源名称', { exact: true }); await sourceName.fill('未保存的数据源');
+    await tab('自动备份').click(); await onlyPanel('schedule');
+    const interval = panel('schedule').getByLabel('持续运行备份间隔（小时）', { exact: true });
+    await interval.fill('12');
+    await tab('备份记录与保留').click(); await onlyPanel('history');
+    assert.equal(await panel('history').locator('.database-backup-row').count(), 32);
+    const list = panel('history').locator('.database-backup-list');
+    assert.ok(await list.evaluate(el => el.clientHeight <= 360 && el.scrollHeight > el.clientHeight && getComputedStyle(el).overflowY === 'auto'));
+    await page.screenshot({ path: path.join(directory, '02-backup-history-tab.png'), fullPage: true });
+    await tab('整站灾备').click(); await onlyPanel('site');
+    await panel('site').getByLabel('外部备份目录（U 盘 / NAS）', { exact: true }).fill('E:\\fixture-draft');
+    await tab('主库连接').click(); assert.equal(await filename.inputValue(), originalFilename + '.draft');
+    await tab('外部数据源').click(); assert.equal(await sourceName.inputValue(), '未保存的数据源');
+    await tab('自动备份').click(); assert.equal(await interval.inputValue(), '12');
+    await tab('整站灾备').click(); assert.equal(await panel('site').getByLabel('外部备份目录（U 盘 / NAS）', { exact: true }).inputValue(), 'E:\\fixture-draft');
+    assert.equal(writes.length, initialWrites, 'switching tabs must not silently save or run a backup');
+    check('five peer tabs show one category at a time, all drafts survive switching, and navigation makes no configuration writes');
+    check('32 backup records scroll inside a height-limited list instead of extending the page');
+    await tab('主库连接').click(); await tab('主库连接').focus(); await page.keyboard.press('ArrowLeft'); await onlyPanel('site');
+    assert.equal(await page.locator(':focus').getAttribute('id'), 'database-tab-site');
+    await page.keyboard.press('Home'); await onlyPanel('primary'); await page.keyboard.press('ArrowRight'); await onlyPanel('sources');
+    await page.keyboard.press('End'); await onlyPanel('site');
+    await page.setViewportSize({ width: 1000, height: 768 });
+    await tab('自动备份').click();
+    const top = await nav.boundingBox(); assert.ok(top.y >= 0 && top.y + top.height < 768);
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+    await page.screenshot({ path: path.join(directory, '03-compact-schedule-tab.png'), fullPage: true });
+    check('arrow/Home/End keys select and focus tabs; the compact viewport has no document-wide horizontal overflow');
+    // Save only the rule form through its real narrow endpoint, leaving the other drafts untouched.
+    const saved = page.waitForResponse(r => r.url().endsWith('/api/data-sources/backups/config') && r.request().method() === 'PUT');
+    await panel('schedule').getByRole('button', { name: '保存备份规则', exact: true }).click(); assert.equal((await saved).status(), 200);
+    const status = await (await page.request.get(info.origin + '/api/data-sources/backups/status')).json(); assert.equal(status.status.intervalHours, 12);
+    await tab('主库连接').click(); assert.equal(await filename.inputValue(), originalFilename + '.draft');
+    check('saving the automatic-backup rule uses the existing endpoint and leaves the other forms unsaved');
+    // Discard owned test drafts via reload, then check unavailable-service fallbacks.
+    supported = false; await page.reload(); await nav.waitFor();
+    await tab('备份记录与保留').click(); await onlyPanel('history'); await panel('history').getByText('未检测到可用的备份工具，请检查当前数据库及备份服务配置。', { exact: true }).waitFor();
+    await tab('整站灾备').click(); await onlyPanel('site'); await panel('site').getByText('当前整站灾备服务不可用。', { exact: true }).waitFor();
+    check('unavailable backup services have an explicit message, not an empty tab');
+    await page.getByRole('navigation', { name: '系统设置分类' }).getByRole('button', { name: /运行与投屏/ }).click();
+    await page.getByRole('button', { name: '搜索电视', exact: true }).click();
+    await page.getByText(castWarning, { exact: true }).waitFor(); assert.equal(await page.getByText(castWarning, { exact: true }).count(), 1);
+    await page.screenshot({ path: path.join(directory, '04-single-cast-notice.png'), fullPage: true });
+    check('an unsuccessful TV search shows its explanation exactly once');
+    assert.deepEqual(errors, []);
+    const result = { success: true, checks, browserErrors: errors, directory };
+    fs.writeFileSync(path.join(directory, 'result.json'), JSON.stringify(result, null, 2)); console.log(JSON.stringify(result, null, 2));
+})().catch(async error => {
+    await page?.screenshot({ path: path.join(directory, 'failure.png'), fullPage: true }).catch(() => {});
+    fs.writeFileSync(path.join(directory, 'failure.json'), JSON.stringify({ error: error.stack, checks, errors }, null, 2)); console.error(error); process.exitCode = 1;
+}).finally(async () => { await browser?.close(); await stopOwnedSmokeProcess(server); });
