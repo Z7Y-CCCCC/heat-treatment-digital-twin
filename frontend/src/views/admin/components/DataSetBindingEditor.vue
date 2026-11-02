@@ -4,9 +4,15 @@ import { adminApi } from '../../../config/factoryConfig.js'
 const props = defineProps({ binding: Object, context: Object, devices: {type:Array,default:()=>[]}, disabled:Boolean })
 const emit = defineEmits(['change','preview','invalidate'])
 const datasets = ref([]), message = ref(''), busy = ref(false), result = ref(null)
+const loading = ref(true)
 const selected = computed(() => datasets.value.find(d=>d.id===props.binding?.datasetId))
-let sequence = 0, disposed = false
-async function load() { try { const response=await adminApi.getDataSets(); if (!disposed) datasets.value=response.datasets || [] } catch(error) { if (!disposed) message.value=error.message } }
+let sequence = 0, loadSequence=0, disposed = false
+async function load() {
+    const request=++loadSequence;loading.value=true
+    try { const response=await adminApi.getDataSets(); if (!disposed && request===loadSequence) {datasets.value=response.datasets || [];message.value=''} }
+    catch(error) { if (!disposed && request===loadSequence) message.value=error.message }
+    finally { if (!disposed && request===loadSequence) loading.value=false }
+}
 function changed(reset=false) {
     if(props.disabled)return
     sequence++; result.value=null; message.value='';emit('invalidate')
@@ -26,14 +32,14 @@ async function preview() {
 }
 watch(()=>props.context,()=>{sequence++;busy.value=false;result.value=null;emit('invalidate')},{deep:true})
 onMounted(()=>{load();window.addEventListener('digital-twin-data-sets-changed',load)})
-onBeforeUnmount(()=>{disposed=true;sequence++;window.removeEventListener('digital-twin-data-sets-changed',load)})
+onBeforeUnmount(()=>{disposed=true;sequence++;loadSequence++;window.removeEventListener('digital-twin-data-sets-changed',load)})
 </script>
 <template>
   <section class="dataset-binding" aria-label="组件数据集绑定">
     <div class="binding-group">
-      <label class="dataset-choice"><span>数据集</span><select v-model="binding.datasetId" aria-label="组件数据集" :disabled="disabled" @change="changed(true)"><option value="">选择数据集</option><option v-for="d in datasets" :key="d.id" :value="d.id">{{d.name}}{{d.enabled?'':'（已停用）'}}</option></select><button class="refresh-button" type="button" aria-label="刷新数据集列表" @click="load"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 10a8 8 0 1 0-1 7M20 4v6h-6"/></svg></button></label>
-      <label><span>字段</span><select v-model="binding.datasetField" aria-label="组件数据集字段" :disabled="disabled || !selected" @change="changed()"><option value="">选择字段</option><option v-for="c in selected?.columns || []" :key="c.name" :value="c.name">{{c.label}}{{c.unit?' · '+c.unit:''}}</option></select></label>
-      <div class="scope-row"><span>设备</span><div class="scope-switch" role="group" aria-label="设备范围"><button type="button" :class="{active:binding.deviceScope!=='fixed'}" :aria-pressed="binding.deviceScope!=='fixed'" :disabled="disabled" @click="binding.deviceScope='current';changed()">跟随视角</button><button type="button" :class="{active:binding.deviceScope==='fixed'}" :aria-pressed="binding.deviceScope==='fixed'" :disabled="disabled" @click="binding.deviceScope='fixed';changed()">指定设备</button></div></div>
+      <label class="dataset-choice"><span>数据集</span><select v-model="binding.datasetId" aria-label="组件数据集" :disabled="disabled || loading" @change="changed(true)"><option value="">选择数据集</option><option v-if="binding.datasetId && !selected" :value="binding.datasetId" disabled>{{loading?'读取中…':'数据集不可用'}}</option><option v-for="d in datasets" :key="d.id" :value="d.id">{{d.name}}{{d.enabled?'':'（已停用）'}}</option></select><button class="refresh-button" type="button" aria-label="刷新数据集列表" @click="load"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 10a8 8 0 1 0-1 7M20 4v6h-6"/></svg></button></label>
+      <label><span>字段</span><select v-model="binding.datasetField" aria-label="组件数据集字段" :disabled="disabled || !selected" @change="changed()"><option value="">选择字段</option><option v-if="binding.datasetField && !selected?.columns?.some(c=>c.name===binding.datasetField)" :value="binding.datasetField" disabled>{{binding.datasetField}}</option><option v-for="c in selected?.columns || []" :key="c.name" :value="c.name">{{c.label}}{{c.unit?' · '+c.unit:''}}</option></select></label>
+      <div class="scope-row"><span>设备</span><div class="scope-switch" role="group" aria-label="设备范围"><button type="button" :class="{active:binding.deviceScope!=='fixed'}" :aria-pressed="binding.deviceScope!=='fixed'" :disabled="disabled || loading" @click="binding.deviceScope='current';changed()">跟随视角</button><button type="button" :class="{active:binding.deviceScope==='fixed'}" :aria-pressed="binding.deviceScope==='fixed'" :disabled="disabled || loading" @click="binding.deviceScope='fixed';changed()">指定设备</button></div></div>
       <label v-if="binding.deviceScope==='fixed'"><span>指定</span><select v-model="binding.deviceId" aria-label="绑定指定设备" :disabled="disabled" @change="changed()"><option value="">选择设备</option><option v-for="d in devices" :key="d.id" :value="String(d.id)">{{d.name}}</option></select></label>
     </div>
     <details class="binding-more" :open="binding.datasetMode && binding.datasetMode!=='first'"><summary>更多设置 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg></summary><label><span>取值</span><select v-model="binding.datasetMode" aria-label="组件数据集取值" :disabled="disabled" @change="changed()"><option value="first">第一条 / 图表序列</option><option value="count">记录数量</option><option value="sum">合计</option><option value="avg">平均值</option><option value="min">最小值</option><option value="max">最大值</option></select></label></details>

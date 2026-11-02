@@ -22,6 +22,7 @@ const { descriptor } = parse(source)
 const compiled = compileScript(descriptor, { id: 'widget-regression', inlineTemplate: true }).content
     .replace(/from (['"])(vue|echarts)\1/g, (_, _quote, name) => `from ${JSON.stringify(import.meta.resolve(name))}`)
     .replace(/from (['"])\.\/hudPresentation\.js\1/g, `from ${JSON.stringify(new URL('../src/runtime/hudPresentation.js', import.meta.url).href)}`)
+    .replace(/from (['"])\.\.\/\.\.\/\.\.\/shared\/dashboardParameters\.mjs\1/g, `from ${JSON.stringify(new URL('../../shared/dashboardParameters.mjs', import.meta.url).href)}`)
 const { default: WidgetRenderer } = await import(`data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`)
 const hudSource = await readFile(new URL('../src/runtime/hudWidgets.css', import.meta.url), 'utf8')
 const hudStyles = compileStyle({ source: hudSource, id: 'hud-regression' })
@@ -360,4 +361,16 @@ test('overlay bar, ring and gauge widgets share lightweight presentation', async
     await view.render({ overlayMode: true, widget: { id: 'oee', type: 'metrics', content: {} }, metrics: { overall_oee: 92 } })
     const ring = charts.at(-1).options.at(-1)[0].series[0]
     assert.deepEqual(ring.data.map(item => item.value), [92, 8])
+})
+
+
+test('filter controls emit typed values including zero/false, and do not act during layout editing',async t=>{
+ const view=fixture(t),actions=[],widget={id:'filter',type:'filter',title:'批次',content:{parameterKey:'batch',control:'select',options:[{label:'零',value:0},{label:'关闭',value:false}]}};
+ await view.render({widget,parameters:{batch:0},onAction:value=>actions.push(value)});
+ const select=findNode(view.root,n=>n.type==='select');assert.equal(select.props.value,0);select.props.onChange({target:{value:'0'}});assert.equal(actions.at(-1).event.value,0);
+ select.props.onChange({target:{value:'1'}});assert.equal(actions.at(-1).event.value,false);
+ await view.render({widget,interactive:false,onAction:value=>actions.push(value)});const count=actions.length;findNode(view.root,n=>n.type==='select').props.onChange({target:{value:'0'}});assert.equal(actions.length,count);
+})
+test('parameter text uses safe interpolation rather than executing expressions',async t=>{
+ const view=fixture(t);await view.render({widget:{type:'text',content:{text:'批次 {parameters.batch} / {parameters.zero}'}},parameters:{batch:'<script>no</script>',zero:0}});assert.match(textContent(view.root),/批次 <script>no<\/script> \/ 0/);
 })

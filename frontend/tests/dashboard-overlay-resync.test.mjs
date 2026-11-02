@@ -7,7 +7,7 @@ import { routerKey, routeLocationKey } from 'vue-router'
 import { installBrowser, installSockets, json, settle } from './helpers.mjs'
 
 test.mock.module('../src/runtime/adminSession.js', { namedExports: {
-    adminFetch: (...args) => globalThis.fetch(...args), startAdminSessionTracking() {}, stopAdminSessionTracking() {}
+    adminFetch: (...args) => globalThis.fetch(...args), adminSession: {displayAuthenticated:true,permissions:{view:true},user:{username:'owned'}}
 } })
 const source = new URL('../src/views/DashboardOverlay.vue', import.meta.url)
 const { descriptor } = parse(await readFile(source, 'utf8'))

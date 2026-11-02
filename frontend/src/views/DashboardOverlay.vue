@@ -5,9 +5,10 @@ import LoadingExperience from '../components/LoadingExperience.vue'
 import { useFactoryConfig } from '../config/factoryConfig.js'
 import { createDashboardDataStore } from '../runtime/DataStore.js'
 import { API_BASE } from '../runtime/backendEndpoint.js'
-import { adminFetch, startAdminSessionTracking, stopAdminSessionTracking } from '../runtime/adminSession.js'
+import { adminFetch, adminSession } from '../runtime/adminSession.js'
 import { createVoiceAnnouncer } from '../runtime/VoiceAnnouncer.js'
 import { resolveBackendAssetUrl } from '../three/ModelFactory.js'
+import { useDashboardIntegration } from '../runtime/dashboardIntegration.js'
 import WidgetRenderer from '../runtime/WidgetRenderer.vue'
 import { applyReferenceHudLayout } from '../runtime/referenceHudLayout.js'
 import { applyFactoryHudModules } from '../runtime/factoryHudModules.js'
@@ -785,8 +786,17 @@ function playVoice(event) {
     voiceAnnouncer.preview({ mode: 'auto', audio_url: event.audioUrl || '', text: event.text || '' }).catch(() => {})
 }
 
-function handleWidgetAction({ event }) {
+const integration = useDashboardIntegration({
+    document:presentationDocument, context:runtimeContext, ready:()=>runtimeContext.sceneReady !== false,
+    scope:computed(() => `${config.factoryId}:${platform.value.activeScene?.id}:${presentationDocument.value?.metadata?.publishedAt || ''}:${adminSession.user?.username || ''}`),
+    devices:computed(() => (config.workshops || []).flatMap(w=>[...(w.devices||[]),...(w.lines||[]).flatMap(l=>l.devices||[])])),
+    authorize:() => adminSession.displayAuthenticated && adminSession.permissions.view,
+    refresh:() => refreshDatabaseValues(true), action:payload => handleWidgetAction(payload)
+})
+function handleWidgetAction({ event, widget }) {
     if (!event) return
+    integration.emit('widgetAction', {widgetId:widget?.id || '', action:event.action})
+    if (integration.handle(event)) return
     if (['set_visibility', 'toggle_visibility'].includes(event.action)) {
         applyVisibilityAction(event, { groupVisibility, widgetVisibility })
         scheduleRegionReport()
@@ -882,7 +892,8 @@ async function refreshDatabaseValues(force = false) {
             workshop_id: runtimeContext.workshopId || '',
             line_id: runtimeContext.lineId || '',
             device_id: runtimeContext.deviceId || '',
-            part_id: runtimeContext.partId || ''
+            part_id: runtimeContext.partId || '',
+            parameters: JSON.stringify(integration.parameters.value)
         })
         const contextKey = `${runtimeContext.factoryId || ''}:${query}`
         if (contextKey !== externalValueContext) {
@@ -957,7 +968,6 @@ async function refreshBusinessData(force = false) {
 }
 
 onMounted(async () => {
-    startAdminSessionTracking()
     const startupBegan = performance.now()
     standalonePreview.value = !window.chrome?.webview
     nativeLoadingManaged.value = Boolean(window.__DIGITAL_TWIN_NATIVE_LOADING__)
@@ -1056,7 +1066,6 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
-    stopAdminSessionTracking()
     overlayDisposed = true
     clearTimeout(inspectionProgressTimer)
     modelProbeGeneration += 1
@@ -1179,7 +1188,7 @@ onUnmounted(() => {
         :point-values="pointValues"
                     :database-values="databaseValues"
                     :business-data="businessData"
-                    :runtime-context="runtimeContext"
+                    :runtime-context="runtimeContext" :parameters="integration.parameters.value" :parameter-definitions="integration.definitions.value"
                     :selected-part="selectedPart"
                     overlay-mode
                     :preview="true"

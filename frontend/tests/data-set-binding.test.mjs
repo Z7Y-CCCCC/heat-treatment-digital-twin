@@ -28,9 +28,9 @@ const {descriptor}=parse(await readFile(source,'utf8'))
 let code=compileScript(descriptor,{id:'data-set-binding'}).content
 for(const match of [...code.matchAll(/from\s+(['"])([^'"]+)\1/g)])code=code.replace(match[0],`from ${JSON.stringify(match[2].startsWith('.')?new URL(match[2],source).href:import.meta.resolve(match[2]))}`)
 const {default:Editor}=await import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`);Editor.render=()=>null
-async function fixture(t,preview){
+async function fixture(t,preview,load){
   const environment=installBrowser(t),events=[]
-  t.mock.method(adminApi,'getDataSets',async()=>({datasets:[{id:'erp',name:'ERP',columns:[{name:'temperature',unit:'°C',role:'value'},{name:'pressure',unit:'MPa'}]}]}))
+  t.mock.method(adminApi,'getDataSets',load || (async()=>({datasets:[{id:'erp',name:'ERP',columns:[{name:'temperature',unit:'°C',role:'value'},{name:'pressure',unit:'MPa'}]}]})))
   t.mock.method(adminApi,'previewDataSet',preview)
   const props=reactive({binding:{mode:'dataset',datasetId:'erp',datasetField:'temperature',datasetMode:'first',deviceScope:'current'},context:{deviceId:'a'}})
   const renderer=createRenderer({createElement:()=>({}),createText:()=>({}),createComment:()=>({}),setText(){},setElementText(){},parentNode:()=>null,nextSibling:()=>null,patchProp(){},insert(){},remove(){}})
@@ -49,4 +49,12 @@ test('changing the selected field updates units and unmounted previews do not em
   f.props.binding.datasetField='pressure';f.state.changed();assert.equal(f.props.binding.unit,'MPa')
   const work=f.state.preview();f.app.unmount();pending.resolve({result:{value:12,rows:[],quality:'good'}});await work
   assert.deepEqual(f.events,[])
+})
+
+
+test('loading datasets never erases the existing binding and a stale refresh cannot replace the current catalog',async t=>{
+ const a=deferred(),b=deferred();let calls=0;const f=await fixture(t,async()=>({}),()=>++calls===1?a.promise:b.promise);
+ assert.equal(f.props.binding.datasetId,'erp');assert.equal(f.props.binding.datasetField,'temperature');assert.equal(f.state.loading,true);
+ const refresh=f.state.load();b.resolve({datasets:[{id:'erp',name:'Current',columns:[{name:'temperature'}]}]});await refresh;
+ a.resolve({datasets:[{id:'stale',name:'Old',columns:[]}]});await settle();assert.equal(f.state.datasets[0].id,'erp');assert.equal(f.state.loading,false);assert.equal(f.props.binding.datasetId,'erp');
 })

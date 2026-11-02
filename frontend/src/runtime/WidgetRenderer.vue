@@ -1,6 +1,7 @@
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import * as echarts from 'echarts'
+import { parameterValue } from '../../../shared/dashboardParameters.mjs'
 import { splitHudKpiValue } from './hudPresentation.js'
 
 const HUD_FONT_TEXT = 'SF Pro Text, Inter Variable, Inter, Noto Sans SC Variable, Segoe UI, PingFang SC, Microsoft YaHei UI, sans-serif'
@@ -17,6 +18,9 @@ const props = defineProps({
   databaseValues: { type: Object, default: () => ({}) },
   businessData: { type: Object, default: () => ({}) },
   runtimeContext: { type: Object, default: () => ({}) },
+  parameters: { type:Object, default:()=>({}) },
+  parameterDefinitions: { type:Array, default:()=>[] },
+  interactive: { type:Boolean, default:true },
   selectedPart: { type: Object, default: () => ({}) },
   overlayMode: { type: Boolean, default: false },
   preview: { type: Boolean, default: false },
@@ -66,6 +70,7 @@ const dataContext = computed(() => ({
   deviceDataMap: props.deviceDataMap,
   points: props.pointValues,
   context: props.runtimeContext,
+  parameters: props.parameters,
   selectedPart: props.selectedPart,
   dataset: ['good','empty'].includes(databaseRecord.value?.quality)
     ? { ...(databaseRecord.value?.rows?.[0] || {}), ...(dataBinding.value.datasetField ? { [dataBinding.value.datasetField]: databaseRecord.value?.value } : {}) } : {}
@@ -357,7 +362,7 @@ const textLines = computed(() => {
   if (dataBinding.value.mode === 'dataset' && content.value.datasetTextMode !== 'template') return [formatValue()]
   const rawText = Array.isArray(content.value.lines) ? content.value.lines.join('\n') : (content.value.text || content.value.label || '')
   const fallback = rawText || widgetTitle.value || '文本组件'
-  return String(fallback).replaceAll('{value}', formatValue()).split('\n').filter(Boolean)
+  return String(fallback).replaceAll('{value}', formatValue()).replace(/\{parameters\.([A-Za-z_][A-Za-z0-9_]*)\}/g, (_match,key)=>String(props.parameters[key] ?? '')).split('\n').filter(Boolean)
 })
 const isHudKpi = computed(() => overlayMode.value && type.value === 'text' && textLines.value.length === 2 && textLines.value[0].startsWith('今日'))
 const hudKpiValue = computed(() => splitHudKpiValue(textLines.value[1]))
@@ -598,6 +603,19 @@ function renderChart() {
   })
 }
 
+const filterError = ref('')
+function changeParameter(event) {
+  if (!props.interactive) return
+  const control = content.value.control || 'select'
+  let value = control === 'checkbox' ? event.target.checked : event.target.value
+  if (control === 'select') value = (content.value.options || [])[Number(event.target.value)]?.value ?? ''
+  const definition=props.parameterDefinitions.find(p=>p.key===content.value.parameterKey)
+  try { if (definition) value=parameterValue(value,definition.type,definition.label);filterError.value='' } catch(error) {filterError.value=error.message;return}
+  emit('action', {event:{action:'set_parameter',parameterKey:content.value.parameterKey,value},widget:props.widget})
+  triggerEvents('change', event)
+}
+watch(()=>props.parameters,()=>{filterError.value=''}, {deep:true})
+const selectedOptionIndex = computed(() => (content.value.options || []).findIndex(option => String(option.value) === String(props.parameters[content.value.parameterKey] ?? '')))
 function triggerEvents(trigger, domEvent) {
   widgetEvents.value.filter(event => (event.trigger || 'click') === trigger).forEach(event => emit('action', { event, widget: props.widget, domEvent }))
 }
@@ -771,6 +789,12 @@ onUnmounted(() => {
       <div class="marquee-content-wrap"><div class="marquee-content" :style="{ animationDuration: (content.speed || 30) + 's' }"><template v-for="copy in 2" :key="copy"><span v-for="(event,index) in eventRows" :key="`${copy}-${event.id || index}`" class="marquee-item" :class="event.level">[{{ event.time || event.occurred_at || '--' }}] {{ event.msg || event.title || event.message }}</span></template></div></div>
     </template>
 
+    <div v-else-if="type === 'filter'" class="parameter-filter" @click.stop @dblclick.stop @pointerdown.stop>
+      <select v-if="(content.control || 'select') === 'select'" :value="selectedOptionIndex" :aria-label="widgetTitle || content.parameterKey" :disabled="!interactive || !content.parameterKey" @change="changeParameter"><option disabled value="-1">{{ content.placeholder || '请选择' }}</option><option v-for="(option,index) in content.options" :key="index" :value="index">{{ option.label }}</option></select>
+      <label v-else-if="content.control === 'checkbox'"><input type="checkbox" :checked="parameters[content.parameterKey] === true" :disabled="!interactive" :aria-label="widgetTitle || content.parameterKey" @change="changeParameter" />{{ content.placeholder }}</label>
+      <input v-else :type="['number','date'].includes(content.control) ? content.control : 'text'" :value="parameters[content.parameterKey] ?? ''" :placeholder="content.placeholder" :aria-label="widgetTitle || content.parameterKey" :disabled="!interactive || !content.parameterKey" @change="changeParameter" />
+      <small v-if="filterError" class="filter-error" role="alert">{{filterError}}</small>
+    </div>
     <template v-else-if="type === 'text'">
       <div v-if="isHudKpi" class="text-widget-body hud-kpi-body">
         <p class="hud-kpi-label">
@@ -810,6 +834,8 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+.parameter-filter{padding:8px 14px;display:flex;flex-direction:column;align-items:stretch;gap:5px;min-width:0}.filter-error{color:#f28e8e;font-size:11px}.parameter-filter select,.parameter-filter input:not([type=checkbox]){width:100%;min-width:0;padding:9px 12px;border:1px solid #8aa0b955;border-radius:8px;background:#fff;color:#28364a;font:inherit}.parameter-filter label{display:flex;align-items:center;gap:8px}
+
  .widget-shell{box-sizing:border-box;position:relative;width:100%;height:100%;min-width:0;min-height:0;display:flex;flex-direction:column;overflow:hidden;padding:14px;border:1px solid rgba(91,169,219,.24);border-radius:14px;color:#edf7ff;background:transparent;box-shadow:none;font-family:"SF Pro Text","Inter","Segoe UI Variable","Segoe UI","PingFang SC","Microsoft YaHei UI",sans-serif;font-synthesis:none;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;transition:border-color .18s,filter .18s,transform .18s,opacity .42s ease}.widget-shell.interactive{cursor:pointer}.widget-shell.quality-bad{filter:saturate(.72)}
  .widget-shell.data-pending> :not(.widget-title):not(.widget-data-placeholder){opacity:.18;filter:blur(1.2px);transition:opacity .42s ease,filter .42s ease}
  .widget-data-placeholder{position:absolute;z-index:4;inset:34px 12px 10px;display:grid;align-content:center;justify-items:center;gap:9px;pointer-events:none}

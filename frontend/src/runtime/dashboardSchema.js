@@ -1,4 +1,5 @@
 export const DASHBOARD_SCHEMA_VERSION = 3
+import { normalizeParameterDefinitions } from '../../../shared/dashboardParameters.mjs'
 
 export const DEFAULT_DASHBOARD_CANVAS = Object.freeze({
   width: 1920,
@@ -142,6 +143,7 @@ export function normalizeDashboardViews(scene = {}) {
 
 export const DASHBOARD_WIDGET_LIBRARY = [
   { type: 'text', label: '文本', icon: 'T', group: '基础', description: '标题、说明和动态文本' },
+  { type: 'filter', label: '参数筛选', icon: '⌕', group: '数据', description: '下拉、文本、日期与数值联动' },
   { type: 'value', label: '数值', icon: '12', group: '基础', description: '任意数据源的数值与格式' },
   { type: 'status', label: '状态灯', icon: '●', group: '基础', description: '布尔状态、在线和报警' },
   { type: 'image', label: '图片', icon: '▧', group: '基础', description: '现场图片、Logo 和图标' },
@@ -178,6 +180,7 @@ export const DASHBOARD_WIDGET_PRESETS = [
 ]
 
 const TYPE_DEFAULTS = {
+  filter: { size: [300, 100], title:'参数筛选', content:{control:'select',parameterKey:'',placeholder:'请选择',options:[]}, style:{background:'rgba(14, 28, 43, .72)',color:'#eef7ff',fontSize:16,borderRadius:12} },
   text: {
     size: [360, 120],
     title: '文本',
@@ -600,6 +603,7 @@ export function normalizeDashboardDocument(source = {}) {
       ...normalizedViews
     },
     widgets,
+    parameters: normalizeParameterDefinitions(source.parameters || []),
     metadata: deepClone(source.metadata || {})
   }
 }

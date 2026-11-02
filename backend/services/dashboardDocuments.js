@@ -113,6 +113,10 @@ async function validatePlcBindings(db, document) {
             const definition = definitions.find(d => d.id === widget.data.datasetId);
             if (!definition || !definition.enabled) throw new Error(`组件“${widget.title || widget.id}”的数据集不存在或已停用`);
             if (!definition.columns.some(c => c.name === widget.data.datasetField)) throw new Error(`组件“${widget.title || widget.id}”的数据集字段不存在`);
+            const keys = new Set((document.parameters || []).map(item => item.key));
+            for (const parameter of require('../../shared/dashboardParameters.mjs').datasetParameterDefinitions(definition)) {
+                if (!keys.has(parameter.key)) throw new Error(`数据集“${definition.name}”引用了未定义参数：${parameter.key}`);
+            }
             resolveConnection(definition.connectionId, project?.factory_id || 'factory_default');
         }
     }

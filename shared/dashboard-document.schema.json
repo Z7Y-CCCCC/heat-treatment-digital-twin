@@ -5,10 +5,11 @@
   "type": "object",
   "required": ["schemaVersion", "projectId", "sceneId", "canvas", "theme", "scene", "widgets"],
   "properties": {
-    "schemaVersion": { "const": 1 },
+    "schemaVersion": { "enum": [1, 2, 3] },
     "projectId": { "type": "string", "minLength": 1, "maxLength": 128 },
     "sceneId": { "type": "string", "minLength": 1, "maxLength": 128 },
     "name": { "type": "string", "maxLength": 255 },
+    "parameters": {"type": "array", "maxItems": 32, "items": {"type": "object", "required": ["key", "type"], "properties": {"key": {"type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,39}$"}, "label": {"type": "string", "maxLength": 80}, "type": {"enum": ["string", "number", "boolean", "date"]}, "defaultValue": {"type": ["string", "number", "boolean", "null"]}}, "additionalProperties": false}},
     "canvas": {
       "type": "object",
       "required": ["width", "height", "gridSize", "background", "safeArea"],
@@ -65,8 +66,10 @@
       "type": "object",
       "required": ["trigger", "action"],
       "properties": {
-        "trigger": { "enum": ["click", "doubleClick"] },
-        "action": { "enum": ["enter_device", "focus_factory", "focus_line", "focus_workshop", "play_voice", "open_link", "switch_scene"] },
+        "parameterKey": { "type": "string", "maxLength": 40 },
+        "value": { "type": ["string", "number", "boolean", "null"] },
+        "trigger": { "enum": ["click", "doubleClick", "change"] },
+        "action": { "enum": ["enter_device", "focus_factory", "focus_line", "focus_workshop", "play_voice", "open_link", "switch_scene", "set_parameter", "reset_parameters", "refresh_data"] },
         "deviceId": { "type": "string", "maxLength": 128 },
         "lineId": { "type": "string", "maxLength": 128 },
         "workshopId": { "type": "string", "maxLength": 128 },
@@ -82,7 +85,7 @@
       "required": ["id", "type", "title", "visible", "locked", "zIndex", "runtimeTarget", "frame", "content", "style", "data", "conditions", "animation", "events"],
       "properties": {
         "id": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$", "maxLength": 128 },
-        "type": { "enum": ["text", "value", "status", "trend", "alarm_list", "device_list", "image", "container", "metrics", "marquee", "navigation", "return_button", "device_label", "diagnostics", "line_overview_cards"] },
+        "type": { "enum": ["text", "value", "status", "trend", "alarm_list", "device_list", "image", "container", "metrics", "marquee", "navigation", "return_button", "device_label", "diagnostics", "line_overview_cards", "filter"] },
         "title": { "type": "string", "maxLength": 255 },
         "visible": { "type": "boolean" },
         "locked": { "type": "boolean" },

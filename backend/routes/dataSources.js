@@ -26,6 +26,7 @@ const {
 
 const router = express.Router();
 const dataSets = require('../services/dataSets');
+const { resolveParameters, datasetParameterDefinitions } = require('../../shared/dashboardParameters.mjs');
 const dataFileUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 1048576, files: 1, fields: 0 } }).single('dataFile');
 const MAP_LEVELS = new Set(['world', 'country', 'province', 'city', 'district']);
 const MAP_DATA_KEYS = new Set(['factsFactoryCount','factsLocalCount','factsDeviceCount','panelRegionRows','dockFactoryCount','dockLocalCount','dockAssignedCount','dockCoverage','dockWorkshops','dockLines','dockDevices']);
@@ -74,6 +75,13 @@ router.get('/runtime-values', async (req, res) => {
         const db = await getDb();
         const { project, scene } = await getProjectAndScene(db, String(req.query.scene_id || ''), req.factoryId);
         const { document, release } = await loadPublishedDocument(db, project, scene);
+        let suppliedParameters = {};
+        if (req.query.parameters) {
+            if (typeof req.query.parameters !== 'string' || req.query.parameters.length > 8192) return res.status(400).json({error:'大屏参数过长'});
+            try { suppliedParameters = JSON.parse(req.query.parameters); } catch { return res.status(400).json({error:'大屏参数格式无效'}); }
+        }
+        let parameters;
+        try { parameters=resolveParameters(document.parameters || [],suppliedParameters); } catch(error) { return res.status(400).json({error:error.message}); }
         const viewId = String(req.query.view_id || '');
         const mapSurface = /^(?:map_(?:world|country|province|city|district)|site_(?:street|factory))$/.test(viewId);
         const mapView = mapSurface ? document.scene?.views?.find(view => view.id === viewId) : null;
@@ -88,6 +96,7 @@ router.get('/runtime-values', async (req, res) => {
             : (document.widgets || []);
         const values = await readRuntimeBindings(boundWidgets, {
             factoryId: req.factoryId,
+            parameters,
             viewId,
             workshopId: String(req.query.workshop_id || ''),
             lineId: String(req.query.line_id || ''),
@@ -125,6 +134,10 @@ router.post('/datasets/preview', localOnly, async (req, res) => {
         else definition = req.body.definition;
         if (!definition) throw new Error('请选择数据集');
         const context = Object.fromEntries(dataSets.CONTEXT_KEYS.map(key => [key, String(req.body.context?.[key] ?? '').slice(0, 200)]));
+        const supplied=req.body.context?.parameters ?? {};
+        if (!supplied || typeof supplied !== 'object' || Array.isArray(supplied) || Object.keys(supplied).length>32) throw new Error('参数值必须是键值对象');
+        const used=datasetParameterDefinitions(definition);
+        context.parameters=resolveParameters(used,Object.fromEntries(used.filter(p=>Object.hasOwn(supplied,p.key)).map(p=>[p.key,supplied[p.key]])));
         const result = await dataSets.readDefinition(definition, context, req.factoryId, true, req.body.inspect === true);
         res.json({ success: true, result: req.body.binding ? dataSets.bindingResult(result, req.body.binding) : result });
     } catch (error) { handleError(res, error, error.status || 400); }

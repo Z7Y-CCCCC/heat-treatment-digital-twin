@@ -1,9 +1,10 @@
 <script setup>
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { API_BASE } from '../runtime/backendEndpoint.js'
-import { adminFetch } from '../runtime/adminSession.js'
+import { adminFetch, adminSession } from '../runtime/adminSession.js'
 import { applyVisibilityAction, widgetRuntimeVisible } from '../runtime/dashboardRules.js'
 import { MAP_SURFACE_VIEW_IDS } from '../runtime/dashboardSchema.js'
+import { useDashboardIntegration } from '../runtime/dashboardIntegration.js'
 import WidgetRenderer from '../runtime/WidgetRenderer.vue'
 
 const props = defineProps({
@@ -19,7 +20,7 @@ const businessData = ref({ status: 'idle', readOnly: true, sections: {} })
 const widgetVisibility = reactive({})
 const groupVisibility = reactive({})
 const currentView = computed(() => props.document?.scene?.views?.find(view => view.id === props.viewId))
-const runtimeContext = computed(() => ({ viewId: props.viewId, viewMode: 'custom', factoryId: props.factoryId }))
+const runtimeContext = computed(() => ({ viewId: props.viewId, viewMode: 'custom', factoryId: props.factoryId, sceneId:props.document?.sceneId || '' }))
 const canvas = computed(() => props.document?.canvas || { width: 1920, height: 1080 })
 const pointValues = computed(() => {
   const result = {}
@@ -82,10 +83,20 @@ function widgetFrame(widget) {
     transform: `rotate(${Number(frame.rotation || 0)}deg)`
   }
 }
-function handleAction({ event }) {
+const integration = useDashboardIntegration({
+  document:computed(()=>props.document),context:runtimeContext,
+  scope:computed(()=>`${props.factoryId}:${props.document?.sceneId || ''}:${props.document?.metadata?.publishedAt || ''}:${adminSession.user?.username || ''}`),
+  devices:computed(()=>(props.config?.workshops || []).flatMap(w=>[...(w.devices||[]),...(w.lines||[]).flatMap(l=>l.devices||[])])),
+  authorize:()=>adminSession.displayAuthenticated && adminSession.permissions.view,
+  refresh:refreshValues,action:payload=>handleAction(payload)
+})
+function handleAction({ event, widget }) {
   if (!event) return
+  integration.emit('widgetAction',{widgetId:widget?.id || '',action:event.action})
+  if (integration.handle(event)) return
   if (['set_visibility', 'toggle_visibility'].includes(event.action)) return applyVisibilityAction(event, { groupVisibility, widgetVisibility })
   if (event.action === 'switch_view' && MAP_SURFACE_VIEW_IDS.has(event.viewId)) return emit('navigate', event.viewId)
+  if (['switch_view','enter_device'].includes(event.action)) throw new Error('请先进入工厂场景调用设备视角')
   if (event.action === 'open_link' && /^https?:\/\//i.test(event.url || '')) {
     if (window.chrome?.webview) window.chrome.webview.postMessage({ type: 'dashboard_action', action: 'open_link', url: event.url })
     else window.open(event.url, '_blank', 'noopener,noreferrer')
@@ -107,7 +118,7 @@ async function refreshValues() {
   abort?.abort()
   abort = new AbortController()
   try {
-    const query = new URLSearchParams({ view_id: props.viewId })
+    const query = new URLSearchParams({ view_id: props.viewId, parameters:JSON.stringify(integration.parameters.value) })
     const response = await adminFetch(`${API_BASE}/data-sources/runtime-values?${query}`, {
       signal: abort.signal,
       ...(props.factoryId ? { headers: { 'X-Factory-ID': props.factoryId } } : {})
@@ -151,7 +162,7 @@ onUnmounted(() => { disposed=true;valuesSequence++;window.clearInterval(timer); 
       <WidgetRenderer :widget="widget" :metrics="dataStore?.metrics || {}" :events="dataStore?.events?.value || []"
         :trend-points="dataStore?.trendPoints?.value || []" :device-status-map="dataStore?.deviceStatusMap || {}"
         :device-data-map="dataStore?.deviceDataMap || {}" :point-values="pointValues" :database-values="values"
-        :runtime-context="runtimeContext" :business-data="businessData" :data-ready="true" overlay-mode @action="handleAction" />
+        :runtime-context="runtimeContext" :parameters="integration.parameters.value" :parameter-definitions="integration.definitions.value" :business-data="businessData" :data-ready="true" overlay-mode @action="handleAction" />
     </div>
   </div>
 </template>

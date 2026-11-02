@@ -1,4 +1,6 @@
 <script setup>
+import DashboardIntegrationPanel from './DashboardIntegrationPanel.vue'
+import { useDashboardIntegration, SOFTWARE_METHODS } from '../../../runtime/dashboardIntegration.js'
 import DataSetBindingEditor from './DataSetBindingEditor.vue'
 import { permissionDirective as vPermission } from '../../../runtime/pagePermissionUi.js'
 import { canAdminPage } from '../../../runtime/adminSession.js'
@@ -61,6 +63,7 @@ const acceptanceReport = ref(null)
 const acceptanceLoading = ref(false)
 const zoom = ref(0.68)
 const previewMode = ref(false)
+const integrationOpen = ref(false)
 const fullscreenActive = ref(false)
 const designerShellRef = ref(null)
 const inspectorTab = ref('content')
@@ -84,6 +87,7 @@ const databasePreviewValues = reactive({})
 const databaseTablesByDataset = reactive({})
 const databaseColumnsByDataset = reactive({})
 const previewContext = reactive({
+  factoryId:draftFactoryId,
   viewId: 'factory_overview', viewMode: 'factory', workshopId: '', lineId: '', deviceId: '',
   inspectionStage: '', partId: 'front_door_open', partName: '前门组件', partDescription: '部件参数与运行状态预览',
   partPointIds: [], partPointKeys: ['analog.temperature', 'doors.front_door_open']
@@ -1941,8 +1945,27 @@ function handleFullscreenChange() {
   if (!fullscreenActive.value) previewMode.value = false
 }
 
-function handlePreviewWidgetAction({ event }) {
+const integration = useDashboardIntegration({
+  document:documentModel, context:previewContext, devices, install:false, ready:()=>!loading.value,
+  scope:computed(()=>`${draftFactoryId}:${documentModel.value.sceneId}`),
+  authorize:()=>!designerDisposed && designerActive && canAdminPage('platform.designer','view'),
+  refresh:()=>Promise.all(overlayWidgets.value.map(w=>w.data?.mode==='dataset'?previewDataSetBinding(w,true):w.data?.mode==='http_api'?previewHttpBinding(w,true):previewDatabaseBinding(w,true))),
+  action:payload=>handlePreviewWidgetAction(payload)
+})
+watch(integration.parameters, value=>{ previewContext.parameters=value },{immediate:true,flush:'sync'})
+function applyParameterDefinitions(definitions) {
+  if (!canAdminPage('platform.designer','edit')) return
+  documentModel.value.parameters=definitions;commitHistory('更新全局参数')
+}
+async function runSoftwareMethod(method,args) {
+  if (!SOFTWARE_METHODS.some(item=>item.name===method)) throw new Error('不支持的接口')
+  if (!previewMode.value) await enterPreviewMode()
+  return integration.api[method](...args)
+}
+function handlePreviewWidgetAction({ event, widget }) {
   if (!previewMode.value || !event) return
+  integration.emit('widgetAction',{widgetId:widget?.id || '',action:event.action})
+  if (integration.handle(event)) return
   if (['set_visibility', 'toggle_visibility'].includes(event.action)) {
     applyVisibilityAction(event, { groupVisibility: previewGroupVisibility, widgetVisibility: previewWidgetVisibility })
     return
@@ -2309,6 +2332,7 @@ onBeforeUnmount(() => {
 
 <template>
   <section ref="designerShellRef" class="dashboard-designer-shell" :class="{ 'is-preview': previewMode, 'is-fullscreen': fullscreenActive }">
+    <DashboardIntegrationPanel v-if="integrationOpen" :definitions="documentModel.parameters" :api="integration.api" :run="runSoftwareMethod" :readonly="!canAdminPage('platform.designer','edit')" :views="views" :widgets="documentModel.widgets" :devices="devices" @apply="applyParameterDefinitions" @close="integrationOpen=false" />
     <header class="designer-toolbar">
       <div class="designer-brand">
         <span class="designer-brand-mark" aria-label="大屏设计器">D</span>
@@ -2374,6 +2398,7 @@ onBeforeUnmount(() => {
           <svg v-if="!previewMode" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H3v5M16 3h5v5M8 21H3v-5M21 16v5h-5"></path></svg>
           <svg v-else viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3v6H3M15 3v6h6M9 21v-6H3M21 15h-6v6"></path></svg>
         </button>
+        <button type="button" @click="integrationOpen=true">接口与参数</button>
         <button type="button" class="save-button" :disabled="saving || !isDirty" @click="saveDraft" v-permission="{ page: 'platform.designer', action: 'edit' }">{{ saving ? '保存中...' : '保存草稿' }}</button>
         <button type="button" class="publish-button" :disabled="publishing || saving" @click="publishVersion" v-permission="{ page: 'platform.designer', action: 'publish' }">{{ publishing ? '发布中...' : '保存并发布' }}</button>
       </div>
@@ -2536,7 +2561,7 @@ onBeforeUnmount(() => {
                   :point-values="pointValues"
                   :database-values="databasePreviewValues"
                   :business-data="mockBusinessData"
-                  :runtime-context="previewContext"
+                  :runtime-context="previewContext" :parameters="integration.parameters.value" :parameter-definitions="integration.definitions.value" :interactive="previewMode"
                   :selected-part="previewSelectedPart"
                   :data-ready="true"
                   preview
@@ -2636,6 +2661,12 @@ onBeforeUnmount(() => {
           <div class="inspector-body">
             <section v-if="inspectorTab === 'content'" class="inspector-section">
               <label>组件标题<input v-model="selectedWidget.title" @change="recordProperty('修改标题')" /></label>
+              <template v-if="selectedWidget.type === 'filter'">
+                <label>关联参数<select v-model="selectedWidget.content.parameterKey" @change="recordProperty()"><option value="">请选择</option><option v-for="p in documentModel.parameters" :key="p.key" :value="p.key">{{p.label}} · {{p.key}}</option></select></label>
+                <label>控件<select v-model="selectedWidget.content.control" @change="recordProperty()"><option value="select">下拉选择</option><option value="text">文本输入</option><option value="number">数值输入</option><option value="date">日期选择</option><option value="checkbox">勾选</option></select></label>
+                <label>占位文字<input v-model="selectedWidget.content.placeholder" @change="recordProperty()" /></label>
+                <template v-if="selectedWidget.content.control==='select'"><div class="section-action-heading"><strong>选项</strong><button @click="selectedWidget.content.options.push({label:'新选项',value:''});recordProperty()">＋</button></div><div v-for="(option,index) in selectedWidget.content.options" :key="index" class="filter-option-row"><input v-model="option.label" aria-label="选项名称" @change="recordProperty()" /><input v-model="option.value" aria-label="选项值" @change="recordProperty()" /><button @click="selectedWidget.content.options.splice(index,1);recordProperty()">×</button></div></template>
+              </template>
               <label v-if="selectedWidget.type === 'text'">文本内容<textarea v-model="selectedWidget.content.text" rows="5" @change="recordProperty('修改文本')"></textarea></label>
               <label v-if="selectedWidget.type === 'text'">文字对齐<select v-model="selectedWidget.content.align" @change="recordProperty()"><option value="left">左对齐</option><option value="center">居中</option><option value="right">右对齐</option></select></label>
               <label v-if="selectedWidget.type === 'value'">字段名称<input v-model="selectedWidget.content.label" @change="recordProperty()" /></label>
@@ -2836,10 +2867,11 @@ onBeforeUnmount(() => {
               <div class="section-action-heading"><div><strong>交互事件</strong><small>导航、语音、链接和组件 / 分组显隐；始终禁止数据写入</small></div><button @click="addEvent" v-permission="{ page: 'platform.designer', action: 'edit' }">＋ 添加</button></div>
               <div v-for="(event, index) in selectedWidget.events" :key="index" class="condition-card">
                 <label>触发<select v-model="event.trigger" @change="recordProperty()" v-permission="{ page: 'platform.designer', action: 'edit' }"><option value="click">单击</option><option value="doubleClick">双击</option></select></label>
-                <label>动作<select v-model="event.action" @change="recordProperty()" v-permission="{ page: 'platform.designer', action: 'edit' }"><option value="enter_device">进入设备</option><option value="focus_factory">返回工厂总览</option><option value="focus_line">聚焦产线</option><option value="focus_workshop">聚焦车间</option><option value="switch_view">切换到指定视角</option><option value="set_visibility">显示 / 隐藏目标</option><option value="toggle_visibility">切换目标显隐</option><option value="play_voice">播放语音</option><option value="open_link">打开链接</option><option value="switch_scene">切换场景</option></select></label>
+                <label>动作<select v-model="event.action" @change="recordProperty()" v-permission="{ page: 'platform.designer', action: 'edit' }"><option value="enter_device">进入设备</option><option value="focus_factory">返回工厂总览</option><option value="focus_line">聚焦产线</option><option value="focus_workshop">聚焦车间</option><option value="switch_view">切换到指定视角</option><option value="set_visibility">显示 / 隐藏目标</option><option value="toggle_visibility">切换目标显隐</option><option value="play_voice">播放语音</option><option value="open_link">打开链接</option><option value="switch_scene">切换场景</option><option value="set_parameter">更新全局参数</option><option value="reset_parameters">恢复参数默认值</option><option value="refresh_data">刷新组件数据</option></select></label>
                 <label v-if="event.action === 'enter_device'">设备<select v-model="event.deviceId" @change="recordProperty()" v-permission="{ page: 'platform.designer', action: 'edit' }"><option value="">请选择</option><option v-for="device in devices" :key="device.id" :value="String(device.id)">{{ device.name }}</option></select></label>
                 <label v-if="event.action === 'focus_line'">产线<select v-model="event.lineId" @change="recordProperty()" v-permission="{ page: 'platform.designer', action: 'edit' }"><option value="">当前设备所属产线</option><option v-for="line in lines" :key="line.id" :value="String(line.id)">{{ line.name }}</option></select></label>
                 <label v-if="event.action === 'focus_workshop'">车间<select v-model="event.workshopId" @change="recordProperty()" v-permission="{ page: 'platform.designer', action: 'edit' }"><option value="">请选择</option><option v-for="workshop in workshops" :key="workshop.id" :value="String(workshop.id)">{{ workshop.name }}</option></select></label>
+                <template v-if="event.action==='set_parameter'"><label>参数<select v-model="event.parameterKey" @change="recordProperty()"><option value="">请选择</option><option v-for="p in documentModel.parameters" :key="p.key" :value="p.key">{{p.label}}</option></select></label><label>参数值<input v-model="event.value" @change="recordProperty()" /></label></template>
                 <label v-if="event.action === 'switch_view'">目标视角<select v-model="event.viewId" @change="recordProperty('设置目标视角')" v-permission="{ page: 'platform.designer', action: 'edit' }"><option value="">请选择</option><option v-for="view in views" :key="view.id" :value="view.id">{{ view.name }} · {{ DASHBOARD_VIEW_MODES.find(item => item.id === view.mode)?.label || '自定义' }}</option></select></label>
                 <template v-if="['set_visibility','toggle_visibility'].includes(event.action)">
                   <label>目标类型<select v-model="event.targetType" @change="normalizeVisibilityEventTarget(event)" v-permission="{ page: 'platform.designer', action: 'edit' }"><option value="group">组件分组</option><option value="widget">单个组件</option></select></label>
@@ -2971,6 +3003,8 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+.filter-option-row{display:grid;grid-template-columns:1fr 1fr 30px;gap:6px;margin:6px 0}.filter-option-row input{min-width:0}
+
 .device-tooltip-settings{display:grid;gap:10px;margin:0 0 18px;padding:14px;border:1px solid #dce4f2;border-radius:10px}.device-tooltip-settings legend{font-weight:700}.device-tooltip-settings label{display:flex;gap:7px;align-items:center;flex-wrap:wrap}.device-tooltip-settings input:not([type=checkbox]),.device-tooltip-settings textarea{width:100%}.device-tooltip-settings input[type=checkbox]{width:auto}.device-tooltip-settings details label{margin-top:8px}
 .template-import-dialog{width:min(720px,90vw)!important;max-height:85vh;overflow:auto}.template-reference-list{display:grid;gap:12px;max-height:48vh;overflow:auto;text-align:left}.template-reference-list label{display:grid;gap:5px}.template-reference-list select{width:100%;padding:8px;border:1px solid #9ab1c7;border-radius:6px;color:#1d2939;background:white}.template-reference-list small{font-size:11px;opacity:.75}
 .dashboard-designer-shell { --panel:#0d1724; --panel2:#111f2f; --line:rgba(130,184,226,.16); --text:#eaf4ff; --muted:#8fa5ba; --accent:#42a5f5; display:flex; flex-direction:column; height:clamp(720px,calc(100vh - 150px),1080px); min-height:720px; overflow-x:auto; overflow-y:hidden; border:1px solid rgba(53,105,148,.26); border-radius:16px; color:var(--text); background:#08111c; box-shadow:0 22px 52px rgba(9,22,34,.18); scrollbar-color:#29445e #08111b; scrollbar-width:thin; font-family:var(--hud-font-text,"SF Pro Text","Inter","Segoe UI","PingFang SC","Microsoft YaHei UI",sans-serif); font-synthesis:none; -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility; }

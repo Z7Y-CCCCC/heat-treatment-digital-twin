@@ -1204,9 +1204,9 @@ async function readDataSetTable(definition, context, factoryId) {
         const fields = [...new Set([...definition.columns.map(column => fieldName(column.path)), ...(definition.match ? [fieldName(definition.match.field)] : [])])];
         let where = ''; const params = [];
         if (definition.match) {
-            const value = context[definition.match.contextKey];
+            const value = require('./dataSets').matchValue(definition, context);
             if (value === undefined || value === null || value === '') throw new Error('请先选择要查看的对象');
-            params.push(value);
+            params.push(typeof value==='boolean' && handle.type==='sqlite' ? Number(value) : value);
             where = ` WHERE ${quoteIdentifier(fieldName(definition.match.field), handle.type)} = ${handle.type === 'postgres' ? '$1' : handle.type === 'sqlserver' ? '@p1' : '?'}`;
         }
         const table = qualifiedTable(connection, definition.database.schema, definition.database.table);

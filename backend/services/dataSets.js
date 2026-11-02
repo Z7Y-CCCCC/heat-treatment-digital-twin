@@ -4,6 +4,7 @@ const crypto = require('node:crypto');
 const { getDb } = require('../db/database');
 const { parseDataPath, readDataPath, appendDataPath } = require('../utils/externalDataPayload');
 const { BoundedTtlCache } = require('../utils/boundedTtlCache');
+const { isParameterKey } = require('../../shared/dashboardParameters.mjs');
 const KEY = 'external_dataset_config';
 const CONTEXT_KEYS = ['deviceId', 'lineId', 'workshopId', 'partId', 'viewId'];
 const cache = new BoundedTtlCache(), pending = new Map();
@@ -37,14 +38,20 @@ function normalizeDataSet(input = {}) {
         if (!/^[a-zA-Z_][\w-]{0,79}$/.test(name) || forbidden.test(name) || secret.test(name)) throw error('参数名称无效；认证信息请在连接中配置');
         if (location === 'header' && /^(host|connection|content-length|transfer-encoding|upgrade|trailer|te|expect|content-type)$/i.test(name)) throw error('不允许覆盖协议请求头');
         if (method === 'GET' && location === 'body') throw error('GET 参数请放在 Query 中');
-        const source = p.source === 'context' ? 'context' : 'literal', key = text(p.key, 40);
+        const source = ['context','parameter'].includes(p.source) ? p.source : 'literal', key = text(p.key, 40);
         if (source === 'context' && !CONTEXT_KEYS.includes(key)) throw error('请选择有效的当前对象参数');
-        return { name, in: location, source, key: source === 'context' ? key : '', value: source === 'literal' ? text(p.value, 1000) : '',
+        if (source === 'parameter' && !isParameterKey(key)) throw error('请选择有效的大屏参数');
+        return { name, in: location, source, key: source !== 'literal' ? key : '', value: source === 'literal' ? text(p.value, 1000) : '',
             required: p.required !== false, type: ['number','boolean'].includes(p.type) ? p.type : 'string' };
     });
     if (new Set(parameters.map(p => `${p.in}:${p.name.toLowerCase()}`)).size !== parameters.length) throw error('同一位置的参数不能重名');
     const match = input.match?.field ? { field: dataPath(input.match.field), contextKey: text(input.match.contextKey, 40) } : null;
-    if (match && !CONTEXT_KEYS.includes(match.contextKey)) throw error('记录匹配需要选择当前对象');
+    if (match && ![...CONTEXT_KEYS,'parameter'].includes(match.contextKey)) throw error('记录匹配需要选择当前对象');
+    if (match?.contextKey === 'parameter') {
+        if (!isParameterKey(input.match.parameterKey)) throw error('请填写记录匹配的参数标识');
+        match.parameterKey=input.match.parameterKey;
+        match.parameterType=['number','boolean'].includes(input.match.parameterType)?input.match.parameterType:'string';
+    }
     const database = { schema: text(input.database?.schema), table: text(input.database?.table), orderBy: text(input.database?.orderBy), orderDirection: input.database?.orderDirection === 'asc' ? 'asc' : 'desc' };
     if (source === 'database' && !database.table) throw error('请选择数据表');
     return { id: idPattern.test(input.id || '') ? input.id : `dataset_${crypto.randomUUID()}`, name, connectionId, source,
@@ -94,7 +101,7 @@ async function deleteDataSet(id, revision, factoryId) {
 function resolveRequest(definition, context) {
     let path = definition.request.path; const query = {}, body = {}, headers = {};
     for (const p of definition.request.parameters) {
-        let value = p.source === 'context' ? context[p.key] : p.value;
+        let value = p.source === 'context' ? context[p.key] : p.source === 'parameter' ? context.parameters?.[p.key] : p.value;
         if (value === undefined || value === null || value === '') { if (p.required) throw error(`缺少参数：${p.name}`); else continue; }
         if (p.type === 'number') { value = Number(value); if (!Number.isFinite(value)) throw error(`参数 ${p.name} 不是数值`); }
         if (p.type === 'boolean') { if (!['true','false','1','0'].includes(String(value))) throw error(`参数 ${p.name} 不是布尔值`); value = ['true','1'].includes(String(value)); }
@@ -115,9 +122,9 @@ function mapRows(payload, definition, context) {
     if (root === undefined) throw error('结果中找不到根节点');
     let rows = root == null ? [] : Array.isArray(root) ? root : [root];
     if (definition.match) {
-        const value = context[definition.match.contextKey];
+        const value = matchValue(definition,context);
         if (value === '' || value == null) throw error('请先选择要查看的对象');
-        rows = rows.filter(row => String(readDataPath(row, definition.match.field)) === String(value));
+        rows = rows.filter(row => typeof value==='boolean' ? convert(readDataPath(row,definition.match.field),{type:'boolean'})===value : String(readDataPath(row, definition.match.field)) === String(value));
         if (rows.length > 1) throw error('当前对象匹配多条记录，请检查匹配字段');
     }
     const invalid = new Set();
@@ -137,8 +144,8 @@ async function readDefinition(input, context, factoryId, force = false, inspect 
         return { fields: columns.map(c=>({path:appendDataPath('',c.name),name:c.name,kind:/int|float|double|decimal|numeric|real/i.test(c.dataType)?'number':'string',sample:c.dataType})), roots:[], fetchedAt:new Date().toISOString() };
     }
     // Validate required row context before opening a connection or issuing SQL.
-    if (!inspect && definition.match && (context[definition.match.contextKey] == null || context[definition.match.contextKey] === '')) throw error('请先选择要查看的对象');
-    const request = resolveRequest(definition, context);
+    if (!inspect && definition.match && (matchValue(definition,context) == null || matchValue(definition,context) === '')) throw error('请先选择要查看的对象或参数');
+    const request = definition.source === 'http' ? resolveRequest(definition, context) : null;
     const key = crypto.createHash('sha256').update(JSON.stringify([factoryId, connection, definition.source, definition.refreshMs, request, definition.source === 'database' ? [definition.database, definition.columns, definition.match, context] : null])).digest('hex');
     let payload = force ? undefined : cache.get(key);
     if (payload === undefined) {
@@ -195,4 +202,5 @@ async function readDataSetBindings(widgets, context) {
     }));
     return result;
 }
-module.exports = { KEY, CONTEXT_KEYS, normalizeDataSet, listDataSets, saveDataSet, deleteDataSet, readDefinition, readDataSetBindings, bindingResult, mapRows };
+function matchValue(definition,context) { return definition.match?.contextKey === 'parameter' ? context.parameters?.[definition.match.parameterKey] : context[definition.match?.contextKey]; }
+module.exports = { KEY, CONTEXT_KEYS, normalizeDataSet, listDataSets, saveDataSet, deleteDataSet, readDefinition, readDataSetBindings, bindingResult, mapRows, matchValue };
