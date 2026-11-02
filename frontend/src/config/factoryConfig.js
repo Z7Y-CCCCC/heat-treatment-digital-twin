@@ -208,6 +208,10 @@ export const adminApi = {
     async testDatabaseConfig(data) { return readApiJson(await fetch(`${API_BASE}/database/test`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) }), '测试数据库连接失败') },
     async saveDatabaseConfig(data) { return readApiJson(await fetch(`${API_BASE}/database/config`, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) }), '保存数据库配置失败') },
     async getDataSources() { return readApiJson(await fetch(`${API_BASE}/data-sources`), '读取外部数据源失败') },
+    async importDataSourceFile(file) {
+        const form = new FormData(); form.append('dataFile', file);
+        return readApiJson(await fetch(`${API_BASE}/data-sources/files`, { method: 'POST', body: form }), '导入数据文件失败')
+    },
     async testDataSource(data) { return readApiJson(await fetch(`${API_BASE}/data-sources/test`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) }), '测试外部数据源失败', true) },
     async saveDataSource(data) {
         const id = data?.id

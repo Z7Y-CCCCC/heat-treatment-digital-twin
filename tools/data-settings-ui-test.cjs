@@ -48,6 +48,7 @@ let server, browser, page;
     const initialWrites = writes.length;
     await page.screenshot({ path: path.join(directory, '01-primary-tab.png'), fullPage: true });
     await tab('外部数据源').click(); await onlyPanel('sources');
+    await panel('sources').locator('.source-start .source-type-card').filter({ hasText: 'MySQL / MariaDB' }).click();
     const sourceName = panel('sources').getByLabel('数据源名称', { exact: true }); await sourceName.fill('未保存的数据源');
     await tab('自动备份').click(); await onlyPanel('schedule');
     const interval = panel('schedule').getByLabel('持续运行备份间隔（小时）', { exact: true });

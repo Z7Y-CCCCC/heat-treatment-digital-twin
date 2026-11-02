@@ -7,6 +7,7 @@ import { adminApi } from '../config/factoryConfig.js'
 import { API_BASE } from '../runtime/backendEndpoint.js'
 import { SceneRuntime } from '../runtime/SceneRuntime.js'
 import WorkshopGroundEditor from './admin/components/WorkshopGroundEditor.vue'
+import DataSourceWorkspace from './admin/components/DataSourceWorkspace.vue'
 import { normalizeGround, normalizeDeviceGround } from '../../../shared/industrialGround.mjs'
 import { createVoiceAnnouncer, normalizeVoiceRule, parseVoiceConfig } from '../runtime/VoiceAnnouncer.js'
 import WidgetRenderer from '../runtime/WidgetRenderer.vue'
@@ -141,7 +142,6 @@ const databaseSectionTabs = [
 function selectDatabaseSection(key) {
     if (!databaseSectionTabs.some(tab => tab.key === key)) return
     databaseSection.value = key
-    if (key === 'sources') isExternalDataSourcesOpen.value = true
 }
 async function databaseTabKey(event, index) {
     if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
@@ -173,7 +173,6 @@ const isAdminNavCollapsed = ref(!!storedAdminUiState.isAdminNavCollapsed)
 const isFactoryMenuOpen = ref(true)
 const isDataMenuOpen = ref(true)
 const isModelsMenuOpen = ref(true)
-const isExternalDataSourcesOpen = ref(!!storedAdminUiState.isExternalDataSourcesOpen)
 
 function selectPointsSubpage(key) {
     if (visiblePointsSubpages.value.some(page => page.key === key)) pointsSubpage.value = key
@@ -350,6 +349,7 @@ const {
     databaseBackupStatus,
     dataSourceConnections,
     dataSourceEditor,
+    dataSourceDirty,
     dataSourceBusy,
     dataSourceMessage,
     dataSourceTestHealth,
@@ -406,19 +406,6 @@ const {
     syncComposerDraftFromSelection: (...args) => syncComposerDraftFromSelection(...args),
     scheduleComposerPreview: (...args) => scheduleComposerPreview(...args)
 })
-
-function dataSourceHealthLabel(status) {
-    return {
-        healthy: '健康',
-        auth_failed: '认证失败',
-        http_error: '接口异常',
-        network_error: '网络失败',
-        timeout: '请求超时',
-        config_error: '配置错误',
-        check_failed: '检查未完成',
-        unknown: '未检查'
-    }[status] || '未检查'
-}
 
 function isHttpDataSource(connection) {
     return connection.sourceType === 'http_api' || connection.type === 'http_api'
@@ -5260,7 +5247,6 @@ watch([
     selectedWidgetPreviewId,
     isLinePlannerEditorCollapsed,
     isLineDevicePoolCollapsed,
-    isExternalDataSourcesOpen,
     pointsSubpage,
     () => lineDevicePoolDock.x,
     () => lineDevicePoolDock.y
@@ -5285,7 +5271,6 @@ watch([
         selectedWidgetPreviewId: selectedWidgetPreviewId.value,
         isLinePlannerEditorCollapsed: isLinePlannerEditorCollapsed.value,
         isLineDevicePoolCollapsed: isLineDevicePoolCollapsed.value,
-        isExternalDataSourcesOpen: isExternalDataSourcesOpen.value,
         pointsSubpage: pointsSubpage.value,
         lineDevicePoolDockX: lineDevicePoolDock.x,
         lineDevicePoolDockY: lineDevicePoolDock.y
@@ -9988,117 +9973,12 @@ async function openAdminSetupStep(step) {
                             </div>
 
                             </section>
-                            <div v-show="databaseSection === 'sources'" id="database-panel-sources" role="tabpanel" aria-labelledby="database-tab-sources" class="external-data-source-manager" :class="{ open: isExternalDataSourcesOpen }">
-                                <div class="external-data-source-heading">
-                                    <button
-                                        type="button"
-                                        class="external-data-source-toggle"
-                                        :aria-expanded="isExternalDataSourcesOpen"
-                                        @click="isExternalDataSourcesOpen = !isExternalDataSourcesOpen"
-                                    >
-                                        <span>
-                                            <strong>外部数据源</strong>
-                                            <small>统一管理数据库和 HTTP API；外部请求由后台代理，业务数据只读使用。</small>
-                                        </span>
-                                        <span class="external-data-source-toggle-status">
-                                            {{ dataSourceConnections.filter(item => !item.primary).length }} 个数据源
-                                            <svg class="collapse-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m7 10 5 5 5-5" /></svg>
-                                        </span>
-                                    </button>
-                                    <button type="button" class="btn btn-small" @click="resetDataSourceEditor(); isExternalDataSourcesOpen = true">＋ 新建数据源</button>
-                                </div>
-
-                                <Transition name="section-collapse">
-                                    <div v-show="isExternalDataSourcesOpen" class="collapsible-section-body">
-                                        <div class="external-data-source-list">
-                                            <button
-                                                v-for="connection in dataSourceConnections.filter(item => !item.primary)"
-                                                :key="connection.id"
-                                                type="button"
-                                                class="external-data-source-card"
-                                                :class="{ active: dataSourceEditor.id === connection.id }"
-                                                @click="editDataSource(connection)"
-                                            >
-                                                <span class="external-data-source-icon" :class="{ api: isHttpDataSource(connection) }">{{ isHttpDataSource(connection) ? 'API' : 'DB' }}</span>
-                                                <span><strong>{{ connection.name }}</strong><small>{{ isHttpDataSource(connection) ? `${connection.method || 'GET'} · ${connection.baseUrl || '未填写地址'}` : `${connection.type} · ${connection.database || connection.filename}` }}</small></span>
-                                                <em :class="{ unhealthy: connection.health && !['healthy', 'unknown'].includes(connection.health.status), unchecked: !connection.health || connection.health.status === 'unknown', disabled: !connection.enabled }">{{ connection.enabled ? '启用' : '停用' }}<small>{{ dataSourceHealthLabel(connection.health?.status) }}</small></em>
-                                            </button>
-                                            <p v-if="!dataSourceConnections.some(item => !item.primary)" class="empty-hint">尚未添加外部数据源。数据库可在设计器中选择“连接 → 表 → 字段”；REST / OData 接口可选择连接、GET 路径与响应字段。</p>
-                                        </div>
-
-                                        <div class="external-data-source-editor">
-                                            <label>数据源类型
-                                                <select v-model="dataSourceEditor.sourceType" class="input" v-permission="{ page: controlPermissionPage, action: 'edit' }">
-                                                    <option value="database">数据库</option>
-                                                    <option value="http_api">HTTP API</option>
-                                                </select>
-                                            </label>
-                                            <label>数据源名称<input v-model="dataSourceEditor.name" class="input" placeholder="例如：MES 生产数据库 / 现场接口"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
-                                            <template v-if="dataSourceEditor.sourceType === 'database'">
-                                            <label>数据库类型
-                                                <select v-model="dataSourceEditor.type" class="input" v-permission="{ page: controlPermissionPage, action: 'edit' }">
-                                                    <option value="mysql">MySQL / MariaDB</option>
-                                                    <option value="postgres">PostgreSQL</option>
-                                                    <option value="sqlserver">SQL Server</option>
-                                                    <option value="sqlite">SQLite 文件</option>
-                                                </select>
-                                            </label>
-                                            <label v-if="dataSourceEditor.type !== 'sqlite'">主机<input v-model="dataSourceEditor.host" class="input" placeholder="127.0.0.1"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
-                                            <label v-if="dataSourceEditor.type !== 'sqlite'">端口<input v-model.number="dataSourceEditor.port" type="number" class="input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
-                                            <label v-if="dataSourceEditor.type !== 'sqlite'">数据库名<input v-model="dataSourceEditor.database" class="input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
-                                            <label v-if="dataSourceEditor.type !== 'sqlite'">默认 Schema<input v-model="dataSourceEditor.defaultSchema" class="input" placeholder="PostgreSQL: public / SQL Server: dbo"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
-                                            <label v-if="dataSourceEditor.type !== 'sqlite'">只读账号<input v-model="dataSourceEditor.user" class="input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
-                                            <label v-if="dataSourceEditor.type !== 'sqlite'">密码<input v-model="dataSourceEditor.password" type="password" autocomplete="new-password" class="input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
-                                            <label v-else class="external-data-source-wide">SQLite 文件<input v-model="dataSourceEditor.filename" class="input" placeholder="完整 .db 文件路径"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
-                                            <label>查询超时（毫秒）<input v-model.number="dataSourceEditor.queryTimeoutMs" type="number" min="1000" max="60000" class="input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
-                                            </template>
-                                            <template v-else>
-                                            <label class="external-data-source-wide">API 根地址<input v-model="dataSourceEditor.baseUrl" class="input" placeholder="例如：https://mes.example.com/api"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
-                                            <label>健康检查地址<input v-model="dataSourceEditor.healthPath" class="input" placeholder="例如：/health"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
-                                            <label>请求方式<select v-model="dataSourceEditor.method" class="input" disabled v-permission="{ page: controlPermissionPage, action: 'edit' }"><option value="GET">GET</option></select></label>
-                                            <label>响应格式<select v-model="dataSourceEditor.responseFormat" class="input" v-permission="{ page: controlPermissionPage, action: 'edit' }"><option value="auto">自动识别（推荐）</option><option value="json">JSON / OData JSON</option><option value="xml">XML</option><option value="csv">CSV</option></select></label>
-                                            <label>认证方式
-                                                <select v-model="dataSourceEditor.authType" class="input" v-permission="{ page: controlPermissionPage, action: 'edit' }">
-                                                    <option value="none">无认证</option>
-                                                    <option value="api_key">API Key</option>
-                                                    <option value="bearer">Bearer Token</option>
-                                                    <option value="basic">Basic 用户名密码</option>
-                                                    <option value="oauth2_client_credentials">OAuth2 客户端凭据（自动续令牌）</option>
-                                                </select>
-                                            </label>
-                                            <label v-if="dataSourceEditor.authType === 'api_key'">API Key 请求头<input v-model="dataSourceEditor.apiKeyHeader" class="input" placeholder="X-API-Key"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
-                                            <label v-if="dataSourceEditor.authType === 'api_key'">API Key<input v-model="dataSourceEditor.apiKey" type="password" autocomplete="new-password" class="input" placeholder="请输入密钥"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
-                                            <label v-if="dataSourceEditor.authType === 'bearer'" class="external-data-source-wide">Bearer Token<input v-model="dataSourceEditor.token" type="password" autocomplete="new-password" class="input" placeholder="请输入令牌"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
-                                            <label v-if="dataSourceEditor.authType === 'basic'">用户名<input v-model="dataSourceEditor.user" class="input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
-                                            <label v-if="dataSourceEditor.authType === 'basic'">密码<input v-model="dataSourceEditor.password" type="password" autocomplete="new-password" class="input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
-                                            <template v-if="dataSourceEditor.authType === 'oauth2_client_credentials'">
-                                                <label class="external-data-source-wide">令牌地址（HTTPS）<input v-model="dataSourceEditor.tokenUrl" class="input" placeholder="https://login.example.com/oauth2/v2.0/token"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
-                                                <label>Client ID<input v-model="dataSourceEditor.clientId" class="input" autocomplete="off"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
-                                                <label>Client Secret<input v-model="dataSourceEditor.clientSecret" type="password" autocomplete="new-password" class="input" placeholder="只保存在后端"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
-                                                <label>Scope（可选）<input v-model="dataSourceEditor.scope" class="input" placeholder="api://resource/.default"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
-                                                <label>客户端认证方式<select v-model="dataSourceEditor.tokenAuthMethod" class="input" v-permission="{ page: controlPermissionPage, action: 'edit' }"><option value="body">表单参数（常用）</option><option value="basic">HTTP Basic</option></select></label>
-                                            </template>
-                                            <label>请求超时（毫秒）<input v-model.number="dataSourceEditor.requestTimeoutMs" type="number" min="1000" max="60000" class="input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
-                                            <p class="external-data-source-wide external-data-source-help">健康检查只证明接口当前可访问、认证正确且返回 2xx，不代表业务数据已经可用。REST / OData 的 JSON、XML、CSV 响应可在设计器中读取字段并绑定；始终只请求 GET 数据接口。</p>
-                                            </template>
-                                            <p v-if="dataSourceEditor.sourceType === 'database' ? dataSourceEditor.type !== 'sqlite' : dataSourceEditor.authType !== 'none'" class="external-data-source-wide external-data-source-help">已有凭据以掩码显示：不修改则保留，输入新值可替换，删除全部内容表示清空。切换数据源类型或认证方式后需重新填写凭据。</p>
-                                            <label class="checkbox-line"><input v-model="dataSourceEditor.enabled" type="checkbox"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/> 启用此连接</label>
-                                        </div>
-                                        <div v-if="dataSourceTestHealth.status" class="external-data-source-health" :class="dataSourceTestHealth.status">
-                                            <div><strong>最近健康检查：{{ dataSourceHealthLabel(dataSourceTestHealth.status) }}</strong><span>{{ dataSourceTestHealth.message }}</span></div>
-                                            <small v-if="Number.isFinite(dataSourceTestHealth.responseTimeMs)">响应 {{ dataSourceTestHealth.responseTimeMs }}ms</small>
-                                            <small v-if="dataSourceTestHealth.httpStatus">HTTP {{ dataSourceTestHealth.httpStatus }}</small>
-                                            <small v-if="dataSourceTestHealth.checkedAt">最后检查：{{ formatBackupTime(dataSourceTestHealth.checkedAt) }}</small>
-                                        </div>
-                                        <div v-else class="external-data-source-health unknown"><div><strong>当前配置未检查</strong><span>测试后将显示健康状态、响应时间和最后检查时间；修改配置后需重新测试。</span></div></div>
-                                        <div class="external-data-source-actions">
-                                            <button type="button" class="btn" :disabled="dataSourceBusy" @click="testExternalDataSource" v-permission="{ page: controlPermissionPage, action: 'edit' }">{{ dataSourceEditor.sourceType === 'http_api' ? '测试接口健康度' : '测试数据库连接' }}</button>
-                                            <button type="button" class="btn btn-primary" :disabled="dataSourceBusy" @click="saveExternalDataSource" v-permission="{ page: controlPermissionPage, action: 'edit' }">保存数据源</button>
-                                            <button v-if="dataSourceEditor.id" type="button" class="btn btn-danger" :disabled="dataSourceBusy" @click="removeExternalDataSource({ ...dataSourceEditor })" v-permission="{ page: controlPermissionPage, action: 'delete' }">删除</button>
-                                        </div>
-                                    </div>
-                                </Transition>
-                                <p v-if="dataSourceMessage" class="external-data-source-message" role="status" aria-live="polite">{{ dataSourceMessage }}</p>
+                            <div v-show="databaseSection === 'sources'" id="database-panel-sources" role="tabpanel" aria-labelledby="database-tab-sources">
+                                <DataSourceWorkspace :connections="dataSourceConnections" :draft="dataSourceEditor"
+                                    :health="dataSourceTestHealth" :busy="dataSourceBusy" :dirty="dataSourceDirty"
+                                    :message="dataSourceMessage" :permission-page="controlPermissionPage" :confirm="confirm" :alert="alert"
+                                    @create="resetDataSourceEditor" @edit="editDataSource" @test="testExternalDataSource"
+                                    @save="saveExternalDataSource" @remove="removeExternalDataSource" @open-plc="selectAdminTab('devices')" />
                             </div>
 
                             <div v-show="databaseSection === 'schedule'" id="database-panel-schedule" role="tabpanel" aria-labelledby="database-tab-schedule" class="database-backup-panel database-auto-backup-panel">
@@ -10594,7 +10474,6 @@ async function openAdminSetupStep(step) {
 .settings-data-workspace > .secondary-page-nav-shell small,
 .settings-data-workspace > .secondary-page-nav-shell svg { display: none; }
 [id^="database-panel-"] { margin-top: 0; }
-#database-panel-sources .external-data-source-list { max-height: 200px; overflow: auto; }
 #database-panel-history .database-backup-list { max-height: 360px; overflow: auto; }
 #database-panel-schedule .database-backup-source-grid { max-height: 280px; overflow: auto; }
 
@@ -13204,7 +13083,6 @@ button:enabled:active {
     font-size: 12px;
 }
 .collapse-chevron { width: 18px; height: 18px; fill: none; stroke: #6e6e73; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; transition: transform 180ms ease; }
-.external-data-source-manager.open .collapse-chevron { transform: rotate(180deg); }
 .section-collapse-enter-active,
 .section-collapse-leave-active { transition: opacity 170ms ease, transform 170ms ease; }
 .section-collapse-enter-from,
@@ -14772,56 +14650,7 @@ button:enabled:active {
 .license-textarea { width: 100%; min-height: 150px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 11px; line-height: 1.45; }
 .license-actions { margin-top: 11px; margin-bottom: 0; }
 @media (max-width: 820px) { .license-summary-grid,.release-status-card { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-.external-data-source-manager { margin-top: 24px; padding: 16px; background: #fff; border: 1px solid #e2e2e5; border-radius: 10px; transition: border-color 180ms ease, box-shadow 180ms ease; }
-.external-data-source-manager.open { border-color: #d5d5da; box-shadow: 0 8px 24px #00000008; }
-.external-data-source-heading { display: flex; align-items: center; justify-content: space-between; gap: 18px; }
-.external-data-source-heading strong { color: #1d1d1f; font-size: 14px; }
-.external-data-source-toggle { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 0; color: inherit; background: transparent; border: 0; text-align: left; cursor: pointer; }
-.external-data-source-toggle > span:first-child { min-width: 0; }
-.external-data-source-toggle strong,.external-data-source-toggle small { display: block; }
-.external-data-source-toggle small { margin-top: 5px; color: #6e6e73; font-size: 12px; line-height: 1.55; }
-.external-data-source-toggle-status { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 8px; color: #6e6e73; font-size: 11px; white-space: nowrap; }
-.external-data-source-manager .collapsible-section-body { padding-top: 2px; }
-.external-data-source-list { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 10px; margin-top: 16px; }
-.external-data-source-card { display: grid; grid-template-columns: 34px minmax(0,1fr) auto; align-items: center; gap: 10px; min-width: 0; padding: 12px; color: #1d1d1f; background: #fff; border: 1px solid #e2e2e5; border-radius: 10px; text-align: left; cursor: pointer; transition: border-color 160ms ease,box-shadow 160ms ease,transform 160ms ease; }
-.external-data-source-card:hover,.external-data-source-card.active { border-color: #8e8e93; box-shadow: 0 8px 24px #0000000d; transform: translateY(-1px); }
-.external-data-source-icon { display: grid; place-items: center; width: 34px; height: 34px; color: #fff; background: #1d1d1f; border-radius: 9px; font-size: 10px; font-weight: 700; }
-.external-data-source-icon.api { background: #176b8e; }
-.external-data-source-card > span:nth-child(2) { min-width: 0; }
-.external-data-source-card strong,.external-data-source-card small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.external-data-source-card strong { font-size: 12px; }.external-data-source-card small { margin-top: 3px; color: #6e6e73; font-size: 10px; }
-.external-data-source-card em { display: flex; flex-direction: column; align-items: flex-end; gap: 3px; color: #24834f; font-size: 10px; font-style: normal; white-space: nowrap; }
-.external-data-source-card em.unhealthy { color: #b45309; }
-.external-data-source-card em.unchecked,.external-data-source-card em.disabled { color: #6e6e73; }
-.external-data-source-card em small { color: inherit; font-size: 9px; }
-.external-data-source-editor { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 12px 18px; margin-top: 16px; padding: 16px; background: #f7f7f8; border: 1px solid #e5e5e7; border-radius: 10px; }
-.external-data-source-editor label { display: flex; flex-direction: column; gap: 6px; color: #515154; font-size: 12px; font-weight: 500; }
-.external-data-source-editor .checkbox-line { flex-direction: row; align-items: center; align-self: end; }
-.external-data-source-wide { grid-column: 1/-1; }
-.external-data-source-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 12px; }
-.external-data-source-actions span { color: #515154; font-size: 12px; }
 .external-data-source-message { margin: 12px 0 0; color: #515154; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
-.external-data-source-help { margin: 0; padding: 10px 12px; color: #6e6e73; background: #fff; border: 1px solid #e5e5e7; border-radius: 8px; font-size: 11px; line-height: 1.55; }
-.external-data-source-health { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-top: 12px; padding: 11px 13px; color: #176b45; background: #f0fbf5; border: 1px solid #b7e5c9; border-radius: 8px; font-size: 11px; }
-.external-data-source-health > div { display: flex; flex: 1 1 300px; flex-direction: column; gap: 3px; min-width: 0; }
-.external-data-source-health > div span { color: #4c705d; overflow-wrap: anywhere; line-height: 1.55; }
-.external-data-source-health > small { color: #4c705d; white-space: nowrap; }
-.external-data-source-health.auth_failed,.external-data-source-health.config_error { color: #a43d32; background: #fff5f3; border-color: #f0c1ba; }
-.external-data-source-health.unknown { color: #515154; background: #f7f7f8; border-color: #e5e5e7; }
-.external-data-source-health.unknown > div span { color: #6e6e73; }
-.external-data-source-health.check_failed { color: #9a5b13; background: #fff9eb; border-color: #ecd69c; }
-.external-data-source-health.check_failed > div span { color: #806a43; }
-.external-data-source-health.auth_failed > div span,.external-data-source-health.config_error > div span { color: #8f5a53; }
-.external-data-source-health.http_error,.external-data-source-health.network_error,.external-data-source-health.timeout { color: #9a5b13; background: #fff9eb; border-color: #ecd69c; }
-.external-data-source-health.http_error > div span,.external-data-source-health.network_error > div span,.external-data-source-health.timeout > div span { color: #806a43; }
-@media (max-width: 820px) {
-    .external-data-source-heading { flex-wrap: wrap; }
-    .external-data-source-list { grid-template-columns: repeat(2,minmax(0,1fr)); }
-}
-@media (max-width: 600px) {
-    .external-data-source-list,.external-data-source-editor { grid-template-columns: minmax(0,1fr); }
-    .external-data-source-toggle { gap: 10px; }
-}
 .database-auto-backup-panel { padding: 18px; background: #f7f7f8; border: 1px solid #e2e2e5; border-radius: 10px; }
 .database-backup-trigger-grid { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 10px; margin-top: 16px; }
 .database-backup-trigger-card { position: relative; display: grid; grid-template-columns: 34px minmax(0,1fr) 38px; align-items: center; gap: 10px; min-width: 0; min-height: 82px; padding: 12px; color: #515154; background: #fff; border: 1px solid #dedee3; border-radius: 12px; cursor: pointer; transition: border-color 160ms ease,background-color 160ms ease,box-shadow 160ms ease,transform 160ms ease; }

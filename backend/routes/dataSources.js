@@ -1,4 +1,6 @@
 const express = require('express');
+const multer = require('multer');
+const { importDataFile } = require('../services/dataSourceTransports');
 const { getDb } = require('../db/database');
 const { isLoopbackAddress } = require('../middleware/security');
 const {
@@ -23,6 +25,7 @@ const {
 } = require('../services/dataSources');
 
 const router = express.Router();
+const dataFileUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 1048576, files: 1, fields: 0 } }).single('dataFile');
 const MAP_LEVELS = new Set(['world', 'country', 'province', 'city', 'district']);
 const MAP_DATA_KEYS = new Set(['factsFactoryCount','factsLocalCount','factsDeviceCount','panelRegionRows','dockFactoryCount','dockLocalCount','dockAssignedCount','dockCoverage','dockWorkshops','dockLines','dockDevices']);
 
@@ -105,6 +108,14 @@ router.get('/runtime-values', async (req, res) => {
 router.get('/', localOnly, (req, res) => {
     try { res.json({ success: true, ...listDataSources(), backupStatus: getBackupStatus() }); }
     catch (error) { handleError(res, error, 500); }
+});
+
+router.post('/files', localOnly, (req, res) => {
+    dataFileUpload(req, res, error => {
+        if (error) return res.status(400).json({ error: '请选择 1 MB 以内的 CSV / JSON 文件' });
+        try { res.json({ success: true, file: importDataFile(req.file?.buffer, req.file?.originalname, req.factoryId) }); }
+        catch (error) { handleError(res, error); }
+    });
 });
 
 router.post('/test', localOnly, async (req, res) => {

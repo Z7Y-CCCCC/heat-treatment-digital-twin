@@ -491,7 +491,7 @@ export function useSystemSettings({
             id: '', name: '', sourceType: 'database', type: 'mysql', host: '127.0.0.1', port: 3306,
             user: '', password: '', database: '', filename: '', defaultSchema: '',
             encrypt: false, trustServerCertificate: true, enabled: true, queryTimeoutMs: 8000,
-            baseUrl: '', healthPath: '/health', method: 'GET', responseFormat: 'auto', authType: 'none',
+            connector: 'http', baseUrl: '', healthPath: '/health', method: 'GET', responseFormat: 'auto', authType: 'none',
             apiKeyHeader: 'X-API-Key', apiKey: '', token: '', tokenUrl: '', clientId: '', clientSecret: '', scope: '', tokenAuthMethod: 'body', requestTimeoutMs: 8000
         }
     }
@@ -505,7 +505,7 @@ export function useSystemSettings({
     const dataSourceTestHealth = reactive(emptyDataSourceHealth())
     let dataSourceTestFingerprint = ''
     let dataSourceHealthToken = ''
-    let dataSourceSavedFingerprint = ''
+    const dataSourceSavedFingerprint = ref('')
     let dataSourceDraftVersion = 0
     let dataSourceEditorSession = 0
     let dataSourceEditorHydrating = false
@@ -538,7 +538,7 @@ export function useSystemSettings({
         // Only submit editable fields belonging to this source/auth type. In particular,
         // metadata and credentials from a previously selected source must never leak in.
         const fields = draft.sourceType === 'http_api'
-            ? ['baseUrl', 'healthPath', 'method', 'responseFormat', 'authType', 'requestTimeoutMs', ...({
+            ? ['connector', 'baseUrl', 'healthPath', 'method', 'responseFormat', 'authType', 'requestTimeoutMs', ...({
                 api_key: ['apiKeyHeader', 'apiKey'], bearer: ['token'], basic: ['user', 'password'],
                 oauth2_client_credentials: ['tokenUrl', 'clientId', 'clientSecret', 'scope', 'tokenAuthMethod']
             }[draft.authType] || [])]
@@ -551,6 +551,12 @@ export function useSystemSettings({
     function dataSourceDraftFingerprint() {
         return JSON.stringify(dataSourcePayload())
     }
+
+    const dataSourceDirty = computed(() => {
+        const current = dataSourceDraftFingerprint()
+        return current !== dataSourceSavedFingerprint.value
+            && (Boolean(dataSourceEditor.id) || current !== JSON.stringify(dataSourcePayload(defaultDataSourceDraft())))
+    })
 
     function dataSourceTimeoutError() {
         const timeout = Number(dataSourceEditor.sourceType === 'http_api'
@@ -584,11 +590,11 @@ export function useSystemSettings({
         dataSourceDraftVersion += 1
         dataSourceEditorSession += 1
         clearDataSourceHealth()
-        dataSourceSavedFingerprint = connection.id ? dataSourceDraftFingerprint() : ''
+        dataSourceSavedFingerprint.value = connection.id ? dataSourceDraftFingerprint() : ''
     }
 
-    function resetDataSourceEditor() {
-        replaceDataSourceDraft()
+    function resetDataSourceEditor(preset = {}) {
+        replaceDataSourceDraft(preset)
         dataSourceMessage.value = ''
     }
 
@@ -614,9 +620,9 @@ export function useSystemSettings({
                 connections: result.backupStatus?.connections || []
             })
             if (dataSourceEditor.id && !dataSourceBusy.value && !dataSourceTestFingerprint
-                && dataSourceDraftFingerprint() === dataSourceSavedFingerprint) {
+                && dataSourceDraftFingerprint() === dataSourceSavedFingerprint.value) {
                 const current = dataSourceConnections.value.find(item => item.id === dataSourceEditor.id)
-                if (current && JSON.stringify(dataSourcePayload(current)) === dataSourceSavedFingerprint) {
+                if (current && JSON.stringify(dataSourcePayload(current)) === dataSourceSavedFingerprint.value) {
                     Object.assign(dataSourceTestHealth, emptyDataSourceHealth(), current.health || {})
                 } else {
                     clearDataSourceHealth()
@@ -1076,7 +1082,7 @@ export function useSystemSettings({
             id: dataSourceEditor.id, name: dataSourceEditor.name,
             enabled: dataSourceEditor.enabled, sourceType: type
         })
-        dataSourceSavedFingerprint = ''
+        dataSourceSavedFingerprint.value = ''
         dataSourceMessage.value = '数据源类型已切换，请重新填写连接和认证信息。'
     }, { flush: 'sync' })
 
@@ -1220,9 +1226,7 @@ export function useSystemSettings({
             throw new Error('有设置正在保存，请等待完成后再切换工厂')
 
         const sourceFingerprint = dataSourceDraftFingerprint()
-        const sourceDefault = JSON.stringify(dataSourcePayload(defaultDataSourceDraft()))
-        const sourceDirty = sourceFingerprint !== dataSourceSavedFingerprint
-            && (Boolean(dataSourceEditor.id) || sourceFingerprint !== sourceDefault)
+        const sourceDirty = dataSourceDirty.value
         if (sourceDirty && !String(dataSourceEditor.name || '').trim())
             throw new Error('外部数据源草稿缺少连接名称；请补全后再切换工厂')
         if (sourceDirty && dataSourceTimeoutError())
@@ -1260,7 +1264,7 @@ export function useSystemSettings({
                 healthToken: dataSourceTestFingerprint === sourceFingerprint ? dataSourceHealthToken : ''
             })
             if (result?.error || !result?.success) throw new Error(result?.error || '外部数据源保存失败')
-            dataSourceSavedFingerprint = sourceFingerprint
+            dataSourceSavedFingerprint.value = sourceFingerprint
         }
         if (savedDataSourceBackupFingerprint && JSON.stringify(dataSourceBackupConfig) !== savedDataSourceBackupFingerprint) {
             const result = await adminApi.saveDataSourceBackupConfig({ ...dataSourceBackupConfig })
@@ -1310,6 +1314,7 @@ export function useSystemSettings({
         databaseBackupStatus,
         dataSourceConnections,
         dataSourceEditor,
+        dataSourceDirty,
         dataSourceBusy,
         dataSourceMessage,
         dataSourceTestHealth,

@@ -23,6 +23,7 @@ const {
 const { reloadDataSourceConfiguration } = require('./dataSources');
 const { getAlarmOutbox, snapshotAlarmOutbox, verifyAlarmOutboxSnapshot } = require('./alarmOutbox');
 const { siteRecoveryStatus, assertNoPendingSiteRecovery, beginSiteRecoveryIntent, updateSiteRecoveryIntent, finishSiteRecoveryIntent } = require('./siteRecoveryIntent');
+const { parseExternalPayload } = require('../utils/externalDataPayload');
 
 const DATA_DIR = process.env.APP_DATA_DIR
     ? path.resolve(process.env.APP_DATA_DIR)
@@ -68,6 +69,9 @@ function ensureDirectory(directory) {
 
 function describeConfigFile(filename) {
     const name = String(filename || '');
+    if (/^data-source-files\/[a-zA-Z0-9_-]{1,100}\/[a-f0-9-]{36}\.(?:csv|json)$/.test(name)) {
+        return { filename: name, archivePath: `config/${name}`, sensitive: true, dataFile: true };
+    }
     if (name === LEGACY_DATA_SOURCE_CONFIG
         || /^data-sources\.[a-zA-Z0-9_-]{1,128}\.json$/.test(name)) {
         return { filename: name, archivePath: `config/${name}`, sensitive: true };
@@ -86,6 +90,13 @@ function listAvailableConfigFiles() {
     let names = [LEGACY_DATA_SOURCE_CONFIG];
     try {
         names = [...names, ...fs.readdirSync(DATA_DIR).filter(name => /^data-sources\.[a-zA-Z0-9_-]{1,128}\.json$/.test(name))];
+        const filesRoot = path.join(DATA_DIR, 'data-source-files');
+        if (fs.existsSync(filesRoot)) for (const entry of fs.readdirSync(filesRoot, { withFileTypes: true })) {
+            if (!entry.isDirectory() || !/^[a-zA-Z0-9_-]{1,100}$/.test(entry.name)) continue;
+            for (const file of fs.readdirSync(path.join(filesRoot, entry.name), { withFileTypes: true })) {
+                if (file.isFile()) names.push(`data-source-files/${entry.name}/${file.name}`);
+            }
+        }
     } catch { /* A fresh install may not have created its data directory yet. */ }
     return [...new Set(names)].map(describeConfigFile).filter(Boolean);
 }
@@ -315,13 +326,9 @@ async function createSiteBackupUnlocked(uploadsRootDir) {
             sources.push({ ...source, archivePath: `uploads/${relative}`, relative });
         }
     }
-    let configNames = [];
-    try { configNames = await fs.promises.readdir(DATA_DIR); }
-    catch (error) { if (error.code !== 'ENOENT') throw error; }
-    for (const name of configNames) {
-        const descriptor = describeConfigFile(name);
-        if (!descriptor) continue;
-        const filename = path.join(DATA_DIR, name);
+    for (const descriptor of listAvailableConfigFiles()) {
+        const filename = path.join(DATA_DIR, descriptor.filename);
+        if (!await exists(filename)) continue;
         const stat = await fs.promises.lstat(filename);
         if (stat.isFile()) sources.push({ ...descriptor, filename, size: stat.size });
     }
@@ -512,6 +519,7 @@ function validateManifest(manifest) {
         if (!Number.isSafeInteger(size) || size < 0 || size > MAX_ARCHIVE_FILE_BYTES || !/^[a-f0-9]{64}$/.test(sha256)) {
             throw new Error(`整站备份文件校验信息无效: ${archivePath}`);
         }
+        if (describeConfigArchivePath(archivePath)?.dataFile && size > 1048576) throw new Error('数据源文件超过 1 MB 上限');
         if (archivePath !== databasePath
             && !(Number(manifest.version) >= 4 && archivePath === ALARM_OUTBOX_ARCHIVE_PATH)
             && !UPLOAD_GROUPS.some(group => archivePath.startsWith(`uploads/${group}/`))
@@ -706,9 +714,14 @@ async function restoreSiteBackupUnlocked(archiveFilename, uploadsRootDir) {
             const descriptor = describeConfigArchivePath(archivePath);
             if (!descriptor) continue;
             const restoredFilename = path.join(stagingDirectory, ...archivePath.split('/'));
-            const parsed = JSON.parse(await fs.promises.readFile(restoredFilename, 'utf8'));
-            if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.connections)) {
-                throw new Error(`整站备份中的配置文件无效：${descriptor.filename}`);
+            const content = await fs.promises.readFile(restoredFilename, 'utf8');
+            if (descriptor.dataFile) {
+                parseExternalPayload(content.replace(/^\uFEFF/, ''), descriptor.filename.endsWith('.csv') ? 'csv' : 'json');
+            } else {
+                const parsed = JSON.parse(content);
+                if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.connections)) {
+                    throw new Error(`整站备份中的配置文件无效：${descriptor.filename}`);
+                }
             }
             const currentFilename = path.join(DATA_DIR, descriptor.filename);
             await fs.promises.mkdir(path.dirname(currentFilename), { recursive: true });

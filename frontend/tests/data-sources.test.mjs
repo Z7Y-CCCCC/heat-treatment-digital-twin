@@ -34,6 +34,26 @@ function mockSave(t) {
     })
 }
 
+test('catalog presets start a clean adapter draft and dirty state returns to false after a save', async t => {
+    const s = fixture(t)
+    assert.equal(s.dataSourceDirty.value, false)
+    s.editDataSource(apiSource({ token: 'old-secret', authType: 'bearer' }))
+    assert.equal(s.dataSourceDirty.value, false)
+    s.resetDataSourceEditor({ sourceType: 'database', type: 'postgres', port: 5432, defaultSchema: 'public' })
+    assert.equal(s.dataSourceEditor.id, '')
+    assert.equal(s.dataSourceEditor.token, '')
+    assert.equal(s.dataSourceEditor.type, 'postgres')
+    assert.equal(s.dataSourceEditor.port, 5432)
+    assert.equal(s.dataSourceEditor.defaultSchema, 'public')
+    assert.equal(s.dataSourceDirty.value, true)
+    s.dataSourceEditor.name = '测试数据库'
+    mockSave(t)
+    await s.saveExternalDataSource()
+    assert.equal(s.dataSourceDirty.value, false)
+    s.dataSourceEditor.host = 'changed.example.test'
+    assert.equal(s.dataSourceDirty.value, true)
+})
+
 test('selecting a saved API keeps its health and does not fabricate or carry credentials', async t => {
     const s = fixture(t)
     s.editDataSource({ id: 'db-a', name: 'DB A', type: 'mysql', password: '******', user: 'db-user', database: 'factory', health: healthy() })

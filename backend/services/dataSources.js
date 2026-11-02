@@ -15,6 +15,7 @@ const { createMysqlDump, resolveMysqlTools } = require('./mysqlBackup');
 const { evaluateVariableExpression } = require('../utils/mathExpression');
 const { parseDataPath, readDataPath, appendDataPath, parseExternalPayload } = require('../utils/externalDataPayload');
 const { BoundedTtlCache } = require('../utils/boundedTtlCache');
+const { validateTransport, readTransport } = require('./dataSourceTransports');
 
 const DATA_DIR = process.env.APP_DATA_DIR
     ? path.resolve(process.env.APP_DATA_DIR)
@@ -150,7 +151,8 @@ function normalizeConnection(source = {}, current = {}) {
         source.type || source.dbType ? (source.type === 'http_api' ? 'http_api' : 'database') : currentSourceType
     ));
     const sameSourceType = sourceType === currentSourceType;
-    const previous = sameSourceType ? current : {};
+    const connector = String(source.connector ?? current.connector ?? 'http');
+    const previous = sameSourceType && (currentSourceType !== 'http_api' || connector === (current.connector || 'http')) ? current : {};
     const type = sourceType === 'http_api'
         ? 'http_api'
         : normalizeType(source.dbType ?? source.type ?? previous.dbType ?? previous.type);
@@ -173,6 +175,7 @@ function normalizeConnection(source = {}, current = {}) {
         const credentials = authType === normalizeHttpAuthType(previous.authType) ? previous : {};
         return {
             ...common,
+            connector,
             baseUrl: shortText(source.baseUrl ?? previous.baseUrl, '', 2048),
             healthPath: shortText(source.healthPath ?? previous.healthPath, '/health', 1024),
             method: 'GET',
@@ -343,7 +346,7 @@ function isHttpApiSource(connection) {
 
 function connectionFingerprint(connection) {
     const fields = isHttpApiSource(connection)
-        ? ['sourceType', 'type', 'enabled', 'baseUrl', 'healthPath', 'method', 'responseFormat', 'authType', 'apiKeyHeader', 'apiKey', 'token', 'user', 'password', 'tokenUrl', 'clientId', 'clientSecret', 'scope', 'tokenAuthMethod', 'requestTimeoutMs']
+        ? ['sourceType', 'type', 'connector', 'enabled', 'baseUrl', 'healthPath', 'method', 'responseFormat', 'authType', 'apiKeyHeader', 'apiKey', 'token', 'user', 'password', 'tokenUrl', 'clientId', 'clientSecret', 'scope', 'tokenAuthMethod', 'requestTimeoutMs']
         : ['sourceType', 'type', 'enabled', 'host', 'port', 'user', 'password', 'database', 'filename', 'defaultSchema', 'encrypt', 'trustServerCertificate', 'queryTimeoutMs'];
     return crypto.createHash('sha256').update(JSON.stringify(fields.map(field => connection[field]))).digest('hex');
 }
@@ -391,8 +394,8 @@ function saveDataSource(input = {}, factoryId = activeFactoryId()) {
     const current = index >= 0 ? stored.connections[index] : {};
     const next = normalizeConnection({ ...input, id: requestedId }, current);
     if (isHttpApiSource(next)) {
-        normalizeHttpUrl(next.baseUrl, next.healthPath);
-        httpAuthHeaders(next);
+        if ((next.connector || 'http') === 'http') { normalizeHttpUrl(next.baseUrl, next.healthPath); httpAuthHeaders(next); }
+        else validateTransport(next, factoryId);
     }
     const fingerprint = connectionFingerprint(next);
     next.health = current.id && connectionFingerprint(current) === fingerprint ? current.health : null;
@@ -582,7 +585,16 @@ async function requestAuthHeaders(connection, factoryId) {
     return headers;
 }
 
-async function testHttpApiSource(connection, checkedAt) {
+async function testHttpApiSource(connection, checkedAt, factoryId = activeFactoryId()) {
+    if ((connection.connector || 'http') !== 'http') {
+        const start = Date.now();
+        try {
+            await readTransport(connection, factoryId, { probe: true });
+            return { status: 'healthy', message: connection.connector === 'udp' ? '本机 UDP 接收端口可用；不代表发送端在线。' : '接入检查通过；请在数据预览中核对实际数据。', responseTimeMs: Date.now() - start, httpStatus: null, checkedAt };
+        } catch (error) {
+            return { status: error.code === 'TIMEOUT' ? 'timeout' : 'network_error', message: redactCredentials(error.message, connection), responseTimeMs: Date.now() - start, httpStatus: null, checkedAt };
+        }
+    }
     const { target } = normalizeHttpUrl(connection.baseUrl, connection.healthPath);
     // Validation belongs outside the network catch; malformed headers must be
     // config_error, and native error strings can contain an entire credential.
@@ -648,6 +660,10 @@ function normalizeHttpBinding(input = {}, requireJsonPath = true) {
 async function fetchHttpApiPayload(binding, factoryId) {
     const connection = resolveConnection(binding.connectionId, factoryId);
     if (!isHttpApiSource(connection)) throw new Error('所选连接不是 HTTP API 数据源');
+    if ((connection.connector || 'http') !== 'http') {
+        const target = ['mqtt', 'redis'].includes(connection.connector) && binding.apiPath !== '/' ? { ...connection, healthPath: binding.apiPath } : connection;
+        return readTransport(target, factoryId);
+    }
     const { base, target } = normalizeHttpUrl(connection.baseUrl, binding.apiPath);
     const prefix = base.pathname.endsWith('/') ? base.pathname : `${base.pathname}/`;
     if (!target.pathname.startsWith(prefix)) throw new Error('接口路径不能超出已登记的 API 根地址');
@@ -685,7 +701,8 @@ async function inspectHttpApiResponse(input = {}, factoryId = activeFactoryId())
     const payload = await fetchHttpApiPayload(binding, factoryId);
     const fields = [];
     function collect(value, path = '', depth = 0) {
-        if (fields.length >= 80 || depth > 5 || value === null) return;
+        if (fields.length >= 80 || depth > 5) return;
+        if (value === null) { if (path) fields.push({ path, kind: 'null', sample: 'null' }); return; }
         if (Array.isArray(value)) {
             if (path) fields.push({ path, kind: 'array', sample: `${value.length} 项` });
             if (value.length) collect(value[0], appendDataPath(path, 0), depth + 1);
@@ -846,7 +863,7 @@ async function testDataSource(input = {}, factoryId = activeFactoryId()) {
     try {
         if (isHttpApiSource(connection)) {
             try {
-                health = await testHttpApiSource(connection, checkedAt);
+                health = await testHttpApiSource(connection, checkedAt, factoryId);
             } catch (error) {
                 health = {
                     status: 'config_error',

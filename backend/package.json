@@ -40,6 +40,7 @@
     "test:designer": "node scripts/dashboard-designer-test.cjs",
     "test:data-sources": "node scripts/data-source-test.cjs",
     "test:data-sources-http": "node scripts/data-source-http-regression-test.cjs",
+    "test:data-source-transports": "node scripts/data-source-transports-test.cjs",
     "test:data-source-designer": "node scripts/data-source-designer-test.cjs",
     "test:business-data": "node scripts/business-data-test.cjs",
     "test:license": "node scripts/license-test.cjs",
@@ -58,6 +59,7 @@
     "express": "^4.18.2",
     "fast-xml-parser": "^5.11.1",
     "modbus-serial": "^8.0.25",
+    "mqtt": "^5.16.1",
     "mssql": "^12.5.5",
     "multer": "^2.2.0",
     "mysql2": "^3.22.5",
@@ -65,6 +67,7 @@
     "node-opcua-client": "^2.175.6",
     "nodes7": "^0.3.15",
     "pg": "^8.21.0",
+    "redis": "^6.3.1",
     "unzipper": "^0.12.5",
     "ws": "^8.16.0"
   }

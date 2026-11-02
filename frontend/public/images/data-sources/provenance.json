@@ -1,0 +1,170 @@
+[
+  {
+    "key": "http",
+    "file": "http.svg",
+    "source": "Project-authored protocol pictogram / word label",
+    "license": "Project source license"
+  },
+  {
+    "key": "websocket",
+    "file": "websocket.svg",
+    "source": "Project-authored protocol pictogram / word label",
+    "license": "Project source license"
+  },
+  {
+    "key": "hikvision",
+    "file": "hikvision.svg",
+    "source": "Project-authored protocol pictogram / word label",
+    "license": "Project source license"
+  },
+  {
+    "key": "mqtt",
+    "file": "mqtt.svg",
+    "source": "https://raw.githubusercontent.com/simple-icons/simple-icons/develop/icons/mqtt.svg",
+    "license": "Simple Icons CC0; brand trademark rights remain with their owners"
+  },
+  {
+    "key": "modbus",
+    "file": "modbus.svg",
+    "source": "Project-authored protocol pictogram / word label",
+    "license": "Project source license"
+  },
+  {
+    "key": "opcua",
+    "file": "opcua.svg",
+    "source": "Project-authored protocol pictogram / word label",
+    "license": "Project source license"
+  },
+  {
+    "key": "bacnet",
+    "file": "bacnet.svg",
+    "source": "Project-authored protocol pictogram / word label",
+    "license": "Project source license"
+  },
+  {
+    "key": "s7",
+    "file": "s7.svg",
+    "source": "https://raw.githubusercontent.com/simple-icons/simple-icons/develop/icons/siemens.svg",
+    "license": "Simple Icons CC0; brand trademark rights remain with their owners"
+  },
+  {
+    "key": "tcp",
+    "file": "tcp.svg",
+    "source": "Project-authored protocol pictogram / word label",
+    "license": "Project source license"
+  },
+  {
+    "key": "udp",
+    "file": "udp.svg",
+    "source": "Project-authored protocol pictogram / word label",
+    "license": "Project source license"
+  },
+  {
+    "key": "mysql",
+    "file": "mysql.svg",
+    "source": "https://raw.githubusercontent.com/simple-icons/simple-icons/develop/icons/mysql.svg",
+    "license": "Simple Icons CC0; brand trademark rights remain with their owners"
+  },
+  {
+    "key": "sqlserver",
+    "file": "sqlserver.svg",
+    "source": "Project-authored protocol pictogram / word label",
+    "license": "Project source license"
+  },
+  {
+    "key": "postgres",
+    "file": "postgres.svg",
+    "source": "https://raw.githubusercontent.com/simple-icons/simple-icons/develop/icons/postgresql.svg",
+    "license": "Simple Icons CC0; brand trademark rights remain with their owners"
+  },
+  {
+    "key": "oracle",
+    "file": "oracle.svg",
+    "source": "Project-authored protocol pictogram / word label",
+    "license": "Project source license"
+  },
+  {
+    "key": "dm8",
+    "file": "dm8.svg",
+    "source": "Project-authored protocol pictogram / word label",
+    "license": "Project source license"
+  },
+  {
+    "key": "kingbase",
+    "file": "kingbase.svg",
+    "source": "Project-authored protocol pictogram / word label",
+    "license": "Project source license"
+  },
+  {
+    "key": "gbase",
+    "file": "gbase.svg",
+    "source": "Project-authored protocol pictogram / word label",
+    "license": "Project source license"
+  },
+  {
+    "key": "mongodb",
+    "file": "mongodb.svg",
+    "source": "https://raw.githubusercontent.com/simple-icons/simple-icons/develop/icons/mongodb.svg",
+    "license": "Simple Icons CC0; brand trademark rights remain with their owners"
+  },
+  {
+    "key": "redis",
+    "file": "redis.svg",
+    "source": "https://raw.githubusercontent.com/simple-icons/simple-icons/develop/icons/redis.svg",
+    "license": "Simple Icons CC0; brand trademark rights remain with their owners"
+  },
+  {
+    "key": "influxdb",
+    "file": "influxdb.svg",
+    "source": "https://raw.githubusercontent.com/simple-icons/simple-icons/develop/icons/influxdb.svg",
+    "license": "Simple Icons CC0; brand trademark rights remain with their owners"
+  },
+  {
+    "key": "iotdb",
+    "file": "iotdb.svg",
+    "source": "Project-authored protocol pictogram / word label",
+    "license": "Project source license"
+  },
+  {
+    "key": "tdengine",
+    "file": "tdengine.svg",
+    "source": "Project-authored protocol pictogram / word label",
+    "license": "Project source license"
+  },
+  {
+    "key": "opengauss",
+    "file": "opengauss.svg",
+    "source": "Project-authored protocol pictogram / word label",
+    "license": "Project source license"
+  },
+  {
+    "key": "dis",
+    "file": "dis.svg",
+    "source": "Project-authored protocol pictogram / word label",
+    "license": "Project source license"
+  },
+  {
+    "key": "excel",
+    "file": "excel.svg",
+    "source": "Project-authored protocol pictogram / word label",
+    "license": "Project source license"
+  },
+  {
+    "key": "sqlite",
+    "file": "sqlite.svg",
+    "source": "Project-authored protocol pictogram / word label",
+    "license": "Project source license"
+  },
+  {
+    "key": "odata",
+    "file": "odata.svg",
+    "source": "Project-authored protocol pictogram / word label",
+    "license": "Project source license"
+  },
+  {
+    "key": "file",
+    "file": "file.svg",
+    "source": "Project-authored protocol pictogram / word label",
+    "license": "Project source license"
+  }
+]
