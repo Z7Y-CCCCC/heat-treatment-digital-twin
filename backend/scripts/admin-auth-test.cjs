@@ -170,14 +170,16 @@ async function serviceChecks() {
     assert.throws(() => restarted.createNativeTicket(viewer.token, viewer.status.csrfToken), { code: 'ADMIN_PERMISSION_DENIED' });
     assert.throws(() => restarted.requireSession(viewer.token, viewer.status.csrfToken, { permission: 'edit' }), { code: 'ADMIN_PERMISSION_DENIED' });
     assert.throws(() => restarted.listUsers(customer.token, customer.status.csrfToken), { code: 'ADMIN_PERMISSION_DENIED' });
-    restarted.updateUser(owner.token, owner.status.csrfToken, viewerAccount.id,
+    await restarted.updateUser(owner.token, owner.status.csrfToken, viewerAccount.id,
         { displayName: '现场操作员', role: 'customer', enabled: true });
-    assert.equal(restarted.status(viewer.token).authenticated, true);
+    assert.equal(restarted.status(viewer.token).authenticated, false);
+    assert.equal(restarted.status(viewer.token).displayAuthenticated, false);
+    assert.throws(() => restarted.requireSession(viewer.token, viewer.status.csrfToken), { code: 'ADMIN_AUTH_REQUIRED' });
     const promoted = await restarted.login(password, 'viewer-login', '', 'viewer_one');
     assert.equal(promoted.status.permissions.launch, true);
     restarted.deleteUser(owner.token, owner.status.csrfToken, viewerAccount.id);
     assert.equal(restarted.status(promoted.token).authenticated, false);
-    restarted.updateUser(owner.token, owner.status.csrfToken, customerAccount.id,
+    await restarted.updateUser(owner.token, owner.status.csrfToken, customerAccount.id,
         { displayName: '现场操作员', role: 'customer', enabled: false });
     assert.equal(restarted.status(customer.token).authenticated, false);
     await assert.rejects(restarted.login(password, 'disabled-login', '', 'customer_one'), { code: 'ADMIN_PASSWORD_INVALID' });

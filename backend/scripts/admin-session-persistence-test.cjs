@@ -24,14 +24,34 @@ const check = name => { checks.push(name); console.log('PASS ' + name); };
         { username: '明确拒绝', role: 'customer', password: 'customer-password', pagePermissions: {} });
     assert.equal(denied.pagePermissions.devices.view, false);
     check('customer default grants only devices/monitor read-only; explicit denials and owner-only pages stay denied');
-    const customer = await auth.login('customer-password', 'customer', '', '现场客户');
-    await auth.updateUser(owner.token, owner.status.csrfToken, customerUser.id,
-        { enabled: true, displayName: '改名后仍记住', pagePermissions: { devices: { view: true } } });
-    assert.equal(auth.status(customer.token).authenticated, true);
-    assert.equal(restart().status(customer.token).authenticated, true);
+    let customer = await auth.login('customer-password', 'customer', '', '现场客户');
+    const edits = [
+        { displayName: '改名后需重新登录' },
+        { permissions: { view: true, launch: true } },
+        { role: 'viewer' },
+        { role: 'customer' },
+        { pagePermissions: { devices: { view: true } } }
+    ];
+    for (const [index, edit] of edits.entries()) {
+        const peer = await auth.login('customer-password', `customer-peer-${index}`, '', '现场客户');
+        const canLaunch = auth.status(customer.token).permissions.launch;
+        const nativeBeforeEdit = canLaunch ? auth.exchangeNativeTicket(auth.createNativeTicket(customer.token, customer.status.csrfToken).ticket) : null;
+        const pendingTicket = canLaunch ? auth.createNativeTicket(customer.token, customer.status.csrfToken).ticket : null;
+        await auth.updateUser(owner.token, owner.status.csrfToken, customerUser.id, { enabled: true, ...edit });
+        for (const previous of [customer, peer, nativeBeforeEdit].filter(Boolean)) {
+            assert.equal(auth.status(previous.token).authenticated, false, 'every old session is revoked');
+            assert.equal(auth.status(previous.token).displayAuthenticated, false, 'remembered display access is revoked');
+            assert.equal(restart().status(previous.token).displayAuthenticated, false, 'revocation survives restart');
+            assert.throws(() => auth.requireSession(previous.token, previous.status.csrfToken), { code: 'ADMIN_AUTH_REQUIRED' });
+        }
+        if (pendingTicket) assert.throws(() => auth.exchangeNativeTicket(pendingTicket), { code: 'ADMIN_AUTH_REQUIRED' });
+        assert.equal(auth.status(owner.token).authenticated, true, 'another account stays logged in');
+        customer = await auth.login('customer-password', `customer-renew-${index}`, '', '现场客户');
+        assert.equal(customer.status.authenticated, true, 'the unchanged password permits a new login');
+    }
     assert.throws(() => auth.requireSession(customer.token, customer.status.csrfToken,
         { permission: 'page:point-monitor:view' }), { code: 'ADMIN_PERMISSION_DENIED' });
-    check('routine account edits retain every valid login across restart while revoked page grants apply immediately');
+    check('legacy account updates revoke all browser/native sessions and pending handoffs; a fresh login receives the new permissions');
     const native = auth.exchangeNativeTicket(auth.createNativeTicket(customer.token, customer.status.csrfToken).ticket);
     const filename = path.join(dataDir, 'admin-sessions.json');
     const disk = fs.readFileSync(filename, 'utf8');

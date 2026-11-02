@@ -3,6 +3,8 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { restoreGltfNodeNames } from './gltfNodeIdentity.js'
 import { TRANSFER_MODEL_PROFILES, planFeedPlacement } from './feedSequence.js'
+import { CleanerProcessEffects } from './CleanerProcessEffects.js'
+import { cleanerEffectsFromSignals } from './cleanerProcess.js'
 
 function disposeObject(root) {
     const geometries = new Set(), materials = new Set(), textures = new Set()
@@ -30,7 +32,7 @@ export class TransferFeedScene {
         this.renderer.setPixelRatio(Math.min(devicePixelRatio || 1, 1.5))
         this.renderer.outputColorSpace = THREE.SRGBColorSpace
         container.appendChild(this.renderer.domElement)
-        this.renderer.domElement.setAttribute('aria-label', '料车、推链、物料与炉门联动三维画面')
+        this.renderer.domElement.setAttribute('aria-label', '设备联动与清洗工艺三维画面')
         this.controls = new OrbitControls(this.camera, this.renderer.domElement)
         this.controls.enableDamping = true
         this.controls.maxPolarAngle = Math.PI * .49
@@ -75,7 +77,7 @@ export class TransferFeedScene {
         else cancelAnimationFrame(this.frame)
     }
 
-    async load({ modelId, furnaceUrl, cartUrl, furnaceMetadata }) {
+    async load({ modelId, furnaceUrl, cartUrl, furnaceMetadata, showTransfer = true }) {
         const profile = TRANSFER_MODEL_PROFILES[modelId]
         if (!profile) throw new Error('该设备型号尚未配置料车联动节点')
         this.profile = profile
@@ -141,6 +143,7 @@ export class TransferFeedScene {
         this.wheels = [1, 2].map(index => this.cart.getObjectByName(`cart_v6_node_cart_wheel_axle_${index}_rotate`))
             .filter(Boolean).map(target => ({ target, base: target.rotation.x }))
         this.makeRails()
+        this.cart.visible = this.chain.visible = this.railGroup.visible = !!showTransfer
         // Clone shell materials per mesh: the imported CAD/GLB can share them
         // with doors, which must remain opaque while the chamber is exposed.
         this.shellMaterials = []
@@ -151,6 +154,7 @@ export class TransferFeedScene {
             mesh.material = Array.isArray(original) ? materials : materials[0]
             this.shellMaterials.push(...materials)
         })
+        if (modelId === 'ultrasonic_cleaner_cad') this.processEffects = new CleanerProcessEffects(this.scene, this.furnace)
         this.loaded = true
         this.setCutaway(true)
         this.apply({ cart: 0, door: 0, chain: 0, material: 0 })
@@ -174,20 +178,23 @@ export class TransferFeedScene {
     }
 
     makeRails() {
+        this.railGroup = new THREE.Group()
+        this.scene.add(this.railGroup)
         const material = new THREE.MeshStandardMaterial({ color: '#7d8f9d', metalness: .7, roughness: .5 })
         for (const offset of [-1.20, 1.20]) {
             const rail = new THREE.Mesh(new THREE.BoxGeometry(.065, .065, 7.4), material)
             rail.position.set(this.dockX + offset, .025, 1.65)
-            this.scene.add(rail)
+            this.railGroup.add(rail)
         }
         for (let z = -1.6; z <= 5.4; z += .65) {
             const tie = new THREE.Mesh(new THREE.BoxGeometry(2.7, .035, .15), material)
             tie.position.set(this.dockX, .005, z)
-            this.scene.add(tie)
+            this.railGroup.add(tie)
         }
     }
 
     setCutaway(enabled) {
+        this.processEffects?.setCutaway(enabled)
         for (const material of this.shellMaterials || []) {
             material.transparent = !!enabled
             material.opacity = enabled ? .19 : 1
@@ -217,6 +224,12 @@ export class TransferFeedScene {
         }
         this.chain.count = index
         this.chain.instanceMatrix.needsUpdate = true
+        this.processEffects?.apply(pose.process)
+    }
+
+    applyProcessSignals(signals) {
+        this.processSignalState = cleanerEffectsFromSignals(signals, this.processSignalState)
+        this.processEffects?.apply(this.processSignalState)
     }
 
     resetCamera() {
@@ -233,11 +246,20 @@ export class TransferFeedScene {
         this.controls.update()
     }
 
+    focusProcess() {
+        if (!this.processEffects) return
+        const center = this.processEffects.center
+        this.camera.position.copy(center).add(new THREE.Vector3(1.6, 1.1, -2.5))
+        this.controls.target.copy(center)
+        this.controls.update()
+    }
+
     dispose() {
         this.disposed = true
         cancelAnimationFrame(this.frame)
         this.observer.disconnect()
         this.controls.dispose()
+        this.processEffects?.dispose()
         disposeObject(this.scene)
         this.renderer.dispose()
         this.renderer.forceContextLoss()

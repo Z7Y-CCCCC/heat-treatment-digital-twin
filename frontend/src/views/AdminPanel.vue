@@ -58,6 +58,7 @@ import PlatformUsersSettings from './admin/components/PlatformUsersSettings.vue'
 import AdminHelpGuide from './admin/components/AdminHelpGuide.vue'
 import MobileDeviceMotion from './admin/components/MobileDeviceMotion.vue'
 import ModelTransferSequence from './admin/components/ModelTransferSequence.vue'
+import { CLEANER_ACTIONS, motionEntries } from './admin/utils/motionEntries.js'
 import ManualDisassemblyLayout from './admin/components/ManualDisassemblyLayout.vue'
 import { useManualDisassemblyPage } from './admin/composables/useManualDisassemblyPage.js'
 import ModelInspectionEditor from './admin/components/ModelInspectionEditor.vue'
@@ -1620,13 +1621,36 @@ const motionBindingPageSize = 4
 const motionBindingSearch = ref('')
 const motionEditorPanel = ref('list')
 const motionWorkspaceMode = ref('parts')
+const cleanerProcessActions = CLEANER_ACTIONS
+const motionInlineProcess = ref('')
+const motionInlinePreviewRef = ref(null)
+const canPreviewCleanerProcesses = computed(() => activeTab.value === 'model-animations' && selectedPreviewModelId.value === 'ultrasonic_cleaner_cad')
+const inlineCleanerPreview = computed(() => canPreviewCleanerProcesses.value && motionWorkspaceMode.value === 'parts' && !!motionInlineProcess.value)
 const motionFormStep = ref('binding')
-const motionBindingEntries = computed(() => modelPartBindings.value.map((binding, index) => ({ binding, index }))
-    .filter(({ binding }) => `${formatModelBindingPartName(binding)} ${binding.source_group} ${binding.source_key}`.toLowerCase().includes(motionBindingSearch.value.trim().toLowerCase())))
+const motionBindingEntries = computed(() => motionEntries(modelPartBindings.value, canPreviewCleanerProcesses.value, motionBindingSearch.value, formatModelBindingPartName))
+const motionNodeCount = computed(() => modelPartBindings.value.length + (canPreviewCleanerProcesses.value ? cleanerProcessActions.length : 0))
 const motionBindingPageCount = computed(() => Math.max(1, Math.ceil(motionBindingEntries.value.length / motionBindingPageSize)))
 const motionBindingPageEntries = computed(() => motionBindingEntries.value.slice((motionBindingPage.value - 1) * motionBindingPageSize, motionBindingPage.value * motionBindingPageSize))
 watch([selectedPreviewModelId, motionBindingSearch], () => { motionBindingPage.value = 1 })
 watch(motionBindingPageCount, count => { motionBindingPage.value = Math.min(motionBindingPage.value, count) })
+watch([selectedPreviewModelId, activeTab], () => { motionInlineProcess.value = '' })
+
+function previewInlineCleanerProcess(id, reveal = false) {
+    if (!canPreviewCleanerProcesses.value || !cleanerProcessActions.some(action => action.id === id)) return
+    clearModelPreviewAnimation()
+    previewModelBindingIndex.value = -1
+    if (motionInlineProcess.value === id) motionInlinePreviewRef.value?.previewProcessStage(id)
+    motionInlineProcess.value = id
+    motionEditorPanel.value = 'list'
+    modelBindingStatus.value = '正在本页预览清洗工艺；工艺效果为模拟演示。'
+    if (reveal) {
+        motionBindingSearch.value = ''
+        nextTick(() => {
+            const index = motionBindingEntries.value.findIndex(entry => entry.process?.id === id)
+            if (index >= 0) motionBindingPage.value = Math.floor(index / motionBindingPageSize) + 1
+        })
+    }
+}
 
 function newMotionBinding() {
     resetModelBindingForm()
@@ -1635,12 +1659,14 @@ function newMotionBinding() {
 }
 
 function stopMotionPreview() {
+    motionInlineProcess.value = ''
     clearModelPreviewAnimation()
     previewModelBindingIndex.value = -1
     modelBindingStatus.value = '已停止动画，部件恢复原位'
 }
 
 async function changeMotionWorkspace(mode) {
+    motionInlineProcess.value = ''
     if (motionWorkspaceMode.value === mode) return
     motionWorkspaceMode.value = mode
     if (mode === 'transfer') disposeModelPreview()
@@ -2820,6 +2846,10 @@ function createModelPreviewRuntime(container) {
     const render = (now = performance.now()) => {
         const delta = Math.min((now - runtime.lastFrameTime) / 1000, 0.1)
         runtime.lastFrameTime = now
+        if (inlineCleanerPreview.value) {
+            runtime.frameId = requestAnimationFrame(render)
+            return
+        }
         runtime.updatables.forEach((object) => {
             if (object.visible !== false && object.update) object.update(delta)
         })
@@ -3342,6 +3372,7 @@ async function removeModelBinding(index) {
 }
 
 function previewModelBinding(index) {
+    motionInlineProcess.value = ''
     const binding = modelPartBindings.value[index]
     if (!binding) return
     const normalized = normalizeModelBinding(binding)
@@ -3377,7 +3408,7 @@ function saveModelBindingDraft() {
         motionBindingSearch.value = ''
         nextTick(() => {
             const index = modelPartBindings.value.findIndex(item => item.id === binding.id)
-            if (index >= 0) motionBindingPage.value = Math.floor(index / motionBindingPageSize) + 1
+            if (index >= 0) motionBindingPage.value = Math.floor((index + (canPreviewCleanerProcesses.value ? cleanerProcessActions.length : 0)) / motionBindingPageSize) + 1
         })
     }
 }
@@ -8635,7 +8666,7 @@ async function openAdminSetupStep(step) {
                 <div v-if="isModelWorkspace" class="tab-content" :class="{ 'model-animation-workspace': activeTab === 'model-animations' }" :data-testid="activeTab === 'model-animations' ? 'model-animation-page' : 'model-management-page'">
                     <template v-if="activeTab === 'model-animations'">
                         <div class="manual-layout-page-heading">
-                            <div><h2>动作动画</h2><p class="desc">{{ motionWorkspaceMode === 'transfer' ? '料车、炉门、推链与物料按进料工序联动。' : '选择动作节点预览，在参数配置中调整部件运动。' }}</p></div>
+                            <div><h2>动作动画</h2><p class="desc">{{ motionWorkspaceMode === 'transfer' ? '设备进料与清洗工艺联动，可预览注液、喷淋、超声、排液和吹扫。' : '选择部件或工艺动作预览，在参数配置中调整部件运动。' }}</p></div>
                             <label v-if="motionWorkspaceMode === 'parts'" class="manual-layout-model-picker">选择模型
                                 <select :value="selectedPreviewModelId" aria-label="选择动作动画模型" :disabled="modelBindingSaving || modelNameSaving" @change="changeMotionModel">
                                     <option v-if="!motionModelOptions.length" value="">暂无可配置的设备模型</option>
@@ -8645,7 +8676,7 @@ async function openAdminSetupStep(step) {
                         </div>
                         <nav class="motion-workspace-modes" aria-label="动作动画模式">
                             <button type="button" :class="{ active: motionWorkspaceMode === 'parts' }" :aria-pressed="motionWorkspaceMode === 'parts'" @click="changeMotionWorkspace('parts')">部件动作</button>
-                            <button type="button" :class="{ active: motionWorkspaceMode === 'transfer' }" :aria-pressed="motionWorkspaceMode === 'transfer'" @click="changeMotionWorkspace('transfer')">料车进料联动</button>
+                            <button type="button" :class="{ active: motionWorkspaceMode === 'transfer' }" :aria-pressed="motionWorkspaceMode === 'transfer'" @click="changeMotionWorkspace('transfer')">设备联动</button>
                         </nav>
                         <p v-if="!motionModelOptions.length" class="desc">请先在“模型管理”中导入设备 GLB / GLTF 模型。</p>
                     </template>
@@ -8923,8 +8954,12 @@ async function openAdminSetupStep(step) {
                                 </div>
 
                                 <template v-if="canEditModelBindings">
+                                    <section v-if="activeTab === 'model-animations' && selectedPreviewModelId === 'ultrasonic_cleaner_cad'" class="cleaner-process-actions" aria-label="清洗机工艺动作">
+                                        <div><strong>工艺动作 <span>{{ cleanerProcessActions.length }}</span></strong><small>选择下方节点，在本页预览</small></div>
+                                        <div class="cleaner-process-action-grid"><button v-for="action in cleanerProcessActions" :key="action.id" type="button" :aria-label="`预览工艺：${action.label}`" :aria-pressed="motionInlineProcess === action.id" @click="previewInlineCleanerProcess(action.id, true)"><span>{{ action.label }}</span><small>选中</small></button></div>
+                                    </section>
                                     <nav v-if="activeTab === 'model-animations'" class="motion-panel-tabs" aria-label="动作编辑面板">
-                                        <button type="button" :class="{ active: motionEditorPanel === 'list' }" :aria-pressed="motionEditorPanel === 'list'" @click="motionEditorPanel = 'list'">动作节点 <span>{{ modelPartBindings.length }}</span></button>
+                                        <button type="button" :class="{ active: motionEditorPanel === 'list' }" :aria-pressed="motionEditorPanel === 'list'" @click="motionEditorPanel = 'list'">动作节点 <span>{{ motionNodeCount }}</span></button>
                                         <button type="button" :class="{ active: motionEditorPanel === 'edit' }" :aria-pressed="motionEditorPanel === 'edit'" @click="motionEditorPanel = 'edit'">参数配置</button>
                                     </nav>
                                     <section v-if="activeTab === 'model-animations' && motionEditorPanel === 'list'" class="motion-binding-browser" aria-label="动作节点列表">
@@ -8933,7 +8968,12 @@ async function openAdminSetupStep(step) {
                                             <button class="btn" type="button" @click="newMotionBinding" v-permission="{ page: controlPermissionPage, action: 'edit' }">新增动作</button>
                                         </div>
                                         <div class="motion-binding-cards">
-                                            <article v-for="{ binding, index } in motionBindingPageEntries" :key="binding.id" class="motion-binding-card" :class="{ active: previewModelBindingIndex === index }">
+                                            <article v-for="{ binding, index, process } in motionBindingPageEntries" :key="process ? `process_${process.id}` : binding.id" class="motion-binding-card" :class="{ active: process ? motionInlineProcess === process.id : !motionInlineProcess && previewModelBindingIndex === index }">
+                                                <template v-if="process">
+                                                    <button type="button" class="motion-binding-select" @click="previewInlineCleanerProcess(process.id)"><strong>{{ process.label }}</strong><code>{{ process.detail }}</code><small>工艺动作 · 模拟预览</small></button>
+                                                    <div class="motion-card-actions"><button type="button" class="btn btn-sm" :aria-label="`预览工艺节点：${process.label}`" @click="previewInlineCleanerProcess(process.id)">预览</button></div>
+                                                </template>
+                                                <template v-else>
                                                 <button type="button" class="motion-binding-select" :title="formatModelBindingPartName(binding)" @click="previewModelBinding(index)">
                                                     <strong>{{ formatModelBindingPartName(binding) }}</strong>
                                                     <code :title="`${binding.source_group}.${binding.source_key}`">{{ binding.source_group }}.{{ binding.source_key }}</code>
@@ -8944,6 +8984,7 @@ async function openAdminSetupStep(step) {
                                                     <button type="button" class="btn btn-sm" @click="editModelBinding(index)" :aria-label="`编辑${formatModelBindingPartName(binding)}`">编辑</button>
                                                     <button type="button" class="btn btn-danger btn-sm" @click="removeModelBinding(index)" :aria-label="`删除${formatModelBindingPartName(binding)}`" v-permission="{ page: controlPermissionPage, action: 'edit' }">删除</button>
                                                 </div>
+                                                </template>
                                             </article>
                                             <p v-if="!motionBindingPageEntries.length" class="motion-list-empty">{{ motionBindingSearch ? '没有匹配的动作节点' : '暂无动作，请新增并配置部件信号。' }}</p>
                                         </div>
@@ -9066,7 +9107,10 @@ async function openAdminSetupStep(step) {
                             </section>
                         </section>
 
-                        <aside class="model-preview-panel" :class="{ 'inspection-preview-panel': modelLibraryStep === 'inspection' }">
+                        <aside v-if="inlineCleanerPreview" class="model-preview-panel inline-process-panel" aria-label="工艺动作本页预览">
+                            <ModelTransferSequence ref="motionInlinePreviewRef" :models="models" :initial-stage="motionInlineProcess" inline-preview @close-preview="stopMotionPreview" />
+                        </aside>
+                        <aside v-show="!inlineCleanerPreview" class="model-preview-panel" :class="{ 'inspection-preview-panel': modelLibraryStep === 'inspection' }">
                             <div class="model-preview-header">
                                 <div class="model-preview-title">
                                     <strong>{{ activeTab === 'model-animations' ? '模型动画演示' : '模型预览' }}</strong>
@@ -14439,6 +14483,17 @@ button:enabled:active {
 .animation-workspace .model-binding-header p { display: none; }
 .animation-workspace .model-binding-header .btn { padding: 8px 12px; font-size: 12px; }
 .motion-panel-tabs { display: flex; flex: 0 0 auto; gap: 4px; padding: 4px; border-radius: 9px; background: #f0f3f8; }
+.cleaner-process-actions { flex: 0 0 auto; padding: 9px; border: 1px solid #dcecf4; border-radius: 9px; background: #f4fafd; }
+.cleaner-process-actions > div:first-child { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 7px; }
+.cleaner-process-actions strong { font-size: 11px; color: #3c7596; }
+.cleaner-process-actions strong span { margin-left: 4px; color: #77a3b9; }
+.cleaner-process-actions small { font-size: 9px; color: #87a4b5; }
+.cleaner-process-action-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5px; }
+.cleaner-process-action-grid button { display: flex; align-items: center; justify-content: space-between; gap: 4px; min-width: 0; padding: 7px; border: 1px solid #dce9ef; border-radius: 6px; background: white; color: #3d7998; cursor: pointer; font-size: 10px; }
+.cleaner-process-action-grid button:hover { background: #e5f4fd; border-color: #8bc9e4; }
+.cleaner-process-action-grid button[aria-pressed="true"] { background: #e5f4fd; border-color: #8bc9e4; }
+.animation-workspace .inline-process-panel { overflow: hidden; }
+.cleaner-process-action-grid button small { font-size: 8px; white-space: nowrap; }
 .motion-panel-tabs button { flex: 1; padding: 8px; border: 0; border-radius: 6px; background: transparent; color: #6a778b; font-size: 12px; font-weight: 600; cursor: pointer; }
 .motion-panel-tabs button.active { background: #fff; color: #2464d5; box-shadow: 0 1px 4px #243b5712; }
 .motion-panel-tabs span { margin-left: 5px; font-size: 11px; color: #7b8ca6; }
