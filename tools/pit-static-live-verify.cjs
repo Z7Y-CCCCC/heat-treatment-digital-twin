@@ -48,8 +48,14 @@ async function verify(origin, token) {
         const result = await client.api('/api/native-preview/navigate', 'POST', { action: 'view', viewId, focus });
         assert.ok(result.sent === true || Number(result.sent) > 0, 'actual Unity must be connected');
         await until(() => context?.factoryId === TARGET.factoryId && context?.sceneReady && context?.viewId === viewId
-            && (!focus.deviceId || context.deviceId === focus.deviceId) && projection?.available && projection.seq > priorSequence && projection.viewId === viewId, viewId + ' ' + (focus.deviceId || ''));
+            && (!focus.deviceId || context.deviceId === focus.deviceId) && projection?.available && projection.seq > priorSequence && projection.viewId === viewId
+            // Context and projection are separate latest-only WS streams. A
+            // prior device's visibility snapshot may arrive after new context.
+            && (focus.deviceId ? projection.devices?.some(d => d.id === focus.deviceId && d.visible)
+                : projection.devices?.every(d => d.visible)), viewId + ' ' + (focus.deviceId || ''));
         await sleep(850);
+        await until(() => context?.viewId === viewId && (!focus.deviceId || context.deviceId === focus.deviceId)
+            && (!focus.deviceId || projection?.devices?.some(d => d.id === focus.deviceId && d.visible)), 'settled native visibility ' + (focus.deviceId || viewId));
     };
     try {
         await new Promise((resolve, reject) => { const timer = setTimeout(() => reject(Error('WebSocket timeout')), 10000); socket.once('open', () => { clearTimeout(timer); resolve(); }); socket.once('error', error => { clearTimeout(timer); reject(error); }); });
