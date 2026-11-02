@@ -46,7 +46,9 @@ export const adminSession = reactive({
     maxSessionHours: 8,
     expiresAt: 0,
     accountSlotId: '',
+    sessionRevision: 0,
     lockPending: false,
+    serviceUnavailable: false,
     warning: ''
 })
 
@@ -81,6 +83,14 @@ function permissionsForRole(role) {
 
 function applySession(data, expectedGeneration = generation) {
     if (expectedGeneration !== generation) return
+    const hasAccess = data?.authenticated === true || data?.displayAuthenticated === true
+    if (!data || typeof data.configured !== 'boolean' || typeof data.authenticated !== 'boolean'
+        || (hasAccess && (!data.configured || !data.user || typeof (data.user.id || data.user.username) !== 'string'
+            || !data.user.role || typeof data.csrfToken !== 'string' || !data.csrfToken))
+        || (data.authenticated && data.displayAuthenticated === false)) {
+        adminSession.serviceUnavailable = true
+        throw Object.assign(new Error('后台会话状态响应异常，请稍后重试'), { code: 'ADMIN_SERVICE_UNAVAILABLE' })
+    }
     if (data.pageCatalog) applyAdminPageCatalog(data.pageCatalog)
     adminSession.ready = true
     adminSession.configured = data.configured !== false
@@ -100,8 +110,15 @@ function applySession(data, expectedGeneration = generation) {
     adminSession.idleTimeoutMinutes = data.idleTimeoutMinutes || 30
     adminSession.maxSessionHours = data.maxSessionHours || 8
     adminSession.expiresAt = data.expiresAt || 0
-    adminSession.accountSlotId = String(data.accountSlotId || (adminSession.displayAuthenticated || adminSession.authenticated ? 'main' : ''))
-    csrfToken = adminSession.displayAuthenticated || adminSession.authenticated ? data.csrfToken || '' : ''
+    const previousSlot = adminSession.accountSlotId
+    const existingSlot = previousSlot === 'main' || /^[a-f0-9]{24}$/.test(previousSlot) ? previousSlot : ''
+    adminSession.accountSlotId = String(data.accountSlotId || (adminSession.displayAuthenticated || adminSession.authenticated ? existingSlot || 'main' : ''))
+    const nextCsrfToken = adminSession.displayAuthenticated || adminSession.authenticated ? data.csrfToken || '' : ''
+    // A password change can replace credentials without changing username or
+    // account slot. Publish a non-secret epoch so the native handoff renews too.
+    if (csrfToken !== nextCsrfToken) adminSession.sessionRevision++
+    csrfToken = nextCsrfToken
+    adminSession.serviceUnavailable = false
     adminSession.warning = ''
 }
 
@@ -146,7 +163,10 @@ async function authRequest(path, { method = 'GET', body } = {}, csrf = csrfToken
             },
             ...(body ? { body: JSON.stringify(body) } : {})
         })
-        const data = await response.json().catch(() => ({}))
+        let data
+        try { data = await response.json() }
+        catch { throw Object.assign(new Error('后台安全服务响应异常，请稍后重试'), { code: 'ADMIN_SERVICE_UNAVAILABLE', status: response.status }) }
+        if (!data || typeof data !== 'object' || Array.isArray(data)) throw Object.assign(new Error('后台安全服务响应异常，请稍后重试'), { code: 'ADMIN_SERVICE_UNAVAILABLE', status: response.status })
         if (!response.ok && data.code === 'ADMIN_AUTH_REQUIRED' && requestGeneration === generation) {
             if (adminSession.displayAuthenticated) void refreshAdminSession()
             else clearSession('后台会话已失效，请重新输入密码')
@@ -158,6 +178,9 @@ async function authRequest(path, { method = 'GET', body } = {}, csrf = csrfToken
         })
         return data
     } catch (error) {
+        if (requestGeneration === generation && (error.name === 'AbortError' || error instanceof TypeError || error.status >= 500 || error.code === 'ADMIN_SERVICE_UNAVAILABLE')) {
+            adminSession.serviceUnavailable = true
+        }
         if (error.name === 'AbortError' || error instanceof TypeError) {
             throw new Error('无法连接后台安全服务，请检查服务状态后重试')
         }
@@ -376,7 +399,13 @@ async function touchSession() {
         const data = await authRequest('/touch', { method: 'POST' })
         applySession(data, expectedGeneration)
     } catch (error) {
-        if (generation === expectedGeneration) clearSession(error.message)
+        if (generation === expectedGeneration) {
+            // A failed heartbeat is not proof of logout. Keep the last confirmed
+            // display identity; only an authoritative session snapshot can revoke
+            // it. API writes are still independently checked by the server.
+            adminSession.warning = error.message
+            if (error.status === 401 || error.status === 403) await refreshAdminSession()
+        }
     }
 }
 
@@ -422,7 +451,7 @@ export function startAdminSessionTracking() {
     document.addEventListener('visibilitychange', handleVisibilityChange)
     pollTimer = window.setInterval(() => {
         const now = Date.now()
-        if ((adminSession.authenticated || adminSession.displayAuthenticated || pendingLock)
+        if ((adminSession.authenticated || adminSession.displayAuthenticated || pendingLock || adminSession.serviceUnavailable)
             && (now - lastPollAt >= 10000 || (adminSession.authenticated && now >= adminSession.expiresAt))) {
             lastPollAt = now
             refreshAdminSession()

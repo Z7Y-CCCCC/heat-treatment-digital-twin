@@ -22,10 +22,10 @@ function makeAccountSlotId(){const bytes=new Uint8Array(12);window.crypto.getRan
 async function addAccount(){accountBusy.value=true;accountError.value='';accountNotice.value='';try{await addAdminAccount(makeAccountSlotId(),accountAddUsername.value,accountAddPassword.value);accountAddUsername.value='';accountAddPassword.value='';accountAddOpen.value=false;await loadAccountSessions()}catch(error){accountError.value=error.message}finally{accountBusy.value=false}}
 async function switchAccount(account){if(account.slotId===adminSession.accountSlotId)return;accountBusy.value=true;accountError.value='';accountNotice.value='';try{if(account.needsLogin){accountAddUsername.value=account.user.username;accountAddPassword.value='';accountAddOpen.value=true;accountNotice.value='登录已失效，请输入密码重新登录';return}await activateAdminAccount(account.slotId,account.csrfToken);await loadAccountSessions()}catch(error){accountError.value=error.message;await loadAccountSessions()}finally{accountBusy.value=false}}
 async function signOut(){accountBusy.value=true;accountError.value='';accountNotice.value='';try{await logoutCurrentAdminAccount();accountPasswordMode.value=false;accountAddOpen.value=false;await loadAccountSessions();accountNotice.value=accountSessions.value.length?'当前账户已退出，可从下方切换到其他已登录账户':'当前账户已退出'}catch(error){accountError.value=error.message}finally{accountBusy.value=false}}
-async function changeOwnPassword(){accountBusy.value=true;accountError.value='';try{await changeAdminPassword(accountCurrentPassword.value,accountNewPassword.value);accountCurrentPassword.value='';accountNewPassword.value='';accountPasswordMode.value=false;accountError.value='密码已更新，其他会话已退出'}catch(error){accountError.value=error.message}finally{accountBusy.value=false}}
+async function changeOwnPassword(){accountBusy.value=true;accountError.value='';try{await changeAdminPassword(accountCurrentPassword.value,accountNewPassword.value);accountCurrentPassword.value='';accountNewPassword.value='';accountPasswordMode.value=false;await loadAccountSessions();accountNotice.value='密码已更新，其他会话已退出'}catch(error){accountError.value=error.message}finally{accountBusy.value=false}}
 
 const dock=ref(null), hidden=ref(false)
-let timer=0, hovering=false, motionFrame=0, sessionTimer=0
+let timer=0, hovering=false, motionFrame=0
 function geometry(){window.dispatchEvent(new Event('account-dock-geometry'))}
 function trackMotion(){
   cancelAnimationFrame(motionFrame)
@@ -47,8 +47,8 @@ function escape(event){if(event.key==='Escape' && accountOpen.value){accountOpen
 watch(()=>qualityState.notice,()=>nextTick(trackMotion))
 watch([hidden,accountOpen],()=>{nextTick(trackMotion);if(!accountOpen.value)arm()})
 watch(()=>route.path,()=>{accountOpen.value=false;accountAddPassword.value='';accountCurrentPassword.value='';accountNewPassword.value='';hidden.value=false;arm();nextTick(refreshAdminSession)})
-onMounted(()=>{void refreshAdminSession();sessionTimer=setInterval(refreshAdminSession,10000);window.addEventListener('focus',refreshAdminSession);arm();window.addEventListener('keydown',escape,true);geometry()})
-onUnmounted(()=>{clearInterval(sessionTimer);window.removeEventListener('focus',refreshAdminSession);clearTimeout(timer);cancelAnimationFrame(motionFrame);window.removeEventListener('keydown',escape,true);geometry()})
+onMounted(()=>{void refreshAdminSession();arm();window.addEventListener('keydown',escape,true);geometry()})
+onUnmounted(()=>{clearTimeout(timer);cancelAnimationFrame(motionFrame);window.removeEventListener('keydown',escape,true);geometry()})
 </script>
 
 <template>

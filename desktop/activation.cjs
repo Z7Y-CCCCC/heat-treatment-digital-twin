@@ -13,17 +13,17 @@ function createActivationClient(origin) {
             }, res => {
                 const chunks = []; let size = 0;
                 res.on('data', chunk => { size += chunk.length; if (size > 65536) req.destroy(new Error('激活响应过大')); else chunks.push(chunk); });
-                res.on('error', reject);
+                res.on('error', error => reject(Object.assign(new Error('激活服务连接中断，请重试'), { cause: error, retryable: true })));
                 res.on('end', () => {
                     try {
                         const value = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-                        if (res.statusCode !== 200 || !value.success) throw new Error(value.error || '激活服务暂不可用，请确认后台版本');
+                        if (res.statusCode !== 200 || value?.success !== true) throw Object.assign(new Error(value?.error || '激活服务暂不可用，请确认后台版本'), { status: res.statusCode, retryable: res.statusCode >= 500 });
                         resolve(value);
                     } catch (error) { reject(error); }
                 });
             });
             req.setTimeout(10000, () => req.destroy(new Error('激活服务连接超时，请重试')));
-            req.on('error', reject); req.end(body);
+            req.on('error', error => reject(Object.assign(new Error('激活服务暂不可用，请重试'), { cause: error, retryable: true }))); req.end(body);
         });
     }
     return {
@@ -36,14 +36,21 @@ function createActivationClient(origin) {
         async activate(code) {
             if (typeof code !== 'string' || code.length > 16384) throw new Error('请粘贴完整激活码');
             const current = await this.status(); // Refresh a nonce after service recovery.
-            if (current.valid) return { success: true, valid: true };
+            if (!current.required) return { success: true, valid: current.valid, required: false };
             return request('POST', { activationCode: code });
         }
     };
 }
 async function runStartupActivation({ origin, ipcMain, clipboard, getWindow, createWindow, onWaiting }) {
     const client = createActivationClient(origin);
-    const initial = await client.status();
+    let initial;
+    for (let attempt = 0; attempt < 3; attempt++) {
+        try { initial = await client.status(); break; }
+        catch (error) {
+            if (!error.retryable || attempt === 2) throw error;
+            await new Promise(resolve => setTimeout(resolve, 300 * (attempt + 1)));
+        }
+    }
     if (!initial.required) return;
     if (!getWindow() || getWindow().isDestroyed()) await createWindow();
     const startupWindow = getWindow();
@@ -55,7 +62,7 @@ async function runStartupActivation({ origin, ipcMain, clipboard, getWindow, cre
     let pollTimer = null, watching = true;
     const watchActivation = async () => {
         try {
-            if ((await client.status()).valid && watching) { resolveActivation(); return; }
+            if (!(await client.status()).required && watching) { resolveActivation(); return; }
         } catch { /* A service recovery must leave the user's input intact. */ }
         if (watching) pollTimer = setTimeout(watchActivation, 2000);
     };
@@ -68,7 +75,7 @@ async function runStartupActivation({ origin, ipcMain, clipboard, getWindow, cre
             busy = true;
             try {
                 const result = await client.activate(code);
-                if (!result.valid || (await client.status()).required) throw new Error('激活状态未确认，请重试');
+                if ((!result.valid && result.required !== false) || (await client.status()).required) throw new Error('激活状态未确认，请重试');
                 setImmediate(resolveActivation); return { success: true };
             } finally { busy = false; }
         }

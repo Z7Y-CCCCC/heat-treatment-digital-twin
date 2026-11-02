@@ -87,6 +87,13 @@ let sandbox, issuer, backend, desktop, browser, nativeBrowser, page, adminPage, 
     assert.equal(startup.url().endsWith('startup.html'), true);
     await startup.screenshot({ path: path.join(sandbox.directory, '02-startup-activation.png') });
     await startup.getByLabel('激活码', { exact: true }).fill(code);
+    await stopOwnedSmokeProcess(backend); backend = null;
+    await startup.getByRole('button', { name: '激活并继续', exact: true }).click();
+    await startup.getByRole('alert').filter({ hasText: /激活服务.*(?:不可用|中断)/ }).waitFor();
+    assert.equal(await startup.getByLabel('激活码', { exact: true }).inputValue(), code);
+    assert.equal(startup.url().endsWith('startup.html'), true);
+    await startBackend();
+    check('a service interruption during activation preserves the entered code and prompt; the next attempt obtains the recovered service nonce');
     await startup.getByRole('button', { name: '激活并继续', exact: true }).click();
     await startup.waitForURL(origin + '/admin');
     const status = await (await fetch(origin + '/api/admin-auth/session')).json(); assert.equal(status.configured, false);

@@ -15,7 +15,13 @@ test('pre-Unity status is compact and has no competing loading artwork or progre
     assert.match(html, /id="elapsed"/);
     assert.match(html, /body\.launch-status\s*\{\s*padding:\s*0;/);
     assert.match(html, /body\.launch-status \.shell\s*\{[^}]*border-radius:\s*0;/);
-    assert.doesNotMatch(html, /loading-factory\.png|id="bar"|id="percent"|@keyframes/);
+    assert.doesNotMatch(html, /loading-factory\.png|id="bar"|id="percent"/);
+    // Activation deliberately has its own waiting indicator. It is hidden in
+    // the compact pre-Unity state and must not invalidate supervision tests.
+    assert.match(html, /<section[^>]*id="activationPanel"[^>]*hidden>/);
+    for (const match of html.matchAll(/([^{}]+)\{([^{}]*\banimation\s*:[^{}]*)\}/g)) {
+        assert.match(match[1], /activation-art|prefers-reduced-motion/);
+    }
 });
 
 class Child extends EventEmitter {
@@ -71,6 +77,9 @@ function loadDesktop({ createLog, spawnProcess, userDataPath, deploymentConfig, 
             if (name === './templateData.cjs') return { seedTemplateConfiguration: async () => {} };
             if (name === './deployment.cjs') return { ...require('../deployment.cjs'),
                 ...(deploymentConfig ? { resolveDeployment: () => deploymentConfig } : {}) };
+            // Activation IPC/network has dedicated integration tests. A VM
+            // supervision unit must never contact a real local installation.
+            if (name === './activation.cjs') return { runStartupActivation: async () => {} };
             if (name === './logManager.cjs') return {
                 cleanupLogArchives() {},
                 createRotatingLogWriter: createLog || (async () => {
