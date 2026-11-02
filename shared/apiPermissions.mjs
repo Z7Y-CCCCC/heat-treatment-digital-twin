@@ -54,6 +54,9 @@ export function apiPermission(path, method = 'GET', body) {
     return 'admin'
   }
   if (resource('native-preview')) {
+    // The header's connection count is display-safe, not a draft-preview grant.
+    // Keep this exact path separate from every authoring/navigation endpoint.
+    if (safe && path === '/api/native-preview/status') return read(PAGE_PERMISSIONS.filter(p => !p.ownerOnly).map(p => p.key), true)
     const previewPages = ['composer', 'workshops', 'lines', 'models', 'disassembly-layout', 'platform.environment', 'platform.designer']
     // Draft previews are ephemeral, but require an authoring grant. Status is read-only.
     return safe ? read(previewPages) : any('admin', ...previewPages.map(k => p(k, 'edit')))

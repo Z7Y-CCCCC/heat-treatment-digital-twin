@@ -752,6 +752,7 @@ const nativeScenePreviewStatus = ref('正在检测 Unity...')
 const nativeScenePreviewConnected = ref(false)
 const nativeScenePreviewBusy = ref(false)
 const nativeScenePreviewChecked = ref(false)
+const nativeScenePreviewUnavailable = ref(false)
 const nativeScenePreviewStatusClass = computed(() => ({
     'is-online': nativeScenePreviewConnected.value,
     'is-busy': nativeScenePreviewBusy.value,
@@ -761,6 +762,7 @@ const nativeScenePreviewStatusClass = computed(() => ({
 const nativeSceneHeaderLabel = computed(() => {
     if (nativeScenePreviewBusy.value) return 'Unity 同步中'
     if (!nativeScenePreviewChecked.value) return 'Unity 检测中'
+    if (nativeScenePreviewUnavailable.value) return 'Unity 状态不可用'
     return nativeScenePreviewConnected.value ? 'Unity 已连接' : 'Unity 未连接'
 })
 const deviceConnectionSummary = computed(() => summarizeDeviceConnections(engineStatus, devices.value))
@@ -863,15 +865,18 @@ async function refreshNativeScenePreviewStatus() {
     try {
         const result = await adminApi.getNativePreviewStatus()
         if (result?.error) {
+            nativeScenePreviewUnavailable.value = true
             nativeScenePreviewConnected.value = false
             nativeScenePreviewStatus.value = 'Unity 实时连接检测失败'
             return
         }
         nativeScenePreviewConnected.value = Number(result.unityClients || 0) > 0
+        nativeScenePreviewUnavailable.value = false
         nativeScenePreviewStatus.value = nativeScenePreviewConnected.value
             ? `Unity 实时同步已连接 · ${result.unityClients} 个客户端`
             : 'Unity 未运行，修改暂未发送'
     } catch (error) {
+        nativeScenePreviewUnavailable.value = true
         nativeScenePreviewConnected.value = false
         nativeScenePreviewStatus.value = 'Unity 实时连接检测失败'
     } finally {
@@ -880,8 +885,15 @@ async function refreshNativeScenePreviewStatus() {
 }
 
 async function refreshAdminConnectionStatus() {
+    const canReadUnityStatus = canAdminApi('/api/native-preview/status')
+    if (!canReadUnityStatus) {
+        nativeScenePreviewConnected.value = false
+        nativeScenePreviewChecked.value = true
+        nativeScenePreviewUnavailable.value = true
+        nativeScenePreviewStatus.value = '当前账户无法查看 Unity 连接状态'
+    }
     await Promise.allSettled([
-        ...(canAdminApi('/api/native-preview/status') ? [refreshNativeScenePreviewStatus()] : []),
+        ...(canReadUnityStatus ? [refreshNativeScenePreviewStatus()] : []),
         ...(canAdminApi('/api/engine/status') ? [loadEngineStatus()] : [])
     ])
 }
@@ -5240,6 +5252,9 @@ let adminPanelDisposed = false
 let adminPanelActive = true
 async function initializeAdminPanel() {
     window.addEventListener('beforeunload', handleUnsavedCanvasBeforeUnload)
+    // Connection telemetry must not wait for unrelated model/config requests.
+    void refreshAdminConnectionStatus()
+    if (!nativeScenePreviewStatusTimer) nativeScenePreviewStatusTimer = setInterval(refreshAdminConnectionStatus, 3000)
     if (canAdminApi('/api/workshops')) await loadWorkshops()
     if (adminPanelDisposed) return
     await Promise.all([

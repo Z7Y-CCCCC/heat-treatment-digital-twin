@@ -6,6 +6,22 @@ import { normalizePagePermissions } from '../../shared/pagePermissions.mjs'
 import { deviceTransformPayload } from '../../shared/deviceAuthoring.mjs'
 import { installBrowser, json } from './helpers.mjs'
 
+test('read-only device and point-monitor users can read connection counts but cannot author a Unity preview', t => {
+  fixture(t, {})
+  for (const key of ['devices', 'point-monitor']) {
+    adminSession.authenticated = true
+    adminSession.pagePermissions = normalizePagePermissions({ [key]: { view: true } })
+    assert.equal(canAdminApi('/api/native-preview/status'), true)
+    assert.equal(canAdminApi('/api/native-preview/status', 'HEAD'), true)
+    for (const path of ['/api/native-preview', '/api/native-preview/status', '/api/native-preview/status/private']) {
+      assert.equal(canAdminApi(path, 'POST'), false)
+    }
+    assert.equal(canAdminApi('/api/native-preview/status/private'), false)
+    adminSession.authenticated = false
+    assert.equal(canAdminApi('/api/native-preview/status'), false)
+  }
+})
+
 function fixture(t, grants, permissions = {}) {
   installBrowser(t)
   const before = { ...adminSession }

@@ -1,5 +1,8 @@
 const express = require('express');
+const crypto = require('crypto');
 const { getAdminAuth } = require('../services/adminAuth');
+const { normalizeUsername } = require('../../shared/accountPolicy.mjs');
+const { recentUsernames, decodeLoginHistory, encodeLoginHistory } = require('../services/adminLoginHistory');
 const { getAdminPageCatalog } = require('../../shared/adminPages.mjs');
 const DISPLAY_COOKIE_MS = 30 * 24 * 60 * 60 * 1000;
 const {
@@ -49,13 +52,25 @@ module.exports = function createAdminAuthRouter(auth = getAdminAuth) {
         else res.clearCookie(adminWebSocketCookieName(), socketCookieOptions(req));
     }
 
-    function sendSession(req, res, result, slotId = 'main') {
+    function usernameHistory(req) {
+        const name = `${adminSessionCookieName()}_usernames`;
+        const cookie = String(req.get('cookie') || '').split(';').map(value => value.trim()).find(value => value.startsWith(`${name}=`));
+        return decodeLoginHistory(cookie?.slice(name.length + 1));
+    }
+
+    function rememberUsername(req, res, username) {
+        res.cookie(`${adminSessionCookieName()}_usernames`, encodeLoginHistory([username, ...usernameHistory(req)]),
+            { ...cookieOptions(req), maxAge: DISPLAY_COOKIE_MS });
+    }
+
+    function sendSession(req, res, result, slotId = 'main', remember = false) {
         const options = { ...cookieOptions(req), maxAge: DISPLAY_COOKIE_MS };
         const sessionCookie = slotId === 'main' ? adminSessionCookieName() : adminAccountCookieName(slotId);
         res.cookie(sessionCookie, result.token, options);
         syncSocketCookie(req, res, result.token, result.status);
         if (slotId === 'main') res.clearCookie(adminActiveAccountCookieName(), cookieOptions(req));
         else res.cookie(adminActiveAccountCookieName(), slotId, options);
+        if (remember) rememberUsername(req, res, result.status.user?.username);
         res.json({ ...result.status, accountSlotId: slotId });
     }
 
@@ -79,11 +94,12 @@ module.exports = function createAdminAuthRouter(auth = getAdminAuth) {
         syncSocketCookie(req, res, token, status);
         res.json({ ...status, accountSlotId: activeAdminAccountSlot(req) });
     }));
-    router.get('/accounts', handle((req, res, service) => res.json({
-        success: true,
-        activeSlotId: activeAdminAccountSlot(req),
-        accounts: suppliedAdminAccounts(req, service)
-    })));
+    router.get('/accounts', handle((req, res, service) => {
+        const accounts = suppliedAdminAccounts(req, service);
+        const history = recentUsernames([...usernameHistory(req), ...accounts.map(account => account.user?.username)]);
+        res.json({ success: true, activeSlotId: activeAdminAccountSlot(req), accounts,
+            recentUsernames: history, lastUsername: history[0] || '' });
+    }));
     router.post('/accounts/login', handle(async (req, res, service) => {
         const slotId = String(req.body?.slotId || '');
         if (!adminAccountCookieName(slotId)) {
@@ -99,7 +115,7 @@ module.exports = function createAdminAuthRouter(auth = getAdminAuth) {
             return;
         }
         const result = await service.login(req.body?.password, req.socket.remoteAddress, '', req.body?.username);
-        sendSession(req, res, result, slotId);
+        sendSession(req, res, result, slotId, true);
     }));
     router.post('/accounts/activate', handle((req, res, service) => {
         const slotId = String(req.body?.slotId || '');
@@ -113,6 +129,7 @@ module.exports = function createAdminAuthRouter(auth = getAdminAuth) {
         res.cookie(adminActiveAccountCookieName(), slotId, options);
         const status = service.status(token);
         syncSocketCookie(req, res, token, status);
+        rememberUsername(req, res, status.user?.username);
         res.json({ ...status, accountSlotId: slotId });
     }));
     router.post('/accounts/logout', handle((req, res, service) => {
@@ -137,11 +154,23 @@ module.exports = function createAdminAuthRouter(auth = getAdminAuth) {
     }));
     router.post('/setup', handle(async (req, res, service) => {
         const result = await service.setup(req.body?.password, req.socket.remoteAddress, suppliedAdminSessionForSlot(req, 'main'));
-        sendSession(req, res, result);
+        sendSession(req, res, result, 'main', true);
     }));
     router.post('/login', handle(async (req, res, service) => {
-        const result = await service.login(req.body?.password, req.socket.remoteAddress, suppliedAdminSessionForSlot(req, 'main'), req.body?.username);
-        sendSession(req, res, result);
+        const accounts = suppliedAdminAccounts(req, service);
+        const username = normalizeUsername(req.body?.username || 'admin');
+        const matchesUsername = account => account.user?.username === username;
+        const existing = accounts.find(account => account.slotId === activeAdminAccountSlot(req) && matchesUsername(account))
+            || accounts.find(matchesUsername);
+        if (!existing && accounts.length >= 8) {
+            res.status(409).json({ success: false, code: 'ADMIN_ACCOUNT_LIMIT', error: '本机最多保留 8 个已登录账户' });
+            return;
+        }
+        // Unlock the chosen account's own slot, never overwrite admin's cookie
+        // when re-authenticating a customer from the locked screen.
+        const slotId = existing?.slotId || (accounts.length ? crypto.randomBytes(12).toString('hex') : 'main');
+        const result = await service.login(req.body?.password, req.socket.remoteAddress, suppliedAdminSessionForSlot(req, slotId), username);
+        sendSession(req, res, result, slotId, true);
     }));
     router.post('/touch', handle((req, res, service) => {
         res.json(service.touch(suppliedAdminSession(req), req.get('x-csrf-token')));

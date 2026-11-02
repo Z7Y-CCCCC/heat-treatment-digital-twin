@@ -202,7 +202,7 @@ export const adminApi = {
     async refreshCastDevices() { return readApiJson(await fetch(`${API_BASE}/system/cast/refresh`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' }), '搜索局域网电视失败') },
     async startCast(deviceId) { return readApiJson(await fetch(`${API_BASE}/system/cast/start`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ deviceId }) }), '投屏到电视失败') },
     async stopCast() { return readApiJson(await fetch(`${API_BASE}/system/cast/stop`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' }), '停止投屏失败') },
-    async getNativePreviewStatus() { return readApiJson(await fetch(`${API_BASE}/native-preview/status`), '读取 Unity 实时预览状态失败') },
+    async getNativePreviewStatus() { return readApiJson(await fetch(`${API_BASE}/native-preview/status`, { signal: AbortSignal.timeout(5000) }), '读取 Unity 实时预览状态失败') },
     async sendNativePreview(data) { return readApiJson(await fetch(`${API_BASE}/native-preview`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) }), '推送 Unity 实时预览失败') },
     async getDatabaseConfig() { return (await fetch(`${API_BASE}/database/config`)).json() },
     async testDatabaseConfig(data) { return readApiJson(await fetch(`${API_BASE}/database/test`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) }), '测试数据库连接失败') },

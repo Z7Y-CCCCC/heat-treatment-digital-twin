@@ -239,6 +239,11 @@ export async function listAdminAccounts() {
     return (await authRequest('/accounts')).accounts || []
 }
 
+export async function listAdminLoginChoices() {
+    const data = await authRequest('/accounts')
+    return { accounts: data.accounts || [], recentUsernames: data.recentUsernames || [], lastUsername: data.lastUsername || '' }
+}
+
 export async function addAdminAccount(slotId, username, password) {
     const expectedGeneration = ++generation
     const data = await authRequest('/accounts/login', {

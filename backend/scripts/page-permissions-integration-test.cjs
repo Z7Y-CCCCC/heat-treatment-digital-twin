@@ -51,6 +51,16 @@ let backend;
         return { ...session, userId: result.data.user.id };
     }
     const reader = await account('model_reader', { models: { view: true } });
+    const deviceReader = await account('device_reader', { devices: { view: true } });
+    const monitorReader = await account('monitor_reader', { 'point-monitor': { view: true } });
+    for (const session of [deviceReader, monitorReader]) {
+        const status = await request('/native-preview/status', { session, expected: 200 });
+        assert.equal(typeof status.data.unityClients, 'number');
+        await request('/native-preview', { method: 'POST', session, body: {}, expected: 403 });
+        await request('/native-preview/status', { method: 'POST', session, body: {}, expected: 403 });
+        await request('/native-preview/status/private', { session, expected: 403 });
+    }
+    await request('/native-preview/status', { expected: 401 });
     const catalog = await request('/admin-auth/page-catalog', { session: owner, noCsrf: true, expected: 200 });
     assert.equal(catalog.cacheControl, 'no-store');
     assert.deepEqual(catalog.data.pages, require('../../shared/adminPages.mjs').getAdminPageCatalog());

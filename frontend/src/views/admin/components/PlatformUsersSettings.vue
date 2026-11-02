@@ -1,7 +1,7 @@
 <script setup>
 import { MIN_PASSWORD_LENGTH, MAX_PASSWORD_LENGTH, MIN_USERNAME_LENGTH, MAX_USERNAME_LENGTH, USERNAME_PATTERN } from '../../../../../shared/accountPolicy.mjs'
 import { PAGE_ACTIONS, normalizePagePermissions } from '../../../../../shared/pagePermissions.mjs'
-import { defaultAccountPagePermissions } from '../../../../../shared/accountTemplates.mjs'
+import { defaultAccountPagePermissions, CAPABILITY_PAGE_LINKS, withCapabilityPageReads } from '../../../../../shared/accountTemplates.mjs'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { adminPageCatalog, getAdminPageCatalog, createPlatformUser, deletePlatformUser, listPlatformUsers, updatePlatformUser } from '../../../runtime/adminSession.js'
 
@@ -20,11 +20,21 @@ function editablePermissions(role, permissions = {}) {
     typeof permissions[key] === 'boolean' ? permissions[key] : defaults[key]
   ]))
 }
-const createDraft = () => ({ username: '', displayName: '', role: 'customer', password: '', enabled: true, permissions: defaultPermissions('customer'), pagePermissions: defaultAccountPagePermissions('customer') })
+const createDraft = () => ({ username: '', displayName: '', role: 'customer', password: '', enabled: true, permissions: defaultPermissions('customer'), pagePermissions: withCapabilityPageReads(defaultAccountPagePermissions('customer'), defaultPermissions('customer')) })
+function changeCapability(capability) {
+  const key = CAPABILITY_PAGE_LINKS[capability]
+  if (!key) return
+  const grants = editor.value.pagePermissions[key]
+  if (editor.value.permissions[capability]) grants.view = true
+  else if (!Object.entries(grants).some(([action, enabled]) => action !== 'view' && enabled)) grants.view = false
+}
 const pageActions = Object.keys(PAGE_ACTIONS)
 function changePageView(page) {
   if (!editor.value.pagePermissions[page.key].view) {
     for (const action of page.actions) editor.value.pagePermissions[page.key][action] = false
+    for (const [capability, key] of Object.entries(CAPABILITY_PAGE_LINKS)) {
+      if (key === page.key) editor.value.permissions[capability] = false
+    }
   }
 }
 function changePageAction(page, action) {
@@ -35,8 +45,20 @@ function setPagePreset(mode) {
   editor.value.pagePermissions = Object.fromEntries(pages.value.map(page => [page.key,
     Object.fromEntries(page.actions.map(action => [action, !page.ownerOnly && (mode === 'all' || mode === 'view' && action === 'view')]))
   ]))
+  if (mode === 'none') for (const capability of Object.keys(CAPABILITY_PAGE_LINKS)) editor.value.permissions[capability] = false
 }
 const users = ref([])
+const currentPage = ref(1)
+const pageSize = ref(10)
+const totalPages = computed(() => Math.max(1, Math.ceil(users.value.length / pageSize.value)))
+const pagedUsers = computed(() => users.value.slice((currentPage.value - 1) * pageSize.value, currentPage.value * pageSize.value))
+const pageNumbers = computed(() => {
+  const start = Math.max(1, Math.min(currentPage.value - 2, totalPages.value - 4))
+  return Array.from({ length: Math.min(5, totalPages.value) }, (_, index) => start + index)
+})
+watch(pageSize, () => { currentPage.value = 1 })
+watch(totalPages, total => { currentPage.value = Math.min(currentPage.value, total) }, { flush: 'sync' })
+const togglingId = ref('')
 const busy = ref(false)
 const loading = ref(true)
 const notice = ref(null)
@@ -122,7 +144,7 @@ function openEdit(user) {
     displayName: user.displayName,
     role: user.role,
     enabled: Boolean(user.enabled),
-    pagePermissions: normalizePagePermissions(user.pagePermissions),
+    pagePermissions: withCapabilityPageReads(user.pagePermissions, editablePermissions(user.role, user.permissions)),
     permissions: editablePermissions(user.role, user.permissions || {})
   }
   replacementPassword.value = ''
@@ -140,7 +162,20 @@ function closeEditor() {
 
 function applyRolePreset() {
   editor.value.permissions = defaultPermissions(editor.value.role)
-  editor.value.pagePermissions = defaultAccountPagePermissions(editor.value.role)
+  editor.value.pagePermissions = withCapabilityPageReads(defaultAccountPagePermissions(editor.value.role), editor.value.permissions)
+}
+
+async function toggleEnabled(user) {
+  if (loading.value || busy.value || togglingId.value) return
+  togglingId.value = user.id
+  clearNotice()
+  try {
+    // Narrow patch: do not resend credentials, roles or a stale grant matrix.
+    const updated = await updatePlatformUser(user.id, { enabled: !user.enabled })
+    users.value = users.value.map(row => row.id === user.id ? { ...row, ...updated } : row)
+    showNotice(`账户已${updated.enabled ? '启用' : '停用'}`, 'success')
+  } catch (error) { showNotice(error.message || '更新账户状态失败') }
+  finally { togglingId.value = '' }
 }
 
 async function saveEditor() {
@@ -221,30 +256,41 @@ onUnmounted(() => {
       <button type="button" class="users-primary" @click="openCreate">＋ 新增账户</button>
     </header>
 
-    <div class="users-toolbar"><span>{{ users.length }} 个现场账户</span><button type="button" :disabled="loading" @click="loadUsers">刷新列表</button></div>
+    <div class="users-toolbar"><span>{{ users.length }} 个现场账户</span><button type="button" :disabled="loading || !!togglingId" @click="loadUsers">刷新列表</button></div>
     <div v-if="loading" class="users-state">正在读取账户…</div>
     <div v-else-if="users.length" class="users-table-wrap">
       <table class="users-table">
         <thead><tr><th>账户</th><th>角色</th><th>功能权限</th><th>状态</th><th><span class="sr-only">操作</span></th></tr></thead>
         <tbody>
-          <tr v-for="user in users" :key="user.id">
+          <tr v-for="user in pagedUsers" :key="user.id">
             <td><strong>{{ user.displayName || user.username }}</strong><small>{{ user.username }}</small></td>
             <td><span class="role-badge">{{ roleLabel(user.role) }}</span></td>
             <td><div class="permission-tags"><span v-for="label in permissionSummary(user)" :key="label">{{ label }}</span><em v-if="!permissionSummary(user).length">无功能权限</em></div></td>
-            <td><span class="account-state" :class="{ disabled: !user.enabled }"><i></i>{{ user.enabled ? '已启用' : '已停用' }}</span></td>
-            <td><button type="button" class="users-edit" @click="openEdit(user)">管理账户</button></td>
+            <td><button type="button" class="account-toggle" :class="{ 'is-enabled': user.enabled }" role="switch" :aria-label="`启用账户：${user.username}`" :aria-checked="Boolean(user.enabled)" :aria-busy="togglingId === user.id" :disabled="!!togglingId || busy" @click="toggleEnabled(user)"><span>{{ user.enabled ? '启用' : '停用' }}</span><i aria-hidden="true"></i></button></td>
+            <td><button type="button" class="users-edit" :disabled="!!togglingId" @click="openEdit(user)">管理账户</button></td>
           </tr>
         </tbody>
       </table>
     </div>
     <div v-else class="users-state">暂无现场账户。系统管理员账户保留，不会列入可删除账户。</div>
+    <nav v-if="users.length" class="users-pagination" aria-label="用户分页">
+      <span>共 {{ users.length }} 个，第 {{ currentPage }} / {{ totalPages }} 页</span>
+      <div class="users-page-controls">
+        <label>每页显示<select v-model.number="pageSize" aria-label="用户每页条数"><option v-for="size in [10, 20, 50, 100]" :key="size" :value="size">{{ size }} 条/页</option></select></label>
+        <button type="button" aria-label="首页" :disabled="currentPage === 1" @click="currentPage = 1">«</button>
+        <button type="button" aria-label="上一页" :disabled="currentPage === 1" @click="currentPage--">‹</button>
+        <button v-for="number in pageNumbers" :key="number" type="button" :aria-label="`第 ${number} 页`" :aria-current="currentPage === number ? 'page' : undefined" @click="currentPage = number">{{ number }}</button>
+        <button type="button" aria-label="下一页" :disabled="currentPage === totalPages" @click="currentPage++">›</button>
+        <button type="button" aria-label="末页" :disabled="currentPage === totalPages" @click="currentPage = totalPages">»</button>
+      </div>
+    </nav>
 
     <Teleport to="body">
       <Transition name="user-editor">
         <!-- Selecting text may release the pointer over the mask; never dismiss on a backdrop click. -->
         <div v-if="editorOpen" class="user-editor-backdrop" @keydown.esc.stop.prevent="closeEditor">
           <section class="user-editor-dialog" role="dialog" aria-modal="true" aria-labelledby="user-editor-title">
-            <header><div><h4 id="user-editor-title">{{ editorTitle }}</h4><p>{{ editorMode === 'create' ? '账户创建后即可按已授权页面和功能工作。' : '切换角色模板仅重置现场功能；后台页面权限独立设置。' }}</p></div><button type="button" class="editor-close" aria-label="关闭" :disabled="busy" @click="closeEditor">×</button></header>
+            <header><div><h4 id="user-editor-title">{{ editorTitle }}</h4><p>{{ editorMode === 'create' ? '账户创建后即可按已授权页面和功能工作。' : '选择模板会重置权限，可逐项调整。' }}</p></div><button type="button" class="editor-close" aria-label="关闭" :disabled="busy" @click="closeEditor">×</button></header>
             <form class="editor-form" @submit.prevent="saveEditor">
               <label v-if="editorMode === 'create'">登录账号<input v-model.trim="editor.username" autocomplete="off" :minlength="MIN_USERNAME_LENGTH" :maxlength="MAX_USERNAME_LENGTH" :pattern="USERNAME_PATTERN" required placeholder="例如 普通用户1" /></label>
               <label v-else>登录账号<input :value="editor.username" disabled /></label>
@@ -252,8 +298,7 @@ onUnmounted(() => {
               <label>角色模板<select v-model="editor.role" @change="applyRolePreset"><option value="customer">现场客户</option><option value="viewer">现场查看</option></select></label>
               <label v-if="editorMode === 'create'">初始密码<input v-model="editor.password" type="password" autocomplete="new-password" :minlength="MIN_PASSWORD_LENGTH" :maxlength="MAX_PASSWORD_LENGTH" required :placeholder="`至少 ${MIN_PASSWORD_LENGTH} 位`" /></label>
               <label v-else>重设密码<input v-model="replacementPassword" type="password" autocomplete="new-password" :minlength="MIN_PASSWORD_LENGTH" :maxlength="MAX_PASSWORD_LENGTH" placeholder="留空则不修改" /></label>
-              <label v-if="editorMode === 'edit'" class="editor-enabled"><input v-model="editor.enabled" type="checkbox" />启用此账户</label>
-              <fieldset class="capability-fieldset"><legend>功能权限</legend><label v-for="choice in permissionChoices" :key="choice.key" class="capability-option"><input v-model="editor.permissions[choice.key]" type="checkbox" /><span><strong>{{ choice.label }}</strong><small>{{ choice.detail }}</small></span></label></fieldset>
+              <fieldset class="capability-fieldset"><legend>功能权限</legend><label v-for="choice in permissionChoices" :key="choice.key" class="capability-option"><input v-model="editor.permissions[choice.key]" type="checkbox" @change="changeCapability(choice.key)" /><span><strong>{{ choice.label }}</strong><small>{{ choice.detail }}</small></span></label></fieldset>
               <fieldset class="page-permission-fieldset">
                 <legend>后台页面权限</legend>
                 <div class="page-permission-presets">
@@ -305,6 +350,7 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+.account-toggle{position:relative;display:inline-flex;align-items:center;width:68px;height:28px;padding:0 7px 0 28px;border:1px solid #d6dde7;border-radius:999px;background:#edf1f6;color:#758198;font:inherit;font-size:11px;cursor:pointer;white-space:nowrap;transition:background .18s,color .18s}.account-toggle i{position:absolute;left:3px;top:3px;width:20px;height:20px;border-radius:50%;background:white;box-shadow:0 1px 4px #26334926;transition:transform .18s}.account-toggle.is-enabled{padding:0 28px 0 8px;border-color:#b8e5ce;background:#def5e9;color:#21764e}.account-toggle.is-enabled i{transform:translateX(40px)}.account-toggle:focus-visible{outline:2px solid #386dca;outline-offset:2px}.account-toggle:disabled{opacity:.6;cursor:wait}.users-pagination{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;padding:12px 0 0;color:#758198;font-size:11px}.users-page-controls,.users-page-controls label{display:flex;align-items:center;gap:6px}.users-page-controls{flex-wrap:wrap}.users-page-controls select,.users-page-controls button{min-height:29px;border:1px solid #d5ddea;border-radius:6px;background:#fff;color:#405879;font:inherit}.users-page-controls select{padding:4px 7px;margin-right:8px}.users-page-controls button{min-width:29px;padding:4px 7px;cursor:pointer}.users-page-controls button[aria-current=page]{border-color:#316cda;background:#316cda;color:white}.users-page-controls button:disabled{opacity:.4;cursor:default}@media(prefers-reduced-motion:reduce){.account-toggle,.account-toggle i{transition:none}}
 .page-permission-fieldset{grid-column:1/-1;margin:0;border:1px solid #e3e8ef;border-radius:8px;padding:12px;min-width:0}.page-permission-fieldset legend{font-size:12px;color:#43526a}.page-permission-presets{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px}.page-permission-presets button{background:#f4f7fc;border:1px solid #d5ddea;border-radius:6px;padding:6px 8px;color:#405879;font-size:11px;cursor:pointer}.page-permission-scroll{overflow:auto}.page-permission-table{width:100%;border-collapse:collapse;font-size:11px;min-width:490px}.page-permission-table th,.page-permission-table td{padding:8px 5px;border-bottom:1px solid #edf0f4;text-align:center}.page-permission-table th:first-child{text-align:left;font-weight:500}.page-permission-table thead{color:#63728a;background:#f7f9fc}.page-permission-table input{width:16px;height:16px}.page-permission-table input:disabled{opacity:.4}
 .users-settings{padding:24px 26px;background:#fff;border:1px solid #e1e6ee;border-radius:12px;color:#263349}.users-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:18px}.users-heading h3{margin:0 0 7px;font-size:19px}.users-heading p{margin:0;color:#758198;font-size:12px;line-height:1.7}.users-primary,.editor-cancel,.users-edit,.users-toolbar button,.editor-delete{border:1px solid #d5ddea;border-radius:7px;padding:8px 12px;background:#fff;color:#405879;font:inherit;font-size:12px;cursor:pointer;white-space:nowrap}.users-primary{border-color:#316cda;background:#316cda;color:white}.users-primary:hover{background:#245cc4}.users-primary:disabled,.editor-cancel:disabled,.editor-delete:disabled{opacity:.55;cursor:wait}.users-toolbar{display:flex;justify-content:space-between;align-items:center;margin:21px 0 9px;color:#758198;font-size:11px}.users-toolbar button{padding:6px 9px}.users-table-wrap{overflow:auto;border:1px solid #e5e9f0;border-radius:8px}.users-table{width:100%;border-collapse:collapse;text-align:left}.users-table th{padding:10px 13px;background:#f7f9fc;color:#758198;font-size:10px;font-weight:600;white-space:nowrap}.users-table td{padding:11px 13px;border-top:1px solid #edf0f4;font-size:12px;vertical-align:middle}.users-table td:first-child strong,.users-table td:first-child small{display:block}.users-table td:first-child strong{font-weight:600}.users-table td:first-child small{margin-top:3px;color:#8c97a9;font-size:10px}.role-badge{padding:4px 7px;border-radius:5px;background:#f2f5fa;color:#5f6e84;font-size:10px}.permission-tags{display:flex;gap:4px;flex-wrap:wrap}.permission-tags span{padding:3px 6px;border:1px solid #e6ebf2;border-radius:4px;color:#63728a;font-size:9px;white-space:nowrap}.permission-tags em{color:#9aa3b1;font-size:10px;font-style:normal}.account-state{display:inline-flex;align-items:center;gap:5px;color:#27845c;font-size:10px;white-space:nowrap}.account-state i{width:6px;height:6px;border-radius:50%;background:#4fb78b}.account-state.disabled{color:#9b6670}.account-state.disabled i{background:#d08a92}.users-edit{padding:6px 9px}.users-state{padding:30px 12px;text-align:center;color:#8792a4;font-size:12px}.sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap}.user-editor-backdrop{position:fixed;inset:0;z-index:10000;display:grid;place-items:center;padding:20px;background:rgba(20,29,43,.38);backdrop-filter:blur(3px)}.user-editor-dialog{display:flex;flex-direction:column;width:min(640px,100%);max-height:min(780px,calc(100vh - 40px));overflow:hidden;border:1px solid #dbe1ea;border-radius:14px;background:#fff;box-shadow:0 26px 80px rgba(20,29,43,.24)}.user-editor-dialog>header{position:relative;flex-shrink:0;display:flex;justify-content:space-between;gap:16px;padding:21px 48px 17px 24px;border-bottom:1px solid #edf0f4}.user-editor-dialog h4{margin:0 0 5px;font-size:16px}.user-editor-dialog header p{margin:0;color:#7a8699;font-size:11px;line-height:1.6}.editor-close{position:absolute;top:8px;right:8px;display:grid;place-items:center;width:30px;height:30px;padding:0;border:0;border-radius:4px;background:transparent;box-shadow:none;color:#68778c;font-size:20px;line-height:1;cursor:pointer}.editor-close:hover{color:#263349}.editor-close:focus-visible{outline:2px solid #386dca;outline-offset:1px}.editor-close:disabled{opacity:.45;cursor:wait}.editor-form{min-height:0;overflow-y:auto;overscroll-behavior:contain;display:grid;grid-template-columns:1fr 1fr;gap:14px;padding:19px 24px 22px}.editor-form>label{display:grid;gap:6px;color:#58677d;font-size:11px}.editor-form input:not([type=checkbox]),.editor-form select{box-sizing:border-box;width:100%;min-width:0;padding:9px 10px;border:1px solid #d5dce6;border-radius:6px;background:#fff;color:#263349;font:inherit;font-size:12px}.editor-form input:disabled{background:#f5f6f8;color:#8b95a6}.editor-form input[type=checkbox]{accent-color:#386dca}.editor-enabled{display:flex!important;align-items:center;gap:7px!important}.capability-fieldset{grid-column:1/-1;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:0;padding:12px;border:1px solid #e3e8ef;border-radius:8px}.capability-fieldset legend{padding:0 5px;color:#69778c;font-size:10px}.capability-option{display:flex!important;align-items:flex-start;gap:8px!important;padding:9px;border:1px solid #e9edf3;border-radius:6px;background:#fff}.capability-option input{margin:2px 0 0}.capability-option span{display:grid;gap:3px}.capability-option strong{color:#43526a;font-size:11px;font-weight:600}.capability-option small{color:#98a2b1;font-size:10px}.editor-hint,.editor-error{grid-column:1/-1;margin:0;color:#8290a3;font-size:10px;line-height:1.6}.editor-error{font-size:12px}.editor-form footer{grid-column:1/-1;display:flex;align-items:center;gap:8px;padding-top:7px}.editor-spacer{flex:1}.editor-delete{border-color:#f0d0d2;color:#a34149}.user-editor-enter-active,.user-editor-leave-active{transition:opacity .16s ease}.user-editor-enter-active .user-editor-dialog,.user-editor-leave-active .user-editor-dialog{transition:transform .16s ease}.user-editor-enter-from,.user-editor-leave-to{opacity:0}.user-editor-enter-from .user-editor-dialog,.user-editor-leave-to .user-editor-dialog{transform:translateY(7px)}@media(max-width:650px){.users-settings{padding:18px}.users-table{min-width:650px}.editor-form{grid-template-columns:1fr}.capability-fieldset,.editor-hint,.editor-error,.editor-form footer{grid-column:1}.capability-fieldset{grid-template-columns:1fr}}
 .user-notice{position:fixed;z-index:10020;top:24px;left:50%;transform:translateX(-50%);display:flex;align-items:flex-start;gap:10px;box-sizing:border-box;width:max-content;max-width:min(520px,calc(100vw - 32px));padding:12px 14px;border:1px solid #e1e6ee;border-radius:8px;background:#fff;color:#b42318;box-shadow:0 8px 28px rgba(20,29,43,.16);font-size:13px;line-height:1.5}.user-notice.success{color:#18774f}.user-notice>span{min-width:0;overflow-wrap:anywhere;max-height:30vh;overflow-y:auto}.user-notice-icon{flex:0 0 20px;width:20px;height:20px}.user-notice-close{flex:0 0 22px;width:22px;height:22px;padding:0;border:0;border-radius:3px;background:transparent;color:inherit;font-size:18px;line-height:1;cursor:pointer}.user-notice-close:focus-visible{outline:2px solid currentColor;outline-offset:2px}.user-notice-enter-active,.user-notice-leave-active{transition:opacity .16s ease}.user-notice-enter-from,.user-notice-leave-to{opacity:0}

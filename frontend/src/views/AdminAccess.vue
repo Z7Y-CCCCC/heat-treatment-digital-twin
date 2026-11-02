@@ -1,8 +1,9 @@
 <script setup>
-import { MIN_PASSWORD_LENGTH, MAX_PASSWORD_LENGTH } from '../../../shared/accountPolicy.mjs'
+import { MIN_PASSWORD_LENGTH, MAX_PASSWORD_LENGTH, isValidUsername } from '../../../shared/accountPolicy.mjs'
 import { computed, defineAsyncComponent, nextTick, onActivated, onDeactivated, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
-import { adminSession, refreshAdminSession, startAdminSessionTracking, stopAdminSessionTracking, unlockAdmin, lockAdmin, logoutCurrentAdminAccount, canOpenAdmin } from '../runtime/adminSession.js'
+import { adminSession, refreshAdminSession, startAdminSessionTracking, stopAdminSessionTracking, unlockAdmin, lockAdmin, logoutCurrentAdminAccount, canOpenAdmin, listAdminLoginChoices } from '../runtime/adminSession.js'
 import AdminWindowChrome from './admin/components/AdminWindowChrome.vue'
+import RememberedUsernameInput from './admin/components/RememberedUsernameInput.vue'
 import { isNativeUnitySurface } from '../runtime/nativeSurfaceBridge.js'
 import { canResumeDashboardAfterLogin } from '../runtime/nativeAdminNavigation.js'
 import { FACTORY_SCOPE_CHANGE_EVENT, getFactoryScope } from '../runtime/factoryScope.js'
@@ -21,6 +22,9 @@ function handleNativeHostState(event) {
 }
 const password = ref('')
 const username = ref('admin')
+const recentUsernames = ref([])
+let usernameEdited = false
+let usernameChoicesGeneration = 0
 const confirmation = ref('')
 const showPassword = ref(false)
 const showConfirmation = ref(false)
@@ -48,6 +52,31 @@ async function focusPassword() {
     await nextTick()
     if (passwordInput.value?.isConnected) passwordInput.value.focus()
 }
+
+async function refreshLoginChoices() {
+    const request = ++usernameChoicesGeneration
+    usernameEdited = false
+    if (adminSession.user?.username) username.value = adminSession.user.username
+    try {
+        const choices = await listAdminLoginChoices()
+        if (request !== usernameChoicesGeneration) return
+        const names = [...new Set([adminSession.user?.username, ...choices.recentUsernames,
+            ...choices.accounts.map(account => account.user?.username)].filter(isValidUsername))].slice(0, 8)
+        recentUsernames.value = names
+        // A delayed history response must not replace a username being typed.
+        if (!usernameEdited && !busy.value) username.value = adminSession.user?.username
+            || (isValidUsername(choices.lastUsername) ? choices.lastUsername : names[0]) || 'admin'
+    } catch { /* History is a convenience, not a prerequisite for password login. */ }
+}
+
+function usernameSelected() {
+    password.value = ''
+    error.value = ''
+    focusPassword()
+}
+
+watch(() => [adminSession.ready, adminSession.authenticated, adminSession.accountSlotId, adminSession.user?.username],
+    ([ready, authenticated]) => { if (ready && !authenticated) void refreshLoginChoices() }, { immediate: true })
 
 async function submit() {
     if (busy.value || retrySeconds.value > 0) return
@@ -167,6 +196,7 @@ onMounted(async () => {
 onActivated(() => { startClock(); startAdminSessionTracking(); refreshAdminSession() })
 onDeactivated(() => { stopClock(); stopAdminSessionTracking() })
 onUnmounted(() => {
+    usernameChoicesGeneration += 1
     window.removeEventListener(FACTORY_SCOPE_CHANGE_EVENT, onFactoryScopeChanged)
     if (isUnityEmbedded) window.chrome.webview.removeEventListener('message', handleNativeHostState)
     stopClock()
@@ -197,7 +227,7 @@ onUnmounted(() => {
                     <form v-if="adminSession.ready" @submit.prevent="submit">
                         <template v-if="!setup">
                             <label for="admin-unlock-username">账号</label>
-                            <input id="admin-unlock-username" v-model.trim="username" autocomplete="username" maxlength="32" required placeholder="admin 或管理员创建的账号" />
+                            <RememberedUsernameInput v-model="username" :usernames="recentUsernames" :disabled="busy" @edited="usernameEdited = true" @selected="usernameSelected" />
                         </template>
                         <label for="admin-unlock-password">{{ setup ? '设置后台密码' : '后台密码' }}</label>
                         <div class="unlock-password-field">
