@@ -122,6 +122,7 @@ export const adminApi = {
     async searchFactoryPlace(countryCode, query) { return readApiJson(await fetch(`${API_BASE}/factories/place-search`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ countryCode, query }) }), '查询海外地点失败') },
     async createFactory(data) { return readApiJson(await fetch(`${API_BASE}/factories`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) }), '创建工厂失败') },
     async updateFactory(id, data) { return readApiJson(await fetch(`${API_BASE}/factories/${pathId(id)}`, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) }), '保存工厂失败') },
+    async setFactoryCollection(id, enabled) { return readApiJson(await fetch(`${API_BASE}/factories/${pathId(id)}/collection`, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ enabled }) }), '保存采集开关失败') },
     async activateFactory(id) { return readApiJson(await fetch(`${API_BASE}/factories/${pathId(id)}/activate`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' }), '切换运行工厂失败') },
     // PLC 协议能力清单
     async getPlcProtocols() { return readApiJson(await fetch(`${API_BASE}/plc/protocols`), '读取 PLC 协议清单失败') },

@@ -37,13 +37,13 @@ class DataEngine {
         this.runVersion = 0;
     }
 
-    async start() {
+    async start({ ownFactoryOnly = false } = {}) {
         assertNoPendingSiteRecovery();
         const runVersion = ++this.runVersion;
         this.alarmStorageStopped = false;
         clearTimeout(this.alarmRetryTimer);
         this.alarmRetryTimer = null;
-        this._stopSecondaryEngines();
+        if (!ownFactoryOnly) await this._stopSecondaryEngines();
         this._stopSources();
         this.deviceSnapshots.clear();
         this.alarmState.clear();
@@ -57,6 +57,15 @@ class DataEngine {
         if (runVersion !== this.runVersion) return;
         const factoryId = this.fixedFactoryId || String(activeFactory?.value || 'factory_default');
         this.activeFactoryId = factoryId;
+        const factory = await db.get('SELECT collection_enabled FROM factories WHERE id = ?', [factoryId]);
+        if (runVersion !== this.runVersion) return;
+        if (Number(factory?.collection_enabled ?? 1) === 0) {
+            this.alarmStorageStopped = true;
+            this.plcStatus = { status: 'stopped', message: '工厂采集已停用', timestamp: Date.now() };
+            this.collectorStatus = { status: 'stopped', message: '工厂采集已停用', lastFrameAt: null, frames: 0, devices: 0 };
+            if (!this.isSecondary && !ownFactoryOnly) await this._startSecondaryEngines(db, runVersion);
+            return;
+        }
         const rows = await db.all('SELECT * FROM settings');
         if (runVersion !== this.runVersion) return;
         const settings = {};
@@ -89,11 +98,11 @@ class DataEngine {
             }
             throw error;
         }
-        if (!this.isSecondary && runVersion === this.runVersion) await this._startSecondaryEngines(db, runVersion);
+        if (!this.isSecondary && !ownFactoryOnly && runVersion === this.runVersion) await this._startSecondaryEngines(db, runVersion);
     }
 
     async _startSecondaryEngines(db, runVersion) {
-        const factories = await db.all('SELECT id FROM factories WHERE is_enabled <> 0');
+        const factories = await db.all('SELECT id FROM factories');
         if (runVersion !== this.runVersion) return;
         const silentWs = { broadcastDeviceData() {}, broadcastStatus() {} };
         await Promise.all(factories.filter(factory => String(factory.id) !== this.activeFactoryId).map(async factory => {
@@ -104,6 +113,26 @@ class DataEngine {
             catch (error) { console.warn(`[DataEngine] 工厂 ${id} 采集启动失败:`, error.message); }
             if (runVersion !== this.runVersion) engine.stop();
         }));
+    }
+
+    async setFactoryCollectionEnabled(factoryId) {
+        const id = String(factoryId);
+        let engine = id === this.activeFactoryId ? this : this.factoryEngines.get(id);
+        if (!engine) {
+            engine = new DataEngine({ broadcastDeviceData() {}, broadcastStatus() {} }, { factoryId: id, isSecondary: true });
+            this.factoryEngines.set(id, engine);
+        }
+        const previous = [...engine.deviceSnapshots.values()];
+        // Read the persisted switch in start(), not an out-of-order IPC value.
+        // Keep every other factory's readers, timers and metric state intact.
+        await engine.start({ ownFactoryOnly: true });
+        if (engine.collectorStatus.status === 'stopped' && previous.length) {
+            engine.wsServer.broadcastDeviceData(previous.map(device => ({ ...device,
+                quality: Object.fromEntries(['analog', 'status', 'digital'].map(group => [group,
+                    Object.fromEntries(Object.keys(device[group] || {}).map(key => [key, 'bad']))]))
+            })));
+        }
+        return { factoryId: id, status: engine.getStatus() };
     }
 
     _stopSecondaryEngines() {

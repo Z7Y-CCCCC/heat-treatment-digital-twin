@@ -83,6 +83,7 @@ export function apiPermission(path, method = 'GET', body) {
     if (/^\/api\/models\/[^/]+\/inspection$/.test(path) && method === 'PUT') return any('admin', p('disassembly-layout', 'edit'))
     return any('admin', p('models', action))
   }
+  if (/^\/api\/factories\/[^/]+\/collection$/.test(path)) return any('admin', p('settings.data', 'edit'))
   if (resource('factories')) return safe ? read(PAGE_PERMISSIONS.map(p => p.key), true) : any('admin', p('factories', 'edit'))
   if (resource('datapoints')) {
     if (path === '/api/datapoints/alarm-texts' && method === 'POST') return any('admin', p('points.alarms', 'edit'))

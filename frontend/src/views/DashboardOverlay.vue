@@ -808,6 +808,10 @@ function handleWidgetAction({ event }) {
 
 async function handleRuntimeMessage(message) {
     if (overlayDisposed) return
+    if (message?.type === 'configuration_changed' && message.payload?.visibilityOnly) {
+        if (message.payload.enabled === false && String(message.payload.factoryId) === String(config.factoryId)) await leaveHiddenFactory(String(message.payload.factoryId))
+        return
+    }
     if (message?.type === 'device_hover_changed') {
         applyDeviceHover(runtimeContext, message.payload, deviceHoverCatalog.value)
         return
@@ -834,6 +838,7 @@ async function handleRuntimeMessage(message) {
         runtimeContext.deviceHoverPointer = { visible: false }
         const loaded = await loadConfig(activated)
         if (overlayDisposed || !loaded) return
+        if (await leaveHiddenFactory()) return
         registerConfiguredDevices()
         probeConfiguredModels()
         runtimeContext.sceneId = platform.value.activeScene?.id || runtimeContext.sceneId
@@ -846,6 +851,14 @@ async function handleRuntimeMessage(message) {
         await nextTick()
         scheduleRegionReport()
     }
+}
+
+async function leaveHiddenFactory(hiddenId = '') {
+    if ((!hiddenId || hiddenId !== String(config.factoryId)) && !config.factories?.some(factory => String(factory.id) === String(config.factoryId) && factory.enabled === false)) return false
+    const query = { ...route.query }
+    for (const key of ['factoryId', 'scene', 'fromGroup']) delete query[key]
+    await router.replace({ path: '/group', query })
+    return true
 }
 
 function handleHostMessage(event) {
@@ -954,6 +967,7 @@ onMounted(async () => {
 
     await loadConfig()
     if (overlayDisposed) return
+    if (await leaveHiddenFactory()) return
     const overviewReadiness = overviewEntryStatus(getWorkshops())
     if (!configLoadError.value && !overviewReadiness.allowed) {
         const query = { ...route.query, navigationNotice: overviewReadiness.message }

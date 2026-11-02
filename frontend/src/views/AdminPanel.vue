@@ -10,6 +10,7 @@ import { useNativeQuality } from '../runtime/nativeQuality.js'
 import QualityNotice from '../components/QualityNotice.vue'
 import WorkshopGroundEditor from './admin/components/WorkshopGroundEditor.vue'
 import DataSourceWorkspace from './admin/components/DataSourceWorkspace.vue'
+import FactoryCollectionSettings from './admin/components/FactoryCollectionSettings.vue'
 import { normalizeGround, normalizeDeviceGround } from '../../../shared/industrialGround.mjs'
 import { createVoiceAnnouncer, normalizeVoiceRule, parseVoiceConfig } from '../runtime/VoiceAnnouncer.js'
 import WidgetRenderer from '../runtime/WidgetRenderer.vue'
@@ -10398,6 +10399,7 @@ async function openAdminSetupStep(step) {
 
                         <!-- ===== 数据通路选择 ===== -->
                         <div v-show="settingsSubpage === 'data'" class="settings-section secondary-page-panel">
+                            <FactoryCollectionSettings v-if="settingsSubpage === 'data'" />
                             <h3 class="section-title">数据通路模式</h3>
                             <label>选择数据采集方式
                                 <select v-model="settings.data_mode" class="input" v-permission="{ page: controlPermissionPage, action: 'edit' }">

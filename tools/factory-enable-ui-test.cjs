@@ -15,13 +15,13 @@ async function request(route, method = 'GET', data, factoryId) {
     return response.json();
 }
 async function login(context, username, tab = 'factories') {
-    await context.addInitScript(tab => localStorage.setItem('digital_twin_admin_ui_state_v1', JSON.stringify({ activeTab: tab })), tab);
+    await context.addInitScript(tab => localStorage.setItem('digital_twin_admin_ui_state_v1', JSON.stringify({ activeTab: tab, settingsSubpage: 'data' })), tab);
     const next = await context.newPage(); next.setDefaultTimeout(30000); next.on('pageerror', e => errors.push(e.message));
     await next.goto(info.origin + '/admin');
     await next.getByLabel('账号', { exact: true }).fill(username);
     await next.getByLabel('后台密码', { exact: true }).fill(info.password);
     await next.getByRole('button', { name: '解锁后台', exact: true }).click();
-    await next.locator(tab === 'users' ? '.users-settings' : '.factory-table').waitFor();
+    await next.locator(tab === 'users' ? '.users-settings' : tab === 'settings' ? '.factory-collection-settings table' : tab === 'devices' ? '.asset-hierarchy-bar' : '.factory-table').waitFor();
     return next;
 }
 async function checked(toggle, value) {
@@ -52,12 +52,15 @@ async function checked(toggle, value) {
     const otherToggle = page.locator(`[data-factory-id="${other.id}"]`).getByRole('switch');
     await checked(toggle, true);
     const defaultToggle = page.locator('[data-factory-id="factory_default"]').getByRole('switch');
-    assert.equal(await defaultToggle.isDisabled(), true);
-    assert.equal(await defaultToggle.getAttribute('title'), '默认工厂不能停用');
+    assert.equal(await defaultToggle.isEnabled(), true);
+    await defaultToggle.click(); await checked(defaultToggle, false);
+    assert.equal((await request('/factories')).activeFactoryId, 'factory_default');
+    assert.ok((await request('/config')).workshops.length);
+    await defaultToggle.click(); await checked(defaultToggle, true);
     const style = await toggle.evaluate(el => ({ width: el.offsetWidth, height: el.offsetHeight, background: getComputedStyle(el).backgroundColor,
         radius: getComputedStyle(el).borderRadius, knob: getComputedStyle(el.querySelector('i')).backgroundColor }));
     assert.deepEqual(style, { width: 68, height: 28, background: 'rgb(222, 245, 233)', radius: '999px', knob: 'rgb(255, 255, 255)' });
-    check('factory status uses the compact green/white enabled capsule; default factory is protected');
+    check('all factories including the selected runtime factory can be hidden; no default-factory restriction');
 
     let release, mutations = [];
     const gate = new Promise(resolve => { release = resolve; });
@@ -90,10 +93,31 @@ async function checked(toggle, value) {
 
     await page.evaluate(id => localStorage.setItem('digital_twin_factory_scope_v1', id), factory.id);
     await page.reload(); await toggle.waitFor();
-    assert.equal(await toggle.isDisabled(), true); assert.equal(await toggle.getAttribute('title'), '请先切换编辑工厂');
+    assert.equal(await toggle.isEnabled(), true);
+    await toggle.click(); await checked(toggle, false);
+    const scopedContext = await browser.newContext();
+    await scopedContext.addInitScript(id => localStorage.setItem('digital_twin_factory_scope_v1', id), factory.id);
+    const scopedPage = await login(scopedContext, info.username, 'devices');
+    assert.equal(await scopedPage.getByLabel('当前编辑工厂', { exact: true }).inputValue(), factory.id);
+    assert.ok(await scopedPage.getByLabel('当前编辑工厂', { exact: true }).locator(`option[value="${factory.id}"]`).count());
+    assert.equal((await request('/config', 'GET', undefined, factory.id)).factoryId, factory.id);
+    await toggle.click(); await checked(toggle, true);
     assert.equal(await otherToggle.isEnabled(), true);
     await page.evaluate(() => localStorage.removeItem('digital_twin_factory_scope_v1')); await page.reload();
-    check('currently edited factory is protected without changing the selected factory or restarting collection');
+    check('hidden factory remains selectable and editable without changing the current editing scope');
+
+    const collectionPage = await login(await browser.newContext({ viewport: { width: 1280, height: 900 } }), info.username, 'settings');
+    const collection = collectionPage.locator(`[data-collection-factory-id="${factory.id}"]`).getByRole('switch');
+    await checked(collection, true);
+    await collection.click(); await checked(collection, false);
+    assert.equal((await request('/factories')).factories.find(item => item.id === factory.id).enabled, true);
+    await toggle.click(); await checked(toggle, false);
+    await collection.click(); await checked(collection, true);
+    assert.equal((await request('/factories')).factories.find(item => item.id === factory.id).enabled, false);
+    await collectionPage.reload(); await checked(collection, true);
+    await collectionPage.locator('.factory-collection-settings').screenshot({ path: path.join(directory, '02-independent-collection-capsules.png') });
+    await toggle.click(); await checked(toggle, true);
+    check('data-route collection capsule works independently of visibility and persists after refresh');
 
     await request('/admin-auth/users', 'POST', { username: 'factory_reader', displayName: '工厂只读', password: info.password, role: 'viewer',
         permissions: { view: false }, pagePermissions: { factories: { view: true } } });
@@ -102,6 +126,8 @@ async function checked(toggle, value) {
     const deniedSession = await (await readonly.request.get(info.origin + '/api/admin-auth/session')).json();
     const denied = await readonly.request.put(target, { headers: { Origin: info.origin, 'X-Admin-Request': '1', 'X-CSRF-Token': deniedSession.csrfToken }, data: { enabled: false } });
     assert.equal(denied.status(), 403);
+    const deniedCollection = await readonly.request.put(target + '/collection', { headers: { Origin: info.origin, 'X-Admin-Request': '1', 'X-CSRF-Token': deniedSession.csrfToken }, data: { enabled: false } });
+    assert.equal(deniedCollection.status(), 403);
     check('read-only users see the capsule but cannot change factory status in UI or API');
 
     const users = await login(await browser.newContext({ viewport: { width: 1626, height: 1000 } }), info.username, 'users');

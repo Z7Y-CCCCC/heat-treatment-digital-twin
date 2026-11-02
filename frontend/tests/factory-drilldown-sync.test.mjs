@@ -31,12 +31,23 @@ function fixture(t) {
     const renderer = Vue.createRenderer({ createElement: () => ({}), createText: () => ({}), createComment: () => ({}), setText() {}, setElementText() {}, parentNode: () => null, nextSibling: () => null, patchProp() {}, insert() {}, remove() {} })
     const instance = Vue.ref(null)
     const app = renderer.createApp({ render: () => Vue.h(Drilldown, { ref: instance }) })
-    app.provide(routeLocationKey, route); app.provide(routerKey, { push() {}, replace() {} }); app.mount({})
+    const replacements = []
+    app.provide(routeLocationKey, route); app.provide(routerKey, { push() {}, replace(target) { replacements.push(target) } }); app.mount({})
     environment.beforeRestore(() => app.unmount())
     const directory = { factories: ['factory_a', 'factory_b'].map(id => ({ id, name: id, enabled: true })) }
-    return { state: instance.value.$.setupState, route, directory, app }
+    return { state: instance.value.$.setupState, route, directory, app, replacements }
 }
 const config = id => ({ factoryId: id, settings: {}, workshops: [{ id: `workshop_${id}`, lines: [] }] })
+
+test('hidden street/campus views return to the map, rather than leaving a stale factory visible', async t => {
+    const view = fixture(t)
+    t.mock.method(globalThis, 'fetch', async url => json(String(url).endsWith('/factories') ? view.directory : config('factory_a')))
+    await view.state.load()
+    view.directory.factories[0].enabled = false
+    await view.state.load()
+    assert.equal(view.replacements.at(-1).path, '/group')
+    assert.equal(view.replacements.at(-1).query.factoryId, undefined)
+})
 
 test('street/campus reloads saved configuration without a user refresh', async t => {
     const view = fixture(t)

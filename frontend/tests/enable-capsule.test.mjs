@@ -43,7 +43,7 @@ test('capsule renders accessible enabled/disabled states and emits a toggle inte
 })
 
 test('factories and accounts reuse one compact animated capsule with keyboard focus and reduced-motion support', async () => {
-  for (const file of ['FactoryDirectorySettings', 'PlatformUsersSettings']) {
+  for (const file of ['FactoryDirectorySettings', 'PlatformUsersSettings', 'FactoryCollectionSettings']) {
     const source = await readFile(new URL(`../src/views/admin/components/${file}.vue`, import.meta.url), 'utf8')
     assert.match(source, /import EnableCapsule from/)
     assert.match(source, /<EnableCapsule /)

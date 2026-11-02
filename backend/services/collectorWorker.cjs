@@ -62,6 +62,9 @@ process.on('message', async message => {
             await engine.start();
             telemetry.flush();
             result = { started: true };
+        } else if (method === 'factoryCollection' && started) {
+            result = await engine.setFactoryCollectionEnabled(payload.factoryId);
+            telemetry.flush();
         } else if (method === 'points' && started) {
             const source = payload.factoryId && payload.factoryId !== engine.activeFactoryId
                 ? engine.factoryEngines.get(payload.factoryId) : engine;

@@ -189,6 +189,20 @@ test('factory hierarchy is visible in asset editors and model levels cannot be a
   assert.match(panel, /deviceHierarchyLabel\(d\)/)
 })
 
+test('factory display switch has no default/runtime restriction and acquisition has a separate data-route capsule', async () => {
+  const directory = await source('../src/views/admin/components/FactoryDirectorySettings.vue')
+  const hierarchy = await source('../src/views/admin/components/AssetHierarchyBar.vue')
+  const collection = await source('../src/views/admin/components/FactoryCollectionSettings.vue')
+  const panel = await source('../src/views/AdminPanel.vue')
+  assert.doesNotMatch(directory, /toggleBlockedReason|默认工厂不能停用|请先切换运行工厂|请先切换编辑工厂/)
+  assert.match(directory, /<th>大屏显示<\/th>/)
+  assert.doesNotMatch(hierarchy, /filter\(factory => factory.enabled\)/)
+  assert.match(panel, /<FactoryCollectionSettings v-if="settingsSubpage === 'data'"/)
+  assert.match(collection, /adminApi.setFactoryCollection/)
+  assert.match(collection, /canAdminPage\('settings.data', 'edit'\)/)
+  assert.doesNotMatch(collection, /updateFactory\(|activateFactory\(|restartEngine/)
+})
+
 test('layout selection lists library models rather than site instances and hides the read-only prose banner', async () => {
   const panel = await source('../src/views/AdminPanel.vue')
   assert.match(panel, /useManualDisassemblyPage\(\{ models, api: adminApi, scope: 'model'/)

@@ -100,6 +100,12 @@ class CollectorProcess {
     }
     getStatus() { return { ...this.state, process: { ...this.processStatus, pendingCommands: this.queued } }; }
     getFactoryStatuses() { return this.factories; }
+    setFactoryCollectionEnabled(factoryId) {
+        return this._enqueue(async () => {
+            if (this.closed || this.processStatus.status !== 'running') throw new Error('Collector unavailable');
+            return this._rpc('factoryCollection', { factoryId: String(factoryId) });
+        });
+    }
     async getPointRuntimeValues(deviceId, points = [], factoryId = '') {
         try {
             if (this.processStatus.status !== 'running') throw new Error('Collector unavailable');

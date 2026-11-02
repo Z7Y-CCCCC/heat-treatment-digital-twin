@@ -29,11 +29,11 @@ function fixture(t) {
     window.cancelAnimationFrame = () => {}
     document.documentElement = { style: {} }
     document.body = { style: {} }
-    let devices = [{ id: 'old', name: 'Old device' }], failure = false
+    let devices = [{ id: 'old', name: 'Old device' }], failure = false, visible = true
     const request = t.mock.method(globalThis, 'fetch', async url => {
         if (String(url).endsWith('/config')) return failure ? json({}, 503) : json({
             workshops: [{ id: 'w', devices: [{ id: 'unassigned', name: 'Unassigned' }], lines: [{ id: 'l', devices }] }],
-            settings: {}, models: [], platform: {}
+            factoryId: 'factory_a', factories: [{ id: 'factory_a', enabled: visible }], settings: {}, models: [], platform: {}
         })
         if (String(url).includes('/events')) return json([])
         return json({})
@@ -43,12 +43,29 @@ function fixture(t) {
     const renderer = createRenderer({ createElement: () => ({}), createText: () => ({}), createComment: () => ({}), setText() {}, setElementText() {}, parentNode: () => null, nextSibling: () => null, patchProp() {}, insert() {}, remove() {} })
     const instance = ref(null)
     const app = renderer.createApp({ render: () => h(Overlay, { ref: instance }) })
-    app.provide(routerKey, { push() {}, replace() {} })
+    const replacements = []
+    app.provide(routerKey, { push() {}, replace(target) { replacements.push(target) } })
     app.provide(routeLocationKey, { query: {} })
     app.mount({})
     environment.beforeRestore(() => app.unmount())
-    return { state: instance.value.$.setupState, sockets, request, setDevices(next) { devices = next }, fail() { failure = true } }
+    return { state: instance.value.$.setupState, sockets, request, replacements, hide() { visible = false }, setDevices(next) { devices = next }, fail() { failure = true } }
 }
+
+test('hiding the displayed factory returns to the map without rebuilding the scene or changing acquisition', async t => {
+    const view = fixture(t); await settle()
+    const calls = view.request.mock.callCount()
+    await view.state.handleRuntimeMessage({ type: 'configuration_changed', payload: { factoryId: 'factory_b', visibilityOnly: true, enabled: false } })
+    assert.equal(view.replacements.length, 0)
+    await view.state.handleRuntimeMessage({ type: 'configuration_changed', payload: { factoryId: 'factory_a', visibilityOnly: true, enabled: false } })
+    assert.equal(view.replacements.at(-1).path, '/group')
+    assert.equal(view.request.mock.callCount(), calls)
+})
+
+test('a hidden factory cannot reappear in the display on a full resync', async t => {
+    const view = fixture(t); await settle(); view.hide()
+    await view.state.handleRuntimeMessage({ type: 'realtime_resync_required' })
+    assert.equal(view.replacements.at(-1).path, '/group')
+})
 
 test('production overlay resync replaces its device set and handles unassigned devices', async t => {
     const view = fixture(t)

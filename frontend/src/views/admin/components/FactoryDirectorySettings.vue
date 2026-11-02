@@ -14,7 +14,7 @@ const factories=ref([]),loading=ref(true),saving=ref(false),error=ref(''),messag
 const createOpen=ref(false),newName=ref(''),newLocation=ref({country:'CHN',regionCode:'',regionName:'',cityCode:'',city:'',districtCode:'',districtName:''})
 const editingId=ref('')
 const previewRevision=ref(0)
-const activeFactoryId=ref(''),togglingId=ref('')
+const togglingId=ref('')
 const draftFactoryId=getFactoryScope()
 let openedSnapshot=''
 const editorPayload=()=>({id:editingId.value,name:newName.value,location:newLocation.value})
@@ -30,7 +30,6 @@ async function load(){
   try{
     const result=await adminApi.listFactories()
     factories.value=result.factories || []
-    activeFactoryId.value=result.activeFactoryId || ''
   }catch(cause){error.value=cause.message || '工厂列表读取失败'}finally{loading.value=false}
 }
 onMounted(async()=>{
@@ -60,15 +59,8 @@ async function createFactory(){
     clearFactoryDraft(draftFactoryId,'factory-directory');createOpen.value=false;await load();previewRevision.value++;message.value=editingId.value?`${result.factory?.name || name}资料已保存。`:`${result.factory?.name || name}已创建。可在各配置页顶部选择该厂，独立维护车间、产线和设备。`
   }catch(cause){error.value=cause.message || '保存工厂失败'}finally{saving.value=false}
 }
-function toggleBlockedReason(factory){
-  if(!factory.enabled)return ''
-  if(factory.id==='factory_default')return '默认工厂不能停用'
-  if(factory.id===activeFactoryId.value)return '请先切换运行工厂'
-  if(factory.id===draftFactoryId)return '请先切换编辑工厂'
-  return ''
-}
 async function toggleFactory(factory){
-  if(loading.value || saving.value || togglingId.value || !canAdminPage('factories','edit') || toggleBlockedReason(factory))return
+  if(loading.value || saving.value || togglingId.value || !canAdminPage('factories','edit'))return
   const enabled=!factory.enabled
   togglingId.value=factory.id;error.value='';message.value=''
   try{
@@ -87,20 +79,20 @@ async function toggleFactory(factory){
 <template>
   <section class="factory-registry" aria-labelledby="factory-registry-title">
     <header class="registry-heading">
-      <div><h3 id="factory-registry-title">集团工厂</h3><p>地图同时展示所有已接入工厂；车间、产线、设备、场景和实时数据按工厂隔离。在各配置页顶部直接选择要编辑的工厂。</p></div>
+      <div><h3 id="factory-registry-title">集团工厂</h3><p>管理工厂资料与大屏显示。</p></div>
       <div class="registry-heading-actions"><FactoryDistributionPreview :refresh-key="previewRevision" /><button type="button" class="primary-action" :disabled="loading || saving || !!togglingId" @click="openCreate">＋ 新建工厂</button></div>
     </header>
     <p v-if="loading" class="registry-state">正在读取工厂…</p>
     <p v-else-if="error && !factories.length" class="registry-state error" role="alert">{{ error }}</p>
     <div v-else class="factory-table-wrap">
       <table class="factory-table">
-        <thead><tr><th>工厂</th><th>区域</th><th>车间</th><th>产线</th><th>设备</th><th>状态</th><th>操作</th></tr></thead>
+        <thead><tr><th>工厂</th><th>区域</th><th>车间</th><th>产线</th><th>设备</th><th>大屏显示</th><th>操作</th></tr></thead>
         <tbody>
           <tr v-for="factory in factories" :key="factory.id" :data-factory-id="factory.id">
             <td><strong>{{ factory.name }}</strong><small>{{ factory.id }}</small></td>
             <td>{{ locationLabel(factory.location) }}</td>
             <td>{{ factory.workshopCount }}</td><td>{{ factory.lineCount }}</td><td>{{ factory.deviceCount }}</td>
-            <td><EnableCapsule class="factory-toggle" :enabled="Boolean(factory.enabled)" :pending="togglingId === factory.id" :disabled="saving || !!togglingId || !!toggleBlockedReason(factory) || !canAdminPage('factories','edit')" :label="`启用工厂：${factory.name}`" :title="toggleBlockedReason(factory)" @toggle="toggleFactory(factory)" /></td>
+            <td><EnableCapsule class="factory-toggle" :enabled="Boolean(factory.enabled)" :pending="togglingId === factory.id" :disabled="saving || !!togglingId || !canAdminPage('factories','edit')" :label="`大屏显示：${factory.name}`" @toggle="toggleFactory(factory)" /></td>
             <td class="row-actions"><button type="button" :disabled="saving || !!togglingId" @click="openEdit(factory)">编辑资料</button></td>
           </tr>
         </tbody>
