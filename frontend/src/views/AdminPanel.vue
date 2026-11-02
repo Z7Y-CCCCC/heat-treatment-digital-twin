@@ -9772,18 +9772,6 @@ async function openAdminSetupStep(step) {
                             </span>
                         </div>
                         <div>
-                            <span class="status-label">端点</span>
-                            <strong>{{ isAllPointMonitorMode ? '全部设备' : (realtimePointDeviceStatus?.endpoint || (selectedMonitorDevice ? formatPlcEndpoint(selectedMonitorDevice) : '-')) }}</strong>
-                        </div>
-                        <div>
-                            <span class="status-label">页面刷新周期</span>
-                            <strong>{{ pointMonitorAutoRefresh ? `${pointMonitorRefreshIntervalMs}ms` : '手动刷新' }}</strong>
-                        </div>
-                        <div>
-                            <span class="status-label">PLC采集周期</span>
-                            <strong>按每行配置执行</strong>
-                        </div>
-                        <div>
                             <span class="status-label">最近数据快照</span>
                             <strong>{{ formatPointTime(realtimePointSnapshotAt) }}</strong>
                         </div>
