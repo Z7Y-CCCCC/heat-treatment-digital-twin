@@ -9803,7 +9803,7 @@ async function openAdminSetupStep(step) {
                                     <th>PLC 标准地址</th>
                                     <th>数据类型</th>
                                     <th>采集周期</th>
-                                    <th>报警说明</th>
+                                    <th>说明</th>
                                     <th>最近读取</th>
                                 </tr>
                             </thead>
