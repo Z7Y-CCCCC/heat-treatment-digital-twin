@@ -1178,12 +1178,26 @@ function openCreateDevice() {
 }
 
 function closeDeviceForm() {
+    if (deviceFormSaving.value) return
     deviceFormRequestToken += 1
     showDeviceForm.value = false
     deviceFormStatus.value = 'idle'
     deviceFormError.value = ''
     deviceFormTargetId.value = ''
 }
+
+const deviceFormSaving = ref(false)
+function handleDeviceEditorEscape(event) {
+    if (event.key !== 'Escape' || event.isComposing || event.defaultPrevented || appDialog.visible) return
+    event.preventDefault()
+    event.stopPropagation()
+    closeDeviceForm()
+}
+watch(showDeviceForm, (visible, previous, onCleanup) => {
+    if (!visible) return
+    window.addEventListener('keydown', handleDeviceEditorEscape, true)
+    onCleanup(() => window.removeEventListener('keydown', handleDeviceEditorEscape, true))
+})
 
 function setEditingDeviceType(value) {
     editingDeviceType.value = value === 'auxiliary' ? 'auxiliary' : 'fixed'
@@ -1235,6 +1249,7 @@ async function openEditDevice(d) {
 }
 
 async function saveDevice() {
+    if (deviceFormSaving.value) return
     if (!editingDevice.id || !editingDevice.name) {
         return alert('请填写设备ID和名称')
     }
@@ -1260,18 +1275,23 @@ async function saveDevice() {
         delete parsedInstanceConfig.workshopId
     }
     const payload = buildDevicePayloadForSave({ ...editingDevice, instance_config: parsedInstanceConfig }, editingDeviceWorkshopId.value)
-    let result
-    if (isEditMode.value) {
-        result = await adminApi.updateDevice(editingDevice.id, payload)
-    } else {
-        result = await adminApi.createDevice(payload)
-    }
-    if (result?.error) return alert(result.error, { title: '设备保存失败', type: 'danger' })
-    if (!result?.success) return alert('设备保存失败：后端没有返回成功状态', { title: '设备保存失败', type: 'danger' })
-    showDeviceForm.value = false
-    await loadDevices()
-    setTimeout(() => loadEngineStatus(), 800)
-    await alert(`设备「${payload.name}」已保存`, { title: '保存成功', type: 'success' })
+    deviceFormSaving.value = true
+    try {
+        let result
+        if (isEditMode.value) {
+            result = await adminApi.updateDevice(editingDevice.id, payload)
+        } else {
+            result = await adminApi.createDevice(payload)
+        }
+        if (result?.error) return alert(result.error, { title: '设备保存失败', type: 'danger' })
+        if (!result?.success) return alert('设备保存失败：后端没有返回成功状态', { title: '设备保存失败', type: 'danger' })
+        showDeviceForm.value = false
+        await loadDevices()
+        setTimeout(() => loadEngineStatus(), 800)
+        await alert(`设备「${payload.name}」已保存`, { title: '保存成功', type: 'success' })
+    } catch (error) {
+        await alert(error.message || '设备保存失败', { title: '设备保存失败', type: 'danger' })
+    } finally { deviceFormSaving.value = false }
 }
 
 async function deleteDevice(id) {
@@ -8354,9 +8374,9 @@ async function openAdminSetupStep(step) {
 
                     <!-- 设备表单弹窗 -->
                     <Transition name="modal-fade">
-                        <div v-if="showDeviceForm" class="modal-overlay" @click.self="closeDeviceForm">
-                            <div class="modal-box">
-                            <h3>{{ isEditMode ? '编辑设备' : '新增设备' }}</h3>
+                        <div v-if="showDeviceForm" class="modal-overlay">
+                            <div class="modal-box device-modal-box" role="dialog" aria-modal="true" aria-labelledby="device-editor-title">
+                            <header class="device-editor-header"><h3 id="device-editor-title">{{ isEditMode ? '编辑设备' : '新增设备' }}</h3><button type="button" class="device-editor-close" aria-label="关闭设备弹窗" :disabled="deviceFormSaving" @click="closeDeviceForm">×</button></header>
                             <div v-if="deviceFormStatus === 'loading'" class="device-form-state device-form-loading" role="status" aria-live="polite">
                                 <span class="device-form-spinner" aria-hidden="true"></span>
                                 <strong>正在加载设备详情</strong>
@@ -8489,8 +8509,8 @@ async function openAdminSetupStep(step) {
                                 </div>
                             </div>
                             <div class="modal-actions">
-                                <button @click="saveDevice" class="btn btn-primary" v-permission="{ page: controlPermissionPage, action: 'edit' }">保存</button>
-                                <button @click="closeDeviceForm" class="btn">取消</button>
+                                <button @click="saveDevice" class="btn btn-primary" :disabled="deviceFormSaving" v-permission="{ page: controlPermissionPage, action: 'edit' }">{{ deviceFormSaving ? '保存中…' : '保存' }}</button>
+                                <button @click="closeDeviceForm" class="btn" :disabled="deviceFormSaving">取消</button>
                             </div>
                             </template>
                             </div>
@@ -13748,6 +13768,11 @@ button:enabled:active {
     background: rgba(0, 0, 0, 0.3);
     display: flex; justify-content: center; align-items: center; z-index: 1000;
 }
+.device-modal-box .device-editor-header { position: sticky; top: -32px; z-index: 2; margin: -32px -32px 24px; padding: 24px 50px 16px 32px; background: #fff; border-radius: 20px 20px 0 0; }
+.device-modal-box .device-editor-header h3 { margin: 0; }
+.device-editor-close { position: absolute; top: 8px; right: 8px; display: grid; place-items: center; width: 30px; height: 30px; padding: 0; border: 0; border-radius: 4px; background: transparent; box-shadow: none; color: #68778c; font-size: 20px; line-height: 1; cursor: pointer; }
+.device-editor-close:focus-visible { outline: 2px solid #386dca; outline-offset: 1px; }
+.device-editor-close:disabled { opacity: .5; cursor: wait; }
 .modal-box {
     background: rgba(255, 255, 255, 0.96);
     border-radius: 20px; box-shadow: 0 30px 70px rgba(0, 0, 0, 0.18), 0 0 0 1px rgba(0, 0, 0, 0.04);
