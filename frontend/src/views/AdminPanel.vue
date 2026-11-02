@@ -7878,7 +7878,6 @@ async function openAdminSetupStep(step) {
                             </div>
                             <div class="workshop-step-footer">
                                 <span>下一步将在 {{ getWorkshopLayout(selectedWorkshopEditor).size.width }} × {{ getWorkshopLayout(selectedWorkshopEditor).size.depth }} 米范围内按比例展示产线。</span>
-                                <button type="button" class="btn btn-primary" @click="selectWorkshopManagementStep('layout')">查看产线布局</button>
                             </div>
                         </section>
                     </template>

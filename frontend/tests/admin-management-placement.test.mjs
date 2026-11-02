@@ -4,6 +4,17 @@ import { readFile } from 'node:fs/promises'
 
 const source = async path => readFile(new URL(path, import.meta.url), 'utf8')
 
+test('workshop space omits the duplicate layout button while keeping top tabs and spatial save actions', async () => {
+  const panel = await source('../src/views/AdminPanel.vue')
+  const space = panel.slice(panel.indexOf('<template v-else-if="workshopManagementStep === \'space\' && selectedWorkshopEditor">'), panel.indexOf('<template v-else-if="selectedWorkshopEditor">'))
+  assert.ok(space.includes('workshop-spatial-editor'))
+  assert.doesNotMatch(panel, /查看产线布局/)
+  assert.match(space, /@click="restoreSavedNativeScenePreview"/)
+  assert.match(space, /@click="saveWorkshopSpatialLayout\(\)"/)
+  assert.match(panel, /key: 'layout', number: '03', title: '产线布局'/)
+  assert.match(panel, /@click="selectWorkshopManagementStep\(step.key\)"/)
+})
+
 test('PLC connection checkbox has the concise enable label without changing its binding', async () => {
   const panel = await source('../src/views/AdminPanel.vue')
   assert.doesNotMatch(panel, /启用此设备直连 PLC 采集/)
