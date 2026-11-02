@@ -54,6 +54,8 @@ const { requiresModelPublish } = require('../services/modelPublicationPermission
     const data = { ...context, pagePermissions: normalizePagePermissions({ 'settings.data': { view: true, edit: true } }) };
     const directoryEditor = { ...context, pagePermissions: normalizePagePermissions({ factories: { view: true, edit: true } }) };
     assert.equal(allowsRequirement(apiPermission('/api/factories/factory_default/collection', 'PUT'), directoryEditor), false);
+    assert.equal(allowsRequirement(apiPermission('/api/factories/collection-status', 'GET'), directoryEditor), false);
+    assert.equal(allowsRequirement(apiPermission('/api/factories/collection-status', 'GET'), data), true);
     assert.equal(allowsRequirement(apiPermission('/api/factories/factory_default/collection', 'PUT'), data), true);
     assert.equal(allowsRequirement(apiPermission('/api/factories/factory_default', 'PUT'), data), false);
     assert.equal(allowsRequirement(apiPermission('/api/settings', 'PUT', { data_mode: 'simulation' }), data), true);

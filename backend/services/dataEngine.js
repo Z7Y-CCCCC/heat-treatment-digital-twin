@@ -187,6 +187,7 @@ class DataEngine {
 
     getStatus() {
         return {
+            observedAt: Date.now(),
             mode: this.currentMode,
             plcStatus: this.plcStatus,
             collectorStatus: this.collectorStatus,

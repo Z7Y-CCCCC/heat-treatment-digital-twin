@@ -115,7 +115,27 @@ async function checked(toggle, value) {
     await collection.click(); await checked(collection, true);
     assert.equal((await request('/factories')).factories.find(item => item.id === factory.id).enabled, false);
     await collectionPage.reload(); await checked(collection, true);
+    const statusRow = collectionPage.locator(`[data-collection-factory-id="${factory.id}"]`);
+    await waitUntil(async () => await statusRow.locator('td').nth(2).innerText() === '1', 12000, 'actual per-factory acquisition counters');
+    assert.equal(await statusRow.locator('td').nth(3).innerText(), '0');
+    assert.match(await statusRow.locator('.collection-time').innerText(), /\d{2}:\d{2}:\d{2}/);
+    check('each factory row displays actual normal/abnormal device counts and its latest sample time');
+    const statusUrl = info.origin + '/api/factories/collection-status';
+    let statusResponse = { success: true, timestamp: Date.now(), factories: [{ factoryId: factory.id, collectionEnabled: true, status: 'abnormal', totalDevices: 5, normalDevices: 3, abnormalDevices: 2, pendingDevices: 0, lastReadAt: Date.now() - 8000 }] };
+    const serveStatus = route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(statusResponse) });
+    await collectionPage.route(statusUrl, serveStatus);
+    await waitUntil(async () => await statusRow.locator('td').nth(3).innerText() === '2', 12000, 'automatic status refresh');
+    assert.equal(await statusRow.locator('.collection-count.good').innerText(), '3');
+    assert.equal(await statusRow.locator('.collection-state').innerText(), '采集异常');
     await collectionPage.locator('.factory-collection-settings').screenshot({ path: path.join(directory, '02-independent-collection-capsules.png') });
+    await collectionPage.unroute(statusUrl, serveStatus);
+    await collectionPage.route(statusUrl, route => route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: '验收：采集状态暂不可用' }) }));
+    await statusRow.getByText('状态未更新', { exact: true }).waitFor();
+    assert.equal(await statusRow.locator('td').nth(2).innerText(), '—');
+    assert.equal(await statusRow.locator('td').nth(3).innerText(), '—');
+    await collectionPage.unroute(statusUrl);
+    await waitUntil(async () => await statusRow.locator('td').nth(2).innerText() === '1', 12000, 'status recovers after a failed poll');
+    check('automatic polling updates mixed counts, never leaves stale green counts after an error, and recovers without a page refresh');
     await toggle.click(); await checked(toggle, true);
     check('data-route collection capsule works independently of visibility and persists after refresh');
 
@@ -128,6 +148,7 @@ async function checked(toggle, value) {
     assert.equal(denied.status(), 403);
     const deniedCollection = await readonly.request.put(target + '/collection', { headers: { Origin: info.origin, 'X-Admin-Request': '1', 'X-CSRF-Token': deniedSession.csrfToken }, data: { enabled: false } });
     assert.equal(deniedCollection.status(), 403);
+    assert.equal((await readonly.request.get(statusUrl)).status(), 403);
     check('read-only users see the capsule but cannot change factory status in UI or API');
 
     const users = await login(await browser.newContext({ viewport: { width: 1626, height: 1000 } }), info.username, 'users');

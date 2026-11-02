@@ -3,6 +3,7 @@ const crypto = require('crypto');
 const { getDb } = require('../db/database');
 const { normalizeSettingValue } = require('./settings');
 const { searchFactoryPlace } = require('../services/factoryGeocoder');
+const { summarizeFactoryCollection } = require('../services/factoryCollectionSummary');
 
 const router = express.Router();
 
@@ -61,6 +62,29 @@ router.get('/', async (req, res) => {
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
+});
+
+router.get('/collection-status', async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    try {
+        const db = await getDb();
+        const factories = await db.all(`SELECT f.id, f.collection_enabled,
+            COALESCE(local_mode.value, global_mode.value, 'integrated_plc') AS mode,
+            COALESCE(local_interval.value, global_interval.value, '2000') AS simulation_interval_ms
+            FROM factories f
+            LEFT JOIN factory_settings local_mode ON local_mode.factory_id=f.id AND local_mode.\`key\`='data_mode'
+            LEFT JOIN settings global_mode ON global_mode.\`key\`='data_mode'
+            LEFT JOIN factory_settings local_interval ON local_interval.factory_id=f.id AND local_interval.\`key\`='simulation_interval_ms'
+            LEFT JOIN settings global_interval ON global_interval.\`key\`='simulation_interval_ms'
+            ORDER BY f.sort_order ASC, f.name ASC`);
+        const devices = await db.all(`SELECT d.id, d.plc_enabled, w.factory_id FROM devices d
+            JOIN \`lines\` l ON l.id=d.line_id JOIN workshops w ON w.id=l.workshop_id`);
+        const grouped = new Map();
+        for (const device of devices) { const id = String(device.factory_id); if (!grouped.has(id)) grouped.set(id, []); grouped.get(id).push(device); }
+        const statuses = global.dataEngine?.getFactoryStatuses?.() || {}, processStatus = global.dataEngine?.getStatus?.().process?.status;
+        const now = Date.now();
+        res.json({ success: true, timestamp: now, factories: factories.map(factory => summarizeFactoryCollection(factory, grouped.get(String(factory.id)) || [], statuses[factory.id], processStatus, now)) });
+    } catch (error) { res.status(500).json({ success: false, error: error.message }); }
 });
 
 router.get('/live-summaries', async (req, res) => {
