@@ -492,6 +492,7 @@ export function useSystemSettings({
             user: '', password: '', database: '', filename: '', defaultSchema: '',
             encrypt: false, trustServerCertificate: true, enabled: true, queryTimeoutMs: 8000,
             connector: 'http', baseUrl: '', healthPath: '/health', method: 'GET', responseFormat: 'auto', authType: 'none',
+            loginPath:'/login',loginUserField:'username',loginPasswordField:'password',loginBodyFormat:'json',tokenPath:'data.token',tokenHeader:'Authorization',tokenPrefix:'Bearer',tokenLifetimeSec:300,
             apiKeyHeader: 'X-API-Key', apiKey: '', token: '', tokenUrl: '', clientId: '', clientSecret: '', scope: '', tokenAuthMethod: 'body', requestTimeoutMs: 8000
         }
     }
@@ -539,6 +540,7 @@ export function useSystemSettings({
         // metadata and credentials from a previously selected source must never leak in.
         const fields = draft.sourceType === 'http_api'
             ? ['connector', 'baseUrl', 'healthPath', 'method', 'responseFormat', 'authType', 'requestTimeoutMs', ...({
+                login_token: ['user','password','loginPath','loginUserField','loginPasswordField','loginBodyFormat','tokenPath','tokenHeader','tokenPrefix','tokenLifetimeSec'],
                 api_key: ['apiKeyHeader', 'apiKey'], bearer: ['token'], basic: ['user', 'password'],
                 oauth2_client_credentials: ['tokenUrl', 'clientId', 'clientSecret', 'scope', 'tokenAuthMethod']
             }[draft.authType] || [])]

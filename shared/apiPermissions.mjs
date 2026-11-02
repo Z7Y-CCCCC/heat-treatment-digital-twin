@@ -32,6 +32,7 @@ export function apiPermission(path, method = 'GET', body) {
     return any('admin', ...(!destructive ? ['backup'] : []), p('settings.database', action))
   }
   if (resource('database') || resource('data-sources')) {
+    if (method === 'POST' && path === '/api/data-sources/datasets/preview') return body?.datasetId ? read(['settings.database', 'platform.designer']) : any('admin', p('settings.database', 'edit'))
     if (safe && path === '/api/data-sources/runtime-values') return read(['points', 'points.alarms', 'point-monitor', 'platform.designer'], true)
     const pages = ['settings.database', 'platform.designer', 'platform.map']
     if (safe) return read(pages)

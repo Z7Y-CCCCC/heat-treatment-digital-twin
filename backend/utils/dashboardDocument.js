@@ -165,7 +165,7 @@ function normalizeDataBinding(source, legacyBinding = {}) {
     const data = objectValue(source, {});
     const binding = objectValue(legacyBinding, {});
     let mode = shortText(data.mode, '', 32);
-    if (!['static', 'plc', 'database', 'http_api', 'runtime', 'business'].includes(mode)) {
+    if (!['static', 'plc', 'database', 'http_api', 'dataset', 'runtime', 'business'].includes(mode)) {
         mode = (data.connectionId || binding.connectionId || binding.connection_id)
             ? 'database'
             : (data.pointId || binding.pointId || binding.point_id)
@@ -190,6 +190,9 @@ function normalizeDataBinding(source, legacyBinding = {}) {
         pointKey: shortText(data.pointKey ?? data.point_key ?? binding.pointKey ?? binding.point_key, '', 255),
         path: mode === 'static' ? '' : shortText(data.path ?? binding.path, '', 255),
         source: mode === 'static' ? '' : shortText(data.source ?? binding.source, '', 128),
+        datasetId: shortText(data.datasetId, '', 80),
+        datasetField: shortText(data.datasetField, '', 64),
+        datasetMode: ['first','count','sum','avg','min','max'].includes(data.datasetMode) ? data.datasetMode : 'first',
         connectionId: shortText(data.connectionId ?? binding.connectionId ?? binding.connection_id, '', 80),
         apiPath: shortText(data.apiPath ?? binding.apiPath, '', 1024),
         jsonPath: shortText(data.jsonPath ?? binding.jsonPath, '', 255),
@@ -710,6 +713,7 @@ function validateDocument(document, options = {}) {
         if (widget?.data?.mode === 'business' && !widget.data.connectionId) {
             errors.push(`${label} 的业务只读组件必须选择外部数据库连接`);
         }
+        if (widget?.data?.mode === 'dataset' && (!/^[a-zA-Z0-9_-]{1,80}$/.test(widget.data.datasetId) || !/^[a-zA-Z_][a-zA-Z0-9_]{0,63}$/.test(widget.data.datasetField))) errors.push(`${label} 请完整选择数据集与字段`);
         if (widget?.data?.mode === 'http_api') {
             if (!widget.data.connectionId || !widget.data.apiPath || !widget.data.jsonPath)
                 errors.push(`${label} 的 HTTP 接口绑定必须选择连接、接口路径和 JSON 字段`);

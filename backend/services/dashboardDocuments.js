@@ -105,6 +105,17 @@ async function loadPublishedDocument(db, project, scene) {
 
 async function validatePlcBindings(db, document) {
     validateDocument(document);
+    const datasetWidgets = document.widgets.filter(widget => widget.data?.mode === 'dataset');
+    if (datasetWidgets.length) {
+        const project = await db.get('SELECT factory_id FROM projects WHERE id=?', [document.projectId]);
+        const definitions = await require('./dataSets').listDataSets(project?.factory_id || 'factory_default');
+        for (const widget of datasetWidgets) {
+            const definition = definitions.find(d => d.id === widget.data.datasetId);
+            if (!definition || !definition.enabled) throw new Error(`组件“${widget.title || widget.id}”的数据集不存在或已停用`);
+            if (!definition.columns.some(c => c.name === widget.data.datasetField)) throw new Error(`组件“${widget.title || widget.id}”的数据集字段不存在`);
+            resolveConnection(definition.connectionId, project?.factory_id || 'factory_default');
+        }
+    }
     const databaseConnectionIds = [...new Set(document.widgets
         .filter(widget => ['database', 'business', 'http_api'].includes(widget.data?.mode))
         .flatMap(widget => (widget.data.mode === 'database' && Array.isArray(widget.data.datasets) && widget.data.datasets.length

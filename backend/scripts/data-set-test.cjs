@@ -1,0 +1,69 @@
+const assert = require('node:assert/strict'), fs = require('node:fs'), path = require('node:path'), http = require('node:http');
+const { createRunDirectory, createTestDatabase } = require('./integration-test-utils.cjs');
+const directory = createRunDirectory('data-set-test');
+let server;
+(async () => {
+    const file = path.join(directory, 'factory.db'); await createTestDatabase(file);
+    Object.assign(process.env, { APP_DATA_DIR:directory, DB_TYPE:'sqlite', SQLITE_FILE:file, DATA_SOURCE_BACKUP_DIR:path.join(directory,'backups') });
+    const sources = require('../services/dataSources'), sets = require('../services/dataSets'), { getDb, closeDb } = require('../db/database');
+    const requests = [], payload = { data: [{id:'a',name:'A',temperature:0},{id:'b',name:'B',temperature:850}] };
+    let logins=0,rejectOnce=false,sessionToken='';
+    server = http.createServer((req,res) => { let body='';req.on('data',chunk=>body+=chunk);req.on('end',()=>{
+        requests.push({url:req.url,method:req.method,body});
+        if(req.url==='/login'){logins++;sessionToken=`owned-session-${logins}`;res.writeHead(200,{'Content-Type':'application/json'});res.end(JSON.stringify({data:{token:sessionToken}}));return}
+        if(req.url.startsWith('/secure') && (rejectOnce || req.headers.authorization!==`Bearer ${sessionToken}`)){rejectOnce=false;res.writeHead(401);res.end();return}
+        res.writeHead(200,{'Content-Type':'application/json'});res.end(JSON.stringify(payload));
+    }) }); await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+    const connection = sources.saveDataSource({name:'Owned ERP',sourceType:'http_api',baseUrl:`http://127.0.0.1:${server.address().port}/`,enabled:true,authType:'none'},'factory_default');
+    const input = {name:'设备参数',connectionId:connection.id,source:'http',rootPath:'data',refreshMs:1000,
+        request:{method:'GET',path:'/devices',parameters:[{name:'id',in:'query',source:'context',key:'deviceId'}]},match:{field:'id',contextKey:'deviceId'},
+        columns:[{name:'temperature',label:'温度',path:'temperature',type:'number',role:'value',scale:1,offset:0},{name:'name',label:'设备',path:'name',type:'string',role:'category'}]};
+    const saved = await sets.saveDataSet(input,'factory_default'); assert.ok(saved.id && saved.revision);
+    const widgets = ['one','two'].map(id=>({id,data:{mode:'dataset',datasetId:saved.id,datasetField:'temperature',deviceScope:'current'}}));
+    const a = await sources.readRuntimeBindings(widgets,{factoryId:'factory_default',deviceId:'a'});
+    assert.equal(a.one.value,0);assert.equal(a.two.value,0);assert.equal(a.one.quality,'good');assert.equal(requests.length,1);
+    assert.match(requests[0].url,/id=a/);
+    const b = await sources.readRuntimeBindings(widgets,{factoryId:'factory_default',deviceId:'b'});
+    assert.equal(b.one.value,850);assert.equal(requests.length,2);assert.equal(b.one.rows[0].name,'B');
+    const cached = await sources.readRuntimeBindings(widgets,{factoryId:'factory_default',deviceId:'b'});
+    assert.equal(cached.one.fetchedAt,b.one.fetchedAt);assert.equal(requests.length,2);
+    const missing = await sources.readRuntimeBindings(widgets,{factoryId:'factory_default',deviceId:''});
+    assert.equal(missing.one.quality,'bad');assert.equal(missing.one.value,null);assert.equal(requests.length,2);
+    assert.equal((await sets.listDataSets('another_factory')).length,0);
+    await assert.rejects(()=>sets.readDefinition(saved,{deviceId:'a'},'another_factory'),/不存在/);
+    await assert.rejects(()=>sets.saveDataSet({...saved,revision:'old'},'factory_default'),e=>e.status===409);
+    const post = await sets.saveDataSet({...input,name:'POST 查询',request:{method:'POST',path:'/query',readOnly:true,parameters:[{name:'id',in:'body',source:'context',key:'deviceId'}]}},'factory_default');
+    const pr = await sets.readDefinition(post,{deviceId:'b'},'factory_default',true);assert.equal(pr.rows[0].temperature,850);
+    assert.equal(requests.at(-1).method,'POST');assert.equal(JSON.parse(requests.at(-1).body).id,'b');
+    const inspected=await sets.readDefinition(saved,{deviceId:'a'},'factory_default',true,true);assert.ok(inspected.fields.some(f=>f.path==='temperature'));assert.ok(inspected.roots.includes('data'));
+    const login=sources.saveDataSource({name:'Login fixture',sourceType:'http_api',baseUrl:`http://127.0.0.1:${server.address().port}/`,healthPath:'/secure',enabled:true,authType:'login_token',user:'fixture',password:'owned-fixture-password',loginPath:'/login',tokenPath:'data.token'},'factory_default');
+    assert.equal(login.password,'******');assert.ok(!JSON.stringify(login).includes('owned-fixture-password'));
+    const authDef={...saved,connectionId:login.id,request:{method:'GET',path:'/secure',parameters:[]}};
+    await Promise.all([sets.readDefinition(authDef,{deviceId:'a'},'factory_default',true),sets.readDefinition(authDef,{deviceId:'b'},'factory_default',true)]);assert.equal(logins,1,'concurrent readers share a login');
+    rejectOnce=true;await sets.readDefinition(authDef,{deviceId:'a'},'factory_default',true);assert.equal(logins,2,'a 401 performs at most one controlled refresh');
+    sessionToken='expired-owned-session';
+    await Promise.all(['a','b'].map(id=>sets.readDefinition({...authDef,request:{...authDef.request,path:`/secure/${id}`}},{deviceId:id},'factory_default',true)));
+    assert.equal(logins,3,'simultaneous rejected requests share the same token refresh');
+    assert.throws(()=>sets.normalizeDataSet({...input,request:{method:'POST',path:'/write'}}),/只读/);
+    assert.throws(()=>sets.normalizeDataSet({...input,request:{method:'DELETE',path:'/write'}}),/GET/);
+    assert.throws(()=>sets.normalizeDataSet({...input,request:{path:'http://outside.test/'}}),/路径/);
+    assert.throws(()=>sets.normalizeDataSet({...input,request:{path:'/x',parameters:[{name:'Authorization',in:'header'}]}}),/认证/);
+    const invalid = sets.mapRows({data:[{id:'a',temperature:'bad'}]},saved,{deviceId:'a'});assert.equal(invalid.quality,'bad');
+    assert.equal(sets.bindingResult(invalid,{datasetField:'temperature'}).value,null);
+    const empty = sets.mapRows({data:[]},saved,{deviceId:'a'});assert.equal(empty.quality,'empty');
+    assert.throws(()=>sets.mapRows({data:[payload.data[0],payload.data[0]]},saved,{deviceId:'a'}),/多条/);
+    const all = sets.mapRows(payload,{...saved,match:null},{ });assert.equal(sets.bindingResult(all,{datasetField:'temperature',datasetMode:'sum'}).value,850);
+    const Sqlite = require('better-sqlite3'), external = path.join(directory,'external.db'), dbx = new Sqlite(external);
+    dbx.exec("CREATE TABLE readings(id TEXT,temperature REAL,name TEXT);INSERT INTO readings VALUES ('a',0,'A'),('b',850,'B')");dbx.close();
+    const sql = sources.saveDataSource({name:'Owned SQLite',type:'sqlite',filename:external,enabled:true},'factory_default');
+    const sqlSet = await sets.saveDataSet({...input,connectionId:sql.id,source:'database',database:{table:'readings'},rootPath:''},'factory_default');
+    const qr = await sets.readDefinition(sqlSet,{deviceId:'b'},'factory_default',true);assert.equal(qr.rows.length,1);assert.equal(qr.rows[0].temperature,850);
+    await assert.rejects(()=>sets.readDefinition(sqlSet,{deviceId:''},'factory_default'),/先选择/);
+    assert.ok((await getDb()).get);await closeDb();
+    assert.equal((await sets.listDataSets('factory_default')).find(d=>d.id===saved.id).revision,saved.revision);
+    await sets.deleteDataSet(post.id,post.revision,'factory_default');assert.equal((await sets.listDataSets('factory_default')).some(d=>d.id===post.id),false);
+    await assert.rejects(()=>sets.saveDataSet(post,'factory_default'),e=>e.status===409);
+    await closeDb();
+    const result = {success:true,directory,checks:['HTTP per-device context, query and read-only POST','two widgets share one response','sample timestamp retained on cache hits','missing context and duplicate identities rejected','field conversion errors are not zero','factory isolation and optimistic revision conflict','SQL field mapping with parameterized object filter','definitions survive database reopen; deletion persists']};
+    fs.writeFileSync(path.join(directory,'result.json'),JSON.stringify(result,null,2));console.log(JSON.stringify(result,null,2));
+})().catch(error=>{console.error(error);process.exitCode=1}).finally(async()=>{if(server){server.closeAllConnections();await new Promise(resolve=>server.close(resolve))}});

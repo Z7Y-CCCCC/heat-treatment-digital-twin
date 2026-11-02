@@ -39,6 +39,7 @@ export function suggestTemplateFields(source, fields, expectedType = '') {
 export function templateFieldBindings(document) {
   return (document.widgets || []).flatMap(widget => {
     const data = widget.data || {}
+    if (data.mode === 'dataset') return [{key:`${widget.id}:dataset`,widgetId:widget.id,label:widget.title || widget.id,kind:'dataset',source:clone(data)}]
     if (data.mode === 'http_api') return [{ key: `${widget.id}:http`, widgetId: widget.id, label: widget.title || widget.id, kind: 'http', source: clone(data) }]
     if (data.mode !== 'database') return []
     return (data.datasets?.length ? data.datasets : [data]).map((source, index) => ({ key: `${widget.id}:${index}`, widgetId: widget.id, index, label: `${widget.title || widget.id} / ${source.label || source.alias || index + 1}`, kind: 'database', source: clone(source) }))
@@ -50,7 +51,7 @@ export function applyTemplateFieldBindings(document, bindings) {
   for (const binding of bindings) {
     const widget = result.widgets.find(row => row.id === binding.widgetId)
     if (!widget) throw new Error('模板组件已改变，请重新载入')
-    if (binding.kind === 'http') Object.assign(widget.data, binding.target)
+    if (binding.kind === 'http' || binding.kind === 'dataset') Object.assign(widget.data, binding.target)
     else {
       if (!widget.data.datasets?.length) widget.data.datasets = [clone(widget.data)]
       widget.data.datasets[binding.index] = clone(binding.target)
@@ -63,6 +64,10 @@ export function applyTemplateFieldBindings(document, bindings) {
 
 export function validateTemplateFieldBinding(binding) {
   const target = binding.target
+  if (binding.kind === 'dataset') {
+    if (!target.datasetId || !binding.fields.some(field => field.name === target.datasetField)) throw new Error('请选择目标数据集中的字段')
+    return
+  }
   if (binding.kind === 'http') {
     if (!target.apiPath || !target.jsonPath) throw new Error('请填写接口路径和字段路径')
     return

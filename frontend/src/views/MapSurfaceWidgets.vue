@@ -50,7 +50,7 @@ const surfaceWidgets = computed(() => {
 })
 function valueForWidget(widget) {
   const binding = widget.data || {}
-  if (binding.mode === 'database' || binding.mode === 'http_api') return values.value[widget.id]?.value
+  if (binding.mode === 'database' || binding.mode === 'http_api' || binding.mode === 'dataset') return values.value[widget.id]?.value
   if (binding.mode === 'plc') {
     const deviceId = String(binding.deviceId || '')
     const pointId = String(binding.pointId || '')
@@ -100,8 +100,10 @@ let timer = 0
 let businessTimer = 0
 let abort = null
 let businessAbort = null
+let valuesSequence = 0, disposed = false
 async function refreshValues() {
-  if (!surfaceWidgets.value.some(widget => ['database', 'http_api'].includes(widget.data?.mode))) return
+  const sequence = ++valuesSequence
+  if (!surfaceWidgets.value.some(widget => ['database', 'http_api', 'dataset'].includes(widget.data?.mode))) return
   abort?.abort()
   abort = new AbortController()
   try {
@@ -110,8 +112,10 @@ async function refreshValues() {
       signal: abort.signal,
       ...(props.factoryId ? { headers: { 'X-Factory-ID': props.factoryId } } : {})
     })
-    if (response.ok) values.value = (await response.json()).values || {}
-  } catch (error) { if (error.name !== 'AbortError') values.value = {} }
+    if (!response.ok) throw new Error('数据读取失败')
+    const payload = await response.json()
+    if (!disposed && sequence === valuesSequence) values.value = payload.values || {}
+  } catch (error) { if (!disposed && sequence === valuesSequence && error.name !== 'AbortError') values.value = {} }
 }
 async function refreshBusiness() {
   const widget = surfaceWidgets.value.find(item => item.type === 'business_summary' || item.data?.mode === 'business')
@@ -136,9 +140,9 @@ async function refreshBusiness() {
     if (error.name !== 'AbortError') businessData.value = { status: 'error', readOnly: true, sections: {} }
   }
 }
-watch(() => [props.viewId, props.document], () => { values.value = {}; void refreshValues(); void refreshBusiness() })
+watch(() => [props.viewId, props.factoryId, props.document], () => { values.value = {}; void refreshValues(); void refreshBusiness() })
 onMounted(() => { void refreshValues(); void refreshBusiness(); timer = window.setInterval(refreshValues, 15000); businessTimer = window.setInterval(refreshBusiness, 60000) })
-onUnmounted(() => { window.clearInterval(timer); window.clearInterval(businessTimer); abort?.abort(); businessAbort?.abort() })
+onUnmounted(() => { disposed=true;valuesSequence++;window.clearInterval(timer); window.clearInterval(businessTimer); abort?.abort(); businessAbort?.abort() })
 </script>
 
 <template>

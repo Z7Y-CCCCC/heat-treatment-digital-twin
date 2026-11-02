@@ -30,6 +30,7 @@ const voiceAnnouncer = createVoiceAnnouncer()
 let previousDocumentBackground = ''
 let previousBodyBackground = ''
 let databaseRequestSeq = 0
+let externalValueContext = ''
 let businessRequestSeq = 0
 let databaseInFlight = false
 let businessInFlight = false
@@ -377,7 +378,7 @@ const widgets = computed(() => {
     }).filter(widget => widgetRuntimeVisible(widget, {
     context: runtimeContext,
     dataValue: runtimeValueForWidget(widget),
-    dataRecord: ['database', 'http_api'].includes(widget.data?.mode) ? databaseValues[widget.id] : null,
+    dataRecord: ['database', 'http_api', 'dataset'].includes(widget.data?.mode) ? databaseValues[widget.id] : null,
     groupVisibility,
     widgetVisibility
     }))
@@ -493,7 +494,7 @@ function handleInspectionCommand(command) {
 
 function runtimeValueForWidget(widget) {
     const binding = widget?.data || widget?.binding || {}
-    if (binding.mode === 'database' || binding.mode === 'http_api') return databaseValues[widget.id]?.value
+    if (binding.mode === 'database' || binding.mode === 'http_api' || binding.mode === 'dataset') return databaseValues[widget.id]?.value
     if (binding.mode === 'plc' || binding.pointId || binding.point_id) {
         const pointId = String(binding.pointId || binding.point_id || '')
         const isCurrentDevice = binding.deviceScope === 'current'
@@ -872,7 +873,7 @@ function handleHostMessage(event) {
 
 async function refreshDatabaseValues(force = false) {
     if (overlayDisposed || (!force && databaseInFlight)) return
-    if (!force && !configuredWidgets.value.some(widget => ['database', 'http_api'].includes(widget.data?.mode))) return
+    if (!force && !configuredWidgets.value.some(widget => ['database', 'http_api', 'dataset'].includes(widget.data?.mode))) return
     const requestSeq = ++databaseRequestSeq
     databaseInFlight = true
     try {
@@ -883,15 +884,25 @@ async function refreshDatabaseValues(force = false) {
             device_id: runtimeContext.deviceId || '',
             part_id: runtimeContext.partId || ''
         })
+        const contextKey = `${runtimeContext.factoryId || ''}:${query}`
+        if (contextKey !== externalValueContext) {
+            externalValueContext = contextKey
+            for (const widget of configuredWidgets.value.filter(widget => widget.data?.mode === 'dataset')) delete databaseValues[widget.id]
+        }
         const response = await adminFetch(`${API_BASE}/data-sources/runtime-values?${query}`, { signal: overlayRequests.signal })
-        if (!response.ok) return
+        if (!response.ok) throw new Error('外部数据暂不可用')
         const payload = await response.json()
         if (overlayDisposed || requestSeq !== databaseRequestSeq) return
         const next = payload.values || {}
         Object.keys(databaseValues).forEach(key => { if (!(key in next)) delete databaseValues[key] })
         Object.assign(databaseValues, next)
     } catch {
-        // 外部数据库短暂离线时保留上一次画面，质量状态由后端结果更新。
+        if (!overlayDisposed && requestSeq === databaseRequestSeq) {
+            for (const widget of configuredWidgets.value.filter(widget => widget.data?.mode === 'dataset')) {
+                const previous = databaseValues[widget.id] || {}
+                databaseValues[widget.id] = {...previous,value:null,rows:[],series:[],quality:'stale',error:'数据连接暂不可用'}
+            }
+        }
     } finally {
         if (requestSeq === databaseRequestSeq) databaseInFlight = false
     }

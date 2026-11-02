@@ -10,7 +10,7 @@ const scripts = [
     'test-isolation-test.cjs', 'collector-process-test.cjs', 'collector-process-integration-test.cjs', 'database-readiness-test.cjs', 'bounded-process-log-test.cjs', 'history-retention-test.cjs', 'map-surface-schema-test.cjs',
     'group-portal-settings-test.cjs', 'appearance-assets-test.cjs',
     'admin-auth-test.cjs', 'admin-session-persistence-test.cjs', 'admin-login-history-test.cjs', 'page-permissions-test.cjs', 'page-permissions-integration-test.cjs', 'license-test.cjs', 'offline-activation-test.cjs', 'release-package-test.cjs', 'package-resource-isolation-test.cjs',
-    'math-expression-test.cjs', 'business-data-test.cjs', 'data-source-test.cjs',
+    'math-expression-test.cjs', 'business-data-test.cjs', 'data-source-test.cjs', 'data-set-test.cjs',
     'data-source-http-regression-test.cjs', 'data-source-designer-test.cjs',
     'spatial-hierarchy-test.cjs', 'industrial-ground-test.cjs', 'cast-discovery-test.cjs',
     'backend-concurrency-test.cjs', 'backend-long-runtime-test.cjs', 'backend-recovery-edge-test.cjs',

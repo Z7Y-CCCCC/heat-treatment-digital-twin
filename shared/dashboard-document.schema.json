@@ -47,7 +47,10 @@
       "type": "object",
       "required": ["mode", "readOnly"],
       "properties": {
-        "mode": { "enum": ["static", "runtime", "plc"] },
+        "mode": { "enum": ["static", "runtime", "plc", "database", "http_api", "dataset", "business"] },
+        "datasetId": { "type": "string", "maxLength": 80 },
+        "datasetField": { "type": "string", "maxLength": 64 },
+        "datasetMode": { "enum": ["first", "count", "sum", "avg", "min", "max"] },
         "deviceId": { "type": "string", "maxLength": 128 },
         "pointId": { "type": "string", "maxLength": 128 },
         "path": { "type": "string", "maxLength": 255 },

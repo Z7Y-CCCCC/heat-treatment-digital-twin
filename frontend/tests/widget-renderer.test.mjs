@@ -75,6 +75,17 @@ function fixture(t) {
 const textContent = root => [root.text, ...root.children.map(textContent)].join(' ')
 const findNode = (root, match) => match(root) ? root : root.children.map(child => findNode(child, match)).find(Boolean)
 
+test('dataset text displays typed values without losing leading zeroes, and unavailable data never uses a static fallback as a real reading', async t => {
+    const view=fixture(t),widget={id:'typed_dataset',type:'text',content:{text:'静态占位'},data:{mode:'dataset',datasetId:'erp',datasetField:'code'}}
+    const record={value:'00123',quality:'good',columns:[{name:'code',type:'string'}],rows:[],series:[]}
+    await view.render({widget,databaseValues:{typed_dataset:record}})
+    assert.match(textContent(view.root),/00123/);assert.doesNotMatch(textContent(view.root),/静态占位|123\.0/)
+    await view.render({widget:{...widget,content:{text:'工单：{value}',datasetTextMode:'template'}},databaseValues:{typed_dataset:record}})
+    assert.match(textContent(view.root),/工单：00123/)
+    await view.render({widget,databaseValues:{typed_dataset:{...record,value:'00123',quality:'stale'}}})
+    assert.doesNotMatch(textContent(view.root),/00123|静态占位/)
+})
+
 test('HUD module ring preserves missing readings and clamps only its graphic', async t => {
     const view = fixture(t)
     const widget = { type: 'hud_kpi_panel', title: '生产运行参数', content: { chartPath: 'metrics.overall_oee', items: [] } }
@@ -85,6 +96,28 @@ test('HUD module ring preserves missing readings and clamps only its graphic', a
     await view.render({ widget, overlayMode: true, metrics: { overall_oee: 135 } })
     assert.equal(findNode(view.root, e => e.props.class === 'ring-progress').props['stroke-dasharray'], '100 100')
     assert.match(textContent(view.root), /135/)
+})
+
+test('dataset charts and event widgets never fall back to unrelated samples or render a missing value as zero', async t => {
+    const view=fixture(t),data={mode:'dataset',datasetId:'erp',datasetField:'temperature'}
+    await view.render({widget:{id:'dataset_chart',type:'trend',content:{chartType:'gauge'},data}})
+    let option=charts.at(-1).options.at(-1)[0]
+    assert.equal(option.series[0].detail.formatter,'—');assert.equal(option.series[0].data[0].value,null)
+    assert.equal(option.series[0].pointer.show,false)
+    await view.render({widget:{id:'dataset_chart',type:'trend',content:{chartType:'line'},data},trendPoints:[{time:'unrelated',value:123}]})
+    option=charts.at(-1).options.at(-1)[0];assert.deepEqual(option.series,[])
+    await view.render({widget:{id:'dataset_event',type:'alarm_list',content:{},data},events:[{message:'unrelated'}]})
+    assert.doesNotMatch(textContent(view.root),/unrelated/)
+    await view.render({widget:{id:'dataset_event',type:'alarm_list',content:{},data},databaseValues:{dataset_event:{quality:'good',rows:[{value:'当前设备消息'}]}}})
+    assert.match(textContent(view.root),/当前设备消息/)
+})
+
+test('dataset HUD metrics use the bound aggregate, and clear it when the record is stale', async t => {
+    const view=fixture(t),widget={id:'dataset_hud',type:'hud_kpi_panel',data:{mode:'dataset',datasetField:'temperature'},content:{chartPath:'dataset.temperature',items:[{label:'温度',path:'dataset.temperature',unit:'°C',decimals:0}]}}
+    await view.render({widget,overlayMode:true,databaseValues:{dataset_hud:{quality:'good',value:750,rows:[{temperature:700}]}}})
+    assert.match(textContent(view.root),/750/);assert.doesNotMatch(textContent(view.root),/700/)
+    await view.render({widget,overlayMode:true,databaseValues:{dataset_hud:{quality:'stale',value:750,rows:[{temperature:700}]}}})
+    assert.doesNotMatch(textContent(view.root),/750|700/)
 })
 
 test('HUD device module emits the existing device action and distinguishes stale/offline states', async t => {

@@ -210,6 +210,10 @@ export const adminApi = {
     async testDatabaseConfig(data) { return readApiJson(await fetch(`${API_BASE}/database/test`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) }), '测试数据库连接失败') },
     async saveDatabaseConfig(data) { return readApiJson(await fetch(`${API_BASE}/database/config`, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) }), '保存数据库配置失败') },
     async getDataSources() { return readApiJson(await fetch(`${API_BASE}/data-sources`), '读取外部数据源失败') },
+    async getDataSets() { return readApiJson(await fetch(`${API_BASE}/data-sources/datasets`, { cache: 'no-store' }), '读取数据集失败', true) },
+    async saveDataSet(definition) { return readApiJson(await fetch(`${API_BASE}/data-sources/datasets`, { method: 'POST', headers: { 'Content-Type':'application/json' }, body: JSON.stringify(definition) }), '保存数据集失败', true) },
+    async deleteDataSet(definition) { return readApiJson(await fetch(`${API_BASE}/data-sources/datasets/${pathId(definition.id)}`, { method: 'DELETE', headers: { 'Content-Type':'application/json' }, body: JSON.stringify({ revision: definition.revision }) }), '删除数据集失败', true) },
+    async previewDataSet(input) { return readApiJson(await fetch(`${API_BASE}/data-sources/datasets/preview`, { method: 'POST', headers: { 'Content-Type':'application/json' }, body: JSON.stringify(input) }), '预览数据集失败', true) },
     async importDataSourceFile(file) {
         const form = new FormData(); form.append('dataFile', file);
         return readApiJson(await fetch(`${API_BASE}/data-sources/files`, { method: 'POST', body: form }), '导入数据文件失败')

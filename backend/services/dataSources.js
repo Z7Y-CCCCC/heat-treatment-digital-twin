@@ -36,7 +36,7 @@ const DEFAULT_BACKUP_CONFIG = Object.freeze({
 });
 const SUPPORTED_TYPES = new Set(['mysql', 'postgres', 'sqlserver', 'sqlite']);
 const SUPPORTED_SOURCE_TYPES = new Set(['database', 'http_api']);
-const SUPPORTED_HTTP_AUTH_TYPES = new Set(['none', 'api_key', 'bearer', 'basic', 'oauth2_client_credentials']);
+const SUPPORTED_HTTP_AUTH_TYPES = new Set(['none', 'api_key', 'bearer', 'basic', 'oauth2_client_credentials', 'login_token']);
 const SUPPORTED_RESPONSE_FORMATS = new Set(['auto', 'json', 'xml', 'csv']);
 const HEALTH_STATUSES = new Set(['unknown', 'healthy', 'auth_failed', 'http_error', 'network_error', 'timeout', 'config_error']);
 const FORBIDDEN_AUTH_HEADERS = new Set(['host', 'connection', 'content-length', 'transfer-encoding', 'upgrade', 'trailer', 'te', 'keep-alive', 'expect']);
@@ -185,8 +185,18 @@ function normalizeConnection(source = {}, current = {}) {
             apiKeyHeader: authType === 'api_key' ? shortText(source.apiKeyHeader ?? credentials.apiKeyHeader, 'X-API-Key', 100) : 'X-API-Key',
             apiKey: authType === 'api_key' ? normalizeSecret(source.apiKey, credentials.apiKey) : '',
             token: authType === 'bearer' ? normalizeSecret(source.token, credentials.token) : '',
-            user: authType === 'basic' ? shortText(source.user ?? credentials.user, '', 255) : '',
-            password: authType === 'basic' ? normalizeSecret(source.password, credentials.password) : '',
+            user: ['basic','login_token'].includes(authType) ? shortText(source.user ?? credentials.user, '', 255) : '',
+            password: ['basic','login_token'].includes(authType) ? normalizeSecret(source.password, credentials.password) : '',
+            ...(authType === 'login_token' ? {
+                loginPath: shortText(source.loginPath ?? credentials.loginPath, '/login', 1024),
+                loginUserField: shortText(source.loginUserField ?? credentials.loginUserField, 'username', 80),
+                loginPasswordField: shortText(source.loginPasswordField ?? credentials.loginPasswordField, 'password', 80),
+                loginBodyFormat: (source.loginBodyFormat ?? credentials.loginBodyFormat) === 'form' ? 'form' : 'json',
+                tokenPath: shortText(source.tokenPath ?? credentials.tokenPath, 'data.token', 255),
+                tokenHeader: shortText(source.tokenHeader ?? credentials.tokenHeader, 'Authorization', 80),
+                tokenPrefix: source.tokenPrefix === undefined ? (credentials.tokenPrefix ?? 'Bearer') : shortText(source.tokenPrefix, '', 80),
+                tokenLifetimeSec: finiteInteger(source.tokenLifetimeSec ?? credentials.tokenLifetimeSec, 300, 10, 86400)
+            } : {}),
             tokenUrl: authType === 'oauth2_client_credentials' ? shortText(source.tokenUrl ?? credentials.tokenUrl, '', 2048) : '',
             clientId: authType === 'oauth2_client_credentials' ? shortText(source.clientId ?? credentials.clientId, '', 255) : '',
             clientSecret: authType === 'oauth2_client_credentials' ? normalizeSecret(source.clientSecret, credentials.clientSecret) : '',
@@ -549,6 +559,17 @@ function httpAuthHeaders(connection) {
     const authType = normalizeHttpAuthType(connection.authType);
     if (!SUPPORTED_HTTP_AUTH_TYPES.has(authType)) throw new Error('不支持的 HTTP API 认证方式');
     if (authType === 'none') return {};
+    if (authType === 'login_token') {
+        const { target } = normalizeHttpUrl(connection.baseUrl, connection.loginPath);
+        if (target.protocol !== 'https:' && !['127.0.0.1','localhost','[::1]'].includes(target.hostname)) throw new Error('登录接口必须使用 HTTPS（本机测试除外）');
+        if (!connection.user || !connection.password) throw new Error('请填写登录账号和密码');
+        for (const name of [connection.loginUserField, connection.loginPasswordField]) if (!/^[a-zA-Z_][\w-]{0,79}$/.test(name) || ['__proto__','constructor','prototype'].includes(name)) throw new Error('登录参数名称无效');
+        if (connection.loginUserField === connection.loginPasswordField) throw new Error('登录账号和密码字段不能同名');
+        parseDataPath(connection.tokenPath);
+        try { validateHeaderName(connection.tokenHeader); validateHeaderValue(connection.tokenHeader, connection.tokenPrefix || ''); } catch { throw new Error('Token 请求头配置无效'); }
+        if (FORBIDDEN_AUTH_HEADERS.has(connection.tokenHeader.toLowerCase()) || /^(cookie|content-type)$/i.test(connection.tokenHeader)) throw new Error('Token 不能覆盖协议请求头');
+        return {};
+    }
     if (authType === 'oauth2_client_credentials') {
         oauthTokenUrl(connection);
         if (!String(connection.clientId || '').trim() || !String(connection.clientSecret || '').trim())
@@ -578,6 +599,38 @@ function httpAuthHeaders(connection) {
 }
 
 async function requestAuthHeaders(connection, factoryId) {
+    if (connection.authType === 'login_token') {
+        const key = `login:${activeFactoryId(factoryId)}:${connection.id}:${connectionFingerprint(connection)}`;
+        let state = oauthTokenCache.get(key);
+        if (!state || state.pending || state.expiresAt <= Date.now()) {
+            if (!state?.pending) {
+                while (oauthTokenCache.size >= 256) oauthTokenCache.delete(oauthTokenCache.keys().next().value);
+                const pending = (async () => {
+                    httpAuthHeaders(connection);
+                    const { base, target } = normalizeHttpUrl(connection.baseUrl, connection.loginPath);
+                    const prefix = base.pathname.endsWith('/') ? base.pathname : base.pathname + '/';
+                    if (!target.pathname.startsWith(prefix) || target.search) throw new Error('登录路径必须位于 API 根地址内且不带查询参数');
+                    const body = { [connection.loginUserField]: connection.user, [connection.loginPasswordField]: connection.password };
+                    let response;
+                    try {
+                        response = await fetch(target, { method:'POST', redirect:'manual', signal:AbortSignal.timeout(connection.requestTimeoutMs),
+                            headers:{'Content-Type':connection.loginBodyFormat==='form'?'application/x-www-form-urlencoded':'application/json',Accept:'application/json'},
+                            body:connection.loginBodyFormat==='form'?new URLSearchParams(body):JSON.stringify(body) });
+                        if (!response.ok) { const error = new Error(`登录接口返回 HTTP ${response.status}`);error.loginAuthFailure = response.status===401 || response.status===403;throw error; }
+                        let payload; try { payload=JSON.parse(await readLimitedResponse(response,16384,'登录响应')); } catch { throw new Error('登录响应不是有效 JSON 或超过大小上限'); }
+                        const raw=readDataPath(payload,connection.tokenPath), token=typeof raw==='string'?raw:'';
+                        if (!token || token.length>8192 || /[\u0000-\u001f\u007f]/.test(token)) throw new Error('登录响应中找不到有效 Token');
+                        const value={token,expiresAt:Date.now()+Math.max(1000,(connection.tokenLifetimeSec-5)*1000)};
+                        oauthTokenCache.set(key,value);return value;
+                    } catch (error) { if (/^登录/.test(error.message)) throw error; throw new Error('登录接口无法访问或超时'); }
+                    finally { if (response?.body && !response.body.locked) await response.body.cancel().catch(()=>{}); }
+                })();
+                state={pending};oauthTokenCache.set(key,state);
+            }
+            try { state=await state.pending; } catch(error) { oauthTokenCache.delete(key);throw error; }
+        }
+        return { [connection.tokenHeader]: `${connection.tokenPrefix ? connection.tokenPrefix+' ' : ''}${state.token}` };
+    }
     const headers = httpAuthHeaders(connection);
     if (normalizeHttpAuthType(connection.authType) === 'oauth2_client_credentials') {
         headers.Authorization = `Bearer ${await oauthAccessToken(connection, factoryId)}`;
@@ -609,7 +662,7 @@ async function testHttpApiSource(connection, checkedAt, factoryId = activeFactor
         checkedAt
     };
     try {
-        for (const [name, value] of Object.entries(await requestAuthHeaders(connection))) headers.set(name, value);
+        for (const [name, value] of Object.entries(await requestAuthHeaders(connection, factoryId))) headers.set(name, value);
         const response = await fetch(target, {
             method: 'GET',
             headers,
@@ -635,9 +688,9 @@ async function testHttpApiSource(connection, checkedAt, factoryId = activeFactor
         if (response.body) await response.body.cancel().catch(() => {});
     } catch (error) {
         health.responseTimeMs = Date.now() - startedAt;
-        health.status = error?.oauthAuthFailure ? 'auth_failed'
+        health.status = error?.oauthAuthFailure || error?.loginAuthFailure ? 'auth_failed'
             : error?.name === 'TimeoutError' || error?.name === 'AbortError' || /OAuth2.*超时/.test(error?.message || '') ? 'timeout' : 'network_error';
-        health.message = error?.oauthAuthFailure ? 'OAuth2 令牌接口拒绝访问，请检查 Client ID、Client Secret 与 Scope。'
+        health.message = error?.loginAuthFailure ? '登录接口拒绝访问，请检查账号和密码。' : error?.oauthAuthFailure ? 'OAuth2 令牌接口拒绝访问，请检查 Client ID、Client Secret 与 Scope。'
             : health.status === 'timeout'
             ? `接口请求超过 ${connection.requestTimeoutMs}ms 未响应。`
             : '接口无法访问，请检查地址、网络、证书及目标服务是否运行。';
@@ -668,17 +721,33 @@ async function fetchHttpApiPayload(binding, factoryId) {
     const prefix = base.pathname.endsWith('/') ? base.pathname : `${base.pathname}/`;
     if (!target.pathname.startsWith(prefix)) throw new Error('接口路径不能超出已登记的 API 根地址');
     const headers = new Headers({ Accept: 'application/json, application/xml, text/xml, text/csv, */*' });
+    for (const [name, value] of Object.entries(binding.headers || {})) {
+        if (FORBIDDEN_AUTH_HEADERS.has(name.toLowerCase()) || /^(authorization|cookie|content-type)$/i.test(name)) throw new Error('请求参数不能覆盖认证或协议请求头');
+        headers.set(name, String(value));
+    }
+    for (const [name, value] of Object.entries(binding.query || {})) target.searchParams.set(name, String(value));
     for (const [name, value] of Object.entries(httpAuthHeaders(connection))) headers.set(name, value);
     let response;
     try {
         for (const [name, value] of Object.entries(await requestAuthHeaders(connection, factoryId))) headers.set(name, value);
-        response = await fetch(target, { method: 'GET', headers, redirect: 'manual', signal: AbortSignal.timeout(connection.requestTimeoutMs) });
+        const method = binding.method === 'POST' ? 'POST' : 'GET';
+        if (method === 'POST') headers.set('Content-Type', 'application/json');
+        response = await fetch(target, { method, headers, ...(method === 'POST' ? { body: JSON.stringify(binding.body || {}) } : {}), redirect: 'manual', signal: AbortSignal.timeout(connection.requestTimeoutMs) });
+        if (response.status === 401 && connection.authType === 'login_token') {
+            await response.body?.cancel().catch(() => {});
+            const key = `login:${activeFactoryId(factoryId)}:${connection.id}:${connectionFingerprint(connection)}`;
+            const current = oauthTokenCache.get(key);
+            // Do not invalidate a replacement token or a refresh already in flight.
+            if (current?.token && headers.get(connection.tokenHeader) === `${connection.tokenPrefix ? connection.tokenPrefix+' ' : ''}${current.token}`) oauthTokenCache.delete(key);
+            for (const [name, value] of Object.entries(await requestAuthHeaders(connection, factoryId))) headers.set(name, value);
+            response = await fetch(target, { method, headers, ...(method === 'POST' ? { body: JSON.stringify(binding.body || {}) } : {}), redirect:'manual', signal:AbortSignal.timeout(connection.requestTimeoutMs) });
+        }
         if (!response.ok) throw new Error(`接口返回 HTTP ${response.status}`);
         const body = await readLimitedResponse(response, 262144, '接口响应（256 KB）');
         return parseExternalPayload(body, connection.responseFormat, response.headers.get('content-type') || '');
     } catch (error) {
         if (error?.name === 'TimeoutError' || error?.name === 'AbortError') throw new Error('接口读取超时');
-        if (/^(?:接口|请选择|HTTP|OAuth2|XML|CSV|不支持|字段)/.test(error?.message || '')) throw error;
+        if (/^(?:接口|请选择|HTTP|OAuth2|登录|XML|CSV|不支持|字段)/.test(error?.message || '')) throw error;
         throw new Error('接口读取失败，请检查目标服务和连接配置');
     } finally {
         if (response?.body && !response.body.locked) await response.body.cancel().catch(() => {});
@@ -1127,6 +1196,27 @@ async function previewBinding(source = {}) {
     return queryCompositeBinding(source, source.context || {});
 }
 
+async function readDataSetTable(definition, context, factoryId) {
+    const connection = resolveConnection(definition.connectionId, factoryId);
+    if (isHttpApiSource(connection)) throw new Error('请选择数据库连接');
+    return withConnection(connection, async handle => {
+        const fieldName = value => { const parts = parseDataPath(value); if (parts.length !== 1 || typeof parts[0] !== 'string') throw new Error('数据库字段必须是单一列名'); return parts[0]; };
+        const fields = [...new Set([...definition.columns.map(column => fieldName(column.path)), ...(definition.match ? [fieldName(definition.match.field)] : [])])];
+        let where = ''; const params = [];
+        if (definition.match) {
+            const value = context[definition.match.contextKey];
+            if (value === undefined || value === null || value === '') throw new Error('请先选择要查看的对象');
+            params.push(value);
+            where = ` WHERE ${quoteIdentifier(fieldName(definition.match.field), handle.type)} = ${handle.type === 'postgres' ? '$1' : handle.type === 'sqlserver' ? '@p1' : '?'}`;
+        }
+        const table = qualifiedTable(connection, definition.database.schema, definition.database.table);
+        const order = definition.database.orderBy ? ` ORDER BY ${quoteIdentifier(definition.database.orderBy, handle.type)} ${definition.database.orderDirection.toUpperCase()}` : '';
+        const columns = fields.map(field => quoteIdentifier(field, handle.type)).join(', ');
+        const sql = handle.type === 'sqlserver' ? `SELECT TOP 100 ${columns} FROM ${table}${where}${order}` : `SELECT ${columns} FROM ${table}${where}${order} LIMIT 100`;
+        return executeRows(handle, sql, params);
+    });
+}
+
 function cacheKey(binding, factoryId = activeFactoryId()) {
     return JSON.stringify({ factoryId: activeFactoryId(factoryId), binding });
 }
@@ -1201,6 +1291,7 @@ async function readRuntimeBindings(widgets = [], context = {}) {
         }
     }
     await Promise.all(Array.from({ length: Math.min(4, httpTargets.length) }, () => readHttpTargets()));
+    if (widgets.some(widget => widget.data?.mode === 'dataset')) Object.assign(values, await require('./dataSets').readDataSetBindings(widgets, context));
     return values;
 }
 
@@ -1476,6 +1567,8 @@ module.exports = {
     previewBinding,
     inspectHttpApiResponse,
     readHttpApiBinding,
+    fetchHttpApiPayload,
+    readDataSetTable,
     readRuntimeBindings,
     reloadDataSourceConfiguration,
     resolveConnection,

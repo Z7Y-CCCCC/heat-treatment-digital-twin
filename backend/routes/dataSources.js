@@ -25,6 +25,7 @@ const {
 } = require('../services/dataSources');
 
 const router = express.Router();
+const dataSets = require('../services/dataSets');
 const dataFileUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 1048576, files: 1, fields: 0 } }).single('dataFile');
 const MAP_LEVELS = new Set(['world', 'country', 'province', 'city', 'district']);
 const MAP_DATA_KEYS = new Set(['factsFactoryCount','factsLocalCount','factsDeviceCount','panelRegionRows','dockFactoryCount','dockLocalCount','dockAssignedCount','dockCoverage','dockWorkshops','dockLines','dockDevices']);
@@ -108,6 +109,33 @@ router.get('/runtime-values', async (req, res) => {
 router.get('/', localOnly, (req, res) => {
     try { res.json({ success: true, ...listDataSources(), backupStatus: getBackupStatus() }); }
     catch (error) { handleError(res, error, 500); }
+});
+
+router.get('/datasets', localOnly, async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    try { res.json({ success: true, datasets: await dataSets.listDataSets(req.factoryId) }); }
+    catch (error) { handleError(res, error, error.status || 400); }
+});
+router.post('/datasets/preview', localOnly, async (req, res) => {
+    try {
+        // A saved definition may be previewed by a designer; arbitrary new
+        // definitions require the same authority as editing the source page.
+        let definition;
+        if (req.body.datasetId) definition = (await dataSets.listDataSets(req.factoryId)).find(d => d.id === req.body.datasetId);
+        else definition = req.body.definition;
+        if (!definition) throw new Error('请选择数据集');
+        const context = Object.fromEntries(dataSets.CONTEXT_KEYS.map(key => [key, String(req.body.context?.[key] ?? '').slice(0, 200)]));
+        const result = await dataSets.readDefinition(definition, context, req.factoryId, true, req.body.inspect === true);
+        res.json({ success: true, result: req.body.binding ? dataSets.bindingResult(result, req.body.binding) : result });
+    } catch (error) { handleError(res, error, error.status || 400); }
+});
+router.post('/datasets', localOnly, async (req, res) => {
+    try { res.json({ success: true, dataset: await dataSets.saveDataSet(req.body, req.factoryId) }); }
+    catch (error) { handleError(res, error, error.status || 400); }
+});
+router.delete('/datasets/:id', localOnly, async (req, res) => {
+    try { await dataSets.deleteDataSet(req.params.id, req.body?.revision, req.factoryId); res.json({ success: true }); }
+    catch (error) { handleError(res, error, error.status || 400); }
 });
 
 router.post('/files', localOnly, (req, res) => {

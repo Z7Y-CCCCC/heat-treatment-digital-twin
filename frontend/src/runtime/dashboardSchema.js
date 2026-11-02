@@ -376,7 +376,7 @@ export function normalizeDashboardWidget(source = {}, canvas = DEFAULT_DASHBOARD
     && Number(source.w || 0) === 5 && Number(source.h || 0) === 5
   const data = objectValue(source.data, objectValue(source.binding, {}))
   const requestedMode = String(data.mode || '')
-  const normalizedMode = requestedMode === 'plc' || requestedMode === 'database' || requestedMode === 'http_api' || requestedMode === 'runtime' || requestedMode === 'business'
+  const normalizedMode = requestedMode === 'plc' || requestedMode === 'database' || requestedMode === 'http_api' || requestedMode === 'dataset' || requestedMode === 'runtime' || requestedMode === 'business'
     ? requestedMode
     : 'static'
   const resolvedDataMode = normalizedMode === 'static'
@@ -436,6 +436,9 @@ export function normalizeDashboardWidget(source = {}, canvas = DEFAULT_DASHBOARD
       pointKey: String(data.pointKey || data.point_key || ''),
       path: resolvedDataMode === 'static' ? '' : String(data.path || ''),
       source: resolvedDataMode === 'static' ? '' : String(data.source || ''),
+      datasetId: String(data.datasetId || '').slice(0, 80),
+      datasetField: String(data.datasetField || '').slice(0, 64),
+      datasetMode: ['first','count','sum','avg','min','max'].includes(data.datasetMode) ? data.datasetMode : 'first',
       connectionId: String(data.connectionId || data.connection_id || ''),
       apiPath: String(data.apiPath || '').slice(0, 1024),
       jsonPath: String(data.jsonPath || '').slice(0, 255),

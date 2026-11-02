@@ -5,6 +5,7 @@ const props = defineProps({ connection: { type: Object, required: true } })
 const http = computed(() => props.connection.sourceType === 'http_api' || props.connection.type === 'http_api')
 const kind = computed(() => props.connection.connector || 'http')
 const tables = ref([]), fields = ref([]), result = ref(null), busy = ref(false), error = ref(''), loaded = ref(false)
+const previewTab = ref('fields')
 const query = reactive({ table: '', field: '', apiPath: ['mqtt', 'redis'].includes(kind.value) ? props.connection.healthPath : '/', jsonPath: '' })
 let generation = 0, disposed = false
 onBeforeUnmount(() => { disposed = true; generation++ })
@@ -30,6 +31,7 @@ async function request(work, apply) {
     finally { if (!disposed && current === generation) busy.value = false }
 }
 function inspect() {
+    previewTab.value = 'fields'
     fields.value = []; query.field = ''; query.jsonPath = ''
     if (http.value) return request(() => adminApi.inspectHttpDataSource({ connectionId: props.connection.id, apiPath: query.apiPath }), data => { fields.value = data.result?.fields || [] })
     query.table = ''
@@ -42,16 +44,15 @@ function chooseTable() {
     return request(() => adminApi.getDataSourceColumns(props.connection.id, table.schema, table.name), data => { fields.value = data.columns || [] })
 }
 function preview() {
-    if (http.value) return request(() => adminApi.previewHttpDataSource({ connectionId: props.connection.id, apiPath: query.apiPath, jsonPath: query.jsonPath }), data => { result.value = data.result })
+    if (http.value) return request(() => adminApi.previewHttpDataSource({ connectionId: props.connection.id, apiPath: query.apiPath, jsonPath: query.jsonPath }), data => { result.value = data.result; previewTab.value = 'sample' })
     const table = tables.value[Number(query.table) - 1]
     if (!table || !query.field) return
-    return request(() => adminApi.previewDataSource({ datasets: [{ connectionId: props.connection.id, schema: table.schema, table: table.name, field: query.field, valueMode: 'list', rowLimit: 20, alias: 'a' }] }), data => { result.value = data.result })
+    return request(() => adminApi.previewDataSource({ datasets: [{ connectionId: props.connection.id, schema: table.schema, table: table.name, field: query.field, valueMode: 'list', rowLimit: 20, alias: 'a' }] }), data => { result.value = data.result; previewTab.value = 'sample' })
 }
 </script>
 
 <template>
     <section class="source-preview" aria-label="数据源只读预览">
-        <p class="note">只读查看已保存连接的数据，不执行自定义 SQL，不修改业务数据。</p>
         <div class="preview-toolbar">
             <label v-if="http && ['http', 'mqtt', 'redis'].includes(kind)">{{ kind === 'http' ? '接口路径' : kind === 'mqtt' ? '订阅主题' : 'Redis 键名' }}<input v-model="query.apiPath" class="input" :aria-label="kind === 'http' ? '接口路径' : kind === 'mqtt' ? '订阅主题' : 'Redis 键名'" /></label>
             <button type="button" class="btn btn-sm" :disabled="busy || !connection.enabled || (http && !query.apiPath)" @click="inspect">{{ http ? kind === 'http' ? '读取接口字段' : '读取数据字段' : '读取表与视图' }}</button>
@@ -62,16 +63,17 @@ function preview() {
         <p v-if="busy" role="status" class="note">正在只读查询…</p>
         <p v-if="!connection.enabled" class="note">连接已停用，请先启用并保存。</p>
         <p v-if="error" role="alert" class="preview-error">{{ error }}</p>
-        <div v-if="fields.length" class="preview-table-scroll">
+        <nav v-if="fields.length" class="preview-result-tabs" aria-label="预览内容"><button type="button" :aria-pressed="previewTab==='fields' || !result" @click="previewTab='fields'">字段 <small>{{fields.length}}</small></button><button v-if="result" type="button" :aria-pressed="previewTab==='sample'" @click="previewTab='sample'">样例</button></nav>
+        <div v-if="fields.length" v-show="previewTab==='fields' || !result" class="preview-table-scroll">
             <table><thead><tr><th>{{ http ? '字段路径' : '字段名' }}</th><th>类型</th><th>{{ http ? '样例' : '属性' }}</th></tr></thead><tbody>
                 <tr v-for="field in fields" :key="field.path || field.name"><td>{{ field.path || field.name }}</td><td>{{ field.kind || field.dataType || '—' }}</td><td>{{ http ? field.sample : [field.primaryKey ? '主键' : '', field.nullable ? '可空' : '非空'].filter(Boolean).join(' · ') }}</td></tr>
             </tbody></table>
         </div>
         <p v-else-if="loaded && !error && !busy && (http || query.table || !tables.length)" class="note">未发现可预览字段或数据表。</p>
-        <section v-if="result" class="preview-result" aria-label="读取样例结果">
+        <section v-if="result" v-show="previewTab==='sample'" class="preview-result" aria-label="读取样例结果">
             <strong>当前值：{{ display(result.value) }}</strong>
             <div v-if="result.rows?.length" class="preview-table-scroll"><table><thead><tr><th>序号</th><th>值</th></tr></thead><tbody><tr v-for="(row, index) in result.rows.slice(0, 20)" :key="index"><td>{{ index + 1 }}</td><td>{{ display(http ? row : row.value) }}</td></tr></tbody></table></div>
-            <small>{{ result.fetchedAt ? new Date(result.fetchedAt).toLocaleString() : '' }} · 最多展示 20 条</small>
+            <small>{{ result.rows?.length || (result.value != null ? 1 : 0) }} 条 · {{ result.fetchedAt ? new Date(result.fetchedAt).toLocaleTimeString('zh-CN',{hour12:false}) : '' }}</small>
         </section>
     </section>
 </template>
@@ -93,4 +95,11 @@ th { position: sticky; top: 0; background: #f4f7fb; color: #61718a; }
 .preview-result { display: grid; gap: 10px; margin-top: 16px; }
 .preview-result strong { overflow-wrap: anywhere; color: #263c56; }
 .preview-result small { color: #8490a1; }
+.preview-result-tabs { display:flex; gap:16px; align-items:center; margin-top:16px; border-bottom:1px solid #edf0f4; }
+.preview-result-tabs button { padding:8px 0; border:0; border-bottom:2px solid transparent; background:none; color:#98a2b3; font:inherit; font-size:11px; cursor:pointer; }
+.preview-result-tabs button[aria-pressed=true] { color:#4779d5; border-bottom-color:#4779d5; }
+.preview-result-tabs small { font-size:10px; margin-left:3px; color:#a8b0bf; }
+.input { border-color:#dce1e8; background:#fff; border-radius:6px; color:#344054; }
+.btn { background:#fff; border-color:#dce2ea; border-radius:6px; color:#52627a; font-weight:500; box-shadow:none; }
+.btn:not(:disabled):hover { transform:none; box-shadow:none; }
 </style>

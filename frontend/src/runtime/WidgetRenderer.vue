@@ -66,7 +66,9 @@ const dataContext = computed(() => ({
   deviceDataMap: props.deviceDataMap,
   points: props.pointValues,
   context: props.runtimeContext,
-  selectedPart: props.selectedPart
+  selectedPart: props.selectedPart,
+  dataset: ['good','empty'].includes(databaseRecord.value?.quality)
+    ? { ...(databaseRecord.value?.rows?.[0] || {}), ...(dataBinding.value.datasetField ? { [dataBinding.value.datasetField]: databaseRecord.value?.value } : {}) } : {}
 }))
 
 function getWidgetValue(path) {
@@ -146,6 +148,7 @@ function businessRowValue(row) {
 
 const boundValue = computed(() => {
   const binding = dataBinding.value
+  if (binding.mode === 'dataset') return ['good','empty'].includes(databaseRecord.value?.quality) ? (databaseRecord.value?.value ?? null) : null
   if (binding.mode === 'database' || binding.mode === 'http_api') return databaseRecord.value?.value ?? content.value.value
   if (binding.mode === 'plc' || binding.pointId || binding.point_id) {
     if (pointRecord.value && pointRecord.value.value !== undefined) return pointRecord.value.value
@@ -163,7 +166,7 @@ const boundValue = computed(() => {
 })
 
 const boundQuality = computed(() => {
-  if (['database', 'http_api'].includes(dataBinding.value.mode)) return databaseRecord.value?.quality || (databaseRecord.value?.error ? 'bad' : 'stale')
+  if (['database', 'http_api', 'dataset'].includes(dataBinding.value.mode)) return databaseRecord.value?.quality || (databaseRecord.value?.error ? 'bad' : 'stale')
   const binding = dataBinding.value
   const deviceId = binding.deviceId || binding.device_id
   const quality = pointRecord.value?.quality
@@ -187,6 +190,7 @@ function boundedDecimals(value, fallback = 1) {
 
 function formatValue(value = boundValue.value) {
   if (value === undefined || value === null || value === '') return content.value.fallback ?? '--'
+    if (dataBinding.value.mode === 'dataset' && databaseRecord.value?.columns?.find(column => column.name === dataBinding.value.datasetField)?.type === 'string') return String(value)
   if (typeof value === 'boolean') return value ? (content.value.onText || '正常') : (content.value.offText || '停止')
   const number = Number(value)
   if (Number.isFinite(number)) {
@@ -309,14 +313,17 @@ const metricItems = computed(() => {
 })
 
 const eventRows = computed(() => {
-  if (['database', 'http_api'].includes(dataBinding.value.mode) && Array.isArray(databaseRecord.value?.rows)) return databaseRecord.value.rows
+  if (dataBinding.value.mode === 'dataset') return boundQuality.value === 'good'
+    ? (databaseRecord.value?.rows || []).map(row => ({ ...row, message: row.msg || row.title || row.message || row.value })) : []
+  if (['database', 'http_api', 'dataset'].includes(dataBinding.value.mode) && Array.isArray(databaseRecord.value?.rows)) return databaseRecord.value.rows
   const source = dataBinding.value.source || dataBinding.value.path
   const bound = source ? getWidgetValue(source) : null
   return Array.isArray(bound) ? bound : props.events
 })
 
 const trendRows = computed(() => {
-  if (['database', 'http_api'].includes(dataBinding.value.mode) && Array.isArray(databaseRecord.value?.rows)) return databaseRecord.value.rows
+  if (dataBinding.value.mode === 'dataset') return boundQuality.value === 'good' ? (databaseRecord.value?.rows || []) : []
+  if (['database', 'http_api', 'dataset'].includes(dataBinding.value.mode) && Array.isArray(databaseRecord.value?.rows)) return databaseRecord.value.rows
   const source = dataBinding.value.source
   const bound = source ? getWidgetValue(source) : null
   if (Array.isArray(bound)) return bound
@@ -325,8 +332,9 @@ const trendRows = computed(() => {
 })
 
 const chartSeries = computed(() => {
+  if (dataBinding.value.mode === 'dataset' && boundQuality.value !== 'good') return []
   const recordSeries = databaseRecord.value?.series
-  if (['database', 'http_api'].includes(dataBinding.value.mode) && Array.isArray(recordSeries) && recordSeries.length) {
+  if (['database', 'http_api', 'dataset'].includes(dataBinding.value.mode) && Array.isArray(recordSeries) && recordSeries.length) {
     return recordSeries.map((series, index) => ({
       id: series.id || `series_${index + 1}`,
       name: series.label || series.id || `数据项 ${index + 1}`,
@@ -346,6 +354,7 @@ const chartSeries = computed(() => {
 const hasTrendData = computed(() => chartSeries.value.some(series => Array.isArray(series.rows) && series.rows.length > 0))
 
 const textLines = computed(() => {
+  if (dataBinding.value.mode === 'dataset' && content.value.datasetTextMode !== 'template') return [formatValue()]
   const rawText = Array.isArray(content.value.lines) ? content.value.lines.join('\n') : (content.value.text || content.value.label || '')
   const fallback = rawText || widgetTitle.value || '文本组件'
   return String(fallback).replaceAll('{value}', formatValue()).split('\n').filter(Boolean)
@@ -532,19 +541,20 @@ function renderChart() {
         type: 'pie', radius: chartType === 'donut' ? [`${Number(content.value.donutRatio ?? 48)}%`, '76%'] : ['0%', '76%'], center: ['50%', '55%'],
         label: { show: content.value.showDataLabel !== false, color: '#dcebf6', fontFamily: HUD_FONT_TEXT, formatter: '{b}\n{c}' },
         itemStyle: { borderColor: 'rgba(8,20,32,.8)', borderWidth: 2 },
-        data: sourceSeries.map(series => ({ name: series.name, value: Number(series.value) || 0, itemStyle: { color: series.color } }))
+        data: sourceSeries.filter(series => dataBinding.value.mode !== 'dataset' || numericValue(series.value) !== null).map(series => ({ name: series.name, value: Number(series.value) || 0, itemStyle: { color: series.color } }))
       }] })
       return
     }
     if (chartType === 'gauge') {
       const minimum = Number(content.value.min ?? 0)
       const maximum = Number(content.value.max ?? 100)
+      const missing = dataBinding.value.mode === 'dataset' && numericValue(boundValue.value) === null
       presentChart({ ...common, series: [{
         type: 'gauge', min: minimum, max: maximum, radius: '88%', center: ['50%', '58%'],
-        progress: { show: true, width: 13 }, axisLine: { lineStyle: { width: 13 } }, axisTick: { show: false }, splitLine: { length: 8 },
-        axisLabel: { color: '#829bae', distance: 18, fontSize: 9, fontFamily: HUD_FONT_TEXT }, pointer: { width: 4 },
-        detail: { color: '#eef7ff', fontSize: 18, fontFamily: HUD_FONT_NUMBER, fontWeight: 600, offsetCenter: [0, '64%'], formatter: `{value}${dataBinding.value.unit || ''}` },
-        data: [{ value: Number(boundValue.value) || 0, name: content.value.seriesName || widgetTitle.value }]
+        progress: { show: !missing, width: 13 }, axisLine: { lineStyle: { width: 13 } }, axisTick: { show: false }, splitLine: { length: 8 },
+        axisLabel: { color: '#829bae', distance: 18, fontSize: 9, fontFamily: HUD_FONT_TEXT }, pointer: { show: !missing, width: 4 },
+        detail: { color: '#eef7ff', fontSize: 18, fontFamily: HUD_FONT_NUMBER, fontWeight: 600, offsetCenter: [0, '64%'], formatter: missing ? '—' : `{value}${dataBinding.value.unit || ''}` },
+        data: [{ value: missing ? null : Number(boundValue.value) || 0, name: content.value.seriesName || widgetTitle.value }]
       }] })
       return
     }
@@ -573,14 +583,15 @@ function renderChart() {
   }
   const chartPath = content.value.chartPath || 'metrics.overall_oee'
   const chartValue = Number(getWidgetValue(chartPath) || 0)
+  const missing = dataBinding.value.mode === 'dataset' && numericValue(getWidgetValue(chartPath)) === null
   presentChart({
     animation: !props.preview,
     series: [{
       type: 'pie', radius: ['64%', '82%'], silent: true,
-      label: { show: true, position: 'center', formatter: `${chartValue.toFixed(1)}%\n${content.value.chartLabel || 'OEE'}`, color: '#eaf6ff', fontFamily: HUD_FONT_TEXT, fontSize: 15, fontWeight: 600 },
+      label: { show: true, position: 'center', formatter: missing ? '—' : `${chartValue.toFixed(1)}%\n${content.value.chartLabel || 'OEE'}`, color: '#eaf6ff', fontFamily: HUD_FONT_TEXT, fontSize: 15, fontWeight: 600 },
       itemStyle: { borderColor: '#12202d', borderWidth: 2 },
       data: [
-        { value: chartValue, itemStyle: { color: content.value.chartColor || '#4fd09a' } },
+        { value: missing ? 0 : chartValue, itemStyle: { color: content.value.chartColor || '#4fd09a' } },
         { value: Math.max(0, 100 - chartValue), itemStyle: { color: 'rgba(122,151,171,.2)' } }
       ]
     }]

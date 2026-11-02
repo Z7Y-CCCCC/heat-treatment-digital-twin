@@ -1,4 +1,5 @@
 <script setup>
+import DataSetBindingEditor from './DataSetBindingEditor.vue'
 import { permissionDirective as vPermission } from '../../../runtime/pagePermissionUi.js'
 import { canAdminPage } from '../../../runtime/adminSession.js'
 import ViewHierarchyTree from './ViewHierarchyTree.vue'
@@ -45,8 +46,8 @@ const templateFileRef = ref(null)
 const templateImport = ref(null)
 const templateFieldImport = ref(null)
 const templateMapping = reactive({})
-const templateKinds = { devices: '设备', points: '点位', connections: '数据源', workshops: '车间', lines: '产线' }
-const templateCatalog = computed(() => ({ devices: devices.value, points: points.value, connections: [...dataSources.value, ...httpApiSources.value], workshops: workshops.value, lines: lines.value }))
+const templateKinds = { devices: '设备', points: '点位', datasets: '数据集', connections: '数据源', workshops: '车间', lines: '产线' }
+const templateCatalog = computed(() => ({ devices: devices.value, points: points.value, datasets: dataSetDefinitions.value, connections: [...dataSources.value, ...httpApiSources.value], workshops: workshops.value, lines: lines.value }))
 const draftFactoryId = getFactoryScope()
 const documentModel = ref(normalizeDashboardDocument())
 const revision = ref(0)
@@ -72,6 +73,7 @@ const workshops = ref([])
 const lines = ref([])
 const dataSources = ref([])
 const httpApiSources = ref([])
+const dataSetDefinitions = ref([])
 const httpFields = ref([])
 const httpFieldBusy = ref(false)
 const httpInspectedKey = ref('')
@@ -657,14 +659,15 @@ async function loadDesigner({ allowLocal = true } = {}) {
   const pendingEditorState = editorStateBeforeReload
   loading.value = true
   try {
-    const [designer, deviceRows, pointRows, dataSourceResult, workshopRows, lineRows, settings] = await Promise.all([
+    const [designer, deviceRows, pointRows, dataSourceResult, workshopRows, lineRows, settings, datasetResult] = await Promise.all([
       adminApi.getDashboardDesigner(),
       adminApi.getDevices(),
       adminApi.getDataPoints('all'),
       adminApi.getDataSources().catch(() => ({ connections: [] })),
       adminApi.getWorkshops().catch(() => []),
       adminApi.getLines().catch(() => []),
-      adminApi.getSettings().catch(() => ({}))
+      adminApi.getSettings().catch(() => ({})),
+      adminApi.getDataSets().catch(() => ({datasets:[]}))
     ])
     if (designerDisposed) return
     if (designer?.error) throw new Error(designer.error)
@@ -679,6 +682,7 @@ async function loadDesigner({ allowLocal = true } = {}) {
     currentRelease.value = designer.currentRelease || null
     devices.value = Array.isArray(deviceRows) ? deviceRows : []
     points.value = (Array.isArray(pointRows) ? pointRows : []).filter(point => String(point.access_type || 'READ').toUpperCase() === 'READ')
+    dataSetDefinitions.value = datasetResult?.datasets || []
     const connections = Array.isArray(dataSourceResult?.connections) ? dataSourceResult.connections : []
     dataSources.value = connections
       .filter(source => source.sourceType !== 'http_api' && source.type !== 'http_api')
@@ -966,7 +970,7 @@ function handleCanvasWheel(event) {
 
 function previewValueForWidget(widget) {
   const binding = widget.data || {}
-  if (binding.mode === 'database' || binding.mode === 'http_api') return databasePreviewValues[widget.id]?.value
+  if (binding.mode === 'database' || binding.mode === 'http_api' || binding.mode === 'dataset') return databasePreviewValues[widget.id]?.value
   if (binding.mode === 'plc') {
     const isCurrentDevice = binding.deviceScope === 'current'
     const deviceId = isCurrentDevice
@@ -1038,7 +1042,7 @@ function layerWidgetDetail(widget) {
   if (widget?.type === 'text') return String(content.text || '{value}')
   if (widget?.type === 'value') return String(content.label || binding.pointKey || binding.path || content.fallback || '{value}')
   if (widget?.type === 'status') return String(content.onText || binding.pointKey || binding.path || '状态值')
-  if (binding.mode === 'plc') return String(binding.pointKey || binding.path || binding.pointId || 'PLC 只读点位')
+  if (binding.mode === 'plc') return String(binding.pointKey || binding.path || binding.pointId || 'PLC 点位')
   if (binding.mode === 'database') return String(binding.formula || binding.table || binding.connectionId || '数据库数据')
   if (binding.mode === 'runtime') return String(binding.path || '设备运行时数据')
   if (widget?.type === 'trend') return String(content.seriesName || '实时趋势')
@@ -1547,7 +1551,7 @@ function bindSelectedPoint() {
   widget.data.unit = point.unit || ''
   widget.data.readOnly = true
   widget.visibility.matchBoundDevice = !isCurrentDevice && Boolean(widget.data.deviceId)
-  commitHistory('绑定 PLC 只读点位')
+  commitHistory('绑定 PLC 点位')
 }
 
 async function loadDatabaseTables(connectionId = selectedWidget.value?.data?.connectionId) {
@@ -1730,6 +1734,23 @@ async function previewDatabaseBinding(widget = selectedWidget.value, silent = fa
   }
 }
 
+const dataSetPreviewSequences = new Map()
+async function previewDataSetBinding(widget, silent = false) {
+  if (!widget || widget.data?.mode !== 'dataset' || !widget.data.datasetId || !widget.data.datasetField) return
+  const id = widget.id, seq = (dataSetPreviewSequences.get(id) || 0) + 1
+  dataSetPreviewSequences.set(id, seq)
+  const binding = JSON.stringify(widget.data), context = JSON.stringify(previewContext)
+  try {
+    const response = await adminApi.previewDataSet({datasetId:widget.data.datasetId,binding:widget.data,context:{...previewContext,...(widget.data.deviceScope==='fixed'?{deviceId:widget.data.deviceId}: {})}})
+    if (designerDisposed || dataSetPreviewSequences.get(id)!==seq || binding!==JSON.stringify(widget.data) || context!==JSON.stringify(previewContext)) return
+    databasePreviewValues[id] = response.result
+  } catch(error) {
+    if (designerDisposed || dataSetPreviewSequences.get(id)!==seq || context!==JSON.stringify(previewContext)) return
+    databasePreviewValues[id] = {value:null,rows:[],series:[],quality:'bad',error:error.message}
+    if (!silent) setStatus(error.message, 'danger')
+  }
+}
+
 async function previewHttpBinding(widget = selectedWidget.value, silent = false) {
   if (!widget || widget.data?.mode !== 'http_api') return
   if (!widget.data.connectionId || !widget.data.apiPath || !widget.data.jsonPath) {
@@ -1773,6 +1794,7 @@ function changeBindingMode() {
   const widget = selectedWidget.value
   if (!widget) return
   widget.data.readOnly = true
+  if (widget.data.mode === 'dataset') { widget.data.datasetMode ||= 'first'; widget.data.deviceScope ||= 'current' }
   if (widget.data.mode === 'static') {
     widget.data.path = ''
     widget.data.source = ''
@@ -1828,6 +1850,26 @@ function changeBindingMode() {
   commitHistory('修改数据源')
 }
 
+function changeReusableBinding() {
+  const widget=selectedWidget.value
+  if(!widget?.data.datasetField)return recordProperty('修改数据集绑定')
+  if(['metrics','hud_kpi_panel'].includes(widget.type)) {
+    const path=`dataset.${widget.data.datasetField}`
+    widget.content.chartPath=path
+    const items=widget.content.items || []
+    if (!items.length || items.every(item=>String(item.path || '').startsWith('metrics.')) || (items.length===1 && String(items[0].path || '').startsWith('dataset.'))) {
+      const field=dataSetDefinitions.value.find(d=>d.id===widget.data.datasetId)?.columns.find(c=>c.name===widget.data.datasetField)
+      widget.content.items=[{label:field?.label || widget.data.datasetField,path,unit:field?.unit || '',decimals:widget.data.decimals ?? 1}]
+    }
+  }
+  if(widget.type==='hud_chart_dock')widget.content.statPath=`dataset.${widget.data.datasetField}`
+  recordProperty('修改数据集绑定')
+}
+
+function invalidateDataSetPreview() {
+  if(selectedWidget.value)delete databasePreviewValues[selectedWidget.value.id]
+}
+
 function addCondition() {
   if (!selectedWidget.value) return
   selectedWidget.value.conditions.push({ operator: '>', value: 0, color: '#ff625f', background: 'rgba(255,98,95,.16)', animation: 'blink' })
@@ -1866,7 +1908,7 @@ function enterPreviewMode() {
   syncPreviewContextFromView()
   Object.keys(previewGroupVisibility).forEach(key => delete previewGroupVisibility[key])
   Object.keys(previewWidgetVisibility).forEach(key => delete previewWidgetVisibility[key])
-  return Promise.all(overlayWidgets.value.map(widget => widget.data?.mode === 'http_api'
+  return Promise.all(overlayWidgets.value.map(widget => widget.data?.mode === 'dataset' ? previewDataSetBinding(widget, true) : widget.data?.mode === 'http_api'
     ? previewHttpBinding(widget, true) : previewDatabaseBinding(widget, true)))
 }
 
@@ -2630,7 +2672,7 @@ onBeforeUnmount(() => {
                   <label>圆环指标路径<input v-model="selectedWidget.content.chartPath" placeholder="metrics.overall_oee" @change="recordProperty()" /></label>
                   <div v-for="(item,index) in selectedWidget.content.items" :key="index" class="inspector-section">
                     <label>指标 {{ index + 1 }} 名称<input v-model="item.label" @change="recordProperty()"  v-permission="{ page: 'platform.designer', action: 'edit' }"/></label>
-                    <label>数据路径<input v-model="item.path" placeholder="metrics.total_devices" @change="recordProperty()"  v-permission="{ page: 'platform.designer', action: 'edit' }"/></label>
+                    <label>数据路径<input v-model="item.path" :list="selectedWidget.data.mode==='dataset'?'selected-dataset-fields':undefined" placeholder="metrics.total_devices" @change="recordProperty()"  v-permission="{ page: 'platform.designer', action: 'edit' }"/></label>
                     <label>单位<input v-model="item.unit" @change="recordProperty()"  v-permission="{ page: 'platform.designer', action: 'edit' }"/></label>
                   </div>
                 </template>
@@ -2702,8 +2744,10 @@ onBeforeUnmount(() => {
             </section>
 
             <section v-else-if="inspectorTab === 'data'" class="inspector-section">
-              <div class="readonly-banner"><span>只读</span>所有外部数据源和 PLC 点位只用于展示，发布校验会拦截任何写入配置。</div>
-              <label>数据来源<select v-model="selectedWidget.data.mode" @change="changeBindingMode"><option value="static">静态 / 组件默认数据</option><option value="plc">PLC 只读点位</option><option value="database">通用数据库连接</option><option value="http_api">ERP / MES 等只读 REST / OData 接口</option><option value="business">排产业务只读适配层</option><option value="runtime">设备检查上下文</option></select></label>
+              <label>数据来源<select v-model="selectedWidget.data.mode" @change="changeBindingMode"><option value="static">静态 / 组件默认数据</option><option value="plc">PLC 点位</option><option v-if="['value','text','status','trend','hud_chart_dock','alarm_list','hud_alarm_panel','marquee','metrics','hud_kpi_panel'].includes(selectedWidget.type)" value="dataset">可复用数据集</option><option value="database">数据库（直接绑定）</option><option value="http_api">HTTP（直接绑定）</option><option value="business">排产业务只读适配层</option><option value="runtime">设备检查上下文</option></select></label>
+              <datalist id="selected-dataset-fields" v-if="selectedWidget.data.mode==='dataset'"><option v-for="column in dataSetDefinitions.find(d=>d.id===selectedWidget.data.datasetId)?.columns || []" :key="column.name" :value="`dataset.${column.name}`">{{column.label}}</option></datalist>
+              <DataSetBindingEditor v-if="selectedWidget.data.mode==='dataset'" :key="selectedWidget.id" :binding="selectedWidget.data" :context="previewContext" :devices="devices" :disabled="!canAdminPage('platform.designer','edit')" @change="changeReusableBinding" @invalidate="invalidateDataSetPreview" @preview="databasePreviewValues[selectedWidget.id]=$event" />
+              <label v-if="selectedWidget.data.mode==='dataset' && selectedWidget.type==='text'">文本呈现<select :value="selectedWidget.content.datasetTextMode || 'value'" @change="selectedWidget.content.datasetTextMode=$event.target.value;recordProperty('修改文本呈现')" v-permission="{page:'platform.designer',action:'edit'}"><option value="value">显示绑定值</option><option value="template">自定义模板（使用 {value}）</option></select></label>
               <template v-if="selectedWidget.data.mode === 'plc'">
                 <label>设备范围<select v-model="selectedWidget.data.deviceScope" @change="changeDeviceScope"><option value="current">当前设备（跟随视角）</option><option value="fixed">指定设备</option></select></label>
                 <p v-if="selectedWidget.data.deviceScope === 'current'" class="field-hint">同一个组件可用于所有设备，运行时自动读取当前视角设备的同名点位，不需要复制组件。</p>
