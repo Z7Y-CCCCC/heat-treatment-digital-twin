@@ -236,7 +236,12 @@ export async function unlockAdmin(password, setup = false, username = 'admin') {
 }
 
 export async function listAdminAccounts() {
-    return (await authRequest('/accounts')).accounts || []
+    const data = await authRequest('/accounts')
+    const accounts = data.accounts || []
+    const known = new Set(accounts.map(account => account.user?.username))
+    return [...accounts, ...(data.recentUsernames || []).filter(username => !known.has(username)).map(username => ({
+        slotId: `remembered:${username}`, user: { username, displayName: username }, needsLogin: true
+    }))]
 }
 
 export async function listAdminLoginChoices() {

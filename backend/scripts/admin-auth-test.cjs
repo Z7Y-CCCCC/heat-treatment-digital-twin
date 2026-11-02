@@ -172,7 +172,7 @@ async function serviceChecks() {
     assert.throws(() => restarted.listUsers(customer.token, customer.status.csrfToken), { code: 'ADMIN_PERMISSION_DENIED' });
     restarted.updateUser(owner.token, owner.status.csrfToken, viewerAccount.id,
         { displayName: '现场操作员', role: 'customer', enabled: true });
-    assert.equal(restarted.status(viewer.token).authenticated, false);
+    assert.equal(restarted.status(viewer.token).authenticated, true);
     const promoted = await restarted.login(password, 'viewer-login', '', 'viewer_one');
     assert.equal(promoted.status.permissions.launch, true);
     restarted.deleteUser(owner.token, owner.status.csrfToken, viewerAccount.id);

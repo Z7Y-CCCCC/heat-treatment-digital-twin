@@ -4,6 +4,19 @@ import 'vue'
 import { deferred, installBrowser, json, settle } from './helpers.mjs'
 
 let moduleId = 0
+
+test('remembered usernames remain listed after their session is revoked without becoming authenticated', async t => {
+    const session = await fixture(t)
+    t.mock.method(session.browser, 'fetch', async () => json({ accounts: [
+        { slotId: 'main', user: { username: 'admin' }, csrfToken: 'valid' }
+    ], recentUsernames: ['admin', '普通用户'] }))
+    const accounts = await session.listAdminAccounts()
+    assert.equal(accounts.length, 2)
+    assert.equal(accounts[1].user.username, '普通用户')
+    assert.equal(accounts[1].needsLogin, true)
+    assert.equal(accounts[1].csrfToken, undefined)
+    assert.equal(session.adminSession.authenticated, false)
+})
 const signedIn = csrfToken => ({ configured: true, authenticated: true, user: { id: 'owner', role: 'owner' }, csrfToken, expiresAt: Date.now() + 600000 })
 
 async function fixture(t) {

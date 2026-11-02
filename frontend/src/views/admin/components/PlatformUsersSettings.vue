@@ -195,7 +195,7 @@ async function saveEditor() {
         pagePermissions: normalizePagePermissions(editor.value.pagePermissions),
         ...(replacementPassword.value ? { password: replacementPassword.value } : {})
       })
-      showNotice('账户已更新，该账户需重新登录', 'success')
+      showNotice(replacementPassword.value ? '账户已更新，请使用新密码登录' : '账户已更新', 'success')
     }
     editorOpen.value = false
     await loadUsers()
@@ -321,7 +321,7 @@ onUnmounted(() => {
                 </table></div>
                 <p v-if="catalogError" class="editor-error" role="status">{{ catalogError }}</p>
               </fieldset>
-              <p class="editor-hint">先勾选查看，再分配操作权限。修改后该账户需重新登录。</p>
+              <p class="editor-hint">先勾选查看，再分配操作权限。</p>
               <footer>
                 <button v-if="editorMode === 'edit'" type="button" class="editor-delete" :disabled="busy" @click="removeEditorUser">{{ pendingDelete ? '确认删除此账户' : '删除账户' }}</button>
                 <span class="editor-spacer"></span>

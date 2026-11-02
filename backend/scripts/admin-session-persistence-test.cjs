@@ -25,6 +25,13 @@ const check = name => { checks.push(name); console.log('PASS ' + name); };
     assert.equal(denied.pagePermissions.devices.view, false);
     check('customer default grants only devices/monitor read-only; explicit denials and owner-only pages stay denied');
     const customer = await auth.login('customer-password', 'customer', '', '现场客户');
+    await auth.updateUser(owner.token, owner.status.csrfToken, customerUser.id,
+        { enabled: true, displayName: '改名后仍记住', pagePermissions: { devices: { view: true } } });
+    assert.equal(auth.status(customer.token).authenticated, true);
+    assert.equal(restart().status(customer.token).authenticated, true);
+    assert.throws(() => auth.requireSession(customer.token, customer.status.csrfToken,
+        { permission: 'page:point-monitor:view' }), { code: 'ADMIN_PERMISSION_DENIED' });
+    check('routine account edits retain every valid login across restart while revoked page grants apply immediately');
     const native = auth.exchangeNativeTicket(auth.createNativeTicket(customer.token, customer.status.csrfToken).ticket);
     const filename = path.join(dataDir, 'admin-sessions.json');
     const disk = fs.readFileSync(filename, 'utf8');

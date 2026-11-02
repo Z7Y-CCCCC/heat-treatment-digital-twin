@@ -544,7 +544,12 @@ function createAdminAuth(options = {}) {
             requireSession(token, csrfToken, { permission: 'owner' });
             const updated = { ...existing, role, permissions, pagePermissions, displayName, enabled: input.enabled, password };
             saveConfig({ ...config, users: config.users.map(user => user.id === id ? updated : user) });
-            for (const [sessionKey, active] of sessions) if (active.userId === id) sessions.delete(sessionKey);
+            // Permission/name edits are read dynamically on every request. Do
+            // not silently erase the remembered account on routine management.
+            // Password reset and disabling must still revoke every old token.
+            if (input?.password || !updated.enabled) {
+                for (const [sessionKey, active] of sessions) if (active.userId === id) sessions.delete(sessionKey);
+            }
             sessionsDirty = true;
             saveSessions();
             const { password: _password, ...publicUser } = updated;
