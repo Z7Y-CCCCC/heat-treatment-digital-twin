@@ -84,7 +84,7 @@ namespace HeatTreatment.DigitalTwin.Editor
             var shader = Shader.Find("Universal Render Pipeline/Lit");
             if (shader == null) throw new BuildFailedException("URP Lit is required for the hall material audit.");
             var root = new GameObject("__AuthoredHallMaterialAudit") { hideFlags = HideFlags.HideAndDontSave };
-            var material = new Material(shader) { name = "Hall_floor", hideFlags = HideFlags.HideAndDontSave };
+            var material = new Material(shader) { name = "Hall_wall", hideFlags = HideFlags.HideAndDontSave };
             try
             {
                 material.SetColor("_BaseColor", new Color(0.13f, 0.31f, 0.72f, 1f));
@@ -100,14 +100,15 @@ namespace HeatTreatment.DigitalTwin.Editor
                 var method = typeof(FactoryEnvironmentBuilder).GetMethod("ApplyFactoryHallPresentation", BindingFlags.Static | BindingFlags.NonPublic);
                 if (method == null) throw new BuildFailedException("Hall material preparation entry point not found.");
                 method.Invoke(null, new object[] { root });
-                if (renderer.sharedMaterial != material || material.GetColor("_BaseColor") != originalColor
+                if (renderer.sharedMaterial == material || material.GetColor("_BaseColor") != originalColor
                     || material.GetColor("_EmissionColor") != originalEmission
                     || !Mathf.Approximately(material.GetFloat("_Metallic"), 0.91f)
                     || !Mathf.Approximately(material.GetFloat("_Smoothness"), 0.17f))
-                    throw new BuildFailedException("Hall presentation overwrote or cloned an authored material.");
-                if (!renderer.receiveShadows || renderer.shadowCastingMode != ShadowCastingMode.On)
-                    throw new BuildFailedException("Authored hall must retain shadow participation.");
-                Debug.Log("[Digital Twin] Authored hall material contract validated: no color/PBR/emission override or material clone.");
+                    throw new BuildFailedException("Hall presentation must keep its authored source material unchanged.");
+                if (renderer.receiveShadows || renderer.shadowCastingMode != ShadowCastingMode.Off
+                    || !Mathf.Approximately(renderer.sharedMaterial.GetFloat("_Opacity"), FactoryHallPresentation.DefaultOpacity))
+                    throw new BuildFailedException("Hall must be transparent and must not darken equipment with opaque shadows.");
+                Debug.Log("[Digital Twin] Hall contract validated: transparent architecture, unchanged source PBR, no architecture shadow.");
             }
             finally
             {

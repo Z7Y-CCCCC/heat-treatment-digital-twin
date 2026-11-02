@@ -1,4 +1,5 @@
 using System;
+using HeatTreatment.DigitalTwin.Rendering;
 using Newtonsoft.Json.Linq;
 using UnityEngine;
 
@@ -82,6 +83,28 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 || (!_webOverlayActive && !Application.isFocused)
                 || pointer.x < 0 || pointer.y < 0 || pointer.x > Screen.width || pointer.y > Screen.height;
             UpdateDeviceHoverAt(pointer, blocked);
+        }
+
+        // A transient, screen-space-width edge on the actual equipment meshes.
+        // Reuses the inspection shader/surfaces; no material replacement, box,
+        // extra camera, render texture or per-frame geometry allocation.
+        private int DrawDeviceHover()
+        {
+            if (_mode != DashboardMode.Overview || !_deviceHoverEnabled || _camera == null
+                || string.IsNullOrEmpty(_hoveredDeviceId)
+                || !_devices.TryGetValue(_hoveredDeviceId, out var device)
+                || device.Root == null || !device.Root.activeInHierarchy || device.Inspection == null) return 0;
+            var material = EnsureHoverOutlineMaterial();
+            if (material == null) return 0;
+            var drawn = 0;
+            foreach (var state in device.Inspection.Renderers)
+            {
+                if (state.Surface == null || !state.Surface.IsVisible
+                    || (_camera.cullingMask & (1 << state.Renderer.gameObject.layer)) == 0) continue;
+                state.Surface.DrawOutline(material, _camera, new Color(.48f, .84f, 1f, .95f), 2f);
+                drawn++;
+            }
+            return drawn;
         }
     }
 }

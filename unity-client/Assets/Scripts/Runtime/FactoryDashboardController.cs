@@ -14,7 +14,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
     /// <summary>
     /// Configurable multi-level presentation shell:
     /// factory -> workshop -> line -> device (plus custom authored views).
-    /// It intentionally uses the authored PBR materials without neon edge rendering.
+    /// Authored PBR materials are retained; only the hovered device gets a transient edge.
     /// </summary>
     [DefaultExecutionOrder(200)]
     public sealed partial class FactoryDashboardController : MonoBehaviour

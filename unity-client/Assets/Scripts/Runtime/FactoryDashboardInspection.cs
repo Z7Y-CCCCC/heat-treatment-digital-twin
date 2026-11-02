@@ -1087,7 +1087,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
 
         private void LateUpdate()
         {
-            if (_mode == DashboardMode.Overview) { UpdateDeviceHover(); return; }
+            if (_mode == DashboardMode.Overview) { UpdateDeviceHover(); DrawDeviceHover(); return; }
             UpdateDeviceHoverAt(Input.mousePosition, true);
             var runtime = _selected?.Inspection;
             if (runtime == null) return;
@@ -1101,22 +1101,28 @@ namespace HeatTreatment.DigitalTwin.Runtime
         private void DrawInspectionHover(DeviceInspectionRuntime runtime)
         {
             if (runtime.HoveredPart == null || _camera == null) return;
-            if (_inspectionOutlineMaterial == null)
-            {
-                var shader = Resources.Load<Shader>("RuntimeShaders/InspectionOutline");
-                if (shader == null) return;
-                _inspectionOutlineMaterial = new Material(shader)
-                {
-                    name = "Inspection hover outline",
-                    hideFlags = HideFlags.DontSave
-                };
-            }
+            if (EnsureHoverOutlineMaterial() == null) return;
             foreach (var state in runtime.Renderers)
             {
                 if (state.Part != runtime.HoveredPart || state.Surface == null) continue;
                 state.Surface.DrawOutline(_inspectionOutlineMaterial, _camera, new Color(.34f, .48f, 1f, .22f), 6f);
                 state.Surface.DrawOutline(_inspectionOutlineMaterial, _camera, new Color(.72f, .78f, 1f, .95f), 2.5f);
             }
+        }
+
+        private Material EnsureHoverOutlineMaterial()
+        {
+            if (_inspectionOutlineMaterial == null)
+            {
+                var shader = Resources.Load<Shader>("RuntimeShaders/InspectionOutline");
+                if (shader == null) return null;
+                _inspectionOutlineMaterial = new Material(shader)
+                {
+                    name = "Equipment and part hover outline",
+                    hideFlags = HideFlags.DontSave
+                };
+            }
+            return _inspectionOutlineMaterial;
         }
 
         private void DisposeInspectionHighlight()
