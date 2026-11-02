@@ -1,0 +1,29 @@
+{
+  "id": "pit_cad_service_tank_v1",
+  "name": "CAD 炉旁循环罐与泵组",
+  "metadata": {
+    "schema_version": 1,
+    "runtime": {
+      "enableGenericBindings": false,
+      "enableInspection": false
+    },
+    "partBindings": [],
+    "inspection": {
+      "enabled": false,
+      "parts": []
+    },
+    "assetSpec": {
+      "unit": "m",
+      "device_family": "CAD车间辅助设施",
+      "delivery_status": "review",
+      "notes": "截图估算重建，不是制造模型。"
+    },
+    "bounds_m": [
+      2.3499999046325684,
+      1.6500000953674316,
+      2.93500018119812
+    ],
+    "triangles": 2212,
+    "meshCount": 4
+  }
+}

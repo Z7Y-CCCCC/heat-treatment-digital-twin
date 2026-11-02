@@ -108,6 +108,11 @@ function resolveDeviceLayoutTarget(deviceCfg, line, globalLineIndex, options = {
             const rail = nearestLayoutItem(layout.rails, relativeZ);
             if (rail) return { type: 'rail', item: rail, explicit: false };
         }
+        // Static placed props are not rail carts. Preserve their authored XYZ.
+        if (config.layoutPlaced === true && config.placementPending !== true && !config.railId
+            && config.role !== 'transfer_cart' && deviceCfg.model_type !== 'transfer_cart') {
+            return { type: 'free', explicit: true };
+        }
         return null;
     }
 
@@ -131,7 +136,7 @@ function applyLineLayoutToDevice(deviceCfg, line, globalLineIndex, targetOverrid
         allowFallback: !lineUsesStructuredLayout(line)
     });
 
-    if (!target) {
+    if (!target || target.type === 'free') {
         if (next.pos_z === undefined || next.pos_z === null || next.pos_z === '') {
             next.pos_z = getLineBaseZ(globalLineIndex, line);
         }

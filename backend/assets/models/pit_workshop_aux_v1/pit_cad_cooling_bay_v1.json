@@ -1,0 +1,29 @@
+{
+  "id": "pit_cad_cooling_bay_v1",
+  "name": "CAD 冷却暂存料台",
+  "metadata": {
+    "schema_version": 1,
+    "runtime": {
+      "enableGenericBindings": false,
+      "enableInspection": false
+    },
+    "partBindings": [],
+    "inspection": {
+      "enabled": false,
+      "parts": []
+    },
+    "assetSpec": {
+      "unit": "m",
+      "device_family": "CAD车间辅助设施",
+      "delivery_status": "review",
+      "notes": "截图估算重建，不是制造模型。"
+    },
+    "bounds_m": [
+      3.1600000858306885,
+      2.6600000858306885,
+      4.744999885559082
+    ],
+    "triangles": 5248,
+    "meshCount": 4
+  }
+}

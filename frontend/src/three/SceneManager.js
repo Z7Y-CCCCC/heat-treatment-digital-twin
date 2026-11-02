@@ -3,6 +3,7 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { CSS2DObject, CSS2DRenderer } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
 import { HDRLoader } from 'three/examples/jsm/loaders/HDRLoader.js';
 import gsap from 'gsap';
+import { fitCameraBox } from '../utils/cameraBoxFit.js';
 import { getBackendOrigin } from '../runtime/backendEndpoint.js';
 import {
     composeSpatialTransforms,
@@ -945,6 +946,7 @@ export class SceneManager {
 
     getDevicesBounds(devicesList, paddingX = 0, paddingZ = 0) {
         let minZ = 0, maxZ = 0, minX = 0, maxX = 0;
+        let minY = 0, maxY = 0;
         if (devicesList.length > 0) {
             minZ = devicesList[0].position.z; maxZ = minZ;
             minX = devicesList[0].position.x; maxX = minX;
@@ -953,6 +955,13 @@ export class SceneManager {
                 maxZ = Math.max(maxZ, f.position.z);
                 minX = Math.min(minX, f.position.x);
                 maxX = Math.max(maxX, f.position.x);
+                f.updateMatrixWorld?.(true);
+                const box = new THREE.Box3().setFromObject(f);
+                if (!box.isEmpty()) {
+                    minX = Math.min(minX, box.min.x); maxX = Math.max(maxX, box.max.x);
+                    minZ = Math.min(minZ, box.min.z); maxZ = Math.max(maxZ, box.max.z);
+                    minY = Math.min(minY, box.min.y); maxY = Math.max(maxY, box.max.y);
+                }
             });
         }
 
@@ -966,6 +975,8 @@ export class SceneManager {
             maxX,
             minZ,
             maxZ,
+            minY,
+            maxY,
             centerX: (minX + maxX) / 2,
             centerZ: (minZ + maxZ) / 2,
             spanX: Math.max(12, maxX - minX),
@@ -1111,12 +1122,10 @@ export class SceneManager {
 
     _flyToDevices(devicesList, yOffset, heightRatio, zRatio) {
         const bounds = this.getDevicesBounds(devicesList, 10, 8);
-        const fitSpan = Math.max(20, this.getCameraFitSpan(bounds));
-        const cameraHeight = Math.max(28, fitSpan * heightRatio * 0.72);
-        const cameraZ = bounds.centerZ + Math.max(34, fitSpan * Math.max(zRatio, 0.78));
-        
-        gsap.to(this.camera.position, { x: bounds.centerX + fitSpan * 0.08, y: cameraHeight + yOffset, z: cameraZ, duration: 2.0, ease: "power2.inOut" });
-        gsap.to(this.controls.target, { x: bounds.centerX, y: 0, z: bounds.centerZ, duration: 2.0, ease: "power2.inOut" });
+        const fit = fitCameraBox(bounds, { fov: this.camera.fov, aspect: this.camera.aspect, direction: [.08, heightRatio, zRatio] });
+        const [x, y, z] = fit.position, [tx, ty, tz] = fit.target;
+        gsap.to(this.camera.position, { x, y: y + yOffset, z, duration: 2.0, ease: "power2.inOut" });
+        gsap.to(this.controls.target, { x: tx, y: ty, z: tz, duration: 2.0, ease: "power2.inOut" });
     }
 
     requestLabelRefresh(durationMs = 800) {

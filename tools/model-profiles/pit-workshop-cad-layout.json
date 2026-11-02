@@ -1,0 +1,338 @@
+{
+  "version": 1,
+  "reference": "codex-clipboard-923933e7-8a74-47ef-b1ff-0e6547235767.png",
+  "accuracy": "侧剖面截图视觉复原；所有米制尺寸、深度及前后间距为估算，不可用于施工。",
+  "target": {
+    "factoryId": "factory_pit_furnaces_v1",
+    "workshopId": "ws_pit_furnaces_v1",
+    "lineId": "line_pit_furnaces_v1"
+  },
+  "workshopSize": {
+    "width": 64,
+    "depth": 18,
+    "height": 10
+  },
+  "ground": {
+    "version": 1,
+    "elevation": 0,
+    "areas": [
+      {
+        "id": "cad_material_pit",
+        "name": "料台共用基坑（估算）",
+        "x": 20,
+        "z": 0,
+        "width": 14.1,
+        "depth": 4.6,
+        "elevation": -4.8
+      }
+    ]
+  },
+  "devices": [
+    {
+      "number": 1,
+      "id": "PitFurnace_01",
+      "model_type": "pit_furnace_1_v1",
+      "name": "01# 井式炉主机",
+      "pos_x": -24,
+      "pos_y": 0,
+      "pos_z": 0,
+      "rotation_y": 3.14159265,
+      "scale": 1,
+      "coordinate_space": "line_local",
+      "ground": {
+        "enabled": false,
+        "width": 4.0,
+        "depth": 3.4,
+        "clearance": 0.35
+      }
+    },
+    {
+      "number": 2,
+      "id": "PitFurnace_04",
+      "model_type": "pit_furnace_4_v1",
+      "name": "02# 井式炉主机",
+      "pos_x": 24.7,
+      "pos_y": 0,
+      "pos_z": 0,
+      "rotation_y": 3.14159265,
+      "scale": 1,
+      "coordinate_space": "line_local",
+      "ground": {
+        "enabled": false,
+        "width": 4.0,
+        "depth": 3.4,
+        "clearance": 0.35
+      }
+    },
+    {
+      "number": 3,
+      "id": "PitFurnace_02",
+      "model_type": "pit_furnace_2_v1",
+      "name": "03# 井式炉主机",
+      "pos_x": -16.6,
+      "pos_y": -4.65,
+      "pos_z": 0,
+      "rotation_y": 0,
+      "scale": 1,
+      "coordinate_space": "line_local",
+      "ground": {
+        "enabled": true,
+        "width": 3.5,
+        "depth": 3.4,
+        "clearance": 0.25
+      }
+    },
+    {
+      "number": 4,
+      "id": "PitFurnace_05",
+      "model_type": "pit_furnace_5_v1",
+      "name": "04# 井式炉主机",
+      "pos_x": -12.3,
+      "pos_y": -4.65,
+      "pos_z": 0,
+      "rotation_y": 0,
+      "scale": 1,
+      "coordinate_space": "line_local",
+      "ground": {
+        "enabled": true,
+        "width": 3.5,
+        "depth": 3.4,
+        "clearance": 0.25
+      }
+    },
+    {
+      "number": 5,
+      "id": "PitFurnace_03",
+      "model_type": "pit_furnace_3_v1",
+      "name": "05# 井式炉主机",
+      "pos_x": -8.1,
+      "pos_y": -4.35,
+      "pos_z": 0,
+      "rotation_y": 0,
+      "scale": 1,
+      "coordinate_space": "line_local",
+      "ground": {
+        "enabled": true,
+        "width": 3.5,
+        "depth": 3.4,
+        "clearance": 0.25
+      }
+    },
+    {
+      "number": 6,
+      "id": "pit_cad_06",
+      "model_type": "pit_furnace_3_v1",
+      "name": "06# 井式炉主机",
+      "pos_x": -3.8,
+      "pos_y": -4.35,
+      "pos_z": 0,
+      "rotation_y": 0,
+      "scale": 1,
+      "coordinate_space": "line_local",
+      "ground": {
+        "enabled": true,
+        "width": 3.5,
+        "depth": 3.4,
+        "clearance": 0.25
+      }
+    },
+    {
+      "number": 7,
+      "id": "pit_cad_07",
+      "model_type": "pit_furnace_2_v1",
+      "name": "07# 井式炉主机",
+      "pos_x": 1.2,
+      "pos_y": -4.65,
+      "pos_z": 0,
+      "rotation_y": 0,
+      "scale": 1,
+      "coordinate_space": "line_local",
+      "ground": {
+        "enabled": true,
+        "width": 3.5,
+        "depth": 3.4,
+        "clearance": 0.25
+      }
+    },
+    {
+      "number": 8,
+      "id": "pit_cad_08",
+      "model_type": "pit_furnace_2_v1",
+      "name": "08# 井式炉主机",
+      "pos_x": 5.7,
+      "pos_y": -4.65,
+      "pos_z": 0,
+      "rotation_y": 0,
+      "scale": 1,
+      "coordinate_space": "line_local",
+      "ground": {
+        "enabled": true,
+        "width": 3.5,
+        "depth": 3.4,
+        "clearance": 0.25
+      }
+    },
+    {
+      "number": 9,
+      "id": "pit_cad_09",
+      "model_type": "pit_furnace_2_v1",
+      "name": "09# 井式炉主机",
+      "pos_x": 10.3,
+      "pos_y": -4.65,
+      "pos_z": 0,
+      "rotation_y": 0,
+      "scale": 1,
+      "coordinate_space": "line_local",
+      "ground": {
+        "enabled": true,
+        "width": 3.5,
+        "depth": 3.4,
+        "clearance": 0.25
+      }
+    },
+    {
+      "number": 10,
+      "id": "pit_cad_10",
+      "model_type": "pit_cad_loading_tower_v1",
+      "name": "10# 工装料台 A",
+      "pos_x": 14.0,
+      "pos_y": -4.4,
+      "pos_z": 0,
+      "rotation_y": 0,
+      "scale": 1,
+      "coordinate_space": "line_local",
+      "ground": {
+        "enabled": false,
+        "width": 3.0,
+        "depth": 3.1,
+        "clearance": 0.35
+      }
+    },
+    {
+      "number": 11,
+      "id": "pit_cad_11",
+      "model_type": "pit_cad_loading_tower_v1",
+      "name": "11# 工装料台 B",
+      "pos_x": 16.6,
+      "pos_y": -4.4,
+      "pos_z": 0,
+      "rotation_y": 0,
+      "scale": 1,
+      "coordinate_space": "line_local",
+      "ground": {
+        "enabled": false,
+        "width": 3.0,
+        "depth": 3.1,
+        "clearance": 0.35
+      }
+    },
+    {
+      "number": 12,
+      "id": "pit_cad_12",
+      "model_type": "pit_cad_loading_tower_v1",
+      "name": "12# 工装料台 C",
+      "pos_x": 19.2,
+      "pos_y": -4.4,
+      "pos_z": 0,
+      "rotation_y": 0,
+      "scale": 1,
+      "coordinate_space": "line_local",
+      "ground": {
+        "enabled": false,
+        "width": 3.0,
+        "depth": 3.1,
+        "clearance": 0.35
+      }
+    },
+    {
+      "number": 13,
+      "id": "pit_cad_13",
+      "model_type": "pit_cad_transfer_base_v1",
+      "name": "13# 料台底部移载框架",
+      "pos_x": 16.6,
+      "pos_y": -4.8,
+      "pos_z": 0,
+      "rotation_y": 0,
+      "scale": 1,
+      "coordinate_space": "line_local",
+      "ground": {
+        "enabled": false,
+        "width": 3.0,
+        "depth": 3.1,
+        "clearance": 0.35
+      }
+    },
+    {
+      "number": 14,
+      "id": "pit_cad_14",
+      "model_type": "pit_cad_cooling_bay_v1",
+      "name": "14# 冷却暂存料台 A",
+      "pos_x": 22.2,
+      "pos_y": -4.4,
+      "pos_z": 0,
+      "rotation_y": 0,
+      "scale": 1,
+      "coordinate_space": "line_local",
+      "ground": {
+        "enabled": false,
+        "width": 3.0,
+        "depth": 3.1,
+        "clearance": 0.35
+      }
+    },
+    {
+      "number": 15,
+      "id": "pit_cad_15",
+      "model_type": "pit_cad_cooling_bay_v1",
+      "name": "15# 冷却暂存料台 B",
+      "pos_x": 25.5,
+      "pos_y": -4.4,
+      "pos_z": 0,
+      "rotation_y": 0,
+      "scale": 1,
+      "coordinate_space": "line_local",
+      "ground": {
+        "enabled": false,
+        "width": 3.0,
+        "depth": 3.1,
+        "clearance": 0.35
+      }
+    },
+    {
+      "number": 16,
+      "id": "pit_cad_16",
+      "model_type": "pit_cad_stock_rack_v1",
+      "name": "16# 环件堆料架",
+      "pos_x": -24.9,
+      "pos_y": -4.7,
+      "pos_z": 0,
+      "rotation_y": 0,
+      "scale": 1,
+      "coordinate_space": "line_local",
+      "ground": {
+        "enabled": true,
+        "width": 3.0,
+        "depth": 3.1,
+        "clearance": 0.35
+      }
+    },
+    {
+      "number": 17,
+      "id": "pit_cad_17",
+      "model_type": "pit_cad_service_tank_v1",
+      "name": "17# 炉旁循环罐与泵组",
+      "pos_x": -20.1,
+      "pos_y": -4.65,
+      "pos_z": 0.1,
+      "rotation_y": 0,
+      "scale": 1,
+      "coordinate_space": "line_local",
+      "ground": {
+        "enabled": true,
+        "width": 3.0,
+        "depth": 3.1,
+        "clearance": 0.35
+      }
+    }
+  ]
+}

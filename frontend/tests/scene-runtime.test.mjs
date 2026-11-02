@@ -41,6 +41,21 @@ function fixture(t, count = 1) {
     return runtime
 }
 
+test('placed static workshop auxiliaries render without a rail; pending props and unbound rail carts do not', async t => {
+    const runtime = fixture(t), registered = []
+    const prop = (id, patch = {}) => ({ id, model_type: 'cad_support', line_id: 'L', pos_x: 5, pos_y: -4.4, pos_z: 2,
+        coordinate_space: 'line_local', instance_config: { role: 'auxiliary', workshop_id: 'W', layoutPlaced: true, placementPending: false, ...patch } })
+    runtime.options.workshops = [{ id: 'W', lines: [{ id: 'L', layout: { version: 2, lanes: [{ id: 'lane', offsetZ: 0 }], rails: [] }, devices: [] }],
+        devices: [prop('static-prop'), prop('pending', { placementPending: true }), prop('cart', { role: 'transfer_cart' }), prop('stale-rail', { railId: 'missing' })] }]
+    modelFactory = definition => { registered.push(definition); return Promise.resolve(model()) }
+    await runtime.start()
+    assert.equal(registered.length, 1)
+    assert.equal(registered[0].deviceCfg.id, 'static-prop')
+    assert.equal(registered[0].deviceCfg.pos_y, -4.4)
+    assert.equal(registered[0].deviceCfg.pos_z, 2)
+    assert.equal(registered[0].isLineMember, false)
+})
+
 test('concurrent starts share a renderer and completed resources dispose once', async t => {
     const runtime = fixture(t)
     const response = deferred(), device = model()

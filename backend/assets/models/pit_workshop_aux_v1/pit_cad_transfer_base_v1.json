@@ -1,0 +1,29 @@
+{
+  "id": "pit_cad_transfer_base_v1",
+  "name": "CAD 料台移载底架",
+  "metadata": {
+    "schema_version": 1,
+    "runtime": {
+      "enableGenericBindings": false,
+      "enableInspection": false
+    },
+    "partBindings": [],
+    "inspection": {
+      "enabled": false,
+      "parts": []
+    },
+    "assetSpec": {
+      "unit": "m",
+      "device_family": "CAD车间辅助设施",
+      "delivery_status": "review",
+      "notes": "截图估算重建，不是制造模型。"
+    },
+    "bounds_m": [
+      8.699999809265137,
+      3.049999952316284,
+      0.4500001072883606
+    ],
+    "triangles": 2204,
+    "meshCount": 3
+  }
+}
