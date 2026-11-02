@@ -95,7 +95,7 @@ test('project migration is an independent owner-only maintenance tab, not part o
   assert.equal(migration.ownerOnly, true)
   assert.doesNotMatch(directory, /ProjectBundleTransfer|项目与资产迁移/)
   assert.match(panel, /<ProjectMigrationSettings v-if="settingsSubpage === 'migration' && canAdminPage\('settings.migration'\)"/)
-  assert.match(panel, /v-if="settingsSubpage !== 'migration'" class="engine-status-card"/)
+  assert.match(panel, /v-if="!\['migration', 'database'\]\.includes\(settingsSubpage\)" class="engine-status-card"/)
   assert.match(panel, /scoped src="\.\/admin\/styles\/form-controls\.css"/)
   assert.match(transfer, /scoped src="\.\.\/styles\/form-controls\.css"/)
   assert.doesNotMatch(transfer, /settings.security|上方工厂列表/)
