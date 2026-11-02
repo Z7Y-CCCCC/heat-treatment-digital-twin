@@ -6,11 +6,12 @@ const { spawn } = require('node:child_process');
 const { createRunDirectory } = require('../backend/scripts/integration-test-utils.cjs');
 const { stopOwnedSmokeProcess, createSmokeEnvironment } = require('../desktop/scripts/smoke-sandbox.cjs');
 const { snapshotTree, verifyTree } = require('./package-resource-integrity.cjs');
+const { createPackageView, activateFixture } = require('./activation-test-fixture.cjs');
 const mysql = require('../backend/node_modules/mysql2/promise');
 const Database = require('../backend/node_modules/better-sqlite3');
 
-const executable = path.resolve(process.argv[2] || '安装包/win-unpacked/热处理数字孪生大屏.exe');
-const resources = path.join(path.dirname(executable), 'resources');
+const sourceExecutable = path.resolve(process.argv[2] || '安装包/win-unpacked/热处理数字孪生大屏.exe');
+const sourceResources = path.join(path.dirname(sourceExecutable), 'resources');
 const delay = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
 const configurationTables = ['factories', 'factory_settings', 'workshops', 'lines', 'devices', 'data_points',
     'models', 'bindings', 'device_templates', 'datapoint_templates', 'projects', 'scenes', 'widgets', 'releases'];
@@ -40,10 +41,11 @@ function processExists(pid) {
 }
 
 async function main() {
-    assert.ok(fs.existsSync(executable), `Missing packaged executable: ${executable}`);
-    assert.ok(fs.existsSync(path.join(resources, 'mysql', 'bin', 'mysqld.exe')), 'The MySQL runtime must be packaged.');
+    assert.ok(fs.existsSync(sourceExecutable), `Missing packaged executable: ${sourceExecutable}`);
+    assert.ok(fs.existsSync(path.join(sourceResources, 'mysql', 'bin', 'mysqld.exe')), 'The MySQL runtime must be packaged.');
     const directory = createRunDirectory('packaged-mysql-smoke');
-    const resourcesBefore = await snapshotTree(resources);
+    const resourcesBefore = await snapshotTree(sourceResources);
+    const { executable, resources, privateKey } = createPackageView(sourceExecutable, directory);
     const dataDir = path.join(directory, 'data');
     const configPath = path.join(dataDir, 'database-config.json');
     const template = new Database(path.join(resources, 'templates', 'factory-template.db'), { readonly: true, fileMustExist: true });
@@ -84,6 +86,7 @@ async function main() {
         let connection;
         let mysqlPid;
         let result;
+        let activated = false;
         try {
             const readyDeadline = Date.now() + 180000;
             while (Date.now() < readyDeadline) {
@@ -97,12 +100,16 @@ async function main() {
                     const offset = previousLog && previousLog.ino === currentLog.ino && currentLog.size >= previousLog.size ? previousLog.size : 0;
                     log = fs.readFileSync(logPath).subarray(offset).toString('utf8');
                 }
-                if (fs.existsSync(configPath) && log.includes('Database:    mysql')) break;
+                if (fs.existsSync(configPath) && log.includes('Database:    mysql')) {
+                    const match = log.match(/后端服务已启动:\s*(http:\/\/127\.0\.0\.1:\d+)/);
+                    if (match) { await activateFixture(match[1], privateKey); activated = true; break; }
+                }
                 const startupFailure = path.join(directory, 'logs', 'startup-error.log');
                 if (fs.existsSync(startupFailure)) throw new Error(fs.readFileSync(startupFailure, 'utf8'));
                 await delay(500);
             }
             const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+            assert.equal(activated, true, 'Real activation must complete before Unity starts');
             assert.equal(config.type, 'mysql');
             connection = await mysql.createConnection({
                 host: config.host, port: config.port, user: config.user, password: config.password,
@@ -186,8 +193,8 @@ async function main() {
             if (!exited) await stopOwnedSmokeProcess(child);
         }
     }
-    const resourceIntegrity = await verifyTree(resources, resourcesBefore);
-    const report = { success: true, executable, userDataDirectory: directory, programData: env.ProgramData, resourceIntegrity, launches };
+    const resourceIntegrity = await verifyTree(sourceResources, resourcesBefore);
+    const report = { success: true, executable: sourceExecutable, fixtureExecutable: executable, fixtureTrustOnly: true, userDataDirectory: directory, programData: env.ProgramData, resourceIntegrity, launches };
     fs.writeFileSync(path.join(directory, 'smoke-result.json'), JSON.stringify(report, null, 2));
     console.log(JSON.stringify(report, null, 2));
 }

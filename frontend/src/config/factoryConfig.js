@@ -118,8 +118,8 @@ export function useFactoryConfig() {
 // Admin API helpers
 export const adminApi = {
     // 集团/工厂层级
-    async getFactoryCollectionStatus(signal) { return readApiJson(await fetch(`${API_BASE}/factories/collection-status`, { cache: 'no-store', signal }), '读取工厂采集情况失败') },
     async listFactories() { return readApiJson(await fetch(`${API_BASE}/factories`), '读取工厂列表失败') },
+    async getFactoryCollectionStatus(signal) { return readApiJson(await fetch(`${API_BASE}/factories/collection-status`, { cache: 'no-store', signal }), '读取工厂采集情况失败') },
     async searchFactoryPlace(countryCode, query) { return readApiJson(await fetch(`${API_BASE}/factories/place-search`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ countryCode, query }) }), '查询海外地点失败') },
     async createFactory(data) { return readApiJson(await fetch(`${API_BASE}/factories`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) }), '创建工厂失败') },
     async updateFactory(id, data) { return readApiJson(await fetch(`${API_BASE}/factories/${pathId(id)}`, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) }), '保存工厂失败') },
@@ -271,6 +271,7 @@ export const adminApi = {
     },
     async getAcceptanceReport() { return readApiJson(await fetch(`${API_BASE}/acceptance-report`, { cache: 'no-store' }), '读取自动验收报告失败') },
     async getLicenseStatus() { return readApiJson(await fetch(`${API_BASE}/license`, { cache: 'no-store' }), '读取离线授权状态失败') },
+    async getLicenseHistory() { return readApiJson(await fetch(`${API_BASE}/license/history`, { cache: 'no-store' }), '读取激活记录失败') },
     async getLicenseContract() { return readApiJson(await fetch(`${API_BASE}/license/contract`, { cache: 'no-store' }), '读取许可证契约失败') },
     async installLicense(license) {
         return readApiJson(await fetch(`${API_BASE}/license`, {

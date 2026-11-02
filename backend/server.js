@@ -110,6 +110,9 @@ app.use('/api/admin-auth', express.json({ limit: '16kb', strict: true }), requir
         success: false, code: 'ADMIN_INVALID_REQUEST', error: '后台安全请求格式不正确或内容过长，请重试'
     });
 });
+// Available before account setup, but only on loopback with a nonce and a
+// cryptographically valid activation code; all management routes stay protected.
+app.use('/api/activation', require('./routes/activation')());
 app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || '5mb', strict: true }));
 app.use(protectManagementWrites);
 app.use((req, res, next) => {
@@ -1003,11 +1006,14 @@ async function startServer() {
                 })
                 .then(() => lanDisplay.loadFromSettings())
                 .then(() => startSiteBackupMaintenance(uploadsRootDir))
-                .then(() => dataEngine.start().catch(error => {
-                    // Collection has its own recovery loop. It must not prevent
-                    // the API's maintenance and management tools from running.
-                    console.error('[CollectorProcess] 独立采集启动失败，自动恢复中:', error.message);
-                }))
+                .then(() => {
+                    if (isLicenseEnforced() && !getLicenseStatus().valid) return;
+                    return dataEngine.start().catch(error => {
+                        // Collection has its own recovery loop. It must not prevent
+                        // the API's maintenance and management tools from running.
+                        console.error('[CollectorProcess] 独立采集启动失败，自动恢复中:', error.message);
+                    });
+                })
                 .then(() => { if (!shuttingDown) historyRetention.start(); })
                 .catch((error) => {
                     console.error('[DataEngine] 启动失败:', error.message);

@@ -50,10 +50,13 @@
       "templateData.cjs",
       "deployment.cjs",
       "deployment-preload.cjs",
+      "activation.cjs",
+      "startup-preload.cjs",
       "package.json",
       "assets/**/*"
     ],
     "extraResources": [
+      { "from": "resources/licensing", "to": "licensing", "filter": ["license-public-key.pem"] },
       { "from": ".cache/collector-center", "to": "collector-center", "filter": ["**/*"] },
       { "from": ".cache/collector-service", "to": "collector-service", "filter": ["**/*"] },
       {
