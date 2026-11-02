@@ -13,6 +13,9 @@ assert.deepEqual(errors, [])
 assert.deepEqual(compileTemplate({ source: descriptor.template.content, filename: url.pathname, id: 'users' }).errors, [])
 let compiled = compileScript(descriptor, { id: 'users' }).content
 compiled = compiled.replace(/import\s*\{([^}]+)\}\s*from\s*['"]\.\.\/\.\.\/\.\.\/runtime\/adminSession\.js['"]/, 'const {$1} = globalThis.__platformUsersFixtureApi')
+// This fixture runs setup logic with a null render; the shared visual control
+// has its own tests and the real account/factory UI is covered in Playwright.
+compiled = compiled.replace(/import EnableCapsule from ['"][^'"]+EnableCapsule\.vue['"]/, 'const EnableCapsule = {}')
 compiled = compiled.replace("from 'vue'", `from ${JSON.stringify(import.meta.resolve('vue'))}`)
 compiled = compiled.replace("from '../../../../../shared/accountPolicy.mjs'", `from ${JSON.stringify(new URL('../../shared/accountPolicy.mjs', import.meta.url).href)}`)
 compiled = compiled.replace("from '../../../../../shared/pagePermissions.mjs'", `from ${JSON.stringify(new URL('../../shared/pagePermissions.mjs', import.meta.url).href)}`)
