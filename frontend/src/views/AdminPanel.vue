@@ -5013,6 +5013,7 @@ async function renderComposerPreview() {
         runtime = new SceneRuntime(container, {
             workshops: composerWorkshops.value,
             industrialGround: true,
+            deviceLabelConfig: { enabled: false },
             models: models.value || [],
             cameraMode: '4level',
             renderOptions: {
@@ -5021,6 +5022,7 @@ async function renderComposerPreview() {
                 renderScale: 0.8,
                 antialias: true,
                 labelFps: 6,
+                labelLayer: false,
                 lightweight: true,
                 environment: false
             },

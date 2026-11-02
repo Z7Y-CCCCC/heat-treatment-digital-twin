@@ -337,10 +337,12 @@ export class SceneManager {
 
     initCSS2DRenderer() {
         this.labelRenderer = new CSS2DRenderer();
+        this.labelRenderer.domElement.classList.add('scene-label-layer');
         this.labelRenderer.setSize(this.width, this.height);
         this.labelRenderer.domElement.style.position = 'absolute';
         this.labelRenderer.domElement.style.top = '0px';
         this.labelRenderer.domElement.style.pointerEvents = 'none';
+        this.labelRenderer.domElement.hidden = this.renderOptions.labelLayer === false;
         this.container.appendChild(this.labelRenderer.domElement);
     }
 
@@ -1185,6 +1187,7 @@ export class SceneManager {
     }
 
     renderLabelLayerOnce() {
+        if (this.renderOptions.labelLayer === false) return;
         if (!this.labelRenderer || !this.scene || !this.camera) return;
         this.labelRenderer.render(this.scene, this.camera);
     }
@@ -1313,8 +1316,8 @@ export class SceneManager {
             this.lastStatsTime = now;
             this.lastStatsFrame = this.frameCount;
         }
-        const hasConnectionBadges = this.hasVisibleConnectionBadges();
-        if (this.labelsVisible || this.factoryGuideLayer?.visible || hasConnectionBadges) {
+        const hasConnectionBadges = this.renderOptions.labelLayer !== false && this.hasVisibleConnectionBadges();
+        if (this.renderOptions.labelLayer !== false && (this.labelsVisible || this.factoryGuideLayer?.visible || hasConnectionBadges)) {
             const requestedLabelFps = now < this.forceLabelRefreshUntil
                 ? Math.min(this.targetFps, this.labelTargetFps * 2)
                 : this.labelTargetFps;
