@@ -1,5 +1,8 @@
 <script setup>
 import { permissionDirective as vPermission } from '../../../runtime/pagePermissionUi.js'
+import { canAdminPage } from '../../../runtime/adminSession.js'
+import ViewHierarchyTree from './ViewHierarchyTree.vue'
+import { hierarchyHidden, moveView, setHierarchyHidden, visibleViewLink, viewDescendants } from '../../../runtime/viewHierarchy.js'
 import { computed, nextTick, onBeforeUnmount, onMounted, onActivated, onDeactivated, reactive, ref, useId, watch } from 'vue'
 import { adminApi } from '../../../config/factoryConfig.js'
 import WidgetRenderer from '../../../runtime/WidgetRenderer.vue'
@@ -277,42 +280,35 @@ defineExpose({
 })
 const viewModeLabel = computed(() => currentViewIsMapSurface.value ? '地图 / 厂区画面' : (DASHBOARD_VIEW_MODES.find(item => item.id === currentView.value?.mode)?.label || '自定义视角'))
 const collapsedViewIds = reactive(new Set())
-const viewTreeRows = computed(() => {
-  const allViews = views.value
-  const byParent = new Map()
-  const viewIds = new Set(allViews.map(view => view.id))
-  byParent.set('', [])
-  allViews.forEach(view => {
-    const parentId = String(view.parentViewId || '')
-    if (parentId && parentId !== view.id && viewIds.has(parentId)) {
-      if (!byParent.has(parentId)) byParent.set(parentId, [])
-      byParent.get(parentId).push(view)
-    } else byParent.get('').push(view)
-    if (!byParent.has(view.id)) byParent.set(view.id, [])
-  })
-  const roots = [...byParent.get('')].sort((a, b) => Number(b.id === 'map_world') - Number(a.id === 'map_world'))
-  const reachable = new Set()
-  const markReachable = view => {
-    if (!view || reachable.has(view.id)) return
-    reachable.add(view.id)
-    ;(byParent.get(view.id) || []).forEach(markReachable)
-  }
-  roots.forEach(markReachable)
-
-  const rows = []
-  const flattened = new Set()
-  const flatten = (view, level) => {
-    if (!view || flattened.has(view.id)) return
-    flattened.add(view.id)
-    const children = byParent.get(view.id) || []
-    rows.push({ view, level, hasChildren: children.length > 0, collapsed: collapsedViewIds.has(view.id) })
-    if (!collapsedViewIds.has(view.id)) children.forEach(child => flatten(child, level + 1))
-  }
-  roots.forEach(view => flatten(view, 0))
-  // 关系配置不完整时，把孤立视角作为根节点展示，避免在树中丢失。
-  allViews.filter(view => !reachable.has(view.id)).forEach(view => flatten(view, 0))
-  return rows
+const hierarchyEditable = computed(() => canAdminPage('platform.designer', 'edit'))
+const hierarchyChoices = computed(() => {
+  const branch = viewDescendants(views.value, currentView.value?.id)
+  return views.value.filter(view => !hierarchyHidden(view) && !branch.has(view.id))
 })
+function moveHierarchyView({ sourceId, targetId, placement }) {
+  if (!hierarchyEditable.value) return
+  const moved = moveView(views.value, sourceId, targetId, placement)
+  if (!moved) return
+  documentModel.value.scene.views = moved
+  const parent = moved.find(view => view.id === sourceId)?.parentViewId
+  if (parent) collapsedViewIds.delete(parent)
+  commitHistory('拖动调整视角层级')
+}
+function setViewHierarchyVisibility({ id, hidden }) {
+  if (!hierarchyEditable.value) return
+  const changed = setHierarchyHidden(views.value, id, hidden)
+  if (!changed) return setStatus('至少保留一个视角', 'warning')
+  documentModel.value.scene.views = changed
+  if (hidden && selectedViewId.value === id) {
+    selectedViewId.value = visibleViewLink(changed, changed.find(view => view.id === id)) || changed.find(view => !hierarchyHidden(view))?.id
+    selectedIds.value = []
+    syncPreviewContextFromView()
+  }
+  commitHistory(hidden ? '隐藏视角层级项' : '恢复视角层级项')
+}
+function changeHierarchyParent(id) {
+  moveHierarchyView({ sourceId: currentView.value?.id, targetId: id, placement: id ? 'inside' : 'root' })
+}
 const systemWidgetCards = computed(() => SYSTEM_WIDGET_LIBRARY
   .filter(definition => !['navigation', 'return_button'].includes(definition.type))
   .map(definition => {
@@ -2358,19 +2354,8 @@ onBeforeUnmount(() => {
           <div><strong>视角编排</strong><small>{{ currentViewIsMapSurface ? '地图层级与组件状态' : 'Unity 镜头与组件状态' }}</small></div><span>{{ viewPanelCollapsed ? '展开' : '收起' }}</span>
         </div>
         <div v-if="!viewPanelCollapsed" class="view-list">
-          <div class="view-tree" role="tree" aria-label="视角层级">
-            <div v-for="(row, rowIndex) in viewTreeRows" :key="row.view.id" class="view-tree-row" :class="{ root: row.level === 0, 'has-next': viewTreeRows[rowIndex + 1]?.view.parentViewId === row.view.id }" role="treeitem" :aria-level="row.level + 1" :aria-expanded="row.hasChildren ? !row.collapsed : undefined">
-              <div class="view-tree-rail">
-                <button type="button" class="view-tree-toggle" :class="{ empty: !row.hasChildren }" :aria-label="row.collapsed ? `展开${row.view.name}` : `收起${row.view.name}`" :disabled="!row.hasChildren" @click.stop="toggleViewTreeNode(row.view.id)">{{ row.hasChildren ? (row.collapsed ? '▸' : '▾') : '·' }}</button>
-                <span v-if="viewTreeRows[rowIndex + 1]?.view.parentViewId === row.view.id" class="view-tree-connector-arrow" aria-hidden="true">↓</span>
-              </div>
-              <button type="button" class="view-tree-select" :class="{ active: selectedViewId === row.view.id }" :title="row.view.name" @click="selectView(row.view.id)">
-                <span class="view-list-icon">{{ row.view.mode === 'device' ? '⌖' : row.view.mode === 'line' ? '≡' : row.view.mode === 'workshop' ? '⌂' : '◎' }}</span>
-                <span><strong>{{ row.view.name }}</strong></span>
-                <i v-if="documentModel.scene.defaultViewId === row.view.id" title="默认视角">●</i>
-              </button>
-            </div>
-          </div>
+          <ViewHierarchyTree :views="views" :selected-id="selectedViewId" :default-id="documentModel.scene.defaultViewId" :collapsed="collapsedViewIds" :can-edit="hierarchyEditable"
+            @select="selectView" @toggle="toggleViewTreeNode" @move="moveHierarchyView" @visibility="setViewHierarchyVisibility" />
           <div class="view-list-actions"><button type="button" @click="addView" v-permission="{ page: 'platform.designer', action: 'edit' }">＋ 新视角</button><button type="button" :disabled="!currentView" @click="duplicateView">复制</button></div>
         </div>
         <div v-if="!currentViewIsMapSurface" class="designer-panel-heading"><strong>场景组件组</strong><small>一次加入完整交互区域</small></div>
@@ -2880,8 +2865,8 @@ onBeforeUnmount(() => {
               </details>
             </section>
             <section v-else class="inspector-section">
-              <label>返回上一级视角<select v-model="currentView.returnViewId" @change="commitHistory('修改返回视角')" v-permission="{ page: 'platform.designer', action: 'edit' }"><option value="">不返回</option><option v-for="view in views.filter(item => item.id !== currentView.id)" :key="view.id" :value="view.id">{{ view.name }}</option></select></label>
-              <label>父级视角<select v-model="currentView.parentViewId" @change="commitHistory('修改父级视角')" v-permission="{ page: 'platform.designer', action: 'edit' }"><option value="">无</option><option v-for="view in views.filter(item => item.id !== currentView.id)" :key="view.id" :value="view.id">{{ view.name }}</option></select></label>
+              <label>返回上一级视角<select :value="visibleViewLink(views, currentView, 'returnViewId')" @change="currentView.returnViewId = $event.target.value; commitHistory('修改返回视角')" v-permission="{ page: 'platform.designer', action: 'edit' }"><option value="">不返回</option><option v-for="view in hierarchyChoices" :key="view.id" :value="view.id">{{ view.name }}</option></select></label>
+              <label>父级视角<select :value="visibleViewLink(views, currentView)" @change="changeHierarchyParent($event.target.value)" v-permission="{ page: 'platform.designer', action: 'edit' }"><option value="">无</option><option v-for="view in hierarchyChoices" :key="view.id" :value="view.id">{{ view.name }}</option></select></label>
               <p class="visibility-hint">点击设备或组件时，可在右侧“事件”中选择“切换到指定视角”。返回按钮会优先使用这里配置的上一级视角。</p>
             </section>
           </div>
@@ -3024,7 +3009,6 @@ onBeforeUnmount(() => {
 .is-preview .designer-left-panel,.is-preview .designer-right-panel{opacity:.56}
 .view-panel-heading{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:11px 12px;border-bottom:1px solid var(--line);cursor:pointer}.view-panel-heading strong,.view-panel-heading small{display:block}.view-panel-heading strong{font-size:13px}.view-panel-heading small{margin-top:3px;color:var(--muted);font-size:10px}.view-panel-heading>span{color:var(--muted);font-size:10px}
 .view-list{padding:7px;border-bottom:1px solid var(--line)}.view-list>button{display:grid;grid-template-columns:26px minmax(0,1fr) 14px;gap:7px;align-items:center;width:100%;padding:8px 7px;border:1px solid transparent;border-radius:8px;text-align:left;color:var(--text);background:transparent;cursor:pointer}.view-list>button:hover{background:var(--panel2)}.view-list>button.active{border-color:#cfcfd4;background:#f0f0f2}.view-list-icon{display:grid;place-items:center;width:24px;height:24px;border-radius:7px;color:#fff;background:#1d1d1f;font-size:13px}.view-list strong,.view-list small{display:block;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}.view-list strong{font-size:12px}.view-list small{margin-top:2px;color:var(--muted);font-size:9px}.view-list i{color:#2e9d5b;font-style:normal;font-size:10px}.view-list-actions{display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-top:6px}.view-list-actions button,.view-inspector-actions button{height:30px;border:1px solid #d8d8dd;border-radius:7px;color:#3a3a3c;background:#fff;font-size:11px;cursor:pointer}.view-list-actions button:first-child,.view-inspector-actions button:first-child{color:#fff;border-color:#1d1d1f;background:#1d1d1f}.view-list-actions button:disabled,.view-inspector-actions button:disabled{opacity:.45;cursor:not-allowed}.view-inspector-actions{display:grid;grid-template-columns:1fr 1fr;gap:7px}.view-inspector-actions button:last-child{color:#b42318}.view-component-list{display:grid;gap:6px;max-height:360px;overflow:auto}.view-component-list label{display:grid!important;grid-template-columns:18px minmax(0,1fr) auto;align-items:center;gap:6px!important;padding:8px;border:1px solid #e2e2e5;border-radius:8px;background:#f8f8fa;cursor:pointer}.view-component-list input{width:auto!important;min-height:auto!important;accent-color:#1d1d1f}.view-component-list span{overflow:hidden;color:#1d1d1f;white-space:nowrap;text-overflow:ellipsis}.view-component-list small{color:#8e8e93;font-size:10px}
-.view-tree{display:grid;gap:2px}.view-tree-row{position:relative;display:grid;grid-template-columns:28px minmax(0,1fr);align-items:stretch;min-width:0}.view-tree-rail{position:relative;display:flex;justify-content:center}.view-tree-row.has-next .view-tree-rail::before{content:'';position:absolute;z-index:0;top:50%;bottom:-50%;left:50%;border-left:1px solid #c8c8ce}.view-tree-connector-arrow{position:absolute;z-index:2;top:100%;left:50%;color:#8e8e93;background:#fff;font-size:11px;line-height:1;transform:translate(-50%,-50%)}.view-tree-toggle{position:relative;z-index:3;align-self:center;display:grid;place-items:center;width:22px;height:22px;padding:0;border:1px solid #d8d8dd;border-radius:50%;color:#6e6e73;background:#fff;font-size:12px;line-height:1;cursor:pointer}.view-tree-toggle:hover:not(:disabled){color:#1d1d1f;border-color:#8e8e93;background:#f0f0f2}.view-tree-toggle.empty{width:8px;height:8px;border:0;color:transparent;background:#1d1d1f;cursor:default}.view-tree-select{position:relative;display:grid;grid-template-columns:26px minmax(0,1fr) 14px;gap:7px;align-items:center;min-width:0;flex:1;padding:8px 7px;border:1px solid transparent;border-radius:8px;text-align:left;color:#1d1d1f;background:transparent;cursor:pointer}.view-tree-select:hover{background:#f0f0f2}.view-tree-select.active{border-color:#cfcfd4;background:#f0f0f2}.view-tree-select>span:nth-child(2){min-width:0}.view-tree-select strong{display:block;overflow:visible;white-space:normal;text-overflow:clip;word-break:break-word;line-height:1.25}.view-tree-select .view-list-icon{align-self:center}
 .view-hidden-components{border:1px solid #e2e2e5;border-radius:8px;background:#fafafa}.view-hidden-components summary{padding:9px;color:#6e6e73;font-size:11px;cursor:pointer}.view-hidden-components .view-component-list{padding:0 7px 7px;max-height:220px}.view-hidden-components .view-component-list label{background:#f3f3f5}
 .system-widget-card{display:grid!important;grid-template-columns:58px minmax(0,1fr);gap:9px;align-items:center;min-width:0;padding:8px!important}.system-widget-card>div:last-child{display:block;min-width:0;padding:0;border:0}.system-widget-card strong,.system-widget-card small,.system-widget-card em{display:block;max-width:100%}.system-widget-card strong{overflow:hidden;color:#1d1d1f;font-size:11px;white-space:nowrap;text-overflow:ellipsis}.system-widget-card small{display:-webkit-box;margin-top:2px;overflow:hidden;color:#8e8e93;font-size:9px;line-height:1.35;-webkit-box-orient:vertical;-webkit-line-clamp:2}.system-widget-card em{margin-top:3px;overflow:hidden;color:#6e6e73;font-size:8px;font-style:normal;white-space:nowrap;text-overflow:ellipsis}.system-widget-preview{position:relative;box-sizing:border-box;width:58px;height:42px;min-width:0;overflow:hidden;padding:0!important;border:1px solid #d8d8dd!important;border-radius:8px;background:linear-gradient(145deg,#2d2d31,#111113)}.system-widget-preview span{position:absolute;left:6px;top:5px;color:#fff;font-size:13px;font-weight:700}.system-widget-preview i,.system-widget-preview b{position:absolute;display:block;border-radius:4px;background:rgba(255,255,255,.8)}.system-widget-preview i{left:7px;right:7px;bottom:9px;height:4px}.system-widget-preview b{left:7px;bottom:18px;width:28px;height:6px;background:#777}.system-widget-preview.preview-label{background:linear-gradient(145deg,#203b4c,#11161a)}.system-widget-preview.preview-label i{left:27px;bottom:16px;width:21px;height:16px;border:1px solid #6fd1ff;background:rgba(79,166,215,.25)}.system-widget-preview.preview-label b{left:15px;bottom:8px;width:4px;height:9px;border-radius:50%;background:#54d3a0}.system-widget-preview.preview-diagnostics{background:#f0f0f2}.system-widget-preview.preview-diagnostics span{color:#1d1d1f}.system-widget-preview.preview-diagnostics i{left:7px;right:7px;bottom:10px;background:#49a86e}.system-widget-preview.preview-diagnostics b{left:7px;bottom:19px;width:34px;background:#999}.system-widget-preview.preview-line{background:linear-gradient(145deg,#38404a,#15171b)}.system-widget-preview.preview-line i{left:8px;right:8px;bottom:9px;height:14px;border:1px solid #888;background:transparent}.system-widget-preview.preview-line b{left:13px;bottom:14px;width:7px;height:7px;border-radius:50%;background:#65d69c}
 .view-delete-button{height:30px;border:1px solid #e1b8b5;border-radius:7px;color:#b42318;background:#fff;font-size:11px;cursor:pointer}.view-delete-button:disabled{opacity:.45;cursor:not-allowed}

@@ -31,13 +31,13 @@ export const DASHBOARD_VIEW_MODES = [
 ]
 
 export const MAP_SURFACE_VIEWS = Object.freeze([
-  { id: 'map_world', name: '01 全球地图', level: 'world', targetType: 'map_world', parentViewId: '' },
-  { id: 'map_country', name: '02 国家地图', level: 'country', targetType: 'map_country', parentViewId: 'map_world' },
-  { id: 'map_province', name: '03 省份 / 直辖市地图', level: 'province', targetType: 'map_province', parentViewId: 'map_country' },
-  { id: 'map_city', name: '04 城市地图', level: 'city', targetType: 'map_city', parentViewId: 'map_province' },
-  { id: 'map_district', name: '05 区县地图', level: 'district', targetType: 'map_district', parentViewId: 'map_city' },
-  { id: 'site_street', name: '06 街道示意', level: 'street', targetType: 'site_street', parentViewId: 'map_district' },
-  { id: 'site_factory', name: '07 工厂建筑', level: 'site_factory', targetType: 'site_factory', parentViewId: 'site_street' }
+  { id: 'map_world', name: '全球地图', level: 'world', targetType: 'map_world', parentViewId: '' },
+  { id: 'map_country', name: '国家地图', level: 'country', targetType: 'map_country', parentViewId: 'map_world' },
+  { id: 'map_province', name: '省份 / 直辖市地图', level: 'province', targetType: 'map_province', parentViewId: 'map_country' },
+  { id: 'map_city', name: '城市地图', level: 'city', targetType: 'map_city', parentViewId: 'map_province' },
+  { id: 'map_district', name: '区县地图', level: 'district', targetType: 'map_district', parentViewId: 'map_city' },
+  { id: 'site_street', name: '街道示意', level: 'street', targetType: 'site_street', parentViewId: 'map_district' },
+  { id: 'site_factory', name: '工厂建筑', level: 'site_factory', targetType: 'site_factory', parentViewId: 'site_street' }
 ])
 export const MAP_SURFACE_VIEW_IDS = new Set(MAP_SURFACE_VIEWS.map(view => view.id))
 const mapSurfaceViewDefinition = view => ({
@@ -72,7 +72,7 @@ function normalizeDashboardView(source = {}, index = 0) {
   const authoredName = String(source.name || fallback.name || `视角 ${index + 1}`)
   return {
     id: viewId,
-    name: viewId === 'site_factory' && authoredName.trim() === '06 工厂建筑' ? '07 工厂建筑' : authoredName,
+    name: MAP_SURFACE_VIEW_IDS.has(viewId) ? authoredName.replace(/^\s*\d{2}\s+/, '') : authoredName,
     mode,
     targetType: String(source.targetType || fallback.targetType || (mode === 'custom' ? 'factory' : mode)),
     targetId: String(source.targetId || source.target_id || ''),
