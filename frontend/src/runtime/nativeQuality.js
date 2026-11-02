@@ -1,4 +1,5 @@
 import { reactive, onMounted, onUnmounted } from 'vue'
+import { createQualityTransport, QUALITY_CHANNEL } from './nativeQualityTransport.js'
 
 export const QUALITY_PROFILES = [
   { key: 'integrated_gpu', label: '流畅', shortcut: 'F1' },
@@ -45,16 +46,20 @@ export function createNativeQualityControl({ state, post, later = setTimeout, ca
   return { request, receive, query, keydown, dispose() { disposed = true; cancel(pendingTimer); cancel(noticeTimer) } }
 }
 
-export function useNativeQuality(active = () => true) {
+export function useNativeQuality(active = () => true, { relay = false, hotkeys = true } = {}) {
   const state = reactive({ profile: '', automatic: false, enabled: false, hotkeysEnabled: false, pending: '', notice: '', error: false })
-  const controller = createNativeQualityControl({ state, post: message => {
+  let channel = null
+  try { if (typeof BroadcastChannel !== 'undefined') channel = new BroadcastChannel(QUALITY_CHANNEL) } catch { /* A standalone browser can still edit saved settings. */ }
+  let controller
+  const transport = createQualityTransport({ relay, channel, receive: snapshot => controller.receive(snapshot), postNative: message => {
     if (!window.chrome?.webview) throw new Error('Native host unavailable')
     window.chrome.webview.postMessage(message)
   } })
+  controller = createNativeQualityControl({ state, post: transport.post })
   let hostVisible = false
   const message = event => {
     if (!active()) return
-    controller.receive(event.data)
+    if (controller.receive(event.data)) transport.publish(event.data)
     if (event.data?.type === 'overlay_host_state') {
       if (!hostVisible && event.data.visible !== false) controller.query()
       hostVisible = event.data.visible !== false
@@ -63,13 +68,14 @@ export function useNativeQuality(active = () => true) {
   const keydown = event => { if (active()) controller.keydown(event) }
   onMounted(() => {
     window.chrome?.webview?.addEventListener('message', message)
-    window.addEventListener('keydown', keydown, true)
+    if (hotkeys) window.addEventListener('keydown', keydown, true)
     controller.query()
   })
   onUnmounted(() => {
     controller.dispose()
+    transport.dispose()
     window.chrome?.webview?.removeEventListener('message', message)
-    window.removeEventListener('keydown', keydown, true)
+    if (hotkeys) window.removeEventListener('keydown', keydown, true)
   })
   return { qualityState: state, setQuality: controller.request, queryQuality: controller.query }
 }

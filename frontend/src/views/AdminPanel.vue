@@ -6,6 +6,8 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { adminApi } from '../config/factoryConfig.js'
 import { API_BASE } from '../runtime/backendEndpoint.js'
 import { SceneRuntime } from '../runtime/SceneRuntime.js'
+import { useNativeQuality } from '../runtime/nativeQuality.js'
+import QualityNotice from '../components/QualityNotice.vue'
 import WorkshopGroundEditor from './admin/components/WorkshopGroundEditor.vue'
 import DataSourceWorkspace from './admin/components/DataSourceWorkspace.vue'
 import { normalizeGround, normalizeDeviceGround } from '../../../shared/industrialGround.mjs'
@@ -393,7 +395,7 @@ const {
     loadEngineStatus,
     formatEngineMode,
     formatCollectorProcessStatus,
-    saveSettings,
+    saveSettings: saveSystemSettings,
     savePendingSystemSettings
 } = useSystemSettings({
     alert,
@@ -406,6 +408,28 @@ const {
     ensureComposerSelection: (...args) => ensureComposerSelection(...args),
     syncComposerDraftFromSelection: (...args) => syncComposerDraftFromSelection(...args),
     scheduleComposerPreview: (...args) => scheduleComposerPreview(...args)
+})
+
+const { qualityState: nativeQualityState, setQuality: setNativeQuality, queryQuality: queryNativeQuality } = useNativeQuality(() => true, { relay: true, hotkeys: false })
+const currentNativeQuality = computed(() => nativeQualityState.enabled && nativeQualityState.profile
+    ? (nativeQualityState.automatic ? 'auto' : nativeQualityState.profile) : settings.native_quality_profile)
+const qualitySelection = computed({
+    get: () => currentNativeQuality.value,
+    set: value => {
+        if (!canAdminPage('settings.performance', 'edit')) return
+        settings.native_quality_profile = value
+        if (nativeQualityState.enabled) setNativeQuality(value)
+    }
+})
+async function saveSettings(pageKey) {
+    // A runtime hotkey/capsule update must not manufacture an unsaved draft or
+    // silently persist a viewer's override. Explicit Save retains that profile.
+    if (pageKey === 'settings.performance' && nativeQualityState.enabled)
+        settings.native_quality_profile = currentNativeQuality.value
+    return saveSystemSettings(pageKey)
+}
+watch([activeTab, settingsSubpage], ([tab, page]) => {
+    if (tab === 'settings' && page === 'performance') queryNativeQuality()
 })
 
 function isHttpDataSource(connection) {
@@ -10348,31 +10372,28 @@ async function openAdminSetupStep(step) {
                             <h3 class="section-title">Unity 原生客户端画质</h3>
                             <div class="settings-grid">
                                 <label>现场电脑画质档位
-                                    <select v-model="settings.native_quality_profile" class="input" v-permission="{ page: controlPermissionPage, action: 'edit' }">
+                                    <select v-model="qualitySelection" class="input" aria-label="现场电脑画质档位" v-permission="{ page: controlPermissionPage, action: 'edit' }">
                                         <option value="auto">自动识别（推荐）</option>
                                         <option value="integrated_gpu">核显稳定档</option>
                                         <option value="balanced">均衡专业档</option>
                                         <option value="showcase">展示高画质档</option>
                                     </select>
                                 </label>
-                                <label>模型几何策略
-                                    <div class="input render-setting-readonly">始终保留导入模型完整几何</div>
-                                </label>
                             </div>
                             <div class="mode-hint render-profile-hint">
-                                <template v-if="settings.native_quality_profile === 'integrated_gpu'">
+                                <template v-if="qualitySelection === 'integrated_gpu'">
                                     <p><strong>核显稳定档：</strong>降低内部渲染分辨率、附加灯阴影和反射开销，模型面数与贴图内容不变。</p>
                                 </template>
-                                <template v-else-if="settings.native_quality_profile === 'balanced'">
+                                <template v-else-if="qualitySelection === 'balanced'">
                                     <p><strong>均衡专业档：</strong>完整 PBR、4× MSAA、专业后处理与中距离阴影，适合开发机和普通独显。</p>
                                 </template>
-                                <template v-else-if="settings.native_quality_profile === 'showcase'">
+                                <template v-else-if="qualitySelection === 'showcase'">
                                     <p><strong>展示高画质档：</strong>更高内部渲染比例、远距离阴影与反射，适合展厅高性能电脑。</p>
                                 </template>
                                 <template v-else>
-                                    <p><strong>自动识别：</strong>按显卡名称和显存选择档位；工程师也可在客户端按 F1 / F2 / F3 临时切换。</p>
+                                    <p><strong>自动识别：</strong>按显卡名称和显存选择档位。</p>
                                 </template>
-                                <p>保存后通过 WebSocket 实时切换画质，无需按 F5；所有档位都不会自动减面。场景光效与大屏组件请在“组件配置”页面调整。</p>
+                                <p>与大屏和 F1 / F2 / F3 同步，保存后保留设置。</p>
                             </div>
                         </div>
 
@@ -10474,6 +10495,7 @@ async function openAdminSetupStep(step) {
                 </section>
             </div>
         </Transition>
+        <QualityNotice v-if="nativeQualityState.error" :state="nativeQualityState" />
     </div>
 </template>
 
@@ -14658,7 +14680,6 @@ button:enabled:active {
 .scene-basic-note { margin: -8px 0 18px; padding: 11px 13px; color: #6e6e73; background: #f5f5f7; border-radius: 9px; font-size: 12px; line-height: 1.55; }
 .settings-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
 .settings-grid label { display: flex; flex-direction: column; gap: 8px; font-size: 13px; color: #515154; font-weight: 500; }
-.render-setting-readonly { display: flex; align-items: center; color: #1d1d1f; background: #f5f5f7; }
 .render-profile-hint { margin-top: 16px; }
 .render-profile-hint p { margin: 4px 0; }
 .render-custom-grid { margin-top: 18px; padding-top: 18px; border-top: 1px solid #e5e5e7; }
