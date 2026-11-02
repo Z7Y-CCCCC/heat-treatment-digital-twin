@@ -76,7 +76,7 @@ async function loginPassword(password) {
     await dialog.waitFor({ state: 'hidden' });
     check('the real customer-template editor saves devices and point-monitor read-only by default');
     await display.goto(origin + '/group');
-    await display.locator('.group-user').click();
+    await display.locator('.account-dock').hover(); await display.locator('.group-user').click();
     const menu = display.getByRole('region', { name: '账户设置', exact: true });
     await menu.getByRole('button', { name: /管理账户/ }).click();
     await menu.getByLabel('账号', { exact: true }).fill('现场客户');

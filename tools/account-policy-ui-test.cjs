@@ -79,7 +79,7 @@ let server, browser, page;
     check('fresh browser login accepts Chinese username and six-character password without granting administrator privileges');
 
     await customer.goto(info.origin + '/group');
-    await customer.locator('.group-user').click();
+    await customer.locator('.account-dock').hover(); await customer.locator('.group-user').click();
     const menu = customer.getByRole('region', { name: '账户设置', exact: true });
     await menu.getByRole('button', { name: /修改我的密码/ }).click();
     const current = menu.getByLabel('当前密码', { exact: true }), next = menu.getByLabel('新密码', { exact: true });
@@ -90,7 +90,7 @@ let server, browser, page;
     check('real-time display account menu changes a six-character password to six characters successfully');
 
     await page.goto(info.origin + '/group');
-    await page.locator('.group-user').click();
+    await page.locator('.account-dock').hover(); await page.locator('.group-user').click();
     const ownerMenu = page.getByRole('region', { name: '账户设置', exact: true });
     await ownerMenu.getByRole('button', { name: /管理账户/ }).click();
     await ownerMenu.getByLabel('账号', { exact: true }).fill('普通用户1');

@@ -76,7 +76,10 @@ function usernameSelected() {
 }
 
 watch(() => [adminSession.ready, adminSession.authenticated, adminSession.accountSlotId, adminSession.user?.username],
-    ([ready, authenticated]) => { if (ready && !authenticated) void refreshLoginChoices() }, { immediate: true })
+    (identity, previous) => {
+        const [ready, authenticated] = identity
+        if (ready && !authenticated && (!previous || identity.some((value, index) => value !== previous[index]))) void refreshLoginChoices()
+    }, { immediate: true })
 
 async function submit() {
     if (busy.value || retrySeconds.value > 0) return

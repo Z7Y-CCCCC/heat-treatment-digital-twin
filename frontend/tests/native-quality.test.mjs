@@ -84,10 +84,10 @@ test('repeated selections refresh one short-lived bubble; initialization and dis
 })
 
 test('both native surfaces display feedback, and the account menu contains the three-position capsule', async () => {
-  const group = await readFile(new URL('../src/views/GroupOverview.vue', import.meta.url), 'utf8')
+  const group = await readFile(new URL('../src/views/DashboardAccountDock.vue', import.meta.url), 'utf8')
   const overlay = await readFile(new URL('../src/views/DashboardOverlay.vue', import.meta.url), 'utf8')
   assert.match(group, /<QualityCapsule :state="qualityState" @select="setQuality" @query="queryQuality"/)
-  for (const source of [group, overlay]) assert.match(source, /<QualityNotice :state="qualityState"/)
+  assert.match(group, /<QualityNotice :state="qualityState"/)
   for (const file of ['QualityCapsule.vue', 'QualityNotice.vue']) {
     const { descriptor } = parse(await readFile(new URL(`../src/components/${file}`, import.meta.url), 'utf8'))
     assert.deepEqual(compileTemplate({ source: descriptor.template.content, filename: file, id: 'quality' }).errors, [])

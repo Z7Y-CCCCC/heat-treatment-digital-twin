@@ -53,7 +53,7 @@ let backend, unity, browser, page, directory;
         window.__qualityTestStates = [];
         window.chrome.webview.addEventListener('message', event => { if (event.data?.type === 'native_quality_state') window.__qualityTestStates.push(event.data); });
     });
-    await page.locator('.group-user').click();
+    await page.locator('.account-dock').hover(); await page.locator('.group-user').click();
     const capsule = page.getByRole('radiogroup', { name: '画质档位', exact: true });
     await capsule.waitFor();
     await waitUntil(() => capsule.getByRole('radio').first().isEnabled(), 15000, 'actual native quality snapshot');

@@ -1,4 +1,5 @@
 <script setup>
+import DashboardAccountDock from './views/DashboardAccountDock.vue'
 import { computed, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import { RouterView, useRoute, useRouter } from 'vue-router'
 import { adminSession, issueNativeSessionTicket, logoutCurrentAdminAccount, refreshAdminSession } from './runtime/adminSession.js'
@@ -120,6 +121,7 @@ onUnmounted(() => window.clearInterval(overlayAuthPoll))
             </KeepAlive>
         </Transition>
     </RouterView>
+    <DashboardAccountDock v-if="['/group','/site','/overlay','/hud-preview'].includes(route.path) && !waitingForNativeOverlayAuth && !showPermissionDenied" />
 </template>
 
 <style>

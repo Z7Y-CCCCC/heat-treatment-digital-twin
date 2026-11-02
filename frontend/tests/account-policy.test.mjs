@@ -27,7 +27,7 @@ test('six-character passwords work without trimming or weakening the upper bound
   for (const password of ['', '12345', '      ', 'p'.repeat(129), null, 123456]) assert.equal(isValidPassword(password), false)
 })
 
-for (const filename of ['AdminAccess.vue', 'GroupOverview.vue', 'admin/components/PlatformUsersSettings.vue', 'admin/components/AdminSecuritySettings.vue']) {
+for (const filename of ['AdminAccess.vue', 'DashboardAccountDock.vue', 'admin/components/PlatformUsersSettings.vue', 'admin/components/AdminSecuritySettings.vue']) {
   test(`${filename} uses the shared six-character policy for every password field`, async () => {
     const { descriptor, errors } = parse(await readFile(new URL(`../src/views/${filename}`, import.meta.url), 'utf8'))
     assert.deepEqual(errors, [])

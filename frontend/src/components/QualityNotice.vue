@@ -3,7 +3,7 @@ defineProps({ state: { type: Object, required: true } })
 </script>
 <template>
   <Teleport to="body"><Transition name="quality-notice">
-    <div v-if="state.notice" class="quality-notice" :class="{ error: state.error }" role="status" aria-live="polite">{{ state.notice }}</div>
+    <div v-if="state.notice" class="quality-notice" data-account-hit="true" :class="{ error: state.error }" role="status" aria-live="polite">{{ state.notice }}</div>
   </Transition></Teleport>
 </template>
 <style scoped>
