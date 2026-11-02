@@ -5038,6 +5038,7 @@ async function renderComposerPreview() {
         runtime = new SceneRuntime(container, {
             workshops: composerWorkshops.value,
             industrialGround: true,
+            groundCutaway: true,
             deviceLabelConfig: { enabled: false },
             models: models.value || [],
             cameraMode: '4level',
