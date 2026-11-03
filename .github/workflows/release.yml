@@ -64,9 +64,8 @@ jobs:
             backend/package-lock.json
             frontend/package-lock.json
             desktop/package-lock.json
-      - uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: 8.0.x
+      # This dedicated machine is provisioned with .NET 8. Installing again
+      # would try to write Program Files as a non-admin desktop build user.
       - name: Check native build prerequisites
         shell: powershell
         run: ./tools/ci/setup-windows-runner.ps1 -CheckOnly
