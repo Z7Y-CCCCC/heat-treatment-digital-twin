@@ -20,7 +20,7 @@
     "build:collector-service": "node scripts/build-collector-service.cjs",
     "test:logs": "node scripts/log-manager-test.cjs",
     "test:processes": "node --test scripts/process-lifecycle-test.cjs scripts/desktop-supervisor-unit-test.cjs scripts/activation-client-test.cjs",
-    "test:resources": "node --test scripts/resource-preparation-test.cjs scripts/runtime-cache-test.cjs scripts/dependency-cache-test.cjs scripts/directory-publish-test.cjs",
+    "test:resources": "node --test scripts/resource-preparation-test.cjs scripts/runtime-cache-test.cjs scripts/dependency-cache-test.cjs scripts/directory-publish-test.cjs scripts/native-client-path-test.cjs",
     "test:deployment": "node --test scripts/deployment-test.cjs scripts/desktop-supervisor-unit-test.cjs",
     "build:collector-center": "node scripts/build-collector-center.cjs",
     "test:collector-center": "node scripts/native-collector-center-test.cjs && node scripts/native-point-client-test.cjs && node --test scripts/service-installer-test.cjs",
@@ -51,6 +51,7 @@
       "deployment.cjs",
       "deployment-preload.cjs",
       "activation.cjs",
+      "nativeClientPath.cjs",
       "startup-preload.cjs",
       "package.json",
       "assets/**/*"

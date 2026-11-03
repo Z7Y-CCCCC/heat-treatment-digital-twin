@@ -72,6 +72,9 @@ function loadDesktop({ createLog, spawnProcess, userDataPath, deploymentConfig, 
             if (name === './processLifecycle.cjs') return require('../processLifecycle.cjs');
             if (name === './mysqlRuntime.cjs') return require('../mysqlRuntime.cjs');
             if (name === './directoryPublish.cjs') return require('../directoryPublish.cjs');
+            // Native path resolution has its own real-junction regression.
+            // This supervisor VM uses nonexistent paths and a fake filesystem.
+            if (name === './nativeClientPath.cjs') return { resolveNativeClientPath: dir => dir, validateNativeClientFiles() {} };
             // This VM tests supervision with fake paths/filesystems. Template
             // seeding has dedicated tests and must not touch the real disk here.
             if (name === './templateData.cjs') return { seedTemplateConfiguration: async () => {} };

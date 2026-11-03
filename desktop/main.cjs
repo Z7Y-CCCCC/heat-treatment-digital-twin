@@ -12,6 +12,7 @@ const { retryFilesystem, publishDirectory } = require('./directoryPublish.cjs');
 const { seedTemplateConfiguration } = require('./templateData.cjs');
 const { deploymentFile, resolveDeployment, saveDeployment } = require('./deployment.cjs');
 const { runStartupActivation } = require('./activation.cjs');
+const { resolveNativeClientPath, validateNativeClientFiles } = require('./nativeClientPath.cjs');
 const {
     cleanupLogArchives,
     createRotatingLogWriter
@@ -908,9 +909,10 @@ function scheduleBackendRestart(writable, port, reason) {
 }
 
 function nativeClientDirectory() {
-    return app.isPackaged
+    const directory = app.isPackaged
         ? resourcePath('native-client')
         : path.resolve(__dirname, '..', 'unity-client', 'Builds', 'Windows');
+    return resolveNativeClientPath(directory, { io: fs, platform: process.platform });
 }
 
 function nativeAdminHostExecutable() {
@@ -1068,6 +1070,7 @@ async function startNativeClient(origin, writable, startupProgressCallback = nul
     if (!fs.existsSync(executable)) {
         throw new Error(`原生大屏程序不存在：${executable}`);
     }
+    validateNativeClientFiles(clientDir, { io: fs });
 
     const logStreams = await Promise.all([
         createRotatingLogWriter(writable.logsDir, 'native-client.log'),
