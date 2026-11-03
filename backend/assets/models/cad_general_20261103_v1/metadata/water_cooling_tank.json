@@ -1,0 +1,92 @@
+{
+  "model_id": "cad_water_cooling_tank_v1",
+  "name": "水冷槽",
+  "file": "47.10.00_水冷槽.glb",
+  "source": {
+    "id": "water_cooling_tank",
+    "source": "47.10.00水冷槽总图.dwg",
+    "sha256": "E54159FAC1E9994D69123D421D2A8B1EF3071C766793885006B1CEFC53CFCC07",
+    "entities": 15828,
+    "dxf": "water_cooling_tank.dxf"
+  },
+  "unit": "m",
+  "up_axis": "Y",
+  "floor_origin": "bottom; installation datums retained separately",
+  "reference_dimensions_mm": {
+    "tank_length": 1654,
+    "tank_width": 2172,
+    "overall_height": 4320,
+    "working_level_above_floor": 1250,
+    "below_floor": 383
+  },
+  "notes": [
+    "完整显示下部槽体；安装时地坪基准比模型底部高 383 mm。液面为静态可移除组件。"
+  ],
+  "bounds_blender_m": [
+    -1.1299999952316284,
+    -1.0709831714630127,
+    0.0,
+    1.2599999904632568,
+    1.9320000410079956,
+    4.320000171661377
+  ],
+  "size_gltf_m": [
+    2.3899999856948853,
+    4.320000171661377,
+    3.0029832124710083
+  ],
+  "editable_meshes": 478,
+  "runtime_meshes": 72,
+  "triangles": 42800,
+  "bytes": 2403564,
+  "sha256": "935bdbc3e0cdb4241aa53232d76bfb6d073a77e1d76434c2b7d5f917b39cba7f",
+  "roundtrip_max_error_m": 0.0,
+  "functional_groups": [
+    "structure",
+    "tank",
+    "agitator",
+    "upper_housing",
+    "lining",
+    "door",
+    "door_guides",
+    "door_drive",
+    "hoist_frame",
+    "basket",
+    "hoist",
+    "hoist_drive",
+    "extraction",
+    "pipes",
+    "valves",
+    "electrics",
+    "hoist_transmission",
+    "door_carriages",
+    "door_chains",
+    "door_seals",
+    "door_safety",
+    "agitator_flange",
+    "basket_guides",
+    "coolant_pipes",
+    "valve_detail",
+    "instrumentation",
+    "rear_tank_hatch",
+    "nameplates",
+    "lifting_eyes",
+    "frame_fixings"
+  ],
+  "runtime": {
+    "enableGenericBindings": false,
+    "enableInspection": false
+  },
+  "partBindings": [],
+  "detail_features": {
+    "agitator_impeller_blade": 3,
+    "basket_guide_shaft": 2,
+    "basket_guide_bush": 4,
+    "service_hatch": 1,
+    "hex_nut": 26,
+    "gauge_dial": 1
+  },
+  "mechanism_checks": [
+    "1100 mm basket depth aligned with tank depth"
+  ]
+}

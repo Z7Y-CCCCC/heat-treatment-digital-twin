@@ -1,0 +1,411 @@
+{
+  "version": 1,
+  "roots": [
+    "backend/assets/models",
+    "unity-client/Assets/Equipment",
+    "unity-client/Assets/StreamingAssets",
+    "frontend/public/assets/models"
+  ],
+  "files": [
+    {
+      "path": "backend/assets/models/box_atmosphere_furnace.glb",
+      "bytes": 176624,
+      "sha256": "e21b88b0cb325f579ec9dd48b53fc712ace48c077792bcbe6cc04014f69a488e"
+    },
+    {
+      "path": "backend/assets/models/box_atmosphere_multipurpose_furnace_blender.blend",
+      "bytes": 196970,
+      "sha256": "2526e52d58a06ebd07fecbf1fdee9acde22ac6a24f80f8aab02e392f9ed02aa7"
+    },
+    {
+      "path": "backend/assets/models/box_atmosphere_multipurpose_furnace_blender.glb",
+      "bytes": 3128392,
+      "sha256": "70f89ab7794db86f6a035b804aa429356864709bed56960f90ae9d9a06de62eb"
+    },
+    {
+      "path": "backend/assets/models/cad_general_20261103_v1/09.13.00_回火炉.glb",
+      "bytes": 2329704,
+      "sha256": "9cf50893d1a0cc8e07e7e61612ea7a26f2008585aeb865fe3714168e461b0387"
+    },
+    {
+      "path": "backend/assets/models/cad_general_20261103_v1/10.13.00_料车.glb",
+      "bytes": 4286252,
+      "sha256": "70a09b8b0f8dd556e09115013470f7b748e149c09534ae21baedc91edb48ac9b"
+    },
+    {
+      "path": "backend/assets/models/cad_general_20261103_v1/11.14.00_升降备料台.glb",
+      "bytes": 815352,
+      "sha256": "22b11f4fd3147c8eb5bdec0300f293a700d7818d914cb98ec492d686076cef81"
+    },
+    {
+      "path": "backend/assets/models/cad_general_20261103_v1/11.22.00_固定备料台.glb",
+      "bytes": 755428,
+      "sha256": "990681d32f0ca8f1d24e7f21cc64456507ed25ecd4256647f2aa5239f39e2bc9"
+    },
+    {
+      "path": "backend/assets/models/cad_general_20261103_v1/11.58.00HT_风冷台.glb",
+      "bytes": 1833080,
+      "sha256": "6611d5c131428b20bd5c488354b22fe5dbf8ab44213e9fad1e8bdc3fd9ca8699"
+    },
+    {
+      "path": "backend/assets/models/cad_general_20261103_v1/17.07.00_清洗机.glb",
+      "bytes": 5191156,
+      "sha256": "a613313565b5c88ea6ceb59d9a258de75ed75915ea47921b46e922c46808f4ae"
+    },
+    {
+      "path": "backend/assets/models/cad_general_20261103_v1/47.10.00_水冷槽.glb",
+      "bytes": 2403564,
+      "sha256": "935bdbc3e0cdb4241aa53232d76bfb6d073a77e1d76434c2b7d5f917b39cba7f"
+    },
+    {
+      "path": "backend/assets/models/cad_general_20261103_v1/sources/09.13.00_回火炉.blend",
+      "bytes": 394653,
+      "sha256": "44bcb0813e5a4446d2f8b22b375703e8009794c8e880c08fe2597f69fed36e46"
+    },
+    {
+      "path": "backend/assets/models/cad_general_20261103_v1/sources/10.13.00_料车.blend",
+      "bytes": 759522,
+      "sha256": "d99951c1243d7939339101d87d525e5944697008ed10d24481e4c9d55948e86f"
+    },
+    {
+      "path": "backend/assets/models/cad_general_20261103_v1/sources/11.14.00_升降备料台.blend",
+      "bytes": 205937,
+      "sha256": "d0314698346b0be4ef9bbb085aad93a5e9154f2038951643fd9a6ba31fe785e5"
+    },
+    {
+      "path": "backend/assets/models/cad_general_20261103_v1/sources/11.22.00_固定备料台.blend",
+      "bytes": 188714,
+      "sha256": "f830e95e654a1892d8ce14ae1c1b5ae00a7e0b31bc8565389f4eedeba769d6c0"
+    },
+    {
+      "path": "backend/assets/models/cad_general_20261103_v1/sources/11.58.00HT_风冷台.blend",
+      "bytes": 285889,
+      "sha256": "6bb3598d8349b383065053b4ede716da5b71ea66dbcc0eec4a397a353802abe5"
+    },
+    {
+      "path": "backend/assets/models/cad_general_20261103_v1/sources/17.07.00_清洗机.blend",
+      "bytes": 736675,
+      "sha256": "eec93452a55bb54bcbe4bd233a727cf19abf22ebb489f6209537f033bb7be5bd"
+    },
+    {
+      "path": "backend/assets/models/cad_general_20261103_v1/sources/47.10.00_水冷槽.blend",
+      "bytes": 406888,
+      "sha256": "e28a7a45ac7584229047f6918af1772567d8bfad0b86cdfbba3087d8985bc5dd"
+    },
+    {
+      "path": "backend/assets/models/cad_multipurpose_furnace_600_20261103_v1/08.20.00_600普通多用炉.glb",
+      "bytes": 8680332,
+      "sha256": "fa859b50f7675f27ae939847942311b6f3a2851e3962b6db035a69100b533f68"
+    },
+    {
+      "path": "backend/assets/models/cad_multipurpose_furnace_600_20261103_v1/sources/08.20.00_600普通多用炉.blend",
+      "bytes": 1107793,
+      "sha256": "66023c4a53c238e621ccc6fcfe5ed175024d005092e498d381959e2fc9696846"
+    },
+    {
+      "path": "backend/assets/models/factory_hall_study/factory_hall_lowpoly.glb",
+      "bytes": 788980,
+      "sha256": "4f79ef3c9e1a54a273c59b24e3c5f55ccfa234e42749445a36f494453325bbcb"
+    },
+    {
+      "path": "backend/assets/models/factory_hall_study/factory_hall_study.blend",
+      "bytes": 249709,
+      "sha256": "1e26bc1c2062427efe789ca02be820e1e82e5ac4a193900e83fff86578784616"
+    },
+    {
+      "path": "backend/assets/models/photo_equipment_models.blend",
+      "bytes": 363534,
+      "sha256": "dadfffe6203f3c0f5bd31fa5e48e056406fcfbbb053913b75fa19281cc860e08"
+    },
+    {
+      "path": "backend/assets/models/photo_equipment_models_v2.blend",
+      "bytes": 552903,
+      "sha256": "1223ea0bd4764ab0b0c2eaa2421af6eac7b1a9dcbdf47aa8200ef77acfc777e1"
+    },
+    {
+      "path": "backend/assets/models/photo_equipment_models_v3.blend",
+      "bytes": 988731,
+      "sha256": "857c31b34739c0e1eb114469114fe614067254489fa660c1f62065c3e0e90230"
+    },
+    {
+      "path": "backend/assets/models/photo_equipment_models_v4.blend",
+      "bytes": 1033073,
+      "sha256": "1224cea15c5783ceb4dbaadeccecfc798dbcc19ba6e29899c81d66b3ecf855b9"
+    },
+    {
+      "path": "backend/assets/models/photo_equipment_models_v5_quality.blend",
+      "bytes": 4245079,
+      "sha256": "277cead6b3f11a854fff66aafd9f1a0565e3367479ddfa8cf59fe378716a3c6b"
+    },
+    {
+      "path": "backend/assets/models/photo_equipment_models_v6_complete.blend",
+      "bytes": 4609474,
+      "sha256": "2a3321a09cc6a32ab8e51fedece9c80d382592ec57d628749b356766f144a55d"
+    },
+    {
+      "path": "backend/assets/models/photo_equipment_models_v6_study.blend",
+      "bytes": 1989072,
+      "sha256": "4de9178b36cb325cce4a84063b6a9c69b77b71dd099dc0a9ebe547e54878c941"
+    },
+    {
+      "path": "backend/assets/models/photo_equipment_models_v7_washing_rear_fix.blend",
+      "bytes": 5503700,
+      "sha256": "66e0c12a02b9bf354570a2776eb1effd0c7634e3a00bc46383da51a7745d42b4"
+    },
+    {
+      "path": "backend/assets/models/photo_multipurpose_furnace.glb",
+      "bytes": 456104,
+      "sha256": "dec2b89ae569ab7bec016c54aa764f5e0025fab6f556a51f2759e6aabf0821ae"
+    },
+    {
+      "path": "backend/assets/models/photo_multipurpose_furnace_v2.glb",
+      "bytes": 1212560,
+      "sha256": "bac1548adfab3c57a17b3c5e3e3889fd769bcfcf4fdccbf1ef57a571a0bfb6cc"
+    },
+    {
+      "path": "backend/assets/models/photo_multipurpose_furnace_v3.glb",
+      "bytes": 2263180,
+      "sha256": "f7c1300b412699db4a177557b687d4a0251406676be9d3a2c09b8cf6f6f3f0da"
+    },
+    {
+      "path": "backend/assets/models/photo_multipurpose_furnace_v4.glb",
+      "bytes": 2006492,
+      "sha256": "c843187ecd4c545222f7c7f0ec1b87eac59c5a9f7c61255e1942ee660045d588"
+    },
+    {
+      "path": "backend/assets/models/photo_multipurpose_furnace_v5.glb",
+      "bytes": 2595756,
+      "sha256": "36f522f23c6de99524ec00710baec94b205a88dd01326b238f009040893dc87d"
+    },
+    {
+      "path": "backend/assets/models/photo_multipurpose_furnace_v6.glb",
+      "bytes": 4971248,
+      "sha256": "773c45d6f1808a495f4bcde313848051d0c088fd5970b318786083628d068976"
+    },
+    {
+      "path": "backend/assets/models/photo_multipurpose_furnace_v6_pipefix.glb",
+      "bytes": 4971248,
+      "sha256": "0de3b9aae08447079f4fbe7a0e622bbf1eb871f987cf770abce16f6a0d02c18b"
+    },
+    {
+      "path": "backend/assets/models/photo_tempering_furnace.glb",
+      "bytes": 209872,
+      "sha256": "648a59a2525cf6ffdffd33e783a37add6ab0f47e0bff682ddb6e5f3e0b73217e"
+    },
+    {
+      "path": "backend/assets/models/photo_tempering_furnace_v2.glb",
+      "bytes": 708672,
+      "sha256": "7e93ecdeed3524d8fd60076832e7fc87331243b59d25944eb7d0b17107303d54"
+    },
+    {
+      "path": "backend/assets/models/photo_tempering_furnace_v3.glb",
+      "bytes": 1466176,
+      "sha256": "0749befd898d1f4a7a797355231753dce0e779a2f4210f7f3d04611f72d3131b"
+    },
+    {
+      "path": "backend/assets/models/photo_tempering_furnace_v4.glb",
+      "bytes": 1241924,
+      "sha256": "b7d541ed0373ee3c7c5f17e2f4130f5a69d6c05e2e548bda86714121e6407f8f"
+    },
+    {
+      "path": "backend/assets/models/photo_tempering_furnace_v6.glb",
+      "bytes": 2898412,
+      "sha256": "e1305ba9816d47ec665aab1936f53afeed19fa914aacfa952f27c7bc9be40e51"
+    },
+    {
+      "path": "backend/assets/models/photo_transfer_cart.glb",
+      "bytes": 173532,
+      "sha256": "0615f5038e5ed622ecad094f6e352a136f385b1158f803a5e28b021099fae50a"
+    },
+    {
+      "path": "backend/assets/models/photo_transfer_cart_v2.glb",
+      "bytes": 583000,
+      "sha256": "5238a6e2d97fe8722e06a4a3e6bd3f254f5675ef92a54f8751340b06f689b628"
+    },
+    {
+      "path": "backend/assets/models/photo_transfer_cart_v3.glb",
+      "bytes": 1178260,
+      "sha256": "cb31d1158e3453ff640dea60fb17340d532adec299f332600ed170a16130ef33"
+    },
+    {
+      "path": "backend/assets/models/photo_transfer_cart_v4.glb",
+      "bytes": 583232,
+      "sha256": "5a9343e56cade92ff22021746473497fec6d2fc31d1247bea7a4c5b83abf7f3d"
+    },
+    {
+      "path": "backend/assets/models/photo_transfer_cart_v6.glb",
+      "bytes": 2600764,
+      "sha256": "78878f039046f13a108e427d5909e9b4f17d196c34f7e0133e897818fed15fe5"
+    },
+    {
+      "path": "backend/assets/models/photo_washing_machine.glb",
+      "bytes": 293024,
+      "sha256": "a1e77333e9ced049e6979a31e77cff5594375bb774be813a71e6c0489f19e81a"
+    },
+    {
+      "path": "backend/assets/models/photo_washing_machine_v2.glb",
+      "bytes": 1004244,
+      "sha256": "720a94e7e4ddc11312830a0cd9edb05c21dfea57810157e0af244bec7012d63b"
+    },
+    {
+      "path": "backend/assets/models/photo_washing_machine_v3.glb",
+      "bytes": 1773744,
+      "sha256": "2b72fb0fc9f6be5302f425e6cc9ec996fcd7da372999f2b0836c3588696c3947"
+    },
+    {
+      "path": "backend/assets/models/photo_washing_machine_v4.glb",
+      "bytes": 1537064,
+      "sha256": "bcce98c12ba7350363eed017361341fe4d489ad1fbe44d1e79bf897f21467577"
+    },
+    {
+      "path": "backend/assets/models/photo_washing_machine_v6.glb",
+      "bytes": 2557948,
+      "sha256": "ca219f658ee016a0e599c5a192b5174db6d1bbd68029db95fad70f16fa296012"
+    },
+    {
+      "path": "backend/assets/models/photo_washing_machine_v7.glb",
+      "bytes": 2911640,
+      "sha256": "eb41e1e127fbab3ce5e8bc9618d377688d727bb944ecb04d79493d559e2c4aff"
+    },
+    {
+      "path": "backend/assets/models/pit_furnace_references_v1/PitFurnace1/pit_furnace_1_v1.blend",
+      "bytes": 1757155,
+      "sha256": "bc97332659443ae0f119d9602d232b7033e5234448c8718502f61bd60995b452"
+    },
+    {
+      "path": "backend/assets/models/pit_furnace_references_v1/PitFurnace1/pit_furnace_1_v1.fbx",
+      "bytes": 1677084,
+      "sha256": "5ed5227f4f049668286c4413999b731e5b9100455161268c3daba8181de9e5d8"
+    },
+    {
+      "path": "backend/assets/models/pit_furnace_references_v1/PitFurnace1/pit_furnace_1_v1.glb",
+      "bytes": 3212304,
+      "sha256": "df6b375049d59b0cfa7496689a691e477e80506f12c993344a1ee4057f7aa0c5"
+    },
+    {
+      "path": "backend/assets/models/pit_furnace_references_v1/PitFurnace2/pit_furnace_2_v1.blend",
+      "bytes": 1767561,
+      "sha256": "a42f8372b887452d857b87c69304218803cb597fc9f0e38332857c693b8b7590"
+    },
+    {
+      "path": "backend/assets/models/pit_furnace_references_v1/PitFurnace2/pit_furnace_2_v1.fbx",
+      "bytes": 1506604,
+      "sha256": "062116eccee60d1a09416b66f39fa7337991d2d8e3ea5e5767f628fd81bafef7"
+    },
+    {
+      "path": "backend/assets/models/pit_furnace_references_v1/PitFurnace2/pit_furnace_2_v1.glb",
+      "bytes": 2418008,
+      "sha256": "921bcb8b04a5630178c63a6614b6c54784160f23270b7d5aa507112d24ffc835"
+    },
+    {
+      "path": "backend/assets/models/pit_furnace_references_v1/PitFurnace3/pit_furnace_3_v1.blend",
+      "bytes": 1006227,
+      "sha256": "3dbfc10f2dd6da135339261dc1567521cefbdda452be6f2026e9d55eb9daa954"
+    },
+    {
+      "path": "backend/assets/models/pit_furnace_references_v1/PitFurnace3/pit_furnace_3_v1.fbx",
+      "bytes": 877180,
+      "sha256": "1eef73e8ebdbe86b38a563cf5d15ac41c9a895e899fb75c81b06f5d164e8cc69"
+    },
+    {
+      "path": "backend/assets/models/pit_furnace_references_v1/PitFurnace3/pit_furnace_3_v1.glb",
+      "bytes": 2675028,
+      "sha256": "f1d503462d9d8d23ffc6332e5a4b02c0d56395154eaf5e4a1e284f4d24b68b4f"
+    },
+    {
+      "path": "backend/assets/models/pit_furnace_references_v1/PitFurnace4/pit_furnace_4_v1.blend",
+      "bytes": 1672240,
+      "sha256": "88925c3209df14efc1b4e2e3d3a1dd24e8f71ac577e8a1d2a1a0b5dd2046cc2e"
+    },
+    {
+      "path": "backend/assets/models/pit_furnace_references_v1/PitFurnace4/pit_furnace_4_v1.fbx",
+      "bytes": 1630828,
+      "sha256": "3e8ccd13f88e3895226477cb8a4087db2d0404968abeb311a40709d01a9983e1"
+    },
+    {
+      "path": "backend/assets/models/pit_furnace_references_v1/PitFurnace4/pit_furnace_4_v1.glb",
+      "bytes": 3403676,
+      "sha256": "ba7657e82fb2db17dc8e6c78f97936016a83b3f7f450b91ddf23328dc09335a7"
+    },
+    {
+      "path": "backend/assets/models/pit_furnace_references_v1/PitFurnace5/pit_furnace_5_v1.blend",
+      "bytes": 365658,
+      "sha256": "73dc8c2bc59c08eb6a420c881705c374f9396578239f9676aae85b92cc4f2e94"
+    },
+    {
+      "path": "backend/assets/models/pit_furnace_references_v1/PitFurnace5/pit_furnace_5_v1.fbx",
+      "bytes": 336060,
+      "sha256": "da3d6f8ce8899f94f24cb200818ab26babb541797fe2327108330a77b2166929"
+    },
+    {
+      "path": "backend/assets/models/pit_furnace_references_v1/PitFurnace5/pit_furnace_5_v1.glb",
+      "bytes": 1149876,
+      "sha256": "c0944db285d9f0c60d09b9b038e59748ac41f3c6da8e8ba864bab5042448c543"
+    },
+    {
+      "path": "backend/assets/models/pit_furnace_references_v1/pit_furnaces_1_to_5_editable.blend",
+      "bytes": 6619645,
+      "sha256": "18b14cb034f884c7d3b443ac2621d7310da82da956b87909177e5ea8243558d4"
+    },
+    {
+      "path": "backend/assets/models/pit_workshop_aux_v1/pit_cad_cooling_bay_v1.glb",
+      "bytes": 333964,
+      "sha256": "af2685ca64d44bb13a49298bad9907dc104c63f0c440dcb9f0fb2181dd4b3ce8"
+    },
+    {
+      "path": "backend/assets/models/pit_workshop_aux_v1/pit_cad_loading_tower_v1.glb",
+      "bytes": 387712,
+      "sha256": "bc957012eacfcba1b3928380c475cc63713df9bfbe8d439a3e377fde49844bc6"
+    },
+    {
+      "path": "backend/assets/models/pit_workshop_aux_v1/pit_cad_service_tank_v1.glb",
+      "bytes": 136468,
+      "sha256": "fbecbafb226eaa1d57b26597f6d5a7e07392a70d68aacb0905884733f1641828"
+    },
+    {
+      "path": "backend/assets/models/pit_workshop_aux_v1/pit_cad_stock_rack_v1.glb",
+      "bytes": 227552,
+      "sha256": "bb6239bd8b468467b10ece1d776b1a4bd93d8cca3707fc61a9faf7a2fb0589a5"
+    },
+    {
+      "path": "backend/assets/models/pit_workshop_aux_v1/pit_cad_transfer_base_v1.glb",
+      "bytes": 146924,
+      "sha256": "bb5451b6c12f655090a2fd9eda44826281302304d4801eb3dff0d70a3cc845df"
+    },
+    {
+      "path": "backend/assets/models/ultrasonic_cleaner_cad.glb",
+      "bytes": 17046004,
+      "sha256": "7c426a3fa318a6f1926c7ccfe9c0d4cd8c77f16f4f5408710e3ba184088307d6"
+    },
+    {
+      "path": "unity-client/Assets/Equipment/PitFurnaceReferences/PitFurnace1/pit_furnace_1_v1.fbx",
+      "bytes": 1677084,
+      "sha256": "5ed5227f4f049668286c4413999b731e5b9100455161268c3daba8181de9e5d8"
+    },
+    {
+      "path": "unity-client/Assets/Equipment/PitFurnaceReferences/PitFurnace2/pit_furnace_2_v1.fbx",
+      "bytes": 1506604,
+      "sha256": "062116eccee60d1a09416b66f39fa7337991d2d8e3ea5e5767f628fd81bafef7"
+    },
+    {
+      "path": "unity-client/Assets/Equipment/PitFurnaceReferences/PitFurnace3/pit_furnace_3_v1.fbx",
+      "bytes": 877180,
+      "sha256": "1eef73e8ebdbe86b38a563cf5d15ac41c9a895e899fb75c81b06f5d164e8cc69"
+    },
+    {
+      "path": "unity-client/Assets/Equipment/PitFurnaceReferences/PitFurnace4/pit_furnace_4_v1.fbx",
+      "bytes": 1630828,
+      "sha256": "3e8ccd13f88e3895226477cb8a4087db2d0404968abeb311a40709d01a9983e1"
+    },
+    {
+      "path": "unity-client/Assets/Equipment/PitFurnaceReferences/PitFurnace5/pit_furnace_5_v1.fbx",
+      "bytes": 336060,
+      "sha256": "da3d6f8ce8899f94f24cb200818ab26babb541797fe2327108330a77b2166929"
+    },
+    {
+      "path": "unity-client/Assets/StreamingAssets/Environment/factory_hall_lowpoly.glb",
+      "bytes": 788980,
+      "sha256": "4f79ef3c9e1a54a273c59b24e3c5f55ccfa234e42749445a36f494453325bbcb"
+    }
+  ]
+}

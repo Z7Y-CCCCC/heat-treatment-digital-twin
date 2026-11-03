@@ -1,0 +1,55 @@
+{
+  "version": 1,
+  "mirrors": [
+    [
+      "backend/assets/models/factory_hall_study/factory_hall_lowpoly.glb",
+      "unity-client/Assets/StreamingAssets/Environment/factory_hall_lowpoly.glb"
+    ]
+  ],
+  "uploads": [
+    {
+      "source": "backend/assets/models/box_atmosphere_multipurpose_furnace_blender.glb",
+      "target": "backend/uploads/models/1783323871223-box_atmosphere_multipurpose_furnace_blender.glb"
+    },
+    {
+      "source": "backend/assets/models/box_atmosphere_multipurpose_furnace_blender.glb",
+      "target": "backend/uploads/models/1783323955604-box_atmosphere_multipurpose_furnace_blender.glb"
+    },
+    {
+      "source": "backend/assets/models/pit_furnace_references_v1/PitFurnace1/pit_furnace_1_v1.glb",
+      "target": "backend/uploads/models/pit_furnace_1_v1-system.glb"
+    },
+    {
+      "source": "backend/assets/models/pit_furnace_references_v1/PitFurnace2/pit_furnace_2_v1.glb",
+      "target": "backend/uploads/models/pit_furnace_2_v1-system.glb"
+    },
+    {
+      "source": "backend/assets/models/pit_furnace_references_v1/PitFurnace3/pit_furnace_3_v1.glb",
+      "target": "backend/uploads/models/pit_furnace_3_v1-system.glb"
+    },
+    {
+      "source": "backend/assets/models/pit_furnace_references_v1/PitFurnace4/pit_furnace_4_v1.glb",
+      "target": "backend/uploads/models/pit_furnace_4_v1-system.glb"
+    },
+    {
+      "source": "backend/assets/models/pit_furnace_references_v1/PitFurnace5/pit_furnace_5_v1.glb",
+      "target": "backend/uploads/models/pit_furnace_5_v1-system.glb"
+    },
+    {
+      "source": "backend/assets/models/photo_multipurpose_furnace_v6.glb",
+      "target": "backend/uploads/models/1788830074049-6aa25cef89f6f22cff3b1ac3.glb"
+    },
+    {
+      "source": "backend/assets/models/photo_transfer_cart_v6.glb",
+      "target": "backend/uploads/models/1788830091156-630e8035c4d3fd07534b9487.glb"
+    },
+    {
+      "source": "backend/assets/models/photo_tempering_furnace_v6.glb",
+      "target": "backend/uploads/models/1788830099931-00f86c8910b39ed4d8380cf6.glb"
+    },
+    {
+      "source": "backend/assets/models/photo_washing_machine_v7.glb",
+      "target": "backend/uploads/models/1788830108351-27979f063948366c03ff0701.glb"
+    }
+  ]
+}

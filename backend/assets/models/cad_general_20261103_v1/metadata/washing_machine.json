@@ -1,0 +1,98 @@
+{
+  "model_id": "cad_washing_machine_v1",
+  "name": "清洗机",
+  "file": "17.07.00_清洗机.glb",
+  "source": {
+    "id": "washing_machine",
+    "source": "清洗机总图.dwg",
+    "sha256": "540E0BB8B7776239CE4020A3003CC67AC075C69B6099D099E5A33A7D2000D3C6",
+    "entities": 7972,
+    "dxf": "washing_machine.dxf"
+  },
+  "unit": "m",
+  "up_axis": "Y",
+  "floor_origin": "bottom; installation datums retained separately",
+  "reference_dimensions_mm": {
+    "base_width": 2650,
+    "body_depth": 2442,
+    "service_envelope_depth": 2900,
+    "max_height": 4107,
+    "door_width": 600,
+    "door_height": 650,
+    "installation_depth": 150
+  },
+  "notes": [
+    "选用 17.07.00 高提升版本（MAX 4107），保留双侧水箱、循环管路及驱动；不是照片 V7 外形。"
+  ],
+  "bounds_blender_m": [
+    -1.5600000619888306,
+    -1.2209999561309814,
+    0.0,
+    1.4800000190734863,
+    1.75,
+    4.10699987411499
+  ],
+  "size_gltf_m": [
+    3.040000081062317,
+    4.10699987411499,
+    2.9709999561309814
+  ],
+  "editable_meshes": 993,
+  "runtime_meshes": 74,
+  "triangles": 103238,
+  "bytes": 5191156,
+  "sha256": "a613313565b5c88ea6ceb59d9a258de75ed75915ea47921b46e922c46808f4ae",
+  "roundtrip_max_error_m": 0.0,
+  "functional_groups": [
+    "structure",
+    "tanks",
+    "housing",
+    "lining",
+    "door",
+    "door_guides",
+    "door_drive",
+    "roof_equipment",
+    "pumps",
+    "pipes",
+    "electrics",
+    "valves",
+    "process_instruments",
+    "door_carriages",
+    "door_chains",
+    "door_seals",
+    "door_safety",
+    "internal_rollers",
+    "chamber_tubes",
+    "filter_tank",
+    "filter_connections",
+    "spray_headers",
+    "belt_drive",
+    "belt_motor",
+    "valve_detail",
+    "instrumentation",
+    "heater_flanges",
+    "rear_inspection",
+    "lifting_eyes"
+  ],
+  "runtime": {
+    "enableGenericBindings": false,
+    "enableInspection": false
+  },
+  "partBindings": [],
+  "detail_features": {
+    "process_instrument": 3,
+    "chamber_return_tube": 4,
+    "tube_support_clip": 12,
+    "rear_filter_tank": 1,
+    "filter_lid_handle": 2,
+    "spray_nozzle": 10,
+    "grooved_pulley": 2,
+    "tangent_drive_belt": 2,
+    "heater_flange": 6,
+    "hex_nut": 84,
+    "internal_load_roller": 7
+  },
+  "mechanism_checks": [
+    "MAX 4107 revision without lower-revision blowers/furnace internals"
+  ]
+}

@@ -1,0 +1,68 @@
+{
+  "model_id": "cad_fixed_staging_table_v1",
+  "name": "固定备料台",
+  "file": "11.22.00_固定备料台.glb",
+  "source": {
+    "id": "fixed_staging_table",
+    "source": "11.22.00固定备料台.dwg",
+    "sha256": "2EA20A38B2457FFE953A5929C53A05235BE6E20B61EBD024C33E8E32978964F6",
+    "entities": 3456,
+    "dxf": "fixed_staging_table.dxf"
+  },
+  "unit": "m",
+  "up_axis": "Y",
+  "floor_origin": "bottom; installation datums retained separately",
+  "reference_dimensions_mm": {
+    "length": 1710,
+    "width": 700,
+    "working_level": 1250,
+    "roller_diameter": 60,
+    "roller_length": 167,
+    "axle_diameter": 20
+  },
+  "notes": [
+    "两份重复布置是同一台设备，不合并成双台。6 对滚轮，轴距 280 mm。"
+  ],
+  "bounds_blender_m": [
+    -0.8650000095367432,
+    -0.3610000014305115,
+    0.0,
+    0.9820000529289246,
+    0.3499999940395355,
+    1.3249999284744263
+  ],
+  "size_gltf_m": [
+    1.8470000624656677,
+    1.3249999284744263,
+    0.710999995470047
+  ],
+  "editable_meshes": 168,
+  "runtime_meshes": 15,
+  "triangles": 13720,
+  "bytes": 755428,
+  "sha256": "990681d32f0ca8f1d24e7f21cc64456507ed25ecd4256647f2aa5239f39e2bc9",
+  "roundtrip_max_error_m": 2.9802322387695312e-08,
+  "functional_groups": [
+    "structure",
+    "roller_bed",
+    "hydraulics",
+    "roller_details",
+    "levelling",
+    "stop_detail"
+  ],
+  "runtime": {
+    "enableGenericBindings": false,
+    "enableInspection": false
+  },
+  "partBindings": [],
+  "detail_features": {
+    "load_roller": 12,
+    "levelling_thread": 4,
+    "hex_nut": 10,
+    "roller_axle_spacer": 12,
+    "fork_stop_bracket": 1
+  },
+  "mechanism_checks": [
+    "paired roller count, diameter, length and shaft direction"
+  ]
+}
