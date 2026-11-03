@@ -23,6 +23,9 @@ namespace HeatTreatment.DigitalTwin.Rendering
         private Vector3 _targetOffset = Vector3.zero;
         private float _minimumDistance = 2.5f;
         private bool _lastPrecise;
+        private bool _manualControl;
+        private int _pointerButtons;
+        private const float ManualResponseSeconds = .09f;
 
         public Vector3 Target => _target;
         public Bounds FramedBounds => _lastBounds;
@@ -41,6 +44,7 @@ namespace HeatTreatment.DigitalTwin.Rendering
 
         public void StopAutoTransition()
         {
+            _manualControl = true;
             _desiredTarget = _target;
             _desiredYaw = _yaw;
             _desiredPitch = _pitch;
@@ -49,6 +53,7 @@ namespace HeatTreatment.DigitalTwin.Rendering
 
         public void TrackBoundsCenter(Bounds bounds)
         {
+            if (_manualControl) return;
             _desiredTarget = bounds.center + _targetOffset;
         }
 
@@ -67,8 +72,9 @@ namespace HeatTreatment.DigitalTwin.Rendering
         {
             _lastBounds = bounds;
             _lastPrecise = precise;
+            _manualControl = false;
             _desiredTarget = bounds.center + (precise ? Vector3.zero : Vector3.up * Mathf.Max(0.5f, bounds.extents.y * 0.08f)) + _targetOffset;
-            _desiredYaw = yaw;
+            _desiredYaw = OrbitCameraMotion.NearestYaw(_yaw, yaw);
             _desiredPitch = Mathf.Clamp(pitch, precise ? -89f : 6f, precise ? 89f : 82f);
             var camera = GetComponent<Camera>();
             var radius = Mathf.Max(precise ? .01f : 3f, bounds.extents.magnitude);
@@ -95,11 +101,13 @@ namespace HeatTreatment.DigitalTwin.Rendering
 
         public void NudgeYaw(float degrees)
         {
+            TakeManualControl();
             _desiredYaw += degrees;
         }
 
         public void ZoomBy(float multiplier)
         {
+            TakeManualControl();
             _desiredDistance = Mathf.Clamp(_desiredDistance * Mathf.Max(0.1f, multiplier), _minimumDistance, 1000f);
         }
 
@@ -112,14 +120,25 @@ namespace HeatTreatment.DigitalTwin.Rendering
         private void Update()
         {
             var allowPointer = InteractionEnabled && !PointerInputBlocked;
-            if (allowPointer && Input.GetMouseButton(0))
+            var held = (Input.GetMouseButton(0) ? 1 : 0) | (Input.GetMouseButton(1) ? 2 : 0) | (Input.GetMouseButton(2) ? 4 : 0);
+            var pressed = (Input.GetMouseButtonDown(0) ? 1 : 0) | (Input.GetMouseButtonDown(1) ? 2 : 0) | (Input.GetMouseButtonDown(2) ? 4 : 0);
+            if (!InteractionEnabled) _pointerButtons = 0;
+            if (pressed != 0 && (allowPointer || _pointerButtons != 0))
+            {
+                // Start from the rendered pose, never a preset still in flight.
+                if (_pointerButtons == 0) StopAutoTransition();
+                _pointerButtons |= pressed;
+            }
+            _pointerButtons &= held;
+            // Keep gesture ownership until release even when crossing a HUD.
+            if ((_pointerButtons & 1) != 0)
             {
                 _desiredYaw += Input.GetAxisRaw("Mouse X") * rotateSpeed * 14f;
                 _desiredPitch -= Input.GetAxisRaw("Mouse Y") * rotateSpeed * 14f;
                 _desiredPitch = Mathf.Clamp(_desiredPitch, _lastPrecise ? -89f : 6f, _lastPrecise ? 89f : 82f);
             }
 
-            if (allowPointer && (Input.GetMouseButton(2) || Input.GetMouseButton(1)))
+            if ((_pointerButtons & 6) != 0)
             {
                 var rotation = Quaternion.Euler(0f, _yaw, 0f);
                 var right = rotation * Vector3.right;
@@ -132,6 +151,7 @@ namespace HeatTreatment.DigitalTwin.Rendering
             var wheel = allowPointer ? Input.mouseScrollDelta.y : 0f;
             if (Mathf.Abs(wheel) > 0.001f)
             {
+                TakeManualControl();
                 _desiredDistance *= Mathf.Exp(-wheel * zoomSpeed);
                 _desiredDistance = Mathf.Clamp(_desiredDistance, _minimumDistance, 1000f);
             }
@@ -141,21 +161,45 @@ namespace HeatTreatment.DigitalTwin.Rendering
                 : Vector2.zero;
             if (keyboard.sqrMagnitude > 0.001f)
             {
+                TakeManualControl();
                 var rotation = Quaternion.Euler(0f, _yaw, 0f);
                 var move = rotation * new Vector3(keyboard.x, 0f, keyboard.y);
                 _desiredTarget += move * (keyboardPanSpeed * Time.unscaledDeltaTime);
             }
-            if (InteractionEnabled && Input.GetKey(KeyCode.Q)) _desiredTarget += Vector3.down * (keyboardPanSpeed * Time.unscaledDeltaTime);
-            if (InteractionEnabled && Input.GetKey(KeyCode.E)) _desiredTarget += Vector3.up * (keyboardPanSpeed * Time.unscaledDeltaTime);
-            if (Input.GetKeyDown(KeyCode.Home)) FocusBounds(_lastBounds, _desiredYaw, _desiredPitch, 1.08f, false, _lastPrecise);
+            if (InteractionEnabled && (Input.GetKey(KeyCode.Q) || Input.GetKey(KeyCode.E)))
+            {
+                TakeManualControl();
+                _desiredTarget += (Input.GetKey(KeyCode.Q) ? Vector3.down : Vector3.up) * (keyboardPanSpeed * Time.unscaledDeltaTime);
+            }
+            if (InteractionEnabled && Input.GetKeyDown(KeyCode.Home)) FocusBounds(_lastBounds, _desiredYaw, _desiredPitch, 1.08f, false, _lastPrecise);
         }
 
         private void LateUpdate()
         {
-            var response = _transitionSeconds <= 0.001f ? 1000f : 4.6f / _transitionSeconds;
-            var blend = 1f - Mathf.Exp(-response * Time.unscaledDeltaTime);
+            AdvanceMotion(Time.unscaledDeltaTime);
+        }
+
+        private void TakeManualControl()
+        {
+            if (!_manualControl) StopAutoTransition();
+        }
+
+        private void OnApplicationFocus(bool focused)
+        {
+            if (focused) return;
+            if (_pointerButtons != 0) StopAutoTransition();
+            _pointerButtons = 0;
+        }
+
+        private void OnDisable() { _pointerButtons = 0; }
+
+        private void AdvanceMotion(float deltaSeconds)
+        {
+            var seconds = _manualControl ? ManualResponseSeconds : _transitionSeconds;
+            var response = seconds <= 0.001f ? 1000f : 4.6f / seconds;
+            var blend = 1f - Mathf.Exp(-response * Mathf.Max(0f, deltaSeconds));
             _target = Vector3.Lerp(_target, _desiredTarget, blend);
-            _yaw = Mathf.LerpAngle(_yaw, _desiredYaw, blend);
+            OrbitCameraMotion.StepYaw(ref _yaw, ref _desiredYaw, blend, _manualControl ? 90f : float.PositiveInfinity);
             _pitch = Mathf.Lerp(_pitch, _desiredPitch, blend);
             _distance = Mathf.Lerp(_distance, _desiredDistance, blend);
             ApplyTransform();
