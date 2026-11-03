@@ -28,6 +28,17 @@ test('collects only verified files with portable metadata and regenerated checks
   assert.equal(JSON.parse(fs.readFileSync(path.join(out, 'release-manifest.json'))).installer, 'test.exe');
   assert.equal(verifyRelease(out, '').installer, 'test.exe');
 });
+test('split release publishes independent collector bytes and checksums, rejects corruption and missing plugin', t => {
+  const f = fixture(t), file = 'HeatTreatmentCollector-Plugin-2.3.1-x64.zip', data = Buffer.from('independent plugin fixture');
+  fs.writeFileSync(path.join(f.directory, file), data);
+  f.manifest.collectorBundled = false;
+  f.manifest.collectorPlugin = { file, size:data.length, sha256:crypto.createHash('sha256').update(data).digest('hex'), smokeTest:'passed' }; f.save();
+  const out=collectRelease(f.root); assert.equal(fs.readdirSync(out).length,6);
+  assert.doesNotThrow(() => portableRelease(out,''));
+  fs.appendFileSync(path.join(out,file),'tampered'); assert.throws(() => verifyRelease(out,''),/plugin.*mismatch/i);
+  const missing=fixture(t);missing.manifest.collectorBundled=false;missing.save();
+  assert.throws(() => collectRelease(missing.root),/Missing optional/);
+});
 
 test('download verification rejects wrong commit, extra files and changed checksum or installer', t => {
   const f = fixture(t); const out = collectRelease(f.root);

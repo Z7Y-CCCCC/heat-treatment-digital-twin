@@ -329,7 +329,7 @@ export function useSystemSettings({
 
     async function loadSettings() {
         const s = await adminApi.getSettings()
-        if (s.data_mode !== 'simulation') s.data_mode = 'integrated_plc'
+        if (!['simulation','external','integrated_plc'].includes(s.data_mode)) s.data_mode = 'integrated_plc'
         const normalizedEnvironment = normalizeNativeEnvironmentConfig(s.native_environment_config)
         for (const key of Object.keys(nativeEnvironmentConfig)) delete nativeEnvironmentConfig[key]
         Object.assign(nativeEnvironmentConfig, normalizedEnvironment)
@@ -1118,6 +1118,7 @@ export function useSystemSettings({
 
     function formatEngineMode(mode) {
         const labels = {
+            external: '外部接口',
             integrated_plc: '独立进程低延迟采集',
             simulation: '模拟模式'
         }
@@ -1125,7 +1126,7 @@ export function useSystemSettings({
     }
 
     function formatCollectorProcessStatus(status) {
-        return ({ idle: '未启动', starting: '启动中', running: '运行中', recovering: '自动恢复中',
+        return ({ not_installed: '插件未安装', idle: '未启动', starting: '启动中', running: '运行中', recovering: '自动恢复中',
             unresponsive: '无响应', stopping: '停止中', stopped: '已停止' })[status] || '未知'
     }
 

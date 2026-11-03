@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { fileDigest } = require('../../desktop/scripts/file-digest.cjs');
 
 function collectRelease(root, sourceDirectory) {
   const releases = path.join(root, '安装包');
@@ -29,6 +30,15 @@ function collectRelease(root, sourceDirectory) {
   fs.writeFileSync(path.join(output, `${name}.sha256.txt`), `${sha256}  ${name}\n`);
   // Strip machine-specific paths from downloadable metadata.
   const { installer: _installer, buildLog: _log, ...portable } = manifest;
+  if (manifest.collectorBundled === false && !manifest.collectorPlugin) throw new Error('Missing optional collector plugin');
+  if (manifest.collectorPlugin) {
+    const plugin = manifest.collectorPlugin;
+    if (manifest.collectorBundled !== false || typeof plugin.file !== 'string' || plugin.file !== `HeatTreatmentCollector-Plugin-${manifest.version}-x64.zip` || plugin.smokeTest !== 'passed') throw new Error('Invalid optional collector plugin');
+    const data = fileDigest(path.join(directory, plugin.file));
+    if (!data.size || data.size !== plugin.size || data.sha256 !== plugin.sha256) throw new Error('Collector plugin size or SHA-256 mismatch');
+    fs.copyFileSync(path.join(directory, plugin.file), path.join(output, plugin.file));
+    fs.writeFileSync(path.join(output, `${plugin.file}.sha256.txt`), `${plugin.sha256}  ${plugin.file}\n`);
+  }
   fs.writeFileSync(path.join(output, 'release-manifest.json'), JSON.stringify({ ...portable, installer: name, commit: process.env.GITHUB_SHA || '', run: process.env.GITHUB_RUN_ID || '' }, null, 2));
   fs.copyFileSync(path.join(directory, 'build-timings.json'), path.join(output, 'build-timings.json'));
   return output;

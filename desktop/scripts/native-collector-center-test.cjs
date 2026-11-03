@@ -17,7 +17,8 @@ assert.equal(result.status, 0, JSON.stringify(data)); assert.equal(data.success,
 const launcher = fs.readFileSync(path.join(project, '采集运行中心.cmd'), 'utf8');
 assert.match(launcher, /HeatTreatmentCollectorCenter\.exe/); assert.doesNotMatch(launcher, /electron|node\.exe/i);
 const pkg = require('../package.json');
-assert.ok(pkg.build.extraResources.some(r => r.to === 'collector-center'));
+assert.ok(!pkg.build.extraResources.some(r => r.to === 'collector-center'));
+assert.match(fs.readFileSync(path.join(__dirname, 'prepare-collector-plugin.cjs'), 'utf8'), /collector-center/);
 const shortcuts = fs.readFileSync(path.join(project, 'desktop', 'service-installer.nsh'), 'utf8');
 assert.match(shortcuts, /采集运行中心\.lnk.*resources\\collector-center\\HeatTreatmentCollectorCenter\.exe/);
 assert.ok(fs.statSync(executable).size < 512 * 1024, 'native center must remain under 512 KiB, no bundled browser/runtime');

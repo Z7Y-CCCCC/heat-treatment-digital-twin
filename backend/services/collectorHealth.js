@@ -25,7 +25,7 @@ function collectorHealth(engine = {}, factories = {}, { now = Date.now(), databa
         const counts = { normal: 0, abnormal: 0, pending: 0, disabled: 0 };
         devices.forEach(d => counts[d.state]++);
         const active = devices.length - counts.disabled;
-        let state = status.status === 'stopped' ? 'paused' : mode === 'simulation' ? 'simulation'
+        let state = mode === 'external' ? 'external' : status.status === 'stopped' ? 'paused' : mode === 'simulation' ? 'simulation'
             : !active ? 'idle' : counts.abnormal ? 'degraded' : counts.pending ? 'starting' : 'healthy';
         if (['error','offline','unresponsive'].includes(status.status) || source.eventStorageStatus?.status === 'error') state = 'degraded';
         if (mode === 'simulation' && (age(status.lastFrameAt) === null || age(status.lastFrameAt) > 15000)) state = 'starting';
@@ -36,6 +36,10 @@ function collectorHealth(engine = {}, factories = {}, { now = Date.now(), databa
     const counts = summaries.reduce((sum, f) => { for (const k of Object.keys(sum)) sum[k] += f.counts[k]; return sum; }, { normal: 0, abnormal: 0, pending: 0, disabled: 0 });
     let state = 'healthy', label = '采集正常', reason = '';
     if (!databaseReady) { state = 'degraded'; label = '数据库异常'; reason = '配置或历史存储不可用'; }
+    else if (engine.plugin?.installed === false) {
+        state = summaries.some(f => f.mode === 'simulation') ? 'simulation' : 'not_installed';
+        label = state === 'simulation' ? '模拟演示运行中' : '外部接口模式';
+    }
     else if (!processRunning) {
         state = ['starting', 'recovering'].includes(proc.status) ? 'starting' : proc.status === 'stopped' ? 'stopped' : 'offline';
         label = { starting: '采集进程恢复中', stopped: '采集已停止', offline: '采集进程未连接' }[state];
@@ -44,6 +48,7 @@ function collectorHealth(engine = {}, factories = {}, { now = Date.now(), databa
         state = 'degraded'; label = counts.normal ? '部分采集异常' : '采集异常'; reason = counts.abnormal ? `${counts.abnormal} 台设备异常${counts.normal ? '，其余设备继续采集' : ''}` : '采集任务或历史存储异常';
     } else if (Number(proc.eventLoopLagMs) > 250) { state = 'degraded'; label = '采集调度延迟'; }
     else if (summaries.every(f => f.state === 'paused')) { state = 'paused'; label = '工厂采集已暂停'; }
+    else if (summaries.every(f => ['paused', 'idle', 'external'].includes(f.state)) && summaries.some(f => f.state === 'external')) { state = 'external'; label = '外部接口模式'; }
     else if (summaries.every(f => ['paused', 'idle'].includes(f.state))) { state = 'idle'; label = '等待设备配置'; }
     else if (summaries.some(f => f.state === 'starting')) { state = 'starting'; label = '正在连接设备'; }
     else if (summaries.some(f => f.mode === 'simulation')) { state = 'simulation'; label = '模拟演示运行中'; }

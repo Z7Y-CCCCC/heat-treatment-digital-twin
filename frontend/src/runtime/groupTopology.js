@@ -27,6 +27,7 @@ export function currentFactorySite(config={}) {
 export function factoryDataModePresentation(config={}) {
   const mode=String(config.settings?.data_mode || '').trim().toLowerCase()
   if(mode==='simulation')return {kind:'simulation',label:'模拟数据',detail:'由模拟引擎生成 · 非 PLC 实采'}
+  if(mode==='external')return {kind:'external',label:'外部接口',detail:'按组件绑定的数据源读取'}
   if(mode==='integrated_plc')return {kind:'plc',label:'PLC 采集配置',detail:'连接状态以实时采集通路为准'}
   return {kind:'unknown',label:'数据模式未确认',detail:'设备数量仅代表配置，不代表在线'}
 }

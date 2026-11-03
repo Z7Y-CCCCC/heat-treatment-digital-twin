@@ -583,7 +583,8 @@ app.get('/api/health', (req, res) => {
     const collectorAgeMs = collector.lastFrameAt ? Math.max(0, Date.now() - Number(collector.lastFrameAt)) : null;
     const dataFresh = collectorAgeMs !== null && collectorAgeMs <= 15000;
     const databaseReady = dbStatus.connected === true;
-    const engineReady = !!engineStatus?.mode && ['connected', 'simulating'].includes(String(collector.status || '').toLowerCase());
+    const externalOnly = engineStatus?.mode === 'external';
+    const engineReady = externalOnly || !!engineStatus?.mode && ['connected', 'simulating'].includes(String(collector.status || '').toLowerCase());
     const nativeSceneReady = unityClients > 0;
     const licenseReady = !license.enforce || license.valid;
     const recoveryIntent = siteRecoveryStatus();
@@ -593,7 +594,7 @@ app.get('/api/health', (req, res) => {
     const readinessFailures = [];
     if (!databaseReady) readinessFailures.push('database');
     if (!engineReady) readinessFailures.push('data_engine');
-    if (!dataFresh) readinessFailures.push('data_freshness');
+    if (!externalOnly && !dataFresh) readinessFailures.push('data_freshness');
     if (!nativeSceneReady) readinessFailures.push('unity');
     if (!licenseReady) readinessFailures.push('license');
     if (alarmStorageFailures.length) readinessFailures.push('event_storage');
@@ -914,8 +915,7 @@ async function startServer() {
     castController.discovery = castDiscovery;
     castController.screenCast = screenCast;
 
-    const CollectorProcess = require('./services/collectorProcess');
-    const dataEngine = new CollectorProcess(wsServer);
+    const dataEngine = require('./services/runtimeEngine').createRuntimeEngine(wsServer);
     global.dataEngine = dataEngine;
 
     let shuttingDown = false;

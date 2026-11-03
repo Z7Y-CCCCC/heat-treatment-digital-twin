@@ -1,5 +1,6 @@
 export function summarizeDeviceConnections(engineStatus = {}, devices = []) {
     const plcStatus = engineStatus.plcStatus || {}
+    if (engineStatus.mode === 'external') return { total: 0, online: 0, tone: 'is-unknown', label: '外部接口', detail: '按组件配置读取数据' }
     if (String(engineStatus.mode || '').toLowerCase() === 'simulation') {
         const status = plcStatus.status || engineStatus.collectorStatus?.status || 'unknown'
         const running = ['simulating', 'connected'].includes(status)

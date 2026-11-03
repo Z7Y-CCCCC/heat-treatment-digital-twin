@@ -4,9 +4,17 @@ import fs from 'node:fs'
 import { createRequire } from 'node:module'
 import { adminSubpages } from '../../shared/adminPages.mjs'
 import { apiPermission } from '../../shared/apiPermissions.mjs'
+import { summarizeDeviceConnections } from '../src/views/admin/utils/connectionStatus.js'
 const require = createRequire(import.meta.url)
 const { allowsRequirement, normalizePagePermissions } = require('../../shared/pagePermissions.cjs')
 const source = path => fs.readFileSync(new URL(path, import.meta.url), 'utf8')
+test('external-interface mode is not shown as a failed PLC or silently remapped to PLC in settings', () => {
+  const status = summarizeDeviceConnections({mode:'external'},[{plc_enabled:1}])
+  assert.equal(status.label,'外部接口'); assert.equal(status.total,0); assert.equal(status.tone,'is-unknown')
+  assert.match(source('../src/views/admin/composables/useSystemSettings.js'), /\['simulation','external','integrated_plc'\]/)
+  const component=source('../src/views/admin/components/CollectorRuntimePanel.vue')
+  assert.match(component, /pluginInstalled===false/); assert.match(component, /changeSource\('external'\)/)
+})
 
 test('collector health is a registered settings page; read does not grant mode writes', () => {
   const page = adminSubpages('settings').find(p => p.key === 'data')

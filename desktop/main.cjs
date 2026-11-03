@@ -1268,7 +1268,7 @@ async function startBackend(port, writable) {
                 : (process.env.LICENSE_PUBLIC_KEY_FILE ?? path.join(writable.dataDir, 'license-public-key.pem')),
             LICENSE_MACHINE_ID: app.isPackaged ? '' : (process.env.LICENSE_MACHINE_ID ?? ''),
             LICENSE_MACHINE_STATE_FILE: app.isPackaged
-                ? path.join(process.env.PROGRAMDATA || app.getPath('appData'), 'HeatTreatmentDigitalTwin', 'machine-identity.json')
+                ? require('./deployment.cjs').desktopMachineIdentityFile(app.getPath('userData'))
                 : (process.env.LICENSE_MACHINE_STATE_FILE ?? ''),
             DESKTOP_AUTO_START_SUPPORTED: app.isPackaged && process.platform === 'win32' && process.env.DISABLE_AUTO_START !== 'true' ? 'true' : 'false',
             SQLITE_RECOVERY_TEMPLATE: process.env.SQLITE_RECOVERY_TEMPLATE ?? resourcePath('templates', 'factory-template.db'),
@@ -1426,9 +1426,19 @@ function createTray() {
 }
 
 async function showCollectorCenter() {
-    const executable = app.isPackaged ? resourcePath('collector-center', 'HeatTreatmentCollectorCenter.exe')
+    let executable = app.isPackaged ? resourcePath('collector-center', 'HeatTreatmentCollectorCenter.exe')
         : path.join(__dirname, '.cache', 'collector-center', 'HeatTreatmentCollectorCenter.exe');
-    if (!fs.existsSync(executable)) throw new Error('缺少原生采集运行中心，请重新构建或安装完整版本');
+    if (app.isPackaged) {
+        const machine = path.join(process.env.ProgramData || 'C:\\ProgramData', 'HeatTreatmentDigitalTwin', 'collector-service.json');
+        if (fs.existsSync(machine)) {
+            const config = JSON.parse(fs.readFileSync(machine, 'utf8').replace(/^\uFEFF/, ''));
+            executable = path.join(config.resourcesRoot, 'collector-center', 'HeatTreatmentCollectorCenter.exe');
+        }
+    }
+    if (!fs.existsSync(executable)) {
+        await dialog.showMessageBox({ type: 'info', title: '数据采集', message: '请先安装独立数据采集插件', buttons: ['确定'] });
+        return;
+    }
     await new Promise((resolve, reject) => {
         // Independent native process; do not supervise it as a display child.
         const child = spawn(executable, [], { windowsHide: false, stdio: 'ignore', detached: true });
@@ -1447,7 +1457,7 @@ async function showDeploymentWindow() {
             assertSender(event);
             try {
                 const config = resolveDeployment(app.getPath('userData'), { packaged: app.isPackaged });
-                return { config: config.mode === 'client' ? config : { mode: 'client', backendOrigin: 'http://127.0.0.1:3001' } };
+                return { config };
             }
             catch (error) { return { config: { mode: 'client', backendOrigin: 'http://127.0.0.1:3001' }, error: error.message }; }
         });
@@ -1574,7 +1584,7 @@ async function launchApplication() {
     try { deployment = resolveDeployment(app.getPath('userData'), { packaged: app.isPackaged }); }
     catch (error) {
         if (!app.isPackaged) throw error;
-        await showCollectorCenter(); app.quit(); return;
+        await showDeploymentWindow(); return;
     }
     // Temporary runtime request, not a permanent modification of power plans.
     if (!backendOnlySmokeMode && powerSaveBlocker)

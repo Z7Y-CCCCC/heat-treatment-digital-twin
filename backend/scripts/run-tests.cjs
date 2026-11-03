@@ -7,7 +7,7 @@ const { BACKEND_DIR, createRunDirectory } = require('./integration-test-utils.cj
 
 const scripts = [
     'endurance-continuity.test.cjs', 'endurance-memory.test.cjs', 'endurance-mysql-memory.test.cjs', 'endurance-mysql-cleanup.test.cjs', 'endurance-report-io.test.cjs',
-    'test-isolation-test.cjs', 'collector-process-test.cjs', 'collector-process-integration-test.cjs', 'database-readiness-test.cjs', 'bounded-process-log-test.cjs', 'history-retention-test.cjs', 'map-surface-schema-test.cjs',
+    'test-isolation-test.cjs', 'display-only-runtime-test.cjs', 'collector-process-test.cjs', 'collector-process-integration-test.cjs', 'database-readiness-test.cjs', 'bounded-process-log-test.cjs', 'history-retention-test.cjs', 'map-surface-schema-test.cjs',
     'group-portal-settings-test.cjs', 'appearance-assets-test.cjs',
     'admin-auth-test.cjs', 'admin-session-persistence-test.cjs', 'admin-login-history-test.cjs', 'page-permissions-test.cjs', 'page-permissions-integration-test.cjs', 'license-test.cjs', 'offline-activation-test.cjs', 'release-package-test.cjs', 'package-resource-isolation-test.cjs',
     'math-expression-test.cjs', 'business-data-test.cjs', 'data-source-test.cjs', 'data-set-test.cjs',

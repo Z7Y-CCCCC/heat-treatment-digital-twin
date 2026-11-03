@@ -27,7 +27,7 @@ async function refresh() {
 async function changeSource(mode) {
   if (busy.value || !data.value || mode === source.value || !canAdminPage('settings.data', 'edit')) return
   const scope = getFactoryScope()
-  if (!await props.confirm(mode === 'simulation' ? '切换为模拟演示？当前工厂将暂停读取 PLC。' : '切换为现场采集？将按后台已保存的设备与点位配置读取。')) return
+  if (!await props.confirm(mode === 'simulation' ? '切换为模拟演示？当前工厂将暂停读取 PLC。' : mode === 'external' ? '切换为外部接口？当前工厂将暂停读取 PLC。' : '切换为现场采集？将按后台已保存的设备与点位配置读取。')) return
   if (scope !== getFactoryScope() || !data.value) return
   busy.value = true; actionError.value = ''; message.value = ''
   try {
@@ -46,8 +46,8 @@ onUnmounted(() => { disposed = true; generation++; abort?.abort(); clearInterval
 </script>
 <template>
   <section class="collector-runtime" aria-label="采集进程健康状态" :data-state="error ? 'offline' : data?.state">
-    <header><div class="runtime-heading"><span class="health-dot"></span><div><h3>{{ error ? '采集状态未连接' : data?.label || '正在检测采集进程…' }}</h3><p>{{ error || data?.reason || (data?.processRunning ? '已连接独立采集进程' : '自动检测后台采集状态') }}</p></div></div>
-      <nav aria-label="采集数据来源"><button :aria-pressed="source==='integrated_plc'" :disabled="busy||!data||!!error||!canAdminPage('settings.data','edit')" @click="changeSource('integrated_plc')">现场采集</button><button :aria-pressed="source==='simulation'" :disabled="busy||!data||!!error||!canAdminPage('settings.data','edit')" @click="changeSource('simulation')">模拟演示</button></nav>
+    <header><div class="runtime-heading"><span class="health-dot"></span><div><h3>{{ error ? '采集状态未连接' : data?.label || '正在检测采集进程…' }}</h3><p>{{ error || data?.reason || (data?.pluginInstalled===false ? '采集插件未安装' : data?.processRunning ? '已连接独立采集进程' : '自动检测后台采集状态') }}</p></div></div>
+      <nav aria-label="采集数据来源"><button :aria-pressed="source==='external'" :disabled="busy||!data||!!error||!canAdminPage('settings.data','edit')" @click="changeSource('external')">外部接口</button><button :aria-pressed="source==='integrated_plc'" :disabled="busy||!data||!!error||data?.pluginInstalled===false||!canAdminPage('settings.data','edit')" @click="changeSource('integrated_plc')">现场采集</button><button :aria-pressed="source==='simulation'" :disabled="busy||!data||!!error||!canAdminPage('settings.data','edit')" @click="changeSource('simulation')">模拟演示</button></nav>
     </header>
     <div class="runtime-metrics"><div><small>正常设备</small><strong>{{error?'—':data?.counts.normal??'—'}}</strong></div><div><small>异常设备</small><strong :class="{warn:!error&&data?.counts.abnormal}">{{error?'—':data?.counts.abnormal??'—'}}</strong></div><div><small>帧传递耗时</small><strong>{{error?'—':milliseconds(data?.process.telemetryDelayMs)}}</strong></div><div><small>最近采样</small><strong>{{error?'—':time(data?.lastSampleAt)}}</strong></div></div>
     <footer><span>心跳 {{error?'—':milliseconds(data?.process.heartbeatAgeMs)}}<template v-if="data?.process.pid"> · PID {{data.process.pid}}</template><template v-if="data?.process.memoryRssBytes"> · {{Math.round(data.process.memoryRssBytes/1048576)}} MB</template><template v-if="data?.process.restartCount"> · 自动恢复 {{data.process.restartCount}} 次</template></span><button :aria-expanded="detail" @click="detail=!detail">{{detail?'收起设备状态':'设备状态'}}</button></footer>

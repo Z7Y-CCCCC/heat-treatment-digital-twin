@@ -188,7 +188,7 @@ jobs:
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             test "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = true
           else
-            gh release create "$RELEASE_TAG" --verify-tag --draft --title "$RELEASE_TAG · Windows x64" --notes "Windows x64 安装包。基于提交 $BUILD_COMMIT 自动构建，包含初始配置，不含现场账号、数据库或 PLC 凭据。自动回归及隔离首次启动、重启检查已通过。下载 exe 安装，sha256.txt 用于完整性校验。"
+            gh release create "$RELEASE_TAG" --verify-tag --draft --title "$RELEASE_TAG · Windows x64" --notes "Windows x64：Setup.exe 为实时大屏和后台管理，不含 PLC 采集服务；仅接外部接口无需安装插件。需要自采时，另下载 Collector-Plugin.zip 并运行其中的安装采集插件.cmd。基于提交 $BUILD_COMMIT 自动构建，不含现场账号或 PLC 凭据。sha256.txt 用于完整性校验。"
           fi
           gh release upload "$RELEASE_TAG" "$RUNNER_TEMP/verified-release/"* --clobber
           gh release view "$RELEASE_TAG" --json assets > uploaded-assets.json

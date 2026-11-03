@@ -2,10 +2,12 @@
 const router = require('express').Router();
 const { getDb, getDbStatus } = require('../db/database');
 const { collectorHealth } = require('../services/collectorHealth');
+const { collectorAvailable } = require('../services/runtimeEngine');
 async function configuredMode(db, factoryId) {
     const local = await db.get('SELECT value FROM factory_settings WHERE factory_id=? AND `key`=?', [factoryId, 'data_mode']);
     const value = local?.value ?? (await db.get('SELECT value FROM settings WHERE `key`=?', ['data_mode']))?.value;
-    return ['simulation', 'integrated_plc'].includes(value) ? value : 'simulation';
+    if (!collectorAvailable() && value !== 'simulation') return 'external';
+    return ['simulation', 'integrated_plc', 'external'].includes(value) ? value : 'simulation';
 }
 router.get('/status', async (req, res) => {
     try {
@@ -13,14 +15,15 @@ router.get('/status', async (req, res) => {
         const factory = global.dataEngine?.getFactoryStatuses?.()?.[req.factoryId] || {};
         const health = collectorHealth(engine, { [req.factoryId]: factory }, { databaseReady: getDbStatus().connected === true });
         res.setHeader('Cache-Control', 'no-store');
-        res.json({ ...health, factoryId: req.factoryId, configuredMode: await configuredMode(await getDb(), req.factoryId) });
+        res.json({ ...health, pluginInstalled: collectorAvailable(), factoryId: req.factoryId, configuredMode: await configuredMode(await getDb(), req.factoryId) });
     } catch (error) { res.status(503).json({ error: '采集状态暂不可用' }); }
 });
 router.put('/mode', async (req, res) => {
     try {
         const body = req.body;
-        if (!body || Object.keys(body).some(k => !['mode', 'expectedMode'].includes(k)) || !['simulation', 'integrated_plc'].includes(body.mode) || !['simulation', 'integrated_plc'].includes(body.expectedMode))
+        if (!body || Object.keys(body).some(k => !['mode', 'expectedMode'].includes(k)) || !['simulation', 'integrated_plc', 'external'].includes(body.mode) || !['simulation', 'integrated_plc', 'external'].includes(body.expectedMode))
             return res.status(400).json({ error: '数据来源无效' });
+        if (body.mode === 'integrated_plc' && !collectorAvailable()) return res.status(409).json({ error: '请先安装采集插件' });
         const db = await getDb();
         let changed = false;
         await db.transaction(async tx => {

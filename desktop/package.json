@@ -1,6 +1,6 @@
 {
   "name": "heat-treatment-digital-twin-desktop",
-  "version": "2.3.1",
+  "version": "2.3.2",
   "description": "热处理数字孪生大屏 Windows 桌面部署版",
   "main": "main.cjs",
   "author": "Digital Twin Team",
@@ -20,7 +20,7 @@
     "build:collector-service": "node scripts/build-collector-service.cjs",
     "test:logs": "node scripts/log-manager-test.cjs",
     "test:processes": "node --test scripts/process-lifecycle-test.cjs scripts/desktop-supervisor-unit-test.cjs scripts/activation-client-test.cjs",
-    "test:resources": "node --test scripts/resource-preparation-test.cjs scripts/runtime-cache-test.cjs scripts/dependency-cache-test.cjs scripts/directory-publish-test.cjs scripts/native-client-path-test.cjs",
+    "test:resources": "node --test scripts/resource-preparation-test.cjs scripts/runtime-cache-test.cjs scripts/dependency-cache-test.cjs scripts/directory-publish-test.cjs scripts/native-client-path-test.cjs scripts/optional-collector-test.cjs",
     "test:deployment": "node --test scripts/deployment-test.cjs scripts/desktop-supervisor-unit-test.cjs",
     "build:collector-center": "node scripts/build-collector-center.cjs",
     "test:collector-center": "node scripts/native-collector-center-test.cjs && node scripts/native-point-client-test.cjs && node --test scripts/service-installer-test.cjs",
@@ -57,18 +57,28 @@
       "assets/**/*"
     ],
     "extraResources": [
-      { "from": "resources/licensing", "to": "licensing", "filter": ["license-public-key.pem"] },
-      { "from": ".cache/collector-center", "to": "collector-center", "filter": ["**/*"] },
-      { "from": ".cache/collector-service", "to": "collector-service", "filter": ["**/*"] },
+      {
+        "from": "resources/licensing",
+        "to": "licensing",
+        "filter": [
+          "license-public-key.pem"
+        ]
+      },
       {
         "from": "resources/mysql",
         "to": "mysql",
-        "filter": ["**/*"]
+        "filter": [
+          "**/*"
+        ]
       },
       {
         "from": "../shared",
         "to": "shared",
-        "filter": ["*.cjs", "*.mjs", "motionPackages.json"]
+        "filter": [
+          "*.cjs",
+          "*.mjs",
+          "motionPackages.json"
+        ]
       },
       {
         "from": ".cache/frontend-dist",
@@ -88,7 +98,12 @@
           "!scripts/**/*",
           "!assets/models/*.blend",
           "!assets/models/*.blend1",
-          "!*.log"
+          "!*.log",
+          "!services/collectorProcess.js",
+          "!services/collectorWorker.cjs",
+          "!services/plcReader.js",
+          "!services/plcProtocolDrivers.js",
+          "!services/s7ReadSafety.js"
         ]
       },
       {
@@ -130,14 +145,21 @@
       {
         "from": "THIRD_PARTY_NOTICES.txt",
         "to": "THIRD_PARTY_NOTICES.txt"
+      },
+      {
+        "from": "assets/display-distribution.json",
+        "to": "backend/distribution.json"
       }
     ],
     "extraFiles": [
-      { "from": "部署与连接.cmd", "to": "部署与连接.cmd" },
-      { "from": "采集运行中心.cmd", "to": "采集运行中心.cmd" },
-      { "from": "collector-operations.ps1", "to": "collector-operations.ps1" },
-      { "from": "安装采集服务.ps1", "to": "安装采集服务.ps1" },
-      { "from": "现场部署选项.ps1", "to": "现场部署选项.ps1" }
+      {
+        "from": "部署与连接.cmd",
+        "to": "部署与连接.cmd"
+      },
+      {
+        "from": "现场部署选项.ps1",
+        "to": "现场部署选项.ps1"
+      }
     ],
     "win": {
       "target": [
@@ -153,7 +175,7 @@
     },
     "nsis": {
       "perMachine": true,
-      "include": "service-installer.nsh",
+      "include": "display-installer.nsh",
       "oneClick": false,
       "differentialPackage": false,
       "useZip": true,

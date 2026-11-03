@@ -8,6 +8,8 @@ function summarizeFactoryCollection(factory, devices, runtime, processStatus, no
     const targets = mode === 'simulation' ? devices : devices.filter(device => Number(device.plc_enabled) !== 0);
     const result = { factoryId: String(factory.id), collectionEnabled: enabled, mode, status: 'starting',
         totalDevices: targets.length, normalDevices: 0, abnormalDevices: 0, pendingDevices: 0, lastReadAt: null };
+    if (mode === 'external') { result.status = 'external'; result.totalDevices = 0; return result; }
+    if (mode === 'simulation' && processStatus === 'not_installed') processStatus = 'running';
     const states = new Map((runtime?.plcStatus?.devices || []).map(device => [String(device.deviceId || device.id), device]));
     result.lastReadAt = mode === 'simulation' ? timestamp(runtime?.collectorStatus?.lastFrameAt) : maxTime([...states.values()].map(device => device.lastReadAt));
     if (!enabled) { result.status = 'disabled'; return result; }

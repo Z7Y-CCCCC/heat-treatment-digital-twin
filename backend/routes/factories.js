@@ -83,7 +83,7 @@ router.get('/collection-status', async (req, res) => {
         for (const device of devices) { const id = String(device.factory_id); if (!grouped.has(id)) grouped.set(id, []); grouped.get(id).push(device); }
         const statuses = global.dataEngine?.getFactoryStatuses?.() || {}, processStatus = global.dataEngine?.getStatus?.().process?.status;
         const now = Date.now();
-        res.json({ success: true, timestamp: now, factories: factories.map(factory => summarizeFactoryCollection(factory, grouped.get(String(factory.id)) || [], statuses[factory.id], processStatus, now)) });
+        res.json({ success: true, pluginInstalled: global.dataEngine?.getStatus?.().plugin?.installed !== false, timestamp: now, factories: factories.map(factory => summarizeFactoryCollection(factory, grouped.get(String(factory.id)) || [], statuses[factory.id], processStatus, now)) });
     } catch (error) { res.status(500).json({ success: false, error: error.message }); }
 });
 
