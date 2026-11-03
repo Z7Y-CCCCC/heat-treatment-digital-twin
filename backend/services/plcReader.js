@@ -98,6 +98,33 @@ class PlcReader {
         await this.start(onData || this.onData, onStatusChange || this.onStatusChange);
     }
 
+    async reloadConfiguration() {
+        if (this.stopped) return;
+        const version = this.runVersion;
+        const next = new PlcReader(this.options);
+        next.stopped = false;
+        await next._loadDataPoints(); // metadata only: never connect a second reader
+        if (this.stopped || version !== this.runVersion) return;
+        const signature = task => JSON.stringify({ endpoint:task.endpoint, interval:task.interval, points:task.points, devices:task.devices });
+        const changed = new Set(), start = [];
+        for (const [id, old] of this.tasks) {
+            const desired = next.tasks.get(id);
+            if (desired && signature(old) === signature(desired)) next.tasks.set(id, old);
+            else {
+                Object.keys(old.devices).forEach(deviceId => changed.add(deviceId));
+                old.connectionGeneration++; this._clearTaskTimers(old); this._dropTaskConnection(old);
+                this._emitBadSnapshotsForTask(old);
+            }
+        }
+        for (const [id, task] of next.tasks) if (task !== this.tasks.get(id)) {
+            Object.keys(task.devices).forEach(deviceId => changed.add(deviceId)); start.push(task);
+        }
+        this.tasks = next.tasks; this.deviceStatus = next.deviceStatus; this.deviceTaskIds = next.deviceTaskIds;
+        for (const id of this.latestSnapshots.keys()) if (changed.has(id) || !this.deviceStatus.has(id)) this.latestSnapshots.delete(id);
+        for (const task of start) this._connectTask(task);
+        this._startStatusHeartbeat(); this._refreshDeviceStatuses(); this._notifyAggregateStatus(true);
+    }
+
     getStatus() {
         return this.currentStatus;
     }
@@ -265,7 +292,8 @@ class PlcReader {
             outageStartedAt: null,
             lastError: '',
             nextRetryAt: null,
-            connectionGeneration: 0
+            connectionGeneration: 0,
+            qualityByDevice: new Map(), lastReadDurationMs: null, hasFreshRead: false
         };
         this.tasks.set(taskKey, task);
         return task;
@@ -276,6 +304,7 @@ class PlcReader {
         this._clearTaskTimers(task);
         this._dropTaskConnection(task);
         task.connectionGeneration += 1;
+        task.hasFreshRead = false;
         const generation = task.connectionGeneration;
         const now = Date.now();
         if (!task.firstConnectAttemptAt) task.firstConnectAttemptAt = now;
@@ -363,11 +392,9 @@ class PlcReader {
             task.connectTimer = null;
         }
         task.lastConnectedAt = Date.now();
-        task.retryCount = 0;
-        task.firstConnectAttemptAt = null;
-        task.outageStartedAt = null;
-        task.lastFailureAt = null;
-        task.lastError = '';
+        // A TCP handshake is not a successful PLC read. Keep consecutive
+        // failures/outage timing until usable read completion, otherwise an
+        // accept-but-silent endpoint resets backoff forever and appears online.
         task.nextRetryAt = null;
         this._setTaskStatus(task, 'connected', message);
     }
@@ -383,6 +410,7 @@ class PlcReader {
         const connection = task.endpoint.protocol === 'S7' ? task.conn : task.driver;
         if (this.stopped || task.reading || task.status !== 'connected' || !connection) return;
         task.reading = true;
+        task.readStartedAt = Date.now();
         const generation = task.connectionGeneration;
         // Some driver callbacks/promises can remain pending after a broken
         // socket. An independent deadline releases the task and rejects late
@@ -394,6 +422,7 @@ class PlcReader {
             this._handleTaskFailure(task, new Error(`${readTimeout}ms 内未完成读取`), '读取超时');
         }, readTimeout);
         const finishRead = () => {
+            task.lastReadDurationMs = Math.max(0, Date.now() - task.readStartedAt);
             clearTimeout(task.readTimer); task.readTimer = null; task.reading = false;
         };
         if (task.endpoint.protocol === 'S7') {
@@ -401,6 +430,16 @@ class PlcReader {
                 if (this.stopped || generation !== task.connectionGeneration || task.conn !== connection) return;
                 finishRead();
                 if (err) {
+                    // nodes7's `true` means ANY bad item, not necessarily a dead
+                    // connection. Preserve good items and null only bad qualities.
+                    if (err === true && values && Object.keys(values).length && connection.findItem?.('_COMMERR')?.value !== true) {
+                        const partial = { ...values };
+                        for (const point of task.points) {
+                            const quality = connection.findItem?.(point.tagName)?.quality;
+                            if (quality != null ? (Array.isArray(quality) ? quality.some(q => q !== 'OK') : quality !== 'OK') : /^BAD(?:\s|$)/.test(String(values[point.tagName]))) partial[point.tagName] = null;
+                        }
+                        this._handleTaskReadSuccess(task, partial); return;
+                    }
                     this._handleTaskFailure(task, err, '读取失败');
                     return;
                 }
@@ -433,6 +472,8 @@ class PlcReader {
 
     _handleTaskReadSuccess(task, values) {
         task.lastReadAt = Date.now();
+        task.hasFreshRead = true;
+        task.retryCount = 0;
         task.firstConnectAttemptAt = null;
         task.outageStartedAt = null;
         task.lastFailureAt = null;
@@ -440,17 +481,18 @@ class PlcReader {
         task.nextRetryAt = null;
         if (task.status !== 'connected') {
             this._setTaskStatus(task, 'connected', `${this._formatEndpoint(task.endpoint)} 数据正常`);
-        } else {
-            this._refreshDeviceStatuses();
-            this._notifyAggregateStatus(false);
         }
 
         const deviceDataArray = [];
         Object.entries(task.devices).forEach(([deviceId, info]) => {
             const patch = this._assembleDeviceData(deviceId, info, values || {});
+            const qualities = info.points.map(p => patch.quality[this._resolveCategory(p)]?.[p.value_role || p.name]);
+            task.qualityByDevice ??= new Map();
+            task.qualityByDevice.set(deviceId, { normal: qualities.filter(q => q === 'good').length, abnormal: qualities.filter(q => q !== 'good').length });
             const merged = this._mergeDevicePatch(deviceId, patch);
             deviceDataArray.push(merged);
         });
+        this._refreshDeviceStatuses(); this._notifyAggregateStatus(false);
 
         if (this.onData && deviceDataArray.length > 0) {
             this.onData(deviceDataArray);
@@ -613,8 +655,8 @@ class PlcReader {
             const tasks = taskIds.map(id => this.tasks.get(id)).filter(Boolean);
             const connected = tasks.filter(task => task.status === 'connected');
             const offline = tasks.filter(task => this._isTaskOffline(task, now));
-            const connectedFresh = connected.filter(task => !offline.includes(task));
-            const connecting = tasks.filter(task => task.status === 'connecting');
+            const connectedFresh = connected.filter(task => !offline.includes(task) && task.hasFreshRead !== false);
+            const connecting = tasks.filter(task => task.status === 'connecting' || task.status === 'connected' && task.hasFreshRead === false);
             const retrying = tasks.filter(task => task.status === 'retrying');
             const errors = tasks.filter(task => task.status === 'error');
             const lastConnectedAt = this._maxNumber(tasks.map(task => task.lastConnectedAt));
@@ -624,6 +666,10 @@ class PlcReader {
             const lastError = tasks.find(task => task.lastError)?.lastError || '';
             const retryCount = Math.max(...tasks.map(task => Number(task.retryCount || 0)), 0);
             const intervals = [...new Set(tasks.map(task => task.interval))].sort((a, b) => a - b);
+            const normalPoints = tasks.reduce((n,t) => n + (connectedFresh.includes(t) ? t.qualityByDevice?.get(deviceId)?.normal || 0 : 0), 0);
+            const abnormalPoints = tasks.reduce((n,t) => n + (connectedFresh.includes(t) ? t.qualityByDevice?.get(deviceId)?.abnormal || 0 : t.devices[deviceId]?.points?.length || 0), 0);
+            const durations = tasks.map(t => t.lastReadDurationMs).filter(n => typeof n === 'number' && Number.isFinite(n));
+            const lastReadDurationMs = durations.length ? Math.max(...durations) : null;
             const allOffline = tasks.length > 0 && connectedFresh.length === 0 && (offline.length === tasks.length || errors.length === tasks.length);
             const offlineSeconds = Math.round(this.offlineAfterMs / 1000);
 
@@ -638,11 +684,16 @@ class PlcReader {
                 lastError,
                 retryCount,
                 nextRetryAt,
-                intervals
+                intervals, normalPoints, abnormalPoints, lastReadDurationMs
             };
 
             if (connectedFresh.length === tasks.length) {
                 next = { ...next, status: 'connected', quality: 'good', message: '数据采集正常' };
+                if (!lastReadAt) next = { ...next, status:'connecting',quality:'stale',message:'等待首次采样' };
+                // Communication is still usable when some points are good.
+                // Per-point qualities carry faults; don't make clients blanket
+                // invalidate every healthy field on the same device.
+                else if (abnormalPoints) next = { ...next,status:'degraded',quality:normalPoints ? 'good':'bad',message:`${abnormalPoints} 个点位异常，${normalPoints} 个正常` };
             } else if (allOffline) {
                 next = {
                     ...next,
@@ -653,7 +704,7 @@ class PlcReader {
                         : `设备离线：超过 ${offlineSeconds} 秒未连通 PLC`
                 };
             } else if (connectedFresh.length > 0) {
-                next = { ...next, status: 'retrying', quality: 'stale', message: '部分采集任务异常，正在重连' };
+                next = { ...next, status: 'retrying', quality: normalPoints ? 'good' : 'stale', message: '部分采集任务异常，正在重连' };
             } else if (connecting.length > 0) {
                 next = { ...next, status: 'connecting', quality: 'stale', message: '正在连接 PLC' };
             } else if (retrying.length > 0) {

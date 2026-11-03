@@ -72,6 +72,8 @@ let startupWindowClosingForSuccess = false;
 let startupAppearance = null;
 let startupFailureLogPath = null;
 let nativeHostReady = false;
+let nativeHostMonitor = null, nativeHostProbeBusy = false, nativeHostMisses = 0;
+let nativeHostRecoveryTimes = [];
 const nativeHostReadyWaiters = new Set();
 const startupState = {
     progress: 0,
@@ -193,6 +195,37 @@ function startupAction(url) {
     if (action === 'configure') { void showDeploymentWindow(); return; }
     if (action === 'collector-center') { void showCollectorCenter(); return; }
     if (action === 'exit') app.quit();
+}
+
+async function showRuntimeFailure(message) {
+    // A failed local API is not an instruction to destroy the Unity scene.
+    await showStartupFailure(new Error(message));
+    startupState.title = '运行服务暂不可用';
+    startupState.detail = '大屏画面保留。可查看日志，确认保存情况后再重启程序。';
+    sendStartupState();
+}
+
+function startNativeHostMonitor() {
+    if (nativeHostMonitor) return;
+    nativeHostMonitor = setInterval(async () => {
+        if (isQuitting || !applicationReadyForInteraction || nativeHostProbeBusy || !nativeProcess || hasProcessExited(nativeProcess)) return;
+        nativeHostProbeBusy = true;
+        try {
+            if (await sendNativeHostCommand('ping', 800)) { nativeHostMisses = 0; return; }
+            if (++nativeHostMisses < 2) return;
+            nativeHostRecoveryTimes = nativeHostRecoveryTimes.filter(time => Date.now() - time < 60000);
+            if (nativeHostRecoveryTimes.length >= 3) {
+                clearInterval(nativeHostMonitor); nativeHostMonitor = null;
+                await showRuntimeFailure('后台界面连续恢复失败，大屏画面保留。请检查 WebView2 和 admin-host.log 后重试。');
+                return;
+            }
+            nativeHostRecoveryTimes.push(Date.now()); nativeHostMisses = 0;
+            logDesktopError('native-host-recover', new Error('后台界面进程未响应，正在恢复界面；不重启 Unity 或数据服务'));
+            launchNativeAdminHost(false);
+        } catch (error) { logDesktopError('native-host-monitor', error); }
+        finally { nativeHostProbeBusy = false; }
+    }, 3000);
+    nativeHostMonitor.unref?.();
 }
 
 async function createStartupWindow() {
@@ -419,6 +452,7 @@ async function initializeWritableData() {
     if (isQuitting) throw new Error('程序正在退出，已取消初始化');
     mysqlRuntime = new MysqlRuntime({
         root,
+        ...(app.isPackaged ? { linkDirectory: path.join(process.env.ProgramData || 'C:\\ProgramData', 'HeatTreatmentDigitalTwinDisplayLinks') } : {}),
         runtimeDir: resourcePath('mysql'),
         nodeBinary: resourcePath('runtime', 'node.exe'),
         hostScript: app.isPackaged ? resourcePath('backend', 'services', 'privateMysqlHost.js')
@@ -429,7 +463,8 @@ async function initializeWritableData() {
         onUnexpectedExit: error => {
             if (isQuitting) return;
             logDesktopError('mysql-runtime', error);
-            showStartupFailure(error).catch(displayError => logDesktopError('mysql-error-ui', displayError));
+            const report = applicationReadyForInteraction ? showRuntimeFailure(error.message) : showStartupFailure(error);
+            report.catch(displayError => logDesktopError('mysql-error-ui', displayError));
         }
     });
     const managedMysql = await mysqlRuntime.start();
@@ -856,10 +891,7 @@ function scheduleBackendRestart(writable, port, reason) {
     if (backendRestartAttempts >= BACKEND_RESTART_DELAYS_MS.length) {
         const message = `本地数据服务连续 ${backendRestartAttempts} 次自动恢复失败`;
         logDesktopError('backend-restart-exhausted', new Error(`${message}：${reason || '未知原因'}`));
-        try {
-            dialog.showErrorBox(APP_NAME, `${message}。\n请查看用户数据目录中的 logs/backend-error.log。`);
-        } catch (error) { /* app may already be closing */ }
-        app.quit();
+        void showRuntimeFailure(`${message}。请查看 logs/backend-error.log。`).catch(error => logDesktopError('runtime-failure-ui', error));
         return;
     }
 
@@ -896,7 +928,7 @@ function scheduleBackendRestart(writable, port, reason) {
             } catch (stopError) {
                 logDesktopError('backend-restart-cleanup-failed', stopError);
                 backendRestartInProgress = false;
-                app.quit();
+                void showRuntimeFailure('数据服务未能安全结束，已停止自动重启；请查看日志后手动恢复。').catch(error => logDesktopError('runtime-failure-ui', error));
                 return;
             }
             backendRestartInProgress = false;
@@ -1268,7 +1300,7 @@ async function startBackend(port, writable) {
                 : (process.env.LICENSE_PUBLIC_KEY_FILE ?? path.join(writable.dataDir, 'license-public-key.pem')),
             LICENSE_MACHINE_ID: app.isPackaged ? '' : (process.env.LICENSE_MACHINE_ID ?? ''),
             LICENSE_MACHINE_STATE_FILE: app.isPackaged
-                ? path.join(process.env.PROGRAMDATA || app.getPath('appData'), 'HeatTreatmentDigitalTwin', 'machine-identity.json')
+                ? require('./deployment.cjs').desktopMachineIdentityFile(app.getPath('userData'))
                 : (process.env.LICENSE_MACHINE_STATE_FILE ?? ''),
             DESKTOP_AUTO_START_SUPPORTED: app.isPackaged && process.platform === 'win32' && process.env.DISABLE_AUTO_START !== 'true' ? 'true' : 'false',
             SQLITE_RECOVERY_TEMPLATE: process.env.SQLITE_RECOVERY_TEMPLATE ?? resourcePath('templates', 'factory-template.db'),
@@ -1426,9 +1458,19 @@ function createTray() {
 }
 
 async function showCollectorCenter() {
-    const executable = app.isPackaged ? resourcePath('collector-center', 'HeatTreatmentCollectorCenter.exe')
+    let executable = app.isPackaged ? resourcePath('collector-center', 'HeatTreatmentCollectorCenter.exe')
         : path.join(__dirname, '.cache', 'collector-center', 'HeatTreatmentCollectorCenter.exe');
-    if (!fs.existsSync(executable)) throw new Error('缺少原生采集运行中心，请重新构建或安装完整版本');
+    if (app.isPackaged) {
+        const machine = path.join(process.env.ProgramData || 'C:\\ProgramData', 'HeatTreatmentDigitalTwin', 'collector-service.json');
+        if (fs.existsSync(machine)) {
+            const config = JSON.parse(fs.readFileSync(machine, 'utf8').replace(/^\uFEFF/, ''));
+            executable = path.join(config.resourcesRoot, 'collector-center', 'HeatTreatmentCollectorCenter.exe');
+        }
+    }
+    if (!fs.existsSync(executable)) {
+        await dialog.showMessageBox({ type: 'info', title: '数据采集', message: '请先安装独立数据采集插件', buttons: ['确定'] });
+        return;
+    }
     await new Promise((resolve, reject) => {
         // Independent native process; do not supervise it as a display child.
         const child = spawn(executable, [], { windowsHide: false, stdio: 'ignore', detached: true });
@@ -1447,7 +1489,7 @@ async function showDeploymentWindow() {
             assertSender(event);
             try {
                 const config = resolveDeployment(app.getPath('userData'), { packaged: app.isPackaged });
-                return { config: config.mode === 'client' ? config : { mode: 'client', backendOrigin: 'http://127.0.0.1:3001' } };
+                return { config };
             }
             catch (error) { return { config: { mode: 'client', backendOrigin: 'http://127.0.0.1:3001' }, error: error.message }; }
         });
@@ -1574,7 +1616,7 @@ async function launchApplication() {
     try { deployment = resolveDeployment(app.getPath('userData'), { packaged: app.isPackaged }); }
     catch (error) {
         if (!app.isPackaged) throw error;
-        await showCollectorCenter(); app.quit(); return;
+        await showDeploymentWindow(); return;
     }
     // Temporary runtime request, not a permanent modification of power plans.
     if (!backendOnlySmokeMode && powerSaveBlocker)
@@ -1582,6 +1624,15 @@ async function launchApplication() {
     // Show immediate, static startup status while the backend is unavailable.
     // Unity owns the sole animated loading screen after its window appears.
     if (!backendOnlySmokeMode) await createStartupWindow();
+    if (app.isPackaged) {
+        updateStartupProgress('environment', 5, '正在检查运行环境', '检查 Windows、WebView2 与 Microsoft 运行库');
+        await require('./prerequisites.cjs').ensurePrerequisites({
+            script: resourcePath('prerequisites', 'RuntimePrerequisites.ps1'),
+            runtimeRoot: resourcePath('prerequisites'), dialog, shell,
+            reportFile: path.join(app.getPath('userData'), 'logs', 'prerequisites-last.json'),
+            onProgress: (title, detail) => updateStartupProgress('environment', 5, title, detail)
+        });
+    }
     updateStartupProgress('resources', 6, '正在准备程序资源', '检查运行目录、数据目录和模型资源');
     if (process.env.DESKTOP_SMOKE_FORCE_STARTUP_ERROR) {
         throw new Error(String(process.env.DESKTOP_SMOKE_FORCE_STARTUP_ERROR));
@@ -1653,6 +1704,7 @@ async function launchApplication() {
         showAdminWindow();
     }
     applicationReadyForInteraction = true;
+    startNativeHostMonitor();
     if (nativeProcess && (process.argv.includes('--admin') || pendingNativeAdminRequest)) {
         pendingNativeAdminRequest = false;
         setTimeout(showNativeAdminPanel, 600).unref?.();

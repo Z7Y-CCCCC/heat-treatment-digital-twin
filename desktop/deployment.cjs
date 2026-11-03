@@ -13,8 +13,8 @@ function httpOrigin(value, label) {
 
 function normalizeDeployment(raw = {}) {
     const mode = raw.mode || 'local';
-    if (!['local', 'client'].includes(mode)) throw new Error('安装版前端不能作为采集后端，请安装 Windows 采集服务');
-    if (mode === 'local') return { mode };
+    if (!['local', 'display', 'client'].includes(mode)) throw new Error('未知部署模式');
+    if (mode === 'local' || mode === 'display') return { mode };
     if (mode === 'client') return { mode, backendOrigin: httpOrigin(raw.backendOrigin, '采集服务地址') };
     throw new Error('未知部署模式');
 }
@@ -54,15 +54,18 @@ function resolveDeployment(root, options = {}) {
         // Once a machine collector is installed, development and packaged Unity
         // must not silently edit a second local database. Smoke fixtures opt out.
         if (config.mode === 'local' && env.DESKTOP_SMOKE_STANDALONE !== 'true' && fs.existsSync(machineFile)) return machineClient();
-        if (options.packaged && config.mode !== 'client' && env.DESKTOP_SMOKE_STANDALONE !== 'true')
-            throw new Error('安装版前端不再启动采集后端，请在“部署与连接”中选择 Windows 服务地址');
         return config;
     }
     if (env.DESKTOP_SMOKE_STANDALONE === 'true') return { mode: 'local' };
     if (fs.existsSync(machineFile)) return machineClient();
-    if (!options.packaged) return { mode: 'local' };
-    if (!fs.existsSync(machineFile)) throw new Error('尚未安装 Windows 采集服务。请使用新版安装包，或以管理员身份运行安装目录中的 安装采集服务.ps1。');
-    return machineClient();
+    // A display-only installation owns its configuration/API but no PLC reader.
+    // An existing collector remains authoritative even when temporarily stopped;
+    // never silently fork its database or lose its accounts/activation.
+    return { mode: 'local' };
 }
 
-module.exports = { deploymentFile, httpOrigin, normalizeDeployment, readDeployment, resolveDeployment, saveDeployment };
+function desktopMachineIdentityFile(root, env = process.env) {
+    const legacy = path.join(env.ProgramData || env.PROGRAMDATA || 'C:\\ProgramData', 'HeatTreatmentDigitalTwin', 'machine-identity.json');
+    return fs.existsSync(legacy) || fs.existsSync(`${legacy}.bak`) ? legacy : path.join(root, 'machine-identity.json');
+}
+module.exports = { deploymentFile, httpOrigin, normalizeDeployment, readDeployment, resolveDeployment, saveDeployment, desktopMachineIdentityFile };

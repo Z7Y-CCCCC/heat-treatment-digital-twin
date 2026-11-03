@@ -75,6 +75,33 @@ function fixture(t) {
 }
 
 const textContent = root => [root.text, ...root.children.map(textContent)].join(' ')
+test('external-only overlay leaves the loading skeleton when its binding responds even without a PLC ready frame',async t=>{
+ const view=fixture(t),widget={id:'http_panel',type:'hud_kpi_panel',data:{mode:'dataset',datasetId:'parts',datasetField:'temperature'},content:{showRing:false,items:[{label:'温度',path:'dataset.temperature'}]}}
+ await view.render({widget,overlayMode:true,dataReady:false,databaseValues:{http_panel:{value:75,rows:[{temperature:75}],columns:[{name:'temperature',type:'number'}],quality:'good'}}})
+ assert.match(textContent(view.root),/75/);assert.doesNotMatch(textContent(view.root),/正在同步当前数据/)
+ await view.render({widget,overlayMode:true,dataReady:false,databaseValues:{http_panel:{value:null,rows:[],quality:'bad'}}})
+ assert.doesNotMatch(textContent(view.root),/75|正在同步当前数据/)
+})
+test('device lists and business summaries consume their dataset rows, not unrelated global device or business data',async t=>{
+ const view=fixture(t),record={quality:'good',value:0,rows:[{id:'a',name:'当前接口设备',online:true,running:false,alarm:false,temp:0,value:0,msg:'当前接口工单'}]}
+ for(const type of ['device_list','hud_device_status','business_summary']){
+  const widget={id:'external_rows',type,data:{mode:'dataset',datasetField:'value'},content:{}}
+  await view.render({widget,overlayMode:true,dataReady:false,databaseValues:{external_rows:record},deviceStatusMap:{foreign:{name:'不应出现',online:true}},businessData:{status:'ready',sections:{batches:{available:true,rows:[{id:'不应出现'}]}}}})
+  assert.match(textContent(view.root),/当前接口设备/);assert.doesNotMatch(textContent(view.root),/不应出现|正在同步当前数据/)
+  await view.render({widget,overlayMode:true,dataReady:false,databaseValues:{external_rows:{quality:'bad',rows:[],value:null}}})
+  assert.doesNotMatch(textContent(view.root),/当前接口设备/)
+ }
+})
+test('part-point panels accept real zero values but reject stale points and late responses for a different part',async t=>{
+ const view=fixture(t),widget={id:'part',type:'hud_kpi_panel',content:{showRing:false,usePartPoints:true,items:[]},data:{mode:'runtime',path:'selectedPart.name',refreshMs:1000}}
+ const base={widget,deviceCatalog:[{id:'a',name:'设备 A'}],runtimeContext:{viewId:'device_part',viewMode:'device',deviceId:'a',partId:'part_b'},playbackNow:1000}
+ await view.render({...base,selectedPart:{id:'part_b',name:'部件 B',points:[{name:'反馈',value:0,quality:'good',unit:'mm'}]}})
+ assert.match(textContent(view.root),/0.*mm/)
+ await view.render({...base,playbackNow:2000,selectedPart:{id:'part_b',points:[{name:'反馈',value:9876,quality:'stale'}]}})
+ assert.doesNotMatch(textContent(view.root),/9876/)
+ await view.render({...base,playbackNow:3000,selectedPart:{id:'part_a',points:[{name:'反馈',value:4321,quality:'good'}]}})
+ assert.doesNotMatch(textContent(view.root),/4321/)
+})
 const findNode = (root, match) => match(root) ? root : root.children.map(child => findNode(child, match)).find(Boolean)
 
 test('dataset text displays typed values without losing leading zeroes, and unavailable data never uses a static fallback as a real reading', async t => {

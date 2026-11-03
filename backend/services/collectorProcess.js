@@ -98,8 +98,20 @@ class CollectorProcess {
         await this._stopChild();
         this._offline('stopped', '独立采集进程已关闭');
     }
-    getStatus() { return { ...this.state, process: { ...this.processStatus, pendingCommands: this.queued } }; }
+    getStatus() { return { ...this.state, process: { ...this.processStatus, lastHeartbeatAt: this.lastMessageAt || null,
+        heartbeatTimeoutMs: this.heartbeatTimeout, pendingCommands: this.queued } }; }
     getFactoryStatuses() { return this.factories; }
+    reloadFactoryConfiguration(factoryId) {
+        return this._enqueue(async () => {
+            if (this.closed || this.processStatus.status !== 'running') throw new Error('Collector unavailable');
+            const result = await this._rpc('reloadFactory', { factoryId:String(factoryId) });
+            for (const id of result.removedDeviceIds || []) {
+                const previous = this.snapshots.get(id);
+                if (previous) { this.snapshotBytes -= Buffer.byteLength(JSON.stringify(previous)); this.snapshots.delete(id); }
+            }
+            return result;
+        });
+    }
     setFactoryCollectionEnabled(factoryId) {
         return this._enqueue(async () => {
             if (this.closed || this.processStatus.status !== 'running') throw new Error('Collector unavailable');
@@ -195,7 +207,11 @@ class CollectorProcess {
                 this.state = message.status;
                 this.factories = message.factories || {};
                 this.processStatus.droppedSamples = Number(message.diagnostics?.droppedSamples || 0);
+                this.processStatus.memoryRssBytes = Number(message.diagnostics?.memoryRssBytes) || null;
+                this.processStatus.eventLoopLagMs = Number(message.diagnostics?.eventLoopLagMs) || 0;
                 const devices = Array.isArray(message.devices) ? message.devices : [];
+                const newest = Math.max(0, ...devices.map(d => Number(d.timestamp) || 0));
+                if (newest) this.processStatus.telemetryDelayMs = Math.max(0, Date.now() - newest);
                 for (const device of devices) {
                     if (!device?.furnace_id) continue;
                     const bytes = Buffer.byteLength(JSON.stringify(device));

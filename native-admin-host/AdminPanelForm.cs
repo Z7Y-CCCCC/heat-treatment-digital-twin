@@ -38,6 +38,7 @@ internal sealed class AdminPanelForm : Form
     private DashboardChromeForm? _dashboardChrome;
     private DashboardOverlayForm? _dashboardOverlay;
     private WebViewNavigationRetry? _navigationRetry;
+    private WebViewProcessRecovery? _processRecovery;
     private readonly Rectangle _defaultDetachedBounds;
     private Rectangle _embeddedBounds;
     private Rectangle _savedDetachedBounds;
@@ -239,6 +240,7 @@ internal sealed class AdminPanelForm : Form
                 args.Cancel = !WebContentPolicy.IsSameOrigin(args.Uri, _options.Url);
             _navigationRetry = new WebViewNavigationRetry(_webView.CoreWebView2, _options.Url,
                 attempt => _status.Text = $"正在重新连接现场服务（{attempt}）…");
+            _processRecovery = new WebViewProcessRecovery(_webView.CoreWebView2, this, WriteHostInfo, Close);
             _webView.CoreWebView2.DownloadStarting += HandleDownload;
             _webView.CoreWebView2.WebMessageReceived += HandleWebMessage;
             _webView.CoreWebView2.NavigationCompleted += (_, args) =>
@@ -268,6 +270,7 @@ internal sealed class AdminPanelForm : Form
             try
             {
                 _dashboardOverlay = new DashboardOverlayForm(_options);
+                _dashboardOverlay.HostRecreationRequested += Close;
                 _dashboardOverlay.AdminRequested += ShowAdminFromOverlay;
                 _dashboardOverlay.CustomerOperationsRequested += ShowCustomerOperations;
                 _dashboardOverlay.QualityRequested += (action, profile, requestId) =>
@@ -1536,6 +1539,7 @@ internal sealed class AdminPanelForm : Form
         if (_closing || IsDisposed) return;
         WriteHostInfo("Unity 运行端已退出，开始关闭后台宿主");
         _closing = true;
+        _processRecovery?.Dispose();
         _parentTimer.Stop();
         try
         {

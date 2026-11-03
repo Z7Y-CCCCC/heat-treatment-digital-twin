@@ -82,6 +82,7 @@ namespace HeatTreatment.DigitalTwin.Editor
             public int furnaceIndex;
             public string displayName;
             public string model;
+            public string modelSha256;
             public string prefab;
             public string reviewScene;
             public string dimensionalAccuracy = "Photo-derived proportions; not measured engineering CAD.";
@@ -148,6 +149,30 @@ namespace HeatTreatment.DigitalTwin.Editor
 
         [MenuItem("Digital Twin/Pit Furnace References/Import Furnace 5", priority = 65)]
         public static void BuildFurnace5() { BuildOne(5); }
+
+        // Refresh evidence from the existing prefabs/scenes. Never regenerate
+        // geometry, materials, prefabs, identifiers or factory scene settings.
+        public static void VerifyCurrentAndExport()
+        {
+            for (var index = 1; index <= FurnaceCount; index++)
+            {
+                var asset = new AssetPaths(index);
+                var scene = EditorSceneManager.OpenScene(asset.ScenePath, OpenSceneMode.Single);
+                var root = scene.GetRootGameObjects().FirstOrDefault(item => item.name == asset.RootName);
+                if (root == null) throw new InvalidDataException("Missing review equipment: " + asset.RootName);
+                var camera = scene.GetRootGameObjects().SelectMany(item => item.GetComponentsInChildren<Camera>(true)).FirstOrDefault();
+                if (camera == null) throw new InvalidDataException("Missing review camera: " + asset.ScenePath);
+                var report = Inspect(asset, root);
+                using (var digest = System.Security.Cryptography.SHA256.Create())
+                    report.modelSha256 = BitConverter.ToString(digest.ComputeHash(File.ReadAllBytes(asset.ModelPath))).Replace("-", "").ToLowerInvariant();
+                CapturePreview(asset, camera, report);
+                if (report.errors.Length != 0 || !report.previewRendered) throw new InvalidDataException("Review verification failed: " + asset.ModelPath);
+                report.status = "passed";
+                WriteReport(asset, report);
+            }
+            ExportPackage();
+            Debug.Log("[PitFurnaceReference] SUCCESS | current prefabs verified/rendered and package exported; geometry unchanged");
+        }
 
         [Serializable]
         private sealed class OverviewPlacement

@@ -49,7 +49,7 @@ const metrics=computed(()=>{
 const events=store.events,trend=store.trendPoints
 const pending=computed(()=>loadingReplay.value || !store.wsConnected.value || (anchors.value.length>0 && !Object.values(devices.value).some(row=>row.lastSeen)))
 const deviceCount=computed(()=>anchors.value.length)
-const dataMode=computed(()=>config.value?.settings?.data_mode==='simulation' ? '实时模拟数据' : '实时采集数据')
+const dataMode=computed(()=>config.value?.settings?.data_mode==='external' ? '外部接口' : config.value?.settings?.data_mode==='simulation' ? '实时模拟数据' : '实时采集数据')
 const factoryName=computed(()=>config.value?.settings?.factory_name || '生产运行中心')
 const configuredView=computed(()=>{
   const doc=config.value?.platform?.document

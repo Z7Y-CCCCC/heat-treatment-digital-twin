@@ -1,5 +1,5 @@
 const { getDb } = require('../db/database');
-const PlcReader = require('./plcReader');
+const PlcReader = require('./runtimeEngine').collectorAvailable() ? require('./plcReader') : null;
 const Simulator = require('./simulator');
 const { getAlarmOutbox } = require('./alarmOutbox');
 const { assertNoPendingSiteRecovery } = require('./siteRecoveryIntent');
@@ -9,6 +9,7 @@ class DataEngine {
         this.wsServer = wsServer;
         this.fixedFactoryId = String(options.factoryId || '');
         this.isSecondary = options.isSecondary === true;
+        this.displayOnly = options.displayOnly === true;
         this.factoryEngines = new Map();
         this.plcReader = null;
         this.simulator = null;
@@ -60,6 +61,7 @@ class DataEngine {
         const factory = await db.get('SELECT collection_enabled FROM factories WHERE id = ?', [factoryId]);
         if (runVersion !== this.runVersion) return;
         if (Number(factory?.collection_enabled ?? 1) === 0) {
+            if (this.displayOnly) this.currentMode = 'external';
             this.alarmStorageStopped = true;
             this.plcStatus = { status: 'stopped', message: '工厂采集已停用', timestamp: Date.now() };
             this.collectorStatus = { status: 'stopped', message: '工厂采集已停用', lastFrameAt: null, frames: 0, devices: 0 };
@@ -81,6 +83,10 @@ class DataEngine {
 
         try {
             switch (mode) {
+                case 'external':
+                    this.plcStatus = { status: 'idle', message: '外部接口模式', timestamp: Date.now() };
+                    this.collectorStatus = { status: 'idle', message: '外部接口模式', lastFrameAt: null, frames: 0, devices: 0 };
+                    break;
                 case 'integrated_plc':
                     await this._startIntegratedPlcMode();
                     break;
@@ -99,6 +105,7 @@ class DataEngine {
             throw error;
         }
         if (!this.isSecondary && !ownFactoryOnly && runVersion === this.runVersion) await this._startSecondaryEngines(db, runVersion);
+        if (runVersion === this.runVersion) this.configLoadedAt = Date.now();
     }
 
     async _startSecondaryEngines(db, runVersion) {
@@ -107,7 +114,7 @@ class DataEngine {
         const silentWs = { broadcastDeviceData() {}, broadcastStatus() {} };
         await Promise.all(factories.filter(factory => String(factory.id) !== this.activeFactoryId).map(async factory => {
             const id = String(factory.id);
-            const engine = new DataEngine(silentWs, { factoryId: id, isSecondary: true });
+            const engine = new DataEngine(silentWs, { factoryId: id, isSecondary: true, displayOnly: this.displayOnly });
             this.factoryEngines.set(id, engine);
             try { await engine.start(); }
             catch (error) { console.warn(`[DataEngine] 工厂 ${id} 采集启动失败:`, error.message); }
@@ -119,7 +126,7 @@ class DataEngine {
         const id = String(factoryId);
         let engine = id === this.activeFactoryId ? this : this.factoryEngines.get(id);
         if (!engine) {
-            engine = new DataEngine({ broadcastDeviceData() {}, broadcastStatus() {} }, { factoryId: id, isSecondary: true });
+            engine = new DataEngine({ broadcastDeviceData() {}, broadcastStatus() {} }, { factoryId: id, isSecondary: true, displayOnly: this.displayOnly });
             this.factoryEngines.set(id, engine);
         }
         const previous = [...engine.deviceSnapshots.values()];
@@ -133,6 +140,23 @@ class DataEngine {
             })));
         }
         return { factoryId: id, status: engine.getStatus() };
+    }
+
+    async reloadFactoryConfiguration(factoryId) {
+        const id = String(factoryId), source = id === this.activeFactoryId ? this : this.factoryEngines.get(id);
+        if (!source) return this.setFactoryCollectionEnabled(id);
+        const previousIds = [...source.deviceSnapshots.keys()];
+        const db = await getDb();
+        const factory = await db.get('SELECT collection_enabled FROM factories WHERE id=?', [id]);
+        const local = await db.get('SELECT value FROM factory_settings WHERE factory_id=? AND `key`=?', [id,'data_mode']);
+        const mode = source._normalizeMode(local?.value ?? (await db.get('SELECT value FROM settings WHERE `key`=?', ['data_mode']))?.value);
+        if (Number(factory?.collection_enabled ?? 1) !== 0 && source.currentMode === mode && source.plcReader) {
+            await source.plcReader.reloadConfiguration(); source.configLoadedAt = Date.now();
+        } else await source.start({ ownFactoryOnly: true });
+        const present = source.plcReader ? new Set(source.plcReader.deviceStatus.keys()) : new Set((source.simulator?.devices || []).map(d => d.id));
+        for (const key of source.deviceSnapshots.keys()) if (!present.has(key)) source.deviceSnapshots.delete(key);
+        for (const key of source.alarmState.keys()) if (!present.has(key)) source.alarmState.delete(key);
+        return { factoryId:id, status:source.getStatus(), removedDeviceIds:previousIds.filter(key => !present.has(key)) };
     }
 
     _stopSecondaryEngines() {
@@ -188,6 +212,8 @@ class DataEngine {
     getStatus() {
         return {
             observedAt: Date.now(),
+            configLoadedAt: this.configLoadedAt || null,
+            configuredDevices: this.plcReader?.deviceStatus?.size ?? this.simulator?.devices?.length ?? 0,
             mode: this.currentMode,
             plcStatus: this.plcStatus,
             collectorStatus: this.collectorStatus,
@@ -218,6 +244,7 @@ class DataEngine {
 
     _normalizeMode(mode) {
         const value = String(mode || '').trim();
+        if (value === 'external' || this.displayOnly && value !== 'simulation') return 'external';
         return value === 'simulation' ? 'simulation' : 'integrated_plc';
     }
 
@@ -397,6 +424,8 @@ class DataEngine {
     }
 
     async _startIntegratedPlcMode() {
+        if (this.displayOnly) throw new Error('请先安装采集插件');
+        if (!PlcReader) throw new Error('采集插件实现缺失');
         console.log('[DataEngine] 内置低延迟采集模式: PLC -> 后端采集器 -> WebSocket');
         const runVersion = this.runVersion;
 

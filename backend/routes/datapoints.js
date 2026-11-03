@@ -324,14 +324,8 @@ function normalizedPointId(value, rowLabel) {
     return id;
 }
 
-function restartDataEngineSoon(reason) {
-    if (!global.dataEngine?.restart) return;
-    setTimeout(() => {
-        global.dataEngine.restart().catch(e => {
-            console.warn(`[DataPoints] 数据引擎重启失败(${reason}):`, e.message);
-        });
-    }, 80);
-}
+const { reloadCollectorSoon } = require('../utils/collectorReload');
+function restartDataEngineSoon(reason, factoryId) { reloadCollectorSoon(factoryId, reason); }
 
 router.get('/', async (req, res) => {
     try {
@@ -402,7 +396,7 @@ router.post('/', async (req, res) => {
             point.alarm_high,
             point.alarm_low
         ]);
-        restartDataEngineSoon('create data point');
+        restartDataEngineSoon('create data point', req.factoryId);
         res.json({ success: true, id: result.lastInsertRowid });
     } catch (e) {
         res.status(400).json({ error: e.message });
@@ -460,7 +454,7 @@ router.put('/:id', async (req, res) => {
             req.params.id,
             existing.device_id
         ]);
-        restartDataEngineSoon('update data point');
+        restartDataEngineSoon('update data point', req.factoryId);
         res.json({ success: true });
     } catch (e) {
         res.status(400).json({ error: e.message });
@@ -474,7 +468,7 @@ router.delete('/:id', async (req, res) => {
         if (!existing || !await deviceInFactory(db, existing.device_id, req.factoryId)) return res.status(404).json({ error: '点位不存在，可能已经被删除或 ID 未正确编码' });
 
         await db.run('DELETE FROM data_points WHERE id = ? AND device_id = ?', [req.params.id, existing.device_id]);
-        restartDataEngineSoon('delete data point');
+        restartDataEngineSoon('delete data point', req.factoryId);
         res.json({ success: true });
     } catch (e) {
         res.status(400).json({ error: e.message });
@@ -511,7 +505,7 @@ router.post('/alarm-texts', async (req, res) => {
             }
             return count;
         });
-        if (updated) restartDataEngineSoon('update alarm texts');
+        if (updated) restartDataEngineSoon('update alarm texts', req.factoryId);
         res.json({ success: true, updated });
     } catch (error) { res.status(error.statusCode || 400).json({ error: error.message }); }
 });
@@ -602,7 +596,7 @@ router.post('/sync', async (req, res) => {
             };
         });
 
-        if (result.changed > 0) restartDataEngineSoon('sync changed data points');
+        if (result.changed > 0) restartDataEngineSoon('sync changed data points', req.factoryId);
         res.json(result);
     } catch (e) {
         res.status(e.statusCode || 400).json({ error: e.message });
@@ -666,7 +660,7 @@ router.post('/batch', async (req, res) => {
                 ]);
             }
         });
-        restartDataEngineSoon('save data point batch');
+        restartDataEngineSoon('save data point batch', req.factoryId);
         res.json({ success: true, count: points.length });
     } catch (e) {
         res.status(400).json({ error: e.message });

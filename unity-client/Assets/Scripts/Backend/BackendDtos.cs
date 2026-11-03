@@ -122,6 +122,7 @@ namespace HeatTreatment.DigitalTwin.Backend
         [JsonProperty("file_path")] public string FilePath { get; set; }
         [JsonProperty("default_scale")] public float DefaultScale { get; set; } = 1f;
         [JsonProperty("metadata")] public JToken Metadata { get; set; }
+        [JsonProperty("motion_package")] public JObject MotionPackage { get; set; }
 
         public JObject MetadataObject
         {
@@ -450,6 +451,8 @@ namespace HeatTreatment.DigitalTwin.Backend
         [JsonProperty("node_name")] public string NodeName { get; set; }
         [JsonProperty("source_group")] public string SourceGroup { get; set; }
         [JsonProperty("source_key")] public string SourceKey { get; set; }
+        [JsonProperty("point_id")] public string PointId { get; set; }
+        [JsonProperty("authoring_space")] public bool AuthoringSpace { get; set; }
         [JsonProperty("action")] public string Action { get; set; }
         [JsonProperty("axis")] public string Axis { get; set; } = "y";
         [JsonProperty("input_min")] public float InputMin { get; set; }

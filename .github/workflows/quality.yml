@@ -75,6 +75,9 @@ jobs:
       - name: HTTP template mapping end-to-end
         run: node scripts/template-http-e2e.mjs
         timeout-minutes: 3
+      - name: Pit part datasets preserve custom widgets and geometry
+        run: node ../tools/pit-part-demo-test.cjs
+        timeout-minutes: 3
       - run: npm run build
       - name: Upload HTTP mapping evidence
         uses: actions/upload-artifact@v4

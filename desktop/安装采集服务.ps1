@@ -58,9 +58,16 @@ if ($ImportDataDirectory) {
     }
     $runningDesktop = Get-Process -Name '热处理数字孪生大屏', 'HeatTreatmentDigitalTwin', 'HeatTreatmentAdminHost' -ErrorAction SilentlyContinue
     if ($runningDesktop) { throw '迁移前请完全退出旧软件，不能复制正在使用的数据库。' }
-    foreach ($name in @('data', 'uploads', 'mysql', 'machine-identity.json')) {
+    foreach ($name in @('data', 'uploads', 'mysql', 'machine-identity.json', 'machine-identity.json.bak', 'machine-identity.json.hardware')) {
         $sourcePath = Join-Path $source $name
         if (Test-Path -LiteralPath $sourcePath) { Copy-Item -LiteralPath $sourcePath -Destination $dataDirectory -Recurse }
+    }
+    # Older display builds stored their installation anchor at machine level.
+    # Preserve it (including hardware fallback) when moving to the service.
+    foreach ($name in @('machine-identity.json','machine-identity.json.bak','machine-identity.json.hardware')) {
+        $legacy = Join-Path $machineDirectory $name
+        $destination = Join-Path $dataDirectory $name
+        if (-not (Test-Path -LiteralPath $destination) -and (Test-Path -LiteralPath $legacy)) { Copy-Item -LiteralPath $legacy -Destination $destination }
     }
     # Rewrite only paths owned by this app; external database settings remain intact.
     $databaseConfigFile = Join-Path $dataDirectory 'data\database-config.json'

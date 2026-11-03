@@ -4,6 +4,16 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { deploymentFile, normalizeDeployment, readDeployment, resolveDeployment, saveDeployment } = require('../deployment.cjs');
+test('standalone activation is user-writable but retains a legacy machine anchor when present', t => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'display-identity-'));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const { desktopMachineIdentityFile } = require('../deployment.cjs');
+    const env = { ProgramData: path.join(root, 'machine') };
+    assert.equal(desktopMachineIdentityFile(root, env), path.join(root, 'machine-identity.json'));
+    const legacy = path.join(env.ProgramData, 'HeatTreatmentDigitalTwin', 'machine-identity.json');
+    fs.mkdirSync(path.dirname(legacy), { recursive: true }); fs.writeFileSync(`${legacy}.bak`, 'retained');
+    assert.equal(desktopMachineIdentityFile(root, env), legacy);
+});
 
 test('deployment rejects credential-bearing and path-based URLs instead of leaking secrets into Unity arguments', () => {
     for (const backendOrigin of ['file:///etc', 'http://user:secret@server', 'http://server/api', 'http://server/?token=secret']) {
@@ -19,7 +29,7 @@ test('saved deployment can be reloaded, never overwrites malformed settings impl
     try {
         const filename = deploymentFile(root, [], {});
         assert.deepEqual(readDeployment(filename), { mode: 'local' });
-        assert.throws(() => resolveDeployment(root, { packaged: true, argv: [], env: { ProgramData: root } }), /尚未安装/);
+        assert.deepEqual(resolveDeployment(root, { packaged: true, argv: [], env: { ProgramData: root } }), { mode: 'local' });
         await saveDeployment(filename, { mode: 'client', backendOrigin: 'http://127.0.0.1:3001' });
         assert.equal(resolveDeployment(root, { packaged: true, argv: [], env: {} }).mode, 'client');
         fs.writeFileSync(filename, '{broken');
@@ -39,5 +49,7 @@ test('Unity development and installed clients share the machine collector config
         await saveDeployment(path.join(root, 'deployment.json'), { mode: 'local' });
         assert.equal(resolveDeployment(root, { packaged: false, argv: [], env }).mode, 'client');
         assert.equal(resolveDeployment(root, { packaged: false, argv: [], env: { ...env, DESKTOP_SMOKE_STANDALONE: 'true' } }).mode, 'local');
+        await saveDeployment(path.join(root, 'deployment.json'), { mode: 'display' });
+        assert.equal(resolveDeployment(root, { packaged: true, argv: [], env }).mode, 'display', 'explicitly selecting standalone display is not a silent failover');
     } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });

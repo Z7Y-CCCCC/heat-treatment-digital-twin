@@ -11,6 +11,7 @@ import QualityNotice from '../components/QualityNotice.vue'
 import WorkshopGroundEditor from './admin/components/WorkshopGroundEditor.vue'
 import DataSourceWorkspace from './admin/components/DataSourceWorkspace.vue'
 import FactoryCollectionSettings from './admin/components/FactoryCollectionSettings.vue'
+import CollectorRuntimePanel from './admin/components/CollectorRuntimePanel.vue'
 import { normalizeGround, normalizeDeviceGround } from '../../../shared/industrialGround.mjs'
 import { createVoiceAnnouncer, normalizeVoiceRule, parseVoiceConfig } from '../runtime/VoiceAnnouncer.js'
 import WidgetRenderer from '../runtime/WidgetRenderer.vue'
@@ -63,6 +64,7 @@ import MobileDeviceMotion from './admin/components/MobileDeviceMotion.vue'
 import ModelTransferSequence from './admin/components/ModelTransferSequence.vue'
 import LineEquipmentSequence from './admin/components/LineEquipmentSequence.vue'
 import CadMotionPreview from './admin/components/CadMotionPreview.vue'
+import DeviceAnimationLink from './admin/components/DeviceAnimationLink.vue'
 import { cadMotionActions } from '../three/cadMotionProfiles.js'
 import { CLEANER_ACTIONS, motionEntries } from './admin/utils/motionEntries.js'
 import ManualDisassemblyLayout from './admin/components/ManualDisassemblyLayout.vue'
@@ -275,11 +277,16 @@ async function requestFactorySwitch({ factoryName }) {
         await mobileMotionRef.value?.savePending?.()
         if (!await manualDisassemblyPage.savePending()) throw new Error(manualDisassemblyStatus.value || '拆解布局未保存')
         await groundEditorRef.value?.savePending?.()
+        if (deviceAnimationLinkRef.value && !await deviceAnimationLinkRef.value.savePending()) throw new Error('设备动画联动未保存')
         await saveCurrentFactoryPageDrafts()
         await unifiedDesignerRef.value?.savePending?.()
         await mapSettingsRef.value?.savePending?.()
         await loadingSettingsRef.value?.savePending?.()
         await saveFactoryDrafts(currentFactoryId, {
+            'device-animations': async ({ deviceId, revision, config }) => {
+                const result = await adminApi.saveDeviceAnimations(deviceId, { revision, config })
+                if (result?.error || !result?.success) throw new Error(result?.error || '动画联动保存失败')
+            },
             setting: async ({ key, value }) => {
                 const result = await adminApi.saveSettings({ [key]: value })
                 if (result?.error || !result?.success) throw new Error(result?.error || `${key} 保存失败`)
@@ -1668,6 +1675,7 @@ const motionBindingPageSize = 4
 const motionBindingSearch = ref('')
 const motionEditorPanel = ref('list')
 const motionWorkspaceMode = ref('parts')
+const deviceAnimationLinkRef = ref(null)
 const cleanerProcessActions = CLEANER_ACTIONS
 const motionInlineProcess = ref('')
 const motionInlinePreviewRef = ref(null)
@@ -1717,10 +1725,11 @@ function stopMotionPreview() {
 }
 
 async function changeMotionWorkspace(mode) {
+    if (motionWorkspaceMode.value === 'live' && mode !== 'live' && deviceAnimationLinkRef.value && !await deviceAnimationLinkRef.value.canLeave()) return
     motionInlineProcess.value = ''
     if (motionWorkspaceMode.value === mode) return
     motionWorkspaceMode.value = mode
-    if (mode === 'transfer') disposeModelPreview()
+    if (mode !== 'parts') disposeModelPreview()
     else {
         await nextTick()
         await ensureMotionModelSelection()
@@ -3077,7 +3086,7 @@ function getActivePreviewModel() {
 
 async function renderSelectedModelPreview() {
     if (!isModelWorkspace.value) return
-    if (activeTab.value === 'model-animations' && motionWorkspaceMode.value === 'transfer') return
+    if (activeTab.value === 'model-animations' && motionWorkspaceMode.value !== 'parts') return
 
     if (activeTab.value === 'models' && selectedModelFile.value && selectedModelObjectUrl) {
         await renderModelPreview({ url: selectedModelObjectUrl, label: selectedModelFile.value.name })
@@ -4923,6 +4932,7 @@ function toggleAdminNavCollapsed() {
 
 async function selectAdminTab(tabKey) {
     if (!canSelectTab(tabKey)) return
+    if (activeTab.value === 'model-animations' && tabKey !== activeTab.value && deviceAnimationLinkRef.value && !await deviceAnimationLinkRef.value.canLeave()) return
     if (activeTab.value === 'disassembly-layout' && tabKey !== activeTab.value && !await manualDisassemblyPage.canLeave()) return
     if (activeTab.value === 'composer' && tabKey !== activeTab.value && groundEditorRef.value && !await groundEditorRef.value.canLeave()) return
     activeTab.value = tabKey
@@ -8719,7 +8729,7 @@ async function openAdminSetupStep(step) {
                 <div v-if="isModelWorkspace" class="tab-content" :class="{ 'model-animation-workspace': activeTab === 'model-animations' }" :data-testid="activeTab === 'model-animations' ? 'model-animation-page' : 'model-management-page'">
                     <template v-if="activeTab === 'model-animations'">
                         <div class="manual-layout-page-heading">
-                            <div><h2>动作动画</h2><p class="desc">{{ motionWorkspaceMode === 'transfer' ? '选择产线和参与设备，按自定顺序模拟送料、设备工艺和取料转运。' : '选择部件或工艺动作预览，在参数配置中调整部件运动。' }}</p></div>
+                            <div><h2>动作动画</h2><p class="desc">{{ motionWorkspaceMode === 'live' ? '按设备绑定采集点位，保存后同步 Unity。' : motionWorkspaceMode === 'transfer' ? '选择设备编排工艺预览。' : '配置模型部件与工艺动作。' }}</p></div>
                             <label v-if="motionWorkspaceMode === 'parts'" class="manual-layout-model-picker">选择模型
                                 <select :value="selectedPreviewModelId" aria-label="选择动作动画模型" :disabled="modelBindingSaving || modelNameSaving" @change="changeMotionModel">
                                     <option v-if="!motionModelOptions.length" value="">暂无可配置的设备模型</option>
@@ -8728,6 +8738,7 @@ async function openAdminSetupStep(step) {
                             </label>
                         </div>
                         <nav class="motion-workspace-modes" aria-label="动作动画模式">
+                            <button type="button" :class="{ active: motionWorkspaceMode === 'live' }" :aria-pressed="motionWorkspaceMode === 'live'" @click="changeMotionWorkspace('live')">实时联动</button>
                             <button type="button" :class="{ active: motionWorkspaceMode === 'parts' }" :aria-pressed="motionWorkspaceMode === 'parts'" @click="changeMotionWorkspace('parts')">部件动作</button>
                             <button type="button" :class="{ active: motionWorkspaceMode === 'transfer' }" :aria-pressed="motionWorkspaceMode === 'transfer'" @click="changeMotionWorkspace('transfer')">设备联动</button>
                         </nav>
@@ -8762,6 +8773,7 @@ async function openAdminSetupStep(step) {
                     </div>
 
                     <LineEquipmentSequence v-if="activeTab === 'model-animations' && motionWorkspaceMode === 'transfer'" :models="models" :lines="lines" :devices="devices" :workshops="workshops" />
+                    <DeviceAnimationLink v-if="activeTab === 'model-animations' && motionWorkspaceMode === 'live'" ref="deviceAnimationLinkRef" :models="models" :devices="devices" :confirm="confirm" />
                     <div v-if="activeTab !== 'model-animations' || motionWorkspaceMode === 'parts'" class="model-library-layout" :class="{ 'inspection-workspace': modelLibraryStep === 'inspection', 'animation-workspace': activeTab === 'model-animations' }">
                         <section class="model-library-main">
                             <section v-if="activeTab === 'models'" v-show="modelLibraryStep === 'library'" class="model-library-step-panel">
@@ -9945,7 +9957,7 @@ async function openAdminSetupStep(step) {
                     <ProjectMigrationSettings v-if="settingsSubpage === 'migration' && canAdminPage('settings.migration')" />
 
                     <!-- 引擎运行状态 -->
-                    <div v-if="!['migration', 'database'].includes(settingsSubpage)" class="engine-status-card" :class="'status-' + engineStatus.plcStatus?.status">
+                    <div v-if="!['migration', 'database', 'data'].includes(settingsSubpage)" class="engine-status-card" :class="'status-' + engineStatus.plcStatus?.status">
                         <div class="engine-status-header">
                             <span class="engine-dot"></span>
                             <strong>数据引擎状态</strong>
@@ -10453,29 +10465,12 @@ async function openAdminSetupStep(step) {
 
                         <!-- ===== 数据通路选择 ===== -->
                         <div v-show="settingsSubpage === 'data'" class="settings-section secondary-page-panel">
+                            <CollectorRuntimePanel v-if="settingsSubpage === 'data'" :confirm="confirm" />
                             <FactoryCollectionSettings v-if="settingsSubpage === 'data'" />
-                            <h3 class="section-title">数据通路模式</h3>
-                            <label>选择数据采集方式
-                                <select v-model="settings.data_mode" class="input" v-permission="{ page: controlPermissionPage, action: 'edit' }">
-                                    <option value="integrated_plc">独立进程低延迟采集（推荐）</option>
-                                    <option value="simulation">模拟数据（离线演示用）</option>
-                                </select>
-                            </label>
-                            <div class="mode-hint">
-                                <template v-if="settings.data_mode === 'integrated_plc'">
-                                    <p><strong>推荐主链路：</strong>PLC → 独立采集进程 → 管理 API / WebSocket → 前台 3D。</p>
-                                    <p style="color:#86868b; font-size:12px;">采集与管理接口进程隔离；采集异常独立重启，界面关闭不停止 Windows 服务采集。</p>
-                                    <p style="color:#86868b; font-size:12px;">PLC 连接参数在“设备管理”里按设备配置，变量采集周期在“点位映射”里按点位配置。</p>
-                                </template>
-                                <template v-else>
-                                    <p><strong>模拟模式：</strong>系统自动生成随机数据，无需连接任何外部设备。</p>
-                                    <p style="color:#86868b; font-size:12px;">适用于离线演示、功能验收。数据为程序模拟生成。</p>
-                                </template>
-                            </div>
                         </div>
 
                         <button
-                            v-if="settingsSubpage === 'performance' || settingsSubpage === 'data'"
+                            v-if="settingsSubpage === 'performance'"
                             @click="saveSettings(currentPermissionPage)"
                             class="btn btn-primary secondary-page-save"
                          v-permission="{ page: controlPermissionPage, action: 'edit' }">保存当前参数</button>

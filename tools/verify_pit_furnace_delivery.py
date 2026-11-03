@@ -208,8 +208,11 @@ def unity_check(number: int | None) -> dict:
                 problems.append(key + " is not zero.")
         if report.get("furnaceIndex") != number or report.get("instanceTriangles", 0) <= 0:
             problems.append("Incorrect or empty Unity model.")
-        if path.stat().st_mtime + 1 < (folder / f"{stem}.fbx").stat().st_mtime:
-            problems.append("Unity report predates its current FBX.")
+        if report.get("modelSha256"):
+            if report["modelSha256"].lower() != sha256(folder / f"{stem}.fbx"):
+                problems.append("Unity report does not match the current FBX hash.")
+        elif path.stat().st_mtime + 1 < (folder / f"{stem}.fbx").stat().st_mtime:
+            problems.append("Unity report predates its current FBX; refresh evidence to record a content hash.")
         if number == 5:
             required = ("f5_insulated_cabinet_shell", "f5_cabinet_support_base")
             reported_groups = report.get("directChildGroups", [])

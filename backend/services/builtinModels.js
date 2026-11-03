@@ -73,8 +73,24 @@ const BUILTIN_MODELS = [
 ];
 
 function getBuiltinModels() {
-    return BUILTIN_MODELS.map(model => ({ ...model }));
+    return BUILTIN_MODELS.map(model => withMotionPackage({ ...model }));
 }
+
+function withMotionPackage(model) {
+    const motion = require('../../shared/motionPackages.json').models[model.id];
+    let valid = false;
+    if (motion && model.file_path === motion.sourcePath) {
+        try {
+            const fs = require('node:fs'), path = require('node:path');
+            const file = path.resolve(__dirname, '..', '.' + motion.sourcePath), stat = fs.statSync(file), key = `${file}:${stat.size}:${stat.mtimeMs}`;
+            if (!motionHashCache.has(key)) motionHashCache.set(key, require('node:crypto').createHash('sha256').update(fs.readFileSync(file)).digest('hex'));
+            valid = motionHashCache.get(key) === motion.sourceSha256;
+        } catch { /* missing/replaced CAD never receives a mismatched rig */ }
+    }
+    // Never attach a rig to a replacement upload merely sharing an old model ID.
+    return { ...model, motion_package: valid ? motion : null };
+}
+const motionHashCache = new Map();
 
 function mergeBuiltinModels(models = []) {
     const merged = new Map(getBuiltinModels().map(model => [model.id, model]));
@@ -87,7 +103,7 @@ function mergeBuiltinModels(models = []) {
             is_builtin: !!builtin || !!model.is_builtin
         });
     });
-    return Array.from(merged.values());
+    return Array.from(merged.values()).map(withMotionPackage);
 }
 
 module.exports = {

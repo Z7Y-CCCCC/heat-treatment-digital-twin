@@ -764,6 +764,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
                     if (string.IsNullOrWhiteSpace(id)) continue;
                     _latestDeviceFrames[id] = deviceData;
                     if (_drivers.TryGetValue(id, out var driver)) driver.ApplyRealtime(deviceData);
+                    if (driver != null) driver.GetComponent<DeviceAnimationDriver>()?.ApplyRealtime(deviceData);
                     if (_visuals.TryGetValue(id, out var visual)) visual.ApplyRealtime(deviceData);
                     if (_motions.TryGetValue(id, out var motion)) motion.ApplyRealtime(deviceData);
                     _dashboard.ApplyRealtime(id, deviceData);
@@ -1013,6 +1014,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 if (_latestDeviceFrames.TryGetValue(device.Id, out var latest))
                 {
                     driver?.ApplyRealtime(latest);
+                    driver?.GetComponent<DeviceAnimationDriver>()?.ApplyRealtime(latest);
                     visual.ApplyRealtime(latest);
                     motion.ApplyRealtime(latest);
                     _dashboard.ApplyRealtime(device.Id, latest);

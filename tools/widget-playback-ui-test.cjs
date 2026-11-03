@@ -17,7 +17,7 @@ async function login(context,username=info.username,state={activeTab:'settings',
  if(state.activeTab==='platform')await p.locator('.dashboard-designer-shell').waitFor();else await p.getByRole('tab',{name:'外部数据源',exact:true}).waitFor();return p;
 }
 (async()=>{
- const infoFile=path.join(directory,'server.json');server=startLoggedProcess(process.execPath,[path.join(__dirname,'manual-disassembly-ui-server.cjs')],{cwd:path.resolve(__dirname,'..'),env:{...process.env,MANUAL_LAYOUT_UI_INFO_FILE:infoFile},logFile:path.join(directory,'server.log')});
+ const infoFile=path.join(directory,'server.json');server=startLoggedProcess(process.execPath,[path.join(__dirname,'manual-disassembly-ui-server.cjs')],{cwd:path.resolve(__dirname,'..'),env:{...process.env,MANUAL_LAYOUT_DISPLAY_ONLY:'true',MANUAL_LAYOUT_UI_INFO_FILE:infoFile},logFile:path.join(directory,'server.log')});
  await waitUntil(()=>fs.existsSync(infoFile),60000,'owned backend');info=JSON.parse(fs.readFileSync(infoFile));
  const requests=[];upstream=http.createServer((req,res)=>{const id=new URL(req.url,'http://localhost').searchParams.get('device');requests.push({id,at:Date.now()});res.writeHead(200,{'Content-Type':'application/json'});res.end(JSON.stringify({rows:[0,1,2].map((n)=>({id,time:'样本'+(n+1),temperature:id===info.devices[0]?n:850+n,pressure:10+n,speed:100+n,open:10+n,close:12+n,low:8+n,high:15+n,min:8+n,q1:10+n,median:11+n,q3:12+n,max:15+n,x:'X'+n,y:'Y'+(n%2)}))}))});await new Promise(resolve=>upstream.listen(0,'127.0.0.1',resolve));
  browser=await playwright.chromium.launch({headless:true,...(process.env.BROWSER_EXECUTABLE?{executablePath:process.env.BROWSER_EXECUTABLE}:{}),args:['--enable-unsafe-swiftshader']});

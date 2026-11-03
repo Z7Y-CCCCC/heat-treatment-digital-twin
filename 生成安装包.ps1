@@ -318,6 +318,14 @@ if (-not (Test-Path -LiteralPath $unpacked)) { throw "缺少解包验证程序�
 if (Test-Path -LiteralPath (Join-Path $outputDirectory 'win-unpacked/resources/backend/data')) {
     throw '候选程序包含 backend/data 运行数据，拒绝执行验证或生成安装包。'
 }
+$displayResources = Join-Path $outputDirectory 'win-unpacked/resources'
+Invoke-CheckedCommand -Label '确认大屏发行版不含采集实现并默认使用外部接口' -Executable $node -ArgumentList @(
+    (Join-Path $desktopDirectory 'scripts/prepare-display-distribution.cjs'), $displayResources
+)
+$pluginDirectory = Join-Path $outputDirectory 'collector-plugin'
+Invoke-CheckedCommand -Label '生成独立可选采集插件目录（不进入大屏安装包）' -Executable $node -ArgumentList @(
+    (Join-Path $desktopDirectory 'scripts/prepare-collector-plugin.cjs'), $displayResources, $pluginDirectory
+)
 $resourceGuard = Join-Path $projectDirectory 'tools/package-resource-integrity.cjs'
 $resourceBaseline = Join-Path $outputDirectory 'installation-resource-baseline.json'
 Invoke-CheckedCommand -Label '记录安装资源不可变基线' -Executable $node -ArgumentList @(
@@ -326,7 +334,7 @@ Invoke-CheckedCommand -Label '记录安装资源不可变基线' -Executable $no
 if (-not $SkipSmokeTest) {
     Invoke-CheckedCommand -Label '独立采集服务：无 Unity 采集、重启持久化与安全停库验证' -Executable $node -ArgumentList @(
         (Join-Path $projectDirectory 'tools/collector-service-smoke-test.cjs'),
-        (Join-Path $outputDirectory 'win-unpacked/resources')
+        (Join-Path $pluginDirectory 'resources')
     )
     Invoke-CheckedCommand -Label '首次运行随包 MySQL 验证' -Executable $node -ArgumentList @(
         (Join-Path $projectDirectory 'tools/packaged-mysql-smoke-test.cjs'),
@@ -373,6 +381,12 @@ if ($installer.Length -le 0) { throw "安装包文件为空：$installerPath" }
 $hash = Get-FileHash -LiteralPath $installerPath -Algorithm SHA256
 $checksumPath = "$installerPath.sha256.txt"
 Set-Content -LiteralPath $checksumPath -Encoding UTF8 -Value "$($hash.Hash.ToLowerInvariant())  $installerName"
+$pluginName = "HeatTreatmentCollector-Plugin-$version-x64.zip"
+$pluginPath = Join-Path $outputDirectory $pluginName
+Invoke-CheckedCommand -Label '单独压缩可选采集插件' -Executable $node -ArgumentList @(
+    (Join-Path $desktopDirectory 'scripts/archive-collector-plugin.cjs'), $pluginDirectory, $pluginPath
+)
+$pluginHash = (Get-FileHash -LiteralPath $pluginPath -Algorithm SHA256).Hash.ToLowerInvariant()
 $releaseManifest = [ordered]@{
     version = $version
     createdAt = (Get-Date).ToString('o')
@@ -380,6 +394,8 @@ $releaseManifest = [ordered]@{
     size = $installer.Length
     sha256 = $hash.Hash.ToLowerInvariant()
     mysqlBundled = $true
+    collectorBundled = $false
+    collectorPlugin = [ordered]@{ file=$pluginName; size=(Get-Item -LiteralPath $pluginPath).Length; sha256=$pluginHash; smokeTest=$(if ($SkipSmokeTest) { 'skipped' } else { 'passed' }) }
     smokeTest = if ($SkipSmokeTest) { 'skipped' } else { 'passed' }
     includeHistory = [bool]$IncludeHistory
     starterTemplate = [bool]$StarterTemplate

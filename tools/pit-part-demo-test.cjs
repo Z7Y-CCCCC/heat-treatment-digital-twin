@@ -1,0 +1,21 @@
+'use strict';
+const fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict'),{execFileSync}=require('node:child_process');
+const Database=require('../backend/node_modules/better-sqlite3');
+const {createRunDirectory,createTestDatabase}=require('../backend/scripts/integration-test-utils.cjs');
+(async()=>{
+ const directory=createRunDirectory('pit-part-demo-test'),filename=await createTestDatabase(path.join(directory,'data/factory.db')),db=new Database(filename);
+ const id='factory_pit_furnaces_v1',profile=require('./model-profiles/pit-workshop-cad-layout.json');
+ db.prepare('INSERT INTO factories (id,name) VALUES (?,?)').run(id,'井式炉验收');db.prepare('INSERT INTO workshops (id,name,factory_id) VALUES (?,?,?)').run('fixture_workshop','车间',id);db.prepare('INSERT INTO lines (id,name,workshop_id) VALUES (?,?,?)').run('fixture_line','产线','fixture_workshop');
+ for(const s of profile.devices)db.prepare('INSERT INTO devices (id,name,model_type,line_id,pos_x,pos_y,pos_z,plc_enabled) VALUES (?,?,?,?,?,?,?,?)').run(s.id,s.name,s.model_type,'fixture_line',s.pos_x,s.pos_y,s.pos_z,0);
+ db.prepare('INSERT INTO projects (id,name,factory_id) VALUES (?,?,?)').run(id+'_project','验收项目',id);
+ const {normalizeDashboardDocument}=await import('../frontend/src/runtime/dashboardSchema.js');const document=normalizeDashboardDocument({projectId:id+'_project',sceneId:id+'_scene',metadata:{pitStaticDisplay:1},widgets:[{id:'custom_marker',type:'text',content:{text:'保留'}},{id:'legacy_factory_api',type:'value',data:{mode:'http_api',connectionId:'owned_factory_only',apiPath:'/',jsonPath:'value'}}]});
+ db.prepare('INSERT INTO scenes (id,project_id,name,draft_json,draft_revision) VALUES (?,?,?,?,?)').run(id+'_scene',id+'_project','验收场景',JSON.stringify(document),1);
+ const geometry=JSON.stringify(db.prepare('SELECT id,pos_x,pos_y,pos_z,plc_enabled FROM devices ORDER BY id').all());db.close();fs.writeFileSync(path.join(directory,'data/database-config.json'),JSON.stringify({type:'sqlite',filename}));
+ fs.writeFileSync(path.join(directory,'data/data-sources.'+id+'.json'),JSON.stringify({version:1,connections:[{id:'owned_factory_only',name:'工厂独立接口',sourceType:'http_api',connector:'http',baseUrl:'http://127.0.0.1:1/',authType:'none',enabled:true}],backup:{selectedConnectionIds:[]}}));
+ const run=()=>JSON.parse(execFileSync(process.execPath,[path.join(__dirname,'pit-part-demo.cjs'),'--apply'],{env:{...process.env,PIT_DEMO_DATA_ROOT:directory,DB_TYPE:'sqlite',SQLITE_FILE:filename},encoding:'utf8',windowsHide:true,timeout:120000}));
+ const first=run(),second=run();assert.equal(first.parts,77);assert.equal(second.parts,77);
+ const check=new Database(filename,{readonly:true}),scene=check.prepare('SELECT draft_json FROM scenes WHERE id=?').get(id+'_scene'),saved=JSON.parse(scene.draft_json);assert.ok(saved.widgets.some(w=>w.id==='custom_marker'));assert.equal(saved.widgets.filter(w=>w.id.startsWith('pit_part_data_')).length,9);
+ assert.equal(JSON.stringify(check.prepare('SELECT id,pos_x,pos_y,pos_z,plc_enabled FROM devices ORDER BY id').all()),geometry);check.close();
+ const sources=JSON.parse(fs.readFileSync(path.join(directory,'data/data-sources.'+id+'.json')));assert.equal(sources.connections.length,10);assert.equal(fs.readdirSync(path.join(directory,'data/data-source-files',id)).length,9);
+ const result={success:true,directory,parts:77,devices:9,repeatedApplyNoDuplicateAssets:true,customWidgetPreserved:true,geometryAndPlcUnchanged:true,noCollectionTests:true};fs.writeFileSync(path.join(directory,'result.json'),JSON.stringify(result,null,2));console.log(JSON.stringify(result,null,2));
+})().catch(e=>{console.error(e);process.exitCode=1});

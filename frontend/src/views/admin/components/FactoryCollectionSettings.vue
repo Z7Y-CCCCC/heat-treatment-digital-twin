@@ -5,10 +5,11 @@ import { canAdminPage } from '../../../runtime/adminSession.js'
 import { FACTORY_DIRECTORY_CHANGE_EVENT } from '../../../runtime/factoryScope.js'
 import EnableCapsule from '../../../components/EnableCapsule.vue'
 
+const pluginInstalled = ref(true)
 const factories = ref([]), busyId = ref(''), error = ref(''), message = ref('')
 const statuses = ref({}), statusError = ref('')
 let timer = null, controller = null, inFlight = false, disposed = false, statusGeneration = 0
-const statusNames = { normal: '采集正常', simulation: '模拟运行', abnormal: '采集异常', connecting: '连接中', starting: '等待采集', unavailable: '采集不可用', disabled: '已停用', no_devices: '未配置设备', unconfigured: '未启用设备' }
+const statusNames = { external: '外部接口', normal: '采集正常', simulation: '模拟运行', abnormal: '采集异常', connecting: '连接中', starting: '等待采集', unavailable: '采集不可用', disabled: '已停用', no_devices: '未配置设备', unconfigured: '未启用设备' }
 function runtime(factory) { return statuses.value[factory.id] }
 function statusText(factory) {
   if (statusError.value) return '状态未更新'
@@ -19,7 +20,7 @@ function statusText(factory) {
 }
 function count(factory, key) {
   const current = runtime(factory)
-  return statusError.value || !current || ['disabled', 'no_devices', 'unconfigured'].includes(current.status) ? '—' : current[key]
+  return statusError.value || !current || ['disabled', 'no_devices', 'unconfigured', 'external'].includes(current.status) ? '—' : current[key]
 }
 function readTime(factory) {
   const value = runtime(factory)?.lastReadAt
@@ -35,6 +36,7 @@ async function refreshStatus() {
     const result = await adminApi.getFactoryCollectionStatus(controller.signal)
     if (disposed || generation !== statusGeneration) return
     if (result.error || !result.success || !Array.isArray(result.factories)) throw new Error(result.error || '读取工厂采集情况失败')
+    pluginInstalled.value = result.pluginInstalled !== false
     statuses.value = Object.fromEntries(result.factories.map(factory => [factory.factoryId, factory]))
     for (const factory of factories.value) {
       if (factory.id !== busyId.value && statuses.value[factory.id]) factory.collectionEnabled = statuses.value[factory.id].collectionEnabled
@@ -84,7 +86,7 @@ onUnmounted(() => { disposed = true; controller?.abort(); clearInterval(timer); 
           <td class="collection-count" :class="{ good: !statusError && runtime(factory)?.normalDevices > 0 }">{{ count(factory, 'normalDevices') }}</td>
           <td class="collection-count" :class="{ bad: !statusError && runtime(factory)?.abnormalDevices > 0 }">{{ count(factory, 'abnormalDevices') }}</td>
           <td class="collection-time">{{ readTime(factory) }}</td>
-          <td><EnableCapsule :enabled="factory.collectionEnabled !== false" :pending="busyId === factory.id" :disabled="!!busyId || !canAdminPage('settings.data', 'edit')" :label="`采集：${factory.name}`" @toggle="toggle(factory)" /></td>
+          <td><EnableCapsule :enabled="factory.collectionEnabled !== false" :pending="busyId === factory.id" :disabled="!pluginInstalled || !!busyId || !canAdminPage('settings.data', 'edit')" :label="`采集：${factory.name}`" @toggle="toggle(factory)" /></td>
         </tr>
       </tbody></table>
     </div>

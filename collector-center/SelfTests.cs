@@ -31,6 +31,9 @@ namespace HeatTreatmentCollectorCenter
                     Ops.Get(h,"engine"),Ops.Parse("{\"mode\":\"integrated_plc\",\"collectorStatus\":{\"status\":\"error\"},\"devices\":[{\"status\":\"offline\",\"quality\":\"bad\"}]}")};
                 var mixed=Ops.Summarize(new Snapshot(),h,DateTime.UtcNow);
                 Check(!mixed.Healthy && mixed.Mode.Contains("混合"),"secondary factory and mixed mode");
+                var automatic=Ops.Parse("{\"db\":{\"connected\":true},\"collectorFactories\":[{\"mode\":\"integrated_plc\"}],\"collectorHealth\":{\"state\":\"degraded\",\"label\":\"部分采集异常\",\"reason\":\"坏设备不影响其他设备\",\"counts\":{\"normal\":16,\"abnormal\":1},\"lastSampleAgeMs\":23,\"process\":{\"pid\":42,\"memoryRssBytes\":67108864}}}");
+                var observed=Ops.Summarize(new Snapshot(),automatic,DateTime.UtcNow);
+                Check(!observed.Healthy && observed.Normal==16 && observed.Abnormal==1 && observed.HealthLabel=="部分采集异常" && observed.Collection=="刚刚" && observed.Process.Contains("64 MB"),"shared observed collector health and counts");
                 bool rejected=false; try { Ops.Origin(Ops.Parse("{\"port\":1}")); } catch { rejected=true; }
                 Check(rejected,"invalid port");
                 var points=PointRow.From(Ops.Parse("{\"points\":[{\"label\":\"温度\",\"plc_tag\":\"DB1,REAL0\",\"data_type\":\"REAL\",\"value\":0,\"quality\":\"good\"},{\"name\":\"报警\",\"value\":false,\"quality\":\"good\"},{\"name\":\"过期\",\"value\":100,\"quality\":\"stale\"}]}"));

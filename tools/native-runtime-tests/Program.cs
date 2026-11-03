@@ -13,6 +13,7 @@ internal static partial class Program
     {
         var tests = new (string Name, Func<Task> Run)[]
         {
+            ("motion signals freeze on stale, invalid or wrong point identity; interpolation follows authored coordinates", MotionSignalsAreSafe),
             ("manual orbit retains direction across half turns and many full revolutions", OrbitRetainsWinding),
             ("world drag out and back never becomes a selection click", WorldClickRetainsGesture),
             ("industrial floor, pits, platforms and device heights match the shared Web/Unity contract", IndustrialGroundMatchesContract),
@@ -37,6 +38,27 @@ internal static partial class Program
             Console.WriteLine($"PASS: {test.Name}");
         }
         Console.WriteLine($"Passed {tests.Length}/{tests.Length} isolated native runtime checks.");
+    }
+
+    private static Task MotionSignalsAreSafe()
+    {
+        var binding = JObject.Parse("{sourceGroup:'doors',sourceKey:'open',pointId:'42',inputMin:0,inputMax:1,transitionSeconds:2,speed:1}");
+        JObject Frame(double value) => new JObject { ["doors"]=new JObject { ["open"]=value }, ["pointMeta"]=new JObject { ["doors.open"]=new JObject { ["id"]="42" } } };
+        var state=new HeatTreatment.DigitalTwin.Rendering.MotionSignalState();
+        state.Receive(Frame(0),binding,0);state.Receive(Frame(1),binding,1);state.Step(.5,1.5,5000,binding);
+        if(Math.Abs(state.Position-.25)>1e-9)throw new Exception("motion interpolation");
+        state.Receive(Frame(0),binding,2);state.Step(.2,2.2,5000,binding);
+        if(Math.Abs(state.Position-.15)>1e-9)throw new Exception("motion reversal");
+        state.Receive(Frame(1),binding,3);state.Step(100,10,5000,binding);
+        if(state.Usable||Math.Abs(state.Position-.15)>1e-9)throw new Exception("stale motion did not freeze");
+        var wrong=Frame(1);wrong["pointMeta"]["doors.open"]["id"]="other";state.Receive(wrong,binding,11);
+        if(state.Usable)throw new Exception("wrong device point moved animation");
+        state.Receive(JObject.Parse("{doors:{open:null}}"),binding,12);if(state.Usable)throw new Exception("missing sample interpreted as zero");
+        binding["invert"]=true;binding["transitionSeconds"]=0;state.Receive(Frame(0),binding,13);if(state.Position!=1)throw new Exception("explicit inversion");
+        var clip=JObject.Parse("{count:2,duration:1}");var track=JObject.Parse("{size:3,channel:'p',values:[0,0,0,2,4,6]}");
+        var v=HeatTreatment.DigitalTwin.Rendering.MotionSignalState.Sample(clip,track,.25);
+        if(v[0]!=.5||v[1]!=1||v[2]!=1.5)throw new Exception("native portable track interpolation differs");
+        return Task.CompletedTask;
     }
 
     private static Task ConfigurationChangesAreScoped()

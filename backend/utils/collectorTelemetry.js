@@ -42,6 +42,12 @@ class CollectorTelemetry {
             if (this.pending.size) this.flush();
         });
     }
+    remove(deviceIds = []) {
+        for (const id of deviceIds) {
+            const item = this.pending.get(String(id));
+            if (item) { this.bytes -= item.bytes; this.pending.delete(String(id)); }
+        }
+    }
     close() {
         this.closed = true;
         this.pending.clear();

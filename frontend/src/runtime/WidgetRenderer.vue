@@ -97,6 +97,12 @@ const dataContext = computed(() => ({
 
 function getWidgetValue(path) {
   if (path === 'metrics.progress_percent') return progressPercent.value
+  const partPoint=/^selectedPart\.points\.(\d+)\.value$/.exec(String(path || ''))
+  if(partPoint){
+    const part=dataContext.value.selectedPart,point=part?.points?.[Number(partPoint[1])]
+    if(part?.id && props.runtimeContext.partId && String(part.id)!==String(props.runtimeContext.partId))return undefined
+    if(point?.quality && point.quality!=='good')return undefined
+  }
   const match=/^(deviceDataMap|deviceStatusMap)\.[^.]+\.(.*)$/.exec(String(path || ''))
   if (scopedDeviceBinding.value && /^(device\.|deviceDataMap\.|deviceStatusMap\.)/.test(String(path || '')) && ['bad','stale'].includes(sampledDevice.value.status?.quality)) return undefined
   if (match && scopedDeviceBinding.value) return getByPath(match[1]==='deviceDataMap'?sampledDevice.value.reading:sampledDevice.value.status,match[2])
@@ -106,7 +112,9 @@ function getWidgetValue(path) {
 const pointRecord = computed(() => scopedDeviceBinding.value ? sampledDevice.value.point : props.pointValues[String(dataBinding.value.pointId || '')] || null)
 const databaseRecord = computed(() => props.databaseValues[String(props.widget.id || '')] || null)
 const businessSection = computed(() => dataBinding.value.businessSection || content.value.section || 'batches')
-const businessSectionMeta = computed(() => dataBinding.value.mode==='business' && databaseRecord.value
+const businessSectionMeta = computed(() => dataBinding.value.mode==='dataset'
+  ? {available:databaseRecord.value?.quality==='good',rows:databaseRecord.value?.quality==='good'?databaseRecord.value.rows || []:[],message:databaseRecord.value?.error || ''}
+  : dataBinding.value.mode==='business' && databaseRecord.value
   ? objectValue(databaseRecord.value.businessSection,{available:false,rows:[]}) : objectValue(props.businessData?.sections?.[businessSection.value], {}))
 const businessRows = computed(() => Array.isArray(businessSectionMeta.value.rows)
   ? businessSectionMeta.value.rows.slice(0, Math.max(1, Number(content.value.limit || 6)))
@@ -119,7 +127,7 @@ const businessSectionLabel = computed(() => ({
   maintenance: '维护记录'
 }[businessSection.value] || '外部业务数据'))
 const businessUnavailable = computed(() => businessSectionMeta.value.available === false)
-const businessLoading = computed(() => dataBinding.value.mode==='business' ? !databaseRecord.value : ['idle', 'loading'].includes(String(props.businessData?.status || 'idle')))
+const businessLoading = computed(() => ['dataset','business'].includes(dataBinding.value.mode) ? !databaseRecord.value : ['idle', 'loading'].includes(String(props.businessData?.status || 'idle')))
 
 const dataDrivenWidget = computed(() => {
   if (isHudModule.value || ['metrics', 'trend', 'alarm_list', 'marquee', 'device_list', 'business_summary'].includes(type.value)) return true
@@ -129,6 +137,9 @@ const dataDrivenWidget = computed(() => {
 const dataPending = computed(() => {
   if (!overlayMode.value || !dataDrivenWidget.value) return false
   if (type.value === 'business_summary') return businessLoading.value
+  // External-only displays never receive a PLC first-frame signal. The actual
+  // binding response (good or failed) completes this widget's loading state.
+  if(['dataset','database','http_api','business'].includes(dataBinding.value.mode))return !databaseRecord.value
   return props.dataReady !== true
 })
 
@@ -141,6 +152,7 @@ function firstBusinessValue(row, keys = []) {
 }
 
 function businessRowTitle(row) {
+  if(dataBinding.value.mode==='dataset')return firstBusinessValue(row,['name','label','id'])
   if (businessSection.value === 'batches') return firstBusinessValue(row, ['batchNo', 'batchName', 'id'])
   if (businessSection.value === 'compliance') return firstBusinessValue(row, ['signalName', 'signalId', 'deviceId'])
   if (businessSection.value === 'oee') return firstBusinessValue(row, ['deviceId', 'date'])
@@ -148,6 +160,7 @@ function businessRowTitle(row) {
 }
 
 function businessRowSubtitle(row) {
+  if(dataBinding.value.mode==='dataset')return firstBusinessValue(row,['msg','description','message','time'])
   if (businessSection.value === 'batches') return [row?.productName, row?.status].filter(Boolean).join(' · ') || '工艺批次'
   if (businessSection.value === 'compliance') return [row?.deviceId, row?.recordTime].filter(Boolean).join(' · ') || '归档信号'
   if (businessSection.value === 'oee') return [row?.date, row?.batchCount != null ? `批次 ${row.batchCount}` : ''].filter(Boolean).join(' · ')
@@ -155,6 +168,7 @@ function businessRowSubtitle(row) {
 }
 
 function businessRowValue(row) {
+  if(dataBinding.value.mode==='dataset')return firstBusinessValue(row,['value','status'])
   if (businessSection.value === 'batches') {
     const progress = Number(row?.progress)
     return Number.isFinite(progress) ? `${progress.toFixed(0)}%` : firstBusinessValue(row, ['status', 'currentStep'])
@@ -407,8 +421,19 @@ const statusText = computed(() => {
   return statusState.value === 'on' ? (content.value.onText || '正常') : (content.value.offText || '停止')
 })
 
-const deviceRows = computed(() => Object.entries(props.deviceStatusMap)
+const externalDeviceRows=computed(()=>{
+ if(dataBinding.value.mode!=='dataset')return null
+ if(databaseRecord.value?.quality!=='good')return []
+ const fields=content.value.deviceFields || {},get=(row,key)=>row[fields[key] || key]
+ const bool=value=>[true,1,'1','true'].includes(value)
+ return [...new Map((databaseRecord.value.rows || []).map(row=>{
+  const id=String(get(row,'id') || row.deviceId || row.device_id || '')
+  return {id,name:get(row,'name') || id,online:bool(get(row,'online')),running:bool(get(row,'running')),alarm:bool(get(row,'alarm')),temp:get(row,'temp') ?? null,quality:get(row,'online')==null?'bad':'good'}
+ }).filter(row=>row.id).map(row=>[row.id,row])).values()]
+})
+const deviceRows = computed(() => (externalDeviceRows.value || Object.entries(props.deviceStatusMap)
   .map(([id, value]) => ({ id, ...value }))
+  )
   .filter(device => !Array.isArray(content.value.deviceIds) || !content.value.deviceIds.length || content.value.deviceIds.includes(device.id))
   .sort((a,b) => Array.isArray(content.value.deviceIds) ? content.value.deviceIds.indexOf(a.id) - content.value.deviceIds.indexOf(b.id) : 0)
   .slice(0, Number(content.value.limit || 12)))
@@ -418,7 +443,7 @@ const deviceRows = computed(() => Object.entries(props.deviceStatusMap)
 const hudRingValue = computed(() => numericValue(getWidgetValue(content.value.chartPath || 'metrics.overall_oee')))
 const hudRingPercent = computed(() => Math.max(0, Math.min(100, hudRingValue.value ?? 0)))
 const hudDeviceCounts = computed(() => {
-  const rows = Object.values(props.deviceStatusMap)
+  const rows = externalDeviceRows.value || Object.values(props.deviceStatusMap)
   return { total: rows.length, online: rows.filter(device => device.online && device.quality !== 'bad').length, alarms: rows.filter(device => device.alarm).length }
 })
 function hudDeviceState(device) {
