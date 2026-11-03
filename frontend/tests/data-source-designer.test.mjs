@@ -7,7 +7,7 @@ import { adminApi } from '../src/config/factoryConfig.js'
 import { deferred, installBrowser, settle } from './helpers.mjs'
 import { exportDashboardTemplate, importDashboardTemplate, dashboardTemplateReferences, rebindDashboardTemplate } from '../src/runtime/dashboardTemplate.js'
 import { normalizeDashboardDocument } from '../src/runtime/dashboardSchema.js'
-import { widgetBindingChoices, DATASET_WIDGETS } from '../src/runtime/widgetBindingChoices.js'
+import { widgetBindingChoices, DATASET_WIDGETS, POINT_WIDGETS } from '../src/runtime/widgetBindingChoices.js'
 import { applyTemplateFieldBindings, templateFieldBindings } from '../src/runtime/templateFieldMapping.js'
 
 // Run the real SFC setup/load path; child renderers are irrelevant to the source
@@ -18,7 +18,7 @@ test('source choices are short, unique, supported by the widget and preserve exi
     const choices=widgetBindingChoices({type,data:{mode}})
     assert.equal(new Set(choices.map(c=>c.id)).size,choices.length)
     assert.ok(choices.some(c=>c.id===mode),`${type}/${mode} remains editable`)
-    if(mode==='static')assert.equal(choices.length,DATASET_WIDGETS.has(type)?4:2)
+    if(mode==='static')assert.equal(choices.length,1+Number(DATASET_WIDGETS.has(type))+2*Number(POINT_WIDGETS.has(type)))
     for(const id of ['database','http_api','business'])assert.equal(choices.some(c=>c.id===id),mode===id)
   }
 })
