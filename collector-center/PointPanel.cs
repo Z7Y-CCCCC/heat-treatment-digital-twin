@@ -12,7 +12,7 @@ namespace HeatTreatmentCollectorCenter
         readonly Func<Snapshot> status;
         readonly ComboBox factories=new ComboBox(),devices=new ComboBox();
         readonly TextBox search=new TextBox();
-        readonly Button login=new Button();
+        readonly Button login=new SoftButton();
         readonly Label info=new Label();
         readonly DataGridView grid=new DataGridView();
         PointClient client;
@@ -33,8 +33,9 @@ namespace HeatTreatmentCollectorCenter
             info.Text="点位使用后台账号权限";info.ForeColor=Color.DimGray;info.Dock=DockStyle.Fill;info.TextAlign=ContentAlignment.MiddleLeft;info.AutoEllipsis=true;layout.Controls.Add(info,0,1);
             grid.Dock=DockStyle.Fill;grid.ReadOnly=true;grid.VirtualMode=true;grid.AllowUserToAddRows=false;grid.AllowUserToDeleteRows=false;
             grid.RowHeadersVisible=false;grid.BackgroundColor=Color.White;grid.BorderStyle=BorderStyle.FixedSingle;grid.SelectionMode=DataGridViewSelectionMode.FullRowSelect;
+            grid.BorderStyle=BorderStyle.None;grid.EnableHeadersVisualStyles=false;grid.ColumnHeadersDefaultCellStyle.BackColor=Color.FromArgb(244,247,251);grid.ColumnHeadersDefaultCellStyle.ForeColor=Color.FromArgb(108,119,136);grid.GridColor=Color.FromArgb(235,239,245);grid.DefaultCellStyle.SelectionBackColor=Color.FromArgb(232,241,255);grid.DefaultCellStyle.SelectionForeColor=Color.FromArgb(37,61,90);grid.RowTemplate.Height=28;
             foreach(var column in new[]{"点位","地址","类型","当前值","单位","质量","更新时间"}) grid.Columns.Add(column,column);
-            grid.Columns[0].Width=125;grid.Columns[1].Width=145;grid.Columns[2].Width=60;grid.Columns[3].Width=82;grid.Columns[4].Width=45;grid.Columns[5].Width=55;grid.Columns[6].Width=90;
+            grid.ColumnHeadersBorderStyle=DataGridViewHeaderBorderStyle.None;grid.CellBorderStyle=DataGridViewCellBorderStyle.SingleHorizontal;grid.Columns[0].Width=125;grid.Columns[1].Width=145;grid.Columns[2].Width=60;grid.Columns[3].Width=82;grid.Columns[4].Width=45;grid.Columns[5].Width=55;grid.Columns[6].Width=90;
             grid.CellValueNeeded+=(s,e)=>{ if(e.RowIndex>=visible.Count)return;var p=visible[e.RowIndex]; e.Value=new[]{p.Name,p.Address,p.Type,p.Value,p.Unit,p.Quality,p.Time}[e.ColumnIndex]; };
             layout.Controls.Add(grid,0,2);Controls.Add(layout);
             factories.SelectedIndexChanged+=async(s,e)=>{ if(!updating){generation++;rows.Clear();Filter();info.Text="读取中…";await RefreshPoints();} };
@@ -84,7 +85,8 @@ namespace HeatTreatmentCollectorCenter
                 if(status().Api!="可达")throw new Exception("后台连接中断");
                 if(active.Origin!=status().Origin)throw new Exception("服务地址已改变，请重新登录");
                 var factoryData=await active.Factories();
-                var list=Ops.Items(Ops.Get(factoryData,"factories")).Where(f=>Ops.Get(f,"is_enabled")==null || Ops.Num(Ops.Get(f,"is_enabled"))!=0).ToArray();
+                // Map visibility is independent of collection and point lookup.
+                var list=Ops.Items(Ops.Get(factoryData,"factories")).ToArray();
                 if(selectedFactory!="" && !list.Any(f=>Ops.Str(f,"id")==selectedFactory))selectedFactory="";
                 var activeName=list.FirstOrDefault(f=>Ops.Str(f,"id")==Ops.Str(factoryData,"activeFactoryId"));
                 var deviceData=await active.Devices(selectedFactory);

@@ -65,6 +65,15 @@ let backend;
     await request(motionRoute, { method: 'PUT', session: motionEditor, body: animationBody, expected: 200 });
     await request(`/devices/${device.id}`, { method: 'PUT', session: motionEditor, body: {}, expected: 403 });
     await request(motionRoute, { session: deviceReader, expected: 403 });
+    const collectorViewer = await account('collector_viewer', { 'settings.data': { view:true } });
+    const collectorEditor = await account('collector_editor', { 'settings.data': { view:true,edit:true } });
+    const collectorStatus = (await request('/collector/status', { session:collectorViewer,expected:200 })).data;
+    const sourceBody = { mode:collectorStatus.configuredMode,expectedMode:collectorStatus.configuredMode };
+    await request('/collector/status', { session:deviceReader,expected:403 });
+    await request('/collector/mode', { method:'PUT',session:collectorViewer,body:sourceBody,expected:403 });
+    await request('/collector/mode', { method:'PUT',session:collectorEditor,body:sourceBody,noCsrf:true,expected:403 });
+    await request('/collector/mode', { method:'PUT',session:collectorEditor,body:sourceBody,expected:200 });
+    await request('/collector/mode', { method:'PUT',session:collectorEditor,body:{...sourceBody,plc_ip:'forbidden'},expected:400 });
     for (const session of [deviceReader, monitorReader]) {
         const status = await request('/native-preview/status', { session, expected: 200 });
         assert.equal(typeof status.data.unityClients, 'number');

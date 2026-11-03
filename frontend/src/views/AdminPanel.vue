@@ -11,6 +11,7 @@ import QualityNotice from '../components/QualityNotice.vue'
 import WorkshopGroundEditor from './admin/components/WorkshopGroundEditor.vue'
 import DataSourceWorkspace from './admin/components/DataSourceWorkspace.vue'
 import FactoryCollectionSettings from './admin/components/FactoryCollectionSettings.vue'
+import CollectorRuntimePanel from './admin/components/CollectorRuntimePanel.vue'
 import { normalizeGround, normalizeDeviceGround } from '../../../shared/industrialGround.mjs'
 import { createVoiceAnnouncer, normalizeVoiceRule, parseVoiceConfig } from '../runtime/VoiceAnnouncer.js'
 import WidgetRenderer from '../runtime/WidgetRenderer.vue'
@@ -9956,7 +9957,7 @@ async function openAdminSetupStep(step) {
                     <ProjectMigrationSettings v-if="settingsSubpage === 'migration' && canAdminPage('settings.migration')" />
 
                     <!-- 引擎运行状态 -->
-                    <div v-if="!['migration', 'database'].includes(settingsSubpage)" class="engine-status-card" :class="'status-' + engineStatus.plcStatus?.status">
+                    <div v-if="!['migration', 'database', 'data'].includes(settingsSubpage)" class="engine-status-card" :class="'status-' + engineStatus.plcStatus?.status">
                         <div class="engine-status-header">
                             <span class="engine-dot"></span>
                             <strong>数据引擎状态</strong>
@@ -10464,29 +10465,12 @@ async function openAdminSetupStep(step) {
 
                         <!-- ===== 数据通路选择 ===== -->
                         <div v-show="settingsSubpage === 'data'" class="settings-section secondary-page-panel">
+                            <CollectorRuntimePanel v-if="settingsSubpage === 'data'" :confirm="confirm" />
                             <FactoryCollectionSettings v-if="settingsSubpage === 'data'" />
-                            <h3 class="section-title">数据通路模式</h3>
-                            <label>选择数据采集方式
-                                <select v-model="settings.data_mode" class="input" v-permission="{ page: controlPermissionPage, action: 'edit' }">
-                                    <option value="integrated_plc">独立进程低延迟采集（推荐）</option>
-                                    <option value="simulation">模拟数据（离线演示用）</option>
-                                </select>
-                            </label>
-                            <div class="mode-hint">
-                                <template v-if="settings.data_mode === 'integrated_plc'">
-                                    <p><strong>推荐主链路：</strong>PLC → 独立采集进程 → 管理 API / WebSocket → 前台 3D。</p>
-                                    <p style="color:#86868b; font-size:12px;">采集与管理接口进程隔离；采集异常独立重启，界面关闭不停止 Windows 服务采集。</p>
-                                    <p style="color:#86868b; font-size:12px;">PLC 连接参数在“设备管理”里按设备配置，变量采集周期在“点位映射”里按点位配置。</p>
-                                </template>
-                                <template v-else>
-                                    <p><strong>模拟模式：</strong>系统自动生成随机数据，无需连接任何外部设备。</p>
-                                    <p style="color:#86868b; font-size:12px;">适用于离线演示、功能验收。数据为程序模拟生成。</p>
-                                </template>
-                            </div>
                         </div>
 
                         <button
-                            v-if="settingsSubpage === 'performance' || settingsSubpage === 'data'"
+                            v-if="settingsSubpage === 'performance'"
                             @click="saveSettings(currentPermissionPage)"
                             class="btn btn-primary secondary-page-save"
                          v-permission="{ page: controlPermissionPage, action: 'edit' }">保存当前参数</button>

@@ -96,6 +96,8 @@ export function apiPermission(path, method = 'GET', body) {
   }
   if (resource('plc') || resource('engine/status')) return safe ? read(['points', 'points.alarms', 'point-monitor', 'mobile-devices', 'settings.data'], true) : 'admin'
   if (path === '/api/engine/restart') return any('admin', p('settings.data', 'edit'))
+  if (path === '/api/collector/status' && safe) return read(['settings.data', 'point-monitor', 'mobile-devices'])
+  if (path === '/api/collector/mode' && method === 'PUT') return any('admin', p('settings.data', 'edit'))
   if (resource('appearance-assets')) return safe ? read(['platform.designer', 'platform.map', 'platform.loading', 'factories'], true) : any('admin', p('platform.designer', action), p('platform.map', action), p('platform.loading', action))
   if (resource('template-library') || resource('config') || resource('business-data')) return safe ? read(spatial, true) : 'admin'
   if (resource('acceptance-report')) return safe ? read(['models', 'platform.designer']) : 'admin'

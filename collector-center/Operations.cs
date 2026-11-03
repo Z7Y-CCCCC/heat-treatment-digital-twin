@@ -22,6 +22,8 @@ namespace HeatTreatmentCollectorCenter
     {
         public string Service="未安装", Api="不可达", Database="未知", Mode="未知", Collection="暂无采样", Process="—", Error="", Root="", Origin="http://127.0.0.1:3001";
         public bool Installed, Running, Healthy;
+        public string HealthState="offline",HealthLabel="等待采集进程";
+        public int Normal=-1,Abnormal=-1;
         public DateTime CheckedAt=DateTime.Now;
     }
     internal sealed class LogLine
@@ -82,6 +84,21 @@ namespace HeatTreatmentCollectorCenter
         }
         internal static Snapshot Summarize(Snapshot s,object health,DateTime now)
         {
+            var observed=Get(health,"collectorHealth");
+            if(observed!=null) {
+                s.HealthState=Str(observed,"state");s.HealthLabel=Str(observed,"label");
+                s.Healthy=s.HealthState=="healthy" || s.HealthState=="simulation";
+                s.Normal=(int)Num(Get(Get(observed,"counts"),"normal"));s.Abnormal=(int)Num(Get(Get(observed,"counts"),"abnormal"));
+                s.Api="可达";s.Database=Yes(Get(Get(health,"db"),"connected"))?"已连接":"异常";
+                var observedModes=Items(Get(health,"collectorFactories")).Select(f=>Str(f,"mode")).Where(x=>x!="").Distinct().ToArray();
+                if(observedModes.Length==0)observedModes=new[]{Str(Get(health,"engine"),"mode")};
+                s.Mode=observedModes.All(x=>x=="")?"未运行":observedModes.Length>1?"混合来源":observedModes.Contains("simulation")?"模拟演示":"现场采集";
+                double sampleAge=Get(observed,"lastSampleAgeMs")==null?double.PositiveInfinity:Num(Get(observed,"lastSampleAgeMs"));
+                s.Collection=double.IsInfinity(sampleAge)?"—":sampleAge<1000?"刚刚":(sampleAge/1000).ToString("0.0")+" 秒前";
+                var process=Get(observed,"process");
+                s.Process=Get(process,"pid")==null?"未运行":"PID "+Str(process,"pid")+(Get(process,"memoryRssBytes")==null?"":" · "+(Num(Get(process,"memoryRssBytes"))/1048576).ToString("0")+" MB");
+                s.Error=Redact(Str(observed,"reason")); return s;
+            }
             var engine=Get(health,"engine"); var proc=Get(engine,"process");
             var factories=Items(Get(health,"collectorFactories")).ToArray();
             if(factories.Length==0) factories=new[]{engine};
@@ -103,6 +120,7 @@ namespace HeatTreatmentCollectorCenter
             s.Error=Redact(Str(proc,"lastError"));
             if(!devicesReady) s.Error="部分设备连接或数据质量异常";
             if(failures.Length>0) s.Error="需检查："+string.Join("、",failures);
+            s.HealthLabel=s.Healthy?"采集正常":"采集需检查";s.HealthState=s.Healthy?"healthy":"degraded";
             return s;
         }
         internal static async Task<Snapshot> Status()
@@ -120,8 +138,9 @@ namespace HeatTreatmentCollectorCenter
             object config=null;
             try { config=ReadConfig(); s.Root=Str(config,"root"); s.Origin=Origin(config); }
             catch(Exception error) { s.Error=Redact(error.Message); return s; }
-            if(!s.Running) return s;
-            if(config==null) { s.Error="服务配置丢失"; return s; }
+            // A development/application-owned collector can be alive without an
+            // installed SCM service. Detect it; never claim boot collection exists.
+            if(config==null && s.Installed && s.Running) { s.Error="服务配置丢失"; return s; }
             try { Summarize(s,await FetchHealth(s.Origin).ConfigureAwait(false),DateTime.UtcNow); }
             catch(Exception error) { s.Error=Redact(error is TaskCanceledException ? "管理接口超时" : error.Message); }
             return s;

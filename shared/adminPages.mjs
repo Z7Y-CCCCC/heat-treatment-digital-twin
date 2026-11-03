@@ -25,7 +25,7 @@ export const ADMIN_PAGES = [
   page('settings.database', '系统设置 · 数据连接与备份', { container: 'settings', subpage: 'database', tabLabel: '数据连接与备份', description: '数据库、ERP / MES 接口、备份与恢复', actions: ['view', 'edit', 'delete'] }),
   page('settings.migration', '系统设置 · 项目迁移（仅管理员）', { container: 'settings', subpage: 'migration', tabLabel: '项目迁移', description: '项目包与引用资产的导入、导出', ownerOnly: true }),
   page('settings.performance', '系统设置 · 客户端性能', { container: 'settings', subpage: 'performance', tabLabel: '客户端性能', description: 'Unity 画质' }),
-  page('settings.data', '系统设置 · 数据通路', { container: 'settings', subpage: 'data', tabLabel: '数据通路', description: 'PLC 实时采集或离线模拟模式' }),
+  page('settings.data', '系统设置 · 采集状态', { container: 'settings', subpage: 'data', tabLabel: '采集状态', description: '进程健康、设备状态与数据来源' }),
   page('settings.license', '系统设置 · 授权与版本', { container: 'settings', subpage: 'license', tabLabel: '授权与版本', description: '离线许可证、有效期与发布信息', actions: ['view'] }),
   page('users', '用户与权限（仅管理员）', { navGroup: 'main', navLabel: '用户与权限', icon: 'users', menuOrder: 50, actions: ['view', 'edit', 'delete'], ownerOnly: true })
 ]

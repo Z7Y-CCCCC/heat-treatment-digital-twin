@@ -9,6 +9,7 @@ const { closeAlarmOutbox } = require('./alarmOutbox');
 const { CollectorTelemetry } = require('../utils/collectorTelemetry');
 const MAX_MESSAGE_BYTES = 4 * 1024 * 1024;
 let stopping = false, started = false;
+let eventLoopLagMs = 0, lastTick = Date.now(), memoryRssBytes = process.memoryUsage().rss;
 
 function send(message, callback = () => {}) {
     if (!process.connected) { callback(new Error('Parent disconnected')); return; }
@@ -24,13 +25,15 @@ function send(message, callback = () => {}) {
 const telemetry = new CollectorTelemetry((devices, done) => send({
     type: 'telemetry', devices, status: engine.getStatus(),
     factories: engine.getFactoryStatuses(), activeFactoryId: engine.activeFactoryId,
-    diagnostics: { droppedSamples: telemetry.dropped }
+    diagnostics: { droppedSamples: telemetry.dropped, memoryRssBytes, eventLoopLagMs }
 }, done));
 const engine = new DataEngine({
     broadcastDeviceData(devices) { if (!stopping) telemetry.add(devices); },
     broadcastStatus() { /* included in heartbeat and latest-frame telemetry */ }
 });
 const heartbeat = setInterval(() => {
+    const now = Date.now(); eventLoopLagMs = Math.max(0, now - lastTick - 1000); lastTick = now;
+    memoryRssBytes = process.memoryUsage().rss;
     if (!stopping) telemetry.flush();
 }, 1000);
 
@@ -64,6 +67,10 @@ process.on('message', async message => {
             result = { started: true };
         } else if (method === 'factoryCollection' && started) {
             result = await engine.setFactoryCollectionEnabled(payload.factoryId);
+            telemetry.flush();
+        } else if (method === 'reloadFactory' && started) {
+            result = await engine.reloadFactoryConfiguration(payload.factoryId);
+            telemetry.remove(result.removedDeviceIds);
             telemetry.flush();
         } else if (method === 'points' && started) {
             const source = payload.factoryId && payload.factoryId !== engine.activeFactoryId

@@ -59,6 +59,7 @@ const { loadReleaseManifest } = require('./services/releaseManifest');
 const { getLicenseStatus, isLicenseEnforced } = require('./services/license');
 const { factoryContext } = require('./services/factoryContext');
 const { historyRetention } = require('./services/historyRetention');
+const { collectorHealth } = require('./services/collectorHealth');
 
 const app = express();
 let databaseOperationBusy = false;
@@ -93,7 +94,7 @@ app.use(securityHeaders);
 if (process.env.ENABLE_CORS !== 'false') app.use(createCorsMiddleware());
 app.use((req, res, next) => {
     const requestPath = req.path.toLowerCase();
-    const diagnostic = ['/api/health', '/api/engine/status', '/api/internal/shutdown'].includes(requestPath)
+    const diagnostic = ['/api/health', '/api/engine/status', '/api/collector/status', '/api/internal/shutdown'].includes(requestPath)
         || requestPath.startsWith('/api/admin-auth');
     if (siteRecoveryStatus().pending && !diagnostic && (requestPath.startsWith('/api/') || requestPath.startsWith('/uploads/models'))) {
         res.status(503).json({ success: false, code: 'SITE_RECOVERY_PENDING', error: '整站恢复状态待确认，自动采集、维护及业务接口已暂停，恢复证据完整保留' });
@@ -475,6 +476,8 @@ app.get('/api/engine/status', (req, res) => {
     }
 });
 
+app.use('/api/collector', factoryContext, require('./routes/collector'));
+
 app.get('/api/plc/protocols', (req, res) => {
     res.json({ protocols: publicProtocolDefinitions() });
 });
@@ -584,6 +587,7 @@ app.get('/api/health', (req, res) => {
     const nativeSceneReady = unityClients > 0;
     const licenseReady = !license.enforce || license.valid;
     const recoveryIntent = siteRecoveryStatus();
+    const { factories: _collectorDetail, ...collectorSummary } = collectorHealth(engineStatus || {}, global.dataEngine?.getFactoryStatuses?.() || {}, { databaseReady });
     const alarmStorageFailures = Object.entries(global.dataEngine?.getFactoryStatuses?.() || {})
         .filter(([, status]) => status.eventStorageStatus?.status === 'error').map(([factoryId]) => factoryId);
     const readinessFailures = [];
@@ -600,6 +604,7 @@ app.get('/api/health', (req, res) => {
         version: { ...loadReleaseManifest(), license },
         db: dbStatus,
         engine: engineStatus,
+        collectorHealth: collectorSummary,
         // Compact, credential-free telemetry for the local operations window.
         // A secondary factory failure must not be hidden by the active factory.
         collectorFactories: Object.entries(global.dataEngine?.getFactoryStatuses?.() || {}).slice(0, 256).map(([factoryId, value]) => ({

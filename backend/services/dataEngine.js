@@ -99,6 +99,7 @@ class DataEngine {
             throw error;
         }
         if (!this.isSecondary && !ownFactoryOnly && runVersion === this.runVersion) await this._startSecondaryEngines(db, runVersion);
+        if (runVersion === this.runVersion) this.configLoadedAt = Date.now();
     }
 
     async _startSecondaryEngines(db, runVersion) {
@@ -133,6 +134,23 @@ class DataEngine {
             })));
         }
         return { factoryId: id, status: engine.getStatus() };
+    }
+
+    async reloadFactoryConfiguration(factoryId) {
+        const id = String(factoryId), source = id === this.activeFactoryId ? this : this.factoryEngines.get(id);
+        if (!source) return this.setFactoryCollectionEnabled(id);
+        const previousIds = [...source.deviceSnapshots.keys()];
+        const db = await getDb();
+        const factory = await db.get('SELECT collection_enabled FROM factories WHERE id=?', [id]);
+        const local = await db.get('SELECT value FROM factory_settings WHERE factory_id=? AND `key`=?', [id,'data_mode']);
+        const mode = source._normalizeMode(local?.value ?? (await db.get('SELECT value FROM settings WHERE `key`=?', ['data_mode']))?.value);
+        if (Number(factory?.collection_enabled ?? 1) !== 0 && source.currentMode === mode && source.plcReader) {
+            await source.plcReader.reloadConfiguration(); source.configLoadedAt = Date.now();
+        } else await source.start({ ownFactoryOnly: true });
+        const present = source.plcReader ? new Set(source.plcReader.deviceStatus.keys()) : new Set((source.simulator?.devices || []).map(d => d.id));
+        for (const key of source.deviceSnapshots.keys()) if (!present.has(key)) source.deviceSnapshots.delete(key);
+        for (const key of source.alarmState.keys()) if (!present.has(key)) source.alarmState.delete(key);
+        return { factoryId:id, status:source.getStatus(), removedDeviceIds:previousIds.filter(key => !present.has(key)) };
     }
 
     _stopSecondaryEngines() {
@@ -188,6 +206,8 @@ class DataEngine {
     getStatus() {
         return {
             observedAt: Date.now(),
+            configLoadedAt: this.configLoadedAt || null,
+            configuredDevices: this.plcReader?.deviceStatus.size ?? this.simulator?.devices.length ?? 0,
             mode: this.currentMode,
             plcStatus: this.plcStatus,
             collectorStatus: this.collectorStatus,

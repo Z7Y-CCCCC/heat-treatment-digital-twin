@@ -94,6 +94,8 @@ class ModbusTcpDriver {
         this.options = normalizePlcOptions('MODBUS_TCP', endpoint.options);
         this.client = null;
         this.modbusModule = dependencies.modbusModule || null;
+        this.readPlans = new WeakMap();
+        this.badPoints = new Map();
     }
 
     async connect() {
@@ -120,30 +122,55 @@ class ModbusTcpDriver {
     async read(points) {
         if (!this.client) throw new Error('Modbus TCP 尚未连接');
         const values = {};
-        const cache = new Map();
-
-        for (const point of points) {
-            const parsed = parseModbusAddress(point.plc_address, point.data_type, this.options);
-            const cacheKey = `${parsed.area}:${parsed.address}:${parsed.registerCount}`;
-            let response = cache.get(cacheKey);
-            if (!response) {
-                if (parsed.area === 'coil') response = await this.client.readCoils(parsed.address, parsed.registerCount);
-                else if (parsed.area === 'discrete') response = await this.client.readDiscreteInputs(parsed.address, parsed.registerCount);
-                else if (parsed.area === 'input') response = await this.client.readInputRegisters(parsed.address, parsed.registerCount);
-                else response = await this.client.readHoldingRegisters(parsed.address, parsed.registerCount);
-                cache.set(cacheKey, response);
-            }
-
-            if (parsed.area === 'coil' || parsed.area === 'discrete') {
-                if (!response?.data || response.data.length < parsed.registerCount) {
-                    throw new Error(`Modbus 返回位数量不一致：期望 ${parsed.registerCount}，实际 ${response?.data?.length || 0}`);
-                }
-                if (![true, false, 0, 1].includes(response.data[0])) throw new Error('Modbus 返回了无效位值');
-                values[point.tagName] = Boolean(response?.data?.[0]);
-            } else {
-                values[point.tagName] = decodeModbusRegisters(response?.data || [], parsed, this.options);
-            }
+        let plan = this.readPlans.get(points);
+        if (!plan) {
+            plan = points.map(point => ({ point, parsed: parseModbusAddress(point.plc_address, point.data_type, this.options) }))
+                .sort((a, b) => a.parsed.area.localeCompare(b.parsed.area) || a.parsed.address - b.parsed.address);
+            this.readPlans.set(points, plan);
         }
+        const groups = []; let probes = 0;
+        for (const row of plan) {
+            const { point, parsed: p } = row;
+            if ((this.badPoints.get(point.tagName) || 0) > Date.now()) { values[point.tagName] = null; continue; }
+            const last = groups[groups.length - 1], limit = ['coil', 'discrete'].includes(p.area) ? 2000 : 120;
+            // Never bridge unconfigured holes: some PLCs reject those registers.
+            if (last && last.area === p.area && p.address <= last.end && Math.max(last.end, p.address + p.registerCount) - last.start <= limit) {
+                last.rows.push(row); last.end = Math.max(last.end, p.address + p.registerCount);
+            } else groups.push({ area: p.area, start: p.address, end: p.address + p.registerCount, rows: [row] });
+        }
+        const readBlock = async rows => {
+            const area = rows[0].parsed.area, start = Math.min(...rows.map(r => r.parsed.address)), end = Math.max(...rows.map(r => r.parsed.address + r.parsed.registerCount));
+            const count = end - start, bits = ['coil', 'discrete'].includes(area);
+            let response;
+            try {
+                const method = { coil: 'readCoils', discrete: 'readDiscreteInputs', input: 'readInputRegisters', holding: 'readHoldingRegisters' }[area] || 'readHoldingRegisters';
+                const chunks = [], limit = bits ? 2000 : 120;
+                for (let address = start; address < end; address += limit) {
+                    const size = Math.min(limit, end - address), part = await this.client[method](address, size);
+                    if (!part?.data || part.data.length < size) throw new Error(`Modbus 返回${bits ? '位' : '寄存器'}数量不一致：期望 ${size}，实际 ${part?.data?.length || 0}`);
+                    chunks.push(...part.data.slice(0, size));
+                }
+                response = { data: chunks };
+            } catch (error) {
+                // A valid exception response is an address/function fault, not a
+                // broken TCP session. Split the block, quarantine only bad points.
+                // Transport/timeouts still fail this endpoint, never other endpoints.
+                if (![1, 2, 3].includes(Number(error?.modbusCode))) throw error;
+                if (rows.length > 1 && probes++ < 128) {
+                    const middle = Math.floor(rows.length / 2); await readBlock(rows.slice(0, middle)); await readBlock(rows.slice(middle)); return;
+                }
+                for (const row of rows) { values[row.point.tagName] = null; this.badPoints.set(row.point.tagName, Date.now() + 10000); }
+                return;
+            }
+            if (!response?.data || response.data.length < count) throw new Error(`Modbus 返回${bits ? '位' : '寄存器'}数量不一致：期望 ${count}，实际 ${response?.data?.length || 0}`);
+            for (const { point, parsed } of rows) {
+                const raw = response.data.slice(parsed.address - start, parsed.address - start + parsed.registerCount);
+                if (bits && ![true, false, 0, 1].includes(raw[0])) throw new Error('Modbus 返回了无效位值');
+                values[point.tagName] = bits ? Boolean(raw[0]) : decodeModbusRegisters(raw, parsed, this.options);
+                this.badPoints.delete(point.tagName);
+            }
+        };
+        for (const group of groups) await readBlock(group.rows);
         return values;
     }
 
@@ -244,7 +271,9 @@ class OpcUaDriver {
                 ? statusCode.isGood()
                 : Number(statusCode?.value ?? statusCode ?? 0) === 0;
             if (!good) {
-                throw new Error(`OPC UA 点位 ${points[index].plc_address} 读取失败：${statusCode?.toString?.() || statusCode}`);
+                // A bad node must not discard good nodes in the same UA Read.
+                values[points[index].tagName] = null;
+                return;
             }
             values[points[index].tagName] = normalizeScalar(dataValue?.value?.value);
         });

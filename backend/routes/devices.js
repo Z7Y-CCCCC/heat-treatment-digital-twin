@@ -115,7 +115,7 @@ router.put('/:id/movement', async (req, res) => {
             await tx.run('UPDATE devices SET instance_config=? WHERE id=?', [JSON.stringify(config), device.id]);
             return config;
         });
-        if (ids.length) restartDataEngineSoon('update movement sampling');
+        if (ids.length) restartDataEngineSoon('update movement sampling', req.factoryId);
         broadcastDeviceConfigurationChanged(req.params.id, config);
         res.json({ success: true });
     } catch (error) { res.status(error.statusCode || 400).json({ error: error.message }); }
@@ -212,14 +212,8 @@ function isAuxiliaryDevice(modelType, instanceConfig) {
         || config.sceneObject === true;
 }
 
-function restartDataEngineSoon(reason) {
-    if (!global.dataEngine?.restart) return;
-    setTimeout(() => {
-        global.dataEngine.restart().catch(e => {
-            console.warn(`[Devices] 数据引擎重启失败(${reason}):`, e.message);
-        });
-    }, 80);
-}
+const { reloadCollectorSoon } = require('../utils/collectorReload');
+function restartDataEngineSoon(reason, factoryId) { reloadCollectorSoon(factoryId, reason); }
 
 // 设备实例配置（尤其是移动设备的路径配置）保存后，直接推送给 Unity。
 // 这样不需要等待下一次配置轮询，也不需要重建整套场景。
@@ -375,7 +369,7 @@ router.post('/', async (req, res) => {
             numberWithDefault(plc_max_retries, 0),
             normalizedOptions
         ]);
-        restartDataEngineSoon('create device');
+        restartDataEngineSoon('create device', req.factoryId);
         broadcastDeviceConfigurationChanged(id, instance_config);
         res.json({ success: true, id });
     } catch (e) {
@@ -452,7 +446,7 @@ router.put('/:id', async (req, res) => {
             numberWithDefault(plc_max_retries, 0),
             req.params.id
         ]);
-        restartDataEngineSoon('update device');
+        restartDataEngineSoon('update device', req.factoryId);
         broadcastDeviceConfigurationChanged(req.params.id, nextInstanceConfig);
         res.json({ success: true });
     } catch (e) {
@@ -482,7 +476,7 @@ router.delete('/:id', async (req, res) => {
             if (!result?.affectedRows && !result?.changes) throw new Error('设备删除失败：没有删除到任何记录');
             return impact;
         });
-        restartDataEngineSoon('delete device');
+        restartDataEngineSoon('delete device', req.factoryId);
         res.json({ success: true, impact: publicDeletionImpact(deletedImpact) });
     } catch (e) {
         res.status(e.statusCode || 400).json({ error: e.message });
