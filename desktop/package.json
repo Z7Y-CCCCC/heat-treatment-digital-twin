@@ -1,6 +1,6 @@
 {
   "name": "heat-treatment-digital-twin-desktop",
-  "version": "2.3.0",
+  "version": "2.3.1",
   "description": "热处理数字孪生大屏 Windows 桌面部署版",
   "main": "main.cjs",
   "author": "Digital Twin Team",
