@@ -1,3 +1,4 @@
+const {upgradeWidgetPlaybackDocument}=require('../../shared/widgetPlaybackProfile.mjs');
 const {
     SCHEMA_VERSION,
     safeJsonParse,
@@ -80,7 +81,7 @@ async function loadDraftDocument(db, project, scene) {
     if (!project || !scene) return createEmptyDocument({ project, scene });
     const stored = safeJsonParse(scene.draft_json, null);
     if (isCanonicalDocument(stored)) {
-        return normalizeDocument(stored, { project, scene, source: 'draft' });
+        return normalizeDocument(upgradeWidgetPlaybackDocument(stored), { project, scene, source: 'draft' });
     }
     return buildLegacyDocument(db, project, scene);
 }
@@ -94,7 +95,7 @@ async function loadPublishedDocument(db, project, scene) {
     const snapshot = safeJsonParse(release?.snapshot_json, null);
     if (release && isCanonicalDocument(snapshot)) {
         return {
-            document: normalizeDocument(snapshot, { project, scene, source: 'release' }),
+            document: normalizeDocument(upgradeWidgetPlaybackDocument(snapshot), { project, scene, source: 'release' }),
             release: releasePayload(release)
         };
     }
@@ -105,6 +106,21 @@ async function loadPublishedDocument(db, project, scene) {
 
 async function validatePlcBindings(db, document) {
     validateDocument(document);
+    const datasetWidgets = document.widgets.filter(widget => widget.data?.mode === 'dataset');
+    if (datasetWidgets.length) {
+        const project = await db.get('SELECT factory_id FROM projects WHERE id=?', [document.projectId]);
+        const definitions = await require('./dataSets').listDataSets(project?.factory_id || 'factory_default');
+        for (const widget of datasetWidgets) {
+            const definition = definitions.find(d => d.id === widget.data.datasetId);
+            if (!definition || !definition.enabled) throw new Error(`组件“${widget.title || widget.id}”的数据集不存在或已停用`);
+            if ([widget.data.datasetField,...(widget.data.datasetFields || [])].some(key=>!definition.columns.some(c=>c.name===key))) throw new Error(`组件“${widget.title || widget.id}”的数据集字段不存在`);
+            const keys = new Set((document.parameters || []).map(item => item.key));
+            for (const parameter of require('../../shared/dashboardParameters.mjs').datasetParameterDefinitions(definition)) {
+                if (!keys.has(parameter.key)) throw new Error(`数据集“${definition.name}”引用了未定义参数：${parameter.key}`);
+            }
+            resolveConnection(definition.connectionId, project?.factory_id || 'factory_default');
+        }
+    }
     const databaseConnectionIds = [...new Set(document.widgets
         .filter(widget => ['database', 'business', 'http_api'].includes(widget.data?.mode))
         .flatMap(widget => (widget.data.mode === 'database' && Array.isArray(widget.data.datasets) && widget.data.datasets.length
@@ -128,7 +144,7 @@ async function validatePlcBindings(db, document) {
         .filter(widget => widget.data?.mode === 'plc')
         .map(widget => ({
             widgetId: widget.id,
-            deviceScope: widget.data.deviceScope === 'current' ? 'current' : 'fixed',
+            deviceScope: widget.data.deviceScope !== 'fixed' ? 'current' : 'fixed',
             deviceId: String(widget.data.deviceId || ''),
             pointId: String(widget.data.pointId || '')
         }));

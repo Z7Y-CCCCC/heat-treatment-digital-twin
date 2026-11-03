@@ -599,18 +599,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
         {
             if (hall == null) return;
 
-            // glTFast already imports the author's base color, metallic,
-            // roughness, textures and emission. Rewriting those by material
-            // name made the same GLB look different in Blender/Web/Unity and
-            // cloned a material for every renderer. Configure only lighting
-            // participation here; never access renderer.materials or recolor.
-            foreach (var renderer in hall.GetComponentsInChildren<Renderer>(true))
-            {
-                renderer.shadowCastingMode = ShadowCastingMode.On;
-                renderer.receiveShadows = true;
-                renderer.lightProbeUsage = LightProbeUsage.BlendProbes;
-                renderer.reflectionProbeUsage = ReflectionProbeUsage.BlendProbes;
-            }
+            FactoryHallPresentation.Apply(hall);
         }
 
         private Color GroundColor()

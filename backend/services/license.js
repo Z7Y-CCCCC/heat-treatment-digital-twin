@@ -3,6 +3,7 @@ const path = require('path');
 const crypto = require('crypto');
 const os = require('os');
 const { execFileSync } = require('child_process');
+const { encodeActivationCode, decodeActivationCode } = require('../../shared/activationCode.cjs');
 
 const DATA_DIR = process.env.APP_DATA_DIR
     ? path.resolve(process.env.APP_DATA_DIR)
@@ -49,6 +50,7 @@ function normalizePayload(payload = {}) {
         expiresAt: String(payload.expiresAt || '').trim(),
         features,
         machineId: String(payload.machineId || '').trim() || null,
+        ...(payload.bindingVersion === 2 ? { bindingVersion: 2 } : {}),
         deviceLimit: Number.isFinite(Number(payload.deviceLimit)) && Number(payload.deviceLimit) > 0
             ? Math.floor(Number(payload.deviceLimit))
             : null
@@ -150,15 +152,26 @@ function hashMachineValue(value) {
 function getLocalMachineId() {
     const configured = String(process.env.LICENSE_MACHINE_ID || '').trim();
     if (!configured && localMachineCache && localMachineCache.expiresAt > Date.now()) return localMachineCache.value;
-    if (configured) return { id: hashMachineValue(configured), source: '环境变量', available: true, aliases: [] };
+    if (configured) return { id: hashMachineValue(configured), activationId: hashMachineValue(configured), source: '环境变量', available: true, aliases: [] };
 
     const installationId = readPersistentInstallationId();
     const hardware = readHardwareIdentities();
     const primaryValue = installationId ? `installation:${installationId}` : hardware[0]?.value;
     const primary = primaryValue ? hashMachineValue(primaryValue) : null;
     const aliases = hardware.map(item => hashMachineValue(item.value)).filter(id => id && id !== primary);
+    // New activations bind to the OS identity rather than a movable data folder.
+    // Keep legacy installation/alias checks only for already-issued v1 documents.
+    const stableHardware = hardware.find(item => item.source !== '本机环境回退标识');
+    let activationId = stableHardware ? hashMachineValue(`activation-v2:${stableHardware.value}`) : null;
+    const hardwareCache = `${MACHINE_STATE_FILE}.hardware`;
+    if (activationId) {
+        try { fs.writeFileSync(hardwareCache, activationId, { mode: 0o600 }); } catch { /* query remains authoritative */ }
+    } else {
+        try { const cached = fs.readFileSync(hardwareCache, 'utf8').trim(); if (/^machine-[a-f0-9]{32}$/.test(cached)) activationId = cached; } catch { }
+    }
     const result = {
         id: primary || null,
+        activationId,
         source: installationId ? '持久安装锚点（兼容硬件指纹）' : (hardware[0]?.source || '本机环境回退标识'),
         available: Boolean(primary),
         aliases: [...new Set(aliases)]
@@ -186,8 +199,10 @@ function readPublicKey() {
 
 function loadRawLicense() {
     try {
-        if (!fs.existsSync(LICENSE_FILE)) return null;
-        const parsed = JSON.parse(fs.readFileSync(LICENSE_FILE, 'utf8'));
+        if (!fs.existsSync(LICENSE_FILE) && !fs.existsSync(`${LICENSE_FILE}.bak`)) return null;
+        let parsed;
+        try { parsed = JSON.parse(fs.readFileSync(LICENSE_FILE, 'utf8')); }
+        catch { parsed = JSON.parse(fs.readFileSync(`${LICENSE_FILE}.bak`, 'utf8')); }
         return parsed && typeof parsed === 'object' ? parsed : null;
     } catch (error) {
         return { __readError: error.message };
@@ -216,6 +231,8 @@ function evaluateLicense(raw = loadRawLicense(), options = {}) {
         features: [],
         machineBound: false,
         machineId: localMachine.id,
+        activationMachineId: localMachine.activationId,
+        publicKeyConfigured: Boolean(publicKey),
         machineIdSource: localMachine.source,
         machineIdAvailable: localMachine.available,
         checkedAt: new Date().toISOString()
@@ -265,6 +282,7 @@ function evaluateLicense(raw = loadRawLicense(), options = {}) {
         result.reason = '许可证签名校验失败';
         return result;
     }
+    result.signatureVerified = true;
     const now = Date.now();
     const issued = Date.parse(payload.issuedAt);
     const expires = Date.parse(payload.expiresAt);
@@ -283,7 +301,11 @@ function evaluateLicense(raw = loadRawLicense(), options = {}) {
         result.reason = '许可证已过期';
         return result;
     }
-    const expectedMachines = new Set([localMachine.id, ...(localMachine.aliases || [])].filter(Boolean));
+    const expectedMachines = new Set((payload.bindingVersion === 2
+        ? [localMachine.activationId] : [localMachine.id, ...(localMachine.aliases || [])]).filter(Boolean));
+    if (process.env.LICENSE_REQUIRE_MACHINE_BOUND === 'true' && !payload.machineId) {
+        result.status = 'invalid'; result.reason = '此安装版需要绑定本机的激活码'; return result;
+    }
     if (payload.machineId && !expectedMachines.size) {
         result.status = 'machine_unavailable';
         result.reason = '无法读取本机授权指纹，暂不能验证机器绑定许可证';
@@ -319,15 +341,52 @@ function assertLicenseForWrite() {
 }
 
 function installLicense(document) {
-    const raw = document && typeof document === 'object' ? document : null;
+    const raw = typeof document === 'string' ? decodeActivationCode(document) : document;
     if (!raw) throw new Error('许可证内容必须是 JSON 对象');
     const status = evaluateLicense(raw);
     if (status.status !== 'valid') throw new Error(`许可证校验失败：${status.reason}`);
+    const clean = cleanDocument(raw);
+    const previous = loadRawLicense();
+    const records = licenseHistoryDocuments(previous);
+    if (!records.some(entry => entry.document.signature === clean.signature))
+        records.push({ activatedAt: new Date().toISOString(), document: clean });
+    const stored = { ...clean, activationHistory: records };
     fs.mkdirSync(path.dirname(LICENSE_FILE), { recursive: true });
     const temporary = `${LICENSE_FILE}.${process.pid}.tmp`;
-    fs.writeFileSync(temporary, `${JSON.stringify(raw, null, 2)}\n`, 'utf8');
+    const fd = fs.openSync(temporary, 'w', 0o600);
+    try { fs.writeFileSync(fd, `${JSON.stringify(stored, null, 2)}\n`, 'utf8'); fs.fsyncSync(fd); }
+    finally { fs.closeSync(fd); }
     fs.renameSync(temporary, LICENSE_FILE);
+    try {
+        const backup = `${LICENSE_FILE}.bak.${process.pid}.tmp`;
+        fs.copyFileSync(LICENSE_FILE, backup); fs.renameSync(backup, `${LICENSE_FILE}.bak`);
+    } catch { /* The committed primary is authoritative. */ }
     return getLicenseStatus();
+}
+
+function cleanDocument(raw) {
+    return { format: raw.format, version: raw.version, algorithm: raw.algorithm, payload: normalizePayload(raw.payload), signature: raw.signature };
+}
+function licenseHistoryDocuments(raw = loadRawLicense()) {
+    if (!raw || raw.__readError) return [];
+    const entries = Array.isArray(raw.activationHistory) ? raw.activationHistory : [];
+    const result = [], signatures = new Set();
+    for (const entry of [...entries, { document: raw, activatedAt: null }]) {
+        const status = evaluateLicense(entry?.document);
+        if (!status.signatureVerified || signatures.has(entry.document.signature)) continue;
+        signatures.add(entry.document.signature);
+        result.push({ activatedAt: entry.activatedAt || null, document: cleanDocument(entry.document) });
+    }
+    return result;
+}
+function getLicenseHistory() {
+    const current = loadRawLicense();
+    return licenseHistoryDocuments(current).reverse().map(entry => ({
+        ...entry.document.payload, activatedAt: entry.activatedAt,
+        current: entry.document.signature === current?.signature,
+        status: evaluateLicense(entry.document).status,
+        activationCode: encodeActivationCode(entry.document)
+    }));
 }
 
 function signLicensePayload(payload, privateKey) {
@@ -355,5 +414,6 @@ module.exports = {
     assertLicenseForWrite,
     signLicensePayload,
     normalizePayload,
-    getLocalMachineId
+    getLocalMachineId,
+    getLicenseHistory
 };

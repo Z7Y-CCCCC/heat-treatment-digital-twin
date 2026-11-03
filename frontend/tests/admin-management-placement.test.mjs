@@ -4,6 +4,17 @@ import { readFile } from 'node:fs/promises'
 
 const source = async path => readFile(new URL(path, import.meta.url), 'utf8')
 
+test('workshop space omits the duplicate layout button while keeping top tabs and spatial save actions', async () => {
+  const panel = await source('../src/views/AdminPanel.vue')
+  const space = panel.slice(panel.indexOf('<template v-else-if="workshopManagementStep === \'space\' && selectedWorkshopEditor">'), panel.indexOf('<template v-else-if="selectedWorkshopEditor">'))
+  assert.ok(space.includes('workshop-spatial-editor'))
+  assert.doesNotMatch(panel, /查看产线布局/)
+  assert.match(space, /@click="restoreSavedNativeScenePreview"/)
+  assert.match(space, /@click="saveWorkshopSpatialLayout\(\)"/)
+  assert.match(panel, /key: 'layout', number: '03', title: '产线布局'/)
+  assert.match(panel, /@click="selectWorkshopManagementStep\(step.key\)"/)
+})
+
 test('PLC connection checkbox has the concise enable label without changing its binding', async () => {
   const panel = await source('../src/views/AdminPanel.vue')
   assert.doesNotMatch(panel, /启用此设备直连 PLC 采集/)
@@ -176,6 +187,20 @@ test('factory hierarchy is visible in asset editors and model levels cannot be a
   assert.match(panel, /fd\.append\('placement_level', modelImportForm\.placement_level\)/)
   assert.match(panel, /\(model\.placement_level \|\| 'device'\) === 'device'/)
   assert.match(panel, /deviceHierarchyLabel\(d\)/)
+})
+
+test('factory display switch has no default/runtime restriction and acquisition has a separate data-route capsule', async () => {
+  const directory = await source('../src/views/admin/components/FactoryDirectorySettings.vue')
+  const hierarchy = await source('../src/views/admin/components/AssetHierarchyBar.vue')
+  const collection = await source('../src/views/admin/components/FactoryCollectionSettings.vue')
+  const panel = await source('../src/views/AdminPanel.vue')
+  assert.doesNotMatch(directory, /toggleBlockedReason|默认工厂不能停用|请先切换运行工厂|请先切换编辑工厂/)
+  assert.match(directory, /<th>大屏显示<\/th>/)
+  assert.doesNotMatch(hierarchy, /filter\(factory => factory.enabled\)/)
+  assert.match(panel, /<FactoryCollectionSettings v-if="settingsSubpage === 'data'"/)
+  assert.match(collection, /adminApi.setFactoryCollection/)
+  assert.match(collection, /canAdminPage\('settings.data', 'edit'\)/)
+  assert.doesNotMatch(collection, /updateFactory\(|activateFactory\(|restartEngine/)
 })
 
 test('layout selection lists library models rather than site instances and hides the read-only prose banner', async () => {

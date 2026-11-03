@@ -173,7 +173,7 @@ module.exports = function createAdminAuthRouter(auth = getAdminAuth) {
         sendSession(req, res, result, slotId, true);
     }));
     router.post('/touch', handle((req, res, service) => {
-        res.json(service.touch(suppliedAdminSession(req), req.get('x-csrf-token')));
+        res.json({ ...service.touch(suppliedAdminSession(req), req.get('x-csrf-token')), accountSlotId: activeAdminAccountSlot(req) });
     }));
     router.post('/lock', handle((req, res, service) => {
         const token = suppliedAdminSession(req);
@@ -182,7 +182,7 @@ module.exports = function createAdminAuthRouter(auth = getAdminAuth) {
         res.json({ ...result, accountSlotId: activeAdminAccountSlot(req) });
     }));
     router.put('/settings', handle((req, res, service) => {
-        res.json(service.updateSettings(suppliedAdminSession(req), req.get('x-csrf-token'), req.body?.idleTimeoutMinutes));
+        res.json({ ...service.updateSettings(suppliedAdminSession(req), req.get('x-csrf-token'), req.body?.idleTimeoutMinutes), accountSlotId: activeAdminAccountSlot(req) });
     }));
     router.put('/password', handle(async (req, res, service) => {
         const slotId = activeAdminAccountSlot(req);

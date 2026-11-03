@@ -26,7 +26,7 @@ export function importDashboardTemplate(text, targetDocument) {
   return normalizeDashboardDocument({ ...source, projectId: targetDocument.projectId, sceneId: targetDocument.sceneId })
 }
 
-const REFERENCE_FIELDS = { deviceId: 'devices', device_id: 'devices', pointId: 'points', point_id: 'points', connectionId: 'connections', connection_id: 'connections', workshopId: 'workshops', workshop_id: 'workshops', lineId: 'lines', line_id: 'lines' }
+const REFERENCE_FIELDS = { datasetId: 'datasets', deviceId: 'devices', device_id: 'devices', pointId: 'points', point_id: 'points', connectionId: 'connections', connection_id: 'connections', workshopId: 'workshops', workshop_id: 'workshops', lineId: 'lines', line_id: 'lines' }
 
 function visitReferences(document, visit) {
   function walk(value, path = []) {

@@ -65,6 +65,14 @@ let backend;
     }
     const viewer = await sessionRequest('/admin-auth/login', { method: 'POST', body: { username: 'display_viewer', password } });
     const noDisplay = await sessionRequest('/admin-auth/login', { method: 'POST', body: { username: 'no_display', password } });
+    const selectedSlot='a'.repeat(24);
+    const slotted=await sessionRequest('/admin-auth/accounts/login',{method:'POST',session:owner,body:{slotId:selectedSlot,username:'display_viewer',password}});
+    assert.equal(slotted.response.status,200);
+    const touched=await sessionRequest('/admin-auth/touch',{method:'POST',session:slotted,body:{}});
+    assert.equal(touched.response.status,200);assert.equal(touched.data.accountSlotId,selectedSlot);
+    assert.equal(touched.data.user.username,'display_viewer');
+    const ownerSettings=await sessionRequest('/admin-auth/settings',{method:'PUT',session:owner,body:{idleTimeoutMinutes:30}});
+    assert.equal(ownerSettings.response.status,200);assert.equal(ownerSettings.data.accountSlotId,'main');
     const displayReads = ['/platform/metrics/latest', '/platform/events?limit=1', '/data-sources/map-values?level=world'];
     for (const route of displayReads) {
         for (const method of ['GET', 'HEAD'])

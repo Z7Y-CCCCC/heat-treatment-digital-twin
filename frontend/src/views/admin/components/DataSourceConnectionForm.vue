@@ -43,7 +43,7 @@ async function importFile(event) {
                 <label class="wide">API 根地址<input v-model="draft.baseUrl" class="input" placeholder="https://mes.example.com/api" /></label>
                 <label>健康检查地址<input v-model="draft.healthPath" class="input" placeholder="/health" /></label>
                 <label>响应格式<select v-model="draft.responseFormat" class="input" aria-label="响应格式"><option value="auto">自动识别</option><option value="json">JSON / OData JSON</option><option value="xml">XML</option><option value="csv">CSV</option></select></label>
-                <p class="hint wide">只读 GET 请求。健康检查通过后，可在“数据预览”中核对业务字段。</p>
+
             </template>
             <template v-else-if="sqlite">
                 <label class="wide">SQLite 文件<input v-model="draft.filename" class="input" placeholder="完整 .db 文件路径" /></label>
@@ -58,8 +58,8 @@ async function importFile(event) {
         <div v-show="section === 'authentication'" class="source-fields">
             <p v-if="sqlite || http && ['file', 'tcp', 'udp'].includes(kind)" class="hint wide">此接入使用本机文件 / 网络权限，无需账号密码。</p>
             <template v-else>
-                <label v-if="http" class="wide">认证方式<select v-model="draft.authType" class="input" aria-label="认证方式"><option value="none">无认证</option><option v-if="kind === 'http'" value="api_key">API Key</option><option v-if="['http', 'websocket'].includes(kind)" value="bearer">Bearer Token</option><option value="basic">用户名密码</option><option v-if="kind === 'http'" value="oauth2_client_credentials">OAuth2 客户端凭据</option></select></label>
-                <template v-if="!http || draft.authType === 'basic'">
+                <label v-if="http" class="wide">认证方式<select v-model="draft.authType" class="input" aria-label="认证方式"><option value="none">无认证</option><option v-if="kind === 'http'" value="login_token">登录接口取 Token</option><option v-if="kind === 'http'" value="api_key">API Key</option><option v-if="['http', 'websocket'].includes(kind)" value="bearer">Bearer Token</option><option value="basic">用户名密码</option><option v-if="kind === 'http'" value="oauth2_client_credentials">OAuth2 客户端凭据</option></select></label>
+                <template v-if="!http || ['basic','login_token'].includes(draft.authType)">
                     <label>{{ http ? '用户名' : '只读账号' }}<input v-model="draft.user" class="input" autocomplete="off" /></label>
                     <label>密码<input v-model="draft.password" type="password" class="input" autocomplete="new-password" /></label>
                 </template>
@@ -68,6 +68,13 @@ async function importFile(event) {
                     <label>API Key<input v-model="draft.apiKey" type="password" class="input" autocomplete="new-password" /></label>
                 </template>
                 <label v-if="http && draft.authType === 'bearer'" class="wide">Bearer Token<input v-model="draft.token" type="password" class="input" autocomplete="new-password" /></label>
+                <template v-if="http && draft.authType === 'login_token'">
+                    <label class="wide">登录路径<input v-model="draft.loginPath" class="input" placeholder="/auth/login" aria-label="登录接口路径" /></label>
+                    <label>账号字段名<input v-model="draft.loginUserField" class="input" placeholder="username" /></label><label>密码字段名<input v-model="draft.loginPasswordField" class="input" placeholder="password" /></label>
+                    <label>登录请求格式<select v-model="draft.loginBodyFormat" class="input"><option value="json">JSON</option><option value="form">Form</option></select></label><label>Token 字段路径<input v-model="draft.tokenPath" class="input" placeholder="data.token" /></label>
+                    <label>Token 请求头<input v-model="draft.tokenHeader" class="input" placeholder="Authorization" /></label><label>Token 前缀<input v-model="draft.tokenPrefix" class="input" placeholder="Bearer，可留空" /></label>
+                    <label>Token 缓存（秒）<input v-model.number="draft.tokenLifetimeSec" class="input" type="number" min="10" max="86400" /></label>
+                </template>
                 <template v-if="http && draft.authType === 'oauth2_client_credentials'">
                     <label class="wide">令牌地址（HTTPS）<input v-model="draft.tokenUrl" class="input" placeholder="https://login.example.com/oauth2/token" /></label>
                     <label>Client ID<input v-model="draft.clientId" class="input" autocomplete="off" /></label>
@@ -96,11 +103,11 @@ async function importFile(event) {
 <style scoped>
 * { box-sizing: border-box; }
 .source-form { min-width: 0; padding: 0; margin: 0; border: 0; }
-.source-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; padding: 18px 0; }
+.source-fields { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:18px 22px; padding:21px 0; }
 label { display: flex; flex-direction: column; gap: 8px; font-size: 12px; color: #536176; min-width: 0; }
-.input { width: 100%; min-width: 0; font: inherit; min-height: 36px; }
+.input { width: 100%; min-width: 0; font: inherit; min-height:36px; border-color:#dce1e8; background:#fff; border-radius:6px; color:#344054; }
 .wide { grid-column: 1 / -1; }
-.check { flex-direction: row; align-items: center; align-self: end; min-height: 36px; }
+.check { flex-direction: row; align-items: center; align-self: end; min-height:36px; border-color:#dce1e8; background:#fff; border-radius:6px; color:#344054; }
 .hint { margin: 0; color: #8490a1; font-size: 12px; line-height: 1.6; }
 @media(max-width: 700px) { .source-fields { grid-template-columns: minmax(0, 1fr); } }
 </style>

@@ -1,0 +1,8 @@
+:root{--runtime-glass:linear-gradient(135deg,rgba(100,84,151,.24),rgba(48,40,82,.14));--runtime-glass-border:rgba(195,178,235,.19)}
+.group-brand,.group-facts,.group-panel,.group-dock,.group-stage-loading,.group-account-menu,.group-user,.site-brand,.site-info,.building-tooltip,.inspection-hover-card,.site-view-controls,.group-map-controls{
+ background:var(--runtime-glass)!important;border-color:var(--runtime-glass-border)!important;
+ backdrop-filter:blur(12px) saturate(125%)!important;-webkit-backdrop-filter:blur(12px) saturate(125%)!important;
+ box-shadow:inset 0 1px 0 #eadbff16,0 8px 28px #17102310!important;
+}
+.group-account-action,.group-account-session{background:rgba(111,92,160,.10)!important;border-color:#c2aee824!important}
+@media(prefers-reduced-motion:reduce){.hud-widget .widget-shell{transition:none}}

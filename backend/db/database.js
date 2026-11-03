@@ -1894,6 +1894,9 @@ async function ensureSchemaColumns() {
 
     await ensureColumn('workshops', 'factory_id', `${t.string(128)} NULL`);
     await ensureColumn('factories', 'is_enabled', `${t.bool} DEFAULT 1`);
+    // Display visibility and acquisition are independent, including upgrades
+    // where a factory was already hidden. Never infer acquisition from visibility.
+    await ensureColumn('factories', 'collection_enabled', `${t.bool} NOT NULL DEFAULT 1`);
     await ensureColumn('workshops', 'layout_json', `${t.json}`);
     await ensureColumn('lines', 'layout_json', `${t.json}`);
     await ensureColumn('projects', 'factory_id', `${t.string(128)} NULL`);
@@ -1953,6 +1956,7 @@ async function initTables() {
         name ${t.string(120)} NOT NULL,
         location_json ${t.json},
         is_enabled ${t.bool} DEFAULT 1,
+        collection_enabled ${t.bool} NOT NULL DEFAULT 1,
         sort_order ${t.int} DEFAULT 0,
         created_at ${t.datetime} DEFAULT CURRENT_TIMESTAMP,
         updated_at ${t.datetime} DEFAULT CURRENT_TIMESTAMP
@@ -2318,7 +2322,7 @@ async function seedFactoryRegistry(db) {
     await db.run('UPDATE metric_snapshots SET factory_id = ? WHERE factory_id IS NULL OR factory_id = ?', [defaultId, '']);
 
     const requestedId = String(configuredActive?.value || '');
-    if (!requestedId || !await db.get('SELECT id FROM factories WHERE id = ? AND is_enabled <> 0', [requestedId])) {
+    if (!requestedId || !await db.get('SELECT id FROM factories WHERE id = ?', [requestedId])) {
         await db.upsert('settings', { key: 'active_factory_id', value: defaultId }, 'key');
     }
 }

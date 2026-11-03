@@ -19,7 +19,7 @@
     "build:admin-host": "node scripts/build-native-admin-host.cjs",
     "build:collector-service": "node scripts/build-collector-service.cjs",
     "test:logs": "node scripts/log-manager-test.cjs",
-    "test:processes": "node --test scripts/process-lifecycle-test.cjs scripts/desktop-supervisor-unit-test.cjs",
+    "test:processes": "node --test scripts/process-lifecycle-test.cjs scripts/desktop-supervisor-unit-test.cjs scripts/activation-client-test.cjs",
     "test:resources": "node --test scripts/resource-preparation-test.cjs scripts/runtime-cache-test.cjs scripts/dependency-cache-test.cjs scripts/directory-publish-test.cjs",
     "test:deployment": "node --test scripts/deployment-test.cjs scripts/desktop-supervisor-unit-test.cjs",
     "build:collector-center": "node scripts/build-collector-center.cjs",
@@ -50,10 +50,13 @@
       "templateData.cjs",
       "deployment.cjs",
       "deployment-preload.cjs",
+      "activation.cjs",
+      "startup-preload.cjs",
       "package.json",
       "assets/**/*"
     ],
     "extraResources": [
+      { "from": "resources/licensing", "to": "licensing", "filter": ["license-public-key.pem"] },
       { "from": ".cache/collector-center", "to": "collector-center", "filter": ["**/*"] },
       { "from": ".cache/collector-service", "to": "collector-service", "filter": ["**/*"] },
       {

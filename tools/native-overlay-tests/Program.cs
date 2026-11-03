@@ -10,6 +10,7 @@ internal static class Program
     [STAThread]
     private static void Main()
     {
+        NativeSessionPipeTests.Run(Check).GetAwaiter().GetResult();
         var retry = new NavigationRetryPolicy("http://127.0.0.1:3001/overlay?embedded=unity");
         Check(retry.Started(1, "http://127.0.0.1:3001/overlay?embedded=unity"), "Local app navigation is retryable");
         Check(retry.Completed(1, false, 0) == 1000, "Connection refusal schedules the first retry");

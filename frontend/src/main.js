@@ -1,3 +1,4 @@
+import './runtime/purpleGlass.css'
 import { createApp } from 'vue'
 import './style.css'
 import './motion-buttons.css'

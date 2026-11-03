@@ -191,7 +191,7 @@ test('lock attempts coalesce and distinguish pending broadcasts from confirmed l
     await settle()
     assert.equal(locks, 1)
     assert.equal(session.channels[0].messages.at(-1).type, 'lock-pending')
-    pending.resolve(json({ success: true }))
+    pending.resolve(json({ ...signedIn('token'), authenticated: false, displayAuthenticated: true }))
     assert.equal(await first, true)
     assert.equal(await second, true)
     assert.equal(session.channels[0].messages.at(-1).type, 'locked')
@@ -224,4 +224,81 @@ test('session tracking is idempotent and releases listeners and channel on teard
     assert.equal(session.browser.listeners.get('focus').size, 0)
     assert.equal(document.listeners.get('visibilitychange').size, 0)
     assert.equal(session.channels[0].closed, true)
+})
+
+test('a failed activity heartbeat preserves the signed-in display and recovers without a password prompt', async t => {
+    const session=await fixture(t)
+    let offline=false
+    t.mock.method(session.browser,'fetch',async url=>{
+        if(offline && String(url).endsWith('/touch'))throw new TypeError('owned network interruption')
+        return json(signedIn('kept-csrf'))
+    })
+    await session.unlockAdmin('valid-password')
+    session.startAdminSessionTracking()
+    const now=Date.now();t.mock.method(Date,'now',()=>now+20000)
+    offline=true
+    for(const handler of session.browser.listeners.get('pointerdown'))handler({isTrusted:true})
+    await settle();await settle()
+    assert.equal(session.adminSession.displayAuthenticated,true,'a failed heartbeat must not sign out the display')
+    assert.equal(session.adminSession.authenticated,true)
+    assert.match(session.adminSession.warning,/连接|服务/)
+    offline=false;await session.refreshAdminSession()
+    assert.equal(session.adminSession.authenticated,true);assert.equal(session.adminSession.warning,'')
+})
+
+test('malformed successful session responses cannot silently sign out a valid account', async t => {
+    const session=await fixture(t)
+    t.mock.method(session.browser,'fetch',async()=>json(signedIn('kept-csrf')))
+    await session.unlockAdmin('valid-password')
+    for (const malformed of [{success:true},{configured:true,authenticated:true},{configured:true,authenticated:false,displayAuthenticated:true},{...signedIn('token'),displayAuthenticated:false}]) {
+        t.mock.method(session.browser,'fetch',async()=>json(malformed))
+        await session.refreshAdminSession()
+        assert.equal(session.adminSession.displayAuthenticated,true)
+        assert.equal(session.adminSession.authenticated,true)
+        assert.match(session.adminSession.warning,/响应|状态|服务/)
+    }
+    t.mock.method(session.browser,'fetch',async()=>new Response('<html>restarting</html>',{headers:{'Content-Type':'text/html'}}))
+    await session.refreshAdminSession()
+    assert.equal(session.adminSession.displayAuthenticated,true)
+})
+
+test('an unavailable initial session retries after the service recovers without requiring window focus', async t => {
+    const session=await fixture(t)
+    let offline=true,poll,now=100000
+    t.mock.method(Date,'now',()=>now)
+    t.mock.method(session.browser,'setInterval',callback=>{poll=callback;return {}})
+    t.mock.method(session.browser,'fetch',async()=>{if(offline)throw new TypeError('owned startup delay');return json(signedIn('restored-csrf'))})
+    session.startAdminSessionTracking();await session.refreshAdminSession()
+    assert.equal(session.adminSession.authenticated,false)
+    offline=false;now+=11000;poll();await settle();await settle()
+    assert.equal(session.adminSession.authenticated,true)
+})
+
+test('a confirmed server-side revocation still removes both admin and display access', async t => {
+    const session=await fixture(t)
+    t.mock.method(session.browser,'fetch',async()=>json(signedIn('revoked-csrf')))
+    await session.unlockAdmin('valid-password')
+    t.mock.method(session.browser,'fetch',async()=>json({configured:true,authenticated:false,displayAuthenticated:false}))
+    await session.refreshAdminSession()
+    assert.equal(session.adminSession.authenticated,false);assert.equal(session.adminSession.displayAuthenticated,false)
+})
+
+test('credential renewal changes a non-secret epoch but ordinary session polls do not',async t=>{
+    const session=await fixture(t)
+    t.mock.method(session.browser,'fetch',async url=>json(signedIn(String(url).endsWith('/password')?'new-csrf':'original-csrf')))
+    await session.unlockAdmin('original-password');const revision=session.adminSession.sessionRevision
+    await session.refreshAdminSession();assert.equal(session.adminSession.sessionRevision,revision)
+    await session.changeAdminPassword('original-password','replacement-password')
+    assert.equal(session.adminSession.sessionRevision,revision+1)
+})
+
+test('a successful heartbeat without a slot field cannot replace a selected customer with main',async t=>{
+    const session=await fixture(t),slot='a'.repeat(24)
+    t.mock.method(session.browser,'fetch',async url=>json({...signedIn('customer-csrf'),user:{id:'customer',role:'customer'},...(String(url).endsWith('/login')?{accountSlotId:slot}:{})}))
+    await session.unlockAdmin('customer-password');const revision=session.adminSession.sessionRevision
+    session.startAdminSessionTracking();const now=Date.now();t.mock.method(Date,'now',()=>now+20000)
+    for(const handler of session.browser.listeners.get('pointerdown'))handler({isTrusted:true})
+    await settle();await settle()
+    assert.equal(session.adminSession.accountSlotId,slot)
+    assert.equal(session.adminSession.sessionRevision,revision)
 })

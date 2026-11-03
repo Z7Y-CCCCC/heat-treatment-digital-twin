@@ -7,6 +7,7 @@ const Database = require('../backend/node_modules/better-sqlite3');
 const { createRunDirectory, findFreePort, waitUntil, waitForExit } = require('../backend/scripts/integration-test-utils.cjs');
 const { stopOwnedSmokeProcess, createSmokeEnvironment } = require('../desktop/scripts/smoke-sandbox.cjs');
 const { snapshotTree, verifyTree } = require('./package-resource-integrity.cjs');
+const { createTestIssuer, activateFixture } = require('./activation-test-fixture.cjs');
 
 const source = path.resolve(process.argv[2] || 'desktop/resources');
 const project = path.resolve(__dirname, '..');
@@ -19,6 +20,7 @@ let child;
     const resourcesBefore = await snapshotTree(source);
     console.log(`Collector smoke workspace: ${run}`);
     fs.mkdirSync(resources);
+    const testIssuer = createTestIssuer(resources);
     for (const name of ['runtime', 'mysql', 'ffmpeg', 'frontend', 'backend', 'shared']) {
         let from = path.join(source, name);
         if (!fs.existsSync(from)) from = name === 'frontend' ? path.join(project, 'frontend', 'dist') : path.join(project, name);
@@ -59,6 +61,7 @@ let child;
                 if (child.exitCode !== null) throw new Error(`Service host failed: ${stdout}\n${stderr}\n${run}`);
                 return stdout.includes('COLLECTOR_SERVICE_READY');
             }, 240000, 'service worker ready', 300);
+            await activateFixture(backendOrigin, testIssuer);
             const config = JSON.parse(fs.readFileSync(path.join(root, 'data', 'database-config.json'), 'utf8'));
             connection = await mysql.createConnection({ host: config.host, port: config.port, user: config.user,
                 password: config.password, database: config.database });
@@ -126,7 +129,7 @@ let child;
         }
     }
     const resourceIntegrity = await verifyTree(source, resourcesBefore);
-    const report = { success: true, consoleServiceHost: true, packagedFrontendVerified, windowsScmInstallTest: 'requires-elevation',
+    const report = { success: true, fixtureTrustOnly: true, consoleServiceHost: true, packagedFrontendVerified, windowsScmInstallTest: 'requires-elevation',
         launches, source, directory: run, programData: machineEnv.ProgramData, resourceIntegrity };
     fs.writeFileSync(path.join(run, 'result.json'), JSON.stringify(report, null, 2));
     console.log(JSON.stringify(report, null, 2));

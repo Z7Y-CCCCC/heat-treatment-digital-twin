@@ -2,6 +2,7 @@ const express = require('express');
 const {
     getLicenseStatus,
     installLicense,
+    getLicenseHistory,
     LICENSE_FORMAT,
     LICENSE_VERSION,
     LICENSE_ALGORITHM
@@ -15,11 +16,18 @@ router.get('/', (req, res) => {
 
 router.put('/', (req, res) => {
     try {
-        const status = installLicense(req.body?.license || req.body);
+        const status = installLicense(req.body?.activationCode || req.body?.license || req.body);
+        if (global.dataEngine?.getStatus?.().process?.status !== 'running')
+            Promise.resolve().then(() => global.dataEngine?.start?.()).catch(error => console.error('[License] 采集启动失败:', error.message));
         res.json({ success: true, ...status });
     } catch (error) {
         res.status(400).json({ success: false, error: error.message });
     }
+});
+
+router.get('/history', (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ success: true, records: getLicenseHistory() });
 });
 
 router.get('/contract', (req, res) => {

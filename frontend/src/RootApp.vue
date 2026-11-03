@@ -2,7 +2,7 @@
 import DashboardAccountDock from './views/DashboardAccountDock.vue'
 import { computed, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import { RouterView, useRoute, useRouter } from 'vue-router'
-import { adminSession, issueNativeSessionTicket, logoutCurrentAdminAccount, refreshAdminSession } from './runtime/adminSession.js'
+import { adminSession, issueNativeSessionTicket, logoutCurrentAdminAccount, refreshAdminSession, startAdminSessionTracking, stopAdminSessionTracking } from './runtime/adminSession.js'
 import { isNativeOverlaySurface } from './runtime/nativeSurfaceBridge.js'
 import { openCustomerOperations } from './runtime/nativeAdminNavigation.js'
 
@@ -17,7 +17,7 @@ const isNativeAdminSurfaceRoute = computed(() => route.query.embedded === 'unity
 const nativeSessionIdentity = computed(() => {
     if (!isNativeAdminSurfaceRoute.value || !adminSession.ready || !adminSession.displayAuthenticated
         || !adminSession.permissions.launch || !adminSession.permissions.view) return ''
-    return `${adminSession.accountSlotId}:${adminSession.user?.id || adminSession.user?.username || ''}`
+    return `${adminSession.accountSlotId}:${adminSession.user?.id || adminSession.user?.username || ''}:${adminSession.sessionRevision || 0}`
 })
 const waitingForNativeOverlayAuth = computed(() => isNativeOverlaySurfaceRoute.value
     && adminSession.ready && !adminSession.displayAuthenticated)
@@ -40,11 +40,11 @@ function showCustomerOperations() {
 watch(() => adminSession.displayAuthenticated, authenticated => {
     if (!authenticated && protectedPaths.has(route.path)) {
         if (isNativeOverlaySurfaceRoute.value) return
-        void router.replace({ path: '/admin', query: { redirect: route.fullPath } })
+        void router.replace({ path: '/admin', query: { ...route.query, redirect: route.fullPath } })
     }
 })
 
-watch(waitingForNativeOverlayAuth, waiting => {
+watch(() => [waitingForNativeOverlayAuth.value, adminSession.serviceUnavailable], ([waiting, unavailable]) => {
     window.clearInterval(overlayAuthPoll)
     overlayAuthPoll = 0
     if (waiting) {
@@ -56,7 +56,7 @@ watch(waitingForNativeOverlayAuth, waiting => {
         void nextTick(() => {
             const webview = window.chrome?.webview
             if (!webview) return
-            webview.postMessage({ type: 'host_action', action: 'show_admin', returnToDashboard: true })
+            if (!unavailable) webview.postMessage({ type: 'host_action', action: 'show_admin', returnToDashboard: true })
             webview.postMessage({ type: 'overlay_regions', viewport: { width: innerWidth, height: innerHeight }, regions: [] })
             webview.postMessage({ type: 'overlay_ready' })
         })
@@ -64,23 +64,34 @@ watch(waitingForNativeOverlayAuth, waiting => {
 }, { immediate: true })
 
 let nativeSessionSyncGeneration = 0
-watch(nativeSessionIdentity, async identity => {
+let rootDisposed = false
+let issuedNativeIdentity = ''
+watch(() => [nativeSessionIdentity.value, adminSession.serviceUnavailable], async ([identity, unavailable]) => {
     const generation = ++nativeSessionSyncGeneration
     if (!isNativeAdminSurfaceRoute.value || !adminSession.ready) return
     const webview = window.chrome?.webview
+    // A reloaded WebView starts without an in-memory identity. An unreachable
+    // service cannot authoritatively declare the still-running Unity signed out.
+    if (unavailable) return
     if (!identity) {
+        issuedNativeIdentity = ''
         webview?.postMessage({ type: 'host_action', action: 'clear_unity_session' })
         return
     }
+    if (issuedNativeIdentity === identity) return
+    // A connection outage is not a logout. Retry a failed initial handoff when
+    // a confirmed session poll observes recovery, even for the same account.
     // Session polling replaces the permissions object every ten seconds. A
     // watch on its object identity re-issued a one-time ticket each poll and
     // restarted Unity's scene loading indefinitely. The account identity is
     // stable during refreshes; retry only genuine handoff failures.
     for (let attempt = 0; attempt < 3; attempt += 1) {
+        if (rootDisposed || generation !== nativeSessionSyncGeneration) return
         try {
             const ticket = await issueNativeSessionTicket()
             if (generation !== nativeSessionSyncGeneration || nativeSessionIdentity.value !== identity) return
             webview?.postMessage({ type: 'host_action', action: 'sync_unity_session', ticket })
+            issuedNativeIdentity = identity
             return
         } catch (error) {
             if (generation !== nativeSessionSyncGeneration) return
@@ -95,8 +106,11 @@ watch(isNativeOverlaySurfaceRoute, isOverlay => {
     document.body.style.backgroundColor = isOverlay ? 'transparent' : originalBodyBackground
 }, { immediate: true })
 
-onMounted(() => { void refreshAdminSession() })
-onUnmounted(() => window.clearInterval(overlayAuthPoll))
+// Tracking belongs to the WebView, not a cached admin route. Otherwise leaving
+// /admin drops BroadcastChannel and account changes in /group take a full poll
+// cycle to reach another surface (or never arrive during a service outage).
+onMounted(() => { startAdminSessionTracking(); void refreshAdminSession() })
+onUnmounted(() => { rootDisposed = true; nativeSessionSyncGeneration++; stopAdminSessionTracking(); window.clearInterval(overlayAuthPoll) })
 </script>
 
 <template>

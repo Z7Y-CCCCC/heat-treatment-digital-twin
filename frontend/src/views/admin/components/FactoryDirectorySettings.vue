@@ -2,7 +2,9 @@
 import { permissionDirective as vPermission } from '../../../runtime/pagePermissionUi.js'
 import { onMounted, onUnmounted, ref } from 'vue'
 import { adminApi } from '../../../config/factoryConfig.js'
-import { getFactoryScope } from '../../../runtime/factoryScope.js'
+import { canAdminPage } from '../../../runtime/adminSession.js'
+import { getFactoryScope, FACTORY_DIRECTORY_CHANGE_EVENT } from '../../../runtime/factoryScope.js'
+import EnableCapsule from '../../../components/EnableCapsule.vue'
 import { cacheFactoryDraft, clearFactoryDraft, readFactoryDraft } from '../../../runtime/factoryDraftCache.js'
 import FactoryGeoFields from './FactoryGeoFields.vue'
 import FactoryDistributionPreview from './FactoryDistributionPreview.vue'
@@ -12,6 +14,7 @@ const factories=ref([]),loading=ref(true),saving=ref(false),error=ref(''),messag
 const createOpen=ref(false),newName=ref(''),newLocation=ref({country:'CHN',regionCode:'',regionName:'',cityCode:'',city:'',districtCode:'',districtName:''})
 const editingId=ref('')
 const previewRevision=ref(0)
+const togglingId=ref('')
 const draftFactoryId=getFactoryScope()
 let openedSnapshot=''
 const editorPayload=()=>({id:editingId.value,name:newName.value,location:newLocation.value})
@@ -56,26 +59,41 @@ async function createFactory(){
     clearFactoryDraft(draftFactoryId,'factory-directory');createOpen.value=false;await load();previewRevision.value++;message.value=editingId.value?`${result.factory?.name || name}资料已保存。`:`${result.factory?.name || name}已创建。可在各配置页顶部选择该厂，独立维护车间、产线和设备。`
   }catch(cause){error.value=cause.message || '保存工厂失败'}finally{saving.value=false}
 }
+async function toggleFactory(factory){
+  if(loading.value || saving.value || togglingId.value || !canAdminPage('factories','edit'))return
+  const enabled=!factory.enabled
+  togglingId.value=factory.id;error.value='';message.value=''
+  try{
+    const result=await adminApi.updateFactory(factory.id,{enabled})
+    if(!result?.success || result.factory?.id!==factory.id || result.factory?.enabled!==enabled)throw new Error(result?.error || '工厂状态未确认')
+    // The PUT response does not contain aggregate counts. Keep the rest of the
+    // directory row, model configuration and the selected editing scope intact.
+    factory.enabled=enabled
+    previewRevision.value++
+    window.dispatchEvent(new CustomEvent(FACTORY_DIRECTORY_CHANGE_EVENT))
+  }catch(cause){const text=cause.message || '工厂状态更新失败';await load();error.value=text}
+  finally{togglingId.value=''}
+}
 </script>
 
 <template>
   <section class="factory-registry" aria-labelledby="factory-registry-title">
     <header class="registry-heading">
-      <div><h3 id="factory-registry-title">集团工厂</h3><p>地图同时展示所有已接入工厂；车间、产线、设备、场景和实时数据按工厂隔离。在各配置页顶部直接选择要编辑的工厂。</p></div>
-      <div class="registry-heading-actions"><FactoryDistributionPreview :refresh-key="previewRevision" /><button type="button" class="primary-action" :disabled="loading || saving" @click="openCreate">＋ 新建工厂</button></div>
+      <div><h3 id="factory-registry-title">集团工厂</h3><p>管理工厂资料与大屏显示。</p></div>
+      <div class="registry-heading-actions"><FactoryDistributionPreview :refresh-key="previewRevision" /><button type="button" class="primary-action" :disabled="loading || saving || !!togglingId" @click="openCreate">＋ 新建工厂</button></div>
     </header>
     <p v-if="loading" class="registry-state">正在读取工厂…</p>
     <p v-else-if="error && !factories.length" class="registry-state error" role="alert">{{ error }}</p>
     <div v-else class="factory-table-wrap">
       <table class="factory-table">
-        <thead><tr><th>工厂</th><th>区域</th><th>车间</th><th>产线</th><th>设备</th><th>状态</th><th>操作</th></tr></thead>
+        <thead><tr><th>工厂</th><th>区域</th><th>车间</th><th>产线</th><th>设备</th><th>大屏显示</th><th>操作</th></tr></thead>
         <tbody>
-          <tr v-for="factory in factories" :key="factory.id">
+          <tr v-for="factory in factories" :key="factory.id" :data-factory-id="factory.id">
             <td><strong>{{ factory.name }}</strong><small>{{ factory.id }}</small></td>
             <td>{{ locationLabel(factory.location) }}</td>
             <td>{{ factory.workshopCount }}</td><td>{{ factory.lineCount }}</td><td>{{ factory.deviceCount }}</td>
-            <td><span v-if="!factory.enabled" class="status disabled">已停用</span><span v-else class="status active">地图可见</span></td>
-            <td class="row-actions"><button type="button" :disabled="saving" @click="openEdit(factory)">编辑资料</button></td>
+            <td><EnableCapsule class="factory-toggle" :enabled="Boolean(factory.enabled)" :pending="togglingId === factory.id" :disabled="saving || !!togglingId || !canAdminPage('factories','edit')" :label="`大屏显示：${factory.name}`" @toggle="toggleFactory(factory)" /></td>
+            <td class="row-actions"><button type="button" :disabled="saving || !!togglingId" @click="openEdit(factory)">编辑资料</button></td>
           </tr>
         </tbody>
       </table>
@@ -99,6 +117,6 @@ async function createFactory(){
 
 <style scoped>
 .factory-modal{position:relative}.factory-modal header{padding-right:28px}.factory-modal header>button{position:absolute;top:8px;right:8px;display:grid;place-items:center;width:30px;height:30px;padding:0!important;border:0!important;background:transparent!important;box-shadow:none;line-height:1}.factory-modal header>button:focus-visible{outline:2px solid #386dca;outline-offset:1px}.factory-modal header>button:disabled{opacity:.5;cursor:wait}
-.factory-registry{padding:22px 0 8px;border-top:1px solid #e2e7ef}.registry-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:20px}.registry-heading h3{margin:0;color:#202b3e;font-size:16px}.registry-heading p{max-width:720px;margin:7px 0 16px;color:#7b879a;font-size:12px;line-height:1.7}.factory-registry button{font:inherit;font-size:11px}.primary-action{border:1px solid #3269db!important;border-radius:6px;padding:8px 12px;background:#3269db!important;color:#fff!important;cursor:pointer}.factory-registry button:disabled{opacity:.5;cursor:default}.factory-table-wrap{overflow:auto;border:1px solid #e1e6ee;border-radius:9px}.factory-table{width:100%;border-collapse:collapse;min-width:720px;text-align:left}.factory-table th{padding:9px 11px;background:#f6f8fb;color:#8590a2;font-size:10px;font-weight:600}.factory-table td{padding:10px 11px;border-top:1px solid #edf0f5;color:#4f5c70;font-size:11px;white-space:nowrap}.factory-table tbody tr.selected{background:#f4f7fd}.factory-table td:first-child strong,.factory-table td:first-child small{display:block}.factory-table td:first-child strong{color:#2d394c;font-size:12px}.factory-table td:first-child small{margin-top:3px;color:#98a1b0;font-size:9px}.row-actions{display:flex;gap:6px}.row-actions button,.factory-modal footer>button,.factory-modal header>button{border:1px solid #d8deea;border-radius:5px;padding:6px 9px;background:#fff;color:#48618f;cursor:pointer}.status{padding:4px 7px;border-radius:99px;background:#f2f4f7;color:#7c8799;font-size:9px}.status.active{background:#e7f5ef;color:#2c8768}.status.disabled{background:#fbefef;color:#a34e52}.scope-hint,.registry-message,.registry-state{margin:11px 0 0;color:#78859a;font-size:11px;line-height:1.6}.scope-hint strong{color:#425877}.scope-hint span{color:#8792a3}.registry-message.error,.registry-state.error{color:#b64250}.factory-modal-backdrop{position:fixed;z-index:3000;inset:0;display:grid;place-items:center;padding:24px;background:#17203366;backdrop-filter:blur(3px)}.factory-modal{width:min(720px,100%);max-height:min(90vh,900px);overflow:auto;padding:22px;border:1px solid #e0e5ed;border-radius:14px;background:#fff;box-shadow:0 24px 70px #17203335}.factory-modal header,.factory-modal footer{display:flex;align-items:center;justify-content:space-between;gap:12px}.factory-modal header h3{margin:0;color:#253149;font-size:17px}.factory-modal header p{margin:5px 0 18px;color:#8792a4;font-size:11px}.factory-modal header>button{font-size:19px}.factory-name-field{display:grid;gap:6px;margin-bottom:16px;color:#5d6a80;font-size:11px}.factory-name-field input{padding:10px;border:1px solid #d6deea;border-radius:6px;font:inherit}.factory-modal footer{justify-content:flex-end;margin-top:18px}.factory-modal footer>button{padding:8px 14px}.factory-modal :deep(.geo-fields){margin:0}@media(max-width:700px){.registry-heading{align-items:flex-start}.registry-heading p{max-width:480px}}
+.factory-registry{padding:22px 0 8px;border-top:1px solid #e2e7ef}.registry-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:20px}.registry-heading h3{margin:0;color:#202b3e;font-size:16px}.registry-heading p{max-width:720px;margin:7px 0 16px;color:#7b879a;font-size:12px;line-height:1.7}.factory-registry button{font:inherit;font-size:11px}.primary-action{border:1px solid #3269db!important;border-radius:6px;padding:8px 12px;background:#3269db!important;color:#fff!important;cursor:pointer}.factory-registry button:disabled{opacity:.5;cursor:default}.factory-table-wrap{overflow:auto;border:1px solid #e1e6ee;border-radius:9px}.factory-table{width:100%;border-collapse:collapse;min-width:720px;text-align:left}.factory-table th{padding:9px 11px;background:#f6f8fb;color:#8590a2;font-size:10px;font-weight:600}.factory-table td{padding:10px 11px;border-top:1px solid #edf0f5;color:#4f5c70;font-size:11px;white-space:nowrap}.factory-table tbody tr.selected{background:#f4f7fd}.factory-table td:first-child strong,.factory-table td:first-child small{display:block}.factory-table td:first-child strong{color:#2d394c;font-size:12px}.factory-table td:first-child small{margin-top:3px;color:#98a1b0;font-size:9px}.row-actions{display:flex;gap:6px}.row-actions button,.factory-modal footer>button,.factory-modal header>button{border:1px solid #d8deea;border-radius:5px;padding:6px 9px;background:#fff;color:#48618f;cursor:pointer}.scope-hint,.registry-message,.registry-state{margin:11px 0 0;color:#78859a;font-size:11px;line-height:1.6}.scope-hint strong{color:#425877}.scope-hint span{color:#8792a3}.registry-message.error,.registry-state.error{color:#b64250}.factory-modal-backdrop{position:fixed;z-index:3000;inset:0;display:grid;place-items:center;padding:24px;background:#17203366;backdrop-filter:blur(3px)}.factory-modal{width:min(720px,100%);max-height:min(90vh,900px);overflow:auto;padding:22px;border:1px solid #e0e5ed;border-radius:14px;background:#fff;box-shadow:0 24px 70px #17203335}.factory-modal header,.factory-modal footer{display:flex;align-items:center;justify-content:space-between;gap:12px}.factory-modal header h3{margin:0;color:#253149;font-size:17px}.factory-modal header p{margin:5px 0 18px;color:#8792a4;font-size:11px}.factory-modal header>button{font-size:19px}.factory-name-field{display:grid;gap:6px;margin-bottom:16px;color:#5d6a80;font-size:11px}.factory-name-field input{padding:10px;border:1px solid #d6deea;border-radius:6px;font:inherit}.factory-modal footer{justify-content:flex-end;margin-top:18px}.factory-modal footer>button{padding:8px 14px}.factory-modal :deep(.geo-fields){margin:0}@media(max-width:700px){.registry-heading{align-items:flex-start}.registry-heading p{max-width:480px}}
 .factory-registry{padding-top:0;border-top:0}.registry-heading-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 </style>

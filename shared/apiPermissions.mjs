@@ -19,6 +19,7 @@ export function apiPermission(path, method = 'GET', body) {
   const safe = ['GET', 'HEAD'].includes(method)
   const action = safe ? 'view' : method === 'DELETE' ? 'delete' : 'edit'
   const resource = prefix => path === `/api/${prefix}` || path.startsWith(`/api/${prefix}/`)
+  if (resource('license')) return safe ? read(['settings.license']) : 'admin'
   if (safe && ['/api/platform/metrics/latest', '/api/platform/events', '/api/data-sources/map-values'].includes(path)) return 'view'
   if (method === 'POST' && (/^\/api\/factories\/(?:[^/]+\/)?activate$/.test(path)
     || path === '/api/native-preview/navigate' || /^\/api\/platform\/scenes\/[^/]+\/activate-latest-release$/.test(path))) return 'launch'
@@ -31,6 +32,7 @@ export function apiPermission(path, method = 'GET', body) {
     return any('admin', ...(!destructive ? ['backup'] : []), p('settings.database', action))
   }
   if (resource('database') || resource('data-sources')) {
+    if (method === 'POST' && path === '/api/data-sources/datasets/preview') return body?.datasetId ? read(['settings.database', 'platform.designer']) : any('admin', p('settings.database', 'edit'))
     if (safe && path === '/api/data-sources/runtime-values') return read(['points', 'points.alarms', 'point-monitor', 'platform.designer'], true)
     const pages = ['settings.database', 'platform.designer', 'platform.map']
     if (safe) return read(pages)
@@ -83,6 +85,8 @@ export function apiPermission(path, method = 'GET', body) {
     if (/^\/api\/models\/[^/]+\/inspection$/.test(path) && method === 'PUT') return any('admin', p('disassembly-layout', 'edit'))
     return any('admin', p('models', action))
   }
+  if (safe && path === '/api/factories/collection-status') return read(['settings.data'])
+  if (/^\/api\/factories\/[^/]+\/collection$/.test(path)) return any('admin', p('settings.data', 'edit'))
   if (resource('factories')) return safe ? read(PAGE_PERMISSIONS.map(p => p.key), true) : any('admin', p('factories', 'edit'))
   if (resource('datapoints')) {
     if (path === '/api/datapoints/alarm-texts' && method === 'POST') return any('admin', p('points.alarms', 'edit'))

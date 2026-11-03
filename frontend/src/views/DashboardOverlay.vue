@@ -5,9 +5,13 @@ import LoadingExperience from '../components/LoadingExperience.vue'
 import { useFactoryConfig } from '../config/factoryConfig.js'
 import { createDashboardDataStore } from '../runtime/DataStore.js'
 import { API_BASE } from '../runtime/backendEndpoint.js'
-import { adminFetch, startAdminSessionTracking, stopAdminSessionTracking } from '../runtime/adminSession.js'
+import { adminFetch, adminSession } from '../runtime/adminSession.js'
 import { createVoiceAnnouncer } from '../runtime/VoiceAnnouncer.js'
 import { resolveBackendAssetUrl } from '../three/ModelFactory.js'
+import { useDashboardIntegration } from '../runtime/dashboardIntegration.js'
+import {useWidgetClock} from '../runtime/widgetPlayback.js'
+import {createWidgetReadScheduler} from '../runtime/widgetReadScheduler.js'
+import {flattenPlaybackDevices} from '../../../shared/widgetPlayback.mjs'
 import WidgetRenderer from '../runtime/WidgetRenderer.vue'
 import { applyReferenceHudLayout } from '../runtime/referenceHudLayout.js'
 import { applyFactoryHudModules } from '../runtime/factoryHudModules.js'
@@ -30,6 +34,7 @@ const voiceAnnouncer = createVoiceAnnouncer()
 let previousDocumentBackground = ''
 let previousBodyBackground = ''
 let databaseRequestSeq = 0
+let externalValueContext = ''
 let businessRequestSeq = 0
 let databaseInFlight = false
 let businessInFlight = false
@@ -70,6 +75,8 @@ const runtimeContext = reactive({
     inspectionEnabled: false, inspectionProgress: 0, inspectionAnimating: false, inspectionPhase: '', inspectionIsolated: false,
     inspectionLabelsEnabled: false, inspectionLeaderLines: false, inspectionHoveredPartId: '', inspectionIssues: [], inspectionParts: []
 })
+const playbackNow=useWidgetClock()
+const playbackDevices=computed(()=>flattenPlaybackDevices(config))
 const groupVisibility = reactive({})
 const widgetVisibility = reactive({})
 
@@ -377,14 +384,14 @@ const widgets = computed(() => {
     }).filter(widget => widgetRuntimeVisible(widget, {
     context: runtimeContext,
     dataValue: runtimeValueForWidget(widget),
-    dataRecord: ['database', 'http_api'].includes(widget.data?.mode) ? databaseValues[widget.id] : null,
+    dataRecord: ['database', 'http_api', 'dataset'].includes(widget.data?.mode) ? databaseValues[widget.id] : null,
     groupVisibility,
     widgetVisibility
     }))
 })
 const businessWidgets = computed(() => configuredWidgets.value.filter(widget => {
     const type = widget.type || widget.widget_type
-    return type === 'business_summary' || widget.data?.mode === 'business'
+    return type === 'business_summary' && widget.data?.mode !== 'business'
 }))
 
 function getByPath(source, path) {
@@ -493,7 +500,7 @@ function handleInspectionCommand(command) {
 
 function runtimeValueForWidget(widget) {
     const binding = widget?.data || widget?.binding || {}
-    if (binding.mode === 'database' || binding.mode === 'http_api') return databaseValues[widget.id]?.value
+    if (binding.mode === 'database' || binding.mode === 'http_api' || binding.mode === 'dataset') return databaseValues[widget.id]?.value
     if (binding.mode === 'plc' || binding.pointId || binding.point_id) {
         const pointId = String(binding.pointId || binding.point_id || '')
         const isCurrentDevice = binding.deviceScope === 'current'
@@ -784,8 +791,17 @@ function playVoice(event) {
     voiceAnnouncer.preview({ mode: 'auto', audio_url: event.audioUrl || '', text: event.text || '' }).catch(() => {})
 }
 
-function handleWidgetAction({ event }) {
+const integration = useDashboardIntegration({
+    document:presentationDocument, context:runtimeContext, ready:()=>runtimeContext.sceneReady !== false,
+    scope:computed(() => `${config.factoryId}:${platform.value.activeScene?.id}:${presentationDocument.value?.metadata?.publishedAt || ''}:${adminSession.user?.username || ''}`),
+    devices:computed(() => (config.workshops || []).flatMap(w=>[...(w.devices||[]),...(w.lines||[]).flatMap(l=>l.devices||[])])),
+    authorize:() => adminSession.displayAuthenticated && adminSession.permissions.view,
+    refresh:() => refreshDatabaseValues(true), action:payload => handleWidgetAction(payload)
+})
+function handleWidgetAction({ event, widget }) {
     if (!event) return
+    integration.emit('widgetAction', {widgetId:widget?.id || '', action:event.action})
+    if (integration.handle(event)) return
     if (['set_visibility', 'toggle_visibility'].includes(event.action)) {
         applyVisibilityAction(event, { groupVisibility, widgetVisibility })
         scheduleRegionReport()
@@ -808,6 +824,10 @@ function handleWidgetAction({ event }) {
 
 async function handleRuntimeMessage(message) {
     if (overlayDisposed) return
+    if (message?.type === 'configuration_changed' && message.payload?.visibilityOnly) {
+        if (message.payload.enabled === false && String(message.payload.factoryId) === String(config.factoryId)) await leaveHiddenFactory(String(message.payload.factoryId))
+        return
+    }
     if (message?.type === 'device_hover_changed') {
         applyDeviceHover(runtimeContext, message.payload, deviceHoverCatalog.value)
         return
@@ -834,6 +854,7 @@ async function handleRuntimeMessage(message) {
         runtimeContext.deviceHoverPointer = { visible: false }
         const loaded = await loadConfig(activated)
         if (overlayDisposed || !loaded) return
+        if (await leaveHiddenFactory()) return
         registerConfiguredDevices()
         probeConfiguredModels()
         runtimeContext.sceneId = platform.value.activeScene?.id || runtimeContext.sceneId
@@ -848,6 +869,14 @@ async function handleRuntimeMessage(message) {
     }
 }
 
+async function leaveHiddenFactory(hiddenId = '') {
+    if ((!hiddenId || hiddenId !== String(config.factoryId)) && !config.factories?.some(factory => String(factory.id) === String(config.factoryId) && factory.enabled === false)) return false
+    const query = { ...route.query }
+    for (const key of ['factoryId', 'scene', 'fromGroup']) delete query[key]
+    await router.replace({ path: '/group', query })
+    return true
+}
+
 function handleHostMessage(event) {
     if (event.data?.type !== 'overlay_host_state') return
     hostConnected.value = event.data.visible !== false
@@ -857,32 +886,25 @@ function handleHostMessage(event) {
     scheduleRegionReport()
 }
 
-async function refreshDatabaseValues(force = false) {
-    if (overlayDisposed || (!force && databaseInFlight)) return
-    if (!force && !configuredWidgets.value.some(widget => ['database', 'http_api'].includes(widget.data?.mode))) return
-    const requestSeq = ++databaseRequestSeq
-    databaseInFlight = true
-    try {
-        const query = new URLSearchParams({
-            view_id: runtimeContext.viewId || '',
-            workshop_id: runtimeContext.workshopId || '',
-            line_id: runtimeContext.lineId || '',
-            device_id: runtimeContext.deviceId || '',
-            part_id: runtimeContext.partId || ''
-        })
-        const response = await adminFetch(`${API_BASE}/data-sources/runtime-values?${query}`, { signal: overlayRequests.signal })
-        if (!response.ok) return
-        const payload = await response.json()
-        if (overlayDisposed || requestSeq !== databaseRequestSeq) return
-        const next = payload.values || {}
-        Object.keys(databaseValues).forEach(key => { if (!(key in next)) delete databaseValues[key] })
-        Object.assign(databaseValues, next)
-    } catch {
-        // 外部数据库短暂离线时保留上一次画面，质量状态由后端结果更新。
-    } finally {
-        if (requestSeq === databaseRequestSeq) databaseInFlight = false
-    }
-}
+const externalReader=createWidgetReadScheduler({
+ context:()=>Object.fromEntries(['factoryId','viewId','viewMode','workshopId','lineId','deviceId','partId'].map(key=>[key,runtimeContext[key] || ''])),
+ parameters:()=>integration.parameters.value,devices:()=>playbackDevices.value,
+ widgets:()=>configuredWidgets.value.filter(w=>{
+   const view=currentView.value,state=view?.componentState || {},group=w.groupId?'group:'+w.groupId:''
+   if(state.hide?.includes(w.id) || group && state.hide?.includes(group))return false
+   if(state.show?.length && !state.show.includes(w.id) && !state.show.includes(group))return false
+   return widgetRuntimeVisible({...w,visibility:{...w.visibility,rules:(w.visibility?.rules || []).filter(r=>r.source!=='data')}},{context:runtimeContext,groupVisibility,widgetVisibility})
+ }),
+ put:(id,record)=>{databaseValues[id]=record},remove:id=>{delete databaseValues[id]},
+ read:async(ids,context,parameters,now,signal)=>{
+   const query=new URLSearchParams({view_id:context.viewId,workshop_id:context.workshopId,line_id:context.lineId,device_id:context.deviceId,part_id:context.partId,parameters:JSON.stringify(parameters),widget_ids:ids.join(','),playback_at:String(now)})
+   const response=await adminFetch(`${API_BASE}/data-sources/runtime-values?${query}`,{signal})
+   if(!response.ok)throw new Error('数据连接暂不可用')
+   return response.json()
+ }
+})
+async function refreshDatabaseValues(force=false) {if(!overlayDisposed)return externalReader.refresh(force,playbackNow.value)}
+watch(playbackNow,()=>{if(!overlayDisposed && !startupLoading.value)void refreshDatabaseValues()})
 
 function emptyBusinessSections(message) {
     return Object.fromEntries(['batches', 'compliance', 'oee', 'energy', 'maintenance'].map(key => [key, {
@@ -933,7 +955,6 @@ async function refreshBusinessData(force = false) {
 }
 
 onMounted(async () => {
-    startAdminSessionTracking()
     const startupBegan = performance.now()
     standalonePreview.value = !window.chrome?.webview
     nativeLoadingManaged.value = Boolean(window.__DIGITAL_TWIN_NATIVE_LOADING__)
@@ -954,6 +975,7 @@ onMounted(async () => {
 
     await loadConfig()
     if (overlayDisposed) return
+    if (await leaveHiddenFactory()) return
     const overviewReadiness = overviewEntryStatus(getWorkshops())
     if (!configLoadError.value && !overviewReadiness.allowed) {
         const query = { ...route.query, navigationNotice: overviewReadiness.message }
@@ -1031,7 +1053,7 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
-    stopAdminSessionTracking()
+    externalReader.dispose()
     overlayDisposed = true
     clearTimeout(inspectionProgressTimer)
     modelProbeGeneration += 1
@@ -1154,7 +1176,7 @@ onUnmounted(() => {
         :point-values="pointValues"
                     :database-values="databaseValues"
                     :business-data="businessData"
-                    :runtime-context="runtimeContext"
+                    :playback-now="playbackNow" :device-catalog="playbackDevices" :runtime-context="runtimeContext" :parameters="integration.parameters.value" :parameter-definitions="integration.definitions.value"
                     :selected-part="selectedPart"
                     overlay-mode
                     :preview="true"

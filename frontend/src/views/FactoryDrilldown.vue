@@ -313,7 +313,8 @@ async function load(){
     if(disposed || requestId!==configRequestId || requestedFactoryId!==factoryId.value)return
     if(!directory.ok || !details.ok)throw new Error(payload.error || listing.error || '工厂资料读取失败')
     const selected=listing.factories?.find(item=>String(item.id)===requestedFactoryId)
-    if(!selected || !selected.enabled)throw new Error('工厂不存在或已停用')
+    if(!selected)throw new Error('工厂不存在')
+    if(!selected.enabled && !adminSurface.value){await router.replace({path:'/group',query:mapQuery()});return}
     if(!Array.isArray(payload.workshops) || !payload.workshops.length){
       const notice=streetEntryStatus({name:selected.name,runtime:'local',workshops:0}).message
       await router.replace({path:'/group',query:{...mapQuery(),navigationNotice:notice}})

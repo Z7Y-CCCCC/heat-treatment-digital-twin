@@ -5,6 +5,7 @@ const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
 const { collectRelease } = require('./collect-release.cjs');
+const { verifyRelease } = require('./verify-release.cjs');
 function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ci-release-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -23,6 +24,19 @@ test('collects only verified files with portable metadata and regenerated checks
   const f = fixture(t); const out = collectRelease(f.root);
   assert.equal(fs.readdirSync(out).length, 4);
   assert.equal(JSON.parse(fs.readFileSync(path.join(out, 'release-manifest.json'))).installer, 'test.exe');
+  assert.equal(verifyRelease(out, '').installer, 'test.exe');
+});
+
+test('download verification rejects wrong commit, extra files and changed checksum or installer', t => {
+  const f = fixture(t); const out = collectRelease(f.root);
+  assert.throws(() => verifyRelease(out, 'unrelated-commit'), /another commit/);
+  fs.writeFileSync(path.join(out, 'unexpected.txt'), 'not a release asset');
+  assert.throws(() => verifyRelease(out, ''), /Unexpected/);
+  fs.unlinkSync(path.join(out, 'unexpected.txt'));
+  fs.appendFileSync(path.join(out, 'test.exe.sha256.txt'), 'wrong');
+  assert.throws(() => verifyRelease(out, ''), /Checksum/);
+  fs.appendFileSync(path.join(out, 'test.exe'), 'changed');
+  assert.throws(() => verifyRelease(out, ''), /SHA-256/);
 });
 test('rejects corruption, skipped smoke, customer config and stale release directories', t => {
   const f = fixture(t);

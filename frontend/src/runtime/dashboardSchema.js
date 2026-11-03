@@ -1,4 +1,7 @@
+import {upgradeWidgetPlaybackDocument} from '../../../shared/widgetPlaybackProfile.mjs'
+import { normalizePlayback } from '../../../shared/widgetPlayback.mjs'
 export const DASHBOARD_SCHEMA_VERSION = 3
+import { normalizeParameterDefinitions } from '../../../shared/dashboardParameters.mjs'
 
 export const DEFAULT_DASHBOARD_CANVAS = Object.freeze({
   width: 1920,
@@ -31,13 +34,13 @@ export const DASHBOARD_VIEW_MODES = [
 ]
 
 export const MAP_SURFACE_VIEWS = Object.freeze([
-  { id: 'map_world', name: '01 全球地图', level: 'world', targetType: 'map_world', parentViewId: '' },
-  { id: 'map_country', name: '02 国家地图', level: 'country', targetType: 'map_country', parentViewId: 'map_world' },
-  { id: 'map_province', name: '03 省份 / 直辖市地图', level: 'province', targetType: 'map_province', parentViewId: 'map_country' },
-  { id: 'map_city', name: '04 城市地图', level: 'city', targetType: 'map_city', parentViewId: 'map_province' },
-  { id: 'map_district', name: '05 区县地图', level: 'district', targetType: 'map_district', parentViewId: 'map_city' },
-  { id: 'site_street', name: '06 街道示意', level: 'street', targetType: 'site_street', parentViewId: 'map_district' },
-  { id: 'site_factory', name: '07 工厂建筑', level: 'site_factory', targetType: 'site_factory', parentViewId: 'site_street' }
+  { id: 'map_world', name: '全球地图', level: 'world', targetType: 'map_world', parentViewId: '' },
+  { id: 'map_country', name: '国家地图', level: 'country', targetType: 'map_country', parentViewId: 'map_world' },
+  { id: 'map_province', name: '省份 / 直辖市地图', level: 'province', targetType: 'map_province', parentViewId: 'map_country' },
+  { id: 'map_city', name: '城市地图', level: 'city', targetType: 'map_city', parentViewId: 'map_province' },
+  { id: 'map_district', name: '区县地图', level: 'district', targetType: 'map_district', parentViewId: 'map_city' },
+  { id: 'site_street', name: '街道示意', level: 'street', targetType: 'site_street', parentViewId: 'map_district' },
+  { id: 'site_factory', name: '工厂建筑', level: 'site_factory', targetType: 'site_factory', parentViewId: 'site_street' }
 ])
 export const MAP_SURFACE_VIEW_IDS = new Set(MAP_SURFACE_VIEWS.map(view => view.id))
 const mapSurfaceViewDefinition = view => ({
@@ -72,7 +75,7 @@ function normalizeDashboardView(source = {}, index = 0) {
   const authoredName = String(source.name || fallback.name || `视角 ${index + 1}`)
   return {
     id: viewId,
-    name: viewId === 'site_factory' && authoredName.trim() === '06 工厂建筑' ? '07 工厂建筑' : authoredName,
+    name: MAP_SURFACE_VIEW_IDS.has(viewId) ? authoredName.replace(/^\s*\d{2}\s+/, '') : authoredName,
     mode,
     targetType: String(source.targetType || fallback.targetType || (mode === 'custom' ? 'factory' : mode)),
     targetId: String(source.targetId || source.target_id || ''),
@@ -142,6 +145,7 @@ export function normalizeDashboardViews(scene = {}) {
 
 export const DASHBOARD_WIDGET_LIBRARY = [
   { type: 'text', label: '文本', icon: 'T', group: '基础', description: '标题、说明和动态文本' },
+  { type: 'filter', label: '参数筛选', icon: '⌕', group: '数据', description: '下拉、文本、日期与数值联动' },
   { type: 'value', label: '数值', icon: '12', group: '基础', description: '任意数据源的数值与格式' },
   { type: 'status', label: '状态灯', icon: '●', group: '基础', description: '布尔状态、在线和报警' },
   { type: 'image', label: '图片', icon: '▧', group: '基础', description: '现场图片、Logo 和图标' },
@@ -178,6 +182,7 @@ export const DASHBOARD_WIDGET_PRESETS = [
 ]
 
 const TYPE_DEFAULTS = {
+  filter: { size: [300, 100], title:'参数筛选', content:{control:'select',parameterKey:'',placeholder:'请选择',options:[]}, style:{background:'rgba(14, 28, 43, .72)',color:'#eef7ff',fontSize:16,borderRadius:12} },
   text: {
     size: [360, 120],
     title: '文本',
@@ -376,7 +381,7 @@ export function normalizeDashboardWidget(source = {}, canvas = DEFAULT_DASHBOARD
     && Number(source.w || 0) === 5 && Number(source.h || 0) === 5
   const data = objectValue(source.data, objectValue(source.binding, {}))
   const requestedMode = String(data.mode || '')
-  const normalizedMode = requestedMode === 'plc' || requestedMode === 'database' || requestedMode === 'http_api' || requestedMode === 'runtime' || requestedMode === 'business'
+  const normalizedMode = requestedMode === 'plc' || requestedMode === 'database' || requestedMode === 'http_api' || requestedMode === 'dataset' || requestedMode === 'runtime' || requestedMode === 'business'
     ? requestedMode
     : 'static'
   const resolvedDataMode = normalizedMode === 'static'
@@ -384,7 +389,7 @@ export function normalizeDashboardWidget(source = {}, canvas = DEFAULT_DASHBOARD
     : normalizedMode
   const rawDeviceId = data.deviceId || data.device_id || ''
   const requestedDeviceScope = String(data.deviceScope || data.device_scope || '').toLowerCase()
-  const deviceScope = requestedDeviceScope === 'current' || requestedDeviceScope === 'fixed'
+  const deviceScope = ['current','fixed','rotation'].includes(requestedDeviceScope)
     ? requestedDeviceScope
     : (rawDeviceId ? 'fixed' : 'current')
   const legacyDataset = normalizeDatabaseDataset(data, data, 0)
@@ -430,12 +435,16 @@ export function normalizeDashboardWidget(source = {}, canvas = DEFAULT_DASHBOARD
     data: {
       // 旧版无来源指标仍迁移为静态占位；新 runtime 模式只读取当前视角与部件上下文。
       mode: resolvedDataMode,
-      deviceScope,
+      ...normalizePlayback({...data,deviceScope}),
+      datasetFields:Array.isArray(data.datasetFields)?data.datasetFields.map(String).slice(0,12):[],
       deviceId: String(rawDeviceId),
       pointId: String(data.pointId || data.point_id || ''),
       pointKey: String(data.pointKey || data.point_key || ''),
       path: resolvedDataMode === 'static' ? '' : String(data.path || ''),
       source: resolvedDataMode === 'static' ? '' : String(data.source || ''),
+      datasetId: String(data.datasetId || '').slice(0, 80),
+      datasetField: String(data.datasetField || '').slice(0, 64),
+      datasetMode: ['first','count','sum','avg','min','max'].includes(data.datasetMode) ? data.datasetMode : 'first',
       connectionId: String(data.connectionId || data.connection_id || ''),
       apiPath: String(data.apiPath || '').slice(0, 1024),
       jsonPath: String(data.jsonPath || '').slice(0, 255),
@@ -527,6 +536,7 @@ function ensureNavigationWidgets(rawWidgets, canvas) {
 }
 
 export function normalizeDashboardDocument(source = {}) {
+  source=upgradeWidgetPlaybackDocument(source)
   const canvas = {
     ...DEFAULT_DASHBOARD_CANVAS,
     ...objectValue(source.canvas, {}),
@@ -597,6 +607,7 @@ export function normalizeDashboardDocument(source = {}) {
       ...normalizedViews
     },
     widgets,
+    parameters: normalizeParameterDefinitions(source.parameters || []),
     metadata: deepClone(source.metadata || {})
   }
 }

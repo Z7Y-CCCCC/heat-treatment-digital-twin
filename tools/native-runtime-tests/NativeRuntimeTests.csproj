@@ -6,6 +6,7 @@
     <Nullable>disable</Nullable>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="../../unity-client/Assets/Scripts/Rendering/OrbitCameraMotion.cs" Link="OrbitCameraMotion.cs" />
     <Compile Include="../../unity-client/Assets/Scripts/Backend/BackendDtos.cs" Link="BackendDtos.cs" />
     <Compile Include="../../unity-client/Assets/Scripts/Runtime/IndustrialGroundPlan.cs" Link="IndustrialGroundPlan.cs" />
     <None Include="../../shared/industrial-ground-fixtures.json" Link="industrial-ground-fixtures.json" CopyToOutputDirectory="PreserveNewest" />

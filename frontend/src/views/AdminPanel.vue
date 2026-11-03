@@ -6,8 +6,11 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { adminApi } from '../config/factoryConfig.js'
 import { API_BASE } from '../runtime/backendEndpoint.js'
 import { SceneRuntime } from '../runtime/SceneRuntime.js'
+import { useNativeQuality } from '../runtime/nativeQuality.js'
+import QualityNotice from '../components/QualityNotice.vue'
 import WorkshopGroundEditor from './admin/components/WorkshopGroundEditor.vue'
 import DataSourceWorkspace from './admin/components/DataSourceWorkspace.vue'
+import FactoryCollectionSettings from './admin/components/FactoryCollectionSettings.vue'
 import { normalizeGround, normalizeDeviceGround } from '../../../shared/industrialGround.mjs'
 import { createVoiceAnnouncer, normalizeVoiceRule, parseVoiceConfig } from '../runtime/VoiceAnnouncer.js'
 import WidgetRenderer from '../runtime/WidgetRenderer.vue'
@@ -396,7 +399,7 @@ const {
     loadEngineStatus,
     formatEngineMode,
     formatCollectorProcessStatus,
-    saveSettings,
+    saveSettings: saveSystemSettings,
     savePendingSystemSettings
 } = useSystemSettings({
     alert,
@@ -409,6 +412,28 @@ const {
     ensureComposerSelection: (...args) => ensureComposerSelection(...args),
     syncComposerDraftFromSelection: (...args) => syncComposerDraftFromSelection(...args),
     scheduleComposerPreview: (...args) => scheduleComposerPreview(...args)
+})
+
+const { qualityState: nativeQualityState, setQuality: setNativeQuality, queryQuality: queryNativeQuality } = useNativeQuality(() => true, { relay: true, hotkeys: false })
+const currentNativeQuality = computed(() => nativeQualityState.enabled && nativeQualityState.profile
+    ? (nativeQualityState.automatic ? 'auto' : nativeQualityState.profile) : settings.native_quality_profile)
+const qualitySelection = computed({
+    get: () => currentNativeQuality.value,
+    set: value => {
+        if (!canAdminPage('settings.performance', 'edit')) return
+        settings.native_quality_profile = value
+        if (nativeQualityState.enabled) setNativeQuality(value)
+    }
+})
+async function saveSettings(pageKey) {
+    // A runtime hotkey/capsule update must not manufacture an unsaved draft or
+    // silently persist a viewer's override. Explicit Save retains that profile.
+    if (pageKey === 'settings.performance' && nativeQualityState.enabled)
+        settings.native_quality_profile = currentNativeQuality.value
+    return saveSystemSettings(pageKey)
+}
+watch([activeTab, settingsSubpage], ([tab, page]) => {
+    if (tab === 'settings' && page === 'performance') queryNativeQuality()
 })
 
 function isHttpDataSource(connection) {
@@ -461,6 +486,13 @@ const licenseStatus = reactive({
 const licenseText = ref('')
 const licenseBusy = ref(false)
 const licenseMessage = ref('')
+const licenseHistory = ref([])
+const licenseHistoryError = ref('')
+const licenseHistoryPage = ref(1)
+const licenseHistoryPages = computed(() => Math.max(1, Math.ceil(licenseHistory.value.length / 10)))
+const visibleLicenseHistory = computed(() => licenseHistory.value.slice((licenseHistoryPage.value - 1) * 10, licenseHistoryPage.value * 10))
+const licenseRenewalOpen = ref(false)
+const licenseViewedCode = ref('')
 const releaseStatus = reactive({
     mode: 'offline_signed_package',
     current: { productVersion: '—', configurationVersion: '—', buildCommit: 'unknown' },
@@ -524,7 +556,16 @@ async function loadWorkshops() {
 
 async function loadLicenseStatus() {
     try {
-        Object.assign(licenseStatus, await adminApi.getLicenseStatus())
+        const status = await adminApi.getLicenseStatus()
+        if (status.error || !status.success) throw new Error(status.error || '读取授权状态失败')
+        Object.assign(licenseStatus, status)
+        try {
+            const history = await adminApi.getLicenseHistory()
+            if (history.error || !history.success || !Array.isArray(history.records)) throw new Error(history.error || '激活记录读取失败')
+            licenseHistory.value = history.records
+            licenseHistoryPage.value = Math.min(licenseHistoryPage.value, licenseHistoryPages.value)
+            licenseHistoryError.value = ''
+        } catch (error) { licenseHistoryError.value = error.message || '激活记录读取失败' }
     } catch (error) {
         licenseStatus.status = 'error'
         licenseStatus.reason = error.message || '读取授权状态失败'
@@ -542,9 +583,9 @@ async function loadReleaseStatus() {
 
 function licenseStatusLabel(status) {
     return {
-        valid: '有效',
+        valid: '已激活',
         not_enforced: '未强制',
-        not_configured: '未配置',
+        not_configured: '未激活',
         unverified: '待验证',
         expired: '已过期',
         not_yet_valid: '尚未生效',
@@ -556,37 +597,40 @@ function licenseStatusLabel(status) {
     }[status] || status || '未知'
 }
 
+function licenseExpiryLabel(value) {
+    return String(value || '').startsWith('9999-') ? '永久' : value ? formatBackupTime(value) : '—'
+}
+
 async function copyLicenseMachineId() {
-    if (!licenseStatus.machineId) {
+    const fingerprint = licenseStatus.activationMachineId || licenseStatus.machineId
+    if (!fingerprint) {
         licenseMessage.value = '当前无法读取本机授权指纹，请检查服务日志。'
         return
     }
     try {
-        await navigator.clipboard.writeText(licenseStatus.machineId)
-        licenseMessage.value = '本机授权指纹已复制，可发给许可证签发方。'
+        await navigator.clipboard.writeText(fingerprint)
+        licenseMessage.value = '指纹已复制'
     } catch (error) {
         licenseMessage.value = '复制失败，请手动选中并复制授权指纹。'
     }
 }
 
 async function installLicenseFromText() {
+    if (licenseBusy.value) return
     if (!licenseText.value.trim()) {
-        licenseMessage.value = '请粘贴交付方提供的许可证 JSON。'
-        return
-    }
-    let license
-    try {
-        license = JSON.parse(licenseText.value)
-    } catch (error) {
-        licenseMessage.value = '许可证不是有效 JSON，请检查复制内容。'
+        licenseMessage.value = '请粘贴厂商提供的激活码'
         return
     }
     licenseBusy.value = true
-    licenseMessage.value = '正在校验签名并安装许可证…'
+    licenseMessage.value = ''
     try {
-        Object.assign(licenseStatus, await adminApi.installLicense(license))
-        licenseMessage.value = `许可证已安装：${licenseStatus.customer || licenseStatus.licenseId || '未命名客户'}`
+        const result = await adminApi.installLicense(licenseText.value.trim())
+        if (result.error || !result.success || result.valid !== true) throw new Error(result.error || '授权更新失败')
+        Object.assign(licenseStatus, result)
+        licenseMessage.value = '授权已更新'
         licenseText.value = ''
+        licenseRenewalOpen.value = false
+        await loadLicenseStatus()
     } catch (error) {
         licenseMessage.value = error.message || '许可证安装失败'
     } finally {
@@ -5020,6 +5064,8 @@ async function renderComposerPreview() {
         runtime = new SceneRuntime(container, {
             workshops: composerWorkshops.value,
             industrialGround: true,
+            groundCutaway: true,
+            deviceLabelConfig: { enabled: false },
             models: models.value || [],
             cameraMode: '4level',
             renderOptions: {
@@ -5028,6 +5074,7 @@ async function renderComposerPreview() {
                 renderScale: 0.8,
                 antialias: true,
                 labelFps: 6,
+                labelLayer: false,
                 lightweight: true,
                 environment: false
             },
@@ -7859,7 +7906,6 @@ async function openAdminSetupStep(step) {
                             </div>
                             <div class="workshop-step-footer">
                                 <span>下一步将在 {{ getWorkshopLayout(selectedWorkshopEditor).size.width }} × {{ getWorkshopLayout(selectedWorkshopEditor).size.depth }} 米范围内按比例展示产线。</span>
-                                <button type="button" class="btn btn-primary" @click="selectWorkshopManagementStep('layout')">查看产线布局</button>
                             </div>
                         </section>
                     </template>
@@ -9784,18 +9830,6 @@ async function openAdminSetupStep(step) {
                             </span>
                         </div>
                         <div>
-                            <span class="status-label">端点</span>
-                            <strong>{{ isAllPointMonitorMode ? '全部设备' : (realtimePointDeviceStatus?.endpoint || (selectedMonitorDevice ? formatPlcEndpoint(selectedMonitorDevice) : '-')) }}</strong>
-                        </div>
-                        <div>
-                            <span class="status-label">页面刷新周期</span>
-                            <strong>{{ pointMonitorAutoRefresh ? `${pointMonitorRefreshIntervalMs}ms` : '手动刷新' }}</strong>
-                        </div>
-                        <div>
-                            <span class="status-label">PLC采集周期</span>
-                            <strong>按每行配置执行</strong>
-                        </div>
-                        <div>
                             <span class="status-label">最近数据快照</span>
                             <strong>{{ formatPointTime(realtimePointSnapshotAt) }}</strong>
                         </div>
@@ -9815,7 +9849,7 @@ async function openAdminSetupStep(step) {
                                     <th>PLC 标准地址</th>
                                     <th>数据类型</th>
                                     <th>采集周期</th>
-                                    <th>报警说明</th>
+                                    <th>说明</th>
                                     <th>最近读取</th>
                                 </tr>
                             </thead>
@@ -9927,8 +9961,7 @@ async function openAdminSetupStep(step) {
                     <div v-show="settingsSubpage === 'license'" class="settings-section secondary-page-panel license-settings-panel">
                         <div class="license-heading-row">
                             <div>
-                                <h3 class="section-title">离线许可证</h3>
-                                <p class="desc">许可证由签发方离线签名，本机只用公钥校验；正式安装包没有有效许可证时将停止业务接口。</p>
+                                <h3 class="section-title">授权信息</h3>
                             </div>
                             <span class="license-status-pill" :class="`license-${licenseStatus.status}`">
                                 {{ licenseStatusLabel(licenseStatus.status) }}
@@ -9937,14 +9970,13 @@ async function openAdminSetupStep(step) {
                         <div class="license-summary-grid">
                             <div><span>客户</span><strong>{{ licenseStatus.customer || '未配置' }}</strong></div>
                             <div><span>许可证编号</span><strong>{{ licenseStatus.licenseId || '—' }}</strong></div>
-                            <div><span>有效期</span><strong>{{ licenseStatus.expiresAt ? formatBackupTime(licenseStatus.expiresAt) : '—' }}</strong></div>
-                            <div><span>强制授权</span><strong>{{ licenseStatus.enforce ? '已开启' : '未开启（开发/演示）' }}</strong></div>
+                            <div><span>有效期</span><strong>{{ licenseExpiryLabel(licenseStatus.expiresAt) }}</strong></div>
+                            <div><span>授权方式</span><strong>{{ licenseStatus.enforce ? '本机离线授权' : '开发环境' }}</strong></div>
                         </div>
                         <div class="license-machine-card">
                             <div>
                                 <span>本机授权指纹</span>
-                                <strong>{{ licenseStatus.machineId || '暂不可用' }}</strong>
-                                <small>签发方可将许可证绑定到这台电脑；只提供哈希指纹，不暴露原始硬件信息。来源：{{ licenseStatus.machineIdSource || '—' }}</small>
+                                <strong>{{ licenseStatus.activationMachineId || licenseStatus.machineId || '暂不可用' }}</strong>
                             </div>
                             <button type="button" class="btn" :disabled="!licenseStatus.machineId" @click="copyLicenseMachineId">复制指纹</button>
                         </div>
@@ -9952,21 +9984,43 @@ async function openAdminSetupStep(step) {
                             <div><span>当前程序版本</span><strong>{{ releaseStatus.current?.productVersion || '—' }}</strong></div>
                             <div><span>配置版本</span><strong>{{ releaseStatus.current?.configurationVersion || '—' }}</strong></div>
                             <div><span>升级模式</span><strong>{{ releaseStatus.mode === 'offline_signed_package' ? '离线签名包' : '不可用' }}</strong></div>
-                            <p>升级包必须通过签名和 SHA-256 校验，低版本包会被拒绝；授权签发工具只应由交付方保管，客户侧不保存私钥。</p>
                         </div>
-                        <p class="license-reason" :class="{ warning: !licenseStatus.valid && licenseStatus.enforce }">{{ licenseStatus.reason }}</p>
-                        <div class="license-install-card">
-                            <label>安装或替换许可证 JSON
-                                <textarea v-model="licenseText" class="input license-textarea" rows="8" spellcheck="false" placeholder="粘贴交付方提供的签名许可证 JSON" v-permission="{ page: controlPermissionPage, action: 'edit' }"></textarea>
+                        <p v-if="licenseStatus.status === 'error' || (licenseStatus.enforce && !licenseStatus.valid)" class="license-reason warning">{{ licenseStatus.reason }}</p>
+                        <div class="license-actions form-row">
+                            <button type="button" class="btn" @click="loadLicenseStatus" :disabled="licenseBusy">刷新状态</button>
+                            <button type="button" class="btn" @click="licenseRenewalOpen = !licenseRenewalOpen" :aria-expanded="licenseRenewalOpen" v-permission="{ page: 'settings.security', action: 'edit' }">续期 / 更新授权</button>
+                        </div>
+                        <div v-if="licenseRenewalOpen" class="license-install-card">
+                            <label>新激活码
+                                <textarea v-model="licenseText" class="input license-textarea" rows="3" maxlength="16384" spellcheck="false" placeholder="粘贴厂商提供的激活码" v-permission="{ page: controlPermissionPage, action: 'edit' }"></textarea>
                             </label>
                             <div class="form-row license-actions">
                                 <button type="button" class="btn btn-primary" :disabled="licenseBusy || !licenseText.trim()" @click="installLicenseFromText" v-permission="{ page: 'settings.security', action: 'edit' }">
-                                    {{ licenseBusy ? '校验中…' : '校验并安装' }}
+                                    {{ licenseBusy ? '校验中…' : '更新授权' }}
                                 </button>
-                                <button type="button" class="btn" :disabled="licenseBusy" @click="loadLicenseStatus">刷新状态</button>
+                                <button type="button" class="btn" :disabled="licenseBusy" @click="licenseRenewalOpen = false">取消</button>
                             </div>
-                            <p v-if="licenseMessage" class="database-backup-message">{{ licenseMessage }}</p>
                         </div>
+                        <p v-if="licenseMessage" class="database-backup-message" role="status">{{ licenseMessage }}</p>
+                        <section class="license-history" aria-label="本机激活记录">
+                            <h4>激活记录</h4>
+                            <p v-if="licenseHistoryError" role="alert">{{ licenseHistoryError }}</p>
+                            <div class="table-container"><table class="data-table">
+                                <thead><tr><th>许可证编号</th><th>客户</th><th>激活时间</th><th>有效期至</th><th>状态</th><th></th></tr></thead>
+                                <tbody>
+                                    <tr v-for="record in visibleLicenseHistory" :key="record.activationCode">
+                                        <td>{{ record.licenseId }}</td><td>{{ record.customer }}</td>
+                                        <td>{{ record.activatedAt ? formatBackupTime(record.activatedAt) : '—' }}</td>
+                                        <td>{{ licenseExpiryLabel(record.expiresAt) }}</td>
+                                        <td>{{ record.current ? '当前使用' : '历史记录' }}</td>
+                                        <td><button type="button" class="btn btn-small" @click="licenseViewedCode = licenseViewedCode === record.activationCode ? '' : record.activationCode">查看激活码</button></td>
+                                    </tr>
+                                    <tr v-if="!licenseHistory.length"><td colspan="6">暂无激活记录</td></tr>
+                                </tbody>
+                            </table></div>
+                            <div v-if="licenseHistoryPages > 1" class="license-actions form-row"><button type="button" class="btn" :disabled="licenseHistoryPage <= 1" @click="licenseHistoryPage--">上一页</button><span>{{ licenseHistoryPage }} / {{ licenseHistoryPages }}</span><button type="button" class="btn" :disabled="licenseHistoryPage >= licenseHistoryPages" @click="licenseHistoryPage++">下一页</button></div>
+                            <label v-if="licenseViewedCode" class="license-code-view">激活码<textarea class="input license-textarea" :value="licenseViewedCode" readonly rows="3" spellcheck="false" @focus="$event.target.select()"></textarea></label>
+                        </section>
                     </div>
 
                     <div class="settings-form settings-form-wide">
@@ -10372,36 +10426,34 @@ async function openAdminSetupStep(step) {
                             <h3 class="section-title">Unity 原生客户端画质</h3>
                             <div class="settings-grid">
                                 <label>现场电脑画质档位
-                                    <select v-model="settings.native_quality_profile" class="input" v-permission="{ page: controlPermissionPage, action: 'edit' }">
+                                    <select v-model="qualitySelection" class="input" aria-label="现场电脑画质档位" v-permission="{ page: controlPermissionPage, action: 'edit' }">
                                         <option value="auto">自动识别（推荐）</option>
                                         <option value="integrated_gpu">核显稳定档</option>
                                         <option value="balanced">均衡专业档</option>
                                         <option value="showcase">展示高画质档</option>
                                     </select>
                                 </label>
-                                <label>模型几何策略
-                                    <div class="input render-setting-readonly">始终保留导入模型完整几何</div>
-                                </label>
                             </div>
                             <div class="mode-hint render-profile-hint">
-                                <template v-if="settings.native_quality_profile === 'integrated_gpu'">
+                                <template v-if="qualitySelection === 'integrated_gpu'">
                                     <p><strong>核显稳定档：</strong>降低内部渲染分辨率、附加灯阴影和反射开销，模型面数与贴图内容不变。</p>
                                 </template>
-                                <template v-else-if="settings.native_quality_profile === 'balanced'">
+                                <template v-else-if="qualitySelection === 'balanced'">
                                     <p><strong>均衡专业档：</strong>完整 PBR、4× MSAA、专业后处理与中距离阴影，适合开发机和普通独显。</p>
                                 </template>
-                                <template v-else-if="settings.native_quality_profile === 'showcase'">
+                                <template v-else-if="qualitySelection === 'showcase'">
                                     <p><strong>展示高画质档：</strong>更高内部渲染比例、远距离阴影与反射，适合展厅高性能电脑。</p>
                                 </template>
                                 <template v-else>
-                                    <p><strong>自动识别：</strong>按显卡名称和显存选择档位；工程师也可在客户端按 F1 / F2 / F3 临时切换。</p>
+                                    <p><strong>自动识别：</strong>按显卡名称和显存选择档位。</p>
                                 </template>
-                                <p>保存后通过 WebSocket 实时切换画质，无需按 F5；所有档位都不会自动减面。场景光效与大屏组件请在“组件配置”页面调整。</p>
+                                <p>与大屏和 F1 / F2 / F3 同步，保存后保留设置。</p>
                             </div>
                         </div>
 
                         <!-- ===== 数据通路选择 ===== -->
                         <div v-show="settingsSubpage === 'data'" class="settings-section secondary-page-panel">
+                            <FactoryCollectionSettings v-if="settingsSubpage === 'data'" />
                             <h3 class="section-title">数据通路模式</h3>
                             <label>选择数据采集方式
                                 <select v-model="settings.data_mode" class="input" v-permission="{ page: controlPermissionPage, action: 'edit' }">
@@ -10498,6 +10550,7 @@ async function openAdminSetupStep(step) {
                 </section>
             </div>
         </Transition>
+        <QualityNotice v-if="nativeQualityState.error" :state="nativeQualityState" />
     </div>
 </template>
 
@@ -14682,7 +14735,6 @@ button:enabled:active {
 .scene-basic-note { margin: -8px 0 18px; padding: 11px 13px; color: #6e6e73; background: #f5f5f7; border-radius: 9px; font-size: 12px; line-height: 1.55; }
 .settings-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
 .settings-grid label { display: flex; flex-direction: column; gap: 8px; font-size: 13px; color: #515154; font-weight: 500; }
-.render-setting-readonly { display: flex; align-items: center; color: #1d1d1f; background: #f5f5f7; }
 .render-profile-hint { margin-top: 16px; }
 .render-profile-hint p { margin: 4px 0; }
 .render-custom-grid { margin-top: 18px; padding-top: 18px; border-top: 1px solid #e5e5e7; }
@@ -14716,7 +14768,8 @@ button:enabled:active {
 .license-reason.warning { color: #a33a2b; }
 .license-install-card { margin-top: 18px; padding: 14px; background: #fafafa; border: 1px solid #e5e5e7; border-radius: 12px; }
 .license-install-card label { display: flex; flex-direction: column; gap: 7px; color: #515154; font-size: 12px; }
-.license-textarea { width: 100%; min-height: 150px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 11px; line-height: 1.45; }
+.license-textarea { width: 100%; min-height: 80px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 11px; line-height: 1.45; }
+.license-history { margin-top: 22px; }.license-history h4 { margin: 0 0 12px; }.license-code-view { display: grid; gap: 8px; margin-top: 12px; font-size: 12px; }
 .license-actions { margin-top: 11px; margin-bottom: 0; }
 @media (max-width: 820px) { .license-summary-grid,.release-status-card { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .external-data-source-message { margin: 12px 0 0; color: #515154; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }

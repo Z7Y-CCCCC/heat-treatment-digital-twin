@@ -1,7 +1,7 @@
 <script setup>
 import { MIN_PASSWORD_LENGTH, MAX_PASSWORD_LENGTH, isValidUsername } from '../../../shared/accountPolicy.mjs'
 import { computed, defineAsyncComponent, nextTick, onActivated, onDeactivated, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
-import { adminSession, refreshAdminSession, startAdminSessionTracking, stopAdminSessionTracking, unlockAdmin, lockAdmin, logoutCurrentAdminAccount, canOpenAdmin, listAdminLoginChoices } from '../runtime/adminSession.js'
+import { adminSession, refreshAdminSession, unlockAdmin, lockAdmin, logoutCurrentAdminAccount, canOpenAdmin, listAdminLoginChoices } from '../runtime/adminSession.js'
 import AdminWindowChrome from './admin/components/AdminWindowChrome.vue'
 import RememberedUsernameInput from './admin/components/RememberedUsernameInput.vue'
 import { isNativeUnitySurface } from '../runtime/nativeSurfaceBridge.js'
@@ -190,20 +190,18 @@ onMounted(async () => {
         window.chrome.webview.addEventListener('message', handleNativeHostState)
         window.chrome.webview.postMessage({ type: 'host_action', action: 'state' })
     }
-    startAdminSessionTracking()
     startClock()
     await refreshAdminSession()
     focusPassword()
     if (adminSession.authenticated) continueAfterLogin()
 })
-onActivated(() => { startClock(); startAdminSessionTracking(); refreshAdminSession() })
-onDeactivated(() => { stopClock(); stopAdminSessionTracking() })
+onActivated(() => { startClock(); refreshAdminSession() })
+onDeactivated(stopClock)
 onUnmounted(() => {
     usernameChoicesGeneration += 1
     window.removeEventListener(FACTORY_SCOPE_CHANGE_EVENT, onFactoryScopeChanged)
     if (isUnityEmbedded) window.chrome.webview.removeEventListener('message', handleNativeHostState)
     stopClock()
-    stopAdminSessionTracking()
     window.clearTimeout(dashboardReturnTimer)
 })
 </script>

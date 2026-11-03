@@ -383,7 +383,7 @@ export class SceneRuntime {
         });
 
         this.sceneManager.setTopologyConfig(workshops || [], cameraMode || 'auto');
-        this.groundRenderer = new IndustrialGroundRenderer(this.sceneManager);
+        this.groundRenderer = new IndustrialGroundRenderer(this.sceneManager, { cutaway: this.options.groundCutaway === true });
         this.updateGround(workshops || []);
         this.sceneManager.animate();
         return this;

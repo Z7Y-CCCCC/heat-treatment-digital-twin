@@ -1,90 +1,30 @@
 <!doctype html>
-<html lang="zh-CN">
-<head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>离线许可证签发工具</title>
-    <style>
-        :root { color-scheme: dark; font-family: Inter, "Microsoft YaHei", sans-serif; background: #08141d; color: #e6f0f5; }
-        * { box-sizing: border-box; }
-        body { margin: 0; min-height: 100vh; background: radial-gradient(circle at 80% 0%, #1b4650 0, transparent 42%), #08141d; }
-        main { width: min(1080px, calc(100% - 32px)); margin: 0 auto; padding: 34px 0 48px; }
-        .topbar { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; margin-bottom: 24px; }
-        h1 { margin: 0; font-size: 26px; letter-spacing: .04em; }
-        .subtle { color: #91a7b2; font-size: 13px; line-height: 1.6; }
-        .eyebrow { margin-bottom: 7px; color: #4dd4b2; font-size: 11px; font-weight: 700; letter-spacing: .16em; text-transform: uppercase; }
-        .status { display: inline-flex; align-items: center; gap: 8px; padding: 9px 13px; color: #a6bac5; border: 1px solid #27414d; border-radius: 999px; font-size: 12px; }
-        .status::before { content: ""; width: 7px; height: 7px; background: #f2b84b; border-radius: 50%; }
-        .status.ready { color: #9be8d1; border-color: #276553; }.status.ready::before { background: #43d6ad; }
-        .grid { display: grid; grid-template-columns: minmax(0, .78fr) minmax(0, 1.22fr); gap: 18px; }
-        .card { padding: 20px; background: rgba(16, 35, 46, .92); border: 1px solid #284552; border-radius: 16px; box-shadow: 0 18px 50px #00000025; }
-        .card h2 { margin: 0; font-size: 17px; }.card h2 + .subtle { margin-top: 6px; }
-        .key-card { margin-bottom: 18px; }.key-state { display: grid; gap: 9px; margin: 18px 0; }
-        .key-state div { display: flex; justify-content: space-between; gap: 12px; padding: 10px 11px; background: #0b202b; border-radius: 9px; font-size: 12px; }.key-state span { color: #8fa5b0; }
-        .fingerprint { overflow-wrap: anywhere; color: #6ce0bf; font: 11px ui-monospace, Consolas, monospace; text-align: right; }
-        label { display: grid; gap: 7px; margin-top: 15px; color: #b8c9d0; font-size: 12px; font-weight: 600; }
-        input, textarea { width: 100%; padding: 10px 11px; color: #e8f3f6; background: #0a1b25; border: 1px solid #355461; border-radius: 8px; outline: none; font: inherit; }
-        input:focus, textarea:focus { border-color: #4dd4b2; box-shadow: 0 0 0 3px #4dd4b21f; }
-        textarea { min-height: 220px; resize: vertical; font: 11px/1.5 ui-monospace, Consolas, monospace; }
-        .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 14px; }.wide { grid-column: 1 / -1; }
-        button, .download { display: inline-flex; align-items: center; justify-content: center; min-height: 38px; padding: 0 14px; color: #06201e; background: #4dd4b2; border: 0; border-radius: 8px; cursor: pointer; font: 700 12px inherit; text-decoration: none; }
-        button:hover, .download:hover { background: #72e8cb; }button.secondary { color: #c8d8dd; background: #203844; border: 1px solid #3b5b68; }button.secondary:hover { background: #2c4a57; }
-        button:disabled { opacity: .55; cursor: not-allowed; }.actions { display: flex; flex-wrap: wrap; gap: 9px; margin-top: 20px; }
-        .notice { margin-top: 15px; padding: 10px 12px; color: #a6bac5; background: #0a202b; border-left: 3px solid #4dd4b2; border-radius: 6px; font-size: 12px; line-height: 1.55; }
-        .result { margin-top: 18px; }.result-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; }.result-head strong { font-size: 13px; }
-        .message { min-height: 20px; margin: 14px 0 0; color: #f2c56e; font-size: 12px; line-height: 1.5; }.message.ok { color: #73e5c1; }
-        code { color: #6ce0bf; font: 11px ui-monospace, Consolas, monospace; }
-        @media (max-width: 760px) { main { width: min(100% - 20px, 620px); padding-top: 22px; }.topbar, .grid { display: block; }.status { margin-top: 14px; }.key-card { margin-top: 18px; }.form-grid { grid-template-columns: 1fr; }.wide { grid-column: auto; } }
-    </style>
-</head>
-<body>
-<main>
-    <div class="topbar">
-        <div><div class="eyebrow">Heat Treatment Digital Twin</div><h1>离线许可证签发工具</h1><div class="subtle">只在授权方电脑本地运行 · Ed25519 签名 · 不需要联网</div></div>
-        <div id="status" class="status">正在检查密钥</div>
-    </div>
-    <div class="grid">
-        <section class="card key-card">
-            <h2>签发密钥</h2><div class="subtle">密钥只生成一次。私钥用于签发，公钥部署到客户程序目录。</div>
-            <div class="key-state"><div><span>私钥</span><strong id="privateState">—</strong></div><div><span>公钥</span><strong id="publicState">—</strong></div><div><span>公钥指纹</span><strong id="fingerprint" class="fingerprint">—</strong></div></div>
-            <div class="actions"><button id="generateKeys">生成密钥对</button><button id="overwriteKeys" class="secondary">覆盖并重新生成</button></div>
-            <div class="notice">重要：私钥是最高权限凭据，不要放进客户安装包、后台页面或发给客户。公钥可以复制到客户机。</div>
-        </section>
-        <section class="card">
-            <h2>生成客户许可证</h2><div class="subtle">客户机从“授权与版本”页面复制本机授权指纹后，粘贴到下面。</div>
-            <form id="licenseForm">
-                <div class="form-grid">
-                    <label>许可证编号<input name="licenseId" value="LIC-" required /></label>
-                    <label>客户名称<input name="customer" placeholder="例如：某某热处理车间" required /></label>
-                    <label>生效时间<input name="issuedAt" type="datetime-local" required /></label>
-                    <label>失效时间<input name="expiresAt" type="datetime-local" required /></label>
-                    <label class="wide">客户机授权指纹（可选）<input name="machineId" placeholder="machine-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" /><span class="subtle">留空表示不绑定电脑；填写后许可证只能在该指纹对应的安装实例使用。</span></label>
-                    <label>设备数量上限（可选）<input name="deviceLimit" type="number" min="1" placeholder="不限制" /></label>
-                    <label>功能标识（可选）<input name="features" placeholder="dashboard,business-readonly" /></label>
-                </div>
-                <div class="actions"><button id="signLicense" type="submit">签名并生成许可证</button></div>
-            </form>
-            <p id="message" class="message"></p>
-            <div id="result" class="result" hidden><div class="result-head"><strong>已生成签名许可证</strong><a id="download" class="download" download>下载 JSON</a></div><textarea id="preview" readonly></textarea></div>
-        </section>
-    </div>
-</main>
-<script>
-    const token = new URLSearchParams(location.search).get('token');
-    const $ = (selector) => document.querySelector(selector);
-    const status = $('#status');
-    const message = $('#message');
-    const result = $('#result');
-    const preview = $('#preview');
-    const download = $('#download');
-    function api(path, options = {}) { const url = new URL(path, location.origin); url.searchParams.set('token', token || ''); return fetch(url, { ...options, headers: { 'content-type': 'application/json', ...(options.headers || {}) } }).then(async response => { const body = await response.json().catch(() => ({})); if (!response.ok) throw new Error(body.error || '请求失败'); return body; }); }
-    function showMessage(text, ok = false) { message.textContent = text; message.className = 'message' + (ok ? ' ok' : ''); }
-    function renderKeys(data) { $('#privateState').textContent = data.privateKeyPresent ? '已生成（仅本机）' : '未生成'; $('#publicState').textContent = data.publicKeyPresent ? '已生成' : '未生成'; $('#fingerprint').textContent = data.publicKeyFingerprint || '—'; const ready = data.privateKeyPresent && data.publicKeyPresent; status.textContent = ready ? '密钥已就绪' : '需要生成密钥'; status.className = 'status' + (ready ? ' ready' : ''); }
-    async function refresh() { try { renderKeys(await api('/api/status')); } catch (error) { showMessage(error.message); } }
-    async function generate(overwrite) { if (overwrite && !window.confirm('覆盖后旧私钥将无法签发新的许可证，确定继续吗？')) return; try { renderKeys(await api('/api/generate-keys', { method: 'POST', body: JSON.stringify({ overwrite }) })); showMessage('密钥对已生成。请备份私钥，并把公钥部署到客户机。', true); } catch (error) { showMessage(error.message); } }
-    $('#generateKeys').addEventListener('click', () => generate(false)); $('#overwriteKeys').addEventListener('click', () => generate(true));
-    $('#licenseForm').addEventListener('submit', async (event) => { event.preventDefault(); const data = Object.fromEntries(new FormData(event.currentTarget)); const toIso = value => value ? new Date(value).toISOString() : ''; const payload = { ...data, issuedAt: toIso(data.issuedAt), expiresAt: toIso(data.expiresAt), deviceLimit: data.deviceLimit ? Number(data.deviceLimit) : null, features: data.features.split(',').map(item => item.trim()).filter(Boolean) }; try { const body = await api('/api/sign', { method: 'POST', body: JSON.stringify({ payload }) }); preview.value = JSON.stringify(body.license, null, 2); result.hidden = false; download.href = '/api/download?token=' + encodeURIComponent(token || '') + '&file=' + encodeURIComponent(body.fileName); showMessage('许可证已签名并保存到授权工具的 issued 文件夹。', true); } catch (error) { showMessage(error.message); } });
-    const now = new Date(); const tomorrow = new Date(now.getTime() + 365 * 24 * 60 * 60 * 1000); const localInput = date => { const pad = n => String(n).padStart(2, '0'); return date.getFullYear() + '-' + pad(date.getMonth() + 1) + '-' + pad(date.getDate()) + 'T' + pad(date.getHours()) + ':' + pad(date.getMinutes()); }; document.querySelector('[name="issuedAt"]').value = localInput(now); document.querySelector('[name="expiresAt"]').value = localInput(tomorrow); refresh();
-</script>
-</body>
-</html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>厂商激活码工具</title>
+<style>
+:root{font-family:'Microsoft YaHei UI','Segoe UI',sans-serif;color:#273347;background:#f3f5f8;color-scheme:light}*{box-sizing:border-box}body{margin:0}main{max-width:780px;margin:30px auto;padding:0 22px}header{display:flex;align-items:center;justify-content:space-between;margin-bottom:22px}h1{font-size:22px;margin:0}header p{color:#7b8798;font-size:12px;margin:7px 0 0}.badge{border:1px solid #cbe5d6;border-radius:999px;padding:7px 12px;font-size:12px;color:#26714b;background:#edf8f0}.card{background:#fff;border:1px solid #dce3ed;border-radius:14px;padding:22px;margin-top:16px;box-shadow:0 8px 30px #25334a05}.key-row,.actions,.result-head{display:flex;align-items:center;justify-content:space-between;gap:12px}h2{font-size:15px;margin:0}.muted{font-size:12px;color:#7b8798}.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:17px;margin-top:18px}label{display:grid;gap:7px;font-size:12px;color:#53627a}.wide{grid-column:1/-1}input,textarea{width:100%;min-width:0;border:1px solid #d5ddea;background:#fafbfd;border-radius:7px;padding:10px 11px;font:inherit;color:#25344c}input:focus,textarea:focus{outline:2px solid #c2d4ff;border-color:#7096ed}button,a.download{border:1px solid #d2dced;border-radius:7px;padding:9px 14px;background:#fff;color:#3263b9;font:inherit;font-size:12px;cursor:pointer;text-decoration:none}button.primary{background:#2f67e9;color:#fff;border-color:#2f67e9}button:disabled{opacity:.5;cursor:default}.actions{justify-content:flex-end;margin-top:20px}.message{color:#b33644;font-size:12px;min-height:18px;margin:12px 0 0}.message.ok{color:#257449}textarea{font:11px/1.6 Consolas,monospace;resize:vertical;min-height:125px;margin-top:12px}.result-head{margin-top:20px}details{margin-top:12px;font-size:12px;color:#788498}code{overflow-wrap:anywhere;display:block;margin-top:10px}label.inline{display:flex;align-items:center;gap:8px}label.inline input{width:auto}.key-row button{flex-shrink:0}[hidden]{display:none!important}@media(max-width:560px){main{padding:0 12px;margin-top:18px}.card{padding:17px}.form-grid{grid-template-columns:1fr}.key-row{align-items:flex-start}header{gap:12px}}
+</style></head><body><main>
+<header><div><h1>厂商激活码工具</h1><p>仅厂商保管，勿随客户安装包分发</p></div><span id="keyStatus" class="badge">读取中</span></header>
+<section class="card"><div class="key-row"><div><h2>签发身份</h2><p id="keyHint" class="muted">首次使用初始化一次，之后沿用同一密钥。</p></div><button id="initialize" type="button">初始化密钥</button></div><details><summary>公钥信息</summary><code id="keyFingerprint"></code><code id="keyFile"></code></details></section>
+<section class="card"><h2>生成激活码</h2><form id="licenseForm"><div class="form-grid">
+<label class="wide">本机指纹<input name="machineId" required pattern="machine-[a-f0-9]{32}" placeholder="粘贴客户提供的完整指纹"></label>
+<label>客户名称<input name="customer" required maxlength="120" placeholder="客户或工厂名称"></label>
+<label>许可证编号<input name="licenseId" required maxlength="120"></label>
+<label>生效时间<input name="issuedAt" type="datetime-local" required></label>
+<label id="expiryField">到期时间<input name="expiresAt" type="datetime-local" required></label>
+<label class="inline wide"><input id="perpetual" type="checkbox">永久授权</label>
+</div><div class="actions"><button class="primary" id="generate" type="submit" disabled>生成激活码</button></div></form>
+<p id="message" class="message" role="status"></p>
+<div id="result" hidden><div class="result-head"><h2>激活码</h2><div><a class="download" id="download">下载 TXT</a> <button id="copyCode" type="button">复制激活码</button></div></div><textarea id="code" readonly aria-label="生成的激活码" spellcheck="false"></textarea></div>
+</section></main><script>
+const $=id=>document.getElementById(id),token=new URLSearchParams(location.search).get('token');
+async function api(route,data){const url=new URL(route,location.origin);url.searchParams.set('token',token||'');const response=await fetch(url,{...(data?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)}:{})});const value=await response.json();if(!response.ok)throw new Error(value.error||'操作失败');return value}
+function message(text,ok=false){$('message').textContent=text;$('message').className='message'+(ok?' ok':'')}
+function renderKeys(data){const ready=data.privateKeyPresent&&data.publicKeyPresent;$('keyStatus').textContent=ready?'签发就绪':'未初始化';$('initialize').disabled=data.privateKeyPresent||data.publicKeyPresent;$('generate').disabled=!ready;$('keyHint').textContent=ready?'签发身份已保存，请离线备份私钥。':'首次使用初始化一次，之后沿用同一密钥。';$('keyFingerprint').textContent=data.publicKeyFingerprint||'—';$('keyFile').textContent=data.publicKeyFile||''}
+$('initialize').onclick=async()=>{const button=$('initialize');button.disabled=true;try{renderKeys(await api('/api/generate-keys',{}));message('签发身份已初始化，请备份私钥。',true)}catch(e){message(e.message);await refresh()}};
+async function refresh(){try{renderKeys(await api('/api/status'))}catch(e){message(e.message)}}
+$('perpetual').onchange=()=>{const expiry=document.querySelector('[name="expiresAt"]');expiry.disabled=$('perpetual').checked;expiry.required=!$('perpetual').checked};
+$('licenseForm').onsubmit=async event=>{event.preventDefault();const button=$('generate');if(button.disabled)return;button.disabled=true;try{const input=Object.fromEntries(new FormData(event.currentTarget));const data=await api('/api/sign',{...input,issuedAt:new Date(input.issuedAt).toISOString(),expiresAt:$('perpetual').checked?'9999-12-31T23:59:59.000Z':new Date(input.expiresAt).toISOString(),features:['dashboard']});$('code').value=data.activationCode;$('result').hidden=false;$('download').href='/api/download?token='+encodeURIComponent(token||'')+'&file='+encodeURIComponent(data.fileName.replace(/\.json$/,'.txt'));message('已生成并保存',true)}catch(e){message(e.message)}finally{button.disabled=false}};
+$('copyCode').onclick=async()=>{try{await navigator.clipboard.writeText($('code').value);message('激活码已复制',true)}catch{$('code').focus();$('code').select();message('请按 Ctrl+C 复制')}};
+const now=new Date(Date.now()-60000),later=new Date(Date.now()+365*86400000),local=d=>new Date(d.getTime()-d.getTimezoneOffset()*60000).toISOString().slice(0,16);
+document.querySelector('[name="issuedAt"]').value=local(now);document.querySelector('[name="expiresAt"]').value=local(later);document.querySelector('[name="licenseId"]').value='LIC-'+new Date().toISOString().slice(0,10).replaceAll('-','')+'-'+crypto.randomUUID().slice(0,8).toUpperCase();refresh();
+</script></body></html>

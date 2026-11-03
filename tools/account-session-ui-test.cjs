@@ -64,6 +64,35 @@ async function loginPassword(password) {
     await admin.getByLabel('后台密码', { exact: true }).fill(sandbox.password);
     await admin.getByRole('button', { name: '解锁后台', exact: true }).click();
     await admin.locator('.users-settings').waitFor();
+    // Fail only this owned browser's activity heartbeat. It must not log out
+    // either surface or send Unity a clear-session command.
+    const nativeSyncBefore=(await admin.evaluate(()=>window.__hostMessages)).filter(m=>m.action==='sync_unity_session').length;
+    const clearBefore=(await admin.evaluate(()=>window.__hostMessages)).filter(m=>m.action==='clear_unity_session').length;
+    let heartbeatFailed=false;
+    await admin.route('**/api/admin-auth/touch',async route=>{heartbeatFailed=true;await route.abort('failed')});
+    await admin.waitForTimeout(10500);
+    await admin.locator('.users-settings').getByRole('heading',{name:'用户与权限',exact:true}).click();
+    await waitUntil(()=>heartbeatFailed,5000,'injected activity heartbeat failure');await admin.waitForTimeout(250);
+    assert.ok(await admin.locator('.users-settings').isVisible());assert.equal(await admin.locator('#admin-unlock-password').count(),0);
+    assert.equal((await admin.evaluate(()=>window.__hostMessages)).filter(m=>m.action==='clear_unity_session').length,clearBefore);
+    await admin.unroute('**/api/admin-auth/touch');await admin.evaluate(()=>window.dispatchEvent(new Event('focus')));await admin.waitForTimeout(500);
+    assert.equal((await admin.evaluate(()=>window.__hostMessages)).filter(m=>m.action==='sync_unity_session').length,nativeSyncBefore);
+    check('a failed activity heartbeat preserves the account and running Unity; recovery does not issue another scene login');
+    const ownerDocumentBorn=await admin.evaluate(()=>performance.timeOrigin);
+    unity?.terminate();unity=null;await stopOwnedSmokeProcess(backend);backend=null;
+    await admin.evaluate(()=>window.dispatchEvent(new Event('focus')));await admin.waitForTimeout(250);
+    assert.ok(await admin.locator('.users-settings').isVisible());
+    await start(port);await connectUnityFixture();await admin.evaluate(()=>window.dispatchEvent(new Event('focus')));await waitUser(admin,'admin');
+    assert.equal(await admin.evaluate(()=>performance.timeOrigin),ownerDocumentBorn);
+    assert.equal(await admin.locator('#admin-unlock-password').count(),0);
+    assert.equal((await admin.evaluate(()=>window.__hostMessages)).filter(m=>m.action==='clear_unity_session').length,clearBefore);
+    check('an actual owned backend stop/restart keeps the open browser, account cookie and native scene authorization without a forced login or reload');
+    await admin.route('**/api/admin-auth/session',route=>route.fulfill({status:200,contentType:'application/json',body:'{"success":true}'}));
+    await admin.reload();await admin.getByRole('alert').filter({hasText:/会话状态响应异常/}).waitFor();
+    assert.equal((await admin.evaluate(()=>window.__hostMessages)).some(m=>m.action==='clear_unity_session'),false);
+    await admin.unroute('**/api/admin-auth/session');await admin.locator('.users-settings').waitFor({timeout:20000});
+    assert.equal(await admin.locator('#admin-unlock-password').count(),0);
+    check('a malformed startup session response cannot clear Unity, and the same browser recovers automatically without retyping a password');
     await admin.getByRole('button', { name: '＋ 新增账户', exact: true }).click();
     const dialog = admin.getByRole('dialog', { name: '新增账户', exact: true });
     for (const name of ['设备管理 · 查看', '点位监视 · 查看'])
@@ -83,10 +112,11 @@ async function loginPassword(password) {
     await menu.getByLabel('密码', { exact: true }).fill('246813');
     await display.locator('.group-portal').evaluate(el => { el.__identityMarker = 'preserve-display'; });
     const documentBorn = await display.evaluate(() => performance.timeOrigin);
-    await menu.getByRole('button', { name: /添加并切换/ }).click();
+    const switchedAt=Date.now();await menu.getByRole('button', { name: /添加并切换/ }).click();
     await waitUser(display, '现场客户'); await waitUser(admin, '现场客户');
     await admin.locator('.users-settings').waitFor({ state: 'hidden' });
     await admin.getByRole('button', { name: '设备管理', exact: true }).waitFor();
+    assert.ok(Date.now()-switchedAt<5000,'the display broadcasts its selected account immediately instead of waiting for a 10-second admin poll');
     assert.equal(await admin.getByRole('button', { name: '用户与权限', exact: true }).count(), 0);
     assert.equal(await admin.locator('#admin-unlock-password').count(), 0);
     await waitUntil(async () => (await admin.evaluate(() => window.__hostMessages.filter(m => m.action === 'sync_unity_session').length)) >= 2,
@@ -96,6 +126,15 @@ async function loginPassword(password) {
     assert.equal((await session(admin)).pagePermissions['point-monitor'].view, true);
     await admin.screenshot({ path: path.join(sandbox.directory, '01-customer-readonly-admin.png') });
     check('switching from the display immediately updates the admin surface without a password prompt or display remount');
+    const customerSlot=(await session(admin)).accountSlotId;
+    const customerSyncs=await admin.evaluate(()=>window.__hostMessages.filter(m=>m.action==='sync_unity_session').length);
+    await admin.waitForTimeout(10500);
+    const heartbeat=admin.waitForResponse(r=>r.url().endsWith('/api/admin-auth/touch')&&r.request().method()==='POST');
+    await admin.getByRole('button',{name:'点位监视',exact:true}).click();
+    assert.equal((await (await heartbeat).json()).accountSlotId,customerSlot);
+    await admin.waitForTimeout(300);
+    assert.equal(await admin.evaluate(()=>window.__hostMessages.filter(m=>m.action==='sync_unity_session').length),customerSyncs);
+    check('a read-only customer heartbeat retains its own account slot and never alternates Unity between customer and main');
     await display.close(); display = null;
     const unityBadge = admin.locator('.admin-connection-strip .admin-connection-pill').first();
     await admin.getByText('Unity 已连接', { exact: true }).waitFor();
@@ -186,6 +225,18 @@ async function loginPassword(password) {
     await waitUntil(async () => (await usernameInput.inputValue()) === '现场客户', 10000, 'last successful username without an active session');
     assert.equal(await admin.getByLabel('后台密码', { exact: true }).inputValue(), '');
     check('after logout the last successful username is still suggested, and delayed history never overwrites manual typing');
+    await chooseUsername('admin');await loginPassword(sandbox.password);await admin.locator('.users-settings').waitFor();
+    await display.goto(origin+'/group');await display.locator('.account-dock').hover();await display.locator('.group-user').click();
+    const passwordMenu=display.getByRole('region',{name:'账户设置',exact:true});
+    const syncBeforePassword=await admin.evaluate(()=>window.__hostMessages.filter(m=>m.action==='sync_unity_session').length);
+    const displayBorn=await display.evaluate(()=>performance.timeOrigin);
+    await passwordMenu.getByRole('button',{name:'修改我的密码',exact:false}).click();
+    await passwordMenu.getByLabel('当前密码',{exact:true}).fill(sandbox.password);await passwordMenu.getByLabel('新密码',{exact:true}).fill('Renewed-Owned-246813');
+    await passwordMenu.getByRole('button',{name:/保存新密码/}).click();await passwordMenu.getByRole('status').filter({hasText:'密码已更新'}).waitFor();
+    await waitUntil(async()=>await admin.evaluate(()=>window.__hostMessages.filter(m=>m.action==='sync_unity_session').length)>syncBeforePassword,5000,'same-user credential renewal handed to Unity');
+    assert.equal(await display.evaluate(()=>performance.timeOrigin),displayBorn);
+    assert.equal((await session(admin)).authenticated,true);
+    check('changing the current password renews Unity credentials across surfaces without reloading the display or retaining stale account slots');
     assert.deepEqual(errors, []);
     const result = { success: true, checks, browserErrors: errors, directory: sandbox.directory };
     fs.writeFileSync(path.join(sandbox.directory, 'result.json'), JSON.stringify(result, null, 2));

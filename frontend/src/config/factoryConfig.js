@@ -119,9 +119,11 @@ export function useFactoryConfig() {
 export const adminApi = {
     // 集团/工厂层级
     async listFactories() { return readApiJson(await fetch(`${API_BASE}/factories`), '读取工厂列表失败') },
+    async getFactoryCollectionStatus(signal) { return readApiJson(await fetch(`${API_BASE}/factories/collection-status`, { cache: 'no-store', signal }), '读取工厂采集情况失败') },
     async searchFactoryPlace(countryCode, query) { return readApiJson(await fetch(`${API_BASE}/factories/place-search`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ countryCode, query }) }), '查询海外地点失败') },
     async createFactory(data) { return readApiJson(await fetch(`${API_BASE}/factories`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) }), '创建工厂失败') },
     async updateFactory(id, data) { return readApiJson(await fetch(`${API_BASE}/factories/${pathId(id)}`, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) }), '保存工厂失败') },
+    async setFactoryCollection(id, enabled) { return readApiJson(await fetch(`${API_BASE}/factories/${pathId(id)}/collection`, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ enabled }) }), '保存采集开关失败') },
     async activateFactory(id) { return readApiJson(await fetch(`${API_BASE}/factories/${pathId(id)}/activate`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' }), '切换运行工厂失败') },
     // PLC 协议能力清单
     async getPlcProtocols() { return readApiJson(await fetch(`${API_BASE}/plc/protocols`), '读取 PLC 协议清单失败') },
@@ -208,6 +210,10 @@ export const adminApi = {
     async testDatabaseConfig(data) { return readApiJson(await fetch(`${API_BASE}/database/test`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) }), '测试数据库连接失败') },
     async saveDatabaseConfig(data) { return readApiJson(await fetch(`${API_BASE}/database/config`, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) }), '保存数据库配置失败') },
     async getDataSources() { return readApiJson(await fetch(`${API_BASE}/data-sources`), '读取外部数据源失败') },
+    async getDataSets() { return readApiJson(await fetch(`${API_BASE}/data-sources/datasets`, { cache: 'no-store' }), '读取数据集失败', true) },
+    async saveDataSet(definition) { return readApiJson(await fetch(`${API_BASE}/data-sources/datasets`, { method: 'POST', headers: { 'Content-Type':'application/json' }, body: JSON.stringify(definition) }), '保存数据集失败', true) },
+    async deleteDataSet(definition) { return readApiJson(await fetch(`${API_BASE}/data-sources/datasets/${pathId(definition.id)}`, { method: 'DELETE', headers: { 'Content-Type':'application/json' }, body: JSON.stringify({ revision: definition.revision }) }), '删除数据集失败', true) },
+    async previewDataSet(input) { return readApiJson(await fetch(`${API_BASE}/data-sources/datasets/preview`, { method: 'POST', headers: { 'Content-Type':'application/json' }, body: JSON.stringify(input) }), '预览数据集失败', true) },
     async importDataSourceFile(file) {
         const form = new FormData(); form.append('dataFile', file);
         return readApiJson(await fetch(`${API_BASE}/data-sources/files`, { method: 'POST', body: form }), '导入数据文件失败')
@@ -269,6 +275,7 @@ export const adminApi = {
     },
     async getAcceptanceReport() { return readApiJson(await fetch(`${API_BASE}/acceptance-report`, { cache: 'no-store' }), '读取自动验收报告失败') },
     async getLicenseStatus() { return readApiJson(await fetch(`${API_BASE}/license`, { cache: 'no-store' }), '读取离线授权状态失败') },
+    async getLicenseHistory() { return readApiJson(await fetch(`${API_BASE}/license/history`, { cache: 'no-store' }), '读取激活记录失败') },
     async getLicenseContract() { return readApiJson(await fetch(`${API_BASE}/license/contract`, { cache: 'no-store' }), '读取许可证契约失败') },
     async installLicense(license) {
         return readApiJson(await fetch(`${API_BASE}/license`, {

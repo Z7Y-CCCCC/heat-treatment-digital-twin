@@ -337,10 +337,12 @@ export class SceneManager {
 
     initCSS2DRenderer() {
         this.labelRenderer = new CSS2DRenderer();
+        this.labelRenderer.domElement.classList.add('scene-label-layer');
         this.labelRenderer.setSize(this.width, this.height);
         this.labelRenderer.domElement.style.position = 'absolute';
         this.labelRenderer.domElement.style.top = '0px';
         this.labelRenderer.domElement.style.pointerEvents = 'none';
+        this.labelRenderer.domElement.hidden = this.renderOptions.labelLayer === false;
         this.container.appendChild(this.labelRenderer.domElement);
     }
 
@@ -353,7 +355,10 @@ export class SceneManager {
         this.controls.panSpeed = 0.62;
         this.controls.enablePan = true;
         this.controls.maxPolarAngle = Math.PI / 2 - 0.1;
-        this.boundOnControlsStart = () => this.suppressConnectionBadges(600);
+        this.boundOnControlsStart = () => {
+            this.stopCameraTransition();
+            this.suppressConnectionBadges(600);
+        };
         this.boundOnControlsChange = () => this.suppressConnectionBadges(260);
         this.controls.addEventListener('start', this.boundOnControlsStart);
         this.controls.addEventListener('change', this.boundOnControlsChange);
@@ -416,9 +421,43 @@ export class SceneManager {
         this.mouse = new THREE.Vector2();
         this.boundOnCanvasClick = this.handleCanvasClick.bind(this);
         this.renderer.domElement.addEventListener('click', this.boundOnCanvasClick);
+        this.boundBeginCanvasGesture = this.beginCanvasGesture.bind(this);
+        this.boundTrackCanvasGesture = this.trackCanvasGesture.bind(this);
+        this.boundEndCanvasGesture = this.endCanvasGesture.bind(this);
+        this.renderer.domElement.addEventListener('pointerdown', this.boundBeginCanvasGesture, true);
+        window.addEventListener('pointermove', this.boundTrackCanvasGesture);
+        window.addEventListener('pointerup', this.boundEndCanvasGesture);
+        window.addEventListener('pointercancel', this.boundEndCanvasGesture);
         if (this.interactionOptions.enableDeviceDrag) {
             this.renderer.domElement.addEventListener('pointerdown', this.boundOnCanvasPointerDown);
         }
+    }
+
+    stopCameraTransition() {
+        // Manual controls own both ends of the orbit. Leaving an old flight on
+        // either vector alive pulls the scene back during the next drag.
+        if (this.camera?.position) gsap.killTweensOf(this.camera.position);
+        if (this.controls?.target) gsap.killTweensOf(this.controls.target);
+    }
+
+    beginCanvasGesture(event) {
+        if (event.button !== 0) return;
+        this.canvasGesture = { id: event.pointerId, x: event.clientX, y: event.clientY, dragged: false };
+        this.suppressNextClick = false;
+    }
+
+    trackCanvasGesture(event) {
+        const gesture = this.canvasGesture;
+        if (!gesture || gesture.id !== event.pointerId) return;
+        const dx = event.clientX - gesture.x, dy = event.clientY - gesture.y;
+        gesture.dragged ||= dx * dx + dy * dy > 25;
+    }
+
+    endCanvasGesture(event) {
+        if (!this.canvasGesture || this.canvasGesture.id !== event.pointerId) return;
+        this.trackCanvasGesture(event);
+        this.suppressNextClick = this.canvasGesture.dragged || event.type === 'pointercancel';
+        this.canvasGesture = null;
     }
 
     setMouseFromPointerEvent(e) {
@@ -1028,6 +1067,7 @@ export class SceneManager {
     }
 
     flyToLine(globalLineIndex) {
+        this.stopCameraTransition();
         this.requestLabelRefresh(1800);
         this.activeLineIndex = globalLineIndex;
         this.currentLevel = 2;
@@ -1060,6 +1100,7 @@ export class SceneManager {
     }
 
     flyToDevice(device) {
+        this.stopCameraTransition();
         this.requestLabelRefresh(1800);
         this.activeDeviceId = device.userData.id;
         this.currentLevel = 3;
@@ -1121,6 +1162,7 @@ export class SceneManager {
     }
 
     _flyToDevices(devicesList, yOffset, heightRatio, zRatio) {
+        this.stopCameraTransition();
         const bounds = this.getDevicesBounds(devicesList, 10, 8);
         const fit = fitCameraBox(bounds, { fov: this.camera.fov, aspect: this.camera.aspect, direction: [.08, heightRatio, zRatio] });
         const [x, y, z] = fit.position, [tx, ty, tz] = fit.target;
@@ -1185,6 +1227,7 @@ export class SceneManager {
     }
 
     renderLabelLayerOnce() {
+        if (this.renderOptions.labelLayer === false) return;
         if (!this.labelRenderer || !this.scene || !this.camera) return;
         this.labelRenderer.render(this.scene, this.camera);
     }
@@ -1214,6 +1257,7 @@ export class SceneManager {
 
     // --- 供 UI 调用的视角控制 API ---
     rotateCamera(angleDelta) {
+        this.stopCameraTransition();
         this.requestLabelRefresh(700);
         // 围绕 target 旋转
         const r = this.camera.position.distanceTo(this.controls.target);
@@ -1230,6 +1274,7 @@ export class SceneManager {
     }
 
     zoomCamera(zoomIn) {
+        this.stopCameraTransition();
         this.requestLabelRefresh(700);
         const dir = new THREE.Vector3().subVectors(this.controls.target, this.camera.position).normalize();
         const dist = zoomIn ? 3 : -3;
@@ -1313,8 +1358,8 @@ export class SceneManager {
             this.lastStatsTime = now;
             this.lastStatsFrame = this.frameCount;
         }
-        const hasConnectionBadges = this.hasVisibleConnectionBadges();
-        if (this.labelsVisible || this.factoryGuideLayer?.visible || hasConnectionBadges) {
+        const hasConnectionBadges = this.renderOptions.labelLayer !== false && this.hasVisibleConnectionBadges();
+        if (this.renderOptions.labelLayer !== false && (this.labelsVisible || this.factoryGuideLayer?.visible || hasConnectionBadges)) {
             const requestedLabelFps = now < this.forceLabelRefreshUntil
                 ? Math.min(this.targetFps, this.labelTargetFps * 2)
                 : this.labelTargetFps;
@@ -1343,6 +1388,7 @@ export class SceneManager {
      */
     dispose() {
         this.disposed = true;
+        this.stopCameraTransition();
         if (this.connectionBadgeRestoreTimer) {
             clearTimeout(this.connectionBadgeRestoreTimer);
             this.connectionBadgeRestoreTimer = null;
@@ -1355,6 +1401,11 @@ export class SceneManager {
         if (this.renderer?.domElement && this.boundOnCanvasClick) {
             this.renderer.domElement.removeEventListener('click', this.boundOnCanvasClick);
         }
+        this.renderer?.domElement?.removeEventListener('pointerdown', this.boundBeginCanvasGesture, true);
+        window.removeEventListener('pointermove', this.boundTrackCanvasGesture);
+        window.removeEventListener('pointerup', this.boundEndCanvasGesture);
+        window.removeEventListener('pointercancel', this.boundEndCanvasGesture);
+        this.canvasGesture = null;
         if (this.renderer?.domElement && this.boundOnCanvasPointerDown) {
             this.renderer.domElement.removeEventListener('pointerdown', this.boundOnCanvasPointerDown);
             if (this.deviceDragState?.pointerId != null) {

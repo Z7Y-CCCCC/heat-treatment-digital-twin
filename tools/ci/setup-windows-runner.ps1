@@ -1,6 +1,7 @@
 ﻿[CmdletBinding()]
 param(
     [switch]$CheckOnly,
+    [switch]$InstallAutoStart,
     [string]$Repository = 'Z7Y-CCCCC/heat-treatment-digital-twin',
     [string]$RunnerDirectory = (Join-Path $env:USERPROFILE 'actions-runners\digital-twin'),
     [string]$RunnerName = "$env:COMPUTERNAME-digital-twin",
@@ -104,11 +105,27 @@ function Get-OwnedListener {
     $listener = Join-Path $runnerRoot 'bin\Runner.Listener.exe'
     @(Get-CimInstance Win32_Process -Filter "Name = 'Runner.Listener.exe'" | Where-Object { $_.ExecutablePath -ieq $listener })
 }
-if (@(Get-OwnedListener).Count -gt 0) { Write-Host "Runner 已运行：$RunnerName（不重复启动）。"; return }
 if (-not (Test-Path -LiteralPath (Join-Path $runnerRoot 'run.cmd'))) { throw '缺少 run.cmd，runner 安装不完整。' }
-$env:UNITY_EDITOR_PATH = $UnityEditorPath
-$env:DESKTOP_MYSQL_RUNTIME_SOURCE = $MysqlRuntimeSource
-Start-Process -FilePath $env:ComSpec -ArgumentList @('/d', '/s', '/c', ('""{0}""' -f (Join-Path $runnerRoot 'run.cmd'))) -WorkingDirectory $runnerRoot -WindowStyle Hidden | Out-Null
+$key = $env:LICENSE_ISSUER_PUBLIC_KEY_FILE
+if (-not $key) { $key = Join-Path $env:LOCALAPPDATA 'HeatTreatmentDigitalTwinIssuer\license-public-key.pem' }
+if (-not (Test-Path -LiteralPath $key -PathType Leaf)) { throw '缺少厂商公钥，请配置 LICENSE_ISSUER_PUBLIC_KEY_FILE；不要向 runner 复制私钥。' }
+$startScript = Join-Path $runnerRoot 'start-release-runner.ps1'
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'start-windows-runner.ps1') -Destination $startScript -Force
+@{ unityEditor=$UnityEditorPath; mysqlRuntime=$MysqlRuntimeSource; publicKey=[IO.Path]::GetFullPath($key) } |
+    ConvertTo-Json | Set-Content -LiteralPath (Join-Path $runnerRoot 'release-environment.json') -Encoding UTF8
+$arguments = '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "{0}" -RunnerDirectory "{1}"' -f $startScript, $runnerRoot
+if ($InstallAutoStart) {
+    $startup = [Environment]::GetFolderPath('Startup')
+    $shell = New-Object -ComObject WScript.Shell
+    $shortcut = $shell.CreateShortcut((Join-Path $startup 'Digital Twin Release Runner.lnk'))
+    $shortcut.TargetPath = (Join-Path $PSHOME 'powershell.exe')
+    if (-not (Test-Path -LiteralPath $shortcut.TargetPath)) { $shortcut.TargetPath = (Join-Path $PSHOME 'pwsh.exe') }
+    $shortcut.Arguments = $arguments; $shortcut.WorkingDirectory = $runnerRoot; $shortcut.WindowStyle = 7
+    $shortcut.Save()
+    Write-Host '已配置当前用户登录后后台启动构建节点；仍需电脑开机、联网并登录桌面。'
+}
+if (@(Get-OwnedListener).Count -gt 0) { Write-Host "Runner 已运行：$RunnerName（不重复启动）。"; return }
+Start-Process -FilePath (Join-Path $PSHOME $(if (Test-Path -LiteralPath (Join-Path $PSHOME 'powershell.exe')) { 'powershell.exe' } else { 'pwsh.exe' })) -ArgumentList $arguments -WorkingDirectory $runnerRoot -WindowStyle Hidden | Out-Null
 for ($attempt = 0; $attempt -lt 15; $attempt++) {
     Start-Sleep -Seconds 1
     if (@(Get-OwnedListener).Count -gt 0) { Write-Host "Runner 已在当前用户会话后台启动：$RunnerName；标签 digital-twin-release。"; return }

@@ -4,10 +4,14 @@ const { prepareResourceDirectory, copySqliteSnapshot } = require('./resource-pre
 const { prepareMysqlRuntime } = require('./prepare-mysql-runtime.cjs');
 const { prepareDependencyArchive } = require('./dependency-archive.cjs');
 const { CONFIGURATION_FILES } = require('../templateData.cjs');
+const { prepareLicenseTrust } = require('./prepare-license-trust.cjs');
 
 const desktopDir = path.resolve(__dirname, '..');
 const projectDir = path.resolve(desktopDir, '..');
-const resourcesDir = path.join(desktopDir, 'resources');
+// Allow a release candidate to be staged without replacing binaries currently
+// used by the operator's running desktop. The normal build path is unchanged.
+const resourcesDir = process.env.DESKTOP_RESOURCES_DIR
+    ? path.resolve(process.env.DESKTOP_RESOURCES_DIR) : path.join(desktopDir, 'resources');
 const nativeClientSourceDir = path.join(projectDir, 'unity-client', 'Builds', 'Windows');
 const explicitSourceDb = String(process.env.DESKTOP_TEMPLATE_SOURCE_DB || '').trim();
 const emptyTemplate = enabled(process.env.DESKTOP_TEMPLATE_EMPTY, false);
@@ -220,6 +224,7 @@ async function main() {
     }
 
     const databaseSource = await prepareResourceDirectory(resourcesDir, async stagingDirectory => {
+        prepareLicenseTrust(path.join(stagingDirectory, 'licensing'));
         const runtimeDir = path.join(stagingDirectory, 'runtime');
         const templatesDir = path.join(stagingDirectory, 'templates');
         const backendDependenciesTar = path.join(stagingDirectory, 'backend-dependencies.tar');
