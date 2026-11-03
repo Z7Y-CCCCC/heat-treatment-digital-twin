@@ -64,6 +64,7 @@ export function apiPermission(path, method = 'GET', body) {
     return safe ? read(previewPages) : any('admin', ...previewPages.map(k => p(k, 'edit')))
   }
   if (resource('devices')) {
+    if (/\/animations$/.test(path)) return safe ? read(['model-animations']) : any('admin', p('model-animations', 'edit'))
     if (safe) return read(spatial, true)
     if (/\/inspection$/.test(path)) return any('admin', p('disassembly-layout', 'edit'))
     if ((path === '/api/devices/transforms' && method === 'PUT') || /\/transform$/.test(path)) return any('admin', p('composer', 'edit'), p('lines', 'edit'))
@@ -91,7 +92,7 @@ export function apiPermission(path, method = 'GET', body) {
   if (resource('datapoints')) {
     if (path === '/api/datapoints/alarm-texts' && method === 'POST') return any('admin', p('points.alarms', 'edit'))
     if (path === '/api/datapoints/batch' && !safe) return any('admin', all(p('points', 'edit'), p('points', 'delete')))
-    return safe ? read(['points', 'points.alarms', 'point-monitor', 'mobile-devices', 'platform.designer'], true) : any('admin', p('points', action))
+    return safe ? read(['points', 'points.alarms', 'point-monitor', 'mobile-devices', 'model-animations', 'platform.designer'], true) : any('admin', p('points', action))
   }
   if (resource('plc') || resource('engine/status')) return safe ? read(['points', 'points.alarms', 'point-monitor', 'mobile-devices', 'settings.data'], true) : 'admin'
   if (path === '/api/engine/restart') return any('admin', p('settings.data', 'edit'))

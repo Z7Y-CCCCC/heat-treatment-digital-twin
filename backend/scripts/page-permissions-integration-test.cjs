@@ -53,6 +53,18 @@ let backend;
     const reader = await account('model_reader', { models: { view: true } });
     const deviceReader = await account('device_reader', { devices: { view: true } });
     const monitorReader = await account('monitor_reader', { 'point-monitor': { view: true } });
+    const motionReader = await account('motion_reader', { 'model-animations': { view: true } });
+    const motionEditor = await account('motion_editor', { 'model-animations': { view: true, edit: true } });
+    const motionRoute = `/devices/${device.id}/animations`;
+    const animation = (await request(motionRoute, { session: motionEditor, expected: 200 })).data;
+    const animationBody = { revision: animation.revision, config: { version: 1, staleMs: 5000, bindings: [] } };
+    await request(`/datapoints?device_id=${device.id}`, { session: motionEditor, expected: 200 });
+    await request(motionRoute, { session: motionReader, expected: 200 });
+    await request(motionRoute, { method: 'PUT', session: motionReader, body: animationBody, expected: 403 });
+    await request(motionRoute, { method: 'PUT', session: motionEditor, body: animationBody, noCsrf: true, expected: 403 });
+    await request(motionRoute, { method: 'PUT', session: motionEditor, body: animationBody, expected: 200 });
+    await request(`/devices/${device.id}`, { method: 'PUT', session: motionEditor, body: {}, expected: 403 });
+    await request(motionRoute, { session: deviceReader, expected: 403 });
     for (const session of [deviceReader, monitorReader]) {
         const status = await request('/native-preview/status', { session, expected: 200 });
         assert.equal(typeof status.data.unityClients, 'number');

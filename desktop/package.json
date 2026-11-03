@@ -68,7 +68,7 @@
       {
         "from": "../shared",
         "to": "shared",
-        "filter": ["*.cjs", "*.mjs"]
+        "filter": ["*.cjs", "*.mjs", "motionPackages.json"]
       },
       {
         "from": ".cache/frontend-dist",

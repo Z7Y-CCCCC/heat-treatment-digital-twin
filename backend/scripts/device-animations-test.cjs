@@ -1,0 +1,31 @@
+const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path');
+const {BACKEND_DIR,createRunDirectory,createTestDatabase,findFreePort,startLoggedProcess,waitForHttp,testFetch,forceStop}=require('./integration-test-utils.cjs');
+let backend;
+(async()=>{
+ const directory=createRunDirectory('device-animations'),dataDir=path.join(directory,'data');await createTestDatabase(path.join(dataDir,'factory.db'));
+ const origin=`http://127.0.0.1:${await findFreePort()}`;backend=startLoggedProcess(process.execPath,['server.js'],{cwd:BACKEND_DIR,env:{...process.env,APP_DATA_DIR:dataDir,PORT:new URL(origin).port,HOST:'127.0.0.1'},logFile:path.join(directory,'backend.log')});await waitForHttp(origin+'/api/health');
+ const request=async(url,method='GET',body,factory)=>{const r=await testFetch(origin+url,{method,headers:{'Content-Type':'application/json',...(factory?{'X-Factory-ID':factory}:{})},...(body?{body:JSON.stringify(body)}:{})});return {status:r.status,data:await r.json()}};
+ const ok=async(...args)=>{const r=await request(...args);assert.ok(r.status<300,JSON.stringify(r));return r.data};
+ const config=await ok('/api/config'),line=config.workshops.flatMap(w=>w.lines)[0],model='cad_multipurpose_furnace_082000';
+ await ok('/api/devices','POST',{id:'motion_test_one',name:'动作设备',line_id:line.id,model_type:model,plc_enabled:false,instance_config:{marker:'must survive',inspection:{enabled:false}}});
+ await ok('/api/devices','POST',{id:'motion_test_two',name:'其它设备',line_id:line.id,model_type:model,plc_enabled:false});
+ const Database=require('better-sqlite3'),db=new Database(path.join(dataDir,'factory.db'));
+ const template=db.prepare('SELECT * FROM data_points LIMIT 1').get();delete template.id;template.device_id='motion_test_one';template.name=template.value_role='front_door_open';template.category='doors';template.access_type='READ';
+ const keys=Object.keys(template),insert=db.prepare(`INSERT INTO data_points (${keys.join(',')}) VALUES (${keys.map(()=>'?').join(',')})`),id=String(insert.run(...Object.values(template)).lastInsertRowid);
+ const other=String(insert.run(...keys.map(k=>k==='device_id'?'motion_test_two':template[k])).lastInsertRowid);
+ const originalModel=config.models.find(m=>m.id===model),metadata=JSON.parse(originalModel.metadata||'{}');
+ metadata.partBindings=[{id:'existing-door',node_name:'door',source_group:'doors',source_key:'front_door_open',action:'translate',input_min:0,input_max:1,output_max:.9}];
+ db.prepare('INSERT INTO models (id,name,file_path,metadata,asset_type,placement_level) VALUES (?,?,?,?,?,?)').run(model,originalModel.name,originalModel.file_path,JSON.stringify(metadata),'model','device');db.close();
+ const route='/api/devices/motion_test_one/animations',initial=await ok(route),before=await ok('/api/devices/motion_test_one');assert.equal(initial.actions.filter(a=>a.kind==='clip').length,9);
+ assert.equal(initial.config.bindings.find(b=>b.actionId==='part:existing-door').pointId,id);
+ assert.equal((await ok('/api/devices/motion_test_two/animations')).config.bindings.find(b=>b.actionId==='part:existing-door').pointId,other);
+ const row={actionId:'clip:door',pointId:id,enabled:true,inputMin:0,inputMax:1,invert:false,speed:1,transitionSeconds:2},body={revision:initial.revision,config:{version:1,staleMs:5000,bindings:[row]}};
+ const saved=await ok(route,'PUT',body);assert.equal(saved.config.bindings[0].pointId,id);assert.notEqual(saved.revision,initial.revision);assert.equal((await request(route,'PUT',body)).status,409);
+ const after=await ok('/api/devices/motion_test_one'),instance=JSON.parse(after.instance_config);assert.equal(instance.marker,'must survive');assert.deepEqual(instance.inspection,{enabled:false});for(const key of Object.keys(before))if(key!=='instance_config')assert.deepEqual(after[key],before[key]);
+ for(const patch of [{pointId:other},{actionId:'clip:injected'},{inputMin:2,inputMax:1},{speed:Infinity}]){const r=await request(route,'PUT',{revision:saved.revision,config:{...body.config,bindings:[{...row,...patch}]}});assert.equal(r.status,400,JSON.stringify(r));}
+ const badFields=await request(route,'PUT',{revision:saved.revision,config:{...body.config,plc_enabled:true}});assert.equal(badFields.status,400);
+ const overlap=await request(route,'PUT',{revision:saved.revision,config:{...body.config,bindings:[{...row,actionId:'clip:heating'},{...row,actionId:'clip:circulation'}]}});assert.equal(overlap.status,400);assert.match(overlap.data.error,/同一部件/);
+ const foreign=await request(route,'GET',null,'factory_pit_furnaces_v1');assert.ok([403,404].includes(foreign.status));
+ const current=await ok('/api/config'),device=current.workshops.flatMap(w=>w.lines).flatMap(l=>l.devices).find(d=>d.id==='motion_test_one');assert.equal(JSON.parse(device.instance_config).animationBindings.bindings[0].sourceKey,'front_door_open');assert.ok(current.models.find(m=>m.id===model).motion_package);
+ fs.writeFileSync(path.join(directory,'result.json'),JSON.stringify({success:true,checks:['device-owned read point binding','CAS rejects stale writes','PLC, geometry and inspection preserved','foreign device/factory denied','unknown actions and invalid ranges rejected','overlapping actuator channels rejected','Unity configuration receives resolved point and same rig package']},null,2));console.log('PASS device animation API integration '+directory);
+})().catch(e=>{console.error(e);process.exitCode=1}).finally(()=>forceStop(backend));

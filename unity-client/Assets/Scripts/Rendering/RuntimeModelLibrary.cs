@@ -4,6 +4,8 @@ using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Net.Http;
+using System.Security.Cryptography;
 using GLTFast;
 using HeatTreatment.DigitalTwin.Backend;
 using Newtonsoft.Json.Linq;
@@ -38,6 +40,7 @@ namespace HeatTreatment.DigitalTwin.Rendering
             public GltfImport Importer;
             public bool IsFallback;
             public string LoadError;
+            public JObject MotionPackage;
         }
 
         private readonly Dictionary<string, ModelAssetDto> _assets = new Dictionary<string, ModelAssetDto>();
@@ -64,7 +67,7 @@ namespace HeatTreatment.DigitalTwin.Rendering
             // A configuration reload is also the retry boundary for transient
             // model failures. Do not keep an offline placeholder forever, nor
             // reuse bindings/scale from an older metadata revision.
-            var currentKeys = new HashSet<string>(_assets.Values.Select(asset => CacheKey(asset, asset.Id)));
+            var currentKeys = new HashSet<string>(_assets.Values.SelectMany(asset => new[] { CacheKey(asset, asset.Id), CacheKey(asset, asset.Id) + ":motion" }));
             foreach (var entry in _templates.ToArray())
             {
                 if (previousBaseUrl == _backendBaseUrl && !entry.Value.IsFallback && currentKeys.Contains(entry.Key)) continue;
@@ -90,10 +93,11 @@ namespace HeatTreatment.DigitalTwin.Rendering
             cancellationToken.ThrowIfCancellationRequested();
             if (_destroyed) throw new ObjectDisposedException(nameof(RuntimeModelLibrary));
             var asset = ResolveAsset(device.ModelType);
-            var key = CacheKey(asset, device.ModelType);
+            var useMotion = asset?.MotionPackage != null && device.InstanceConfigObject?["animationBindings"]?["bindings"]?.OfType<JObject>().Any(b => b.Value<bool?>("enabled") == true && b.Value<string>("kind") == "clip") == true;
+            var key = CacheKey(asset, device.ModelType) + (useMotion ? ":motion" : "");
             if (!_templates.TryGetValue(key, out var template))
             {
-                template = await LoadTemplateSafeAsync(asset, device.ModelType, cancellationToken);
+                template = await LoadTemplateSafeAsync(asset, device.ModelType, cancellationToken, useMotion);
                 if (cancellationToken.IsCancellationRequested || _destroyed)
                 {
                     DisposeTemplate(template);
@@ -118,7 +122,9 @@ namespace HeatTreatment.DigitalTwin.Rendering
             clone.SetActive(true);
 
             var driver = clone.AddComponent<ModelBindingDriver>();
-            driver.Configure(template.Bindings);
+            driver.Configure(DeviceBindings(template.Bindings, device));
+            driver.DataTimeoutSeconds = (device.InstanceConfigObject?["animationBindings"]?.Value<float?>("staleMs") ?? 10000) / 1000f;
+            if (template.MotionPackage != null) clone.AddComponent<DeviceAnimationDriver>().Configure(device, template.MotionPackage);
             return new RuntimeModelInstance
             {
                 Root = clone,
@@ -140,7 +146,7 @@ namespace HeatTreatment.DigitalTwin.Rendering
         private async Task<TemplateEntry> LoadTemplateSafeAsync(
             ModelAssetDto asset,
             string requestedModelType,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken, bool useMotion = false)
         {
             if (asset == null || string.IsNullOrWhiteSpace(asset.FilePath))
             {
@@ -152,7 +158,7 @@ namespace HeatTreatment.DigitalTwin.Rendering
 
             try
             {
-                return await LoadGltfTemplateAsync(asset, cancellationToken);
+                return await LoadGltfTemplateAsync(asset, cancellationToken, useMotion);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -175,7 +181,7 @@ namespace HeatTreatment.DigitalTwin.Rendering
             }
         }
 
-        private async Task<TemplateEntry> LoadGltfTemplateAsync(ModelAssetDto asset, CancellationToken cancellationToken)
+        private async Task<TemplateEntry> LoadGltfTemplateAsync(ModelAssetDto asset, CancellationToken cancellationToken, bool useMotion = false)
         {
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeout.CancelAfter(TimeSpan.FromSeconds(_loadTimeoutSeconds));
@@ -193,8 +199,11 @@ namespace HeatTreatment.DigitalTwin.Rendering
                     AnisotropicFilterLevel = 4,
                     NodeNameMethod = NameImportMethod.Original
                 };
-                var url = ResolveAssetUrl(asset.FilePath);
-                var loaded = await importer.Load(url, settings, timeout.Token);
+                JObject motionPackage = null;
+                if (useMotion) motionPackage = await LoadMotionPackage(asset, timeout.Token);
+                var url = ResolveAssetUrl(motionPackage != null ? asset.MotionPackage.Value<string>("rigPath") : asset.FilePath);
+                var loaded = motionPackage == null ? await importer.Load(url, settings, timeout.Token)
+                    : await importer.LoadGltfBinary(await ReadVerifiedMotionBytes(asset.MotionPackage.Value<string>("rigPath"), asset.MotionPackage.Value<string>("rigSha256"), 80 * 1024 * 1024, timeout.Token), new Uri(url), settings, timeout.Token);
                 timeout.Token.ThrowIfCancellationRequested();
                 if (!loaded)
                 {
@@ -220,7 +229,7 @@ namespace HeatTreatment.DigitalTwin.Rendering
                     // not in the saved preset. Material merging destroys those boundaries.
                     // Preserve hierarchy for inspectable assets while retaining material
                     // preparation/instancing; non-inspectable assets still batch normally.
-                    inspection.Enabled ? root.GetComponentsInChildren<Transform>(true).Select(node => node.name)
+                    inspection.Enabled || motionPackage != null ? root.GetComponentsInChildren<Transform>(true).Select(node => node.name)
                         : ProtectedNodeNames(bindings, inspection),
                     options
                 );
@@ -235,6 +244,7 @@ namespace HeatTreatment.DigitalTwin.Rendering
                     Inspection = inspection,
                     OptimizationReport = report,
                     Importer = importer,
+                    MotionPackage = motionPackage,
                     IsFallback = false
                 };
             }
@@ -311,7 +321,64 @@ namespace HeatTreatment.DigitalTwin.Rendering
         {
             return asset == null
                 ? $"fallback:{modelType}"
-                : $"{asset.Id}:{asset.FilePath}:{asset.DefaultScale.ToString("R", System.Globalization.CultureInfo.InvariantCulture)}:{asset.MetadataObject.ToString(Newtonsoft.Json.Formatting.None)}";
+                : $"{asset.Id}:{asset.FilePath}:{asset.DefaultScale.ToString("R", System.Globalization.CultureInfo.InvariantCulture)}:{asset.MetadataObject.ToString(Newtonsoft.Json.Formatting.None)}:{asset.MotionPackage?.Value<string>("clipSha256")}";
+        }
+
+        private async Task<byte[]> ReadVerifiedMotionBytes(string relative, string expectedHash, int maximum, CancellationToken token)
+        {
+            if (string.IsNullOrEmpty(relative) || !relative.StartsWith("/assets/motions/", StringComparison.Ordinal) || relative.Contains("..")) throw new InvalidOperationException("Invalid motion asset path");
+            using var handler = new HttpClientHandler { UseProxy = false, AllowAutoRedirect = false };
+            using var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(_loadTimeoutSeconds) };
+            using var response = await client.GetAsync(ResolveAssetUrl(relative), HttpCompletionOption.ResponseHeadersRead, token);
+            response.EnsureSuccessStatusCode();
+            if (response.Content.Headers.ContentLength > maximum) throw new InvalidOperationException("Motion asset too large");
+            // ResponseHeadersRead does not bound or time out a later body read.
+            // Stream with the same cancellation token and enforce the cap even
+            // when a faulty server omits Content-Length or never finishes.
+            using var stream = await response.Content.ReadAsStreamAsync();
+            using var output = new MemoryStream();
+            var buffer = new byte[64 * 1024];
+            int read;
+            while ((read = await stream.ReadAsync(buffer, 0, buffer.Length, token)) > 0)
+            {
+                if (output.Length + read > maximum) throw new InvalidOperationException("Motion asset too large");
+                output.Write(buffer, 0, read);
+            }
+            token.ThrowIfCancellationRequested(); var bytes = output.ToArray();
+            using var hash = SHA256.Create();
+            var actual = BitConverter.ToString(hash.ComputeHash(bytes)).Replace("-", "").ToLowerInvariant();
+            if (!string.Equals(actual, expectedHash, StringComparison.OrdinalIgnoreCase)) throw new InvalidOperationException("Motion asset SHA256 mismatch");
+            return bytes;
+        }
+        private async Task<JObject> LoadMotionPackage(ModelAssetDto asset, CancellationToken token)
+        {
+            var bytes = await ReadVerifiedMotionBytes(asset.MotionPackage.Value<string>("clipPath"), asset.MotionPackage.Value<string>("clipSha256"), 16 * 1024 * 1024, token);
+            var result = JObject.Parse(System.Text.Encoding.UTF8.GetString(bytes));
+            if (result.Value<int?>("schemaVersion") != 1 || result.Value<string>("modelId") != asset.Id || result.Value<string>("rigSha256") != asset.MotionPackage.Value<string>("rigSha256")) throw new InvalidOperationException("Motion package does not match model");
+            return result;
+        }
+        private static List<PartBindingDto> DeviceBindings(IEnumerable<PartBindingDto> bindings, DeviceDto device)
+        {
+            var config = device.InstanceConfigObject?["animationBindings"];
+            if (config == null) return bindings.ToList();
+            var rows = config["bindings"]?.OfType<JObject>().ToArray() ?? Array.Empty<JObject>();
+            var result = new List<PartBindingDto>(); var i = 0;
+            foreach (var source in bindings)
+            {
+                var id = "part:" + (string.IsNullOrEmpty(source.Id) ? i.ToString() : source.Id); i++;
+                var row = rows.FirstOrDefault(b => b.Value<string>("actionId") == id && b.Value<bool?>("enabled") == true);
+                if (row == null) continue;
+                var binding = JObject.FromObject(source).ToObject<PartBindingDto>();
+                binding.SourceGroup = row.Value<string>("sourceGroup"); binding.SourceKey = row.Value<string>("sourceKey");
+                binding.PointId = row.Value<string>("pointId");
+                binding.AuthoringSpace = true;
+                binding.InputMin = row.Value<float>("inputMin"); binding.InputMax = row.Value<float>("inputMax"); binding.TransitionDuration = row.Value<float>("transitionSeconds");
+                if (binding.Action == "rotate_speed") binding.SpeedFactor *= row.Value<float>("speed") * (row.Value<bool?>("invert") == true ? -1 : 1);
+                else if (row.Value<bool?>("invert") == true) { var value = binding.OutputMin; binding.OutputMin = binding.OutputMax; binding.OutputMax = value; }
+                binding.Invert = row.Value<bool?>("invert") ?? false;
+                result.Add(binding);
+            }
+            return result;
         }
 
         private static List<PartBindingDto> ReadBindings(JObject metadata)

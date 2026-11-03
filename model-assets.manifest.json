@@ -2,6 +2,7 @@
   "version": 1,
   "roots": [
     "backend/assets/models",
+    "backend/assets/motions",
     "unity-client/Assets/Equipment",
     "unity-client/Assets/StreamingAssets",
     "frontend/public/assets/models"
@@ -421,6 +422,46 @@
       "path": "backend/assets/models/water_cooling_tank_cad.glb",
       "bytes": 758360,
       "sha256": "b697b0627ed0add9f9f4de80f01524a6aa847ff51267fae85edfcd1bb603e181"
+    },
+    {
+      "path": "backend/assets/motions/cad_air_cooling_table_115800ht.glb",
+      "bytes": 1982156,
+      "sha256": "aa9f577430dd077f7712d5aab91fd66b6b2e4e1f0cc7098c454a0f143d231f71"
+    },
+    {
+      "path": "backend/assets/motions/cad_cleaner_170700.glb",
+      "bytes": 5279424,
+      "sha256": "b7ae8bfa8ad959b1772a5660efc16ce65c4d6bba34fa5bcebbce311ef5935ce5"
+    },
+    {
+      "path": "backend/assets/motions/cad_fixed_load_table_112200.glb",
+      "bytes": 860608,
+      "sha256": "253eca33c48275ab312df2c9ce5ed319f6caac58e7ffe59f964f57ed39e248cd"
+    },
+    {
+      "path": "backend/assets/motions/cad_lifting_load_table_111400.glb",
+      "bytes": 1129008,
+      "sha256": "fa6c1d3f311019872a5572566986f3c59a9da1aa5cac8a566fc5f8fbccbc5d28"
+    },
+    {
+      "path": "backend/assets/motions/cad_multipurpose_furnace_082000.glb",
+      "bytes": 8925084,
+      "sha256": "39994eb840a608d7edc8c9f0a435150189d4fbaf7f612a86ea5ec912836861b9"
+    },
+    {
+      "path": "backend/assets/motions/cad_transfer_cart_101300.glb",
+      "bytes": 4478644,
+      "sha256": "cb6b27763c768a1fcb59daa089ec53297b186f942ecb9a62775a9b898518e502"
+    },
+    {
+      "path": "backend/assets/motions/cad_water_cooling_tank_471000.glb",
+      "bytes": 2448204,
+      "sha256": "b009df8fd1f53b9b376f20fb18f840fbc302370de4b648bde932d785023b5c60"
+    },
+    {
+      "path": "backend/assets/motions/ultrasonic_cleaner_cad.glb",
+      "bytes": 15819376,
+      "sha256": "2a5a0bdbf4c9b154925a40b3fa96e89dabac466495dcc98b03c545bcf1611f2c"
     },
     {
       "path": "unity-client/Assets/Equipment/PitFurnaceReferences/PitFurnace1/pit_furnace_1_v1.fbx",

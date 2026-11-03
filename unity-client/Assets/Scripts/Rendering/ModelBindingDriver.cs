@@ -25,6 +25,8 @@ namespace HeatTreatment.DigitalTwin.Rendering
 
         private readonly List<BindingState> _states = new List<BindingState>();
         private MaterialPropertyBlock _propertyBlock;
+        private float _lastRealtimeAt = float.NegativeInfinity;
+        public float DataTimeoutSeconds { get; set; } = 10f;
 
         public void Configure(IEnumerable<PartBindingDto> bindings)
         {
@@ -53,11 +55,13 @@ namespace HeatTreatment.DigitalTwin.Rendering
 
         public void ApplyRealtime(JObject deviceData)
         {
+            _lastRealtimeAt = Time.realtimeSinceStartup;
             foreach (var state in _states)
             {
                 var binding = state.Binding;
                 var token = ReadBindingValue(deviceData, binding, out var group);
                 state.Suspended = !IsUsable(deviceData, group, binding.SourceKey)
+                    || (!string.IsNullOrEmpty(binding.PointId) && deviceData?["pointMeta"]?[group + "." + binding.SourceKey]?["id"] != null && deviceData["pointMeta"][group + "." + binding.SourceKey].Value<string>("id") != binding.PointId)
                     || token == null || token.Type == JTokenType.Null;
                 if (state.Suspended) { state.AngularSpeedDegrees = 0; continue; }
                 var action = binding.Action ?? "rotate_speed";
@@ -79,18 +83,22 @@ namespace HeatTreatment.DigitalTwin.Rendering
                 }
                 else if (action == "visibility")
                 {
-                    var visible = ToBool(token);
+                    if (binding.AuthoringSpace && !TryFloat(token, out value)) { state.Suspended = true; continue; }
+                    var visible = binding.AuthoringSpace ? Map(value, binding.InputMin, binding.InputMax, 0, 1) > .5f : ToBool(token);
                     state.Target.gameObject.SetActive(binding.Invert ? !visible : visible);
                 }
                 else if (action == "color")
                 {
-                    ApplyColor(state.Target, ToBool(token) ? binding.OnColor : binding.OffColor);
+                    if (binding.AuthoringSpace && !TryFloat(token, out value)) { state.Suspended = true; continue; }
+                    var active = binding.AuthoringSpace ? Map(value, binding.InputMin, binding.InputMax, 0, 1) > .5f : ToBool(token);
+                    ApplyColor(state.Target, (active != binding.Invert) ? binding.OnColor : binding.OffColor, binding.AuthoringSpace);
                 }
             }
         }
 
         private void Update()
         {
+            if (Time.realtimeSinceStartup - _lastRealtimeAt > DataTimeoutSeconds) foreach (var state in _states) { state.Suspended = true; state.AngularSpeedDegrees = 0; }
             AdvanceMotion(Time.deltaTime);
         }
 
@@ -101,7 +109,7 @@ namespace HeatTreatment.DigitalTwin.Rendering
             {
                 if (state.Suspended || state.Target == null) continue;
                 if ((state.Binding.Action ?? "rotate_speed") == "rotate_speed")
-                    state.Target.Rotate(Axis(state.Binding.Axis), state.AngularSpeedDegrees * deltaTime, Space.Self);
+                    state.Target.Rotate(RotationAxis(state.Binding), state.AngularSpeedDegrees * deltaTime, Space.Self);
                 else if (state.HasPose && state.Binding.TransitionDuration > 0)
                 {
                     var range = Mathf.Abs(state.Binding.OutputMax - state.Binding.OutputMin);
@@ -115,20 +123,23 @@ namespace HeatTreatment.DigitalTwin.Rendering
         private static void ApplyPose(BindingState state)
         {
             if (state.Binding.Action == "translate")
-                state.Target.localPosition = state.BasePosition + Axis(state.Binding.Axis) * state.Offset;
+                state.Target.localPosition = state.BasePosition + (state.Binding.AuthoringSpace && state.Binding.Axis == "x" ? Vector3.left : Axis(state.Binding.Axis)) * state.Offset;
             else
-                state.Target.localRotation = state.BaseRotation * Quaternion.AngleAxis(state.Offset, Axis(state.Binding.Axis));
+                state.Target.localRotation = state.BaseRotation * Quaternion.AngleAxis(state.Offset, RotationAxis(state.Binding));
         }
+        private static Vector3 RotationAxis(PartBindingDto binding) => binding.AuthoringSpace && binding.Axis != "x" ? -Axis(binding.Axis) : Axis(binding.Axis);
 
-        private void ApplyColor(Transform target, string htmlColor)
+        private void ApplyColor(Transform target, string htmlColor, bool authoringSpace)
         {
             if (!ColorUtility.TryParseHtmlString(htmlColor, out var color)) return;
+            if (authoringSpace && QualitySettings.activeColorSpace == ColorSpace.Linear) color = color.linear;
             _propertyBlock ??= new MaterialPropertyBlock();
             foreach (var renderer in target.GetComponentsInChildren<Renderer>(true))
             {
                 renderer.GetPropertyBlock(_propertyBlock);
                 _propertyBlock.SetColor("_BaseColor", color);
                 _propertyBlock.SetColor("_Color", color);
+                _propertyBlock.SetColor("baseColorFactor", color);
                 renderer.SetPropertyBlock(_propertyBlock);
             }
         }
@@ -180,6 +191,7 @@ namespace HeatTreatment.DigitalTwin.Rendering
             if (deviceData == null || string.IsNullOrWhiteSpace(binding.SourceKey)) return null;
             var direct = deviceData[sourceGroup]?[binding.SourceKey];
             if (direct != null) return direct;
+            if (!string.IsNullOrEmpty(binding.PointId)) return null; // Explicit assignment cannot fall through to another group.
 
             var groups = new[] { "analog", "motors", "doors", "gas", "mechanisms", "status" };
             foreach (var group in groups)

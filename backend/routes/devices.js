@@ -6,6 +6,27 @@ const { loadDeviceInspection, publicInspection, patchDeviceInspectionLayout,
 const { getBuiltinModels } = require('../services/builtinModels');
 const { TRANSFORM_FIELDS, LAYOUT_CONFIG_FIELDS } = require('../../shared/deviceAuthoring.mjs');
 const { normalizeDeviceGround } = require('../../shared/industrialGround.mjs');
+const { loadDeviceAnimations, validateDeviceAnimations, publicDeviceAnimations } = require('../services/deviceAnimations');
+
+router.get('/:id/animations', async (req, res) => {
+    try { res.json(publicDeviceAnimations(await loadDeviceAnimations(await getDb(), req.params.id, req.factoryId))); }
+    catch (error) { res.status(error.statusCode || 400).json({ error: error.message }); }
+});
+router.put('/:id/animations', async (req, res) => {
+    try {
+        const db = await getDb();
+        const saved = await db.transaction(async tx => {
+            const loaded = await loadDeviceAnimations(tx, req.params.id, req.factoryId);
+            const config = validateDeviceAnimations(loaded, req.body);
+            // Re-resolve point ownership and model identity within the transaction.
+            const instance = { ...loaded.instance, animationBindings: config };
+            await tx.run('UPDATE devices SET instance_config=? WHERE id=?', [JSON.stringify(instance), loaded.device.id]);
+            return publicDeviceAnimations(await loadDeviceAnimations(tx, req.params.id, req.factoryId));
+        });
+        global.wsServer?.broadcast?.('configuration_changed', { factoryId: req.factoryId, resource: 'device-animations', reloadRequired: true, timestamp: Date.now() });
+        res.json({ success: true, ...saved });
+    } catch (error) { res.status(error.statusCode || 400).json({ error: error.message }); }
+});
 
 // Narrow authoring endpoints deliberately preserve model identity, PLC network
 // configuration and inspection metadata. Never reuse the full device PUT for

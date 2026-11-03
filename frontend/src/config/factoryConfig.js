@@ -171,6 +171,8 @@ export const adminApi = {
         const suffix = deviceId && deviceId !== 'all' ? `?device_id=${encodeURIComponent(deviceId)}` : ''
         return readApiJson(await fetch(`${API_BASE}/plc/points/realtime${suffix}`), '读取实时点位失败')
     },
+    async getDeviceAnimations(id) { return readApiJson(await fetch(`${API_BASE}/devices/${pathId(id)}/animations`), '读取设备动画失败') },
+    async saveDeviceAnimations(id, body) { return readApiJson(await fetch(`${API_BASE}/devices/${pathId(id)}/animations`, { method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body) }), '保存设备动画失败') },
     async deleteDataPoint(id) { return readApiJson(await fetch(`${API_BASE}/datapoints/${pathId(id)}`, { method: 'DELETE' }), '删除点位失败') },
 
     // 点位语音
