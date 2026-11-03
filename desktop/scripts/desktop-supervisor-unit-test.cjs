@@ -37,6 +37,7 @@ class Child extends EventEmitter {
 function loadDesktop({ createLog, spawnProcess, userDataPath, deploymentConfig, fileSystem, electron = {} } = {}) {
     const app = new EventEmitter();
     const timers = [];
+    const intervals = [];
     const exits = [];
     const logs = [];
     const logStreams = [];
@@ -59,7 +60,7 @@ function loadDesktop({ createLog, spawnProcess, userDataPath, deploymentConfig, 
             return timer;
         },
         clearTimeout: timer => { if (timer) timer.cleared = true; },
-        setInterval: () => ({ unref() {} }),
+        setInterval: (callback, milliseconds) => { const timer={callback,milliseconds,unref(){}}; intervals.push(timer); return timer; },
         clearInterval() {},
         require: name => {
             if (name === 'electron') return { app, dialog: { showErrorBox() {} }, ...electron };
@@ -99,7 +100,7 @@ function loadDesktop({ createLog, spawnProcess, userDataPath, deploymentConfig, 
     vm.runInContext(fs.readFileSync(path.join(desktopDir, 'main.cjs'), 'utf8'), context);
     vm.runInContext('logDesktopError = (kind, error) => recordedLogs.push({ kind, message: error.message });', context);
     return {
-        app, timers, exits, logs, logStreams, context,
+        app, timers, intervals, exits, logs, logStreams, context,
         run: source => vm.runInContext(source, context),
         get spawnCalls() { return spawnCalls; }
     };
@@ -497,4 +498,21 @@ test('an existing live backend prevents duplicate spawning', async () => {
     desktop.run('backendProcess = child');
     await assert.rejects(desktop.run('startBackend(3001, {})'), /旧数据服务仍在运行/);
     assert.equal(desktop.spawnCalls, 0);
+});
+
+
+test('exhausted backend recovery reports an actionable error without quitting the live Unity scene',async()=>{
+    const desktop=loadDesktop();let quits=0;desktop.app.quit=()=>{quits++};
+    desktop.context.liveUnity=new Child();
+    desktop.run("nativeProcess=liveUnity;backendRestartAttempts=BACKEND_RESTART_DELAYS_MS.length;showRuntimeFailure=async message=>recordedLogs.push({kind:'runtime-ui',message})");
+    desktop.run("scheduleBackendRestart({},3001,'fixture failure')");await Promise.resolve();
+    assert.equal(quits,0);assert.equal(desktop.run('nativeProcess'),desktop.context.liveUnity);assert.ok(desktop.logs.some(log=>log.kind==='runtime-ui'));
+});
+test('missing native host is relaunched without restarting Unity or API, with bounded attempts',async()=>{
+    const desktop=loadDesktop();desktop.context.liveUnity=new Child();
+    desktop.run("nativeProcess=liveUnity;applicationReadyForInteraction=true;sendNativeHostCommand=async()=>false;launchNativeAdminHost=()=>recordedLogs.push({kind:'restore-host'});showRuntimeFailure=async message=>recordedLogs.push({kind:'runtime-ui',message});startNativeHostMonitor()");
+    const tick=desktop.intervals.at(-1).callback;
+    for(let i=0;i<8;i++)await tick();
+    assert.equal(desktop.logs.filter(log=>log.kind==='restore-host').length,3);assert.equal(desktop.run('nativeProcess'),desktop.context.liveUnity);assert.ok(desktop.logs.some(log=>log.kind==='runtime-ui'));
+    desktop.run('isQuitting=true');await tick();assert.equal(desktop.logs.filter(log=>log.kind==='restore-host').length,3);
 });

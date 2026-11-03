@@ -16,6 +16,8 @@ namespace HeatTreatmentAdminHost;
 /// </summary>
 internal sealed class DashboardOverlayForm : Form
 {
+    public event Action? HostRecreationRequested;
+    private WebViewProcessRecovery? _processRecovery;
     private readonly HostOptions _options;
     private CoreWebView2CompositionController? _webView;
     private OverlayCompositionSurface? _compositionSurface;
@@ -119,6 +121,7 @@ internal sealed class DashboardOverlayForm : Form
             ApplyEmptyInteractionRegion();
         };
         _webView.CoreWebView2.WebMessageReceived += HandleWebMessage;
+        _processRecovery = new WebViewProcessRecovery(_webView.CoreWebView2, this, message => WriteOverlayError(message), () => HostRecreationRequested?.Invoke());
         _navigationRetry = new WebViewNavigationRetry(_webView.CoreWebView2, BuildOverlayUrl(_options.Url),
             attempt => WriteOverlayError($"透明数据层正在自动重连（{attempt}）"));
         _webView.CoreWebView2.NavigationCompleted += (_, args) =>
@@ -860,6 +863,7 @@ internal sealed class DashboardOverlayForm : Form
     {
         if (disposing)
         {
+            _processRecovery?.Dispose();
             _reloadCover?.Dispose();
             _reloadCover = null;
             _navigationRetry?.Dispose();

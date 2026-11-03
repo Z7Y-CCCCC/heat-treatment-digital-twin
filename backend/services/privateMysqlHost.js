@@ -29,7 +29,7 @@ function readJson(filename) {
     catch { throw new Error(`无法读取数据库状态文件 ${path.basename(filename)}；现有文件未被覆盖`); }
 }
 
-function mysqlAsciiPaths(mysqlRoot, runtimeDirectory) {
+function mysqlAsciiPaths(mysqlRoot, runtimeDirectory, linkDirectory) {
     // MySQL on Windows reparses its command line with the ANSI code page.
     // Junctions keep every native argument ASCII even for Chinese user/install
     // directories, while all actual data stays in the original userData tree.
@@ -37,7 +37,7 @@ function mysqlAsciiPaths(mysqlRoot, runtimeDirectory) {
     const storage = fs.realpathSync(mysqlRoot);
     const token = crypto.createHash('sha256').update(`${storage}\n${runtime}`).digest('hex').slice(0, 32);
     const programData = path.resolve(process.env.ProgramData || 'C:\\ProgramData');
-    const aliasRoot = path.join(programData, 'HeatTreatmentDigitalTwin', 'mysql-links', token);
+    const aliasRoot = linkDirectory ? path.join(path.resolve(linkDirectory), token) : path.join(programData, 'HeatTreatmentDigitalTwin', 'mysql-links', token);
     if (!/^[\x20-\x7e]+$/.test(aliasRoot)) throw new Error('MySQL 兼容路径必须为英文，请将 ProgramData 设置为英文目录');
     fs.mkdirSync(aliasRoot, { recursive: true });
     const link = (name, target) => {
@@ -151,7 +151,7 @@ async function main() {
             password: crypto.randomBytes(32).toString('hex'), user: 'digital_twin', database: 'digital_twin', initialized: false, secured: false };
         atomicJson(stateFile, state);
     }
-    const nativePaths = mysqlAsciiPaths(mysqlRoot, options.runtimeDir);
+    const nativePaths = mysqlAsciiPaths(mysqlRoot, options.runtimeDir, options.linkDirectory);
     const executable = path.join(nativePaths.runtime, 'bin', 'mysqld.exe');
     const nativeDataDir = path.join(nativePaths.storage, 'data');
     if (!state.initialized) {

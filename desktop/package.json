@@ -12,7 +12,7 @@
   "scripts": {
     "prepare:ffmpeg": "node scripts/prepare-ffmpeg.cjs",
     "prepare:mysql": "node scripts/prepare-mysql-runtime.cjs",
-    "prepare:resources": "node scripts/prepare-resources.cjs && npm run prepare:ffmpeg && node scripts/generate-third-party-notices.cjs",
+    "prepare:resources": "node scripts/prepare-resources.cjs && npm run prepare:ffmpeg && node scripts/generate-third-party-notices.cjs && npm run prepare:prerequisites",
     "build:frontend": "node scripts/build-frontend.cjs",
     "build:unity": "node scripts/build-unity-client.cjs",
     "build:unity:force": "node scripts/build-unity-client.cjs --force",
@@ -20,7 +20,7 @@
     "build:collector-service": "node scripts/build-collector-service.cjs",
     "test:logs": "node scripts/log-manager-test.cjs",
     "test:processes": "node --test scripts/process-lifecycle-test.cjs scripts/desktop-supervisor-unit-test.cjs scripts/activation-client-test.cjs",
-    "test:resources": "node --test scripts/resource-preparation-test.cjs scripts/runtime-cache-test.cjs scripts/dependency-cache-test.cjs scripts/directory-publish-test.cjs scripts/native-client-path-test.cjs scripts/optional-collector-test.cjs",
+    "test:resources": "node --test scripts/resource-preparation-test.cjs scripts/runtime-cache-test.cjs scripts/dependency-cache-test.cjs scripts/directory-publish-test.cjs scripts/native-client-path-test.cjs scripts/optional-collector-test.cjs scripts/prerequisites-test.cjs",
     "test:deployment": "node --test scripts/deployment-test.cjs scripts/desktop-supervisor-unit-test.cjs",
     "build:collector-center": "node scripts/build-collector-center.cjs",
     "test:collector-center": "node scripts/native-collector-center-test.cjs && node scripts/native-point-client-test.cjs && node --test scripts/service-installer-test.cjs",
@@ -28,9 +28,11 @@
     "test:supervisor": "node scripts/backend-supervisor-test.cjs",
     "test:admin-host-parent": "node scripts/admin-host-parent-test.cjs",
     "test:admin-host-retry": "node scripts/admin-host-retry-test.cjs",
-    "dist": "node scripts/build-release.cjs"
+    "dist": "node scripts/build-release.cjs",
+    "prepare:prerequisites": "node scripts/prepare-prerequisites.cjs"
   },
   "devDependencies": {
+    "7zip-bin": "5.2.0",
     "electron": "43.1.1",
     "electron-builder": "26.15.3"
   },
@@ -42,6 +44,7 @@
       "output": "../安装包"
     },
     "files": [
+      "prerequisites.cjs",
       "main.cjs",
       "logManager.cjs",
       "processLifecycle.cjs",
@@ -149,6 +152,13 @@
       {
         "from": "assets/display-distribution.json",
         "to": "backend/distribution.json"
+      },
+      {
+        "from": "resources/prerequisites",
+        "to": "prerequisites",
+        "filter": [
+          "**/*"
+        ]
       }
     ],
     "extraFiles": [
@@ -186,7 +196,15 @@
       "deleteAppDataOnUninstall": false,
       "runAfterFinish": true,
       "installerIcon": "assets/icon.ico",
-      "uninstallerIcon": "assets/icon.ico"
+      "uninstallerIcon": "assets/icon.ico",
+      "installerLanguages": [
+        "zh_CN",
+        "en_US"
+      ],
+      "language": "2052",
+      "installerSidebar": "assets/installer-sidebar.bmp",
+      "uninstallerSidebar": "assets/installer-sidebar.bmp",
+      "installerHeader": "assets/installer-header.bmp"
     }
   }
 }

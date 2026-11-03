@@ -41,6 +41,10 @@ test('collector plugin gets an independent, complete resource tree without Unity
         if (name.endsWith('.tar')) fs.writeFileSync(target,'dependencies fixture');
         else { fs.mkdirSync(target,{recursive:true}); fs.writeFileSync(path.join(target,'fixture.txt'),name); }
     }
+    fs.mkdirSync(path.join(display,'prerequisites'));
+    fs.writeFileSync(path.join(display,'prerequisites','RuntimePrerequisites.ps1'),'fixture');
+    fs.writeFileSync(path.join(display,'prerequisites','vc_redist.x64.exe'),'fixture');
+    fs.writeFileSync(path.join(display,'prerequisites','manifest.json'),JSON.stringify({files:[{name:'vc_redist.x64.exe'}]}));
     fs.mkdirSync(path.join(display,'backend','services'));
     fs.mkdirSync(path.join(display,'native-client')); fs.writeFileSync(path.join(display,'native-client','UnityPlayer.dll'),'must not copy');
     for (const name of ['collector-center','collector-service']) {
@@ -57,6 +61,18 @@ test('collector plugin gets an independent, complete resource tree without Unity
     const manifest=JSON.parse(fs.readFileSync(path.join(target,'plugin-manifest.json')));
     assert.ok(manifest.files.length>10); assert.ok(manifest.files.every(f => f.sha256.length===64 && !f.path.includes('..')));
     assert.throws(() => prepareCollectorPlugin(display,target,source),/must be new/);
+});
+
+test('the packaging-only ZIP step has its declared archiver and preserves Chinese file names', t => {
+    const directory=fs.mkdtempSync(path.join(os.tmpdir(),'plugin-archive-'));
+    t.after(()=>fs.rmSync(directory,{recursive:true,force:true}));
+    const source=path.join(directory,'source');fs.mkdirSync(source);
+    fs.writeFileSync(path.join(source,'安装说明.txt'),'packaging fixture only');
+    const {archivePlugin}=require('./archive-collector-plugin.cjs');
+    const result=archivePlugin(source,path.join(directory,'plugin.zip'));
+    assert.ok(result.size>0);assert.equal(result.sha256.length,64);
+    const list=spawnSync(require('7zip-bin').path7za,['l','-sccUTF-8',path.join(directory,'plugin.zip')],{encoding:'utf8',windowsHide:true});
+    assert.equal(list.status,0);assert.match(list.stdout,/安装说明\.txt/);
 });
 test('plugin installer PowerShell is valid in Windows PowerShell 5.1, not only PowerShell 7', {skip:process.platform!=='win32'}, () => {
     for (const file of ['collector-plugin/Install-CollectorPlugin.ps1','display-install-preflight.ps1']) {

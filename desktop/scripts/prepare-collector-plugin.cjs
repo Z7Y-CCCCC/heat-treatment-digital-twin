@@ -26,6 +26,12 @@ function prepareCollectorPlugin(displayResources, destination, source = project)
     for (const name of ['collector-center', 'collector-service']) fs.cpSync(path.join(source, 'desktop', '.cache', name), path.join(resources, name), { recursive: true });
     for (const file of COLLECTOR_FILES) fs.copyFileSync(path.join(source, 'backend', 'services', file), path.join(resources, 'backend', 'services', file));
     fs.writeFileSync(path.join(resources, 'backend', 'distribution.json'), JSON.stringify({ product: 'collector-plugin', collector: true }));
+    const depSource=path.join(displayResources,'prerequisites'),depTarget=path.join(resources,'prerequisites');
+    fs.mkdirSync(depTarget,{recursive:true});
+    for(const name of ['RuntimePrerequisites.ps1','vc_redist.x64.exe'])fs.copyFileSync(path.join(depSource,name),path.join(depTarget,name));
+    const runtimes=JSON.parse(fs.readFileSync(path.join(depSource,'manifest.json'),'utf8'));
+    fs.writeFileSync(path.join(depTarget,'manifest.json'),JSON.stringify({files:runtimes.files.filter(file=>file.name==='vc_redist.x64.exe')},null,2));
+
     for (const name of ['安装采集服务.ps1', '采集运行中心.cmd', 'collector-operations.ps1']) fs.copyFileSync(path.join(source, 'desktop', name), path.join(destination, name));
     for (const name of ['Install-CollectorPlugin.ps1', '安装采集插件.cmd', 'README.md']) fs.copyFileSync(path.join(source, 'desktop', 'collector-plugin', name), path.join(destination, name));
     fs.writeFileSync(path.join(destination, 'plugin-manifest.json'), JSON.stringify({ product: 'collector-plugin', version: require(path.join(source, 'desktop', 'package.json')).version,

@@ -69,6 +69,11 @@ try {
         Move-Item -LiteralPath $target -Destination $backup
     }
     Move-Item -LiteralPath $staging -Destination $target
+    $runtimeScript=Join-Path $target 'resources\prerequisites\RuntimePrerequisites.ps1'
+    if(Test-Path -LiteralPath $runtimeScript){
+        & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $runtimeScript -Action Install -Component VCRedist -RuntimeRoot (Join-Path $target 'resources\prerequisites')
+        if($LASTEXITCODE -ne 0){throw '采集插件运行环境未就绪，请重启 Windows 或修复 Visual C++ x64 运行库后重试。'}
+    }
     $arguments = @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',(Join-Path $target '安装采集服务.ps1'),'-InstallRoot',$target)
     if (-not $previousConfig -and (Test-Path -LiteralPath (Join-Path $ImportDataDirectory 'data\database-config.json'))) {
         $arguments += @('-ImportDataDirectory',$ImportDataDirectory)
