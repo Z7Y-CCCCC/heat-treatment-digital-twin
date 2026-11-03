@@ -11,6 +11,7 @@ import { canAdminPage } from '../../../runtime/adminSession.js'
 import ViewHierarchyTree from './ViewHierarchyTree.vue'
 import { hierarchyHidden, moveView, setHierarchyHidden, visibleViewLink, viewDescendants } from '../../../runtime/viewHierarchy.js'
 import { computed, nextTick, onBeforeUnmount, onMounted, onActivated, onDeactivated, reactive, ref, useId, watch } from 'vue'
+import { widgetBindingChoices, LEGACY_BINDINGS } from '../../../runtime/widgetBindingChoices.js'
 import { adminApi } from '../../../config/factoryConfig.js'
 import WidgetRenderer from '../../../runtime/WidgetRenderer.vue'
 import { applyReferenceHudLayout } from '../../../runtime/referenceHudLayout.js'
@@ -95,20 +96,18 @@ const databaseColumnsByDataset = reactive({})
 const previewContext = reactive({
   factoryId:draftFactoryId,
   viewId: 'factory_overview', viewMode: 'factory', workshopId: '', lineId: '', deviceId: '',
-  inspectionStage: '', partId: 'front_door_open', partName: '前门组件', partDescription: '部件参数与运行状态预览',
-  partPointIds: [], partPointKeys: ['analog.temperature', 'doors.front_door_open']
+  inspectionStage: '', partId: '', partName: '', partDescription: '',
+  partPointIds: [], partPointKeys: []
 })
-const previewPartPoints = [
-  { id: 'preview_temperature', label: '当前温度', name: '当前温度', value: 836.4, unit: '°C', quality: 'good' },
-  { id: 'preview_speed', label: '运行转速', name: '运行转速', value: 1280, unit: 'rpm', quality: 'good' },
-  { id: 'preview_interlock', label: '联锁状态', name: '联锁状态', value: '正常', unit: '', quality: 'good' }
-]
+const previewParts=ref([]),previewPartsBusy=ref(false),previewPartsError=ref('')
+let previewPartsSequence=0
+const previewPartPoints = computed(()=>Object.values(pointValues.value).filter(p=>String(p.device_id)===String(previewContext.deviceId) && (previewContext.partPointIds.includes(String(p.id)) || previewContext.partPointKeys.includes(`${p.category || 'analog'}.${p.value_role || p.name}`))))
 const previewSelectedPart = computed(() => ({
   id: previewContext.partId,
   name: previewContext.partName,
   description: previewContext.partDescription,
-  points: previewPartPoints,
-  pointMap: Object.fromEntries(previewPartPoints.map(point => [point.id, point])),
+  points: previewPartPoints.value,
+  pointMap: Object.fromEntries(previewPartPoints.value.map(point => [point.id, point])),
   stage: previewContext.inspectionStage
 }))
 const previewGroupVisibility = reactive({})
@@ -736,12 +735,26 @@ function syncPreviewContextFromView() {
   if (view.targetType === 'line') previewContext.lineId = view.targetId || previewContext.lineId || ''
   if (view.targetType === 'workshop') previewContext.workshopId = view.targetId || previewContext.workshopId || ''
   previewContext.inspectionStage = view.metadata?.inspectionStage || (view.id === 'device_detail' ? 'solid' : '')
-  if (previewContext.viewMode !== 'device') previewContext.partId = ''
-  if (previewContext.inspectionStage === 'part' && !previewContext.partId) {
-    previewContext.partId = 'front_door_open'
-    previewContext.partName = '前门组件'
-    previewContext.partDescription = '前室升降门与驱动组件；运行时会替换为 Unity 当前选中的真实部件。'
-  }
+  if (previewContext.viewMode !== 'device') Object.assign(previewContext,{partId:'',partName:'',partDescription:'',partPointIds:[],partPointKeys:[]})
+}
+
+function changePreviewPart() {
+  const part=previewParts.value.find(p=>p.id===previewContext.partId)
+  Object.assign(previewContext,{partId:part?.id || '',partName:part?.name || '',partDescription:part?.description || '',partPointIds:part?.point_ids || [],partPointKeys:part?.point_keys || []})
+  invalidateDataSetPreview()
+}
+async function loadPreviewParts() {
+  const id=String(previewContext.deviceId || editorDeviceId.value || ''),seq=++previewPartsSequence
+  previewParts.value=[];changePreviewPart();previewPartsError.value=''
+  if(!id)return
+  previewPartsBusy.value=true
+  try {
+    const response=await adminApi.getDeviceInspection(id)
+    if(designerDisposed || seq!==previewPartsSequence || id!==String(previewContext.deviceId || editorDeviceId.value || ''))return
+    previewParts.value=response.inspection?.parts || []
+    previewContext.partId=previewParts.value[0]?.id || '';changePreviewPart()
+  }catch(error){if(seq===previewPartsSequence)previewPartsError.value=error.message}
+  finally{if(seq===previewPartsSequence)previewPartsBusy.value=false}
 }
 
 function emitCurrentViewPreview({ immediate = false } = {}) {
@@ -771,8 +784,9 @@ function scheduleCurrentViewPreview({ immediate = false } = {}) {
 }
 
 function updateEditorDevice() {
+  previewPartsSequence++;previewPartsBusy.value=false;previewParts.value=[];changePreviewPart()
   editorDeviceId.value = String(editorDeviceId.value || '')
-  if (editorDeviceId.value) previewContext.deviceId = editorDeviceId.value
+  previewContext.deviceId = editorDeviceId.value
   setStatus(`当前编辑设备：${editorDevice.value?.name || editorDeviceId.value || '未选择'}；组件数据将按绑定范围预览`, 'info')
   refreshRealtimePoints()
 }
@@ -1903,6 +1917,14 @@ function changeReusableBinding() {
   recordProperty('修改数据集绑定')
 }
 
+function useDatasetPanelFields() {
+  const widget=selectedWidget.value,definition=dataSetDefinitions.value.find(d=>d.id===widget?.data?.datasetId)
+  if(!widget || !definition || !canAdminPage('platform.designer','edit'))return
+  widget.content.usePartPoints=false
+  widget.content.items=definition.columns.filter(c=>!['category','time'].includes(c.role)).slice(0,8).map(c=>({label:c.label || c.name,path:`dataset.${c.name}`,unit:c.unit || '',decimals:widget.data.decimals ?? 1}))
+  recordProperty('应用面板数据字段')
+}
+
 function invalidateDataSetPreview() {
   if(selectedWidget.value)delete databasePreviewValues[selectedWidget.value.id]
 }
@@ -2813,15 +2835,18 @@ onBeforeUnmount(() => {
             </section>
 
             <section v-else-if="inspectorTab === 'data'" class="inspector-section">
-              <label>数据来源<select v-model="selectedWidget.data.mode" aria-label="组件数据来源" @change="changeBindingMode"><option value="static">静态 / 组件默认数据</option><option value="plc">PLC 点位</option><option v-if="['value','text','status','trend','hud_chart_dock','alarm_list','hud_alarm_panel','marquee','metrics','hud_kpi_panel'].includes(selectedWidget.type)" value="dataset">可复用数据集</option><option value="database">数据库（直接绑定）</option><option value="http_api">HTTP（直接绑定）</option><option value="business">排产业务只读适配层</option><option value="runtime">设备检查上下文</option></select></label>
+              <div v-if="previewContext.viewMode==='device'" class="binding-part-preview"><label>预览部件<select v-model="previewContext.partId" aria-label="预览部件" :disabled="previewPartsBusy || !previewParts.length" @change="changePreviewPart"><option value="">请选择部件</option><option v-for="part in previewParts" :key="part.id" :value="part.id">{{part.name}}</option></select></label><button type="button" :disabled="previewPartsBusy || !previewContext.deviceId" @click="loadPreviewParts">{{previewPartsBusy?'读取中…':'读取当前设备部件'}}</button><small v-if="previewPartsError" role="status">{{previewPartsError}}</small></div>
+              <label>数据来源<select v-model="selectedWidget.data.mode" aria-label="组件数据来源" @change="changeBindingMode"><option v-for="choice in widgetBindingChoices(selectedWidget)" :key="choice.id" :value="choice.id">{{choice.label}}</option></select></label>
+              <details class="binding-compatibility"><summary>高级绑定</summary><div class="button-row"><button v-for="choice in LEGACY_BINDINGS" :key="choice.id" type="button" :disabled="selectedWidget.data.mode===choice.id || !canAdminPage('platform.designer','edit')" @click="selectedWidget.data.mode=choice.id;changeBindingMode()">{{choice.label}}</button></div></details>
               <WidgetPlaybackEditor v-if="selectedWidget.data.mode!=='static'" :binding="selectedWidget.data" :devices="devices" :disabled="!canAdminPage('platform.designer','edit')" @change="recordProperty('修改设备数据播放');invalidateDataSetPreview()" />
               <datalist id="selected-dataset-fields" v-if="selectedWidget.data.mode==='dataset'"><option v-for="column in dataSetDefinitions.find(d=>d.id===selectedWidget.data.datasetId)?.columns || []" :key="column.name" :value="`dataset.${column.name}`">{{column.label}}</option></datalist>
               <DataSetBindingEditor v-if="selectedWidget.data.mode==='dataset'" :key="selectedWidget.id" :binding="selectedWidget.data" :context="previewContext" :devices="playbackDevices" :playback-now="previewMode ? playbackNow : 0" :multiple="['trend','hud_chart_dock'].includes(selectedWidget.type)" :disabled="!canAdminPage('platform.designer','edit')" @change="changeReusableBinding" @invalidate="invalidateDataSetPreview" @preview="databasePreviewValues[selectedWidget.id]=$event" />
+              <details v-if="selectedWidget.data.mode==='dataset' && ['device_list','hud_device_status'].includes(selectedWidget.type)" open><summary>设备字段</summary><label v-for="field in [{key:'id',label:'设备 ID'},{key:'name',label:'名称'},{key:'online',label:'在线'},{key:'running',label:'运行'},{key:'alarm',label:'报警'},{key:'temp',label:'温度'}]" :key="field.key">{{field.label}}<select :value="selectedWidget.content.deviceFields?.[field.key] || field.key" @change="selectedWidget.content.deviceFields={...selectedWidget.content.deviceFields,[field.key]:$event.target.value};recordProperty('修改设备字段')"><option :value="field.key">{{field.key}}</option><option v-for="column in (dataSetDefinitions.find(d=>d.id===selectedWidget.data.datasetId)?.columns || []).filter(c=>c.name!==field.key)" :key="column.name" :value="column.name">{{column.label}}</option></select></label></details>
+              <details v-if="selectedWidget.data.mode==='dataset' && ['metrics','hud_kpi_panel'].includes(selectedWidget.type)" class="binding-panel-fields" open><summary>面板指标</summary><button type="button" :disabled="!selectedWidget.data.datasetId || !canAdminPage('platform.designer','edit')" @click="useDatasetPanelFields">使用数据集字段</button><div v-for="(item,index) in selectedWidget.content.items || []" :key="index" class="property-grid two"><label>名称<input v-model="item.label" @change="recordProperty('修改指标名称')" /></label><label>字段<select v-model="item.path" :aria-label="`指标字段 ${index+1}`" @change="selectedWidget.content.usePartPoints=false;recordProperty('修改指标字段')"><option v-if="!item.path?.startsWith('dataset.')" :value="item.path" disabled>原绑定</option><option v-for="column in dataSetDefinitions.find(d=>d.id===selectedWidget.data.datasetId)?.columns || []" :key="column.name" :value="`dataset.${column.name}`">{{column.label}}</option></select></label></div></details>
               <label v-if="selectedWidget.data.mode==='dataset' && selectedWidget.type==='text'">文本呈现<select :value="selectedWidget.content.datasetTextMode || 'value'" @change="selectedWidget.content.datasetTextMode=$event.target.value;recordProperty('修改文本呈现')" v-permission="{page:'platform.designer',action:'edit'}"><option value="value">显示绑定值</option><option value="template">自定义模板（使用 {value}）</option></select></label>
               <template v-if="selectedWidget.data.mode === 'plc'">
 
                 <p v-if="selectedWidget.data.deviceScope === 'current'" class="field-hint">同一个组件可用于所有设备，运行时自动读取当前视角设备的同名点位，不需要复制组件。</p>
-                <label v-if="selectedWidget.data.deviceScope === 'fixed'">绑定设备<select v-model="selectedWidget.data.deviceId" @change="selectedWidget.data.pointId=''; selectedWidget.data.pointKey=''; recordProperty('选择设备')"><option value="">请选择设备</option><option v-for="device in devices" :key="device.id" :value="String(device.id)">{{ device.name }}（{{ device.id }}）</option></select></label>
                 <label>READ 点位<select v-model="selectedWidget.data.pointId" :disabled="!selectedBindingDeviceId" @change="bindSelectedPoint"><option value="">请选择只读点位</option><option v-for="point in selectedDevicePoints" :key="point.id" :value="String(point.id)">{{ point.label || point.name }} · {{ point.plc_tag || `DB${point.db_number}.${point.db_byte_offset}` }}</option></select></label>
                 <div class="binding-summary" v-if="selectedWidget.data.pointId"><span>路径</span><code>{{ selectedWidget.data.path }}</code><span>实时值</span><strong>{{ previewValueForWidget(selectedWidget) ?? '--' }} {{ selectedWidget.data.unit }}</strong></div>
               </template>
@@ -2844,20 +2869,16 @@ onBeforeUnmount(() => {
                 </details>
                 <label>计算公式（可选）<input v-model="selectedWidget.data.formula" placeholder="例如：(a / b) * 100" @change="recordProperty('修改计算公式'); previewDatabaseBinding()" /><small class="field-hint">仅支持别名、数字、+ − × ÷ 和括号，不执行 SQL 或脚本。</small></label>
                 <div v-if="selectedWidget.data.formula" class="property-grid two"><label>计算结果名称<input v-model="selectedWidget.data.formulaLabel" @change="recordProperty()" /></label><ColorField v-model="selectedWidget.data.formulaColor" label="计算结果颜色" :presets="textColorPresets" @commit="recordProperty('修改计算颜色')" /></div>
-                <label>设备范围<select v-model="selectedWidget.data.deviceScope" @change="changeDatabaseScope"><option value="current">当前设备（跟随视角）</option><option value="fixed">指定设备 / 所有设备通用</option></select></label>
-                <label v-if="selectedWidget.data.deviceScope === 'fixed'">设备详情适用范围<select v-model="selectedWidget.data.deviceId" @change="bindDatabaseToDevice"><option value="">所有设备通用</option><option v-for="device in devices" :key="`db-${device.id}`" :value="String(device.id)">仅 {{ device.name }}（{{ device.id }}）</option></select><small class="field-hint">只有确实需要固定设备数据时才选择指定设备；通常选“当前设备”即可复用。</small></label>
-                <p v-else class="field-hint">运行时按当前视角设备读取；一个组件即可覆盖多台设备。</p>
                 <button type="button" class="inspector-preview-button" :disabled="databaseMetadataLoading" @click="previewDatabaseBinding()">刷新数据预览</button>
                 <div v-if="databasePreviewValues[selectedWidget.id]" class="binding-summary"><span>预览值</span><strong>{{ databasePreviewValues[selectedWidget.id]?.value ?? '--' }} {{ selectedWidget.data.unit }}</strong><span>数据项</span><code>{{ databasePreviewValues[selectedWidget.id]?.series?.map(item => `${item.label}: ${item.value ?? '--'}`).join(' · ') || '--' }}</code><span>状态</span><strong>{{ databasePreviewValues[selectedWidget.id]?.error || '读取正常' }}</strong></div>
               </template>
               <template v-else-if="selectedWidget.data.mode === 'http_api'">
                 <label>已登记的接口连接<select v-model="selectedWidget.data.connectionId" @change="recordProperty('选择 HTTP 接口')"><option value="">请选择接口连接</option><option v-for="source in httpApiSources" :key="`http-${source.id}`" :value="source.id">{{ source.name }} · {{ source.health?.status === 'healthy' ? '已连通' : '待验证' }}</option></select></label>
                 <p v-if="!httpApiSources.length" class="field-hint">还没有接口连接。先在「系统设置 → 数据连接与备份 → 外部数据源」登记根地址、响应格式和认证方式；密钥只保存在后端。</p>
-                <label>读取路径 / 主题 / 键<input v-model.trim="selectedWidget.data.apiPath" placeholder="GET 路径、MQTT 主题、Redis 键；其他填 /" maxlength="1024" @change="recordProperty('修改接口路径')" /><small class="field-hint">HTTP 使用相对 GET 路径；MQTT / Redis 可指定主题 / 键，填 / 使用连接默认值；WebSocket、TCP/UDP、文件填 /。</small></label>
+                <label>读取路径 / 主题 / 键<input v-model.trim="selectedWidget.data.apiPath" placeholder="接口路径、主题或键" maxlength="1024" @change="recordProperty('修改接口路径')" /><small class="field-hint">请求方法跟随连接配置；主题或键填 / 时使用连接默认值。</small></label>
                 <button type="button" class="inspector-preview-button" :disabled="httpFieldBusy" @click="inspectHttpFields">{{ httpFieldBusy ? '正在读取接口字段…' : '① 读取并选择接口字段' }}</button>
                 <div v-if="httpInspectedKey===`${selectedWidget.data.connectionId}|${selectedWidget.data.apiPath}` && httpFields.length" class="http-field-list" aria-label="可绑定的接口字段"><button v-for="field in httpFields" :key="field.path" type="button" :class="{selected:selectedWidget.data.jsonPath===field.path}" @click="selectHttpField(field.path)"><code>{{ field.path }}</code><small>{{ field.kind }} · {{ field.sample }}</small></button></div>
                 <label>响应字段路径<input v-model.trim="selectedWidget.data.jsonPath" placeholder="点击上方字段填入，或手动输入 value[0].quantity" maxlength="255" @change="recordProperty('修改接口字段')" /><small class="field-hint">可选数值、文本或数组；含空格或中文的字段会自动使用方括号路径。</small></label>
-                <label>刷新周期（秒）<input :value="Math.round(selectedWidget.data.refreshMs/1000)" type="number" min="5" max="3600" @change="selectedWidget.data.refreshMs=Math.max(5000,Number($event.target.value||30)*1000);recordProperty('修改接口刷新周期')" /><small class="field-hint">建议 30 秒以上，避免频繁请求 ERP / MES。</small></label>
                 <button type="button" class="inspector-preview-button" @click="previewHttpBinding()">② 测试字段并预览</button>
                 <div v-if="databasePreviewValues[selectedWidget.id]" class="binding-summary"><span>预览值</span><strong>{{ databasePreviewValues[selectedWidget.id]?.value ?? '--' }} {{ selectedWidget.data.unit }}</strong><span>状态</span><strong>{{ databasePreviewValues[selectedWidget.id]?.error || '读取正常' }}</strong></div>
               </template>

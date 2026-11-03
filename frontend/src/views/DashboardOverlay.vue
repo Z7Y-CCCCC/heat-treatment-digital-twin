@@ -1153,6 +1153,7 @@ onUnmounted(() => {
             <div
                 v-for="widget in widgets"
                 :key="widget.id"
+                :data-widget-id="widget.id"
                 class="overlay-widget hud-widget"
                 @pointerenter="trackHoverMotion"
                 @pointerleave="trackHoverMotion"

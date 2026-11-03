@@ -7,11 +7,21 @@ import { adminApi } from '../src/config/factoryConfig.js'
 import { deferred, installBrowser, settle } from './helpers.mjs'
 import { exportDashboardTemplate, importDashboardTemplate, dashboardTemplateReferences, rebindDashboardTemplate } from '../src/runtime/dashboardTemplate.js'
 import { normalizeDashboardDocument } from '../src/runtime/dashboardSchema.js'
+import { widgetBindingChoices, DATASET_WIDGETS } from '../src/runtime/widgetBindingChoices.js'
 import { applyTemplateFieldBindings, templateFieldBindings } from '../src/runtime/templateFieldMapping.js'
 
 // Run the real SFC setup/load path; child renderers are irrelevant to the source
 // selection and are stubbed so no canvas, GL context or browser is required.
 const sourceUrl = new URL('../src/views/admin/components/DashboardDesigner.vue', import.meta.url)
+test('source choices are short, unique, supported by the widget and preserve existing direct bindings',()=>{
+  for(const type of [...DATASET_WIDGETS,'image','container','navigation'])for(const mode of ['static','dataset','database','http_api','business','plc']){
+    const choices=widgetBindingChoices({type,data:{mode}})
+    assert.equal(new Set(choices.map(c=>c.id)).size,choices.length)
+    assert.ok(choices.some(c=>c.id===mode),`${type}/${mode} remains editable`)
+    if(mode==='static')assert.equal(choices.length,DATASET_WIDGETS.has(type)?4:2)
+    for(const id of ['database','http_api','business'])assert.equal(choices.some(c=>c.id===id),mode===id)
+  }
+})
 const { descriptor, errors } = parse(await readFile(sourceUrl, 'utf8'))
 assert.deepEqual(errors, [])
 let compiled = compileScript(descriptor, { id: 'data-source-designer-test' }).content
@@ -50,6 +60,16 @@ function fixture(t, connections) {
     environment.beforeRestore(() => app.unmount())
     return { instance }
 }
+
+test('designer reads actual device part catalogs and a late A catalog cannot replace B or invent preview measurements',async t=>{
+ const {instance}=fixture(t,[]);await settle();const state=instance.value.$.setupState,a=deferred(),b=deferred()
+ t.mock.method(adminApi,'getDeviceInspection',id=>id==='a'?a.promise:b.promise)
+ state.editorDeviceId='a';state.previewContext.deviceId='a';const first=state.loadPreviewParts()
+ state.editorDeviceId='b';state.previewContext.deviceId='b';const second=state.loadPreviewParts()
+ b.resolve({inspection:{parts:[{id:'b_real',name:'真实 B 部件',point_ids:[],point_keys:[]}]}});await second
+ a.resolve({inspection:{parts:[{id:'a_old',name:'旧 A 部件'}]}});await first
+ assert.equal(state.previewContext.partId,'b_real');assert.equal(state.previewContext.partName,'真实 B 部件');assert.deepEqual(state.previewSelectedPart.points,[])
+})
 
 test('saving retains edits and the newer selection made while the server is pending', async t => {
     const { instance } = fixture(t, [])

@@ -28,11 +28,26 @@ process.once('SIGINT', stop); process.once('SIGTERM', stop);
             .run(index ? '现场设备B' : '现场设备A', modelIds[0], index ? -60 : 35,
                 index ? .8 : 1, JSON.stringify(config), device.id);
     });
+    const displayOnly=process.env.MANUAL_LAYOUT_DISPLAY_ONLY==='true';
+    if(displayOnly){
+        database.prepare("UPDATE settings SET value='external' WHERE `key`='data_mode'").run();
+        database.prepare("UPDATE factory_settings SET value='external' WHERE `key`='data_mode'").run();
+    }
     database.close();
+    let serverDirectory=BACKEND_DIR;
+    if(displayOnly){
+        const {COLLECTOR_FILES}=require('../desktop/scripts/prepare-display-distribution.cjs');
+        serverDirectory=path.join(sandbox.directory,'resources','backend');fs.mkdirSync(serverDirectory,{recursive:true});
+        for(const name of ['server.js','services','db','routes','utils','middleware'])fs.cpSync(path.join(BACKEND_DIR,name),path.join(serverDirectory,name),{recursive:true,filter:file=>!COLLECTOR_FILES.includes(path.basename(file))});
+        fs.symlinkSync(path.join(BACKEND_DIR,'assets'),path.join(serverDirectory,'assets'),'junction');
+        fs.cpSync(path.join(root,'shared'),path.join(sandbox.directory,'resources','shared'),{recursive:true});
+        fs.copyFileSync(path.join(root,'release-manifest.json'),path.join(sandbox.directory,'resources','release-manifest.json'));
+        fs.writeFileSync(path.join(serverDirectory,'distribution.json'),'{"collector":false}');
+    }
     const port = await findFreePort(3957);
     const origin = `http://127.0.0.1:${port}`;
-    backend = startLoggedProcess(process.execPath, ['server.js'], { cwd: BACKEND_DIR,
-        env: { ...sandbox.env, PORT: String(port), HOST: '127.0.0.1', FRONTEND_DIST: path.join(root, 'frontend/dist') },
+    backend = startLoggedProcess(process.execPath, ['server.js'], { cwd: serverDirectory,
+        env: { ...sandbox.env, NODE_PATH:path.join(BACKEND_DIR,'node_modules'), PORT: String(port), HOST: '127.0.0.1', FRONTEND_DIST: path.join(root, 'frontend/dist') },
         logFile: path.join(sandbox.directory, 'backend.log') });
     await waitForHttp(`${origin}/api/health`);
     await createSmokeSession(origin, sandbox);

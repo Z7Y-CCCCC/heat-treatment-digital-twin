@@ -106,6 +106,8 @@ async function loadPublishedDocument(db, project, scene) {
 
 async function validatePlcBindings(db, document) {
     validateDocument(document);
+    const owner = await db.get('SELECT factory_id FROM projects WHERE id=?', [document.projectId]);
+    const bindingFactoryId = owner?.factory_id || 'factory_default';
     const datasetWidgets = document.widgets.filter(widget => widget.data?.mode === 'dataset');
     if (datasetWidgets.length) {
         const project = await db.get('SELECT factory_id FROM projects WHERE id=?', [document.projectId]);
@@ -129,7 +131,7 @@ async function validatePlcBindings(db, document) {
         .map(binding => String(binding.connectionId || ''))
         .filter(Boolean))];
     for (const connectionId of databaseConnectionIds) {
-        const connection = resolveConnection(connectionId);
+        const connection = resolveConnection(connectionId, bindingFactoryId);
         if (connection.sourceType === 'http_api' || connection.type === 'http_api') {
             const usedForHttp = document.widgets.some(widget => widget.data?.mode === 'http_api' && widget.data.connectionId === connectionId);
             const usedForDatabase = document.widgets.some(widget => ['database', 'business'].includes(widget.data?.mode)
