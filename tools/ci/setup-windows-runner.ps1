@@ -40,7 +40,7 @@ $MysqlRuntimeSource = [IO.Path]::GetFullPath($MysqlRuntimeSource)
 foreach ($file in @('bin\mysqld.exe', 'bin\mysql.exe', 'bin\mysqladmin.exe', 'bin\mysqldump.exe', 'LICENSE', 'README', 'lib', 'share')) {
     if (-not (Test-Path -LiteralPath (Join-Path $MysqlRuntimeSource $file))) { throw "MySQL 运行时缺少 $file；请设置 -MysqlRuntimeSource。" }
 }
-foreach ($command in @('node', 'npm.cmd', 'dotnet', 'git', 'gh', 'curl.exe', 'tar.exe')) {
+foreach ($command in @('node', 'npm.cmd', 'dotnet', 'git', 'gh', 'curl.exe', 'tar.exe', 'pwsh')) {
     if (-not (Get-Command $command -ErrorAction SilentlyContinue)) { throw "缺少命令：$command" }
 }
 $nodeVersion = & node --version

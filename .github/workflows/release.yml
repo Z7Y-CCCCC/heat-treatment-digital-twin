@@ -67,7 +67,7 @@ jobs:
       # This dedicated machine is provisioned with .NET 8. Installing again
       # would try to write Program Files as a non-admin desktop build user.
       - name: Check native build prerequisites
-        shell: powershell
+        shell: pwsh -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File {0}
         run: ./tools/ci/setup-windows-runner.ps1 -CheckOnly
       - uses: actions/cache@v4
         with:
@@ -80,13 +80,13 @@ jobs:
             release-windows-${{ runner.name }}-${{ hashFiles('unity-client/ProjectSettings/ProjectVersion.txt', '**/package-lock.json') }}-
             release-windows-${{ runner.name }}-
       - name: Build, verify first launch and restart, then package
-        shell: powershell
+        shell: pwsh -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File {0}
         run: ./生成安装包.ps1 -StarterTemplate -NoPause
       - name: Verify native overlay in the interactive Windows session
-        shell: powershell
+        shell: pwsh -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File {0}
         run: dotnet run --project tools/native-overlay-tests/NativeOverlayTests.csproj --configuration Release
       - name: Collect this build's verified installer
-        shell: powershell
+        shell: pwsh -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File {0}
         run: node tools/ci/collect-release.cjs
       - uses: actions/upload-artifact@v4
         with:

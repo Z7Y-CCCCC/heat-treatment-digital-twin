@@ -4,7 +4,7 @@
 
 ## 首次准备
 
-在专用构建账户安装 Node.js 22.12+、.NET 8 SDK、Git、GitHub CLI、Unity 项目指定版本及 Windows Build Support，完成 Unity 许可证激活；准备 MySQL 9.2 完整安装目录（不需要运行数据库服务），安装 WebView2 Runtime 和 Visual C++ x64 运行库。账户应处于已登录的 Windows 桌面会话，具有访问网络和构建目录的权限。不要用现场正在运行生产大屏的账户做构建。
+在专用构建账户安装 Node.js 22.12+、.NET 8 SDK、PowerShell 7（pwsh）、Git、GitHub CLI、Unity 项目指定版本及 Windows Build Support，完成 Unity 许可证激活；准备 MySQL 9.2 完整安装目录（不需要运行数据库服务），安装 WebView2 Runtime 和 Visual C++ x64 运行库。账户应处于已登录的 Windows 桌面会话，具有访问网络和构建目录的权限。不要用现场正在运行生产大屏的账户做构建。发布步骤使用无用户 profile 的 PowerShell 7，避免中文路径解码和个人终端主题干扰；不会重复写入 Program Files 安装 .NET。
 
 先运行仅检查本机依赖的命令，此命令不注册 runner、不修改远端：
 
