@@ -65,7 +65,7 @@ async function login(context,username=info.username,state={activeTab:'settings',
  await dp.locator('.inspector-tabs').getByRole('button',{name:'数据来源',exact:true}).click();
  const binding=dp.getByRole('region',{name:'组件数据集绑定',exact:true});await binding.getByLabel('组件数据集',{exact:true}).waitFor();
  assert.equal(await binding.getByLabel('组件数据集',{exact:true}).inputValue(),definition.id);assert.equal(await binding.getByLabel('组件数据集字段',{exact:true}).inputValue(),'temperature');
- await binding.getByRole('button',{name:'指定设备',exact:true}).click();await binding.getByLabel('绑定指定设备',{exact:true}).selectOption(info.devices[1]);
+ await dp.getByRole('region',{name:'设备数据播放',exact:true}).getByRole('button',{name:'固定设备',exact:true}).click();await dp.getByLabel('固定数据设备',{exact:true}).selectOption(info.devices[1]);
  await binding.getByRole('button',{name:'读取预览',exact:true}).click();await binding.locator('.binding-result strong').filter({hasText:'850'}).waitFor();
  await binding.locator('summary').click();assert.ok(await binding.getByLabel('组件数据集取值',{exact:true}).isVisible());await binding.locator('summary').click();
  await dp.locator('.designer-right-panel').screenshot({path:path.join(directory,'02-component-data-source.png')});

@@ -1,3 +1,5 @@
+import {upgradeWidgetPlaybackDocument} from '../../../shared/widgetPlaybackProfile.mjs'
+import { normalizePlayback } from '../../../shared/widgetPlayback.mjs'
 export const DASHBOARD_SCHEMA_VERSION = 3
 import { normalizeParameterDefinitions } from '../../../shared/dashboardParameters.mjs'
 
@@ -387,7 +389,7 @@ export function normalizeDashboardWidget(source = {}, canvas = DEFAULT_DASHBOARD
     : normalizedMode
   const rawDeviceId = data.deviceId || data.device_id || ''
   const requestedDeviceScope = String(data.deviceScope || data.device_scope || '').toLowerCase()
-  const deviceScope = requestedDeviceScope === 'current' || requestedDeviceScope === 'fixed'
+  const deviceScope = ['current','fixed','rotation'].includes(requestedDeviceScope)
     ? requestedDeviceScope
     : (rawDeviceId ? 'fixed' : 'current')
   const legacyDataset = normalizeDatabaseDataset(data, data, 0)
@@ -433,7 +435,8 @@ export function normalizeDashboardWidget(source = {}, canvas = DEFAULT_DASHBOARD
     data: {
       // 旧版无来源指标仍迁移为静态占位；新 runtime 模式只读取当前视角与部件上下文。
       mode: resolvedDataMode,
-      deviceScope,
+      ...normalizePlayback({...data,deviceScope}),
+      datasetFields:Array.isArray(data.datasetFields)?data.datasetFields.map(String).slice(0,12):[],
       deviceId: String(rawDeviceId),
       pointId: String(data.pointId || data.point_id || ''),
       pointKey: String(data.pointKey || data.point_key || ''),
@@ -533,6 +536,7 @@ function ensureNavigationWidgets(rawWidgets, canvas) {
 }
 
 export function normalizeDashboardDocument(source = {}) {
+  source=upgradeWidgetPlaybackDocument(source)
   const canvas = {
     ...DEFAULT_DASHBOARD_CANVAS,
     ...objectValue(source.canvas, {}),

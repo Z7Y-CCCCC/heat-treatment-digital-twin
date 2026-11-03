@@ -9,6 +9,9 @@ import { adminFetch, adminSession } from '../runtime/adminSession.js'
 import { createVoiceAnnouncer } from '../runtime/VoiceAnnouncer.js'
 import { resolveBackendAssetUrl } from '../three/ModelFactory.js'
 import { useDashboardIntegration } from '../runtime/dashboardIntegration.js'
+import {useWidgetClock} from '../runtime/widgetPlayback.js'
+import {createWidgetReadScheduler} from '../runtime/widgetReadScheduler.js'
+import {flattenPlaybackDevices} from '../../../shared/widgetPlayback.mjs'
 import WidgetRenderer from '../runtime/WidgetRenderer.vue'
 import { applyReferenceHudLayout } from '../runtime/referenceHudLayout.js'
 import { applyFactoryHudModules } from '../runtime/factoryHudModules.js'
@@ -72,6 +75,8 @@ const runtimeContext = reactive({
     inspectionEnabled: false, inspectionProgress: 0, inspectionAnimating: false, inspectionPhase: '', inspectionIsolated: false,
     inspectionLabelsEnabled: false, inspectionLeaderLines: false, inspectionHoveredPartId: '', inspectionIssues: [], inspectionParts: []
 })
+const playbackNow=useWidgetClock()
+const playbackDevices=computed(()=>flattenPlaybackDevices(config))
 const groupVisibility = reactive({})
 const widgetVisibility = reactive({})
 
@@ -386,7 +391,7 @@ const widgets = computed(() => {
 })
 const businessWidgets = computed(() => configuredWidgets.value.filter(widget => {
     const type = widget.type || widget.widget_type
-    return type === 'business_summary' || widget.data?.mode === 'business'
+    return type === 'business_summary' && widget.data?.mode !== 'business'
 }))
 
 function getByPath(source, path) {
@@ -881,43 +886,25 @@ function handleHostMessage(event) {
     scheduleRegionReport()
 }
 
-async function refreshDatabaseValues(force = false) {
-    if (overlayDisposed || (!force && databaseInFlight)) return
-    if (!force && !configuredWidgets.value.some(widget => ['database', 'http_api', 'dataset'].includes(widget.data?.mode))) return
-    const requestSeq = ++databaseRequestSeq
-    databaseInFlight = true
-    try {
-        const query = new URLSearchParams({
-            view_id: runtimeContext.viewId || '',
-            workshop_id: runtimeContext.workshopId || '',
-            line_id: runtimeContext.lineId || '',
-            device_id: runtimeContext.deviceId || '',
-            part_id: runtimeContext.partId || '',
-            parameters: JSON.stringify(integration.parameters.value)
-        })
-        const contextKey = `${runtimeContext.factoryId || ''}:${query}`
-        if (contextKey !== externalValueContext) {
-            externalValueContext = contextKey
-            for (const widget of configuredWidgets.value.filter(widget => widget.data?.mode === 'dataset')) delete databaseValues[widget.id]
-        }
-        const response = await adminFetch(`${API_BASE}/data-sources/runtime-values?${query}`, { signal: overlayRequests.signal })
-        if (!response.ok) throw new Error('外部数据暂不可用')
-        const payload = await response.json()
-        if (overlayDisposed || requestSeq !== databaseRequestSeq) return
-        const next = payload.values || {}
-        Object.keys(databaseValues).forEach(key => { if (!(key in next)) delete databaseValues[key] })
-        Object.assign(databaseValues, next)
-    } catch {
-        if (!overlayDisposed && requestSeq === databaseRequestSeq) {
-            for (const widget of configuredWidgets.value.filter(widget => widget.data?.mode === 'dataset')) {
-                const previous = databaseValues[widget.id] || {}
-                databaseValues[widget.id] = {...previous,value:null,rows:[],series:[],quality:'stale',error:'数据连接暂不可用'}
-            }
-        }
-    } finally {
-        if (requestSeq === databaseRequestSeq) databaseInFlight = false
-    }
-}
+const externalReader=createWidgetReadScheduler({
+ context:()=>Object.fromEntries(['factoryId','viewId','viewMode','workshopId','lineId','deviceId','partId'].map(key=>[key,runtimeContext[key] || ''])),
+ parameters:()=>integration.parameters.value,devices:()=>playbackDevices.value,
+ widgets:()=>configuredWidgets.value.filter(w=>{
+   const view=currentView.value,state=view?.componentState || {},group=w.groupId?'group:'+w.groupId:''
+   if(state.hide?.includes(w.id) || group && state.hide?.includes(group))return false
+   if(state.show?.length && !state.show.includes(w.id) && !state.show.includes(group))return false
+   return widgetRuntimeVisible({...w,visibility:{...w.visibility,rules:(w.visibility?.rules || []).filter(r=>r.source!=='data')}},{context:runtimeContext,groupVisibility,widgetVisibility})
+ }),
+ put:(id,record)=>{databaseValues[id]=record},remove:id=>{delete databaseValues[id]},
+ read:async(ids,context,parameters,now,signal)=>{
+   const query=new URLSearchParams({view_id:context.viewId,workshop_id:context.workshopId,line_id:context.lineId,device_id:context.deviceId,part_id:context.partId,parameters:JSON.stringify(parameters),widget_ids:ids.join(','),playback_at:String(now)})
+   const response=await adminFetch(`${API_BASE}/data-sources/runtime-values?${query}`,{signal})
+   if(!response.ok)throw new Error('数据连接暂不可用')
+   return response.json()
+ }
+})
+async function refreshDatabaseValues(force=false) {if(!overlayDisposed)return externalReader.refresh(force,playbackNow.value)}
+watch(playbackNow,()=>{if(!overlayDisposed && !startupLoading.value)void refreshDatabaseValues()})
 
 function emptyBusinessSections(message) {
     return Object.fromEntries(['batches', 'compliance', 'oee', 'energy', 'maintenance'].map(key => [key, {
@@ -1066,6 +1053,7 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+    externalReader.dispose()
     overlayDisposed = true
     clearTimeout(inspectionProgressTimer)
     modelProbeGeneration += 1
@@ -1188,7 +1176,7 @@ onUnmounted(() => {
         :point-values="pointValues"
                     :database-values="databaseValues"
                     :business-data="businessData"
-                    :runtime-context="runtimeContext" :parameters="integration.parameters.value" :parameter-definitions="integration.definitions.value"
+                    :playback-now="playbackNow" :device-catalog="playbackDevices" :runtime-context="runtimeContext" :parameters="integration.parameters.value" :parameter-definitions="integration.definitions.value"
                     :selected-part="selectedPart"
                     overlay-mode
                     :preview="true"

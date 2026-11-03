@@ -94,7 +94,13 @@ router.get('/runtime-values', async (req, res) => {
                     && !hidden.includes(widget.id) && !(group && hidden.includes(group));
             }) : [])
             : (document.widgets || []);
-        const values = await readRuntimeBindings(boundWidgets, {
+        let targets=boundWidgets;
+        if(req.query.widget_ids){const ids=String(req.query.widget_ids).split(',');if(ids.length>20 || ids.some(id=>!(/^[\w-]{1,128}$/).test(id)))return res.status(400).json({error:'组件请求无效'});targets=targets.filter(w=>ids.includes(w.id));}
+        const playbackAt=Number(req.query.playback_at || Date.now());
+        if(!Number.isFinite(playbackAt) || Math.abs(playbackAt-Date.now())>60000)return res.status(400).json({error:'刷新时间无效'});
+        const devices=await require('../services/widgetPlayback').playbackDevices(db,req.factoryId);
+        const values = await readRuntimeBindings(targets, {
+            playbackDevices:devices,playbackAt,viewMode:document.scene?.views?.find(v=>v.id===viewId)?.mode || '',
             factoryId: req.factoryId,
             parameters,
             viewId,
@@ -201,7 +207,11 @@ router.post('/preview', localOnly, async (req, res) => {
 });
 
 router.post('/preview-http', localOnly, async (req, res) => {
-    try { res.json({ success: true, result: await readHttpApiBinding(req.body || {}, req.factoryId) }); }
+    try {
+        const source=req.body || {};
+        const result=source.context ? (await readRuntimeBindings([{id:'preview',data:{...source,mode:'http_api'}}],{...source.context,factoryId:req.factoryId})).preview : await readHttpApiBinding(source,req.factoryId);
+        res.json({success:true,result});
+    }
     catch (error) { handleError(res, error); }
 });
 

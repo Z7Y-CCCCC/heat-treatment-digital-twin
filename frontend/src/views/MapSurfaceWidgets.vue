@@ -5,6 +5,9 @@ import { adminFetch, adminSession } from '../runtime/adminSession.js'
 import { applyVisibilityAction, widgetRuntimeVisible } from '../runtime/dashboardRules.js'
 import { MAP_SURFACE_VIEW_IDS } from '../runtime/dashboardSchema.js'
 import { useDashboardIntegration } from '../runtime/dashboardIntegration.js'
+import {useWidgetClock} from '../runtime/widgetPlayback.js'
+import {createWidgetReadScheduler} from '../runtime/widgetReadScheduler.js'
+import {flattenPlaybackDevices} from '../../../shared/widgetPlayback.mjs'
 import WidgetRenderer from '../runtime/WidgetRenderer.vue'
 
 const props = defineProps({
@@ -15,6 +18,8 @@ const props = defineProps({
   dataStore: { type: Object, default: null }
 })
 const emit = defineEmits(['navigate'])
+const playbackNow=useWidgetClock()
+const playbackDevices=computed(()=>flattenPlaybackDevices(props.config || {}))
 const values = ref({})
 const businessData = ref({ status: 'idle', readOnly: true, sections: {} })
 const widgetVisibility = reactive({})
@@ -112,24 +117,19 @@ let businessTimer = 0
 let abort = null
 let businessAbort = null
 let valuesSequence = 0, disposed = false
-async function refreshValues() {
-  const sequence = ++valuesSequence
-  if (!surfaceWidgets.value.some(widget => ['database', 'http_api', 'dataset'].includes(widget.data?.mode))) return
-  abort?.abort()
-  abort = new AbortController()
-  try {
-    const query = new URLSearchParams({ view_id: props.viewId, parameters:JSON.stringify(integration.parameters.value) })
-    const response = await adminFetch(`${API_BASE}/data-sources/runtime-values?${query}`, {
-      signal: abort.signal,
-      ...(props.factoryId ? { headers: { 'X-Factory-ID': props.factoryId } } : {})
-    })
-    if (!response.ok) throw new Error('数据读取失败')
-    const payload = await response.json()
-    if (!disposed && sequence === valuesSequence) values.value = payload.values || {}
-  } catch (error) { if (!disposed && sequence === valuesSequence && error.name !== 'AbortError') values.value = {} }
-}
+const externalReader=createWidgetReadScheduler({
+ context:()=>runtimeContext.value,parameters:()=>integration.parameters.value,devices:()=>playbackDevices.value,widgets:()=>surfaceWidgets.value,
+ put:(id,record)=>{values.value={...values.value,[id]:record}},remove:id=>{delete values.value[id]},
+ read:async(ids,context,parameters,now,signal)=>{
+   const query=new URLSearchParams({view_id:context.viewId,parameters:JSON.stringify(parameters),widget_ids:ids.join(','),playback_at:String(now)})
+   const response=await adminFetch(`${API_BASE}/data-sources/runtime-values?${query}`,{signal,...(props.factoryId?{headers:{'X-Factory-ID':props.factoryId}}:{})})
+   if(!response.ok)throw new Error('数据读取失败');return response.json()
+ }
+})
+async function refreshValues(force=false){if(!disposed)return externalReader.refresh(force,playbackNow.value)}
+watch(playbackNow,()=>{void refreshValues()})
 async function refreshBusiness() {
-  const widget = surfaceWidgets.value.find(item => item.type === 'business_summary' || item.data?.mode === 'business')
+    const widget = surfaceWidgets.value.find(item => item.type === 'business_summary' && item.data?.mode !== 'business')
   if (!widget) return
   const connectionId = String(widget.data?.connectionId || widget.content?.connectionId || '').trim()
   if (!connectionId) {
@@ -153,7 +153,7 @@ async function refreshBusiness() {
 }
 watch(() => [props.viewId, props.factoryId, props.document], () => { values.value = {}; void refreshValues(); void refreshBusiness() })
 onMounted(() => { void refreshValues(); void refreshBusiness(); timer = window.setInterval(refreshValues, 15000); businessTimer = window.setInterval(refreshBusiness, 60000) })
-onUnmounted(() => { disposed=true;valuesSequence++;window.clearInterval(timer); window.clearInterval(businessTimer); abort?.abort(); businessAbort?.abort() })
+onUnmounted(() => { disposed=true;externalReader.dispose();valuesSequence++;window.clearInterval(timer); window.clearInterval(businessTimer); abort?.abort(); businessAbort?.abort() })
 </script>
 
 <template>
@@ -162,7 +162,7 @@ onUnmounted(() => { disposed=true;valuesSequence++;window.clearInterval(timer); 
       <WidgetRenderer :widget="widget" :metrics="dataStore?.metrics || {}" :events="dataStore?.events?.value || []"
         :trend-points="dataStore?.trendPoints?.value || []" :device-status-map="dataStore?.deviceStatusMap || {}"
         :device-data-map="dataStore?.deviceDataMap || {}" :point-values="pointValues" :database-values="values"
-        :runtime-context="runtimeContext" :parameters="integration.parameters.value" :parameter-definitions="integration.definitions.value" :business-data="businessData" :data-ready="true" overlay-mode @action="handleAction" />
+        :playback-now="playbackNow" :device-catalog="playbackDevices" :runtime-context="runtimeContext" :parameters="integration.parameters.value" :parameter-definitions="integration.definitions.value" :business-data="businessData" :data-ready="true" overlay-mode @action="handleAction" />
     </div>
   </div>
 </template>

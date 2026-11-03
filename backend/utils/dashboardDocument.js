@@ -5,6 +5,7 @@ const { normalizeParameterDefinitions, resolveParameters } = require('../../shar
 
 const { normalizeViewTooltipMetadata } = require('../../shared/deviceTooltip.mjs');
 
+const { normalizePlayback } = require('../../shared/widgetPlayback.mjs');
 const SCHEMA_VERSION = 3;
 const SUPPORTED_SCHEMA_VERSIONS = new Set([1, 2, 3]);
 const DEFAULT_CANVAS = Object.freeze({
@@ -178,14 +179,14 @@ function normalizeDataBinding(source, legacyBinding = {}) {
     const datasets = rawDatasets.slice(0, 12).map((item, index) => normalizeDatabaseDataset(item, legacyDataset, index));
     const rawDeviceId = data.deviceId ?? data.device_id ?? binding.deviceId ?? binding.device_id ?? '';
     const requestedDeviceScope = String(data.deviceScope ?? data.device_scope ?? binding.deviceScope ?? '').toLowerCase();
-    const deviceScope = requestedDeviceScope === 'current' || requestedDeviceScope === 'fixed'
+    const deviceScope = ['current','fixed','rotation'].includes(requestedDeviceScope)
         ? requestedDeviceScope
         : (rawDeviceId ? 'fixed' : 'current');
     return {
         ...binding,
         ...data,
         mode,
-        deviceScope,
+        ...normalizePlayback({...data,deviceScope}),
         deviceId: shortText(rawDeviceId, '', 128),
         pointId: shortText(data.pointId ?? binding.pointId ?? binding.point_id, '', 128),
         pointKey: shortText(data.pointKey ?? data.point_key ?? binding.pointKey ?? binding.point_key, '', 255),
@@ -193,6 +194,7 @@ function normalizeDataBinding(source, legacyBinding = {}) {
         source: mode === 'static' ? '' : shortText(data.source ?? binding.source, '', 128),
         datasetId: shortText(data.datasetId, '', 80),
         datasetField: shortText(data.datasetField, '', 64),
+        datasetFields:[...new Set((Array.isArray(data.datasetFields)?data.datasetFields:[]).map(v=>shortText(v,'',64)))].slice(0,12),
         datasetMode: ['first','count','sum','avg','min','max'].includes(data.datasetMode) ? data.datasetMode : 'first',
         connectionId: shortText(data.connectionId ?? binding.connectionId ?? binding.connection_id, '', 80),
         apiPath: shortText(data.apiPath ?? binding.apiPath, '', 1024),
@@ -726,7 +728,7 @@ function validateDocument(document, options = {}) {
         if (!widget?.frame || Number(widget.frame.width) < 20 || Number(widget.frame.height) < 20) errors.push(`${label} 尺寸不合法`);
         if (widget?.data?.readOnly === false) errors.push(`${label} 禁止启用 PLC 写入`);
         if (widget?.data?.mode === 'plc') {
-            const currentDeviceScope = widget.data.deviceScope === 'current';
+            const currentDeviceScope = widget.data.deviceScope !== 'fixed';
             if ((!currentDeviceScope && !widget.data.deviceId) || !widget.data.pointId) {
                 errors.push(`${label} 的 PLC 绑定必须选择点位${currentDeviceScope ? '' : '和设备'}`);
             }

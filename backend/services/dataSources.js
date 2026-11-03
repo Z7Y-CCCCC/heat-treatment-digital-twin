@@ -707,7 +707,7 @@ function normalizeHttpBinding(input = {}, requireJsonPath = true) {
     if (apiPath.startsWith('//') || /[\\\u0000-\u001f\u007f]/.test(apiPath) || /(^|\/)\.\.(\/|$)/.test(apiPath))
         throw new Error('HTTP 接口路径只能是当前连接下的只读相对路径');
     if (jsonPath) parseDataPath(jsonPath);
-    return { connectionId, apiPath, jsonPath, refreshMs: finiteInteger(input.refreshMs, 30000, 5000, 3600000) };
+    return { connectionId, apiPath, jsonPath, refreshMs: finiteInteger(input.refreshMs, 30000, 1000, 3600000) };
 }
 
 async function fetchHttpApiPayload(binding, factoryId) {
@@ -1222,6 +1222,7 @@ function cacheKey(binding, factoryId = activeFactoryId()) {
 }
 
 async function readRuntimeBindings(widgets = [], context = {}) {
+    if (context.playbackDevices && !context.playbackResolved) return require('./widgetPlayback').readPlaybackBindings(widgets,context,readRuntimeBindings);
     const cacheVersion = runtimeCache.version;
     const targets = widgets
         .filter(widget => widget?.data?.mode === 'database')
@@ -1282,9 +1283,11 @@ async function readRuntimeBindings(widgets = [], context = {}) {
             const cached = runtimeCache.get(key);
             if (cached) { values[widgetId] = cached; continue; }
             try {
-                const result = await readHttpApiBinding(widget.data, context.factoryId);
+                const scopedBinding={...widget.data,apiPath:String(widget.data.apiPath || '').replace(/\{(deviceId|lineId|workshopId|partId|viewId)\}/g,(_match,key)=>encodeURIComponent(context[key] || ''))};
+                const result = await readHttpApiBinding(scopedBinding, context.factoryId);
+                if(widget.data.contextField && widget.data.contextKey){const expected=context[widget.data.contextKey];if(expected===undefined || expected==='')throw new Error('缺少设备上下文');result.rows=result.rows.filter(row=>String(readDataPath(row,widget.data.contextField))===String(expected));result.value=result.rows[0]?.value ?? null;result.series=[];if(!result.rows.length)result.quality='empty';}
                 values[widgetId] = result;
-                runtimeCache.set(key, result, Date.now() + finiteInteger(widget.data.refreshMs, 30000, 5000, 3600000), cacheVersion);
+                runtimeCache.set(key, result, Date.now() + finiteInteger(widget.data.refreshMs, 30000, 1000, 3600000), cacheVersion);
             } catch (error) {
                 values[widgetId] = { value: null, rows: [], series: [], quality: 'bad', error: error.message, fetchedAt: new Date().toISOString() };
             }
@@ -1292,6 +1295,17 @@ async function readRuntimeBindings(widgets = [], context = {}) {
     }
     await Promise.all(Array.from({ length: Math.min(4, httpTargets.length) }, () => readHttpTargets()));
     if (widgets.some(widget => widget.data?.mode === 'dataset')) Object.assign(values, await require('./dataSets').readDataSetBindings(widgets, context));
+      const businessTargets=widgets.filter(widget=>widget.data?.mode==='business').slice(0,20);let nextBusiness=0;
+      await Promise.all(Array.from({length:Math.min(4,businessTargets.length)},async()=>{while(nextBusiness<businessTargets.length){
+          const widget=businessTargets[nextBusiness++],key=cacheKey({binding:widget.data,section:widget.content?.section,context},context.factoryId);
+          const cached=runtimeCache.get(key);if(cached){values[widget.id]=cached;continue;}
+          try{
+              const section=widget.data.businessSection || widget.content?.section || 'batches';
+              const result=await withFactoryScope(context.factoryId,()=>require('./businessData').readBusinessSection(widget.data.connectionId,section,{deviceId:context.deviceId,limit:200}));
+              const record={value:null,rows:result.rows || [],series:[],quality:result.available===false?'bad':result.rows?.length?'good':'empty',businessSection:result,source:{connectionId:widget.data.connectionId},fetchedAt:result.fetchedAt || new Date().toISOString()};
+              values[widget.id]=record;runtimeCache.set(key,record,Date.now()+finiteInteger(widget.data.refreshMs,5000,1000,3600000),cacheVersion);
+          }catch(error){values[widget.id]={value:null,rows:[],series:[],quality:'bad',businessSection:{available:false,rows:[],message:'业务数据暂不可用'},error:error.message};}
+      }}));
     return values;
 }
 

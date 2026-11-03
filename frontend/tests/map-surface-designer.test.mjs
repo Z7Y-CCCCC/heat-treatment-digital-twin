@@ -84,7 +84,7 @@ test('all 01–07 tabs use the same mounted designer and runtime surfaces render
   assert.match(map, /<MapSurfaceWidgets/)
   assert.match(site, /<MapSurfaceWidgets/)
   assert.match(runtime, /const surfaceWidgets = computed/)
-  assert.match(runtime, /surfaceWidgets\.value\.some\(widget => \['database', 'http_api', 'dataset'\]/)
+  assert.match(runtime, /createWidgetReadScheduler/);assert.match(runtime, /widgets:\(\)=>surfaceWidgets\.value/)
 })
 
 test('the seven built-in map and site canvases do not show empty-widget prompts', async () => {

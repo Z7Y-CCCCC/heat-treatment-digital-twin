@@ -1,6 +1,10 @@
 <script setup>
 import DashboardIntegrationPanel from './DashboardIntegrationPanel.vue'
 import { useDashboardIntegration, SOFTWARE_METHODS } from '../../../runtime/dashboardIntegration.js'
+import {DASHBOARD_CHARTS,CHART_FIELD_ROLES} from '../../../../../shared/dashboardCharts.mjs'
+import WidgetPlaybackEditor from './WidgetPlaybackEditor.vue'
+import {useWidgetClock} from '../../../runtime/widgetPlayback.js'
+import {playbackSelection} from '../../../../../shared/widgetPlayback.mjs'
 import DataSetBindingEditor from './DataSetBindingEditor.vue'
 import { permissionDirective as vPermission } from '../../../runtime/pagePermissionUi.js'
 import { canAdminPage } from '../../../runtime/adminSession.js'
@@ -63,6 +67,8 @@ const acceptanceReport = ref(null)
 const acceptanceLoading = ref(false)
 const zoom = ref(0.68)
 const previewMode = ref(false)
+const playbackNow=useWidgetClock()
+const playbackDevices=computed(()=>devices.value.map(d=>({...d,lineId:d.line_id || '',workshopId:lines.value.find(l=>l.id===d.line_id)?.workshop_id || d.workshop_id || ''})))
 const integrationOpen = ref(false)
 const fullscreenActive = ref(false)
 const designerShellRef = ref(null)
@@ -1126,6 +1132,7 @@ function beginMarqueeSelection(event) {
 }
 
 function addWidget(type, position = {}) {
+  if(loading.value)return
   const widget = createDashboardWidget(type, documentModel.value.widgets.length, position)
   widget.frame.x = snap(Math.max(0, Math.min(canvas.value.width - widget.frame.width, widget.frame.x)))
   widget.frame.y = snap(Math.max(0, Math.min(canvas.value.height - widget.frame.height, widget.frame.y)))
@@ -1228,6 +1235,7 @@ function addWidgetPreset(preset) {
 }
 
 function handleLibraryDragStart(event, type) {
+  if(loading.value){event.preventDefault();return}
   event.dataTransfer.effectAllowed = 'copy'
   event.dataTransfer.setData('application/x-dashboard-widget', type)
 }
@@ -1548,7 +1556,7 @@ function bindSelectedPoint() {
     return setStatus('设计器只允许绑定 READ 点位', 'danger')
   }
   widget.data.mode = 'plc'
-  const isCurrentDevice = widget.data.deviceScope === 'current'
+  const isCurrentDevice = widget.data.deviceScope !== 'fixed'
   widget.data.deviceId = isCurrentDevice ? '' : String(point.device_id)
   widget.data.pointKey = `${point.category || point.category_resolved || 'analog'}.${point.value_role || point.field_name || point.name}`
   widget.data.path = `${point.category || point.category_resolved || 'analog'}.${point.value_role || point.field_name || point.name}`
@@ -1729,8 +1737,8 @@ async function previewDatabaseBinding(widget = selectedWidget.value, silent = fa
     return
   }
   try {
-    const result = await adminApi.previewDataSource({ ...widget.data, context: { ...previewContext } })
-    databasePreviewValues[widget.id] = result.result || {}
+    const result = await previewExternalBinding(widget, context=>adminApi.previewDataSource({ ...widget.data, context }))
+    if(!result)return
     if (!silent) setStatus(`数据预览：${result.result?.value ?? '空值'}`, 'success')
   } catch (error) {
     databasePreviewValues[widget.id] = { value: null, rows: [], quality: 'bad', error: error.message }
@@ -1738,18 +1746,43 @@ async function previewDatabaseBinding(widget = selectedWidget.value, silent = fa
   }
 }
 
+const externalPreviewSequences=new Map()
+function previewDevice(widget){return playbackSelection(widget.data,previewContext,playbackDevices.value,previewMode.value?playbackNow.value:0).device}
+async function previewExternalBinding(widget,read){
+  const id=widget.id,seq=(externalPreviewSequences.get(id)||0)+1;externalPreviewSequences.set(id,seq)
+  const selected=previewDevice(widget),binding=JSON.stringify(widget.data),context=JSON.stringify(previewContext)
+  if(databasePreviewValues[id]?.deviceId!==selected?.id)delete databasePreviewValues[id]
+  if(!selected){databasePreviewValues[id]={value:null,rows:[],quality:'bad',businessSection:{available:false,rows:[]}};return}
+  const scoped={...previewContext,deviceId:selected.id,lineId:selected.lineId || selected.line_id || '',workshopId:selected.workshopId || selected.workshop_id || ''}
+  const stillCurrent=()=>!designerDisposed && designerActive && externalPreviewSequences.get(id)===seq && binding===JSON.stringify(widget.data) && context===JSON.stringify(previewContext) && selected.id===previewDevice(widget)?.id
+  let response
+  try{response=await read(scoped)}catch(error){if(stillCurrent())throw error;return}
+  if(!stillCurrent())return
+  databasePreviewValues[id]={...response.result,deviceId:selected.id,deviceName:selected.name};return response
+}
+async function previewBusinessBinding(widget,silent=false){
+  if(widget?.data?.mode!=='business' || !widget.data.connectionId)return
+  try{await previewExternalBinding(widget,async context=>{
+    const snapshot=await adminApi.getBusinessDataSnapshot(widget.data.connectionId,{deviceId:context.deviceId,limit:200})
+    const section=snapshot.sections?.[widget.data.businessSection || widget.content?.section || 'batches'] || {available:false,rows:[]}
+    return {result:{businessSection:section,source:snapshot.source,rows:section.rows || [],quality:section.available===false?'bad':section.rows?.length?'good':'empty',fetchedAt:snapshot.fetchedAt}}
+  })}catch(error){databasePreviewValues[widget.id]={value:null,rows:[],quality:'bad',businessSection:{available:false,rows:[]}};if(!silent)setStatus(error.message,'danger')}
+}
+function previewWidgetBinding(widget,silent=true){return widget?.data?.mode==='dataset'?previewDataSetBinding(widget,silent):widget?.data?.mode==='http_api'?previewHttpBinding(widget,silent):widget?.data?.mode==='business'?previewBusinessBinding(widget,silent):previewDatabaseBinding(widget,silent)}
+
 const dataSetPreviewSequences = new Map()
 async function previewDataSetBinding(widget, silent = false) {
   if (!widget || widget.data?.mode !== 'dataset' || !widget.data.datasetId || !widget.data.datasetField) return
   const id = widget.id, seq = (dataSetPreviewSequences.get(id) || 0) + 1
   dataSetPreviewSequences.set(id, seq)
   const binding = JSON.stringify(widget.data), context = JSON.stringify(previewContext)
+  const selected=previewDevice(widget)
   try {
-    const response = await adminApi.previewDataSet({datasetId:widget.data.datasetId,binding:widget.data,context:{...previewContext,...(widget.data.deviceScope==='fixed'?{deviceId:widget.data.deviceId}: {})}})
-    if (designerDisposed || dataSetPreviewSequences.get(id)!==seq || binding!==JSON.stringify(widget.data) || context!==JSON.stringify(previewContext)) return
-    databasePreviewValues[id] = response.result
+    const response = await adminApi.previewDataSet({datasetId:widget.data.datasetId,binding:widget.data,context:{...previewContext,deviceId:selected?.id || ''}})
+    if (designerDisposed || dataSetPreviewSequences.get(id)!==seq || binding!==JSON.stringify(widget.data) || context!==JSON.stringify(previewContext) || selected?.id!==previewDevice(widget)?.id) return
+    databasePreviewValues[id] = {...response.result,deviceId:selected?.id || '',deviceName:selected?.name || ''}
   } catch(error) {
-    if (designerDisposed || dataSetPreviewSequences.get(id)!==seq || context!==JSON.stringify(previewContext)) return
+    if (designerDisposed || dataSetPreviewSequences.get(id)!==seq || context!==JSON.stringify(previewContext) || selected?.id!==previewDevice(widget)?.id) return
     databasePreviewValues[id] = {value:null,rows:[],series:[],quality:'bad',error:error.message}
     if (!silent) setStatus(error.message, 'danger')
   }
@@ -1762,8 +1795,8 @@ async function previewHttpBinding(widget = selectedWidget.value, silent = false)
     return
   }
   try {
-    const result = await adminApi.previewHttpDataSource(widget.data)
-    databasePreviewValues[widget.id] = result.result
+    const result = await previewExternalBinding(widget, context=>adminApi.previewHttpDataSource({...widget.data,context}))
+    if(!result)return
     if (!silent) setStatus(`接口预览：${result.result?.value ?? '空值'}`, 'success')
   } catch (error) {
     databasePreviewValues[widget.id] = { value: null, rows: [], quality: 'bad', error: error.message }
@@ -1896,6 +1929,7 @@ function removeCondition(index) {
   commitHistory('删除条件样式')
 }
 
+function addChartWidget(chartType){if(loading.value || !canAdminPage('platform.designer','edit'))return;const w=createDashboardWidget('trend',documentModel.value.widgets.length,{x:120,y:180});w.content.chartType=chartType;w.content.smooth=chartType==='smoothLine';w.title=DASHBOARD_CHARTS.find(c=>c.id===chartType)?.label || '图表';w.visibility.viewIds=[selectedViewId.value];w.visibility.viewModes=[];documentModel.value.widgets.push(w);if(currentView.value.componentState?.show?.length)currentView.value.componentState.show.push(w.id);selectedIds.value=[w.id];inspectorTab.value='data';revealRightPanel();commitHistory('添加图表')}
 function addEvent() {
   if (!selectedWidget.value) return
   selectedWidget.value.events.push({ trigger: 'click', action: 'enter_device', deviceId: selectedWidget.value.data.deviceId || '' })
@@ -1907,13 +1941,14 @@ function normalizeVisibilityEventTarget(event) {
   recordProperty('修改显隐目标')
 }
 
+const previewPlaybackKeys=new Map()
+watch(playbackNow,()=>{if(!previewMode.value || designerDisposed || !designerActive)return;for(const w of overlayWidgets.value.filter(w=>['dataset','database','http_api','business'].includes(w.data?.mode))){const id=playbackSelection(w.data,previewContext,playbackDevices.value,playbackNow.value).device?.id || '';const key=id+':'+Math.floor(playbackNow.value/(w.data.refreshMs || 5000));if(previewPlaybackKeys.get(w.id)!==key){previewPlaybackKeys.set(w.id,key);void previewWidgetBinding(w,true)}}})
 function enterPreviewMode() {
   previewMode.value = true
   syncPreviewContextFromView()
   Object.keys(previewGroupVisibility).forEach(key => delete previewGroupVisibility[key])
   Object.keys(previewWidgetVisibility).forEach(key => delete previewWidgetVisibility[key])
-  return Promise.all(overlayWidgets.value.map(widget => widget.data?.mode === 'dataset' ? previewDataSetBinding(widget, true) : widget.data?.mode === 'http_api'
-    ? previewHttpBinding(widget, true) : previewDatabaseBinding(widget, true)))
+  return Promise.all(overlayWidgets.value.map(widget=>previewWidgetBinding(widget)))
 }
 
 async function toggleFullscreenPreview() {
@@ -1949,7 +1984,7 @@ const integration = useDashboardIntegration({
   document:documentModel, context:previewContext, devices, install:false, ready:()=>!loading.value,
   scope:computed(()=>`${draftFactoryId}:${documentModel.value.sceneId}`),
   authorize:()=>!designerDisposed && designerActive && canAdminPage('platform.designer','view'),
-  refresh:()=>Promise.all(overlayWidgets.value.map(w=>w.data?.mode==='dataset'?previewDataSetBinding(w,true):w.data?.mode==='http_api'?previewHttpBinding(w,true):previewDatabaseBinding(w,true))),
+  refresh:()=>Promise.all(overlayWidgets.value.map(w=>previewWidgetBinding(w))),
   action:payload=>handlePreviewWidgetAction(payload)
 })
 watch(integration.parameters, value=>{ previewContext.parameters=value },{immediate:true,flush:'sync'})
@@ -2398,7 +2433,7 @@ onBeforeUnmount(() => {
           <svg v-if="!previewMode" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H3v5M16 3h5v5M8 21H3v-5M21 16v5h-5"></path></svg>
           <svg v-else viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3v6H3M15 3v6h6M9 21v-6H3M21 15h-6v6"></path></svg>
         </button>
-        <button type="button" @click="integrationOpen=true">接口与参数</button>
+        <button type="button" :disabled="loading" @click="integrationOpen=true">接口与参数</button>
         <button type="button" class="save-button" :disabled="saving || !isDirty" @click="saveDraft" v-permission="{ page: 'platform.designer', action: 'edit' }">{{ saving ? '保存中...' : '保存草稿' }}</button>
         <button type="button" class="publish-button" :disabled="publishing || saving" @click="publishVersion" v-permission="{ page: 'platform.designer', action: 'publish' }">{{ publishing ? '发布中...' : '保存并发布' }}</button>
       </div>
@@ -2440,6 +2475,7 @@ onBeforeUnmount(() => {
             <div class="component-grid">
               <button
                 v-for="item in group.items"
+                :disabled="loading"
                 :key="item.type"
                 type="button"
                 draggable="true"
@@ -2452,6 +2488,7 @@ onBeforeUnmount(() => {
           </section>
         </div>
 
+        <details class="chart-library"><summary>图表 <small>{{DASHBOARD_CHARTS.length}}</small></summary><div><button v-for="chart in DASHBOARD_CHARTS" :key="chart.id" type="button" :disabled="loading" @click="addChartWidget(chart.id)">{{chart.label}}</button></div></details>
         <div class="layer-heading" @click="layersCollapsed = !layersCollapsed">
           <strong>当前视角组件（{{ currentViewWidgets.length + mapBuiltIns.length }}）</strong><span>{{ layersCollapsed ? '展开' : '收起' }}</span>
         </div>
@@ -2561,7 +2598,7 @@ onBeforeUnmount(() => {
                   :point-values="pointValues"
                   :database-values="databasePreviewValues"
                   :business-data="mockBusinessData"
-                  :runtime-context="previewContext" :parameters="integration.parameters.value" :parameter-definitions="integration.definitions.value" :interactive="previewMode"
+                  :playback-now="playbackNow" :device-catalog="playbackDevices" :runtime-context="previewContext" :parameters="integration.parameters.value" :parameter-definitions="integration.definitions.value" :interactive="previewMode"
                   :selected-part="previewSelectedPart"
                   :data-ready="true"
                   preview
@@ -2718,7 +2755,7 @@ onBeforeUnmount(() => {
                 <label class="visibility-bound-device"><input v-model="selectedWidget.content.showSource" type="checkbox" @change="recordProperty('显示数据源')" /> 显示外部数据源</label>
               </template>
               <template v-if="['trend','hud_chart_dock'].includes(selectedWidget.type)">
-                <label>图表形式<select v-model="selectedWidget.content.chartType" @change="recordProperty('修改图表形式')"><option value="line">折线图</option><option value="area">面积图</option><option value="bar">柱状图</option><option value="stackedBar">堆叠柱状图</option><option value="scatter">散点图</option><option value="pie">饼图</option><option value="donut">环形图</option><option value="gauge">仪表盘</option></select></label>
+                <label>图表形式<select v-model="selectedWidget.content.chartType" aria-label="图表类型" @change="selectedWidget.content.smooth=selectedWidget.content.chartType==='smoothLine';recordProperty('修改图表类型')"><option v-for="chart in DASHBOARD_CHARTS" :key="chart.id" :value="chart.id">{{chart.label}}</option></select></label>
                 <label>配色预设<select v-model="selectedWidget.content.chartPalette" @change="applyChartPalette" ><option v-for="palette in chartPalettes" :key="palette.id" :value="palette.id">{{ palette.label }}</option></select></label>
                 <label>图表名称<input v-model="selectedWidget.content.seriesName" @change="recordProperty()" /></label>
                 <label>保留数据点<input v-model.number="selectedWidget.content.historyLength" type="number" min="8" max="600" @change="recordProperty()" /></label>
@@ -2728,6 +2765,7 @@ onBeforeUnmount(() => {
                 <template v-if="['line','area','scatter'].includes(selectedWidget.content.chartType)"><div class="property-grid two"><label class="visibility-bound-device"><input v-model="selectedWidget.content.smooth" type="checkbox" :disabled="selectedWidget.content.chartType === 'scatter'" @change="recordProperty('修改曲线')" /> 平滑曲线</label><label class="visibility-bound-device"><input v-model="selectedWidget.content.showSymbol" type="checkbox" @change="recordProperty('修改数据点')" /> 显示数据点</label></div><label>线宽<input v-model.number="selectedWidget.content.lineWidth" type="range" min="1" max="8" step="1" @change="recordProperty('修改线宽')" /><small class="field-hint">{{ selectedWidget.content.lineWidth || 2 }} px</small></label></template>
                 <label v-if="selectedWidget.content.chartType === 'area'">面积透明度<input v-model.number="selectedWidget.content.areaOpacity" type="range" min="0.05" max="0.9" step="0.05" @change="recordProperty('修改面积透明度')" /><small class="field-hint">{{ Math.round((selectedWidget.content.areaOpacity ?? .2) * 100) }}%</small></label>
                 <label v-if="['bar','stackedBar'].includes(selectedWidget.content.chartType)">柱体圆角<input v-model.number="selectedWidget.content.barRadius" type="range" min="0" max="20" step="1" @change="recordProperty('修改柱体圆角')" /><small class="field-hint">{{ selectedWidget.content.barRadius || 0 }} px</small></label>
+                <details class="chart-field-mapping"><summary>图表字段映射</summary><label>分类 / 时间字段<input v-model="selectedWidget.content.categoryField" list="chart-output-fields" placeholder="time" @change="recordProperty()" /></label><label v-for="role in (CHART_FIELD_ROLES[selectedWidget.content.chartType] || [['valueField','数值字段']])" :key="role[0]">{{role[1]}}<input v-model="selectedWidget.content[role[0]]" list="chart-output-fields" :aria-label="`图表字段 ${role[1]}`" @change="recordProperty()" /></label><datalist id="chart-output-fields"><option v-for="column in dataSetDefinitions.find(d=>d.id===selectedWidget.data.datasetId)?.columns || []" :key="column.name" :value="column.name">{{column.label}}</option></datalist></details>
                 <label v-if="selectedWidget.content.chartType === 'donut'">内环比例<input v-model.number="selectedWidget.content.donutRatio" type="range" min="20" max="75" step="1" @change="recordProperty('修改内环')" /><small class="field-hint">{{ selectedWidget.content.donutRatio || 48 }}%</small></label>
                 <div v-if="selectedWidget.content.chartType === 'gauge'" class="property-grid two"><label>最小值<input v-model.number="selectedWidget.content.min" type="number" @change="recordProperty()" /></label><label>最大值<input v-model.number="selectedWidget.content.max" type="number" @change="recordProperty()" /></label></div>
               </template>
@@ -2775,12 +2813,13 @@ onBeforeUnmount(() => {
             </section>
 
             <section v-else-if="inspectorTab === 'data'" class="inspector-section">
-              <label>数据来源<select v-model="selectedWidget.data.mode" @change="changeBindingMode"><option value="static">静态 / 组件默认数据</option><option value="plc">PLC 点位</option><option v-if="['value','text','status','trend','hud_chart_dock','alarm_list','hud_alarm_panel','marquee','metrics','hud_kpi_panel'].includes(selectedWidget.type)" value="dataset">可复用数据集</option><option value="database">数据库（直接绑定）</option><option value="http_api">HTTP（直接绑定）</option><option value="business">排产业务只读适配层</option><option value="runtime">设备检查上下文</option></select></label>
+              <label>数据来源<select v-model="selectedWidget.data.mode" aria-label="组件数据来源" @change="changeBindingMode"><option value="static">静态 / 组件默认数据</option><option value="plc">PLC 点位</option><option v-if="['value','text','status','trend','hud_chart_dock','alarm_list','hud_alarm_panel','marquee','metrics','hud_kpi_panel'].includes(selectedWidget.type)" value="dataset">可复用数据集</option><option value="database">数据库（直接绑定）</option><option value="http_api">HTTP（直接绑定）</option><option value="business">排产业务只读适配层</option><option value="runtime">设备检查上下文</option></select></label>
+              <WidgetPlaybackEditor v-if="selectedWidget.data.mode!=='static'" :binding="selectedWidget.data" :devices="devices" :disabled="!canAdminPage('platform.designer','edit')" @change="recordProperty('修改设备数据播放');invalidateDataSetPreview()" />
               <datalist id="selected-dataset-fields" v-if="selectedWidget.data.mode==='dataset'"><option v-for="column in dataSetDefinitions.find(d=>d.id===selectedWidget.data.datasetId)?.columns || []" :key="column.name" :value="`dataset.${column.name}`">{{column.label}}</option></datalist>
-              <DataSetBindingEditor v-if="selectedWidget.data.mode==='dataset'" :key="selectedWidget.id" :binding="selectedWidget.data" :context="previewContext" :devices="devices" :disabled="!canAdminPage('platform.designer','edit')" @change="changeReusableBinding" @invalidate="invalidateDataSetPreview" @preview="databasePreviewValues[selectedWidget.id]=$event" />
+              <DataSetBindingEditor v-if="selectedWidget.data.mode==='dataset'" :key="selectedWidget.id" :binding="selectedWidget.data" :context="previewContext" :devices="playbackDevices" :playback-now="previewMode ? playbackNow : 0" :multiple="['trend','hud_chart_dock'].includes(selectedWidget.type)" :disabled="!canAdminPage('platform.designer','edit')" @change="changeReusableBinding" @invalidate="invalidateDataSetPreview" @preview="databasePreviewValues[selectedWidget.id]=$event" />
               <label v-if="selectedWidget.data.mode==='dataset' && selectedWidget.type==='text'">文本呈现<select :value="selectedWidget.content.datasetTextMode || 'value'" @change="selectedWidget.content.datasetTextMode=$event.target.value;recordProperty('修改文本呈现')" v-permission="{page:'platform.designer',action:'edit'}"><option value="value">显示绑定值</option><option value="template">自定义模板（使用 {value}）</option></select></label>
               <template v-if="selectedWidget.data.mode === 'plc'">
-                <label>设备范围<select v-model="selectedWidget.data.deviceScope" @change="changeDeviceScope"><option value="current">当前设备（跟随视角）</option><option value="fixed">指定设备</option></select></label>
+
                 <p v-if="selectedWidget.data.deviceScope === 'current'" class="field-hint">同一个组件可用于所有设备，运行时自动读取当前视角设备的同名点位，不需要复制组件。</p>
                 <label v-if="selectedWidget.data.deviceScope === 'fixed'">绑定设备<select v-model="selectedWidget.data.deviceId" @change="selectedWidget.data.pointId=''; selectedWidget.data.pointKey=''; recordProperty('选择设备')"><option value="">请选择设备</option><option v-for="device in devices" :key="device.id" :value="String(device.id)">{{ device.name }}（{{ device.id }}）</option></select></label>
                 <label>READ 点位<select v-model="selectedWidget.data.pointId" :disabled="!selectedBindingDeviceId" @change="bindSelectedPoint"><option value="">请选择只读点位</option><option v-for="point in selectedDevicePoints" :key="point.id" :value="String(point.id)">{{ point.label || point.name }} · {{ point.plc_tag || `DB${point.db_number}.${point.db_byte_offset}` }}</option></select></label>
@@ -3003,6 +3042,8 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+.chart-library{margin:10px 12px;border:1px solid #dce3ee;border-radius:8px;padding:10px;font-size:12px;color:#596d8b}.chart-library summary{cursor:pointer}.chart-library small{float:right;color:#97a4b6}.chart-library>div{display:grid;grid-template-columns:1fr 1fr;gap:5px;max-height:260px;overflow:auto;margin-top:10px}.chart-library button{font:inherit;padding:7px;border:1px solid #e2e7ef;border-radius:5px;background:white;color:#596d8b;cursor:pointer}
+
 .filter-option-row{display:grid;grid-template-columns:1fr 1fr 30px;gap:6px;margin:6px 0}.filter-option-row input{min-width:0}
 
 .device-tooltip-settings{display:grid;gap:10px;margin:0 0 18px;padding:14px;border:1px solid #dce4f2;border-radius:10px}.device-tooltip-settings legend{font-weight:700}.device-tooltip-settings label{display:flex;gap:7px;align-items:center;flex-wrap:wrap}.device-tooltip-settings input:not([type=checkbox]),.device-tooltip-settings textarea{width:100%}.device-tooltip-settings input[type=checkbox]{width:auto}.device-tooltip-settings details label{margin-top:8px}

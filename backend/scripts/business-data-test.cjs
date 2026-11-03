@@ -71,6 +71,19 @@ async function main() {
     if (snapshot.sections.energy.available || snapshot.sections.maintenance.available) {
         throw new Error('缺失的可选业务表不应被伪造为可用');
     }
+    const assert=require('node:assert/strict');
+    const widget={id:'business_rotating',type:'business_summary',content:{section:'batches'},data:{mode:'business',connectionId:connection.id,deviceScope:'rotation',rotationDeviceIds:['FURNACE-01','FURNACE-02'],rotationIntervalMs:2000,refreshMs:1000}};
+    const context={factoryId:'factory_default',viewMode:'factory',playbackDevices:[{id:'FURNACE-01',name:'一号炉'},{id:'FURNACE-02',name:'二号炉'}]};
+    const first=(await dataSources.readRuntimeBindings([widget],{...context,playbackAt:0}))[widget.id];
+    const second=(await dataSources.readRuntimeBindings([widget],{...context,playbackAt:2000}))[widget.id];
+    assert.equal(first.rows[0].batchNo,'B-20260830-001');assert.equal(first.deviceId,'FURNACE-01');
+    assert.equal(second.deviceId,'FURNACE-02');assert.deepEqual(second.rows,[]);
+    const detail=(await dataSources.readRuntimeBindings([widget],{...context,playbackAt:2000,viewMode:'device',deviceId:'FURNACE-01'}))[widget.id];
+    assert.equal(detail.rows[0].batchNo,'B-20260830-001');assert.equal(detail.deviceId,'FURNACE-01');
+    const more=new Database(database);
+    more.exec("CREATE TABLE energy_consumption(id INTEGER,device_id TEXT,energy REAL); INSERT INTO energy_consumption VALUES(1,'FURNACE-01',0),(2,'FURNACE-02',850)");more.close();
+    const energy=await businessData.readBusinessSection(connection.id,'energy',{deviceId:'FURNACE-01'});
+    assert.deepEqual(energy.rows.map(r=>r.energy),[0]);
     let writeRejected = false;
     try { await dataSources.executeReadOnlyQuery(connection.id, 'UPDATE produce_batch SET status = ? WHERE id = ?', ['DONE', 101]); }
     catch (error) { writeRejected = /只允许|禁止/.test(error.message); }

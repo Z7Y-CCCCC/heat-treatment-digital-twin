@@ -19,10 +19,11 @@ mock.module('echarts', { namedExports: { init: element => {
 
 const source = await readFile(new URL('../src/runtime/WidgetRenderer.vue', import.meta.url), 'utf8')
 const { descriptor } = parse(source)
-const compiled = compileScript(descriptor, { id: 'widget-regression', inlineTemplate: true }).content
+let compiled = compileScript(descriptor, { id: 'widget-regression', inlineTemplate: true }).content
     .replace(/from (['"])(vue|echarts)\1/g, (_, _quote, name) => `from ${JSON.stringify(import.meta.resolve(name))}`)
     .replace(/from (['"])\.\/hudPresentation\.js\1/g, `from ${JSON.stringify(new URL('../src/runtime/hudPresentation.js', import.meta.url).href)}`)
     .replace(/from (['"])\.\.\/\.\.\/\.\.\/shared\/dashboardParameters\.mjs\1/g, `from ${JSON.stringify(new URL('../../shared/dashboardParameters.mjs', import.meta.url).href)}`)
+compiled=compiled.replace(/from (['"])(\.\.?\/[^'"]+)\1/g,(_m,_q,name)=>`from ${JSON.stringify(new URL(name,new URL('../src/runtime/WidgetRenderer.vue',import.meta.url)).href)}`)
 const { default: WidgetRenderer } = await import(`data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`)
 const hudSource = await readFile(new URL('../src/runtime/hudWidgets.css', import.meta.url), 'utf8')
 const hudStyles = compileStyle({ source: hudSource, id: 'hud-regression' })
@@ -242,13 +243,13 @@ test('HUD panel alpha changes the surface without fading the content', async t =
     await view.render({ widget, overlayMode: true })
     const style = view.root.children[0].props.style
     assert.equal(style['--hud-panel-opacity'], 0.24)
-    assert.match(style['--hud-glass-bg'], /rgba\(16, 24, 48, 0\.24\)/)
+    assert.match(style['--hud-glass-bg'], /rgba\(88, 79, 137, 0\.24\)/)
     assert.equal(style.opacity, 1)
 
     await view.render({ widget: { ...widget, style: { backgroundOpacity: 0 } }, overlayMode: true })
     const transparentStyle = view.root.children[0].props.style
     assert.equal(transparentStyle['--hud-panel-opacity'], 0)
-    assert.match(transparentStyle['--hud-glass-bg'], /rgba\(16, 24, 48, 0\)/)
+    assert.match(transparentStyle['--hud-glass-bg'], /rgba\(88, 79, 137, 0\)/)
     assert.equal(transparentStyle.opacity, 1)
 })
 
@@ -373,4 +374,32 @@ test('filter controls emit typed values including zero/false, and do not act dur
 })
 test('parameter text uses safe interpolation rather than executing expressions',async t=>{
  const view=fixture(t);await view.render({widget:{type:'text',content:{text:'批次 {parameters.batch} / {parameters.zero}'}},parameters:{batch:'<script>no</script>',zero:0}});assert.match(textContent(view.root),/批次 <script>no<\/script> \/ 0/);
+})
+
+
+test('one device card rotates cached samples, refreshes independently and locks to the selected detail device without another PLC request',async t=>{
+ const view=fixture(t),catalog=[{id:'a',name:'设备 A'},{id:'b',name:'设备 B'}],widget={id:'play',type:'value',title:'温度',data:{mode:'runtime',path:'device.analog.temperature',deviceScope:'rotation',rotationDeviceIds:['a','b'],rotationIntervalMs:2000,refreshMs:1000}};
+ const props={widget,deviceCatalog:catalog,deviceDataMap:{a:{analog:{temperature:0}},b:{analog:{temperature:850}}},runtimeContext:{viewMode:'factory'}};
+ await view.render({...props,playbackNow:0});assert.match(textContent(view.root),/设备 A/);assert.match(textContent(view.root),/0/);
+ await view.render({...props,playbackNow:2000});assert.match(textContent(view.root),/设备 B/);assert.match(textContent(view.root),/850/);
+ await view.render({...props,playbackNow:2200,deviceDataMap:{...props.deviceDataMap,b:{analog:{temperature:999}}}});assert.doesNotMatch(textContent(view.root),/999/);
+ await view.render({...props,playbackNow:3000,deviceDataMap:{...props.deviceDataMap,b:{analog:{temperature:999}}}});assert.match(textContent(view.root),/999/);
+ await view.render({...props,playbackNow:3000,runtimeContext:{viewId:'device_exploded',viewMode:'device',deviceId:'a'}});assert.match(textContent(view.root),/设备 A/);assert.doesNotMatch(textContent(view.root),/850|999/);
+})
+
+
+test('unchanged refreshed dataset samples do not rebuild or reanimate the chart',async t=>{
+ const view=fixture(t),widget={id:'stable_chart',type:'trend',content:{chartType:'line'},data:{mode:'dataset',datasetField:'temperature'}};
+ const record={quality:'good',value:0,rows:[{time:'A',value:0}],series:[{id:'temperature',value:0,rows:[{time:'A',value:0}]}],fetchedAt:'first'};
+ await view.render({widget,databaseValues:{stable_chart:record}});const chart=charts.at(-1),count=chart.options.length;
+ await view.render({widget,databaseValues:{stable_chart:{...record,fetchedAt:'second'}}});assert.equal(chart.options.length,count);
+})
+
+test('business cards render their own selected-device response rather than the surface-wide snapshot',async t=>{
+ const view=fixture(t),widget={id:'business',type:'business_summary',content:{section:'batches',showSource:false},data:{mode:'business',deviceScope:'rotation',rotationDeviceIds:['a','b'],rotationIntervalMs:2000}};
+ const props={widget,deviceCatalog:[{id:'a',name:'A'},{id:'b',name:'B'}],runtimeContext:{viewMode:'factory'},businessData:{status:'ready',sections:{batches:{available:true,rows:[{batchNo:'GLOBAL_NOT_SELECTED'}]}}}};
+ await view.render({...props,playbackNow:0,databaseValues:{business:{quality:'good',deviceId:'a',deviceName:'A',businessSection:{available:true,rows:[{batchNo:'BATCH_A'}]}}}});
+ assert.match(textContent(view.root),/BATCH_A/);assert.doesNotMatch(textContent(view.root),/GLOBAL_NOT_SELECTED/);
+ await view.render({...props,playbackNow:2000,databaseValues:{business:{quality:'empty',deviceId:'b',deviceName:'B',businessSection:{available:true,rows:[]}}}});
+ assert.doesNotMatch(textContent(view.root),/BATCH_A|GLOBAL_NOT_SELECTED/);assert.match(textContent(view.root),/暂无记录/);
 })

@@ -148,6 +148,7 @@ async function readDefinition(input, context, factoryId, force = false, inspect 
     const request = definition.source === 'http' ? resolveRequest(definition, context) : null;
     const key = crypto.createHash('sha256').update(JSON.stringify([factoryId, connection, definition.source, definition.refreshMs, request, definition.source === 'database' ? [definition.database, definition.columns, definition.match, context] : null])).digest('hex');
     let payload = force ? undefined : cache.get(key);
+    if(payload && Date.now()-Date.parse(payload.fetchedAt)>Math.min(definition.refreshMs,Number(context.widgetRefreshMs)||definition.refreshMs))payload=undefined;
     if (payload === undefined) {
         if (!pending.has(key)) {
             if (pending.size >= 32) throw error('数据请求繁忙，请稍后再试', 429);
@@ -183,7 +184,10 @@ function bindingResult(result, binding) {
     const mode = binding.datasetMode || 'first'; let value = rows[0]?.value ?? null;
     if (mode === 'count') value = rows.length;
     else if (['sum','avg','min','max'].includes(mode)) value = !valid.length ? null : mode === 'sum' || mode === 'avg' ? valid.reduce((a,b) => a+b, 0) / (mode === 'avg' ? valid.length : 1) : Math[mode](...valid);
-    return { ...result, rows, value: result.quality === 'bad' ? null : value, unit: column.unit, series: [{ id: field, label: column.label, value, rows }] };
+    const fields=[...new Set([field,...(binding.datasetFields || [])])].slice(0,12);
+    const series=fields.map((key,index)=>{const col=result.columns.find(c=>c.name===key);if(!col)throw error('图表数值列不存在，请重新选择');
+        const data=rows.map(row=>({...row,value:row[key]}));return {id:key,field:key,label:col.label,color:['#a995d8','#7f91cc','#71aaa3','#d2b783','#a37d9a'][index%5],value:key===field?value:data[0]?.value ?? null,rows:data};});
+    return { ...result, rows, value: result.quality === 'bad' ? null : value, unit: column.unit, series };
 }
 async function readDataSetBindings(widgets, context) {
     const definitions = await listDataSets(context.factoryId), result = {};
@@ -195,7 +199,7 @@ async function readDataSetBindings(widgets, context) {
             try {
                 const definition = definitions.find(d => d.id === binding.datasetId);
                 if (!definition) throw error('数据集未配置，请重新绑定');
-                const scoped = { ...context, ...(binding.deviceScope === 'fixed' ? { deviceId: binding.deviceId || '' } : {}) };
+                const scoped = { ...context,widgetRefreshMs:binding.refreshMs || definition.refreshMs, ...(binding.deviceScope === 'fixed' ? { deviceId: binding.deviceId || '' } : {}) };
                 result[widget.id] = bindingResult(await readDefinition(definition, scoped, context.factoryId), binding);
             } catch (cause) { result[widget.id] = { value: null, rows: [], series: [], quality: 'bad', error: cause.message, fetchedAt: new Date().toISOString() }; }
         }

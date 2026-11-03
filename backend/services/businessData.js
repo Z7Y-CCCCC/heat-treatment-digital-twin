@@ -325,15 +325,27 @@ async function readCandidateRows(connectionId, candidates, options = {}) {
     const tail = type === 'sqlserver' ? '' : ` LIMIT ${limit}`;
     let lastError = null;
     for (const candidate of candidates) {
+      for (const deviceColumn of (options.deviceId ? ['device_id','furnace_id','deviceId'] : [''])) {
         try {
+            const where=deviceColumn ? ` WHERE ${castIdentifier(quoteIdentifier(deviceColumn,type),type)} = ${placeholder(type,1)}` : '';
             const rows = await readQuery(connectionId,
-                `SELECT ${top}* FROM ${quoteIdentifier(candidate, type)} ORDER BY 1 DESC${tail}`);
+                `SELECT ${top}* FROM ${quoteIdentifier(candidate, type)}${where} ORDER BY 1 DESC${tail}`,deviceColumn?[String(options.deviceId)]:[]);
             return { available: true, table: candidate, rows, fetchedAt: new Date().toISOString() };
         } catch (error) {
             lastError = error;
         }
+      }
     }
     return queryError(lastError || new Error('外部数据库未提供该类标准数据表'));
+}
+
+async function readBusinessSection(connectionId, section, options = {}) {
+    if (!options.deviceId) throw new Error('请先选择设备');
+    if(section==='batches')return readBatches(connectionId,options);
+    if(section==='compliance')return readCompliance(connectionId,options);
+    if(section==='oee')return readOee(connectionId,options);
+    if(['energy','maintenance'].includes(section))return readCandidateRows(connectionId,BUSINESS_SECTIONS[section].sourceTables,options);
+    throw new Error('业务区块不存在');
 }
 
 async function readBusinessSnapshot(connectionId, options = {}) {
@@ -380,6 +392,7 @@ module.exports = {
     readBatchDetail,
     readBusinessManifest,
     readBusinessSnapshot,
+    readBusinessSection,
     readBatches,
     readCompliance,
     readOee
