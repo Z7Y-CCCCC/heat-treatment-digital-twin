@@ -1,0 +1,90 @@
+{
+  "model_id": "cad_tempering_furnace_v1",
+  "name": "回火炉",
+  "file": "09.13.00_回火炉.glb",
+  "source": {
+    "id": "tempering_furnace",
+    "source": "回火炉.dwg",
+    "sha256": "7B7D664DE617F91BA7B6C817BD9E8F19F2AFCD2FF55A6E675BD32E32F1DC7373",
+    "entities": 14356,
+    "dxf": "tempering_furnace.dxf"
+  },
+  "unit": "m",
+  "up_axis": "Y",
+  "floor_origin": "bottom; installation datums retained separately",
+  "reference_dimensions_mm": {
+    "body_width": 1798,
+    "body_depth": 1930,
+    "overall_height": 4024,
+    "door_width": 600,
+    "door_height": 650,
+    "door_sill": 1230
+  },
+  "notes": [
+    "选用 600KG／09.13.00 原总图；不混用 4424 mm 加高或 XQ 版本。炉内滚道、加热元件和循环机构依剖视图重建，未标注零件尺寸按视图比例推定。"
+  ],
+  "bounds_blender_m": [
+    -0.9585000276565552,
+    -2.189000129699707,
+    0.0,
+    1.1200000047683716,
+    1.0569891929626465,
+    4.054837703704834
+  ],
+  "size_gltf_m": [
+    2.0785000324249268,
+    4.054837703704834,
+    3.2459893226623535
+  ],
+  "editable_meshes": 457,
+  "runtime_meshes": 67,
+  "triangles": 41588,
+  "bytes": 2329704,
+  "sha256": "9cf50893d1a0cc8e07e7e61612ea7a26f2008585aeb865fe3714168e461b0387",
+  "roundtrip_max_error_m": 0.0,
+  "functional_groups": [
+    "structure",
+    "housing",
+    "lining",
+    "door",
+    "door_guides",
+    "door_drive",
+    "extraction",
+    "circulation_fan",
+    "pipes",
+    "valves",
+    "electrics",
+    "process_instruments",
+    "door_carriages",
+    "door_chains",
+    "door_seals",
+    "door_safety",
+    "internal_rollers",
+    "heating_elements",
+    "internal_fan",
+    "heater_terminals",
+    "circulation_cover",
+    "panel_fasteners",
+    "process_pipes",
+    "valve_detail",
+    "instrumentation",
+    "rear_service_hatch",
+    "nameplates",
+    "lifting_eyes"
+  ],
+  "runtime": {
+    "enableGenericBindings": false,
+    "enableInspection": false
+  },
+  "partBindings": [],
+  "detail_features": {
+    "process_instrument": 3,
+    "internal_load_roller": 7,
+    "internal_heater_element": 6,
+    "circulation_impeller_blade": 8,
+    "heater_porcelain_terminal": 12,
+    "chain_rivet": 32,
+    "door_safety_switch": 1
+  },
+  "mechanism_checks": []
+}

@@ -1,0 +1,75 @@
+{
+  "model_id": "cad_lifting_staging_table_v1",
+  "name": "升降备料台",
+  "file": "11.14.00_升降备料台.glb",
+  "source": {
+    "id": "lifting_staging_table",
+    "source": "11.14.00升降备料台.dwg",
+    "sha256": "7C1ED5E168F074B67CF682C93DAFDAD6014A3DFA334DBD1879C46CFF013A0BA7",
+    "entities": 3456,
+    "dxf": "lifting_staging_table.dxf"
+  },
+  "unit": "m",
+  "up_axis": "Y",
+  "floor_origin": "bottom; installation datums retained separately",
+  "reference_dimensions_mm": {
+    "deck_length": 1710,
+    "deck_width": 700,
+    "lift_table_level": 1045,
+    "working_level": 1200,
+    "roller_diameter": 60,
+    "roller_length": 136,
+    "axle_diameter": 20
+  },
+  "notes": [
+    "以总图明确文字 1045 mm 为升降台面标高，滚轮组件到工作高度 1200 mm；不采用采购页旧注 1050。5 对滚轮，轴距 320 mm。"
+  ],
+  "bounds_blender_m": [
+    -0.8550000190734863,
+    -0.4300000071525574,
+    0.0,
+    0.9820000529289246,
+    0.4300000071525574,
+    1.274999976158142
+  ],
+  "size_gltf_m": [
+    1.8370000720024109,
+    1.274999976158142,
+    0.8600000143051147
+  ],
+  "editable_meshes": 169,
+  "runtime_meshes": 25,
+  "triangles": 15216,
+  "bytes": 815352,
+  "sha256": "22b11f4fd3147c8eb5bdec0300f293a700d7818d914cb98ec492d686076cef81",
+  "roundtrip_max_error_m": 5.960464477539063e-08,
+  "functional_groups": [
+    "structure",
+    "lift",
+    "hydraulics",
+    "roller_bed",
+    "roller_details",
+    "pivot_detail",
+    "hydraulic_pack",
+    "slide_detail",
+    "stop_detail"
+  ],
+  "runtime": {
+    "enableGenericBindings": false,
+    "enableInspection": false
+  },
+  "partBindings": [],
+  "detail_features": {
+    "load_roller": 10,
+    "roller_axle_spacer": 10,
+    "hydraulic_cylinder_barrel": 1,
+    "hard_chrome_piston": 1,
+    "cylinder_mount_eye": 2,
+    "scissor_travel_roller": 4,
+    "hydraulic_hose_union": 2,
+    "hex_nut": 6
+  },
+  "mechanism_checks": [
+    "paired roller count, diameter, length and shaft direction"
+  ]
+}

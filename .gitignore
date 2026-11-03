@@ -93,3 +93,7 @@ tools/*/obj/
 # Temporary preparing directories
 desktop/.*.preparing*
 .*.preparing*
+
+# Share editable CAD models, not duplicate delivery archives / local review runs.
+backend/assets/models/cad_*/*.zip
+backend/assets/models/cad_*/review/

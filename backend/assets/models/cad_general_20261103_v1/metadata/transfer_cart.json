@@ -1,0 +1,81 @@
+{
+  "model_id": "cad_transfer_cart_v1",
+  "name": "料车",
+  "file": "10.13.00_料车.glb",
+  "source": {
+    "id": "transfer_cart",
+    "source": "10.13.00(料车总图).dwg",
+    "sha256": "C22F9813EB00B914691E5453A5CC8D505D1CC903415CE1C9F55EE4A5F825BBE0",
+    "entities": 27015,
+    "dxf": "transfer_cart.dxf"
+  },
+  "unit": "m",
+  "up_axis": "Y",
+  "floor_origin": "bottom; installation datums retained separately",
+  "reference_dimensions_mm": {
+    "bed_length": 1610,
+    "main_frame_length": 1679,
+    "operator_side_envelope": 2343,
+    "bed_level": 1250,
+    "wheelbase": 1425,
+    "wheel_track": 1050
+  },
+  "notes": [
+    "选用 600 料车／10.13.00；不采用同文件中 1.2T／10.02.00 版本。未标注链架细节按视图比例重建。"
+  ],
+  "bounds_blender_m": [
+    -0.8604999780654907,
+    -1.6399999856948853,
+    0.0,
+    1.0809999704360962,
+    0.6289499998092651,
+    2.180781602859497
+  ],
+  "size_gltf_m": [
+    1.941499948501587,
+    2.180781602859497,
+    2.2689499855041504
+  ],
+  "editable_meshes": 635,
+  "runtime_meshes": 46,
+  "triangles": 90860,
+  "bytes": 4286252,
+  "sha256": "70a09b8b0f8dd556e09115013470f7b748e149c09534ae21baedc91edb48ac9b",
+  "roundtrip_max_error_m": 5.960464477539063e-08,
+  "functional_groups": [
+    "structure",
+    "travel_wheels",
+    "roller_bed",
+    "platform",
+    "guard",
+    "electrics",
+    "travel_drive",
+    "return_chain",
+    "feed_sprocket",
+    "feed_motor",
+    "pusher",
+    "feed_interlock",
+    "axle_detail",
+    "travel_chain",
+    "cabinet_details"
+  ],
+  "runtime": {
+    "enableGenericBindings": false,
+    "enableInspection": false
+  },
+  "partBindings": [],
+  "detail_features": {
+    "central_return_chain_plate": 1,
+    "chain_rivet": 79,
+    "toothed_sprocket": 3,
+    "full_width_drive_axle": 2,
+    "hex_nut": 24,
+    "walkway_cross_brace": 6,
+    "pressed_louver": 5,
+    "central_push_guide": 1,
+    "limit_switch": 1
+  },
+  "mechanism_checks": [
+    "four travel wheels, two transverse axles, 1425 mm wheelbase and 1050 mm track"
+  ]
+}

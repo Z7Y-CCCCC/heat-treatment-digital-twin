@@ -25,6 +25,8 @@ jobs:
         working-directory: backend
     steps:
       - uses: actions/checkout@v4
+        with:
+          lfs: true
       - name: Reject generated files and high-confidence credential signatures
         run: node tools/repository-hygiene.cjs
         working-directory: .
@@ -57,6 +59,8 @@ jobs:
         working-directory: frontend
     steps:
       - uses: actions/checkout@v4
+        with:
+          lfs: true
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -95,6 +99,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+        with:
+          lfs: true
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -128,6 +134,8 @@ jobs:
         working-directory: mock-server
     steps:
       - uses: actions/checkout@v4
+        with:
+          lfs: true
       - uses: actions/setup-node@v4
         with:
           node-version: 22
