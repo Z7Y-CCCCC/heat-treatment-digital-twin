@@ -9915,7 +9915,7 @@ async function openAdminSetupStep(step) {
                 </div>
 
                 <!-- ======== 系统设置 ======== -->
-                <div v-if="activeTab === 'settings'" class="tab-content" :class="{ 'settings-data-workspace': settingsSubpage === 'database' }">
+                <div v-if="activeTab === 'settings'" class="tab-content">
                     <h2>系统设置</h2>
                     <p class="desc">配置运行、数据连接和系统维护。</p>
 
@@ -10572,18 +10572,6 @@ async function openAdminSetupStep(step) {
     background: #fff; color: #245dc5; box-shadow: 0 2px 8px #243c6420; font-weight: 600;
 }
 .database-section-tabs button:focus-visible { outline: 2px solid #84caff; outline-offset: 1px; }
-.settings-data-workspace > .desc { display: none; }
-.settings-data-workspace > .secondary-page-nav-shell { margin: 16px 0; }
-.settings-data-workspace > .secondary-page-nav-shell .secondary-page-nav {
-    display: flex; overflow-x: auto;
-}
-.settings-data-workspace > .secondary-page-nav-shell .secondary-page-nav-item {
-    flex: 1 0 auto; min-width: 0; padding: 10px 12px; min-height: 0;
-    display: flex; justify-content: center;
-}
-.settings-data-workspace > .secondary-page-nav-shell .secondary-page-number,
-.settings-data-workspace > .secondary-page-nav-shell small,
-.settings-data-workspace > .secondary-page-nav-shell svg { display: none; }
 [id^="database-panel-"] { margin-top: 0; }
 #database-panel-history .database-backup-list { max-height: 360px; overflow: auto; }
 #database-panel-schedule .database-backup-source-grid { max-height: 280px; overflow: auto; }

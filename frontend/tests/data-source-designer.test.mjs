@@ -35,6 +35,9 @@ function fixture(t, connections) {
     for (const method of ['getDevices', 'getDataPoints', 'getWorkshops', 'getLines']) t.mock.method(adminApi, method, async () => [])
     t.mock.method(adminApi, 'getRealtimePointValues', async () => ({ points: [] }))
     t.mock.method(adminApi, 'getDataSources', async () => ({ connections }))
+    // Dataset loading is part of the real startup Promise.all too. Never let a
+    // unit fixture race an actual localhost request (or the next fixture).
+    t.mock.method(adminApi, 'getDataSets', async () => ({ datasets: [] }))
     t.mock.method(adminApi, 'getSettings', async () => ({}))
     const renderer = createRenderer({
         createElement: () => ({}), createText: () => ({}), createComment: () => ({}),

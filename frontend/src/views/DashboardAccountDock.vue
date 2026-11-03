@@ -2,11 +2,12 @@
 import { computed, ref, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { MIN_PASSWORD_LENGTH, MAX_PASSWORD_LENGTH } from '../../../shared/accountPolicy.mjs'
-import { adminSession, refreshAdminSession, changeAdminPassword, listAdminAccounts, addAdminAccount, activateAdminAccount, logoutCurrentAdminAccount, canOpenAdmin } from '../runtime/adminSession.js'
+import { adminSession, refreshAdminSession, changeAdminPassword, listAdminAccounts, addAdminAccount, activateAdminAccount, logoutCurrentAdminAccount, canOpenAdmin, canAdminApi } from '../runtime/adminSession.js'
 import { isNativeUnitySurface } from '../runtime/nativeSurfaceBridge.js'
 import { openAdminSurface, openCustomerOperations } from '../runtime/nativeAdminNavigation.js'
 import QualityCapsule from '../components/QualityCapsule.vue'
 import QualityNotice from '../components/QualityNotice.vue'
+import QuickCastPanel from '../components/QuickCastPanel.vue'
 import { useNativeQuality } from '../runtime/nativeQuality.js'
 const route=useRoute(),router=useRouter()
 const {qualityState,setQuality,queryQuality}=useNativeQuality()
@@ -14,6 +15,8 @@ const adminSurface=computed(()=>isNativeUnitySurface(route.query.embedded,window
 function openAdmin(){openAdminSurface({embedded:route.query.embedded,surface:adminSurface.value?'admin':undefined,webview:window.chrome?.webview,router})}
 const accessStatus=computed(()=>!adminSession.ready?'读取账户状态…':!adminSession.configured?'首次设置密码':adminSession.displayAuthenticated?adminSession.authenticated?({owner:'系统管理员',customer:'现场客户',editor:'现场客户',viewer:'现场查看'}[adminSession.user?.role] || '已登录'):'后台已锁定 · 大屏展示中':'未登录 · 需要登录')
 const accountOpen=ref(false),accountBusy=ref(false),accountError=ref(''),accountNotice=ref(''),accountSessions=ref([]),accountAddOpen=ref(false),accountAddUsername=ref(''),accountAddPassword=ref(''),accountCurrentPassword=ref(''),accountNewPassword=ref(''),accountPasswordMode=ref(false)
+const castingOpen=ref(false)
+const canCast=computed(()=>adminSession.displayAuthenticated && canAdminApi('/api/system/cast', 'POST'))
 const visibleAccountSessions=computed(()=>[...accountSessions.value].sort((a,b)=>Number(b.slotId===adminSession.accountSlotId)-Number(a.slotId===adminSession.accountSlotId)))
 async function loadAccountSessions(){try{accountSessions.value=await listAdminAccounts()}catch(error){accountError.value=error.message}}
 async function toggleAccount(){accountOpen.value=!accountOpen.value;accountError.value='';accountNotice.value='';if(accountOpen.value){await refreshAdminSession();await loadAccountSessions()}}
@@ -24,8 +27,8 @@ async function switchAccount(account){if(account.slotId===adminSession.accountSl
 async function signOut(){accountBusy.value=true;accountError.value='';accountNotice.value='';try{await logoutCurrentAdminAccount();accountPasswordMode.value=false;accountAddOpen.value=false;await loadAccountSessions();accountNotice.value=accountSessions.value.length?'当前账户已退出，可从下方切换到其他已登录账户':'当前账户已退出'}catch(error){accountError.value=error.message}finally{accountBusy.value=false}}
 async function changeOwnPassword(){accountBusy.value=true;accountError.value='';try{await changeAdminPassword(accountCurrentPassword.value,accountNewPassword.value);accountCurrentPassword.value='';accountNewPassword.value='';accountPasswordMode.value=false;await loadAccountSessions();accountNotice.value='密码已更新，其他会话已退出'}catch(error){accountError.value=error.message}finally{accountBusy.value=false}}
 
-const dock=ref(null), hidden=ref(false)
-let timer=0, hovering=false, motionFrame=0
+const dock=ref(null), menu=ref(null), hidden=ref(false)
+let timer=0, hovering=false, motionFrame=0, dockObserver
 function geometry(){window.dispatchEvent(new Event('account-dock-geometry'))}
 function trackMotion(){
   cancelAnimationFrame(motionFrame)
@@ -43,19 +46,22 @@ function arm(){
 function reveal(){hidden.value=false;arm()}
 function enter(){hovering=true;reveal()}
 function leave(){hovering=false;arm()}
-function escape(event){if(event.key==='Escape' && accountOpen.value){accountOpen.value=false;event.preventDefault();event.stopPropagation();arm()}}
+function escape(event){if(event.key==='Escape' && accountOpen.value){if(castingOpen.value)castingOpen.value=false;else accountOpen.value=false;event.preventDefault();event.stopPropagation();arm()}}
 watch(()=>qualityState.notice,()=>nextTick(trackMotion))
-watch([hidden,accountOpen],()=>{nextTick(trackMotion);if(!accountOpen.value)arm()})
+watch(menu,(element,previous)=>{if(previous)dockObserver?.unobserve(previous);if(element)dockObserver?.observe(element);geometry()})
+watch([hidden,accountOpen,castingOpen],()=>{nextTick(trackMotion);if(!accountOpen.value){castingOpen.value=false;arm()}})
 watch(()=>route.path,()=>{accountOpen.value=false;accountAddPassword.value='';accountCurrentPassword.value='';accountNewPassword.value='';hidden.value=false;arm();nextTick(refreshAdminSession)})
-onMounted(()=>{void refreshAdminSession();arm();window.addEventListener('keydown',escape,true);geometry()})
-onUnmounted(()=>{clearTimeout(timer);cancelAnimationFrame(motionFrame);window.removeEventListener('keydown',escape,true);geometry()})
+onMounted(()=>{void refreshAdminSession();arm();window.addEventListener('keydown',escape,true);dockObserver=new ResizeObserver(geometry);if(dock.value)dockObserver.observe(dock.value);geometry()})
+onUnmounted(()=>{dockObserver?.disconnect();clearTimeout(timer);cancelAnimationFrame(motionFrame);window.removeEventListener('keydown',escape,true);geometry()})
 </script>
 
 <template>
 <QualityNotice :state="qualityState" />
 <div ref="dock" class="account-dock" :class="{'is-hidden':hidden}" data-overlay-hit="true" data-account-hit="true" aria-label="右上角账户入口" @pointerenter="enter" @pointermove="reveal" @pointerleave="leave" @focusin="reveal" @focusout="arm">
     <button class="group-user" type="button" :aria-label="`${accessStatus}，打开账户菜单`" :aria-expanded="accountOpen" @click="toggleAccount"><span class="group-user-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm-7 8a7 7 0 0 1 14 0" /></svg></span><span><strong>{{ adminSession.user?.displayName || (adminSession.configured ? '账户':'后台账户') }}</strong><small>{{ adminSession.displayAuthenticated ? accessStatus : '点击登录' }}</small></span><i class="group-user-state" :class="{verified:adminSession.displayAuthenticated}" aria-hidden="true"></i></button>
-    <div v-if="accountOpen" class="group-account-menu" data-overlay-hit="true" data-account-hit="true" role="region" aria-label="账户设置">
+    <div v-if="accountOpen" ref="menu" class="group-account-menu" data-overlay-hit="true" data-account-hit="true" role="region" aria-label="账户设置">
+      <QuickCastPanel v-if="castingOpen" @back="castingOpen=false" />
+      <template v-else>
       <template v-if="!adminSession.displayAuthenticated">
         <header class="group-account-profile"><span class="group-account-avatar"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm-7 8a7 7 0 0 1 14 0" /></svg></span><span><strong>{{ accountSessions.length ? '选择账户' : '尚未登录' }}</strong><small>{{ accountSessions.length ? '本机已保存有效登录会话' : '请登录后查看生产大屏与现场数据' }}</small></span></header>
         <section v-if="accountSessions.length" class="group-account-list" aria-label="已登录账户"><small>本机账户 · {{ accountSessions.length }}</small><button v-for="account in visibleAccountSessions" :key="account.slotId" type="button" :disabled="accountBusy" @click="switchAccount(account)"><span class="group-account-avatar small">{{ (account.user?.displayName || account.user?.username || '?').slice(0,1) }}</span><span><strong>{{ account.user?.displayName || account.user?.username }}</strong><small>{{ account.user?.username }} · {{ ({owner:'系统管理员',customer:'现场客户',viewer:'现场查看'}[account.user?.role] || (account.needsLogin ? '需重新登录' : '已登录')) }}</small></span><i>切换 →</i></button></section>
@@ -65,6 +71,7 @@ onUnmounted(()=>{clearTimeout(timer);cancelAnimationFrame(motionFrame);window.re
       <template v-else>
         <header class="group-account-profile"><span class="group-account-avatar"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm-7 8a7 7 0 0 1 14 0" /></svg></span><span><strong>{{ adminSession.user?.displayName }}</strong><small>{{ adminSession.user?.username }} · {{ accessStatus }}</small></span></header>
         <QualityCapsule :state="qualityState" @select="setQuality" @query="queryQuality" />
+        <button v-if="canCast" class="group-account-action group-cast-entry" type="button" aria-label="投屏" @click="castingOpen=true"><span><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8m-4-4v4"/></svg>投屏</span><span aria-hidden="true">›</span></button>
         <section v-if="accountSessions.length>1 || accountSessions.some(account=>account.needsLogin)" class="group-account-list" aria-label="已登录账户"><small>本机账户 · {{ accountSessions.length }}</small><button v-for="account in visibleAccountSessions" :key="account.slotId" type="button" :class="{active:account.slotId===adminSession.accountSlotId}" :disabled="accountBusy || account.slotId===adminSession.accountSlotId" @click="switchAccount(account)"><span class="group-account-avatar small">{{ (account.user?.displayName || account.user?.username || '?').slice(0,1) }}</span><span><strong>{{ account.user?.displayName || account.user?.username }}</strong><small>{{ account.user?.username }} · {{ ({owner:'系统管理员',customer:'现场客户',viewer:'现场查看'}[account.user?.role] || (account.needsLogin ? '需重新登录' : '已登录')) }}</small></span><i>{{ account.needsLogin ? '重新登录 →' : account.slotId===adminSession.accountSlotId ? '当前账户':'切换 →' }}</i></button></section>
         <button v-if="!adminSession.authenticated" class="group-account-action group-account-primary" type="button" @click="requestAdminLogin">解锁设置页面 <span>→</span></button>
         <button v-else-if="canOpenAdmin()" class="group-account-action group-account-primary" type="button" @click="openAdmin">设置页面 <span>→</span></button>
@@ -77,6 +84,7 @@ onUnmounted(()=>{clearTimeout(timer);cancelAnimationFrame(motionFrame);window.re
       </template>
       <p v-if="accountError" class="group-account-message error" role="alert">{{ accountError }}</p>
       <p v-if="accountNotice" class="group-account-message" role="status">{{ accountNotice }}</p>
+      </template>
     </div>
 
 </div>
