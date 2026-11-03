@@ -19,6 +19,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          lfs: true
           fetch-depth: 0
       - name: Only release main or a version tag already merged into main
         env:
@@ -48,6 +49,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          lfs: true
           clean: true
           persist-credentials: false
       - uses: actions/setup-node@v4

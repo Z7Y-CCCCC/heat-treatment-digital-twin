@@ -1,0 +1,587 @@
+{
+  "version": 1,
+  "detail_pass": true,
+  "models": [
+    {
+      "model_id": "cad_air_cooling_table_v1",
+      "name": "风冷台",
+      "file": "11.58.00HT_风冷台.glb",
+      "source": {
+        "id": "air_cooling_table",
+        "source": "11.58.00HT 风冷台.dwg",
+        "sha256": "F0E50B7BBD9C3CFE1B232AF19AB18804CB2101F5FD82E57D7D6AA8867BF8329E",
+        "entities": 14806,
+        "dxf": "air_cooling_table.dxf"
+      },
+      "unit": "m",
+      "up_axis": "Y",
+      "floor_origin": "bottom; installation datums retained separately",
+      "reference_dimensions_mm": {
+        "length": 1816,
+        "width": 862,
+        "hood_height": 2373,
+        "gantry_height": 3052,
+        "working_level": 1250
+      },
+      "notes": [
+        "选用 HT 升降门版本；不是同文件中的 XQ 简版。"
+      ],
+      "bounds_blender_m": [
+        -0.990850031375885,
+        -0.4399999976158142,
+        0.0,
+        0.9650000333786011,
+        0.4580000340938568,
+        3.052000045776367
+      ],
+      "size_gltf_m": [
+        1.955850064754486,
+        3.052000045776367,
+        0.898000031709671
+      ],
+      "editable_meshes": 346,
+      "runtime_meshes": 33,
+      "triangles": 31560,
+      "bytes": 1833080,
+      "sha256": "6611d5c131428b20bd5c488354b22fe5dbf8ab44213e9fad1e8bdc3fd9ca8699",
+      "roundtrip_max_error_m": 0.0,
+      "functional_groups": [
+        "structure",
+        "roller_bed",
+        "fans",
+        "hood",
+        "door",
+        "door_guides",
+        "drive",
+        "electrics",
+        "fan_guards",
+        "fan_mounts",
+        "door_lift_chain",
+        "door_carriages",
+        "hood_latches",
+        "duct_flange_bolts"
+      ],
+      "runtime": {
+        "enableGenericBindings": false,
+        "enableInspection": false
+      },
+      "partBindings": [],
+      "detail_features": {
+        "load_roller": 12,
+        "fan_safety_grille": 8,
+        "fan_grille_spoke": 16,
+        "hood_clip_pin": 6,
+        "chain_rivet": 22,
+        "hex_nut": 16
+      },
+      "mechanism_checks": [
+        "paired roller count, diameter, length and shaft direction",
+        "door and gantry on narrow X-negative end"
+      ]
+    },
+    {
+      "model_id": "cad_fixed_staging_table_v1",
+      "name": "固定备料台",
+      "file": "11.22.00_固定备料台.glb",
+      "source": {
+        "id": "fixed_staging_table",
+        "source": "11.22.00固定备料台.dwg",
+        "sha256": "2EA20A38B2457FFE953A5929C53A05235BE6E20B61EBD024C33E8E32978964F6",
+        "entities": 3456,
+        "dxf": "fixed_staging_table.dxf"
+      },
+      "unit": "m",
+      "up_axis": "Y",
+      "floor_origin": "bottom; installation datums retained separately",
+      "reference_dimensions_mm": {
+        "length": 1710,
+        "width": 700,
+        "working_level": 1250,
+        "roller_diameter": 60,
+        "roller_length": 167,
+        "axle_diameter": 20
+      },
+      "notes": [
+        "两份重复布置是同一台设备，不合并成双台。6 对滚轮，轴距 280 mm。"
+      ],
+      "bounds_blender_m": [
+        -0.8650000095367432,
+        -0.3610000014305115,
+        0.0,
+        0.9820000529289246,
+        0.3499999940395355,
+        1.3249999284744263
+      ],
+      "size_gltf_m": [
+        1.8470000624656677,
+        1.3249999284744263,
+        0.710999995470047
+      ],
+      "editable_meshes": 168,
+      "runtime_meshes": 15,
+      "triangles": 13720,
+      "bytes": 755428,
+      "sha256": "990681d32f0ca8f1d24e7f21cc64456507ed25ecd4256647f2aa5239f39e2bc9",
+      "roundtrip_max_error_m": 2.9802322387695312e-08,
+      "functional_groups": [
+        "structure",
+        "roller_bed",
+        "hydraulics",
+        "roller_details",
+        "levelling",
+        "stop_detail"
+      ],
+      "runtime": {
+        "enableGenericBindings": false,
+        "enableInspection": false
+      },
+      "partBindings": [],
+      "detail_features": {
+        "load_roller": 12,
+        "levelling_thread": 4,
+        "hex_nut": 10,
+        "roller_axle_spacer": 12,
+        "fork_stop_bracket": 1
+      },
+      "mechanism_checks": [
+        "paired roller count, diameter, length and shaft direction"
+      ]
+    },
+    {
+      "model_id": "cad_lifting_staging_table_v1",
+      "name": "升降备料台",
+      "file": "11.14.00_升降备料台.glb",
+      "source": {
+        "id": "lifting_staging_table",
+        "source": "11.14.00升降备料台.dwg",
+        "sha256": "7C1ED5E168F074B67CF682C93DAFDAD6014A3DFA334DBD1879C46CFF013A0BA7",
+        "entities": 3456,
+        "dxf": "lifting_staging_table.dxf"
+      },
+      "unit": "m",
+      "up_axis": "Y",
+      "floor_origin": "bottom; installation datums retained separately",
+      "reference_dimensions_mm": {
+        "deck_length": 1710,
+        "deck_width": 700,
+        "lift_table_level": 1045,
+        "working_level": 1200,
+        "roller_diameter": 60,
+        "roller_length": 136,
+        "axle_diameter": 20
+      },
+      "notes": [
+        "以总图明确文字 1045 mm 为升降台面标高，滚轮组件到工作高度 1200 mm；不采用采购页旧注 1050。5 对滚轮，轴距 320 mm。"
+      ],
+      "bounds_blender_m": [
+        -0.8550000190734863,
+        -0.4300000071525574,
+        0.0,
+        0.9820000529289246,
+        0.4300000071525574,
+        1.274999976158142
+      ],
+      "size_gltf_m": [
+        1.8370000720024109,
+        1.274999976158142,
+        0.8600000143051147
+      ],
+      "editable_meshes": 169,
+      "runtime_meshes": 25,
+      "triangles": 15216,
+      "bytes": 815352,
+      "sha256": "22b11f4fd3147c8eb5bdec0300f293a700d7818d914cb98ec492d686076cef81",
+      "roundtrip_max_error_m": 5.960464477539063e-08,
+      "functional_groups": [
+        "structure",
+        "lift",
+        "hydraulics",
+        "roller_bed",
+        "roller_details",
+        "pivot_detail",
+        "hydraulic_pack",
+        "slide_detail",
+        "stop_detail"
+      ],
+      "runtime": {
+        "enableGenericBindings": false,
+        "enableInspection": false
+      },
+      "partBindings": [],
+      "detail_features": {
+        "load_roller": 10,
+        "roller_axle_spacer": 10,
+        "hydraulic_cylinder_barrel": 1,
+        "hard_chrome_piston": 1,
+        "cylinder_mount_eye": 2,
+        "scissor_travel_roller": 4,
+        "hydraulic_hose_union": 2,
+        "hex_nut": 6
+      },
+      "mechanism_checks": [
+        "paired roller count, diameter, length and shaft direction"
+      ]
+    },
+    {
+      "model_id": "cad_tempering_furnace_v1",
+      "name": "回火炉",
+      "file": "09.13.00_回火炉.glb",
+      "source": {
+        "id": "tempering_furnace",
+        "source": "回火炉.dwg",
+        "sha256": "7B7D664DE617F91BA7B6C817BD9E8F19F2AFCD2FF55A6E675BD32E32F1DC7373",
+        "entities": 14356,
+        "dxf": "tempering_furnace.dxf"
+      },
+      "unit": "m",
+      "up_axis": "Y",
+      "floor_origin": "bottom; installation datums retained separately",
+      "reference_dimensions_mm": {
+        "body_width": 1798,
+        "body_depth": 1930,
+        "overall_height": 4024,
+        "door_width": 600,
+        "door_height": 650,
+        "door_sill": 1230
+      },
+      "notes": [
+        "选用 600KG／09.13.00 原总图；不混用 4424 mm 加高或 XQ 版本。炉内滚道、加热元件和循环机构依剖视图重建，未标注零件尺寸按视图比例推定。"
+      ],
+      "bounds_blender_m": [
+        -0.9585000276565552,
+        -2.189000129699707,
+        0.0,
+        1.1200000047683716,
+        1.0569891929626465,
+        4.054837703704834
+      ],
+      "size_gltf_m": [
+        2.0785000324249268,
+        4.054837703704834,
+        3.2459893226623535
+      ],
+      "editable_meshes": 457,
+      "runtime_meshes": 67,
+      "triangles": 41588,
+      "bytes": 2329704,
+      "sha256": "9cf50893d1a0cc8e07e7e61612ea7a26f2008585aeb865fe3714168e461b0387",
+      "roundtrip_max_error_m": 0.0,
+      "functional_groups": [
+        "structure",
+        "housing",
+        "lining",
+        "door",
+        "door_guides",
+        "door_drive",
+        "extraction",
+        "circulation_fan",
+        "pipes",
+        "valves",
+        "electrics",
+        "process_instruments",
+        "door_carriages",
+        "door_chains",
+        "door_seals",
+        "door_safety",
+        "internal_rollers",
+        "heating_elements",
+        "internal_fan",
+        "heater_terminals",
+        "circulation_cover",
+        "panel_fasteners",
+        "process_pipes",
+        "valve_detail",
+        "instrumentation",
+        "rear_service_hatch",
+        "nameplates",
+        "lifting_eyes"
+      ],
+      "runtime": {
+        "enableGenericBindings": false,
+        "enableInspection": false
+      },
+      "partBindings": [],
+      "detail_features": {
+        "process_instrument": 3,
+        "internal_load_roller": 7,
+        "internal_heater_element": 6,
+        "circulation_impeller_blade": 8,
+        "heater_porcelain_terminal": 12,
+        "chain_rivet": 32,
+        "door_safety_switch": 1
+      },
+      "mechanism_checks": []
+    },
+    {
+      "model_id": "cad_transfer_cart_v1",
+      "name": "料车",
+      "file": "10.13.00_料车.glb",
+      "source": {
+        "id": "transfer_cart",
+        "source": "10.13.00(料车总图).dwg",
+        "sha256": "C22F9813EB00B914691E5453A5CC8D505D1CC903415CE1C9F55EE4A5F825BBE0",
+        "entities": 27015,
+        "dxf": "transfer_cart.dxf"
+      },
+      "unit": "m",
+      "up_axis": "Y",
+      "floor_origin": "bottom; installation datums retained separately",
+      "reference_dimensions_mm": {
+        "bed_length": 1610,
+        "main_frame_length": 1679,
+        "operator_side_envelope": 2343,
+        "bed_level": 1250,
+        "wheelbase": 1425,
+        "wheel_track": 1050
+      },
+      "notes": [
+        "选用 600 料车／10.13.00；不采用同文件中 1.2T／10.02.00 版本。未标注链架细节按视图比例重建。"
+      ],
+      "bounds_blender_m": [
+        -0.8604999780654907,
+        -1.6399999856948853,
+        0.0,
+        1.0809999704360962,
+        0.6289499998092651,
+        2.180781602859497
+      ],
+      "size_gltf_m": [
+        1.941499948501587,
+        2.180781602859497,
+        2.2689499855041504
+      ],
+      "editable_meshes": 635,
+      "runtime_meshes": 46,
+      "triangles": 90860,
+      "bytes": 4286252,
+      "sha256": "70a09b8b0f8dd556e09115013470f7b748e149c09534ae21baedc91edb48ac9b",
+      "roundtrip_max_error_m": 5.960464477539063e-08,
+      "functional_groups": [
+        "structure",
+        "travel_wheels",
+        "roller_bed",
+        "platform",
+        "guard",
+        "electrics",
+        "travel_drive",
+        "return_chain",
+        "feed_sprocket",
+        "feed_motor",
+        "pusher",
+        "feed_interlock",
+        "axle_detail",
+        "travel_chain",
+        "cabinet_details"
+      ],
+      "runtime": {
+        "enableGenericBindings": false,
+        "enableInspection": false
+      },
+      "partBindings": [],
+      "detail_features": {
+        "central_return_chain_plate": 1,
+        "chain_rivet": 79,
+        "toothed_sprocket": 3,
+        "full_width_drive_axle": 2,
+        "hex_nut": 24,
+        "walkway_cross_brace": 6,
+        "pressed_louver": 5,
+        "central_push_guide": 1,
+        "limit_switch": 1
+      },
+      "mechanism_checks": [
+        "four travel wheels, two transverse axles, 1425 mm wheelbase and 1050 mm track"
+      ]
+    },
+    {
+      "model_id": "cad_washing_machine_v1",
+      "name": "清洗机",
+      "file": "17.07.00_清洗机.glb",
+      "source": {
+        "id": "washing_machine",
+        "source": "清洗机总图.dwg",
+        "sha256": "540E0BB8B7776239CE4020A3003CC67AC075C69B6099D099E5A33A7D2000D3C6",
+        "entities": 7972,
+        "dxf": "washing_machine.dxf"
+      },
+      "unit": "m",
+      "up_axis": "Y",
+      "floor_origin": "bottom; installation datums retained separately",
+      "reference_dimensions_mm": {
+        "base_width": 2650,
+        "body_depth": 2442,
+        "service_envelope_depth": 2900,
+        "max_height": 4107,
+        "door_width": 600,
+        "door_height": 650,
+        "installation_depth": 150
+      },
+      "notes": [
+        "选用 17.07.00 高提升版本（MAX 4107），保留双侧水箱、循环管路及驱动；不是照片 V7 外形。"
+      ],
+      "bounds_blender_m": [
+        -1.5600000619888306,
+        -1.2209999561309814,
+        0.0,
+        1.4800000190734863,
+        1.75,
+        4.10699987411499
+      ],
+      "size_gltf_m": [
+        3.040000081062317,
+        4.10699987411499,
+        2.9709999561309814
+      ],
+      "editable_meshes": 993,
+      "runtime_meshes": 74,
+      "triangles": 103238,
+      "bytes": 5191156,
+      "sha256": "a613313565b5c88ea6ceb59d9a258de75ed75915ea47921b46e922c46808f4ae",
+      "roundtrip_max_error_m": 0.0,
+      "functional_groups": [
+        "structure",
+        "tanks",
+        "housing",
+        "lining",
+        "door",
+        "door_guides",
+        "door_drive",
+        "roof_equipment",
+        "pumps",
+        "pipes",
+        "electrics",
+        "valves",
+        "process_instruments",
+        "door_carriages",
+        "door_chains",
+        "door_seals",
+        "door_safety",
+        "internal_rollers",
+        "chamber_tubes",
+        "filter_tank",
+        "filter_connections",
+        "spray_headers",
+        "belt_drive",
+        "belt_motor",
+        "valve_detail",
+        "instrumentation",
+        "heater_flanges",
+        "rear_inspection",
+        "lifting_eyes"
+      ],
+      "runtime": {
+        "enableGenericBindings": false,
+        "enableInspection": false
+      },
+      "partBindings": [],
+      "detail_features": {
+        "process_instrument": 3,
+        "chamber_return_tube": 4,
+        "tube_support_clip": 12,
+        "rear_filter_tank": 1,
+        "filter_lid_handle": 2,
+        "spray_nozzle": 10,
+        "grooved_pulley": 2,
+        "tangent_drive_belt": 2,
+        "heater_flange": 6,
+        "hex_nut": 84,
+        "internal_load_roller": 7
+      },
+      "mechanism_checks": [
+        "MAX 4107 revision without lower-revision blowers/furnace internals"
+      ]
+    },
+    {
+      "model_id": "cad_water_cooling_tank_v1",
+      "name": "水冷槽",
+      "file": "47.10.00_水冷槽.glb",
+      "source": {
+        "id": "water_cooling_tank",
+        "source": "47.10.00水冷槽总图.dwg",
+        "sha256": "E54159FAC1E9994D69123D421D2A8B1EF3071C766793885006B1CEFC53CFCC07",
+        "entities": 15828,
+        "dxf": "water_cooling_tank.dxf"
+      },
+      "unit": "m",
+      "up_axis": "Y",
+      "floor_origin": "bottom; installation datums retained separately",
+      "reference_dimensions_mm": {
+        "tank_length": 1654,
+        "tank_width": 2172,
+        "overall_height": 4320,
+        "working_level_above_floor": 1250,
+        "below_floor": 383
+      },
+      "notes": [
+        "完整显示下部槽体；安装时地坪基准比模型底部高 383 mm。液面为静态可移除组件。"
+      ],
+      "bounds_blender_m": [
+        -1.1299999952316284,
+        -1.0709831714630127,
+        0.0,
+        1.2599999904632568,
+        1.9320000410079956,
+        4.320000171661377
+      ],
+      "size_gltf_m": [
+        2.3899999856948853,
+        4.320000171661377,
+        3.0029832124710083
+      ],
+      "editable_meshes": 478,
+      "runtime_meshes": 72,
+      "triangles": 42800,
+      "bytes": 2403564,
+      "sha256": "935bdbc3e0cdb4241aa53232d76bfb6d073a77e1d76434c2b7d5f917b39cba7f",
+      "roundtrip_max_error_m": 0.0,
+      "functional_groups": [
+        "structure",
+        "tank",
+        "agitator",
+        "upper_housing",
+        "lining",
+        "door",
+        "door_guides",
+        "door_drive",
+        "hoist_frame",
+        "basket",
+        "hoist",
+        "hoist_drive",
+        "extraction",
+        "pipes",
+        "valves",
+        "electrics",
+        "hoist_transmission",
+        "door_carriages",
+        "door_chains",
+        "door_seals",
+        "door_safety",
+        "agitator_flange",
+        "basket_guides",
+        "coolant_pipes",
+        "valve_detail",
+        "instrumentation",
+        "rear_tank_hatch",
+        "nameplates",
+        "lifting_eyes",
+        "frame_fixings"
+      ],
+      "runtime": {
+        "enableGenericBindings": false,
+        "enableInspection": false
+      },
+      "partBindings": [],
+      "detail_features": {
+        "agitator_impeller_blade": 3,
+        "basket_guide_shaft": 2,
+        "basket_guide_bush": 4,
+        "service_hatch": 1,
+        "hex_nut": 26,
+        "gauge_dial": 1
+      },
+      "mechanism_checks": [
+        "1100 mm basket depth aligned with tank depth"
+      ]
+    }
+  ]
+}
