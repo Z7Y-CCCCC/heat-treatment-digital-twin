@@ -4,6 +4,8 @@
 
 仓库地址：[heat-treatment-digital-twin](https://github.com/Z7Y-CCCCC/heat-treatment-digital-twin)，协作基线为 **main**。
 
+历史改动与未完成验收统一登记在 [历史需求验收台账](docs/历史需求验收台账.md)。中断续做先查台账及对应测试结果，不以聊天中的完成说明代替验收。主客户端与可选采集插件已经拆分；旧 Release 不代表当前源码的分包状态。
+
 ## 新同事接手
 
 仅体验软件请到仓库 [Releases](https://github.com/Z7Y-CCCCC/heat-treatment-digital-twin/releases) 下载本次 **CAD 动作演示 2.3.1** 的 Windows x64 安装包；安装包提供运行环境。源码下载与安装包不同，完整步骤见 [朋友下载与动作演示](docs/朋友下载与动作演示.md)。

@@ -158,9 +158,9 @@ router.delete('/datasets/:id', localOnly, async (req, res) => {
 });
 
 router.post('/files', localOnly, (req, res) => {
-    dataFileUpload(req, res, error => {
-        if (error) return res.status(400).json({ error: '请选择 1 MB 以内的 CSV / JSON 文件' });
-        try { res.json({ success: true, file: importDataFile(req.file?.buffer, req.file?.originalname, req.factoryId) }); }
+    dataFileUpload(req, res, async error => {
+        if (error) return res.status(400).json({ error: '请选择 1 MB 以内的 CSV / JSON / XLSX 文件' });
+        try { res.json({ success: true, file: await importDataFile(req.file?.buffer, req.file?.originalname, req.factoryId) }); }
         catch (error) { handleError(res, error); }
     });
 });

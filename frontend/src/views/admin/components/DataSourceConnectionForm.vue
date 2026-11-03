@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref, onBeforeUnmount } from 'vue'
+import { computed, ref, watch, onBeforeUnmount } from 'vue'
 import { adminApi } from '../../../config/factoryConfig.js'
 import { permissionDirective as vPermission } from '../../../runtime/pagePermissionUi.js'
 const props = defineProps({ draft: { type: Object, required: true }, section: { type: String, default: 'connection' }, permissionPage: { type: String, default: 'settings.database' }, busy: Boolean })
@@ -8,6 +8,9 @@ const http = computed(() => props.draft.sourceType === 'http_api')
 const kind = computed(() => props.draft.connector || 'http')
 const sqlite = computed(() => !http.value && props.draft.type === 'sqlite')
 const uploading = ref(false), uploadMessage = ref('')
+const workbookSheets = ref([])
+const excel = computed(() => kind.value === 'file' && /\.xlsx$/i.test(props.draft.baseUrl || ''))
+watch(() => props.draft.id, () => { workbookSheets.value = []; uploadMessage.value = '' })
 let disposed = false
 onBeforeUnmount(() => { disposed = true })
 async function importFile(event) {
@@ -19,6 +22,8 @@ async function importFile(event) {
         const result = await adminApi.importDataSourceFile(file)
         if (disposed) return
         props.draft.baseUrl = result.file.asset
+        workbookSheets.value = result.file.sheets || []
+        props.draft.healthPath = result.file.sheet || '/'
         if (!props.draft.name) props.draft.name = file.name.replace(/\.[^.]+$/, '')
         uploadMessage.value = file.name + ' · 已导入'
     } catch (error) { if (!disposed) uploadMessage.value = error.message || '导入失败' }
@@ -31,8 +36,11 @@ async function importFile(event) {
         <div v-show="section === 'connection'" class="source-fields">
             <label class="wide">数据源名称<input v-model="draft.name" class="input" placeholder="例如：MES 生产数据库" maxlength="100" /></label>
             <template v-if="http && kind === 'file'">
-                <label class="wide">数据文件<input type="file" class="input" accept=".csv,.json,text/csv,application/json" aria-label="导入 CSV / JSON 文件" @change="importFile" /></label>
-                <p class="hint wide">{{ uploadMessage || (draft.baseUrl ? '已有导入文件；重新选择可替换。' : '导入 1 MB 以内的 CSV / JSON，保存副本，不读取任意系统文件。') }}</p>
+                <label class="wide">数据文件<input type="file" class="input" accept=".csv,.json,.xlsx,text/csv,application/json,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" aria-label="导入 CSV / JSON / XLSX 文件" @change="importFile" /></label>
+                <p class="hint wide">{{ uploadMessage || (draft.baseUrl ? '已有导入文件；重新选择可替换。' : 'CSV / JSON / XLSX，最大 1 MB。') }}</p>
+                <label v-if="excel && workbookSheets.length" class="wide">工作表<select v-model="draft.healthPath" class="input" aria-label="Excel 工作表"><option v-for="sheet in workbookSheets" :key="sheet" :value="sheet">{{ sheet }}</option></select></label>
+                <label v-else-if="excel" class="wide">工作表<input v-model="draft.healthPath" class="input" aria-label="Excel 工作表" placeholder="工作表名称；/ 表示第一张" /></label>
+                <p v-if="excel" class="hint wide">首行为列名，最多 1000 行数据。修改原文件后需重新导入。</p>
             </template>
             <template v-else-if="http && kind !== 'http'">
                 <label class="wide">接入地址<input v-model="draft.baseUrl" class="input" :placeholder="({ websocket: 'wss://HOST/telemetry', mqtt: 'mqtt://HOST:1883', tcp: 'tcp://HOST:PORT', udp: 'udp://0.0.0.0:PORT', redis: 'redis://HOST:6379/0' })[kind]" /></label>

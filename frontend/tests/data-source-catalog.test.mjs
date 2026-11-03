@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { DATA_SOURCE_CATALOG, filterSources, sourceCatalogEntry, sourceEndpoint, sourceStatus } from '../src/views/admin/utils/dataSourceCatalog.js'
 test('complete catalog distinguishes real adapters, device channels and planned connectors', () => {
     assert.equal(DATA_SOURCE_CATALOG.length, 28)
-    assert.equal(DATA_SOURCE_CATALOG.filter(entry => entry.status === 'ready').length, 12)
+    assert.equal(DATA_SOURCE_CATALOG.filter(entry => entry.status === 'ready').length, 13)
     assert.equal(DATA_SOURCE_CATALOG.filter(entry => entry.status === 'device').length, 3)
     for (const entry of DATA_SOURCE_CATALOG) {
         assert.match(entry.image, /^\/images\/data-sources\/[\w-]+\.svg$/)
@@ -13,6 +13,8 @@ test('complete catalog distinguishes real adapters, device channels and planned 
     assert.equal(DATA_SOURCE_CATALOG.find(item => item.key === 'postgres').draft.port, 5432)
     assert.equal(DATA_SOURCE_CATALOG.find(item => item.key === 'odata').draft.type, 'http_api')
     assert.equal(DATA_SOURCE_CATALOG.find(item => item.key === 'sqlserver').draft.trustServerCertificate, false)
+    assert.equal(DATA_SOURCE_CATALOG.find(item => item.key === 'excel').draft.connector, 'file')
+    assert.equal(sourceCatalogEntry({ sourceType: 'http_api', connector: 'file', baseUrl: 'sample.xlsx' }).key, 'excel')
 })
 test('source search covers name, address and database without exposing credentials or including the primary database', () => {
     const connections = [{ id: 'primary', primary: true, name: '主库' }, { name: 'MES', type: 'postgres', host: 'db.internal', database: 'orders', user: 'secret', password: 'secret', enabled: true }, { name: '工单接口', sourceType: 'http_api', baseUrl: 'https://mes.internal', enabled: false }]

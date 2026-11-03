@@ -1,0 +1,35 @@
+'use strict';
+const assert = require('node:assert/strict');
+const fs = require('node:fs'), path = require('node:path');
+const { createRunDirectory } = require('./integration-test-utils.cjs');
+const { workbook } = require('./fixtures/excel-workbook.cjs');
+const directory = createRunDirectory('excel-data-file');
+process.env.APP_DATA_DIR = directory;
+const { readExcelData } = require('../services/excelDataFile');
+const { importDataFile, readTransport } = require('../services/dataSourceTransports');
+(async () => {
+    const buffer = await workbook();
+    fs.writeFileSync(path.join(directory, 'owned-workbook.xlsx'), buffer);
+    const first = await readExcelData(buffer);
+    assert.deepEqual(first.sheets, ['温度参数', '第二车间']);
+    assert.deepEqual(first.rows[0], { deviceId: 'Pit_01', 温度: 247.5, 温度_2: 0, enabled: false,
+        time: '2026-11-03T00:00:00.000Z', __proto___2: 'safe', code: '0012', formula: 12 });
+    assert.equal(first.rows[1].温度_2, null);
+    assert.equal((await readExcelData(buffer, '第二车间')).rows[0].value, 222);
+    await assert.rejects(readExcelData(buffer, '不存在'), /工作表不存在/);
+    const file = await importDataFile(buffer, '厂内参数.xlsx', 'factory_excel');
+    assert.deepEqual(file.sheets, first.sheets);
+    const connection = { connector: 'file', baseUrl: file.asset, healthPath: '第二车间', authType: 'none' };
+    const data = await readTransport(connection, 'factory_excel');
+    assert.equal(data.sheet, '第二车间'); assert.equal(data.rows[0].value, 222);
+    await assert.rejects(readTransport(connection, 'other_factory'), /不存在/);
+    await assert.rejects(importDataFile(buffer, 'legacy.xls', 'factory_excel'), /XLSX/);
+    await assert.rejects(importDataFile(Buffer.from('broken'), 'broken.xlsx', 'factory_excel'), /无法读取/);
+    await assert.rejects(readExcelData(await workbook({ dimension: 'A1:XFD1048576' })), /数据范围/);
+    await assert.rejects(readExcelData(await workbook({ cell: '<c r="A1048576"><v>1</v></c>' })), /数据范围/);
+    await assert.rejects(readExcelData(await workbook({ cell: '<c r="CW2"><v>1</v></c>' })), /数据范围/);
+    await assert.rejects(readExcelData(await workbook({ extra: ' '.repeat(9 * 1024 * 1024) })), /8 MB/);
+    assert.equal(fs.readdirSync(path.join(directory, 'data-source-files/factory_excel')).length, 1, 'rejected workbooks are never persisted');
+    console.log('PASS Excel XLSX values, two sheets, dates, zero/false, duplicate/unsafe headers, cached formula, factory isolation, legacy/corrupt/sparse/bomb rejection');
+    console.log('Evidence: ' + directory);
+})().catch(error => { console.error(error); process.exitCode = 1; });

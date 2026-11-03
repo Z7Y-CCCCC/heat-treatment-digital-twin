@@ -25,7 +25,10 @@ const filtered = computed(() => filterSources(props.connections, search.value, g
 const pages = computed(() => Math.max(1, Math.ceil(filtered.value.length / pageSize.value)))
 const rows = computed(() => filtered.value.slice((page.value - 1) * pageSize.value, page.value * pageSize.value))
 const active = computed(() => Boolean(props.draft.id || creating.value))
-const selectedType = computed(() => sourceCatalogEntry(props.draft))
+const creatingType = ref('')
+const selectedType = computed(() => creating.value && !props.draft.baseUrl
+    ? DATA_SOURCE_CATALOG.find(item => item.key === creatingType.value) || sourceCatalogEntry(props.draft)
+    : sourceCatalogEntry(props.draft))
 const saved = computed(() => sources.value.find(item => item.id === props.draft.id))
 const catalog = computed(() => DATA_SOURCE_CATALOG.filter(item => (pickerGroup.value === 'all' || item.group === pickerGroup.value)
     && `${item.name} ${item.description}`.toLowerCase().includes(pickerSearch.value.trim().toLowerCase())))
@@ -50,7 +53,7 @@ async function create(entry) {
         return
     }
     if (!canEdit.value || !await allowDiscard()) return
-    emit('create', { ...entry.draft }); creating.value = true; section.value = 'connection'; closePicker()
+    emit('create', { ...entry.draft }); creatingType.value = entry.key; creating.value = true; section.value = 'connection'; closePicker()
 }
 async function closeEditor() {
     if (!await allowDiscard()) return

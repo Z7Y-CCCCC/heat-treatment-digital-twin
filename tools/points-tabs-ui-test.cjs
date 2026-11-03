@@ -164,7 +164,7 @@ const check = name => { checks.push(name); console.log('PASS ' + name); };
     await page.getByRole('button', { name: '管理账户', exact: true }).first().click();
     const matrix = page.locator('.page-permission-table');
     const liveCatalog = await (await page.request.get(info.origin + '/api/admin-auth/page-catalog')).json();
-    assert.equal(await matrix.locator('tbody tr').count(), liveCatalog.pages.length);
+    assert.equal(await matrix.locator('tbody tr').count(), liveCatalog.pages.filter(item => !item.retired).length);
     assert.ok(await matrix.getByRole('rowheader', { name: '点位映射 · 报警配置', exact: true }).isVisible());
     const modelView = page.getByRole('checkbox', { name: '模型库 · 模型管理 · 查看', exact: true });
     await modelView.check();
