@@ -8,20 +8,20 @@ Electron and Chromium notices are distributed in their own license files.
 BUNDLED NATIVE COMPONENT
 ------------------------
 
-MySQL Community Server 9.2.0
+MySQL Community Server 8.4.13
 License: GPL-2.0
-Bundled Microsoft Visual C++ runtime DLLs: msvcp140.dll, msvcp140_atomic_wait.dll, vcruntime140.dll, vcruntime140_1.dll
-MySQL Community Server 9.2.0, unmodified Oracle Windows x64 binaries.
+Bundled Microsoft Visual C++ runtime DLLs: msvcp140.dll, vcruntime140.dll, vcruntime140_1.dll
+MySQL Community Server 8.4.13, unmodified Oracle Windows x64 binaries.
 License: GPL-2.0; see the complete upstream LICENSE shipped beside this file.
 Official downloads and corresponding source: https://downloads.mysql.com/archives/community/
-Source archive: https://downloads.mysql.com/archives/get/p/23/file/mysql-9.2.0.tar.gz
+Source archive: https://downloads.mysql.com/archives/get/p/23/file/mysql-8.4.13.tar.gz
 Microsoft Visual C++ runtime DLLs are included app-local; their distribution rights are governed by Microsoft terms.
 No development data directory, service configuration, credentials or backups are bundled.
 
 ----- BEGIN MYSQL UPSTREAM LICENSE TEXT -----
 Licensing Information User Manual
 
-MySQL 9.2.0 Community
+MySQL 8.4.13 Community
      __________________________________________________________________
 
 Introduction
@@ -29,18 +29,18 @@ Introduction
    This License Information User Manual contains Oracle's product license
    and other licensing information, including licensing information for
    third-party software which may be included in this distribution of
-   MySQL 9.2.0 Community.
+   MySQL 8.4.13 Community.
 
-   Last updated: December 2024
+   Last updated: September 2026
 
 Licensing Information
 
-   This release of MySQL 9.2.0 Community is brought to you by the MySQL
+   This release of MySQL 8.4.13 Community is brought to you by the MySQL
    team at Oracle. This software is released under version 2 of the GNU
    General Public License (GPLv2), as set forth below, with the following
    additional permissions:
 
-   This distribution of MySQL 9.2.0 Community is designed to work with
+   This distribution of MySQL 8.4.13 Community is designed to work with
    certain software (including but not limited to OpenSSL) that is
    licensed under separate terms, as designated in a particular file or
    component or in the license documentation. Without limiting your rights
@@ -57,7 +57,7 @@ Licensing Information
    reproduced below and can also be found along with its FAQ at
    http://oss.oracle.com/licenses/universal-foss-exception.
 
-   Copyright (c) 1997, 2024, Oracle and/or its affiliates.
+   Copyright (c) 1997, 2026, Oracle and/or its affiliates.
 
 Election of GPLv2
 
@@ -1245,40 +1245,66 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ICU4C Unicode Libraries
 
-COPYRIGHT AND PERMISSION NOTICE (ICU 58 and later)
+### ICU License
 
-Copyright (c) 1991-2019 Unicode, Inc. All rights reserved.
-Distributed under the Terms of Use in https://www.unicode.org/copyright.html.
-Permission is hereby granted, free of charge, to any person obtaining
-a copy of the Unicode data files and any associated documentation
-(the "Data Files") or Unicode software and any associated documentation
-(the "Software") to deal in the Data Files or Software
-without restriction, including without limitation the rights to use,
-copy, modify, merge, publish, distribute, and/or sell copies of
-the Data Files or Software, and to permit persons to whom the Data Files
-or Software are furnished to do so, provided that either
-(a) this copyright and permission notice appear with all copies
-of the Data Files or Software, or
-(b) this copyright and permission notice appear in associated
-Documentation.
+UNICODE LICENSE V3
 
-THE DATA FILES AND SOFTWARE ARE PROVIDED "AS IS", WITHOUT WARRANTY OF
-ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE
-WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
-NONINFRINGEMENT OF THIRD PARTY RIGHTS.
-IN NO EVENT SHALL THE COPYRIGHT HOLDER OR HOLDERS INCLUDED IN THIS
-NOTICE BE LIABLE FOR ANY CLAIM, OR ANY SPECIAL INDIRECT OR CONSEQUENTIAL
-DAMAGES, OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE,
-DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER
-TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
-PERFORMANCE OF THE DATA FILES OR SOFTWARE.
+COPYRIGHT AND PERMISSION NOTICE
 
-Except as contained in this notice, the name of a copyright holder
-shall not be used in advertising or otherwise to promote the sale,
-use or other dealings in these Data Files or Software without prior
-written authorization of the copyright holder.
+```
 
----------------------
+Copyright (C) 1996-2016, International Business Machines
+Copyright (C) 1996-2017, International Business Machines Corporation
+Copyright (C) 1996-2016, International Business Machines Corporation and others.
+ All Rights Reserved.
+Copyright (C) 2007 Google Inc. All rights reserved.
+Copyright (C) 2016 and later: Unicode, Inc. and others.
+Copyright (C) 2001-2004 and onwards Google Inc.
+Copyright (C) 1999-2013 IBM Corp. All rights reserved.
+Copyright (C) IBM Corporation, 2000-2016. All rights reserved.
+Copyright (C) 2006-2012 the V8 project authors. All rights reserved.
+Copyright (C) 2001-2015 IBM and others. All rights reserved.
+Copyright (C) 2010 , Yahoo! Inc.
+Copyright (C) 2008-2014, Google, International Business Machines Corporation and
+ others. All Rights Reserved.
+Copyright (C) 2008-2015, Google, International Business Machines Corporation
+
+NOTICE TO USER: Carefully read the following legal agreement. BY
+DOWNLOADING, INSTALLING, COPYING OR OTHERWISE USING DATA FILES, AND/OR
+SOFTWARE, YOU UNEQUIVOCALLY ACCEPT, AND AGREE TO BE BOUND BY, ALL OF THE
+TERMS AND CONDITIONS OF THIS AGREEMENT. IF YOU DO NOT AGREE, DO NOT
+DOWNLOAD, INSTALL, COPY, DISTRIBUTE OR USE THE DATA FILES OR SOFTWARE.
+
+Permission is hereby granted, free of charge, to any person obtaining a
+copy of data files and any associated documentation (the "Data Files") or
+software and any associated documentation (the "Software") to deal in the
+Data Files or Software without restriction, including without limitation
+the rights to use, copy, modify, merge, publish, distribute, and/or sell
+copies of the Data Files or Software, and to permit persons to whom the
+Data Files or Software are furnished to do so, provided that either (a)
+this copyright and permission notice appear with all copies of the Data
+Files or Software, or (b) this copyright and permission notice appear in
+associated Documentation.
+
+THE DATA FILES AND SOFTWARE ARE PROVIDED "AS IS", WITHOUT WARRANTY OF ANY
+KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT OF
+THIRD PARTY RIGHTS.
+
+IN NO EVENT SHALL THE COPYRIGHT HOLDER OR HOLDERS INCLUDED IN THIS NOTICE
+BE LIABLE FOR ANY CLAIM, OR ANY SPECIAL INDIRECT OR CONSEQUENTIAL DAMAGES,
+OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS,
+WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION,
+ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THE DATA
+FILES OR SOFTWARE.
+
+Except as contained in this notice, the name of a copyright holder shall
+not be used in advertising or otherwise to promote the sale, use or other
+dealings in these Data Files or Software without prior written
+authorization of the copyright holder.
+
+SPDX-License-Identifier: Unicode-3.0
+----------------------------------------------------------------------
 
 Third-Party Software Licenses
 
@@ -1286,12 +1312,13 @@ This section contains third-party software notices and/or additional
 terms for licensed third-party software components included within ICU
 libraries.
 
-1. ICU License - ICU 1.8.1 to ICU 57.1
+----------------------------------------------------------------------
+
+ICU License - ICU 1.8.1 to ICU 57.1
 
 COPYRIGHT AND PERMISSION NOTICE
 
-Copyright (c) 1995-2016 International Business Machines Corporation and
-others
+Copyright (C) 1995-2016 International Business Machines Corporation and others
 All rights reserved.
 
 Permission is hereby granted, free of charge, to any person obtaining
@@ -1322,7 +1349,9 @@ of the copyright holder.
 All trademarks and registered trademarks mentioned herein are the
 property of their respective owners.
 
-2. Chinese/Japanese Word Break Dictionary Data (cjdict.txt)
+----------------------------------------------------------------------
+
+Chinese/Japanese Word Break Dictionary Data (cjdict.txt)
 
  #     The Google Chrome software developed by Google is licensed under
  # the BSD license. Other software included in this distribution is
@@ -1330,6 +1359,7 @@ property of their respective owners.
  #
  #  The BSD License
  #  http://opensource.org/licenses/bsd-license.php
+
  #  Copyright (C) 2006-2008, Google Inc.
  #
  #  All rights reserved.
@@ -1369,17 +1399,19 @@ property of their respective owners.
  #
  #  * Libtabe (Chinese)
  #    - https://sourceforge.net/project/?group_id=1519
+
  #    - Its license terms and conditions are shown below.
  #
  #  * IPADIC (Japanese)
  #    - http://chasen.aist-nara.ac.jp/chasen/distribution.html
+
  #    - Its license terms and conditions are shown below.
  #
  #  ---------COPYING.libtabe ---- BEGIN--------------------
  #
  #  /*
- #   * Copyright (c) 1999 TaBE Project.
- #   * Copyright (c) 1999 Pai-Hsiang Hsiao.
+ #   * Copyright (C) 1999 TaBE Project.
+ #   * Copyright (C) 1999 Pai-Hsiang Hsiao.
  #   * All rights reserved.
  #   *
  #   * Redistribution and use in source and binary forms, with or without
@@ -1411,7 +1443,7 @@ property of their respective owners.
  #   */
  #
  #  /*
- #   * Copyright (c) 1999 Computer Systems and Communication Lab,
+ #   * Copyright (C) 1999 Computer Systems and Communication Lab,
  #   *                    Institute of Information Science, Academia
  #       *                    Sinica. All rights reserved.
  #   *
@@ -1447,6 +1479,7 @@ property of their respective owners.
  #  Copyright 1996 Chih-Hao Tsai @ Beckman Institute,
  #      University of Illinois
  #  c-tsai4@uiuc.edu  http://casper.beckman.uiuc.edu/~c-tsai4
+
  #
  #  ---------------COPYING.libtabe-----END--------------------------------
  #
@@ -1526,34 +1559,37 @@ property of their respective owners.
  #
  #  ---------------COPYING.ipadic-----END----------------------------------
 
-3. Lao Word Break Dictionary Data (laodict.txt)
+----------------------------------------------------------------------
 
- #  Copyright (c) 2013 International Business Machines Corporation
- #  and others. All Rights Reserved.
+Lao Word Break Dictionary Data (laodict.txt)
+
+ # Copyright (C) 2016 and later: Unicode, Inc. and others.
+ # License & terms of use: http://www.unicode.org/copyright.html
+
+ # Copyright (C) 2015 International Business Machines Corporation
+ # and others. All Rights Reserved.
  #
- # Project: http://code.google.com/p/lao-dictionary/
- # Dictionary: http://lao-dictionary.googlecode.com/git/Lao-Dictionary.txt
- # License:
- # http://lao-dictionary.googlecode.com/git/Lao-Dictionary-LICENSE.txt
- #              (copied below)
+ # Project: https://github.com/rober42539/lao-dictionary
+
+ # Dictionary: https://github.com/rober42539/lao-dictionary/laodict.txt
+
+ # License: https://github.com/rober42539/lao-dictionary/LICENSE.txt
+
+ #          (copied below)
  #
- #  This file is derived from the above dictionary, with slight
- #  modifications.
+ #      This file is derived from the above dictionary version of Nov 22, 2020
  #  ----------------------------------------------------------------------
  #  Copyright (C) 2013 Brian Eugene Wilson, Robert Martin Campbell.
  #  All rights reserved.
  #
  #  Redistribution and use in source and binary forms, with or without
- #  modification,
- #  are permitted provided that the following conditions are met:
+ #  modification, are permitted provided that the following conditions are met:
  #
- #
- # Redistributions of source code must retain the above copyright notice, this
- #  list of conditions and the following disclaimer. Redistributions in
- #  binary form must reproduce the above copyright notice, this list of
- #  conditions and the following disclaimer in the documentation and/or
- #  other materials provided with the distribution.
- #
+ #  Redistributions of source code must retain the above copyright notice, this
+ #  list of conditions and the following disclaimer. Redistributions in binary
+ #  form must reproduce the above copyright notice, this list of conditions and
+ #  the following disclaimer in the documentation and/or other materials
+ #  provided with the distribution.
  #
  # THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
  # "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
@@ -1567,20 +1603,20 @@ property of their respective owners.
  # STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
  # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
  # OF THE POSSIBILITY OF SUCH DAMAGE.
- #
---------------------------------------------------------------------------
+ #  --------------------------------------------------------------------------
 
-4. Burmese Word Break Dictionary Data (burmesedict.txt)
+----------------------------------------------------------------------
 
- #  Copyright (c) 2014 International Business Machines Corporation
+Burmese Word Break Dictionary Data (burmesedict.txt)
+
+ #  Copyright (C) 2014 International Business Machines Corporation
  #  and others. All Rights Reserved.
  #
  #  This list is part of a project hosted at:
  #    github.com/kanyawtech/myanmar-karen-word-lists
  #
- #
---------------------------------------------------------------------------
- #  Copyright (c) 2013, LeRoy Benjamin Sharon
+ #  --------------------------------------------------------------------------
+ #  Copyright (C) 2013, LeRoy Benjamin Sharon
  #  All rights reserved.
  #
  #  Redistribution and use in source and binary forms, with or without
@@ -1609,10 +1645,11 @@ property of their respective owners.
  #  TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF
  #  THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  #  SUCH DAMAGE.
- #
---------------------------------------------------------------------------
+ #  --------------------------------------------------------------------------
 
-5. Time Zone Database
+----------------------------------------------------------------------
+
+Time Zone Database
 
   ICU uses the public domain data and code derived from Time Zone
 Database for its time zone support. The ownership of the TZ database
@@ -1635,7 +1672,9 @@ Database section 7.
  #    making a contribution to the database or code waives all rights to
  #    future claims in that contribution or in the TZ Database.
 
-6. Google double-conversion
+----------------------------------------------------------------------
+
+Google double-conversion
 
 Copyright 2006-2011, the V8 project authors. All rights reserved.
 Redistribution and use in source and binary forms, with or without
@@ -1663,6 +1702,35 @@ DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
 THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+----------------------------------------------------------------------
+
+JSON parsing library (nlohmann/json)
+
+File: vendor/json/upstream/single_include/nlohmann/json.hpp (only for ICU4C)
+
+MIT License
+
+Copyright (C) 2013-2022 Niels Lohmann
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
 
    ======================================================================
    ======================================================================
@@ -3995,6 +4063,35 @@ SOFTWARE.
    ======================================================================
    ======================================================================
 
+xxHash
+
+Copyright (c) 2012-2021 Yann Collet
+All rights reserved.
+BSD 2-Clause License (https://www.opensource.org/licenses/bsd-license.php
+Redistribution and use in source and binary forms, with or without modification,
+are permitted provided that the following conditions are met:
+* Redistributions of source code must retain the above copyright notice, this
+  list of conditions and the following disclaimer.
+* Redistributions in binary form must reproduce the above copyright notice, this
+  list of conditions and the following disclaimer in the documentation and/or
+  other materials provided with the distribution.
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR
+ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+Some source files include the above license with different copyright years:
+Copyright (C) 2012-2023 Yann Collet
+Copyright (C) 2020-2024 Yann Collet
+
+   ======================================================================
+   ======================================================================
+
 zlib
 
 Oracle gratefully acknowledges the contributions of Jean-loup Gailly
@@ -5352,23 +5449,23 @@ Written Offer for Source Code
        offers spare parts or customer support for that product model.
 ----- END MYSQL UPSTREAM LICENSE TEXT -----
 
-FFmpeg n7.1.5-12-g1fdbca85aa-20260805
+FFmpeg n8.1.3-32-g760d10603e-20261102
 License: LGPL-3.0-or-later
 Distribution: BtbN FFmpeg-Builds Windows x64 LGPL shared build
-Binary release: https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-08-05-15-18/ffmpeg-n7.1.5-12-g1fdbca85aa-win64-lgpl-shared-7.1.zip
-Build scripts: https://github.com/BtbN/FFmpeg-Builds/tree/autobuild-2026-08-05-15-18
-Corresponding source: https://github.com/FFmpeg/FFmpeg/tree/1fdbca85aa
-Archive SHA-256: 185df1abe559a813be7d53c7ec7e1a6135129b0db09e7b0f607317c2f16cf5a6
+Binary release: https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.1-latest-win64-lgpl-shared-8.1.zip
+Build scripts: https://github.com/BtbN/FFmpeg-Builds/tree/5ece628
+Corresponding source: https://github.com/FFmpeg/FFmpeg/tree/760d10603e
+Archive SHA-256: 8f8219f9a6a99da57c6fce6ab285b7dc7aed1d1dba26c1b50146677e63e59371
 
 FFmpeg bundled component source and build information
 =====================================================
 
-Binary: ffmpeg version n7.1.5-12-g1fdbca85aa-20260805 Copyright (c) 2000-2026 the FFmpeg developers
+Binary: ffmpeg version n8.1.3-32-g760d10603e-20261102 Copyright (c) 2000-2026 the FFmpeg developers
 License: LGPL-3.0-or-later (see LICENSE.txt)
-Binary release: https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-08-05-15-18/ffmpeg-n7.1.5-12-g1fdbca85aa-win64-lgpl-shared-7.1.zip
-Archive SHA-256: 185df1abe559a813be7d53c7ec7e1a6135129b0db09e7b0f607317c2f16cf5a6
-Build scripts and exact build recipe: https://github.com/BtbN/FFmpeg-Builds/tree/autobuild-2026-08-05-15-18
-Corresponding FFmpeg source revision: https://github.com/FFmpeg/FFmpeg/tree/1fdbca85aa
+Binary release: https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.1-latest-win64-lgpl-shared-8.1.zip
+Archive SHA-256: 8f8219f9a6a99da57c6fce6ab285b7dc7aed1d1dba26c1b50146677e63e59371
+Build scripts and exact build recipe: https://github.com/BtbN/FFmpeg-Builds/tree/5ece628
+Corresponding FFmpeg source revision: https://github.com/FFmpeg/FFmpeg/tree/760d10603e
 
 This product uses the dynamically linked LGPL build without libx264/libx265.
 Video encoding is performed by the Windows Media Foundation h264_mf encoder.
@@ -6076,6 +6173,35 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
+----- END UPSTREAM LICENSE TEXT -----
+
+@babel/runtime@7.29.10
+License: MIT
+Repository: https://github.com/babel/babel.git
+License file: LICENSE
+----- BEGIN UPSTREAM LICENSE TEXT -----
+MIT License
+
+Copyright (c) 2014-present Sebastian McKenzie and other contributors
+
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of this software and associated documentation files (the
+"Software"), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to
+permit persons to whom the Software is furnished to do so, subject to
+the following conditions:
+
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
+LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ----- END UPSTREAM LICENSE TEXT -----
 
 @babel/types@7.29.0
@@ -7026,6 +7152,26 @@ Apache License
    limitations under the License.
 ----- END UPSTREAM LICENSE TEXT -----
 
+@redis/bloom@6.3.1
+License: MIT
+Repository: git://github.com/redis/node-redis.git
+
+@redis/client@6.3.1
+License: MIT
+Repository: git://github.com/redis/node-redis.git
+
+@redis/json@6.3.1
+License: MIT
+Repository: git://github.com/redis/node-redis.git
+
+@redis/search@6.3.1
+License: MIT
+Repository: git://github.com/redis/node-redis.git
+
+@redis/time-series@6.3.1
+License: MIT
+Repository: git://github.com/redis/node-redis.git
+
 @serialport/binding-mock@10.2.2
 License: MIT
 Repository: git@github.com:serialport/binding-mock.git
@@ -7615,6 +7761,34 @@ MIT License
 ----- END UPSTREAM LICENSE TEXT -----
 
 @types/readable-stream@4.0.23
+License: MIT
+Repository: https://github.com/DefinitelyTyped/DefinitelyTyped.git
+License file: LICENSE
+----- BEGIN UPSTREAM LICENSE TEXT -----
+MIT License
+
+    Copyright (c) Microsoft Corporation.
+
+    Permission is hereby granted, free of charge, to any person obtaining a copy
+    of this software and associated documentation files (the "Software"), to deal
+    in the Software without restriction, including without limitation the rights
+    to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+    copies of the Software, and to permit persons to whom the Software is
+    furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included in all
+    copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+    AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+    SOFTWARE
+----- END UPSTREAM LICENSE TEXT -----
+
+@types/ws@8.18.2
 License: MIT
 Repository: https://github.com/DefinitelyTyped/DefinitelyTyped.git
 License file: LICENSE
@@ -9980,6 +10154,34 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ----- END UPSTREAM LICENSE TEXT -----
 
+broker-factory@3.1.15
+License: MIT
+Repository: https://github.com/chrisguttandin/broker-factory.git
+License file: LICENSE
+----- BEGIN UPSTREAM LICENSE TEXT -----
+MIT License
+
+Copyright (c) 2026 Christoph Guttandin
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+----- END UPSTREAM LICENSE TEXT -----
+
 buffer-crc32@1.0.0
 License: MIT
 Repository: git://github.com/brianloveswords/buffer-crc32.git
@@ -10508,6 +10710,34 @@ IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
 CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
 TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+----- END UPSTREAM LICENSE TEXT -----
+
+commist@3.2.0
+License: MIT
+Repository: https://github.com/mcollina/commist.git
+License file: LICENSE
+----- BEGIN UPSTREAM LICENSE TEXT -----
+The MIT License (MIT)
+
+Copyright (c) 2014-2022 Matteo Collina
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 ----- END UPSTREAM LICENSE TEXT -----
 
 compress-commons@6.0.2
@@ -12776,6 +13006,34 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ----- END UPSTREAM LICENSE TEXT -----
 
+fast-unique-numbers@9.0.27
+License: MIT
+Repository: https://github.com/chrisguttandin/fast-unique-numbers.git
+License file: LICENSE
+----- BEGIN UPSTREAM LICENSE TEXT -----
+MIT License
+
+Copyright (c) 2026 Christoph Guttandin
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+----- END UPSTREAM LICENSE TEXT -----
+
 fast-xml-builder@1.3.1
 License: MIT
 Repository: git+https://github.com/NaturalIntelligence/fast-xml-builder.git
@@ -13384,6 +13642,34 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ----- END UPSTREAM LICENSE TEXT -----
 
+help-me@5.0.0
+License: MIT
+Repository: https://github.com/mcollina/help-me.git
+License file: LICENSE
+----- BEGIN UPSTREAM LICENSE TEXT -----
+The MIT License (MIT)
+
+Copyright (c) 2014-2022 Matteo Collina
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+----- END UPSTREAM LICENSE TEXT -----
+
 hexy@0.4.0
 License: MIT
 Repository: git://github.com/a2800276/hexy.js.git
@@ -13642,6 +13928,32 @@ ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
 WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
 ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR
 IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+----- END UPSTREAM LICENSE TEXT -----
+
+ip-address@10.7.5
+License: MIT
+Repository: https://github.com/beaugunderson/ip-address.git
+License file: LICENSE
+----- BEGIN UPSTREAM LICENSE TEXT -----
+Copyright (C) 2011 by Beau Gunderson
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
 ----- END UPSTREAM LICENSE TEXT -----
 
 ipaddr.js@1.9.1
@@ -15192,6 +15504,48 @@ ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
 WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
 ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
 OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+----- END UPSTREAM LICENSE TEXT -----
+
+mqtt-packet@9.0.2
+License: MIT
+Repository: https://github.com/mqttjs/mqtt-packet.git
+License file: LICENSE.md
+----- BEGIN UPSTREAM LICENSE TEXT -----
+The MIT License (MIT)
+=====================
+
+Copyright (c) 2014-2017 mqtt-packet contributors
+---------------------------------------
+
+*mqtt-packet contributors listed at <https://github.com/mqttjs/mqtt-packet#contributors>*
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+----- END UPSTREAM LICENSE TEXT -----
+
+mqtt@5.16.1
+License: MIT
+Repository: git://github.com/mqttjs/MQTT.js.git
+License file: LICENSE.md
+----- BEGIN UPSTREAM LICENSE TEXT -----
+The MIT License (MIT)
+=====================
+
+Copyright (c) 2015-2016 MQTT.js contributors
+---------------------------------------
+
+*MQTT.js contributors listed at <https://github.com/mqttjs/MQTT.js#contributors>*
+
+Copyright 2011-2014 by Adam Rudd
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ----- END UPSTREAM LICENSE TEXT -----
 
 ms@2.0.0
@@ -18437,6 +18791,60 @@ IN THE SOFTWARE.
 """
 ----- END UPSTREAM LICENSE TEXT -----
 
+readable-stream@4.8.0
+License: MIT
+Repository: https://github.com/nodejs/readable-stream
+License file: LICENSE
+----- BEGIN UPSTREAM LICENSE TEXT -----
+Node.js is licensed for use as follows:
+
+"""
+Copyright Node.js contributors. All rights reserved.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to
+deal in the Software without restriction, including without limitation the
+rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
+sell copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+IN THE SOFTWARE.
+"""
+
+This license applies to parts of Node.js originating from the
+https://github.com/joyent/node repository:
+
+"""
+Copyright Joyent, Inc. and other Node contributors. All rights reserved.
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to
+deal in the Software without restriction, including without limitation the
+rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
+sell copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+IN THE SOFTWARE.
+"""
+----- END UPSTREAM LICENSE TEXT -----
+
 readdir-glob@1.1.3
 License: Apache-2.0
 Repository: git://github.com/Yqnn/node-readdir-glob.git
@@ -18673,6 +19081,10 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ----- END UPSTREAM LICENSE TEXT -----
 
+redis@6.3.1
+License: MIT
+Repository: git://github.com/redis/node-redis.git
+
 reflect-metadata@0.2.2
 License: Apache-2.0
 Repository: https://github.com/rbuckton/reflect-metadata.git
@@ -18783,6 +19195,28 @@ LIABLE FOR ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES
 OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS,
 WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION,
 ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+----- END UPSTREAM LICENSE TEXT -----
+
+rfdc@1.4.1
+License: MIT
+Repository: git+https://github.com/davidmarkclements/rfdc.git
+License file: LICENSE
+----- BEGIN UPSTREAM LICENSE TEXT -----
+Copyright 2019 "David Mark Clements <david.mark.clements@gmail.com>"
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the Software without restriction, including without limitation
+the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and
+to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF
+CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+IN THE SOFTWARE.
 ----- END UPSTREAM LICENSE TEXT -----
 
 run-applescript@7.1.0
@@ -19240,6 +19674,60 @@ License file: LICENSE
 The MIT License (MIT)
 
 Copyright (c) Feross Aboukhadijeh
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software is furnished to do so,
+subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+----- END UPSTREAM LICENSE TEXT -----
+
+smart-buffer@4.2.0
+License: MIT
+Repository: https://github.com/JoshGlazebrook/smart-buffer.git
+License file: LICENSE
+----- BEGIN UPSTREAM LICENSE TEXT -----
+The MIT License (MIT)
+
+Copyright (c) 2013-2017 Josh Glazebrook
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software is furnished to do so,
+subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+----- END UPSTREAM LICENSE TEXT -----
+
+socks@2.8.10
+License: MIT
+Repository: git+https://github.com/JoshGlazebrook/socks.git
+License file: LICENSE
+----- BEGIN UPSTREAM LICENSE TEXT -----
+The MIT License (MIT)
+
+Copyright (c) 2013 Josh Glazebrook
 
 Permission is hereby granted, free of charge, to any person obtaining a copy of
 this software and associated documentation files (the "Software"), to deal in
@@ -20885,6 +21373,118 @@ License file: LICENSE
 The MIT License (MIT)
 
 Copyright (c) 2015-25 Lloyd Brookes <opensource@75lb.com>
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+----- END UPSTREAM LICENSE TEXT -----
+
+worker-factory@7.0.50
+License: MIT
+Repository: https://github.com/chrisguttandin/worker-factory.git
+License file: LICENSE
+----- BEGIN UPSTREAM LICENSE TEXT -----
+MIT License
+
+Copyright (c) 2026 Christoph Guttandin
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+----- END UPSTREAM LICENSE TEXT -----
+
+worker-timers-broker@8.0.18
+License: MIT
+Repository: https://github.com/chrisguttandin/worker-timers-broker.git
+License file: LICENSE
+----- BEGIN UPSTREAM LICENSE TEXT -----
+MIT License
+
+Copyright (c) 2026 Christoph Guttandin
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+----- END UPSTREAM LICENSE TEXT -----
+
+worker-timers-worker@9.0.15
+License: MIT
+Repository: https://github.com/chrisguttandin/worker-timers-worker.git
+License file: LICENSE
+----- BEGIN UPSTREAM LICENSE TEXT -----
+MIT License
+
+Copyright (c) 2026 Christoph Guttandin
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+----- END UPSTREAM LICENSE TEXT -----
+
+worker-timers@8.0.34
+License: MIT
+Repository: https://github.com/chrisguttandin/worker-timers.git
+License file: LICENSE
+----- BEGIN UPSTREAM LICENSE TEXT -----
+MIT License
+
+Copyright (c) 2026 Christoph Guttandin
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

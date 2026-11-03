@@ -68,8 +68,6 @@ async function main() {
             setAge(destination, backup.ageDays);
         }
         const orphanTemporary = path.join(backupDir, 'factory-orphan.db.999.tmp-wal');
-        fs.writeFileSync(orphanTemporary, 'stale temporary sidecar');
-        setAge(orphanTemporary, 2);
 
         const port = await findFreePort(3621);
         origin = `http://127.0.0.1:${port}`;
@@ -91,8 +89,14 @@ async function main() {
         await waitForHttp(`${origin}/api/health`, 30000);
         await waitUntil(async () => {
             const status = await requestJson(`${origin}/api/database/backups`);
-            return status.supported && status.backups?.length >= seededBackups.length ? status : null;
+            return status.supported && status.backups?.length >= seededBackups.length
+                && status.lastCleanup?.reason === 'startup' ? status : null;
         }, 15000, 'database backup status');
+
+        // Exercise policy-save cleanup after startup cleanup has completed;
+        // otherwise startup may remove the fixture before policy30 can count it.
+        fs.writeFileSync(orphanTemporary, 'stale temporary sidecar');
+        setAge(orphanTemporary, 2);
 
         const policy30 = await requestJson(`${origin}/api/database/backups/config`, {
             method: 'PUT',

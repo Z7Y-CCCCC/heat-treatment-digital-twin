@@ -1,0 +1,703 @@
+{
+  "assetSpec": {
+    "version": "1.0.0",
+    "device_family": "水冷槽",
+    "unit": "m",
+    "axis_rule": "Y-up / Z-forward",
+    "max_triangles": 200000,
+    "max_nodes": 800,
+    "max_texture_size": 2048,
+    "lod_policy": "LOD0 必须可用，LOD1/LOD2 可选",
+    "node_naming_rule": "role_part_action，例如 fan_rear_rotate、door_front_lift、valve_gas_01",
+    "delivery_status": "review",
+    "owner": "",
+    "notes": "用户提供的 47.10.00_水冷槽.glb 原文件入库；保留原始节点、材质和坐标。"
+  },
+  "optimization": {
+    "mode": "auto",
+    "mergeStatic": false,
+    "instanceRepeated": true,
+    "preserveAnimated": true,
+    "materialEnhancement": "original",
+    "contactShadow": true,
+    "environmentIntensity": 0.85
+  },
+  "runtime": {
+    "enableGenericBindings": true
+  },
+  "inspection": {
+    "version": 2,
+    "enabled": true,
+    "offset_space": "model",
+    "animation_duration": 1.3,
+    "shell_duration": 0.2,
+    "stagger": 0.12,
+    "playback_speed": 1,
+    "easing": "smoothstep",
+    "labels": {
+      "enabled": true,
+      "leader_lines": true
+    },
+    "shell": {
+      "node_paths": [],
+      "node_names": [],
+      "opacity": 0.18,
+      "wireframe": false,
+      "transition": "clip",
+      "axis": "y",
+      "direction": 1
+    },
+    "solid": {
+      "view_id": "",
+      "transition_seconds": 0.65,
+      "camera": {
+        "yaw": 38,
+        "pitch": 22,
+        "distance_scale": 1.12,
+        "target_offset": [
+          0,
+          0,
+          0
+        ]
+      }
+    },
+    "xray": {
+      "view_id": "",
+      "transition_seconds": 0.65,
+      "camera": {
+        "yaw": 238,
+        "pitch": 19,
+        "distance_scale": 1.08,
+        "target_offset": [
+          0,
+          0,
+          0
+        ]
+      }
+    },
+    "exploded": {
+      "view_id": "",
+      "transition_seconds": 1.5,
+      "camera": {
+        "yaw": 38,
+        "pitch": 25,
+        "distance_scale": 1.15,
+        "target_offset": [
+          0,
+          0,
+          0
+        ]
+      }
+    },
+    "parts": [
+      {
+        "id": "cad_water_cooling_tank_471000_assembly_1",
+        "name": "底座与紧固件",
+        "group": "cad_water_cooling_tank_471000",
+        "enabled": true,
+        "node_path": "",
+        "node_name": "cad_water_cooling_tank_v1_structure",
+        "node_paths": [],
+        "node_names": [
+          "cad_water_cooling_tank_v1_frame_fixings"
+        ],
+        "explode_offset": [
+          0,
+          0,
+          0
+        ],
+        "explode_rotation": [
+          0,
+          0,
+          0
+        ],
+        "delay": 0,
+        "duration": 1.3,
+        "label_offset": [
+          0,
+          0.35,
+          0
+        ],
+        "description": "原 GLB 总成拆解展示；保留节点内部相对位置，不代表实际检修顺序。",
+        "point_ids": [],
+        "point_keys": [],
+        "detail_view_id": "",
+        "camera": null
+      },
+      {
+        "id": "cad_water_cooling_tank_471000_assembly_2",
+        "name": "水槽总成",
+        "group": "cad_water_cooling_tank_471000",
+        "enabled": true,
+        "node_path": "",
+        "node_name": "cad_water_cooling_tank_v1_tank",
+        "node_paths": [],
+        "node_names": [],
+        "explode_offset": [
+          -1.7,
+          -0.25,
+          0
+        ],
+        "explode_rotation": [
+          0,
+          0,
+          0
+        ],
+        "delay": 0,
+        "duration": 1.3,
+        "label_offset": [
+          0,
+          0.35,
+          0
+        ],
+        "description": "原 GLB 总成拆解展示；保留节点内部相对位置，不代表实际检修顺序。",
+        "point_ids": [],
+        "point_keys": [],
+        "detail_view_id": "",
+        "camera": null
+      },
+      {
+        "id": "cad_water_cooling_tank_471000_assembly_3",
+        "name": "上部罩壳与吊耳",
+        "group": "cad_water_cooling_tank_471000",
+        "enabled": true,
+        "node_path": "",
+        "node_name": "cad_water_cooling_tank_v1_upper_housing",
+        "node_paths": [],
+        "node_names": [
+          "cad_water_cooling_tank_v1_lifting_eyes"
+        ],
+        "explode_offset": [
+          -1.8,
+          1.1,
+          0
+        ],
+        "explode_rotation": [
+          0,
+          0,
+          0
+        ],
+        "delay": 0,
+        "duration": 1.3,
+        "label_offset": [
+          0,
+          0.35,
+          0
+        ],
+        "description": "原 GLB 总成拆解展示；保留节点内部相对位置，不代表实际检修顺序。",
+        "point_ids": [],
+        "point_keys": [],
+        "detail_view_id": "",
+        "camera": null
+      },
+      {
+        "id": "cad_water_cooling_tank_471000_assembly_4",
+        "name": "内衬",
+        "group": "cad_water_cooling_tank_471000",
+        "enabled": true,
+        "node_path": "",
+        "node_name": "cad_water_cooling_tank_v1_lining",
+        "node_paths": [],
+        "node_names": [],
+        "explode_offset": [
+          0,
+          0.2,
+          -1.8
+        ],
+        "explode_rotation": [
+          0,
+          0,
+          0
+        ],
+        "delay": 0,
+        "duration": 1.3,
+        "label_offset": [
+          0,
+          0.35,
+          0
+        ],
+        "description": "原 GLB 总成拆解展示；保留节点内部相对位置，不代表实际检修顺序。",
+        "point_ids": [],
+        "point_keys": [],
+        "detail_view_id": "",
+        "camera": null
+      },
+      {
+        "id": "cad_water_cooling_tank_471000_assembly_5",
+        "name": "承料篮及导向",
+        "group": "cad_water_cooling_tank_471000",
+        "enabled": true,
+        "node_path": "",
+        "node_name": "cad_water_cooling_tank_v1_basket",
+        "node_paths": [],
+        "node_names": [
+          "cad_water_cooling_tank_v1_basket_guides"
+        ],
+        "explode_offset": [
+          0,
+          1.45,
+          0.7
+        ],
+        "explode_rotation": [
+          0,
+          0,
+          0
+        ],
+        "delay": 0,
+        "duration": 1.3,
+        "label_offset": [
+          0,
+          0.35,
+          0
+        ],
+        "description": "原 GLB 总成拆解展示；保留节点内部相对位置，不代表实际检修顺序。",
+        "point_ids": [],
+        "point_keys": [],
+        "detail_view_id": "",
+        "camera": null
+      },
+      {
+        "id": "cad_water_cooling_tank_471000_assembly_6",
+        "name": "提升框架",
+        "group": "cad_water_cooling_tank_471000",
+        "enabled": true,
+        "node_path": "",
+        "node_name": "cad_water_cooling_tank_v1_hoist_frame",
+        "node_paths": [],
+        "node_names": [],
+        "explode_offset": [
+          1.6,
+          0.8,
+          0
+        ],
+        "explode_rotation": [
+          0,
+          0,
+          0
+        ],
+        "delay": 0,
+        "duration": 1.3,
+        "label_offset": [
+          0,
+          0.35,
+          0
+        ],
+        "description": "原 GLB 总成拆解展示；保留节点内部相对位置，不代表实际检修顺序。",
+        "point_ids": [],
+        "point_keys": [],
+        "detail_view_id": "",
+        "camera": null
+      },
+      {
+        "id": "cad_water_cooling_tank_471000_assembly_7",
+        "name": "提升机构与传动",
+        "group": "cad_water_cooling_tank_471000",
+        "enabled": true,
+        "node_path": "",
+        "node_name": "cad_water_cooling_tank_v1_hoist",
+        "node_paths": [],
+        "node_names": [
+          "cad_water_cooling_tank_v1_hoist_drive",
+          "cad_water_cooling_tank_v1_hoist_transmission"
+        ],
+        "explode_offset": [
+          0,
+          2,
+          0
+        ],
+        "explode_rotation": [
+          0,
+          0,
+          0
+        ],
+        "delay": 0,
+        "duration": 1.3,
+        "label_offset": [
+          0,
+          0.35,
+          0
+        ],
+        "description": "原 GLB 总成拆解展示；保留节点内部相对位置，不代表实际检修顺序。",
+        "point_ids": [],
+        "point_keys": [],
+        "detail_view_id": "",
+        "camera": null
+      },
+      {
+        "id": "cad_water_cooling_tank_471000_assembly_8",
+        "name": "前门及密封滑架",
+        "group": "cad_water_cooling_tank_471000",
+        "enabled": true,
+        "node_path": "",
+        "node_name": "cad_water_cooling_tank_v1_door",
+        "node_paths": [],
+        "node_names": [
+          "cad_water_cooling_tank_v1_door_carriages",
+          "cad_water_cooling_tank_v1_door_seals"
+        ],
+        "explode_offset": [
+          0,
+          0.3,
+          1.7
+        ],
+        "explode_rotation": [
+          0,
+          0,
+          0
+        ],
+        "delay": 0,
+        "duration": 1.3,
+        "label_offset": [
+          0,
+          0.35,
+          0
+        ],
+        "description": "原 GLB 总成拆解展示；保留节点内部相对位置，不代表实际检修顺序。",
+        "point_ids": [],
+        "point_keys": [],
+        "detail_view_id": "",
+        "camera": null
+      },
+      {
+        "id": "cad_water_cooling_tank_471000_assembly_9",
+        "name": "门导向及安全附件",
+        "group": "cad_water_cooling_tank_471000",
+        "enabled": true,
+        "node_path": "",
+        "node_name": "cad_water_cooling_tank_v1_door_guides",
+        "node_paths": [],
+        "node_names": [
+          "cad_water_cooling_tank_v1_door_safety"
+        ],
+        "explode_offset": [
+          1.6,
+          0.7,
+          1
+        ],
+        "explode_rotation": [
+          0,
+          0,
+          0
+        ],
+        "delay": 0,
+        "duration": 1.3,
+        "label_offset": [
+          0,
+          0.35,
+          0
+        ],
+        "description": "原 GLB 总成拆解展示；保留节点内部相对位置，不代表实际检修顺序。",
+        "point_ids": [],
+        "point_keys": [],
+        "detail_view_id": "",
+        "camera": null
+      },
+      {
+        "id": "cad_water_cooling_tank_471000_assembly_10",
+        "name": "门驱动与链条",
+        "group": "cad_water_cooling_tank_471000",
+        "enabled": true,
+        "node_path": "",
+        "node_name": "cad_water_cooling_tank_v1_door_drive",
+        "node_paths": [],
+        "node_names": [
+          "cad_water_cooling_tank_v1_door_chains"
+        ],
+        "explode_offset": [
+          0,
+          1.7,
+          1.2
+        ],
+        "explode_rotation": [
+          0,
+          0,
+          0
+        ],
+        "delay": 0,
+        "duration": 1.3,
+        "label_offset": [
+          0,
+          0.35,
+          0
+        ],
+        "description": "原 GLB 总成拆解展示；保留节点内部相对位置，不代表实际检修顺序。",
+        "point_ids": [],
+        "point_keys": [],
+        "detail_view_id": "",
+        "camera": null
+      },
+      {
+        "id": "cad_water_cooling_tank_471000_assembly_11",
+        "name": "搅拌总成及安装法兰",
+        "group": "cad_water_cooling_tank_471000",
+        "enabled": true,
+        "node_path": "",
+        "node_name": "cad_water_cooling_tank_v1_agitator",
+        "node_paths": [],
+        "node_names": [
+          "cad_water_cooling_tank_v1_agitator_flange"
+        ],
+        "explode_offset": [
+          1.7,
+          0.6,
+          -0.8
+        ],
+        "explode_rotation": [
+          0,
+          0,
+          0
+        ],
+        "delay": 0,
+        "duration": 1.3,
+        "label_offset": [
+          0,
+          0.35,
+          0
+        ],
+        "description": "原 GLB 总成拆解展示；保留节点内部相对位置，不代表实际检修顺序。",
+        "point_ids": [],
+        "point_keys": [],
+        "detail_view_id": "",
+        "camera": null
+      },
+      {
+        "id": "cad_water_cooling_tank_471000_assembly_12",
+        "name": "排烟抽气总成",
+        "group": "cad_water_cooling_tank_471000",
+        "enabled": true,
+        "node_path": "",
+        "node_name": "cad_water_cooling_tank_v1_extraction",
+        "node_paths": [],
+        "node_names": [],
+        "explode_offset": [
+          0,
+          1.5,
+          -1.5
+        ],
+        "explode_rotation": [
+          0,
+          0,
+          0
+        ],
+        "delay": 0,
+        "duration": 1.3,
+        "label_offset": [
+          0,
+          0.35,
+          0
+        ],
+        "description": "原 GLB 总成拆解展示；保留节点内部相对位置，不代表实际检修顺序。",
+        "point_ids": [],
+        "point_keys": [],
+        "detail_view_id": "",
+        "camera": null
+      },
+      {
+        "id": "cad_water_cooling_tank_471000_assembly_13",
+        "name": "循环管路与阀门",
+        "group": "cad_water_cooling_tank_471000",
+        "enabled": true,
+        "node_path": "",
+        "node_name": "cad_water_cooling_tank_v1_coolant_pipes",
+        "node_paths": [],
+        "node_names": [
+          "cad_water_cooling_tank_v1_pipes",
+          "cad_water_cooling_tank_v1_valves",
+          "cad_water_cooling_tank_v1_valve_detail"
+        ],
+        "explode_offset": [
+          2,
+          0.25,
+          0
+        ],
+        "explode_rotation": [
+          0,
+          0,
+          0
+        ],
+        "delay": 0,
+        "duration": 1.3,
+        "label_offset": [
+          0,
+          0.35,
+          0
+        ],
+        "description": "原 GLB 总成拆解展示；保留节点内部相对位置，不代表实际检修顺序。",
+        "point_ids": [],
+        "point_keys": [],
+        "detail_view_id": "",
+        "camera": null
+      },
+      {
+        "id": "cad_water_cooling_tank_471000_assembly_14",
+        "name": "电气附件",
+        "group": "cad_water_cooling_tank_471000",
+        "enabled": true,
+        "node_path": "",
+        "node_name": "cad_water_cooling_tank_v1_electrics",
+        "node_paths": [],
+        "node_names": [],
+        "explode_offset": [
+          -1.6,
+          0.1,
+          1.4
+        ],
+        "explode_rotation": [
+          0,
+          0,
+          0
+        ],
+        "delay": 0,
+        "duration": 1.3,
+        "label_offset": [
+          0,
+          0.35,
+          0
+        ],
+        "description": "原 GLB 总成拆解展示；保留节点内部相对位置，不代表实际检修顺序。",
+        "point_ids": [],
+        "point_keys": [],
+        "detail_view_id": "",
+        "camera": null
+      },
+      {
+        "id": "cad_water_cooling_tank_471000_assembly_15",
+        "name": "仪表与铭牌",
+        "group": "cad_water_cooling_tank_471000",
+        "enabled": true,
+        "node_path": "",
+        "node_name": "cad_water_cooling_tank_v1_instrumentation",
+        "node_paths": [],
+        "node_names": [
+          "cad_water_cooling_tank_v1_nameplates"
+        ],
+        "explode_offset": [
+          1.7,
+          1.5,
+          -0.5
+        ],
+        "explode_rotation": [
+          0,
+          0,
+          0
+        ],
+        "delay": 0,
+        "duration": 1.3,
+        "label_offset": [
+          0,
+          0.35,
+          0
+        ],
+        "description": "原 GLB 总成拆解展示；保留节点内部相对位置，不代表实际检修顺序。",
+        "point_ids": [],
+        "point_keys": [],
+        "detail_view_id": "",
+        "camera": null
+      },
+      {
+        "id": "cad_water_cooling_tank_471000_assembly_16",
+        "name": "后槽检修盖",
+        "group": "cad_water_cooling_tank_471000",
+        "enabled": true,
+        "node_path": "",
+        "node_name": "cad_water_cooling_tank_v1_rear_tank_hatch",
+        "node_paths": [],
+        "node_names": [],
+        "explode_offset": [
+          0,
+          0.6,
+          -2
+        ],
+        "explode_rotation": [
+          0,
+          0,
+          0
+        ],
+        "delay": 0,
+        "duration": 1.3,
+        "label_offset": [
+          0,
+          0.35,
+          0
+        ],
+        "description": "原 GLB 总成拆解展示；保留节点内部相对位置，不代表实际检修顺序。",
+        "point_ids": [],
+        "point_keys": [],
+        "detail_view_id": "",
+        "camera": null
+      },
+      {
+        "id": "cad_water_cooling_tank_471000_reference",
+        "name": "模型参考标记",
+        "group": "参考",
+        "enabled": true,
+        "node_path": "",
+        "node_name": "cad_water_cooling_tank_v1_review",
+        "node_paths": [],
+        "node_names": [],
+        "explode_offset": [
+          0,
+          0,
+          0
+        ],
+        "explode_rotation": [
+          0,
+          0,
+          0
+        ],
+        "delay": 0,
+        "duration": 0,
+        "label_offset": [
+          0,
+          0.35,
+          0
+        ],
+        "description": "",
+        "point_ids": [],
+        "point_keys": [],
+        "detail_view_id": "",
+        "camera": null
+      }
+    ]
+  },
+  "partBindings": [],
+  "sourceAsset": {
+    "filename": "47.10.00_水冷槽.glb",
+    "sha256": "935bdbc3e0cdb4241aa53232d76bfb6d073a77e1d76434c2b7d5f917b39cba7f",
+    "stats": {
+      "nodes": 104,
+      "meshes": 72,
+      "triangles": 42800,
+      "materials": 14,
+      "size": [
+        2.389999955892563,
+        4.320000171661377,
+        3.0029832124710083
+      ],
+      "min": [
+        -1.1299999952316284,
+        0,
+        -1.9320000410079956
+      ],
+      "max": [
+        1.2599999606609344,
+        4.320000171661377,
+        1.0709831714630127
+      ]
+    }
+  },
+  "schema_version": 1,
+  "batchable": true,
+  "acceptance": {
+    "status": "review",
+    "checked_at": "",
+    "stats": {},
+    "checks": []
+  },
+  "release": {
+    "version": "1.0.0",
+    "status": "review",
+    "published_at": "",
+    "history": []
+  }
+}

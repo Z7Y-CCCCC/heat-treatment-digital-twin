@@ -1,0 +1,698 @@
+{
+  "assetSpec": {
+    "version": "1.0.0",
+    "device_family": "水冷槽",
+    "unit": "m",
+    "axis_rule": "Y-up / Z-forward",
+    "max_triangles": 200000,
+    "max_nodes": 800,
+    "max_texture_size": 2048,
+    "lod_policy": "LOD0 必须可用，LOD1/LOD2 可选",
+    "node_naming_rule": "role_part_action，例如 fan_rear_rotate、door_front_lift、valve_gas_01",
+    "delivery_status": "review",
+    "owner": "",
+    "notes": "47.10.00 三视总图视觉重建；标注尺寸用于外形/行程标定，未标注细节为示意。"
+  },
+  "optimization": {
+    "mode": "auto",
+    "mergeStatic": false,
+    "instanceRepeated": true,
+    "preserveAnimated": true,
+    "materialEnhancement": "auto",
+    "contactShadow": true,
+    "environmentIntensity": 0.85
+  },
+  "runtime": {
+    "enableGenericBindings": true
+  },
+  "inspection": {
+    "version": 2,
+    "enabled": true,
+    "offset_space": "parent",
+    "animation_duration": 1.5,
+    "shell_duration": 1,
+    "stagger": 0.06,
+    "playback_speed": 1,
+    "easing": "smoothstep",
+    "labels": {
+      "enabled": true,
+      "leader_lines": true
+    },
+    "shell": {
+      "node_paths": [],
+      "node_names": [
+        "tank_shell",
+        "side_reservoir",
+        "exhaust_hood"
+      ],
+      "opacity": 0.16,
+      "wireframe": false,
+      "transition": "clip",
+      "axis": "y",
+      "direction": 1
+    },
+    "solid": {
+      "view_id": "",
+      "transition_seconds": 0.65,
+      "camera": {
+        "yaw": 238,
+        "pitch": 19,
+        "distance_scale": 1.12,
+        "target_offset": [
+          0,
+          0,
+          0
+        ]
+      }
+    },
+    "xray": {
+      "view_id": "",
+      "transition_seconds": 0.65,
+      "camera": {
+        "yaw": 238,
+        "pitch": 19,
+        "distance_scale": 1.08,
+        "target_offset": [
+          0,
+          0,
+          0
+        ]
+      }
+    },
+    "exploded": {
+      "view_id": "",
+      "transition_seconds": 1.5,
+      "camera": {
+        "yaw": 238,
+        "pitch": 22,
+        "distance_scale": 1.22,
+        "target_offset": [
+          0,
+          0,
+          0
+        ]
+      }
+    },
+    "parts": [
+      {
+        "id": "water_tank_shell",
+        "name": "主槽焊接壳体",
+        "group": "47.10.00 水冷槽",
+        "enabled": true,
+        "node_path": "",
+        "node_name": "tank_shell",
+        "node_paths": [],
+        "node_names": [],
+        "explode_offset": [
+          0,
+          0,
+          -1.6
+        ],
+        "explode_rotation": [
+          0,
+          0,
+          0
+        ],
+        "delay": 0,
+        "duration": 1.2,
+        "label_offset": [
+          0,
+          0.35,
+          0
+        ],
+        "description": "按总图总成分组，用于结构展示。",
+        "point_ids": [],
+        "point_keys": [],
+        "detail_view_id": "",
+        "camera": null
+      },
+      {
+        "id": "water_base_and_stiffeners",
+        "name": "底座与加强筋",
+        "group": "47.10.00 水冷槽",
+        "enabled": true,
+        "node_path": "",
+        "node_name": "base_and_stiffeners",
+        "node_paths": [],
+        "node_names": [],
+        "explode_offset": [
+          0,
+          -0.45,
+          0
+        ],
+        "explode_rotation": [
+          0,
+          0,
+          0
+        ],
+        "delay": 0,
+        "duration": 1.2,
+        "label_offset": [
+          0,
+          0.35,
+          0
+        ],
+        "description": "按总图总成分组，用于结构展示。",
+        "point_ids": [],
+        "point_keys": [],
+        "detail_view_id": "",
+        "camera": null
+      },
+      {
+        "id": "water_work_deck",
+        "name": "槽口工作平台",
+        "group": "47.10.00 水冷槽",
+        "enabled": true,
+        "node_path": "",
+        "node_name": "work_deck",
+        "node_paths": [],
+        "node_names": [],
+        "explode_offset": [
+          0,
+          0.7,
+          0
+        ],
+        "explode_rotation": [
+          0,
+          0,
+          0
+        ],
+        "delay": 0,
+        "duration": 1.2,
+        "label_offset": [
+          0,
+          0.35,
+          0
+        ],
+        "description": "按总图总成分组，用于结构展示。",
+        "point_ids": [],
+        "point_keys": [],
+        "detail_view_id": "",
+        "camera": null
+      },
+      {
+        "id": "water_lift_guides",
+        "name": "升降导向架",
+        "group": "47.10.00 水冷槽",
+        "enabled": true,
+        "node_path": "",
+        "node_name": "lift_guides",
+        "node_paths": [],
+        "node_names": [],
+        "explode_offset": [
+          1.3,
+          0.4,
+          0
+        ],
+        "explode_rotation": [
+          0,
+          0,
+          0
+        ],
+        "delay": 0,
+        "duration": 1.2,
+        "label_offset": [
+          0,
+          0.35,
+          0
+        ],
+        "description": "按总图总成分组，用于结构展示。",
+        "point_ids": [],
+        "point_keys": [],
+        "detail_view_id": "",
+        "camera": null
+      },
+      {
+        "id": "water_lift_carriage",
+        "name": "升降承料架（含示意工件）",
+        "group": "47.10.00 水冷槽",
+        "enabled": true,
+        "node_path": "",
+        "node_name": "lift_carriage",
+        "node_paths": [],
+        "node_names": [],
+        "explode_offset": [
+          0,
+          1.3,
+          0
+        ],
+        "explode_rotation": [
+          0,
+          0,
+          0
+        ],
+        "delay": 0,
+        "duration": 1.2,
+        "label_offset": [
+          0,
+          0.35,
+          0
+        ],
+        "description": "按总图总成分组，用于结构展示。",
+        "point_ids": [],
+        "point_keys": [],
+        "detail_view_id": "",
+        "camera": null
+      },
+      {
+        "id": "water_lift_drive",
+        "name": "升降电机与减速机",
+        "group": "47.10.00 水冷槽",
+        "enabled": true,
+        "node_path": "",
+        "node_name": "lift_drive",
+        "node_paths": [],
+        "node_names": [],
+        "explode_offset": [
+          -1.2,
+          0.7,
+          0
+        ],
+        "explode_rotation": [
+          0,
+          0,
+          0
+        ],
+        "delay": 0,
+        "duration": 1.2,
+        "label_offset": [
+          0,
+          0.35,
+          0
+        ],
+        "description": "按总图总成分组，用于结构展示。",
+        "point_ids": [],
+        "point_keys": [],
+        "detail_view_id": "",
+        "camera": null
+      },
+      {
+        "id": "water_hoist_shaft",
+        "name": "传动轴与链轮",
+        "group": "47.10.00 水冷槽",
+        "enabled": true,
+        "node_path": "",
+        "node_name": "hoist_shaft",
+        "node_paths": [],
+        "node_names": [],
+        "explode_offset": [
+          0,
+          1.5,
+          0
+        ],
+        "explode_rotation": [
+          0,
+          0,
+          0
+        ],
+        "delay": 0,
+        "duration": 1.2,
+        "label_offset": [
+          0,
+          0.35,
+          0
+        ],
+        "description": "按总图总成分组，用于结构展示。",
+        "point_ids": [],
+        "point_keys": [],
+        "detail_view_id": "",
+        "camera": null
+      },
+      {
+        "id": "water_lift_chains",
+        "name": "提升链条",
+        "group": "47.10.00 水冷槽",
+        "enabled": true,
+        "node_path": "",
+        "node_name": "lift_chains",
+        "node_paths": [],
+        "node_names": [],
+        "explode_offset": [
+          0,
+          0.5,
+          -0.8
+        ],
+        "explode_rotation": [
+          0,
+          0,
+          0
+        ],
+        "delay": 0,
+        "duration": 1.2,
+        "label_offset": [
+          0,
+          0.35,
+          0
+        ],
+        "description": "按总图总成分组，用于结构展示。",
+        "point_ids": [],
+        "point_keys": [],
+        "detail_view_id": "",
+        "camera": null
+      },
+      {
+        "id": "water_side_reservoir",
+        "name": "侧置循环槽",
+        "group": "47.10.00 水冷槽",
+        "enabled": true,
+        "node_path": "",
+        "node_name": "side_reservoir",
+        "node_paths": [],
+        "node_names": [],
+        "explode_offset": [
+          0,
+          0,
+          1.35
+        ],
+        "explode_rotation": [
+          0,
+          0,
+          0
+        ],
+        "delay": 0,
+        "duration": 1.2,
+        "label_offset": [
+          0,
+          0.35,
+          0
+        ],
+        "description": "按总图总成分组，用于结构展示。",
+        "point_ids": [],
+        "point_keys": [],
+        "detail_view_id": "",
+        "camera": null
+      },
+      {
+        "id": "water_agitator_motor",
+        "name": "搅拌电机",
+        "group": "47.10.00 水冷槽",
+        "enabled": true,
+        "node_path": "",
+        "node_name": "agitator_motor",
+        "node_paths": [],
+        "node_names": [],
+        "explode_offset": [
+          0,
+          0.9,
+          1
+        ],
+        "explode_rotation": [
+          0,
+          0,
+          0
+        ],
+        "delay": 0,
+        "duration": 1.2,
+        "label_offset": [
+          0,
+          0.35,
+          0
+        ],
+        "description": "按总图总成分组，用于结构展示。",
+        "point_ids": [],
+        "point_keys": [],
+        "detail_view_id": "",
+        "camera": null
+      },
+      {
+        "id": "water_agitator_rotor",
+        "name": "搅拌轴与叶轮",
+        "group": "47.10.00 水冷槽",
+        "enabled": true,
+        "node_path": "",
+        "node_name": "agitator_rotor",
+        "node_paths": [],
+        "node_names": [],
+        "explode_offset": [
+          0,
+          0.4,
+          1.5
+        ],
+        "explode_rotation": [
+          0,
+          0,
+          0
+        ],
+        "delay": 0,
+        "duration": 1.2,
+        "label_offset": [
+          0,
+          0.35,
+          0
+        ],
+        "description": "按总图总成分组，用于结构展示。",
+        "point_ids": [],
+        "point_keys": [],
+        "detail_view_id": "",
+        "camera": null
+      },
+      {
+        "id": "water_circulation_piping",
+        "name": "进水排水及循环管路",
+        "group": "47.10.00 水冷槽",
+        "enabled": true,
+        "node_path": "",
+        "node_name": "circulation_piping",
+        "node_paths": [],
+        "node_names": [],
+        "explode_offset": [
+          1.3,
+          0,
+          1
+        ],
+        "explode_rotation": [
+          0,
+          0,
+          0
+        ],
+        "delay": 0,
+        "duration": 1.2,
+        "label_offset": [
+          0,
+          0.35,
+          0
+        ],
+        "description": "按总图总成分组，用于结构展示。",
+        "point_ids": [],
+        "point_keys": [],
+        "detail_view_id": "",
+        "camera": null
+      },
+      {
+        "id": "water_exhaust_hood",
+        "name": "侧置排烟罩",
+        "group": "47.10.00 水冷槽",
+        "enabled": true,
+        "node_path": "",
+        "node_name": "exhaust_hood",
+        "node_paths": [],
+        "node_names": [],
+        "explode_offset": [
+          -1.4,
+          0,
+          0
+        ],
+        "explode_rotation": [
+          0,
+          0,
+          0
+        ],
+        "delay": 0,
+        "duration": 1.2,
+        "label_offset": [
+          0,
+          0.35,
+          0
+        ],
+        "description": "按总图总成分组，用于结构展示。",
+        "point_ids": [],
+        "point_keys": [],
+        "detail_view_id": "",
+        "camera": null
+      },
+      {
+        "id": "water_exhaust_duct",
+        "name": "排烟弯管",
+        "group": "47.10.00 水冷槽",
+        "enabled": true,
+        "node_path": "",
+        "node_name": "exhaust_duct",
+        "node_paths": [],
+        "node_names": [],
+        "explode_offset": [
+          0,
+          0.8,
+          0
+        ],
+        "explode_rotation": [
+          0,
+          0,
+          0
+        ],
+        "delay": 0,
+        "duration": 1.2,
+        "label_offset": [
+          0,
+          0.35,
+          0
+        ],
+        "description": "按总图总成分组，用于结构展示。",
+        "point_ids": [],
+        "point_keys": [],
+        "detail_view_id": "",
+        "camera": null
+      }
+    ]
+  },
+  "partBindings": [
+    {
+      "id": "water_lift",
+      "name": "承料架下降入水 / 升起沥水",
+      "node_path": "",
+      "node_name": "lift_carriage",
+      "source_group": "water_cooling",
+      "source_key": "lift_down",
+      "action": "translate",
+      "axis": "y",
+      "input_min": 0,
+      "input_max": 1,
+      "output_min": 0,
+      "output_max": -1.05,
+      "speed_factor": 0.10471975511965977,
+      "transition_duration": 5,
+      "on_color": "#00ff88",
+      "off_color": "#666666",
+      "invert": false
+    },
+    {
+      "id": "water_hoist",
+      "name": "升降传动轴与链轮",
+      "node_path": "",
+      "node_name": "hoist_shaft",
+      "source_group": "water_cooling",
+      "source_key": "hoist_rpm",
+      "action": "rotate_speed",
+      "axis": "x",
+      "input_min": 0,
+      "input_max": 1,
+      "output_min": 0,
+      "output_max": 90,
+      "speed_factor": 0.10471975511965977,
+      "transition_duration": 5,
+      "on_color": "#00ff88",
+      "off_color": "#666666",
+      "invert": false
+    },
+    {
+      "id": "water_stir",
+      "name": "循环搅拌轴与叶轮",
+      "node_path": "",
+      "node_name": "agitator_rotor",
+      "source_group": "water_cooling",
+      "source_key": "agitator_rpm",
+      "action": "rotate_speed",
+      "axis": "y",
+      "input_min": 0,
+      "input_max": 1,
+      "output_min": 0,
+      "output_max": 180,
+      "speed_factor": 0.10471975511965977,
+      "transition_duration": 5,
+      "on_color": "#00ff88",
+      "off_color": "#666666",
+      "invert": false
+    },
+    {
+      "id": "water_level",
+      "name": "注水 / 排水液位变化",
+      "node_path": "",
+      "node_name": "water_level",
+      "source_group": "water_cooling",
+      "source_key": "level_ratio",
+      "action": "translate",
+      "axis": "y",
+      "input_min": 0,
+      "input_max": 1,
+      "output_min": 0,
+      "output_max": 1.2,
+      "speed_factor": 0.10471975511965977,
+      "transition_duration": 5,
+      "on_color": "#00ff88",
+      "off_color": "#666666",
+      "invert": false
+    },
+    {
+      "id": "water_inlet",
+      "name": "进水阀启闭",
+      "node_path": "",
+      "node_name": "inlet_valve",
+      "source_group": "water_cooling",
+      "source_key": "inlet_open",
+      "action": "rotate_angle",
+      "axis": "y",
+      "input_min": 0,
+      "input_max": 1,
+      "output_min": 0,
+      "output_max": 90,
+      "speed_factor": 0.10471975511965977,
+      "transition_duration": 5,
+      "on_color": "#00ff88",
+      "off_color": "#666666",
+      "invert": false
+    },
+    {
+      "id": "water_drain",
+      "name": "排水阀启闭",
+      "node_path": "",
+      "node_name": "drain_valve",
+      "source_group": "water_cooling",
+      "source_key": "drain_open",
+      "action": "rotate_angle",
+      "axis": "y",
+      "input_min": 0,
+      "input_max": 1,
+      "output_min": 0,
+      "output_max": 90,
+      "speed_factor": 0.10471975511965977,
+      "transition_duration": 5,
+      "on_color": "#00ff88",
+      "off_color": "#666666",
+      "invert": false
+    }
+  ],
+  "motionProfile": {
+    "id": "water_cooling_tank_cad",
+    "version": 1,
+    "demonstration": true,
+    "stroke": 1.05,
+    "sourceDrawing": "47.10.00",
+    "dimensionsMm": {
+      "length": 2759,
+      "width": 2172,
+      "height": 4320,
+      "frameHeight": 3013,
+      "workHeightAboveFloor": 1250,
+      "baseBelowFloor": 383,
+      "load": [
+        1100,
+        600,
+        650
+      ]
+    },
+    "note": "液位、转速和时长为演示参数；现场点位地址未映射。不写入 PLC。"
+  },
+  "schema_version": 1,
+  "batchable": true,
+  "acceptance": {
+    "status": "review",
+    "checked_at": "",
+    "stats": {},
+    "checks": []
+  },
+  "release": {
+    "version": "1.0.0",
+    "status": "review",
+    "published_at": "",
+    "history": []
+  }
+}

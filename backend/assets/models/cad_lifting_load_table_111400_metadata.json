@@ -1,0 +1,425 @@
+{
+  "assetSpec": {
+    "version": "1.0.0",
+    "device_family": "升降备料台",
+    "unit": "m",
+    "axis_rule": "Y-up / Z-forward",
+    "max_triangles": 200000,
+    "max_nodes": 800,
+    "max_texture_size": 2048,
+    "lod_policy": "LOD0 必须可用，LOD1/LOD2 可选",
+    "node_naming_rule": "role_part_action，例如 fan_rear_rotate、door_front_lift、valve_gas_01",
+    "delivery_status": "review",
+    "owner": "",
+    "notes": "用户提供的 11.14.00_升降备料台.glb 原文件入库；保留原始节点、材质和坐标。"
+  },
+  "optimization": {
+    "mode": "auto",
+    "mergeStatic": false,
+    "instanceRepeated": true,
+    "preserveAnimated": true,
+    "materialEnhancement": "original",
+    "contactShadow": true,
+    "environmentIntensity": 0.85
+  },
+  "runtime": {
+    "enableGenericBindings": true
+  },
+  "inspection": {
+    "version": 2,
+    "enabled": true,
+    "offset_space": "model",
+    "animation_duration": 1.3,
+    "shell_duration": 0.2,
+    "stagger": 0.12,
+    "playback_speed": 1,
+    "easing": "smoothstep",
+    "labels": {
+      "enabled": true,
+      "leader_lines": true
+    },
+    "shell": {
+      "node_paths": [],
+      "node_names": [],
+      "opacity": 0.18,
+      "wireframe": false,
+      "transition": "clip",
+      "axis": "y",
+      "direction": 1
+    },
+    "solid": {
+      "view_id": "",
+      "transition_seconds": 0.65,
+      "camera": {
+        "yaw": 38,
+        "pitch": 22,
+        "distance_scale": 1.12,
+        "target_offset": [
+          0,
+          0,
+          0
+        ]
+      }
+    },
+    "xray": {
+      "view_id": "",
+      "transition_seconds": 0.65,
+      "camera": {
+        "yaw": 238,
+        "pitch": 19,
+        "distance_scale": 1.08,
+        "target_offset": [
+          0,
+          0,
+          0
+        ]
+      }
+    },
+    "exploded": {
+      "view_id": "",
+      "transition_seconds": 1.5,
+      "camera": {
+        "yaw": 38,
+        "pitch": 25,
+        "distance_scale": 1.15,
+        "target_offset": [
+          0,
+          0,
+          0
+        ]
+      }
+    },
+    "parts": [
+      {
+        "id": "cad_lifting_load_table_111400_assembly_1",
+        "name": "固定底座",
+        "group": "cad_lifting_load_table_111400",
+        "enabled": true,
+        "node_path": "",
+        "node_name": "cad_lifting_staging_table_v1_structure",
+        "node_paths": [],
+        "node_names": [],
+        "explode_offset": [
+          0,
+          0,
+          0
+        ],
+        "explode_rotation": [
+          0,
+          0,
+          0
+        ],
+        "delay": 0,
+        "duration": 1.3,
+        "label_offset": [
+          0,
+          0.35,
+          0
+        ],
+        "description": "原 GLB 总成拆解展示；保留节点内部相对位置，不代表实际检修顺序。",
+        "point_ids": [],
+        "point_keys": [],
+        "detail_view_id": "",
+        "camera": null
+      },
+      {
+        "id": "cad_lifting_load_table_111400_assembly_2",
+        "name": "剪叉升降机构",
+        "group": "cad_lifting_load_table_111400",
+        "enabled": true,
+        "node_path": "",
+        "node_name": "cad_lifting_staging_table_v1_lift",
+        "node_paths": [],
+        "node_names": [],
+        "explode_offset": [
+          0,
+          0.65,
+          0
+        ],
+        "explode_rotation": [
+          0,
+          0,
+          0
+        ],
+        "delay": 0,
+        "duration": 1.3,
+        "label_offset": [
+          0,
+          0.35,
+          0
+        ],
+        "description": "原 GLB 总成拆解展示；保留节点内部相对位置，不代表实际检修顺序。",
+        "point_ids": [],
+        "point_keys": [],
+        "detail_view_id": "",
+        "camera": null
+      },
+      {
+        "id": "cad_lifting_load_table_111400_assembly_3",
+        "name": "液压缸及连接管件",
+        "group": "cad_lifting_load_table_111400",
+        "enabled": true,
+        "node_path": "",
+        "node_name": "cad_lifting_staging_table_v1_hydraulics",
+        "node_paths": [],
+        "node_names": [],
+        "explode_offset": [
+          -1.1,
+          0.4,
+          0
+        ],
+        "explode_rotation": [
+          0,
+          0,
+          0
+        ],
+        "delay": 0,
+        "duration": 1.3,
+        "label_offset": [
+          0,
+          0.35,
+          0
+        ],
+        "description": "原 GLB 总成拆解展示；保留节点内部相对位置，不代表实际检修顺序。",
+        "point_ids": [],
+        "point_keys": [],
+        "detail_view_id": "",
+        "camera": null
+      },
+      {
+        "id": "cad_lifting_load_table_111400_assembly_4",
+        "name": "液压动力单元",
+        "group": "cad_lifting_load_table_111400",
+        "enabled": true,
+        "node_path": "",
+        "node_name": "cad_lifting_staging_table_v1_hydraulic_pack",
+        "node_paths": [],
+        "node_names": [],
+        "explode_offset": [
+          1.15,
+          0,
+          0
+        ],
+        "explode_rotation": [
+          0,
+          0,
+          0
+        ],
+        "delay": 0,
+        "duration": 1.3,
+        "label_offset": [
+          0,
+          0.35,
+          0
+        ],
+        "description": "原 GLB 总成拆解展示；保留节点内部相对位置，不代表实际检修顺序。",
+        "point_ids": [],
+        "point_keys": [],
+        "detail_view_id": "",
+        "camera": null
+      },
+      {
+        "id": "cad_lifting_load_table_111400_assembly_5",
+        "name": "升降轴销附件",
+        "group": "cad_lifting_load_table_111400",
+        "enabled": true,
+        "node_path": "",
+        "node_name": "cad_lifting_staging_table_v1_pivot_detail",
+        "node_paths": [],
+        "node_names": [],
+        "explode_offset": [
+          0,
+          0.25,
+          -1
+        ],
+        "explode_rotation": [
+          0,
+          0,
+          0
+        ],
+        "delay": 0,
+        "duration": 1.3,
+        "label_offset": [
+          0,
+          0.35,
+          0
+        ],
+        "description": "原 GLB 总成拆解展示；保留节点内部相对位置，不代表实际检修顺序。",
+        "point_ids": [],
+        "point_keys": [],
+        "detail_view_id": "",
+        "camera": null
+      },
+      {
+        "id": "cad_lifting_load_table_111400_assembly_6",
+        "name": "辊道承料平台",
+        "group": "cad_lifting_load_table_111400",
+        "enabled": true,
+        "node_path": "",
+        "node_name": "cad_lifting_staging_table_v1_roller_bed",
+        "node_paths": [],
+        "node_names": [
+          "cad_lifting_staging_table_v1_roller_details"
+        ],
+        "explode_offset": [
+          0,
+          1.45,
+          0
+        ],
+        "explode_rotation": [
+          0,
+          0,
+          0
+        ],
+        "delay": 0,
+        "duration": 1.3,
+        "label_offset": [
+          0,
+          0.35,
+          0
+        ],
+        "description": "原 GLB 总成拆解展示；保留节点内部相对位置，不代表实际检修顺序。",
+        "point_ids": [],
+        "point_keys": [],
+        "detail_view_id": "",
+        "camera": null
+      },
+      {
+        "id": "cad_lifting_load_table_111400_assembly_7",
+        "name": "滑块导向附件",
+        "group": "cad_lifting_load_table_111400",
+        "enabled": true,
+        "node_path": "",
+        "node_name": "cad_lifting_staging_table_v1_slide_detail",
+        "node_paths": [],
+        "node_names": [],
+        "explode_offset": [
+          0,
+          0.6,
+          1
+        ],
+        "explode_rotation": [
+          0,
+          0,
+          0
+        ],
+        "delay": 0,
+        "duration": 1.3,
+        "label_offset": [
+          0,
+          0.35,
+          0
+        ],
+        "description": "原 GLB 总成拆解展示；保留节点内部相对位置，不代表实际检修顺序。",
+        "point_ids": [],
+        "point_keys": [],
+        "detail_view_id": "",
+        "camera": null
+      },
+      {
+        "id": "cad_lifting_load_table_111400_assembly_8",
+        "name": "端部挡料机构",
+        "group": "cad_lifting_load_table_111400",
+        "enabled": true,
+        "node_path": "",
+        "node_name": "cad_lifting_staging_table_v1_stop_detail",
+        "node_paths": [],
+        "node_names": [],
+        "explode_offset": [
+          1.1,
+          0.95,
+          0
+        ],
+        "explode_rotation": [
+          0,
+          0,
+          0
+        ],
+        "delay": 0,
+        "duration": 1.3,
+        "label_offset": [
+          0,
+          0.35,
+          0
+        ],
+        "description": "原 GLB 总成拆解展示；保留节点内部相对位置，不代表实际检修顺序。",
+        "point_ids": [],
+        "point_keys": [],
+        "detail_view_id": "",
+        "camera": null
+      },
+      {
+        "id": "cad_lifting_load_table_111400_reference",
+        "name": "模型参考标记",
+        "group": "参考",
+        "enabled": true,
+        "node_path": "",
+        "node_name": "cad_lifting_staging_table_v1_review",
+        "node_paths": [],
+        "node_names": [],
+        "explode_offset": [
+          0,
+          0,
+          0
+        ],
+        "explode_rotation": [
+          0,
+          0,
+          0
+        ],
+        "delay": 0,
+        "duration": 0,
+        "label_offset": [
+          0,
+          0.35,
+          0
+        ],
+        "description": "",
+        "point_ids": [],
+        "point_keys": [],
+        "detail_view_id": "",
+        "camera": null
+      }
+    ]
+  },
+  "partBindings": [],
+  "sourceAsset": {
+    "filename": "11.14.00_升降备料台.glb",
+    "sha256": "22b11f4fd3147c8eb5bdec0300f293a700d7818d914cb98ec492d686076cef81",
+    "stats": {
+      "nodes": 36,
+      "meshes": 25,
+      "triangles": 15216,
+      "materials": 9,
+      "size": [
+        1.8370001018047333,
+        1.2750000059604645,
+        0.85999995470047
+      ],
+      "min": [
+        -0.8550000190734863,
+        0,
+        -0.4299999698996544
+      ],
+      "max": [
+        0.982000082731247,
+        1.2750000059604645,
+        0.4299999848008156
+      ]
+    }
+  },
+  "schema_version": 1,
+  "batchable": true,
+  "acceptance": {
+    "status": "review",
+    "checked_at": "",
+    "stats": {},
+    "checks": []
+  },
+  "release": {
+    "version": "1.0.0",
+    "status": "review",
+    "published_at": "",
+    "history": []
+  }
+}

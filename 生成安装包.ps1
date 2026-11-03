@@ -155,7 +155,15 @@ function Resolve-UnityEditor {
 }
 
 function Assert-ApplicationIsClosed {
-    $running = Get-Process -Name 'HeatTreatmentDigitalTwin', 'HeatTreatmentAdminHost' -ErrorAction SilentlyContinue
+    $workspacePrefix = [IO.Path]::GetFullPath($projectDirectory).TrimEnd('\') + '\'
+    $running = Get-Process -Name 'HeatTreatmentDigitalTwin', 'HeatTreatmentAdminHost' -ErrorAction SilentlyContinue |
+        Where-Object {
+            try { $executablePath = $_.Path } catch { $executablePath = $null }
+            # Another checkout or an installed copy may keep serving the site
+            # while an independent workspace prepares its own release resources.
+            [string]::IsNullOrWhiteSpace($executablePath) -or
+                $executablePath.StartsWith($workspacePrefix, [StringComparison]::OrdinalIgnoreCase)
+        }
     if ($running) {
         $processList = ($running | ForEach-Object { "$($_.ProcessName) (PID $($_.Id))" }) -join '、'
         throw "打包前请先关闭正在运行的调试程序：$processList"
