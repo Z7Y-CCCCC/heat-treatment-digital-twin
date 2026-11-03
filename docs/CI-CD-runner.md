@@ -41,3 +41,5 @@ Runner 的进程路径检测只针对本安装目录。停止 runner 前应确�
 在 Actions → Windows installer → Run workflow 选择 `main`；或推送已合入 main 且与 `desktop/package.json` 一致的 `vX.Y.Z` tag。先启用仓库变量 `WINDOWS_RELEASE_RUNNER_ENABLED=true`。流程执行自动回归、初始模板打包、独立 MySQL 首次启动／重启和资源完整性检查、原生界面验证，再上传产物。
 
 只有全部成功才会创建草稿、附加安装包及 SHA256、复核提交与文件哈希，然后**自动发布 Release**。手动 main 发布也使用当前版本 tag。已有 tag 指向其它提交或已发布的同版本不会被覆盖；新版本必须先修改版本号。下载入口是仓库 Releases；私有仓库需要访问权限。失败运行只保留 Actions 日志，不会把旧安装包当作新版本发布。
+
+诊断日志归档上传属于辅助步骤：网络失败会明确警告，日志仍留在 runner `_diag`；不因日志传输中断否定已通过的安装包。构建、回归、启动检查、安装包上传和下载哈希验证都不是可选步骤，任一失败仍禁止发布。

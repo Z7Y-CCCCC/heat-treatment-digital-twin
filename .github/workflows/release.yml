@@ -96,7 +96,12 @@ jobs:
           retention-days: 30
           compression-level: 0
       - uses: actions/upload-artifact@v4
+        id: build-logs
         if: always()
+        # Diagnostic transport is not a release input. The mandatory installer
+        # upload above and all build/smoke/native checks still fail closed.
+        continue-on-error: true
+        timeout-minutes: 5
         with:
           name: windows-build-logs-${{ github.run_number }}
           path: |
@@ -106,6 +111,10 @@ jobs:
             output/packaged-project-bundle-mysql-*/mysqld.log
             unity-client/Logs/desktop-package-build.log
           retention-days: 14
+      - name: Report diagnostic upload failure
+        if: always() && steps.build-logs.outcome == 'failure'
+        shell: pwsh -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File {0}
+        run: Write-Warning 'Diagnostic log upload failed; runner logs remain in _diag. Build, installer upload and release verification are still mandatory.'
 
   publish-release:
     needs: [preflight, package]
