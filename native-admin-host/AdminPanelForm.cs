@@ -467,16 +467,10 @@ internal sealed class AdminPanelForm : Form
                         PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly
                     );
                     await pipe.ConnectAsync(350, _pipeCancellation.Token);
-                    await using var writer = new StreamWriter(pipe, new UTF8Encoding(false), 1024, leaveOpen: true);
-                    await writer.WriteLineAsync(message);
-                    await writer.FlushAsync();
                     // Unity verifies the peer identity after ReadLine. Keep the
                     // connection alive until its listener closes/acknowledges it;
                     // closing immediately can make GetImpersonationUserName fail.
-                    using var receiptTimeout = CancellationTokenSource.CreateLinkedTokenSource(_pipeCancellation.Token);
-                    receiptTimeout.CancelAfter(TimeSpan.FromSeconds(2));
-                    using var receipt = new StreamReader(pipe, Encoding.UTF8, false, 1024, leaveOpen: true);
-                    await receipt.ReadLineAsync(receiptTimeout.Token);
+                    await NativeSessionCommandTransport.SendAsync(pipe, message, _pipeCancellation.Token);
                     return;
                 }
                 catch (OperationCanceledException) when (_pipeCancellation.IsCancellationRequested)
