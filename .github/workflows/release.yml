@@ -167,7 +167,9 @@ jobs:
         env:
           BUILD_COMMIT: ${{ needs.preflight.outputs.commit }}
           BUILD_RUN: ${{ needs.preflight.outputs.run }}
-        run: node tools/ci/verify-release.cjs "$RUNNER_TEMP/verified-release" "$BUILD_COMMIT" "$BUILD_RUN"
+        run: |
+          node tools/ci/verify-release.cjs "$RUNNER_TEMP/verified-release" "$BUILD_COMMIT" "$BUILD_RUN"
+          node tools/ci/portable-release.cjs "$RUNNER_TEMP/verified-release" "$BUILD_COMMIT" "$BUILD_RUN"
       - name: Upload all files, then publish the release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -189,4 +191,6 @@ jobs:
             gh release create "$RELEASE_TAG" --verify-tag --draft --title "$RELEASE_TAG · Windows x64" --notes "Windows x64 安装包。基于提交 $BUILD_COMMIT 自动构建，包含初始配置，不含现场账号、数据库或 PLC 凭据。自动回归及隔离首次启动、重启检查已通过。下载 exe 安装，sha256.txt 用于完整性校验。"
           fi
           gh release upload "$RELEASE_TAG" "$RUNNER_TEMP/verified-release/"* --clobber
+          gh release view "$RELEASE_TAG" --json assets > uploaded-assets.json
+          node tools/ci/portable-release.cjs --uploaded "$RUNNER_TEMP/verified-release" uploaded-assets.json
           gh release edit "$RELEASE_TAG" --draft=false --latest

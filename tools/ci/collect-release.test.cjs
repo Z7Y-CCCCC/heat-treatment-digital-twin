@@ -7,6 +7,7 @@ const crypto = require('crypto');
 const { collectRelease } = require('./collect-release.cjs');
 const { verifyRelease } = require('./verify-release.cjs');
 const { reusableRelease } = require('./reusable-release.cjs');
+const { portableRelease, verifyUploadedAssets } = require('./portable-release.cjs');
 function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ci-release-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -15,7 +16,7 @@ function fixture(t) {
   const installer = path.join(directory, 'test.exe');
   const data = Buffer.from('installer fixture');
   fs.writeFileSync(installer, data);
-  const manifest = { installer, size: data.length, sha256: crypto.createHash('sha256').update(data).digest('hex'), smokeTest: 'passed', starterTemplate: true, mysqlBundled: true };
+  const manifest = { version: '2.3.1', installer, size: data.length, sha256: crypto.createHash('sha256').update(data).digest('hex'), smokeTest: 'passed', starterTemplate: true, mysqlBundled: true };
   const save = () => fs.writeFileSync(path.join(directory, 'release-manifest.json'), '\uFEFF' + JSON.stringify(manifest));
   save();
   fs.writeFileSync(path.join(directory, 'build-timings.json'), '\uFEFF' + JSON.stringify({ success: true }));
@@ -78,4 +79,17 @@ test('rejects corruption, skipped smoke, customer config and stale release direc
   f.manifest.smokeTest = 'passed'; f.manifest.starterTemplate = false; f.save(); assert.throws(() => collectRelease(f.root), /starter/);
   f.manifest.starterTemplate = true; f.save(); fs.appendFileSync(f.installer, 'corrupt'); assert.throws(() => collectRelease(f.root), /mismatch/);
   fs.mkdirSync(path.join(f.root, '安装包', 'release-stale')); assert.throws(() => collectRelease(f.root), /exactly one/);
+});
+
+test('portable publication keeps installer bytes and provenance, with consistent ASCII names and checksum', t => {
+  const f = fixture(t), out = collectRelease(f.root), original = verifyRelease(out, '');
+  const normalized = portableRelease(out, '');
+  assert.equal(normalized.installer, 'HeatTreatmentDigitalTwin-Setup-2.3.1-x64.exe');
+  assert.equal(normalized.sha256, original.sha256);
+  assert.equal(normalized.commit, original.commit);
+  assert.deepEqual(portableRelease(out, ''), normalized);
+  const assets = fs.readdirSync(out).map(name => ({ name, size: fs.statSync(path.join(out, name)).size }));
+  assert.doesNotThrow(() => verifyUploadedAssets(out, assets));
+  assert.throws(() => verifyUploadedAssets(out, assets.map((asset, i) => i ? asset : { ...asset, name: 'renamed-by-host.exe' })), /renamed or omitted/);
+  assert.throws(() => verifyUploadedAssets(out, assets.map((asset, i) => i ? asset : { ...asset, size: asset.size + 1 })), /size mismatch/);
 });
