@@ -1,0 +1,53 @@
+const fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict');
+const {createRunDirectory,startLoggedProcess,waitUntil,requireTestPath}=require('../backend/scripts/integration-test-utils.cjs');
+const {stopOwnedSmokeProcess}=require('../desktop/scripts/smoke-sandbox.cjs');
+const playwright=require(process.env.PLAYWRIGHT_MODULE||'playwright');
+let server,browser;
+(async()=>{
+ const directory=createRunDirectory('line-simulation-ui-checks'),infoFile=process.env.LINE_SIMULATION_UI_INFO_FILE||path.join(directory,'server.json');requireTestPath(infoFile);
+ if(!process.env.LINE_SIMULATION_UI_INFO_FILE){server=startLoggedProcess(process.execPath,[path.join(__dirname,'line-simulation-ui-server.cjs')],{cwd:path.resolve(__dirname,'..'),env:{...process.env,LINE_SIMULATION_UI_INFO_FILE:infoFile},logFile:path.join(directory,'server.log')});await waitUntil(()=>{assert.equal(server.exitCode,null);return fs.existsSync(infoFile)},60000,'simulation fixture')}
+ const info=JSON.parse(fs.readFileSync(infoFile)),{buildLineSimulation}=await import('../frontend/src/three/lineSimulation.js');
+ browser=await playwright.chromium.launch({headless:true,...(process.env.BROWSER_EXECUTABLE?{executablePath:process.env.BROWSER_EXECUTABLE}:{}),args:['--enable-unsafe-swiftshader']});
+ const page=await browser.newPage({viewport:{width:1600,height:1050}}),errors=[],writes=[],checks=[];page.setDefaultTimeout(30000);
+ page.on('pageerror',e=>errors.push(e.message));page.on('request',r=>{if(!['GET','HEAD'].includes(r.method())&&/\/api\/(devices|lines|models|plc|config)(\/|$)/.test(new URL(r.url()).pathname))writes.push(r.method()+' '+r.url())});
+ await page.addInitScript(()=>localStorage.setItem('digital_twin_admin_ui_state_v1',JSON.stringify({activeTab:'model-animations',modelLibraryStep:'bindings'})));
+ await page.goto(info.origin+'/admin');await page.getByRole('textbox',{name:'账号',exact:true}).fill(info.username);await page.getByLabel('后台密码',{exact:true}).fill(info.password);await page.getByRole('button',{name:'解锁后台',exact:true}).click();
+ await page.getByRole('button',{name:'设备联动',exact:true}).click();
+ const picker=page.getByRole('combobox',{name:'选择联动产线',exact:true});await picker.selectOption('simulation_line_a');
+ const api=async route=>{const r=await page.request.get(info.origin+route);assert.equal(r.status(),200);return r.json()};
+ const before={devices:await api('/api/devices'),lines:await api('/api/lines')},models=await api('/api/models');
+ const checkbox=name=>page.getByRole('checkbox',{name:'参与联动：'+name,exact:true});
+ for(const name of ['料车实例 A','清洗机实例 A','水冷槽实例 A'])await checkbox(name).check();
+ await page.getByRole('button',{name:'上移水冷槽实例 A',exact:true}).click();
+ await page.getByRole('button',{name:'预览选中设备',exact:true}).click();
+ const sequence=page.getByTestId('line-equipment-sequence'),slider=page.getByRole('slider',{name:'产线联动流程进度',exact:true});
+ await sequence.locator('.empty').waitFor({state:'hidden'});assert.equal(await sequence.getAttribute('data-step-kind'),'approach');
+ assert.ok((await sequence.locator('.hud').innerText()).includes('水冷槽实例 A'));checks.push('selected instance order controls the first station');
+ await page.getByRole('button',{name:'设备选择 · 3',exact:true}).click();await page.getByRole('button',{name:'下移水冷槽实例 A',exact:true}).click();
+ await page.getByRole('button',{name:'开始联动',exact:true}).click();await sequence.locator('.empty').waitFor({state:'hidden'});
+ await page.getByRole('button',{name:'暂停',exact:true}).click();
+ const selected=['sim_0','sim_4','sim_5'].map(id=>before.devices.find(d=>d.id===id)),plan=buildLineSimulation(selected,models);
+ const setTime=async value=>{await slider.evaluate((el,v)=>{el.value=String(v);el.dispatchEvent(new Event('input',{bubbles:true}))},value);await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))))};
+ for(const [id,kind] of [['sim_4','feed'],['sim_4','retract'],['sim_4','spray'],['sim_5','approach'],['sim_5','quench'],['sim_5','reclaim']]){
+  const step=plan.steps.find(s=>s.deviceId===id&&s.kind===kind);await setTime(step.start+step.duration/2);assert.equal(await sequence.getAttribute('data-step-kind'),kind);
+  await sequence.locator('.preview').screenshot({path:path.join(directory,id+'-'+kind+'.png')});
+ }
+ await sequence.screenshot({path:path.join(directory,'selected-line-simulation.png')});
+ const artifacts=path.resolve(__dirname,'../output/line-simulation-preview.png');
+ await page.getByRole('button',{name:'设备选择 · 3',exact:true}).click();await page.screenshot({path:artifacts,fullPage:true});
+ await page.getByRole('button',{name:'联动工步',exact:true}).click();
+ checks.push('actual cart, doors, feeding, cleaning and water-cooling steps render on one seekable timeline');
+ await setTime(plan.total);assert.ok((await sequence.locator('.hud').innerText()).includes('本次联动完成'));
+ await page.getByRole('button',{name:'复位',exact:true}).click();assert.equal(await slider.inputValue(),'0');checks.push('seek to end and reset work');
+ await page.getByRole('button',{name:'设备选择 · 3',exact:true}).click();await page.getByRole('button',{name:'清空',exact:true}).click();
+ for(const name of ['料车实例 A','升降备料台实例 A','固定备料台实例 A','风冷台实例 A','清洗机实例 A','水冷槽实例 A'])await checkbox(name).check();
+ await page.getByRole('button',{name:'预览选中设备',exact:true}).click();await sequence.locator('.empty').waitFor({state:'hidden'});checks.push('all six CAD equipment types load together');
+ await page.getByRole('button',{name:'设备选择 · 6',exact:true}).click();await page.getByRole('button',{name:'下一页',exact:true}).click();await checkbox('备用料车实例').check();
+ assert.ok((await page.getByRole('alert').innerText()).includes('一台料车'));checks.push('multiple selected carts are rejected explicitly');
+ await picker.selectOption('simulation_line_b');assert.equal(await sequence.locator('.equipment-list article').count(),2);assert.equal(await checkbox('B 线清洗机').isChecked(),false);assert.equal(await slider.isDisabled(),true);checks.push('line switching clears selection and stops the old renderer');
+ await checkbox('B 线清洗机').check();await page.getByRole('combobox',{name:'联动预览排布',exact:true}).selectOption('site');await page.getByRole('button',{name:'开始联动',exact:true}).click();await sequence.locator('.empty').waitFor({state:'hidden'});await page.getByRole('button',{name:'暂停',exact:true}).click();checks.push('site placement and simulation without a cart work');
+ await picker.selectOption('simulation_line_a');await page.getByRole('button',{name:'下一页',exact:true}).click();await checkbox('清洗机实例 B').check();await checkbox('回火炉实例').check();await page.getByRole('button',{name:'预览选中设备',exact:true}).click();await sequence.locator('.empty').waitFor({state:'hidden'});checks.push('same-model instances and imported tempering-furnace doors are supported');
+ await picker.selectOption('simulation_line_b');await checkbox('原清洗机实例').check();await page.getByRole('button',{name:'预览选中设备',exact:true}).click();await sequence.locator('.empty').waitFor({state:'hidden'});checks.push('the original cleaner process remains available through a selected line instance');
+ assert.deepEqual(errors,[]);assert.deepEqual(writes,[]);assert.deepEqual(await api('/api/devices'),before.devices);assert.deepEqual(await api('/api/lines'),before.lines);
+ fs.writeFileSync(path.join(directory,'result.json'),JSON.stringify({checks,errors,writes,preview:artifacts},null,2));console.log(JSON.stringify({checks,errors,writes,preview:artifacts,directory},null,2));
+})().catch(e=>{console.error(e);process.exitCode=1}).finally(async()=>{await browser?.close();if(server)await stopOwnedSmokeProcess(server)});

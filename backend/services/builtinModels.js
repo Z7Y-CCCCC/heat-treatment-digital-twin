@@ -1,6 +1,8 @@
 const { presetMetadata } = require('./inspectionPresets');
 const { getPitFurnaceModels } = require('./pitFurnaceModels');
+const { getCadEquipmentModels } = require('./cadEquipmentModels');
 const cleanerMetadata = require('../assets/models/ultrasonic_cleaner_cad_metadata.json');
+const temperingCadMetadata = require('../assets/models/cad_tempering_furnace_091300_metadata.json');
 
 const BUILTIN_MODELS = [
     ...[
@@ -20,6 +22,13 @@ const BUILTIN_MODELS = [
         metadata: JSON.stringify(cleanerMetadata), is_builtin: true
     },
     ...getPitFurnaceModels(),
+    {
+        id: 'cad_tempering_furnace_091300', name: '回火炉 · 09.13.00 CAD',
+        file_path: '/assets/models/cad_tempering_furnace_091300.glb', asset_type: 'model', placement_level: 'device', factory_id: null,
+        tags: JSON.stringify(['packaged', 'cad', 'tempering_furnace']), thumbnail: null, default_scale: 1,
+        metadata: JSON.stringify(temperingCadMetadata), is_builtin: true
+    },
+    ...getCadEquipmentModels(),
     {
         id: 'factory_hall_lowpoly',
         name: '厂房环境 · 开放式总览模型',

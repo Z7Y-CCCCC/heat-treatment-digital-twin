@@ -1,0 +1,1317 @@
+{
+  "assetSpec": {
+    "version": "1.0.0",
+    "device_family": "多用炉",
+    "unit": "m",
+    "axis_rule": "Y-up / Z-forward",
+    "max_triangles": 200000,
+    "max_nodes": 800,
+    "max_texture_size": 2048,
+    "lod_policy": "LOD0 必须可用，LOD1/LOD2 可选",
+    "node_naming_rule": "role_part_action，例如 fan_rear_rotate、door_front_lift、valve_gas_01",
+    "delivery_status": "review",
+    "owner": "",
+    "notes": "用户提供的 08.20.00_600普通多用炉.glb 原文件入库；保留原始节点、材质和坐标。"
+  },
+  "optimization": {
+    "mode": "auto",
+    "mergeStatic": false,
+    "instanceRepeated": true,
+    "preserveAnimated": true,
+    "materialEnhancement": "original",
+    "contactShadow": true,
+    "environmentIntensity": 0.85
+  },
+  "runtime": {
+    "enableGenericBindings": true
+  },
+  "inspection": {
+    "version": 2,
+    "enabled": true,
+    "offset_space": "model",
+    "animation_duration": 1.3,
+    "shell_duration": 0.2,
+    "stagger": 0.12,
+    "playback_speed": 1,
+    "easing": "smoothstep",
+    "labels": {
+      "enabled": true,
+      "leader_lines": true
+    },
+    "shell": {
+      "node_paths": [],
+      "node_names": [],
+      "opacity": 0.18,
+      "wireframe": false,
+      "transition": "clip",
+      "axis": "y",
+      "direction": 1
+    },
+    "solid": {
+      "view_id": "",
+      "transition_seconds": 0.65,
+      "camera": {
+        "yaw": 38,
+        "pitch": 22,
+        "distance_scale": 1.12,
+        "target_offset": [
+          0,
+          0,
+          0
+        ]
+      }
+    },
+    "xray": {
+      "view_id": "",
+      "transition_seconds": 0.65,
+      "camera": {
+        "yaw": 238,
+        "pitch": 19,
+        "distance_scale": 1.08,
+        "target_offset": [
+          0,
+          0,
+          0
+        ]
+      }
+    },
+    "exploded": {
+      "view_id": "",
+      "transition_seconds": 1.5,
+      "camera": {
+        "yaw": 38,
+        "pitch": 25,
+        "distance_scale": 1.15,
+        "target_offset": [
+          0,
+          0,
+          0
+        ]
+      }
+    },
+    "parts": [
+      {
+        "id": "cad_multipurpose_furnace_082000_assembly_1",
+        "name": "冷热室底座",
+        "group": "cad_multipurpose_furnace_082000",
+        "enabled": true,
+        "node_path": "",
+        "node_name": "cad_multipurpose_furnace_600_v1_cold_base",
+        "node_paths": [],
+        "node_names": [
+          "cad_multipurpose_furnace_600_v1_hot_base"
+        ],
+        "explode_offset": [
+          0,
+          0,
+          0
+        ],
+        "explode_rotation": [
+          0,
+          0,
+          0
+        ],
+        "delay": 0,
+        "duration": 1.3,
+        "label_offset": [
+          0,
+          0.35,
+          0
+        ],
+        "description": "原 GLB 总成拆解展示；保留节点内部相对位置，不代表实际检修顺序。",
+        "point_ids": [],
+        "point_keys": [],
+        "detail_view_id": "",
+        "camera": null
+      },
+      {
+        "id": "cad_multipurpose_furnace_082000_assembly_2",
+        "name": "热室框架",
+        "group": "cad_multipurpose_furnace_082000",
+        "enabled": true,
+        "node_path": "",
+        "node_name": "cad_multipurpose_furnace_600_v1_hot_frame",
+        "node_paths": [],
+        "node_names": [],
+        "explode_offset": [
+          1.8,
+          0.3,
+          -0.5
+        ],
+        "explode_rotation": [
+          0,
+          0,
+          0
+        ],
+        "delay": 0,
+        "duration": 1.3,
+        "label_offset": [
+          0,
+          0.35,
+          0
+        ],
+        "description": "原 GLB 总成拆解展示；保留节点内部相对位置，不代表实际检修顺序。",
+        "point_ids": [],
+        "point_keys": [],
+        "detail_view_id": "",
+        "camera": null
+      },
+      {
+        "id": "cad_multipurpose_furnace_082000_assembly_3",
+        "name": "前室外壳",
+        "group": "cad_multipurpose_furnace_082000",
+        "enabled": true,
+        "node_path": "",
+        "node_name": "cad_multipurpose_furnace_600_v1_cold_housing",
+        "node_paths": [],
+        "node_names": [],
+        "explode_offset": [
+          -2,
+          1,
+          0
+        ],
+        "explode_rotation": [
+          0,
+          0,
+          0
+        ],
+        "delay": 0,
+        "duration": 1.3,
+        "label_offset": [
+          0,
+          0.35,
+          0
+        ],
+        "description": "原 GLB 总成拆解展示；保留节点内部相对位置，不代表实际检修顺序。",
+        "point_ids": [],
+        "point_keys": [],
+        "detail_view_id": "",
+        "camera": null
+      },
+      {
+        "id": "cad_multipurpose_furnace_082000_assembly_4",
+        "name": "热室外壳与端盖",
+        "group": "cad_multipurpose_furnace_082000",
+        "enabled": true,
+        "node_path": "",
+        "node_name": "cad_multipurpose_furnace_600_v1_hot_housing",
+        "node_paths": [],
+        "node_names": [
+          "cad_multipurpose_furnace_600_v1_hot_roof_end_caps"
+        ],
+        "explode_offset": [
+          2.3,
+          1,
+          -0.8
+        ],
+        "explode_rotation": [
+          0,
+          0,
+          0
+        ],
+        "delay": 0,
+        "duration": 1.3,
+        "label_offset": [
+          0,
+          0.35,
+          0
+        ],
+        "description": "原 GLB 总成拆解展示；保留节点内部相对位置，不代表实际检修顺序。",
+        "point_ids": [],
+        "point_keys": [],
+        "detail_view_id": "",
+        "camera": null
+      },
+      {
+        "id": "cad_multipurpose_furnace_082000_assembly_5",
+        "name": "炉衬与拱顶砖",
+        "group": "cad_multipurpose_furnace_082000",
+        "enabled": true,
+        "node_path": "",
+        "node_name": "cad_multipurpose_furnace_600_v1_lining",
+        "node_paths": [],
+        "node_names": [
+          "cad_multipurpose_furnace_600_v1_refractory",
+          "cad_multipurpose_furnace_600_v1_vault_bricks"
+        ],
+        "explode_offset": [
+          -2.4,
+          0.4,
+          -1.2
+        ],
+        "explode_rotation": [
+          0,
+          0,
+          0
+        ],
+        "delay": 0,
+        "duration": 1.3,
+        "label_offset": [
+          0,
+          0.35,
+          0
+        ],
+        "description": "原 GLB 总成拆解展示；保留节点内部相对位置，不代表实际检修顺序。",
+        "point_ids": [],
+        "point_keys": [],
+        "detail_view_id": "",
+        "camera": null
+      },
+      {
+        "id": "cad_multipurpose_furnace_082000_assembly_6",
+        "name": "前门及滑架密封",
+        "group": "cad_multipurpose_furnace_082000",
+        "enabled": true,
+        "node_path": "",
+        "node_name": "cad_multipurpose_furnace_600_v1_door",
+        "node_paths": [],
+        "node_names": [
+          "cad_multipurpose_furnace_600_v1_door_carriages",
+          "cad_multipurpose_furnace_600_v1_door_seals"
+        ],
+        "explode_offset": [
+          0,
+          0.3,
+          1.6
+        ],
+        "explode_rotation": [
+          0,
+          0,
+          0
+        ],
+        "delay": 0,
+        "duration": 1.3,
+        "label_offset": [
+          0,
+          0.35,
+          0
+        ],
+        "description": "原 GLB 总成拆解展示；保留节点内部相对位置，不代表实际检修顺序。",
+        "point_ids": [],
+        "point_keys": [],
+        "detail_view_id": "",
+        "camera": null
+      },
+      {
+        "id": "cad_multipurpose_furnace_082000_assembly_7",
+        "name": "前门导向与联锁",
+        "group": "cad_multipurpose_furnace_082000",
+        "enabled": true,
+        "node_path": "",
+        "node_name": "cad_multipurpose_furnace_600_v1_door_guides",
+        "node_paths": [],
+        "node_names": [
+          "cad_multipurpose_furnace_600_v1_door_safety",
+          "cad_multipurpose_furnace_600_v1_safety_interlocks"
+        ],
+        "explode_offset": [
+          1.6,
+          0.7,
+          1.2
+        ],
+        "explode_rotation": [
+          0,
+          0,
+          0
+        ],
+        "delay": 0,
+        "duration": 1.3,
+        "label_offset": [
+          0,
+          0.35,
+          0
+        ],
+        "description": "原 GLB 总成拆解展示；保留节点内部相对位置，不代表实际检修顺序。",
+        "point_ids": [],
+        "point_keys": [],
+        "detail_view_id": "",
+        "camera": null
+      },
+      {
+        "id": "cad_multipurpose_furnace_082000_assembly_8",
+        "name": "前门驱动与链条",
+        "group": "cad_multipurpose_furnace_082000",
+        "enabled": true,
+        "node_path": "",
+        "node_name": "cad_multipurpose_furnace_600_v1_door_drive",
+        "node_paths": [],
+        "node_names": [
+          "cad_multipurpose_furnace_600_v1_door_chains",
+          "cad_multipurpose_furnace_600_v1_counterbalance"
+        ],
+        "explode_offset": [
+          -1.7,
+          1.6,
+          0.5
+        ],
+        "explode_rotation": [
+          0,
+          0,
+          0
+        ],
+        "delay": 0,
+        "duration": 1.3,
+        "label_offset": [
+          0,
+          0.35,
+          0
+        ],
+        "description": "原 GLB 总成拆解展示；保留节点内部相对位置，不代表实际检修顺序。",
+        "point_ids": [],
+        "point_keys": [],
+        "detail_view_id": "",
+        "camera": null
+      },
+      {
+        "id": "cad_multipurpose_furnace_082000_assembly_9",
+        "name": "隔热门及导轨",
+        "group": "cad_multipurpose_furnace_082000",
+        "enabled": true,
+        "node_path": "",
+        "node_name": "cad_multipurpose_furnace_600_v1_intermediate_gate",
+        "node_paths": [],
+        "node_names": [
+          "cad_multipurpose_furnace_600_v1_intermediate_gate_guides"
+        ],
+        "explode_offset": [
+          1.6,
+          0.9,
+          -0.2
+        ],
+        "explode_rotation": [
+          0,
+          0,
+          0
+        ],
+        "delay": 0,
+        "duration": 1.3,
+        "label_offset": [
+          0,
+          0.35,
+          0
+        ],
+        "description": "原 GLB 总成拆解展示；保留节点内部相对位置，不代表实际检修顺序。",
+        "point_ids": [],
+        "point_keys": [],
+        "detail_view_id": "",
+        "camera": null
+      },
+      {
+        "id": "cad_multipurpose_furnace_082000_assembly_10",
+        "name": "隔门龙门架与提升链",
+        "group": "cad_multipurpose_furnace_082000",
+        "enabled": true,
+        "node_path": "",
+        "node_name": "cad_multipurpose_furnace_600_v1_gate_gantry",
+        "node_paths": [],
+        "node_names": [
+          "cad_multipurpose_furnace_600_v1_gate_lift_chain",
+          "cad_multipurpose_furnace_600_v1_gate_hydraulics"
+        ],
+        "explode_offset": [
+          0,
+          2,
+          -1.3
+        ],
+        "explode_rotation": [
+          0,
+          0,
+          0
+        ],
+        "delay": 0,
+        "duration": 1.3,
+        "label_offset": [
+          0,
+          0.35,
+          0
+        ],
+        "description": "原 GLB 总成拆解展示；保留节点内部相对位置，不代表实际检修顺序。",
+        "point_ids": [],
+        "point_keys": [],
+        "detail_view_id": "",
+        "camera": null
+      },
+      {
+        "id": "cad_multipurpose_furnace_082000_assembly_11",
+        "name": "冷热室隔板",
+        "group": "cad_multipurpose_furnace_082000",
+        "enabled": true,
+        "node_path": "",
+        "node_name": "cad_multipurpose_furnace_600_v1_partition_shell",
+        "node_paths": [],
+        "node_names": [
+          "cad_multipurpose_furnace_600_v1_partition_lining"
+        ],
+        "explode_offset": [
+          -1.8,
+          0.2,
+          -1
+        ],
+        "explode_rotation": [
+          0,
+          0,
+          0
+        ],
+        "delay": 0,
+        "duration": 1.3,
+        "label_offset": [
+          0,
+          0.35,
+          0
+        ],
+        "description": "原 GLB 总成拆解展示；保留节点内部相对位置，不代表实际检修顺序。",
+        "point_ids": [],
+        "point_keys": [],
+        "detail_view_id": "",
+        "camera": null
+      },
+      {
+        "id": "cad_multipurpose_furnace_082000_assembly_12",
+        "name": "前室升降承料架",
+        "group": "cad_multipurpose_furnace_082000",
+        "enabled": true,
+        "node_path": "",
+        "node_name": "cad_multipurpose_furnace_600_v1_elevator_basket",
+        "node_paths": [],
+        "node_names": [],
+        "explode_offset": [
+          0,
+          1.3,
+          1
+        ],
+        "explode_rotation": [
+          0,
+          0,
+          0
+        ],
+        "delay": 0,
+        "duration": 1.3,
+        "label_offset": [
+          0,
+          0.35,
+          0
+        ],
+        "description": "原 GLB 总成拆解展示；保留节点内部相对位置，不代表实际检修顺序。",
+        "point_ids": [],
+        "point_keys": [],
+        "detail_view_id": "",
+        "camera": null
+      },
+      {
+        "id": "cad_multipurpose_furnace_082000_assembly_13",
+        "name": "承料架导向",
+        "group": "cad_multipurpose_furnace_082000",
+        "enabled": true,
+        "node_path": "",
+        "node_name": "cad_multipurpose_furnace_600_v1_basket_guides",
+        "node_paths": [],
+        "node_names": [],
+        "explode_offset": [
+          1.7,
+          0.3,
+          0.6
+        ],
+        "explode_rotation": [
+          0,
+          0,
+          0
+        ],
+        "delay": 0,
+        "duration": 1.3,
+        "label_offset": [
+          0,
+          0.35,
+          0
+        ],
+        "description": "原 GLB 总成拆解展示；保留节点内部相对位置，不代表实际检修顺序。",
+        "point_ids": [],
+        "point_keys": [],
+        "detail_view_id": "",
+        "camera": null
+      },
+      {
+        "id": "cad_multipurpose_furnace_082000_assembly_14",
+        "name": "前室提升与传动",
+        "group": "cad_multipurpose_furnace_082000",
+        "enabled": true,
+        "node_path": "",
+        "node_name": "cad_multipurpose_furnace_600_v1_basket_hoist",
+        "node_paths": [],
+        "node_names": [
+          "cad_multipurpose_furnace_600_v1_front_lift_chains",
+          "cad_multipurpose_furnace_600_v1_front_transmission"
+        ],
+        "explode_offset": [
+          -1.8,
+          1.3,
+          0
+        ],
+        "explode_rotation": [
+          0,
+          0,
+          0
+        ],
+        "delay": 0,
+        "duration": 1.3,
+        "label_offset": [
+          0,
+          0.35,
+          0
+        ],
+        "description": "原 GLB 总成拆解展示；保留节点内部相对位置，不代表实际检修顺序。",
+        "point_ids": [],
+        "point_keys": [],
+        "detail_view_id": "",
+        "camera": null
+      },
+      {
+        "id": "cad_multipurpose_furnace_082000_assembly_15",
+        "name": "淬火槽及挡流板",
+        "group": "cad_multipurpose_furnace_082000",
+        "enabled": true,
+        "node_path": "",
+        "node_name": "cad_multipurpose_furnace_600_v1_quench_tank",
+        "node_paths": [],
+        "node_names": [
+          "cad_multipurpose_furnace_600_v1_tank_baffles"
+        ],
+        "explode_offset": [
+          0,
+          -0.5,
+          1.6
+        ],
+        "explode_rotation": [
+          0,
+          0,
+          0
+        ],
+        "delay": 0,
+        "duration": 1.3,
+        "label_offset": [
+          0,
+          0.35,
+          0
+        ],
+        "description": "原 GLB 总成拆解展示；保留节点内部相对位置，不代表实际检修顺序。",
+        "point_ids": [],
+        "point_keys": [],
+        "detail_view_id": "",
+        "camera": null
+      },
+      {
+        "id": "cad_multipurpose_furnace_082000_assembly_16",
+        "name": "淬火液示意层",
+        "group": "cad_multipurpose_furnace_082000",
+        "enabled": true,
+        "node_path": "",
+        "node_name": "cad_multipurpose_furnace_600_v1_quench_liquid",
+        "node_paths": [],
+        "node_names": [],
+        "explode_offset": [
+          0,
+          0.8,
+          1.8
+        ],
+        "explode_rotation": [
+          0,
+          0,
+          0
+        ],
+        "delay": 0,
+        "duration": 1.3,
+        "label_offset": [
+          0,
+          0.35,
+          0
+        ],
+        "description": "原 GLB 总成拆解展示；保留节点内部相对位置，不代表实际检修顺序。",
+        "point_ids": [],
+        "point_keys": [],
+        "detail_view_id": "",
+        "camera": null
+      },
+      {
+        "id": "cad_multipurpose_furnace_082000_assembly_17",
+        "name": "淬火搅拌驱动与盖板",
+        "group": "cad_multipurpose_furnace_082000",
+        "enabled": true,
+        "node_path": "",
+        "node_name": "cad_multipurpose_furnace_600_v1_agitators",
+        "node_paths": [],
+        "node_names": [
+          "cad_multipurpose_furnace_600_v1_agitator_lids"
+        ],
+        "explode_offset": [
+          2,
+          0.6,
+          1
+        ],
+        "explode_rotation": [
+          0,
+          0,
+          0
+        ],
+        "delay": 0,
+        "duration": 1.3,
+        "label_offset": [
+          0,
+          0.35,
+          0
+        ],
+        "description": "原 GLB 总成拆解展示；保留节点内部相对位置，不代表实际检修顺序。",
+        "point_ids": [],
+        "point_keys": [],
+        "detail_view_id": "",
+        "camera": null
+      },
+      {
+        "id": "cad_multipurpose_furnace_082000_assembly_18",
+        "name": "淬火搅拌叶轮",
+        "group": "cad_multipurpose_furnace_082000",
+        "enabled": true,
+        "node_path": "",
+        "node_name": "cad_multipurpose_furnace_600_v1_agitator_impellers",
+        "node_paths": [],
+        "node_names": [],
+        "explode_offset": [
+          -2,
+          -0.1,
+          1.1
+        ],
+        "explode_rotation": [
+          0,
+          0,
+          0
+        ],
+        "delay": 0,
+        "duration": 1.3,
+        "label_offset": [
+          0,
+          0.35,
+          0
+        ],
+        "description": "原 GLB 总成拆解展示；保留节点内部相对位置，不代表实际检修顺序。",
+        "point_ids": [],
+        "point_keys": [],
+        "detail_view_id": "",
+        "camera": null
+      },
+      {
+        "id": "cad_multipurpose_furnace_082000_assembly_19",
+        "name": "槽盖与仪表",
+        "group": "cad_multipurpose_furnace_082000",
+        "enabled": true,
+        "node_path": "",
+        "node_name": "cad_multipurpose_furnace_600_v1_tank_lids",
+        "node_paths": [],
+        "node_names": [
+          "cad_multipurpose_furnace_600_v1_tank_instruments",
+          "cad_multipurpose_furnace_600_v1_oil_instruments"
+        ],
+        "explode_offset": [
+          1.9,
+          1.6,
+          1.3
+        ],
+        "explode_rotation": [
+          0,
+          0,
+          0
+        ],
+        "delay": 0,
+        "duration": 1.3,
+        "label_offset": [
+          0,
+          0.35,
+          0
+        ],
+        "description": "原 GLB 总成拆解展示；保留节点内部相对位置，不代表实际检修顺序。",
+        "point_ids": [],
+        "point_keys": [],
+        "detail_view_id": "",
+        "camera": null
+      },
+      {
+        "id": "cad_multipurpose_furnace_082000_assembly_20",
+        "name": "油路与阀门",
+        "group": "cad_multipurpose_furnace_082000",
+        "enabled": true,
+        "node_path": "",
+        "node_name": "cad_multipurpose_furnace_600_v1_oil_pipes",
+        "node_paths": [],
+        "node_names": [
+          "cad_multipurpose_furnace_600_v1_oil_valves"
+        ],
+        "explode_offset": [
+          2.7,
+          0.2,
+          0.5
+        ],
+        "explode_rotation": [
+          0,
+          0,
+          0
+        ],
+        "delay": 0,
+        "duration": 1.3,
+        "label_offset": [
+          0,
+          0.35,
+          0
+        ],
+        "description": "原 GLB 总成拆解展示；保留节点内部相对位置，不代表实际检修顺序。",
+        "point_ids": [],
+        "point_keys": [],
+        "detail_view_id": "",
+        "camera": null
+      },
+      {
+        "id": "cad_multipurpose_furnace_082000_assembly_21",
+        "name": "油槽加热器接口",
+        "group": "cad_multipurpose_furnace_082000",
+        "enabled": true,
+        "node_path": "",
+        "node_name": "cad_multipurpose_furnace_600_v1_oil_heater_ports",
+        "node_paths": [],
+        "node_names": [],
+        "explode_offset": [
+          -2.4,
+          0.2,
+          0.8
+        ],
+        "explode_rotation": [
+          0,
+          0,
+          0
+        ],
+        "delay": 0,
+        "duration": 1.3,
+        "label_offset": [
+          0,
+          0.35,
+          0
+        ],
+        "description": "原 GLB 总成拆解展示；保留节点内部相对位置，不代表实际检修顺序。",
+        "point_ids": [],
+        "point_keys": [],
+        "detail_view_id": "",
+        "camera": null
+      },
+      {
+        "id": "cad_multipurpose_furnace_082000_assembly_22",
+        "name": "热室承料辊道",
+        "group": "cad_multipurpose_furnace_082000",
+        "enabled": true,
+        "node_path": "",
+        "node_name": "cad_multipurpose_furnace_600_v1_hot_rollers",
+        "node_paths": [],
+        "node_names": [],
+        "explode_offset": [
+          0,
+          0.8,
+          -2
+        ],
+        "explode_rotation": [
+          0,
+          0,
+          0
+        ],
+        "delay": 0,
+        "duration": 1.3,
+        "label_offset": [
+          0,
+          0.35,
+          0
+        ],
+        "description": "原 GLB 总成拆解展示；保留节点内部相对位置，不代表实际检修顺序。",
+        "point_ids": [],
+        "point_keys": [],
+        "detail_view_id": "",
+        "camera": null
+      },
+      {
+        "id": "cad_multipurpose_furnace_082000_assembly_23",
+        "name": "辐射加热管",
+        "group": "cad_multipurpose_furnace_082000",
+        "enabled": true,
+        "node_path": "",
+        "node_name": "cad_multipurpose_furnace_600_v1_radiant_tubes",
+        "node_paths": [],
+        "node_names": [],
+        "explode_offset": [
+          2.1,
+          0.9,
+          -1.7
+        ],
+        "explode_rotation": [
+          0,
+          0,
+          0
+        ],
+        "delay": 0,
+        "duration": 1.3,
+        "label_offset": [
+          0,
+          0.35,
+          0
+        ],
+        "description": "原 GLB 总成拆解展示；保留节点内部相对位置，不代表实际检修顺序。",
+        "point_ids": [],
+        "point_keys": [],
+        "detail_view_id": "",
+        "camera": null
+      },
+      {
+        "id": "cad_multipurpose_furnace_082000_assembly_24",
+        "name": "炉顶循环驱动",
+        "group": "cad_multipurpose_furnace_082000",
+        "enabled": true,
+        "node_path": "",
+        "node_name": "cad_multipurpose_furnace_600_v1_roof_fan",
+        "node_paths": [],
+        "node_names": [
+          "cad_multipurpose_furnace_600_v1_belt_drive"
+        ],
+        "explode_offset": [
+          0,
+          1.9,
+          -1.7
+        ],
+        "explode_rotation": [
+          0,
+          0,
+          0
+        ],
+        "delay": 0,
+        "duration": 1.3,
+        "label_offset": [
+          0,
+          0.35,
+          0
+        ],
+        "description": "原 GLB 总成拆解展示；保留节点内部相对位置，不代表实际检修顺序。",
+        "point_ids": [],
+        "point_keys": [],
+        "detail_view_id": "",
+        "camera": null
+      },
+      {
+        "id": "cad_multipurpose_furnace_082000_assembly_25",
+        "name": "循环叶轮与轴",
+        "group": "cad_multipurpose_furnace_082000",
+        "enabled": true,
+        "node_path": "",
+        "node_name": "cad_multipurpose_furnace_600_v1_circulation_impeller",
+        "node_paths": [],
+        "node_names": [],
+        "explode_offset": [
+          -1.8,
+          1.2,
+          -2
+        ],
+        "explode_rotation": [
+          0,
+          0,
+          0
+        ],
+        "delay": 0,
+        "duration": 1.3,
+        "label_offset": [
+          0,
+          0.35,
+          0
+        ],
+        "description": "原 GLB 总成拆解展示；保留节点内部相对位置，不代表实际检修顺序。",
+        "point_ids": [],
+        "point_keys": [],
+        "detail_view_id": "",
+        "camera": null
+      },
+      {
+        "id": "cad_multipurpose_furnace_082000_assembly_26",
+        "name": "后部移料及侧驱动",
+        "group": "cad_multipurpose_furnace_082000",
+        "enabled": true,
+        "node_path": "",
+        "node_name": "cad_multipurpose_furnace_600_v1_rear_transfer",
+        "node_paths": [],
+        "node_names": [
+          "cad_multipurpose_furnace_600_v1_side_feed_motor",
+          "cad_multipurpose_furnace_600_v1_side_feed_return"
+        ],
+        "explode_offset": [
+          0,
+          0.2,
+          -2.3
+        ],
+        "explode_rotation": [
+          0,
+          0,
+          0
+        ],
+        "delay": 0,
+        "duration": 1.3,
+        "label_offset": [
+          0,
+          0.35,
+          0
+        ],
+        "description": "原 GLB 总成拆解展示；保留节点内部相对位置，不代表实际检修顺序。",
+        "point_ids": [],
+        "point_keys": [],
+        "detail_view_id": "",
+        "camera": null
+      },
+      {
+        "id": "cad_multipurpose_furnace_082000_assembly_27",
+        "name": "排烟罩与烟管",
+        "group": "cad_multipurpose_furnace_082000",
+        "enabled": true,
+        "node_path": "",
+        "node_name": "cad_multipurpose_furnace_600_v1_extraction",
+        "node_paths": [],
+        "node_names": [
+          "cad_multipurpose_furnace_600_v1_exhaust_duct",
+          "cad_multipurpose_furnace_600_v1_hood_fittings",
+          "cad_multipurpose_furnace_600_v1_canopy_frame"
+        ],
+        "explode_offset": [
+          0,
+          1.9,
+          1.5
+        ],
+        "explode_rotation": [
+          0,
+          0,
+          0
+        ],
+        "delay": 0,
+        "duration": 1.3,
+        "label_offset": [
+          0,
+          0.35,
+          0
+        ],
+        "description": "原 GLB 总成拆解展示；保留节点内部相对位置，不代表实际检修顺序。",
+        "point_ids": [],
+        "point_keys": [],
+        "detail_view_id": "",
+        "camera": null
+      },
+      {
+        "id": "cad_multipurpose_furnace_082000_assembly_28",
+        "name": "前室检修口与管路",
+        "group": "cad_multipurpose_furnace_082000",
+        "enabled": true,
+        "node_path": "",
+        "node_name": "cad_multipurpose_furnace_600_v1_cold_front_hatches",
+        "node_paths": [],
+        "node_names": [
+          "cad_multipurpose_furnace_600_v1_cold_rear_hatches",
+          "cad_multipurpose_furnace_600_v1_cold_roof_pipes"
+        ],
+        "explode_offset": [
+          -2.2,
+          0.2,
+          0
+        ],
+        "explode_rotation": [
+          0,
+          0,
+          0
+        ],
+        "delay": 0,
+        "duration": 1.3,
+        "label_offset": [
+          0,
+          0.35,
+          0
+        ],
+        "description": "原 GLB 总成拆解展示；保留节点内部相对位置，不代表实际检修顺序。",
+        "point_ids": [],
+        "point_keys": [],
+        "detail_view_id": "",
+        "camera": null
+      },
+      {
+        "id": "cad_multipurpose_furnace_082000_assembly_29",
+        "name": "热室检修盖板",
+        "group": "cad_multipurpose_furnace_082000",
+        "enabled": true,
+        "node_path": "",
+        "node_name": "cad_multipurpose_furnace_600_v1_hot_access_panels",
+        "node_paths": [],
+        "node_names": [
+          "cad_multipurpose_furnace_600_v1_hot_rear_hatch",
+          "cad_multipurpose_furnace_600_v1_upper_service_panels"
+        ],
+        "explode_offset": [
+          2.3,
+          0.3,
+          -2
+        ],
+        "explode_rotation": [
+          0,
+          0,
+          0
+        ],
+        "delay": 0,
+        "duration": 1.3,
+        "label_offset": [
+          0,
+          0.35,
+          0
+        ],
+        "description": "原 GLB 总成拆解展示；保留节点内部相对位置，不代表实际检修顺序。",
+        "point_ids": [],
+        "point_keys": [],
+        "detail_view_id": "",
+        "camera": null
+      },
+      {
+        "id": "cad_multipurpose_furnace_082000_assembly_30",
+        "name": "后部工艺管路与阀门",
+        "group": "cad_multipurpose_furnace_082000",
+        "enabled": true,
+        "node_path": "",
+        "node_name": "cad_multipurpose_furnace_600_v1_rear_process_pipes",
+        "node_paths": [],
+        "node_names": [
+          "cad_multipurpose_furnace_600_v1_rear_process_valves"
+        ],
+        "explode_offset": [
+          -2.4,
+          0.8,
+          -2.1
+        ],
+        "explode_rotation": [
+          0,
+          0,
+          0
+        ],
+        "delay": 0,
+        "duration": 1.3,
+        "label_offset": [
+          0,
+          0.35,
+          0
+        ],
+        "description": "原 GLB 总成拆解展示；保留节点内部相对位置，不代表实际检修顺序。",
+        "point_ids": [],
+        "point_keys": [],
+        "detail_view_id": "",
+        "camera": null
+      },
+      {
+        "id": "cad_multipurpose_furnace_082000_assembly_31",
+        "name": "热电偶与工艺仪表",
+        "group": "cad_multipurpose_furnace_082000",
+        "enabled": true,
+        "node_path": "",
+        "node_name": "cad_multipurpose_furnace_600_v1_thermocouples",
+        "node_paths": [],
+        "node_names": [
+          "cad_multipurpose_furnace_600_v1_process_instruments"
+        ],
+        "explode_offset": [
+          2.2,
+          1.8,
+          -1
+        ],
+        "explode_rotation": [
+          0,
+          0,
+          0
+        ],
+        "delay": 0,
+        "duration": 1.3,
+        "label_offset": [
+          0,
+          0.35,
+          0
+        ],
+        "description": "原 GLB 总成拆解展示；保留节点内部相对位置，不代表实际检修顺序。",
+        "point_ids": [],
+        "point_keys": [],
+        "detail_view_id": "",
+        "camera": null
+      },
+      {
+        "id": "cad_multipurpose_furnace_082000_assembly_32",
+        "name": "电气附件与铭牌",
+        "group": "cad_multipurpose_furnace_082000",
+        "enabled": true,
+        "node_path": "",
+        "node_name": "cad_multipurpose_furnace_600_v1_electrics",
+        "node_paths": [],
+        "node_names": [
+          "cad_multipurpose_furnace_600_v1_nameplates"
+        ],
+        "explode_offset": [
+          2.4,
+          0.1,
+          0.5
+        ],
+        "explode_rotation": [
+          0,
+          0,
+          0
+        ],
+        "delay": 0,
+        "duration": 1.3,
+        "label_offset": [
+          0,
+          0.35,
+          0
+        ],
+        "description": "原 GLB 总成拆解展示；保留节点内部相对位置，不代表实际检修顺序。",
+        "point_ids": [],
+        "point_keys": [],
+        "detail_view_id": "",
+        "camera": null
+      },
+      {
+        "id": "cad_multipurpose_furnace_082000_assembly_33",
+        "name": "检修平台、爬梯及护栏",
+        "group": "cad_multipurpose_furnace_082000",
+        "enabled": true,
+        "node_path": "",
+        "node_name": "cad_multipurpose_furnace_600_v1_rear_platform",
+        "node_paths": [],
+        "node_names": [
+          "cad_multipurpose_furnace_600_v1_service_ladder",
+          "cad_multipurpose_furnace_600_v1_platform_guard",
+          "cad_multipurpose_furnace_600_v1_upper_guards"
+        ],
+        "explode_offset": [
+          -2.7,
+          0.3,
+          -1.5
+        ],
+        "explode_rotation": [
+          0,
+          0,
+          0
+        ],
+        "delay": 0,
+        "duration": 1.3,
+        "label_offset": [
+          0,
+          0.35,
+          0
+        ],
+        "description": "原 GLB 总成拆解展示；保留节点内部相对位置，不代表实际检修顺序。",
+        "point_ids": [],
+        "point_keys": [],
+        "detail_view_id": "",
+        "camera": null
+      },
+      {
+        "id": "cad_multipurpose_furnace_082000_assembly_34",
+        "name": "吊耳与临时参考件",
+        "group": "cad_multipurpose_furnace_082000",
+        "enabled": true,
+        "node_path": "",
+        "node_name": "cad_multipurpose_furnace_600_v1_lifting_eyes",
+        "node_paths": [],
+        "node_names": [
+          "cad_multipurpose_furnace_600_v1_temporary"
+        ],
+        "explode_offset": [
+          0,
+          2.2,
+          0
+        ],
+        "explode_rotation": [
+          0,
+          0,
+          0
+        ],
+        "delay": 0,
+        "duration": 1.3,
+        "label_offset": [
+          0,
+          0.35,
+          0
+        ],
+        "description": "原 GLB 总成拆解展示；保留节点内部相对位置，不代表实际检修顺序。",
+        "point_ids": [],
+        "point_keys": [],
+        "detail_view_id": "",
+        "camera": null
+      },
+      {
+        "id": "cad_multipurpose_furnace_082000_reference",
+        "name": "模型参考标记",
+        "group": "参考",
+        "enabled": true,
+        "node_path": "",
+        "node_name": "cad_multipurpose_furnace_600_v1_review",
+        "node_paths": [],
+        "node_names": [],
+        "explode_offset": [
+          0,
+          0,
+          0
+        ],
+        "explode_rotation": [
+          0,
+          0,
+          0
+        ],
+        "delay": 0,
+        "duration": 0,
+        "label_offset": [
+          0,
+          0.35,
+          0
+        ],
+        "description": "",
+        "point_ids": [],
+        "point_keys": [],
+        "detail_view_id": "",
+        "camera": null
+      }
+    ]
+  },
+  "partBindings": [],
+  "sourceAsset": {
+    "filename": "08.20.00_600普通多用炉.glb",
+    "sha256": "fa859b50f7675f27ae939847942311b6f3a2851e3962b6db035a69100b533f68",
+    "stats": {
+      "nodes": 243,
+      "meshes": 169,
+      "triangles": 161148,
+      "materials": 14,
+      "size": [
+        3.0649999380111694,
+        4.663000166416168,
+        6.080000180751085
+      ],
+      "min": [
+        -1.3899999856948853,
+        0,
+        -4.872000236064196
+      ],
+      "max": [
+        1.6749999523162842,
+        4.663000166416168,
+        1.2079999446868896
+      ]
+    }
+  },
+  "schema_version": 1,
+  "batchable": true,
+  "acceptance": {
+    "status": "review",
+    "checked_at": "",
+    "stats": {},
+    "checks": []
+  },
+  "release": {
+    "version": "1.0.0",
+    "status": "review",
+    "published_at": "",
+    "history": []
+  }
+}

@@ -1,0 +1,134 @@
+{
+  "assetSpec": {
+    "version": "1.0.0",
+    "device_family": "回火炉",
+    "unit": "m",
+    "axis_rule": "Y-up / Z-forward",
+    "max_triangles": 200000,
+    "max_nodes": 800,
+    "max_texture_size": 2048,
+    "lod_policy": "LOD0 必须可用，LOD1/LOD2 可选",
+    "node_naming_rule": "role_part_action，例如 fan_rear_rotate、door_front_lift、valve_gas_01",
+    "delivery_status": "review",
+    "owner": "",
+    "notes": "用户提供的 09.13.00_回火炉.glb 原文件入库；保留原始节点、材质和坐标。"
+  },
+  "optimization": {
+    "mode": "auto",
+    "mergeStatic": false,
+    "instanceRepeated": true,
+    "preserveAnimated": true,
+    "materialEnhancement": "original",
+    "contactShadow": true,
+    "environmentIntensity": 0.85
+  },
+  "runtime": {
+    "enableGenericBindings": true
+  },
+  "inspection": {
+    "version": 2,
+    "enabled": true,
+    "offset_space": "parent",
+    "animation_duration": 1.5,
+    "shell_duration": 1,
+    "stagger": 0.06,
+    "playback_speed": 1,
+    "easing": "smoothstep",
+    "labels": {
+      "enabled": true,
+      "leader_lines": true
+    },
+    "shell": {
+      "node_paths": [],
+      "node_names": [],
+      "opacity": 0.18,
+      "wireframe": false,
+      "transition": "clip",
+      "axis": "y",
+      "direction": 1
+    },
+    "solid": {
+      "view_id": "",
+      "transition_seconds": 0.65,
+      "camera": {
+        "yaw": 238,
+        "pitch": 19,
+        "distance_scale": 1.12,
+        "target_offset": [
+          0,
+          0,
+          0
+        ]
+      }
+    },
+    "xray": {
+      "view_id": "",
+      "transition_seconds": 0.65,
+      "camera": {
+        "yaw": 238,
+        "pitch": 19,
+        "distance_scale": 1.08,
+        "target_offset": [
+          0,
+          0,
+          0
+        ]
+      }
+    },
+    "exploded": {
+      "view_id": "",
+      "transition_seconds": 1.5,
+      "camera": {
+        "yaw": 238,
+        "pitch": 22,
+        "distance_scale": 1.22,
+        "target_offset": [
+          0,
+          0,
+          0
+        ]
+      }
+    },
+    "parts": []
+  },
+  "partBindings": [],
+  "sourceAsset": {
+    "filename": "09.13.00_回火炉.glb",
+    "sha256": "9cf50893d1a0cc8e07e7e61612ea7a26f2008585aeb865fe3714168e461b0387",
+    "stats": {
+      "nodes": 97,
+      "meshes": 67,
+      "triangles": 41588,
+      "materials": 13,
+      "size": [
+        2.078499972820282,
+        4.054837703704834,
+        3.2459893019404262
+      ],
+      "min": [
+        -0.9584999978542328,
+        0,
+        -1.0569891929626465
+      ],
+      "max": [
+        1.1199999749660492,
+        4.054837703704834,
+        2.1890001089777797
+      ]
+    }
+  },
+  "schema_version": 1,
+  "batchable": true,
+  "acceptance": {
+    "status": "review",
+    "checked_at": "",
+    "stats": {},
+    "checks": []
+  },
+  "release": {
+    "version": "1.0.0",
+    "status": "review",
+    "published_at": "",
+    "history": []
+  }
+}
