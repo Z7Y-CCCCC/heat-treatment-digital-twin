@@ -21,16 +21,15 @@ const outputDir = path.join(cacheDir, 'runtime');
 const distributionDir = path.join(desktopDir, 'resources', 'ffmpeg');
 
 const build = Object.freeze({
-    version: 'n7.1.5-12-g1fdbca85aa-20260805',
-    releaseTag: 'autobuild-2026-08-05-15-18',
-    archiveName: 'ffmpeg-n7.1.5-12-g1fdbca85aa-win64-lgpl-shared-7.1.zip',
-    archiveRoot: 'ffmpeg-n7.1.5-12-g1fdbca85aa-win64-lgpl-shared-7.1',
-    sha256: '185df1abe559a813be7d53c7ec7e1a6135129b0db09e7b0f607317c2f16cf5a6',
+    version: 'n8.1.3-32-g760d10603e-20261102',
+    releaseTag: 'latest (2026-11-02 snapshot preserved in Git LFS)',
+    archiveName: 'ffmpeg-8.1-20261102-win64-lgpl-shared.zip',
+    archiveRoot: 'ffmpeg-n8.1-latest-win64-lgpl-shared-8.1',
+    sha256: '8f8219f9a6a99da57c6fce6ab285b7dc7aed1d1dba26c1b50146677e63e59371',
     url: 'https://github.com/BtbN/FFmpeg-Builds/releases/download/'
-        + 'autobuild-2026-08-05-15-18/'
-        + 'ffmpeg-n7.1.5-12-g1fdbca85aa-win64-lgpl-shared-7.1.zip',
-    buildScriptsUrl: 'https://github.com/BtbN/FFmpeg-Builds/tree/autobuild-2026-08-05-15-18',
-    ffmpegSourceUrl: 'https://github.com/FFmpeg/FFmpeg/tree/1fdbca85aa'
+        + 'latest/ffmpeg-n8.1-latest-win64-lgpl-shared-8.1.zip',
+    buildScriptsUrl: 'https://github.com/BtbN/FFmpeg-Builds/tree/5ece628',
+    ffmpegSourceUrl: 'https://github.com/FFmpeg/FFmpeg/tree/760d10603e'
 });
 
 function fileSha256(filename) {
@@ -61,10 +60,8 @@ function downloadWithSystemTool(url, destination) {
         execFileSync('powershell.exe', [
             '-NoProfile', '-NonInteractive', '-Command',
             '$ProgressPreference="SilentlyContinue"; '
-                + 'Invoke-WebRequest -UseBasicParsing -Uri $args[0] -OutFile $args[1]',
-            url,
-            partial
-        ], { stdio: 'inherit', windowsHide: true });
+                + 'Invoke-WebRequest -UseBasicParsing -Uri $env:FFMPEG_DOWNLOAD_URL -OutFile $env:FFMPEG_DOWNLOAD_PATH'
+        ], { stdio: 'inherit', windowsHide: true, env: { ...process.env, FFMPEG_DOWNLOAD_URL: url, FFMPEG_DOWNLOAD_PATH: partial } });
     }
     fs.renameSync(partial, destination);
 }
@@ -78,6 +75,16 @@ function ensureArchive() {
             throw new Error(`FFMPEG_ARCHIVE_PATH 指向的文件不存在或 SHA-256 不匹配：${resolved}`);
         }
         return resolved;
+    }
+
+    // Upstream auto-builds expire. Keep the exact verified archive with source
+    // delivery so a future clean checkout does not depend on its retention.
+    const vendored = path.join(desktopDir, 'vendor', 'ffmpeg', build.archiveName);
+    if (fs.existsSync(vendored)) {
+        if (fileSha256(vendored) !== build.sha256) {
+            throw new Error('随库 FFmpeg 校验失败，请先运行 git lfs pull；不会删除或覆盖仓库文件');
+        }
+        return vendored;
     }
 
     const archive = path.join(cacheDir, build.archiveName);
@@ -100,10 +107,8 @@ function extractArchive(archive, destination) {
         console.warn('tar 解压失败，改用 PowerShell Expand-Archive。');
         execFileSync('powershell.exe', [
             '-NoProfile', '-NonInteractive', '-Command',
-            'Expand-Archive -LiteralPath $args[0] -DestinationPath $args[1] -Force',
-            archive,
-            destination
-        ], { stdio: 'inherit', windowsHide: true });
+            'Expand-Archive -LiteralPath $env:FFMPEG_ARCHIVE_INPUT -DestinationPath $env:FFMPEG_EXTRACT_OUTPUT -Force'
+        ], { stdio: 'inherit', windowsHide: true, env: { ...process.env, FFMPEG_ARCHIVE_INPUT: archive, FFMPEG_EXTRACT_OUTPUT: destination } });
     }
 }
 
@@ -141,7 +146,7 @@ function verifyRuntime() {
         windowsHide: true,
         maxBuffer: 16 * 1024 * 1024
     });
-    if (!/^ffmpeg version n7\.1\.5-12-g1fdbca85aa-20260805/m.test(versionOutput)) {
+    if (!versionOutput.startsWith(`ffmpeg version ${build.version} `)) {
         throw new Error('FFmpeg 版本验证失败，实际输出与固定交付版本不一致');
     }
     if (!/\bh264_mf\b/.test(encoderOutput)) {
