@@ -16,12 +16,15 @@ jobs:
   preflight:
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
         with:
           lfs: true
           fetch-depth: 0
       - name: Only release main or a version tag already merged into main
+        id: version
         env:
           RUNNER_ENABLED: ${{ vars.WINDOWS_RELEASE_RUNNER_ENABLED }}
         shell: bash
@@ -33,6 +36,7 @@ jobs:
           fi
           git merge-base --is-ancestor HEAD origin/main
           node tools/ci/check-release.cjs
+          echo "tag=v$(node -p 'require("./desktop/package.json").version')" >> "$GITHUB_OUTPUT"
           if [[ "$RUNNER_ENABLED" != true ]]; then
             echo 'Windows runner is not enabled. Run tools/ci/setup-windows-runner.ps1; then set WINDOWS_RELEASE_RUNNER_ENABLED=true.' >&2
             exit 1
@@ -104,9 +108,8 @@ jobs:
             unity-client/Logs/desktop-package-build.log
           retention-days: 14
 
-  draft-release:
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: package
+  publish-release:
+    needs: [preflight, package]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -116,17 +119,32 @@ jobs:
         with:
           name: windows-installer-${{ github.run_number }}
           path: release
-      - name: Create draft release with verified installer and checksums
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Verify downloaded artifact before publishing
+        run: node tools/ci/verify-release.cjs release
+      - name: Upload all files, then publish the release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ needs.preflight.outputs.tag }}
         shell: bash
         run: |
           set -euo pipefail
+          gh api "repos/$GH_REPO/git/ref/tags/$RELEASE_TAG" > tag.json 2> tag-error.txt || {
+            if ! grep -q 'HTTP 404' tag-error.txt; then cat tag-error.txt >&2; exit 1; fi
+            gh api --method POST "repos/$GH_REPO/git/refs" -f ref="refs/tags/$RELEASE_TAG" -f sha="$GITHUB_SHA" > tag.json
+          }
+          TAG_SHA=$(gh api "repos/$GH_REPO/commits/$RELEASE_TAG" --jq .sha)
+          test "$TAG_SHA" = "$GITHUB_SHA" || { echo 'Version tag belongs to another commit; bump the version instead of overwriting it.' >&2; exit 1; }
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             test "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = true
           else
-            gh release create "$RELEASE_TAG" --verify-tag --draft --title "$RELEASE_TAG" --notes 'Windows x64 installer. Automated quality checks and isolated first-launch/restart verification passed. Includes starter configuration, not customer data.'
+            gh release create "$RELEASE_TAG" --verify-tag --draft --title "$RELEASE_TAG · Windows x64" --notes "Windows x64 安装包。基于提交 $GITHUB_SHA 自动构建，包含初始配置，不含现场账号、数据库或 PLC 凭据。自动回归及隔离首次启动、重启检查已通过。下载 exe 安装，sha256.txt 用于完整性校验。"
           fi
           gh release upload "$RELEASE_TAG" release/* --clobber
+          gh release edit "$RELEASE_TAG" --draft=false --latest
