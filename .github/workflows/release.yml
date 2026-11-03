@@ -2,11 +2,18 @@ name: Windows installer
 
 on:
   workflow_dispatch:
+    inputs:
+      verified_run_id:
+        description: 'Optional: retry publishing an already verified main build; leave empty for a fresh installer'
+        required: false
+        default: ''
+        type: string
   push:
     tags: ['v*']
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: windows-release
@@ -18,6 +25,9 @@ jobs:
     timeout-minutes: 5
     outputs:
       tag: ${{ steps.version.outputs.tag }}
+      commit: ${{ steps.reuse.outputs.commit || github.sha }}
+      run: ${{ steps.reuse.outputs.run || github.run_id }}
+      artifact: ${{ steps.reuse.outputs.artifact || format('windows-installer-{0}', github.run_number) }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -42,12 +52,27 @@ jobs:
             exit 1
           fi
 
+      - name: Verify previously built artifact provenance for publish-only retry
+        id: reuse
+        if: inputs.verified_run_id != '' && github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN: ${{ inputs.verified_run_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_RUN" =~ ^[0-9]+$ ]] || { echo 'Invalid source run id'; exit 1; }
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN" > source-run.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN/jobs?filter=latest&per_page=100" > source-jobs.json
+          node tools/ci/reusable-release.cjs source-run.json source-jobs.json "$SOURCE_RUN"
+
   quality:
     needs: preflight
     uses: ./.github/workflows/quality.yml
 
   package:
     needs: [preflight, quality]
+    if: inputs.verified_run_id == ''
     runs-on: [self-hosted, Windows, X64, digital-twin-release]
     timeout-minutes: 60
     steps:
@@ -117,42 +142,51 @@ jobs:
         run: Write-Warning 'Diagnostic log upload failed; runner logs remain in _diag. Build, installer upload and release verification are still mandatory.'
 
   publish-release:
-    needs: [preflight, package]
+    needs: [preflight, quality, package]
+    if: always() && needs.preflight.result == 'success' && needs.quality.result == 'success' && (needs.package.result == 'success' || (needs.package.result == 'skipped' && inputs.verified_run_id != ''))
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: write
+      actions: read
     steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: windows-installer-${{ github.run_number }}
-          path: release
+      # Checkout must precede download: its clean step removes untracked files.
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.preflight.outputs.artifact }}
+          run-id: ${{ needs.preflight.outputs.run }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/verified-release
       - uses: actions/setup-node@v4
         with:
           node-version: 22
       - name: Verify downloaded artifact before publishing
-        run: node tools/ci/verify-release.cjs release
+        env:
+          BUILD_COMMIT: ${{ needs.preflight.outputs.commit }}
+          BUILD_RUN: ${{ needs.preflight.outputs.run }}
+        run: node tools/ci/verify-release.cjs "$RUNNER_TEMP/verified-release" "$BUILD_COMMIT" "$BUILD_RUN"
       - name: Upload all files, then publish the release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ needs.preflight.outputs.tag }}
+          BUILD_COMMIT: ${{ needs.preflight.outputs.commit }}
         shell: bash
         run: |
           set -euo pipefail
           gh api "repos/$GH_REPO/git/ref/tags/$RELEASE_TAG" > tag.json 2> tag-error.txt || {
             if ! grep -q 'HTTP 404' tag-error.txt; then cat tag-error.txt >&2; exit 1; fi
-            gh api --method POST "repos/$GH_REPO/git/refs" -f ref="refs/tags/$RELEASE_TAG" -f sha="$GITHUB_SHA" > tag.json
+            gh api --method POST "repos/$GH_REPO/git/refs" -f ref="refs/tags/$RELEASE_TAG" -f sha="$BUILD_COMMIT" > tag.json
           }
           TAG_SHA=$(gh api "repos/$GH_REPO/commits/$RELEASE_TAG" --jq .sha)
-          test "$TAG_SHA" = "$GITHUB_SHA" || { echo 'Version tag belongs to another commit; bump the version instead of overwriting it.' >&2; exit 1; }
+          test "$TAG_SHA" = "$BUILD_COMMIT" || { echo 'Version tag belongs to another commit; bump the version instead of overwriting it.' >&2; exit 1; }
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             test "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = true
           else
-            gh release create "$RELEASE_TAG" --verify-tag --draft --title "$RELEASE_TAG · Windows x64" --notes "Windows x64 安装包。基于提交 $GITHUB_SHA 自动构建，包含初始配置，不含现场账号、数据库或 PLC 凭据。自动回归及隔离首次启动、重启检查已通过。下载 exe 安装，sha256.txt 用于完整性校验。"
+            gh release create "$RELEASE_TAG" --verify-tag --draft --title "$RELEASE_TAG · Windows x64" --notes "Windows x64 安装包。基于提交 $BUILD_COMMIT 自动构建，包含初始配置，不含现场账号、数据库或 PLC 凭据。自动回归及隔离首次启动、重启检查已通过。下载 exe 安装，sha256.txt 用于完整性校验。"
           fi
-          gh release upload "$RELEASE_TAG" release/* --clobber
+          gh release upload "$RELEASE_TAG" "$RUNNER_TEMP/verified-release/"* --clobber
           gh release edit "$RELEASE_TAG" --draft=false --latest
