@@ -27,6 +27,11 @@ test('installer carries the motion registry together with backend assets (withou
  assert.ok(backend.filter.includes('**/*'))
  assert.ok(!backend.filter.some(p=>p.startsWith('!assets/motions')))
 })
+test('measured door stroke is linear, not the eased timeline of an open/close demonstration',()=>{
+ const data=JSON.parse(fs.readFileSync(new URL('../../backend/assets/motions/cad_cleaner_170700.json',import.meta.url)))
+ const clip=data.clips.find(c=>c.id==='door'),track=clip.tracks.find(t=>t.channel==='p'&&t.node.endsWith('_door'))
+ for(const p of [0,.25,.37,.75,1])assert.ok(Math.abs(sampleMotionTrack(clip,track,p*clip.duration)[1]-.9*p)<.00001)
+})
 test('running is read-only, stops without accumulating angle, and input inversion is explicit',()=>{
  const b={...binding,mode:'running',invert:true,transitionSeconds:0,speed:2},s={seconds:0}
  receiveMotionSignal(s,b,frame(false),1);stepMotionSignal(s,b,.5,1.5,5000);assert.equal(s.seconds,1)

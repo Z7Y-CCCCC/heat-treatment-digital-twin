@@ -7,7 +7,7 @@
       "rigPath": "/assets/motions/cad_multipurpose_furnace_082000.glb",
       "rigSha256": "39994eb840a608d7edc8c9f0a435150189d4fbaf7f612a86ea5ec912836861b9",
       "clipPath": "/assets/motions/cad_multipurpose_furnace_082000.json",
-      "clipSha256": "ff3df4f112aeeeb3fd668406f8294ec8ff63d763ec1b19d699daf714741663c5",
+      "clipSha256": "23d55b94a23165b957f25377466f4f0d44ca897cf7450e81ac834783f09f955b",
       "actions": [
         {
           "id": "door",
@@ -195,7 +195,7 @@
       "rigPath": "/assets/motions/cad_transfer_cart_101300.glb",
       "rigSha256": "cb6b27763c768a1fcb59daa089ec53297b186f942ecb9a62775a9b898518e502",
       "clipPath": "/assets/motions/cad_transfer_cart_101300.json",
-      "clipSha256": "684354f2fd6f829df4b429bef025384b5d36f9ba2715254f409c5d8cb60e677e",
+      "clipSha256": "b2782fa9da6a9e1b0c42f947ad94767b87852efc1e9bb49b00441faa78354d3b",
       "actions": [
         {
           "id": "travel",
@@ -241,7 +241,7 @@
       "rigPath": "/assets/motions/cad_lifting_load_table_111400.glb",
       "rigSha256": "fa6c1d3f311019872a5572566986f3c59a9da1aa5cac8a566fc5f8fbccbc5d28",
       "clipPath": "/assets/motions/cad_lifting_load_table_111400.json",
-      "clipSha256": "1e59fa6a4c6663c14c65b9704274c9b82bf185c7de7f023d5a2037a010b2de5a",
+      "clipSha256": "5ea78914b716359ab7b5894565c96bf01f1dd4e85de974fa9e20151921f81217",
       "actions": [
         {
           "id": "lift_up",
@@ -402,7 +402,7 @@
       "rigPath": "/assets/motions/cad_air_cooling_table_115800ht.glb",
       "rigSha256": "aa9f577430dd077f7712d5aab91fd66b6b2e4e1f0cc7098c454a0f143d231f71",
       "clipPath": "/assets/motions/cad_air_cooling_table_115800ht.json",
-      "clipSha256": "41dd5e0eed3f63f34102f52ee85ba4b0905853077703f0de732345e8a704357d",
+      "clipSha256": "400e75da506c6c49dc9864e14e75d7c03c3bf94f96cb42e9536f53e647e3fe07",
       "actions": [
         {
           "id": "door",
@@ -446,7 +446,7 @@
       "rigPath": "/assets/motions/cad_cleaner_170700.glb",
       "rigSha256": "b7ae8bfa8ad959b1772a5660efc16ce65c4d6bba34fa5bcebbce311ef5935ce5",
       "clipPath": "/assets/motions/cad_cleaner_170700.json",
-      "clipSha256": "1fd98315fa1040e1121adddd78977a451aa2cde11d234c8770dd910f5b648694",
+      "clipSha256": "bae21bd19e32325108438793a3cff7f0260fbf478f28dd7872fa201432fe3579",
       "actions": [
         {
           "id": "door",
@@ -881,7 +881,7 @@
       "rigPath": "/assets/motions/cad_water_cooling_tank_471000.glb",
       "rigSha256": "b009df8fd1f53b9b376f20fb18f840fbc302370de4b648bde932d785023b5c60",
       "clipPath": "/assets/motions/cad_water_cooling_tank_471000.json",
-      "clipSha256": "7d2c824daeb61b642ca9d5d507d3860566e27f043fc941227aafc9574cb5230f",
+      "clipSha256": "eb0a8f4a2b5eee83545dcca9736a9ee244053889c4a7a25c57ba19f839e8959a",
       "actions": [
         {
           "id": "door",

@@ -27,7 +27,7 @@ async function main() {
     };
     const selected = await request('/api/devices/motion_one/animations');
     const binding = (id, point) => ({ actionId: 'clip:' + id, enabled: true, pointId: point,
-        inputMin: 0, inputMax: 1, invert: false, speed: 1, transitionSeconds: 1 });
+        inputMin: 0, inputMax: 1, invert: false, speed: 1, transitionSeconds: 2 });
     await request('/api/devices/motion_one/animations', { method: 'PUT', body: JSON.stringify({ revision: selected.revision,
         config: { version: 1, staleMs: 1500, bindings: [binding('door', info.pointIds[0]), binding('pumps', info.pointIds[1])] } }) });
     const exe = path.join(root, 'unity-client/Builds/Windows/HeatTreatmentDigitalTwin.exe');
@@ -57,7 +57,8 @@ async function main() {
         const clip = packageData.clips.find(c => c.id === 'door');
         for (const track of action(s, 'door').tracks) {
             const authored = clip.tracks.find(t => t.node === track.node && t.channel === track.channel);
-            const values = authored.values.slice((progress ? clip.count - 1 : 0) * authored.size, (progress ? clip.count : 1) * authored.size);
+            const offset = progress * (clip.count - 1), left = Math.floor(offset), right = Math.min(clip.count - 1, left + 1);
+            const values = Array.from({ length: authored.size }, (_, i) => authored.values[left * authored.size + i] * (1 - offset + left) + authored.values[right * authored.size + i] * (offset - left));
             if (track.channel === 'p') values[0] *= -1;
             else if (track.channel === 'q') { values[1] *= -1; values[2] *= -1; }
             if (['p', 's', 'v', 'q'].includes(track.channel)) values.forEach((v, i) => assert.ok(Math.abs(v - track.actual[i]) < .0002, track.node));
@@ -67,6 +68,8 @@ async function main() {
     check('Windows player imports hash-verified motion rig and acquires closed pose from actual collector feedback');
     let from = snapshots().length;
     await control({ door: 1, pump: 1 });
+    const intermediate = await observed(s => action(s, 'door')?.usable && action(s, 'door').position > .05 && action(s, 'door').position < .95, 'native intermediate stroke', from);
+    assertPosition(intermediate, action(intermediate, 'door').position);
     const open = await observed(s => action(s, 'door')?.usable && action(s, 'door').position > .999, 'native opening endpoint', from);
     assertPosition(open, 1);
     const turning = await observed(s => action(s, 'pumps')?.seconds > action(open, 'pumps').seconds + .5, 'native pump advances', from);

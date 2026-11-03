@@ -27,12 +27,12 @@ function advance(delta){
  if(!ready.value)return
  const now=performance.now()/1000;if(props.test)receive()
  player?.advance(delta,now)
- for(const p of parts){stepMotionSignal(p.signal,p.binding,delta,now,props.staleMs);const s=p.signal,b=p.definition;if(!s.hasSample)continue;const axis=new T.Vector3(b.axis==='x'?1:0,b.axis==='y'?1:0,b.axis==='z'?1:0),offset=(b.output_min||0)+((b.output_max??90)-(b.output_min||0))*s.position
+ for(const p of parts){stepMotionSignal(p.signal,p.binding,delta,now,props.staleMs);const s=p.signal,b=p.definition;if(!s.hasSample)continue;const axisName=b.axis||'y',axis=new T.Vector3(axisName==='x'?1:0,axisName==='y'?1:0,axisName==='z'?1:0),offset=(b.output_min||0)+((b.output_max??90)-(b.output_min||0))*s.position
    if(b.action==='translate')p.node.position.copy(p.position).addScaledVector(axis,offset)
    else if(b.action==='rotate_angle')p.node.quaternion.copy(p.rotation).multiply(new T.Quaternion().setFromAxisAngle(axis,T.MathUtils.degToRad(offset)))
    else if(b.action==='rotate_speed'){if(s.usable){const value=Number((props.test?testFrame():props.frame)?.[p.binding.sourceGroup]?.[p.binding.sourceKey]);p.angle+=(Number.isFinite(value)?value:0)*Number(b.speed_factor??.10472)*p.binding.speed*(p.binding.invert?-1:1)*delta}p.node.quaternion.copy(p.rotation).multiply(new T.Quaternion().setFromAxisAngle(axis,p.angle))}
    else if(s.usable&&b.action==='visibility')p.node.visible=s.position>.5
-   else if(s.usable&&b.action==='color')p.node.traverse(n=>{if(n.isMesh)for(const m of [].concat(n.material))m.color?.set(s.position>.5?b.on_color:b.off_color)})
+   else if(s.usable&&b.action==='color')p.node.traverse(n=>{if(n.isMesh)for(const m of [].concat(n.material))m.color?.set(s.position>.5?(b.on_color||'#00ff88'):(b.off_color||'#666666'))})
  }
 }
 async function load(){
