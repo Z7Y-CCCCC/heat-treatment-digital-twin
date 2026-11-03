@@ -1,9 +1,11 @@
 const { evaluateVariableExpression } = require('./mathExpression');
 const { parseDataPath } = require('./externalDataPayload');
 const { createHash } = require('node:crypto');
+const { normalizeParameterDefinitions, resolveParameters } = require('../../shared/dashboardParameters.mjs');
 
 const { normalizeViewTooltipMetadata } = require('../../shared/deviceTooltip.mjs');
 
+const { normalizePlayback } = require('../../shared/widgetPlayback.mjs');
 const SCHEMA_VERSION = 3;
 const SUPPORTED_SCHEMA_VERSIONS = new Set([1, 2, 3]);
 const DEFAULT_CANVAS = Object.freeze({
@@ -18,7 +20,7 @@ const ALLOWED_WIDGET_TYPES = new Set([
     'text', 'value', 'status', 'trend', 'alarm_list', 'device_list', 'image',
     'container', 'metrics', 'marquee', 'navigation', 'return_button', 'device_label',
     'diagnostics', 'line_overview_cards', 'business_summary', 'hud_kpi_panel',
-    'hud_device_status', 'hud_alarm_panel', 'hud_chart_dock'
+    'hud_device_status', 'hud_alarm_panel', 'hud_chart_dock', 'filter'
 ]);
 const UNITY_WIDGET_TYPES = new Set(['navigation', 'return_button', 'device_label', 'diagnostics', 'line_overview_cards']);
 const SYSTEM_VIEW_COMPONENT_IDS = new Set([
@@ -27,9 +29,9 @@ const SYSTEM_VIEW_COMPONENT_IDS = new Set([
 ]);
 const ALLOWED_EVENT_ACTIONS = new Set([
     'enter_device', 'focus_factory', 'focus_line', 'focus_workshop',
-    'play_voice', 'open_link', 'switch_scene', 'switch_view', 'set_visibility', 'toggle_visibility'
+    'play_voice', 'open_link', 'switch_scene', 'switch_view', 'set_visibility', 'toggle_visibility', 'set_parameter', 'reset_parameters', 'refresh_data'
 ]);
-const ALLOWED_EVENT_TRIGGERS = new Set(['click', 'doubleClick']);
+const ALLOWED_EVENT_TRIGGERS = new Set(['click', 'doubleClick', 'change']);
 const FORBIDDEN_WRITE_KEYS = new Set([
     'write', 'writevalue', 'setvalue', 'command', 'plcwrite', 'writetoplc',
     'outputvalue', 'coilvalue', 'registervalue'
@@ -165,7 +167,7 @@ function normalizeDataBinding(source, legacyBinding = {}) {
     const data = objectValue(source, {});
     const binding = objectValue(legacyBinding, {});
     let mode = shortText(data.mode, '', 32);
-    if (!['static', 'plc', 'database', 'http_api', 'runtime', 'business'].includes(mode)) {
+    if (!['static', 'plc', 'database', 'http_api', 'dataset', 'runtime', 'business'].includes(mode)) {
         mode = (data.connectionId || binding.connectionId || binding.connection_id)
             ? 'database'
             : (data.pointId || binding.pointId || binding.point_id)
@@ -177,19 +179,23 @@ function normalizeDataBinding(source, legacyBinding = {}) {
     const datasets = rawDatasets.slice(0, 12).map((item, index) => normalizeDatabaseDataset(item, legacyDataset, index));
     const rawDeviceId = data.deviceId ?? data.device_id ?? binding.deviceId ?? binding.device_id ?? '';
     const requestedDeviceScope = String(data.deviceScope ?? data.device_scope ?? binding.deviceScope ?? '').toLowerCase();
-    const deviceScope = requestedDeviceScope === 'current' || requestedDeviceScope === 'fixed'
+    const deviceScope = ['current','fixed','rotation'].includes(requestedDeviceScope)
         ? requestedDeviceScope
         : (rawDeviceId ? 'fixed' : 'current');
     return {
         ...binding,
         ...data,
         mode,
-        deviceScope,
+        ...normalizePlayback({...data,deviceScope}),
         deviceId: shortText(rawDeviceId, '', 128),
         pointId: shortText(data.pointId ?? binding.pointId ?? binding.point_id, '', 128),
         pointKey: shortText(data.pointKey ?? data.point_key ?? binding.pointKey ?? binding.point_key, '', 255),
         path: mode === 'static' ? '' : shortText(data.path ?? binding.path, '', 255),
         source: mode === 'static' ? '' : shortText(data.source ?? binding.source, '', 128),
+        datasetId: shortText(data.datasetId, '', 80),
+        datasetField: shortText(data.datasetField, '', 64),
+        datasetFields:[...new Set((Array.isArray(data.datasetFields)?data.datasetFields:[]).map(v=>shortText(v,'',64)))].slice(0,12),
+        datasetMode: ['first','count','sum','avg','min','max'].includes(data.datasetMode) ? data.datasetMode : 'first',
         connectionId: shortText(data.connectionId ?? binding.connectionId ?? binding.connection_id, '', 80),
         apiPath: shortText(data.apiPath ?? binding.apiPath, '', 1024),
         jsonPath: shortText(data.jsonPath ?? binding.jsonPath, '', 255),
@@ -230,6 +236,10 @@ function normalizeEvent(event) {
     })) {
         const value = shortText(source[key], '', max);
         if (value) result[key] = value;
+    }
+    if (source.action === 'set_parameter') {
+        result.parameterKey = shortText(source.parameterKey, '', 40);
+        result.value = source.value;
     }
     return result;
 }
@@ -635,6 +645,7 @@ function normalizeDocument(input, context = {}) {
             ...sceneViews
         },
         widgets: normalizedReferences.widgets,
+        parameters: normalizeParameterDefinitions(source.parameters || []),
         metadata: {
             ...objectValue(source.metadata, {}),
             updatedAt: new Date().toISOString(),
@@ -650,6 +661,8 @@ function buildDocumentFromLegacy({ project, scene, widgets }) {
 function validateDocument(document, options = {}) {
     const errors = [];
     const input = objectValue(document, {});
+    let parameters=[];
+    try { parameters=normalizeParameterDefinitions(input.parameters || []); } catch(error) { errors.push(error.message); }
     if (!SUPPORTED_SCHEMA_VERSIONS.has(Number(input.schemaVersion))) errors.push(`仅支持 Schema v1-v${SCHEMA_VERSION}`);
     if (!shortText(input.projectId, '', 128)) errors.push('projectId 不能为空');
     if (!shortText(input.sceneId, '', 128)) errors.push('sceneId 不能为空');
@@ -699,10 +712,23 @@ function validateDocument(document, options = {}) {
         }
         visitedIds.add(widget?.id);
         if (!ALLOWED_WIDGET_TYPES.has(widget?.type)) errors.push(`${label} 类型不支持：${widget?.type}`);
+        if (widget?.type === 'filter') {
+            const definition=parameters.find(p=>p.key===widget.content?.parameterKey);
+            if (!definition) errors.push(`${label} 请选择已定义的大屏参数`);
+            if (!['select','text','number','date','checkbox'].includes(widget.content?.control)) errors.push(`${label} 的筛选类型不支持`);
+            const options=widget.content?.options ?? [];
+            if (!Array.isArray(options) || options.length>100) errors.push(`${label} 最多配置 100 个筛选选项`);
+            else for (const item of options) {
+                try {
+                    if (!item || typeof item.label!=='string' || item.label.length>80) throw new Error('筛选选项名称无效');
+                    resolveParameters(parameters,{[widget.content.parameterKey]:item.value});
+                } catch(error) { errors.push(`${label}：${error.message}`); }
+            }
+        }
         if (!widget?.frame || Number(widget.frame.width) < 20 || Number(widget.frame.height) < 20) errors.push(`${label} 尺寸不合法`);
         if (widget?.data?.readOnly === false) errors.push(`${label} 禁止启用 PLC 写入`);
         if (widget?.data?.mode === 'plc') {
-            const currentDeviceScope = widget.data.deviceScope === 'current';
+            const currentDeviceScope = widget.data.deviceScope !== 'fixed';
             if ((!currentDeviceScope && !widget.data.deviceId) || !widget.data.pointId) {
                 errors.push(`${label} 的 PLC 绑定必须选择点位${currentDeviceScope ? '' : '和设备'}`);
             }
@@ -710,6 +736,7 @@ function validateDocument(document, options = {}) {
         if (widget?.data?.mode === 'business' && !widget.data.connectionId) {
             errors.push(`${label} 的业务只读组件必须选择外部数据库连接`);
         }
+        if (widget?.data?.mode === 'dataset' && (!/^[a-zA-Z0-9_-]{1,80}$/.test(widget.data.datasetId) || !/^[a-zA-Z_][a-zA-Z0-9_]{0,63}$/.test(widget.data.datasetField))) errors.push(`${label} 请完整选择数据集与字段`);
         if (widget?.data?.mode === 'http_api') {
             if (!widget.data.connectionId || !widget.data.apiPath || !widget.data.jsonPath)
                 errors.push(`${label} 的 HTTP 接口绑定必须选择连接、接口路径和 JSON 字段`);
@@ -745,6 +772,9 @@ function validateDocument(document, options = {}) {
             if (viewIds.size && !viewIds.has(viewId)) errors.push(`${label} 指定的视角不存在：${viewId}`);
         }
         for (const event of widget?.events || []) {
+            if (event?.action === 'set_parameter') {
+                try { resolveParameters(parameters,{[event.parameterKey]:event.value}); } catch(error) { errors.push(`${label}：${error.message}`); }
+            }
             if (!ALLOWED_EVENT_ACTIONS.has(event?.action)) errors.push(`${label} 包含不允许的点击动作`);
             if (event?.action === 'switch_view' && (!event.viewId || !viewIds.has(event.viewId))) {
                 errors.push(`${label} 的视角切换事件目标不存在：${event.viewId || '(空)'}`);

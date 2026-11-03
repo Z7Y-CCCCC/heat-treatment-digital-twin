@@ -148,7 +148,7 @@ function startLoggedProcess(command, args, options) {
             SQLITE_UPGRADE_TEMPLATE: '',
             SQLITE_TEMPLATE_FILE: '',
             LICENSE_FILE: path.join(dataDir, 'license.json'),
-            LICENSE_ENFORCE: 'false',
+            LICENSE_ENFORCE: options.licenseEnforced === true ? 'true' : 'false',
             ADMIN_API_TOKEN: env.ADMIN_API_TOKEN || crypto.randomBytes(32).toString('hex')
         };
         // A developer's shell must not redirect a test into their commissioned DB.

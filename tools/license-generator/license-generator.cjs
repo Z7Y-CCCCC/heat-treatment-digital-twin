@@ -2,7 +2,7 @@
 
 /*
  * Local-only license issuer.
- * The private key is created and kept beside this tool. It is never served to
+ * The private key stays in the vendor's local application data. It is never served to
  * the browser and is never included in a customer license document.
  */
 const crypto = require('crypto');
@@ -12,12 +12,13 @@ const path = require('path');
 const { execFile } = require('child_process');
 
 const { signLicensePayload, normalizePayload, LICENSE_FORMAT, LICENSE_VERSION, LICENSE_ALGORITHM } = require('../../backend/services/license');
+const { encodeActivationCode } = require('../../shared/activationCode.cjs');
 
-const TOOL_DIR = __dirname;
+const TOOL_DIR = require('./issuer-paths.cjs').issuerDataDirectory();
 const ISSUED_DIR = path.join(TOOL_DIR, 'issued');
 const PRIVATE_KEY_FILE = path.join(TOOL_DIR, 'license-private-key.pem');
 const PUBLIC_KEY_FILE = path.join(TOOL_DIR, 'license-public-key.pem');
-const UI_FILE = path.join(TOOL_DIR, 'index.html');
+const UI_FILE = path.join(__dirname, 'index.html');
 const HOST = '127.0.0.1';
 const ACCESS_TOKEN = crypto.randomBytes(24).toString('hex');
 const MAX_BODY_BYTES = 128 * 1024;
@@ -29,6 +30,8 @@ function json(res, statusCode, value) {
     res.writeHead(statusCode, {
         'content-type': 'application/json; charset=utf-8',
         'cache-control': 'no-store',
+        'referrer-policy': 'no-referrer',
+        'x-content-type-options': 'nosniff',
         'content-length': Buffer.byteLength(body)
     });
     res.end(body);
@@ -55,19 +58,24 @@ function keyStatus() {
 }
 
 function writePrivateFile(file, value) {
-    fs.writeFileSync(file, value, { encoding: 'utf8', mode: 0o600 });
+    fs.writeFileSync(file, value, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
     try { fs.chmodSync(file, 0o600); } catch (error) { /* Windows ACLs are managed by the owner. */ }
 }
 
-function generateKeys(overwrite = false) {
-    if (!overwrite && (fs.existsSync(PRIVATE_KEY_FILE) || fs.existsSync(PUBLIC_KEY_FILE))) {
-        const error = new Error('密钥文件已存在；如需替换请明确选择“覆盖密钥对”。');
+function generateKeys() {
+    if (fs.existsSync(PRIVATE_KEY_FILE) || fs.existsSync(PUBLIC_KEY_FILE)) {
+        const error = new Error('厂商密钥已存在，不会覆盖。请备份原密钥，继续使用同一签发身份。');
         error.code = 'KEY_EXISTS';
         throw error;
     }
     const { privateKey, publicKey } = crypto.generateKeyPairSync('ed25519');
-    writePrivateFile(PRIVATE_KEY_FILE, privateKey.export({ type: 'pkcs8', format: 'pem' }));
-    fs.writeFileSync(PUBLIC_KEY_FILE, publicKey.export({ type: 'spki', format: 'pem' }), { encoding: 'utf8', mode: 0o644 });
+    try {
+        writePrivateFile(PRIVATE_KEY_FILE, privateKey.export({ type: 'pkcs8', format: 'pem' }));
+        fs.writeFileSync(PUBLIC_KEY_FILE, publicKey.export({ type: 'spki', format: 'pem' }), { encoding: 'utf8', mode: 0o644, flag: 'wx' });
+    } catch (error) {
+        if (error.code === 'EEXIST') { error.code = 'KEY_EXISTS'; error.message = '密钥文件已存在，未覆盖；请检查并备份原签发身份。'; }
+        throw error;
+    }
     return keyStatus();
 }
 
@@ -98,16 +106,19 @@ function safeLicenseFileName(licenseId) {
 }
 
 function validatePayload(input) {
-    const payload = normalizePayload(input || {});
+    const payload = normalizePayload({ ...input, bindingVersion: 2 });
     if (!payload.licenseId || !payload.customer || !payload.issuedAt || !payload.expiresAt) {
         throw new Error('许可证编号、客户名称、生效时间、失效时间均不能为空。');
+    }
+    if (payload.licenseId.length > 120 || payload.customer.length > 120 || payload.features.length > 32 || payload.features.some(feature => feature.length > 64)) {
+        throw new Error('客户、编号或功能列表过长。');
     }
     const issued = Date.parse(payload.issuedAt);
     const expires = Date.parse(payload.expiresAt);
     if (!Number.isFinite(issued) || !Number.isFinite(expires) || expires <= issued) {
         throw new Error('许可证日期无效，且失效时间必须晚于生效时间。');
     }
-    if (payload.machineId && !/^machine-[a-f0-9]{32}$/i.test(payload.machineId)) {
+    if (!payload.machineId || !/^machine-[a-f0-9]{32}$/.test(payload.machineId)) {
         throw new Error('机器指纹格式不正确，请从客户机后台复制完整指纹。');
     }
     return payload;
@@ -119,12 +130,19 @@ function isAuthorized(requestUrl) {
 
 function serveUi(res) {
     const body = fs.readFileSync(UI_FILE);
-    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store',
+        'referrer-policy': 'no-referrer', 'x-content-type-options': 'nosniff',
+        'content-security-policy': "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'" });
     res.end(body);
 }
 
 const server = http.createServer(async (req, res) => {
     const requestUrl = new URL(req.url || '/', `http://${HOST}`);
+    const expectedHost = `${HOST}:${server.address()?.port}`;
+    if (req.headers.host !== expectedHost || (req.headers.origin && req.headers.origin !== `http://${expectedHost}`)
+        || req.headers['sec-fetch-site'] === 'cross-site') {
+        json(res, 403, { success: false, error: '拒绝跨站访问' }); return;
+    }
     if (!isAuthorized(requestUrl)) {
         json(res, 401, { success: false, error: '本地授权工具访问令牌无效。' });
         return;
@@ -140,7 +158,8 @@ const server = http.createServer(async (req, res) => {
         }
         if (req.method === 'POST' && requestUrl.pathname === '/api/generate-keys') {
             const body = await readBody(req);
-            json(res, 200, { success: true, ...generateKeys(Boolean(body.overwrite)) });
+            if (body.overwrite) throw new Error('不允许覆盖签发密钥');
+            json(res, 200, { success: true, ...generateKeys() });
             return;
         }
         if (req.method === 'POST' && requestUrl.pathname === '/api/sign') {
@@ -148,16 +167,20 @@ const server = http.createServer(async (req, res) => {
             const body = await readBody(req);
             const payload = validatePayload(body.payload || body);
             const privateKey = crypto.createPrivateKey(fs.readFileSync(PRIVATE_KEY_FILE));
+            if (publicKeyFingerprint() !== crypto.createHash('sha256').update(crypto.createPublicKey(privateKey).export({ type: 'spki', format: 'der' })).digest('hex'))
+                throw new Error('公私钥不匹配，请恢复备份；不要重新生成密钥');
             const license = signLicensePayload(payload, privateKey);
             const fileName = safeLicenseFileName(payload.licenseId);
             const filePath = path.join(ISSUED_DIR, fileName);
             fs.writeFileSync(filePath, `${JSON.stringify(license, null, 2)}\n`, 'utf8');
-            json(res, 200, { success: true, fileName, license });
+            const activationCode = encodeActivationCode(license);
+            fs.writeFileSync(filePath.replace(/\.json$/, '.txt'), activationCode + '\n', { mode: 0o600 });
+            json(res, 200, { success: true, fileName, license, activationCode });
             return;
         }
         if (req.method === 'GET' && requestUrl.pathname === '/api/download') {
             const fileName = path.basename(requestUrl.searchParams.get('file') || '');
-            if (!/^license-[a-zA-Z0-9._-]+\.json$/.test(fileName)) {
+            if (!/^license-[a-zA-Z0-9._-]+\.(json|txt)$/.test(fileName)) {
                 json(res, 400, { success: false, error: '文件名无效。' });
                 return;
             }
@@ -167,7 +190,7 @@ const server = http.createServer(async (req, res) => {
                 return;
             }
             res.writeHead(200, {
-                'content-type': 'application/json; charset=utf-8',
+                'content-type': 'text/plain; charset=utf-8',
                 'content-disposition': `attachment; filename="${fileName}"`,
                 'cache-control': 'no-store'
             });
@@ -188,7 +211,7 @@ server.listen(Number(process.env.LICENSE_GENERATOR_PORT || 0), HOST, () => {
     console.log(`私钥文件：${PRIVATE_KEY_FILE}`);
     console.log(`公钥文件：${PUBLIC_KEY_FILE}`);
     console.log('请只把公钥部署到客户机，私钥不要发送给客户。');
-    if (process.platform === 'win32') {
+    if (process.platform === 'win32' && process.env.LICENSE_GENERATOR_NO_OPEN !== 'true') {
         execFile('cmd.exe', ['/c', 'start', '', url], { windowsHide: true }, () => {});
     }
 });

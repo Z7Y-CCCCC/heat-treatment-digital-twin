@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain, Menu, powerSaveBlocker, shell, Tray } = require('electron');
+const { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, powerSaveBlocker, shell, Tray } = require('electron');
 const { spawn } = require('child_process');
 const crypto = require('crypto');
 const fs = require('fs');
@@ -11,6 +11,7 @@ const { MysqlRuntime } = require('./mysqlRuntime.cjs');
 const { retryFilesystem, publishDirectory } = require('./directoryPublish.cjs');
 const { seedTemplateConfiguration } = require('./templateData.cjs');
 const { deploymentFile, resolveDeployment, saveDeployment } = require('./deployment.cjs');
+const { runStartupActivation } = require('./activation.cjs');
 const {
     cleanupLogArchives,
     createRotatingLogWriter
@@ -211,6 +212,7 @@ async function createStartupWindow() {
         backgroundColor: '#29292c',
         icon: path.join(__dirname, 'assets', 'icon.png'),
         webPreferences: {
+            preload: path.join(__dirname, 'startup-preload.cjs'),
             contextIsolation: true,
             nodeIntegration: false,
             sandbox: true
@@ -1255,12 +1257,11 @@ async function startBackend(port, writable) {
             REMOTE_ACCESS_ENABLED: 'false',
             PUBLIC_ORIGIN: '',
             DESKTOP_PACKAGED: app.isPackaged ? 'true' : 'false',
-            // A packaged delivery requires a license key when an issuer public
-            // key is deployed with the customer. If no public key file exists yet
-            // or dev mode is active, enforcement defaults to false to avoid deadlocking.
-            LICENSE_ENFORCE: process.env.LICENSE_ENFORCE ?? ((app.isPackaged && fs.existsSync(path.join(writable.dataDir, 'license-public-key.pem'))) ? 'true' : 'false'),
+            // Missing trust material must never silently turn off activation.
+            LICENSE_ENFORCE: app.isPackaged ? 'true' : (process.env.LICENSE_ENFORCE ?? 'false'),
+            LICENSE_REQUIRE_MACHINE_BOUND: app.isPackaged ? 'true' : (process.env.LICENSE_REQUIRE_MACHINE_BOUND ?? 'false'),
             LICENSE_PUBLIC_KEY_FILE: app.isPackaged
-                ? path.join(writable.dataDir, 'license-public-key.pem')
+                ? resourcePath('licensing', 'license-public-key.pem')
                 : (process.env.LICENSE_PUBLIC_KEY_FILE ?? path.join(writable.dataDir, 'license-public-key.pem')),
             LICENSE_MACHINE_ID: app.isPackaged ? '' : (process.env.LICENSE_MACHINE_ID ?? ''),
             LICENSE_MACHINE_STATE_FILE: app.isPackaged
@@ -1604,6 +1605,10 @@ async function launchApplication() {
     const initialBackendProcess = deployment.mode === 'client' ? null : await startBackend(port, writable);
     updateStartupProgress('backend-health', 50, '正在检查数据服务', `等待 ${origin} 响应`);
     await waitForHealth(`${origin}/api/health`, deployment.mode === 'client' ? 15000 : 60000, initialBackendProcess);
+    // Licensing precedes Unity, account creation and the original login flow.
+    // The local collector owns the fingerprint and license even when the UI is
+    // running as a normal user without write access to service data directories.
+    await waitForStartupActivation(origin);
     updateStartupProgress('settings', 59, '正在读取系统设置', '同步开机自启、日志、备份和运行参数');
     if (deployment.mode !== 'client') {
         void refreshStartupAppearanceWhenReady(port);
@@ -1653,6 +1658,12 @@ async function launchApplication() {
     completeStartupProgress();
     closeStartupWindow();
     scheduleSmokeTimers();
+}
+
+async function waitForStartupActivation(origin) {
+    return runStartupActivation({ origin, ipcMain, clipboard,
+        getWindow: () => startupWindow, createWindow: createStartupWindow,
+        onWaiting: () => updateStartupProgress('activation', 54, '等待激活', '复制本机指纹给厂商，粘贴返回的激活码') });
 }
 
 function scheduleSmokeTimers() {

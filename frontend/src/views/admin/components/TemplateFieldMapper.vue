@@ -23,7 +23,12 @@ async function inspect(row) {
   row.busy = true
   row.fields = []
   try {
-    if (row.kind === 'http') {
+    if (row.kind === 'dataset') {
+      const response=await adminApi.getDataSets()
+      if (disposed || row.generation!==generation) return
+      row.fields=response.datasets?.find(d=>d.id===row.target.datasetId)?.columns || []
+      if (!row.fields.some(c=>c.name===row.target.datasetField)) row.target.datasetField=''
+    } else if (row.kind === 'http') {
       const response = await adminApi.inspectHttpDataSource(row.target)
       if (disposed || row.generation !== generation) return
       if (response.error || response.success === false) throw new Error(response.error || '读取接口字段失败')
@@ -75,7 +80,7 @@ async function preview(row) {
     const widget = props.document.widgets.find(item => item.id === row.widgetId)
     const context = { ...props.context }
     if (widget.data.deviceScope === 'fixed') context.deviceId = widget.data.deviceId
-    const response = row.kind === 'http'
+    const response = row.kind === 'dataset' ? await adminApi.previewDataSet({datasetId:row.target.datasetId,binding:row.target,context}) : row.kind === 'http'
       ? await adminApi.previewHttpDataSource(row.target)
       : await adminApi.previewDataSource({ ...widget.data, datasets: [row.target], formula: '', context })
     if (disposed || generation !== row.generation) return
@@ -110,6 +115,9 @@ onMounted(async () => { for (const row of rows) { if (disposed) break; await ins
             <select v-model="row.target[role]" @change="invalidate(row)"><option value="">未选择</option><option v-for="field in candidates(row, role)" :key="field.value" :value="field.value">{{ field.value }} · {{ field.dataType || '未知类型' }} · {{ field.reason }}</option></select>
           </label>
           <p v-if="row.target.contextKey">筛选上下文：{{ row.target.contextKey }}。预览使用当前设计器上下文。</p>
+        </template>
+        <template v-else-if="row.kind==='dataset'">
+          <label>目标数据集字段<select v-model="row.target.datasetField" @change="invalidate(row)"><option value="">请选择字段</option><option v-for="c in row.fields" :key="c.name" :value="c.name">{{c.label}} · {{c.type}}</option></select></label>
         </template>
         <template v-else>
           <label>目标接口 GET 路径<input v-model="row.target.apiPath" @input="invalidate(row); row.fields = []" /></label>

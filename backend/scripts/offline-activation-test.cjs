@@ -1,0 +1,54 @@
+const assert = require('node:assert/strict'), fs = require('node:fs'), path = require('node:path'), crypto = require('node:crypto');
+const { createRunDirectory } = require('./integration-test-utils.cjs');
+const directory = createRunDirectory('offline-activation-unit');
+Object.assign(process.env, { APP_DATA_DIR: directory, LICENSE_FILE: path.join(directory, 'license.json'), LICENSE_MACHINE_STATE_FILE: path.join(directory, 'machine.json'),
+    LICENSE_MACHINE_ID: 'fixture-pc-a', LICENSE_ENFORCE: 'true', LICENSE_REQUIRE_MACHINE_BOUND: 'true', LICENSE_PUBLIC_KEY_FILE: '' });
+const { privateKey, publicKey } = crypto.generateKeyPairSync('ed25519');
+process.env.LICENSE_PUBLIC_KEY = publicKey.export({ type: 'spki', format: 'pem' });
+const service = require('../services/license');
+const { encodeActivationCode, decodeActivationCode } = require('../../shared/activationCode.cjs');
+const { prepareLicenseTrust } = require('../../desktop/scripts/prepare-license-trust.cjs');
+const payload = { licenseId: 'FIXTURE-1', customer: '测试工厂', issuedAt: new Date(Date.now() - 60000).toISOString(), expiresAt: '9999-12-31T23:59:59.000Z',
+    machineId: service.getLocalMachineId().activationId, bindingVersion: 2, features: ['dashboard'] };
+const signed = service.signLicensePayload(payload, privateKey), code = encodeActivationCode(signed);
+assert.deepEqual(decodeActivationCode(code), signed);
+assert.deepEqual(decodeActivationCode(code.replace(/\./g, '.\n')), signed);
+assert.deepEqual(decodeActivationCode(JSON.stringify(signed)), signed);
+assert.throws(() => decodeActivationCode(code.slice(0, -1)), /不完整|有误/);
+assert.throws(() => decodeActivationCode('x'.repeat(17000)), /完整/);
+assert.throws(() => encodeActivationCode({ tooLarge: 'x'.repeat(17000) }), /过长/);
+assert.equal(service.installLicense(code).valid, true);
+assert.equal(service.getLicenseHistory().length, 1);
+const firstTime = service.getLicenseHistory()[0].activatedAt;
+service.installLicense(code); assert.equal(service.getLicenseHistory().length, 1); assert.equal(service.getLicenseHistory()[0].activatedAt, firstTime);
+const second = service.signLicensePayload({ ...payload, licenseId: 'FIXTURE-2' }, privateKey);
+service.installLicense({ ...second, activationHistory: [{ document: signed, activatedAt: 'forged-time' }] });
+let history = service.getLicenseHistory(); assert.equal(history.length, 2); assert.equal(history[0].current, true); assert.equal(history[1].activationCode, code);
+assert.equal(history[1].activatedAt, firstTime, 'input history cannot replace locally recorded activation time');
+const before = fs.readFileSync(service.LICENSE_FILE);
+const forged = { ...signed, payload: { ...signed.payload, customer: '篡改' } };
+assert.throws(() => service.installLicense(encodeActivationCode(forged)), /签名/);
+const expired = service.signLicensePayload({ ...payload, issuedAt: '2020-01-01', expiresAt: '2021-01-01' }, privateKey);
+assert.throws(() => service.installLicense(encodeActivationCode(expired)), /过期/);
+const unbound = service.signLicensePayload({ ...payload, machineId: null }, privateKey);
+assert.throws(() => service.installLicense(encodeActivationCode(unbound)), /绑定本机/);
+assert.deepEqual(fs.readFileSync(service.LICENSE_FILE), before);
+process.env.LICENSE_MACHINE_ID = 'fixture-pc-b'; assert.equal(service.evaluateLicense(second).status, 'machine_mismatch');
+process.env.LICENSE_MACHINE_ID = 'fixture-pc-a';
+fs.writeFileSync(service.LICENSE_FILE, '{ interrupted'); assert.equal(service.getLicenseStatus().licenseId, 'FIXTURE-2'); assert.equal(service.getLicenseHistory().length, 2);
+// Existing v1 documents retain their original canonical payload and can migrate.
+const legacy = service.signLicensePayload({ ...payload, bindingVersion: undefined, machineId: service.getLocalMachineId().id }, privateKey);
+assert.equal(Object.hasOwn(legacy.payload, 'bindingVersion'), false);
+fs.writeFileSync(service.LICENSE_FILE, JSON.stringify(legacy)); assert.equal(service.getLicenseHistory().length, 1);
+service.installLicense(second); assert.equal(service.getLicenseHistory().length, 2);
+const vendorPublic = path.join(directory, 'issuer-public.pem'); fs.writeFileSync(vendorPublic, process.env.LICENSE_PUBLIC_KEY);
+const trust = path.join(directory, 'trust'); prepareLicenseTrust(trust, vendorPublic);
+assert.deepEqual(fs.readdirSync(trust), ['license-public-key.pem']); assert.doesNotMatch(fs.readFileSync(path.join(trust, 'license-public-key.pem'), 'utf8'), /PRIVATE/);
+assert.throws(() => prepareLicenseTrust(path.join(directory, 'missing'), path.join(directory, 'absent.pem')), /厂商公钥/);
+const main = fs.readFileSync(path.resolve(__dirname, '../../desktop/main.cjs'), 'utf8');
+const startup = main.slice(main.indexOf('async function launchApplication()'));
+assert.ok(startup.indexOf('await waitForStartupActivation(origin)') < startup.indexOf('await startNativeClient('));
+const pkg = require('../../desktop/package.json'); assert.ok(!pkg.build.files.some(file => file.includes('license-generator')));
+assert.ok(pkg.build.extraResources.some(item => item.to === 'licensing' && item.filter.length === 1 && item.filter[0] === 'license-public-key.pem'));
+console.log(JSON.stringify({ success: true, checks: ['signed-code-roundtrip', 'strict-machine-binding', 'legacy-signature-compatibility', 'idempotent-history', 'untrusted-history-ignored',
+    'wrong-machine-tamper-expiry-rejected', 'atomic-backup-recovery', 'issuer-public-only-packaging', 'no-key-no-release', 'activation-before-unity'], directory }, null, 2));

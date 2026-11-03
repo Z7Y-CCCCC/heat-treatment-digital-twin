@@ -14,7 +14,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
     /// <summary>
     /// Configurable multi-level presentation shell:
     /// factory -> workshop -> line -> device (plus custom authored views).
-    /// It intentionally uses the authored PBR materials without neon edge rendering.
+    /// Authored PBR materials are retained; only the hovered device gets a transient edge.
     /// </summary>
     [DefaultExecutionOrder(200)]
     public sealed partial class FactoryDashboardController : MonoBehaviour
@@ -147,7 +147,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
         private string _plcState = "unknown";
         private float _uiScale = 1f;
         private Vector2 _uiOffset;
-        private Vector2 _pointerDown;
+        private readonly PointerClickGesture _worldClick = new PointerClickGesture();
         private Vector2 _deviceScroll;
         private Vector2 _pointScroll;
         private float _uiBlend = 1f;
@@ -551,6 +551,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
 
         public void ClearFactory()
         {
+            _worldClick.Cancel();
             foreach (var entry in _devices.Values)
             {
                 ResetInspection(entry, true);
@@ -575,11 +576,16 @@ namespace HeatTreatment.DigitalTwin.Runtime
             var legacyDashboardBlocksPointer = !_webOverlayActive && IsPointerOverDashboard(pointer);
             if (_orbit != null) _orbit.PointerInputBlocked = legacyDashboardBlocksPointer;
 
-            if (Input.GetMouseButtonDown(0)) _pointerDown = pointer;
+            var screenPointer = Input.mousePosition;
+            if (Input.GetMouseButtonDown(0)) _worldClick.Begin(screenPointer.x, screenPointer.y, !legacyDashboardBlocksPointer);
+            if (Input.GetMouseButton(0)) _worldClick.Move(screenPointer.x, screenPointer.y);
             if (!Input.GetMouseButtonUp(0)) return;
-            if (legacyDashboardBlocksPointer) return;
-            if (Vector2.Distance(_pointerDown, pointer) > 10f) return;
-            SelectFromWorld(Input.mousePosition);
+            if (_worldClick.End(screenPointer.x, screenPointer.y, !legacyDashboardBlocksPointer)) SelectFromWorld(screenPointer);
+        }
+
+        private void OnApplicationFocus(bool focused)
+        {
+            if (!focused) _worldClick.Cancel();
         }
 
         private void OnGUI()

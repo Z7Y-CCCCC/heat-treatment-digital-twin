@@ -1,2 +1,3 @@
 *.pem
 issued/*.json
+issued/*.txt

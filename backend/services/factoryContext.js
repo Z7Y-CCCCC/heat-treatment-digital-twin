@@ -4,9 +4,9 @@ const { withFactoryScope } = require('./dataSources');
 async function resolveFactoryId(db, requestedId = '') {
     const requested = String(requestedId || '').trim();
     if (requested) {
-        const row = await db.get('SELECT id, is_enabled FROM factories WHERE id = ?', [requested]);
-        if (!row || Number(row.is_enabled) === 0) {
-            const error = new Error('所选工厂不存在或已停用');
+        const row = await db.get('SELECT id FROM factories WHERE id = ?', [requested]);
+        if (!row) {
+            const error = new Error('所选工厂不存在');
             error.statusCode = 404;
             error.code = 'FACTORY_CONTEXT_NOT_FOUND';
             throw error;
@@ -15,10 +15,10 @@ async function resolveFactoryId(db, requestedId = '') {
     }
     const active = await db.get('SELECT value FROM settings WHERE `key` = ?', ['active_factory_id']);
     if (active?.value) {
-        const row = await db.get('SELECT id, is_enabled FROM factories WHERE id = ?', [active.value]);
-        if (row && Number(row.is_enabled) !== 0) return String(row.id);
+        const row = await db.get('SELECT id FROM factories WHERE id = ?', [active.value]);
+        if (row) return String(row.id);
     }
-    const first = await db.get('SELECT id FROM factories WHERE is_enabled <> 0 ORDER BY sort_order ASC, created_at ASC LIMIT 1');
+    const first = await db.get('SELECT id FROM factories ORDER BY sort_order ASC, created_at ASC LIMIT 1');
     if (first) return String(first.id);
     const error = new Error('数据库中尚未配置可用工厂');
     error.statusCode = 503;

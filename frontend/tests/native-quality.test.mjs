@@ -94,3 +94,11 @@ test('both native surfaces display feedback, and the account menu contains the t
   }
   assert.deepEqual(QUALITY_PROFILES.map(p => p.shortcut), ['F1', 'F2', 'F3'])
 })
+
+test('admin quality selector follows current runtime state and does not present a fake geometry-policy input', async () => {
+  const admin=await readFile(new URL('../src/views/AdminPanel.vue',import.meta.url),'utf8')
+  assert.match(admin,/v-model="qualitySelection"/)
+  assert.match(admin,/relay: true, hotkeys: false/)
+  assert.doesNotMatch(admin,/模型几何策略/)
+  assert.doesNotMatch(admin,/始终保留导入模型完整几何/)
+})

@@ -21,7 +21,7 @@ async function reloadFactories() {
   try {
     const result = await adminApi.listFactories()
     if (result.error) throw new Error(result.error)
-    factories.value = (result.factories || []).filter(factory => factory.enabled)
+    factories.value = result.factories || []
     error.value = ''
     if (!factories.value.some(factory => factory.id === factoryId.value)) {
       factoryId.value = result.activeFactoryId || factories.value[0]?.id || ''

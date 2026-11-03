@@ -227,7 +227,7 @@ function protectManagementWrites(req, res, next) {
     // License exemption permits recovery on expired installations, not
     // anonymous configuration writes. Read-only status remains public.
     const authenticationExempt = shutdown || apiPath.startsWith('/api/admin-auth')
-        || licenseExempt && !writing && apiPath !== '/api/system/runtime';
+        || licenseExempt && !writing && apiPath !== '/api/system/runtime' && apiPath !== '/api/license/history';
     if (!apiPath.startsWith('/api/') || req.method === 'OPTIONS' || authenticationExempt) {
         next();
         return;

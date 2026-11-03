@@ -1,6 +1,9 @@
 <script setup>
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
 import * as echarts from 'echarts'
+import { playbackSelection,normalizePlayback,isDeviceBinding,devicePoint } from '../../../shared/widgetPlayback.mjs'
+import { parameterValue } from '../../../shared/dashboardParameters.mjs'
+import {extendedChartOption} from './dashboardCharts.js'
 import { splitHudKpiValue } from './hudPresentation.js'
 
 const HUD_FONT_TEXT = 'SF Pro Text, Inter Variable, Inter, Noto Sans SC Variable, Segoe UI, PingFang SC, Microsoft YaHei UI, sans-serif'
@@ -17,6 +20,11 @@ const props = defineProps({
   databaseValues: { type: Object, default: () => ({}) },
   businessData: { type: Object, default: () => ({}) },
   runtimeContext: { type: Object, default: () => ({}) },
+  parameters: { type:Object, default:()=>({}) },
+  parameterDefinitions: { type:Array, default:()=>[] },
+  interactive: { type:Boolean, default:true },
+  playbackNow: {type:Number,default:()=>Date.now()},
+  deviceCatalog: {type:Array,default:null},
   selectedPart: { type: Object, default: () => ({}) },
   overlayMode: { type: Boolean, default: false },
   preview: { type: Boolean, default: false },
@@ -27,7 +35,10 @@ const props = defineProps({
 const emit = defineEmits(['action'])
 const chartRef = ref(null)
 const localTrend = ref([])
+const localHistories=new Map()
+const historyKey=()=>`${props.runtimeContext.factoryId || ''}:${playback.value.device?.id || ''}:${props.runtimeContext.partId || ''}:${dataBinding.value.path || dataBinding.value.pointKey || ''}`
 let chart = null
+let lastChartSignature = ''
 let chartResizeObserver = null
 let widgetDisposed = false
 
@@ -58,30 +69,45 @@ const progressPercent = computed(() => {
   return Math.max(0, Math.min(100, target ? (output / target) * 100 : 0)).toFixed(1)
 })
 
+const sampledDevice=shallowRef({id:'',reading:{},status:{},part:{},point:null,at:0})
+const playbackCatalog=computed(()=>props.deviceCatalog ?? [...new Set([...Object.keys(props.deviceDataMap),String(dataBinding.value.deviceId || '')].filter(Boolean))].map(id=>({id,name:id})))
+const playback=computed(()=>playbackSelection(dataBinding.value,props.runtimeContext,playbackCatalog.value,props.preview && !props.interactive ? 0 : props.playbackNow))
+const scopedDeviceBinding=computed(()=>isDeviceBinding(dataBinding.value))
+watch(()=>JSON.stringify([playback.value.device?.id || '',Math.floor((props.preview && !props.interactive?0:props.playbackNow)/normalizePlayback(dataBinding.value).refreshMs),JSON.stringify(dataBinding.value),props.runtimeContext.factoryId,props.runtimeContext.partId,props.runtimeContext.viewId]),()=>{
+ const id=playback.value.device?.id || ''
+ const clone=value=>JSON.parse(JSON.stringify(value || {}))
+ sampledDevice.value={id,reading:clone(props.deviceDataMap[id]),status:clone(props.deviceStatusMap[id]),part:clone(props.selectedPart),point:devicePoint(dataBinding.value,id,props.pointValues) ? clone(devicePoint(dataBinding.value,id,props.pointValues)) : null,at:props.playbackNow}
+},{immediate:true})
+const activeDeviceName=computed(()=>databaseRecord.value?.deviceName || playback.value.device?.name || '')
 const dataContext = computed(() => ({
   metrics: props.metrics,
   events: props.events,
   trendPoints: props.trendPoints,
   deviceStatusMap: props.deviceStatusMap,
-  deviceDataMap: props.deviceDataMap,
+  deviceDataMap: scopedDeviceBinding.value && sampledDevice.value.id ? { [sampledDevice.value.id]:sampledDevice.value.reading } : props.deviceDataMap,
+  device:sampledDevice.value.reading,
+  deviceInfo:{id:playback.value.device?.id,name:playback.value.device?.name,lineName:playback.value.device?.lineName,workshopName:playback.value.device?.workshopName,posY:playback.value.device?.pos_y},
   points: props.pointValues,
   context: props.runtimeContext,
-  selectedPart: props.selectedPart
+  parameters: props.parameters,
+  selectedPart: scopedDeviceBinding.value ? sampledDevice.value.part : props.selectedPart,
+  dataset: ['good','empty'].includes(databaseRecord.value?.quality)
+    ? { ...(databaseRecord.value?.rows?.[0] || {}), ...(dataBinding.value.datasetField ? { [dataBinding.value.datasetField]: databaseRecord.value?.value } : {}) } : {}
 }))
 
 function getWidgetValue(path) {
   if (path === 'metrics.progress_percent') return progressPercent.value
+  const match=/^(deviceDataMap|deviceStatusMap)\.[^.]+\.(.*)$/.exec(String(path || ''))
+  if (scopedDeviceBinding.value && /^(device\.|deviceDataMap\.|deviceStatusMap\.)/.test(String(path || '')) && ['bad','stale'].includes(sampledDevice.value.status?.quality)) return undefined
+  if (match && scopedDeviceBinding.value) return getByPath(match[1]==='deviceDataMap'?sampledDevice.value.reading:sampledDevice.value.status,match[2])
   return getByPath(dataContext.value, path)
 }
 
-const pointRecord = computed(() => {
-  const pointId = String(dataBinding.value.pointId || dataBinding.value.point_id || '')
-  const deviceId = String(dataBinding.value.deviceId || dataBinding.value.device_id || '')
-  return props.pointValues[`${deviceId}:${pointId}`] || props.pointValues[pointId] || null
-})
+const pointRecord = computed(() => scopedDeviceBinding.value ? sampledDevice.value.point : props.pointValues[String(dataBinding.value.pointId || '')] || null)
 const databaseRecord = computed(() => props.databaseValues[String(props.widget.id || '')] || null)
 const businessSection = computed(() => dataBinding.value.businessSection || content.value.section || 'batches')
-const businessSectionMeta = computed(() => objectValue(props.businessData?.sections?.[businessSection.value], {}))
+const businessSectionMeta = computed(() => dataBinding.value.mode==='business' && databaseRecord.value
+  ? objectValue(databaseRecord.value.businessSection,{available:false,rows:[]}) : objectValue(props.businessData?.sections?.[businessSection.value], {}))
 const businessRows = computed(() => Array.isArray(businessSectionMeta.value.rows)
   ? businessSectionMeta.value.rows.slice(0, Math.max(1, Number(content.value.limit || 6)))
   : [])
@@ -93,7 +119,7 @@ const businessSectionLabel = computed(() => ({
   maintenance: '维护记录'
 }[businessSection.value] || '外部业务数据'))
 const businessUnavailable = computed(() => businessSectionMeta.value.available === false)
-const businessLoading = computed(() => ['idle', 'loading'].includes(String(props.businessData?.status || 'idle')))
+const businessLoading = computed(() => dataBinding.value.mode==='business' ? !databaseRecord.value : ['idle', 'loading'].includes(String(props.businessData?.status || 'idle')))
 
 const dataDrivenWidget = computed(() => {
   if (isHudModule.value || ['metrics', 'trend', 'alarm_list', 'marquee', 'device_list', 'business_summary'].includes(type.value)) return true
@@ -146,16 +172,17 @@ function businessRowValue(row) {
 
 const boundValue = computed(() => {
   const binding = dataBinding.value
+  if (binding.mode === 'dataset') return ['good','empty'].includes(databaseRecord.value?.quality) ? (databaseRecord.value?.value ?? null) : null
   if (binding.mode === 'database' || binding.mode === 'http_api') return databaseRecord.value?.value ?? content.value.value
   if (binding.mode === 'plc' || binding.pointId || binding.point_id) {
     if (pointRecord.value && pointRecord.value.value !== undefined) return pointRecord.value.value
-    const deviceId = binding.deviceId || binding.device_id
-    const deviceData = props.deviceDataMap[deviceId]
+    const deviceId = sampledDevice.value.id
+    const deviceData = sampledDevice.value.reading
     const fromDevice = getByPath(deviceData, binding.path)
     if (fromDevice !== undefined) return fromDevice
-    const fromStatus = getByPath(props.deviceStatusMap[deviceId], binding.path)
+    const fromStatus = getByPath(sampledDevice.value.status, binding.path)
     if (fromStatus !== undefined) return fromStatus
-    return content.value.value
+    return null
   }
   const path = binding.path || binding.source
   if (path) return getWidgetValue(path)
@@ -163,12 +190,12 @@ const boundValue = computed(() => {
 })
 
 const boundQuality = computed(() => {
-  if (['database', 'http_api'].includes(dataBinding.value.mode)) return databaseRecord.value?.quality || (databaseRecord.value?.error ? 'bad' : 'stale')
+  if (['database', 'http_api', 'dataset', 'business'].includes(dataBinding.value.mode)) return databaseRecord.value?.quality || (databaseRecord.value?.error ? 'bad' : 'stale')
   const binding = dataBinding.value
   const deviceId = binding.deviceId || binding.device_id
   const quality = pointRecord.value?.quality
-    || getByPath(props.deviceDataMap[deviceId]?.quality, binding.path)
-    || props.deviceStatusMap[deviceId]?.quality
+    || getByPath(sampledDevice.value.reading?.quality, String(binding.path || '').replace(/^device\./,''))
+    || sampledDevice.value.status?.quality
   if (quality) return quality
   return !props.preview && (binding.mode === 'plc' || binding.pointId || binding.point_id) ? 'stale' : 'good'
 })
@@ -187,6 +214,7 @@ function boundedDecimals(value, fallback = 1) {
 
 function formatValue(value = boundValue.value) {
   if (value === undefined || value === null || value === '') return content.value.fallback ?? '--'
+    if (dataBinding.value.mode === 'dataset' && databaseRecord.value?.columns?.find(column => column.name === dataBinding.value.datasetField)?.type === 'string') return String(value)
   if (typeof value === 'boolean') return value ? (content.value.onText || '正常') : (content.value.offText || '停止')
   const number = Number(value)
   if (Number.isFinite(number)) {
@@ -229,14 +257,14 @@ const shellStyle = computed(() => {
   const configuredBackgroundOpacity = Number(style.backgroundOpacity)
   const backgroundOpacity = Number.isFinite(configuredBackgroundOpacity)
     ? Math.max(0, Math.min(1, configuredBackgroundOpacity))
-    : 0.12
+    : 0.22
   const subtleOpacity = Math.max(0, Math.min(1, backgroundOpacity * 0.72))
   const brandOpacity = Math.max(0, Math.min(1, backgroundOpacity * 1.25))
   const marqueeOpacity = Math.max(0, Math.min(1, backgroundOpacity * 1.1))
-  const glassBackground = `linear-gradient(135deg, rgba(16, 24, 48, ${backgroundOpacity}) 0%, rgba(10, 14, 28, ${backgroundOpacity * 0.5}) 100%)`
-  const subtleGlassBackground = `linear-gradient(135deg, rgba(22, 30, 58, ${subtleOpacity}) 0%, rgba(12, 16, 34, ${subtleOpacity * 0.45}) 100%)`
-  const brandBackground = `linear-gradient(105deg, rgba(18, 23, 43, ${brandOpacity}) 0%, rgba(14, 18, 36, ${brandOpacity * 0.38}) 70%, transparent 100%)`
-  const marqueeBackground = `rgba(12, 16, 32, ${marqueeOpacity})`
+  const glassBackground = `linear-gradient(135deg, rgba(88, 79, 137, ${backgroundOpacity}) 0%, rgba(43, 41, 78, ${backgroundOpacity * .6}) 100%)`
+  const subtleGlassBackground = `linear-gradient(135deg, rgba(91, 81, 143, ${subtleOpacity}) 0%, rgba(48, 43, 83, ${subtleOpacity * 0.45}) 100%)`
+  const brandBackground = `linear-gradient(105deg, rgba(91, 77, 135, ${brandOpacity}) 0%, rgba(48, 40, 82, ${brandOpacity * 0.38}) 70%, transparent 100%)`
+  const marqueeBackground = `rgba(70, 56, 105, ${marqueeOpacity})`
   const shadows = {
     none: 'none',
     soft: '0 14px 34px rgba(0,8,18,.24)',
@@ -247,7 +275,9 @@ const shellStyle = computed(() => {
     // The Unity overlay uses one controlled glass palette. Keep configured
     // condition colors for active states, but do not let legacy flat panel
     // colors flatten the runtime HUD.
-    background: overlayMode.value ? glassBackground : (condition.background || style.background),
+    background: glassBackground,
+    backdropFilter:'blur(12px) saturate(125%)',
+    WebkitBackdropFilter:'blur(12px) saturate(125%)',
     color: condition.color || style.color,
     borderColor: overlayMode.value ? condition.borderColor : (condition.borderColor || style.borderColor),
     borderRadius: overlayMode.value ? undefined : cssSize(style.borderRadius, undefined),
@@ -261,12 +291,12 @@ const shellStyle = computed(() => {
     // This lets the designer change only the panel alpha while keeping the
     // text, values and charts fully opaque.
     '--hud-panel-opacity': overlayMode.value ? backgroundOpacity : undefined,
-    '--hud-glass-bg': overlayMode.value ? glassBackground : undefined,
-    '--hud-glass-bg-subtle': overlayMode.value ? subtleGlassBackground : undefined,
+    '--hud-glass-bg': glassBackground,
+    '--hud-glass-bg-subtle': subtleGlassBackground,
     '--hud-brand-bg': overlayMode.value ? brandBackground : undefined,
     '--hud-marquee-bg': overlayMode.value ? marqueeBackground : undefined,
     '--hud-title-bg': overlayMode.value ? `rgba(129, 140, 248, ${Math.min(0.1, backgroundOpacity * 0.65)})` : undefined,
-    '--hud-navigation-bg': overlayMode.value ? `linear-gradient(180deg, rgba(18, 35, 53, ${Math.min(0.86, backgroundOpacity * 1.8)}) 0%, rgba(8, 20, 34, ${Math.min(0.78, backgroundOpacity * 1.35)}) 100%)` : undefined,
+    '--hud-navigation-bg': overlayMode.value ? `linear-gradient(180deg, rgba(91, 77, 135, ${Math.min(0.86, backgroundOpacity * 1.8)}) 0%, rgba(48, 40, 82, ${Math.min(0.78, backgroundOpacity * 1.35)}) 100%)` : undefined,
     '--hud-return-bg': overlayMode.value ? `rgba(29, 29, 31, ${Math.min(0.96, backgroundOpacity * 1.8)})` : undefined,
     boxShadow: overlayMode.value ? undefined : (shadows[style.shadow] || style.boxShadow),
     '--widget-value-color': condition.color || style.valueColor || '#67d2ff',
@@ -288,7 +318,8 @@ const metricItems = computed(() => {
     { label: '能耗估算', path: 'metrics.energy_consumption' },
     { label: '在线设备', path: 'metrics.online_devices', suffixPath: 'metrics.total_devices', separator: '/' }
   ]
-  return items.map(item => {
+  const configured=content.value.usePartPoints ? [...items,...(sampledDevice.value.part?.points || []).slice(0,6).map((point,index)=>({label:point.label || point.name || point.id,path:`selectedPart.points.${index}.value`,unitPath:`selectedPart.points.${index}.unit`}))] : items
+  return configured.map(item => {
     const rawValue = item.path ? getWidgetValue(item.path) : item.value
     const suffix = item.suffixPath ? getWidgetValue(item.suffixPath) : undefined
     const dynamicLabel = item.labelPath ? getWidgetValue(item.labelPath) : undefined
@@ -309,26 +340,31 @@ const metricItems = computed(() => {
 })
 
 const eventRows = computed(() => {
-  if (['database', 'http_api'].includes(dataBinding.value.mode) && Array.isArray(databaseRecord.value?.rows)) return databaseRecord.value.rows
+  if (dataBinding.value.mode === 'dataset') return boundQuality.value === 'good'
+    ? (databaseRecord.value?.rows || []).map(row => ({ ...row, message: row.msg || row.title || row.message || row.value })) : []
+  if (['database', 'http_api', 'dataset'].includes(dataBinding.value.mode) && Array.isArray(databaseRecord.value?.rows)) return databaseRecord.value.rows
   const source = dataBinding.value.source || dataBinding.value.path
   const bound = source ? getWidgetValue(source) : null
   return Array.isArray(bound) ? bound : props.events
 })
 
 const trendRows = computed(() => {
-  if (['database', 'http_api'].includes(dataBinding.value.mode) && Array.isArray(databaseRecord.value?.rows)) return databaseRecord.value.rows
+  if (dataBinding.value.mode === 'dataset') return boundQuality.value === 'good' ? (databaseRecord.value?.rows || []) : []
+  if (['database', 'http_api', 'dataset'].includes(dataBinding.value.mode) && Array.isArray(databaseRecord.value?.rows)) return databaseRecord.value.rows
   const source = dataBinding.value.source
   const bound = source ? getWidgetValue(source) : null
   if (Array.isArray(bound)) return bound
-  if (dataBinding.value.mode === 'plc' || dataBinding.value.pointId) return localTrend.value
+  if (dataBinding.value.mode === 'plc' || dataBinding.value.pointId || scopedDeviceBinding.value && dataBinding.value.mode==='runtime') return localTrend.value
   return props.trendPoints
 })
 
 const chartSeries = computed(() => {
+  if (dataBinding.value.mode === 'dataset' && boundQuality.value !== 'good') return []
   const recordSeries = databaseRecord.value?.series
-  if (['database', 'http_api'].includes(dataBinding.value.mode) && Array.isArray(recordSeries) && recordSeries.length) {
+  if (['database', 'http_api', 'dataset'].includes(dataBinding.value.mode) && Array.isArray(recordSeries) && recordSeries.length) {
     return recordSeries.map((series, index) => ({
       id: series.id || `series_${index + 1}`,
+      field:series.field || series.id,
       name: series.label || series.id || `数据项 ${index + 1}`,
       color: series.color || ['#55c7ff', '#45df9b', '#ffc45f', '#ff6b78'][index % 4],
       value: series.value,
@@ -346,9 +382,10 @@ const chartSeries = computed(() => {
 const hasTrendData = computed(() => chartSeries.value.some(series => Array.isArray(series.rows) && series.rows.length > 0))
 
 const textLines = computed(() => {
+  if (dataBinding.value.mode === 'dataset' && content.value.datasetTextMode !== 'template') return [formatValue()]
   const rawText = Array.isArray(content.value.lines) ? content.value.lines.join('\n') : (content.value.text || content.value.label || '')
   const fallback = rawText || widgetTitle.value || '文本组件'
-  return String(fallback).replaceAll('{value}', formatValue()).split('\n').filter(Boolean)
+  return String(fallback).replaceAll('{value}', formatValue()).replace(/\{parameters\.([A-Za-z_][A-Za-z0-9_]*)\}/g, (_match,key)=>String(props.parameters[key] ?? '')).split('\n').filter(Boolean)
 })
 const isHudKpi = computed(() => overlayMode.value && type.value === 'text' && textLines.value.length === 2 && textLines.value[0].startsWith('今日'))
 const hudKpiValue = computed(() => splitHudKpiValue(textLines.value[1]))
@@ -424,7 +461,8 @@ function chartColorWithAlpha(color, alpha) {
 }
 
 function resizeChart() { chart?.resize() }
-function disposeChart() { if (chart) { chart.dispose(); chart = null } }
+function disposeChart() {
+  lastChartSignature=''; if (chart) { chart.dispose(); chart = null } }
 
 // Apply the overlay art direction to every supported chart without changing
 // samples, axes ranges, bindings or the designer's non-overlay preview.
@@ -443,6 +481,7 @@ function presentChart(option) {
       if (axis.splitLine) axis.splitLine = { lineStyle: { color: 'rgba(173,185,224,.09)', type: 'dashed' } }
     }
     for (const [index, series] of option.series.entries()) {
+      if(series.silent && series.itemStyle?.color==='transparent')continue
       const color = isHudModule.value ? (chartSeries.value[index]?.color || palette[index % palette.length]) : palette[index % palette.length]
       if (['line', 'bar', 'scatter'].includes(series.type)) {
         series.lineStyle = {
@@ -504,6 +543,9 @@ function renderChart() {
   if (!isTrend.value && type.value !== 'metrics') { disposeChart(); return }
   if (type.value === 'metrics' && content.value.layout === 'list') { disposeChart(); return }
   if (!chartRef.value) return
+  const signature=JSON.stringify([type.value,overlayMode.value,props.preview,content.value,widgetStyle.value,boundQuality.value,scopedDeviceBinding.value?sampledDevice.value.id:'',isTrend.value?chartSeries.value:[metricItems.value,hudRingValue.value]])
+  if(chart && signature===lastChartSignature)return
+  lastChartSignature=signature
   if (!chart) chart = echarts.init(chartRef.value)
   if (isTrend.value) {
     const timeField = content.value.timeField || 'time'
@@ -527,24 +569,27 @@ function renderChart() {
       tooltip: { trigger: ['pie', 'donut', 'gauge'].includes(chartType) ? 'item' : 'axis', backgroundColor: 'rgba(8,20,32,.94)', borderColor: 'rgba(86,181,238,.3)', textStyle: { color: '#fff', fontFamily: HUD_FONT_TEXT } },
       legend
     }
+    const extended=extendedChartOption(chartType,{common,sourceSeries,content:content.value,binding:dataBinding.value})
+    if(extended){presentChart(extended);return}
     if (chartType === 'pie' || chartType === 'donut') {
       presentChart({ ...common, series: [{
         type: 'pie', radius: chartType === 'donut' ? [`${Number(content.value.donutRatio ?? 48)}%`, '76%'] : ['0%', '76%'], center: ['50%', '55%'],
         label: { show: content.value.showDataLabel !== false, color: '#dcebf6', fontFamily: HUD_FONT_TEXT, formatter: '{b}\n{c}' },
         itemStyle: { borderColor: 'rgba(8,20,32,.8)', borderWidth: 2 },
-        data: sourceSeries.map(series => ({ name: series.name, value: Number(series.value) || 0, itemStyle: { color: series.color } }))
+        data: sourceSeries.filter(series => dataBinding.value.mode !== 'dataset' || numericValue(series.value) !== null).map(series => ({ name: series.name, value: Number(series.value) || 0, itemStyle: { color: series.color } }))
       }] })
       return
     }
     if (chartType === 'gauge') {
       const minimum = Number(content.value.min ?? 0)
       const maximum = Number(content.value.max ?? 100)
+      const missing = dataBinding.value.mode === 'dataset' && numericValue(boundValue.value) === null
       presentChart({ ...common, series: [{
         type: 'gauge', min: minimum, max: maximum, radius: '88%', center: ['50%', '58%'],
-        progress: { show: true, width: 13 }, axisLine: { lineStyle: { width: 13 } }, axisTick: { show: false }, splitLine: { length: 8 },
-        axisLabel: { color: '#829bae', distance: 18, fontSize: 9, fontFamily: HUD_FONT_TEXT }, pointer: { width: 4 },
-        detail: { color: '#eef7ff', fontSize: 18, fontFamily: HUD_FONT_NUMBER, fontWeight: 600, offsetCenter: [0, '64%'], formatter: `{value}${dataBinding.value.unit || ''}` },
-        data: [{ value: Number(boundValue.value) || 0, name: content.value.seriesName || widgetTitle.value }]
+        progress: { show: !missing, width: 13 }, axisLine: { lineStyle: { width: 13 } }, axisTick: { show: false }, splitLine: { length: 8 },
+        axisLabel: { color: '#829bae', distance: 18, fontSize: 9, fontFamily: HUD_FONT_TEXT }, pointer: { show: !missing, width: 4 },
+        detail: { color: '#eef7ff', fontSize: 18, fontFamily: HUD_FONT_NUMBER, fontWeight: 600, offsetCenter: [0, '64%'], formatter: missing ? '—' : `{value}${dataBinding.value.unit || ''}` },
+        data: [{ value: missing ? null : Number(boundValue.value) || 0, name: content.value.seriesName || widgetTitle.value }]
       }] })
       return
     }
@@ -573,33 +618,49 @@ function renderChart() {
   }
   const chartPath = content.value.chartPath || 'metrics.overall_oee'
   const chartValue = Number(getWidgetValue(chartPath) || 0)
+  const missing = dataBinding.value.mode === 'dataset' && numericValue(getWidgetValue(chartPath)) === null
   presentChart({
     animation: !props.preview,
     series: [{
       type: 'pie', radius: ['64%', '82%'], silent: true,
-      label: { show: true, position: 'center', formatter: `${chartValue.toFixed(1)}%\n${content.value.chartLabel || 'OEE'}`, color: '#eaf6ff', fontFamily: HUD_FONT_TEXT, fontSize: 15, fontWeight: 600 },
+      label: { show: true, position: 'center', formatter: missing ? '—' : `${chartValue.toFixed(1)}%\n${content.value.chartLabel || 'OEE'}`, color: '#eaf6ff', fontFamily: HUD_FONT_TEXT, fontSize: 15, fontWeight: 600 },
       itemStyle: { borderColor: '#12202d', borderWidth: 2 },
       data: [
-        { value: chartValue, itemStyle: { color: content.value.chartColor || '#4fd09a' } },
+        { value: missing ? 0 : chartValue, itemStyle: { color: content.value.chartColor || '#4fd09a' } },
         { value: Math.max(0, 100 - chartValue), itemStyle: { color: 'rgba(122,151,171,.2)' } }
       ]
     }]
   })
 }
 
+const filterError = ref('')
+function changeParameter(event) {
+  if (!props.interactive) return
+  const control = content.value.control || 'select'
+  let value = control === 'checkbox' ? event.target.checked : event.target.value
+  if (control === 'select') value = (content.value.options || [])[Number(event.target.value)]?.value ?? ''
+  const definition=props.parameterDefinitions.find(p=>p.key===content.value.parameterKey)
+  try { if (definition) value=parameterValue(value,definition.type,definition.label);filterError.value='' } catch(error) {filterError.value=error.message;return}
+  emit('action', {event:{action:'set_parameter',parameterKey:content.value.parameterKey,value},widget:props.widget})
+  triggerEvents('change', event)
+}
+watch(()=>props.parameters,()=>{filterError.value=''}, {deep:true})
+const selectedOptionIndex = computed(() => (content.value.options || []).findIndex(option => String(option.value) === String(props.parameters[content.value.parameterKey] ?? '')))
 function triggerEvents(trigger, domEvent) {
   widgetEvents.value.filter(event => (event.trigger || 'click') === trigger).forEach(event => emit('action', { event, widget: props.widget, domEvent }))
 }
 
-watch(boundValue, value => {
-  if (!(dataBinding.value.mode === 'plc' || dataBinding.value.pointId || dataBinding.value.point_id)) return
+watch(() => [boundValue.value,sampledDevice.value.at], ([value]) => {
+  if (!(dataBinding.value.mode === 'plc' || dataBinding.value.pointId || dataBinding.value.point_id || scopedDeviceBinding.value && isTrend.value)) return
   const number = numericValue(value)
   if (number === null || boundQuality.value !== 'good') return
   const now = new Date().toLocaleTimeString().slice(0, 8)
-  localTrend.value = [...localTrend.value, { time: now, value: number }].slice(-Math.max(8, Number(content.value.historyLength || 60)))
+  const key=historyKey();if(!localHistories.has(key) && localHistories.size>=32)localHistories.delete(localHistories.keys().next().value)
+  const rows=[...(localHistories.get(key)||[]),{time:now,value:number}].slice(-Math.max(8,Math.min(240,Number(content.value.historyLength || 60))))
+  localHistories.set(key,rows);localTrend.value=rows
 })
 
-watch(() => [dataBinding.value.mode, dataBinding.value.deviceId || dataBinding.value.device_id, dataBinding.value.pointId || dataBinding.value.point_id, dataBinding.value.path], () => { localTrend.value = [] })
+watch(() => [dataBinding.value.mode, dataBinding.value.deviceId || dataBinding.value.device_id, dataBinding.value.pointId || dataBinding.value.point_id, dataBinding.value.path,playback.value.device?.id,props.runtimeContext.factoryId,props.runtimeContext.partId], () => { localTrend.value = localHistories.get(historyKey()) || [] },{flush:'sync'})
 
 watch(chartRef, element => {
   disposeChart()
@@ -608,7 +669,7 @@ watch(chartRef, element => {
   nextTick(renderChart)
 })
 
-watch(() => [props.widget, props.metrics, props.trendPoints, props.events, props.databaseValues, props.businessData, localTrend.value], () => nextTick(renderChart), { deep: true })
+watch(() => [props.widget, props.metrics, props.trendPoints, props.events, props.databaseValues[String(props.widget.id || '')], props.businessData, localTrend.value], () => nextTick(renderChart), { deep: true })
 
 onMounted(() => {
   if (typeof ResizeObserver !== 'undefined') {
@@ -651,6 +712,7 @@ onUnmounted(() => {
   >
     <div v-if="widgetTitle && content.showTitle !== false && !isHudModule && !['image', 'navigation', 'return_button'].includes(type)" class="widget-title"><i></i><span>{{ widgetTitle }}</span></div>
 
+    <div v-if="scopedDeviceBinding && activeDeviceName && content.showDeviceLabel!==false && !['text','image'].includes(type)" class="widget-device-heading"><span>{{activeDeviceName}}</span><small v-if="playback.total>1">{{playback.index+1}} / {{playback.total}}</small></div>
     <header v-if="isHudModule && content.showTitle !== false" class="hud-module-heading">
       <span><small>{{ content.eyebrow || ({ hud_kpi_panel: 'PRODUCTION', hud_device_status: 'EQUIPMENT', hud_alarm_panel: 'EVENT LOG', hud_chart_dock: 'PROCESS TREND' })[type] }}</small><strong>{{ widgetTitle }}</strong></span>
       <svg class="hud-module-icon" :class="`icon-${type}`" viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -748,10 +810,10 @@ onUnmounted(() => {
 
     <template v-else-if="type === 'business_summary'">
       <div class="business-summary">
-        <div class="business-toolbar"><span>{{ businessSectionLabel }}</span><small v-if="content.showSource !== false">{{ businessData?.source?.connectionId || '未配置只读连接' }}</small></div>
-        <div v-if="businessLoading" class="business-empty"><strong>正在读取外部业务数据</strong><small>组件已就位，数据到达后自动更新</small></div>
-        <div v-else-if="businessUnavailable" class="business-empty"><strong>{{ businessSectionMeta.message || content.unavailableText || '外部数据库未提供该类标准数据表' }}</strong><small>本组件只读展示，不会创建或修改排产数据</small></div>
-        <div v-else-if="!businessRows.length" class="business-empty"><strong>{{ content.emptyText || '外部系统暂无记录' }}</strong><small>{{ businessData?.fetchedAt ? `最近读取 ${businessData.fetchedAt}` : '等待外部数据库读取' }}</small></div>
+          <div class="business-toolbar"><span>{{ businessSectionLabel }}</span><small v-if="content.showSource !== false">{{ databaseRecord?.source?.connectionId || businessData?.source?.connectionId || '未配置只读连接' }}</small></div>
+          <div v-if="businessLoading" class="business-empty"><strong>读取中</strong></div>
+          <div v-else-if="businessUnavailable" class="business-empty"><strong>{{ content.unavailableText || '数据暂不可用' }}</strong></div>
+          <div v-else-if="!businessRows.length" class="business-empty"><strong>{{ content.emptyText || '暂无记录' }}</strong></div>
         <div v-else class="business-rows"><div v-for="(row, index) in businessRows" :key="row.id || row.batchNo || `${businessSection}-${index}`" class="business-row"><span><strong>{{ businessRowTitle(row) }}</strong><small>{{ businessRowSubtitle(row) }}</small></span><b>{{ businessRowValue(row) }}</b></div></div>
       </div>
     </template>
@@ -760,6 +822,12 @@ onUnmounted(() => {
       <div class="marquee-content-wrap"><div class="marquee-content" :style="{ animationDuration: (content.speed || 30) + 's' }"><template v-for="copy in 2" :key="copy"><span v-for="(event,index) in eventRows" :key="`${copy}-${event.id || index}`" class="marquee-item" :class="event.level">[{{ event.time || event.occurred_at || '--' }}] {{ event.msg || event.title || event.message }}</span></template></div></div>
     </template>
 
+    <div v-else-if="type === 'filter'" class="parameter-filter" @click.stop @dblclick.stop @pointerdown.stop>
+      <select v-if="(content.control || 'select') === 'select'" :value="selectedOptionIndex" :aria-label="widgetTitle || content.parameterKey" :disabled="!interactive || !content.parameterKey" @change="changeParameter"><option disabled value="-1">{{ content.placeholder || '请选择' }}</option><option v-for="(option,index) in content.options" :key="index" :value="index">{{ option.label }}</option></select>
+      <label v-else-if="content.control === 'checkbox'"><input type="checkbox" :checked="parameters[content.parameterKey] === true" :disabled="!interactive" :aria-label="widgetTitle || content.parameterKey" @change="changeParameter" />{{ content.placeholder }}</label>
+      <input v-else :type="['number','date'].includes(content.control) ? content.control : 'text'" :value="parameters[content.parameterKey] ?? ''" :placeholder="content.placeholder" :aria-label="widgetTitle || content.parameterKey" :disabled="!interactive || !content.parameterKey" @change="changeParameter" />
+      <small v-if="filterError" class="filter-error" role="alert">{{filterError}}</small>
+    </div>
     <template v-else-if="type === 'text'">
       <div v-if="isHudKpi" class="text-widget-body hud-kpi-body">
         <p class="hud-kpi-label">
@@ -799,6 +867,10 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+.widget-device-heading{display:flex;justify-content:space-between;align-items:center;gap:8px;flex:none;font-size:11px;color:#c0bce5;margin:0 0 8px;line-height:1.3}.widget-device-heading span{overflow:hidden;white-space:nowrap;text-overflow:ellipsis}.widget-device-heading small{font-size:10px;color:#9996bb}
+
+.parameter-filter{padding:8px 14px;display:flex;flex-direction:column;align-items:stretch;gap:5px;min-width:0}.filter-error{color:#f28e8e;font-size:11px}.parameter-filter select,.parameter-filter input:not([type=checkbox]){width:100%;min-width:0;padding:9px 12px;border:1px solid #8aa0b955;border-radius:8px;background:rgba(82,65,122,.3);color:#e9e2f5;font:inherit}.parameter-filter option{background:#352c4e;color:#eee8fa}.parameter-filter label{display:flex;align-items:center;gap:8px}
+
  .widget-shell{box-sizing:border-box;position:relative;width:100%;height:100%;min-width:0;min-height:0;display:flex;flex-direction:column;overflow:hidden;padding:14px;border:1px solid rgba(91,169,219,.24);border-radius:14px;color:#edf7ff;background:transparent;box-shadow:none;font-family:"SF Pro Text","Inter","Segoe UI Variable","Segoe UI","PingFang SC","Microsoft YaHei UI",sans-serif;font-synthesis:none;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;transition:border-color .18s,filter .18s,transform .18s,opacity .42s ease}.widget-shell.interactive{cursor:pointer}.widget-shell.quality-bad{filter:saturate(.72)}
  .widget-shell.data-pending> :not(.widget-title):not(.widget-data-placeholder){opacity:.18;filter:blur(1.2px);transition:opacity .42s ease,filter .42s ease}
  .widget-data-placeholder{position:absolute;z-index:4;inset:34px 12px 10px;display:grid;align-content:center;justify-items:center;gap:9px;pointer-events:none}

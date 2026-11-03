@@ -24,6 +24,8 @@ Runtime connection settings are stored in `Assets/StreamingAssets/runtime-config
 The quality profiles never decimate the imported mesh. `F1`, `F2`, and `F3` only tune render scale, shadows, anti-aliasing and post processing; `F4` performs hardware auto-detection.
 The account menu also offers a draggable three-position quality capsule: F1 / 流畅, F2 / 均衡, F3 / 高画质. These are temporary, local changes, not saved backend settings. The capsule and short-lived notification update only after Unity acknowledges the applied profile through the local named-pipe bridge; WebView keyboard focus does not disable the shortcuts.
 
+Workshop, line, device and part cameras use continuous horizontal orbit. A scene drag takes over from the current rendered pose and cancels preset interpolation; release settles at that angle without recentering. Navigation to another view still uses the shortest authored route. Pointer movement is tracked over the whole gesture, so an out-and-back drag cannot become a device click. Run `node tools/native-orbit-camera-checks.cjs` from the repository root for the actual Unity controller regression; the headless direction/gesture cases also run in `tools/native-runtime-tests`.
+
 ## Build
 
 Use `Digital Twin/Build Windows Client`. The first development build uses the built-in Windows Mono backend, so no WebGL, UWP, Dedicated Server or IL2CPP module is required. Output is written to `Builds/Windows`.

@@ -9,17 +9,19 @@ const { BACKEND_DIR, findFreePort, startLoggedProcess, requestJson, waitForHttp,
 const { getInspectionPresets } = require('../backend/services/inspectionPresets');
 
 const root = path.resolve(__dirname, '..');
-const executable = path.join(root, 'unity-client/Builds/Windows/HeatTreatmentDigitalTwin.exe');
+const executable = path.resolve(process.env.NATIVE_INSPECTION_PLAYER || path.join(root, 'unity-client/Builds/Windows/HeatTreatmentDigitalTwin.exe'));
 let backend, unity, web;
 (async () => {
     if (!fs.existsSync(executable)) throw new Error('Build the current Unity client before running this test');
     const sandbox = await createSmokeSandbox('native-inspection');
     const presets = getInspectionPresets();
     const db = new Database(sandbox.filename);
-    const devices = db.prepare('SELECT id FROM devices ORDER BY id LIMIT 4').all();
-    assert.equal(devices.length, 4);
+    // Cover every registered preset (including the five pit furnaces), not
+    // four seeded devices followed by an assertion against all nine models.
+    const devices = db.prepare('SELECT id FROM devices ORDER BY id LIMIT ?').all(presets.length);
+    assert.equal(devices.length, presets.length, 'fixture needs one device per inspection preset');
     for (let index = 0; index < devices.length; index++) {
-        db.prepare("UPDATE devices SET model_type=?,model_file=NULL,rotation_y=?,scale=1,instance_config='{}',plc_enabled=0 WHERE id=?").run(presets[index].modelId, [0, 35, -65, 135][index], devices[index].id);
+        db.prepare("UPDATE devices SET model_type=?,model_file=NULL,rotation_y=?,scale=1,instance_config='{}',plc_enabled=0 WHERE id=?").run(presets[index].modelId, [0, 35, -65, 135][index % 4], devices[index].id);
     }
     db.close();
     const port = await findFreePort(3921);

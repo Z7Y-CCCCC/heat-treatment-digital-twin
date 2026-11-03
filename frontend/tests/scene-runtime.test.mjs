@@ -8,7 +8,7 @@ class FakeSceneManager {
     furnaces = []
     batches = []
     disposeCount = 0
-    constructor() { managers.push(this) }
+    constructor(_container, _level, _select, _interaction, renderOptions) { this.renderOptions = renderOptions; managers.push(this) }
     addFurnace(model) { assert.equal(this.disposeCount, 0); this.furnaces.push(model) }
     addBatchRenderer(batch) { assert.equal(this.disposeCount, 0); this.batches.push(batch) }
     setTopologyConfig() { assert.equal(this.disposeCount, 0) }
@@ -40,6 +40,23 @@ function fixture(t, count = 1) {
     t.after(() => runtime.dispose())
     return runtime
 }
+
+test('composer label policy is forwarded to original and batched models and to its private renderer', async t => {
+    for (const batched of [false, true]) {
+        const runtime = fixture(t)
+        runtime.options.deviceLabelConfig = { enabled: false }
+        runtime.options.renderOptions = { labelLayer: false }
+        const received = []
+        modelFactory = (_definition, _models, options) => { received.push(options.labelConfig); return Promise.resolve(model()) }
+        batchInfo = batched ? { id: 'batch', file_path: '/model.glb' } : null
+        shouldBatch = batched
+        batchFactory = (_model, _definitions, options) => { received.push(options.labelConfig); return Promise.resolve({ batchRenderer: { dispose() {} }, deviceModels: [model()] }) }
+        await runtime.start()
+        assert.deepEqual(received, [{ enabled: false }])
+        assert.equal(managers[0].renderOptions.labelLayer, false)
+        runtime.dispose()
+    }
+})
 
 test('placed static workshop auxiliaries render without a rail; pending props and unbound rail carts do not', async t => {
     const runtime = fixture(t), registered = []

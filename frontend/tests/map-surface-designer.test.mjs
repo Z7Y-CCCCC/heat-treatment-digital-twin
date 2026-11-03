@@ -42,13 +42,13 @@ test('older authored dashboards gain the seven map and site canvases without cha
     assert.equal(view.parentViewId, definition.parentViewId)
     assert.deepEqual(view.componentState.show, [])
   }
-  assert.equal(document.scene.views.find(view => view.id === 'site_street').name, '06 街道示意')
-  assert.equal(document.scene.views.find(view => view.id === 'site_factory').name, '07 工厂建筑')
+  assert.equal(document.scene.views.find(view => view.id === 'site_street').name, '街道示意')
+  assert.equal(document.scene.views.find(view => view.id === 'site_factory').name, '工厂建筑')
 })
 
 test('the duplicate legacy 06 label migrates without overwriting a custom factory-view name', () => {
   const legacy = normalizeDashboardDocument({scene:{views:[{id:'site_factory',name:'06 工厂建筑',mode:'custom'}]}})
-  assert.equal(legacy.scene.views.find(view=>view.id==='site_factory').name,'07 工厂建筑')
+  assert.equal(legacy.scene.views.find(view=>view.id==='site_factory').name,'工厂建筑')
   const custom = normalizeDashboardDocument({scene:{views:[{id:'site_factory',name:'我的厂区',mode:'custom'}]}})
   assert.equal(custom.scene.views.find(view=>view.id==='site_factory').name,'我的厂区')
 })
@@ -77,14 +77,14 @@ test('all 01–07 tabs use the same mounted designer and runtime surfaces render
   assert.match(unified, /const siteViewId = ref\('site_street'\)/)
   assert.match(designer, /@drop\.prevent="handleCanvasDrop"/)
   assert.match(designer, /MAP_SURFACE_VIEW_IDS\.has\(view\.id\)/)
-  assert.match(designer, /roots = \[\.\.\.byParent\.get\(''\)\]\.sort/)
+  assert.match(designer, /<ViewHierarchyTree/)
   assert.match(designer, /mapBuiltIns\.length/)
   assert.match(designer, /designer-map-built-in/)
   assert.match(unified, /@edit-map-module="editMapModule"/)
   assert.match(map, /<MapSurfaceWidgets/)
   assert.match(site, /<MapSurfaceWidgets/)
   assert.match(runtime, /const surfaceWidgets = computed/)
-  assert.match(runtime, /surfaceWidgets\.value\.some\(widget => \['database', 'http_api'\]/)
+  assert.match(runtime, /createWidgetReadScheduler/);assert.match(runtime, /widgets:\(\)=>surfaceWidgets\.value/)
 })
 
 test('the seven built-in map and site canvases do not show empty-widget prompts', async () => {

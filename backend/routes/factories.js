@@ -3,6 +3,7 @@ const crypto = require('crypto');
 const { getDb } = require('../db/database');
 const { normalizeSettingValue } = require('./settings');
 const { searchFactoryPlace } = require('../services/factoryGeocoder');
+const { summarizeFactoryCollection } = require('../services/factoryCollectionSummary');
 
 const router = express.Router();
 
@@ -27,6 +28,7 @@ function publicFactory(row) {
         name: String(row.name || ''),
         location: parseLocation(row.location_json),
         enabled: Number(row.is_enabled) !== 0,
+        collectionEnabled: Number(row.collection_enabled ?? 1) !== 0,
         sortOrder: Number(row.sort_order || 0),
         workshopCount: Number(row.workshop_count || 0),
         lineCount: Number(row.line_count || 0),
@@ -34,17 +36,18 @@ function publicFactory(row) {
     };
 }
 
-function notifyFactoryDirectory(factoryId) {
+function notifyFactoryDirectory(factoryId, visibilityOnly = false, enabled = true) {
     global.wsServer?.broadcast?.('configuration_changed', {
-        factoryId: String(factoryId), resource: 'factories', reloadRequired: true,
-        keys: ['factory_name', 'factory_location'], timestamp: Date.now()
+        factoryId: String(factoryId), resource: 'factories', reloadRequired: !visibilityOnly,
+        ...(visibilityOnly ? { visibilityOnly: true, enabled, settings: {} } : {}),
+        keys: visibilityOnly ? ['factory_visibility'] : ['factory_name', 'factory_location'], timestamp: Date.now()
     });
 }
 
 router.get('/', async (req, res) => {
     try {
         const db = await getDb();
-        const rows = await db.all(`SELECT f.id, f.name, f.location_json, f.is_enabled, f.sort_order,
+        const rows = await db.all(`SELECT f.id, f.name, f.location_json, f.is_enabled, f.collection_enabled, f.sort_order,
             COUNT(DISTINCT w.id) AS workshop_count,
             COUNT(DISTINCT l.id) AS line_count,
             COUNT(DISTINCT d.id) AS device_count
@@ -52,13 +55,36 @@ router.get('/', async (req, res) => {
             LEFT JOIN workshops w ON w.factory_id = f.id
             LEFT JOIN \`lines\` l ON l.workshop_id = w.id
             LEFT JOIN devices d ON d.line_id = l.id
-            GROUP BY f.id, f.name, f.location_json, f.is_enabled, f.sort_order
+            GROUP BY f.id, f.name, f.location_json, f.is_enabled, f.collection_enabled, f.sort_order
             ORDER BY f.sort_order ASC, f.name ASC`);
         const active = await db.get('SELECT value FROM settings WHERE `key` = ?', ['active_factory_id']);
         res.json({ factories: rows.map(publicFactory), activeFactoryId: String(active?.value || 'factory_default') });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
+});
+
+router.get('/collection-status', async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    try {
+        const db = await getDb();
+        const factories = await db.all(`SELECT f.id, f.collection_enabled,
+            COALESCE(local_mode.value, global_mode.value, 'integrated_plc') AS mode,
+            COALESCE(local_interval.value, global_interval.value, '2000') AS simulation_interval_ms
+            FROM factories f
+            LEFT JOIN factory_settings local_mode ON local_mode.factory_id=f.id AND local_mode.\`key\`='data_mode'
+            LEFT JOIN settings global_mode ON global_mode.\`key\`='data_mode'
+            LEFT JOIN factory_settings local_interval ON local_interval.factory_id=f.id AND local_interval.\`key\`='simulation_interval_ms'
+            LEFT JOIN settings global_interval ON global_interval.\`key\`='simulation_interval_ms'
+            ORDER BY f.sort_order ASC, f.name ASC`);
+        const devices = await db.all(`SELECT d.id, d.plc_enabled, w.factory_id FROM devices d
+            JOIN \`lines\` l ON l.id=d.line_id JOIN workshops w ON w.id=l.workshop_id`);
+        const grouped = new Map();
+        for (const device of devices) { const id = String(device.factory_id); if (!grouped.has(id)) grouped.set(id, []); grouped.get(id).push(device); }
+        const statuses = global.dataEngine?.getFactoryStatuses?.() || {}, processStatus = global.dataEngine?.getStatus?.().process?.status;
+        const now = Date.now();
+        res.json({ success: true, timestamp: now, factories: factories.map(factory => summarizeFactoryCollection(factory, grouped.get(String(factory.id)) || [], statuses[factory.id], processStatus, now)) });
+    } catch (error) { res.status(500).json({ success: false, error: error.message }); }
 });
 
 router.get('/live-summaries', async (req, res) => {
@@ -131,25 +157,46 @@ router.put('/:id', async (req, res) => {
         const location = req.body?.location === undefined
             ? current.location_json
             : normalizeSettingValue('factory_location', req.body.location);
-        const active = await db.get('SELECT value FROM settings WHERE `key` = ?', ['active_factory_id']);
+        if (req.body?.enabled !== undefined && typeof req.body.enabled !== 'boolean') return res.status(400).json({ error: '大屏显示状态须为布尔值' });
+        if (Object.hasOwn(req.body || {}, 'collectionEnabled')) return res.status(400).json({ error: '请在数据通路中设置采集开关' });
         const enabled = req.body?.enabled === undefined ? Number(current.is_enabled) !== 0 : req.body.enabled === true;
-        if (!enabled && (String(req.params.id) === 'factory_default' || String(active?.value) === String(req.params.id))) {
-            return res.status(409).json({ error: '默认工厂或当前运行工厂不能停用，请先切换运行工厂' });
-        }
         await db.run('UPDATE factories SET name = ?, location_json = ?, is_enabled = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
             [name, location, enabled ? 1 : 0, req.params.id]);
-        notifyFactoryDirectory(req.params.id);
+        notifyFactoryDirectory(req.params.id, Object.keys(req.body || {}).every(key => key === 'enabled'), enabled);
         res.json({ success: true, factory: publicFactory({ ...current, name, location_json: location, is_enabled: enabled ? 1 : 0 }) });
     } catch (error) {
         res.status(400).json({ error: error.message });
     }
 });
 
+// This is deliberately a separate operation/permission from map visibility.
+router.put('/:id/collection', async (req, res) => {
+    try {
+        if (typeof req.body?.enabled !== 'boolean' || Object.keys(req.body).some(key => key !== 'enabled')) {
+            return res.status(400).json({ error: '请提供采集开关状态' });
+        }
+        const db = await getDb();
+        const factory = await db.get('SELECT id FROM factories WHERE id = ?', [req.params.id]);
+        if (!factory) return res.status(404).json({ error: '工厂不存在' });
+        await db.run('UPDATE factories SET collection_enabled = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [req.body.enabled ? 1 : 0, factory.id]);
+        let runtimeApplied = false;
+        try {
+            if (global.dataEngine?.setFactoryCollectionEnabled) {
+                await global.dataEngine.setFactoryCollectionEnabled(String(factory.id));
+                runtimeApplied = true;
+            }
+        } catch (error) { console.warn('[Factories] 采集开关已保存，等待采集进程恢复:', error.message); }
+        // Not a scene change: do not reload Unity or restart other factories.
+        global.wsServer?.broadcast?.('factory_collection_changed', { factoryId: String(factory.id), collectionEnabled: req.body.enabled, timestamp: Date.now() });
+        res.json({ success: true, factoryId: String(factory.id), collectionEnabled: req.body.enabled, runtimeApplied });
+    } catch (error) { res.status(400).json({ error: error.message }); }
+});
+
 router.post('/:id/activate', async (req, res) => {
     try {
         const db = await getDb();
         const factory = await db.get('SELECT id, name FROM factories WHERE id = ? AND is_enabled <> 0', [req.params.id]);
-        if (!factory) return res.status(404).json({ error: '工厂不存在或已停用' });
+        if (!factory) return res.status(404).json({ error: '工厂不存在或未在大屏显示' });
         const hierarchy = await db.get(`SELECT
             (SELECT COUNT(*) FROM workshops WHERE factory_id = ?) AS workshop_count,
             (SELECT COUNT(*) FROM \`lines\` l JOIN workshops w ON w.id = l.workshop_id WHERE w.factory_id = ?) AS line_count,

@@ -1,9 +1,13 @@
 <script setup>
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { API_BASE } from '../runtime/backendEndpoint.js'
-import { adminFetch } from '../runtime/adminSession.js'
+import { adminFetch, adminSession } from '../runtime/adminSession.js'
 import { applyVisibilityAction, widgetRuntimeVisible } from '../runtime/dashboardRules.js'
 import { MAP_SURFACE_VIEW_IDS } from '../runtime/dashboardSchema.js'
+import { useDashboardIntegration } from '../runtime/dashboardIntegration.js'
+import {useWidgetClock} from '../runtime/widgetPlayback.js'
+import {createWidgetReadScheduler} from '../runtime/widgetReadScheduler.js'
+import {flattenPlaybackDevices} from '../../../shared/widgetPlayback.mjs'
 import WidgetRenderer from '../runtime/WidgetRenderer.vue'
 
 const props = defineProps({
@@ -14,12 +18,14 @@ const props = defineProps({
   dataStore: { type: Object, default: null }
 })
 const emit = defineEmits(['navigate'])
+const playbackNow=useWidgetClock()
+const playbackDevices=computed(()=>flattenPlaybackDevices(props.config || {}))
 const values = ref({})
 const businessData = ref({ status: 'idle', readOnly: true, sections: {} })
 const widgetVisibility = reactive({})
 const groupVisibility = reactive({})
 const currentView = computed(() => props.document?.scene?.views?.find(view => view.id === props.viewId))
-const runtimeContext = computed(() => ({ viewId: props.viewId, viewMode: 'custom', factoryId: props.factoryId }))
+const runtimeContext = computed(() => ({ viewId: props.viewId, viewMode: 'custom', factoryId: props.factoryId, sceneId:props.document?.sceneId || '' }))
 const canvas = computed(() => props.document?.canvas || { width: 1920, height: 1080 })
 const pointValues = computed(() => {
   const result = {}
@@ -50,7 +56,7 @@ const surfaceWidgets = computed(() => {
 })
 function valueForWidget(widget) {
   const binding = widget.data || {}
-  if (binding.mode === 'database' || binding.mode === 'http_api') return values.value[widget.id]?.value
+  if (binding.mode === 'database' || binding.mode === 'http_api' || binding.mode === 'dataset') return values.value[widget.id]?.value
   if (binding.mode === 'plc') {
     const deviceId = String(binding.deviceId || '')
     const pointId = String(binding.pointId || '')
@@ -82,10 +88,20 @@ function widgetFrame(widget) {
     transform: `rotate(${Number(frame.rotation || 0)}deg)`
   }
 }
-function handleAction({ event }) {
+const integration = useDashboardIntegration({
+  document:computed(()=>props.document),context:runtimeContext,
+  scope:computed(()=>`${props.factoryId}:${props.document?.sceneId || ''}:${props.document?.metadata?.publishedAt || ''}:${adminSession.user?.username || ''}`),
+  devices:computed(()=>(props.config?.workshops || []).flatMap(w=>[...(w.devices||[]),...(w.lines||[]).flatMap(l=>l.devices||[])])),
+  authorize:()=>adminSession.displayAuthenticated && adminSession.permissions.view,
+  refresh:refreshValues,action:payload=>handleAction(payload)
+})
+function handleAction({ event, widget }) {
   if (!event) return
+  integration.emit('widgetAction',{widgetId:widget?.id || '',action:event.action})
+  if (integration.handle(event)) return
   if (['set_visibility', 'toggle_visibility'].includes(event.action)) return applyVisibilityAction(event, { groupVisibility, widgetVisibility })
   if (event.action === 'switch_view' && MAP_SURFACE_VIEW_IDS.has(event.viewId)) return emit('navigate', event.viewId)
+  if (['switch_view','enter_device'].includes(event.action)) throw new Error('请先进入工厂场景调用设备视角')
   if (event.action === 'open_link' && /^https?:\/\//i.test(event.url || '')) {
     if (window.chrome?.webview) window.chrome.webview.postMessage({ type: 'dashboard_action', action: 'open_link', url: event.url })
     else window.open(event.url, '_blank', 'noopener,noreferrer')
@@ -100,21 +116,20 @@ let timer = 0
 let businessTimer = 0
 let abort = null
 let businessAbort = null
-async function refreshValues() {
-  if (!surfaceWidgets.value.some(widget => ['database', 'http_api'].includes(widget.data?.mode))) return
-  abort?.abort()
-  abort = new AbortController()
-  try {
-    const query = new URLSearchParams({ view_id: props.viewId })
-    const response = await adminFetch(`${API_BASE}/data-sources/runtime-values?${query}`, {
-      signal: abort.signal,
-      ...(props.factoryId ? { headers: { 'X-Factory-ID': props.factoryId } } : {})
-    })
-    if (response.ok) values.value = (await response.json()).values || {}
-  } catch (error) { if (error.name !== 'AbortError') values.value = {} }
-}
+let valuesSequence = 0, disposed = false
+const externalReader=createWidgetReadScheduler({
+ context:()=>runtimeContext.value,parameters:()=>integration.parameters.value,devices:()=>playbackDevices.value,widgets:()=>surfaceWidgets.value,
+ put:(id,record)=>{values.value={...values.value,[id]:record}},remove:id=>{delete values.value[id]},
+ read:async(ids,context,parameters,now,signal)=>{
+   const query=new URLSearchParams({view_id:context.viewId,parameters:JSON.stringify(parameters),widget_ids:ids.join(','),playback_at:String(now)})
+   const response=await adminFetch(`${API_BASE}/data-sources/runtime-values?${query}`,{signal,...(props.factoryId?{headers:{'X-Factory-ID':props.factoryId}}:{})})
+   if(!response.ok)throw new Error('数据读取失败');return response.json()
+ }
+})
+async function refreshValues(force=false){if(!disposed)return externalReader.refresh(force,playbackNow.value)}
+watch(playbackNow,()=>{void refreshValues()})
 async function refreshBusiness() {
-  const widget = surfaceWidgets.value.find(item => item.type === 'business_summary' || item.data?.mode === 'business')
+    const widget = surfaceWidgets.value.find(item => item.type === 'business_summary' && item.data?.mode !== 'business')
   if (!widget) return
   const connectionId = String(widget.data?.connectionId || widget.content?.connectionId || '').trim()
   if (!connectionId) {
@@ -136,9 +151,9 @@ async function refreshBusiness() {
     if (error.name !== 'AbortError') businessData.value = { status: 'error', readOnly: true, sections: {} }
   }
 }
-watch(() => [props.viewId, props.document], () => { values.value = {}; void refreshValues(); void refreshBusiness() })
+watch(() => [props.viewId, props.factoryId, props.document], () => { values.value = {}; void refreshValues(); void refreshBusiness() })
 onMounted(() => { void refreshValues(); void refreshBusiness(); timer = window.setInterval(refreshValues, 15000); businessTimer = window.setInterval(refreshBusiness, 60000) })
-onUnmounted(() => { window.clearInterval(timer); window.clearInterval(businessTimer); abort?.abort(); businessAbort?.abort() })
+onUnmounted(() => { disposed=true;externalReader.dispose();valuesSequence++;window.clearInterval(timer); window.clearInterval(businessTimer); abort?.abort(); businessAbort?.abort() })
 </script>
 
 <template>
@@ -147,7 +162,7 @@ onUnmounted(() => { window.clearInterval(timer); window.clearInterval(businessTi
       <WidgetRenderer :widget="widget" :metrics="dataStore?.metrics || {}" :events="dataStore?.events?.value || []"
         :trend-points="dataStore?.trendPoints?.value || []" :device-status-map="dataStore?.deviceStatusMap || {}"
         :device-data-map="dataStore?.deviceDataMap || {}" :point-values="pointValues" :database-values="values"
-        :runtime-context="runtimeContext" :business-data="businessData" :data-ready="true" overlay-mode @action="handleAction" />
+        :playback-now="playbackNow" :device-catalog="playbackDevices" :runtime-context="runtimeContext" :parameters="integration.parameters.value" :parameter-definitions="integration.definitions.value" :business-data="businessData" :data-ready="true" overlay-mode @action="handleAction" />
     </div>
   </div>
 </template>

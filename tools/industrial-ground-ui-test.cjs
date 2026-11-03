@@ -36,6 +36,16 @@ let server, browser, page;
     await page.getByRole('textbox', { name: '账号', exact: true }).fill(info.username);
     await page.getByLabel('后台密码', { exact: true }).fill(info.password);
     await page.getByRole('button', { name: '解锁后台', exact: true }).click();
+    const preview=page.locator('.composer-preview-stage');
+    await preview.locator('canvas').waitFor();
+    await waitUntil(async()=>await preview.locator('.scene-label-layer[hidden]').count()===1,30000,'composer label layer disabled');
+    for (const mode of ['总览','车间','产线']) {
+        await page.locator('.preview-mode-buttons').getByRole('button',{name:mode,exact:true}).click();
+        await page.waitForTimeout(350);
+        assert.equal(await preview.locator('.furnace-label:visible,.furnace-part-label:visible').count(),0);
+        assert.equal(await preview.locator('.scene-label-layer:not([hidden])').count(),0);
+    }
+    check('factory, workshop and line composer views contain no device/temperature/carbon labels, without disabling device selection');
     await page.locator('.composer-ground-panel summary').click();
     const editor = page.getByRole('region', { name: '车间地面编辑', exact: true }); await editor.waitFor();
     await editor.getByRole('button', { name: '＋ 基坑', exact: true }).click();
@@ -63,6 +73,7 @@ let server, browser, page;
     const panel = page.locator('.composer-device-layout-float');
     if (!await panel.isVisible() || await panel.getByLabel('设备名称', { exact: true }).inputValue() !== '现场设备A') await page.locator('.device-pill').filter({ has: page.getByText('现场设备A', { exact: true }) }).click();
     const height = panel.getByLabel('标高 Y（米）', { exact: true }); await height.fill('-3'); await height.press('Tab');
+    assert.equal(await preview.locator('.furnace-label:visible,.furnace-part-label:visible').count(),0,'selected device view has no floating tooltip');
     await waitUntil(() => panel.getByLabel('地面跟随设备（基坑 / 高台）', { exact: true }).isChecked(), 10000, 'automatic device pit');
     await panel.getByLabel('坑宽（米）', { exact: true }).fill('8'); await panel.getByLabel('坑宽（米）', { exact: true }).press('Tab');
     saved = page.waitForResponse(r => r.url().endsWith('/api/devices/' + info.devices[0] + '/transform') && r.request().method() === 'PUT');
