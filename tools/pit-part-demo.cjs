@@ -28,7 +28,7 @@ async function configure(root,{apply=false}={}){
    const payload={demo:true,ownedDemoProfile:'pit-component-delivery-v1',deviceId:target.device.id,rows:target.rows};
    let connection=sources.listDataSources(factoryId).connections.find(c=>c.id===target.id);
    if(connection){assert.equal(connection.connector,'file','Refuse to overwrite a real connection');const prior=await sources.readHttpApiBinding({connectionId:connection.id,apiPath:'/',jsonPath:'ownedDemoProfile'},factoryId);assert.equal(prior.value,'pit-component-delivery-v1','Refuse to overwrite an unrelated file');}
-   if(!connection){const imported=require('../backend/services/dataSourceTransports').importDataFile(Buffer.from(JSON.stringify(payload)),target.id+'.json',factoryId);
+   if(!connection){const imported=await require('../backend/services/dataSourceTransports').importDataFile(Buffer.from(JSON.stringify(payload)),target.id+'.json',factoryId);
     const config={id:target.id,name:target.device.name+' · 部件',sourceType:'http_api',connector:'file',baseUrl:imported.asset,healthPath:'/',authType:'none',enabled:true,responseFormat:'json',requestTimeoutMs:3000};
     const tested=await sources.testDataSource(config,factoryId);connection=sources.saveDataSource({...config,healthToken:tested.healthToken},factoryId);
    }

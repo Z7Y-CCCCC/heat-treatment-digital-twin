@@ -162,6 +162,12 @@ async function main() {
             body: JSON.stringify({ name: '整站备份隔离工厂', location: { country: 'CHN', regionName: '浙江省' } })
         });
         const scopedFactoryId = secondaryFactory.factory.id;
+        const excelBytes = await require('./fixtures/excel-workbook.cjs').workbook();
+        const excelName = crypto.randomUUID() + '.xlsx';
+        const excelDir = path.join(dataDir, 'data-source-files', scopedFactoryId);
+        fs.mkdirSync(excelDir, { recursive: true });
+        const excelFilename = path.join(excelDir, excelName);
+        fs.writeFileSync(excelFilename, excelBytes);
         await requestJson(`${backendOrigin}/api/data-sources/connections`, {
             method: 'POST',
             headers: { 'X-Factory-ID': scopedFactoryId },
@@ -208,6 +214,7 @@ async function main() {
         await requestJson(`${backendOrigin}/api/data-sources/connections/${encodeURIComponent(SCOPED_DATA_SOURCE_ID)}`, {
             method: 'DELETE', headers: { 'X-Factory-ID': scopedFactoryId }
         });
+        fs.unlinkSync(excelFilename);
         const imported = await importArchive(downloadedArchive);
         if (!imported.ok || !imported.body?.success) {
             throw new Error(`Valid import failed: HTTP ${imported.status} ${JSON.stringify(imported.body)}`);
@@ -229,6 +236,8 @@ async function main() {
         const corruptedImport = await importArchive(corruptedArchive);
 
         const checks = {
+            excelFileIncludedAndRestored: archivePaths.has(`config/data-source-files/${scopedFactoryId}/${excelName}`)
+                && fs.readFileSync(excelFilename).equals(excelBytes),
             manifestFormatValid: manifest.format === 'heat-treatment-digital-twin-site-backup' && manifest.version === 4,
             databaseIncluded: archivePaths.has('database/factory.db'),
             uploadedModelIncluded: archivePaths.has(`uploads/models/${MODEL_FILENAME}`),

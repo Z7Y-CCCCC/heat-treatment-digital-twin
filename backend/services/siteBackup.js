@@ -69,7 +69,7 @@ function ensureDirectory(directory) {
 
 function describeConfigFile(filename) {
     const name = String(filename || '');
-    if (/^data-source-files\/[a-zA-Z0-9_-]{1,100}\/[a-f0-9-]{36}\.(?:csv|json)$/.test(name)) {
+    if (/^data-source-files\/[a-zA-Z0-9_-]{1,100}\/[a-f0-9-]{36}\.(?:csv|json|xlsx)$/.test(name)) {
         return { filename: name, archivePath: `config/${name}`, sensitive: true, dataFile: true };
     }
     if (name === LEGACY_DATA_SOURCE_CONFIG
@@ -714,11 +714,12 @@ async function restoreSiteBackupUnlocked(archiveFilename, uploadsRootDir) {
             const descriptor = describeConfigArchivePath(archivePath);
             if (!descriptor) continue;
             const restoredFilename = path.join(stagingDirectory, ...archivePath.split('/'));
-            const content = await fs.promises.readFile(restoredFilename, 'utf8');
+            const content = await fs.promises.readFile(restoredFilename);
             if (descriptor.dataFile) {
-                parseExternalPayload(content.replace(/^\uFEFF/, ''), descriptor.filename.endsWith('.csv') ? 'csv' : 'json');
+                if (descriptor.filename.endsWith('.xlsx')) await require('./excelDataFile').readExcelData(content);
+                else parseExternalPayload(content.toString('utf8').replace(/^\uFEFF/, ''), descriptor.filename.endsWith('.csv') ? 'csv' : 'json');
             } else {
-                const parsed = JSON.parse(content);
+                const parsed = JSON.parse(content.toString('utf8'));
                 if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.connections)) {
                     throw new Error(`整站备份中的配置文件无效：${descriptor.filename}`);
                 }

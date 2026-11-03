@@ -124,15 +124,38 @@ let server, browser, page, api, ws;
     await editorTab('数据预览').click(); await preview.getByRole('button', { name: '读取数据字段', exact: true }).click();
     await preview.getByLabel('字段路径', { exact: true }).selectOption('temperature'); await preview.getByRole('button', { name: '读取样例', exact: true }).click(); await preview.getByText('当前值：247.5', { exact: true }).waitFor();
     await workspace.getByRole('button', { name: '＋ 新建数据源', exact: true }).click(); await card(dialog, 'CSV / JSON').click();
-    await editor.getByLabel('导入 CSV / JSON 文件', { exact: true }).setInputFiles({ name: '现场温度.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify({ temperature: 247.5 })) });
+    await editor.getByLabel('导入 CSV / JSON / XLSX 文件', { exact: true }).setInputFiles({ name: '现场温度.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify({ temperature: 247.5 })) });
     await editor.getByText('现场温度.json · 已导入', { exact: true }).waitFor();
     await editor.getByRole('button', { name: '保存数据源', exact: true }).click(); await editor.getByText('已保存：现场温度', { exact: true }).waitFor();
     await editorTab('数据预览').click(); await preview.getByRole('button', { name: '读取数据字段', exact: true }).click();
     await preview.getByLabel('字段路径', { exact: true }).selectOption('temperature'); await preview.getByRole('button', { name: '读取样例', exact: true }).click(); await preview.getByText('当前值：247.5', { exact: true }).waitFor();
     check('new WebSocket and file connectors can be configured, saved and previewed through their real UI and backend paths');
+    await workspace.getByRole('button', { name: '＋ 新建数据源', exact: true }).click(); await card(dialog, 'Excel / XLSX').click();
+    await editor.locator('.source-detail-heading small').filter({ hasText: 'Excel / XLSX' }).waitFor();
+    await editor.getByLabel('导入 CSV / JSON / XLSX 文件', { exact: true }).setInputFiles({ name: '工艺参数.xlsx', mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', buffer: await require('../backend/scripts/fixtures/excel-workbook.cjs').workbook() });
+    await editor.getByText('工艺参数.xlsx · 已导入', { exact: true }).waitFor();
+    await editor.getByLabel('Excel 工作表', { exact: true }).selectOption('第二车间');
+    await editor.getByRole('button', { name: '保存数据源', exact: true }).click(); await editor.getByText('已保存：工艺参数', { exact: true }).waitFor();
+    await editorTab('数据预览').click(); await preview.getByRole('button', { name: '读取数据字段', exact: true }).click();
+    await preview.getByLabel('字段路径', { exact: true }).selectOption('rows[0].value'); await preview.getByRole('button', { name: '读取样例', exact: true }).click(); await preview.getByText('当前值：222', { exact: true }).waitFor();
+    await page.screenshot({ path: path.join(directory, '04-excel-workbook-preview.png'), fullPage: true });
+    check('Excel XLSX uploads, worksheet selection, save and real field/value preview work without installing Office');
     // Fill only the owned fixture to check search and pagination with a realistic list.
     const session = await (await page.request.get(info.origin + '/api/admin-auth/session')).json();
     const headers = { Origin: info.origin, 'X-Admin-Request': '1', 'X-CSRF-Token': session.csrfToken };
+    const excelConnection = (await (await page.request.get(info.origin + '/api/data-sources')).json()).connections.find(c => c.name === '工艺参数');
+    assert.ok(excelConnection);
+    const dataSetSaved = await page.request.post(info.origin + '/api/data-sources/datasets', { headers, data: {
+        name: 'Excel 设备参数', connectionId: excelConnection.id, source: 'http', rootPath: 'rows',
+        match: { field: 'deviceId', contextKey: 'deviceId' }, columns: [{ name: 'value', path: 'value', type: 'number' }]
+    } });
+    assert.equal(dataSetSaved.status(), 200, await dataSetSaved.text());
+    const dataSet = (await dataSetSaved.json()).dataset;
+    const dataSetValue = await page.request.post(info.origin + '/api/data-sources/datasets/preview', { headers,
+        data: { datasetId: dataSet.id, context: { deviceId: 'Pit_09' } } });
+    assert.equal(dataSetValue.status(), 200, await dataSetValue.text());
+    assert.equal((await dataSetValue.json()).result.rows[0].value, 222);
+    check('the saved Excel source feeds a reusable dataset matched to the selected device, not just an isolated upload preview');
     for (let i = 0; i < 16; i++) {
         const created = await page.request.post(info.origin + '/api/data-sources/connections', { headers, data: { name: '分页夹具 ' + i, sourceType: 'database', type: 'sqlite', filename: info.database, enabled: false } }); assert.equal(created.status(), 200);
     }

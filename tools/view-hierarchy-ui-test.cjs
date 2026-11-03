@@ -33,11 +33,16 @@ const check = text => { checks.push(text); console.log('PASS ' + text); };
     check('all 14 views use compact draggable grips; legacy numeric prefixes and black mode icons are gone');
     // Real native HTML drag sequence, not a direct invocation of Vue handlers.
     async function drag(source,target,zone='inside') {
+        // Settle layout/scroll before pressing: scrolling programmatically while
+        // a native drag is in progress can cancel it on Chromium/Windows.
+        await tree.scrollIntoViewIfNeeded();
+        const dropTarget=target ? row(target) : tree.locator('.view-root-drop');
         const handle=row(source).getByRole('button',{name:/^拖动/});await handle.scrollIntoViewIfNeeded();
+        if(target) await dropTarget.scrollIntoViewIfNeeded();
+        await handle.hover();
         const box=await handle.boundingBox();await page.mouse.move(box.x+box.width/2,box.y+box.height/2);await page.mouse.down();
         await page.mouse.move(box.x+box.width/2+10,box.y+box.height/2,{steps:5});
-        const dropTarget=target ? row(target) : tree.locator('.view-root-drop');
-        await dropTarget.scrollIntoViewIfNeeded();const destination=await dropTarget.boundingBox();
+        if(!target) await dropTarget.scrollIntoViewIfNeeded();const destination=await dropTarget.boundingBox();
         const y=destination.y+destination.height*(zone==='before'?.1:zone==='after'?.9:.5);
         await page.mouse.move(destination.x+destination.width*.65,y,{steps:12});
         await page.mouse.move(destination.x+destination.width*.65,y+1,{steps:2});

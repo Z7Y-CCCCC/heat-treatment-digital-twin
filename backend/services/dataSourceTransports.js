@@ -16,7 +16,7 @@ function validateTransport(connection, factoryId) {
     const auth = ({ websocket: ['none', 'basic', 'bearer'], mqtt: ['none', 'basic'], redis: ['none', 'basic'] })[kind] || ['none'];
     if (!auth.includes(connection.authType || 'none')) throw safeError('此适配器不支持所选认证方式');
     if (kind === 'file') {
-        if (!/^[a-f0-9-]{36}\.(?:json|csv)$/.test(connection.baseUrl)) throw safeError('请先导入 CSV / JSON 数据文件');
+        if (!/^[a-f0-9-]{36}\.(?:json|csv|xlsx)$/.test(connection.baseUrl)) throw safeError('请先导入 CSV / JSON / XLSX 数据文件');
         return { filename: path.join(folder(factoryId), connection.baseUrl) };
     }
     let url;
@@ -99,7 +99,8 @@ async function readTransportOnce(connection, factoryId, { probe = false } = {}) 
         // Imported files are immutable, server-named copies, never arbitrary filesystem paths.
         const body = await fs.promises.readFile(filename);
         if (body.length > FILE_LIMIT) throw safeError('文件超过 1 MB 上限');
-        const payload = parseExternalPayload(body.toString('utf8').replace(/^\uFEFF/, ''), filename.endsWith('.csv') ? 'csv' : 'json');
+        const payload = filename.endsWith('.xlsx') ? await require('./excelDataFile').readExcelData(body, connection.healthPath)
+            : parseExternalPayload(body.toString('utf8').replace(/^\uFEFF/, ''), filename.endsWith('.csv') ? 'csv' : 'json');
         return payload !== null && typeof payload === 'object' ? payload : { value: payload };
     }
     if (connection.connector === 'redis') {
@@ -136,15 +137,16 @@ async function readTransport(connection, factoryId, options = {}) {
     }).finally(() => pending.delete(key));
     pending.set(key, promise); return promise;
 }
-function importDataFile(buffer, originalName, factoryId) {
+async function importDataFile(buffer, originalName, factoryId) {
     const extension = path.extname(String(originalName)).toLowerCase();
-    if (!['.json', '.csv'].includes(extension) || !buffer?.length || buffer.length > FILE_LIMIT) throw safeError('仅支持 1 MB 以内的 CSV / JSON 文件');
-    parseExternalPayload(buffer.toString('utf8').replace(/^\uFEFF/, ''), extension.slice(1));
+    if (!['.json', '.csv', '.xlsx'].includes(extension) || !buffer?.length || buffer.length > FILE_LIMIT) throw safeError('仅支持 1 MB 以内的 CSV / JSON / XLSX 文件');
+    const workbook = extension === '.xlsx' ? await require('./excelDataFile').readExcelData(buffer) : null;
+    if (!workbook) parseExternalPayload(buffer.toString('utf8').replace(/^\uFEFF/, ''), extension.slice(1));
     const directory = folder(factoryId); fs.mkdirSync(directory, { recursive: true });
     const total = fs.readdirSync(directory).reduce((sum, item) => sum + fs.statSync(path.join(directory, item)).size, 0);
     if (total + buffer.length > 64 * FILE_LIMIT) throw safeError('当前工厂的数据文件已达到 64 MB 上限');
     const asset = crypto.randomUUID() + extension;
     fs.writeFileSync(path.join(directory, asset), buffer, { flag: 'wx', mode: 0o600 });
-    return { asset, name: path.basename(String(originalName)), size: buffer.length };
+    return { asset, name: path.basename(String(originalName)), size: buffer.length, ...(workbook ? { sheets: workbook.sheets, sheet: workbook.sheet } : {}) };
 }
 module.exports = { KINDS, validateTransport, readTransport, importDataFile };
