@@ -207,7 +207,7 @@ class DataEngine {
         return {
             observedAt: Date.now(),
             configLoadedAt: this.configLoadedAt || null,
-            configuredDevices: this.plcReader?.deviceStatus.size ?? this.simulator?.devices.length ?? 0,
+            configuredDevices: this.plcReader?.deviceStatus?.size ?? this.simulator?.devices?.length ?? 0,
             mode: this.currentMode,
             plcStatus: this.plcStatus,
             collectorStatus: this.collectorStatus,
