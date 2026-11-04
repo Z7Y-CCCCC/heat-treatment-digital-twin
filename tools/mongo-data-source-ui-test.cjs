@@ -58,6 +58,7 @@ async function api(route, method = 'GET', data) {
     await datasetEditor.getByRole('tab', { name: '参数与匹配', exact: true }).click(); await datasetEditor.getByRole('switch', { name: '按当前对象匹配记录', exact: true }).check(); await datasetEditor.getByLabel('记录匹配字段', { exact: true }).fill('deviceId');
     await datasetEditor.getByRole('tab', { name: '字段映射', exact: true }).click(); await datasetEditor.getByRole('button', { name: '解析字段', exact: true }).click();
     await datasetEditor.getByLabel('发现的来源字段', { exact: true }).selectOption('telemetry.temperature'); await datasetEditor.getByRole('button', { name: '添加到映射', exact: true }).click();
+    await datasetEditor.getByLabel('字段单位 1', { exact: true }).fill('°C');
     await datasetEditor.getByRole('button', { name: '保存数据集', exact: true }).click(); await datasetEditor.getByText('已保存', { exact: true }).waitFor();
     await datasetEditor.getByRole('tab', { name: '数据预览', exact: true }).click(); await datasetEditor.getByLabel('预览 deviceId', { exact: true }).fill(info.devices[0]);
     await datasetEditor.getByRole('button', { name: '读取预览', exact: true }).click(); await datasetEditor.locator('.result-table tbody tr').waitFor();
@@ -73,8 +74,17 @@ async function api(route, method = 'GET', data) {
     boundWidget.content.unit = '°C';
     boundWidget.data = { ...boundWidget.data, mode: 'dataset', datasetId: definition.id, datasetField: definition.columns[0].name, refreshMs: 1000, deviceScope: 'current' };
     boundWidget.visibility.viewIds = ['device_detail']; designer.document.widgets.push(boundWidget);
+    for (const mode of ['fixed', 'rotation']) {
+        const extra = createDashboardWidget('value');
+        Object.assign(extra, { id: 'mongo_' + mode, title: mode === 'fixed' ? '固定设备' : '设备轮播', runtimeTarget: 'overlay',
+            frame: { x: mode === 'fixed' ? 72 : 520, y: 200, width: 400, height: 220, rotation: 0 } });
+        extra.data = { ...boundWidget.data, deviceScope: mode, deviceId: mode === 'fixed' ? info.devices[0] : '', rotationDeviceIds: info.devices, rotationIntervalMs: 2000 };
+        extra.visibility.viewIds = ['factory_overview']; designer.document.widgets.push(extra);
+    }
     const detail = designer.document.scene.views.find(view => view.id === 'device_detail');
     if (detail) detail.componentState = { show: ['mongo_delivery_value'], hide: [] };
+    const overview = designer.document.scene.views.find(view => view.id === 'factory_overview');
+    if (overview) overview.componentState = { show: ['mongo_fixed', 'mongo_rotation'], hide: [] };
     await api('/platform/designer/draft', 'PUT', { sceneId: designer.document.sceneId, document: designer.document, expectedRevision: designer.revision }); await api('/platform/releases', 'POST', { sceneId: designer.document.sceneId, notes: 'Owned MongoDB binding verification' });
     const overlay = await context.newPage(); overlay.on('pageerror', e => errors.push(e.message));
     await overlay.addInitScript(() => { window.__hostHandlers = []; window.chrome = { webview: { postMessage() {}, addEventListener(name, fn) { if (name === 'message') window.__hostHandlers.push(fn); }, removeEventListener() {} } }; });
@@ -86,10 +96,24 @@ async function api(route, method = 'GET', data) {
     async function selectDevice(deviceId) { await overlay.evaluate(id => { for (const handler of window.__hostHandlers) handler({ data: { type: 'overlay_host_state', visible: true, context: { factoryId: 'factory_default', sceneReady: true, viewId: 'device_detail', viewMode: 'device', deviceId: id, partId: '' } } }); }, deviceId); }
     await selectDevice(info.devices[0]); await waitUntil(async () => (await widget.innerText()).includes('0') && !await widget.locator('.widget-data-placeholder').count(), 15000, 'real overlay zero');
     await selectDevice(info.devices[1]); await waitUntil(async () => (await widget.innerText()).includes('888.5'), 15000, 'real overlay selected device B');
+    assert.ok((await widget.innerText()).includes('°C'), 'the dataset output unit is rendered without a duplicate widget override');
     await fixture.database.collection('设备参数').updateOne({ deviceId: info.devices[1] }, { $set: { 'telemetry.temperature': 999.5 } });
     await waitUntil(async () => (await widget.innerText()).includes('999.5'), 15000, 'real overlay periodic refresh');
     await overlay.screenshot({ path: path.join(directory, '03-real-overlay-refresh.png') });
     check('normal save/publish feeds the actual Vue overlay; changing devices and the database value updates the displayed component on its refresh interval');
+    await overlay.evaluate(() => { for (const handler of window.__hostHandlers) handler({ data: { type: 'overlay_host_state', visible: true, context: { factoryId: 'factory_default', sceneReady: true, viewId: 'factory_overview', viewMode: 'factory', deviceId: '', partId: '' } } }); });
+    const rotation = overlay.locator('[data-widget-id="mongo_rotation"]'), fixed = overlay.locator('[data-widget-id="mongo_fixed"]'), observed = new Set();
+    await waitUntil(async () => {
+        const body = await rotation.innerText();
+        if (body.includes('999.5')) observed.add('B');
+        else if (!await rotation.locator('.widget-data-placeholder').count()
+            && Number.parseFloat((await rotation.locator('.value-widget-body strong').innerText().catch(() => '')).replace(/,/g, '')) === 0) observed.add('A');
+        return observed.size === 2;
+    }, 15000, 'MongoDB A/B rotation in the actual overlay');
+    assert.ok(!(await fixed.innerText()).includes('999.5'));
+    assert.ok((await fixed.innerText()).includes('0'));
+    await overlay.screenshot({ path: path.join(directory, '04-fixed-and-rotation.png') });
+    check('the same MongoDB dataset reuses fixed-device and multi-device rotation in overview widgets while continuing timed refresh');
     assert.deepEqual(errors, []);
     const result = { success: true, checks, directory, noCollectionOrSoak: true, realUnityBackgroundTested: false };
     fs.writeFileSync(path.join(directory, 'result.json'), JSON.stringify(result, null, 2)); console.log(JSON.stringify(result, null, 2));

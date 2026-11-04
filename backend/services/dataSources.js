@@ -1435,8 +1435,8 @@ async function listTablesWithHandle(handle) {
 }
 
 async function createExternalBackup(connection, reason, factoryId = activeFactoryId()) {
-    if (!backupSupported(connection)) throw new Error('此数据源仅用于只读接入，不参与 SQL 数据库备份');
     if (isHttpApiSource(connection)) throw new Error('HTTP API 数据源不参与数据库备份');
+    if (!backupSupported(connection)) throw new Error('此数据源仅用于只读接入，不参与 SQL 数据库备份');
     const directory = backupDirectory(connection.id, factoryId);
     const type = normalizeType(connection.type);
     const mysqlDumpAvailable = type === 'mysql' && resolveMysqlTools().available;
@@ -1479,6 +1479,7 @@ async function createConnectionBackup(connectionId, reason = 'manual', factoryId
     factoryId = activeFactoryId(factoryId);
     const id = safeId(connectionId);
     const connection = id === PRIMARY_ID ? null : resolveConnection(id, factoryId);
+    if (isHttpApiSource(connection)) throw new Error('HTTP API 数据源不参与数据库备份');
     if (connection && !backupSupported(connection)) throw new Error('此数据源不参与 SQL 数据库备份');
     const backupKey = `${factoryId}:${id}`;
     if (activeConnectionBackups.has(backupKey)) return activeConnectionBackups.get(backupKey);
