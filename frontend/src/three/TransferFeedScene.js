@@ -133,17 +133,12 @@ export class TransferFeedScene {
         this.cart.position.set(this.dockX, 0, this.dockZ + this.approachDistance)
         this.material = this.makeMaterial()
         this.scene.add(this.material)
-        this.chain = new THREE.InstancedMesh(new THREE.BoxGeometry(.095, .035, .055),
-            new THREE.MeshStandardMaterial({ color: '#e3aa35', metalness: .65, roughness: .35 }), 180)
-        this.chain.frustumCulled = false
-        this.chain.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
-        this.scene.add(this.chain)
         this.rollers = [1, 2, 3].map(index => this.cart.getObjectByName(`cart_v6_node_cart_feed_roller_${index}_rotate`))
             .filter(Boolean).map(target => ({ target, base: target.rotation.z }))
         this.wheels = [1, 2].map(index => this.cart.getObjectByName(`cart_v6_node_cart_wheel_axle_${index}_rotate`))
             .filter(Boolean).map(target => ({ target, base: target.rotation.x }))
         this.makeRails()
-        this.cart.visible = this.chain.visible = this.railGroup.visible = !!showTransfer
+        this.cart.visible = this.railGroup.visible = !!showTransfer
         // Clone shell materials per mesh: the imported CAD/GLB can share them
         // with doors, which must remain opaque while the chamber is exposed.
         this.shellMaterials = []
@@ -212,18 +207,6 @@ export class TransferFeedScene {
         this.material.position.set(THREE.MathUtils.lerp(this.materialStartX, this.materialEndX, pose.material), this.materialY, cartZ + .085)
         for (const { target, base } of this.rollers) target.rotation.z = base + pose.material * this.feedDistance / .054
         for (const { target, base } of this.wheels) target.rotation.x = base + pose.cart * this.approachDistance / .223
-        const anchor = this.dockX + 1.05
-        const head = this.dockX + .0325 - this.feedDistance * pose.chain
-        const length = anchor - head
-        const count = Math.min(89, Math.max(2, Math.ceil(length / .11)))
-        const matrix = new THREE.Matrix4()
-        let index = 0
-        for (const side of [-.24, .24]) for (let i = 0; i < count; i++) {
-            matrix.makeTranslation(anchor - length * i / (count - 1), this.materialY + .055, cartZ + .085 + side)
-            this.chain.setMatrixAt(index++, matrix)
-        }
-        this.chain.count = index
-        this.chain.instanceMatrix.needsUpdate = true
         this.processEffects?.apply(pose.process)
     }
 

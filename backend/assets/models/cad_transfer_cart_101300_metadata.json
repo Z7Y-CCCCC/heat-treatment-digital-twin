@@ -11,7 +11,7 @@
     "node_naming_rule": "role_part_action，例如 fan_rear_rotate、door_front_lift、valve_gas_01",
     "delivery_status": "review",
     "owner": "",
-    "notes": "原料车 CAD 几何保留；在中央滑块上试装 08.05.01.05 推拉钩，固定导轨不随动。"
+    "notes": "原料车 CAD 几何保留；在中央滑块上试装 08.05.01.05 推拉钩，固定导轨不随动。 统一展示送料基准为 1.25 m；门板密封搭边保留，原 CAD 交付文件保留。"
   },
   "optimization": {
     "mode": "auto",
@@ -457,7 +457,7 @@
   "partBindings": [],
   "sourceAsset": {
     "filename": "10.13.00_料车_安装推拉钩.glb",
-    "sha256": "de6893b63814e42050b5293dd6ee6a81d3ff8dd8e5007cf9fc9d2405170b25ec",
+    "sha256": "c46dd1af79786d9853a1efd266b6dd6c389385c8aef074ed6359d72b51eb92e7",
     "stats": {
       "nodes": 82,
       "meshes": 61,
@@ -514,5 +514,20 @@
     "carriageRearX": 0.5425,
     "carriageFrontX": -0.5425,
     "previewStroke": 1.085
+  },
+  "transferAlignment": {
+    "version": 1,
+    "surfaceY": 1.25,
+    "loadY": 1.29,
+    "basketStroke": null,
+    "sourceSha256": "de6893b63814e42050b5293dd6ee6a81d3ff8dd8e5007cf9fc9d2405170b25ec",
+    "note": "Display transfer-height alignment; door sealing overlap retained; original CAD deliveries preserved.",
+    "assetSha256": "c46dd1af79786d9853a1efd266b6dd6c389385c8aef074ed6359d72b51eb92e7",
+    "calibration": {
+      "floor": 0,
+      "knot": 1,
+      "delta": 0,
+      "pusherOffsetY": -0.085
+    }
   }
 }

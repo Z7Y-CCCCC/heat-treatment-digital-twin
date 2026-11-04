@@ -11,7 +11,7 @@
     "node_naming_rule": "role_part_action，例如 fan_rear_rotate、door_front_lift、valve_gas_01",
     "delivery_status": "review",
     "owner": "",
-    "notes": "2026-11-04: restored central lower sheet enclosure, rectangular lower attachment and drain from DWG K/side views; unknown sheet gauge/projection depth remain inferred."
+    "notes": "2026-11-04: restored central lower sheet enclosure, rectangular lower attachment and drain from DWG K/side views; unknown sheet gauge/projection depth remain inferred. 统一展示送料基准为 1.25 m；门板密封搭边保留，原 CAD 交付文件保留。"
   },
   "optimization": {
     "mode": "auto",
@@ -664,7 +664,7 @@
   "partBindings": [],
   "sourceAsset": {
     "filename": "17.07.00_清洗机.glb",
-    "sha256": "e5b45809e4218f82b8e3a5fc67fe054b81c010f13edcc5902b9286659b473a33",
+    "sha256": "2052be6b23dfe35a43ae3aad542e976b744aaf3378323b65b2e63e1a7b6b02bb",
     "stats": {
       "nodes": 112,
       "meshes": 80,
@@ -672,7 +672,7 @@
       "materials": 14,
       "size": [
         3.0399999991059303,
-        4.107000052928925,
+        4.062000052928925,
         2.971000015735626
       ],
       "min": [
@@ -682,7 +682,7 @@
       ],
       "max": [
         1.4799999669194221,
-        4.107000052928925,
+        4.062000052928925,
         1.2209999561309814
       ]
     }
@@ -712,5 +712,21 @@
       "130 mm attachment projection",
       "existing chamber depth retained"
     ]
+  },
+  "transferAlignment": {
+    "version": 1,
+    "surfaceY": 1.25,
+    "loadY": 1.29,
+    "basketStroke": 0.8,
+    "sourceSha256": "e5b45809e4218f82b8e3a5fc67fe054b81c010f13edcc5902b9286659b473a33",
+    "note": "Display transfer-height alignment; door sealing overlap retained; original CAD deliveries preserved.",
+    "assetSha256": "2052be6b23dfe35a43ae3aad542e976b744aaf3378323b65b2e63e1a7b6b02bb",
+    "calibration": {
+      "floor": 0.1,
+      "knot": 1.1,
+      "delta": -0.045,
+      "rollerCorrection": -0.002,
+      "basketStroke": 0.8
+    }
   }
 }

@@ -11,7 +11,7 @@
     "node_naming_rule": "role_part_action，例如 fan_rear_rotate、door_front_lift、valve_gas_01",
     "delivery_status": "review",
     "owner": "",
-    "notes": "用户提供的 11.58.00HT_风冷台.glb 原文件入库；保留原始节点、材质和坐标。"
+    "notes": "用户提供的 11.58.00HT_风冷台.glb 原文件入库；保留原始节点、材质和坐标。 统一展示送料基准为 1.25 m；门板密封搭边保留，原 CAD 交付文件保留。"
   },
   "optimization": {
     "mode": "auto",
@@ -455,7 +455,7 @@
   "partBindings": [],
   "sourceAsset": {
     "filename": "11.58.00HT_风冷台.glb",
-    "sha256": "6611d5c131428b20bd5c488354b22fe5dbf8ab44213e9fad1e8bdc3fd9ca8699",
+    "sha256": "24b63303fdf452bb4f533c50181886c4e906daf06982d3c8ff86c4d9b79928d4",
     "stats": {
       "nodes": 49,
       "meshes": 33,
@@ -463,7 +463,7 @@
       "materials": 8,
       "size": [
         1.9558500424027443,
-        3.052000105381012,
+        3.046000105381012,
         0.8980000093579292
       ],
       "min": [
@@ -473,7 +473,7 @@
       ],
       "max": [
         0.9650000259280205,
-        3.052000105381012,
+        3.046000105381012,
         0.4399999864399433
       ]
     }
@@ -491,5 +491,20 @@
     "status": "review",
     "published_at": "",
     "history": []
+  },
+  "transferAlignment": {
+    "version": 1,
+    "surfaceY": 1.25,
+    "loadY": 1.29,
+    "basketStroke": null,
+    "sourceSha256": "6611d5c131428b20bd5c488354b22fe5dbf8ab44213e9fad1e8bdc3fd9ca8699",
+    "note": "Display transfer-height alignment; door sealing overlap retained; original CAD deliveries preserved.",
+    "assetSha256": "24b63303fdf452bb4f533c50181886c4e906daf06982d3c8ff86c4d9b79928d4",
+    "calibration": {
+      "floor": 0,
+      "knot": 1,
+      "delta": 0,
+      "doorCorrection": -0.006
+    }
   }
 }

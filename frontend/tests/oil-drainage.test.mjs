@@ -14,6 +14,7 @@ async function loadRig(id){
 test('600 furnace drains sparse glossy amber beads and thinning oil necks back into its bath',async()=>{
  const rig=await loadRig('cad_multipurpose_furnace_082000')
  try{
+  assert.equal(rig.water.visible,true);assert.ok(rig.water.material.color.r>rig.water.material.color.b,'the permanent quench bath is oil, rather than blue water')
   const snapshot=time=>{
    rig.applyLinked({drip:true,time})
    return [...rig.drops.children,...rig.oilFilaments.children].map(node=>[node.visible,...node.position,...node.scale])

@@ -75,6 +75,22 @@ for(const [id,profile] of Object.entries(CAD_MOTION_PROFILES))test(`${id}: each 
         rig.apply('lift_down',4);assert.ok(rig.node('roller_bed').position.y<-.2)
         for(const {pivot} of rig.scissor)assert.ok(Math.abs(pivot.rotation.z)<.3)
     }
+    if(id==='cad_cleaner_170700'){
+        const deck=rig.node('internal_rollers'),fixed=['central_lower_body','tanks','housing','pumps_blue'].map(n=>rig.node(n))
+        rig.reset();gltf.scene.updateMatrixWorld(true);const matrices=fixed.map(n=>n.matrixWorld.clone()),waterPose=rig.bathVolumes.map(n=>[...n.position,...n.scale,Number(n.visible)])
+        const assertWater=()=>assert.deepEqual(rig.bathVolumes.map(n=>[...n.position,...n.scale,Number(n.visible)]),waterPose,'all three lower water volumes stay full')
+        assert.equal(rig.bathVolumes.length,3);assert.ok(rig.bathVolumes.every(n=>n.visible))
+        const waterBox=new T.Box3().setFromObject(rig.water)
+        assert.ok(waterBox.min.x<-.60&&waterBox.max.x>.60&&waterBox.min.z<-.95&&waterBox.max.z>.95,'central lower chamber is filled, not just a small rear corner')
+        rig.apply('basket_down',0);const home=new T.Box3().setFromObject(rig.cleanerCharge);assert.ok(home.min.y>waterBox.max.y,'load starts above the permanent water')
+        for(const time of [2,4,8]){rig.apply('basket_down',time);assertWater()}
+        assert.ok(new T.Box3().setFromObject(rig.cleanerCharge).max.y<waterBox.max.y-.1,'the whole charge must be submerged at the end of lowering')
+        assert.ok(Math.abs(deck.position.y+.8)<1e-7);assert.ok(new T.Box3().setFromObject(deck).min.y>waterBox.min.y,'deck must not pass through the tank floor')
+        rig.apply('basket_up',8);assert.ok(Math.abs(deck.position.y)<1e-7);assert.ok(new T.Box3().setFromObject(rig.cleanerCharge).min.y>waterBox.max.y)
+        for(const basket of [0,.5,1,0]){rig.applyLinked({basket,level:0});assertWater();assert.ok(Math.abs(deck.position.y+.8*basket)<1e-7);assert.equal(rig.cleanerCharge.visible,false)}
+        gltf.scene.updateMatrixWorld(true);fixed.forEach((n,i)=>assert.ok(n.matrixWorld.equals(matrices[i]),'water tanks, shell and pump housings stay fixed'))
+        rig.reset();assertWater()
+    }
     if(id==='cad_multipurpose_furnace_082000'){
         assert.equal(rig.hotRollers.length,7);assert.equal(rig.multiAgitators.length,2)
         assert.equal(rig.multiCirculation.children.length,10,'eight blades, hub and shaft; the large shroud stays fixed')

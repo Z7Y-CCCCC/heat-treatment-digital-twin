@@ -25,11 +25,11 @@ for(const id of [...Object.keys(CAD_MOTION_PROFILES),'ultrasonic_cleaner_cad'].f
  let rig,effects,apply,reset,actions
  if(CAD_MOTION_PROFILES[id]){
    rig=new CadMotionRig(asset,id);reset=()=>rig.reset()
-   actions=CAD_MOTION_PROFILES[id].actions.map(a=>({...a,mode:modes[a.id]||'running',duration:(modes[a.id]==='position' && !['fill','drain'].includes(a.id))?a.duration/2:(modes[a.id]==='position'?a.duration:5)}))
+   actions=CAD_MOTION_PROFILES[id].actions.map(a=>({...a,mode:modes[a.id]||'running',duration:a.preserveDuration?a.duration:(modes[a.id]==='position' && !['fill','drain'].includes(a.id)&&!a.oneWay)?a.duration/2:(modes[a.id]==='position'?a.duration:5)}))
    // Preview demos ease out and back with sin². PLC position is a measured
    // stroke, not demo elapsed time: 25% feedback must show 25% of travel.
    // Keep the authored mechanism/geometry, invert only that demo easing.
-   apply=(a,t)=>rig.apply(a.id,a.mode==='position'&&!['fill','drain'].includes(a.id)
+   apply=(a,t)=>rig.apply(a.id,a.mode==='position'&&!['fill','drain'].includes(a.id)&&!a.oneWay
      ? CAD_MOTION_PROFILES[id].actions.find(x=>x.id===a.id).duration*Math.asin(Math.sqrt(Math.max(0,Math.min(1,t/a.duration))))/Math.PI : t)
  }else{
    effects=new CleanerProcessEffects(asset,asset);reset=()=>effects.apply(null)

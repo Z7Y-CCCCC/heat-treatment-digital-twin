@@ -11,7 +11,7 @@
     "node_naming_rule": "role_part_action，例如 fan_rear_rotate、door_front_lift、valve_gas_01",
     "delivery_status": "review",
     "owner": "",
-    "notes": "用户提供的 47.10.00_水冷槽.glb 原文件入库；保留原始节点、材质和坐标。"
+    "notes": "用户提供的 47.10.00_水冷槽.glb 原文件入库；保留原始节点、材质和坐标。 统一展示送料基准为 1.25 m；门板密封搭边保留，原 CAD 交付文件保留。"
   },
   "optimization": {
     "mode": "auto",
@@ -663,7 +663,7 @@
   "partBindings": [],
   "sourceAsset": {
     "filename": "47.10.00_水冷槽.glb",
-    "sha256": "935bdbc3e0cdb4241aa53232d76bfb6d073a77e1d76434c2b7d5f917b39cba7f",
+    "sha256": "491ad1bd6be12352ad5a9106741fb955903b51df56b576f0849c7b3c97be439e",
     "stats": {
       "nodes": 104,
       "meshes": 72,
@@ -671,7 +671,7 @@
       "materials": 14,
       "size": [
         2.389999955892563,
-        4.320000171661377,
+        3.937000171661377,
         3.0029832124710083
       ],
       "min": [
@@ -681,7 +681,7 @@
       ],
       "max": [
         1.2599999606609344,
-        4.320000171661377,
+        3.937000171661377,
         1.0709831714630127
       ]
     }
@@ -699,5 +699,20 @@
     "status": "review",
     "published_at": "",
     "history": []
+  },
+  "transferAlignment": {
+    "version": 1,
+    "surfaceY": 1.25,
+    "loadY": 1.29,
+    "basketStroke": 0.85,
+    "sourceSha256": "935bdbc3e0cdb4241aa53232d76bfb6d073a77e1d76434c2b7d5f917b39cba7f",
+    "note": "Display transfer-height alignment; door sealing overlap retained; original CAD deliveries preserved.",
+    "assetSha256": "491ad1bd6be12352ad5a9106741fb955903b51df56b576f0849c7b3c97be439e",
+    "calibration": {
+      "floor": 0.16,
+      "knot": 1.5,
+      "delta": -0.383,
+      "basketStroke": 0.85
+    }
   }
 }

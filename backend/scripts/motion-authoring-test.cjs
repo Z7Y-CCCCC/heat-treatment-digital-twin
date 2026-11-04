@@ -65,8 +65,18 @@ const action = (nodes, id = 'user_door_lift') => ({ id, label: '门升降与转�
     const edited={...draft,tracks:[{...draft.tracks[0],to:1.2},draft.tracks[1]]}, editedSaved=await ok(route,'PUT',{revision:saved.revision,actions:[edited]});assert.notEqual(editedSaved.bundle.clipSha256,saved.bundle.clipSha256);
     assert.equal((await request(route,'GET',null,'factory_pit_furnaces_v1')).status,404);
     const cadRoute=`/api/models/${template.id}/motion-actions`, cad=await ok(cadRoute), cadDraft=action(cad.nodes,'user_extra');
-    const cadSaved=await ok(cadRoute,'PUT',{revision:cad.revision,actions:[cadDraft]});assert.equal(cadSaved.bundle.actions.length,10,'all nine original CAD clips remain available');
-    const cadAgain=await ok(cadRoute), cadResaved=await ok(cadRoute,'PUT',{revision:cadAgain.revision,actions:[{...cadDraft,label:'修改动作名称'}]});assert.equal(cadResaved.bundle.actions.length,10,'editing must not accumulate duplicate clips');
+    const originalCadClips=JSON.parse(fs.readFileSync(author.localFile(template.motion_package.clipPath))).clips;
+    assert.ok(originalCadClips.some(clip=>clip.id==='process_cycle'),'the complete multipurpose process must be included');
+    const expectedCadIds=[...originalCadClips.map(clip=>clip.id),cadDraft.id].sort();
+    const assertPreservedCadClips=async bundle=>{
+        assert.deepEqual(bundle.actions.map(clip=>clip.id).sort(),expectedCadIds,'editing preserves all built-in actions and exactly one custom action');
+        const response=await fetch(origin+bundle.clipPath);assert.equal(response.status,200);
+        const bytes=Buffer.from(await response.arrayBuffer());assert.equal(hash(bytes),bundle.clipSha256);
+        const compiled=JSON.parse(bytes);assert.deepEqual(compiled.clips.map(clip=>clip.id).sort(),expectedCadIds,'compiled clips cannot be missing or duplicated');
+        for(const original of originalCadClips)assert.deepEqual(compiled.clips.find(clip=>clip.id===original.id),original,'original CAD duration and tracks survive custom editing unchanged');
+    };
+    const cadSaved=await ok(cadRoute,'PUT',{revision:cad.revision,actions:[cadDraft]});await assertPreservedCadClips(cadSaved.bundle);
+    const cadAgain=await ok(cadRoute), cadResaved=await ok(cadRoute,'PUT',{revision:cadAgain.revision,actions:[{...cadDraft,label:'修改动作名称'}]});await assertPreservedCadClips(cadResaved.bundle);
     const exportResponse=await testFetch(origin+'/api/project-bundles/export');assert.equal(exportResponse.status,200,await exportResponse.clone().text());const zip=await exportResponse.arrayBuffer();
     const inspectForm=new FormData();inspectForm.append('file',new Blob([zip],{type:'application/zip'}),'motion-project.zip');const inspectedResponse=await testFetch(origin+'/api/project-bundles/inspect',{method:'POST',body:inspectForm}), inspected=await inspectedResponse.json();assert.equal(inspectedResponse.status,200,JSON.stringify(inspected));
     const form=new FormData();form.append('file',new Blob([zip],{type:'application/zip'}),'motion-project.zip');form.append('name','动作迁移验收');form.append('inspectedSha256',inspected.sha256);

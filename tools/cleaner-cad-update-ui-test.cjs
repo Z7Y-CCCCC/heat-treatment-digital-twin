@@ -35,21 +35,22 @@ let server,browser;
  await page.waitForFunction(()=>Number(document.querySelector('input[aria-label="拆解进度"]')?.value)===0);
  checks.push('model library and restored lower assemblies render in disassembly');
  await page.getByRole('button',{name:'动作动画',exact:true}).click();await page.getByRole('combobox',{name:'选择动作动画模型',exact:true}).selectOption(id);
+ assert.equal(await page.getByRole('button',{name:'预览 CAD 动作：注水',exact:true}).count(),0);assert.equal(await page.getByRole('button',{name:'预览 CAD 动作：排水',exact:true}).count(),0);
  const setTime=async(slider,value)=>{await slider.evaluate((element,next)=>{element.value=String(next);element.dispatchEvent(new Event('input',{bubbles:true}))},value);await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))))};
  for(const action of cadMotionActions(id)){
   await page.getByRole('button',{name:'预览 CAD 动作：'+action.label,exact:true}).click();const preview=page.locator('.cad-motion-preview');await preview.locator('.loading').waitFor({state:'hidden'});await preview.getByRole('button',{name:'暂停',exact:true}).click();
   const slider=preview.getByRole('slider',{name:'CAD 动作进度',exact:true});await setTime(slider,1.3);const before=await preview.locator('canvas').screenshot();await setTime(slider,3.7);assert.equal(before.equals(await preview.locator('canvas').screenshot()),false,action.label);
-  await preview.screenshot({path:path.join(directory,action.id+'.png')});await preview.getByRole('button',{name:'复位',exact:true}).click();assert.equal(await slider.inputValue(),'0');
+  await preview.screenshot({path:path.join(directory,action.id+'.png')});if(action.id==='basket_down'){await setTime(slider,action.duration);await preview.screenshot({path:path.join(directory,'basket-down-fully-submerged.png')})}await preview.getByRole('button',{name:'复位',exact:true}).click();assert.equal(await slider.inputValue(),'0');
  }
  checks.push('all six actions render changing frames and support seeking and reset');
  await page.getByRole('button',{name:'设备联动',exact:true}).click();await page.getByRole('combobox',{name:'选择联动产线',exact:true}).selectOption('simulation_line_a');
  for(const name of ['料车实例 A','清洗机实例 A'])await page.getByRole('checkbox',{name:'参与联动：'+name,exact:true}).check();
  const plan=buildLineSimulation(['sim_0','sim_4'].map(key=>devices.find(device=>device.id===key)),models);await page.getByRole('button',{name:'预览选中设备',exact:true}).click();
  const sequence=page.getByTestId('line-equipment-sequence');await sequence.locator('.empty').waitFor({state:'hidden'});const slider=page.getByRole('slider',{name:'产线联动流程进度',exact:true});
- for(const kind of ['feed','fill','spray','drain','blow','reclaim']){
+ for(const kind of ['feed','lower','spray','raise','blow','reclaim']){
   const step=plan.steps.find(item=>item.kind===kind);assert.ok(step);await setTime(slider,step.start+step.duration/2);assert.equal(await sequence.getAttribute('data-step-kind'),kind);await sequence.locator('.preview').screenshot({path:path.join(directory,'line-'+kind+'.png')});
  }
- checks.push('updated cleaner participates in cart feeding, filling, spray, drainage, blow and unloading');
+ checks.push('updated cleaner participates in cart feeding, full immersion in a permanent bath, spray, raising, blow and unloading without fill/drain stages');
  assert.deepEqual(errors,[]);assert.deepEqual(writes,[]);assert.deepEqual(await api('/api/devices'),devices);
  fs.writeFileSync(path.join(directory,'result.json'),JSON.stringify({success:true,checks,errors,writes,directory},null,2));console.log(JSON.stringify({success:true,checks,errors,writes,directory},null,2));
 })().catch(error=>{console.error(error);process.exitCode=1}).finally(async()=>{await browser?.close();await stopOwnedSmokeProcess(server)});

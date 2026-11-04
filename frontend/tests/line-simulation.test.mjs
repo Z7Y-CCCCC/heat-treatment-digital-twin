@@ -27,6 +27,17 @@ const devices=[{id:'cart',name:'料车实例',model_type:models[0].id,line_id:'A
  {id:'cleaner1',name:'一号清洗机',model_type:models[1].id,line_id:'A'},
  {id:'cleaner2',name:'二号清洗机',model_type:models[1].id,line_id:'B'},
  {id:'tank',name:'水冷槽',model_type:models[2].id,line_id:'A'}]
+test('cleaner enters a permanent full bath after feeding, then rises before unloading without filling or draining',()=>{
+ const plan=buildLineSimulation([devices[0],devices[1]],models)
+ assert.deepEqual(plan.steps.map(s=>s.kind),['approach','open','feed','retract','close','lower','spray','raise','blow','open_out','pickup_extend','reclaim','close_out'])
+ const at=(kind,p=.5)=>{const step=plan.steps.find(s=>s.kind===kind);return sampleLineSimulation(plan,step.start+step.duration*p)}
+ for(let time=0;time<=plan.total;time+=.25)assert.equal(sampleLineSimulation(plan,time).states.cleaner1.level,1)
+ assert.equal(at('feed').states.cleaner1.basket,0)
+ const lowered=at('lower');assert.equal(lowered.states.cleaner1.basket,.5);assert.equal(lowered.material.holder,'cleaner1');assert.equal(lowered.states.cleaner1.door,0);assert.equal(lowered.cart.feed,0)
+ assert.equal(at('spray').states.cleaner1.basket,1);assert.equal(at('raise').states.cleaner1.basket,.5)
+ assert.equal(at('blow').states.cleaner1.basket,0);assert.equal(at('open_out').states.cleaner1.basket,0)
+ const sample=at('spray');sampleLineSimulation(plan,plan.total);assert.deepEqual(at('spray'),sample)
+})
 test('line membership is based on instances and explicit line binding, including rail-bound carts',()=>{
  const cart={id:'rail-cart',model_type:models[0].id,instance_config:JSON.stringify({railLineId:'A'})}
  assert.deepEqual(simulationLineMembers([...devices,cart],'A').map(d=>d.id).sort(),['cart','cleaner1','rail-cart','tank'])
@@ -64,7 +75,7 @@ test('chosen instances preserve order, identical models remain independent, and 
 test('600 multipurpose furnace closes the intermediate gate for heating and quenching, and returns charge before lowering',()=>{
  const model={id:'cad_multipurpose_furnace_082000',file_path:'/600.glb'},furnace={id:'600-instance',name:'600 多用炉',model_type:model.id}
  const plan=buildLineSimulation([devices[0],furnace],[...models,model])
- assert.equal(plan.steps.find(step=>step.kind==='drip').label,'沥油')
+ assert.equal(plan.steps.find(step=>step.kind==='drip').label,'前室沥油')
  assert.equal(buildLineSimulation([devices[0],devices[3]],models).steps.find(step=>step.kind==='drip').label,'沥水')
  const at=kind=>{const step=plan.steps.find(s=>s.kind===kind);return sampleLineSimulation(plan,step.start+step.duration/2).states[furnace.id]}
  let s=at('hot_feed');assert.equal(s.gate,1);assert.equal(s.door,0);assert.equal(s.chamber,.5);assert.equal(s.basket,0)

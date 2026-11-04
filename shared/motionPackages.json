@@ -1,14 +1,208 @@
 {
   "schemaVersion": 1,
   "models": {
+    "cad_tempering_furnace_091300": {
+      "sourcePath": "/assets/models/cad_tempering_furnace_091300.glb",
+      "sourceSha256": "a0f151f1cffbe9ce23c12f6db9d4a8a7ab3a42f18c21d23b6a2f5b7ed6565dd9",
+      "rigPath": "/assets/motions/cad_tempering_furnace_091300.glb",
+      "rigSha256": "20184dc98e86e0384c676abd3ac4b0c9b8a5d921c0375a1885628f6cfc81b990",
+      "clipPath": "/assets/motions/cad_tempering_furnace_091300.json",
+      "clipSha256": "5078c66f0a5c1e9b6319a984bf7dcefaeb45ed85ae8b22c53da3dc9e1dc78dcb",
+      "actions": [
+        {
+          "id": "door",
+          "label": "回火炉门开启 / 关闭",
+          "mode": "position",
+          "duration": 4,
+          "channels": [
+            "cad_tempering_furnace_v1_door:p",
+            "cad_tempering_furnace_v1_door_carriages:p"
+          ]
+        },
+        {
+          "id": "circulation",
+          "label": "循环风机运转",
+          "mode": "running",
+          "duration": 5,
+          "channels": [
+            "preview_tempering_impeller:q",
+            "preview_tempering_drive_0:q",
+            "preview_tempering_drive_1:q"
+          ]
+        },
+        {
+          "id": "rollers",
+          "label": "炉内辊道运转",
+          "mode": "running",
+          "duration": 5,
+          "channels": [
+            "preview_tempering_roller_0:q",
+            "preview_tempering_roller_1:q",
+            "preview_tempering_roller_2:q",
+            "preview_tempering_roller_3:q",
+            "preview_tempering_roller_4:q",
+            "preview_tempering_roller_5:q",
+            "preview_tempering_roller_6:q"
+          ]
+        },
+        {
+          "id": "heating",
+          "label": "回火加热与热风循环",
+          "mode": "running",
+          "duration": 5,
+          "channels": [
+            "cad_tempering_furnace_v1_heating_elements_black:e0",
+            "preview_tempering_impeller:q",
+            "preview_tempering_drive_0:q",
+            "preview_tempering_drive_1:q"
+          ]
+        }
+      ]
+    },
     "cad_multipurpose_furnace_082000": {
       "sourcePath": "/assets/models/cad_multipurpose_furnace_082000.glb",
-      "sourceSha256": "fa859b50f7675f27ae939847942311b6f3a2851e3962b6db035a69100b533f68",
+      "sourceSha256": "773dd70b490e00b864cffdb853205a89382166003300791096742d747ff7d7c0",
       "rigPath": "/assets/motions/cad_multipurpose_furnace_082000.glb",
-      "rigSha256": "5cfdc9e09a7d57e336a4e9e593646dd8d783414ada59201b7a9594b3666a994d",
+      "rigSha256": "f6a20d40b9d7c978afbe422ef4d5c8ea21ebdaca021b1ddb55fe94c92a233512",
       "clipPath": "/assets/motions/cad_multipurpose_furnace_082000.json",
-      "clipSha256": "f292a8bbd01b36a4a4932ae33f9f337c4f25c4f107589c6c1c0589ee8a20190b",
+      "clipSha256": "c35e285206ab8344f08454430976496a0df8a945fe2fe59803d888b7f0f6940d",
       "actions": [
+        {
+          "id": "process_cycle",
+          "label": "完整工艺循环",
+          "mode": "running",
+          "duration": 83,
+          "channels": [
+            "cad_multipurpose_furnace_600_v1_door:p",
+            "cad_multipurpose_furnace_600_v1_door_carriages:p",
+            "cad_multipurpose_furnace_600_v1_elevator_basket:p",
+            "cad_multipurpose_furnace_600_v1_intermediate_gate:p",
+            "cad_multipurpose_furnace_600_v1_radiant_tubes_black:e0",
+            "cad_multipurpose_furnace_600_v1_radiant_tubes_enamel:e0",
+            "preview_hot_circulation:q",
+            "preview_quench_agitator_0:q",
+            "preview_quench_agitator_1:q",
+            "preview_hot_roller_0:q",
+            "preview_hot_roller_1:q",
+            "preview_hot_roller_2:q",
+            "preview_hot_roller_3:q",
+            "preview_hot_roller_4:q",
+            "preview_hot_roller_5:q",
+            "preview_hot_roller_6:q",
+            "motion_node_287:v",
+            "preview_oil_drop_0:p",
+            "preview_oil_drop_0:s",
+            "preview_oil_drop_0:v",
+            "preview_oil_drop_1:p",
+            "preview_oil_drop_1:s",
+            "preview_oil_drop_1:v",
+            "preview_oil_drop_2:p",
+            "preview_oil_drop_2:s",
+            "preview_oil_drop_2:v",
+            "preview_oil_drop_3:p",
+            "preview_oil_drop_3:s",
+            "preview_oil_drop_3:v",
+            "preview_oil_drop_4:p",
+            "preview_oil_drop_4:s",
+            "preview_oil_drop_4:v",
+            "preview_oil_drop_5:p",
+            "preview_oil_drop_5:s",
+            "preview_oil_drop_5:v",
+            "preview_oil_drop_6:p",
+            "preview_oil_drop_6:s",
+            "preview_oil_drop_6:v",
+            "preview_oil_drop_7:p",
+            "preview_oil_drop_7:s",
+            "preview_oil_drop_7:v",
+            "preview_oil_drop_8:v",
+            "preview_oil_drop_9:v",
+            "preview_oil_drop_10:v",
+            "preview_oil_drop_11:v",
+            "preview_oil_drop_12:v",
+            "preview_oil_drop_13:v",
+            "preview_oil_drop_14:v",
+            "preview_oil_drop_15:v",
+            "preview_oil_drop_16:v",
+            "preview_oil_drop_17:v",
+            "preview_oil_drop_18:v",
+            "preview_oil_drop_19:v",
+            "preview_oil_drop_20:v",
+            "preview_oil_drop_21:v",
+            "preview_oil_drop_22:v",
+            "preview_oil_drop_23:v",
+            "preview_oil_drop_24:v",
+            "preview_oil_drop_25:v",
+            "preview_oil_drop_26:v",
+            "preview_oil_drop_27:v",
+            "preview_oil_drop_28:v",
+            "preview_oil_drop_29:v",
+            "preview_oil_drop_30:v",
+            "preview_oil_drop_31:v",
+            "preview_oil_drop_32:v",
+            "preview_oil_drop_33:v",
+            "preview_oil_drop_34:v",
+            "preview_oil_drop_35:v",
+            "preview_oil_drop_36:v",
+            "preview_oil_drop_37:v",
+            "preview_oil_drop_38:v",
+            "preview_oil_drop_39:v",
+            "preview_oil_drop_40:v",
+            "preview_oil_drop_41:v",
+            "preview_oil_drop_42:v",
+            "preview_oil_drop_43:v",
+            "preview_oil_drop_44:v",
+            "preview_oil_drop_45:v",
+            "preview_oil_drop_46:v",
+            "preview_oil_drop_47:v",
+            "preview_oil_drop_48:v",
+            "preview_oil_drop_49:v",
+            "preview_oil_drop_50:v",
+            "preview_oil_drop_51:v",
+            "preview_oil_drop_52:v",
+            "preview_oil_drop_53:v",
+            "preview_oil_drop_54:v",
+            "preview_oil_drop_55:v",
+            "preview_oil_drop_56:v",
+            "preview_oil_drop_57:v",
+            "preview_oil_drop_58:v",
+            "preview_oil_drop_59:v",
+            "preview_oil_filaments:v",
+            "preview_oil_filament_0:p",
+            "preview_oil_filament_0:s",
+            "preview_oil_filament_0:v",
+            "preview_oil_filament_1:p",
+            "preview_oil_filament_1:s",
+            "preview_oil_filament_1:v",
+            "preview_oil_filament_2:p",
+            "preview_oil_filament_2:s",
+            "preview_oil_filament_2:v",
+            "preview_oil_filament_3:p",
+            "preview_oil_filament_3:s",
+            "preview_oil_filament_3:v",
+            "preview_oil_filament_4:p",
+            "preview_oil_filament_4:s",
+            "preview_oil_filament_4:v",
+            "preview_oil_filament_5:p",
+            "preview_oil_filament_5:s",
+            "preview_oil_filament_5:v",
+            "preview_oil_filament_6:p",
+            "preview_oil_filament_6:s",
+            "preview_oil_filament_6:v",
+            "preview_oil_filament_7:p",
+            "preview_oil_filament_7:s",
+            "preview_oil_filament_7:v",
+            "preview_internal_charge:p",
+            "preview_internal_charge:v",
+            "preview_cycle_pallet:v",
+            "motion_node_360:v",
+            "motion_node_361:s",
+            "motion_node_361:c0",
+            "motion_node_362:s",
+            "motion_node_362:c0",
+            "motion_node_363:s",
+            "motion_node_363:c0"
+          ]
+        },
         {
           "id": "door",
           "label": "前室门开启 / 关闭",
@@ -16,7 +210,10 @@
           "duration": 4,
           "channels": [
             "cad_multipurpose_furnace_600_v1_door:p",
-            "cad_multipurpose_furnace_600_v1_door_carriages:p"
+            "cad_multipurpose_furnace_600_v1_door_carriages:p",
+            "motion_node_361:c0",
+            "motion_node_362:c0",
+            "motion_node_363:c0"
           ]
         },
         {
@@ -25,7 +222,10 @@
           "mode": "position",
           "duration": 4,
           "channels": [
-            "cad_multipurpose_furnace_600_v1_intermediate_gate:p"
+            "cad_multipurpose_furnace_600_v1_intermediate_gate:p",
+            "motion_node_361:c0",
+            "motion_node_362:c0",
+            "motion_node_363:c0"
           ]
         },
         {
@@ -36,7 +236,10 @@
           "channels": [
             "cad_multipurpose_furnace_600_v1_elevator_basket:p",
             "preview_internal_charge:p",
-            "preview_internal_charge:v"
+            "preview_internal_charge:v",
+            "motion_node_361:c0",
+            "motion_node_362:c0",
+            "motion_node_363:c0"
           ]
         },
         {
@@ -137,7 +340,10 @@
             "preview_oil_filament_6:v",
             "preview_oil_filament_7:v",
             "preview_internal_charge:p",
-            "preview_internal_charge:v"
+            "preview_internal_charge:v",
+            "motion_node_361:c0",
+            "motion_node_362:c0",
+            "motion_node_363:c0"
           ]
         },
         {
@@ -146,7 +352,10 @@
           "mode": "running",
           "duration": 5,
           "channels": [
-            "preview_hot_circulation:q"
+            "preview_hot_circulation:q",
+            "motion_node_361:c0",
+            "motion_node_362:c0",
+            "motion_node_363:c0"
           ]
         },
         {
@@ -157,13 +366,13 @@
           "channels": [
             "preview_quench_agitator_0:q",
             "preview_quench_agitator_1:q",
-            "motion_node_359:v",
-            "motion_node_360:s",
-            "motion_node_360:c0",
+            "motion_node_360:v",
             "motion_node_361:s",
             "motion_node_361:c0",
             "motion_node_362:s",
-            "motion_node_362:c0"
+            "motion_node_362:c0",
+            "motion_node_363:s",
+            "motion_node_363:c0"
           ]
         },
         {
@@ -179,9 +388,9 @@
             "preview_hot_roller_4:q",
             "preview_hot_roller_5:q",
             "preview_hot_roller_6:q",
-            "motion_node_360:c0",
             "motion_node_361:c0",
-            "motion_node_362:c0"
+            "motion_node_362:c0",
+            "motion_node_363:c0"
           ]
         },
         {
@@ -200,9 +409,9 @@
             "preview_hot_roller_6:q",
             "preview_internal_charge:p",
             "preview_internal_charge:v",
-            "motion_node_360:c0",
             "motion_node_361:c0",
-            "motion_node_362:c0"
+            "motion_node_362:c0",
+            "motion_node_363:c0"
           ]
         },
         {
@@ -214,20 +423,20 @@
             "cad_multipurpose_furnace_600_v1_radiant_tubes_black:e0",
             "cad_multipurpose_furnace_600_v1_radiant_tubes_enamel:e0",
             "preview_hot_circulation:q",
-            "motion_node_360:c0",
             "motion_node_361:c0",
-            "motion_node_362:c0"
+            "motion_node_362:c0",
+            "motion_node_363:c0"
           ]
         }
       ]
     },
     "cad_transfer_cart_101300": {
       "sourcePath": "/assets/models/cad_transfer_cart_101300.glb",
-      "sourceSha256": "de6893b63814e42050b5293dd6ee6a81d3ff8dd8e5007cf9fc9d2405170b25ec",
+      "sourceSha256": "c46dd1af79786d9853a1efd266b6dd6c389385c8aef074ed6359d72b51eb92e7",
       "rigPath": "/assets/motions/cad_transfer_cart_101300.glb",
-      "rigSha256": "f389b0932a597db588c51a9fa9f65e932cc5230ff202b235083f01f8a23f1f49",
+      "rigSha256": "04ed7bd9684c32d7de78a8e3215522cd25a939cbfe19d25c3f79b36d0b752167",
       "clipPath": "/assets/motions/cad_transfer_cart_101300.json",
-      "clipSha256": "a9c9ff586da54a1cb9b7ca7c7c68b1927077efd31e94abb8dfd49185b8fb87d5",
+      "clipSha256": "5adbb577f80b4aa795c71a9b0210f22921c7087466db39c187f01784166548a3",
       "actions": [
         {
           "id": "travel",
@@ -362,11 +571,11 @@
     },
     "cad_lifting_load_table_111400": {
       "sourcePath": "/assets/models/cad_lifting_load_table_111400.glb",
-      "sourceSha256": "22b11f4fd3147c8eb5bdec0300f293a700d7818d914cb98ec492d686076cef81",
+      "sourceSha256": "dbe913f90575df3e64dd150c4ec4a7b4fe9dab26a267aa7b7987d33798b6af5a",
       "rigPath": "/assets/motions/cad_lifting_load_table_111400.glb",
-      "rigSha256": "ac942bac63f4a7fbb23974212b64bb34cea50ca6306b453d368a05f6d1dd821f",
+      "rigSha256": "5001a9de1ec220d44658898dae5c30cb1230342f6f95d2a4ea48636721ed703a",
       "clipPath": "/assets/motions/cad_lifting_load_table_111400.json",
-      "clipSha256": "fdee76e0a2b6de92b24bdb11b237823eb735015ca1d1d6572236584165cc1bcd",
+      "clipSha256": "9b5ecb8bb7b401fc731b4309617b55dbf1956901776e78576c708c9e79e4d431",
       "actions": [
         {
           "id": "lift_up",
@@ -499,11 +708,11 @@
     },
     "cad_fixed_load_table_112200": {
       "sourcePath": "/assets/models/cad_fixed_load_table_112200.glb",
-      "sourceSha256": "990681d32f0ca8f1d24e7f21cc64456507ed25ecd4256647f2aa5239f39e2bc9",
+      "sourceSha256": "f588dc96c112cec105bff5066804508bf4a7536868872d22a83098a655355081",
       "rigPath": "/assets/motions/cad_fixed_load_table_112200.glb",
-      "rigSha256": "253eca33c48275ab312df2c9ce5ed319f6caac58e7ffe59f964f57ed39e248cd",
+      "rigSha256": "9a000f19ec251ffe13a886d54d16147569f57f7381d5d7e769234f58046693df",
       "clipPath": "/assets/motions/cad_fixed_load_table_112200.json",
-      "clipSha256": "209458fb357719645ecdf56901d7f162dfa1fe1f095818bcde036558553d7e8d",
+      "clipSha256": "80f9394cfcf19f3a7ef358ef67a37bffe6f143209cb465cbb849db183428ccc7",
       "actions": [
         {
           "id": "rollers",
@@ -523,11 +732,11 @@
     },
     "cad_air_cooling_table_115800ht": {
       "sourcePath": "/assets/models/cad_air_cooling_table_115800ht.glb",
-      "sourceSha256": "6611d5c131428b20bd5c488354b22fe5dbf8ab44213e9fad1e8bdc3fd9ca8699",
+      "sourceSha256": "24b63303fdf452bb4f533c50181886c4e906daf06982d3c8ff86c4d9b79928d4",
       "rigPath": "/assets/motions/cad_air_cooling_table_115800ht.glb",
-      "rigSha256": "aa9f577430dd077f7712d5aab91fd66b6b2e4e1f0cc7098c454a0f143d231f71",
+      "rigSha256": "c53b141bedb16294443bb3bd2ea7cf12a0a31df1ea2d3a773103bda2c23367e3",
       "clipPath": "/assets/motions/cad_air_cooling_table_115800ht.json",
-      "clipSha256": "400e75da506c6c49dc9864e14e75d7c03c3bf94f96cb42e9536f53e647e3fe07",
+      "clipSha256": "3debf07832bbcdaff8ef5e84c8a436bf2be1e379f1907096459b64ae7d228972",
       "actions": [
         {
           "id": "door",
@@ -567,11 +776,11 @@
     },
     "cad_cleaner_170700": {
       "sourcePath": "/assets/models/cad_cleaner_170700.glb",
-      "sourceSha256": "e5b45809e4218f82b8e3a5fc67fe054b81c010f13edcc5902b9286659b473a33",
+      "sourceSha256": "2052be6b23dfe35a43ae3aad542e976b744aaf3378323b65b2e63e1a7b6b02bb",
       "rigPath": "/assets/motions/cad_cleaner_170700.glb",
-      "rigSha256": "f69c51f45d6a819fef9321f9994c630626244ea8884aac10a2c8f5c7b0db940e",
+      "rigSha256": "08e4bc38d73e071102418f0f15f9ef38c098973a413f01deb05590fe72dadf98",
       "clipPath": "/assets/motions/cad_cleaner_170700.json",
-      "clipSha256": "0b6498ac46566a033b0fa3e8191167c9b66b6f57780dc3f66b110b9516d76312",
+      "clipSha256": "4f610ac3bd23ede1ca40bf65adc01886c9942df40575210bbf91e0676abca7e8",
       "actions": [
         {
           "id": "door",
@@ -599,6 +808,7 @@
           "mode": "running",
           "duration": 5,
           "channels": [
+            "cad_washing_machine_v1_internal_rollers:p",
             "preview_pump_0:q",
             "preview_pump_1:q",
             "motion_node_128:v",
@@ -662,151 +872,31 @@
             "motion_node_186:p",
             "motion_node_187:p",
             "motion_node_188:p",
-            "motion_node_189:v"
+            "preview_cleaner_charge:p",
+            "preview_cleaner_charge:v",
+            "motion_node_196:v"
           ]
         },
         {
-          "id": "fill",
-          "label": "注水",
+          "id": "basket_down",
+          "label": "料盘下降浸洗",
           "mode": "position",
           "duration": 8,
           "channels": [
-            "motion_node_127:p",
-            "motion_node_127:s",
-            "motion_node_127:v",
-            "motion_node_128:v",
-            "motion_node_129:p",
-            "motion_node_130:p",
-            "motion_node_131:p",
-            "motion_node_132:p",
-            "motion_node_133:p",
-            "motion_node_134:p",
-            "motion_node_135:p",
-            "motion_node_136:p",
-            "motion_node_137:p",
-            "motion_node_138:p",
-            "motion_node_139:p",
-            "motion_node_140:p",
-            "motion_node_141:p",
-            "motion_node_142:p",
-            "motion_node_143:p",
-            "motion_node_144:p",
-            "motion_node_145:p",
-            "motion_node_146:p",
-            "motion_node_147:p",
-            "motion_node_148:p",
-            "motion_node_149:p",
-            "motion_node_150:p",
-            "motion_node_151:p",
-            "motion_node_152:p",
-            "motion_node_153:p",
-            "motion_node_154:p",
-            "motion_node_155:p",
-            "motion_node_156:p",
-            "motion_node_157:p",
-            "motion_node_158:p",
-            "motion_node_159:p",
-            "motion_node_160:p",
-            "motion_node_161:p",
-            "motion_node_162:p",
-            "motion_node_163:p",
-            "motion_node_164:p",
-            "motion_node_165:p",
-            "motion_node_166:p",
-            "motion_node_167:p",
-            "motion_node_168:p",
-            "motion_node_169:p",
-            "motion_node_170:p",
-            "motion_node_171:p",
-            "motion_node_172:p",
-            "motion_node_173:p",
-            "motion_node_174:p",
-            "motion_node_175:p",
-            "motion_node_176:p",
-            "motion_node_177:p",
-            "motion_node_178:p",
-            "motion_node_179:p",
-            "motion_node_180:p",
-            "motion_node_181:p",
-            "motion_node_182:p",
-            "motion_node_183:p",
-            "motion_node_184:p",
-            "motion_node_185:p",
-            "motion_node_186:p",
-            "motion_node_187:p",
-            "motion_node_188:p"
+            "cad_washing_machine_v1_internal_rollers:p",
+            "preview_cleaner_charge:p",
+            "preview_cleaner_charge:v"
           ]
         },
         {
-          "id": "drain",
-          "label": "排水",
+          "id": "basket_up",
+          "label": "料盘升起出水",
           "mode": "position",
           "duration": 8,
           "channels": [
-            "motion_node_127:p",
-            "motion_node_127:s",
-            "motion_node_127:v",
-            "motion_node_128:v",
-            "motion_node_129:p",
-            "motion_node_130:p",
-            "motion_node_131:p",
-            "motion_node_132:p",
-            "motion_node_133:p",
-            "motion_node_134:p",
-            "motion_node_135:p",
-            "motion_node_136:p",
-            "motion_node_137:p",
-            "motion_node_138:p",
-            "motion_node_139:p",
-            "motion_node_140:p",
-            "motion_node_141:p",
-            "motion_node_142:p",
-            "motion_node_143:p",
-            "motion_node_144:p",
-            "motion_node_145:p",
-            "motion_node_146:p",
-            "motion_node_147:p",
-            "motion_node_148:p",
-            "motion_node_149:p",
-            "motion_node_150:p",
-            "motion_node_151:p",
-            "motion_node_152:p",
-            "motion_node_153:p",
-            "motion_node_154:p",
-            "motion_node_155:p",
-            "motion_node_156:p",
-            "motion_node_157:p",
-            "motion_node_158:p",
-            "motion_node_159:p",
-            "motion_node_160:p",
-            "motion_node_161:p",
-            "motion_node_162:p",
-            "motion_node_163:p",
-            "motion_node_164:p",
-            "motion_node_165:p",
-            "motion_node_166:p",
-            "motion_node_167:p",
-            "motion_node_168:p",
-            "motion_node_169:p",
-            "motion_node_170:p",
-            "motion_node_171:p",
-            "motion_node_172:p",
-            "motion_node_173:p",
-            "motion_node_174:p",
-            "motion_node_175:p",
-            "motion_node_176:p",
-            "motion_node_177:p",
-            "motion_node_178:p",
-            "motion_node_179:p",
-            "motion_node_180:p",
-            "motion_node_181:p",
-            "motion_node_182:p",
-            "motion_node_183:p",
-            "motion_node_184:p",
-            "motion_node_185:p",
-            "motion_node_186:p",
-            "motion_node_187:p",
-            "motion_node_188:p"
+            "cad_washing_machine_v1_internal_rollers:p",
+            "preview_cleaner_charge:p",
+            "preview_cleaner_charge:v"
           ]
         },
         {
@@ -995,18 +1085,19 @@
             "motion_node_187:c0",
             "motion_node_188:p",
             "motion_node_188:s",
-            "motion_node_188:c0"
+            "motion_node_188:c0",
+            "preview_cleaner_charge:v"
           ]
         }
       ]
     },
     "cad_water_cooling_tank_471000": {
       "sourcePath": "/assets/models/cad_water_cooling_tank_471000.glb",
-      "sourceSha256": "935bdbc3e0cdb4241aa53232d76bfb6d073a77e1d76434c2b7d5f917b39cba7f",
+      "sourceSha256": "491ad1bd6be12352ad5a9106741fb955903b51df56b576f0849c7b3c97be439e",
       "rigPath": "/assets/motions/cad_water_cooling_tank_471000.glb",
-      "rigSha256": "b009df8fd1f53b9b376f20fb18f840fbc302370de4b648bde932d785023b5c60",
+      "rigSha256": "a8185bd035215c50954e1ce8ea00008fbe59ee885979d32ca4f6b59ab59c8fa4",
       "clipPath": "/assets/motions/cad_water_cooling_tank_471000.json",
-      "clipSha256": "eb0a8f4a2b5eee83545dcca9736a9ee244053889c4a7a25c57ba19f839e8959a",
+      "clipSha256": "7a81b8046dc8aff8b0e13c7792188e585e9c6f00d4e70b44ae0e7e3e610c6eca",
       "actions": [
         {
           "id": "door",
@@ -3238,64 +3329,6 @@
             "motion_node_990:p",
             "motion_node_991:p",
             "motion_node_992:p"
-          ]
-        }
-      ]
-    },
-    "cad_tempering_furnace_091300": {
-      "sourcePath": "/assets/models/cad_tempering_furnace_091300.glb",
-      "sourceSha256": "9cf50893d1a0cc8e07e7e61612ea7a26f2008585aeb865fe3714168e461b0387",
-      "rigPath": "/assets/motions/cad_tempering_furnace_091300.glb",
-      "rigSha256": "22294566d2faef5dc6439b2893bc9fe72013050c0126f1e10d10e7c79a5f08c5",
-      "clipPath": "/assets/motions/cad_tempering_furnace_091300.json",
-      "clipSha256": "cab0388ec6ca39475ab73c3f228f4b387654e75342e6c62add5a136e78f3dc19",
-      "actions": [
-        {
-          "id": "door",
-          "label": "回火炉门开启 / 关闭",
-          "mode": "position",
-          "duration": 4,
-          "channels": [
-            "cad_tempering_furnace_v1_door:p",
-            "cad_tempering_furnace_v1_door_carriages:p"
-          ]
-        },
-        {
-          "id": "circulation",
-          "label": "循环风机运转",
-          "mode": "running",
-          "duration": 5,
-          "channels": [
-            "preview_tempering_impeller:q",
-            "preview_tempering_drive_0:q",
-            "preview_tempering_drive_1:q"
-          ]
-        },
-        {
-          "id": "rollers",
-          "label": "炉内辊道运转",
-          "mode": "running",
-          "duration": 5,
-          "channels": [
-            "preview_tempering_roller_0:q",
-            "preview_tempering_roller_1:q",
-            "preview_tempering_roller_2:q",
-            "preview_tempering_roller_3:q",
-            "preview_tempering_roller_4:q",
-            "preview_tempering_roller_5:q",
-            "preview_tempering_roller_6:q"
-          ]
-        },
-        {
-          "id": "heating",
-          "label": "回火加热与热风循环",
-          "mode": "running",
-          "duration": 5,
-          "channels": [
-            "cad_tempering_furnace_v1_heating_elements_black:e0",
-            "preview_tempering_impeller:q",
-            "preview_tempering_drive_0:q",
-            "preview_tempering_drive_1:q"
           ]
         }
       ]

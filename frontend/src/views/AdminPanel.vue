@@ -63,6 +63,7 @@ import AdminHelpGuide from './admin/components/AdminHelpGuide.vue'
 import MobileDeviceMotion from './admin/components/MobileDeviceMotion.vue'
 import ModelTransferSequence from './admin/components/ModelTransferSequence.vue'
 import LineEquipmentSequence from './admin/components/LineEquipmentSequence.vue'
+import LineBatchArrangement from './admin/components/LineBatchArrangement.vue'
 import CadMotionPreview from './admin/components/CadMotionPreview.vue'
 import MotionActionEditor from './admin/components/MotionActionEditor.vue'
 import DeviceAnimationLink from './admin/components/DeviceAnimationLink.vue'
@@ -789,6 +790,7 @@ const selectedLineDeviceIds = ref([])
 const lineGroupSaving = ref(false)
 const lineDeviceLayoutBusy = computed(() => lineGroupSaving.value || lineLayoutSaving.value || !!lineDeviceSavingId.value)
 const lineDeviceGap = ref(5)
+const showLineBatchArrangement = ref(false)
 const lineSelectionFeedback = ref('')
 const lineDeviceGhosts = ref([])
 const lineFlowDirectionOptions = [
@@ -5565,8 +5567,17 @@ const lineSelectionSameTarget = computed(() => {
     const targets = selectedLineDevices.value.map(device => resolveDeviceLayoutTarget(device, selectedLineEditor.value, { allowFallback: false }))
     return targets.length >= 2 && targets.every(target => target && target.type === targets[0]?.type && target.item.id === targets[0]?.item.id)
 })
+const lineBatchTargets = computed(() => [
+    ...selectedLineLayout.value.lanes.map(item => ({ type: 'lane', item })),
+    ...selectedLineLayout.value.rails.map(item => ({ type: 'rail', item }))
+])
+const lineBatchDevices = computed(() => [...new Map([...selectedLineEditorDevices.value, ...selectedLineEditorCarts.value, ...selectedLineDevicePool.value].map(device => {
+    const binding = resolveDeviceLayoutTarget(device, selectedLineEditor.value, { allowFallback: false })
+    return [device.id, { ...device, arrangementType: isAuxiliaryDeviceConfig(device) ? 'rail' : 'lane', arrangementTarget: binding ? `${binding.type}:${binding.item.id}` : '' }]
+})).values()])
 watch(() => selectedLineEditor.value?.id, () => {
     cancelLineDeviceDrag()
+    showLineBatchArrangement.value = false
     selectedLineDeviceIds.value = []
     lineSelectionFeedback.value = ''
 })
@@ -6383,9 +6394,13 @@ function linePreviewItemStyle(item, line = selectedLineEditor.value) {
 
 function linePreviewDeviceStyle(device, line = selectedLineEditor.value) {
     const bounds = linePreviewBounds(line)
+    const binding = resolveDeviceLayoutTarget(device, line, { allowFallback: false })
+    const nearest = binding ? Math.min(...getDevicesBoundToLayoutItem(binding.type, binding.item.id, line)
+        .filter(row => row.id !== device.id).map(row => Math.abs(numberOrDefault(row.pos_x, 0) - numberOrDefault(device.pos_x, 0)))) : Infinity
     return {
         left: `${linePreviewPercent(numberOrDefault(device.pos_x, 0), bounds.minX, bounds.maxX)}%`,
-        top: `${linePreviewPercent(getDeviceRelativeZOnLine(device, line), bounds.minZ, bounds.maxZ)}%`
+        top: `${linePreviewPercent(getDeviceRelativeZOnLine(device, line), bounds.minZ, bounds.maxZ)}%`,
+        ...(Number.isFinite(nearest) && nearest > 0 ? { width: `clamp(36px, calc(${nearest / (bounds.maxX - bounds.minX) * 100}% - 8px), 148px)`, boxSizing: 'border-box' } : {})
     }
 }
 
@@ -6717,11 +6732,31 @@ async function applyLineDeviceSpacing(manual = false) {
     } catch (error) { alert(error.message, { type: 'warning' }) }
 }
 
+function openLineBatchArrangement() {
+    if (!canAdminPage('lines', 'edit') || lineDeviceLayoutBusy.value) return
+    cancelLineDeviceDrag()
+    showLineBatchArrangement.value = true
+}
+
+async function applyLineBatchArrangement(plan) {
+    if (await saveLineDevicePlan(plan, selectedLineEditor.value?.id)) {
+        selectedLineDeviceIds.value = plan.map(row => row.id)
+        showLineBatchArrangement.value = false
+        lineSelectionFeedback.value = `已保存 ${plan.length} 台设备排布`
+    }
+}
+
 async function saveLineDevicePlan(plan, lineId) {
     if (!plan.length || lineDeviceLayoutBusy.value || !canAdminPage('lines', 'edit')) return
     const line = lines.value.find(row => row.id === lineId)
     if (!line) return
     const stations = getLineStationNumberMap(line)
+    const usedStations = new Set(stations.values())
+    for (const row of plan) if (row.binding.type === 'lane' && !stations.has(row.id)) {
+        let next = 1
+        while (usedStations.has(next)) next += 1
+        stations.set(row.id, next); usedStations.add(next)
+    }
     const patches = plan.map(row => {
         const device = getLineDeviceById(row.id), target = row.binding.item
         const layoutConfig = row.binding.type === 'rail'
@@ -6746,10 +6781,12 @@ async function saveLineDevicePlan(plan, lineId) {
             savedDeviceLayoutSnapshots.value[saved.id] = deviceLayoutSnapshot(saved)
         }
         lineSelectionFeedback.value = '已保存'
+        return true
     } catch (error) {
         lineSelectionFeedback.value = '保存失败'
         scheduleNativeScenePreview({ source: 'lines', includeLayout: true, deviceOverride: null })
         await alert(error.message || '保存失败，位置未改变', { title: '设备布局保存失败', type: 'danger' })
+        return false
     } finally {
         lineGroupSaving.value = false
         scheduleNativeScenePreview({ source: 'lines', includeLayout: true, deviceOverride: null })
@@ -8234,14 +8271,16 @@ async function openAdminSetupStep(step) {
                                     </div>
                                 </div>
                                 <div v-if="selectedLineEditor" class="line-selection-toolbar" role="toolbar" aria-label="设备多选与间距">
+                                    <button type="button" :disabled="lineDeviceLayoutBusy || !lineBatchTargets.length" @click="openLineBatchArrangement" v-permission="{ page: 'lines', action: 'edit' }">批量添加与排布</button>
                                     <span class="line-selection-hint">Ctrl / Shift 多选</span>
                                     <span v-if="selectedLineDeviceIds.length">已选 {{ selectedLineDeviceIds.length }} 台</span>
                                     <button type="button" :disabled="lineDeviceLayoutBusy || !lineSelectionSameTarget || selectedLineDeviceIds.length < 3" title="固定两端，平均分配所选设备的中心间距" @click="applyLineDeviceSpacing()" v-permission="{ page: 'lines', action: 'edit' }">等间距</button>
-                                    <label>间距(m) <input v-model.number="lineDeviceGap" aria-label="设备中心间距（米）" type="number" min="0.01" step="0.5" :disabled="lineDeviceLayoutBusy || !lineSelectionSameTarget" /></label>
+                                    <label>中心距(m) <input v-model.number="lineDeviceGap" aria-label="设备中心间距（米）" type="number" min="0.01" step="0.5" :disabled="lineDeviceLayoutBusy || !lineSelectionSameTarget" /></label>
                                     <button type="button" :disabled="lineDeviceLayoutBusy || !lineSelectionSameTarget" @click="applyLineDeviceSpacing(true)" v-permission="{ page: 'lines', action: 'edit' }">应用间距</button>
                                     <button v-if="selectedLineDeviceIds.length" type="button" :disabled="lineDeviceLayoutBusy" @click="clearLineDeviceSelection">取消选择</button>
                                     <span role="status" aria-live="polite">{{ lineSelectionFeedback }}</span>
                                 </div>
+                                <LineBatchArrangement v-if="showLineBatchArrangement && selectedLineEditor" :key="selectedLineEditor.id" :devices="lineBatchDevices" :models="models" :targets="lineBatchTargets" :preset-ids="selectedLineDeviceIds" :saving="lineDeviceLayoutBusy" @close="showLineBatchArrangement=false" @apply="applyLineBatchArrangement" />
                                 <div ref="linePreviewStageRef" class="line-preview-stage" v-if="selectedLineEditor" @pointerdown.self="clearLineDeviceSelection">
                                     <div class="line-preview-legend">
                                         <span><i class="legend-lane"></i>设备线</span>
@@ -8323,7 +8362,7 @@ async function openAdminSetupStep(step) {
                                         :style="linePreviewDeviceStyle(device)"
                                         role="button" tabindex="0" :aria-label="device.name" :aria-pressed="selectedLineDeviceIds.includes(device.id)" :data-device-id="device.id"
                                         @keydown="selectLineDeviceWithKeyboard(device.id, $event)"
-                                        title="拖动设备；Ctrl / Shift 点击多选"
+                                        :title="`${device.name} · ${formatModelName(device.model_type)} · X ${Number(device.pos_x||0).toFixed(2)} m；Ctrl / Shift 点击多选`"
                                         @pointerdown="startLineDeviceDrag(device.id, $event)"
                                     >
                                         <span class="line-map-station-bubble" @pointerdown.stop @click.stop>
@@ -8367,7 +8406,7 @@ async function openAdminSetupStep(step) {
                                         :style="linePreviewDeviceStyle(cart)"
                                         role="button" tabindex="0" :aria-label="cart.name" :aria-pressed="selectedLineDeviceIds.includes(cart.id)" :data-device-id="cart.id"
                                         @keydown="selectLineDeviceWithKeyboard(cart.id, $event)"
-                                        title="拖动小车；Ctrl / Shift 点击多选"
+                                        :title="`${cart.name} · ${formatModelName(cart.model_type)} · X ${Number(cart.pos_x||0).toFixed(2)} m；Ctrl / Shift 点击多选`"
                                         @pointerdown="startLineDeviceDrag(cart.id, $event)"
                                     >
                                         <strong>{{ cart.name }}</strong>
