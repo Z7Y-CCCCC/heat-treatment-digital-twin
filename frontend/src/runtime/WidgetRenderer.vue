@@ -5,6 +5,7 @@ import { playbackSelection,normalizePlayback,isDeviceBinding,devicePoint } from 
 import { parameterValue } from '../../../shared/dashboardParameters.mjs'
 import {extendedChartOption} from './dashboardCharts.js'
 import { splitHudKpiValue } from './hudPresentation.js'
+import { configureTrendAxes, appendTrendSample } from './trendChart.js'
 
 const HUD_FONT_TEXT = 'SF Pro Text, Inter Variable, Inter, Noto Sans SC Variable, Segoe UI, PingFang SC, Microsoft YaHei UI, sans-serif'
 const HUD_FONT_NUMBER = 'SF Pro Display, Inter Variable, Inter, Segoe UI, Bahnschrift, sans-serif'
@@ -36,7 +37,7 @@ const emit = defineEmits(['action'])
 const chartRef = ref(null)
 const localTrend = ref([])
 const localHistories=new Map()
-const historyKey=()=>`${props.runtimeContext.factoryId || ''}:${playback.value.device?.id || ''}:${props.runtimeContext.partId || ''}:${dataBinding.value.path || dataBinding.value.pointKey || ''}`
+const historyKey=()=>`${props.runtimeContext.factoryId || ''}:${playback.value.device?.id || ''}:${props.runtimeContext.partId || ''}:${dataBinding.value.pointKey || dataBinding.value.pointId || dataBinding.value.path || ''}`
 let chart = null
 let lastChartSignature = ''
 let chartResizeObserver = null
@@ -73,7 +74,7 @@ const sampledDevice=shallowRef({id:'',reading:{},status:{},part:{},point:null,at
 const playbackCatalog=computed(()=>props.deviceCatalog ?? [...new Set([...Object.keys(props.deviceDataMap),String(dataBinding.value.deviceId || '')].filter(Boolean))].map(id=>({id,name:id})))
 const playback=computed(()=>playbackSelection(dataBinding.value,props.runtimeContext,playbackCatalog.value,props.preview && !props.interactive ? 0 : props.playbackNow))
 const scopedDeviceBinding=computed(()=>isDeviceBinding(dataBinding.value))
-watch(()=>JSON.stringify([playback.value.device?.id || '',Math.floor((props.preview && !props.interactive?0:props.playbackNow)/normalizePlayback(dataBinding.value).refreshMs),JSON.stringify(dataBinding.value),props.runtimeContext.factoryId,props.runtimeContext.partId,props.runtimeContext.viewId]),()=>{
+watch(()=>JSON.stringify([playback.value.device?.id || '',Math.floor(props.playbackNow/normalizePlayback(dataBinding.value).refreshMs),JSON.stringify(dataBinding.value),props.runtimeContext.factoryId,props.runtimeContext.partId,props.runtimeContext.viewId]),()=>{
  const id=playback.value.device?.id || ''
  const clone=value=>JSON.parse(JSON.stringify(value || {}))
  sampledDevice.value={id,reading:clone(props.deviceDataMap[id]),status:clone(props.deviceStatusMap[id]),part:clone(props.selectedPart),point:devicePoint(dataBinding.value,id,props.pointValues) ? clone(devicePoint(dataBinding.value,id,props.pointValues)) : null,at:props.playbackNow}
@@ -191,6 +192,7 @@ const boundValue = computed(() => {
   if (binding.mode === 'database' || binding.mode === 'http_api') return databaseRecord.value?.value ?? content.value.value
   if (binding.mode === 'plc' || binding.pointId || binding.point_id) {
     if (pointRecord.value && pointRecord.value.value !== undefined) return pointRecord.value.value
+    if(binding.requireConfiguredPoint || binding.pointKey)return null
     const deviceId = sampledDevice.value.id
     const deviceData = sampledDevice.value.reading
     const fromDevice = getByPath(deviceData, binding.path)
@@ -207,6 +209,7 @@ const boundValue = computed(() => {
 const boundQuality = computed(() => {
   if (['database', 'http_api', 'dataset', 'business'].includes(dataBinding.value.mode)) return databaseRecord.value?.quality || (databaseRecord.value?.error ? 'bad' : 'stale')
   const binding = dataBinding.value
+  if(binding.mode==='plc' && (binding.requireConfiguredPoint || binding.pointKey) && !pointRecord.value)return 'stale'
   const deviceId = binding.deviceId || binding.device_id
   const quality = pointRecord.value?.quality
     || getByPath(sampledDevice.value.reading?.quality, String(binding.path || '').replace(/^device\./,''))
@@ -470,7 +473,8 @@ function enterHudDevice(device, domEvent) {
 const hudTrendReading = computed(() => {
   const valueField = content.value.valueField || 'value'
   const samples = trendRows.value.map(row => numericValue(row[valueField])).filter(value => value !== null)
-  const current = content.value.statPath ? numericValue(getWidgetValue(content.value.statPath)) : (numericValue(boundValue.value) ?? samples.at(-1) ?? null)
+  const bound = dataBinding.value.mode && dataBinding.value.mode !== 'static'
+  const current = boundQuality.value !== 'good' ? null : content.value.statPath ? numericValue(getWidgetValue(content.value.statPath)) : (numericValue(boundValue.value) ?? (bound ? null : samples.at(-1)) ?? null)
   return { current, min: samples.length ? Math.min(...samples) : null, max: samples.length ? Math.max(...samples) : null }
 })
 function hudNumber(value, decimals = 1) {
@@ -493,6 +497,7 @@ function disposeChart() {
 // Apply the overlay art direction to every supported chart without changing
 // samples, axes ranges, bindings or the designer's non-overlay preview.
 function presentChart(option) {
+  if(isTrend.value)configureTrendAxes(option,content.value,displayUnit.value || content.value.statUnit || '',chartRef.value?.clientHeight || 160)
   if (overlayMode.value) {
     const palette = ['#8995f5', '#71cbd8', '#a59ae1', '#69c2aa', '#e2b775', '#e77f98']
     option.backgroundColor = 'transparent'
@@ -501,10 +506,10 @@ function presentChart(option) {
     if (option.legend) option.legend = { ...option.legend, icon: 'circle', itemWidth: 5, itemHeight: 5, textStyle: { color: '#969fb6', fontSize: 10, fontFamily: HUD_FONT_TEXT } }
     if (option.tooltip) option.tooltip = { ...option.tooltip, backgroundColor: 'rgba(20,24,41,.96)', borderColor: 'rgba(150,162,214,.24)', padding: 10, textStyle: { color: '#e4e8f5', fontSize: 12, fontFamily: HUD_FONT_TEXT } }
     for (const axis of [option.xAxis, option.yAxis].filter(Boolean)) {
-      axis.axisLabel = { ...axis.axisLabel, color: '#8590aa', fontSize: 10, fontFamily: HUD_FONT_TEXT, hideOverlap: true }
+      axis.axisLabel = { ...axis.axisLabel, color: content.value.axisLabelColor || '#bac5de', fontSize: Number(content.value.axisFontSize || 11), fontFamily: HUD_FONT_TEXT, hideOverlap: true }
       axis.axisTick = { show: false }
       axis.axisLine = { show: false }
-      if (axis.splitLine) axis.splitLine = { lineStyle: { color: 'rgba(173,185,224,.09)', type: 'dashed' } }
+      if (axis.splitLine) axis.splitLine = { ...axis.splitLine,lineStyle: { ...axis.splitLine.lineStyle,color: content.value.gridColor || 'rgba(173,185,224,.18)', type: 'dashed' } }
     }
     for (const [index, series] of option.series.entries()) {
       if(series.silent && series.itemStyle?.color==='transparent')continue
@@ -513,7 +518,7 @@ function presentChart(option) {
         series.lineStyle = {
           ...series.lineStyle,
           color,
-          width: isHudModule.value ? Number(content.value.lineWidth || 1.4) : 1.4,
+          width: Number(content.value.lineWidth || 2),
           ...(isHudModule.value && series.type === 'line' ? { shadowBlur: 7, shadowColor: chartColorWithAlpha(color, .28) } : {})
         }
         series.itemStyle = { ...series.itemStyle, color, borderRadius: series.type === 'bar' ? [2, 2, 0, 0] : 0 }
@@ -679,10 +684,11 @@ function triggerEvents(trigger, domEvent) {
 watch(() => [boundValue.value,sampledDevice.value.at], ([value]) => {
   if (!(dataBinding.value.mode === 'plc' || dataBinding.value.pointId || dataBinding.value.point_id || scopedDeviceBinding.value && isTrend.value)) return
   const number = numericValue(value)
-  if (number === null || boundQuality.value !== 'good') return
-  const now = new Date().toLocaleTimeString().slice(0, 8)
+  const sourceTime=pointRecord.value?.lastReadAt || pointRecord.value?.timestamp || sampledDevice.value.reading?.timestamp
+  const now = boundQuality.value !== 'good' ? sampledDevice.value.at : typeof sourceTime === 'string' ? Date.parse(sourceTime) : Number(sourceTime || sampledDevice.value.at)
+  if(number===null && !localTrend.value.length)return
   const key=historyKey();if(!localHistories.has(key) && localHistories.size>=32)localHistories.delete(localHistories.keys().next().value)
-  const rows=[...(localHistories.get(key)||[]),{time:now,value:number}].slice(-Math.max(8,Math.min(240,Number(content.value.historyLength || 60))))
+  const rows=appendTrendSample(localHistories.get(key)||[],{timestamp:now,value:number,quality:boundQuality.value},{limit:content.value.historyLength || 120,windowSeconds:content.value.timeWindowSeconds || 600})
   localHistories.set(key,rows);localTrend.value=rows
 })
 
@@ -727,7 +733,7 @@ onUnmounted(() => {
       { 'text-is-state': overlayMode && type === 'text' && textLines.length === 1 && ['正常', '运行中', '在线', '报警', '离线', '停止', '待机'].includes(textLines[0]) },
       { 'data-pending': dataPending },
       { 'hud-module-shell': isHudModule },
-      { 'hud-module-compact': isHudModule && content.compact },
+      { 'hud-module-compact': isHudModule && (content.compact || isTrend && Number(widget.frame?.height || 300) <= 260) },
       animationClass,
       `quality-${boundQuality}`,
       { interactive: widgetEvents.length > 0 }

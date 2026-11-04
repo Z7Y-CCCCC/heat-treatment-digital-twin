@@ -190,6 +190,7 @@ function normalizeDataBinding(source, legacyBinding = {}) {
         deviceId: shortText(rawDeviceId, '', 128),
         pointId: shortText(data.pointId ?? binding.pointId ?? binding.point_id, '', 128),
         pointKey: shortText(data.pointKey ?? data.point_key ?? binding.pointKey ?? binding.point_key, '', 255),
+        requireConfiguredPoint: data.requireConfiguredPoint === true,
         path: mode === 'static' ? '' : shortText(data.path ?? binding.path, '', 255),
         source: mode === 'static' ? '' : shortText(data.source ?? binding.source, '', 128),
         datasetId: shortText(data.datasetId, '', 80),
@@ -729,7 +730,7 @@ function validateDocument(document, options = {}) {
         if (widget?.data?.readOnly === false) errors.push(`${label} 禁止启用 PLC 写入`);
         if (widget?.data?.mode === 'plc') {
             const currentDeviceScope = widget.data.deviceScope !== 'fixed';
-            if ((!currentDeviceScope && !widget.data.deviceId) || !widget.data.pointId) {
+            if ((!currentDeviceScope && !widget.data.deviceId) || (!widget.data.pointId && widget.data.requireConfiguredPoint !== true)) {
                 errors.push(`${label} 的 PLC 绑定必须选择点位${currentDeviceScope ? '' : '和设备'}`);
             }
         }

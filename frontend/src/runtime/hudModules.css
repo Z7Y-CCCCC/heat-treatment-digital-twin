@@ -227,6 +227,9 @@
 .hud-module-compact .hud-module-heading strong { font-size: 13px; }
 .hud-module-compact .hud-module-reading strong { font-size: 21px; }
 .hud-module-compact .hud-module-chart { padding-top: 1px; }
+.hud-module-compact.widget-kind-hud_chart_dock .hud-module-icon { width: 20px; height: 20px; }
+.hud-module-compact.widget-kind-hud_chart_dock .hud-module-heading { margin-bottom: 6px; padding-bottom: 6px; }
+.hud-module-compact.widget-kind-hud_chart_dock .widget-device-heading { margin-bottom: 4px; }
 .hud-module-kpis.without-ring { grid-template-columns: 1fr; }
 .without-ring .hud-module-stat-list { gap: 12px; }
 .without-ring .hud-module-stat-list dd { font-size: 20px; }

@@ -35,7 +35,7 @@ const pointValues = computed(() => {
       const category = point.category || 'analog'
       const field = point.value_role || point.name
       const value = reading?.[category]?.[field]
-      const record = { ...point, value, device_id: device.id, quality: reading?.quality?.[category]?.[field] || 'bad' }
+      const record = { ...point, value, device_id: device.id, quality: reading?.quality?.[category]?.[field] || 'bad', lastReadAt: reading.pointMeta?.[`${category}.${field}`]?.lastReadAt || reading.timestamp || null }
       result[String(point.id)] = record
       result[`${device.id}:${point.id}`] = record
     }
