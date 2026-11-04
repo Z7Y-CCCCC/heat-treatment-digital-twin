@@ -30,6 +30,8 @@
 
 `release-environment.json` 只保存 Unity、MySQL 和**公钥**路径；厂商私钥不进入仓库、runner 工作目录或 Actions secrets。发布机通过 `LICENSE_ISSUER_PUBLIC_KEY_FILE` 或当前用户已有的厂商公钥打包。
 
+建议由维护者只导出公钥到 runner 独立的 `trust/license-public-key.pem`，把 `LICENSE_ISSUER_PUBLIC_KEY_FILE` 指向此文件后运行准备脚本；不要让构建账户依赖厂商个人 AppData 目录的可见性。复制前后核对公钥 SHA-256/签发指纹，绝不复制整个签发目录或重新生成身份。本机 v2.3.2 已按此方式 provision，原私钥位置不变。
+
 发布任务在 Node 准备后，显式从 `RUNNER_TEMP/../../release-environment.json` 加载这三条路径，检查已有公钥是 Ed25519、拒绝私钥文件，再写入后续步骤的 `GITHUB_ENV`。缺失配置会在 Unity 编译前失败，不依赖 listener 启动时继承的 LOCALAPPDATA、测试签发目录或临时环境。只读取已有签发身份，不自动生成替代密钥；日志仅记录公钥指纹。可用 `node --test tools/ci/release-environment.test.cjs` 重跑边界检查。
 
 配置中断后，脚本不会覆盖非空且尚未成功配置的目录：先查看 `_diag` 日志，确认无正在运行的构建，选择新的专用空目录重试；如远端已出现 runner，先核查并按 GitHub Settings → Actions → Runners 的移除流程清理失效记录。不要为重试直接删除工作目录或覆盖远端同名 runner。
@@ -51,3 +53,5 @@ GitHub 下载资产使用 `HeatTreatmentDigitalTwin-Setup-X.Y.Z-x64.exe`，避�
 如果只有发布阶段失败，重新运行 workflow 时可填写 `verified_run_id`。仅接受同仓库 `main` 手动发布流程中已全部通过回归和 `package` 的运行；原构建提交必须是当前提交的祖先，且此后只能有发布脚本/文档变更，产品源码一旦变化就拒绝复用。流程重跑质量门禁，下载原运行的指定产物，复核来源提交、运行编号与 SHA256，再将版本 tag 指向**原构建提交**。不改写产物来源，也不把失败构建补标成成功。默认留空仍完整构建。
 
 GitHub 自带 `GITHUB_TOKEN` 为历史提交创建 tag 时，可能因 workflow 文件写权限返回 403；这不是安装包校验失败。此类补发先由维护者为已验证的原构建提交创建版本 tag，再重试发布任务。不要移动现有 tag、修改产物清单提交号或把个人 token 自动保存进 Secrets。维护者建 tag 会另外触发 tag 构建；如果已在补发同一份验证产物，应取消这次重复构建，避免多跑一套。正常按版本 tag 发布不需要此补发步骤。[Git references 权限说明](https://docs.github.com/en/rest/git/refs#create-a-reference)。
+
+2026-11-04：完整分离式发布已在 [run 41802526546](https://github.com/Z7Y-CCCCC/heat-treatment-digital-twin/actions/runs/41802526546) 跑通并公开 v2.3.2，实际产物、校验及未验证边界见 [发布交付记录](发布交付-v2.3.2.md)。
