@@ -7,7 +7,7 @@ from pathlib import Path
 import sys,math,json
 sys.path.insert(0,str(Path(__file__).resolve().parent))
 import blender_build_general_cad_20261103 as base
-import bpy
+import bpy,bmesh
 from mathutils import Vector
 
 def delete_group(a,key):
@@ -394,7 +394,7 @@ CONTRACT={
  'air_cooling_table':{'load_roller':12,'fan_safety_grille':8,'fan_grille_spoke':16,'hood_clip_pin':6,'chain_rivet':15,'hex_nut':12},
  'water_cooling_tank':{'agitator_impeller_blade':3,'basket_guide_shaft':2,'basket_guide_bush':4,'service_hatch':1,'hex_nut':20,'gauge_dial':1},
  'tempering_furnace':{'process_instrument':3,'internal_load_roller':7,'internal_heater_element':6,'circulation_impeller_blade':8,'heater_porcelain_terminal':12,'chain_rivet':15,'door_safety_switch':1},
- 'washing_machine':{'process_instrument':3,'chamber_return_tube':4,'tube_support_clip':12,'rear_filter_tank':1,'filter_lid_handle':2,'spray_nozzle':10,'grooved_pulley':2,'tangent_drive_belt':2,'heater_flange':6,'hex_nut':40,'internal_load_roller':7},
+ 'washing_machine':{'process_instrument':3,'chamber_return_tube':4,'tube_support_clip':12,'rear_filter_tank':1,'filter_lid_handle':2,'spray_nozzle':10,'grooved_pulley':2,'tangent_drive_belt':2,'heater_flange':6,'hex_nut':40,'internal_load_roller':7,'wash_lower_shell':1,'wash_lower_top_rail':2,'wash_lower_collector_front':1,'wash_lower_drain_spout':1},
 }
 BUILDERS={'transfer_cart':detailed_cart,'lifting_staging_table':lambda a:detailed_table(a,True),'fixed_staging_table':lambda a:detailed_table(a,False),
  'air_cooling_table':detailed_air,'water_cooling_tank':detailed_water,'tempering_furnace':detailed_temper,'washing_machine':detailed_wash}
@@ -437,6 +437,16 @@ def check_mechanisms(a,key):
     if key=='washing_machine':
         assert 'blowers' not in a.groups and 'heating_elements' not in a.groups and 'internal_fan' not in a.groups
         checked.append('MAX 4107 revision without lower-revision blowers/furnace internals')
+        lower=objects('wash_lower_shell');assert len(lower)==1
+        shell=lower[0]
+        assert shell.parent==a.group('central_lower_body')
+        assert abs(shell.dimensions.x-1.200)<.0001
+        assert abs(min(v.co.z for v in shell.data.vertices)-.100)<.0001
+        assert abs(max(v.co.z for v in shell.data.vertices)-1.295)<.0001
+        bm=bmesh.new();bm.from_mesh(shell.data)
+        assert bm.edges and all(edge.is_manifold for edge in bm.edges)
+        bm.free()
+        checked.append('central lower sheet enclosure from base top to chamber underside; not an open bay')
     a.root['cad_geometry_checks']=json.dumps(checked)
     return checked
 
