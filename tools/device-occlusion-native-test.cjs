@@ -1,0 +1,12 @@
+'use strict';
+const fs=require('node:fs'),path=require('node:path'),{spawnSync}=require('node:child_process');
+const {createRunDirectory}=require('../backend/scripts/integration-test-utils.cjs');
+const root=path.resolve(__dirname,'..'),directory=createRunDirectory('device-occlusion');
+const folder=path.join(root,'backend/assets/models/pit_furnace_references_v1/PitFurnace2');
+const metadata=JSON.parse(fs.readFileSync(path.join(folder,'metadata.json')));
+const model={id:'pit_furnace_2_v1',name:'井式炉2',file_path:path.join(folder,'pit_furnace_2_v1.glb'),default_scale:1,metadata:{...(metadata.metadata||metadata),inspection:{enabled:false},partBindings:[],runtime:{enableGenericBindings:false}}};
+fs.writeFileSync(path.join(directory,'fixture.json'),JSON.stringify({model}));
+const editor=process.env.UNITY_EDITOR_PATH||'C:/Program Files/Unity 2022.3.34f1c1/Editor/Unity.exe';
+const result=spawnSync(editor,['-batchmode','-projectPath',path.join(root,'unity-client'),'-executeMethod','HeatTreatment.DigitalTwin.Editor.DeviceOcclusionChecks.Run','-logFile',path.join(directory,'unity.log')],{cwd:root,windowsHide:true,env:{...process.env,OCCLUSION_CHECK_DIRECTORY:directory},timeout:360000});
+const report=fs.existsSync(path.join(directory,'result.json'))?JSON.parse(fs.readFileSync(path.join(directory,'result.json'))):null;
+console.log(JSON.stringify({directory,exitCode:result.status,...report},null,2));if(result.error)console.error(result.error);if(result.status!==0||!report?.success)process.exitCode=1;
