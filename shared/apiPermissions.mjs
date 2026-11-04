@@ -82,7 +82,8 @@ export function apiPermission(path, method = 'GET', body) {
   }
   if (resource('models')) {
     if (safe) return read(spatial, true)
-    if (/^\/api\/models\/[^/]+\/bindings$/.test(path) && method === 'PUT') return any('admin', p('models', 'edit'), p('model-animations', 'edit'))
+    if (/^\/api\/models\/[^/]+\/(bindings|motion-actions)$/.test(path) && method === 'PUT') return any('admin', p('models', 'edit'), p('model-animations', 'edit'))
+    if (/^\/api\/models\/[^/]+\/motion-actions\/preview$/.test(path) && method === 'POST') return any('admin', p('models', 'edit'), p('model-animations', 'edit'))
     if (/^\/api\/models\/[^/]+\/inspection$/.test(path) && method === 'PUT') return any('admin', p('disassembly-layout', 'edit'))
     return any('admin', p('models', action))
   }

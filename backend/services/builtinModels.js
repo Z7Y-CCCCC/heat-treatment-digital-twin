@@ -76,7 +76,7 @@ function getBuiltinModels() {
     return BUILTIN_MODELS.map(model => withMotionPackage({ ...model }));
 }
 
-function withMotionPackage(model) {
+function builtinMotionForModel(model) {
     const motion = require('../../shared/motionPackages.json').models[model.id];
     let valid = false;
     if (motion && model.file_path === motion.sourcePath) {
@@ -88,9 +88,26 @@ function withMotionPackage(model) {
         } catch { /* missing/replaced CAD never receives a mismatched rig */ }
     }
     // Never attach a rig to a replacement upload merely sharing an old model ID.
-    return { ...model, motion_package: valid ? motion : null };
+    return valid ? motion : null;
 }
 const motionHashCache = new Map();
+
+function withMotionPackage(model) {
+    const builtin = builtinMotionForModel(model);
+    let authored;
+    try { authored = (typeof model.metadata === 'string' ? JSON.parse(model.metadata || '{}') : model.metadata)?.motionAuthoring?.bundle; } catch { /* invalid legacy metadata */ }
+    if (authored && authored.sourcePath === model.file_path && Array.isArray(authored.actions)
+        && /^[a-f0-9]{64}$/.test(authored.sourceSha256) && /^[a-f0-9]{64}$/.test(authored.rigSha256) && /^[a-f0-9]{64}$/.test(authored.clipSha256)
+        && /^\/uploads\/(models\/motions|projects)\/[a-zA-Z0-9_./-]+\.glb$/.test(authored.rigPath)
+        && /^\/uploads\/(models\/motions|projects)\/[a-zA-Z0-9_./-]+\.json$/.test(authored.clipPath)) {
+        try {
+            const fs = require('node:fs'), file = require('./motionAuthoring').localFile(model.file_path), stat = fs.statSync(file), key = `${file}:${stat.size}:${stat.mtimeMs}`;
+            if (!motionHashCache.has(key)) motionHashCache.set(key, require('node:crypto').createHash('sha256').update(fs.readFileSync(file)).digest('hex'));
+            if (motionHashCache.get(key) === authored.sourceSha256) return { ...model, motion_package: authored };
+        } catch { /* replacement/missing source must not receive an old rig */ }
+    }
+    return { ...model, motion_package: builtin };
+}
 
 function mergeBuiltinModels(models = []) {
     const merged = new Map(getBuiltinModels().map(model => [model.id, model]));
@@ -107,6 +124,7 @@ function mergeBuiltinModels(models = []) {
 }
 
 module.exports = {
+    builtinMotionForModel,
     getBuiltinModels,
     mergeBuiltinModels
 };

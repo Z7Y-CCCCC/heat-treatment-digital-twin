@@ -6,10 +6,20 @@ import { CadMotionScene } from '../../../three/CadMotionScene.js'
 import { PortableMotionPlayer,receiveMotionSignal,stepMotionSignal } from '../../../three/PortableMotionPlayer.js'
 import { restoreGltfNodeNames } from '../../../three/gltfNodeIdentity.js'
 import { resolveBackendAssetUrl } from '../../../three/ModelFactory.js'
-const props=defineProps({model:Object,bundle:Object,bindings:Array,points:Array,frame:Object,frameTime:Number,staleMs:Number,test:Boolean,testValue:Number})
-const emit=defineEmits(['ready'])
+const props=defineProps({model:Object,bundle:Object,bindings:Array,points:Array,frame:Object,frameTime:Number,staleMs:Number,test:Boolean,testValue:Number,selectableNodeNames:Array})
+const emit=defineEmits(['ready','node-picked'])
 const viewport=ref(null),ready=ref(false),error=ref(''),cutaway=ref(false)
 let scene,player,parts=[],disposed=false,lastStamp=0,baseline,materialBaseline
+let pointerStart
+function rememberPointer(event){pointerStart={x:event.clientX,y:event.clientY,id:event.pointerId}}
+function pickNode(event){
+ if(!ready.value||!props.selectableNodeNames?.length||!pointerStart||pointerStart.id!==event.pointerId||Math.hypot(event.clientX-pointerStart.x,event.clientY-pointerStart.y)>5)return
+ pointerStart=null
+ const canvas=scene.renderer.domElement,rect=canvas.getBoundingClientRect(),ray=new T.Raycaster()
+ ray.setFromCamera(new T.Vector2((event.clientX-rect.left)/rect.width*2-1,-(event.clientY-rect.top)/rect.height*2+1),scene.camera)
+ const names=new Set(props.selectableNodeNames)
+ for(const hit of ray.intersectObject(scene.model,true)){let n=hit.object;while(n&&n!==scene.model){if(names.has(n.name)){emit('node-picked',n.name);return}n=n.parent}}
+}
 function setCutaway(){const metadata=typeof props.model?.metadata==='string'?JSON.parse(props.model.metadata||'{}'):props.model?.metadata||{},names=new Set(metadata.inspection?.shell?.node_names||[]);const suffixes=['housing','lining','hood','upper_housing','tank','tanks','cold_housing','hot_housing','refractory','vault_bricks','partition_shell','partition_lining','quench_tank','quench_liquid'];scene?.model?.traverse(n=>{if(names.has(n.name)||suffixes.some(s=>n.name.endsWith('_'+s)))n.traverse(mesh=>{if(!mesh.isMesh)return;for(const m of [].concat(mesh.material)){m.userData.linkCutaway=cutaway.value;m.userData.linkOriginalOpacity??=m.opacity;m.userData.linkOriginalTransparent??=m.transparent;m.opacity=cutaway.value?Math.min(.16,m.userData.linkOriginalOpacity):m.userData.linkOriginalOpacity;m.transparent=cutaway.value||m.userData.linkOriginalTransparent;m.depthWrite=!m.transparent;m.needsUpdate=true}})})}
 function setupBindings(){
  if(!scene?.model||!ready.value)return
@@ -37,8 +47,10 @@ function advance(delta){
 }
 async function load(){
  scene=new CadMotionScene(viewport.value,advance)
+ scene.renderer.domElement.addEventListener('pointerdown',rememberPointer)
+ scene.renderer.domElement.addEventListener('pointerup',pickNode)
  try{const url=props.bundle?.rigPath||props.model?.file_path;if(!url)throw Error('尚未选择设备模型');const gltf=await new GLTFLoader().loadAsync(resolveBackendAssetUrl(url));restoreGltfNodeNames(gltf);if(disposed){scene.release(gltf.scene);return}scene.model=gltf.scene;scene.scene.add(scene.model);scene.model.traverse(n=>{if(n.isMesh)n.material=Array.isArray(n.material)?n.material.map(m=>m.clone()):n.material.clone()})
-   if(props.bundle){const response=await fetch(resolveBackendAssetUrl(props.bundle.clipPath));if(!response.ok)throw Error('动作包读取失败');scene.packageData=await response.json();if(disposed)return}
+   if(props.bundle){if(props.bundle.previewData)scene.packageData=props.bundle.previewData;else{const response=await fetch(resolveBackendAssetUrl(props.bundle.clipPath));if(!response.ok)throw Error('动作包读取失败');scene.packageData=await response.json()}if(disposed)return}
    scene.bounds=new T.Box3().setFromObject(scene.model);scene.resetCamera();materialBaseline=[];scene.model.traverse(n=>{for(const m of [].concat(n.material||[]))materialBaseline.push([m,m.color?.clone(),m.emissive?.clone(),m.emissiveIntensity])});baseline=[];scene.model.traverse(n=>baseline.push([n,n.position.clone(),n.quaternion.clone(),n.scale.clone(),n.visible]));ready.value=true;setupBindings();emit('ready',true)
  }catch(e){if(!disposed)error.value=e.message}
 }
