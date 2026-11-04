@@ -11,7 +11,7 @@
     "node_naming_rule": "role_part_action，例如 fan_rear_rotate、door_front_lift、valve_gas_01",
     "delivery_status": "review",
     "owner": "",
-    "notes": "用户提供的 11.22.00_固定备料台.glb 原文件入库；保留原始节点、材质和坐标。"
+    "notes": "用户提供的 11.22.00_固定备料台.glb 原文件入库；保留原始节点、材质和坐标。 统一展示送料基准为 1.25 m；门板密封搭边保留，原 CAD 交付文件保留。"
   },
   "optimization": {
     "mode": "auto",
@@ -319,7 +319,7 @@
   "partBindings": [],
   "sourceAsset": {
     "filename": "11.22.00_固定备料台.glb",
-    "sha256": "990681d32f0ca8f1d24e7f21cc64456507ed25ecd4256647f2aa5239f39e2bc9",
+    "sha256": "f588dc96c112cec105bff5066804508bf4a7536868872d22a83098a655355081",
     "stats": {
       "nodes": 23,
       "meshes": 15,
@@ -355,5 +355,19 @@
     "status": "review",
     "published_at": "",
     "history": []
+  },
+  "transferAlignment": {
+    "version": 1,
+    "surfaceY": 1.25,
+    "loadY": 1.29,
+    "basketStroke": null,
+    "sourceSha256": "990681d32f0ca8f1d24e7f21cc64456507ed25ecd4256647f2aa5239f39e2bc9",
+    "note": "Display transfer-height alignment; door sealing overlap retained; original CAD deliveries preserved.",
+    "assetSha256": "f588dc96c112cec105bff5066804508bf4a7536868872d22a83098a655355081",
+    "calibration": {
+      "floor": 0,
+      "knot": 1,
+      "delta": 0
+    }
   }
 }

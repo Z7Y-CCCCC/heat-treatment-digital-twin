@@ -11,7 +11,7 @@
     "node_naming_rule": "role_part_action，例如 fan_rear_rotate、door_front_lift、valve_gas_01",
     "delivery_status": "review",
     "owner": "",
-    "notes": "用户提供的 08.20.00_600普通多用炉.glb 原文件入库；保留原始节点、材质和坐标。"
+    "notes": "用户提供的 08.20.00_600普通多用炉.glb 原文件入库；保留原始节点、材质和坐标。 统一展示送料基准为 1.25 m；门板密封搭边保留，原 CAD 交付文件保留。"
   },
   "optimization": {
     "mode": "auto",
@@ -1277,7 +1277,7 @@
   "partBindings": [],
   "sourceAsset": {
     "filename": "08.20.00_600普通多用炉.glb",
-    "sha256": "fa859b50f7675f27ae939847942311b6f3a2851e3962b6db035a69100b533f68",
+    "sha256": "773dd70b490e00b864cffdb853205a89382166003300791096742d747ff7d7c0",
     "stats": {
       "nodes": 243,
       "meshes": 169,
@@ -1285,7 +1285,7 @@
       "materials": 14,
       "size": [
         3.0649999380111694,
-        4.663000166416168,
+        4.283000166416168,
         6.080000180751085
       ],
       "min": [
@@ -1295,7 +1295,7 @@
       ],
       "max": [
         1.6749999523162842,
-        4.663000166416168,
+        4.283000166416168,
         1.2079999446868896
       ]
     }
@@ -1313,5 +1313,20 @@
     "status": "review",
     "published_at": "",
     "history": []
+  },
+  "transferAlignment": {
+    "version": 1,
+    "surfaceY": 1.25,
+    "loadY": 1.29,
+    "basketStroke": 0.8,
+    "sourceSha256": "fa859b50f7675f27ae939847942311b6f3a2851e3962b6db035a69100b533f68",
+    "note": "Display transfer-height alignment; door sealing overlap retained; original CAD deliveries preserved.",
+    "assetSha256": "773dd70b490e00b864cffdb853205a89382166003300791096742d747ff7d7c0",
+    "calibration": {
+      "floor": 0.14,
+      "knot": 1.53,
+      "delta": -0.38,
+      "basketStroke": 0.8
+    }
   }
 }

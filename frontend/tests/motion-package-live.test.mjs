@@ -67,6 +67,17 @@ test('measured door stroke is linear, not the eased timeline of an open/close de
  const clip=data.clips.find(c=>c.id==='door'),track=clip.tracks.find(t=>t.channel==='p'&&t.node.endsWith('_door'))
  for(const p of [0,.25,.37,.75,1])assert.ok(Math.abs(sampleMotionTrack(clip,track,p*clip.duration)[1]-.9*p)<.00001)
 })
+test('portable cleaner keeps the lower bath visible and exports full downward and upward strokes',()=>{
+ const data=JSON.parse(fs.readFileSync(new URL('../../backend/assets/motions/cad_cleaner_170700.json',import.meta.url)))
+ assert.ok(!data.clips.some(c=>['fill','drain'].includes(c.id)))
+ const volumes=data.nodes.filter(n=>n.name.startsWith('preview_cleaner_bath_'))
+ assert.equal(volumes.length,3);assert.ok(volumes.every(n=>n.v[0]===1&&n.s[1]>1))
+ for(const id of ['basket_down','basket_up']){
+  const clip=data.clips.find(c=>c.id===id),track=clip.tracks.find(t=>t.channel==='p'&&t.node.endsWith('_internal_rollers'))
+  for(const p of [0,.25,.5,.75,1])assert.ok(Math.abs(sampleMotionTrack(clip,track,p*clip.duration)[1]+.8*(id==='basket_down'?p:1-p))<.00001)
+ }
+ for(const clip of data.clips)assert.ok(!clip.tracks.some(t=>volumes.some(n=>n.name===t.node)),'water level never animates')
+})
 test('running is read-only, stops without accumulating angle, and input inversion is explicit',()=>{
  const b={...binding,mode:'running',invert:true,transitionSeconds:0,speed:2},s={seconds:0}
  receiveMotionSignal(s,b,frame(false),1);stepMotionSignal(s,b,.5,1.5,5000);assert.equal(s.seconds,1)

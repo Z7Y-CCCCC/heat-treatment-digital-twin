@@ -1,4 +1,5 @@
 import {CAD_MOTION_PROFILES} from './cadMotionProfiles.js'
+import {MULTIPURPOSE_CYCLE,MULTIPURPOSE_PROCESS_KINDS} from './multipurposeProcess.js'
 export const parseSimulationConfig=value=>{try{return typeof value==='string'?JSON.parse(value):value||{}}catch{return {}}}
 const CART_MODELS=new Set(['transfer_cart','photo_transfer_cart_v6','cad_transfer_cart_101300'])
 export const isSimulationCart=device=>CART_MODELS.has(device.model_type)
@@ -19,8 +20,8 @@ export function simulationCapabilities(device,models){
     let process=[]
     switch(device.model_type){
         case 'cad_tempering_furnace_091300':process=['tempering_heat','tempering_hold'];break
-        case 'cad_multipurpose_furnace_082000':process=['gate_open','hot_feed','gate_close','heat_treat','gate_open_return','hot_return','gate_close_return','lower','quench','raise','drip'];break
-        case 'cad_cleaner_170700':process=['fill','spray','drain','blow'];break
+        case 'cad_multipurpose_furnace_082000':process=[...MULTIPURPOSE_PROCESS_KINDS];break
+        case 'cad_cleaner_170700':process=['lower','spray','raise','blow'];break
         case 'ultrasonic_cleaner_cad':process=['fill','heat','spray','ultrasonic','drain','blow'];break
         case 'cad_water_cooling_tank_471000':process=['lower','quench','raise','drip'];break
         case 'cad_lifting_load_table_111400':process=['lift','rollers'];break
@@ -44,10 +45,15 @@ export function buildLineSimulation(devices,models,{process=true}={}){
     for(const station of stations){
         const c=station.capabilities
         if(!c.animated){push(station,'display','静态展示（未配置动作）',3);continue}
+        if(cart&&process&&station.model_type==='cad_multipurpose_furnace_082000'){
+            for(const step of MULTIPURPOSE_CYCLE)push(station,step.kind,step.label,step.duration)
+            previous=station.id;continue
+        }
         if(cart){push(station,'approach','料车定位',4);if(c.door)push(station,'open','开门');push(station,'feed','送料',4);push(station,'retract','退链');if(c.door)push(station,'close','关门')}
         if(process)for(const kind of c.process){
-            const label=kind==='drip'?(station.model_type==='cad_multipurpose_furnace_082000'?'沥油':'沥水'):LABELS[kind]
-            push(station,kind,label,['spray','quench','fans','ultrasonic','heat_treat','tempering_heat','tempering_hold'].includes(kind)?6:4)
+            const multi=station.model_type==='cad_multipurpose_furnace_082000'?MULTIPURPOSE_CYCLE.find(s=>s.kind===kind):null
+            const label=multi?.label||(station.model_type==='cad_cleaner_170700'&&['lower','raise'].includes(kind)?(kind==='lower'?'料盘下降浸没':'料盘升起出水'):kind==='drip'?'沥水':LABELS[kind])
+            push(station,kind,label,multi?.duration||(['spray','quench','fans','ultrasonic','heat_treat','tempering_heat','tempering_hold'].includes(kind)?6:4))
         }
         if(!cart&&c.door)push(station,'door_cycle','开关门演示',6)
         if(cart){if(c.door)push(station,'open_out','出料开门');push(station,'pickup_extend','取料伸链',2);push(station,'reclaim','物料回车',4);if(c.door)push(station,'close_out','出料关门');previous=station.id}
@@ -60,7 +66,7 @@ export function buildLineSimulation(devices,models,{process=true}={}){
 const smooth=x=>x*x*(3-2*x)
 export function sampleLineSimulation(plan,time){
     const elapsed=Math.max(0,Math.min(plan.total,Number(time)||0))
-    const states=Object.fromEntries(plan.rows.map(d=>[d.id,{door:0,gate:0,chamber:0,basket:0,lift:0,level:d.model_type==='cad_water_cooling_tank_471000'?1:0,runTime:0,circulationTime:0,stirTime:0,conveyTime:0,time:0,run:false,spray:false,blow:false,heat:false,ultrasonic:false,drip:false}]))
+    const states=Object.fromEntries(plan.rows.map(d=>[d.id,{door:0,gate:0,chamber:0,basket:0,lift:0,level:['cad_water_cooling_tank_471000','cad_cleaner_170700'].includes(d.model_type)?1:0,runTime:0,circulationTime:0,stirTime:0,conveyTime:0,time:0,run:false,spray:false,blow:false,heat:false,ultrasonic:false,drip:false}]))
     const cart={from:null,to:null,progress:0,feed:0,runTime:0,segments:[]}
     let material={holder:plan.cart?.id||'',from:'',to:'',progress:0},index=plan.steps.length-1
     for(let i=0;i<plan.steps.length;i++){
@@ -85,7 +91,7 @@ export function sampleLineSimulation(plan,time){
             case 'gate_open':case 'gate_open_return':state.gate=s;break
             case 'gate_close':case 'gate_close_return':state.gate=1-s;break
             case 'hot_feed':state.chamber=s;state.conveyTime+=local;break
-            case 'hot_return':state.chamber=1-s;state.conveyTime+=local;break
+            case 'hot_return':state.chamber=1-s;state.conveyTime-=local;break
             case 'heat_treat':state.heat=active;state.run=active;state.circulationTime+=local;break
             case 'tempering_heat':case 'tempering_hold':state.heat=active;state.run=active;state.circulationTime+=local;break
             case 'spray':case 'blow':case 'heat':case 'ultrasonic':case 'drip':state[step.kind]=active;state.run=active;state.runTime+=local;break

@@ -11,7 +11,7 @@
     "node_naming_rule": "role_part_action，例如 fan_rear_rotate、door_front_lift、valve_gas_01",
     "delivery_status": "review",
     "owner": "",
-    "notes": "用户提供的 11.14.00_升降备料台.glb 原文件入库；保留原始节点、材质和坐标。"
+    "notes": "用户提供的 11.14.00_升降备料台.glb 原文件入库；保留原始节点、材质和坐标。 统一展示送料基准为 1.25 m；门板密封搭边保留，原 CAD 交付文件保留。"
   },
   "optimization": {
     "mode": "auto",
@@ -385,7 +385,7 @@
   "partBindings": [],
   "sourceAsset": {
     "filename": "11.14.00_升降备料台.glb",
-    "sha256": "22b11f4fd3147c8eb5bdec0300f293a700d7818d914cb98ec492d686076cef81",
+    "sha256": "dbe913f90575df3e64dd150c4ec4a7b4fe9dab26a267aa7b7987d33798b6af5a",
     "stats": {
       "nodes": 36,
       "meshes": 25,
@@ -393,7 +393,7 @@
       "materials": 9,
       "size": [
         1.8370001018047333,
-        1.2750000059604645,
+        1.3250000059604645,
         0.85999995470047
       ],
       "min": [
@@ -403,7 +403,7 @@
       ],
       "max": [
         0.982000082731247,
-        1.2750000059604645,
+        1.3250000059604645,
         0.4299999848008156
       ]
     }
@@ -421,5 +421,19 @@
     "status": "review",
     "published_at": "",
     "history": []
+  },
+  "transferAlignment": {
+    "version": 1,
+    "surfaceY": 1.25,
+    "loadY": 1.29,
+    "basketStroke": null,
+    "sourceSha256": "22b11f4fd3147c8eb5bdec0300f293a700d7818d914cb98ec492d686076cef81",
+    "note": "Display transfer-height alignment; door sealing overlap retained; original CAD deliveries preserved.",
+    "assetSha256": "dbe913f90575df3e64dd150c4ec4a7b4fe9dab26a267aa7b7987d33798b6af5a",
+    "calibration": {
+      "floor": 0.14,
+      "knot": 0.95,
+      "delta": 0.05
+    }
   }
 }
