@@ -326,7 +326,7 @@ namespace HeatTreatment.DigitalTwin.Rendering
 
         private async Task<byte[]> ReadVerifiedMotionBytes(string relative, string expectedHash, int maximum, CancellationToken token)
         {
-            if (string.IsNullOrEmpty(relative) || !relative.StartsWith("/assets/motions/", StringComparison.Ordinal) || relative.Contains("..")) throw new InvalidOperationException("Invalid motion asset path");
+            if (!MotionAssetPolicy.IsAllowed(relative)) throw new InvalidOperationException("Invalid motion asset path");
             using var handler = new HttpClientHandler { UseProxy = false, AllowAutoRedirect = false };
             using var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(_loadTimeoutSeconds) };
             using var response = await client.GetAsync(ResolveAssetUrl(relative), HttpCompletionOption.ResponseHeadersRead, token);

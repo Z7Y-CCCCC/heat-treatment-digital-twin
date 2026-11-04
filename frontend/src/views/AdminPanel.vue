@@ -64,6 +64,7 @@ import MobileDeviceMotion from './admin/components/MobileDeviceMotion.vue'
 import ModelTransferSequence from './admin/components/ModelTransferSequence.vue'
 import LineEquipmentSequence from './admin/components/LineEquipmentSequence.vue'
 import CadMotionPreview from './admin/components/CadMotionPreview.vue'
+import MotionActionEditor from './admin/components/MotionActionEditor.vue'
 import DeviceAnimationLink from './admin/components/DeviceAnimationLink.vue'
 import { cadMotionActions } from '../three/cadMotionProfiles.js'
 import { CLEANER_ACTIONS, motionEntries } from './admin/utils/motionEntries.js'
@@ -278,11 +279,16 @@ async function requestFactorySwitch({ factoryName }) {
         if (!await manualDisassemblyPage.savePending()) throw new Error(manualDisassemblyStatus.value || '拆解布局未保存')
         await groundEditorRef.value?.savePending?.()
         if (deviceAnimationLinkRef.value && !await deviceAnimationLinkRef.value.savePending()) throw new Error('设备动画联动未保存')
+        if (motionActionEditorRef.value && !await motionActionEditorRef.value.savePending()) throw new Error('工艺动作未保存')
         await saveCurrentFactoryPageDrafts()
         await unifiedDesignerRef.value?.savePending?.()
         await mapSettingsRef.value?.savePending?.()
         await loadingSettingsRef.value?.savePending?.()
         await saveFactoryDrafts(currentFactoryId, {
+            'motion-authoring': async ({ modelId, revision, actions }) => {
+                const result = await adminApi.saveMotionActions(modelId, { revision, actions })
+                if (result?.error || !result?.success) throw new Error(result?.error || '工艺动作保存失败')
+            },
             'device-animations': async ({ deviceId, revision, config }) => {
                 const result = await adminApi.saveDeviceAnimations(deviceId, { revision, config })
                 if (result?.error || !result?.success) throw new Error(result?.error || '动画联动保存失败')
@@ -1676,6 +1682,7 @@ const motionBindingSearch = ref('')
 const motionEditorPanel = ref('list')
 const motionWorkspaceMode = ref('parts')
 const deviceAnimationLinkRef = ref(null)
+const motionActionEditorRef = ref(null)
 const cleanerProcessActions = CLEANER_ACTIONS
 const motionInlineProcess = ref('')
 const motionInlinePreviewRef = ref(null)
@@ -1726,6 +1733,7 @@ function stopMotionPreview() {
 
 async function changeMotionWorkspace(mode) {
     if (motionWorkspaceMode.value === 'live' && mode !== 'live' && deviceAnimationLinkRef.value && !await deviceAnimationLinkRef.value.canLeave()) return
+    if (motionWorkspaceMode.value === 'authoring' && mode !== 'authoring' && motionActionEditorRef.value && !await motionActionEditorRef.value.canLeave()) return
     motionInlineProcess.value = ''
     if (motionWorkspaceMode.value === mode) return
     motionWorkspaceMode.value = mode
@@ -1912,7 +1920,7 @@ const motionModelOptions = computed(() => models.value.filter(model => model.fil
 
 async function ensureMotionModelSelection() {
     modelLibraryStep.value = 'bindings'
-    if (motionWorkspaceMode.value === 'transfer') return
+    if (motionWorkspaceMode.value !== 'parts') return
     const model = motionModelOptions.value.find(model => model.id === selectedPreviewModelId.value)
         || motionModelOptions.value.find(model => model.id === manualDisassemblyModelId.value)
         || motionModelOptions.value[0]
@@ -4933,6 +4941,7 @@ function toggleAdminNavCollapsed() {
 async function selectAdminTab(tabKey) {
     if (!canSelectTab(tabKey)) return
     if (activeTab.value === 'model-animations' && tabKey !== activeTab.value && deviceAnimationLinkRef.value && !await deviceAnimationLinkRef.value.canLeave()) return
+    if (activeTab.value === 'model-animations' && tabKey !== activeTab.value && motionActionEditorRef.value && !await motionActionEditorRef.value.canLeave()) return
     if (activeTab.value === 'disassembly-layout' && tabKey !== activeTab.value && !await manualDisassemblyPage.canLeave()) return
     if (activeTab.value === 'composer' && tabKey !== activeTab.value && groundEditorRef.value && !await groundEditorRef.value.canLeave()) return
     activeTab.value = tabKey
@@ -8739,6 +8748,7 @@ async function openAdminSetupStep(step) {
                         </div>
                         <nav class="motion-workspace-modes" aria-label="动作动画模式">
                             <button type="button" :class="{ active: motionWorkspaceMode === 'live' }" :aria-pressed="motionWorkspaceMode === 'live'" @click="changeMotionWorkspace('live')">实时联动</button>
+                            <button type="button" :class="{ active: motionWorkspaceMode === 'authoring' }" :aria-pressed="motionWorkspaceMode === 'authoring'" @click="changeMotionWorkspace('authoring')">工艺动作</button>
                             <button type="button" :class="{ active: motionWorkspaceMode === 'parts' }" :aria-pressed="motionWorkspaceMode === 'parts'" @click="changeMotionWorkspace('parts')">部件动作</button>
                             <button type="button" :class="{ active: motionWorkspaceMode === 'transfer' }" :aria-pressed="motionWorkspaceMode === 'transfer'" @click="changeMotionWorkspace('transfer')">设备联动</button>
                         </nav>
@@ -8774,6 +8784,7 @@ async function openAdminSetupStep(step) {
 
                     <LineEquipmentSequence v-if="activeTab === 'model-animations' && motionWorkspaceMode === 'transfer'" :models="models" :lines="lines" :devices="devices" :workshops="workshops" />
                     <DeviceAnimationLink v-if="activeTab === 'model-animations' && motionWorkspaceMode === 'live'" ref="deviceAnimationLinkRef" :models="models" :devices="devices" :confirm="confirm" />
+                    <MotionActionEditor v-if="activeTab === 'model-animations' && motionWorkspaceMode === 'authoring'" ref="motionActionEditorRef" :models="motionModelOptions" :confirm="confirm" @saved="updated => { models = models.map(m => m.id === updated.id ? updated : m) }" />
                     <div v-if="activeTab !== 'model-animations' || motionWorkspaceMode === 'parts'" class="model-library-layout" :class="{ 'inspection-workspace': modelLibraryStep === 'inspection', 'animation-workspace': activeTab === 'model-animations' }">
                         <section class="model-library-main">
                             <section v-if="activeTab === 'models'" v-show="modelLibraryStep === 'library'" class="model-library-step-panel">

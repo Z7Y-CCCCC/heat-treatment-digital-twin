@@ -6,6 +6,53 @@ const { configurationMutation } = require('../services/configurationSync');
 const { getBuiltinModels } = require('../services/builtinModels');
 const { normalizeModelMetadata } = require('../services/modelAssetMetadata');
 const { canonicalJson } = require('../services/deviceInspection');
+const authoring = require('../services/motionAuthoring');
+const { actionsForModel } = require('../services/deviceAnimations');
+
+router.get('/:id/motion-actions', async (req, res) => {
+    try {
+        const loaded = await loadModelInspection(await getDb(), req.params.id, req.factoryId), prepared = authoring.prepare(loaded.model);
+        res.setHeader('Cache-Control', 'no-store');
+        res.json({ revision: prepared.revision, actions: prepared.actions, nodes: prepared.nodes.map(({ id, name, label }) => ({ id, name, label })), model: loaded.model });
+    } catch (error) { res.status(error.statusCode || 400).json({ error: error.statusCode ? error.message : '动作模型读取失败，请检查 GLB 资产' }); }
+});
+
+async function compileAuthored(req, res, preview) {
+    try {
+        if (!req.body || Object.keys(req.body).some(k => !['revision', 'actions'].includes(k))) throw Object.assign(new Error('仅可保存工艺动作及原版本'), { statusCode: 400 });
+        const db = await getDb(), loaded = await loadModelInspection(db, req.params.id, req.factoryId), prepared = authoring.prepare(loaded.model);
+        const assertRevision = revision => { if (revision !== req.body.revision) throw Object.assign(new Error('模型或动作已更新，请重新读取；当前草稿仍保留'), { statusCode: 409 }); };
+        assertRevision(prepared.revision);
+        const compiled = authoring.compile(loaded.model, prepared, req.body.actions);
+        authoring.storeCompiled(prepared, compiled, preview);
+        if (preview) return res.json({ success: true, bundle: { ...compiled.bundle, previewData: compiled.data }, actions: compiled.actions });
+        const saved = await db.transaction(async tx => {
+            const current = await loadModelInspection(tx, req.params.id, req.factoryId);
+            assertRevision(authoring.prepare(current.model).revision);
+            const metadata = { ...current.metadata, motionAuthoring: { version: 1, actions: compiled.actions, bundle: compiled.bundle } };
+            const available = actionsForModel({ ...current.model, metadata, motion_package: compiled.bundle });
+            // Shared models may be used by multiple factories. No active binding
+            // may silently disappear, change driving mode or acquire a collision.
+            for (const device of await tx.all('SELECT instance_config FROM devices WHERE model_type=?', [req.params.id])) {
+                let bindings; try { bindings = JSON.parse(device.instance_config || '{}').animationBindings?.bindings || []; } catch { continue; }
+                const occupied = new Set();
+                for (const row of bindings.filter(b => b.enabled)) {
+                    const action = available.find(a => a.id === row.actionId);
+                    if (!action || row.kind === 'clip' && action.mode !== row.mode) throw Object.assign(new Error('动作仍用于设备，不能删除或改变驱动方式；请先解除对应联动'), { statusCode: 409 });
+                    for (const channel of new Set(action.channels.map(c => c.replace(/:c\d+$/, ':c')))) {
+                        if (occupied.has(channel)) throw Object.assign(new Error('修改后与已启用的动作控制同一部件，请先解除冲突联动'), { statusCode: 409 });
+                        occupied.add(channel);
+                    }
+                }
+            }
+            return saveModelInspectionLayout(tx, current, metadata, req.factoryId, getDbStatus().type);
+        });
+        global.wsServer?.broadcastToRole?.('model_metadata_changed', { modelId: req.params.id, timestamp: Date.now() }, 'unity');
+        res.json({ success: true, model: saved.model, revision: authoring.prepare(saved.model).revision, actions: compiled.actions, bundle: compiled.bundle });
+    } catch (error) { res.status(error.statusCode || 400).json({ error: error.message }); }
+}
+router.post('/:id/motion-actions/preview', (req, res) => compileAuthored(req, res, true));
+router.put('/:id/motion-actions', configurationMutation('models'), (req, res) => compileAuthored(req, res, false));
 
 // Motion authors may change bindings, but cannot rename, publish or rewrite
 // inspection layouts. Merge into the latest metadata and retain the CAS guard.
