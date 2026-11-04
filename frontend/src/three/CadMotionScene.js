@@ -42,13 +42,19 @@ export class CadMotionScene {
     resize(){const rect=this.container.getBoundingClientRect();this.camera.aspect=Math.max(1,rect.width)/Math.max(1,rect.height);this.camera.updateProjectionMatrix();this.renderer.setSize(Math.max(1,rect.width),Math.max(1,rect.height))}
     resetCamera(){
         if(!this.bounds)return
-        this.oilView=false;this.setCutaway(this.cutaway??true);this.frameBox(this.bounds)
+        this.oilView=false;this.cartHookView=false;this.setCutaway(this.cutaway??true);this.frameBox(this.bounds)
     }
     focusOilDrainage(){
         if(this.rig?.id!=='cad_multipurpose_furnace_082000')return
         this.model.updateWorldMatrix(true,false);this.oilView=true;this.setCutaway(this.cutaway??true)
         const box=new T.Box3(new T.Vector3(-.48,1.23,-1.66),new T.Vector3(.48,1.94,-.3)).applyMatrix4(this.model.matrixWorld)
         this.frameBox(box,[.15,.03,1.4])
+    }
+    focusCartHook(){
+        if(this.rig?.id!=='cad_transfer_cart_101300')return
+        this.model.updateWorldMatrix(true,false);this.cartHookView=true
+        const box=new T.Box3(new T.Vector3(-.75,1.15,-.43),new T.Vector3(.8,1.62,.43)).applyMatrix4(this.model.matrixWorld)
+        this.frameBox(box,[-.8,.7,1.2])
     }
     frameBox(b,direction=[1,.5,1.25]){
         const size=b.getSize(new T.Vector3()),scale=10/Math.max(size.x,size.y,size.z,.001)

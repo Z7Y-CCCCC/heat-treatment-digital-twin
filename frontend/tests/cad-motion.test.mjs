@@ -7,6 +7,7 @@ import {GLTFLoader} from 'three/examples/jsm/loaders/GLTFLoader.js'
 import {CadMotionRig} from '../src/three/CadMotionRig.js'
 import {CAD_MOTION_PROFILES,cadMotionFrame} from '../src/three/cadMotionProfiles.js'
 import {motionEntries} from '../src/views/admin/utils/motionEntries.js'
+import {CART_FEED} from '../src/three/cartFeedMechanism.js'
 for(const [id,profile] of Object.entries(CAD_MOTION_PROFILES))test(`${id}: each action moves isolated parts, seeks deterministically and resets`,async()=>{
     const buffer=fs.readFileSync(new URL(`../../backend/assets/models/${id}.glb`,import.meta.url)),sourceHash=crypto.createHash('sha256').update(buffer).digest('hex')
     const gltf=await new GLTFLoader().parseAsync(buffer.buffer.slice(buffer.byteOffset,buffer.byteOffset+buffer.byteLength),'')
@@ -24,6 +25,36 @@ for(const [id,profile] of Object.entries(CAD_MOTION_PROFILES))test(`${id}: each 
     // Splitting material buckets must preserve all original surface bounds at rest.
     const partsBox=new T.Box3();gltf.scene.traverse(o=>{if(o.isMesh&&!rig.effects.getObjectsByProperty('uuid',o.uuid).length){let inFx=false;for(let p=o;p;p=p.parent)if(p===rig.effects)inFx=true;if(!inFx)partsBox.union(new T.Box3().setFromObject(o))}})
     assert.ok(initial.min.distanceTo(partsBox.min)<1e-5);assert.ok(initial.max.distanceTo(partsBox.max)<1e-5)
+    if(id==='cad_transfer_cart_101300'){
+        const hook=rig.node('push_hook'),carriage=rig.node('feed_carriage'),latch=rig.node('hook_latch')
+        assert.ok(hook&&carriage&&latch,'mounted hook and carriage are in the delivered GLB')
+        const fixed=[rig.node('pusher_metal'),rig.node('pusher_stainless')]
+        rig.reset();gltf.scene.updateMatrixWorld(true)
+        const matrices=fixed.map(node=>node.matrixWorld.clone()),world=node=>node.getWorldPosition(new T.Vector3())
+        const home=world(hook),offset=world(hook).sub(world(carriage))
+        assert.equal(rig.cartChain.length,42)
+        const shuttleCenter=()=>new T.Box3().setFromObject(rig.node('pusher_steel')).getCenter(new T.Vector3()).x
+        assert.ok(Math.abs(shuttleCenter()-CART_FEED.rearX)<1e-6,'hook starts at the rear end of the guide')
+        const chainHome=rig.cartChain[0].pivot.position.clone()
+        const fixedPanel=rig.node('return_chain').children.find(node=>node.isMesh&&new T.Box3().setFromObject(node).getSize(new T.Vector3()).x>.4)
+        assert.ok(fixedPanel);const panelMatrix=fixedPanel.matrixWorld.clone()
+        for(const time of [0,2,4,6,8]){
+            rig.apply('feed',time);gltf.scene.updateMatrixWorld(true)
+            fixed.forEach((node,index)=>assert.ok(node.matrixWorld.equals(matrices[index]),'fixed chain guide must not slide with the hook'))
+            assert.ok(world(hook).sub(world(carriage)).distanceTo(offset)<1e-7)
+            assert.ok(fixedPanel.matrixWorld.equals(panelMatrix),'chain cover and guide races stay fixed')
+        }
+        rig.apply('feed',4);assert.ok(Math.abs(world(hook).x-home.x+CART_FEED.stroke)<1e-6)
+        assert.ok(Math.abs(shuttleCenter()-CART_FEED.frontX)<1e-6,'hook reaches the front end of the guide')
+        assert.ok(rig.cartChain[0].pivot.position.distanceTo(chainHome)>.05,'actual rear chain links circulate')
+        assert.ok(Math.abs(rig.joints.feed_gear.rotation.z-CART_FEED.stroke/.135)<1e-6)
+        rig.apply('feed',8);assert.ok(Math.abs(shuttleCenter()-CART_FEED.rearX)<1e-6)
+        assert.ok(rig.cartChain[0].pivot.position.distanceTo(chainHome)<1e-6,'the same chain links return with the hook')
+        rig.apply('hook',4);assert.ok(Math.abs(latch.rotation.z+.65)<1e-7)
+        rig.applyLinked({feed:1,feedTravel:1.2,hookEngaged:true});assert.ok(Math.abs(world(hook).x-home.x+1.2)<1e-6);assert.ok(Math.abs(latch.rotation.z)<1e-7)
+        rig.applyLinked({feed:.5,feedTravel:1.2,hookEngaged:false});assert.ok(Math.abs(world(hook).x-home.x+.6)<1e-6);assert.equal(latch.rotation.z,-.65)
+        rig.reset();assert.ok(world(hook).distanceTo(home)<1e-7)
+    }
     if(id==='cad_lifting_load_table_111400'){
         rig.reset();gltf.scene.updateMatrixWorld(true)
         const bed=rig.node('roller_bed'),world=node=>node.getWorldPosition(new T.Vector3())

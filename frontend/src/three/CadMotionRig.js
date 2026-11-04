@@ -1,6 +1,7 @@
 import * as T from 'three'
 import {CAD_MOTION_PROFILES,cadMotionFrame} from './cadMotionProfiles.js'
 import {connectedGeometryParts} from './cadGeometryParts.js'
+import {CART_FEED,locateCartChain,sampleCartChain} from './cartFeedMechanism.js'
 
 /** Temporary preview rig. Original GLB bytes and saved disassembly hierarchy stay unchanged. */
 export class CadMotionRig {
@@ -45,6 +46,7 @@ export class CadMotionRig {
             this.wheels=[];const parts=[...this.parts('travel_wheels_metal'),...this.parts('travel_wheels_steel'),...this.parts('travel_wheels_stainless')]
             for(const x of [-.7125,.7125])this.wheels.push(this.pivot('wheel_'+x,new T.Vector3(x,.148,0),parts.filter(p=>Math.abs(p.center.x-x)<.1)))
             const gear=this.node('feed_sprocket');if(gear){this.pivot('feed_gear',new T.Vector3(.806,1.16,0),[{mesh:gear}])}
+            this.prepareCartChain()
         }
         if(this.id==='cad_air_cooling_table_115800ht'){
             this.fans=[];const parts=[...this.parts('fans_metal'),...this.parts('fans_stainless')]
@@ -90,6 +92,27 @@ export class CadMotionRig {
     setTemperingFanAngle(angle){
         this.temperingFan.rotation.y=angle
         for(const {pivot,axis} of this.temperingDriveShafts)pivot.rotation[axis]=angle
+    }
+    prepareCartChain(){
+        const rollers=this.parts('return_chain_stainless'),metal=this.parts('return_chain_metal'),steel=this.parts('return_chain_steel')
+        const centers=rollers.filter(p=>Math.abs(p.center.z-.038)<.001&&Math.abs(p.size.z-.027)<.002&&Math.abs(p.size.x-.022)<.002)
+        if(centers.length!==42)throw Error('料车回链节点与已配置轨迹不匹配')
+        const all=[...rollers,...metal,...steel];this.cartChain=[]
+        centers.forEach((roller,index)=>{
+            const center=roller.center.clone();center.z=.038
+            const pieces=all.filter(p=>Math.hypot(p.center.x-center.x,p.center.y-center.y)<.002&&p.center.z>.01&&p.size.x<.055&&p.size.y<.055&&p.size.z<.055)
+            if(pieces.length!==4)throw Error('料车链节应包含两片侧板、滚子和销轴')
+            const at=locateCartChain(center.x,center.y)
+            if(at.error>.0001)throw Error('料车链节偏离回链轨迹')
+            const pivot=this.pivot('return_link_'+index,center,pieces);this.cartChain.push({pivot,distance:at.distance,angle:at.angle})
+        })
+    }
+    setCartFeed(progress,travel=CART_FEED.stroke,engaged=true){
+        const distance=progress*travel
+        this.move(this.node('feed_carriage')?'feed_carriage':'pusher','x',-progress*travel)
+        const latch=this.node('hook_latch');if(latch)latch.rotation.z=-.65*(1-Number(engaged))
+        this.joints.feed_gear.rotation.z=distance/CART_FEED.sprocketRadius
+        this.cartChain.forEach(({pivot,distance:phase,angle})=>{const at=sampleCartChain(phase+distance);pivot.position.fromArray(at.position);pivot.rotation.z=at.angle-angle})
     }
     prepareMultipurpose(){
         const impeller=this.parts('circulation_impeller_metal'),shaft=this.parts('circulation_impeller_stainless')
@@ -167,7 +190,8 @@ export class CadMotionRig {
     apply(actionId,time){
         this.reset();const f=cadMotionFrame(this.id,actionId,time),s=f.amount,t=f.elapsed,angle=t*Math.PI*2
         if(actionId==='travel'){this.root.position.x+=s*.8;this.wheels.forEach(n=>n.rotation.z=-s*.8/.13)}
-        if(actionId==='feed'){this.move('pusher','x',s*.5);this.joints.feed_gear.rotation.z=-s*6}
+        if(actionId==='feed')this.setCartFeed(s,CART_FEED.stroke,f.progress<=.5)
+        if(actionId==='hook'){const latch=this.node('hook_latch');if(latch)latch.rotation.z=-s*.65}
         if(actionId==='rollers')this.rollers.forEach(n=>n.rotation.z=angle*.6)
         if(actionId==='rollers')this.temperingRollers?.forEach(n=>n.rotation.x=-angle*.6)
         if(actionId==='fans')this.fans.forEach(n=>n.rotation.y=angle*2)
@@ -226,7 +250,7 @@ export class CadMotionRig {
         const air=this.id==='cad_air_cooling_table_115800ht'
         for(const name of ['door','door_carriages'])this.move(name,'y',air ? -.9*(1-s.door) : .9*s.door)
         if(this.id==='cad_transfer_cart_101300'){
-            this.move('pusher','x',s.feed*.5);this.joints.feed_gear.rotation.z=-s.feed*6
+            this.setCartFeed(s.feed,s.feedTravel??CART_FEED.stroke,s.hookEngaged??true)
             this.wheels.forEach(n=>n.rotation.z=-(s.travel||0)/.13)
         }
         this.rollers.forEach(n=>n.rotation.z=angle*.6)

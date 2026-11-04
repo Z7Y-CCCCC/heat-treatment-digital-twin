@@ -7,9 +7,25 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { PortableMotionPlayer,receiveMotionSignal,stepMotionSignal,sampleMotionTrack } from '../src/three/PortableMotionPlayer.js'
 import { CAD_MOTION_PROFILES } from '../src/three/cadMotionProfiles.js'
 import { restoreGltfNodeNames } from '../src/three/gltfNodeIdentity.js'
+import {CART_FEED} from '../src/three/cartFeedMechanism.js'
 const registry=JSON.parse(fs.readFileSync(new URL('../../shared/motionPackages.json',import.meta.url)))
 const binding={enabled:true,kind:'clip',mode:'position',sourceGroup:'doors',sourceKey:'open',pointId:'42',inputMin:0,inputMax:1,invert:false,speed:1,transitionSeconds:2}
 const frame=(value,patch={})=>({doors:{open:value},pointMeta:{'doors.open':{id:42}},quality:{doors:{open:'good'}},...patch})
+
+test('portable cart feeds the mounted hook and releases its latch while chain guides stay fixed',async()=>{
+ const manifest=registry.models.cad_transfer_cart_101300,binary=fs.readFileSync(new URL('../../backend'+manifest.rigPath,import.meta.url)),data=JSON.parse(fs.readFileSync(new URL('../../backend'+manifest.clipPath,import.meta.url)))
+ const gltf=await new GLTFLoader().parseAsync(binary.buffer.slice(binary.byteOffset,binary.byteOffset+binary.byteLength),'');restoreGltfNodeNames(gltf)
+ const root=gltf.scene,node=name=>root.getObjectByName('cad_transfer_cart_v1_'+name),hook=node('push_hook'),guide=node('pusher_metal'),latch=node('hook_latch')
+ assert.ok(hook&&guide&&latch);root.updateMatrixWorld(true)
+ const world=object=>object.getWorldPosition(new T.Vector3()),home=world(hook),guideMatrix=guide.matrixWorld.clone()
+ const player=new PortableMotionPlayer(root,data,[{...binding,transitionSeconds:0,clipId:'feed'}])
+ for(const progress of [0,.25,1,.5,0]){
+  player.receive(frame(progress),0);player.advance(0,0);root.updateMatrixWorld(true)
+  assert.ok(Math.abs(world(hook).x-home.x+CART_FEED.stroke*progress)<1e-6);assert.ok(guide.matrixWorld.equals(guideMatrix))
+ }
+ const release=new PortableMotionPlayer(root,data,[{...binding,transitionSeconds:0,clipId:'hook'}])
+ release.receive(frame(1),0);release.advance(0,0);assert.ok(Math.abs(latch.rotation.z+.65)<1e-6)
+});
 
 test('portable lift actions keep every roller on the deck throughout measured stroke and return',async()=>{
  const manifest=registry.models.cad_lifting_load_table_111400

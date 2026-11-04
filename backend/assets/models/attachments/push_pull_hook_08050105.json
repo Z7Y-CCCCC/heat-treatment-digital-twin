@@ -1,0 +1,26 @@
+{
+  "sourceStepFilename": "08.05.01.05-推头.step",
+  "sourceStepSha256": "dc6e992ff45f67ef8ec0588f272ffe04d7515df28d90dd8dea39b5257442abbb",
+  "sourceDwgSha256": "55cf019e503953268fad17add654e7677335995439869d3f178468acce07803c",
+  "description": "One trial push-hook station rebased from the DWG/STEP assembly; 880 mm cross-member excluded.",
+  "unit": "m",
+  "solidCount": 15,
+  "partNames": [
+    "06_fixed_hook_1_-1",
+    "07_bearing_washer_1_-1",
+    "06_fixed_hook_1_1",
+    "07_bearing_washer_1_1",
+    "10_movable_pawl_1",
+    "11_pawl_spacer_1_-1",
+    "11_pawl_spacer_1_1",
+    "12_retaining_pin_1",
+    "13_rear_pin_1",
+    "14_retaining_head_1_-1",
+    "14_retaining_head_1_1",
+    "15_torsion_spring_trial_1",
+    "16_spring_leg_1",
+    "pivot_shaft_D25_L110",
+    "mount_adapter"
+  ],
+  "limitations": "Trial assembly; inferred mount adapter and latch demonstration angle, not a manufacturing or PLC commissioning model."
+}

@@ -8,6 +8,7 @@ const emit=defineEmits(['close-preview'])
 const viewport=ref(null),ready=ref(false),error=ref(''),playing=ref(false),elapsed=ref(0),speed=ref(1),cutaway=ref(true),showDetails=ref(false)
 const action=computed(()=>cadMotionActions(props.model.id).find(a=>a.id===props.actionId))
 const oilAction=computed(()=>props.model.id==='cad_multipurpose_furnace_082000'&&props.actionId==='basket_up')
+const cartHookAction=computed(()=>props.model.id==='cad_transfer_cart_101300'&&['feed','hook'].includes(props.actionId))
 let runtime,disposed=false
 async function load(){
     ready.value=false;playing.value=false;error.value='';runtime?.dispose()
@@ -16,7 +17,7 @@ async function load(){
     try{await scene.load(resolveBackendAssetUrl(props.model.file_path),props.model.id);if(disposed||runtime!==scene)return;scene.setCutaway(cutaway.value);ready.value=true;previewProcessStage()}
     catch(e){if(!disposed){error.value=`动作模型加载失败：${e.message||e}`;scene.dispose()}}
 }
-function previewProcessStage(){elapsed.value=0;playing.value=ready.value;if(oilAction.value)runtime?.focusOilDrainage();else if(runtime?.oilView)runtime.resetCamera()}
+function previewProcessStage(){elapsed.value=0;playing.value=ready.value;if(oilAction.value)runtime?.focusOilDrainage();else if(cartHookAction.value)runtime?.focusCartHook();else if(runtime?.oilView||runtime?.cartHookView)runtime.resetCamera()}
 function play(){if(elapsed.value>=action.value.duration)elapsed.value=0;playing.value=!playing.value}
 watch(()=>props.actionId,previewProcessStage)
 onMounted(load);onUnmounted(()=>{disposed=true;runtime?.dispose()});onActivated(()=>runtime?.setActive(true));onDeactivated(()=>{playing.value=false;runtime?.setActive(false)})
@@ -24,7 +25,7 @@ defineExpose({previewProcessStage})
 </script>
 <template>
  <section class="cad-motion-preview" aria-label="CAD 动作本页预览" :data-action="actionId" :data-playing="playing">
-  <header><div><strong>{{ action?.label }}</strong><small>{{ model.name }}</small></div><div class="tools"><label><input v-model="cutaway" type="checkbox" @change="runtime?.setCutaway(cutaway)">内部透视</label><button type="button" :aria-pressed="showDetails" @click="showDetails=!showDetails">{{ showDetails?'隐藏说明':'显示说明' }}</button><button v-if="oilAction" type="button" @click="runtime?.focusOilDrainage()">沥油近景</button><button type="button" @click="runtime?.resetCamera()">完整视图</button></div></header>
+  <header><div><strong>{{ action?.label }}</strong><small>{{ model.name }}</small></div><div class="tools"><label><input v-model="cutaway" type="checkbox" @change="runtime?.setCutaway(cutaway)">内部透视</label><button type="button" :aria-pressed="showDetails" @click="showDetails=!showDetails">{{ showDetails?'隐藏说明':'显示说明' }}</button><button v-if="cartHookAction" type="button" @click="runtime?.focusCartHook()">推拉钩近景</button><button v-if="oilAction" type="button" @click="runtime?.focusOilDrainage()">沥油近景</button><button type="button" @click="runtime?.resetCamera()">完整视图</button></div></header>
   <div class="stage"><div ref="viewport" class="canvas"></div><div v-if="!ready" class="loading" role="status">{{ error||'正在准备可动部件…' }}<button v-if="error" type="button" @click="load">重新加载</button></div><div v-else-if="showDetails" class="hud"><button class="hud-close" type="button" aria-label="关闭动作说明" @click="showDetails=false">×</button><strong>{{ action?.label }}</strong><span>{{ action?.detail }}</span><small>模拟演示 · 未连接 PLC</small></div></div>
   <footer><div><button type="button" :disabled="!ready" @click="play">{{ playing?'暂停':elapsed>=action.duration?'重播':'播放' }}</button><button type="button" :disabled="!ready" @click="playing=false;elapsed=0">复位</button><select v-model.number="speed" aria-label="CAD 动画速度"><option :value=".5">0.5×</option><option :value="1">1×</option><option :value="2">2×</option></select><button type="button" @click="emit('close-preview')">停止预览</button></div><label>动作进度<input type="range" min="0" :max="action?.duration||8" step=".01" :value="elapsed" :disabled="!ready" aria-label="CAD 动作进度" @input="playing=false;elapsed=Number($event.target.value)"><span>{{ elapsed.toFixed(1) }} / {{ action?.duration }} 秒</span></label></footer>
  </section>

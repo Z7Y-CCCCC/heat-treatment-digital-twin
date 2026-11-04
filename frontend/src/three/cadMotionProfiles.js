@@ -20,7 +20,8 @@ export const CAD_MOTION_PROFILES = {
     ]},
     cad_transfer_cart_101300: {prefix:'cad_transfer_cart_v1_',actions:[
         action('travel','料车往返行走','车体平移，行走轮按轮径同步滚动。'),
-        action('feed','推料伸出 / 退回','推料机构往复，送料链轮同步转动。'),
+        action('feed','推料伸出 / 退回','抓钩从导轨最后端前进至最前端，再退回最后端；回链与送料链轮同步运行，导轨固定。'),
+        action('hook','推拉钩脱开 / 勾合','钩头绕横向轴翻转，演示脱开与勾合；实际角度及信号需现场标定。'),
         action('rollers','承料辊转动','仅辊轴和辊筒转动，支架及轴承座保持固定。')
     ]},
     cad_lifting_load_table_111400: {prefix:'cad_lifting_staging_table_v1_',actions:[
