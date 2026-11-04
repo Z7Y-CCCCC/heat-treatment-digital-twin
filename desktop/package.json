@@ -20,7 +20,8 @@
     "build:collector-service": "node scripts/build-collector-service.cjs",
     "test:logs": "node scripts/log-manager-test.cjs",
     "test:processes": "node --test scripts/process-lifecycle-test.cjs scripts/desktop-supervisor-unit-test.cjs scripts/activation-client-test.cjs",
-    "test:resources": "node --test scripts/resource-preparation-test.cjs scripts/runtime-cache-test.cjs scripts/dependency-cache-test.cjs scripts/directory-publish-test.cjs scripts/native-client-path-test.cjs scripts/optional-collector-test.cjs scripts/prerequisites-test.cjs",
+    "test:resources": "node --test --test-concurrency=1 scripts/resource-preparation-test.cjs scripts/runtime-cache-test.cjs scripts/dependency-cache-test.cjs scripts/directory-publish-test.cjs scripts/native-client-path-test.cjs scripts/optional-collector-test.cjs scripts/prerequisites-test.cjs scripts/installer-ui-test.cjs",
+    "preview:installer": "node scripts/installer-preview.cjs",
     "test:deployment": "node --test scripts/deployment-test.cjs scripts/desktop-supervisor-unit-test.cjs",
     "build:collector-center": "node scripts/build-collector-center.cjs",
     "test:collector-center": "node scripts/native-collector-center-test.cjs && node scripts/native-point-client-test.cjs && node --test scripts/service-installer-test.cjs",
@@ -189,7 +190,7 @@
       "oneClick": false,
       "differentialPackage": false,
       "useZip": true,
-      "allowToChangeInstallationDirectory": true,
+      "allowToChangeInstallationDirectory": false,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "热处理数字孪生大屏",
@@ -202,9 +203,7 @@
         "en_US"
       ],
       "language": "2052",
-      "installerSidebar": "assets/installer-sidebar.bmp",
-      "uninstallerSidebar": "assets/installer-sidebar.bmp",
-      "installerHeader": "assets/installer-header.bmp"
+      "uninstallerSidebar": "assets/installer-sidebar.bmp"
     }
   }
 }
