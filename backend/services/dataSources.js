@@ -922,6 +922,7 @@ async function executeReadOnlyQuery(connectionId, sql, params = [], factoryId = 
         throw new Error('只读查询包含被禁止的写入或管理关键字');
     }
     const connection = resolveConnection(connectionId, factoryId);
+    if (connection.type === 'mongodb') throw new Error('MongoDB 不支持 SQL，请使用数据集的集合和字段配置');
     return withConnection(connection, handle => executeRows(handle, statement, params));
 }
 

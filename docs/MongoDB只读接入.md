@@ -36,7 +36,7 @@
 - `backend/scripts/mongo-data-source-integration-test.cjs`：测试/保存/掩码、集合与字段、超过前 100 条的设备匹配、零/布尔/日期/Long/Decimal、投影、全局参数、重复/缺失、聚合与隔离、操作符拒绝、错密码、TLS 不降级、黑洞握手与数据库退出/重开。
 - 查询本机自有 MongoDB profiler，确认适配器没有 insert/update/delete/drop/createUser 或 `$out/$merge`。
 - `tools/mongo-data-source-ui-test.cjs`：真正工作台建立连接和数据集，通过正常保存/发布进入实际 Vue overlay，设备切换及数据库 888.5 → 999.5 后刷新。宿主消息桥为夹具，测试背景为纯色；没有声称这是 Unity 三维画面的实机验收。
-- GitHub 后端质量任务使用官方 `mongo:8.0.34`、固定镜像摘要与独立数据库/只读用户重复验收，结束即销毁容器。不部署到现场。
+- GitHub 后端质量任务使用官方 `mongo:8.0.34`、固定镜像摘要与独立数据库/只读用户重复验收，结束即销毁容器。不部署到现场。测试节点固定为 Ubuntu 22.04 / 6.8 内核：初次在滚动的 ubuntu-latest 上数据库启动失败，因 MongoDB 明确拒绝 6.19+ 内核；没有禁用其安全检查或跳过测试。Ubuntu 22.04 的 runner 支持期后仍需升级这个测试矩阵。
 
 本机官方 ZIP 完整 SHA-256：`6b021a0864494e4decf278b36477a29eb36072432773e4e62c2f42c302630db0`；`mongod.exe` SHA-256：`4c9e9764cbac5be8eb92733e23ce7f70b52f8ae84b6879b4d5cc010c90ec6082`。ZIP 中的程序没有 Authenticode 签名，因此校验了完整官方归档，而不是把未签名说成签名有效。测试服务器/数据库/截图只在忽略的 `output/`，不进入 Git 或客户安装包。
 

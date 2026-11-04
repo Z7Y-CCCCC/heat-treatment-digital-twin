@@ -18,7 +18,10 @@ concurrency:
 jobs:
   backend:
     name: Backend contract and integration tests
-    runs-on: ubuntu-latest
+    # MongoDB 8.0.34 refuses kernels >= 6.19 (SERVER-121912).
+    # Ubuntu 22.04 currently provides supported 6.8; 24.04/latest use 7.x.
+    # Keep the real database mandatory; never bypass its safety startup check.
+    runs-on: ubuntu-22.04
     timeout-minutes: 20
     defaults:
       run:

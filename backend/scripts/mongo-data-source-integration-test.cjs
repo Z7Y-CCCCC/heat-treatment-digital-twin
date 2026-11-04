@@ -69,6 +69,7 @@ let fixture;
     await assert.rejects(sources.readDataSetTable({ ...normalized, database: { ...normalized.database, table: 'system.users' } }, { deviceId: 'device_a' }, 'factory_default'), /系统集合/);
     await assert.rejects(sources.listTables(saved.id, 'another_factory'), /不存在/);
     await assert.rejects(sources.createConnectionBackup(saved.id), /不参与/);
+    await assert.rejects(sources.executeReadOnlyQuery(saved.id, 'SELECT 1'), /MongoDB 不支持 SQL/);
     assert.ok(!sources.getBackupStatus().connections.some(c => c.id === saved.id));
     const reader = new MongoClient(fixture.uri, { auth: { username: fixture.username, password: fixture.password }, authSource: fixture.name, serverSelectionTimeoutMS: 2000 });
     try { await reader.connect(); await assert.rejects(reader.db(fixture.name).collection('设备参数').insertOne({ unauthorized: true }), error => error.code === 13); }
