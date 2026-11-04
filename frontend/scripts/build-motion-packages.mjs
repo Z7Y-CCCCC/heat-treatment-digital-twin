@@ -15,7 +15,7 @@ const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../..'),ou
 fs.mkdirSync(out,{recursive:true})
 globalThis.FileReader=class {readAsArrayBuffer(blob){blob.arrayBuffer().then(v=>{this.result=v;this.onloadend?.()})} readAsDataURL(blob){blob.arrayBuffer().then(v=>{this.result=`data:${blob.type};base64,${Buffer.from(v).toString('base64')}`;this.onloadend?.()})}}
 const sha=b=>crypto.createHash('sha256').update(b).digest('hex'),round=v=>Math.round(v*1e6)/1e6
-const modes={door:'position',gate:'position',basket_down:'position',basket_up:'position',lift_up:'position',lift_down:'position',travel:'position',feed:'position',fill:'position',drain:'position'}
+const modes={door:'position',gate:'position',hook:'position',basket_down:'position',basket_up:'position',lift_up:'position',lift_down:'position',travel:'position',feed:'position',fill:'position',drain:'position'}
 const catalog={schemaVersion:1,models:{}}
 const matches=process.argv.filter(v=>v.startsWith('--model=')).map(v=>v.slice(8))
 for(const id of [...Object.keys(CAD_MOTION_PROFILES),'ultrasonic_cleaner_cad'].filter(id=>!matches.length||matches.includes(id))){
@@ -25,11 +25,11 @@ for(const id of [...Object.keys(CAD_MOTION_PROFILES),'ultrasonic_cleaner_cad'].f
  let rig,effects,apply,reset,actions
  if(CAD_MOTION_PROFILES[id]){
    rig=new CadMotionRig(asset,id);reset=()=>rig.reset()
-   actions=CAD_MOTION_PROFILES[id].actions.map(a=>({...a,mode:modes[a.id]||'running',duration:(modes[a.id]==='position' && !['fill','drain'].includes(a.id))?a.duration/2:(modes[a.id]==='position'?a.duration:5)}))
+   actions=CAD_MOTION_PROFILES[id].actions.map(a=>({...a,mode:modes[a.id]||'running',duration:a.preserveDuration?a.duration:(modes[a.id]==='position' && !['fill','drain'].includes(a.id)&&!a.oneWay)?a.duration/2:(modes[a.id]==='position'?a.duration:5)}))
    // Preview demos ease out and back with sin². PLC position is a measured
    // stroke, not demo elapsed time: 25% feedback must show 25% of travel.
    // Keep the authored mechanism/geometry, invert only that demo easing.
-   apply=(a,t)=>rig.apply(a.id,a.mode==='position'&&!['fill','drain'].includes(a.id)
+   apply=(a,t)=>rig.apply(a.id,a.mode==='position'&&!['fill','drain'].includes(a.id)&&!a.oneWay
      ? CAD_MOTION_PROFILES[id].actions.find(x=>x.id===a.id).duration*Math.asin(Math.sqrt(Math.max(0,Math.min(1,t/a.duration))))/Math.PI : t)
  }else{
    effects=new CleanerProcessEffects(asset,asset);reset=()=>effects.apply(null)

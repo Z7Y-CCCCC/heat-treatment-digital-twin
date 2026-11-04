@@ -76,6 +76,30 @@ jobs:
     runs-on: [self-hosted, Windows, X64, digital-twin-release]
     timeout-minutes: 60
     steps:
+      # Never let checkout's clean step delete Mono/runtime files underneath a
+      # display, collector or leftover build still running from this workspace.
+      - name: Refuse cleanup of an in-use build workspace
+        shell: pwsh -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File {0}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $workspace = [IO.Path]::GetFullPath($env:GITHUB_WORKSPACE).TrimEnd('\', '/') + '\'
+          if ($workspace -eq [IO.Path]::GetPathRoot($workspace)) { throw 'Unsafe build workspace path' }
+          $products = @('HeatTreatmentDigitalTwin.exe', 'HeatTreatmentAdminHost.exe', 'HeatTreatmentCollectorService.exe', 'HeatTreatmentCollectorCenter.exe', '热处理数字孪生大屏.exe', 'heat-treatment-digital-twin-desktop.exe')
+          $tools = @('node.exe', 'Unity.exe', 'blender.exe', 'dotnet.exe')
+          $busy = @(Get-CimInstance Win32_Process | Where-Object {
+            $product = $_.Name -in $products
+            $tool = $_.Name -in $tools
+            if (-not $product -and -not $tool) { return $false }
+            $exe = [string]$_.ExecutablePath
+            $command = ([string]$_.CommandLine).Replace('/', '\')
+            ($product -and -not $exe) -or
+              ($exe -and $exe.Replace('/', '\').StartsWith($workspace, [StringComparison]::OrdinalIgnoreCase)) -or
+              ($tool -and $command.IndexOf($workspace, [StringComparison]::OrdinalIgnoreCase) -ge 0)
+          })
+          if ($busy.Count) {
+            $names = ($busy | ForEach-Object { "$($_.Name) (PID $($_.ProcessId))" }) -join ', '
+            throw "Workspace is in use: $names. Checkout was not started. Move/close these workspace copies manually; this workflow will never terminate the running display or collector."
+          }
       - uses: actions/checkout@v4
         with:
           lfs: true
@@ -91,6 +115,9 @@ jobs:
             desktop/package-lock.json
       # This dedicated machine is provisioned with .NET 8. Installing again
       # would try to write Program Files as a non-admin desktop build user.
+      - name: Load and validate provisioned release environment
+        shell: pwsh -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File {0}
+        run: node tools/ci/release-environment.cjs
       - name: Check native build prerequisites
         shell: pwsh -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File {0}
         run: ./tools/ci/setup-windows-runner.ps1 -CheckOnly

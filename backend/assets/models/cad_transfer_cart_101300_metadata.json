@@ -11,7 +11,7 @@
     "node_naming_rule": "role_part_action，例如 fan_rear_rotate、door_front_lift、valve_gas_01",
     "delivery_status": "review",
     "owner": "",
-    "notes": "用户提供的 10.13.00_料车.glb 原文件入库；保留原始节点、材质和坐标。"
+    "notes": "原料车 CAD 几何保留；在中央滑块上试装 08.05.01.05 推拉钩，固定导轨不随动。 统一展示送料基准为 1.25 m；门板密封搭边保留，原 CAD 交付文件保留。"
   },
   "optimization": {
     "mode": "auto",
@@ -326,7 +326,7 @@
       },
       {
         "id": "cad_transfer_cart_101300_assembly_8",
-        "name": "推料机构",
+        "name": "推料机构与推拉钩",
         "group": "cad_transfer_cart_101300",
         "enabled": true,
         "node_path": "",
@@ -456,13 +456,13 @@
   },
   "partBindings": [],
   "sourceAsset": {
-    "filename": "10.13.00_料车.glb",
-    "sha256": "70a09b8b0f8dd556e09115013470f7b748e149c09534ae21baedc91edb48ac9b",
+    "filename": "10.13.00_料车_安装推拉钩.glb",
+    "sha256": "c46dd1af79786d9853a1efd266b6dd6c389385c8aef074ed6359d72b51eb92e7",
     "stats": {
-      "nodes": 63,
-      "meshes": 46,
-      "triangles": 90860,
-      "materials": 11,
+      "nodes": 82,
+      "meshes": 61,
+      "triangles": 110710,
+      "materials": 14,
       "size": [
         1.9414999186992645,
         2.180781602859497,
@@ -493,5 +493,41 @@
     "status": "review",
     "published_at": "",
     "history": []
+  },
+  "cartPushHook": {
+    "version": 1,
+    "attachment": "/assets/models/attachments/push_pull_hook_08050105.glb",
+    "attachmentSha256": "55d759f740950ecf7e36b017c89f6b13379e4c4db3fb0b5c89bc35f8becc7171",
+    "originalCartSha256": "70a09b8b0f8dd556e09115013470f7b748e149c09534ae21baedc91edb48ac9b",
+    "sourceDwgSha256": "55cf019e503953268fad17add654e7677335995439869d3f178468acce07803c",
+    "mountOrigin": [
+      -0.06,
+      1.4025,
+      0
+    ],
+    "mountRotationY": 3.141592653589793,
+    "feedAxis": "-X",
+    "unit": "m",
+    "feedCarriageNode": "cad_transfer_cart_v1_feed_carriage",
+    "latchNode": "cad_transfer_cart_v1_hook_latch",
+    "note": "推拉钩试装与仿真；安装转接板、演示行程和脱开角待现场核验。",
+    "carriageRearX": 0.5425,
+    "carriageFrontX": -0.5425,
+    "previewStroke": 1.085
+  },
+  "transferAlignment": {
+    "version": 1,
+    "surfaceY": 1.25,
+    "loadY": 1.29,
+    "basketStroke": null,
+    "sourceSha256": "de6893b63814e42050b5293dd6ee6a81d3ff8dd8e5007cf9fc9d2405170b25ec",
+    "note": "Display transfer-height alignment; door sealing overlap retained; original CAD deliveries preserved.",
+    "assetSha256": "c46dd1af79786d9853a1efd266b6dd6c389385c8aef074ed6359d72b51eb92e7",
+    "calibration": {
+      "floor": 0,
+      "knot": 1,
+      "delta": 0,
+      "pusherOffsetY": -0.085
+    }
   }
 }

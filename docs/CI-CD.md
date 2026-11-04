@@ -4,7 +4,7 @@
 
 1. 推送 main 或创建指向 main 的 PR：GitHub Actions 自动运行前端、后端、模拟器和 Windows/原生回归；失败可下载测试日志。
 2. 测试安装包：在 Actions → Windows installer → Run workflow 选择 main。通过全部质量检查后，在专用 Windows 构建机生成安装包，执行首次启动与重启验证，再上传 `windows-installer-运行号`。不需要手工逐条运行构建命令。
-3. 发布版本：同步更新 `desktop/package.json` 和 `release-manifest.json` 的版本，并更新 desktop 锁文件；合入 main 后推送对应 `vX.Y.Z` 标签。工作流生成带安装包和 SHA-256 的 **Draft Release**，检查后再发布给客户。
+3. 发布版本：同步更新 `desktop/package.json` 和 `release-manifest.json` 的版本，并更新 desktop 锁文件；合入 main 后手动运行 main 或推送对应 `vX.Y.Z` 标签。工作流先创建草稿，上传并验证主包、可选采集插件、SHA-256 与构建清单，再自动公开为正式 Release，不会停在草稿状态。
 
 安装包仅包含初始模板，绝不从构建机复制现场数据库或上传资源。产物保留30天，构建日志保留14天，标签构建的 Release 资产长期保留。已有正式 Release 不会被工作流覆盖。
 
@@ -19,11 +19,9 @@
 ## 实现与验证
 
 - `quality.yml` 可复用：release 必须先通过同一套质量门禁。
-- `release.yml` 顺序执行版本检查、质量门禁、Windows 构建、产物哈希验证、上传、草稿 Release。
+- `release.yml` 顺序执行版本检查、质量门禁、Windows 构建、产物哈希验证、上传、草稿复核并公开 Release。
 - 干净 checkout 后恢复 Unity Library/Builds 和构建缓存；脚本继续验证缓存失效条件。没有关闭 checkout 清理。
 - `collect-release.cjs` 拒绝跳过启动测试、客户配置、损坏安装包、多份旧构建目录；上传前重新计算 SHA-256。
 - 本地验证：`node --test tools/ci/collect-release.test.cjs`；`node tools/ci/check-release.cjs`。
 
-当前工作区包括上一轮修复及新增模块；首次启用时应一并提交完整依赖文件，不能只上传 YAML。本地文件存在不表示 GitHub Actions 已启用或远端构建已通过，应以仓库实际运行结果为准。
-
-本轮已通过 actionlint 1.7.12 工作流检查、产物收集与拒绝异常产物回归、本机 Windows PowerShell 5.1 构建环境预检。尚未推送工作流或注册 runner，远端首轮执行待公开上传源码及启用构建机的授权后进行。
+2026-11-04 已在专用 Windows runner 跑通完整构建、隔离短测、上传与公开发布。[v2.3.2](https://github.com/Z7Y-CCCCC/heat-treatment-digital-twin/releases/tag/v2.3.2) 已可下载主包和独立采集插件；[run 41802526546](https://github.com/Z7Y-CCCCC/heat-treatment-digital-twin/actions/runs/41802526546) 第三次尝试全部成功。构建提交、文件大小/哈希和仍需 Ethan 实机验证的边界见 [交付记录](发布交付-v2.3.2.md)。历史失败保持原状态，不把源码存在当成发布成功。

@@ -35,6 +35,8 @@ async function main() {
         const config = await requestJson(origin + '/api/config');
         assert.equal(config.factories.length, 0); assert.equal(config.models.length, 0); assert.equal(config.workshops.length, 0); assert.equal(config.environmentModel, null);
         assert.deepEqual(await requestJson(origin + '/api/models'), []);
+        for (let i = 0; i < 25; i++) assert.deepEqual(await requestJson(origin + '/api/models'), []);
+        checks.push('ordinary model reads do not consume the asset-transfer-only rate limit');
         checks.push('fresh boot: all 16 business tables zero; config/models readable without any factory or built-in');
         await forceStop(child); child = null; await start(); assertEmpty();
         checks.push('restart stays empty');

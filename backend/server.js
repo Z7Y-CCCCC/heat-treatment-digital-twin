@@ -621,7 +621,7 @@ app.get('/api/health', (req, res) => {
         })),
         historyRetention: historyRetention.status(),
         components: {
-            backend: { status: 'healthy' },
+            backend: { status: 'healthy', processId: process.pid },
             database: { status: databaseReady ? 'healthy' : 'error', connected: databaseReady, error: dbStatus.error || null },
             eventStorage: { status: alarmStorageFailures.length ? 'error' : 'healthy', failedFactories: alarmStorageFailures },
             siteRecovery: { status: recoveryIntent.pending ? 'requires_recovery' : 'healthy', ...recoveryIntent },

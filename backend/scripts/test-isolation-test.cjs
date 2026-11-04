@@ -3,8 +3,9 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const net = require('net');
+const http = require('node:http');
 const { once } = require('events');
-const { createRunDirectory, requireTestPath, findFreePort, startLoggedProcess } = require('./integration-test-utils.cjs');
+const { createRunDirectory, requireTestPath, findFreePort, startLoggedProcess, waitForOwnedBackend } = require('./integration-test-utils.cjs');
 
 (async () => {
     const directory = createRunDirectory('test-isolation');
@@ -28,11 +29,36 @@ const { createRunDirectory, requireTestPath, findFreePort, startLoggedProcess } 
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
     try { assert.notEqual(await findFreePort(server.address().port), server.address().port); }
     finally { await new Promise(resolve => server.close(resolve)); }
+    // A free-port probe is not a reservation. Never authenticate or write a
+    // configuration merely because some server happens to answer that port.
+    let healthPid = process.pid + 1;
+    const requests = [];
+    const healthServer = http.createServer((req, res) => {
+        requests.push(`${req.method} ${req.url}`);
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ components: { backend: { status: 'healthy', processId: healthPid } } }));
+    });
+    await new Promise(resolve => healthServer.listen(0, '127.0.0.1', resolve));
+    const origin = `http://127.0.0.1:${healthServer.address().port}`;
+    const owned = { pid: process.pid, exitCode: null, signalCode: null };
+    try {
+        await assert.rejects(waitForOwnedBackend(origin, owned), /identity mismatch/);
+        healthPid = undefined;
+        await assert.rejects(waitForOwnedBackend(origin, owned), /identity mismatch/);
+        healthPid = process.pid;
+        assert.equal((await waitForOwnedBackend(origin, owned)).components.backend.processId, process.pid);
+        await assert.rejects(waitForOwnedBackend(origin, { ...owned, exitCode: 1 }), /exited/);
+        await assert.rejects(waitForOwnedBackend('http://example.com', owned), /loopback/);
+        assert.deepEqual(requests, Array(3).fill('GET /api/health'), 'mismatches never send login or configuration requests');
+    } finally {
+        healthServer.closeAllConnections();
+        await new Promise(resolve => healthServer.close(resolve));
+    }
     const logFile = path.join(directory, 'large-output.log');
     const child = startLoggedProcess(process.execPath, ['-e', "process.stdout.write('x'.repeat(262144))"], { cwd: directory, logFile });
     await once(child, 'close');
     // The stream may finish flushing in the next turn after child close.
     await new Promise(resolve => setImmediate(resolve));
     assert.equal(fs.readFileSync(logFile, 'utf8').length, 262144);
-    console.log(JSON.stringify({ success: true, checks: 7, artifacts: directory }, null, 2));
+    console.log(JSON.stringify({ success: true, checks: 13, artifacts: directory }, null, 2));
 })().catch(error => { console.error(error.stack || error.message); process.exitCode = 1; });

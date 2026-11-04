@@ -3,7 +3,7 @@ const path = require('node:path');
 const Database = require('../backend/node_modules/better-sqlite3');
 const { getBuiltinModels } = require('../backend/services/builtinModels');
 const { createSmokeSandbox, createSmokeSession, stopOwnedSmokeProcess } = require('../desktop/scripts/smoke-sandbox.cjs');
-const { BACKEND_DIR, findFreePort, startLoggedProcess, waitForHttp, requireTestPath } = require('../backend/scripts/integration-test-utils.cjs');
+const { BACKEND_DIR, findFreePort, startLoggedProcess, waitForOwnedBackend, requireTestPath } = require('../backend/scripts/integration-test-utils.cjs');
 
 let backend;
 async function stop() { await stopOwnedSmokeProcess(backend); process.exit(0); }
@@ -12,7 +12,7 @@ process.once('SIGINT', stop); process.once('SIGTERM', stop);
 (async () => {
     const root = path.resolve(__dirname, '..');
     const sandbox = await createSmokeSandbox('manual-disassembly-ui');
-    sandbox.password = 'ManualLayout-Isolated-Test-20261030!';
+    sandbox.password = 'ManualLayout-' + require('node:crypto').randomBytes(18).toString('hex') + '!';
     const database = new Database(sandbox.filename);
     const targets = database.prepare('SELECT id,instance_config FROM devices ORDER BY id LIMIT 2').all();
     if (targets.length !== 2) throw new Error('Two isolated fixture devices are required');
@@ -44,12 +44,12 @@ process.once('SIGINT', stop); process.once('SIGTERM', stop);
         fs.copyFileSync(path.join(root,'release-manifest.json'),path.join(sandbox.directory,'resources','release-manifest.json'));
         fs.writeFileSync(path.join(serverDirectory,'distribution.json'),'{"collector":false}');
     }
-    const port = await findFreePort(3957);
+    const port = await findFreePort();
     const origin = `http://127.0.0.1:${port}`;
     backend = startLoggedProcess(process.execPath, ['server.js'], { cwd: serverDirectory,
         env: { ...sandbox.env, NODE_PATH:path.join(BACKEND_DIR,'node_modules'), PORT: String(port), HOST: '127.0.0.1', FRONTEND_DIST: path.join(root, 'frontend/dist') },
         logFile: path.join(sandbox.directory, 'backend.log') });
-    await waitForHttp(`${origin}/api/health`);
+    await waitForOwnedBackend(origin, backend);
     await createSmokeSession(origin, sandbox);
     const info = { origin, directory: sandbox.directory, username: 'admin', password: sandbox.password,
         devices: targets.map(device => device.id), models: modelIds, database: sandbox.filename, backendPid: backend.pid };

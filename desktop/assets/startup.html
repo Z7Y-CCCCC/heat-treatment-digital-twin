@@ -9,7 +9,10 @@
     :root { color-scheme: dark; font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif; }
     * { box-sizing: border-box; }
     html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: var(--startup-background,#29292c); }
-    body { display: grid; place-items: center; padding: 18px; color: #eeeeea; }
+    body { display: grid; place-items: center; padding: 18px; color: #eeeeea; -webkit-app-region: drag; user-select: none; }
+    /* Native window drag on the background; controls and copyable text stay interactive. */
+    button, input, textarea, select, a, #title, #detail, .failure, #activationPanel { -webkit-app-region: no-drag; user-select: text; }
+    button { user-select: none; }
     body.launch-status { padding: 0; }
     .shell {
       width: min(900px, 100%); max-height: calc(100vh - 48px); padding: 28px 34px 24px;

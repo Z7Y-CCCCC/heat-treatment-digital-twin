@@ -237,6 +237,7 @@ async function createStartupWindow() {
         frame: false,
         transparent: false,
         resizable: false,
+        movable: true,
         maximizable: false,
         minimizable: false,
         show: false,

@@ -24,6 +24,24 @@ test('pre-Unity status is compact and has no competing loading artwork or progre
     }
 });
 
+test('frameless startup can be dragged without swallowing activation, actions or copyable errors', () => {
+    const html = fs.readFileSync(path.join(desktopDir, 'assets', 'startup.html'), 'utf8');
+    assert.match(html, /body\s*\{[^}]*-webkit-app-region:\s*drag;/);
+    const css = html.match(/<style>([\s\S]*?)<\/style>/)[1].replace(/\/\*[\s\S]*?\*\//g, '');
+    const exclusions = css.match(/([^{}]+)\{[^{}]*-webkit-app-region:\s*no-drag;[^}]*\}/);
+    assert.ok(exclusions, 'interactive areas must opt out of native window dragging');
+    for (const selector of ['button', 'input', 'textarea', 'select', 'a', '#title', '#detail', '.failure', '#activationPanel']) {
+        assert.ok(exclusions[1].split(',').map(value => value.trim()).includes(selector), selector);
+    }
+    const source = fs.readFileSync(path.join(desktopDir, 'main.cjs'), 'utf8');
+    const startup = source.slice(source.indexOf('async function createStartupWindow()'), source.indexOf('function closeStartupWindow()'));
+    assert.match(startup, /frame:\s*false/);
+    assert.match(startup, /movable:\s*true/);
+    assert.match(startup, /maximizable:\s*false/);
+    assert.match(startup, /contextIsolation:\s*true/);
+    assert.match(startup, /sandbox:\s*true/);
+});
+
 class Child extends EventEmitter {
     pid = 12345;
     exitCode = null;

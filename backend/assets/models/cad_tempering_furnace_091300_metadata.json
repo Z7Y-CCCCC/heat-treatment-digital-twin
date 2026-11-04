@@ -11,7 +11,7 @@
     "node_naming_rule": "role_part_action，例如 fan_rear_rotate、door_front_lift、valve_gas_01",
     "delivery_status": "review",
     "owner": "",
-    "notes": "用户提供的 09.13.00_回火炉.glb 原文件入库；保留原始节点、材质和坐标。"
+    "notes": "用户提供的 09.13.00_回火炉.glb 原文件入库；保留原始节点、材质和坐标。 统一展示送料基准为 1.25 m；门板密封搭边保留，原 CAD 交付文件保留。"
   },
   "optimization": {
     "mode": "auto",
@@ -94,7 +94,7 @@
   "partBindings": [],
   "sourceAsset": {
     "filename": "09.13.00_回火炉.glb",
-    "sha256": "9cf50893d1a0cc8e07e7e61612ea7a26f2008585aeb865fe3714168e461b0387",
+    "sha256": "a0f151f1cffbe9ce23c12f6db9d4a8a7ab3a42f18c21d23b6a2f5b7ed6565dd9",
     "stats": {
       "nodes": 97,
       "meshes": 67,
@@ -102,7 +102,7 @@
       "materials": 13,
       "size": [
         2.078499972820282,
-        4.054837703704834,
+        4.074837703704834,
         3.2459893019404262
       ],
       "min": [
@@ -112,7 +112,7 @@
       ],
       "max": [
         1.1199999749660492,
-        4.054837703704834,
+        4.074837703704834,
         2.1890001089777797
       ]
     }
@@ -130,5 +130,20 @@
     "status": "review",
     "published_at": "",
     "history": []
+  },
+  "transferAlignment": {
+    "version": 1,
+    "surfaceY": 1.25,
+    "loadY": 1.29,
+    "basketStroke": null,
+    "sourceSha256": "9cf50893d1a0cc8e07e7e61612ea7a26f2008585aeb865fe3714168e461b0387",
+    "note": "Display transfer-height alignment; door sealing overlap retained; original CAD deliveries preserved.",
+    "assetSha256": "a0f151f1cffbe9ce23c12f6db9d4a8a7ab3a42f18c21d23b6a2f5b7ed6565dd9",
+    "calibration": {
+      "floor": 0.1,
+      "knot": 0.435,
+      "delta": 0.02,
+      "rollerCorrection": -0.002
+    }
   }
 }
