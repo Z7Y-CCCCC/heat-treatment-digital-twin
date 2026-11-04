@@ -10,6 +10,8 @@ using UnityEngine;
 
 namespace HeatTreatment.DigitalTwin.Backend
 {
+    // Drain the bounded inbox before animation Update, avoiding an extra render frame.
+    [DefaultExecutionOrder(-400)]
     public sealed class RealtimeWebSocketClient : MonoBehaviour
     {
         private readonly RealtimeMessageQueue _messages = new RealtimeMessageQueue();

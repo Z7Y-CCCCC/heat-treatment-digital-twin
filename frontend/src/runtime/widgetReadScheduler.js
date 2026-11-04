@@ -2,6 +2,13 @@ import { playbackSelection, normalizePlayback } from '../../../shared/widgetPlay
 // One clock and one bounded, sequential batch reader per surface, not a timer
 // and a PLC connection per card. The existing backend cache remains the source.
 export function createWidgetReadScheduler(hooks) {
+  // Two bounded lanes: a slow ERP/database call must not hold fast device APIs.
+  // Each lane remains sequential, cancels obsolete contexts and batches <=20.
+  const fast=w=>['http_api','dataset'].includes(w.data?.mode) && normalizePlayback(w.data).refreshMs<=500
+  const lanes=[true,false].map(urgent=>createReadLane({...hooks,widgets:()=>hooks.widgets().filter(w=>fast(w)===urgent)}))
+  return {refresh(force=false,now=Date.now()){return Promise.all(lanes.map(lane=>lane.refresh(force,now)))},dispose(){for(const lane of lanes)lane.dispose()}}
+}
+function createReadLane(hooks) {
   const nextAt=new Map(),keys=new Map();let disposed=false,controller=null,running=null,signature='',generation=0
   async function refresh(force=false,now=Date.now()) {
     if(disposed)return
@@ -30,7 +37,11 @@ export function createWidgetReadScheduler(hooks) {
           const record=payload.values?.[e.widget.id]
           if(record && (!record.deviceId || record.deviceId===e.deviceId))hooks.put(e.widget.id,record)
           else hooks.put(e.widget.id,{value:null,rows:[],series:[],quality:'bad',deviceId:e.deviceId,error:'设备数据暂不可用'})
-          nextAt.set(e.widget.id,now+normalizePlayback(e.widget.data).refreshMs)
+          // Backend reports remaining cache freshness, so a cache hit cannot add
+          // a second complete refresh interval. Relative TTL avoids host clock skew.
+          const interval=normalizePlayback(e.widget.data).refreshMs
+          const remaining=Number(record?.refreshAfterMs)
+          nextAt.set(e.widget.id,now+(record && Number.isFinite(remaining) ? Math.max(100,Math.min(interval,remaining)) : interval))
         }
       }catch(error){if(disposed || signal.aborted || request!==generation)return
         for(const e of batch){hooks.put(e.widget.id,{value:null,rows:[],series:[],quality:'stale',deviceId:e.deviceId,error:'数据连接暂不可用'});nextAt.set(e.widget.id,now+normalizePlayback(e.widget.data).refreshMs)}

@@ -1021,14 +1021,18 @@ onMounted(async () => {
     // flashes. ResizeObserver handles geometry changes; MutationObserver is
     // limited to structural changes so newly mounted hit targets are picked up.
     mutationObserver = new MutationObserver(mutations => {
+        let structuralChange=false
         for (const mutation of mutations) {
+            if ([...mutation.addedNodes,...mutation.removedNodes].some(node=>node.nodeType===Node.ELEMENT_NODE)) structuralChange=true
             for (const node of mutation.addedNodes || []) {
                 if (node.nodeType !== Node.ELEMENT_NODE) continue
                 if (node.matches?.('[data-overlay-hit="true"]')) resizeObserver.observe(node)
                 node.querySelectorAll?.('[data-overlay-hit="true"]').forEach(element => resizeObserver.observe(element))
             }
         }
-        scheduleRegionReport()
+        // Vue setElementText replaces text nodes on every PLC update. These
+        // are NOT new hit targets; ResizeObserver handles resulting size changes.
+        if(structuralChange) scheduleRegionReport()
     })
     mutationObserver.observe(rootRef.value, { childList: true, subtree: true })
     window.addEventListener('resize', scheduleRegionReport)

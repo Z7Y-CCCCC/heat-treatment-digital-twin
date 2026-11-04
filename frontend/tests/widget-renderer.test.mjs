@@ -415,12 +415,12 @@ test('parameter text uses safe interpolation rather than executing expressions',
 })
 
 
-test('one device card rotates cached samples, refreshes independently and locks to the selected detail device without another PLC request',async t=>{
+test('one device card rotates live samples, updates immediately and locks to the selected detail device without another PLC request',async t=>{
  const view=fixture(t),catalog=[{id:'a',name:'设备 A'},{id:'b',name:'设备 B'}],widget={id:'play',type:'value',title:'温度',data:{mode:'runtime',path:'device.analog.temperature',deviceScope:'rotation',rotationDeviceIds:['a','b'],rotationIntervalMs:2000,refreshMs:1000}};
  const props={widget,deviceCatalog:catalog,deviceDataMap:{a:{analog:{temperature:0}},b:{analog:{temperature:850}}},runtimeContext:{viewMode:'factory'}};
  await view.render({...props,playbackNow:0});assert.match(textContent(view.root),/设备 A/);assert.match(textContent(view.root),/0/);
  await view.render({...props,playbackNow:2000});assert.match(textContent(view.root),/设备 B/);assert.match(textContent(view.root),/850/);
- await view.render({...props,playbackNow:2200,deviceDataMap:{...props.deviceDataMap,b:{analog:{temperature:999}}}});assert.doesNotMatch(textContent(view.root),/999/);
+ await view.render({...props,playbackNow:2200,deviceDataMap:{...props.deviceDataMap,b:{analog:{temperature:999}}}});assert.match(textContent(view.root),/999/);
  await view.render({...props,playbackNow:3000,deviceDataMap:{...props.deviceDataMap,b:{analog:{temperature:999}}}});assert.match(textContent(view.root),/999/);
  await view.render({...props,playbackNow:3000,runtimeContext:{viewId:'device_exploded',viewMode:'device',deviceId:'a'}});assert.match(textContent(view.root),/设备 A/);assert.doesNotMatch(textContent(view.root),/850|999/);
 })
@@ -467,4 +467,19 @@ test('overlay styling respects authored curve color/width/opacity, bar radius an
  assert.equal(option.series[0].lineStyle.color,'#cc88ff');assert.equal(option.series[0].lineStyle.width,5);assert.match(option.series[0].areaStyle.color.colorStops[0].color,/, 0.6\)/)
  await view.render({widget:{...base,content:{chartType:'bar',barRadius:9}},trendPoints,overlayMode:true});option=charts.at(-1).options.at(-1)[0];assert.deepEqual(option.series[0].itemStyle.borderRadius,[9,9,0,0])
  await view.render({widget:{...base,content:{chartType:'donut',donutRatio:55}},trendPoints,overlayMode:true});option=charts.at(-1).options.at(-1)[0];assert.deepEqual(option.series[0].radius,['55%','81%'])
+})
+
+test('PLC point, device reading and selected part update without advancing the playback clock', async t => {
+ const view=fixture(t),base={playbackNow:10000,deviceCatalog:[{id:'a',name:'A'}],runtimeContext:{viewMode:'device',deviceId:'a',partId:'part-a'}};
+ const widget={id:'live',type:'value',data:{mode:'plc',pointId:'p',deviceScope:'fixed',deviceId:'a',refreshMs:5000,decimals:0}};
+ const point=value=>({p:{id:'p',device_id:'a',value,quality:'good'}});
+ await view.render({...base,widget,pointValues:point(111)});assert.match(textContent(view.root),/111/);
+ await view.render({...base,widget,pointValues:point(222)});assert.match(textContent(view.root),/222/);assert.doesNotMatch(textContent(view.root),/111/);
+ const readingWidget={...widget,data:{mode:'runtime',path:'device.analog.actual_temp',deviceScope:'fixed',deviceId:'a',refreshMs:5000}};
+ await view.render({...base,widget:readingWidget,deviceDataMap:{a:{analog:{actual_temp:333}}}});assert.match(textContent(view.root),/333/);
+ await view.render({...base,widget:readingWidget,deviceDataMap:{a:{analog:{actual_temp:444}}}});assert.match(textContent(view.root),/444/);
+ const partWidget={...widget,data:{mode:'runtime',path:'selectedPart.points.0.value',deviceScope:'fixed',deviceId:'a'}};
+ await view.render({...base,widget:partWidget,selectedPart:{id:'part-a',points:[{value:555,quality:'good'}]}});assert.match(textContent(view.root),/555/);
+ await view.render({...base,widget:partWidget,selectedPart:{id:'part-a',points:[{value:666,quality:'good'}]}});assert.match(textContent(view.root),/666/);
+ await view.render({...base,widget:partWidget,selectedPart:{id:'wrong-part',points:[{value:777,quality:'good'}]}});assert.doesNotMatch(textContent(view.root),/777/);
 })

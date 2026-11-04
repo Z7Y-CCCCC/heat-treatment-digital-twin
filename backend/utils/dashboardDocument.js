@@ -214,7 +214,7 @@ function normalizeDataBinding(source, legacyBinding = {}) {
             ? (data.valueMode ?? binding.valueMode)
             : 'latest',
         rowLimit: integer(data.rowLimit ?? binding.rowLimit, 50, 1, 500),
-        refreshMs: integer(data.refreshMs ?? binding.refreshMs, 5000, 1000, 3600000),
+        refreshMs: integer(data.refreshMs ?? binding.refreshMs, 5000, ['http_api','dataset'].includes(mode) ? 250 : 1000, 3600000),
         datasets,
         formula: shortText(data.formula, '', 256),
         formulaLabel: shortText(data.formulaLabel, '计算结果', 100),

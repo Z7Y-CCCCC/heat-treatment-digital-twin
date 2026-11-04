@@ -228,7 +228,14 @@ internal sealed class AdminPanelForm : Form
             var fixedRuntime = Directory.Exists(_options.FixedRuntimeFolder)
                 ? _options.FixedRuntimeFolder
                 : null;
-            var environment = await CoreWebView2Environment.CreateAsync(fixedRuntime, userData);
+            // Industrial data/animation overlays must remain realtime even when
+            // Windows marks the owned transparent surface as occluded/background.
+            // Preserve per-process diagnostic arguments; never change machine settings.
+            var realtimeArguments = (Environment.GetEnvironmentVariable("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS") ?? "")
+                + " --disable-background-timer-throttling --disable-renderer-backgrounding --disable-backgrounding-occluded-windows";
+            Environment.SetEnvironmentVariable("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", realtimeArguments);
+            var environment = await CoreWebView2Environment.CreateAsync(fixedRuntime, userData,
+                new CoreWebView2EnvironmentOptions(realtimeArguments));
             if (_closing || IsDisposed) return;
             await _webView.EnsureCoreWebView2Async(environment);
             if (_closing || IsDisposed) return;

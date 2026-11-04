@@ -148,7 +148,7 @@ onBeforeUnmount(() => { disposed = true; generation++; if (dirty.value && canEdi
                 <label v-if="connection?.type!=='mongodb'">Schema<input v-model.trim="draft.database.schema" class="input" placeholder="默认" /></label><label>{{ connection?.type==='mongodb' ? '集合' : '表 / 视图' }}<input v-model.trim="draft.database.table" class="input" :aria-label="connection?.type==='mongodb' ? '数据集集合' : '数据集数据表'" /></label>
                 <label>排序字段<input v-model.trim="draft.database.orderBy" class="input" placeholder="不排序" /></label><label>排序<select v-model="draft.database.orderDirection" class="input"><option value="desc">降序</option><option value="asc">升序</option></select></label>
               </template>
-              <label>刷新间隔<div class="input-suffix"><input :value="draft.refreshMs/1000" class="input" type="number" min="1" max="3600" aria-label="刷新间隔（秒）" @change="draft.refreshMs=Number($event.target.value)*1000" /><span>秒</span></div></label>
+              <label>刷新间隔<div class="input-suffix"><input :value="draft.refreshMs/1000" class="input" type="number" :min="draft.source === 'http' ? 0.25 : 1" step="0.25" max="3600" aria-label="刷新间隔（秒）" @change="draft.refreshMs=Number($event.target.value)*1000" /><span>秒</span></div></label>
               <div class="query-bottom wide"><label class="toggle-label"><input v-model="draft.enabled" type="checkbox" role="switch" aria-label="启用数据集" /><span class="toggle-track" aria-hidden="true"></span>启用</label><button class="text-button" @click="inspect">解析字段 <span aria-hidden="true">→</span></button></div>
             </div>
             <div v-show="section==='parameters'" class="parameter-panel">
