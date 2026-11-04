@@ -6,6 +6,7 @@ import { parameterValue } from '../../../shared/dashboardParameters.mjs'
 import {extendedChartOption} from './dashboardCharts.js'
 import { splitHudKpiValue } from './hudPresentation.js'
 import { configureTrendAxes, appendTrendSample } from './trendChart.js'
+import MapRegionList from './MapRegionList.vue'
 
 const HUD_FONT_TEXT = 'SF Pro Text, Inter Variable, Inter, Noto Sans SC Variable, Segoe UI, PingFang SC, Microsoft YaHei UI, sans-serif'
 const HUD_FONT_NUMBER = 'SF Pro Display, Inter Variable, Inter, Segoe UI, Bahnschrift, sans-serif'
@@ -13,6 +14,7 @@ const HUD_FONT_NUMBER = 'SF Pro Display, Inter Variable, Inter, Segoe UI, Bahnsc
 const props = defineProps({
   widget: { type: Object, default: () => ({ type: 'metrics', title: '' }) },
   metrics: { type: Object, default: () => ({}) },
+  mapData: { type: Object, default: () => ({}) },
   events: { type: Array, default: () => [] },
   trendPoints: { type: Array, default: () => [] },
   deviceStatusMap: { type: Object, default: () => ({}) },
@@ -37,7 +39,7 @@ const emit = defineEmits(['action'])
 const chartRef = ref(null)
 const localTrend = ref([])
 const localHistories=new Map()
-const historyKey=()=>`${props.runtimeContext.factoryId || ''}:${playback.value.device?.id || ''}:${props.runtimeContext.partId || ''}:${dataBinding.value.pointKey || dataBinding.value.pointId || dataBinding.value.path || ''}`
+const historyKey=()=>`${props.runtimeContext.factoryId || ''}:${playback.value.device?.id || ''}:${props.runtimeContext.partId || ''}:${/^map(?:\.|$)/.test(dataBinding.value.path || '') ? props.mapData.code || props.runtimeContext.viewId || '' : ''}:${dataBinding.value.pointKey || dataBinding.value.pointId || dataBinding.value.path || ''}`
 let chart = null
 let lastChartSignature = ''
 let chartResizeObserver = null
@@ -74,7 +76,7 @@ const sampledDevice=shallowRef({id:'',reading:{},status:{},part:{},point:null,at
 const playbackCatalog=computed(()=>props.deviceCatalog ?? [...new Set([...Object.keys(props.deviceDataMap),String(dataBinding.value.deviceId || '')].filter(Boolean))].map(id=>({id,name:id})))
 const playback=computed(()=>playbackSelection(dataBinding.value,props.runtimeContext,playbackCatalog.value,props.preview && !props.interactive ? 0 : props.playbackNow))
 const scopedDeviceBinding=computed(()=>isDeviceBinding(dataBinding.value))
-watch(()=>JSON.stringify([playback.value.device?.id || '',Math.floor(props.playbackNow/normalizePlayback(dataBinding.value).refreshMs),JSON.stringify(dataBinding.value),props.runtimeContext.factoryId,props.runtimeContext.partId,props.runtimeContext.viewId]),()=>{
+watch(()=>JSON.stringify([playback.value.device?.id || '',Math.floor(props.playbackNow/normalizePlayback(dataBinding.value).refreshMs),JSON.stringify(dataBinding.value),props.runtimeContext.factoryId,props.runtimeContext.partId,props.runtimeContext.viewId,props.runtimeContext.regionCode]),()=>{
  const id=playback.value.device?.id || ''
  const clone=value=>JSON.parse(JSON.stringify(value || {}))
  sampledDevice.value={id,reading:clone(props.deviceDataMap[id]),status:clone(props.deviceStatusMap[id]),part:clone(props.selectedPart),point:devicePoint(dataBinding.value,id,props.pointValues) ? clone(devicePoint(dataBinding.value,id,props.pointValues)) : null,at:props.playbackNow}
@@ -82,6 +84,7 @@ watch(()=>JSON.stringify([playback.value.device?.id || '',Math.floor(props.playb
 const activeDeviceName=computed(()=>databaseRecord.value?.deviceName || playback.value.device?.name || '')
 const dataContext = computed(() => ({
   metrics: props.metrics,
+  map: props.mapData,
   events: props.events,
   trendPoints: props.trendPoints,
   deviceStatusMap: props.deviceStatusMap,
@@ -372,7 +375,7 @@ const trendRows = computed(() => {
   const source = dataBinding.value.source
   const bound = source ? getWidgetValue(source) : null
   if (Array.isArray(bound)) return bound
-  if (dataBinding.value.mode === 'plc' || dataBinding.value.pointId || scopedDeviceBinding.value && dataBinding.value.mode==='runtime') return localTrend.value
+  if (dataBinding.value.mode === 'plc' || dataBinding.value.pointId || scopedDeviceBinding.value && dataBinding.value.mode==='runtime' || dataBinding.value.mode==='runtime' && isTrend.value) return localTrend.value
   return props.trendPoints
 })
 
@@ -397,8 +400,14 @@ const chartSeries = computed(() => {
     rows: trendRows.value
   }]
 })
+const mapRecords = computed(()=>{
+ if(['dataset','http_api','database'].includes(dataBinding.value.mode))return boundQuality.value==='good' ? databaseRecord.value?.rows || [] : []
+ return Array.isArray(boundValue.value)?boundValue.value:[]
+})
+function mapAction(event){if(props.interactive && !props.preview)emit('action',{event,widget:props.widget})}
 const hasTrendData = computed(() => chartSeries.value.some(series => Array.isArray(series.rows) && series.rows.length > 0))
 
+const imageUrl=computed(()=>content.value.url || (typeof boundValue.value==='string'?boundValue.value:''))
 const textLines = computed(() => {
   if (dataBinding.value.mode === 'dataset' && content.value.datasetTextMode !== 'template') return [formatValue()]
   const rawText = Array.isArray(content.value.lines) ? content.value.lines.join('\n') : (content.value.text || content.value.label || '')
@@ -685,9 +694,9 @@ function triggerEvents(trigger, domEvent) {
 }
 
 watch(() => [boundValue.value,sampledDevice.value.at], ([value]) => {
-  if (!(dataBinding.value.mode === 'plc' || dataBinding.value.pointId || dataBinding.value.point_id || scopedDeviceBinding.value && isTrend.value)) return
+  if (!(dataBinding.value.mode === 'plc' || dataBinding.value.pointId || dataBinding.value.point_id || dataBinding.value.mode==='runtime' && isTrend.value)) return
   const number = numericValue(value)
-  const sourceTime=pointRecord.value?.lastReadAt || pointRecord.value?.timestamp || sampledDevice.value.reading?.timestamp
+  const sourceTime=pointRecord.value?.lastReadAt || pointRecord.value?.timestamp || sampledDevice.value.reading?.timestamp || (/^map(?:\.|$)/.test(dataBinding.value.path || '') ? props.mapData.timestamp : null)
   const now = boundQuality.value !== 'good' ? sampledDevice.value.at : typeof sourceTime === 'string' ? Date.parse(sourceTime) : Number(sourceTime || sampledDevice.value.at)
   if(number===null && !localTrend.value.length)return
   const key=historyKey();if(!localHistories.has(key) && localHistories.size>=32)localHistories.delete(localHistories.keys().next().value)
@@ -695,7 +704,7 @@ watch(() => [boundValue.value,sampledDevice.value.at], ([value]) => {
   localHistories.set(key,rows);localTrend.value=rows
 })
 
-watch(() => [dataBinding.value.mode, dataBinding.value.deviceId || dataBinding.value.device_id, dataBinding.value.pointId || dataBinding.value.point_id, dataBinding.value.path,playback.value.device?.id,props.runtimeContext.factoryId,props.runtimeContext.partId], () => { localTrend.value = localHistories.get(historyKey()) || [] },{flush:'sync'})
+watch(() => [dataBinding.value.mode, dataBinding.value.deviceId || dataBinding.value.device_id, dataBinding.value.pointId || dataBinding.value.point_id, dataBinding.value.path,playback.value.device?.id,props.runtimeContext.factoryId,props.runtimeContext.partId,props.mapData.code], () => { localTrend.value = localHistories.get(historyKey()) || [] },{flush:'sync'})
 
 watch(chartRef, element => {
   disposeChart()
@@ -830,6 +839,10 @@ onUnmounted(() => {
       </div>
     </template>
 
+    <template v-else-if="type === 'map_region_list'">
+      <MapRegionList :rows="mapRecords" :content="content" :title="mapData.title" @action="mapAction" />
+    </template>
+
     <template v-else-if="type === 'metrics'">
       <div class="metrics-layout" :class="{ 'list-only': content.layout === 'list' }"><div v-if="content.layout !== 'list'" ref="chartRef" class="widget-chart"></div><div class="metric-list"><div v-for="item in metricItems" :key="item.label" class="metric-row"><span>{{ item.label }}</span><strong>{{ item.value }}</strong></div><p v-if="!metricItems.length" class="metric-empty">{{ content.emptyText || '暂无指标数据' }}</p></div></div>
     </template>
@@ -887,7 +900,7 @@ onUnmounted(() => {
     </template>
 
     <template v-else-if="type === 'image'">
-      <img v-if="content.url" class="image-widget" :src="content.url" :alt="content.alt || widgetTitle" :style="{ objectFit: content.fit || 'contain' }" />
+      <img v-if="imageUrl" class="image-widget" :src="imageUrl" :alt="content.alt || widgetTitle" :style="{ objectFit: content.fit || 'contain' }" />
       <div v-else class="image-placeholder"><span>▧</span><strong>选择图片</strong><small>在右侧内容属性填写地址</small></div>
     </template>
 

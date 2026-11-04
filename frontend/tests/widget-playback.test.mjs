@@ -8,6 +8,13 @@ import {createWidgetReadScheduler} from '../src/runtime/widgetReadScheduler.js'
 import {deferred,settle} from './helpers.mjs'
 const devices=[{id:'a',name:'A',lineId:'l',workshopId:'w'},{id:'b',name:'B',lineId:'l',workshopId:'w'},{id:'foreign',name:'C',lineId:'other',workshopId:'other'}]
 const binding={deviceScope:'rotation',rotationDeviceIds:['a','b'],rotationIntervalMs:2000,refreshMs:1000}
+
+test('global regional/ERP data does not rotate devices or change to a focused device context',()=>{
+ for(const context of [{viewMode:'factory'},{viewMode:'device',deviceId:'a'},{viewId:'map_world'}]) {
+  const result=playbackSelection({deviceScope:'global'},context,devices,2000)
+  assert.equal(result.device,null);assert.equal(result.mode,'global');assert.equal(normalizePlayback({deviceScope:'global'}).deviceScope,'global')
+ }
+})
 test('existing device context overrides overview rotation/fixed bindings in device, xray, exploded and part views',()=>{
  assert.equal(playbackSelection(binding,{viewMode:'factory'},devices,0).device.id,'a');assert.equal(playbackSelection(binding,{viewMode:'factory'},devices,2000).device.id,'b')
  for(const viewId of ['device_detail','device_xray','device_exploded','device_part'])for(const deviceScope of ['fixed','rotation','current'])assert.equal(playbackSelection({...binding,deviceScope,deviceId:'b'},{viewId,deviceId:'a'},devices,4000).device.id,'a')

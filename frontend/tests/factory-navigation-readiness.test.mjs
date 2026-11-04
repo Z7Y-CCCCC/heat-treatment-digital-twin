@@ -23,7 +23,7 @@ test('map, street, factory and direct overlay entrances all apply readiness chec
   const site = source('../src/views/FactoryDrilldown.vue')
   const overlay = source('../src/views/DashboardOverlay.vue')
   assert.match(map, /const status=streetEntryStatus\(target\)/)
-  assert.match(map, /:disabled="!streetEntryStatus\(factory\)\.allowed"/)
+  assert.match(map, /factory && streetEntryStatus\(factory\)\.allowed/);assert.match(map,/allowed:status.allowed/)
   assert.match(site, /if\(!overviewReadiness\.value\.allowed\)/)
   assert.match(site, /if\(!Array\.isArray\(payload\.workshops\) \|\| !payload\.workshops\.length\)/)
   assert.match(overlay, /if \(!configLoadError\.value && !overviewReadiness\.allowed\)/)

@@ -104,6 +104,8 @@ router.get('/runtime-values', async (req, res) => {
             factoryId: req.factoryId,
             parameters,
             viewId,
+            regionCode: mapSurface ? String(req.query.region_code || '').slice(0,200) : '',
+            regionLevel: /^map_/.test(viewId) ? viewId.slice(4) : '',
             workshopId: String(req.query.workshop_id || ''),
             lineId: String(req.query.line_id || ''),
             deviceId: String(req.query.device_id || ''),

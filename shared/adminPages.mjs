@@ -16,7 +16,7 @@ export const ADMIN_PAGES = [
   page('points.alarms', '点位映射 · 报警配置', { container: 'points', subpage: 'alarms', tabLabel: '报警配置' }),
   page('point-monitor', '点位监视', { navGroup: 'data', icon: 'points', actions: ['view'] }),
   page('platform.designer', '组件配置 · 大屏设计器', { container: 'platform', subpage: 'designer', tabLabel: '大屏设计器', description: '多级视角、图层与场景组件', actions: ['view', 'edit', 'delete', 'publish'] }),
-  page('platform.map', '组件配置 · 地图底图与内置模块', { container: 'platform', subpage: 'map', tabLabel: '地图底图与内置模块', description: '地图、Logo、标题与统计模块', migratedFrom: 'platform.designer' }),
+  page('platform.map', '组件配置 · 地图底图与主题', { container: 'platform', subpage: 'map', tabLabel: '地图底图与主题', description: '地图底图、品牌默认值与配色', migratedFrom: 'platform.designer' }),
   page('platform.loading', '组件配置 · 加载画面', { container: 'platform', subpage: 'loading', tabLabel: '加载画面', description: '启动图片、配色与加载文案', migratedFrom: 'platform.designer' }),
   page('platform.scene', '组件配置 · 场景名称（旧入口）', { container: 'platform', subpage: 'scene', retired: true }),
   page('platform.environment', '组件配置 · 场景与光效', { container: 'platform', subpage: 'environment', tabLabel: '场景与光效', description: 'Unity 灯光、后处理、围墙与空间' }),

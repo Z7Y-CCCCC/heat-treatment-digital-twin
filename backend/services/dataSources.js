@@ -1075,7 +1075,7 @@ function normalizeBinding(source = {}) {
         label: shortText(source.label, source.alias || '数据项', 100),
         color: shortText(source.color, '#55c7ff', 64),
         contextField: shortText(source.contextField, '', 255),
-        contextKey: ['deviceId', 'lineId', 'workshopId', 'viewId', 'partId'].includes(source.contextKey) ? source.contextKey : ''
+        contextKey: ['deviceId', 'lineId', 'workshopId', 'viewId', 'partId', 'regionCode', 'regionLevel'].includes(source.contextKey) ? source.contextKey : ''
     };
 }
 
@@ -1302,7 +1302,7 @@ async function readRuntimeBindings(widgets = [], context = {}) {
             const cached = runtimeCache.get(key);
             if (cached) { values[widgetId] = cached; continue; }
             try {
-                const scopedBinding={...widget.data,apiPath:String(widget.data.apiPath || '').replace(/\{(deviceId|lineId|workshopId|partId|viewId)\}/g,(_match,key)=>encodeURIComponent(context[key] || ''))};
+                const scopedBinding={...widget.data,apiPath:String(widget.data.apiPath || '').replace(/\{(deviceId|lineId|workshopId|partId|viewId|regionCode|regionLevel)\}/g,(_match,key)=>encodeURIComponent(context[key] || ''))};
                 const result = await readHttpApiBinding(scopedBinding, context.factoryId);
                 if(widget.data.contextField && widget.data.contextKey){const expected=context[widget.data.contextKey];if(expected===undefined || expected==='')throw new Error('缺少设备上下文');result.rows=result.rows.filter(row=>String(readDataPath(row,widget.data.contextField))===String(expected));result.value=result.rows[0]?.value ?? null;result.series=[];if(!result.rows.length)result.quality='empty';}
                 values[widgetId] = result;

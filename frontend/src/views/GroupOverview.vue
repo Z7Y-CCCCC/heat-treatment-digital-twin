@@ -19,6 +19,7 @@ import AdminWindowChrome from './admin/components/AdminWindowChrome.vue'
 import GroupHierarchyCapsule from './GroupHierarchyCapsule.vue'
 import LoadingExperience from '../components/LoadingExperience.vue'
 import MapSurfaceWidgets from './MapSurfaceWidgets.vue'
+import {upgradeMapDesignerDocument,createMapDesignerContext} from '../runtime/mapDesigner.js'
 import { disposeSceneObject } from '../runtime/ConfiguredFactoryScene.js'
 import { groupPortalAppearanceForLevel } from '../runtime/groupPortalAppearance.js'
 
@@ -28,11 +29,6 @@ const nativeLoadingManaged=ref(Boolean(window.__DIGITAL_TWIN_NATIVE_LOADING__)),
 function reportMapLoading(progress,phase,step){mapLoadingProgress.value=progress;mapLoadingPhase.value=phase;mapLoadingStep.value=step;window.dispatchEvent(new CustomEvent('digital-twin-loading-progress',{detail:{progress,phase,step}}))}
 const appearance=computed(()=>groupPortalAppearanceForLevel(config.value?.settings?.group_portal_config,level.value))
 const appearanceStyle=computed(()=>({'--group-background':appearance.value.background,'--group-surface':appearance.value.panelSurface,'--group-accent':appearance.value.accent,'--group-text':appearance.value.text}))
-function layoutStyle(key){
-  const point=appearance.value.layout?.[key]
-  if(!point)return undefined
-  return {left:`${point.x}%`,top:`${point.y}%`,right:'auto',bottom:'auto',...(key==='dock'?{width:'67%'}:{})}
-}
 const sites=computed(()=>config.value ? factoryDirectorySites(config.value) : [])
 const factorySummaries=ref({})
 const factorySummary=factoryId=>factorySummaries.value[String(factoryId)] || null
@@ -46,7 +42,6 @@ const level=computed(()=>{
 const selected=computed(()=>String(route.query.code || route.query.region || ''))
 const navigationNotice=computed(()=>String(route.query.navigationNotice || '').slice(0,180))
 const visibleSites=computed(()=>sitesAtHierarchyLevel(sites.value,level.value,selected.value))
-const unassignedCitySites=computed(()=>level.value==='city' ? visibleSites.value.filter(item=>!item.location.districtCode && !item.location.districtName) : [])
 const visibleLocalSites=computed(()=>visibleSites.value.filter(item=>item.runtime==='local'))
 const districtAssignedSites=computed(()=>visibleSites.value.filter(item=>item.location.country==='CHN' ? item.location.districtCode : item.location.regionName))
 const districtCoverage=computed(()=>visibleSites.value.length ? Math.round(districtAssignedSites.value.length/visibleSites.value.length*100) : null)
@@ -91,9 +86,18 @@ const regionRows=computed(()=>{
   }
   return merge(groupHierarchyEntries(sites.value,level.value,selected.value,childFeatures.value))
 })
-const showAllRegions=ref(false)
-const displayedRegionRows=computed(()=>showAllRegions.value?regionRows.value:regionRows.value.filter(row=>row.count>0))
-const unregisteredRegionCount=computed(()=>regionRows.value.filter(row=>row.count===0).length)
+const mapDesignerDocument=computed(()=>upgradeMapDesignerDocument(config.value?.platform?.document,config.value?.settings?.group_portal_config))
+const legacyMapValues=computed(()=>config.value?.platform?.document?.metadata?.unifiedMapDesigner===1?{}:mapValues.value)
+const mapDesignerData=computed(()=>({...createMapDesignerContext(config.value,{level:level.value,code:selected.value,regions:regionRows.value,title:regionTitle.value}),
+  records:createMapDesignerContext(config.value,{level:level.value,code:selected.value,regions:regionRows.value}).records?.map(row=>{if(row.kind!=='factory')return row;const factory=visibleSites.value.find(f=>f.id===row.id),status=streetEntryStatus(factory);return {...row,allowed:status.allowed,message:status.message,...factorySummary(row.id)}}),
+  factsFactoryCount:factsFactoryCount.value,factsLocalCount:factsLocalCount.value,factsDeviceCount:mapNumber('factsDeviceCount',visibleTotals.value.devices),
+  dockFactoryCount:dockFactoryCount.value,dockLocalCount:dockLocalCount.value,dockAssignedCount:dockAssignedCount.value,dockCoverage:dockCoverageValue.value,
+  dockWorkshops:mapNumber('dockWorkshops',visibleTotals.value.workshops),dockLines:mapNumber('dockLines',visibleTotals.value.lines),dockDevices:mapNumber('dockDevices',visibleTotals.value.devices)}))
+function handleMapWidgetAction(event){
+  if(event.action==='map_enter_factory'){const factory=visibleSites.value.find(f=>f.id===event.id);if(factory && streetEntryStatus(factory).allowed)void openFactoryStreet(factory)}
+  else if(event.action==='map_select_region' && regionRows.value.some(r=>String(r.code)===event.id))void selectRegion(event.id)
+  else if(event.action==='map_hover_region')hoverRegion(regionRows.value.some(r=>String(r.code)===event.id)?event.id:'')
+}
 const levelNames={world:'全球',country:'国家',province:'省份',city:'城市',district:'区县'}
 const hierarchyCrumbs=computed(()=>createGroupNavigationCrumbs({query:route.query,level:level.value,currentLabel:regionTitle.value}))
 const data=createDashboardDataStore()
@@ -593,6 +597,7 @@ async function refreshConfig() {
   }
 }
 async function refreshMapValues(){
+  if(config.value?.platform?.document?.metadata?.unifiedMapDesigner===1){mapValues.value={};return}
   const requestedLevel=level.value
   const requestId=++mapValueRequestId
   try{
@@ -644,7 +649,7 @@ function pick(event) {
   else if(smallRegion || regionHit)selectRegion(smallRegion || regionHit.object.userData.code)
   else if(country)selectRegion(country)
 }
-watch([level,selected],()=>{showAllRegions.value=false;mapValues.value={};void refreshMapValues();if(scene)buildMap()})
+watch([level,selected],()=>{mapValues.value={};void refreshMapValues();if(scene)buildMap()})
 onMounted(async()=>{
   window.addEventListener('keydown',handleMapEscape,true)
   nativeLoadingManaged.value=Boolean(window.__DIGITAL_TWIN_NATIVE_LOADING__)
@@ -699,137 +704,31 @@ onUnmounted(()=>{window.removeEventListener('keydown',handleMapEscape,true);stop
 
 <template>
   <LoadingExperience v-if="!ready && !error && !nativeLoadingManaged" :show="!ready" :progress="mapLoadingProgress" :phase="mapLoadingPhase" :step="mapLoadingStep" :config="config?.settings?.loading_experience_config" />
-  <main class="group-portal" :class="{'admin-surface':adminSurface,'no-panel':!appearance.showPanel,'no-facts':!appearance.showFacts,'no-dock':!appearance.showDock}" :style="appearanceStyle">
+  <main class="group-portal" :class="{'admin-surface':adminSurface}" :style="appearanceStyle">
     <AdminWindowChrome v-if="adminSurface" @before-dashboard="router.replace({path:'/admin',query:{embedded:'unity'}})" @before-admin="returnToAdminWorkspace" />
     <div ref="mapHost" class="group-map" :class="{'group-map-detail':level==='province'||level==='city','group-map-national':level==='country' && selected==='CHN'}" aria-label="集团工厂分布地图，可拖拽旋转和滚轮缩放" @pointerdown="down=[$event.clientX,$event.clientY]" @pointermove="trackRegionHover" @pointerup="pick" @pointercancel="down=null" @pointerleave="hoverRegion('')">
       <button v-for="marker in markerLabels" :key="marker.id" :ref="element=>{if(element){labelElements.set(marker.id,element);dirty=true}else labelElements.delete(marker.id)}" class="group-map-label" :class="{registered:marker.runtime==='registered','is-selected':Boolean(selectedSiteId && selectedSiteId===marker.factoryId)}" :data-site-id="marker.id" :aria-label="`定位 ${marker.name}`" :title="`${marker.name}；${marker.located===false?'位置待完善':'标记表示位置，不代表产量'}`" @pointerdown.stop @pointerup.stop @click.stop="selectMarker(marker.id)"><i></i><span>{{ marker.name }}</span><small>{{ marker.factoryId ? factorySummary(marker.factoryId)?.status==='live' ? `${factorySummary(marker.factoryId).runningDevices}/${factorySummary(marker.factoryId).totalDevices} 台运行${factorySummary(marker.factoryId).mode==='simulation'?' · 模拟':''}` : '实时数据待接入' : marker.located===false?'位置待完善':`${marker.count} 座工厂` }}</small></button>
     </div>
     <div class="group-vignette"></div>
-    <header v-if="appearance.showBrand" class="group-brand" :style="layoutStyle('brand')"><img v-if="appearance.logoUrl" class="group-brand-image" :src="appearance.logoUrl" alt="大屏 Logo" /><i v-else></i><div><strong>{{ appearance.brandTitle }}</strong><small>{{ appearance.brandSubtitle }}</small></div></header>
     <GroupHierarchyCapsule :crumbs="hierarchyCrumbs" @navigate="navigateHierarchy" />
-    <aside v-if="appearance.showFacts" class="group-facts" :style="layoutStyle('facts')"><small>{{ appearance.factsTitle }}</small><strong>{{ config ? factsFactoryCount:'—' }} <em>座</em></strong><span>{{ factsLocalCount }} 座已接入 · {{ Math.max(0,factsFactoryCount-factsLocalCount) }} 座仅登记</span><small>现场设备配置数</small><strong>{{ visibleLocalSites.length || hasMapMetric('factsDeviceCount') ? mapNumber('factsDeviceCount',visibleTotals.devices):'—' }} <em>台</em></strong><span>配置数不代表设备实时在线</span></aside>
-    <aside v-if="appearance.showPanel" class="group-panel" :style="layoutStyle('panel')">
-      <small>{{ appearance.panelTitle }}</small>
-      <Transition name="group-stage" mode="out-in">
-        <div :key="`${level}-${selected}`" class="group-panel-stage">
-          <h1>{{ regionTitle }}</h1>
-          <p>{{ level==='district' || level==='country' && selected!=='CHN' ? '点击光柱进入街道示意视角' : `点击地图进入下一级；点击上方地址返回对应层级` }}</p>
-          <div v-if="regionRows.length && level!=='district'" class="group-region-list">
-            <button v-for="region in displayedRegionRows" :key="region.code" class="group-region-row" :class="{'is-map-hovered':hoveredRegionId===region.code,'is-empty':!region.count}" :aria-pressed="selected===region.code" @mouseenter="hoverRegion(region.code)" @mouseleave="hoverRegion('')" @focus="hoverRegion(region.code)" @blur="hoverRegion('')" @click="selectRegion(region.code)">
-              <span class="group-region-copy">
-                <strong>{{ region.name }}</strong>
-                <small>{{ region.count ? '已登记工厂所在区域':'暂无登记工厂' }}</small>
-                <small v-if="region.count" class="group-region-meta">{{ region.districtAssignedCount }} 区县已归属 <i>·</i> {{ region.localCount }} 已接入工厂 <i>·</i> {{ region.registeredCount }} 仅登记</small>
-                <span v-if="region.count" class="group-region-meters" aria-hidden="true">
-                  <span><small>区县</small><i><b :style="{width:`${region.count ? region.districtAssignedCount / region.count * 100 : 0}%`}"></b></i><em>{{ region.count ? Math.round(region.districtAssignedCount / region.count * 100) : 0 }}%</em></span>
-                  <span><small>运行</small><i class="runtime"><b :style="{width:`${region.count ? region.localCount / region.count * 100 : 0}%`}"></b></i><em>{{ region.count ? Math.round(region.localCount / region.count * 100) : 0 }}%</em></span>
-                </span>
-              </span>
-              <span class="group-region-count"><b>{{ String(region.count).padStart(2,'0') }}</b><small>站点</small><i>↗</i></span>
-            </button>
-          </div>
-          <button v-if="unregisteredRegionCount && level!=='district'" class="group-region-more" type="button" :aria-expanded="showAllRegions" @click="showAllRegions=!showAllRegions">{{ showAllRegions ? '收起未登记区域' : `查看其他 ${unregisteredRegionCount} 个区域` }}<span aria-hidden="true">{{ showAllRegions ? '↑':'↓' }}</span></button>
-          <div v-for="factory in (level==='district' || level==='country' && selected!=='CHN' ? visibleSites : [])" :key="factory.id" class="group-site" :class="{selected:selectedSiteId===factory.id}" :data-factory-id="factory.id">
-            <span class="group-site-tag" :class="{registered:factory.runtime==='registered'}">{{ factory.runtime==='local' ? '中控库已接入':'仅登记 · 运行端未接入' }}</span>
-            <h2><button class="group-site-focus" type="button" :aria-label="`选择并聚焦${factory.name}`" @click="selectSite(factory.id)"><span>{{ factory.name }}</span><small>区域视角 ↗</small></button></h2><p>{{ factory.location.districtName || factory.location.city || factory.location.regionName || factory.location.country }}</p>
-            <dl v-if="factory.runtime==='local'"><div><dt>车间</dt><dd>{{ factory.workshops }}</dd></div><div><dt>产线</dt><dd>{{ factory.lines }}</dd></div><div><dt>设备</dt><dd>{{ factory.devices }}</dd></div></dl>
-            <p v-if="factorySummary(factory.id)?.status==='live'" class="group-site-live">{{ factorySummary(factory.id).mode==='simulation'?'模拟数据':'实时采集' }} · 运行 {{ factorySummary(factory.id).runningDevices }}/{{ factorySummary(factory.id).totalDevices }} 台 · 在线 {{ factorySummary(factory.id).onlineDevices }} 台 · 报警 {{ factorySummary(factory.id).alarmDevices }} 台 · OEE {{ factorySummary(factory.id).overallOee }}%</p>
-            <p v-else-if="factory.runtime==='local'" class="group-site-live is-stale">实时数据未更新；以上仅为配置数量</p>
-            <p v-else class="group-unconnected">未接入独立运行端，暂无生产指标。</p>
-            <button v-if="factory.runtime==='local' && factory.location.country==='CHN' && !factory.location.districtCode" class="group-location-action" type="button" @click="openFactoryLocationSettings">补充行政区归属 →</button>
-            <button v-if="level==='district' && factory.runtime==='local' && (factory.location.latitude===null || factory.location.longitude===null)" class="group-location-action" type="button" @click="openFactoryLocationSettings">补充工厂经纬度，精确定位光柱 →</button>
-            <button v-if="factory.runtime==='local'" :disabled="!streetEntryStatus(factory).allowed" :title="streetEntryStatus(factory).message" @click="openFactoryStreet(factory)">{{ streetEntryStatus(factory).allowed ? '进入街道视角 →' : '车间待配置' }}</button>
-            <p v-if="factory.runtime==='local' && !streetEntryStatus(factory).allowed" class="group-unconnected">{{ streetEntryStatus(factory).message }}</p>
-            <button v-else disabled>运行端待接入</button>
-          </div>
-          <div v-for="factory in unassignedCitySites" :key="`unassigned_${factory.id}`" class="group-site group-site-unassigned" :data-factory-id="factory.id">
-            <span class="group-site-tag">区县待归属</span>
-            <h2>{{ factory.name }}</h2>
-            <p>当前按城市中心显示位置示意；补充区县后可再设置经纬度，精确定位区级工厂光柱。</p>
-            <button v-if="factory.runtime==='local'" class="group-location-action" type="button" @click="openFactoryLocationSettings">补充区县归属 →</button>
-          </div>
-          <div v-if="level!=='world' && !visibleSites.length" class="group-empty">此区域暂无已登记工厂</div>
-          <p v-if="appearance.showHelp" class="group-help">在“工厂与区域”维护归属和工厂经纬度；区级光柱按坐标定位，未定位站点仅作区中心示意。</p>
-        </div>
-      </Transition>
-      <p v-if="error || configError || navigationNotice" class="group-error" role="alert">{{ error || configError || navigationNotice }}</p>
-    </aside>
-    <div v-if="appearance.showDock" class="group-dock" :style="layoutStyle('dock')" :aria-label="`${regionTitle}工厂网络摘要`">
-      <section class="group-dock-network">
-        <small>FACTORY NETWORK</small><h2>{{ appearance.dockNetworkTitle }}</h2>
-        <div class="group-dock-number"><strong>{{ config ? dockFactoryCount : '—' }}</strong><span>座登记工厂</span></div>
-        <div class="group-dock-composition" role="img" :aria-label="`${dockLocalCount} 座已接入工厂，${dockFactoryCount-dockLocalCount} 座仅登记`">
-          <i class="local" :style="{width:`${dockFactoryCount ? dockLocalCount / dockFactoryCount * 100 : 0}%`}"></i>
-          <i class="registered" :style="{width:`${dockFactoryCount ? (dockFactoryCount-dockLocalCount) / dockFactoryCount * 100 : 0}%`}"></i>
-        </div>
-        <div class="group-dock-legend"><span><i class="local"></i>已接入 <b>{{ dockLocalCount }}</b></span><span><i class="registered"></i>仅登记 <b>{{ dockFactoryCount-dockLocalCount }}</b></span></div>
-      </section>
-      <section class="group-dock-location">
-        <small>AREA ASSIGNMENT</small><h2>{{ appearance.dockLocationTitle }}</h2>
-        <div class="group-dock-location-body">
-          <div class="group-dock-location-ring" :style="{'--coverage':`${dockCoverageValue ?? 0}%`}" role="img" :aria-label="`行政区归属 ${dockCoverageValue ?? '未知'}%，已补充区县 ${dockAssignedCount} 座，共 ${dockFactoryCount} 座`"><strong>{{ dockCoverageValue ?? '—' }}<em v-if="dockCoverageValue !== null">%</em></strong></div>
-          <div class="group-dock-location-copy"><strong>{{ dockAssignedCount }}<i>/</i>{{ dockFactoryCount }} <small>座已归属到区县</small></strong><p>区级光柱按工厂坐标定位</p></div>
-        </div>
-      </section>
-      <section class="group-dock-hierarchy">
-        <small>LOCAL SITE STRUCTURE</small><h2>{{ appearance.dockHierarchyTitle }}</h2>
-        <dl><div><dt>车间</dt><dd>{{ visibleLocalSites.length || hasMapMetric('dockWorkshops') ? mapNumber('dockWorkshops',visibleTotals.workshops) : '—' }}</dd></div><div><dt>产线</dt><dd>{{ visibleLocalSites.length || hasMapMetric('dockLines') ? mapNumber('dockLines',visibleTotals.lines) : '—' }}</dd></div><div><dt>设备</dt><dd>{{ visibleLocalSites.length || hasMapMetric('dockDevices') ? mapNumber('dockDevices',visibleTotals.devices) : '—' }}</dd></div></dl>
-        <p>配置数量 · 不代表实时在线</p>
-      </section>
-    </div>
+    <div v-if="error || configError || navigationNotice" class="map-action-error" role="alert">{{error || configError || navigationNotice}}</div>
     <div class="group-map-controls"><button aria-label="复位地图视角" title="复位地图视角" @click="frameMap">⌖</button></div>
     <div v-if="loadingStage && ready" class="group-stage-loading" role="status">正在进入{{ levelNames[level] }}地图…</div>
-    <MapSurfaceWidgets :document="config?.platform?.document" :view-id="`map_${level}`" :factory-id="config?.factoryId || ''" :config="config" :data-store="data" @navigate="navigateDesignedSurface" />
+    <MapSurfaceWidgets :document="mapDesignerDocument" :map-data="mapDesignerData" :legacy-values="legacyMapValues" :view-id="`map_${level}`" :factory-id="config?.factoryId || ''" :config="config" :data-store="data" @navigate="navigateDesignedSurface" @map-action="handleMapWidgetAction" />
   </main>
 </template>
 
 <style scoped>
-.group-portal{position:fixed;inset:0;overflow:hidden;background:#141722;color:#d7ddef;font-family:var(--hud-font-text,'Segoe UI',sans-serif)}.group-map{position:absolute;inset:30px 14% 35px -6%}.group-map :deep(canvas){width:100%;height:100%;touch-action:none;display:block}.group-vignette{position:absolute;inset:0;pointer-events:none;background:linear-gradient(90deg,#141722b0,transparent 24%,transparent 68%,#141722e8),linear-gradient(0deg,#10121dcc,transparent 35%,transparent 75%,#10121dcc)}
-.group-brand{position:absolute;left:3%;top:4%;display:flex;gap:15px;align-items:center}.group-brand i{width:26px;height:32px;background:linear-gradient(145deg,#bbc1ff,#6c75d9);clip-path:polygon(50% 0,100% 25%,100% 75%,50% 100%,0 75%,0 25%)}.group-brand strong{font-size:21px;font-weight:500;letter-spacing:.03em}.group-brand small{display:block;margin-top:8px;font-size:9px;letter-spacing:.23em;color:#707d9b}.group-breadcrumb button{border:0;background:transparent;color:#7f89a5;font:inherit;cursor:pointer}
-.group-breadcrumb{position:absolute;left:3%;top:13%;display:flex;gap:12px;align-items:center;font-size:11px;color:#8d9ab5;padding:7px 12px;border:1px solid #7c8cac26;border-radius:20px;background:rgba(20,23,34,.28)}.group-breadcrumb button{color:#b6c0d7}.group-facts{position:absolute;left:3.5%;top:23%;display:grid;gap:12px}.group-facts>small{margin-top:18px;color:#8793ad;font-size:11px}.group-facts strong{font-size:30px;font-weight:400;font-variant-numeric:tabular-nums}.group-facts em{font-size:10px;color:#8491a8;font-style:normal}.group-facts>span{font-size:10px;color:#77839d}
-.group-panel{position:absolute;right:3%;top:17%;width:270px;max-width:27vw;padding:24px 18px;background:linear-gradient(120deg,#1015228c,#10152238);border-radius:4px}.group-panel>small{font-size:9px;color:#7c88a4;letter-spacing:.2em}.group-panel h1{font-size:18px;font-weight:500;margin:10px 0 20px}.group-panel-stage>p,.group-site>p{font-size:11px;line-height:1.8;color:#8996b2}.group-region-row{display:flex;align-items:center;justify-content:space-between;width:100%;padding:15px 0;margin:20px 0;border:0;border-top:1px solid #7b8aa522;border-bottom:1px solid #7b8aa522;background:transparent;color:#c7d0e8;font-size:12px;cursor:pointer;text-align:left}.group-region-row small{display:block;font-size:10px;color:#77849e;margin-top:7px}.group-region-row b{font-weight:400}.group-site{padding-top:20px}.group-site-tag{color:#9aade0;font-size:9px;letter-spacing:.07em}.group-site h2{font-size:15px;line-height:1.7;font-weight:500}.group-site dl{display:flex;justify-content:space-between;margin:22px 0}.group-site dt{color:#7686a5;font-size:10px}.group-site dd{font-size:25px;font-weight:300;margin:8px 0}.group-site>button{width:100%;padding:11px 8px;border:1px solid #8d9fe34d;border-radius:5px;background:#7484de20;color:#c1cdfa;font-size:12px;cursor:pointer}.group-site>button:hover{background:#7484de38}.group-panel .group-help{margin-top:26px;font-size:10px;color:#63728c}.group-panel .group-error{color:#efa3af}.group-empty{padding:30px 0;font-size:12px;color:#818faa}.group-map-controls{position:absolute;bottom:12%;left:50%;display:flex;align-items:center;transform:translateX(-50%)}.group-map-controls button{width:32px;height:32px;border:1px solid #8a98c33b;border-radius:50%;background:#181e30;color:#a5b5e0;cursor:pointer}.group-loading{position:absolute;left:40%;top:50%;color:#9daacb;font-size:14px}button:focus-visible{outline:2px solid #97a6eb;outline-offset:4px}button:disabled{opacity:.55;cursor:wait}@media(max-width:900px){.group-facts{display:none}.group-panel{width:210px;max-width:31vw;padding:16px 12px}.group-brand strong{font-size:16px}.group-brand small{font-size:7px}.group-panel h1{font-size:16px}}
+.map-action-error{position:absolute;bottom:12px;left:50%;transform:translateX(-50%);z-index:30;padding:8px 16px;border-radius:8px;background:#2b203ce6;color:#ecd5e5;font-size:12px}
+.group-portal{position:fixed;inset:0;overflow:hidden;background:#141722;color:#d7ddef;font-family:var(--hud-font-text,'Segoe UI',sans-serif)}.group-map{position:absolute;inset:30px 14% 35px -6%}.group-map :deep(canvas){width:100%;height:100%;touch-action:none;display:block}.group-vignette{position:absolute;inset:0;pointer-events:none;background:linear-gradient(90deg,#141722b0,transparent 24%,transparent 68%,#141722e8),linear-gradient(0deg,#10121dcc,transparent 35%,transparent 75%,#10121dcc)}.group-map-controls{position:absolute;bottom:12%;left:50%;display:flex;align-items:center;transform:translateX(-50%)}.group-map-controls button{width:32px;height:32px;border:1px solid #8a98c33b;border-radius:50%;background:#181e30;color:#a5b5e0;cursor:pointer}.group-loading{position:absolute;left:40%;top:50%;color:#9daacb;font-size:14px}button:focus-visible{outline:2px solid #97a6eb;outline-offset:4px}button:disabled{opacity:.55;cursor:wait}
 </style>
 <style scoped>
 .group-portal{--group-font:"Inter Variable","Noto Sans SC Variable","Segoe UI","Microsoft YaHei UI",sans-serif;font-family:var(--group-font)!important;font-synthesis:none;-webkit-font-smoothing:antialiased}.group-map-label{font-family:var(--group-font)!important}.group-map-label>span{min-width:0;overflow:hidden;text-overflow:ellipsis}.group-map-label small{flex-shrink:0}
-.group-panel{bottom:9%;overflow-y:auto;scrollbar-width:thin;scrollbar-color:#414c6a transparent}.group-region-list{max-height:220px;overflow:auto;scrollbar-width:thin;scrollbar-color:#414c6a transparent}.group-region-list .group-region-row{margin:0;border-top:0;padding:13px 0}.group-site{margin-top:15px;padding:18px 0 20px;border-bottom:1px solid #7786a41c}.group-site.selected{background:linear-gradient(90deg,#8996e311,transparent);box-shadow:inset 2px 0 #97a2df;padding-left:10px}.group-site-tag.registered{color:#b4a1cc}.group-site .group-unconnected{font-size:10px;color:#77869e}.group-site>button:disabled{cursor:not-allowed;background:#75819d0c;border-color:#75819d24;color:#7f8aa4}
 .group-map-label{position:absolute;left:0;top:0;z-index:2;visibility:hidden;display:flex;align-items:center;gap:7px;max-width:180px;padding:6px 9px;border:1px solid #9aace838;border-radius:5px;background:rgba(15,20,35,.76);color:#d0dcf4;font:400 10px var(--hud-font-text,'Segoe UI',sans-serif);white-space:nowrap;cursor:pointer;overflow:hidden;text-overflow:ellipsis}.group-map-label i{width:4px;height:4px;flex-shrink:0;border-radius:50%;background:#91d4cc;box-shadow:0 0 8px #83baf066}.group-map-label small{font-size:8px;color:#7f91b8}.group-map-label.registered i{background:#c2a2dc;box-shadow:none}.group-map-label:hover{border-color:#b4c5f4aa;color:white}.group-map-label:focus-visible{outline:2px solid #a7b2f1;outline-offset:3px}
-.group-location-action{width:100%;margin:4px 0 8px;padding:8px 10px;border:1px solid rgba(145,163,205,.23);border-radius:5px;background:rgba(130,148,194,.08);color:#b7c4e3;text-align:left;font-size:11px;cursor:pointer;transition:background .18s ease,border-color .18s ease}.group-location-action:hover{border-color:rgba(159,178,231,.55);background:rgba(130,148,194,.15)}
 </style>
 <style scoped>.group-portal.admin-surface{top:46px}.group-portal.admin-surface :deep(.unity-window-chrome){position:fixed;top:0;left:0;right:0}</style>
 <style scoped>
-.group-brand{z-index:2;min-width:290px;padding:11px 30px 13px 12px;border:1px solid rgba(155,171,225,.13);border-radius:0 0 20px 0;background:linear-gradient(115deg,rgba(18,23,39,.72),rgba(18,23,39,.16));box-shadow:inset 0 -1px 0 rgba(119,137,236,.37),0 8px 26px rgba(5,9,21,.12)}
 .group-portal{background:radial-gradient(ellipse 55% 48% at 48% 49%,rgba(76,77,104,.2),transparent 78%),linear-gradient(180deg,#181a25 0%,#12141e 100%)}
-.group-brand::after{content:"";position:absolute;right:6px;bottom:-1px;width:78px;height:1px;background:linear-gradient(90deg,transparent,rgba(146,154,255,.8));box-shadow:0 0 11px rgba(131,143,255,.48)}
-.group-brand i{box-shadow:0 0 18px rgba(132,144,255,.38)}
-.group-facts{padding-left:13px;border-left:1px solid rgba(150,165,211,.25);gap:9px}
-.group-facts>small{margin-top:15px;letter-spacing:.13em;text-transform:uppercase}
-.group-facts strong{font-size:31px;line-height:1.05;color:#edf0fa;text-shadow:0 0 22px rgba(140,155,233,.16)}
-.group-panel{z-index:2;border:1px solid rgba(142,159,207,.11);border-radius:9px;background:linear-gradient(125deg,rgba(23,29,48,.7),rgba(17,22,36,.48) 56%,rgba(15,20,34,.62));box-shadow:0 18px 38px rgba(2,6,17,.17),inset 0 1px 0 rgba(219,226,255,.045)}
-.group-panel::before{content:"";position:absolute;top:0;left:18px;width:94px;height:1px;background:linear-gradient(90deg,rgba(155,160,245,.72),transparent);pointer-events:none}
-.group-panel h1{color:#e9edf9;letter-spacing:.025em}
-.group-dock{position:absolute;z-index:2;left:3%;right:30%;bottom:8%;display:grid;grid-template-columns:1.08fr 1fr 1.2fr;min-height:126px;overflow:hidden;border:1px solid rgba(149,165,215,.11);border-radius:9px;background:linear-gradient(110deg,rgba(20,25,42,.68),rgba(20,24,40,.53) 60%,rgba(16,20,34,.64));box-shadow:0 16px 34px rgba(3,6,17,.14),inset 0 1px 0 rgba(220,226,255,.05);font-variant-numeric:tabular-nums}
-.group-dock::before{content:"";position:absolute;top:0;left:20px;width:140px;height:1px;background:linear-gradient(90deg,rgba(155,161,255,.68),rgba(96,195,221,.28),transparent);box-shadow:0 0 9px rgba(139,153,249,.22)}
-.group-dock section{min-width:0;padding:16px 20px 13px}
-.group-dock section+section{border-left:1px solid rgba(159,176,220,.11)}
-.group-dock small{color:#7f8ca9;font-size:8px;letter-spacing:.18em}
-.group-dock h2{margin:5px 0 8px;color:#e5e9f5;font-size:12px;font-weight:550;letter-spacing:.025em}
-.group-dock-number{display:flex;align-items:baseline;gap:8px;white-space:nowrap}
-.group-dock-number strong{color:#edf0fa;font:400 28px/1 var(--hud-font-number,"Segoe UI Variable",sans-serif);letter-spacing:-.035em}
-.group-dock-number strong em{font-size:13px;font-style:normal;letter-spacing:0}
-.group-dock-number span,.group-dock p{color:#91a0ba;font-size:9px}
-.group-dock p{margin:10px 0 0;line-height:1.35;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.group-dock p span{padding:0 4px;color:#60708f}
-.group-dock-live{display:inline-block;width:5px;height:5px;margin:0 7px 1px 0;border-radius:50%;background:#81d6ba;box-shadow:0 0 8px rgba(129,214,186,.55)}
-.group-dock-meter{height:2px;margin-top:11px;background:rgba(156,171,211,.14)}
-.group-dock-meter i{display:block;height:100%;background:linear-gradient(90deg,#6f94e8,#bca3ec);box-shadow:0 0 7px rgba(141,162,255,.54);transition:width .55s ease}
-.group-dock-location p{margin-top:7px}
-.group-dock-hierarchy dl{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:10px 0 0}
-.group-dock-hierarchy dl div{min-width:0}
-.group-dock-hierarchy dt{color:#8997b1;font-size:9px}
-.group-dock-hierarchy dd{margin:5px 0 0;color:#e6eaf7;font:400 20px/1 var(--hud-font-number,"Segoe UI Variable",sans-serif)}
-.group-dock-hierarchy p{margin-top:8px}
-@media(max-width:1100px){.group-dock{right:32%;grid-template-columns:1fr 1fr}.group-dock-hierarchy{display:none}.group-dock section{padding:14px 15px 12px}}
-@media(max-width:720px){.group-dock{left:3%;right:35%;bottom:8%;grid-template-columns:1fr;min-height:0}.group-dock-location{display:none}.group-dock-network p{white-space:normal}.group-brand{min-width:0}.group-panel{max-width:32vw}}
 </style>
 <style scoped>
 .group-map-label{overflow:visible;isolation:isolate;border-color:rgba(154,172,224,.27);border-radius:6px;background:linear-gradient(115deg,rgba(19,25,43,.84),rgba(22,27,42,.66));box-shadow:0 5px 16px rgba(3,7,18,.22),inset 0 1px 0 rgba(225,232,255,.07);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px)}
@@ -840,79 +739,20 @@ onUnmounted(()=>{window.removeEventListener('keydown',handleMapEscape,true);stop
 .group-map-label:hover{border-color:rgba(190,207,255,.64);box-shadow:0 7px 20px rgba(3,7,18,.3),0 0 12px rgba(117,147,231,.12),inset 0 1px 0 rgba(235,240,255,.12)}
 .group-map-label.is-selected{border-color:rgba(168,193,255,.8);background:linear-gradient(110deg,rgba(41,59,99,.92),rgba(23,30,52,.88));box-shadow:0 0 0 2px rgba(129,153,255,.13),0 0 18px rgba(119,150,255,.25),inset 0 1px 0 rgba(235,242,255,.15)}.group-map-label.is-selected i{background:#d4edff;box-shadow:0 0 0 3px rgba(132,177,255,.18),0 0 12px rgba(149,199,255,.8)}
 .group-map-label{opacity:var(--map-label-opacity,1)}.group-stage-loading{position:absolute;left:50%;top:20%;transform:translateX(-50%);padding:7px 13px;border:1px solid rgba(133,154,215,.22);border-radius:99px;background:rgba(18,25,42,.75);color:#9cafcf;font-size:10px;letter-spacing:.08em;pointer-events:none}
-.group-breadcrumb-factory{color:#dfe5fa!important}.group-site-focus{display:flex;align-items:baseline;justify-content:space-between;width:100%;padding:0;border:0;background:transparent;color:inherit;text-align:left;font:inherit;cursor:pointer}.group-site-focus small{flex-shrink:0;margin-left:10px;color:#91a0c2;font-size:9px;font-weight:400;opacity:.55;transition:opacity .18s ease,color .18s ease}.group-site-focus:hover small,.group-site.selected .group-site-focus small{color:#c3cdf1;opacity:1}.group-site-focus:focus-visible{outline:2px solid #a7b2f1;outline-offset:4px;border-radius:2px}
-.group-region-list .group-region-row{gap:14px;padding:14px 7px;border-bottom-color:rgba(151,166,203,.12);transition:background .18s ease,border-color .18s ease}.group-region-list .group-region-row:hover,.group-region-list .group-region-row.is-map-hovered{background:linear-gradient(100deg,rgba(120,139,202,.11),rgba(120,139,202,.015));border-bottom-color:rgba(157,174,226,.28)}.group-region-list .group-region-row.is-map-hovered{box-shadow:inset 2px 0 rgba(170,183,255,.72)}.group-region-copy{display:grid;gap:5px;min-width:0}.group-region-copy>strong{overflow:hidden;color:#dce3f4;font-size:12px;font-weight:500;text-overflow:ellipsis}.group-region-copy>small{margin:0!important;color:#7887a4!important;font-size:9px!important}.group-region-copy>.group-region-meta{white-space:nowrap;color:#9aa7c0!important;font-size:8px!important;letter-spacing:0}.group-region-meta i{padding:0 2px;color:#53617d;font-style:normal}.group-region-count{display:grid;grid-template-columns:auto auto;align-items:baseline;column-gap:4px;flex-shrink:0;color:#a8b5d1}.group-region-count>b{grid-row:1/3;color:#e0e7f4;font:400 21px/1 var(--hud-font-number,"Segoe UI Variable",sans-serif);font-variant-numeric:tabular-nums}.group-region-count>small{font-size:8px;color:#7c8ba8}.group-region-count>i{grid-column:2;grid-row:1/3;align-self:center;margin-left:5px;color:#8394bc;font-size:13px;font-style:normal;transition:transform .18s ease,color .18s ease}.group-region-row:hover .group-region-count>i{transform:translateX(3px);color:#d0dbfa}
-.group-region-meters{display:grid;gap:5px;margin-top:2px}.group-region-meters>span{display:grid;grid-template-columns:24px minmax(42px,1fr) 25px;align-items:center;gap:7px}.group-region-meters>span>small{color:#7887a4;font-size:8px;letter-spacing:.03em}.group-region-meters>span>i{display:block;height:2px;overflow:hidden;border-radius:2px;background:rgba(148,163,199,.13)}.group-region-meters>span>i>b{display:block;height:100%;border-radius:inherit;background:linear-gradient(90deg,rgba(145,155,235,.58),rgba(177,186,255,.9));box-shadow:0 0 6px rgba(155,166,246,.2);transition:width .35s ease}.group-region-meters>span>i.runtime>b{background:linear-gradient(90deg,rgba(93,191,175,.56),rgba(127,224,194,.9));box-shadow:0 0 6px rgba(111,211,181,.18)}.group-region-meters em{color:#7f8da8;font:400 8px/1 var(--hud-font-number,"Segoe UI Variable",sans-serif);font-style:normal;font-variant-numeric:tabular-nums;text-align:right}
 .group-stage-enter-active,.group-stage-leave-active{transition:opacity .24s ease,transform .3s cubic-bezier(.2,.75,.25,1),filter .24s ease;will-change:opacity,transform,filter}.group-stage-enter-from{opacity:0;transform:translateY(7px);filter:blur(2px)}.group-stage-leave-to{opacity:0;transform:translateY(-4px);filter:blur(2px)}
 @media(prefers-reduced-motion:reduce){.group-stage-enter-active,.group-stage-leave-active{transition:none}.group-stage-enter-from,.group-stage-leave-to{transform:none;filter:none}}
-.group-dock{backdrop-filter:blur(18px) saturate(1.2);-webkit-backdrop-filter:blur(18px) saturate(1.2);background:linear-gradient(112deg,rgba(22,27,45,.66),rgba(22,27,43,.46) 58%,rgba(16,20,34,.61));border-color:rgba(164,179,224,.15);box-shadow:0 18px 42px rgba(3,6,17,.18),inset 0 1px 0 rgba(229,234,255,.065)}
-.group-dock section{position:relative;padding:16px 20px 14px}.group-dock section+section{border-left-color:rgba(159,176,220,.13)}.group-dock h2{margin-bottom:12px}.group-dock-network .group-dock-number{margin-bottom:12px}
-.group-dock-composition{display:flex;gap:2px;height:4px;overflow:hidden;border-radius:5px;background:rgba(156,171,211,.12);box-shadow:inset 0 1px 2px rgba(3,7,18,.2)}.group-dock-composition>i{display:block;height:100%;border-radius:4px;transition:width .45s cubic-bezier(.2,.75,.25,1)}.group-dock-composition>.local{background:linear-gradient(90deg,#57a99e,#8ce0c5);box-shadow:0 0 10px rgba(111,211,181,.3)}.group-dock-composition>.registered{background:linear-gradient(90deg,#7889bd,#b0a1dc);box-shadow:0 0 9px rgba(155,166,246,.2)}
-.group-dock-legend{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:9px}.group-dock-legend>span{display:flex;align-items:center;gap:5px;color:#8997b1;font-size:8px;white-space:nowrap}.group-dock-legend>span>i{width:5px;height:5px;border-radius:50%;background:#75cdb6;box-shadow:0 0 7px rgba(111,211,181,.32)}.group-dock-legend>span>i.registered{background:#a89acb;box-shadow:0 0 7px rgba(168,154,203,.25)}.group-dock-legend b{color:#d9e1f1;font:500 9px/1 var(--hud-font-number,"Segoe UI Variable",sans-serif);font-variant-numeric:tabular-nums}
-.group-dock-location-body{display:flex;align-items:center;gap:14px;margin-top:2px}.group-dock-location-ring{position:relative;isolation:isolate;display:grid;place-items:center;width:54px;height:54px;flex:none;border:1px solid rgba(179,188,245,.16);border-radius:50%;background:conic-gradient(from -90deg,#a4a8f4 0 var(--coverage),rgba(148,163,199,.15) var(--coverage) 100%);box-shadow:0 0 20px rgba(139,145,227,.11)}.group-dock-location-ring::before{content:"";position:absolute;z-index:-1;inset:4px;border:1px solid rgba(193,203,239,.12);border-radius:50%;background:linear-gradient(145deg,rgba(27,33,53,.98),rgba(18,22,37,.98))}.group-dock-location-ring>strong{color:#e8ebfa;font:500 12px/1 var(--hud-font-number,"Segoe UI Variable",sans-serif);font-variant-numeric:tabular-nums}.group-dock-location-ring>strong>em{margin-left:1px;color:#aeb5e9;font-size:7px;font-style:normal}.group-dock-location-copy{min-width:0}.group-dock-location-copy>strong{display:flex;align-items:baseline;gap:4px;color:#e5e9f6;font:400 18px/1 var(--hud-font-number,"Segoe UI Variable",sans-serif);font-variant-numeric:tabular-nums;white-space:nowrap}.group-dock-location-copy>strong>i{color:#697895;font-size:11px;font-style:normal}.group-dock-location-copy>strong>small{margin-left:3px;color:#93a0b8;font:400 8px/1.2 var(--group-font,"Segoe UI",sans-serif)}.group-dock-location-copy>p{margin:8px 0 0;color:#7887a2;font-size:8px}
-.group-dock-hierarchy dl{gap:10px;margin-top:13px}.group-dock-hierarchy dl div{position:relative;padding-left:9px}.group-dock-hierarchy dl div::before{content:"";position:absolute;left:0;top:3px;bottom:3px;width:1px;background:linear-gradient(180deg,rgba(167,171,239,.56),rgba(107,202,191,.18))}.group-dock-hierarchy dd{margin-top:7px;font-size:22px}.group-dock-hierarchy p{margin-top:10px}
-@media(max-width:720px){.group-dock-legend{gap:6px}.group-dock-legend>span{gap:4px;font-size:7px}.group-dock-location-body{gap:9px}.group-dock-location-ring{width:46px;height:46px}.group-dock-location-copy>strong{font-size:15px}}
-.group-brand{z-index:3;box-sizing:border-box;width:min(31vw,450px);min-height:62px;padding:9px 42px 15px 17px;border:1px solid rgba(151,169,215,.1);border-top-color:rgba(151,169,215,.045);border-right-color:transparent;border-radius:0 0 26px 0;background:linear-gradient(103deg,rgba(27,34,54,.84),rgba(24,30,48,.58) 68%,rgba(19,24,40,.12));box-shadow:inset 0 1px 0 rgba(229,235,255,.055),0 10px 28px rgba(4,7,18,.08)}.group-brand::before{content:"";position:absolute;right:23px;top:-8px;width:1px;height:73px;transform:skewX(-27deg);background:linear-gradient(180deg,rgba(142,161,239,.07),rgba(144,159,232,.5) 72%,rgba(125,145,220,.2));box-shadow:0 0 8px rgba(124,145,235,.18);pointer-events:none}.group-brand::after{content:"";position:absolute;right:15px;bottom:-1px;width:136px;height:1px;transform:skewX(-27deg);background:linear-gradient(90deg,rgba(154,166,243,.52),rgba(114,145,219,.24),transparent);box-shadow:0 0 9px rgba(133,148,238,.18);pointer-events:none}.group-brand i{filter:drop-shadow(0 0 8px rgba(145,154,255,.28))}.group-brand strong{color:#e5e9f6;font-size:19px;letter-spacing:.015em}.group-brand small{margin-top:5px;color:#7987a3;font-size:8px;letter-spacing:.2em}
-@media(max-width:900px){.group-brand{width:auto;min-width:0;max-width:58vw;padding:8px 28px 13px 11px}.group-brand strong{font-size:16px}.group-brand small{font-size:7px}.group-brand::before{right:12px;height:63px}.group-brand::after{width:72px}}
-.group-panel{bottom:auto;max-height:calc(100% - 26%);overflow-y:auto}
-.group-region-list{max-height:min(42vh,360px)}
-.group-region-row.is-empty{padding-top:10px;padding-bottom:10px;opacity:.68}
-.group-region-row.is-empty:hover,.group-region-row.is-empty.is-map-hovered{opacity:1}
-.group-region-row.is-empty .group-region-copy{gap:3px}
-.group-region-row.is-empty .group-region-count>b{font-size:16px}
-.group-region-more{display:flex;align-items:center;justify-content:space-between;width:100%;margin-top:8px;padding:11px 7px;border:1px solid rgba(150,167,210,.2);border-radius:5px;background:rgba(102,118,162,.09);color:#9eacc9;font:500 11px/1.2 var(--group-font);cursor:pointer;text-align:left;transition:background .2s ease,border-color .2s ease,color .2s ease}
-.group-region-more:hover{border-color:rgba(163,185,240,.42);background:rgba(112,134,198,.15);color:#d2dcf5}
-.group-region-more span{font-size:14px;color:#a5b9eb}
 .group-map-detail{top:calc(30px - min(18vh,150px));bottom:calc(35px + min(18vh,150px))}
 .group-map-national{top:-15px;bottom:80px}
 .group-portal{background:radial-gradient(ellipse 62% 58% at 48% 44%,rgba(206,204,193,.085),transparent 72%),linear-gradient(140deg,#36373a 0%,#303134 52%,#292a2c 100%);color:#e5e3de}
 .group-vignette{background:linear-gradient(90deg,rgba(21,21,22,.12),transparent 24%,transparent 70%,rgba(19,19,20,.18)),linear-gradient(0deg,rgba(17,17,18,.2),transparent 31%,transparent 78%,rgba(20,20,21,.12))}
-.group-breadcrumb{border-color:rgba(215,213,204,.11);background:rgba(202,200,192,.065);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px)}
-.group-brand{border-color:rgba(210,208,199,.085);background:linear-gradient(108deg,rgba(218,216,208,.11),rgba(218,216,208,.045) 70%,transparent);box-shadow:inset 0 1px 0 rgba(255,255,255,.045),0 10px 28px rgba(0,0,0,.035);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px)}
-.group-brand::before{background:linear-gradient(180deg,rgba(204,203,194,.04),rgba(204,203,194,.28) 72%,rgba(204,203,194,.1));box-shadow:0 0 8px rgba(204,203,194,.07)}
-.group-brand::after{background:linear-gradient(90deg,rgba(210,208,199,.28),rgba(210,208,199,.12),transparent);box-shadow:0 0 9px rgba(210,208,199,.08)}
-.group-location-action{border-color:rgba(215,213,204,.17);background:rgba(204,202,194,.07);color:#d5d3cc}
-.group-location-action:hover{border-color:rgba(222,220,211,.32);background:rgba(204,202,194,.12)}
-.group-panel{border-color:rgba(214,212,203,.105);background:linear-gradient(135deg,rgba(218,216,208,.105),rgba(218,216,208,.045) 58%,rgba(218,216,208,.018));box-shadow:0 18px 42px rgba(0,0,0,.075),inset 0 1px 0 rgba(255,255,255,.055);backdrop-filter:blur(20px) saturate(.76);-webkit-backdrop-filter:blur(20px) saturate(.76)}
-.group-panel::before{background:linear-gradient(90deg,rgba(215,213,204,.42),transparent)}
-.group-dock{border-color:rgba(214,212,203,.1);background:linear-gradient(112deg,rgba(218,216,208,.095),rgba(218,216,208,.045) 58%,rgba(218,216,208,.02));box-shadow:0 16px 38px rgba(0,0,0,.065),inset 0 1px 0 rgba(255,255,255,.05);backdrop-filter:blur(20px) saturate(.76);-webkit-backdrop-filter:blur(20px) saturate(.76)}
-.group-dock section+section{border-left-color:rgba(216,214,204,.11)}
-.group-dock::before{background:linear-gradient(90deg,rgba(215,213,204,.32),rgba(188,190,181,.14),transparent);box-shadow:0 0 9px rgba(215,213,204,.07)}
 .group-map-label{border-color:rgba(218,216,207,.2);background:linear-gradient(115deg,rgba(55,55,57,.88),rgba(43,43,45,.78));color:#e7e5df}
 .group-map-label.is-selected{background:linear-gradient(110deg,rgba(83,82,88,.94),rgba(54,54,57,.9))}
 .group-map-controls button{border-color:rgba(217,215,205,.2);background:rgba(57,57,59,.8);color:#dedcd5;backdrop-filter:blur(12px)}
 .group-stage-loading{border-color:rgba(215,213,204,.18);background:rgba(54,54,56,.82);color:#d5d3cb;backdrop-filter:blur(14px)}
-.group-region-more{border-color:rgba(215,213,204,.16);background:rgba(87,87,87,.22)}
-.group-portal{background:radial-gradient(ellipse 48% 43% at 47% 43%,rgba(208,204,194,.07),transparent 76%),linear-gradient(160deg,color-mix(in srgb,var(--group-background) 88%,#454347),var(--group-background) 65%,color-mix(in srgb,var(--group-background) 82%,#171719));color:var(--group-text)}
-.group-panel,.group-dock{border-color:rgba(226,222,212,.07);background:linear-gradient(135deg,color-mix(in srgb,var(--group-surface) 64%,transparent),color-mix(in srgb,var(--group-surface) 28%,transparent) 62%,color-mix(in srgb,var(--group-background) 42%,transparent));box-shadow:0 22px 55px rgba(0,0,0,.08),inset 0 1px 0 rgba(255,255,255,.05);backdrop-filter:blur(18px) saturate(.84)}
-.group-panel::before,.group-dock::before{background:linear-gradient(90deg,color-mix(in srgb,var(--group-accent) 54%,transparent),transparent);box-shadow:none}.group-brand{background:linear-gradient(100deg,color-mix(in srgb,var(--group-surface) 51%,transparent),transparent);border-color:rgba(226,222,212,.075)}.group-brand i{background:linear-gradient(145deg,var(--group-accent),color-mix(in srgb,var(--group-accent) 56%,#63536d));box-shadow:0 0 18px color-mix(in srgb,var(--group-accent) 25%,transparent)}.group-brand strong,.group-panel h1{color:var(--group-text)}.group-user{background:color-mix(in srgb,var(--group-surface) 42%,transparent);border-color:rgba(226,222,212,.1)}.group-user:hover{background:color-mix(in srgb,var(--group-surface) 63%,transparent)}.group-facts strong{color:var(--group-text);text-shadow:none}.group-map-label{border-color:color-mix(in srgb,var(--group-accent) 28%,transparent);background:color-mix(in srgb,var(--group-surface) 88%,transparent)}.group-region-row.is-map-hovered,.group-region-row:hover{border-color:color-mix(in srgb,var(--group-accent) 32%,transparent)}
-.group-portal.no-panel .group-map{right:3%}.group-portal.no-facts .group-map{left:3%}.group-portal.no-dock .group-map{bottom:3%}
+.group-portal{background:radial-gradient(ellipse 48% 43% at 47% 43%,rgba(208,204,194,.07),transparent 76%),linear-gradient(160deg,color-mix(in srgb,var(--group-background) 88%,#454347),var(--group-background) 65%,color-mix(in srgb,var(--group-background) 82%,#171719));color:var(--group-text)}.group-user{background:color-mix(in srgb,var(--group-surface) 42%,transparent);border-color:rgba(226,222,212,.1)}.group-user:hover{background:color-mix(in srgb,var(--group-surface) 63%,transparent)}.group-map-label{border-color:color-mix(in srgb,var(--group-accent) 28%,transparent);background:color-mix(in srgb,var(--group-surface) 88%,transparent)}
 .group-portal{background:radial-gradient(ellipse 56% 64% at 43% 43%,color-mix(in srgb,var(--group-surface) 36%,transparent),transparent 74%),linear-gradient(145deg,color-mix(in srgb,var(--group-background) 89%,#5c5855),var(--group-background) 64%,color-mix(in srgb,var(--group-background) 85%,#19191b))}
 .group-vignette{background:linear-gradient(90deg,rgba(18,18,20,.18),transparent 20%,transparent 66%,rgba(18,18,20,.16)),linear-gradient(0deg,rgba(16,16,18,.13),transparent 28%,transparent 78%,rgba(17,17,19,.08))}
-.group-panel{border:0;border-left:1px solid color-mix(in srgb,var(--group-accent) 22%,transparent);border-radius:0 8px 8px 0;background:linear-gradient(90deg,color-mix(in srgb,var(--group-surface) 43%,transparent),color-mix(in srgb,var(--group-surface) 16%,transparent));box-shadow:none;backdrop-filter:blur(14px) saturate(.9);-webkit-backdrop-filter:blur(14px) saturate(.9)}
-.group-panel::before{left:0;width:82px;height:1px;background:linear-gradient(90deg,var(--group-accent),transparent);opacity:.55}
-.group-panel>small,.group-dock>section>small{color:#aaa9b1;letter-spacing:.2em}
-.group-panel h1{font-size:21px;font-weight:570;letter-spacing:.01em}
-.group-panel-stage>p,.group-site>p{color:#b9b9bb}
-.group-region-copy>strong{color:var(--group-text);font-size:12px;font-weight:550}
-.group-region-copy>small,.group-region-row small,.group-region-count>small{color:#a6a5af!important}
-.group-region-count>b{color:var(--group-text)}
-.group-region-list .group-region-row{border-bottom-color:rgba(220,216,210,.13)}
-.group-region-list .group-region-row:hover,.group-region-list .group-region-row.is-map-hovered{background:linear-gradient(90deg,color-mix(in srgb,var(--group-accent) 12%,transparent),transparent)}
-.group-dock{border:0;border-top:1px solid rgba(223,220,213,.14);border-radius:0 0 8px 8px;background:linear-gradient(180deg,color-mix(in srgb,var(--group-surface) 37%,transparent),color-mix(in srgb,var(--group-background) 15%,transparent));box-shadow:none;backdrop-filter:blur(15px) saturate(.9);-webkit-backdrop-filter:blur(15px) saturate(.9)}
-.group-dock::before{left:0;width:110px;background:linear-gradient(90deg,var(--group-accent),transparent);opacity:.52}
-.group-dock section+section{border-left-color:rgba(221,218,210,.11)}
-.group-dock h2{color:var(--group-text);font-size:13px}
-.group-dock-number strong,.group-dock-hierarchy dd,.group-dock-location-copy>strong{color:var(--group-text)}
-.group-dock-number span,.group-dock p,.group-dock-location-copy>p,.group-dock-legend>span{color:#acaaad}
-.group-dock-location-ring{background:conic-gradient(from -90deg,var(--group-accent) 0 var(--coverage),rgba(193,192,199,.16) var(--coverage) 100%)}
-.group-dock-location-ring::before{background:var(--group-background)}
 .group-map-label{color:var(--group-text);box-shadow:0 8px 18px rgba(10,10,12,.14),inset 0 1px 0 rgba(255,255,255,.07)}
 .group-map-label small{color:#b5b7c4}
-.group-facts{border-left-color:color-mix(in srgb,var(--group-accent) 36%,transparent)}
-.group-facts>small,.group-facts>span{color:#b5b4b8}
-.group-brand-image{width:36px;height:36px;flex:none;object-fit:contain}
 .group-map-controls button{border-color:rgba(224,222,215,.23);background:color-mix(in srgb,var(--group-surface) 68%,transparent)}
-.group-site .group-site-live{margin:10px 0;padding:8px 10px;border:1px solid #53cbaa38;border-radius:5px;background:#53cbaa0d;color:#98e3cf;font-size:10px;line-height:1.55}
-.group-site .group-site-live.is-stale{border-color:#8290aa30;background:#8290aa0d;color:#9aa5b7}
 </style>

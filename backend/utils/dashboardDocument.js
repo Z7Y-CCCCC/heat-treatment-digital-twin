@@ -1,3 +1,4 @@
+const {MAX_DASHBOARD_WIDGETS}=require('../../shared/dashboardLimits.mjs');
 const { evaluateVariableExpression } = require('./mathExpression');
 const { parseDataPath } = require('./externalDataPayload');
 const { createHash } = require('node:crypto');
@@ -20,7 +21,7 @@ const ALLOWED_WIDGET_TYPES = new Set([
     'text', 'value', 'status', 'trend', 'alarm_list', 'device_list', 'image',
     'container', 'metrics', 'marquee', 'navigation', 'return_button', 'device_label',
     'diagnostics', 'line_overview_cards', 'business_summary', 'hud_kpi_panel',
-    'hud_device_status', 'hud_alarm_panel', 'hud_chart_dock', 'filter'
+    'hud_device_status', 'hud_alarm_panel', 'hud_chart_dock', 'filter', 'map_region_list'
 ]);
 const UNITY_WIDGET_TYPES = new Set(['navigation', 'return_button', 'device_label', 'diagnostics', 'line_overview_cards']);
 const SYSTEM_VIEW_COMPONENT_IDS = new Set([
@@ -159,7 +160,7 @@ function normalizeDatabaseDataset(source = {}, fallback = {}, index = 0) {
         rowLimit: integer(data.rowLimit ?? base.rowLimit, 50, 1, 500),
         refreshMs: integer(data.refreshMs ?? base.refreshMs, 5000, 1000, 3600000),
         contextField: shortText(data.contextField, '', 255),
-        contextKey: ['deviceId', 'lineId', 'workshopId', 'viewId', 'partId'].includes(data.contextKey) ? data.contextKey : ''
+        contextKey: ['deviceId', 'lineId', 'workshopId', 'viewId', 'partId', 'regionCode', 'regionLevel'].includes(data.contextKey) ? data.contextKey : ''
     };
 }
 
@@ -179,7 +180,7 @@ function normalizeDataBinding(source, legacyBinding = {}) {
     const datasets = rawDatasets.slice(0, 12).map((item, index) => normalizeDatabaseDataset(item, legacyDataset, index));
     const rawDeviceId = data.deviceId ?? data.device_id ?? binding.deviceId ?? binding.device_id ?? '';
     const requestedDeviceScope = String(data.deviceScope ?? data.device_scope ?? binding.deviceScope ?? '').toLowerCase();
-    const deviceScope = ['current','fixed','rotation'].includes(requestedDeviceScope)
+    const deviceScope = ['current','fixed','rotation','global'].includes(requestedDeviceScope)
         ? requestedDeviceScope
         : (rawDeviceId ? 'fixed' : 'current');
     return {
@@ -303,8 +304,8 @@ function normalizeDashboardView(source, index = 0) {
                 : [0, 0, 0]
         },
         componentState: {
-            show: arrayValue(components.show, []).map(value => cleanId(value, '')).filter(Boolean).slice(0, 500),
-            hide: arrayValue(components.hide, []).map(value => cleanId(value, '')).filter(Boolean).slice(0, 500),
+            show: arrayValue(components.show, []).map(value => cleanId(value, '')).filter(Boolean).slice(0, MAX_DASHBOARD_WIDGETS),
+            hide: arrayValue(components.hide, []).map(value => cleanId(value, '')).filter(Boolean).slice(0, MAX_DASHBOARD_WIDGETS),
             hideNonTargetDevices: booleanValue(components.hideNonTargetDevices, false)
         },
         metadata: normalizeViewTooltipMetadata(objectValue(input.metadata, {}))
@@ -425,13 +426,13 @@ function defaultReturnButtonWidget(canvas = DEFAULT_CANVAS) {
 }
 
 function ensureNavigationWidgets(rawWidgets, canvas) {
-    const widgets = Array.isArray(rawWidgets) ? rawWidgets.slice(0, 500) : [];
+    const widgets = Array.isArray(rawWidgets) ? rawWidgets.slice(0, MAX_DASHBOARD_WIDGETS) : [];
     const frames = navigationFrames(canvas);
     let navigationIndex = widgets.findIndex(widget => String(objectValue(widget, {}).type ?? objectValue(widget, {}).widget_type ?? '').toLowerCase() === 'navigation');
     let returnIndex = widgets.findIndex(widget => String(objectValue(widget, {}).type ?? objectValue(widget, {}).widget_type ?? '').toLowerCase() === 'return_button');
     const missingCount = (navigationIndex < 0 ? 1 : 0) + (returnIndex < 0 ? 1 : 0);
-    if (widgets.length + missingCount > 500) {
-        let removeCount = widgets.length + missingCount - 500;
+    if (widgets.length + missingCount > MAX_DASHBOARD_WIDGETS) {
+        let removeCount = widgets.length + missingCount - MAX_DASHBOARD_WIDGETS;
         for (let index = widgets.length - 1; index >= 0 && removeCount > 0; index -= 1) {
             const type = String(objectValue(widgets[index], {}).type ?? objectValue(widgets[index], {}).widget_type ?? '').toLowerCase();
             if (type === 'navigation' || type === 'return_button') continue;
@@ -599,7 +600,7 @@ function normalizeDocument(input, context = {}) {
     // document, or stored both as one item. Migrate them into two authored
     // components so each can be positioned, hidden and locked independently.
     const widgets = ensureNavigationWidgets(rawWidgets, canvas);
-    const normalizedWidgets = widgets.slice(0, 500).map((widget, index) => normalizeWidget(widget, canvas, index));
+    const normalizedWidgets = widgets.slice(0, MAX_DASHBOARD_WIDGETS).map((widget, index) => normalizeWidget(widget, canvas, index));
     const sceneId = shortText(context.scene?.id ?? source.sceneId, base.sceneId, 128);
     const sceneViewState = normalizeDashboardViews(sceneSource);
     // Widget IDs are global database keys. Default controls from an empty
@@ -668,7 +669,7 @@ function validateDocument(document, options = {}) {
     if (!shortText(input.projectId, '', 128)) errors.push('projectId 不能为空');
     if (!shortText(input.sceneId, '', 128)) errors.push('sceneId 不能为空');
     if (!Array.isArray(input.widgets)) errors.push('widgets 必须是数组');
-    if (Array.isArray(input.widgets) && input.widgets.length > 500) errors.push('组件数量不能超过 500 个');
+    if (Array.isArray(input.widgets) && input.widgets.length > MAX_DASHBOARD_WIDGETS) errors.push(`组件数量不能超过 ${MAX_DASHBOARD_WIDGETS} 个`);
 
     const scene = objectValue(input.scene, {});
     const views = Array.isArray(scene.views) ? scene.views : [];
@@ -729,6 +730,7 @@ function validateDocument(document, options = {}) {
         if (!widget?.frame || Number(widget.frame.width) < 20 || Number(widget.frame.height) < 20) errors.push(`${label} 尺寸不合法`);
         if (widget?.data?.readOnly === false) errors.push(`${label} 禁止启用 PLC 写入`);
         if (widget?.data?.mode === 'plc') {
+            if(widget.data.deviceScope==='global')errors.push(`${label} 的设备点位不能使用全局范围`);
             const currentDeviceScope = widget.data.deviceScope !== 'fixed';
             if ((!currentDeviceScope && !widget.data.deviceId) || (!widget.data.pointId && widget.data.requireConfiguredPoint !== true)) {
                 errors.push(`${label} 的 PLC 绑定必须选择点位${currentDeviceScope ? '' : '和设备'}`);

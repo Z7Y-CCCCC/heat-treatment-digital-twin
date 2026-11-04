@@ -1,3 +1,4 @@
+import {MAX_DASHBOARD_WIDGETS} from '../../../shared/dashboardLimits.mjs'
 import { DASHBOARD_SCHEMA_VERSION, normalizeDashboardDocument } from './dashboardSchema.js'
 
 export const DASHBOARD_TEMPLATE_FORMAT = 'dashboard-template'
@@ -14,7 +15,7 @@ export function importDashboardTemplate(text, targetDocument) {
   const source = envelope.document
   if (!source || typeof source !== 'object' || !Array.isArray(source.widgets) || !Array.isArray(source.scene?.views)) throw new Error('模板缺少组件或视角定义')
   if (source.schemaVersion > DASHBOARD_SCHEMA_VERSION) throw new Error('模板来自更新版本，请先升级程序')
-  if (source.widgets.length > 500 || source.scene.views.length > 50) throw new Error('模板超过 500 个组件或 50 个视角的上限')
+  if (source.widgets.length > MAX_DASHBOARD_WIDGETS || source.scene.views.length > 50) throw new Error(`模板超过 ${MAX_DASHBOARD_WIDGETS} 个组件或 50 个视角的上限`)
   for (const [label, rows] of [['组件', source.widgets], ['视角', source.scene.views]]) {
     const ids = new Set()
     for (const row of rows) {

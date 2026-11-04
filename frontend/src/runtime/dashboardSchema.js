@@ -1,3 +1,4 @@
+import {MAX_DASHBOARD_WIDGETS} from '../../../shared/dashboardLimits.mjs'
 import {upgradeWidgetPlaybackDocument} from '../../../shared/widgetPlaybackProfile.mjs'
 import { normalizePlayback } from '../../../shared/widgetPlayback.mjs'
 export const DASHBOARD_SCHEMA_VERSION = 3
@@ -144,6 +145,7 @@ export function normalizeDashboardViews(scene = {}) {
 }
 
 export const DASHBOARD_WIDGET_LIBRARY = [
+  {type:'map_region_list',label:'区域与工厂列表',icon:'▤',group:'数据',description:'区域/工厂记录，可绑定数据集并导航'},
   { type: 'text', label: '文本', icon: 'T', group: '基础', description: '标题、说明和动态文本' },
   { type: 'filter', label: '参数筛选', icon: '⌕', group: '数据', description: '下拉、文本、日期与数值联动' },
   { type: 'value', label: '数值', icon: '12', group: '基础', description: '任意数据源的数值与格式' },
@@ -182,6 +184,7 @@ export const DASHBOARD_WIDGET_PRESETS = [
 ]
 
 const TYPE_DEFAULTS = {
+  map_region_list: {size:[440,650],title:'区域与工厂',content:{limit:300,showCounts:true,showMeters:true},style:{color:'#ddd7f0',backgroundOpacity:.26,borderRadius:8}},
   filter: { size: [300, 100], title:'参数筛选', content:{control:'select',parameterKey:'',placeholder:'请选择',options:[]}, style:{background:'rgba(14, 28, 43, .72)',color:'#eef7ff',fontSize:16,borderRadius:12} },
   text: {
     size: [360, 120],
@@ -352,7 +355,7 @@ function normalizeDatabaseDataset(source = {}, fallback = {}, index = 0) {
     rowLimit: Math.round(numberValue(data.rowLimit ?? base.rowLimit, 50, 1, 500)),
     refreshMs: Math.round(numberValue(data.refreshMs ?? base.refreshMs, 5000, 1000, 3600000)),
     contextField: String(data.contextField || ''),
-    contextKey: ['deviceId', 'lineId', 'workshopId', 'viewId', 'partId'].includes(data.contextKey) ? data.contextKey : ''
+    contextKey: ['deviceId', 'lineId', 'workshopId', 'viewId', 'partId', 'regionCode', 'regionLevel'].includes(data.contextKey) ? data.contextKey : ''
   }
 }
 
@@ -389,7 +392,7 @@ export function normalizeDashboardWidget(source = {}, canvas = DEFAULT_DASHBOARD
     : normalizedMode
   const rawDeviceId = data.deviceId || data.device_id || ''
   const requestedDeviceScope = String(data.deviceScope || data.device_scope || '').toLowerCase()
-  const deviceScope = ['current','fixed','rotation'].includes(requestedDeviceScope)
+  const deviceScope = ['current','fixed','rotation','global'].includes(requestedDeviceScope)
     ? requestedDeviceScope
     : (rawDeviceId ? 'fixed' : 'current')
   const legacyDataset = normalizeDatabaseDataset(data, data, 0)
@@ -485,13 +488,13 @@ function navigationFrames(canvas = DEFAULT_DASHBOARD_CANVAS) {
 }
 
 function ensureNavigationWidgets(rawWidgets, canvas) {
-  const widgets = Array.isArray(rawWidgets) ? rawWidgets.slice(0, 500) : []
+  const widgets = Array.isArray(rawWidgets) ? rawWidgets.slice(0, MAX_DASHBOARD_WIDGETS) : []
   const frames = navigationFrames(canvas)
   let navigationIndex = widgets.findIndex(widget => String(widget?.type || widget?.widget_type || '').toLowerCase() === 'navigation')
   let returnIndex = widgets.findIndex(widget => String(widget?.type || widget?.widget_type || '').toLowerCase() === 'return_button')
   const missingCount = (navigationIndex < 0 ? 1 : 0) + (returnIndex < 0 ? 1 : 0)
-  if (widgets.length + missingCount > 500) {
-    let removeCount = widgets.length + missingCount - 500
+  if (widgets.length + missingCount > MAX_DASHBOARD_WIDGETS) {
+    let removeCount = widgets.length + missingCount - MAX_DASHBOARD_WIDGETS
     for (let index = widgets.length - 1; index >= 0 && removeCount > 0; index -= 1) {
       const type = String(widgets[index]?.type || widgets[index]?.widget_type || '').toLowerCase()
       if (type === 'navigation' || type === 'return_button') continue

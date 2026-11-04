@@ -1,4 +1,5 @@
 <script setup>
+import {MAX_DASHBOARD_WIDGETS} from '../../../../../shared/dashboardLimits.mjs'
 import DashboardIntegrationPanel from './DashboardIntegrationPanel.vue'
 import { useDashboardIntegration, SOFTWARE_METHODS } from '../../../runtime/dashboardIntegration.js'
 import {DASHBOARD_CHARTS,CHART_FIELD_ROLES} from '../../../../../shared/dashboardCharts.mjs'
@@ -28,7 +29,7 @@ import TemplateFieldMapper from './TemplateFieldMapper.vue'
 import { templateFieldBindings, remapCopiedWidgetEvents } from '../../../runtime/templateFieldMapping.js'
 import { normalizeFactoryLocation } from '../../../runtime/groupTopology.js'
 import { DEFAULT_STREET_IMAGE, normalizeSiteSceneConfig } from '../../../runtime/siteSceneConfig.js'
-import { groupPortalAppearanceForLevel } from '../../../runtime/groupPortalAppearance.js'
+import { upgradeMapDesignerDocument, createMapDesignerContext, MAP_DESIGNER_FIELDS } from '../../../runtime/mapDesigner.js'
 import { getFactoryScope } from '../../../runtime/factoryScope.js'
 import { cacheFactoryDraft, clearFactoryDraft, readFactoryDraft } from '../../../runtime/factoryDraftCache.js'
 import { exportDashboardTemplate, importDashboardTemplate, dashboardTemplateReferences, rebindDashboardTemplate, MAX_TEMPLATE_BYTES } from '../../../runtime/dashboardTemplate.js'
@@ -50,7 +51,7 @@ import {
 } from '../../../runtime/dashboardSchema.js'
 
 const props = defineProps({ initialViewId: { type: String, default: 'factory_overview' } })
-const emit = defineEmits(['reload', 'preview-view', 'view-change', 'edit-map-module'])
+const emit = defineEmits(['reload', 'preview-view', 'view-change'])
 
 const viewportRef = ref(null)
 const templateFileRef = ref(null)
@@ -144,7 +145,6 @@ const layersCollapsed = ref(false)
 const canvasPreset = ref('1920x1080')
 const selectedViewId = ref('factory_overview')
 const mapPreviewLocation = ref(normalizeFactoryLocation())
-const mapAppearanceSource = ref(null)
 const sitePreviewImage = ref(DEFAULT_STREET_IMAGE)
 // This is an editor/preview context only. It lets the user choose which
 // device's data is used while editing a device view without cloning widgets.
@@ -241,21 +241,14 @@ const views = computed(() => Array.isArray(documentModel.value.scene?.views) && 
 const currentView = computed(() => views.value.find(view => view.id === selectedViewId.value) || views.value[0] || null)
 const currentViewIsMapSurface = computed(() => MAP_SURFACE_VIEW_IDS.has(currentView.value?.id))
 const currentMapLevel = computed(() => MAP_SURFACE_VIEWS.find(view => view.id === currentView.value?.id)?.level || '')
-const mapBuiltIns = computed(() => {
-  if (!String(currentView.value?.id || '').startsWith('map_')) return []
-  const appearance = groupPortalAppearanceForLevel(mapAppearanceSource.value, currentMapLevel.value)
-  return [
-    { key: 'brand', name: '标题与 Logo', visible: appearance.showBrand, x: 3, y: 5, width: 30, height: 11, detail: appearance.brandTitle },
-    { key: 'facts', name: '工厂统计', visible: appearance.showFacts, x: 3, y: 26, width: 19, height: 28, detail: appearance.factsTitle },
-    { key: 'panel', name: '区域与工厂面板', visible: appearance.showPanel, x: 73, y: 17, width: 23, height: 48, detail: appearance.panelTitle },
-    { key: 'dock', name: '底部网络摘要', visible: appearance.showDock, x: 3, y: 76, width: 65, height: 13, detail: appearance.dockNetworkTitle }
-  ].filter(item => item.visible).map(item => ({ ...item, x: appearance.layout?.[item.key]?.x ?? item.x, y: appearance.layout?.[item.key]?.y ?? item.y }))
-})
-function mapBuiltInStyle(item) {
-  return { left: `${item.x}%`, top: `${item.y}%`, width: `${item.width}%`, height: `${item.height}%` }
-}
+const mapPreviewConfig = ref(null)
+const mapPreviewData = computed(() => createMapDesignerContext(mapPreviewConfig.value, {level:currentMapLevel.value,code:({country:mapPreviewLocation.value.country,province:mapPreviewLocation.value.regionCode,city:mapPreviewLocation.value.cityCode,district:mapPreviewLocation.value.districtCode})[currentMapLevel.value] || ''}))
+watch(mapPreviewData,value=>{previewContext.regionCode=value.code || '';previewContext.regionLevel=value.level || ''},{immediate:true})
+const selectedUsesMapData = computed(() => selectedWidget.value?.data?.mode==='runtime' && /^map(?:\.|$)/.test(selectedWidget.value.data.path || ''))
 defineExpose({
-  setMapAppearance: value => { mapAppearanceSource.value = value },
+  setMapAppearance: value => {
+    if(mapPreviewConfig.value)mapPreviewConfig.value={...mapPreviewConfig.value,settings:{...mapPreviewConfig.value.settings,group_portal_config:value}}
+  },
   savePending: async () => {
     if (loading.value) throw new Error('大屏设计器仍在读取当前工厂配置，请稍后重试切换')
     if (!isDirty.value) return true
@@ -360,7 +353,7 @@ const currentViewTargetLabel = computed(() => {
   return '全厂'
 })
 const designerScopeHint = computed(() => currentViewIsMapSurface.value
-  ? '地图与厂区新增组件只在当前层级显示；预设地图模块仍可在下方“底图与内置模块”中调整。'
+  ? '当前地图视角的组件统一在此设计并绑定数据。'
   : currentViewUsesDevice.value
   ? '画布和图层按当前设备视角 + 预览设备过滤；不匹配当前设备的组件不会显示。'
   : '这是公共视角，所有设备共用；画布和图层只按当前全厂、车间或产线视角过滤。')
@@ -658,7 +651,7 @@ async function loadDesigner({ allowLocal = true } = {}) {
     const localDocument = cached && Number(cached.revision) === revision.value
       ? cached.document
       : allowLocal ? readLocalDraft(serverDocument.sceneId, revision.value) : null
-    documentModel.value = applyFactoryHudModules(applyReferenceHudLayout(localDocument || serverDocument))
+    documentModel.value = normalizeDashboardDocument(upgradeMapDesignerDocument(applyFactoryHudModules(applyReferenceHudLayout(localDocument || serverDocument)), settings.group_portal_config))
     releases.value = designer.releases || []
     currentRelease.value = designer.currentRelease || null
     devices.value = Array.isArray(deviceRows) ? deviceRows : []
@@ -674,12 +667,12 @@ async function loadDesigner({ allowLocal = true } = {}) {
     workshops.value = Array.isArray(workshopRows) ? workshopRows : []
     lines.value = Array.isArray(lineRows) ? lineRows : []
     mapPreviewLocation.value = normalizeFactoryLocation(settings.factory_location)
-    mapAppearanceSource.value = settings.group_portal_config
+    mapPreviewConfig.value = {settings, factories: (await adminApi.listFactories().catch(()=>({factories:[]}))).factories || []}
     sitePreviewImage.value = normalizeSiteSceneConfig(settings.site_scene_config).streetImageUrl || DEFAULT_STREET_IMAGE
     // The reference HUD is a presentation migration applied on load. Treat
     // that derived layout as the editor baseline so opening the designer does
     // not falsely report an unsaved change before the user edits anything.
-    const baseline = applyFactoryHudModules(applyReferenceHudLayout(serverDocument))
+    const baseline = normalizeDashboardDocument(upgradeMapDesignerDocument(applyFactoryHudModules(applyReferenceHudLayout(serverDocument)), settings.group_portal_config))
     baseline.widgets = baseline.widgets.map(widget => migrateDeviceTrend(widget, points.value))
     lastSavedSnapshot.value = snapshot(baseline)
     resetHistory()
@@ -878,6 +871,13 @@ function toggleViewComponent(view, id, visible) {
   commitHistory(visible ? '视角显示组件' : '视角隐藏组件')
 }
 
+async function refreshMapPreview() {
+  try {
+    const result=await adminApi.listFactories()
+    if(!designerDisposed && Array.isArray(result.factories))mapPreviewConfig.value={...mapPreviewConfig.value,factories:result.factories}
+  } catch(error){setStatus(error.message || '区域资料读取失败','warning')}
+}
+
 async function refreshRealtimePoints() {
   if (designerDisposed || !designerActive || realtimeInFlight) return
   const requestSeq = ++realtimeRequestSeq
@@ -996,7 +996,7 @@ function previewValueForWidget(widget) {
     return pointValues.value[`${deviceId}:${binding.pointId}`]?.value ?? pointValues.value[binding.pointId]?.value
   }
   if (binding.mode === 'runtime') {
-    const context = { context: previewContext, selectedPart: previewSelectedPart.value }
+    const context = { map:mapPreviewData.value, context: previewContext, selectedPart: previewSelectedPart.value }
     return String(binding.path || '').split('.').reduce((current, key) => current?.[key], context)
   }
   return widget.content?.value
@@ -1154,7 +1154,7 @@ function addWidgetPreset(preset) {
     const targetViewId = 'factory_hud_modules'
     const existing = views.value.find(view => view.id === targetViewId)
     if (existing) { selectView(targetViewId); return setStatus('已定位到工厂 HUD 方案', 'success') }
-    if (views.value.length >= 50 || documentModel.value.widgets.length + 4 > 500) return setStatus('视角或组件数量已达上限，请先移除不用的内容', 'warning')
+    if (views.value.length >= 50 || documentModel.value.widgets.length + 4 > MAX_DASHBOARD_WIDGETS) return setStatus('视角或组件数量已达上限，请先移除不用的内容', 'warning')
     const base = views.value.find(view => view.id === 'factory_overview') || views.value[0]
     const modules = createDashboardWidgetPreset(preset.id, { canvas: canvas.value, viewIds: [targetViewId], baseZ: 10 })
     // New view only: the currently published view and its authored widgets
@@ -1770,11 +1770,11 @@ const externalPreviewSequences=new Map()
 function previewDevice(widget){return playbackSelection(widget.data,previewContext,playbackDevices.value,previewMode.value?playbackNow.value:0).device}
 async function previewExternalBinding(widget,read){
   const id=widget.id,seq=(externalPreviewSequences.get(id)||0)+1;externalPreviewSequences.set(id,seq)
-  const selected=previewDevice(widget),binding=JSON.stringify(widget.data),context=JSON.stringify(previewContext)
+  const selected=widget.data.deviceScope==='global'?{id:'',name:'',lineId:'',workshopId:''}:previewDevice(widget),binding=JSON.stringify(widget.data),context=JSON.stringify(previewContext)
   if(databasePreviewValues[id]?.deviceId!==selected?.id)delete databasePreviewValues[id]
   if(!selected){databasePreviewValues[id]={value:null,rows:[],quality:'bad',businessSection:{available:false,rows:[]}};return}
   const scoped={...previewContext,deviceId:selected.id,lineId:selected.lineId || selected.line_id || '',workshopId:selected.workshopId || selected.workshop_id || ''}
-  const stillCurrent=()=>!designerDisposed && designerActive && externalPreviewSequences.get(id)===seq && binding===JSON.stringify(widget.data) && context===JSON.stringify(previewContext) && selected.id===previewDevice(widget)?.id
+  const stillCurrent=()=>!designerDisposed && designerActive && externalPreviewSequences.get(id)===seq && binding===JSON.stringify(widget.data) && context===JSON.stringify(previewContext) && selected.id===(widget.data.deviceScope==='global'?'':previewDevice(widget)?.id)
   let response
   try{response=await read(scoped)}catch(error){if(stillCurrent())throw error;return}
   if(!stillCurrent())return
@@ -1851,6 +1851,9 @@ function changeBindingMode() {
   const widget = selectedWidget.value
   if (!widget) return
   widget.data.readOnly = true
+  if(widget.data.mode==='plc' && widget.data.deviceScope==='global')widget.data.deviceScope='current'
+  if(widget.data.mode==='runtime' && currentViewIsMapSurface.value && !/^map(?:\.|$)/.test(widget.data.path || ''))widget.data.path=widget.type==='map_region_list'?'map.records':widget.type==='hud_kpi_panel'?'map':widget.type==='image'?'map.logoUrl':'map.factsFactoryCount'
+  if(widget.data.mode==='dataset' && widget.type==='map_region_list')widget.data.datasetMode='first'
   if (widget.data.mode === 'dataset') { widget.data.datasetMode ||= 'first'; widget.data.deviceScope ||= 'current' }
   if (widget.data.mode === 'static') {
     widget.data.path = ''
@@ -2335,6 +2338,7 @@ function activateDesigner() {
   if (designerDisposed) return
   designerActive = true
   startDesignerData()
+  if(mapPreviewConfig.value)void refreshMapPreview()
   window.addEventListener('keydown', handleKeydown)
   if (!realtimeTimer) realtimeTimer = window.setInterval(refreshRealtimePoints, 1000)
   if (viewportRef.value) viewportObserver?.observe(viewportRef.value)
@@ -2523,12 +2527,9 @@ onBeforeUnmount(() => {
 
         <details class="chart-library"><summary>图表 <small>{{DASHBOARD_CHARTS.length}}</small></summary><div><button v-for="chart in DASHBOARD_CHARTS" :key="chart.id" type="button" :disabled="loading" @click="addChartWidget(chart.id)">{{chart.label}}</button></div></details>
         <div class="layer-heading" @click="layersCollapsed = !layersCollapsed">
-          <strong>当前视角组件（{{ currentViewWidgets.length + mapBuiltIns.length }}）</strong><span>{{ layersCollapsed ? '展开' : '收起' }}</span>
+          <strong>当前视角组件（{{ currentViewWidgets.length }}）</strong><span>{{ layersCollapsed ? '展开' : '收起' }}</span>
         </div>
         <div v-if="!layersCollapsed" class="layer-list">
-          <button v-for="item in mapBuiltIns" :key="`built-in-${item.key}`" type="button" class="map-built-in-layer" @click="emit('edit-map-module', item.key)">
-            <span class="layer-type">图</span><span class="layer-copy"><strong class="layer-name">{{ item.name }}</strong><small class="layer-value">内置地图模块 · {{ item.detail }}</small></span><i>编辑</i>
-          </button>
           <button
             v-for="widget in [...currentViewWidgets].reverse()"
             :key="widget.id"
@@ -2544,7 +2545,7 @@ onBeforeUnmount(() => {
             <i title="显示/隐藏" @click.stop="toggleLayerVisibility(widget)">{{ widget.visible ? '◉' : '○' }}</i>
             <i title="锁定/解锁" @click.stop="toggleLayerLock(widget)">{{ widget.locked ? '◆' : '◇' }}</i>
           </button>
-          <p v-if="!currentViewIsMapSurface && !currentViewWidgets.length && !mapBuiltIns.length">当前视角没有组件，从左侧拖入组件到画布</p>
+          <p v-if="!currentViewWidgets.length">当前视角没有组件，从左侧拖入组件到画布</p>
           <details v-if="currentViewHiddenWidgets.length" class="layer-hidden-components">
             <summary>本视角已隐藏（{{ currentViewHiddenWidgets.length }}）</summary>
             <button v-for="item in currentViewHiddenWidgets" :key="`hidden-layer-${item.id}`" type="button" @click="toggleViewComponent(currentView, item.id, true)">
@@ -2600,7 +2601,7 @@ onBeforeUnmount(() => {
             <div class="designer-canvas-stage" :style="canvasTransformStyle" @pointerdown.stop="beginMarqueeSelection">
               <MapGeometryPreview v-if="currentMapLevel && !currentMapLevel.startsWith('site_') && currentMapLevel !== 'street'" :level="currentMapLevel" :location="mapPreviewLocation" class="designer-map-background" />
               <div v-if="currentMapLevel === 'street' || currentMapLevel === 'site_factory'" class="designer-site-background" :style="{ backgroundImage: `linear-gradient(90deg,rgba(12,17,31,.2),rgba(12,17,31,.35)),url('${sitePreviewImage}')` }"><span>{{ currentView?.name }}</span></div>
-              <button v-for="item in mapBuiltIns" :key="`map-preview-${item.key}`" type="button" class="designer-map-built-in" :style="mapBuiltInStyle(item)" :title="`编辑${item.name}`" @pointerdown.stop @click.stop="emit('edit-map-module', item.key)"><span>{{ item.name }}</span><strong>{{ item.detail }}</strong></button>
+
               <div class="canvas-safe-area" :style="{ inset: `${canvas.safeArea}px` }"></div>
               <div v-for="x in guides.x" :key="`gx-${x}`" class="alignment-guide vertical" :style="{ left: `${x}px` }"></div>
               <div v-for="y in guides.y" :key="`gy-${y}`" class="alignment-guide horizontal" :style="{ top: `${y}px` }"></div>
@@ -2624,6 +2625,7 @@ onBeforeUnmount(() => {
               >
                 <WidgetRenderer
                   :widget="widget"
+                  :map-data="mapPreviewData"
                   :metrics="liveMetrics"
                   :events="liveEvents"
                   :trend-points="[]"
@@ -2697,7 +2699,7 @@ onBeforeUnmount(() => {
                 </button>
               </div>
 
-              <div v-if="!currentViewIsMapSurface && !canvasWidgets.length" class="empty-canvas-hint">
+              <div v-if="!canvasWidgets.length" class="empty-canvas-hint">
                 <strong>{{ overlayWidgets.length ? '当前视角没有可见组件' : '把组件拖到这里' }}</strong><span>画布为 {{ canvas.width }} × {{ canvas.height }}，运行时按屏幕等比缩放</span>
               </div>
             </div>
@@ -2774,7 +2776,7 @@ onBeforeUnmount(() => {
                   <label>圆环指标路径<input v-model="selectedWidget.content.chartPath" placeholder="metrics.overall_oee" @change="recordProperty()" /></label>
                   <div v-for="(item,index) in selectedWidget.content.items" :key="index" class="inspector-section">
                     <label>指标 {{ index + 1 }} 名称<input v-model="item.label" @change="recordProperty()"  v-permission="{ page: 'platform.designer', action: 'edit' }"/></label>
-                    <label>数据路径<input v-model="item.path" :list="selectedWidget.data.mode==='dataset'?'selected-dataset-fields':undefined" placeholder="metrics.total_devices" @change="recordProperty()"  v-permission="{ page: 'platform.designer', action: 'edit' }"/></label>
+                    <label v-if="selectedUsesMapData">区域指标<select v-model="item.path" :aria-label="`地图指标字段 ${index+1}`" @change="recordProperty('修改地图指标')"><option v-for="field in MAP_DESIGNER_FIELDS" :key="field.key" :value="field.path">{{field.label}}</option></select></label><label v-else>数据路径<input v-model="item.path" :list="selectedWidget.data.mode==='dataset'?'selected-dataset-fields':undefined" placeholder="metrics.total_devices" @change="recordProperty()"  v-permission="{ page: 'platform.designer', action: 'edit' }"/></label>
                     <label>单位<input v-model="item.unit" @change="recordProperty()"  v-permission="{ page: 'platform.designer', action: 'edit' }"/></label>
                   </div>
                 </template>
@@ -2782,6 +2784,12 @@ onBeforeUnmount(() => {
                   <label>读数名称<input v-model="selectedWidget.content.statLabel" @change="recordProperty()" /></label>
                   <label>读数单位<input v-model="selectedWidget.content.statUnit" @change="recordProperty()" /></label>
                 </template>
+              </template>
+              <template v-if="selectedWidget.type==='map_region_list'">
+                <label>最多显示<input v-model.number="selectedWidget.content.limit" type="number" min="1" max="1000" @change="recordProperty()" /></label>
+                <label class="visibility-bound-device"><input v-model="selectedWidget.content.showCounts" type="checkbox" @change="recordProperty()" /> 显示数量</label>
+                <label class="visibility-bound-device"><input v-model="selectedWidget.content.showMeters" type="checkbox" @change="recordProperty()" /> 显示接入情况</label>
+                <details><summary>列表字段</summary><label v-for="field in [{key:'nameField',label:'名称',value:'name'},{key:'codeField',label:'区域代码',value:'code'},{key:'countField',label:'数量',value:'count'},{key:'kindField',label:'类型',value:'kind'},{key:'idField',label:'工厂ID',value:'id'}]" :key="field.key">{{field.label}}<input :value="selectedWidget.content[field.key] || field.value" @change="selectedWidget.content[field.key]=$event.target.value;recordProperty()" /></label></details>
               </template>
               <template v-if="selectedWidget.type === 'business_summary'">
                 <label>业务区块<select v-model="selectedWidget.content.section" @change="selectedWidget.data.businessSection = selectedWidget.content.section; recordProperty('选择业务区块')"><option value="batches">批次与工艺执行</option><option value="compliance">温度 / 碳势合规</option><option value="oee">设备运行统计</option><option value="energy">单批次能耗</option><option value="maintenance">维护记录</option></select></label>
@@ -2849,11 +2857,11 @@ onBeforeUnmount(() => {
 
             <section v-else-if="inspectorTab === 'data'" class="inspector-section">
               <div v-if="previewContext.viewMode==='device'" class="binding-part-preview"><label>预览部件<select v-model="previewContext.partId" aria-label="预览部件" :disabled="previewPartsBusy || !previewParts.length" @change="changePreviewPart"><option value="">请选择部件</option><option v-for="part in previewParts" :key="part.id" :value="part.id">{{part.name}}</option></select></label><button type="button" :disabled="previewPartsBusy || !previewContext.deviceId" @click="loadPreviewParts">{{previewPartsBusy?'读取中…':'读取当前设备部件'}}</button><small v-if="previewPartsError" role="status">{{previewPartsError}}</small></div>
-              <label>数据来源<select v-model="selectedWidget.data.mode" aria-label="组件数据来源" @change="changeBindingMode"><option v-for="choice in widgetBindingChoices(selectedWidget)" :key="choice.id" :value="choice.id">{{choice.label}}</option></select></label>
+              <label>数据来源<select v-model="selectedWidget.data.mode" aria-label="组件数据来源" @change="changeBindingMode"><option v-for="choice in widgetBindingChoices(selectedWidget,{mapContext:currentViewIsMapSurface})" :key="choice.id" :value="choice.id">{{choice.label}}</option></select></label>
               <DevicePointBindingEditor v-if="selectedWidget.data.mode==='plc'" :binding="selectedWidget.data" :devices="devices" :points="points" :values="pointValues" :device-id="selectedBindingDeviceId" :source-mode="pointSourceMode" :error="pointReadError" :disabled="!canAdminPage('platform.designer','edit')" @select-point="bindSelectedPoint" @preview-device="previewBindingDevice" @refresh="refreshRealtimePoints" />
               <details class="binding-compatibility"><summary>高级绑定</summary><div class="button-row"><button v-for="choice in LEGACY_BINDINGS" :key="choice.id" type="button" :disabled="selectedWidget.data.mode===choice.id || !canAdminPage('platform.designer','edit')" @click="selectedWidget.data.mode=choice.id;changeBindingMode()">{{choice.label}}</button></div></details>
               <details v-if="selectedWidget.data.mode==='plc'" class="binding-compatibility"><summary>设备范围与刷新</summary><WidgetPlaybackEditor :binding="selectedWidget.data" :devices="devices" :disabled="!canAdminPage('platform.designer','edit')" @change="pointPlaybackChanged" /></details>
-              <WidgetPlaybackEditor v-else-if="selectedWidget.data.mode!=='static'" :binding="selectedWidget.data" :devices="devices" :disabled="!canAdminPage('platform.designer','edit')" @change="recordProperty('修改设备数据播放');invalidateDataSetPreview()" />
+              <WidgetPlaybackEditor v-else-if="selectedWidget.data.mode!=='static' && !selectedUsesMapData" :binding="selectedWidget.data" :devices="devices" :disabled="!canAdminPage('platform.designer','edit')" @change="recordProperty('修改设备数据播放');invalidateDataSetPreview()" />
               <datalist id="selected-dataset-fields" v-if="selectedWidget.data.mode==='dataset'"><option v-for="column in dataSetDefinitions.find(d=>d.id===selectedWidget.data.datasetId)?.columns || []" :key="column.name" :value="`dataset.${column.name}`">{{column.label}}</option></datalist>
               <DataSetBindingEditor v-if="selectedWidget.data.mode==='dataset'" :key="selectedWidget.id" :binding="selectedWidget.data" :context="previewContext" :devices="playbackDevices" :playback-now="previewMode ? playbackNow : 0" :multiple="['trend','hud_chart_dock'].includes(selectedWidget.type)" :disabled="!canAdminPage('platform.designer','edit')" @change="changeReusableBinding" @invalidate="invalidateDataSetPreview" @preview="databasePreviewValues[selectedWidget.id]=$event" />
               <details v-if="selectedWidget.data.mode==='dataset' && ['device_list','hud_device_status'].includes(selectedWidget.type)" open><summary>设备字段</summary><label v-for="field in [{key:'id',label:'设备 ID'},{key:'name',label:'名称'},{key:'online',label:'在线'},{key:'running',label:'运行'},{key:'alarm',label:'报警'},{key:'temp',label:'温度'}]" :key="field.key">{{field.label}}<select :value="selectedWidget.content.deviceFields?.[field.key] || field.key" @change="selectedWidget.content.deviceFields={...selectedWidget.content.deviceFields,[field.key]:$event.target.value};recordProperty('修改设备字段')"><option :value="field.key">{{field.key}}</option><option v-for="column in (dataSetDefinitions.find(d=>d.id===selectedWidget.data.datasetId)?.columns || []).filter(c=>c.name!==field.key)" :key="column.name" :value="column.name">{{column.label}}</option></select></label></details>
@@ -2872,7 +2880,7 @@ onBeforeUnmount(() => {
                     <label>读取方式<select v-model="dataset.valueMode" @change="recordProperty('修改读取方式'); previewDatabaseBinding()" v-permission="{ page: 'platform.designer', action: 'edit' }"><option value="latest">最新一条</option><option value="first">第一条</option><option value="list">序列（图表 / 列表）</option><option value="count">记录数量</option><option value="sum">合计</option><option value="avg">平均值</option><option value="min">最小值</option><option value="max">最大值</option></select></label>
                     <template v-if="['latest','first','list'].includes(dataset.valueMode)"><label>时间 / 排序字段<select v-model="dataset.orderBy" @change="dataset.timeField=dataset.orderBy; recordProperty('修改排序')" v-permission="{ page: 'platform.designer', action: 'edit' }"><option value="">不指定</option><option v-for="column in datasetColumns(datasetIndex)" :key="`order-${column.name}`" :value="column.name">{{ column.name }}</option></select></label><label>排序方向<select v-model="dataset.orderDirection" @change="recordProperty('修改排序')" v-permission="{ page: 'platform.designer', action: 'edit' }"><option value="desc">新到旧</option><option value="asc">旧到新</option></select></label></template>
                     <div class="property-grid two"><label v-if="dataset.valueMode === 'list'">读取行数<input v-model.number="dataset.rowLimit" type="number" min="1" max="500" @change="recordProperty('修改读取行数')"  v-permission="{ page: 'platform.designer', action: 'edit' }"/></label><label>刷新周期（秒）<input :value="Math.round(dataset.refreshMs/1000)" type="number" min="1" max="3600" @change="dataset.refreshMs=Math.max(1000,Number($event.target.value||5)*1000);recordProperty('修改刷新周期')" /></label></div>
-                    <div class="dataset-context"><label>按当前对象过滤<select v-model="dataset.contextKey" @change="recordProperty('修改上下文过滤')" v-permission="{ page: 'platform.designer', action: 'edit' }"><option value="">不过滤</option><option value="deviceId">当前设备 ID</option><option value="partId">当前部件 ID</option><option value="lineId">当前产线 ID</option><option value="workshopId">当前车间 ID</option><option value="viewId">当前视角 ID</option></select></label><label v-if="dataset.contextKey">表中对应字段<select v-model="dataset.contextField" @change="recordProperty('修改上下文字段')" v-permission="{ page: 'platform.designer', action: 'edit' }"><option value="">请选择</option><option v-for="column in datasetColumns(datasetIndex)" :key="`context-${column.name}`" :value="column.name">{{ column.name }}</option></select></label></div>
+                    <div class="dataset-context"><label>按当前对象过滤<select v-model="dataset.contextKey" @change="recordProperty('修改上下文过滤')" v-permission="{ page: 'platform.designer', action: 'edit' }"><option value="">不过滤</option><option value="deviceId">当前设备 ID</option><option value="partId">当前部件 ID</option><option value="lineId">当前产线 ID</option><option value="workshopId">当前车间 ID</option><option value="viewId">当前视角 ID</option><option value="regionCode">当前地区代码</option><option value="regionLevel">当前地图层级</option></select></label><label v-if="dataset.contextKey">表中对应字段<select v-model="dataset.contextField" @change="recordProperty('修改上下文字段')" v-permission="{ page: 'platform.designer', action: 'edit' }"><option value="">请选择</option><option v-for="column in datasetColumns(datasetIndex)" :key="`context-${column.name}`" :value="column.name">{{ column.name }}</option></select></label></div>
                     <button v-if="ensureDatabaseDatasets(selectedWidget).length > 1" type="button" class="danger-link" @click="removeDatabaseDataset(datasetIndex)" v-permission="{ page: 'platform.designer', action: 'edit' }">删除这个数据项</button>
                   </div>
                 </details>
@@ -2897,8 +2905,9 @@ onBeforeUnmount(() => {
                 <div class="readonly-banner compact"><span>只读</span>运行时会按当前设备上下文读取外部数据库；没有标准表时显示“未提供”，不会写入排产系统。</div>
               </template>
               <template v-else-if="selectedWidget.data.mode === 'runtime'">
-                <label>上下文路径<input v-model="selectedWidget.data.path" class="input" placeholder="selectedPart.description / selectedPart.name / context.inspectionStage" @change="recordProperty('修改检查上下文路径')" /></label>
-                <p class="field-hint">可用字段：selectedPart.name、selectedPart.description、selectedPart.stage、selectedPart.points.0.value，以及 context.deviceId / context.inspectionStage。</p>
+                <button v-if="currentViewIsMapSurface" type="button" @click="refreshMapPreview">刷新区域数据</button><label v-if="currentViewIsMapSurface">区域数据<select v-model="selectedWidget.data.path" aria-label="地图组件区域数据" @change="recordProperty('修改地图数据')"><option value="map">当前区域指标组</option><option value="map.records">区域 / 工厂列表</option><option value="map.brandText">默认品牌标题</option><option value="map.logoUrl">默认Logo</option><option v-for="field in MAP_DESIGNER_FIELDS" :key="field.key" :value="field.path">{{field.label}} · {{field.unit}}</option><option v-if="!selectedUsesMapData" :value="selectedWidget.data.path">现有上下文</option></select></label>
+                <label v-if="!currentViewIsMapSurface">上下文路径<input v-model="selectedWidget.data.path" class="input" placeholder="selectedPart.description / selectedPart.name / context.inspectionStage" @change="recordProperty('修改检查上下文路径')" /></label>
+                <p v-if="!currentViewIsMapSurface" class="field-hint">可用字段：selectedPart.name、selectedPart.description、selectedPart.stage、selectedPart.points.0.value，以及 context.deviceId / context.inspectionStage。</p>
               </template>
               <div class="property-grid two">
                 <label>单位<input v-model="selectedWidget.data.unit" @change="recordProperty('修改单位')" /></label>
@@ -2910,7 +2919,7 @@ onBeforeUnmount(() => {
               <div class="section-action-heading"><div><strong>显隐规则</strong><small>可按当前对象或数据值决定组件出现 / 消失</small></div><button @click="addVisibilityRule" v-permission="{ page: 'platform.designer', action: 'edit' }">＋ 添加</button></div>
               <label v-if="selectedWidget.visibility.rules.length">多条规则<select v-model="selectedWidget.visibility.ruleMode" @change="recordProperty('修改显隐规则')"><option value="all">全部满足</option><option value="any">任意满足</option></select></label>
               <div v-for="(rule, index) in selectedWidget.visibility.rules" :key="`visible-${index}`" class="condition-card">
-                <div class="property-grid two"><label>来源<select v-model="rule.source" @change="rule.path = rule.source === 'data' ? 'value' : 'viewMode'; recordProperty()" v-permission="{ page: 'platform.designer', action: 'edit' }"><option value="context">Unity 上下文</option><option value="data">组件数据值</option></select></label><label>字段<select v-if="rule.source === 'context'" v-model="rule.path" @change="recordProperty()" v-permission="{ page: 'platform.designer', action: 'edit' }"><option value="viewMode">当前视角</option><option value="viewId">当前视角 ID</option><option value="workshopId">车间 ID</option><option value="lineId">产线 ID</option><option value="deviceId">设备 ID</option><option value="inspectionStage">检查阶段</option><option value="partId">部件 ID</option><option value="partName">部件名称</option></select><input v-else v-model="rule.path" placeholder="value" @change="recordProperty()"  v-permission="{ page: 'platform.designer', action: 'edit' }"/></label></div>
+                <div class="property-grid two"><label>来源<select v-model="rule.source" @change="rule.path = rule.source === 'data' ? 'value' : 'viewMode'; recordProperty()" v-permission="{ page: 'platform.designer', action: 'edit' }"><option value="context">Unity 上下文</option><option value="data">组件数据值</option></select></label><label>字段<select v-if="rule.source === 'context'" v-model="rule.path" @change="recordProperty()" v-permission="{ page: 'platform.designer', action: 'edit' }"><option value="viewMode">当前视角</option><option value="viewId">当前视角 ID</option><option value="regionCode">当前地区代码</option><option value="regionLevel">当前地图层级</option><option value="workshopId">车间 ID</option><option value="lineId">产线 ID</option><option value="deviceId">设备 ID</option><option value="inspectionStage">检查阶段</option><option value="partId">部件 ID</option><option value="partName">部件名称</option></select><input v-else v-model="rule.path" placeholder="value" @change="recordProperty()"  v-permission="{ page: 'platform.designer', action: 'edit' }"/></label></div>
                 <div class="property-grid two"><label>判断<select v-model="rule.operator" @change="recordProperty()" v-permission="{ page: 'platform.designer', action: 'edit' }"><option value="==">等于</option><option value="!=">不等于</option><option value=">">大于</option><option value=">=">大于等于</option><option value="<">小于</option><option value="<=">小于等于</option><option value="truthy">为真</option><option value="falsy">为假</option><option value="contains">包含</option></select></label><label>目标值<input v-model="rule.value" @change="recordProperty()"  v-permission="{ page: 'platform.designer', action: 'edit' }"/></label></div>
                 <button class="danger-link" @click="removeVisibilityRule(index)" v-permission="{ page: 'platform.designer', action: 'edit' }">删除显隐规则</button>
               </div>
@@ -3003,7 +3012,7 @@ onBeforeUnmount(() => {
               </fieldset>
               <label class="visibility-bound-device"><input v-model="currentView.componentState.hideNonTargetDevices" type="checkbox" @change="commitHistory('修改目标设备显隐')"  v-permission="{ page: 'platform.designer', action: 'edit' }"/> 只显示目标范围内的设备</label>
               <div v-if="viewComponents.length" class="view-component-list"><label v-for="item in viewComponents" :key="item.id"><input type="checkbox" checked @change="toggleViewComponent(currentView, item.id, $event.target.checked)" /><span>{{ item.label }}</span><small>{{ item.type === 'navigation' ? '顶部导航' : item.type === 'return_button' ? '返回键' : widgetTypeLabel(item.type) }}</small></label></div>
-              <p v-else-if="!currentViewIsMapSurface" class="empty-inspector">当前视角还没有显示组件，请从左侧拖入组件到画布。</p>
+              <p v-else class="empty-inspector">当前视角还没有显示组件，请从左侧拖入组件到画布。</p>
               <details v-if="hiddenViewComponents.length" class="view-hidden-components">
                 <summary>已隐藏组件（{{ hiddenViewComponents.length }}）</summary>
                 <div class="view-component-list"><label v-for="item in hiddenViewComponents" :key="item.id"><input type="checkbox" :checked="false" @change="toggleViewComponent(currentView, item.id, $event.target.checked)" /><span>{{ item.label }}</span><small>{{ item.type === 'navigation' ? '顶部导航' : item.type === 'return_button' ? '返回键' : widgetTypeLabel(item.type) }}</small></label></div>
@@ -3184,7 +3193,7 @@ onBeforeUnmount(() => {
 .layer-hidden-components button { display:grid; grid-template-columns:24px minmax(0,1fr) 20px; align-items:center; width:100%; min-height:32px; padding:3px 6px; border:0; border-top:1px solid #ededee; color:#6e6e73; background:transparent; text-align:left; cursor:pointer; }
 .layer-hidden-components button:hover { background:#f0f0f2; }
 .layer-hidden-components button i { color:#176b3a; font-style:normal; text-align:center; }
-.designer-map-built-in{position:absolute;z-index:1;display:grid;align-content:start;gap:8px;padding:16px;border:1px solid #98a8d4a0;border-radius:6px;background:#22273cce;color:#f4f6ff;text-align:left;cursor:pointer;box-shadow:0 8px 24px #0004}.designer-map-built-in:hover{border-color:#cad6ff;background:#333b5aef}.designer-map-built-in span{font-size:14px;color:#aebde8}.designer-map-built-in strong{overflow:hidden;font-size:19px;text-overflow:ellipsis;white-space:nowrap}.map-built-in-layer i{font-size:10px;white-space:nowrap}
+
 .designer-canvas > .designer-canvas-scroll { position:relative; inset:auto; flex:1; min-height:0; height:auto; }
 @media(max-width:1100px) { .designer-scope-bar { gap:9px; padding-inline:10px; } .designer-scope-hint { display:none; } .designer-device-picker { grid-template-columns:1fr; gap:3px!important; } }
 .designer-toolbar { min-height: 62px; padding-block: 10px; }

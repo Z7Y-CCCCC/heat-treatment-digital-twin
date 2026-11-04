@@ -238,13 +238,6 @@ const mapSettingsRef = ref(null), loadingSettingsRef = ref(null), modelPlacement
 const mapSettingsLevel = ref('world')
 const visitedPlatformSubpages = ref(new Set([platformSubpage.value]))
 watch(platformSubpage, key => { visitedPlatformSubpages.value = new Set([...visitedPlatformSubpages.value, key]) })
-async function openMapModule({ key, level }) {
-    if (!canAdminPage('platform.map')) return
-    mapSettingsLevel.value = level
-    await selectPlatformSubpage('map')
-    mapSettingsRef.value?.selectComponent?.(key, level)
-}
-
 const groundEditorRef = ref(null)
 const composerGroundPreviews = ref({})
 const composerGroundWarning = ref('')
@@ -9280,7 +9273,7 @@ async function openAdminSetupStep(step) {
                             <summary>场景信息</summary>
                             <div><label>项目名称<input :value="platform.activeProject?.name" disabled class="input" /></label><label>场景名称<input v-model="platform.activeScene.name" class="input" v-permission="{ page: 'platform.scene', action: 'edit' }" /></label><button type="button" class="btn btn-sm" @click="saveActiveScene" v-permission="{ page: 'platform.scene', action: 'edit' }">保存名称</button></div>
                         </details>
-                        <UnifiedDashboardDesigner v-if="canAdminPage('platform.designer')" ref="unifiedDesignerRef" @reload="loadPlatform" @preview-view="handleDashboardViewPreview" @edit-map-module="openMapModule" />
+                        <UnifiedDashboardDesigner v-if="canAdminPage('platform.designer')" ref="unifiedDesignerRef" @reload="loadPlatform" @preview-view="handleDashboardViewPreview" />
                     </div>
                     <div v-if="visitedPlatformSubpages.has('map') && canAdminPage('platform.map')" v-show="platformSubpage === 'map'" class="secondary-page-panel" data-testid="platform-map-panel">
                         <GroupPortalSettings ref="mapSettingsRef" :active-level="mapSettingsLevel" permission-page="platform.map" @saved="unifiedDesignerRef?.setMapAppearance?.($event)" />
