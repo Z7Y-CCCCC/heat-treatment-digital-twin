@@ -459,3 +459,11 @@ test('configured point charts sample fresh source timestamps, never simulator fi
  await view.render({...props,widget:{...widget,data:{...widget.data,deviceId:'d2'}},playbackNow:time+5000,pointValues:{p1:point}})
  assert.deepEqual(charts.at(-1).options.at(-1)[0].series[0].data,[],'another furnace must not inherit this device history or point')
 })
+
+test('overlay styling respects authored curve color/width/opacity, bar radius and ring ratio',async t=>{
+ const view=fixture(t),base={id:'styled',type:'trend',content:{chartType:'area',lineColor:'#cc88ff',lineWidth:5,areaOpacity:.6}},trendPoints=[{time:'10:00',value:42}]
+ await view.render({widget:base,trendPoints,overlayMode:true});let option=charts.at(-1).options.at(-1)[0]
+ assert.equal(option.series[0].lineStyle.color,'#cc88ff');assert.equal(option.series[0].lineStyle.width,5);assert.match(option.series[0].areaStyle.color.colorStops[0].color,/, 0.6\)/)
+ await view.render({widget:{...base,content:{chartType:'bar',barRadius:9}},trendPoints,overlayMode:true});option=charts.at(-1).options.at(-1)[0];assert.deepEqual(option.series[0].itemStyle.borderRadius,[9,9,0,0])
+ await view.render({widget:{...base,content:{chartType:'donut',donutRatio:55}},trendPoints,overlayMode:true});option=charts.at(-1).options.at(-1)[0];assert.deepEqual(option.series[0].radius,['55%','81%'])
+})

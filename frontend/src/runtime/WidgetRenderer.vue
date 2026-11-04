@@ -513,7 +513,8 @@ function presentChart(option) {
     }
     for (const [index, series] of option.series.entries()) {
       if(series.silent && series.itemStyle?.color==='transparent')continue
-      const color = isHudModule.value ? (chartSeries.value[index]?.color || palette[index % palette.length]) : palette[index % palette.length]
+      const color = isHudModule.value || content.value.lineColor || databaseRecord.value?.series?.length
+        ? (chartSeries.value[index]?.color || palette[index % palette.length]) : palette[index % palette.length]
       if (['line', 'bar', 'scatter'].includes(series.type)) {
         series.lineStyle = {
           ...series.lineStyle,
@@ -521,15 +522,17 @@ function presentChart(option) {
           width: Number(content.value.lineWidth || 2),
           ...(isHudModule.value && series.type === 'line' ? { shadowBlur: 7, shadowColor: chartColorWithAlpha(color, .28) } : {})
         }
-        series.itemStyle = { ...series.itemStyle, color, borderRadius: series.type === 'bar' ? [2, 2, 0, 0] : 0 }
+        const radius=Number(content.value.barRadius ?? 2)
+        series.itemStyle = { ...series.itemStyle, color, borderRadius: series.type === 'bar' ? (content.value.chartType==='horizontalBar' ? [0,radius,radius,0] : [radius,radius,0,0]) : 0 }
         series.symbolSize = isHudModule.value ? 3 : 4
         if (series.type === 'bar') series.barMaxWidth = 12
+        const areaOpacity=Math.max(0,Math.min(1,Number(content.value.areaOpacity ?? .24)))
         if (series.areaStyle) series.areaStyle = { ...series.areaStyle, opacity: 1, color: {
           type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
           colorStops: [
-            { offset: 0, color: chartColorWithAlpha(color, .24) },
-            { offset: .52, color: chartColorWithAlpha(color, .085) },
-            { offset: 1, color: chartColorWithAlpha(color, .008) }
+            { offset: 0, color: chartColorWithAlpha(color, areaOpacity) },
+            { offset: .52, color: chartColorWithAlpha(color, areaOpacity*.35) },
+            { offset: 1, color: chartColorWithAlpha(color, areaOpacity*.03) }
           ]
         } }
         if (isHudModule.value && series.type === 'line' && Array.isArray(series.data)) {
@@ -548,7 +551,7 @@ function presentChart(option) {
         }
       } else if (series.type === 'pie') {
         const ring = Array.isArray(series.radius) && series.radius[0] !== '0%'
-        if (ring) series.radius = ['73%', '81%']
+        if (ring) series.radius = [`${Number(content.value.donutRatio ?? 73)}%`, '81%']
         if (series.silent) series.label = { ...series.label, fontSize: 11, fontWeight: 400, fontFamily: HUD_FONT_TEXT, lineHeight: 17 }
         series.itemStyle = { borderColor: 'transparent', borderWidth: 1 }
         series.labelLine = { length: 8, length2: 6, lineStyle: { color: '#606d8d' } }
