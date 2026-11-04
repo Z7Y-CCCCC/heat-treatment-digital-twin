@@ -115,6 +115,9 @@ jobs:
             desktop/package-lock.json
       # This dedicated machine is provisioned with .NET 8. Installing again
       # would try to write Program Files as a non-admin desktop build user.
+      - name: Load and validate provisioned release environment
+        shell: pwsh -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File {0}
+        run: node tools/ci/release-environment.cjs
       - name: Check native build prerequisites
         shell: pwsh -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File {0}
         run: ./tools/ci/setup-windows-runner.ps1 -CheckOnly

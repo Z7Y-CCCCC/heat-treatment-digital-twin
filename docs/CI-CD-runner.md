@@ -30,6 +30,8 @@
 
 `release-environment.json` 只保存 Unity、MySQL 和**公钥**路径；厂商私钥不进入仓库、runner 工作目录或 Actions secrets。发布机通过 `LICENSE_ISSUER_PUBLIC_KEY_FILE` 或当前用户已有的厂商公钥打包。
 
+发布任务在 Node 准备后，显式从 `RUNNER_TEMP/../../release-environment.json` 加载这三条路径，检查已有公钥是 Ed25519、拒绝私钥文件，再写入后续步骤的 `GITHUB_ENV`。缺失配置会在 Unity 编译前失败，不依赖 listener 启动时继承的 LOCALAPPDATA、测试签发目录或临时环境。只读取已有签发身份，不自动生成替代密钥；日志仅记录公钥指纹。可用 `node --test tools/ci/release-environment.test.cjs` 重跑边界检查。
+
 配置中断后，脚本不会覆盖非空且尚未成功配置的目录：先查看 `_diag` 日志，确认无正在运行的构建，选择新的专用空目录重试；如远端已出现 runner，先核查并按 GitHub Settings → Actions → Runners 的移除流程清理失效记录。不要为重试直接删除工作目录或覆盖远端同名 runner。
 
 在仓库 Settings → Actions → Runners 确认 `Idle` 和 `digital-twin-release` 标签后再触发发布。使用主分支手动发布或受保护版本 tag，禁止把自托管发布任务接到外部 PR 或 `pull_request_target` 的外部代码上。构建采用初始模板，避免把现场数据库或上传文件作为安装包输入。发布环境和受保护分支由仓库管理员设置。
@@ -44,7 +46,7 @@ Runner 的进程路径检测只针对本安装目录。停止 runner 前应确�
 
 诊断日志归档上传属于辅助步骤：网络失败会明确警告，日志仍留在 runner `_diag`；不因日志传输中断否定已通过的安装包。构建、回归、启动检查、安装包上传和下载哈希验证都不是可选步骤，任一失败仍禁止发布。
 
-GitHub 下载资产使用 `HeatTreatmentDigitalTwin-Setup-X.Y.Z-x64.exe`，避免平台改写中文文件名导致清单与校验文件不一致。发布前只规范文件名与对应清单，不修改安装包二进制、构建提交或 SHA256；上传后再核对服务器上的文件名及大小，确认四个文件齐全才公开。
+GitHub 下载资产使用 `HeatTreatmentDigitalTwin-Setup-X.Y.Z-x64.exe`，避免平台改写中文文件名导致清单与校验文件不一致。采集另用 `HeatTreatmentCollector-Plugin-X.Y.Z-x64.zip`。发布前只规范文件名与对应清单，不修改安装包二进制、构建提交或 SHA256；上传后再核对主包、插件、各自校验文件、清单和构建耗时文件齐全才公开。
 
 如果只有发布阶段失败，重新运行 workflow 时可填写 `verified_run_id`。仅接受同仓库 `main` 手动发布流程中已全部通过回归和 `package` 的运行；原构建提交必须是当前提交的祖先，且此后只能有发布脚本/文档变更，产品源码一旦变化就拒绝复用。流程重跑质量门禁，下载原运行的指定产物，复核来源提交、运行编号与 SHA256，再将版本 tag 指向**原构建提交**。不改写产物来源，也不把失败构建补标成成功。默认留空仍完整构建。
 

@@ -143,7 +143,7 @@ jobs:
       - run: npm --prefix desktop run test:logs
       - run: npm --prefix desktop run test:processes
       - run: npm --prefix desktop run test:resources
-      - run: node --test tools/ci/collect-release.test.cjs tools/ci/workspace-idle.test.cjs
+      - run: node --test tools/ci/collect-release.test.cjs tools/ci/workspace-idle.test.cjs tools/ci/release-environment.test.cjs
       - run: node tools/ci/check-release.cjs
       - run: dotnet run --project tools/native-runtime-tests/NativeRuntimeTests.csproj --configuration Release --artifacts-path output/native-runtime-tests
       - run: dotnet run --project tools/native-inspection-tests/NativeInspectionTests.csproj --configuration Release --artifacts-path output/native-inspection-tests
