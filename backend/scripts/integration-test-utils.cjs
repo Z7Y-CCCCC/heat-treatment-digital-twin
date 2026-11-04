@@ -240,6 +240,17 @@ async function waitForHttp(url, timeoutMs = 30000) {
     throw new Error(`Timed out waiting for ${url}: ${lastError?.message || 'no response'}`);
 }
 
+async function waitForOwnedBackend(origin, child, timeoutMs = 30000) {
+    const url = new URL(origin);
+    if (url.protocol !== 'http:' || url.hostname !== '127.0.0.1' || !Number.isSafeInteger(child?.pid) || child.pid <= 0)
+        throw new Error('Owned backend requires a spawned child and loopback origin');
+    if (child.exitCode != null || child.signalCode != null) throw new Error('Owned backend exited before readiness');
+    const health = await waitForHttp(url.origin + '/api/health', timeoutMs);
+    if (child.exitCode != null || child.signalCode != null || health.components?.backend?.processId !== child.pid)
+        throw new Error('Backend identity mismatch; no login or configuration request was sent');
+    return health;
+}
+
 async function waitUntil(predicate, timeoutMs, label, intervalMs = 25) {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
@@ -280,5 +291,6 @@ module.exports = {
     testFetch,
     waitForExit,
     waitForHttp,
+    waitForOwnedBackend,
     waitUntil
 };

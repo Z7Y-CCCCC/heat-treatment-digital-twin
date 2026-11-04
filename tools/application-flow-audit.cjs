@@ -19,6 +19,7 @@ const backend = [
     'ws-queue-test.cjs', 'http-integrity-test.cjs'
 ];
 const entries = historyOnly ? [] : backend.map(script => ({ name: script, args: [path.join(root, 'backend/scripts', script)] }));
+if (!historyOnly) entries.push({ name: 'ui-fixture-isolation-test.cjs', args: [path.join(__dirname, 'ui-fixture-isolation-test.cjs')] });
 if (!historyOnly) entries.push({ name: 'frontend-regressions', cwd: path.join(root, 'frontend'), args: [
     '--experimental-test-module-mocks', '--test', '--test-concurrency=1', ...fs.readdirSync(path.join(root, 'frontend/tests')).filter(name => name.endsWith('.test.mjs')).map(name => `tests/${name}`)
 ] });
@@ -32,6 +33,7 @@ if (historyOnly) for (const script of [
     'admin-header-ui-test.cjs', 'factory-modal-ui-test.cjs', 'device-form-ui-test.cjs',
     'users-feedback-ui-test.cjs', 'users-table-ui-test.cjs', 'points-tabs-ui-test.cjs',
     'model-library-ui-test.cjs', 'platform-tabs-ui-test.cjs', 'map-settings-tabs-ui-test.cjs',
+    'unified-map-designer-ui-test.cjs', 'trend-source-ui-test.cjs',
     'project-migration-ui-test.cjs', 'quick-cast-ui-test.cjs', 'quality-admin-sync-ui-test.cjs',
     'view-hierarchy-ui-test.cjs', 'data-source-workspace-ui-test.cjs', 'data-set-workflow-ui-test.cjs',
     'line-multiselect-ui-test.cjs', 'industrial-ground-ui-test.cjs', 'industrial-ground-cutaway-visual-test.cjs',
