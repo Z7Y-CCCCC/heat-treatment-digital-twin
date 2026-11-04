@@ -316,6 +316,8 @@ export const adminApi = {
     async updateLinePlacement(id, layout) { return readApiJson(await fetch(`${API_BASE}/lines/${pathId(id)}/placement`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ transform: layout.transform, placementPending: layout.placementPending }) }), '保存产线位置失败') },
     async uploadModel(formData) { return readApiJson(await fetch(`${API_BASE}/models/upload`, { method: 'POST', body: formData }), '上传模型失败') },
     async updateModel(id, data) { return readApiJson(await fetch(`${API_BASE}/models/${pathId(id)}`, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) }), '保存模型失败') },
+    async getMotionActions(id) { return readApiJson(await fetch(`${API_BASE}/models/${pathId(id)}/motion-actions`, { cache: 'no-store' }), '读取工艺动作失败', true) },
+    async saveMotionActions(id, data, preview = false) { return readApiJson(await fetch(`${API_BASE}/models/${pathId(id)}/motion-actions${preview ? '/preview' : ''}`, { method: preview ? 'POST' : 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) }), preview ? '准备动作预览失败' : '保存工艺动作失败') },
     async saveModelBindings(id, data) { return readApiJson(await fetch(`${API_BASE}/models/${pathId(id)}/bindings`, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) }), '保存动作动画失败') },
     async renameModel(id, name) { return readApiJson(await fetch(`${API_BASE}/models/${pathId(id)}/name`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) }), '保存模型名称失败') },
     async deleteModel(id) {

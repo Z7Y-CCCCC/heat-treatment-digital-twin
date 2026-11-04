@@ -36,7 +36,7 @@ async function loadDeviceAnimations(db, id, factoryId) {
             invert: ['visibility','color'].includes(b.action) && !!b.invert }];
     });
     const config = instance.animationBindings || { version: 1, staleMs: 5000, bindings: inherited };
-    const revision = crypto.createHash('sha256').update(canonicalJson({model:device.model_type,path:model.file_path,metadata:object(model.metadata),config,points:points.map(p => [p.id,p.category,p.value_role,p.name,p.access_type])})).digest('hex');
+    const revision = crypto.createHash('sha256').update(canonicalJson({model:device.model_type,path:model.file_path,metadata:object(model.metadata),motion:model.motion_package?.clipSha256,config,points:points.map(p => [p.id,p.category,p.value_role,p.name,p.access_type])})).digest('hex');
     return { device, instance, model, points, config, revision, actions: actionsForModel(model), motionPackage: model.motion_package };
 }
 function validateDeviceAnimations(loaded, body) {
@@ -54,8 +54,7 @@ function validateDeviceAnimations(loaded, body) {
         if (row.enabled && (!point || String(point.access_type || 'READ').toUpperCase() !== 'READ')) throw error('请选择本设备的只读采集点位');
         if (row.enabled && (!groups.has(point.category) || !String(point.value_role || point.name || '').trim())) throw error('请先在点位映射中设置有效的点位分组和字段');
         if (['inputMin','inputMax','speed','transitionSeconds'].some(k => typeof row[k] !== 'number' || !Number.isFinite(row[k])) || row.inputMin >= row.inputMax || Math.max(Math.abs(row.inputMin),Math.abs(row.inputMax)) > 1e12 || row.speed < .05 || row.speed > 10 || row.transitionSeconds < 0 || row.transitionSeconds > 60) throw error('输入范围、速度或过渡时间无效');
-        if (row.enabled) for (let channel of action.channels) {
-            channel = channel.replace(/:c\d+$/, ':c'); // generic color owns every material slot on that node
+        if (row.enabled) for (const channel of new Set(action.channels.map(c => c.replace(/:c\d+$/, ':c')))) {
             if (occupied.has(channel)) throw error(`“${action.label}”与“${occupied.get(channel)}”控制同一部件，请保留一个`);
             occupied.set(channel, action.label);
         }

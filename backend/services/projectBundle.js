@@ -118,7 +118,8 @@ function localReference(value) {
     let decoded;
     try { decoded = decodeURIComponent(clean); } catch { throw new Error('资产 URL 编码无效'); }
     if (/[\\\0:]/.test(decoded) || decoded.slice(1).split('/').some(part => !part || part === '.' || part === '..')) throw new Error('资产路径不安全');
-    if (!/\.(glb|gltf|bin|png|jpe?g|webp|gif|ktx2?|dds|mp3|wav|ogg|m4a|aac|flac)$/i.test(decoded)) throw new Error('迁移包引用了不支持的资产类型');
+    if (!/\.(glb|gltf|bin|png|jpe?g|webp|gif|ktx2?|dds|mp3|wav|ogg|m4a|aac|flac)$/i.test(decoded)
+        && !/^\/(assets\/motions|uploads\/models\/motions|uploads\/projects)\/[\w./-]+\.json$/.test(decoded)) throw new Error('迁移包引用了不支持的资产类型');
     return decoded;
 }
 
@@ -319,7 +320,20 @@ async function importBundle(filename, input = {}, options = {}) {
         }
     }
     const assetMap = new Map(bundle.manifest.assets.map(item => [item.url, `/uploads/projects/${token}${item.url}`]));
+    const motionContent = new Map(), motionHashes = new Map();
+    for (const model of bundle.tables.models) {
+        const metadata = typeof model.metadata === 'string' ? JSON.parse(model.metadata || '{}') : model.metadata;
+        const motion = metadata?.motionAuthoring?.bundle;
+        if (!motion) continue;
+        const asset = bundle.manifest.assets.find(a => a.url === motion.clipPath);
+        if (!asset || asset.size > 16 * 1024 * 1024 || asset.sha256 !== motion.clipSha256) throw new Error('迁移包中的动作文件缺失或不匹配');
+        const data = JSON.parse(bundle.content.get(asset.path));
+        if (data.schemaVersion !== 1 || data.modelId !== model.id || data.rigSha256 !== motion.rigSha256 || data.sourceSha256 !== motion.sourceSha256) throw new Error('动作包与迁移模型不一致');
+        const bytes = Buffer.from(JSON.stringify({ ...data, modelId: mappings.get(model.id) }));
+        motionContent.set(asset.path, bytes); motionHashes.set(motion.clipSha256, hash(bytes));
+    }
     const rewrite = (value, key) => {
+        if (key === 'clipSha256' && motionHashes.has(value)) return motionHashes.get(value);
         if (/^(pointId|point_id|dataPointId|data_point_id)$/.test(key) && pointMappings.has(String(value))) return typeof value === 'number' ? pointMappings.get(String(value)) : String(pointMappings.get(String(value)));
         if (typeof value !== 'string') return value;
         if (/^(connectionId|connection_id|sourceConnectionId)$/.test(key) && value) return `unconfigured_${token}_${hash(Buffer.from(value)).slice(0, 12)}`;
@@ -339,7 +353,7 @@ async function importBundle(filename, input = {}, options = {}) {
         for (const item of bundle.manifest.assets) {
             const output = path.join(destination, item.url.slice(1));
             fs.mkdirSync(path.dirname(output), { recursive: true });
-            fs.writeFileSync(output, bundle.content.get(item.path), { flag: 'wx' });
+            fs.writeFileSync(output, motionContent.get(item.path) || bundle.content.get(item.path), { flag: 'wx' });
         }
         await db.transaction(async tx => {
             for (const table of ['factories', 'workshops', 'lines', 'device_templates', 'datapoint_templates', 'models', 'devices', 'data_points', 'projects', 'scenes', 'widgets', 'bindings', 'releases', 'factory_settings']) {

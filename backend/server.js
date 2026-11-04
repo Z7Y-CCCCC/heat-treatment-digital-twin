@@ -529,6 +529,7 @@ app.get('/api/plc/points/realtime', async (req, res) => {
                 };
             runtimeDevices.push({
                 device,
+                sourceMode: runtime.sourceMode || null,
                 deviceStatus: runtime.deviceStatus,
                 snapshotTimestamp: runtime.snapshotTimestamp,
                 points: runtime.points.map(point => ({
@@ -553,6 +554,7 @@ app.get('/api/plc/points/realtime', async (req, res) => {
             deviceStatuses: runtimeDevices.map(item => item.deviceStatus).filter(Boolean),
             snapshotTimestamp: latestSnapshot,
             points: runtimeDevices.flatMap(item => item.points),
+            sourceMode: [...new Set(runtimeDevices.map(item => item.sourceMode).filter(Boolean))].join(',') || null,
             timestamp: Date.now()
         });
     } catch (e) {

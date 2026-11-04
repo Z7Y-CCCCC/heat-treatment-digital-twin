@@ -1087,6 +1087,8 @@ namespace HeatTreatment.DigitalTwin.Runtime
 
         private void LateUpdate()
         {
+            _occlusionFader.SetFocus(_camera, _mode == DashboardMode.Detail ? _selected?.Root?.transform : null, transform);
+            _occlusionFader.Tick(Time.unscaledTimeAsDouble, Time.unscaledDeltaTime);
             if (_mode == DashboardMode.Overview) { UpdateDeviceHover(); DrawDeviceHover(); return; }
             UpdateDeviceHoverAt(Input.mousePosition, true);
             var runtime = _selected?.Inspection;

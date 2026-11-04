@@ -135,6 +135,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
         private readonly Dictionary<string, string> _lineNames = new Dictionary<string, string>();
 
         private Camera _camera;
+        private readonly DeviceOcclusionFader _occlusionFader = new DeviceOcclusionFader();
         private OrbitCameraController _orbit;
         private RuntimeDiagnosticsOverlay _diagnostics;
         private FactoryConfigDto _config;
@@ -491,6 +492,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
 
         public void FocusPreviewBounds(Bounds bounds, ConfiguredView view = null, ISet<string> targetDeviceIds = null)
         {
+            _occlusionFader.Clear();
             if (_selected != null) ResetInspection(_selected, false);
             _selected = null;
             _mode = DashboardMode.Overview;
@@ -551,6 +553,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
 
         public void ClearFactory()
         {
+            _occlusionFader.Clear();
             _worldClick.Cancel();
             foreach (var entry in _devices.Values)
             {
@@ -994,6 +997,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
         private void ShowDetail(DeviceView device, ConfiguredView configuredView = null)
         {
             if (device == null || device.Root == null) return;
+            _occlusionFader.Clear();
             if (_selected != null && _selected != device) ResetInspection(_selected, false);
             _selected = device;
             _mode = DashboardMode.Detail;
@@ -1030,6 +1034,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
 
         private void ShowOverview(bool immediate, ConfiguredView configuredView = null)
         {
+            _occlusionFader.Clear();
             if (_selected != null) ResetInspection(_selected, false);
             _selected = null;
             _mode = DashboardMode.Overview;
@@ -1602,5 +1607,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
             if (_buttonActiveTexture != null) Destroy(_buttonActiveTexture);
             if (_font != null) Destroy(_font);
         }
+
+        private void OnDisable() => _occlusionFader.Clear();
     }
 }

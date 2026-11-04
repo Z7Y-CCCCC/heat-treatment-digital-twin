@@ -93,6 +93,9 @@ async function main() {
             filename: databaseFile
         }, null, 2));
         fs.writeFileSync(path.join(modelsDir, MODEL_FILENAME), ORIGINAL_MODEL);
+        const motionFile = path.join(modelsDir, 'motions', 'backup-fixture', 'tracks.json');
+        const motionBytes = Buffer.from(JSON.stringify({ schemaVersion: 1, modelId: 'backup-fixture', nodes: [], clips: [] }));
+        fs.mkdirSync(path.dirname(motionFile), { recursive: true }); fs.writeFileSync(motionFile, motionBytes);
         const migratedAsset = path.join(uploadsDir, 'projects', 'test-project', 'model.glb');
         const appearanceAsset = path.join(uploadsDir, 'appearance', 'test-image.png');
         const largeModel = path.join(modelsDir, 'large-backup-test.glb');
@@ -203,6 +206,7 @@ async function main() {
 
         await putSetting(MUTATED_SETTING);
         fs.writeFileSync(path.join(modelsDir, MODEL_FILENAME), MUTATED_MODEL);
+        fs.writeFileSync(motionFile, Buffer.from('mutated motion fixture'));
         fs.writeFileSync(migratedAsset, MUTATED_MODEL);
         fs.writeFileSync(appearanceAsset, MUTATED_MODEL);
         fs.writeFileSync(largeModel, MUTATED_MODEL);
@@ -241,6 +245,7 @@ async function main() {
             manifestFormatValid: manifest.format === 'heat-treatment-digital-twin-site-backup' && manifest.version === 4,
             databaseIncluded: archivePaths.has('database/factory.db'),
             uploadedModelIncluded: archivePaths.has(`uploads/models/${MODEL_FILENAME}`),
+            authoredMotionJsonIncludedAndRestored: archivePaths.has('uploads/models/motions/backup-fixture/tracks.json') && fs.readFileSync(motionFile).equals(motionBytes),
             dataSourceConfigIncluded: archivePaths.has('config/data-sources.json')
                 && archivePaths.has(`config/data-sources.${scopedFactoryId}.json`)
                 && manifest.containsSensitiveConfiguration === true,

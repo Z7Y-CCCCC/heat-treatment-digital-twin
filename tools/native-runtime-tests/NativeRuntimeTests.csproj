@@ -9,6 +9,7 @@
     <Compile Include="../../unity-client/Assets/Scripts/Rendering/MotionSignalState.cs" Link="MotionSignalState.cs" />
     <Compile Include="../../unity-client/Assets/Scripts/Rendering/OrbitCameraMotion.cs" Link="OrbitCameraMotion.cs" />
     <Compile Include="../../unity-client/Assets/Scripts/Backend/BackendDtos.cs" Link="BackendDtos.cs" />
+    <Compile Include="../../unity-client/Assets/Scripts/Backend/MotionAssetPolicy.cs" Link="MotionAssetPolicy.cs" />
     <Compile Include="../../unity-client/Assets/Scripts/Runtime/IndustrialGroundPlan.cs" Link="IndustrialGroundPlan.cs" />
     <None Include="../../shared/industrial-ground-fixtures.json" Link="industrial-ground-fixtures.json" CopyToOutputDirectory="PreserveNewest" />
     <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />

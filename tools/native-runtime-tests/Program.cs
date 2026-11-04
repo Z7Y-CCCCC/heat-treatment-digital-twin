@@ -14,6 +14,7 @@ internal static partial class Program
         var tests = new (string Name, Func<Task> Run)[]
         {
             ("motion signals freeze on stale, invalid or wrong point identity; interpolation follows authored coordinates", MotionSignalsAreSafe),
+            ("authored motion downloads allow only local managed asset namespaces", MotionPathsAreBounded),
             ("manual orbit retains direction across half turns and many full revolutions", OrbitRetainsWinding),
             ("world drag out and back never becomes a selection click", WorldClickRetainsGesture),
             ("industrial floor, pits, platforms and device heights match the shared Web/Unity contract", IndustrialGroundMatchesContract),
@@ -38,6 +39,15 @@ internal static partial class Program
             Console.WriteLine($"PASS: {test.Name}");
         }
         Console.WriteLine($"Passed {tests.Length}/{tests.Length} isolated native runtime checks.");
+    }
+
+    private static Task MotionPathsAreBounded()
+    {
+        foreach (var path in new[] { "/assets/motions/cad.json", "/uploads/models/motions/model/hash.glb", "/uploads/projects/new/assets/motions/a.json" })
+            if (!MotionAssetPolicy.IsAllowed(path)) throw new Exception("managed motion path rejected: " + path);
+        foreach (var path in new[] { "https://example.com/a.json", "//example.com/a.glb", "/uploads/models/a.glb", "/uploads/audio/a.json", "/uploads/projects/../secret.json", "/uploads/projects/%2e%2e/a.json", "/uploads/projects/a.json?url=remote", "/assets/motions/a.json#secret", "/assets/motions/a\\b.json", "/uploads/projects/a.js", "/assets/motions/a.json\n", "/assets/motions//a.glb" })
+            if (MotionAssetPolicy.IsAllowed(path)) throw new Exception("unsafe motion path accepted: " + path);
+        return Task.CompletedTask;
     }
 
     private static Task MotionSignalsAreSafe()
