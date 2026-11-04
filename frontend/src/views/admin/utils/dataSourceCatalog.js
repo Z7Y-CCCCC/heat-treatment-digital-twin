@@ -1,5 +1,6 @@
 // Capability is explicit. Planned entries never create a fake working connection.
 const ready = [
+    { key: 'mongodb', name: 'MongoDB', badge: 'MDB', group: 'nosql', color: '#2c963c', description: '集合、嵌套字段与设备参数', draft: { sourceType: 'database', type: 'mongodb', port: 27017, defaultSchema: '', encrypt: true, trustServerCertificate: false } },
     { key: 'mysql', name: 'MySQL / MariaDB', badge: 'MY', group: 'database', color: '#16759c', description: '业务表、视图与字段', draft: { sourceType: 'database', type: 'mysql', port: 3306 } },
     { key: 'postgres', name: 'PostgreSQL', badge: 'PG', group: 'database', color: '#426b96', description: 'Schema、表与视图', draft: { sourceType: 'database', type: 'postgres', port: 5432, defaultSchema: 'public' } },
     { key: 'sqlserver', name: 'SQL Server', badge: 'SQL', group: 'database', color: '#9162a8', description: '业务表、视图与字段', draft: { sourceType: 'database', type: 'sqlserver', port: 1433, defaultSchema: 'dbo', encrypt: true, trustServerCertificate: false } },
@@ -23,7 +24,7 @@ const planned = [
     ['hikvision', 'HIKVISION', 'industrial', '#373e42'], ['bacnet', 'BACnet/IP', 'industrial', '#5caebb'],
     ['oracle', 'Oracle', 'database', '#bb2025'], ['dm8', 'DM8', 'database', '#64a59d'],
     ['kingbase', 'KingbaseES', 'database', '#123b5f'], ['gbase', 'GBase 8s', 'database', '#36433c'],
-    ['mongodb', 'MongoDB', 'nosql', '#2c963c'], ['influxdb', 'InfluxDB', 'nosql', '#10a0aa'],
+    ['influxdb', 'InfluxDB', 'nosql', '#10a0aa'],
     ['iotdb', 'IoTDB', 'nosql', '#178ec1'], ['tdengine', 'TDengine', 'nosql', '#058bba'],
     ['opengauss', 'openGauss', 'database', '#1664c4'], ['dis', 'DIS', 'stream', '#3298a4'],
 ]
@@ -38,7 +39,7 @@ export function capabilityLabel(entry) { return ({ ready: '已接入', device: '
 
 export function sourceCatalogEntry(connection = {}) {
     const kind = connection.connector === 'file' && /\.xlsx$/i.test(connection.baseUrl || '') ? 'excel' : connection.connector
-    return DATA_SOURCE_CATALOG.find(item => item.key === (connection.sourceType === 'http_api' || connection.type === 'http_api' ? kind || 'http' : connection.type)) || ready[0]
+    return DATA_SOURCE_CATALOG.find(item => item.key === (connection.sourceType === 'http_api' || connection.type === 'http_api' ? kind || 'http' : connection.type)) || DATA_SOURCE_CATALOG.find(item => item.key === 'mysql')
 }
 export function sourceEndpoint(connection = {}) {
     if (connection.connector === 'file') return '已导入数据文件'

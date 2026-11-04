@@ -7,6 +7,7 @@ const emit = defineEmits(['upload-state'])
 const http = computed(() => props.draft.sourceType === 'http_api')
 const kind = computed(() => props.draft.connector || 'http')
 const sqlite = computed(() => !http.value && props.draft.type === 'sqlite')
+const mongo = computed(() => !http.value && props.draft.type === 'mongodb')
 const uploading = ref(false), uploadMessage = ref('')
 const workbookSheets = ref([])
 const excel = computed(() => kind.value === 'file' && /\.xlsx$/i.test(props.draft.baseUrl || ''))
@@ -61,6 +62,7 @@ async function importFile(event) {
                 <label>主机<input v-model="draft.host" class="input" placeholder="127.0.0.1" /></label>
                 <label>端口<input v-model.number="draft.port" class="input" type="number" min="1" max="65535" /></label>
                 <label class="wide">数据库名<input v-model="draft.database" class="input" placeholder="数据库名称" /></label>
+                <p v-if="mongo" class="hint wide">MongoDB 主机与端口接入；集合、嵌套字段和当前设备匹配在数据集中设置。</p>
             </template>
         </div>
         <div v-show="section === 'authentication'" class="source-fields">
@@ -71,6 +73,7 @@ async function importFile(event) {
                     <label>{{ http ? '用户名' : '只读账号' }}<input v-model="draft.user" class="input" autocomplete="off" /></label>
                     <label>密码<input v-model="draft.password" type="password" class="input" autocomplete="new-password" /></label>
                 </template>
+                <label v-if="mongo" class="wide">认证数据库<input v-model="draft.defaultSchema" class="input" placeholder="留空使用上面的数据库；常见为 admin" aria-label="MongoDB 认证数据库" /></label>
                 <template v-if="http && draft.authType === 'api_key'">
                     <label>API Key 请求头<input v-model="draft.apiKeyHeader" class="input" placeholder="X-API-Key" /></label>
                     <label>API Key<input v-model="draft.apiKey" type="password" class="input" autocomplete="new-password" /></label>
@@ -97,6 +100,7 @@ async function importFile(event) {
             <label v-if="http">请求超时（毫秒）<input v-model.number="draft.requestTimeoutMs" class="input" type="number" min="1000" max="60000" /></label>
             <label v-else>查询超时（毫秒）<input v-model.number="draft.queryTimeoutMs" class="input" type="number" min="1000" max="60000" /></label>
             <label v-if="!http && ['postgres', 'sqlserver'].includes(draft.type)">默认 Schema<input v-model="draft.defaultSchema" class="input" :placeholder="draft.type === 'postgres' ? 'public' : 'dbo'" /></label>
+            <label v-if="mongo" class="check"><input v-model="draft.encrypt" type="checkbox" />TLS 加密连接</label>
             <label class="check"><input v-model="draft.enabled" type="checkbox" />启用此连接</label>
             <template v-if="!http && draft.type === 'sqlserver'">
                 <label class="check"><input v-model="draft.encrypt" type="checkbox" />加密连接</label>

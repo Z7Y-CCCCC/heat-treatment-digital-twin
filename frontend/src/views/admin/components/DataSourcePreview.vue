@@ -55,14 +55,15 @@ function preview() {
     <section class="source-preview" aria-label="数据源只读预览">
         <div class="preview-toolbar">
             <label v-if="http && ['http', 'mqtt', 'redis'].includes(kind)">{{ kind === 'http' ? '接口路径' : kind === 'mqtt' ? '订阅主题' : 'Redis 键名' }}<input v-model="query.apiPath" class="input" :aria-label="kind === 'http' ? '接口路径' : kind === 'mqtt' ? '订阅主题' : 'Redis 键名'" /></label>
-            <button type="button" class="btn btn-sm" :disabled="busy || !connection.enabled || (http && !query.apiPath)" @click="inspect">{{ http ? kind === 'http' ? '读取接口字段' : '读取数据字段' : '读取表与视图' }}</button>
-            <label v-if="!http && tables.length">数据表<select v-model="query.table" class="input" aria-label="数据表" @change="chooseTable"><option value="">请选择表或视图</option><option v-for="(table, index) in tables" :key="index" :value="String(index + 1)">{{ table.schema ? table.schema + '.' : '' }}{{ table.name }}</option></select></label>
+            <button type="button" class="btn btn-sm" :disabled="busy || !connection.enabled || (http && !query.apiPath)" @click="inspect">{{ http ? kind === 'http' ? '读取接口字段' : '读取数据字段' : connection.type === 'mongodb' ? '读取集合' : '读取表与视图' }}</button>
+            <label v-if="!http && tables.length">{{ connection.type === 'mongodb' ? '集合' : '数据表' }}<select v-model="query.table" class="input" :aria-label="connection.type === 'mongodb' ? 'MongoDB 集合' : '数据表'" @change="chooseTable"><option value="">请选择{{ connection.type === 'mongodb' ? '集合' : '表或视图' }}</option><option v-for="(table, index) in tables" :key="index" :value="String(index + 1)">{{ table.schema ? table.schema + '.' : '' }}{{ table.name }}</option></select></label>
             <label v-if="fields.length">{{ http ? '字段路径' : '字段' }}<select v-if="http" v-model="query.jsonPath" class="input" aria-label="字段路径"><option value="">请选择字段</option><option v-for="field in fields" :key="field.path" :value="field.path">{{ field.path }}</option></select><select v-else v-model="query.field" class="input" aria-label="字段"><option value="">请选择字段</option><option v-for="field in fields" :key="field.name" :value="field.name">{{ field.name }}</option></select></label>
             <button v-if="fields.length" type="button" class="btn btn-sm" :disabled="busy || !(http ? query.jsonPath : query.field)" @click="preview">读取样例</button>
         </div>
         <p v-if="busy" role="status" class="note">正在只读查询…</p>
         <p v-if="!connection.enabled" class="note">连接已停用，请先启用并保存。</p>
         <p v-if="error" role="alert" class="preview-error">{{ error }}</p>
+        <p v-if="connection.type === 'mongodb' && fields.length" class="note">字段来自前 50 条记录；空集合或未出现的字段可在数据集中手动填写。</p>
         <nav v-if="fields.length" class="preview-result-tabs" aria-label="预览内容"><button type="button" :aria-pressed="previewTab==='fields' || !result" @click="previewTab='fields'">字段 <small>{{fields.length}}</small></button><button v-if="result" type="button" :aria-pressed="previewTab==='sample'" @click="previewTab='sample'">样例</button></nav>
         <div v-if="fields.length" v-show="previewTab==='fields' || !result" class="preview-table-scroll">
             <table><thead><tr><th>{{ http ? '字段路径' : '字段名' }}</th><th>类型</th><th>{{ http ? '样例' : '属性' }}</th></tr></thead><tbody>
