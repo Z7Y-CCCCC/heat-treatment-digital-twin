@@ -12,6 +12,17 @@ const action = (nodes, id = 'user_door_lift') => ({ id, label: '门升降与转�
     await createTestDatabase(path.join(data, 'factory.db')); fs.mkdirSync(path.join(uploads, 'models'), { recursive: true });
     const document = { asset: { version:'2.0' }, scene:0, scenes:[{ nodes:[0] }], nodes:[{name:'duplicate',children:[1,2],translation:[1,2,3]}, {name:'duplicate',translation:[0,1,0],scale:[2,3,4]},{name:'user_motion_node_1'},{name:'unused_other_scene'}] };
     const fixture = author.encodeGlb(document, [{type:0x4e4f534a,bytes:Buffer.from('{}')}]); fs.writeFileSync(path.join(uploads,'models/fixture.glb'), fixture);
+    const priorUploads = process.env.UPLOADS_DIR; process.env.UPLOADS_DIR = uploads;
+    try {
+        const prepared = author.prepare({ id:'write_fixture',file_path:'/uploads/models/fixture.glb',metadata:'{}' }), compiled = author.compile({ id:'write_fixture',file_path:'/uploads/models/fixture.glb' },prepared,[action(prepared.nodes)]);
+        const originalWrite = fs.writeFileSync;
+        try {
+            fs.writeFileSync = function(file,bytes,...args) { if(String(file).endsWith('.tmp')) { originalWrite.call(fs,file,bytes.subarray(0,4),...args);throw Object.assign(new Error('owned disk-full fixture'),{code:'ENOSPC'}); } return originalWrite.call(fs,file,bytes,...args); };
+            assert.throws(()=>author.storeCompiled(prepared,compiled),/disk-full/);
+        } finally { fs.writeFileSync = originalWrite; }
+        const folder = path.join(uploads,compiled.folder); assert.deepEqual(fs.readdirSync(folder),[],'interrupted file writes leave no published partial blob');
+        author.storeCompiled(prepared,compiled);const file=path.join(folder,compiled.clipName);fs.writeFileSync(file,'interrupted old output');author.storeCompiled(prepared,compiled);assert.equal(hash(fs.readFileSync(file)),compiled.bundle.clipSha256,'retry repairs an old corrupt generated file without changing model data');
+    } finally { if(priorUploads === undefined) delete process.env.UPLOADS_DIR; else process.env.UPLOADS_DIR = priorUploads; }
     let originalClips = 0;
     for (const builtin of getBuiltinModels().filter(model => model.motion_package)) {
         const prepared = author.prepare(builtin), compiled = author.compile(builtin, prepared, []), original = JSON.parse(fs.readFileSync(author.localFile(builtin.motion_package.clipPath)));

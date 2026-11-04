@@ -82,6 +82,7 @@ function prepare(model) {
         return [{ id: String(index), name: n.name, label: original, ...rest }];
     });
     if (!base) { rig = encodeGlb(parsed.document, parsed.chunks); base = { schemaVersion: 1, modelId: model.id, sourceSha256, nodes: nodes.map(({ id, label, ...row }) => row), clips: [] }; }
+    if (rig.length > 80 * 1024 * 1024) throw fail('运动模型超过 80 MB，请先优化源模型');
     const metadata = typeof model.metadata === 'string' ? JSON.parse(model.metadata || '{}') : model.metadata || {};
     const revision = sha(canonicalJson({ sourceSha256, baseRig: sha(rig), baseClips: base.clips, metadata }));
     return { sourceSha256, rig, base, nodes, revision, actions: metadata.motionAuthoring?.actions || [] };
@@ -152,7 +153,13 @@ function storeCompiled(prepared, compiled, previewOnly = false) {
     const directory = path.join(uploadsRoot(), compiled.folder); fs.mkdirSync(directory, { recursive: true });
     for (const [name, bytes] of [[compiled.rigName, prepared.rig], ...(previewOnly ? [] : [[compiled.clipName, compiled.bytes]])]) {
         const file = path.join(directory, name);
-        try { fs.writeFileSync(file, bytes, { flag: 'wx' }); } catch (error) { if (error.code !== 'EEXIST' || sha(fs.readFileSync(file)) !== sha(bytes)) throw error; }
+        const valid = () => fs.existsSync(file) && fs.statSync(file).size === bytes.length && sha(fs.readFileSync(file)) === sha(bytes);
+        if (valid()) continue;
+        const temporary = path.join(directory, `${name}.${crypto.randomUUID()}.tmp`);
+        try {
+            fs.writeFileSync(temporary, bytes, { flag: 'wx' });
+            try { fs.renameSync(temporary, file); } catch (error) { if (!valid()) throw error; }
+        } finally { fs.rmSync(temporary, { force: true }); }
     }
 }
 module.exports = { prepare, compile, storeCompiled, validateActions, localFile, glb, encodeGlb };
