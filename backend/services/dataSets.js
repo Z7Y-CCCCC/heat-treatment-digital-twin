@@ -141,7 +141,7 @@ async function readDefinition(input, context, factoryId, force = false, inspect 
     const sources = require('./dataSources'), connection = sources.resolveConnection(definition.connectionId, factoryId);
     if (inspect && definition.source === 'database') {
         const columns = await sources.listColumns(definition.connectionId, definition.database.schema, definition.database.table, factoryId);
-        return { fields: columns.map(c=>({path:appendDataPath('',c.name),name:c.name,kind:/int|float|double|decimal|numeric|real/i.test(c.dataType)?'number':'string',sample:c.dataType})), roots:[], fetchedAt:new Date().toISOString() };
+        return { fields: columns.map(c=>({path:c.path || appendDataPath('',c.name),name:c.name,kind:/int|float|double|decimal|numeric|real/i.test(c.dataType)?'number':c.dataType==='boolean'?'boolean':'string',sample:c.dataType})), roots:[], fetchedAt:new Date().toISOString() };
     }
     // Validate required row context before opening a connection or issuing SQL.
     if (!inspect && definition.match && (matchValue(definition,context) == null || matchValue(definition,context) === '')) throw error('请先选择要查看的对象或参数');

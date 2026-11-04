@@ -10152,7 +10152,7 @@ async function openAdminSetupStep(step) {
                                     <div><strong>手动备份、整站导出、恢复前安全备份</strong><small>这些操作由用户主动发起；恢复前回滚备份始终保留，避免恢复失败后无法撤回。</small></div>
                                 </div>
                                 <div class="database-backup-source-grid">
-                                    <label v-for="connection in dataSourceConnections.filter(item => !isHttpDataSource(item))" :key="`backup-${connection.id}`" class="database-backup-source-option">
+                                    <label v-for="connection in dataSourceConnections.filter(item => !isHttpDataSource(item) && item.backupSupported !== false)" :key="`backup-${connection.id}`" class="database-backup-source-option">
                                         <input v-model="dataSourceBackupConfig.selectedConnectionIds" type="checkbox" :value="connection.id"  />
                                         <span><strong>{{ connection.name }}</strong><small>{{ connection.type }} · {{ connection.database || connection.filename }}</small></span>
                                     </label>

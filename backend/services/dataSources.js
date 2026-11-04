@@ -34,7 +34,7 @@ const DEFAULT_BACKUP_CONFIG = Object.freeze({
     retention: 10,
     selectedConnectionIds: [PRIMARY_ID]
 });
-const SUPPORTED_TYPES = new Set(['mysql', 'postgres', 'sqlserver', 'sqlite']);
+const SUPPORTED_TYPES = new Set(['mysql', 'postgres', 'sqlserver', 'sqlite', 'mongodb']);
 const SUPPORTED_SOURCE_TYPES = new Set(['database', 'http_api']);
 const SUPPORTED_HTTP_AUTH_TYPES = new Set(['none', 'api_key', 'bearer', 'basic', 'oauth2_client_credentials', 'login_token']);
 const SUPPORTED_RESPONSE_FORMATS = new Set(['auto', 'json', 'xml', 'csv']);
@@ -138,7 +138,10 @@ function normalizeHealth(health) {
     };
 }
 
+function backupSupported(connection) { return !!connection && !isHttpApiSource(connection) && connection.type !== 'mongodb'; }
+
 function defaultPort(type) {
+    if (type === 'mongodb') return 27017;
     if (type === 'postgres') return 5432;
     if (type === 'sqlserver') return 1433;
     if (type === 'mysql') return 3306;
@@ -152,7 +155,8 @@ function normalizeConnection(source = {}, current = {}) {
     ));
     const sameSourceType = sourceType === currentSourceType;
     const connector = String(source.connector ?? current.connector ?? 'http');
-    const previous = sameSourceType && (currentSourceType !== 'http_api' || connector === (current.connector || 'http')) ? current : {};
+    const sameDatabaseType = sourceType === 'http_api' || normalizeType(source.dbType ?? source.type ?? current.type) === normalizeType(current.type);
+    const previous = sameSourceType && sameDatabaseType && (currentSourceType !== 'http_api' || connector === (current.connector || 'http')) ? current : {};
     const type = sourceType === 'http_api'
         ? 'http_api'
         : normalizeType(source.dbType ?? source.type ?? previous.dbType ?? previous.type);
@@ -214,8 +218,8 @@ function normalizeConnection(source = {}, current = {}) {
         database: shortText(source.database ?? previous.database, '', 255),
         filename: shortText(source.filename ?? previous.filename, '', 2048),
         defaultSchema: shortText(source.defaultSchema ?? previous.defaultSchema, type === 'postgres' ? 'public' : '', 255),
-        encrypt: source.encrypt ?? previous.encrypt ?? false ? true : false,
-        trustServerCertificate: source.trustServerCertificate ?? previous.trustServerCertificate ?? true ? true : false,
+        encrypt: source.encrypt ?? previous.encrypt ?? (type === 'mongodb') ? true : false,
+        trustServerCertificate: source.trustServerCertificate ?? previous.trustServerCertificate ?? (type !== 'mongodb') ? true : false,
         queryTimeoutMs: finiteInteger(source.queryTimeoutMs ?? previous.queryTimeoutMs, 8000, 1000, 60000)
     };
 }
@@ -275,7 +279,7 @@ function loadStoredConfig(factoryId = activeFactoryId()) {
             ? raw.connections.map(item => normalizeConnection(item, item)).filter(item => item.id && item.id !== PRIMARY_ID)
             : [];
         const backup = normalizeBackupConfig(raw.backup);
-        const databaseIds = new Set([PRIMARY_ID, ...connections.filter(item => !isHttpApiSource(item)).map(item => item.id)]);
+        const databaseIds = new Set([PRIMARY_ID, ...connections.filter(backupSupported).map(item => item.id)]);
         backup.selectedConnectionIds = backup.selectedConnectionIds.filter(id => databaseIds.has(id));
         return { version: 1, connections, backup };
     } catch (error) {
@@ -297,6 +301,7 @@ function publicConnection(connection, extra = {}) {
         password: connection.password ? MASKED_PASSWORD : '',
         readOnly: extra.primary ? false : true
     };
+    publicValue.backupSupported = backupSupported(connection);
     if (publicValue.health) {
         publicValue.health = { ...publicValue.health, message: redactCredentials(publicValue.health.message, connection) };
     }
@@ -407,6 +412,7 @@ function saveDataSource(input = {}, factoryId = activeFactoryId()) {
         if ((next.connector || 'http') === 'http') { normalizeHttpUrl(next.baseUrl, next.healthPath); httpAuthHeaders(next); }
         else validateTransport(next, factoryId);
     }
+    if (next.type === 'mongodb') require('./mongoDataSource').validate(next);
     const fingerprint = connectionFingerprint(next);
     next.health = current.id && connectionFingerprint(current) === fingerprint ? current.health : null;
     const tested = healthTokens.get(input.healthToken);
@@ -418,7 +424,7 @@ function saveDataSource(input = {}, factoryId = activeFactoryId()) {
     next.configRevision = crypto.randomUUID();
     if (index >= 0) stored.connections[index] = next;
     else stored.connections.push(next);
-    if (isHttpApiSource(next)) stored.backup.selectedConnectionIds = stored.backup.selectedConnectionIds.filter(id => id !== requestedId);
+    if (!backupSupported(next)) stored.backup.selectedConnectionIds = stored.backup.selectedConnectionIds.filter(id => id !== requestedId);
     saveStoredConfig(stored, factoryId);
     runtimeCache.clear();
     oauthTokenCache.clear();
@@ -821,6 +827,7 @@ function qualifiedTable(connection, schema, table) {
 async function withConnection(connection, callback) {
     if (isHttpApiSource(connection)) throw new Error('HTTP API 数据源不能执行数据库结构读取或数据库备份');
     const type = normalizeType(connection.type);
+    if (type === 'mongodb') return require('./mongoDataSource').withMongo(connection, callback);
     if (type === 'mysql') {
         const client = await getMysql().createConnection({
             host: connection.host,
@@ -915,6 +922,7 @@ async function executeReadOnlyQuery(connectionId, sql, params = [], factoryId = 
         throw new Error('只读查询包含被禁止的写入或管理关键字');
     }
     const connection = resolveConnection(connectionId, factoryId);
+    if (connection.type === 'mongodb') throw new Error('MongoDB 不支持 SQL，请使用数据集的集合和字段配置');
     return withConnection(connection, handle => executeRows(handle, statement, params));
 }
 
@@ -944,7 +952,11 @@ async function testDataSource(input = {}, factoryId = activeFactoryId()) {
             }
         } else {
             try {
-                await withConnection(connection, handle => executeRows(handle, 'SELECT 1 AS ok'));
+                await withConnection(connection, async handle => {
+                    if (handle.type !== 'mongodb') return executeRows(handle, 'SELECT 1 AS ok');
+                    await handle.database.command({ ping: 1 }, { signal: handle.signal });
+                    return require('./mongoDataSource').tables(handle);
+                });
                 health = {
                     status: 'healthy',
                     message: '数据库连接成功，可读取数据库结构。',
@@ -954,7 +966,7 @@ async function testDataSource(input = {}, factoryId = activeFactoryId()) {
                 };
             } catch (error) {
                 health = {
-                    status: 'network_error',
+                    status: error.code === 'AUTH_FAILED' ? 'auth_failed' : error.code === 'TIMEOUT' ? 'timeout' : 'network_error',
                     message: redactCredentials(`数据库连接失败：${error.message || String(error)}`, connection),
                     responseTimeMs: Date.now() - startedAt,
                     httpStatus: null,
@@ -979,6 +991,7 @@ async function testDataSource(input = {}, factoryId = activeFactoryId()) {
 async function listTables(id, factoryId = activeFactoryId()) {
     const connection = resolveConnection(id, factoryId);
     return withConnection(connection, async handle => {
+        if (handle.type === 'mongodb') return require('./mongoDataSource').tables(handle);
         let rows;
         if (handle.type === 'sqlite') {
             rows = await executeRows(handle, `SELECT '' AS table_schema, name AS table_name, type AS table_type
@@ -1006,6 +1019,7 @@ async function listColumns(id, schema, table, factoryId = activeFactoryId()) {
     const tableName = shortText(table, '', 255);
     if (!tableName) throw new Error('请选择数据库表');
     return withConnection(connection, async handle => {
+        if (handle.type === 'mongodb') return require('./mongoDataSource').columns(handle, schema, tableName);
         let rows;
         if (handle.type === 'sqlite') {
             rows = await executeRows(handle, `PRAGMA table_info(${quoteIdentifier(tableName, 'sqlite')})`);
@@ -1127,6 +1141,10 @@ function normalizeDatabaseRows(rows) {
 
 async function queryBindingWithHandle(handle, source, context = {}) {
     const binding = normalizeBinding(source);
+    if (handle.type === 'mongodb') {
+        const rows = normalizeDatabaseRows(await require('./mongoDataSource').binding(handle, binding, context));
+        return { value: rows[0]?.value ?? null, rows: binding.valueMode === 'list' ? rows : [], quality: rows.length ? 'good' : 'empty', fetchedAt: new Date().toISOString(), binding };
+    }
     const query = bindingSelectSql(handle, binding, context);
     const rows = normalizeDatabaseRows(await executeRows(handle, query.sql, query.params));
     const list = binding.valueMode === 'list' ? rows : [];
@@ -1200,6 +1218,7 @@ async function readDataSetTable(definition, context, factoryId) {
     const connection = resolveConnection(definition.connectionId, factoryId);
     if (isHttpApiSource(connection)) throw new Error('请选择数据库连接');
     return withConnection(connection, async handle => {
+        if (handle.type === 'mongodb') return require('./mongoDataSource').dataset(handle, definition, context);
         const fieldName = value => { const parts = parseDataPath(value); if (parts.length !== 1 || typeof parts[0] !== 'string') throw new Error('数据库字段必须是单一列名'); return parts[0]; };
         const fields = [...new Set([...definition.columns.map(column => fieldName(column.path)), ...(definition.match ? [fieldName(definition.match.field)] : [])])];
         let where = ''; const params = [];
@@ -1314,7 +1333,7 @@ function saveBackupConfig(input = {}, factoryId = activeFactoryId()) {
     const stored = loadStoredConfig(factoryId);
     const validIds = new Set([
         PRIMARY_ID,
-        ...stored.connections.filter(item => !isHttpApiSource(item)).map(item => item.id)
+        ...stored.connections.filter(backupSupported).map(item => item.id)
     ]);
     const next = normalizeBackupConfig(input);
     next.selectedConnectionIds = next.selectedConnectionIds.filter(id => validIds.has(id));
@@ -1417,6 +1436,7 @@ async function listTablesWithHandle(handle) {
 
 async function createExternalBackup(connection, reason, factoryId = activeFactoryId()) {
     if (isHttpApiSource(connection)) throw new Error('HTTP API 数据源不参与数据库备份');
+    if (!backupSupported(connection)) throw new Error('此数据源仅用于只读接入，不参与 SQL 数据库备份');
     const directory = backupDirectory(connection.id, factoryId);
     const type = normalizeType(connection.type);
     const mysqlDumpAvailable = type === 'mysql' && resolveMysqlTools().available;
@@ -1460,6 +1480,7 @@ async function createConnectionBackup(connectionId, reason = 'manual', factoryId
     const id = safeId(connectionId);
     const connection = id === PRIMARY_ID ? null : resolveConnection(id, factoryId);
     if (isHttpApiSource(connection)) throw new Error('HTTP API 数据源不参与数据库备份');
+    if (connection && !backupSupported(connection)) throw new Error('此数据源不参与 SQL 数据库备份');
     const backupKey = `${factoryId}:${id}`;
     if (activeConnectionBackups.has(backupKey)) return activeConnectionBackups.get(backupKey);
     const pending = (async () => {
@@ -1558,7 +1579,7 @@ function getBackupStatus(factoryId = activeFactoryId()) {
         running: !!backupPromise,
         lastBackupRun,
         lastError: lastBackupError,
-        connections: [primaryConnection(), ...stored.connections.filter(connection => !isHttpApiSource(connection))].map(connection => ({
+        connections: [primaryConnection(), ...stored.connections.filter(backupSupported)].map(connection => ({
             id: connection.id,
             name: connection.name,
             type: normalizeType(connection.type),

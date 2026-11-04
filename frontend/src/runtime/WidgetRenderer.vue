@@ -111,6 +111,7 @@ function getWidgetValue(path) {
 
 const pointRecord = computed(() => scopedDeviceBinding.value ? sampledDevice.value.point : props.pointValues[String(dataBinding.value.pointId || '')] || null)
 const databaseRecord = computed(() => props.databaseValues[String(props.widget.id || '')] || null)
+const displayUnit = computed(() => dataBinding.value.unit || (dataBinding.value.mode === 'dataset' ? databaseRecord.value?.unit : '') || '')
 const businessSection = computed(() => dataBinding.value.businessSection || content.value.section || 'batches')
 const businessSectionMeta = computed(() => dataBinding.value.mode==='dataset'
   ? {available:databaseRecord.value?.quality==='good',rows:databaseRecord.value?.quality==='good'?databaseRecord.value.rows || []:[],message:databaseRecord.value?.error || ''}
@@ -613,7 +614,7 @@ function renderChart() {
         type: 'gauge', min: minimum, max: maximum, radius: '88%', center: ['50%', '58%'],
         progress: { show: !missing, width: 13 }, axisLine: { lineStyle: { width: 13 } }, axisTick: { show: false }, splitLine: { length: 8 },
         axisLabel: { color: '#829bae', distance: 18, fontSize: 9, fontFamily: HUD_FONT_TEXT }, pointer: { show: !missing, width: 4 },
-        detail: { color: '#eef7ff', fontSize: 18, fontFamily: HUD_FONT_NUMBER, fontWeight: 600, offsetCenter: [0, '64%'], formatter: missing ? '—' : `{value}${dataBinding.value.unit || ''}` },
+        detail: { color: '#eef7ff', fontSize: 18, fontFamily: HUD_FONT_NUMBER, fontWeight: 600, offsetCenter: [0, '64%'], formatter: missing ? '—' : `{value}${displayUnit.value}` },
         data: [{ value: missing ? null : Number(boundValue.value) || 0, name: content.value.seriesName || widgetTitle.value }]
       }] })
       return
@@ -865,7 +866,7 @@ onUnmounted(() => {
     </template>
 
     <template v-else-if="type === 'value'">
-      <div class="value-widget-body" :class="`shape-${content.shape || 'card'}`"><span>{{ content.label || widgetTitle }}</span><strong>{{ formatValue() }}<small v-if="dataBinding.unit">{{ dataBinding.unit }}</small></strong><em v-if="boundQuality !== 'good'">{{ boundQuality === 'bad' ? '离线' : '数据延迟' }}</em></div>
+      <div class="value-widget-body" :class="`shape-${content.shape || 'card'}`"><span>{{ content.label || widgetTitle }}</span><strong>{{ formatValue() }}<small v-if="displayUnit">{{ displayUnit }}</small></strong><em v-if="boundQuality !== 'good'">{{ boundQuality === 'bad' ? '离线' : '数据延迟' }}</em></div>
     </template>
 
     <template v-else-if="type === 'status'">
