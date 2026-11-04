@@ -9,6 +9,11 @@
   ],
   "files": [
     {
+      "path": "backend/assets/models/attachments/push_pull_hook_08050105.glb",
+      "bytes": 394684,
+      "sha256": "55d759f740950ecf7e36b017c89f6b13379e4c4db3fb0b5c89bc35f8becc7171"
+    },
+    {
       "path": "backend/assets/models/box_atmosphere_furnace.glb",
       "bytes": 176624,
       "sha256": "e21b88b0cb325f579ec9dd48b53fc712ace48c077792bcbe6cc04014f69a488e"
@@ -135,8 +140,8 @@
     },
     {
       "path": "backend/assets/models/cad_transfer_cart_101300.glb",
-      "bytes": 4286252,
-      "sha256": "70a09b8b0f8dd556e09115013470f7b748e149c09534ae21baedc91edb48ac9b"
+      "bytes": 4681444,
+      "sha256": "de6893b63814e42050b5293dd6ee6a81d3ff8dd8e5007cf9fc9d2405170b25ec"
     },
     {
       "path": "backend/assets/models/cad_water_cooling_tank_471000.glb",
@@ -415,8 +420,8 @@
     },
     {
       "path": "backend/assets/models/ultrasonic_cleaner_cad.glb",
-      "bytes": 17046004,
-      "sha256": "7c426a3fa318a6f1926c7ccfe9c0d4cd8c77f16f4f5408710e3ba184088307d6"
+      "bytes": 17041044,
+      "sha256": "a46f8fe286165ee2e1a72192051dec1a0a98861ce228aa2f23fad508e1a65281"
     },
     {
       "path": "backend/assets/models/water_cooling_tank_cad.glb",
@@ -441,17 +446,22 @@
     {
       "path": "backend/assets/motions/cad_lifting_load_table_111400.glb",
       "bytes": 1129008,
-      "sha256": "fa6c1d3f311019872a5572566986f3c59a9da1aa5cac8a566fc5f8fbccbc5d28"
+      "sha256": "ac942bac63f4a7fbb23974212b64bb34cea50ca6306b453d368a05f6d1dd821f"
     },
     {
       "path": "backend/assets/motions/cad_multipurpose_furnace_082000.glb",
-      "bytes": 8925084,
-      "sha256": "39994eb840a608d7edc8c9f0a435150189d4fbaf7f612a86ea5ec912836861b9"
+      "bytes": 8930248,
+      "sha256": "5cfdc9e09a7d57e336a4e9e593646dd8d783414ada59201b7a9594b3666a994d"
+    },
+    {
+      "path": "backend/assets/motions/cad_tempering_furnace_091300.glb",
+      "bytes": 2452224,
+      "sha256": "22294566d2faef5dc6439b2893bc9fe72013050c0126f1e10d10e7c79a5f08c5"
     },
     {
       "path": "backend/assets/motions/cad_transfer_cart_101300.glb",
-      "bytes": 4478644,
-      "sha256": "cb6b27763c768a1fcb59daa089ec53297b186f942ecb9a62775a9b898518e502"
+      "bytes": 7837104,
+      "sha256": "f389b0932a597db588c51a9fa9f65e932cc5230ff202b235083f01f8a23f1f49"
     },
     {
       "path": "backend/assets/motions/cad_water_cooling_tank_471000.glb",
@@ -460,8 +470,8 @@
     },
     {
       "path": "backend/assets/motions/ultrasonic_cleaner_cad.glb",
-      "bytes": 15819376,
-      "sha256": "2a5a0bdbf4c9b154925a40b3fa96e89dabac466495dcc98b03c545bcf1611f2c"
+      "bytes": 15566756,
+      "sha256": "615734784f702c74c3c59331c6fab7ab23b28bb8e1a68238dc5d2e811710aef7"
     },
     {
       "path": "unity-client/Assets/Equipment/PitFurnaceReferences/PitFurnace1/pit_furnace_1_v1.fbx",

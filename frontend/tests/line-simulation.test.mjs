@@ -1,6 +1,27 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {simulationLineMembers,simulationCapabilities,buildLineSimulation,sampleLineSimulation} from '../src/three/lineSimulation.js'
+
+test('tempering heats with its door closed and drives only the required mechanisms during loading, holding and unloading',()=>{
+ const model={id:'cad_tempering_furnace_091300',file_path:'/tempering.glb'}
+ const station={id:'tempering',name:'回火炉',model_type:model.id,line_id:'A'}
+ const allModels=[...models,model],plan=buildLineSimulation([devices[0],station],allModels)
+ assert.deepEqual(plan.steps.map(step=>step.kind),['approach','open','feed','retract','close','tempering_heat','tempering_hold','open_out','pickup_extend','reclaim','close_out'])
+ assert.ok(plan.steps.every(step=>step.label))
+ const middle=kind=>{const step=plan.steps.find(item=>item.kind===kind);return sampleLineSimulation(plan,step.start+step.duration/2)}
+ const feeding=middle('feed').states.tempering
+ assert.equal(feeding.door,1);assert.ok(feeding.conveyTime>0);assert.equal(feeding.circulationTime,0)
+ for(const kind of ['tempering_heat','tempering_hold']){
+  const frame=middle(kind),state=frame.states.tempering
+  assert.equal(state.door,0);assert.equal(frame.cart.feed,0);assert.equal(frame.material.holder,station.id)
+  assert.equal(state.heat,true);assert.ok(state.circulationTime>0);assert.equal(state.conveyTime,4,'rollers must stop while heating')
+  sampleLineSimulation(plan,plan.total);assert.deepEqual(middle(kind),frame,'seeking must be deterministic')
+ }
+ assert.ok(middle('reclaim').states.tempering.conveyTime<4,'rollers reverse when the cart takes the load back')
+ const final=sampleLineSimulation(plan,plan.total).states.tempering
+ assert.equal(final.heat,false);assert.equal(final.door,0);assert.equal(final.conveyTime,0)
+ assert.ok(!buildLineSimulation([devices[0],station],allModels,{process:false}).steps.some(step=>step.kind.startsWith('tempering_')))
+})
 const models=['cad_transfer_cart_101300','cad_cleaner_170700','cad_water_cooling_tank_471000','cad_fixed_load_table_112200'].map(id=>({id,file_path:`/${id}.glb`}))
 const devices=[{id:'cart',name:'料车实例',model_type:models[0].id,line_id:'A'},
  {id:'cleaner1',name:'一号清洗机',model_type:models[1].id,line_id:'A'},
@@ -43,6 +64,8 @@ test('chosen instances preserve order, identical models remain independent, and 
 test('600 multipurpose furnace closes the intermediate gate for heating and quenching, and returns charge before lowering',()=>{
  const model={id:'cad_multipurpose_furnace_082000',file_path:'/600.glb'},furnace={id:'600-instance',name:'600 多用炉',model_type:model.id}
  const plan=buildLineSimulation([devices[0],furnace],[...models,model])
+ assert.equal(plan.steps.find(step=>step.kind==='drip').label,'沥油')
+ assert.equal(buildLineSimulation([devices[0],devices[3]],models).steps.find(step=>step.kind==='drip').label,'沥水')
  const at=kind=>{const step=plan.steps.find(s=>s.kind===kind);return sampleLineSimulation(plan,step.start+step.duration/2).states[furnace.id]}
  let s=at('hot_feed');assert.equal(s.gate,1);assert.equal(s.door,0);assert.equal(s.chamber,.5);assert.equal(s.basket,0)
  s=at('heat_treat');assert.equal(s.gate,0);assert.equal(s.chamber,1);assert.equal(s.heat,true);assert.ok(s.circulationTime>0)

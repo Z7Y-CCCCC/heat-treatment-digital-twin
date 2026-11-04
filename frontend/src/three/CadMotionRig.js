@@ -1,6 +1,7 @@
 import * as T from 'three'
 import {CAD_MOTION_PROFILES,cadMotionFrame} from './cadMotionProfiles.js'
 import {connectedGeometryParts} from './cadGeometryParts.js'
+import {CART_FEED,locateCartChain,sampleCartChain} from './cartFeedMechanism.js'
 
 /** Temporary preview rig. Original GLB bytes and saved disassembly hierarchy stay unchanged. */
 export class CadMotionRig {
@@ -34,6 +35,9 @@ export class CadMotionRig {
             // A small cyan witness mark makes a rotationally symmetric roller's movement visible.
             const marker=new T.Mesh(new T.BoxGeometry(.007,.007,parts[0].size.z*.7),new T.MeshBasicMaterial({color:'#25bfe6'}))
             marker.name='preview_rotation_witness';marker.position.set(0,parts[0].size.x/2+.001,parts[0].center.z);pivot.add(marker)
+            // The lift deck moves as one assembly. Keep each rotating roller
+            // beneath that deck rather than leaving its pivot at the model root.
+            if(this.id==='cad_lifting_load_table_111400')owner.attach(pivot)
             this.rollers.push(pivot)
         }
     }
@@ -42,6 +46,7 @@ export class CadMotionRig {
             this.wheels=[];const parts=[...this.parts('travel_wheels_metal'),...this.parts('travel_wheels_steel'),...this.parts('travel_wheels_stainless')]
             for(const x of [-.7125,.7125])this.wheels.push(this.pivot('wheel_'+x,new T.Vector3(x,.148,0),parts.filter(p=>Math.abs(p.center.x-x)<.1)))
             const gear=this.node('feed_sprocket');if(gear){this.pivot('feed_gear',new T.Vector3(.806,1.16,0),[{mesh:gear}])}
+            this.prepareCartChain()
         }
         if(this.id==='cad_air_cooling_table_115800ht'){
             this.fans=[];const parts=[...this.parts('fans_metal'),...this.parts('fans_stainless')]
@@ -54,7 +59,60 @@ export class CadMotionRig {
             this.pumpShafts=this.parts('pumps_stainless').map((p,i)=>this.pivot('pump_'+i,p.center,[p]))
         }
         if(this.id==='cad_multipurpose_furnace_082000')this.prepareMultipurpose()
+        if(this.id==='cad_tempering_furnace_091300')this.prepareTempering()
         if(this.id==='cad_lifting_load_table_111400')this.prepareLift()
+    }
+    prepareTempering(){
+        // The author merged solids by material: bearings and motor housings
+        // remain in their original groups while the actual rotors are split out.
+        const blades=this.parts('internal_fan_metal'),shaft=this.parts('internal_fan_stainless')
+        const rollers=this.parts('internal_rollers_stainless')
+        if(blades.length!==8||shaft.length!==1||rollers.length!==7)throw Error('回火炉叶轮或辊筒节点与动作配置不匹配，请检查模型文件。')
+        this.temperingFan=this.pivot('tempering_impeller',new T.Vector3(0,1.96,-.1544),[...blades,...shaft])
+        this.temperingDriveShafts=this.parts('circulation_fan_stainless').map((part,index)=>({
+            pivot:this.pivot('tempering_drive_'+index,part.center,[part]),axis:part.size.x>part.size.y?'x':'y'
+        }))
+        this.temperingRollers=rollers.map((part,index)=>{
+            const pivot=this.pivot('tempering_roller_'+index,part.center,[part])
+            const marker=new T.Mesh(new T.BoxGeometry(.35,.005,.008),new T.MeshBasicMaterial({color:'#25bfe6'}))
+            marker.name='preview_rotation_witness';marker.position.y=part.size.y/2+.001;pivot.add(marker)
+            return pivot
+        })
+        this.heatMaterials=[]
+        this.node('heating_elements').traverse(node=>{
+            if(!node.isMesh)return
+            const materials=[].concat(node.material).map(material=>{
+                const clone=material.clone()
+                this.heatMaterials.push({material:clone,emissive:clone.emissive.clone(),intensity:clone.emissiveIntensity})
+                return clone
+            })
+            node.material=Array.isArray(node.material)?materials:materials[0]
+        })
+    }
+    setTemperingFanAngle(angle){
+        this.temperingFan.rotation.y=angle
+        for(const {pivot,axis} of this.temperingDriveShafts)pivot.rotation[axis]=angle
+    }
+    prepareCartChain(){
+        const rollers=this.parts('return_chain_stainless'),metal=this.parts('return_chain_metal'),steel=this.parts('return_chain_steel')
+        const centers=rollers.filter(p=>Math.abs(p.center.z-.038)<.001&&Math.abs(p.size.z-.027)<.002&&Math.abs(p.size.x-.022)<.002)
+        if(centers.length!==42)throw Error('料车回链节点与已配置轨迹不匹配')
+        const all=[...rollers,...metal,...steel];this.cartChain=[]
+        centers.forEach((roller,index)=>{
+            const center=roller.center.clone();center.z=.038
+            const pieces=all.filter(p=>Math.hypot(p.center.x-center.x,p.center.y-center.y)<.002&&p.center.z>.01&&p.size.x<.055&&p.size.y<.055&&p.size.z<.055)
+            if(pieces.length!==4)throw Error('料车链节应包含两片侧板、滚子和销轴')
+            const at=locateCartChain(center.x,center.y)
+            if(at.error>.0001)throw Error('料车链节偏离回链轨迹')
+            const pivot=this.pivot('return_link_'+index,center,pieces);this.cartChain.push({pivot,distance:at.distance,angle:at.angle})
+        })
+    }
+    setCartFeed(progress,travel=CART_FEED.stroke,engaged=true){
+        const distance=progress*travel
+        this.move(this.node('feed_carriage')?'feed_carriage':'pusher','x',-progress*travel)
+        const latch=this.node('hook_latch');if(latch)latch.rotation.z=-.65*(1-Number(engaged))
+        this.joints.feed_gear.rotation.z=distance/CART_FEED.sprocketRadius
+        this.cartChain.forEach(({pivot,distance:phase,angle})=>{const at=sampleCartChain(phase+distance);pivot.position.fromArray(at.position);pivot.rotation.z=at.angle-angle})
     }
     prepareMultipurpose(){
         const impeller=this.parts('circulation_impeller_metal'),shaft=this.parts('circulation_impeller_stainless')
@@ -96,21 +154,34 @@ export class CadMotionRig {
         this.water=new T.Mesh(new T.BoxGeometry(1,1,1),waterMat);this.water.visible=false;this.effects.add(this.water)
         const water=this.id==='cad_water_cooling_tank_471000'
         this.fluid={x:water ? -.32 : 0,z:water ? 0 : -.75,w:water ? .72 : 1.5,d:water ? 1.04 : 1.05,min:.20,max:water ? 1.40 : 1.1}
-        this.dropMaterial=new T.MeshBasicMaterial({color:'#49c9ef',transparent:true,opacity:.9})
+        const oil=this.id==='cad_multipurpose_furnace_082000'
+        this.dropMaterial=oil
+            ? new T.MeshStandardMaterial({name:'preview_quench_oil',color:'#99591f',roughness:.16,metalness:.05,transparent:true,opacity:.92,depthWrite:false})
+            : new T.MeshBasicMaterial({color:'#49c9ef',transparent:true,opacity:.9})
         this.drops=new T.Group();this.effects.add(this.drops);this.drops.visible=false
         this.nozzles=[]
         if(this.id==='cad_cleaner_170700'){
             const nodes=this.parts('spray_headers_brass');this.nozzles=nodes.map(p=>p.center.clone())
         }
-        const geometry=new T.SphereGeometry(.012,6,4)
-        for(let i=0;i<60;i++)this.drops.add(new T.Mesh(geometry,this.dropMaterial))
+        const geometry=oil
+            ? new T.LatheGeometry([[0,-.016],[.008,-.013],[.012,-.005],[.01,.006],[.004,.018],[0,.028]].map(([x,y])=>new T.Vector2(x,y)),12)
+            : new T.SphereGeometry(.012,6,4)
+        for(let i=0;i<60;i++){
+            const drop=new T.Mesh(geometry,this.dropMaterial)
+            if(oil)drop.name='preview_oil_drop_'+i
+            this.drops.add(drop)
+        }
         this.flow=new T.Group();this.effects.add(this.flow);this.flow.visible=false
         for(const from of this.nozzles){const to=from.clone();to.x*=.18;to.y-=.08;const line=new T.Line(new T.BufferGeometry().setFromPoints([from,to]),new T.LineBasicMaterial({color:'#54ccef',transparent:true,opacity:.35}));this.flow.add(line)}
         if(this.id==='cad_multipurpose_furnace_082000'){
             this.fluid={x:0,z:-.985,w:1.04,d:1.7,min:.2,max:1.31}
+            this.oilSites=[[-.27,-.45],[.27,.45],[.27,-.45],[-.27,.45],[-.27,0],[.27,0],[-.09,-.48],[.12,.48]]
+            this.oilFilaments=new T.Group();this.oilFilaments.name='preview_oil_filaments';this.oilFilaments.visible=false;this.effects.add(this.oilFilaments)
+            const threadGeometry=new T.CylinderGeometry(.0025,.0045,1,7)
+            this.oilSites.forEach((_,i)=>{const thread=new T.Mesh(threadGeometry,this.dropMaterial);thread.name='preview_oil_filament_'+i;this.oilFilaments.add(thread)})
             this.charge=new T.Mesh(new T.BoxGeometry(.54,.28,1.0),new T.MeshStandardMaterial({color:'#c79143',metalness:.5}));this.charge.name='preview_internal_charge';this.charge.position.set(0,1.81,-.985);this.charge.visible=false;this.effects.add(this.charge)
             this.ripples=new T.Group();this.ripples.visible=false;this.effects.add(this.ripples)
-            for(let i=0;i<3;i++){const ring=new T.Mesh(new T.TorusGeometry(.22,.004,6,40),new T.MeshBasicMaterial({color:'#7ec9d1',transparent:true,opacity:.7}));ring.rotation.x=Math.PI/2;ring.position.set(0,1.323,-.985);this.ripples.add(ring)}
+            for(let i=0;i<3;i++){const ring=new T.Mesh(new T.TorusGeometry(.22,.004,6,40),new T.MeshBasicMaterial({color:'#d4a05c',transparent:true,opacity:.5}));ring.rotation.x=Math.PI/2;ring.position.set(0,1.323,-.985);this.ripples.add(ring)}
         }
         this.bounds=new T.Box3().setFromObject(this.root)
     }
@@ -119,14 +190,19 @@ export class CadMotionRig {
     apply(actionId,time){
         this.reset();const f=cadMotionFrame(this.id,actionId,time),s=f.amount,t=f.elapsed,angle=t*Math.PI*2
         if(actionId==='travel'){this.root.position.x+=s*.8;this.wheels.forEach(n=>n.rotation.z=-s*.8/.13)}
-        if(actionId==='feed'){this.move('pusher','x',s*.5);this.joints.feed_gear.rotation.z=-s*6}
+        if(actionId==='feed')this.setCartFeed(s,CART_FEED.stroke,f.progress<=.5)
+        if(actionId==='hook'){const latch=this.node('hook_latch');if(latch)latch.rotation.z=-s*.65}
         if(actionId==='rollers')this.rollers.forEach(n=>n.rotation.z=angle*.6)
+        if(actionId==='rollers')this.temperingRollers?.forEach(n=>n.rotation.x=-angle*.6)
         if(actionId==='fans')this.fans.forEach(n=>n.rotation.y=angle*2)
         if(actionId==='agitator'){
             if(this.multiAgitators){this.multiAgitators.forEach(n=>n.rotation.y=angle*1.5);this.showQuench(t)}
             else this.joints.agitator.rotation.y=angle*1.5
         }
-        if(actionId==='circulation'||actionId==='heating')this.multiCirculation.rotation.y=angle*1.5
+        if(actionId==='circulation'||actionId==='heating'){
+            if(this.temperingFan)this.setTemperingFanAngle(angle*1.5)
+            else this.multiCirculation.rotation.y=angle*1.5
+        }
         if(actionId==='heating')this.showHeat(true)
         if(actionId==='hot_rollers')this.hotRollers.forEach(n=>n.rotation.x=angle*.6)
         if(actionId==='gate')this.move('intermediate_gate','y',.85*s)
@@ -148,7 +224,7 @@ export class CadMotionRig {
             const down=actionId==='basket_down'?s:1-s,multi=this.id==='cad_multipurpose_furnace_082000';this.move(multi?'elevator_basket':'basket','y',-1.05*down)
             if(!multi)this.showWater(1)
             else{this.charge.visible=true;this.charge.position.y=1.81-1.05*down}
-            if(actionId==='basket_up')this.showDrips(t,1.58-down*1.05)
+            if(actionId==='basket_up')this.showDrips(t,(multi?1.44:1.58)-down*1.05)
         }
         if(actionId==='fill'||actionId==='drain'){
             const level=actionId==='fill'?f.progress:1-f.progress;this.showWater(level)
@@ -170,11 +246,11 @@ export class CadMotionRig {
     }
     applyLinked(state={}){
         this.reset()
-        const s={door:0,feed:0,basket:0,lift:0,level:0,run:false,runTime:0,time:0,...state},angle=s.runTime*Math.PI*2
+        const s={door:0,feed:0,basket:0,lift:0,level:0,run:false,runTime:0,circulationTime:0,conveyTime:0,time:0,...state},angle=s.runTime*Math.PI*2
         const air=this.id==='cad_air_cooling_table_115800ht'
         for(const name of ['door','door_carriages'])this.move(name,'y',air ? -.9*(1-s.door) : .9*s.door)
         if(this.id==='cad_transfer_cart_101300'){
-            this.move('pusher','x',s.feed*.5);this.joints.feed_gear.rotation.z=-s.feed*6
+            this.setCartFeed(s.feed,s.feedTravel??CART_FEED.stroke,s.hookEngaged??true)
             this.wheels.forEach(n=>n.rotation.z=-(s.travel||0)/.13)
         }
         this.rollers.forEach(n=>n.rotation.z=angle*.6)
@@ -183,6 +259,11 @@ export class CadMotionRig {
         this.pumpShafts?.forEach(n=>n.rotation.y=angle*2)
         if(this.scissor.length)this.applyLift(.81+.24*s.lift)
         this.move('basket','y',-1.05*s.basket)
+        if(this.id==='cad_tempering_furnace_091300'){
+            this.setTemperingFanAngle(s.circulationTime*Math.PI*3)
+            this.temperingRollers.forEach(node=>node.rotation.x=-s.conveyTime*Math.PI*1.2)
+            this.showHeat(s.heat)
+        }
         if(this.id==='cad_multipurpose_furnace_082000'){
             this.move('intermediate_gate','y',.85*(s.gate||0));this.move('elevator_basket','y',-1.05*s.basket)
             this.multiCirculation.rotation.y=(s.circulationTime||0)*Math.PI*3
@@ -193,15 +274,39 @@ export class CadMotionRig {
         }
         if(this.id==='cad_water_cooling_tank_471000'||s.level>0||['fill','drain'].includes(s.operation))this.showWater(s.level)
         if(s.spray||s.blow)this.showJets(s.time,s.blow)
-        if(s.drip)this.showDrips(s.time,1.58-s.basket*1.05)
+        if(s.drip)this.showDrips(s.time,(this.oilSites?1.44:1.58)-s.basket*1.05)
         this.root.updateMatrixWorld(true)
     }
     showWater(level){const v=this.fluid,h=Math.max(.008,(v.max-v.min)*level);this.water.visible=true;this.water.scale.set(v.w,h,v.d);this.water.position.set(v.x,v.min+h/2,v.z)}
     showQuench(time){this.ripples.visible=true;this.ripples.children.forEach((ring,i)=>{const phase=(time*.6+i/3)%1;ring.scale.setScalar(.3+phase*1.3);ring.material.opacity=(1-phase)*.7})}
     showHeat(on){if(on)this.heatMaterials.forEach(({material})=>{material.emissive.set('#b94c12');material.emissiveIntensity=.9})}
     showDrips(t,height,drain=false){
+        if(this.oilSites&&!drain){this.showOilDrips(t,height);return}
         this.drops.visible=true;this.dropMaterial.color.set('#49c9ef')
         this.drops.children.forEach((drop,i)=>{const fall=(t*.85+i*.113)%1;drop.position.set(drain ? .55 : this.fluid.x+(i%10-4.5)*.055,height-fall*(drain ? .26 : .25),drain ? .9 : (Math.floor(i/10)-2.5)*.10)})
+    }
+    showOilDrips(t,height){
+        // Oil forms a bead and a thinning neck before detaching. Emit from the
+        // raised basket's underside, over the oil bath rather than inside its rollers.
+        const above=height>this.fluid.max+.035,count=Math.max(2,Math.ceil(this.oilSites.length*Math.exp(-Math.max(0,t)*.19)))
+        this.drops.visible=above;this.oilFilaments.visible=above
+        this.drops.children.forEach((drop,i)=>{
+            drop.visible=false;if(!above||i>=count)return
+            const [x,z]=this.oilSites[i],phase=(t/(1.65+(i%3)*.31)+i*.173)%1
+            const falling=Math.max(0,(phase-.45)/.55),formed=Math.min(1,phase/.45)
+            const sy=falling>0?1.1+.45*falling:.3+.8*formed,wide=falling>0?.82:.4+.42*formed
+            drop.scale.set(wide,sy,wide)
+            drop.position.set(this.fluid.x+x,height-.028*sy-.4*falling*falling,this.fluid.z+z)
+            drop.visible=drop.position.y-.016*sy>this.fluid.max+.004
+        })
+        this.oilFilaments.children.forEach((thread,i)=>{
+            thread.visible=false;if(!above||i>=count)return
+            const [x,z]=this.oilSites[i],phase=(t/(1.65+(i%3)*.31)+i*.173)%1
+            const length=Math.min(height-this.fluid.max-.015,.012+.15*Math.pow(Math.min(1,phase/.58),1.6))
+            const neck=phase<.45?1:Math.max(.1,(.58-phase)/.13)
+            thread.visible=phase>.18&&phase<.58;thread.scale.set(neck,length,neck)
+            thread.position.set(this.fluid.x+x,height-length/2,this.fluid.z+z)
+        })
     }
     showJets(t,air){
         this.flow.visible=!air;this.drops.visible=true;this.dropMaterial.color.set(air?'#c4eaff':'#49c9ef')

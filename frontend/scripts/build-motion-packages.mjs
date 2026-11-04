@@ -15,7 +15,7 @@ const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../..'),ou
 fs.mkdirSync(out,{recursive:true})
 globalThis.FileReader=class {readAsArrayBuffer(blob){blob.arrayBuffer().then(v=>{this.result=v;this.onloadend?.()})} readAsDataURL(blob){blob.arrayBuffer().then(v=>{this.result=`data:${blob.type};base64,${Buffer.from(v).toString('base64')}`;this.onloadend?.()})}}
 const sha=b=>crypto.createHash('sha256').update(b).digest('hex'),round=v=>Math.round(v*1e6)/1e6
-const modes={door:'position',gate:'position',basket_down:'position',basket_up:'position',lift_up:'position',lift_down:'position',travel:'position',feed:'position',fill:'position',drain:'position'}
+const modes={door:'position',gate:'position',hook:'position',basket_down:'position',basket_up:'position',lift_up:'position',lift_down:'position',travel:'position',feed:'position',fill:'position',drain:'position'}
 const catalog={schemaVersion:1,models:{}}
 const matches=process.argv.filter(v=>v.startsWith('--model=')).map(v=>v.slice(8))
 for(const id of [...Object.keys(CAD_MOTION_PROFILES),'ultrasonic_cleaner_cad'].filter(id=>!matches.length||matches.includes(id))){
