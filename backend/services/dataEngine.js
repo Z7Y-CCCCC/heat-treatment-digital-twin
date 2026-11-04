@@ -223,22 +223,30 @@ class DataEngine {
 
     getPointRuntimeValues(deviceId, points = []) {
         if (this.plcReader?.getPointRuntimeValues) {
-            return this.plcReader.getPointRuntimeValues(deviceId, points);
+            return { ...this.plcReader.getPointRuntimeValues(deviceId, points), sourceMode: this.currentMode };
         }
 
         const deviceStatus = (this.plcStatus?.devices || []).find(device => device.deviceId === deviceId) || null;
+        const snapshot = this.deviceSnapshots?.get(deviceId);
         return {
+            sourceMode: this.currentMode,
             deviceStatus,
-            snapshotTimestamp: null,
-            points: points.map(point => ({
+            snapshotTimestamp: snapshot?.timestamp || null,
+            points: points.map(point => {
+                const category = point.category || 'analog', field = point.value_role || point.name;
+                const value = snapshot?.[category]?.[field] ?? null;
+                const timestamp = new Date(snapshot?.timestamp || 0).getTime();
+                const stale = !timestamp || Date.now() - timestamp > Math.max(6000, Number(point.sample_interval_ms || 1000) * 3);
+                return ({
                 ...point,
                 category_resolved: point.category || 'analog',
                 field_name: point.value_role || point.name,
                 plc_address: point.plc_tag || '',
-                value: null,
-                quality: deviceStatus?.quality || 'bad',
-                lastReadAt: deviceStatus?.lastReadAt || null
-            }))
+                value,
+                quality: value === null || snapshot?.status?.online === false ? 'bad' : stale ? 'stale' : snapshot?.quality?.[category]?.[field] || deviceStatus?.quality || 'good',
+                lastReadAt: snapshot?.timestamp || null,
+                sourceMode: this.currentMode
+            }); })
         };
     }
 

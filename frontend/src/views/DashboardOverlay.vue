@@ -410,7 +410,7 @@ const pointValues = computed(() => {
                     const field = point.value_role || point.name
                     const value = getByPath(frame, `${category}.${field}`)
                     const quality = getByPath(frame, `quality.${category}.${field}`) || dataStore.deviceStatusMap[device.id]?.quality || 'bad'
-                    const record = { ...point, value, quality, device_id: device.id }
+                    const record = { ...point, value, quality, device_id: device.id, lastReadAt: frame.pointMeta?.[`${category}.${field}`]?.lastReadAt || frame.timestamp || null }
                     result[String(point.id)] = record
                     result[`${device.id}:${point.id}`] = record
                 }

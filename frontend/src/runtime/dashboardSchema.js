@@ -206,7 +206,7 @@ const TYPE_DEFAULTS = {
     title: '实时趋势',
     content: {
       seriesName: '实时值', chartType: 'line', chartPalette: 'industrial',
-      lineColor: '#55c7ff', areaColor: 'rgba(85,199,255,.18)', historyLength: 60,
+      lineColor: '#55c7ff', areaColor: 'rgba(85,199,255,.18)', historyLength: 600, timeWindowSeconds:600,
       showLegend: true, legendPosition: 'top', showAxis: true, showDataLabel: false,
       smooth: true, showSymbol: false, lineWidth: 2, areaOpacity: .2,
       barRadius: 4, donutRatio: 48
@@ -286,7 +286,7 @@ const TYPE_DEFAULTS = {
     title: '实时趋势',
     content: {
       seriesName: '实时温度', chartType: 'area', lineColor: '#8995f5', areaColor: 'rgba(137,149,245,.18)',
-      historyLength: 60, showLegend: false, showAxis: true, showDataLabel: false, smooth: true, showSymbol: false, lineWidth: 1.5, areaOpacity: .2,
+      historyLength: 600, timeWindowSeconds:600, showLegend: false, showAxis: true, showDataLabel: false, smooth: true, showSymbol: false, lineWidth: 1.5, areaOpacity: .2,
       statLabel: '当前温度', statPath: '', statUnit: '°C'
     },
     style: { background: 'rgba(10, 18, 34, .12)', color: '#eef7ff', borderColor: 'rgba(137, 149, 245, .2)', borderRadius: 18, backgroundOpacity: .08, shadow: 'soft' }
@@ -440,6 +440,7 @@ export function normalizeDashboardWidget(source = {}, canvas = DEFAULT_DASHBOARD
       deviceId: String(rawDeviceId),
       pointId: String(data.pointId || data.point_id || ''),
       pointKey: String(data.pointKey || data.point_key || ''),
+      requireConfiguredPoint: data.requireConfiguredPoint === true,
       path: resolvedDataMode === 'static' ? '' : String(data.path || ''),
       source: resolvedDataMode === 'static' ? '' : String(data.source || ''),
       datasetId: String(data.datasetId || '').slice(0, 80),

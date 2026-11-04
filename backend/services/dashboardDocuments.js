@@ -144,6 +144,7 @@ async function validatePlcBindings(db, document) {
     }
     const bindings = document.widgets
         .filter(widget => widget.data?.mode === 'plc')
+        .filter(widget => !(widget.data.requireConfiguredPoint === true && !widget.data.pointId))
         .map(widget => ({
             widgetId: widget.id,
             deviceScope: widget.data.deviceScope !== 'fixed' ? 'current' : 'fixed',

@@ -3,6 +3,10 @@ import DashboardIntegrationPanel from './DashboardIntegrationPanel.vue'
 import { useDashboardIntegration, SOFTWARE_METHODS } from '../../../runtime/dashboardIntegration.js'
 import {DASHBOARD_CHARTS,CHART_FIELD_ROLES} from '../../../../../shared/dashboardCharts.mjs'
 import WidgetPlaybackEditor from './WidgetPlaybackEditor.vue'
+import DevicePointBindingEditor from './DevicePointBindingEditor.vue'
+import TrendChartSettings from './TrendChartSettings.vue'
+import { migrateDeviceTrend, findBoundPoint } from '../../../runtime/pointBinding.js'
+import { createDashboardDataStore } from '../../../runtime/DataStore.js'
 import {useWidgetClock} from '../../../runtime/widgetPlayback.js'
 import {playbackSelection} from '../../../../../shared/widgetPlayback.mjs'
 import DataSetBindingEditor from './DataSetBindingEditor.vue'
@@ -113,6 +117,24 @@ const previewSelectedPart = computed(() => ({
 const previewGroupVisibility = reactive({})
 const previewWidgetVisibility = reactive({})
 const pointValues = ref({})
+const pointSourceMode = ref('')
+const pointReadError = ref('')
+const liveMetrics = ref({})
+const liveEvents = ref([])
+const liveDeviceStatus = ref({})
+const liveDeviceData = ref({})
+let designerStore = null
+let stopDesignerEvents = null
+function startDesignerData() {
+  if (designerStore) return
+  designerStore = createDashboardDataStore()
+  designerStore.syncDevices(devices.value)
+  liveMetrics.value = designerStore.metrics
+  stopDesignerEvents = watch(designerStore.events, value => { liveEvents.value=value }, {immediate:true})
+  liveDeviceStatus.value = designerStore.deviceStatusMap
+  liveDeviceData.value = designerStore.deviceDataMap
+  designerStore.connect()
+}
 const history = ref([])
 const historyIndex = ref(-1)
 const lastSavedSnapshot = ref('')
@@ -211,52 +233,6 @@ const chartPalettes = [
   { id: 'cool', label: '冷色科技', colors: ['#00c7be', '#64d2ff', '#5e5ce6', '#32ade6', '#40c8e0', '#7d7aff'] },
   { id: 'mono', label: '极简灰阶', colors: ['#f5f5f7', '#c7c7cc', '#8e8e93', '#636366', '#aeaeb2', '#d1d1d6'] }
 ]
-
-const mockMetrics = reactive({
-  current_output: 1260,
-  daily_target: 1800,
-  overall_oee: 86.5,
-  energy_consumption: 4280,
-  running_devices: 7,
-  alarm_devices: 1,
-  online_devices: 11,
-  total_devices: 12
-})
-const mockEvents = ref([
-  { id: 1, time: '10:26:18', title: '2# 多用炉温度到达设定值', level: 'info' },
-  { id: 2, time: '10:24:03', title: '清洗机液位偏低', level: 'warning' },
-  { id: 3, time: '10:21:42', title: '1# 多用炉通讯恢复', level: 'info' }
-])
-const mockTrend = ref([
-  { time: '10:00', value: 782 }, { time: '10:05', value: 806 },
-  { time: '10:10', value: 824 }, { time: '10:15', value: 836 },
-  { time: '10:20', value: 842 }, { time: '10:25', value: 838 }
-])
-const mockBusinessData = reactive({
-  readOnly: true,
-  source: { connectionId: '排产系统只读库' },
-  fetchedAt: '2026-08-30T10:26:18+08:00',
-  sections: {
-    batches: { available: true, rows: [
-      { id: 1, batchNo: 'B-20260830-001', productName: '18CrNiMo7-6 齿轮', status: '执行中', progress: 68 },
-      { id: 2, batchNo: 'B-20260830-002', productName: '42CrMo 轴类件', status: '待执行', progress: 0 }
-    ] },
-    compliance: { available: true, rows: [
-      { deviceId: 'Furnace_01', signalName: '炉温', value: 836.4, recordTime: '10:25:40' },
-      { deviceId: 'Furnace_01', signalName: '碳势', value: 0.88, recordTime: '10:25:40' }
-    ] },
-    oee: { available: true, rows: [
-      { deviceId: 'Furnace_01', date: '2026-08-30', batchCount: 8, utilizationRate: 88.5 }
-    ] },
-    energy: { available: false, rows: [], message: '外部数据库未提供该类标准数据表' },
-    maintenance: { available: false, rows: [], message: '外部数据库未提供该类标准数据表' }
-  }
-})
-const mockDeviceStatus = reactive({
-  Furnace_01: { name: '1# 多用炉', temp: 836, running: true, alarm: false, online: true, quality: 'good' },
-  Furnace_02: { name: '2# 多用炉', temp: 821, running: true, alarm: false, online: true, quality: 'good' },
-  Furnace_03: { name: '3# 多用炉', temp: '--', running: false, alarm: true, online: false, quality: 'bad' }
-})
 
 const canvas = computed(() => documentModel.value.canvas)
 const views = computed(() => Array.isArray(documentModel.value.scene?.views) && documentModel.value.scene.views.length
@@ -421,15 +397,11 @@ const canRedo = computed(() => historyIndex.value >= 0 && historyIndex.value < h
 const isDirty = computed(() => JSON.stringify(documentModel.value) !== lastSavedSnapshot.value)
 const currentReleaseId = computed(() => currentRelease.value?.id || releases.value.find(item => item.is_current)?.id || '')
 const selectedBindingDeviceId = computed(() => {
-  if (selectedWidget.value?.data?.deviceScope === 'current') {
+  if (selectedWidget.value?.data?.deviceScope !== 'fixed') {
     return String(editorDeviceId.value || previewContext.deviceId || devices.value[0]?.id || '')
   }
-  return String(selectedWidget.value?.data?.deviceId || '')
+  return String(selectedWidget.value?.data?.deviceId || devices.value[0]?.id || '')
 })
-const selectedDevicePoints = computed(() => points.value.filter(point =>
-  String(point.device_id) === selectedBindingDeviceId.value
-  && String(point.access_type || 'READ').toUpperCase() === 'READ'
-))
 const selectedDataSource = computed(() => dataSources.value.find(item => item.id === selectedWidget.value?.data?.connectionId) || null)
 const groupOptions = computed(() => {
   const groups = new Map()
@@ -690,7 +662,10 @@ async function loadDesigner({ allowLocal = true } = {}) {
     releases.value = designer.releases || []
     currentRelease.value = designer.currentRelease || null
     devices.value = Array.isArray(deviceRows) ? deviceRows : []
+    designerStore?.syncDevices(devices.value)
     points.value = (Array.isArray(pointRows) ? pointRows : []).filter(point => String(point.access_type || 'READ').toUpperCase() === 'READ')
+    documentModel.value.widgets = documentModel.value.widgets.map(widget => migrateDeviceTrend(widget, points.value))
+    pointSourceMode.value = settings.data_mode || ''
     dataSetDefinitions.value = datasetResult?.datasets || []
     const connections = Array.isArray(dataSourceResult?.connections) ? dataSourceResult.connections : []
     dataSources.value = connections
@@ -704,7 +679,9 @@ async function loadDesigner({ allowLocal = true } = {}) {
     // The reference HUD is a presentation migration applied on load. Treat
     // that derived layout as the editor baseline so opening the designer does
     // not falsely report an unsaved change before the user edits anything.
-    lastSavedSnapshot.value = snapshot(applyFactoryHudModules(applyReferenceHudLayout(serverDocument)))
+    const baseline = applyFactoryHudModules(applyReferenceHudLayout(serverDocument))
+    baseline.widgets = baseline.widgets.map(widget => migrateDeviceTrend(widget, points.value))
+    lastSavedSnapshot.value = snapshot(baseline)
     resetHistory()
     const savedEditorState = pendingEditorState || readEditorState(serverDocument.sceneId)
     restoreEditorState(savedEditorState)
@@ -908,15 +885,19 @@ async function refreshRealtimePoints() {
   try {
     const result = await adminApi.getRealtimePointValues('all')
     if (designerDisposed || !designerActive || requestSeq !== realtimeRequestSeq) return
-    if (result?.error || !Array.isArray(result?.points)) return
+    if (result?.error || !Array.isArray(result?.points)) throw new Error(result?.error || '后台未返回点位数据')
     const next = {}
     result.points.forEach(point => {
       next[String(point.id)] = point
       next[`${point.device_id}:${point.id}`] = point
     })
     pointValues.value = next
-  } catch {
-    // PLC 离线时设计器继续使用组件占位值。
+    pointSourceMode.value = result.sourceMode || pointSourceMode.value
+    pointReadError.value = ''
+  } catch (error) {
+    if (designerDisposed || !designerActive || requestSeq !== realtimeRequestSeq) return
+    pointReadError.value = error.message || '后台数据暂不可用'
+    pointValues.value = Object.fromEntries(Object.entries(pointValues.value).map(([key, point]) => [key, {...point, value:null, quality:'bad'}]))
   } finally {
     if (requestSeq === realtimeRequestSeq) realtimeInFlight = false
   }
@@ -1560,9 +1541,15 @@ function changeDeviceScope() {
   recordProperty('修改设备绑定范围')
 }
 
-function bindSelectedPoint() {
+function bindSelectedPoint(pointId) {
   const widget = selectedWidget.value
   if (!widget) return
+  if (typeof pointId === 'string') widget.data.pointId = pointId
+  if (pointId === '') {
+    Object.assign(widget.data,{pointId:'',pointKey:'',path:'',requireConfiguredPoint:true,readOnly:true})
+    commitHistory('清除采集点位绑定')
+    return
+  }
   const point = points.value.find(item => String(item.id) === String(widget.data.pointId))
   if (!point) return
   if (String(point.access_type || 'READ').toUpperCase() !== 'READ') {
@@ -1576,8 +1563,27 @@ function bindSelectedPoint() {
   widget.data.path = `${point.category || point.category_resolved || 'analog'}.${point.value_role || point.field_name || point.name}`
   widget.data.unit = point.unit || ''
   widget.data.readOnly = true
-  widget.visibility.matchBoundDevice = !isCurrentDevice && Boolean(widget.data.deviceId)
+  widget.data.requireConfiguredPoint = true
+  // A fixed data source must also be usable on an overview without a selected
+  // device. Visibility is configured separately from which device supplies data.
+  widget.visibility.matchBoundDevice = false
   commitHistory('绑定 PLC 点位')
+}
+
+function previewBindingDevice(id) {
+  const widget=selectedWidget.value
+  if(!widget)return
+  if(widget.data.deviceScope==='fixed') {
+    widget.data.deviceId=id
+    const point=findBoundPoint(widget.data,id,points.value)
+    bindSelectedPoint(point ? String(point.id) : '')
+  } else editorDeviceId.value=id
+}
+
+function pointPlaybackChanged() {
+  const widget=selectedWidget.value
+  if(widget?.data.deviceScope==='fixed')previewBindingDevice(String(widget.data.deviceId || editorDeviceId.value || devices.value[0]?.id || ''))
+  recordProperty('修改设备数据播放')
 }
 
 async function loadDatabaseTables(connectionId = selectedWidget.value?.data?.connectionId) {
@@ -2328,14 +2334,19 @@ watch(() => [selectedWidget.value?.id, selectedWidget.value?.data?.mode], async 
 function activateDesigner() {
   if (designerDisposed) return
   designerActive = true
+  startDesignerData()
   window.addEventListener('keydown', handleKeydown)
-  if (!realtimeTimer) realtimeTimer = window.setInterval(refreshRealtimePoints, 3000)
+  if (!realtimeTimer) realtimeTimer = window.setInterval(refreshRealtimePoints, 1000)
   if (viewportRef.value) viewportObserver?.observe(viewportRef.value)
 }
 
 function deactivateDesigner() {
   scheduleCurrentViewPreview({ immediate: true })
   designerActive = false
+  stopDesignerEvents?.()
+  stopDesignerEvents=null
+  designerStore?.dispose()
+  designerStore = null
   realtimeRequestSeq += 1
   realtimeInFlight = false
   persistLocalDraft()
@@ -2613,13 +2624,14 @@ onBeforeUnmount(() => {
               >
                 <WidgetRenderer
                   :widget="widget"
-                  :metrics="mockMetrics"
-                  :events="mockEvents"
-                  :trend-points="mockTrend"
-                  :device-status-map="mockDeviceStatus"
+                  :metrics="liveMetrics"
+                  :events="liveEvents"
+                  :trend-points="[]"
+                  :device-status-map="liveDeviceStatus"
+                  :device-data-map="liveDeviceData"
                   :point-values="pointValues"
                   :database-values="databasePreviewValues"
-                  :business-data="mockBusinessData"
+                  :business-data="{}"
                   :playback-now="playbackNow" :device-catalog="playbackDevices" :runtime-context="previewContext" :parameters="integration.parameters.value" :parameter-definitions="integration.definitions.value" :interactive="previewMode"
                   :selected-part="previewSelectedPart"
                   :data-ready="true"
@@ -2780,11 +2792,12 @@ onBeforeUnmount(() => {
                 <label>图表形式<select v-model="selectedWidget.content.chartType" aria-label="图表类型" @change="selectedWidget.content.smooth=selectedWidget.content.chartType==='smoothLine';recordProperty('修改图表类型')"><option v-for="chart in DASHBOARD_CHARTS" :key="chart.id" :value="chart.id">{{chart.label}}</option></select></label>
                 <label>配色预设<select v-model="selectedWidget.content.chartPalette" @change="applyChartPalette" ><option v-for="palette in chartPalettes" :key="palette.id" :value="palette.id">{{ palette.label }}</option></select></label>
                 <label>图表名称<input v-model="selectedWidget.content.seriesName" @change="recordProperty()" /></label>
+                <TrendChartSettings :content="selectedWidget.content" :unit="selectedWidget.data.unit" @change="recordProperty('修改图表坐标与时间')" />
                 <label>保留数据点<input v-model.number="selectedWidget.content.historyLength" type="number" min="8" max="600" @change="recordProperty()" /></label>
                 <label class="visibility-bound-device"><input v-model="selectedWidget.content.showLegend" type="checkbox" @change="recordProperty('修改图例')" /> 显示多数据项图例</label>
                 <label v-if="selectedWidget.content.showLegend">图例位置<select v-model="selectedWidget.content.legendPosition" @change="recordProperty('修改图例位置')"><option value="top">顶部</option><option value="bottom">底部</option><option value="right">右侧</option></select></label>
                 <div class="property-grid two"><label class="visibility-bound-device"><input v-model="selectedWidget.content.showAxis" type="checkbox" @change="recordProperty('修改坐标轴')" /> 显示坐标轴</label><label class="visibility-bound-device"><input v-model="selectedWidget.content.showDataLabel" type="checkbox" @change="recordProperty('修改数据标签')" /> 显示数据标签</label></div>
-                <template v-if="['line','area','scatter'].includes(selectedWidget.content.chartType)"><div class="property-grid two"><label class="visibility-bound-device"><input v-model="selectedWidget.content.smooth" type="checkbox" :disabled="selectedWidget.content.chartType === 'scatter'" @change="recordProperty('修改曲线')" /> 平滑曲线</label><label class="visibility-bound-device"><input v-model="selectedWidget.content.showSymbol" type="checkbox" @change="recordProperty('修改数据点')" /> 显示数据点</label></div><label>线宽<input v-model.number="selectedWidget.content.lineWidth" type="range" min="1" max="8" step="1" @change="recordProperty('修改线宽')" /><small class="field-hint">{{ selectedWidget.content.lineWidth || 2 }} px</small></label></template>
+                <template v-if="['line','area','scatter','smoothLine','stepLine','stackedArea','lineBar'].includes(selectedWidget.content.chartType)"><div class="property-grid two"><label class="visibility-bound-device"><input v-model="selectedWidget.content.smooth" type="checkbox" :disabled="['scatter','stepLine'].includes(selectedWidget.content.chartType)" @change="recordProperty('修改曲线')" /> 平滑曲线</label><label class="visibility-bound-device"><input v-model="selectedWidget.content.showSymbol" type="checkbox" @change="recordProperty('修改数据点')" /> 显示数据点</label></div><label>线宽<input v-model.number="selectedWidget.content.lineWidth" type="range" min="1" max="8" step="1" @change="recordProperty('修改线宽')" /><small class="field-hint">{{ selectedWidget.content.lineWidth || 2 }} px</small></label></template>
                 <label v-if="selectedWidget.content.chartType === 'area'">面积透明度<input v-model.number="selectedWidget.content.areaOpacity" type="range" min="0.05" max="0.9" step="0.05" @change="recordProperty('修改面积透明度')" /><small class="field-hint">{{ Math.round((selectedWidget.content.areaOpacity ?? .2) * 100) }}%</small></label>
                 <label v-if="['bar','stackedBar'].includes(selectedWidget.content.chartType)">柱体圆角<input v-model.number="selectedWidget.content.barRadius" type="range" min="0" max="20" step="1" @change="recordProperty('修改柱体圆角')" /><small class="field-hint">{{ selectedWidget.content.barRadius || 0 }} px</small></label>
                 <details class="chart-field-mapping"><summary>图表字段映射</summary><label>分类 / 时间字段<input v-model="selectedWidget.content.categoryField" list="chart-output-fields" placeholder="time" @change="recordProperty()" /></label><label v-for="role in (CHART_FIELD_ROLES[selectedWidget.content.chartType] || [['valueField','数值字段']])" :key="role[0]">{{role[1]}}<input v-model="selectedWidget.content[role[0]]" list="chart-output-fields" :aria-label="`图表字段 ${role[1]}`" @change="recordProperty()" /></label><datalist id="chart-output-fields"><option v-for="column in dataSetDefinitions.find(d=>d.id===selectedWidget.data.datasetId)?.columns || []" :key="column.name" :value="column.name">{{column.label}}</option></datalist></details>
@@ -2837,20 +2850,16 @@ onBeforeUnmount(() => {
             <section v-else-if="inspectorTab === 'data'" class="inspector-section">
               <div v-if="previewContext.viewMode==='device'" class="binding-part-preview"><label>预览部件<select v-model="previewContext.partId" aria-label="预览部件" :disabled="previewPartsBusy || !previewParts.length" @change="changePreviewPart"><option value="">请选择部件</option><option v-for="part in previewParts" :key="part.id" :value="part.id">{{part.name}}</option></select></label><button type="button" :disabled="previewPartsBusy || !previewContext.deviceId" @click="loadPreviewParts">{{previewPartsBusy?'读取中…':'读取当前设备部件'}}</button><small v-if="previewPartsError" role="status">{{previewPartsError}}</small></div>
               <label>数据来源<select v-model="selectedWidget.data.mode" aria-label="组件数据来源" @change="changeBindingMode"><option v-for="choice in widgetBindingChoices(selectedWidget)" :key="choice.id" :value="choice.id">{{choice.label}}</option></select></label>
+              <DevicePointBindingEditor v-if="selectedWidget.data.mode==='plc'" :binding="selectedWidget.data" :devices="devices" :points="points" :values="pointValues" :device-id="selectedBindingDeviceId" :source-mode="pointSourceMode" :error="pointReadError" :disabled="!canAdminPage('platform.designer','edit')" @select-point="bindSelectedPoint" @preview-device="previewBindingDevice" @refresh="refreshRealtimePoints" />
               <details class="binding-compatibility"><summary>高级绑定</summary><div class="button-row"><button v-for="choice in LEGACY_BINDINGS" :key="choice.id" type="button" :disabled="selectedWidget.data.mode===choice.id || !canAdminPage('platform.designer','edit')" @click="selectedWidget.data.mode=choice.id;changeBindingMode()">{{choice.label}}</button></div></details>
-              <WidgetPlaybackEditor v-if="selectedWidget.data.mode!=='static'" :binding="selectedWidget.data" :devices="devices" :disabled="!canAdminPage('platform.designer','edit')" @change="recordProperty('修改设备数据播放');invalidateDataSetPreview()" />
+              <details v-if="selectedWidget.data.mode==='plc'" class="binding-compatibility"><summary>设备范围与刷新</summary><WidgetPlaybackEditor :binding="selectedWidget.data" :devices="devices" :disabled="!canAdminPage('platform.designer','edit')" @change="pointPlaybackChanged" /></details>
+              <WidgetPlaybackEditor v-else-if="selectedWidget.data.mode!=='static'" :binding="selectedWidget.data" :devices="devices" :disabled="!canAdminPage('platform.designer','edit')" @change="recordProperty('修改设备数据播放');invalidateDataSetPreview()" />
               <datalist id="selected-dataset-fields" v-if="selectedWidget.data.mode==='dataset'"><option v-for="column in dataSetDefinitions.find(d=>d.id===selectedWidget.data.datasetId)?.columns || []" :key="column.name" :value="`dataset.${column.name}`">{{column.label}}</option></datalist>
               <DataSetBindingEditor v-if="selectedWidget.data.mode==='dataset'" :key="selectedWidget.id" :binding="selectedWidget.data" :context="previewContext" :devices="playbackDevices" :playback-now="previewMode ? playbackNow : 0" :multiple="['trend','hud_chart_dock'].includes(selectedWidget.type)" :disabled="!canAdminPage('platform.designer','edit')" @change="changeReusableBinding" @invalidate="invalidateDataSetPreview" @preview="databasePreviewValues[selectedWidget.id]=$event" />
               <details v-if="selectedWidget.data.mode==='dataset' && ['device_list','hud_device_status'].includes(selectedWidget.type)" open><summary>设备字段</summary><label v-for="field in [{key:'id',label:'设备 ID'},{key:'name',label:'名称'},{key:'online',label:'在线'},{key:'running',label:'运行'},{key:'alarm',label:'报警'},{key:'temp',label:'温度'}]" :key="field.key">{{field.label}}<select :value="selectedWidget.content.deviceFields?.[field.key] || field.key" @change="selectedWidget.content.deviceFields={...selectedWidget.content.deviceFields,[field.key]:$event.target.value};recordProperty('修改设备字段')"><option :value="field.key">{{field.key}}</option><option v-for="column in (dataSetDefinitions.find(d=>d.id===selectedWidget.data.datasetId)?.columns || []).filter(c=>c.name!==field.key)" :key="column.name" :value="column.name">{{column.label}}</option></select></label></details>
               <details v-if="selectedWidget.data.mode==='dataset' && ['metrics','hud_kpi_panel'].includes(selectedWidget.type)" class="binding-panel-fields" open><summary>面板指标</summary><button type="button" :disabled="!selectedWidget.data.datasetId || !canAdminPage('platform.designer','edit')" @click="useDatasetPanelFields">使用数据集字段</button><div v-for="(item,index) in selectedWidget.content.items || []" :key="index" class="property-grid two"><label>名称<input v-model="item.label" @change="recordProperty('修改指标名称')" /></label><label>字段<select v-model="item.path" :aria-label="`指标字段 ${index+1}`" @change="selectedWidget.content.usePartPoints=false;recordProperty('修改指标字段')"><option v-if="!item.path?.startsWith('dataset.')" :value="item.path" disabled>原绑定</option><option v-for="column in dataSetDefinitions.find(d=>d.id===selectedWidget.data.datasetId)?.columns || []" :key="column.name" :value="`dataset.${column.name}`">{{column.label}}</option></select></label></div></details>
               <label v-if="selectedWidget.data.mode==='dataset' && selectedWidget.type==='text'">文本呈现<select :value="selectedWidget.content.datasetTextMode || 'value'" @change="selectedWidget.content.datasetTextMode=$event.target.value;recordProperty('修改文本呈现')" v-permission="{page:'platform.designer',action:'edit'}"><option value="value">显示绑定值</option><option value="template">自定义模板（使用 {value}）</option></select></label>
-              <template v-if="selectedWidget.data.mode === 'plc'">
-
-                <p v-if="selectedWidget.data.deviceScope === 'current'" class="field-hint">同一个组件可用于所有设备，运行时自动读取当前视角设备的同名点位，不需要复制组件。</p>
-                <label>READ 点位<select v-model="selectedWidget.data.pointId" :disabled="!selectedBindingDeviceId" @change="bindSelectedPoint"><option value="">请选择只读点位</option><option v-for="point in selectedDevicePoints" :key="point.id" :value="String(point.id)">{{ point.label || point.name }} · {{ point.plc_tag || `DB${point.db_number}.${point.db_byte_offset}` }}</option></select></label>
-                <div class="binding-summary" v-if="selectedWidget.data.pointId"><span>路径</span><code>{{ selectedWidget.data.path }}</code><span>实时值</span><strong>{{ previewValueForWidget(selectedWidget) ?? '--' }} {{ selectedWidget.data.unit }}</strong></div>
-              </template>
-              <template v-else-if="selectedWidget.data.mode === 'database'">
+              <template v-if="selectedWidget.data.mode === 'database'">
                 <div class="section-action-heading"><div><strong>数据项</strong><small>每项可来自不同数据库和表，别名用于下方公式</small></div><button type="button" @click="addDatabaseDataset" v-permission="{ page: 'platform.designer', action: 'edit' }">＋ 数据项</button></div>
                 <details v-for="(dataset, datasetIndex) in ensureDatabaseDatasets(selectedWidget)" :key="`${selectedWidget.id}-${datasetIndex}`" class="dataset-card" :open="datasetIndex === 0">
                   <summary><i :style="{background:dataset.color}"></i><strong>{{ dataset.alias.toUpperCase() }} · {{ dataset.label }}</strong><span>{{ dataset.table || '未选择表' }}</span></summary>

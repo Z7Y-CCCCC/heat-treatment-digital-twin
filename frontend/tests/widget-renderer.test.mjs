@@ -373,7 +373,7 @@ test('overlay charts use the HUD theme without changing samples or designer styl
     await view.render({ widget, trendPoints, overlayMode: true })
     const hud = charts.at(-1).options.at(-1)[0]
     assert.equal(hud.backgroundColor, 'transparent')
-    assert.equal(hud.series[0].lineStyle.width, 1.4)
+    assert.equal(hud.series[0].lineStyle.width, 2)
     assert.equal(hud.series[0].areaStyle.color.type, 'linear')
     assert.equal(hud.yAxis.splitLine.lineStyle.type, 'dashed')
     const samples = hud.series[0].data
@@ -439,4 +439,31 @@ test('business cards render their own selected-device response rather than the s
  assert.match(textContent(view.root),/BATCH_A/);assert.doesNotMatch(textContent(view.root),/GLOBAL_NOT_SELECTED/);
  await view.render({...props,playbackNow:2000,databaseValues:{business:{quality:'empty',deviceId:'b',deviceName:'B',businessSection:{available:true,rows:[]}}}});
  assert.doesNotMatch(textContent(view.root),/BATCH_A|GLOBAL_NOT_SELECTED/);assert.match(textContent(view.root),/暂无记录/);
+})
+
+
+test('configured point charts sample fresh source timestamps, never simulator fields, and keep per-device histories separate',async t=>{
+ const view=fixture(t),time=Date.now(),widget={id:'real_temp',type:'hud_chart_dock',title:'温度趋势',content:{chartType:'smoothLine',showAxis:true},data:{mode:'plc',deviceScope:'fixed',deviceId:'d1',pointId:'p1',pointKey:'analog.actual_temp',path:'analog.actual_temp',unit:'°C',requireConfiguredPoint:true,refreshMs:1000}}
+ const props={widget,preview:true,interactive:false,deviceCatalog:[{id:'d1',name:'一号炉'},{id:'d2',name:'二号炉'}],deviceDataMap:{d1:{timestamp:time,analog:{actual_temp:999}}},playbackNow:time}
+ await view.render(props)
+ assert.deepEqual(charts.at(-1).options.at(-1)[0].series[0].data,[])
+ const point={id:'p1',device_id:'d1',category:'analog',value_role:'actual_temp',value:857.3,quality:'good',lastReadAt:time}
+ await view.render({...props,playbackNow:time+1000,pointValues:{p1:point}})
+ assert.deepEqual(charts.at(-1).options.at(-1)[0].series[0].data,[857.3])
+ await view.render({...props,playbackNow:time+2000,pointValues:{p1:point}})
+ assert.deepEqual(charts.at(-1).options.at(-1)[0].series[0].data,[857.3],'cached poll must not invent a new sample')
+ await view.render({...props,playbackNow:time+3000,pointValues:{p1:{...point,value:0,lastReadAt:time+3000}}})
+ assert.deepEqual(charts.at(-1).options.at(-1)[0].series[0].data,[857.3,0])
+ await view.render({...props,playbackNow:time+4000,pointValues:{p1:{...point,quality:'bad'}}})
+ assert.equal(charts.at(-1).options.at(-1)[0].series[0].data.at(-1),null)
+ await view.render({...props,widget:{...widget,data:{...widget.data,deviceId:'d2'}},playbackNow:time+5000,pointValues:{p1:point}})
+ assert.deepEqual(charts.at(-1).options.at(-1)[0].series[0].data,[],'another furnace must not inherit this device history or point')
+})
+
+test('overlay styling respects authored curve color/width/opacity, bar radius and ring ratio',async t=>{
+ const view=fixture(t),base={id:'styled',type:'trend',content:{chartType:'area',lineColor:'#cc88ff',lineWidth:5,areaOpacity:.6}},trendPoints=[{time:'10:00',value:42}]
+ await view.render({widget:base,trendPoints,overlayMode:true});let option=charts.at(-1).options.at(-1)[0]
+ assert.equal(option.series[0].lineStyle.color,'#cc88ff');assert.equal(option.series[0].lineStyle.width,5);assert.match(option.series[0].areaStyle.color.colorStops[0].color,/, 0.6\)/)
+ await view.render({widget:{...base,content:{chartType:'bar',barRadius:9}},trendPoints,overlayMode:true});option=charts.at(-1).options.at(-1)[0];assert.deepEqual(option.series[0].itemStyle.borderRadius,[9,9,0,0])
+ await view.render({widget:{...base,content:{chartType:'donut',donutRatio:55}},trendPoints,overlayMode:true});option=charts.at(-1).options.at(-1)[0];assert.deepEqual(option.series[0].radius,['55%','81%'])
 })

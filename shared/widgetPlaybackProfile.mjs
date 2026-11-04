@@ -5,7 +5,7 @@ export function upgradeWidgetPlaybackDocument(input) {
  const isVideo=w=>/^pit_static_(vms_|camera_)/.test(w.id || '') || /(^|_)vms($|_)/i.test(w.data?.connectionId || '') || w.title==='视频监控'
  const videos=input.widgets.filter(isVideo)
  const pit=input.metadata?.pitStaticDisplay===1 && input.metadata?.devicePlaybackProfile!==1
- if(!videos.length && !pit)return input
+ if(!videos.length && !pit)return upgradeDeviceTrendBindings(input)
  const doc=JSON.parse(JSON.stringify(input)),removed=new Set(videos.map(w=>w.id))
  if(pit)for(const w of doc.widgets)if(w.id.startsWith('pit_static_'))removed.add(w.id)
  const furnaceIds=[...new Set(doc.widgets.filter(w=>/^pit_static_value_.*_actual_temp$/.test(w.id)).map(w=>w.data?.deviceId).filter(Boolean))]
@@ -43,5 +43,20 @@ export function upgradeWidgetPlaybackDocument(input) {
   if(pit && key==='show' && prior.length){for(const w of doc.widgets.filter(w=>w.id.startsWith('pit_playback_')&&w.visibility.viewIds?.includes(view.id)))view.componentState.show.push(w.id)}
  }
  for(const w of doc.widgets)if(Array.isArray(w.events))w.events=w.events.filter(e=>!removed.has(e.targetId))
- return doc
+ return upgradeDeviceTrendBindings(doc)
+}
+
+// A numeric chart is a point binding, not a device metadata field. Preserve the
+// document on disk until explicitly saved; old demos cannot invent a PLC point.
+export function upgradeDeviceTrendBindings(input) {
+ if(!input || !Array.isArray(input.widgets))return input
+ let changed=false
+ const widgets=input.widgets.map(w=>{
+  if(!['trend','hud_chart_dock'].includes(w.type) || w.data?.mode!=='runtime')return w
+  const match=/^(?:device\.|deviceDataMap\.[^.]+\.)(\w+\.\w+)$/.exec(w.data.path || '')
+  if(!match)return w
+  changed=true
+  return {...w,data:{...w.data,mode:'plc',pointId:'',pointKey:match[1],path:match[1],requireConfiguredPoint:true},content:{...w.content,yAxisMode:w.content?.yAxisMode || 'auto',timeWindowSeconds:w.content?.timeWindowSeconds || 600,historyLength:w.content?.timeWindowSeconds ? w.content.historyLength : 600}}
+ })
+ return changed?{...input,widgets}:input
 }

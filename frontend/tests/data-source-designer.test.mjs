@@ -18,7 +18,7 @@ test('source choices are short, unique, supported by the widget and preserve exi
     const choices=widgetBindingChoices({type,data:{mode}})
     assert.equal(new Set(choices.map(c=>c.id)).size,choices.length)
     assert.ok(choices.some(c=>c.id===mode),`${type}/${mode} remains editable`)
-    if(mode==='static')assert.equal(choices.length,1+Number(DATASET_WIDGETS.has(type))+2*Number(POINT_WIDGETS.has(type)))
+    if(mode==='static')assert.equal(choices.length,1+Number(DATASET_WIDGETS.has(type))+Number(POINT_WIDGETS.has(type))*(1+Number(!['trend','hud_chart_dock'].includes(type))))
     for(const id of ['database','http_api','business'])assert.equal(choices.some(c=>c.id===id),mode===id)
   }
 })
@@ -342,4 +342,25 @@ test('HUD preset adds an isolated view without changing the existing view or def
     const count = state.documentModel.widgets.length
     state.addWidgetPreset({ id: 'factory_hud_modules', label: '工厂总览 HUD 模块' })
     assert.equal(state.documentModel.widgets.length, count, 'repeated click should focus, not duplicate')
+})
+
+
+test('designer previews real backend point records and clears cached healthy values after a failed read',async t=>{
+ const {instance}=fixture(t,[]);await settle();const state=instance.value.$.setupState
+ state.designerActive=true
+ t.mock.method(adminApi,'getRealtimePointValues',async()=>({sourceMode:'simulation',points:[{id:'p',device_id:'d',value:857.3,quality:'good',lastReadAt:12345}]}))
+ await state.refreshRealtimePoints();assert.equal(state.pointValues['d:p'].value,857.3);assert.equal(state.pointSourceMode,'simulation');assert.equal(state.pointValues.p.lastReadAt,12345)
+ t.mock.method(adminApi,'getRealtimePointValues',async()=>{throw Error('engine disconnected')})
+ await state.refreshRealtimePoints();assert.equal(state.pointValues.p.value,null);assert.equal(state.pointValues.p.quality,'bad');assert.equal(state.pointReadError,'engine disconnected')
+ const source=await readFile(sourceUrl,'utf8');assert.doesNotMatch(source,/const mock(?:Metrics|Trend|DeviceStatus|BusinessData|Events)/)
+})
+
+
+test('changing a fixed source device resolves that device point and clearing a binding really stays empty',async t=>{
+ const {instance}=fixture(t,[]);await settle();const state=instance.value.$.setupState
+ state.devices=[{id:'a'},{id:'b'},{id:'empty'}];state.points=[{id:'pa',device_id:'a',category:'analog',value_role:'temp',unit:'°C'},{id:'pb',device_id:'b',category:'analog',value_role:'temp',unit:'°C'}]
+ state.documentModel.widgets=[{id:'chart',type:'trend',data:{mode:'plc',deviceScope:'fixed',deviceId:'a',pointId:'pa',pointKey:'analog.temp'},visibility:{}}];state.selectedIds=['chart']
+ state.previewBindingDevice('b');assert.equal(state.selectedWidget.data.pointId,'pb');assert.equal(state.selectedWidget.data.deviceId,'b');assert.equal(state.selectedWidget.visibility.matchBoundDevice,false)
+ state.bindSelectedPoint('');assert.equal(state.selectedWidget.data.pointId,'');assert.equal(state.selectedWidget.data.pointKey,'');assert.equal(state.selectedWidget.data.path,'')
+ state.previewBindingDevice('empty');assert.equal(state.selectedWidget.data.pointId,'')
 })

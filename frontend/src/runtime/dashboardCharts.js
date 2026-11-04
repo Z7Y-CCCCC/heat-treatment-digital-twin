@@ -43,7 +43,7 @@ export function extendedChartOption(type,{common={},sourceSeries=[],content={},b
  if(['horizontalBar','lineBar','smoothLine','stepLine','stackedArea'].includes(type)) {
   const horizontal=type==='horizontalBar'
   return {...common,grid,xAxis:horizontal?vertical:axis,yAxis:horizontal?{...axis,inverse:true}:vertical,series:sourceSeries.map((s,i)=>({
-   name:s.name,type:horizontal || type==='lineBar'&&i===0?'bar':'line',smooth:type==='smoothLine',step:type==='stepLine'?'end':undefined,showSymbol:content.showSymbol===true,
+   name:s.name,type:horizontal || type==='lineBar'&&i===0?'bar':'line',smooth:type==='smoothLine'?content.smooth!==false:type!=='stepLine'&&content.smooth===true,step:type==='stepLine'?'end':undefined,showSymbol:content.showSymbol===true,
    stack:type==='stackedArea'?'total':undefined,areaStyle:type==='stackedArea'?{opacity:Number(content.areaOpacity ?? .2)}:undefined,
    lineStyle:{width:Number(content.lineWidth || 2)},itemStyle:{color:s.color,borderRadius:horizontal?3:0},label,data:s.rows.map(r=>numberAt(r,value))
   }))}
