@@ -25,6 +25,21 @@ for(const [id,profile] of Object.entries(CAD_MOTION_PROFILES))test(`${id}: each 
     const partsBox=new T.Box3();gltf.scene.traverse(o=>{if(o.isMesh&&!rig.effects.getObjectsByProperty('uuid',o.uuid).length){let inFx=false;for(let p=o;p;p=p.parent)if(p===rig.effects)inFx=true;if(!inFx)partsBox.union(new T.Box3().setFromObject(o))}})
     assert.ok(initial.min.distanceTo(partsBox.min)<1e-5);assert.ok(initial.max.distanceTo(partsBox.max)<1e-5)
     if(id==='cad_lifting_load_table_111400'){
+        rig.reset();gltf.scene.updateMatrixWorld(true)
+        const bed=rig.node('roller_bed'),world=node=>node.getWorldPosition(new T.Vector3())
+        const rollerOffsets=rig.rollers.map(roller=>world(roller).sub(world(bed)))
+        const assertRollersOnDeck=label=>{
+            gltf.scene.updateMatrixWorld(true)
+            rig.rollers.forEach((roller,index)=>assert.ok(world(roller).sub(world(bed)).distanceTo(rollerOffsets[index])<1e-7,`${label}: roller ${index} must follow the platform`))
+        }
+        assert.ok(rig.rollers.length>0)
+        for(const action of ['lift_up','lift_down'])for(const time of [0,1,2,4,6,8]){
+            rig.apply(action,time);assertRollersOnDeck(`${action} at ${time}s`)
+        }
+        for(const lift of [0,.25,.5,1,0]){
+            rig.applyLinked({lift,runTime:1.3});assertRollersOnDeck(`linked lift ${lift}`)
+        }
+        rig.reset();assertRollersOnDeck('reset')
         rig.apply('lift_up',4);assert.ok(rig.node('roller_bed').position.y>.2)
         rig.apply('lift_down',4);assert.ok(rig.node('roller_bed').position.y<-.2)
         for(const {pivot} of rig.scissor)assert.ok(Math.abs(pivot.rotation.z)<.3)
@@ -36,6 +51,28 @@ for(const [id,profile] of Object.entries(CAD_MOTION_PROFILES))test(`${id}: each 
         rig.reset();gltf.scene.updateMatrixWorld(true);const matrices=fixed.map(n=>n.matrixWorld.clone())
         rig.apply('agitator',2);gltf.scene.updateMatrixWorld(true);fixed.forEach((n,i)=>assert.ok(n.matrixWorld.equals(matrices[i])))
         rig.apply('heating',2);assert.ok(rig.heatMaterials.every(e=>e.material.emissiveIntensity===.9));rig.reset();assert.ok(rig.heatMaterials.every(e=>e.material.emissive.equals(e.emissive)&&e.material.emissiveIntensity===e.intensity))
+    }
+    if(id==='cad_tempering_furnace_091300'){
+        assert.equal(rig.temperingFan.children.length,9,'eight real blades and the internal shaft')
+        assert.equal(rig.temperingRollers.length,7);assert.equal(rig.temperingDriveShafts.length,2)
+        const fixed=['housing','structure','circulation_fan_teal','circulation_cover','internal_rollers_metal','door_guides','door_drive','heater_terminals'].map(name=>rig.node(name))
+        rig.reset();gltf.scene.updateMatrixWorld(true);const matrices=fixed.map(node=>node.matrixWorld.clone())
+        for(const action of ['door','circulation','rollers','heating']){
+            rig.apply(action,1.37);gltf.scene.updateMatrixWorld(true)
+            fixed.forEach((node,i)=>assert.ok(node.matrixWorld.equals(matrices[i]),`${action}: ${node.name} must stay fixed`))
+        }
+        const doorMaterial=rig.node('door_black').material
+        rig.reset();const originalDoorEmissive=doorMaterial.emissive.clone(),doorPosition=rig.node('door').position.clone()
+        rig.apply('door',4);assert.ok(Math.abs(rig.node('door').position.y-doorPosition.y-.9)<1e-6)
+        assert.ok(Math.abs(rig.node('door_carriages').position.y-.9)<1e-6)
+        rig.applyLinked({conveyTime:1});const rollerAngle=rig.temperingRollers[0].rotation.x
+        assert.ok(rollerAngle<0);assert.equal(rig.temperingFan.rotation.y,0)
+        rig.applyLinked({conveyTime:1,circulationTime:2,heat:true})
+        assert.equal(rig.temperingRollers[0].rotation.x,rollerAngle,'rollers hold still during heating')
+        assert.notEqual(rig.temperingFan.rotation.y,0);assert.ok(rig.heatMaterials.every(entry=>entry.material.emissiveIntensity===.9))
+        assert.ok(doorMaterial.emissive.equals(originalDoorEmissive),'shared black door material must not glow')
+        rig.reset();assert.ok(rig.heatMaterials.every(entry=>entry.material.emissive.equals(entry.emissive)&&entry.material.emissiveIntensity===entry.intensity))
+        assert.deepEqual(snapshot(),base)
     }
     assert.equal(crypto.createHash('sha256').update(buffer).digest('hex'),sourceHash)
     rig.dispose()

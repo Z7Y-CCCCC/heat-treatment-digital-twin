@@ -11,7 +11,7 @@
     "node_naming_rule": "role_part_action，例如 fan_rear_rotate、door_front_lift、valve_gas_01",
     "delivery_status": "review",
     "owner": "",
-    "notes": "用户提供的 17.07.00_清洗机.glb 原文件入库；保留原始节点、材质和坐标。"
+    "notes": "2026-11-04: restored central lower sheet enclosure, rectangular lower attachment and drain from DWG K/side views; unknown sheet gauge/projection depth remain inferred."
   },
   "optimization": {
     "mode": "auto",
@@ -359,13 +359,16 @@
       },
       {
         "id": "cad_cleaner_170700_assembly_9",
-        "name": "储液槽总成",
+        "name": "水箱与中央下部壳体",
         "group": "cad_cleaner_170700",
         "enabled": true,
         "node_path": "",
         "node_name": "cad_washing_machine_v1_tanks",
         "node_paths": [],
-        "node_names": [],
+        "node_names": [
+          "cad_washing_machine_v1_central_lower_body",
+          "cad_washing_machine_v1_lower_collection"
+        ],
         "explode_offset": [
           0,
           -0.6,
@@ -655,49 +658,17 @@
         "point_keys": [],
         "detail_view_id": "",
         "camera": null
-      },
-      {
-        "id": "cad_cleaner_170700_reference",
-        "name": "模型参考标记",
-        "group": "参考",
-        "enabled": true,
-        "node_path": "",
-        "node_name": "cad_washing_machine_v1_review",
-        "node_paths": [],
-        "node_names": [],
-        "explode_offset": [
-          0,
-          0,
-          0
-        ],
-        "explode_rotation": [
-          0,
-          0,
-          0
-        ],
-        "delay": 0,
-        "duration": 0,
-        "label_offset": [
-          0,
-          0.35,
-          0
-        ],
-        "description": "",
-        "point_ids": [],
-        "point_keys": [],
-        "detail_view_id": "",
-        "camera": null
       }
     ]
   },
   "partBindings": [],
   "sourceAsset": {
     "filename": "17.07.00_清洗机.glb",
-    "sha256": "a613313565b5c88ea6ceb59d9a258de75ed75915ea47921b46e922c46808f4ae",
+    "sha256": "e5b45809e4218f82b8e3a5fc67fe054b81c010f13edcc5902b9286659b473a33",
     "stats": {
-      "nodes": 105,
-      "meshes": 74,
-      "triangles": 103238,
+      "nodes": 112,
+      "meshes": 80,
+      "triangles": 104582,
       "materials": 14,
       "size": [
         3.0399999991059303,
@@ -729,5 +700,17 @@
     "status": "review",
     "published_at": "",
     "history": []
+  },
+  "cadCorrection": {
+    "revision": "2026-11-04-central-lower-enclosure",
+    "sourceDwgSha256": "540e0bb8b7776239ce4020a3003cc67ac075c69b6099d099e5a33a7d2000d3c6",
+    "panelWidthMm": 1200,
+    "panelTopElevationMm": 1121,
+    "inferred": [
+      "6 mm sheet gauge",
+      "3 mm fold relief",
+      "130 mm attachment projection",
+      "existing chamber depth retained"
+    ]
   }
 }

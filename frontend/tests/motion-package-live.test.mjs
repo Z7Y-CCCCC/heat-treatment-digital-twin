@@ -10,6 +10,25 @@ import { restoreGltfNodeNames } from '../src/three/gltfNodeIdentity.js'
 const registry=JSON.parse(fs.readFileSync(new URL('../../shared/motionPackages.json',import.meta.url)))
 const binding={enabled:true,kind:'clip',mode:'position',sourceGroup:'doors',sourceKey:'open',pointId:'42',inputMin:0,inputMax:1,invert:false,speed:1,transitionSeconds:2}
 const frame=(value,patch={})=>({doors:{open:value},pointMeta:{'doors.open':{id:42}},quality:{doors:{open:'good'}},...patch})
+
+test('portable lift actions keep every roller on the deck throughout measured stroke and return',async()=>{
+ const manifest=registry.models.cad_lifting_load_table_111400
+ const binary=fs.readFileSync(new URL('../../backend'+manifest.rigPath,import.meta.url))
+ const data=JSON.parse(fs.readFileSync(new URL('../../backend'+manifest.clipPath,import.meta.url)))
+ const gltf=await new GLTFLoader().parseAsync(binary.buffer.slice(binary.byteOffset,binary.byteOffset+binary.byteLength),'');restoreGltfNodeNames(gltf)
+ const root=gltf.scene,deck=root.getObjectByName('cad_lifting_staging_table_v1_roller_bed'),rollers=[]
+ root.traverse(node=>{if(node.name.startsWith('preview_roller_'))rollers.push(node)})
+ assert.ok(deck&&rollers.length>0);root.updateMatrixWorld(true)
+ const world=node=>node.getWorldPosition(new T.Vector3()),origin=world(deck),offsets=rollers.map(roller=>world(roller).sub(origin))
+ for(const clipId of ['lift_up','lift_down']){
+  const player=new PortableMotionPlayer(root,data,[{...binding,transitionSeconds:0,clipId}])
+  for(const progress of [0,.25,.5,.75,1,0]){
+   player.receive(frame(progress),0);player.advance(0,0);root.updateMatrixWorld(true)
+   assert.ok(Math.abs(world(deck).y-origin.y-(clipId==='lift_up'?.24:-.24)*progress)<1e-6)
+   rollers.forEach((roller,index)=>assert.ok(world(roller).sub(world(deck)).distanceTo(offsets[index])<1e-6,`${clipId} ${progress}: exported roller ${index} must stay attached to the deck`))
+  }
+ }
+})
 test('signal mapping snaps first acquisition, reverses without restarting and freezes on stale/bad/missing data',()=>{
  const s={seconds:0};receiveMotionSignal(s,binding,frame(0),0);receiveMotionSignal(s,binding,frame(1),1);stepMotionSignal(s,binding,.5,1.5,5000);assert.equal(s.position,.25)
  receiveMotionSignal(s,binding,frame(1),1.5);stepMotionSignal(s,binding,.5,2,5000);assert.equal(s.position,.5)

@@ -42,6 +42,15 @@ function readCadGeometry(file) {
     return {THREE,objects,root,byName:new Map(objects.map(object=>[object.name,object]))};
 }
 
+test('packaged cleaner and portable motion rig omit the detached pneumatic pipe assembly',()=>{
+    const path=require('node:path');
+    for(const file of [cleanerGlb,path.join(__dirname,'../assets/motions/ultrasonic_cleaner_cad.glb')]){
+        const binary=fs.readFileSync(file),gltf=JSON.parse(binary.toString('utf8',20,20+binary.readUInt32LE(12)));
+        assert.ok(!gltf.nodes.some(node=>node.name==='221_气动管路'),'floating pipes must be removed from the asset, not just hidden in one viewer');
+        for(const name of [...movingNodes,...fixedDoorNodes,...groups.flatMap(group=>group[2])])assert.ok(gltf.nodes.some(node=>node.name===name),name+' must remain');
+    }
+});
+
 test('door calibration preserves authored bindings except the owned door endpoints',()=>{
     const source=buildMetadata({});
     source.partBindings[0].transition_duration=4.5;

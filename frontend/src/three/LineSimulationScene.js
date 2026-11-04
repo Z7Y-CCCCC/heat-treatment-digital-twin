@@ -67,7 +67,7 @@ export class LineSimulationScene extends CadMotionScene {
             }
             entry.wrapper.updateMatrixWorld(true);entry.basePosition=entry.wrapper.position.clone();entry.baseYaw=entry.wrapper.rotation.y
             const caption=label(row.name||row.id);caption.position.set(0,box.getSize(new T.Vector3()).y+.35,0);entry.wrapper.add(caption)
-            const shellNames=[...new Set([...parseSimulationConfig(model?.metadata).inspection?.shell?.node_names||[],...(CAD_MOTION_PROFILES[row.model_type]?['housing','lining','hood','upper_housing','tank','tanks','fans_enamel','cold_housing','hot_housing','refractory','vault_bricks','partition_shell','partition_lining','quench_tank','quench_liquid'].map(n=>CAD_MOTION_PROFILES[row.model_type].prefix+n):[])])]
+            const shellNames=[...new Set([...parseSimulationConfig(model?.metadata).inspection?.shell?.node_names||[],...(CAD_MOTION_PROFILES[row.model_type]?['housing','lining','hood','upper_housing','tank','tanks','central_lower_body','lower_collection','fans_enamel','cold_housing','hot_housing','refractory','vault_bricks','partition_shell','partition_lining','quench_tank','quench_liquid'].map(n=>CAD_MOTION_PROFILES[row.model_type].prefix+n):[])])]
             for(const name of shellNames)asset.getObjectByName(name)?.traverse(n=>{if(n.isMesh){const materials=[].concat(n.material).map(m=>{const c=m.clone();c.userData.previewOpacity=m.opacity;c.userData.previewTransparent=m.transparent;return c});n.material=Array.isArray(n.material)?materials:materials[0];this.shell.push(...materials)}})
         }
         this.plan=plan

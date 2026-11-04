@@ -417,7 +417,9 @@
         "installation_depth": 150
       },
       "notes": [
-        "选用 17.07.00 高提升版本（MAX 4107），保留双侧水箱、循环管路及驱动；不是照片 V7 外形。"
+        "选用 17.07.00 高提升版本（MAX 4107），保留双侧水箱、循环管路及驱动；不是照片 V7 外形。",
+        "2026-11-04 修复：补回 K 向与侧视图存在的中央下部薄壁壳体；前板宽 1200 mm、折面顶部标高 1121 mm，门槛 1295 mm。板厚、折面深度及未注尺寸为展示推定。",
+        "2026-11-04 修复：补回 K 向与侧视图存在的中央下部薄壁壳体；前板宽 1200 mm、折面顶部标高 1121 mm，门槛 1295 mm。板厚、折面深度及未注尺寸为展示推定。"
       ],
       "bounds_blender_m": [
         -1.5600000619888306,
@@ -432,42 +434,44 @@
         4.10699987411499,
         2.9709999561309814
       ],
-      "editable_meshes": 993,
-      "runtime_meshes": 74,
-      "triangles": 103238,
-      "bytes": 5191156,
-      "sha256": "a613313565b5c88ea6ceb59d9a258de75ed75915ea47921b46e922c46808f4ae",
+      "editable_meshes": 1008,
+      "runtime_meshes": 80,
+      "triangles": 104582,
+      "bytes": 5284204,
+      "sha256": "e5b45809e4218f82b8e3a5fc67fe054b81c010f13edcc5902b9286659b473a33",
       "roundtrip_max_error_m": 0.0,
       "functional_groups": [
-        "structure",
-        "tanks",
-        "housing",
-        "lining",
-        "door",
-        "door_guides",
-        "door_drive",
-        "roof_equipment",
-        "pumps",
-        "pipes",
-        "electrics",
-        "valves",
-        "process_instruments",
-        "door_carriages",
-        "door_chains",
-        "door_seals",
-        "door_safety",
-        "internal_rollers",
-        "chamber_tubes",
-        "filter_tank",
-        "filter_connections",
-        "spray_headers",
         "belt_drive",
         "belt_motor",
-        "valve_detail",
-        "instrumentation",
+        "central_lower_body",
+        "chamber_tubes",
+        "door",
+        "door_carriages",
+        "door_chains",
+        "door_drive",
+        "door_guides",
+        "door_safety",
+        "door_seals",
+        "electrics",
+        "filter_connections",
+        "filter_tank",
         "heater_flanges",
+        "housing",
+        "instrumentation",
+        "internal_rollers",
+        "lifting_eyes",
+        "lining",
+        "lower_collection",
+        "pipes",
+        "process_instruments",
+        "pumps",
         "rear_inspection",
-        "lifting_eyes"
+        "roof_equipment",
+        "spray_headers",
+        "structure",
+        "tanks",
+        "valve_detail",
+        "valves"
       ],
       "runtime": {
         "enableGenericBindings": false,
@@ -485,11 +489,17 @@
         "tangent_drive_belt": 2,
         "heater_flange": 6,
         "hex_nut": 84,
-        "internal_load_roller": 7
+        "internal_load_roller": 7,
+        "wash_lower_shell": 1,
+        "wash_lower_top_rail": 2,
+        "wash_lower_collector_front": 1,
+        "wash_lower_drain_spout": 1
       },
       "mechanism_checks": [
-        "MAX 4107 revision without lower-revision blowers/furnace internals"
-      ]
+        "MAX 4107 revision without lower-revision blowers/furnace internals",
+        "central lower sheet enclosure from base top to chamber underside; not an open bay"
+      ],
+      "correction_revision": "2026-11-04-central-lower-enclosure"
     },
     {
       "model_id": "cad_water_cooling_tank_v1",

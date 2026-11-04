@@ -68,6 +68,13 @@ def review(item):
             measure('base width',o.dimensions.x,2.650);measure('base depth',o.dimensions.y,2.442)
         for o in parts('rear_filter_tank'):
             for axis,expected in enumerate([.836,.733,.700]):measure('filter tank '+str(axis),o.dimensions[axis],expected)
+        count('wash_lower_shell',1);count('wash_lower_collector_front',1);count('wash_lower_drain_spout',1)
+        for o in parts('wash_lower_shell'):
+            measure('central lower enclosure width',o.dimensions.x,1.200)
+            measure('central lower enclosure top',max((o.matrix_world@v.co).z for v in o.data.vertices),1.295)
+        for o in parts('wash_lower_collector_front'):
+            measure('lower attachment width',o.dimensions.x,.836)
+            measure('lower attachment top',o.location.z+o.dimensions.z/2,1.038)
     record={'name':item['name'],'file':item['file'],'sha256':hashlib.sha256((OUT/item['file']).read_bytes()).hexdigest(),
             'source_blend_sha256':hashlib.sha256((OUT/'sources'/(Path(item['file']).stem+'.blend')).read_bytes()).hexdigest(),
             'tests':tests,'pass':all(t['pass'] for t in tests),'part_inventory':{name:sum(o.type=='MESH' for o in group.children_recursive) for name,group in [(o.get('part'),o) for o in root.children if o.type=='EMPTY'] if name and name!='review'}}
