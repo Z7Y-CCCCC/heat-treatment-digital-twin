@@ -18,6 +18,10 @@ async function playbackDevices(db,factoryId) {
 async function readPlaybackBindings(widgets,context,read) {
     const result={},groups=new Map();
     for(const widget of widgets) {
+        if(widget.data?.deviceScope==='global'){
+            if(!groups.has(''))groups.set('',{device:{id:'',name:'',lineId:'',workshopId:''},widgets:[]});
+            groups.get('').widgets.push(widget);continue;
+        }
         const selection=playbackSelection(widget.data,context,context.playbackDevices,context.playbackAt);
         if(!selection.device){result[widget.id]={value:null,rows:[],series:[],quality:'bad',deviceId:'',error:'当前范围没有可读取的设备'};continue;}
         const id=selection.device.id;

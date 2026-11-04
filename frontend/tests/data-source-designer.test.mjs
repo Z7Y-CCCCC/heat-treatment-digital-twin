@@ -18,7 +18,7 @@ test('source choices are short, unique, supported by the widget and preserve exi
     const choices=widgetBindingChoices({type,data:{mode}})
     assert.equal(new Set(choices.map(c=>c.id)).size,choices.length)
     assert.ok(choices.some(c=>c.id===mode),`${type}/${mode} remains editable`)
-    if(mode==='static')assert.equal(choices.length,1+Number(DATASET_WIDGETS.has(type))+Number(POINT_WIDGETS.has(type))*(1+Number(!['trend','hud_chart_dock'].includes(type))))
+    if(mode==='static')assert.equal(choices.length,1+Number(DATASET_WIDGETS.has(type))+Number(POINT_WIDGETS.has(type))*(1+Number(!['trend','hud_chart_dock'].includes(type)))+Number(type==='map_region_list'))
     for(const id of ['database','http_api','business'])assert.equal(choices.some(c=>c.id===id),mode===id)
   }
 })
@@ -49,6 +49,7 @@ function fixture(t, connections) {
     // unit fixture race an actual localhost request (or the next fixture).
     t.mock.method(adminApi, 'getDataSets', async () => ({ datasets: [] }))
     t.mock.method(adminApi, 'getSettings', async () => ({}))
+    t.mock.method(adminApi, 'listFactories', async () => ({factories:[]}))
     const renderer = createRenderer({
         createElement: () => ({}), createText: () => ({}), createComment: () => ({}),
         setText() {}, setElementText() {}, parentNode: () => null, nextSibling: () => null,
@@ -363,4 +364,15 @@ test('changing a fixed source device resolves that device point and clearing a b
  state.previewBindingDevice('b');assert.equal(state.selectedWidget.data.pointId,'pb');assert.equal(state.selectedWidget.data.deviceId,'b');assert.equal(state.selectedWidget.visibility.matchBoundDevice,false)
  state.bindSelectedPoint('');assert.equal(state.selectedWidget.data.pointId,'');assert.equal(state.selectedWidget.data.pointKey,'');assert.equal(state.selectedWidget.data.path,'')
  state.previewBindingDevice('empty');assert.equal(state.selectedWidget.data.pointId,'')
+})
+
+
+test('global map HTTP preview reads without any device catalog and passes the selected region context',async t=>{
+ const {instance}=fixture(t,[]);await settle();const state=instance.value.$.setupState
+ state.devices=[];state.previewContext.regionCode='120000';state.previewContext.regionLevel='province'
+ const widget={id:'global_map',type:'value',data:{mode:'http_api',deviceScope:'global',connectionId:'owned',apiPath:'/counts/{regionCode}',jsonPath:'count'}}
+ state.documentModel.widgets.push(widget)
+ let context
+ await state.previewExternalBinding(widget,async c=>{context=c;return {result:{value:42,quality:'good'}}})
+ assert.equal(context.deviceId,'');assert.equal(context.regionCode,'120000');assert.equal(context.regionLevel,'province');assert.equal(state.databasePreviewValues.global_map.value,42)
 })

@@ -24,6 +24,7 @@ let compiled = compileScript(descriptor, { id: 'widget-regression', inlineTempla
     .replace(/from (['"])\.\/hudPresentation\.js\1/g, `from ${JSON.stringify(new URL('../src/runtime/hudPresentation.js', import.meta.url).href)}`)
     .replace(/from (['"])\.\.\/\.\.\/\.\.\/shared\/dashboardParameters\.mjs\1/g, `from ${JSON.stringify(new URL('../../shared/dashboardParameters.mjs', import.meta.url).href)}`)
 compiled=compiled.replace(/from (['"])(\.\.?\/[^'"]+)\1/g,(_m,_q,name)=>`from ${JSON.stringify(new URL(name,new URL('../src/runtime/WidgetRenderer.vue',import.meta.url)).href)}`)
+compiled=compiled.replace(/from (["'])([^"']+\.vue)\1/g, `from 'data:text/javascript,export default {}'`)
 const { default: WidgetRenderer } = await import(`data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`)
 const hudSource = await readFile(new URL('../src/runtime/hudWidgets.css', import.meta.url), 'utf8')
 const hudStyles = compileStyle({ source: hudSource, id: 'hud-regression' })

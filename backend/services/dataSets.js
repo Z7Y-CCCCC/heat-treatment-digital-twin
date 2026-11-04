@@ -6,7 +6,7 @@ const { parseDataPath, readDataPath, appendDataPath } = require('../utils/extern
 const { BoundedTtlCache } = require('../utils/boundedTtlCache');
 const { isParameterKey } = require('../../shared/dashboardParameters.mjs');
 const KEY = 'external_dataset_config';
-const CONTEXT_KEYS = ['deviceId', 'lineId', 'workshopId', 'partId', 'viewId'];
+const CONTEXT_KEYS = ['deviceId', 'lineId', 'workshopId', 'partId', 'viewId', 'regionCode', 'regionLevel'];
 const cache = new BoundedTtlCache(), pending = new Map();
 const idPattern = /^[a-zA-Z0-9_-]{1,80}$/;
 const forbidden = /^(?:__proto__|prototype|constructor)$/;

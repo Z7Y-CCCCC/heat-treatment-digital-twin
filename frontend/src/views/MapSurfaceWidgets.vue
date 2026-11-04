@@ -15,17 +15,24 @@ const props = defineProps({
   viewId: { type: String, required: true },
   factoryId: { type: String, default: '' },
   config: { type: Object, default: null },
-  dataStore: { type: Object, default: null }
+  dataStore: { type: Object, default: null },
+  mapData: { type: Object, default:()=>({}) },
+  legacyValues: { type: Object, default:()=>({}) }
 })
-const emit = defineEmits(['navigate'])
+const emit = defineEmits(['navigate','map-action'])
 const playbackNow=useWidgetClock()
 const playbackDevices=computed(()=>flattenPlaybackDevices(props.config || {}))
 const values = ref({})
+const effectiveValues = computed(()=>{
+  const result={...values.value}
+  for(const w of props.document?.widgets || [])if(w.data?.legacyMapMetric && props.legacyValues[w.data.legacyMapMetric])result[w.id]=props.legacyValues[w.data.legacyMapMetric]
+  return result
+})
 const businessData = ref({ status: 'idle', readOnly: true, sections: {} })
 const widgetVisibility = reactive({})
 const groupVisibility = reactive({})
 const currentView = computed(() => props.document?.scene?.views?.find(view => view.id === props.viewId))
-const runtimeContext = computed(() => ({ viewId: props.viewId, viewMode: 'custom', factoryId: props.factoryId, sceneId:props.document?.sceneId || '' }))
+const runtimeContext = computed(() => ({ viewId: props.viewId, viewMode: 'custom', regionCode:props.mapData.code || '', regionLevel:props.mapData.level || '', factoryId: props.factoryId, sceneId:props.document?.sceneId || '' }))
 const canvas = computed(() => props.document?.canvas || { width: 1920, height: 1080 })
 const pointValues = computed(() => {
   const result = {}
@@ -56,14 +63,14 @@ const surfaceWidgets = computed(() => {
 })
 function valueForWidget(widget) {
   const binding = widget.data || {}
-  if (binding.mode === 'database' || binding.mode === 'http_api' || binding.mode === 'dataset') return values.value[widget.id]?.value
+  if (binding.mode === 'database' || binding.mode === 'http_api' || binding.mode === 'dataset') return effectiveValues.value[widget.id]?.value
   if (binding.mode === 'plc') {
     const deviceId = String(binding.deviceId || '')
     const pointId = String(binding.pointId || '')
     return pointValues.value[`${deviceId}:${pointId}`]?.value ?? pointValues.value[pointId]?.value
   }
   if (binding.mode === 'runtime') {
-    const source = { metrics: props.dataStore?.metrics || {}, events: props.dataStore?.events?.value || [], trendPoints: props.dataStore?.trendPoints?.value || [] }
+    const source = {map:props.mapData, metrics: props.dataStore?.metrics || {}, events: props.dataStore?.events?.value || [], trendPoints: props.dataStore?.trendPoints?.value || [] }
     return String(binding.path || '').split('.').reduce((value, key) => value?.[key], source)
   }
   return widget.content?.value
@@ -72,7 +79,7 @@ const widgets = computed(() => surfaceWidgets.value
     .filter(widget => widgetRuntimeVisible(widget, {
       context: runtimeContext.value,
       dataValue: valueForWidget(widget),
-      dataRecord: values.value[widget.id] || null,
+      dataRecord: effectiveValues.value[widget.id] || null,
       groupVisibility,
       widgetVisibility
     }))
@@ -97,6 +104,7 @@ const integration = useDashboardIntegration({
 })
 function handleAction({ event, widget }) {
   if (!event) return
+  if (['map_enter_factory','map_select_region','map_hover_region'].includes(event.action))return emit('map-action',event)
   integration.emit('widgetAction',{widgetId:widget?.id || '',action:event.action})
   if (integration.handle(event)) return
   if (['set_visibility', 'toggle_visibility'].includes(event.action)) return applyVisibilityAction(event, { groupVisibility, widgetVisibility })
@@ -121,7 +129,7 @@ const externalReader=createWidgetReadScheduler({
  context:()=>runtimeContext.value,parameters:()=>integration.parameters.value,devices:()=>playbackDevices.value,widgets:()=>surfaceWidgets.value,
  put:(id,record)=>{values.value={...values.value,[id]:record}},remove:id=>{delete values.value[id]},
  read:async(ids,context,parameters,now,signal)=>{
-   const query=new URLSearchParams({view_id:context.viewId,parameters:JSON.stringify(parameters),widget_ids:ids.join(','),playback_at:String(now)})
+   const query=new URLSearchParams({view_id:context.viewId,region_code:context.regionCode || '',parameters:JSON.stringify(parameters),widget_ids:ids.join(','),playback_at:String(now)})
    const response=await adminFetch(`${API_BASE}/data-sources/runtime-values?${query}`,{signal,...(props.factoryId?{headers:{'X-Factory-ID':props.factoryId}}:{})})
    if(!response.ok)throw new Error('数据读取失败');return response.json()
  }
@@ -159,9 +167,9 @@ onUnmounted(() => { disposed=true;externalReader.dispose();valuesSequence++;wind
 <template>
   <div v-if="widgets.length" class="map-surface-widget-layer" aria-label="已发布的地图画面组件">
     <div v-for="widget in widgets" :key="widget.id" class="map-surface-widget hud-widget" :style="widgetFrame(widget)" @pointerdown.stop @click.stop="handleWidgetClick(widget)">
-      <WidgetRenderer :widget="widget" :metrics="dataStore?.metrics || {}" :events="dataStore?.events?.value || []"
+      <WidgetRenderer :widget="widget" :map-data="mapData" :metrics="dataStore?.metrics || {}" :events="dataStore?.events?.value || []"
         :trend-points="dataStore?.trendPoints?.value || []" :device-status-map="dataStore?.deviceStatusMap || {}"
-        :device-data-map="dataStore?.deviceDataMap || {}" :point-values="pointValues" :database-values="values"
+        :device-data-map="dataStore?.deviceDataMap || {}" :point-values="pointValues" :database-values="effectiveValues"
         :playback-now="playbackNow" :device-catalog="playbackDevices" :runtime-context="runtimeContext" :parameters="integration.parameters.value" :parameter-definitions="integration.definitions.value" :business-data="businessData" :data-ready="true" overlay-mode @action="handleAction" />
     </div>
   </div>

@@ -162,15 +162,12 @@ test('factory controls and account permissions occupy standalone admin pages', a
   assert.doesNotMatch(users, /class="user-row"/)
 })
 
-test('each map-level layout editor is wired to the actual dashboard components', async () => {
-  const editor = await source('../src/views/admin/components/GroupPortalSettings.vue')
-  const dashboard = await source('../src/views/GroupOverview.vue')
-  assert.match(editor, /GROUP_MAP_LEVELS/)
-  assert.match(editor, /startLayoutDrag\('brand'/)
-  for (const component of ['brand', 'facts', 'panel', 'dock']) {
-    assert.match(editor, new RegExp(`layoutPosition\\('${component}'\\)`))
-    assert.match(dashboard, new RegExp(`:style="layoutStyle\\('${component}'\\)"`))
-  }
+test('map base settings cannot host a second component/layout/source editor', async () => {
+ const editor=await source('../src/views/admin/components/GroupPortalSettings.vue'),designer=await source('../src/views/admin/components/DashboardDesigner.vue'),dashboard=await source('../src/views/GroupOverview.vue')
+ assert.doesNotMatch(editor,/label: '(?:画面组件|数据来源|画面编排)'|startLayoutDrag|setMapBinding/)
+ assert.doesNotMatch(designer,/mapBuiltIns|edit-map-module/)
+ assert.match(designer,/upgradeMapDesignerDocument/);assert.match(dashboard,/:document="mapDesignerDocument"/)
+ assert.doesNotMatch(dashboard,/<aside v-if="appearance.showFacts"|<aside v-if="appearance.showPanel"|<div v-if="appearance.showDock"/)
 })
 
 test('factory hierarchy is visible in asset editors and model levels cannot be assigned as device models', async () => {

@@ -1,6 +1,6 @@
 const bounded = (value, fallback, min, max) => Number.isFinite(Number(value)) ? Math.round(Math.min(max, Math.max(min, Number(value)))) : fallback
 export function normalizePlayback(binding = {}) {
-  const scope = ['current','fixed','rotation'].includes(binding.deviceScope) ? binding.deviceScope : (binding.deviceId ? 'fixed' : 'current')
+  const scope = ['current','fixed','rotation','global'].includes(binding.deviceScope) ? binding.deviceScope : (binding.deviceId ? 'fixed' : 'current')
   const ids = Array.isArray(binding.rotationDeviceIds) ? [...new Set(binding.rotationDeviceIds.map(String).filter(id=>/^[\w.-]{1,128}$/.test(id)))].slice(0,100) : []
   return { deviceScope:scope, rotationDeviceIds:ids, rotationIntervalMs:bounded(binding.rotationIntervalMs,10000,2000,3600000), refreshMs:bounded(binding.refreshMs,5000,1000,3600000) }
 }
@@ -14,6 +14,7 @@ export function flattenPlaybackDevices(config = {}) {
 }
 export function playbackSelection(binding, context = {}, devices = [], now = Date.now()) {
   const config=normalizePlayback(binding), byId=new Map(devices.map(d=>[String(d.id),d]))
+  if(config.deviceScope==='global')return {device:null,index:0,total:0,mode:'global'}
   const deviceView=!!context.deviceId && (context.viewMode==='device' || /^device_/.test(context.viewId || '') || !!context.inspectionStage)
   if (deviceView) return {device:byId.get(String(context.deviceId)) || null,index:0,total:1,mode:'current'}
   if (config.deviceScope==='fixed') return {device:byId.get(String(binding.deviceId || '')) || null,index:0,total:1,mode:'fixed'}
@@ -26,6 +27,7 @@ export function playbackSelection(binding, context = {}, devices = [], now = Dat
   return {device:eligible[index] || null,index,total:eligible.length,mode:eligible.length>1?'rotation':'current'}
 }
 export function isDeviceBinding(binding = {}) {
+  if(binding.deviceScope==='global')return false
   return ['plc','dataset','database','http_api','business'].includes(binding.mode) || /^(deviceDataMap|deviceStatusMap|selectedPart|deviceInfo|device)\./.test(binding.path || '')
 }
 export function devicePoint(binding, deviceId, pointValues = {}) {

@@ -4,7 +4,7 @@ import { GROUP_MAP_LEVELS } from '../../../runtime/groupPortalAppearance.js'
 import DashboardDesigner from './DashboardDesigner.vue'
 import FactorySiteSceneSettings from './FactorySiteSceneSettings.vue'
 
-const emit = defineEmits(['reload', 'preview-view', 'edit-map-module'])
+const emit = defineEmits(['reload', 'preview-view'])
 const activeSurface = ref('world')
 const siteViewId = ref('site_street')
 const dashboardDesigner = ref(null)
@@ -30,15 +30,12 @@ function syncSurface(viewId) {
     else if (String(viewId).startsWith('site_')) { siteViewId.value = viewId; activeSurface.value = 'site' }
     else activeSurface.value = 'factory'
 }
-function editMapModule(key) {
-    if (showingMap.value) emit('edit-map-module', { key, level: activeSurface.value })
-}
 </script>
 
 <template>
     <section class="unified-dashboard-designer" aria-label="大屏画面设计器">
         <header class="unified-designer-header">
-            <div><strong>大屏画面设计器</strong><small>01–07 共用组件库与自由画布。地图标题、统计、分布面板和底部摘要已列入图层；点击图层可直接打开该模块设置。</small></div>
+            <div><strong>大屏画面设计器</strong><small>所有视角共用组件、布局与数据绑定。</small></div>
             <div class="unified-designer-actions"><span>MAP → SITE → WORKSHOP → LINE → DEVICE</span></div>
         </header>
         <nav class="unified-designer-views" role="tablist" aria-label="选择大屏视角">
@@ -47,7 +44,7 @@ function editMapModule(key) {
             <button type="button" role="tab" :aria-selected="activeSurface==='factory'" :class="{active:activeSurface==='factory'}" @click="selectSurface('factory')"><i>07</i>车间 · 产线 · 设备</button>
         </nav>
         <div class="unified-factory-workspace" role="tabpanel" aria-label="统一画面组件编辑">
-            <DashboardDesigner ref="dashboardDesigner" :initial-view-id="designerViewId" @reload="emit('reload')" @preview-view="value=>emit('preview-view',value)" @view-change="syncSurface" @edit-map-module="editMapModule" />
+            <DashboardDesigner ref="dashboardDesigner" :initial-view-id="designerViewId" @reload="emit('reload')" @preview-view="value=>emit('preview-view',value)" @view-change="syncSurface" />
         </div>
         <details v-if="showingSite" class="unified-base-settings"><summary>街道与工厂建筑底层配置 <span>背景、建筑展示顺序、光标与悬停效果</span></summary><FactorySiteSceneSettings ref="siteSceneSettings" /></details>
     </section>

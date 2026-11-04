@@ -8,8 +8,8 @@ import { cacheFactoryDraft, clearFactoryDraft, readFactoryDraft } from '../../..
 const props = defineProps({ connections: { type: Array, default: () => [] }, permissionPage: { type: String, default: 'settings.database' }, confirm: Function })
 const definitions = ref([]), draft = ref(null), busy = ref(false), failed = ref(false), message = ref(''), query = ref(''), section = ref('query'), result = ref(null)
 const availableFields = ref([]), roots = ref([]), addingField = ref('')
-const previewContext = ref({ parameters:{}, deviceId: '', lineId: '', workshopId: '', partId: '', viewId: '' })
-const contextOptions = [{key:'deviceId',label:'当前设备'},{key:'lineId',label:'当前产线'},{key:'workshopId',label:'当前车间'},{key:'partId',label:'当前部件'},{key:'viewId',label:'当前视角'}]
+const previewContext = ref({ parameters:{}, deviceId: '', lineId: '', workshopId: '', partId: '', viewId: '', regionCode:'', regionLevel:'' })
+const contextOptions = [{key:'deviceId',label:'当前设备'},{key:'lineId',label:'当前产线'},{key:'workshopId',label:'当前车间'},{key:'partId',label:'当前部件'},{key:'viewId',label:'当前视角'},{key:'regionCode',label:'当前地区代码'},{key:'regionLevel',label:'当前地图层级'}]
 const tabs = [{key:'query',label:'读取配置'},{key:'parameters',label:'参数与匹配'},{key:'fields',label:'字段映射'},{key:'preview',label:'数据预览'}]
 const prefix = `dataset-${useId()}`
 async function tabKey(event,index) {

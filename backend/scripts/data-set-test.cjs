@@ -82,6 +82,14 @@ let server;
     for(const playbackAt of [100,200])await require('../services/widgetPlayback').readPlaybackBindings([scopedWidget],{factoryId:'factory_default',playbackDevices,playbackAt,viewMode:'factory'},async(_widgets,context)=>{contexts.push(context);return {rotating:{value:0,quality:'good'}}});
     assert.deepEqual(contexts[0],contexts[1],'playback clock must not invalidate the selected device cache');
     assert.equal('playbackAt' in contexts[0],false);
+    const globals=await require('../services/widgetPlayback').readPlaybackBindings([{id:'regional',data:{mode:'http_api',deviceScope:'global'}}],{factoryId:'factory_default',deviceId:'a',lineId:'l',workshopId:'w',playbackDevices:[],playbackAt:100},async(widgets,context)=>{
+        assert.equal(context.deviceId,'');assert.equal(context.lineId,'');assert.equal(context.workshopId,'');assert.equal(context.factoryId,'factory_default');assert.equal(widgets[0].data.deviceScope,'global');
+        return {regional:{value:77,quality:'good'}};
+    });assert.equal(globals.regional.value,77);assert.equal(globals.regional.deviceId,'');
+    const regionDefinition=sets.normalizeDataSet({...input,request:{method:'GET',path:'/regions',parameters:[{name:'area',in:'query',source:'context',key:'regionCode'},{name:'level',in:'query',source:'context',key:'regionLevel'}]},match:{field:'id',contextKey:'regionCode'}});
+    assert.equal(regionDefinition.request.parameters[0].key,'regionCode');assert.equal(regionDefinition.match.contextKey,'regionCode');
+    const regionHttp=(await sources.readRuntimeBindings([{id:'region_http',data:{mode:'http_api',connectionId:connection.id,apiPath:'/regions/{regionCode}/{regionLevel}',jsonPath:'data',deviceScope:'global'}}],{factoryId:'factory_default',playbackDevices:[],playbackAt:0,regionCode:'120000',regionLevel:'province'})).region_http;
+    assert.equal(regionHttp.deviceId,'');assert.match(requests.at(-1).url,/regions\/120000\/province$/);
     const direct={id:'direct_http',data:{mode:'http_api',connectionId:connection.id,apiPath:'/device/{deviceId}',jsonPath:'data',contextField:'id',contextKey:'deviceId',deviceScope:'fixed',deviceId:'a',refreshMs:1000}};
     const directResult=(await sources.readRuntimeBindings([direct],{factoryId:'factory_default',playbackDevices,playbackAt:0})).direct_http;
     assert.equal(directResult.deviceId,'a');assert.deepEqual(directResult.rows.map(row=>row.id),['a']);assert.match(requests.at(-1).url,/\/device\/a$/);
