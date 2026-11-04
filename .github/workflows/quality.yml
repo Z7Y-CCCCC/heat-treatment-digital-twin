@@ -18,11 +18,25 @@ concurrency:
 jobs:
   backend:
     name: Backend contract and integration tests
-    runs-on: ubuntu-latest
+    # MongoDB 8.0.34 refuses kernels >= 6.19 (SERVER-121912).
+    # Ubuntu 22.04 currently provides supported 6.8; 24.04/latest use 7.x.
+    # Keep the real database mandatory; never bypass its safety startup check.
+    runs-on: ubuntu-22.04
     timeout-minutes: 20
     defaults:
       run:
         working-directory: backend
+    services:
+      mongodb:
+        image: mongo:8.0.34@sha256:b9924c330a8bbc5800fe9c69f04a84e221eca7b28fd049a0354147d9908fa142
+        env:
+          MONGO_INITDB_ROOT_USERNAME: fixture_admin
+          MONGO_INITDB_ROOT_PASSWORD: ci-disposable-only
+        ports:
+          - 27017/tcp
+        options: >-
+          --health-cmd "mongosh --quiet -u fixture_admin -p ci-disposable-only --authenticationDatabase admin --eval 'db.adminCommand({ping:1}).ok'"
+          --health-interval 10s --health-timeout 5s --health-retries 10
     steps:
       - uses: actions/checkout@v4
         with:
@@ -41,6 +55,14 @@ jobs:
       - run: npm --prefix ../frontend ci
       - run: npm ci
       - run: npm test
+      - name: Native MongoDB authenticated read-only datasets
+        run: node scripts/mongo-data-source-integration-test.cjs
+        timeout-minutes: 3
+        env:
+          MONGODB_TEST_URI: mongodb://127.0.0.1:${{ job.services.mongodb.ports[27017] }}/admin
+          MONGODB_TEST_DISPOSABLE: 'true'
+          MONGODB_TEST_ADMIN_USER: fixture_admin
+          MONGODB_TEST_ADMIN_PASSWORD: ci-disposable-only
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
@@ -48,6 +70,8 @@ jobs:
           path: |
             output/quality-suite-*/result.json
             output/quality-suite-*/*.log
+            output/mongo-data-source-*/result.json
+            output/mongo-data-source-*/failure.json
           retention-days: 7
 
   frontend:

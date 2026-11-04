@@ -313,7 +313,7 @@ function listDatabaseBackups({ validate = true } = {}) {
     return fs.readdirSync(BACKUP_DIR, { withFileTypes: true })
         .filter(entry => entry.isFile() && backupMatchesConfig(entry.name))
         .map(entry => path.join(BACKUP_DIR, entry.name))
-        .sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs)
+        .sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs || path.basename(b).localeCompare(path.basename(a)))
         .map(filename => {
             const verification = validate
                 ? (backupExtension() === '.db' ? verifySqliteFile(filename) : knownMysqlBackupVerification(filename))
@@ -992,6 +992,10 @@ async function pruneDatabaseBackupsUnlocked(options = {}) {
     );
     const cutoffMs = Date.now() - retentionDays * DAY_MS;
     const backups = listDatabaseBackups({ validate: false });
+    // Filesystem timestamp granularity (or a clock change) must not let an
+    // older file displace the snapshot just completed by this operation.
+    // Treat the explicitly verified new artifact as newest for this prune.
+    if (options.verifiedFilename) backups.sort((a, b) => Number(b.filename === options.verifiedFilename) - Number(a.filename === options.verifiedFilename));
     // A gzip header alone cannot prove a recovery point is usable. Fully verify
     // newest candidates, stopping at the first good file instead of scanning all
     // historical backups on every export. Newly written backups are already verified.

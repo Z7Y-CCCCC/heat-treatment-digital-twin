@@ -75,6 +75,16 @@ function fixture(t) {
 }
 
 const textContent = root => [root.text, ...root.children.map(textContent)].join(' ')
+test('dataset numeric cards and gauges inherit the output unit, while an explicit widget unit wins', async t => {
+ const view=fixture(t),widget={id:'with_unit',type:'value',data:{mode:'dataset',datasetField:'temperature'},content:{}};
+ const record={quality:'good',value:0,unit:'°C',rows:[{temperature:0}]};
+ await view.render({widget,databaseValues:{with_unit:record}});
+ assert.match(textContent(view.root),/0.*°C/);
+ await view.render({widget:{...widget,data:{...widget.data,unit:'K'}},databaseValues:{with_unit:record}});
+ assert.match(textContent(view.root),/0.*K/);assert.doesNotMatch(textContent(view.root),/°C/);
+ await view.render({widget:{...widget,type:'trend',content:{chartType:'gauge'}},databaseValues:{with_unit:record}});
+ assert.ok(charts.at(-1).options.at(-1)[0].series[0].detail.formatter.includes('°C'));
+})
 test('external-only overlay leaves the loading skeleton when its binding responds even without a PLC ready frame',async t=>{
  const view=fixture(t),widget={id:'http_panel',type:'hud_kpi_panel',data:{mode:'dataset',datasetId:'parts',datasetField:'temperature'},content:{showRing:false,items:[{label:'温度',path:'dataset.temperature'}]}}
  await view.render({widget,overlayMode:true,dataReady:false,databaseValues:{http_panel:{value:75,rows:[{temperature:75}],columns:[{name:'temperature',type:'number'}],quality:'good'}}})
