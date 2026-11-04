@@ -23,7 +23,7 @@ function triangleGlb() {
     browser = await playwright.chromium.launch({ headless: true, ...(process.env.BROWSER_EXECUTABLE ? { executablePath: process.env.BROWSER_EXECUTABLE } : {}), args: ['--enable-unsafe-swiftshader'] });
     const makePage = async (legacy = false) => {
         const context = await browser.newContext({ viewport: { width: 1920, height: 1200 } });
-        await context.addInitScript(({ legacy }) => { if (!localStorage.getItem('digital_twin_admin_ui_state_v1')) localStorage.setItem('digital_twin_admin_ui_state_v1', JSON.stringify({ activeTab: 'models', modelLibraryStep: legacy ? 'import' : 'library' })); }, { legacy });
+        await context.addInitScript(({ legacy }) => { if (!localStorage.getItem('digital_twin_admin_ui_state_v1')) localStorage.setItem('digital_twin_admin_ui_state_v1', JSON.stringify({ activeTab: 'models', modelLibraryStep: legacy ? 'optimization' : 'library' })); }, { legacy });
         await context.grantPermissions(['clipboard-read', 'clipboard-write']);
         const target = await context.newPage(); target.setDefaultTimeout(30000); target.on('pageerror', e => errors.push(e.message)); return target;
     };
@@ -31,15 +31,18 @@ function triangleGlb() {
     page = await makePage(true); await login(page, info.username);
     const nav = page.getByRole('navigation', { name: '模型库操作步骤' }), row = id => page.locator(`[data-model-id="${id}"]`);
     const assets = nav.getByRole('button', { name: /模型资产/ }), importer = page.getByRole('button', { name: '导入模型', exact: true });
-    assert.equal(await nav.getByRole('button').count(), 4); assert.equal(await nav.evaluate(el => getComputedStyle(el).gridTemplateColumns.split(' ').length), 4); assert.equal(await nav.getByRole('button', { name: /导入模型/ }).count(), 0);
+    assert.equal(await nav.getByRole('button').count(), 3); assert.equal(await nav.evaluate(el => getComputedStyle(el).gridTemplateColumns.split(' ').length), 3); assert.equal(await nav.getByRole('button', { name: /导入模型/ }).count(), 0);
     assert.equal(await assets.getAttribute('aria-current'), 'step'); assert.ok(await importer.isVisible());
+    assert.equal(await nav.getByRole('button', { name: /优化与验收/ }).count(), 0);
+    assert.equal(await page.getByRole('columnheader', { name: '交付状态', exact: true }).count(), 0);
+    assert.equal(await page.getByRole('group', { name: '动作包导入导出' }).count(), 0);
     const before = await (await page.request.get(info.origin + '/api/models')).json(), customId = info.models[0], builtinId = 'pit_furnace_2_v1';
     const originalDevices = await (await page.request.get(info.origin + '/api/devices')).json();
     await row(customId).locator('td').nth(2).click();
     assert.equal(await page.locator('.model-selection-actions').count(), 0);
     await page.locator('.model-preview-title > span').getByText('井式炉2 · 型号A', { exact: true }).waitFor();
     await page.screenshot({ path: path.join(directory, '01-assets-and-import-action.png'), fullPage: true });
-    check('import is a button inside Model Assets, not a step card; the three duplicate lower navigation buttons are removed and legacy import-tab state falls back to assets');
+    check('import is a button inside Model Assets, not a step card; the three duplicate lower navigation buttons are removed and legacy removed optimization-tab state falls back to assets');
     const codes = await page.locator('.model-id-copy code').allTextContents();
     assert.equal(new Set(codes).size, codes.length); for (const code of codes) assert.match(code, /^M-[0-9A-F]{8,16}$/);
     assert.equal(await page.locator('.model-id-copy code').evaluateAll(nodes => nodes.some(el => el.scrollWidth > el.clientWidth + 1)), false, 'short codes must remain fully visible');
@@ -72,7 +75,7 @@ function triangleGlb() {
     input = await begin(builtinId, '客户自定义井式炉型号'); response = responseFor(builtinId);
     await row(builtinId).getByRole('button', { name: '保存模型名称', exact: true }).click();
     assert.ok(await importer.isDisabled()); assert.ok(await input.isDisabled());
-    assert.ok(await nav.getByRole('button', { name: /优化与验收/ }).isDisabled());
+    assert.ok(await nav.getByRole('button', { name: /拆解检查/ }).isDisabled());
     release(); assert.equal((await response).status(), 200); await page.unroute(`**/api/models/${builtinId}/name`);
     await row(builtinId).getByRole('status', { name: '模型名称已保存' }).waitFor();
     const builtin = before.find(m => m.id === builtinId), actualBuiltin = (await (await page.request.get(info.origin + '/api/models')).json()).find(m => m.id === builtinId);
@@ -95,6 +98,28 @@ function triangleGlb() {
     assert.ok((await row(customId).textContent()).includes('失败后重试名称')); assert.ok((await row(builtinId).textContent()).includes('客户自定义井式炉型号'));
     check('the asset import button opens a real file chooser; inline GLB import/cancel work and uploaded and renamed models survive reload without changing devices');
     await page.screenshot({ path: path.join(directory, '03-saved-names.png'), fullPage: true });
+    await row(customId).locator('td').nth(2).click();
+    const preserved = (await (await page.request.get(info.origin + '/api/models')).json()).find(m => m.id === customId);
+    await nav.getByRole('button', { name: /拆解检查/ }).click();
+    const inspector = page.locator('.model-inspection-editor');
+    const saveInspection = inspector.getByRole('button', { name: '保存拆解配置', exact: true }).last();
+    await saveInspection.waitFor(); await page.waitForFunction(() => ![...document.querySelectorAll('.model-inspection-editor button')].find(b => b.textContent.trim() === '保存拆解配置')?.disabled);
+    const inspectionSaved = page.waitForResponse(r => new URL(r.url()).pathname === `/api/models/${customId}` && r.request().method() === 'PUT');
+    await saveInspection.click(); const savedResponse = await inspectionSaved; assert.equal(savedResponse.status(), 200);
+    await page.getByRole('heading', { name: '保存成功', exact: true }).waitFor(); await page.getByRole('button', { name: '确定', exact: true }).click();
+    const persisted = (await (await page.request.get(info.origin + '/api/models')).json()).find(m => m.id === customId);
+    const oldMetadata = JSON.parse(preserved.metadata), newMetadata = JSON.parse(persisted.metadata);
+    const requested = JSON.parse(savedResponse.request().postDataJSON().metadata);
+    for (const key of ['assetSpec', 'optimization', 'acceptance', 'release']) {
+      assert.deepEqual(requested[key], oldMetadata[key], `inspection save must not rewrite ${key}`);
+      // The existing backend canonicalizer can fill omitted legacy defaults,
+      // but must not change any previously stored value or acceptance timestamp.
+      for (const [field, value] of Object.entries(oldMetadata[key] || {})) assert.deepEqual(newMetadata[key]?.[field], value, `${key}.${field}`);
+    }
+    await nav.getByRole('button', { name: /部位绑定/ }).click(); await page.getByRole('heading', { name: '部位与点位绑定', exact: true }).waitFor();
+    await nav.getByRole('button', { name: /模型资产/ }).click();
+    check('inspection and part binding remain available; inspection saves preserve existing legacy state and render settings without submitting acceptance');
+
     const session = await (await page.request.get(info.origin + '/api/admin-auth/session')).json();
     const headers = { Origin: info.origin, 'X-Admin-Request': '1', 'X-CSRF-Token': session.csrfToken };
     for (const [username, edit] of [['model_reader', false], ['model_editor', true]]) { const created = await page.request.post(info.origin + '/api/admin-auth/users', { headers, data: { username, password: info.password, role: 'viewer', permissions: { view: false }, pagePermissions: { models: { view: true, edit } } } }); assert.equal(created.status(), 201, await created.text()); }

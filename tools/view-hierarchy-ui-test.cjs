@@ -21,6 +21,32 @@ const check = text => { checks.push(text); console.log('PASS ' + text); };
     await page.getByRole('button',{name:'解锁后台',exact:true}).click();
     const tree=page.getByRole('tree',{name:'视角层级',exact:true});await tree.waitFor();
     const row=id=>tree.locator(`[data-view-id="${id}"]`);
+    assert.equal(await page.getByRole('tablist', { name: '选择大屏视角', exact: true }).count(), 0);
+    assert.equal(await page.locator('.designer-brand,.designer-brand-mark,.unified-designer-views').count(), 0);
+    const designerHandle = await page.locator('.dashboard-designer-shell').elementHandle();
+    for (const id of ['map_country','map_province','map_city','map_district','site_street','site_factory','workshop_overview','line_overview','device_detail','device_xray','device_exploded','device_part','factory_overview','map_world']) {
+        await row(id).locator('.view-tree-select').click();
+        await waitUntil(async () => /(^| )active( |$)/.test(await row(id).getAttribute('class')), 5000, `selected tree view ${id}`);
+        await page.waitForTimeout(75);
+        assert.ok(/(^| )active( |$)/.test(await row(id).getAttribute('class')), `tree selection must not bounce away from ${id}`);
+        assert.equal(await designerHandle.evaluate(el => el.isConnected), true, 'changing view must keep the same designer and draft');
+        const name = await page.getByLabel('视角名称', { exact: true }).inputValue();
+        assert.equal(/^(map_|site_)/.test(id) ? name.replace(/^\s*\d{2}\s+/, '') : name, (await row(id).locator('.view-tree-select strong').textContent()).trim());
+    }
+    await page.screenshot({path:path.join(directory,'01-clean-designer-toolbar.png'),fullPage:true});
+    check('top duplicate view tabs and D mark are absent; maps, street, building and device views remain selectable in one mounted designer without bouncing to factory overview');
+    for (const title of ['数据采集', '模型库']) {
+        const toggle = page.locator(`.admin-nav .nav-group-toggle[title="${title}"]`);
+        if (!(await toggle.locator('..').getAttribute('class')).split(' ').includes('open')) await toggle.click();
+    }
+    const navIcon = async title => page.locator(`.admin-nav .nav-subitem[title="${title}"] svg path`).evaluateAll(nodes => nodes.map(n => n.getAttribute('d')));
+    const mappingIcon = await navIcon('点位映射'), monitorIcon = await navIcon('点位监视');
+    const modelIcon = await navIcon('模型管理'), layoutIcon = await navIcon('拆解布局');
+    assert.ok(mappingIcon.length && monitorIcon.length && modelIcon.length && layoutIcon.length);
+    assert.notDeepEqual(mappingIcon, monitorIcon); assert.notDeepEqual(modelIcon, layoutIcon);
+    assert.equal((await page.locator('.admin-nav .nav-subitem[title="点位监视"] svg').evaluate(el => getComputedStyle(el).strokeWidth)), '1.75px');
+    await page.locator('.admin-nav').screenshot({path:path.join(directory,'02-distinct-sidebar-icons.png')});
+    check('point monitor and disassembly layout have distinct, semantic outline icons using the existing stroke style');
     async function save() {
         const response=page.waitForResponse(r=>new URL(r.url()).pathname==='/api/platform/designer/draft'&&r.request().method()==='PUT');
         await page.getByRole('button',{name:'保存草稿',exact:true}).click();

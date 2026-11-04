@@ -1,66 +1,134 @@
 <script setup>
-import { ref, onUnmounted } from 'vue'
+import { ref, computed, nextTick, onUnmounted } from 'vue'
 import { API_BASE } from '../../../runtime/backendEndpoint.js'
 import { adminFetch, canAdminPage } from '../../../runtime/adminSession.js'
 import { getFactoryScope } from '../../../runtime/factoryScope.js'
+import ModelActionPicker from './ModelActionPicker.vue'
+import { MAX_PACKAGE_SELECTION, runPackageQueue } from '../utils/modelPackageSelection.js'
 const props = defineProps({ models: { type: Array, default: () => [] }, selectedId: { type: String, default: '' } })
 const emit = defineEmits(['imported'])
-const fileInput = ref(null), file = ref(null), checked = ref(null), busy = ref(false), error = ref(''), message = ref(''), exportId = ref('')
-let disposed = false, controller
+const fileInput = ref(null), rows = ref([]), busy = ref(false), error = ref(''), message = ref(''), exportIds = ref([])
+const dialog = ref(null), operation = ref('import')
+const readyImports = computed(() => rows.value.filter(row => row.checked && row.status !== 'imported'))
+let disposed = false, controller, batchScope = ''
 onUnmounted(() => { disposed = true; controller?.abort() })
+async function openDialog(mode) {
+  operation.value = mode; rows.value = []; error.value = ''; message.value = ''; batchScope = getFactoryScope()
+  if (mode === 'export') exportIds.value = props.models.some(m => m.id === props.selectedId) ? [props.selectedId] : []
+  await nextTick(); if (!disposed) dialog.value?.showModal()
+}
+function closeDialog() {
+  if (busy.value) return
+  dialog.value?.close(); rows.value = []
+}
+function assertScope() { if (getFactoryScope() !== batchScope) throw Error('工厂已切换，请关闭并重新选择文件') }
+async function request(operation, row) {
+  assertScope(); controller = new AbortController()
+  const form = new FormData(); form.append('file', row.file)
+  if (operation === 'import') form.append('inspectedSha256', row.checked.inspectedSha256)
+  const response = await adminFetch(`${API_BASE}/models/asset-${operation}`, { method: 'POST', headers: { ...(batchScope ? { 'X-Factory-ID': batchScope } : {}), ...(operation === 'import' ? { 'X-Asset-Request-ID': row.requestId } : {}) }, body: form, signal: controller.signal })
+  const data = await response.json()
+  if (!response.ok || !data.success) throw Error(data.error || '动作包处理失败')
+  return data
+}
 async function choose(event) {
-  file.value = event.target.files?.[0] || null; event.target.value = ''; checked.value = null; error.value = ''; message.value = ''
-  if (!file.value) return
-  await request('inspect')
-}
-async function request(operation) {
-  if (busy.value || !file.value) return
-  const scope = getFactoryScope(), form = new FormData()
-  form.append('file', file.value)
-  if (operation === 'import') form.append('inspectedSha256', checked.value?.inspectedSha256 || '')
-  busy.value = true; error.value = ''; message.value = ''; controller = new AbortController()
+  const files = [...(event.target.files || [])]; event.target.value = ''
+  if (!files.length) return
+  await openDialog('import')
+  if (files.length > MAX_PACKAGE_SELECTION) { error.value = `一次最多导入 ${MAX_PACKAGE_SELECTION} 个文件`; return }
+  rows.value = files.map((file, index) => ({ id: index, requestId: crypto.randomUUID(), file, name: file.name, status: 'waiting', error: '', checked: null }))
+  busy.value = true
   try {
-    const response = await adminFetch(`${API_BASE}/models/asset-${operation}`, { method: 'POST', headers: scope ? { 'X-Factory-ID': scope } : {}, body: form, signal: controller.signal })
-    const data = await response.json()
-    if (disposed) return
-    if (!response.ok || !data.success) throw Error(data.error || '模型动作包处理失败')
-    if (operation === 'inspect') checked.value = data
-    else { checked.value = null; file.value = null; emit('imported', data.model); message.value = '已导入到当前工厂。模型与动作可在对应编辑器选择；不会覆盖旧模型或自动绑定设备。' }
-  } catch (e) { if (!disposed) error.value = e.message } finally { busy.value = false }
+    await runPackageQueue(rows.value, async row => {
+      row.status = 'checking'
+      try { const data = await request('inspect', row); if (!disposed) { row.checked = data; row.status = 'ready' } }
+      catch (cause) { if (!disposed) { row.status = 'error'; row.error = cause.message }; throw cause }
+    }, { stopped: () => disposed })
+  } finally { if (!disposed) busy.value = false }
 }
-async function exportAsset() {
-  const id = props.selectedId || exportId.value
-  if (!id || busy.value) return
-  busy.value = true; error.value = ''; message.value = ''; controller = new AbortController()
+async function importAssets() {
+  if (busy.value || !canAdminPage('models', 'edit') || !readyImports.value.length) return
+  busy.value = true; message.value = ''; const imported = []
   try {
-    const response = await adminFetch(`${API_BASE}/models/${encodeURIComponent(id)}/asset-export`, { signal: controller.signal })
-    if (!response.ok) throw Error((await response.json()).error || '导出失败')
-    const blob = await response.blob(); if (disposed) return
-    const url = URL.createObjectURL(blob), link = document.createElement('a')
-    link.href = url; link.download = `model-asset-${id}.zip`; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000)
-    message.value = '已导出模型资产 ZIP（解压可见 model.glb、motion.glb、motion.json 和清单）。不是数据库备份。'
-  } catch (e) { if (!disposed) error.value = e.message } finally { busy.value = false }
+    await runPackageQueue(rows.value, async row => {
+      row.status = 'importing'; row.error = ''
+      try { const result = await request('import', row); if (!disposed) { row.status = 'imported'; imported.push(result.model) } }
+      catch (cause) { if (!disposed) { row.status = 'error'; row.error = cause.message }; throw cause }
+    }, { eligible: row => row.checked && row.status !== 'imported', stopped: () => disposed })
+    if (!disposed) {
+      if (imported.length) emit('imported', imported.at(-1))
+      const done = rows.value.filter(r => r.status === 'imported').length, failed = rows.value.filter(r => r.status === 'error').length
+      message.value = rows.value.length === 1 && done === 1 ? '动作包已导入' : `已导入 ${done} 个${failed ? `，失败 ${failed} 个` : ''}`
+    }
+  } finally { if (!disposed) busy.value = false }
 }
+async function exportAssets() {
+  if (busy.value || !exportIds.value.length) return
+  rows.value = [...new Set(exportIds.value)].map(id => ({ id, name: props.models.find(m => m.id === id)?.name || id, status: 'waiting', error: '' }))
+  busy.value = true; error.value = ''; message.value = ''
+  try {
+    await runPackageQueue(rows.value, async row => {
+      row.status = 'exporting'; row.error = ''
+      try {
+        assertScope(); controller = new AbortController()
+        if (!props.models.some(m => m.id === row.id)) throw Error('模型已不存在，请重新选择')
+        const response = await adminFetch(`${API_BASE}/models/${encodeURIComponent(row.id)}/asset-export`, { signal: controller.signal })
+        if (!response.ok) throw Error((await response.json()).error || '导出失败')
+        const blob = await response.blob(); if (disposed) return
+        const url = URL.createObjectURL(blob), link = document.createElement('a')
+        link.href = url; link.download = `model-asset-${row.id}.zip`; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000)
+        row.status = 'exported'
+      } catch (cause) { if (!disposed) { row.status = 'error'; row.error = cause.message }; throw cause }
+    }, { stopped: () => disposed })
+    if (!disposed) {
+      const done = rows.value.filter(r => r.status === 'exported').length
+      message.value = rows.value.length === 1 && done === 1 ? '动作包已导出' : `已导出 ${done} / ${rows.value.length} 个`
+    }
+  } finally { if (!disposed) busy.value = false }
+}
+const statuses = { waiting: '等待', checking: '读取中…', ready: '可导入', importing: '导入中…', imported: '已导入', exporting: '导出中…', exported: '已导出', error: '失败' }
 </script>
 <template>
-  <section class="asset-transfer" aria-label="项目模型与动作文件导入导出">
-    <div class="asset-toolbar">
-      <strong>项目导入文件</strong>
-      <button type="button" class="btn btn-primary" :disabled="busy || !canAdminPage('models', 'edit')" @click="fileInput?.click()">导入模型 / 厂房 / 动作包</button>
-      <input ref="fileInput" type="file" accept=".zip" aria-label="选择模型动作资产 ZIP" hidden :disabled="busy" @change="choose" />
-      <select v-if="!selectedId" v-model="exportId" class="input" aria-label="选择导出模型" :disabled="busy"><option value="">选择导出模型</option><option v-for="m in models" :key="m.id" :value="m.id">{{ m.name }}</option></select>
-      <button type="button" class="btn" :disabled="busy || !(selectedId || exportId)" @click="exportAsset">导出模型及动作文件</button>
-    </div>
-    <p>安装包无预置工厂或模型。按项目从根目录“导入文件”选择资产包；单个 GLB 仍可用“导入模型”。源工程 .blend 和旧分发 ZIP 不作为运行资产导入。</p>
-    <div v-if="checked" class="asset-check">
-      <strong>{{ checked.model.name }}</strong> · {{ checked.model.assetType === 'environment' ? '厂房环境' : '模型' }} · {{ checked.actions.length }} 个动作 · {{ file?.name }}
-      <p v-if="checked.actions.length">{{ checked.actions.map(a => a.label).join('、') }}</p>
-      <button class="btn btn-primary" type="button" :disabled="busy || !canAdminPage('models', 'edit')" @click="request('import')">确认导入当前工厂（创建新资产）</button>
-      <button class="btn" type="button" :disabled="busy" @click="checked = null; file = null">取消</button>
-    </div>
-    <p v-if="error" role="alert">{{ error }}</p><p v-if="message" role="status">{{ message }}</p>
-  </section>
+  <div class="motion-package-actions" role="group" aria-label="动作包导入导出">
+    <button type="button" class="btn btn-sm" :disabled="busy || !canAdminPage('models', 'edit')" @click="fileInput?.click()">导入动作包</button>
+    <input ref="fileInput" type="file" accept=".zip" multiple aria-label="选择模型动作资产 ZIP" hidden :disabled="busy" @change="choose" />
+    <button type="button" class="btn btn-sm" :disabled="busy || !models.length" @click="openDialog('export')">导出动作包</button>
+  </div>
+  <Teleport to="body">
+    <dialog ref="dialog" class="motion-package-dialog" :aria-label="operation === 'import' ? '导入动作包' : '导出动作包'" @cancel.prevent="closeDialog">
+      <header><h3>{{ operation === 'import' ? '导入动作包' : '导出动作包' }}</h3><button type="button" class="dialog-close" aria-label="关闭动作包弹窗" :disabled="busy" @click="closeDialog">×</button></header>
+      <div class="package-dialog-body">
+        <div v-if="operation === 'export' && !message" class="package-model-field"><span>模型</span><ModelActionPicker v-model="exportIds" :models="models" :disabled="busy" /></div>
+        <ul v-if="rows.length" class="package-file-list" aria-label="动作包处理结果"><li v-for="row in rows" :key="row.id" :data-status="row.status"><div><strong>{{ row.checked?.model.name || row.name }}</strong><small v-if="row.checked">{{ row.checked.actions.length }} 个动作</small><span>{{ statuses[row.status] }}</span></div><p v-if="row.checked?.actions.length" class="package-action-names">{{ row.checked.actions.map(a=>a.label).join('、') }}</p><p v-if="row.error" role="alert">{{ row.error }}</p></li></ul>
+        <p v-if="operation === 'import' && readyImports.length" class="import-effect">导入为新模型，保留现有模型与设备绑定。</p>
+        <p v-if="error" role="alert">{{ error }}</p><p v-if="message" role="status">{{ message }}</p>
+      </div>
+      <footer>
+        <button type="button" class="btn" :disabled="busy" @click="closeDialog">{{ message ? '完成' : '取消' }}</button>
+        <button v-if="operation === 'import' && readyImports.length" class="btn btn-primary" type="button" :disabled="busy || !canAdminPage('models', 'edit')" @click="importAssets">{{ message ? '重试未完成项' : '确认导入' }}</button>
+        <button v-if="operation === 'export' && !message" class="btn btn-primary" type="button" :disabled="busy || !exportIds.length" @click="exportAssets">确认导出{{ exportIds.length ? `（${exportIds.length}）` : '' }}</button>
+      </footer>
+    </dialog>
+  </Teleport>
 </template>
+<style scoped src="../styles/form-controls.css"></style>
 <style scoped>
-.asset-transfer{border:1px solid #64748b50;border-radius:10px;padding:14px;margin:12px 0}.asset-toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.asset-transfer p{font-size:12px;line-height:1.6;opacity:.85;margin:8px 0}.asset-toolbar select{max-width:260px}.asset-check{padding:10px;background:#64748b15;border-radius:6px}[role=alert]{color:#ef6666}
+.motion-package-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-left: auto; }
+.motion-package-actions button { white-space: nowrap; min-height: 34px; }
+.motion-package-dialog { position: fixed; width: min(560px, calc(100vw - 32px)); max-height: calc(100vh - 32px); margin: auto; padding: 0; overflow: auto; border: 1px solid #dce3ec; border-radius: 14px; background: #fff; box-shadow: 0 20px 70px #17203335; color: #344054; font: calc(13px * var(--admin-font-scale, 1)) 'Inter Variable', 'Noto Sans SC Variable', sans-serif; }
+.motion-package-dialog::backdrop { background: #17203355; }
+.motion-package-dialog header { position: relative; padding: 20px 44px 16px 22px; border-bottom: 1px solid #edf0f5; }
+.motion-package-dialog h3 { margin: 0; font-size: calc(16px * var(--admin-font-scale, 1)); }
+.dialog-close { position: absolute; top: 5px; right: 5px; width: 30px; height: 30px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: #73829a; font-family: inherit; font-size: calc(20px * var(--admin-font-scale, 1)); cursor: pointer; }
+.dialog-close:hover:not(:disabled) { color: #2457a6; }
+.dialog-close:disabled { opacity: .5; cursor: wait; }
+.package-dialog-body { padding: 20px 22px; line-height: 1.6; }
+.package-dialog-body label { display: grid; gap: 8px; }
+.package-dialog-body select { width: 100%; min-width: 0; }
+.package-dialog-body p { margin: 8px 0 0; overflow-wrap: anywhere; }
+.package-summary > span { margin-left: 10px; color: #7b8ca3; }
+.package-summary .import-effect { color: #7b8ca3; font-size: calc(12px * var(--admin-font-scale, 1)); }
+.motion-package-dialog footer { display: flex; justify-content: flex-end; gap: 8px; padding: 14px 22px; border-top: 1px solid #edf0f5; }
+[role=alert] { color: #b42318; }
+.package-model-field{display:grid;gap:8px}.package-file-list{list-style:none;margin:0;padding:0;max-height:300px;overflow:auto}.package-file-list li{padding:10px 0;border-bottom:1px solid #edf0f5}.package-file-list li>div{display:flex;align-items:center;gap:8px}.package-file-list strong{flex:1;min-width:0;overflow-wrap:anywhere}.package-file-list small,.package-action-names,.import-effect{color:#7b8ca3;font-size:calc(12px * var(--admin-font-scale, 1))}.package-file-list li[data-status=imported] span,.package-file-list li[data-status=exported] span{color:#16815b}.package-file-list li[data-status=error] span{color:#b42318}
 </style>

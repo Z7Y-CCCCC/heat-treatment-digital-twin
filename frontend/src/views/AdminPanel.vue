@@ -8,6 +8,7 @@ import { API_BASE } from '../runtime/backendEndpoint.js'
 import { SceneRuntime } from '../runtime/SceneRuntime.js'
 import { useNativeQuality } from '../runtime/nativeQuality.js'
 import QualityNotice from '../components/QualityNotice.vue'
+import AdminReadingSettings from './admin/components/AdminReadingSettings.vue'
 import WorkshopGroundEditor from './admin/components/WorkshopGroundEditor.vue'
 import DataSourceWorkspace from './admin/components/DataSourceWorkspace.vue'
 import FactoryCollectionSettings from './admin/components/FactoryCollectionSettings.vue'
@@ -64,7 +65,6 @@ import AdminHelpGuide from './admin/components/AdminHelpGuide.vue'
 import MobileDeviceMotion from './admin/components/MobileDeviceMotion.vue'
 import ModelTransferSequence from './admin/components/ModelTransferSequence.vue'
 import LineEquipmentSequence from './admin/components/LineEquipmentSequence.vue'
-import LineBatchArrangement from './admin/components/LineBatchArrangement.vue'
 import CadMotionPreview from './admin/components/CadMotionPreview.vue'
 import MotionActionEditor from './admin/components/MotionActionEditor.vue'
 import DeviceAnimationLink from './admin/components/DeviceAnimationLink.vue'
@@ -227,10 +227,12 @@ const navIconPaths = {
     devices: ['M6 8h12v8H6z', 'M9 8V5h6v3', 'M9 19h6', 'M12 16v3'],
     mobile: ['M5 8h14v8H5z', 'M8 8V5h8v3', 'M8 16v3', 'M16 16v3', 'M2 12h3', 'M19 12h3'],
     models: ['M12 3l8 4.5v9L12 21l-8-4.5v-9L12 3z', 'M12 12l8-4.5', 'M12 12v9', 'M12 12L4 7.5'],
+    'disassembly-layout': ['M12 3l9 5-9 5-9-5 9-5z', 'M3 12l9 5 9-5', 'M3 16l9 5 9-5'],
     animation: ['M8 5l11 7-11 7z', 'M4 5v14'],
     platform: ['M5 5h6v6H5z', 'M13 5h6v6h-6z', 'M5 13h6v6H5z', 'M13 13h6v6h-6z'],
     data: ['M4 7h16', 'M4 12h16', 'M4 17h16', 'M7 7v10', 'M17 7v10'],
     points: ['M5 12h4', 'M15 12h4', 'M9 12a3 3 0 1 0 6 0a3 3 0 0 0-6 0', 'M12 5V3', 'M12 21v-2'],
+    'point-monitor': ['M3 4h18v13H3z', 'M8 21h8', 'M12 17v4', 'M6 11h3l2-4 3 7 2-3h2'],
     settings: ['M12 8a4 4 0 1 0 0 8a4 4 0 0 0 0-8z', 'M12 2v3', 'M12 19v3', 'M4.93 4.93l2.12 2.12', 'M16.95 16.95l2.12 2.12', 'M2 12h3', 'M19 12h3', 'M4.93 19.07l2.12-2.12', 'M16.95 7.05l2.12-2.12']
 }
 
@@ -770,7 +772,7 @@ const savedLineLayoutSnapshots = ref({})
 const savedLineRecordSnapshots = ref({})
 const savedLinePlacementSnapshots = ref({})
 const placedLines = computed(() => lines.value.filter(line => !isLinePlacementPending(line)))
-const isLinePlannerEditorCollapsed = ref(!!storedAdminUiState.isLinePlannerEditorCollapsed)
+const isLinePlannerEditorCollapsed = ref(true)
 const isLineDevicePoolCollapsed = ref(!!storedAdminUiState.isLineDevicePoolCollapsed)
 const lineDevicePoolDock = reactive({
     x: Number.isFinite(Number(storedAdminUiState.lineDevicePoolDockX)) ? Number(storedAdminUiState.lineDevicePoolDockX) : 28,
@@ -791,7 +793,6 @@ const selectedLineDeviceIds = ref([])
 const lineGroupSaving = ref(false)
 const lineDeviceLayoutBusy = computed(() => lineGroupSaving.value || lineLayoutSaving.value || !!lineDeviceSavingId.value)
 const lineDeviceGap = ref(5)
-const showLineBatchArrangement = ref(false)
 const lineSelectionFeedback = ref('')
 const lineDeviceGhosts = ref([])
 const lineFlowDirectionOptions = [
@@ -1513,8 +1514,7 @@ const modelPreviewRef = ref(null)
 const modelFileInputRef = ref(null)
 const selectedModelFile = ref(null)
 const MODEL_LIBRARY_STEPS = [
-    { key: 'library', label: '模型资产', description: '选择已有模型并查看交付状态' },
-    { key: 'optimization', label: '优化与验收', description: '优化材质、规范并发布模型' },
+    { key: 'library', label: '模型资产', description: '选择与管理模型' },
     { key: 'inspection', label: '拆解检查', description: '配置外壳、关键部件、镜头与点位上下文' },
     { key: 'bindings', label: '部位绑定', description: '把模型节点绑定到实时点位' }
 ]
@@ -1529,20 +1529,6 @@ const modelPreviewError = ref(null)
 const modelUploading = ref(false)
 const modelNameSaving = ref(false)
 const isModelPreviewActive = ref(false)
-const defaultModelAssetSpec = {
-    version: '1.0.0',
-    device_family: '',
-    unit: 'm',
-    axis_rule: 'Y-up / Z-forward',
-    max_triangles: 200000,
-    max_nodes: 800,
-    max_texture_size: 2048,
-    lod_policy: 'LOD0 必须可用，LOD1/LOD2 可选',
-    node_naming_rule: 'role_part_action，例如 fan_rear_rotate、door_front_lift、valve_gas_01',
-    delivery_status: 'draft',
-    owner: '',
-    notes: ''
-}
 const defaultModelOptimization = {
     mode: 'auto',
     mergeStatic: true,
@@ -1553,32 +1539,12 @@ const defaultModelOptimization = {
     environmentIntensity: 0.85
 }
 const defaultModelInspection = createInspectionDefaults()
-const modelWorkflowStepLabels = {
-    imported: '导入',
-    parsed: '解析',
-    specified: '规范',
-    bound: '绑定',
-    accepted: '验收',
-    released: '发布'
-}
-
 function createDefaultModelMetadata() {
     return {
         batchable: true,
         optimization: { ...defaultModelOptimization },
         inspection: JSON.parse(JSON.stringify(defaultModelInspection)),
-        assetSpec: { ...defaultModelAssetSpec },
-        partBindings: [],
-        acceptance: {
-            status: 'draft',
-            checked_at: '',
-            checks: []
-        },
-        release: {
-            version: '0.1.0',
-            status: 'draft',
-            published_at: ''
-        }
+        partBindings: []
     }
 }
 
@@ -1636,8 +1602,6 @@ const modelPreviewStats = reactive({
     bounds: { x: 0, y: 0, z: 0 }
 })
 const modelPartBindings = ref([])
-const modelAssetSpec = reactive({ ...defaultModelAssetSpec })
-const modelOptimization = reactive({ ...defaultModelOptimization })
 const savedModelEditorSnapshot = ref('')
 const modelInspection = reactive(JSON.parse(JSON.stringify(defaultModelInspection)))
 const modelInspectionParts = ref([])
@@ -1888,10 +1852,6 @@ function resolveModelBindingTarget(binding) {
     return null
 }
 
-function countUnresolvedModelBindings() {
-    return modelPartBindings.value.filter(binding => !resolveModelBindingTarget(binding)).length
-}
-
 const activePreviewModel = computed(() => getActivePreviewModel())
 const modelLevelLabels = { factory: '工厂', workshop: '车间', line: '产线', device: '设备' }
 const modelLevelFilter = ref('all')
@@ -1932,7 +1892,7 @@ async function changeMotionModel(event) {
 }
 
 function modelLibraryStepRequiresModel(step) {
-    return step === 'optimization' || step === 'inspection' || step === 'bindings'
+    return step === 'inspection' || step === 'bindings'
 }
 
 function modelLibraryStepAvailable(step) {
@@ -1949,147 +1909,6 @@ async function selectModelLibraryStep(step) {
     await nextTick()
     await renderSelectedModelPreview()
 }
-
-const modelOptimizationEstimate = computed(() => {
-    if (modelOptimization.mode === 'off') return '已关闭：模型将按原始节点逐个渲染'
-    const meshes = Math.max(0, Number(modelPreviewStats.meshCount) || 0)
-    const materials = Math.max(1, Number(modelPreviewStats.materialCount) || 1)
-    const bindings = Math.max(0, modelPartBindings.value.length)
-    const estimatedStaticParts = modelOptimization.mergeStatic
-        ? Math.min(Math.max(0, meshes - bindings), materials)
-        : Math.max(0, meshes - bindings)
-    const estimatedCalls = estimatedStaticParts + bindings
-    return `预计单台从约 ${meshes || '-'} 个网格压到约 ${estimatedCalls || '-'} 个静态/活动渲染组；同型多台会进一步共享静态绘制`
-})
-const modelAcceptanceChecks = computed(() => {
-    const model = activePreviewModel.value
-    const maxTriangles = Number(modelAssetSpec.max_triangles || defaultModelAssetSpec.max_triangles)
-    const maxNodes = Number(modelAssetSpec.max_nodes || defaultModelAssetSpec.max_nodes)
-    const maxTextureSize = Number(modelAssetSpec.max_texture_size || defaultModelAssetSpec.max_texture_size)
-    const checks = [
-        {
-            id: 'uploaded_glb',
-            label: '上传模型文件',
-            required: true,
-            passed: !!model?.file_path && !model?.is_builtin,
-            detail: model?.file_path || '内置模型不能作为现场交付资产'
-        },
-        {
-            id: 'preview_loaded',
-            label: '预览可加载',
-            required: true,
-            passed: modelPreviewStats.loaded && modelPreviewStats.meshCount > 0,
-            detail: `${modelPreviewStats.meshCount} 个网格 / ${modelPreviewStats.nodeCount} 个节点`
-        },
-        {
-            id: 'triangle_budget',
-            label: '三角面预算',
-            required: true,
-            passed: modelPreviewStats.loaded && modelPreviewStats.triangleCount <= maxTriangles,
-            detail: `${formatModelNumber(modelPreviewStats.triangleCount)} / ${formatModelNumber(maxTriangles)}`
-        },
-        {
-            id: 'node_budget',
-            label: '节点数量预算',
-            required: true,
-            passed: modelPreviewStats.loaded && modelPreviewStats.nodeCount <= maxNodes,
-            detail: `${modelPreviewStats.nodeCount} / ${maxNodes}`
-        },
-        {
-            id: 'texture_budget',
-            label: '贴图尺寸预算',
-            required: true,
-            passed: modelPreviewStats.loaded && modelPreviewStats.maxTextureSize <= maxTextureSize,
-            detail: modelPreviewStats.textureCount
-                ? `${modelPreviewStats.textureCount} 张贴图，最大 ${modelPreviewStats.maxTextureSize}px`
-                : '未检测到贴图'
-        },
-        {
-            id: 'binding_nodes',
-            label: '绑定节点可解析',
-            required: true,
-            passed: countUnresolvedModelBindings() === 0,
-            detail: countUnresolvedModelBindings() === 0
-                ? `${modelPartBindings.value.length} 条绑定`
-                : `${countUnresolvedModelBindings()} 条绑定找不到节点`
-        },
-        {
-            id: 'binding_keys',
-            label: '绑定点位字段完整',
-            required: true,
-            passed: modelPartBindings.value.every(binding => binding.source_group && binding.source_key),
-            detail: modelPartBindings.value.length ? '字段完整' : '暂无动作绑定'
-        },
-        {
-            id: 'interactive_parts',
-            label: '存在可动部位',
-            required: false,
-            passed: modelPartBindings.value.length > 0,
-            detail: modelPartBindings.value.length ? `${modelPartBindings.value.length} 个可动部位` : '静态模型，仅可展示'
-        }
-    ]
-    return checks
-})
-const modelAcceptanceSummary = computed(() => {
-    const required = modelAcceptanceChecks.value.filter(item => item.required)
-    const passed = required.filter(item => item.passed)
-    const warnings = modelAcceptanceChecks.value.filter(item => !item.required && !item.passed)
-    return {
-        passed: passed.length,
-        required: required.length,
-        warnings: warnings.length,
-        ready: required.length > 0 && passed.length === required.length
-    }
-})
-const canAcceptModelAsset = computed(() => !!activePreviewModel.value && canEditModelBindings.value && modelAcceptanceSummary.value.ready)
-const canPublishModelAsset = computed(() => canAcceptModelAsset.value && modelAssetSpec.delivery_status === 'accepted')
-const modelAssetWorkflow = computed(() => {
-    const model = activePreviewModel.value
-    return [
-        {
-            id: 'imported',
-            label: modelWorkflowStepLabels.imported,
-            passed: !!model?.file_path && !model?.is_builtin,
-            detail: model?.file_path ? '文件已入库' : '等待上传'
-        },
-        {
-            id: 'parsed',
-            label: modelWorkflowStepLabels.parsed,
-            passed: modelPreviewStats.loaded && modelPreviewStats.meshCount > 0,
-            detail: modelPreviewStats.loaded ? `${modelPreviewStats.nodeCount} 节点` : '等待预览'
-        },
-        {
-            id: 'specified',
-            label: modelWorkflowStepLabels.specified,
-            passed: !!modelAssetSpec.device_family && !!modelAssetSpec.node_naming_rule,
-            detail: modelAssetSpec.device_family || '未设置设备类型'
-        },
-        {
-            id: 'bound',
-            label: modelWorkflowStepLabels.bound,
-            passed: modelPartBindings.value.length > 0,
-            optional: true,
-            detail: modelPartBindings.value.length ? `${modelPartBindings.value.length} 条动作` : '可先静态交付'
-        },
-        {
-            id: 'accepted',
-            label: modelWorkflowStepLabels.accepted,
-            passed: ['accepted', 'released'].includes(modelAssetSpec.delivery_status),
-            detail: modelAcceptanceSummary.value.ready ? '检查通过' : `${modelAcceptanceSummary.value.passed}/${modelAcceptanceSummary.value.required}`
-        },
-        {
-            id: 'released',
-            label: modelWorkflowStepLabels.released,
-            passed: modelAssetSpec.delivery_status === 'released',
-            detail: modelAssetSpec.version || '未发布'
-        }
-    ]
-})
-const modelReleaseHistory = computed(() => {
-    const metadata = parseModelMetadata(activePreviewModel.value)
-    const history = metadata.release?.history
-    return Array.isArray(history) ? [...history].reverse() : []
-})
 
 async function loadModels() {
     const result = await adminApi.getModels()
@@ -2177,30 +1996,9 @@ function formatMeshCount(count) {
     return nextCount > 0 ? `${nextCount} 个网格` : '无网格'
 }
 
-function formatModelNumber(value) {
-    const number = Number(value) || 0
-    if (number >= 10000) return `${(number / 10000).toFixed(number >= 100000 ? 0 : 1)}万`
-    return String(Math.round(number))
-}
-
 function formatModelBounds(bounds) {
     if (!bounds) return '-'
     return `${Number(bounds.x || 0).toFixed(2)} x ${Number(bounds.y || 0).toFixed(2)} x ${Number(bounds.z || 0).toFixed(2)}`
-}
-
-function formatAssetStatus(status) {
-    const labels = {
-        draft: '草稿',
-        review: '待验收',
-        accepted: '验收通过',
-        released: '已发布'
-    }
-    return labels[status] || status || '草稿'
-}
-
-function getModelAssetStatus(model) {
-    const metadata = parseModelMetadata(model)
-    return metadata.assetSpec?.delivery_status || metadata.acceptance?.status || metadata.release?.status || 'draft'
 }
 
 function getModelBindingCount(model) {
@@ -3127,36 +2925,6 @@ function parseModelMetadata(model) {
     }
 }
 
-function normalizeModelAssetSpec(spec = {}) {
-    return {
-        ...defaultModelAssetSpec,
-        ...(spec || {}),
-        max_triangles: Number(spec.max_triangles ?? defaultModelAssetSpec.max_triangles),
-        max_nodes: Number(spec.max_nodes ?? defaultModelAssetSpec.max_nodes),
-        max_texture_size: Number(spec.max_texture_size ?? defaultModelAssetSpec.max_texture_size)
-    }
-}
-
-function normalizeModelOptimization(optimization = {}) {
-    return {
-        ...defaultModelOptimization,
-        ...(optimization || {}),
-        mode: ['auto', 'off'].includes(optimization?.mode) ? optimization.mode : defaultModelOptimization.mode,
-        mergeStatic: optimization?.mergeStatic ?? optimization?.merge_static ?? defaultModelOptimization.mergeStatic,
-        instanceRepeated: optimization?.instanceRepeated ?? optimization?.instance_repeated ?? defaultModelOptimization.instanceRepeated,
-        preserveAnimated: true,
-        materialEnhancement: ['auto', 'original'].includes(optimization?.materialEnhancement || optimization?.material_enhancement)
-            ? (optimization.materialEnhancement || optimization.material_enhancement)
-            : defaultModelOptimization.materialEnhancement,
-        contactShadow: optimization?.contactShadow ?? optimization?.contact_shadow ?? defaultModelOptimization.contactShadow,
-        environmentIntensity: Math.max(0, Math.min(2, Number(
-            optimization?.environmentIntensity
-            ?? optimization?.environment_intensity
-            ?? defaultModelOptimization.environmentIntensity
-        )))
-    }
-}
-
 function normalizeModelInspection(inspection = {}) {
     return normalizeInspection(inspection, modelPartBindings.value)
 }
@@ -3172,69 +2940,16 @@ function loadModelInspectionState(model) {
     if (!devices.value.some(device => device.id === inspectionPreviewDeviceId.value && device.model_type === model?.id)) inspectionPreviewDeviceId.value = ''
 }
 
-function loadModelAssetSpec(model) {
-    const metadata = parseModelMetadata(model)
-    Object.assign(modelAssetSpec, normalizeModelAssetSpec(metadata.assetSpec || metadata.asset_spec || {}))
-    Object.assign(modelOptimization, normalizeModelOptimization(
-        metadata.optimization || (metadata.batchable === false ? { mode: 'off' } : {})
-    ))
-}
-
-function makeAcceptanceSnapshot(status = modelAssetSpec.delivery_status || 'draft') {
-    return {
-        status,
-        checked_at: new Date().toISOString(),
-        stats: {
-            nodeCount: modelPreviewStats.nodeCount,
-            meshCount: modelPreviewStats.meshCount,
-            triangleCount: modelPreviewStats.triangleCount,
-            materialCount: modelPreviewStats.materialCount,
-            textureCount: modelPreviewStats.textureCount,
-            maxTextureSize: modelPreviewStats.maxTextureSize,
-            bounds: modelPreviewStats.bounds
-        },
-        checks: modelAcceptanceChecks.value.map(item => ({
-            id: item.id,
-            label: item.label,
-            required: item.required,
-            passed: item.passed,
-            detail: item.detail
-        }))
-    }
-}
-
-function normalizeSaveOverrides(overrides = {}) {
-    if (!overrides || typeof overrides !== 'object') return {}
-    if (typeof overrides.preventDefault === 'function') return {}
-    return overrides
-}
-
-function buildCurrentModelMetadata(model, overrides = {}) {
-    overrides = normalizeSaveOverrides(overrides)
+function buildCurrentModelMetadata(model) {
     const metadata = parseModelMetadata(model)
     const normalizedPartBindings = dedupeModelBindings(modelPartBindings.value)
-    const assetSpec = normalizeModelAssetSpec({
-        ...(metadata.assetSpec || {}),
-        ...modelAssetSpec,
-        ...(overrides.assetSpec || {})
-    })
-    const existingRelease = metadata.release || {}
-    const release = {
-        version: overrides.releaseVersion || assetSpec.version || existingRelease.version || '0.1.0',
-        status: overrides.releaseStatus || assetSpec.delivery_status || existingRelease.status || 'draft',
-        published_at: overrides.publishedAt || existingRelease.published_at || '',
-        history: Array.isArray(existingRelease.history) ? existingRelease.history : []
-    }
+    // Preserve legacy render settings and history unchanged. Editing inspection
+    // or bindings must no longer create or advance model acceptance/release state.
     return {
         ...metadata,
         schema_version: 1,
-        batchable: metadata.batchable ?? true,
-        optimization: normalizeModelOptimization(modelOptimization),
         inspection: normalizeModelInspection(modelInspection),
-        assetSpec,
         partBindings: normalizedPartBindings,
-        acceptance: overrides.acceptance || makeAcceptanceSnapshot(assetSpec.delivery_status),
-        release,
         runtime: {
             ...(metadata.runtime || {}),
             enableGenericBindings: metadata.runtime?.enableGenericBindings ?? normalizedPartBindings.length > 0
@@ -3362,7 +3077,6 @@ function loadModelBindingState(model) {
     motionBindingPage.value = 1
     motionEditorPanel.value = 'list'
     motionFormStep.value = 'binding'
-    loadModelAssetSpec(model)
     loadModelInspectionState(model)
     const metadata = parseModelMetadata(model)
     const rawBindings = Array.isArray(metadata.partBindings)
@@ -3378,7 +3092,7 @@ function loadModelBindingState(model) {
 }
 
 function modelEditorSnapshot() {
-    return snapshotJson({ assetSpec: modelAssetSpec, optimization: modelOptimization, inspection: modelInspection, partBindings: modelPartBindings.value })
+    return snapshotJson({ inspection: modelInspection, partBindings: modelPartBindings.value })
 }
 
 function selectPreviewNode(path) {
@@ -3535,152 +3249,6 @@ async function saveModelInspection() {
     }
 }
 
-async function saveModelAssetSpec(overrides = {}) {
-    overrides = normalizeSaveOverrides(overrides)
-    const model = activePreviewModel.value
-    if (!model?.id || !canEditModelBindings.value) return
-
-    modelBindingSaving.value = true
-    modelBindingStatus.value = '正在保存模型资产规范...'
-    try {
-        const metadata = buildCurrentModelMetadata(model, overrides)
-        await persistModelMetadata(model, metadata, overrides.successMessage || '模型资产规范已保存')
-    } catch (e) {
-        modelBindingStatus.value = `保存失败：${e.message || e}`
-    } finally {
-        modelBindingSaving.value = false
-    }
-}
-
-async function submitModelAssetReview() {
-    modelAssetSpec.delivery_status = 'review'
-    await saveModelAssetSpec({
-        assetSpec: { delivery_status: 'review' },
-        releaseStatus: 'review',
-        successMessage: '模型已提交待验收'
-    })
-}
-
-async function markModelAssetAccepted() {
-    if (!canAcceptModelAsset.value) return
-    modelAssetSpec.delivery_status = 'accepted'
-    await saveModelAssetSpec({
-        assetSpec: {
-            delivery_status: 'accepted'
-        },
-        acceptance: makeAcceptanceSnapshot('accepted'),
-        releaseStatus: 'accepted',
-        successMessage: '模型已标记为验收通过'
-    })
-}
-
-async function publishModelAsset() {
-    if (!canPublishModelAsset.value) return
-    const model = activePreviewModel.value
-    if (!model?.id) return
-
-    const now = new Date().toISOString()
-    modelAssetSpec.delivery_status = 'released'
-    modelBindingSaving.value = true
-    modelBindingStatus.value = '正在发布模型资产...'
-    try {
-        const metadata = buildCurrentModelMetadata(model, {
-            assetSpec: { delivery_status: 'released' },
-            acceptance: makeAcceptanceSnapshot('released'),
-            releaseStatus: 'released',
-            releaseVersion: modelAssetSpec.version || '1.0.0',
-            publishedAt: now
-        })
-        const releaseRecord = {
-            id: `release_${Date.now()}`,
-            version: metadata.release.version,
-            status: 'released',
-            published_at: now,
-            stats: metadata.acceptance?.stats || {},
-            snapshot: {
-                schema_version: metadata.schema_version,
-                assetSpec: metadata.assetSpec,
-                optimization: metadata.optimization,
-                inspection: metadata.inspection,
-                partBindings: metadata.partBindings,
-                acceptance: metadata.acceptance,
-                runtime: metadata.runtime
-            }
-        }
-        metadata.release.history = [...(metadata.release.history || []), releaseRecord]
-        await persistModelMetadata(model, metadata, `模型已发布：${metadata.release.version}`)
-    } catch (e) {
-        modelBindingStatus.value = `发布失败：${e.message || e}`
-    } finally {
-        modelBindingSaving.value = false
-    }
-}
-
-async function restoreModelRelease(record) {
-    const model = activePreviewModel.value
-    if (!model?.id || !record?.snapshot) return
-
-    const now = new Date().toISOString()
-    modelBindingSaving.value = true
-    modelBindingStatus.value = '正在恢复发布版本...'
-    try {
-        const current = parseModelMetadata(model)
-        const history = Array.isArray(current.release?.history) ? current.release.history : []
-        const snapshot = record.snapshot
-        const restoredBindings = Array.isArray(snapshot.partBindings)
-            ? snapshot.partBindings.map(binding => normalizeModelBinding(binding))
-            : []
-        const restoredSpec = normalizeModelAssetSpec({
-            ...(snapshot.assetSpec || {}),
-            delivery_status: 'released'
-        })
-        const restoredOptimization = normalizeModelOptimization(snapshot.optimization || current.optimization || {})
-        const restoredInspection = normalizeModelInspection(snapshot.inspection || current.inspection || {})
-        const metadata = {
-            ...current,
-            schema_version: snapshot.schema_version || 1,
-            assetSpec: restoredSpec,
-            optimization: restoredOptimization,
-            inspection: restoredInspection,
-            partBindings: restoredBindings,
-            acceptance: snapshot.acceptance || makeAcceptanceSnapshot('released'),
-            runtime: {
-                ...(current.runtime || {}),
-                ...(snapshot.runtime || {}),
-                enableGenericBindings: snapshot.runtime?.enableGenericBindings ?? current.runtime?.enableGenericBindings ?? restoredBindings.length > 0
-            },
-            release: {
-                ...(current.release || {}),
-                version: record.version || restoredSpec.version || current.release?.version || '1.0.0',
-                status: 'released',
-                published_at: now,
-                history: [
-                    ...history,
-                    {
-                        id: `rollback_${Date.now()}`,
-                        version: record.version || restoredSpec.version || '1.0.0',
-                        status: 'rollback',
-                        restored_from: record.id,
-                        published_at: now,
-                        stats: snapshot.acceptance?.stats || {},
-                        snapshot
-                    }
-                ]
-            }
-        }
-        Object.assign(modelAssetSpec, restoredSpec)
-        Object.assign(modelOptimization, restoredOptimization)
-        Object.assign(modelInspection, restoredInspection)
-        modelInspectionParts.value = restoredInspection.parts
-        modelPartBindings.value = restoredBindings
-        await persistModelMetadata(model, metadata, `已恢复发布版本：${metadata.release.version}`)
-    } catch (e) {
-        modelBindingStatus.value = `恢复失败：${e.message || e}`
-    } finally {
-        modelBindingSaving.value = false
-    }
-}
-
 function resetModelImportForm(file) {
     const modelId = createShortModelId(models.value.map(model => model.id))
     modelImportForm.id = modelId
@@ -3688,9 +3256,6 @@ function resetModelImportForm(file) {
     modelImportForm.placement_level = 'device'
     modelImportForm.default_scale = 1
     const metadata = createDefaultModelMetadata()
-    metadata.assetSpec.device_family = modelImportForm.name
-    Object.assign(modelAssetSpec, metadata.assetSpec)
-    Object.assign(modelOptimization, metadata.optimization)
     Object.assign(modelInspection, normalizeModelInspection(metadata.inspection))
     modelInspectionParts.value = []
     modelImportForm.metadata = JSON.stringify(metadata, null, 2)
@@ -3722,8 +3287,6 @@ function clearSelectedModelFile() {
     modelPreviewModel = null
     modelPartBindings.value = []
     modelBindingStatus.value = ''
-    Object.assign(modelAssetSpec, { ...defaultModelAssetSpec })
-    Object.assign(modelOptimization, { ...defaultModelOptimization })
     resetModelBindingForm()
     modelImportForm.id = ''
     modelImportForm.name = ''
@@ -3864,7 +3427,6 @@ async function deleteModel(id) {
             selectedPreviewModelId.value = ''
             modelPreviewModel = null
             modelPartBindings.value = []
-            Object.assign(modelAssetSpec, { ...defaultModelAssetSpec })
             resetModelBindingForm()
             disposeModelPreview({ revokeObjectUrl: true })
             modelPreviewError.value = null
@@ -5568,17 +5130,8 @@ const lineSelectionSameTarget = computed(() => {
     const targets = selectedLineDevices.value.map(device => resolveDeviceLayoutTarget(device, selectedLineEditor.value, { allowFallback: false }))
     return targets.length >= 2 && targets.every(target => target && target.type === targets[0]?.type && target.item.id === targets[0]?.item.id)
 })
-const lineBatchTargets = computed(() => [
-    ...selectedLineLayout.value.lanes.map(item => ({ type: 'lane', item })),
-    ...selectedLineLayout.value.rails.map(item => ({ type: 'rail', item }))
-])
-const lineBatchDevices = computed(() => [...new Map([...selectedLineEditorDevices.value, ...selectedLineEditorCarts.value, ...selectedLineDevicePool.value].map(device => {
-    const binding = resolveDeviceLayoutTarget(device, selectedLineEditor.value, { allowFallback: false })
-    return [device.id, { ...device, arrangementType: isAuxiliaryDeviceConfig(device) ? 'rail' : 'lane', arrangementTarget: binding ? `${binding.type}:${binding.item.id}` : '' }]
-})).values()])
 watch(() => selectedLineEditor.value?.id, () => {
     cancelLineDeviceDrag()
-    showLineBatchArrangement.value = false
     selectedLineDeviceIds.value = []
     lineSelectionFeedback.value = ''
 })
@@ -5724,6 +5277,12 @@ function selectLineEditor(lineId) {
     lineFlowMenuLaneId.value = ''
     lineStationEditingDeviceId.value = ''
     lineStationDraft.value = ''
+}
+
+async function openLineCreation() {
+    isLinePlannerEditorCollapsed.value = false
+    await nextTick()
+    adminContentRef.value?.querySelector('.line-create-row input')?.focus()
 }
 
 function toggleLinePlannerEditor() {
@@ -6733,20 +6292,6 @@ async function applyLineDeviceSpacing(manual = false) {
     } catch (error) { alert(error.message, { type: 'warning' }) }
 }
 
-function openLineBatchArrangement() {
-    if (!canAdminPage('lines', 'edit') || lineDeviceLayoutBusy.value) return
-    cancelLineDeviceDrag()
-    showLineBatchArrangement.value = true
-}
-
-async function applyLineBatchArrangement(plan) {
-    if (await saveLineDevicePlan(plan, selectedLineEditor.value?.id)) {
-        selectedLineDeviceIds.value = plan.map(row => row.id)
-        showLineBatchArrangement.value = false
-        lineSelectionFeedback.value = `已保存 ${plan.length} 台设备排布`
-    }
-}
-
 async function saveLineDevicePlan(plan, lineId) {
     if (!plan.length || lineDeviceLayoutBusy.value || !canAdminPage('lines', 'edit')) return
     const line = lines.value.find(row => row.id === lineId)
@@ -7396,7 +6941,7 @@ const adminSetupFlow = [
     { key: 'system', label: '系统', tab: 'settings', settingsSubpage: 'database', description: '确认数据库、运行服务与数据通路' },
     { key: 'workshop', label: '车间', tab: 'workshops', description: '建立车间并确定空间范围' },
     { key: 'line', label: '产线', tab: 'lines', description: '创建产线、设备线与导轨结构' },
-    { key: 'model', label: '模型', tab: 'models', description: '导入并验收设备 3D 模型' },
+    { key: 'model', label: '模型', tab: 'models', description: '导入与配置设备 3D 模型' },
     { key: 'device', label: '设备', tab: 'devices', description: '创建设备并关联产线和模型' },
     { key: 'composer', label: '编排', tab: 'composer', description: '调整设备位置、朝向与缩放' },
     { key: 'points', label: '点位', tab: 'points', description: '配置 PLC 点位名称、地址与周期' },
@@ -7472,6 +7017,7 @@ async function openAdminSetupStep(step) {
                     <i aria-hidden="true"></i>
                     {{ deviceConnectionSummary.label }}
                 </span>
+                <AdminReadingSettings />
                 <button type="button" class="admin-lock-button" aria-label="立即锁定" :title="`立即锁定 · ${adminSession.idleTimeoutMinutes} 分钟无操作后自动锁定；离开前请先保存`" @click="lockAdmin">
                     <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3M12 14v3"/></svg>
                 </button>
@@ -7493,7 +7039,7 @@ async function openAdminSetupStep(step) {
                 >
                     <span class="nav-icon" aria-hidden="true">
                         <svg viewBox="0 0 24 24">
-                            <path v-for="(path, index) in navIconPaths[tab.icon]" :key="index" :d="path" />
+                            <path v-for="(path, index) in (navIconPaths[tab.key] || navIconPaths[tab.icon])" :key="index" :d="path" />
                         </svg>
                     </span>
                     <span class="nav-label">{{ tab.label }}</span>
@@ -7527,7 +7073,7 @@ async function openAdminSetupStep(step) {
                             >
                                 <span class="nav-icon" aria-hidden="true">
                                     <svg viewBox="0 0 24 24">
-                                        <path v-for="(path, index) in navIconPaths[tab.icon]" :key="index" :d="path" />
+                                        <path v-for="(path, index) in (navIconPaths[tab.key] || navIconPaths[tab.icon])" :key="index" :d="path" />
                                     </svg>
                                 </span>
                                 <span class="nav-label">{{ tab.label }}</span>
@@ -7564,7 +7110,7 @@ async function openAdminSetupStep(step) {
                             >
                                 <span class="nav-icon" aria-hidden="true">
                                     <svg viewBox="0 0 24 24">
-                                        <path v-for="(path, index) in navIconPaths[tab.icon]" :key="index" :d="path" />
+                                        <path v-for="(path, index) in (navIconPaths[tab.key] || navIconPaths[tab.icon])" :key="index" :d="path" />
                                     </svg>
                                 </span>
                                 <span class="nav-label">{{ tab.label }}</span>
@@ -7586,7 +7132,7 @@ async function openAdminSetupStep(step) {
                         <div v-if="isModelsMenuOpen || isAdminNavCollapsed" id="model-library-submenu" class="nav-submenu">
                             <button v-for="child in visibleModelTabs" :key="child.key" type="button" class="nav-item nav-subitem"
                                 :class="{ active: activeTab === child.key }" :title="child.label" @click="selectAdminTab(child.key)">
-                                <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path v-for="(path, index) in navIconPaths[child.icon]" :key="index" :d="path" /></svg></span>
+                                <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path v-for="(path, index) in (navIconPaths[child.key] || navIconPaths[child.icon])" :key="index" :d="path" /></svg></span>
                                 <span class="nav-label">{{ child.label }}</span>
                             </button>
                         </div>
@@ -7601,7 +7147,7 @@ async function openAdminSetupStep(step) {
                 >
                     <span class="nav-icon" aria-hidden="true">
                         <svg viewBox="0 0 24 24">
-                            <path v-for="(path, index) in navIconPaths[tab.icon]" :key="index" :d="path" />
+                            <path v-for="(path, index) in (navIconPaths[tab.key] || navIconPaths[tab.icon])" :key="index" :d="path" />
                         </svg>
                     </span>
                     <span class="nav-label">{{ tab.label }}</span>
@@ -7920,9 +7466,6 @@ async function openAdminSetupStep(step) {
 
                     <template v-else-if="workshopManagementStep === 'space' && selectedWorkshopEditor">
                         <div class="workshop-step-context">
-                            <button type="button" class="workshop-back-button" title="返回车间列表" @click="selectWorkshopManagementStep('list')">
-                                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6" /></svg>
-                            </button>
                             <label>编辑车间
                                 <select v-model="selectedWorkshopEditorId" class="input">
                                     <option v-for="workshop in workshops" :key="workshop.id" :value="workshop.id">{{ workshop.name }}</option>
@@ -7962,9 +7505,6 @@ async function openAdminSetupStep(step) {
 
                     <template v-else-if="selectedWorkshopEditor">
                         <div class="workshop-step-context">
-                            <button type="button" class="workshop-back-button" title="返回空间设置" @click="selectWorkshopManagementStep('space')">
-                                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6" /></svg>
-                            </button>
                             <label>查看车间
                                 <select v-model="selectedWorkshopEditorId" class="input">
                                     <option v-for="workshop in workshops" :key="workshop.id" :value="workshop.id">{{ workshop.name }}</option>
@@ -8149,12 +7689,6 @@ async function openAdminSetupStep(step) {
                         </div>
 
                         <div class="line-planner-guidance">
-                            <div class="line-planner-steps">
-                                <span class="active">1 选择产线</span>
-                                <span>2 实时调整 Unity 设备线 / 导轨</span>
-                                <span>3 保存并固化现场布局</span>
-                            </div>
-
                             <div v-if="lineLayoutDirty" class="canvas-save-reminder line-canvas-save-reminder" role="status">
                                 <span class="canvas-save-reminder-dot"></span>
                                 <div>
@@ -8170,12 +7704,22 @@ async function openAdminSetupStep(step) {
                             </div>
                         </div>
 
-                        <div class="line-planner-layout" :class="{ 'editor-collapsed': isLinePlannerEditorCollapsed }">
-                            <section class="line-planner-editor">
+                        <div class="line-planner-layout">
+                            <section class="line-planner-top-controls" aria-label="产线配置工具栏">
+                                <div class="line-config-toolbar">
+                                    <label>产线 <select class="input" aria-label="选择编辑产线" :value="selectedLineEditorId" @change="selectLineEditor($event.target.value)"><option v-if="!lines.length" value="">暂无产线</option><option v-for="line in lines" :key="line.id" :value="line.id">{{ workshops.find(ws => ws.id === line.workshop_id)?.name || '' }} / {{ line.name }}</option></select></label>
+                                    <button type="button" class="btn btn-primary btn-sm" @click="openLineCreation" v-permission="{ page: 'lines', action: 'edit' }">+ 新增产线</button>
+                                    <button type="button" class="btn btn-sm" :aria-expanded="!isLinePlannerEditorCollapsed" aria-controls="line-configuration-panel" @click="toggleLinePlannerEditor">{{ isLinePlannerEditorCollapsed ? '产线与轨道设置' : '收起设置' }}</button>
+                                    <div class="line-preview-metrics">
+                                        <span>{{ selectedLineLayout.lanes.length }} 条设备线</span>
+                                        <span>{{ selectedLineLayout.rails.length }} 条导轨</span>
+                                        <span>{{ selectedLineEditorDevices.length }}/{{ selectedLineTotalDeviceCount }} 台设备</span>
+                                    </div>
+                                </div>
+                                <div v-show="!isLinePlannerEditorCollapsed" id="line-configuration-panel" class="line-planner-editor">
                                 <div class="line-editor-panel">
                                     <div class="line-panel-title">
                                         <strong>新增产线</strong>
-                                        <span>结构先建，设备后摆</span>
                                     </div>
                                     <div class="line-create-row">
                                         <input v-model="newLine.id" placeholder="产线ID，如 line_e" class="input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/>
@@ -8227,7 +7771,7 @@ async function openAdminSetupStep(step) {
                                             <button class="btn btn-sm" type="button" @click="addLineLayoutItem('lane')" v-permission="{ page: controlPermissionPage, action: 'edit' }">+ 设备线</button>
                                         </div>
                                         <div class="line-layout-row" v-for="lane in selectedLineLayout.lanes" :key="lane.id">
-                                            <input v-model="lane.name" class="input input-sm"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/>
+                                            <input v-model="lane.name" :title="lane.name" class="input input-sm"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/>
                                             <label>偏移Z<input v-model.number="lane.offsetZ" type="number" class="input input-sm"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
                                             <label>长度<input v-model.number="lane.length" type="number" min="1" class="input input-sm"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
                                             <button class="btn btn-danger btn-sm" type="button" @click="removeLineLayoutItem('lane', lane.id)" v-permission="{ page: controlPermissionPage, action: 'edit' }">删除</button>
@@ -8240,7 +7784,7 @@ async function openAdminSetupStep(step) {
                                             <button class="btn btn-sm" type="button" @click="addLineLayoutItem('rail')" v-permission="{ page: controlPermissionPage, action: 'edit' }">+ 小车导轨</button>
                                         </div>
                                         <div class="line-layout-row" v-for="rail in selectedLineLayout.rails" :key="rail.id">
-                                            <input v-model="rail.name" class="input input-sm"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/>
+                                            <input v-model="rail.name" :title="rail.name" class="input input-sm"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/>
                                             <label>偏移Z<input v-model.number="rail.offsetZ" type="number" class="input input-sm"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
                                             <label>长度<input v-model.number="rail.length" type="number" min="1" class="input input-sm"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
                                             <button class="btn btn-danger btn-sm" type="button" @click="removeLineLayoutItem('rail', rail.id)" v-permission="{ page: controlPermissionPage, action: 'edit' }">删除</button>
@@ -8248,40 +7792,19 @@ async function openAdminSetupStep(step) {
                                         <div v-if="!selectedLineLayout.rails.length" class="composer-empty">当前产线还没有小车导轨</div>
                                     </div>
                                 </div>
+                                </div>
                             </section>
 
                             <section class="line-planner-preview">
-                                <button
-                                    class="line-editor-float-toggle"
-                                    type="button"
-                                    :class="{ collapsed: isLinePlannerEditorCollapsed }"
-                                    :title="isLinePlannerEditorCollapsed ? '展开左侧配置' : '收起左侧配置'"
-                                    @click="toggleLinePlannerEditor"
-                                >
-                                    {{ isLinePlannerEditorCollapsed ? '›' : '‹' }}
-                                </button>
-                                <div class="line-preview-toolbar">
-                                    <div>
-                                        <strong>{{ selectedLineEditor?.name || '未选择产线' }}</strong>
-                                        <span>{{ selectedLineEditorWorkshopName }}</span>
-                                    </div>
-                                    <div class="line-preview-metrics">
-                                        <span>{{ selectedLineLayout.lanes.length }} 条设备线</span>
-                                        <span>{{ selectedLineLayout.rails.length }} 条导轨</span>
-                                        <span>{{ selectedLineEditorDevices.length }}/{{ selectedLineTotalDeviceCount }} 台设备</span>
-                                    </div>
-                                </div>
                                 <div v-if="selectedLineEditor" class="line-selection-toolbar" role="toolbar" aria-label="设备多选与间距">
-                                    <button type="button" :disabled="lineDeviceLayoutBusy || !lineBatchTargets.length" @click="openLineBatchArrangement" v-permission="{ page: 'lines', action: 'edit' }">批量添加与排布</button>
                                     <span class="line-selection-hint">Ctrl / Shift 多选</span>
                                     <span v-if="selectedLineDeviceIds.length">已选 {{ selectedLineDeviceIds.length }} 台</span>
-                                    <button type="button" :disabled="lineDeviceLayoutBusy || !lineSelectionSameTarget || selectedLineDeviceIds.length < 3" title="固定两端，平均分配所选设备的中心间距" @click="applyLineDeviceSpacing()" v-permission="{ page: 'lines', action: 'edit' }">等间距</button>
+                                    <button type="button" class="btn btn-sm" :disabled="lineDeviceLayoutBusy || !lineSelectionSameTarget || selectedLineDeviceIds.length < 3" title="固定两端，平均分配所选设备的中心间距" @click="applyLineDeviceSpacing()" v-permission="{ page: 'lines', action: 'edit' }">等间距</button>
                                     <label>中心距(m) <input v-model.number="lineDeviceGap" aria-label="设备中心间距（米）" type="number" min="0.01" step="0.5" :disabled="lineDeviceLayoutBusy || !lineSelectionSameTarget" /></label>
-                                    <button type="button" :disabled="lineDeviceLayoutBusy || !lineSelectionSameTarget" @click="applyLineDeviceSpacing(true)" v-permission="{ page: 'lines', action: 'edit' }">应用间距</button>
+                                    <button type="button" class="btn btn-sm" :disabled="lineDeviceLayoutBusy || !lineSelectionSameTarget" @click="applyLineDeviceSpacing(true)" v-permission="{ page: 'lines', action: 'edit' }">应用间距</button>
                                     <button v-if="selectedLineDeviceIds.length" type="button" :disabled="lineDeviceLayoutBusy" @click="clearLineDeviceSelection">取消选择</button>
                                     <span role="status" aria-live="polite">{{ lineSelectionFeedback }}</span>
                                 </div>
-                                <LineBatchArrangement v-if="showLineBatchArrangement && selectedLineEditor" :key="selectedLineEditor.id" :devices="lineBatchDevices" :models="models" :targets="lineBatchTargets" :preset-ids="selectedLineDeviceIds" :saving="lineDeviceLayoutBusy" @close="showLineBatchArrangement=false" @apply="applyLineBatchArrangement" />
                                 <div ref="linePreviewStageRef" class="line-preview-stage" v-if="selectedLineEditor" @pointerdown.self="clearLineDeviceSelection">
                                     <div class="line-preview-legend">
                                         <span><i class="legend-lane"></i>设备线</span>
@@ -8779,18 +8302,21 @@ async function openAdminSetupStep(step) {
                                 </select>
                             </label>
                         </div>
+                        <div class="motion-workspace-toolbar">
                         <nav class="motion-workspace-modes" aria-label="动作动画模式">
                             <button type="button" :class="{ active: motionWorkspaceMode === 'live' }" :aria-pressed="motionWorkspaceMode === 'live'" @click="changeMotionWorkspace('live')">实时联动</button>
                             <button type="button" :class="{ active: motionWorkspaceMode === 'authoring' }" :aria-pressed="motionWorkspaceMode === 'authoring'" @click="changeMotionWorkspace('authoring')">工艺动作</button>
                             <button type="button" :class="{ active: motionWorkspaceMode === 'parts' }" :aria-pressed="motionWorkspaceMode === 'parts'" @click="changeMotionWorkspace('parts')">部件动作</button>
                             <button type="button" :class="{ active: motionWorkspaceMode === 'transfer' }" :aria-pressed="motionWorkspaceMode === 'transfer'" @click="changeMotionWorkspace('transfer')">设备联动</button>
                         </nav>
+                        <ModelAssetTransfer :models="models" :selected-id="motionWorkspaceMode === 'parts' ? selectedPreviewModelId : ''" @imported="loadModels" />
+                        </div>
                         <p v-if="!motionModelOptions.length" class="desc">请先在“模型管理”中导入设备 GLB / GLTF 模型。</p>
                     </template>
                     <template v-else>
                         <ModelPlacementMenu ref="modelPlacementMenuRef" :busy="modelPlacementSaving || modelNameSaving || modelUploading" @change="saveModelPlacement" />
                         <h2>3D 模型库</h2>
-                        <p class="desc">管理模型资产、优化验收与部位绑定。</p>
+                        <p class="desc">管理模型资产、拆解检查与部位绑定。</p>
                     </template>
 
                     <div v-if="activeTab === 'models'" class="secondary-page-nav-shell model-step-nav-shell">
@@ -8815,7 +8341,6 @@ async function openAdminSetupStep(step) {
                         </nav>
                     </div>
 
-                    <ModelAssetTransfer :models="models" :selected-id="activeTab === 'models' ? selectedPreviewModelId : ''" @imported="loadModels" />
                     <LineEquipmentSequence v-if="activeTab === 'model-animations' && motionWorkspaceMode === 'transfer'" :models="models" :lines="lines" :devices="devices" :workshops="workshops" />
                     <DeviceAnimationLink v-if="activeTab === 'model-animations' && motionWorkspaceMode === 'live'" ref="deviceAnimationLinkRef" :models="models" :devices="devices" :confirm="confirm" />
                     <MotionActionEditor v-if="activeTab === 'model-animations' && motionWorkspaceMode === 'authoring'" ref="motionActionEditorRef" :models="motionModelOptions" :confirm="confirm" @saved="updated => { models = models.map(m => m.id === updated.id ? updated : m) }" />
@@ -8861,11 +8386,11 @@ async function openAdminSetupStep(step) {
                             <div class="table-scroll model-table-scroll">
                                 <table class="data-table model-table">
                                     <colgroup>
-                                        <col style="width:11%" /><col style="width:28%" /><col style="width:8%" /><col style="width:9%" />
-                                        <col style="width:9%" /><col style="width:7%" /><col style="width:18%" /><col style="width:10%" />
+                                        <col style="width:11%" /><col style="width:31%" /><col style="width:9%" /><col style="width:10%" />
+                                        <col style="width:8%" /><col style="width:21%" /><col style="width:10%" />
                                     </colgroup>
                                     <thead>
-                                        <tr><th title="短编号仅用于列表显示，点击可复制完整模型 ID">编号</th><th>名称</th><th>归属</th><th>适用层级</th><th>交付状态</th><th>绑定数</th><th>文件路径</th><th>操作</th></tr>
+                                        <tr><th title="短编号仅用于列表显示，点击可复制完整模型 ID">编号</th><th>名称</th><th>归属</th><th>适用层级</th><th>绑定数</th><th>文件路径</th><th>操作</th></tr>
                                     </thead>
                                     <tbody>
                                         <tr
@@ -8880,7 +8405,6 @@ async function openAdminSetupStep(step) {
                                             <td><ModelNameEditor :model="m" :disabled="modelBindingSaving || modelUploading || modelPlacementSaving || modelNameSaving" @renamed="applyModelName" @saving="modelNameSaving = $event" @error="alert($event, { title: '保存模型名称失败', type: 'danger' })" /></td>
                                             <td>{{ m.factory_id ? '当前工厂' : '集团共享' }}</td>
                                             <td>{{ modelLevelLabels[m.placement_level || 'device'] || '设备' }}级</td>
-                                            <td><span class="asset-status-pill" :class="'asset-status-' + getModelAssetStatus(m)">{{ formatAssetStatus(getModelAssetStatus(m)) }}</span></td>
                                             <td>{{ getModelBindingCount(m) }}</td>
                                             <td :title="m.file_path || '（内置）'">{{ m.file_path || '（内置）' }}</td>
                                             <td>
@@ -8891,140 +8415,6 @@ async function openAdminSetupStep(step) {
                                     </tbody>
                                 </table>
                             </div>
-                            </section>
-
-                            <section v-if="activePreviewModel && !activePreviewIsEnvironment" v-show="modelLibraryStep === 'optimization'" class="model-asset-governance model-library-step-panel">
-                                <div class="model-binding-header">
-                                    <div>
-                                        <h3>模型资产规范</h3>
-                                        <p>当前状态：<span class="asset-status-pill" :class="'asset-status-' + modelAssetSpec.delivery_status">{{ formatAssetStatus(modelAssetSpec.delivery_status) }}</span></p>
-                                    </div>
-                                    <div class="model-governance-actions">
-                                        <button class="btn" type="button" @click="saveModelAssetSpec" :disabled="!canEditModelBindings || modelBindingSaving" v-permission="{ page: controlPermissionPage, action: 'edit' }">保存规范</button>
-                                        <button class="btn" type="button" @click="submitModelAssetReview" :disabled="!canEditModelBindings || modelBindingSaving">提交验收</button>
-                                        <button class="btn btn-primary" type="button" @click="markModelAssetAccepted" :disabled="!canAcceptModelAsset || modelBindingSaving">标记验收通过</button>
-                                        <button class="btn btn-primary" type="button" @click="publishModelAsset" :disabled="!canPublishModelAsset || modelBindingSaving" v-permission="{ page: controlPermissionPage, action: 'publish', also: 'edit' }">发布模型</button>
-                                    </div>
-                                </div>
-
-                                <div class="model-workflow-rail">
-                                    <div
-                                        v-for="(step, index) in modelAssetWorkflow"
-                                        :key="step.id"
-                                        class="model-workflow-step"
-                                        :class="{ passed: step.passed, optional: step.optional && !step.passed }"
-                                    >
-                                        <strong>{{ index + 1 }}</strong>
-                                        <span>{{ step.label }}</span>
-                                        <small>{{ step.detail }}</small>
-                                    </div>
-                                </div>
-
-                                <div class="model-stats-strip">
-                                    <span>节点 {{ modelPreviewStats.nodeCount }}</span>
-                                    <span>网格 {{ modelPreviewStats.meshCount }}</span>
-                                    <span>三角面 {{ formatModelNumber(modelPreviewStats.triangleCount) }}</span>
-                                    <span>材质 {{ modelPreviewStats.materialCount }}</span>
-                                    <span>贴图 {{ modelPreviewStats.textureCount }}</span>
-                                    <span>尺寸 {{ formatModelBounds(modelPreviewStats.bounds) }}</span>
-                                </div>
-
-                                <template v-if="canEditModelBindings">
-                                    <div class="model-optimization-panel">
-                                        <div class="model-release-header">
-                                            <strong>通用模型优化</strong>
-                                            <span>保留三角面和点位动画，主要降低 draw call 并改善 PBR 观感</span>
-                                        </div>
-                                        <div class="model-spec-form model-optimization-form">
-                                            <label>优化策略
-                                                <select v-model="modelOptimization.mode" class="input" v-permission="{ page: controlPermissionPage, action: 'edit' }">
-                                                    <option value="auto">自动优化（推荐）</option>
-                                                    <option value="off">关闭，使用模型原始结构</option>
-                                                </select>
-                                            </label>
-                                            <label>无贴图材质
-                                                <select v-model="modelOptimization.materialEnhancement" class="input" :disabled="modelOptimization.mode === 'off'" v-permission="{ page: controlPermissionPage, action: 'edit' }">
-                                                    <option value="auto">自动识别金属 / 油漆 / 橡胶</option>
-                                                    <option value="original">保持原始材质参数</option>
-                                                </select>
-                                            </label>
-                                            <label>环境反射强度
-                                                <input v-model.number="modelOptimization.environmentIntensity" type="number" min="0" max="2" step="0.05" class="input" :disabled="modelOptimization.mode === 'off'"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/>
-                                            </label>
-                                            <label class="checkbox-line"><input v-model="modelOptimization.mergeStatic" type="checkbox" :disabled="modelOptimization.mode === 'off'"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/> 静态网格按材质合并</label>
-                                            <label class="checkbox-line"><input v-model="modelOptimization.instanceRepeated" type="checkbox" :disabled="modelOptimization.mode === 'off'"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/> 同型多台实例化</label>
-                                            <label class="checkbox-line"><input v-model="modelOptimization.contactShadow" type="checkbox" :disabled="modelOptimization.mode === 'off'"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/> 低成本接触阴影</label>
-                                        </div>
-                                        <p class="model-optimization-estimate">{{ modelOptimizationEstimate }}。骨骼、Morph 或单网格多材质等不适合的模型会自动回退，不会强行破坏。</p>
-                                    </div>
-
-                                    <div class="model-spec-form">
-                                        <label>资产版本<input v-model="modelAssetSpec.version" class="input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
-                                        <label>设备类型<input v-model="modelAssetSpec.device_family" class="input" placeholder="如 箱式气氛多用炉"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
-                                        <label>尺寸单位
-                                            <select v-model="modelAssetSpec.unit" class="input" v-permission="{ page: controlPermissionPage, action: 'edit' }">
-                                                <option value="m">m</option>
-                                                <option value="mm">mm</option>
-                                            </select>
-                                        </label>
-                                        <label>坐标规范<input v-model="modelAssetSpec.axis_rule" class="input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
-                                        <label>最大三角面<input v-model.number="modelAssetSpec.max_triangles" type="number" min="1000" step="1000" class="input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
-                                        <label>最大节点数<input v-model.number="modelAssetSpec.max_nodes" type="number" min="1" step="10" class="input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
-                                        <label>最大贴图尺寸<input v-model.number="modelAssetSpec.max_texture_size" type="number" min="256" step="256" class="input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
-                                        <label>交付状态
-                                            <select v-model="modelAssetSpec.delivery_status" class="input" v-permission="{ page: controlPermissionPage, action: 'edit' }">
-                                                <option value="draft">草稿</option>
-                                                <option value="review">待验收</option>
-                                                <option value="accepted">验收通过</option>
-                                                <option value="released">已发布</option>
-                                            </select>
-                                        </label>
-                                        <label class="wide-form-section">节点命名规则<input v-model="modelAssetSpec.node_naming_rule" class="input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
-                                        <label class="wide-form-section">LOD 策略<input v-model="modelAssetSpec.lod_policy" class="input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
-                                        <label class="wide-form-section">交付备注<textarea v-model="modelAssetSpec.notes" class="input model-metadata" v-permission="{ page: controlPermissionPage, action: 'edit' }"></textarea></label>
-                                    </div>
-
-                                    <div class="model-acceptance-summary" :class="{ ready: modelAcceptanceSummary.ready }">
-                                        必检 {{ modelAcceptanceSummary.passed }}/{{ modelAcceptanceSummary.required }}
-                                        <span v-if="modelAcceptanceSummary.warnings">，提示 {{ modelAcceptanceSummary.warnings }} 项</span>
-                                    </div>
-                                    <div class="model-acceptance-grid">
-                                        <div
-                                            v-for="check in modelAcceptanceChecks"
-                                            :key="check.id"
-                                            class="model-acceptance-item"
-                                            :class="{ passed: check.passed, warning: !check.required && !check.passed }"
-                                        >
-                                            <strong>{{ check.passed ? '通过' : (check.required ? '未过' : '提示') }}</strong>
-                                            <span>{{ check.label }}</span>
-                                            <small>{{ check.detail }}</small>
-                                        </div>
-                                    </div>
-
-                                    <div class="model-release-history">
-                                        <div class="model-release-header">
-                                            <strong>发布记录</strong>
-                                            <span>{{ modelReleaseHistory.length ? `共 ${modelReleaseHistory.length} 次` : '暂无发布快照' }}</span>
-                                        </div>
-                                        <table class="data-table" v-if="modelReleaseHistory.length">
-                                            <thead>
-                                                <tr><th>版本</th><th>状态</th><th>时间</th><th>三角面</th><th>绑定</th><th>操作</th></tr>
-                                            </thead>
-                                            <tbody>
-                                                <tr v-for="release in modelReleaseHistory" :key="release.id">
-                                                    <td>{{ release.version }}</td>
-                                                    <td>{{ release.status === 'rollback' ? '回滚' : '发布' }}</td>
-                                                    <td>{{ release.published_at || '-' }}</td>
-                                                    <td>{{ formatModelNumber(release.stats?.triangleCount) }}</td>
-                                                    <td>{{ release.snapshot?.partBindings?.length || 0 }}</td>
-                                                    <td>
-                                                        <button class="btn btn-sm" type="button" @click="restoreModelRelease(release)" :disabled="modelBindingSaving || !release.snapshot">恢复此版</button>
-                                                    </td>
-                                                </tr>
-                                            </tbody>
-                                        </table>
-                                    </div>
-                                </template>
                             </section>
 
                             <section v-if="activePreviewModel && !activePreviewIsEnvironment" v-show="modelLibraryStep === 'inspection'" class="model-binding-editor model-library-step-panel model-inspection-editor">
@@ -9517,10 +8907,10 @@ async function openAdminSetupStep(step) {
                                         </div>
                                     </div>
                                     <label style="grid-column: span 2;">组件配置 JSON
-                                        <textarea v-model="newWidget.configText" class="input widget-json-textarea" placeholder="配置 JSON" spellcheck="false" style="height: 90px; font-family: SFMono-Regular, Consolas, monospace; font-size: 12px;" v-permission="{ page: controlPermissionPage, action: 'edit' }"></textarea>
+                                        <textarea v-model="newWidget.configText" class="input widget-json-textarea" placeholder="配置 JSON" spellcheck="false" style="height: 90px; font-family: SFMono-Regular, Consolas, monospace; font-size: calc(12px * var(--admin-font-scale, 1));" v-permission="{ page: controlPermissionPage, action: 'edit' }"></textarea>
                                     </label>
                                     <label style="grid-column: span 2;">数据绑定 JSON
-                                        <textarea v-model="newWidget.bindingText" class="input widget-json-textarea" placeholder="数据绑定 JSON" spellcheck="false" style="height: 70px; font-family: SFMono-Regular, Consolas, monospace; font-size: 12px;" v-permission="{ page: controlPermissionPage, action: 'edit' }"></textarea>
+                                        <textarea v-model="newWidget.bindingText" class="input widget-json-textarea" placeholder="数据绑定 JSON" spellcheck="false" style="height: 70px; font-family: SFMono-Regular, Consolas, monospace; font-size: calc(12px * var(--admin-font-scale, 1));" v-permission="{ page: controlPermissionPage, action: 'edit' }"></textarea>
                                     </label>
                                 </div>
                                 <div class="modal-actions" style="margin-top: 20px; display: flex; justify-content: flex-end; gap: 12px;">
@@ -9558,7 +8948,7 @@ async function openAdminSetupStep(step) {
 
                     <div class="form-row points-filter-toolbar">
                         <div>
-                            <label style="font-size:12px; color:#86868b; display:block; margin-bottom:5px;">筛选设备</label>
+                            <label style="font-size:calc(12px * var(--admin-font-scale, 1)); color:#86868b; display:block; margin-bottom:5px;">筛选设备</label>
                             <select v-model="selectedDeviceForPoints" aria-label="筛选点位设备" @change="loadDataPoints" :disabled="pointsSaving" class="input" style="width:250px">
                                 <option value="all">全部设备</option>
                                 <option v-for="d in devices" :key="d.id" :value="d.id">{{ deviceHierarchyLabel(d) }}</option>
@@ -9850,7 +9240,7 @@ async function openAdminSetupStep(step) {
 
                         <div class="points-savebar" data-testid="points-savebar">
                             <div style="display:flex; align-items: center; gap: 15px;">
-                                <span v-if="isPointsDirty" style="color: #ff9500; font-size: 13px;">存在未保存的修改</span>
+                                <span v-if="isPointsDirty" style="color: #ff9500; font-size: calc(13px * var(--admin-font-scale, 1));">存在未保存的修改</span>
                                 <button @click="savePointsPage" class="btn btn-primary" :disabled="pointsLoading || pointsSaving || (!isPointsDirty && dataPoints.length > 0)" v-permission="{ page: controlPermissionPage, action: 'edit' }">{{ pointsLoading ? '正在读取点位…' : pointsSaving ? '正在保存…' : isAllPointsMode ? '保存全部设备配置' : '保存当前设备配置' }}</button>
                             </div>
                         </div>
@@ -9866,7 +9256,7 @@ async function openAdminSetupStep(step) {
 
                     <div class="form-row point-monitor-toolbar">
                         <div>
-                            <label style="font-size:12px; color:#86868b; display:block; margin-bottom:5px;">筛选设备</label>
+                            <label style="font-size:calc(12px * var(--admin-font-scale, 1)); color:#86868b; display:block; margin-bottom:5px;">筛选设备</label>
                             <select v-model="selectedDeviceForMonitor" class="input" style="width:280px">
                                 <option value="all">全部设备</option>
                                 <option v-for="d in devices" :key="d.id" :value="d.id">{{ deviceHierarchyLabel(d) }}</option>
@@ -10608,7 +9998,7 @@ async function openAdminSetupStep(step) {
 .database-section-tabs button {
     flex: 0 0 auto; padding: 9px 15px;
     border: 0; border-radius: 7px; background: transparent; color: #64748b;
-    font: inherit; font-size: 12px; white-space: nowrap; cursor: pointer;
+    font: inherit; font-size: calc(12px * var(--admin-font-scale, 1)); white-space: nowrap; cursor: pointer;
 }
 .database-section-tabs button[aria-selected=true] {
     background: #fff; color: #245dc5; box-shadow: 0 2px 8px #243c6420; font-weight: 600;
@@ -10618,8 +10008,8 @@ async function openAdminSetupStep(step) {
 #database-panel-history .database-backup-list { max-height: 360px; overflow: auto; }
 #database-panel-schedule .database-backup-source-grid { max-height: 280px; overflow: auto; }
 
-.composer-ground-panel{padding:0!important}.composer-ground-panel summary{padding:14px 16px;cursor:pointer;font-size:13px;font-weight:600}.composer-ground-panel summary small{margin-left:8px;font-weight:400;color:#b76e00}
-.composer-ground-controls{border:0;padding:10px 0;margin:0;display:grid;gap:10px;min-width:0}.composer-ground-buttons{display:flex;gap:8px}.composer-ground-controls .inline-check{display:flex;align-items:center;gap:6px;font-size:12px}
+.composer-ground-panel{padding:0!important}.composer-ground-panel summary{padding:14px 16px;cursor:pointer;font-size:calc(13px * var(--admin-font-scale, 1));font-weight:600}.composer-ground-panel summary small{margin-left:8px;font-weight:400;color:#b76e00}
+.composer-ground-controls{border:0;padding:10px 0;margin:0;display:grid;gap:10px;min-width:0}.composer-ground-buttons{display:flex;gap:8px}.composer-ground-controls .inline-check{display:flex;align-items:center;gap:6px;font-size:calc(12px * var(--admin-font-scale, 1))}
 * { box-sizing: border-box; }
 
 .admin-container {
@@ -10654,7 +10044,7 @@ async function openAdminSetupStep(step) {
 .admin-lock-button {
     display: inline-flex; align-items: center; justify-content: center;
     flex: 0 0 36px; width: 36px; height: 36px; padding: 0; border: 1px solid #344054; border-radius: 8px;
-    background: linear-gradient(135deg, #344054 0%, #1d2939 100%); color: #fff; font: inherit; font-size: 12px; font-weight: 600;
+    background: linear-gradient(135deg, #344054 0%, #1d2939 100%); color: #fff; font: inherit; font-size: calc(12px * var(--admin-font-scale, 1)); font-weight: 600;
     white-space: nowrap; cursor: pointer;
     box-shadow: 0 6px 14px rgba(29, 41, 57, .18);
     transition: transform 180ms cubic-bezier(.22, 1, .36, 1), background 180ms ease, box-shadow 180ms ease;
@@ -10708,7 +10098,7 @@ async function openAdminSetupStep(step) {
 .admin-setup-flow-title {
     flex: 0 0 auto;
     color: #86868b;
-    font-size: 12px;
+    font-size: calc(12px * var(--admin-font-scale, 1));
     font-weight: 700;
     letter-spacing: .06em;
     white-space: nowrap;
@@ -10763,7 +10153,7 @@ async function openAdminSetupStep(step) {
     color: #777a7f;
     background: #e6e8eb;
     border-radius: 50%;
-    font-size: 12px;
+    font-size: calc(12px * var(--admin-font-scale, 1));
     font-weight: 750;
     line-height: 1;
 }
@@ -10773,7 +10163,7 @@ async function openAdminSetupStep(step) {
     box-shadow: 0 2px 6px rgba(0, 102, 204, .3);
 }
 .admin-setup-step-label {
-    font-size: 14px;
+    font-size: calc(14px * var(--admin-font-scale, 1));
     font-weight: 650;
     line-height: 1;
     white-space: nowrap;
@@ -10817,7 +10207,7 @@ async function openAdminSetupStep(step) {
     border-radius: 999px;
     color: #515154;
     background: #f3f4f6;
-    font-size: 12px;
+    font-size: calc(12px * var(--admin-font-scale, 1));
     font-weight: 600;
     line-height: 1;
     white-space: nowrap;
@@ -10859,7 +10249,7 @@ async function openAdminSetupStep(step) {
     appearance: none;
     border: 0;
     width: 100%;
-    padding: 10px 16px; cursor: pointer; font-size: 14px; color: #434345;
+    padding: 10px 16px; cursor: pointer; font-size: calc(14px * var(--admin-font-scale, 1)); color: #434345;
     font-weight: 500; border-radius: 10px;
     transition: color var(--ui-motion-standard) var(--ui-ease), background var(--ui-motion-standard) var(--ui-ease), box-shadow var(--ui-motion-standard) var(--ui-ease), transform var(--ui-motion-standard) var(--ui-ease); position: relative;
     display: flex; align-items: center; gap: 10px;
@@ -10908,7 +10298,7 @@ async function openAdminSetupStep(step) {
 .nav-group-toggle .nav-chevron {
     margin-left: auto;
     color: #86868b;
-    font-size: 13px;
+    font-size: calc(13px * var(--admin-font-scale, 1));
     transition: transform 220ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 .nav-group.open .nav-chevron {
@@ -10940,7 +10330,7 @@ async function openAdminSetupStep(step) {
     min-height: 38px;
     padding-top: 8px;
     padding-bottom: 8px;
-    font-size: 13px;
+    font-size: calc(13px * var(--admin-font-scale, 1));
 }
 .nav-collapse-btn:hover,
 .nav-item:hover { color: #1d1d1f; background: rgba(255, 255, 255, .74); box-shadow: 0 5px 16px rgba(15, 23, 42, .07); }
@@ -10972,7 +10362,7 @@ async function openAdminSetupStep(step) {
     stroke-linejoin: round;
 }
 .nav-collapse-icon {
-    font-size: 22px;
+    font-size: calc(22px * var(--admin-font-scale, 1));
 }
 .nav-label {
     min-width: 0;
@@ -11052,16 +10442,16 @@ async function openAdminSetupStep(step) {
 .manual-layout-active .tab-transition-host { display: flex; flex: 1; flex-direction: column; min-height: 0; }
 .manual-disassembly-tab { display: flex; flex-direction: column; gap: 10px; flex: 1; min-height: 0; }
 .manual-layout-page-heading { display: flex; flex: 0 0 auto; align-items: center; justify-content: space-between; gap: 18px; padding: 6px 4px; }
-.manual-layout-page-heading h2 { margin: 0 0 4px; font-size: 22px; }
-.manual-layout-page-heading p, .manual-layout-page-note { margin: 0; font-size: 12px; color: #697b8d; line-height: 1.6; }
-.manual-layout-page-heading label { display: grid; gap: 5px; font-size: 11px; color: #52687d; min-width: 230px; max-width: 430px; }
+.manual-layout-page-heading h2 { margin: 0 0 4px; font-size: calc(22px * var(--admin-font-scale, 1)); }
+.manual-layout-page-heading p, .manual-layout-page-note { margin: 0; font-size: calc(12px * var(--admin-font-scale, 1)); color: #697b8d; line-height: 1.6; }
+.manual-layout-page-heading label { display: grid; gap: 5px; font-size: calc(11px * var(--admin-font-scale, 1)); color: #52687d; min-width: 230px; max-width: 430px; }
 .manual-layout-page-heading select { max-width: 100%; padding: 9px 12px; border: 1px solid #d5dfea; border-radius: 8px; background: white; color: #293d52; }
 .manual-layout-page-note { flex: 0 0 auto; padding: 0 4px; }
 .manual-layout-page-state { flex: 1; display: flex; flex-direction: column; gap: 16px; align-items: center; justify-content: center; padding: 24px; border-radius: 14px; background: #fff; color: #637b90; text-align: center; }
 .manual-disassembly-tab :deep(.manual-layout) { display: flex; flex: 1; flex-direction: column; min-height: 0; }
 .manual-disassembly-tab :deep(.layout-heading) { padding: 12px 18px; flex: 0 0 auto; }
 .manual-disassembly-tab :deep(.layout-heading .eyebrow), .manual-disassembly-tab :deep(.layout-heading p) { display: none; }
-.manual-disassembly-tab :deep(.layout-heading h3) { font-size: 17px; margin: 0; }
+.manual-disassembly-tab :deep(.layout-heading h3) { font-size: calc(17px * var(--admin-font-scale, 1)); margin: 0; }
 .manual-disassembly-tab :deep(.layout-toolbar) { padding: 9px 18px; flex: 0 0 auto; }
 .manual-disassembly-tab :deep(.layout-body) { flex: 1; min-height: 0; overflow: hidden; }
 .manual-disassembly-tab :deep(.viewport-shell) { min-height: 0; }
@@ -11092,17 +10482,17 @@ async function openAdminSetupStep(step) {
     .manual-disassembly-tab { min-height: 550px; }
 }
 @media (max-width: 900px) { .manual-layout-page-heading { align-items: stretch; flex-direction: column; gap: 7px; } }
-.tab-content h2 { margin: 0 0 6px 0; font-size: 24px; color: #1d1d1f; font-weight: 600; letter-spacing: -0.5px; }
-.desc { color: #86868b; font-size: 14px; margin-bottom: 28px; }
+.tab-content h2 { margin: 0 0 6px 0; font-size: calc(24px * var(--admin-font-scale, 1)); color: #1d1d1f; font-weight: 600; letter-spacing: -0.5px; }
+.desc { color: #86868b; font-size: calc(14px * var(--admin-font-scale, 1)); margin-bottom: 28px; }
 .factory-hierarchy-note { margin: 0 0 18px; padding: 15px 17px; background: #f7f9fc; border: 1px solid #e3e8ef; border-radius: 10px; }
-.factory-hierarchy-chain { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; color: #40536f; font-size: 11px; font-weight: 600; }
+.factory-hierarchy-chain { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; color: #40536f; font-size: calc(11px * var(--admin-font-scale, 1)); font-weight: 600; }
 .factory-hierarchy-chain span { padding: 6px 9px; background: #fff; border: 1px solid #e1e7ef; border-radius: 6px; }
-.factory-hierarchy-chain i { color: #9ba7b8; font-size: 12px; font-style: normal; }
-.factory-hierarchy-note p { margin: 10px 0 0; color: #7a879a; font-size: 11px; line-height: 1.65; }
+.factory-hierarchy-chain i { color: #9ba7b8; font-size: calc(12px * var(--admin-font-scale, 1)); font-style: normal; }
+.factory-hierarchy-note p { margin: 10px 0 0; color: #7a879a; font-size: calc(11px * var(--admin-font-scale, 1)); line-height: 1.65; }
 .factory-hierarchy-note p strong { color: #52637b; }
 .factory-network-panel { margin-top: 16px; padding: 22px; background: #fff; border: 1px solid #e2e7ee; border-radius: 11px; }
 .factory-network-appearance { margin-top: 18px; }
-.map-design-details{margin:0 0 16px;border:1px solid #d9dee7;border-radius:12px;background:#fff;overflow:hidden}.map-design-details>summary{display:flex;align-items:center;gap:14px;padding:15px 18px;color:#1d2939;font-weight:700;cursor:pointer;list-style:none}.map-design-details>summary::-webkit-details-marker{display:none}.map-design-details>summary::before{content:'▸';color:#667085;transition:transform .16s}.map-design-details[open]>summary::before{transform:rotate(90deg)}.map-design-details>summary span{color:#667085;font-size:12px;font-weight:400}.map-design-details .group-appearance-admin{margin:0;border:0;border-top:1px solid #e4e7ec;border-radius:0}
+.map-design-details{margin:0 0 16px;border:1px solid #d9dee7;border-radius:12px;background:#fff;overflow:hidden}.map-design-details>summary{display:flex;align-items:center;gap:14px;padding:15px 18px;color:#1d2939;font-weight:700;cursor:pointer;list-style:none}.map-design-details>summary::-webkit-details-marker{display:none}.map-design-details>summary::before{content:'▸';color:#667085;transition:transform .16s}.map-design-details[open]>summary::before{transform:rotate(90deg)}.map-design-details>summary span{color:#667085;font-size:calc(12px * var(--admin-font-scale, 1));font-weight:400}.map-design-details .group-appearance-admin{margin:0;border:0;border-top:1px solid #e4e7ec;border-radius:0}
 .users-management-tab > .desc { margin-bottom: 18px; }
 .secondary-page-nav-shell {
     position: sticky;
@@ -11175,7 +10565,7 @@ async function openAdminSetupStep(step) {
     color: #6e6e73;
     background: #f2f2f4;
     border-radius: 8px;
-    font-size: 10px;
+    font-size: calc(10px * var(--admin-font-scale, 1));
     font-weight: 700;
     letter-spacing: 0.04em;
 }
@@ -11194,13 +10584,13 @@ async function openAdminSetupStep(step) {
     white-space: nowrap;
 }
 .secondary-page-copy strong {
-    font-size: 13px;
+    font-size: calc(13px * var(--admin-font-scale, 1));
     font-weight: 650;
 }
 .secondary-page-copy small {
     margin-top: 3px;
     color: #86868b;
-    font-size: 10px;
+    font-size: calc(10px * var(--admin-font-scale, 1));
     font-weight: 500;
 }
 .secondary-page-nav-item.active .secondary-page-copy small {
@@ -11225,7 +10615,7 @@ async function openAdminSetupStep(step) {
 .secondary-page-save {
     margin-top: 0;
     padding: 10px 30px;
-    font-size: 15px;
+    font-size: calc(15px * var(--admin-font-scale, 1));
 }
 @keyframes secondary-page-in {
     from { opacity: 0; transform: translateY(5px); }
@@ -11263,7 +10653,7 @@ async function openAdminSetupStep(step) {
 }
 .line-planner-header h2 {
     margin: 0 0 4px;
-    font-size: 22px;
+    font-size: calc(22px * var(--admin-font-scale, 1));
     color: #172027;
     letter-spacing: 0;
 }
@@ -11279,57 +10669,22 @@ async function openAdminSetupStep(step) {
     background: #f8fafb;
     border-bottom: 1px solid rgba(25, 33, 38, 0.07);
 }
-.line-planner-steps {
-    display: flex;
-    gap: 8px;
-    padding: 10px 22px;
-    background: #f8fafb;
-    border-bottom: 0;
-}
-.line-planner-steps span {
-    display: inline-flex;
-    align-items: center;
-    min-height: 28px;
-    padding: 0 10px;
-    color: #687179;
-    background: #eef1f4;
-    border: 1px solid rgba(25, 33, 38, 0.06);
-    border-radius: 999px;
-    font-size: 12px;
-    font-weight: 600;
-}
-.line-planner-steps .active {
-    color: #ffffff;
-    background: #1e4f6b;
-    border-color: #1e4f6b;
-}
-.line-planner-layout {
-    position: relative;
-    height: 100%;
-    min-height: calc(100vh - 220px);
-    display: grid;
-    grid-template-columns: minmax(380px, 440px) minmax(0, 1fr);
-    transition: grid-template-columns 0.22s ease;
-    overflow: visible;
-}
-.line-planner-layout.editor-collapsed {
-    grid-template-columns: minmax(0, 1fr);
-}
-.line-planner-layout.editor-collapsed .line-planner-editor {
-    display: none;
-}
-.line-planner-editor {
-    min-width: 0;
-    align-self: stretch;
-    height: 100%;
-    max-height: none;
-    overflow-x: hidden;
-    overflow-y: auto;
-    overscroll-behavior: contain;
-    padding: 16px;
-    background: #f5f7f8;
-    border-right: 1px solid rgba(25, 33, 38, 0.08);
-}
+/* Compact top configuration; the canvas always owns the full width. */
+.line-planner-layout { display: flex; flex-direction: column; min-width: 0; min-height: calc(100vh - 220px); }
+.line-planner-top-controls { min-width: 0; background: #f8fafc; border-bottom: 1px solid #e3e8ef; }
+.line-config-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 10px 16px; }
+.line-config-toolbar label { display: flex; align-items: center; gap: 8px; color: #52687d; font-size: calc(13px * var(--admin-font-scale, 1)); }
+.line-config-toolbar .line-preview-metrics { margin-left: auto; }
+.line-config-toolbar select { min-width: 220px; max-width: min(440px, 60vw); }
+.line-planner-editor { box-sizing: border-box; display: grid; grid-template-columns: minmax(230px, .8fr) minmax(240px, 1fr) minmax(420px, 1.5fr); align-items: start; gap: 12px; min-width: 0; max-height: 250px; overflow: auto; padding: 0 16px 12px; }
+.line-planner-editor .line-editor-panel, .line-planner-editor .line-structure-section { margin: 0; }
+.line-planner-editor .line-structure-editor { grid-template-columns: repeat(2, minmax(190px, 1fr)); gap: 12px; }
+.line-planner-editor .line-selector-list { max-height: 190px; overflow-y: auto; }
+.line-planner-editor .line-layout-row { grid-template-columns: minmax(82px, 1fr) 60px 60px 50px; gap: 6px; }
+.line-planner-editor .line-layout-row .btn { width: 50px; min-width: 50px; }
+
+.line-planner-preview { flex: 1; min-width: 0; }
+@media(max-width: 1500px) { .line-planner-editor { grid-template-columns: repeat(2, minmax(220px, 1fr)); } .line-structure-editor { grid-column: 1 / -1; } }
 /* The embedded host adds a 46px window-chrome strip above the header, so every
    viewport-relative height in this tab has that much less room to work with. */
 .admin-container.unity-embedded .line-planner-tab,
@@ -11339,9 +10694,7 @@ async function openAdminSetupStep(step) {
 .admin-container.unity-embedded .line-planner-layout {
     min-height: calc(100vh - 266px);
 }
-.admin-container.unity-embedded .line-planner-editor {
-    max-height: none;
-}
+.admin-container.unity-embedded .line-planner-editor { max-height: 250px; }
 .line-editor-panel,
 .line-basic-grid,
 .line-structure-section {
@@ -11363,12 +10716,12 @@ async function openAdminSetupStep(step) {
 .line-structure-title strong {
     flex: 0 0 auto;
     color: #172027;
-    font-size: 15px;
+    font-size: calc(15px * var(--admin-font-scale, 1));
 }
 .line-panel-title span {
     min-width: 0;
     color: #77818a;
-    font-size: 12px;
+    font-size: calc(12px * var(--admin-font-scale, 1));
     line-height: 1.45;
     text-align: right;
     overflow-wrap: anywhere;
@@ -11413,11 +10766,11 @@ async function openAdminSetupStep(step) {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    font-size: 14px;
+    font-size: calc(14px * var(--admin-font-scale, 1));
 }
 .line-card-select span {
     color: #77818a;
-    font-size: 12px;
+    font-size: calc(12px * var(--admin-font-scale, 1));
     white-space: nowrap;
 }
 .line-card-status {
@@ -11425,7 +10778,7 @@ async function openAdminSetupStep(step) {
     margin-left: 5px;
     padding: 2px 6px;
     border-radius: 999px;
-    font-size: 10px;
+    font-size: calc(10px * var(--admin-font-scale, 1));
     font-style: normal;
     font-weight: 800;
     vertical-align: 1px;
@@ -11458,7 +10811,7 @@ async function openAdminSetupStep(step) {
     gap: 6px;
     min-width: 0;
     color: #4d5861;
-    font-size: 12px;
+    font-size: calc(12px * var(--admin-font-scale, 1));
     font-weight: 600;
 }
 .line-basic-grid .btn {
@@ -11505,10 +10858,10 @@ async function openAdminSetupStep(step) {
 }
 .line-placement-pending-icon svg { width: 25px; height: 25px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 .line-placement-pending-copy { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 6px; }
-.line-placement-pending-copy strong { color: #6b3500; font-size: 15px; }
-.line-placement-pending-copy small { color: #936222; font-size: 11px; line-height: 1.55; }
-.line-placement-pending-action { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 6px; color: #9a5500; font-size: 12px; font-weight: 800; }
-.line-placement-pending-action b { font-size: 17px; }
+.line-placement-pending-copy strong { color: #6b3500; font-size: calc(15px * var(--admin-font-scale, 1)); }
+.line-placement-pending-copy small { color: #936222; font-size: calc(11px * var(--admin-font-scale, 1)); line-height: 1.55; }
+.line-placement-pending-action { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 6px; color: #9a5500; font-size: calc(12px * var(--admin-font-scale, 1)); font-weight: 800; }
+.line-placement-pending-action b { font-size: calc(17px * var(--admin-font-scale, 1)); }
 .line-structure-title .btn {
     background: #eef1f4;
     color: #245c7a;
@@ -11516,7 +10869,7 @@ async function openAdminSetupStep(step) {
 .line-flow-hint {
     min-width: 0;
     color: #77818a;
-    font-size: 12px;
+    font-size: calc(12px * var(--admin-font-scale, 1));
     line-height: 1.45;
     text-align: right;
     overflow-wrap: anywhere;
@@ -11533,7 +10886,7 @@ async function openAdminSetupStep(step) {
     border: 1px solid rgba(25, 33, 38, 0.10);
     border-radius: 8px;
     cursor: pointer;
-    font-size: 13px;
+    font-size: calc(13px * var(--admin-font-scale, 1));
     font-weight: 700;
 }
 .line-flow-btn:hover {
@@ -11572,58 +10925,8 @@ async function openAdminSetupStep(step) {
     grid-template-rows: auto minmax(0, 1fr);
     background: #e6ebef;
 }
-.line-editor-float-toggle {
-    appearance: none;
-    position: absolute;
-    left: -18px;
-    top: 50%;
-    z-index: 20;
-    width: 36px;
-    height: 48px;
-    padding: 0;
-    transform: translateY(-50%);
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    color: #50616c;
-    background: rgba(255,255,255,.92);
-    border: 1px solid rgba(25, 33, 38, 0.12);
-    border-radius: 10px;
-    box-shadow: 0 8px 22px rgba(38, 50, 58, .14);
-    cursor: pointer;
-    font-size: 24px;
-    line-height: 1;
-}
-.line-editor-float-toggle:hover {
-    color: #1e4f6b;
-    background: #ffffff;
-}
-.line-editor-float-toggle.collapsed {
-    left: 12px;
-}
-.line-preview-toolbar {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-    min-height: 62px;
-    padding: 12px 18px;
-    color: #172027;
-    background: #ffffff;
-    border-bottom: 1px solid rgba(25, 33, 38, 0.08);
-}
-.line-preview-toolbar strong,
-.line-preview-toolbar span {
-    display: block;
-}
-.line-preview-toolbar strong {
-    font-size: 17px;
-}
-.line-preview-toolbar span {
-    color: #6b737a;
-    font-size: 12px;
-}
 .line-preview-metrics {
+    font-size: calc(12px * var(--admin-font-scale, 1));
     display: flex;
     flex-wrap: wrap;
     justify-content: flex-end;
@@ -11638,7 +10941,7 @@ async function openAdminSetupStep(step) {
     border-radius: 999px;
     font-weight: 600;
 }
-.line-selection-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 18px 0; font-size: 12px; color: #526574; }
+.line-selection-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 18px 0; font-size: calc(12px * var(--admin-font-scale, 1)); color: #526574; }
 .line-selection-toolbar button { padding: 5px 10px; min-height: 30px; border: 1px solid #cbd9e5; border-radius: 6px; background: #fff; color: #245f8b; cursor: pointer; }
 .line-selection-toolbar button:disabled { opacity: .45; cursor: not-allowed; }
 .line-selection-toolbar label { display: inline-flex; align-items: center; gap: 5px; }
@@ -11698,7 +11001,7 @@ async function openAdminSetupStep(step) {
     background: rgba(255,255,255,.82);
     border: 1px solid rgba(25, 33, 38, 0.08);
     border-radius: 999px;
-    font-size: 12px;
+    font-size: calc(12px * var(--admin-font-scale, 1));
     font-weight: 600;
 }
 .line-preview-legend i {
@@ -11714,7 +11017,7 @@ async function openAdminSetupStep(step) {
     position: absolute;
     z-index: 4;
     color: #66727c;
-    font-size: 12px;
+    font-size: calc(12px * var(--admin-font-scale, 1));
     font-weight: 700;
     letter-spacing: 0;
 }
@@ -11761,7 +11064,7 @@ async function openAdminSetupStep(step) {
     align-items: flex-start;
     padding: 8px 12px;
     color: #26323a;
-    font-size: 12px;
+    font-size: calc(12px * var(--admin-font-scale, 1));
     font-weight: 700;
     white-space: nowrap;
     border-radius: 8px;
@@ -11943,7 +11246,7 @@ async function openAdminSetupStep(step) {
     border: 0;
     border-radius: 6px;
     cursor: pointer;
-    font-size: 11px;
+    font-size: calc(11px * var(--admin-font-scale, 1));
     font-weight: 700;
     white-space: nowrap;
 }
@@ -11995,11 +11298,11 @@ async function openAdminSetupStep(step) {
     padding-left: 10px;
 }
 .line-map-device strong {
-    font-size: 12px;
+    font-size: calc(12px * var(--admin-font-scale, 1));
 }
 .line-map-device small {
     color: rgba(255,255,255,.72);
-    font-size: 11px;
+    font-size: calc(11px * var(--admin-font-scale, 1));
 }
 .line-map-station-bubble {
     position: absolute;
@@ -12050,20 +11353,20 @@ async function openAdminSetupStep(step) {
     border: 0;
     cursor: pointer;
     font: inherit;
-    font-size: 11px;
+    font-size: calc(11px * var(--admin-font-scale, 1));
     font-weight: 800;
 }
 .line-map-station-trigger small {
     padding-left: 0;
     color: #6c8794;
-    font-size: 9px;
+    font-size: calc(9px * var(--admin-font-scale, 1));
     font-weight: 600;
 }
 .line-map-station-label {
     display: inline-block;
     margin-right: 4px;
     color: #5e7885;
-    font-size: 10px;
+    font-size: calc(10px * var(--admin-font-scale, 1));
     font-weight: 700;
 }
 .line-map-station-input {
@@ -12075,7 +11378,7 @@ async function openAdminSetupStep(step) {
     border: 1px solid #8ab6c9;
     border-radius: 5px;
     font: inherit;
-    font-size: 12px;
+    font-size: calc(12px * var(--admin-font-scale, 1));
     font-weight: 800;
     text-align: center;
 }
@@ -12090,7 +11393,7 @@ async function openAdminSetupStep(step) {
     border-radius: 5px;
     cursor: pointer;
     font: inherit;
-    font-size: 12px;
+    font-size: calc(12px * var(--admin-font-scale, 1));
     font-weight: 800;
 }
 .line-map-station-action.cancel {
@@ -12113,7 +11416,7 @@ async function openAdminSetupStep(step) {
     transform: translateY(-3px);
     transition: opacity 0.16s ease, transform 0.16s ease, background 0.16s ease;
     cursor: pointer;
-    font-size: 11px;
+    font-size: calc(11px * var(--admin-font-scale, 1));
     font-weight: 700;
 }
 .line-map-device:hover .line-map-remove,
@@ -12167,7 +11470,7 @@ async function openAdminSetupStep(step) {
     border: 1px solid rgba(25, 33, 38, 0.10);
     border-radius: 999px;
     box-shadow: 0 12px 28px rgba(38, 50, 58, .20);
-    font-size: 13px;
+    font-size: calc(13px * var(--admin-font-scale, 1));
     font-weight: 700;
     cursor: pointer;
 }
@@ -12218,11 +11521,11 @@ async function openAdminSetupStep(step) {
 }
 .line-device-pool-title strong {
     color: #172027;
-    font-size: 13px;
+    font-size: calc(13px * var(--admin-font-scale, 1));
 }
 .line-device-pool-title span {
     color: #6b737a;
-    font-size: 11px;
+    font-size: calc(11px * var(--admin-font-scale, 1));
     white-space: nowrap;
 }
 .line-device-pool-chip {
@@ -12250,7 +11553,7 @@ async function openAdminSetupStep(step) {
     border: 1px solid rgba(25, 33, 38, 0.10);
     border-radius: 999px;
     cursor: pointer;
-    font-size: 12px;
+    font-size: calc(12px * var(--admin-font-scale, 1));
     font-weight: 700;
 }
 .line-device-pool-close:hover {
@@ -12273,12 +11576,12 @@ async function openAdminSetupStep(step) {
     white-space: nowrap;
 }
 .line-device-pool-chip strong {
-    font-size: 12px;
+    font-size: calc(12px * var(--admin-font-scale, 1));
 }
 .line-device-pool-chip span {
     color: currentColor;
     opacity: .72;
-    font-size: 11px;
+    font-size: calc(11px * var(--admin-font-scale, 1));
 }
 .line-preview-empty-state {
     position: absolute;
@@ -12290,7 +11593,7 @@ async function openAdminSetupStep(step) {
     background: rgba(255,255,255,.82);
     border: 1px solid rgba(25, 33, 38, 0.08);
     border-radius: 8px;
-    font-size: 12px;
+    font-size: calc(12px * var(--admin-font-scale, 1));
     font-weight: 600;
 }
 
@@ -12326,8 +11629,8 @@ async function openAdminSetupStep(step) {
     box-shadow: 0 4px 16px rgba(0, 0, 0, 0.025);
 }
 
-.composer-section h2 { font-size: 22px; }
-.composer-section h3 { margin: 0 0 12px; font-size: 15px; color: #1d1d1f; }
+.composer-section h2 { font-size: calc(22px * var(--admin-font-scale, 1)); }
+.composer-section h3 { margin: 0 0 12px; font-size: calc(15px * var(--admin-font-scale, 1)); color: #1d1d1f; }
 .composer-section .desc { margin-bottom: 16px; line-height: 1.5; }
 .native-live-row {
     display: flex;
@@ -12339,7 +11642,7 @@ async function openAdminSetupStep(step) {
 .native-live-help {
     display: block;
     color: #6e6e73;
-    font-size: 11px;
+    font-size: calc(11px * var(--admin-font-scale, 1));
     line-height: 1.5;
 }
 
@@ -12358,14 +11661,14 @@ async function openAdminSetupStep(step) {
 .composer-stat-grid span {
     display: block;
     color: #86868b;
-    font-size: 12px;
+    font-size: calc(12px * var(--admin-font-scale, 1));
 }
 
 .composer-stat-grid strong {
     display: block;
     margin-top: 4px;
     color: #1d1d1f;
-    font-size: 18px;
+    font-size: calc(18px * var(--admin-font-scale, 1));
 }
 
 .composer-select { width: 100%; margin-bottom: 12px; }
@@ -12417,7 +11720,7 @@ async function openAdminSetupStep(step) {
 .line-pill em, .device-pill span {
     color: #86868b;
     font-style: normal;
-    font-size: 12px;
+    font-size: calc(12px * var(--admin-font-scale, 1));
 }
 
 .device-pill {
@@ -12442,7 +11745,7 @@ async function openAdminSetupStep(step) {
     color: #ffffff;
     background: #0071e3;
     border-radius: 50%;
-    font-size: 14px;
+    font-size: calc(14px * var(--admin-font-scale, 1));
     font-style: normal;
     line-height: 1;
     vertical-align: -2px;
@@ -12466,7 +11769,7 @@ async function openAdminSetupStep(step) {
     gap: 7px;
     min-width: 0;
     color: #515154;
-    font-size: 13px;
+    font-size: calc(13px * var(--admin-font-scale, 1));
     font-weight: 500;
 }
 
@@ -12507,13 +11810,13 @@ async function openAdminSetupStep(step) {
     justify-content: space-between;
     gap: 10px;
     color: #515154;
-    font-size: 13px;
+    font-size: calc(13px * var(--admin-font-scale, 1));
     font-weight: 600;
 }
 
 .composer-control-header strong {
     color: #1d1d1f;
-    font-size: 16px;
+    font-size: calc(16px * var(--admin-font-scale, 1));
 }
 
 .composer-rotation-presets,
@@ -12547,13 +11850,13 @@ async function openAdminSetupStep(step) {
 .composer-mirror-control strong {
     display: block;
     color: #1d1d1f;
-    font-size: 13px;
+    font-size: calc(13px * var(--admin-font-scale, 1));
 }
 .composer-mirror-control span {
     display: block;
     margin-top: 3px;
     color: #86868b;
-    font-size: 12px;
+    font-size: calc(12px * var(--admin-font-scale, 1));
     line-height: 1.35;
 }
 .composer-mirror-control .btn.active {
@@ -12621,7 +11924,7 @@ async function openAdminSetupStep(step) {
 .composer-device-layout-float-header span {
     display: block;
     color: #86868b;
-    font-size: 11px;
+    font-size: calc(11px * var(--admin-font-scale, 1));
 }
 .composer-device-layout-float-header strong {
     display: block;
@@ -12629,7 +11932,7 @@ async function openAdminSetupStep(step) {
     margin-top: 1px;
     overflow: hidden;
     color: #1d1d1f;
-    font-size: 14px;
+    font-size: calc(14px * var(--admin-font-scale, 1));
     white-space: nowrap;
     text-overflow: ellipsis;
 }
@@ -12644,7 +11947,7 @@ async function openAdminSetupStep(step) {
     border: 0;
     border-radius: 50%;
     cursor: pointer;
-    font-size: 20px;
+    font-size: calc(20px * var(--admin-font-scale, 1));
     line-height: 1;
 }
 .composer-device-layout-float-header button:hover { color: #ffffff; background: #ff453a; }
@@ -12672,12 +11975,12 @@ async function openAdminSetupStep(step) {
 .composer-preview-toolbar strong {
     display: block;
     color: #1d1d1f;
-    font-size: 15px;
+    font-size: calc(15px * var(--admin-font-scale, 1));
 }
 
 .composer-preview-toolbar span {
     color: #86868b;
-    font-size: 12px;
+    font-size: calc(12px * var(--admin-font-scale, 1));
 }
 
 .preview-mode-buttons {
@@ -12750,7 +12053,7 @@ async function openAdminSetupStep(step) {
 
 .composer-preview-error > strong {
     color: #ffd3cc;
-    font-size: 14px;
+    font-size: calc(14px * var(--admin-font-scale, 1));
 }
 
 .composer-preview-error-item {
@@ -12762,7 +12065,7 @@ async function openAdminSetupStep(step) {
 
 .composer-preview-error-item span {
     color: #fff5f2;
-    font-size: 12px;
+    font-size: calc(12px * var(--admin-font-scale, 1));
     font-weight: 700;
 }
 
@@ -12770,7 +12073,7 @@ async function openAdminSetupStep(step) {
 .composer-preview-error-item code,
 .composer-preview-error > em {
     color: #ffdcd5;
-    font-size: 11px;
+    font-size: calc(11px * var(--admin-font-scale, 1));
     line-height: 1.4;
     overflow-wrap: anywhere;
 }
@@ -12788,7 +12091,7 @@ async function openAdminSetupStep(step) {
     color: #b7bebc;
     background: #171b1d;
     border-top: 1px solid rgba(255, 255, 255, 0.08);
-    font-size: 12px;
+    font-size: calc(12px * var(--admin-font-scale, 1));
 }
 
 .composer-preview-stage :deep(.furnace-label),
@@ -12798,7 +12101,7 @@ async function openAdminSetupStep(step) {
     border: 1px solid rgba(242, 184, 91, .35);
     box-shadow: 0 8px 18px rgba(0,0,0,.32);
     pointer-events: none;
-    font-size: 12px;
+    font-size: calc(12px * var(--admin-font-scale, 1));
 }
 
 .composer-preview-stage :deep(.furnace-label) {
@@ -12816,7 +12119,7 @@ async function openAdminSetupStep(step) {
 
 .form-row { display: flex; gap: 12px; align-items: center; margin-bottom: 28px; }
 .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin: 24px 0; }
-.form-grid label { display: flex; flex-direction: column; gap: 8px; font-size: 13px; color: #515154; font-weight: 500; }
+.form-grid label { display: flex; flex-direction: column; gap: 8px; font-size: calc(13px * var(--admin-font-scale, 1)); color: #515154; font-weight: 500; }
 .wide-form-section { grid-column: 1 / -1; }
 .form-section {
     border: 1px solid rgba(0, 0, 0, 0.08);
@@ -12831,8 +12134,8 @@ async function openAdminSetupStep(step) {
     align-items: baseline;
     margin-bottom: 14px;
 }
-.form-section-header strong { color: #1d1d1f; font-size: 14px; }
-.form-section-header span { color: #86868b; font-size: 12px; line-height: 1.5; }
+.form-section-header strong { color: #1d1d1f; font-size: calc(14px * var(--admin-font-scale, 1)); }
+.form-section-header span { color: #86868b; font-size: calc(12px * var(--admin-font-scale, 1)); line-height: 1.5; }
 .inline-check {
     display: inline-flex !important;
     flex-direction: row !important;
@@ -12847,7 +12150,7 @@ async function openAdminSetupStep(step) {
 
 .settings-form { max-width: 700px; display: flex; flex-direction: column; gap: 28px; }
 .settings-form-wide { max-width: 1080px; }
-.settings-form label { display: flex; flex-direction: column; gap: 8px; font-size: 13px; color: #515154; font-weight: 500; }
+.settings-form label { display: flex; flex-direction: column; gap: 8px; font-size: calc(13px * var(--admin-font-scale, 1)); color: #515154; font-weight: 500; }
 
 /* 按钮 */
 
@@ -12856,10 +12159,10 @@ button:enabled:active {
 }
 
 /* 表格 */
-.data-table { width: 100%; border-collapse: collapse; margin-bottom: 28px; font-size: 14px; }
+.data-table { width: 100%; border-collapse: collapse; margin-bottom: 28px; font-size: calc(14px * var(--admin-font-scale, 1)); }
 .data-table th {
     text-align: left; padding: 14px 18px; background: #f5f5f7;
-    border-bottom: 1px solid rgba(0, 0, 0, 0.05); color: #515154; font-weight: 600; font-size: 13px;
+    border-bottom: 1px solid rgba(0, 0, 0, 0.05); color: #515154; font-weight: 600; font-size: calc(13px * var(--admin-font-scale, 1));
 }
 .data-table td {
     padding: 16px 18px; border-bottom: 1px solid rgba(0, 0, 0, 0.04); color: #1d1d1f;
@@ -12872,7 +12175,7 @@ button:enabled:active {
 .data-table tbody tr:hover { background: rgba(0, 0, 0, 0.015); }
 .data-table code {
     color: #b01a68; background: rgba(176, 26, 104, 0.06); border: none;
-    padding: 2px 8px; border-radius: 4px; font-family: SFMono-Regular, Consolas, Monaco, monospace; font-size: 12px;
+    padding: 2px 8px; border-radius: 4px; font-family: SFMono-Regular, Consolas, Monaco, monospace; font-size: calc(12px * var(--admin-font-scale, 1));
 }
 
 .table-scroll {
@@ -12963,7 +12266,7 @@ button:enabled:active {
     background: #f8f9fa;
     border: 1px solid #e5e5ea;
     border-radius: 10px;
-    font-size: 13px;
+    font-size: calc(13px * var(--admin-font-scale, 1));
     color: #48484a;
 }
 .pagination-info {
@@ -12986,7 +12289,7 @@ button:enabled:active {
     width: 110px;
     height: 30px;
     padding: 2px 8px;
-    font-size: 13px;
+    font-size: calc(13px * var(--admin-font-scale, 1));
 }
 .pagination-nav-btns {
     display: flex;
@@ -13000,7 +12303,7 @@ button:enabled:active {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    font-size: 13px;
+    font-size: calc(13px * var(--admin-font-scale, 1));
     border-radius: 6px;
     border: 1px solid #d1d1d6;
     background: #ffffff;
@@ -13037,7 +12340,7 @@ button:enabled:active {
     margin-bottom: 16px;
 }
 .voice-modal-header h3 { margin-bottom: 6px; }
-.voice-modal-header p { margin: 0; color: #6e6e73; font-size: 13px; }
+.voice-modal-header p { margin: 0; color: #6e6e73; font-size: calc(13px * var(--admin-font-scale, 1)); }
 .voice-config-help {
     padding: 12px 14px;
     margin-bottom: 16px;
@@ -13045,7 +12348,7 @@ button:enabled:active {
     background: #f5f7fa;
     border: 1px solid rgba(0, 113, 227, 0.12);
     border-radius: 10px;
-    font-size: 13px;
+    font-size: calc(13px * var(--admin-font-scale, 1));
     line-height: 1.7;
 }
 .voice-config-help code { color: #7d2358; }
@@ -13143,7 +12446,7 @@ button:enabled:active {
     display: grid;
     gap: 6px;
     color: #515154;
-    font-size: 12px;
+    font-size: calc(12px * var(--admin-font-scale, 1));
 }
 .voice-startup-check {
     grid-column: span 2;
@@ -13173,7 +12476,7 @@ button:enabled:active {
     display: grid;
     gap: 5px;
     color: #6e6e73;
-    font-size: 12px;
+    font-size: calc(12px * var(--admin-font-scale, 1));
 }
 .voice-file-path code {
     max-width: 520px;
@@ -13184,9 +12487,9 @@ button:enabled:active {
 }
 .voice-rule-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
 .voice-modal-actions { justify-content: space-between; }
-.muted-cell { color: #86868b; font-size: 12px; }
+.muted-cell { color: #86868b; font-size: calc(12px * var(--admin-font-scale, 1)); }
 .points-subpage-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; border-bottom: 1px solid #dce4ee; }
-.points-subpage-tabs button { padding: 10px 16px; border: 0; border-bottom: 3px solid transparent; background: transparent; color: #6e7d90; font: inherit; font-size: 20px; font-weight: 650; cursor: pointer; }
+.points-subpage-tabs button { padding: 10px 16px; border: 0; border-bottom: 3px solid transparent; background: transparent; color: #6e7d90; font: inherit; font-size: calc(20px * var(--admin-font-scale, 1)); font-weight: 650; cursor: pointer; }
 .points-subpage-tabs button.active { color: #2459a2; border-bottom-color: #356bc4; background: #f1f6fe; }
 .points-subpage-tabs button:focus-visible { outline: 2px solid #356bc4; outline-offset: -2px; border-radius: 6px 6px 0 0; }
 .points-filter-toolbar { margin-bottom: 20px; align-items: flex-end; flex-wrap: wrap; gap: 12px; }
@@ -13212,8 +12515,8 @@ button:enabled:active {
     text-align: left;
     margin-bottom: 14px;
 }
-.alarm-config-header h3 { margin: 0 0 6px; font-size: 16px; color: #1d1d1f; }
-.alarm-config-header p { margin: 0; color: #6e6e73; font-size: 13px; line-height: 1.6; }
+.alarm-config-header h3 { margin: 0 0 6px; font-size: calc(16px * var(--admin-font-scale, 1)); color: #1d1d1f; }
+.alarm-config-header p { margin: 0; color: #6e6e73; font-size: calc(13px * var(--admin-font-scale, 1)); line-height: 1.6; }
 .alarm-config-header-actions { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 9px; }
 .alarm-config-count {
     white-space: nowrap;
@@ -13221,7 +12524,7 @@ button:enabled:active {
     border-radius: 999px;
     background: #f5f5f7;
     color: #515154;
-    font-size: 12px;
+    font-size: calc(12px * var(--admin-font-scale, 1));
 }
 .collapse-chevron { width: 18px; height: 18px; fill: none; stroke: #6e6e73; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; transition: transform 180ms ease; }
 .section-collapse-enter-active,
@@ -13241,7 +12544,7 @@ button:enabled:active {
     color: #6e6e73;
     display: flex;
     justify-content: space-between;
-    font-size: 13px;
+    font-size: calc(13px * var(--admin-font-scale, 1));
 }
 .alarm-record-status > div.configured {
     background: #eef7f1;
@@ -13270,7 +12573,7 @@ button:enabled:active {
     border-radius: 8px;
     background: #f5f5f7;
     color: #515154;
-    font-size: 12px;
+    font-size: calc(12px * var(--admin-font-scale, 1));
     line-height: 1.7;
     overflow: auto;
 }
@@ -13287,7 +12590,7 @@ button:enabled:active {
     min-height: 38px;
     padding: 0 12px;
     color: #515154;
-    font-size: 13px;
+    font-size: calc(13px * var(--admin-font-scale, 1));
     border: 1px solid rgba(0, 0, 0, 0.08);
     border-radius: 8px;
     background: #fbfbfd;
@@ -13310,14 +12613,14 @@ button:enabled:active {
 .point-monitor-status strong {
     min-width: 0;
     color: #1d1d1f;
-    font-size: 13px;
+    font-size: calc(13px * var(--admin-font-scale, 1));
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
 }
 .status-label {
     color: #86868b;
-    font-size: 12px;
+    font-size: calc(12px * var(--admin-font-scale, 1));
 }
 .inline-error {
     margin-bottom: 14px;
@@ -13326,7 +12629,7 @@ button:enabled:active {
     background: rgba(255, 59, 48, 0.08);
     border: 1px solid rgba(255, 59, 48, 0.16);
     border-radius: 8px;
-    font-size: 13px;
+    font-size: calc(13px * var(--admin-font-scale, 1));
     white-space: pre-line;
 }
 .realtime-points-table { min-width: 1180px; margin-bottom: 0; }
@@ -13343,7 +12646,7 @@ button:enabled:active {
     min-height: 24px;
     padding: 3px 8px;
     border-radius: 999px;
-    font-size: 12px;
+    font-size: calc(12px * var(--admin-font-scale, 1));
     font-weight: 700;
     border: 1px solid rgba(0, 0, 0, 0.06);
 }
@@ -13358,14 +12661,14 @@ button:enabled:active {
 }
 .model-name-cell strong {
     color: #1d1d1f;
-    font-size: 13px;
+    font-size: calc(13px * var(--admin-font-scale, 1));
     font-weight: 600;
     line-height: 1.4;
 }
 .model-name-cell small {
     color: #86868b;
     font-family: SFMono-Regular, Consolas, Monaco, monospace;
-    font-size: 11px;
+    font-size: calc(11px * var(--admin-font-scale, 1));
     line-height: 1.4;
 }
 .plc-status-pill {
@@ -13376,7 +12679,7 @@ button:enabled:active {
     min-height: 24px;
     padding: 3px 8px;
     border-radius: 999px;
-    font-size: 12px;
+    font-size: calc(12px * var(--admin-font-scale, 1));
     font-weight: 600;
     color: #515154;
     background: #e8e8ed;
@@ -13386,7 +12689,7 @@ button:enabled:active {
     display: block;
     margin-top: 6px;
     color: #86868b;
-    font-size: 12px;
+    font-size: calc(12px * var(--admin-font-scale, 1));
     line-height: 1.35;
     max-width: 260px;
 }
@@ -13395,7 +12698,7 @@ button:enabled:active {
     gap: 2px;
     margin-top: 6px;
     color: #86868b;
-    font-size: 12px;
+    font-size: calc(12px * var(--admin-font-scale, 1));
     line-height: 1.35;
 }
 .plc-connected { color: #1b6b3a; background: rgba(52, 199, 89, 0.12); border-color: rgba(52, 199, 89, 0.24); }
@@ -13451,13 +12754,13 @@ button:enabled:active {
 }
 .widget-live-preview-header strong {
     display: block;
-    font-size: 14px;
+    font-size: calc(14px * var(--admin-font-scale, 1));
 }
 .widget-live-preview-header span,
 .widget-live-preview-header small,
 .widget-live-preview-footer span {
     color: #9eabb5;
-    font-size: 12px;
+    font-size: calc(12px * var(--admin-font-scale, 1));
 }
 .widget-live-preview-footer {
     border-top: 1px solid rgba(255,255,255,0.08);
@@ -13528,16 +12831,16 @@ button:enabled:active {
     text-overflow: ellipsis;
     white-space: nowrap;
 }
-.widget-preview-placeholder strong { font-size: 13px; }
-.widget-preview-placeholder span { color: #9fd3f2; font-size: 12px; }
-.widget-preview-placeholder small { color: #9eabb5; font-size: 11px; }
+.widget-preview-placeholder strong { font-size: calc(13px * var(--admin-font-scale, 1)); }
+.widget-preview-placeholder span { color: #9fd3f2; font-size: calc(12px * var(--admin-font-scale, 1)); }
+.widget-preview-placeholder small { color: #9eabb5; font-size: calc(11px * var(--admin-font-scale, 1)); }
 .widget-preview-empty {
     position: absolute;
     inset: 0;
     display: grid;
     place-items: center;
     color: #9eabb5;
-    font-size: 13px;
+    font-size: calc(13px * var(--admin-font-scale, 1));
 }
 .widget-preview-slot :deep(.widget-shell) {
     width: 100%;
@@ -13558,7 +12861,7 @@ button:enabled:active {
     gap: 6px;
     margin-bottom: 8px;
     color: #e8ecef;
-    font-size: 12px;
+    font-size: calc(12px * var(--admin-font-scale, 1));
     font-weight: 700;
 }
 .widget-preview-slot :deep(.widget-title i) {
@@ -13589,7 +12892,7 @@ button:enabled:active {
     gap: 8px;
     padding: 4px 0;
     color: #aeb7bf;
-    font-size: 11px;
+    font-size: calc(11px * var(--admin-font-scale, 1));
 }
 .widget-preview-slot :deep(.metric-row strong) {
     color: #fff;
@@ -13606,7 +12909,7 @@ button:enabled:active {
     align-items: center;
     min-height: 26px;
     color: #cbd5dc;
-    font-size: 11px;
+    font-size: calc(11px * var(--admin-font-scale, 1));
 }
 .widget-preview-slot :deep(.alarm-txt) {
     overflow: hidden;
@@ -13623,7 +12926,7 @@ button:enabled:active {
     background: rgba(255,255,255,.08);
 }
 .widget-preview-slot :deep(.tag) {
-    font-size: 10px;
+    font-size: calc(10px * var(--admin-font-scale, 1));
 }
 .widget-preview-slot :deep(.critical) { color: #ff8a80; }
 .widget-preview-slot :deep(.warning) { color: #ffd180; }
@@ -13643,7 +12946,7 @@ button:enabled:active {
 .widget-preview-slot :deep(.marquee-item) {
     margin-right: 32px;
     color: #d2d8dc;
-    font-size: 12px;
+    font-size: calc(12px * var(--admin-font-scale, 1));
 }
 .widget-preview-slot :deep(.text-widget-body) {
     flex: 1;
@@ -13651,7 +12954,7 @@ button:enabled:active {
     align-content: center;
     gap: 6px;
     color: #e8ecef;
-    font-size: 14px;
+    font-size: calc(14px * var(--admin-font-scale, 1));
     line-height: 1.45;
 }
 .widget-preview-slot :deep(.text-widget-body p) {
@@ -13685,11 +12988,11 @@ button:enabled:active {
     margin-bottom: 14px;
 }
 .device-card-header strong {
-    font-size: 16px;
+    font-size: calc(16px * var(--admin-font-scale, 1));
 }
 .device-card-header span {
     color: #9fd3f2;
-    font-size: 12px;
+    font-size: calc(12px * var(--admin-font-scale, 1));
 }
 .diagnostic-preview-grid {
     display: grid;
@@ -13707,7 +13010,7 @@ button:enabled:active {
     display: block;
     margin-bottom: 8px;
     color: #fff;
-    font-size: 12px;
+    font-size: calc(12px * var(--admin-font-scale, 1));
 }
 .diagnostic-preview-row {
     display: flex;
@@ -13715,7 +13018,7 @@ button:enabled:active {
     gap: 10px;
     padding: 3px 0;
     color: #aeb7bf;
-    font-size: 11px;
+    font-size: calc(11px * var(--admin-font-scale, 1));
 }
 .diagnostic-preview-row b {
     color: #f6fbff;
@@ -13756,7 +13059,7 @@ button:enabled:active {
 }
 .mock-device-label span {
     color: var(--device-label-text-color, #b7c4cc);
-    font-size: 12px;
+    font-size: calc(12px * var(--admin-font-scale, 1));
 }
 .mock-device-label span::first-letter {
     color: var(--device-label-value-color, #fff);
@@ -13786,7 +13089,7 @@ button:enabled:active {
 }
 .mock-line-card span {
     color: #aeb7bf;
-    font-size: 12px;
+    font-size: calc(12px * var(--admin-font-scale, 1));
 }
 @keyframes marqueeRoll { from { transform: translateX(0); } to { transform: translateX(-50%); } }
 .platform-table { min-width: 1920px; }
@@ -13829,7 +13132,7 @@ button:enabled:active {
     margin-bottom: 8px;
 }
 .widget-json {
-    width: 260px; height: 72px; font-family: SFMono-Regular, Consolas, Monaco, monospace; font-size: 12px;
+    width: 260px; height: 72px; font-family: SFMono-Regular, Consolas, Monaco, monospace; font-size: calc(12px * var(--admin-font-scale, 1));
     resize: vertical; border-radius: 6px; background: #f5f5f7; border: 1px solid rgba(0,0,0,0.08);
 }
 .widget-json-large {
@@ -13844,7 +13147,7 @@ button:enabled:active {
 }
 
 .device-group { margin-bottom: 44px; }
-.group-title { color: #1d1d1f; font-size: 17px; margin-bottom: 18px; font-weight: 600; padding-left: 12px; border-left: 4px solid #0071e3; }
+.group-title { color: #1d1d1f; font-size: calc(17px * var(--admin-font-scale, 1)); margin-bottom: 18px; font-weight: 600; padding-left: 12px; border-left: 4px solid #0071e3; }
 
 /* 弹窗 */
 .modal-overlay {
@@ -13854,7 +13157,7 @@ button:enabled:active {
 }
 .device-modal-box .device-editor-header { position: sticky; top: -32px; z-index: 2; margin: -32px -32px 24px; padding: 24px 50px 16px 32px; background: #fff; border-radius: 20px 20px 0 0; }
 .device-modal-box .device-editor-header h3 { margin: 0; }
-.device-editor-close { position: absolute; top: 8px; right: 8px; display: grid; place-items: center; width: 30px; height: 30px; padding: 0; border: 0; border-radius: 4px; background: transparent; box-shadow: none; color: #68778c; font-size: 20px; line-height: 1; cursor: pointer; }
+.device-editor-close { position: absolute; top: 8px; right: 8px; display: grid; place-items: center; width: 30px; height: 30px; padding: 0; border: 0; border-radius: 4px; background: transparent; box-shadow: none; color: #68778c; font-size: calc(20px * var(--admin-font-scale, 1)); line-height: 1; cursor: pointer; }
 .device-editor-close:focus-visible { outline: 2px solid #386dca; outline-offset: 1px; }
 .device-editor-close:disabled { opacity: .5; cursor: wait; }
 .modal-box {
@@ -13897,7 +13200,7 @@ button:enabled:active {
     opacity: 0;
     transform: translateY(18px) scale(0.96);
 }
-.modal-box h3 { color: #1d1d1f; margin: 0 0 24px 0; font-size: 20px; font-weight: 600; }
+.modal-box h3 { color: #1d1d1f; margin: 0 0 24px 0; font-size: calc(20px * var(--admin-font-scale, 1)); font-weight: 600; }
 .modal-actions { display: flex; gap: 12px; justify-content: flex-end; margin-top: 32px; border-top: 1px solid rgba(0, 0, 0, 0.08); padding-top: 20px; }
 .device-form-state {
     min-height: 260px;
@@ -13979,13 +13282,13 @@ button:enabled:active {
 .app-dialog-body h3 {
     margin: 0 0 8px;
     color: #1d1d1f;
-    font-size: 17px;
+    font-size: calc(17px * var(--admin-font-scale, 1));
     font-weight: 700;
 }
 .app-dialog-body p {
     margin: 0;
     color: #515154;
-    font-size: 14px;
+    font-size: calc(14px * var(--admin-font-scale, 1));
     line-height: 1.55;
     white-space: pre-line;
 }
@@ -14006,17 +13309,17 @@ button:enabled:active {
     border: 1px solid #e7e7ea;
     border-radius: 9px;
 }
-.app-dialog-details span { color: #6e6e73; font-size: 12px; }
-.app-dialog-details strong { color: #1d1d1f; font-size: 13px; white-space: nowrap; }
+.app-dialog-details span { color: #6e6e73; font-size: calc(12px * var(--admin-font-scale, 1)); }
+.app-dialog-details strong { color: #1d1d1f; font-size: calc(13px * var(--admin-font-scale, 1)); white-space: nowrap; }
 .app-dialog-verification {
     display: grid;
     gap: 7px;
     margin-top: 16px;
     color: #515154;
-    font-size: 12px;
+    font-size: calc(12px * var(--admin-font-scale, 1));
 }
 .app-dialog-verification .input { width: 100%; }
-.app-dialog-verification small { color: #86868b; font-size: 11px; }
+.app-dialog-verification small { color: #86868b; font-size: calc(11px * var(--admin-font-scale, 1)); }
 .app-dialog-verification small strong { color: #1d1d1f; user-select: all; }
 .dialog-danger .app-dialog-actions .btn-primary { border-color: #d92d20; background: linear-gradient(135deg, #ef6a5b 0%, #d92d20 100%); }
 .dialog-danger .app-dialog-actions .btn-primary:disabled { border-color: #d9d9dd; background: #d9d9dd; }
@@ -14045,27 +13348,28 @@ button:enabled:active {
 .model-library-main {
     min-width: 0;
 }
+.model-step-nav-shell .secondary-page-nav { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .model-step-nav-shell .secondary-page-nav-item:disabled { color: #a1a1a6; background: rgba(248, 248, 250, .72); border-color: rgba(0, 0, 0, .035); box-shadow: none; cursor: not-allowed; opacity: .62; transform: none; }
 .model-step-nav-shell .secondary-page-nav-item:disabled:hover { color: #a1a1a6; background: rgba(248, 248, 250, .72); border-color: rgba(0, 0, 0, .035); box-shadow: none; transform: none; }
 .model-library-step-panel { animation: secondary-page-in 180ms cubic-bezier(.22, 1, .36, 1); }
 .model-step-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; margin-bottom: 16px; padding-bottom: 14px; border-bottom: 1px solid rgba(0, 0, 0, .07); }
-.model-step-heading h3 { margin: 0; color: #1d1d1f; font-size: 17px; }
-.model-step-heading p { margin: 5px 0 0; color: #6e6e73; font-size: 12px; line-height: 1.55; }
-.model-step-heading > span { flex: 0 0 auto; padding: 5px 9px; color: #6e6e73; background: #f2f2f4; border-radius: 999px; font-size: 10px; }
+.model-step-heading h3 { margin: 0; color: #1d1d1f; font-size: calc(17px * var(--admin-font-scale, 1)); }
+.model-step-heading p { margin: 5px 0 0; color: #6e6e73; font-size: calc(12px * var(--admin-font-scale, 1)); line-height: 1.55; }
+.model-step-heading > span { flex: 0 0 auto; padding: 5px 9px; color: #6e6e73; background: #f2f2f4; border-radius: 999px; font-size: calc(10px * var(--admin-font-scale, 1)); }
 .model-asset-heading-actions { display: flex; align-items: center; justify-content: flex-end; gap: 12px; flex-wrap: wrap; }
-.model-asset-heading-actions > span { color: #7b879a; font-size: 11px; }
+.model-asset-heading-actions > span { color: #7b879a; font-size: calc(11px * var(--admin-font-scale, 1)); }
 .model-pending-import { margin-bottom: 18px; }
 .model-pending-import > .model-file-chip { display: inline-block; margin-bottom: 12px; }
-.designer-scene-info { margin: 0 0 10px; color: #748094; font-size: 12px; }
+.designer-scene-info { margin: 0 0 10px; color: #748094; font-size: calc(12px * var(--admin-font-scale, 1)); }
 .designer-scene-info summary { width: max-content; margin-left: auto; cursor: pointer; }
 .designer-scene-info > div { display: flex; align-items: end; justify-content: flex-end; gap: 10px; padding: 10px 0; }
 .designer-scene-info label { display: grid; gap: 5px; }
 .model-selection-actions { display: flex; align-items: center; justify-content: flex-end; gap: 9px; margin-top: 14px; padding: 12px; background: #f7f7f9; border: 1px solid rgba(0, 0, 0, .055); border-radius: 10px; }
 .model-selection-actions > div { display: flex; min-width: 0; margin-right: auto; flex-direction: column; gap: 2px; }
-.model-selection-actions span { color: #86868b; font-size: 10px; }
-.model-selection-actions strong { overflow: hidden; color: #1d1d1f; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
-.model-environment-note { color: #5e6f86; font-size: 11px; line-height: 1.45; }
-.model-environment-badge { flex: 0 0 auto; padding: 6px 10px; color: #155e75; background: #e0f2fe; border: 1px solid #bae6fd; border-radius: 999px; font-size: 11px; font-weight: 600; }
+.model-selection-actions span { color: #86868b; font-size: calc(10px * var(--admin-font-scale, 1)); }
+.model-selection-actions strong { overflow: hidden; color: #1d1d1f; font-size: calc(13px * var(--admin-font-scale, 1)); text-overflow: ellipsis; white-space: nowrap; }
+.model-environment-note { color: #5e6f86; font-size: calc(11px * var(--admin-font-scale, 1)); line-height: 1.45; }
+.model-environment-badge { flex: 0 0 auto; padding: 6px 10px; color: #155e75; background: #e0f2fe; border: 1px solid #bae6fd; border-radius: 999px; font-size: calc(11px * var(--admin-font-scale, 1)); font-weight: 600; }
 .model-library-layout .upload-area {
     display: flex;
     align-items: center;
@@ -14078,7 +13382,7 @@ button:enabled:active {
     background: #eef0f2;
     border-radius: 999px;
     padding: 6px 12px;
-    font-size: 12px;
+    font-size: calc(12px * var(--admin-font-scale, 1));
 }
 .model-import-form {
     display: grid;
@@ -14094,7 +13398,7 @@ button:enabled:active {
     display: flex;
     flex-direction: column;
     gap: 8px;
-    font-size: 13px;
+    font-size: calc(13px * var(--admin-font-scale, 1));
     color: #515154;
     font-weight: 500;
 }
@@ -14105,7 +13409,7 @@ button:enabled:active {
     min-height: 76px;
     resize: vertical;
     font-family: SFMono-Regular, Consolas, Monaco, monospace;
-    font-size: 12px;
+    font-size: calc(12px * var(--admin-font-scale, 1));
 }
 .model-import-actions {
     grid-column: 1 / -1;
@@ -14114,241 +13418,19 @@ button:enabled:active {
     justify-content: flex-end;
 }
 .model-table-scroll { max-width: 100%; }
-.model-table-scroll .model-table { min-width: 1010px; table-layout: fixed; font-size: 12px; }
+.model-table-scroll .model-table { min-width: 1010px; table-layout: fixed; font-size: calc(12px * var(--admin-font-scale, 1)); }
 .model-table th,
 .model-table td { padding: 11px 9px; vertical-align: middle; white-space: nowrap; }
-.model-table th { font-size: 11px; }
+.model-table th { font-size: calc(11px * var(--admin-font-scale, 1)); }
 .model-table td:nth-child(2),
-.model-table td:nth-child(7) { overflow: hidden; text-overflow: ellipsis; }
+.model-table td:nth-child(6) { overflow: hidden; text-overflow: ellipsis; }
 .model-table td:nth-child(3),
-.model-table td:nth-child(4) { font-size: 12px; white-space: nowrap; }
+.model-table td:nth-child(4) { font-size: calc(12px * var(--admin-font-scale, 1)); white-space: nowrap; }
 .model-id-copy { display: inline-flex; align-items: center; gap: 3px; max-width: 100%; border: 0; border-radius: 5px; padding: 4px 0; background: transparent; cursor: copy; }
 .model-id-copy code { color: #64748b; background: #f1f5f9; }
-.model-id-copy > span { color: #16815b; font-size: 11px; }
-.model-table code { display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 2px 5px; font-size: 10px; vertical-align: middle; }
-.model-table .asset-status-pill { min-width: 0; font-size: 11px; }
-.model-table tbody tr {
-    cursor: pointer;
-}
-.model-table tbody tr.active {
-    background: rgba(0, 113, 227, 0.08);
-    box-shadow: inset 3px 0 0 #0071e3;
-}
-.asset-status-pill {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-width: 64px;
-    padding: 3px 8px;
-    border-radius: 999px;
-    font-size: 12px;
-    color: #515154;
-    background: #eef0f2;
-}
-.asset-status-review {
-    color: #7a4b00;
-    background: #fff0cc;
-}
-.asset-status-accepted {
-    color: #11613a;
-    background: #dff6ea;
-}
-.asset-status-released {
-    color: #0b4f8a;
-    background: #dceeff;
-}
-.model-asset-governance {
-    margin-top: 18px;
-    padding: 18px;
-    border: 1px solid rgba(0, 0, 0, 0.08);
-    border-radius: 12px;
-    background: #ffffff;
-}
-.model-asset-governance.model-library-step-panel,
+.model-id-copy > span { color: #16815b; font-size: calc(11px * var(--admin-font-scale, 1)); }
+.model-table code { display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 2px 5px; font-size: calc(10px * var(--admin-font-scale, 1)); vertical-align: middle; }
 .model-binding-editor.model-library-step-panel { margin-top: 0; }
-.model-governance-actions {
-    display: flex;
-    gap: 10px;
-    flex-wrap: wrap;
-    justify-content: flex-end;
-}
-.model-workflow-rail {
-    display: grid;
-    grid-template-columns: repeat(6, minmax(0, 1fr));
-    gap: 8px;
-    margin-bottom: 14px;
-}
-.model-workflow-step {
-    min-height: 64px;
-    display: grid;
-    grid-template-columns: 24px 1fr;
-    gap: 2px 8px;
-    align-items: center;
-    padding: 8px;
-    border: 1px solid rgba(0, 0, 0, 0.08);
-    border-radius: 8px;
-    background: #f6f7f8;
-}
-.model-workflow-step strong {
-    width: 24px;
-    height: 24px;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    border-radius: 50%;
-    color: #707074;
-    background: #e5e7ea;
-    font-size: 12px;
-}
-.model-workflow-step span {
-    color: #1d1d1f;
-    font-size: 13px;
-    font-weight: 700;
-}
-.model-workflow-step small {
-    grid-column: 2;
-    min-width: 0;
-    overflow: hidden;
-    color: #86868b;
-    font-size: 12px;
-    line-height: 1.3;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-.model-workflow-step.passed {
-    border-color: rgba(17, 97, 58, 0.25);
-    background: #f1faf5;
-}
-.model-workflow-step.passed strong {
-    color: #ffffff;
-    background: #1b7f4f;
-}
-.model-workflow-step.optional {
-    border-color: rgba(240, 179, 90, 0.35);
-    background: #fffaf0;
-}
-.model-stats-strip {
-    display: grid;
-    grid-template-columns: repeat(6, minmax(0, 1fr));
-    gap: 8px;
-    margin-bottom: 14px;
-}
-.model-stats-strip span {
-    min-height: 34px;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    padding: 6px 8px;
-    border-radius: 8px;
-    background: #f5f6f7;
-    color: #515154;
-    font-size: 12px;
-    white-space: nowrap;
-}
-.model-spec-form {
-    display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: 12px;
-    margin-bottom: 14px;
-}
-.model-spec-form label {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    color: #515154;
-    font-size: 12px;
-    font-weight: 500;
-}
-.model-spec-form .wide-form-section {
-    grid-column: 1 / -1;
-}
-.model-optimization-panel {
-    margin-bottom: 16px;
-    padding: 14px;
-    border: 1px solid rgba(0, 113, 227, 0.18);
-    border-radius: 10px;
-    background: linear-gradient(135deg, rgba(0, 113, 227, 0.055), rgba(255, 255, 255, 0.96));
-}
-.model-optimization-form {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    margin-bottom: 8px;
-}
-.model-optimization-form .checkbox-line {
-    min-height: 38px;
-    flex-direction: row;
-    align-items: center;
-    gap: 8px;
-    padding: 0 10px;
-    border-radius: 8px;
-    background: rgba(255, 255, 255, 0.78);
-}
-.model-optimization-estimate {
-    margin: 0;
-    color: #5e5e63;
-    font-size: 12px;
-    line-height: 1.55;
-}
-.model-acceptance-summary {
-    margin: 4px 0 10px;
-    color: #7a4b00;
-    font-size: 13px;
-    font-weight: 600;
-}
-.model-acceptance-summary.ready {
-    color: #11613a;
-}
-.model-acceptance-grid {
-    display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: 10px;
-}
-.model-acceptance-item {
-    min-height: 74px;
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    padding: 10px;
-    border: 1px solid rgba(217, 96, 96, 0.35);
-    border-radius: 8px;
-    background: #fff7f7;
-}
-.model-acceptance-item.passed {
-    border-color: rgba(17, 97, 58, 0.25);
-    background: #f2fbf6;
-}
-.model-acceptance-item.warning {
-    border-color: rgba(240, 179, 90, 0.35);
-    background: #fffaf0;
-}
-.model-acceptance-item strong {
-    color: #1d1d1f;
-    font-size: 12px;
-}
-.model-acceptance-item span {
-    color: #515154;
-    font-size: 13px;
-    font-weight: 600;
-}
-.model-acceptance-item small {
-    color: #86868b;
-    font-size: 12px;
-    line-height: 1.35;
-}
-.model-release-history {
-    margin-top: 14px;
-}
-.model-release-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-bottom: 8px;
-    color: #515154;
-    font-size: 13px;
-}
-.model-release-header strong {
-    color: #1d1d1f;
-    font-size: 14px;
-}
 .model-binding-editor {
     margin-top: 18px;
     padding: 18px;
@@ -14366,12 +13448,12 @@ button:enabled:active {
 .model-binding-header h3 {
     margin: 0 0 5px;
     color: #1d1d1f;
-    font-size: 16px;
+    font-size: calc(16px * var(--admin-font-scale, 1));
 }
 .model-binding-header p {
     margin: 0;
     color: #68686d;
-    font-size: 12px;
+    font-size: calc(12px * var(--admin-font-scale, 1));
     line-height: 1.5;
 }
 .inspection-stage-toolbar {
@@ -14408,7 +13490,7 @@ button:enabled:active {
     flex-direction: column;
     gap: 6px;
     color: #515154;
-    font-size: 12px;
+    font-size: calc(12px * var(--admin-font-scale, 1));
 }
 .model-inspection-settings input[type="range"] { width: 100%; }
 .inspection-config-card {
@@ -14443,7 +13525,7 @@ button:enabled:active {
     flex-direction: column;
     gap: 6px;
     color: #515154;
-    font-size: 12px;
+    font-size: calc(12px * var(--admin-font-scale, 1));
     font-weight: 500;
 }
 .model-binding-form label:first-child {
@@ -14466,7 +13548,7 @@ button:enabled:active {
 }
 .field-hint {
     color: #86868b;
-    font-size: 11px;
+    font-size: calc(11px * var(--admin-font-scale, 1));
     line-height: 1.45;
 }
 .color-input {
@@ -14507,12 +13589,12 @@ button:enabled:active {
     background: #fbfbfd;
     border: 1px solid rgba(0, 0, 0, 0.06);
     border-radius: 10px;
-    font-size: 12px;
+    font-size: calc(12px * var(--admin-font-scale, 1));
 }
 .model-binding-status {
     min-height: 18px;
     color: #68686d;
-    font-size: 12px;
+    font-size: calc(12px * var(--admin-font-scale, 1));
 }
 .model-preview-panel {
     position: sticky;
@@ -14549,17 +13631,17 @@ button:enabled:active {
 }
 .model-preview-title strong {
     color: #1d1d1f;
-    font-size: 15px;
+    font-size: calc(15px * var(--admin-font-scale, 1));
 }
 .model-preview-title span {
     color: #86868b;
-    font-size: 12px;
+    font-size: calc(12px * var(--admin-font-scale, 1));
     min-width: 0;
     overflow: hidden;
     white-space: nowrap;
     text-overflow: ellipsis;
 }
-.model-preview-mode-badge { flex: 0 0 auto; padding: 6px 9px; color: #515154; background: #f0f2f4; border: 1px solid rgba(0, 0, 0, .07); border-radius: 8px; font-size: 11px; font-weight: 600; }
+.model-preview-mode-badge { flex: 0 0 auto; padding: 6px 9px; color: #515154; background: #f0f2f4; border: 1px solid rgba(0, 0, 0, .07); border-radius: 8px; font-size: calc(11px * var(--admin-font-scale, 1)); font-weight: 600; }
 .model-preview-stage {
     position: relative;
     height: 360px;
@@ -14569,8 +13651,8 @@ button:enabled:active {
 }
 .admin-container.animation-active { height: 100vh; }
 .animation-active .admin-content { display: flex; flex-direction: column; overflow: hidden; padding: 14px 16px 16px; }
-.animation-active .tab-transition-host { display: flex; flex: 1; min-height: 0; }
-.model-animation-workspace.tab-content { display: flex; flex: 1; flex-direction: column; gap: 12px; min-height: 0; padding: 0; background: transparent; border: 0; box-shadow: none; }
+.animation-active .tab-transition-host { display: flex; flex: 1; min-height: 0; min-width: 0; }
+.model-animation-workspace.tab-content { display: flex; flex: 1; flex-direction: column; gap: 12px; min-height: 0; min-width: 0; width: 100%; padding: 0; background: transparent; border: 0; box-shadow: none; }
 .model-animation-workspace .manual-layout-page-heading { padding: 2px 4px; }
 .animation-workspace.model-library-layout { flex: 1; min-height: 0; grid-template-columns: minmax(330px, .75fr) minmax(0, 1.35fr); gap: 14px; align-items: stretch; }
 .animation-workspace .model-library-main { display: flex; min-height: 0; }
@@ -14578,45 +13660,45 @@ button:enabled:active {
 .animation-workspace .model-binding-header { flex: 0 0 auto; align-items: center; gap: 8px; margin: 0; }
 .animation-workspace .model-binding-header h3 { margin: 0; }
 .animation-workspace .model-binding-header p { display: none; }
-.animation-workspace .model-binding-header .btn { padding: 8px 12px; font-size: 12px; }
+.animation-workspace .model-binding-header .btn { padding: 8px 12px; font-size: calc(12px * var(--admin-font-scale, 1)); }
 .motion-panel-tabs { display: flex; flex: 0 0 auto; gap: 4px; padding: 4px; border-radius: 9px; background: #f0f3f8; }
 .cleaner-process-actions { flex: 0 0 auto; padding: 9px; border: 1px solid #dcecf4; border-radius: 9px; background: #f4fafd; }
 .cleaner-process-actions > div:first-child { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 7px; }
-.cleaner-process-actions strong { font-size: 11px; color: #3c7596; }
+.cleaner-process-actions strong { font-size: calc(11px * var(--admin-font-scale, 1)); color: #3c7596; }
 .cleaner-process-actions strong span { margin-left: 4px; color: #77a3b9; }
-.cleaner-process-actions small { font-size: 9px; color: #87a4b5; }
+.cleaner-process-actions small { font-size: calc(9px * var(--admin-font-scale, 1)); color: #87a4b5; }
 .cleaner-process-action-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5px; }
-.cleaner-process-action-grid button { display: flex; align-items: center; justify-content: space-between; gap: 4px; min-width: 0; padding: 7px; border: 1px solid #dce9ef; border-radius: 6px; background: white; color: #3d7998; cursor: pointer; font-size: 10px; }
+.cleaner-process-action-grid button { display: flex; align-items: center; justify-content: space-between; gap: 4px; min-width: 0; padding: 7px; border: 1px solid #dce9ef; border-radius: 6px; background: white; color: #3d7998; cursor: pointer; font-size: calc(10px * var(--admin-font-scale, 1)); }
 .cleaner-process-action-grid button:hover { background: #e5f4fd; border-color: #8bc9e4; }
 .cleaner-process-action-grid button[aria-pressed="true"] { background: #e5f4fd; border-color: #8bc9e4; }
 .animation-workspace .inline-process-panel { overflow: hidden; }
-.cleaner-process-action-grid button small { font-size: 8px; white-space: nowrap; }
-.motion-panel-tabs button { flex: 1; padding: 8px; border: 0; border-radius: 6px; background: transparent; color: #6a778b; font-size: 12px; font-weight: 600; cursor: pointer; }
+.cleaner-process-action-grid button small { font-size: calc(8px * var(--admin-font-scale, 1)); white-space: nowrap; }
+.motion-panel-tabs button { flex: 1; padding: 8px; border: 0; border-radius: 6px; background: transparent; color: #6a778b; font-size: calc(12px * var(--admin-font-scale, 1)); font-weight: 600; cursor: pointer; }
 .motion-panel-tabs button.active { background: #fff; color: #2464d5; box-shadow: 0 1px 4px #243b5712; }
-.motion-panel-tabs span { margin-left: 5px; font-size: 11px; color: #7b8ca6; }
+.motion-panel-tabs span { margin-left: 5px; font-size: calc(11px * var(--admin-font-scale, 1)); color: #7b8ca6; }
 .motion-binding-browser { display: flex; flex: 1; flex-direction: column; gap: 10px; min-height: 0; }
 .motion-list-tools { display: flex; flex: 0 0 auto; gap: 7px; }
-.motion-list-tools .input { flex: 1; min-width: 0; padding: 8px 10px; font-size: 12px; }
-.motion-list-tools .btn { flex: 0 0 auto; padding: 8px 10px; font-size: 12px; }
+.motion-list-tools .input { flex: 1; min-width: 0; padding: 8px 10px; font-size: calc(12px * var(--admin-font-scale, 1)); }
+.motion-list-tools .btn { flex: 0 0 auto; padding: 8px 10px; font-size: calc(12px * var(--admin-font-scale, 1)); }
 .motion-binding-cards { display: grid; flex: 1; grid-template-rows: repeat(4, minmax(0, 1fr)); gap: 8px; min-height: 0; }
 .motion-binding-card { display: flex; min-width: 0; min-height: 0; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid #e3e9f0; border-radius: 10px; background: #fff; transition: background .15s, border-color .15s; }
 .motion-binding-card:hover { border-color: #a4bff3; }
 .motion-binding-card.active { background: #eef5ff; border-color: #6d9ded; box-shadow: inset 3px 0 #397ee5; }
 .motion-binding-select { display: grid; flex: 1; gap: 5px; min-width: 0; padding: 0; border: 0; background: transparent; text-align: left; color: #263950; cursor: pointer; }
 .motion-binding-select strong, .motion-binding-select code { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.motion-binding-select strong { font-size: 13px; font-weight: 600; }
-.motion-binding-select code { padding: 0; background: transparent; color: #71829a; font-size: 10px; }
-.motion-binding-select small { color: #7e8ba0; font-size: 10px; }
+.motion-binding-select strong { font-size: calc(13px * var(--admin-font-scale, 1)); font-weight: 600; }
+.motion-binding-select code { padding: 0; background: transparent; color: #71829a; font-size: calc(10px * var(--admin-font-scale, 1)); }
+.motion-binding-select small { color: #7e8ba0; font-size: calc(10px * var(--admin-font-scale, 1)); }
 .motion-card-actions { display: grid; grid-template-columns: repeat(2, auto); gap: 5px; flex: 0 0 auto; }
-.motion-card-actions .btn { padding: 5px 7px; font-size: 11px; }
+.motion-card-actions .btn { padding: 5px 7px; font-size: calc(11px * var(--admin-font-scale, 1)); }
 .motion-card-actions .btn-danger { grid-column: 2; }
-.motion-list-empty { grid-row: 1 / -1; align-self: center; text-align: center; color: #8390a2; font-size: 12px; }
+.motion-list-empty { grid-row: 1 / -1; align-self: center; text-align: center; color: #8390a2; font-size: calc(12px * var(--admin-font-scale, 1)); }
 .motion-pagination { display: flex; flex: 0 0 auto; justify-content: space-between; align-items: center; gap: 8px; padding-top: 8px; border-top: 1px solid #edf0f5; }
-.motion-pagination > span { font-size: 11px; color: #7a899e; white-space: nowrap; }
+.motion-pagination > span { font-size: calc(11px * var(--admin-font-scale, 1)); color: #7a899e; white-space: nowrap; }
 .motion-pagination > div { display: flex; align-items: center; gap: 5px; }
-.motion-pagination .btn { padding: 6px 8px; font-size: 11px; }
-.motion-pagination select { max-width: 52px; padding: 5px; border: 1px solid #d6e0ef; border-radius: 6px; background: white; color: #39526c; font-size: 12px; }
-.animation-workspace .model-binding-status { flex: 0 0 auto; min-height: 16px; max-height: 34px; overflow: hidden; font-size: 11px; line-height: 1.5; }
+.motion-pagination .btn { padding: 6px 8px; font-size: calc(11px * var(--admin-font-scale, 1)); }
+.motion-pagination select { max-width: 52px; padding: 5px; border: 1px solid #d6e0ef; border-radius: 6px; background: white; color: #39526c; font-size: calc(12px * var(--admin-font-scale, 1)); }
+.animation-workspace .model-binding-status { flex: 0 0 auto; min-height: 16px; max-height: 34px; overflow: hidden; font-size: calc(11px * var(--admin-font-scale, 1)); line-height: 1.5; }
 .animation-workspace .motion-editor-body { flex: 1; min-height: 0; overflow: auto; padding-right: 3px; }
 .motion-form-steps { display: flex; gap: 6px; margin-bottom: 12px; }
 .motion-form-steps .btn { flex: 1; padding: 7px; }
@@ -14627,17 +13709,18 @@ button:enabled:active {
 .animation-workspace .model-binding-form label:first-child { grid-column: auto; }
 .animation-workspace .model-binding-form label.model-node-picker { grid-column: 1 / -1; }
 .animation-workspace .model-binding-form .input { min-width: 0; padding: 8px; }
-.animation-workspace .model-binding-form .field-hint { font-size: 10px; }
+.animation-workspace .model-binding-form .field-hint { font-size: calc(10px * var(--admin-font-scale, 1)); }
 .animation-workspace .model-binding-actions { flex-wrap: wrap; justify-content: flex-start; gap: 6px; margin-bottom: 10px; }
-.animation-workspace .model-binding-actions .btn { padding: 7px 9px; font-size: 11px; }
+.animation-workspace .model-binding-actions .btn { padding: 7px 9px; font-size: calc(11px * var(--admin-font-scale, 1)); }
 .animation-workspace .model-preview-panel { position: relative; display: flex; flex-direction: column; min-height: 0; }
 .animation-workspace .model-preview-header { flex: 0 0 auto; padding: 12px 16px; }
 .animation-workspace .model-preview-stage { flex: 1; height: auto; min-height: 320px; background: #edf1f5; }
-.animation-workspace .model-preview-footer { flex: 0 0 auto; padding: 10px 14px; font-size: 11px; }
+.animation-workspace .model-preview-footer { flex: 0 0 auto; padding: 10px 14px; font-size: calc(11px * var(--admin-font-scale, 1)); }
 .animation-workspace .model-preview-node-card { max-width: min(300px, calc(100% - 120px)); }
 .motion-preview-tools { display: flex; align-items: center; gap: 8px; }
+.motion-workspace-toolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px 16px; }
 .motion-workspace-modes { display: flex; flex: 0 0 auto; gap: 6px; padding: 3px; align-self: flex-start; border: 1px solid #e0e7f1; border-radius: 10px; background: #ecf0f6; }
-.motion-workspace-modes button { padding: 8px 18px; color: #7b8ca3; border: 0; border-radius: 7px; background: transparent; cursor: pointer; font-size: 12px; font-weight: 600; }
+.motion-workspace-modes button { padding: 8px 18px; color: #7b8ca3; border: 0; border-radius: 7px; background: transparent; cursor: pointer; font-size: calc(12px * var(--admin-font-scale, 1)); font-weight: 600; }
 .motion-workspace-modes .active { color: #3378d7; background: #fff; box-shadow: 0 2px 5px #253b5710; }
 @media (max-width: 1050px) {
     .animation-active .admin-content { overflow-y: auto; }
@@ -14672,16 +13755,16 @@ button:enabled:active {
     white-space: nowrap;
 }
 .model-preview-node-card strong {
-    font-size: 13px;
+    font-size: calc(13px * var(--admin-font-scale, 1));
 }
 .model-preview-node-card span {
     color: #4b5a64;
-    font-size: 12px;
+    font-size: calc(12px * var(--admin-font-scale, 1));
 }
 .model-preview-node-card small {
     color: #7c858c;
     font-family: SFMono-Regular, Consolas, Monaco, monospace;
-    font-size: 11px;
+    font-size: calc(11px * var(--admin-font-scale, 1));
 }
 .model-preview-reset {
     position: absolute;
@@ -14696,7 +13779,7 @@ button:enabled:active {
     border-radius: 999px;
     box-shadow: 0 8px 22px rgba(25, 33, 38, 0.12);
     cursor: pointer;
-    font-size: 12px;
+    font-size: calc(12px * var(--admin-font-scale, 1));
     font-weight: 700;
 }
 .model-preview-reset:hover {
@@ -14714,7 +13797,7 @@ button:enabled:active {
     align-items: center;
     justify-content: center;
     color: #86868b;
-    font-size: 13px;
+    font-size: calc(13px * var(--admin-font-scale, 1));
     pointer-events: none;
 }
 .model-preview-error {
@@ -14734,17 +13817,17 @@ button:enabled:active {
     box-shadow: 0 8px 24px rgba(122, 35, 23, .16);
     pointer-events: none;
 }
-.model-preview-error strong { color: #b42318; font-size: 13px; }
-.model-preview-error span { color: #7f1d1d; font-size: 12px; font-weight: 700; }
-.model-preview-error small { color: #9b2c1f; font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }
-.model-preview-error code { color: #8b3f34; font-family: SFMono-Regular, Consolas, Monaco, monospace; font-size: 10px; line-height: 1.35; overflow-wrap: anywhere; }
+.model-preview-error strong { color: #b42318; font-size: calc(13px * var(--admin-font-scale, 1)); }
+.model-preview-error span { color: #7f1d1d; font-size: calc(12px * var(--admin-font-scale, 1)); font-weight: 700; }
+.model-preview-error small { color: #9b2c1f; font-size: calc(12px * var(--admin-font-scale, 1)); line-height: 1.45; overflow-wrap: anywhere; }
+.model-preview-error code { color: #8b3f34; font-family: SFMono-Regular, Consolas, Monaco, monospace; font-size: calc(10px * var(--admin-font-scale, 1)); line-height: 1.35; overflow-wrap: anywhere; }
 .model-preview-footer {
     min-height: 42px;
     padding: 10px 14px;
     color: #515154;
     background: #fbfbfd;
     border-top: 1px solid rgba(0, 0, 0, 0.08);
-    font-size: 12px;
+    font-size: calc(12px * var(--admin-font-scale, 1));
     line-height: 1.45;
 }
 .model-preview-selected-text {
@@ -14759,184 +13842,184 @@ button:enabled:active {
     border-radius: 12px; margin-bottom: 24px;
 }
 .section-title {
-    margin: 0 0 20px 0; font-size: 16px; color: #1d1d1f; font-weight: 600;
+    margin: 0 0 20px 0; font-size: calc(16px * var(--admin-font-scale, 1)); color: #1d1d1f; font-weight: 600;
     padding-bottom: 12px; border-bottom: 1px solid rgba(0, 0, 0, 0.06);
 }
-.scene-basic-note { margin: -8px 0 18px; padding: 11px 13px; color: #6e6e73; background: #f5f5f7; border-radius: 9px; font-size: 12px; line-height: 1.55; }
+.scene-basic-note { margin: -8px 0 18px; padding: 11px 13px; color: #6e6e73; background: #f5f5f7; border-radius: 9px; font-size: calc(12px * var(--admin-font-scale, 1)); line-height: 1.55; }
 .settings-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
-.settings-grid label { display: flex; flex-direction: column; gap: 8px; font-size: 13px; color: #515154; font-weight: 500; }
+.settings-grid label { display: flex; flex-direction: column; gap: 8px; font-size: calc(13px * var(--admin-font-scale, 1)); color: #515154; font-weight: 500; }
 .render-profile-hint { margin-top: 16px; }
 .render-profile-hint p { margin: 4px 0; }
 .render-custom-grid { margin-top: 18px; padding-top: 18px; border-top: 1px solid #e5e5e7; }
 .checkbox-line { display: flex; align-items: center; gap: 8px; min-height: 38px; font-weight: 400; }
-.database-production-notice { margin: 16px 0 0; padding: 11px 13px; color: #173f2b; background: #edf8f1; border-left: 3px solid #24834f; font-size: 13px; line-height: 1.55; }
+.database-production-notice { margin: 16px 0 0; padding: 11px 13px; color: #173f2b; background: #edf8f1; border-left: 3px solid #24834f; font-size: calc(13px * var(--admin-font-scale, 1)); line-height: 1.55; }
 .license-settings-panel { margin-bottom: 18px; }
 .license-heading-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
 .license-heading-row .section-title { margin-bottom: 4px; }
-.license-status-pill { flex: 0 0 auto; padding: 6px 11px; color: #5b5b60; background: #f1f1f3; border: 1px solid #dedee3; border-radius: 999px; font-size: 11px; font-weight: 700; }
+.license-status-pill { flex: 0 0 auto; padding: 6px 11px; color: #5b5b60; background: #f1f1f3; border: 1px solid #dedee3; border-radius: 999px; font-size: calc(11px * var(--admin-font-scale, 1)); font-weight: 700; }
 .license-status-pill.license-valid { color: #1f6b3b; background: #edf8f1; border-color: #bfe4ca; }
 .license-status-pill.license-not_enforced { color: #6a5517; background: #fff8df; border-color: #ead58a; }
 .license-status-pill.license-invalid,.license-status-pill.license-expired,.license-status-pill.license-machine_mismatch,.license-status-pill.license-machine_unavailable,.license-status-pill.license-error { color: #9b2c2c; background: #fff1f1; border-color: #efc6c6; }
 .license-summary-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-top: 18px; }
 .license-summary-grid > div { min-width: 0; padding: 12px 13px; background: #f7f7f8; border: 1px solid #e6e6e9; border-radius: 10px; }
 .license-summary-grid span,.license-summary-grid strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.license-summary-grid span { color: #86868b; font-size: 10px; }
-.license-summary-grid strong { margin-top: 5px; color: #27272a; font-size: 12px; }
+.license-summary-grid span { color: #86868b; font-size: calc(10px * var(--admin-font-scale, 1)); }
+.license-summary-grid strong { margin-top: 5px; color: #27272a; font-size: calc(12px * var(--admin-font-scale, 1)); }
 .license-machine-card { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-top: 12px; padding: 12px 13px; background: #f1f7ff; border: 1px solid #cfe0f7; border-radius: 10px; }
 .license-machine-card > div { min-width: 0; }
 .license-machine-card span,.license-machine-card strong,.license-machine-card small { display: block; }
-.license-machine-card span { color: #5b6e86; font-size: 10px; }
-.license-machine-card strong { margin-top: 5px; overflow-wrap: anywhere; color: #173f65; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; }
-.license-machine-card small { margin-top: 5px; color: #6b7f96; font-size: 11px; line-height: 1.45; }
+.license-machine-card span { color: #5b6e86; font-size: calc(10px * var(--admin-font-scale, 1)); }
+.license-machine-card strong { margin-top: 5px; overflow-wrap: anywhere; color: #173f65; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: calc(12px * var(--admin-font-scale, 1)); }
+.license-machine-card small { margin-top: 5px; color: #6b7f96; font-size: calc(11px * var(--admin-font-scale, 1)); line-height: 1.45; }
 .release-status-card { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-top: 12px; padding: 12px 13px; background: #f7f7f8; border: 1px solid #e6e6e9; border-radius: 10px; }
 .release-status-card > div { min-width: 0; }
 .release-status-card span,.release-status-card strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.release-status-card span { color: #86868b; font-size: 10px; }
-.release-status-card strong { margin-top: 4px; color: #27272a; font-size: 12px; }
-.release-status-card p { grid-column: 1 / -1; margin: 2px 0 0; color: #6e6e73; font-size: 11px; line-height: 1.45; }
-.license-reason { margin: 12px 0 0; color: #6e6e73; font-size: 12px; line-height: 1.5; }
+.release-status-card span { color: #86868b; font-size: calc(10px * var(--admin-font-scale, 1)); }
+.release-status-card strong { margin-top: 4px; color: #27272a; font-size: calc(12px * var(--admin-font-scale, 1)); }
+.release-status-card p { grid-column: 1 / -1; margin: 2px 0 0; color: #6e6e73; font-size: calc(11px * var(--admin-font-scale, 1)); line-height: 1.45; }
+.license-reason { margin: 12px 0 0; color: #6e6e73; font-size: calc(12px * var(--admin-font-scale, 1)); line-height: 1.5; }
 .license-reason.warning { color: #a33a2b; }
 .license-install-card { margin-top: 18px; padding: 14px; background: #fafafa; border: 1px solid #e5e5e7; border-radius: 12px; }
-.license-install-card label { display: flex; flex-direction: column; gap: 7px; color: #515154; font-size: 12px; }
-.license-textarea { width: 100%; min-height: 80px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 11px; line-height: 1.45; }
-.license-history { margin-top: 22px; }.license-history h4 { margin: 0 0 12px; }.license-code-view { display: grid; gap: 8px; margin-top: 12px; font-size: 12px; }
+.license-install-card label { display: flex; flex-direction: column; gap: 7px; color: #515154; font-size: calc(12px * var(--admin-font-scale, 1)); }
+.license-textarea { width: 100%; min-height: 80px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: calc(11px * var(--admin-font-scale, 1)); line-height: 1.45; }
+.license-history { margin-top: 22px; }.license-history h4 { margin: 0 0 12px; }.license-code-view { display: grid; gap: 8px; margin-top: 12px; font-size: calc(12px * var(--admin-font-scale, 1)); }
 .license-actions { margin-top: 11px; margin-bottom: 0; }
 @media (max-width: 820px) { .license-summary-grid,.release-status-card { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-.external-data-source-message { margin: 12px 0 0; color: #515154; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.external-data-source-message { margin: 12px 0 0; color: #515154; font-size: calc(12px * var(--admin-font-scale, 1)); line-height: 1.6; overflow-wrap: anywhere; }
 .database-auto-backup-panel { padding: 18px; background: #f7f7f8; border: 1px solid #e2e2e5; border-radius: 10px; }
 .database-backup-trigger-grid { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 10px; margin-top: 16px; }
 .database-backup-trigger-card { position: relative; display: grid; grid-template-columns: 34px minmax(0,1fr) 38px; align-items: center; gap: 10px; min-width: 0; min-height: 82px; padding: 12px; color: #515154; background: #fff; border: 1px solid #dedee3; border-radius: 12px; cursor: pointer; transition: border-color 160ms ease,background-color 160ms ease,box-shadow 160ms ease,transform 160ms ease; }
 .database-backup-trigger-card:hover { border-color: #b8b8bd; box-shadow: 0 7px 20px #0000000d; transform: translateY(-1px); }
 .database-backup-trigger-card.active { color: #1d1d1f; background: #fff; border-color: #a8a8ad; box-shadow: inset 0 0 0 1px #00000008,0 8px 22px #0000000b; }
 .database-backup-trigger-card > input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
-.database-backup-trigger-index { display: grid; place-items: center; width: 34px; height: 34px; color: #8e8e93; background: #f2f2f4; border-radius: 9px; font-size: 10px; font-weight: 700; font-variant-numeric: tabular-nums; transition: color 160ms ease,background-color 160ms ease; }
+.database-backup-trigger-index { display: grid; place-items: center; width: 34px; height: 34px; color: #8e8e93; background: #f2f2f4; border-radius: 9px; font-size: calc(10px * var(--admin-font-scale, 1)); font-weight: 700; font-variant-numeric: tabular-nums; transition: color 160ms ease,background-color 160ms ease; }
 .database-backup-trigger-card.active .database-backup-trigger-index { color: #fff; background: #1d1d1f; }
 .database-backup-trigger-copy { min-width: 0; }
 .database-backup-trigger-copy strong,.database-backup-trigger-copy small { display: block; }
-.database-backup-trigger-copy strong { color: inherit; font-size: 12px; }
-.database-backup-trigger-copy small { margin-top: 4px; color: #86868b; font-size: 10px; line-height: 1.45; }
+.database-backup-trigger-copy strong { color: inherit; font-size: calc(12px * var(--admin-font-scale, 1)); }
+.database-backup-trigger-copy small { margin-top: 4px; color: #86868b; font-size: calc(10px * var(--admin-font-scale, 1)); line-height: 1.45; }
 .database-backup-trigger-switch { position: relative; width: 36px; height: 22px; background: #d1d1d6; border-radius: 999px; box-shadow: inset 0 0 0 1px #0000000a; transition: background-color 160ms ease; }
 .database-backup-trigger-switch i { position: absolute; left: 3px; top: 3px; width: 16px; height: 16px; background: #fff; border-radius: 50%; box-shadow: 0 1px 3px #0003; transition: transform 160ms ease; }
 .database-backup-trigger-card.active .database-backup-trigger-switch { background: #1d1d1f; }
 .database-backup-trigger-card.active .database-backup-trigger-switch i { transform: translateX(14px); }
 .database-auto-backup-controls { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; margin-top: 14px; }
-.database-auto-backup-controls > label:not(.checkbox-line) { display: flex; flex-direction: column; gap: 5px; color: #515154; font-size: 12px; }
+.database-auto-backup-controls > label:not(.checkbox-line) { display: flex; flex-direction: column; gap: 5px; color: #515154; font-size: calc(12px * var(--admin-font-scale, 1)); }
 .database-auto-backup-controls .input-small { width: 100px; }
 .database-auto-backup-controls input:disabled { color: #a1a1a6; background: #ececef; cursor: not-allowed; }
 .database-backup-protection-note { display: grid; grid-template-columns: auto minmax(0,1fr); align-items: center; gap: 11px; margin-top: 14px; padding: 11px 12px; background: #fff; border: 1px solid #e5e5e7; border-radius: 10px; }
-.database-backup-protection-note > span { padding: 5px 8px; color: #fff; background: #1d1d1f; border-radius: 999px; font-size: 9px; font-weight: 700; white-space: nowrap; }
+.database-backup-protection-note > span { padding: 5px 8px; color: #fff; background: #1d1d1f; border-radius: 999px; font-size: calc(9px * var(--admin-font-scale, 1)); font-weight: 700; white-space: nowrap; }
 .database-backup-protection-note strong,.database-backup-protection-note small { display: block; }
-.database-backup-protection-note strong { color: #353537; font-size: 11px; }
-.database-backup-protection-note small { margin-top: 3px; color: #86868b; font-size: 10px; line-height: 1.45; }
+.database-backup-protection-note strong { color: #353537; font-size: calc(11px * var(--admin-font-scale, 1)); }
+.database-backup-protection-note small { margin-top: 3px; color: #86868b; font-size: calc(10px * var(--admin-font-scale, 1)); line-height: 1.45; }
 .database-backup-source-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 8px; margin-top: 14px; }
 .database-backup-source-option { display: flex; align-items: center; gap: 9px; min-width: 0; padding: 10px 12px; background: #fff; border: 1px solid #e5e5e7; border-radius: 8px; cursor: pointer; }
 .database-backup-source-option input { accent-color: #1d1d1f; }
 .database-backup-source-option span { min-width: 0; }.database-backup-source-option strong,.database-backup-source-option small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.database-backup-source-option strong { color: #1d1d1f; font-size: 12px; }.database-backup-source-option small { margin-top: 2px; color: #8e8e93; font-size: 10px; }
+.database-backup-source-option strong { color: #1d1d1f; font-size: calc(12px * var(--admin-font-scale, 1)); }.database-backup-source-option small { margin-top: 2px; color: #8e8e93; font-size: calc(10px * var(--admin-font-scale, 1)); }
 .database-backup-panel { margin-top: 22px; padding-top: 20px; border-top: 1px solid #e5e5e7; }
 .database-backup-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
-.database-backup-header p { margin: 6px 0 0; color: #6e6e73; font-size: 13px; line-height: 1.6; }
+.database-backup-header p { margin: 6px 0 0; color: #6e6e73; font-size: calc(13px * var(--admin-font-scale, 1)); line-height: 1.6; }
 .database-retention-card { margin-top: 16px; overflow: hidden; background: linear-gradient(180deg,#fafafa 0%,#f5f5f7 100%); border: 1px solid #dedee2; border-radius: 14px; box-shadow: 0 8px 24px #00000008; }
 .database-retention-heading { display: grid; grid-template-columns: auto minmax(0,1fr) auto; align-items: center; gap: 12px; padding: 14px 16px 12px; }
 .database-retention-icon { display: grid; place-items: center; width: 36px; height: 36px; color: #fff; background: #1d1d1f; border-radius: 10px; box-shadow: 0 4px 10px #0000001f; }
 .database-retention-icon svg { width: 19px; height: 19px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
 .database-retention-heading > div:nth-child(2) { min-width: 0; }
 .database-retention-heading strong,.database-retention-heading span { display: block; }
-.database-retention-heading strong { color: #1d1d1f; font-size: 13px; }
-.database-retention-heading span { margin-top: 3px; color: #77777c; font-size: 11px; line-height: 1.45; }
-.database-retention-heading > em { padding: 5px 9px; color: #3a3a3c; background: #fff; border: 1px solid #dfdfe3; border-radius: 999px; font-size: 11px; font-style: normal; white-space: nowrap; }
+.database-retention-heading strong { color: #1d1d1f; font-size: calc(13px * var(--admin-font-scale, 1)); }
+.database-retention-heading span { margin-top: 3px; color: #77777c; font-size: calc(11px * var(--admin-font-scale, 1)); line-height: 1.45; }
+.database-retention-heading > em { padding: 5px 9px; color: #3a3a3c; background: #fff; border: 1px solid #dfdfe3; border-radius: 999px; font-size: calc(11px * var(--admin-font-scale, 1)); font-style: normal; white-space: nowrap; }
 .database-retention-controls { display: grid; grid-template-columns: minmax(0,1fr) auto auto; align-items: end; gap: 12px; padding: 0 16px 14px; }
 .database-retention-presets { display: grid; grid-template-columns: repeat(5,minmax(58px,1fr)); gap: 3px; min-width: 0; padding: 3px; background: #e8e8eb; border-radius: 10px; }
-.database-retention-presets button { min-height: 34px; padding: 5px 8px; color: #636366; background: transparent; border: 0; border-radius: 8px; font: inherit; font-size: 11px; font-weight: 600; cursor: pointer; transition: color 150ms ease,background-color 150ms ease,box-shadow 150ms ease,transform 150ms ease; }
+.database-retention-presets button { min-height: 34px; padding: 5px 8px; color: #636366; background: transparent; border: 0; border-radius: 8px; font: inherit; font-size: calc(11px * var(--admin-font-scale, 1)); font-weight: 600; cursor: pointer; transition: color 150ms ease,background-color 150ms ease,box-shadow 150ms ease,transform 150ms ease; }
 .database-retention-presets button:hover { color: #1d1d1f; }
 .database-retention-presets button.active { color: #1d1d1f; background: #fff; box-shadow: 0 1px 4px #0000001a; transform: translateY(-1px); }
-.database-retention-custom { display: flex; flex-direction: column; gap: 5px; color: #6e6e73; font-size: 10px; font-weight: 500; }
+.database-retention-custom { display: flex; flex-direction: column; gap: 5px; color: #6e6e73; font-size: calc(10px * var(--admin-font-scale, 1)); font-weight: 500; }
 .database-retention-input { display: grid; grid-template-columns: 72px auto; align-items: center; min-height: 40px; overflow: hidden; background: #fff; border: 1px solid #d9d9de; border-radius: 9px; transition: border-color 150ms ease,box-shadow 150ms ease; }
 .database-retention-input:focus-within { border-color: #8e8e93; box-shadow: 0 0 0 3px #0000000d; }
-.database-retention-input input { width: 72px; height: 38px; padding: 0 4px 0 11px; color: #1d1d1f; background: transparent; border: 0; outline: 0; font: inherit; font-size: 13px; font-weight: 600; }
-.database-retention-input em { padding-right: 10px; color: #86868b; font-size: 11px; font-style: normal; }
+.database-retention-input input { width: 72px; height: 38px; padding: 0 4px 0 11px; color: #1d1d1f; background: transparent; border: 0; outline: 0; font: inherit; font-size: calc(13px * var(--admin-font-scale, 1)); font-weight: 600; }
+.database-retention-input em { padding-right: 10px; color: #86868b; font-size: calc(11px * var(--admin-font-scale, 1)); font-style: normal; }
 .database-retention-save { min-height: 40px; white-space: nowrap; }
 .database-retention-stats { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); border-top: 1px solid #e2e2e5; background: #fff; }
 .database-retention-stats > div { min-width: 0; padding: 11px 14px; border-right: 1px solid #ededee; }
 .database-retention-stats > div:last-child { border-right: 0; }
 .database-retention-stats span,.database-retention-stats strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.database-retention-stats span { color: #8e8e93; font-size: 10px; }
-.database-retention-stats strong { margin-top: 4px; color: #353537; font-size: 11px; font-weight: 600; }
-.database-recovery-notice { margin: 14px 0 0; padding: 10px 12px; background: #fff8e6; border-left: 3px solid #c68a00; color: #5c4300; font-size: 13px; }
-.database-local-only-notice { margin: 14px 0 0; padding: 10px 12px; background: #fff8e6; border-left: 3px solid #c68a00; color: #5c4300; font-size: 13px; line-height: 1.55; }
-.database-backup-message { margin: 12px 0 0; color: #515154; font-size: 13px; }
+.database-retention-stats span { color: #8e8e93; font-size: calc(10px * var(--admin-font-scale, 1)); }
+.database-retention-stats strong { margin-top: 4px; color: #353537; font-size: calc(11px * var(--admin-font-scale, 1)); font-weight: 600; }
+.database-recovery-notice { margin: 14px 0 0; padding: 10px 12px; background: #fff8e6; border-left: 3px solid #c68a00; color: #5c4300; font-size: calc(13px * var(--admin-font-scale, 1)); }
+.database-local-only-notice { margin: 14px 0 0; padding: 10px 12px; background: #fff8e6; border-left: 3px solid #c68a00; color: #5c4300; font-size: calc(13px * var(--admin-font-scale, 1)); line-height: 1.55; }
+.database-backup-message { margin: 12px 0 0; color: #515154; font-size: calc(13px * var(--admin-font-scale, 1)); }
 .database-backup-list { margin-top: 14px; border-top: 1px solid #e5e5e7; }
 .database-backup-row { display: grid; grid-template-columns: minmax(280px, 1fr) auto auto auto auto; align-items: center; gap: 10px; min-height: 58px; padding: 8px 0; border-bottom: 1px solid #ededee; }
 .database-backup-row > div { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
-.database-backup-row strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
-.database-backup-row span { color: #6e6e73; font-size: 12px; }
+.database-backup-row strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: calc(13px * var(--admin-font-scale, 1)); }
+.database-backup-row span { color: #6e6e73; font-size: calc(12px * var(--admin-font-scale, 1)); }
 .backup-validity { white-space: nowrap; }
 .backup-validity.is-valid { color: #16713a; }
 .backup-validity.is-invalid { color: #b42318; }
 .backup-validity.is-unverified { color: #805d16; }
-.btn-small { min-height: 32px; padding: 5px 10px; font-size: 12px; }
+.btn-small { min-height: 32px; padding: 5px 10px; font-size: calc(12px * var(--admin-font-scale, 1)); }
 .site-backup-panel { margin-top: 26px; padding-top: 24px; border-top: 1px solid #d7d7da; }
 .site-backup-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
-.site-backup-header p { max-width: 720px; margin: 6px 0 0; color: #515154; font-size: 13px; line-height: 1.6; }
+.site-backup-header p { max-width: 720px; margin: 6px 0 0; color: #515154; font-size: calc(13px * var(--admin-font-scale, 1)); line-height: 1.6; }
 .site-backup-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 10px; }
 .site-backup-file-input { display: none; }
-.site-backup-external-notice { margin: 16px 0 0; padding: 12px 14px; color: #173f2b; background: #edf8f1; border-left: 3px solid #24834f; font-size: 13px; line-height: 1.55; }
+.site-backup-external-notice { margin: 16px 0 0; padding: 12px 14px; color: #173f2b; background: #edf8f1; border-left: 3px solid #24834f; font-size: calc(13px * var(--admin-font-scale, 1)); line-height: 1.55; }
 .site-backup-auto-config { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; margin-top: 14px; padding: 12px 14px; background: #f7f7f8; border: 1px solid #e1e1e4; border-radius: 8px; }
-.site-backup-auto-config label { display: flex; flex-direction: column; gap: 5px; color: #515154; font-size: 12px; }
+.site-backup-auto-config label { display: flex; flex-direction: column; gap: 5px; color: #515154; font-size: calc(12px * var(--admin-font-scale, 1)); }
 .site-backup-auto-toggle { flex-direction: row !important; align-items: center; padding-bottom: 8px; color: #1d1d1f !important; }
 .site-backup-mirror-field { flex: 1 1 360px; min-width: 260px; }
 .site-backup-auto-config .input-small { width: 90px; }
 .site-backup-history { display: grid; grid-template-columns: 130px minmax(0, 1fr); gap: 8px 14px; align-items: start; margin-top: 16px; padding-top: 14px; border-top: 1px solid #e5e5e7; }
-.site-backup-history > span { padding-top: 8px; color: #6e6e73; font-size: 12px; }
+.site-backup-history > span { padding-top: 8px; color: #6e6e73; font-size: calc(12px * var(--admin-font-scale, 1)); }
 .site-backup-history-item { grid-column: 2; display: flex; align-items: center; justify-content: space-between; gap: 16px; width: 100%; min-width: 0; padding: 8px 10px; color: #1d1d1f; background: transparent; border: 1px solid transparent; border-radius: 6px; text-align: left; cursor: pointer; transition: background-color 160ms ease, border-color 160ms ease; }
 .site-backup-history-item:hover:not(:disabled) { background: #f5f5f7; border-color: #e2e2e5; }
-.site-backup-history-item strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
-.site-backup-history-item small { flex: 0 0 auto; color: #6e6e73; font-size: 11px; }
+.site-backup-history-item strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: calc(12px * var(--admin-font-scale, 1)); }
+.site-backup-history-item small { flex: 0 0 auto; color: #6e6e73; font-size: calc(11px * var(--admin-font-scale, 1)); }
 .runtime-settings-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; }
 .runtime-card { min-width: 0; padding: 18px; background: #ffffff; border: 1px solid #e5e5e7; border-radius: 10px; }
 .runtime-card-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
-.runtime-card-heading strong { color: #1d1d1f; font-size: 14px; }
-.runtime-card-heading p { margin: 6px 0 0; color: #6e6e73; font-size: 12px; line-height: 1.55; }
-.runtime-badge { flex: 0 0 auto; padding: 4px 8px; border-radius: 999px; font-size: 11px; white-space: nowrap; }
+.runtime-card-heading strong { color: #1d1d1f; font-size: calc(14px * var(--admin-font-scale, 1)); }
+.runtime-card-heading p { margin: 6px 0 0; color: #6e6e73; font-size: calc(12px * var(--admin-font-scale, 1)); line-height: 1.55; }
+.runtime-badge { flex: 0 0 auto; padding: 4px 8px; border-radius: 999px; font-size: calc(11px * var(--admin-font-scale, 1)); white-space: nowrap; }
 .runtime-badge.is-supported { color: #176b3a; background: #e8f7ee; }
 .runtime-badge.is-muted { color: #6e6e73; background: #f0f0f2; }
-.runtime-toggle-row { display: inline-flex !important; flex-direction: row !important; align-items: center; gap: 9px !important; margin-top: 16px; color: #1d1d1f !important; font-size: 13px !important; cursor: pointer; }
+.runtime-toggle-row { display: inline-flex !important; flex-direction: row !important; align-items: center; gap: 9px !important; margin-top: 16px; color: #1d1d1f !important; font-size: calc(13px * var(--admin-font-scale, 1)) !important; cursor: pointer; }
 .runtime-toggle-row input { position: absolute; opacity: 0; pointer-events: none; }
 .runtime-toggle-track { position: relative; width: 38px; height: 22px; flex: 0 0 auto; border-radius: 999px; background: #c7c7cc; transition: background-color 160ms ease; }
 .runtime-toggle-track span { position: absolute; left: 3px; top: 3px; width: 16px; height: 16px; border-radius: 50%; background: #ffffff; box-shadow: 0 1px 3px #0003; transition: transform 160ms ease; }
 .runtime-toggle-row input:checked + .runtime-toggle-track { background: #24834f; }
 .runtime-toggle-row input:checked + .runtime-toggle-track span { transform: translateX(16px); }
 .runtime-toggle-row input:disabled + .runtime-toggle-track { opacity: .55; }
-.runtime-help { margin: 12px 0 0; color: #86868b; font-size: 12px; line-height: 1.55; }
-.runtime-error { margin: 14px 0 0; padding: 9px 11px; color: #8a1c14; background: #fff0ee; border-left: 3px solid #c9372c; font-size: 12px; line-height: 1.5; }
-.runtime-message { margin: 14px 0 0; color: #176b3a; font-size: 12px; line-height: 1.5; }
+.runtime-help { margin: 12px 0 0; color: #86868b; font-size: calc(12px * var(--admin-font-scale, 1)); line-height: 1.55; }
+.runtime-error { margin: 14px 0 0; padding: 9px 11px; color: #8a1c14; background: #fff0ee; border-left: 3px solid #c9372c; font-size: calc(12px * var(--admin-font-scale, 1)); line-height: 1.5; }
+.runtime-message { margin: 14px 0 0; color: #176b3a; font-size: calc(12px * var(--admin-font-scale, 1)); line-height: 1.5; }
 .runtime-save-button { margin-top: 16px; }
 
 /* 局域网电视发现与一键投屏 */
 .cast-device-panel { margin-bottom: 16px; padding: 18px; background: #ffffff; border: 1px solid #d7e5ec; border-radius: 10px; }
 .cast-panel-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
-.cast-panel-heading strong { color: #1d1d1f; font-size: 15px; }
-.cast-panel-heading p { max-width: 620px; margin: 6px 0 0; color: #6e6e73; font-size: 12px; line-height: 1.55; }
+.cast-panel-heading strong { color: #1d1d1f; font-size: calc(15px * var(--admin-font-scale, 1)); }
+.cast-panel-heading p { max-width: 620px; margin: 6px 0 0; color: #6e6e73; font-size: calc(12px * var(--admin-font-scale, 1)); line-height: 1.55; }
 .cast-panel-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 10px; }
 .cast-active-banner { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-top: 14px; padding: 12px 14px; background: #e8f7ee; border: 1px solid #b6e3c8; border-radius: 8px; }
-.cast-active-banner strong { display: block; color: #14653a; font-size: 13px; }
-.cast-active-banner small { display: block; margin-top: 4px; color: #3f7a5b; font-size: 11px; }
-.cast-warning { margin: 14px 0 0; padding: 10px 12px; color: #7a4a06; background: #fff8ea; border-left: 3px solid #e0a338; font-size: 12px; line-height: 1.6; }
-.cast-warning code { padding: 1px 5px; background: rgba(0, 0, 0, .05); border-radius: 4px; font-size: 11px; }
+.cast-active-banner strong { display: block; color: #14653a; font-size: calc(13px * var(--admin-font-scale, 1)); }
+.cast-active-banner small { display: block; margin-top: 4px; color: #3f7a5b; font-size: calc(11px * var(--admin-font-scale, 1)); }
+.cast-warning { margin: 14px 0 0; padding: 10px 12px; color: #7a4a06; background: #fff8ea; border-left: 3px solid #e0a338; font-size: calc(12px * var(--admin-font-scale, 1)); line-height: 1.6; }
+.cast-warning code { padding: 1px 5px; background: rgba(0, 0, 0, .05); border-radius: 4px; font-size: calc(11px * var(--admin-font-scale, 1)); }
 .cast-device-list { margin: 14px 0 0; padding: 0; list-style: none; display: grid; gap: 8px; }
 .cast-device-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 11px 13px; background: #f8fafb; border: 1px solid #e3eaee; border-radius: 8px; }
 .cast-device-row.is-active { background: #eef8f2; border-color: #b6e3c8; }
 .cast-device-icon { display: inline-flex; width: 34px; height: 34px; align-items: center; justify-content: center; color: #2f6d8c; background: #ffffff; border: 1px solid #dbe6ec; border-radius: 8px; }
 .cast-device-icon svg { width: 19px; height: 19px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
 .cast-device-text { min-width: 0; }
-.cast-device-text strong { display: block; color: #1d1d1f; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.cast-device-text small { display: block; margin-top: 3px; color: #86868b; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cast-device-text strong { display: block; color: #1d1d1f; font-size: calc(13px * var(--admin-font-scale, 1)); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cast-device-text small { display: block; margin-top: 3px; color: #86868b; font-size: calc(11px * var(--admin-font-scale, 1)); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cast-empty { display: grid; gap: 7px; margin-top: 14px; padding: 20px 16px; color: #6e6e73; text-align: center; background: #f8fafb; border: 1px dashed #d3dde3; border-radius: 8px; }
-.cast-empty strong { color: #344054; font-size: 13px; }
-.cast-empty span { margin: 0 auto; max-width: 620px; font-size: 12px; line-height: 1.6; }
+.cast-empty strong { color: #344054; font-size: calc(13px * var(--admin-font-scale, 1)); }
+.cast-empty span { margin: 0 auto; max-width: 620px; font-size: calc(12px * var(--admin-font-scale, 1)); line-height: 1.6; }
 .mode-hint { margin-top: 16px; padding: 16px 20px; background: rgba(0, 102, 204, 0.03); border: 1px solid rgba(0, 102, 204, 0.1); border-radius: 8px; }
-.mode-hint p { margin: 6px 0; font-size: 13px; color: #434345; line-height: 1.6; }
-.mode-hint code { background: rgba(0, 0, 0, 0.04); padding: 2px 6px; border-radius: 4px; font-size: 12px; color: #1d1d1f; }
+.mode-hint p { margin: 6px 0; font-size: calc(13px * var(--admin-font-scale, 1)); color: #434345; line-height: 1.6; }
+.mode-hint code { background: rgba(0, 0, 0, 0.04); padding: 2px 6px; border-radius: 4px; font-size: calc(12px * var(--admin-font-scale, 1)); color: #1d1d1f; }
 .required { color: #ff3b30; font-weight: bold; margin-left: 2px; }
 
 /* 引擎状态卡片 */
@@ -14946,9 +14029,9 @@ button:enabled:active {
     display: flex; flex-direction: column; gap: 12px;
     box-shadow: 0 4px 16px rgba(0,0,0,0.02);
 }
-.engine-status-header { display: flex; align-items: center; gap: 10px; font-size: 15px; color: #1d1d1f; font-weight: 600; }
+.engine-status-header { display: flex; align-items: center; gap: 10px; font-size: calc(15px * var(--admin-font-scale, 1)); color: #1d1d1f; font-weight: 600; }
 .engine-dot { width: 10px; height: 10px; border-radius: 50%; background: #8e8e93; display: inline-block; flex-shrink: 0; }
-.engine-status-body { display: flex; flex-wrap: wrap; gap: 10px 32px; font-size: 13px; color: #515154; }
+.engine-status-body { display: flex; flex-wrap: wrap; gap: 10px 32px; font-size: calc(13px * var(--admin-font-scale, 1)); color: #515154; }
 .status-connected .engine-dot, .status-simulating .engine-dot, .status-heartbeat .engine-dot { background: #34c759; box-shadow: 0 0 8px rgba(52, 199, 89, 0.6); }
 .status-connected, .status-simulating, .status-heartbeat { border-color: rgba(52, 199, 89, 0.15); background: rgba(52, 199, 89, 0.05); }
 .status-error .engine-dot, .status-unconfigured .engine-dot { background: #ff3b30; box-shadow: 0 0 8px rgba(255, 59, 48, 0.6); }
@@ -14964,14 +14047,6 @@ button:enabled:active {
     }
     .model-preview-panel {
         position: relative;
-    }
-    .model-workflow-rail,
-    .model-stats-strip,
-    .model-acceptance-grid {
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-    }
-    .model-spec-form {
-        grid-template-columns: repeat(2, minmax(0, 1fr));
     }
     .database-retention-controls { grid-template-columns: minmax(0,1fr) auto; }
     .database-retention-presets { grid-column: 1 / -1; }
@@ -15012,7 +14087,7 @@ button:enabled:active {
     .secondary-page-nav-item { min-height: 58px; }
     .admin-header { padding: 0 16px; }
     .admin-connection-strip { gap: 6px; margin-left: 10px; }
-    .admin-connection-pill { padding: 5px 8px; font-size: 11px; }
+    .admin-connection-pill { padding: 5px 8px; font-size: calc(11px * var(--admin-font-scale, 1)); }
     .admin-container.line-planner-active .admin-content {
         padding: 8px;
     }
@@ -15025,35 +14100,8 @@ button:enabled:active {
     .line-native-actions {
         justify-content: flex-start;
     }
-    .line-planner-steps {
-        overflow-x: auto;
-        padding: 8px 14px;
-        scrollbar-width: thin;
-    }
-    .line-planner-steps span {
-        flex: 0 0 auto;
-    }
-    .line-planner-layout {
-        min-height: 0;
-        grid-template-columns: minmax(0, 1fr);
-        grid-template-rows: auto auto;
-    }
-    .line-planner-editor {
-        max-height: none;
-        overflow: visible;
-        border-right: 0;
-    }
     .line-planner-preview {
         min-height: 640px;
-    }
-    .line-editor-float-toggle {
-        left: 12px;
-        top: 12px;
-        transform: none;
-    }
-    .line-preview-toolbar {
-        align-items: flex-start;
-        flex-direction: column;
     }
     .line-preview-metrics {
         justify-content: flex-start;
@@ -15135,7 +14183,7 @@ button:enabled:active {
     gap: 6px;
     padding: 5px 12px;
     border-radius: 999px;
-    font-size: 13px;
+    font-size: calc(13px * var(--admin-font-scale, 1));
     font-weight: 600;
     line-height: 1.3;
     transition: all 0.2s ease;
@@ -15180,57 +14228,54 @@ button:enabled:active {
 .workshop-management-tab { --workshop-accent: #1d1d1f; }
 .workshop-management-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
 .workshop-management-heading h2 { margin-bottom: 6px; }
-.workshop-current-chip { flex: 0 0 auto; padding: 7px 12px; color: #515154; background: #f5f5f7; border: 1px solid #e5e5e7; border-radius: 999px; font-size: 12px; }
+.workshop-current-chip { flex: 0 0 auto; padding: 7px 12px; color: #515154; background: #f5f5f7; border: 1px solid #e5e5e7; border-radius: 999px; font-size: calc(12px * var(--admin-font-scale, 1)); }
 .workshop-step-nav { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 18px 0; padding: 8px; background: #f5f5f7; border: 1px solid #e6e6e8; border-radius: 16px; }
 .workshop-step-nav > button { display: flex; align-items: center; min-width: 0; padding: 12px 13px; color: #515154; text-align: left; background: #fff; border: 1px solid #e8e8ed; border-radius: 12px; cursor: pointer; transition: color .18s ease, background .18s ease, border-color .18s ease, box-shadow .18s ease, transform .18s ease; }
 .workshop-step-nav > button:hover:not(:disabled) { border-color: #c7c7cc; box-shadow: 0 7px 20px rgba(0, 0, 0, .06); transform: translateY(-1px); }
 .workshop-step-nav > button.active { color: #fff; background: #1d1d1f; border-color: #1d1d1f; box-shadow: 0 8px 22px rgba(0, 0, 0, .16); }
 .workshop-step-nav > button:disabled { opacity: .45; cursor: not-allowed; }
-.workshop-step-number { display: grid; flex: 0 0 34px; width: 34px; height: 34px; margin-right: 11px; place-items: center; color: #6e6e73; background: #f5f5f7; border-radius: 9px; font-size: 11px; font-weight: 700; }
+.workshop-step-number { display: grid; flex: 0 0 34px; width: 34px; height: 34px; margin-right: 11px; place-items: center; color: #6e6e73; background: #f5f5f7; border-radius: 9px; font-size: calc(11px * var(--admin-font-scale, 1)); font-weight: 700; }
 .workshop-step-nav > button.active .workshop-step-number { color: #1d1d1f; background: #fff; }
 .workshop-step-copy { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 3px; }
-.workshop-step-copy strong { overflow: hidden; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
-.workshop-step-copy small { overflow: hidden; color: #86868b; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.workshop-step-copy strong { overflow: hidden; font-size: calc(13px * var(--admin-font-scale, 1)); text-overflow: ellipsis; white-space: nowrap; }
+.workshop-step-copy small { overflow: hidden; color: #86868b; font-size: calc(11px * var(--admin-font-scale, 1)); text-overflow: ellipsis; white-space: nowrap; }
 .workshop-step-nav > button.active small { color: #c7c7cc; }
 .workshop-step-nav svg { flex: 0 0 17px; width: 17px; height: 17px; margin-left: 8px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.8; }
-.spatial-rule-banner { display: flex; align-items: center; gap: 14px; margin: 14px 0; padding: 13px 15px; color: #475467; background: #f0f7fa; border: 1px solid #cfe2ea; border-radius: 9px; font-size: 12px; line-height: 1.55; }
+.spatial-rule-banner { display: flex; align-items: center; gap: 14px; margin: 14px 0; padding: 13px 15px; color: #475467; background: #f0f7fa; border: 1px solid #cfe2ea; border-radius: 9px; font-size: calc(12px * var(--admin-font-scale, 1)); line-height: 1.55; }
 .spatial-rule-banner strong { flex: 0 0 auto; color: #175f7b; }
 .data-table tbody tr:not(.row-selected):hover td { background: #f8fbff; }
 .data-table tr.row-selected td { background: #edf5ff; box-shadow: inset 0 1px 0 rgba(37, 99, 235, .12), inset 0 -1px 0 rgba(37, 99, 235, .12); }
 .data-table td .btn + .btn { margin-left: 6px; }
 .workshop-create-row { margin-bottom: 14px; }
-.workshop-step-context { display: flex; align-items: center; gap: 12px; margin: 6px 0 14px; padding: 10px 12px; color: #6e6e73; background: #f8f8fa; border: 1px solid #e5e5e7; border-radius: 12px; font-size: 12px; }
+.workshop-step-context { display: flex; align-items: center; gap: 12px; margin: 6px 0 14px; padding: 10px 12px; color: #6e6e73; background: #f8f8fa; border: 1px solid #e5e5e7; border-radius: 12px; font-size: calc(12px * var(--admin-font-scale, 1)); }
 .workshop-step-context label { display: flex; align-items: center; gap: 8px; color: #3a3a3c; font-weight: 600; }
 .workshop-step-context .input { width: auto; min-width: 180px; height: 34px; }
-.workshop-back-button { display: grid; flex: 0 0 34px; width: 34px; height: 34px; padding: 0; place-items: center; color: #1d1d1f; background: #fff; border: 1px solid #d9d9de; border-radius: 50%; cursor: pointer; transition: background .16s ease, transform .16s ease; }
-.workshop-back-button:hover { background: #ececf0; transform: translateX(-1px); }
-.workshop-back-button svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
 .workshop-spatial-editor { margin-top: 0; padding: 20px; background: #f8fafb; border: 1px solid #dce5eb; border-radius: 14px; }
 .workshop-spatial-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
-.workshop-spatial-heading h3 { margin: 0; color: #1d2939; font-size: 16px; }
-.workshop-spatial-heading p { max-width: 720px; margin: 6px 0 0; color: #667085; font-size: 12px; line-height: 1.55; }
+.workshop-spatial-heading h3 { margin: 0; color: #1d2939; font-size: calc(16px * var(--admin-font-scale, 1)); }
+.workshop-spatial-heading p { max-width: 720px; margin: 6px 0 0; color: #667085; font-size: calc(12px * var(--admin-font-scale, 1)); line-height: 1.55; }
 .workshop-spatial-grid { display: grid; grid-template-columns: repeat(4, minmax(150px, 1fr)); gap: 12px; margin-top: 16px; }
-.workshop-spatial-grid > label, .line-transform-grid > label { display: flex; flex-direction: column; gap: 6px; color: #475467; font-size: 12px; font-weight: 500; }
+.workshop-spatial-grid > label, .line-transform-grid > label { display: flex; flex-direction: column; gap: 6px; color: #475467; font-size: calc(12px * var(--admin-font-scale, 1)); font-weight: 500; }
 .workshop-spatial-grid .workshop-boundary-toggle { flex-direction: row; align-items: center; min-height: 38px; padding: 8px 10px; align-self: end; background: #fff; border: 1px solid #d0d5dd; border-radius: 7px; }
 .workshop-boundary-toggle input { accent-color: #176b8b; }
-.workshop-step-footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 18px; padding-top: 16px; color: #667085; border-top: 1px solid #e3e7eb; font-size: 12px; }
+.workshop-step-footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 18px; padding-top: 16px; color: #667085; border-top: 1px solid #e3e7eb; font-size: calc(12px * var(--admin-font-scale, 1)); }
 .canvas-save-reminder { position: relative; z-index: 12; display: flex; align-items: center; gap: 12px; margin: 12px 16px; padding: 12px 14px; overflow: hidden; color: #7a2e0e; background: linear-gradient(90deg, #fff4e8, #fff9ef); border: 1px solid #f79009; border-radius: 11px; box-shadow: 0 8px 24px rgba(181, 71, 8, .12); }
 .canvas-save-reminder::before { position: absolute; top: 0; bottom: 0; left: 0; width: 5px; content: ''; background: #f04438; }
 .canvas-save-reminder-dot { flex: 0 0 10px; width: 10px; height: 10px; margin-left: 2px; background: #f04438; border-radius: 50%; box-shadow: 0 0 0 5px rgba(240, 68, 56, .12); animation: canvas-save-pulse 1.8s ease-in-out infinite; }
 .canvas-save-reminder > div:not(.canvas-save-reminder-actions) { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 3px; }
-.canvas-save-reminder strong { color: #8a2c12; font-size: 13px; }
-.canvas-save-reminder span { font-size: 11px; line-height: 1.45; }
+.canvas-save-reminder strong { color: #8a2c12; font-size: calc(13px * var(--admin-font-scale, 1)); }
+.canvas-save-reminder span { font-size: calc(11px * var(--admin-font-scale, 1)); line-height: 1.45; }
 .canvas-save-reminder-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 8px; }
 .canvas-save-reminder-actions .btn { min-height: 32px; }
 .line-canvas-save-reminder { margin-top: 0; margin-bottom: 12px; }
 @keyframes canvas-save-pulse { 0%, 100% { transform: scale(1); opacity: 1; } 50% { transform: scale(.75); opacity: .72; } }
 .workshop-map-shell { overflow: hidden; background: #fff; border: 1px solid #e5e5e7; border-radius: 16px; box-shadow: 0 10px 34px rgba(0, 0, 0, .055); }
 .workshop-map-toolbar { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; padding: 18px 20px; border-bottom: 1px solid #e8e8ed; }
-.workshop-map-toolbar h3 { margin: 0; color: #1d1d1f; font-size: 16px; }
-.workshop-map-toolbar p { max-width: 760px; margin: 6px 0 0; color: #6e6e73; font-size: 12px; line-height: 1.55; }
+.workshop-map-toolbar h3 { margin: 0; color: #1d1d1f; font-size: calc(16px * var(--admin-font-scale, 1)); }
+.workshop-map-toolbar p { max-width: 760px; margin: 6px 0 0; color: #6e6e73; font-size: calc(12px * var(--admin-font-scale, 1)); line-height: 1.55; }
 .workshop-map-layout { display: grid; grid-template-columns: minmax(0, 1fr) 300px; min-height: 620px; background: #f5f7f8; }
 .workshop-map-board { position: relative; min-width: 0; padding: 42px 28px 44px 54px; }
-.workshop-map-dimension { position: absolute; z-index: 2; color: #6e6e73; font-size: 11px; font-weight: 600; letter-spacing: .02em; }
+.workshop-map-dimension { position: absolute; z-index: 2; color: #6e6e73; font-size: calc(11px * var(--admin-font-scale, 1)); font-weight: 600; letter-spacing: .02em; }
 .workshop-map-dimension-x { top: 18px; left: 54px; right: 28px; text-align: center; }
 .workshop-map-dimension-z { top: 50%; left: 12px; transform: translateY(-50%) rotate(-90deg); white-space: nowrap; }
 .workshop-map-stage { position: relative; overflow: hidden; width: 100%; height: clamp(500px, 62vh, 680px); background-color: #eef3f5; background-image: linear-gradient(rgba(92, 119, 132, .095) 1px, transparent 1px), linear-gradient(90deg, rgba(92, 119, 132, .095) 1px, transparent 1px), linear-gradient(rgba(92, 119, 132, .12) 1px, transparent 1px), linear-gradient(90deg, rgba(92, 119, 132, .12) 1px, transparent 1px); background-position: center; background-size: 20px 20px, 20px 20px, 100px 100px, 100px 100px; border: 1px solid #bfcdd3; border-radius: 12px; box-shadow: inset 0 0 0 1px rgba(255,255,255,.7), inset 0 0 34px rgba(37, 70, 84, .045); touch-action: none; }
@@ -15241,15 +14286,15 @@ button:enabled:active {
 .workshop-map-axis { position: absolute; z-index: 0; background: rgba(29, 29, 31, .22); pointer-events: none; }
 .workshop-map-axis-x { top: 50%; right: 0; left: 0; height: 1px; }
 .workshop-map-axis-z { top: 0; bottom: 0; left: 50%; width: 1px; }
-.workshop-map-origin { position: absolute; z-index: 1; top: calc(50% + 6px); left: calc(50% + 7px); color: #86868b; font-size: 10px; pointer-events: none; }
+.workshop-map-origin { position: absolute; z-index: 1; top: calc(50% + 6px); left: calc(50% + 7px); color: #86868b; font-size: calc(10px * var(--admin-font-scale, 1)); pointer-events: none; }
 .workshop-map-line { position: absolute; z-index: 3; overflow: hidden; min-width: 46px; min-height: 42px; padding: 0; color: #244654; background: rgba(173, 202, 214, .74); border: 1px solid #82a8b9; border-radius: 9px; box-shadow: 0 6px 18px rgba(40, 68, 81, .14); cursor: grab; transform-origin: center; touch-action: none; transition: box-shadow .16s ease, border-color .16s ease, background .16s ease; }
 .workshop-map-line:hover { z-index: 4; border-color: #4b8198; box-shadow: 0 9px 22px rgba(40, 68, 81, .2); }
 .workshop-map-line.selected { z-index: 5; color: #fff; background: rgba(35, 78, 97, .9); border-color: #173f51; box-shadow: 0 0 0 3px rgba(0, 113, 227, .22), 0 10px 26px rgba(24, 59, 75, .26); }
 .workshop-map-line.dragging { cursor: grabbing; transition: none; }
 .workshop-map-line.outside { border-color: #ff3b30; box-shadow: 0 0 0 3px rgba(255, 59, 48, .2); }
 .workshop-map-line header { position: absolute; z-index: 2; top: 5px; right: 7px; left: 7px; display: flex; align-items: center; justify-content: space-between; gap: 8px; pointer-events: none; }
-.workshop-map-line header strong { overflow: hidden; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
-.workshop-map-line header span { flex: 0 0 auto; font-size: 9px; opacity: .75; }
+.workshop-map-line header strong { overflow: hidden; font-size: calc(11px * var(--admin-font-scale, 1)); text-overflow: ellipsis; white-space: nowrap; }
+.workshop-map-line header span { flex: 0 0 auto; font-size: calc(9px * var(--admin-font-scale, 1)); opacity: .75; }
 .workshop-map-track { position: absolute; z-index: 1; height: 3px; border-radius: 999px; pointer-events: none; transform: translateY(-50%); }
 .workshop-map-track.lane { background: #4d91ad; box-shadow: 0 0 0 2px rgba(89, 146, 169, .16); }
 .workshop-map-track.rail { height: 2px; background: #bd842b; box-shadow: 0 -3px #bd842b, 0 3px #bd842b; }
@@ -15258,51 +14303,51 @@ button:enabled:active {
 .workshop-line-placement-dock { position: absolute; z-index: 9; top: 14px; right: 14px; width: min(230px, calc(100% - 28px)); max-height: calc(100% - 28px); overflow: hidden; color: #364152; background: rgba(255, 255, 255, .96); border: 1px solid rgba(229, 139, 0, .42); border-radius: 13px; box-shadow: 0 13px 34px rgba(48, 57, 66, .2); backdrop-filter: blur(10px); }
 .workshop-line-placement-dock > header { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 11px 12px; background: linear-gradient(135deg, #fff8e8, #fff1cc); border-bottom: 1px solid #f5d390; }
 .workshop-line-placement-dock > header div { display: flex; min-width: 0; flex-direction: column; gap: 2px; }
-.workshop-line-placement-dock > header strong { color: #704000; font-size: 12px; }
-.workshop-line-placement-dock > header span { color: #9a6a21; font-size: 10px; }
-.workshop-line-placement-dock > header b { display: grid; flex: 0 0 26px; width: 26px; height: 26px; place-items: center; color: #fff; background: #dd8400; border-radius: 8px; font-size: 11px; }
+.workshop-line-placement-dock > header strong { color: #704000; font-size: calc(12px * var(--admin-font-scale, 1)); }
+.workshop-line-placement-dock > header span { color: #9a6a21; font-size: calc(10px * var(--admin-font-scale, 1)); }
+.workshop-line-placement-dock > header b { display: grid; flex: 0 0 26px; width: 26px; height: 26px; place-items: center; color: #fff; background: #dd8400; border-radius: 8px; font-size: calc(11px * var(--admin-font-scale, 1)); }
 .workshop-line-placement-list { display: grid; max-height: 260px; padding: 8px; overflow-y: auto; gap: 7px; }
 .workshop-line-placement-card { display: flex; min-width: 0; padding: 9px 8px; align-items: center; gap: 8px; color: #344054; background: #fff; border: 1px solid #e5e7eb; border-radius: 9px; box-shadow: 0 3px 9px rgba(16, 24, 40, .05); cursor: grab; user-select: none; touch-action: none; transition: border-color .16s ease, box-shadow .16s ease, transform .16s ease, opacity .16s ease; }
 .workshop-line-placement-card:hover, .workshop-line-placement-card.attention { border-color: #e58b00; box-shadow: 0 0 0 3px rgba(229, 139, 0, .13), 0 7px 16px rgba(91, 56, 0, .1); transform: translateY(-1px); }
 .workshop-line-placement-card.dragging { opacity: .48; cursor: grabbing; }
-.workshop-line-placement-handle { flex: 0 0 auto; color: #b36a00; font-size: 19px; line-height: 1; }
+.workshop-line-placement-handle { flex: 0 0 auto; color: #b36a00; font-size: calc(19px * var(--admin-font-scale, 1)); line-height: 1; }
 .workshop-line-placement-copy { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 2px; }
-.workshop-line-placement-copy strong { overflow: hidden; color: #344054; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
-.workshop-line-placement-copy small { color: #98a2b3; font-size: 9px; }
-.workshop-line-placement-card em { flex: 0 0 auto; color: #9a5500; font-size: 9px; font-style: normal; font-weight: 800; }
+.workshop-line-placement-copy strong { overflow: hidden; color: #344054; font-size: calc(11px * var(--admin-font-scale, 1)); text-overflow: ellipsis; white-space: nowrap; }
+.workshop-line-placement-copy small { color: #98a2b3; font-size: calc(9px * var(--admin-font-scale, 1)); }
+.workshop-line-placement-card em { flex: 0 0 auto; color: #9a5500; font-size: calc(9px * var(--admin-font-scale, 1)); font-style: normal; font-weight: 800; }
 .workshop-pending-line-ghost { position: fixed; z-index: 10000; top: 0; left: 0; display: flex; width: 220px; min-width: 0; padding: 10px 10px; align-items: center; gap: 8px; color: #344054; background: rgba(255, 255, 255, .98); border: 1px solid #e5a12f; border-radius: 10px; box-shadow: 0 15px 38px rgba(91, 56, 0, .24); pointer-events: none; user-select: none; opacity: .92; will-change: transform; }
 .workshop-pending-line-ghost.can-drop { color: #17542f; border-color: #12b76a; box-shadow: 0 0 0 4px rgba(18, 183, 106, .13), 0 15px 38px rgba(19, 78, 47, .22); }
-.workshop-pending-line-ghost em { flex: 0 0 auto; color: #9a5500; font-size: 9px; font-style: normal; font-weight: 800; }
+.workshop-pending-line-ghost em { flex: 0 0 auto; color: #9a5500; font-size: calc(9px * var(--admin-font-scale, 1)); font-style: normal; font-weight: 800; }
 .workshop-pending-line-ghost.can-drop em { color: #087443; }
 :global(body.workshop-pending-line-dragging),
 :global(body.workshop-pending-line-dragging *) { cursor: grabbing !important; user-select: none !important; }
 .workshop-map-empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 8px; color: #6e6e73; text-align: center; }
-.workshop-map-empty strong { color: #1d1d1f; font-size: 16px; }
-.workshop-map-empty span { margin-bottom: 8px; font-size: 12px; }
-.workshop-map-legend { position: absolute; right: 28px; bottom: 12px; display: flex; gap: 14px; color: #6e6e73; font-size: 10px; }
+.workshop-map-empty strong { color: #1d1d1f; font-size: calc(16px * var(--admin-font-scale, 1)); }
+.workshop-map-empty span { margin-bottom: 8px; font-size: calc(12px * var(--admin-font-scale, 1)); }
+.workshop-map-legend { position: absolute; right: 28px; bottom: 12px; display: flex; gap: 14px; color: #6e6e73; font-size: calc(10px * var(--admin-font-scale, 1)); }
 .workshop-map-legend span { display: flex; align-items: center; gap: 5px; }
 .workshop-map-legend i { display: block; width: 18px; height: 3px; border-radius: 999px; background: #4d91ad; }
 .workshop-map-legend i.rail { height: 2px; background: #bd842b; box-shadow: 0 -3px #bd842b, 0 3px #bd842b; }
 .workshop-map-legend i.center { height: 1px; background: rgba(29, 29, 31, .35); }
 .workshop-map-inspector { padding: 18px; background: #fff; border-left: 1px solid #e5e5e7; }
-.workshop-map-line-select, .workshop-map-input-grid label { display: flex; flex-direction: column; gap: 6px; color: #515154; font-size: 11px; font-weight: 600; }
+.workshop-map-line-select, .workshop-map-input-grid label { display: flex; flex-direction: column; gap: 6px; color: #515154; font-size: calc(11px * var(--admin-font-scale, 1)); font-weight: 600; }
 .workshop-map-line-select .input { width: 100%; }
 .workshop-map-footprint-card { display: flex; margin: 14px 0; padding: 14px; flex-direction: column; gap: 4px; color: #6e6e73; background: #f5f5f7; border-radius: 11px; }
-.workshop-map-footprint-card span { font-size: 10px; text-transform: uppercase; }
-.workshop-map-footprint-card strong { color: #1d1d1f; font-size: 18px; }
-.workshop-map-footprint-card small { font-size: 10px; }
+.workshop-map-footprint-card span { font-size: calc(10px * var(--admin-font-scale, 1)); text-transform: uppercase; }
+.workshop-map-footprint-card strong { color: #1d1d1f; font-size: calc(18px * var(--admin-font-scale, 1)); }
+.workshop-map-footprint-card small { font-size: calc(10px * var(--admin-font-scale, 1)); }
 .workshop-map-input-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
 .workshop-map-input-grid .input { width: 100%; min-width: 0; box-sizing: border-box; }
 .workshop-map-metrics { margin-top: 16px; padding-top: 14px; border-top: 1px solid #e8e8ed; }
-.workshop-map-metrics h4 { margin: 0 0 10px; color: #1d1d1f; font-size: 12px; }
+.workshop-map-metrics h4 { margin: 0 0 10px; color: #1d1d1f; font-size: calc(12px * var(--admin-font-scale, 1)); }
 .workshop-map-metric-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
-.workshop-map-metric-grid span { display: flex; justify-content: space-between; gap: 6px; padding: 8px; color: #86868b; background: #f8f8fa; border-radius: 7px; font-size: 10px; }
+.workshop-map-metric-grid span { display: flex; justify-content: space-between; gap: 6px; padding: 8px; color: #86868b; background: #f8f8fa; border-radius: 7px; font-size: calc(10px * var(--admin-font-scale, 1)); }
 .workshop-map-metric-grid strong { color: #3a3a3c; }
-.workshop-map-metrics p { margin: 10px 0 0; padding: 9px; color: #3b6d46; background: #eef8f0; border-radius: 7px; font-size: 10px; line-height: 1.45; }
+.workshop-map-metrics p { margin: 10px 0 0; padding: 9px; color: #3b6d46; background: #eef8f0; border-radius: 7px; font-size: calc(10px * var(--admin-font-scale, 1)); line-height: 1.45; }
 .workshop-map-metrics p.danger { color: #b42318; background: #fff0ef; }
 .workshop-line-detail-button { width: 100%; margin-top: 14px; }
-.workshop-map-inspector-empty { display: grid; height: 100%; min-height: 240px; place-items: center; color: #86868b; font-size: 12px; text-align: center; }
-.workshop-loading-state { display: grid; min-height: 280px; margin-top: 14px; place-items: center; color: #667085; background: #f8fafb; border: 1px dashed #cfd8df; border-radius: 14px; font-size: 13px; }
+.workshop-map-inspector-empty { display: grid; height: 100%; min-height: 240px; place-items: center; color: #86868b; font-size: calc(12px * var(--admin-font-scale, 1)); text-align: center; }
+.workshop-loading-state { display: grid; min-height: 280px; margin-top: 14px; place-items: center; color: #667085; background: #f8fafb; border: 1px dashed #cfd8df; border-radius: 14px; font-size: calc(13px * var(--admin-font-scale, 1)); }
 .line-transform-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 12px; }
 .line-transform-grid .input { width: 100%; min-width: 0; box-sizing: border-box; }
 @media (max-width: 1180px) {

@@ -60,8 +60,8 @@ defineExpose({ open, close })
 </template>
 
 <style scoped>
-.model-placement-menu { position: fixed; z-index: 10010; width: 148px; padding: 5px; border: 1px solid #dce3ec; border-radius: 8px; background: #fff; box-shadow: 0 8px 24px #17203322; color: #344054; font: 12px 'Inter Variable', 'Noto Sans SC Variable', sans-serif; }
-.placement-menu-title { padding: 5px 8px 7px; color: #8b96a6; font-size: 11px; }
+.model-placement-menu { position: fixed; z-index: 10010; width: 148px; padding: 5px; border: 1px solid #dce3ec; border-radius: 8px; background: #fff; box-shadow: 0 8px 24px #17203322; color: #344054; font: calc(12px * var(--admin-font-scale, 1)) 'Inter Variable', 'Noto Sans SC Variable', sans-serif; }
+.placement-menu-title { padding: 5px 8px 7px; color: #8b96a6; font-size: calc(11px * var(--admin-font-scale, 1)); }
 .model-placement-menu button { display: flex; justify-content: space-between; width: 100%; padding: 6px 9px; border: 0; border-radius: 5px; background: transparent; color: inherit; font: inherit; text-align: left; }
 .model-placement-menu button:hover:not(:disabled), .model-placement-menu button:focus-visible { outline: none; background: #edf4ff; color: #2457a6; }
 .model-placement-menu button:disabled { color: #b2bac6; cursor: not-allowed; }

@@ -21,7 +21,7 @@ function set(key, value) { emit('update:modelValue', { ...props.modelValue, [key
 <style scoped>
 .inspection-camera-fields { display: grid; gap: 10px; }
 .camera-numbers { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
-label { display: grid; gap: 6px; color: #475467; font-size: 13px; min-width: 0; }
-input { width: 100%; min-width: 0; box-sizing: border-box; border: 1px solid #d5dfe6; border-radius: 6px; padding: 7px; color: #223d4c; background: #fff; font-size: 14px; }
-.camera-capture { justify-self: start; padding: 6px 10px; border: 1px solid #a9cbd5; border-radius: 6px; background: #edf8fb; color: #23687a; font-size: 13px; cursor: pointer; }
+label { display: grid; gap: 6px; color: #475467; font-size: calc(13px * var(--admin-font-scale, 1)); min-width: 0; }
+input { width: 100%; min-width: 0; box-sizing: border-box; border: 1px solid #d5dfe6; border-radius: 6px; padding: 7px; color: #223d4c; background: #fff; font-size: calc(14px * var(--admin-font-scale, 1)); }
+.camera-capture { justify-self: start; padding: 6px 10px; border: 1px solid #a9cbd5; border-radius: 6px; background: #edf8fb; color: #23687a; font-size: calc(13px * var(--admin-font-scale, 1)); cursor: pointer; }
 </style>

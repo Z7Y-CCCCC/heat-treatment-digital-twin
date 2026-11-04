@@ -121,15 +121,24 @@ async function inspectAsset(filename) {
         assetType: asset.manifest.model.asset_type, placementLevel: asset.manifest.model.placement_level },
         actions: asset.actions, files: asset.manifest.files };
 }
-async function importAsset(db, filename, factoryId, inspectedSha256, authorize = () => {}) {
+async function importAsset(db, filename, factoryId, inspectedSha256, authorize = () => {}, requestId = '') {
     if (!/^[a-f0-9]{64}$/.test(inspectedSha256 || '') || sha(fs.readFileSync(filename)) !== inspectedSha256) fail('请先检查模型动作包，文件变化后需重新检查');
     const asset = await readAsset(filename), m = asset.manifest.model;
     if (!await db.get('SELECT id FROM factories WHERE id = ?', [factoryId])) fail('请先创建并选择工厂');
-    const token = crypto.randomBytes(16).toString('hex'), id = 'asset_' + token;
+    if (requestId && !/^[a-zA-Z0-9-]{16,80}$/.test(requestId)) fail('导入请求标识无效');
+    const token = requestId ? sha(Buffer.from(factoryId + '\0' + requestId)).slice(0, 32) : crypto.randomBytes(16).toString('hex'), id = 'asset_' + token;
+    const previous = requestId ? await db.get('SELECT * FROM models WHERE id = ? AND factory_id = ?', [id, factoryId]) : null;
+    if (previous) {
+        const saved = parse(previous.metadata);
+        if (saved.assetImport?.packageSha256 !== inspectedSha256) throw Object.assign(new Error('导入请求对应的文件已改变，请重新选择'), { statusCode: 409 });
+        authorize(previous.metadata);
+        return { model: { ...previous, motion_package: saved.motionAuthoring?.bundle || null, is_builtin: false }, reused: true };
+    }
     const root = path.resolve(process.env.UPLOADS_DIR || path.join(__dirname, '../uploads')), parent = path.join(root, 'projects'), dest = path.join(parent, token);
     fs.mkdirSync(parent, { recursive: true });
     if (!fs.realpathSync(parent).startsWith(fs.realpathSync(root) + path.sep)) fail('模型导入目录不在上传目录内');
     const base = '/uploads/projects/' + token + '/', metadata = { ...m.metadata };
+    metadata.assetImport = { requestId: requestId || token, packageSha256: inspectedSha256 };
     if (metadata.motionAuthoring) metadata.motionAuthoring = { version: 1, actions: metadata.motionAuthoring.actions || [] };
     let motion;
     if (asset.data) {

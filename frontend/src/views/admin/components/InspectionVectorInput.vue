@@ -21,10 +21,10 @@ function update(value, index, current) {
 
 <style scoped>
 .inspection-vector { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; padding: 0; margin: 0; min-width: 0; border: 0; }
-legend { padding: 0; margin-bottom: 6px; color: #475467; font-size: 13px; }
+legend { padding: 0; margin-bottom: 6px; color: #475467; font-size: calc(13px * var(--admin-font-scale, 1)); }
 legend small { color: #6b7f8f; font-size: inherit; }
 label { display: flex; align-items: center; border: 1px solid #d5dfe6; border-radius: 6px; background: #fff; min-width: 0; overflow: hidden; }
-span { color: #67808e; background: #f2f6f8; padding: 8px; font-size: 12px; }
-input { width: 100%; min-width: 0; border: 0; padding: 7px 4px; color: #223d4c; background: transparent; font-size: 14px; outline: none; }
+span { color: #67808e; background: #f2f6f8; padding: 8px; font-size: calc(12px * var(--admin-font-scale, 1)); }
+input { width: 100%; min-width: 0; border: 0; padding: 7px 4px; color: #223d4c; background: transparent; font-size: calc(14px * var(--admin-font-scale, 1)); outline: none; }
 label:focus-within { outline: 2px solid #45b4c8; outline-offset: 1px; }
 </style>

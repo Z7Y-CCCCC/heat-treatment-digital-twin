@@ -4,6 +4,21 @@ import { readFile } from 'node:fs/promises'
 
 const source = async path => readFile(new URL(path, import.meta.url), 'utf8')
 
+test('monitoring and disassembly use distinct semantic outline icons, including with an older server catalog', async () => {
+  const panel = await source('../src/views/AdminPanel.vue')
+  const { ADMIN_PAGES } = await import('../../shared/adminPages.mjs')
+  const pathsSource = panel.slice(panel.indexOf('const navIconPaths = {'), panel.indexOf('const { appDialog'))
+  const paths = new Function(`${pathsSource}; return navIconPaths`)()
+  for (const [key, original] of [['point-monitor', 'points'], ['disassembly-layout', 'models']]) {
+    assert.equal(ADMIN_PAGES.find(p => p.key === key).icon, key)
+    assert.ok(paths[key].length)
+    assert.notDeepEqual(paths[key], paths[original])
+  }
+  assert.match(panel, /navIconPaths\[tab.key\] \|\| navIconPaths\[tab.icon\]/)
+  assert.match(panel, /navIconPaths\[child.key\] \|\| navIconPaths\[child.icon\]/)
+  assert.match(panel, /\.nav-icon svg\s*\{[^}]*fill: none;[^}]*stroke: currentColor;[^}]*stroke-width: 1.75/)
+})
+
 test('workshop space omits the duplicate layout button while keeping top tabs and spatial save actions', async () => {
   const panel = await source('../src/views/AdminPanel.vue')
   const space = panel.slice(panel.indexOf('<template v-else-if="workshopManagementStep === \'space\' && selectedWorkshopEditor">'), panel.indexOf('<template v-else-if="selectedWorkshopEditor">'))
@@ -151,7 +166,8 @@ test('factory controls and account permissions occupy standalone admin pages', a
   assert.doesNotMatch(panel.slice(platformStart, settingsStart), /<FactoryLocationSettings/)
   assert.match(panel.slice(platformStart, settingsStart), /<UnifiedDashboardDesigner/)
   assert.doesNotMatch(panel.slice(platformStart, settingsStart), /map-design-details/)
-  assert.match(unifiedDesigner, /v-for="\(level,index\) in GROUP_MAP_LEVELS"/)
+  assert.doesNotMatch(unifiedDesigner, /unified-designer-views|选择大屏视角/)
+  assert.match(unifiedDesigner, /@view-change="syncSurface"/)
   assert.doesNotMatch(unifiedDesigner, /GroupPortalSettings|LoadingExperienceSettings|配置外部数据连接/)
   assert.match(panel, /data-testid="platform-map-panel"[\s\S]*?<GroupPortalSettings/)
   assert.match(panel, /data-testid="platform-loading-panel"[\s\S]*?<LoadingExperienceSettings/)

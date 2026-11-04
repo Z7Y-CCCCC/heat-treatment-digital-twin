@@ -31,6 +31,6 @@ onMounted(load)
 <style scoped src="../styles/form-controls.css"></style>
 <style scoped>
 .project-migration-settings { max-width: 1080px; }
-.project-migration-settings > p { margin: 18px 0 0; color: #7b879a; font-size: 13px; }
-.migration-load-error { display: flex; align-items: center; gap: 12px; margin-top: 18px; color: #b42318; font-size: 13px; }
+.project-migration-settings > p { margin: 18px 0 0; color: #7b879a; font-size: calc(13px * var(--admin-font-scale, 1)); }
+.migration-load-error { display: flex; align-items: center; gap: 12px; margin-top: 18px; color: #b42318; font-size: calc(13px * var(--admin-font-scale, 1)); }
 </style>

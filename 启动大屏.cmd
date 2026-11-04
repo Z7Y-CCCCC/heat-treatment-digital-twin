@@ -1,23 +1,25 @@
 @echo off
 setlocal EnableExtensions
 title Digital Twin - Current Workspace
-rem Recreated launcher: rebuild this checkout before starting the desktop app.
+rem Build changed source; reuse only a source-matched, verified interface.
 set "PROJECT_ROOT=%~dp0"
 set "APP_DIR=%PROJECT_ROOT%desktop"
 set "APP_EXE=%APP_DIR%\node_modules\electron\dist\electron.exe"
 set "NODE_EXE=%APP_DIR%\resources\runtime\node.exe"
 set "VITE_SCRIPT=%PROJECT_ROOT%frontend\node_modules\vite\bin\vite.js"
+set "ENSURE_FRONTEND=%APP_DIR%\scripts\ensure-workspace-frontend.cjs"
 set "ELECTRON_RUN_AS_NODE="
 if not exist "%APP_EXE%" goto missing
 if not exist "%NODE_EXE%" goto missing
 if not exist "%VITE_SCRIPT%" goto missing
+if not exist "%ENSURE_FRONTEND%" goto missing
 if not exist "%PROJECT_ROOT%unity-client\Builds\Windows\HeatTreatmentDigitalTwin.exe" goto missing
 
 echo Workspace: "%PROJECT_ROOT%"
-echo [1/2] Building the latest interface from this workspace...
+echo [1/2] Checking the latest interface from this workspace...
 pushd "%PROJECT_ROOT%frontend"
 if errorlevel 1 goto failed
-"%NODE_EXE%" "%VITE_SCRIPT%" build
+"%NODE_EXE%" "%ENSURE_FRONTEND%"
 set "BUILD_RESULT=%ERRORLEVEL%"
 popd
 if not "%BUILD_RESULT%"=="0" goto failed

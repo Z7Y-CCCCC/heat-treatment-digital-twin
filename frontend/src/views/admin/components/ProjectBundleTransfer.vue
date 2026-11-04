@@ -114,30 +114,30 @@ async function request(operation) {
 
 <style scoped src="../styles/form-controls.css"></style>
 <style scoped>
-.project-transfer { padding: 24px 0; color: #344054; font-size: 13px; }
-.transfer-heading h3 { margin: 0; font-size: 21px; color: #1d2939; }
+.project-transfer { padding: 24px 0; color: #344054; font-size: calc(13px * var(--admin-font-scale, 1)); }
+.transfer-heading h3 { margin: 0; font-size: calc(21px * var(--admin-font-scale, 1)); color: #1d2939; }
 .transfer-heading p { margin: 8px 0 20px; color: #7b879a; line-height: 1.6; }
 .transfer-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
 .transfer-card, .inspection { min-width: 0; padding: 22px; background: #fff; border: 1px solid #e0e5ed; border-radius: 12px; }
-.project-transfer h4 { margin: 0 0 18px; color: #253149; font-size: 16px; }
-.transfer-field { display: grid; gap: 8px; margin-bottom: 18px; color: #515154; font-size: 13px; font-weight: 500; }
+.project-transfer h4 { margin: 0 0 18px; color: #253149; font-size: calc(16px * var(--admin-font-scale, 1)); }
+.transfer-field { display: grid; gap: 8px; margin-bottom: 18px; color: #515154; font-size: calc(13px * var(--admin-font-scale, 1)); font-weight: 500; }
 .transfer-field .input { box-sizing: border-box; width: 100%; min-width: 0; min-height: 38px; font-family: inherit; }
 .transfer-file-row { display: flex; align-items: center; gap: 10px; min-height: 38px; margin-bottom: 18px; }
 .transfer-file-row .btn { flex-shrink: 0; }
 .transfer-file-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #7b879a; }
 .project-transfer .btn { min-height: 38px; font-family: inherit; }
-.transfer-note { margin: 14px 0 0; color: #7b879a; font-size: 12px; line-height: 1.6; }
+.transfer-note { margin: 14px 0 0; color: #7b879a; font-size: calc(12px * var(--admin-font-scale, 1)); line-height: 1.6; }
 .inspection { margin-top: 18px; }
-.inspection dl { display: grid; grid-template-columns: repeat(2, minmax(70px, 1fr) minmax(60px, 1fr)); gap: 10px; margin: 0 0 18px; font-size: 13px; }
+.inspection dl { display: grid; grid-template-columns: repeat(2, minmax(70px, 1fr) minmax(60px, 1fr)); gap: 10px; margin: 0 0 18px; font-size: calc(13px * var(--admin-font-scale, 1)); }
 .inspection dt { color: #7b879a; }
 .inspection dd { margin: 0; }
 .inspection details { margin: 16px 0; color: #65748b; line-height: 1.7; }
 .inspection summary { cursor: pointer; }
 .transfer-name { max-width: 520px; }
-.transfer-appearance { display: flex; align-items: center; gap: 8px; margin: 0 0 18px; font-size: 12px; color: #65748b; }
+.transfer-appearance { display: flex; align-items: center; gap: 8px; margin: 0 0 18px; font-size: calc(12px * var(--admin-font-scale, 1)); color: #65748b; }
 .transfer-appearance input { flex-shrink: 0; accent-color: var(--ui-accent); }
 .transfer-feedback { margin: 18px 0 0; padding: 10px 14px; border-radius: 8px; color: #067647; background: #ecfdf3; line-height: 1.6; }
 .transfer-feedback.error { color: #b42318; background: #fef3f2; }
 @media (max-width: 850px) { .transfer-grid { grid-template-columns: 1fr; } }
-@media (max-width: 600px) { .transfer-card, .inspection { padding: 16px; } .inspection dl { grid-template-columns: 1fr 1fr; } .project-transfer .btn { font-size: 13px; } }
+@media (max-width: 600px) { .transfer-card, .inspection { padding: 16px; } .inspection dl { grid-template-columns: 1fr 1fr; } .project-transfer .btn { font-size: calc(13px * var(--admin-font-scale, 1)); } }
 </style>

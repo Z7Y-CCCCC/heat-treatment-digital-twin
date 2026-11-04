@@ -43,6 +43,6 @@ watch(() => [props.level, props.location.country, props.location.regionCode, pro
 </template>
 
 <style scoped>
-.map-geometry-preview{position:absolute;inset:3% 10% 5%;display:grid;place-items:center;pointer-events:none}.map-geometry-preview svg{width:100%;height:100%;overflow:visible}.map-geometry-preview path{fill:color-mix(in srgb,var(--preview-map-base) 50%,transparent);stroke:color-mix(in srgb,var(--preview-accent) 37%,transparent);stroke-width:1.3;vector-effect:non-scaling-stroke}.map-geometry-preview path.selected{fill:color-mix(in srgb,var(--preview-accent) 42%,var(--preview-map-base));stroke:var(--preview-accent);stroke-width:1.8}.map-geometry-preview span{font-size:12px;color:var(--preview-text);opacity:.5}
-.map-geometry-preview em{position:absolute;left:0;bottom:2px;color:var(--preview-text);font-size:10px;font-style:normal;opacity:.6}
+.map-geometry-preview{position:absolute;inset:3% 10% 5%;display:grid;place-items:center;pointer-events:none}.map-geometry-preview svg{width:100%;height:100%;overflow:visible}.map-geometry-preview path{fill:color-mix(in srgb,var(--preview-map-base) 50%,transparent);stroke:color-mix(in srgb,var(--preview-accent) 37%,transparent);stroke-width:1.3;vector-effect:non-scaling-stroke}.map-geometry-preview path.selected{fill:color-mix(in srgb,var(--preview-accent) 42%,var(--preview-map-base));stroke:var(--preview-accent);stroke-width:1.8}.map-geometry-preview span{font-size:calc(12px * var(--admin-font-scale, 1));color:var(--preview-text);opacity:.5}
+.map-geometry-preview em{position:absolute;left:0;bottom:2px;color:var(--preview-text);font-size:calc(10px * var(--admin-font-scale, 1));font-style:normal;opacity:.6}
 </style>

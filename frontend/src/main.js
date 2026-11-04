@@ -2,6 +2,7 @@ import './runtime/purpleGlass.css'
 import { createApp } from 'vue'
 import './style.css'
 import './motion-buttons.css'
+import './runtime/adminControlStyles.css'
 import router from './router/index.js'
 import RootApp from './RootApp.vue'
 

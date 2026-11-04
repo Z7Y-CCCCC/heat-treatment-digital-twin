@@ -67,7 +67,7 @@ async function save() {
 .model-name-trigger svg { flex-shrink: 0; width: 14px; height: 14px; fill: none; stroke: #8191a7; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
 .model-name-trigger:hover:not(:disabled) { color: #2457a6; }
 .model-name-trigger:disabled { opacity: .6; cursor: wait; }
-.model-name-input { flex: 1; min-width: 0; width: 100%; height: 30px; padding: 4px 6px; border-radius: 6px; font-family: inherit; font-size: 12px; box-sizing: border-box; }
+.model-name-input { flex: 1; min-width: 0; width: 100%; height: 30px; padding: 4px 6px; border-radius: 6px; font-family: inherit; font-size: calc(12px * var(--admin-font-scale, 1)); box-sizing: border-box; }
 .model-name-action { flex-shrink: 0; min-width: 25px; height: 30px; padding: 4px 6px; }
-.model-name-saved { flex-shrink: 0; color: #16815b; font-size: 12px; }
+.model-name-saved { flex-shrink: 0; color: #16815b; font-size: calc(12px * var(--admin-font-scale, 1)); }
 </style>

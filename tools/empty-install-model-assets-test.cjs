@@ -24,10 +24,10 @@ async function main() {
     const assertEmpty = () => { for (const [table, n] of Object.entries(counts())) assert.equal(n, 0, table); };
     const post = (url, body) => requestJson(origin + url, { method: 'POST', body: JSON.stringify(body) });
     const zip = path.join(root, '导入文件/正式模型资产/cad_cleaner_170700.zip');
-    const send = async (op, file = zip, sha = '') => {
+    const send = async (op, file = zip, sha = '', requestId = '') => {
         const form = new FormData(); form.append('file', new Blob([fs.readFileSync(file)]), 'asset.zip');
         if (sha) form.append('inspectedSha256', sha);
-        const response = await testFetch(origin + '/api/models/asset-' + op, { method: 'POST', body: form });
+        const response = await testFetch(origin + '/api/models/asset-' + op, { method: 'POST', headers: requestId ? { 'X-Asset-Request-ID': requestId } : {}, body: form });
         return { status: response.status, data: await response.json() };
     };
     try {
@@ -60,6 +60,17 @@ async function main() {
         checks.push('selective model+motion import preserves complete sampling data, hashes and editable node identities; remaps modelId');
         const second = await send('import', zip, inspection.data.inspectedSha256); assert.equal(second.status, 201); assert.notEqual(second.data.model.id, model.id);
         checks.push('repeat import creates independent asset; never overwrites an existing model');
+        const requestId = require('node:crypto').randomUUID(), beforeRetry = counts().models;
+        const firstAttempt = await send('import', zip, inspection.data.inspectedSha256, requestId);
+        const repeatAttempt = await send('import', zip, inspection.data.inspectedSha256, requestId);
+        assert.equal(firstAttempt.status, 201); assert.equal(repeatAttempt.status, 201);
+        assert.equal(repeatAttempt.data.model.id, firstAttempt.data.model.id); assert.equal(repeatAttempt.data.reused, true);
+        assert.equal(counts().models, beforeRetry + 1);
+        const otherFile = path.join(root,'导入文件/正式模型资产/cad_fixed_load_table_112200.zip'), otherCheck = await send('inspect',otherFile);
+        const collision = await send('import', otherFile, otherCheck.data.inspectedSha256, requestId);
+        assert.equal(collision.status,409); assert.equal(counts().models,beforeRetry+1);
+        checks.push('retrying a stable batch request is idempotent; changed-file reuse is rejected without creating duplicate models');
+
         const exported = await testFetch(origin + '/api/models/' + model.id + '/asset-export'); assert.equal(exported.status, 200);
         const exportedFile = path.join(directory, 'roundtrip.zip'); fs.writeFileSync(exportedFile, Buffer.from(await exported.arrayBuffer()));
         const roundtrip = await bundle.inspectAsset(exportedFile); assert.equal(roundtrip.actions.length, inspection.data.actions.length);
@@ -80,7 +91,7 @@ async function main() {
         await assert.rejects(bundle.inspectAsset(mismatch), /不匹配/);
         checks.push('rejects illegal ZIP paths and motion/model mismatch even with a recomputed file checksum');
         await forceStop(child); child = null; await start();
-        assert.equal(counts().factories, 1); assert.equal(counts().models, 3); assert.equal(counts().devices, 0); assert.equal(counts().widgets, 0);
+        assert.equal(counts().factories, 1); assert.equal(counts().models, 4); assert.equal(counts().devices, 0); assert.equal(counts().widgets, 0);
         const loaded = (await requestJson(origin + '/api/models')).find(m => m.id === model.id); assert.ok(loaded.motion_package);
         checks.push('import survives backend restart without default factories/models being reseeded');
         fs.writeFileSync(path.join(directory, 'result.json'), JSON.stringify({ success: true, directory, checks, counts: counts() }, null, 2));

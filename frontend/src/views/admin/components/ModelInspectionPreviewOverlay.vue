@@ -46,24 +46,24 @@ const labels = computed(() => {
 
 <style scoped>
 .inspection-preview-overlay { position: absolute; z-index: 3; inset: 0; overflow: hidden; pointer-events: none; }
-.preview-stage-caption { position: absolute; top: 14px; left: 14px; display: grid; gap: 5px; color: #c3dce7; font-size: 12px; text-shadow: 0 1px 3px #001821; }
-.preview-stage-caption b { color: #f1fbff; font-size: 15px; }
+.preview-stage-caption { position: absolute; top: 14px; left: 14px; display: grid; gap: 5px; color: #c3dce7; font-size: calc(12px * var(--admin-font-scale, 1)); text-shadow: 0 1px 3px #001821; }
+.preview-stage-caption b { color: #f1fbff; font-size: calc(15px * var(--admin-font-scale, 1)); }
 .inspection-leaders { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
 line { stroke: #7ca6b7; stroke-width: 0.7; vector-effect: non-scaling-stroke; }
 circle { fill: #b8e5ed; }
 .selected line { stroke: #37e0ed; stroke-width: 1.4; }
 .selected circle { fill: #37e0ed; }
-.spatial-part-label { position: absolute; max-width: min(180px, 40%); padding: 5px 8px; border-radius: 5px; border: 1px solid #426170; background: #102a3bee; color: #e1eff5; font-size: 14px; cursor: pointer; pointer-events: auto; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; transform: translateY(-50%); box-shadow: 0 2px 8px #0004; }
+.spatial-part-label { position: absolute; max-width: min(180px, 40%); padding: 5px 8px; border-radius: 5px; border: 1px solid #426170; background: #102a3bee; color: #e1eff5; font-size: calc(14px * var(--admin-font-scale, 1)); cursor: pointer; pointer-events: auto; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; transform: translateY(-50%); box-shadow: 0 2px 8px #0004; }
 .spatial-part-label.right { transform: translate(-100%, -50%); }
 .spatial-part-label.selected, .spatial-part-label.hovered, .spatial-part-label:hover { color: #f4ffff; background: #07576b; border-color: #3ed4e5; z-index: 2; }
-.preview-part-detail { position: absolute; bottom: 12px; left: 12px; right: 12px; max-height: 185px; overflow: auto; border: 1px solid #517487; border-radius: 8px; padding: 10px 12px; color: #d9e9f1; background: #102536f2; pointer-events: auto; box-shadow: 0 6px 20px #0003; font-size: 13px; }
+.preview-part-detail { position: absolute; bottom: 12px; left: 12px; right: 12px; max-height: 185px; overflow: auto; border: 1px solid #517487; border-radius: 8px; padding: 10px 12px; color: #d9e9f1; background: #102536f2; pointer-events: auto; box-shadow: 0 6px 20px #0003; font-size: calc(13px * var(--admin-font-scale, 1)); }
 header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-header strong { font-size: 15px; }
-header button { border: none !important; background: transparent !important; font-size: 20px !important; padding: 0 4px !important; }
+header strong { font-size: calc(15px * var(--admin-font-scale, 1)); }
+header button { border: none !important; background: transparent !important; font-size: calc(20px * var(--admin-font-scale, 1)) !important; padding: 0 4px !important; }
 p { margin: 8px 0; line-height: 1.5; }
 small { color: #a0becc; }
 .preview-point-links { display: flex; flex-wrap: wrap; gap: 5px; margin: 8px 0; }
-.preview-point-links span { width: 100%; color: #9cc3d3; font-size: 12px; }
-code { padding: 3px 5px; border-radius: 4px; background: #244051; color: #9de5ed; font-size: 11px; overflow-wrap: anywhere; }
-.preview-part-detail button { margin-top: 4px; padding: 5px 8px; color: #cefbff; border: 1px solid #3b7689; border-radius: 5px; background: #1b4152; font-size: 12px; cursor: pointer; }
+.preview-point-links span { width: 100%; color: #9cc3d3; font-size: calc(12px * var(--admin-font-scale, 1)); }
+code { padding: 3px 5px; border-radius: 4px; background: #244051; color: #9de5ed; font-size: calc(11px * var(--admin-font-scale, 1)); overflow-wrap: anywhere; }
+.preview-part-detail button { margin-top: 4px; padding: 5px 8px; color: #cefbff; border: 1px solid #3b7689; border-radius: 5px; background: #1b4152; font-size: calc(12px * var(--admin-font-scale, 1)); cursor: pointer; }
 </style>

@@ -51,6 +51,7 @@ let backendAdminToken = null;
 let applicationOrigin = null;
 let writablePaths = null;
 let desktopSettingsTimer = null;
+let desktopSettingsSyncPromise = null;
 let appliedAutoStartSetting = null;
 let desktopControlServer = null;
 let desktopControlOrigin = null;
@@ -276,7 +277,9 @@ async function createStartupWindow() {
         startupWindow.focus();
     }
     sendStartupState();
-    await delay(120);
+    // loadFile has already completed. Yield for painting without an artificial
+    // minimum wait before real startup work can begin.
+    await delay(0);
     return startupWindow;
 }
 
@@ -360,6 +363,13 @@ function backendDependenciesReady(directory) {
 }
 
 async function ensureBackendDependencies() {
+    // The workspace server already resolves this exact dependency tree itself.
+    // Do not unpack a second copy into each developer/test profile. Installed
+    // customers still use the verified bundled archive below.
+    if (!app.isPackaged) {
+        const workspaceModules = path.resolve(__dirname, '..', 'backend', 'node_modules');
+        if (backendDependenciesReady(workspaceModules)) return workspaceModules;
+    }
     const tarFile = resourcePath('backend-dependencies.tar');
     const uncompressedDir = resourcePath('backend-dependencies');
 
@@ -807,7 +817,17 @@ function probeBackendHealth(port) {
     });
 }
 
-async function syncDesktopSettings() {
+function syncDesktopSettings() {
+    if (!backendPort) return Promise.resolve();
+    if (desktopSettingsSyncPromise) return desktopSettingsSyncPromise;
+    const pending = syncDesktopSettingsOnce();
+    desktopSettingsSyncPromise = pending;
+    const clear = () => { if (desktopSettingsSyncPromise === pending) desktopSettingsSyncPromise = null; };
+    pending.then(clear, clear);
+    return pending;
+}
+
+async function syncDesktopSettingsOnce() {
     if (!backendPort) return;
     try {
         const runtime = await readRuntimeSettings(backendPort);
@@ -844,7 +864,7 @@ async function syncDesktopSettings() {
 async function startDesktopSettingsSync() {
     if (desktopSettingsTimer) clearInterval(desktopSettingsTimer);
     desktopSettingsTimer = setInterval(() => {
-        syncDesktopSettings();
+        syncDesktopSettings().catch(error => logDesktopError('runtime-settings-sync', error));
     }, 4000);
     desktopSettingsTimer.unref?.();
     await syncDesktopSettings();
@@ -1665,14 +1685,20 @@ async function launchApplication() {
     // running as a normal user without write access to service data directories.
     await waitForStartupActivation(origin);
     updateStartupProgress('settings', 59, '正在读取系统设置', '同步开机自启、日志、备份和运行参数');
+    let initialSettingsSync = Promise.resolve();
     if (deployment.mode !== 'client') {
         void refreshStartupAppearanceWhenReady(port);
-        await startDesktopSettingsSync();
+        // Once licensing has passed, runtime settings and native rendering are
+        // independent. Keep the first settings read required, but overlap it
+        // with Unity instead of blocking creation of the login surface.
+        initialSettingsSync = startDesktopSettingsSync();
+        initialSettingsSync.catch(() => {}); // observed below, even if Unity fails first
     } else {
         // Autostart and supervision belong to this PC, not the remote collector.
         configureAutoStart(true);
     }
     if (backendOnlySmokeMode) {
+        await initialSettingsSync;
         applicationReadyForInteraction = true;
         completeStartupProgress();
         closeStartupWindow();
@@ -1696,13 +1722,16 @@ async function launchApplication() {
     // second startup window over Unity while the embedded WebView becomes ready.
     closeStartupWindow();
     updateStartupProgress('admin-host', 94, '正在加载顶部栏和数据组件', '等待后台管理 WebView2 完成首屏渲染');
-    try {
-        await waitForNativeHostReady(45000);
-    } catch (hostError) {
+    const hostReady = waitForNativeHostReady(45000).catch(hostError => {
         logDesktopError('admin-host-ready', hostError);
         // If WebView2 cannot show the embedded login, expose the same local
         // admin page in Electron instead of leaving a blank Unity surface.
         showAdminWindow();
+    });
+    await Promise.all([initialSettingsSync, hostReady]);
+    if (isQuitting) throw new Error('程序正在退出，已取消启动完成确认');
+    if (nativeStartup.process && (nativeProcess !== nativeStartup.process || hasProcessExited(nativeStartup.process))) {
+        throw new Error('三维大屏在启动完成前退出，请查看 native-client-error.log');
     }
     applicationReadyForInteraction = true;
     startNativeHostMonitor();

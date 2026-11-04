@@ -213,6 +213,7 @@ test('first-run dependency extraction yields to the event loop', async () => {
                 return extractor;
             }
         });
+        desktop.app.isPackaged = true;
         desktop.context.testResourcePath = name => path.join(userDataPath, name);
         desktop.run('resourcePath = testResourcePath; backendDependenciesReady = () => true; updateStartupProgress = () => {};');
         const pending = desktop.run('ensureBackendDependencies()');
@@ -240,6 +241,18 @@ test('first-run dependency extraction yields to the event loop', async () => {
     } finally {
         fs.rmSync(userDataPath, { recursive: true, force: true });
     }
+});
+
+test('workspace startup reuses source dependencies, but installed startup cannot borrow them', async () => {
+    const desktop = loadDesktop();
+    desktop.run(`
+        app.isPackaged = false;
+        backendDependenciesReady = directory => directory.endsWith('node_modules');
+        resourcePath = () => { throw new Error('archive path reached'); };
+    `);
+    assert.equal(await desktop.run('ensureBackendDependencies()'), path.resolve(desktopDir,'../backend/node_modules'));
+    desktop.app.isPackaged = true;
+    await assert.rejects(desktop.run('ensureBackendDependencies()'), /archive path reached/);
 });
 
 test('normal startup shows an immediate status window before service initialization', async () => {
@@ -275,6 +288,57 @@ test('static startup status yields to Unity before waiting for the embedded admi
     `);
     await desktop.run('launchApplication()');
     assert.deepEqual(Array.from(desktop.run('startupOrder')), ['status', 'backend', 'handoff', 'host', 'handoff']);
+});
+
+for (const lostNative of [false, true]) test('parallel runtime settings preserve activation/readiness gates' + (lostNative ? ' and reject a native exit while waiting' : ''), async () => {
+    const desktop = loadDesktop();
+    const nativeChild = new Child();
+    desktop.context.unitNativeChild = nativeChild;
+    desktop.run(`
+        startupOrder = [];
+        activationGate = new Promise(resolve => { finishActivation = resolve; });
+        settingsGate = new Promise(resolve => { finishSettings = resolve; });
+        createStartupWindow = async () => {};
+        initializeWritableData = () => ({ logsDir: 'unit-test-logs' });
+        guardLogStream = stream => stream; startLogMaintenance = () => {};
+        findAvailablePort = async () => 3001; startDesktopControlServer = async () => {};
+        startBackend = async () => ({}); waitForHealth = async () => {};
+        waitForStartupActivation = async () => { startupOrder.push('activation'); await activationGate; };
+        refreshStartupAppearanceWhenReady = async () => {};
+        startDesktopSettingsSync = () => { startupOrder.push('settings'); return settingsGate; };
+        createTray = () => {};
+        startNativeClient = async () => { startupOrder.push('native'); nativeProcess = unitNativeChild; return { process: unitNativeChild, ready: Promise.resolve() }; };
+        waitForNativeHostReady = async () => { startupOrder.push('host'); };
+        closeStartupWindow = () => {}; scheduleSmokeTimers = () => {};
+    `);
+    const startup = desktop.run('launchApplication()');
+    await tick();
+    assert.deepEqual(Array.from(desktop.run('startupOrder')), ['activation']);
+    desktop.run('finishActivation()'); await tick();
+    assert.deepEqual(Array.from(desktop.run('startupOrder')), ['activation','settings','native','host']);
+    assert.equal(desktop.run('applicationReadyForInteraction'), false);
+    if (lostNative) nativeChild.exit(1);
+    desktop.run('finishSettings()');
+    if (lostNative) {
+        await assert.rejects(startup, /三维大屏在启动完成前退出/);
+        assert.equal(desktop.run('applicationReadyForInteraction'), false);
+    } else {
+        await startup; assert.equal(desktop.run('applicationReadyForInteraction'), true);
+    }
+});
+
+test('slow runtime settings polling is single-flight, not repeated every timer tick', async () => {
+    const desktop = loadDesktop();
+    desktop.run(`
+        backendPort = 3001; reads = 0;
+        runtimeGate = new Promise(resolve => { finishRuntimeRead = resolve; });
+        readRuntimeSettings = () => { reads += 1; return runtimeGate; };
+    `);
+    const first = desktop.run('syncDesktopSettings()'), second = desktop.run('syncDesktopSettings()');
+    assert.equal(first,second);
+    assert.equal(desktop.run('reads'),1);
+    desktop.run('finishRuntimeRead({})');await first;
+    await desktop.run('syncDesktopSettings()');assert.equal(desktop.run('reads'),2);
 });
 
 test('startup failures restore an actionable, enlarged status window after handoff', async () => {

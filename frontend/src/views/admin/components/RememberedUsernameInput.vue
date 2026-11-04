@@ -47,7 +47,7 @@ function moveChoice(event, direction) {
 
 <style scoped>
 .username-field { position: relative; }
-input { width: 100%; box-sizing: border-box; padding: 12px 14px; border: 1px solid #d0d5dd; border-radius: 9px; font: inherit; font-size: 14px; color: #1d2939; background: #fff; }
+input { width: 100%; box-sizing: border-box; padding: 12px 14px; border: 1px solid #d0d5dd; border-radius: 9px; font: inherit; font-size: calc(14px * var(--admin-font-scale, 1)); color: #1d2939; background: #fff; }
 input.has-choices { padding-right: 44px; }
 input:focus { outline: 2px solid #84caff; outline-offset: 2px; }
 button { font: inherit; cursor: pointer; }

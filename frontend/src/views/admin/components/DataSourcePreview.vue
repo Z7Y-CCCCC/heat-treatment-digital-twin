@@ -82,14 +82,14 @@ function preview() {
 <style scoped src="../styles/form-controls.css"></style>
 <style scoped>
 * { box-sizing: border-box; }
-.source-preview { min-width: 0; padding: 14px 0; font-size: 12px; }
+.source-preview { min-width: 0; padding: 14px 0; font-size: calc(12px * var(--admin-font-scale, 1)); }
 .note { color: #8490a1; line-height: 1.6; margin: 0 0 12px; }
 .preview-toolbar { display: flex; gap: 12px; align-items: end; flex-wrap: wrap; }
 label { display: grid; gap: 7px; min-width: 0; flex: 1 1 160px; color: #536176; }
 .input { width: 100%; min-width: 0; font: inherit; }
 .btn { min-height: 36px; }
 .preview-table-scroll { overflow: auto; max-height: 220px; border: 1px solid #e4e9f0; border-radius: 8px; margin-top: 14px; }
-table { width: 100%; border-collapse: collapse; text-align: left; font-size: 12px; }
+table { width: 100%; border-collapse: collapse; text-align: left; font-size: calc(12px * var(--admin-font-scale, 1)); }
 th, td { padding: 9px 12px; border-bottom: 1px solid #eef1f5; overflow-wrap: anywhere; }
 th { position: sticky; top: 0; background: #f4f7fb; color: #61718a; }
 .preview-error { color: #b42318; overflow-wrap: anywhere; }
@@ -97,9 +97,9 @@ th { position: sticky; top: 0; background: #f4f7fb; color: #61718a; }
 .preview-result strong { overflow-wrap: anywhere; color: #263c56; }
 .preview-result small { color: #8490a1; }
 .preview-result-tabs { display:flex; gap:16px; align-items:center; margin-top:16px; border-bottom:1px solid #edf0f4; }
-.preview-result-tabs button { padding:8px 0; border:0; border-bottom:2px solid transparent; background:none; color:#98a2b3; font:inherit; font-size:11px; cursor:pointer; }
+.preview-result-tabs button { padding:8px 0; border:0; border-bottom:2px solid transparent; background:none; color:#98a2b3; font:inherit; font-size:calc(11px * var(--admin-font-scale, 1)); cursor:pointer; }
 .preview-result-tabs button[aria-pressed=true] { color:#4779d5; border-bottom-color:#4779d5; }
-.preview-result-tabs small { font-size:10px; margin-left:3px; color:#a8b0bf; }
+.preview-result-tabs small { font-size:calc(10px * var(--admin-font-scale, 1)); margin-left:3px; color:#a8b0bf; }
 .input { border-color:#dce1e8; background:#fff; border-radius:6px; color:#344054; }
 .btn { background:#fff; border-color:#dce2ea; border-radius:6px; color:#52627a; font-weight:500; box-shadow:none; }
 .btn:not(:disabled):hover { transform:none; box-shadow:none; }

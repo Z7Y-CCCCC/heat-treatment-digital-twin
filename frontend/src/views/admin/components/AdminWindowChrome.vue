@@ -300,7 +300,7 @@ watch(unityHostState, state => emit('state', { ...state }), { immediate: true })
     border-radius: 10px 10px 0 0;
     color: #475467;
     font-family: inherit;
-    font-size: 13px;
+    font-size: calc(13px * var(--admin-font-scale, 1));
     font-weight: 600;
     white-space: nowrap;
 }

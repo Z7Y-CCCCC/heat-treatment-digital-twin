@@ -10,7 +10,9 @@ const upload = multer({ dest: temp, limits: { fileSize: bundle.MAX_BYTES, files:
 // This router shares /api/models with ordinary model editing routes. Apply the
 // asset-transfer budget only to its own endpoints, never to fall-through reads
 // or inspection saves handled by the model library router.
-const assetTransferLimit = createOperationRateLimiter({ name: 'model-asset-bundle', limit: 20 });
+// One bounded UI batch can inspect/import/export 32 files sequentially. Keep a
+// rate budget, without rejecting the second half of a normal user selection.
+const assetTransferLimit = createOperationRateLimiter({ name: 'model-asset-bundle', limit: 120, windowMs: 60 * 1000 });
 router.get('/:id/asset-export', assetTransferLimit, async (req, res) => {
     const file = path.join(temp, crypto.randomUUID() + '.zip');
     try {
@@ -24,7 +26,7 @@ for (const operation of ['inspect', 'import']) router.post('/asset-' + operation
             if (error) throw new Error(error.code === 'LIMIT_FILE_SIZE' ? '模型动作包超过 184 MB' : '模型动作包上传失败');
             if (!req.file) throw new Error('请选择模型资产 ZIP');
             const result = operation === 'inspect' ? await bundle.inspectAsset(req.file.path)
-                : await bundle.importAsset(await getDb(), req.file.path, req.factoryId, req.body.inspectedSha256, metadata => assertModelPublishPermission(req, {}, metadata));
+                : await bundle.importAsset(await getDb(), req.file.path, req.factoryId, req.body.inspectedSha256, metadata => assertModelPublishPermission(req, {}, metadata), req.get('x-asset-request-id') || '');
             res.status(operation === 'import' ? 201 : 200).json({ success: true, ...result });
         } catch (e) { res.status(e.statusCode || 400).json({ success: false, error: e.message }); }
         finally { if (req.file) fs.rmSync(req.file.path, { force: true }); }
