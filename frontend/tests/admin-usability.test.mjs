@@ -3,7 +3,19 @@ import assert from 'node:assert/strict'
 import { readFile, access } from 'node:fs/promises'
 import { modelPackageActions, toggleModelSelection, runPackageQueue, MAX_PACKAGE_SELECTION } from '../src/views/admin/utils/modelPackageSelection.js'
 import { ADMIN_READING_KEY, DEFAULT_TEXT_SIZE, normalizeTextSize, readTextSize, saveTextSize } from '../src/runtime/adminReadingPreferences.js'
+import { normalizePagePermissions, normalizeStoredPagePermissions } from '../../shared/pagePermissions.mjs'
 const source = path => readFile(new URL(path, import.meta.url), 'utf8')
+
+test('retiring model publication preserves old stored page grants without allowing new unknown permissions', () => {
+  for (const publish of [true, false]) {
+    const old = { models: { view: true, edit: true, publish } }, before = structuredClone(old)
+    const migrated = normalizeStoredPagePermissions(old)
+    assert.deepEqual(migrated.models, { view: true, edit: true, delete: false })
+    assert.deepEqual(old, before)
+    assert.throws(() => normalizePagePermissions(old), /权限/)
+  }
+  for (const old of [{ models: { view: true, unknown: true } }, { models: { view: true, publish: 'true' } }, { users: { view: true } }]) assert.throws(() => normalizeStoredPagePermissions(old))
+})
 
 test('model options describe the same compiled and generic actions available to Unity, never invented recipe counts', () => {
   const model = { motion_package: { actions: [{ id: 'door', label: '炉门升降' }] }, metadata: JSON.stringify({ partBindings: [{ id: 'fan', name: '循环风机' }], motionAuthoring: { actions: [{ id: 'uncompiled' }] } }) }

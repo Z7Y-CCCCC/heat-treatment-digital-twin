@@ -28,6 +28,17 @@ export function normalizePagePermissions(value, { owner = false } = {}) {
   }))
 }
 
+// Read compatibility only: previous versions stored this boolean even for
+// accounts with no model publishing grant. Retiring the action must not make
+// the whole credential file unreadable. New permission writes remain strict.
+export function normalizeStoredPagePermissions(value) {
+  if (plainObject(value) && plainObject(value.models) && typeof value.models.publish === 'boolean') {
+    const { publish: retired, ...models } = value.models
+    return normalizePagePermissions({ ...value, models })
+  }
+  return normalizePagePermissions(value)
+}
+
 export function canPage(grants, key, action = 'view') {
   const definition = PAGE_PERMISSIONS.find(p => p.key === key)
   return !!definition && definition.actions.includes(action)

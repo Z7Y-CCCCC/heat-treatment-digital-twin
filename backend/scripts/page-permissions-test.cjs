@@ -86,6 +86,18 @@ const { requiresModelPublish } = require('../services/modelPublicationPermission
     fs.writeFileSync(filename, JSON.stringify(stored));
     const migrated = createAdminAuth({ dataDir: directory });
     assert.equal((await migrated.login(password, 'migrated-author', '', user.username)).status.canAccessAdmin, false);
+    for (const publish of [false, true]) {
+        stored.users[0].pagePermissions = { models: { view: true, edit: true, publish } };
+        fs.writeFileSync(filename, JSON.stringify(stored));
+        const legacyAuth = createAdminAuth({ dataDir: directory });
+        const legacyLogin = await legacyAuth.login(password, `retired-grant-${publish}`, '', user.username);
+        assert.equal(legacyLogin.status.canAccessAdmin, true);
+        assert.equal(canPage(legacyLogin.status.pagePermissions, 'models', 'edit'), true);
+        assert.equal(Object.hasOwn(legacyLogin.status.pagePermissions.models, 'publish'), false);
+        assert.equal(canPage(legacyLogin.status.pagePermissions, 'devices'), false);
+        assert.throws(() => legacyAuth.requireSession(legacyLogin.token, legacyLogin.status.csrfToken,
+            { permission: 'page:models:publish' }), e => e.statusCode === 403);
+    }
     stored.users[0].pagePermissions = { users: { view: true } };
     fs.writeFileSync(filename, JSON.stringify(stored));
     assert.throws(() => createAdminAuth({ dataDir: directory }), e => e.code === 'ADMIN_CONFIG_UNAVAILABLE');

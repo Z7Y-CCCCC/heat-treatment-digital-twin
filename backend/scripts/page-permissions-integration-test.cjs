@@ -130,9 +130,23 @@ let backend;
     await request('/models/missing', { method: 'DELETE', session: author, expected: 403 });
     await request('/models/permission_model', { method: 'PUT', session: author,
         body: { metadata: { assetSpec: { delivery_status: 'released' }, release: { status: 'released', version: '1.0.0' } } }, expected: 403 });
-    const modelPublisher = await account('model_publisher', { models: { view: true, edit: true, publish: true } });
-    await request('/models/permission_model', { method: 'PUT', session: modelPublisher,
+    assert.deepEqual(catalog.data.pages.find(page => page.key === 'models').actions, ['view', 'edit', 'delete']);
+    // Model acceptance/publishing is retired. Do not recreate that page grant
+    // merely to satisfy an old fixture; unknown grants must still fail closed.
+    const retiredGrant = await request('/admin-auth/users', { method: 'POST', session: owner,
+        body: { username: 'retired_model_publisher', password, role: 'viewer', permissions: { view: false },
+            pagePermissions: { models: { view: true, edit: true, publish: true } } }, expected: 400 });
+    assert.equal(retiredGrant.data.code, 'ADMIN_PAGE_PERMISSIONS_FORMAT');
+    // An owner can retain legacy metadata, and ordinary editors can save the
+    // model without being allowed to forge or alter its historical release.
+    await request('/models/permission_model', { method: 'PUT', session: owner,
         body: { metadata: { assetSpec: { delivery_status: 'released' }, release: { status: 'released', version: '1.0.0' } } }, expected: 200 });
+    const legacyModel = (await request('/models', { session: author, expected: 200 })).data.find(model => model.id === 'permission_model');
+    const legacyMetadata = JSON.parse(legacyModel.metadata);
+    await request('/models/permission_model', { method: 'PUT', session: author,
+        body: { metadata: { ...legacyMetadata, editorNote: '普通模型编辑不生成验收或发布状态' } }, expected: 200 });
+    await request('/models/permission_model', { method: 'PUT', session: author,
+        body: { metadata: { ...legacyMetadata, release: { ...legacyMetadata.release, version: 'unauthorized-change' } } }, expected: 403 });
     await request('/devices', { method: 'POST', session: author, body: {}, expected: 403 });
     await request('/mcp', { method: 'POST', session: author, body: { method: 'tools/call', params: { name: 'update_device' } }, expected: 403 });
     const composer = await account('layout_editor', { composer: { view: true, edit: true } });

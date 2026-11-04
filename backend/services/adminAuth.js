@@ -11,7 +11,7 @@ const DISPLAY_SESSION_MS = 30 * 24 * 60 * 60 * 1000;
 const USER_ROLES = new Set(['customer', 'viewer', 'editor']);
 const ASSIGNABLE_USER_ROLES = new Set(['customer', 'viewer']);
 const DELEGABLE_PERMISSIONS = ['view', 'launch', 'cast', 'backup'];
-const { normalizePagePermissions, canAccessAdmin, allowsRequirement } = require('../../shared/pagePermissions.cjs');
+const { normalizePagePermissions, normalizeStoredPagePermissions, canAccessAdmin, allowsRequirement } = require('../../shared/pagePermissions.cjs');
 const { getAdminPageCatalog } = require('../../shared/adminPages.mjs');
 const { defaultAccountPagePermissions } = require('../../shared/accountTemplates.mjs');
 const { isValidUsername, normalizeUsername, isValidPassword, MIN_PASSWORD_LENGTH, MAX_PASSWORD_LENGTH } = require('../../shared/accountPolicy.mjs');
@@ -107,8 +107,9 @@ function createAdminAuth(options = {}) {
                     || !USER_ROLES.has(user.role) || !/^[a-f0-9]{32}$/.test(user.password?.salt || '')
                     || !/^[a-f0-9]{128}$/.test(user.password?.hash || '')
                     || !storedUserPermissionsAreValid(user.permissions)
-                    || !userPagePermissions(user.pagePermissions)))) throw new Error('Invalid users');
-            config = { ...stored, users: stored.users || [] };
+                    || !normalizeStoredPagePermissions(user.pagePermissions)))) throw new Error('Invalid users');
+            config = { ...stored, users: (stored.users || []).map(user => ({ ...user,
+                pagePermissions: normalizeStoredPagePermissions(user.pagePermissions) })) };
         } catch {
             // Never turn a damaged credential file into an unprotected first run.
             throw authError(503, 'ADMIN_CONFIG_UNAVAILABLE', '账户安全配置无法读取，请联系系统管理员恢复安全配置');

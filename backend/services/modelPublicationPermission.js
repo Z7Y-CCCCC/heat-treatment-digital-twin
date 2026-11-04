@@ -16,7 +16,10 @@ function requiresModelPublish(before, after) {
 }
 function assertModelPublishPermission(req, before, after) {
     if (requiresModelPublish(before, after) && !req.managementAutomationAuthorized) {
-        getAdminAuth().requireSession(suppliedAdminSession(req), req.get('x-csrf-token'), { permission: 'page:models:publish' });
+        // The model acceptance/publish page action is retired. Preserve legacy
+        // history protection with an explicit owner check, rather than asking
+        // even an owner for a page action that no longer exists in the catalog.
+        getAdminAuth().requireSession(suppliedAdminSession(req), req.get('x-csrf-token'), { permission: 'owner' });
     }
 }
 module.exports = { requiresModelPublish, assertModelPublishPermission };
