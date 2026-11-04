@@ -24,11 +24,25 @@ function recordDependencies(directory) {
     fs.writeFileSync(stateFile(directory), JSON.stringify(dependencyState(directory)));
 }
 
+function installedMatchesLock(directory) {
+    try {
+        const lock = JSON.parse(fs.readFileSync(path.join(directory, 'package-lock.json'), 'utf8'));
+        if (!lock.packages) return false;
+        for (const [relative, expected] of Object.entries(lock.packages)) {
+            if (!relative || expected.link || expected.optional && !fs.existsSync(path.join(directory, relative))) continue;
+            const installed = JSON.parse(fs.readFileSync(path.join(directory, relative, 'package.json'), 'utf8'));
+            if (expected.version && installed.version !== expected.version) return false;
+        }
+        return true;
+    } catch { return false; }
+}
+
 if (require.main === module) {
     const [mode, directory] = process.argv.slice(2);
-    if (!directory || !['check', 'record'].includes(mode)) throw new Error('Usage: dependency-state.cjs check|record directory');
+    if (!directory || !['check', 'record', 'verify'].includes(mode)) throw new Error('Usage: dependency-state.cjs check|verify|record directory');
     if (mode === 'record') recordDependencies(path.resolve(directory));
+    else if (mode === 'verify') process.exitCode = installedMatchesLock(path.resolve(directory)) ? 0 : 1;
     else process.exitCode = dependenciesCurrent(path.resolve(directory)) ? 0 : 1;
 }
 
-module.exports = { dependenciesCurrent, recordDependencies };
+module.exports = { dependenciesCurrent, recordDependencies, installedMatchesLock };

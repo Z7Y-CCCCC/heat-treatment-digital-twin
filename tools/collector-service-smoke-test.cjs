@@ -36,6 +36,16 @@ let child;
     if (fs.existsSync(path.join(source, 'templates', 'uploads')))
         fs.symlinkSync(path.join(source, 'templates', 'uploads'), path.join(resources, 'templates', 'uploads'), 'junction');
     const fixture = new Database(template);
+    // The delivered installer is deliberately empty. Collection still needs a
+    // self-owned test device; add it ONLY to this private copy of the snapshot.
+    if (fixture.prepare('SELECT COUNT(*) n FROM factories').get().n === 0) {
+        fixture.prepare('INSERT INTO factories(id,name) VALUES (?,?)').run('smoke_factory', '隔离采集验收工厂');
+        fixture.prepare('INSERT INTO workshops(id,factory_id,name) VALUES (?,?,?)').run('smoke_ws', 'smoke_factory', '隔离车间');
+        fixture.prepare('INSERT INTO lines(id,workshop_id,name) VALUES (?,?,?)').run('smoke_line', 'smoke_ws', '隔离产线');
+        fixture.prepare('INSERT INTO devices(id,line_id,name,plc_enabled) VALUES (?,?,?,0)').run('smoke_device', 'smoke_line', '模拟采集验收设备');
+        fixture.prepare("UPDATE settings SET value='smoke_factory' WHERE `key`='active_factory_id'").run();
+        fixture.prepare("INSERT INTO factory_settings(factory_id,`key`,value) VALUES ('smoke_factory','data_mode','simulation')").run();
+    }
     fixture.prepare("UPDATE settings SET value='simulation' WHERE key='data_mode'").run();
     fixture.prepare("UPDATE factory_settings SET value='simulation' WHERE key='data_mode'").run();
     fixture.prepare('UPDATE devices SET plc_enabled=0').run();

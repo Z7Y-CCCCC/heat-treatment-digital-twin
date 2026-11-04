@@ -181,6 +181,7 @@ async function modelAvailableToFactory(db, modelType, modelFile, factoryId) {
     const matches = [];
     if (modelType) matches.push(await db.get('SELECT factory_id, placement_level FROM models WHERE id = ?', [modelType]));
     if (modelFile) matches.push(await db.get('SELECT factory_id, placement_level FROM models WHERE file_path = ? LIMIT 1', [modelFile]));
+    if (require('../services/installContentPolicy').emptyInstallation() && (!modelType || !matches[0] || matches.some(model => !model))) return false;
     return matches.every(model => !model || ((model.factory_id === null || model.factory_id === factoryId) && (model.placement_level || 'device') === 'device'));
 }
 

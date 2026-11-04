@@ -9,8 +9,9 @@ param(
     [switch]$IncludeHistory,
     [switch]$RefreshDependencies,
     [switch]$ForceUnityBuild,
-    [switch]$StarterTemplate,
+    [switch]$StarterTemplate = $true,
     [switch]$SkipSmokeTest,
+    [string]$ReleaseDirectory,
     [switch]$NoPause
 )
 
@@ -21,8 +22,15 @@ $projectDirectory = $PSScriptRoot
 $desktopDirectory = Join-Path $projectDirectory 'desktop'
 $outputRoot = Join-Path $projectDirectory '安装包'
 $outputDirectory = Join-Path $outputRoot ("release-{0}" -f (Get-Date -Format 'yyyyMMdd-HHmmss-fff'))
+if ($ReleaseDirectory) {
+    $candidate = [IO.Path]::GetFullPath($ReleaseDirectory)
+    if (-not $candidate.StartsWith([IO.Path]::GetFullPath($outputRoot).TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) { throw '继续构建的目录必须在项目安装包目录内。' }
+    if (Test-Path -LiteralPath (Join-Path $candidate 'release-manifest.json')) { throw '不能覆盖已交付 Release；请使用新的构建目录。' }
+    $outputDirectory = $candidate
+}
 $packageFile = Join-Path $desktopDirectory 'package.json'
 $unityVersionFile = Join-Path $projectDirectory 'unity-client\ProjectSettings\ProjectVersion.txt'
+if ($IncludeHistory -or $SourceUserDataDirectory) { throw '安装包固定为空系统；现场项目/模型请通过独立导入文件迁移。' }
 
 function Resolve-RequiredCommand {
     param(
@@ -108,6 +116,18 @@ function Ensure-NodeDependencies {
             Write-Host "[$Label] 依赖锁文件、安装记录和 Node 运行时未变化，直接复用。"
             return
         }
+        # A packaging/UI edit changes package.json but not dependency versions.
+        # Verify every locked installed package before reusing it; never npm ci
+        # over a running operator's backend/Electron tree merely to refresh state.
+        & $node $dependencyStateScript 'verify' $Directory
+        if ($LASTEXITCODE -eq 0) {
+            & $node $dependencyStateScript 'record' $Directory
+            if ($LASTEXITCODE -ne 0) { throw "$Label 依赖状态记录失败。" }
+            Write-Host "[$Label] 已逐项核对锁文件版本，保留现有依赖。"
+            return
+        }
+        $runningBackend = Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Where-Object { $_.CommandLine -and $_.CommandLine.Contains((Join-Path $Directory 'server.js')) }
+        if ($runningBackend) { throw "$Label 依赖需更新但当前系统正在使用；请在隔离目录安装依赖，不覆盖运行中的 node_modules。" }
         Write-Host "[$Label] 依赖或运行时变化，或尚无成功安装记录，重新安装后建立记录。"
     }
 
@@ -205,7 +225,8 @@ if ([string]::IsNullOrWhiteSpace($version)) {
     throw "无法从 $packageFile 读取安装包版本。"
 }
 
-Assert-ApplicationIsClosed
+# Build into a release-only directory. Never overwrite binaries being used by
+# 启动大屏.cmd or force-close the operator's current project.
 
 # The development launcher stores its live uploads outside the source tree.
 # Resolve its database configuration and assets together when making a clone.
@@ -246,8 +267,8 @@ Write-Host "软件版本：$version"
 Write-Host "Unity：$unityEditor"
 $unityBuildMode = if ($ForceUnityBuild) { '强制重新生成' } else { '源码未变化时复用缓存' }
 Write-Host "Unity 构建：$unityBuildMode"
-Write-Host "配置数据库：$DatabaseHost`:$DatabasePort/$DatabaseName"
-$historyText = if ($IncludeHistory) { '包含' } else { '不包含，仅交付现场配置' }
+Write-Host '数据库内容：只打包空表结构及系统设置，不读取本机现场配置。'
+$historyText = '不包含（零工厂、设备、点位、模型、场景和历史）'
 Write-Host "运行历史：$historyText"
 if ($SourceUserDataDirectory) { Write-Host "当前软件数据来源：$SourceUserDataDirectory" }
 Write-Host "构建日志：$buildLogPath"
@@ -266,6 +287,7 @@ $environmentNames = @(
     'DESKTOP_MYSQL_USER',
     'DESKTOP_MYSQL_PASSWORD',
     'DESKTOP_MYSQL_DATABASE',
+    'DIGITAL_TWIN_UNITY_BUILD_DIR',
     'DESKTOP_TEMPLATE_INCLUDE_HISTORY',
     'DESKTOP_TEMPLATE_EMPTY',
     'DESKTOP_TEMPLATE_SOURCE_DB',
@@ -286,7 +308,8 @@ try {
     $env:DESKTOP_MYSQL_PASSWORD = $DatabasePassword
     $env:DESKTOP_MYSQL_DATABASE = $DatabaseName
     $env:DESKTOP_TEMPLATE_INCLUDE_HISTORY = if ($IncludeHistory) { 'true' } else { 'false' }
-    $env:DESKTOP_TEMPLATE_EMPTY = if ($StarterTemplate) { 'true' } else { 'false' }
+    $env:DESKTOP_TEMPLATE_EMPTY = 'true'
+    $env:DIGITAL_TWIN_UNITY_BUILD_DIR = Join-Path $outputDirectory 'native-build'
     Remove-Item Env:DESKTOP_TEMPLATE_SOURCE_DB -ErrorAction SilentlyContinue
     Remove-Item Env:DESKTOP_TEMPLATE_SOURCE_UPLOADS -ErrorAction SilentlyContinue
     Remove-Item Env:DESKTOP_TEMPLATE_SOURCE_DATA -ErrorAction SilentlyContinue
@@ -323,11 +346,26 @@ Invoke-CheckedCommand -Label '确认大屏发行版不含采集实现并默认�
     (Join-Path $desktopDirectory 'scripts/prepare-display-distribution.cjs'), $displayResources
 )
 $pluginDirectory = Join-Path $outputDirectory 'collector-plugin'
+if (Test-Path -LiteralPath $pluginDirectory) {
+    $pluginDirectory = Join-Path $outputDirectory ("collector-plugin-{0}" -f (Get-Date -Format 'yyyyMMdd-HHmmss-fff'))
+}
+Invoke-CheckedCommand -Label '核对实际安装资源为空系统（业务库、模型、动作、上传配置）' -Executable $node -ArgumentList @(
+    (Join-Path $desktopDirectory 'scripts/verify-empty-install.cjs'), $displayResources
+)
 Invoke-CheckedCommand -Label '生成独立可选采集插件目录（不进入大屏安装包）' -Executable $node -ArgumentList @(
     (Join-Path $desktopDirectory 'scripts/prepare-collector-plugin.cjs'), $displayResources, $pluginDirectory
 )
 $resourceGuard = Join-Path $projectDirectory 'tools/package-resource-integrity.cjs'
 $resourceBaseline = Join-Path $outputDirectory 'installation-resource-baseline.json'
+# A resumed, unfinished release is rebuilt above. Keep the earlier immutable
+# baseline for diagnosis instead of overwriting it or comparing new bits to it.
+if (Test-Path -LiteralPath $resourceBaseline) {
+    $resourceBaseline = Join-Path $outputDirectory ("installation-resource-baseline-{0}.json" -f (Get-Date -Format 'yyyyMMdd-HHmmss-fff'))
+}
+$resourceVerification = Join-Path $outputDirectory 'installation-resource-verification.json'
+if (Test-Path -LiteralPath $resourceVerification) {
+    $resourceVerification = Join-Path $outputDirectory ("installation-resource-verification-{0}.json" -f (Get-Date -Format 'yyyyMMdd-HHmmss-fff'))
+}
 Invoke-CheckedCommand -Label '记录安装资源不可变基线' -Executable $node -ArgumentList @(
     $resourceGuard, '--snapshot', (Join-Path $outputDirectory 'win-unpacked'), $resourceBaseline
 )
@@ -349,7 +387,7 @@ if (-not $SkipSmokeTest) {
 }
 Invoke-CheckedCommand -Label '验证运行测试未改写安装资源' -Executable $node -ArgumentList @(
     $resourceGuard, '--verify', (Join-Path $outputDirectory 'win-unpacked'), $resourceBaseline,
-    (Join-Path $outputDirectory 'installation-resource-verification.json')
+    $resourceVerification
 )
 
 $previousCompressionLevel = [Environment]::GetEnvironmentVariable('ELECTRON_BUILDER_COMPRESSION_LEVEL', 'Process')
@@ -398,7 +436,11 @@ $releaseManifest = [ordered]@{
     collectorPlugin = [ordered]@{ file=$pluginName; size=(Get-Item -LiteralPath $pluginPath).Length; sha256=$pluginHash; smokeTest=$(if ($SkipSmokeTest) { 'skipped' } else { 'passed' }) }
     smokeTest = if ($SkipSmokeTest) { 'skipped' } else { 'passed' }
     includeHistory = [bool]$IncludeHistory
-    starterTemplate = [bool]$StarterTemplate
+    starterTemplate = $false
+    emptySystem = $true
+    contentPolicy = 'empty-v1'
+    resourceBaseline = $resourceBaseline
+    resourceVerification = $resourceVerification
     sourceUserDataDirectory = $SourceUserDataDirectory
     sourceUploadsDirectory = $sourceUploadsDirectory
     compressionLevel = $effectiveCompressionLevel

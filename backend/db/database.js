@@ -2206,10 +2206,12 @@ async function createIndex(indexName, table, columnsSql, options = {}) {
 
 async function seedDefaults() {
     const db = makeDbClient();
+    const empty = require('../services/installContentPolicy').emptyInstallation()
+        || (await db.get('SELECT value FROM settings WHERE `key` = ?', ['install_content_policy']))?.value === 'empty-v1';
     const rows = [
-        ['factory_name', '智能热处理数字孪生控制中心'],
-        ['active_factory_id', 'factory_default'],
-        ['data_mode', 'integrated_plc'],
+        ['factory_name', empty ? '' : '智能热处理数字孪生控制中心'],
+        ['active_factory_id', empty ? '' : 'factory_default'],
+        ['data_mode', empty ? 'external' : 'integrated_plc'],
         ['simulation_interval_ms', '2000'],
         ['realtime_stale_ms', '6000'],
         ['native_quality_profile', 'auto'],
@@ -2261,6 +2263,11 @@ async function seedDefaults() {
     ];
     for (const [key, value] of rows) {
         await db.insertIgnore('settings', { key, value }, 'key');
+    }
+
+    if (empty) {
+        await db.insertIgnore('settings', { key: 'install_content_policy', value: 'empty-v1' }, 'key');
+        return; // schema + system settings only; never manufacture business data
     }
 
     await seedFactoryRegistry(db);

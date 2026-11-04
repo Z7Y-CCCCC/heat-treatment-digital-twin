@@ -20,6 +20,9 @@ namespace HeatTreatment.DigitalTwin.Backend
         [JsonProperty("models")]
         public List<ModelAssetDto> Models { get; set; } = new List<ModelAssetDto>();
 
+        [JsonProperty("environmentModel")]
+        public ModelAssetDto EnvironmentModel { get; set; }
+
         [JsonProperty("platform")]
         public JObject Platform { get; set; } = new JObject();
     }

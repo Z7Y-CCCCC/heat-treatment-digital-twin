@@ -599,7 +599,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
             _diagnostics.ReadyDeviceCount = 0;
             _diagnostics.FallbackDeviceCount = 0;
             _diagnostics.BackendState = "configuration online";
-            _environment.RebuildFactoryFloor(config, devices);
+            _environment.RebuildFactoryFloor(config, devices, backendHttpUrl: _settings.backendHttpUrl);
             await _environment.HallReady;
             cancellationToken.ThrowIfCancellationRequested();
             _diagnostics.UpdateLoading(0.32f, "正在准备三维场景");
@@ -916,7 +916,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
 
             if (includeLayout && payload.Value<bool?>("groundOnly") != true)
             {
-                _environment.RebuildFactoryFloor(previewConfig, devices, reset);
+                _environment.RebuildFactoryFloor(previewConfig, devices, reset, _settings.backendHttpUrl);
                 await _environment.HallReady;
                 if (payload == null || _factoryRoot == null) return;
                 if (reset) _environment.RefreshReflectionProbe();

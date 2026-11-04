@@ -12,9 +12,9 @@ const projectDir = path.resolve(desktopDir, '..');
 // used by the operator's running desktop. The normal build path is unchanged.
 const resourcesDir = process.env.DESKTOP_RESOURCES_DIR
     ? path.resolve(process.env.DESKTOP_RESOURCES_DIR) : path.join(desktopDir, 'resources');
-const nativeClientSourceDir = path.join(projectDir, 'unity-client', 'Builds', 'Windows');
+const nativeClientSourceDir = process.env.DIGITAL_TWIN_UNITY_BUILD_DIR ? path.resolve(process.env.DIGITAL_TWIN_UNITY_BUILD_DIR) : path.join(projectDir, 'unity-client', 'Builds', 'Windows');
 const explicitSourceDb = String(process.env.DESKTOP_TEMPLATE_SOURCE_DB || '').trim();
-const emptyTemplate = enabled(process.env.DESKTOP_TEMPLATE_EMPTY, false);
+const emptyTemplate = true; // site data belongs in explicit imports, never an installer
 const sourceData = String(process.env.DESKTOP_TEMPLATE_SOURCE_DATA || '').trim();
 const sourceUploads = path.resolve(
     process.env.DESKTOP_TEMPLATE_SOURCE_UPLOADS || path.join(projectDir, 'backend', 'uploads')
@@ -78,6 +78,7 @@ async function createEmptySqliteDatabase(dataDir, filename) {
         APP_DATA_DIR: dataDir,
         DB_TYPE: 'sqlite',
         SQLITE_FILE: filename,
+        APP_EMPTY_INSTALL: '1',
         DB_BACKUP_INTERVAL_MS: String(24 * 60 * 60 * 1000)
     });
     const databaseModule = require(path.join(projectDir, 'backend', 'db', 'database.js'));
@@ -192,14 +193,14 @@ async function prepareDatabaseTemplate(stagingDirectory, outputDb) {
     let sourceLabel;
     let exportResult = null;
 
-    if (emptyTemplate && explicitSourceDb) {
-        throw new Error('DESKTOP_TEMPLATE_EMPTY 与 DESKTOP_TEMPLATE_SOURCE_DB 不能同时设置');
+    if (explicitSourceDb || sourceData || process.env.DESKTOP_TEMPLATE_SOURCE_UPLOADS || enabled(process.env.DESKTOP_TEMPLATE_INCLUDE_HISTORY)) {
+        throw new Error('空系统安装包不能包含现场数据库、上传文件或历史；请使用项目/模型导入包');
     }
 
     if (emptyTemplate) {
         await createEmptySqliteDatabase(generatedDataDir, generatedDb);
         templateSource = generatedDb;
-        sourceLabel = '内置初始模板（未包含本机现场数据）';
+        sourceLabel = '空系统（仅表结构和系统设置，零工厂/设备/模型）';
     } else if (explicitSourceDb) {
         templateSource = path.resolve(explicitSourceDb);
         if (!fs.existsSync(templateSource)) throw new Error(`指定的数据库模板不存在：${templateSource}`);
@@ -248,6 +249,8 @@ async function main() {
         fs.cpSync(nativeClientSourceDir, path.join(stagingDirectory, 'native-client'), {
             recursive: true,
             filter: source => !path.basename(source).includes('BurstDebugInformation_DoNotShip')
+                && !source.split(path.sep).includes('Environment')
+                && !/\.(glb|gltf|blend\d*|zip)$/i.test(source)
         });
         if (!emptyTemplate && fs.existsSync(sourceUploads)) {
             fs.cpSync(sourceUploads, path.join(templatesDir, 'uploads'), {

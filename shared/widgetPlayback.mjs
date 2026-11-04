@@ -2,7 +2,7 @@ const bounded = (value, fallback, min, max) => Number.isFinite(Number(value)) ? 
 export function normalizePlayback(binding = {}) {
   const scope = ['current','fixed','rotation','global'].includes(binding.deviceScope) ? binding.deviceScope : (binding.deviceId ? 'fixed' : 'current')
   const ids = Array.isArray(binding.rotationDeviceIds) ? [...new Set(binding.rotationDeviceIds.map(String).filter(id=>/^[\w.-]{1,128}$/.test(id)))].slice(0,100) : []
-  return { deviceScope:scope, rotationDeviceIds:ids, rotationIntervalMs:bounded(binding.rotationIntervalMs,10000,2000,3600000), refreshMs:bounded(binding.refreshMs,5000,1000,3600000) }
+  return { deviceScope:scope, rotationDeviceIds:ids, rotationIntervalMs:bounded(binding.rotationIntervalMs,10000,2000,3600000), refreshMs:bounded(binding.refreshMs,5000,250,3600000) }
 }
 export function flattenPlaybackDevices(config = {}) {
   const rows=[]
@@ -32,6 +32,8 @@ export function isDeviceBinding(binding = {}) {
 }
 export function devicePoint(binding, deviceId, pointValues = {}) {
   if (!deviceId) return null
+  const direct=pointValues[String(binding.pointId || '')]
+  if(direct && String(direct.id)===String(binding.pointId) && String(direct.device_id)===String(deviceId))return direct
   const rows=[...new Map(Object.values(pointValues).filter(p=>p && String(p.device_id)===String(deviceId)).map(p=>[String(p.id),p])).values()]
   const exact=rows.find(p=>String(p.id)===String(binding.pointId || ''))
   if (exact) return exact

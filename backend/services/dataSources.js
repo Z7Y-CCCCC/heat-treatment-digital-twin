@@ -713,7 +713,7 @@ function normalizeHttpBinding(input = {}, requireJsonPath = true) {
     if (apiPath.startsWith('//') || /[\\\u0000-\u001f\u007f]/.test(apiPath) || /(^|\/)\.\.(\/|$)/.test(apiPath))
         throw new Error('HTTP 接口路径只能是当前连接下的只读相对路径');
     if (jsonPath) parseDataPath(jsonPath);
-    return { connectionId, apiPath, jsonPath, refreshMs: finiteInteger(input.refreshMs, 30000, 1000, 3600000) };
+    return { connectionId, apiPath, jsonPath, refreshMs: finiteInteger(input.refreshMs, 30000, 250, 3600000) };
 }
 
 async function fetchHttpApiPayload(binding, factoryId) {
@@ -1287,7 +1287,8 @@ async function readRuntimeBindings(widgets = [], context = {}) {
             if (target.error) throw target.error;
             const result = composeBindingResult(target.binding, target.results);
             values[target.widgetId] = result;
-            runtimeCache.set(target.key, result, Date.now() + target.binding.refreshMs, cacheVersion);
+            result.nextRefreshAt = Date.now() + target.binding.refreshMs;
+            runtimeCache.set(target.key, result, result.nextRefreshAt, cacheVersion);
         } catch (error) {
             values[target.widgetId] = { value: null, rows: [], series: [], quality: 'bad', error: error.message, fetchedAt: new Date().toISOString() };
         }
@@ -1306,7 +1307,8 @@ async function readRuntimeBindings(widgets = [], context = {}) {
                 const result = await readHttpApiBinding(scopedBinding, context.factoryId);
                 if(widget.data.contextField && widget.data.contextKey){const expected=context[widget.data.contextKey];if(expected===undefined || expected==='')throw new Error('缺少设备上下文');result.rows=result.rows.filter(row=>String(readDataPath(row,widget.data.contextField))===String(expected));result.value=result.rows[0]?.value ?? null;result.series=[];if(!result.rows.length)result.quality='empty';}
                 values[widgetId] = result;
-                runtimeCache.set(key, result, Date.now() + finiteInteger(widget.data.refreshMs, 30000, 1000, 3600000), cacheVersion);
+                result.nextRefreshAt = Date.now() + finiteInteger(widget.data.refreshMs, 30000, 250, 3600000);
+                runtimeCache.set(key, result, result.nextRefreshAt, cacheVersion);
             } catch (error) {
                 values[widgetId] = { value: null, rows: [], series: [], quality: 'bad', error: error.message, fetchedAt: new Date().toISOString() };
             }
@@ -1322,10 +1324,13 @@ async function readRuntimeBindings(widgets = [], context = {}) {
               const section=widget.data.businessSection || widget.content?.section || 'batches';
               const result=await withFactoryScope(context.factoryId,()=>require('./businessData').readBusinessSection(widget.data.connectionId,section,{deviceId:context.deviceId,limit:200}));
               const record={value:null,rows:result.rows || [],series:[],quality:result.available===false?'bad':result.rows?.length?'good':'empty',businessSection:result,source:{connectionId:widget.data.connectionId},fetchedAt:result.fetchedAt || new Date().toISOString()};
-              values[widget.id]=record;runtimeCache.set(key,record,Date.now()+finiteInteger(widget.data.refreshMs,5000,1000,3600000),cacheVersion);
+              record.nextRefreshAt=Date.now()+finiteInteger(widget.data.refreshMs,5000,1000,3600000);
+              values[widget.id]=record;runtimeCache.set(key,record,record.nextRefreshAt,cacheVersion);
           }catch(error){values[widget.id]={value:null,rows:[],series:[],quality:'bad',businessSection:{available:false,rows:[],message:'业务数据暂不可用'},error:error.message};}
       }}));
-    return values;
+    // Do not mutate cached records: each response gets its current remaining TTL.
+    return Object.fromEntries(Object.entries(values).map(([id,record]) => [id,
+        Number.isFinite(record.nextRefreshAt) ? {...record,refreshAfterMs:Math.max(0,record.nextRefreshAt-Date.now())} : record]));
 }
 
 function saveBackupConfig(input = {}, factoryId = activeFactoryId()) {

@@ -8,7 +8,7 @@ namespace HeatTreatment.DigitalTwin.Rendering
 {
     public sealed class DeviceAnimationDriver : MonoBehaviour
     {
-        private sealed class Entry { public JObject Binding, Clip; public MotionSignalState Signal = new MotionSignalState(); }
+        private sealed class Entry { public JObject Binding, Clip; public MotionSignalState Signal = new MotionSignalState(); public long SignalChangedAt, FirstTransformAt; public bool DiagnosticPending; }
         private readonly List<Entry> _entries = new List<Entry>();
         private readonly Dictionary<string, Transform> _nodes = new Dictionary<string, Transform>();
         private readonly Dictionary<string, JObject> _base = new Dictionary<string, JObject>();
@@ -44,12 +44,23 @@ namespace HeatTreatment.DigitalTwin.Rendering
                 _entries.Add(new Entry { Binding = binding, Clip = clip });
             }
         }
-        public void ApplyRealtime(JObject data) { foreach (var entry in _entries) entry.Signal.Receive(data, entry.Binding, Time.realtimeSinceStartupAsDouble); }
-        private void Update() { Advance(Time.deltaTime, Time.realtimeSinceStartupAsDouble); }
-        public void Advance(double delta, double now)
+        public void ApplyRealtime(JObject data)
         {
             foreach (var entry in _entries)
             {
+                var priorTarget=entry.Signal.Target; var priorUsable=entry.Signal.Usable; var priorSample=entry.Signal.HasSample;
+                entry.Signal.Receive(data, entry.Binding, Time.realtimeSinceStartupAsDouble);
+                if (_diagnostics && (priorTarget!=entry.Signal.Target || priorUsable!=entry.Signal.Usable || priorSample!=entry.Signal.HasSample))
+                { entry.SignalChangedAt=DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(); entry.FirstTransformAt=0; entry.DiagnosticPending=true; }
+            }
+        }
+        private void Update() { Advance(Time.deltaTime, Time.realtimeSinceStartupAsDouble); }
+        public void Advance(double delta, double now)
+        {
+            var eventDiagnostic=false;
+            foreach (var entry in _entries)
+            {
+                var priorPosition=entry.Signal.Position; var priorSeconds=entry.Signal.Seconds;
                 var signal = entry.Signal; signal.Step(delta, now, _staleMs, entry.Binding);
                 if (!signal.HasSample) continue;
                 var running = entry.Binding.Value<string>("mode") == "running"; var duration = entry.Clip.Value<double>("duration");
@@ -63,7 +74,12 @@ namespace HeatTreatment.DigitalTwin.Rendering
                     else MotionSignalState.SampleInto(entry.Clip, track, time, values);
                     if (values != null) ApplyChannel(name, channel, values);
                 }
+                // Timestamp the first actual phase/transform application after a target
+                // change, not the test process's later log polling time.
+                if (entry.DiagnosticPending && (signal.Position!=priorPosition || signal.Seconds!=priorSeconds || !signal.Usable || signal.Position==signal.Target))
+                { entry.FirstTransformAt=DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(); entry.DiagnosticPending=false; eventDiagnostic=true; }
             }
+            if (_diagnostics && eventDiagnostic) Debug.Log("[DeviceAnimation] " + CaptureDiagnostic().ToString(Newtonsoft.Json.Formatting.None));
             if (_diagnostics && _entries.Count > 0 && now >= _nextDiagnostic)
             {
                 _nextDiagnostic = now + .5;
@@ -96,10 +112,11 @@ namespace HeatTreatment.DigitalTwin.Rendering
                     tracks.Add(new JObject { ["node"] = name, ["channel"] = channel, ["actual"] = values });
                 }
                 actions.Add(new JObject { ["actionId"] = entry.Binding["actionId"], ["clipId"] = entry.Binding["clipId"],
+                    ["target"] = entry.Signal.Target, ["signalChangedAt"] = entry.SignalChangedAt, ["firstTransformAt"] = entry.FirstTransformAt,
                     ["usable"] = entry.Signal.Usable, ["running"] = entry.Signal.Running,
                     ["reason"] = entry.Signal.Reason, ["position"] = entry.Signal.Position, ["seconds"] = entry.Signal.Seconds, ["tracks"] = tracks });
             }
-            return new JObject { ["deviceId"] = _deviceId, ["actions"] = actions };
+            return new JObject { ["capturedAt"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), ["deviceId"] = _deviceId, ["actions"] = actions };
         }
         private void ApplyChannel(string name, string channel, double[] v)
         {

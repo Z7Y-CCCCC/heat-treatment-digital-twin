@@ -7,9 +7,9 @@ const { createTreeManifest, verifyFileManifest } = require('./runtime-cache.cjs'
 const desktopDir = path.resolve(__dirname, '..');
 const projectDir = path.resolve(desktopDir, '..');
 const hostProject = path.join(projectDir, 'native-admin-host', 'HeatTreatmentAdminHost.csproj');
-const outputDirectory = path.join(projectDir, 'unity-client', 'Builds', 'Windows', 'AdminHost');
+const outputDirectory = process.env.DIGITAL_TWIN_UNITY_BUILD_DIR ? path.join(path.resolve(process.env.DIGITAL_TWIN_UNITY_BUILD_DIR), 'AdminHost') : path.join(projectDir, 'unity-client', 'Builds', 'Windows', 'AdminHost');
 const executable = path.join(outputDirectory, 'HeatTreatmentAdminHost.exe');
-const cacheFile = path.join(desktopDir, '.cache', 'admin-host-build.json');
+const cacheFile = process.env.DIGITAL_TWIN_UNITY_BUILD_DIR ? path.join(outputDirectory, '.admin-host-build.json') : path.join(desktopDir, '.cache', 'admin-host-build.json');
 
 function inputFingerprint() {
     const hash = crypto.createHash('sha256');

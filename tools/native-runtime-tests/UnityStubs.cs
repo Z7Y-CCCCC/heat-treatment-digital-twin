@@ -1,6 +1,8 @@
 // Compile the actual connection code without starting Unity or a GPU renderer.
 namespace UnityEngine
 {
+    [AttributeUsage(AttributeTargets.Class)]
+    public sealed class DefaultExecutionOrderAttribute : Attribute { public int Order { get; } public DefaultExecutionOrderAttribute(int order) { Order=order; } }
     public class MonoBehaviour { }
     public class Object
     {

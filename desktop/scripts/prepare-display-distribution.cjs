@@ -4,7 +4,7 @@ const path = require('node:path');
 const COLLECTOR_FILES = ['collectorProcess.js', 'collectorWorker.cjs', 'plcReader.js', 'plcProtocolDrivers.js', 's7ReadSafety.js'];
 function prepareDisplayDistribution(resources) {
     const backend = path.join(resources, 'backend');
-    fs.writeFileSync(path.join(backend, 'distribution.json'), JSON.stringify({ product: 'display', collector: false }));
+    fs.writeFileSync(path.join(backend, 'distribution.json'), JSON.stringify({ product: 'display', collector: false, contentPolicy: 'empty-v1' }));
     for (const file of COLLECTOR_FILES) if (fs.existsSync(path.join(backend, 'services', file))) throw new Error(`Display must not contain collector implementation: ${file}`);
     for (const file of ['collector-center', 'collector-service']) if (fs.existsSync(path.join(resources, file))) throw new Error(`Display must not bundle ${file}`);
     // Only the distributable starter snapshot is changed, never live settings.
@@ -12,9 +12,15 @@ function prepareDisplayDistribution(resources) {
     const Database = require('../../backend/node_modules/better-sqlite3');
     const db = new Database(template);
     try {
+        for (const table of ['factories', 'factory_settings', 'workshops', 'lines', 'devices', 'data_points', 'models', 'bindings', 'device_templates', 'datapoint_templates', 'projects', 'scenes', 'widgets', 'releases', 'event_logs', 'metric_snapshots']) {
+            if (db.prepare(`SELECT COUNT(*) AS n FROM \`${table}\``).get().n !== 0) throw new Error(`空安装包含有业务数据：${table}`);
+        }
+        db.prepare("INSERT OR REPLACE INTO settings (`key`,value) VALUES ('install_content_policy','empty-v1')").run();
         db.prepare("UPDATE settings SET value='external' WHERE `key`='data_mode'").run();
         db.prepare("UPDATE factory_settings SET value='external' WHERE `key`='data_mode'").run();
     } finally { db.close(); }
+    for (const directory of ['assets/models', 'assets/motions']) fs.mkdirSync(path.join(backend, directory), { recursive: true });
+    fs.writeFileSync(path.join(resources, 'shared', 'motionPackages.json'), JSON.stringify({ schemaVersion: 1, models: {} }));
 }
 if (require.main === module) prepareDisplayDistribution(path.resolve(process.argv[2]));
 module.exports = { COLLECTOR_FILES, prepareDisplayDistribution };

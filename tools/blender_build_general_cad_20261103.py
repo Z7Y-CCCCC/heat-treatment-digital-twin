@@ -5,7 +5,7 @@ Dimensions are metres; Blender Z-up -> glTF Y-up. No PLC/project data is changed
 """
 from pathlib import Path
 from collections import defaultdict
-import bpy, bmesh, math, json, hashlib, sys
+import bpy, bmesh, math, json, hashlib, sys, time
 from mathutils import Vector, Quaternion
 
 ROOT=Path(__file__).resolve().parents[1]
@@ -334,10 +334,75 @@ def temper(a):
     a.box('temperature_display',(-.66,front-.168,1.26),(.12,.012,.075),'screen','electrics')
     for z in [.98,1.08]:a.cyl('control_button',(-.66,front-.18,z),.016,.02,'red' if z<1 else 'green','Y','electrics',16)
 
+def wash_lower_body(a):
+    """Restore the lower enclosure visible in both 17.07.00 K and side views.
+
+    This is sheet enclosure geometry, NOT an invented solid process tank or an
+    exposed X-braced frame. The drawing's diagonal panel lines are represented
+    as shallow pressed facets; sheet gauge and fold relief are display-scale
+    assumptions, not manufacturing dimensions. Keep the chamber/door opening.
+    """
+    # K-view LINE 282E6 spans 1200 mm; its elevation is 1121 mm above
+    # drawing datum 4964.3063. The existing model's base covers the first
+    # 100 mm. Keep the original chamber depth/alignment, rather than moving
+    # the whole machine during a local omission repair.
+    width,depth=1.200,1.922
+    front,bottom,fold_top,top=-.960,.100,1.121,1.295
+    back=front+depth;half=width/2;middle=(bottom+fold_top)/2
+    vertices=[(x,front,z) for z in [bottom,fold_top,top] for x in [-half,0,half]]
+    vertices += [(-half/2,front-.003,middle),(half/2,front-.003,middle)]
+    vertices += [(x,back,z) for z in [bottom,fold_top,top] for x in [-half,0,half]]
+    # Two continuous folded front panels, closed sides, rear, top and bottom.
+    faces=[(0,1,9),(1,4,9),(4,3,9),(3,0,9),
+           (1,2,10),(2,5,10),(5,4,10),(4,1,10),
+           (3,4,7,6),(4,5,8,7),
+           (0,3,14,11),(3,6,17,14),(2,13,16,5),(5,16,19,8),
+           (6,7,18,17),(7,8,19,18),
+           (0,11,12,1),(1,12,13,2),
+           (11,14,15,12),(12,15,16,13),(14,17,18,15),(15,18,19,16)]
+    mesh=bpy.data.meshes.new('wash_lower_sheet_enclosure')
+    mesh.from_pydata(vertices,[],faces);mesh.update()
+    bm=bmesh.new();bm.from_mesh(mesh)
+    bmesh.ops.recalc_face_normals(bm,faces=bm.faces);bm.to_mesh(mesh);bm.free()
+    obj=bpy.data.objects.new('wash_lower_shell',mesh);a.scene.collection.objects.link(obj)
+    a.finish(obj,'wash_lower_shell','enamel','central_lower_body')
+    solid=obj.modifiers.new('Inferred 6 mm display sheet','SOLIDIFY')
+    solid.thickness=.006;solid.offset=-1;solid.use_even_offset=True
+    obj['cad_evidence']='17.07.00 K elevation lower centre enclosure and matching side-view walls'
+    obj['inferred_details']='6 mm sheet gauge; 3 mm pressed-panel relief; not manufacturing data'
+    obj['cad_panel_width_mm']=1200
+    obj['cad_panel_top_elevation_mm']=1121
+    for x in [-half,half]:
+        a.box('wash_lower_top_rail',(x,(front+back)/2,top-.018),(.040,depth,.036),'edge','central_lower_body',.002)
+    wash_lower_collector(a,front)
+
+
+def wash_lower_collector(a,front=-.960):
+    """K-view rectangular lower attachment (49758..4976E) and drain.
+
+    Width 836 and elevations 795/845/1038 are measured drawing geometry.
+    Projection depth and sheet gauge are inferred; do not claim tank capacity.
+    """
+    group='lower_collection';w,d,t=.836,.130,.006
+    y=front-d/2
+    a.box('wash_lower_collector_back',(0,front-t/2,.9165),(w,t,.243),'enamel',group,.001)
+    a.box('wash_lower_collector_front',(0,front-d+t/2,.9415),(w,t,.193),'enamel',group,.001)
+    a.box('wash_lower_collector_bottom',(0,y,.798),(w,d,t),'enamel',group,.001)
+    for x in [-w/2+t/2,w/2-t/2]:
+        a.box('wash_lower_collector_end',(x,y,.9165),(t,d,.243),'enamel',group,.001)
+    for x in [-.435,.435]:
+        a.box('wash_lower_collector_mount',(x,front-d,.985),(.035,.018,.050),'metal',group,.001)
+        a.cyl('wash_lower_mount_bolt',(x,front-d-.013,.985),.008,.012,'metal','Y',group,6)
+    a.cyl('wash_lower_drain_spout',(.390,y,.752),.016,.092,'metal','Z',group,20)
+    a.cyl('wash_lower_drain_valve',(.390,y,.720),.025,.044,'brass','Z',group,20)
+    a.beam('wash_lower_drain_handle',(.415,y,.725),(.465,y,.670),.009,mat='steel',group=group)
+
+
 def wash(a):
     # Twin side-tank arrangement in 17.07.00, not the photo-derived V7 rear extension.
     w,d=2.650,2.442
     a.box('continuous_base',(0,0,.05),(w,d,.10),'steel')
+    wash_lower_body(a)
     for x in [-1.02,1.02]:
         a.box('wash_side_tank',(x,0,.69),(.56,2.08,1.18),'enamel','tanks')
         a.panel('tank_inspection_cover',(x,-1.06,.68),.43,.78,'enamel','tanks')
@@ -433,6 +498,10 @@ def studio(a,box):
 
 def export(a):
     bpy.context.window.scene=a.scene
+    # Resuming a saved source must not accumulate empty studio groups in GLB.
+    for obj in list(a.root.children):
+        if obj.get('part')=='review':bpy.data.objects.remove(obj,do_unlink=True)
+    a.groups.pop('review',None)
     for o in list(a.root.children_recursive):
         if o.type not in ['MESH','CURVE','FONT']:continue
         if getattr(a,'prepared_geometry',False):
@@ -451,6 +520,8 @@ def export(a):
     assert box[2]>=-.001,box
     edit_objects=len(meshes)
     camera,center,span=studio(a,box)
+    review=a.groups.pop('review',None)
+    if review:bpy.data.objects.remove(review,do_unlink=True)
     bpy.ops.wm.save_as_mainfile(filepath=str(OUT/'sources'/(a.filename+'.blend')),compress=True)
     by_group_material=defaultdict(list)
     for o in meshes:by_group_material[(o.parent.name,o.data.materials[0].name)].append(o)
@@ -469,7 +540,16 @@ def export(a):
     assert triangles<getattr(a,'triangle_budget',150000),(a.id,triangles)
     for suffix,direction in [('preview',(5,-7,4.5)),('rear',(-5,7,4))]:
         camera.location=center+Vector(direction)*max(1,span/3);look(camera,center)
-        a.scene.render.filepath=str(OUT/'previews'/(a.filename+'_'+suffix+'.png'));bpy.ops.render.render(write_still=True)
+        picture=OUT/'previews'/(a.filename+'_'+suffix+'.png')
+        # OneDrive/preview readers can briefly hold the existing PNG open.
+        # Render a fresh file, then promote it instead of truncating that file.
+        temporary=picture.with_name(picture.stem+'.rendering.png')
+        a.scene.render.filepath=str(temporary);bpy.ops.render.render(write_still=True)
+        for attempt in range(20):
+            try:temporary.replace(picture);break
+            except PermissionError:
+                if attempt==19:raise
+                time.sleep(.25)
     # Round trip every exported GLB in an isolated scene; unit/transform drift is a failure.
     check_scene=bpy.data.scenes.new(a.id+'_roundtrip');bpy.context.window.scene=check_scene
     bpy.ops.import_scene.gltf(filepath=str(file));check_meshes=[o for o in check_scene.objects if o.type=='MESH'];bpy.context.view_layer.update();back=bounds(check_meshes)

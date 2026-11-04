@@ -25,7 +25,7 @@ function prepareCollectorPlugin(displayResources, destination, source = project)
     for (const name of RESOURCE_NAMES) fs.cpSync(path.join(displayResources, name), path.join(resources, name), { recursive: true });
     for (const name of ['collector-center', 'collector-service']) fs.cpSync(path.join(source, 'desktop', '.cache', name), path.join(resources, name), { recursive: true });
     for (const file of COLLECTOR_FILES) fs.copyFileSync(path.join(source, 'backend', 'services', file), path.join(resources, 'backend', 'services', file));
-    fs.writeFileSync(path.join(resources, 'backend', 'distribution.json'), JSON.stringify({ product: 'collector-plugin', collector: true }));
+    fs.writeFileSync(path.join(resources, 'backend', 'distribution.json'), JSON.stringify({ product: 'collector-plugin', collector: true, contentPolicy: 'empty-v1' }));
     const depSource=path.join(displayResources,'prerequisites'),depTarget=path.join(resources,'prerequisites');
     fs.mkdirSync(depTarget,{recursive:true});
     for(const name of ['RuntimePrerequisites.ps1','vc_redist.x64.exe'])fs.copyFileSync(path.join(depSource,name),path.join(depTarget,name));

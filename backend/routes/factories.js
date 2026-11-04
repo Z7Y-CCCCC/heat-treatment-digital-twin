@@ -58,7 +58,7 @@ router.get('/', async (req, res) => {
             GROUP BY f.id, f.name, f.location_json, f.is_enabled, f.collection_enabled, f.sort_order
             ORDER BY f.sort_order ASC, f.name ASC`);
         const active = await db.get('SELECT value FROM settings WHERE `key` = ?', ['active_factory_id']);
-        res.json({ factories: rows.map(publicFactory), activeFactoryId: String(active?.value || 'factory_default') });
+        res.json({ factories: rows.map(publicFactory), activeFactoryId: String(active?.value || '') });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
@@ -139,6 +139,8 @@ router.post('/', async (req, res) => {
             for (const setting of defaults) {
                 await tx.run('INSERT INTO factory_settings (factory_id, `key`, value) VALUES (?, ?, ?)', [factoryId, setting.key, setting.value]);
             }
+            const active = await tx.get('SELECT value FROM settings WHERE `key` = ?', ['active_factory_id']);
+            if (!active?.value) await tx.upsert('settings', { key: 'active_factory_id', value: factoryId }, 'key');
         });
         notifyFactoryDirectory(factoryId);
         res.status(201).json({ success: true, factory: publicFactory({ id: factoryId, name, location_json: location, is_enabled: 1, sort_order: Number(maxOrder?.max_order ?? -1) + 1 }) });

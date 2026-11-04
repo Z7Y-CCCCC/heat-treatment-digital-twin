@@ -138,7 +138,8 @@ namespace HeatTreatment.DigitalTwin.Runtime
             RenderSettings.ambientGroundColor = new Color(.34f, .40f, .48f);
             RenderSettings.ambientIntensity = 1.12f;
         }
-        private bool HasHallAsset => File.Exists(Path.Combine(Application.streamingAssetsPath, "Environment", "factory_hall_lowpoly.glb"));
+        private string _projectHallUri;
+        private bool HasHallAsset => !string.IsNullOrWhiteSpace(_projectHallUri) || File.Exists(Path.Combine(Application.streamingAssetsPath, "Environment", "factory_hall_lowpoly.glb"));
         private readonly Dictionary<string, Transform> _workshopEnvironmentRoots = new Dictionary<string, Transform>();
         private readonly Dictionary<string, Transform> _lineEnvironmentRoots = new Dictionary<string, Transform>();
         private readonly List<GameObject> _gridObjects = new List<GameObject>();
@@ -282,9 +283,17 @@ namespace HeatTreatment.DigitalTwin.Runtime
         public void RebuildFactoryFloor(
             FactoryConfigDto config,
             IReadOnlyList<DeviceDto> devices,
-            bool createReflectionProbe = true)
+            bool createReflectionProbe = true,
+            string backendHttpUrl = null)
         {
             _factoryConfig = config;
+            _projectHallUri = null;
+            // Only backend-resolved library assets may replace the developer
+            // hall. A clean release contains no StreamingAssets hall at all.
+            var assetPath = config?.EnvironmentModel?.FilePath;
+            if (!string.IsNullOrWhiteSpace(backendHttpUrl) && !string.IsNullOrWhiteSpace(assetPath)
+                && (assetPath.StartsWith("/uploads/") || assetPath.StartsWith("/assets/models/")))
+                _projectHallUri = backendHttpUrl.TrimEnd('/') + assetPath;
             _hallGeneration++;
             foreach (var importer in _hallImports) importer.Dispose();
             _hallImports.Clear();
@@ -368,11 +377,11 @@ namespace HeatTreatment.DigitalTwin.Runtime
             {
                 if (!_workshopEnvironmentRoots.TryGetValue(workshop.Id, out var parent)) continue;
                 if (workshop.LayoutObject["boundary"]?.Value<bool?>("enabled") == false) continue;
-                var importer = new GltfImport();
+                var importer = new GltfImport(new LoopbackDownloadProvider());
                 GameObject hall = null;
                 try
                 {
-                    var uri = new Uri(Path.Combine(Application.streamingAssetsPath, "Environment", "factory_hall_lowpoly.glb")).AbsoluteUri;
+                    var uri = _projectHallUri ?? new Uri(Path.Combine(Application.streamingAssetsPath, "Environment", "factory_hall_lowpoly.glb")).AbsoluteUri;
                     if (!await importer.Load(uri)) throw new InvalidOperationException("Factory hall GLB load failed");
                     AuditImportedHallMaterials(importer);
                     if (generation != _hallGeneration || parent == null) { importer.Dispose(); return; }
@@ -390,6 +399,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
                         Mathf.Clamp(size?.Value<float?>("width") ?? 100f, 10f, 5000f) / 100f,
                         1f,
                         Mathf.Clamp(size?.Value<float?>("depth") ?? 80f, 10f, 5000f) / 80f);
+                    if (!string.IsNullOrWhiteSpace(_projectHallUri)) hall.transform.localScale = Vector3.one * Mathf.Max(.001f, configScale());
                     ApplyFactoryHallPresentation(hall);
                     var customGround = _industrialGroundEnabled.TryGetValue(workshop.Id, out var custom) && custom;
                     var floorSurfaces = SetHallFloorVisibility(hall.transform, !customGround);
@@ -410,6 +420,8 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 }
             }
         }
+
+        private float configScale() => _factoryConfig?.EnvironmentModel?.DefaultScale ?? 1f;
 
         private static void AuditImportedHallMaterials(GltfImport importer)
         {

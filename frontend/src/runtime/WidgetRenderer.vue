@@ -1,5 +1,5 @@
 <script setup>
-import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import * as echarts from 'echarts'
 import { playbackSelection,normalizePlayback,isDeviceBinding,devicePoint } from '../../../shared/widgetPlayback.mjs'
 import { parameterValue } from '../../../shared/dashboardParameters.mjs'
@@ -72,15 +72,25 @@ const progressPercent = computed(() => {
   return Math.max(0, Math.min(100, target ? (output / target) * 100 : 0)).toFixed(1)
 })
 
-const sampledDevice=shallowRef({id:'',reading:{},status:{},part:{},point:null,at:0})
 const playbackCatalog=computed(()=>props.deviceCatalog ?? [...new Set([...Object.keys(props.deviceDataMap),String(dataBinding.value.deviceId || '')].filter(Boolean))].map(id=>({id,name:id})))
-const playback=computed(()=>playbackSelection(dataBinding.value,props.runtimeContext,playbackCatalog.value,props.preview && !props.interactive ? 0 : props.playbackNow))
+// A 100ms API scheduler tick need not invalidate every device snapshot.
+const playbackTime=computed(()=>{
+ const interval=normalizePlayback(dataBinding.value).rotationIntervalMs
+ return props.preview && !props.interactive ? 0 : Math.floor(props.playbackNow/interval)*interval
+})
+const historyClock=computed(()=>{
+ const interval=Math.max(1000,normalizePlayback(dataBinding.value).refreshMs)
+ return Math.floor(props.playbackNow/interval)*interval
+})
+const playback=computed(()=>playbackSelection(dataBinding.value,props.runtimeContext,playbackCatalog.value,playbackTime.value))
 const scopedDeviceBinding=computed(()=>isDeviceBinding(dataBinding.value))
-watch(()=>JSON.stringify([playback.value.device?.id || '',Math.floor(props.playbackNow/normalizePlayback(dataBinding.value).refreshMs),JSON.stringify(dataBinding.value),props.runtimeContext.factoryId,props.runtimeContext.partId,props.runtimeContext.viewId,props.runtimeContext.regionCode]),()=>{
+// PLC frames and part changes are already reactive. Never gate their display on
+// the external-source refresh timer (rotation selection remains independent).
+const sampledDevice=computed(()=>{
  const id=playback.value.device?.id || ''
- const clone=value=>JSON.parse(JSON.stringify(value || {}))
- sampledDevice.value={id,reading:clone(props.deviceDataMap[id]),status:clone(props.deviceStatusMap[id]),part:clone(props.selectedPart),point:devicePoint(dataBinding.value,id,props.pointValues) ? clone(devicePoint(dataBinding.value,id,props.pointValues)) : null,at:props.playbackNow}
-},{immediate:true})
+ return {id,reading:props.deviceDataMap[id] || {},status:props.deviceStatusMap[id] || {},
+   part:props.selectedPart,point:devicePoint(dataBinding.value,id,props.pointValues)}
+})
 const activeDeviceName=computed(()=>databaseRecord.value?.deviceName || playback.value.device?.name || '')
 const dataContext = computed(() => ({
   metrics: props.metrics,
@@ -693,11 +703,11 @@ function triggerEvents(trigger, domEvent) {
   widgetEvents.value.filter(event => (event.trigger || 'click') === trigger).forEach(event => emit('action', { event, widget: props.widget, domEvent }))
 }
 
-watch(() => [boundValue.value,sampledDevice.value.at], ([value]) => {
+watch(() => [boundValue.value,historyClock.value], ([value]) => {
   if (!(dataBinding.value.mode === 'plc' || dataBinding.value.pointId || dataBinding.value.point_id || dataBinding.value.mode==='runtime' && isTrend.value)) return
   const number = numericValue(value)
   const sourceTime=pointRecord.value?.lastReadAt || pointRecord.value?.timestamp || sampledDevice.value.reading?.timestamp || (/^map(?:\.|$)/.test(dataBinding.value.path || '') ? props.mapData.timestamp : null)
-  const now = boundQuality.value !== 'good' ? sampledDevice.value.at : typeof sourceTime === 'string' ? Date.parse(sourceTime) : Number(sourceTime || sampledDevice.value.at)
+  const now = boundQuality.value !== 'good' ? historyClock.value : typeof sourceTime === 'string' ? Date.parse(sourceTime) : Number(sourceTime || historyClock.value)
   if(number===null && !localTrend.value.length)return
   const key=historyKey();if(!localHistories.has(key) && localHistories.size>=32)localHistories.delete(localHistories.keys().next().value)
   const rows=appendTrendSample(localHistories.get(key)||[],{timestamp:now,value:number,quality:boundQuality.value},{limit:content.value.historyLength || 120,windowSeconds:content.value.timeWindowSeconds || 600})

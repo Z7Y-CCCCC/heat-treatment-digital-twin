@@ -83,6 +83,7 @@ async function toggleFactory(factory){
       <div class="registry-heading-actions"><FactoryDistributionPreview :refresh-key="previewRevision" /><button type="button" class="primary-action" :disabled="loading || saving || !!togglingId" @click="openCreate">＋ 新建工厂</button></div>
     </header>
     <p v-if="loading" class="registry-state">正在读取工厂…</p>
+    <p v-else-if="!error && !factories.length" class="registry-state">当前为空系统，没有预置模板工厂。请新增工厂，或到项目迁移中导入项目；模型与动作按项目单独导入。</p>
     <p v-else-if="error && !factories.length" class="registry-state error" role="alert">{{ error }}</p>
     <div v-else class="factory-table-wrap">
       <table class="factory-table">

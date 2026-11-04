@@ -2,6 +2,7 @@
 import { permissionDirective as vPermission } from '../../../runtime/pagePermissionUi.js'
 import { computed, onUnmounted, ref, watch } from 'vue'
 import NativeWallEditor from './NativeWallEditor.vue'
+import ModelAssetTransfer from './ModelAssetTransfer.vue'
 
 const props = defineProps({
     config: { type: Object, required: true },
@@ -10,10 +11,11 @@ const props = defineProps({
     presetOptions: { type: Array, default: () => [] },
     workshops: { type: Array, default: () => [] },
     lines: { type: Array, default: () => [] },
-    devices: { type: Array, default: () => [] }
+    devices: { type: Array, default: () => [] },
+    models: { type: Array, default: () => [] }
 })
 
-const emit = defineEmits(['save', 'apply-preset', 'reset'])
+const emit = defineEmits(['save', 'apply-preset', 'reset', 'model-imported'])
 
 const colorItems = [
     ['skyColor', '天空'],
@@ -158,6 +160,13 @@ function saveCustom() {
         </div>
 
         <div class="preset-panel">
+            <ModelAssetTransfer :models="models.filter(m => m.asset_type === 'environment')" @imported="emit('model-imported')" />
+            <label>项目厂房模型
+                <select v-model="config.environmentModelId" :disabled="saving" @change="saveCustom" v-permission="{ page: 'platform.environment', action: 'edit' }">
+                    <option value="">不加载厂房模型（开发工程保留原场景）</option>
+                    <option v-for="m in models.filter(m => m.asset_type === 'environment')" :key="m.id" :value="m.id">{{ m.name }}</option>
+                </select>
+            </label>
             <div class="preset-panel-heading">
                 <div>
                     <strong>视觉预设</strong>

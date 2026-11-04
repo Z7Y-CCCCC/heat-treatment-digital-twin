@@ -11,6 +11,7 @@ import { normalizePlcOptions, normalizePlcProtocol } from '../../../config/plcPr
 function createDefaultNativeEnvironmentConfig() {
     return {
         version: 3,
+        environmentModelId: '',
         preset: 'neutral_factory',
         sceneBrightness: 1.05,
         ambientIntensity: 1.05,
@@ -126,6 +127,7 @@ function normalizeNativeEnvironmentConfig(value) {
     const fogStart = dashboardNumber(source.fogStart, defaults.fogStart, 0, 500)
     return {
         version: 3,
+        environmentModelId: /^[\w-]{1,128}$/.test(source.environmentModelId || '') ? source.environmentModelId : '',
         preset: ACTIVE_NATIVE_ENVIRONMENT_PRESETS.has(String(source.preset || '').trim())
             ? String(source.preset).trim()
             : defaults.preset,
@@ -1184,6 +1186,7 @@ export function useSystemSettings({
         if (!selected?.config) return
         const next = normalizeNativeEnvironmentConfig({
             ...selected.config,
+            environmentModelId: nativeEnvironmentConfig.environmentModelId,
             preset: selected.value,
             showWalls: false,
             wallEditorWidth: nativeEnvironmentConfig.wallEditorWidth,
@@ -1198,6 +1201,7 @@ export function useSystemSettings({
     function resetNativeEnvironmentConfig() {
         const defaults = {
             ...createDefaultNativeEnvironmentConfig(),
+            environmentModelId: nativeEnvironmentConfig.environmentModelId,
             showWalls: false,
             wallEditorWidth: nativeEnvironmentConfig.wallEditorWidth,
             wallEditorDepth: nativeEnvironmentConfig.wallEditorDepth,

@@ -301,6 +301,7 @@ function recoverPendingModelDeletions(db) {
     return modelRecoveryPromise;
 }
 
+app.use('/api/models', factoryContext, require('./routes/modelAssetBundles'));
 app.use('/api/models', factoryContext, require('./routes/modelInspection'));
 app.post('/api/models/upload', upload.single('modelFile'), async (req, res) => {
     if (!req.file) {

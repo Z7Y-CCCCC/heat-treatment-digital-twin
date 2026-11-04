@@ -463,7 +463,7 @@ export function normalizeDashboardWidget(source = {}, canvas = DEFAULT_DASHBOARD
       orderDirection: String(data.orderDirection || 'desc').toLowerCase() === 'asc' ? 'asc' : 'desc',
       valueMode: ['latest', 'first', 'list', 'count', 'sum', 'avg', 'min', 'max'].includes(data.valueMode) ? data.valueMode : 'latest',
       rowLimit: Math.round(numberValue(data.rowLimit, 50, 1, 500)),
-      refreshMs: Math.round(numberValue(data.refreshMs, 5000, 1000, 3600000)),
+      refreshMs: Math.round(numberValue(data.refreshMs, 5000, 250, 3600000)),
       datasets,
       formula: String(data.formula || '').slice(0, 256),
       formulaLabel: String(data.formulaLabel || '计算结果').slice(0, 100),

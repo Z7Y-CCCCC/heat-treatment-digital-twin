@@ -87,8 +87,12 @@ async function main() {
         let mysqlPid;
         let result;
         let activated = false;
+        let phaseError;
         try {
-            const readyDeadline = Date.now() + 180000;
+            // A cold fixture copies the complete package, verifies prerequisites,
+            // initializes MySQL and extracts native dependencies on this disk.
+            // Keep that installation work separate from runtime readiness.
+            const readyDeadline = Date.now() + (phase === 'first-install' ? 420000 : 240000);
             while (Date.now() < readyDeadline) {
                 if (spawnError) throw spawnError;
                 if (exited) throw new Error(`Desktop exited before its MySQL backend became ready; inspect ${directory}`);
@@ -108,6 +112,7 @@ async function main() {
                 if (fs.existsSync(startupFailure)) throw new Error(fs.readFileSync(startupFailure, 'utf8'));
                 await delay(500);
             }
+            assert.equal(activated, true, `Desktop backend/activation readiness timed out; inspect ${directory}`);
             const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
             assert.equal(activated, true, 'Real activation must complete before Unity starts');
             assert.equal(config.type, 'mysql');
@@ -188,9 +193,19 @@ async function main() {
                 historyCountsImported: { event_logs: seedResult.counts.event_logs, metric_snapshots: seedResult.counts.metric_snapshots },
                 portableConfigurationFilesVerified: deliveredConfiguration.length };
             launches.push(result);
+        } catch (error) {
+            phaseError = error;
+            fs.writeFileSync(path.join(directory, 'smoke-failure.json'), JSON.stringify({ success: false, phase, error: error.stack }, null, 2));
+            throw error;
         } finally {
             if (connection) await connection.end().catch(() => {});
-            if (!exited) await stopOwnedSmokeProcess(child);
+            if (!exited) {
+                try { await stopOwnedSmokeProcess(child); }
+                catch (cleanupError) {
+                    if (phaseError) throw new AggregateError([phaseError, cleanupError], 'Packaged smoke failed and cleanup also failed');
+                    throw cleanupError;
+                }
+            }
         }
     }
     const resourceIntegrity = await verifyTree(sourceResources, resourcesBefore);

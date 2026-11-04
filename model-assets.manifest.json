@@ -30,8 +30,8 @@
     },
     {
       "path": "backend/assets/models/cad_cleaner_170700.glb",
-      "bytes": 5191156,
-      "sha256": "a613313565b5c88ea6ceb59d9a258de75ed75915ea47921b46e922c46808f4ae"
+      "bytes": 5284204,
+      "sha256": "e5b45809e4218f82b8e3a5fc67fe054b81c010f13edcc5902b9286659b473a33"
     },
     {
       "path": "backend/assets/models/cad_fixed_load_table_112200.glb",
@@ -65,8 +65,8 @@
     },
     {
       "path": "backend/assets/models/cad_general_20261103_v1/17.07.00_清洗机.glb",
-      "bytes": 5191156,
-      "sha256": "a613313565b5c88ea6ceb59d9a258de75ed75915ea47921b46e922c46808f4ae"
+      "bytes": 5284204,
+      "sha256": "e5b45809e4218f82b8e3a5fc67fe054b81c010f13edcc5902b9286659b473a33"
     },
     {
       "path": "backend/assets/models/cad_general_20261103_v1/47.10.00_水冷槽.glb",
@@ -100,8 +100,8 @@
     },
     {
       "path": "backend/assets/models/cad_general_20261103_v1/sources/17.07.00_清洗机.blend",
-      "bytes": 736675,
-      "sha256": "eec93452a55bb54bcbe4bd233a727cf19abf22ebb489f6209537f033bb7be5bd"
+      "bytes": 752291,
+      "sha256": "0c628221e5fe255f47c935816f642bb556ab87cd7a5b8496962ab7654c7ee56d"
     },
     {
       "path": "backend/assets/models/cad_general_20261103_v1/sources/47.10.00_水冷槽.blend",
@@ -430,8 +430,8 @@
     },
     {
       "path": "backend/assets/motions/cad_cleaner_170700.glb",
-      "bytes": 5279424,
-      "sha256": "b7ae8bfa8ad959b1772a5660efc16ce65c4d6bba34fa5bcebbce311ef5935ce5"
+      "bytes": 5373724,
+      "sha256": "f69c51f45d6a819fef9321f9994c630626244ea8884aac10a2c8f5c7b0db940e"
     },
     {
       "path": "backend/assets/motions/cad_fixed_load_table_112200.glb",

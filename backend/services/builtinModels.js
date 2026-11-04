@@ -1,10 +1,13 @@
+let catalogue;
+function legacyCatalogue() {
+if (catalogue) return catalogue;
 const { presetMetadata } = require('./inspectionPresets');
 const { getPitFurnaceModels } = require('./pitFurnaceModels');
 const { getCadEquipmentModels } = require('./cadEquipmentModels');
 const cleanerMetadata = require('../assets/models/ultrasonic_cleaner_cad_metadata.json');
 const temperingCadMetadata = require('../assets/models/cad_tempering_furnace_091300_metadata.json');
 
-const BUILTIN_MODELS = [
+catalogue = [
     ...[
         ['photo_multipurpose_furnace_v6', '多用炉 V6 · 可配置拆解样板', 'photo_multipurpose_furnace_v6_pipefix'],
         ['photo_tempering_furnace_v6', '回火炉 V6 · 可配置拆解样板'],
@@ -71,12 +74,16 @@ const BUILTIN_MODELS = [
         is_builtin: true
     }
 ];
+return catalogue;
+}
 
 function getBuiltinModels() {
-    return BUILTIN_MODELS.map(model => withMotionPackage({ ...model }));
+    if (require('./installContentPolicy').emptyInstallation()) return [];
+    return legacyCatalogue().map(model => withMotionPackage({ ...model }));
 }
 
 function builtinMotionForModel(model) {
+    if (require('./installContentPolicy').emptyInstallation()) return null;
     const motion = require('../../shared/motionPackages.json').models[model.id];
     let valid = false;
     if (motion && model.file_path === motion.sourcePath) {

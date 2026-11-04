@@ -58,6 +58,7 @@ import UnifiedDashboardDesigner from './admin/components/UnifiedDashboardDesigne
 import AdminWindowChrome from './admin/components/AdminWindowChrome.vue'
 import AdminSecuritySettings from './admin/components/AdminSecuritySettings.vue'
 import ProjectMigrationSettings from './admin/components/ProjectMigrationSettings.vue'
+import ModelAssetTransfer from './admin/components/ModelAssetTransfer.vue'
 import PlatformUsersSettings from './admin/components/PlatformUsersSettings.vue'
 import AdminHelpGuide from './admin/components/AdminHelpGuide.vue'
 import MobileDeviceMotion from './admin/components/MobileDeviceMotion.vue'
@@ -1237,7 +1238,7 @@ function openCreateDevice() {
     editingDeviceWorkshopId.value = workshops.value[0]?.id || ''
     Object.assign(editingDevice, { 
         id: '', name: '', line_id: placedLines.value[0]?.id || '',
-        model_type: 'builtin_furnace', model_file: '', template_id: '', instance_config: '{}',
+        model_type: availableModelOptions.value[0]?.id || '', model_file: '', template_id: '', instance_config: '{}',
         pos_x: 0, pos_y: 0, pos_z: 0, rotation_y: 0, scale: 1.0, coordinate_space: 'line_local', sort_order: devices.value.length,
         ...defaultPlcConnectionConfig()
     })
@@ -1596,7 +1597,7 @@ const fallbackModelOptions = [
     { id: 'transfer_cart', name: '轨道料车 / 取料小车' }
 ]
 const availableModelOptions = computed(() => {
-    const merged = new Map(fallbackModelOptions.map(model => [model.id, model]))
+    const merged = new Map() // project library only; no built-in device choices
     models.value
         .filter(model => !isEnvironmentModel(model) && (model.placement_level || 'device') === 'device')
         .forEach(model => merged.set(model.id, { ...model }))
@@ -8775,6 +8776,7 @@ async function openAdminSetupStep(step) {
                         </nav>
                     </div>
 
+                    <ModelAssetTransfer :models="models" :selected-id="activeTab === 'models' ? selectedPreviewModelId : ''" @imported="loadModels" />
                     <LineEquipmentSequence v-if="activeTab === 'model-animations' && motionWorkspaceMode === 'transfer'" :models="models" :lines="lines" :devices="devices" :workshops="workshops" />
                     <DeviceAnimationLink v-if="activeTab === 'model-animations' && motionWorkspaceMode === 'live'" ref="deviceAnimationLinkRef" :models="models" :devices="devices" :confirm="confirm" />
                     <MotionActionEditor v-if="activeTab === 'model-animations' && motionWorkspaceMode === 'authoring'" ref="motionActionEditorRef" :models="motionModelOptions" :confirm="confirm" @saved="updated => { models = models.map(m => m.id === updated.id ? updated : m) }" />
@@ -9284,6 +9286,8 @@ async function openAdminSetupStep(step) {
 
                     <div v-if="visitedPlatformSubpages.has('environment') && canAdminPage('platform.environment')" v-show="platformSubpage === 'environment'" class="secondary-page-panel">
                         <NativeEnvironmentSettings
+                            :models="models"
+                            @model-imported="loadModels"
                             :config="nativeEnvironmentConfig"
                             :saving="nativeEnvironmentSaving"
                             :message="nativeEnvironmentMessage"

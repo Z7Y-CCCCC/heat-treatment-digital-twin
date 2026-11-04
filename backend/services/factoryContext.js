@@ -32,6 +32,12 @@ async function factoryContext(req, res, next) {
         req.factoryId = await resolveFactoryId(db, req.get('x-factory-id') || req.query.factory_id || '');
         withFactoryScope(req.factoryId, next);
     } catch (error) {
+        // Empty installations must be able to render onboarding/read empty
+        // lists. Writes still require an explicitly created factory.
+        if (error.code === 'FACTORY_CONTEXT_MISSING' && ['GET', 'HEAD'].includes(req.method)) {
+            req.factoryId = '';
+            return withFactoryScope('', next);
+        }
         res.status(error.statusCode || 500).json({ success: false, code: error.code || 'FACTORY_CONTEXT_ERROR', error: error.message });
     }
 }

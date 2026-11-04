@@ -88,7 +88,7 @@ const PROFILES = {
         ['门驱动与链条', ['door_drive','door_chains'], [0,1.6,1]],
         ['传动带与电机', ['belt_drive','belt_motor'], [-1.5,1.5,0]],
         ['内部承料辊道', ['internal_rollers'], [0,.65,1.2]],
-        ['储液槽总成', ['tanks'], [0,-.6,-1.5]],
+        ['水箱与中央下部壳体', ['tanks','central_lower_body','lower_collection'], [0,-.6,-1.5]],
         ['过滤槽与接管', ['filter_tank','filter_connections'], [1.8,.25,-.8]],
         ['泵组', ['pumps'], [1.8,.1,.9]],
         ['喷淋总管与腔内管组', ['spray_headers','chamber_tubes'], [0,1.5,-1.25]],

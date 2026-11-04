@@ -55,7 +55,7 @@ function normalizeDataSet(input = {}) {
     const database = { schema: text(input.database?.schema), table: text(input.database?.table), orderBy: text(input.database?.orderBy), orderDirection: input.database?.orderDirection === 'asc' ? 'asc' : 'desc' };
     if (source === 'database' && !database.table) throw error('请选择数据表');
     return { id: idPattern.test(input.id || '') ? input.id : `dataset_${crypto.randomUUID()}`, name, connectionId, source,
-        enabled: input.enabled !== false, refreshMs: Math.round(number(input.refreshMs, 5000, 1000, 3600000)),
+        enabled: input.enabled !== false, refreshMs: Math.round(number(input.refreshMs, 5000, source === 'http' ? 250 : 1000, 3600000)),
         request: { method, path, readOnly: true, parameters }, rootPath: source === 'http' ? dataPath(input.rootPath, true) : '',
         match, columns, database, revision: text(input.revision, 80) };
 }
@@ -147,8 +147,9 @@ async function readDefinition(input, context, factoryId, force = false, inspect 
     if (!inspect && definition.match && (matchValue(definition,context) == null || matchValue(definition,context) === '')) throw error('请先选择要查看的对象或参数');
     const request = definition.source === 'http' ? resolveRequest(definition, context) : null;
     const key = crypto.createHash('sha256').update(JSON.stringify([factoryId, connection, definition.source, definition.refreshMs, request, definition.source === 'database' ? [definition.database, definition.columns, definition.match, context] : null])).digest('hex');
+    const effectiveRefreshMs=Math.min(definition.refreshMs,Math.max(definition.source === 'http' ? 250 : 1000,Number(context.widgetRefreshMs)||definition.refreshMs));
     let payload = force ? undefined : cache.get(key);
-    if(payload && Date.now()-Date.parse(payload.fetchedAt)>Math.min(definition.refreshMs,Number(context.widgetRefreshMs)||definition.refreshMs))payload=undefined;
+    if(payload && Date.now()-Date.parse(payload.fetchedAt)>=effectiveRefreshMs)payload=undefined;
     if (payload === undefined) {
         if (!pending.has(key)) {
             if (pending.size >= 32) throw error('数据请求繁忙，请稍后再试', 429);
@@ -173,7 +174,8 @@ async function readDefinition(input, context, factoryId, force = false, inspect 
         walk(Array.isArray(selected)?selected[0]:selected);
         return {fields,roots:[...new Set(roots)],fetchedAt:payload.fetchedAt};
     }
-    return { ...mapRows(payload.payload, definition, context), fetchedAt: payload.fetchedAt };
+    return { ...mapRows(payload.payload, definition, context), fetchedAt: payload.fetchedAt,
+        refreshAfterMs: Math.max(0, Date.parse(payload.fetchedAt) + effectiveRefreshMs - Date.now()) };
 }
 function bindingResult(result, binding) {
     const field = binding.datasetField, column = result.columns.find(c => c.name === field);

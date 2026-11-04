@@ -97,3 +97,6 @@ desktop/.*.preparing*
 # Share editable CAD models, not duplicate delivery archives / local review runs.
 backend/assets/models/cad_*/*.zip
 backend/assets/models/cad_*/review/
+
+# Optional project assets are delivered separately, never baked into installers.
+导入文件/

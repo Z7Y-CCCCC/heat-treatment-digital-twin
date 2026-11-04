@@ -7,11 +7,11 @@ const desktopDir = path.resolve(__dirname, '..');
 const projectDir = path.resolve(desktopDir, '..');
 const unityProjectDir = path.join(projectDir, 'unity-client');
 const projectVersionFile = path.join(unityProjectDir, 'ProjectSettings', 'ProjectVersion.txt');
-const buildDirectory = path.join(unityProjectDir, 'Builds', 'Windows');
+const buildDirectory = process.env.DIGITAL_TWIN_UNITY_BUILD_DIR ? path.resolve(process.env.DIGITAL_TWIN_UNITY_BUILD_DIR) : path.join(unityProjectDir, 'Builds', 'Windows');
 const buildExecutable = path.join(buildDirectory, 'HeatTreatmentDigitalTwin.exe');
 const logDirectory = path.join(unityProjectDir, 'Logs');
 const logFile = path.join(logDirectory, 'desktop-package-build.log');
-const cacheFile = path.join(unityProjectDir, 'Library', 'DigitalTwinBuildCache', 'windows-client.json');
+const cacheFile = process.env.DIGITAL_TWIN_UNITY_BUILD_DIR ? path.join(buildDirectory, '.unity-build-cache.json') : path.join(unityProjectDir, 'Library', 'DigitalTwinBuildCache', 'windows-client.json');
 const forceRebuild = process.argv.includes('--force')
     || String(process.env.DESKTOP_FORCE_UNITY_REBUILD || '').toLowerCase() === 'true';
 const inputRoots = ['Assets', 'Packages', 'ProjectSettings'].map(name => path.join(unityProjectDir, name));

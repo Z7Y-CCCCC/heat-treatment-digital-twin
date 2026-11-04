@@ -1,4 +1,7 @@
 const { createInspectionDefaults, normalizeInspection } = require('../../shared/inspectionConfig.cjs');
+let catalogue;
+function legacyCatalogue() {
+if (catalogue) return catalogue;
 const { getPitFurnaceModels, getPitInspectionPresets } = require('./pitFurnaceModels');
 
 // Asset-authored, editable examples. Renderers contain no equipment-specific logic.
@@ -97,4 +100,10 @@ function presetMetadata(modelId) {
     return JSON.parse(JSON.stringify({ ...assetMetadata[modelId], inspection: item.inspection }));
 }
 
-module.exports = { getInspectionPresets, presetMetadata };
+catalogue = { getInspectionPresets, presetMetadata };
+return catalogue;
+}
+module.exports = {
+    getInspectionPresets: () => require('./installContentPolicy').emptyInstallation() ? [] : legacyCatalogue().getInspectionPresets(),
+    presetMetadata: id => require('./installContentPolicy').emptyInstallation() ? null : legacyCatalogue().presetMetadata(id)
+};

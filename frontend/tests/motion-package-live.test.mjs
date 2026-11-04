@@ -20,12 +20,17 @@ test('signal mapping snaps first acquisition, reverses without restarting and fr
  receiveMotionSignal(s,binding,frame(1,{pointMeta:{'doors.open':{id:'other'}}}),15);assert.equal(s.usable,false)
  const fresh={seconds:0};receiveMotionSignal(fresh,binding,frame(true),0);assert.equal(fresh.position,1)
 })
-test('installer carries the motion registry together with backend assets (without broadening credential filters)',()=>{
+test('empty installer excludes model/motion assets, keeping uploads and credentials out of release resources',()=>{
  const options=JSON.parse(fs.readFileSync(new URL('../../desktop/package.json',import.meta.url))).build.extraResources
  const shared=options.find(x=>x.to==='shared'),backend=options.find(x=>x.to==='backend')
  assert.ok(shared.filter.includes('motionPackages.json'))
  assert.ok(backend.filter.includes('**/*'))
- assert.ok(!backend.filter.some(p=>p.startsWith('!assets/motions')))
+ assert.ok(backend.filter.includes('!assets/motions/**/*'))
+ assert.ok(backend.filter.includes('!assets/models/**/*'))
+ assert.ok(backend.filter.includes('!uploads/**/*'))
+ assert.ok(backend.filter.includes('!data/**/*'))
+ const distribution=JSON.parse(fs.readFileSync(new URL('../../desktop/assets/display-distribution.json',import.meta.url)))
+ assert.equal(distribution.contentPolicy,'empty-v1')
 })
 test('measured door stroke is linear, not the eased timeline of an open/close demonstration',()=>{
  const data=JSON.parse(fs.readFileSync(new URL('../../backend/assets/motions/cad_cleaner_170700.json',import.meta.url)))

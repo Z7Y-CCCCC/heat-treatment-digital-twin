@@ -20,7 +20,7 @@ test('existing device context overrides overview rotation/fixed bindings in devi
  for(const viewId of ['device_detail','device_xray','device_exploded','device_part'])for(const deviceScope of ['fixed','rotation','current'])assert.equal(playbackSelection({...binding,deviceScope,deviceId:'b'},{viewId,deviceId:'a'},devices,4000).device.id,'a')
  assert.equal(playbackSelection(binding,{viewMode:'device',deviceId:'unknown'},devices,0).device,null)
  assert.equal(playbackSelection({...binding,rotationDeviceIds:['foreign']},{lineId:'l'},devices,0).device,null)
- assert.equal(normalizePlayback({refreshMs:-2,rotationIntervalMs:1}).refreshMs,1000)
+ assert.equal(normalizePlayback({refreshMs:-2,rotationIntervalMs:1}).refreshMs,250)
 })
 test('same-role point reuse never falls back to another device, including ambiguous or missing roles',()=>{
  const values={template:{id:'template',device_id:'a',category:'analog',value_role:'temp',value:99},one:{id:'one',device_id:'b',category:'analog',value_role:'temp',value:0}}
@@ -69,4 +69,22 @@ test('all advanced chart families consume real fields and never invent missing z
  for(const type of DASHBOARD_CHARTS.map(c=>c.id).filter(id=>!['line','area','bar','stackedBar','gauge','scatter'].includes(id))){const option=extendedChartOption(type,{sourceSeries:series,content:{xField:'x',yField:'y'}});assert.ok(option,type);assert.ok(Array.isArray(option.series),type)}
  const pie=extendedChartOption('pie',{sourceSeries:[{name:'读数',value:null,rows:[{time:'未知',value:null},{time:'零',value:0}]}]});assert.deepEqual(pie.series[0].data.map(x=>x.value),[0])
  const candle=extendedChartOption('candlestick',{sourceSeries:[{rows:[{time:'missing',open:1}]}]});assert.equal(candle.series[0].data[0],null)
+})
+
+test('cached response schedules at remaining freshness, not another full widget interval',async()=>{
+ const calls=[],f=scheduler(async(_ids,_c,_p,now)=>{calls.push(now);return {values:{w:{value:now,deviceId:'a',refreshAfterMs:250}}}});
+ f.context({viewMode:'device',deviceId:'a'});
+ await f.reader.refresh(false,0);await f.reader.refresh(false,200);await f.reader.refresh(false,300);
+ assert.deepEqual(calls,[0,300]);f.reader.dispose();
+})
+
+
+test('a stalled slow ERP read does not block the bounded fast device API lane',async()=>{
+ const stalled=deferred(),values={},calls=[];
+ const widgets=[{id:'fast',data:{mode:'dataset',deviceScope:'fixed',deviceId:'a',refreshMs:250}},{id:'erp',data:{mode:'http_api',deviceScope:'fixed',deviceId:'a',refreshMs:5000}}];
+ const reader=createWidgetReadScheduler({context:()=>({}),parameters:()=>({}),devices:()=>devices,widgets:()=>widgets,
+  read:(ids,_c,_p,now)=>{calls.push({ids,now});return ids.includes('erp')?stalled.promise:Promise.resolve({values:{fast:{value:now,deviceId:'a'}}})},put:(id,v)=>values[id]=v,remove:id=>delete values[id]});
+ const first=reader.refresh(false,0);await settle();assert.equal(values.fast.value,0);
+ const second=reader.refresh(false,300);await settle();assert.equal(values.fast.value,300);
+ assert.equal(calls.filter(r=>r.ids.includes('erp')).length,1);stalled.resolve({values:{erp:{deviceId:'a',value:1}}});await first;await second;reader.dispose();
 })

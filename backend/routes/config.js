@@ -123,6 +123,8 @@ router.get('/', async (req, res) => {
         });
 
         const models = mergeBuiltinModels(await db.all('SELECT * FROM models WHERE factory_id IS NULL OR factory_id = ?', [req.factoryId]));
+        const environmentModelId = safeJsonParse(settings.native_environment_config, {}).environmentModelId;
+        const environmentModel = models.find(m => m.id === environmentModelId && m.asset_type === 'environment') || null;
         const { project: activeProject, scene: activeScene } = await getProjectAndScene(db, '', req.factoryId);
         const published = await loadPublishedDocument(db, activeProject, activeScene);
         const runtimeScene = published.document?.sceneId && published.document.sceneId !== activeScene?.id
@@ -135,6 +137,7 @@ router.get('/', async (req, res) => {
             factoryId: req.factoryId,
             factories: await loadFactorySummaries(db),
             models,
+            environmentModel,
             templatePacks: getHeatTreatmentTemplatePacks(),
             platform: runtimePlatformPayload({
                 project: activeProject,
