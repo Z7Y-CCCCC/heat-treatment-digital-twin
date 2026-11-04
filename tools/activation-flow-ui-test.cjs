@@ -3,7 +3,7 @@
 const assert = require('node:assert/strict'), fs = require('node:fs'), path = require('node:path');
 const playwright = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const { createSmokeSandbox, stopOwnedSmokeProcess } = require('../desktop/scripts/smoke-sandbox.cjs');
-const { findFreePort, startLoggedProcess, waitUntil, waitForHttp, BACKEND_DIR } = require('../backend/scripts/integration-test-utils.cjs');
+const { findFreePort, startLoggedProcess, waitUntil, waitForHttp, waitForOwnedBackend, waitForExit, BACKEND_DIR } = require('../backend/scripts/integration-test-utils.cjs');
 const { decodeActivationCode, encodeActivationCode } = require('../shared/activationCode.cjs');
 const { createActivationClient } = require('../desktop/activation.cjs');
 const checks = [], errors = [], check = name => { checks.push(name); console.log('PASS ' + name); };
@@ -20,12 +20,12 @@ let sandbox, issuer, backend, desktop, browser, nativeBrowser, page, adminPage, 
     await page.getByText('签发就绪', { exact: true }).waitFor();
     const publicKeyFile = path.join(vendorDir, 'license-public-key.pem');
     assert.ok(fs.existsSync(publicKeyFile)); assert.ok(fs.existsSync(path.join(vendorDir, 'license-private-key.pem')));
-    const port = await findFreePort(3957); origin = `http://127.0.0.1:${port}`;
+    const port = await findFreePort(); origin = `http://127.0.0.1:${port}`;
     const env = { ...sandbox.env, PORT: String(port), HOST: '127.0.0.1', FRONTEND_DIST: path.resolve(__dirname, '../frontend/dist'),
         LICENSE_PUBLIC_KEY_FILE: publicKeyFile, LICENSE_ENFORCE: 'true', LICENSE_REQUIRE_MACHINE_BOUND: 'true', LICENSE_MACHINE_ID: 'owned-activation-machine' };
     const startBackend = async () => {
         backend = startLoggedProcess(process.execPath, ['server.js'], { cwd: BACKEND_DIR, env, licenseEnforced: true, logFile: path.join(sandbox.directory, 'backend.log') });
-        await waitForHttp(origin + '/api/health');
+        await waitForOwnedBackend(origin, backend);
     };
     await startBackend();
     const client = createActivationClient(origin), initial = await client.status();
@@ -69,7 +69,7 @@ let sandbox, issuer, backend, desktop, browser, nativeBrowser, page, adminPage, 
     assert.equal((await client.status()).required, true);
     check('vendor UI issues a real signed machine-bound code; keys cannot be overwritten; wrong-machine, expired, truncated and forged codes are rejected');
 
-    const debugPort = await findFreePort(9223), desktopLog = path.join(sandbox.directory, 'desktop.log');
+    const debugPort = await findFreePort(), desktopLog = path.join(sandbox.directory, 'desktop.log');
     const electron = require('../desktop/node_modules/electron');
     desktop = startLoggedProcess(electron, [`--remote-debugging-port=${debugPort}`, path.resolve(__dirname, 'activation-window-fixture.cjs')], {
         cwd: path.resolve(__dirname, '..'), env: { ...sandbox.env, ACTIVATION_UI_DATA: path.join(sandbox.directory, 'desktop'), ACTIVATION_UI_ORIGIN: origin }, logFile: desktopLog });
@@ -151,7 +151,11 @@ let sandbox, issuer, backend, desktop, browser, nativeBrowser, page, adminPage, 
     await adminPage.locator('.license-settings-panel').screenshot({ path: path.join(sandbox.directory, '03-license-history.png'), animations: 'disabled' });
     fs.writeFileSync(path.join(sandbox.directory, 'native-license-history.txt'), await startup.locator('.license-settings-panel').innerText());
     check('original six-character password setup still works; owner renewal retains both codes and the actual admin page displays the activation history');
-    await stopOwnedSmokeProcess(desktop); desktop = null; await nativeBrowser.close().catch(() => {}); nativeBrowser = null;
+    // Exercise the user's normal close path, not a taskkill while CDP still
+    // holds the fixture. Forced-crash behaviour has separate lifecycle tests.
+    await startup.evaluate(() => window.close());
+    await waitForExit(desktop); assert.equal(desktop.exitCode, 0); desktop = null;
+    await nativeBrowser.close().catch(() => {}); nativeBrowser = null;
     await stopOwnedSmokeProcess(backend); await startBackend();
     assert.equal((await createActivationClient(origin).status()).required, false);
     const afterRestart = await (await fetch(origin + '/api/license')).json(); assert.equal(afterRestart.licenseId, 'LIC-RENEWAL');
@@ -169,4 +173,9 @@ let sandbox, issuer, backend, desktop, browser, nativeBrowser, page, adminPage, 
         fs.writeFileSync(path.join(sandbox.directory, `native-failure-${index}.txt`), await native.locator('body').innerText().catch(() => 'unavailable'));
     }
     await page?.screenshot({ path: path.join(sandbox.directory, 'failure.png'), fullPage: true }).catch(() => {}); console.error(error); process.exitCode = 1;
-}).finally(async () => { await nativeBrowser?.close().catch(() => {}); await browser?.close(); for (const child of [desktop, backend, issuer]) await stopOwnedSmokeProcess(child); });
+}).finally(async () => {
+    await nativeBrowser?.close().catch(() => {}); await browser?.close();
+    const results = await Promise.allSettled([desktop, backend, issuer].map(child => stopOwnedSmokeProcess(child)));
+    const errors = results.filter(result => result.status === 'rejected').map(result => result.reason);
+    if (errors.length) throw new AggregateError(errors, 'Activation fixture cleanup failed; all owned children were attempted');
+});
