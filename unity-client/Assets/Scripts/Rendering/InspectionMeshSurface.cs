@@ -19,7 +19,6 @@ namespace HeatTreatment.DigitalTwin.Rendering
         private TriangleRayIndex _index;
         private int _bakedFrame = -1;
         private bool _unreadableReported;
-        private readonly MaterialPropertyBlock _outlineProperties = new MaterialPropertyBlock();
 
         public InspectionMeshSurface(Renderer renderer)
         {
@@ -113,11 +112,7 @@ namespace HeatTreatment.DigitalTwin.Rendering
             if (!IsVisible || material == null || camera == null) return;
             var mesh = CurrentMesh();
             if (mesh == null) return;
-            _outlineProperties.SetColor("_OutlineColor", color);
-            _outlineProperties.SetFloat("_OutlineWidthPixels", widthPixels);
-            for (var subMesh = 0; subMesh < mesh.subMeshCount; subMesh++)
-                Graphics.DrawMesh(mesh, Renderer.localToWorldMatrix, material, Renderer.gameObject.layer,
-                    camera, subMesh, _outlineProperties, ShadowCastingMode.Off, false, null, LightProbeUsage.Off);
+            InspectionOutlineRenderer.Submit(mesh, Renderer.localToWorldMatrix, Renderer.gameObject.layer, camera, material, color, widthPixels);
         }
 
         public void Dispose()

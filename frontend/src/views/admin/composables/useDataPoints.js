@@ -26,6 +26,12 @@ export function useDataPoints({
 }) {
     const selectedDeviceForPoints = ref(storedAdminUiState.selectedDeviceForPoints || 'all')
     const dataPoints = ref([])
+    const rowKeys = new WeakMap()
+    let nextRowKey = 0
+    function pointRowKey(point) {
+        if (!rowKeys.has(point)) rowKeys.set(point, `point-row-${++nextRowKey}`)
+        return rowKeys.get(point)
+    }
     const isPointsDirty = ref(false)
     const pointsLoading = ref(false)
     const pointsSaving = ref(false)
@@ -1115,6 +1121,7 @@ export function useDataPoints({
         handleVoiceFileChange,
         loadDataPoints,
         addDataPoint,
+        pointRowKey,
         addAlarmTriggerPoint,
         removeDataPoint,
         markPointsDirty,

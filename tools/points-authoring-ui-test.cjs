@@ -1,0 +1,57 @@
+// Real production UI and point-save API against an owned disposable profile.
+const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path');
+const Database=require('../backend/node_modules/better-sqlite3');
+const playwright=require(process.env.PLAYWRIGHT_MODULE||'playwright');
+const {createRunDirectory,requireTestPath,startLoggedProcess,waitUntil}=require('../backend/scripts/integration-test-utils.cjs');
+const {stopOwnedSmokeProcess}=require('../desktop/scripts/smoke-sandbox.cjs');
+const root=path.resolve(__dirname,'..'),directory=createRunDirectory('points-authoring-ui'),checks=[],errors=[];
+let server,browser,page;
+const check=name=>{checks.push(name);console.log('PASS '+name)};
+(async()=>{
+ const infoFile=path.join(directory,'server.json');
+ server=startLoggedProcess(process.execPath,[path.join(__dirname,'manual-disassembly-ui-server.cjs')],{cwd:root,env:{...process.env,MANUAL_LAYOUT_UI_INFO_FILE:infoFile},logFile:path.join(directory,'server.log')});
+ await waitUntil(()=>{assert.equal(server.exitCode,null);return fs.existsSync(infoFile)},60000,'owned backend');
+ const info=JSON.parse(fs.readFileSync(infoFile));requireTestPath(info.database);
+ const db=new Database(info.database),longName='点位设备长名称完整显示验证：三号多用炉后部循环风机及热处理传动总成';
+ db.prepare('UPDATE devices SET name=?,plc_protocol=?,plc_enabled=0 WHERE id=?').run(longName,'S7',info.devices[0]);db.close();
+ browser=await playwright.chromium.launch({headless:true,...(process.env.BROWSER_EXECUTABLE?{executablePath:process.env.BROWSER_EXECUTABLE}:{}),args:['--enable-unsafe-swiftshader']});
+ const context=await browser.newContext({viewport:{width:1440,height:1000}});
+ await context.addInitScript(()=>localStorage.setItem('digital_twin_admin_ui_state_v1',JSON.stringify({activeTab:'points',selectedDeviceForPoints:'all',pointsSubpage:'mapping'})));
+ page=await context.newPage();page.setDefaultTimeout(20000);page.on('pageerror',e=>errors.push(e.message));
+ await page.goto(info.origin+'/admin');await page.getByRole('textbox',{name:'账号',exact:true}).fill(info.username);await page.getByLabel('后台密码',{exact:true}).fill(info.password);await page.getByRole('button',{name:'解锁后台',exact:true}).click();
+ const workspace=page.getByTestId('points-workspace');await workspace.waitFor();
+ const add=page.getByTestId('add-data-point');await add.click();await add.click();
+ const rows=page.locator('.points-table tr.is-new-point');assert.equal(await rows.count(),2);
+ for(let i=0;i<2;i++){
+   const row=rows.nth(i);await row.locator('.point-name-input').fill(`新增绿色点位${i+1}`);await row.locator('.plc-address-input').fill(`DB90.DBW${i*2}`);
+   assert.equal(await row.locator('td').first().evaluate(el=>getComputedStyle(el).borderTopColor),'rgb(66, 184, 131)');
+ }
+ await rows.last().screenshot({path:path.join(directory,'01-new-green-point.png')});
+ check('every newly added point row has a green enclosing border; multiple blank rows have independent stable keys while editing');
+ const trigger=rows.last().getByRole('button',{name:'选择点位所属设备',exact:true});
+ await trigger.click();const popup=page.getByRole('region',{name:'点位设备选项'});await popup.waitFor();
+ const search=popup.getByRole('textbox',{name:'搜索点位设备'});await search.fill('长名称完整显示验证');
+ const option=popup.getByRole('option');assert.equal(await option.count(),1);assert.ok((await option.textContent()).includes(longName));
+ const box=await popup.boundingBox(),button=await option.boundingBox();assert.ok(box.x>=0&&box.x+box.width<=1440&&button.x+button.width<=box.x+box.width);
+ assert.ok(await option.evaluate(el=>el.scrollWidth<=el.clientWidth));assert.equal(await option.locator('span').evaluate(el=>getComputedStyle(el).whiteSpace),'normal');
+ await popup.screenshot({path:path.join(directory,'02-complete-device-options.png')});
+ await search.press('ArrowDown');await page.keyboard.press('Enter');assert.equal(await popup.count(),0);assert.ok((await trigger.getAttribute('title')).includes(longName));
+ await page.setViewportSize({width:600,height:760});await page.evaluate(()=>document.documentElement.style.setProperty('--admin-font-scale','2'));
+ await trigger.click();await popup.waitFor();await search.fill('长名称完整显示验证');
+ const compact=await popup.boundingBox();assert.ok(compact.x>=0&&compact.x+compact.width<=600&&compact.y>=0&&compact.y+compact.height<=760);
+ assert.ok(await popup.evaluate(el=>el.scrollWidth<=el.clientWidth));await popup.screenshot({path:path.join(directory,'03-options-200-percent.png')});await page.keyboard.press('Escape');
+ await page.evaluate(()=>document.documentElement.style.removeProperty('--admin-font-scale'));await page.setViewportSize({width:1440,height:1000});
+ check('searchable device options wrap complete hierarchy names, fit viewport at 200% text, and support keyboard selection/Escape without clipping');
+ await page.route('**/api/datapoints/sync',route=>route.fulfill({status:500,json:{error:'隔离点位保存失败'}}));
+ const save=page.getByTestId('points-savebar').getByRole('button',{name:'保存全部设备配置',exact:true});await save.click();
+ await page.getByRole('heading',{name:'保存失败',exact:true}).waitFor();await page.getByRole('button',{name:'确定',exact:true}).click();assert.equal(await rows.count(),2);
+ await page.unroute('**/api/datapoints/sync');await save.click();await page.getByRole('heading',{name:'点位配置已保存',exact:true}).waitFor();await page.getByRole('button',{name:'确定',exact:true}).click();await rows.first().waitFor({state:'hidden'});
+ const points=await(await page.request.get(info.origin+'/api/datapoints')).json();assert.equal(points.filter(p=>/^新增绿色点位/.test(p.label)).length,2);assert.ok(points.filter(p=>/^新增绿色点位/.test(p.label)).every(p=>p.id));
+ await page.reload();await workspace.waitFor();assert.equal(await rows.count(),0);
+ check('failed save preserves green pending rows; confirmed API save assigns IDs and clears markers across reload, without serializing UI keys');
+ await page.getByRole('button',{name:'组件配置',exact:true}).click();const nav=page.getByRole('navigation',{name:'画面组件设置分类'});await nav.getByRole('button',{name:/场景与光效/}).click();
+ const environment=page.locator('.environment-settings');await environment.waitFor();assert.equal(await environment.getByRole('button',{name:'导入动作包',exact:true}).count(),0);assert.equal(await environment.getByRole('button',{name:'导出动作包',exact:true}).count(),0);await environment.screenshot({path:path.join(directory,'04-environment-without-motion-buttons.png')});
+ await page.getByRole('button',{name:'动作动画',exact:true}).click();await page.getByRole('button',{name:'导入动作包',exact:true}).waitFor();await page.getByRole('button',{name:'导出动作包',exact:true}).waitFor();
+ check('scene/lighting contains no motion-package import/export, while both remain available in the animation workspace');
+ assert.deepEqual(errors,[]);const result={success:true,checks,browserErrors:errors,directory};fs.writeFileSync(path.join(directory,'result.json'),JSON.stringify(result,null,2));console.log(JSON.stringify(result,null,2));
+})().catch(async e=>{await page?.screenshot({path:path.join(directory,'failure.png'),fullPage:true}).catch(()=>{});fs.writeFileSync(path.join(directory,'failure.json'),JSON.stringify({error:e.stack,checks,errors},null,2));console.error(e);process.exitCode=1}).finally(async()=>{await browser?.close();await stopOwnedSmokeProcess(server)});

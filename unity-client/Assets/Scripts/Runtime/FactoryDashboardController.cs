@@ -553,6 +553,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
 
         public void ClearFactory()
         {
+            InspectionOutlineRenderer.Release(_camera);
             _occlusionFader.Clear();
             _worldClick.Cancel();
             foreach (var entry in _devices.Values)
@@ -1608,6 +1609,10 @@ namespace HeatTreatment.DigitalTwin.Runtime
             if (_font != null) Destroy(_font);
         }
 
-        private void OnDisable() => _occlusionFader.Clear();
+        private void OnDisable()
+        {
+            _occlusionFader.Clear();
+            InspectionOutlineRenderer.Release(_camera);
+        }
     }
 }

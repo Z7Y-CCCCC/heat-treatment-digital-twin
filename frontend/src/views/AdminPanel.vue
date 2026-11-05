@@ -62,6 +62,7 @@ import AdminWindowChrome from './admin/components/AdminWindowChrome.vue'
 import AdminSecuritySettings from './admin/components/AdminSecuritySettings.vue'
 import ProjectMigrationSettings from './admin/components/ProjectMigrationSettings.vue'
 import ModelAssetTransfer from './admin/components/ModelAssetTransfer.vue'
+import PointDeviceSelect from './admin/components/PointDeviceSelect.vue'
 import PlatformUsersSettings from './admin/components/PlatformUsersSettings.vue'
 import AdminHelpGuide from './admin/components/AdminHelpGuide.vue'
 import MobileDeviceMotion from './admin/components/MobileDeviceMotion.vue'
@@ -1469,6 +1470,7 @@ const {
     handleVoiceFileChange,
     loadDataPoints,
     addDataPoint,
+    pointRowKey,
     addAlarmTriggerPoint,
     removeDataPoint,
     markPointsDirty,
@@ -8645,7 +8647,6 @@ async function openAdminSetupStep(step) {
                     <div v-if="visitedPlatformSubpages.has('environment') && canAdminPage('platform.environment')" v-show="platformSubpage === 'environment'" class="secondary-page-panel">
                         <NativeEnvironmentSettings
                             :models="models"
-                            @model-imported="loadModels"
                             :config="nativeEnvironmentConfig"
                             :saving="nativeEnvironmentSaving"
                             :message="nativeEnvironmentMessage"
@@ -8917,12 +8918,9 @@ async function openAdminSetupStep(step) {
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    <tr v-for="(p, idx) in paginatedDataPoints" :key="p.name || p.plc_tag || idx">
+                                    <tr v-for="p in paginatedDataPoints" :key="pointRowKey(p)" :class="{ 'is-new-point': !p.id }">
                                         <td v-if="isAllPointsMode">
-                                            <select v-model="p.device_id" @change="markPointsDirty" class="input input-sm device-point-select" v-permission="{ page: controlPermissionPage, action: 'edit' }">
-                                                <option value="">选择设备</option>
-                                                <option v-for="d in devices" :key="d.id" :value="d.id">{{ deviceHierarchyLabel(d) }}</option>
-                                            </select>
+                                            <PointDeviceSelect v-model="p.device_id" @change="markPointsDirty" :options="devices.map(d => ({ value: d.id, label: deviceHierarchyLabel(d) }))" :disabled="pointsLoading || pointsSaving || !canAdminPage(controlPermissionPage, 'edit')" />
                                         </td>
                                         <td><input v-model="p.label" @input="markPointsDirty" class="input input-sm point-name-input" placeholder="实际温度 / bj1"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></td>
                                         <td>
@@ -11997,6 +11995,9 @@ button:enabled:active {
 .points-table .unit-input { width: 80px; }
 .points-table .alarm-text-input { min-width: 180px; }
 .points-table .device-point-select { min-width: 180px; }
+.points-table tr.is-new-point > td { background:#f3fcf7; border-top:1px solid #42b883; border-bottom:1px solid #42b883; }
+.points-table tr.is-new-point > td:first-child { border-left:1px solid #42b883; border-radius:7px 0 0 7px; }
+.points-table tr.is-new-point > td:last-child { border-right:1px solid #42b883; border-radius:0 7px 7px 0; }
 .points-pagination-bar {
     display: flex;
     align-items: center;

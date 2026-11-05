@@ -87,9 +87,10 @@ namespace HeatTreatment.DigitalTwin.Runtime
 
         // A transient, screen-space-width edge on the actual equipment meshes.
         // Reuses the inspection shader/surfaces; no material replacement, box,
-        // extra camera, render texture or per-frame geometry allocation.
+        // extra camera or per-frame geometry allocation (one reused silhouette mask).
         private int DrawDeviceHover()
         {
+            InspectionOutlineRenderer.Begin(_camera);
             if (_mode != DashboardMode.Overview || !_deviceHoverEnabled || _camera == null
                 || string.IsNullOrEmpty(_hoveredDeviceId)
                 || !_devices.TryGetValue(_hoveredDeviceId, out var device)
