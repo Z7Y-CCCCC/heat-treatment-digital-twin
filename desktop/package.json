@@ -20,7 +20,7 @@
     "build:collector-service": "node scripts/build-collector-service.cjs",
     "test:logs": "node scripts/log-manager-test.cjs",
     "test:processes": "node --test scripts/process-lifecycle-test.cjs scripts/desktop-supervisor-unit-test.cjs scripts/activation-client-test.cjs",
-    "test:resources": "node --test --test-concurrency=1 scripts/resource-preparation-test.cjs scripts/runtime-cache-test.cjs scripts/dependency-cache-test.cjs scripts/directory-publish-test.cjs scripts/native-client-path-test.cjs scripts/optional-collector-test.cjs scripts/prerequisites-test.cjs scripts/installer-ui-test.cjs scripts/workspace-frontend-test.cjs",
+    "test:resources": "node --test --test-concurrency=1 scripts/resource-preparation-test.cjs scripts/runtime-cache-test.cjs scripts/release-frontend-cache-test.cjs scripts/dependency-cache-test.cjs scripts/directory-publish-test.cjs scripts/native-client-path-test.cjs scripts/optional-collector-test.cjs scripts/prerequisites-test.cjs scripts/installer-ui-test.cjs scripts/workspace-frontend-test.cjs",
     "preview:installer": "node scripts/installer-preview.cjs",
     "test:deployment": "node --test scripts/deployment-test.cjs scripts/desktop-supervisor-unit-test.cjs",
     "build:collector-center": "node scripts/build-collector-center.cjs",

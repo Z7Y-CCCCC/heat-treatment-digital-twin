@@ -9,7 +9,7 @@ const projects = [
     { label: 'backend', directory: path.join(projectDir, 'backend') }
 ];
 const packages = new Map();
-const ffmpegDirectory = path.join(desktopDir, 'resources', 'ffmpeg');
+const ffmpegDirectory = path.join(process.env.DESKTOP_RESOURCES_DIR || path.join(desktopDir, 'resources'), 'ffmpeg');
 
 function normalizeLicense(value) {
     if (Array.isArray(value)) return value.map(normalizeLicense).filter(Boolean).join(' OR ');
@@ -110,7 +110,7 @@ function readFfmpegNotice() {
 }
 
 const ffmpeg = readFfmpegNotice();
-const mysqlDirectory = path.join(desktopDir, 'resources', 'mysql');
+const mysqlDirectory = path.join(process.env.DESKTOP_RESOURCES_DIR || path.join(desktopDir, 'resources'), 'mysql');
 const mysqlMetadata = JSON.parse(fs.readFileSync(path.join(mysqlDirectory, 'MYSQL_METADATA.json'), 'utf8'));
 const mysqlLicense = fs.readFileSync(path.join(mysqlDirectory, 'LICENSE'), 'utf8').trim();
 const mysqlSource = fs.readFileSync(path.join(mysqlDirectory, 'SOURCE.txt'), 'utf8').trim();

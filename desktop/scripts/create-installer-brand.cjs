@@ -18,5 +18,5 @@ function bitmap(width,height,header=false){
     }
     const data=Buffer.alloc(54+pixels.length);data.write('BM');data.writeUInt32LE(data.length,2);data.writeUInt32LE(54,10);data.writeUInt32LE(40,14);data.writeInt32LE(width,18);data.writeInt32LE(height,22);data.writeUInt16LE(1,26);data.writeUInt16LE(24,28);pixels.copy(data,54);return data;
 }
-if(require.main===module){const assets=path.resolve(__dirname,'../assets');fs.writeFileSync(path.join(assets,'installer-sidebar.bmp'),bitmap(164,314));fs.writeFileSync(path.join(assets,'installer-header.bmp'),bitmap(150,57,true));}
+if(require.main===module){const assets=path.resolve(__dirname,'../assets');fs.writeFileSync(path.join(assets,'installer-sidebar.bmp'),require('./installer-art.cjs').bitmap(600,1100));fs.writeFileSync(path.join(assets,'installer-header.bmp'),bitmap(150,57,true));}
 module.exports={bitmap};

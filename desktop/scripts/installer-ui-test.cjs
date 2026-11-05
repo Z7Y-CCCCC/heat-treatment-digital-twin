@@ -8,7 +8,7 @@ const source = fs.readFileSync(path.join(root, 'display-installer-ui.nsh'), 'utf
 const hooks = fs.readFileSync(path.join(root, 'display-installer.nsh'), 'utf8');
 const pkg = require('../package.json');
 
-test('the real NSIS package uses the compact native layout, not stock directory/sidebar pages', () => {
+test('the real NSIS package uses the ice-blue native layout, not stock directory/sidebar pages', () => {
   assert.equal(pkg.build.nsis.include, 'display-installer.nsh');
   assert.equal(pkg.build.nsis.allowToChangeInstallationDirectory, false);
   assert.equal(pkg.build.nsis.oneClick, false);
@@ -20,10 +20,10 @@ test('the real NSIS package uses the compact native layout, not stock directory/
   assert.doesNotMatch(hooks, /MUI_PAGE_WELCOME|MUI_PAGE_DIRECTORY|DisplayReadyPage/);
   assert.doesNotMatch(source, /01\s+安装设置|242238|displayRailFont/);
 });
-test('the checked-in resource is source-matched, tiny, and has no executable entry point', () => {
+test('the checked-in resource is source-matched, resource-only, and has no executable entry point', () => {
   const binary = fs.readFileSync(path.join(root, 'assets/installer-ui.bin'));
   const manifest = JSON.parse(fs.readFileSync(path.join(root, 'assets/installer-ui.json')));
-  assert.ok(binary.length < 16 * 1024);
+  assert.ok(binary.length < 3 * 1024 * 1024);
   assert.equal(binary.toString('ascii', 0, 2), 'MZ');
   const pe = binary.readUInt32LE(0x3c);
   assert.equal(binary.toString('ascii', pe, pe + 4), 'PE\0\0');
@@ -42,7 +42,7 @@ test('all native controls fit the client area at 100%, 125%, 150% and 200% scale
   const d = layout.dialogs.find(d => d.id === 105);
   const page = d.controls.find(c => c.id === 1018), action = d.controls.find(c => c.id === 1);
   assert.ok(page.y + page.h < action.y, 'page content must not overlap the main action');
-  assert.ok(d.w < 440 && d.h < 230, 'do not restore the oversized wizard');
+  assert.ok(d.w <= 460 && d.h <= 275, 'keep the illustrated wizard bounded');
 });
 test('primary action stays a native default pushbutton with keyboard and accessible text', () => {
   const next = layout.dialogs[0].controls.find(c => c.id === 1);

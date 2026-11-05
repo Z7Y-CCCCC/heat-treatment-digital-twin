@@ -18,6 +18,8 @@ Var displaySmallFont
 Var displayPrimaryBitmap
 Var displayActionId
 Var displayBrandIcon
+Var displaySidebarBitmap
+Var displayBrandFont
 
 !macro DisplayLabel X Y W H TEXT COLOR
   ${NSD_CreateLabel} ${X} ${Y} ${W} ${H} "${TEXT}"
@@ -28,10 +30,20 @@ Var displayBrandIcon
 
 Function DisplayUIInit
   SetAutoClose true
-  SetCtlColors $HWNDPARENT "293044" "FFFFFF"
-  CreateFont $displayFont "Microsoft YaHei UI" 10 400
-  CreateFont $displayTitleFont "Microsoft YaHei UI" 18 600
-  CreateFont $displaySmallFont "Microsoft YaHei UI" 8 400
+  SetCtlColors $HWNDPARENT "233E52" "FFFFFF"
+  ; Explicit Chinese charset avoids machine-dependent Han font substitution.
+  System::Call 'user32::GetDC(p $HWNDPARENT) p.r0'
+  System::Call 'gdi32::GetDeviceCaps(p r0, i 90) i.r1'
+  System::Call 'user32::ReleaseDC(p $HWNDPARENT, p r0)'
+  System::Call 'kernel32::MulDiv(i -10, i r1, i 72) i.r2'
+  System::Call 'gdi32::CreateFontW(i r2, i 0, i 0, i 0, i 400, i 0, i 0, i 0, i 134, i 0, i 0, i 5, i 0, w "Microsoft YaHei UI") p.s'
+  Pop $displayFont
+  System::Call 'kernel32::MulDiv(i -15, i r1, i 72) i.r2'
+  System::Call 'gdi32::CreateFontW(i r2, i 0, i 0, i 0, i 600, i 0, i 0, i 0, i 134, i 0, i 0, i 5, i 0, w "Microsoft YaHei UI") p.s'
+  Pop $displayTitleFont
+  System::Call 'kernel32::MulDiv(i -8, i r1, i 72) i.r2'
+  System::Call 'gdi32::CreateFontW(i r2, i 0, i 0, i 0, i 400, i 0, i 0, i 0, i 134, i 0, i 0, i 5, i 0, w "Microsoft YaHei UI") p.s'
+  Pop $displaySmallFont
   !ifdef DISPLAY_UI_PREVIEW
     System::Call 'user32::GetDC(p $HWNDPARENT) p.r0'
     System::Call 'gdi32::SelectObject(p r0, p $displayFont) p.r1'
@@ -41,6 +53,7 @@ Function DisplayUIInit
     System::Call 'gdi32::SelectObject(p r0, p r1)'
     System::Call 'user32::ReleaseDC(p $HWNDPARENT, p r0)'
   !endif
+  Call DisplayPaintSidebar
   GetDlgItem $0 $HWNDPARENT 1039
   System::Alloc 16
   Pop $1
@@ -57,10 +70,10 @@ Function DisplayUIInit
   GetDlgItem $0 $HWNDPARENT 1037
   SendMessage $0 ${WM_SETFONT} $displayTitleFont 1
   GetDlgItem $0 $HWNDPARENT 1038
-  SetCtlColors $0 "7B8191" "FFFFFF"
+  SetCtlColors $0 "6D8798" "FFFFFF"
   GetDlgItem $0 $HWNDPARENT 1220
   SendMessage $0 ${WM_SETTEXT} 0 "STR:v${VERSION}   ·   Windows x64"
-  SetCtlColors $0 "9398A6" "FFFFFF"
+  SetCtlColors $0 "7C95A5" "FFFFFF"
   SendMessage $0 ${WM_SETFONT} $displaySmallFont 1
   GetDlgItem $0 $HWNDPARENT 3
   ShowWindow $0 ${SW_HIDE}
@@ -68,7 +81,53 @@ Function DisplayUIInit
   ShowWindow $0 ${SW_HIDE}
 FunctionEnd
 
+Function DisplayPaintSidebar
+  GetDlgItem $R0 $HWNDPARENT 1036
+  ShowWindow $R0 ${SW_SHOW}
+  System::Alloc 16
+  Pop $R1
+  System::Call 'user32::GetClientRect(p R0, p R1)'
+  System::Call '*$R1(i, i, i.R2, i.R3)'
+  System::Free $R1
+  InitPluginsDir
+  File /oname=$PLUGINSDIR\installer-sidebar.bmp "${__FILEDIR__}\assets\installer-sidebar.bmp"
+  System::Call 'user32::LoadImageW(p 0, w "$PLUGINSDIR\installer-sidebar.bmp", i 0, i 0, i 0, i 0x2010) p.R4'
+  System::Call 'user32::GetDC(p R0) p.R5'
+  System::Call 'gdi32::CreateCompatibleDC(p R5) p.R6'
+  System::Call 'gdi32::SelectObject(p R6, p R4) p.R7'
+  System::Call 'gdi32::CreateCompatibleDC(p R5) p.R8'
+  System::Call 'gdi32::CreateCompatibleBitmap(p R5, i R2, i R3) p.R9'
+  System::Call 'gdi32::SelectObject(p R8, p R9) p.r0'
+  System::Call 'gdi32::SetStretchBltMode(p R8, i 4)'
+  System::Call 'gdi32::SetBrushOrgEx(p R8, i 0, i 0, p 0)'
+  System::Call 'gdi32::StretchBlt(p R8, i 0, i 0, i R2, i R3, p R6, i 0, i 0, i 600, i 1100, i 0xCC0020)'
+  System::Call 'gdi32::SelectObject(p R8, p r0)'
+  System::Call 'gdi32::SelectObject(p R6, p R7)'
+  System::Call 'gdi32::DeleteDC(p R8)'
+  System::Call 'gdi32::DeleteDC(p R6)'
+  System::Call 'gdi32::DeleteObject(p R4)'
+  System::Call 'user32::ReleaseDC(p R0, p R5)'
+  SendMessage $R0 0x172 0 $R9
+  StrCpy $displaySidebarBitmap $R9
+  CreateFont $displayBrandFont "Segoe UI" 28 700
+  GetDlgItem $0 $HWNDPARENT 1039
+  ShowWindow $0 ${SW_SHOW}
+  SendMessage $0 ${WM_SETFONT} $displayBrandFont 1
+  SetCtlColors $0 "159EBD" "EDF8FC"
+  GetDlgItem $0 $HWNDPARENT 1035
+  ShowWindow $0 ${SW_SHOW}
+  SendMessage $0 ${WM_SETFONT} $displaySmallFont 1
+  SetCtlColors $0 "568797" "EDF8FC"
+  GetDlgItem $0 $HWNDPARENT 1034
+  ShowWindow $0 ${SW_SHOW}
+  SendMessage $0 ${WM_SETFONT} $displaySmallFont 1
+  SetCtlColors $0 "568797" "EDF8FC"
+FunctionEnd
+
 Function DisplayRefreshFonts
+  GetDlgItem $0 $HWNDPARENT 1035
+  SendMessage $0 ${WM_SETTEXT} 0 "STR:数字孪生 · 智慧工业"
+  ShowWindow $0 ${SW_SHOW}
   ; NSIS assigns the language font after .onGUIInit; apply typography on each
   ; page as well, so the Chinese NLF's legacy SimSun cannot win that race.
   GetDlgItem $0 $HWNDPARENT 1037
@@ -102,7 +161,7 @@ Function DisplayPaintAction
   System::Call 'gdi32::CreateSolidBrush(i 0xFFFFFF) p.R8'
   System::Call 'user32::FillRect(p R5, p R1, p R8)'
   System::Call 'gdi32::DeleteObject(p R8)'
-  System::Call 'gdi32::CreateSolidBrush(i 0xE56161) p.R8'
+  System::Call 'gdi32::CreateSolidBrush(i 0xBFA510) p.R8'
   System::Call 'gdi32::SelectObject(p R5, p R8) p.R9'
   System::Call 'gdi32::GetStockObject(i 8) p.s'
   Pop $0
@@ -141,30 +200,32 @@ Function DisplaySettingsPage
   ShowWindow $0 ${SW_HIDE}
   nsDialogs::Create 1018
   Pop $0
-  SetCtlColors $0 "293044" "FFFFFF"
-  !insertmacro DisplayLabel 0 0 350u 14u "安装位置" "293044"
-  ${NSD_CreateLabel} 0 20u 350u 28u ""
+  SetCtlColors $0 "233E52" "FFFFFF"
+  !insertmacro DisplayLabel 0 0 260u 14u "安装位置" "233E52"
+  ${NSD_CreateLabel} 0 20u 260u 28u ""
   Pop $displayPathPanel
-  SetCtlColors $displayPathPanel "F5F6FA" "F5F6FA"
-  ${NSD_CreateDirRequest} 9u 26u 278u 14u "$INSTDIR"
+  SetCtlColors $displayPathPanel "F0F8FC" "F0F8FC"
+  ${NSD_CreateDirRequest} 9u 26u 191u 14u "$INSTDIR"
   Pop $displayPath
   SendMessage $displayPath ${WM_SETFONT} $displayFont 1
-  SetCtlColors $displayPath "364154" "F5F6FA"
+  SetCtlColors $displayPath "364154" "F0F8FC"
   System::Call 'user32::GetWindowLongW(p $displayPath, i -20) i.r1'
   IntOp $1 $1 & 0xFFFFFDFF
   System::Call 'user32::SetWindowLongW(p $displayPath, i -20, i r1)'
   System::Call 'user32::SetWindowPos(p $displayPath, p 0, i 0, i 0, i 0, i 0, i 0x37)'
-  ${NSD_CreateLink} 296u 25u 46u 16u "更改"
+  ${NSD_CreateLink} 210u 25u 46u 16u "更改"
   Pop $0
   SendMessage $0 ${WM_SETFONT} $displayFont 1
-  SetCtlColors $0 "6161E5" "F5F6FA"
+  SetCtlColors $0 "087FB4" "F0F8FC"
   ${NSD_OnClick} $0 DisplayBrowsePath
-  ${NSD_CreateLabel} 0 49u 350u 18u ""
+  ${NSD_CreateLabel} 0 49u 260u 18u ""
   Pop $displayPathError
   SetCtlColors $displayPathError "C13F55" "FFFFFF"
   SendMessage $displayPathError ${WM_SETFONT} $displaySmallFont 1
-  !insertmacro DisplayLabel 0 67u 350u 14u "运行环境自动配置 · 采集插件单独安装" "7B8191"
+  !insertmacro DisplayLabel 0 67u 260u 14u "运行环境自动配置 · 数据保留" "6D8798"
   System::Call 'user32::SetWindowPos(p $displayPathPanel, p 1, i 0, i 0, i 0, i 0, i 0x13)'
+  !insertmacro DisplayLabel 0 94u 260u 16u "实时大屏 / 后台管理 / 外部接口" "233E52"
+  !insertmacro DisplayLabel 0 115u 260u 14u "PLC 采集插件仍支持独立安装。" "6D8798"
   ${NSD_OnChange} $displayPath DisplayPathChanged
   nsDialogs::Show
 FunctionEnd
@@ -269,7 +330,7 @@ FunctionEnd
 Function DisplayInstallingShow
   !insertmacro MUI_HEADER_TEXT "正在安装" "热处理数字孪生大屏"
   Call DisplayRefreshFonts
-  SetCtlColors $mui.InstFilesPage "293044" "FFFFFF"
+  SetCtlColors $mui.InstFilesPage "233E52" "FFFFFF"
   GetDlgItem $0 $HWNDPARENT 3
   ShowWindow $0 ${SW_HIDE}
   GetDlgItem $0 $HWNDPARENT 2
@@ -286,13 +347,13 @@ Function DisplayInstallingShow
   System::Call 'uxtheme::SetWindowTheme(p r0, p 0, p 0)'
   SendMessage $mui.InstFilesPage.Text ${WM_SETTEXT} 0 "STR:复制程序文件"
   SetDetailsPrint listonly
-  SetCtlColors $mui.InstFilesPage.Text "293044" "FFFFFF"
+  SetCtlColors $mui.InstFilesPage.Text "233E52" "FFFFFF"
   SendMessage $mui.InstFilesPage.Text ${WM_SETFONT} $displayFont 1
   GetDlgItem $0 $mui.InstFilesPage 1230
-  SetCtlColors $0 "7B8191" "FFFFFF"
+  SetCtlColors $0 "6D8798" "FFFFFF"
   System::Call 'uxtheme::SetWindowTheme(p $mui.InstFilesPage.ProgressBar, w "", w "")'
-  SendMessage $mui.InstFilesPage.ProgressBar 0x409 0 0xE56161
-  SendMessage $mui.InstFilesPage.ProgressBar 0x2001 0 0xF3F0EF
+  SendMessage $mui.InstFilesPage.ProgressBar 0x409 0 0xBFA510
+  SendMessage $mui.InstFilesPage.ProgressBar 0x2001 0 0xF8EDE2
 FunctionEnd
 
 Function DisplayFinishPage
@@ -311,20 +372,20 @@ Function DisplayFinishPage
   ShowWindow $0 ${SW_HIDE}
   nsDialogs::Create 1018
   Pop $0
-  SetCtlColors $0 "293044" "FFFFFF"
+  SetCtlColors $0 "233E52" "FFFFFF"
   ${If} $runtimeNeedsReboot == "1"
     !insertmacro MUI_HEADER_TEXT "安装完成，请重启电脑" "Microsoft 运行环境需要重新启动 Windows"
-    !insertmacro DisplayLabel 0 2u 350u 22u "重启后，从桌面打开大屏。" "293044"
-    !insertmacro DisplayLabel 0 32u 350u 22u "不会自动重启电脑。" "7B8191"
+    !insertmacro DisplayLabel 0 2u 260u 22u "重启后，从桌面打开大屏。" "233E52"
+    !insertmacro DisplayLabel 0 32u 260u 22u "不会自动重启电脑。" "6D8798"
     StrCpy $displayLaunch ""
   ${Else}
     !insertmacro MUI_HEADER_TEXT "安装完成" "大屏已准备就绪"
-    !insertmacro DisplayLabel 0 2u 350u 22u "首次打开后，完成激活并登录账户。" "293044"
-    !insertmacro DisplayLabel 0 30u 350u 20u "已有工程和账户将保留。" "7B8191"
-    ${NSD_CreateCheckbox} 0 62u 350u 18u "启动热处理数字孪生大屏"
+    !insertmacro DisplayLabel 0 2u 260u 22u "首次打开后，完成激活并登录账户。" "233E52"
+    !insertmacro DisplayLabel 0 30u 260u 20u "已有工程和账户将保留。" "6D8798"
+    ${NSD_CreateCheckbox} 0 62u 260u 18u "启动热处理数字孪生大屏"
     Pop $displayLaunch
     SendMessage $displayLaunch ${WM_SETFONT} $displayFont 1
-    SetCtlColors $displayLaunch "293044" "FFFFFF"
+    SetCtlColors $displayLaunch "233E52" "FFFFFF"
     ${NSD_Check} $displayLaunch
   ${EndIf}
   nsDialogs::Show

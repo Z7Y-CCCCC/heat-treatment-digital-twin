@@ -18,7 +18,7 @@ const { prepareResourceDirectory } = require('./resource-preparation.cjs');
 const desktopDir = path.resolve(__dirname, '..');
 const cacheDir = path.resolve(process.env.FFMPEG_CACHE_DIR || path.join(desktopDir, '.cache', 'ffmpeg'));
 const outputDir = path.join(cacheDir, 'runtime');
-const distributionDir = path.join(desktopDir, 'resources', 'ffmpeg');
+const distributionDir = path.join(process.env.DESKTOP_RESOURCES_DIR || path.join(desktopDir, 'resources'), 'ffmpeg');
 
 const build = Object.freeze({
     version: 'n8.1.3-32-g760d10603e-20261102',

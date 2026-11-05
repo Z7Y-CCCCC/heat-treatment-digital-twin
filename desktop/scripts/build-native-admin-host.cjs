@@ -82,5 +82,6 @@ console.log(`Unity 内嵌后台宿主已生成：${executable}`);
 fs.mkdirSync(path.dirname(cacheFile), { recursive: true });
 fs.writeFileSync(cacheFile, JSON.stringify({
     fingerprint: inputFingerprint(),
-    files: createTreeManifest(outputDirectory)
+    // Never hash the success marker into its own manifest.
+    files: createTreeManifest(outputDirectory, [path.relative(outputDirectory, cacheFile).split(path.sep).join('/')])
 }, null, 2));

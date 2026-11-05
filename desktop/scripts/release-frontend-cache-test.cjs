@@ -1,0 +1,30 @@
+'use strict';
+const { test } = require('node:test'), assert = require('node:assert/strict');
+const fs = require('node:fs'), path = require('node:path'), os = require('node:os');
+const { buildReleaseFrontend } = require('./release-frontend-cache.cjs');
+test('release frontend reuses exact inputs/outputs and invalidates edits, corruption, extra files and force', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'release-vite-test-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const frontend = path.join(root,'frontend'), output = path.join(root,'cache/dist');
+  fs.mkdirSync(frontend); fs.writeFileSync(path.join(frontend,'index.html'),'v1');
+  let builds = 0;
+  const build = async dir => { builds++; fs.writeFileSync(path.join(dir,'index.html'),'build-'+builds); };
+  const run = options => buildReleaseFrontend(frontend,output,build,{env:{},...options});
+  assert.equal((await run()).reused,false); assert.equal((await run()).reused,true); assert.equal(builds,1);
+  fs.writeFileSync(path.join(frontend,'index.html'),'v2'); assert.equal((await run()).reused,false);
+  fs.writeFileSync(path.join(output,'index.html'),'corrupt'); assert.equal((await run()).reused,false);
+  fs.writeFileSync(path.join(output,'stale.js'),'old'); assert.equal((await run()).reused,false);
+  assert.equal(fs.existsSync(path.join(output,'stale.js')),false);
+  assert.equal((await run({force:true})).reused,false);
+  assert.equal((await run({env:{VITE_API_URL:'changed'}})).reused,false);
+});
+test('failed release frontend preserves last complete output and never records changed inputs', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(),'release-vite-failure-'));
+  t.after(() => fs.rmSync(root,{recursive:true,force:true}));
+  const frontend=path.join(root,'frontend'), output=path.join(root,'cache/dist');fs.mkdirSync(frontend);
+  fs.writeFileSync(path.join(frontend,'index.html'),'original');
+  await buildReleaseFrontend(frontend,output,async dir=>fs.writeFileSync(path.join(dir,'index.html'),'complete'),{env:{}});
+  const before=fs.readFileSync(output+'.json','utf8');
+  await assert.rejects(buildReleaseFrontend(frontend,output,async dir=>{fs.writeFileSync(path.join(dir,'index.html'),'partial');throw Error('failed');},{force:true,env:{}}),/failed/);
+  assert.equal(fs.readFileSync(path.join(output,'index.html'),'utf8'),'complete');assert.equal(fs.readFileSync(output+'.json','utf8'),before);
+});

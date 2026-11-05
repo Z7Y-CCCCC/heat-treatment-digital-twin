@@ -12,6 +12,7 @@ param(
     [switch]$StarterTemplate = $true,
     [switch]$SkipSmokeTest,
     [string]$ReleaseDirectory,
+    [string]$BuildOutputRoot,
     [switch]$NoPause
 )
 
@@ -20,7 +21,16 @@ Set-StrictMode -Version Latest
 
 $projectDirectory = $PSScriptRoot
 $desktopDirectory = Join-Path $projectDirectory 'desktop'
-$outputRoot = Join-Path $projectDirectory '安装包'
+$deliveryRoot = Join-Path $projectDirectory '安装包'
+# Large native trees and thousands of intermediate writes do not belong in a
+# OneDrive-synced Desktop. Only verified final delivery files are copied back.
+if (-not $BuildOutputRoot) {
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { $workspaceKey = ([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($projectDirectory)))).Replace('-', '').Substring(0, 12) }
+    finally { $sha.Dispose() }
+    $BuildOutputRoot = Join-Path $env:LOCALAPPDATA "HeatTreatmentDigitalTwinBuild\$workspaceKey\releases"
+}
+$outputRoot = [IO.Path]::GetFullPath($BuildOutputRoot)
 $outputDirectory = Join-Path $outputRoot ("release-{0}" -f (Get-Date -Format 'yyyyMMdd-HHmmss-fff'))
 if ($ReleaseDirectory) {
     $candidate = [IO.Path]::GetFullPath($ReleaseDirectory)
@@ -288,6 +298,7 @@ $environmentNames = @(
     'DESKTOP_MYSQL_PASSWORD',
     'DESKTOP_MYSQL_DATABASE',
     'DIGITAL_TWIN_UNITY_BUILD_DIR',
+    'DESKTOP_RESOURCES_DIR',
     'DESKTOP_TEMPLATE_INCLUDE_HISTORY',
     'DESKTOP_TEMPLATE_EMPTY',
     'DESKTOP_TEMPLATE_SOURCE_DB',
@@ -309,7 +320,10 @@ try {
     $env:DESKTOP_MYSQL_DATABASE = $DatabaseName
     $env:DESKTOP_TEMPLATE_INCLUDE_HISTORY = if ($IncludeHistory) { 'true' } else { 'false' }
     $env:DESKTOP_TEMPLATE_EMPTY = 'true'
-    $env:DIGITAL_TWIN_UNITY_BUILD_DIR = Join-Path $outputDirectory 'native-build'
+    # Stable release-only output; timestamps previously defeated native caches.
+    $env:DIGITAL_TWIN_UNITY_BUILD_DIR = Join-Path (Split-Path -Parent $outputRoot) 'release-native'
+    # Never replace resources used by the operator's running application.
+    $env:DESKTOP_RESOURCES_DIR = Join-Path $outputDirectory 'prepared-resources'
     Remove-Item Env:DESKTOP_TEMPLATE_SOURCE_DB -ErrorAction SilentlyContinue
     Remove-Item Env:DESKTOP_TEMPLATE_SOURCE_UPLOADS -ErrorAction SilentlyContinue
     Remove-Item Env:DESKTOP_TEMPLATE_SOURCE_DATA -ErrorAction SilentlyContinue
@@ -323,8 +337,17 @@ try {
         Invoke-CheckedCommand -Label $buildStep -Executable $npm -ArgumentList @('--prefix', $desktopDirectory, 'run', $buildStep)
     }
     $builderCli = Join-Path $desktopDirectory 'node_modules/electron-builder/out/cli/cli.js'
+    $candidateConfig = Join-Path $outputDirectory 'candidate-builder.json'
+    $candidateBuild = $desktopPackage.build | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+    foreach ($resource in $candidateBuild.extraResources) {
+        if ($resource.from.StartsWith('resources/')) {
+            $resource.from = Join-Path $env:DESKTOP_RESOURCES_DIR $resource.from.Substring(10)
+        }
+    }
+    $candidateBuild | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $candidateConfig -Encoding UTF8
     Invoke-CheckedCommand -Label '生成可验证的 Windows x64 程序目录' -Executable $node -ArgumentList @(
         $builderCli,
+        '--config', $candidateConfig,
         '--projectDir', $desktopDirectory,
         '--dir', '--win', '--x64',
         "--config.directories.output=$outputDirectory",
@@ -448,8 +471,21 @@ $releaseManifest = [ordered]@{
 }
 $releaseManifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $outputDirectory 'release-manifest.json') -Encoding UTF8
 
+$deliveryDirectory = Join-Path $deliveryRoot (Split-Path -Leaf $outputDirectory)
+if (Test-Path -LiteralPath $deliveryDirectory) { throw '交付目录已存在，拒绝覆盖旧安装包。' }
+New-Item -ItemType Directory -Path $deliveryDirectory -Force | Out-Null
+foreach ($file in Get-ChildItem -LiteralPath $outputDirectory -File) {
+    if ($file.Name -eq 'candidate-builder.json') { continue }
+    if ($file.Extension -in '.exe', '.zip', '.txt', '.json') { Copy-Item -LiteralPath $file.FullName -Destination $deliveryDirectory }
+}
+$releaseManifest['stagingDirectory'] = $outputDirectory
+$releaseManifest['installer'] = Join-Path $deliveryDirectory $installerName
+$releaseManifest['buildLog'] = Join-Path $deliveryDirectory (Split-Path -Leaf $buildLogPath)
+$releaseManifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $deliveryDirectory 'release-manifest.json') -Encoding UTF8
+
 Write-Host "`n安装包生成完成。" -ForegroundColor Green
 Write-Host "安装包：$installerPath"
+Write-Host "交付目录：$deliveryDirectory"
 Write-Host "文件大小：$([Math]::Round($installer.Length / 1MB, 1)) MB"
 Write-Host "SHA-256：$($hash.Hash)"
 Write-Host "校验文件：$checksumPath"
@@ -473,6 +509,9 @@ Write-Host "校验文件：$checksumPath"
             }
             $timingJson = $timingReport | ConvertTo-Json -Depth 5
             $timingJson | Set-Content -LiteralPath $timingPath -Encoding UTF8
+            if (-not $buildFailed -and (Test-Path Variable:deliveryDirectory)) {
+                $timingJson | Set-Content -LiteralPath (Join-Path $deliveryDirectory 'build-timings.json') -Encoding UTF8
+            }
             $timingCache = Join-Path $desktopDirectory '.cache'
             New-Item -ItemType Directory -Force -Path $timingCache | Out-Null
             $timingJson | Set-Content -LiteralPath (Join-Path $timingCache 'build-timings.json') -Encoding UTF8

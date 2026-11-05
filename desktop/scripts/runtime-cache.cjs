@@ -29,11 +29,12 @@ function verifyFileManifest(directory, manifest) {
     } catch { return false; }
 }
 
-function createTreeManifest(directory) {
+function createTreeManifest(directory, exclude = []) {
     const names = [];
     function walk(relative) {
         for (const entry of fs.readdirSync(path.join(directory, relative), { withFileTypes: true })) {
             const name = path.join(relative, entry.name);
+            if (exclude.includes(name.split(path.sep).join('/'))) continue;
             if (entry.isSymbolicLink()) throw new Error(`Cache cannot contain symlinks: ${name}`);
             if (entry.isDirectory()) walk(name);
             else names.push(name);

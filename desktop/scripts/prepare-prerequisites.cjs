@@ -8,7 +8,7 @@ function verifyMicrosoft(file){
     const script=`$ProgressPreference='SilentlyContinue';$env:PSModulePath=(Join-Path $PSHOME 'Modules');$s=Get-AuthenticodeSignature -LiteralPath '${file.replace(/'/g,"''")}';if($s.Status -ne 'Valid' -or $s.SignerCertificate.Subject -notmatch '(?:^|,\\s*)O=Microsoft Corporation(?:,|$)'){throw 'Microsoft signature invalid'};[Console]::WriteLine($s.SignerCertificate.Subject)`;
     return execFileSync('powershell.exe',['-NoProfile','-NonInteractive','-EncodedCommand',Buffer.from(script,'utf16le').toString('base64')],{windowsHide:true,encoding:'utf8',timeout:30000}).trim();
 }
-async function preparePrerequisites(destination=path.resolve(__dirname,'../resources/prerequisites')){
+async function preparePrerequisites(destination=path.join(process.env.DESKTOP_RESOURCES_DIR || path.resolve(__dirname,'../resources'), 'prerequisites')){
     if(process.platform!=='win32')throw new Error('Microsoft runtime signatures must be verified on Windows');
     fs.mkdirSync(destination,{recursive:true});const cache=path.resolve(__dirname,'../.cache/prerequisites');fs.mkdirSync(cache,{recursive:true});const files=[];
     for(const pkg of PACKAGES){
