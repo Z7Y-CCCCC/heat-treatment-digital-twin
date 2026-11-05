@@ -85,6 +85,17 @@ function collectDependencies(dependencies = {}) {
 }
 
 projects.forEach(({ directory }) => {
+    // npm ls treats a junction-backed node_modules tree as extraneous when
+    // invoked from a source snapshot. Inventory its physical project only
+    // after proving that the snapshot has exactly the same dependency specs.
+    const physicalDirectory = path.dirname(fs.realpathSync(path.join(directory, 'node_modules')));
+    if (path.resolve(physicalDirectory).toLowerCase() !== path.resolve(directory).toLowerCase()) {
+        for (const name of ['package.json', 'package-lock.json']) {
+            const read = root => JSON.stringify(JSON.parse(fs.readFileSync(path.join(root, name), 'utf8')));
+            if (read(directory) !== read(physicalDirectory)) throw new Error(`Dependency inventory source differs: ${name}`);
+        }
+        directory = physicalDirectory;
+    }
     const npmCli = process.env.npm_execpath
         || path.join(path.dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js');
     const output = execFileSync(process.execPath, [npmCli, 'ls', '--omit=dev', '--all', '--json', '--long'], {
