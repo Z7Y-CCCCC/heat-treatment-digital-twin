@@ -7,7 +7,7 @@ const directory = createRunDirectory('model-asset-transfer-browser'), root = pat
 let server, browser, page;
 (async () => {
     const infoFile = path.join(directory, 'server.json');
-    server = startLoggedProcess(process.execPath, [path.join(__dirname, 'empty-install-ui-server.cjs')], { cwd: root, env: { ...process.env, EMPTY_INSTALL_UI_INFO_FILE: infoFile, FRONTEND_DIST: path.join(root, 'frontend/dist') }, logFile: path.join(directory, 'server.log') });
+    server = startLoggedProcess(process.execPath, [path.join(__dirname, 'empty-install-ui-server.cjs')], { cwd: root, env: { ...process.env, EMPTY_INSTALL_UI_INFO_FILE: infoFile, FRONTEND_DIST: process.env.UI_FRONTEND_DIST || path.join(root, 'frontend/dist') }, logFile: path.join(directory, 'server.log') });
     await waitUntil(() => { assert.equal(server.exitCode, null); return fs.existsSync(infoFile); }, 60000, 'empty system UI backend');
     const info = JSON.parse(fs.readFileSync(infoFile));
     browser = await playwright.chromium.launch({ headless: true, ...(process.env.BROWSER_EXECUTABLE ? { executablePath: process.env.BROWSER_EXECUTABLE } : {}), args: ['--enable-unsafe-swiftshader'] });
@@ -20,7 +20,7 @@ let server, browser, page;
     await page.getByRole('heading', { name: '3D 模型库', exact: true }).waitFor();
     assert.equal(await transfer.count(), 0, 'model management must not contain a package banner');
     assert.equal(await page.getByRole('columnheader', { name: '交付状态', exact: true }).count(), 0);
-    assert.deepEqual(await (await page.request.get(info.origin + '/api/models')).json(), []);
+    assert.deepEqual(await (await page.request.get(info.origin + '/api/models',{maxRetries:2})).json(), []);
     assert.equal(await page.locator('.model-table tbody tr[data-model-id]').count(), 0);
     await page.screenshot({ path: path.join(directory, '01-empty-model-library.png'), fullPage: true }); checks.push('empty installation login and model library render without seeded model cards or UI exceptions');
     // Factory creation is separately HTTP-tested; here establish one using the
@@ -43,7 +43,7 @@ let server, browser, page;
     await modal.getByRole('button', { name: '确认导入', exact: true }).click();
     await modal.getByRole('status').getByText('动作包已导入', { exact: true }).waitFor();
     await modal.getByRole('button', { name: '完成', exact: true }).click();
-    const models = await (await page.request.get(info.origin + '/api/models')).json(); assert.equal(models.length, 1); assert.ok(models[0].motion_package?.actions.length);
+    const models = await (await page.request.get(info.origin + '/api/models',{maxRetries:2})).json(); assert.equal(models.length, 1); assert.ok(models[0].motion_package?.actions.length);
     await page.getByLabel('选择动作动画模型', { exact: true }).selectOption(models[0].id);
     await page.locator('.model-preview-footer').getByText(/^预览：.*尺寸/).waitFor();
     for (const width of [1600, 1024]) {
@@ -88,7 +88,7 @@ let server, browser, page;
     assert.equal(await modal.locator('li[data-status="imported"]').count(),2);
     assert.equal(await modal.getByRole('button',{name:'重试未完成项',exact:true}).count(),0);
     await modal.getByRole('button',{name:'完成',exact:true}).click();
-    const batchModels = (await (await page.request.get(info.origin + '/api/models')).json()).filter(m=>m.id!==models[0].id);
+    const batchModels = (await (await page.request.get(info.origin + '/api/models',{maxRetries:2})).json()).filter(m=>m.id!==models[0].id);
     assert.equal(batchModels.length,2);
     await transfer.getByRole('button',{name:'导出动作包',exact:true}).click();
     modal = page.getByRole('dialog',{name:'导出动作包',exact:true});
@@ -107,11 +107,24 @@ let server, browser, page;
     await modal.screenshot({path:path.join(directory,'04-multiple-model-tags.png')});
     const downloads=[]; const onDownload=d=>downloads.push(d); page.on('download',onDownload);
     await modal.getByRole('button',{name:/^确认导出/}).click();
-    await modal.getByRole('status').getByText('已导出 2 / 2 个',{exact:true}).waitFor();
-    await waitUntil(()=>downloads.length===2,10000,'both selected model downloads');page.off('download',onDownload);
-    for(const [i,download] of downloads.entries()){const file=path.join(directory,`multi-${i}.zip`);await download.saveAs(file);const bundle=await require('../backend/services/modelAssetBundle').inspectAsset(file);assert.ok(bundle.actions.length)}
+    await modal.getByRole('status').getByText('已导出 2 个模型（1 个动作包）',{exact:true}).waitFor();
+    await waitUntil(()=>downloads.length===1,10000,'one combined model download');page.off('download',onDownload);
+    const combined = path.join(directory,'combined-motions.zip'); await downloads[0].saveAs(combined);
+    const combinedInfo = await require('../backend/services/modelAssetCollection').inspectPackage(combined);
+    assert.equal(combinedInfo.models.length,2); assert.ok(combinedInfo.models.every(item=>item.actions.length));
+    await modal.screenshot({path:path.join(directory,'05-one-archive-exported.png')});
     await modal.getByRole('button',{name:'完成',exact:true}).click();
-    checks.push('multiple chosen files import independently even when one ZIP is bad; model tags show true action counts/names and both selected packages download and validate');
+    const beforeCombined = (await (await page.request.get(info.origin+'/api/models',{maxRetries:2})).json()).length;
+    await choose(combined); modal=page.getByRole('dialog',{name:'导入动作包',exact:true});
+    await modal.getByRole('button',{name:'确认导入',exact:true}).waitFor();
+    assert.equal(await modal.locator('.package-file-list>li').count(),1);
+    assert.equal(await modal.locator('.collection-models li').count(),2);
+    await modal.screenshot({path:path.join(directory,'06-collection-import-preview.png')});
+    await modal.getByRole('button',{name:'确认导入',exact:true}).click();
+    await modal.getByRole('status').getByText('已导入 2 个',{exact:true}).waitFor();
+    assert.equal((await (await page.request.get(info.origin+'/api/models',{maxRetries:2})).json()).length,beforeCombined+2);
+    await modal.getByRole('button',{name:'完成',exact:true}).click();
+    checks.push('multiple legacy files tolerate one bad ZIP; model action details retained; multi-model export downloads exactly one directory-structured archive and the same archive imports all models');
     for (const mode of ['实时联动', '工艺动作', '设备联动', '部件动作']) {
       await page.getByRole('navigation', { name: '动作动画模式' }).getByRole('button', { name: mode, exact: true }).click();
       assert.equal(await transfer.getByRole('button').count(), 2); assert.equal(await page.getByText('项目导入文件', { exact: true }).count(), 0);

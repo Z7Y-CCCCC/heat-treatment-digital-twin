@@ -52,12 +52,12 @@ async function importAssets() {
   try {
     await runPackageQueue(rows.value, async row => {
       row.status = 'importing'; row.error = ''
-      try { const result = await request('import', row); if (!disposed) { row.status = 'imported'; imported.push(result.model) } }
+      try { const result = await request('import', row); if (!disposed) { row.status = 'imported'; imported.push(...(result.models || [result.model])) } }
       catch (cause) { if (!disposed) { row.status = 'error'; row.error = cause.message }; throw cause }
     }, { eligible: row => row.checked && row.status !== 'imported', stopped: () => disposed })
     if (!disposed) {
       if (imported.length) emit('imported', imported.at(-1))
-      const done = rows.value.filter(r => r.status === 'imported').length, failed = rows.value.filter(r => r.status === 'error').length
+      const doneRows = rows.value.filter(r => r.status === 'imported'), done = doneRows.reduce((n, row) => n + (row.checked.models?.length || 1), 0), failed = rows.value.filter(r => r.status === 'error').length
       message.value = rows.value.length === 1 && done === 1 ? '动作包已导入' : `已导入 ${done} 个${failed ? `，失败 ${failed} 个` : ''}`
     }
   } finally { if (!disposed) busy.value = false }
@@ -67,23 +67,24 @@ async function exportAssets() {
   rows.value = [...new Set(exportIds.value)].map(id => ({ id, name: props.models.find(m => m.id === id)?.name || id, status: 'waiting', error: '' }))
   busy.value = true; error.value = ''; message.value = ''
   try {
-    await runPackageQueue(rows.value, async row => {
-      row.status = 'exporting'; row.error = ''
-      try {
-        assertScope(); controller = new AbortController()
-        if (!props.models.some(m => m.id === row.id)) throw Error('模型已不存在，请重新选择')
-        const response = await adminFetch(`${API_BASE}/models/${encodeURIComponent(row.id)}/asset-export`, { signal: controller.signal })
-        if (!response.ok) throw Error((await response.json()).error || '导出失败')
-        const blob = await response.blob(); if (disposed) return
-        const url = URL.createObjectURL(blob), link = document.createElement('a')
-        link.href = url; link.download = `model-asset-${row.id}.zip`; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000)
-        row.status = 'exported'
-      } catch (cause) { if (!disposed) { row.status = 'error'; row.error = cause.message }; throw cause }
-    }, { stopped: () => disposed })
-    if (!disposed) {
-      const done = rows.value.filter(r => r.status === 'exported').length
-      message.value = rows.value.length === 1 && done === 1 ? '动作包已导出' : `已导出 ${done} / ${rows.value.length} 个`
-    }
+    assertScope(); controller = new AbortController()
+    if (rows.value.some(row => !props.models.some(m => m.id === row.id))) throw Error('模型已不存在，请重新选择')
+    rows.value.forEach(row => { row.status = 'exporting' })
+    const multiple = rows.value.length > 1
+    const response = await adminFetch(multiple ? `${API_BASE}/models/asset-export` : `${API_BASE}/models/${encodeURIComponent(rows.value[0].id)}/asset-export`, {
+      method: multiple ? 'POST' : 'GET', signal: controller.signal,
+      headers: { ...(multiple ? { 'Content-Type': 'application/json' } : {}), ...(batchScope ? { 'X-Factory-ID': batchScope } : {}) },
+      ...(multiple ? { body: JSON.stringify({ modelIds: rows.value.map(row => row.id) }) } : {})
+    })
+    if (!response.ok) throw Error((await response.json()).error || '导出失败')
+    const blob = await response.blob(); if (disposed) return
+    assertScope()
+    const url = URL.createObjectURL(blob), link = document.createElement('a')
+    link.href = url; link.download = multiple ? '动作包合集.zip' : `model-asset-${rows.value[0].id}.zip`; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000)
+    rows.value.forEach(row => { row.status = 'exported' })
+    message.value = multiple ? `已导出 ${rows.value.length} 个模型（1 个动作包）` : '动作包已导出'
+  } catch (cause) {
+    if (!disposed) { rows.value.forEach(row => { row.status = 'error' }); error.value = cause.message }
   } finally { if (!disposed) busy.value = false }
 }
 const statuses = { waiting: '等待', checking: '读取中…', ready: '可导入', importing: '导入中…', imported: '已导入', exporting: '导出中…', exported: '已导出', error: '失败' }
@@ -99,7 +100,9 @@ const statuses = { waiting: '等待', checking: '读取中…', ready: '可导�
       <header><h3>{{ operation === 'import' ? '导入动作包' : '导出动作包' }}</h3><button type="button" class="dialog-close" aria-label="关闭动作包弹窗" :disabled="busy" @click="closeDialog">×</button></header>
       <div class="package-dialog-body">
         <div v-if="operation === 'export' && !message" class="package-model-field"><span>模型</span><ModelActionPicker v-model="exportIds" :models="models" :disabled="busy" /></div>
-        <ul v-if="rows.length" class="package-file-list" aria-label="动作包处理结果"><li v-for="row in rows" :key="row.id" :data-status="row.status"><div><strong>{{ row.checked?.model.name || row.name }}</strong><small v-if="row.checked">{{ row.checked.actions.length }} 个动作</small><span>{{ statuses[row.status] }}</span></div><p v-if="row.checked?.actions.length" class="package-action-names">{{ row.checked.actions.map(a=>a.label).join('、') }}</p><p v-if="row.error" role="alert">{{ row.error }}</p></li></ul>
+        <ul v-if="rows.length" class="package-file-list" aria-label="动作包处理结果"><li v-for="row in rows" :key="row.id" :data-status="row.status"><div><strong>{{ row.checked?.model?.name || row.name }}</strong><small v-if="row.checked">{{ row.checked.isCollection ? `${row.checked.models.length} 个模型` : `${row.checked.actions.length} 个动作` }}</small><span>{{ statuses[row.status] }}</span></div><p v-if="row.checked?.actions?.length" class="package-action-names">{{ row.checked.actions.map(a=>a.label).join('、') }}</p>
+          <details v-if="row.checked?.isCollection" class="collection-models" :open="rows.length === 1"><summary>包内模型</summary><ul><li v-for="item in row.checked.models" :key="item.model.id"><div><strong>{{ item.model.name }}</strong><small>{{ item.actions.length }} 个动作</small></div><p v-if="item.actions.length" class="package-action-names">{{ item.actions.map(a=>a.label).join('、') }}</p></li></ul></details>
+          <p v-if="row.error" role="alert">{{ row.error }}</p></li></ul>
         <p v-if="operation === 'import' && readyImports.length" class="import-effect">导入为新模型，保留现有模型与设备绑定。</p>
         <p v-if="error" role="alert">{{ error }}</p><p v-if="message" role="status">{{ message }}</p>
       </div>
@@ -131,4 +134,5 @@ const statuses = { waiting: '等待', checking: '读取中…', ready: '可导�
 .motion-package-dialog footer { display: flex; justify-content: flex-end; gap: 8px; padding: 14px 22px; border-top: 1px solid #edf0f5; }
 [role=alert] { color: #b42318; }
 .package-model-field{display:grid;gap:8px}.package-file-list{list-style:none;margin:0;padding:0;max-height:300px;overflow:auto}.package-file-list li{padding:10px 0;border-bottom:1px solid #edf0f5}.package-file-list li>div{display:flex;align-items:center;gap:8px}.package-file-list strong{flex:1;min-width:0;overflow-wrap:anywhere}.package-file-list small,.package-action-names,.import-effect{color:#7b8ca3;font-size:calc(12px * var(--admin-font-scale, 1))}.package-file-list li[data-status=imported] span,.package-file-list li[data-status=exported] span{color:#16815b}.package-file-list li[data-status=error] span{color:#b42318}
+.collection-models{margin-top:8px}.collection-models summary{cursor:pointer;color:#506580}.collection-models ul{list-style:none;padding:0 0 0 12px;margin:4px 0;border-left:2px solid #e4ebf4}.collection-models li:last-child{border-bottom:0}
 </style>

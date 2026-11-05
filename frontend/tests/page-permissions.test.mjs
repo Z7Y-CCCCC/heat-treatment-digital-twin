@@ -30,6 +30,15 @@ function fixture(t, grants, permissions = {}) {
   t.after(() => Object.assign(adminSession, before))
 }
 
+test('combined motion package export is a read; collection import still requires model authoring', t => {
+  fixture(t, { 'model-animations': { view: true } })
+  assert.equal(canAdminApi('/api/models/asset-export', 'POST'), true)
+  assert.equal(canAdminApi('/api/models/a/asset-export', 'GET'), true)
+  assert.equal(canAdminApi('/api/models/asset-import', 'POST'), false)
+  adminSession.pagePermissions = normalizePagePermissions({ models: { view: true, edit: true } })
+  assert.equal(canAdminApi('/api/models/asset-import', 'POST'), true)
+})
+
 test('page-only users can enter admin without legacy global edit or display permission', t => {
   fixture(t, { models: { view: true, edit: true } })
   assert.equal(canOpenAdmin(), true)

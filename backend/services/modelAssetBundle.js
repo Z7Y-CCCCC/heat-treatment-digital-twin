@@ -8,6 +8,11 @@ const { stringifyModelMetadata } = require('./modelAssetMetadata');
 const FORMAT = 'digital-twin-model-asset', MAX_BYTES = 184 * 1024 * 1024;
 const LIMITS = { 'manifest.json': 4 * 1024 * 1024, 'model.glb': 80 * 1024 * 1024, 'motion.glb': 80 * 1024 * 1024, 'motion.json': 16 * 1024 * 1024 };
 const sha = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
+async function fileSha(filename) {
+    const hash = crypto.createHash('sha256');
+    for await (const chunk of fs.createReadStream(filename)) hash.update(chunk);
+    return hash.digest('hex');
+}
 const object = v => !!v && typeof v === 'object' && !Array.isArray(v);
 const fail = message => { throw Object.assign(new Error(message), { statusCode: 400 }); };
 const parse = v => typeof v === 'string' ? JSON.parse(v || '{}') : v || {};
@@ -49,7 +54,12 @@ async function writeZip(filename, entries) {
     await new Promise((resolve, reject) => {
         const output = fs.createWriteStream(filename, { flags: 'wx' }), archive = archiver('zip', { zlib: { level: 1 } });
         output.on('close', resolve); output.on('error', reject); archive.on('error', reject);
-        archive.pipe(output); for (const [name, bytes] of entries) archive.append(bytes, { name }); archive.finalize();
+        archive.pipe(output);
+        for (const [name, bytes] of entries) {
+            if (bytes?.file) archive.file(bytes.file, { name });
+            else archive.append(bytes, { name });
+        }
+        archive.finalize().catch(reject);
     });
 }
 function buildEntries(model) {
@@ -94,6 +104,10 @@ async function readAsset(filename) {
         if (entry.type !== 'File' || !Object.hasOwn(LIMITS, entry.path) || entries.has(entry.path)) fail('模型包含非法/重复路径或多余文件');
         entries.set(entry.path, await boundedRead(entry, LIMITS[entry.path]));
     }
+    return validateAssetEntries(entries);
+}
+function validateAssetEntries(entries) {
+    if (entries.size < 2 || entries.size > 4 || [...entries.keys()].some(name => !Object.hasOwn(LIMITS, name))) fail('模型包含非法路径或多余文件');
     if (!entries.has('manifest.json') || !entries.has('model.glb')) fail('请选择模型资产 ZIP，不是数据库备份或 Blender 工程 ZIP');
     const manifest = JSON.parse(entries.get('manifest.json'));
     if (!object(manifest) || manifest.format !== FORMAT || manifest.version !== 1 || !object(manifest.model) || !Array.isArray(manifest.files) || manifest.files.length !== entries.size - 1) fail('不支持的模型资产包格式');
@@ -117,13 +131,16 @@ async function readAsset(filename) {
 }
 async function inspectAsset(filename) {
     const asset = await readAsset(filename);
-    return { inspectedSha256: sha(fs.readFileSync(filename)), model: { id: asset.manifest.model.id, name: asset.manifest.model.name,
+    return { inspectedSha256: await fileSha(filename), model: { id: asset.manifest.model.id, name: asset.manifest.model.name,
         assetType: asset.manifest.model.asset_type, placementLevel: asset.manifest.model.placement_level },
         actions: asset.actions, files: asset.manifest.files };
 }
 async function importAsset(db, filename, factoryId, inspectedSha256, authorize = () => {}, requestId = '') {
-    if (!/^[a-f0-9]{64}$/.test(inspectedSha256 || '') || sha(fs.readFileSync(filename)) !== inspectedSha256) fail('请先检查模型动作包，文件变化后需重新检查');
-    const asset = await readAsset(filename), m = asset.manifest.model;
+    if (!/^[a-f0-9]{64}$/.test(inspectedSha256 || '') || await fileSha(filename) !== inspectedSha256) fail('请先检查模型动作包，文件变化后需重新检查');
+    return importValidatedAsset(db, await readAsset(filename), factoryId, inspectedSha256, authorize, requestId);
+}
+async function importValidatedAsset(db, asset, factoryId, inspectedSha256, authorize = () => {}, requestId = '') {
+    const m = asset.manifest.model;
     if (!await db.get('SELECT id FROM factories WHERE id = ?', [factoryId])) fail('请先创建并选择工厂');
     if (requestId && !/^[a-zA-Z0-9-]{16,80}$/.test(requestId)) fail('导入请求标识无效');
     const token = requestId ? sha(Buffer.from(factoryId + '\0' + requestId)).slice(0, 32) : crypto.randomBytes(16).toString('hex'), id = 'asset_' + token;
@@ -167,4 +184,4 @@ async function importAsset(db, filename, factoryId, inspectedSha256, authorize =
         return { model: { ...model, motion_package: motion || null, is_builtin: false } };
     } finally { if (owns && !committed) fs.rmSync(dest, { recursive: true, force: true }); }
 }
-module.exports = { FORMAT, MAX_BYTES, buildEntries, writeZip, exportAsset, inspectAsset, importAsset, readAsset, validateMotion };
+module.exports = { FORMAT, MAX_BYTES, LIMITS, fileSha, boundedRead, validateAssetEntries, buildEntries, writeZip, exportAsset, inspectAsset, importAsset, importValidatedAsset, readAsset, validateMotion };
