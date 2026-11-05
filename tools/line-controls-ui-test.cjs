@@ -60,7 +60,8 @@ const check = name => { checks.push(name); console.log('PASS ' + name); };
   check('raised equipment-lane and rail pills open independent floating editors directly below, never on hover, without reflowing the canvas');
 
   for (const [type, id, name] of [['lane','qa_lane2','设备线 2'], ['rail','qa_rail1','小车导轨 1']]) {
-    await pill(type).click(); await popup(type).getByRole('button', { name: `选中 ${name}`, exact: true }).click();
+    await pill(type).click(); assert.equal(await popup(type).getByRole('button',{name:/^选中 /}).count(),0);
+    await popup(type).getByRole('group',{name,exact:true}).click({position:{x:12,y:8}});
     await shape(type,id).waitFor(); assert.ok((await shape(type,id).getAttribute('class')).includes('is-selected'));
     assert.equal(await shape(type,id).evaluate(el => document.activeElement === el), true);
     const box = await shape(type,id).boundingBox(); assert.ok(box.y >= 0 && box.y + box.height <= 1000);
@@ -68,7 +69,7 @@ const check = name => { checks.push(name); console.log('PASS ' + name); };
   }
   assert.deepEqual(mutations, []); assert.deepEqual(await getLayout(), savedLayout);
   await page.screenshot({ path: path.join(directory, '02-focused-rail.png'), fullPage: true });
-  check('selecting a lane or rail closes the popup, scrolls to and persistently highlights only that canvas shape without moving or saving anything');
+  check('clicking a lane or rail row (no extra Select button) closes the popup, scrolls to and persistently highlights only that canvas shape without moving or saving anything');
 
   // Add/edit/remove draft geometry from each popup. Existing device bindings survive.
   for (const type of ['lane','rail']) {
@@ -76,7 +77,7 @@ const check = name => { checks.push(name); console.log('PASS ' + name); };
     await list.getByRole('button', { name: type === 'lane' ? '+ 设备线' : '+ 小车导轨', exact: true }).click();
     const added = list.locator('[data-structure-id]').last(), id = await added.getAttribute('data-structure-id');
     assert.ok(!beforeIds.includes(id));
-    const fields = added.locator('input'); await fields.nth(0).fill('验证' + type); await fields.nth(1).fill('24'); await fields.nth(2).fill('72');
+    const fields = added.locator('input'); await fields.nth(0).click(); assert.ok(await list.isVisible(),'editing a field must not activate row selection'); await fields.nth(0).fill('验证' + type); await fields.nth(1).fill('24'); await fields.nth(2).fill('72');
     // Clicking outside commits the focused field before its editor is removed.
     await page.locator('.line-planner-header h2').click();
     await pill(type).click(); const edited = list.locator(`[data-structure-id="${id}"]`);
@@ -148,7 +149,7 @@ const check = name => { checks.push(name); console.log('PASS ' + name); };
   check('line name/workshop/order editing remains available without restoring the removed settings block; unsaved edits can be discarded');
 
   // Saving structure changes through the existing API remains authoritative across reload.
-  await pill('rail').click();await popup('rail').getByLabel('小车导轨 1 长度',{exact:true}).fill('68');await popup('rail').getByRole('button',{name:'选中 小车导轨 1',exact:true}).click();
+  await pill('rail').click();await popup('rail').getByLabel('小车导轨 1 长度',{exact:true}).fill('68');await popup('rail').getByRole('group',{name:'小车导轨 1',exact:true}).click({position:{x:12,y:8}});
   await page.getByRole('button',{name:'保存产线结构',exact:true}).click(); await page.getByRole('heading',{name:'系统提示',exact:true}).waitFor();await page.getByRole('button',{name:'确定',exact:true}).click();
   assert.equal((await getLayout()).rails[0].length,68);await page.reload();await controls.waitFor();
   await pill('rail').click();assert.equal(await popup('rail').getByLabel('小车导轨 1 长度',{exact:true}).inputValue(),'68');await page.keyboard.press('Escape');
@@ -160,7 +161,15 @@ const check = name => { checks.push(name); console.log('PASS ' + name); };
     await popup('lane').screenshot({path:path.join(directory,`04-lane-popup-${percent}.png`)});await page.keyboard.press('Escape');
     const modal=await openCreate();const save=modal.getByRole('button',{name:'+ 添加产线',exact:true});await save.scrollIntoViewIfNeeded();box=await save.boundingBox();assert.ok(box.x>=0&&box.x+box.width<=1100&&box.y>=0&&box.y+box.height<=900);await page.keyboard.press('Escape');
   }
-  check('at narrow desktop width and 200% text both popup editors and creation actions remain within the viewport and reachable');
+  for(const width of [1600,1100,600]) {
+    await page.setViewportSize({width,height:900});await picker.click();
+    const list=page.getByRole('dialog',{name:'产线选择',exact:true}), search=list.getByRole('textbox',{name:'搜索产线',exact:true});
+    const box=await list.boundingBox(),field=await search.boundingBox();
+    assert.ok(field.x>=box.x+4 && field.x+field.width<=box.x+box.width-4,'search border box stays inside popup');
+    assert.ok(await list.evaluate(el=>el.scrollWidth<=el.clientWidth),'popup must not have horizontal overflow');
+    await search.fill('验证');await search.clear();await list.screenshot({path:path.join(directory,`05-line-search-${width}.png`)});await page.keyboard.press('Escape');
+  }
+  check('at narrow desktop width and 200% text popup editors/actions stay reachable and line search stays within the popup without horizontal scrolling');
 
   const session=await(await page.request.get(info.origin+'/api/admin-auth/session')).json();
   const user=await page.request.post(info.origin+'/api/admin-auth/users',{headers:{Origin:info.origin,'X-Admin-Request':'1','X-CSRF-Token':session.csrfToken},data:{username:'line_reader',password:info.password,role:'viewer',permissions:{view:false},pagePermissions:{lines:{view:true}}}});assert.equal(user.status(),201,await user.text());
@@ -169,7 +178,7 @@ const check = name => { checks.push(name); console.log('PASS ' + name); };
   const readerControls=reader.getByRole('region',{name:'产线配置工具栏'});await readerControls.waitFor();assert.ok(await readerControls.getByRole('button',{name:'+ 新增产线',exact:true}).isDisabled());
   await readerControls.getByRole('button',{name:'选择编辑产线',exact:true}).click();for(const button of await reader.getByRole('button',{name:/删除产线 /}).all())assert.ok(await button.isDisabled());await reader.keyboard.press('Escape');
   await readerControls.getByRole('button',{name:'管理设备线',exact:true}).click();const readonly=reader.getByRole('dialog',{name:'设备线管理',exact:true});assert.ok(await readonly.getByRole('button',{name:'+ 设备线',exact:true}).isDisabled());assert.ok(await readonly.getByLabel('设备线 1 长度',{exact:true}).isDisabled());
-  await readonly.getByRole('button',{name:'选中 设备线 1',exact:true}).click();assert.ok((await reader.locator('[data-line-target-id="qa_lane1"]').getAttribute('class')).includes('is-selected'));
+  const readerRow=readonly.getByRole('group',{name:'设备线 1',exact:true});await readerRow.focus();await reader.keyboard.press('Enter');assert.ok((await reader.locator('[data-line-target-id="qa_lane1"]').getAttribute('class')).includes('is-selected'));
   check('read-only users may open and focus geometry, but creation, row trash icons and all structure mutation controls remain disabled');
   assert.deepEqual(errors,[]);const result={success:true,checks,browserErrors:errors,directory};fs.writeFileSync(path.join(directory,'result.json'),JSON.stringify(result,null,2));console.log(JSON.stringify(result,null,2));
 })().catch(async error=>{await page?.screenshot({path:path.join(directory,'failure.png'),fullPage:true}).catch(()=>{});fs.writeFileSync(path.join(directory,'failure.json'),JSON.stringify({error:error.stack,checks,errors},null,2));console.error(error);process.exitCode=1;

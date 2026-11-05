@@ -61,6 +61,10 @@ function popupKey(event) {
 function chooseLine(id) { closePopup(); emit('select', id); lineTrigger.value?.focus({ preventScroll: true }) }
 function deleteLine(id) { if (props.busy || !canDelete.value) return; closePopup(); emit('delete', id) }
 function selectItem(id) { const type = popup.value; closePopup(); emit('focus-item', { type, id }) }
+function selectItemWithKeyboard(id, event) {
+  if (event.target !== event.currentTarget || !['Enter', ' '].includes(event.key)) return
+  event.preventDefault(); event.stopPropagation(); selectItem(id)
+}
 function addItem() { if (!props.busy && canEdit.value) emit('add-item', popup.value) }
 function removeItem(id) { if (!props.busy && canEdit.value) emit('remove-item', popup.value, id) }
 function changeItem(id, field, event) {
@@ -132,11 +136,11 @@ defineExpose({ closeCreation: () => { modal.value = ''; modalReturnFocus?.focus?
         </template>
         <template v-else>
           <header><strong>{{ itemLabel }}</strong><button class="btn btn-sm" type="button" :disabled="!canEdit || busy" @click="addItem">+ {{ itemLabel }}</button></header>
-          <div v-for="item in items" :key="item.id" class="structure-row" :data-structure-id="item.id">
-            <label class="structure-name">名称<input :value="item.name" :aria-label="`${item.name} 名称`" class="input" :disabled="!canEdit || busy" @input="changeItem(item.id, 'name', $event)" /></label>
-            <label>偏移Z<input :value="item.offsetZ" :aria-label="`${item.name} 偏移Z`" type="number" step="0.5" class="input" :disabled="!canEdit || busy" @input="changeItem(item.id, 'offsetZ', $event)" /></label>
-            <label>长度<input :value="item.length" :aria-label="`${item.name} 长度`" type="number" min="1" step="0.5" class="input" :disabled="!canEdit || busy" @input="changeItem(item.id, 'length', $event)" /></label>
-            <div class="structure-row-actions"><button type="button" class="btn btn-sm" :aria-label="`选中 ${item.name}`" @click="selectItem(item.id)">选中</button><button type="button" class="line-icon-button danger" :aria-label="`删除 ${item.name}`" title="删除" :disabled="!canEdit || busy" @click="removeItem(item.id)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7m4-7v7"/></svg></button></div>
+          <div v-for="item in items" :key="item.id" class="structure-row" :data-structure-id="item.id" role="group" :aria-label="item.name" tabindex="0" @click="selectItem(item.id)" @keydown="selectItemWithKeyboard(item.id, $event)">
+            <div class="structure-field structure-name"><span>名称</span><input :value="item.name" :aria-label="`${item.name} 名称`" class="input" :disabled="!canEdit || busy" @click.stop @input="changeItem(item.id, 'name', $event)" /></div>
+            <div class="structure-field"><span>偏移Z</span><input :value="item.offsetZ" :aria-label="`${item.name} 偏移Z`" type="number" step="0.5" class="input" :disabled="!canEdit || busy" @click.stop @input="changeItem(item.id, 'offsetZ', $event)" /></div>
+            <div class="structure-field"><span>长度</span><input :value="item.length" :aria-label="`${item.name} 长度`" type="number" min="1" step="0.5" class="input" :disabled="!canEdit || busy" @click.stop @input="changeItem(item.id, 'length', $event)" /></div>
+            <div class="structure-row-actions"><button type="button" class="line-icon-button danger" :aria-label="`删除 ${item.name}`" title="删除" :disabled="!canEdit || busy" @click.stop="removeItem(item.id)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7m4-7v7"/></svg></button></div>
           </div>
           <p v-if="!items.length" class="line-empty">暂无{{ itemLabel }}</p>
         </template>
@@ -174,9 +178,9 @@ svg { flex-shrink:0; width:16px; height:16px; fill:none; stroke:currentColor; st
 .structure-pill:active:not(:disabled) { box-shadow:inset 0 1px 3px #22385820; }
 .rail-pill { color:#896026; }
 .device-count { padding:5px 9px; color:#647282; background:#f0f3f5; border:1px solid #e0e5eb; border-radius:999px; }
-.line-control-popup { box-sizing:border-box; position:fixed; z-index:1200; width:min(560px,calc(100vw - 16px)); padding:14px; overflow:auto; border:1px solid #d6dfeb; border-radius:12px; background:#fff; box-shadow:0 12px 36px #17203326,0 2px 6px #17203312; color:#344054; font:calc(13px * var(--admin-font-scale,1)) 'Inter Variable','Noto Sans SC Variable',sans-serif; }
+.line-control-popup { box-sizing:border-box; position:fixed; z-index:1200; width:min(560px,calc(100vw - 16px)); padding:14px; overflow-y:auto; overflow-x:hidden; border:1px solid #d6dfeb; border-radius:12px; background:#fff; box-shadow:0 12px 36px #17203326,0 2px 6px #17203312; color:#344054; font:calc(13px * var(--admin-font-scale,1)) 'Inter Variable','Noto Sans SC Variable',sans-serif; }
 .line-list-popup { width:min(440px,calc(100vw - 16px)); padding:8px; }
-.line-search { width:100%; margin-bottom:6px; }
+.line-search { box-sizing:border-box; width:100%; max-width:100%; min-width:0; margin-bottom:6px; }
 .line-option { display:flex; align-items:center; gap:3px; padding:3px; border-radius:7px; }
 .line-option.active { background:#edf4ff; }
 .line-option-select { display:flex; align-items:center; gap:8px; min-width:0; flex:1; min-height:36px; padding:6px; border:0; background:transparent; color:inherit; font:inherit; cursor:pointer; text-align:left; }
@@ -187,8 +191,10 @@ svg { flex-shrink:0; width:16px; height:16px; fill:none; stroke:currentColor; st
 .line-icon-button:hover:not(:disabled) { background:#eaf1fc; color:#2457a6; }
 .line-icon-button.danger:hover:not(:disabled) { background:#fff0ee; color:#cf3e36; }
 .line-control-popup header { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:12px; }
-.structure-row { display:grid; grid-template-columns:minmax(100px,1fr) 76px 76px auto; align-items:end; gap:8px; padding:10px; margin-top:8px; background:#f7f9fc; border:1px solid #e8edf4; border-radius:8px; }
-.structure-row label,.line-create-row label { display:grid; gap:6px; min-width:0; color:#65738a; font-size:calc(12px * var(--admin-font-scale,1)); }
+.structure-row { display:grid; grid-template-columns:minmax(100px,1fr) 76px 76px auto; align-items:end; gap:8px; padding:10px; margin-top:8px; background:#f7f9fc; border:1px solid #e8edf4; border-radius:8px; cursor:pointer; }
+.structure-row:hover,.structure-row:focus-visible { background:#edf4ff; border-color:#94b6e5; }
+.structure-row:focus-visible { outline:2px solid #4389e9; outline-offset:2px; }
+.structure-field,.line-create-row label { display:grid; gap:6px; min-width:0; color:#65738a; font-size:calc(12px * var(--admin-font-scale,1)); }
 .structure-row input { box-sizing:border-box; width:100%; min-width:0; padding:6px 8px; }
 .structure-row-actions { display:flex; align-items:center; gap:4px; }
 .line-empty { color:#8995a6; margin:16px 6px; }
