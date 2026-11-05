@@ -7,6 +7,12 @@ const root = path.resolve(__dirname, '..');
 const source = fs.readFileSync(path.join(root, 'display-installer-ui.nsh'), 'utf8');
 const hooks = fs.readFileSync(path.join(root, 'display-installer.nsh'), 'utf8');
 const pkg = require('../package.json');
+test('custom installer illustration and stock uninstaller sidebar use their own required dimensions', () => {
+  for (const [name, width, height] of [['installer-art.bmp',600,1100],['installer-sidebar.bmp',164,314]]) {
+    const data=fs.readFileSync(path.join(root,'assets',name));
+    assert.equal(data.readInt32LE(18),width); assert.equal(data.readInt32LE(22),height);
+  }
+});
 
 test('the real NSIS package uses the ice-blue native layout, not stock directory/sidebar pages', () => {
   assert.equal(pkg.build.nsis.include, 'display-installer.nsh');

@@ -64,5 +64,8 @@ function bitmap(width, height) {
   for(let i=0;i<14;i++){const x=width*(.12+(i*37%75)/100),y=height*(.36+(i*13%48)/100);dot(x,y,[70,177,201],.55);dot(x+1,y,[70,177,201],.55);}
   const data = Buffer.alloc(54 + pixels.length); data.write('BM'); data.writeUInt32LE(data.length,2);data.writeUInt32LE(54,10);data.writeUInt32LE(40,14);data.writeInt32LE(width,18);data.writeInt32LE(height,22);data.writeUInt16LE(1,26);data.writeUInt16LE(24,28); pixels.copy(data,54); return data;
 }
-if (require.main === module) fs.writeFileSync(path.resolve(__dirname,'../assets/installer-sidebar.bmp'),bitmap(600,1100));
+if (require.main === module) {
+  fs.writeFileSync(path.resolve(__dirname,'../assets/installer-art.bmp'),bitmap(600,1100));
+  fs.writeFileSync(path.resolve(__dirname,'../assets/installer-sidebar.bmp'),bitmap(164,314));
+}
 module.exports = { bitmap };

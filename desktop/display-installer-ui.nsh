@@ -90,7 +90,7 @@ Function DisplayPaintSidebar
   System::Call '*$R1(i, i, i.R2, i.R3)'
   System::Free $R1
   InitPluginsDir
-  File /oname=$PLUGINSDIR\installer-sidebar.bmp "${__FILEDIR__}\assets\installer-sidebar.bmp"
+  File /oname=$PLUGINSDIR\installer-sidebar.bmp "${__FILEDIR__}\assets\installer-art.bmp"
   System::Call 'user32::LoadImageW(p 0, w "$PLUGINSDIR\installer-sidebar.bmp", i 0, i 0, i 0, i 0x2010) p.R4'
   System::Call 'user32::GetDC(p R0) p.R5'
   System::Call 'gdi32::CreateCompatibleDC(p R5) p.R6'
