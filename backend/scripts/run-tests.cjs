@@ -18,7 +18,7 @@ const scripts = [
     'admin-auth-integration-test.cjs', 'factory-isolation-test.cjs', 'factory-display-collection-test.cjs', 'factory-collection-summary-test.cjs', 'configuration-sync-test.cjs', 'factory-geocoder-test.cjs', 'production-readiness-test.cjs',
     'data-point-sync-test.cjs', 'deletion-safety-test.cjs',
     'native-dashboard-config-test.cjs', 'inspection-hover-test.cjs', 'device-hover-test.cjs', 'dashboard-designer-test.cjs', 'mcp-platform-integration-test.cjs', 'plc-protocol-test.cjs',
-    'plc-value-precision-test.cjs', 's7-read-safety-test.cjs', 'collector-isolation-test.cjs',
+    'plc-value-precision-test.cjs', 's7-read-safety-test.cjs', 'collector-isolation-test.cjs', 'plc-empty-connectivity-test.cjs',
     'inspection-platform-test.cjs', 'device-inspection-layout-test.cjs', 'model-inspection-layout-test.cjs', 'tempering-inspection-defaults-test.cjs', 'model-asset-collection-test.cjs', 'model-name-test.cjs', 'ultrasonic-cleaner-profile.test.cjs', 'device-animations-test.cjs', 'motion-authoring-test.cjs',
     'database-retention-test.cjs', 'database-backup-ties-test.cjs', 'site-backup-test.cjs', 'backup-storage-test.cjs', 'project-bundle-test.cjs',
     'power-recovery-test.cjs', 'runtime-display-test.cjs', 'http-integrity-test.cjs'

@@ -29,6 +29,7 @@ const MIN_SAMPLE_INTERVAL_MS = 100;
 const MAX_SAMPLE_INTERVAL_MS = 60000;
 const STATUS_BROADCAST_MIN_MS = 2000;
 const DEFAULT_OFFLINE_AFTER_MS = 15000;
+const CONNECTION_PROBE_INTERVAL_MS = 10000;
 
 class PlcReader {
     constructor(options = {}) {
@@ -187,6 +188,7 @@ class PlcReader {
         this.deviceStatus.clear();
         this.deviceTaskIds.clear();
 
+        const withoutReadablePoints = [];
         devices.forEach(device => {
             const points = pointsByDevice.get(device.id) || [];
             const plc = this._normalizePlcConfig(device);
@@ -215,6 +217,7 @@ class PlcReader {
                     quality: 'stale',
                     message: '未配置点位'
                 });
+                withoutReadablePoints.push({ device, plc, message: '未配置点位' });
                 return;
             }
 
@@ -255,8 +258,24 @@ class PlcReader {
                         ? `没有可读取点位：${invalidAddressCount} 个地址不符合 ${plc.protocol} 格式`
                         : '未配置可读取点位'
                 });
+                withoutReadablePoints.push({ device, plc, message: this.deviceStatus.get(device.id).message });
             }
         });
+
+        // No points is a configuration state, not evidence of PLC connectivity.
+        // Reuse existing endpoint sessions where possible; otherwise perform a
+        // periodic protocol connection only, without inventing a PLC read tag.
+        for (const { device, plc, message } of withoutReadablePoints) {
+            const key = this._endpointKey(plc);
+            let tasks = [...this.tasks.values()].filter(task => task.endpointKey === key);
+            if (!tasks.length) {
+                const task = this._getOrCreateTask(`${key}|connection-probe`, plc, CONNECTION_PROBE_INTERVAL_MS);
+                task.connectionOnly = true; tasks = [task];
+            }
+            for (const task of tasks) if (task.connectionOnly) task.devices[device.id] = { deviceName: device.name, points: [] };
+            this.deviceTaskIds.set(device.id, new Set(tasks.map(task => task.id)));
+            this._updateBaseDeviceStatus(device.id, { noReadablePoints: true, pointConfigurationMessage: message });
+        }
 
         const pointCount = Array.from(this.tasks.values())
             .reduce((sum, task) => sum + task.points.length, 0);
@@ -344,8 +363,10 @@ class PlcReader {
 
                 try {
                     const tagNames = Object.keys(task.tags);
-                    connection.setTranslationCB(tag => task.tags[tag]);
-                    connection.addItems(tagNames);
+                    if (!task.connectionOnly) {
+                        connection.setTranslationCB(tag => task.tags[tag]);
+                        connection.addItems(tagNames);
+                    }
                     this._markTaskConnected(task, `${this._formatEndpoint(task.endpoint)} 已连接，${tagNames.length} 点，${task.interval}ms`);
                     this._startTaskPolling(task);
                 } catch (e) {
@@ -392,6 +413,9 @@ class PlcReader {
             task.connectTimer = null;
         }
         task.lastConnectedAt = Date.now();
+        if (task.connectionOnly) {
+            task.retryCount = 0; task.outageStartedAt = null; task.lastError = '';
+        }
         // A TCP handshake is not a successful PLC read. Keep consecutive
         // failures/outage timing until usable read completion, otherwise an
         // accept-but-silent endpoint resets backoff forever and appears online.
@@ -401,6 +425,16 @@ class PlcReader {
 
     _startTaskPolling(task) {
         const generation = task.connectionGeneration;
+        if (task.connectionOnly) {
+            // Close after the handshake to avoid occupying an extra PLC session.
+            // Never call readAllItems/readPoints with dummy or empty addresses.
+            this._dropTaskConnection(task);
+            task.timer = setTimeout(() => {
+                task.timer = null;
+                if (!this.stopped && generation === task.connectionGeneration) this._connectTask(task);
+            }, task.interval);
+            return;
+        }
         this._readTask(task);
         if (this.stopped || generation !== task.connectionGeneration || task.status !== 'connected') return;
         task.timer = setInterval(() => this._readTask(task), task.interval);
@@ -562,6 +596,7 @@ class PlcReader {
     }
 
     _emitBadSnapshotsForTask(task) {
+        if (task.connectionOnly) return;
         if (!this.onData) return;
         const deviceDataArray = [];
         Object.entries(task.devices || {}).forEach(([deviceId, info]) => {
@@ -686,6 +721,17 @@ class PlcReader {
                 nextRetryAt,
                 intervals, normalPoints, abnormalPoints, lastReadDurationMs
             };
+
+            if (status.noReadablePoints) {
+                const reachable = connected.some(task => !offline.includes(task));
+                const failed = tasks.length && tasks.every(task => ['retrying', 'error'].includes(task.status) || offline.includes(task));
+                next = { ...next, lastReadAt: null, lastReadDurationMs: null, intervals: [], normalPoints: 0, abnormalPoints: 0 };
+                if (reachable) next = { ...next, status: 'no_points', message: `PLC 已连接，${status.pointConfigurationMessage || '未配置可读取点位'}` };
+                else if (failed) next = { ...next, status: 'offline', quality: 'bad', message: lastError ? `PLC 离线：${lastError}` : 'PLC 离线' };
+                else if (connecting.length) next = { ...next, status: 'connecting', message: '正在检查 PLC 连接' };
+                this.deviceStatus.set(deviceId, { ...status, ...next });
+                continue;
+            }
 
             if (connectedFresh.length === tasks.length) {
                 next = { ...next, status: 'connected', quality: 'good', message: '数据采集正常' };

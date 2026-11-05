@@ -12461,7 +12461,7 @@ button:enabled:active {
 .plc-connected { color: #1b6b3a; background: rgba(52, 199, 89, 0.12); border-color: rgba(52, 199, 89, 0.24); }
 .plc-connecting, .plc-idle { color: #6c5800; background: rgba(255, 204, 0, 0.14); border-color: rgba(255, 204, 0, 0.24); }
 .plc-retrying, .plc-no_points, .plc-unconfigured { color: #8a4b0f; background: rgba(255, 149, 0, 0.13); border-color: rgba(255, 149, 0, 0.24); }
-.plc-error, .plc-unsupported { color: #9f1d17; background: rgba(255, 59, 48, 0.12); border-color: rgba(255, 59, 48, 0.24); }
+.plc-error, .plc-offline, .plc-unsupported { color: #9f1d17; background: rgba(255, 59, 48, 0.12); border-color: rgba(255, 59, 48, 0.24); }
 .plc-disabled, .plc-stopped { color: #6e6e73; background: #f5f5f7; }
 .widget-layout-editor {
     display: block;

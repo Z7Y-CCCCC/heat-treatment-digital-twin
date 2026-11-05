@@ -7,6 +7,7 @@ import { adminApi } from '../../../config/factoryConfig.js'
 import { API_BASE } from '../../../runtime/backendEndpoint.js'
 import { adminFetch as fetch, canAdminApi, canAdminPage } from '../../../runtime/adminSession.js'
 import { normalizePlcOptions, normalizePlcProtocol } from '../../../config/plcProtocols.js'
+import { PLC_STATUS_LABELS, plcDeviceStatusLabel } from '../utils/plcStatus.js'
 
 function createDefaultNativeEnvironmentConfig() {
     return {
@@ -364,18 +365,7 @@ export function useSystemSettings({
         plcStatus: { status: 'unknown', message: '未知' },
         collectorStatus: { status: 'unknown', message: '未知' }
     })
-    const plcStatusLabels = {
-        connected: '已连接',
-        connecting: '连接中',
-        retrying: '重连中',
-        error: '异常',
-        disabled: '未启用',
-        no_points: '无点位',
-        unconfigured: '未配置',
-        unsupported: '暂不支持',
-        stopped: '已停止',
-        idle: '等待'
-    }
+    const plcStatusLabels = PLC_STATUS_LABELS
     const plcStatusByDevice = computed(() => {
         const map = {}
         const statuses = engineStatus.plcStatus?.devices || []
@@ -386,11 +376,7 @@ export function useSystemSettings({
     })
 
     function formatPlcDeviceStatus(device) {
-        if (!Number(device.plc_enabled || 0)) return '未启用'
-        const status = plcStatusByDevice.value[device.id]
-        if (!status) return device.plc_ip ? '等待采集' : '未配置'
-        if (status.status === 'unconfigured' && device.plc_ip && !status.plc_ip) return '配置已更新'
-        return plcStatusLabels[status.status] || status.status || '未知'
+        return plcDeviceStatusLabel(device, plcStatusByDevice.value[device.id])
     }
 
     function formatPlcEndpoint(device) {
