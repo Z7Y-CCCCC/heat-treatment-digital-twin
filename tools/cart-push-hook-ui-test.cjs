@@ -17,6 +17,8 @@ let server,browser;
  const models=await api('/api/models'),devices=await api('/api/devices'),model=models.find(m=>m.id===id),metadata=JSON.parse(model.metadata),response=await page.request.get(info.origin+model.file_path),bytes=await response.body();
  assert.equal(crypto.createHash('sha256').update(bytes).digest('hex'),metadata.sourceAsset.sha256);assert.equal(model.motion_package.actions.length,4);assert.ok(metadata.cartPushHook);
  const doc=JSON.parse(bytes.toString('utf8',20,20+bytes.readUInt32LE(12)));for(const name of ['feed_carriage','push_hook','hook_latch'])assert.ok(doc.nodes.some(n=>n.name==='cad_transfer_cart_v1_'+name));checks.push('cart asset and four portable actions include the mounted hook');
+ const motionResponse=await page.request.get(info.origin+model.motion_package.clipPath);assert.equal(motionResponse.status(),200);const motion=await motionResponse.json();
+ for(const name of ['preview_chain_carriage_anchor','preview_chain_case_entry','preview_working_chain_link_0'])assert.ok(motion.nodes.some(n=>n.name===name));checks.push('portable rig includes a steel working chain joining the carriage clamp to the rear housing');
  await page.getByRole('combobox',{name:'选择动作动画模型',exact:true}).selectOption(id);
  const setTime=async(slider,value)=>{await slider.evaluate((element,next)=>{element.value=String(next);element.dispatchEvent(new Event('input',{bubbles:true}))},value);await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))))};
  for(const action of cadMotionActions(id)){

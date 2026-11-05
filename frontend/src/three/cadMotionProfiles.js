@@ -22,7 +22,7 @@ export const CAD_MOTION_PROFILES = {
     ]},
     cad_transfer_cart_101300: {prefix:'cad_transfer_cart_v1_',actions:[
         action('travel','料车往返行走','车体平移，行走轮按轮径同步滚动。'),
-        action('feed','推料伸出 / 退回','抓钩从导轨最后端前进至最前端，再退回最后端；回链与送料链轮同步运行，导轨固定。'),
+        action('feed','推料伸出 / 退回','抓钩通过连接销接住中间导槽内的送料链；送料链接入后方链条盒，与链轮同步进退，带动抓钩往返。'),
         action('hook','推拉钩脱开 / 勾合','钩头绕横向轴翻转，演示脱开与勾合；实际角度及信号需现场标定。'),
         action('rollers','承料辊转动','仅辊轴和辊筒转动，支架及轴承座保持固定。')
     ]},
@@ -42,10 +42,9 @@ export const CAD_MOTION_PROFILES = {
     cad_cleaner_170700: {prefix:'cad_washing_machine_v1_',actions:[
         action('door','清洗门开启 / 关闭','门板和滑架同步升降，导轨及驱动外壳固定。'),
         action('pumps','循环泵运转','可见轴端转动，泵壳固定；不旋转整个泵组。'),
-        action('spray','喷淋清洗','按模型实际喷嘴位置显示喷淋水流，泵轴随动。'),
-        {...action('basket_down','料盘下降浸洗','下部中央浸洗区及左右水槽常驻满水；料盘与承料辊台同步下降，物料完全浸没。'),oneWay:true},
-        {...action('basket_up','料盘升起出水','料盘与承料辊台从水中同步升回进出料高度，槽内水位保持不变。'),oneWay:true},
-        action('blow','吹扫','显示清洗腔内空气流动示意。')
+        {...action('basket_down','料盘下降浸洗','下方碱水槽常驻满液；料盘与承料辊台同步下降，物料完全浸入碱液。'),oneWay:true},
+        {...action('basket_up','料盘升起出水','浸洗后料盘与承料辊台从碱水槽升回进出料高度，再进行喷清水。'),oneWay:true},
+        action('spray','喷清水','料盘升出碱水槽后，在上位按实际喷嘴位置喷清水漂洗，泵轴随动。')
     ]},
     cad_water_cooling_tank_471000: {prefix:'cad_water_cooling_tank_v1_',actions:[
         action('door','前门开启 / 关闭','门板和滑架同步升降，导轨固定。'),

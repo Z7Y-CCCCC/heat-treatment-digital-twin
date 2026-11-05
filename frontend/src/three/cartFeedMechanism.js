@@ -1,6 +1,25 @@
 // Metres in the CAD cart's coordinates. Guide length 1.315, carriage length .230.
 export const CART_FEED=Object.freeze({rearX:.5425,frontX:-.5425,stroke:1.085,carriageOriginalX:-.06,hookTipOffset:.15,trayHalfLength:.275,homeTrayX:.1175,sprocketRadius:.135})
 
+// Central working strand: a guided metal chain joins the carriage clamp to
+// the bottom of the existing return-chain housing, in the same chain plane.
+export const CART_WORK_CHAIN=Object.freeze({anchorX:.6575,y:1.237,z:.038,pitch:.048,entryX:.70,caseX:.806,caseY:1.31})
+const bridge=[],bridgeSegments=[];let bridgeLength=0
+for(let i=0;i<=32;i++){
+ const t=i/32,u=1-t,c=CART_WORK_CHAIN
+ bridge.push([u*u*u*c.entryX+3*u*u*t*.755+3*u*t*t*.751+t*t*t*c.caseX,u*u*u*c.y+3*u*u*t*c.y+3*u*t*t*c.caseY+t*t*t*c.caseY,c.z])
+}
+for(let i=1;i<bridge.length;i++){
+ const a=bridge[i-1],b=bridge[i],span=Math.hypot(b[0]-a[0],b[1]-a[1]);bridgeSegments.push({a,b,span,start:bridgeLength});bridgeLength+=span
+}
+export function cartWorkingChainLength(anchorX){return Math.max(0,CART_WORK_CHAIN.entryX-anchorX)+bridgeLength}
+export function sampleCartWorkingChain(anchorX,distance){
+ const c=CART_WORK_CHAIN,straight=Math.max(0,c.entryX-anchorX)
+ if(distance<=straight)return {position:[anchorX+distance,c.y,c.z],angle:0}
+ const d=Math.min(bridgeLength,Math.max(0,distance-straight)),segment=bridgeSegments.find(s=>d<=s.start+s.span)||bridgeSegments.at(-1),p=Math.min(1,(d-segment.start)/segment.span)
+ return {position:[segment.a[0]+(segment.b[0]-segment.a[0])*p,segment.a[1]+(segment.b[1]-segment.a[1])*p,c.z],angle:Math.atan2(segment.b[1]-segment.a[1],segment.b[0]-segment.a[0])}
+}
+
 // The authored return-chain route, sampled exactly like the original CAD detail
 // builder: upper and lower semicircles joined by two vertical runs.
 const points=[]

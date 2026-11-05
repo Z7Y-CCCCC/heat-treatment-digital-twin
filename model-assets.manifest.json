@@ -435,8 +435,8 @@
     },
     {
       "path": "backend/assets/motions/cad_cleaner_170700.glb",
-      "bytes": 5390584,
-      "sha256": "08e4bc38d73e071102418f0f15f9ef38c098973a413f01deb05590fe72dadf98"
+      "bytes": 5390604,
+      "sha256": "c464de35267f77b7074ce024260e0949780ac35d1704ca91de0c1510d77a55e4"
     },
     {
       "path": "backend/assets/motions/cad_fixed_load_table_112200.glb",
@@ -445,8 +445,8 @@
     },
     {
       "path": "backend/assets/motions/cad_lifting_load_table_111400.glb",
-      "bytes": 1130020,
-      "sha256": "5001a9de1ec220d44658898dae5c30cb1230342f6f95d2a4ea48636721ed703a"
+      "bytes": 1147204,
+      "sha256": "7d9a72cb018ff7f4908bbc78b18df503fbd170cc8f54bd45310e6699185474ac"
     },
     {
       "path": "backend/assets/motions/cad_multipurpose_furnace_082000.glb",
@@ -460,8 +460,8 @@
     },
     {
       "path": "backend/assets/motions/cad_transfer_cart_101300.glb",
-      "bytes": 7837408,
-      "sha256": "04ed7bd9684c32d7de78a8e3215522cd25a939cbfe19d25c3f79b36d0b752167"
+      "bytes": 7875816,
+      "sha256": "c49a811db61bc2af216afbcc2c7af2be19d2079c8335c5898a72d539d31b9296"
     },
     {
       "path": "backend/assets/motions/cad_water_cooling_tank_471000.glb",

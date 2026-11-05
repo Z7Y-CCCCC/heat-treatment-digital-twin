@@ -27,15 +27,17 @@ const devices=[{id:'cart',name:'料车实例',model_type:models[0].id,line_id:'A
  {id:'cleaner1',name:'一号清洗机',model_type:models[1].id,line_id:'A'},
  {id:'cleaner2',name:'二号清洗机',model_type:models[1].id,line_id:'B'},
  {id:'tank',name:'水冷槽',model_type:models[2].id,line_id:'A'}]
-test('cleaner enters a permanent full bath after feeding, then rises before unloading without filling or draining',()=>{
+test('ordinary cleaner immerses in alkali, rises, then rinses with clean water and unloads without blow',()=>{
  const plan=buildLineSimulation([devices[0],devices[1]],models)
- assert.deepEqual(plan.steps.map(s=>s.kind),['approach','open','feed','retract','close','lower','spray','raise','blow','open_out','pickup_extend','reclaim','close_out'])
+ assert.deepEqual(plan.steps.map(s=>s.kind),['approach','open','feed','retract','close','lower','immersion','raise','spray','open_out','pickup_extend','reclaim','close_out'])
  const at=(kind,p=.5)=>{const step=plan.steps.find(s=>s.kind===kind);return sampleLineSimulation(plan,step.start+step.duration*p)}
  for(let time=0;time<=plan.total;time+=.25)assert.equal(sampleLineSimulation(plan,time).states.cleaner1.level,1)
  assert.equal(at('feed').states.cleaner1.basket,0)
  const lowered=at('lower');assert.equal(lowered.states.cleaner1.basket,.5);assert.equal(lowered.material.holder,'cleaner1');assert.equal(lowered.states.cleaner1.door,0);assert.equal(lowered.cart.feed,0)
- assert.equal(at('spray').states.cleaner1.basket,1);assert.equal(at('raise').states.cleaner1.basket,.5)
- assert.equal(at('blow').states.cleaner1.basket,0);assert.equal(at('open_out').states.cleaner1.basket,0)
+ assert.equal(at('immersion').states.cleaner1.basket,1);assert.equal(at('immersion').states.cleaner1.spray,false);assert.equal(at('immersion').states.cleaner1.run,true)
+ assert.equal(at('raise').states.cleaner1.basket,.5);assert.equal(at('raise').states.cleaner1.spray,false)
+ assert.equal(at('spray').states.cleaner1.basket,0);assert.equal(at('spray').states.cleaner1.spray,true);assert.equal(at('open_out').states.cleaner1.basket,0)
+ assert.ok(!plan.steps.some(s=>['fill','drain','blow'].includes(s.kind)))
  const sample=at('spray');sampleLineSimulation(plan,plan.total);assert.deepEqual(at('spray'),sample)
 })
 test('line membership is based on instances and explicit line binding, including rail-bound carts',()=>{
