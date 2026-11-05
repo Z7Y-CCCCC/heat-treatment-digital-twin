@@ -23,9 +23,10 @@ function fixture(t) {
   return { root, directory, installer, manifest, save };
 }
 test('collects only verified files with portable metadata and regenerated checksum', t => {
-  const f = fixture(t); const out = collectRelease(f.root);
+  const f = fixture(t); f.manifest.packagingResourceBaseline = 'C:/LOCAL/private/baseline.json'; f.save(); const out = collectRelease(f.root);
   assert.equal(fs.readdirSync(out).length, 4);
   assert.equal(JSON.parse(fs.readFileSync(path.join(out, 'release-manifest.json'))).installer, 'test.exe');
+  assert.equal(JSON.parse(fs.readFileSync(path.join(out, 'release-manifest.json'))).packagingResourceBaseline, undefined);
   assert.equal(verifyRelease(out, '').installer, 'test.exe');
 });
 test('split release publishes independent collector bytes and checksums, rejects corruption and missing plugin', t => {
@@ -100,8 +101,11 @@ test('portable publication keeps installer bytes and provenance, with consistent
   assert.equal(normalized.sha256, original.sha256);
   assert.equal(normalized.commit, original.commit);
   assert.deepEqual(portableRelease(out, ''), normalized);
-  const assets = fs.readdirSync(out).map(name => ({ name, size: fs.statSync(path.join(out, name)).size }));
+  const assets = fs.readdirSync(out).map(name => ({ name, size: fs.statSync(path.join(out, name)).size,
+    state: 'uploaded', digest: 'sha256:' + crypto.createHash('sha256').update(fs.readFileSync(path.join(out, name))).digest('hex') }));
   assert.doesNotThrow(() => verifyUploadedAssets(out, assets));
   assert.throws(() => verifyUploadedAssets(out, assets.map((asset, i) => i ? asset : { ...asset, name: 'renamed-by-host.exe' })), /renamed or omitted/);
   assert.throws(() => verifyUploadedAssets(out, assets.map((asset, i) => i ? asset : { ...asset, size: asset.size + 1 })), /size mismatch/);
+  assert.throws(() => verifyUploadedAssets(out, assets.map((asset, i) => i ? asset : { ...asset, digest: 'sha256:wrong' })), /digest mismatch/);
+  assert.throws(() => verifyUploadedAssets(out, assets.map((asset, i) => i ? asset : { ...asset, state: 'starter' })), /incomplete/);
 });

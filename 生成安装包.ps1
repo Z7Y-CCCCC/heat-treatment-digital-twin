@@ -388,6 +388,9 @@ Invoke-CheckedCommand -Label '生成独立可选采集插件目录（不进入�
     (Join-Path $desktopDirectory 'scripts/prepare-collector-plugin.cjs'), $displayResources, $pluginDirectory
 )
 $resourceGuard = Join-Path $projectDirectory 'tools/package-resource-integrity.cjs'
+Invoke-CheckedCommand -Label '在不可变基线前准备可验证的 NSIS 提权助手' -Executable $node -ArgumentList @(
+    (Join-Path $projectDirectory 'tools/package-nsis-integrity.cjs'), '--prepare', (Join-Path $outputDirectory 'win-unpacked')
+)
 $resourceBaseline = Join-Path $outputDirectory 'installation-resource-baseline.json'
 # A resumed, unfinished release is rebuilt above. Keep the earlier immutable
 # baseline for diagnosis instead of overwriting it or comparing new bits to it.
@@ -441,6 +444,9 @@ try {
 } finally {
     [Environment]::SetEnvironmentVariable('ELECTRON_BUILDER_COMPRESSION_LEVEL', $previousCompressionLevel, 'Process')
 }
+Invoke-CheckedCommand -Label '确认 NSIS 压缩没有改写已验证程序' -Executable $node -ArgumentList @(
+    $resourceGuard, '--verify', (Join-Path $outputDirectory 'win-unpacked'), $resourceBaseline
+)
 $installerPath = Join-Path $outputDirectory $installerName
 if (-not (Test-Path -LiteralPath $installerPath)) {
     throw "构建命令已结束，但没有找到预期安装包：$installerPath"

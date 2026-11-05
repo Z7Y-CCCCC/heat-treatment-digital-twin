@@ -30,7 +30,7 @@ function collectRelease(root, sourceDirectory) {
   fs.writeFileSync(path.join(output, `${name}.sha256.txt`), `${sha256}  ${name}\n`);
   // Strip machine-specific paths from downloadable metadata.
   const { installer: _installer, buildLog: _log, preparedBuildLog: _prepared,
-    resourceBaseline: _baseline, resourceVerification: _verification, stagingDirectory: _staging,
+    resourceBaseline: _baseline, resourceVerification: _verification, packagingResourceBaseline: _packagingBaseline, stagingDirectory: _staging,
     sourceUserDataDirectory: _data, sourceUploadsDirectory: _uploads,
     collectorSmokeEvidence: _collectorEvidence, mysqlSmokeEvidence: _mysqlEvidence, ...portable } = manifest;
   if (manifest.collectorBundled === false && !manifest.collectorPlugin) throw new Error('Missing optional collector plugin');

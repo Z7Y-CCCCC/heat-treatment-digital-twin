@@ -1,6 +1,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { verifyRelease } = require('./verify-release.cjs');
+const { fileDigest } = require('../../desktop/scripts/file-digest.cjs');
 function portableRelease(directory, commit, run) {
   const proof = verifyRelease(directory, commit, run);
   const file = path.join(directory, 'release-manifest.json');
@@ -21,7 +22,12 @@ function verifyUploadedAssets(directory, assets) {
   verifyRelease(directory, '');
   const names = fs.readdirSync(directory).sort();
   if (JSON.stringify(assets.map(asset => asset.name).sort()) !== JSON.stringify(names)) throw new Error('GitHub renamed or omitted release assets');
-  for (const asset of assets) if (asset.size !== fs.statSync(path.join(directory, asset.name)).size) throw new Error('GitHub asset size mismatch');
+  for (const asset of assets) {
+    const actual = fileDigest(path.join(directory, asset.name));
+    if (asset.size !== actual.size) throw new Error('GitHub asset size mismatch');
+    if (asset.state !== 'uploaded') throw new Error('GitHub asset upload is incomplete');
+    if (asset.digest !== `sha256:${actual.sha256}`) throw new Error('GitHub asset SHA-256 digest mismatch');
+  }
 }
 if (require.main === module) {
   if (process.argv[2] === '--uploaded') verifyUploadedAssets(process.argv[3], JSON.parse(fs.readFileSync(process.argv[4], 'utf8')).assets);
