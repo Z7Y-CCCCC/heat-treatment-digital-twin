@@ -455,8 +455,8 @@
     },
     {
       "path": "backend/assets/motions/cad_tempering_furnace_091300.glb",
-      "bytes": 2452688,
-      "sha256": "20184dc98e86e0384c676abd3ac4b0c9b8a5d921c0375a1885628f6cfc81b990"
+      "bytes": 2452680,
+      "sha256": "51fca0d5d1c7866bab547e53c8e1be5b3b69e2e6f01c8bdc3f1ce9031f9286cb"
     },
     {
       "path": "backend/assets/motions/cad_transfer_cart_101300.glb",
