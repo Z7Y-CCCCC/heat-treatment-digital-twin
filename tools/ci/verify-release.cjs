@@ -6,7 +6,7 @@ const { fileDigest } = require('../../desktop/scripts/file-digest.cjs');
 function verifyRelease(directory, expectedCommit = process.env.GITHUB_SHA, expectedRun = '') {
   const read = name => JSON.parse(fs.readFileSync(path.join(directory, name), 'utf8').replace(/^\uFEFF/, ''));
   const manifest = read('release-manifest.json'), timings = read('build-timings.json');
-  if (!timings.success || manifest.smokeTest !== 'passed' || manifest.starterTemplate !== true || manifest.mysqlBundled !== true)
+  if (!timings.success || manifest.smokeTest !== 'passed' || manifest.emptySystem !== true || manifest.contentPolicy !== 'empty-v1' || manifest.mysqlBundled !== true)
     throw new Error('Release build and isolated launch checks must have passed');
   if (expectedCommit && manifest.commit !== expectedCommit) throw new Error('Artifact belongs to another commit');
   if (expectedRun && manifest.run !== String(expectedRun)) throw new Error('Artifact belongs to another run');

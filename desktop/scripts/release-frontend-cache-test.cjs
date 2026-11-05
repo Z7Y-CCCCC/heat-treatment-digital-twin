@@ -11,6 +11,9 @@ test('release frontend reuses exact inputs/outputs and invalidates edits, corrup
   const build = async dir => { builds++; fs.writeFileSync(path.join(dir,'index.html'),'build-'+builds); };
   const run = options => buildReleaseFrontend(frontend,output,build,{env:{},...options});
   assert.equal((await run()).reused,false); assert.equal((await run()).reused,true); assert.equal(builds,1);
+  fs.mkdirSync(path.join(frontend,'output')); fs.writeFileSync(path.join(frontend,'output','screenshot.png'),'diagnostics');
+  fs.writeFileSync(path.join(frontend,'dev.log'),'running');
+  assert.equal((await run()).reused,true, 'diagnostic files are not build inputs');
   fs.writeFileSync(path.join(frontend,'index.html'),'v2'); assert.equal((await run()).reused,false);
   fs.writeFileSync(path.join(output,'index.html'),'corrupt'); assert.equal((await run()).reused,false);
   fs.writeFileSync(path.join(output,'stale.js'),'old'); assert.equal((await run()).reused,false);

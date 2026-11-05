@@ -14,8 +14,8 @@ function collectRelease(root, sourceDirectory) {
   const directory = path.resolve(directories[0]);
   const manifest = JSON.parse(fs.readFileSync(path.join(directory, 'release-manifest.json'), 'utf8').replace(/^\uFEFF/, ''));
   const timings = JSON.parse(fs.readFileSync(path.join(directory, 'build-timings.json'), 'utf8').replace(/^\uFEFF/, ''));
-  if (!timings.success || manifest.smokeTest !== 'passed' || manifest.starterTemplate !== true || manifest.mysqlBundled !== true) {
-    throw new Error('Release must pass the full build and smoke test using starter configuration');
+  if (!timings.success || manifest.smokeTest !== 'passed' || manifest.emptySystem !== true || manifest.contentPolicy !== 'empty-v1' || manifest.mysqlBundled !== true) {
+    throw new Error('Release must pass the full build and smoke test using empty-system configuration');
   }
   const installer = path.resolve(manifest.installer);
   if (path.dirname(installer) !== directory || path.extname(installer).toLowerCase() !== '.exe') throw new Error('Installer is outside the release directory');
@@ -29,7 +29,10 @@ function collectRelease(root, sourceDirectory) {
   fs.copyFileSync(installer, path.join(output, name));
   fs.writeFileSync(path.join(output, `${name}.sha256.txt`), `${sha256}  ${name}\n`);
   // Strip machine-specific paths from downloadable metadata.
-  const { installer: _installer, buildLog: _log, ...portable } = manifest;
+  const { installer: _installer, buildLog: _log, preparedBuildLog: _prepared,
+    resourceBaseline: _baseline, resourceVerification: _verification, stagingDirectory: _staging,
+    sourceUserDataDirectory: _data, sourceUploadsDirectory: _uploads,
+    collectorSmokeEvidence: _collectorEvidence, mysqlSmokeEvidence: _mysqlEvidence, ...portable } = manifest;
   if (manifest.collectorBundled === false && !manifest.collectorPlugin) throw new Error('Missing optional collector plugin');
   if (manifest.collectorPlugin) {
     const plugin = manifest.collectorPlugin;

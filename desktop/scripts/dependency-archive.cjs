@@ -1,7 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { execFileSync } = require('child_process');
+const tar = require('tar');
 const { prepareResourceDirectory } = require('./resource-preparation.cjs');
 const { sha256 } = require('./runtime-cache.cjs');
 
@@ -29,7 +29,10 @@ function dependencyFingerprint(source) {
 }
 
 async function prepareDependencyArchive(source, cache, destination, build = (output) => {
-    execFileSync('tar', ['-cf', output, '-C', source, '.'], { windowsHide: true });
+    // Windows bsdtar can spend minutes traversing a large synced dependency
+    // tree before writing a byte. Node tar streams entries with bounded jobs.
+    // This is a build-only dependency; customer runtime requirements do not change.
+    return tar.c({ file: output, cwd: source, portable: true, jobs: 32 }, ['.']);
 }) {
     const fingerprint = dependencyFingerprint(source);
     const archive = path.join(cache, 'backend-dependencies.tar');

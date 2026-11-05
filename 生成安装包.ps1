@@ -202,6 +202,11 @@ function Assert-ApplicationIsClosed {
 
 $buildFailed = $false
 $buildStartedAt = (Get-Date).ToString('o')
+$buildSourceCommit = $null
+if (Get-Command git -ErrorAction SilentlyContinue) {
+    $gitCommit = & git -C $projectDirectory rev-parse HEAD 2>$null
+    if ($LASTEXITCODE -eq 0) { $buildSourceCommit = [string]$gitCommit }
+}
 $buildTimer = [Diagnostics.Stopwatch]::StartNew()
 $buildStages = New-Object 'System.Collections.Generic.List[object]'
 $transcriptStarted = $false
@@ -450,6 +455,7 @@ Invoke-CheckedCommand -Label '单独压缩可选采集插件' -Executable $node 
 $pluginHash = (Get-FileHash -LiteralPath $pluginPath -Algorithm SHA256).Hash.ToLowerInvariant()
 $releaseManifest = [ordered]@{
     version = $version
+    buildSourceCommit = $buildSourceCommit
     createdAt = (Get-Date).ToString('o')
     installer = $installerPath
     size = $installer.Length

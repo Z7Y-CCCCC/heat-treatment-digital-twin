@@ -16,7 +16,7 @@ function fixture(t) {
   const installer = path.join(directory, 'test.exe');
   const data = Buffer.from('installer fixture');
   fs.writeFileSync(installer, data);
-  const manifest = { version: '2.3.1', installer, size: data.length, sha256: crypto.createHash('sha256').update(data).digest('hex'), smokeTest: 'passed', starterTemplate: true, mysqlBundled: true };
+  const manifest = { version: '2.3.1', installer, size: data.length, sha256: crypto.createHash('sha256').update(data).digest('hex'), smokeTest: 'passed', starterTemplate: false, emptySystem: true, contentPolicy: 'empty-v1', mysqlBundled: true };
   const save = () => fs.writeFileSync(path.join(directory, 'release-manifest.json'), '\uFEFF' + JSON.stringify(manifest));
   save();
   fs.writeFileSync(path.join(directory, 'build-timings.json'), '\uFEFF' + JSON.stringify({ success: true }));
@@ -87,8 +87,9 @@ test('publication checks out code before downloading and keeps verified artifact
 test('rejects corruption, skipped smoke, customer config and stale release directories', t => {
   const f = fixture(t);
   f.manifest.smokeTest = 'skipped'; f.save(); assert.throws(() => collectRelease(f.root), /smoke/);
-  f.manifest.smokeTest = 'passed'; f.manifest.starterTemplate = false; f.save(); assert.throws(() => collectRelease(f.root), /starter/);
-  f.manifest.starterTemplate = true; f.save(); fs.appendFileSync(f.installer, 'corrupt'); assert.throws(() => collectRelease(f.root), /mismatch/);
+  f.manifest.smokeTest = 'passed'; f.manifest.emptySystem = false; f.save(); assert.throws(() => collectRelease(f.root), /empty-system/);
+  f.manifest.emptySystem = true; f.manifest.contentPolicy = 'site-data'; f.save(); assert.throws(() => collectRelease(f.root), /empty-system/);
+  f.manifest.contentPolicy = 'empty-v1'; f.save(); fs.appendFileSync(f.installer, 'corrupt'); assert.throws(() => collectRelease(f.root), /mismatch/);
   fs.mkdirSync(path.join(f.root, '安装包', 'release-stale')); assert.throws(() => collectRelease(f.root), /exactly one/);
 });
 
