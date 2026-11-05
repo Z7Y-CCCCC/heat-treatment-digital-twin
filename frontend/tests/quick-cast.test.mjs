@@ -52,6 +52,21 @@ test('no-device entry discovers once and reports a compact empty result', async 
     assert.equal(view.calls.filter(call => call === 'search').length, 1)
     assert.deepEqual(view.state.devices, [])
 })
+
+test('remembered offline TV survives refresh and remains connectable by stable identity, not its old IP', async t => {
+    const view = fixture(t)
+    const remembered = { id: 'uuid:previous-tv', name: '车间电视', remembered: true, available: false, address: '' }
+    view.api.getCastDevices = async () => payload({ devices: [remembered] })
+    view.api.refreshCastDevices = async () => { view.calls.push('search'); return payload({ devices: [remembered] }) }
+    view.identity.value = 'history-account'
+    await nextTick(); await settle()
+    assert.equal(view.calls.filter(call => call === 'search').length, 1)
+    assert.equal(view.state.devices[0].remembered, true)
+    view.selectedId.value = remembered.id
+    assert.equal(view.selected.value.address, '')
+    await view.start()
+    assert.deepEqual(view.calls.at(-1), ['start', remembered.id])
+})
 test('duplicate start/stop/search commands coalesce and do not overwrite a pending operation', async t => {
     const view = fixture(t), pending = deferred()
     await settle()

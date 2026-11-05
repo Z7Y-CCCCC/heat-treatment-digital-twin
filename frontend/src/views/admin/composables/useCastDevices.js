@@ -50,7 +50,7 @@ export function useCastDevices({ alert, confirm } = {}) {
         castState.ffmpegError = result.cast?.ffmpegError || ''
         castState.casting = result.cast?.casting === true
         castState.session = result.cast?.session || null
-        castState.castError = result.cast?.error || ''
+        castState.castError = result.cast?.error || result.historyError || ''
         castState.loaded = true
     }
 
@@ -60,7 +60,8 @@ export function useCastDevices({ alert, confirm } = {}) {
     }
 
     function deviceSubtitle(device) {
-        const parts = [device?.brand || device?.manufacturer, device?.modelName, device?.address]
+        const parts = [device?.brand || device?.manufacturer, device?.modelName,
+            device?.available === false ? '待发现' : device?.address]
             .map(part => String(part || '').trim())
             .filter(Boolean)
         return Array.from(new Set(parts)).join(' · ')
@@ -103,8 +104,9 @@ export function useCastDevices({ alert, confirm } = {}) {
         try {
             const result = await adminApi.refreshCastDevices()
             applyPayload(result)
-            castMessage.value = castState.devices.length
-                ? `搜索完成，找到 ${castState.devices.length} 台可投屏设备。`
+            const available = castState.devices.filter(device => device.available !== false).length
+            castMessage.value = available
+                ? `搜索完成，找到 ${available} 台可投屏设备。`
                 : (castState.error || '没有搜到可投屏的电视。')
         } catch (error) {
             castMessage.value = `搜索失败：${error.message || error}`

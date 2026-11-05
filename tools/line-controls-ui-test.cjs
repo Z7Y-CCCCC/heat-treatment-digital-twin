@@ -77,6 +77,10 @@ const check = name => { checks.push(name); console.log('PASS ' + name); };
     await list.getByRole('button', { name: type === 'lane' ? '+ 设备线' : '+ 小车导轨', exact: true }).click();
     const added = list.locator('[data-structure-id]').last(), id = await added.getAttribute('data-structure-id');
     assert.ok(!beforeIds.includes(id));
+    assert.ok((await added.getAttribute('class')).includes('is-new'));
+    assert.equal(await added.getByText('新增',{exact:true}).count(),1);
+    assert.equal(await added.evaluate(el=>getComputedStyle(el).borderTopColor),'rgb(66, 184, 131)');
+    await list.screenshot({path:path.join(directory,`02-new-${type}.png`)});
     const fields = added.locator('input'); await fields.nth(0).click(); assert.ok(await list.isVisible(),'editing a field must not activate row selection'); await fields.nth(0).fill('验证' + type); await fields.nth(1).fill('24'); await fields.nth(2).fill('72');
     // Clicking outside commits the focused field before its editor is removed.
     await page.locator('.line-planner-header h2').click();
@@ -154,6 +158,28 @@ const check = name => { checks.push(name); console.log('PASS ' + name); };
   assert.equal((await getLayout()).rails[0].length,68);await page.reload();await controls.waitFor();
   await pill('rail').click();assert.equal(await popup('rail').getByLabel('小车导轨 1 长度',{exact:true}).inputValue(),'68');await page.keyboard.press('Escape');
   check('floating geometry changes use the existing explicit Save action and survive a page reload');
+
+  // New markers describe pending geometry, never become persisted model fields.
+  const pendingIds = {};
+  for(const type of ['lane','rail']) {
+    await pill(type).click();const list=popup(type);
+    assert.equal(await list.locator('.is-new').count(),0);
+    await list.getByRole('button',{name:type==='lane'?'+ 设备线':'+ 小车导轨',exact:true}).click();
+    pendingIds[type]=await list.locator('[data-structure-id]').last().getAttribute('data-structure-id');
+    assert.equal(await list.locator('.is-new .new-item-corner').textContent(),'新增');
+    await page.keyboard.press('Escape');
+  }
+  await page.route('**/api/lines/*',route=>route.request().method()==='PUT'?route.fulfill({status:500,contentType:'application/json',body:JSON.stringify({error:'隔离保存失败'})}):route.continue());
+  await page.getByRole('button',{name:'保存产线结构',exact:true}).click();await page.getByRole('button',{name:'确定',exact:true}).click();
+  for(const type of ['lane','rail']) {await pill(type).click();assert.equal(await popup(type).locator('.is-new').count(),1);await page.keyboard.press('Escape');}
+  await page.unroute('**/api/lines/*');
+  await page.getByRole('button',{name:'保存产线结构',exact:true}).click();await page.getByRole('button',{name:'确定',exact:true}).click();
+  await page.reload();await controls.waitFor();
+  for(const type of ['lane','rail']) {await pill(type).click();assert.equal(await popup(type).locator('.is-new').count(),0);assert.equal(await popup(type).locator(`[data-structure-id="${pendingIds[type]}"]`).count(),1);await page.keyboard.press('Escape');}
+  assert.doesNotMatch(JSON.stringify(await getLayout()),/isNew|is-new|新增/);
+  await pill('rail').click();await popup('rail').getByRole('button',{name:'+ 小车导轨',exact:true}).click();assert.equal(await popup('rail').locator('.is-new').count(),1);await page.keyboard.press('Escape');
+  await page.getByRole('button',{name:'放弃画布修改',exact:true}).click();await pill('rail').click();assert.equal(await popup('rail').locator('.is-new').count(),0);await page.keyboard.press('Escape');
+  check('green diagonal New ribbons survive failed saves, clear after successful save/reload or discard, and never pollute persisted layout data');
 
   for(const percent of [115,200]) {
     const reading=page.locator('summary[aria-label="后台文字大小"]');await reading.click();await page.getByRole('group',{name:'后台文字大小设置'}).getByRole('button',{name:`${percent}%`,exact:true}).click();await reading.click();

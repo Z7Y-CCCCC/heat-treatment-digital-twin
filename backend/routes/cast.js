@@ -65,17 +65,12 @@ module.exports = function createCastRouter(controller = {}) {
             res.status(400).json({ success: false, error: '请先选择一台电视' });
             return;
         }
-        let device = controller.discovery.get(deviceId);
-        if (!device) {
-            // 后台页面可能开了很久，设备缓存已过期；重扫一次再试。
-            await controller.discovery.scan({ timeoutMs: 3000 }).catch(() => {});
-            device = controller.discovery.get(deviceId);
-        }
-        if (!device) {
-            res.status(404).json({ ...payload(), success: false, error: '这台电视已经不在局域网里，请重新搜索' });
-            return;
-        }
         try {
+            const device = await controller.discovery.resolve(deviceId);
+            if (!device) {
+                res.status(404).json({ ...payload(), success: false, error: '暂未找到这台电视；请确认已开机并连接同一局域网，再重新连接' });
+                return;
+            }
             await controller.screenCast.start(device);
             res.json(payload());
         } catch (error) {

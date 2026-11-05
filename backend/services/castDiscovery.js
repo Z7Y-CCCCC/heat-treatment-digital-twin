@@ -13,6 +13,7 @@ const dgram = require('dgram');
 const http = require('http');
 const https = require('https');
 const os = require('os');
+const { stableCastId } = require('./castHistory');
 const { URL } = require('url');
 const {
     allHostIpv4Addresses,
@@ -163,7 +164,8 @@ function friendlyBrand(device) {
 }
 
 class CastDiscoveryService {
-    constructor() {
+    constructor({ history = null } = {}) {
+        this.history = history;
         /** @type {Map<string, object>} key 为设备 UDN 或 LOCATION */
         this.devices = new Map();
         this.lastScanAt = 0;
@@ -296,7 +298,7 @@ class CastDiscoveryService {
         try { address = new URL(location).hostname; } catch (error) { /* 保持为空 */ }
 
         const device = {
-            id: udn || location,
+            id: stableCastId(udn) || udn || location,
             name: friendlyName,
             manufacturer,
             modelName,
@@ -315,12 +317,36 @@ class CastDiscoveryService {
 
     get(id) {
         const device = this.devices.get(id) || null;
-        return device && !ignoredDeviceReason(device) ? device : null;
+        return device && Date.now() - device.seenAt <= DEVICE_RETENTION_MS && !ignoredDeviceReason(device) ? device : null;
+    }
+
+    async verify(device) {
+        if (!device?.location) return null;
+        const fresh = await this._describe(device.location).catch(() => null);
+        if (fresh?.id === device.id && !ignoredDeviceReason(fresh)) {
+            this.devices.set(fresh.id, { ...fresh, seenAt: Date.now() });
+            return this.get(fresh.id);
+        }
+        this.devices.delete(device.id);
+        return null;
+    }
+
+    async resolve(id) {
+        // Re-read identity BEFORE sending SOAP. The old IP may now belong to another TV.
+        const cached = this.get(id);
+        const verified = cached ? await this.verify(cached) : null;
+        if (verified) return verified;
+        this.devices.delete(id);
+        await this.scan({ timeoutMs: 3000 });
+        // Only descriptors from THIS scan qualify, not a retained stale endpoint.
+        const found = this.get(id);
+        return found && found.seenAt === this.lastScanAt ? found : null;
     }
 
     list() {
-        return Array.from(this.devices.values())
-            .filter(device => !ignoredDeviceReason(device))
+        const history = new Map((this.history?.list() || []).map(device => [device.id, device]));
+        const live = Array.from(this.devices.values())
+            .filter(device => this.get(device.id))
             .map(device => ({
                 id: device.id,
                 name: device.name,
@@ -328,9 +354,16 @@ class CastDiscoveryService {
                 manufacturer: device.manufacturer,
                 modelName: device.modelName,
                 address: device.address,
-                seenAt: new Date(device.seenAt).toISOString()
-            }))
-            .sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'));
+                seenAt: new Date(device.seenAt).toISOString(),
+                available: true,
+                remembered: history.has(device.id),
+                lastCastAt: history.get(device.id)?.lastCastAt || ''
+            }));
+        const ids = new Set(live.map(device => device.id));
+        const offline = [...history.values()].filter(device => !ids.has(device.id))
+            .map(device => ({ ...device, remembered: true, available: false, address: '', seenAt: '' }));
+        return [...live, ...offline].sort((a, b) => Number(b.remembered) - Number(a.remembered)
+            || String(b.lastCastAt).localeCompare(String(a.lastCastAt)) || a.name.localeCompare(b.name, 'zh-CN'));
     }
 
     status() {
@@ -343,6 +376,7 @@ class CastDiscoveryService {
             scanning: Boolean(this.scanning),
             lastScanAt: this.lastScanAt ? new Date(this.lastScanAt).toISOString() : '',
             error: this.lastError,
+            historyError: this.history?.error || '',
             ignoredCount: this.ignoredDevices.length,
             ignoredDevices: this.ignoredDevices
         };

@@ -913,8 +913,11 @@ async function startServer() {
 
     const CastDiscoveryService = require('./services/castDiscovery');
     const ScreenCastService = require('./services/screenCast');
-    const castDiscovery = new CastDiscoveryService();
-    const screenCast = new ScreenCastService({ port: Number(process.env.CAST_STREAM_PORT) || 8788 });
+    const { CastHistory } = require('./services/castHistory');
+    const castHistory = new CastHistory();
+    const castDiscovery = new CastDiscoveryService({ history: castHistory });
+    const screenCast = new ScreenCastService({ port: Number(process.env.CAST_STREAM_PORT) || 8788,
+        onConnected: device => castHistory.remember(device), verifyDevice: device => castDiscovery.verify(device) });
     castController.discovery = castDiscovery;
     castController.screenCast = screenCast;
 

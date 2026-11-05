@@ -17,7 +17,7 @@ export function useQuickCast({ allowed, identity, api = adminApi, intervalMs = 3
         state.casting = result.cast?.casting === true
         state.session = result.cast?.session || null
         state.encoderReady = result.cast?.ffmpegAvailable === true
-        error.value = result.cast?.error || result.error || ''
+        error.value = result.cast?.error || result.historyError || result.error || ''
         if (selectedId.value && !state.devices.some(device => device.id === selectedId.value)) selectedId.value = ''
     }
     async function load() {
@@ -67,7 +67,7 @@ export function useQuickCast({ allowed, identity, api = adminApi, intervalMs = 3
         await load()
         if (!valid(token)) return
         // Search once on entry, not continuously. Status polling never changes target.
-        if (state.loaded && !state.devices.length && !state.casting && !error.value) await search()
+        if (state.loaded && !state.devices.some(device => device.available !== false) && !state.casting && !error.value) await search()
         if (valid(token)) timer = setInterval(load, intervalMs)
     }, { immediate: true })
     onScopeDispose(() => { disposed = true; epoch++; clearInterval(timer) })

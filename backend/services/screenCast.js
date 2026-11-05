@@ -703,7 +703,9 @@ function pickLocalAddressFor(targetIp) {
 }
 
 class ScreenCastService {
-    constructor({ port = DEFAULT_STREAM_PORT, windowTitle = process.env.CAST_WINDOW_TITLE } = {}) {
+    constructor({ port = DEFAULT_STREAM_PORT, windowTitle = process.env.CAST_WINDOW_TITLE, onConnected = null, verifyDevice = null } = {}) {
+        this.onConnected = onConnected;
+        this.verifyDevice = verifyDevice;
         const requested = Number(port);
         // 0 表示交给系统随机分配端口（自测用），不能被当成“没填”而回落到默认值。
         this.port = Number.isInteger(requested) && requested >= 0 && requested <= 65535
@@ -956,6 +958,13 @@ class ScreenCastService {
         };
 
         res.flushHeaders?.();
+        encoder.stdout.once('data', () => {
+            // A successful SOAP response alone does not mean the TV ever received video.
+            if (this.session !== session || session.historyRecorded) return;
+            session.historyRecorded = true;
+            try { this.onConnected?.(session.device); }
+            catch (error) { console.warn(`[投屏] 保存设备记录失败：${error.message}`); }
+        });
         encoder.stdout.pipe(res);
         encoder.stdout.on('error', cleanup);
         encoder.on('exit', () => { try { res.end(); } catch (error) { /* 已关闭 */ } cleanup(); });
@@ -1028,7 +1037,11 @@ class ScreenCastService {
         session.retryCount += 1;
         session.state = 'reconnecting';
         try {
-            const playback = await dlna.startPlayback(session.device, {
+            const device = this.verifyDevice ? await this.verifyDevice(session.device) : session.device;
+            if (this.session !== session || session.viewers > 0) return;
+            if (!device) throw new Error('电视地址或设备标识已变化，请重新连接');
+            session.device = device;
+            const playback = await dlna.startPlayback(device, {
                 url: session.url,
                 title: STREAM_TITLE,
                 mimeType: session.mimeType
@@ -1120,7 +1133,10 @@ class ScreenCastService {
         this.stopEncoders();
         if (session?.device) {
             // 电视可能已经关机或换了输入源，停不下来不算失败。
-            try { await dlna.stopPlayback(session.device); } catch (error) { /* 忽略 */ }
+            try {
+                const device = this.verifyDevice ? await this.verifyDevice(session.device) : session.device;
+                if (device) await dlna.stopPlayback(device);
+            } catch (error) { /* 忽略 */ }
             console.log(`[投屏] 已停止推送到「${session.deviceName}」`);
         }
         await this.restoreCapturePresentation();

@@ -6,6 +6,7 @@ const props = defineProps({
   lines: { type: Array, default: () => [] }, workshops: { type: Array, default: () => [] },
   selectedId: { type: String, default: '' }, layout: { type: Object, required: true },
   draft: { type: Object, required: true }, busy: Boolean, creating: Boolean,
+  savedSnapshot: { type: String, default: '' },
   deviceCount: { type: Number, default: 0 }, totalDevices: { type: Number, default: 0 }
 })
 const emit = defineEmits(['select', 'delete', 'create', 'edit', 'add-item', 'remove-item', 'change-item', 'focus-item'])
@@ -19,6 +20,13 @@ const label = line => `${props.workshops.find(ws => ws.id === line?.workshop_id)
 const filteredLines = computed(() => props.lines.filter(line => `${label(line)} ${line.id}`.toLowerCase().includes(lineQuery.value.trim().toLowerCase())))
 const items = computed(() => popup.value === 'rail' ? props.layout.rails : props.layout.lanes)
 const itemLabel = computed(() => popup.value === 'rail' ? '小车导轨' : '设备线')
+const savedItemIds = computed(() => {
+  try {
+    const layout = JSON.parse(props.savedSnapshot)
+    return new Set((popup.value === 'rail' ? layout.rails : layout.lanes)?.map(item => item.id) || [])
+  } catch { return null }
+})
+const isNewItem = id => savedItemIds.value !== null && !savedItemIds.value.has(id)
 let anchor = null, modalReturnFocus = null, resizeObserver
 
 function closePopup(restore = false) {
@@ -136,7 +144,8 @@ defineExpose({ closeCreation: () => { modal.value = ''; modalReturnFocus?.focus?
         </template>
         <template v-else>
           <header><strong>{{ itemLabel }}</strong><button class="btn btn-sm" type="button" :disabled="!canEdit || busy" @click="addItem">+ {{ itemLabel }}</button></header>
-          <div v-for="item in items" :key="item.id" class="structure-row" :data-structure-id="item.id" role="group" :aria-label="item.name" tabindex="0" @click="selectItem(item.id)" @keydown="selectItemWithKeyboard(item.id, $event)">
+          <div v-for="item in items" :key="item.id" class="structure-row" :class="{ 'is-new': isNewItem(item.id) }" :data-structure-id="item.id" role="group" :aria-label="item.name" tabindex="0" @click="selectItem(item.id)" @keydown="selectItemWithKeyboard(item.id, $event)">
+            <span v-if="isNewItem(item.id)" class="new-item-corner"><span>新增</span></span>
             <div class="structure-field structure-name"><span>名称</span><input :value="item.name" :aria-label="`${item.name} 名称`" class="input" :disabled="!canEdit || busy" @click.stop @input="changeItem(item.id, 'name', $event)" /></div>
             <div class="structure-field"><span>偏移Z</span><input :value="item.offsetZ" :aria-label="`${item.name} 偏移Z`" type="number" step="0.5" class="input" :disabled="!canEdit || busy" @click.stop @input="changeItem(item.id, 'offsetZ', $event)" /></div>
             <div class="structure-field"><span>长度</span><input :value="item.length" :aria-label="`${item.name} 长度`" type="number" min="1" step="0.5" class="input" :disabled="!canEdit || busy" @click.stop @input="changeItem(item.id, 'length', $event)" /></div>
@@ -191,8 +200,12 @@ svg { flex-shrink:0; width:16px; height:16px; fill:none; stroke:currentColor; st
 .line-icon-button:hover:not(:disabled) { background:#eaf1fc; color:#2457a6; }
 .line-icon-button.danger:hover:not(:disabled) { background:#fff0ee; color:#cf3e36; }
 .line-control-popup header { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:12px; }
-.structure-row { display:grid; grid-template-columns:minmax(100px,1fr) 76px 76px auto; align-items:end; gap:8px; padding:10px; margin-top:8px; background:#f7f9fc; border:1px solid #e8edf4; border-radius:8px; cursor:pointer; }
+.structure-row { position:relative; display:grid; grid-template-columns:minmax(100px,1fr) 76px 76px auto; align-items:end; gap:8px; padding:10px; margin-top:8px; background:#f7f9fc; border:1px solid #e8edf4; border-radius:8px; cursor:pointer; }
 .structure-row:hover,.structure-row:focus-visible { background:#edf4ff; border-color:#94b6e5; }
+.structure-row.is-new { border-color:#42b883; background:#f3fcf7; box-shadow:inset 0 0 0 1px #42b88320; padding-top:24px; }
+.structure-row.is-new .structure-name > span { padding-left:20px; }
+.new-item-corner { position:absolute; inset:0 auto auto 0; width:46px; height:46px; overflow:hidden; border-top-left-radius:7px; pointer-events:none; }
+.new-item-corner > span { position:absolute; top:7px; left:-16px; width:65px; text-align:center; transform:rotate(-45deg); background:#25875d; color:#fff; font-size:10px; line-height:17px; letter-spacing:1px; }
 .structure-row:focus-visible { outline:2px solid #4389e9; outline-offset:2px; }
 .structure-field,.line-create-row label { display:grid; gap:6px; min-width:0; color:#65738a; font-size:calc(12px * var(--admin-font-scale,1)); }
 .structure-row input { box-sizing:border-box; width:100%; min-width:0; padding:6px 8px; }

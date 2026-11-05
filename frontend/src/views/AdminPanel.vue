@@ -7744,6 +7744,7 @@ async function openAdminSetupStep(step) {
                         <div class="line-planner-layout">
                             <LinePlannerControls ref="linePlannerControlsRef"
                                 :lines="lines" :workshops="workshops" :selected-id="selectedLineEditorId" :layout="selectedLineLayout"
+                                :saved-snapshot="savedLineLayoutSnapshots[selectedLineEditorId] || ''"
                                 :draft="newLine" :busy="lineDeviceLayoutBusy" :creating="lineCreating"
                                 :device-count="selectedLineEditorDevices.length" :total-devices="selectedLineTotalDeviceCount"
                                 @select="selectLineEditor" @delete="deleteLine" @create="createLine" @edit="editLineDetails"
@@ -9691,7 +9692,7 @@ async function openAdminSetupStep(step) {
                                     </div>
                                     <div class="cast-panel-actions">
                                         <span class="runtime-badge" :class="castState.casting ? 'is-supported' : 'is-muted'">
-                                            {{ castState.casting ? `投屏中 · ${castingDeviceName}` : (!castState.loaded ? '正在检测投屏服务' : `待机 · ${castState.devices.length} 台可投`) }}
+                                            {{ castState.casting ? `投屏中 · ${castingDeviceName}` : (!castState.loaded ? '正在检测投屏服务' : `待机 · ${castState.devices.filter(device => device.available !== false).length} 台可投`) }}
                                         </span>
                                         <button
                                             class="btn btn-small"
@@ -9728,7 +9729,7 @@ async function openAdminSetupStep(step) {
                                 </p>
 
                                 <ul v-if="castState.devices.length" class="cast-device-list">
-                                    <li v-for="device in castState.devices" :key="device.id" class="cast-device-row" :class="{ 'is-active': castingDeviceId === device.id }">
+                                    <li v-for="device in castState.devices" :key="device.id" class="cast-device-row" :class="{ 'is-active': castingDeviceId === device.id, 'is-remembered': device.remembered }">
                                         <span class="cast-device-icon" aria-hidden="true">
                                             <svg viewBox="0 0 24 24">
                                                 <rect x="2.5" y="4" width="19" height="13" rx="2" />
@@ -9736,7 +9737,7 @@ async function openAdminSetupStep(step) {
                                             </svg>
                                         </span>
                                         <span class="cast-device-text">
-                                            <strong>{{ castDeviceLabel(device) }}</strong>
+                                            <strong>{{ castDeviceLabel(device) }} <span v-if="device.remembered" class="cast-history-label">投过</span></strong>
                                             <small>{{ castDeviceSubtitle(device) }}</small>
                                         </span>
                                         <button
@@ -9752,7 +9753,7 @@ async function openAdminSetupStep(step) {
                                             type="button"
                                             :disabled="Boolean(castBusyDeviceId) || !castState.loaded || castState.ffmpegChecking || !castState.ffmpegAvailable"
                                             @click="startCast(device)"
-                                        >{{ castBusyDeviceId === device.id ? '连接中...' : '投屏' }}</button>
+                                        >{{ castBusyDeviceId === device.id ? '连接中...' : device.available === false ? '查找并连接' : '投屏' }}</button>
                                     </li>
                                 </ul>
                                 <div v-else-if="!castState.loaded" class="cast-empty">
@@ -13750,6 +13751,8 @@ button:enabled:active {
 .cast-device-list { margin: 14px 0 0; padding: 0; list-style: none; display: grid; gap: 8px; }
 .cast-device-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 11px 13px; background: #f8fafb; border: 1px solid #e3eaee; border-radius: 8px; }
 .cast-device-row.is-active { background: #eef8f2; border-color: #b6e3c8; }
+.cast-device-row.is-remembered { border-color: #42b883; background: #f3fcf7; }
+.cast-history-label { display:inline-block; margin-left:5px; padding:1px 5px; border-radius:4px; background:#e1f4e9; color:#25875d; font-size:calc(10px * var(--admin-font-scale,1)); font-weight:500; }
 .cast-device-icon { display: inline-flex; width: 34px; height: 34px; align-items: center; justify-content: center; color: #2f6d8c; background: #ffffff; border: 1px solid #dbe6ec; border-radius: 8px; }
 .cast-device-icon svg { width: 19px; height: 19px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
 .cast-device-text { min-width: 0; }

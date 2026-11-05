@@ -339,27 +339,15 @@ watch(unityHostState, state => emit('state', { ...state }), { immediate: true })
     color: #172b3f;
     background: #f8fafc;
     border-color: #cbd5df;
-    box-shadow: 0 -1px 4px rgba(27, 45, 63, 0.08);
-}
-.unity-browser-tab.is-active::after {
-    content: '';
-    position: absolute;
-    left: 12px;
-    right: 12px;
-    bottom: -1px;
-    height: 2px;
-    background: #f8fafc;
-}
-.unity-screen-tab { position: relative; }
-.unity-window-chrome.is-dashboard-tab .unity-screen-tab.is-active {
     margin-bottom: 4px;
     border-bottom: 1px solid #cbd5df;
     border-radius: 10px;
     box-shadow: 0 1px 5px rgba(27, 45, 63, 0.14);
 }
-.unity-window-chrome.is-dashboard-tab .unity-screen-tab.is-active::after {
+.unity-browser-tab.is-active::after {
     display: none;
 }
+.unity-screen-tab { position: relative; }
 .unity-admin-tab > svg { color: #1570ef; }
 .unity-window-chrome.is-dock-ready .unity-admin-tab {
     border-color: #6ce9a6;

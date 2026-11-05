@@ -318,6 +318,20 @@ check('没有 AVTransport 地址的设备直接拒绝，不去起编码器', asy
     );
 });
 
+check('投屏排除顶端标签栏：普通模式按 DPI 裁切，纯画面模式不重复裁切', () => {
+    for (const chromeHeight of [46, 69, 92]) {
+        const args = buildEncoderArgs({}, { left: 100, top: 50, width: 1600, height: 900, chromeHeight });
+        assert.match(args[args.indexOf('-vf') + 1], new RegExp(`^crop=iw:${900 - chromeHeight}:0:${chromeHeight},`));
+    }
+    const args = buildEncoderArgs({}, { left: 100, top: 50, width: 1600, height: 900, chromeHeight: 0 });
+    assert.doesNotMatch(args[args.indexOf('-vf') + 1], /crop=/);
+    const source = require('fs').readFileSync(require('path').join(__dirname, '../../native-admin-host/AdminPanelForm.cs'), 'utf8');
+    const presentation = source.slice(source.indexOf('private void PrepareCastPresentation()'), source.indexOf('private void RestoreCastPresentation()'));
+    assert.match(presentation, /HideDetachedDashboardChrome\(\)/);
+    assert.match(presentation, /SetPresentationMode\(true\)/);
+    assert.match(presentation, /ShowWindow\(Handle, NativeMethods\.SwHide\)/);
+});
+
 check('投屏流服务只响应带 token 的路径', async () => {
     const service = new ScreenCastService({ port: 0 });
     service.ffmpegChecked = true;

@@ -47,7 +47,7 @@ process.once('SIGINT', stop); process.once('SIGTERM', stop);
     const port = await findFreePort();
     const origin = `http://127.0.0.1:${port}`;
     backend = startLoggedProcess(process.execPath, ['server.js'], { cwd: serverDirectory,
-        env: { ...sandbox.env, NODE_PATH:path.join(BACKEND_DIR,'node_modules'), PORT: String(port), HOST: '127.0.0.1', FRONTEND_DIST: path.join(root, 'frontend/dist') },
+        env: { ...sandbox.env, NODE_PATH:path.join(BACKEND_DIR,'node_modules'), PORT: String(port), HOST: '127.0.0.1', FRONTEND_DIST: process.env.UI_FRONTEND_DIST || path.join(root, 'frontend/dist') },
         logFile: path.join(sandbox.directory, 'backend.log') });
     await waitForOwnedBackend(origin, backend);
     await createSmokeSession(origin, sandbox);
