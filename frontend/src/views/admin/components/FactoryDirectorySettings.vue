@@ -8,6 +8,7 @@ import EnableCapsule from '../../../components/EnableCapsule.vue'
 import { cacheFactoryDraft, clearFactoryDraft, readFactoryDraft } from '../../../runtime/factoryDraftCache.js'
 import FactoryGeoFields from './FactoryGeoFields.vue'
 import FactoryDistributionPreview from './FactoryDistributionPreview.vue'
+import FactoryStructureTooltip from './FactoryStructureTooltip.vue'
 
 const props=defineProps({provinces:{type:Array,default:()=>[]},countries:{type:Array,default:()=>[]}})
 const factories=ref([]),loading=ref(true),saving=ref(false),error=ref(''),message=ref('')
@@ -92,7 +93,9 @@ async function toggleFactory(factory){
           <tr v-for="factory in factories" :key="factory.id" :data-factory-id="factory.id">
             <td><strong>{{ factory.name }}</strong><small>{{ factory.id }}</small></td>
             <td>{{ locationLabel(factory.location) }}</td>
-            <td>{{ factory.workshopCount }}</td><td>{{ factory.lineCount }}</td><td>{{ factory.deviceCount }}</td>
+            <td><FactoryStructureTooltip :factory-id="factory.id" :factory-name="factory.name" kind="workshops" :count="factory.workshopCount" /></td>
+            <td><FactoryStructureTooltip :factory-id="factory.id" :factory-name="factory.name" kind="lines" :count="factory.lineCount" /></td>
+            <td><FactoryStructureTooltip :factory-id="factory.id" :factory-name="factory.name" kind="devices" :count="factory.deviceCount" /></td>
             <td><EnableCapsule class="factory-toggle" :enabled="Boolean(factory.enabled)" :pending="togglingId === factory.id" :disabled="saving || !!togglingId || !canAdminPage('factories','edit')" :label="`大屏显示：${factory.name}`" @toggle="toggleFactory(factory)" /></td>
             <td class="row-actions"><button type="button" :disabled="saving || !!togglingId" @click="openEdit(factory)">编辑资料</button></td>
           </tr>

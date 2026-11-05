@@ -3,6 +3,24 @@ const MAP_WIDTH = 320
 const MAP_HEIGHT = 220
 const MAP_PADDING = 8
 
+const deviceTotal = sites => (sites || []).reduce((sum, site) => {
+  const count = Number(site?.devices ?? site?.deviceCount ?? 0)
+  return sum + (Number.isFinite(count) && count > 0 ? Math.floor(count) : 0)
+}, 0)
+
+export function deviceDensityFill(count, maximum) {
+  const ratio = Number.isFinite(count) && count > 0 && maximum > 0 ? Math.sqrt(Math.min(1, count / maximum)) : 0
+  const light = [237, 247, 240], dark = [24, 123, 76]
+  return `rgb(${light.map((channel, i) => Math.round(channel + (dark[i] - channel) * ratio)).join(', ')})`
+}
+
+function applyDensity(areas) {
+  const maximum = Math.max(0, ...areas.map(area => area.deviceCount))
+  for (const area of areas) area.fill = area.count > 0 || area.populated
+    ? deviceDensityFill(area.deviceCount, maximum) : '#e8edf4'
+  return maximum
+}
+
 function projectCoordinate(value, bounds = MAP_BOUNDS) {
   if (!Array.isArray(value) || value.length < 2) return null
   const longitude = Number(value[0]), latitude = Number(value[1])
@@ -52,11 +70,12 @@ export function buildFactoryDistributionPreview(sites = [], features = [], world
     if (!code || !path) return []
     const center = featureCenter(feature)
     const count = provinceSites.get(code)?.length || 0
-    return [{ code, name: String(feature.properties?.name || code), path, count, center }]
+    return [{ code, name: String(feature.properties?.name || code), path, count, center, deviceCount: deviceTotal(provinceSites.get(code)) }]
   })
+  const chinaDeviceMaximum = applyDensity(provinces)
   const markers = provinces.filter(row => row.count > 0 && row.center).map(row => ({
     code: row.code, name: row.name, count: row.count, x: row.center[0], y: row.center[1],
-    factoryNames: provinceSites.get(row.code).map(site => site.name || '未命名工厂')
+    deviceCount: row.deviceCount, factoryNames: provinceSites.get(row.code).map(site => site.name || '未命名工厂')
   }))
   const regions = markers.slice().sort((a, b) => b.count - a.count || a.name.localeCompare(b.name, 'zh-CN'))
   const countrySites = new Map()
@@ -70,8 +89,9 @@ export function buildFactoryDistributionPreview(sites = [], features = [], world
   const worldCountries = (Array.isArray(worldFeatures) ? worldFeatures : []).flatMap(feature => {
     const code = String(feature?.properties?.ADM0_A3 || '')
     const path = featurePath(feature, worldBounds)
-    return code && path ? [{ code, path, populated: countrySites.has(code) }] : []
+    return code && path ? [{ code, name: String(feature.properties.NAME_ZH || feature.properties.ADMIN || code), path, populated: countrySites.has(code), deviceCount: deviceTotal(countrySites.get(code)) }] : []
   })
+  const worldDeviceMaximum = applyDensity(worldCountries)
   const worldMarkers = [...countrySites.entries()].flatMap(([code, factories]) => {
     const feature = worldFeatures.find(item => item?.properties?.ADM0_A3 === code)
     const longitude = Number(feature?.properties?.LABEL_X), latitude = Number(feature?.properties?.LABEL_Y)
@@ -79,7 +99,7 @@ export function buildFactoryDistributionPreview(sites = [], features = [], world
     if (!center) return []
     const [x, y] = projectCoordinate(center, worldBounds)
     return [{ code, name: code === 'CHN' ? '中国' : String(feature.properties.NAME_ZH || feature.properties.ADMIN || code), count: factories.length, x, y,
-      factoryNames: factories.map(site => site.name || '未命名工厂') }]
+      deviceCount: deviceTotal(factories), factoryNames: factories.map(site => site.name || '未命名工厂') }]
   })
   return {
     provinces,
@@ -87,6 +107,8 @@ export function buildFactoryDistributionPreview(sites = [], features = [], world
     regions,
     worldCountries,
     worldMarkers,
+    chinaDeviceMaximum,
+    worldDeviceMaximum,
     overseasRegions: [...countrySites.entries()].filter(([code]) => code !== 'CHN').map(([code, factories]) => ({ code, count: factories.length,
       name: worldMarkers.find(marker => marker.code === code)?.name || code,
       factoryNames: factories.map(site => site.name || '未命名工厂') })).sort((a, b) => b.count - a.count || a.code.localeCompare(b.code)),
