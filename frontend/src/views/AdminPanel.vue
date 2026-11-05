@@ -6,6 +6,7 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { adminApi } from '../config/factoryConfig.js'
 import { API_BASE } from '../runtime/backendEndpoint.js'
 import { SceneRuntime } from '../runtime/SceneRuntime.js'
+import { usePreviewFullscreen } from '../runtime/usePreviewFullscreen.js'
 import { useNativeQuality } from '../runtime/nativeQuality.js'
 import QualityNotice from '../components/QualityNotice.vue'
 import AdminReadingSettings from './admin/components/AdminReadingSettings.vue'
@@ -1528,6 +1529,8 @@ const modelDisplayIds = computed(() => buildModelDisplayIds(models.value.map(mod
 const copiedModelId = ref('')
 const DELETABLE_RETIRED_MODEL_IDS = new Set(['builtin_furnace', 'photo_multipurpose_furnace_v5', 'transfer_cart'])
 const modelPreviewRef = ref(null)
+const modelFullscreen = usePreviewFullscreen(modelPreviewRef)
+const isModelPreviewFullscreen = modelFullscreen.active
 const modelFileInputRef = ref(null)
 const selectedModelFile = ref(null)
 const MODEL_LIBRARY_STEPS = [
@@ -2093,6 +2096,7 @@ function disposeThreeObject(object) {
 }
 
 function disposeModelPreview(options = {}) {
+    modelFullscreen.exit()
     restoreInspectionPreviewStage()
     clearModelPreviewAnimation()
     if (modelPreviewRuntime) {
@@ -2657,16 +2661,6 @@ function highlightPreviewTarget(target) {
     modelPreviewSelectionBox.name = 'model_preview_selected_part'
     modelPreviewRuntime.scene.add(modelPreviewSelectionBox)
     focusPreviewCameraOnNode(target)
-}
-
-function resetModelPreviewCamera() {
-    if (!modelPreviewRuntime?.camera || !modelPreviewRuntime?.controls || !modelPreviewRootObject) return
-    if (modelLibraryStep.value === 'inspection' && modelInspectionPreview) {
-        modelInspectionPreview.command({ command: 'clear' })
-        return
-    }
-    fitPreviewCamera(modelPreviewRuntime.camera, modelPreviewRuntime.controls, modelPreviewRootObject)
-    modelPreviewRuntime.controls.autoRotate = false
 }
 
 function createModelPreviewRuntime(container) {
@@ -8575,7 +8569,11 @@ async function openAdminSetupStep(step) {
                                 </div>
                                 <span v-else class="model-preview-mode-badge">{{ modelLibraryStep === 'inspection' ? '拆解预览' : modelLibraryStep === 'bindings' ? '绑定预览' : '模型预览' }}</span>
                             </div>
-                            <div ref="modelPreviewRef" class="model-preview-stage">
+                            <Teleport to="body" :disabled="!isModelPreviewFullscreen">
+                            <div ref="modelPreviewRef" class="model-preview-stage" :class="{ 'is-model-fullscreen': isModelPreviewFullscreen }"
+                                :role="isModelPreviewFullscreen ? 'dialog' : undefined" :aria-modal="isModelPreviewFullscreen ? true : undefined"
+                                :aria-label="isModelPreviewFullscreen ? '模型全屏预览' : undefined">
+                                <div v-if="isModelPreviewFullscreen" class="model-fullscreen-title">{{ selectedModelFile ? modelImportForm.name || selectedModelFile.name : activePreviewModel?.name }}</div>
                                 <ModelInspectionPreviewOverlay v-if="modelLibraryStep === 'inspection' && isModelPreviewActive && !modelPreviewError" :state="inspectionPreviewSnapshot" @command="inspectionPreviewCommand" />
                                 <div v-if="!isModelPreviewActive" class="model-preview-empty">选择文件或点击模型列表</div>
                                 <div v-if="modelPreviewError" class="model-preview-error" role="alert">
@@ -8589,8 +8587,13 @@ async function openAdminSetupStep(step) {
                                     <span>{{ formatModelNodeType(selectedModelNodeInfo.type) }} · {{ formatMeshCount(selectedModelNodeInfo.meshCount) }}</span>
                                     <small>{{ selectedModelNodeInfo.path }}</small>
                                 </div>
-                                <button v-if="isModelPreviewActive" class="model-preview-reset" type="button" @click="resetModelPreviewCamera">看全模型</button>
+                                <button v-if="isModelPreviewActive" class="model-preview-fullscreen-toggle" data-preview-fullscreen-toggle type="button"
+                                    :aria-label="isModelPreviewFullscreen ? '退出全屏预览' : '全屏预览模型'" :title="isModelPreviewFullscreen ? '退出全屏（Esc）' : '全屏预览'"
+                                    :aria-expanded="isModelPreviewFullscreen" @click="modelFullscreen.toggle()">
+                                    <svg viewBox="0 0 24 24" aria-hidden="true"><path v-if="isModelPreviewFullscreen" d="M9 3v6H3m12-6v6h6M9 21v-6H3m12 6v-6h6"/><path v-else d="M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5"/></svg>
+                                </button>
                             </div>
+                            </Teleport>
                             <div class="model-preview-footer">
                                 <div>{{ modelPreviewStatus }}</div>
                                 <div v-if="selectedModelNodeInfo" class="model-preview-selected-text">
@@ -13370,7 +13373,16 @@ button:enabled:active {
 .inspection-preview-panel .model-preview-mode-badge { background: #214e60; color: #b6e3ed; border-color: #326376; }
 .inspection-preview-panel .model-preview-stage { height: min(76vh, 820px); min-height: 560px; background: #11232f; }
 .inspection-preview-panel .model-preview-footer { color: #91afbd; background: #132936; border-color: #2c4655; }
-.inspection-preview-panel .model-preview-reset { z-index: 5; top: 12px; right: 12px; background: #244959; color: #d7eef7; border-color: #426778; }
+/* Teleported stage also works in the WebView2 host when fullscreen is unavailable. */
+.model-preview-stage.is-model-fullscreen,
+.model-preview-stage:fullscreen { position:fixed; inset:0; width:100vw; height:100dvh; min-height:0; max-height:none; z-index:20000; border-radius:0; }
+.model-preview-fullscreen-toggle { position:absolute; top:12px; right:12px; z-index:15; display:grid; place-items:center; width:34px; height:34px; padding:0; border:1px solid #dfe5ec; border-radius:9px; background:rgba(255,255,255,.94); color:#43526a; box-shadow:0 3px 12px #28344a12; cursor:pointer; }
+.model-preview-fullscreen-toggle:hover { color:#245cd8; border-color:#a9c2f2; background:#fff; }
+.model-preview-fullscreen-toggle:focus-visible { outline:2px solid #4a83ed; outline-offset:3px; }
+.model-preview-fullscreen-toggle svg { width:18px; height:18px; fill:none; stroke:currentColor; stroke-width:1.7; stroke-linecap:round; stroke-linejoin:round; }
+.model-fullscreen-title { position:absolute; left:20px; top:18px; z-index:14; max-width:calc(100% - 90px); overflow:hidden; white-space:nowrap; text-overflow:ellipsis; color:#405169; font-size:15px; font-weight:600; pointer-events:none; }
+.is-model-fullscreen .model-preview-fullscreen-toggle { top:16px; right:16px; }
+
 .model-preview-header {
     min-height: 54px;
     padding: 12px 14px;
@@ -13522,25 +13534,6 @@ button:enabled:active {
     color: #7c858c;
     font-family: SFMono-Regular, Consolas, Monaco, monospace;
     font-size: calc(11px * var(--admin-font-scale, 1));
-}
-.model-preview-reset {
-    position: absolute;
-    right: 12px;
-    top: 12px;
-    z-index: 3;
-    height: 32px;
-    padding: 0 10px;
-    color: #23323b;
-    background: rgba(255, 255, 255, 0.9);
-    border: 1px solid rgba(25, 33, 38, 0.12);
-    border-radius: 999px;
-    box-shadow: 0 8px 22px rgba(25, 33, 38, 0.12);
-    cursor: pointer;
-    font-size: calc(12px * var(--admin-font-scale, 1));
-    font-weight: 700;
-}
-.model-preview-reset:hover {
-    background: #ffffff;
 }
 .model-preview-canvas {
     display: block;

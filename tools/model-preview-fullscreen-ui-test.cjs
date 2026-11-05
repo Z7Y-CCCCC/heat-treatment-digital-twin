@@ -1,0 +1,53 @@
+// Built UI + an owned backend/profile. Never reload or edit the operator's scene.
+const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path');
+const playwright=require(process.env.PLAYWRIGHT_MODULE||'playwright');
+const {createRunDirectory,startLoggedProcess,waitUntil}=require('../backend/scripts/integration-test-utils.cjs');
+const {stopOwnedSmokeProcess}=require('../desktop/scripts/smoke-sandbox.cjs');
+const directory=createRunDirectory('model-preview-fullscreen-ui'),errors=[],checks=[];
+let server,browser,page;
+const pass=name=>{checks.push(name);console.log('PASS '+name)};
+(async()=>{
+  const infoFile=path.join(directory,'server.json');
+  server=startLoggedProcess(process.execPath,[path.join(__dirname,'manual-disassembly-ui-server.cjs')],{cwd:path.resolve(__dirname,'..'),env:{...process.env,MANUAL_LAYOUT_UI_INFO_FILE:infoFile},logFile:path.join(directory,'backend.log')});
+  await waitUntil(()=>{assert.equal(server.exitCode,null);return fs.existsSync(infoFile)},60000,'owned UI fixture');
+  const info=JSON.parse(fs.readFileSync(infoFile));
+  browser=await playwright.chromium.launch({headless:true,...(process.env.BROWSER_EXECUTABLE?{executablePath:process.env.BROWSER_EXECUTABLE}:{}),args:['--enable-unsafe-swiftshader']});
+  const context=await browser.newContext({viewport:{width:1440,height:1000}});
+  await context.addInitScript(()=>localStorage.setItem('digital_twin_admin_ui_state_v1',JSON.stringify({activeTab:'models',modelLibraryStep:'library'})));
+  page=await context.newPage();page.setDefaultTimeout(30000);page.on('pageerror',e=>errors.push(e.message));
+  let loads=0,writes=0;
+  page.on('request',r=>{if(/\.glb(?:\?|$)/.test(r.url()))loads++;if(r.method()!=='GET'&&/\/api\/(models|devices)(?:\/|$)/.test(new URL(r.url()).pathname))writes++});
+  await page.goto(info.origin+'/admin');await page.getByRole('textbox',{name:'账号',exact:true}).fill(info.username);await page.getByLabel('后台密码',{exact:true}).fill(info.password);await page.getByRole('button',{name:'解锁后台',exact:true}).click();
+  const row=page.locator('.model-table tbody tr').filter({has:page.locator(`.model-id-copy[title^="${info.models[0]}（"]`)});
+  await row.locator('td').nth(2).click();
+  const stage=page.locator('.model-preview-stage'),expand=page.getByRole('button',{name:'全屏预览模型',exact:true}),close=page.getByRole('button',{name:'退出全屏预览',exact:true});
+  await expand.waitFor();assert.equal(await page.getByRole('button',{name:'看全模型',exact:true}).count(),0);
+  const canvas=await stage.locator('canvas').elementHandle(),before=await stage.boundingBox(),loadFence=loads,writeFence=writes;
+  await page.screenshot({path:path.join(directory,'01-preview-button.png'),fullPage:true});
+  await expand.click();const dialog=page.getByRole('dialog',{name:'模型全屏预览',exact:true});await dialog.waitFor();
+  await waitUntil(async()=>await stage.evaluate(el=>Math.abs(el.clientWidth-innerWidth)<2&&Math.abs(el.clientHeight-innerHeight)<2&&el.querySelector('canvas').width>=innerWidth),10000,'full viewport and resized WebGL renderer');
+  assert.equal(await canvas.evaluate(el=>el.isConnected&&el===document.querySelector('.is-model-fullscreen canvas')),true);
+  assert.equal(await stage.locator('canvas').count(),1);assert.equal(loads,loadFence);assert.equal(writes,writeFence);
+  await page.screenshot({path:path.join(directory,'02-fullscreen-model.png')});
+  pass('fit-camera text becomes a fullscreen icon; the same model/canvas fills the viewport without another GLB load or configuration write');
+  const native=await stage.evaluate(el=>document.fullscreenElement===el);assert.equal(native,true,'Chromium exercises the actual Fullscreen API');
+  const box=await stage.boundingBox();await page.mouse.move(box.width*.45,box.height*.5);await page.mouse.down();await page.mouse.move(box.width*.55,box.height*.54,{steps:10});await page.mouse.up();await page.mouse.wheel(0,-120);
+  await page.keyboard.press('Escape');await dialog.waitFor({state:'hidden'});await waitUntil(()=>page.evaluate(()=>!document.fullscreenElement),5000,'native fullscreen closed');
+  assert.ok(Math.abs((await stage.boundingBox()).height-before.height)<2);assert.equal(await expand.evaluate(el=>document.activeElement===el),true);
+  assert.equal(await canvas.evaluate(el=>el.isConnected),true);pass('orbit and zoom remain usable; Esc restores the card, canvas, scroll state and button focus');
+  // WebView2 can deny fullscreen. The in-app fallback must still be a real viewport preview.
+  await stage.evaluate(el=>{el.requestFullscreen=()=>Promise.reject(new Error('host denied fullscreen'))});
+  const overflow=await page.evaluate(()=>document.body.style.overflow);await expand.click();await dialog.waitFor();
+  assert.equal(await stage.evaluate(el=>el.parentElement===document.body),true);
+  await page.setViewportSize({width:640,height:720});await waitUntil(async()=>await stage.evaluate(el=>el.clientWidth===innerWidth&&el.clientHeight===innerHeight),5000,'fallback follows viewport resize');
+  await page.keyboard.press('Tab');assert.equal(await close.evaluate(el=>document.activeElement===el),true);
+  await page.screenshot({path:path.join(directory,'03-host-fallback-compact.png')});await close.click();await dialog.waitFor({state:'hidden'});
+  assert.equal(await page.evaluate(()=>document.body.style.overflow),overflow);
+  assert.equal(loads,loadFence);assert.equal(writes,writeFence);pass('fullscreen-denied host falls back cleanly; small windows resize, focus stays inside and the exit icon restores the original preview');
+  await page.setViewportSize({width:1440,height:1000});await expand.click();await dialog.waitFor();
+  await page.goto(info.origin+'/admin?fixture=after-preview');await page.locator('.model-table').waitFor();
+  assert.equal(await page.getByRole('dialog',{name:'模型全屏预览',exact:true}).count(),0);assert.equal(await page.evaluate(()=>document.body.style.overflow),'');
+  assert.deepEqual(errors,[]);pass('leaving the page removes fullscreen and restores scroll without leaked previews or browser errors');
+  fs.writeFileSync(path.join(directory,'result.json'),JSON.stringify({success:true,checks,errors,directory},null,2));console.log(directory);
+})().catch(async error=>{await page?.screenshot({path:path.join(directory,'failure.png')}).catch(()=>{});console.error(error.stack);process.exitCode=1})
+.finally(async()=>{await browser?.close();await stopOwnedSmokeProcess(server)});
