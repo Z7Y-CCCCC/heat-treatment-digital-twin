@@ -1,4 +1,5 @@
 import { createRouter, createWebHistory } from 'vue-router'
+import { globalEntryRedirect } from '../runtime/globalViewRouting.js'
 import { isNativeMapEntry } from '../runtime/groupTopology.js'
 import { adminSession, refreshAdminSession, canOpenAdmin } from '../runtime/adminSession.js'
 import { isNativeOverlaySurface } from '../runtime/nativeSurfaceBridge.js'
@@ -77,11 +78,20 @@ router.beforeEach(async (to, from) => {
         && !adminSession.permissions.cast && !adminSession.permissions.backup) {
         return { path: '/group', query: to.query }
     }
+    if (adminSession.displayAuthenticated) {
+        try { const redirect = await globalEntryRedirect(to); if (redirect) return redirect }
+        catch (error) { console.warn('[ViewNavigation]', error.message) }
+    }
     return true
 })
 
 router.afterEach((to) => {
     document.title = to.meta?.title || '热处理数字孪生大屏'
+})
+
+window.addEventListener('global-view-navigation-changed', async () => {
+    try { const redirect = await globalEntryRedirect(router.currentRoute.value); if (redirect) await router.replace(redirect) }
+    catch (error) { console.warn('[ViewNavigation]', error.message) }
 })
 
 export default router

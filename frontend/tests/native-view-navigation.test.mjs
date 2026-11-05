@@ -51,3 +51,11 @@ test('hierarchy transitions confirm their own workshop/line target rather than a
   await tick();nav.accept({viewId:'line_overview',lineId:'line_a',sceneReady:true});await tick();assert.equal(complete,false)
   nav.accept({viewId:'line_overview',lineId:'line_b',sceneReady:true});await promise;assert.equal(complete,true)
 })
+
+test('startup ignores a ready default-view frame until its requested local camera mode is applied',async()=>{
+  const nav=createNativeViewNavigator(async()=>({success:true,sent:1}))
+  let complete=false
+  const promise=nav.go({viewId:'workshop_overview',viewMode:'workshop'}).then(()=>{complete=true})
+  await tick();nav.accept({viewId:'workshop_overview',viewMode:'factory',sceneReady:true});await tick();assert.equal(complete,false)
+  nav.accept({viewId:'workshop_overview',viewMode:'workshop',sceneReady:true});await promise;assert.equal(complete,true)
+})

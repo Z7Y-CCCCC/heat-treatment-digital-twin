@@ -14,6 +14,7 @@ import { factoryDirectorySites,configuredOverseasCountries,sitesAtHierarchyLevel
 import { streetEntryStatus } from '../runtime/factoryNavigationReadiness.js'
 import { loadChinaAdminMap } from '../runtime/chinaAdminMaps.js'
 import { createFactoryMapMarker } from '../runtime/groupMapMarkers.js'
+import { globalEntryRedirect, visibleGlobalCrumbs } from '../runtime/globalViewRouting.js'
 import { createGroupNavigationCrumbs } from '../runtime/groupHierarchyPath.js'
 import { isNativeUnitySurface, NATIVE_SURFACE_CHANNEL, requestNativeSceneSurface } from '../runtime/nativeSurfaceBridge.js'
 import AdminWindowChrome from './admin/components/AdminWindowChrome.vue'
@@ -100,7 +101,7 @@ function handleMapWidgetAction(event){
   else if(event.action==='map_hover_region')hoverRegion(regionRows.value.some(r=>String(r.code)===event.id)?event.id:'')
 }
 const levelNames={world:'全球',country:'国家',province:'省份',city:'城市',district:'区县'}
-const hierarchyCrumbs=computed(()=>createGroupNavigationCrumbs({query:route.query,level:level.value,currentLabel:regionTitle.value}))
+const hierarchyCrumbs=computed(()=>visibleGlobalCrumbs(createGroupNavigationCrumbs({query:route.query,level:level.value,currentLabel:regionTitle.value}),config.value?.settings?.global_view_navigation))
 const data=createDashboardDataStore()
 const factoryVoice=createFactoryVoiceController({available:()=>!adminSurface.value,onPlaybackError:error=>console.warn('[Voice]',error.message)})
 const unlockFactoryVoice=()=>factoryVoice.unlock()
@@ -593,6 +594,9 @@ async function refreshConfig() {
   try {
     const next=await pollingRequests.read('config',API_BASE+'/config',{cache:'no-store'}),changed=mapConfigSignature(next)!==mapConfigSignature(config.value)
     if(disposed)return
+    const redirect=await globalEntryRedirect(route,next.settings?.global_view_navigation)
+    if(disposed)return
+    if(redirect){await router.replace(redirect);return}
     config.value=next;factoryVoice.configure(next);configError.value=''
     if(changed && scene)buildMap({reframe:!ready.value})
   }catch(e){if(!disposed && e.name!=='AbortError')configError.value=e.message}finally{

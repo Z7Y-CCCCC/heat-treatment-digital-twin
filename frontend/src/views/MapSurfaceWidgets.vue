@@ -8,6 +8,7 @@ import { useDashboardIntegration } from '../runtime/dashboardIntegration.js'
 import {useWidgetClock} from '../runtime/widgetPlayback.js'
 import {createWidgetReadScheduler} from '../runtime/widgetReadScheduler.js'
 import {flattenPlaybackDevices} from '../../../shared/widgetPlayback.mjs'
+import { runtimeViewHidden } from '../../../shared/viewNavigation.mjs'
 import WidgetRenderer from '../runtime/WidgetRenderer.vue'
 
 const props = defineProps({
@@ -50,7 +51,7 @@ const pointValues = computed(() => {
   return result
 })
 const surfaceWidgets = computed(() => {
-  if (!MAP_SURFACE_VIEW_IDS.has(props.viewId) || !currentView.value) return []
+  if (!MAP_SURFACE_VIEW_IDS.has(props.viewId) || !currentView.value || runtimeViewHidden(currentView.value)) return []
   const shown = new Set(currentView.value.componentState?.show || [])
   const hidden = new Set(currentView.value.componentState?.hide || [])
   return (props.document?.widgets || [])

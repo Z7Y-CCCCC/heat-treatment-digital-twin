@@ -1,4 +1,5 @@
 import { computed, onBeforeUnmount, onMounted, ref, unref, watch } from 'vue'
+import { runtimeViewHidden } from '../../../shared/viewNavigation.mjs'
 import { normalizeParameterDefinitions, resolveParameters } from '../../../shared/dashboardParameters.mjs'
 
 const copy = value => JSON.parse(JSON.stringify(value ?? null))
@@ -105,7 +106,7 @@ export function useDashboardIntegration(options) {
     resetParameters: () => setParameters(resolveParameters(definitions.value)),
     refreshData: () => options.refresh(),
     switchView: id => {
-      if (!(unref(options.document)?.scene?.views || []).some(view => view.id === id && !view.metadata?.hierarchyHidden)) throw new Error('视角不存在或已隐藏')
+      if (!(unref(options.document)?.scene?.views || []).some(view => view.id === id && !runtimeViewHidden(view))) throw new Error('视角不存在或已隐藏')
       return options.action({ event: { action:'switch_view', viewId:id } })
     },
     focusDevice: id => {

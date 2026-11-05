@@ -54,7 +54,8 @@ router.get('/', async (req, res) => {
         const factory = await db.get('SELECT id, name, location_json FROM factories WHERE id = ?', [req.factoryId]);
         const factorySettings = await db.all('SELECT `key`, value FROM factory_settings WHERE factory_id = ?', [req.factoryId]);
         settings.voice_enabled = 'true'; // No global fallback: this is independently owned by each factory.
-        factorySettings.forEach(row => { settings[row.key] = row.value; });
+        factorySettings.forEach(row => { if (row.key !== 'global_view_navigation') settings[row.key] = row.value; });
+        settings.global_view_navigation = JSON.stringify((await require('../services/globalViewNavigation').getPolicy(db)).config);
         if (factory) {
             settings.factory_name = factory.name;
             settings.factory_location = normalizeSettingValue('factory_location', factory.location_json || '{}');

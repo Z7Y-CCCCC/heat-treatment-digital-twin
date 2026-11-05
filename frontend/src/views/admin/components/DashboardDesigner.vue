@@ -14,6 +14,8 @@ import DataSetBindingEditor from './DataSetBindingEditor.vue'
 import { permissionDirective as vPermission } from '../../../runtime/pagePermissionUi.js'
 import { canAdminPage } from '../../../runtime/adminSession.js'
 import ViewHierarchyTree from './ViewHierarchyTree.vue'
+import GlobalViewSection from './GlobalViewSection.vue'
+import { isGlobalView } from '../../../../../shared/viewNavigation.mjs'
 import { hierarchyHidden, moveView, setHierarchyHidden, visibleViewLink, viewDescendants } from '../../../runtime/viewHierarchy.js'
 import { computed, nextTick, onBeforeUnmount, onMounted, onActivated, onDeactivated, reactive, ref, useId, watch } from 'vue'
 import { widgetBindingChoices, LEGACY_BINDINGS } from '../../../runtime/widgetBindingChoices.js'
@@ -261,21 +263,24 @@ defineExpose({
 const viewModeLabel = computed(() => currentViewIsMapSurface.value ? '地图 / 厂区画面' : (DASHBOARD_VIEW_MODES.find(item => item.id === currentView.value?.mode)?.label || '自定义视角'))
 const collapsedViewIds = reactive(new Set())
 const hierarchyEditable = computed(() => canAdminPage('platform.designer', 'edit'))
+const factoryViews = computed(() => views.value.filter(view => !isGlobalView(view)))
 const hierarchyChoices = computed(() => {
   const branch = viewDescendants(views.value, currentView.value?.id)
-  return views.value.filter(view => !hierarchyHidden(view) && !branch.has(view.id))
+  return factoryViews.value.filter(view => !hierarchyHidden(view) && !branch.has(view.id))
 })
 function moveHierarchyView({ sourceId, targetId, placement }) {
   if (!hierarchyEditable.value) return
-  const moved = moveView(views.value, sourceId, targetId, placement)
+  const moved = moveView(factoryViews.value, sourceId, targetId, placement)
   if (!moved) return
-  documentModel.value.scene.views = moved
+  documentModel.value.scene.views = views.value.map(view => moved.find(item => item.id === view.id) || view)
   const parent = moved.find(view => view.id === sourceId)?.parentViewId
   if (parent) collapsedViewIds.delete(parent)
   commitHistory('拖动调整视角层级')
 }
 function setViewHierarchyVisibility({ id, hidden }) {
   if (!hierarchyEditable.value) return
+  if (isGlobalView(id)) return
+  if (hidden && factoryViews.value.filter(view => !hierarchyHidden(view)).length <= 1) return setStatus('至少保留一个工厂内视角', 'warning')
   const changed = setHierarchyHidden(views.value, id, hidden)
   if (!changed) return setStatus('至少保留一个视角', 'warning')
   documentModel.value.scene.views = changed
@@ -2487,10 +2492,12 @@ onBeforeUnmount(() => {
     <div class="designer-main" :class="{ 'is-left-panel-collapsed': panelLayout.leftCollapsed, 'is-right-panel-collapsed': panelLayout.rightCollapsed }">
       <aside :id="leftPanelId" v-show="!panelLayout.leftCollapsed" class="designer-left-panel" aria-label="视角与组件面板">
         <div class="view-panel-heading" @click="viewPanelCollapsed = !viewPanelCollapsed">
-          <div><strong>视角编排</strong><small>{{ currentViewIsMapSurface ? '地图层级与组件状态' : 'Unity 镜头与组件状态' }}</small></div><span>{{ viewPanelCollapsed ? '展开' : '收起' }}</span>
+          <div><strong>视角编排</strong><small>全局入口与工厂内视角</small></div><span>{{ viewPanelCollapsed ? '展开' : '收起' }}</span>
         </div>
         <div v-if="!viewPanelCollapsed" class="view-list">
-          <ViewHierarchyTree :views="views" :selected-id="selectedViewId" :default-id="documentModel.scene.defaultViewId" :collapsed="collapsedViewIds" :can-edit="hierarchyEditable"
+          <GlobalViewSection :views="views" :selected-id="selectedViewId" :can-edit="hierarchyEditable" @select="selectView" @notice="(text,type)=>setStatus(text,type||'danger')" />
+          <div class="factory-view-category"><strong>工厂内视角</strong><small>当前工厂</small></div>
+          <ViewHierarchyTree :views="factoryViews" :selected-id="selectedViewId" :default-id="documentModel.scene.defaultViewId" :collapsed="collapsedViewIds" :can-edit="hierarchyEditable"
             @select="selectView" @toggle="toggleViewTreeNode" @move="moveHierarchyView" @visibility="setViewHierarchyVisibility" />
           <div class="view-list-actions"><button type="button" @click="addView" v-permission="{ page: 'platform.designer', action: 'edit' }">＋ 新视角</button><button type="button" :disabled="!currentView" @click="duplicateView">复制</button></div>
         </div>
@@ -3078,6 +3085,8 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+.factory-view-category{display:flex;align-items:center;justify-content:space-between;padding:5px 8px 9px;color:#34455e}.factory-view-category strong{font-size:12px}.factory-view-category small{font-size:10px;color:#94a0b1}
+
 .chart-library{margin:10px 12px;border:1px solid #dce3ee;border-radius:8px;padding:10px;font-size:calc(12px * var(--admin-font-scale, 1));color:#596d8b}.chart-library summary{cursor:pointer}.chart-library small{float:right;color:#97a4b6}.chart-library>div{display:grid;grid-template-columns:1fr 1fr;gap:5px;max-height:260px;overflow:auto;margin-top:10px}.chart-library button{font:inherit;padding:7px;border:1px solid #e2e7ef;border-radius:5px;background:white;color:#596d8b;cursor:pointer}
 
 .filter-option-row{display:grid;grid-template-columns:1fr 1fr 30px;gap:6px;margin:6px 0}.filter-option-row input{min-width:0}

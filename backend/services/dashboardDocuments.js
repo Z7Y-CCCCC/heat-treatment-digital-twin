@@ -87,7 +87,7 @@ async function loadDraftDocument(db, project, scene) {
 }
 
 async function loadPublishedDocument(db, project, scene) {
-    if (!project) return { document: createEmptyDocument({ project, scene, source: 'unpublished' }), release: null };
+    if (!project) return { document: await require('./globalViewNavigation').runtimeDocument(db, createEmptyDocument({ project, scene, source: 'unpublished' })), release: null };
     let release = (await orderedReleases(db, project.id, { currentOnly: true, limit: 1 }))[0];
     if (!release && scene?.published_release_id) {
         release = await db.get('SELECT * FROM releases WHERE id = ? AND project_id = ?', [scene.published_release_id, project.id]);
@@ -95,13 +95,13 @@ async function loadPublishedDocument(db, project, scene) {
     const snapshot = safeJsonParse(release?.snapshot_json, null);
     if (release && isCanonicalDocument(snapshot)) {
         return {
-            document: normalizeDocument(upgradeWidgetPlaybackDocument(snapshot), { project, scene, source: 'release' }),
+            document: await require('./globalViewNavigation').runtimeDocument(db, normalizeDocument(upgradeWidgetPlaybackDocument(snapshot), { project, scene, source: 'release' })),
             release: releasePayload(release)
         };
     }
     const empty = createEmptyDocument({ project, scene, source: 'unpublished' });
     empty.metadata = { ...empty.metadata, unpublished: true };
-    return { document: empty, release: null };
+    return { document: await require('./globalViewNavigation').runtimeDocument(db, empty), release: null };
 }
 
 async function validatePlcBindings(db, document) {

@@ -541,6 +541,9 @@ export function createDashboardDataStore(options = {}) {
                 if (disposed || wsClient !== socket) return;
                 try {
                     const msg = JSON.parse(event.data);
+                    if (msg.type === 'configuration_changed' && msg.payload?.keys?.includes('global_view_navigation')) {
+                        window.dispatchEvent(new CustomEvent('global-view-navigation-changed', { detail:msg.payload }));
+                    }
                     if (msg.type === 'realtime_frame') {
                         applyFrame(msg.payload);
                     } else if (msg.type === 'device_data') {

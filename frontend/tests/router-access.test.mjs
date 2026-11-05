@@ -6,7 +6,9 @@ import { canAccessAdmin, normalizePagePermissions } from '../../shared/pagePermi
 
 const session = { ready: true, authenticated: false, displayAuthenticated: false, permissions: {} }
 let refreshes = 0
+let entryResult = { allowed:true }
 test.mock.module('../src/runtime/adminSession.js', { namedExports: {
+    adminFetch: async () => ({ok:true,json:async()=>entryResult}),
     adminSession: session, refreshAdminSession: async () => { refreshes++; session.ready = true },
     canOpenAdmin: () => session.authenticated && canAccessAdmin(session.pagePermissions)
 } })
@@ -20,7 +22,7 @@ let sequence = 0
 async function fixture(t, overrides = {}) {
     const environment = installBrowser(t)
     Object.assign(session, { ready: true, authenticated: false, displayAuthenticated: false, permissions: {}, pagePermissions: normalizePagePermissions() }, overrides)
-    refreshes = 0
+    refreshes = 0; entryResult = {allowed:true}
     const { default: router } = await import(`../src/router/index.js?access-test=${++sequence}`)
     return { router, environment }
 }
@@ -72,3 +74,12 @@ test('native customer entry asks the opaque host to open operations without moun
     assert.equal(router.currentRoute.value.path, '/group')
     assert.deepEqual(messages, [{ type: 'host_action', action: 'show_customer' }])
 })
+
+ test('disabled global startup resolves to a local entry without a redirect loop',async t=>{
+    const {router}=await fixture(t,{displayAuthenticated:true})
+    entryResult={allowed:false,route:{path:'/overlay',query:{scene:'1',factoryId:'factory_b',entryViewId:'workshop_overview',entryMode:'workshop'}}}
+    await router.push('/group?embedded=unity&surface=overlay')
+    assert.equal(router.currentRoute.value.path,'/overlay')
+    assert.equal(router.currentRoute.value.query.entryViewId,'workshop_overview')
+    assert.equal(router.currentRoute.value.query.embedded,'unity')
+ })

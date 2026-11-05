@@ -9,6 +9,7 @@ import { createDashboardDataStore } from '../runtime/DataStore.js'
 import { createFactoryVoiceController } from '../runtime/factoryVoice.js'
 import { createNativeViewNavigator } from '../runtime/nativeViewNavigation.js'
 import { isNativeUnitySurface, requestNativeSceneSurface } from '../runtime/nativeSurfaceBridge.js'
+import { globalEntryRedirect, visibleGlobalCrumbs } from '../runtime/globalViewRouting.js'
 import { createGroupNavigationCrumbs } from '../runtime/groupHierarchyPath.js'
 import { DEFAULT_STREET_IMAGE, normalizeSiteSceneConfig, orderedSiteWorkshops } from '../runtime/siteSceneConfig.js'
 import { overviewEntryStatus, streetEntryStatus } from '../runtime/factoryNavigationReadiness.js'
@@ -33,7 +34,7 @@ const overviewReadiness=computed(()=>overviewEntryStatus(config.value?.workshops
 const crumbs=computed(()=>{
   const mapLevel=String(route.query.level || 'district')
   const map=createGroupNavigationCrumbs({query:route.query,level:mapLevel,currentLabel:String(route.query[`${mapLevel}Name`] || route.query.code || '地图')})
-  return [...map,{key:'street',label:'街道',level:'street'},...(stage.value==='factory'?[{key:'factory',label:'工厂',level:'factory'}]:[])]
+  return visibleGlobalCrumbs([...map,{key:'street',label:'街道',level:'street'},...(stage.value==='factory'?[{key:'factory',label:'工厂',level:'factory'}]:[])],config.value?.settings?.global_view_navigation)
 })
 const data=createDashboardDataStore()
 const factoryVoice=createFactoryVoiceController({available:()=>!adminSurface.value,onPlaybackError:error=>console.warn('[Voice]',error.message)})
@@ -324,6 +325,9 @@ async function load(){
     const listing=await directory.json(),payload=await details.json()
     if(disposed || requestId!==configRequestId || requestedFactoryId!==factoryId.value)return
     if(!directory.ok || !details.ok)throw new Error(payload.error || listing.error || '工厂资料读取失败')
+    const redirect=await globalEntryRedirect(route,payload.settings?.global_view_navigation)
+    if(disposed || requestId!==configRequestId)return
+    if(redirect){await router.replace(redirect);return}
     const selected=listing.factories?.find(item=>String(item.id)===requestedFactoryId)
     if(!selected)throw new Error('工厂不存在')
     if(!selected.enabled && !adminSurface.value){await router.replace({path:'/group',query:mapQuery()});return}

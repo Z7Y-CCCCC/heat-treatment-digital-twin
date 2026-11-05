@@ -26,5 +26,5 @@ test('map, street, factory and direct overlay entrances all apply readiness chec
   assert.match(map, /factory && streetEntryStatus\(factory\)\.allowed/);assert.match(map,/allowed:status.allowed/)
   assert.match(site, /if\(!overviewReadiness\.value\.allowed\)/)
   assert.match(site, /if\(!Array\.isArray\(payload\.workshops\) \|\| !payload\.workshops\.length\)/)
-  assert.match(overlay, /if \(!configLoadError\.value && !overviewReadiness\.allowed\)/)
+  assert.match(overlay, /if \(!route\.query\.entryViewId && route\.query\.noVisibleFactory !== '1' && !configLoadError\.value && !overviewReadiness\.allowed\)/)
 })

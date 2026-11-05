@@ -20,6 +20,9 @@ import { applyFactoryHudModules } from '../runtime/factoryHudModules.js'
 import { createNativeViewNavigator } from '../runtime/nativeViewNavigation.js'
 import { fitHudCanvas } from '../runtime/hudPresentation.js'
 import { applyVisibilityAction, widgetRuntimeVisible } from '../runtime/dashboardRules.js'
+import { isGlobalView, runtimeViewHidden } from '../../../shared/viewNavigation.mjs'
+import { visibleGlobalCrumbs } from '../runtime/globalViewRouting.js'
+import { requestNativeSceneSurface } from '../runtime/nativeSurfaceBridge.js'
 import { createGroupHierarchyPath } from '../runtime/groupHierarchyPath.js'
 import { applyInspectionHover, inspectionHoverDetails, inspectionPointText } from '../runtime/inspectionHover.js'
 import { applyDeviceHover, deviceHoverDetails, tooltipDevices } from '../runtime/deviceHover.js'
@@ -57,7 +60,7 @@ const viewNavigator = createNativeViewNavigator(async target => {
     const result = await response.json()
     if(!response.ok) throw new Error(result.error || '视角切换失败')
     return result
-})
+},120000)
 const overlayViewport = reactive({ width: 1920, height: 1080 })
 const parentReturnBusy = ref(false)
 const childNavigationEntered = ref(false)
@@ -113,14 +116,14 @@ const hierarchyTrail = computed(() => {
     const mode = String(runtimeContext.viewMode || 'factory').toLowerCase()
     const includesWorkshop = ['workshop','line','device'].includes(mode)
     const includesLine = ['line','device'].includes(mode)
-    const trail = createGroupHierarchyPath({
+    const trail = visibleGlobalCrumbs(createGroupHierarchyPath({
         scope:route.query.scope,
         fromGroup:route.query.fromGroup,
         embedded:route.query.embedded,
         location:config.settings?.factory_location || {},
         factoryName:config.settings?.factory_name || '全厂总览',
         query:route.query
-    })
+    }), config.settings?.global_view_navigation)
     const workshop = hierarchyWorkshops.value.find(item => String(item.id) === String(runtimeContext.workshopId))
     if (includesWorkshop && runtimeContext.workshopId) {
         trail.push({ key:'workshop', label:workshop?.name || currentView.value?.name || '车间', mode:'workshop', focus:{workshopId:runtimeContext.workshopId} })
@@ -226,7 +229,7 @@ const presentationDocument = computed(() => applyFactoryHudModules(applyReferenc
 const dashboardViews = computed(() => {
     const views = presentationDocument.value?.scene?.views || platform.value.activeScene?.views || []
     return Array.isArray(views) && views.length
-        ? views
+        ? views.filter(view=>!runtimeViewHidden(view) && !isGlobalView(view))
         : [{ id: 'factory_overview', name: '全厂总览', mode: 'factory', targetType: 'factory', returnViewId: '' }]
 })
 const currentView = computed(() => dashboardViews.value.find(view => view.id === runtimeContext.viewId)
@@ -963,6 +966,34 @@ async function refreshBusinessData(force = false) {
     }
 }
 
+async function enterVisibleLocalView() {
+    const factoryId = String(route.query.factoryId || config.factoryId || '')
+    if (factoryId) {
+        const response = await adminFetch(`${API_BASE}/factories/${encodeURIComponent(factoryId)}/activate`, { method:'POST', headers:{'Content-Type':'application/json'}, body:'{}' })
+        const result = await response.json()
+        if (!response.ok) throw Error(result.error || '工厂载入失败')
+    }
+    const viewId = String(route.query.entryViewId || defaultViewId.value)
+    const focus = {mode:String(route.query.entryMode || 'factory')}
+    for (const [key,query] of [['workshopId','entryWorkshopId'],['lineId','entryLineId'],['deviceId','entryDeviceId']]) if(route.query[query]) focus[key]=String(route.query[query])
+    const deadline = Date.now()+115000
+    while (!overlayDisposed) {
+        const status = await adminFetch(`${API_BASE}/native-preview/status`, {signal:overlayRequests.signal,cache:'no-store'})
+        const state = await status.json()
+        if (!status.ok) throw Error(state.error || '三维服务状态读取失败')
+        if (state.unityClients>0) break
+        if (Date.now()>deadline) throw Error('三维客户端尚未就绪，请重试')
+        await new Promise(resolve=>setTimeout(resolve,350))
+    }
+    if (overlayDisposed) return
+    const confirmed = await viewNavigator.go({viewId,focus,viewMode:focus.mode,...(factoryId?{factoryId}:{}),...Object.fromEntries(['workshopId','lineId','deviceId'].filter(key=>focus[key]).map(key=>[key,focus[key]]))})
+    if (overlayDisposed) return
+    applyRuntimeContext(confirmed,{userNavigation:true})
+    requestNativeSceneSurface()
+    const query = {...route.query}; for(const key of Object.keys(query)) if(key.startsWith('entry')) delete query[key]
+    await router.replace({path:'/overlay',query})
+}
+
 onMounted(async () => {
     const startupBegan = performance.now()
     standalonePreview.value = !window.chrome?.webview
@@ -982,11 +1013,11 @@ onMounted(async () => {
     window.chrome?.webview?.addEventListener('message', handleHostMessage)
     window.addEventListener('keydown', handleOverlayKeydown, true)
 
-    await loadConfig()
+    await loadConfig(String(route.query.factoryId || ''))
     if (overlayDisposed) return
-    if (await leaveHiddenFactory()) return
+    if (route.query.noVisibleFactory !== '1' && await leaveHiddenFactory()) return
     const overviewReadiness = overviewEntryStatus(getWorkshops())
-    if (!configLoadError.value && !overviewReadiness.allowed) {
+    if (!route.query.entryViewId && route.query.noVisibleFactory !== '1' && !configLoadError.value && !overviewReadiness.allowed) {
         const query = { ...route.query, navigationNotice: overviewReadiness.message }
         delete query.scene
         delete query.factoryId
@@ -1013,6 +1044,14 @@ onMounted(async () => {
     dataStore.setMessageHandler(handleRuntimeMessage)
     dataStore.connect()
     reportStartup(67, 2, '正在同步实时生产数据')
+    if (route.query.entryViewId) {
+        try { await enterVisibleLocalView() }
+        catch (error) { hierarchyError.value = error.message }
+        if (overlayDisposed) return
+    }
+    if (route.query.noVisibleFactory === '1') {
+        hierarchyError.value = '暂无可显示的工厂'; requestNativeSceneSurface()
+    }
     await Promise.allSettled([
         dataStore.refreshEvents(true),
         dataStore.refreshMetrics(true),
@@ -1097,6 +1136,7 @@ onUnmounted(() => {
 </script>
 
 <template>
+    <div v-if="route.query.noVisibleFactory === '1'" class="empty-factory-surface" data-overlay-hit="true">暂无可显示的工厂</div>
     <LoadingExperience v-if="startupLoading && !nativeLoadingManaged" :show="startupLoading" :progress="startupProgress" :phase="startupPhase" :step="startupStep" :config="config.settings?.loading_experience_config" />
     <div ref="rootRef" class="dashboard-overlay-root" :class="{ 'is-scene-ready': runtimeContext.sceneReady !== false, 'standalone-preview': standalonePreview }">
       <SceneLoadingIndicator :show="!startupLoading && runtimeContext.sceneReady === false && !!runtimeContext.sceneLoading" :loading="runtimeContext.sceneLoading" />
@@ -1228,6 +1268,7 @@ onUnmounted(() => {
 </template>
 
 <style>
+.empty-factory-surface{position:fixed;inset:0;z-index:10;display:grid;place-items:center;background:#262634;color:#b9bacd;font-size:16px}
 .device-hover-card{max-height:calc(100vh - 24px);overflow:auto}.device-hover-card .inspection-hover-point b{overflow-wrap:anywhere}
 .group-map-return{position:absolute;pointer-events:auto;left:24px;top:100px;z-index:1002;padding:7px 11px;border:1px solid #8598c333;border-radius:16px;color:#aebddd;background:#151d2b44;text-decoration:none;font-size:11px}
 .overlay-hierarchy{position:absolute;left:145px;top:100px;z-index:1002;display:flex;align-items:center;gap:11px;max-width:74%;padding:5px 7px;border:1px solid rgba(157,177,219,.17);border-radius:10px;background:linear-gradient(115deg,rgba(15,22,37,.78),rgba(24,30,47,.56));box-shadow:0 8px 25px rgba(2,8,18,.16),inset 0 1px 0 rgba(228,235,255,.06);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);color:#aebddd;font-size:10px;pointer-events:auto}.overlay-hierarchy-path,.overlay-hierarchy-controls{display:flex;align-items:center;gap:4px;min-width:0}.overlay-hierarchy-path{overflow:hidden}.overlay-hierarchy-separator{padding:0 2px;color:#65758f;font-style:normal}.overlay-hierarchy-current,.overlay-hierarchy-ancestor{max-width:180px;overflow:hidden;padding:5px 7px;border:0;border-radius:6px;text-overflow:ellipsis;white-space:nowrap;font:inherit}.overlay-hierarchy-current{color:#edf2ff;background:linear-gradient(110deg,rgba(129,151,220,.17),rgba(129,151,220,.06));box-shadow:inset 0 0 0 1px rgba(165,184,235,.12)}.overlay-hierarchy-ancestor{color:#91a1bd;background:transparent;cursor:pointer;transition:color .16s ease,background .16s ease}.overlay-hierarchy-ancestor:hover:not(:disabled){color:#e2eaff;background:rgba(140,161,220,.1)}.overlay-hierarchy-ancestor:disabled{opacity:.55;cursor:wait}.overlay-hierarchy-controls{flex-shrink:0;padding-left:8px;border-left:1px solid rgba(159,175,212,.14)}.overlay-hierarchy select,.overlay-hierarchy-action{max-width:180px;padding:5px 22px 5px 9px;border:1px solid rgba(153,172,214,.18);border-radius:6px;color:#cfdaef;background-color:rgba(28,37,57,.74);font:inherit;cursor:pointer}.overlay-hierarchy select{appearance:none;background-image:linear-gradient(45deg,transparent 50%,#91a3c4 50%),linear-gradient(135deg,#91a3c4 50%,transparent 50%);background-position:calc(100% - 10px) 50%,calc(100% - 6px) 50%;background-size:4px 4px;background-repeat:no-repeat}.overlay-hierarchy select:disabled,.overlay-hierarchy-action:disabled{opacity:.55;cursor:wait}.overlay-hierarchy-action{padding:5px 8px}.overlay-hierarchy-action:hover{border-color:rgba(164,185,234,.4);background-color:rgba(59,75,111,.54)}.overlay-hierarchy-status{display:flex;align-items:center;gap:5px;color:#aebddd}.overlay-hierarchy-status i{width:5px;height:5px;border-radius:50%;background:#65d7b0;box-shadow:0 0 7px rgba(101,215,176,.65);animation:hierarchy-pulse 1.2s ease-in-out infinite}.overlay-hierarchy .hierarchy-error{color:#ef9caa;max-width:240px}@keyframes hierarchy-pulse{50%{opacity:.38;transform:scale(.8)}}

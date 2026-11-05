@@ -19,6 +19,7 @@ export function apiPermission(path, method = 'GET', body) {
   const safe = ['GET', 'HEAD'].includes(method)
   const action = safe ? 'view' : method === 'DELETE' ? 'delete' : 'edit'
   const resource = prefix => path === `/api/${prefix}` || path.startsWith(`/api/${prefix}/`)
+  if (resource('view-navigation')) return safe ? read(['platform.designer'], true) : any('admin', p('platform.designer', 'edit'))
   if (resource('license')) return safe ? read(['settings.license']) : 'admin'
   if (safe && ['/api/platform/metrics/latest', '/api/platform/events', '/api/data-sources/map-values'].includes(path)) return 'view'
   if (method === 'POST' && (/^\/api\/factories\/(?:[^/]+\/)?activate$/.test(path)

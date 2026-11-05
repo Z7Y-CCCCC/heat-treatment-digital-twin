@@ -294,6 +294,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
         public void ApplyPublishedViews(JObject document)
         {
             _configuredViews.Clear();
+            var hiddenViews = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             _defaultViewId = document?.SelectToken("scene.defaultViewId")?.Value<string>()
                 ?? document?.SelectToken("scene.default_view_id")?.Value<string>()
                 ?? "factory_overview";
@@ -304,6 +305,13 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 {
                     var id = token.Value<string>("id");
                     if (string.IsNullOrWhiteSpace(id)) continue;
+                    var hidden = token.SelectToken("metadata.runtimeHidden")?.Value<bool?>()
+                        ?? token.SelectToken("metadata.hierarchyHidden")?.Value<bool?>() ?? false;
+                    // Geographic / site surfaces belong to the WebView router, never
+                    // to the native factory camera or its Escape parent chain.
+                    var globalSurface = id == "map_world" || id == "map_country" || id == "map_province"
+                        || id == "map_city" || id == "map_district" || id == "site_street" || id == "site_factory";
+                    if (hidden || globalSurface) { hiddenViews.Add(id); continue; }
                     var camera = token["camera"] as JObject;
                     var state = (token["componentState"] ?? token["components"]) as JObject;
                     var targetOffset = camera?["targetOffset"] as JArray;
@@ -337,6 +345,10 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 }
             }
             EnsureBuiltInViews();
+            foreach (var id in hiddenViews) _configuredViews.Remove(id);
+            if (!_configuredViews.ContainsKey(_defaultViewId))
+                _defaultViewId = _configuredViews.Values.FirstOrDefault()?.Id ?? "factory_overview";
+            NormalizeViewNavigation();
         }
 
         public void ApplyTransientView(JObject token)

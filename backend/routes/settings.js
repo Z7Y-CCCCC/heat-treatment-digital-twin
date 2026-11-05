@@ -326,6 +326,7 @@ module.exports = function createSettingsRouter(controller = {}) {
             if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) {
                 throw new Error('设置内容必须是 JSON 对象');
             }
+            if (Object.hasOwn(req.body, 'global_view_navigation')) return res.status(400).json({ error: '请在视角编排中设置全局视角' });
             const changed = Object.fromEntries(Object.entries(req.body)
                 .filter(([key]) => !LEGACY_WEB_SETTING_KEYS.has(key))
                 .map(([key, value]) => [key, normalizeSettingValue(key, value)]));
