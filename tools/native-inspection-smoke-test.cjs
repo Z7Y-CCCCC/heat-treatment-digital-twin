@@ -14,7 +14,8 @@ let backend, unity, web;
 (async () => {
     if (!fs.existsSync(executable)) throw new Error('Build the current Unity client before running this test');
     const sandbox = await createSmokeSandbox('native-inspection');
-    const presets = getInspectionPresets();
+    const tempering = require('../backend/services/builtinModels').getBuiltinModels().find(model => model.id === 'cad_tempering_furnace_091300');
+    const presets = [...getInspectionPresets(), { modelId: tempering.id, inspection: JSON.parse(tempering.metadata).inspection }];
     const db = new Database(sandbox.filename);
     // Cover every registered preset (including the five pit furnaces), not
     // four seeded devices followed by an assertion against all nine models.

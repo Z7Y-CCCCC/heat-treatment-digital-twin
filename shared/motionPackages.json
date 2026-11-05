@@ -5,9 +5,9 @@
       "sourcePath": "/assets/models/cad_tempering_furnace_091300.glb",
       "sourceSha256": "a0f151f1cffbe9ce23c12f6db9d4a8a7ab3a42f18c21d23b6a2f5b7ed6565dd9",
       "rigPath": "/assets/motions/cad_tempering_furnace_091300.glb",
-      "rigSha256": "20184dc98e86e0384c676abd3ac4b0c9b8a5d921c0375a1885628f6cfc81b990",
+      "rigSha256": "51fca0d5d1c7866bab547e53c8e1be5b3b69e2e6f01c8bdc3f1ce9031f9286cb",
       "clipPath": "/assets/motions/cad_tempering_furnace_091300.json",
-      "clipSha256": "5078c66f0a5c1e9b6319a984bf7dcefaeb45ed85ae8b22c53da3dc9e1dc78dcb",
+      "clipSha256": "d3d0692bc6b113f18ba11a1ef6a3402b49ee57b809acf3894e5391250b11bf5b",
       "actions": [
         {
           "id": "door",
@@ -25,9 +25,9 @@
           "mode": "running",
           "duration": 5,
           "channels": [
-            "preview_tempering_impeller:q",
             "preview_tempering_drive_0:q",
-            "preview_tempering_drive_1:q"
+            "preview_tempering_drive_1:q",
+            "preview_tempering_impeller:q"
           ]
         },
         {
@@ -51,10 +51,10 @@
           "mode": "running",
           "duration": 5,
           "channels": [
-            "cad_tempering_furnace_v1_heating_elements_black:e0",
-            "preview_tempering_impeller:q",
             "preview_tempering_drive_0:q",
-            "preview_tempering_drive_1:q"
+            "preview_tempering_drive_1:q",
+            "cad_tempering_furnace_v1_heating_elements_black:e0",
+            "preview_tempering_impeller:q"
           ]
         }
       ]

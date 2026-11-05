@@ -127,7 +127,31 @@ function mergeBuiltinModels(models = []) {
             is_builtin: !!builtin || !!model.is_builtin
         });
     });
-    return Array.from(merged.values()).map(withMotionPackage);
+    return Array.from(merged.values()).map(withMissingInspectionDefaults).map(withMotionPackage);
+}
+
+// Upgrade only the known, previously empty CAD preset at read time. No database
+// rewrite: authored layouts, PLC bindings and replacement uploads remain intact.
+function withMissingInspectionDefaults(model) {
+    if (model.id !== 'cad_tempering_furnace_091300') return model;
+    const builtin = getBuiltinModels().find(item => item.id === model.id);
+    if (!builtin || model.file_path !== builtin.file_path || !builtinMotionForModel(model)) return model;
+    try {
+        const metadata = typeof model.metadata === 'string' ? JSON.parse(model.metadata) : model.metadata;
+        if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return model;
+        const inspection = metadata.inspection;
+        if (inspection != null && (typeof inspection !== 'object' || Array.isArray(inspection))) return model;
+        if (inspection?.parts !== undefined && (!Array.isArray(inspection.parts) || inspection.parts.length)) return model;
+        const defaults = JSON.parse(builtin.metadata);
+        if (metadata.sourceAsset?.sha256 && metadata.sourceAsset.sha256 !== defaults.sourceAsset.sha256) return model;
+        const shell = inspection?.shell;
+        const hasShell = shell && ['node_path', 'node_name', 'node_paths', 'node_names'].some(key => shell[key]?.length);
+        if (hasShell) return model; // A shell-only authored document is not the old empty preset.
+        const next = { ...metadata, inspection: { ...defaults.inspection, ...inspection,
+            offset_space: 'model', parts: defaults.inspection.parts,
+            shell: hasShell ? shell : { ...defaults.inspection.shell, ...shell, node_names: defaults.inspection.shell.node_names } } };
+        return { ...model, metadata: typeof model.metadata === 'string' ? JSON.stringify(next) : next };
+    } catch { return model; }
 }
 
 module.exports = {

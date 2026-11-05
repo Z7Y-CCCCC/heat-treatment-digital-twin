@@ -63,6 +63,7 @@ import AdminSecuritySettings from './admin/components/AdminSecuritySettings.vue'
 import ProjectMigrationSettings from './admin/components/ProjectMigrationSettings.vue'
 import ModelAssetTransfer from './admin/components/ModelAssetTransfer.vue'
 import PointDeviceSelect from './admin/components/PointDeviceSelect.vue'
+import DeviceModelHoverPreview from './admin/components/DeviceModelHoverPreview.vue'
 import PlatformUsersSettings from './admin/components/PlatformUsersSettings.vue'
 import AdminHelpGuide from './admin/components/AdminHelpGuide.vue'
 import MobileDeviceMotion from './admin/components/MobileDeviceMotion.vue'
@@ -1522,6 +1523,7 @@ function formatModelName(modelType) {
 
 // ============ 模型管理 ============
 const models = ref([])
+const deviceModelHover = ref(null)
 const modelDisplayIds = computed(() => buildModelDisplayIds(models.value.map(model => model.id)))
 const copiedModelId = ref('')
 const DELETABLE_RETIRED_MODEL_IDS = new Set(['builtin_furnace', 'photo_multipurpose_furnace_v5', 'transfer_cart'])
@@ -8130,8 +8132,13 @@ async function openAdminSetupStep(step) {
                                     <td><code>{{ d.id }}</code></td>
                                     <td>{{ d.name }}</td>
                                     <td class="model-name-cell">
-                                        <strong>{{ formatModelName(d.model_type) }}</strong>
-                                        <small>{{ d.model_type }}</small>
+                                        <button type="button" class="model-hover-trigger" :aria-label="'预览模型：' + formatModelName(d.model_type)"
+                                            :title="formatModelName(d.model_type)"
+                                            @mouseenter="deviceModelHover?.show(d, $event.currentTarget)" @mouseleave="deviceModelHover?.hide()"
+                                            @focus="deviceModelHover?.show(d, $event.currentTarget)" @blur="deviceModelHover?.hide()">
+                                            <strong>{{ formatModelName(d.model_type) }}</strong>
+                                            <small>{{ d.model_type }}</small>
+                                        </button>
                                     </td>
                                     <td>
                                         <span class="plc-status-pill" :class="'plc-' + (plcStatusByDevice[d.id]?.status || (Number(d.plc_enabled || 0) ? 'idle' : 'disabled'))">
@@ -8166,8 +8173,13 @@ async function openAdminSetupStep(step) {
                                     <td>{{ d.name }}</td>
                                     <td>{{ workshops.find(w => w.id === getDeviceWorkshopId(d))?.name || getDeviceWorkshopId(d) || '未设置' }}</td>
                                     <td class="model-name-cell">
-                                        <strong>{{ formatModelName(d.model_type) }}</strong>
-                                        <small>{{ d.model_type }}</small>
+                                        <button type="button" class="model-hover-trigger" :aria-label="'预览模型：' + formatModelName(d.model_type)"
+                                            :title="formatModelName(d.model_type)"
+                                            @mouseenter="deviceModelHover?.show(d, $event.currentTarget)" @mouseleave="deviceModelHover?.hide()"
+                                            @focus="deviceModelHover?.show(d, $event.currentTarget)" @blur="deviceModelHover?.hide()">
+                                            <strong>{{ formatModelName(d.model_type) }}</strong>
+                                            <small>{{ d.model_type }}</small>
+                                        </button>
                                     </td>
                                     <td>
                                         <span class="plc-status-pill" :class="'plc-' + (plcStatusByDevice[d.id]?.status || (Number(d.plc_enabled || 0) ? 'idle' : 'disabled'))">
@@ -8188,6 +8200,8 @@ async function openAdminSetupStep(step) {
                         </table>
                     </div>
                 </div>
+
+                <DeviceModelHoverPreview v-if="activeTab === 'devices'" ref="deviceModelHover" :models="models" />
 
                 <!-- ======== 设备运动配置 ======== -->
                 <MobileDeviceMotion
@@ -12396,12 +12410,12 @@ button:enabled:active {
 .quality-good { color: #1b6b3a; background: rgba(52, 199, 89, 0.12); border-color: rgba(52, 199, 89, 0.22); }
 .quality-stale { color: #7a4b00; background: rgba(255, 204, 0, 0.16); border-color: rgba(255, 204, 0, 0.28); }
 .quality-bad { color: #9f1d17; background: rgba(255, 59, 48, 0.12); border-color: rgba(255, 59, 48, 0.24); }
-.model-name-cell {
-    display: flex;
-    flex-direction: column;
-    justify-content: flex-start;
-    gap: 4px;
+.model-hover-trigger {
+    display: flex; flex-direction: column; gap: 4px; max-width: 260px; padding: 4px 0;
+    border: 0; background: transparent; text-align: left; cursor: zoom-in; font: inherit;
 }
+.model-hover-trigger:focus-visible { outline: 2px solid #5685ef; outline-offset: 4px; border-radius: 3px; }
+.model-hover-trigger strong, .model-hover-trigger small { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .model-name-cell strong {
     color: #1d1d1f;
     font-size: calc(13px * var(--admin-font-scale, 1));
