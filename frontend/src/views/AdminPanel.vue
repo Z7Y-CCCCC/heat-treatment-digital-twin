@@ -48,6 +48,7 @@ import {
     normalizeLineRecord
 } from './admin/utils/lineLayout.js'
 import { chooseLineDevices, planLineGroupMove, spaceLineDevices } from './admin/utils/lineDeviceSelection.js'
+import { alignLoadingFaces, measureLoadingFaces } from '../three/lineLoadingAlignment.js'
 import { buildModelDisplayIds, createShortModelId } from './admin/utils/modelIds.js'
 import { useAppDialog } from './admin/composables/useAppDialog.js'
 import { useSystemSettings } from './admin/composables/useSystemSettings.js'
@@ -796,7 +797,8 @@ let lineDevicePoolMoveState = null
 const lineDeviceSavingId = ref('')
 const selectedLineDeviceIds = ref([])
 const lineGroupSaving = ref(false)
-const lineDeviceLayoutBusy = computed(() => lineGroupSaving.value || lineLayoutSaving.value || !!lineDeviceSavingId.value)
+const lineLoadingMeasuring = ref(false)
+const lineDeviceLayoutBusy = computed(() => lineLoadingMeasuring.value || lineGroupSaving.value || lineLayoutSaving.value || !!lineDeviceSavingId.value)
 const lineDeviceGap = ref(5)
 const lineSelectionFeedback = ref('')
 const lineDeviceGhosts = ref([])
@@ -5305,8 +5307,9 @@ function changeLineLayoutItem({ type, id, field, value }) {
     if (!item || !['name', 'offsetZ', 'length'].includes(field)) return
     const next = field === 'name' ? String(value) : Number(value)
     if (field !== 'name' && (!Number.isFinite(next) || field === 'length' && next < 1)) return
+    const previousZ=numberOrDefault(item.offsetZ,0)
     item[field] = next
-    patchBoundDevicesForLayoutItem(type, id, item, selectedLineEditor.value)
+    patchBoundDevicesForLayoutItem(type, id, item, selectedLineEditor.value, null, numberOrDefault(item.offsetZ,0)-previousZ)
     touchLineLayout(selectedLineEditor.value)
 }
 
@@ -5670,13 +5673,13 @@ async function saveLineStationNumber(device) {
     }
 }
 
-function buildDeviceLayoutBindingPatch(device, type, item, line) {
+function buildDeviceLayoutBindingPatch(device, type, item, line, deltaZ = 0) {
     const config = {
         ...parseInstanceConfig(device.instance_config)
     }
     const halfLength = Math.max(1, numberOrDefault(item.length, 60) / 2)
     const nextX = roundLineLayoutValue(Math.min(halfLength, Math.max(-halfLength, numberOrDefault(device.pos_x, 0))), 0.5)
-    const nextZ = roundLineLayoutValue(getLineBaseZ(line.id) + numberOrDefault(item.offsetZ, 0), 0.5)
+    const nextZ = Number((numberOrDefault(device.pos_z, getLineBaseZ(line.id) + numberOrDefault(item.offsetZ, 0)) + deltaZ).toFixed(6))
 
     if (type === 'rail') {
         config.role = device.model_type === 'transfer_cart' ? 'transfer_cart' : (config.role || 'auxiliary')
@@ -5708,7 +5711,7 @@ function buildDeviceLayoutBindingPatch(device, type, item, line) {
     }
 }
 
-function patchBoundDevicesForLayoutItem(type, itemId, item, line = selectedLineEditor.value, deviceIds = null) {
+function patchBoundDevicesForLayoutItem(type, itemId, item, line = selectedLineEditor.value, deviceIds = null, deltaZ = 0) {
     if (!line || !item) return []
     const boundIds = new Set(deviceIds || getDevicesBoundToLayoutItem(type, itemId, line).map(device => device.id))
     if (!boundIds.size) return []
@@ -5716,7 +5719,7 @@ function patchBoundDevicesForLayoutItem(type, itemId, item, line = selectedLineE
         if (!boundIds.has(device.id)) return device
         return {
             ...device,
-            ...buildDeviceLayoutBindingPatch(device, type, item, line)
+            ...buildDeviceLayoutBindingPatch(device, type, item, line, deltaZ)
         }
     })
     return [...boundIds]
@@ -6060,6 +6063,7 @@ function handleLinePreviewDrag(event) {
     const item = findLineLayoutItem(state.type, state.itemId)
     if (!item) return
 
+    const previousZ=numberOrDefault(item.offsetZ,0)
     if (state.mode === 'move') {
         item.offsetZ = roundLineLayoutValue(previewClientYToZ(event.clientY, state), 0.5)
     } else {
@@ -6067,7 +6071,7 @@ function handleLinePreviewDrag(event) {
         const signedDelta = state.mode === 'resize-left' ? -deltaUnits : deltaUnits
         item.length = Math.max(4, roundLineLayoutValue(state.startLength + signedDelta * 2, 0.5))
     }
-    patchBoundDevicesForLayoutItem(state.type, state.itemId, item, selectedLineEditor.value, state.boundDeviceIds)
+    patchBoundDevicesForLayoutItem(state.type, state.itemId, item, selectedLineEditor.value, state.boundDeviceIds, numberOrDefault(item.offsetZ,0)-previousZ)
     touchLineLayout(selectedLineEditor.value)
 }
 
@@ -6217,7 +6221,7 @@ function startLineDeviceDrag(deviceId, event) {
         return
     }
     const rows = (fromPool ? [device] : selectedLineDevices.value).map(row => ({
-        id: row.id, x: numberOrDefault(row.pos_x, 0),
+        id: row.id, x: numberOrDefault(row.pos_x, 0), z: numberOrDefault(row.pos_z, 0)-getLineBaseZ(selectedLineEditor.value.id),
         binding: resolveDeviceLayoutTarget(row, selectedLineEditor.value, { allowFallback: false })
     }))
     const rect = stage.getBoundingClientRect(), bounds = linePreviewBounds(selectedLineEditor.value)
@@ -6323,10 +6327,37 @@ async function applyLineDeviceSpacing(manual = false) {
     if (!canAdminPage('lines', 'edit') || lineDeviceLayoutBusy.value) return
     cancelLineDeviceDrag()
     try {
-        const plan = spaceLineDevices(selectedLineDevices.value.map(device => ({ id: device.id, x: device.pos_x,
+        const plan = spaceLineDevices(selectedLineDevices.value.map(device => ({ id: device.id, x: device.pos_x, z: numberOrDefault(device.pos_z,0)-getLineBaseZ(selectedLineEditor.value.id),
             binding: resolveDeviceLayoutTarget(device, selectedLineEditor.value, { allowFallback: false }) })), manual ? lineDeviceGap.value : undefined)
         await saveLineDevicePlan(plan, selectedLineEditor.value.id)
     } catch (error) { alert(error.message, { type: 'warning' }) }
+}
+
+async function alignLineLoadingFaces() {
+    if (!canAdminPage('lines', 'edit') || lineDeviceLayoutBusy.value) return
+    cancelLineDeviceDrag()
+    const line=selectedLineEditor.value, layout=getLineLayout(line), baseZ=getLineBaseZ(line.id)
+    lineLoadingMeasuring.value=true
+    lineSelectionFeedback.value='正在测量进料口…'
+    try {
+        const plan=[]
+        for (const lane of layout.lanes) {
+            const members=getDevicesBoundToLayoutItem('lane',lane.id,line)
+            if(members.length<2)continue
+            const rail=[...layout.rails].sort((a,b)=>Math.abs(a.offsetZ-lane.offsetZ)-Math.abs(b.offsetZ-lane.offsetZ))[0]
+            if(!rail || Math.abs(rail.offsetZ-lane.offsetZ)<.001)throw Error('请先为设备线配置一侧的小车导轨')
+            const rows=members.map(device=>({id:device.id,device,x:device.pos_x,z:numberOrDefault(device.pos_z,0)-baseZ,
+                binding:{type:'lane',item:lane},direction:Math.sign(rail.offsetZ-lane.offsetZ)}))
+            plan.push(...alignLoadingFaces(await measureLoadingFaces(rows,models.value)))
+        }
+        if(!plan.length)throw Error('请在同一设备线上放置至少两台设备')
+        if(selectedLineEditor.value?.id!==line.id)throw Error('产线已切换，未移动设备')
+        lineLoadingMeasuring.value=false
+        if(await saveLineDevicePlan(plan,line.id))lineSelectionFeedback.value='进料口已沿轨道对齐'
+    } catch(error) {
+        lineSelectionFeedback.value='对齐未完成'
+        await alert(error.message,{title:'进料口对齐',type:'warning'})
+    } finally {lineLoadingMeasuring.value=false}
 }
 
 async function saveLineDevicePlan(plan, lineId) {
@@ -7754,6 +7785,7 @@ async function openAdminSetupStep(step) {
                             <section class="line-planner-preview">
                                 <div v-if="selectedLineEditor" class="line-selection-toolbar" role="toolbar" aria-label="设备多选与间距">
                                     <span class="line-selection-hint">Ctrl / Shift 多选</span>
+                                    <button type="button" class="btn btn-sm" :disabled="lineDeviceLayoutBusy" title="按实际炉门和备料台进料端对齐，保持送料高度与设备间距" @click="alignLineLoadingFaces" v-permission="{ page: 'lines', action: 'edit' }">进料口对齐</button>
                                     <span v-if="selectedLineDeviceIds.length">已选 {{ selectedLineDeviceIds.length }} 台</span>
                                     <button type="button" class="btn btn-sm" :disabled="lineDeviceLayoutBusy || !lineSelectionSameTarget || selectedLineDeviceIds.length < 3" title="固定两端，平均分配所选设备的中心间距" @click="applyLineDeviceSpacing()" v-permission="{ page: 'lines', action: 'edit' }">等间距</button>
                                     <label>中心距(m) <input v-model.number="lineDeviceGap" aria-label="设备中心间距（米）" type="number" min="0.01" step="0.5" :disabled="lineDeviceLayoutBusy || !lineSelectionSameTarget" /></label>
