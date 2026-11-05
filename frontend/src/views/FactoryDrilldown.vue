@@ -15,9 +15,11 @@ import { overviewEntryStatus, streetEntryStatus } from '../runtime/factoryNaviga
 import GroupHierarchyCapsule from './GroupHierarchyCapsule.vue'
 import AdminWindowChrome from './admin/components/AdminWindowChrome.vue'
 import MapSurfaceWidgets from './MapSurfaceWidgets.vue'
+import SceneLoadingIndicator from '../components/SceneLoadingIndicator.vue'
 
 const route=useRoute(),router=useRouter(),host=ref(null),factory=ref(null),config=ref(null),loading=ref(true),busy=ref(false),error=ref(''),page=ref(0)
 const hoveredBuilding=ref(null),sceneExpanded=ref(false)
+const entryLoading=ref(null)
 const factoryId=computed(()=>String(route.query.factoryId || ''))
 const stage=computed(()=>route.query.stage==='factory'?'factory':'street')
 const adminSurface=computed(()=>isNativeUnitySurface(route.query.embedded,window.chrome?.webview) && route.query.surface==='admin')
@@ -42,10 +44,11 @@ const navigator=createNativeViewNavigator(async target=>{
   const body=await response.json().catch(()=>({}))
   if(!response.ok)throw new Error(body.error || '车间视角请求失败')
   return body
-},25000)
+},120000)
 
 let renderer,scene,camera,controls,observer,frame=0,root,disposed=false,down=null,renderDirty=true
 let configRequest=null,configRequestId=0,configSignature='',configTimer=null,refreshTimer=null
+let entryRequest=null,entrySequence=0
 const hitMeshes=[]
 const hoverBases=new Map(),raycaster=new THREE.Raycaster(),pointer=new THREE.Vector2()
 function scheduleRender(){
@@ -280,16 +283,21 @@ function handleSiteEscape(event){
 async function enterFactoryOverview(){
   if(busy.value)return
   if(!overviewReadiness.value.allowed){error.value=overviewReadiness.value.message;return}
-  busy.value=true;error.value=''
+  busy.value=true;error.value='';entryLoading.value=null
+  const sequence=++entrySequence,controller=new AbortController();entryRequest=controller
+  const timeout=setTimeout(()=>controller.abort(),15000)
   try{
-    const response=await adminFetch(`${API_BASE}/factories/${encodeURIComponent(factoryId.value)}/activate`,{method:'POST',headers:{'Content-Type':'application/json','X-Factory-ID':factoryId.value},body:'{}'})
+    const response=await adminFetch(`${API_BASE}/factories/${encodeURIComponent(factoryId.value)}/activate`,{method:'POST',headers:{'Content-Type':'application/json','X-Factory-ID':factoryId.value},body:'{}',signal:controller.signal})
     const result=await response.json().catch(()=>({}))
+    clearTimeout(timeout)
+    if(disposed || sequence!==entrySequence)return
     if(!response.ok)throw new Error(result.error || '切换运行工厂失败')
     await navigator.go({viewId:'factory_overview',factoryId:factoryId.value})
-    if(disposed)return
+    if(disposed || sequence!==entrySequence)return
     if(adminSurface.value && window.chrome?.webview){requestNativeSceneSurface();await router.replace({path:'/admin',query:{embedded:'unity'}});window.chrome.webview.postMessage({type:'host_action',action:'show_dashboard'})}
     else await router.push({path:'/overlay',query:{...mapQuery(),factoryId:factoryId.value,scene:'1',fromGroup:String(route.query.code || '')}})
-  }catch(cause){if(!disposed)error.value=cause.message}finally{busy.value=false}
+  }catch(cause){if(!disposed && sequence===entrySequence)error.value=cause.name==='AbortError'?'工厂连接超时，请重试':cause.message}
+  finally{clearTimeout(timeout);if(sequence===entrySequence){entryRequest=null;busy.value=false}}
 }
 function pick(event){
   if(!down || Math.hypot(event.clientX-down[0],event.clientY-down[1])>5){down=null;return}
@@ -338,7 +346,7 @@ function scheduleConfigRefresh(message){
   if(message?.payload?.factoryId && String(message.payload.factoryId)!==factoryId.value && message.payload.resource!=='factories')return
   clearTimeout(refreshTimer);refreshTimer=setTimeout(()=>{if(!disposed)void load()},180)
 }
-watch(factoryId,()=>{factoryVoice.suspend();configSignature='';config.value=null;page.value=0;if(renderer)void load()})
+watch(factoryId,()=>{entrySequence++;entryRequest?.abort();navigator.dispose();busy.value=false;entryLoading.value=null;factoryVoice.suspend();configSignature='';config.value=null;page.value=0;if(renderer)void load()})
 watch([stage,page],()=>rebuild())
 onMounted(()=>{
   window.addEventListener('keydown',handleSiteEscape,true)
@@ -353,7 +361,10 @@ onMounted(()=>{
   scheduleRender()
   data.setMessageHandler(message=>{
     if(factoryVoice.handleMessage(message))return
-    if(message.type==='dashboard_context_changed')navigator.accept(message.payload)
+    if(message.type==='dashboard_context_changed'){
+      if(busy.value && String(message.payload?.factoryId || '')===factoryId.value)entryLoading.value=message.payload?.sceneReady===false?message.payload?.sceneLoading || null:null
+      navigator.accept(message.payload)
+    }
     else if(['configuration_changed','device_configuration_changed','dashboard_release_changed','realtime_resync_required'].includes(message.type))scheduleConfigRefresh(message)
   })
   configTimer=setInterval(()=>void load(),15000)
@@ -361,11 +372,12 @@ onMounted(()=>{
   window.chrome?.webview?.addEventListener('message',onHostMessage)
   void load()
 })
-onUnmounted(()=>{factoryVoice.dispose();window.removeEventListener('pointerdown',unlockFactoryVoice);window.removeEventListener('keydown',handleSiteEscape,true);disposed=true;configRequestId++;configRequest?.abort();clearInterval(configTimer);clearTimeout(refreshTimer);cancelAnimationFrame(frame);navigator.dispose();data.dispose();observer?.disconnect();controls?.removeEventListener('change',onControlsChange);controls?.dispose();disposeRoot();sharedMaterials.forEach(item=>item.dispose());wallTexture.dispose();roofTexture.dispose();renderer?.dispose();window.chrome?.webview?.removeEventListener('message',onHostMessage);window.chrome?.webview?.postMessage({type:'overlay_regions',viewport:{width:innerWidth,height:innerHeight},regions:[]})})
+onUnmounted(()=>{factoryVoice.dispose();window.removeEventListener('pointerdown',unlockFactoryVoice);window.removeEventListener('keydown',handleSiteEscape,true);disposed=true;entrySequence++;entryRequest?.abort();configRequestId++;configRequest?.abort();clearInterval(configTimer);clearTimeout(refreshTimer);cancelAnimationFrame(frame);navigator.dispose();data.dispose();observer?.disconnect();controls?.removeEventListener('change',onControlsChange);controls?.dispose();disposeRoot();sharedMaterials.forEach(item=>item.dispose());wallTexture.dispose();roofTexture.dispose();renderer?.dispose();window.chrome?.webview?.removeEventListener('message',onHostMessage);window.chrome?.webview?.postMessage({type:'overlay_regions',viewport:{width:innerWidth,height:innerHeight},regions:[]})})
 </script>
 
 <template>
-  <main class="factory-drilldown" :class="`stage-${stage}`" :style="{'--site-accent':siteScene.accent}">
+  <main class="factory-drilldown" :class="`stage-${stage}`" :style="{'--site-accent':siteScene.accent}" :aria-busy="busy">
+    <SceneLoadingIndicator :show="busy" :loading="entryLoading" />
     <AdminWindowChrome v-if="adminSurface" @before-dashboard="router.replace({path:'/group',query:mapQuery()})" @before-admin="router.push({path:'/admin',query:{embedded:'unity'}})" />
     <div class="street-backdrop" :style="{backgroundImage:`url('${streetImage}')`}" aria-hidden="true"></div>
     <div class="scene-dimmer" aria-hidden="true"></div>
@@ -377,7 +389,7 @@ onUnmounted(()=>{factoryVoice.dispose();window.removeEventListener('pointerdown'
       <div v-if="siteScene.showViewControls" class="site-view-controls" aria-label="工厂视角控制"><button type="button" title="重置方向" aria-label="重置视角方向" @click="resetView">⌖</button><button type="button" title="放大" aria-label="放大工厂视角" @click="zoomView(1)">＋</button><button type="button" title="缩小" aria-label="缩小工厂视角" @click="zoomView(-1)">−</button><button type="button" :title="sceneExpanded?'退出放大视角':'放大视角'" :aria-label="sceneExpanded?'退出放大视角':'放大视角'" :aria-pressed="sceneExpanded" @click="sceneExpanded=!sceneExpanded">{{ sceneExpanded?'⊟':'⛶' }}</button></div>
       <button v-if="siteScene.showBeacon && !loading && !error && stage==='street'" class="site-beacon" type="button" @click="enterFactory"><i></i><span>{{ factory?.name }}<small>点击进入工厂</small></span></button>
     </section>
-    <aside v-if="siteScene.showInfoPanel || error || loading || busy" class="site-info">
+    <aside v-if="siteScene.showInfoPanel || error || loading" class="site-info">
       <small>{{ stage==='street'?'STREET / SITE':'FACTORY / CAMPUS' }}</small>
       <h1>{{ factory?.name || '工厂视角' }}</h1>
       <p v-if="stage==='street'">{{ siteScene.streetDescription }}</p>
@@ -390,7 +402,7 @@ onUnmounted(()=>{factoryVoice.dispose();window.removeEventListener('pointerdown'
         <div v-if="pageCount>1" class="site-pages"><button :disabled="page===0" @click="page--">上一组</button><span>{{ page+1 }} / {{ pageCount }}</span><button :disabled="page>=pageCount-1" @click="page++">下一组</button></div>
       </div>
       <button v-if="stage==='street'" class="site-primary" type="button" :disabled="loading" @click="enterFactory">查看工厂建筑 →</button>
-      <p v-if="loading || busy" class="site-status" role="status">{{ busy?'正在等待 Unity 确认全厂总览…':'正在载入工厂资料…' }}</p>
+      <p v-if="loading" class="site-status" role="status">正在载入工厂资料…</p>
       <p v-if="error" class="site-error" role="alert">{{ error }}</p>
     </aside>
     <footer v-if="siteScene.showFooter" class="site-footer"><span>鼠标拖动旋转视角 · 滚轮缩放</span><button type="button" @click="stage==='factory'?router.push({path:'/site',query:{...route.query,stage:'street'}}):router.push({path:'/group',query:mapQuery()})">← {{ stage==='factory'?'返回街道':'返回区级地图' }}</button></footer>

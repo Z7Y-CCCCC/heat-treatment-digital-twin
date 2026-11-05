@@ -42,6 +42,18 @@ let backend, unity, web;
     await authorizeSmokeUnity(origin, unity, session);
     const log = () => fs.existsSync(logFile) ? fs.readFileSync(logFile, 'utf8') : '';
     await waitUntil(() => { if (unity.exitCode !== null) throw new Error(`Unity exited: ${unity.exitCode}`); return log().includes('[FactoryRuntime] Native factory ready'); }, 120000, 'real Unity models ready');
+    // The log write can precede draining queued socket frames; use the wire acknowledgement as the fence.
+    await waitUntil(() => contexts.some(frame => frame.sceneReady === true && frame.sceneLoading === null), 10000, 'loading state clears on native readiness');
+    const loadingFrames = contexts.filter(frame => frame.sceneReady === false && frame.sceneLoading);
+    assert.ok(loadingFrames.some(frame => frame.sceneLoading.stage === 'environment'), 'cold native loading must publish environment preparation');
+    const modelLoading = loadingFrames.filter(frame => frame.sceneLoading.stage === 'models').map(frame => frame.sceneLoading);
+    assert.ok(modelLoading.length > 0 && modelLoading[0].completed === 0, 'real model progress starts before first import finishes');
+    const expectedCount = Number(log().match(/Native factory ready: devices=(\d+)/)?.[1]);
+    assert.ok(expectedCount > 0);
+    const completedCounts = new Set(modelLoading.map(frame => frame.completed));
+    for (let count = 0; count <= expectedCount; count++) assert.ok(completedCounts.has(count), `native model completion ${count}/${expectedCount} not relayed`);
+    assert.ok(modelLoading.every(frame => frame.total === expectedCount && frame.modelName && frame.progress === frame.completed / frame.total));
+    console.log(`PASS real native cold-load progress: every completed model 0..${expectedCount}, current model name, real ratios and ready cleanup`);
     const results = [];
     const send = (deviceId, inspection) => requestJson(`${origin}/api/native-preview/navigate`, { method: 'POST', body: JSON.stringify({ action: 'inspection', focus: { mode: 'device', deviceId }, inspection }) });
     const next = (deviceId, fence, predicate, label, timeout = 20000) => waitUntil(() => contexts.slice(fence).find(frame => frame.deviceId === deviceId && predicate(frame)), timeout, label);

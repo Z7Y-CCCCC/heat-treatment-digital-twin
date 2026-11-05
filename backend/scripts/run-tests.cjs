@@ -14,7 +14,7 @@ const scripts = [
     'data-source-http-regression-test.cjs', 'data-source-designer-test.cjs', 'excel-data-file-test.cjs',
     'spatial-hierarchy-test.cjs', 'industrial-ground-test.cjs', 'cast-discovery-test.cjs', 'cast-history-test.cjs',
     'backend-concurrency-test.cjs', 'backend-long-runtime-test.cjs', 'backend-recovery-edge-test.cjs',
-    'backend-service-failure-test.cjs', 'alarm-outbox-test.cjs', 'mysql-runtime-safety-test.cjs', 'site-recovery-intent-test.cjs', 'ws-queue-test.cjs',
+    'backend-service-failure-test.cjs', 'alarm-outbox-test.cjs', 'mysql-runtime-safety-test.cjs', 'site-recovery-intent-test.cjs', 'ws-queue-test.cjs', 'scene-loading-test.cjs',
     'admin-auth-integration-test.cjs', 'factory-isolation-test.cjs', 'factory-display-collection-test.cjs', 'factory-collection-summary-test.cjs', 'configuration-sync-test.cjs', 'factory-geocoder-test.cjs', 'production-readiness-test.cjs',
     'data-point-sync-test.cjs', 'deletion-safety-test.cjs',
     'native-dashboard-config-test.cjs', 'inspection-hover-test.cjs', 'device-hover-test.cjs', 'dashboard-designer-test.cjs', 'mcp-platform-integration-test.cjs', 'plc-protocol-test.cjs',
