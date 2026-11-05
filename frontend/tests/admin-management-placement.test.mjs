@@ -130,7 +130,9 @@ test('project migration is an independent owner-only maintenance tab, not part o
   assert.match(controls, /\.input:focus\s*\{/)
   assert.match(controls, /\.btn-primary\s*\{/)
   assert.doesNotMatch(controls, /line-preview|line-map|line-create-row/)
-  assert.match(panel, /\.line-create-row \.btn\s*\{/)
+  const lineControls = await source('../src/views/admin/components/LinePlannerControls.vue')
+  assert.match(panel, /<LinePlannerControls/)
+  assert.match(lineControls, /class="line-create-row" @submit\.prevent/)
 })
 
 test('model importing is an asset-toolbar action, with no duplicate lower navigation and editable row names', async () => {

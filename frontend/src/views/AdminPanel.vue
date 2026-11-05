@@ -9,6 +9,7 @@ import { SceneRuntime } from '../runtime/SceneRuntime.js'
 import { useNativeQuality } from '../runtime/nativeQuality.js'
 import QualityNotice from '../components/QualityNotice.vue'
 import AdminReadingSettings from './admin/components/AdminReadingSettings.vue'
+import LinePlannerControls from './admin/components/LinePlannerControls.vue'
 import WorkshopGroundEditor from './admin/components/WorkshopGroundEditor.vue'
 import DataSourceWorkspace from './admin/components/DataSourceWorkspace.vue'
 import FactoryCollectionSettings from './admin/components/FactoryCollectionSettings.vue'
@@ -772,7 +773,10 @@ const savedLineLayoutSnapshots = ref({})
 const savedLineRecordSnapshots = ref({})
 const savedLinePlacementSnapshots = ref({})
 const placedLines = computed(() => lines.value.filter(line => !isLinePlacementPending(line)))
-const isLinePlannerEditorCollapsed = ref(true)
+const linePlannerControlsRef = ref(null)
+const lineCreating = ref(false)
+const selectedLineStructure = ref(null)
+watch(selectedLineEditorId, () => { selectedLineStructure.value = null })
 const isLineDevicePoolCollapsed = ref(!!storedAdminUiState.isLineDevicePoolCollapsed)
 const lineDevicePoolDock = reactive({
     x: Number.isFinite(Number(storedAdminUiState.lineDevicePoolDockX)) ? Number(storedAdminUiState.lineDevicePoolDockX) : 28,
@@ -1112,34 +1116,42 @@ async function loadLines() {
 }
 
 async function createLine() {
+    if (!canAdminPage('lines', 'edit') || lineCreating.value || lineDeviceLayoutBusy.value) return
     if (!newLine.id || !newLine.name || !newLine.workshop_id) return alert('请填写产线ID、名称和所属车间')
-    const layout = defaultLineLayout()
-    const siblingLines = sortByOrder(lines.value.filter(line => line.workshop_id === newLine.workshop_id))
-    layout.placementPending = siblingLines.length > 0
-    const result = await adminApi.createLine({
-        id: newLine.id,
-        name: newLine.name,
-        workshop_id: newLine.workshop_id,
-        layout_json: serializeLineLayout(layout),
-        sort_order: lines.value.length
-    })
-    if (result?.error) return alert(result.error, { title: '新增产线失败', type: 'danger' })
-    if (!result?.success) return alert('新增产线失败：后端没有返回成功状态', { title: '新增产线失败', type: 'danger' })
-    const createdName = newLine.name
-    const placementPending = layout.placementPending
-    selectedLineEditorId.value = newLine.id
-    newLine.id = ''
-    newLine.name = ''
-    await loadLines()
-    await alert(
-        placementPending
-            ? `产线「${createdName}」已创建，位置暂定。请点击“产线在车间中的位置”前往布局画布手动放置。`
-            : `产线「${createdName}」已创建，并已默认放置在车间中心。`,
-        { title: '新增成功', type: 'success' }
-    )
+    lineCreating.value = true
+    try {
+        const layout = defaultLineLayout()
+        const siblingLines = sortByOrder(lines.value.filter(line => line.workshop_id === newLine.workshop_id))
+        layout.placementPending = siblingLines.length > 0
+        const result = await adminApi.createLine({
+            id: newLine.id,
+            name: newLine.name,
+            workshop_id: newLine.workshop_id,
+            layout_json: serializeLineLayout(layout),
+            sort_order: lines.value.length
+        })
+        if (result?.error) return await alert(result.error, { title: '新增产线失败', type: 'danger' })
+        if (!result?.success) return await alert('新增产线失败：后端没有返回成功状态', { title: '新增产线失败', type: 'danger' })
+        const createdName = newLine.name
+        const placementPending = layout.placementPending
+        selectedLineEditorId.value = newLine.id
+        newLine.id = ''
+        newLine.name = ''
+        await loadLines()
+        linePlannerControlsRef.value?.closeCreation()
+        await alert(
+            placementPending
+                ? `产线「${createdName}」已创建，位置暂定。请点击“产线在车间中的位置”前往布局画布手动放置。`
+                : `产线「${createdName}」已创建，并已默认放置在车间中心。`,
+            { title: '新增成功', type: 'success' }
+        )
+    } catch (error) {
+        await alert(error.message || '新增产线失败', { title: '新增产线失败', type: 'danger' })
+    } finally { lineCreating.value = false }
 }
 
 async function deleteLine(id) {
+    if (!canAdminPage('lines', 'delete') || lineDeviceLayoutBusy.value || lineCreating.value) return
     const confirmation = await requestNamedDeletionConfirmation('产线', id, adminApi.getLineDeletionImpact)
     if (!confirmation) return
     let result
@@ -4907,7 +4919,6 @@ watch([
     selectedPreviewModelId,
     manualDisassemblyModelId,
     selectedWidgetPreviewId,
-    isLinePlannerEditorCollapsed,
     isLineDevicePoolCollapsed,
     pointsSubpage,
     () => lineDevicePoolDock.x,
@@ -4931,7 +4942,6 @@ watch([
         selectedPreviewModelId: selectedPreviewModelId.value,
         manualDisassemblyModelId: manualDisassemblyModelId.value,
         selectedWidgetPreviewId: selectedWidgetPreviewId.value,
-        isLinePlannerEditorCollapsed: isLinePlannerEditorCollapsed.value,
         isLineDevicePoolCollapsed: isLineDevicePoolCollapsed.value,
         pointsSubpage: pointsSubpage.value,
         lineDevicePoolDockX: lineDevicePoolDock.x,
@@ -5274,19 +5284,40 @@ function touchLineLayout(line) {
 
 function selectLineEditor(lineId) {
     selectedLineEditorId.value = lineId
+    selectedLineStructure.value = null
     lineFlowMenuLaneId.value = ''
     lineStationEditingDeviceId.value = ''
     lineStationDraft.value = ''
 }
 
-async function openLineCreation() {
-    isLinePlannerEditorCollapsed.value = false
-    await nextTick()
-    adminContentRef.value?.querySelector('.line-create-row input')?.focus()
+function editLineDetails(draft) {
+    if (!canAdminPage('lines', 'edit') || lineDeviceLayoutBusy.value) return
+    const line = lines.value.find(row => row.id === draft.id)
+    if (!line || !workshops.value.some(ws => ws.id === draft.workshop_id)) return
+    Object.assign(line, { name: draft.name, workshop_id: draft.workshop_id, sort_order: numberOrDefault(draft.sort_order, 0) })
+    selectLineEditor(line.id)
 }
 
-function toggleLinePlannerEditor() {
-    isLinePlannerEditorCollapsed.value = !isLinePlannerEditorCollapsed.value
+function changeLineLayoutItem({ type, id, field, value }) {
+    if (!canAdminPage('lines', 'edit') || lineDeviceLayoutBusy.value) return
+    const item = findLineLayoutItem(type, id)
+    if (!item || !['name', 'offsetZ', 'length'].includes(field)) return
+    const next = field === 'name' ? String(value) : Number(value)
+    if (field !== 'name' && (!Number.isFinite(next) || field === 'length' && next < 1)) return
+    item[field] = next
+    patchBoundDevicesForLayoutItem(type, id, item, selectedLineEditor.value)
+    touchLineLayout(selectedLineEditor.value)
+}
+
+async function focusLineStructure({ type, id }) {
+    if (!findLineLayoutItem(type, id)) return
+    selectedLineStructure.value = { type, id }
+    clearLineDeviceSelection()
+    await nextTick()
+    const target = [...(linePreviewStageRef.value?.querySelectorAll('[data-line-target-id]') || [])]
+        .find(el => el.dataset.lineTargetType === type && el.dataset.lineTargetId === id)
+    target?.focus({ preventScroll: true })
+    target?.scrollIntoView({ block: 'center', inline: 'nearest', behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' })
 }
 
 function toggleLineDevicePool() {
@@ -5401,6 +5432,7 @@ function handleLineDevicePoolTabClick() {
 }
 
 function addLineLayoutItem(type) {
+    if (!canAdminPage('lines', 'edit') || lineDeviceLayoutBusy.value) return
     const line = selectedLineEditor.value
     if (!line) return
     const layout = getLineLayout(line)
@@ -5420,6 +5452,7 @@ function addLineLayoutItem(type) {
 }
 
 function removeLineLayoutItem(type, itemId) {
+    if (!canAdminPage('lines', 'edit') || lineDeviceLayoutBusy.value) return
     const line = selectedLineEditor.value
     if (!line) return
     const layout = getLineLayout(line)
@@ -5431,6 +5464,7 @@ function removeLineLayoutItem(type, itemId) {
     layout[key] = layout[key].filter(item => item.id !== itemId)
     layout[key].forEach((item, index) => { item.sort_order = index })
     syncLineLayout(line, layout)
+    if (selectedLineStructure.value?.type === type && selectedLineStructure.value?.id === itemId) selectedLineStructure.value = null
 }
 
 async function saveSelectedLineLayout() {
@@ -5998,6 +6032,7 @@ function startLinePreviewDrag(type, itemId, mode, event) {
     const item = findLineLayoutItem(type, itemId)
     const stage = event.currentTarget.closest?.('.line-preview-stage')
     if (!item || !stage) return
+    selectedLineStructure.value = { type, id: itemId }
     event.preventDefault()
     event.stopPropagation()
 
@@ -6106,6 +6141,7 @@ function linePreviewItemClass(type, item) {
         ? (isAuxiliaryDeviceConfig(device) ? type === 'rail' : type === 'lane')
         : false
     return {
+        'is-selected': selectedLineStructure.value?.type === type && selectedLineStructure.value?.id === item.id,
         'drop-compatible': lineDeviceDrag.active && compatible,
         'drop-target': isTarget
     }
@@ -7705,95 +7741,13 @@ async function openAdminSetupStep(step) {
                         </div>
 
                         <div class="line-planner-layout">
-                            <section class="line-planner-top-controls" aria-label="产线配置工具栏">
-                                <div class="line-config-toolbar">
-                                    <label>产线 <select class="input" aria-label="选择编辑产线" :value="selectedLineEditorId" @change="selectLineEditor($event.target.value)"><option v-if="!lines.length" value="">暂无产线</option><option v-for="line in lines" :key="line.id" :value="line.id">{{ workshops.find(ws => ws.id === line.workshop_id)?.name || '' }} / {{ line.name }}</option></select></label>
-                                    <button type="button" class="btn btn-primary btn-sm" @click="openLineCreation" v-permission="{ page: 'lines', action: 'edit' }">+ 新增产线</button>
-                                    <button type="button" class="btn btn-sm" :aria-expanded="!isLinePlannerEditorCollapsed" aria-controls="line-configuration-panel" @click="toggleLinePlannerEditor">{{ isLinePlannerEditorCollapsed ? '产线与轨道设置' : '收起设置' }}</button>
-                                    <div class="line-preview-metrics">
-                                        <span>{{ selectedLineLayout.lanes.length }} 条设备线</span>
-                                        <span>{{ selectedLineLayout.rails.length }} 条导轨</span>
-                                        <span>{{ selectedLineEditorDevices.length }}/{{ selectedLineTotalDeviceCount }} 台设备</span>
-                                    </div>
-                                </div>
-                                <div v-show="!isLinePlannerEditorCollapsed" id="line-configuration-panel" class="line-planner-editor">
-                                <div class="line-editor-panel">
-                                    <div class="line-panel-title">
-                                        <strong>新增产线</strong>
-                                    </div>
-                                    <div class="line-create-row">
-                                        <input v-model="newLine.id" placeholder="产线ID，如 line_e" class="input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/>
-                                        <input v-model="newLine.name" placeholder="产线名称，如 E 产线" class="input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/>
-                                        <select v-model="newLine.workshop_id" class="input" v-permission="{ page: controlPermissionPage, action: 'edit' }">
-                                            <option value="" disabled>选择所属车间</option>
-                                            <option v-for="ws in workshops" :key="ws.id" :value="ws.id">{{ ws.name }}</option>
-                                        </select>
-                                        <button @click="createLine" class="btn btn-primary" v-permission="{ page: controlPermissionPage, action: 'edit' }">+ 添加产线</button>
-                                    </div>
-                                </div>
-
-                                <div class="line-editor-panel">
-                                    <div class="line-panel-title">
-                                        <strong>产线列表</strong>
-                                        <span>{{ lines.length }} 条</span>
-                                    </div>
-                                    <div class="line-selector-list">
-                                        <div
-                                            v-for="line in lines"
-                                            :key="line.id"
-                                            class="line-card"
-                                            :class="{ active: selectedLineEditorId === line.id }"
-                                        >
-                                            <button type="button" class="line-card-select" @click="selectLineEditor(line.id)">
-                                                <strong>{{ line.name }}</strong>
-                                                <span>
-                                                    {{ workshops.find(w => w.id === line.workshop_id)?.name || line.workshop_id }} · {{ (lineMemberDevicesByLine[line.id] || []).length }} 台设备
-                                                    <em v-if="isLinePlacementPending(line)" class="line-card-status pending">待布局</em>
-                                                    <em v-else-if="dirtyLineIds.includes(line.id)" class="line-card-status dirty">未保存</em>
-                                                </span>
-                                            </button>
-                                            <div class="line-card-fields" v-if="selectedLineEditorId === line.id">
-                                                <input v-model="line.name" class="input input-sm" placeholder="产线名称"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/>
-                                                <select v-model="line.workshop_id" class="input input-sm" v-permission="{ page: controlPermissionPage, action: 'edit' }">
-                                                    <option v-for="ws in workshops" :key="ws.id" :value="ws.id">{{ ws.name }}</option>
-                                                </select>
-                                                <input v-model.number="line.sort_order" type="number" class="input input-sm" title="排序"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/>
-                                                <button class="btn btn-danger btn-sm" type="button" @click="deleteLine(line.id)" v-permission="{ page: controlPermissionPage, action: 'delete' }">删除</button>
-                                            </div>
-                                        </div>
-                                    </div>
-                                </div>
-
-                                <div v-if="selectedLineEditor" class="line-structure-editor">
-                                    <div class="line-structure-section">
-                                        <div class="line-structure-title">
-                                            <strong>设备线</strong>
-                                            <button class="btn btn-sm" type="button" @click="addLineLayoutItem('lane')" v-permission="{ page: controlPermissionPage, action: 'edit' }">+ 设备线</button>
-                                        </div>
-                                        <div class="line-layout-row" v-for="lane in selectedLineLayout.lanes" :key="lane.id">
-                                            <input v-model="lane.name" :title="lane.name" class="input input-sm"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/>
-                                            <label>偏移Z<input v-model.number="lane.offsetZ" type="number" class="input input-sm"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
-                                            <label>长度<input v-model.number="lane.length" type="number" min="1" class="input input-sm"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
-                                            <button class="btn btn-danger btn-sm" type="button" @click="removeLineLayoutItem('lane', lane.id)" v-permission="{ page: controlPermissionPage, action: 'edit' }">删除</button>
-                                        </div>
-                                    </div>
-
-                                    <div class="line-structure-section">
-                                        <div class="line-structure-title">
-                                            <strong>小车导轨</strong>
-                                            <button class="btn btn-sm" type="button" @click="addLineLayoutItem('rail')" v-permission="{ page: controlPermissionPage, action: 'edit' }">+ 小车导轨</button>
-                                        </div>
-                                        <div class="line-layout-row" v-for="rail in selectedLineLayout.rails" :key="rail.id">
-                                            <input v-model="rail.name" :title="rail.name" class="input input-sm"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/>
-                                            <label>偏移Z<input v-model.number="rail.offsetZ" type="number" class="input input-sm"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
-                                            <label>长度<input v-model.number="rail.length" type="number" min="1" class="input input-sm"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
-                                            <button class="btn btn-danger btn-sm" type="button" @click="removeLineLayoutItem('rail', rail.id)" v-permission="{ page: controlPermissionPage, action: 'edit' }">删除</button>
-                                        </div>
-                                        <div v-if="!selectedLineLayout.rails.length" class="composer-empty">当前产线还没有小车导轨</div>
-                                    </div>
-                                </div>
-                                </div>
-                            </section>
+                            <LinePlannerControls ref="linePlannerControlsRef"
+                                :lines="lines" :workshops="workshops" :selected-id="selectedLineEditorId" :layout="selectedLineLayout"
+                                :draft="newLine" :busy="lineDeviceLayoutBusy" :creating="lineCreating"
+                                :device-count="selectedLineEditorDevices.length" :total-devices="selectedLineTotalDeviceCount"
+                                @select="selectLineEditor" @delete="deleteLine" @create="createLine" @edit="editLineDetails"
+                                @add-item="addLineLayoutItem" @remove-item="removeLineLayoutItem" @change-item="changeLineLayoutItem" @focus-item="focusLineStructure"
+                            />
 
                             <section class="line-planner-preview">
                                 <div v-if="selectedLineEditor" class="line-selection-toolbar" role="toolbar" aria-label="设备多选与间距">
@@ -7827,6 +7781,7 @@ async function openAdminSetupStep(step) {
                                         :style="linePreviewItemStyle(lane)"
                                         data-line-target-type="lane"
                                         :data-line-target-id="lane.id"
+                                        tabindex="-1" role="group" :aria-label="lane.name"
                                         title="拖动调整设备线偏移，拖左右把手调整长度"
                                         @pointerdown="startLinePreviewDrag('lane', lane.id, 'move', $event)"
                                     >
@@ -7871,6 +7826,7 @@ async function openAdminSetupStep(step) {
                                         :style="linePreviewItemStyle(rail)"
                                         data-line-target-type="rail"
                                         :data-line-target-id="rail.id"
+                                        tabindex="-1" role="group" :aria-label="rail.name"
                                         title="拖动调整小车导轨偏移，拖左右把手调整长度"
                                         @pointerdown="startLinePreviewDrag('rail', rail.id, 'move', $event)"
                                     >
@@ -8004,35 +7960,6 @@ async function openAdminSetupStep(step) {
                             </section>
                         </div>
                     </div>
-                    <h2>产线管理</h2>
-                    <p class="desc">管理工厂车间的产线划分。每条产线可包含多台设备。</p>
-
-                    <div class="form-row">
-                        <input v-model="newLine.id" placeholder="产线ID（如 line_e）" class="input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/>
-                        <input v-model="newLine.name" placeholder="产线名称（如 E 产线）" class="input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/>
-                        <select v-model="newLine.workshop_id" class="input" style="min-width: 150px" v-permission="{ page: controlPermissionPage, action: 'edit' }">
-                            <option value="" disabled>选择所属车间</option>
-                            <option v-for="ws in workshops" :key="ws.id" :value="ws.id">{{ ws.name }}</option>
-                        </select>
-                        <button @click="createLine" class="btn btn-primary" v-permission="{ page: controlPermissionPage, action: 'edit' }">+ 添加产线</button>
-                    </div>
-
-                    <table class="data-table">
-                        <thead>
-                            <tr><th>ID</th><th>名称</th><th>所属车间</th><th>设备数量</th><th>操作</th></tr>
-                        </thead>
-                        <tbody>
-                            <tr v-for="line in lines" :key="line.id">
-                                <td><code>{{ line.id }}</code></td>
-                                <td>{{ line.name }}</td>
-                                <td>{{ workshops.find(w => w.id === line.workshop_id)?.name || line.workshop_id }}</td>
-                                <td>{{ (lineMemberDevicesByLine[line.id] || []).length }} 台</td>
-                                <td>
-                                    <button @click="deleteLine(line.id)" class="btn btn-danger btn-sm" v-permission="{ page: controlPermissionPage, action: 'delete' }">删除</button>
-                                </td>
-                            </tr>
-                        </tbody>
-                    </table>
                 </div>
 
                 <!-- ======== 设备管理 ======== -->
@@ -10629,12 +10556,6 @@ async function openAdminSetupStep(step) {
     overflow: visible;
     background: #f2f4f6;
 }
-.line-planner-tab > h2,
-.line-planner-tab > .desc,
-.line-planner-tab > .form-row,
-.line-planner-tab > .data-table {
-    display: none;
-}
 .line-planner-shell {
     height: 100%;
     min-height: calc(100vh - 86px);
@@ -10671,20 +10592,7 @@ async function openAdminSetupStep(step) {
 }
 /* Compact top configuration; the canvas always owns the full width. */
 .line-planner-layout { display: flex; flex-direction: column; min-width: 0; min-height: calc(100vh - 220px); }
-.line-planner-top-controls { min-width: 0; background: #f8fafc; border-bottom: 1px solid #e3e8ef; }
-.line-config-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 10px 16px; }
-.line-config-toolbar label { display: flex; align-items: center; gap: 8px; color: #52687d; font-size: calc(13px * var(--admin-font-scale, 1)); }
-.line-config-toolbar .line-preview-metrics { margin-left: auto; }
-.line-config-toolbar select { min-width: 220px; max-width: min(440px, 60vw); }
-.line-planner-editor { box-sizing: border-box; display: grid; grid-template-columns: minmax(230px, .8fr) minmax(240px, 1fr) minmax(420px, 1.5fr); align-items: start; gap: 12px; min-width: 0; max-height: 250px; overflow: auto; padding: 0 16px 12px; }
-.line-planner-editor .line-editor-panel, .line-planner-editor .line-structure-section { margin: 0; }
-.line-planner-editor .line-structure-editor { grid-template-columns: repeat(2, minmax(190px, 1fr)); gap: 12px; }
-.line-planner-editor .line-selector-list { max-height: 190px; overflow-y: auto; }
-.line-planner-editor .line-layout-row { grid-template-columns: minmax(82px, 1fr) 60px 60px 50px; gap: 6px; }
-.line-planner-editor .line-layout-row .btn { width: 50px; min-width: 50px; }
-
 .line-planner-preview { flex: 1; min-width: 0; }
-@media(max-width: 1500px) { .line-planner-editor { grid-template-columns: repeat(2, minmax(220px, 1fr)); } .line-structure-editor { grid-column: 1 / -1; } }
 /* The embedded host adds a 46px window-chrome strip above the header, so every
    viewport-relative height in this tab has that much less room to work with. */
 .admin-container.unity-embedded .line-planner-tab,
@@ -10693,136 +10601,6 @@ async function openAdminSetupStep(step) {
 }
 .admin-container.unity-embedded .line-planner-layout {
     min-height: calc(100vh - 266px);
-}
-.admin-container.unity-embedded .line-planner-editor { max-height: 250px; }
-.line-editor-panel,
-.line-basic-grid,
-.line-structure-section {
-    margin-bottom: 14px;
-    padding: 14px;
-    background: #ffffff;
-    border: 1px solid rgba(25, 33, 38, 0.08);
-    border-radius: 8px;
-}
-.line-panel-title,
-.line-structure-title {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: 10px;
-    margin-bottom: 12px;
-}
-.line-panel-title strong,
-.line-structure-title strong {
-    flex: 0 0 auto;
-    color: #172027;
-    font-size: calc(15px * var(--admin-font-scale, 1));
-}
-.line-panel-title span {
-    min-width: 0;
-    color: #77818a;
-    font-size: calc(12px * var(--admin-font-scale, 1));
-    line-height: 1.45;
-    text-align: right;
-    overflow-wrap: anywhere;
-}
-.line-create-row,
-.line-selector-list,
-.line-structure-editor,
-.line-structure-section {
-    display: grid;
-    gap: 10px;
-}
-.line-create-row .btn {
-    min-height: 38px;
-}
-.line-card {
-    border: 1px solid rgba(25, 33, 38, 0.10);
-    border-radius: 8px;
-    background: #f8fafb;
-    overflow: hidden;
-}
-.line-card.active {
-    background: #eef5f8;
-    border-color: #3e7da0;
-    box-shadow: inset 3px 0 0 #245c7a;
-}
-.line-card-select {
-    width: 100%;
-    min-height: 42px;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-    padding: 9px 11px;
-    color: #172027;
-    background: transparent;
-    border: 0;
-    cursor: pointer;
-    text-align: left;
-}
-.line-card-select strong {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    font-size: calc(14px * var(--admin-font-scale, 1));
-}
-.line-card-select span {
-    color: #77818a;
-    font-size: calc(12px * var(--admin-font-scale, 1));
-    white-space: nowrap;
-}
-.line-card-status {
-    display: inline-flex;
-    margin-left: 5px;
-    padding: 2px 6px;
-    border-radius: 999px;
-    font-size: calc(10px * var(--admin-font-scale, 1));
-    font-style: normal;
-    font-weight: 800;
-    vertical-align: 1px;
-}
-.line-card-status.pending { color: #9a4f00; background: #fff0d5; }
-.line-card-status.dirty { color: #b42318; background: #fee4e2; }
-.line-card-fields {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1.35fr);
-    gap: 8px;
-    padding: 0 10px 10px 13px;
-}
-.line-card-fields .input {
-    min-width: 0;
-    height: 32px;
-    padding: 5px 8px;
-}
-.line-card-fields .btn {
-    width: 100%;
-    padding: 7px 0;
-}
-.line-basic-grid {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-    gap: 10px;
-}
-.line-basic-grid label,
-.line-layout-row label {
-    display: grid;
-    gap: 6px;
-    min-width: 0;
-    color: #4d5861;
-    font-size: calc(12px * var(--admin-font-scale, 1));
-    font-weight: 600;
-}
-.line-basic-grid .btn {
-    grid-column: 2;
-    justify-self: end;
-    align-self: end;
-}
-.line-structure-section {
-    min-width: 0;
-    margin-bottom: 0;
-    overflow: hidden;
 }
 .line-placement-pending-card {
     display: flex;
@@ -10862,10 +10640,6 @@ async function openAdminSetupStep(step) {
 .line-placement-pending-copy small { color: #936222; font-size: calc(11px * var(--admin-font-scale, 1)); line-height: 1.55; }
 .line-placement-pending-action { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 6px; color: #9a5500; font-size: calc(12px * var(--admin-font-scale, 1)); font-weight: 800; }
 .line-placement-pending-action b { font-size: calc(17px * var(--admin-font-scale, 1)); }
-.line-structure-title .btn {
-    background: #eef1f4;
-    color: #245c7a;
-}
 .line-flow-hint {
     min-width: 0;
     color: #77818a;
@@ -10897,26 +10671,6 @@ async function openAdminSetupStep(step) {
     background: #245c7a;
     border-color: #245c7a;
 }
-.line-layout-row {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) 92px 92px 60px;
-    gap: 8px;
-    align-items: end;
-    padding: 8px;
-    background: #f8fafb;
-    border: 1px solid rgba(25, 33, 38, 0.06);
-    border-radius: 8px;
-}
-.line-layout-row .input {
-    min-width: 0;
-    height: 32px;
-    padding: 5px 8px;
-}
-.line-layout-row .btn {
-    width: 60px;
-    min-width: 60px;
-    padding: 7px 0;
-}
 .line-planner-preview {
     position: relative;
     min-width: 0;
@@ -10924,22 +10678,6 @@ async function openAdminSetupStep(step) {
     display: grid;
     grid-template-rows: auto minmax(0, 1fr);
     background: #e6ebef;
-}
-.line-preview-metrics {
-    font-size: calc(12px * var(--admin-font-scale, 1));
-    display: flex;
-    flex-wrap: wrap;
-    justify-content: flex-end;
-    gap: 8px;
-}
-.line-preview-metrics span {
-    min-height: 26px;
-    padding: 5px 9px;
-    color: #3d474f;
-    background: #f0f3f5;
-    border: 1px solid rgba(25, 33, 38, 0.08);
-    border-radius: 999px;
-    font-weight: 600;
 }
 .line-selection-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 18px 0; font-size: calc(12px * var(--admin-font-scale, 1)); color: #526574; }
 .line-selection-toolbar button { padding: 5px 10px; min-height: 30px; border: 1px solid #cbd9e5; border-radius: 6px; background: #fff; color: #245f8b; cursor: pointer; }
@@ -11080,6 +10818,8 @@ async function openAdminSetupStep(step) {
     background: rgba(117, 154, 176, 0.22);
     border: 1px solid rgba(70, 113, 139, 0.35);
 }
+.line-map-item.is-selected { outline: 3px solid #3287df; outline-offset: 4px; box-shadow: 0 0 0 7px #3287df22; }
+.line-map-rail.is-selected { outline-color: #b57a21; box-shadow: 0 0 0 7px #d49a3226; }
 .line-map-item.drop-compatible {
     outline: 1px dashed rgba(36, 92, 122, 0.38);
     outline-offset: 4px;
@@ -14140,16 +13880,8 @@ button:enabled:active {
         left: 50px;
     }
     .line-transform-grid,
-    .line-card-fields,
     .line-flow-controls {
         grid-template-columns: 1fr;
-    }
-    .line-layout-row {
-        grid-template-columns: minmax(0, 1fr) 82px;
-    }
-    .line-layout-row .btn {
-        grid-column: 1 / -1;
-        width: 100%;
     }
 }
 

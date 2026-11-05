@@ -51,12 +51,29 @@ test('reading preferences are local, bounded and robust to unavailable/corrupted
 
 test('removed batch arrangement leaves normal drag/multi-select/spacing and a full-width canvas with compact top configuration', async () => {
   const panel = await source('../src/views/AdminPanel.vue')
+  const controls = await source('../src/views/admin/components/LinePlannerControls.vue')
   assert.doesNotMatch(panel, /LineBatchArrangement|lineBatchTargets|批量添加与排布|line-planner-steps|workshop-back-button|line-editor-float-toggle/)
-  assert.match(panel, /class="line-planner-top-controls"[\s\S]*aria-label="选择编辑产线"[\s\S]*class="line-planner-preview"/)
+  assert.match(panel, /<LinePlannerControls[\s\S]*class="line-planner-preview"/)
+  assert.match(controls, /aria-label="选择编辑产线"/)
   assert.match(panel, /\.line-planner-layout\s*\{[^}]*flex-direction: column/)
   assert.match(panel, /applyLineDeviceSpacing\(true\)/); assert.match(panel, /@pointerdown="startLineDeviceDrag/)
   assert.match(panel, /key: 'space'/); assert.match(panel, /selectWorkshopManagementStep\(step.key\)/)
   await assert.rejects(access(new URL('../src/views/admin/components/LineBatchArrangement.vue', import.meta.url)))
+})
+
+test('line creation is modal, destructive actions remain permission-checked, and structure inspection never starts a drag', async () => {
+  const panel = await source('../src/views/AdminPanel.vue'), controls = await source('../src/views/admin/components/LinePlannerControls.vue')
+  assert.doesNotMatch(panel, /产线与轨道设置|line-configuration-panel|line-planner-editor|isLinePlannerEditorCollapsed/)
+  assert.match(controls, /role="dialog" aria-modal="true"/)
+  assert.doesNotMatch(controls, /@(?:mouse(?:leave|over)|click\.self)=/)
+  for (const label of ['产线 ID', '产线名称', '所属车间', '管理设备线', '管理小车导轨']) assert.ok(controls.includes(label))
+  assert.match(controls, /canAdminPage\('lines', 'delete'\)/)
+  assert.match(controls, /aria-label="`删除产线 \$\{line.name\}`"/)
+  assert.match(controls, /emit\('focus-item', \{ type, id \}\)/)
+  const focus = panel.slice(panel.indexOf('async function focusLineStructure'), panel.indexOf('function toggleLineDevicePool'))
+  assert.match(focus, /scrollIntoView/); assert.match(focus, /focus\(\{ preventScroll: true \}\)/)
+  assert.doesNotMatch(focus, /adminApi\.|touchLineLayout|startLinePreviewDrag/)
+  assert.match(panel, /'is-selected': selectedLineStructure/)
 })
 
 test('admin font scale and file-picker styling are scoped to UI and do not scale canvas coordinates or published HUD text', async () => {
