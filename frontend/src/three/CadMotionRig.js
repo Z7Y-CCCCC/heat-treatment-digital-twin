@@ -77,13 +77,18 @@ export class CadMotionRig {
         const rollers=this.parts('internal_rollers_stainless')
         if(blades.length!==8||shaft.length!==1||rollers.length!==7)throw Error('回火炉叶轮或辊筒节点与动作配置不匹配，请检查模型文件。')
         this.temperingFan=this.pivot('tempering_impeller',new T.Vector3(0,this.authoringY(1.96),-.1544),[...blades,...shaft])
+        // Keep animated solids under their CAD assembly so one inspection part
+        // moves the complete fan/roller group in both Three.js and exported Unity rigs.
+        this.node('internal_fan').attach(this.temperingFan)
         this.temperingDriveShafts=this.parts('circulation_fan_stainless').map((part,index)=>({
             pivot:this.pivot('tempering_drive_'+index,part.center,[part]),axis:part.size.x>part.size.y?'x':'y'
         }))
+        for(const {pivot} of this.temperingDriveShafts)this.node('circulation_fan').attach(pivot)
         this.temperingRollers=rollers.map((part,index)=>{
             const pivot=this.pivot('tempering_roller_'+index,part.center,[part])
             const marker=new T.Mesh(new T.BoxGeometry(.35,.005,.008),new T.MeshBasicMaterial({color:'#25bfe6'}))
             marker.name='preview_rotation_witness';marker.position.y=part.size.y/2+.001;pivot.add(marker)
+            this.node('internal_rollers').attach(pivot)
             return pivot
         })
         this.heatMaterials=[]

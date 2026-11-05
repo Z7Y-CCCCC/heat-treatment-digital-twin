@@ -156,6 +156,16 @@ test('text-only alarm save cannot clear or silently save point-definition drafts
     assert.equal(points.isPointsDirty.value, false)
 })
 
+test('point row keys survive edits and stay out of stored point payloads', async t => {
+    const { points } = pointsFixture(t)
+    const point = points.normalizeLoadedPoint({ id: 5, device_id: 'A', name: 'temperature' })
+    const key = points.pointRowKey(point)
+    point.name = 'changed'; point.plc_tag = 'DB1.DBW2'; point.device_id = 'B'
+    assert.equal(points.pointRowKey(point), key)
+    assert.notEqual(points.pointRowKey(points.normalizeLoadedPoint({ name: 'changed' })), key)
+    assert.doesNotMatch(JSON.stringify(point), /point-row-/)
+})
+
 test('alarm save errors and concurrent typing preserve the latest dirty draft', async t => {
     const { points } = pointsFixture(t)
     t.mock.method(adminApi, 'getDataPoints', async () => [{ id: 1, name: 'bj1', device_id: 'A', alarm_text: 'old' }])

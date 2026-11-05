@@ -2,6 +2,7 @@
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import LoadingExperience from '../components/LoadingExperience.vue'
+import SceneLoadingIndicator from '../components/SceneLoadingIndicator.vue'
 import { useFactoryConfig } from '../config/factoryConfig.js'
 import { createDashboardDataStore } from '../runtime/DataStore.js'
 import { API_BASE } from '../runtime/backendEndpoint.js'
@@ -1098,6 +1099,7 @@ onUnmounted(() => {
 <template>
     <LoadingExperience v-if="startupLoading && !nativeLoadingManaged" :show="startupLoading" :progress="startupProgress" :phase="startupPhase" :step="startupStep" :config="config.settings?.loading_experience_config" />
     <div ref="rootRef" class="dashboard-overlay-root" :class="{ 'is-scene-ready': runtimeContext.sceneReady !== false, 'standalone-preview': standalonePreview }">
+      <SceneLoadingIndicator :show="!startupLoading && runtimeContext.sceneReady === false && !!runtimeContext.sceneLoading" :loading="runtimeContext.sceneLoading" />
         <nav class="overlay-hierarchy" aria-label="逐级浏览" data-overlay-hit="true" @pointerdown.stop>
             <div ref="hierarchyPathRef" class="overlay-hierarchy-path" aria-label="当前层级路径">
                 <template v-for="(segment,index) in hierarchyTrail" :key="segment.key">

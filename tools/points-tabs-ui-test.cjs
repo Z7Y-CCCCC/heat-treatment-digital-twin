@@ -125,6 +125,10 @@ const check = name => { checks.push(name); console.log('PASS ' + name); };
     assert.ok(await reader.locator('.alarm-textarea').isDisabled());
     assert.ok(await reader.getByRole('button', { name: '匹配到报警点位', exact: true }).isDisabled());
     assert.equal(await reader.locator('.page-readonly-notice').count(), 0);
+    await reader.getByRole('tab', { name: 'PLC 点位映射', exact: true }).click();
+    await reader.getByLabel('筛选点位设备', { exact: true }).selectOption('all');
+    const readonlyPicker=reader.getByRole('button',{name:'选择点位所属设备',exact:true}).first();
+    await readonlyPicker.waitFor();assert.ok(await readonlyPicker.isDisabled());
     check('read-only users can switch both tabs but cannot add, import or save edits');
     const alarmAccount = await page.request.post(info.origin + '/api/admin-auth/users', { headers: {
         Origin: info.origin, 'X-Admin-Request': '1', 'X-CSRF-Token': session.csrfToken

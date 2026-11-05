@@ -79,6 +79,8 @@ namespace HeatTreatment.DigitalTwin.Runtime
         private Camera _camera;
         private OrbitCameraController _orbit;
         private bool _sceneReady;
+        private JObject _sceneLoading;
+        private string _sceneLoadId = string.Empty;
         private bool _inspectionIsolated;
         private CameraClearFlags _inspectionPreviousClearFlags;
         private Color _inspectionPreviousBackground;
@@ -485,7 +487,8 @@ namespace HeatTreatment.DigitalTwin.Runtime
             _reload = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
             _diagnostics?.BeginLoading();
             _sceneReady = false;
-            if (_webSocket != null) PublishDashboardContext("factory", viewId: "factory_overview");
+            _sceneLoadId = Guid.NewGuid().ToString("N");
+            SetSceneLoading("config", 0, 0);
             DestroyCurrentFactory();
             _ = LoadConfigurationLoopAsync(_reload.Token);
         }
@@ -540,6 +543,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
                     _diagnostics.BackendState = "configuration offline";
                     var reason = ShortMessage(exception.Message);
                     _diagnostics.UpdateLoading(0.08f, "现场服务暂不可用，正在重试…", reason);
+                    SetSceneLoading("retry", 0, 0);
                     _diagnostics.Activity = $"Config retry in {retry:0}s: {reason}";
                     Debug.LogWarning($"[StartupWarning] 8|现场配置读取失败：{reason}");
                     Debug.LogWarning($"[FactoryRuntime] Configuration unavailable: {exception.Message}");
@@ -595,6 +599,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
 
             var placements = CreateHierarchy(config, _factoryRoot);
             var devices = placements.Select(placement => placement.Device).ToList();
+            SetSceneLoading("environment", 0, placements.Count);
             _diagnostics.DeviceCount = devices.Count;
             _diagnostics.ReadyDeviceCount = 0;
             _diagnostics.FallbackDeviceCount = 0;
@@ -611,6 +616,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var device = placement.Device;
+                SetSceneLoading("models", loadedPlacements, placements.Count, device.Name ?? device.Id);
                 _diagnostics.Activity = $"Loading {device.Name ?? device.Id}";
                 var instance = await _modelLibrary.InstantiateAsync(device, placement.Parent, cancellationToken);
                 if (cancellationToken.IsCancellationRequested)
@@ -650,12 +656,14 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 }
                 _diagnostics.TemplateCount = _modelLibrary.LoadedTemplateCount;
                 loadedPlacements += 1;
+                SetSceneLoading("models", loadedPlacements, placements.Count, device.Name ?? device.Id);
                 _diagnostics.UpdateLoading(0.32f + 0.55f * loadedPlacements / totalPlacements, $"正在加载设备模型（{loadedPlacements}/{totalPlacements}）");
                 await Task.Yield();
             }
 
             cancellationToken.ThrowIfCancellationRequested();
             var bounds = CalculateFactoryOverviewBounds();
+            SetSceneLoading("scene", loadedPlacements, placements.Count);
             _sceneReady = true;
             NormalizeFactoryOverviewViewForEnvironment("factory_overview", "factory");
             _dashboard.CompleteFactory(bounds);
@@ -1350,6 +1358,13 @@ namespace HeatTreatment.DigitalTwin.Runtime
             }
         }
 
+        private void SetSceneLoading(string stage, int completed, int total, string modelName = "")
+        {
+            _sceneLoading = new JObject { ["loadId"] = _sceneLoadId, ["stage"] = stage,
+                ["completed"] = completed, ["total"] = total, ["modelName"] = modelName ?? string.Empty };
+            if (_webSocket != null && !_sceneReady) PublishDashboardContext("factory", viewId: "factory_overview");
+        }
+
         private void PublishDashboardContext(string mode, string deviceId = "", string lineId = "", string workshopId = "", string viewId = "")
         {
             var normalizedMode = string.IsNullOrWhiteSpace(mode) ? "factory" : mode.ToLowerInvariant();
@@ -1364,6 +1379,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 ["factoryId"] = _config?.FactoryId ?? string.Empty,
                 ["viewId"] = viewId ?? string.Empty,
                 ["sceneReady"] = _sceneReady,
+                ["sceneLoading"] = _sceneReady ? null : _sceneLoading?.DeepClone(),
                 ["viewMode"] = normalizedMode,
                 ["sceneId"] = _config?.Platform?["activeScene"]?["id"]?.Value<string>() ?? string.Empty,
                 ["workshopId"] = workshopId ?? string.Empty,

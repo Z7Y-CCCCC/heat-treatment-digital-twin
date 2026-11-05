@@ -83,6 +83,7 @@ export function apiPermission(path, method = 'GET', body) {
   }
   if (resource('models')) {
     if (safe) return read(spatial, true)
+    if (path === '/api/models/asset-export' && method === 'POST') return read(spatial, true)
     if (path === '/api/models/asset-inspect' && method === 'POST') return any('admin', p('models', 'edit'), p('model-animations', 'edit'))
     // Package import also creates a model; animation-only editors cannot
     // introduce/replace model assets by using the motion page.
