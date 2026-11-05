@@ -12,7 +12,7 @@ const statusNames = { normal: '正常', abnormal: '异常', pending: '连接中'
 const time = n => n ? new Date(n).toLocaleTimeString('zh-CN', { hour12: false }) : '—'
 const milliseconds = n => n == null ? '—' : `${Math.round(n)} ms`
 async function refresh() {
-  if (disposed || loading || document.visibilityState === 'hidden') return
+  if (disposed || loading || busy.value || document.visibilityState === 'hidden') return
   loading = true; const controller = new AbortController(); abort = controller
   const version = ++generation, scope = getFactoryScope(), timeout = setTimeout(() => controller.abort(), 6000)
   try {
@@ -26,14 +26,17 @@ async function refresh() {
 }
 async function changeSource(mode) {
   if (busy.value || !data.value || mode === source.value || !canAdminPage('settings.data', 'edit')) return
-  const scope = getFactoryScope()
-  if (!await props.confirm(mode === 'simulation' ? '切换为模拟演示？当前工厂将暂停读取 PLC。' : mode === 'external' ? '切换为外部接口？当前工厂将暂停读取 PLC。' : '切换为现场采集？将按后台已保存的设备与点位配置读取。')) return
-  if (scope !== getFactoryScope() || !data.value) return
+  const scope = getFactoryScope(), expectedMode = source.value
+  // A status request started before this choice must not restore the previous
+  // capsule after the durable mode write completes. Only the server owns it.
+  generation++; abort?.abort(); abort = null; loading = false
   busy.value = true; actionError.value = ''; message.value = ''
   try {
-    const result = await adminApi.setCollectorMode({ mode, expectedMode: source.value })
+    if (!await props.confirm(mode === 'simulation' ? '切换为模拟演示？当前工厂将暂停读取 PLC。' : mode === 'external' ? '切换为外部接口？当前工厂将暂停读取 PLC。' : '切换为现场采集？将按后台已保存的设备与点位配置读取。')) return
+    if (disposed || scope !== getFactoryScope() || !data.value) return
+    const result = await adminApi.setCollectorMode({ mode, expectedMode })
     if (disposed || scope !== getFactoryScope()) return
-    if (!result.success) throw Error(result.error || '数据来源切换失败')
+    if (!result.success || result.mode !== mode) throw Error(result.error || '数据来源切换失败')
     data.value.configuredMode = result.mode
     if (!result.runtimeApplied) message.value = '已保存，等待采集进程恢复同步'
   } catch (cause) { if (!disposed && scope === getFactoryScope()) actionError.value = cause.message }

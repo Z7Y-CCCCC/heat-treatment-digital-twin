@@ -29,7 +29,7 @@ test('collector page replaces the old selector and duplicate engine card, withou
   assert.doesNotMatch(panel, /<select v-model="settings.data_mode"/)
   assert.match(panel, /!\['migration', 'database', 'data'\]\.includes\(settingsSubpage\)/)
   assert.doesNotMatch(component,/engine\/restart|\.restart\(|saveSettings\(/)
-  assert.match(component,/props\.confirm\(/); assert.match(component,/expectedMode: source.value/)
+  assert.match(component,/props\.confirm\(/); assert.match(component,/expectedMode = source.value/)
 })
 test('collector polling is bounded, scoped, cancellable, and never treats request failure as healthy', () => {
   const component = source('../src/views/admin/components/CollectorRuntimePanel.vue')
