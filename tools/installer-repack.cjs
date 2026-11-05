@@ -18,7 +18,18 @@ function assertRepackable(root, manifest) {
   const git = args => execFileSync('git', ['-C',root,...args], {encoding:'utf8',windowsHide:true});
   const changed = git(['diff','--name-only',manifest.buildSourceCommit,'--']).trim().split(/\r?\n/).filter(Boolean);
   const untracked = git(['ls-files','--others','--exclude-standard']).trim().split(/\r?\n/).filter(Boolean);
-  const unsafe = [...changed,...untracked].filter(name => !installerOnlyFile(name));
+  const unsafe = [...changed,...untracked].filter(name => {
+    if (installerOnlyFile(name)) return false;
+    // The normal build regenerates this tracked legal document. It is safe
+    // only when it already equals the verified installed copy byte-for-byte.
+    if (name === 'desktop/THIRD_PARTY_NOTICES.txt') {
+      try {
+        const installed = path.join(manifest.stagingDirectory, 'win-unpacked/resources/THIRD_PARTY_NOTICES.txt');
+        return fileDigest(path.join(root,name)).sha256 !== fileDigest(installed).sha256;
+      } catch { return true; }
+    }
+    return true;
+  });
   if (unsafe.length) throw Error('Application sources changed; use the full build: '+unsafe.join(', '));
   if (manifest.version !== require(path.join(root,'desktop/package.json')).version) throw Error('Version changed; use the full build');
 }

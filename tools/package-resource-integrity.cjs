@@ -7,7 +7,7 @@ const crypto = require('node:crypto');
 async function hashFile(filename) {
     const before = await fs.promises.stat(filename);
     const hash = crypto.createHash('sha256');
-    for await (const chunk of fs.createReadStream(filename)) hash.update(chunk);
+    for await (const chunk of fs.createReadStream(filename, { highWaterMark: 1024 * 1024 })) hash.update(chunk);
     const after = await fs.promises.stat(filename);
     assert.ok(before.size === after.size && before.mtimeMs === after.mtimeMs && before.ino === after.ino,
         `Installation resource changed while hashing: ${filename}`);
@@ -17,6 +17,7 @@ async function hashFile(filename) {
 async function snapshotTree(directory) {
     const root = await fs.promises.realpath(path.resolve(directory));
     const entries = [];
+    const pending = [];
     async function visit(current, prefix = '') {
         const children = (await fs.promises.readdir(current, { withFileTypes: true }))
             .sort((a, b) => a.name.localeCompare(b.name));
@@ -29,11 +30,23 @@ async function snapshotTree(directory) {
                 await visit(filename, name);
             } else {
                 assert.ok(child.isFile(), `Unsupported installation resource: ${filename}`);
-                entries.push({ path: name, type: 'file', ...await hashFile(filename) });
+                const index = entries.length;
+                entries.push(null);
+                pending.push({ index, filename, name });
             }
         }
     }
     await visit(root);
+    // Keep the original deterministic traversal order and SHA-256 proof,
+    // but avoid serial open/read/close latency for thousands of files. Eight
+    // workers bound descriptors and buffers; file mutation checks remain intact.
+    let next = 0;
+    await Promise.all(Array.from({ length: Math.min(8, pending.length) }, async () => {
+        while (next < pending.length) {
+            const { index, filename, name } = pending[next++];
+            entries[index] = { path: name, type: 'file', ...await hashFile(filename) };
+        }
+    }));
     const digest = crypto.createHash('sha256').update(JSON.stringify(entries)).digest('hex');
     return { version: 1, root, entries, sha256: digest };
 }

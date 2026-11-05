@@ -16,6 +16,18 @@ function fixture(t) {
     return root;
 }
 
+test('streaming tar preserves binary and Chinese-name files for standard tar extraction', async t => {
+    const root = fixture(t), source = path.join(root, 'node_modules');
+    const bytes = Buffer.from([0, 1, 255, 128, 10]);
+    fs.writeFileSync(path.join(source, '中文依赖.bin'), bytes);
+    const output = path.join(root, 'default.tar');
+    await prepareDependencyArchive(source, path.join(root, 'cache'), output);
+    const extracted = path.join(root, 'extracted'); fs.mkdirSync(extracted);
+    require('node:child_process').execFileSync('tar', ['-xf', output, '-C', extracted], { windowsHide: true });
+    assert.deepEqual(fs.readFileSync(path.join(extracted, '中文依赖.bin')), bytes);
+    assert.equal(fs.readFileSync(path.join(extracted, 'example.js'), 'utf8'), 'module.exports=1');
+});
+
 test('dependency install state invalidates package, lock, installed lock and missing state changes', t => {
     const root = fixture(t);
     assert.equal(dependenciesCurrent(root), false);
