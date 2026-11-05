@@ -71,6 +71,8 @@ const loading = ref(true)
 const saving = ref(false)
 const publishing = ref(false)
 const status = reactive({ tone: 'info', text: '正在读取设计器...' })
+const publishNotice = ref(null)
+let publishNoticeTimer = null, publishNoticeSequence = 0
 const acceptanceReport = ref(null)
 const acceptanceLoading = ref(false)
 const zoom = ref(0.68)
@@ -475,6 +477,19 @@ const canvasOuterStyle = computed(() => ({
 function setStatus(text, tone = 'info') {
   status.text = text
   status.tone = tone
+}
+
+function clearPublishNotice() {
+  window.clearTimeout(publishNoticeTimer)
+  publishNoticeTimer = null
+  publishNotice.value = null
+}
+
+function showPublishNotice(text, tone = 'error') {
+  if (designerDisposed || !designerActive) return
+  clearPublishNotice()
+  publishNotice.value = { text, tone, sequence:++publishNoticeSequence }
+  if (tone === 'success') publishNoticeTimer = window.setTimeout(clearPublishNotice, 4000)
 }
 
 async function runAcceptanceReport() {
@@ -2239,9 +2254,17 @@ async function saveDraft() {
 
 async function publishVersion() {
   if (publishing.value || saving.value) return
+  clearPublishNotice()
   rememberEditorState()
   if (isDirty.value) {
-    if (!await saveDraft() || isDirty.value) return
+    if (!await saveDraft()) {
+      showPublishNotice(`保存失败：${status.text || '请重试'}`)
+      return
+    }
+    if (isDirty.value) {
+      showPublishNotice('尚未发布：保存期间有新修改，请再次保存并发布', 'warning')
+      return
+    }
   }
   publishing.value = true
   try {
@@ -2251,9 +2274,11 @@ async function publishVersion() {
     // 的草稿，不需要再次请求草稿、设备、点位和数据源，避免整块画布闪回加载态。
     applyPublishedRelease(result.release)
     setStatus(`版本 ${result.release.version} 已发布，运行端连接后将加载此版本`, 'success')
+    showPublishNotice(`保存并发布成功（版本 ${result.release.version}）`, 'success')
     emit('reload')
   } catch (error) {
     setStatus(error.message || '发布失败', 'danger')
+    showPublishNotice(`发布失败：${error.message || '请重试'}`)
   } finally {
     publishing.value = false
   }
@@ -2350,6 +2375,7 @@ function activateDesigner() {
 }
 
 function deactivateDesigner() {
+  clearPublishNotice()
   scheduleCurrentViewPreview({ immediate: true })
   designerActive = false
   stopDesignerEvents?.()
@@ -2389,6 +2415,7 @@ onMounted(() => {
 onActivated(activateDesigner)
 onDeactivated(deactivateDesigner)
 onBeforeUnmount(() => {
+  clearPublishNotice()
   if (!loading.value && isDirty.value && documentModel.value?.sceneId) {
     persistLocalDraft()
     cacheFactoryDraft(draftFactoryId, `dashboard:${documentModel.value.sceneId}`, 'dashboard', {
@@ -2409,6 +2436,15 @@ onBeforeUnmount(() => {
 
 <template>
   <section ref="designerShellRef" class="dashboard-designer-shell" :class="{ 'is-preview': previewMode, 'is-fullscreen': fullscreenActive }">
+    <Teleport :to="fullscreenActive && designerShellRef ? designerShellRef : 'body'">
+      <Transition name="publish-notice">
+        <div v-if="publishNotice" :key="publishNotice.sequence" class="designer-publish-notice" :class="publishNotice.tone" :role="publishNotice.tone === 'error' ? 'alert' : 'status'" aria-atomic="true" data-testid="designer-publish-notice">
+          <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><circle cx="10" cy="10" r="8"/><path v-if="publishNotice.tone === 'success'" d="m6 10 2.5 2.5L14 7"/><path v-else d="M10 5.5v5M10 13.5v1"/></svg>
+          <span>{{ publishNotice.text }}</span>
+          <button type="button" aria-label="关闭发布消息" @click="clearPublishNotice">×</button>
+        </div>
+      </Transition>
+    </Teleport>
     <DashboardIntegrationPanel v-if="integrationOpen" :definitions="documentModel.parameters" :api="integration.api" :run="runSoftwareMethod" :readonly="!canAdminPage('platform.designer','edit')" :views="views" :widgets="documentModel.widgets" :devices="devices" @apply="applyParameterDefinitions" @close="integrationOpen=false" />
     <header class="designer-toolbar">
       <div class="designer-toolbar-group">
@@ -3085,6 +3121,9 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+.designer-publish-notice{position:fixed;z-index:10020;top:24px;left:50%;transform:translateX(-50%);display:flex;align-items:flex-start;gap:10px;box-sizing:border-box;width:max-content;max-width:min(520px,calc(100vw - 32px));padding:12px 14px;border:1px solid #e1e6ee;border-radius:8px;background:#fff;color:#b42318;box-shadow:0 8px 28px #141d2b29;font-size:13px;line-height:1.5}
+.designer-publish-notice.success{color:#18774f}.designer-publish-notice.warning{color:#a36a12}.designer-publish-notice>svg{flex:0 0 20px;width:20px;height:20px}.designer-publish-notice>span{min-width:0;overflow-wrap:anywhere;max-height:30vh;overflow-y:auto}.designer-publish-notice>button{flex:0 0 22px;width:22px;height:22px;padding:0;border:0;background:transparent;color:inherit;font-size:18px;line-height:1;cursor:pointer}.designer-publish-notice>button:focus-visible{outline:2px solid currentColor;outline-offset:2px}.publish-notice-enter-active,.publish-notice-leave-active{transition:opacity .16s ease}.publish-notice-enter-from,.publish-notice-leave-to{opacity:0}
+@media(prefers-reduced-motion:reduce){.publish-notice-enter-active,.publish-notice-leave-active{transition:none}}
 .factory-view-category{display:flex;align-items:center;justify-content:space-between;padding:5px 8px 9px;color:#34455e}.factory-view-category strong{font-size:12px}.factory-view-category small{font-size:10px;color:#94a0b1}
 
 .chart-library{margin:10px 12px;border:1px solid #dce3ee;border-radius:8px;padding:10px;font-size:calc(12px * var(--admin-font-scale, 1));color:#596d8b}.chart-library summary{cursor:pointer}.chart-library small{float:right;color:#97a4b6}.chart-library>div{display:grid;grid-template-columns:1fr 1fr;gap:5px;max-height:260px;overflow:auto;margin-top:10px}.chart-library button{font:inherit;padding:7px;border:1px solid #e2e7ef;border-radius:5px;background:white;color:#596d8b;cursor:pointer}

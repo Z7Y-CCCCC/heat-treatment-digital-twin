@@ -104,6 +104,8 @@ test('revision conflicts preserve the local draft and never publish', async t =>
     assert.equal(state.isDirty, true)
     assert.equal(publish.mock.callCount(), 0)
     assert.equal(state.status.tone, 'danger')
+    assert.equal(state.publishNotice.tone, 'error')
+    assert.match(state.publishNotice.text, /保存失败.*修订冲突/)
 })
 
 test('template import stays in the target scene and can be undone without publishing', async t => {
@@ -275,6 +277,45 @@ test('publish success reports the saved release without claiming an unacknowledg
     assert.match(state.status.text, /1\.0\.1 已发布/)
     assert.doesNotMatch(state.status.text, /已收到更新/)
     assert.match(state.status.text, /连接后将加载/)
+    assert.equal(state.publishNotice.tone, 'success')
+    assert.match(state.publishNotice.text, /保存并发布成功.*1\.0\.1/)
+})
+
+test('publish errors produce a dismissible failure notice and a later retry replaces it with success', async t => {
+    const { instance } = fixture(t, [])
+    await settle()
+    const state = instance.value.$.setupState
+    let attempts = 0
+    t.mock.method(adminApi, 'publishDashboard', async () => {
+        if (++attempts === 1) throw Error('服务器暂不可用')
+        return { release:{id:'retry-release',version:'1.0.3'} }
+    })
+    await state.publishVersion()
+    assert.equal(state.publishing,false)
+    assert.equal(state.publishNotice.tone,'error')
+    assert.match(state.publishNotice.text,/发布失败.*服务器暂不可用/)
+    state.clearPublishNotice();assert.equal(state.publishNotice,null)
+    await state.publishVersion()
+    assert.equal(state.publishNotice.tone,'success')
+    assert.match(state.publishNotice.text,/1\.0\.3/)
+    state.deactivateDesigner();assert.equal(state.publishNotice,null)
+})
+
+test('edits during the save stage show not-published feedback and never a false success', async t => {
+    const { instance } = fixture(t, [])
+    await settle()
+    const state = instance.value.$.setupState, pending=deferred()
+    let submitted
+    t.mock.method(adminApi,'saveDashboardDraft',async(_id,document)=>{submitted=JSON.parse(JSON.stringify(document));return pending.promise})
+    const publish=t.mock.method(adminApi,'publishDashboard',async()=>{throw Error('must not publish')})
+    state.documentModel.name='保存前'
+    const saving=state.publishVersion();await settle()
+    state.documentModel.name='保存期间的新修改'
+    pending.resolve({revision:2,document:submitted});await saving
+    assert.equal(publish.mock.callCount(),0)
+    assert.equal(state.isDirty,true)
+    assert.equal(state.publishNotice.tone,'warning')
+    assert.match(state.publishNotice.text,/尚未发布/)
 })
 
 test('canvas resolution follows template import and undo instead of retaining the last preset', async t => {
