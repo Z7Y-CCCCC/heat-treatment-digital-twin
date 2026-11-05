@@ -10,6 +10,7 @@ import { useNativeQuality } from '../runtime/nativeQuality.js'
 import QualityNotice from '../components/QualityNotice.vue'
 import AdminReadingSettings from './admin/components/AdminReadingSettings.vue'
 import LinePlannerControls from './admin/components/LinePlannerControls.vue'
+import FactoryVoiceToggle from './admin/components/FactoryVoiceToggle.vue'
 import WorkshopGroundEditor from './admin/components/WorkshopGroundEditor.vue'
 import DataSourceWorkspace from './admin/components/DataSourceWorkspace.vue'
 import FactoryCollectionSettings from './admin/components/FactoryCollectionSettings.vue'
@@ -8911,7 +8912,7 @@ async function openAdminSetupStep(step) {
                                         <th v-if="showPointAdvancedFields" title="PLC 原始值乘以这个数，常用于把整数缩放成工程值">换算倍率</th>
                                         <th v-if="showPointAdvancedFields" title="倍率换算后再加上的修正值，常用于传感器零点校准">偏移修正</th>
                                         <th v-if="showPointAdvancedFields" title="控制画面显示的小数位，例如 0、0.0、0.00">显示小数</th>
-                                        <th>单位</th><th>报警说明</th><th>语音播报</th><th></th>
+                                        <th>单位</th><th>报警说明</th><th><FactoryVoiceToggle /></th><th></th>
                                     </tr>
                                 </thead>
                                 <tbody>

@@ -23,10 +23,14 @@ const LEGACY_WEB_SETTING_KEYS = new Set([
 ]);
 const FACTORY_SETTING_KEYS = new Set([
     'data_mode', 'simulation_interval_ms', 'realtime_stale_ms', 'native_quality_profile',
-    'native_environment_config', 'native_dashboard_config', 'site_scene_config'
+    'native_environment_config', 'native_dashboard_config', 'site_scene_config', 'voice_enabled'
 ]);
 
 function normalizeSettingValue(key, value) {
+    if (key === 'voice_enabled') {
+        if (![true, false, 'true', 'false'].includes(value)) throw new Error('工厂语音开关必须为布尔值');
+        return String(value);
+    }
     if (key === 'simulation_interval_ms') {
         const interval = Number(value);
         if (!Number.isInteger(interval) || interval < 100 || interval > 60000) {
@@ -256,6 +260,28 @@ function normalizeSettingValue(key, value) {
 
 module.exports = function createSettingsRouter(controller = {}) {
     const router = express.Router();
+    router.get('/voice', async (req, res) => {
+        try {
+            if (!req.factoryId) return res.status(404).json({ success: false, error: '请先选择工厂' });
+            const db = await getDb();
+            const row = await db.get('SELECT value FROM factory_settings WHERE factory_id = ? AND `key` = ?', [req.factoryId, 'voice_enabled']);
+            res.json({ success: true, factoryId: req.factoryId, enabled: row?.value !== 'false' });
+        } catch (error) { res.status(500).json({ success: false, error: error.message }); }
+    });
+    router.put('/voice', async (req, res) => {
+        try {
+            if (!req.body || Array.isArray(req.body) || Object.keys(req.body).length !== 1 || typeof req.body.enabled !== 'boolean') throw new Error('语音开关只接受 enabled 布尔值');
+            const db = await getDb(), value = String(req.body.enabled);
+            await db.transaction(async tx => {
+                const row = await tx.get('SELECT 1 FROM factory_settings WHERE factory_id = ? AND `key` = ?', [req.factoryId, 'voice_enabled']);
+                if (row) await tx.run('UPDATE factory_settings SET value = ?, updated_at = CURRENT_TIMESTAMP WHERE factory_id = ? AND `key` = ?', [value, req.factoryId, 'voice_enabled']);
+                else await tx.run('INSERT INTO factory_settings (factory_id, `key`, value) VALUES (?, ?, ?)', [req.factoryId, 'voice_enabled', value]);
+            });
+            const payload = { factoryId: req.factoryId, enabled: req.body.enabled, timestamp: Date.now() };
+            controller.wsServer?.broadcast('factory_voice_changed', payload);
+            res.json({ success: true, ...payload });
+        } catch (error) { res.status(400).json({ success: false, error: error.message }); }
+    });
 
     router.get('/loading-experience', async (req, res) => {
         try {
@@ -281,6 +307,7 @@ module.exports = function createSettingsRouter(controller = {}) {
             });
             const factory = await db.get('SELECT name, location_json FROM factories WHERE id = ?', [req.factoryId]);
             const factoryRows = await db.all('SELECT `key`, value FROM factory_settings WHERE factory_id = ?', [req.factoryId]);
+            settings.voice_enabled = 'true';
             factoryRows.forEach(row => {
                 if (FACTORY_SETTING_KEYS.has(row.key)) settings[row.key] = row.value;
             });

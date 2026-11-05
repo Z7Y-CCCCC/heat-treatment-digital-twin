@@ -68,6 +68,7 @@ function truthy(value) {
 }
 
 function numeric(value) {
+  if (value === null || value === undefined || value === '' || typeof value === 'boolean') return null
   const number = Number(value)
   return Number.isFinite(number) ? number : null
 }
@@ -183,30 +184,58 @@ export class VoiceAnnouncer {
     this.definitionsByDevice = new Map()
     this.previousValues = new Map()
     this.lastTriggeredAt = new Map()
+    this.initializedKeys = new Set()
+    this.definitionSignatures = new Map()
     this.pendingKeys = new Set()
     this.queue = []
     this.playing = false
     this.muted = options.muted === true
-    this.maxQueue = options.maxQueue || 32
+    this.maxQueue = options.maxQueue || 16
+    this.maxQueueAgeMs = options.maxQueueAgeMs || 15000
+    this.startTimeoutMs = options.startTimeoutMs || 1500
+    this.now = options.now || Date.now
+    this.onPlaybackError = options.onPlaybackError
+    this.audioCache = new Map()
+    this.activeAudio = null
+    this.blocked = false
+    this.stats = { started: 0, dropped: 0, failed: 0, lastQueueWaitMs: 0, lastStartDelayMs: 0, maxStartDelayMs: 0 }
     this.disposed = false
     this.playbackCancels = new Set()
   }
 
   setFactoryPoints(workshops = []) {
-    this.definitionsByDevice.clear()
-    const grouped = new Map()
     const allDevices = []
     workshops.forEach(workshop => {
       ;(workshop.lines || []).forEach(line => (line.devices || []).forEach(device => allDevices.push(device)))
       ;(workshop.devices || []).forEach(device => allDevices.push(device))
     })
-    allDevices.forEach(device => {
+    this.setFactoryDevices(allDevices)
+  }
+
+  setFactoryDevices(devices = []) {
+    const grouped = new Map(), liveKeys = new Set(), liveTriggerKeys = new Set()
+    devices.forEach(device => {
       const definitions = (device.dataPoints || [])
         .map((point, index) => pointDefinition(device.id, device.name, point, index))
         .filter(Boolean)
+      definitions.forEach(definition => {
+        liveKeys.add(definition.key)
+        for (const rule of definition.rules) liveTriggerKeys.add(`${definition.key}|${rule.id}`)
+        for (const rule of definition.rules) if (rule.enabled && /^\/uploads\/audio\//.test(rule.audio_url)) this._cachedAudio(resolveAudioUrl(rule.audio_url), true)
+      })
       grouped.set(device.id, definitions)
     })
+    this.definitionsByDevice.clear()
     grouped.forEach((definitions, deviceId) => this.definitionsByDevice.set(deviceId, definitions))
+    this.definitionSignatures.clear()
+    for (const key of this.previousValues.keys()) if (!liveKeys.has(key)) this.previousValues.delete(key)
+    for (const key of this.initializedKeys) if (!liveKeys.has(key)) this.initializedKeys.delete(key)
+    for (const key of this.lastTriggeredAt.keys()) if (!liveTriggerKeys.has(key)) this.lastTriggeredAt.delete(key)
+    this.queue = this.queue.filter(item => { if (liveTriggerKeys.has(item.key)) return true; this.pendingKeys.delete(item.key); return false })
+    if (this.activeItem && !liveTriggerKeys.has(this.activeItem.key)) {
+      this.activeItem.cancelled = true
+      for (const cancel of [...this.playbackCancels]) cancel()
+    }
   }
 
   updateDefinitionsFromFrame(data) {
@@ -214,6 +243,9 @@ export class VoiceAnnouncer {
     if (!deviceId || !data?.pointMeta) return
     const entries = Object.entries(data.pointMeta)
     if (!entries.some(([, meta]) => Object.prototype.hasOwnProperty.call(meta || {}, 'voice_config'))) return
+    const signature = JSON.stringify(entries.map(([path, meta]) => [path, meta?.id, meta?.voice_config, meta?.label, meta?.unit, meta?.field_name, meta?.category]))
+    if (this.definitionSignatures.get(deviceId) === signature) return
+    this.definitionSignatures.set(deviceId, signature)
     const definitions = entries.map(([path, meta], index) => {
       const [category, fieldName] = path.split('.')
       const config = parseVoiceConfig(meta?.voice_config)
@@ -236,6 +268,7 @@ export class VoiceAnnouncer {
   setMuted(value) {
     this.muted = Boolean(value)
     if (this.muted) {
+      this.blocked = false
       this.queue = []
       this.pendingKeys.clear()
       for (const cancel of [...this.playbackCancels]) cancel()
@@ -249,12 +282,17 @@ export class VoiceAnnouncer {
     this.definitionsByDevice.clear()
     this.previousValues.clear()
     this.lastTriggeredAt.clear()
+    this.initializedKeys.clear()
+    this.definitionSignatures.clear()
+    for (const audio of this.audioCache.values()) { audio.pause(); audio.removeAttribute?.('src'); audio.load?.() }
+    this.audioCache.clear()
   }
 
   unlock() {
     if (typeof window === 'undefined') return
     // A real user gesture is enough to unlock Chromium's audio policy. The
     // Electron shell also disables the autoplay restriction for unattended sites.
+    this.blocked = false
     this._drainQueue()
   }
 
@@ -266,44 +304,63 @@ export class VoiceAnnouncer {
     const definitions = this.definitionsByDevice.get(deviceId) || []
     definitions.forEach(definition => {
       const current = data?.[definition.category]?.[definition.fieldName]
-      const quality = data?.quality?.[definition.category]?.[definition.fieldName] || 'good'
+      const quality = data?.online === false ? 'bad' : data?.quality?.[definition.category]?.[definition.fieldName] || 'good'
       const previousKey = definition.key
       const hasPrevious = this.previousValues.has(previousKey)
       const previous = this.previousValues.get(previousKey)
+      if (quality !== 'good' || current === null || current === undefined) {
+        this.previousValues.delete(previousKey)
+        const staleKeys = new Set(definition.rules.map(rule => `${previousKey}|${rule.id}`))
+        this.queue = this.queue.filter(item => { if (!staleKeys.has(item.key)) return true; this.pendingKeys.delete(item.key); return false })
+        if (staleKeys.has(this.activeItem?.key)) {
+          this.activeItem.cancelled = true
+          for (const cancel of [...this.playbackCancels]) cancel()
+        }
+        return
+      }
+      const firstValid = !this.initializedKeys.has(previousKey)
+      this.initializedKeys.add(previousKey)
       this.previousValues.set(previousKey, current)
-      if (quality !== 'good') return
+      if (this.muted || (!hasPrevious && !firstValid)) return
 
       definition.rules.forEach(rule => {
         if (!shouldTriggerVoiceRule(rule, previous, current, hasPrevious)) return
-        const now = Date.now()
+        const now = this.now()
         const triggerKey = `${previousKey}|${rule.id}`
         const lastAt = this.lastTriggeredAt.get(triggerKey) || 0
-        if (now - lastAt < rule.cooldown_ms) return
-        this.lastTriggeredAt.set(triggerKey, now)
-        this.enqueue({
+        if (this.lastTriggeredAt.has(triggerKey) && now - lastAt < rule.cooldown_ms) return
+        const accepted = this.enqueue({
           key: triggerKey,
           rule,
           context: {
-            deviceName: data.furnace_name || deviceId,
+            deviceName: data.furnace_name || definition.deviceName || deviceId,
             label: definition.label,
             value: current,
             unit: definition.unit
           }
         })
+        if (accepted) this.lastTriggeredAt.set(triggerKey, now)
       })
     })
   }
 
   enqueue(item) {
-    if (this.disposed || this.muted || !item?.rule) return
-    if (this.pendingKeys.has(item.key)) return
+    if (this.disposed || this.muted || !item?.rule) return false
+    const queuedAt = this.now()
+    if (this.pendingKeys.has(item.key)) {
+      const queued = this.queue.findIndex(entry => entry.key === item.key)
+      if (queued >= 0) this.queue[queued] = { ...item, queuedAt }
+      return false
+    }
     if (this.queue.length >= this.maxQueue) {
       const dropped = this.queue.shift()
       if (dropped?.key) this.pendingKeys.delete(dropped.key)
+      this.stats.dropped++
     }
-    this.queue.push(item)
+    this.queue.push({ ...item, queuedAt })
     this.pendingKeys.add(item.key)
     this._drainQueue()
+    return true
   }
 
   async preview(rule, context = {}) {
@@ -321,13 +378,24 @@ export class VoiceAnnouncer {
   }
 
   async _drainQueue() {
-    if (this.disposed || this.playing || this.muted || this.queue.length === 0) return
+    if (this.disposed || this.playing || this.muted || this.blocked || this.queue.length === 0) return
+    while (this.queue.length && this.now() - this.queue[0].queuedAt > this.maxQueueAgeMs) {
+      this.pendingKeys.delete(this.queue.shift().key); this.stats.dropped++
+    }
+    if (!this.queue.length) return
     this.playing = true
     const item = this.queue.shift()
-    this.pendingKeys.delete(item.key)
-    try { await this._playItem(item) } catch (error) { /* audio failure must not stop the queue */ }
+    this.activeItem = item
+    this.stats.lastQueueWaitMs = this.now() - item.queuedAt
+    try { await this._playItem(item) } catch (error) {
+      if (error?.name === 'NotAllowedError' && !this.muted && !this.disposed) {
+        this.blocked = true; this.queue.unshift(item)
+      } else { this.stats.failed++; this.onPlaybackError?.(error) }
+    }
+    if (!this.blocked) this.pendingKeys.delete(item.key)
+    this.activeItem = null
     this.playing = false
-    if (this.queue.length) this._drainQueue()
+    if (this.queue.length && !this.blocked) this._drainQueue()
   }
 
   async _playItem(item) {
@@ -340,11 +408,31 @@ export class VoiceAnnouncer {
         await this._playAudio(resolveAudioUrl(rule.audio_url), rule.volume)
         return
       } catch (error) {
+        if (error?.name === 'NotAllowedError') throw error
         if (!text) throw error
       }
     }
-    if (this.disposed || this.muted) return
+    if (this.disposed || this.muted || item.cancelled) return
     await this._speak(text, rule)
+  }
+
+  _cachedAudio(url, prepareOnly = false) {
+    if (typeof Audio === 'undefined') return null
+    if (this.audioCache.has(url)) return this.audioCache.get(url)
+    if (prepareOnly && this.audioCache.size >= 4) return null
+    if (this.audioCache.size >= 4) {
+      const entry = [...this.audioCache].find(([, audio]) => audio !== this.activeAudio)
+      if (entry) { entry[1].pause(); entry[1].removeAttribute?.('src'); entry[1].load?.(); this.audioCache.delete(entry[0]) }
+    }
+    const audio = new Audio(url); audio.preload = 'metadata'
+    this.audioCache.set(url, audio)
+    return audio
+  }
+
+  _recordStarted(began) {
+    this.stats.started++
+    this.stats.lastStartDelayMs = this.now() - began
+    this.stats.maxStartDelayMs = Math.max(this.stats.maxStartDelayMs, this.stats.lastStartDelayMs)
   }
 
   _playAudio(url, volume = 1) {
@@ -353,9 +441,12 @@ export class VoiceAnnouncer {
         reject(new Error('当前环境不支持音频播放'))
         return
       }
-      const audio = new Audio(url)
+      const audio = this._cachedAudio(url)
+      this.activeAudio = audio
+      const began = this.now()
+      let started = false
       audio.volume = clamp(volume, 0, 1, 1)
-      audio.preload = 'auto'
+      try { audio.currentTime = 0 } catch { /* metadata can still be loading */ }
       let settled = false
       let timeout
       const cancel = () => finish(new Error('语音播放已停止'))
@@ -366,15 +457,23 @@ export class VoiceAnnouncer {
         this.playbackCancels.delete(cancel)
         audio.onended = null
         audio.onerror = null
+        audio.onplaying = null
         audio.pause()
-        audio.removeAttribute?.('src')
+        this.activeAudio = null
+        if (error) { audio.removeAttribute?.('src'); this.audioCache.delete(url) }
         if (error) reject(error)
         else resolve()
       }
       this.playbackCancels.add(cancel)
       audio.onended = () => finish()
       audio.onerror = () => finish(new Error('语音文件播放失败'))
-      timeout = setTimeout(() => finish(new Error('语音文件播放超时')), 30000)
+      audio.onplaying = () => {
+        if (started) return
+        started = true
+        clearTimeout(timeout); this._recordStarted(began)
+        timeout = setTimeout(() => finish(new Error('语音文件播放超时')), Math.min(120000, Math.max(5000, (Number.isFinite(audio.duration) ? audio.duration * 1000 : 28000) + 2000)))
+      }
+      timeout = setTimeout(() => finish(new Error('语音文件启动超时')), this.startTimeoutMs)
       try { Promise.resolve(audio.play()).catch(finish) } catch (error) { finish(error) }
     })
   }
@@ -386,6 +485,7 @@ export class VoiceAnnouncer {
         return
       }
       const utterance = new SpeechSynthesisUtterance(text)
+      const began = this.now()
       utterance.lang = 'zh-CN'
       utterance.volume = clamp(rule.volume, 0, 1, 1)
       utterance.rate = clamp(rule.rate, 0.5, 2, 1)
@@ -406,16 +506,21 @@ export class VoiceAnnouncer {
         this.playbackCancels.delete(cancel)
         utterance.onend = null
         utterance.onerror = null
+        utterance.onstart = null
         if (error) reject(error)
         else resolve()
       }
       utterance.onend = () => finish()
-      utterance.onerror = event => finish(new Error(event?.error || '系统语音播放失败'))
+      utterance.onerror = event => finish(Object.assign(new Error(event?.error || '系统语音播放失败'), event?.error === 'not-allowed' ? { name: 'NotAllowedError' } : {}))
+      utterance.onstart = () => {
+        clearTimeout(timeout); this._recordStarted(began)
+        timeout = setTimeout(cancel, Math.max(10000, text.length * 450))
+      }
       this.playbackCancels.add(cancel)
       timeout = setTimeout(() => {
         finish(new Error('系统语音播放超时'))
         window.speechSynthesis.cancel()
-      }, Math.max(10000, text.length * 450))
+      }, this.startTimeoutMs)
       try { window.speechSynthesis.speak(utterance) } catch (error) { finish(error) }
     })
   }

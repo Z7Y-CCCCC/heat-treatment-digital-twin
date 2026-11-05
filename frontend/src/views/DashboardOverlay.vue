@@ -7,6 +7,7 @@ import { createDashboardDataStore } from '../runtime/DataStore.js'
 import { API_BASE } from '../runtime/backendEndpoint.js'
 import { adminFetch, adminSession } from '../runtime/adminSession.js'
 import { createVoiceAnnouncer } from '../runtime/VoiceAnnouncer.js'
+import { createFactoryVoiceController } from '../runtime/factoryVoice.js'
 import { resolveBackendAssetUrl } from '../three/ModelFactory.js'
 import { useDashboardIntegration } from '../runtime/dashboardIntegration.js'
 import {useWidgetClock} from '../runtime/widgetPlayback.js'
@@ -30,7 +31,9 @@ const startupLoading = ref(true), startupProgress = ref(6), startupPhase = ref(0
 const nativeLoadingManaged = ref(Boolean(window.__DIGITAL_TWIN_NATIVE_LOADING__))
 let overlayDisposed = false
 const overlayRequests = new AbortController()
-const voiceAnnouncer = createVoiceAnnouncer()
+const voiceAnnouncer = createVoiceAnnouncer() // Explicit designer play_voice actions.
+const factoryVoice = createFactoryVoiceController({ onPlaybackError: error => console.warn('[Voice]', error.message) })
+const unlockFactoryVoice = () => factoryVoice.unlock()
 let previousDocumentBackground = ''
 let previousBodyBackground = ''
 let databaseRequestSeq = 0
@@ -788,6 +791,7 @@ function handleOverlayKeydown(event) {
 }
 
 function playVoice(event) {
+    if (factoryVoice.announcer.muted) return
     voiceAnnouncer.preview({ mode: 'auto', audio_url: event.audioUrl || '', text: event.text || '' }).catch(() => {})
 }
 
@@ -824,6 +828,7 @@ function handleWidgetAction({ event, widget }) {
 
 async function handleRuntimeMessage(message) {
     if (overlayDisposed) return
+    if (factoryVoice.handleMessage(message)) { voiceAnnouncer.setMuted(factoryVoice.announcer.muted); return }
     if (message?.type === 'configuration_changed' && message.payload?.visibilityOnly) {
         if (message.payload.enabled === false && String(message.payload.factoryId) === String(config.factoryId)) await leaveHiddenFactory(String(message.payload.factoryId))
         return
@@ -847,6 +852,7 @@ async function handleRuntimeMessage(message) {
         const activated = String(message.payload?.activeFactoryId || '')
         const changedFactory = String(message.payload?.factoryId || '')
         if (!activated && changedFactory && config.factoryId && changedFactory !== config.factoryId) return
+        if (activated && activated !== config.factoryId) { factoryVoice.suspend(); voiceAnnouncer.setMuted(true) }
         if (activated && route.query.factoryId && String(route.query.factoryId) !== activated) {
             await router.replace({query:{...route.query,factoryId:activated}})
         }
@@ -855,6 +861,8 @@ async function handleRuntimeMessage(message) {
         const loaded = await loadConfig(activated)
         if (overlayDisposed || !loaded) return
         if (await leaveHiddenFactory()) return
+        factoryVoice.configure(config)
+        voiceAnnouncer.setMuted(factoryVoice.announcer.muted)
         registerConfiguredDevices()
         probeConfiguredModels()
         runtimeContext.sceneId = platform.value.activeScene?.id || runtimeContext.sceneId
@@ -995,6 +1003,10 @@ onMounted(async () => {
         runtimeContext.viewMode = dashboardViews.value.find(view => view.id === runtimeContext.viewId)?.mode || 'factory'
     }
     if (!window.chrome?.webview) runtimeContext.sceneReady = true
+    factoryVoice.configure(config)
+    voiceAnnouncer.setMuted(factoryVoice.announcer.muted)
+    dataStore.setDeviceDataHandler(data => factoryVoice.handleDeviceData(data))
+    window.addEventListener('pointerdown', unlockFactoryVoice, { passive: true })
     registerConfiguredDevices()
     dataStore.setEventQueryOptions(eventQueryConfig())
     dataStore.setMessageHandler(handleRuntimeMessage)
@@ -1064,6 +1076,8 @@ onUnmounted(() => {
     overlayRequests.abort()
     viewNavigator.dispose()
     voiceAnnouncer.dispose()
+    factoryVoice.dispose()
+    window.removeEventListener('pointerdown', unlockFactoryVoice)
     document.documentElement.style.background = previousDocumentBackground
     document.body.style.background = previousBodyBackground
     if (regionFrame) window.cancelAnimationFrame(regionFrame)

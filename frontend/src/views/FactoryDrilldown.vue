@@ -6,6 +6,7 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { API_BASE } from '../runtime/backendEndpoint.js'
 import { adminFetch } from '../runtime/adminSession.js'
 import { createDashboardDataStore } from '../runtime/DataStore.js'
+import { createFactoryVoiceController } from '../runtime/factoryVoice.js'
 import { createNativeViewNavigator } from '../runtime/nativeViewNavigation.js'
 import { isNativeUnitySurface, requestNativeSceneSurface } from '../runtime/nativeSurfaceBridge.js'
 import { createGroupNavigationCrumbs } from '../runtime/groupHierarchyPath.js'
@@ -33,6 +34,9 @@ const crumbs=computed(()=>{
   return [...map,{key:'street',label:'街道',level:'street'},...(stage.value==='factory'?[{key:'factory',label:'工厂',level:'factory'}]:[])]
 })
 const data=createDashboardDataStore()
+const factoryVoice=createFactoryVoiceController({available:()=>!adminSurface.value,onPlaybackError:error=>console.warn('[Voice]',error.message)})
+const unlockFactoryVoice=()=>factoryVoice.unlock()
+data.setDeviceDataHandler(frame=>factoryVoice.handleDeviceData(frame))
 const navigator=createNativeViewNavigator(async target=>{
   const response=await adminFetch(`${API_BASE}/native-preview/navigate`,{method:'POST',headers:{'Content-Type':'application/json','X-Factory-ID':factoryId.value},body:JSON.stringify({action:'view',viewId:target.viewId,focus:{mode:'factory'}})})
   const body=await response.json().catch(()=>({}))
@@ -321,7 +325,7 @@ async function load(){
       return
     }
     const signature=JSON.stringify([selected,payload])
-    factory.value=selected;config.value=payload
+    factory.value=selected;config.value=payload;factoryVoice.configure(payload)
     page.value=Math.min(page.value,pageCount.value-1)
     if(signature!==configSignature){configSignature=signature;rebuild()}
   }catch(cause){if(!disposed && requestId===configRequestId && cause.name!=='AbortError')error.value=cause.message}
@@ -334,7 +338,7 @@ function scheduleConfigRefresh(message){
   if(message?.payload?.factoryId && String(message.payload.factoryId)!==factoryId.value && message.payload.resource!=='factories')return
   clearTimeout(refreshTimer);refreshTimer=setTimeout(()=>{if(!disposed)void load()},180)
 }
-watch(factoryId,()=>{configSignature='';config.value=null;page.value=0;if(renderer)void load()})
+watch(factoryId,()=>{factoryVoice.suspend();configSignature='';config.value=null;page.value=0;if(renderer)void load()})
 watch([stage,page],()=>rebuild())
 onMounted(()=>{
   window.addEventListener('keydown',handleSiteEscape,true)
@@ -348,15 +352,16 @@ onMounted(()=>{
   observer=new ResizeObserver(()=>{if(!host.value)return;const width=host.value.clientWidth,height=host.value.clientHeight;renderer.setSize(width,height,false);const aspect=width/Math.max(height,1);camera.left=-8.7*aspect;camera.right=8.7*aspect;camera.top=8.7;camera.bottom=-8.7;camera.updateProjectionMatrix();renderDirty=true;scheduleRender()});observer.observe(host.value)
   scheduleRender()
   data.setMessageHandler(message=>{
+    if(factoryVoice.handleMessage(message))return
     if(message.type==='dashboard_context_changed')navigator.accept(message.payload)
     else if(['configuration_changed','device_configuration_changed','dashboard_release_changed','realtime_resync_required'].includes(message.type))scheduleConfigRefresh(message)
   })
   configTimer=setInterval(()=>void load(),15000)
-  data.connect()
+  window.addEventListener('pointerdown',unlockFactoryVoice,{passive:true});data.connect()
   window.chrome?.webview?.addEventListener('message',onHostMessage)
   void load()
 })
-onUnmounted(()=>{window.removeEventListener('keydown',handleSiteEscape,true);disposed=true;configRequestId++;configRequest?.abort();clearInterval(configTimer);clearTimeout(refreshTimer);cancelAnimationFrame(frame);navigator.dispose();data.dispose();observer?.disconnect();controls?.removeEventListener('change',onControlsChange);controls?.dispose();disposeRoot();sharedMaterials.forEach(item=>item.dispose());wallTexture.dispose();roofTexture.dispose();renderer?.dispose();window.chrome?.webview?.removeEventListener('message',onHostMessage);window.chrome?.webview?.postMessage({type:'overlay_regions',viewport:{width:innerWidth,height:innerHeight},regions:[]})})
+onUnmounted(()=>{factoryVoice.dispose();window.removeEventListener('pointerdown',unlockFactoryVoice);window.removeEventListener('keydown',handleSiteEscape,true);disposed=true;configRequestId++;configRequest?.abort();clearInterval(configTimer);clearTimeout(refreshTimer);cancelAnimationFrame(frame);navigator.dispose();data.dispose();observer?.disconnect();controls?.removeEventListener('change',onControlsChange);controls?.dispose();disposeRoot();sharedMaterials.forEach(item=>item.dispose());wallTexture.dispose();roofTexture.dispose();renderer?.dispose();window.chrome?.webview?.removeEventListener('message',onHostMessage);window.chrome?.webview?.postMessage({type:'overlay_regions',viewport:{width:innerWidth,height:innerHeight},regions:[]})})
 </script>
 
 <template>

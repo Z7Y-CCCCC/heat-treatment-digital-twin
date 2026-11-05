@@ -5,6 +5,7 @@ import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { API_BASE } from '../runtime/backendEndpoint.js'
 import { createDashboardDataStore } from '../runtime/DataStore.js'
+import { createFactoryVoiceController } from '../runtime/factoryVoice.js'
 import { createJsonPollingScope } from '../runtime/pollingRequests.js'
 import { createNativeViewNavigator } from '../runtime/nativeViewNavigation.js'
 import { openAdminSurface, openCustomerOperations } from '../runtime/nativeAdminNavigation.js'
@@ -101,6 +102,9 @@ function handleMapWidgetAction(event){
 const levelNames={world:'全球',country:'国家',province:'省份',city:'城市',district:'区县'}
 const hierarchyCrumbs=computed(()=>createGroupNavigationCrumbs({query:route.query,level:level.value,currentLabel:regionTitle.value}))
 const data=createDashboardDataStore()
+const factoryVoice=createFactoryVoiceController({available:()=>!adminSurface.value,onPlaybackError:error=>console.warn('[Voice]',error.message)})
+const unlockFactoryVoice=()=>factoryVoice.unlock()
+data.setDeviceDataHandler(frame=>factoryVoice.handleDeviceData(frame))
 const configError=ref('')
 const mapConfigSignature=value=>JSON.stringify({sites:factoryDirectorySites(value || {}).map(({id,name,location,runtime})=>({id,name,location,runtime})),appearance:value?.settings?.group_portal_config})
 let renderer,scene,camera,controls,mapRoot,observer,raf,pollTimer,summaryPollTimer,focusFrame=0,disposed=false,dirty=true,geometryGeneration=0,down,surfaceChannel,configLoading=false,configRefreshPending=false,mapMotionEnabled=true,lastMarkerFrame=0,regionVisuals=new Map(),mapTransition=null,activeProject=null
@@ -589,7 +593,7 @@ async function refreshConfig() {
   try {
     const next=await pollingRequests.read('config',API_BASE+'/config',{cache:'no-store'}),changed=mapConfigSignature(next)!==mapConfigSignature(config.value)
     if(disposed)return
-    config.value=next;configError.value=''
+    config.value=next;factoryVoice.configure(next);configError.value=''
     if(changed && scene)buildMap({reframe:!ready.value})
   }catch(e){if(!disposed && e.name!=='AbortError')configError.value=e.message}finally{
     configLoading=false
@@ -694,12 +698,12 @@ onMounted(async()=>{
     await Promise.all([buildMap(),refreshMapValues(),refreshFactorySummaries()])
     if(disposed)return
     pollTimer=setInterval(()=>{void refreshConfig();void refreshMapValues()},15000);summaryPollTimer=setInterval(()=>void refreshFactorySummaries(),5000)
-    data.setMessageHandler(message=>{if(['configuration_changed','realtime_resync_required'].includes(message.type))return refreshConfig();if(message.type==='dashboard_context_changed')navigator.accept(message.payload)})
+    data.setMessageHandler(message=>{if(factoryVoice.handleMessage(message))return;if(['configuration_changed','realtime_resync_required'].includes(message.type))return refreshConfig();if(message.type==='dashboard_context_changed')navigator.accept(message.payload)})
     if(typeof BroadcastChannel!=='undefined' && !adminSurface.value){surfaceChannel=new BroadcastChannel(NATIVE_SURFACE_CHANNEL);surfaceChannel.onmessage=event=>{if(event.data?.type==='show_native_scene' && route.query.embedded==='unity')router.replace({path:'/overlay',query:{...route.query,scene:'1'}})}}
-    data.connect();window.chrome?.webview?.addEventListener('message',hostMessage);window.chrome?.webview?.postMessage({type:'overlay_ready'});reportRegions()
+    window.addEventListener('pointerdown',unlockFactoryVoice,{passive:true});data.connect();window.chrome?.webview?.addEventListener('message',hostMessage);window.chrome?.webview?.postMessage({type:'overlay_ready'});reportRegions()
   }catch(e){error.value=e.message;window.chrome?.webview?.postMessage({type:'overlay_ready'})}
 })
-onUnmounted(()=>{window.removeEventListener('keydown',handleMapEscape,true);stopAdminSessionTracking();disposed=true;mapValueRequestId++;geometryGeneration++;pollingRequests.dispose();surfaceChannel?.close();clearInterval(pollTimer);clearInterval(summaryPollTimer);cancelAnimationFrame(raf);cancelMapFlight();navigator.dispose();data.dispose();observer?.disconnect();controls?.removeEventListener('start',cancelMapFlight);controls?.dispose();disposeSceneObject(scene);renderer?.dispose();window.chrome?.webview?.removeEventListener('message',hostMessage);window.chrome?.webview?.postMessage({type:'overlay_regions',viewport:{width:innerWidth,height:innerHeight},regions:[]})})
+onUnmounted(()=>{factoryVoice.dispose();window.removeEventListener('pointerdown',unlockFactoryVoice);window.removeEventListener('keydown',handleMapEscape,true);stopAdminSessionTracking();disposed=true;mapValueRequestId++;geometryGeneration++;pollingRequests.dispose();surfaceChannel?.close();clearInterval(pollTimer);clearInterval(summaryPollTimer);cancelAnimationFrame(raf);cancelMapFlight();navigator.dispose();data.dispose();observer?.disconnect();controls?.removeEventListener('start',cancelMapFlight);controls?.dispose();disposeSceneObject(scene);renderer?.dispose();window.chrome?.webview?.removeEventListener('message',hostMessage);window.chrome?.webview?.postMessage({type:'overlay_regions',viewport:{width:innerWidth,height:innerHeight},regions:[]})})
 </script>
 
 <template>

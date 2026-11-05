@@ -4,6 +4,8 @@ import { computed, onUnmounted, ref, watch } from 'vue'
 import { adminApi } from '../../../config/factoryConfig.js'
 import { getFactoryScope } from '../../../runtime/factoryScope.js'
 import { cacheFactoryDraft, clearFactoryDraft, readFactoryDraft } from '../../../runtime/factoryDraftCache.js'
+import AdminNotice from './AdminNotice.vue'
+import { useAdminNotice } from '../composables/useAdminNotice.js'
 
 defineOptions({ name: 'MobileDeviceMotion' })
 
@@ -173,6 +175,9 @@ const loading = ref(false)
 const saving = ref(false)
 const message = ref('')
 const errorMessage = ref('')
+const { notice, show: showNotice, clear: clearNotice } = useAdminNotice()
+watch(message, value => { if (value) showNotice(value) }, { flush: 'sync' })
+watch(errorMessage, value => { if (value) showNotice(value, 'error') }, { flush: 'sync' })
 let loadGeneration = 0
 const draftFactoryId = getFactoryScope()
 let savedMotionSnapshot = ''
@@ -610,6 +615,8 @@ const stationDistanceSummary = computed(() => {
 })
 
 async function saveMotion() {
+    if (saving.value || loading.value) return
+    message.value = ''; errorMessage.value = ''
     if (!deviceDetail.value?.id) return
     if (motion.value.enabled && !motion.value.currentPositionPointId) {
         errorMessage.value = '启用移动同步时，请先绑定“当前位置”数值点位'
@@ -668,7 +675,7 @@ async function saveMotion() {
         deviceDetail.value = { ...detail, instance_config: draft.devicePayload.instance_config }
         savedMotionSnapshot = motionSnapshot()
         clearFactoryDraft(draftFactoryId, `mobile-motion:${detail.id}`)
-        message.value = '已保存。绑定点位采集周期已设为 100ms，Unity 将实时应用移动配置。'
+        message.value = '移动配置已保存'
         emit('saved', detail.id)
     } catch (error) {
         errorMessage.value = error.message || '移动配置保存失败'
@@ -680,6 +687,7 @@ async function saveMotion() {
 
 <template>
     <div class="tab-content mobile-motion-page">
+        <AdminNotice :state="notice" @close="clearNotice" />
         <div class="page-heading-row">
             <div>
                 <h2>设备运动配置</h2>
@@ -692,7 +700,7 @@ async function saveMotion() {
         <template v-else>
             <section class="motion-card motion-device-picker">
                 <label class="motion-device-select">选择设备（小车 / 辅助设备）
-                    <select v-model="selectedDeviceId" class="input">
+                    <select v-model="selectedDeviceId" class="input" :disabled="saving">
                         <option v-for="device in mobileDevices" :key="device.id" :value="String(device.id)">
                             {{ device.name || device.id }}（{{ device.id }}）
                         </option>
@@ -703,8 +711,6 @@ async function saveMotion() {
                 <span v-else class="motion-muted">设备配置尚未读取</span>
             </section>
 
-            <div v-if="errorMessage" class="motion-alert motion-alert-error">{{ errorMessage }}</div>
-            <div v-if="message" class="motion-alert motion-alert-success">{{ message }}</div>
 
             <section v-if="loading && !deviceDetail" class="motion-card motion-loading-state" aria-live="polite">
                 <div class="motion-loading-dot" aria-hidden="true"></div>
@@ -1041,9 +1047,6 @@ async function saveMotion() {
 .motion-actions .btn-primary:hover { border-color: #1e40af; background: #1e40af; box-shadow: 0 4px 12px rgba(29, 78, 216, .2); }
 .motion-actions .btn:active { transform: translateY(1px); }
 .motion-actions .btn:disabled { opacity: .55; cursor: not-allowed; box-shadow: none; transform: none; }
-.motion-alert { margin-bottom: 16px; padding: 10px 14px; border-radius: 8px; font-size: calc(13px * var(--admin-font-scale, 1)); }
-.motion-alert-error { color: #b42318; background: #fff1f0; border: 1px solid #fecdca; }
-.motion-alert-success { color: #16794c; background: #effaf4; border: 1px solid #b7ebcf; }
 .empty-state { padding: 36px; border: 1px dashed #cfd7e3; border-radius: 12px; color: #667085; text-align: center; }
 @media (max-width: 760px) {
     .page-heading-row, .motion-card-header, .motion-device-picker { align-items: flex-start; flex-direction: column; }

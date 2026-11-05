@@ -8,7 +8,7 @@ export const SETTING_PAGES = {
   native_quality_profile: 'settings.performance', native_environment_config: 'platform.environment',
   native_dashboard_config: 'platform.designer', loading_experience_config: 'platform.loading',
   group_portal_config: 'platform.map', site_scene_config: 'platform.designer',
-  factory_location: 'factories', factory_directory: 'factories', factory_name: 'factories'
+  factory_location: 'factories', factory_directory: 'factories', factory_name: 'factories', voice_enabled: 'points'
 }
 
 // The server chooses the policy from the actual URL/method/body, never from a
@@ -41,6 +41,7 @@ export function apiPermission(path, method = 'GET', body) {
   }
   if (resource('project-bundles')) return 'admin' // whole-project import/export affects every page
   if (resource('settings')) {
+    if (path === '/api/settings/voice') return safe ? read(['points', 'points.alarms'], true) : method === 'PUT' ? any('admin', p('points', 'edit')) : 'admin'
     if (safe) return read(PAGE_PERMISSIONS.filter(p => !p.ownerOnly).map(p => p.key), true)
     if (method !== 'PUT' || path !== '/api/settings' || !body || typeof body !== 'object' || Array.isArray(body) || !Object.keys(body).length) return 'admin'
     return any('admin', all(...Object.keys(body).map(key => SETTING_PAGES[key] ? p(SETTING_PAGES[key], 'edit') : 'admin')))
@@ -106,6 +107,6 @@ export function apiPermission(path, method = 'GET', body) {
   if (resource('template-library') || resource('config') || resource('business-data')) return safe ? read(spatial, true) : 'admin'
   if (resource('acceptance-report')) return safe ? read(['models', 'platform.designer']) : 'admin'
   // Preserve existing display audio reads; system speech/control is administrative.
-  if (resource('voice')) return safe ? read(['settings.runtime'], true) : any('admin', p('settings.runtime', 'edit'))
+  if (resource('voice')) return safe ? read(['points', 'points.alarms', 'settings.runtime'], true) : any('admin', p('points', 'edit'), p('settings.runtime', 'edit'))
   return 'admin'
 }

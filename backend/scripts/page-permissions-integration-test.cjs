@@ -25,15 +25,16 @@ let backend;
     await db.run("INSERT INTO data_points (device_id,name,label,plc_tag,data_type,point_kind,alarm_text) VALUES (?,?,?,?,?,?,?)",
         [device.id, 'bj81', 'bj81', 'DB1.DBX90.0', 'BOOL', 'alarm', '原始报警文本']);
     await db.run('INSERT INTO models (id,name,file_path,metadata) VALUES (?,?,?,?)', ['permission_model', '权限测试模型', '/assets/models/test.glb', '{}']);
+    await db.run('INSERT INTO factories (id,name) VALUES (?,?)', ['voice_factory_b', '独立语音工厂']);
     await closeDb();
     const origin = `http://127.0.0.1:${process.env.PORT}`;
     backend = startLoggedProcess(process.execPath, [path.join(BACKEND_DIR, 'server.js')], { cwd: BACKEND_DIR,
         env: process.env, logFile: path.join(directory, 'backend.log') });
     await waitForHttp(`${origin}/api/health`);
     let checks = 0;
-    async function request(route, { method = 'GET', session, body, expected, noCsrf = false } = {}) {
+    async function request(route, { method = 'GET', session, body, expected, noCsrf = false, factoryId = workshop.factory_id } = {}) {
         const response = await fetch(`${origin}/api${route}`, { method,
-            headers: { Origin: origin, 'X-Admin-Request': '1', 'X-Factory-ID': workshop.factory_id,
+            headers: { Origin: origin, 'X-Admin-Request': '1', 'X-Factory-ID': factoryId,
                 ...(session ? { Cookie: session.cookie, ...(!noCsrf ? { 'X-CSRF-Token': session.csrfToken } : {}) } : {}),
                 ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
             ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
@@ -50,6 +51,25 @@ let backend;
         const session = await request('/admin-auth/login', { method: 'POST', body: { username, password }, expected: 200 });
         return { ...session, userId: result.data.user.id };
     }
+    const voiceReader = await account('voice_reader', { points: { view: true } });
+    const voiceEditor = await account('voice_editor', { points: { view: true, edit: true } });
+    await request('/voice/voices', { session: voiceReader, expected: 200 });
+    await request('/voice/generate', { method: 'POST', session: voiceReader, body: { text: '' }, expected: 403 });
+    await request('/voice/generate', { method: 'POST', session: voiceEditor, body: { text: '' }, expected: 400 });
+    assert.equal((await request('/settings/voice', { session: voiceReader, expected: 200 })).data.enabled, true);
+    await request('/settings/voice', { method: 'PUT', session: voiceReader, body: { enabled: false }, expected: 403 });
+    await request('/settings/voice', { method: 'PUT', session: voiceEditor, body: { enabled: false }, noCsrf: true, expected: 403 });
+    const off = await request('/settings/voice', { method: 'PUT', session: voiceEditor, body: { enabled: false }, expected: 200 });
+    assert.equal(off.data.factoryId, workshop.factory_id); assert.equal(off.data.enabled, false);
+    assert.equal((await request('/settings/voice', { session: voiceReader, factoryId: 'voice_factory_b', expected: 200 })).data.enabled, true);
+    assert.equal((await request('/config', { session: owner, expected: 200 })).data.settings.voice_enabled, 'false');
+    assert.equal((await request('/config', { session: owner, factoryId: 'voice_factory_b', expected: 200 })).data.settings.voice_enabled, 'true');
+    await request('/settings/voice', { method: 'PUT', session: voiceEditor, body: { enabled: 'false' }, expected: 400 });
+    await request('/settings/voice', { method: 'PUT', session: voiceEditor, body: { enabled: true, data_mode: 'external' }, expected: 400 });
+    await request('/settings/voice', { method: 'PUT', session: voiceEditor, factoryId: 'missing_factory', body: { enabled: true }, expected: 404 });
+    await request('/settings', { method: 'PUT', session: voiceEditor, body: { voice_enabled: 'invalid' }, expected: 400 });
+    await request('/settings', { method: 'PUT', session: voiceEditor, body: { voice_enabled: 'true', data_mode: 'external' }, expected: 403 });
+    await request('/settings/voice', { method: 'PUT', session: voiceEditor, body: { enabled: true }, expected: 200 });
     const reader = await account('model_reader', { models: { view: true } });
     const deviceReader = await account('device_reader', { devices: { view: true } });
     const monitorReader = await account('monitor_reader', { 'point-monitor': { view: true } });

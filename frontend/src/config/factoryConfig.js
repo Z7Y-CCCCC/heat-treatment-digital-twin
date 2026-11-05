@@ -9,6 +9,7 @@ const factoryConfig = reactive({
     factories: [],
     settings: {},
     workshops: [],
+    voiceDevices: [],
     lines: [],
     models: [],
     templatePacks: [],
@@ -63,6 +64,7 @@ async function loadConfig(factoryId = '') {
         factoryConfig.factories = data.factories || []
         factoryConfig.settings = data.settings || {}
         factoryConfig.workshops = data.workshops || []
+        factoryConfig.voiceDevices = data.voiceDevices || []
         
         // 为了兼容性，我们可以从 workshops 拍平 lines，或者直接取 data.workshops 下挂载的 lines。
         // 由于 config.js 返回的是 workshops -> lines，我们把它拍平赋给 factoryConfig.lines 方便原有逻辑使用

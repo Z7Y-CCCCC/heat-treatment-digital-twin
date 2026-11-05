@@ -53,6 +53,7 @@ router.get('/', async (req, res) => {
         });
         const factory = await db.get('SELECT id, name, location_json FROM factories WHERE id = ?', [req.factoryId]);
         const factorySettings = await db.all('SELECT `key`, value FROM factory_settings WHERE factory_id = ?', [req.factoryId]);
+        settings.voice_enabled = 'true'; // No global fallback: this is independently owned by each factory.
         factorySettings.forEach(row => { settings[row.key] = row.value; });
         if (factory) {
             settings.factory_name = factory.name;
@@ -134,6 +135,10 @@ router.get('/', async (req, res) => {
         res.json({
             settings,
             workshops: workshopsWithLines,
+            voiceDevices: allDevices.map(device => ({ id: device.id, name: device.name,
+                dataPoints: (pointsByDevice[device.id] || []).filter(point => point.voice_config).map(point => ({
+                    id: point.id, name: point.name, label: point.label, category: point.category, value_role: point.value_role, data_type: point.data_type, unit: point.unit, voice_config: point.voice_config
+                })) })),
             factoryId: req.factoryId,
             factories: await loadFactorySummaries(db),
             models,

@@ -11,7 +11,7 @@ const FORMAT = 'digital-twin-factory-bundle';
 const MAX_BYTES = 512 * 1024 * 1024;
 const MAX_JSON = 16 * 1024 * 1024;
 const MAX_ENTRIES = 2000;
-const SETTINGS = ['data_mode', 'simulation_interval_ms', 'realtime_stale_ms', 'native_quality_profile', 'native_environment_config', 'native_dashboard_config', 'site_scene_config', 'external_dataset_config'];
+const SETTINGS = ['data_mode', 'simulation_interval_ms', 'realtime_stale_ms', 'native_quality_profile', 'native_environment_config', 'native_dashboard_config', 'site_scene_config', 'external_dataset_config', 'voice_enabled'];
 const SHARED_APPEARANCE = ['group_portal_config', 'loading_experience_config'];
 // Explicit columns make the archive a portable configuration format, never an SQL dump.
 const COLUMNS = Object.fromEntries(Object.entries({

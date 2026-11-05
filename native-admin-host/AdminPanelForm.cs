@@ -232,7 +232,7 @@ internal sealed class AdminPanelForm : Form
             // Windows marks the owned transparent surface as occluded/background.
             // Preserve per-process diagnostic arguments; never change machine settings.
             var realtimeArguments = (Environment.GetEnvironmentVariable("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS") ?? "")
-                + " --disable-background-timer-throttling --disable-renderer-backgrounding --disable-backgrounding-occluded-windows";
+                + " --disable-background-timer-throttling --disable-renderer-backgrounding --disable-backgrounding-occluded-windows --autoplay-policy=no-user-gesture-required";
             Environment.SetEnvironmentVariable("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", realtimeArguments);
             var environment = await CoreWebView2Environment.CreateAsync(fixedRuntime, userData,
                 new CoreWebView2EnvironmentOptions(realtimeArguments));
