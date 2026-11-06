@@ -12,11 +12,16 @@ internal enum CloseChoice
 internal sealed class CloseChoiceDialog : Form
 {
     private const int CornerRadius = 18;
+    private readonly WindowTheme _theme;
     private readonly ChoiceCard _minimizeCard;
+    private Size _roundedSize;
+    private int _roundedDpi;
 
-    public CloseChoiceDialog()
+    public CloseChoiceDialog(string theme = "light")
     {
-        Text = "热处理数字孪生大屏";
+        _theme = WindowTheme.FromName(theme);
+        SuspendLayout();
+        Text = "关闭窗口";
         FormBorderStyle = FormBorderStyle.None;
         StartPosition = FormStartPosition.CenterScreen;
         ShowInTaskbar = false;
@@ -24,17 +29,17 @@ internal sealed class CloseChoiceDialog : Form
         MinimizeBox = false;
         MaximizeBox = false;
         ControlBox = false;
-        ClientSize = new Size(270, 252);
+        ClientSize = new Size(304, 260);
         MinimumSize = ClientSize;
         MaximumSize = ClientSize;
         AutoScaleMode = AutoScaleMode.Dpi;
-        BackColor = Color.FromArgb(40, 41, 43);
-        ForeColor = Color.FromArgb(234, 235, 229);
+        BackColor = _theme.Color(245, 247, 251);
+        ForeColor = _theme.Color(29, 41, 57);
         Font = new Font("Microsoft YaHei UI", 9f, FontStyle.Regular);
         DoubleBuffered = true;
         KeyPreview = true;
 
-        var header = new ChromeHeader
+        var header = new ChromeHeader(_theme)
         {
             Dock = DockStyle.Top,
             Height = 37,
@@ -44,13 +49,13 @@ internal sealed class CloseChoiceDialog : Form
         {
             Dock = DockStyle.Left,
             Width = 205,
-            Text = "HEAT TREATMENT  /  SYSTEM",
+            Text = "热处理数字孪生",
             TextAlign = ContentAlignment.MiddleLeft,
-            ForeColor = Color.FromArgb(166, 177, 169),
+            ForeColor = _theme.Color(72, 100, 145),
             Font = new Font("Segoe UI", 7.5f, FontStyle.Bold),
             BackColor = Color.Transparent
         };
-        var closeButton = new ChromeCloseButton
+        var closeButton = new ChromeCloseButton(_theme)
         {
             Dock = DockStyle.Right,
             Width = 27,
@@ -62,13 +67,13 @@ internal sealed class CloseChoiceDialog : Form
         BindWindowDrag(header);
         BindWindowDrag(title);
 
-        var content = new TableLayoutPanel
+        var content = new BufferedTableLayoutPanel
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
             RowCount = 3,
             Padding = new Padding(14, 6, 14, 10),
-            BackColor = Color.FromArgb(40, 41, 43)
+            BackColor = _theme.Color(245, 247, 251)
         };
         content.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
         content.RowStyles.Add(new RowStyle(SizeType.Absolute, 55f));
@@ -85,7 +90,7 @@ internal sealed class CloseChoiceDialog : Form
             Dock = DockStyle.Top,
             Height = 29,
             Text = "要离开大屏吗？",
-            ForeColor = Color.FromArgb(239, 240, 235),
+            ForeColor = _theme.Color(29, 41, 57),
             Font = new Font("Microsoft YaHei UI", 14f, FontStyle.Bold),
             TextAlign = ContentAlignment.MiddleLeft,
             BackColor = Color.Transparent
@@ -95,7 +100,7 @@ internal sealed class CloseChoiceDialog : Form
             Dock = DockStyle.Bottom,
             Height = 23,
             Text = "选择接下来的运行方式",
-            ForeColor = Color.FromArgb(158, 161, 158),
+            ForeColor = _theme.Color(102, 112, 133),
             Font = new Font("Microsoft YaHei UI", 8.5f),
             TextAlign = ContentAlignment.MiddleLeft,
             BackColor = Color.Transparent
@@ -103,7 +108,7 @@ internal sealed class CloseChoiceDialog : Form
         hero.Controls.Add(heading);
         hero.Controls.Add(subtitle);
 
-        var options = new TableLayoutPanel
+        var options = new BufferedTableLayoutPanel
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
@@ -118,6 +123,7 @@ internal sealed class CloseChoiceDialog : Form
         _minimizeCard = new ChoiceCard(
             "收起到系统托盘",
             "后台运行，可随时恢复",
+            _theme,
             danger: false
         )
         {
@@ -128,6 +134,7 @@ internal sealed class CloseChoiceDialog : Form
         var exitCard = new ChoiceCard(
             "完全退出程序",
             "安全结束，并按设置备份",
+            _theme,
             danger: true
         )
         {
@@ -145,7 +152,7 @@ internal sealed class CloseChoiceDialog : Form
             Dock = DockStyle.Fill,
             Text = "ESC  ·  继续使用大屏",
             TextAlign = ContentAlignment.BottomLeft,
-            ForeColor = Color.FromArgb(130, 136, 133),
+            ForeColor = _theme.Color(102, 112, 133),
             Font = new Font("Microsoft YaHei UI", 7.5f),
             BackColor = Color.Transparent
         };
@@ -155,12 +162,11 @@ internal sealed class CloseChoiceDialog : Form
         Controls.Add(content);
         Controls.Add(header);
 
+        ResumeLayout(true);
         Shown += (_, _) =>
         {
-            ApplyRoundedWindow();
-            Activate();
-            BringToFront();
-            if (IsHandleCreated) NativeMethods.SetForegroundWindow(Handle);
+            // ShowDialog already activates the modal window. Avoid another
+            // foreground/z-order round trip and repaint on first presentation.
             _minimizeCard.Focus();
         };
         Resize += (_, _) => ApplyRoundedWindow();
@@ -190,7 +196,7 @@ internal sealed class CloseChoiceDialog : Form
         if (ClientSize.Width < 2 || ClientSize.Height < 2) return;
         e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
         using var path = RoundedPath(new Rectangle(0, 0, ClientSize.Width - 1, ClientSize.Height - 1), CornerRadius);
-        using var pen = new Pen(Color.FromArgb(84, 87, 86));
+        using var pen = new Pen(_theme.Color(208, 219, 236));
         e.Graphics.DrawPath(pen, path);
     }
 
@@ -227,6 +233,9 @@ internal sealed class CloseChoiceDialog : Form
     private void ApplyRoundedWindow()
     {
         if (!IsHandleCreated || ClientSize.Width <= 0 || ClientSize.Height <= 0) return;
+        if (_roundedSize == Size && _roundedDpi == DeviceDpi) return;
+        _roundedSize = Size;
+        _roundedDpi = DeviceDpi;
         var preference = NativeMethods.DwmWindowCornerRound;
         try
         {
@@ -252,16 +261,31 @@ internal sealed class CloseChoiceDialog : Form
             radius * 2
         );
         if (region == IntPtr.Zero) return;
-        if (NativeMethods.SetWindowRgn(Handle, region, true) == 0)
+        if (NativeMethods.SetWindowRgn(Handle, region, false) == 0)
         {
             NativeMethods.DeleteObject(region);
         }
     }
 
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        _roundedSize = Size.Empty;
+        ApplyRoundedWindow();
+    }
+
+    private sealed class BufferedTableLayoutPanel : TableLayoutPanel
+    {
+        public BufferedTableLayoutPanel() { DoubleBuffered = true; }
+    }
+
     private sealed class ChromeHeader : Panel
     {
-        public ChromeHeader()
+        private readonly WindowTheme _theme;
+
+        public ChromeHeader(WindowTheme theme)
         {
+            _theme = theme;
             SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint, true);
         }
 
@@ -270,14 +294,14 @@ internal sealed class CloseChoiceDialog : Form
             if (ClientRectangle.Width <= 0 || ClientRectangle.Height <= 0) return;
             using var background = new LinearGradientBrush(
                 ClientRectangle,
-                Color.FromArgb(48, 49, 51),
-                Color.FromArgb(42, 43, 45),
+                _theme.Color(248, 250, 255),
+                _theme.Color(240, 245, 255),
                 LinearGradientMode.Horizontal
             );
             e.Graphics.FillRectangle(background, ClientRectangle);
-            using var accent = new SolidBrush(Color.FromArgb(152, 189, 169));
+            using var accent = new SolidBrush(_theme.Color(37, 99, 235));
             e.Graphics.FillRectangle(accent, 14, 12, 2, 11);
-            using var border = new Pen(Color.FromArgb(70, 73, 73));
+            using var border = new Pen(_theme.Color(222, 231, 244));
             e.Graphics.DrawLine(border, 0, Height - 1, Width, Height - 1);
         }
     }
@@ -286,9 +310,14 @@ internal sealed class CloseChoiceDialog : Form
     {
         private bool _pressed;
 
-        protected ClickableControl()
+        protected readonly WindowTheme _theme;
+
+        protected ClickableControl(WindowTheme theme)
         {
+            _theme = theme;
             SetStyle(ControlStyles.Selectable, true);
+            // OnMouseUp below dispatches exactly once after a genuine press.
+            SetStyle(ControlStyles.StandardClick | ControlStyles.StandardDoubleClick, false);
         }
 
         protected override void OnMouseDown(MouseEventArgs e)
@@ -327,7 +356,7 @@ internal sealed class CloseChoiceDialog : Form
     {
         private bool _hovered;
 
-        public ChromeCloseButton()
+        public ChromeCloseButton(WindowTheme theme) : base(theme)
         {
             Cursor = Cursors.Hand;
             SetStyle(
@@ -338,7 +367,7 @@ internal sealed class CloseChoiceDialog : Form
                 true
             );
             TabStop = true;
-            BackColor = Color.FromArgb(43, 44, 46);
+            BackColor = _theme.Color(243, 247, 255);
         }
 
         protected override void OnPaintBackground(PaintEventArgs e)
@@ -376,11 +405,11 @@ internal sealed class CloseChoiceDialog : Form
             e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
             if (_hovered)
             {
-                using var fill = new SolidBrush(Color.FromArgb(68, 70, 71));
+                using var fill = new SolidBrush(_theme.Color(226, 235, 252));
                 using var path = RoundedPath(new Rectangle(1, 5, Width - 2, Height - 10), 8);
                 e.Graphics.FillPath(fill, path);
             }
-            using var pen = new Pen(_hovered ? Color.FromArgb(241, 242, 237) : Color.FromArgb(162, 166, 163), 1.4f)
+            using var pen = new Pen(_hovered ? _theme.Color(37, 99, 235) : _theme.Color(102, 112, 133), 1.4f)
             {
                 StartCap = LineCap.Round,
                 EndCap = LineCap.Round
@@ -401,12 +430,12 @@ internal sealed class CloseChoiceDialog : Form
         private readonly Font _descriptionFont = new("Microsoft YaHei UI", 7.8f, FontStyle.Regular);
         private bool _hovered;
 
-        public ChoiceCard(string title, string description, bool danger)
+        public ChoiceCard(string title, string description, WindowTheme theme, bool danger) : base(theme)
         {
             _title = title;
             _description = description;
             _danger = danger;
-            BackColor = Color.FromArgb(40, 41, 43);
+            BackColor = _theme.Color(245, 247, 251);
             Cursor = Cursors.Hand;
             TabStop = true;
             AccessibleRole = AccessibleRole.PushButton;
@@ -462,11 +491,11 @@ internal sealed class CloseChoiceDialog : Form
             e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
             var bounds = new Rectangle(1, 1, Width - 3, Height - 3);
             var fillColor = _danger
-                ? (_hovered ? Color.FromArgb(62, 54, 52) : Color.FromArgb(48, 47, 48))
-                : (_hovered ? Color.FromArgb(55, 61, 57) : Color.FromArgb(49, 52, 51));
+                ? (_hovered ? _theme.Color(255, 241, 240) : _theme.Color(255, 255, 255))
+                : (_hovered ? _theme.Color(235, 242, 255) : _theme.Color(255, 255, 255));
             var borderColor = _danger
-                ? (_hovered || Focused ? Color.FromArgb(166, 126, 109) : Color.FromArgb(81, 74, 72))
-                : (_hovered || Focused ? Color.FromArgb(138, 175, 154) : Color.FromArgb(77, 86, 81));
+                ? (_hovered || Focused ? _theme.Color(242, 143, 137) : _theme.Color(222, 229, 240))
+                : (_hovered || Focused ? _theme.Color(72, 129, 244) : _theme.Color(208, 222, 245));
             using var path = RoundedPath(bounds, 9);
             using var fill = new SolidBrush(fillColor);
             using var border = new Pen(borderColor, Focused ? 1.6f : 1f);
@@ -474,9 +503,9 @@ internal sealed class CloseChoiceDialog : Form
             e.Graphics.DrawPath(border, path);
 
             var iconBounds = new Rectangle(11, (Height - 25) / 2, 25, 25);
-            using var iconFill = new SolidBrush(_danger ? Color.FromArgb(76, 61, 56) : Color.FromArgb(59, 77, 67));
+            using var iconFill = new SolidBrush(_danger ? _theme.Color(255, 235, 232) : _theme.Color(232, 240, 255));
             e.Graphics.FillEllipse(iconFill, iconBounds);
-            using var iconPen = new Pen(_danger ? Color.FromArgb(220, 167, 142) : Color.FromArgb(168, 207, 184), 1.6f)
+            using var iconPen = new Pen(_danger ? _theme.Color(208, 70, 60) : _theme.Color(37, 99, 235), 1.6f)
             {
                 StartCap = LineCap.Round,
                 EndCap = LineCap.Round
@@ -500,7 +529,7 @@ internal sealed class CloseChoiceDialog : Form
                 _title,
                 _titleFont,
                 new Rectangle(titleX, 7, Width - titleX - 24, 20),
-                Color.FromArgb(232, 234, 229),
+                _theme.Color(29, 41, 57),
                 TextFormatFlags.NoPadding | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis
             );
             TextRenderer.DrawText(
@@ -508,13 +537,13 @@ internal sealed class CloseChoiceDialog : Form
                 _description,
                 _descriptionFont,
                 new Rectangle(titleX, 27, Width - titleX - 24, 18),
-                Color.FromArgb(153, 159, 155),
+                _theme.Color(102, 112, 133),
                 TextFormatFlags.NoPadding | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis
             );
 
             var chevronX = Width - 16;
             var chevronY = Height / 2;
-            using var chevron = new Pen(_hovered ? Color.FromArgb(218, 227, 218) : Color.FromArgb(130, 140, 133), 1.4f)
+            using var chevron = new Pen(_hovered ? _theme.Color(37, 99, 235) : _theme.Color(130, 147, 174), 1.4f)
             {
                 StartCap = LineCap.Round,
                 EndCap = LineCap.Round
@@ -531,81 +560,6 @@ internal sealed class CloseChoiceDialog : Form
                 _descriptionFont.Dispose();
             }
             base.Dispose(disposing);
-        }
-    }
-
-    private sealed class RoundedActionButton : ClickableControl
-    {
-        private bool _hovered;
-
-        public RoundedActionButton()
-        {
-            Cursor = Cursors.Hand;
-            TabStop = true;
-            AccessibleRole = AccessibleRole.PushButton;
-            SetStyle(
-                ControlStyles.AllPaintingInWmPaint
-                | ControlStyles.OptimizedDoubleBuffer
-                | ControlStyles.UserPaint
-                | ControlStyles.Selectable,
-                true
-            );
-        }
-
-        protected override void OnMouseEnter(EventArgs e)
-        {
-            _hovered = true;
-            Invalidate();
-            base.OnMouseEnter(e);
-        }
-
-        protected override void OnMouseLeave(EventArgs e)
-        {
-            _hovered = false;
-            Invalidate();
-            base.OnMouseLeave(e);
-        }
-
-        protected override void OnGotFocus(EventArgs e)
-        {
-            Invalidate();
-            base.OnGotFocus(e);
-        }
-
-        protected override void OnLostFocus(EventArgs e)
-        {
-            Invalidate();
-            base.OnLostFocus(e);
-        }
-
-        protected override void OnKeyDown(KeyEventArgs e)
-        {
-            if (e.KeyCode is Keys.Enter or Keys.Space)
-            {
-                e.Handled = true;
-                OnClick(EventArgs.Empty);
-            }
-            base.OnKeyDown(e);
-        }
-
-        protected override void OnPaint(PaintEventArgs e)
-        {
-            if (Width < 4 || Height < 8) return;
-            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-            var bounds = new Rectangle(1, 3, Math.Max(1, Width - 3), Math.Max(1, Height - 6));
-            using var path = RoundedPath(bounds, 8);
-            using var fill = new SolidBrush(_hovered ? Color.FromArgb(238, 242, 246) : Color.White);
-            using var border = new Pen(Focused ? Color.FromArgb(82, 139, 255) : Color.FromArgb(203, 213, 223), Focused ? 1.7f : 1f);
-            e.Graphics.FillPath(fill, path);
-            e.Graphics.DrawPath(border, path);
-            TextRenderer.DrawText(
-                e.Graphics,
-                Text,
-                Font,
-                bounds,
-                Color.FromArgb(71, 84, 103),
-                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding
-            );
         }
     }
 

@@ -42,6 +42,41 @@ test('frameless startup can be dragged without swallowing activation, actions or
     assert.match(startup, /sandbox:\s*true/);
 });
 
+test('blue-white loading avoids timed fake progress, layout animations and modal overlay flicker', () => {
+    const read = file => fs.readFileSync(path.resolve(desktopDir, '..', file), 'utf8');
+    const html = read('desktop/assets/startup.html');
+    assert.match(html, /color-scheme:\s*light/);
+    assert.match(html, /--startup-background,#f5f7fb/);
+    assert.match(html, /background:\s*#2563eb/);
+    const native = read('native-admin-host/DashboardLoadingExperience.cs');
+    assert.doesNotMatch(native, /setInterval|transition:(?:width|left)|filter:drop-shadow/);
+    assert.match(native, /progressFrame = requestAnimationFrame/);
+    assert.match(native, /window\.removeEventListener\('digital-twin-loading-progress', onProgress\)/);
+    assert.match(native, /transition:transform \.18s/);
+    const form = read('native-admin-host/AdminPanelForm.cs');
+    const close = form.slice(form.indexOf('private async void HandleCloseRequest()'), form.indexOf('private void ShowDetachedDashboardChrome()'));
+    assert.doesNotMatch(close, /HideOverlay/);
+    assert.match(form, /if \(_closeChoiceOpen\) return;[\s\S]*?TryResolveParentWindow\(parentAlreadyChecked/);
+    assert.match(form, /if \(overlayWasEnabled\) NativeMethods.EnableWindow\(overlayHandle, false\)/);
+    const dialog = read('native-admin-host/CloseChoiceDialog.cs');
+    assert.match(dialog, /SuspendLayout\(\)/);
+    assert.match(dialog, /ResumeLayout\(true\)/);
+    assert.match(dialog, /SetStyle\(ControlStyles.StandardClick \| ControlStyles.StandardDoubleClick, false\)/);
+    assert.match(dialog, /_roundedSize == Size && _roundedDpi == DeviceDpi/);
+});
+
+test('desktop remembers either theme and honors explicit choices over old cached colors', () => {
+    const desktop = loadDesktop();
+    assert.equal(desktop.run("normalizeStartupAppearance({}).theme"), 'light');
+    assert.equal(desktop.run("normalizeStartupAppearance({background:'#28282b',accent:'#a8c3b1'}).theme"), 'dark');
+    assert.equal(desktop.run("normalizeStartupAppearance({theme:'light',background:'#28282b'}).background"), '#f5f7fb');
+    assert.equal(desktop.run("normalizeStartupAppearance({theme:'dark'}).background"), '#28282b');
+    const source = fs.readFileSync(path.join(desktopDir, 'main.cjs'), 'utf8');
+    const control = source.slice(source.indexOf('function startDesktopControlServer()'), source.indexOf('function nativeHostPipePath()'));
+    assert.ok(control.indexOf('suppliedToken !== desktopControlToken') < control.indexOf("'/appearance/light'"));
+    assert.match(control, /applyStartupAppearance\([\s\S]*?true\)/);
+});
+
 class Child extends EventEmitter {
     pid = 12345;
     exitCode = null;

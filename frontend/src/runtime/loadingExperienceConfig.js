@@ -3,8 +3,9 @@ export const DEFAULT_LOADING_EXPERIENCE = Object.freeze({
   title: '正在准备生产现场',
   kicker: 'HEAT TREATMENT / DIGITAL TWIN',
   imageUrl: '',
-  background: '#28282b',
-  accent: '#a8c3b1'
+  theme: 'light',
+  background: '#f5f7fb',
+  accent: '#2563eb'
 })
 
 export function normalizeLoadingExperience(raw) {
@@ -18,9 +19,10 @@ export function normalizeLoadingExperience(raw) {
   for (const [key, limit] of [['title', 48], ['kicker', 72]]) {
     if (typeof value[key] === 'string' && value[key].trim()) result[key] = value[key].trim().slice(0, limit)
   }
-  for (const key of ['background', 'accent']) {
-    if (typeof value[key] === 'string' && /^#[0-9a-fA-F]{6}$/.test(value[key])) result[key] = value[key].toLowerCase()
-  }
+  result.theme = ['light', 'dark'].includes(value.theme) ? value.theme
+    : ['#28282b', '#29292c'].includes(String(value.background).toLowerCase()) ? 'dark' : 'light'
+  result.background = result.theme === 'dark' ? '#28282b' : '#f5f7fb'
+  result.accent = result.theme === 'dark' ? '#a8c3b1' : '#2563eb'
   if (typeof value.imageUrl === 'string' && /^\/uploads\/appearance\/[a-f0-9]{32}\.(?:png|jpg|webp)$/.test(value.imageUrl)) result.imageUrl = value.imageUrl
   return result
 }

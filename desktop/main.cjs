@@ -118,14 +118,16 @@ function sendStartupState() {
 }
 
 function normalizeStartupAppearance(raw = {}) {
-    const color = (value, fallback) => /^#[0-9a-fA-F]{6}$/.test(value || '') ? value : fallback;
     const imageUrl = String(raw.imageUrl || '');
+    const theme = ['light', 'dark'].includes(raw.theme) ? raw.theme
+        : ['#28282b', '#29292c'].includes(String(raw.background).toLowerCase()) ? 'dark' : 'light';
     return {
         preset: raw.preset === 'quiet' ? 'quiet' : 'interactive',
         title: String(raw.title || '正在准备生产现场').slice(0, 48),
         kicker: String(raw.kicker || 'HEAT TREATMENT / DIGITAL TWIN').slice(0, 72),
-        background: color(raw.background, '#28282b'),
-        accent: color(raw.accent, '#a8c3b1'),
+        theme,
+        background: theme === 'dark' ? '#28282b' : '#f5f7fb',
+        accent: theme === 'dark' ? '#a8c3b1' : '#2563eb',
         imageUrl: /^\/uploads\/appearance\/[a-f0-9]{32}\.(?:png|jpg|webp)$/.test(imageUrl) ? imageUrl : ''
     };
 }
@@ -139,7 +141,7 @@ function applyStartupAppearance(raw, persist = false) {
     }
     if (!startupWindow || startupWindow.isDestroyed() || startupWindow.webContents.isLoading()) return;
     const serialized = JSON.stringify(startupAppearance).replace(/</g, '\\u003c');
-    startupWindow.webContents.executeJavaScript(`window.configureStartup?.(${serialized})`, true).catch(() => {});
+    return startupWindow.webContents.executeJavaScript(`window.configureStartup?.(${serialized})`, true).catch(() => {});
 }
 
 function readCachedStartupAppearance() {
@@ -232,6 +234,7 @@ function startNativeHostMonitor() {
 async function createStartupWindow() {
     if (startupWindow && !startupWindow.isDestroyed()) return startupWindow;
     startupWindowClosingForSuccess = false;
+    startupAppearance = normalizeStartupAppearance(startupAppearance || readCachedStartupAppearance() || {});
     startupWindow = new BrowserWindow({
         width: 440,
         height: 200,
@@ -245,7 +248,7 @@ async function createStartupWindow() {
         center: true,
         alwaysOnTop: true,
         skipTaskbar: true,
-        backgroundColor: '#29292c',
+        backgroundColor: startupAppearance.background,
         icon: path.join(__dirname, 'assets', 'icon.png'),
         webPreferences: {
             preload: path.join(__dirname, 'startup-preload.cjs'),
@@ -271,7 +274,7 @@ async function createStartupWindow() {
     });
     await startupWindow.loadFile(path.join(__dirname, 'assets', 'startup.html'));
     if (!startupWindow || startupWindow.isDestroyed()) throw new Error('启动加载页面创建失败');
-    applyStartupAppearance(startupAppearance || readCachedStartupAppearance() || {});
+    await applyStartupAppearance(startupAppearance);
     if (!backendOnlySmokeMode) {
         startupWindow.show();
         startupWindow.focus();
@@ -596,6 +599,13 @@ function startDesktopControlServer() {
             response.writeHead(202, { 'content-type': 'application/json; charset=utf-8' });
             response.end(JSON.stringify({ success: true }));
             setImmediate(signalNativeHostReady);
+            return;
+        }
+
+        if (request.method === 'POST' && ['/appearance/light', '/appearance/dark'].includes(pathname)) {
+            applyStartupAppearance({ ...startupAppearance, theme: pathname.endsWith('/dark') ? 'dark' : 'light' }, true);
+            response.writeHead(202, { 'content-type': 'application/json; charset=utf-8' });
+            response.end(JSON.stringify({ success: true }));
             return;
         }
 
@@ -1172,7 +1182,8 @@ async function startNativeClient(origin, writable, startupProgressCallback = nul
             DIGITAL_TWIN_ADMIN_FIXED_RUNTIME: path.join(path.dirname(nativeAdminHostExecutable()), 'WebView2Runtime'),
             DIGITAL_TWIN_DESKTOP_CONTROL_URL: desktopControlOrigin || '',
             DIGITAL_TWIN_DESKTOP_CONTROL_TOKEN: desktopControlToken || '',
-            DIGITAL_TWIN_MAXIMIZE_WINDOW: 'true'
+            DIGITAL_TWIN_MAXIMIZE_WINDOW: 'true',
+            DIGITAL_TWIN_WINDOW_THEME: startupAppearance?.theme || 'light'
         },
         stdio: ['ignore', 'pipe', 'pipe']
     }));

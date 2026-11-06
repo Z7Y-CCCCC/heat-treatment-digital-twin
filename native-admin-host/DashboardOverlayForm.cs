@@ -23,6 +23,8 @@ internal sealed class DashboardOverlayForm : Form
     private OverlayCompositionSurface? _compositionSurface;
     private WebViewNavigationRetry? _navigationRetry;
     private DashboardReloadCoverForm? _reloadCover;
+    private WindowTheme _windowTheme = WindowTheme.FromName(Environment.GetEnvironmentVariable("DIGITAL_TWIN_WINDOW_THEME"));
+    private string? _loadingScriptId;
     private readonly List<RectangleF> _cssRegions = new();
     private readonly List<Rectangle> _appliedRegions = new();
     private SizeF _cssViewport = new(1f, 1f);
@@ -105,7 +107,7 @@ internal sealed class DashboardOverlayForm : Form
         _webView.CoreWebView2.Settings.IsStatusBarEnabled = false;
         _webView.CoreWebView2.Settings.AreDefaultContextMenusEnabled = false;
         _webView.CoreWebView2.Settings.IsZoomControlEnabled = false;
-        await _webView.CoreWebView2.AddScriptToExecuteOnDocumentCreatedAsync(DashboardLoadingExperience.DocumentCreatedScript);
+        await SetWindowThemeAsync(_windowTheme);
         UpdateDpiState();
         UpdateWebViewBounds();
         _webView.CoreWebView2.NewWindowRequested += (_, args) => args.Handled = true;
@@ -316,8 +318,20 @@ internal sealed class DashboardOverlayForm : Form
     {
         if (!_visibleRequested || _parentHandle == IntPtr.Zero || !NativeMethods.IsWindow(_parentHandle)) return;
         _reloadCover ??= new DashboardReloadCoverForm();
+        _reloadCover.SetTheme(_windowTheme);
         var chromeHeight = _presentationMode ? 0 : DashboardChromeForm.GetChromeHeightPixels(_parentHandle);
         _reloadCover.ShowForParent(_parentHandle, chromeHeight);
+    }
+
+    public async Task SetWindowThemeAsync(WindowTheme theme)
+    {
+        var changed = _windowTheme != theme;
+        _windowTheme = theme;
+        _reloadCover?.SetTheme(theme);
+        if (_webView?.CoreWebView2 == null || IsDisposed || (!changed && _loadingScriptId != null)) return;
+        if (_loadingScriptId != null) _webView.CoreWebView2.RemoveScriptToExecuteOnDocumentCreated(_loadingScriptId);
+        _loadingScriptId = await _webView.CoreWebView2.AddScriptToExecuteOnDocumentCreatedAsync(
+            "window.__DIGITAL_TWIN_WINDOW_THEME__='" + theme.Name + "';\n" + DashboardLoadingExperience.DocumentCreatedScript);
     }
 
     /// <summary>

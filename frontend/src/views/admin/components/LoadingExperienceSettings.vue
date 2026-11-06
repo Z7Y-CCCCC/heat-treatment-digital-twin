@@ -1,6 +1,6 @@
 <script setup>
 import { permissionDirective as vPermission } from '../../../runtime/pagePermissionUi.js'
-import { onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { canAdminPage } from '../../../runtime/adminSession.js'
 import { adminApi } from '../../../config/factoryConfig.js'
 import { normalizeLoadingExperience } from '../../../runtime/loadingExperienceConfig.js'
@@ -8,6 +8,11 @@ import { getFactoryScope } from '../../../runtime/factoryScope.js'
 import { cacheFactoryDraft, clearFactoryDraft, readFactoryDraft } from '../../../runtime/factoryDraftCache.js'
 
 const form = ref(normalizeLoadingExperience())
+function setTheme(theme) { form.value = normalizeLoadingExperience({ ...form.value, theme }) }
+const previewTextColor = computed(() => {
+  const rgb = form.value.background.match(/[a-f0-9]{2}/gi)?.map(hex => parseInt(hex, 16)) || [245, 247, 251]
+  return rgb[0] * 0.299 + rgb[1] * 0.587 + rgb[2] * 0.114 > 150 ? '#1d2939' : '#f8faff'
+})
 const draftFactoryId = getFactoryScope()
 let savedSnapshot = ''
 const formSnapshot = () => JSON.stringify(form.value)
@@ -34,6 +39,7 @@ async function save() {
   try {
     const result = await adminApi.saveSettings({ loading_experience_config: form.value })
     if (result.error) throw new Error(result.error)
+    window.chrome?.webview?.postMessage({ type: 'loading_appearance_changed' })
     savedSnapshot = formSnapshot()
     clearFactoryDraft(draftFactoryId, 'loading-experience')
     message.value = '已保存；下一次启动或刷新大屏时生效。'
@@ -66,11 +72,13 @@ async function uploadImage(event) {
         <label>画面方案<select v-model="form.preset" v-permission="{ page: 'platform.loading', action: 'edit' }"><option value="interactive">互动厂房</option><option value="quiet">简洁厂房</option></select></label>
         <label>主标题<input v-model.trim="form.title" maxlength="48" required  v-permission="{ page: 'platform.loading', action: 'edit' }"/></label>
         <label>英文标识<input v-model.trim="form.kicker" maxlength="72" required  v-permission="{ page: 'platform.loading', action: 'edit' }"/></label>
-        <label>背景色<input v-model="form.background" type="color"  v-permission="{ page: 'platform.loading', action: 'edit' }"/></label>
-        <label>进度强调色<input v-model="form.accent" type="color"  v-permission="{ page: 'platform.loading', action: 'edit' }"/></label>
+        <div class="loading-theme-field"><span>主题配色</span><div class="loading-theme-switch" role="group" aria-label="主题配色">
+          <button type="button" :aria-pressed="form.theme==='light'" :class="{selected:form.theme==='light'}" @click="setTheme('light')"><i class="theme-light"></i>蓝白</button>
+          <button type="button" :aria-pressed="form.theme==='dark'" :class="{selected:form.theme==='dark'}" @click="setTheme('dark')"><i class="theme-dark"></i>深色</button>
+        </div></div>
         <label>厂房展示图片<input type="file" accept="image/png,image/jpeg,image/webp" :disabled="uploading" @change="uploadImage"  v-permission="{ page: 'platform.loading', action: 'edit' }"/><small>建议 3:2 透明背景图，最大 5 MB；上传后保存。自定义图不会套用默认灯光热点。</small></label>
       </div>
-      <div class="loading-settings-preview" :style="{background:form.background,'--loading-preview-accent':form.accent}">
+      <div class="loading-settings-preview" :style="{background:form.background,color:previewTextColor,'--loading-preview-accent':form.accent}">
         <small>{{ form.kicker }}</small><img :src="form.imageUrl || '/loading/industrial-factory.png'" alt="厂房加载画面预览" /><strong>{{ form.title }}</strong><i></i><span>{{ form.preset==='interactive'?'可旋转 · 灯光与烟囱可互动':'简洁展示 · 低干扰动效' }}</span>
       </div>
       <button v-if="form.imageUrl" class="btn loading-settings-secondary" type="button" @click="form.imageUrl=''">恢复内置厂房图</button>
@@ -80,9 +88,11 @@ async function uploadImage(event) {
   </section>
 </template>
 
-<style scoped src="../styles/form-controls.css"></style>
+<style scoped src="../styles/form-controls.css">.loading-theme-field{display:grid;align-self:start;gap:6px;color:#475467;font-size:calc(12px * var(--admin-font-scale,1))}.loading-theme-switch{display:flex;gap:4px;padding:4px;width:max-content;border:1px solid #dbe4f2;border-radius:9px;background:#f5f7fb}.loading-theme-switch button{display:flex;align-items:center;gap:7px;min-height:30px;padding:5px 13px;border:0;border-radius:6px;background:transparent;color:#667085;font:inherit;cursor:pointer}.loading-theme-switch button.selected{background:#fff;color:#245fd6;box-shadow:0 1px 4px #315b9f1a}.loading-theme-switch i{width:13px;height:13px;border:1px solid #d1def4;border-radius:4px}.theme-light{background:linear-gradient(135deg,#fff 50%,#2563eb 50%)}.theme-dark{background:linear-gradient(135deg,#28282b 50%,#a8c3b1 50%)}
+</style>
 <style scoped>
 .appearance-edit-controls{display:contents;border:0;margin:0;padding:0;min-width:0}
 .loading-settings{padding:24px;color:#1d2939;background:#fff}.loading-settings h3{margin:0 0 7px;font-size:calc(19px * var(--admin-font-scale, 1))}.loading-settings p{margin:0 0 18px;color:#667085;font-size:calc(13px * var(--admin-font-scale, 1));line-height:1.6}.loading-settings-grid{display:grid;align-items:start;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin-bottom:18px}.loading-settings label{display:grid;gap:6px;color:#475467;font-size:calc(12px * var(--admin-font-scale, 1))}.loading-settings input,.loading-settings select{box-sizing:border-box;width:100%;min-height:36px;padding:7px 9px;border:1px solid #d0d5dd;border-radius:7px;background:#fff;color:#1d2939;font:inherit}.loading-settings input[type=color]{width:68px;padding:2px}.loading-settings-preview{display:grid;place-items:center;gap:5px;max-width:590px;min-height:205px;margin-bottom:18px;padding:14px;border-radius:12px;color:#eee}.loading-settings-preview small{font-size:calc(10px * var(--admin-font-scale, 1));letter-spacing:.12em}.loading-settings-preview img{width:260px;max-height:100px;object-fit:contain}.loading-settings-preview strong{font-size:calc(16px * var(--admin-font-scale, 1))}.loading-settings-preview i{display:block;width:62%;height:3px;border-radius:3px;background:var(--loading-preview-accent)}.loading-settings-preview span{font-size:calc(10px * var(--admin-font-scale, 1));opacity:.7}.loading-settings button:disabled{opacity:.55}.loading-settings-message{margin-left:12px;color:#067647;font-size:calc(12px * var(--admin-font-scale, 1))}.loading-settings-message.failed{color:#b42318}@media(max-width:900px){.loading-settings-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 .loading-settings .loading-settings-secondary{margin-right:10px;color:#344054;background:#eef2f6}.loading-settings label small{font-size:calc(11px * var(--admin-font-scale, 1));color:#98a2b3}
+.loading-theme-field{display:grid;align-self:start;gap:6px;color:#475467;font-size:calc(12px * var(--admin-font-scale,1))}.loading-theme-switch{display:flex;gap:4px;padding:4px;width:max-content;border:1px solid #dbe4f2;border-radius:9px;background:#f5f7fb}.loading-theme-switch button{display:flex;align-items:center;gap:7px;min-height:30px;padding:5px 13px;border:0;border-radius:6px;background:transparent;color:#667085;font:inherit;cursor:pointer}.loading-theme-switch button.selected{background:#fff;color:#245fd6;box-shadow:0 1px 4px #315b9f1a}.loading-theme-switch i{width:13px;height:13px;border:1px solid #d1def4;border-radius:4px}.theme-light{background:linear-gradient(135deg,#fff 50%,#2563eb 50%)}.theme-dark{background:linear-gradient(135deg,#28282b 50%,#a8c3b1 50%)}
 </style>

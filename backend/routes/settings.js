@@ -242,16 +242,21 @@ function normalizeSettingValue(key, value) {
         if (imageUrl && !/^\/uploads\/(?:projects\/[a-f0-9]{24}\/uploads\/)*appearance\/[a-f0-9]{32}\.(?:png|jpg|webp)$/.test(imageUrl))
             throw new Error('加载图片必须通过设计器上传');
         const colors = {};
-        for (const [field, fallback] of [['background', '#28282b'], ['accent', '#a8c3b1']]) {
+        for (const [field, fallback] of [['background', '#f5f7fb'], ['accent', '#2563eb']]) {
             const color = String(parsed[field] || fallback).trim();
             if (!/^#[0-9a-fA-F]{6}$/.test(color)) throw new Error(`加载画面 ${field} 颜色无效`);
             colors[field] = color.toLowerCase();
         }
+        if (parsed.theme != null && !['light', 'dark'].includes(parsed.theme)) throw new Error('加载画面主题无效');
+        const theme = parsed.theme || (['#28282b', '#29292c'].includes(colors.background) ? 'dark' : 'light');
+        colors.background = theme === 'dark' ? '#28282b' : '#f5f7fb';
+        colors.accent = theme === 'dark' ? '#a8c3b1' : '#2563eb';
         return JSON.stringify({
             preset,
             title: String(parsed.title || '正在准备生产现场').trim().slice(0, 48),
             kicker: String(parsed.kicker || 'HEAT TREATMENT / DIGITAL TWIN').trim().slice(0, 72),
             imageUrl,
+            theme,
             ...colors
         });
     }

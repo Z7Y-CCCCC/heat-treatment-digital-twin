@@ -41,7 +41,12 @@ assert.throws(() => normalizeSettingValue('group_portal_config', { logoUrl: 'jav
 assert.throws(() => normalizeSettingValue('group_portal_config', { levels: { city: { accent: 'red' } } }), /颜色/);
 const loading = JSON.parse(normalizeSettingValue('loading_experience_config', { preset: 'quiet', title: '加载地图', accent: '#ABCDEF' }));
 assert.equal(loading.preset, 'quiet');
-assert.equal(loading.accent, '#abcdef');
+assert.equal(loading.accent, '#2563eb');
+assert.equal(loading.theme, 'light');
+assert.equal(JSON.parse(normalizeSettingValue('loading_experience_config', { theme: 'dark' })).background, '#28282b');
+assert.equal(JSON.parse(normalizeSettingValue('loading_experience_config', { background: '#28282b', accent: '#a8c3b1' })).theme, 'dark');
+assert.equal(JSON.parse(normalizeSettingValue('loading_experience_config', { theme: 'light', background: '#28282b' })).background, '#f5f7fb');
+assert.throws(() => normalizeSettingValue('loading_experience_config', { theme: 'unknown' }), /主题/);
 const imageUrl = `/uploads/appearance/${'a'.repeat(32)}.png`;
 assert.equal(JSON.parse(normalizeSettingValue('loading_experience_config', { imageUrl })).imageUrl, imageUrl);
 assert.throws(() => normalizeSettingValue('loading_experience_config', { imageUrl: '/uploads/../secret.png' }), /上传/);

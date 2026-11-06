@@ -60,6 +60,8 @@ internal sealed class AdminPanelForm : Form
     private bool _resizing;
     private bool _dockReady;
     private bool _closeChoiceOpen;
+    private WindowTheme _windowTheme = WindowTheme.FromName(Environment.GetEnvironmentVariable("DIGITAL_TWIN_WINDOW_THEME"));
+    private bool _windowThemeReadPending;
     private Point _dragStart;
     private Point _dragPointerOffset;
     private Rectangle _dragStartBounds;
@@ -104,6 +106,7 @@ internal sealed class AdminPanelForm : Form
         Shown += async (_, _) =>
         {
             _pipeTask = ListenForCommandsAsync(_pipeCancellation.Token);
+            _ = RefreshWindowThemeAsync();
             // 先把宿主窗口嵌入 Unity 正确位置，再创建/导航 WebView2。
             // 否则 WebView2 会以默认窗体尺寸短暂闪现成一块黑色矩形。
             ApplyInitialPlacement();
@@ -283,6 +286,7 @@ internal sealed class AdminPanelForm : Form
                 _dashboardOverlay.QualityRequested += (action, profile, requestId) =>
                     ForwardUnitySessionCommand(action, profile: profile, requestId: requestId);
                 await _dashboardOverlay.InitializeAsync(environment);
+                await _dashboardOverlay.SetWindowThemeAsync(_windowTheme);
                 if (_closing || IsDisposed)
                 {
                     _dashboardOverlay.Dispose();
@@ -387,6 +391,11 @@ internal sealed class AdminPanelForm : Form
             var root = document.RootElement;
             if (!root.TryGetProperty("type", out var typeElement)) return;
             var type = typeElement.GetString();
+            if (type == "loading_appearance_changed")
+            {
+                _ = RefreshWindowThemeAsync();
+                return;
+            }
             if (type == "close_admin")
             {
                 HandleCloseRequest();
@@ -658,6 +667,10 @@ internal sealed class AdminPanelForm : Form
             RequestCloseAfterParentExit();
             return;
         }
+        // The modal choice disables both underlying HWNDs. Keep their last
+        // composed frame instead of repeatedly updating bounds/visibility while
+        // WinForms runs its modal message loop (the timer still detects exit).
+        if (_closeChoiceOpen) return;
         if (!TryResolveParentWindow(parentAlreadyChecked: true))
         {
             // Unity can take several seconds to create its main HWND (and smoke/
@@ -997,7 +1010,6 @@ internal sealed class AdminPanelForm : Form
     {
         if (_closeChoiceOpen) return;
         _closeChoiceOpen = true;
-        _dashboardOverlay?.HideOverlay();
         try
         {
             var choice = ShowCloseChoiceDialog();
@@ -1236,16 +1248,22 @@ internal sealed class AdminPanelForm : Form
 
     private CloseChoice ShowCloseChoiceDialog()
     {
-        using var dialog = new CloseChoiceDialog();
+        using var dialog = new CloseChoiceDialog(_windowTheme.Name);
         // The Unity HWND is in another process, so it cannot be used as the
-        // WinForms modal owner. Disable both underlying windows explicitly and
+        // WinForms modal owner. Disable the underlying windows explicitly and
         // use an ownerless, topmost dialog so no click can fall through to the
         // 3D scene while the close choice is visible.
         var hostWasEnabled = NativeMethods.IsWindowEnabled(Handle);
         var parentCanBeDisabled = _parentHandle != IntPtr.Zero && NativeMethods.IsWindow(_parentHandle);
         var parentWasEnabled = parentCanBeDisabled && NativeMethods.IsWindowEnabled(_parentHandle);
+        // The DirectComposition overlay is an owned popup, not a Unity child.
+        // Block its input without hiding/recreating its last composed frame.
+        var overlayHandle = _dashboardOverlay is { IsDisposed: false, IsHandleCreated: true }
+            ? _dashboardOverlay.Handle : IntPtr.Zero;
+        var overlayWasEnabled = overlayHandle != IntPtr.Zero && NativeMethods.IsWindowEnabled(overlayHandle);
         if (hostWasEnabled) NativeMethods.EnableWindow(Handle, false);
         if (parentWasEnabled) NativeMethods.EnableWindow(_parentHandle, false);
+        if (overlayWasEnabled) NativeMethods.EnableWindow(overlayHandle, false);
         try
         {
             dialog.ShowDialog();
@@ -1254,6 +1272,7 @@ internal sealed class AdminPanelForm : Form
         {
             if (parentWasEnabled) NativeMethods.EnableWindow(_parentHandle, true);
             if (hostWasEnabled) NativeMethods.EnableWindow(Handle, true);
+            if (overlayWasEnabled && NativeMethods.IsWindow(overlayHandle)) NativeMethods.EnableWindow(overlayHandle, true);
         }
         return dialog.Choice;
     }
@@ -1401,6 +1420,25 @@ internal sealed class AdminPanelForm : Form
         {
             // Diagnostics must not affect the UI host.
         }
+    }
+
+    private async Task RefreshWindowThemeAsync()
+    {
+        if (_windowThemeReadPending || _closing || IsDisposed) return;
+        _windowThemeReadPending = true;
+        try
+        {
+            var uri = new Uri(new Uri(_options.Url), "/api/settings/loading-experience");
+            using var response = await DashboardSessionClient.GetAsync(uri, _pipeCancellation.Token);
+            response.EnsureSuccessStatusCode();
+            using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+            if (_closing || IsDisposed || !document.RootElement.TryGetProperty("config", out var config)) return;
+            _windowTheme = WindowTheme.FromConfig(config);
+            if (_dashboardOverlay != null) await _dashboardOverlay.SetWindowThemeAsync(_windowTheme);
+            _ = PostDesktopControlAsync("appearance/" + _windowTheme.Name);
+        }
+        catch { /* Theme reads never block startup, login or a close request. */ }
+        finally { _windowThemeReadPending = false; }
     }
 
     private async Task<bool> PostDesktopControlAsync(string action, TimeSpan? timeout = null)

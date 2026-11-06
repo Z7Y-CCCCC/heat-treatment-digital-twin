@@ -17,13 +17,19 @@ internal sealed class DashboardReloadCoverForm : Form
         StartPosition = FormStartPosition.Manual;
         ShowInTaskbar = false;
         MinimumSize = Size.Empty;
-        BackColor = Color.FromArgb(40, 40, 43);
+        BackColor = Color.FromArgb(245, 247, 251);
         SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer |
                  ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true);
 
     }
 
     protected override bool ShowWithoutActivation => true;
+
+    public void SetTheme(WindowTheme theme)
+    {
+        var color = theme.Dark ? Color.FromArgb(40, 40, 43) : Color.FromArgb(245, 247, 251);
+        if (BackColor != color) { BackColor = color; Invalidate(); }
+    }
 
     public void ShowForParent(IntPtr parentHandle, int chromeHeight)
     {
@@ -90,7 +96,7 @@ internal sealed class DashboardReloadCoverForm : Form
         e.Graphics.Clear(BackColor);
         if (string.IsNullOrEmpty(_failure)) return;
         using var font = new Font("Microsoft YaHei UI", 12f);
-        using var brush = new SolidBrush(Color.FromArgb(238, 177, 165));
+        using var brush = new SolidBrush(BackColor.R < 100 ? Color.FromArgb(238, 177, 165) : Color.FromArgb(180, 35, 24));
         var bounds = new RectangleF(ClientSize.Width * .15f, ClientSize.Height * .4f,
             ClientSize.Width * .7f, ClientSize.Height * .2f);
         using var format = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
