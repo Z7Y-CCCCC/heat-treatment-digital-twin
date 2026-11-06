@@ -72,9 +72,9 @@ async function main() {
         await fs.promises.mkdir(staging, { recursive: true });
         log('Preparing backend dependencies');
         await new Promise((resolve, reject) => {
-            const tar = spawn(path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe'),
-                ['-xf', archive, '-C', staging], { windowsHide: true, stdio: 'ignore' });
-            tar.once('error', reject); tar.once('close', code => code === 0 ? resolve() : reject(new Error(`Dependency extraction failed: ${code}`)));
+            const extractor = spawn(path.join(__dirname, 'HeatTreatmentCollector.exe'),
+                ['--extract-dependencies', archive, staging], { windowsHide: true, stdio: 'ignore' });
+            extractor.once('error', reject); extractor.once('close', code => code === 0 ? resolve() : reject(new Error(`Dependency extraction failed: ${code}`)));
         });
         for (const name of ['express', 'mysql2', 'better-sqlite3', 'ws']) {
             if (!fs.existsSync(path.join(staging, name, 'package.json'))) throw new Error(`Missing backend dependency: ${name}`);

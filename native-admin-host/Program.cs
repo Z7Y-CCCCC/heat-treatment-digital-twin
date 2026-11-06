@@ -74,6 +74,11 @@ internal static class Program
     [STAThread]
     private static void Main(string[] args)
     {
+        if (HeatTreatment.Shared.DependencyArchive.TryRun(args, out var archiveExitCode))
+        {
+            Environment.ExitCode = archiveExitCode;
+            return;
+        }
         EnablePerMonitorDpiAwareness();
         // Prevent the transparent overlay WebView from flashing white before its
         // controller-level background color is applied. Admin pages remain opaque.

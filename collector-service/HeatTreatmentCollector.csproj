@@ -10,5 +10,8 @@
     <Nullable>enable</Nullable>
     <AssemblyName>HeatTreatmentCollector</AssemblyName>
   </PropertyGroup>
-  <ItemGroup><PackageReference Include="System.ServiceProcess.ServiceController" Version="8.0.1" /></ItemGroup>
+  <ItemGroup>
+    <Compile Include="..\shared\DependencyArchive.cs" Link="DependencyArchive.cs" />
+    <PackageReference Include="System.ServiceProcess.ServiceController" Version="8.0.1" />
+  </ItemGroup>
 </Project>

@@ -19,6 +19,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Include="..\shared\DependencyArchive.cs" Link="DependencyArchive.cs" />
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.3719.77" />
     <EmbeddedResource Include="..\frontend\public\loading\industrial-factory.png" LogicalName="HeatTreatmentAdminHost.LoadingFactory.png" />
   </ItemGroup>

@@ -9,6 +9,7 @@ internal static class Program
 {
     public static int Main(string[] args)
     {
+        if (HeatTreatment.Shared.DependencyArchive.TryRun(args, out var archiveExitCode)) return archiveExitCode;
         Console.OutputEncoding = new System.Text.UTF8Encoding(false);
         var index = Array.IndexOf(args, "--config");
         if (index < 0 || index + 1 >= args.Length) { Console.Error.WriteLine("Requires --config <absolute file>"); return 2; }

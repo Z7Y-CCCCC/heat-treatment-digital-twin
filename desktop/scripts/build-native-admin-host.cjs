@@ -30,6 +30,7 @@ function inputFingerprint() {
         }
     }
     visit(path.dirname(hostProject));
+    visit(path.join(projectDir, 'shared', 'DependencyArchive.cs'));
     visit(path.join(desktopDir, 'assets', 'icon.ico'));
     visit(path.join(projectDir, 'frontend', 'public', 'loading', 'industrial-factory.png'));
     visit(path.join(path.dirname(hostProject), 'obj', 'project.assets.json'));

@@ -411,7 +411,8 @@ async function ensureBackendDependencies() {
             await retryFilesystem(() => fs.promises.rm(stagingDir, { recursive: true, force: true }));
             await fs.promises.mkdir(stagingDir, { recursive: true });
             await new Promise((resolve, reject) => {
-                const extractor = spawn('tar', ['-xf', tarFile, '-C', stagingDir], {
+                const extractor = spawn(resourcePath('native-client', 'AdminHost', 'HeatTreatmentAdminHost.exe'),
+                    ['--extract-dependencies', tarFile, stagingDir], {
                     windowsHide: true,
                     stdio: 'ignore'
                 });
