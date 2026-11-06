@@ -6,6 +6,7 @@ import { parameterValue } from '../../../shared/dashboardParameters.mjs'
 import {extendedChartOption} from './dashboardCharts.js'
 import { splitHudKpiValue } from './hudPresentation.js'
 import { resolveHudText } from './hudTextConfig.js'
+import { colorChannels, colorAtOpacity, effectiveWidgetBackground, widgetAppearanceVariables } from './widgetAppearance.js'
 import { configureTrendAxes, appendTrendSample } from './trendChart.js'
 import MapRegionList from './MapRegionList.vue'
 
@@ -305,18 +306,16 @@ const shellStyle = computed(() => {
     strong: '0 18px 48px rgba(0,6,14,.42)'
   }
   return {
-    // The Unity overlay uses one controlled glass palette. Keep configured
-    // condition colors for active states, but do not let legacy flat panel
-    // colors flatten the runtime HUD.
-    background: glassBackground,
+    ...widgetAppearanceVariables(style, condition),
+    background: style.background ? effectiveWidgetBackground(style) : glassBackground,
     backdropFilter:'blur(12px) saturate(125%)',
     WebkitBackdropFilter:'blur(12px) saturate(125%)',
     color: condition.color || style.color,
-    borderColor: overlayMode.value ? condition.borderColor : (condition.borderColor || style.borderColor),
-    borderRadius: overlayMode.value ? undefined : cssSize(style.borderRadius, undefined),
+    borderColor: condition.borderColor || style.borderColor,
+    borderRadius: cssSize(style.borderRadius, undefined),
     opacity: style.opacity ?? 1,
-    padding: overlayMode.value ? undefined : cssSize(style.padding, undefined),
-    fontSize: overlayMode.value ? undefined : cssSize(style.fontSize, undefined),
+    padding: cssSize(style.padding, undefined),
+    fontSize: overlayMode.value && !isHudModule.value ? undefined : cssSize(style.fontSize, undefined),
     // Keep the already-migrated label/value hierarchy in authoring pixels.
     // The canvas scales once; brand and KPI rules own their separate sizes.
     '--hud-text-size': overlayMode.value && type.value === 'text' ? cssSize(style.fontSize) : undefined,
@@ -324,14 +323,15 @@ const shellStyle = computed(() => {
     // This lets the designer change only the panel alpha while keeping the
     // text, values and charts fully opaque.
     '--hud-panel-opacity': overlayMode.value ? backgroundOpacity : undefined,
-    '--hud-glass-bg': glassBackground,
-    '--hud-glass-bg-subtle': subtleGlassBackground,
+    '--hud-glass-bg': style.background ? effectiveWidgetBackground(style) : glassBackground,
+    '--hud-glass-bg-subtle': style.background ? effectiveWidgetBackground(style) : subtleGlassBackground,
     '--hud-brand-bg': overlayMode.value ? brandBackground : undefined,
     '--hud-marquee-bg': overlayMode.value ? marqueeBackground : undefined,
     '--hud-title-bg': overlayMode.value ? `rgba(129, 140, 248, ${Math.min(0.1, backgroundOpacity * 0.65)})` : undefined,
     '--hud-navigation-bg': overlayMode.value ? `linear-gradient(180deg, rgba(91, 77, 135, ${Math.min(0.86, backgroundOpacity * 1.8)}) 0%, rgba(48, 40, 82, ${Math.min(0.78, backgroundOpacity * 1.35)}) 100%)` : undefined,
     '--hud-return-bg': overlayMode.value ? `rgba(29, 29, 31, ${Math.min(0.96, backgroundOpacity * 1.8)})` : undefined,
-    boxShadow: overlayMode.value ? undefined : (shadows[style.shadow] || style.boxShadow),
+    boxShadow: shadows[style.shadow] || style.boxShadow,
+    '--widget-shadow': shadows[style.shadow] || style.boxShadow,
     '--widget-value-color': condition.color || style.valueColor || '#67d2ff',
     '--widget-on-color': style.onColor || '#49df9d',
     '--widget-off-color': style.offColor || '#7c8d9d',
@@ -506,11 +506,8 @@ function hudNumber(value, decimals = 1) {
 }
 
 function chartColorWithAlpha(color, alpha) {
-  const match = String(color || '').trim().match(/^#([\da-f]{3}|[\da-f]{6})$/i)
-  if (!match) return `rgba(137, 149, 245, ${alpha})`
-  const hex = match[1].length === 3 ? [...match[1]].map(value => value + value).join('') : match[1]
-  const channels = [0, 2, 4].map(offset => Number.parseInt(hex.slice(offset, offset + 2), 16))
-  return `rgba(${channels.join(', ')}, ${alpha})`
+  const source = colorChannels(color) ? color : '#8995f5'
+  return colorAtOpacity(source, alpha * (colorChannels(source)?.alpha ?? 1))
 }
 
 function resizeChart() { chart?.resize() }
@@ -521,23 +518,28 @@ function disposeChart() {
 // samples, axes ranges, bindings or the designer's non-overlay preview.
 function presentChart(option) {
   if(isTrend.value)configureTrendAxes(option,content.value,displayUnit.value || content.value.statUnit || '',chartRef.value?.clientHeight || 160)
+  const textColor = activeCondition.value?.color || widgetStyle.value.color
+  const fontScale = Math.max(10, Math.min(120, Number(widgetStyle.value.fontSize) || 14)) / 14
   if (overlayMode.value) {
     const palette = ['#8995f5', '#71cbd8', '#a59ae1', '#69c2aa', '#e2b775', '#e77f98']
     option.backgroundColor = 'transparent'
     option.color = palette
-    option.textStyle = { fontFamily: HUD_FONT_TEXT, color: '#98a1b9' }
-    if (option.legend) option.legend = { ...option.legend, icon: 'circle', itemWidth: 5, itemHeight: 5, textStyle: { color: '#969fb6', fontSize: 10, fontFamily: HUD_FONT_TEXT } }
-    if (option.tooltip) option.tooltip = { ...option.tooltip, backgroundColor: 'rgba(20,24,41,.96)', borderColor: 'rgba(150,162,214,.24)', padding: 10, textStyle: { color: '#e4e8f5', fontSize: 12, fontFamily: HUD_FONT_TEXT } }
+    option.textStyle = { fontFamily: HUD_FONT_TEXT, color: textColor || '#98a1b9', fontSize: 11 * fontScale }
+    if (option.legend) option.legend = { ...option.legend, icon: 'circle', itemWidth: 5, itemHeight: 5, textStyle: { color: textColor || '#969fb6', fontSize: 10 * fontScale, fontFamily: HUD_FONT_TEXT } }
+    if (option.tooltip) option.tooltip = { ...option.tooltip, backgroundColor: 'rgba(20,24,41,.96)', borderColor: 'rgba(150,162,214,.24)', padding: 10, textStyle: { color: textColor || '#e4e8f5', fontSize: 12 * fontScale, fontFamily: HUD_FONT_TEXT } }
     for (const axis of [option.xAxis, option.yAxis].filter(Boolean)) {
-      axis.axisLabel = { ...axis.axisLabel, color: content.value.axisLabelColor || '#bac5de', fontSize: Number(content.value.axisFontSize || 11), fontFamily: HUD_FONT_TEXT, hideOverlap: true }
+      axis.axisLabel = { ...axis.axisLabel, color: content.value.axisLabelColor || textColor || '#bac5de', fontSize: Number(content.value.axisFontSize || 11) * fontScale, fontFamily: HUD_FONT_TEXT, hideOverlap: true }
+      if (axis.nameTextStyle) axis.nameTextStyle = { ...axis.nameTextStyle, color: content.value.axisLabelColor || textColor || '#bac5de', fontSize: 10 * fontScale }
       axis.axisTick = { show: false }
       axis.axisLine = { show: false }
       if (axis.splitLine) axis.splitLine = { ...axis.splitLine,lineStyle: { ...axis.splitLine.lineStyle,color: content.value.gridColor || 'rgba(173,185,224,.18)', type: 'dashed' } }
     }
+    if (fontScale !== 1 && option.grid) option.grid = { ...option.grid, top: Number(option.grid.top || 17) * fontScale, containLabel: true }
     for (const [index, series] of option.series.entries()) {
       if(series.silent && series.itemStyle?.color==='transparent')continue
-      const color = isHudModule.value || content.value.lineColor || databaseRecord.value?.series?.length
-        ? (chartSeries.value[index]?.color || palette[index % palette.length]) : palette[index % palette.length]
+      const color = option.series.length === 1 && content.value.lineColor ? content.value.lineColor
+        : isHudModule.value || content.value.lineColor || databaseRecord.value?.series?.length
+          ? (chartSeries.value[index]?.color || palette[index % palette.length]) : palette[index % palette.length]
       if (['line', 'bar', 'scatter'].includes(series.type)) {
         series.lineStyle = {
           ...series.lineStyle,
@@ -550,12 +552,13 @@ function presentChart(option) {
         series.symbolSize = isHudModule.value ? 3 : 4
         if (series.type === 'bar') series.barMaxWidth = 12
         const areaOpacity=Math.max(0,Math.min(1,Number(content.value.areaOpacity ?? .24)))
+        const fillColor = content.value.areaColor || color
         if (series.areaStyle) series.areaStyle = { ...series.areaStyle, opacity: 1, color: {
           type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
           colorStops: [
-            { offset: 0, color: chartColorWithAlpha(color, areaOpacity) },
-            { offset: .52, color: chartColorWithAlpha(color, areaOpacity*.35) },
-            { offset: 1, color: chartColorWithAlpha(color, areaOpacity*.03) }
+            { offset: 0, color: chartColorWithAlpha(fillColor, areaOpacity) },
+            { offset: .52, color: chartColorWithAlpha(fillColor, areaOpacity*.35) },
+            { offset: 1, color: chartColorWithAlpha(fillColor, areaOpacity*.03) }
           ]
         } }
         if (isHudModule.value && series.type === 'line' && Array.isArray(series.data)) {
@@ -575,7 +578,7 @@ function presentChart(option) {
       } else if (series.type === 'pie') {
         const ring = Array.isArray(series.radius) && series.radius[0] !== '0%'
         if (ring) series.radius = [`${Number(content.value.donutRatio ?? 73)}%`, '81%']
-        if (series.silent) series.label = { ...series.label, fontSize: 11, fontWeight: 400, fontFamily: HUD_FONT_TEXT, lineHeight: 17 }
+        series.label = { ...series.label, color: textColor || series.label?.color, fontSize: 11 * fontScale, fontWeight: 400, fontFamily: HUD_FONT_TEXT, lineHeight: 17 * fontScale }
         series.itemStyle = { borderColor: 'transparent', borderWidth: 1 }
         series.labelLine = { length: 8, length2: 6, lineStyle: { color: '#606d8d' } }
         series.data = series.data.map((item, i) => ({ ...item, itemStyle: { ...item.itemStyle, color: series.silent && i === 1 ? 'rgba(143,155,204,.14)' : palette[i % palette.length] } }))
@@ -586,9 +589,9 @@ function presentChart(option) {
         series.progress = { show: true, width: 4, itemStyle: { color } }
         series.axisLine = { lineStyle: { width: 4, color: [[1, 'rgba(143,155,204,.15)']] } }
         series.pointer = { show: false }
-        series.axisLabel = { color: '#8590aa', distance: 8, fontSize: 8, fontFamily: HUD_FONT_TEXT, formatter: value => value === series.min || value === series.max ? String(value) : '' }
+        series.axisLabel = { color: textColor || '#8590aa', distance: 8, fontSize: 8 * fontScale, fontFamily: HUD_FONT_TEXT, formatter: value => value === series.min || value === series.max ? String(value) : '' }
         series.splitLine = { length: 4, distance: -8, lineStyle: { color: '#687493', width: 1 } }
-        series.detail = { ...series.detail, color: '#edf0fa', fontSize: 22, fontFamily: HUD_FONT_NUMBER, fontWeight: 600, offsetCenter: [0, '-12%'] }
+        series.detail = { ...series.detail, color: textColor || '#edf0fa', fontSize: 22 * fontScale, fontFamily: HUD_FONT_NUMBER, fontWeight: 600, offsetCenter: [0, '-12%'] }
       }
     }
   }
@@ -760,6 +763,7 @@ onUnmounted(() => {
       { 'data-pending': dataPending },
       { 'hud-module-shell': isHudModule },
       { 'hud-module-compact': isHudModule && (content.compact || isTrend && Number(widget.frame?.height || 300) <= 260) },
+      { 'has-authored-padding': widgetStyle.padding !== undefined, 'has-authored-radius': widgetStyle.borderRadius !== undefined, 'has-authored-border': !!(activeCondition?.borderColor || widgetStyle.borderColor), 'has-authored-shadow': !!widgetStyle.shadow || !!widgetStyle.boxShadow },
       animationClass,
       `quality-${boundQuality}`,
       { interactive: widgetEvents.length > 0 }

@@ -24,6 +24,7 @@ import { widgetBindingChoices, LEGACY_BINDINGS } from '../../../runtime/widgetBi
 import { adminApi } from '../../../config/factoryConfig.js'
 import WidgetRenderer from '../../../runtime/WidgetRenderer.vue'
 import { hudTextFields } from '../../../runtime/hudTextConfig.js'
+import { effectiveWidgetBackground, updateWidgetBackground, updateWidgetBackgroundOpacity } from '../../../runtime/widgetAppearance.js'
 import { applyReferenceHudLayout } from '../../../runtime/referenceHudLayout.js'
 import { applyFactoryHudModules } from '../../../runtime/factoryHudModules.js'
 import { applyVisibilityAction, matchesRule, widgetRuntimeVisible } from '../../../runtime/dashboardRules.js'
@@ -2887,7 +2888,7 @@ onBeforeUnmount(() => {
 
             <section v-else-if="inspectorTab === 'style'" class="inspector-section">
               <details v-if="selectedWidget.type.startsWith('hud_')" class="hud-copy-settings"><summary>副标题样式</summary><label>副标题字号<input v-model.number="selectedWidget.style.eyebrowFontSize" type="number" min="8" max="32" :placeholder="selectedWidget.content.compact ? '8' : '9'" @change="recordProperty('修改副标题字号')" /></label><ColorField v-model="selectedWidget.style.eyebrowColor" label="副标题颜色" :presets="textColorPresets" @commit="recordProperty('修改副标题颜色')" /></details>
-              <ColorField v-model="selectedWidget.style.background" label="背景颜色" :presets="backgroundColorPresets" @commit="recordProperty('修改样式')" />
+              <ColorField :model-value="effectiveWidgetBackground(selectedWidget.style)" label="背景颜色" :presets="backgroundColorPresets" @update:model-value="updateWidgetBackground(selectedWidget.style,$event)" @commit="recordProperty('修改样式')" />
               <ColorField v-model="selectedWidget.style.color" label="文字颜色" :presets="textColorPresets" @commit="recordProperty('修改样式')" />
               <ColorField v-if="selectedWidget.type === 'value'" v-model="selectedWidget.style.valueColor" label="数值颜色" :presets="textColorPresets" @commit="recordProperty('修改样式')" />
               <template v-if="selectedWidget.type === 'status'">
@@ -2897,7 +2898,7 @@ onBeforeUnmount(() => {
               </template>
               <template v-if="['trend','hud_chart_dock','hud_kpi_panel'].includes(selectedWidget.type)">
                 <ColorField v-model="selectedWidget.content.lineColor" label="曲线颜色" :presets="textColorPresets" @commit="recordProperty('修改样式')" />
-                <ColorField v-model="selectedWidget.content.areaColor" label="曲线填充颜色" :presets="borderColorPresets" @commit="recordProperty('修改样式')" />
+                <ColorField v-if="['area','stackedArea'].includes(selectedWidget.content.chartType)" v-model="selectedWidget.content.areaColor" label="曲线填充颜色" :presets="borderColorPresets" @commit="recordProperty('修改样式')" />
               </template>
               <ColorField v-model="selectedWidget.style.borderColor" label="边框颜色" :presets="borderColorPresets" @commit="recordProperty('修改样式')" />
               <div class="property-grid two">
@@ -2908,7 +2909,7 @@ onBeforeUnmount(() => {
               </div>
               <label class="panel-opacity-setting">
                 <span>面板背景不透明度 <b>{{ Math.round(Number(selectedWidget.style.backgroundOpacity || 0) * 100) }}%</b><small>透光 {{ Math.round((1 - Number(selectedWidget.style.backgroundOpacity || 0)) * 100) }}%</small></span>
-                <input v-model.number="selectedWidget.style.backgroundOpacity" type="range" min="0" max="1" step=".01" @change="recordProperty('修改面板透明度')" />
+                <input :value="selectedWidget.style.backgroundOpacity" type="range" min="0" max="1" step=".01" aria-label="面板背景不透明度" @input="updateWidgetBackgroundOpacity(selectedWidget.style,Number($event.target.value))" @change="recordProperty('修改面板透明度')" />
                 <small class="field-hint">只调整底色，不会让文字、数字和图表变淡。大屏与设计器预览同步使用。</small>
               </label>
               <label>阴影<select v-model="selectedWidget.style.shadow" @change="recordProperty('修改样式')"><option value="none">无</option><option value="soft">柔和</option><option value="glow">发光</option><option value="strong">强调</option></select></label>

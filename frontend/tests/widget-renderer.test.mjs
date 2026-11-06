@@ -115,6 +115,37 @@ test('part-point panels accept real zero values but reject stale points and late
 })
 const findNode = (root, match) => match(root) ? root : root.children.map(child => findNode(child, match)).find(Boolean)
 
+test('authored HUD surface properties reach designer and runtime rather than the fixed skin', async t => {
+    const view=fixture(t), style={background:'rgba(30, 90, 180, .8)',backgroundOpacity:.6,color:'#ff625f',borderColor:'#33ff66',borderRadius:24,padding:28,fontSize:28,shadow:'none',opacity:.75}
+    for(const type of ['hud_kpi_panel','hud_device_status','hud_alarm_panel','hud_chart_dock'])for(const overlayMode of [false,true]){
+        await view.render({widget:{type,style,content:{items:[]}},overlayMode})
+        const rendered=view.root.children[0].props.style
+        assert.equal(rendered['--hud-glass-bg'],'rgba(30, 90, 180, 0.6)')
+        assert.equal(rendered['--widget-border-color'],'#33ff66')
+        assert.equal(rendered['--widget-radius'],'24px')
+        assert.equal(rendered['--widget-padding'],'28px')
+        assert.equal(rendered['--hud-module-font-size'],'28px')
+        assert.equal(rendered['--module-text'],'#ff625f')
+        assert.equal(rendered['--widget-shadow'],'none')
+        assert.equal(rendered.opacity,.75)
+    }
+})
+
+test('HUD chart fill uses its independent authored color and alpha; chart typography follows the widget', async t => {
+    const view=fixture(t), widget={type:'hud_chart_dock',style:{color:'#ff625f',fontSize:28},content:{chartType:'area',lineColor:'#aa33ff',areaColor:'rgba(10, 220, 80, .5)',areaOpacity:.6,showAxis:true}}
+    await view.render({widget,overlayMode:true,trendPoints:[{time:'a',value:1},{time:'b',value:2}]})
+    const option=charts.at(-1).options.at(-1)[0]
+    assert.equal(option.series[0].lineStyle.color,'#aa33ff')
+    assert.equal(option.series[0].areaStyle.color.colorStops[0].color,'rgba(10, 220, 80, 0.3)')
+    assert.equal(option.textStyle.color,'#ff625f')
+    assert.equal(option.xAxis.axisLabel.color,'#ff625f')
+    assert.equal(option.yAxis.axisLabel.fontSize,22)
+    assert.equal(option.grid.top,34, 'larger unit captions retain enough top space instead of clipping')
+    assert.equal(option.tooltip.textStyle.fontSize,24)
+    await view.render({widget:{...widget,id:'external',data:{mode:'dataset',datasetField:'value'}},overlayMode:true,databaseValues:{external:{quality:'good',rows:[{time:'a',value:1},{time:'b',value:2}],series:[{id:'value',color:'#55c7ff',rows:[{time:'a',value:1},{time:'b',value:2}]}]}}})
+    assert.equal(charts.at(-1).options.at(-1)[0].series[0].lineStyle.color,'#aa33ff','a generated dataset color cannot disable the single-curve color control')
+})
+
 test('HUD subtitle uses the same default in designer and overlay, allows custom text and truly hides a blank value', async t => {
     const view = fixture(t)
     for (const [type, fallback] of [['hud_kpi_panel','PRODUCTION'], ['hud_device_status','EQUIPMENT'], ['hud_alarm_panel','EVENT LOG'], ['hud_chart_dock','PROCESS TREND']]) {

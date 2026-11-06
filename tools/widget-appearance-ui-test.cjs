@@ -1,0 +1,59 @@
+// Actual style controls, published runtime and native overlay against an owned DB.
+const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),http=require('node:http');
+const playwright=require(process.env.PLAYWRIGHT_MODULE||'playwright');
+const {createRunDirectory,startLoggedProcess,waitUntil}=require('../backend/scripts/integration-test-utils.cjs');
+const {stopOwnedSmokeProcess}=require('../desktop/scripts/smoke-sandbox.cjs');
+const directory=createRunDirectory('widget-appearance-ui'),errors=[],checks=[];
+let server,browser,page,info,upstream;
+const pass=name=>{checks.push(name);console.log('PASS '+name)};
+async function api(route,method='GET',data){
+ const session=await(await page.request.get(info.origin+'/api/admin-auth/session')).json();
+ const response=await page.request.fetch(info.origin+'/api'+route,{method,headers:{Origin:info.origin,'X-Admin-Request':'1','X-CSRF-Token':session.csrfToken},...(data===undefined?{}:{data})});
+ assert.equal(response.status(),200,await response.text());return response.json();
+}
+async function edit(name,value,role='textbox'){const field=page.getByRole(role,{name,exact:true});await field.fill(String(value));await field.blur()}
+async function appearance(panel){return panel.evaluate(el=>{const shell=el.matches('.widget-shell')?el:el.querySelector('.widget-shell'),heading=shell.querySelector('.hud-module-heading strong'),reading=shell.querySelector('.hud-module-reading strong');const s=getComputedStyle(shell);return{background:s.backgroundColor,border:s.borderTopColor,radius:s.borderRadius,padding:s.paddingTop,font:s.fontSize,headingFont:getComputedStyle(heading).fontSize,headingColor:getComputedStyle(heading).color,readingFont:reading?getComputedStyle(reading).fontSize:null,readingColor:reading?getComputedStyle(reading).color:null,shadow:s.boxShadow,opacity:s.opacity}})}
+(async()=>{
+ const infoFile=path.join(directory,'server.json');server=startLoggedProcess(process.execPath,[path.join(__dirname,'manual-disassembly-ui-server.cjs')],{cwd:path.resolve(__dirname,'..'),env:{...process.env,MANUAL_LAYOUT_UI_INFO_FILE:infoFile},logFile:path.join(directory,'backend.log')});
+ await waitUntil(()=>{assert.equal(server.exitCode,null);return fs.existsSync(infoFile)},60000,'owned backend');info=JSON.parse(fs.readFileSync(infoFile));
+ browser=await playwright.chromium.launch({headless:true,...(process.env.BROWSER_EXECUTABLE?{executablePath:process.env.BROWSER_EXECUTABLE}:{}),args:['--enable-unsafe-swiftshader']});
+ const context=await browser.newContext({viewport:{width:1600,height:1050}});await context.addInitScript(()=>localStorage.setItem('digital_twin_admin_ui_state_v1',JSON.stringify({activeTab:'platform',platformSubpage:'designer'})));
+ page=await context.newPage();page.setDefaultTimeout(20000);page.on('pageerror',e=>errors.push(e.message));await page.goto(info.origin+'/admin');await page.getByRole('textbox',{name:'账号',exact:true}).fill(info.username);await page.getByLabel('后台密码',{exact:true}).fill(info.password);await page.getByRole('button',{name:'解锁后台',exact:true}).click();await page.locator('.dashboard-designer-shell').waitFor();
+ const state=await api('/platform/designer'),{createDashboardWidget}=await import('../frontend/src/runtime/dashboardSchema.js');
+ upstream=http.createServer((req,res)=>{res.writeHead(200,{'Content-Type':'application/json'});res.end(JSON.stringify({rows:[850,853,851,856,852,854,851,855].map((value,i)=>({time:`10:00:0${i}`,value}))}))});await new Promise(resolve=>upstream.listen(0,'127.0.0.1',resolve));
+ const connection=(await api('/data-sources/connections','POST',{name:'曲线样式验收接口',sourceType:'http_api',authType:'none',baseUrl:`http://127.0.0.1:${upstream.address().port}/`,enabled:true})).connection;
+ const dataset=(await api('/data-sources/datasets','POST',{name:'曲线样式样本',connectionId:connection.id,source:'http',rootPath:'rows',refreshMs:1000,request:{method:'GET',path:'/samples'},columns:[{name:'time',path:'time',label:'时间',type:'string',role:'category'},{name:'value',path:'value',label:'温度',type:'number',role:'value',unit:'°C'}]})).dataset;
+ state.document.metadata={...state.document.metadata,unifiedMapDesigner:1};state.document.widgets=['hud_chart_dock','hud_kpi_panel','hud_device_status','hud_alarm_panel'].map((type,i)=>{const w=createDashboardWidget(type,i,{x:60+(i%2)*850,y:120+Math.floor(i/2)*450});w.id='appearance_'+i;w.title='样式验证'+i;w.frame.width=720;w.frame.height=380;w.content.compact=false;return w});
+ state.document.widgets[0].data={...state.document.widgets[0].data,mode:'dataset',datasetId:dataset.id,datasetField:'value',deviceScope:'global',refreshMs:1000};
+ for(const view of state.document.scene.views)view.componentState={show:state.document.widgets.map(w=>w.id),hide:[]};
+ await api('/platform/designer/draft','PUT',{sceneId:state.document.sceneId,document:state.document,expectedRevision:state.revision});await api('/platform/releases','POST',{sceneId:state.document.sceneId,notes:'Owned appearance fixture'});await page.reload();await page.locator('.dashboard-designer-shell').waitFor();
+ const tree=page.getByRole('tree',{name:'视角层级',exact:true});await tree.locator('[data-view-id="factory_overview"] .view-tree-select').click();
+ for(let i=0;i<4;i++){
+  await page.locator('.layer-list button').filter({has:page.getByText('样式验证'+i,{exact:true})}).click();
+  if(i===0){await page.locator('.inspector-tabs').getByRole('button',{name:'数据来源',exact:true}).click();await page.getByRole('button',{name:'读取预览',exact:true}).click();await page.locator('[data-widget-id="appearance_0"] canvas').waitFor()}
+  await page.locator('.inspector-tabs').getByRole('button',{name:'样式',exact:true}).click();
+  await edit('背景颜色颜色值','rgba(20, 75, 110, 0.65)');await edit('文字颜色颜色值','#ff625f');await edit('边框颜色颜色值','#33ff66');
+  await edit('圆角',24,'spinbutton');await edit('字号',28,'spinbutton');await edit('内边距',28,'spinbutton');await page.getByRole('combobox',{name:'阴影',exact:true}).selectOption('none');
+  const panel=page.locator(`[data-widget-id="appearance_${i}"]`);
+  await waitUntil(async()=>{const actual=await appearance(panel);return actual.shadow==='none'&&actual.border==='rgb(51, 255, 102)'},4000,'authored style transition');
+  const actual=await appearance(panel);
+  assert.equal(actual.background,'rgba(20, 75, 110, 0.65)');assert.equal(actual.border,'rgb(51, 255, 102)');assert.equal(actual.radius,'24px');assert.equal(actual.padding,'28px');assert.equal(actual.headingFont,'28px');assert.equal(actual.headingColor,'rgb(255, 98, 95)');assert.equal(actual.shadow,'none');
+  if(i===0){assert.ok(Math.abs(parseFloat(actual.readingFont)-50)<.01);assert.equal(actual.readingColor,'rgb(255, 98, 95)');await edit('曲线颜色颜色值','#aa33ff');await edit('曲线填充颜色颜色值','rgba(10, 220, 80, 0.5)');await waitUntil(async()=>panel.locator('canvas').evaluate(canvas=>{const pixels=canvas.getContext('2d').getImageData(0,0,canvas.width,canvas.height).data;let green=0,purple=0;for(let p=0;p<pixels.length;p+=4){const [r,g,b,a]=pixels.slice(p,p+4);if(a>2&&g>r*1.8&&g>b*1.2)green++;if(a>20&&r>80&&b>r*1.3&&b>g*2)purple++}return green>100&&purple>5}),10000,'independent purple curve and green fill from the real HTTP dataset');await panel.screenshot({path:path.join(directory,'01-chart-authored-style.png')})}
+ }
+ pass('actual background/text/border/radius/font/padding/shadow controls change computed styles on all four HUD families, including the trend reading');
+ await page.locator('.layer-list button').filter({has:page.getByText('样式验证0',{exact:true})}).click();
+ const slider=page.getByRole('slider',{name:'面板背景不透明度',exact:true});await slider.evaluate(el=>{el.value='0.3';el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}))});
+ const chart=page.locator('[data-widget-id="appearance_0"]');await waitUntil(async()=>(await appearance(chart)).background==='rgba(20, 75, 110, 0.3)',4000,'opacity transition');assert.equal(await page.getByRole('textbox',{name:'背景颜色颜色值',exact:true}).inputValue(),'rgba(20, 75, 110, 0.3)');
+ await edit('圆角',0,'spinbutton');await edit('内边距',0,'spinbutton');assert.equal((await appearance(chart)).radius,'0px');assert.equal((await appearance(chart)).padding,'0px');
+ await edit('圆角',24,'spinbutton');await edit('内边距',28,'spinbutton');
+ pass('background alpha and opacity slider stay in sync; zero radius and zero padding are applied, not replaced by skin defaults');
+ const publish=page.waitForResponse(r=>r.request().method()==='POST'&&new URL(r.url()).pathname==='/api/platform/releases');await page.locator('.designer-toolbar .publish-button').click();assert.equal((await publish).status(),200);await page.getByTestId('designer-publish-notice').filter({hasText:'保存并发布成功'}).waitFor();
+ const expected=await appearance(chart),saved=(await api('/platform/designer')).document.widgets.find(w=>w.id==='appearance_0');assert.equal(saved.style.backgroundOpacity,.3);assert.equal(saved.content.areaColor,'rgba(10, 220, 80, 0.5)');
+ const runtime=await context.newPage();runtime.on('pageerror',e=>errors.push(e.message));await runtime.goto(info.origin+'/group');const mapChart=runtime.locator('.map-surface-widget-layer .widget-kind-hud_chart_dock').filter({hasText:'样式验证0'});await mapChart.waitFor();assert.deepEqual(await appearance(mapChart),expected);await mapChart.screenshot({path:path.join(directory,'02-map-runtime-style.png')});await runtime.close();
+ const native=await context.newPage();native.on('pageerror',e=>errors.push(e.message));await native.addInitScript(()=>{window.ownedHandlers=[];window.chrome={webview:{postMessage(){},addEventListener(name,fn){if(name==='message')window.ownedHandlers.push(fn)},removeEventListener(){}}}});await native.route('**/api/health',async route=>{const response=await route.fetch(),body=await response.json();body.readiness={...body.readiness,displayReady:true};await route.fulfill({response,json:body})});
+ await native.goto(info.origin+'/overlay?embedded=unity&surface=overlay&scene=1');await native.locator('.dashboard-overlay-root').waitFor({state:'attached'});await native.evaluate(()=>{for(const fn of window.ownedHandlers)fn({data:{type:'overlay_host_state',visible:true,context:{factoryId:'factory_default',sceneReady:true,viewId:'factory_overview',viewMode:'factory'}}})});
+ const nativeChart=native.locator('[data-widget-id="appearance_0"]');await nativeChart.waitFor();await native.getByRole('status',{name:'大屏正在加载',exact:true}).waitFor({state:'hidden'});assert.deepEqual(await appearance(nativeChart),expected);await native.addStyleTag({content:'html,body,#app{background:#26282e!important}'});await nativeChart.screenshot({path:path.join(directory,'03-native-overlay-style.png'),animations:'disabled'});await native.close();
+ await page.reload();await page.locator('.dashboard-designer-shell').waitFor();await page.locator('.layer-list button').filter({has:page.getByText('样式验证0',{exact:true})}).click();assert.deepEqual(await appearance(chart),expected);
+ pass('save/publish/reload preserves appearance, and designer/map/native WebView overlay have identical computed styles');
+ assert.deepEqual(errors,[]);fs.writeFileSync(path.join(directory,'result.json'),JSON.stringify({success:true,checks,errors,expected,directory},null,2));console.log(directory);
+})().catch(async error=>{await page?.screenshot({path:path.join(directory,'failure.png')}).catch(()=>{});console.error(error.stack);console.error('Browser errors: '+JSON.stringify([...new Set(errors)].slice(0,6)));if(page)console.error('Chart markup: '+await page.locator('[data-widget-id="appearance_0"] .hud-module-chart').innerHTML().catch(()=>''));process.exitCode=1}).finally(async()=>{await browser?.close();await stopOwnedSmokeProcess(server);if(upstream){upstream.closeAllConnections();await new Promise(resolve=>upstream.close(resolve))}});
