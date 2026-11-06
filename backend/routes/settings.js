@@ -299,6 +299,34 @@ module.exports = function createSettingsRouter(controller = {}) {
         }
     });
 
+    router.patch('/loading-experience/config', async (req, res) => {
+        try {
+            const patch = req.body;
+            const fields = ['theme', 'preset', 'title', 'kicker', 'imageUrl'];
+            if (!patch || typeof patch !== 'object' || Array.isArray(patch) || !Object.keys(patch).length
+                || Object.keys(patch).some(key => !fields.includes(key) || typeof patch[key] !== 'string'))
+                throw new Error('加载画面设置内容无效');
+            const db = await getDb();
+            const config = await db.transaction(async tx => {
+                const row = await tx.get('SELECT value FROM settings WHERE `key` = ?', ['loading_experience_config']);
+                const current = JSON.parse(normalizeSettingValue('loading_experience_config', row?.value || {}));
+                const value = normalizeSettingValue('loading_experience_config', { ...current, ...patch });
+                if (row && row.value !== value) {
+                    // Compare-and-swap: never silently overwrite a concurrent
+                    // title/image/theme edit from another screen or client.
+                    const result = await tx.run('UPDATE settings SET value = ? WHERE `key` = ? AND value = ?',
+                        [value, 'loading_experience_config', row.value]);
+                    if (result.changes !== 1) throw Object.assign(new Error('加载设置已更新，请重试'), { status: 409 });
+                } else if (!row) await tx.run('INSERT INTO settings (`key`, value) VALUES (?, ?)', ['loading_experience_config', value]);
+                return JSON.parse(value);
+            });
+            controller.wsServer?.broadcast('configuration_changed', {
+                keys: ['loading_experience_config'], settings: { loading_experience_config: JSON.stringify(config) }, timestamp: Date.now()
+            });
+            res.json({ success: true, config });
+        } catch (error) { res.status(error.status || 400).json({ error: error.message }); }
+    });
+
     router.get('/', async (req, res) => {
         try {
             const db = await getDb();

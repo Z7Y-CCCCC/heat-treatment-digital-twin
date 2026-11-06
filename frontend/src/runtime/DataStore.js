@@ -544,6 +544,9 @@ export function createDashboardDataStore(options = {}) {
                     if (msg.type === 'configuration_changed' && msg.payload?.keys?.includes('global_view_navigation')) {
                         window.dispatchEvent(new CustomEvent('global-view-navigation-changed', { detail:msg.payload }));
                     }
+                    if (msg.type === 'configuration_changed' && msg.payload?.settings?.loading_experience_config) {
+                        window.dispatchEvent(new CustomEvent('loading-appearance-updated', { detail: msg.payload.settings.loading_experience_config }));
+                    }
                     if (msg.type === 'realtime_frame') {
                         applyFrame(msg.payload);
                     } else if (msg.type === 'device_data') {

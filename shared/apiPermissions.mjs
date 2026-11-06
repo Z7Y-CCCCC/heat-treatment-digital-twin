@@ -42,6 +42,7 @@ export function apiPermission(path, method = 'GET', body) {
   }
   if (resource('project-bundles')) return 'admin' // whole-project import/export affects every page
   if (resource('settings')) {
+    if (path === '/api/settings/loading-experience/config' && method === 'PATCH') return any('admin', p('platform.loading', 'edit'))
     if (path === '/api/settings/voice') return safe ? read(['points', 'points.alarms'], true) : method === 'PUT' ? any('admin', p('points', 'edit')) : 'admin'
     if (safe) return read(PAGE_PERMISSIONS.filter(p => !p.ownerOnly).map(p => p.key), true)
     if (method !== 'PUT' || path !== '/api/settings' || !body || typeof body !== 'object' || Array.isArray(body) || !Object.keys(body).length) return 'admin'

@@ -62,6 +62,7 @@ internal sealed class AdminPanelForm : Form
     private bool _closeChoiceOpen;
     private WindowTheme _windowTheme = WindowTheme.FromName(Environment.GetEnvironmentVariable("DIGITAL_TWIN_WINDOW_THEME"));
     private bool _windowThemeReadPending;
+    private bool _windowThemeReadAgain;
     private Point _dragStart;
     private Point _dragPointerOffset;
     private Rectangle _dragStartBounds;
@@ -1424,7 +1425,8 @@ internal sealed class AdminPanelForm : Form
 
     private async Task RefreshWindowThemeAsync()
     {
-        if (_windowThemeReadPending || _closing || IsDisposed) return;
+        if (_closing || IsDisposed) return;
+        if (_windowThemeReadPending) { _windowThemeReadAgain = true; return; }
         _windowThemeReadPending = true;
         try
         {
@@ -1432,13 +1434,21 @@ internal sealed class AdminPanelForm : Form
             using var response = await DashboardSessionClient.GetAsync(uri, _pipeCancellation.Token);
             response.EnsureSuccessStatusCode();
             using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
-            if (_closing || IsDisposed || !document.RootElement.TryGetProperty("config", out var config)) return;
+            if (_closing || IsDisposed || _windowThemeReadAgain || !document.RootElement.TryGetProperty("config", out var config)) return;
             _windowTheme = WindowTheme.FromConfig(config);
             if (_dashboardOverlay != null) await _dashboardOverlay.SetWindowThemeAsync(_windowTheme);
             _ = PostDesktopControlAsync("appearance/" + _windowTheme.Name);
         }
         catch { /* Theme reads never block startup, login or a close request. */ }
-        finally { _windowThemeReadPending = false; }
+        finally
+        {
+            _windowThemeReadPending = false;
+            if (_windowThemeReadAgain && !_closing && !IsDisposed)
+            {
+                _windowThemeReadAgain = false;
+                _ = RefreshWindowThemeAsync();
+            }
+        }
     }
 
     private async Task<bool> PostDesktopControlAsync(string action, TimeSpan? timeout = null)

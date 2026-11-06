@@ -196,6 +196,8 @@ export const adminApi = {
 
     // 设置
     async getSettings() { return (await fetch(`${API_BASE}/settings`)).json() },
+    async getLoadingExperience() { return readApiJson(await fetch(`${API_BASE}/settings/loading-experience`, { cache: 'no-store' }), '读取主题失败') },
+    async patchLoadingExperience(patch) { return readApiJson(await fetch(`${API_BASE}/settings/loading-experience/config`, { method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify(patch) }), '保存外观设置失败') },
     async getCollectorStatus(signal) { return readApiJson(await fetch(`${API_BASE}/collector/status`, { signal }), '读取采集状态失败') },
     async setCollectorMode(data) { return readApiJson(await fetch(`${API_BASE}/collector/mode`, { method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(data) }), '切换数据来源失败') },
     async saveSettings(data) { return readApiJson(await fetch(`${API_BASE}/settings`, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) }), '保存设置失败') },
