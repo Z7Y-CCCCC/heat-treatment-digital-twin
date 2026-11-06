@@ -16,6 +16,8 @@ import { canAdminPage } from '../../../runtime/adminSession.js'
 import ViewHierarchyTree from './ViewHierarchyTree.vue'
 import GlobalViewSection from './GlobalViewSection.vue'
 import { isGlobalView } from '../../../../../shared/viewNavigation.mjs'
+import { normalizeGlobalViews } from '../../../../../shared/viewNavigation.mjs'
+import { designerEntryView, designerViewAvailable } from '../../../runtime/designerEntryView.js'
 import { hierarchyHidden, moveView, setHierarchyHidden, visibleViewLink, viewDescendants } from '../../../runtime/viewHierarchy.js'
 import { computed, nextTick, onBeforeUnmount, onMounted, onActivated, onDeactivated, reactive, ref, useId, watch } from 'vue'
 import { widgetBindingChoices, LEGACY_BINDINGS } from '../../../runtime/widgetBindingChoices.js'
@@ -149,6 +151,7 @@ const releaseDialog = ref(null)
 const layersCollapsed = ref(false)
 const canvasPreset = ref('1920x1080')
 const selectedViewId = ref('factory_overview')
+const globalViewPolicy = ref(normalizeGlobalViews())
 const mapPreviewLocation = ref(normalizeFactoryLocation())
 const sitePreviewImage = ref(DEFAULT_STREET_IMAGE)
 // This is an editor/preview context only. It lets the user choose which
@@ -288,7 +291,7 @@ function setViewHierarchyVisibility({ id, hidden }) {
   if (!changed) return setStatus('至少保留一个视角', 'warning')
   documentModel.value.scene.views = changed
   if (hidden && selectedViewId.value === id) {
-    selectedViewId.value = visibleViewLink(changed, changed.find(view => view.id === id)) || changed.find(view => !hierarchyHidden(view))?.id
+    selectedViewId.value = designerEntryView(changed, globalViewPolicy.value, [visibleViewLink(changed, changed.find(view => view.id === id)), documentModel.value.scene.defaultViewId])
     selectedIds.value = []
     syncPreviewContextFromView()
   }
@@ -597,7 +600,7 @@ function captureEditorState() {
 }
 
 function persistEditorState(state = captureEditorState(), sceneId = documentModel.value.sceneId) {
-  if (!sceneId) return
+  if (!sceneId || loading.value) return
   try { localStorage.setItem(editorStateKey(sceneId), JSON.stringify({ ...state, savedAt: new Date().toISOString() })) }
   catch { /* UI state persistence must not affect editing. */ }
 }
@@ -620,10 +623,8 @@ function rememberEditorState() {
 
 function restoreEditorState(state) {
   const viewIds = new Set(views.value.map(view => String(view.id)))
-  const fallbackViewId = documentModel.value.scene?.defaultViewId || views.value[0]?.id || 'factory_overview'
-  selectedViewId.value = state?.viewId && viewIds.has(String(state.viewId))
-    ? String(state.viewId)
-    : fallbackViewId
+  selectedViewId.value = designerEntryView(views.value, globalViewPolicy.value,
+    [String(state?.viewId || ''), props.initialViewId, documentModel.value.scene?.defaultViewId])
   if (state?.editorDeviceId !== undefined) editorDeviceId.value = String(state.editorDeviceId || '')
   if (state?.inspectorTab) inspectorTab.value = state.inspectorTab
   if (state?.viewInspectorTab) viewInspectorTab.value = state.viewInspectorTab
@@ -652,6 +653,7 @@ function restoreEditorState(state) {
 
 async function loadDesigner({ allowLocal = true } = {}) {
   const pendingEditorState = editorStateBeforeReload
+  let restored = false
   loading.value = true
   try {
     const [designer, deviceRows, pointRows, dataSourceResult, workshopRows, lineRows, settings, datasetResult] = await Promise.all([
@@ -666,6 +668,7 @@ async function loadDesigner({ allowLocal = true } = {}) {
     ])
     if (designerDisposed) return
     if (designer?.error) throw new Error(designer.error)
+    globalViewPolicy.value = normalizeGlobalViews(settings.global_view_navigation)
     revision.value = Number(designer.revision || 0)
     const serverDocument = normalizeDashboardDocument(designer.document || {})
     const cached = allowLocal ? readFactoryDraft(draftFactoryId, `dashboard:${serverDocument.sceneId}`) : null
@@ -699,7 +702,8 @@ async function loadDesigner({ allowLocal = true } = {}) {
     resetHistory()
     const savedEditorState = pendingEditorState || readEditorState(serverDocument.sceneId)
     restoreEditorState(savedEditorState)
-    if (views.value.some(view => view.id === props.initialViewId)) selectView(props.initialViewId)
+    restored = true
+    if (selectedViewId.value) emit('view-change', selectedViewId.value)
     setStatus(localDocument ? '已恢复本机未保存的编辑内容' : `草稿修订 ${revision.value}，运行中版本 ${designer.currentRelease?.version || '未发布'}`, localDocument ? 'warning' : 'success')
     await nextTick()
     fitCanvas('comfortable')
@@ -708,6 +712,7 @@ async function loadDesigner({ allowLocal = true } = {}) {
     setStatus(error.message || '设计器加载失败', 'danger')
   } finally {
     loading.value = false
+    if (restored) persistEditorState()
     scheduleCurrentViewPreview({ immediate: true })
   }
 }
@@ -795,6 +800,18 @@ function selectView(viewId, { enterPreview = false } = {}) {
   syncPreviewContextFromView()
   scheduleCurrentViewPreview({ immediate: true })
   if (enterPreview) previewMode.value = true
+}
+
+function ensureAvailableEntry(preferred = selectedViewId.value) {
+  const next = designerEntryView(views.value, globalViewPolicy.value, [preferred, documentModel.value.scene?.defaultViewId])
+  if (next && next !== selectedViewId.value) selectView(next)
+}
+
+function updateGlobalViewPolicy(policy) {
+  const next = normalizeGlobalViews(policy)
+  const changed = JSON.stringify(next) !== JSON.stringify(globalViewPolicy.value)
+  globalViewPolicy.value = next
+  if (changed && !loading.value && !designerViewAvailable(currentView.value, globalViewPolicy.value)) ensureAvailableEntry()
 }
 
 function addView() {
@@ -2366,6 +2383,7 @@ watch(() => [selectedWidget.value?.id, selectedWidget.value?.data?.mode], async 
 function activateDesigner() {
   if (designerDisposed) return
   designerActive = true
+  if (!loading.value) ensureAvailableEntry()
   startDesignerData()
   if(mapPreviewConfig.value)void refreshMapPreview()
   window.addEventListener('keydown', handleKeydown)
@@ -2396,7 +2414,7 @@ function deactivateDesigner() {
 }
 
 watch(() => props.initialViewId, viewId => {
-  if (viewId && !loading.value) selectView(viewId)
+  if (viewId && !loading.value) ensureAvailableEntry(viewId)
 })
 
 onMounted(() => {
@@ -2530,7 +2548,7 @@ onBeforeUnmount(() => {
           <div><strong>视角编排</strong><small>全局入口与工厂内视角</small></div><span>{{ viewPanelCollapsed ? '展开' : '收起' }}</span>
         </div>
         <div v-if="!viewPanelCollapsed" class="view-list">
-          <GlobalViewSection :views="views" :selected-id="selectedViewId" :can-edit="hierarchyEditable" @select="selectView" @notice="(text,type)=>setStatus(text,type||'danger')" />
+          <GlobalViewSection :views="views" :selected-id="selectedViewId" :can-edit="hierarchyEditable" @select="selectView" @policy="updateGlobalViewPolicy" @notice="(text,type)=>setStatus(text,type||'danger')" />
           <div class="factory-view-category"><strong>工厂内视角</strong><small>当前工厂</small></div>
           <ViewHierarchyTree :views="factoryViews" :selected-id="selectedViewId" :default-id="documentModel.scene.defaultViewId" :collapsed="collapsedViewIds" :can-edit="hierarchyEditable"
             @select="selectView" @toggle="toggleViewTreeNode" @move="moveHierarchyView" @visibility="setViewHierarchyVisibility" />

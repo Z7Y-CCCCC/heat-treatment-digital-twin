@@ -8,6 +8,22 @@ export const DEFAULT_LOADING_EXPERIENCE = Object.freeze({
   accent: '#2563eb'
 })
 
+export const LOADING_APPEARANCE_CACHE_KEY = 'digital_twin_loading_appearance_v1'
+
+export function initialLoadingExperience(raw) {
+  let cached = null
+  try { cached = JSON.parse(globalThis.localStorage?.getItem(LOADING_APPEARANCE_CACHE_KEY) || 'null') } catch { /* Optional cosmetic cache. */ }
+  const hostTheme = typeof window === 'undefined' ? '' : window.__DIGITAL_TWIN_WINDOW_THEME__
+  if (raw !== undefined && raw !== null) return normalizeLoadingExperience(raw)
+  return normalizeLoadingExperience(['light','dark'].includes(hostTheme) ? { ...cached, theme: hostTheme } : cached)
+}
+
+export function cacheLoadingExperience(config) {
+  const next = normalizeLoadingExperience(config)
+  try { globalThis.localStorage?.setItem(LOADING_APPEARANCE_CACHE_KEY, JSON.stringify(next)) } catch { /* Optional cosmetic cache. */ }
+  return next
+}
+
 export function normalizeLoadingExperience(raw) {
   let value = raw
   if (typeof raw === 'string') {

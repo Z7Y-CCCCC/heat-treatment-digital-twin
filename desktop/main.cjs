@@ -1698,8 +1698,15 @@ async function launchApplication() {
     await waitForStartupActivation(origin);
     updateStartupProgress('settings', 59, '正在读取系统设置', '同步开机自启、日志、备份和运行参数');
     let initialSettingsSync = Promise.resolve();
-    if (deployment.mode !== 'client') {
+    // Read the authoritative cosmetic choice before taking the environment
+    // snapshot inherited by Unity and AdminHost. A detached refresh raced their
+    // first frame and could seed both loaders with yesterday's theme.
+    try { await applyStartupAppearance(await readStartupAppearance(port), true); }
+    catch (error) {
+        logDesktopError('startup-appearance-initial', error);
         void refreshStartupAppearanceWhenReady(port);
+    }
+    if (deployment.mode !== 'client') {
         // Once licensing has passed, runtime settings and native rendering are
         // independent. Keep the first settings read required, but overlap it
         // with Unity instead of blocking creation of the login surface.

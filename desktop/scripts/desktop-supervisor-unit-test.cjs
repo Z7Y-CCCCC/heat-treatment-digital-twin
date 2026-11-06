@@ -72,6 +72,8 @@ test('desktop remembers either theme and honors explicit choices over old cached
     assert.equal(desktop.run("normalizeStartupAppearance({theme:'light',background:'#28282b'}).background"), '#f5f7fb');
     assert.equal(desktop.run("normalizeStartupAppearance({theme:'dark'}).background"), '#28282b');
     const source = fs.readFileSync(path.join(desktopDir, 'main.cjs'), 'utf8');
+    const launch = source.slice(source.indexOf('async function launchApplication()'));
+    assert.ok(launch.indexOf('await applyStartupAppearance(await readStartupAppearance(port), true)') < launch.indexOf('await startNativeClient('), 'authoritative theme precedes the Unity/AdminHost environment snapshot, including remote-client mode');
     const control = source.slice(source.indexOf('function startDesktopControlServer()'), source.indexOf('function nativeHostPipePath()'));
     assert.ok(control.indexOf('suppliedToken !== desktopControlToken') < control.indexOf("'/appearance/light'"));
     assert.match(control, /applyStartupAppearance\([\s\S]*?true\)/);
@@ -339,6 +341,8 @@ for (const lostNative of [false, true]) test('parallel runtime settings preserve
         findAvailablePort = async () => 3001; startDesktopControlServer = async () => {};
         startBackend = async () => ({}); waitForHealth = async () => {};
         waitForStartupActivation = async () => { startupOrder.push('activation'); await activationGate; };
+        readStartupAppearance = async () => ({theme:'light'});
+        applyStartupAppearance = async () => {};
         refreshStartupAppearanceWhenReady = async () => {};
         startDesktopSettingsSync = () => { startupOrder.push('settings'); return settingsGate; };
         createTray = () => {};

@@ -95,7 +95,24 @@ internal static class DashboardLoadingExperience
           let finished = false;
           const root = document.createElement('div');
           root.id = 'digital-twin-loading-root';
-          root.classList.toggle('is-dark', window.__DIGITAL_TWIN_WINDOW_THEME__ === 'dark');
+          const appearanceCacheKey = 'digital_twin_loading_appearance_v1';
+          let appearanceCache = {}, themeRevision = 0;
+          try { appearanceCache = JSON.parse(localStorage.getItem(appearanceCacheKey) || '{}') || {}; } catch {}
+          function applyTheme(theme) {
+            const dark = theme === 'dark';
+            root.classList.toggle('is-dark', dark);
+            root.style.setProperty('--dtl-background', dark ? '#28282b' : '#f5f7fb');
+            root.style.setProperty('--dtl-accent', dark ? '#a8c3b1' : '#2563eb');
+            appearanceCache = { ...appearanceCache, theme: dark ? 'dark' : 'light', background: dark ? '#28282b' : '#f5f7fb', accent: dark ? '#a8c3b1' : '#2563eb' };
+            try { localStorage.setItem(appearanceCacheKey, JSON.stringify(appearanceCache)); } catch {}
+          }
+          applyTheme(window.__DIGITAL_TWIN_WINDOW_THEME__ || appearanceCache.theme);
+          function themeChanged(event) {
+            if (!['light','dark'].includes(event.detail)) return;
+            themeRevision++;
+            applyTheme(event.detail);
+          }
+          window.addEventListener('digital-twin-loading-theme', themeChanged);
           root.setAttribute('role', 'status');
           root.setAttribute('aria-live', 'polite');
           root.innerHTML = `
@@ -178,13 +195,13 @@ internal static class DashboardLoadingExperience
           if (!mount()) document.addEventListener('DOMContentLoaded', mount, { once: true });
           window.__DIGITAL_TWIN_LOADING_ROOT__ = root;
 
+          const requestedThemeRevision = themeRevision;
           fetch('/api/settings/loading-experience', { credentials: 'same-origin', cache: 'no-store' })
             .then(response => response.ok ? response.json() : null)
             .then(data => {
               const config = data?.config;
               if (finished || !config || typeof config !== 'object') return;
-              if (/^#[0-9a-fA-F]{6}$/.test(config.background || '')) root.style.setProperty('--dtl-background', config.background);
-              if (/^#[0-9a-fA-F]{6}$/.test(config.accent || '')) root.style.setProperty('--dtl-accent', config.accent);
+              if (requestedThemeRevision === themeRevision) applyTheme(config.theme || (['#28282b','#29292c'].includes(config.background?.toLowerCase()) ? 'dark' : 'light'));
               if (typeof config.title === 'string' && config.title.trim()) root.querySelector('.dtl-status h1').textContent = config.title.slice(0, 48);
               if (typeof config.kicker === 'string' && config.kicker.trim()) root.querySelector('.dtl-kicker').textContent = config.kicker.slice(0, 72);
               if (typeof config.imageUrl === 'string' && /^\/uploads\/appearance\/[a-f0-9]{32}\.(?:png|jpg|webp)$/.test(config.imageUrl)) {
@@ -192,7 +209,6 @@ internal static class DashboardLoadingExperience
                 root.classList.add('is-custom-artwork');
               }
               root.classList.toggle('is-quiet', config.preset === 'quiet');
-              root.classList.toggle('is-dark', config.theme === 'dark' || (!config.theme && ['#28282b','#29292c'].includes(config.background?.toLowerCase())));
             }).catch(() => {});
 
           const phases = ['正在读取现场配置', '正在构建三维场景', '正在装配设备模型', '正在连接实时数据'];
@@ -238,6 +254,7 @@ internal static class DashboardLoadingExperience
             cancelAnimationFrame(progressFrame);
             cancelAnimationFrame(modelFrame);
             window.removeEventListener('digital-twin-loading-progress', onProgress);
+            window.removeEventListener('digital-twin-loading-theme', themeChanged);
             setProgress(100, 3, '生产现场已就绪');
             root.classList.add('is-leaving');
             window.setTimeout(() => {

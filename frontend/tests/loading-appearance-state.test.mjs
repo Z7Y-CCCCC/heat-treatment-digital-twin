@@ -3,6 +3,25 @@ import assert from 'node:assert/strict'
 import { adminApi } from '../src/config/factoryConfig.js'
 import { applyLoadingAppearance, loadingAppearance, patchLoadingAppearance, readLoadingAppearance } from '../src/runtime/loadingAppearanceState.js'
 import { deferred } from './helpers.mjs'
+import { initialLoadingExperience, cacheLoadingExperience, LOADING_APPEARANCE_CACHE_KEY } from '../src/runtime/loadingExperienceConfig.js'
+
+test('loading resolves its theme synchronously from confirmed cache or host before configuration arrives', t => {
+  const previousStorage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage')
+  const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  const saved = new Map()
+  Object.defineProperty(globalThis, 'localStorage', {configurable:true,value:{getItem:k=>saved.get(k),setItem:(k,v)=>saved.set(k,v)}})
+  Object.defineProperty(globalThis, 'window', {configurable:true,value:{__DIGITAL_TWIN_WINDOW_THEME__:'light'}})
+  t.after(()=>{if(previousStorage)Object.defineProperty(globalThis,'localStorage',previousStorage);else delete globalThis.localStorage;if(previousWindow)Object.defineProperty(globalThis,'window',previousWindow);else delete globalThis.window})
+  cacheLoadingExperience({theme:'dark',title:'自定义标题'})
+  assert.equal(JSON.parse(saved.get(LOADING_APPEARANCE_CACHE_KEY)).theme,'dark')
+  assert.equal(initialLoadingExperience().theme,'light','host authoritative seed beats an older dark browser cache')
+  delete window.__DIGITAL_TWIN_WINDOW_THEME__
+  assert.equal(initialLoadingExperience().theme,'dark')
+  assert.equal(initialLoadingExperience().title,'自定义标题')
+  assert.equal(initialLoadingExperience({theme:'light'}).theme,'light')
+  saved.set(LOADING_APPEARANCE_CACHE_KEY,'invalid')
+  assert.equal(initialLoadingExperience().theme,'light')
+})
 
 test('a stale appearance GET cannot undo a confirmed theme change', async t => {
   const originalGet = adminApi.getLoadingExperience, originalPatch = adminApi.patchLoadingExperience

@@ -4,7 +4,7 @@ import { API_BASE } from '../../../runtime/backendEndpoint.js'
 import { adminFetch } from '../../../runtime/adminSession.js'
 import { GLOBAL_VIEWS, normalizeGlobalViews } from '../../../../../shared/viewNavigation.mjs'
 const props = defineProps({ views: Array, selectedId: String, canEdit: Boolean })
-const emit = defineEmits(['select', 'notice'])
+const emit = defineEmits(['select', 'notice', 'policy'])
 const config = ref(normalizeGlobalViews()), revision = ref(''), loading = ref(true), busy = ref(false), expanded = ref(true)
 const count = computed(() => Object.values(config.value.enabled).filter(Boolean).length)
 const names = computed(() => GLOBAL_VIEWS.map(view => ({ ...view, name: props.views?.find(item => item.id === view.id)?.name?.replace(/^\s*\d{2}\s+/, '') || view.name })))
@@ -13,7 +13,7 @@ async function load() {
   try {
     const response = await adminFetch(API_BASE + '/view-navigation', { cache: 'no-store' }), data = await response.json()
     if (!response.ok) throw Error(data.error || '全局视角读取失败')
-    if (!disposed && !busy.value) { config.value = normalizeGlobalViews(data.config); revision.value = data.revision }
+    if (!disposed && !busy.value) { config.value = normalizeGlobalViews(data.config); revision.value = data.revision; emit('policy', config.value) }
   } catch (error) { if (!disposed) emit('notice', error.message) }
   finally { if (!disposed) loading.value = false }
 }
@@ -25,7 +25,7 @@ async function setEnabled(id, enabled) {
   try {
     const response = await adminFetch(API_BASE + '/view-navigation', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ config: next, revision: revision.value }) }), data = await response.json()
     if (!response.ok) throw Error(data.error || '全局视角保存失败')
-    if (!disposed) { config.value = normalizeGlobalViews(data.config); revision.value = data.revision; emit('notice', '全局视角已更新', 'success') }
+    if (!disposed) { config.value = normalizeGlobalViews(data.config); revision.value = data.revision; emit('policy', config.value); emit('notice', '全局视角已更新', 'success') }
   } catch (error) { if (!disposed) { config.value = previous; emit('notice', error.message) } }
   finally { busy.value = false; if (!disposed) void load() }
 }

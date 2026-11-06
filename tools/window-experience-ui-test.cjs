@@ -19,7 +19,7 @@ const { descriptor } = parse(source);
 const component = compileScript(descriptor, { id: 'loading-test', inlineTemplate: true }).content
   .replace(/from ['"]vue['"]/g, "from '/vue.js'")
   .replace("'../runtime/loadingExperienceConfig.js'", "'/config.js'");
-let browser, page, selectedTheme = 'light';
+let browser, page, selectedTheme = 'light', delayAppearance = 0;
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, 'http://127.0.0.1');
   const send = (type, body) => { res.writeHead(200, { 'Content-Type': type }); res.end(body); };
@@ -30,9 +30,9 @@ const server = http.createServer((req, res) => {
   if (url.pathname === '/vue') return send('text/html', `<style>${descriptor.styles[0].content}</style><div id="app"></div><script type="module">
     import {createApp,ref,h} from '/vue.js'; import Loading from '/component.js';
     const show=ref(true), progress=ref(25); window.setProgress=p=>progress.value=p; window.finish=()=>show.value=false;
-    createApp({render:()=>h(Loading,{show:show.value,progress:progress.value,phase:1,step:'正在装配设备模型',config:{theme:new URL(location).searchParams.get('theme')||'light'}})}).mount('#app');
+    createApp({render:()=>h(Loading,{show:show.value,progress:progress.value,phase:1,step:'正在装配设备模型',config:new URL(location).searchParams.has('theme')?{theme:new URL(location).searchParams.get('theme')}:null})}).mount('#app');
   </script>`);
-  if (url.pathname === '/api/settings/loading-experience') return send('application/json', JSON.stringify({ config: JSON.parse(normalizeSettingValue('loading_experience_config', { theme: selectedTheme })) }));
+  if (url.pathname === '/api/settings/loading-experience') { const config=JSON.parse(normalizeSettingValue('loading_experience_config',{theme:selectedTheme})); return setTimeout(()=>send('application/json',JSON.stringify({config})),delayAppearance); }
   if (url.pathname.endsWith('industrial-factory.png') || url.pathname.endsWith('icon.png')) {
     const file = url.pathname.endsWith('icon.png') ? 'desktop/assets/icon.png' : 'frontend/public/loading/industrial-factory.png';
     return send('image/png', fs.readFileSync(path.join(root, file)));
@@ -128,6 +128,30 @@ const server = http.createServer((req, res) => {
   assert.equal(await page.locator('.loading-status-row h1').evaluate(el => getComputedStyle(el).color), 'rgb(238, 238, 234)');
   await page.screenshot({ path: path.join(directory, '07-vue-dark.png') });
   check('the original dark palette coexists on all loading surfaces without restoring expensive filters or fake progress');
+  delayAppearance=1200;
+  const immediate=await browser.newContext({viewport:{width:1280,height:800}});
+  await immediate.addInitScript(({script})=>{
+    const seed=new URL(location).searchParams.get('seed') || 'light';
+    localStorage.setItem('digital_twin_loading_appearance_v1',JSON.stringify({theme:seed==='dark'?'light':'dark'}));
+    window.__DIGITAL_TWIN_WINDOW_THEME__=seed;
+    (0,eval)(script);
+    window.firstLoadingFrames=[];
+    function sample(){const root=document.querySelector('#digital-twin-loading-root');if(root)window.firstLoadingFrames.push({dark:root.classList.contains('is-dark'),background:getComputedStyle(root).backgroundColor});if(window.firstLoadingFrames.length<90)requestAnimationFrame(sample)}
+    requestAnimationFrame(sample);
+  },{script:native});
+  const first=await immediate.newPage();first.on('pageerror',error=>errors.push(error.message));
+  selectedTheme='light';await first.goto(origin+'/overlay');await first.waitForTimeout(1350);
+  const frames=await first.evaluate(()=>window.firstLoadingFrames);assert.ok(frames.length>10);assert.ok(frames.every(frame=>!frame.dark&&frame.background==='rgb(245, 247, 251)'));
+  await first.screenshot({path:path.join(directory,'08-first-frame-light.png')});
+  selectedTheme='dark';await first.goto(origin+'/overlay?seed=dark');await first.waitForTimeout(1350);
+  const darkFrames=await first.evaluate(()=>window.firstLoadingFrames);assert.ok(darkFrames.length>10);assert.ok(darkFrames.every(frame=>frame.dark&&frame.background==='rgb(40, 40, 43)'));
+  await first.screenshot({path:path.join(directory,'09-first-frame-dark.png')});
+  await first.goto(origin+'/overlay?seed=light');await first.waitForTimeout(100);
+  await first.evaluate(()=>window.dispatchEvent(new CustomEvent('digital-twin-loading-theme',{detail:'light'})));
+  await first.waitForTimeout(1350);assert.equal(await first.locator('#digital-twin-loading-root').evaluate(el=>el.classList.contains('is-dark')),false,'late old read cannot undo a new host choice');
+  await first.goto(origin+'/vue');await first.locator('.loading-experience').waitFor();assert.equal(await first.locator('.loading-experience').evaluate(el=>el.classList.contains('dark')),false,'Vue initial render follows the same host seed');
+  await immediate.close();delayAppearance=0;
+  check('first loading frames honor the host theme despite an old dark cache and a delayed settings response; native and Vue agree and late reads cannot undo a newer choice');
   assert.deepEqual(errors, []);
   fs.writeFileSync(path.join(directory, 'result.json'), JSON.stringify({ success: true, checks, errors, directory }, null, 2));
   console.log(JSON.stringify({ success: true, directory, checks: checks.length }));

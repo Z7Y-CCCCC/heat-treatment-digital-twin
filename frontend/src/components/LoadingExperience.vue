@@ -1,6 +1,6 @@
 <script setup>
 import { computed, onUnmounted, ref } from 'vue'
-import { normalizeLoadingExperience } from '../runtime/loadingExperienceConfig.js'
+import { initialLoadingExperience } from '../runtime/loadingExperienceConfig.js'
 
 const props = defineProps({
   show: { type: Boolean, default: true },
@@ -9,7 +9,7 @@ const props = defineProps({
   step: { type: String, default: '正在读取现场配置' },
   config: { type: [Object, String], default: null }
 })
-const appearance = computed(() => normalizeLoadingExperience(props.config))
+const appearance = computed(() => initialLoadingExperience(props.config))
 
 const phases = [
   { label: '现场配置', caption: 'CONFIGURATION' },

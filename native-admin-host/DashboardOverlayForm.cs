@@ -332,6 +332,10 @@ internal sealed class DashboardOverlayForm : Form
         if (_loadingScriptId != null) _webView.CoreWebView2.RemoveScriptToExecuteOnDocumentCreated(_loadingScriptId);
         _loadingScriptId = await _webView.CoreWebView2.AddScriptToExecuteOnDocumentCreatedAsync(
             "window.__DIGITAL_TWIN_WINDOW_THEME__='" + theme.Name + "';\n" + DashboardLoadingExperience.DocumentCreatedScript);
+        // Registration affects future navigations only. Update the current
+        // document too, before a reloaded surface can paint its loading cover.
+        await _webView.CoreWebView2.ExecuteScriptAsync("window.__DIGITAL_TWIN_WINDOW_THEME__='" + theme.Name
+            + "';window.dispatchEvent(new CustomEvent('digital-twin-loading-theme',{detail:'" + theme.Name + "'}));");
     }
 
     /// <summary>

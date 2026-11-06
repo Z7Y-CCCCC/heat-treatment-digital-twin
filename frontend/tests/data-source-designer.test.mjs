@@ -75,6 +75,25 @@ test('layer controls contain only top/bottom and place a widget beyond the actua
     state.moveLayer(widget, 'bottom'); assert.equal(widget.zIndex, -21)
 })
 
+test('restoring or reentering the designer skips disabled global and hidden local views, but manual editing remains possible', async t => {
+    const { instance } = fixture(t, [])
+    await settle()
+    const state = instance.value.$.setupState
+    const disabled = {enabled:Object.fromEntries(state.views.filter(v=>/^(map_|site_)/.test(v.id)).map(v=>[v.id,false]))}
+    state.updateGlobalViewPolicy(disabled)
+    state.documentModel.scene.views.find(v=>v.id==='factory_overview').metadata={hierarchyHidden:true}
+    state.restoreEditorState({viewId:'map_world',collapsedViewIds:['factory_overview']})
+    assert.equal(state.selectedViewId, 'workshop_overview')
+    assert.ok(state.collapsedViewIds.has('factory_overview'))
+    state.selectView('map_world')
+    assert.equal(state.selectedViewId,'map_world', 'closed views remain explicitly editable')
+    state.deactivateDesigner(); state.activateDesigner()
+    assert.equal(state.selectedViewId,'workshop_overview')
+    const deviceView=state.views.find(view=>view.mode==='device').id
+    state.selectView(deviceView); state.deactivateDesigner(); state.activateDesigner()
+    assert.equal(state.selectedViewId,deviceView, 'available last selection is retained')
+})
+
 test('designer reads actual device part catalogs and a late A catalog cannot replace B or invent preview measurements',async t=>{
  const {instance}=fixture(t,[]);await settle();const state=instance.value.$.setupState,a=deferred(),b=deferred()
  t.mock.method(adminApi,'getDeviceInspection',id=>id==='a'?a.promise:b.promise)

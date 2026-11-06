@@ -1,12 +1,12 @@
 import { shallowRef } from 'vue'
 import { adminApi } from '../config/factoryConfig.js'
-import { normalizeLoadingExperience } from './loadingExperienceConfig.js'
+import { initialLoadingExperience, cacheLoadingExperience } from './loadingExperienceConfig.js'
 
-export const loadingAppearance = shallowRef(normalizeLoadingExperience())
+export const loadingAppearance = shallowRef(initialLoadingExperience())
 let revision = 0
 let readRequest = 0
 export function applyLoadingAppearance(config, notifyHost = false) {
-  const next = normalizeLoadingExperience(config)
+  const next = cacheLoadingExperience(config)
   const changed = JSON.stringify(next) !== JSON.stringify(loadingAppearance.value)
   if (changed) loadingAppearance.value = next
   revision++
