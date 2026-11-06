@@ -13,6 +13,7 @@ internal static partial class Program
     {
         var tests = new (string Name, Func<Task> Run)[]
         {
+            ("native loading uses the shared light/dark choice and preserves malformed setting failures", LoadingThemesMatch),
             ("motion signals freeze on stale, invalid or wrong point identity; interpolation follows authored coordinates", MotionSignalsAreSafe),
             ("authored motion downloads allow only local managed asset namespaces", MotionPathsAreBounded),
             ("manual orbit retains direction across half turns and many full revolutions", OrbitRetainsWinding),
@@ -39,6 +40,20 @@ internal static partial class Program
             Console.WriteLine($"PASS: {test.Name}");
         }
         Console.WriteLine($"Passed {tests.Length}/{tests.Length} isolated native runtime checks.");
+    }
+
+    private static Task LoadingThemesMatch()
+    {
+        foreach (var (config, expected) in new[] { ("{theme:'light'}", "light"), ("{theme:'dark'}", "dark"), ("{background:'#28282B'}", "dark"), ("{background:'#29292c'}", "dark"), ("{background:'#f5f7fb'}", "light") })
+        {
+            var value = JObject.Parse(config);
+            foreach (var input in new JToken[] { value, new JValue(value.ToString()) })
+                if (!HeatTreatment.DigitalTwin.Runtime.LoadingThemePolicy.TryResolve(input, out var actual) || actual != expected)
+                    throw new Exception("native loading theme mismatch: " + config);
+        }
+        foreach (var input in new JToken[] { null, JValue.CreateNull(), new JValue("invalid"), JObject.Parse("{theme:'invalid'}"), JObject.Parse("{theme:2}"), new JObject(), new JArray() })
+            if (HeatTreatment.DigitalTwin.Runtime.LoadingThemePolicy.TryResolve(input, out _)) throw new Exception("invalid loading theme accepted");
+        return Task.CompletedTask;
     }
 
     private static Task MotionPathsAreBounded()

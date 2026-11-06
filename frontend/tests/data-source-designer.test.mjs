@@ -62,6 +62,19 @@ function fixture(t, connections) {
     return { instance }
 }
 
+test('layer controls contain only top/bottom and place a widget beyond the actual stack bounds', async t => {
+    const controls = descriptor.template.content.match(/class="layer-actions"[^>]*>(.*?)<\/div>/s)?.[1]
+    assert.ok(controls)
+    assert.deepEqual([...controls.matchAll(/>([^<>]+)<\/button>/g)].map(match => match[1]), ['置顶', '置底'])
+    const { instance } = fixture(t, [])
+    await settle()
+    const state = instance.value.$.setupState
+    state.documentModel.widgets = [{id:'a',zIndex:1030},{id:'b',zIndex:2000},{id:'c',zIndex:-20}]
+    const widget = state.documentModel.widgets[0]
+    state.moveLayer(widget, 'top'); assert.equal(widget.zIndex, 2001)
+    state.moveLayer(widget, 'bottom'); assert.equal(widget.zIndex, -21)
+})
+
 test('designer reads actual device part catalogs and a late A catalog cannot replace B or invent preview measurements',async t=>{
  const {instance}=fixture(t,[]);await settle();const state=instance.value.$.setupState,a=deferred(),b=deferred()
  t.mock.method(adminApi,'getDeviceInspection',id=>id==='a'?a.promise:b.promise)

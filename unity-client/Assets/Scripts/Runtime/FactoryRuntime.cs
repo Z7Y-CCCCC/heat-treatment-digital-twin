@@ -129,6 +129,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
             _quality.ProfileStateChanged += PublishQualityState;
 
             _diagnostics = GetOrAdd<RuntimeDiagnosticsOverlay>();
+            _diagnostics.SetLoadingTheme(Environment.GetEnvironmentVariable("DIGITAL_TWIN_WINDOW_THEME"));
             _diagnostics.Visible = _settings.showDiagnostics;
             _diagnostics.QualityController = _quality;
             _diagnostics.BeginLoading();
@@ -300,7 +301,10 @@ namespace HeatTreatment.DigitalTwin.Runtime
             ++_authGeneration;
             if (_loginInProgress || _api == null || _diagnostics == null) return;
             _loginInProgress = true;
-            _diagnostics.SetLoginBusy(true);
+            // A ticket refresh/account switch renews authorization, not scene
+            // loading. Never replace an existing scene or model-load progress
+            // with a new blocking login cover.
+            if (!_authenticated) _diagnostics.SetLoginBusy(true);
             try
             {
                 // Serialize cookie-bearing exchanges. A rapid second switch
@@ -332,6 +336,8 @@ namespace HeatTreatment.DigitalTwin.Runtime
             {
                 _loginInProgress = false;
                 _diagnostics.SetLoginBusy(false);
+                if (_authenticated && _sceneReady) _diagnostics.CompleteLoading();
+                Debug.Log($"[NativeLoading] Session sync finished: sceneReady={_sceneReady}, visible={_diagnostics.LoadingVisible}, theme={_diagnostics.LoadingThemeName}");
             }
         }
 
@@ -589,6 +595,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
             SetInspectionSceneIsolation(false);
             DestroyCurrentFactory();
             _config = config;
+            ApplyLoadingTheme(config.Settings);
             var root = new GameObject("RuntimeFactory");
             root.transform.SetParent(transform, false);
             _factoryRoot = root.transform;
@@ -1617,12 +1624,20 @@ namespace HeatTreatment.DigitalTwin.Runtime
                     : property.Value.ToString();
             }
             if (_config != null) _config.Settings = merged;
+            ApplyLoadingTheme(merged);
             _dashboard.ApplySettings(merged);
             _environment.ApplySettings(merged);
 
             if (changedSettings.Property("native_quality_profile") != null) ApplyBackendQuality(merged);
             _diagnostics.Activity = "Dashboard configuration updated live";
             Debug.Log("[FactoryRuntime] Dashboard configuration updated live");
+        }
+
+        private void ApplyLoadingTheme(Dictionary<string, string> settings)
+        {
+            if (settings != null && settings.TryGetValue("loading_experience_config", out var config)
+                && LoadingThemePolicy.TryResolve(new JValue(config), out var theme))
+                _diagnostics?.SetLoadingTheme(theme);
         }
 
         private void ApplyLiveDeviceConfiguration(JObject payload)

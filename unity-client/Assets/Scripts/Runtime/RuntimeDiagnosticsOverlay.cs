@@ -41,6 +41,29 @@ namespace HeatTreatment.DigitalTwin.Runtime
         private string _lastReportedLoadingStep = string.Empty;
         private string _lastReportedLoadingDetail = string.Empty;
         private readonly List<string> _modelErrors = new List<string>();
+        private bool _darkLoadingTheme;
+
+        public bool LoadingVisible => _loadingVisible;
+        public string LoadingThemeName => _darkLoadingTheme ? "dark" : "light";
+
+        public void SetLoadingTheme(string theme)
+        {
+            var dark = theme == "dark";
+            if (_darkLoadingTheme == dark) return;
+            _darkLoadingTheme = dark;
+            if (_loadingTexture != null) Destroy(_loadingTexture);
+            if (_loadingCardTexture != null) Destroy(_loadingCardTexture);
+            _loadingTexture = null;
+            _loadingCardTexture = null;
+            _loadingCardStyle = null;
+            Debug.Log($"[NativeLoading] Theme={LoadingThemeName}");
+        }
+
+        private Color LoadingColor(int dark, int light, float alpha = 1f)
+        {
+            var rgb = _darkLoadingTheme ? dark : light;
+            return new Color(((rgb >> 16) & 255) / 255f, ((rgb >> 8) & 255) / 255f, (rgb & 255) / 255f, alpha);
+        }
 
         public bool Visible { get; set; } = true;
         public string BackendState { get; set; } = "starting";
@@ -213,7 +236,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
             if (_loadingTexture == null)
             {
                 _loadingTexture = new Texture2D(1, 1, TextureFormat.RGBA32, false);
-                _loadingTexture.SetPixel(0, 0, new Color(0.152f, 0.152f, 0.164f, 1f));
+                _loadingTexture.SetPixel(0, 0, LoadingColor(0x28282b, 0xf5f7fb));
                 _loadingTexture.Apply();
             }
             if (_loadingFactoryTexture == null) _loadingFactoryTexture = Resources.Load<Texture2D>("Loading/industrial-factory");
@@ -232,24 +255,24 @@ namespace HeatTreatment.DigitalTwin.Runtime
 
             // Match the WebView loading card used after sign-in. This native
             // fallback must exist before the WebView/login page is available.
-            GUI.color = new Color(.3f, .3f, .32f, .22f);
+            GUI.color = LoadingColor(0x4c4c52, 0xa9c7ff, .22f);
             GUI.DrawTexture(new Rect(x - 210f, y - 145f, 1320f, 800f), _loadingGlowTexture);
-            GUI.color = new Color(0f, 0f, 0f, .28f);
+            GUI.color = LoadingColor(0x000000, 0x5c7aab, .16f);
             GUI.Box(new Rect(x + 8f, y + 20f, 900f, 518f), GUIContent.none, _loadingCardStyle);
             GUI.color = Color.white;
             GUI.Box(panel, GUIContent.none, _loadingCardStyle);
 
-            DrawLoadingBlock(new Rect(x + 35f, y + 28f, 18f, 18f), new Color(.43f, .46f, .45f, .65f));
-            DrawLoadingBlock(new Rect(x + 36f, y + 29f, 16f, 16f), new Color(.18f, .19f, .2f));
-            DrawLoadingBlock(new Rect(x + 40f, y + 38f, 2f, 4f), new Color(.62f, .77f, .69f));
-            DrawLoadingBlock(new Rect(x + 44f, y + 34f, 2f, 8f), new Color(.62f, .77f, .69f));
-            DrawLoadingBlock(new Rect(x + 48f, y + 36f, 2f, 6f), new Color(.82f, .66f, .43f));
+            DrawLoadingBlock(new Rect(x + 35f, y + 28f, 18f, 18f), LoadingColor(0x6e7573, 0x2563eb, .65f));
+            DrawLoadingBlock(new Rect(x + 36f, y + 29f, 16f, 16f), LoadingColor(0x2e3033, 0xffffff));
+            DrawLoadingBlock(new Rect(x + 40f, y + 38f, 2f, 4f), LoadingColor(0x9ec4b0, 0x2563eb));
+            DrawLoadingBlock(new Rect(x + 44f, y + 34f, 2f, 8f), LoadingColor(0x9ec4b0, 0x2563eb));
+            DrawLoadingBlock(new Rect(x + 48f, y + 36f, 2f, 6f), LoadingColor(0xd1a86e, 0x72a2ff));
             GUI.Label(new Rect(x + 64f, y + 27f, 420f, 20f), "HEAT TREATMENT  /  DIGITAL TWIN", _loadingKickerStyle);
-            DrawLoadingDot(new Rect(x + 774f, y + 34f, 6f, 6f), new Color(.56f, .72f, .63f));
+            DrawLoadingDot(new Rect(x + 774f, y + 34f, 6f, 6f), LoadingColor(0x8fb8a1, 0x2563eb));
             GUI.Label(new Rect(x + 784f, y + 28f, 90f, 18f), "SYSTEM STARTUP", _loadingTinyStyle);
 
             var pulse = .85f + .15f * Mathf.Sin(Time.realtimeSinceStartup * 1.5f);
-            GUI.color = new Color(.63f, .7f, .68f, .17f * pulse);
+            GUI.color = LoadingColor(0xa1b3ad, 0x75a5ff, .17f * pulse);
             GUI.DrawTexture(new Rect(x + 235f, y + 95f, 430f, 270f), _loadingGlowTexture);
             if (_loadingFactoryTexture != null)
             {
@@ -257,31 +280,31 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 var floatOffset = Mathf.Sin(Time.realtimeSinceStartup * 1.35f) * 3f;
                 GUI.DrawTexture(new Rect(x + 160f, y + 66f + floatOffset, 580f, 286f), _loadingFactoryTexture, ScaleMode.ScaleToFit, true);
             }
-            DrawLoadingDot(new Rect(x + 35f, y + 347f, 6f, 6f), new Color(.54f, .72f, .63f));
+            DrawLoadingDot(new Rect(x + 35f, y + 347f, 6f, 6f), LoadingColor(0x8ab8a1, 0x2563eb));
             GUI.Label(new Rect(x + 47f, y + 340f, 265f, 19f), "FACTORY SYSTEMS  INITIALIZING", _loadingCaptionStyle);
             if (!string.IsNullOrWhiteSpace(_loadingDetail))
             {
                 GUI.Label(new Rect(x + 385f, y + 340f, 478f, 20f), _loadingDetail, _loadingTinyStyle);
             }
-            DrawLoadingBlock(new Rect(x + 35f, y + 367f, 830f, 1f), new Color(.59f, .61f, .59f, .16f));
+            DrawLoadingBlock(new Rect(x + 35f, y + 367f, 830f, 1f), LoadingColor(0x979c97, 0x6c89b5, .16f));
 
             GUI.Label(new Rect(x + 35f, y + 387f, 690f, 25f), "正在准备生产现场", _loadingHeadingStyle);
             GUI.Label(new Rect(x + 35f, y + 413f, 700f, 18f), _loadingStep, _loadingStepStyle);
             GUI.Label(new Rect(x + 785f, y + 386f, 80f, 34f), $"{Mathf.RoundToInt(_loadingProgress * 100f)}%", _loadingPercentStyle);
-            DrawLoadingBlock(new Rect(x + 35f, y + 446f, 830f, 3f), new Color(.57f, .59f, .59f, .24f));
-            DrawLoadingBlock(new Rect(x + 35f, y + 446f, 830f * _loadingProgress, 3f), new Color(.66f, .78f, .69f));
+            DrawLoadingBlock(new Rect(x + 35f, y + 446f, 830f, 3f), LoadingColor(0x919797, 0x8ba5ce, .24f));
+            DrawLoadingBlock(new Rect(x + 35f, y + 446f, 830f * _loadingProgress, 3f), LoadingColor(0xa8c7b0, 0x2563eb));
             var knobX = x + 35f + 830f * Mathf.Clamp01(_loadingProgress);
-            DrawLoadingDot(new Rect(knobX - 5f, y + 442.5f, 10f, 10f), new Color(.82f, .68f, .47f));
+            DrawLoadingDot(new Rect(knobX - 5f, y + 442.5f, 10f, 10f), LoadingColor(0xd1ad78, 0x2563eb));
 
             var currentPhase = Mathf.Min(LoadingPhases.Length - 1, Mathf.FloorToInt(_loadingProgress * LoadingPhases.Length));
             for (var index = 0; index < LoadingPhases.Length; index += 1)
             {
                 var phaseX = x + 35f + index * 210f;
                 var markerColor = index < currentPhase
-                    ? new Color(.58f, .76f, .65f)
-                    : index == currentPhase ? new Color(.83f, .69f, .46f) : new Color(.43f, .45f, .45f);
+                    ? LoadingColor(0x94c2a6, 0x2563eb)
+                    : index == currentPhase ? LoadingColor(0xd4b075, 0x2563eb) : LoadingColor(0x6e7373, 0xbac8dd);
                 DrawLoadingDot(new Rect(phaseX, y + 473f, 18f, 18f), markerColor);
-                DrawLoadingDot(new Rect(phaseX + 6f, y + 479f, 6f, 6f), new Color(.16f, .17f, .18f));
+                DrawLoadingDot(new Rect(phaseX + 6f, y + 479f, 6f, 6f), LoadingColor(0x292b2e, 0xf5f7fb));
                 GUI.Label(new Rect(phaseX + 27f, y + 468f, 165f, 17f), LoadingPhases[index], _loadingPhaseStyle);
                 GUI.Label(new Rect(phaseX + 27f, y + 484f, 165f, 15f), LoadingPhaseCaptions[index], _loadingPhaseCaptionStyle);
             }
@@ -317,7 +340,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 var distance = Mathf.Sqrt(dx * dx + dy * dy);
                 var opacity = Mathf.Clamp01(8.5f - distance);
                 var border = distance > 7f;
-                var color = border ? new Color(.33f, .34f, .35f, opacity) : new Color(.177f, .179f, .19f, opacity);
+                var color = border ? LoadingColor(0x545759, 0xd0dbec, opacity) : LoadingColor(0x2d2e30, 0xffffff, opacity);
                 _loadingCardTexture.SetPixel(x, y, color);
             }
             _loadingCardTexture.Apply();
@@ -327,7 +350,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 border = new RectOffset(8, 8, 8, 8),
                 padding = new RectOffset(0, 0, 0, 0)
             };
-            _loadingGlowTexture = new Texture2D(128, 128, TextureFormat.RGBA32, false);
+            if (_loadingGlowTexture == null) _loadingGlowTexture = new Texture2D(128, 128, TextureFormat.RGBA32, false);
             for (var y = 0; y < 128; y += 1)
             for (var x = 0; x < 128; x += 1)
             {
@@ -336,7 +359,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 _loadingGlowTexture.SetPixel(x, y, new Color(1f, 1f, 1f, alpha));
             }
             _loadingGlowTexture.Apply();
-            _loadingDotTexture = new Texture2D(16, 16, TextureFormat.RGBA32, false);
+            if (_loadingDotTexture == null) _loadingDotTexture = new Texture2D(16, 16, TextureFormat.RGBA32, false);
             for (var y = 0; y < 16; y += 1)
             for (var x = 0; x < 16; x += 1)
             {
@@ -344,15 +367,15 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 _loadingDotTexture.SetPixel(x, y, new Color(1f, 1f, 1f, Mathf.Clamp01(8f - radius)));
             }
             _loadingDotTexture.Apply();
-            _loadingKickerStyle = new GUIStyle(GUI.skin.label) { fontSize = 9, fontStyle = FontStyle.Bold, normal = { textColor = new Color(.76f, .76f, .72f) } };
-            _loadingTinyStyle = new GUIStyle(GUI.skin.label) { fontSize = 8, alignment = TextAnchor.MiddleRight, normal = { textColor = new Color(.55f, .56f, .55f) } };
+            _loadingKickerStyle = new GUIStyle(GUI.skin.label) { fontSize = 9, fontStyle = FontStyle.Bold, normal = { textColor = LoadingColor(0xc2c2b8, 0x486491) } };
+            _loadingTinyStyle = new GUIStyle(GUI.skin.label) { fontSize = 8, alignment = TextAnchor.MiddleRight, normal = { textColor = LoadingColor(0x8c8f8c, 0x667085) } };
             _loadingCaptionStyle = new GUIStyle(_loadingTinyStyle) { alignment = TextAnchor.MiddleLeft };
             _loadingFooterStyle = new GUIStyle(_loadingTinyStyle) { alignment = TextAnchor.MiddleCenter };
-            _loadingHeadingStyle = new GUIStyle(GUI.skin.label) { fontSize = 17, fontStyle = FontStyle.Bold, normal = { textColor = new Color(.93f, .94f, .93f) } };
-            _loadingStepStyle = new GUIStyle(GUI.skin.label) { fontSize = 11, normal = { textColor = new Color(.65f, .66f, .63f) } };
-            _loadingPercentStyle = new GUIStyle(GUI.skin.label) { fontSize = 22, alignment = TextAnchor.MiddleRight, normal = { textColor = new Color(.87f, .86f, .82f) } };
-            _loadingPhaseStyle = new GUIStyle(GUI.skin.label) { fontSize = 9, normal = { textColor = new Color(.76f, .76f, .72f) } };
-            _loadingPhaseCaptionStyle = new GUIStyle(GUI.skin.label) { fontSize = 7, normal = { textColor = new Color(.43f, .45f, .44f) } };
+            _loadingHeadingStyle = new GUIStyle(GUI.skin.label) { fontSize = 17, fontStyle = FontStyle.Bold, normal = { textColor = LoadingColor(0xedf0ed, 0x1d2939) } };
+            _loadingStepStyle = new GUIStyle(GUI.skin.label) { fontSize = 11, normal = { textColor = LoadingColor(0xa6a8a1, 0x486491) } };
+            _loadingPercentStyle = new GUIStyle(GUI.skin.label) { fontSize = 22, alignment = TextAnchor.MiddleRight, normal = { textColor = LoadingColor(0xdedbd1, 0x2563eb) } };
+            _loadingPhaseStyle = new GUIStyle(GUI.skin.label) { fontSize = 9, normal = { textColor = LoadingColor(0xc2c2b8, 0x486491) } };
+            _loadingPhaseCaptionStyle = new GUIStyle(GUI.skin.label) { fontSize = 7, normal = { textColor = LoadingColor(0x6e7370, 0x8293ae) } };
         }
 
         private string FrameText()

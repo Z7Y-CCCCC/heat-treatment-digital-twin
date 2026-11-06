@@ -66,6 +66,7 @@ async function publish() {
   await page.getByRole('tree', { name: '视角层级', exact: true }).locator('[data-view-id="factory_overview"] .view-tree-select').click();
   const kpi = page.locator('[data-widget-id="owned_hud_kpi_panel"]');
   await select('owned_hud_kpi_panel');
+  assert.deepEqual(await page.locator('.layer-actions button').allTextContents(), ['置顶', '置底']);
   assert.equal(await page.getByRole('textbox', { name: '副标题（小字）', exact: true }).inputValue(), 'PRODUCTION');
   assert.equal(await kpi.locator('.hud-module-eyebrow').innerText(), 'PRODUCTION');
   pass('legacy visible subtitle and inspector value agree instead of a blank field hiding a renderer default');
