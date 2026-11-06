@@ -76,11 +76,13 @@
 }
 .hud-module-heading > span { display: grid; gap: 4px; min-width: 0; }
 .hud-module-heading small {
-  color: #8995b1;
-  font-size: 9px;
+  color: var(--hud-eyebrow-color, #8995b1);
+  font-size: var(--hud-eyebrow-size, 9px);
   font-weight: 550;
   letter-spacing: .17em;
   line-height: 1.2;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 .hud-module-heading strong {
   overflow: hidden;
@@ -223,7 +225,7 @@
 .hud-module-compact { padding: 14px 16px !important; }
 .hud-module-compact .hud-module-heading { margin-bottom: 9px; padding-bottom: 8px; }
 .hud-module-compact .hud-module-heading > span { display: flex; align-items: baseline; flex-direction: row-reverse; gap: 12px; }
-.hud-module-compact .hud-module-heading small { font-size: 8px; }
+.hud-module-compact .hud-module-heading small { font-size: var(--hud-eyebrow-size, 8px); }
 .hud-module-compact .hud-module-heading strong { font-size: 13px; }
 .hud-module-compact .hud-module-reading strong { font-size: 21px; }
 .hud-module-compact .hud-module-chart { padding-top: 1px; }

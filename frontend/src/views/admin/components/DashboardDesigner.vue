@@ -21,6 +21,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, onActivated, onDeactiva
 import { widgetBindingChoices, LEGACY_BINDINGS } from '../../../runtime/widgetBindingChoices.js'
 import { adminApi } from '../../../config/factoryConfig.js'
 import WidgetRenderer from '../../../runtime/WidgetRenderer.vue'
+import { hudTextFields } from '../../../runtime/hudTextConfig.js'
 import { applyReferenceHudLayout } from '../../../runtime/referenceHudLayout.js'
 import { applyFactoryHudModules } from '../../../runtime/factoryHudModules.js'
 import { applyVisibilityAction, matchesRule, widgetRuntimeVisible } from '../../../runtime/dashboardRules.js'
@@ -2808,12 +2809,12 @@ onBeforeUnmount(() => {
                 <label>最多显示<input v-model.number="selectedWidget.content.limit" type="number" min="1" max="100" @change="recordProperty()" /></label>
               </template>
               <template v-if="selectedWidget.type.startsWith('hud_')">
-                <div class="readonly-banner compact"><span>共享 HUD 模块</span>内部为流式排版，背景不叠加；设计器和实时大屏使用同一个渲染器。</div>
-                <label>英文眉题<input v-model="selectedWidget.content.eyebrow" @change="recordProperty('修改模块眉题')" /></label>
+                <label>副标题（小字）<input v-model="selectedWidget.content.eyebrow" placeholder="留空隐藏" @change="recordProperty('修改副标题')" /></label>
                 <label v-if="selectedWidget.type === 'hud_device_status'" class="visibility-bound-device"><input v-model="selectedWidget.content.showTemperature" type="checkbox" @change="recordProperty()" /> 显示设备温度</label>
                 <template v-if="selectedWidget.type === 'hud_kpi_panel'">
                   <label>圆环名称<input v-model="selectedWidget.content.chartLabel" @change="recordProperty()" /></label>
                   <label>圆环指标路径<input v-model="selectedWidget.content.chartPath" placeholder="metrics.overall_oee" @change="recordProperty()" /></label>
+                  <label>底部文字<input v-model="selectedWidget.content.note" placeholder="留空隐藏" @change="recordProperty('修改底部文字')" /></label>
                   <div v-for="(item,index) in selectedWidget.content.items" :key="index" class="inspector-section">
                     <label>指标 {{ index + 1 }} 名称<input v-model="item.label" @change="recordProperty()"  v-permission="{ page: 'platform.designer', action: 'edit' }"/></label>
                     <label v-if="selectedUsesMapData">区域指标<select v-model="item.path" :aria-label="`地图指标字段 ${index+1}`" @change="recordProperty('修改地图指标')"><option v-for="field in MAP_DESIGNER_FIELDS" :key="field.key" :value="field.path">{{field.label}}</option></select></label><label v-else>数据路径<input v-model="item.path" :list="selectedWidget.data.mode==='dataset'?'selected-dataset-fields':undefined" placeholder="metrics.total_devices" @change="recordProperty()"  v-permission="{ page: 'platform.designer', action: 'edit' }"/></label>
@@ -2824,6 +2825,7 @@ onBeforeUnmount(() => {
                   <label>读数名称<input v-model="selectedWidget.content.statLabel" @change="recordProperty()" /></label>
                   <label>读数单位<input v-model="selectedWidget.content.statUnit" @change="recordProperty()" /></label>
                 </template>
+                <details v-if="hudTextFields(selectedWidget.type).some(field => !['eyebrow','chartLabel','note','statLabel'].includes(field.key))" class="hud-copy-settings"><summary>其他文字</summary><label v-for="field in hudTextFields(selectedWidget.type).filter(field => !['eyebrow','chartLabel','note','statLabel'].includes(field.key))" :key="field.key">{{field.label}}<input v-model="selectedWidget.content[field.key]" placeholder="留空隐藏" @change="recordProperty('修改组件文字')" /></label></details>
               </template>
               <template v-if="selectedWidget.type==='map_region_list'">
                 <label>最多显示<input v-model.number="selectedWidget.content.limit" type="number" min="1" max="1000" @change="recordProperty()" /></label>
@@ -2868,6 +2870,7 @@ onBeforeUnmount(() => {
             </section>
 
             <section v-else-if="inspectorTab === 'style'" class="inspector-section">
+              <details v-if="selectedWidget.type.startsWith('hud_')" class="hud-copy-settings"><summary>副标题样式</summary><label>副标题字号<input v-model.number="selectedWidget.style.eyebrowFontSize" type="number" min="8" max="32" :placeholder="selectedWidget.content.compact ? '8' : '9'" @change="recordProperty('修改副标题字号')" /></label><ColorField v-model="selectedWidget.style.eyebrowColor" label="副标题颜色" :presets="textColorPresets" @commit="recordProperty('修改副标题颜色')" /></details>
               <ColorField v-model="selectedWidget.style.background" label="背景颜色" :presets="backgroundColorPresets" @commit="recordProperty('修改样式')" />
               <ColorField v-model="selectedWidget.style.color" label="文字颜色" :presets="textColorPresets" @commit="recordProperty('修改样式')" />
               <ColorField v-if="selectedWidget.type === 'value'" v-model="selectedWidget.style.valueColor" label="数值颜色" :presets="textColorPresets" @commit="recordProperty('修改样式')" />

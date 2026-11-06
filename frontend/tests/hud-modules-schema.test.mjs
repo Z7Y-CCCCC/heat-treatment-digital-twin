@@ -2,9 +2,37 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createRequire } from 'node:module'
 import { createDashboardWidget, createDashboardWidgetPreset, normalizeDashboardDocument, DASHBOARD_WIDGET_LIBRARY } from '../src/runtime/dashboardSchema.js'
+import { hudTextFields, hudTextDefaults, resolveHudText } from '../src/runtime/hudTextConfig.js'
 const require = createRequire(import.meta.url)
 const { normalizeDocument, validateDocument } = require('../../backend/utils/dashboardDocument.js')
 const types = ['hud_kpi_panel','hud_device_status','hud_alarm_panel','hud_chart_dock']
+
+test('HUD inspector defaults match visible copy and authored blanks survive publication and reload', () => {
+    for (const type of types) {
+        const widget = createDashboardWidget(type)
+        const defaults = hudTextDefaults(type)
+        assert.ok(defaults.eyebrow)
+        assert.equal(widget.content.eyebrow, defaults.eyebrow)
+        assert.equal(resolveHudText(type).eyebrow, defaults.eyebrow)
+        for (const { key } of hudTextFields(type)) {
+            assert.equal(widget.content[key], defaults[key], `${type}.${key}`)
+            widget.content[key] = `自定义 ${key}`
+        }
+        widget.style.eyebrowFontSize = 14
+        widget.style.eyebrowColor = '#aad9ff'
+        let document = normalizeDashboardDocument(normalizeDocument({ widgets: [widget] }))
+        assert.deepEqual(document.widgets[0].content, widget.content)
+        assert.equal(document.widgets[0].style.eyebrowFontSize, 14)
+        assert.equal(document.widgets[0].style.eyebrowColor, '#aad9ff')
+        for (const { key } of hudTextFields(type)) document.widgets[0].content[key] = ''
+        document = normalizeDashboardDocument(normalizeDocument(document))
+        for (const { key } of hudTextFields(type)) {
+            assert.equal(document.widgets[0].content[key], '')
+            assert.equal(resolveHudText(type, document.widgets[0].content)[key], '')
+        }
+        assert.equal(resolveHudText(type, { eyebrow: null }).eyebrow, '')
+    }
+})
 
 test('HUD modules survive the frontend/backend publish round trip without type downgrade', () => {
     const source = normalizeDashboardDocument({ widgets: types.map(type => createDashboardWidget(type)) })

@@ -1,6 +1,7 @@
 import {MAX_DASHBOARD_WIDGETS} from '../../../shared/dashboardLimits.mjs'
 import {upgradeWidgetPlaybackDocument} from '../../../shared/widgetPlaybackProfile.mjs'
 import { normalizePlayback } from '../../../shared/widgetPlayback.mjs'
+import { hudTextDefaults } from './hudTextConfig.js'
 export const DASHBOARD_SCHEMA_VERSION = 3
 import { normalizeParameterDefinitions } from '../../../shared/dashboardParameters.mjs'
 
@@ -262,8 +263,8 @@ const TYPE_DEFAULTS = {
     size: [520, 260],
     title: '生产运行参数',
     content: {
+      ...hudTextDefaults('hud_kpi_panel'),
       chartPath: 'metrics.overall_oee',
-      chartLabel: '综合效率',
       items: [
         { label: '设备总数', path: 'metrics.total_devices', unit: ' 台' },
         { label: '在线设备', path: 'metrics.online_devices', unit: ' 台' },
@@ -275,19 +276,20 @@ const TYPE_DEFAULTS = {
   hud_device_status: {
     size: [560, 420],
     title: '设备运行监测',
-    content: { limit: 8, showTemperature: false },
+    content: { ...hudTextDefaults('hud_device_status'), limit: 8, showTemperature: false },
     style: { background: 'rgba(10, 18, 34, .12)', color: '#eef7ff', borderColor: 'rgba(113, 203, 216, .2)', borderRadius: 18, backgroundOpacity: .08, shadow: 'soft' }
   },
   hud_alarm_panel: {
     size: [560, 320],
     title: '报警 / 事件履历',
-    content: { limit: 6, showLevel: true, showTime: true },
+    content: { ...hudTextDefaults('hud_alarm_panel'), limit: 6, showLevel: true, showTime: true },
     style: { background: 'rgba(10, 18, 34, .12)', color: '#eef7ff', borderColor: 'rgba(231, 127, 152, .2)', borderRadius: 18, backgroundOpacity: .08, shadow: 'soft' }
   },
   hud_chart_dock: {
     size: [680, 280],
     title: '实时趋势',
     content: {
+      ...hudTextDefaults('hud_chart_dock'),
       seriesName: '实时温度', chartType: 'area', lineColor: '#8995f5', areaColor: 'rgba(137,149,245,.18)',
       historyLength: 600, timeWindowSeconds:600, showLegend: false, showAxis: true, showDataLabel: false, smooth: true, showSymbol: false, lineWidth: 1.5, areaOpacity: .2,
       statLabel: '当前温度', statPath: '', statUnit: '°C'

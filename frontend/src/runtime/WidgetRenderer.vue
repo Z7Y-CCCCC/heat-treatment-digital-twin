@@ -5,6 +5,7 @@ import { playbackSelection,normalizePlayback,isDeviceBinding,devicePoint } from 
 import { parameterValue } from '../../../shared/dashboardParameters.mjs'
 import {extendedChartOption} from './dashboardCharts.js'
 import { splitHudKpiValue } from './hudPresentation.js'
+import { resolveHudText } from './hudTextConfig.js'
 import { configureTrendAxes, appendTrendSample } from './trendChart.js'
 import MapRegionList from './MapRegionList.vue'
 
@@ -56,12 +57,13 @@ function objectValue(value, fallback = {}) {
 
 const type = computed(() => props.widget.type || props.widget.widget_type || 'text')
 const content = computed(() => objectValue(props.widget.content, objectValue(props.widget.config, {})))
+const hudCopy = computed(() => resolveHudText(type.value, content.value))
 const widgetStyle = computed(() => objectValue(props.widget.style, objectValue(props.widget.config?.style, {})))
 const dataBinding = computed(() => objectValue(props.widget.data, objectValue(props.widget.binding, {})))
 const conditions = computed(() => Array.isArray(props.widget.conditions) ? props.widget.conditions : (Array.isArray(props.widget.config?.conditions) ? props.widget.config.conditions : []))
 const animation = computed(() => objectValue(props.widget.animation, objectValue(props.widget.config?.animation, { type: 'none' })))
 const widgetEvents = computed(() => Array.isArray(props.widget.events) ? props.widget.events : (Array.isArray(props.widget.config?.events) ? props.widget.config.events : []))
-const widgetTitle = computed(() => props.widget.title || content.value.title || '')
+const widgetTitle = computed(() => props.widget.title ?? content.value.title ?? '')
 const overlayMode = computed(() => props.overlayMode === true)
 const isHudModule = computed(() => ['hud_kpi_panel', 'hud_device_status', 'hud_alarm_panel', 'hud_chart_dock'].includes(type.value))
 const isTrend = computed(() => ['trend', 'hud_chart_dock'].includes(type.value))
@@ -336,6 +338,8 @@ const shellStyle = computed(() => {
     '--widget-alarm-color': style.alarmColor || '#ff625f',
     '--widget-line-color': content.value.lineColor || '#55c7ff',
     '--module-accent': content.value.lineColor || '#a2a7ed',
+    '--hud-eyebrow-size': Number.isFinite(Number(style.eyebrowFontSize)) && Number(style.eyebrowFontSize) > 0 ? `${Math.max(8, Math.min(32, Number(style.eyebrowFontSize)))}px` : undefined,
+    '--hud-eyebrow-color': style.eyebrowColor || undefined,
     animationDuration: `${Number(animation.value.duration || 1.2)}s`,
     animationDelay: `${Number(animation.value.delay || 0)}s`,
     animationIterationCount: animation.value.iteration || 'infinite'
@@ -470,10 +474,10 @@ const hudDeviceCounts = computed(() => {
   return { total: rows.length, online: rows.filter(device => device.online && device.quality !== 'bad').length, alarms: rows.filter(device => device.alarm).length }
 })
 function hudDeviceState(device) {
-  if (!device.online || device.quality === 'bad') return { tone: 'offline', label: '离线' }
-  if (device.quality === 'stale') return { tone: 'delayed', label: '数据延迟' }
-  if (device.alarm) return { tone: 'alarm', label: '报警' }
-  return device.running ? { tone: 'running', label: '运行中' } : { tone: 'idle', label: '待机' }
+  if (!device.online || device.quality === 'bad') return { tone: 'offline', label: hudCopy.value.offlineText }
+  if (device.quality === 'stale') return { tone: 'delayed', label: hudCopy.value.staleText }
+  if (device.alarm) return { tone: 'alarm', label: hudCopy.value.alarmText }
+  return device.running ? { tone: 'running', label: hudCopy.value.runningText } : { tone: 'idle', label: hudCopy.value.idleText }
 }
 function hudEventTone(event) {
   const level = String(event.level || '').toLowerCase()
@@ -481,7 +485,7 @@ function hudEventTone(event) {
 }
 function hudEventTime(event) {
   const time = String(event.time || event.occurred_at || '')
-  return time.match(/\d{1,2}:\d{2}(?::\d{2})?/)?.[0] || time || '时间未提供'
+  return time.match(/\d{1,2}:\d{2}(?::\d{2})?/)?.[0] || time || hudCopy.value.missingTimeText
 }
 function enterHudDevice(device, domEvent) {
   if (dataPending.value) return
@@ -768,7 +772,7 @@ onUnmounted(() => {
 
     <div v-if="scopedDeviceBinding && activeDeviceName && content.showDeviceLabel!==false && !['text','image'].includes(type)" class="widget-device-heading"><span>{{activeDeviceName}}</span><small v-if="playback.total>1">{{playback.index+1}} / {{playback.total}}</small></div>
     <header v-if="isHudModule && content.showTitle !== false" class="hud-module-heading">
-      <span><small>{{ content.eyebrow || ({ hud_kpi_panel: 'PRODUCTION', hud_device_status: 'EQUIPMENT', hud_alarm_panel: 'EVENT LOG', hud_chart_dock: 'PROCESS TREND' })[type] }}</small><strong>{{ widgetTitle }}</strong></span>
+      <span><small v-if="hudCopy.eyebrow" class="hud-module-eyebrow">{{ hudCopy.eyebrow }}</small><strong v-if="widgetTitle">{{ widgetTitle }}</strong></span>
       <svg class="hud-module-icon" :class="`icon-${type}`" viewBox="0 0 24 24" fill="none" aria-hidden="true">
         <path v-if="type === 'hud_alarm_panel'" d="M12 3 2.8 19h18.4L12 3Zm0 5.5v5.3m0 2.7v.2"/>
         <path v-else-if="type === 'hud_device_status'" d="M3.5 5.5h17v11h-17zM8 20.5h8m-4-4v4m-5-8h3l1.8-3 2.7 5.7 1.6-3.2H19"/>
@@ -802,35 +806,35 @@ onUnmounted(() => {
 
     <template v-if="type === 'hud_kpi_panel'">
       <div class="hud-module-kpis" :class="{ 'without-ring': content.showRing === false }">
-        <div v-if="content.showRing !== false" class="hud-module-ring" :aria-label="`${content.chartLabel || '综合效率'} ${hudRingValue === null ? '暂无数据' : hudNumber(hudRingValue) + '%'}`">
+        <div v-if="content.showRing !== false" class="hud-module-ring" :aria-label="`${hudCopy.chartLabel} ${hudRingValue === null ? '暂无数据' : hudNumber(hudRingValue) + '%'}`">
           <svg viewBox="0 0 120 120" aria-hidden="true"><circle class="ring-halo" cx="60" cy="60" r="53"/><g class="ring-ticks"><line v-for="tick in 48" :key="tick" x1="60" :y1="tick % 6 === 1 ? 1.5 : 3.5" x2="60" :y2="tick % 6 === 1 ? 7.5 : 6.5" :class="{'ring-tick-major':tick % 6 === 1}" :transform="`rotate(${(tick - 1) * 7.5} 60 60)`"/></g><circle class="ring-track" cx="60" cy="60" r="44"/><circle class="ring-progress" cx="60" cy="60" r="44" pathLength="100" :stroke-dasharray="`${hudRingPercent} 100`" transform="rotate(-90 60 60)"/><circle class="ring-inner" cx="60" cy="60" r="36"/></svg>
-          <span class="hud-module-ring-copy"><strong>{{ hudNumber(hudRingValue) }}<small v-if="hudRingValue !== null">%</small></strong><em>{{ content.chartLabel || '综合效率' }}</em></span>
+          <span class="hud-module-ring-copy"><strong>{{ hudNumber(hudRingValue) }}<small v-if="hudRingValue !== null">%</small></strong><em v-if="hudCopy.chartLabel">{{ hudCopy.chartLabel }}</em></span>
         </div>
         <dl class="hud-module-stat-list"><div v-for="(item,index) in metricItems" :key="index"><dt><i :class="`stat-dot-${index % 3}`"></i>{{ item.label }}</dt><dd>{{ item.value }}</dd></div></dl>
       </div>
-      <p v-if="content.note" class="hud-module-note">{{ content.note }}</p>
+      <p v-if="hudCopy.note" class="hud-module-note">{{ hudCopy.note }}</p>
     </template>
 
     <template v-else-if="type === 'hud_device_status'">
-      <div class="hud-module-summary"><span>在线 <b>{{ dataPending ? '—' : hudDeviceCounts.online }}</b><small>/ {{ hudDeviceCounts.total }}</small></span><span class="hud-alarm-summary">报警 <b>{{ dataPending ? '—' : hudDeviceCounts.alarms }}</b></span></div>
+      <div class="hud-module-summary"><span>{{ hudCopy.onlineLabel }} <b>{{ dataPending ? '—' : hudDeviceCounts.online }}</b><small>/ {{ hudDeviceCounts.total }}</small></span><span class="hud-alarm-summary">{{ hudCopy.alarmLabel }} <b>{{ dataPending ? '—' : hudDeviceCounts.alarms }}</b></span></div>
       <div class="hud-module-devices">
         <button v-for="(device,index) in deviceRows" :key="device.id" type="button" :class="['hud-module-device', `state-${hudDeviceState(device).tone}`]" :disabled="dataPending" :aria-label="`查看${device.name || device.id}设备详情`" @click.stop="enterHudDevice(device,$event)">
           <span class="hud-device-index">{{ String(index + 1).padStart(2,'0') }}</span><span class="hud-device-name">{{ device.name || device.id }}</span>
-          <span v-if="content.showTemperature" class="hud-device-temp">{{ hudNumber(device.temp) }}<small> °C</small></span>
+          <span v-if="content.showTemperature" class="hud-device-temp">{{ hudNumber(device.temp) }}<small v-if="hudCopy.temperatureUnit"> {{ hudCopy.temperatureUnit }}</small></span>
           <span class="hud-device-state"><i></i>{{ hudDeviceState(device).label }}</span><span class="hud-device-chevron">›</span>
         </button>
-        <div v-if="!deviceRows.length && !dataPending" class="hud-module-empty">尚未接入设备<small>接入后自动显示运行状态</small></div>
+        <div v-if="!deviceRows.length && !dataPending" class="hud-module-empty">{{ hudCopy.emptyText }}<small v-if="hudCopy.emptyHint">{{ hudCopy.emptyHint }}</small></div>
       </div>
     </template>
 
     <template v-else-if="type === 'hud_alarm_panel'">
-      <ol class="hud-module-events"><li v-for="(event,index) in eventRows.slice(0, content.limit || 6)" :key="event.id || `${event.time}-${index}`" :class="hudEventTone(event)"><i class="hud-event-dot"></i><div><time v-if="content.showTime !== false">{{ hudEventTime(event) }}</time><p>{{ event.msg || event.title || event.message || '事件记录' }}</p></div><span v-if="content.showLevel !== false" class="hud-event-level">{{ ({ critical:'报警', warning:'警告', info:'事件' })[hudEventTone(event)] }}</span></li></ol>
-      <div v-if="!eventRows.length && !dataPending" class="hud-module-empty">暂无事件记录<small>新事件将在此自动更新</small></div>
+      <ol class="hud-module-events"><li v-for="(event,index) in eventRows.slice(0, content.limit || 6)" :key="event.id || `${event.time}-${index}`" :class="hudEventTone(event)"><i class="hud-event-dot"></i><div><time v-if="content.showTime !== false">{{ hudEventTime(event) }}</time><p>{{ event.msg || event.title || event.message || hudCopy.fallbackEventText }}</p></div><span v-if="content.showLevel !== false" class="hud-event-level">{{ hudCopy[`${hudEventTone(event)}Label`] }}</span></li></ol>
+      <div v-if="!eventRows.length && !dataPending" class="hud-module-empty">{{ hudCopy.emptyText }}<small v-if="hudCopy.emptyHint">{{ hudCopy.emptyHint }}</small></div>
     </template>
 
     <template v-else-if="type === 'hud_chart_dock'">
-      <div class="hud-module-reading"><span>{{ content.statLabel || '当前值' }}<strong>{{ hudNumber(hudTrendReading.current) }}<small>{{ content.statUnit || dataBinding.unit }}</small></strong></span><span class="hud-trend-range"><small>区间最低 / 最高</small>{{ hudNumber(hudTrendReading.min) }} <i>/</i> {{ hudNumber(hudTrendReading.max) }}</span></div>
-      <div class="hud-module-chart"><div ref="chartRef" class="widget-chart"></div><span v-if="!dataPending && !hasTrendData" class="hud-chart-empty">等待趋势采样</span></div>
+      <div class="hud-module-reading"><span>{{ hudCopy.statLabel }}<strong>{{ hudNumber(hudTrendReading.current) }}<small>{{ content.statUnit ?? dataBinding.unit }}</small></strong></span><span class="hud-trend-range"><small v-if="hudCopy.rangeLabel">{{ hudCopy.rangeLabel }}</small>{{ hudNumber(hudTrendReading.min) }} <i>/</i> {{ hudNumber(hudTrendReading.max) }}</span></div>
+      <div class="hud-module-chart"><div ref="chartRef" class="widget-chart"></div><span v-if="!dataPending && !hasTrendData && hudCopy.emptyText" class="hud-chart-empty">{{ hudCopy.emptyText }}</span></div>
     </template>
 
     <template v-else-if="type === 'navigation'">

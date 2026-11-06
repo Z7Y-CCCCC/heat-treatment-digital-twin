@@ -115,6 +115,47 @@ test('part-point panels accept real zero values but reject stale points and late
 })
 const findNode = (root, match) => match(root) ? root : root.children.map(child => findNode(child, match)).find(Boolean)
 
+test('HUD subtitle uses the same default in designer and overlay, allows custom text and truly hides a blank value', async t => {
+    const view = fixture(t)
+    for (const [type, fallback] of [['hud_kpi_panel','PRODUCTION'], ['hud_device_status','EQUIPMENT'], ['hud_alarm_panel','EVENT LOG'], ['hud_chart_dock','PROCESS TREND']]) {
+        for (const overlayMode of [false, true]) {
+            const widget = { type, title: '我的面板', content: { items: [] } }
+            await view.render({ widget, overlayMode })
+            assert.equal(findNode(view.root, e => e.props.class === 'hud-module-eyebrow').text, fallback)
+            await view.render({ widget: { ...widget, content: { ...widget.content, eyebrow: '车间 · 当班统计' }, style: { eyebrowFontSize: 14, eyebrowColor: '#aad9ff' } }, overlayMode })
+            assert.equal(findNode(view.root, e => e.props.class === 'hud-module-eyebrow').text, '车间 · 当班统计')
+            const shell = findNode(view.root, e => e.props.style?.['--hud-eyebrow-size'])
+            assert.equal(shell.props.style['--hud-eyebrow-size'], '14px')
+            assert.equal(shell.props.style['--hud-eyebrow-color'], '#aad9ff')
+            for (const eyebrow of ['', '  ', null]) {
+                await view.render({ widget: { ...widget, content: { ...widget.content, eyebrow } }, overlayMode })
+                assert.equal(findNode(view.root, e => e.props.class === 'hud-module-eyebrow'), undefined)
+                assert.doesNotMatch(textContent(view.root), new RegExp(fallback))
+                assert.match(textContent(view.root), /我的面板/)
+            }
+        }
+    }
+})
+
+test('HUD authored captions and footer are editable without changing bound measurements or status semantics', async t => {
+    const view = fixture(t)
+    await view.render({ widget: { type: 'hud_kpi_panel', content: { eyebrow: '', chartLabel: '设备效率', chartPath: 'metrics.overall_oee', note: '本班累计', items: [] } }, metrics: { overall_oee: 92 } })
+    assert.match(textContent(view.root), /92.*设备效率.*本班累计/)
+    await view.render({ widget: { type: 'hud_kpi_panel', content: { eyebrow: '', chartLabel: '', note: '', items: [] } } })
+    assert.doesNotMatch(textContent(view.root), /综合效率|本班累计/)
+    await view.render({ widget: { type: 'hud_device_status', content: { onlineLabel: '已连接', alarmLabel: '待处理', offlineText: '通信中断', showTemperature: true, temperatureUnit: '℃' } }, deviceStatusMap: { a: { name: '炉一', online: false, temp: 55 } } })
+    assert.match(textContent(view.root), /已连接.*0.*待处理.*0.*炉一.*55.*℃.*通信中断/)
+    assert.ok(findNode(view.root, e => String(e.props.class).includes('state-offline')))
+    await view.render({ widget: { type: 'hud_alarm_panel', content: { criticalLabel: '需处理', missingTimeText: '未记录', fallbackEventText: '现场事件' } }, events: [{ id: 'a', level: 'critical' }] })
+    assert.match(textContent(view.root), /未记录.*现场事件.*需处理/)
+    await view.render({ widget: { type: 'hud_alarm_panel', content: { emptyText: '暂无报警', emptyHint: '' } } })
+    assert.match(textContent(view.root), /暂无报警/)
+    assert.doesNotMatch(textContent(view.root), /新事件将在此自动更新/)
+    await view.render({ widget: { type: 'hud_chart_dock', content: { statLabel: '', rangeLabel: '温度范围', emptyText: '等待测量', statUnit: '' }, data: { unit: 'K' } } })
+    assert.match(textContent(view.root), /温度范围.*等待测量/)
+    assert.doesNotMatch(textContent(view.root), /当前温度|区间最低|K/)
+})
+
 test('dataset text displays typed values without losing leading zeroes, and unavailable data never uses a static fallback as a real reading', async t => {
     const view=fixture(t),widget={id:'typed_dataset',type:'text',content:{text:'静态占位'},data:{mode:'dataset',datasetId:'erp',datasetField:'code'}}
     const record={value:'00123',quality:'good',columns:[{name:'code',type:'string'}],rows:[],series:[]}
