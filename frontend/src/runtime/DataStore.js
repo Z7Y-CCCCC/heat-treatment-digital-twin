@@ -73,6 +73,7 @@ export function createDashboardDataStore(options = {}) {
     });
 
     const latestDeviceDataMap = new Map();
+    const latestMotionDataMap = new Map();
     const lastSeenMap = new Map();
     let configuredDeviceIds = null;
     let wsClient = null;
@@ -82,6 +83,7 @@ export function createDashboardDataStore(options = {}) {
     let staleTimer = null;
     let disposed = false;
     let onDeviceData = null;
+    let onMotionInput = null;
     let onMessage = null;
     let lastMetricsRefreshAt = 0;
     let lastEventsRefreshAt = 0;
@@ -141,6 +143,17 @@ export function createDashboardDataStore(options = {}) {
         onMessage = typeof handler === 'function' ? handler : null;
     }
 
+    function setMotionInputHandler(handler) {
+        onMotionInput = typeof handler === 'function' ? handler : null;
+        latestMotionDataMap.forEach(record => {
+            const stamp = typeof record.data.timestamp === 'number' ? record.data.timestamp : Date.parse(record.data.timestamp);
+            // Cache replay advances the clock bridge, never the source-read
+            // timestamp. Reattaching a preview cannot resurrect expired data.
+            onMotionInput?.({ ...record.data, motionInputOnly: true,
+                timestamp: Number.isFinite(stamp) ? stamp + Math.max(0, Date.now() - record.receivedAt) : Date.now() });
+        });
+    }
+
     function registerDevice(deviceCfg) {
         if (disposed || !deviceCfg?.id) return;
         if (deviceStatusMap[deviceCfg.id]) {
@@ -165,11 +178,12 @@ export function createDashboardDataStore(options = {}) {
         if (disposed) return;
         const configured = (Array.isArray(devices) ? devices : []).filter(device => device?.id);
         configuredDeviceIds = new Set(configured.map(device => String(device.id)));
-        for (const deviceId of new Set([...Object.keys(deviceStatusMap), ...Object.keys(deviceDataMap), ...latestDeviceDataMap.keys(), ...lastSeenMap.keys()])) {
+        for (const deviceId of new Set([...Object.keys(deviceStatusMap), ...Object.keys(deviceDataMap), ...latestDeviceDataMap.keys(), ...latestMotionDataMap.keys(), ...lastSeenMap.keys()])) {
             if (configuredDeviceIds.has(String(deviceId))) continue;
             delete deviceStatusMap[deviceId];
             delete deviceDataMap[deviceId];
             latestDeviceDataMap.delete(deviceId);
+            latestMotionDataMap.delete(deviceId);
             lastSeenMap.delete(deviceId);
         }
         if (selectedDeviceId.value != null && !configuredDeviceIds.has(String(selectedDeviceId.value))) selectDevice(null);
@@ -190,6 +204,20 @@ export function createDashboardDataStore(options = {}) {
 
     function applyDeviceRealtimeData(data) {
         if (disposed || !data?.furnace_id || !acceptsDevice(data.furnace_id)) return;
+        if (data.motionInputs) latestMotionDataMap.set(data.furnace_id, { data, receivedAt: Date.now() });
+        if (data.motionInputOnly === true) {
+            // An independent data-table read is not a PLC acquisition. Keep
+            // device status, telemetry, trends and lastSeen untouched.
+            const previous = latestDeviceDataMap.get(data.furnace_id);
+            if (previous) {
+                const merged = { ...previous, motionInputs: data.motionInputs || {} };
+                latestDeviceDataMap.set(data.furnace_id, merged);
+                deviceDataMap[data.furnace_id] = merged;
+                if (selectedDeviceId.value === data.furnace_id) selectedDeviceData.motionInputs = merged.motionInputs;
+            }
+            onMotionInput?.(data);
+            return;
+        }
 
         lastRealtimeFrameAt = Date.now();
         latestDeviceDataMap.set(data.furnace_id, data);
@@ -322,7 +350,9 @@ export function createDashboardDataStore(options = {}) {
     function applyFrame(payload) {
         const devices = (Array.isArray(payload?.devices) ? payload.devices : []).filter(device => acceptsDevice(device?.furnace_id));
         devices.forEach(applyDeviceRealtimeData);
-        updateRollingTrend(devices);
+        const telemetry = devices.filter(device => device.motionInputOnly !== true);
+        if (!telemetry.length) return;
+        updateRollingTrend(telemetry);
         recomputeMetricsFromRuntime();
         refreshMetrics();
         refreshEvents();
@@ -589,6 +619,8 @@ export function createDashboardDataStore(options = {}) {
         pendingRequests.forEach(controller => controller.abort());
         pendingRequests.clear();
         onDeviceData = null;
+        onMotionInput = null;
+        latestMotionDataMap.clear();
         onMessage = null;
         if (reconnectTimer) clearTimeout(reconnectTimer);
         if (connectionTimer) clearTimeout(connectionTimer);
@@ -622,6 +654,7 @@ export function createDashboardDataStore(options = {}) {
         setStaleMs,
         setEventQueryOptions,
         setDeviceDataHandler,
+        setMotionInputHandler,
         setMessageHandler,
         registerDevice,
         syncDevices,

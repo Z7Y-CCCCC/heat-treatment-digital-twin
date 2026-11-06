@@ -112,12 +112,13 @@ test('overview hover uses compact state without config fetches and clears on fac
     Object.assign(state.runtimeContext,{factoryId:'pit',viewId:'factory_overview',viewMode:'factory',sceneReady:true})
     const calls=view.request.mock.callCount()
     await state.handleRuntimeMessage({type:'device_hover_changed',payload:{factoryId:'pit',viewId:'factory_overview',hoveredDeviceId:'old',deviceHoverPointer:{x:.3,y:.4,visible:true}}})
-    assert.equal(state.hoveredOverviewDevice.name,'Old device')
+    assert.equal(state.tooltipTarget.device.name,'Old device')
+    assert.equal(state.tooltipContext.hover.device.name,'Old device')
     assert.equal(view.request.mock.callCount(),calls)
     state.applyRuntimeContext({factoryId:'next',viewId:'factory_overview'})
-    assert.equal(state.hoveredOverviewDevice,null)
+    assert.equal(state.tooltipTarget,null)
     await state.handleRuntimeMessage({type:'device_hover_changed',payload:{factoryId:'pit',viewId:'factory_overview',hoveredDeviceId:'old',deviceHoverPointer:{x:.3,y:.4,visible:true}}})
-    assert.equal(state.hoveredOverviewDevice,null)
+    assert.equal(state.tooltipTarget,null)
 })
 
 test('full hierarchy navigation is not gated by the reference HUD layout migration flag', () => {

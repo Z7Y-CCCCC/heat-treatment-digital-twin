@@ -59,6 +59,26 @@ test('mapping preserves formulas, aliases and mapped filter/sort fields across s
   assert.throws(() => validateTemplateFieldBinding(rows[0]), /映射/)
 })
 
+test('tooltip field mapper previews and applies the nested template owner without main-widget lookup', async t => {
+  t.mock.method(adminApi, 'getDataSets', async () => ({ datasets: [{ id:'tooltip_set',columns:[{name:'reading',label:'读数'}] }] }))
+  const requests=[]
+  t.mock.method(adminApi, 'previewDataSet', async data => { requests.push(data); return {result:{value:42,rows:[],quality:'good'}} })
+  const document=normalizeDashboardDocument()
+  const template=document.tooltipTemplates.templates[0]
+  template.widgets=[{...template.widgets[1],id:'nested_only',data:{mode:'dataset',datasetId:'tooltip_set',datasetField:'reading',deviceScope:'current'}}]
+  const {state,applied}=fixture(t,document)
+  await settle()
+  const row=state.rows[0]
+  assert.equal(row.templateId,template.id)
+  await state.preview(row)
+  assert.equal(row.error,'')
+  assert.equal(requests[0].context.deviceId,'current-device')
+  row.confirmed=true
+  state.apply()
+  assert.equal(applied[0].tooltipTemplates.templates[0].widgets[0].data.datasetField,'reading')
+  assert.ok(!applied[0].widgets.some(widget=>widget.id==='nested_only'))
+})
+
 test('database mapper reads real schema, blocks unchecked preview, invalidates after edit, and applies selected values', async t => {
   t.mock.method(adminApi, 'getDataSourceTables', async () => ({ tables: [{ name: 'measurements', schema: '' }] }))
   t.mock.method(adminApi, 'getDataSourceColumns', async () => ({ columns: [{ name: '温度', dataType: 'real' }, { name: 'operator_custom', dataType: 'real' }] }))

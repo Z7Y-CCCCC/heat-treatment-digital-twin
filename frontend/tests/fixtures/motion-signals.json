@@ -1,0 +1,77 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "boolean condition follows the source and reverses a partial stroke",
+      "binding": { "actionId": "clip:door", "dataItemId": "state:door", "mode": "position", "trigger": { "mode": "condition", "operator": "eq", "value": true, "hysteresis": 0 }, "transitionSeconds": 2, "speed": 1 },
+      "events": [
+        { "op": "receive", "now": 0, "value": false, "expect": { "position": 0, "target": 0, "usable": true, "running": false } },
+        { "op": "receive", "now": 1, "value": true, "expect": { "position": 0, "target": 1, "usable": true, "running": true } },
+        { "op": "step", "now": 1.5, "delta": 0.5, "expect": { "position": 0.25, "seconds": 0.5 } },
+        { "op": "receive", "now": 1.5, "value": false, "expect": { "position": 0.25, "target": 0, "running": false } },
+        { "op": "step", "now": 1.7, "delta": 0.2, "expect": { "position": 0.15, "seconds": 0.5 } }
+      ]
+    },
+    {
+      "name": "typed text condition and inversion do not coerce unrelated values",
+      "binding": { "actionId": "clip:fan", "dataItemId": "state:phase", "mode": "running", "trigger": { "mode": "condition", "operator": "eq", "value": "运行", "hysteresis": 0 }, "invert": true, "transitionSeconds": 0, "speed": 2 },
+      "events": [
+        { "op": "receive", "now": 0, "value": "停止", "expect": { "position": 1, "target": 1, "usable": true, "running": true } },
+        { "op": "step", "now": 0.5, "delta": 0.5, "expect": { "seconds": 1 } },
+        { "op": "receive", "now": 1, "value": "运行", "expect": { "position": 0, "target": 0, "running": false } },
+        { "op": "step", "now": 1.5, "delta": 0.5, "expect": { "seconds": 1 } },
+        { "op": "receive", "now": 2, "value": true, "expect": { "usable": false, "position": 0, "running": false, "reason": "数据类型无效" } }
+      ]
+    },
+    {
+      "name": "numeric greater threshold has hysteresis but not a self-declared completion",
+      "binding": { "actionId": "clip:heat", "dataItemId": "point:temperature", "mode": "running", "trigger": { "mode": "condition", "operator": "gt", "value": 50, "hysteresis": 5 }, "transitionSeconds": 0 },
+      "events": [
+        { "op": "receive", "now": 0, "value": 49, "expect": { "running": false, "target": 0 } },
+        { "op": "receive", "now": 1, "value": 53, "expect": { "running": true, "target": 1 } },
+        { "op": "receive", "now": 2, "value": 56, "expect": { "running": true, "target": 1 } },
+        { "op": "receive", "now": 3, "value": 48, "expect": { "running": true, "target": 1 } },
+        { "op": "receive", "now": 4, "value": 44, "expect": { "running": false, "target": 0, "reason": "停止" } }
+      ]
+    },
+    {
+      "name": "catalog ranges require actual numeric values while reconnect stays smooth",
+      "binding": { "actionId": "part:stroke", "dataItemId": "point:stroke", "mode": "position", "trigger": { "mode": "range" }, "inputMin": 0, "inputMax": 1, "transitionSeconds": 0 },
+      "events": [
+        { "op": "receive", "now": 0, "value": 1, "expect": { "position": 1, "usable": true } },
+        { "op": "receive", "now": 1, "value": true, "expect": { "position": 1, "usable": false, "reason": "数据类型无效" } },
+        { "op": "receive", "now": 2, "value": "1", "expect": { "position": 1, "usable": false, "reason": "数据类型无效" } },
+        { "op": "receive", "now": 3, "value": 0, "expect": { "position": 1, "target": 0, "usable": true } },
+        { "op": "step", "now": 3.1, "delta": 0.1, "expect": { "position": 0.5 } }
+      ]
+    },
+    {
+      "name": "out of order, repeated timestamps, bad recovery and first reconnect pose",
+      "binding": { "actionId": "part:door", "dataItemId": "point:stroke", "mode": "position", "trigger": { "mode": "range" }, "inputMin": 0, "inputMax": 1, "transitionSeconds": 0 },
+      "events": [
+        { "op": "receive", "now": 0, "value": 0, "expect": { "position": 0, "usable": true } },
+        { "op": "receive", "now": 1, "value": 1, "expect": { "position": 1, "target": 1 } },
+        { "op": "receive", "now": 2, "stamp": 1000500, "value": 0, "expect": { "position": 1, "target": 1, "usable": true } },
+        { "op": "receive", "now": 3, "missing": true, "expect": { "position": 1, "usable": false } },
+        { "op": "receive", "now": 4, "stamp": 1001000, "value": 1, "expect": { "position": 1, "usable": true, "receivedAt": 1 } },
+        { "op": "receive", "now": 7, "stamp": 1001000, "value": 1, "expect": { "position": 1, "usable": false, "reason": "数据超时", "receivedAt": 1 } },
+        { "op": "receive", "now": 8, "value": 0, "expect": { "position": 1, "target": 0, "usable": true } },
+        { "op": "step", "now": 8.1, "delta": 0.1, "expect": { "position": 0.5 } },
+        { "op": "step", "now": 8.2, "delta": 0.1, "expect": { "position": 0 } },
+        { "op": "receive", "now": 8.3, "stamp": 1007000, "value": 1, "quality": "bad", "expect": { "usable": false, "position": 0 } },
+        { "op": "receive", "now": 8.4, "stamp": 1008000, "value": 0, "expect": { "usable": true, "position": 0, "receivedAt": 8 } },
+        { "op": "step", "now": 13.1, "delta": 0, "expect": { "usable": false, "position": 0, "reason": "数据超时" } }
+      ]
+    },
+    {
+      "name": "catalog state is valid while PLC offline but identity and expired source fail closed",
+      "binding": { "actionId": "clip:offline", "dataItemId": "state:online", "trigger": { "mode": "condition", "operator": "eq", "value": false }, "transitionSeconds": 0 },
+      "events": [
+        { "op": "receive", "now": 0, "online": false, "value": false, "expect": { "position": 1, "running": true, "usable": true } },
+        { "op": "receive", "now": 1, "value": false, "identity": "other", "expect": { "position": 1, "usable": false } },
+        { "op": "receive", "now": 10, "stamp": 1000000, "value": true, "expect": { "position": 1, "usable": false, "reason": "数据超时" } },
+        { "op": "receive", "now": 11, "stamp": 1015000, "value": true, "expect": { "position": 1, "usable": false, "reason": "数据时间无效" } }
+      ]
+    }
+  ]
+}

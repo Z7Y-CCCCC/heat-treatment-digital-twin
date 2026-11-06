@@ -10,10 +10,12 @@ import { usePreviewFullscreen } from '../runtime/usePreviewFullscreen.js'
 import { useNativeQuality } from '../runtime/nativeQuality.js'
 import QualityNotice from '../components/QualityNotice.vue'
 import AdminReadingSettings from './admin/components/AdminReadingSettings.vue'
+import AdminConnectionStatus from './admin/components/AdminConnectionStatus.vue'
 import LinePlannerControls from './admin/components/LinePlannerControls.vue'
 import FactoryVoiceToggle from './admin/components/FactoryVoiceToggle.vue'
 import WorkshopGroundEditor from './admin/components/WorkshopGroundEditor.vue'
 import DataSourceWorkspace from './admin/components/DataSourceWorkspace.vue'
+import DataCenterWorkspace from './admin/components/DataCenterWorkspace.vue'
 import FactoryCollectionSettings from './admin/components/FactoryCollectionSettings.vue'
 import CollectorRuntimePanel from './admin/components/CollectorRuntimePanel.vue'
 import { normalizeGround, normalizeDeviceGround } from '../../../shared/industrialGround.mjs'
@@ -49,7 +51,6 @@ import {
     normalizeLineRecord
 } from './admin/utils/lineLayout.js'
 import { chooseLineDevices, planLineGroupMove, spaceLineDevices } from './admin/utils/lineDeviceSelection.js'
-import { alignLoadingFaces, measureLoadingFaces } from '../three/lineLoadingAlignment.js'
 import { buildModelDisplayIds, createShortModelId } from './admin/utils/modelIds.js'
 import { useAppDialog } from './admin/composables/useAppDialog.js'
 import { useSystemSettings } from './admin/composables/useSystemSettings.js'
@@ -72,7 +73,6 @@ import MobileDeviceMotion from './admin/components/MobileDeviceMotion.vue'
 import ModelTransferSequence from './admin/components/ModelTransferSequence.vue'
 import LineEquipmentSequence from './admin/components/LineEquipmentSequence.vue'
 import CadMotionPreview from './admin/components/CadMotionPreview.vue'
-import MotionActionEditor from './admin/components/MotionActionEditor.vue'
 import DeviceAnimationLink from './admin/components/DeviceAnimationLink.vue'
 import { cadMotionActions } from '../three/cadMotionProfiles.js'
 import { CLEANER_ACTIONS, motionEntries } from './admin/utils/motionEntries.js'
@@ -81,6 +81,8 @@ import { useManualDisassemblyPage } from './admin/composables/useManualDisassemb
 import ModelInspectionEditor from './admin/components/ModelInspectionEditor.vue'
 import ModelNameEditor from './admin/components/ModelNameEditor.vue'
 import ModelPlacementMenu from './admin/components/ModelPlacementMenu.vue'
+import LoadingPortEditor from './admin/components/LoadingPortEditor.vue'
+import LoadingAlignmentDialog from './admin/components/LoadingAlignmentDialog.vue'
 import GroupPortalSettings from './admin/components/GroupPortalSettings.vue'
 import LoadingExperienceSettings from './admin/components/LoadingExperienceSettings.vue'
 import ModelInspectionPreviewOverlay from './admin/components/ModelInspectionPreviewOverlay.vue'
@@ -94,7 +96,7 @@ import { adminUiStateForFocus } from '../runtime/nativeAdminNavigation.js'
 import { normalizeWorkshopLayout } from '../utils/spatialLayout.js'
 import { summarizeDeviceConnections } from './admin/utils/connectionStatus.js'
 import { isNativeUnitySurface } from '../runtime/nativeSurfaceBridge.js'
-import { getFactoryScope } from '../runtime/factoryScope.js'
+import { getFactoryScope, setFactoryScope, FACTORY_SCOPE_CHANGE_EVENT, FACTORY_DIRECTORY_CHANGE_EVENT } from '../runtime/factoryScope.js'
 import { discardFactoryDrafts, saveFactoryDrafts } from '../runtime/factoryDraftCache.js'
 import {
     PLC_PROTOCOL_OPTIONS,
@@ -127,6 +129,13 @@ const storedAdminUiState = adminUiStateForFocus(
     new URLSearchParams(window.location.search).get('focus')
 )
 
+// Preserve old saved tabs and native focus links without changing their permission keys.
+if (['points', 'point-monitor'].includes(storedAdminUiState.activeTab)) {
+    storedAdminUiState.dataCenterSection = storedAdminUiState.activeTab === 'point-monitor' ? 'monitor' : storedAdminUiState.pointsSubpage || 'mapping'
+    storedAdminUiState.activeTab = 'data-center'
+}
+const DATA_CENTER_SUBPAGES = computed(() => adminSubpages('data-center', adminPageCatalog.value).sort((a, b) => ['tables','sources','mapping','monitor','alarms'].indexOf(a.key) - ['tables','sources','mapping','monitor','alarms'].indexOf(b.key)))
+const visibleDataCenterSubpages = computed(() => DATA_CENTER_SUBPAGES.value.filter(page => page.viewPages ? page.viewPages.some(key => canAdminPage(key)) : canAdminPage(page.permissionKey)))
 const PLATFORM_SUBPAGES = computed(() => adminSubpages('platform', adminPageCatalog.value))
 const POINTS_SUBPAGES = computed(() => adminSubpages('points', adminPageCatalog.value))
 const SETTINGS_SUBPAGES = computed(() => adminSubpages('settings', adminPageCatalog.value))
@@ -134,6 +143,7 @@ const visibleSettingsSubpages = computed(() => SETTINGS_SUBPAGES.value.filter(pa
 const visiblePlatformSubpages = computed(() => PLATFORM_SUBPAGES.value.filter(page => canAdminPage(page.permissionKey) || page.key === 'designer' && canAdminPage('platform.scene')))
 const visiblePointsSubpages = computed(() => POINTS_SUBPAGES.value.filter(page => canAdminPage(page.permissionKey)))
 function canSelectTab(key) {
+    if (key === 'data-center') return visibleDataCenterSubpages.value.length > 0
     if (key === 'platform') return visiblePlatformSubpages.value.length > 0
     if (key === 'settings') return visibleSettingsSubpages.value.length > 0
     if (key === 'points') return visiblePointsSubpages.value.length > 0
@@ -152,7 +162,6 @@ const settingsSubpage = ref(restoreSubpage(storedAdminUiState.settingsSubpage, S
 const databaseSection = ref('primary')
 const databaseSectionTabs = [
     { key: 'primary', label: '主库连接' },
-    { key: 'sources', label: '外部数据源' },
     { key: 'schedule', label: '自动备份' },
     { key: 'history', label: '备份记录与保留' },
     { key: 'site', label: '整站灾备' }
@@ -175,8 +184,17 @@ async function databaseTabKey(event, index) {
 }
 
 const pointsSubpage = ref(restoreSubpage(storedAdminUiState.pointsSubpage, POINTS_SUBPAGES.value, 'mapping'))
+const dataCenterSection = ref(storedAdminUiState.dataCenterSection || 'tables')
+const dataCenterFactoryId = ref(getFactoryScope())
+const dataCenterRef = ref(null)
+const dataCenterSourceRef = ref(null)
+function syncDataCenterFactory(event) { dataCenterFactoryId.value = event.detail?.factoryId || getFactoryScope() }
+const isPointMappingWorkspace = computed(() => activeTab.value === 'data-center' && ['mapping', 'alarms'].includes(dataCenterSection.value))
+const isPointMonitorWorkspace = computed(() => activeTab.value === 'data-center' && dataCenterSection.value === 'monitor')
+watch(dataCenterSection, section => { if (['mapping','alarms'].includes(section)) pointsSubpage.value = section }, { immediate: true, flush: 'sync' })
 const currentPermissionPage = computed(() => activeTab.value === 'platform' ? `platform.${platformSubpage.value}`
     : activeTab.value === 'settings' ? `settings.${settingsSubpage.value}`
+    : activeTab.value === 'data-center' ? DATA_CENTER_SUBPAGES.value.find(page => page.key === (dataCenterSection.value === 'table-editor' ? 'tables' : dataCenterSection.value))?.permissionKey || ''
     : activeTab.value === 'points' ? POINTS_SUBPAGES.value.find(page => page.key === pointsSubpage.value)?.permissionKey || '' : activeTab.value)
 const controlPermissionPage = computed(() => currentPermissionPage.value === 'settings.license' ? 'settings.security' : currentPermissionPage.value)
 // Saved tab/focus state is navigation data, never an authorization grant.
@@ -184,16 +202,20 @@ watch([() => adminSession.pagePermissions, adminPageCatalog], () => {
     if (!visiblePlatformSubpages.value.some(page => page.key === platformSubpage.value)) platformSubpage.value = visiblePlatformSubpages.value[0]?.key || ''
     if (!canAdminPage(`settings.${settingsSubpage.value}`)) settingsSubpage.value = visibleSettingsSubpages.value[0]?.key || ''
     if (!visiblePointsSubpages.value.some(page => page.key === pointsSubpage.value)) pointsSubpage.value = visiblePointsSubpages.value[0]?.key || ''
-    if (!canSelectTab(activeTab.value)) activeTab.value = [...new Set(adminPageCatalog.value.map(page => page.container || page.key))].find(canSelectTab) || ''
+    if (!visibleDataCenterSubpages.value.some(page => page.key === (dataCenterSection.value === 'table-editor' ? 'tables' : dataCenterSection.value))) dataCenterSection.value = visibleDataCenterSubpages.value[0]?.key || ''
+    if (!canSelectTab(activeTab.value)) activeTab.value = [...new Set([
+        ...adminMainTabs(adminPageCatalog.value).map(tab => tab.key),
+        ...adminPageCatalog.value.filter(page => page.navGroup).map(page => page.key)
+    ])].find(canSelectTab) || ''
 }, { immediate: true, deep: true })
 const adminContentRef = ref(null)
 const isAdminNavCollapsed = ref(!!storedAdminUiState.isAdminNavCollapsed)
 const isFactoryMenuOpen = ref(true)
-const isDataMenuOpen = ref(true)
 const isModelsMenuOpen = ref(true)
+const isDataCenterMenuOpen = ref(storedAdminUiState.isDataCenterMenuOpen !== false)
 
 function selectPointsSubpage(key) {
-    if (visiblePointsSubpages.value.some(page => page.key === key)) pointsSubpage.value = key
+    if (visiblePointsSubpages.value.some(page => page.key === key)) { pointsSubpage.value = key; dataCenterSection.value = key }
 }
 async function pointsTabKeydown(event) {
     if (!visiblePointsSubpages.value.length) return
@@ -237,6 +259,8 @@ const navIconPaths = {
     animation: ['M8 5l11 7-11 7z', 'M4 5v14'],
     platform: ['M5 5h6v6H5z', 'M13 5h6v6h-6z', 'M5 13h6v6H5z', 'M13 13h6v6h-6z'],
     data: ['M4 7h16', 'M4 12h16', 'M4 17h16', 'M7 7v10', 'M17 7v10'],
+    'data-tables': ['M3 4h18v16H3z', 'M3 10h18', 'M3 15h18', 'M10 10v10'],
+    'data-sources': ['M4 5c0-4 16-4 16 0s-16 4-16 0', 'M4 5v6c0 4 16 4 16 0V5', 'M4 11v6c0 4 16 4 16 0v-6'],
     points: ['M5 12h4', 'M15 12h4', 'M9 12a3 3 0 1 0 6 0a3 3 0 0 0-6 0', 'M12 5V3', 'M12 21v-2'],
     'point-monitor': ['M3 4h18v13H3z', 'M8 21h8', 'M12 17v4', 'M6 11h3l2-4 3 7 2-3h2'],
     settings: ['M12 8a4 4 0 1 0 0 8a4 4 0 0 0 0-8z', 'M12 2v3', 'M12 19v3', 'M4.93 4.93l2.12 2.12', 'M16.95 16.95l2.12 2.12', 'M2 12h3', 'M19 12h3', 'M4.93 19.07l2.12-2.12', 'M16.95 7.05l2.12-2.12']
@@ -254,8 +278,39 @@ const composerGroundWarning = ref('')
 const mobileMotionRef = ref(null)
 const manualDisassemblyRef = ref(null)
 let factorySwitchApproved = false
+const motionFactories = ref([]), motionFactoryId = ref(getFactoryScope()), motionFactoryError = ref('')
+async function loadMotionFactories() {
+    try {
+        const result = await adminApi.listFactories()
+        if (result.error) throw new Error(result.error)
+        motionFactories.value = result.factories || []
+        motionFactoryId.value = getFactoryScope() || result.activeFactoryId || motionFactories.value[0]?.id || ''
+        motionFactoryError.value = ''
+    } catch (error) { motionFactoryError.value = error.message || '工厂目录读取失败，请重新读取' }
+}
+async function requestMotionFactorySwitch({ factoryId, factoryName }) {
+    const next = String(factoryId || '')
+    if (!next || !motionFactories.value.some(factory => String(factory.id) === next)) throw new Error('工厂不可访问，请重新读取工厂目录')
+    if (next === motionFactoryId.value) return true
+    if (!await requestFactorySwitch({ factoryName })) return false
+    setFactoryScope(next)
+    if (getFactoryScope() !== next) { factorySwitchApproved = false; throw new Error('无法保存工厂选择，请允许本地存储后重试') }
+    window.location.reload()
+    return true
+}
 
 async function requestFactorySwitch({ factoryName }) {
+    // Native modal dialogs are top-layer surfaces: finish them before opening
+    // a factory-switch prompt on the ordinary application overlay.
+    if (lineAlignmentMode.value || loadingPortDeviceId.value) return false
+    if (modelLoadingPortRef.value?.busy || deviceLoadingPortRef.value?.busy || lineGroupSaving.value) {
+        await alert('请先完成进出料口配置或关闭对齐预览，再切换工厂。', { title: '暂时不能切换' })
+        return false
+    }
+    if (dataCenterRef.value?.isBusy || dataCenterSourceRef.value?.isBusy) {
+        await alert('数据中心正在读取或保存，请完成后再切换工厂。', { title: '暂时不能切换' })
+        return false
+    }
     const choice = await openAppDialog({
         title: '切换工厂配置',
         message: `即将切换到「${factoryName}」。请选择如何处理当前工厂在各页面尚未保存的修改。`,
@@ -268,6 +323,11 @@ async function requestFactorySwitch({ factoryName }) {
     if (choice !== true && choice !== 'secondary') return false
     const currentFactoryId = getFactoryScope()
     if (choice === 'secondary') {
+        modelLoadingPortRef.value?.discardPending?.()
+        deviceLoadingPortRef.value?.discardPending?.()
+        deviceAnimationLinkRef.value?.discardPending?.()
+        dataCenterRef.value?.discardPending?.()
+        dataCenterSourceRef.value?.discardPending?.()
         unifiedDesignerRef.value?.discardPending?.()
         mobileMotionRef.value?.discardPending?.()
         manualDisassemblyPage.discard()
@@ -277,20 +337,23 @@ async function requestFactorySwitch({ factoryName }) {
         return true
     }
     try {
+        if (modelLoadingPortRef.value && !await modelLoadingPortRef.value.savePending()) throw new Error('模型进出料口尚未保存')
+        if (deviceLoadingPortRef.value && !await deviceLoadingPortRef.value.savePending()) throw new Error('设备进出料口尚未保存')
+        await dataCenterRef.value?.savePending?.()
+        await dataCenterSourceRef.value?.savePending?.()
         await savePendingSystemSettings()
         await mobileMotionRef.value?.savePending?.()
         if (!await manualDisassemblyPage.savePending()) throw new Error(manualDisassemblyStatus.value || '拆解布局未保存')
         await groundEditorRef.value?.savePending?.()
         if (deviceAnimationLinkRef.value && !await deviceAnimationLinkRef.value.savePending()) throw new Error('设备动画联动未保存')
-        if (motionActionEditorRef.value && !await motionActionEditorRef.value.savePending()) throw new Error('工艺动作未保存')
         await saveCurrentFactoryPageDrafts()
         await unifiedDesignerRef.value?.savePending?.()
         await mapSettingsRef.value?.savePending?.()
         await loadingSettingsRef.value?.savePending?.()
         await saveFactoryDrafts(currentFactoryId, {
-            'motion-authoring': async ({ modelId, revision, actions }) => {
-                const result = await adminApi.saveMotionActions(modelId, { revision, actions })
-                if (result?.error || !result?.success) throw new Error(result?.error || '工艺动作保存失败')
+            dataset: async ({ value }) => {
+                const result = await adminApi.saveDataSet(value)
+                if (result?.error || !result?.dataset || result?.success === false) throw new Error(result?.error || '数据表保存失败')
             },
             'device-animations': async ({ deviceId, revision, config }) => {
                 const result = await adminApi.saveDeviceAnimations(deviceId, { revision, config })
@@ -394,6 +457,7 @@ const {
     siteBackupConfig,
     siteBackupConfigSaving,
     loadDatabaseConfig,
+    loadDataSources,
     loadSiteBackups,
     saveSiteBackupConfiguration,
     downloadSiteBackup,
@@ -801,6 +865,8 @@ const lineDeviceSavingId = ref('')
 const selectedLineDeviceIds = ref([])
 const lineGroupSaving = ref(false)
 const lineLoadingMeasuring = ref(false)
+const lineAlignmentMode = ref('')
+const lineAlignmentError = ref('')
 const lineDeviceLayoutBusy = computed(() => lineLoadingMeasuring.value || lineGroupSaving.value || lineLayoutSaving.value || !!lineDeviceSavingId.value)
 const lineDeviceGap = ref(5)
 const lineSelectionFeedback = ref('')
@@ -1526,6 +1592,13 @@ function formatModelName(modelType) {
 
 // ============ 模型管理 ============
 const models = ref([])
+const modelLoadingPortRef = ref(null)
+const deviceLoadingPortRef = ref(null)
+const deviceLoadingPortDialog = ref(null)
+const loadingPortDeviceId = ref('')
+const loadingPortDevice = computed(() => devices.value.find(device => device.id === loadingPortDeviceId.value) || null)
+const loadingPortDeviceModel = computed(() => models.value.find(model => model.id === loadingPortDevice.value?.model_type) || null)
+const loadingPortModelOptions = computed(() => models.value.filter(model => (model.placement_level || 'device') === 'device' && !isEnvironmentModel(model) && model.file_path))
 const deviceModelHover = ref(null)
 const modelDisplayIds = computed(() => buildModelDisplayIds(models.value.map(model => model.id)))
 const copiedModelId = ref('')
@@ -1537,6 +1610,7 @@ const modelFileInputRef = ref(null)
 const selectedModelFile = ref(null)
 const MODEL_LIBRARY_STEPS = [
     { key: 'library', label: '模型资产', description: '选择与管理模型' },
+    { key: 'ports', label: '进出料口', description: '配置入口、出口、送料高度与方向' },
     { key: 'inspection', label: '拆解检查', description: '配置外壳、关键部件、镜头与点位上下文' },
     { key: 'bindings', label: '部位绑定', description: '把模型节点绑定到实时点位' }
 ]
@@ -1664,7 +1738,6 @@ const motionBindingSearch = ref('')
 const motionEditorPanel = ref('list')
 const motionWorkspaceMode = ref('parts')
 const deviceAnimationLinkRef = ref(null)
-const motionActionEditorRef = ref(null)
 const cleanerProcessActions = CLEANER_ACTIONS
 const motionInlineProcess = ref('')
 const motionInlinePreviewRef = ref(null)
@@ -1714,8 +1787,8 @@ function stopMotionPreview() {
 }
 
 async function changeMotionWorkspace(mode) {
+    if (!['parts', 'live', 'transfer'].includes(mode)) return
     if (motionWorkspaceMode.value === 'live' && mode !== 'live' && deviceAnimationLinkRef.value && !await deviceAnimationLinkRef.value.canLeave()) return
-    if (motionWorkspaceMode.value === 'authoring' && mode !== 'authoring' && motionActionEditorRef.value && !await motionActionEditorRef.value.canLeave()) return
     motionInlineProcess.value = ''
     if (motionWorkspaceMode.value === mode) return
     motionWorkspaceMode.value = mode
@@ -1914,7 +1987,7 @@ async function changeMotionModel(event) {
 }
 
 function modelLibraryStepRequiresModel(step) {
-    return step === 'inspection' || step === 'bindings'
+    return step === 'inspection' || step === 'bindings' || step === 'ports'
 }
 
 function modelLibraryStepAvailable(step) {
@@ -1927,8 +2000,10 @@ function modelLibraryStepAvailable(step) {
 async function selectModelLibraryStep(step) {
     if (modelLibraryStep.value === step) return
     if (!modelLibraryStepAvailable(step)) return
+    if (modelLoadingPortRef.value && !await modelLoadingPortRef.value.canLeave()) return
     modelLibraryStep.value = step
     await nextTick()
+    if (step === 'ports') { disposeModelPreview(); return }
     await renderSelectedModelPreview()
 }
 
@@ -2901,6 +2976,7 @@ function getActivePreviewModel() {
 
 async function renderSelectedModelPreview() {
     if (!isModelWorkspace.value) return
+    if (activeTab.value === 'models' && modelLibraryStep.value === 'ports') { disposeModelPreview(); return }
     if (activeTab.value === 'model-animations' && motionWorkspaceMode.value !== 'parts') return
 
     if (activeTab.value === 'models' && selectedModelFile.value && selectedModelObjectUrl) {
@@ -3354,6 +3430,7 @@ async function uploadModel() {
 
 async function previewExistingModel(model, { afterUpload = false } = {}) {
     if (modelBindingSaving.value || modelNameSaving.value || (modelUploading.value && !afterUpload)) { modelBindingStatus.value = '正在保存模型，请等待保存完成再切换。'; return }
+    if (model.id !== selectedPreviewModelId.value && modelLoadingPortRef.value && !await modelLoadingPortRef.value.canLeave()) return
     if (activeTab.value === 'model-animations' && model.id !== selectedPreviewModelId.value && activePreviewModel.value) {
         const savedBindings = dedupeModelBindings(parseModelMetadata(activePreviewModel.value).partBindings || [])
         const dirty = snapshotJson(modelPartBindings.value) !== snapshotJson(savedBindings) || Boolean(modelBindingForm.source_key)
@@ -3377,6 +3454,57 @@ async function previewExistingModel(model, { afterUpload = false } = {}) {
         ? { url: resolveBackendAssetUrl(model.file_path), label: model.name || model.id }
         : null
     await renderSelectedModelPreview()
+}
+
+async function openModelLoadingPorts(model) {
+    await previewExistingModel(model)
+    if (selectedPreviewModelId.value === model.id) await selectModelLibraryStep('ports')
+}
+async function changeLoadingPortModel(event) {
+    const model = loadingPortModelOptions.value.find(item => item.id === event.target.value)
+    if (model) await previewExistingModel(model)
+    event.target.value = selectedPreviewModelId.value
+}
+function applySavedLoadingPorts(result) {
+    if (result.model) {
+        models.value = models.value.map(model => model.id === result.model.id ? { ...model, ...result.model } : model)
+        if (modelPreviewModel?.id === result.model.id) modelPreviewModel = { ...modelPreviewModel, ...result.model }
+    }
+    if (result.device) {
+        // Port calibration is not a scene-layout save. Keep any unrelated
+        // local layout draft, and update the saved snapshot from server truth.
+        const local = getLineDeviceById(result.device.id)
+        const instance = { ...parseInstanceConfig(local?.instance_config) }
+        const saved = parseInstanceConfig(result.device.instance_config)
+        if (Object.hasOwn(saved, 'loadingPortOverrides')) instance.loadingPortOverrides = saved.loadingPortOverrides
+        else delete instance.loadingPortOverrides
+        patchDeviceLocally(result.device.id, { instance_config: JSON.stringify(instance) })
+        savedDeviceLayoutSnapshots.value[result.device.id] = deviceLayoutSnapshot(result.device)
+    }
+}
+async function openDeviceLoadingPorts(device) {
+    if (!canAdminPage('devices', 'edit')) return
+    if (showDeviceForm.value) return alert('请先保存或取消正在编辑的设备，再调整进出料口。', { title: '避免覆盖配置' })
+    if (!models.value.some(model => model.id === device?.model_type && model.file_path)) return alert('请先在模型管理中配置设备模型。', { title: '未找到设备模型' })
+    if (deviceLoadingPortRef.value && !await deviceLoadingPortRef.value.canLeave()) return
+    loadingPortDeviceId.value = device.id
+    await nextTick()
+    deviceLoadingPortDialog.value?.showModal()
+}
+async function closeDeviceLoadingPorts() {
+    if (deviceLoadingPortRef.value && !await deviceLoadingPortRef.value.canLeave()) return
+    loadingPortDeviceId.value = ''
+}
+async function confirmDeviceLoadingPorts(message, options) {
+    // The shared application prompt cannot appear above a native modal dialog.
+    // Suspend only the top-layer surface, not its mounted editor or draft.
+    const dialog = deviceLoadingPortDialog.value
+    const wasOpen = Boolean(dialog?.open)
+    if (wasOpen) dialog.close()
+    try { return await confirm(message, options) }
+    finally {
+        if (wasOpen && loadingPortDeviceId.value && deviceLoadingPortDialog.value === dialog && dialog.isConnected && !dialog.open) dialog.showModal()
+    }
 }
 
 function applyModelName({ id, name }) {
@@ -4041,12 +4169,12 @@ function getDeviceWorkshopId(device) {
         || ''
 }
 
-const assetHierarchyTabs = new Set(['platform', 'composer', 'workshops', 'lines', 'devices', 'mobile-devices', 'points', 'point-monitor', 'models', 'settings'])
+const assetHierarchyTabs = new Set(['platform', 'composer', 'workshops', 'lines', 'devices', 'mobile-devices', 'points', 'point-monitor', 'data-center', 'models', 'settings'])
 const assetHierarchyDeviceId = computed(() => {
     if (activeTab.value === 'composer') return selectedComposerDeviceId.value
     if (activeTab.value === 'devices' && showDeviceForm.value) return deviceFormTargetId.value
-    if (activeTab.value === 'points' && selectedDeviceForPoints.value !== 'all') return selectedDeviceForPoints.value
-    if (activeTab.value === 'point-monitor' && selectedDeviceForMonitor.value !== 'all') return selectedDeviceForMonitor.value
+    if (isPointMappingWorkspace.value && selectedDeviceForPoints.value !== 'all') return selectedDeviceForPoints.value
+    if (isPointMonitorWorkspace.value && selectedDeviceForMonitor.value !== 'all') return selectedDeviceForMonitor.value
     return ''
 })
 const assetHierarchyLineId = computed(() => {
@@ -4509,13 +4637,46 @@ function toggleAdminNavCollapsed() {
     resizeComposerPreviewAfterLayout()
 }
 
+async function selectDataCenterSection(section) {
+    const key = section === 'table-editor' ? 'tables' : section
+    if (!visibleDataCenterSubpages.value.some(page => page.key === key) || section === 'table-editor' && !canAdminPage('settings.database')) return
+    if (section !== dataCenterSection.value && dataCenterRef.value?.canLeave && !await dataCenterRef.value.canLeave()) return
+    if (section !== dataCenterSection.value && dataCenterSourceRef.value?.canLeave && !await dataCenterSourceRef.value.canLeave()) return
+    if (!visibleDataCenterSubpages.value.some(page => page.key === key) || section === 'table-editor' && !canAdminPage('settings.database')) return
+    dataCenterSection.value = section
+    await nextTick()
+    adminContentRef.value?.scrollTo({ top: 0 })
+}
+
+async function openDataCenterSection(section) {
+    if (activeTab.value !== 'data-center') await selectAdminTab('data-center')
+    if (activeTab.value !== 'data-center') return
+    isDataCenterMenuOpen.value = true
+    await selectDataCenterSection(section)
+}
+
 async function selectAdminTab(tabKey) {
+    let requestedDataSection = ''
+    if (['points', 'point-monitor'].includes(tabKey)) {
+        const section = tabKey === 'point-monitor' ? 'monitor' : pointsSubpage.value || 'mapping'
+        if (!visibleDataCenterSubpages.value.some(page => page.key === section)) return
+        requestedDataSection = section
+        tabKey = 'data-center'
+    }
     if (!canSelectTab(tabKey)) return
+    if (tabKey !== activeTab.value && modelLoadingPortRef.value && !await modelLoadingPortRef.value.canLeave()) return
+    if (tabKey !== activeTab.value && deviceLoadingPortRef.value && !await deviceLoadingPortRef.value.canLeave()) return
+    if (tabKey !== activeTab.value && (lineGroupSaving.value || lineLoadingMeasuring.value)) return
+    if (tabKey !== activeTab.value) { lineAlignmentMode.value = ''; loadingPortDeviceId.value = '' }
+    if (activeTab.value === 'data-center' && (tabKey !== activeTab.value || requestedDataSection && requestedDataSection !== dataCenterSection.value) && dataCenterRef.value?.canLeave && !await dataCenterRef.value.canLeave()) return
+    if (activeTab.value === 'data-center' && (tabKey !== activeTab.value || requestedDataSection && requestedDataSection !== dataCenterSection.value) && dataCenterSourceRef.value?.canLeave && !await dataCenterSourceRef.value.canLeave()) return
     if (activeTab.value === 'model-animations' && tabKey !== activeTab.value && deviceAnimationLinkRef.value && !await deviceAnimationLinkRef.value.canLeave()) return
-    if (activeTab.value === 'model-animations' && tabKey !== activeTab.value && motionActionEditorRef.value && !await motionActionEditorRef.value.canLeave()) return
     if (activeTab.value === 'disassembly-layout' && tabKey !== activeTab.value && !await manualDisassemblyPage.canLeave()) return
     if (activeTab.value === 'composer' && tabKey !== activeTab.value && groundEditorRef.value && !await groundEditorRef.value.canLeave()) return
+    if (!canSelectTab(tabKey) || requestedDataSection && !visibleDataCenterSubpages.value.some(page => page.key === requestedDataSection)) return
+    if (requestedDataSection) dataCenterSection.value = requestedDataSection
     activeTab.value = tabKey
+    if (tabKey === 'data-center') isDataCenterMenuOpen.value = true
     if (['models', 'disassembly-layout', 'model-animations'].includes(tabKey)) isModelsMenuOpen.value = true
     resizeComposerPreviewAfterLayout()
 }
@@ -4874,6 +5035,7 @@ watch(activeTab, async (tab) => {
         scheduleNativeScenePreview({ source: 'spatial', includeLayout: true })
     }
     if (tab === 'model-animations') {
+        await loadMotionFactories()
         await nextTick()
         await ensureMotionModelSelection()
     } else if (tab === 'models') {
@@ -4885,22 +5047,21 @@ watch(activeTab, async (tab) => {
     } else {
         disposeModelPreview()
     }
-    if (tab === 'point-monitor') {
-        startPointMonitor()
-    } else {
-        stopPointMonitor()
-    }
-    if (tab === 'points' && dataPoints.value.length === 0) {
-        loadDataPoints()
-    }
+    if (tab === 'data-center' && canAdminPage('settings.database')) void loadDataSources({ connectionsOnly: true, silent: true })
+})
+
+watch([isPointMappingWorkspace, isPointMonitorWorkspace], ([mapping, monitor]) => {
+    if (mapping && dataPoints.value.length === 0) void loadDataPoints()
+    if (monitor) startPointMonitor()
+    else stopPointMonitor()
 })
 
 watch(selectedDeviceForMonitor, () => {
-    if (activeTab.value === 'point-monitor') startPointMonitor()
+    if (isPointMonitorWorkspace.value) startPointMonitor()
 })
 
 watch(pointMonitorAutoRefresh, () => {
-    if (activeTab.value === 'point-monitor') startPointMonitor()
+    if (isPointMonitorWorkspace.value) startPointMonitor()
 })
 
 watch([
@@ -4908,6 +5069,7 @@ watch([
     platformSubpage,
     settingsSubpage,
     isAdminNavCollapsed,
+    isDataCenterMenuOpen,
     selectedDeviceForPoints,
     showPointAdvancedFields,
     selectedDeviceForMonitor,
@@ -4922,6 +5084,7 @@ watch([
     selectedWidgetPreviewId,
     isLineDevicePoolCollapsed,
     pointsSubpage,
+    dataCenterSection,
     () => lineDevicePoolDock.x,
     () => lineDevicePoolDock.y
 ], () => {
@@ -4931,6 +5094,7 @@ watch([
         platformSubpage: platformSubpage.value,
         settingsSubpage: settingsSubpage.value,
         isAdminNavCollapsed: isAdminNavCollapsed.value,
+        isDataCenterMenuOpen: isDataCenterMenuOpen.value,
         selectedDeviceForPoints: selectedDeviceForPoints.value,
         showPointAdvancedFields: showPointAdvancedFields.value,
         selectedDeviceForMonitor: selectedDeviceForMonitor.value,
@@ -4945,6 +5109,7 @@ watch([
         selectedWidgetPreviewId: selectedWidgetPreviewId.value,
         isLineDevicePoolCollapsed: isLineDevicePoolCollapsed.value,
         pointsSubpage: pointsSubpage.value,
+        dataCenterSection: dataCenterSection.value,
         lineDevicePoolDockX: lineDevicePoolDock.x,
         lineDevicePoolDockY: lineDevicePoolDock.y
     }))
@@ -4955,6 +5120,8 @@ watch([
 let adminPanelDisposed = false
 let adminPanelActive = true
 async function initializeAdminPanel() {
+    window.addEventListener(FACTORY_SCOPE_CHANGE_EVENT, syncDataCenterFactory)
+    window.addEventListener(FACTORY_DIRECTORY_CHANGE_EVENT, loadMotionFactories)
     window.addEventListener('beforeunload', handleUnsavedCanvasBeforeUnload)
     // Connection telemetry must not wait for unrelated model/config requests.
     void refreshAdminConnectionStatus()
@@ -4984,7 +5151,7 @@ async function initializeAdminPanel() {
     if (selectedDeviceForPoints.value !== 'all' && !devices.value.some(device => device.id === selectedDeviceForPoints.value)) {
         selectedDeviceForPoints.value = 'all'
     }
-    if (activeTab.value === 'points') await loadDataPoints()
+    if (isPointMappingWorkspace.value) await loadDataPoints()
     if (adminPanelDisposed) return
     ensureComposerSelection()
     syncComposerDraftFromSelection()
@@ -5001,7 +5168,7 @@ async function initializeAdminPanel() {
         ensureWorkshopMapLineSelection()
         scheduleNativeScenePreview({ source: 'spatial', includeLayout: true })
     }
-    if (activeTab.value === 'model-animations') await ensureMotionModelSelection()
+    if (activeTab.value === 'model-animations') { await loadMotionFactories(); await ensureMotionModelSelection() }
     else if (activeTab.value === 'models') await renderSelectedModelPreview()
     if (activeTab.value === 'disassembly-layout') await manualDisassemblyPage.ensureSelection()
 }
@@ -5025,7 +5192,7 @@ onActivated(async () => {
         nativeScenePreviewStatusTimer = setInterval(refreshAdminConnectionStatus, 3000)
     }
     if (isModelWorkspace.value) await renderSelectedModelPreview()
-    if (activeTab.value === 'point-monitor') startPointMonitor()
+    if (isPointMonitorWorkspace.value) startPointMonitor()
 })
 
 onDeactivated(() => {
@@ -5048,6 +5215,8 @@ onDeactivated(() => {
 })
 
 onUnmounted(() => {
+    window.removeEventListener(FACTORY_SCOPE_CHANGE_EVENT, syncDataCenterFactory)
+    window.removeEventListener(FACTORY_DIRECTORY_CHANGE_EVENT, loadMotionFactories)
     adminPanelDisposed = true
     manualDisassemblyPage.dispose()
     adminPanelActive = false
@@ -5143,6 +5312,8 @@ const lineSelectionSameTarget = computed(() => {
 })
 watch(() => selectedLineEditor.value?.id, () => {
     cancelLineDeviceDrag()
+    lineAlignmentMode.value = ''
+    lineAlignmentError.value = ''
     selectedLineDeviceIds.value = []
     lineSelectionFeedback.value = ''
 })
@@ -6331,31 +6502,36 @@ async function applyLineDeviceSpacing(manual = false) {
     } catch (error) { alert(error.message, { type: 'warning' }) }
 }
 
-async function alignLineLoadingFaces() {
-    if (!canAdminPage('lines', 'edit') || lineDeviceLayoutBusy.value) return
+async function openLineLoadingAlignment(mode) {
+    if (!canAdminPage('lines', 'edit') || lineDeviceLayoutBusy.value || !selectedLineEditor.value) return
+    if (lineLayoutDirty.value) return alert('请先保存产线的设备线、导轨和布局修改，再生成对齐预览。', { title: '请先保存产线' })
     cancelLineDeviceDrag()
-    const line=selectedLineEditor.value, layout=getLineLayout(line), baseZ=getLineBaseZ(line.id)
-    lineLoadingMeasuring.value=true
-    lineSelectionFeedback.value='正在测量进料口…'
+    lineAlignmentError.value = ''
+    lineAlignmentMode.value = mode
+}
+async function applyLineLoadingAlignment(payload) {
+    if (!canAdminPage('lines', 'edit') || lineGroupSaving.value) return
+    if (selectedLineEditor.value?.id !== payload.expectedLine?.id || lineLayoutDirty.value) {
+        lineAlignmentError.value = '产线或布局已改变，请重新生成预览。'
+        return
+    }
+    lineGroupSaving.value = true
+    lineAlignmentError.value = ''
     try {
-        const plan=[]
-        for (const lane of layout.lanes) {
-            const members=getDevicesBoundToLayoutItem('lane',lane.id,line)
-            if(members.length<2)continue
-            const rail=[...layout.rails].sort((a,b)=>Math.abs(a.offsetZ-lane.offsetZ)-Math.abs(b.offsetZ-lane.offsetZ))[0]
-            if(!rail || Math.abs(rail.offsetZ-lane.offsetZ)<.001)throw Error('请先为设备线配置一侧的小车导轨')
-            const rows=members.map(device=>({id:device.id,device,x:device.pos_x,z:numberOrDefault(device.pos_z,0)-baseZ,
-                binding:{type:'lane',item:lane},direction:Math.sign(rail.offsetZ-lane.offsetZ)}))
-            plan.push(...alignLoadingFaces(await measureLoadingFaces(rows,models.value)))
+        const result = await adminApi.applyLoadingAlignment(payload)
+        if (result?.success !== true || !Array.isArray(result.devices)) throw new Error(result?.error || '后端未确认整批保存')
+        for (const device of result.devices) {
+            patchDeviceLocally(device.id, device)
+            savedDeviceLayoutSnapshots.value[device.id] = deviceLayoutSnapshot(device)
         }
-        if(!plan.length)throw Error('请在同一设备线上放置至少两台设备')
-        if(selectedLineEditor.value?.id!==line.id)throw Error('产线已切换，未移动设备')
-        lineLoadingMeasuring.value=false
-        if(await saveLineDevicePlan(plan,line.id))lineSelectionFeedback.value='进料口已沿轨道对齐'
-    } catch(error) {
-        lineSelectionFeedback.value='对齐未完成'
-        await alert(error.message,{title:'进料口对齐',type:'warning'})
-    } finally {lineLoadingMeasuring.value=false}
+        lineSelectionFeedback.value = payload.mode === 'faces' ? '进料面前后对齐已保存，高度和间距未改变' : '送料高度对齐已保存，前后位置和间距未改变'
+        lineAlignmentMode.value = ''
+    } catch (error) {
+        lineAlignmentError.value = error.message || '保存失败，设备位置未改变。'
+    } finally {
+        lineGroupSaving.value = false
+        scheduleNativeScenePreview({ source: 'lines', includeLayout: true, deviceOverride: null })
+    }
 }
 
 async function saveLineDevicePlan(plan, lineId) {
@@ -6989,15 +7165,12 @@ function openSelectedWorkshopLineEditor() {
 
 const factoryTabs = computed(() => adminNavPages('factory', adminPageCatalog.value))
 const factoryTabKeys = computed(() => factoryTabs.value.map(tab => tab.key))
-const dataTabs = computed(() => adminNavPages('data', adminPageCatalog.value))
-const dataTabKeys = computed(() => dataTabs.value.map(tab => tab.key))
 const modelTabs = computed(() => adminNavPages('models', adminPageCatalog.value))
 const modelTabKeys = computed(() => modelTabs.value.map(tab => tab.key))
 const visibleModelTabs = computed(() => modelTabs.value.filter(tab => canSelectTab(tab.key)))
 const mainTabs = computed(() => adminMainTabs(adminPageCatalog.value))
 const visibleMainTabs = computed(() => mainTabs.value.filter(tab => tab.key === 'models' ? visibleModelTabs.value.length > 0 : canSelectTab(tab.key)))
 const visibleFactoryTabs = computed(() => factoryTabs.value.filter(tab => canSelectTab(tab.key)))
-const visibleDataTabs = computed(() => dataTabs.value.filter(tab => canSelectTab(tab.key)))
 
 function savePointsPage() {
     return canAdminPage('points', 'edit') ? saveAllPoints() : saveAlarmTexts()
@@ -7020,7 +7193,6 @@ async function openAdminSetupStep(step) {
         || step.settingsSubpage && !canAdminPage(`settings.${step.settingsSubpage}`)
         || step.platformSubpage && !canAdminPage(`platform.${step.platformSubpage}`)) return
     if (factoryTabKeys.value.includes(step.tab)) isFactoryMenuOpen.value = true
-    if (dataTabKeys.value.includes(step.tab)) isDataMenuOpen.value = true
     if (step.settingsSubpage) settingsSubpage.value = step.settingsSubpage
     if (step.platformSubpage) platformSubpage.value = step.platformSubpage
     selectAdminTab(step.tab)
@@ -7067,22 +7239,13 @@ async function openAdminSetupStep(step) {
                 </div>
             </nav>
             <div class="admin-connection-strip" aria-label="系统连接状态" aria-live="polite">
-                <span
-                    class="admin-connection-pill"
-                    :class="nativeScenePreviewStatusClass"
-                    :title="nativeScenePreviewStatus"
-                >
-                    <i aria-hidden="true"></i>
-                    {{ nativeSceneHeaderLabel }}
-                </span>
-                <span
-                    class="admin-connection-pill"
-                    :class="deviceConnectionSummary.tone"
-                    :title="deviceConnectionSummary.detail"
-                >
-                    <i aria-hidden="true"></i>
-                    {{ deviceConnectionSummary.label }}
-                </span>
+                <AdminConnectionStatus
+                    :unity-connected="nativeScenePreviewConnected"
+                    :unity-class="nativeScenePreviewStatusClass"
+                    :unity-label="nativeSceneHeaderLabel"
+                    :unity-detail="nativeScenePreviewStatus"
+                    :summary="deviceConnectionSummary"
+                />
                 <AdminReadingSettings />
                 <button type="button" class="admin-lock-button" aria-label="立即锁定" :title="`立即锁定 · ${adminSession.idleTimeoutMinutes} 分钟无操作后自动锁定；离开前请先保存`" @click="lockAdmin">
                     <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3M12 14v3"/></svg>
@@ -7147,43 +7310,6 @@ async function openAdminSetupStep(step) {
                         </div>
                     </Transition>
                 </div>
-                <div v-if="visibleDataTabs.length" class="nav-group" :class="{ active: dataTabKeys.includes(activeTab), open: isDataMenuOpen }">
-                    <button
-                        type="button"
-                        class="nav-item nav-group-toggle"
-                        :class="{ active: dataTabKeys.includes(activeTab) }"
-                        title="数据采集"
-                        @click="isDataMenuOpen = !isDataMenuOpen"
-                    >
-                        <span class="nav-icon" aria-hidden="true">
-                            <svg viewBox="0 0 24 24">
-                                <path v-for="(path, index) in navIconPaths.data" :key="index" :d="path" />
-                            </svg>
-                        </span>
-                        <span class="nav-label">数据采集</span>
-                        <span class="nav-chevron">⌄</span>
-                    </button>
-                    <Transition name="nav-submenu">
-                        <div v-if="isDataMenuOpen || isAdminNavCollapsed" class="nav-submenu">
-                            <button
-                                v-for="tab in visibleDataTabs"
-                                :key="tab.key"
-                                type="button"
-                                class="nav-item nav-subitem"
-                                :class="{ active: activeTab === tab.key }"
-                                :title="tab.label"
-                                @click="selectAdminTab(tab.key)"
-                            >
-                                <span class="nav-icon" aria-hidden="true">
-                                    <svg viewBox="0 0 24 24">
-                                        <path v-for="(path, index) in (navIconPaths[tab.key] || navIconPaths[tab.icon])" :key="index" :d="path" />
-                                    </svg>
-                                </span>
-                                <span class="nav-label">{{ tab.label }}</span>
-                            </button>
-                        </div>
-                    </Transition>
-                </div>
                 <template v-for="tab in visibleMainTabs.filter(tab => tab.key !== 'factories')" :key="tab.key">
                 <div v-if="tab.key === 'models'" class="nav-group" data-testid="model-library-nav"
                     :class="{ active: modelTabKeys.includes(activeTab), open: isModelsMenuOpen }">
@@ -7199,6 +7325,27 @@ async function openAdminSetupStep(step) {
                             <button v-for="child in visibleModelTabs" :key="child.key" type="button" class="nav-item nav-subitem"
                                 :class="{ active: activeTab === child.key }" :title="child.label" @click="selectAdminTab(child.key)">
                                 <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path v-for="(path, index) in (navIconPaths[child.key] || navIconPaths[child.icon])" :key="index" :d="path" /></svg></span>
+                                <span class="nav-label">{{ child.label }}</span>
+                            </button>
+                        </div>
+                    </Transition>
+                </div>
+                <div v-else-if="tab.key === 'data-center'" class="nav-group" data-testid="data-center-nav"
+                    :class="{ active: activeTab === 'data-center', open: isDataCenterMenuOpen }">
+                    <button type="button" class="nav-item nav-group-toggle" title="数据中心"
+                        :class="{ active: activeTab === 'data-center' }"
+                        :aria-expanded="isDataCenterMenuOpen || isAdminNavCollapsed" aria-controls="data-center-submenu"
+                        @click="isDataCenterMenuOpen = !isDataCenterMenuOpen">
+                        <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path v-for="(path, index) in navIconPaths.data" :key="index" :d="path" /></svg></span>
+                        <span class="nav-label">数据中心</span><span class="nav-chevron">⌄</span>
+                    </button>
+                    <Transition name="nav-submenu">
+                        <div v-if="isDataCenterMenuOpen || isAdminNavCollapsed" id="data-center-submenu" class="nav-submenu" aria-label="数据中心子菜单">
+                            <button v-for="child in visibleDataCenterSubpages" :key="child.key" type="button" class="nav-item nav-subitem"
+                                :class="{ active: activeTab === 'data-center' && child.key === (dataCenterSection === 'table-editor' ? 'tables' : dataCenterSection) }"
+                                :aria-current="activeTab === 'data-center' && child.key === (dataCenterSection === 'table-editor' ? 'tables' : dataCenterSection) ? 'page' : undefined"
+                                :title="child.label" :data-data-center-section="child.key" @click="openDataCenterSection(child.key)">
+                                <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path v-for="(path, index) in (navIconPaths[child.key === 'mapping' || child.key === 'alarms' ? 'points' : child.key === 'monitor' ? 'point-monitor' : child.key === 'tables' ? 'data-tables' : 'data-sources'])" :key="index" :d="path" /></svg></span>
                                 <span class="nav-label">{{ child.label }}</span>
                             </button>
                         </div>
@@ -7783,7 +7930,9 @@ async function openAdminSetupStep(step) {
                             <section class="line-planner-preview">
                                 <div v-if="selectedLineEditor" class="line-selection-toolbar" role="toolbar" aria-label="设备多选与间距">
                                     <span class="line-selection-hint">Ctrl / Shift 多选</span>
-                                    <button type="button" class="btn btn-sm" :disabled="lineDeviceLayoutBusy" title="按实际炉门和备料台进料端对齐，保持送料高度与设备间距" @click="alignLineLoadingFaces" v-permission="{ page: 'lines', action: 'edit' }">进料口对齐</button>
+                                    <button type="button" class="btn btn-sm" :disabled="lineDeviceLayoutBusy" title="仅调整前后位置；选择范围、核对预览后应用" @click="openLineLoadingAlignment('faces')" v-permission="{ page: 'lines', action: 'edit' }">进料面前后对齐</button>
+                                    <button type="button" class="btn btn-sm" :disabled="lineDeviceLayoutBusy" title="仅调整整体高度；选择基准设备、核对预览后应用" @click="openLineLoadingAlignment('heights')" v-permission="{ page: 'lines', action: 'edit' }">送料高度对齐</button>
+                                    <button v-if="selectedLineDeviceIds.length === 1 && canAdminPage('devices', 'edit')" type="button" class="btn btn-sm" :disabled="lineDeviceLayoutBusy" @click="openDeviceLoadingPorts(getLineDeviceById(selectedLineDeviceIds[0]))">进出料口微调</button>
                                     <span v-if="selectedLineDeviceIds.length">已选 {{ selectedLineDeviceIds.length }} 台</span>
                                     <button type="button" class="btn btn-sm" :disabled="lineDeviceLayoutBusy || !lineSelectionSameTarget || selectedLineDeviceIds.length < 3" title="固定两端，平均分配所选设备的中心间距" @click="applyLineDeviceSpacing()" v-permission="{ page: 'lines', action: 'edit' }">等间距</button>
                                     <label>中心距(m) <input v-model.number="lineDeviceGap" aria-label="设备中心间距（米）" type="number" min="0.01" step="0.5" :disabled="lineDeviceLayoutBusy || !lineSelectionSameTarget" /></label>
@@ -7994,6 +8143,19 @@ async function openAdminSetupStep(step) {
                     </div>
                 </div>
 
+                <LoadingAlignmentDialog v-if="lineAlignmentMode && selectedLineEditor" :key="lineAlignmentMode + selectedLineEditor.id"
+                    :mode="lineAlignmentMode" :line="selectedLineEditor" :layout="selectedLineLayout"
+                    :devices="[...selectedLineEditorDevices, ...selectedLineEditorCarts]" :models="models" :selected-ids="selectedLineDeviceIds"
+                    :busy="lineGroupSaving" :error="lineAlignmentError" :can-edit="canAdminPage('lines', 'edit')"
+                    @close="lineAlignmentMode = ''" @retry="lineAlignmentError = ''" @apply="applyLineLoadingAlignment" />
+                <Teleport to="body">
+                    <dialog v-if="loadingPortDevice && loadingPortDeviceModel" ref="deviceLoadingPortDialog" class="device-loading-port-dialog"
+                        aria-label="设备进出料口微调" @cancel.prevent="closeDeviceLoadingPorts">
+                        <header class="device-loading-port-heading"><div><h2>设备进出料口微调</h2><p>只调整「{{ loadingPortDevice.name }}」，同型号其他设备不变。</p></div><button type="button" class="btn" :disabled="deviceLoadingPortRef?.busy" aria-label="关闭设备进出料口微调" @click="closeDeviceLoadingPorts">关闭</button></header>
+                        <LoadingPortEditor ref="deviceLoadingPortRef" :model="loadingPortDeviceModel" :device="loadingPortDevice" :confirm="confirmDeviceLoadingPorts" @saved="applySavedLoadingPorts" />
+                    </dialog>
+                </Teleport>
+
                 <!-- ======== 设备管理 ======== -->
                 <div v-if="activeTab === 'devices'" class="tab-content">
                     <h2>设备管理</h2>
@@ -8177,6 +8339,7 @@ async function openAdminSetupStep(step) {
                                         </div>
                                     </td>
                                     <td>
+                                        <button type="button" @click="openDeviceLoadingPorts(d)" class="btn btn-sm" v-permission="{ page: 'devices', action: 'edit' }">进出料口微调</button>
                                         <button @click="openEditDevice(d)" class="btn btn-sm" v-permission="{ page: controlPermissionPage, action: 'edit' }">编辑</button>
                                         <button @click="deleteDevice(d.id)" class="btn btn-danger btn-sm" v-permission="{ page: controlPermissionPage, action: 'delete' }">删除</button>
                                     </td>
@@ -8218,6 +8381,7 @@ async function openAdminSetupStep(step) {
                                         </div>
                                     </td>
                                     <td>
+                                        <button type="button" @click="openDeviceLoadingPorts(d)" class="btn btn-sm" v-permission="{ page: 'devices', action: 'edit' }">进出料口微调</button>
                                         <button @click="openEditDevice(d)" class="btn btn-sm" v-permission="{ page: controlPermissionPage, action: 'edit' }">编辑</button>
                                         <button @click="deleteDevice(d.id)" class="btn btn-danger btn-sm" v-permission="{ page: controlPermissionPage, action: 'delete' }">删除</button>
                                     </td>
@@ -8265,7 +8429,7 @@ async function openAdminSetupStep(step) {
                 <div v-if="isModelWorkspace" class="tab-content" :class="{ 'model-animation-workspace': activeTab === 'model-animations' }" :data-testid="activeTab === 'model-animations' ? 'model-animation-page' : 'model-management-page'">
                     <template v-if="activeTab === 'model-animations'">
                         <div class="manual-layout-page-heading">
-                            <div><h2>动作动画</h2><p class="desc">{{ motionWorkspaceMode === 'live' ? '按设备绑定采集点位，保存后同步 Unity。' : motionWorkspaceMode === 'transfer' ? '选择设备编排工艺预览。' : '配置模型部件与工艺动作。' }}</p></div>
+                            <div><h2>动作动画</h2><p class="desc">{{ motionWorkspaceMode === 'live' ? '按现场层级选设备，从数据中心选数据，设置动作触发条件并同步 Unity。' : motionWorkspaceMode === 'transfer' ? '选择设备编排联动预览。' : '配置模型部件动作。' }}</p></div>
                             <label v-if="motionWorkspaceMode === 'parts'" class="manual-layout-model-picker">选择模型
                                 <select :value="selectedPreviewModelId" aria-label="选择动作动画模型" :disabled="modelBindingSaving || modelNameSaving" @change="changeMotionModel">
                                     <option v-if="!motionModelOptions.length" value="">暂无可配置的设备模型</option>
@@ -8276,7 +8440,6 @@ async function openAdminSetupStep(step) {
                         <div class="motion-workspace-toolbar">
                         <nav class="motion-workspace-modes" aria-label="动作动画模式">
                             <button type="button" :class="{ active: motionWorkspaceMode === 'live' }" :aria-pressed="motionWorkspaceMode === 'live'" @click="changeMotionWorkspace('live')">实时联动</button>
-                            <button type="button" :class="{ active: motionWorkspaceMode === 'authoring' }" :aria-pressed="motionWorkspaceMode === 'authoring'" @click="changeMotionWorkspace('authoring')">工艺动作</button>
                             <button type="button" :class="{ active: motionWorkspaceMode === 'parts' }" :aria-pressed="motionWorkspaceMode === 'parts'" @click="changeMotionWorkspace('parts')">部件动作</button>
                             <button type="button" :class="{ active: motionWorkspaceMode === 'transfer' }" :aria-pressed="motionWorkspaceMode === 'transfer'" @click="changeMotionWorkspace('transfer')">设备联动</button>
                         </nav>
@@ -8288,6 +8451,11 @@ async function openAdminSetupStep(step) {
                         <ModelPlacementMenu ref="modelPlacementMenuRef" :busy="modelPlacementSaving || modelNameSaving || modelUploading" @change="saveModelPlacement" />
                         <h2>3D 模型库</h2>
                         <p class="desc">管理模型资产、拆解检查与部位绑定。</p>
+                        <label v-if="modelLibraryStep === 'ports'" class="loading-port-model-picker">选择模型
+                            <select :value="selectedPreviewModelId" aria-label="选择进出料口模型" :disabled="modelLoadingPortRef?.busy" @change="changeLoadingPortModel">
+                                <option v-for="model in loadingPortModelOptions" :key="model.id" :value="model.id">{{ model.name || model.id }}</option>
+                            </select>
+                        </label>
                     </template>
 
                     <div v-if="activeTab === 'models'" class="secondary-page-nav-shell model-step-nav-shell">
@@ -8313,9 +8481,11 @@ async function openAdminSetupStep(step) {
                     </div>
 
                     <LineEquipmentSequence v-if="activeTab === 'model-animations' && motionWorkspaceMode === 'transfer'" :models="models" :lines="lines" :devices="devices" :workshops="workshops" />
-                    <DeviceAnimationLink v-if="activeTab === 'model-animations' && motionWorkspaceMode === 'live'" ref="deviceAnimationLinkRef" :models="models" :devices="devices" :confirm="confirm" />
-                    <MotionActionEditor v-if="activeTab === 'model-animations' && motionWorkspaceMode === 'authoring'" ref="motionActionEditorRef" :models="motionModelOptions" :confirm="confirm" @saved="updated => { models = models.map(m => m.id === updated.id ? updated : m) }" />
-                    <div v-if="activeTab !== 'model-animations' || motionWorkspaceMode === 'parts'" class="model-library-layout" :class="{ 'inspection-workspace': modelLibraryStep === 'inspection', 'animation-workspace': activeTab === 'model-animations' }">
+                    <p v-if="activeTab === 'model-animations' && motionWorkspaceMode === 'live' && motionFactoryError" role="alert">{{ motionFactoryError }} <button type="button" class="btn btn-sm" @click="loadMotionFactories">重试</button></p>
+                    <DeviceAnimationLink v-if="activeTab === 'model-animations' && motionWorkspaceMode === 'live' && motionFactoryId" ref="deviceAnimationLinkRef" :models="models" :devices="devices" :workshops="workshops" :lines="lines" :factories="motionFactories" :factory-id="motionFactoryId" :request-factory-switch="requestMotionFactorySwitch" :confirm="confirm" />
+                    <LoadingPortEditor v-if="activeTab === 'models' && modelLibraryStep === 'ports' && activePreviewModel" ref="modelLoadingPortRef"
+                        :model="activePreviewModel" :confirm="confirm" @saved="applySavedLoadingPorts" />
+                    <div v-if="activeTab === 'model-animations' ? motionWorkspaceMode === 'parts' : modelLibraryStep !== 'ports'" class="model-library-layout" :class="{ 'inspection-workspace': modelLibraryStep === 'inspection', 'animation-workspace': activeTab === 'model-animations' }">
                         <section class="model-library-main">
                             <section v-if="activeTab === 'models'" v-show="modelLibraryStep === 'library'" class="model-library-step-panel">
                                 <div class="model-step-heading">
@@ -8379,6 +8549,7 @@ async function openAdminSetupStep(step) {
                                             <td>{{ getModelBindingCount(m) }}</td>
                                             <td :title="m.file_path || '（内置）'">{{ m.file_path || '（内置）' }}</td>
                                             <td>
+                                                <button v-if="(m.placement_level || 'device') === 'device' && m.file_path && !isEnvironmentModel(m)" type="button" class="btn btn-sm" @click.stop="openModelLoadingPorts(m)">进出料口</button>
                                                 <button v-if="!m.is_builtin || DELETABLE_RETIRED_MODEL_IDS.has(m.id)" @click.stop="deleteModel(m.id)" class="btn btn-danger btn-sm" v-permission="{ page: controlPermissionPage, action: 'delete' }">删除</button>
                                                 <span v-else style="color:#888">系统内置</span>
                                             </td>
@@ -8915,14 +9086,19 @@ async function openAdminSetupStep(step) {
                     </div>
                 </div>
 
+                <DataCenterWorkspace v-if="activeTab === 'data-center'" ref="dataCenterRef" :factory-id="dataCenterFactoryId" :devices="devices" :active-section="dataCenterSection"
+                    :sections="visibleDataCenterSubpages" :can-edit="canAdminPage('settings.database', 'edit')"
+                    :can-delete="canAdminPage('settings.database', 'delete')" :confirm="confirm" @navigate="selectDataCenterSection">
+                    <DataSourceWorkspace v-if="['sources','table-editor'].includes(dataCenterSection) && canAdminPage('settings.database')" ref="dataCenterSourceRef"
+                        :mode="dataCenterSection === 'table-editor' ? 'datasets' : 'connections'"
+                        :connections="dataSourceConnections" :draft="dataSourceEditor"
+                        :health="dataSourceTestHealth" :busy="dataSourceBusy" :dirty="dataSourceDirty"
+                        :message="dataSourceMessage" permission-page="settings.database" :confirm="confirm" :alert="alert"
+                        @create="resetDataSourceEditor" @edit="editDataSource" @test="testExternalDataSource"
+                        @save="saveExternalDataSource" @remove="removeExternalDataSource" @open-plc="selectAdminTab('devices')" />
                 <!-- ======== 点位映射 ======== -->
-                <div v-if="activeTab === 'points'" class="tab-content" data-testid="points-workspace">
-                    <nav class="points-subpage-tabs" role="tablist" aria-label="点位配置">
-                        <button v-for="page in visiblePointsSubpages" :key="page.key" :id="`points-tab-${page.key}`"
-                            type="button" role="tab" :aria-selected="pointsSubpage === page.key" :aria-controls="`points-panel-${page.key}`"
-                            :tabindex="pointsSubpage === page.key ? 0 : -1" :class="{ active: pointsSubpage === page.key }"
-                            @click="selectPointsSubpage(page.key)" @keydown="pointsTabKeydown">{{ page.label }}</button>
-                    </nav>
+                <div v-if="isPointMappingWorkspace" class="tab-content" data-testid="points-workspace">
+
                     <p class="desc">{{ pointsSubpage === 'mapping' ? '配置点位名称、PLC 地址和采集周期。' : '配置报警点位与报警文本。' }}</p>
 
                     <div class="form-row points-filter-toolbar">
@@ -8947,7 +9123,7 @@ async function openAdminSetupStep(step) {
                     </div>
 
                     <div v-if="selectedDeviceForPoints">
-                        <section id="points-panel-mapping" role="tabpanel" aria-labelledby="points-tab-mapping" v-show="pointsSubpage === 'mapping'">
+                        <section id="points-panel-mapping" v-show="pointsSubpage === 'mapping'">
                         <div class="point-toolbar">
                             <button @click="showPointAdvancedFields = !showPointAdvancedFields" class="btn btn-sm">
                                 {{ showPointAdvancedFields ? '收起换算字段' : '显示换算字段' }}
@@ -9072,7 +9248,7 @@ async function openAdminSetupStep(step) {
 
                         </section>
 
-                        <section id="points-panel-alarms" role="tabpanel" aria-labelledby="points-tab-alarms" v-show="pointsSubpage === 'alarms'" class="alarm-config-card">
+                        <section id="points-panel-alarms" v-show="pointsSubpage === 'alarms'" class="alarm-config-card">
                             <header class="alarm-config-header">
                                 <div>
                                     <h3>报警点位与报警文本</h3>
@@ -9226,7 +9402,7 @@ async function openAdminSetupStep(step) {
                 </div>
 
                 <!-- ======== 点位实时监视 ======== -->
-                <div v-if="activeTab === 'point-monitor'" class="tab-content">
+                <div v-if="isPointMonitorWorkspace" data-testid="data-center-monitor" class="tab-content">
                     <h2>PLC 点位实时监视</h2>
                     <p class="desc">查看已配置 PLC 点位的实时值、质量、标准地址和最近读取时间。这里读取的是后端采集缓存，不会因为刷新页面而强行插队读取 PLC。</p>
 
@@ -9339,10 +9515,12 @@ async function openAdminSetupStep(step) {
                     </div>
                 </div>
 
+                </DataCenterWorkspace>
+
                 <!-- ======== 系统设置 ======== -->
                 <div v-if="activeTab === 'settings'" class="tab-content">
                     <h2>系统设置</h2>
-                    <p class="desc">配置运行、数据连接和系统维护。</p>
+                    <p class="desc">配置运行和系统维护；数据源、数据表与点位配置已统一到数据中心。</p>
 
                     <div class="secondary-page-nav-shell">
                         <nav class="secondary-page-nav" aria-label="系统设置分类">
@@ -9452,7 +9630,7 @@ async function openAdminSetupStep(step) {
 
                         <!-- ===== 数据库部署配置 ===== -->
                         <div v-show="settingsSubpage === 'database'" class="settings-section secondary-page-panel">
-                            <nav class="database-section-tabs" role="tablist" aria-label="数据连接与备份分类">
+                            <nav class="database-section-tabs" role="tablist" aria-label="数据库与备份分类">
                                 <button v-for="(tab, index) in databaseSectionTabs" :id="`database-tab-${tab.key}`" :key="tab.key"
                                     type="button" role="tab" :aria-selected="databaseSection === tab.key"
                                     :aria-controls="`database-panel-${tab.key}`" :tabindex="databaseSection === tab.key ? 0 : -1"
@@ -9510,14 +9688,6 @@ async function openAdminSetupStep(step) {
                             </div>
 
                             </section>
-                            <div v-show="databaseSection === 'sources'" id="database-panel-sources" role="tabpanel" aria-labelledby="database-tab-sources">
-                                <DataSourceWorkspace :connections="dataSourceConnections" :draft="dataSourceEditor"
-                                    :health="dataSourceTestHealth" :busy="dataSourceBusy" :dirty="dataSourceDirty"
-                                    :message="dataSourceMessage" :permission-page="controlPermissionPage" :confirm="confirm" :alert="alert"
-                                    @create="resetDataSourceEditor" @edit="editDataSource" @test="testExternalDataSource"
-                                    @save="saveExternalDataSource" @remove="removeExternalDataSource" @open-plc="selectAdminTab('devices')" />
-                            </div>
-
                             <div v-show="databaseSection === 'schedule'" id="database-panel-schedule" role="tabpanel" aria-labelledby="database-tab-schedule" class="database-backup-panel database-auto-backup-panel">
                                 <div class="database-backup-header">
                                     <div>
@@ -13140,7 +13310,7 @@ button:enabled:active {
 .model-library-main {
     min-width: 0;
 }
-.model-step-nav-shell .secondary-page-nav { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.model-step-nav-shell .secondary-page-nav { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .model-step-nav-shell .secondary-page-nav-item:disabled { color: #a1a1a6; background: rgba(248, 248, 250, .72); border-color: rgba(0, 0, 0, .035); box-shadow: none; cursor: not-allowed; opacity: .62; transform: none; }
 .model-step-nav-shell .secondary-page-nav-item:disabled:hover { color: #a1a1a6; background: rgba(248, 248, 250, .72); border-color: rgba(0, 0, 0, .035); box-shadow: none; transform: none; }
 .model-library-step-panel { animation: secondary-page-in 180ms cubic-bezier(.22, 1, .36, 1); }
@@ -14148,4 +14318,8 @@ button:enabled:active {
     .line-placement-pending-action { display: none; }
     .workshop-line-placement-dock { top: 10px; right: 10px; width: min(220px, calc(100% - 20px)); }
 }
+</style>
+
+<style scoped>
+.device-loading-port-dialog{width:min(1250px,calc(100vw - 32px));max-height:92vh;padding:18px;border:1px solid #dce5ef;border-radius:16px;background:#f7f9fc;color:#30445c;overflow:auto;box-shadow:0 28px 90px #10254145}.device-loading-port-dialog::backdrop{background:#13283b65;backdrop-filter:blur(3px)}.device-loading-port-heading{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:4px 4px 16px}.device-loading-port-heading h2{font-size:20px;margin:0 0 7px}.device-loading-port-heading p{font-size:12px;color:#7d90a5;margin:0}.loading-port-model-picker{display:flex;align-items:center;gap:10px;justify-content:flex-end;margin-bottom:12px;font-size:12px;color:#6a7d93}.loading-port-model-picker select{max-width:360px;padding:9px 12px;border:1px solid #d9e3ef;background:white;color:#30445c;border-radius:8px}
 </style>

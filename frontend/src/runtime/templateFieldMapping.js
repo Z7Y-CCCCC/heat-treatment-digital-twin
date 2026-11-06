@@ -37,19 +37,23 @@ export function suggestTemplateFields(source, fields, expectedType = '') {
 }
 
 export function templateFieldBindings(document) {
-  return (document.widgets || []).flatMap(widget => {
+  const entries = [...(document.widgets || []).map(widget => ({ widget, templateId: '' })), ...(document.tooltipTemplates?.templates || []).flatMap(template => (template.widgets || []).map(widget => ({ widget, templateId: template.id })))]
+  return entries.flatMap(({ widget, templateId }) => {
     const data = widget.data || {}
-    if (data.mode === 'dataset') return [{key:`${widget.id}:dataset`,widgetId:widget.id,label:widget.title || widget.id,kind:'dataset',source:clone(data)}]
-    if (data.mode === 'http_api') return [{ key: `${widget.id}:http`, widgetId: widget.id, label: widget.title || widget.id, kind: 'http', source: clone(data) }]
+    const prefix = templateId ? `${templateId}/` : ''
+    const owner = templateId ? { templateId } : {}
+    if (data.mode === 'dataset') return [{key:`${prefix}${widget.id}:dataset`,widgetId:widget.id,...owner,label:widget.title || widget.id,kind:'dataset',source:clone(data)}]
+    if (data.mode === 'http_api') return [{ key: `${prefix}${widget.id}:http`, widgetId: widget.id,...owner, label: widget.title || widget.id, kind: 'http', source: clone(data) }]
     if (data.mode !== 'database') return []
-    return (data.datasets?.length ? data.datasets : [data]).map((source, index) => ({ key: `${widget.id}:${index}`, widgetId: widget.id, index, label: `${widget.title || widget.id} / ${source.label || source.alias || index + 1}`, kind: 'database', source: clone(source) }))
+    return (data.datasets?.length ? data.datasets : [data]).map((source, index) => ({ key: `${prefix}${widget.id}:${index}`, widgetId: widget.id,...owner, index, label: `${widget.title || widget.id} / ${source.label || source.alias || index + 1}`, kind: 'database', source: clone(source) }))
   })
 }
 
 export function applyTemplateFieldBindings(document, bindings) {
   const result = clone(document)
   for (const binding of bindings) {
-    const widget = result.widgets.find(row => row.id === binding.widgetId)
+    const widgets = binding.templateId ? result.tooltipTemplates?.templates?.find(template => template.id === binding.templateId)?.widgets : result.widgets
+    const widget = widgets?.find(row => row.id === binding.widgetId)
     if (!widget) throw new Error('模板组件已改变，请重新载入')
     if (binding.kind === 'http' || binding.kind === 'dataset') Object.assign(widget.data, binding.target)
     else {

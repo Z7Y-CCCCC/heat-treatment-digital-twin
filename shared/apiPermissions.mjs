@@ -40,6 +40,9 @@ export function apiPermission(path, method = 'GET', body) {
     if (method === 'POST' && /\/(preview|preview-http|inspect-http)$/.test(path)) return read(pages)
     return any('admin', p('settings.database', action))
   }
+  if (resource('data-center')) return safe
+    ? read(['settings.database', 'points', 'points.alarms', 'point-monitor', 'platform.designer', 'platform.map', 'model-animations'])
+    : any('admin', p('settings.database', action))
   if (resource('project-bundles')) return 'admin' // whole-project import/export affects every page
   if (resource('settings')) {
     if (path === '/api/settings/loading-experience/config' && method === 'PATCH') return any('admin', p('platform.loading', 'edit'))
@@ -67,6 +70,8 @@ export function apiPermission(path, method = 'GET', body) {
     return safe ? read(previewPages) : any('admin', ...previewPages.map(k => p(k, 'edit')))
   }
   if (resource('devices')) {
+    if (path === '/api/devices/loading-alignment' && method === 'PUT') return any('admin', p('lines', 'edit'), p('composer', 'edit'))
+    if (/\/loading-ports$/.test(path)) return safe ? read(['devices', 'models', 'lines', 'composer'], true) : any('admin', p('devices', 'edit'))
     if (/\/animations$/.test(path)) return safe ? read(['model-animations']) : any('admin', p('model-animations', 'edit'))
     if (safe) return read(spatial, true)
     if (/\/inspection$/.test(path)) return any('admin', p('disassembly-layout', 'edit'))
@@ -84,6 +89,7 @@ export function apiPermission(path, method = 'GET', body) {
     return safe ? read(spatial, true) : any('admin', p('workshops', action))
   }
   if (resource('models')) {
+    if (/\/loading-ports$/.test(path)) return safe ? read(['models', 'devices', 'lines', 'composer'], true) : any('admin', p('models', 'edit'))
     if (safe) return read(spatial, true)
     if (path === '/api/models/asset-export' && method === 'POST') return read(spatial, true)
     if (path === '/api/models/asset-inspect' && method === 'POST') return any('admin', p('models', 'edit'), p('model-animations', 'edit'))

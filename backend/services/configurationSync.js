@@ -5,8 +5,14 @@ function configurationMutation(resource, server = () => global.wsServer) {
         if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)) return next();
         res.once('finish', () => {
             if (res.statusCode < 200 || res.statusCode >= 300) return;
+            // Narrow committed routes can identify their actual resource. This
+            // is trusted server state, never an option accepted from the body.
+            // Action-input edits must not also invalidate the whole device tree.
+            const committedResource = res.locals.configurationResource || resource;
+            const deviceId = res.locals.configurationDeviceId;
             server()?.broadcast?.('configuration_changed', {
-                factoryId: req.factoryId, resource, reloadRequired: true, timestamp: Date.now()
+                factoryId: req.factoryId, resource: committedResource,
+                ...(deviceId ? { deviceId } : {}), reloadRequired: true, timestamp: Date.now()
             });
         });
         next();

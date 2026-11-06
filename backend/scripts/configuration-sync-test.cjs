@@ -45,7 +45,15 @@ async function main() {
         await changed(() => api('/api/lines', 'POST', { id: 'line_sync', name: '同步线', workshop_id: 'ws_sync' }, id), configChange('lines', id), 'line creation invalidates its own factory');
         await changed(() => api('/api/devices', 'POST', { id: 'sync_device', name: '同步设备', line_id: 'line_sync' }, id), configChange('devices', id), 'device creation invalidates geometry, not just motion');
         await changed(() => api('/api/workshops/ws_sync', 'PUT', { name: '同步后车间' }, id), configChange('workshops', id), 'workshop rename broadcasts without refresh');
+        const layoutOffset = events.length;
         await changed(() => api('/api/devices/sync_device', 'PUT', { name: '同步设备', line_id: 'line_sync', pos_x: 12 }, id), configChange('devices', id), 'saved layout position broadcasts without refresh');
+        await new Promise(resolve => setTimeout(resolve, 250));
+        const layoutEvents = events.slice(layoutOffset).filter(event => event.type === 'configuration_changed');
+        assert.equal(layoutEvents.length, 1, 'ordinary device layout remains one full-device committed invalidation');
+        assert.equal(layoutEvents[0].payload.resource, 'devices');
+        assert.equal(layoutEvents[0].payload.factoryId, id);
+        assert.equal(layoutEvents[0].payload.reloadRequired, true);
+        checks.push('narrow action notification override does not downgrade real device layout reloads');
         const settingsOffset = events.length;
         await api('/api/settings', 'PUT', { native_quality_profile: 'balanced', group_portal_config: {} }, id);
         await waitUntil(() => events.slice(settingsOffset).find(e => e.type === 'configuration_changed' && e.payload.factoryId === id && e.payload.settings?.native_quality_profile), 5000, 'scoped settings event');

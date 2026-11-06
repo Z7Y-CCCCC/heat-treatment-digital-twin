@@ -7,10 +7,39 @@ const { getBuiltinModels } = require('../services/builtinModels');
 const { TRANSFORM_FIELDS, LAYOUT_CONFIG_FIELDS } = require('../../shared/deviceAuthoring.mjs');
 const { normalizeDeviceGround } = require('../../shared/industrialGround.mjs');
 const { loadDeviceAnimations, validateDeviceAnimations, publicDeviceAnimations } = require('../services/deviceAnimations');
+const { loadDeviceLoadingPorts, publicDeviceLoadingPorts, saveDeviceLoadingPorts, normalizeInstanceLoadingPorts } = require('../services/loadingPorts');
+const { saveLoadingAlignment } = require('../services/deviceLoadingAlignment');
+
+router.put('/loading-alignment', async (req, res) => {
+    try {
+        const db = await getDb();
+        const devices = await db.transaction(tx => saveLoadingAlignment(tx, req.body, req.factoryId, getDbStatus().type));
+        for (const device of devices) broadcastDeviceConfigurationChanged(device.id, device.instance_config);
+        res.json({ success: true, devices: devices.map(publicDevice) });
+    } catch (error) { res.status(error.statusCode || 400).json({ error: error.message, code: error.code }); }
+});
+
+router.get('/:id/loading-ports', async (req, res) => {
+    try {
+        const loaded = await loadDeviceLoadingPorts(await getDb(), req.params.id, req.factoryId);
+        res.setHeader('Cache-Control', 'no-store'); res.json(publicDeviceLoadingPorts(loaded, publicDevice));
+    } catch (error) { res.status(error.statusCode || 400).json({ error: error.message, code: error.code }); }
+});
+router.put('/:id/loading-ports', async (req, res) => {
+    try {
+        const db = await getDb();
+        const saved = await db.transaction(async tx => {
+            const loaded = await loadDeviceLoadingPorts(tx, req.params.id, req.factoryId);
+            return saveDeviceLoadingPorts(tx, loaded, req.body, req.factoryId, getDbStatus().type);
+        });
+        broadcastDeviceConfigurationChanged(saved.device.id, saved.instance);
+        res.json(publicDeviceLoadingPorts(saved, publicDevice));
+    } catch (error) { res.status(error.statusCode || 400).json({ error: error.message, code: error.code }); }
+});
 
 router.get('/:id/animations', async (req, res) => {
     try { res.json(publicDeviceAnimations(await loadDeviceAnimations(await getDb(), req.params.id, req.factoryId))); }
-    catch (error) { res.status(error.statusCode || 400).json({ error: error.message }); }
+    catch (error) { res.status(error.statusCode || error.status || 400).json({ error: error.message }); }
 });
 router.put('/:id/animations', async (req, res) => {
     try {
@@ -20,12 +49,16 @@ router.put('/:id/animations', async (req, res) => {
             const config = validateDeviceAnimations(loaded, req.body);
             // Re-resolve point ownership and model identity within the transaction.
             const instance = { ...loaded.instance, animationBindings: config };
-            await tx.run('UPDATE devices SET instance_config=? WHERE id=?', [JSON.stringify(instance), loaded.device.id]);
+            const result = await tx.run('UPDATE devices SET instance_config=? WHERE id=? AND COALESCE(instance_config,\'\')=?', [JSON.stringify(instance), loaded.device.id, loaded.device.instance_config || '']);
+            if (!result.changes && !result.affectedRows) throw Object.assign(new Error('设备配置已更新，请重新读取后保存'), { statusCode:409 });
             return publicDeviceAnimations(await loadDeviceAnimations(tx, req.params.id, req.factoryId));
         });
-        global.wsServer?.broadcast?.('configuration_changed', { factoryId: req.factoryId, resource: 'device-animations', reloadRequired: true, timestamp: Date.now() });
+        // The outer committed-write middleware emits one authoritative action
+        // invalidation on finish; do not also emit a whole-device reload.
+        res.locals.configurationResource = 'device-animations';
+        res.locals.configurationDeviceId = req.params.id;
         res.json({ success: true, ...saved });
-    } catch (error) { res.status(error.statusCode || 400).json({ error: error.message }); }
+    } catch (error) { res.status(error.statusCode || error.status || 400).json({ error: error.message }); }
 });
 
 // Narrow authoring endpoints deliberately preserve model identity, PLC network
@@ -146,8 +179,7 @@ function boolWithDefault(value, defaultValue) {
 }
 
 function stringifyJson(value) {
-    if (typeof value === 'string') return value;
-    return JSON.stringify(value || {});
+    return JSON.stringify(normalizeInstanceLoadingPorts(value));
 }
 
 function parseJson(value) {

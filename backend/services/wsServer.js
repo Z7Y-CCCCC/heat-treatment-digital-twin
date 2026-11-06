@@ -68,6 +68,13 @@ class WsServer {
         this.dashboardContext = null;
         this.sceneProjection = null;
         this.sceneProjectionOwner = null;
+        this.motionInputResolver = null;
+    }
+
+    setMotionInputResolver(resolver) {
+        this.motionInputResolver?.dispose();
+        this.motionInputResolver = resolver;
+        resolver?.start(devices => this._broadcastDeviceData(devices), () => this.clients.size > 0);
     }
 
     /**
@@ -255,6 +262,12 @@ class WsServer {
     broadcastDeviceData(deviceDataArray) {
         if (this.clients.size === 0) return;
         if (!Array.isArray(deviceDataArray) || deviceDataArray.length === 0) return;
+        const devices = this.motionInputResolver ? this.motionInputResolver.decorate(deviceDataArray) : deviceDataArray;
+        return this._broadcastDeviceData(devices);
+    }
+
+    _broadcastDeviceData(deviceDataArray) {
+        if (this.clients.size === 0 || !Array.isArray(deviceDataArray) || !deviceDataArray.length) return;
 
         const message = {
             type: 'realtime_frame',
@@ -285,6 +298,7 @@ class WsServer {
      * 这样 Unity 原生客户端无需轮询或手动按 F5。
      */
     broadcast(type, payload = {}) {
+        if (['configuration_changed','device_configuration_changed','model_metadata_changed'].includes(type)) this.motionInputResolver?.invalidate();
         if (this.clients.size === 0) return 0;
 
         const message = { type, payload };
@@ -299,6 +313,7 @@ class WsServer {
     }
 
     broadcastToRole(type, payload = {}, role = '') {
+        if (type === 'model_metadata_changed') this.motionInputResolver?.invalidate();
         if (this.clients.size === 0) return 0;
         const normalizedRole = String(role || '').trim().toLowerCase();
         const message = { type, payload };
@@ -327,6 +342,8 @@ class WsServer {
      * 关闭 WebSocket 服务
      */
     close() {
+        this.motionInputResolver?.dispose();
+        this.motionInputResolver = null;
         for (const client of this.clients) {
             if (client.sessionCheckTimer) clearInterval(client.sessionCheckTimer);
             this.outbound.get(client)?.dispose();

@@ -61,7 +61,7 @@ test('header removes the long title and ends with an accessible icon-only lock f
   const panel = await source('../src/views/AdminPanel.vue')
   const header = panel.slice(panel.indexOf('<header class="admin-header"'), panel.indexOf('</header>', panel.indexOf('<header class="admin-header"')))
   assert.doesNotMatch(header, /数字孪生后台配置管理|<h1/)
-  assert.match(header, /deviceConnectionSummary\.label[\s\S]*class="admin-lock-button" aria-label="立即锁定"[\s\S]*<AdminHelpGuide[^>]*\/\s*>\s*<\/div>\s*$/)
+  assert.match(header, /<AdminConnectionStatus[\s\S]*:summary="deviceConnectionSummary"[\s\S]*class="admin-lock-button" aria-label="立即锁定"[\s\S]*<AdminHelpGuide[^>]*\/\s*>\s*<\/div>\s*$/)
   const lock = header.match(/<button[^>]*class="admin-lock-button"[\s\S]*?<\/button>/)?.[0]
   assert.ok(lock)
   assert.match(lock, /@click="lockAdmin"/)
@@ -192,7 +192,7 @@ test('factory hierarchy is visible in asset editors and model levels cannot be a
   const panel = await source('../src/views/AdminPanel.vue')
   const hierarchy = await source('../src/views/admin/components/AssetHierarchyBar.vue')
   assert.match(panel, /<AssetHierarchyBar[\s\S]*?:workshop-id="assetHierarchyWorkshopId"[\s\S]*?:device-id="assetHierarchyDeviceId"/)
-  assert.match(panel, /assetHierarchyTabs = new Set\(\['platform', 'composer', 'workshops', 'lines', 'devices', 'mobile-devices', 'points', 'point-monitor', 'models', 'settings'\]\)/)
+  assert.match(panel, /assetHierarchyTabs = new Set\(\['platform', 'composer', 'workshops', 'lines', 'devices', 'mobile-devices', 'points', 'point-monitor', 'data-center', 'models', 'settings'\]\)/)
   assert.match(hierarchy, /aria-label="当前编辑范围"/)
   assert.doesNotMatch(hierarchy, /资产归属|工厂 → 车间 → 产线 → 设备|asset-hierarchy-note|modelLibrary/)
   assert.doesNotMatch(hierarchy, /管理工厂<\/button>/)

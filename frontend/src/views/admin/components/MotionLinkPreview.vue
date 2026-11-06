@@ -3,13 +3,14 @@ import { ref,watch,onMounted,onUnmounted } from 'vue'
 import * as T from 'three'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { CadMotionScene } from '../../../three/CadMotionScene.js'
-import { PortableMotionPlayer,receiveMotionSignal,stepMotionSignal } from '../../../three/PortableMotionPlayer.js'
+import { PortableMotionPlayer,receiveMotionSignal,stepMotionSignal,motionTestValue } from '../../../three/PortableMotionPlayer.js'
+import { captureMotionEndpointDisplayStates,restoreMotionEndpointDisplayStates } from '../../../three/motionEndpointDisplayState.js'
 import { restoreGltfNodeNames } from '../../../three/gltfNodeIdentity.js'
 import { resolveBackendAssetUrl } from '../../../three/ModelFactory.js'
-const props=defineProps({model:Object,bundle:Object,bindings:Array,points:Array,frame:Object,frameTime:Number,staleMs:Number,test:Boolean,testValue:Number,selectableNodeNames:Array})
+const props=defineProps({model:Object,bundle:Object,bindings:Array,points:Array,frame:Object,frameTime:Number,staleMs:Number,test:Boolean,testValue:[Number,Boolean,String,Object],selectableNodeNames:Array})
 const emit=defineEmits(['ready','node-picked'])
-const viewport=ref(null),ready=ref(false),error=ref(''),cutaway=ref(false)
-let scene,player,parts=[],disposed=false,lastStamp=0,baseline,materialBaseline
+const viewport=ref(null),ready=ref(false),error=ref(''),cutaway=ref(false),endpointState=ref(null)
+let scene,player,parts=[],disposed=false,lastStamp=0,baseline,materialBaseline,previewResizeObserver,lastPreviewAspect
 let pointerStart
 function rememberPointer(event){pointerStart={x:event.clientX,y:event.clientY,id:event.pointerId}}
 function pickNode(event){
@@ -23,41 +24,56 @@ function pickNode(event){
 function setCutaway(){const metadata=typeof props.model?.metadata==='string'?JSON.parse(props.model.metadata||'{}'):props.model?.metadata||{},names=new Set(metadata.inspection?.shell?.node_names||[]);const suffixes=['housing','lining','hood','upper_housing','tank','tanks','cold_housing','hot_housing','refractory','vault_bricks','partition_shell','partition_lining','quench_tank','quench_liquid'];scene?.model?.traverse(n=>{if(names.has(n.name)||suffixes.some(s=>n.name.endsWith('_'+s)))n.traverse(mesh=>{if(!mesh.isMesh)return;for(const m of [].concat(mesh.material)){m.userData.linkCutaway=cutaway.value;m.userData.linkOriginalOpacity??=m.opacity;m.userData.linkOriginalTransparent??=m.transparent;m.opacity=cutaway.value?Math.min(.16,m.userData.linkOriginalOpacity):m.userData.linkOriginalOpacity;m.transparent=cutaway.value||m.userData.linkOriginalTransparent;m.depthWrite=!m.transparent;m.needsUpdate=true}})})}
 function setupBindings(){
  if(!scene?.model||!ready.value)return
+ const endpointDisplayStates=captureMotionEndpointDisplayStates(player,parts)
  if(baseline)for(const [node,p,q,s,visible] of baseline){node.position.copy(p);node.quaternion.copy(q);node.scale.copy(s);node.visible=visible}
  for(const [m,c,e,intensity] of materialBaseline||[]){m.color?.copy(c);if(e)m.emissive?.copy(e);m.emissiveIntensity=intensity}
  if(scene.packageData)player=new PortableMotionPlayer(scene.model,scene.packageData,props.bindings,props.staleMs)
  const metadata=typeof props.model?.metadata==='string'?JSON.parse(props.model.metadata||'{}'):props.model?.metadata||{}
  const paths=new Map();function visit(parent,prefix=''){parent.children.forEach((n,i)=>{const path=[prefix,`${n.name.replaceAll('/','_')}#${i}`].filter(Boolean).join('/');paths.set(path,n);visit(n,path)})}visit(scene.model)
  parts=(metadata.partBindings||[]).map((definition,i)=>{const row=props.bindings.find(b=>b.actionId===`part:${definition.id||i}`&&b.enabled),node=paths.get(definition.node_path)||scene.model.getObjectByName(definition.node_name||'');return row&&node?{binding:row,definition,node,position:node.position.clone(),rotation:node.quaternion.clone(),signal:{seconds:0},angle:0}:null}).filter(Boolean)
- receive()
+ restoreMotionEndpointDisplayStates(endpointDisplayStates,player,parts)
+ endpointState.value=null;receive()
 }
-function testFrame(){const data={status:{online:true},quality:{overall:'good'}};for(const b of props.bindings){data[b.sourceGroup]||={};data[b.sourceGroup][b.sourceKey]=b.inputMin+(b.inputMax-b.inputMin)*props.testValue}return data}
-function receive(){if(!ready.value)return;const now=performance.now()/1000,data=props.test?testFrame():props.frame;if(!data)return;lastStamp=props.test?now:props.frameTime;player?.receive(data,lastStamp);for(const p of parts)receiveMotionSignal(p.signal,p.binding,data,lastStamp)}
+function testFrame(){
+ const timestamp=Date.now(),data={timestamp,status:{online:true},quality:{overall:'good'},motionInputs:{}}
+ for(const b of props.bindings||[]){
+  const value=typeof props.testValue==='number'?motionTestValue(b,props.testValue):props.testValue
+  if(b.trigger?.mode==='endpoints')data.motionInputs[b.actionId]={quality:'good',endpointFeedback:Object.fromEntries(['extended','retracted'].map(side=>[side,{dataItemId:b.trigger[side]?.dataItemId,value:value?.[side]===true,quality:'good',timestamp,staleMs:props.staleMs||5000}]))}
+  else if(b.dataItemId)data.motionInputs[b.actionId]={dataItemId:b.dataItemId,value,quality:'good',timestamp,staleMs:props.staleMs||5000}
+  else{const group=b.sourceGroup||'analog';data[group]||={};data[group][b.sourceKey]=value}
+ }
+ return data
+}
+function receive(){if(!ready.value)return;const now=performance.now()/1000,data=props.test?testFrame():props.frame;if(!data)return;lastStamp=props.test||!Number.isFinite(props.frameTime)?now:props.frameTime;player?.receive(data,lastStamp);for(const p of parts)receiveMotionSignal(p.signal,p.binding,data,lastStamp)}
 function advance(delta){
  if(!ready.value)return
  const now=performance.now()/1000;if(props.test)receive()
  player?.advance(delta,now)
- for(const p of parts){stepMotionSignal(p.signal,p.binding,delta,now,props.staleMs);const s=p.signal,b=p.definition;if(!s.hasSample)continue;const axisName=b.axis||'y',axis=new T.Vector3(axisName==='x'?1:0,axisName==='y'?1:0,axisName==='z'?1:0),offset=(b.output_min||0)+((b.output_max??90)-(b.output_min||0))*s.position
+ const endpointEntry=player?.entries.find(entry=>entry.binding.trigger?.mode==='endpoints')||parts.find(entry=>entry.binding.trigger?.mode==='endpoints')
+ if(endpointEntry){const state=endpointEntry.signal,signature=`${state.reason}:${state.usable}:${state.endpointStage}`;if(endpointState.value?.signature!==signature)endpointState.value={signature,reason:state.reason||'等待数据',usable:state.usable===true,waiting:state.endpointStage==='waiting'}}
+ for(const p of parts){stepMotionSignal(p.signal,p.binding,delta,now,props.staleMs);const s=p.signal,b=p.definition;if(!s.hasSample||!s.usable)continue;const axisName=b.axis||'y',axis=new T.Vector3(axisName==='x'?1:0,axisName==='y'?1:0,axisName==='z'?1:0),offset=(b.output_min||0)+((b.output_max??90)-(b.output_min||0))*s.position
    if(b.action==='translate')p.node.position.copy(p.position).addScaledVector(axis,offset)
    else if(b.action==='rotate_angle')p.node.quaternion.copy(p.rotation).multiply(new T.Quaternion().setFromAxisAngle(axis,T.MathUtils.degToRad(offset)))
-   else if(b.action==='rotate_speed'){if(s.usable){const value=Number((props.test?testFrame():props.frame)?.[p.binding.sourceGroup]?.[p.binding.sourceKey]);p.angle+=(Number.isFinite(value)?value:0)*Number(b.speed_factor??.10472)*p.binding.speed*(p.binding.invert?-1:1)*delta}p.node.quaternion.copy(p.rotation).multiply(new T.Quaternion().setFromAxisAngle(axis,p.angle))}
+   else if(b.action==='rotate_speed'){const direction=p.binding.trigger?.mode==='condition'?1:p.binding.invert?-1:1;p.angle+=(Number.isFinite(s.numericValue)?s.numericValue:0)*Number(b.speed_factor??.10472)*(p.binding.speed||1)*direction*delta;p.node.quaternion.copy(p.rotation).multiply(new T.Quaternion().setFromAxisAngle(axis,p.angle))}
    else if(s.usable&&b.action==='visibility')p.node.visible=s.position>.5
    else if(s.usable&&b.action==='color')p.node.traverse(n=>{if(n.isMesh)for(const m of [].concat(n.material))m.color?.set(s.position>.5?(b.on_color||'#00ff88'):(b.off_color||'#666666'))})
  }
 }
+function getDiagnostics(){const nodes={};scene?.model?.traverse(n=>{if(n.name==='cad_transfer_cart_v1_feed_carriage'||n.name==='preview_feed_gear'||n.name==='cad_transfer_cart_v1_hook_latch')nodes[n.name]={position:n.position.toArray(),quaternion:n.quaternion.toArray(),visible:n.visible}});return {ready:ready.value,entries:(player?.entries||[]).map(entry=>({actionId:entry.binding.actionId,signal:{...entry.signal}})),parts:parts.map(entry=>({actionId:entry.binding.actionId,signal:{...entry.signal}})),nodes}}
+defineExpose({getDiagnostics})
 async function load(){
  scene=new CadMotionScene(viewport.value,advance)
  scene.renderer.domElement.addEventListener('pointerdown',rememberPointer)
  scene.renderer.domElement.addEventListener('pointerup',pickNode)
  try{const url=props.bundle?.rigPath||props.model?.file_path;if(!url)throw Error('尚未选择设备模型');const gltf=await new GLTFLoader().loadAsync(resolveBackendAssetUrl(url));restoreGltfNodeNames(gltf);if(disposed){scene.release(gltf.scene);return}scene.model=gltf.scene;scene.scene.add(scene.model);scene.model.traverse(n=>{if(n.isMesh)n.material=Array.isArray(n.material)?n.material.map(m=>m.clone()):n.material.clone()})
    if(props.bundle){if(props.bundle.previewData)scene.packageData=props.bundle.previewData;else{const response=await fetch(resolveBackendAssetUrl(props.bundle.clipPath));if(!response.ok)throw Error('动作包读取失败');scene.packageData=await response.json()}if(disposed)return}
-   scene.bounds=new T.Box3().setFromObject(scene.model);scene.resetCamera();materialBaseline=[];scene.model.traverse(n=>{for(const m of [].concat(n.material||[]))materialBaseline.push([m,m.color?.clone(),m.emissive?.clone(),m.emissiveIntensity])});baseline=[];scene.model.traverse(n=>baseline.push([n,n.position.clone(),n.quaternion.clone(),n.scale.clone(),n.visible]));ready.value=true;setupBindings();emit('ready',true)
+   scene.bounds=new T.Box3().setFromObject(scene.model);scene.resetCamera();materialBaseline=[];scene.model.traverse(n=>{for(const m of [].concat(n.material||[]))materialBaseline.push([m,m.color?.clone(),m.emissive?.clone(),m.emissiveIntensity])});baseline=[];scene.model.traverse(n=>baseline.push([n,n.position.clone(),n.quaternion.clone(),n.scale.clone(),n.visible]));ready.value=true;setupBindings();viewport.value.__motionDiagnostics=getDiagnostics;lastPreviewAspect=scene.camera.aspect;previewResizeObserver=new ResizeObserver(()=>{if(disposed||!scene?.bounds)return;const rect=viewport.value.getBoundingClientRect();if(rect.width<1||rect.height<1)return;const aspect=rect.width/rect.height;if(Math.abs(aspect-lastPreviewAspect)<.02)return;lastPreviewAspect=aspect;const direction=scene.camera.position.clone().sub(scene.controls.target).normalize();scene.resize();scene.frameBox(scene.bounds,direction.toArray())});previewResizeObserver.observe(viewport.value);emit('ready',true)
  }catch(e){if(!disposed)error.value=e.message}
 }
 watch(()=>JSON.stringify(props.bindings),setupBindings)
 watch(()=>props.staleMs,value=>{if(player)player.staleMs=value})
-watch(()=>[props.frame,props.test,props.testValue],receive)
-onMounted(load);onUnmounted(()=>{disposed=true;scene?.dispose()})
+watch(()=>[props.frame,props.frameTime,props.test,props.testValue],receive)
+onMounted(load);onUnmounted(()=>{disposed=true;previewResizeObserver?.disconnect();if(viewport.value)delete viewport.value.__motionDiagnostics;scene?.dispose()})
 </script>
-<template><div class="motion-link-stage"><div ref="viewport" class="viewport"></div><div v-if="!ready" class="state" role="status">{{error||'正在准备动作模型…'}}</div><div v-if="ready" class="fit"><label><input v-model="cutaway" type="checkbox" @change="setCutaway">内部透视</label><button type="button" @click="scene.resetCamera()">完整视图</button></div></div></template>
-<style scoped>.motion-link-stage{position:relative;flex:1;min-height:380px}.viewport{position:absolute;inset:0}.state{position:absolute;inset:0;display:grid;place-content:center;color:#8491a5;background:#f3f6f9;font-size:calc(12px * var(--admin-font-scale, 1))}.fit{position:absolute;top:10px;right:10px;display:flex;align-items:center;gap:10px;padding:5px;border:1px solid #d5dfea;border-radius:9px;background:#fffffff0;color:#527399;font-size:calc(11px * var(--admin-font-scale, 1));box-shadow:0 2px 9px #4055740c}.fit label{display:flex;align-items:center;gap:5px;padding-left:5px;cursor:pointer}.fit input{accent-color:#3478df}.fit button{border:0;border-radius:6px;padding:7px 10px;background:#f0f5fc;color:#426995;cursor:pointer;font:inherit}.fit button:hover{background:#e5eefb}</style>
+<template><div class="motion-link-stage"><div ref="viewport" class="viewport"></div><div v-if="!ready" class="state" role="status">{{error||'正在准备动作模型…'}}</div><div v-if="ready && endpointState" class="endpoint-state" :class="{good:endpointState.usable,waiting:endpointState.waiting}" role="status"><strong>{{endpointState.reason}}</strong><small>端点确认 · 未采集过程位置</small></div><div v-if="ready" class="fit"><label><input v-model="cutaway" type="checkbox" @change="setCutaway">内部透视</label><button type="button" @click="scene.resetCamera()">完整视图</button></div></div></template>
+<style scoped>.motion-link-stage{position:relative;flex:1;min-height:380px}.viewport{position:absolute;inset:0}.state{position:absolute;inset:0;display:grid;place-content:center;color:#8491a5;background:#f3f6f9;font-size:calc(12px * var(--admin-font-scale, 1))}.endpoint-state{position:absolute;top:12px;left:12px;display:grid;gap:5px;padding:9px 12px;border:1px solid #e3d6cb;border-radius:8px;background:#fffffff0;color:#a2785e;box-shadow:0 2px 10px #4055740a;pointer-events:none}.endpoint-state.good{border-color:#cce1d7;color:#4d8b74}.endpoint-state.waiting{border-color:#e6dfcf;color:#9b8655}.endpoint-state strong{font-size:12px;font-weight:500}.endpoint-state small{font-size:10px;color:#8d9caf}.fit{position:absolute;top:10px;right:10px;display:flex;align-items:center;gap:10px;padding:5px;border:1px solid #d5dfea;border-radius:9px;background:#fffffff0;color:#527399;font-size:calc(11px * var(--admin-font-scale, 1));box-shadow:0 2px 9px #4055740c}.fit label{display:flex;align-items:center;gap:5px;padding-left:5px;cursor:pointer}.fit input{accent-color:#3478df}.fit button{border:0;border-radius:6px;padding:7px 10px;background:#f0f5fc;color:#426995;cursor:pointer;font:inherit}.fit button:hover{background:#e5eefb}</style>

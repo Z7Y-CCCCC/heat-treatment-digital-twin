@@ -23,8 +23,8 @@ const added = () => ({ key: 'points.catalog-fixture', label: '点位映射 · �
 test('one registration feeds navigation, nested tabs and the authorization matrix', async () => {
   assert.equal(PAGE_PERMISSIONS, ADMIN_PAGES)
   const panel = await readFile(new URL('../src/views/AdminPanel.vue', import.meta.url), 'utf8')
-  for (const group of ['factory', 'data', 'models']) assert.match(panel, new RegExp(`adminNavPages\\('${group}', adminPageCatalog\\.value\\)`))
-  for (const group of ['platform', 'settings', 'points']) assert.match(panel, new RegExp(`adminSubpages\\('${group}', adminPageCatalog\\.value\\)`))
+  for (const group of ['factory', 'models']) assert.match(panel, new RegExp(`adminNavPages\\('${group}', adminPageCatalog\\.value\\)`))
+  for (const group of ['platform', 'settings', 'points', 'data-center']) assert.match(panel, new RegExp(`adminSubpages\\('${group}', adminPageCatalog\\.value\\)`))
   assert.equal(adminNavPages('models').find(p => p.key === 'disassembly-layout').label, '拆解布局')
   assert.ok(adminSubpages('points').some(p => p.permissionKey === 'points.alarms'))
   assert.equal(new Set(PAGE_PERMISSIONS.map(p => p.key)).size, PAGE_PERMISSIONS.length)

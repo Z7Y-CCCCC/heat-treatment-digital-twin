@@ -8,6 +8,7 @@ import { cacheFactoryDraft, clearFactoryDraft, readFactoryDraft } from '../../..
 const props = defineProps({ connections: { type: Array, default: () => [] }, permissionPage: { type: String, default: 'settings.database' }, confirm: Function })
 const definitions = ref([]), draft = ref(null), busy = ref(false), failed = ref(false), message = ref(''), query = ref(''), section = ref('query'), result = ref(null)
 const availableFields = ref([]), roots = ref([]), addingField = ref('')
+const databaseTables = ref([]), tablesBusy = ref(false), tablesError = ref('')
 const previewContext = ref({ parameters:{}, deviceId: '', lineId: '', workshopId: '', partId: '', viewId: '', regionCode:'', regionLevel:'' })
 const contextOptions = [{key:'deviceId',label:'当前设备'},{key:'lineId',label:'当前产线'},{key:'workshopId',label:'当前车间'},{key:'partId',label:'当前部件'},{key:'viewId',label:'当前视角'},{key:'regionCode',label:'当前地区代码'},{key:'regionLevel',label:'当前地图层级'}]
 const tabs = [{key:'query',label:'读取配置'},{key:'parameters',label:'参数与匹配'},{key:'fields',label:'字段映射'},{key:'preview',label:'数据预览'}]
@@ -28,22 +29,47 @@ const customParameters = computed(()=>{try{return datasetParameterDefinitions(dr
 const requiredContext = computed(() => contextOptions.filter(c => draft.value?.match?.contextKey === c.key || draft.value?.request.parameters.some(p => p.source === 'context' && p.key === c.key)))
 const sourceName = computed(() => connection.value?.name || '未选择连接')
 const typeNames = { number: '数值', string: '文本', boolean: '布尔' }
-let disposed = false, generation = 0
+let disposed = false, generation = 0, tableGeneration = 0
+const databaseTableSelection = computed(() => {
+    const index = databaseTables.value.findIndex(table => table.name === draft.value?.database?.table && (table.schema || '') === (draft.value?.database?.schema || ''))
+    return index < 0 ? '' : String(index + 1)
+})
+async function loadTables() {
+    if (busy.value || tablesBusy.value || !connection.value?.id || draft.value?.source !== 'database') return
+    const id = connection.value.id, seq = ++tableGeneration
+    tablesBusy.value = true; tablesError.value = ''
+    try {
+        const response = await adminApi.getDataSourceTables(id)
+        if (disposed || seq !== tableGeneration || id !== connection.value?.id) return
+        if (response.error || response.success === false) throw new Error(response.error || '读取数据表失败')
+        databaseTables.value = response.tables || []
+        if (!databaseTables.value.length) tablesError.value = '未找到可读取的表、视图或集合，请检查连接权限。'
+    } catch (error) { if (!disposed && seq === tableGeneration) tablesError.value = error.message }
+    finally { if (!disposed && seq === tableGeneration) tablesBusy.value = false }
+}
+function chooseDatabaseTable(value) {
+    const table = databaseTables.value[Number(value) - 1]
+    if (!table || busy.value || !canEdit.value) return
+    draft.value.database.schema = table.schema || ''; draft.value.database.table = table.name
+    result.value = null; availableFields.value = []
+}
+function resetTables() { tableGeneration++; databaseTables.value = []; tablesBusy.value = false; tablesError.value = '' }
+watch(() => draft.value?.connectionId, resetTables)
 function newColumn(index = 0) { return { name: index ? `field_${index+1}` : 'value', label: index ? `字段 ${index+1}` : '数值', path: 'value', type: 'number', role: index ? '' : 'value', unit: '', scale: 1, offset: 0 } }
 async function load() {
-    try { const response = await adminApi.getDataSets(); if (disposed) return; definitions.value = response.datasets || [] }
+    try { const response = await adminApi.getDataSets(); if (disposed) return; if (response.error || response.success === false) throw new Error(response.error || '数据表读取失败'); definitions.value = response.datasets || [] }
     catch (error) { if (!disposed) { failed.value = true; message.value = error.message } }
 }
 async function choose(definition) {
-    if (busy.value) return false
-    if (dirty.value && props.confirm && !await props.confirm('放弃当前数据集的未保存修改？', {title:'未保存的数据集'})) return false
+    if (busy.value || tablesBusy.value) return false
+    if (dirty.value && props.confirm && !await props.confirm('放弃当前数据表的未保存修改？', {title:'未保存的数据表'})) return false
     availableFields.value=[];roots.value=[];addingField.value='';expandedField.value=-1;expandedParameter.value=-1
-    generation++; draft.value = JSON.parse(JSON.stringify(definition)); savedSnapshot.value = JSON.stringify(draft.value); result.value = null; message.value = ''; section.value = 'query'
+    generation++; resetTables(); draft.value = JSON.parse(JSON.stringify(definition)); savedSnapshot.value = JSON.stringify(draft.value); result.value = null; message.value = ''; section.value = 'query'
     return true
 }
 function create() {
     if (!canEdit.value || busy.value) return
-    choose({ name: '新数据集', connectionId: props.connections.find(c=>!c.primary)?.id || props.connections[0]?.id || '', source: 'http', enabled: true, refreshMs: 5000,
+    choose({ name: '新数据表', connectionId: props.connections.find(c=>!c.primary)?.id || props.connections[0]?.id || '', source: 'http', enabled: true, refreshMs: 5000,
         request: { method: 'GET', path: '/', readOnly: false, parameters: [] }, database: {schema:'',table:'',orderBy:'',orderDirection:'desc'},
         rootPath: '', match: null, columns: [newColumn()] }).then(changed => { if (changed) changeConnection() })
 }
@@ -57,6 +83,7 @@ async function save() {
     try {
         const response = await adminApi.saveDataSet(draft.value)
         if (disposed) return
+        if (response.error || response.success === false || !response.dataset) throw new Error(response.error || '数据表保存失败，请重试')
         draft.value = response.dataset; savedSnapshot.value = JSON.stringify(draft.value); clearFactoryDraft(scope, 'data-set-editor'); await load(); message.value = '已保存'
         window.dispatchEvent(new CustomEvent('digital-twin-data-sets-changed'))
     } catch (error) { if (!disposed) { failed.value = true; message.value = error.message } }
@@ -64,9 +91,9 @@ async function save() {
 }
 async function remove() {
     if (!canDelete.value || !draft.value?.id || busy.value) return
-    if (!await props.confirm('删除此数据集？已有组件引用将失效。', {title:'删除数据集',type:'warning'})) return
+    if (!await props.confirm('删除此数据表？已有组件引用将失效。', {title:'删除数据表',type:'warning'})) return
     busy.value = true
-    try { await adminApi.deleteDataSet(draft.value); if (disposed) return; draft.value = null; savedSnapshot.value = ''; clearFactoryDraft(scope, 'data-set-editor'); await load(); window.dispatchEvent(new CustomEvent('digital-twin-data-sets-changed')) }
+    try { const response = await adminApi.deleteDataSet(draft.value); if (disposed) return; if (response.error || response.success === false) throw new Error(response.error || '数据表删除失败'); draft.value = null; savedSnapshot.value = ''; clearFactoryDraft(scope, 'data-set-editor'); await load(); window.dispatchEvent(new CustomEvent('digital-twin-data-sets-changed')) }
     catch (error) { failed.value = true; message.value = error.message }
     finally { busy.value = false }
 }
@@ -77,6 +104,7 @@ async function preview() {
     try {
         const payload = !dirty.value && draft.value.id ? { datasetId: draft.value.id } : { definition: draft.value }
         const response = await adminApi.previewDataSet({ ...payload, context: previewContext.value })
+        if (response.error || response.success === false || !response.result) throw new Error(response.error || '数据表预览失败')
         if (!disposed && seq === generation) { result.value = response.result; section.value = 'preview' }
     } catch (error) { if (!disposed && seq === generation) { failed.value = true; message.value = error.message; result.value = null } }
     finally { busy.value = false }
@@ -88,6 +116,7 @@ async function inspect() {
     try {
         const response=await adminApi.previewDataSet({definition:draft.value,context:previewContext.value,inspect:true})
         if(disposed || seq!==generation) return
+        if(response.error || response.success===false || !response.result)throw new Error(response.error || '数据表字段解析失败')
         availableFields.value=response.result.fields || [];roots.value=response.result.roots || [];section.value='fields'
     } catch(error) { if(!disposed && seq===generation){failed.value=true;message.value=error.message} }
     finally{busy.value=false}
@@ -103,55 +132,80 @@ function addDiscoveredField() {
     addingField.value=''
 }
 watch(draft, () => { result.value = null }, {deep:true})
+watch([draft, savedSnapshot, canEdit], () => {
+    if (dirty.value && canEdit.value) cacheFactoryDraft(scope, 'data-set-editor', 'dataset', {value:JSON.parse(JSON.stringify(draft.value))})
+    else clearFactoryDraft(scope, 'data-set-editor')
+}, {deep:true})
 watch(previewContext, () => { generation++; result.value = null }, {deep:true})
-defineExpose({ create })
+async function canLeave() {
+    if (busy.value || tablesBusy.value) return false
+    if (!dirty.value) return true
+    return Boolean(props.confirm && await props.confirm('当前数据表有未保存修改，是否离开？草稿会保留在当前工厂。', {title:'未保存的数据表',confirmText:'保留草稿并离开',cancelText:'继续编辑'}))
+}
+const isBusy = computed(() => busy.value || tablesBusy.value)
+async function savePending() {
+    if (isBusy.value) throw new Error('数据表正在处理，请稍后再试')
+    if (!dirty.value) return
+    await save()
+    if (dirty.value || failed.value) throw new Error(message.value || '数据表保存失败')
+}
+function discardPending() {
+    generation++; resetTables()
+    const saved = definitions.value.find(item => item.id === draft.value?.id)
+    draft.value = saved ? JSON.parse(JSON.stringify(saved)) : null
+    savedSnapshot.value = JSON.stringify(draft.value)
+    clearFactoryDraft(scope, 'data-set-editor'); message.value = ''; failed.value = false
+}
+defineExpose({ create, canLeave, isBusy, isDirty: dirty, savePending, discardPending })
 onMounted(async () => {
     await load(); if (disposed) return
     const cached = readFactoryDraft(scope, 'data-set-editor')
     if (cached?.value && canEdit.value) { draft.value = cached.value; savedSnapshot.value = JSON.stringify(definitions.value.find(d => d.id === draft.value.id) || {}); message.value = '已恢复未保存草稿' }
     else if (definitions.value.length) await choose(definitions.value[0])
 })
-onBeforeUnmount(() => { disposed = true; generation++; if (dirty.value && canEdit.value) cacheFactoryDraft(scope, 'data-set-editor', 'setting', {value:JSON.parse(JSON.stringify(draft.value))}); else clearFactoryDraft(scope, 'data-set-editor') })
+onBeforeUnmount(() => { disposed = true; generation++; tableGeneration++; if (dirty.value && canEdit.value) cacheFactoryDraft(scope, 'data-set-editor', 'dataset', {value:JSON.parse(JSON.stringify(draft.value))}); else clearFactoryDraft(scope, 'data-set-editor') })
 </script>
 <template>
-  <section class="dataset-workspace" aria-label="可复用数据集">
+  <section class="dataset-workspace" aria-label="可复用数据表">
+    <div class="dataset-intro"><span class="intro-step">配置一次 · 多处复用</span><p>① 选择已接入的数据源　② 给字段起中文名称、设置单位　③ 按当前设备 / 部件匹配记录　④ 预览核对并保存</p></div>
     <div class="dataset-shell">
       <aside class="dataset-sidebar">
-        <div class="list-search"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4 4"/></svg><input v-model="query" class="input" type="search" placeholder="搜索数据集" aria-label="搜索数据集" /></div>
-        <div class="list-caption">数据集 <span>{{ definitions.length }}</span></div>
+        <div class="list-search"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4 4"/></svg><input v-model="query" class="input" type="search" placeholder="搜索数据表" aria-label="搜索数据表" /></div>
+        <div class="list-caption">数据表 <span>{{ definitions.length }}</span></div>
         <div class="dataset-list">
           <button v-for="item in searchRows" :key="item.id" :class="{active:draft?.id===item.id}" :aria-pressed="draft?.id===item.id" :disabled="busy" @click="choose(item)">
             <span class="dataset-list-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="M4 10h16M10 10v10"/></svg></span>
             <span class="dataset-list-copy"><strong>{{ item.name }}</strong><small>{{ connections.find(c=>c.id===item.connectionId)?.name || '连接未配置' }}</small></span>
             <i :class="{off:!item.enabled}" :aria-label="item.enabled?'启用':'停用'"></i>
           </button>
-          <p v-if="!searchRows.length" class="list-empty">{{ query?'没有匹配的数据集':'暂无数据集' }}</p>
+          <p v-if="!searchRows.length" class="list-empty">{{ query?'没有匹配的数据表':'暂无数据表' }}</p>
         </div>
       </aside>
       <section v-if="draft" class="dataset-editor">
         <header class="dataset-detail-heading">
-          <div><h4>{{ draft.name || '新数据集' }}</h4><p><span class="source-kind">{{ draft.source==='http'?'API':'DB' }}</span>{{ sourceName }}<span class="heading-divider">/</span>{{ draft.columns.length }} 个字段</p></div>
+          <div><h4>{{ draft.name || '新数据表' }}</h4><p><span class="source-kind">{{ draft.source==='http'?'API':'DB' }}</span>{{ sourceName }}<span class="heading-divider">/</span>{{ draft.columns.length }} 个字段</p></div>
           <span class="dataset-state" :class="{off:!draft.enabled}"><i></i>{{draft.enabled?'已启用':'已停用'}}</span>
         </header>
-        <nav role="tablist" aria-label="数据集编辑分类"><button v-for="(tab,index) in tabs" :id="`${prefix}-${tab.key}`" :key="tab.key" role="tab" :tabindex="section===tab.key?0:-1" :aria-controls="`${prefix}-panel`" :aria-selected="section===tab.key" @keydown="tabKey($event,index)" @click="section=tab.key">{{tab.label}}</button></nav>
+        <nav role="tablist" aria-label="数据表编辑分类"><button v-for="(tab,index) in tabs" :id="`${prefix}-${tab.key}`" :key="tab.key" role="tab" :tabindex="section===tab.key?0:-1" :aria-controls="`${prefix}-panel`" :aria-selected="section===tab.key" @keydown="tabKey($event,index)" @click="section=tab.key">{{tab.label}}</button></nav>
         <div :id="`${prefix}-panel`" class="dataset-body" role="tabpanel" :aria-labelledby="`${prefix}-${section}`">
           <fieldset :disabled="busy || !canEdit">
             <div v-show="section==='query'" class="dataset-grid">
-              <label>数据集名称<input v-model.trim="draft.name" class="input" aria-label="数据集名称" maxlength="100" /></label>
-              <label>数据源连接<select v-model="draft.connectionId" class="input" aria-label="数据集连接" @change="changeConnection"><option value="">请选择连接</option><option v-for="c in connections" :key="c.id" :value="c.id">{{c.name}}</option></select></label>
+              <label>数据表名称<input v-model.trim="draft.name" class="input" aria-label="数据表名称" maxlength="100" /></label>
+              <label>数据源连接<select v-model="draft.connectionId" class="input" aria-label="数据表连接" @change="changeConnection"><option value="">请选择连接</option><option v-for="c in connections" :key="c.id" :value="c.id">{{c.name}}</option></select></label>
               <template v-if="draft.source==='http'">
-                <label class="wide">接口路径<div class="request-line"><select v-model="draft.request.method" class="input method-select" aria-label="数据集请求方式"><option value="GET">GET</option><option v-if="!connection?.connector || connection.connector==='http'" value="POST">POST</option></select><input v-model.trim="draft.request.path" class="input path-input" aria-label="数据集请求路径" placeholder="/devices" /></div></label>
+                <label class="wide">接口路径<div class="request-line"><select v-model="draft.request.method" class="input method-select" aria-label="数据表请求方式"><option value="GET">GET</option><option v-if="!connection?.connector || connection.connector==='http'" value="POST">POST</option></select><input v-model.trim="draft.request.path" class="input path-input" aria-label="数据表请求路径" placeholder="/devices" /></div></label>
                 <label v-if="draft.request.method==='POST'" class="inline wide"><input v-model="draft.request.readOnly" type="checkbox" />只读查询接口</label>
                 <label>结果根节点<input v-model.trim="draft.rootPath" class="input" aria-label="结果根节点" :list="`${prefix}-roots`" placeholder="如 data.items" /><datalist :id="`${prefix}-roots`"><option v-for="path in roots" :key="path" :value="path" /></datalist></label>
               </template>
               <template v-else>
-                <label v-if="connection?.type!=='mongodb'">Schema<input v-model.trim="draft.database.schema" class="input" placeholder="默认" /></label><label>{{ connection?.type==='mongodb' ? '集合' : '表 / 视图' }}<input v-model.trim="draft.database.table" class="input" :aria-label="connection?.type==='mongodb' ? '数据集集合' : '数据集数据表'" /></label>
+                <div class="wide database-picker"><label>{{connection?.type==='mongodb'?'集合':'数据库表 / 视图'}}<div class="table-picker-line"><select :value="databaseTableSelection" class="input" aria-label="选择来源数据表" :disabled="!databaseTables.length || tablesBusy" @change="chooseDatabaseTable($event.target.value)"><option value="">{{draft.database.table && !databaseTableSelection ? `当前：${draft.database.schema?draft.database.schema+'.':''}${draft.database.table}` : '先读取，再选择表 / 视图'}}</option><option v-for="(table,index) in databaseTables" :key="`${table.schema || ''}:${table.name}`" :value="String(index+1)">{{table.schema?table.schema+'.':''}}{{table.name}}</option></select><button type="button" class="btn btn-sm" :disabled="tablesBusy || !connection?.id" @click="loadTables">{{tablesBusy?'读取中…':connection?.type==='mongodb'?'读取集合':'读取表与视图'}}</button></div></label><p v-if="tablesError" role="status" class="dataset-message bad">{{tablesError}}</p><details class="manual-table"><summary>高级：手动填写表名</summary><div class="dataset-grid"><label v-if="connection?.type!=='mongodb'">Schema<input v-model.trim="draft.database.schema" class="input" placeholder="默认" /></label><label>{{connection?.type==='mongodb'?'集合名称':'表 / 视图名称'}}<input v-model.trim="draft.database.table" class="input" :aria-label="connection?.type==='mongodb'?'数据表集合':'数据表来源表名'" /></label></div></details></div>
                 <label>排序字段<input v-model.trim="draft.database.orderBy" class="input" placeholder="不排序" /></label><label>排序<select v-model="draft.database.orderDirection" class="input"><option value="desc">降序</option><option value="asc">升序</option></select></label>
               </template>
               <label>刷新间隔<div class="input-suffix"><input :value="draft.refreshMs/1000" class="input" type="number" :min="draft.source === 'http' ? 0.25 : 1" step="0.25" max="3600" aria-label="刷新间隔（秒）" @change="draft.refreshMs=Number($event.target.value)*1000" /><span>秒</span></div></label>
-              <div class="query-bottom wide"><label class="toggle-label"><input v-model="draft.enabled" type="checkbox" role="switch" aria-label="启用数据集" /><span class="toggle-track" aria-hidden="true"></span>启用</label><button class="text-button" @click="inspect">解析字段 <span aria-hidden="true">→</span></button></div>
+              <div class="query-bottom wide"><label class="toggle-label"><input v-model="draft.enabled" type="checkbox" role="switch" aria-label="启用数据表" /><span class="toggle-track" aria-hidden="true"></span>启用</label><button class="text-button" @click="inspect">解析字段 <span aria-hidden="true">→</span></button></div>
             </div>
             <div v-show="section==='parameters'" class="parameter-panel">
+              <p class="mapping-guide">如果接口同时返回多台设备的数据，请开启“记录匹配”：将数据中的设备编号字段与“当前设备”对应。悬停或切换设备时会自动读取它自己的记录，无需在设计器逐个填写。</p>
               <div class="section-heading"><strong>记录匹配</strong><label class="toggle-label"><input :checked="!!draft.match" type="checkbox" role="switch" aria-label="按当前对象匹配记录" @change="draft.match=$event.target.checked?{field:'id',contextKey:'deviceId'}:null" /><span class="toggle-track" aria-hidden="true"></span></label></div>
               <div v-if="draft.match" class="dataset-grid match-fields"><label>数据中的标识字段<input v-model.trim="draft.match.field" class="input" aria-label="记录匹配字段" placeholder="id" /></label><label>匹配对象<select v-model="draft.match.contextKey" class="input" aria-label="记录匹配对象"><option v-for="c in contextOptions" :key="c.key" :value="c.key">{{c.label}}</option><option value="parameter">全局参数</option></select></label><label v-if="draft.match.contextKey==='parameter'">参数标识<input v-model.trim="draft.match.parameterKey" class="input" aria-label="匹配参数标识" /></label><label v-if="draft.match.contextKey==='parameter'">值类型<select :value="draft.match.parameterType || 'string'" class="input" aria-label="匹配参数类型" @change="draft.match.parameterType=$event.target.value"><option value="string">文本</option><option value="number">数值</option><option value="boolean">布尔</option></select></label></div>
               <template v-if="draft.source==='http'">
@@ -161,13 +215,14 @@ onBeforeUnmount(() => { disposed = true; generation++; if (dirty.value && canEdi
               </template>
             </div>
             <div v-show="section==='fields'" class="fields-panel">
+              <p class="mapping-guide">这里整理一次，设计器以后只需选择中文数据项。“来源字段”保持真实绑定；中文名称与单位用于帮助辨认。</p>
               <div class="section-heading"><strong>输出字段 <span>{{ draft.columns.length }}</span></strong><button class="text-button" @click="inspect">解析字段</button></div>
               <div class="field-discovery" v-if="availableFields.length"><select v-model="addingField" class="input" aria-label="发现的来源字段"><option value="">选择来源字段</option><option v-for="field in availableFields" :key="field.path" :value="field.path">{{field.path}} · {{typeNames[field.kind] || field.kind}}</option></select><button class="btn btn-sm" :disabled="!addingField" @click="addDiscoveredField">添加到映射</button></div>
               <div class="dataset-scroll editable-table field-table"><table><thead><tr><th>名称</th><th>来源字段</th><th>类型</th><th>单位</th><th class="row-actions"></th></tr></thead><tbody><template v-for="(c,index) in draft.columns" :key="index"><tr><td><input v-model.trim="c.label" class="input" :aria-label="`字段名称 ${index+1}`" /></td><td><input v-model.trim="c.path" class="input code-input" :aria-label="`来源字段 ${index+1}`" placeholder="temperature" /></td><td><select v-model="c.type" class="input"><option value="number">数值</option><option value="string">文本</option><option value="boolean">布尔</option></select></td><td><input v-model="c.unit" class="input" :aria-label="`字段单位 ${index+1}`" placeholder="—" /></td><td class="row-actions"><button class="row-settings" :aria-label="`字段设置 ${index+1}`" :aria-expanded="expandedField===index" @click="expandedField=expandedField===index?-1:index">···</button><button class="icon-remove" aria-label="删除字段" :disabled="draft.columns.length<=1" @click="draft.columns.splice(index,1)">×</button></td></tr><tr v-if="expandedField===index" class="expanded-row"><td colspan="5"><div class="row-options"><label>字段标识<input v-model.trim="c.name" class="input" :aria-label="`字段标识 ${index+1}`" /></label><label>字段用途<select v-model="c.role" class="input"><option value="">普通字段</option><option value="value">主数值</option><option value="category">分类</option><option value="time">时间</option></select></label><label>倍率<input v-model.number="c.scale" class="input" type="number" step="any" /></label><label>偏移<input v-model.number="c.offset" class="input" type="number" step="any" /></label></div></td></tr></template></tbody></table></div>
               <button class="text-button add-field" :disabled="draft.columns.length>=32" @click="draft.columns.push(newColumn(draft.columns.length))">＋ 添加字段</button>
             </div>
           </fieldset>
-          <section v-show="section==='preview'" class="preview-panel" aria-label="数据集预览结果">
+          <section v-show="section==='preview'" class="preview-panel" aria-label="数据表预览结果">
             <div v-if="requiredContext.length" class="context-bar"><label v-for="c in requiredContext" :key="c.key">{{c.label}} ID<input v-model="previewContext[c.key]" class="input" :disabled="busy" :aria-label="`预览 ${c.key}`" placeholder="输入对象 ID" /></label></div>
             <div v-if="customParameters.length" class="context-bar"><label v-for="p in customParameters" :key="p.key">{{p.key}}<input v-model="previewContext.parameters[p.key]" class="input" :aria-label="`预览参数 ${p.key}`" /></label></div>
             <template v-if="result">
@@ -179,11 +234,11 @@ onBeforeUnmount(() => { disposed = true; generation++; if (dirty.value && canEdi
           </section>
         </div>
         <footer>
-          <span v-if="message" :class="['dataset-message',{bad:failed}]" role="status">{{message}}</span><span v-else-if="dirty" class="draft-text"><i></i>未保存</span><span v-else class="footer-note">{{draft.id?'已保存':'新建数据集'}}</span>
-          <div class="footer-actions"><button v-if="draft.id" class="text-button delete-dataset" :disabled="busy || !canDelete" @click="remove">删除</button><button class="btn btn-sm" :disabled="busy || (!canEdit && !draft.id)" @click="preview">{{busy?'读取中…':'读取预览'}}</button><button class="btn btn-primary btn-sm" :disabled="busy || !canEdit" @click="save">保存数据集</button></div>
+          <span v-if="message" :class="['dataset-message',{bad:failed}]" role="status">{{message}}</span><span v-else-if="dirty" class="draft-text"><i></i>未保存</span><span v-else class="footer-note">{{draft.id?'已保存':'新建数据表'}}</span>
+          <div class="footer-actions"><button v-if="draft.id" class="text-button delete-dataset" :disabled="busy || !canDelete" @click="remove">删除</button><button class="btn btn-sm" :disabled="busy || (!canEdit && !draft.id)" @click="preview">{{busy?'读取中…':'读取预览'}}</button><button class="btn btn-primary btn-sm" :disabled="busy || !canEdit" @click="save">保存数据表</button></div>
         </footer>
       </section>
-      <div v-else class="dataset-placeholder blank-editor"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M3 10h18M9 10v10"/></svg><strong>选择或新建数据集</strong><span>将连接中的数据提供给大屏组件</span><p v-if="message" class="bad" role="status">{{message}}</p></div>
+      <div v-else class="dataset-placeholder blank-editor"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M3 10h18M9 10v10"/></svg><strong>选择或新建数据表</strong><span>将连接中的数据提供给大屏组件</span><p v-if="message" class="bad" role="status">{{message}}</p></div>
     </div>
   </section>
 </template>
@@ -191,6 +246,8 @@ onBeforeUnmount(() => { disposed = true; generation++; if (dirty.value && canEdi
 <style scoped>
 * { box-sizing: border-box; }
 .dataset-workspace { color: #344054; font-size: calc(13px * var(--admin-font-scale, 1)); }
+.dataset-intro { display:flex; gap:13px; align-items:center; padding:13px 16px; margin-bottom:16px; border:1px solid #e6ecf6; border-radius:8px; background:#fafcff; }.intro-step { color:#88a0c8; font-size:calc(11px * var(--admin-font-scale,1)); white-space:nowrap; }.dataset-intro p { margin:0; color:#9aaac1; font-size:calc(11px * var(--admin-font-scale,1)); line-height:1.7; }.mapping-guide { margin:0 0 18px; padding:12px 14px; border-radius:7px; background:#f7faff; color:#91a4c2; font-size:calc(11px * var(--admin-font-scale,1)); line-height:1.8; }
+.table-picker-line { display:flex; align-items:center; gap:8px; }.table-picker-line select { flex:1; min-width:0; }.manual-table { margin-top:12px; font-size:calc(11px * var(--admin-font-scale,1)); color:#98a8c0; }.manual-table summary { cursor:pointer; }.manual-table>div { margin-top:14px; }.database-picker>p { margin-top:10px; }
 .dataset-shell { display: grid; grid-template-columns: 224px minmax(0,1fr); border: 1px solid #e4e7ec; border-radius: 10px; overflow: hidden; background: #fff; }
 .dataset-sidebar { padding: 16px 10px 12px; border-right: 1px solid #e9edf2; background: #fafbfc; min-width: 0; }
 .list-search { position: relative; padding: 0 2px; }

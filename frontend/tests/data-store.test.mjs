@@ -12,6 +12,57 @@ function fixture(t, options) {
     return { store, sockets }
 }
 
+test('motion-only data table frames neither invent PLC health nor erase live telemetry', t => {
+    const { store, sockets } = fixture(t)
+    store.syncDevices([{ id: 'A', name: '设备A' }]); store.selectDevice('A')
+    const regular = [], inputs = []
+    store.setDeviceDataHandler(data => regular.push(data)); store.setMotionInputHandler(data => inputs.push(data)); store.connect()
+    regular.length = 0
+    const motion = { furnace_id: 'A', timestamp: 2000, motionInputOnly: true, motionInputs: { lift: { value: 8, quality: 'good', timestamp: 2000 } } }
+    sockets[0].emit('realtime_frame', { devices: [motion] })
+    assert.equal(store.deviceStatusMap.A.online, false); assert.equal(store.deviceDataMap.A, undefined)
+    assert.equal(regular.length, 0); assert.equal(inputs.length, 1)
+    const telemetry = { furnace_id: 'A', timestamp: 1000, analog: { actual_temp: 700 }, quality: { analog: { actual_temp: 'good' } }, status: { running: true } }
+    sockets[0].emit('realtime_frame', { devices: [telemetry] })
+    const lastSeen = store.deviceStatusMap.A.lastSeen
+    sockets[0].emit('realtime_frame', { devices: [motion] })
+    assert.equal(store.selectedDeviceData.analog.actual_temp, 700)
+    assert.equal(store.selectedDeviceData.timestamp, 1000)
+    assert.equal(store.deviceStatusMap.A.lastSeen, lastSeen)
+    assert.equal(regular.length, 1); assert.equal(inputs.length, 2)
+    const replay = []; store.setMotionInputHandler(data => replay.push(data))
+    assert.equal(replay[0].motionInputOnly, true); assert.ok(replay[0].timestamp >= 2000)
+    store.syncDevices([]); store.setMotionInputHandler(data => replay.push(data)); assert.equal(replay.length, 1)
+})
+
+test('independent motion publications cannot prevent a stopped PLC from becoming stale', t => {
+    t.mock.timers.enable({ apis: ['Date', 'setTimeout', 'setInterval'], now: 100000 })
+    const { store, sockets } = fixture(t, { staleMs: 2000 })
+    store.connect(); sockets[0].open()
+    sockets[0].emit('realtime_frame', { devices: [{ furnace_id: 'A', timestamp: Date.now(), analog: { actual_temp: 700 }, quality: { analog: { actual_temp: 'good' } } }] })
+    for (let i = 0; i < 6; i++) {
+        t.mock.timers.tick(1000)
+        sockets[0].emit('realtime_frame', { devices: [{ furnace_id: 'A', timestamp: Date.now(), motionInputOnly: true, motionInputs: {} }] })
+    }
+    assert.equal(store.deviceStatusMap.A.quality, 'bad')
+    assert.equal(store.deviceStatusMap.A.online, false)
+    assert.equal(store.selectedDeviceData.timestamp, undefined)
+    assert.equal(store.deviceDataMap.A.analog.actual_temp, 700)
+})
+
+test('replaying a cached motion source keeps its read stamp and includes elapsed cache age', t => {
+    t.mock.timers.enable({ apis: ['Date', 'setTimeout', 'setInterval'], now: 100000 })
+    const { store, sockets } = fixture(t)
+    store.connect(); sockets[0].open()
+    sockets[0].emit('realtime_frame', { devices: [{ furnace_id: 'A', timestamp: 100000, motionInputOnly: true,
+        motionInputs: { lift: { dataItemId: 'source', value: 1, quality: 'good', timestamp: 99000, staleMs: 5000 } } }] })
+    t.mock.timers.tick(6000)
+    const replay = []; store.setMotionInputHandler(data => replay.push(data))
+    assert.equal(replay[0].timestamp, 106000)
+    assert.equal(replay[0].motionInputs.lift.timestamp, 99000)
+    assert.equal(replay[0].motionInputOnly, true)
+})
+
 test('connect is idempotent and dispose detaches every socket callback', t => {
     const { store, sockets } = fixture(t)
     store.connect()

@@ -1,11 +1,33 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createRequire } from 'node:module'
+import { readFile } from 'node:fs/promises'
+import { compileStyle } from 'vue/compiler-sfc'
 import { createDashboardWidget, createDashboardWidgetPreset, normalizeDashboardDocument, DASHBOARD_WIDGET_LIBRARY } from '../src/runtime/dashboardSchema.js'
 import { hudTextFields, hudTextDefaults, resolveHudText } from '../src/runtime/hudTextConfig.js'
 const require = createRequire(import.meta.url)
 const { normalizeDocument, validateDocument } = require('../../backend/utils/dashboardDocument.js')
 const types = ['hud_kpi_panel','hud_device_status','hud_alarm_panel','hud_chart_dock']
+
+test('alarm timeline retains critical dots and labels without expanding red ripple lines', async () => {
+    const source = await readFile(new URL('../src/runtime/hudModules.css', import.meta.url), 'utf8')
+    const css = compileStyle({ source, id: 'hud-alarm-no-ripple' })
+    assert.deepEqual(css.errors, [])
+    const rules = new Map()
+    css.rawResult.root.walkRules(rule => {
+        const declarations = {}
+        rule.walkDecls(declaration => { declarations[declaration.prop] = declaration.value })
+        rules.set(rule.selector, declarations)
+    })
+    assert.equal(rules.has('.critical .hud-event-dot::after'), false)
+    for (const [selector, declarations] of rules) {
+        if (selector.includes('.hud-event-dot')) assert.equal(declarations.animation, undefined)
+    }
+    assert.equal(rules.get('.critical .hud-event-dot')['border-color'], '#f08aa2')
+    assert.equal(rules.get('.critical .hud-event-level').color, '#f0a3b6')
+    assert.equal(rules.get('.hud-module-events li:not(:last-child)::after').width, '1px')
+    assert.match(rules.get('.hud-device-state i::after').animation, /hud-state-pulse/)
+})
 
 test('HUD inspector defaults match visible copy and authored blanks survive publication and reload', () => {
     for (const type of types) {

@@ -13,7 +13,7 @@ async function loadModelInspection(db, id, factoryId) {
     const metadata = JSON.parse(canonicalJson(model.metadata));
     const { raw, inspection } = effectiveInspection(metadata, {});
     return { model, metadata, raw, inspection, instance: metadata, record: records.find(item => item.id === id) || null,
-        revision: hash([id, model.file_path, model.placement_level, model.asset_type, model.factory_id, canonicalJson(metadata)]),
+        revision: hash([id, model.file_path, model.placement_level, model.asset_type, model.factory_id, model.default_scale, canonicalJson(metadata)]),
         assetRevision: hash([id, model.file_path]), source: 'model', modelId: id };
 }
 
@@ -34,8 +34,10 @@ async function saveModelInspectionLayout(tx, loaded, metadata, factoryId, dialec
         const json = ['mysql', 'postgres'].includes(dialect) ? canonicalJson(original.metadata) : original.metadata ?? '';
         result = await tx.run(`UPDATE models SET metadata = ? WHERE id = ? AND (factory_id IS NULL OR factory_id = ?)
             AND ${exactJsonEquals('metadata', dialect)} AND ${exactTextEquals('file_path', dialect)}
-            AND ${exactTextEquals('placement_level', dialect)} AND ${exactTextEquals('asset_type', dialect)}`,
-        [serialized, loaded.model.id, factoryId, json, original.file_path ?? '', original.placement_level ?? '', original.asset_type ?? '']);
+            AND ${exactTextEquals('placement_level', dialect)} AND ${exactTextEquals('asset_type', dialect)}
+            AND ${original.default_scale == null ? 'default_scale IS NULL' : 'default_scale=?'}`,
+        [serialized, loaded.model.id, factoryId, json, original.file_path ?? '', original.placement_level ?? '', original.asset_type ?? '',
+            ...(original.default_scale == null ? [] : [original.default_scale])]);
     } else {
         const model = loaded.model;
         // Materialize only the packaged model being edited; never upsert over

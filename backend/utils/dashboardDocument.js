@@ -5,6 +5,7 @@ const { createHash } = require('node:crypto');
 const { normalizeParameterDefinitions, resolveParameters } = require('../../shared/dashboardParameters.mjs');
 
 const { normalizeViewTooltipMetadata } = require('../../shared/deviceTooltip.mjs');
+const { normalizeTooltipTemplates, normalizeTooltipTemplateRefs, MAX_TOOLTIP_TEMPLATES, MAX_TOOLTIP_WIDGETS, TOOLTIP_WIDGET_TYPES } = require('../../shared/tooltipTemplates.mjs');
 
 const { normalizePlayback } = require('../../shared/widgetPlayback.mjs');
 const SCHEMA_VERSION = 3;
@@ -81,6 +82,13 @@ function booleanValue(value, fallback = true) {
 function cleanId(value, fallback) {
     const cleaned = shortText(value, fallback, 128).replace(/[^a-zA-Z0-9_-]/g, '_');
     return cleaned || fallback;
+}
+
+function cleanComponentTarget(value) {
+    const text = shortText(value, '', 128);
+    const prefix = /^(group:|system:)/.exec(text)?.[1] || '';
+    const id = cleanId(prefix ? text.slice(prefix.length) : text, '');
+    return id ? `${prefix}${id}` : '';
 }
 
 function clone(value) {
@@ -304,11 +312,11 @@ function normalizeDashboardView(source, index = 0) {
                 : [0, 0, 0]
         },
         componentState: {
-            show: arrayValue(components.show, []).map(value => cleanId(value, '')).filter(Boolean).slice(0, MAX_DASHBOARD_WIDGETS),
-            hide: arrayValue(components.hide, []).map(value => cleanId(value, '')).filter(Boolean).slice(0, MAX_DASHBOARD_WIDGETS),
+            show: arrayValue(components.show, []).map(cleanComponentTarget).filter(Boolean).slice(0, MAX_DASHBOARD_WIDGETS),
+            hide: arrayValue(components.hide, []).map(cleanComponentTarget).filter(Boolean).slice(0, MAX_DASHBOARD_WIDGETS),
             hideNonTargetDevices: booleanValue(components.hideNonTargetDevices, false)
         },
-        metadata: normalizeViewTooltipMetadata(objectValue(input.metadata, {}))
+        metadata: normalizeTooltipTemplateRefs(normalizeViewTooltipMetadata(objectValue(input.metadata, {})))
     };
 }
 
@@ -581,6 +589,7 @@ function createEmptyDocument(context = {}) {
             ...sceneViews
         },
         widgets: [defaultNavigationWidget(canvas), defaultReturnButtonWidget(canvas)],
+        tooltipTemplates: normalizeTooltipTemplates(undefined, sceneViews.views, normalizeWidget),
         metadata: {
             updatedAt: new Date().toISOString(),
             source: shortText(context.source, 'designer', 64)
@@ -647,6 +656,7 @@ function normalizeDocument(input, context = {}) {
             ...sceneViews
         },
         widgets: normalizedReferences.widgets,
+        tooltipTemplates: normalizeTooltipTemplates(source.tooltipTemplates, sceneViews.views, normalizeWidget),
         parameters: normalizeParameterDefinitions(source.parameters || []),
         metadata: {
             ...objectValue(source.metadata, {}),
@@ -662,6 +672,10 @@ function buildDocumentFromLegacy({ project, scene, widgets }) {
 
 function validateDocument(document, options = {}) {
     const errors = [];
+    // An unfinished draft may contain a newly added filter/business widget.
+    // Only blank selections are deferred; malformed or stale chosen bindings,
+    // write intent, and published/re-activated documents remain strict.
+    const allowIncompleteBindings = options.allowIncompleteBindings === true;
     const input = objectValue(document, {});
     let parameters=[];
     try { parameters=normalizeParameterDefinitions(input.parameters || []); } catch(error) { errors.push(error.message); }
@@ -670,6 +684,33 @@ function validateDocument(document, options = {}) {
     if (!shortText(input.sceneId, '', 128)) errors.push('sceneId 不能为空');
     if (!Array.isArray(input.widgets)) errors.push('widgets 必须是数组');
     if (Array.isArray(input.widgets) && input.widgets.length > MAX_DASHBOARD_WIDGETS) errors.push(`组件数量不能超过 ${MAX_DASHBOARD_WIDGETS} 个`);
+    if (input.tooltipTemplates !== undefined) {
+        const tooltipConfig = objectValue(input.tooltipTemplates, {});
+        if (!Array.isArray(tooltipConfig.templates) || tooltipConfig.templates.length > MAX_TOOLTIP_TEMPLATES) errors.push(`悬停模板必须是数组且不超过 ${MAX_TOOLTIP_TEMPLATES} 个`);
+        const templates = Array.isArray(tooltipConfig.templates) ? tooltipConfig.templates : [];
+        const templateIds = new Set();
+        for (const template of Array.isArray(templates) ? templates : []) {
+            if (!template?.id || !/^[a-zA-Z0-9_-]{1,128}$/.test(template.id) || templateIds.has(template.id)) errors.push('悬停模板 ID 无效或重复');
+            templateIds.add(template?.id);
+            if (!['device', 'part'].includes(template?.kind)) errors.push('悬停模板类型无效');
+            if (!Array.isArray(template?.widgets) || template.widgets.length > MAX_TOOLTIP_WIDGETS) errors.push(`悬停模板最多 ${MAX_TOOLTIP_WIDGETS} 个基础组件`);
+            const templateWidgets = Array.isArray(template?.widgets) ? template.widgets : [];
+            for (const widget of templateWidgets) {
+                if (!TOOLTIP_WIDGET_TYPES.includes(widget?.type)) errors.push(`悬停模板只支持基础组件：${widget?.type}`);
+                const minHeight = widget?.type === 'container' ? 1 : 20;
+                if (!widget?.frame || !Number.isFinite(Number(widget.frame.height)) || !Number.isFinite(Number(widget.frame.width)) || Number(widget.frame.height) < minHeight || Number(widget.frame.width) < 1) errors.push('悬停组件尺寸无效');
+            }
+            // Reuse all existing read-only/data-source/event validation, while
+            // allowing a one-pixel basic container as a divider in local space.
+            const nested = templateWidgets.map(widget => ({ ...widget, frame: { ...widget?.frame, width: Math.max(20, Number(widget?.frame?.width || 0)), height: Math.max(20, Number(widget?.frame?.height || 0)) } }));
+            errors.push(...validateDocument({ ...input, tooltipTemplates: undefined, widgets: nested, scene: { ...input.scene, views: (input.scene?.views || []).map(view => ({ ...view, componentState: { show: [], hide: [] } })) } }, { throwOnError: false, allowIncompleteBindings }).map(error => `悬停模板“${template?.name || template?.id || '(无效)'}”：${error}`));
+        }
+        for (const kind of ['device', 'part']) if (!templates.some(template => template?.id === tooltipConfig.defaults?.[kind] && template?.kind === kind)) errors.push(`默认${kind === 'device' ? '设备' : '部件'}悬停模板不存在`);
+        for (const view of input.scene?.views || []) for (const kind of ['device', 'part']) {
+            const ref = view.metadata?.tooltipTemplates?.[kind];
+            if (ref && !['inherit', 'disabled'].includes(ref) && !templates.some(template => template?.id === ref && template?.kind === kind)) errors.push(`视角“${view.name || view.id}”的悬停模板不存在`);
+        }
+    }
 
     const scene = objectValue(input.scene, {});
     const views = Array.isArray(scene.views) ? scene.views : [];
@@ -706,7 +747,7 @@ function validateDocument(document, options = {}) {
     const duplicateIds = new Set();
     const visitedIds = new Set();
     for (const [index, widget] of (input.widgets || []).entries()) {
-        const label = `第 ${index + 1} 个组件`;
+        const label = `第 ${index + 1} 个组件“${shortText(widget?.title, widget?.id || '(未命名)', 128)}”（${widget?.id || '(无效 ID)'}）`;
         if (!widget?.id || !/^[a-zA-Z0-9_-]+$/.test(widget.id)) errors.push(`${label} ID 不合法`);
         if (visitedIds.has(widget?.id) && !duplicateIds.has(widget?.id)) {
             errors.push(`组件 ID 重复：${widget.id}`);
@@ -716,14 +757,14 @@ function validateDocument(document, options = {}) {
         if (!ALLOWED_WIDGET_TYPES.has(widget?.type)) errors.push(`${label} 类型不支持：${widget?.type}`);
         if (widget?.type === 'filter') {
             const definition=parameters.find(p=>p.key===widget.content?.parameterKey);
-            if (!definition) errors.push(`${label} 请选择已定义的大屏参数`);
+            if (!definition && !(allowIncompleteBindings && !widget.content?.parameterKey)) errors.push(`${label} 请选择已定义的大屏参数`);
             if (!['select','text','number','date','checkbox'].includes(widget.content?.control)) errors.push(`${label} 的筛选类型不支持`);
             const options=widget.content?.options ?? [];
             if (!Array.isArray(options) || options.length>100) errors.push(`${label} 最多配置 100 个筛选选项`);
             else for (const item of options) {
                 try {
                     if (!item || typeof item.label!=='string' || item.label.length>80) throw new Error('筛选选项名称无效');
-                    resolveParameters(parameters,{[widget.content.parameterKey]:item.value});
+                    if (definition) resolveParameters(parameters,{[widget.content.parameterKey]:item.value});
                 } catch(error) { errors.push(`${label}：${error.message}`); }
             }
         }
@@ -736,7 +777,7 @@ function validateDocument(document, options = {}) {
                 errors.push(`${label} 的 PLC 绑定必须选择点位${currentDeviceScope ? '' : '和设备'}`);
             }
         }
-        if (widget?.data?.mode === 'business' && !widget.data.connectionId) {
+        if (widget?.data?.mode === 'business' && !widget.data.connectionId && !allowIncompleteBindings) {
             errors.push(`${label} 的业务只读组件必须选择外部数据库连接`);
         }
         if (widget?.data?.mode === 'dataset' && (!/^[a-zA-Z0-9_-]{1,80}$/.test(widget.data.datasetId) || !/^[a-zA-Z_][a-zA-Z0-9_]{0,63}$/.test(widget.data.datasetField))) errors.push(`${label} 请完整选择数据集与字段`);

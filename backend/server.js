@@ -153,6 +153,7 @@ const nativePreviewController = { wsServer: null };
 app.use('/api/native-preview', factoryContext, require('./routes/nativePreview')(nativePreviewController));
 app.use('/api/platform', factoryContext, require('./routes/platform'));
 app.use('/api/data-sources', factoryContext, require('./routes/dataSources'));
+app.use('/api/data-center', factoryContext, require('./routes/dataCenter'));
 // 外部排产/生产数据库只读适配层：供数字孪生大屏读取批次、工艺和统计数据。
 app.use('/api/business-data', factoryContext, require('./routes/businessData'));
 // 热处理行业模板、点位包、报警规则和部件绑定清单（只读蓝图）。
@@ -877,6 +878,7 @@ async function startServer() {
 
     const WsServer = require('./services/wsServer');
     const wsServer = new WsServer();
+    wsServer.setMotionInputResolver(new (require('./services/motionInputs').MotionInputResolver)());
     wsServer.attach(httpServer, {
         verifyClient: (info, done) => {
             if (!isLicenseEnforced() || getLicenseStatus().valid) {
@@ -931,6 +933,7 @@ async function startServer() {
         shuttingDown = true;
         const forceExit = setTimeout(() => process.exit(1), 12000);
         forceExit.unref?.();
+        try { wsServer.motionInputResolver?.dispose(); } catch (e) { /* ignore */ }
         try { await dataEngine.dispose(); } catch (e) { /* ignore */ }
         try { closeAlarmOutbox(); } catch (e) { console.error('[Shutdown] Alarm outbox:', e.message); }
         try { await historyRetention.stop(); } catch (e) { console.error('[Shutdown] History retention:', e.message); }

@@ -138,6 +138,8 @@ class CollectorProcess {
                 collectorStatus: { ...value.collectorStatus, status, lastFrameAt: null } };
         }
         const invalid = [...this.snapshots.values()].map(device => ({ ...device,
+            connectionStatusTimestamp: Date.now(),
+            status: { ...device.status, online:false },
             quality: Object.fromEntries(['analog', 'status', 'digital'].map(group => [group,
                 Object.fromEntries(Object.keys(device[group] || {}).map(key => [key, 'bad']))])) }));
         this.snapshots.clear();

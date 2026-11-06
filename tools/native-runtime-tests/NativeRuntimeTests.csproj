@@ -16,6 +16,7 @@
     <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
     <Compile Include="../../unity-client/Assets/Scripts/Backend/RealtimeWebSocketClient.cs" Link="RealtimeWebSocketClient.cs" />
     <Compile Include="../../unity-client/Assets/Scripts/Backend/ConfigurationSyncPolicy.cs" Link="ConfigurationSyncPolicy.cs" />
+    <Compile Include="../../unity-client/Assets/Scripts/Backend/ModelHotRefreshPolicy.cs" Link="ModelHotRefreshPolicy.cs" />
     <Compile Include="../../unity-client/Assets/Scripts/Backend/RealtimeMessageQueue.cs" Link="RealtimeMessageQueue.cs" />
     <Compile Include="../../unity-client/Assets/Scripts/Backend/LoopbackDownloadProvider.cs" Link="LoopbackDownloadProvider.cs" />
     <Compile Include="../../native-admin-host/WebContentPolicy.cs" Link="WebContentPolicy.cs" />

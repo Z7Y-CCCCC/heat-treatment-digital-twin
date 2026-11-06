@@ -4,6 +4,7 @@ import { normalizePlayback } from '../../../shared/widgetPlayback.mjs'
 import { hudTextDefaults } from './hudTextConfig.js'
 export const DASHBOARD_SCHEMA_VERSION = 3
 import { normalizeParameterDefinitions } from '../../../shared/dashboardParameters.mjs'
+import { normalizeTooltipTemplates, normalizeTooltipTemplateRefs } from '../../../shared/tooltipTemplates.mjs'
 
 export const DEFAULT_DASHBOARD_CANVAS = Object.freeze({
   width: 1920,
@@ -98,7 +99,7 @@ function normalizeDashboardView(source = {}, index = 0) {
       hide: stringArray(componentState.hide),
       hideNonTargetDevices: !!componentState.hideNonTargetDevices
     },
-    metadata: normalizeViewTooltipMetadata(deepClone(objectValue(source.metadata, {})))
+    metadata: normalizeTooltipTemplateRefs(normalizeViewTooltipMetadata(deepClone(objectValue(source.metadata, {}))))
   }
 }
 
@@ -613,6 +614,7 @@ export function normalizeDashboardDocument(source = {}) {
       ...normalizedViews
     },
     widgets,
+    tooltipTemplates: normalizeTooltipTemplates(source.tooltipTemplates, normalizedViews.views, normalizeDashboardWidget),
     parameters: normalizeParameterDefinitions(source.parameters || []),
     metadata: deepClone(source.metadata || {})
   }

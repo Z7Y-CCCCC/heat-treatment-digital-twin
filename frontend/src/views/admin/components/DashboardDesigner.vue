@@ -8,18 +8,20 @@ import DevicePointBindingEditor from './DevicePointBindingEditor.vue'
 import TrendChartSettings from './TrendChartSettings.vue'
 import { migrateDeviceTrend, findBoundPoint } from '../../../runtime/pointBinding.js'
 import { createDashboardDataStore } from '../../../runtime/DataStore.js'
-import {useWidgetClock} from '../../../runtime/widgetPlayback.js'
+import {useWidgetClock,createWidgetPlaybackController,WidgetPlaybackKey} from '../../../runtime/widgetPlayback.js'
 import {playbackSelection} from '../../../../../shared/widgetPlayback.mjs'
 import DataSetBindingEditor from './DataSetBindingEditor.vue'
+import DataCatalogPicker from './DataCatalogPicker.vue'
+import { catalogBinding, catalogItemUsable } from '../../../runtime/dataCatalog.js'
 import { permissionDirective as vPermission } from '../../../runtime/pagePermissionUi.js'
 import { canAdminPage } from '../../../runtime/adminSession.js'
 import ViewHierarchyTree from './ViewHierarchyTree.vue'
 import GlobalViewSection from './GlobalViewSection.vue'
 import { isGlobalView } from '../../../../../shared/viewNavigation.mjs'
-import { normalizeGlobalViews } from '../../../../../shared/viewNavigation.mjs'
+import { normalizeGlobalViews, applyViewNavigation } from '../../../../../shared/viewNavigation.mjs'
 import { designerEntryView, designerViewAvailable } from '../../../runtime/designerEntryView.js'
 import { hierarchyHidden, moveView, setHierarchyHidden, visibleViewLink, viewDescendants } from '../../../runtime/viewHierarchy.js'
-import { computed, nextTick, onBeforeUnmount, onMounted, onActivated, onDeactivated, reactive, ref, useId, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, onActivated, onDeactivated, provide, reactive, ref, useId, watch } from 'vue'
 import { widgetBindingChoices, LEGACY_BINDINGS } from '../../../runtime/widgetBindingChoices.js'
 import { adminApi } from '../../../config/factoryConfig.js'
 import WidgetRenderer from '../../../runtime/WidgetRenderer.vue'
@@ -27,9 +29,10 @@ import { hudTextFields } from '../../../runtime/hudTextConfig.js'
 import { effectiveWidgetBackground, updateWidgetBackground, updateWidgetBackgroundOpacity } from '../../../runtime/widgetAppearance.js'
 import { applyReferenceHudLayout } from '../../../runtime/referenceHudLayout.js'
 import { applyFactoryHudModules } from '../../../runtime/factoryHudModules.js'
-import { applyVisibilityAction, matchesRule, widgetRuntimeVisible } from '../../../runtime/dashboardRules.js'
+import { applyVisibilityAction, matchesRule } from '../../../runtime/dashboardRules.js'
+import { isCanvasWidget, widgetViewVisibility, widgetPresentationState } from '../../../runtime/widgetPresentation.js'
 import ColorField from './ColorField.vue'
-import { DEVICE_TOOLTIP_FIELDS, normalizeDeviceTooltip, validDeviceTooltipPointKey } from '../../../../../shared/deviceTooltip.mjs'
+import TooltipTemplateEditor from './TooltipTemplateEditor.vue'
 import MapGeometryPreview from './MapGeometryPreview.vue'
 import TemplateFieldMapper from './TemplateFieldMapper.vue'
 import { templateFieldBindings, remapCopiedWidgetEvents } from '../../../runtime/templateFieldMapping.js'
@@ -64,7 +67,7 @@ const templateFileRef = ref(null)
 const templateImport = ref(null)
 const templateFieldImport = ref(null)
 const templateMapping = reactive({})
-const templateKinds = { devices: '设备', points: '点位', datasets: '数据集', connections: '数据源', workshops: '车间', lines: '产线' }
+const templateKinds = { devices: '设备', points: '点位', datasets: '数据表', connections: '数据源', workshops: '车间', lines: '产线' }
 const templateCatalog = computed(() => ({ devices: devices.value, points: points.value, datasets: dataSetDefinitions.value, connections: [...dataSources.value, ...httpApiSources.value], workshops: workshops.value, lines: lines.value }))
 const draftFactoryId = getFactoryScope()
 const documentModel = ref(normalizeDashboardDocument())
@@ -76,17 +79,23 @@ const saving = ref(false)
 const publishing = ref(false)
 const status = reactive({ tone: 'info', text: '正在读取设计器...' })
 const publishNotice = ref(null)
+const validationIssues = ref([])
+const validationIssuesExpanded = ref(true)
+const validationIssuePhase = ref('')
 let publishNoticeTimer = null, publishNoticeSequence = 0
 const acceptanceReport = ref(null)
 const acceptanceLoading = ref(false)
 const zoom = ref(0.68)
 const previewMode = ref(false)
 const playbackNow=useWidgetClock()
+const playbackController=createWidgetPlaybackController()
+provide(WidgetPlaybackKey,playbackController)
 const playbackDevices=computed(()=>devices.value.map(d=>({...d,lineId:d.line_id || '',workshopId:lines.value.find(l=>l.id===d.line_id)?.workshop_id || d.workshop_id || ''})))
 const integrationOpen = ref(false)
 const fullscreenActive = ref(false)
 const designerShellRef = ref(null)
 const inspectorTab = ref('content')
+const designerMode = ref('layout')
 const selectedIds = ref([])
 const guides = reactive({ x: [], y: [] })
 const selectionBox = reactive({ active: false, x: 0, y: 0, width: 0, height: 0 })
@@ -160,19 +169,18 @@ const sitePreviewImage = ref(DEFAULT_STREET_IMAGE)
 const editorDeviceId = ref('')
 const viewInspectorTab = ref('camera')
 const deviceTooltipSupported = computed(() => ['factory', 'workshop', 'line'].includes(currentView.value?.mode))
-const deviceTooltipConfig = computed(() => normalizeDeviceTooltip(currentView.value?.metadata?.deviceTooltip))
-const deviceTooltipPointOptions = computed(() => [...new Map(points.value.map(point => {
-  const key = `${point.category || point.category_resolved || 'analog'}.${point.value_role || point.name || ''}`
-  return [key, { key, label: `${point.label || point.name || key}${point.unit ? ` (${point.unit})` : ''}` }]
-}).filter(([key]) => validDeviceTooltipPointKey(key))).values()])
-function updateDeviceTooltip(key, value) {
-  if (!deviceTooltipSupported.value) return
-  currentView.value.metadata = { ...currentView.value.metadata, deviceTooltip: normalizeDeviceTooltip({ ...deviceTooltipConfig.value, [key]: value }) }
-  commitHistory('修改设备悬浮提示')
+const partTooltipSupported = computed(() => currentView.value?.mode === 'device')
+function updateViewTooltipReference(kind, value) {
+  if (!currentView.value || !canAdminPage('platform.designer', 'edit')) return
+  currentView.value.metadata = { ...currentView.value.metadata, tooltipTemplates: { ...currentView.value.metadata?.tooltipTemplates, [kind]: value } }
+  if (kind === 'device') currentView.value.metadata.deviceTooltip = { ...currentView.value.metadata.deviceTooltip, enabled: value !== 'disabled' }
+  commitHistory('修改视角悬停提示模板引用')
 }
-function toggleDeviceTooltipItem(key, value, enabled) {
-  const items = deviceTooltipConfig.value[key]
-  updateDeviceTooltip(key, enabled ? [...items, value] : items.filter(item => item !== value))
+function setDesignerMode(mode) {
+  if (previewMode.value) return
+  endPointerOperation()
+  designerMode.value = mode
+  nextTick(() => { if (mode === 'layout') fitCanvas('comfortable') })
 }
 const viewPanelCollapsed = ref(false)
 const PANEL_LAYOUT_KEY = 'dashboard-designer-panel-layout-v1'
@@ -182,6 +190,7 @@ const leftPanelId = `${panelId}-designer-left-panel`
 const rightPanelId = `${panelId}-designer-right-panel`
 let editorStateBeforeReload = null
 let pointerOperation = null
+let canvasPointerSelection = null
 let realtimeTimer = 0
 let localPersistTimer = 0
 let viewportObserver = null
@@ -320,7 +329,7 @@ const overlayWidgets = computed(() => documentModel.value.widgets
   // Navigation and return are designer-authored components. Their runtime
   // renderer is still the WebView layer, while other Unity system panels stay
   // outside the editable canvas.
-  .filter(widget => ['navigation', 'return_button'].includes(widget.type) || (!SYSTEM_WIDGET_TYPES.has(widget.type) && widget.runtimeTarget !== 'unity'))
+  .filter(isCanvasWidget)
   .sort((left, right) => Number(left.zIndex || 0) - Number(right.zIndex || 0)))
 const systemWidgets = computed(() => documentModel.value.widgets.filter(widget => !['navigation', 'return_button'].includes(widget.type) && (SYSTEM_WIDGET_TYPES.has(widget.type) || widget.runtimeTarget === 'unity')))
 const viewComponentCandidates = computed(() => [
@@ -370,7 +379,6 @@ const designerScopeHint = computed(() => currentViewIsMapSurface.value
   ? '画布和图层按当前设备视角 + 预览设备过滤；不匹配当前设备的组件不会显示。'
   : '这是公共视角，所有设备共用；画布和图层只按当前全厂、车间或产线视角过滤。')
 const currentViewWidgets = computed(() => overlayWidgets.value.filter(widget => widgetAllowedInCurrentView(widget)))
-const currentViewHiddenWidgets = computed(() => viewComponentCandidates.value.filter(item => !widgetAllowedInCurrentView(item.widget)))
 const selectedCanvasWidgets = computed(() => selectedWidgets.value.filter(widget => widgetAllowedInCurrentView(widget)))
 const selectedAllLocked = computed(() => selectedCanvasWidgets.value.length > 0 && selectedCanvasWidgets.value.every(widget => widget.locked))
 const selectedHasUnlocked = computed(() => selectedCanvasWidgets.value.some(widget => !widget.locked))
@@ -422,8 +430,14 @@ const libraryGroups = computed(() => {
     if (!groups.has(item.group)) groups.set(item.group, [])
     groups.get(item.group).push(item)
   })
-  return [...groups.entries()].map(([name, items]) => ({ name, items }))
+  return [...groups.entries()].map(([name, items], index) => ({ name, items, id: `${panelId}-component-group-${index}` }))
 })
+// Library expansion is transient editor UI, not a saved scene setting.
+const expandedLibraryGroups = reactive(new Set())
+function toggleLibraryGroup(name) {
+  if (expandedLibraryGroups.has(name)) expandedLibraryGroups.delete(name)
+  else expandedLibraryGroups.add(name)
+}
 const zoomPercent = computed(() => `${Math.round(zoom.value * 100)}%`)
 function widgetMatchesCurrentView(widget) {
   const view = currentView.value
@@ -442,7 +456,7 @@ function widgetMatchesCurrentView(widget) {
   // left to preview mode so a changing live value cannot make a component
   // disappear while it is being edited.
   const contextRules = (visibility.rules || []).filter(rule => rule?.source !== 'data')
-  if (!contextRules.length) return true
+  if (!contextRules.length || visibility.ruleMode === 'any' && visibility.rules.some(rule => rule?.source === 'data')) return true
   const matches = contextRules.map(rule => matchesRule(rule, { context: designerVisibilityContext.value }))
   return visibility.ruleMode === 'any' ? matches.some(Boolean) : matches.every(Boolean)
 }
@@ -451,21 +465,28 @@ function widgetAllowedInCurrentView(widget) {
   if (!widgetMatchesCurrentView(widget)) return false
   const view = currentView.value
   if (!view) return false
-  const state = view.componentState || {}
-  if (MAP_SURFACE_VIEW_IDS.has(view.id) && !state.show?.includes(widget.id) && !state.show?.includes(`group:${widget.groupId}`)) return false
-  if (state.hide?.includes(widget.id) || state.hide?.includes(`group:${widget.groupId}`)) return false
-  if (state.show?.length && !state.show.includes(widget.id) && !state.show.includes(`group:${widget.groupId}`)) return false
-  return true
+  return widgetViewVisibility(widget, view).visible
 }
-const canvasWidgets = computed(() => overlayWidgets.value.filter(widget => widgetAllowedInCurrentView(widget)).filter(widget => previewMode.value
-  ? widgetRuntimeVisible(widget, {
-      context: previewContext,
-      dataValue: previewValueForWidget(widget),
-      dataRecord: databasePreviewValues[widget.id] || null,
-      groupVisibility: previewGroupVisibility,
-      widgetVisibility: previewWidgetVisibility
-    })
-  : true))
+const componentRuntimeScene = computed(() => applyViewNavigation({scene: deepClone(documentModel.value.scene)}, globalViewPolicy.value).scene)
+function componentDisplayState(widget) {
+  return widgetPresentationState(widget, {
+    view: componentRuntimeScene.value.views.find(view => view.id === currentView.value?.id), context: designerVisibilityContext.value,
+    policy: globalViewPolicy.value, defaultViewId: componentRuntimeScene.value.defaultViewId,
+    dataValue: previewValueForWidget(widget), dataRecord: databasePreviewValues[widget.id] || null,
+    groupVisibility: previewGroupVisibility, widgetVisibility: previewWidgetVisibility
+  })
+}
+const componentDisplayStates = computed(() => Object.fromEntries(overlayWidgets.value.map(widget => [widget.id, componentDisplayState(widget)])))
+const layerVisibilityFilter = ref('current')
+const layerWidgets = computed(() => overlayWidgets.value.filter(widget => {
+  if (layerVisibilityFilter.value === 'all') return true
+  if (layerVisibilityFilter.value === 'hidden') return !componentDisplayStates.value[widget.id].visible
+  const membership = widgetViewVisibility(widget, currentView.value)
+  return membership.visible || membership.code === 'view-hidden'
+}))
+const selectedDisplayState = computed(() => selectedWidget.value && componentDisplayStates.value[selectedWidget.value.id])
+const canvasWidgets = computed(() => overlayWidgets.value.filter(widget => widgetAllowedInCurrentView(widget))
+  .filter(widget => !previewMode.value || componentDisplayStates.value[widget.id].visible))
 const canvasTransformStyle = computed(() => ({
   width: `${canvas.value.width}px`,
   height: `${canvas.value.height}px`,
@@ -482,6 +503,58 @@ const canvasOuterStyle = computed(() => ({
 function setStatus(text, tone = 'info') {
   status.text = text
   status.tone = tone
+}
+
+function setValidationIssues(messages, phase = 'error') {
+  const values = Array.isArray(messages) ? messages : String(messages || '').split('；')
+  const templates = documentModel.value.tooltipTemplates?.templates || []
+  validationIssuePhase.value = phase
+  validationIssues.value = [...new Set(values.filter(message => typeof message === 'string' && message.trim()))].map(message => {
+    // Old servers supplied only a component index. Newer servers include its
+    // stable ID as well; prefer that ID so reordering does not select a sibling.
+    const templateName = message.match(/^悬停模板[“"]([^”"]+)[”"]/)?.[1]
+    const template = templateName ? templates.find(item => item.name === templateName || item.id === templateName) : null
+    const widgets = templateName ? template?.widgets || [] : documentModel.value.widgets
+    const explicitId = message.match(/[”"]\s*[（(]([a-zA-Z0-9_-]+)[）)]/)?.[1]
+      || message.match(/个组件\s*[（(]([a-zA-Z0-9_-]+)[）)]/)?.[1]
+    const index = Number(message.match(/第\s*(\d+)\s*个组件/)?.[1]) - 1
+    const widget = widgets.find(item => item.id === explicitId)
+      || (!explicitId && Number.isInteger(index) && index >= 0 ? widgets[index] : null)
+    const label = widget ? `${widget.title || widgetTypeLabel(widget.type)} · ${widget.id}` : ''
+    return { message, widgetId: widget?.id || '', label, templateId: template?.id || '', isTooltip: !!templateName }
+  })
+  validationIssuesExpanded.value = true
+}
+
+function validationFailure(result) {
+  const error = new Error(result.error)
+  error.validationErrors = result.errors
+  return error
+}
+
+async function locateValidationIssue(issue) {
+  const widget = documentModel.value.widgets.find(item => item.id === issue.widgetId)
+  if (!widget || issue.isTooltip) return
+  if (previewMode.value || fullscreenActive.value) await toggleFullscreenPreview()
+  setDesignerMode('layout')
+  if (!widgetAllowedInCurrentView(widget)) {
+    const view = views.value.find(item => widget.visibility?.viewIds?.includes(item.id))
+      || views.value.find(item => item.componentState?.show?.includes(widget.id))
+      || views.value.find(item => widget.visibility?.viewModes?.includes(item.mode))
+    if (view) selectView(view.id)
+  }
+  if (widget.visibility?.matchBoundDevice && widget.data?.deviceScope === 'fixed' && widget.data?.deviceId) {
+    editorDeviceId.value = String(widget.data.deviceId)
+    syncPreviewContextFromView()
+  }
+  panelLayout.leftCollapsed = false
+  layersCollapsed.value = false
+  layerVisibilityFilter.value = 'all'
+  selectedIds.value = [widget.id]
+  inspectorTab.value = widget.type === 'filter' ? 'content' : 'data'
+  revealRightPanel()
+  await nextTick()
+  focusWidgetInCanvas(widget)
 }
 
 function clearPublishNotice() {
@@ -669,6 +742,7 @@ async function loadDesigner({ allowLocal = true } = {}) {
     ])
     if (designerDisposed) return
     if (designer?.error) throw new Error(designer.error)
+    validationIssues.value = []
     globalViewPolicy.value = normalizeGlobalViews(settings.global_view_navigation)
     revision.value = Number(designer.revision || 0)
     const serverDocument = normalizeDashboardDocument(designer.document || {})
@@ -1134,13 +1208,27 @@ function selectWidget(widget, event = {}, { focusCanvas = false } = {}) {
     : [widget.id]
   if (event.ctrlKey || event.metaKey) {
     const next = new Set(selectedIds.value)
-    groupIds.forEach(id => next.has(id) ? next.delete(id) : next.add(id))
+    const removeGroup = groupIds.every(id => next.has(id))
+    groupIds.forEach(id => removeGroup ? next.delete(id) : next.add(id))
     selectedIds.value = [...next]
+  } else if (event.shiftKey) {
+    selectedIds.value = [...new Set([...selectedIds.value, ...groupIds])]
   } else if (!selectedIds.value.includes(widget.id) || groupIds.some(id => !selectedIds.value.includes(id))) {
     selectedIds.value = groupIds
   }
   if (selectedIds.value.length) revealRightPanel()
   if (focusCanvas) focusWidgetInCanvas(widget)
+}
+
+function selectCanvasWidget(widget, event = {}) {
+  const pointerSelection = canvasPointerSelection
+  canvasPointerSelection = null
+  if (previewMode.value) return
+  // A pointer gesture already selected on pointerdown. Do not toggle it again
+  // on its following click; keyboard clicks and the layer list still select.
+  if (event.detail !== 0 && pointerSelection?.widgetId === widget.id
+    && (pointerSelection.pointerId == null || event.pointerId == null || event.pointerId === pointerSelection.pointerId)) return
+  selectWidget(widget, event)
 }
 
 function clearSelection(event) {
@@ -1149,6 +1237,7 @@ function clearSelection(event) {
 
 function beginMarqueeSelection(event) {
   if (previewMode.value || event.button !== 0) return
+  endPointerOperation()
   const point = canvasPoint(event)
   pointerOperation = {
     kind: 'marquee',
@@ -1163,6 +1252,7 @@ function beginMarqueeSelection(event) {
   event.preventDefault()
   window.addEventListener('pointermove', handlePointerMove)
   window.addEventListener('pointerup', endPointerOperation, { once: true })
+  window.addEventListener('pointercancel', endPointerOperation, { once: true })
 }
 
 function addWidget(type, position = {}) {
@@ -1281,15 +1371,19 @@ function handleCanvasDrop(event) {
   addWidget(type, { x: point.x - 120, y: point.y - 60 })
 }
 
-function movableSelection(widget, event) {
-  selectWidget(widget, event)
-  const selected = documentModel.value.widgets.filter(item => selectedIds.value.includes(item.id) && !item.locked)
-  return selected.length ? selected : (!widget.locked ? [widget] : [])
+function movableSelection(widget) {
+  // Cancelling this widget must not start dragging the remaining selection.
+  if (widget.locked || !selectedIds.value.includes(widget.id)) return []
+  return documentModel.value.widgets.filter(item => selectedIds.value.includes(item.id) && !item.locked)
 }
 
 function beginMove(event, widget) {
-  if (previewMode.value || event.button !== 0 || widget.locked) return
-  const moving = movableSelection(widget, event)
+  canvasPointerSelection = null
+  if (previewMode.value || event.button !== 0) return
+  endPointerOperation()
+  selectWidget(widget, event)
+  canvasPointerSelection = { widgetId: widget.id, pointerId: event.pointerId }
+  const moving = movableSelection(widget)
   if (!moving.length) return
   event.preventDefault()
   const frames = new Map(moving.map(item => [item.id, deepClone(item.frame)]))
@@ -1303,11 +1397,14 @@ function beginMove(event, widget) {
   }
   window.addEventListener('pointermove', handlePointerMove)
   window.addEventListener('pointerup', endPointerOperation, { once: true })
+  window.addEventListener('pointercancel', endPointerOperation, { once: true })
 }
 
 function beginResize(event, widget, direction) {
-  if (previewMode.value || widget.locked) return
+  if (previewMode.value || event.button !== 0 || widget.locked) return
+  endPointerOperation()
   selectWidget(widget)
+  canvasPointerSelection = { widgetId: widget.id, pointerId: event.pointerId }
   event.preventDefault()
   pointerOperation = {
     kind: 'resize',
@@ -1320,6 +1417,7 @@ function beginResize(event, widget, direction) {
   }
   window.addEventListener('pointermove', handlePointerMove)
   window.addEventListener('pointerup', endPointerOperation, { once: true })
+  window.addEventListener('pointercancel', endPointerOperation, { once: true })
 }
 
 function findWidget(id) {
@@ -1412,13 +1510,18 @@ function handlePointerMove(event) {
       y: Math.max(0, Math.min(canvas.value.height - primaryStart.height, primaryStart.y + dy))
     }
     const aligned = alignedPosition(raw, new Set(pointerOperation.frames.keys()))
-    const alignedDx = aligned.x - primaryStart.x
-    const alignedDy = aligned.y - primaryStart.y
+    // Keep one delta for the entire selection, including when any member
+    // reaches a canvas edge, rather than clamping each frame independently.
+    const frames = [...pointerOperation.frames.values()]
+    const alignedDx = Math.max(-Math.min(...frames.map(frame => frame.x)),
+      Math.min(canvas.value.width - Math.max(...frames.map(frame => frame.x + frame.width)), aligned.x - primaryStart.x))
+    const alignedDy = Math.max(-Math.min(...frames.map(frame => frame.y)),
+      Math.min(canvas.value.height - Math.max(...frames.map(frame => frame.y + frame.height)), aligned.y - primaryStart.y))
     pointerOperation.frames.forEach((start, id) => {
       const target = findWidget(id)
       if (!target) return
-      target.frame.x = Math.max(0, Math.min(canvas.value.width - start.width, start.x + alignedDx))
-      target.frame.y = Math.max(0, Math.min(canvas.value.height - start.height, start.y + alignedDy))
+      target.frame.x = start.x + alignedDx
+      target.frame.y = start.y + alignedDy
     })
     if (primaryWidget) primaryWidget.frame = { ...primaryWidget.frame }
     return
@@ -1443,6 +1546,8 @@ function handlePointerMove(event) {
 
 function endPointerOperation() {
   window.removeEventListener('pointermove', handlePointerMove)
+  window.removeEventListener('pointerup', endPointerOperation)
+  window.removeEventListener('pointercancel', endPointerOperation)
   guides.x = []
   guides.y = []
   if (pointerOperation?.kind === 'marquee') {
@@ -1555,7 +1660,7 @@ function moveLayer(widget, mode) {
 }
 
 function toggleLayerVisibility(widget) {
-  widget.visible = !widget.visible
+  widget.visible = widget.visible === false || widget.visible === 0
   commitHistory(widget.visible ? '显示组件' : '隐藏组件')
 }
 
@@ -1804,7 +1909,7 @@ async function previewDatabaseBinding(widget = selectedWidget.value, silent = fa
 }
 
 const externalPreviewSequences=new Map()
-function previewDevice(widget){return playbackSelection(widget.data,previewContext,playbackDevices.value,previewMode.value?playbackNow.value:0).device}
+function previewDevice(widget){return playbackSelection(widget.data,previewContext,playbackDevices.value,previewMode.value?playbackController.timeFor(widget,playbackNow.value):0).device}
 async function previewExternalBinding(widget,read){
   const id=widget.id,seq=(externalPreviewSequences.get(id)||0)+1;externalPreviewSequences.set(id,seq)
   const selected=widget.data.deviceScope==='global'?{id:'',name:'',lineId:'',workshopId:''}:previewDevice(widget),binding=JSON.stringify(widget.data),context=JSON.stringify(previewContext)
@@ -1884,6 +1989,32 @@ function selectHttpField(path) {
   void previewHttpBinding()
 }
 
+function chooseCatalogData(item) {
+  const widget = selectedWidget.value
+  if (!widget || !canAdminPage('platform.designer', 'edit') || !catalogItemUsable(item, { widgetType: widget.type, mapContext: currentViewIsMapSurface.value })) return
+  const binding = catalogBinding(item)
+  if (!binding) return
+  widget.data = { ...binding, unit: item.unit || binding.unit || '', decimals: widget.data.decimals ?? 1 }
+  widget.visibility.matchBoundDevice = false
+  if (widget.type === 'text') {
+    widget.content.text = '{value}{unit}'
+    widget.content.datasetTextMode = 'template'
+    delete widget.content.lines
+    delete widget.content.valueMap
+  }
+  if (['metrics', 'hud_kpi_panel'].includes(widget.type)) {
+    const path = binding.mode === 'dataset' ? `dataset.${binding.datasetField}` : binding.path
+    widget.content.items = [{ label: item.label, path, unit: item.unit || '', decimals: widget.data.decimals }]
+    widget.content.chartPath = path
+    widget.content.usePartPoints = false
+  }
+  if (widget.type === 'hud_chart_dock') {
+    if (binding.mode === 'dataset') widget.content.statPath = `dataset.${binding.datasetField}`
+    else delete widget.content.statPath
+  }
+  invalidateDataSetPreview(); commitHistory('从数据中心绑定数据')
+}
+
 function changeBindingMode() {
   const widget = selectedWidget.value
   if (!widget) return
@@ -1949,7 +2080,7 @@ function changeBindingMode() {
 
 function changeReusableBinding() {
   const widget=selectedWidget.value
-  if(!widget?.data.datasetField)return recordProperty('修改数据集绑定')
+  if(!widget?.data.datasetField)return recordProperty('修改数据表绑定')
   if(['metrics','hud_kpi_panel'].includes(widget.type)) {
     const path=`dataset.${widget.data.datasetField}`
     widget.content.chartPath=path
@@ -1960,7 +2091,7 @@ function changeReusableBinding() {
     }
   }
   if(widget.type==='hud_chart_dock')widget.content.statPath=`dataset.${widget.data.datasetField}`
-  recordProperty('修改数据集绑定')
+  recordProperty('修改数据表绑定')
 }
 
 function useDatasetPanelFields() {
@@ -2010,7 +2141,8 @@ function normalizeVisibilityEventTarget(event) {
 }
 
 const previewPlaybackKeys=new Map()
-watch(playbackNow,()=>{if(!previewMode.value || designerDisposed || !designerActive)return;for(const w of overlayWidgets.value.filter(w=>['dataset','database','http_api','business'].includes(w.data?.mode))){const id=playbackSelection(w.data,previewContext,playbackDevices.value,playbackNow.value).device?.id || '';const key=id+':'+Math.floor(playbackNow.value/(w.data.refreshMs || 5000));if(previewPlaybackKeys.get(w.id)!==key){previewPlaybackKeys.set(w.id,key);void previewWidgetBinding(w,true)}}})
+watch(()=>[previewMode.value,documentModel.value.sceneId,...['factoryId','viewId','viewMode','workshopId','lineId','deviceId','partId'].map(key=>previewContext[key])],()=>{playbackController.reset();previewPlaybackKeys.clear()},{flush:'sync'})
+watch(playbackNow,()=>{if(!previewMode.value || designerDisposed || !designerActive)return;for(const w of overlayWidgets.value.filter(w=>['dataset','database','http_api','business'].includes(w.data?.mode))){const id=previewDevice(w)?.id || '';const key=id+':'+Math.floor(playbackNow.value/(w.data.refreshMs || 5000));if(previewPlaybackKeys.get(w.id)!==key){previewPlaybackKeys.set(w.id,key);void previewWidgetBinding(w,true)}}})
 function enterPreviewMode() {
   previewMode.value = true
   syncPreviewContextFromView()
@@ -2241,7 +2373,7 @@ async function saveDraft() {
     const submitted = deepClone(documentModel.value)
     const submittedSnapshot = snapshot(submitted)
     const result = await adminApi.saveDashboardDraft(submitted.sceneId, submitted, revision.value)
-    if (result?.error) throw new Error(result.error)
+    if (result?.error) throw validationFailure(result)
     if (designerDisposed) return false
     const editedDuringSave = snapshot() !== submittedSnapshot
     const savedDocument = normalizeDashboardDocument(result.document)
@@ -2258,9 +2390,12 @@ async function saveDraft() {
       restoreEditorState(editorState)
       setStatus(`草稿已保存，修订 ${revision.value}；现场仍运行已发布版本`, 'success')
     }
+    setValidationIssues(result.warnings || [], 'draft')
+    if (validationIssues.value.length) setStatus(`草稿已保存，修订 ${revision.value}；${validationIssues.value.length} 项配置待完善，暂不能发布${editedDuringSave ? '；新修改请再次保存' : ''}`, 'warning')
     emit('reload')
     return true
   } catch (error) {
+    setValidationIssues(error.validationErrors?.length ? error.validationErrors : error.message)
     setStatus(error.message || '草稿保存失败', 'danger')
     persistLocalDraft()
     return false
@@ -2273,6 +2408,7 @@ async function publishVersion() {
   if (publishing.value || saving.value) return
   clearPublishNotice()
   rememberEditorState()
+  let savedBeforePublish = false
   if (isDirty.value) {
     if (!await saveDraft()) {
       showPublishNotice(`保存失败：${status.text || '请重试'}`)
@@ -2282,20 +2418,30 @@ async function publishVersion() {
       showPublishNotice('尚未发布：保存期间有新修改，请再次保存并发布', 'warning')
       return
     }
+    savedBeforePublish = true
+  }
+  if (validationIssuePhase.value === 'draft' && validationIssues.value.length) {
+    validationIssuesExpanded.value = true
+    const message = `草稿已保存，尚未发布：${validationIssues.value.length} 项组件配置待完善，请点击“定位组件”处理`
+    setStatus(message, 'warning')
+    showPublishNotice(message, 'warning')
+    return
   }
   publishing.value = true
   try {
     const result = await adminApi.publishDashboard(documentModel.value.sceneId, publishForm.version, publishForm.notes)
-    if (result?.error) throw new Error(result.error)
+    if (result?.error) throw validationFailure(result)
     // 发布接口已经返回新版本信息。设计器当前内存中的文档就是刚刚保存
     // 的草稿，不需要再次请求草稿、设备、点位和数据源，避免整块画布闪回加载态。
     applyPublishedRelease(result.release)
+    validationIssues.value = []
     setStatus(`版本 ${result.release.version} 已发布，运行端连接后将加载此版本`, 'success')
     showPublishNotice(`保存并发布成功（版本 ${result.release.version}）`, 'success')
     emit('reload')
   } catch (error) {
+    setValidationIssues(error.validationErrors?.length ? error.validationErrors : error.message)
     setStatus(error.message || '发布失败', 'danger')
-    showPublishNotice(`发布失败：${error.message || '请重试'}`)
+    showPublishNotice(`${savedBeforePublish ? '草稿已保存，尚未发布' : '发布失败'}：${error.message || '请重试'}`)
   } finally {
     publishing.value = false
   }
@@ -2346,6 +2492,7 @@ function handleKeydown(event) {
   if (ctrl && event.key.toLowerCase() === 's') { event.preventDefault(); saveDraft(); return }
   if (ctrl && event.key.toLowerCase() === 'z') { event.preventDefault(); event.shiftKey ? redo() : undo(); return }
   if (ctrl && event.key.toLowerCase() === 'y') { event.preventDefault(); redo(); return }
+  if (designerMode.value === 'tooltips') return
   if (ctrl && event.key.toLowerCase() === 'c') { event.preventDefault(); copySelected(); return }
   if (ctrl && event.key.toLowerCase() === 'g') { event.preventDefault(); event.shiftKey ? ungroupSelected() : groupSelected(); return }
   if (event.key === 'Delete' || event.key === 'Backspace') { event.preventDefault(); deleteSelected(); return }
@@ -2393,6 +2540,8 @@ function activateDesigner() {
 }
 
 function deactivateDesigner() {
+  playbackController.reset()
+  previewPlaybackKeys.clear()
   clearPublishNotice()
   scheduleCurrentViewPreview({ immediate: true })
   designerActive = false
@@ -2404,6 +2553,7 @@ function deactivateDesigner() {
   realtimeInFlight = false
   persistLocalDraft()
   endPointerOperation()
+  canvasPointerSelection = null
   window.removeEventListener('keydown', handleKeydown)
   window.clearInterval(realtimeTimer)
   realtimeTimer = 0
@@ -2465,9 +2615,14 @@ onBeforeUnmount(() => {
     </Teleport>
     <DashboardIntegrationPanel v-if="integrationOpen" :definitions="documentModel.parameters" :api="integration.api" :run="runSoftwareMethod" :readonly="!canAdminPage('platform.designer','edit')" :views="views" :widgets="documentModel.widgets" :devices="devices" @apply="applyParameterDefinitions" @close="integrationOpen=false" />
     <header class="designer-toolbar">
+      <nav class="designer-mode-tabs" aria-label="设计器编辑模式">
+        <button type="button" :class="{active:designerMode==='layout'}" :aria-pressed="designerMode==='layout'" title="切换到画面布局编辑" @click="setDesignerMode('layout')"><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><rect x="3" y="3" width="6" height="6" rx="1.3"/><rect x="11" y="3" width="6" height="6" rx="1.3"/><rect x="3" y="11" width="6" height="6" rx="1.3"/><rect x="11" y="11" width="6" height="6" rx="1.3"/></svg><span>画面布局</span></button>
+        <button type="button" :disabled="loading || previewMode" :class="{active:designerMode==='tooltips'}" :aria-pressed="designerMode==='tooltips'" title="切换到悬停提示编辑" @click="setDesignerMode('tooltips')"><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M5 3.5h10A2 2 0 0 1 17 5.5v7a2 2 0 0 1-2 2H9l-4 3v-3a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2Z"/><path d="M6.5 7.5h7m-7 3h4"/></svg><span>悬停提示</span></button>
+      </nav>
       <div class="designer-toolbar-group">
         <button type="button" title="撤销 Ctrl+Z" :disabled="!canUndo" @click="undo">↶</button>
         <button type="button" title="重做 Ctrl+Y" :disabled="!canRedo" @click="redo">↷</button>
+        <template v-if="designerMode==='layout'">
         <span class="toolbar-divider"></span>
         <button type="button" class="designer-icon-button" title="复制 Ctrl+C" aria-label="复制选中组件" :disabled="!selectedIds.length" @click="copySelected">
           <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -2492,8 +2647,9 @@ onBeforeUnmount(() => {
         </button>
         <button type="button" title="组合 Ctrl+G" :disabled="selectedIds.length < 2" @click="groupSelected">组合</button>
         <button type="button" title="取消组合 Ctrl+Shift+G" :disabled="!selectedWidgets.some(item => item.groupId)" @click="ungroupSelected">解组</button>
+        </template>
       </div>
-      <div class="designer-toolbar-group canvas-tools">
+      <div v-if="designerMode==='layout'" class="designer-toolbar-group canvas-tools">
         <select v-model="canvasPreset" title="基准分辨率" @change="applyCanvasPreset" v-permission="{ page: 'platform.designer', action: 'edit' }">
           <option value="1920x1080">1920 × 1080</option>
           <option value="2560x1440">2560 × 1440</option>
@@ -2509,7 +2665,6 @@ onBeforeUnmount(() => {
         <button type="button" :disabled="loading" title="导出布局、视角和数据绑定引用" @click="downloadTemplate">导出模板</button>
         <button type="button" :disabled="loading || saving || publishing" title="替换当前草稿，可通过撤销恢复；不会自动发布" @click="templateFileRef?.click()">导入模板</button>
         <button type="button" :disabled="loading || saving || publishing" title="迁移项目后选择新数据源，核对字段并预览实际数据" @click="rebindCurrentTemplate">重绑定数据</button>
-        <RouterLink :to="{path:'/hud-preview',query:{embedded:$route.query.embedded}}" class="hud-review-link">同源场景预览</RouterLink>
         <select v-if="previewMode" :value="selectedViewId" title="模拟 Unity 当前视角" @change="selectView($event.target.value, { enterPreview: true })">
           <option v-for="view in views" :key="view.id" :value="view.id">{{ view.name }}</option>
         </select>
@@ -2518,6 +2673,7 @@ onBeforeUnmount(() => {
         <button
           type="button"
           class="fullscreen-button"
+          :disabled="designerMode!=='layout'"
           :class="{ active: previewMode }"
           :aria-label="previewMode ? '退出全屏预览' : '全屏预览当前视角'"
           :title="previewMode ? '退出全屏预览（Esc）' : '全屏预览当前视角'"
@@ -2532,6 +2688,16 @@ onBeforeUnmount(() => {
       </div>
     </header>
 
+    <details v-if="validationIssues.length" class="designer-validation-issues" :class="{ 'is-error': validationIssuePhase !== 'draft' }" :open="validationIssuesExpanded" @toggle="validationIssuesExpanded = $event.target.open" aria-label="组件配置问题">
+      <summary><strong>{{ validationIssuePhase === 'draft' ? '草稿已保存，发布前请完善配置' : '保存 / 发布检查未通过' }}</strong><span>{{ validationIssues.length }} 项 · 可定位组件</span></summary>
+      <ul>
+        <li v-for="(issue, index) in validationIssues" :key="`${index}-${issue.message}`" :data-diagnostic-component-id="issue.widgetId">
+          <div><strong v-if="issue.label">{{ issue.label }}</strong><span>{{ issue.message }}</span></div>
+          <button v-if="issue.widgetId && !issue.isTooltip" type="button" :aria-label="`定位组件 ${issue.label}`" @click="locateValidationIssue(issue)">定位组件</button>
+        </li>
+      </ul>
+    </details>
+
     <button
       v-if="fullscreenActive"
       type="button"
@@ -2543,7 +2709,8 @@ onBeforeUnmount(() => {
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3v6H3M15 3v6h6M9 21v-6H3M21 15h-6v6"></path></svg>
     </button>
 
-    <div class="designer-main" :class="{ 'is-left-panel-collapsed': panelLayout.leftCollapsed, 'is-right-panel-collapsed': panelLayout.rightCollapsed }">
+    <TooltipTemplateEditor v-if="designerMode==='tooltips' && !loading" :document="documentModel" :factory-id="draftFactoryId" :parameters="previewContext.parameters || {}" :views="views" :current-view-id="selectedViewId" :devices="devices" :points="points" :workshops="workshops" :lines="lines" :metrics="liveMetrics" :device-status-map="liveDeviceStatus" :device-data-map="liveDeviceData" :point-values="pointValues" :playback-now="playbackNow" :source-mode="pointSourceMode" :readonly="!canAdminPage('platform.designer','edit') || saving || publishing" @change="commitHistory" @notice="setStatus($event,'warning')" />
+    <div v-show="designerMode==='layout'" class="designer-main" :class="{ 'is-left-panel-collapsed': panelLayout.leftCollapsed, 'is-right-panel-collapsed': panelLayout.rightCollapsed }">
       <aside :id="leftPanelId" v-show="!panelLayout.leftCollapsed" class="designer-left-panel" aria-label="视角与组件面板">
         <div class="view-panel-heading" @click="viewPanelCollapsed = !viewPanelCollapsed">
           <div><strong>视角编排</strong><small>全局入口与工厂内视角</small></div><span>{{ viewPanelCollapsed ? '展开' : '收起' }}</span>
@@ -2565,9 +2732,9 @@ onBeforeUnmount(() => {
         </div>
         <div class="designer-panel-heading"><strong>单个组件</strong><small>拖到画布指定位置添加</small></div>
         <div class="component-library">
-          <section v-for="group in libraryGroups" :key="group.name">
-            <h4>{{ group.name }}</h4>
-            <div class="component-grid">
+          <section v-for="group in libraryGroups" :key="group.name" :data-component-group="group.name">
+            <h4><button type="button" class="component-group-heading" :aria-label="`${group.name}组件分类`" :aria-expanded="expandedLibraryGroups.has(group.name)" :aria-controls="group.id" @click="toggleLibraryGroup(group.name)"><span>{{ group.name }}</span><span class="component-group-arrow" :class="{collapsed:!expandedLibraryGroups.has(group.name)}" aria-hidden="true">▲</span></button></h4>
+            <div v-show="expandedLibraryGroups.has(group.name)" :id="group.id" class="component-grid">
               <button
                 v-for="item in group.items"
                 :disabled="loading"
@@ -2585,14 +2752,20 @@ onBeforeUnmount(() => {
 
         <details class="chart-library"><summary>图表 <small>{{DASHBOARD_CHARTS.length}}</small></summary><div><button v-for="chart in DASHBOARD_CHARTS" :key="chart.id" type="button" :disabled="loading" @click="addChartWidget(chart.id)">{{chart.label}}</button></div></details>
         <div class="layer-heading" @click="layersCollapsed = !layersCollapsed">
-          <strong>当前视角组件（{{ currentViewWidgets.length }}）</strong><span>{{ layersCollapsed ? '展开' : '收起' }}</span>
+          <strong>组件显隐（{{ layerWidgets.length }}）</strong><span>{{ layersCollapsed ? '展开' : '收起' }}</span>
         </div>
+        <div v-if="!layersCollapsed" class="layer-visibility-filter">
+          <select v-model="layerVisibilityFilter" aria-label="组件显隐范围"><option value="current">当前视角</option><option value="all">全部组件</option><option value="hidden">隐藏组件</option></select>
+          <small>按当前预览判断</small>
+        </div>
+        <p v-if="!layersCollapsed" class="layer-selection-hint">Ctrl / Command 点击多选，再点取消；空白处拖动框选。</p>
         <div v-if="!layersCollapsed" class="layer-list">
           <button
-            v-for="widget in [...currentViewWidgets].reverse()"
+            v-for="widget in [...layerWidgets].reverse()"
             :key="widget.id"
             type="button"
-            :class="{ active: selectedIds.includes(widget.id), hidden: !widget.visible }"
+            :class="{ active: selectedIds.includes(widget.id), hidden: !componentDisplayStates[widget.id].visible }"
+            :data-component-id="widget.id"
             @click="selectWidget(widget, $event, { focusCanvas: true })"
           >
             <span class="layer-type">{{ widgetTypeLabel(widget.type).slice(0, 1) }}</span>
@@ -2600,18 +2773,11 @@ onBeforeUnmount(() => {
               <strong class="layer-name" :title="layerWidgetTitle(widget)">{{ layerWidgetTitle(widget) }}</strong>
               <small class="layer-value" :title="layerWidgetDetail(widget)">{{ layerWidgetDetail(widget) }}</small>
             </span>
-            <i title="显示/隐藏" @click.stop="toggleLayerVisibility(widget)">{{ widget.visible ? '◉' : '○' }}</i>
+            <span class="component-display-badge" :class="{ 'is-hidden': !componentDisplayStates[widget.id].visible }" :title="componentDisplayStates[widget.id].reason || '当前预览中显示'">{{ componentDisplayStates[widget.id].visible ? '显示' : '隐藏' }}</span>
+            <i :title="widget.visible === false ? '取消手动隐藏' : '手动隐藏组件'" @click.stop="toggleLayerVisibility(widget)">{{ widget.visible ? '◉' : '○' }}</i>
             <i title="锁定/解锁" @click.stop="toggleLayerLock(widget)">{{ widget.locked ? '◆' : '◇' }}</i>
           </button>
-          <p v-if="!currentViewWidgets.length">当前视角没有组件，从左侧拖入组件到画布</p>
-          <details v-if="currentViewHiddenWidgets.length" class="layer-hidden-components">
-            <summary>本视角已隐藏（{{ currentViewHiddenWidgets.length }}）</summary>
-            <button v-for="item in currentViewHiddenWidgets" :key="`hidden-layer-${item.id}`" type="button" @click="toggleViewComponent(currentView, item.id, true)">
-              <span class="layer-type">{{ widgetTypeLabel(item.type).slice(0, 1) }}</span>
-              <span class="layer-copy"><strong class="layer-name">{{ layerWidgetTitle(item.widget) }}</strong><small class="layer-value">{{ layerWidgetDetail(item.widget) }}</small></span>
-              <i title="恢复到当前视角">＋</i>
-            </button>
-          </details>
+          <p v-if="!layerWidgets.length">没有符合条件的组件</p>
         </div>
         <details v-if="systemWidgetCards.length" class="system-widget-list" open>
           <summary>系统导航（{{ systemWidgetCards.length }}）</summary>
@@ -2679,7 +2845,7 @@ onBeforeUnmount(() => {
                 :style="widgetFrameStyle(widget)"
                 :data-widget-id="widget.id"
                 @pointerdown.stop="beginMove($event, widget)"
-                @click.stop="selectWidget(widget, $event)"
+                @click.stop="selectCanvasWidget(widget, $event)"
               >
                 <WidgetRenderer
                   :widget="widget"
@@ -2784,6 +2950,10 @@ onBeforeUnmount(() => {
         <template v-if="selectedWidget">
           <div class="selected-widget-heading">
             <div><span>{{ widgetTypeLabel(selectedWidget.type) }}</span><strong>{{ selectedWidget.title || selectedWidget.id }}</strong><small>{{ selectedWidget.id }}</small></div>
+          </div>
+          <div v-if="selectedDisplayState" class="component-display-state" :class="{ 'is-hidden': !selectedDisplayState.visible }" role="status" aria-label="组件大屏显隐">
+            <span><strong>大屏：{{ selectedDisplayState.visible ? '显示' : '隐藏' }}</strong><small>{{ selectedDisplayState.reason || '当前预览中可见' }}</small></span>
+            <label title="手动隐藏对所有视角生效；启用后仍遵循自动显隐规则"><input type="checkbox" :checked="selectedWidget.visible !== false && selectedWidget.visible !== 0" aria-label="启用组件显示" @change="toggleLayerVisibility(selectedWidget)" v-permission="{ page: 'platform.designer', action: 'edit' }" />启用</label>
           </div>
           <nav class="inspector-tabs">
             <button v-for="tab in [{id:'content',label:'内容'},{id:'style',label:'样式'},{id:'data',label:'数据来源'},{id:'condition',label:'显示条件'},{id:'animation',label:'动画'},{id:'event',label:'事件'}]" :key="tab.id" type="button" :class="{ active: inspectorTab === tab.id }" @click="inspectorTab = tab.id">{{ tab.label }}</button>
@@ -2917,15 +3087,17 @@ onBeforeUnmount(() => {
 
             <section v-else-if="inspectorTab === 'data'" class="inspector-section">
               <div v-if="previewContext.viewMode==='device'" class="binding-part-preview"><label>预览部件<select v-model="previewContext.partId" aria-label="预览部件" :disabled="previewPartsBusy || !previewParts.length" @change="changePreviewPart"><option value="">请选择部件</option><option v-for="part in previewParts" :key="part.id" :value="part.id">{{part.name}}</option></select></label><button type="button" :disabled="previewPartsBusy || !previewContext.deviceId" @click="loadPreviewParts">{{previewPartsBusy?'读取中…':'读取当前设备部件'}}</button><small v-if="previewPartsError" role="status">{{previewPartsError}}</small></div>
+              <DataCatalogPicker :key="selectedWidget.id" :binding="selectedWidget.data" :factory-id="previewContext.factoryId" :device-id="selectedBindingDeviceId" :widget-type="selectedWidget.type" :map-context="currentViewIsMapSurface" :disabled="!canAdminPage('platform.designer','edit')" @select="chooseCatalogData" />
+              <details class="data-catalog-advanced"><summary>高级绑定设置（原有配置、播放范围与预览）</summary>
               <label>数据来源<select v-model="selectedWidget.data.mode" aria-label="组件数据来源" @change="changeBindingMode"><option v-for="choice in widgetBindingChoices(selectedWidget,{mapContext:currentViewIsMapSurface})" :key="choice.id" :value="choice.id">{{choice.label}}</option></select></label>
               <DevicePointBindingEditor v-if="selectedWidget.data.mode==='plc'" :binding="selectedWidget.data" :devices="devices" :points="points" :values="pointValues" :device-id="selectedBindingDeviceId" :source-mode="pointSourceMode" :error="pointReadError" :disabled="!canAdminPage('platform.designer','edit')" @select-point="bindSelectedPoint" @preview-device="previewBindingDevice" @refresh="refreshRealtimePoints" />
               <details class="binding-compatibility"><summary>高级绑定</summary><div class="button-row"><button v-for="choice in LEGACY_BINDINGS" :key="choice.id" type="button" :disabled="selectedWidget.data.mode===choice.id || !canAdminPage('platform.designer','edit')" @click="selectedWidget.data.mode=choice.id;changeBindingMode()">{{choice.label}}</button></div></details>
               <details v-if="selectedWidget.data.mode==='plc'" class="binding-compatibility"><summary>设备范围与刷新</summary><WidgetPlaybackEditor :binding="selectedWidget.data" :devices="devices" :disabled="!canAdminPage('platform.designer','edit')" @change="pointPlaybackChanged" /></details>
               <WidgetPlaybackEditor v-else-if="selectedWidget.data.mode!=='static' && !selectedUsesMapData" :binding="selectedWidget.data" :devices="devices" :disabled="!canAdminPage('platform.designer','edit')" @change="recordProperty('修改设备数据播放');invalidateDataSetPreview()" />
               <datalist id="selected-dataset-fields" v-if="selectedWidget.data.mode==='dataset'"><option v-for="column in dataSetDefinitions.find(d=>d.id===selectedWidget.data.datasetId)?.columns || []" :key="column.name" :value="`dataset.${column.name}`">{{column.label}}</option></datalist>
-              <DataSetBindingEditor v-if="selectedWidget.data.mode==='dataset'" :key="selectedWidget.id" :binding="selectedWidget.data" :context="previewContext" :devices="playbackDevices" :playback-now="previewMode ? playbackNow : 0" :multiple="['trend','hud_chart_dock'].includes(selectedWidget.type)" :disabled="!canAdminPage('platform.designer','edit')" @change="changeReusableBinding" @invalidate="invalidateDataSetPreview" @preview="databasePreviewValues[selectedWidget.id]=$event" />
+              <DataSetBindingEditor v-if="selectedWidget.data.mode==='dataset'" :key="selectedWidget.id" :binding="selectedWidget.data" :context="previewContext" :devices="playbackDevices" :playback-now="previewMode ? playbackController.timeFor(selectedWidget,playbackNow) : 0" :multiple="['trend','hud_chart_dock'].includes(selectedWidget.type)" :disabled="!canAdminPage('platform.designer','edit')" @change="changeReusableBinding" @invalidate="invalidateDataSetPreview" @preview="databasePreviewValues[selectedWidget.id]=$event" />
               <details v-if="selectedWidget.data.mode==='dataset' && ['device_list','hud_device_status'].includes(selectedWidget.type)" open><summary>设备字段</summary><label v-for="field in [{key:'id',label:'设备 ID'},{key:'name',label:'名称'},{key:'online',label:'在线'},{key:'running',label:'运行'},{key:'alarm',label:'报警'},{key:'temp',label:'温度'}]" :key="field.key">{{field.label}}<select :value="selectedWidget.content.deviceFields?.[field.key] || field.key" @change="selectedWidget.content.deviceFields={...selectedWidget.content.deviceFields,[field.key]:$event.target.value};recordProperty('修改设备字段')"><option :value="field.key">{{field.key}}</option><option v-for="column in (dataSetDefinitions.find(d=>d.id===selectedWidget.data.datasetId)?.columns || []).filter(c=>c.name!==field.key)" :key="column.name" :value="column.name">{{column.label}}</option></select></label></details>
-              <details v-if="selectedWidget.data.mode==='dataset' && ['metrics','hud_kpi_panel'].includes(selectedWidget.type)" class="binding-panel-fields" open><summary>面板指标</summary><button type="button" :disabled="!selectedWidget.data.datasetId || !canAdminPage('platform.designer','edit')" @click="useDatasetPanelFields">使用数据集字段</button><div v-for="(item,index) in selectedWidget.content.items || []" :key="index" class="property-grid two"><label>名称<input v-model="item.label" @change="recordProperty('修改指标名称')" /></label><label>字段<select v-model="item.path" :aria-label="`指标字段 ${index+1}`" @change="selectedWidget.content.usePartPoints=false;recordProperty('修改指标字段')"><option v-if="!item.path?.startsWith('dataset.')" :value="item.path" disabled>原绑定</option><option v-for="column in dataSetDefinitions.find(d=>d.id===selectedWidget.data.datasetId)?.columns || []" :key="column.name" :value="`dataset.${column.name}`">{{column.label}}</option></select></label></div></details>
+              <details v-if="selectedWidget.data.mode==='dataset' && ['metrics','hud_kpi_panel'].includes(selectedWidget.type)" class="binding-panel-fields" open><summary>面板指标</summary><button type="button" :disabled="!selectedWidget.data.datasetId || !canAdminPage('platform.designer','edit')" @click="useDatasetPanelFields">使用数据表字段</button><div v-for="(item,index) in selectedWidget.content.items || []" :key="index" class="property-grid two"><label>名称<input v-model="item.label" @change="recordProperty('修改指标名称')" /></label><label>字段<select v-model="item.path" :aria-label="`指标字段 ${index+1}`" @change="selectedWidget.content.usePartPoints=false;recordProperty('修改指标字段')"><option v-if="!item.path?.startsWith('dataset.')" :value="item.path" disabled>原绑定</option><option v-for="column in dataSetDefinitions.find(d=>d.id===selectedWidget.data.datasetId)?.columns || []" :key="column.name" :value="`dataset.${column.name}`">{{column.label}}</option></select></label></div></details>
               <label v-if="selectedWidget.data.mode==='dataset' && selectedWidget.type==='text'">文本呈现<select :value="selectedWidget.content.datasetTextMode || 'value'" @change="selectedWidget.content.datasetTextMode=$event.target.value;recordProperty('修改文本呈现')" v-permission="{page:'platform.designer',action:'edit'}"><option value="value">显示绑定值</option><option value="template">自定义模板（使用 {value}）</option></select></label>
               <template v-if="selectedWidget.data.mode === 'database'">
                 <div class="section-action-heading"><div><strong>数据项</strong><small>每项可来自不同数据库和表，别名用于下方公式</small></div><button type="button" @click="addDatabaseDataset" v-permission="{ page: 'platform.designer', action: 'edit' }">＋ 数据项</button></div>
@@ -2951,7 +3123,7 @@ onBeforeUnmount(() => {
               </template>
               <template v-else-if="selectedWidget.data.mode === 'http_api'">
                 <label>已登记的接口连接<select v-model="selectedWidget.data.connectionId" @change="recordProperty('选择 HTTP 接口')"><option value="">请选择接口连接</option><option v-for="source in httpApiSources" :key="`http-${source.id}`" :value="source.id">{{ source.name }} · {{ source.health?.status === 'healthy' ? '已连通' : '待验证' }}</option></select></label>
-                <p v-if="!httpApiSources.length" class="field-hint">还没有接口连接。先在「系统设置 → 数据连接与备份 → 外部数据源」登记根地址、响应格式和认证方式；密钥只保存在后端。</p>
+                <p v-if="!httpApiSources.length" class="field-hint">还没有接口连接。先在「数据中心 → 数据源」登记根地址、响应格式和认证方式；密钥只保存在后端。</p>
                 <label>读取路径 / 主题 / 键<input v-model.trim="selectedWidget.data.apiPath" placeholder="接口路径、主题或键" maxlength="1024" @change="recordProperty('修改接口路径')" /><small class="field-hint">请求方法跟随连接配置；主题或键填 / 时使用连接默认值。</small></label>
                 <button type="button" class="inspector-preview-button" :disabled="httpFieldBusy" @click="inspectHttpFields">{{ httpFieldBusy ? '正在读取接口字段…' : '① 读取并选择接口字段' }}</button>
                 <div v-if="httpInspectedKey===`${selectedWidget.data.connectionId}|${selectedWidget.data.apiPath}` && httpFields.length" class="http-field-list" aria-label="可绑定的接口字段"><button v-for="field in httpFields" :key="field.path" type="button" :class="{selected:selectedWidget.data.jsonPath===field.path}" @click="selectHttpField(field.path)"><code>{{ field.path }}</code><small>{{ field.kind }} · {{ field.sample }}</small></button></div>
@@ -2973,6 +3145,7 @@ onBeforeUnmount(() => {
                 <label>单位<input v-model="selectedWidget.data.unit" @change="recordProperty('修改单位')" /></label>
                 <label>小数位<input v-model.number="selectedWidget.data.decimals" type="number" min="0" max="8" @change="recordProperty('修改格式')" /></label>
               </div>
+              </details>
             </section>
 
             <section v-else-if="inspectorTab === 'condition'" class="inspector-section">
@@ -3054,28 +3227,18 @@ onBeforeUnmount(() => {
             </section>
             <section v-else-if="viewInspectorTab === 'components'" class="inspector-section">
               <div class="readonly-banner"><span>所见即所得</span>下面列出当前视角画布中的组件；顶部导航状态和返回键是两个独立组件，可分别删除 / 隐藏 / 锁定。Unity 诊断面板、设备浮标等运行时系统项不占画布。取消勾选可暂时隐藏，隐藏后可在“已隐藏组件”中恢复。</div>
-              <fieldset v-if="deviceTooltipSupported" class="device-tooltip-settings">
-                <legend>设备悬浮提示</legend>
-                <p class="readonly-banner">仅作用于当前全厂 / 车间 / 产线视角。保存并发布后自动同步到大屏；不影响点击设备及下层部件提示。</p>
-                <label><input type="checkbox" :checked="deviceTooltipConfig.enabled" @change="updateDeviceTooltip('enabled', $event.target.checked)" /> 开启设备悬浮提示</label>
-                <template v-if="deviceTooltipConfig.enabled">
-                  <label>提示标题<input :value="deviceTooltipConfig.title" maxlength="80" @change="updateDeviceTooltip('title', $event.target.value)" /></label>
-                  <label>补充说明<textarea :value="deviceTooltipConfig.description" maxlength="500" @change="updateDeviceTooltip('description', $event.target.value)"></textarea></label>
-                  <strong>显示信息</strong>
-                  <div class="device-tooltip-field-options"><label v-for="field in DEVICE_TOOLTIP_FIELDS" :key="field.id"><input type="checkbox" :checked="deviceTooltipConfig.fields.includes(field.id)" @change="toggleDeviceTooltipItem('fields', field.id, $event.target.checked)" /> {{ field.label }}</label></div>
-                  <details><summary>实时点位（最多 8 项，按当前设备匹配）</summary>
-                    <p v-if="!deviceTooltipPointOptions.length">暂无已配置点位</p>
-                    <label v-for="point in deviceTooltipPointOptions" :key="point.key"><input type="checkbox" :checked="deviceTooltipConfig.pointKeys.includes(point.key)" :disabled="!deviceTooltipConfig.pointKeys.includes(point.key) && deviceTooltipConfig.pointKeys.length >= 8" @change="toggleDeviceTooltipItem('pointKeys', point.key, $event.target.checked)" /> {{ point.label }} <small>{{ point.key }}</small></label>
-                  </details>
-                  <label><input type="checkbox" :checked="deviceTooltipConfig.showHint" @change="updateDeviceTooltip('showHint', $event.target.checked)" /> 显示“点击进入设备”提示</label>
-                </template>
+              <fieldset v-if="deviceTooltipSupported || partTooltipSupported" class="device-tooltip-settings">
+                <legend>悬停提示模板</legend>
+                <label>{{ partTooltipSupported ? '部件提示' : '设备提示' }}<select :value="currentView.metadata?.tooltipTemplates?.[partTooltipSupported?'part':'device'] || 'inherit'" aria-label="当前视角悬停模板" @change="updateViewTooltipReference(partTooltipSupported?'part':'device',$event.target.value)" v-permission="{page:'platform.designer',action:'edit'}"><option value="inherit">继承默认模板</option><option value="disabled">关闭提示</option><option v-for="item in documentModel.tooltipTemplates?.templates.filter(item=>item.kind===(partTooltipSupported?'part':'device')) || []" :key="item.id" :value="item.id">{{ item.name }}</option></select></label>
+                <button type="button" @click="setDesignerMode('tooltips')">编辑悬停提示内容与数据来源</button>
+                <p class="readonly-banner">共享模板内部的文字、数值、区域均可单独编辑。保存并发布后同步到大屏。</p>
               </fieldset>
               <label class="visibility-bound-device"><input v-model="currentView.componentState.hideNonTargetDevices" type="checkbox" @change="commitHistory('修改目标设备显隐')"  v-permission="{ page: 'platform.designer', action: 'edit' }"/> 只显示目标范围内的设备</label>
-              <div v-if="viewComponents.length" class="view-component-list"><label v-for="item in viewComponents" :key="item.id"><input type="checkbox" checked @change="toggleViewComponent(currentView, item.id, $event.target.checked)" /><span>{{ item.label }}</span><small>{{ item.type === 'navigation' ? '顶部导航' : item.type === 'return_button' ? '返回键' : widgetTypeLabel(item.type) }}</small></label></div>
+              <div v-if="viewComponents.length" class="view-component-list"><label v-for="item in viewComponents" :key="item.id"><input type="checkbox" checked @change="toggleViewComponent(currentView, item.id, $event.target.checked)" /><span>{{ item.label }}</span><small :title="componentDisplayStates[item.id]?.reason">{{ componentDisplayStates[item.id]?.visible ? '显示' : '隐藏' }}</small></label></div>
               <p v-else class="empty-inspector">当前视角还没有显示组件，请从左侧拖入组件到画布。</p>
               <details v-if="hiddenViewComponents.length" class="view-hidden-components">
                 <summary>已隐藏组件（{{ hiddenViewComponents.length }}）</summary>
-                <div class="view-component-list"><label v-for="item in hiddenViewComponents" :key="item.id"><input type="checkbox" :checked="false" @change="toggleViewComponent(currentView, item.id, $event.target.checked)" /><span>{{ item.label }}</span><small>{{ item.type === 'navigation' ? '顶部导航' : item.type === 'return_button' ? '返回键' : widgetTypeLabel(item.type) }}</small></label></div>
+                <div class="view-component-list"><label v-for="item in hiddenViewComponents" :key="item.id"><input type="checkbox" :checked="false" @change="toggleViewComponent(currentView, item.id, $event.target.checked)" /><span>{{ item.label }}</span><small :title="componentDisplayStates[item.id]?.reason">{{ componentDisplayStates[item.id]?.visible ? '显示' : '隐藏' }}</small></label></div>
               </details>
             </section>
             <section v-else class="inspector-section">
@@ -3101,7 +3264,7 @@ onBeforeUnmount(() => {
 
     <footer class="designer-statusbar">
       <span class="designer-status" :class="status.tone"><i></i>{{ status.text }}</span>
-      <span>{{ documentModel.widgets.length }} 个组件 · {{ selectedIds.length }} 个已选</span>
+      <span>{{ designerMode==='tooltips' ? `${documentModel.tooltipTemplates?.templates.length || 0} 个悬停提示模板` : `${documentModel.widgets.length} 个组件 · ${selectedIds.length} 个已选` }}</span>
       <span :class="{ dirty: isDirty }">{{ isDirty ? '有未保存修改' : '草稿已保存' }}</span>
       <div class="release-strip"><strong>发布记录</strong><button v-for="release in releases.slice(0, 5)" :key="release.id" type="button" :class="{ current: release.id === currentReleaseId }" @click="requestActivateRelease(release)">{{ release.version }}<small>{{ release.id === currentReleaseId ? '运行中' : '可恢复' }}</small></button></div>
     </footer>
@@ -3141,6 +3304,8 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+.data-catalog-advanced{margin-top:14px;border-top:1px solid #e6ebf3;padding-top:12px}.data-catalog-advanced>summary{font-size:11px;color:#8995a8;cursor:pointer;margin-bottom:13px;line-height:1.6}.data-catalog-advanced[open]>summary{color:#557baa}
+
 .designer-publish-notice{position:fixed;z-index:10020;top:24px;left:50%;transform:translateX(-50%);display:flex;align-items:flex-start;gap:10px;box-sizing:border-box;width:max-content;max-width:min(520px,calc(100vw - 32px));padding:12px 14px;border:1px solid #e1e6ee;border-radius:8px;background:#fff;color:#b42318;box-shadow:0 8px 28px #141d2b29;font-size:13px;line-height:1.5}
 .designer-publish-notice.success{color:#18774f}.designer-publish-notice.warning{color:#a36a12}.designer-publish-notice>svg{flex:0 0 20px;width:20px;height:20px}.designer-publish-notice>span{min-width:0;overflow-wrap:anywhere;max-height:30vh;overflow-y:auto}.designer-publish-notice>button{flex:0 0 22px;width:22px;height:22px;padding:0;border:0;background:transparent;color:inherit;font-size:18px;line-height:1;cursor:pointer}.designer-publish-notice>button:focus-visible{outline:2px solid currentColor;outline-offset:2px}.publish-notice-enter-active,.publish-notice-leave-active{transition:opacity .16s ease}.publish-notice-enter-from,.publish-notice-leave-to{opacity:0}
 @media(prefers-reduced-motion:reduce){.publish-notice-enter-active,.publish-notice-leave-active{transition:none}}
@@ -3155,6 +3320,7 @@ onBeforeUnmount(() => {
 .dashboard-designer-shell { --panel:#0d1724; --panel2:#111f2f; --line:rgba(130,184,226,.16); --text:#eaf4ff; --muted:#8fa5ba; --accent:#42a5f5; display:flex; flex-direction:column; height:clamp(720px,calc(100vh - 150px),1080px); min-height:720px; overflow-x:auto; overflow-y:hidden; border:1px solid rgba(53,105,148,.26); border-radius:16px; color:var(--text); background:#08111c; box-shadow:0 22px 52px rgba(9,22,34,.18); scrollbar-color:#29445e #08111b; scrollbar-width:thin; font-family:var(--hud-font-text,"SF Pro Text","Inter","Segoe UI","PingFang SC","Microsoft YaHei UI",sans-serif); font-synthesis:none; -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility; }
 .designer-toolbar { flex:0 0 58px; display:flex; align-items:center; gap:14px; min-width:1180px; padding:0 14px; border-bottom:1px solid var(--line); background:linear-gradient(180deg,#142335,#0d1927); }
 .designer-toolbar-group,.designer-toolbar-actions,.canvas-tools { display:flex; align-items:center; gap:5px; }
+.designer-mode-tabs{display:flex;gap:3px;flex-shrink:0;padding:3px;border:1px solid #cbd9f3;border-radius:11px;background:#edf2ff}
 .designer-toolbar button,.designer-toolbar select { height:32px; padding:0 10px; border:1px solid rgba(126,178,219,.18); border-radius:8px; color:#cfe2f1; background:rgba(12,28,43,.72); font-size:calc(12px * var(--admin-font-scale, 1)); cursor:pointer; transition:.15s ease; }
 .designer-toolbar button:hover:not(:disabled),.designer-toolbar button.active { color:#fff; border-color:rgba(84,188,255,.46); background:rgba(43,123,181,.28); }.designer-toolbar button:disabled{opacity:.34;cursor:not-allowed}.designer-toolbar .zoom-label{min-width:58px}.toolbar-divider{width:1px;height:20px;margin:0 3px;background:var(--line)}
 .canvas-tools { margin-left:auto; }.designer-toolbar-actions{margin-left:2px}.designer-toolbar .save-button{border-color:rgba(73,187,145,.28);color:#8ce6bf}.designer-toolbar .publish-button{border-color:rgba(66,165,245,.48);color:#fff;background:linear-gradient(135deg,#237abe,#155b91)}.designer-toolbar .acceptance-button{border-color:rgba(255,196,95,.38);color:#ffd88c}.designer-toolbar .acceptance-button.passed{border-color:rgba(69,223,155,.38);color:#8ce6bf}
@@ -3210,10 +3376,17 @@ onBeforeUnmount(() => {
 .designer-toolbar{flex-basis:62px;border-bottom-color:#dedee3;background:rgba(255,255,255,.94);box-shadow:0 1px 0 rgba(0,0,0,.035);backdrop-filter:blur(18px)}
 .designer-toolbar button,.designer-toolbar select{border-color:#d8d8dd;color:#3a3a3c;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.035);font-size:calc(13px * var(--admin-font-scale, 1))}
 .designer-toolbar button:hover:not(:disabled),.designer-toolbar button.active{color:#000;border-color:#8e8e93;background:#f2f2f4}.designer-toolbar .save-button{border-color:#b7d8c4;color:#176b3a;background:#f5fbf7}.designer-toolbar .publish-button{border-color:#1d1d1f;color:#fff;background:#1d1d1f}.toolbar-divider{background:#dedee3}
+.designer-toolbar .designer-mode-tabs button{display:flex;align-items:center;justify-content:center;gap:6px;height:34px;padding:0 12px;border-color:transparent;border-radius:8px;color:#436195;background:transparent;box-shadow:none;font-size:calc(13px * var(--admin-font-scale,1));font-weight:600;letter-spacing:.02em;white-space:nowrap}
+.designer-toolbar .designer-mode-tabs button svg{width:15px;height:15px;stroke:currentColor;stroke-width:1.5;flex-shrink:0}
+.designer-toolbar .designer-mode-tabs button:hover:not(:disabled){color:#245cd0;border-color:transparent;background:#dfe8fc}
+.designer-toolbar .designer-mode-tabs button.active,.designer-toolbar .designer-mode-tabs button.active:hover:not(:disabled){color:#fff;border-color:#2864df;background:#2864df;box-shadow:0 2px 5px rgba(40,100,223,.2)}
+.designer-toolbar .designer-mode-tabs button:focus-visible{outline:2px solid #2864df;outline-offset:2px}
 .designer-left-panel,.designer-right-panel{background:#fff;scrollbar-color:#c5c5ca transparent}.designer-left-panel{border-right-color:#dedee3}.designer-right-panel{border-left-color:#dedee3}
 .designer-panel-heading,.layer-heading,.selected-widget-heading,.inspector-tabs{border-color:#e5e5e7;background:#fff}.designer-panel-heading strong,.layer-heading strong,.selected-widget-heading strong{color:#1d1d1f}.designer-panel-heading strong{font-size:calc(14px * var(--admin-font-scale, 1))}.designer-panel-heading small,.layer-heading span,.selected-widget-heading span,.selected-widget-heading small{color:#8e8e93;font-size:calc(11px * var(--admin-font-scale, 1))}
 .scene-preset-list{border-bottom-color:#e5e5e7;background:#fff}.scene-preset-list>button{border-color:#d8d8dd;color:#1d1d1f;background:linear-gradient(145deg,#f7f9fb,#eef3f7)}.scene-preset-list>button:hover{border-color:#8e8e93;box-shadow:0 8px 22px rgba(0,0,0,.08)}.scene-preset-list>button>span{color:#fff;background:#1d1d1f}.scene-preset-list small{color:#8e8e93;font-size:calc(9px * var(--admin-font-scale, 1))}.scene-preset-list em{color:#176b3a;background:#e7f4ec;font-size:calc(9px * var(--admin-font-scale, 1))}
 .component-library section h4{color:#8e8e93;font-size:calc(11px * var(--admin-font-scale, 1))}.component-grid button{min-height:62px;border-color:#e2e2e5;color:#1d1d1f;background:#f8f8fa}.component-grid button:hover{border-color:#8e8e93;background:#fff;box-shadow:0 7px 20px rgba(0,0,0,.07)}.component-grid button>span{color:#fff;background:#1d1d1f}.component-grid strong{font-size:calc(12px * var(--admin-font-scale, 1))}.component-grid button small{color:#8e8e93;font-size:calc(10px * var(--admin-font-scale, 1))}
+.component-library .component-group-heading{display:flex;align-items:center;justify-content:space-between;gap:8px;width:100%;min-height:28px;padding:3px 0;border:0;background:transparent;color:inherit;font:inherit;letter-spacing:inherit;text-align:left;cursor:pointer}.component-library .component-group-heading:hover{color:#245cb3}.component-library .component-group-heading:focus-visible{outline:2px solid #4285db;outline-offset:2px;border-radius:4px}.component-group-arrow{display:inline-block;font-size:9px;line-height:1;transition:transform .15s ease}.component-group-arrow.collapsed{transform:rotate(180deg)}
+@media(prefers-reduced-motion:reduce){.component-group-arrow{transition:none}}
 .layer-heading{font-size:calc(12px * var(--admin-font-scale, 1))}.layer-list>button{min-height:38px}.layer-list button{color:#515154;background:transparent}.layer-list button:hover{background:#f5f5f7}.layer-list button.active{color:#1d1d1f;background:#ededf0;border-color:#d7d7dc}.layer-type{color:#fff;background:#3a3a3c;font-size:calc(11px * var(--admin-font-scale, 1))}.layer-name{font-size:calc(12px * var(--admin-font-scale, 1))}.layer-list i{color:#6e6e73}.system-widget-list{border-color:#e5e5e7;color:#515154;background:#f8f8fa;font-size:calc(11px * var(--admin-font-scale, 1))}.system-widget-list summary{color:#515154}.system-widget-list small{color:#8e8e93;font-size:calc(10px * var(--admin-font-scale, 1))}
 .designer-canvas{background:#e9e9ec}.designer-canvas-scroll{box-sizing:border-box;width:100%;height:100%;overflow:auto;padding:12px 16px;overscroll-behavior:contain;scrollbar-color:#a9a9af #e1e1e4}.designer-canvas-spacer{position:relative;flex:0 0 auto;margin:0 auto;box-shadow:0 18px 46px rgba(0,0,0,.18)}.designer-canvas-stage{transform-origin:top left;border:1px solid rgba(0,0,0,.36)}
 .selected-widget-heading strong{font-size:calc(14px * var(--admin-font-scale, 1))}.selected-widget-heading button,.layer-actions button,.section-action-heading button{border-color:#d8d8dd;color:#3a3a3c;background:#fff;font-size:calc(11px * var(--admin-font-scale, 1))}.inspector-tabs button{height:34px;color:#8e8e93;font-size:calc(12px * var(--admin-font-scale, 1))}.inspector-tabs button.active{color:#fff;background:#1d1d1f}
@@ -3345,4 +3518,9 @@ onBeforeUnmount(() => {
 .inspector-section .device-tooltip-settings textarea{min-height:48px;resize:vertical}
 .inspector-section .device-tooltip-settings .readonly-banner{margin:0;font-size:calc(11px * var(--admin-font-scale, 1))}
 .inspector-section .device-tooltip-field-options{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.layer-visibility-filter{display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid #e5e9f0}.layer-visibility-filter select{flex:1;min-width:0;padding:5px 7px;border:1px solid #d7dfeb;border-radius:7px;color:#34435a;background:#f8faff;font:inherit;font-size:12px}.layer-visibility-filter small{flex-shrink:0;color:#8994a5;font-size:10px}
+.layer-selection-hint{margin:0;padding:7px 10px 0;color:#7a8597;font-size:calc(10px * var(--admin-font-scale,1));line-height:1.5}
+.layer-list>button{grid-template-columns:24px minmax(0,1fr) max-content 20px 20px;column-gap:2px}.layer-list .component-display-badge{padding:3px 5px;border-radius:5px;background:#e8f7ef;color:#23825c;font-size:calc(10px * var(--admin-font-scale,1));line-height:1.3;white-space:nowrap}.layer-list .component-display-badge.is-hidden{background:#eef1f6;color:#7a8597}.layer-list>button.hidden{opacity:1}.layer-list>button.hidden .layer-name{color:#7a8597}
+.component-display-state{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:9px 12px;border-bottom:1px solid #e3e9f1;background:#f2faf6;color:#23825c}.component-display-state.is-hidden{background:#f4f6fa;color:#66758c}.component-display-state>span{display:grid;gap:3px;min-width:0}.component-display-state strong{font-size:12px}.component-display-state small{font-size:11px;overflow-wrap:anywhere}.component-display-state label{display:flex;align-items:center;gap:4px;flex-shrink:0;font-size:11px;cursor:pointer}
+.designer-validation-issues{flex:0 0 auto;border-bottom:1px solid #e7d4a6;background:#fff9ec;color:#71551c;font-size:calc(12px * var(--admin-font-scale,1))}.designer-validation-issues.is-error{border-color:#edc8c4;background:#fff4f3;color:#8b3530}.designer-validation-issues summary{display:flex;align-items:center;gap:12px;padding:9px 14px;cursor:pointer}.designer-validation-issues summary::before{content:'▸';font-size:11px}.designer-validation-issues[open] summary::before{content:'▾'}.designer-validation-issues summary span{margin-left:auto;font-size:11px}.designer-validation-issues ul{display:grid;gap:6px;max-height:156px;overflow:auto;margin:0;padding:0 14px 10px;list-style:none}.designer-validation-issues li{display:flex;align-items:center;gap:12px;padding:7px 9px;border:1px solid rgba(151,109,40,.16);border-radius:7px;background:rgba(255,255,255,.7)}.designer-validation-issues li>div{display:grid;gap:3px;min-width:0;overflow-wrap:anywhere}.designer-validation-issues li strong{color:#34435a;font-size:11px}.designer-validation-issues li button{flex-shrink:0;margin-left:auto;padding:5px 9px;border:1px solid #bbcced;border-radius:6px;color:#2861b2;background:#fff;font:inherit;font-size:11px;cursor:pointer}.designer-validation-issues li button:hover{background:#edf3ff;border-color:#6b98e7}.dashboard-designer-shell.is-fullscreen .designer-validation-issues{display:none}
 </style>

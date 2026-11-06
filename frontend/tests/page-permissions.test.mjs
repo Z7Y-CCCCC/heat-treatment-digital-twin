@@ -128,12 +128,15 @@ test('motion authors can save bindings without model publishing or disassembly r
   assert.equal(canAdminPage('model-animations'), true)
   assert.equal(canAdminApi('/api/models', 'GET'), true)
   assert.equal(canAdminApi('/api/models/type/bindings', 'PUT'), true)
+  assert.equal(canAdminApi('/api/data-center/catalog', 'GET'), true)
+  assert.equal(canAdminApi('/api/data-center/categories', 'PUT'), false)
   for (const path of ['/api/models/type', '/api/models/type/inspection', '/api/models/type/name']) {
     assert.equal(canAdminApi(path, 'PUT'), false)
   }
   assert.equal(canAdminApi('/api/models/upload', 'POST'), false)
   adminSession.pagePermissions = normalizePagePermissions({ 'model-animations': { view: true } })
   assert.equal(canAdminApi('/api/models/type/bindings', 'PUT'), false)
+  assert.equal(canAdminApi('/api/data-center/catalog', 'GET'), true)
 })
 
 test('page-specific settings save submits only the current authorized group', async t => {

@@ -6,12 +6,13 @@ const unzipper = require('unzipper');
 const { getDb } = require('../db/database');
 const { mergeBuiltinModels } = require('./builtinModels');
 const { normalizeSettingValue } = require('../routes/settings');
+const { validateConfig: validateDataCenterConfig, stableId: dataCenterItemId } = require('./dataCenter');
 
 const FORMAT = 'digital-twin-factory-bundle';
 const MAX_BYTES = 512 * 1024 * 1024;
 const MAX_JSON = 16 * 1024 * 1024;
 const MAX_ENTRIES = 2000;
-const SETTINGS = ['data_mode', 'simulation_interval_ms', 'realtime_stale_ms', 'native_quality_profile', 'native_environment_config', 'native_dashboard_config', 'site_scene_config', 'external_dataset_config', 'voice_enabled'];
+const SETTINGS = ['data_mode', 'simulation_interval_ms', 'realtime_stale_ms', 'native_quality_profile', 'native_environment_config', 'native_dashboard_config', 'site_scene_config', 'external_dataset_config', 'data_center_catalog_v1', 'voice_enabled'];
 const SHARED_APPEARANCE = ['group_portal_config', 'loading_experience_config'];
 // Explicit columns make the archive a portable configuration format, never an SQL dump.
 const COLUMNS = Object.fromEntries(Object.entries({
@@ -33,6 +34,13 @@ const COLUMNS = Object.fromEntries(Object.entries({
 const WARNINGS = ['现场 PLC 地址、连接选项及数据源凭据不迁移；导入设备采集已禁用，工厂以模拟模式启动。', '外部 API/数据库连接需在新工厂重新配置；远程资源仍依赖原远程服务。'];
 const hash = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 const roots = options => ({ uploads: path.resolve(options?.uploadsRoot || process.env.UPLOADS_DIR || path.join(__dirname, '..', 'uploads')), assets: path.resolve(options?.assetsRoot || path.join(__dirname, '..', 'assets')) });
+function dataCenterConfig(value) {
+    let config;
+    try { config = typeof value === 'string' ? JSON.parse(value) : value; }
+    catch { throw new Error('数据中心分类配置无效'); }
+    if (Buffer.byteLength(JSON.stringify(config) || '') > 1024 * 1024) throw new Error('数据中心分类配置超过 1 MB');
+    return validateDataCenterConfig(config);
+}
 
 function walk(value, transform, key = '') {
     if (Array.isArray(value)) return value.map(item => walk(item, transform, key));
@@ -101,8 +109,11 @@ async function snapshot(db, factoryId) {
     rows.device_templates = await children(db, 'device_templates', 'id', [...new Set(rows.devices.map(r => r.template_id).filter(Boolean))]);
     rows.datapoint_templates = await children(db, 'datapoint_templates', 'device_template_id', rows.device_templates.map(r => r.id));
     const independent = await children(db, 'factory_settings', 'factory_id', [factoryId]);
+    const savedCatalog = independent.find(row => row.key === 'data_center_catalog_v1');
+    if (savedCatalog) dataCenterConfig(savedCatalog.value);
     const defaults = await children(db, 'settings', 'key', SETTINGS);
-    rows.factory_settings = SETTINGS.map(key => ({ factory_id: factoryId, key, value: independent.find(r => r.key === key)?.value ?? defaults.find(r => r.key === key)?.value ?? (key === 'data_mode' ? 'simulation' : '') }));
+    rows.factory_settings = SETTINGS.map(key => ({ factory_id: factoryId, key, value: independent.find(r => r.key === key)?.value ?? defaults.find(r => r.key === key)?.value ?? (key === 'data_mode' ? 'simulation' : '') }))
+        .filter(row => row.key !== 'data_center_catalog_v1' || savedCatalog);
     const references = new Set();
     walk(rows, value => { if (typeof value === 'string') references.add(value); return value; });
     rows.models = mergeBuiltinModels(await db.all('SELECT * FROM models')).filter(row => row.factory_id === factoryId || references.has(row.id) || (row.file_path && references.has(row.file_path)));
@@ -224,6 +235,9 @@ function validateTables(tables) {
     const settings = new Set();
     for (const row of tables.factory_settings) {
         if (!SETTINGS.includes(row.key) || settings.has(row.key)) throw new Error('工厂设置无效或重复');
+        if (row.key === 'data_center_catalog_v1') {
+            dataCenterConfig(row.value);
+        }
         settings.add(row.key);
     }
 }
@@ -311,7 +325,7 @@ async function importBundle(filename, input = {}, options = {}) {
     const factoryId = `factory_${token}`;
     const dirs = roots(options);
     const destination = path.join(dirs.uploads, 'projects', token);
-    const mappings = new Map(); const pointMappings = new Map();
+    const mappings = new Map(); const pointMappings = new Map(); const catalogPointMappings = new Map();
     for (const [table, rows] of Object.entries(bundle.tables)) {
         if (table === 'data_points' || table === 'factory_settings') continue;
         for (const row of rows) {
@@ -359,6 +373,13 @@ async function importBundle(filename, input = {}, options = {}) {
             for (const table of ['factories', 'workshops', 'lines', 'device_templates', 'datapoint_templates', 'models', 'devices', 'data_points', 'projects', 'scenes', 'widgets', 'bindings', 'releases', 'factory_settings']) {
                 for (const original of bundle.tables[table]) {
                     const row = walk(original, rewrite);
+                    if (table === 'factory_settings' && original.key === 'data_center_catalog_v1') {
+                        const config = dataCenterConfig(original.value);
+                        // Names/categories are user-authored display metadata,
+                        // not foreign-key values. Preserve them verbatim while
+                        // remapping only generated PLC catalog item identities.
+                        row.value = JSON.stringify({ ...config, overrides: Object.fromEntries(Object.entries(config.overrides).map(([id, metadata]) => [catalogPointMappings.get(id) || id, metadata])) });
+                    }
                     if (table === 'factories') Object.assign(row, { name, is_enabled: 1 });
                     if (table === 'models') row.factory_id = factoryId;
                     if (table === 'data_points') delete row.id;
@@ -368,6 +389,9 @@ async function importBundle(filename, input = {}, options = {}) {
                         // row by the new, unique device namespace in this transaction.
                         const id = result.insertId || result.lastInsertRowid || (await tx.get('SELECT MAX(id) AS id FROM data_points WHERE device_id = ?', [row.device_id])).id;
                         pointMappings.set(String(original.id), Number(id));
+                        catalogPointMappings.set(dataCenterItemId('point', original.id), dataCenterItemId('point', Number(id)));
+                        catalogPointMappings.set(dataCenterItemId('point', String(original.id)), dataCenterItemId('point', Number(id)));
+                        if (Number.isSafeInteger(Number(original.id))) catalogPointMappings.set(dataCenterItemId('point', Number(original.id)), dataCenterItemId('point', Number(id)));
                     }
                 }
             }

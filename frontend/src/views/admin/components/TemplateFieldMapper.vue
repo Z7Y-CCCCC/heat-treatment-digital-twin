@@ -77,11 +77,13 @@ async function preview(row) {
   row.busy = true
   try {
     validateTemplateFieldBinding(row)
-    const widget = props.document.widgets.find(item => item.id === row.widgetId)
+    const widgets = row.templateId ? props.document.tooltipTemplates?.templates?.find(template => template.id === row.templateId)?.widgets : props.document.widgets
+    const widget = widgets?.find(item => item.id === row.widgetId)
+    if (!widget) throw new Error('模板组件已改变，请重新载入')
     const context = { ...props.context }
     if (widget.data.deviceScope === 'fixed') context.deviceId = widget.data.deviceId
     const response = row.kind === 'dataset' ? await adminApi.previewDataSet({datasetId:row.target.datasetId,binding:row.target,context}) : row.kind === 'http'
-      ? await adminApi.previewHttpDataSource(row.target)
+      ? await adminApi.previewHttpDataSource({ ...row.target, context })
       : await adminApi.previewDataSource({ ...widget.data, datasets: [row.target], formula: '', context })
     if (disposed || generation !== row.generation) return
     if (response.error || response.success === false) throw new Error(response.error || '数据预览失败')

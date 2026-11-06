@@ -25,7 +25,7 @@ let configRequest = null
 async function readApiJson(resp, fallbackMessage = '请求失败', preserveFailureDetails = false) {
     const data = await resp.json().catch(() => ({}))
     if (!resp.ok) return {
-        ...(preserveFailureDetails ? { ...data, success: false } : {}),
+        ...(preserveFailureDetails ? { ...data, success: false, status: resp.status } : {}),
         error: data.error || `${fallbackMessage}: ${resp.status}`
     }
     return data
@@ -218,6 +218,13 @@ export const adminApi = {
     async testDatabaseConfig(data) { return readApiJson(await fetch(`${API_BASE}/database/test`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) }), '测试数据库连接失败') },
     async saveDatabaseConfig(data) { return readApiJson(await fetch(`${API_BASE}/database/config`, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) }), '保存数据库配置失败') },
     async getDataSources() { return readApiJson(await fetch(`${API_BASE}/data-sources`), '读取外部数据源失败') },
+    async getDataCenterCatalog({ deviceId = '', previewDeviceId = '', factoryId = '' } = {}) {
+        const params = new URLSearchParams({ ...(deviceId ? { device_id: deviceId } : {}), ...(previewDeviceId ? { preview_device_id: previewDeviceId } : {}) })
+        return readApiJson(await fetch(`${API_BASE}/data-center/catalog${params.size ? `?${params}` : ''}`, { cache: 'no-store', ...(factoryId ? { headers: { 'X-Factory-ID': factoryId } } : {}) }), '读取数据中心失败', true)
+    },
+    async saveDataCategory(definition) { return readApiJson(await fetch(`${API_BASE}/data-center/categories`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(definition) }), '保存数据分类失败', true) },
+    async deleteDataCategory(id, revision) { return readApiJson(await fetch(`${API_BASE}/data-center/categories/${pathId(id)}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ revision: typeof revision === 'object' ? revision?.revision : revision }) }), '删除数据分类失败', true) },
+    async saveDataItemMetadata(id, definition) { return readApiJson(await fetch(`${API_BASE}/data-center/items/${pathId(id)}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(definition) }), '保存数据项分类失败', true) },
     async getDataSets() { return readApiJson(await fetch(`${API_BASE}/data-sources/datasets`, { cache: 'no-store' }), '读取数据集失败', true) },
     async saveDataSet(definition) { return readApiJson(await fetch(`${API_BASE}/data-sources/datasets`, { method: 'POST', headers: { 'Content-Type':'application/json' }, body: JSON.stringify(definition) }), '保存数据集失败', true) },
     async deleteDataSet(definition) { return readApiJson(await fetch(`${API_BASE}/data-sources/datasets/${pathId(definition.id)}`, { method: 'DELETE', headers: { 'Content-Type':'application/json' }, body: JSON.stringify({ revision: definition.revision }) }), '删除数据集失败', true) },
@@ -320,8 +327,11 @@ export const adminApi = {
     async updateLinePlacement(id, layout) { return readApiJson(await fetch(`${API_BASE}/lines/${pathId(id)}/placement`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ transform: layout.transform, placementPending: layout.placementPending }) }), '保存产线位置失败') },
     async uploadModel(formData) { return readApiJson(await fetch(`${API_BASE}/models/upload`, { method: 'POST', body: formData }), '上传模型失败') },
     async updateModel(id, data) { return readApiJson(await fetch(`${API_BASE}/models/${pathId(id)}`, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) }), '保存模型失败') },
-    async getMotionActions(id) { return readApiJson(await fetch(`${API_BASE}/models/${pathId(id)}/motion-actions`, { cache: 'no-store' }), '读取工艺动作失败', true) },
-    async saveMotionActions(id, data, preview = false) { return readApiJson(await fetch(`${API_BASE}/models/${pathId(id)}/motion-actions${preview ? '/preview' : ''}`, { method: preview ? 'POST' : 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) }), preview ? '准备动作预览失败' : '保存工艺动作失败') },
+    async getModelLoadingPorts(id, options = {}) { return readApiJson(await fetch(`${API_BASE}/models/${pathId(id)}/loading-ports`, { cache: 'no-store', signal: options.signal }), '读取模型进出料口失败', true) },
+    async saveModelLoadingPorts(id, data, options = {}) { return readApiJson(await fetch(`${API_BASE}/models/${pathId(id)}/loading-ports`, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data), signal: options.signal }), '保存模型进出料口失败', true) },
+    async getDeviceLoadingPorts(id, options = {}) { return readApiJson(await fetch(`${API_BASE}/devices/${pathId(id)}/loading-ports`, { cache: 'no-store', signal: options.signal }), '读取设备进出料口失败', true) },
+    async saveDeviceLoadingPorts(id, data, options = {}) { return readApiJson(await fetch(`${API_BASE}/devices/${pathId(id)}/loading-ports`, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data), signal: options.signal }), '保存设备进出料口失败', true) },
+    async applyLoadingAlignment(data) { return readApiJson(await fetch(`${API_BASE}/devices/loading-alignment`, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) }), '对齐保存失败，设备位置未改变', true) },
     async saveModelBindings(id, data) { return readApiJson(await fetch(`${API_BASE}/models/${pathId(id)}/bindings`, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) }), '保存动作动画失败') },
     async renameModel(id, name) { return readApiJson(await fetch(`${API_BASE}/models/${pathId(id)}/name`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) }), '保存模型名称失败') },
     async deleteModel(id) {

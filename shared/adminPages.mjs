@@ -12,9 +12,9 @@ export const ADMIN_PAGES = [
   page('models', '模型库 · 模型管理', { navGroup: 'models', navLabel: '模型管理', icon: 'models', actions: ['view', 'edit', 'delete'] }),
   page('disassembly-layout', '模型库 · 拆解布局', { navGroup: 'models', navLabel: '拆解布局', icon: 'disassembly-layout' }),
   page('model-animations', '模型库 · 动作动画', { navGroup: 'models', navLabel: '动作动画', icon: 'animation' }),
-  page('points', '点位映射 · PLC 点位映射', { navGroup: 'data', navLabel: '点位映射', icon: 'points', container: 'points', subpage: 'mapping', tabLabel: 'PLC 点位映射', actions: ['view', 'edit', 'delete'] }),
-  page('points.alarms', '点位映射 · 报警配置', { container: 'points', subpage: 'alarms', tabLabel: '报警配置' }),
-  page('point-monitor', '点位监视', { navGroup: 'data', icon: 'point-monitor', actions: ['view'] }),
+  page('points', '数据中心 · 点位映射', { icon: 'points', container: 'points', subpage: 'mapping', tabLabel: '点位映射', destinations: [{ container: 'data-center', subpage: 'mapping', tabLabel: '点位映射' }], actions: ['view', 'edit', 'delete'] }),
+  page('points.alarms', '数据中心 · 报警配置', { container: 'points', subpage: 'alarms', tabLabel: '报警配置', destinations: [{ container: 'data-center', subpage: 'alarms', tabLabel: '报警配置' }] }),
+  page('point-monitor', '数据中心 · 点位监视', { icon: 'point-monitor', destinations: [{ container: 'data-center', subpage: 'monitor', tabLabel: '点位监视' }], actions: ['view'] }),
   page('platform.designer', '组件配置 · 大屏设计器', { container: 'platform', subpage: 'designer', tabLabel: '大屏设计器', description: '多级视角、图层与场景组件', actions: ['view', 'edit', 'delete', 'publish'] }),
   page('platform.map', '组件配置 · 地图底图与主题', { container: 'platform', subpage: 'map', tabLabel: '地图底图与主题', description: '地图底图、品牌默认值与配色', migratedFrom: 'platform.designer' }),
   page('platform.loading', '组件配置 · 加载画面', { container: 'platform', subpage: 'loading', tabLabel: '加载画面', description: '启动图片、配色与加载文案', migratedFrom: 'platform.designer' }),
@@ -22,7 +22,7 @@ export const ADMIN_PAGES = [
   page('platform.environment', '组件配置 · 场景与光效', { container: 'platform', subpage: 'environment', tabLabel: '场景与光效', description: 'Unity 灯光、后处理、围墙与空间' }),
   page('settings.security', '后台安全（仅管理员）', { container: 'settings', subpage: 'security', tabLabel: '后台安全', description: '后台密码、无操作自动锁定与立即锁定', ownerOnly: true }),
   page('settings.runtime', '系统设置 · 运行与投屏', { container: 'settings', subpage: 'runtime', tabLabel: '运行与投屏', description: '自启动、电视投屏与本地运行服务' }),
-  page('settings.database', '系统设置 · 数据连接与备份', { container: 'settings', subpage: 'database', tabLabel: '数据连接与备份', description: '数据库、ERP / MES 接口、备份与恢复', actions: ['view', 'edit', 'delete'] }),
+  page('settings.database', '数据中心与系统维护 · 数据源 / 数据表 / 备份', { container: 'settings', subpage: 'database', tabLabel: '数据库与备份', description: '主业务数据库、备份与恢复；数据接入已迁至数据中心', destinations: [{ container: 'data-center', subpage: 'tables', tabLabel: '数据表', viewPages: ['settings.database', 'points', 'points.alarms', 'point-monitor', 'platform.designer'] }, { container: 'data-center', subpage: 'sources', tabLabel: '数据源' }], actions: ['view', 'edit', 'delete'] }),
   page('settings.migration', '系统设置 · 项目迁移（仅管理员）', { container: 'settings', subpage: 'migration', tabLabel: '项目迁移', description: '项目包与引用资产的导入、导出', ownerOnly: true }),
   page('settings.performance', '系统设置 · 客户端性能', { container: 'settings', subpage: 'performance', tabLabel: '客户端性能', description: 'Unity 画质' }),
   page('settings.data', '系统设置 · 采集状态', { container: 'settings', subpage: 'data', tabLabel: '采集状态', description: '进程健康、设备状态与数据来源' }),
@@ -31,13 +31,14 @@ export const ADMIN_PAGES = [
 ]
 const groups = [
   { key: 'models', label: '模型库', icon: 'models', menuOrder: 30 },
+  { key: 'data-center', label: '数据中心', icon: 'data', menuOrder: 35 },
   { key: 'platform', label: '组件配置', icon: 'platform', menuOrder: 40 },
   { key: 'settings', label: '系统设置', icon: 'settings', menuOrder: 60 }
 ]
 export const getAdminPageCatalog = () => JSON.parse(JSON.stringify(ADMIN_PAGES))
 export const adminNavPages = (group, pages = ADMIN_PAGES) => pages.filter(p => p.navGroup === group).map(p => ({ ...p, label: p.navLabel || p.label }))
 export const adminMainTabs = (pages = ADMIN_PAGES) => [...adminNavPages('main', pages), ...groups].sort((a, b) => (a.menuOrder || 100) - (b.menuOrder || 100))
-export const adminSubpages = (container, pages = ADMIN_PAGES) => pages.filter(p => p.container === container && !p.retired).map(p => ({ ...p, permissionKey: p.key, key: p.subpage, label: p.tabLabel || p.label }))
+export const adminSubpages = (container, pages = ADMIN_PAGES) => pages.filter(p => !p.retired).flatMap(p => [p, ...(p.destinations || []).map(destination => ({ ...p, ...destination }))].filter(destination => destination.container === container).map(destination => ({ ...destination, permissionKey: p.key, key: destination.subpage, label: destination.tabLabel || p.label })))
 
 export function mergeAdminPageCatalog(pages) {
   if (!Array.isArray(pages) || !pages.length || pages.length > 256) throw new TypeError('页面目录无效')

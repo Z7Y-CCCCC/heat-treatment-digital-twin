@@ -1,15 +1,16 @@
 <script setup>
-import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, provide, reactive, ref, watch } from 'vue'
 import { API_BASE } from '../runtime/backendEndpoint.js'
 import { adminFetch, adminSession } from '../runtime/adminSession.js'
-import { applyVisibilityAction, widgetRuntimeVisible } from '../runtime/dashboardRules.js'
+import { applyVisibilityAction } from '../runtime/dashboardRules.js'
 import { MAP_SURFACE_VIEW_IDS } from '../runtime/dashboardSchema.js'
 import { useDashboardIntegration } from '../runtime/dashboardIntegration.js'
-import {useWidgetClock} from '../runtime/widgetPlayback.js'
+import {useWidgetClock,createWidgetPlaybackController,WidgetPlaybackKey} from '../runtime/widgetPlayback.js'
 import {createWidgetReadScheduler} from '../runtime/widgetReadScheduler.js'
 import {flattenPlaybackDevices} from '../../../shared/widgetPlayback.mjs'
 import { runtimeViewHidden } from '../../../shared/viewNavigation.mjs'
 import WidgetRenderer from '../runtime/WidgetRenderer.vue'
+import { isCanvasWidget, widgetViewVisibility, widgetPresentationState } from '../runtime/widgetPresentation.js'
 
 const props = defineProps({
   document: { type: Object, default: null },
@@ -22,6 +23,8 @@ const props = defineProps({
 })
 const emit = defineEmits(['navigate','map-action'])
 const playbackNow=useWidgetClock()
+const playbackController=createWidgetPlaybackController()
+provide(WidgetPlaybackKey,playbackController)
 const playbackDevices=computed(()=>flattenPlaybackDevices(props.config || {}))
 const values = ref({})
 const effectiveValues = computed(()=>{
@@ -52,15 +55,9 @@ const pointValues = computed(() => {
 })
 const surfaceWidgets = computed(() => {
   if (!MAP_SURFACE_VIEW_IDS.has(props.viewId) || !currentView.value || runtimeViewHidden(currentView.value)) return []
-  const shown = new Set(currentView.value.componentState?.show || [])
-  const hidden = new Set(currentView.value.componentState?.hide || [])
   return (props.document?.widgets || [])
-    .filter(widget => widget.visible !== false && widget.visible !== 0 && widget.runtimeTarget !== 'unity')
-    .filter(widget => !['device_label', 'diagnostics', 'line_overview_cards'].includes(widget.type))
-    .filter(widget => (shown.has(widget.id) || (widget.groupId && shown.has(`group:${widget.groupId}`)))
-      && !hidden.has(widget.id) && !(widget.groupId && hidden.has(`group:${widget.groupId}`)))
-    .filter(widget => !widget.visibility?.viewIds?.length || widget.visibility.viewIds.includes(props.viewId))
-    .filter(widget => !widget.visibility?.viewModes?.length || widget.visibility.viewModes.includes('custom'))
+    .filter(isCanvasWidget)
+    .filter(widget => widgetViewVisibility(widget, currentView.value).visible)
 })
 function valueForWidget(widget) {
   const binding = widget.data || {}
@@ -77,13 +74,13 @@ function valueForWidget(widget) {
   return widget.content?.value
 }
 const widgets = computed(() => surfaceWidgets.value
-    .filter(widget => widgetRuntimeVisible(widget, {
-      context: runtimeContext.value,
-      dataValue: valueForWidget(widget),
-      dataRecord: effectiveValues.value[widget.id] || null,
-      groupVisibility,
-      widgetVisibility
-    }))
+    .filter(widget => widgetPresentationState(widget, {
+      view: currentView.value, context: runtimeContext.value,
+      policy: props.config?.settings?.global_view_navigation,
+      defaultViewId: props.document?.scene?.defaultViewId,
+      dataValue: valueForWidget(widget), dataRecord: effectiveValues.value[widget.id] || null,
+      groupVisibility, widgetVisibility
+    }).visible)
     .sort((a, b) => Number(a.zIndex || 0) - Number(b.zIndex || 0)))
 function widgetFrame(widget) {
   const frame = widget.frame || {}
@@ -128,6 +125,7 @@ let businessAbort = null
 let valuesSequence = 0, disposed = false
 const externalReader=createWidgetReadScheduler({
  context:()=>runtimeContext.value,parameters:()=>integration.parameters.value,devices:()=>playbackDevices.value,widgets:()=>surfaceWidgets.value,
+ playbackTime:(widget,now)=>playbackController.timeFor(widget,now),
  put:(id,record)=>{values.value={...values.value,[id]:record}},remove:id=>{delete values.value[id]},
  read:async(ids,context,parameters,now,signal)=>{
    const query=new URLSearchParams({view_id:context.viewId,region_code:context.regionCode || '',parameters:JSON.stringify(parameters),widget_ids:ids.join(','),playback_at:String(now)})
@@ -160,14 +158,20 @@ async function refreshBusiness() {
     if (error.name !== 'AbortError') businessData.value = { status: 'error', readOnly: true, sections: {} }
   }
 }
-watch(() => [props.viewId, props.factoryId, props.document], () => { values.value = {}; void refreshValues(); void refreshBusiness() })
+// The group map polls /config every 15 s and receives new object references
+// even when nothing changed. Only a semantic playback/scope change may release
+// a held card; an equivalent poll must not make it rotate under the pointer.
+watch(() => JSON.stringify([runtimeContext.value,
+  surfaceWidgets.value.map(widget=>[widget.id,widget.data || widget.binding || {}]),
+  playbackDevices.value.map(device=>[device.id,device.workshopId,device.lineId])]),
+() => { playbackController.reset();values.value = {}; void refreshValues(); void refreshBusiness() },{flush:'sync'})
 onMounted(() => { void refreshValues(); void refreshBusiness(); timer = window.setInterval(refreshValues, 15000); businessTimer = window.setInterval(refreshBusiness, 60000) })
-onUnmounted(() => { disposed=true;externalReader.dispose();valuesSequence++;window.clearInterval(timer); window.clearInterval(businessTimer); abort?.abort(); businessAbort?.abort() })
+onUnmounted(() => { disposed=true;playbackController.reset();externalReader.dispose();valuesSequence++;window.clearInterval(timer); window.clearInterval(businessTimer); abort?.abort(); businessAbort?.abort() })
 </script>
 
 <template>
   <div v-if="widgets.length" class="map-surface-widget-layer" aria-label="已发布的地图画面组件">
-    <div v-for="widget in widgets" :key="widget.id" class="map-surface-widget hud-widget" :style="widgetFrame(widget)" @pointerdown.stop @click.stop="handleWidgetClick(widget)">
+    <div v-for="widget in widgets" :key="widget.id" :data-widget-id="widget.id" class="map-surface-widget hud-widget" :style="widgetFrame(widget)" @pointerdown.stop @click.stop="handleWidgetClick(widget)">
       <WidgetRenderer :widget="widget" :map-data="mapData" :metrics="dataStore?.metrics || {}" :events="dataStore?.events?.value || []"
         :trend-points="dataStore?.trendPoints?.value || []" :device-status-map="dataStore?.deviceStatusMap || {}"
         :device-data-map="dataStore?.deviceDataMap || {}" :point-values="pointValues" :database-values="effectiveValues"

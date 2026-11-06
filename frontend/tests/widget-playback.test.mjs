@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import {playbackSelection,devicePoint,normalizePlayback} from '../../shared/widgetPlayback.mjs'
+import {playbackSelection,devicePoint,normalizePlayback,isPlaybackTimestamp} from '../../shared/widgetPlayback.mjs'
 import {upgradeWidgetPlaybackDocument} from '../../shared/widgetPlaybackProfile.mjs'
 import {DASHBOARD_CHARTS} from '../../shared/dashboardCharts.mjs'
 import {extendedChartOption} from '../src/runtime/dashboardCharts.js'
@@ -8,6 +8,15 @@ import {createWidgetReadScheduler} from '../src/runtime/widgetReadScheduler.js'
 import {deferred,settle} from './helpers.mjs'
 const devices=[{id:'a',name:'A',lineId:'l',workshopId:'w'},{id:'b',name:'B',lineId:'l',workshopId:'w'},{id:'foreign',name:'C',lineId:'other',workshopId:'other'}]
 const binding={deviceScope:'rotation',rotationDeviceIds:['a','b'],rotationIntervalMs:2000,refreshMs:1000}
+
+test('paused playback timestamps can be historical but cannot be unsafe, negative or too far in the future',()=>{
+ const now=180000
+ for(const at of [0,2000,now-120000,now,now+60000])assert.equal(isPlaybackTimestamp(at,now),true)
+ for(const at of [-1,1.5,NaN,Infinity,Number.MAX_SAFE_INTEGER+1,now+60001])assert.equal(isPlaybackTimestamp(at,now),false)
+ // Retaining an old selection time does not widen the registered view range.
+ assert.equal(playbackSelection(binding,{lineId:'other'},devices,0).device,null)
+ assert.equal(playbackSelection(binding,{viewMode:'device',deviceId:'b'},devices,0).device.id,'b')
+})
 
 test('global regional/ERP data does not rotate devices or change to a focused device context',()=>{
  for(const context of [{viewMode:'factory'},{viewMode:'device',deviceId:'a'},{viewId:'map_world'}]) {
@@ -35,6 +44,123 @@ test('rotation and refresh are independent; unchanged ticks do not issue reads, 
  const calls=[],f=scheduler(async(ids,c,p,now)=>{calls.push(now);return {values:{w:{value:now,deviceId:playbackSelection(binding,c,devices,now).device.id}}}})
  await f.reader.refresh(false,0);await f.reader.refresh(false,500);assert.deepEqual(calls,[0]);await f.reader.refresh(false,1000);await f.reader.refresh(false,2000);assert.deepEqual(calls,[0,1000,2000]);assert.equal(f.values.w.deviceId,'b')
  f.context({viewMode:'device',deviceId:'a'});await f.reader.refresh(false,2500);assert.equal(f.values.w.deviceId,'a');await f.reader.refresh(false,4000);assert.equal(f.values.w.deviceId,'a');f.reader.dispose()
+})
+
+test('a hovered widget keeps refreshing after a long pause while its neighboring widget continues rotating',async()=>{
+ const calls=[],values={},widgets=['paused','rotating'].map(id=>({id,data:{mode:'dataset',...binding}}))
+ const reader=createWidgetReadScheduler({context:()=>({viewMode:'factory'}),parameters:()=>({}),devices:()=>devices,widgets:()=>widgets,
+  playbackTime:(widget,now)=>widget.id==='paused'?0:now,
+  read:async(ids,context,_params,playbackAt)=>{
+   calls.push({ids,playbackAt})
+   return {values:Object.fromEntries(ids.map(id=>[id,{value:calls.length,deviceId:playbackSelection(binding,context,devices,playbackAt).device.id}]))}
+  },put:(id,value)=>values[id]=value,remove:id=>delete values[id]})
+ await reader.refresh(false,0);await reader.refresh(false,500)
+ assert.equal(calls.length,1)
+ await reader.refresh(false,1000)
+ assert.deepEqual(calls.slice(1).map(row=>[row.ids,row.playbackAt]),[[['paused'],0],[['rotating'],1000]])
+ await reader.refresh(false,2000)
+ assert.equal(values.paused.deviceId,'a');assert.equal(values.rotating.deviceId,'b')
+ const before=calls.length
+ await reader.refresh(false,123000);await reader.refresh(false,123100)
+ assert.equal(calls.length,before+2,'real-time refresh deadlines must not use the frozen selection clock')
+ assert.equal(values.paused.deviceId,'a');assert.equal(values.rotating.deviceId,'b')
+ assert.deepEqual(calls.slice(-2).map(row=>[row.ids,row.playbackAt]),[[['paused'],0],[['rotating'],123000]])
+ reader.dispose()
+})
+
+test('three-second reads keep a hovered card live despite a two-second rotating neighbor in the same lane',async()=>{
+ let now=0;const calls=[],accepted=[],values={},refreshes=[]
+ const widgets=['held','moving'].map(id=>({id,data:{mode:'dataset',...binding}}))
+ const reader=createWidgetReadScheduler({context:()=>({viewMode:'factory'}),parameters:()=>({}),devices:()=>devices,widgets:()=>widgets,
+  playbackTime:(widget,rawNow)=>widget.id==='held'?0:rawNow,
+  read:(ids,context,_params,playbackAt,signal)=>{
+   const response=deferred(),at=now
+   calls.push({ids,at,signal,response,done:false,payload:{values:Object.fromEntries(ids.map(id=>[id,{value:100+at/1000,deviceId:playbackSelection(binding,context,devices,playbackAt).device.id}]))}})
+   return response.promise
+  },put:(id,record)=>{
+   const expected=playbackSelection(binding,{viewMode:'factory'},devices,id==='held'?0:now).device.id
+   assert.equal(record.deviceId,expected,'a late rotating result cannot be relabelled as the newly selected device')
+   values[id]=record;accepted.push({id,at:now,value:record.value})
+  },remove:id=>delete values[id]})
+ try {
+  // Deterministic raw-clock simulation of a 3s transport and 2s rotation. Keep
+  // ticking during the pending read, exactly as the shared surface clock does.
+  for(now=0;now<=12000;now+=1000){
+   refreshes.push(reader.refresh(false,now));await settle()
+   for(const call of calls)if(!call.done && now-call.at>=3000){call.done=true;call.abortedBeforeResolve=call.signal.aborted;call.response.resolve(call.payload)}
+   await settle()
+   assert.ok(calls.filter(call=>!call.done && !call.signal.aborted).length<=1,'the slow lane remains sequential')
+  }
+  assert.deepEqual(accepted.filter(row=>row.id==='held').map(row=>row.value),[100,104,108])
+  assert.deepEqual(calls.filter(call=>call.ids.includes('held')).map(call=>call.at),[0,4000,8000,12000],'refresh freshness starts from completion real time, not the old selection time')
+  assert.ok(calls.filter(call=>call.ids.includes('held')).every(call=>call.done?!call.abortedBeforeResolve:!call.signal.aborted),'neighbor switches never cancel a pending held device request')
+  assert.ok(calls.every(call=>call.ids.length<=20));assert.equal(values.held.deviceId,'a')
+ } finally {
+  reader.dispose();for(const call of calls)call.response.resolve(call.payload);await Promise.all(refreshes)
+ }
+})
+
+test('context and parameter changes still cancel pending held-device reads',async()=>{
+ for(const change of ['context','parameters']){
+  const old=deferred(),calls=[],f=scheduler((_ids,_context,_params,at,signal)=>{
+   calls.push(signal);return calls.length===1?old.promise:Promise.resolve({values:{w:{value:222,deviceId:'a'}}})
+  })
+  const first=f.reader.refresh(false,0)
+  if(change==='context')f.context({viewMode:'device',deviceId:'a'})
+  else f.params({batch:'new'})
+  await f.reader.refresh(false,1000)
+  assert.equal(calls[0].aborted,true);assert.equal(f.values.w.value,222)
+  old.resolve({values:{w:{value:111,deviceId:'a'}}});await first
+  assert.equal(f.values.w.value,222);f.reader.dispose()
+ }
+})
+
+test('removing one in-flight batch member preserves its still-current held neighbor and discards the removed record',async()=>{
+ const response=deferred(),values={},calls=[]
+ let widgets=['held','removed'].map(id=>({id,data:{mode:'dataset',...binding}}))
+ const reader=createWidgetReadScheduler({context:()=>({}),parameters:()=>({}),devices:()=>devices,widgets:()=>widgets,playbackTime:()=>0,
+  read:(ids,_context,_params,_at,signal)=>{calls.push({ids,signal});return response.promise},put:(id,record)=>values[id]=record,remove:id=>delete values[id]})
+ const first=reader.refresh(false,0)
+ widgets=widgets.filter(widget=>widget.id==='held');const latest=reader.refresh(false,1000)
+ assert.equal(calls[0].signal.aborted,false)
+ response.resolve({values:{held:{value:111,deviceId:'a'},removed:{value:999,deviceId:'a'}}})
+ await first;await latest
+ assert.equal(values.held.value,111);assert.equal(values.removed,undefined);assert.equal(calls.length,1)
+ reader.dispose()
+})
+
+test('paused readers schedule remaining cache freshness using real time and resume without stale device responses',async()=>{
+ let paused=true;const values={},calls=[],pending=deferred()
+ const widget={id:'w',data:{mode:'dataset',...binding}}
+ const reader=createWidgetReadScheduler({context:()=>({viewMode:'factory'}),parameters:()=>({}),devices:()=>devices,widgets:()=>[widget],
+  playbackTime:(_widget,now)=>paused?0:now,
+  read:(ids,context,_params,playbackAt)=>{
+   calls.push(playbackAt)
+   return calls.length===3?pending.promise:Promise.resolve({values:{w:{value:calls.length,deviceId:playbackSelection(binding,context,devices,playbackAt).device.id,refreshAfterMs:250}}})
+  },put:(id,value)=>values[id]=value,remove:id=>delete values[id]})
+ await reader.refresh(false,100000);await reader.refresh(false,100200)
+ assert.deepEqual(calls,[0])
+ await reader.refresh(false,100300);assert.deepEqual(calls,[0,0])
+ const stale=reader.refresh(false,102000)
+ paused=false;await reader.refresh(false,102001)
+ assert.equal(values.w.deviceId,'b')
+ pending.resolve({values:{w:{value:999,deviceId:'a'}}});await stale
+ assert.equal(values.w.deviceId,'b');assert.notEqual(values.w.value,999)
+ reader.dispose()
+})
+
+test('different selection clocks remain separated within the twenty-widget transport limit',async()=>{
+ const calls=[],values={},widgets=Array.from({length:45},(_,index)=>({id:`widget_${index}`,data:{mode:'dataset',...binding}}))
+ const reader=createWidgetReadScheduler({context:()=>({viewMode:'factory'}),parameters:()=>({}),devices:()=>devices,widgets:()=>widgets,
+  playbackTime:(widget,now)=>Number(widget.id.slice(7))<25?0:now,
+  read:async(ids,context,_params,playbackAt)=>{
+   calls.push({ids,playbackAt})
+   return {values:Object.fromEntries(ids.map(id=>[id,{value:1,deviceId:playbackSelection(binding,context,devices,playbackAt).device.id}]))}
+  },put:(id,value)=>values[id]=value,remove:id=>delete values[id]})
+ await reader.refresh(false,2000);await reader.refresh(false,2100)
+ assert.deepEqual(calls.map(row=>[row.ids.length,row.playbackAt]),[[20,0],[5,0],[20,2000]])
+ assert.equal(Object.keys(values).length,45);assert.equal(values.widget_24.deviceId,'a');assert.equal(values.widget_25.deviceId,'b')
+ reader.dispose()
 })
 test('late device A responses cannot overwrite B, and unmount cancels pending values',async()=>{
  const a=deferred(),b=deferred(),f=scheduler((_ids,_c,_p,now)=>now===0?a.promise:b.promise)

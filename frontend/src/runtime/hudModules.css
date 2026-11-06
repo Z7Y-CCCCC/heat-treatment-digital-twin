@@ -200,7 +200,6 @@
 .hud-module-events p { margin: 4px 0 0; overflow-wrap: anywhere; color: var(--module-text, #cbd3e3); font-size: calc(var(--hud-module-font-size, 14px) * 0.7142857); line-height: 1.55; }
 .hud-event-level { flex: 0 0 auto; padding: 2px 6px; border: 1px solid rgba(137, 149, 245, .15); border-radius: 99px; color: #9da9d8; background: rgba(137, 149, 245, .06); font-size: calc(var(--hud-module-font-size, 14px) * 0.5714286); line-height: 1.4; }
 .critical .hud-event-dot { border-color: #f08aa2; background: rgba(240, 138, 162, .35); box-shadow: 0 0 0 3px rgba(240, 138, 162, .08), 0 0 9px rgba(240, 138, 162, .2); }
-.critical .hud-event-dot::after { content: ""; position: absolute; inset: -4px; border: 1px solid rgba(240, 138, 162, .66); border-radius: 50%; animation: hud-state-pulse 1.5s ease-out infinite; }
 .critical .hud-event-level { border-color: rgba(240, 138, 162, .22); color: #f0a3b6; background: rgba(240, 138, 162, .08); }
 .warning .hud-event-dot { border-color: #d5bd8a; background: rgba(213, 189, 138, .3); }
 .warning .hud-event-level { border-color: rgba(213, 189, 138, .2); color: #d9c18d; background: rgba(213, 189, 138, .06); }

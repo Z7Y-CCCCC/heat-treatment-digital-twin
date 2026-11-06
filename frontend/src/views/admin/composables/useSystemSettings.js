@@ -712,6 +712,7 @@ export function useSystemSettings({
                 if (!dataSourceEditor.id && result.connection?.id) dataSourceEditor.id = result.connection.id
                 dataSourceMessage.value = `已保存：${result.connection?.name || submitted.name}；当前表单还有未保存的修改。`
             }
+            window.dispatchEvent?.(new CustomEvent('digital-twin-data-center-changed'))
         } catch (e) {
             if (!runtimeSettingsDisposed && session === dataSourceEditorSession) dataSourceMessage.value = `保存失败：${e.message || e}`
         } finally {
@@ -734,6 +735,7 @@ export function useSystemSettings({
             Object.assign(dataSourceBackupConfig, result.backup || {})
             if (dataSourceEditor.id === connection.id) resetDataSourceEditor()
             dataSourceMessage.value = `已删除：${connection.name}`
+            window.dispatchEvent?.(new CustomEvent('digital-twin-data-center-changed'))
         } catch (e) {
             if (!runtimeSettingsDisposed) dataSourceMessage.value = `删除失败：${e.message || e}`
         } finally {

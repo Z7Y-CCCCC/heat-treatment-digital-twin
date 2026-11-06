@@ -41,15 +41,16 @@ class WsOutboundQueue {
             const text = serialized === undefined ? JSON.stringify(message) : serialized;
             const size = Buffer.byteLength(text);
             if (size > this.options.maxMessageBytes) return this.fail('message size limit', true);
-            const kind = message.type === 'realtime_frame' && !message.payload.devices.some(d => hasFault(d.quality))
-                ? 'realtime' : message.type === 'scene_projection' ? 'projection'
+            const kind = message.type === 'realtime_frame' && !message.payload.devices.some(d => hasFault(d.quality) || hasFault(d.motionInputs))
+                ? message.payload.devices.every(d => d.motionInputOnly === true) ? 'motion-input' : 'realtime'
+                : message.type === 'scene_projection' ? 'projection'
                     : message.type === 'inspection_hover_changed' ? 'hover'
                         : message.type === 'device_hover_changed' ? 'device-hover' : 'reliable';
             const tail = this.queue[this.queue.length - 1];
             let entry = { message, text, size, kind };
             // Reliable entries are barriers: never move a patch across a control/fault event.
             if (kind !== 'reliable' && tail?.kind === kind) {
-                const merged = kind === 'realtime' ? mergeRealtime(tail.message, message) : message;
+                const merged = ['realtime','motion-input'].includes(kind) ? mergeRealtime(tail.message, message) : message;
                 const mergedText = JSON.stringify(merged);
                 entry = { message: merged, text: mergedText, size: Buffer.byteLength(mergedText), kind };
             }

@@ -125,7 +125,7 @@ let server, browser, page;
     assert.equal((await (await page.request.get(info.origin+'/api/models',{maxRetries:2})).json()).length,beforeCombined+2);
     await modal.getByRole('button',{name:'完成',exact:true}).click();
     checks.push('multiple legacy files tolerate one bad ZIP; model action details retained; multi-model export downloads exactly one directory-structured archive and the same archive imports all models');
-    for (const mode of ['实时联动', '工艺动作', '设备联动', '部件动作']) {
+    for (const mode of ['实时联动', '设备联动', '部件动作']) {
       await page.getByRole('navigation', { name: '动作动画模式' }).getByRole('button', { name: mode, exact: true }).click();
       assert.equal(await transfer.getByRole('button').count(), 2); assert.equal(await page.getByText('项目导入文件', { exact: true }).count(), 0);
     }

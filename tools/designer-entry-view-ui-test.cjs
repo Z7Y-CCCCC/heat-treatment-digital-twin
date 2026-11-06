@@ -25,6 +25,9 @@ async function named(value) { await waitUntil(async () => await nameInput().inpu
   page = await context.newPage(); page.setDefaultTimeout(20000); page.on('pageerror', error => errors.push(error.message));
   await page.goto(info.origin + '/admin'); await page.getByRole('textbox', { name: '账号', exact: true }).fill(info.username);
   await page.getByLabel('后台密码', { exact: true }).fill(info.password); await page.getByRole('button', { name: '解锁后台', exact: true }).click(); await page.locator('.dashboard-designer-shell').waitFor();
+  const global = page.getByTestId('global-view-section');
+  assert.equal(await global.locator('.section-heading').getAttribute('aria-expanded'), 'false');
+  assert.equal(await global.locator('[data-global-view-id]').count(), 0);
   const state = await api('/platform/designer'), nav = await api('/view-navigation');
   for (const key of Object.keys(nav.config.enabled)) nav.config.enabled[key] = false;
   await api('/view-navigation', 'PUT', { config: nav.config, revision: nav.revision });
@@ -37,6 +40,8 @@ async function named(value) { await waitUntil(async () => await nameInput().inpu
   assert.equal(await page.getByRole('switch', { name: '启用全部全局视角', exact: true }).getAttribute('aria-checked'), 'false');
   await page.screenshot({ path: path.join(directory, '01-off-global-hidden-local-entry.png') });
   pass('initial entry skips all seven disabled global views and the hidden local default despite a saved map selection');
+  assert.equal(await global.locator('.section-heading').getAttribute('aria-expanded'), 'false');
+  await global.locator('.section-heading').click();
   await page.locator('[data-global-view-id="map_world"] .global-view-name').click();
   await named(state.document.scene.views.find(view => view.id === 'map_world').name.replace(/^\s*\d{2}\s+/, ''));
   await page.locator('.admin-nav').getByRole('button', { name: '工厂与区域', exact: true }).click();

@@ -19,9 +19,13 @@ namespace HeatTreatment.DigitalTwin.Runtime
         private void UpdateDeviceHoverAt(Vector3 pointer, bool blocked)
         {
             var view = ResolveView(_activeViewId, "factory");
+            var templateReference = view?.Metadata?["tooltipTemplates"]?["device"]?.Value<string>();
+            var tooltipEnabled = !string.IsNullOrEmpty(templateReference)
+                ? templateReference != "disabled"
+                : view?.Metadata?["deviceTooltip"]?["enabled"]?.Value<bool>() != false;
             var enabled = _mode == DashboardMode.Overview && _camera != null
                 && (view == null || view.Mode == "factory" || view.Mode == "workshop" || view.Mode == "line")
-                && view?.Metadata?["deviceTooltip"]?["enabled"]?.Value<bool>() != false;
+                && tooltipEnabled;
             var contextChanged = _deviceHoverView != _activeViewId || _deviceHoverCount != _devices.Count;
             var changed = contextChanged || _deviceHoverEnabled != enabled || !_deviceHoverPointer.Equals(pointer);
             _deviceHoverEnabled = enabled;

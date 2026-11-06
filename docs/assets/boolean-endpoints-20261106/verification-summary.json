@@ -1,0 +1,215 @@
+{
+  "date": "2026-11-06",
+  "scope": "Isolated read-only feedback injection -> backend -> real Unity; no physical PLC connection or writes; installed player not replaced",
+  "tests": {
+    "frontend": {
+      "passed": 1051,
+      "total": 1051
+    },
+    "browser": {
+      "passed": 8,
+      "total": 8,
+      "pageErrors": 0
+    },
+    "dotnet": {
+      "passed": 22,
+      "total": 22
+    },
+    "unityEditor": {
+      "checks": 154,
+      "passed": true
+    },
+    "unityPlayer": {
+      "passed": 12,
+      "total": 12
+    },
+    "backend": {
+      "passed": 92,
+      "total": 93,
+      "success": false,
+      "failure": "admin-auth isolated configuration-file persistence failed once; original failure retained; unchanged test passed 17 groups on standalone retry; underlying errno unavailable"
+    }
+  },
+  "unityChecks": [
+    "real CAD transfer cart feed action binds only the two guaranteed read-only BOOL points through the actual data-center save API",
+    "native initialization shows the actually confirmed retracted CAD pose, without replaying a fictitious stroke",
+    "both-off only waits; no timer invents intermediate position or confirms a successful transfer",
+    "healthy endpoint confirmation drives the actual CAD carriage, gear and return-chain channels using the same sampled package as the management preview",
+    "both-on feedback conflict freezes actual geometry and is not interpreted as two successful stages",
+    "bad/stale sources freeze geometry; fresh recovery reads the latest endpoint directly rather than continuing a disconnected display timer",
+    "adding a current model component action and binding existing data makes it play in the same Unity process without recompile or restart",
+    "editing the component action output updates its actual native transform live, while the existing CAD feed remains correct",
+    "component deletion removes the actual native action; explicit re-add/rebind and rapid edits apply only the final authoritative definition",
+    "sixteen real native source/receive/first-transform observations measure latency separately from the intentional display transition",
+    "targeted model/action refresh preserves the same factory, hall, camera, current view and unrelated furnace roots; paired specific/generic events do not cause a full reload",
+    "adding, editing and deleting component actions never re-download/import the unchanged all-node-preserved CAD rig; independent renderers and the actual endpoint clip remain available"
+  ],
+  "latencyStats": {
+    "sourceReadToFirstTransform": {
+      "samples": 16,
+      "p50": 11,
+      "p95": 26,
+      "max": 26
+    },
+    "controlToFirstTransform": {
+      "samples": 16,
+      "p50": 60,
+      "p95": 116,
+      "max": 116
+    },
+    "receiveToFirstTransform": {
+      "samples": 16,
+      "p50": 2,
+      "p95": 4,
+      "max": 4
+    }
+  },
+  "latencyScope": "100ms isolated read-only injection -> backend motion inputs -> real Unity transform; not a PLC/collector end-to-end measurement",
+  "displayTransitionSeconds": 2,
+  "configurationReload": {
+    "additionMs": 1439,
+    "bindingMs": 1951,
+    "editMs": 1330,
+    "targeted": true,
+    "factoryBuilds": 1
+  },
+  "unchangedExecutable": true,
+  "unchangedAssets": true,
+  "images": [
+    {
+      "file": "screenshot-20261106-unity-01-retracted.jpg",
+      "extended": false,
+      "retracted": true,
+      "offline": false,
+      "paused": false,
+      "stage": "retracted",
+      "displayProgress": 0,
+      "usable": true
+    },
+    {
+      "file": "screenshot-20261106-unity-02-waiting.jpg",
+      "extended": false,
+      "retracted": false,
+      "offline": false,
+      "paused": false,
+      "stage": "waiting",
+      "displayProgress": 0,
+      "usable": false
+    },
+    {
+      "file": "screenshot-20261106-unity-03-extension-transition.jpg",
+      "extended": true,
+      "retracted": false,
+      "offline": false,
+      "paused": false,
+      "stage": "extended",
+      "displayProgress": 1,
+      "usable": true
+    },
+    {
+      "file": "screenshot-20261106-unity-04-extended.jpg",
+      "extended": true,
+      "retracted": false,
+      "offline": false,
+      "paused": false,
+      "stage": "extended",
+      "displayProgress": 1,
+      "usable": true
+    },
+    {
+      "file": "screenshot-20261106-unity-05-waiting-extended.jpg",
+      "extended": false,
+      "retracted": false,
+      "offline": false,
+      "paused": false,
+      "stage": "waiting",
+      "displayProgress": 1,
+      "usable": false
+    },
+    {
+      "file": "screenshot-20261106-unity-06-retracted-again.jpg",
+      "extended": false,
+      "retracted": true,
+      "offline": false,
+      "paused": false,
+      "stage": "retracted",
+      "displayProgress": 0,
+      "usable": true
+    },
+    {
+      "file": "screenshot-20261106-unity-07-display-frozen-midway.jpg",
+      "extended": false,
+      "retracted": false,
+      "offline": false,
+      "paused": false,
+      "stage": "waiting",
+      "displayProgress": 0.5102537022903562,
+      "usable": false
+    },
+    {
+      "file": "screenshot-20261106-unity-08-confirmed-extended.jpg",
+      "extended": true,
+      "retracted": false,
+      "offline": false,
+      "paused": false,
+      "stage": "extended",
+      "displayProgress": 1,
+      "usable": true
+    },
+    {
+      "file": "screenshot-20261106-unity-09-conflict.jpg",
+      "extended": true,
+      "retracted": true,
+      "offline": false,
+      "paused": false,
+      "stage": "conflict",
+      "displayProgress": 1,
+      "usable": false
+    },
+    {
+      "file": "screenshot-20261106-unity-10-bad-quality.jpg",
+      "extended": false,
+      "retracted": true,
+      "offline": true,
+      "paused": false,
+      "stage": "invalid",
+      "displayProgress": 1,
+      "usable": false
+    },
+    {
+      "file": "screenshot-20261106-unity-11-recovered-current-endpoint.jpg",
+      "extended": false,
+      "retracted": true,
+      "offline": false,
+      "paused": false,
+      "stage": "retracted",
+      "displayProgress": 0,
+      "usable": true
+    },
+    {
+      "file": "screenshot-20261106-unity-12-stale.jpg",
+      "extended": false,
+      "retracted": true,
+      "offline": false,
+      "paused": true,
+      "stage": "invalid",
+      "displayProgress": 0,
+      "usable": false
+    },
+    {
+      "file": "screenshot-20261106-unity-13-stale-recovery-current-endpoint.jpg",
+      "extended": true,
+      "retracted": false,
+      "offline": false,
+      "paused": false,
+      "stage": "extended",
+      "displayProgress": 1,
+      "usable": true
+    }
+  ],
+  "notes": [
+    "Screenshots are original JPEG capture bytes, not composited or generated images.",
+    "51% is frozen display interpolation for demonstration, not measured physical position.",
+    "Full local logs, session credentials, databases and compiled players are excluded from Git."
+  ]
+}

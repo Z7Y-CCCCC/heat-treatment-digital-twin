@@ -54,6 +54,8 @@ const { requiresModelPublish } = require('../services/modelPublicationPermission
     assert.equal(allowsRequirement(apiPermission('/api/view-navigation/resolve','GET'),{...context,permissions:{view:true}}),true);
     const motionEditor = { ...context, pagePermissions: normalizePagePermissions({ 'model-animations': { view: true, edit: true } }) };
     const motionViewer = { ...context, pagePermissions: normalizePagePermissions({ 'model-animations': { view: true } }) };
+    assert.equal(allowsRequirement(apiPermission('/api/data-center/catalog','GET'),motionViewer),true);
+    assert.equal(allowsRequirement(apiPermission('/api/data-center/categories','PUT'),motionEditor),false);
     for (const [route,method] of [['/api/models/item/motion-actions','PUT'],['/api/models/item/motion-actions/preview','POST']]) {
         assert.equal(allowsRequirement(apiPermission(route,method),motionEditor),true);
         assert.equal(allowsRequirement(apiPermission(route,method),motionViewer),false);

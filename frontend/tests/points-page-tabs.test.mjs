@@ -14,10 +14,9 @@ test('add point is a single top-toolbar action, not a footer action', () => {
 })
 
 test('mapping and alarms are peer tabpanels sharing the device filter and save action', () => {
-  assert.match(page, /role="tablist" aria-label="点位配置"/)
-  assert.match(page, /role="tab" :aria-selected="pointsSubpage === page\.key"/)
-  assert.match(page, /<section id="points-panel-mapping" role="tabpanel"[^>]*v-show="pointsSubpage === 'mapping'"/)
-  assert.match(page, /<\/section>\s*<section id="points-panel-alarms" role="tabpanel"[^>]*v-show="pointsSubpage === 'alarms'"/)
+  assert.match(panel, /<DataCenterWorkspace[^>]*:active-section="dataCenterSection"/)
+  assert.match(page, /<section id="points-panel-mapping"[^>]*v-show="pointsSubpage === 'mapping'"/)
+  assert.match(page, /<\/section>\s*<section id="points-panel-alarms"[^>]*v-show="pointsSubpage === 'alarms'"/)
   assert.equal((page.match(/aria-label="筛选点位设备"/g) || []).length, 1)
   assert.equal((page.match(/@click="savePointsPage"/g) || []).length, 1)
   assert.match(page, /<header class="alarm-config-header">/)

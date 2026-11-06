@@ -210,15 +210,55 @@ class DataEngine {
     }
 
     getStatus() {
+        const observedAt = Date.now();
+        const simulationDevices = this.currentMode === 'simulation' ? this._simulationDeviceStatuses(observedAt) : null;
         return {
-            observedAt: Date.now(),
+            observedAt,
             configLoadedAt: this.configLoadedAt || null,
-            configuredDevices: this.plcReader?.deviceStatus?.size ?? this.simulator?.devices?.length ?? 0,
+            configuredDevices: simulationDevices ? simulationDevices.length : this.plcReader?.deviceStatus?.size ?? 0,
             mode: this.currentMode,
-            plcStatus: this.plcStatus,
+            plcStatus: simulationDevices ? { ...this.plcStatus, devices: simulationDevices } : this.plcStatus,
             collectorStatus: this.collectorStatus,
             eventStorageStatus: { ...this.eventStorageStatus }
         };
+    }
+
+    _simulationDeviceStatuses(observedAt) {
+        const simulator = this.simulator;
+        const interval = Number(simulator?.pollIntervalMs);
+        const freshnessMs = Math.max(6000, (Number.isFinite(interval) && interval >= 100 && interval <= 60000 ? interval : 2000) * 3);
+        const plcState = String(this.plcStatus?.status || '').toLowerCase();
+        const collectorState = String(this.collectorStatus?.status || '').toLowerCase();
+        const stopped = !simulator || simulator.stopped === true || ['stopped', 'stopping', 'disabled'].includes(plcState)
+            || ['stopped', 'stopping', 'disabled'].includes(collectorState);
+        const failed = ['error', 'offline', 'disconnected'].includes(plcState)
+            || ['error', 'offline', 'disconnected', 'recovering', 'unresponsive'].includes(collectorState);
+        const running = !stopped && !failed && ['simulating', 'connected'].includes(plcState);
+        const seen = new Set();
+        return (simulator?.devices || []).flatMap(device => {
+            const deviceId = String(device?.id ?? '').trim();
+            if (!deviceId || seen.has(deviceId)) return [];
+            seen.add(deviceId);
+            const stored = this.deviceSnapshots.get(deviceId);
+            // A configured device is never assigned a different device's last
+            // frame, and snapshot counts cannot identify which devices work.
+            const snapshot = String(stored?.furnace_id ?? '') === deviceId ? stored : null;
+            const rawTimestamp = snapshot?.timestamp;
+            const timestamp = rawTimestamp == null || rawTimestamp === '' ? NaN : Number.isFinite(Number(rawTimestamp))
+                ? Number(rawTimestamp) : Date.parse(rawTimestamp);
+            const lastReadAt = Number.isFinite(timestamp) && timestamp > 0 ? timestamp : null;
+            const qualityValues = Object.values(snapshot?.quality || {}).flatMap(group => Object.values(group || {}));
+            const reportedQuality = snapshot ? this._deviceQuality(snapshot) : 'good';
+            const quality = reportedQuality !== 'good' ? reportedQuality
+                : !qualityValues.length || qualityValues.some(value => value !== 'good') ? 'unknown' : 'good';
+            const stale = lastReadAt !== null && (lastReadAt > observedAt || observedAt - lastReadAt > freshnessMs);
+            let status = 'starting', connectionQuality = 'unknown';
+            if (stopped) { status = 'stopped'; connectionQuality = 'bad'; }
+            else if (failed || snapshot?.status?.online === false || quality === 'bad') { status = 'error'; connectionQuality = 'bad'; }
+            else if (stale || quality === 'stale') { status = 'stale'; connectionQuality = 'stale'; }
+            else if (running && lastReadAt !== null && quality === 'good') { status = 'connected'; connectionQuality = 'good'; }
+            return [{ deviceId, deviceName: String(device.name || deviceId), status, quality: connectionQuality, lastReadAt, freshnessMs }];
+        });
     }
 
     getPointRuntimeValues(deviceId, points = []) {

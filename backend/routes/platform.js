@@ -169,7 +169,7 @@ router.put('/designer/draft', async (req, res) => {
             expectedRevision: req.body?.expectedRevision ?? req.body?.expected_revision,
             factoryId: req.factoryId
         });
-        res.json({ success: true, document: result.document, revision: result.revision });
+        res.json({ success: true, document: result.document, revision: result.revision, warnings: result.warnings });
     } catch (e) {
         res.status(e.status || 400).json({ error: e.message, code: e.code, errors: e.validationErrors || [] });
     }

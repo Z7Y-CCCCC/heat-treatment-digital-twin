@@ -1,0 +1,33 @@
+<script setup>
+import { computed, ref, watch } from 'vue'
+const props = defineProps({ catalog: Object, dataItemId: String, pointId: String, disabled: Boolean, busy: Boolean, error: String })
+const emit = defineEmits(['select', 'refresh', 'clear'])
+const categoryId = ref(''), tableId = ref(''), query = ref('')
+const availableItems = computed(() => (props.catalog?.items || []).filter(item => item.motionReady === true && item.enabled !== false && item.sourceReady !== false && item.objectScope !== 'part' && ['number', 'boolean', 'string'].includes(item.type) && ['runtime', 'plc', 'dataset'].includes(item.binding?.mode)))
+const selected = computed(() => availableItems.value.find(item => item.id === props.dataItemId) || (!props.dataItemId && props.pointId ? availableItems.value.find(item => item.binding?.mode === 'plc' && String(item.binding.pointId) === props.pointId) : null))
+const unavailable = computed(() => props.dataItemId && !selected.value ? (props.catalog?.items || []).find(item => item.id === props.dataItemId) : null)
+const items = computed(() => availableItems.value.filter(item => (!categoryId.value || item.categoryId === categoryId.value) && (!tableId.value || item.tableId === tableId.value)
+  && (!query.value.trim() || [item.label, item.unit, props.catalog?.tables?.find(table => table.id === item.tableId)?.name].some(value => String(value || '').toLowerCase().includes(query.value.trim().toLowerCase())))))
+const tables = computed(() => (props.catalog?.tables || []).filter(table => availableItems.value.some(item => item.tableId === table.id && (!categoryId.value || item.categoryId === categoryId.value))))
+const typeLabel = type => ({ number: '数值', boolean: '开关量', string: '文字状态' })[type] || '数据'
+function choose(id) { if (props.disabled || props.busy) return; const item = availableItems.value.find(item => item.id === id); if (item) emit('select', item) }
+function clear() { if (!props.disabled && !props.busy) emit('clear') }
+watch(categoryId, () => { if (!tables.value.some(table => table.id === tableId.value)) tableId.value = '' })
+</script>
+<template>
+  <section class="motion-data-picker" aria-label="动作数据中心选取">
+    <header><strong>驱动数据</strong><span>来自数据中心</span><button type="button" :disabled="busy" aria-label="刷新动作数据目录" @click="emit('refresh')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 10a8 8 0 1 0-1 7M20 4v6h-6"/></svg></button></header>
+    <p>选择已整理好的设备资料、采集点位或外部数据表，不需要填写接口路径。</p>
+    <div class="motion-data-filters"><label>用途分类<select v-model="categoryId" aria-label="动作数据用途分类" :disabled="busy"><option value="">全部分类</option><option v-for="category in catalog?.categories || []" :key="category.id" :value="category.id">{{ category.name }}</option></select></label><label>数据表<select v-model="tableId" aria-label="动作数据表" :disabled="busy"><option value="">全部数据表</option><option v-for="table in tables" :key="table.id" :value="table.id">{{ table.name }}</option></select></label></div>
+    <input v-model="query" type="search" aria-label="搜索动作数据" placeholder="搜索中文名称或单位" :disabled="busy" />
+    <label>具体数据<select :value="selected?.id || dataItemId || ''" aria-label="动作驱动数据项" :disabled="disabled || busy" @change="choose($event.target.value)"><option value="">选择本设备可用数据</option><option v-if="dataItemId && !selected" :value="dataItemId" disabled>原数据项不可用，请重新选择</option><option v-if="selected && !items.some(item => item.id === selected.id)" :value="selected.id">已绑定 · {{ selected.label }}</option><option v-for="item in items" :key="item.id" :value="item.id">{{ item.label }} · {{ typeLabel(item.type) }}{{ item.unit ? ` · ${item.unit}` : '' }}{{ !tableId ? ` · ${catalog.tables.find(table => table.id === item.tableId)?.name || ''}` : '' }}</option></select></label>
+    <button v-if="dataItemId || pointId" type="button" class="motion-clear-binding" aria-label="解除动作数据绑定" :disabled="disabled || busy" @click="clear">解除绑定<span>同时停用此动作</span></button>
+    <div v-if="selected" class="motion-source-summary"><strong>{{ selected.label }}</strong><small>{{ typeLabel(selected.type) }}{{ selected.unit ? ` · ${selected.unit}` : '' }} · {{ selected.sourceType === 'plc' ? '本设备只读采集点位' : selected.sourceType === 'internal' ? '当前设备关联资料' : '已配置的数据表' }}</small><span>{{ selected.quality === 'good' && selected.previewValue != null ? `预览：${selected.previewValue}${selected.unit ? ` ${selected.unit}` : ''}` : '以现场实际读取结果为准，异常或超时会停止联动' }}</span></div>
+    <p v-if="unavailable" class="motion-picker-error" role="alert">{{ unavailable.label }}：{{ unavailable.motionError || '当前设备无法读取此数据项，请检查数据中心的来源与对象映射后刷新目录。' }}</p>
+    <p v-if="error" class="motion-picker-error" role="alert">{{ error }}</p><p v-else-if="!busy && !availableItems.length">此设备暂无可执行的数据项。请先在数据中心接入并整理；部件资料需在具备部件上下文的悬停编辑器中使用。</p>
+  </section>
+</template>
+<style scoped>
+.motion-data-picker{display:grid;gap:10px;padding:12px;border:1px solid #dce7f6;border-radius:9px;background:linear-gradient(130deg,#f5f9ff,#fff);color:#58708d}.motion-data-picker header{display:flex;align-items:center;gap:8px}.motion-data-picker header strong{font-size:12px;font-weight:600;color:#416389}.motion-data-picker header span{flex:1;font-size:10px;color:#98a8be}.motion-data-picker header button{width:22px;height:22px;padding:3px;border:0;background:none;color:#8b9eb9;cursor:pointer}.motion-data-picker svg{width:14px;height:14px;stroke:currentColor;stroke-width:1.6;fill:none}.motion-data-picker p{margin:0;font-size:11px;line-height:1.65;color:#8c9baf}.motion-data-picker label{display:grid;gap:5px;font-size:11px;color:#8798af}.motion-data-picker select,.motion-data-picker input{box-sizing:border-box;width:100%;max-width:100%;min-width:0;height:34px;padding:7px 8px;border:1px solid #d4dfef;border-radius:6px;background:#fff;font:inherit;font-size:12px;color:#425b7c}.motion-data-picker select:focus,.motion-data-picker input:focus{outline:2px solid #9cbdeb;outline-offset:1px}.motion-data-filters{display:grid;grid-template-columns:1fr 1fr;gap:8px}.motion-source-summary{display:grid;gap:5px;padding:9px;border-radius:6px;background:#edf4ff;font-size:11px;color:#647f9f;line-height:1.6;overflow-wrap:anywhere}.motion-source-summary small{color:#8da1ba}.motion-source-summary strong{color:#5278a4;font-weight:500}.motion-data-picker .motion-picker-error{color:#b05459}button:disabled,select:disabled{opacity:.5;cursor:default}
+.motion-clear-binding{display:flex;align-items:center;justify-content:space-between;gap:8px;border:0;background:none;padding:0;font:inherit;font-size:11px;text-align:left;color:#aa6970;cursor:pointer}.motion-clear-binding span{color:#9aa7b7;font-size:10px}.motion-clear-binding:focus-visible{outline:2px solid #8bb9ef;outline-offset:3px}
+</style>

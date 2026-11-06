@@ -49,6 +49,41 @@ async function main() {
     assert.equal(queue.bytes, 0); queue.dispose();
     console.log('PASS multi-PLC/device patch union, quality fault barrier, control ordering');
 
+    const motion = (id, actionId, value, timestamp, quality = 'good') => ({ furnace_id:id, timestamp,
+        motionInputOnly:true, motionInputs:{[actionId]:{dataItemId:'field_'+actionId,value,quality,timestamp,staleMs:5000}} });
+    for (const order of ['full-then-partial','partial-then-full']) {
+        const socket = new HeldSocket(), q = new WsOutboundQueue(socket);
+        q.enqueue({type:'welcome'});
+        const full = frame({...device('a',{temperature:850},{temperature:'good'}),timestamp:1000});
+        const partial = frame(motion('a','run',true,2000));
+        if (order === 'full-then-partial') { q.enqueue(full); q.enqueue(partial); }
+        else { q.enqueue(partial); q.enqueue(full); }
+        assert.equal(q.queue.length,2,'complete telemetry and motion-only samples are different queue classes');
+        const fullQueued = q.queue.find(entry=>entry.kind==='realtime').message.payload.devices[0];
+        const partialQueued = q.queue.find(entry=>entry.kind==='motion-input').message.payload.devices[0];
+        assert.deepEqual(fullQueued.analog,{temperature:850}); assert.equal(fullQueued.timestamp,1000);
+        assert.notEqual(fullQueued.motionInputOnly,true,'complete telemetry never inherits a partial marker');
+        assert.equal(partialQueued.analog,undefined,'motion-only sample never borrows telemetry fields');
+        assert.equal(partialQueued.timestamp,2000);
+        while (socket.callbacks.length) socket.flush(); q.dispose();
+    }
+    {
+        const socket = new HeldSocket(), q = new WsOutboundQueue(socket); q.enqueue({type:'welcome'});
+        q.enqueue(frame(motion('a','run',true,1000)));
+        q.enqueue(frame(motion('b','open',false,1100)));
+        q.enqueue(frame(motion('a','speed',0,1200)));
+        assert.equal(q.queue.length,1); assert.equal(q.queue[0].kind,'motion-input');
+        const merged = q.queue[0].message.payload.devices.find(d=>d.furnace_id==='a');
+        assert.equal(merged.motionInputOnly,true); assert.equal(merged.analog,undefined);
+        assert.equal(merged.motionInputs.run.timestamp,1000); assert.equal(merged.motionInputs.speed.timestamp,1200);
+        q.enqueue(frame(motion('a','run',null,1000,'bad')));
+        q.enqueue(frame(motion('a','run',true,1300)));
+        assert.deepEqual(q.queue.map(entry=>entry.kind),['motion-input','reliable','motion-input'],'bad motion quality is a reliable ordering barrier');
+        while (socket.callbacks.length) socket.flush();
+        assert.equal(socket.sent[2].payload.devices[0].motionInputs.run.quality,'bad'); q.dispose();
+    }
+    console.log('PASS motion-only coalescing remains separate from complete telemetry and preserves sample/fault clocks');
+
     for (const mode of ['throw', 'callback', 'bytes', 'count', 'timeout']) {
         const socket = new HeldSocket();
         const q = new WsOutboundQueue(socket, { maxMessages: 3, maxBytes: 500, maxMessageBytes: 400, stallMs: 30, pollMs: 5 });

@@ -1,5 +1,5 @@
 <script setup>
-import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, provide, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import LoadingExperience from '../components/LoadingExperience.vue'
 import SceneLoadingIndicator from '../components/SceneLoadingIndicator.vue'
@@ -11,7 +11,7 @@ import { createVoiceAnnouncer } from '../runtime/VoiceAnnouncer.js'
 import { createFactoryVoiceController } from '../runtime/factoryVoice.js'
 import { resolveBackendAssetUrl } from '../three/ModelFactory.js'
 import { useDashboardIntegration } from '../runtime/dashboardIntegration.js'
-import {useWidgetClock} from '../runtime/widgetPlayback.js'
+import {useWidgetClock,createWidgetPlaybackController,WidgetPlaybackKey} from '../runtime/widgetPlayback.js'
 import {createWidgetReadScheduler} from '../runtime/widgetReadScheduler.js'
 import {flattenPlaybackDevices} from '../../../shared/widgetPlayback.mjs'
 import WidgetRenderer from '../runtime/WidgetRenderer.vue'
@@ -20,12 +20,17 @@ import { applyFactoryHudModules } from '../runtime/factoryHudModules.js'
 import { createNativeViewNavigator } from '../runtime/nativeViewNavigation.js'
 import { fitHudCanvas } from '../runtime/hudPresentation.js'
 import { applyVisibilityAction, widgetRuntimeVisible } from '../runtime/dashboardRules.js'
+import { widgetPresentationState, returnNavigationVisibility } from '../runtime/widgetPresentation.js'
 import { isGlobalView, runtimeViewHidden } from '../../../shared/viewNavigation.mjs'
 import { visibleGlobalCrumbs } from '../runtime/globalViewRouting.js'
 import { requestNativeSceneSurface } from '../runtime/nativeSurfaceBridge.js'
 import { createGroupHierarchyPath } from '../runtime/groupHierarchyPath.js'
-import { applyInspectionHover, inspectionHoverDetails, inspectionPointText } from '../runtime/inspectionHover.js'
-import { applyDeviceHover, deviceHoverDetails, tooltipDevices } from '../runtime/deviceHover.js'
+import { applyInspectionHover } from '../runtime/inspectionHover.js'
+import { applyDeviceHover, tooltipDevices } from '../runtime/deviceHover.js'
+import TooltipSurface from '../runtime/TooltipSurface.vue'
+import { createTooltipContext } from '../runtime/tooltipContext.js'
+import { tooltipHoverTarget } from '../runtime/tooltipRuntime.js'
+import { resolveTooltipTemplate } from '../../../shared/tooltipTemplates.mjs'
 import { overviewEntryStatus } from '../runtime/factoryNavigationReadiness.js'
 
 const rootRef = ref(null)
@@ -83,6 +88,9 @@ const runtimeContext = reactive({
     inspectionLabelsEnabled: false, inspectionLeaderLines: false, inspectionHoveredPartId: '', inspectionIssues: [], inspectionParts: []
 })
 const playbackNow=useWidgetClock()
+const playbackController=createWidgetPlaybackController()
+provide(WidgetPlaybackKey,playbackController)
+watch(()=>['factoryId','sceneId','viewId','viewMode','workshopId','lineId','deviceId','partId'].map(key=>runtimeContext[key]),()=>playbackController.reset(),{flush:'sync'})
 const playbackDevices=computed(()=>flattenPlaybackDevices(config))
 const groupVisibility = reactive({})
 const widgetVisibility = reactive({})
@@ -238,28 +246,7 @@ const currentView = computed(() => dashboardViews.value.find(view => view.id ===
 const defaultViewId = computed(() => presentationDocument.value?.scene?.defaultViewId
     || platform.value.activeScene?.defaultViewId
     || 'factory_overview')
-const canNavigateToParentView = computed(() => {
-    const targetType = String(currentView.value?.targetType || '').toLowerCase()
-    const mode = String(runtimeContext.viewMode || currentView.value?.mode || targetType || 'factory').toLowerCase()
-    const isDeviceView = mode === 'device' || targetType === 'device' || targetType === 'device_part'
-        || ['xray', 'exploded', 'part'].includes(String(runtimeContext.inspectionStage || '').toLowerCase())
-    // The native host can publish the inspection context a few frames after
-    // entering a part view. A known device/inspection view is still safely
-    // returnable during that hand-off.
-    if (runtimeContext.sceneReady === false && !isDeviceView) return false
-    if (!isDeviceView && (mode === 'factory' || runtimeContext.viewId === defaultViewId.value)) return false
-    if (isDeviceView && runtimeContext.inspectionStage && runtimeContext.inspectionStage !== 'solid') return true
-    if (isDeviceView && targetType === 'device_part') return true
-    if (!currentView.value?.returnViewId && !currentView.value?.parentViewId) {
-        // Older/custom documents may not have a return edge. Keep the
-        // standard hierarchy available as a safe runtime fallback.
-        return isDeviceView || ['line', 'workshop'].includes(mode)
-    }
-    if (isDeviceView) return Boolean(runtimeContext.deviceId || currentView.value?.targetId || runtimeContext.partId)
-    if (mode === 'line') return Boolean(runtimeContext.lineId || currentView.value?.targetId)
-    if (mode === 'workshop') return Boolean(runtimeContext.workshopId || currentView.value?.targetId)
-    return true
-})
+const canNavigateToParentView = computed(() => returnNavigationVisibility(currentView.value, runtimeContext, defaultViewId.value).visible)
 // The return control must follow the actual navigation context. Depending on
 // a transient "this WebView saw the click" flag made it disappear when Unity
 // entered a deep view first or delivered its context update a frame later.
@@ -320,13 +307,6 @@ const parentViewName = computed(() => {
     const parentId = parentViewIdForCurrent()
     return dashboardViews.value.find(view => view.id === parentId)?.name || '上一级视角'
 })
-function viewComponentVisible(type, id = `widget_${type}`) {
-    const state = currentView.value?.componentState || {}
-    const candidates = [id, type, `system:${type}`].filter(Boolean)
-    if (candidates.some(candidate => state.hide?.includes(candidate))) return false
-    if (state.show?.length && !candidates.some(candidate => state.show.includes(candidate))) return false
-    return true
-}
 const dashboardCanvas = computed(() => presentationDocument.value?.canvas || platform.value.canvas || {
     width: 1920,
     height: 1080,
@@ -344,58 +324,36 @@ const allConfiguredWidgets = computed(() => {
         .filter(widget => !CONFIG_ONLY_WIDGET_TYPES.has(widget.type || widget.widget_type))
         .sort((left, right) => Number(left.zIndex ?? left.sort_order ?? 0) - Number(right.zIndex ?? right.sort_order ?? 0))
 })
-const navigationWidget = computed(() => {
-    const configured = Array.isArray(presentationDocument.value?.widgets)
-        ? presentationDocument.value.widgets
-        : (Array.isArray(platform.value.widgets) ? platform.value.widgets : [])
-    return configured.find(widget => (widget.type || widget.widget_type) === 'navigation') || null
-})
-const returnButtonWidget = computed(() => {
-    const configured = Array.isArray(presentationDocument.value?.widgets)
-        ? presentationDocument.value.widgets
-        : (Array.isArray(platform.value.widgets) ? platform.value.widgets : [])
-    return configured.find(widget => (widget.type || widget.widget_type) === 'return_button') || null
-})
-const navigationEnabled = computed(() => {
-    const widget = navigationWidget.value
-    if (widget && (widget.visible === false || widget.visible === 0)) return false
-    return viewComponentVisible('navigation', widget?.id || 'widget_navigation')
-})
-const returnButtonEnabled = computed(() => {
-    const widget = returnButtonWidget.value
-    if (widget && (widget.visible === false || widget.visible === 0)) return false
-    return viewComponentVisible('return_button', widget?.id || 'widget_return_button')
-})
-const navigationStyle = computed(() => {
-    const widget = navigationWidget.value
+const authoredControls = computed(() => Array.isArray(presentationDocument.value?.widgets)
+    ? presentationDocument.value.widgets
+    : (Array.isArray(platform.value.widgets) ? platform.value.widgets : []))
+function widgetDisplayState(widget) {
+    return widgetPresentationState(widget, {
+        view: currentView.value, context: runtimeContext,
+        policy: config.settings?.global_view_navigation, defaultViewId: defaultViewId.value,
+        dataValue: runtimeValueForWidget(widget),
+        dataRecord: ['database', 'http_api', 'dataset'].includes(widget.data?.mode) ? databaseValues[widget.id] : null,
+        groupVisibility, widgetVisibility
+    })
+}
+const navigationWidgets = computed(() => authoredControls.value.filter(widget => (widget.type || widget.widget_type) === 'navigation' && widgetDisplayState(widget).visible))
+const returnButtonWidgets = computed(() => authoredControls.value.filter(widget => (widget.type || widget.widget_type) === 'return_button' && widgetDisplayState(widget).visible))
+function controlStyle(widget, type) {
     if (widget?.frame) return widgetStyle(widget)
-    // Keep the legacy runtime position until a document containing the
-    // navigation component has been normalized by the designer/backend.
-    return { left: '34.38%', top: '1.67%', width: '31.25%', height: '3.89%' }
-})
-const returnButtonStyle = computed(() => {
-    const widget = returnButtonWidget.value
-    if (widget?.frame) return widgetStyle(widget)
-    return { left: '1.04%', top: '1.67%', width: '2.19%', height: '3.89%' }
-})
+    return type === 'navigation'
+        ? { left: '34.38%', top: '1.67%', width: '31.25%', height: '3.89%' }
+        : { left: '1.04%', top: '1.67%', width: '2.19%', height: '3.89%' }
+}
+function activateControl(widget) {
+    const clicks = (widget.events || widget.config?.events || []).filter(event => (event.trigger || 'click') === 'click')
+    if (clicks.length) return clicks.forEach(event => handleWidgetAction({event, widget}))
+    if ((widget.type || widget.widget_type) === 'return_button') return returnToParentView()
+    selectWidget(widget.id)
+}
 const configuredWidgets = computed(() => allConfiguredWidgets.value
     .filter(widget => widget.visible !== 0 && widget.visible !== false)
     .filter(widget => widget.runtimeTarget !== 'unity'))
-const widgets = computed(() => {
-    return configuredWidgets.value.filter(widget => {
-    const state = currentView.value?.componentState || {}
-    const groupId = widget.groupId ? `group:${widget.groupId}` : ''
-    if (state.hide?.includes(widget.id) || (groupId && state.hide?.includes(groupId))) return false
-    if (state.show?.length && !state.show.includes(widget.id) && (!groupId || !state.show.includes(groupId))) return false
-    return true
-    }).filter(widget => widgetRuntimeVisible(widget, {
-    context: runtimeContext,
-    dataValue: runtimeValueForWidget(widget),
-    dataRecord: ['database', 'http_api', 'dataset'].includes(widget.data?.mode) ? databaseValues[widget.id] : null,
-    groupVisibility,
-    widgetVisibility
-    }))
-})
+const widgets = computed(() => configuredWidgets.value.filter(widget => widgetDisplayState(widget).visible))
 const businessWidgets = computed(() => configuredWidgets.value.filter(widget => {
     const type = widget.type || widget.widget_type
     return type === 'business_summary' && widget.data?.mode !== 'business'
@@ -409,18 +367,17 @@ function getByPath(source, path) {
 const pointValues = computed(() => {
     const result = {}
     for (const workshop of getWorkshops() || []) {
-        for (const line of workshop.lines || []) {
-            for (const device of line.devices || []) {
-                const frame = dataStore.deviceDataMap[device.id] || {}
-                for (const point of device.dataPoints || []) {
-                    const category = point.category || 'analog'
-                    const field = point.value_role || point.name
-                    const value = getByPath(frame, `${category}.${field}`)
-                    const quality = getByPath(frame, `quality.${category}.${field}`) || dataStore.deviceStatusMap[device.id]?.quality || 'bad'
-                    const record = { ...point, value, quality, device_id: device.id, lastReadAt: frame.pointMeta?.[`${category}.${field}`]?.lastReadAt || frame.timestamp || null }
-                    result[String(point.id)] = record
-                    result[`${device.id}:${point.id}`] = record
-                }
+        const workshopDevices = [...(workshop.devices || []), ...(workshop.lines || []).flatMap(line => line.devices || [])]
+        for (const device of workshopDevices) {
+            const frame = dataStore.deviceDataMap[device.id] || {}
+            for (const point of device.dataPoints || []) {
+                const category = point.category || point.category_resolved || 'analog'
+                const field = point.value_role || point.name
+                const value = getByPath(frame, `${category}.${field}`)
+                const quality = getByPath(frame, `quality.${category}.${field}`) || dataStore.deviceStatusMap[device.id]?.quality || 'bad'
+                const record = { ...point, value, quality, device_id: device.id, lastReadAt: frame.pointMeta?.[`${category}.${field}`]?.lastReadAt || frame.timestamp || null }
+                result[String(point.id)] = record
+                result[`${device.id}:${point.id}`] = record
             }
         }
     }
@@ -433,19 +390,13 @@ function pointForContextKey(deviceId, key) {
     const separator = value.indexOf('.')
     const category = separator > 0 ? value.slice(0, separator) : ''
     const field = separator > 0 ? value.slice(separator + 1) : value
-    for (const workshop of getWorkshops() || []) {
-        for (const line of workshop.lines || []) {
-            const device = (line.devices || []).find(item => String(item.id) === String(deviceId))
-            if (!device) continue
-            const point = (device.dataPoints || []).find(item => {
-                const pointCategory = String(item.category || item.category_resolved || 'analog')
-                const pointField = String(item.value_role || item.name || '')
-                return (!category || pointCategory === category) && pointField === field
-            })
-            if (point) return pointValues.value[`${deviceId}:${point.id}`] || null
-        }
-    }
-    return null
+    const device = deviceHoverCatalog.value.find(item => String(item.id) === String(deviceId))
+    const matches = (device?.dataPoints || []).filter(item => {
+        const pointCategory = String(item.category || item.category_resolved || 'analog')
+        const pointField = String(item.value_role || item.name || '')
+        return (!category || pointCategory === category) && pointField === field
+    })
+    return matches.length === 1 ? pointValues.value[`${deviceId}:${matches[0].id}`] || null : null
 }
 
 const selectedPart = computed(() => {
@@ -468,12 +419,21 @@ const selectedPart = computed(() => {
     }
 })
 const deviceHoverCatalog = computed(() => tooltipDevices(getWorkshops() || [], config.models || []))
-const hoveredOverviewDevice = computed(() => deviceHoverDetails(runtimeContext, currentView.value, deviceHoverCatalog.value,
-    dataStore.deviceStatusMap, dataStore.deviceDataMap, overlayViewport))
-watch(dataStore.wsConnected, connected => {
-    if (!connected) { runtimeContext.hoveredDeviceId = ''; runtimeContext.deviceHoverPointer = { visible: false } }
+const tooltipTarget = computed(() => tooltipHoverTarget(runtimeContext, deviceHoverCatalog.value, pointValues.value, pointForContextKey))
+const activeTooltipTemplate = computed(() => tooltipTarget.value
+    ? resolveTooltipTemplate(presentationDocument.value, currentView.value, tooltipTarget.value.kind) : null)
+const tooltipContext = computed(() => {
+    const target = tooltipTarget.value
+    if (!target) return {}
+    return createTooltipContext({ ...target, runtimeContext, status: dataStore.deviceStatusMap[target.device.id] || {},
+        frame: dataStore.deviceDataMap[target.device.id] || {} })
 })
-const hoveredInspectionPart = computed(() => inspectionHoverDetails(runtimeContext, pointValues.value, pointForContextKey, overlayViewport))
+watch(dataStore.wsConnected, connected => {
+    if (!connected) {
+        runtimeContext.hoveredDeviceId = ''; runtimeContext.deviceHoverPointer = { visible: false }
+        runtimeContext.inspectionHoveredPartId = ''; runtimeContext.inspectionHoverPointer = { visible: false }
+    }
+})
 
 async function sendInspectionCommand(inspection) {
     if (overlayDisposed || !runtimeContext.deviceId) return
@@ -538,10 +498,7 @@ function runtimeValueForWidget(widget) {
     return widget?.content?.value
 }
 
-const projectName = computed(() => platform.value.activeProject?.name || '热处理数字孪生')
-const sceneName = computed(() => platform.value.activeScene?.name || '工厂总览')
-const navigationProjectLabel = computed(() => navigationWidget.value?.content?.projectLabel || `${projectName.value} · ${sceneName.value}`)
-const navigationStatusText = computed(() => navigationWidget.value?.content?.statusText || dataStore.plcStatusText.value)
+const navigationCopy = widget => widget.content || widget.config || {}
 
 let resizeObserver = null
 let mutationObserver = null
@@ -901,6 +858,7 @@ function handleHostMessage(event) {
 const externalReader=createWidgetReadScheduler({
  context:()=>Object.fromEntries(['factoryId','viewId','viewMode','workshopId','lineId','deviceId','partId'].map(key=>[key,runtimeContext[key] || ''])),
  parameters:()=>integration.parameters.value,devices:()=>playbackDevices.value,
+ playbackTime:(widget,now)=>playbackController.timeFor(widget,now),
  widgets:()=>configuredWidgets.value.filter(w=>{
    const view=currentView.value,state=view?.componentState || {},group=w.groupId?'group:'+w.groupId:''
    if(state.hide?.includes(w.id) || group && state.hide?.includes(group))return false
@@ -1109,6 +1067,7 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+    playbackController.reset()
     externalReader.dispose()
     overlayDisposed = true
     clearTimeout(inspectionProgressTimer)
@@ -1160,22 +1119,22 @@ onUnmounted(() => {
             </div>
         </nav>
         <div class="overlay-canvas" :class="{ 'is-reference-canvas': presentationDocument?.metadata?.referenceHud === 1 && runtimeContext.viewId === 'factory_overview' }" :style="presentationDocument?.metadata?.referenceHud === 1 && runtimeContext.viewId === 'factory_overview' ? fitHudCanvas(dashboardCanvas, overlayViewport) : undefined">
-            <div v-if="navigationEnabled" class="overlay-navigation" :style="navigationStyle">
+            <div v-for="widget in navigationWidgets" :key="widget.id" :data-widget-id="widget.id" class="overlay-navigation" :style="controlStyle(widget, 'navigation')">
                 <button
                     type="button"
                     class="overlay-status"
                     :class="{ online: dataStore.health.readiness.displayReady && hostConnected }"
                     data-overlay-hit="true"
                     :title="`后端：${dataStore.health.components.backend?.status || '未知'}；数据库：${dataStore.health.components.database?.status || '未知'}；Unity：${dataStore.health.components.unity?.status || '未知'}；数据：${dataStore.health.components.dataEngine?.fresh ? '新鲜' : '未就绪'}`"
-                    @click="selectWidget('overlay-status')"
+                    @click="activateControl(widget)"
                 >
                     <span class="overlay-status-dot"></span>
-                    <span>{{ navigationProjectLabel }}</span>
-                    <strong>{{ navigationStatusText }}</strong>
+                    <span>{{ navigationCopy(widget).projectLabel ?? '' }}</span>
+                    <strong>{{ navigationCopy(widget).statusText ?? '' }}</strong>
                 </button>
             </div>
 
-            <div v-if="returnButtonEnabled" class="overlay-return-widget" :style="returnButtonStyle">
+            <div v-for="widget in returnButtonWidgets" :key="widget.id" :data-widget-id="widget.id" class="overlay-return-widget" :style="controlStyle(widget, 'return_button')">
                 <button
                     type="button"
                     v-if="canReturnToParentView"
@@ -1186,7 +1145,7 @@ onUnmounted(() => {
                     :title="`返回${parentViewName}`"
                     data-overlay-hit="true"
                     @pointerdown.stop
-                    @click.stop="returnToParentView"
+                    @click.stop="activateControl(widget)"
                 >
                     <svg viewBox="0 0 24 24" aria-hidden="true">
                         <path d="M15.25 4.75 8 12l7.25 7.25" />
@@ -1246,24 +1205,12 @@ onUnmounted(() => {
                 />
             </div>
         </div>
-        <aside v-if="hoveredOverviewDevice" class="inspection-hover-card device-hover-card" :style="hoveredOverviewDevice.style" aria-label="悬停设备详情">
-            <span v-if="hoveredOverviewDevice.title" class="inspection-hover-eyebrow">{{ hoveredOverviewDevice.title }}</span>
-            <strong v-if="hoveredOverviewDevice.name">{{ hoveredOverviewDevice.name }}</strong>
-            <p v-if="hoveredOverviewDevice.description">{{ hoveredOverviewDevice.description }}</p>
-            <div v-for="row in hoveredOverviewDevice.rows" :key="row.key" class="inspection-hover-point"><span>{{ row.label }}</span><b>{{ row.value }}<small v-if="row.quality"> · {{ row.quality }}</small></b></div>
-            <small v-if="hoveredOverviewDevice.showHint" class="inspection-hover-hint">点击进入设备</small>
-        </aside>
-        <aside v-if="hoveredInspectionPart" class="inspection-hover-card" :style="hoveredInspectionPart.style" aria-label="悬停部件详情">
-            <span class="inspection-hover-eyebrow">COMPONENT / 部件</span>
-            <strong>{{ hoveredInspectionPart.name || hoveredInspectionPart.id }}</strong>
-            <small v-if="hoveredInspectionPart.group" class="inspection-hover-group">{{ hoveredInspectionPart.group }}</small>
-            <p>{{ hoveredInspectionPart.description || '已配置的设备部件' }}</p>
-            <div v-for="point in hoveredInspectionPart.points" :key="point.id || point.name" class="inspection-hover-point">
-                <span>{{ point.display_name || point.name || point.value_role || point.id }}</span>
-                <b>{{ inspectionPointText(point) }}</b>
-            </div>
-            <small class="inspection-hover-hint">{{ ['exploded', 'part'].includes(runtimeContext.inspectionStage) ? '点击部件查看完整详情' : '点击部件继续查看拆解结构' }}</small>
-        </aside>
+        <TooltipSurface v-if="tooltipTarget && activeTooltipTemplate" :template="activeTooltipTemplate"
+            :context="tooltipContext" :pointer="tooltipTarget.pointer" :viewport="overlayViewport"
+            :metrics="dataStore.metrics" :events="dataStore.events.value" :trend-points="dataStore.trendPoints.value"
+            :device-status-map="dataStore.deviceStatusMap" :device-data-map="dataStore.deviceDataMap" :point-values="pointValues"
+            :device-catalog="playbackDevices" :playback-now="playbackNow" :parameters="integration.parameters.value"
+            :parameter-definitions="integration.definitions.value" :data-ready="dataStore.health.readiness.displayReady === true" />
     </div>
 </template>
 

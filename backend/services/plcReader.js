@@ -151,7 +151,7 @@ class PlcReader {
                     sample_interval_ms: this._resolveSampleInterval(point),
                     value,
                     quality,
-                    lastReadAt: deviceStatus?.lastReadAt || null
+                    lastReadAt: snapshot?.pointMeta?.[`${category}.${fieldName}`]?.timestamp || null
                 };
             })
         };
@@ -580,6 +580,7 @@ class PlcReader {
             data.quality[category][fieldName] = quality;
             data.pointMeta[`${category}.${fieldName}`] = {
                 id: point.id || '',
+                timestamp: data.timestamp,
                 name: point.name || fieldName,
                 label: point.label,
                 category,
@@ -609,6 +610,7 @@ class PlcReader {
                 patch.quality[category][fieldName] = 'bad';
                 patch.pointMeta[`${category}.${fieldName}`] = {
                     id: point.id || '',
+                    timestamp: previous.pointMeta?.[`${category}.${fieldName}`]?.timestamp || 0,
                     name: point.name || fieldName,
                     label: point.label,
                     category,

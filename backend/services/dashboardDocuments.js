@@ -1,4 +1,5 @@
 const {upgradeWidgetPlaybackDocument}=require('../../shared/widgetPlaybackProfile.mjs');
+const { tooltipDocumentWidgets } = require('../../shared/tooltipTemplates.mjs');
 const {
     SCHEMA_VERSION,
     safeJsonParse,
@@ -104,11 +105,12 @@ async function loadPublishedDocument(db, project, scene) {
     return { document: await require('./globalViewNavigation').runtimeDocument(db, empty), release: null };
 }
 
-async function validatePlcBindings(db, document) {
-    validateDocument(document);
+async function validatePlcBindings(db, document, options = {}) {
+    validateDocument(document, { allowIncompleteBindings: options.allowIncompleteBindings === true });
+    const bindingWidgets = tooltipDocumentWidgets(document);
     const owner = await db.get('SELECT factory_id FROM projects WHERE id=?', [document.projectId]);
     const bindingFactoryId = owner?.factory_id || 'factory_default';
-    const datasetWidgets = document.widgets.filter(widget => widget.data?.mode === 'dataset');
+    const datasetWidgets = bindingWidgets.filter(widget => widget.data?.mode === 'dataset');
     if (datasetWidgets.length) {
         const project = await db.get('SELECT factory_id FROM projects WHERE id=?', [document.projectId]);
         const definitions = await require('./dataSets').listDataSets(project?.factory_id || 'factory_default');
@@ -123,7 +125,7 @@ async function validatePlcBindings(db, document) {
             resolveConnection(definition.connectionId, project?.factory_id || 'factory_default');
         }
     }
-    const databaseConnectionIds = [...new Set(document.widgets
+    const databaseConnectionIds = [...new Set(bindingWidgets
         .filter(widget => ['database', 'business', 'http_api'].includes(widget.data?.mode))
         .flatMap(widget => (widget.data.mode === 'database' && Array.isArray(widget.data.datasets) && widget.data.datasets.length
             ? widget.data.datasets
@@ -133,16 +135,16 @@ async function validatePlcBindings(db, document) {
     for (const connectionId of databaseConnectionIds) {
         const connection = resolveConnection(connectionId, bindingFactoryId);
         if (connection.sourceType === 'http_api' || connection.type === 'http_api') {
-            const usedForHttp = document.widgets.some(widget => widget.data?.mode === 'http_api' && widget.data.connectionId === connectionId);
-            const usedForDatabase = document.widgets.some(widget => ['database', 'business'].includes(widget.data?.mode)
+            const usedForHttp = bindingWidgets.some(widget => widget.data?.mode === 'http_api' && widget.data.connectionId === connectionId);
+            const usedForDatabase = bindingWidgets.some(widget => ['database', 'business'].includes(widget.data?.mode)
                 && (widget.data.connectionId === connectionId || widget.data.datasets?.some(dataset => dataset.connectionId === connectionId)));
             if (usedForHttp && !usedForDatabase) continue;
             throw new Error('数据库和业务数据组件不能绑定 HTTP API，请改用 HTTP 接口组件或数据库连接');
         }
-        if (document.widgets.some(widget => widget.data?.mode === 'http_api' && widget.data.connectionId === connectionId))
+        if (bindingWidgets.some(widget => widget.data?.mode === 'http_api' && widget.data.connectionId === connectionId))
             throw new Error('HTTP 接口组件必须选择 HTTP API 数据源');
     }
-    const bindings = document.widgets
+    const bindings = bindingWidgets
         .filter(widget => widget.data?.mode === 'plc')
         .filter(widget => !(widget.data.requireConfiguredPoint === true && !widget.data.pointId))
         .map(widget => ({
@@ -225,11 +227,13 @@ async function saveDraft(db, { sceneId, document: input, expectedRevision, facto
     const document = normalizeDocument(input, { project, scene, source: 'designer' });
     // Normalize first so deleting a view can repair legacy visibility/event
     // references before validation instead of returning one error per widget.
-    validateDocument(document);
+    const draftValidation = { allowIncompleteBindings: true };
+    validateDocument(document, draftValidation);
     document.projectId = String(project.id);
     document.sceneId = String(scene.id);
     document.scene.id = String(scene.id);
-    await validatePlcBindings(db, document);
+    await validatePlcBindings(db, document, draftValidation);
+    const warnings = validateDocument(document, { throwOnError: false });
     const nextRevision = currentRevision + 1;
     document.metadata = {
         ...objectValue(document.metadata, {}),
@@ -250,7 +254,7 @@ async function saveDraft(db, { sceneId, document: input, expectedRevision, facto
         }
         await syncLegacyWidgets(tx, document);
     });
-    return { document, revision: nextRevision, project, scene: { ...scene, draft_revision: nextRevision } };
+    return { document, revision: nextRevision, warnings, project, scene: { ...scene, draft_revision: nextRevision } };
 }
 
 function parseSemver(value) {

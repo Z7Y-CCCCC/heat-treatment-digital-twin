@@ -49,6 +49,19 @@ async function zipFile(filename, entries) {
         await db.run('INSERT INTO bindings (id, widget_id, source_id) VALUES (?, ?, ?)', ['portable_binding', 'portable_widget', 'portable_device']);
         await db.run('INSERT INTO releases (id, project_id, scene_id, version, snapshot_json, is_current) VALUES (?, ?, ?, ?, ?, ?)', ['portable_release', 'portable_project', 'portable_scene', 'v1', JSON.stringify(document), 1]);
         await db.run('INSERT INTO factory_settings (factory_id, `key`, value) VALUES (?, ?, ?)', ['portable_source', 'native_dashboard_config', JSON.stringify({ title: '专属配置', image: '/uploads/appearance/picture.png' })]);
+        const dataCenter = require('../services/dataCenter');
+        const externalTable = require('../services/dataSets').normalizeDataSet({ id: 'dataset_portable_business', name: '便携业务表', connectionId: 'portable_connection', source: 'http', rootPath: 'data',
+            request: { method: 'GET', path: '/business' }, columns: [{ name: 'amount', label: '业务数量', path: 'amount', type: 'number', unit: '件' }] });
+        externalTable.revision = 'portable_business_revision';
+        await db.run('INSERT INTO factory_settings (factory_id,`key`,value) VALUES (?,?,?)', ['portable_source', 'external_dataset_config', JSON.stringify({ version: 1, datasets: [externalTable] })]);
+        const sourceCatalog = await dataCenter.buildCatalog('portable_source');
+        const sourcePoint = sourceCatalog.items.find(item => item.sourceType === 'plc');
+        const sourceField = sourceCatalog.items.find(item => item.datasetId === externalTable.id);
+        assert.ok(sourcePoint && sourceField);
+        const category = await dataCenter.saveCategory({ name: 'portable_device', revision: sourceCatalog.revision }, 'portable_source');
+        const pointMetadata = await dataCenter.saveItem(sourcePoint.id, { categoryId: category.category.id, label: 'portable_line', revision: category.revision }, 'portable_source');
+        const fieldMetadata = await dataCenter.saveItem(sourceField.id, { categoryId: 'production', label: '自定义业务字段', revision: pointMetadata.revision }, 'portable_source');
+        await dataCenter.saveItem('internal_device_name', { label: '自定义设备标题', revision: fieldMetadata.revision }, 'portable_source');
         const archive = path.join(directory, 'portable.zip');
         await exportBundle('portable_source', archive, options);
         const checked = await inspectBundle(archive);
@@ -58,6 +71,7 @@ async function zipFile(filename, entries) {
         const entries = await Promise.all(zip.files.map(async entry => [entry.path, await entry.buffer()]));
         const configText = entries.find(([name]) => name === 'config.json')[1].toString();
         assert.ok(!configText.includes('must-never-export') && !configText.includes('192.168.10.123') && !configText.includes('json-secret'));
+        assert.ok(JSON.parse(configText).tables.factory_settings.some(row => row.key === 'data_center_catalog_v1'));
         const first = await importBundle(archive, { name: '一号副本', inspectedSha256: checked.sha256 }, options);
         const second = await importBundle(archive, { name: '二号副本', inspectedSha256: checked.sha256 }, options);
         assert.notEqual(first.factoryId, second.factoryId);
@@ -69,6 +83,17 @@ async function zipFile(filename, entries) {
         assert.notEqual(newDevice.id, 'portable_device'); assert.equal(newPoint.device_id, newDevice.id);
         assert.notEqual(newPoint.id, pointId); assert.equal(JSON.parse(newDevice.instance_config).pointId, newPoint.id);
         assert.equal(newDevice.plc_enabled, 0); assert.equal(newDevice.plc_ip, '');
+        const importedCatalog = await dataCenter.buildCatalog(first.factoryId);
+        const newCatalogPoint = importedCatalog.items.find(item => item.binding?.pointId === String(newPoint.id));
+        assert.ok(newCatalogPoint && newCatalogPoint.id !== sourcePoint.id);
+        assert.equal(newCatalogPoint.categoryId, category.category.id); assert.equal(newCatalogPoint.label, 'portable_line');
+        assert.equal(importedCatalog.categories.find(item => item.id === category.category.id).name, 'portable_device', 'user-authored display names that resemble IDs are not rewritten');
+        assert.equal(importedCatalog.items.find(item => item.id === 'internal_device_name').label, '自定义设备标题');
+        const importedField = importedCatalog.items.find(item => item.id === sourceField.id);
+        assert.ok(importedField); assert.equal(importedField.label, '自定义业务字段'); assert.equal(importedField.categoryId, 'production');
+        assert.equal(importedField.binding.datasetId, externalTable.id); assert.equal(importedField.binding.datasetField, 'amount');
+        const secondCatalog = await dataCenter.buildCatalog(second.factoryId);
+        assert.equal(secondCatalog.items.find(item => item.sourceType === 'plc').label, 'portable_line');
         assert.equal(draft.projectId, newProject.id); assert.equal(draft.sceneId, scene.id);
         assert.match(draft.widgets[0].data.connectionId, /^unconfigured_/);
         const release = await db.get('SELECT * FROM releases WHERE id = ?', [scene.published_release_id]);
@@ -96,6 +121,18 @@ async function zipFile(filename, entries) {
         manifest.config.size = configBytes.length; manifest.config.sha256 = crypto.createHash('sha256').update(configBytes).digest('hex');
         await zipFile(invalid, changed.map(([name, bytes]) => [name, name === 'config.json' ? configBytes : name === 'manifest.json' ? Buffer.from(JSON.stringify(manifest)) : bytes]));
         await assert.rejects(inspectBundle(invalid), /包外配置/);
+        const malformedCatalog = path.join(directory, 'malformed-data-center.zip');
+        const brokenConfig = JSON.parse(configText);
+        const brokenCatalogRow = brokenConfig.tables.factory_settings.find(row => row.key === 'data_center_catalog_v1');
+        const brokenCatalog = JSON.parse(brokenCatalogRow.value);
+        brokenCatalog.overrides[sourcePoint.id].binding = { mode: 'static', value: 999 };
+        brokenCatalogRow.value = JSON.stringify(brokenCatalog);
+        const brokenConfigBytes = Buffer.from(JSON.stringify(brokenConfig));
+        const brokenManifest = JSON.parse(entries.find(([name]) => name === 'manifest.json')[1]);
+        brokenManifest.config.size = brokenConfigBytes.length; brokenManifest.config.sha256 = crypto.createHash('sha256').update(brokenConfigBytes).digest('hex');
+        await zipFile(malformedCatalog, entries.map(([name, bytes]) => [name, name === 'config.json' ? brokenConfigBytes : name === 'manifest.json' ? Buffer.from(JSON.stringify(brokenManifest)) : bytes]));
+        await assert.rejects(inspectBundle(malformedCatalog), /数据中心/);
+        assert.equal((await db.get('SELECT COUNT(*) AS n FROM factories')).n, count, 'malformed data-center metadata is rejected before creating any new factory');
         // A late failure must roll back even after every row and file was written.
         await assert.rejects(importBundle(archive, { inspectedSha256: checked.sha256 }, { ...options, beforeCommit: () => { throw new Error('injected rollback'); } }), /injected rollback/);
         assert.equal((await db.get('SELECT COUNT(*) AS n FROM factories')).n, count);
@@ -103,6 +140,11 @@ async function zipFile(filename, entries) {
         // Re-export the imported namespace to prove assets stay portable a second time.
         const again = path.join(directory, 'again.zip'); await exportBundle(first.factoryId, again, options);
         assert.equal((await inspectBundle(again)).inspection.assetCount, 4);
+        const againCheck = await inspectBundle(again);
+        const third = await importBundle(again, { inspectedSha256: againCheck.sha256 }, options);
+        const thirdCatalog = await dataCenter.buildCatalog(third.factoryId);
+        assert.equal(thirdCatalog.items.find(item => item.sourceType === 'plc').label, 'portable_line');
+        assert.equal(thirdCatalog.items.find(item => item.id === sourceField.id).categoryId, 'production');
         // Shared appearance travels with the package but only applies by opt-in.
         const { normalizeSettingValue } = require('../routes/settings');
         const appearanceName = `${'a'.repeat(32)}.png`;
@@ -176,6 +218,6 @@ async function zipFile(filename, entries) {
         const builtinModel = await db.get('SELECT * FROM models WHERE factory_id = ? AND name LIKE ?', [builtinCopy.factoryId, '%转运%']);
         assert.ok(builtinModel && builtinModel.id !== 'photo_transfer_cart_v6');
         assert.equal(fs.readFileSync(path.join(uploadsRoot, builtinModel.file_path.slice('/uploads/'.length)), 'utf8'), 'builtin mesh');
-        console.log('PASS project bundle: independent copies, all assets, glTF dependencies, IDs, drafts/releases, credential removal, hash rejection and transactional rollback');
+        console.log('PASS project bundle: independent copies, all assets, glTF dependencies, IDs, drafts/releases, credential removal, hash rejection and transactional rollback; data-center categories/labels and remapped point metadata survive repeated export/import, malformed metadata rejected');
     } finally { await closeDb(); }
 })().catch(error => { console.error(error.stack || error); process.exitCode = 1; });

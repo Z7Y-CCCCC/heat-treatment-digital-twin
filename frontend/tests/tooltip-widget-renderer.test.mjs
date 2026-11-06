@@ -1,0 +1,221 @@
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import { readFile } from 'node:fs/promises'
+import { createRenderer, h, nextTick } from 'vue'
+import { parse, compileScript } from 'vue/compiler-sfc'
+import { installBrowser } from './helpers.mjs'
+import { createTooltipContext } from '../src/runtime/tooltipContext.js'
+
+const url = new URL('../src/runtime/WidgetRenderer.vue', import.meta.url)
+const { descriptor } = parse(await readFile(url, 'utf8'))
+const compiled = compileScript(descriptor, { id: 'tooltip-renderer', inlineTemplate: true }).content
+  .replace(/from (['"])(vue|echarts)\1/g, (_, _quote, name) => `from ${JSON.stringify(import.meta.resolve(name))}`)
+  .replace(/from (['"])(\.\.?\/[^'"]+)\1/g, (_, _quote, name) => `from ${JSON.stringify(new URL(name, url).href)}`)
+  .replace(/from (["'])([^"']+\.vue)\1/g, `from 'data:text/javascript,export default {}'`)
+const { default: WidgetRenderer } = await import(`data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`)
+const node = (type, text = '') => ({ type, text, children: [], props: {}, parent: null })
+const text = root => [root.text, ...root.children.map(text)].join(' ')
+function fixture(t) {
+  const environment = installBrowser(t)
+  const renderer = createRenderer({
+    createElement: type => node(type), createText: value => node('#text', value), createComment: value => node('#comment', value),
+    setText: (element, value) => element.text = value,
+    setElementText: (element, value) => { element.text = value; element.children = [] },
+    parentNode: element => element.parent,
+    nextSibling: element => element.parent?.children[element.parent.children.indexOf(element) + 1] || null,
+    patchProp: (element, key, previous, value) => element.props[key] = value,
+    insert(element, parent, anchor = null) {
+      if (element.parent) element.parent.children = element.parent.children.filter(child => child !== element)
+      element.parent = parent
+      const index = parent.children.indexOf(anchor)
+      if (index < 0) parent.children.push(element); else parent.children.splice(index, 0, element)
+    },
+    remove(element) { if (element?.parent) element.parent.children = element.parent.children.filter(child => child !== element) }
+  })
+  const root = node('root')
+  environment.beforeRestore(() => renderer.render(null, root))
+  let vm
+  return { root, get vm() { return vm }, async render(props) { const vnode = h(WidgetRenderer, props); renderer.render(vnode, root); vm = vnode.component.exposed; await nextTick(); await nextTick() } }
+}
+
+test('tooltip identity is current hover metadata even before PLC readiness and never the selected device', async t => {
+  const view = fixture(t), runtimeContext = createTooltipContext({ device: { id: 'b', name: '悬停设备 B' }, runtimeContext: { viewMode: 'factory', deviceId: 'a' } })
+  const widget = { id: 'title', type: 'text', content: { text: '{value}', showTitle: false }, data: { mode: 'runtime', path: 'hover.device.name' } }
+  await view.render({ widget, runtimeContext, overlayMode: true, dataReady: false, deviceCatalog: [{ id: 'a', name: '设备 A' }] })
+  assert.match(text(view.root), /悬停设备 B/)
+  assert.doesNotMatch(text(view.root), /设备 A|正在同步当前数据/)
+})
+
+test('current tooltip PLC bindings resolve matching current-device points and withhold late/stale readings', async t => {
+  const view = fixture(t), runtimeContext = createTooltipContext({ device: { id: 'b', name: 'B' }, runtimeContext: { viewMode: 'factory' } })
+  const widget = { id: 'reading', type: 'text', content: { text: '{value} {unit}', fallback: '未连接' }, data: { mode: 'plc', deviceScope: 'current', pointId: 'template_a', pointKey: 'analog.temp', unit: '°C', decimals: 1 } }
+  const points = { template_a: { id: 'template_a', device_id: 'a', category: 'analog', value_role: 'temp', value: 999, quality: 'good' }, b: { id: 'p_b', device_id: 'b', category: 'analog', value_role: 'temp', value: 0, quality: 'good' } }
+  await view.render({ widget, runtimeContext, pointValues: points, deviceCatalog: [{ id: 'a' }, { id: 'b' }] })
+  assert.match(text(view.root), /0\.0 °C/)
+  assert.doesNotMatch(text(view.root), /999/)
+  await view.render({ widget, runtimeContext, pointValues: { ...points, b: { ...points.b, value: 666, quality: 'stale' } } })
+  assert.match(text(view.root), /未连接/)
+  assert.doesNotMatch(text(view.root), /666|999/)
+  await view.render({ widget, runtimeContext, pointValues: { template_a: points.template_a } })
+  assert.doesNotMatch(text(view.root), /999|0\.0/)
+})
+
+test('tooltip part text and per-field mappings preserve real zero and clear obsolete values', async t => {
+  const view = fixture(t), part = { id: 'fan', name: '风机', points: [{ id: 'p', device_id: 'b', value: 0, quality: 'good', unit: 'rpm' }] }
+  const context = createTooltipContext({ kind: 'part', device: { id: 'b' }, part })
+  const widget = { id: 'part_value', type: 'text', content: { text: '{value}', valueMap: [{ value: 0, text: '停止' }], fallback: '缺少数据' }, data: { mode: 'runtime', path: 'hover.part.points.0.value' } }
+  await view.render({ widget, runtimeContext: context })
+  assert.match(text(view.root), /停止/)
+  const missing = createTooltipContext({ kind: 'part', device: { id: 'b' }, part: { id: 'another' } })
+  await view.render({ widget, runtimeContext: missing })
+  assert.match(text(view.root), /缺少数据/)
+  assert.doesNotMatch(text(view.root), /停止/)
+})
+
+test('bad external responses do not show a stale tooltip value or configured example as a live reading', async t => {
+  const view = fixture(t), runtimeContext = createTooltipContext({ device: { id: 'b' } })
+  const widget = { id: 'external', type: 'text', content: { text: '{value}', value: 888, fallback: '无记录' }, data: { mode: 'http_api' } }
+  await view.render({ widget, runtimeContext, databaseValues: { external: { value: 999, quality: 'bad', rows: [] } } })
+  assert.match(text(view.root), /无记录/)
+  assert.doesNotMatch(text(view.root), /888|999/)
+})
+
+test('tooltip text units follow the hovered point and an empty authored text stays hidden', async t => {
+  const view = fixture(t), runtimeContext = createTooltipContext({ kind: 'part', device: { id: 'b' }, part: { id: 'fan', points: [{ id: 'p', device_id: 'b', value: 0, quality: 'good', unit: 'rpm' }] } })
+  const widget = { id: 'speed', type: 'text', content: { text: '{value}{unit}' }, data: { mode: 'runtime', path: 'hover.part.points.0.value', decimals: 0 } }
+  await view.render({ widget, runtimeContext })
+  assert.match(text(view.root), /0 rpm/)
+  await view.render({ widget: { ...widget, title: '不应出现标题', content: { text: '', showTitle: false }, data: { mode: 'static' } }, runtimeContext })
+  assert.doesNotMatch(text(view.root), /不应出现标题|文本组件|0 rpm/)
+})
+
+test('tooltip numeric elements allow empty internal labels and retain configured alignment', async t => {
+  const view = fixture(t), runtimeContext = createTooltipContext({ device: { id: 'b' } })
+  const widget = { id: 'number', title: '图层名不作标签', type: 'value', content: { value: 0, label: '', showTitle: false, align: 'right' }, data: { mode: 'static', decimals: 0 } }
+  await view.render({ widget, runtimeContext })
+  assert.match(text(view.root), /0/)
+  assert.doesNotMatch(text(view.root), /图层名不作标签/)
+  const body = view.root.children[0].children.find(child => child.props.class?.includes('value-widget-body'))
+  assert.equal(body.props.style.textAlign, 'right')
+})
+
+test('designer text capture uses the renderer exact multiline and parameter-substituted wording', async t => {
+  const view = fixture(t)
+  const runtimeContext = createTooltipContext({ kind: 'part', device: { id: 'b' }, part: { id: 'rail', description: '第一行说明\n第二行说明' } })
+  const widget = { id: 'description', type: 'text', content: { text: '{value}\n批次 {parameters.batch}', fallback: '—' }, data: { mode: 'runtime', path: 'hover.part.description' } }
+  await view.render({ widget, runtimeContext, parameters: { batch: 'A-1' } })
+  assert.equal(view.vm.getRenderedText(), '第一行说明\n第二行说明\n批次 A-1')
+  await view.render({ widget, runtimeContext, parameters: { batch: 'B-2' } })
+  assert.equal(view.vm.getRenderedText(), '第一行说明\n第二行说明\n批次 B-2')
+})
+
+test('designer text capture preserves actual zero, units and mapped text rather than raw binding values', async t => {
+  const view = fixture(t)
+  const runtimeContext = createTooltipContext({ kind: 'part', device: { id: 'b' }, part: { id: 'fan', points: [{ id: 'p', device_id: 'b', value: 0, unit: 'rpm', quality: 'good' }] } })
+  const widget = { id: 'speed', type: 'text', content: { text: '{value}{unit}', fallback: '无数据' }, data: { mode: 'runtime', path: 'hover.part.points.0.value', decimals: 0 } }
+  await view.render({ widget, runtimeContext })
+  assert.equal(view.vm.getRenderedText(), '0 rpm')
+  await view.render({ widget: { ...widget, content: { ...widget.content, valueMap: [{ value: 0, text: '停止' }] } }, runtimeContext })
+  assert.equal(view.vm.getRenderedText(), '停止 rpm')
+})
+
+test('linked tooltip metadata stays tied to the hovered object and cannot be renamed by a text mapping', async t => {
+  const view = fixture(t)
+  const widget = { id: 'workshop', type: 'text', content: { text: '{value}', valueMap: [{ value: '车间 A', text: '假的固定车间' }] }, data: { mode: 'runtime', path: 'hover.device.workshopName' } }
+  await view.render({ widget, runtimeContext: createTooltipContext({ device: { id: 'a', workshopName: '车间 A' } }) })
+  assert.equal(view.vm.getRenderedText(), '车间 A')
+  await view.render({ widget, runtimeContext: createTooltipContext({ device: { id: 'b', workshopName: '车间 B' } }) })
+  assert.equal(view.vm.getRenderedText(), '车间 B')
+  await view.render({ widget: { ...widget, content: { text: '旧模板里的固定车间' } }, runtimeContext: createTooltipContext({ device: { id: 'b', workshopName: '车间 B' } }) })
+  assert.equal(view.vm.getRenderedText(), '车间 B', 'legacy bound formats cannot substitute a constant for associated data')
+  const disconnected = createTooltipContext({ device: { id: 'b' }, status: { quality: 'bad' } })
+  const actualStatus = disconnected.hover.device.status
+  await view.render({ widget: { ...widget, id: 'status', content: { text: '{value}', valueMap: [{ value: actualStatus, text: '数据正常' }] }, data: { mode: 'runtime', path: 'hover.device.status' } }, runtimeContext: disconnected })
+  assert.equal(view.vm.getRenderedText(), actualStatus)
+  assert.notEqual(view.vm.getRenderedText(), '数据正常')
+})
+
+test('device status renders live good, stale, bad, unknown and recovered states independently of process flags', async t => {
+  const view = fixture(t), widget = { id: 'data_status', type: 'text', content: { text: '{value}', showTitle: false,
+    valueMap: [{ value: '数据异常 / 未连接', text: '数据正常' }, { value: '暂无实时数据', text: '数据正常' }] },
+    data: { mode: 'runtime', path: 'hover.device.status' } }
+  for (const [status, expected] of [
+    [{ quality: 'good', online: true, running: false, alarm: true }, '数据正常'],
+    [{ quality: 'stale', online: false, lastSeen: Date.now() }, '数据已过期'],
+    [{ quality: 'bad', online: false, lastSeen: Date.now() }, '数据异常 / 未连接'],
+    [{ quality: 'unknown', online: true, lastSeen: Date.now() }, '暂无实时数据'],
+    [{ lastSeen: Date.now() }, '暂无实时数据'],
+    [{ quality: 'good', online: true, running: true, alarm: false }, '数据正常']
+  ]) {
+    await view.render({ widget, runtimeContext: createTooltipContext({ device: { id: 'b' }, status }), overlayMode: true })
+    assert.equal(view.vm.getRenderedText(), expected)
+  }
+})
+
+test('a frozen tooltip field with binding provenance is repaired in the renderer and follows device identity and status', async t => {
+  const view = fixture(t), widget = { id: 'old_status', type: 'text', content: { text: '数据正常', showTitle: false },
+    data: { mode: 'static' }, dynamicBinding: { mode: 'runtime', path: 'hover.device.status', deviceScope: 'current', readOnly: true } }
+  const before = JSON.stringify(widget)
+  await view.render({ widget, runtimeContext: createTooltipContext({ device: { id: 'a' }, status: { quality: 'good' } }) })
+  assert.equal(view.vm.getRenderedText(), '数据正常')
+  await view.render({ widget, runtimeContext: createTooltipContext({ device: { id: 'b' }, status: { quality: 'bad' } }) })
+  assert.equal(view.vm.getRenderedText(), '数据异常 / 未连接')
+  await view.render({ widget: { ...widget, dynamicBinding: { mode: 'runtime', path: 'hover.device.workshopName', deviceScope: 'current', readOnly: true } },
+    runtimeContext: createTooltipContext({ device: { id: 'b', workshopName: '车间 B' } }) })
+  assert.equal(view.vm.getRenderedText(), '车间 B')
+  assert.equal(JSON.stringify(widget), before)
+})
+
+test('a tooltip data-status lamp cannot turn disconnected or unknown strings into an on state or custom healthy text', async t => {
+  const view = fixture(t), widget = { id: 'live_status_lamp', type: 'status', content: { label: '数据状态',
+    onText: '永远正常', offText: '永远正常', unknownText: '永远正常' }, data: { mode: 'runtime', path: 'hover.device.status' } }
+  const findBody = root => String(root.props.class || '').includes('status-widget-body') ? root : root.children.map(findBody).find(Boolean)
+  for (const [status, expected, healthy] of [
+    [{ quality: 'good', online: true }, '数据正常', true],
+    [{ quality: 'bad', online: false, lastSeen: Date.now() }, '数据异常 / 未连接', false],
+    [{ quality: 'stale', online: false, lastSeen: Date.now() }, '数据已过期', false],
+    [{ quality: 'unknown', online: true, lastSeen: Date.now() }, '暂无实时数据', false],
+    [{ quality: 'good', online: false }, '数据异常 / 未连接', false]
+  ]) {
+    await view.render({ widget, runtimeContext: createTooltipContext({ device: { id: 'b' }, status }) })
+    assert.ok(text(view.root).includes(expected), text(view.root))
+    assert.doesNotMatch(text(view.root), /永远正常/)
+    const body = findBody(view.root)
+    assert.ok(body)
+    assert.equal(String(body.props.class).includes('state-on'), healthy, JSON.stringify(status))
+  }
+})
+
+test('linked device and part point names, IDs and units follow the current point definition and cannot be mapped to constants', async t => {
+  const view = fixture(t)
+  const reading = (id, deviceId, name, unit) => ({ id, device_id: deviceId, category: 'analog', value_role: 'temp',
+    display_name: name, unit, value: 0, quality: 'good' })
+  const first = createTooltipContext({ kind: 'part', device: { id: 'a' }, part: { id: 'part_a', pointIds: ['pa'] }, points: [reading('pa', 'a', '炉 A 温度', '°C')] })
+  const second = createTooltipContext({ kind: 'part', device: { id: 'b' }, part: { id: 'part_b', pointIds: ['pb'] }, points: [reading('pb', 'b', '炉 B 温度', 'K')] })
+  for (const prefix of ['hover.device.pointMap.analog.temp', 'hover.part.points.0']) {
+    for (const [field, initial, next] of [['name', '炉 A 温度', '炉 B 温度'], ['label', '炉 A 温度', '炉 B 温度'], ['id', 'pa', 'pb'], ['unit', '°C', 'K']]) {
+      const widget = { id: 'linked_point_field', type: 'text', content: { text: '{value}', showTitle: false,
+        valueMap: [{ value: initial, text: '伪造常量' }, { value: next, text: '伪造常量' }] }, data: { mode: 'runtime', path: `${prefix}.${field}` } }
+      await view.render({ widget, runtimeContext: first })
+      assert.equal(view.vm.getRenderedText(), initial)
+      await view.render({ widget, runtimeContext: second })
+      assert.equal(view.vm.getRenderedText(), next)
+      await view.render({ widget: { ...widget, data: { mode: 'static', path: `${prefix}.${field}` }, content: { ...widget.content, text: '旧固定点位信息' } }, runtimeContext: second })
+      assert.equal(view.vm.getRenderedText(), next)
+    }
+    const valueWidget = { id: 'point_code', type: 'text', content: { text: '{value}', valueMap: [{ value: 0, text: '停止' }] },
+      data: { mode: 'runtime', path: `${prefix}.value` } }
+    await view.render({ widget: valueWidget, runtimeContext: second })
+    assert.equal(view.vm.getRenderedText(), '停止', 'numeric point-code mappings are intentionally still supported')
+  }
+})
+
+test('missing linked metadata cannot be replaced by an invented association through a saved fallback', async t => {
+  const view = fixture(t), context = createTooltipContext({ device: { id: 'a' }, status: { quality: 'good' } })
+  for (const path of ['hover.device.workshopName', 'hover.device.lineName', 'hover.device.pointMap.analog.missing.name']) {
+    await view.render({ runtimeContext: context, widget: { id: 'linked_missing', type: 'text',
+      data: { mode: 'runtime', path }, content: { text: '{value}', fallback: '伪造的默认车间／产线', showTitle: false } } })
+    assert.equal(view.vm.getRenderedText(), '—')
+    assert.doesNotMatch(text(view.root), /伪造/)
+  }
+})

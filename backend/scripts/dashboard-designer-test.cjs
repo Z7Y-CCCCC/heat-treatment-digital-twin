@@ -42,6 +42,16 @@ async function main() {
         ]
     });
     assert.equal(isCanonicalDocument(legacy), true);
+    // Group/system namespaces must survive save/publish normalization. Replacing
+    // ':' with '_' used to silently discard the user's hidden-group settings.
+    const visibilityDraft = clone(legacy);
+    visibilityDraft.widgets[0].groupId = 'visibility_group';
+    visibilityDraft.scene.views[0].componentState = { show: ['system:navigation'], hide: ['group:visibility_group'] };
+    const visibilityRoundTrip = normalizeDocument(visibilityDraft);
+    assert.ok(visibilityRoundTrip.scene.views[0].componentState.show.includes('system:navigation'));
+    assert.ok(visibilityRoundTrip.scene.views[0].componentState.hide.includes('group:visibility_group'));
+    assert.deepEqual(normalizeDocument(visibilityRoundTrip).scene.views[0].componentState, visibilityRoundTrip.scene.views[0].componentState);
+    assert.doesNotThrow(() => validateDocument(visibilityRoundTrip));
     assert.equal(Math.round(legacy.widgets[0].frame.x), 80);
     assert.equal(Math.round(legacy.widgets[0].frame.y), 180);
     assert.equal(legacy.widgets[1].data.mode, 'static', '旧系统运行指标没有迁移为静态数据');

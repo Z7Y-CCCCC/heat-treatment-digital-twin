@@ -1,4 +1,9 @@
 const bounded = (value, fallback, min, max) => Number.isFinite(Number(value)) ? Math.round(Math.min(max, Math.max(min, Number(value)))) : fallback
+// This timestamp only selects an allowed device; refreshing and cache freshness
+// keep using real time. A hover pause can legitimately retain an old clock.
+export function isPlaybackTimestamp(value, currentTime = Date.now()) {
+  return Number.isSafeInteger(value) && value >= 0 && value <= currentTime + 60000
+}
 export function normalizePlayback(binding = {}) {
   const scope = ['current','fixed','rotation','global'].includes(binding.deviceScope) ? binding.deviceScope : (binding.deviceId ? 'fixed' : 'current')
   const ids = Array.isArray(binding.rotationDeviceIds) ? [...new Set(binding.rotationDeviceIds.map(String).filter(id=>/^[\w.-]{1,128}$/.test(id)))].slice(0,100) : []
@@ -15,6 +20,12 @@ export function flattenPlaybackDevices(config = {}) {
 export function playbackSelection(binding, context = {}, devices = [], now = Date.now()) {
   const config=normalizePlayback(binding), byId=new Map(devices.map(d=>[String(d.id),d]))
   if(config.deviceScope==='global')return {device:null,index:0,total:0,mode:'global'}
+  // Hover templates have their own object scope, never a rotating main-view
+  // selection. Explicit fixed bindings still opt into another registered device.
+  if(context.tooltipTarget===true) {
+    const selectedId=config.deviceScope==='fixed' ? String(binding.deviceId || '') : String(context.deviceId || '')
+    return {device:byId.get(selectedId) || null,index:0,total:1,mode:config.deviceScope==='fixed'?'fixed':'current'}
+  }
   const deviceView=!!context.deviceId && (context.viewMode==='device' || /^device_/.test(context.viewId || '') || !!context.inspectionStage)
   if (deviceView) return {device:byId.get(String(context.deviceId)) || null,index:0,total:1,mode:'current'}
   if (config.deviceScope==='fixed') return {device:byId.get(String(binding.deviceId || '')) || null,index:0,total:1,mode:'fixed'}

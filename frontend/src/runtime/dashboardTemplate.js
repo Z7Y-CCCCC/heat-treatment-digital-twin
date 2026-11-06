@@ -1,5 +1,6 @@
 import {MAX_DASHBOARD_WIDGETS} from '../../../shared/dashboardLimits.mjs'
 import { DASHBOARD_SCHEMA_VERSION, normalizeDashboardDocument } from './dashboardSchema.js'
+import { MAX_TOOLTIP_TEMPLATES, MAX_TOOLTIP_WIDGETS, tooltipDocumentWidgets } from '../../../shared/tooltipTemplates.mjs'
 
 export const DASHBOARD_TEMPLATE_FORMAT = 'dashboard-template'
 export const MAX_TEMPLATE_BYTES = 5 * 1024 * 1024
@@ -16,6 +17,20 @@ export function importDashboardTemplate(text, targetDocument) {
   if (!source || typeof source !== 'object' || !Array.isArray(source.widgets) || !Array.isArray(source.scene?.views)) throw new Error('模板缺少组件或视角定义')
   if (source.schemaVersion > DASHBOARD_SCHEMA_VERSION) throw new Error('模板来自更新版本，请先升级程序')
   if (source.widgets.length > MAX_DASHBOARD_WIDGETS || source.scene.views.length > 50) throw new Error(`模板超过 ${MAX_DASHBOARD_WIDGETS} 个组件或 50 个视角的上限`)
+  if (source.tooltipTemplates) {
+    if (!Array.isArray(source.tooltipTemplates.templates) || source.tooltipTemplates.templates.length > MAX_TOOLTIP_TEMPLATES) throw new Error('悬停模板数量或格式无效')
+    const ids = new Set()
+    for (const template of source.tooltipTemplates.templates) {
+      if (!template || !/^[a-zA-Z0-9_-]{1,128}$/.test(template.id || '') || ids.has(template.id)) throw new Error('悬停模板 ID 无效或重复')
+      ids.add(template.id)
+      if (!Array.isArray(template.widgets) || template.widgets.length > MAX_TOOLTIP_WIDGETS) throw new Error('悬停模板基础组件数量无效')
+      const widgetIds = new Set()
+      for (const widget of template.widgets) {
+        if (!widget || !/^[a-zA-Z0-9_-]{1,128}$/.test(widget.id || '') || widgetIds.has(widget.id)) throw new Error('悬停组件 ID 无效或重复')
+        widgetIds.add(widget.id)
+      }
+    }
+  }
   for (const [label, rows] of [['组件', source.widgets], ['视角', source.scene.views]]) {
     const ids = new Set()
     for (const row of rows) {
@@ -46,6 +61,7 @@ function visitReferences(document, visit) {
     }
   }
   walk(document.widgets, ['widgets'])
+  walk(document.tooltipTemplates?.templates, ['tooltipTemplates', 'templates'])
   for (const [index, view] of document.scene.views.entries()) {
     const kind = { device: 'devices', device_part: 'devices', line: 'lines', workshop: 'workshops' }[view.targetType]
     if (kind && view.targetId) visit(view, 'targetId', kind, view.targetId, ['scene', 'views', String(index), 'targetId'])
@@ -69,7 +85,7 @@ export function rebindDashboardTemplate(document, mapping, catalog) {
     if (!target || !(catalog[kind] || []).some(row => String(row.id) === target)) throw new Error(`请为 ${id} 选择当前工厂的有效目标`)
     owner[field] = target
   })
-  for (const widget of result.widgets) {
+  for (const widget of tooltipDocumentWidgets(result)) {
     const data = widget.data
     const point = (catalog.points || []).find(row => String(row.id) === data.pointId)
     if (data.deviceId && data.pointId) {

@@ -9,7 +9,8 @@ const props = defineProps({
     connections: { type: Array, default: () => [] }, draft: { type: Object, required: true },
     health: { type: Object, default: () => ({}) }, busy: Boolean, dirty: Boolean,
     message: { type: String, default: '' }, permissionPage: { type: String, default: 'settings.database' },
-    confirm: { type: Function, required: true }, alert: { type: Function, required: true }
+    confirm: { type: Function, required: true }, alert: { type: Function, required: true },
+    mode: { type: String, default: 'all' }
 })
 const emit = defineEmits(['create', 'edit', 'test', 'save', 'remove', 'open-plc'])
 const search = ref(''), group = ref('all'), page = ref(1), pageSize = ref(8), creating = ref(false), section = ref('connection')
@@ -18,8 +19,20 @@ const uploadBusy = ref(false), working = computed(() => props.busy || uploadBusy
 let returnFocus
 const canEdit = computed(() => canAdminPage(props.permissionPage, 'edit'))
 const canDelete = computed(() => canAdminPage(props.permissionPage, 'delete'))
-const workspaceTab = ref('connections'), visitedDataSets = ref(false), datasetEditor = ref(null)
+const workspaceTab = ref(props.mode === 'datasets' ? 'datasets' : 'connections'), visitedDataSets = ref(props.mode === 'datasets'), datasetEditor = ref(null)
+const isBusy = computed(() => working.value || workspaceTab.value === 'datasets' && datasetEditor.value?.isBusy)
+const isDirty = computed(() => props.dirty || workspaceTab.value === 'datasets' && datasetEditor.value?.isDirty)
 function switchWorkspace(key) { workspaceTab.value = key; if (key === 'datasets') visitedDataSets.value = true }
+watch(() => props.mode, mode => { if (mode !== 'all') switchWorkspace(mode === 'datasets' ? 'datasets' : 'connections') })
+async function canLeave() {
+    if (workspaceTab.value === 'datasets') return datasetEditor.value?.canLeave?.() ?? true
+    if (!await allowDiscard()) return false
+    if (props.dirty) { creating.value = false; emit('create'); section.value = 'connection' }
+    return true
+}
+async function savePending() { if (workspaceTab.value === 'datasets') await datasetEditor.value?.savePending?.() }
+function discardPending() { if (workspaceTab.value === 'datasets') datasetEditor.value?.discardPending?.() }
+defineExpose({ canLeave, isBusy, isDirty, savePending, discardPending })
 const sources = computed(() => props.connections.filter(item => !item.primary))
 const filtered = computed(() => filterSources(props.connections, search.value, group.value))
 const pages = computed(() => Math.max(1, Math.ceil(filtered.value.length / pageSize.value)))
@@ -87,9 +100,10 @@ async function tabKeys(event, index) {
 <template>
     <div class="source-workspace">
         <header class="workspace-heading">
-            <nav class="workspace-tabs" aria-label="数据接入分类"><button type="button" :class="{active:workspaceTab==='connections'}" :aria-pressed="workspaceTab==='connections'" @click="switchWorkspace('connections')"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="3"/><path d="M3 10h18M7 14h3M14 14h3"/></svg>连接<span>{{sources.length}}</span></button><button type="button" :class="{active:workspaceTab==='datasets'}" :aria-pressed="workspaceTab==='datasets'" @click="switchWorkspace('datasets')"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="M4 10h16M10 10v10"/></svg>数据集</button></nav>
+            <nav v-if="mode==='all'" class="workspace-tabs" aria-label="数据接入分类"><button type="button" :class="{active:workspaceTab==='connections'}" :aria-pressed="workspaceTab==='connections'" @click="switchWorkspace('connections')"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="3"/><path d="M3 10h18M7 14h3M14 14h3"/></svg>连接<span>{{sources.length}}</span></button><button type="button" :class="{active:workspaceTab==='datasets'}" :aria-pressed="workspaceTab==='datasets'" @click="switchWorkspace('datasets')"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="M4 10h16M10 10v10"/></svg>数据表</button></nav>
+            <div v-else class="standalone-heading"><strong>{{mode==='datasets'?'外部数据表':'外部数据源'}}</strong><small>{{mode==='datasets'?'整理中文字段、单位与对象映射，设计器直接选用':'先连接数据，再将需要的字段整理成数据表'}}</small></div>
             <button v-if="workspaceTab==='connections'" type="button" class="btn btn-primary btn-sm" :disabled="!canEdit || working" @click="openPicker">＋ 新建数据源</button>
-            <button v-else type="button" class="btn btn-primary btn-sm" :disabled="!canEdit || working" @click="datasetEditor?.create()">＋ 新建数据集</button>
+            <button v-else type="button" class="btn btn-primary btn-sm" :disabled="!canEdit || working" @click="datasetEditor?.create()">＋ 新建数据表</button>
         </header>
         <DataSetWorkspace ref="datasetEditor" v-if="visitedDataSets" v-show="workspaceTab==='datasets'" :connections="connections" :permission-page="permissionPage" :confirm="confirm" />
         <div v-show="workspaceTab==='connections'">
@@ -142,6 +156,7 @@ async function tabKeys(event, index) {
 <style scoped>
 * { box-sizing: border-box; }
 .source-workspace { color:#344054; }
+.standalone-heading { display:grid; gap:6px; }.standalone-heading strong { color:#61748e; font-size:calc(14px * var(--admin-font-scale,1)); font-weight:550; }.standalone-heading small { color:#9aa7ba; font-size:calc(11px * var(--admin-font-scale,1)); }
 .workspace-tabs { display:flex; gap:4px; padding:4px; border:1px solid #e9edf2; border-radius:8px; background:#f4f6f9; }
 .workspace-tabs button { display:flex; gap:8px; align-items:center; padding:7px 14px; border:0; border-radius:5px; background:transparent; color:#8490a2; font:inherit; font-size:calc(12px * var(--admin-font-scale, 1)); cursor:pointer; }
 .workspace-tabs button svg { width:16px; height:16px; fill:none; stroke:currentColor; stroke-width:1.6; }

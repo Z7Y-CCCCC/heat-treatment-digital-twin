@@ -59,14 +59,14 @@ function normalizeDataSet(input = {}) {
         request: { method, path, readOnly: true, parameters }, rootPath: source === 'http' ? dataPath(input.rootPath, true) : '',
         match, columns, database, revision: text(input.revision, 80) };
 }
-async function store(factoryId) {
-    const db = await getDb(), row = await db.get('SELECT value FROM factory_settings WHERE factory_id=? AND `key`=?', [factoryId, KEY]);
+async function store(factoryId, database = null) {
+    const db = database || await getDb(), row = await db.get('SELECT value FROM factory_settings WHERE factory_id=? AND `key`=?', [factoryId, KEY]);
     if (!row || !row.value) return { db, value: row?.value ?? null, datasets: [] };
     let data; try { data = JSON.parse(row.value); } catch { throw error('数据集配置损坏，请从备份恢复', 500); }
     if (!Array.isArray(data.datasets)) throw error('数据集配置格式无效', 500);
     return { db, value: row.value, datasets: data.datasets };
 }
-async function listDataSets(factoryId) { return (await store(factoryId)).datasets; }
+async function listDataSets(factoryId, database = null) { return (await store(factoryId, database)).datasets; }
 async function commit(state, datasets, factoryId) {
     const value = JSON.stringify({ version: 1, datasets });
     if (Buffer.byteLength(value) > 1024 * 1024) throw error('数据集配置超过 1 MB');

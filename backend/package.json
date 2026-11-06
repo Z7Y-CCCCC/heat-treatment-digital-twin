@@ -38,6 +38,7 @@
     "test:spatial": "node scripts/spatial-hierarchy-test.cjs",
     "test:cast": "node scripts/cast-discovery-test.cjs && node scripts/cast-history-test.cjs",
     "test:designer": "node scripts/dashboard-designer-test.cjs",
+    "test:tooltip-templates": "node scripts/tooltip-template-integration-test.cjs",
     "test:data-sources": "node scripts/data-source-test.cjs",
     "test:data-sources-http": "node scripts/data-source-http-regression-test.cjs",
     "test:data-source-transports": "node scripts/data-source-transports-test.cjs",

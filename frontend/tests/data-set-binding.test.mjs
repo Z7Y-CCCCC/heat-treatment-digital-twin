@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
-import { createRenderer, h, reactive, ref } from 'vue'
+import { createRenderer, h, nextTick, reactive, ref } from 'vue'
 import { parse, compileScript } from 'vue/compiler-sfc'
 import { adminApi } from '../src/config/factoryConfig.js'
 import { createDashboardWidget, normalizeDashboardDocument } from '../src/runtime/dashboardSchema.js'
@@ -57,4 +57,83 @@ test('loading datasets never erases the existing binding and a stale refresh can
  assert.equal(f.props.binding.datasetId,'erp');assert.equal(f.props.binding.datasetField,'temperature');assert.equal(f.state.loading,true);
  const refresh=f.state.load();b.resolve({datasets:[{id:'erp',name:'Current',columns:[{name:'temperature'}]}]});await refresh;
  a.resolve({datasets:[{id:'stale',name:'Old',columns:[]}]});await settle();assert.equal(f.state.datasets[0].id,'erp');assert.equal(f.state.loading,false);assert.equal(f.props.binding.datasetId,'erp');
+})
+
+test('ordinary editing honors clock zero and emits the selected device identity and scoped hierarchy', async t => {
+  let input
+  const f = await fixture(t, async payload => { input=payload;return {result:{value:700,rows:[],quality:'good'}} })
+  f.props.binding.deviceScope = 'rotation'
+  f.props.binding.rotationDeviceIds = ['a','b']
+  f.props.binding.rotationIntervalMs = 2000
+  f.props.context = { viewMode: 'factory', deviceId: '' }
+  f.props.devices = [{ id:'a',name:'设备 A',lineId:'line_a',workshopId:'workshop_a' },{ id:'b',name:'设备 B',lineId:'line_b',workshopId:'workshop_b' }]
+  f.props.playbackNow = 0
+  await nextTick()
+  await f.state.preview()
+  assert.equal(input.context.deviceId,'a')
+  assert.equal(input.context.lineId,'line_a')
+  assert.equal(input.context.workshopId,'workshop_a')
+  assert.equal(f.events[0].deviceId,'a')
+  assert.equal(f.events[0].deviceName,'设备 A')
+  assert.equal(f.state.result.deviceId,'a')
+})
+
+test('rotation rejects late successful and failed previews after only the effective clock changes', async t => {
+  const pending=deferred(),f=await fixture(t,()=>pending.promise)
+  Object.assign(f.props.binding,{deviceScope:'rotation',rotationDeviceIds:['a','b'],rotationIntervalMs:2000})
+  f.props.context={viewMode:'factory'}
+  f.props.devices=[{id:'a',name:'A'},{id:'b',name:'B'}]
+  f.props.playbackNow=0
+  await nextTick()
+  const work=f.state.preview()
+  f.props.playbackNow=2000
+  await nextTick()
+  pending.resolve({result:{value:700,rows:[],quality:'good'}})
+  await work
+  assert.deepEqual(f.events,[])
+  assert.equal(f.state.result,null)
+  const failed=deferred()
+  t.mock.method(adminApi,'previewDataSet',()=>failed.promise)
+  const failure=f.state.preview()
+  f.props.playbackNow=4000
+  await nextTick()
+  failed.reject(new Error('old device failure'))
+  await failure
+  assert.deepEqual(f.events,[])
+  assert.equal(f.state.message,'')
+})
+
+test('held effective clock accepts refreshed data and errors with the same device identity', async t => {
+  const pending=deferred(),f=await fixture(t,()=>pending.promise)
+  Object.assign(f.props.binding,{deviceScope:'rotation',rotationDeviceIds:['a','b'],rotationIntervalMs:2000})
+  f.props.context={viewMode:'factory'}
+  f.props.devices=[{id:'a',name:'A'},{id:'b',name:'B'}]
+  f.props.playbackNow=2500
+  await nextTick()
+  const work=f.state.preview()
+  pending.resolve({result:{value:850,rows:[],quality:'good'}})
+  await work
+  assert.equal(f.events[0].deviceId,'b')
+  assert.equal(f.events[0].deviceName,'B')
+  t.mock.method(adminApi,'previewDataSet',async()=>{throw new Error('disconnected')})
+  await f.state.preview()
+  assert.equal(f.events[1].quality,'bad')
+  assert.equal(f.events[1].deviceId,'b')
+  assert.equal(f.events[1].deviceName,'B')
+  assert.equal(f.state.result.value,null)
+})
+
+test('global dataset previews clear focused-device context and emit empty device metadata', async t => {
+  let input
+  const f=await fixture(t,async payload=>{input=payload;return {result:{value:42,rows:[],quality:'good'}}})
+  f.props.binding.deviceScope='global'
+  f.props.context={deviceId:'a',lineId:'line_a',workshopId:'workshop_a',regionCode:'120000'}
+  await nextTick()
+  await f.state.preview()
+  assert.equal(input.context.deviceId,'')
+  assert.equal(input.context.lineId,'')
+  assert.equal(input.context.workshopId,'')
+  assert.equal(input.context.regionCode,'120000')
+  assert.equal(f.events[0].deviceId,'')
+  assert.equal(f.events[0].deviceName,'')
 })

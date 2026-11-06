@@ -98,6 +98,6 @@ test('map and site canvases use the same empty-state and selection as other view
   assert.equal(MAP_SURFACE_VIEWS.length, 7)
   const designer = await source('../src/views/admin/components/DashboardDesigner.vue')
   assert.match(designer, /v-if="!canvasWidgets\.length" class="empty-canvas-hint"/)
-  assert.match(designer, /v-if="!currentViewWidgets\.length"/)
+  assert.match(designer, /v-if="!layerWidgets\.length"/)
   assert.match(designer, /v-else class="empty-inspector"/)
 })

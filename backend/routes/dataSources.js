@@ -27,6 +27,8 @@ const {
 const router = express.Router();
 const dataSets = require('../services/dataSets');
 const { resolveParameters, datasetParameterDefinitions } = require('../../shared/dashboardParameters.mjs');
+const { resolveTooltipTemplate } = require('../../shared/tooltipTemplates.mjs');
+const { isPlaybackTimestamp } = require('../../shared/widgetPlayback.mjs');
 const dataFileUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 1048576, files: 1, fields: 0 } }).single('dataFile');
 const MAP_LEVELS = new Set(['world', 'country', 'province', 'city', 'district']);
 const MAP_DATA_KEYS = new Set(['factsFactoryCount','factsLocalCount','factsDeviceCount','panelRegionRows','dockFactoryCount','dockLocalCount','dockAssignedCount','dockCoverage','dockWorkshops','dockLines','dockDevices']);
@@ -83,6 +85,14 @@ router.get('/runtime-values', async (req, res) => {
         let parameters;
         try { parameters=resolveParameters(document.parameters || [],suppliedParameters); } catch(error) { return res.status(400).json({error:error.message}); }
         const viewId = String(req.query.view_id || '');
+        const tooltipTemplateId = String(req.query.tooltip_template_id || '');
+        const tooltipView = document.scene?.views?.find(view => view.id === viewId);
+        const tooltipTemplate = tooltipTemplateId ? document.tooltipTemplates?.templates?.find(template => template.id === tooltipTemplateId) : null;
+        if (tooltipTemplateId && (!/^[a-zA-Z0-9_-]{1,128}$/.test(tooltipTemplateId) || !tooltipView || !tooltipTemplate
+            || resolveTooltipTemplate(document, tooltipView, tooltipTemplate.kind)?.id !== tooltipTemplateId
+            || !(tooltipTemplate.kind === 'part' ? tooltipView.mode === 'device' : ['factory','workshop','line'].includes(tooltipView.mode)))) {
+            return res.status(400).json({error:'当前视角的悬停模板无效或已关闭'});
+        }
         const mapSurface = /^(?:map_(?:world|country|province|city|district)|site_(?:street|factory))$/.test(viewId);
         const mapView = mapSurface ? document.scene?.views?.find(view => view.id === viewId) : null;
         const boundWidgets = mapSurface
@@ -94,13 +104,15 @@ router.get('/runtime-values', async (req, res) => {
                     && !hidden.includes(widget.id) && !(group && hidden.includes(group));
             }) : [])
             : (document.widgets || []);
-        let targets=boundWidgets;
+        let targets=tooltipTemplate ? tooltipTemplate.widgets : boundWidgets;
         if(req.query.widget_ids){const ids=String(req.query.widget_ids).split(',');if(ids.length>20 || ids.some(id=>!(/^[\w-]{1,128}$/).test(id)))return res.status(400).json({error:'组件请求无效'});targets=targets.filter(w=>ids.includes(w.id));}
         const playbackAt=Number(req.query.playback_at || Date.now());
-        if(!Number.isFinite(playbackAt) || Math.abs(playbackAt-Date.now())>60000)return res.status(400).json({error:'刷新时间无效'});
+        if(!isPlaybackTimestamp(playbackAt))return res.status(400).json({error:'刷新时间无效'});
         const devices=await require('../services/widgetPlayback').playbackDevices(db,req.factoryId);
+        if (tooltipTemplateId && !devices.some(device => device.id === String(req.query.device_id || ''))) return res.status(400).json({error:'悬停设备不属于当前工厂'});
         const values = await readRuntimeBindings(targets, {
             playbackDevices:devices,playbackAt,viewMode:document.scene?.views?.find(v=>v.id===viewId)?.mode || '',
+            tooltipTarget: Boolean(tooltipTemplateId),
             factoryId: req.factoryId,
             parameters,
             viewId,

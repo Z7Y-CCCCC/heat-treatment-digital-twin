@@ -1,5 +1,5 @@
 <script setup>
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, inject, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import * as echarts from 'echarts'
 import { playbackSelection,normalizePlayback,isDeviceBinding,devicePoint } from '../../../shared/widgetPlayback.mjs'
 import { parameterValue } from '../../../shared/dashboardParameters.mjs'
@@ -9,6 +9,8 @@ import { resolveHudText } from './hudTextConfig.js'
 import { colorChannels, colorAtOpacity, effectiveWidgetBackground, widgetAppearanceVariables } from './widgetAppearance.js'
 import { configureTrendAxes, appendTrendSample } from './trendChart.js'
 import MapRegionList from './MapRegionList.vue'
+import { tooltipBindingContext, tooltipPlaybackSelection, tooltipPathQuality, tooltipRuntimeValue, tooltipMetadataPath, mappedWidgetValue, deviceStatusText } from './tooltipContext.js'
+import { WidgetPlaybackKey, createWidgetPlaybackController } from './widgetPlayback.js'
 
 const HUD_FONT_TEXT = 'SF Pro Text, Inter Variable, Inter, Noto Sans SC Variable, Segoe UI, PingFang SC, Microsoft YaHei UI, sans-serif'
 const HUD_FONT_NUMBER = 'SF Pro Display, Inter Variable, Inter, Segoe UI, Bahnschrift, sans-serif'
@@ -38,6 +40,10 @@ const props = defineProps({
 })
 
 const emit = defineEmits(['action'])
+// The surface reader and its renderers must select the same device, including
+// while one card is held under the pointer. Standalone previews use a local clock.
+const playbackController = inject(WidgetPlaybackKey, null) || createWidgetPlaybackController()
+const pointerHovered = ref(false)
 const chartRef = ref(null)
 const localTrend = ref([])
 const localHistories=new Map()
@@ -60,7 +66,10 @@ const type = computed(() => props.widget.type || props.widget.widget_type || 'te
 const content = computed(() => objectValue(props.widget.content, objectValue(props.widget.config, {})))
 const hudCopy = computed(() => resolveHudText(type.value, content.value))
 const widgetStyle = computed(() => objectValue(props.widget.style, objectValue(props.widget.config?.style, {})))
-const dataBinding = computed(() => objectValue(props.widget.data, objectValue(props.widget.binding, {})))
+const dataBinding = computed(() => {
+  const data = objectValue(props.widget.data, objectValue(props.widget.binding, {}))
+  return props.runtimeContext.tooltipScope ? tooltipBindingContext({ ...props.widget, data }, props.runtimeContext).widget.data : data
+})
 const conditions = computed(() => Array.isArray(props.widget.conditions) ? props.widget.conditions : (Array.isArray(props.widget.config?.conditions) ? props.widget.config.conditions : []))
 const animation = computed(() => objectValue(props.widget.animation, objectValue(props.widget.config?.animation, { type: 'none' })))
 const widgetEvents = computed(() => Array.isArray(props.widget.events) ? props.widget.events : (Array.isArray(props.widget.config?.events) ? props.widget.config.events : []))
@@ -79,22 +88,39 @@ const playbackCatalog=computed(()=>props.deviceCatalog ?? [...new Set([...Object
 // A 100ms API scheduler tick need not invalidate every device snapshot.
 const playbackTime=computed(()=>{
  const interval=normalizePlayback(dataBinding.value).rotationIntervalMs
- return props.preview && !props.interactive ? 0 : Math.floor(props.playbackNow/interval)*interval
+ const now=props.runtimeContext.tooltipScope ? props.playbackNow : playbackController.timeFor(props.widget,props.playbackNow)
+ return props.preview && !props.interactive ? 0 : Math.floor(now/interval)*interval
 })
 const historyClock=computed(()=>{
  const interval=Math.max(1000,normalizePlayback(dataBinding.value).refreshMs)
  return Math.floor(props.playbackNow/interval)*interval
 })
-const playback=computed(()=>playbackSelection(dataBinding.value,props.runtimeContext,playbackCatalog.value,playbackTime.value))
+const playback=computed(()=>props.runtimeContext.tooltipScope
+  ? tooltipPlaybackSelection(dataBinding.value,props.runtimeContext,playbackCatalog.value)
+  : playbackSelection(dataBinding.value,props.runtimeContext,playbackCatalog.value,playbackTime.value))
 const scopedDeviceBinding=computed(()=>isDeviceBinding(dataBinding.value))
+const hoverCanPause=computed(()=>props.interactive && !props.runtimeContext.tooltipScope && scopedDeviceBinding.value && playback.value.mode==='rotation' && playback.value.total>1)
+function setPlaybackHovered(hovered) {
+ pointerHovered.value=hovered
+ if(!props.runtimeContext.tooltipScope)playbackController.setHovered(props.widget,hovered && hoverCanPause.value,props.playbackNow)
+}
+watch(hoverCanPause,allowed=>{if(!allowed && pointerHovered.value)setPlaybackHovered(false)},{flush:'sync'})
+watch(()=>JSON.stringify([props.widget.id,dataBinding.value,props.interactive,props.preview,
+ props.runtimeContext.factoryId,props.runtimeContext.viewId,props.runtimeContext.viewMode,
+ props.runtimeContext.workshopId,props.runtimeContext.lineId,props.runtimeContext.deviceId,
+ props.runtimeContext.partId,props.runtimeContext.inspectionStage,props.runtimeContext.tooltipScope]),(_next,previous)=>{
+ if(previous && !props.runtimeContext.tooltipScope){playbackController.remove(JSON.parse(previous)[0]);pointerHovered.value=false}
+},{flush:'sync'})
 // PLC frames and part changes are already reactive. Never gate their display on
 // the external-source refresh timer (rotation selection remains independent).
 const sampledDevice=computed(()=>{
  const id=playback.value.device?.id || ''
  return {id,reading:props.deviceDataMap[id] || {},status:props.deviceStatusMap[id] || {},
-   part:props.selectedPart,point:devicePoint(dataBinding.value,id,props.pointValues)}
+   part:props.runtimeContext.tooltipScope ? props.runtimeContext.tooltipSelectedPart || props.selectedPart : props.selectedPart,point:devicePoint(dataBinding.value,id,props.pointValues)}
 })
-const activeDeviceName=computed(()=>databaseRecord.value?.deviceName || playback.value.device?.name || '')
+// A cached preview/HTTP result cannot override the identity selected for the
+// current curve. Late records for the previous device are rejected below.
+const activeDeviceName=computed(()=>playback.value.device?.name || databaseRecord.value?.deviceName || '')
 const dataContext = computed(() => ({
   metrics: props.metrics,
   map: props.mapData,
@@ -103,9 +129,10 @@ const dataContext = computed(() => ({
   deviceStatusMap: props.deviceStatusMap,
   deviceDataMap: scopedDeviceBinding.value && sampledDevice.value.id ? { [sampledDevice.value.id]:sampledDevice.value.reading } : props.deviceDataMap,
   device:sampledDevice.value.reading,
-  deviceInfo:{id:playback.value.device?.id,name:playback.value.device?.name,lineName:playback.value.device?.lineName,workshopName:playback.value.device?.workshopName,posY:playback.value.device?.pos_y},
+  deviceInfo:{id:playback.value.device?.id,name:playback.value.device?.name,dataStatus:playback.value.device ? deviceStatusText(sampledDevice.value.status) : undefined,modelName:playback.value.device?.model_name || playback.value.device?.modelName || playback.value.device?.model_type,lineName:playback.value.device?.lineName,workshopName:playback.value.device?.workshopName,posY:playback.value.device?.pos_y},
   points: props.pointValues,
   context: props.runtimeContext,
+  hover: props.runtimeContext.hover,
   parameters: props.parameters,
   selectedPart: scopedDeviceBinding.value ? sampledDevice.value.part : props.selectedPart,
   dataset: ['good','empty'].includes(databaseRecord.value?.quality)
@@ -113,6 +140,7 @@ const dataContext = computed(() => ({
 }))
 
 function getWidgetValue(path) {
+  if (props.runtimeContext.tooltipScope && String(path || '').startsWith('hover.')) return tooltipRuntimeValue(props.runtimeContext, path)
   if (path === 'metrics.progress_percent') return progressPercent.value
   const partPoint=/^selectedPart\.points\.(\d+)\.value$/.exec(String(path || ''))
   if(partPoint){
@@ -127,13 +155,29 @@ function getWidgetValue(path) {
 }
 
 const pointRecord = computed(() => scopedDeviceBinding.value ? sampledDevice.value.point : props.pointValues[String(dataBinding.value.pointId || '')] || null)
-const databaseRecord = computed(() => props.databaseValues[String(props.widget.id || '')] || null)
-const displayUnit = computed(() => dataBinding.value.unit || (dataBinding.value.mode === 'dataset' ? databaseRecord.value?.unit : '') || '')
+const databaseRecord = computed(() => {
+ const record=props.databaseValues[String(props.widget.id || '')] || null
+ if(!record || !scopedDeviceBinding.value)return record
+ const expected=String(playback.value.device?.id || '')
+ if(record.deviceId!==undefined && String(record.deviceId || '')!==expected)return null
+ // Untagged legacy records are usable for a single device, but ambiguous in a
+ // carousel: never pair one device's label with another device's measurements.
+ if(playback.value.mode==='rotation' && record.deviceId===undefined)return null
+ return record
+})
+const displayUnit = computed(() => {
+  const path = String(dataBinding.value.path || dataBinding.value.source || '')
+  const hoverUnitPath = props.runtimeContext.tooltipScope && /^hover\.(part\.points\.\d+|device\.pointMap\.[^.]+\.[^.]+)\.value$/.test(path)
+    ? path.replace(/\.value$/, '.unit') : ''
+  return dataBinding.value.unit || getWidgetValue(dataBinding.value.unitPath || content.value.unitPath || hoverUnitPath)
+    || (dataBinding.value.mode === 'plc' ? pointRecord.value?.unit : '')
+    || (dataBinding.value.mode === 'dataset' ? databaseRecord.value?.unit : '') || ''
+})
 const businessSection = computed(() => dataBinding.value.businessSection || content.value.section || 'batches')
 const businessSectionMeta = computed(() => dataBinding.value.mode==='dataset'
   ? {available:databaseRecord.value?.quality==='good',rows:databaseRecord.value?.quality==='good'?databaseRecord.value.rows || []:[],message:databaseRecord.value?.error || ''}
-  : dataBinding.value.mode==='business' && databaseRecord.value
-  ? objectValue(databaseRecord.value.businessSection,{available:false,rows:[]}) : objectValue(props.businessData?.sections?.[businessSection.value], {}))
+  : dataBinding.value.mode==='business'
+  ? objectValue(databaseRecord.value?.businessSection,{available:false,rows:[]}) : objectValue(props.businessData?.sections?.[businessSection.value], {}))
 const businessRows = computed(() => Array.isArray(businessSectionMeta.value.rows)
   ? businessSectionMeta.value.rows.slice(0, Math.max(1, Number(content.value.limit || 6)))
   : [])
@@ -154,6 +198,9 @@ const dataDrivenWidget = computed(() => {
 })
 const dataPending = computed(() => {
   if (!overlayMode.value || !dataDrivenWidget.value) return false
+  // Hover validity/scene readiness belongs to the floating surface. A missing
+  // PLC point is a field fallback, not a reason to blur the object's identity.
+  if (props.runtimeContext.tooltipScope) return ['dataset','database','http_api','business'].includes(dataBinding.value.mode) && !databaseRecord.value
   if (type.value === 'business_summary') return businessLoading.value
   // External-only displays never receive a PLC first-frame signal. The actual
   // binding response (good or failed) completes this widget's loading state.
@@ -205,7 +252,7 @@ function businessRowValue(row) {
 const boundValue = computed(() => {
   const binding = dataBinding.value
   if (binding.mode === 'dataset') return ['good','empty'].includes(databaseRecord.value?.quality) ? (databaseRecord.value?.value ?? null) : null
-  if (binding.mode === 'database' || binding.mode === 'http_api') return databaseRecord.value?.value ?? content.value.value
+  if (binding.mode === 'database' || binding.mode === 'http_api') return databaseRecord.value?.value ?? null
   if (binding.mode === 'plc' || binding.pointId || binding.point_id) {
     if (pointRecord.value && pointRecord.value.value !== undefined) return pointRecord.value.value
     if(binding.requireConfiguredPoint || binding.pointKey)return null
@@ -223,6 +270,9 @@ const boundValue = computed(() => {
 })
 
 const boundQuality = computed(() => {
+  const hoverQuality = tooltipPathQuality(props.runtimeContext, dataBinding.value.path || dataBinding.value.source)
+  if (hoverQuality && dataBinding.value.mode === 'runtime') return hoverQuality
+  if (props.runtimeContext.tooltipScope && (!dataBinding.value.mode || dataBinding.value.mode === 'static')) return 'good'
   if (['database', 'http_api', 'dataset', 'business'].includes(dataBinding.value.mode)) return databaseRecord.value?.quality || (databaseRecord.value?.error ? 'bad' : 'stale')
   const binding = dataBinding.value
   if(binding.mode==='plc' && (binding.requireConfiguredPoint || binding.pointKey) && !pointRecord.value)return 'stale'
@@ -247,7 +297,14 @@ function boundedDecimals(value, fallback = 1) {
 }
 
 function formatValue(value = boundValue.value) {
-  if (value === undefined || value === null || value === '') return content.value.fallback ?? '--'
+  const linkedMetadata = props.runtimeContext.tooltipScope && dataBinding.value.mode === 'runtime'
+    && tooltipMetadataPath(dataBinding.value.path || dataBinding.value.source)
+  const fallback = linkedMetadata ? '—' : content.value.fallback ?? '--'
+  if (props.runtimeContext.tooltipScope && boundQuality.value !== 'good') return fallback
+  if (value === undefined || value === null || value === '') return fallback
+  const mapped = linkedMetadata
+    ? undefined : mappedWidgetValue(value, content.value.valueMap)
+  if (mapped !== undefined) return mapped
     if (dataBinding.value.mode === 'dataset' && databaseRecord.value?.columns?.find(column => column.name === dataBinding.value.datasetField)?.type === 'string') return String(value)
   if (typeof value === 'boolean') return value ? (content.value.onText || '正常') : (content.value.offText || '停止')
   const number = Number(value)
@@ -377,7 +434,7 @@ const metricItems = computed(() => {
 const eventRows = computed(() => {
   if (dataBinding.value.mode === 'dataset') return boundQuality.value === 'good'
     ? (databaseRecord.value?.rows || []).map(row => ({ ...row, message: row.msg || row.title || row.message || row.value })) : []
-  if (['database', 'http_api', 'dataset'].includes(dataBinding.value.mode) && Array.isArray(databaseRecord.value?.rows)) return databaseRecord.value.rows
+  if (['database', 'http_api', 'dataset'].includes(dataBinding.value.mode)) return databaseRecord.value?.rows || []
   const source = dataBinding.value.source || dataBinding.value.path
   const bound = source ? getWidgetValue(source) : null
   return Array.isArray(bound) ? bound : props.events
@@ -385,7 +442,7 @@ const eventRows = computed(() => {
 
 const trendRows = computed(() => {
   if (dataBinding.value.mode === 'dataset') return boundQuality.value === 'good' ? (databaseRecord.value?.rows || []) : []
-  if (['database', 'http_api', 'dataset'].includes(dataBinding.value.mode) && Array.isArray(databaseRecord.value?.rows)) return databaseRecord.value.rows
+  if (['database', 'http_api', 'dataset'].includes(dataBinding.value.mode)) return databaseRecord.value?.rows || []
   const source = dataBinding.value.source
   const bound = source ? getWidgetValue(source) : null
   if (Array.isArray(bound)) return bound
@@ -425,25 +482,47 @@ const imageUrl=computed(()=>content.value.url || (typeof boundValue.value==='str
 const textLines = computed(() => {
   if (dataBinding.value.mode === 'dataset' && content.value.datasetTextMode !== 'template') return [formatValue()]
   const rawText = Array.isArray(content.value.lines) ? content.value.lines.join('\n') : (content.value.text || content.value.label || '')
-  const fallback = rawText || widgetTitle.value || '文本组件'
-  return String(fallback).replaceAll('{value}', formatValue()).replace(/\{parameters\.([A-Za-z_][A-Za-z0-9_]*)\}/g, (_match,key)=>String(props.parameters[key] ?? '')).split('\n').filter(Boolean)
+  const fallback = props.runtimeContext.tooltipScope ? rawText : rawText || widgetTitle.value || '文本组件'
+  // Legacy/imported bound text must not hide live metadata behind a constant.
+  // Authored static captions are unaffected; dynamic text always shows data.
+  const format = props.runtimeContext.tooltipScope && dataBinding.value.mode && dataBinding.value.mode !== 'static' && !String(fallback).includes('{value}')
+    ? '{value}' : String(fallback)
+  return format.replaceAll('{value}', formatValue()).replace(/\{unit\}/g, (_match, offset, text) => {
+    const unit = displayUnit.value
+    return props.runtimeContext.tooltipScope && unit && offset > 0 && !/\s/.test(text[offset - 1]) ? ` ${unit}` : unit
+  }).replace(/\{parameters\.([A-Za-z_][A-Za-z0-9_]*)\}/g, (_match,key)=>String(props.parameters[key] ?? '')).split('\n').filter(Boolean)
 })
+// The designer copies the actual displayed text, not the binding placeholder.
+// Reuse this renderer's formatting so units, mappings and parameters agree.
+defineExpose({ getRenderedText: () => type.value === 'text' ? textLines.value.join('\n') : undefined })
 const isHudKpi = computed(() => overlayMode.value && type.value === 'text' && textLines.value.length === 2 && textLines.value[0].startsWith('今日'))
 const hudKpiValue = computed(() => splitHudKpiValue(textLines.value[1]))
 
 const statusState = computed(() => {
   if (boundQuality.value === 'bad') return 'unknown'
   const value = boundValue.value
+  // The connection/data-health label is metadata, not an arbitrary truthy
+  // string. In particular NaN !== 0 must never light a disconnected device.
+  if (props.runtimeContext.tooltipScope && dataBinding.value.mode === 'runtime'
+    && (dataBinding.value.path || dataBinding.value.source) === 'hover.device.status') {
+    return value === '数据正常' ? 'on' : value === '数据异常 / 未连接' ? 'off' : 'unknown'
+  }
   if (typeof value === 'string') {
     const normalized = value.toLowerCase()
     if (['true', '1', 'on', 'running', 'online', 'normal', '正常', '运行'].includes(normalized)) return 'on'
     if (['false', '0', 'off', 'stopped', 'offline', '停止', '离线'].includes(normalized)) return 'off'
   }
   if (value === undefined || value === null || value === '') return 'unknown'
-  return Number(value) !== 0 || value === true ? 'on' : 'off'
+  const number = Number(value)
+  return Number.isFinite(number) ? (number !== 0 ? 'on' : 'off') : 'unknown'
 })
 
 const statusText = computed(() => {
+  if (props.runtimeContext.tooltipScope && dataBinding.value.mode === 'runtime'
+    && tooltipMetadataPath(dataBinding.value.path || dataBinding.value.source)) {
+    return boundValue.value === undefined || boundValue.value === null || boundValue.value === ''
+      ? '暂无实时数据' : String(boundValue.value)
+  }
   if (statusState.value === 'unknown') return content.value.unknownText || '离线'
   return statusState.value === 'on' ? (content.value.onText || '正常') : (content.value.offText || '停止')
 })
@@ -730,7 +809,7 @@ watch(chartRef, element => {
   nextTick(renderChart)
 })
 
-watch(() => [props.widget, props.metrics, props.trendPoints, props.events, props.databaseValues[String(props.widget.id || '')], props.businessData, localTrend.value], () => nextTick(renderChart), { deep: true })
+watch(() => [props.widget, props.metrics, props.trendPoints, props.events, databaseRecord.value, playback.value.device?.id, props.businessData, localTrend.value], () => nextTick(renderChart), { deep: true })
 
 onMounted(() => {
   if (typeof ResizeObserver !== 'undefined') {
@@ -742,6 +821,7 @@ onMounted(() => {
 })
 onUnmounted(() => {
   widgetDisposed = true
+  if(!props.runtimeContext.tooltipScope)playbackController.remove(props.widget)
   window.removeEventListener('resize', resizeChart)
   chartResizeObserver?.disconnect()
   chartResizeObserver = null
@@ -771,6 +851,8 @@ onUnmounted(() => {
     :style="shellStyle"
     @click="triggerEvents('click', $event)"
     @dblclick="triggerEvents('doubleClick', $event)"
+    @mouseenter="setPlaybackHovered(true)"
+    @mouseleave="setPlaybackHovered(false)"
   >
     <div v-if="widgetTitle && content.showTitle !== false && !isHudModule && !['image', 'navigation', 'return_button'].includes(type)" class="widget-title"><i></i><span>{{ widgetTitle }}</span></div>
 
@@ -845,8 +927,8 @@ onUnmounted(() => {
       <div class="navigation-widget-preview">
         <div class="navigation-preview-status">
           <span class="navigation-preview-dot"></span>
-          <span>{{ content.projectLabel || '热处理车间项目 · 南区热处理车间智能监控大屏' }}</span>
-          <strong>{{ content.statusText || '模拟数据正常' }}</strong>
+          <span>{{ content.projectLabel ?? '' }}</span>
+          <strong>{{ content.statusText ?? '' }}</strong>
         </div>
       </div>
     </template>
@@ -906,7 +988,7 @@ onUnmounted(() => {
     </template>
 
     <template v-else-if="type === 'value'">
-      <div class="value-widget-body" :class="`shape-${content.shape || 'card'}`"><span>{{ content.label || widgetTitle }}</span><strong>{{ formatValue() }}<small v-if="displayUnit">{{ displayUnit }}</small></strong><em v-if="boundQuality !== 'good'">{{ boundQuality === 'bad' ? '离线' : '数据延迟' }}</em></div>
+      <div class="value-widget-body" :class="`shape-${content.shape || 'card'}`" :style="runtimeContext.tooltipScope ? { textAlign: content.align || 'left' } : undefined"><span v-if="!runtimeContext.tooltipScope || (content.label ?? widgetTitle)">{{ runtimeContext.tooltipScope ? (content.label ?? widgetTitle) : (content.label || widgetTitle) }}</span><strong>{{ formatValue() }}<small v-if="displayUnit">{{ displayUnit }}</small></strong><em v-if="boundQuality !== 'good'">{{ boundQuality === 'bad' ? '离线' : '数据延迟' }}</em></div>
     </template>
 
     <template v-else-if="type === 'status'">

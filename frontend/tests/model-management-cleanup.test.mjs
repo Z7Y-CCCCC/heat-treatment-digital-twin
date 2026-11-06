@@ -8,7 +8,7 @@ const transfer = await readFile(new URL('../src/views/admin/components/ModelAsse
 
 test('model management removes acceptance and delivery state but retains inspection, bindings and layout', () => {
   const steps = panel.slice(panel.indexOf('const MODEL_LIBRARY_STEPS = ['), panel.indexOf('const modelLibraryStep = ref('))
-  assert.deepEqual([...steps.matchAll(/key: '([^']+)'/g)].map(m => m[1]), ['library', 'inspection', 'bindings'])
+  assert.deepEqual([...steps.matchAll(/key: '([^']+)'/g)].map(m => m[1]), ['library', 'ports', 'inspection', 'bindings'])
   assert.doesNotMatch(panel, /优化与验收|交付状态|提交待验收|发布模型|modelAcceptance|makeAcceptanceSnapshot|delivery_status/)
   assert.match(panel, /MODEL_LIBRARY_STEPS.some\(step => step.key === storedAdminUiState.modelLibraryStep\)/)
   assert.match(panel, /<ModelInspectionEditor/)

@@ -1,4 +1,5 @@
 const { normalizeInspection, validateInspection } = require('../../shared/inspectionConfig.cjs');
+const { normalizeLoadingPorts } = require('../../shared/loadingPorts.cjs');
 const VALID_DELIVERY_STATUS = new Set(['draft', 'review', 'accepted', 'released']);
 const VALID_BINDING_ACTIONS = new Set(['rotate_speed', 'rotate_angle', 'translate', 'visibility', 'color']);
 const VALID_AXES = new Set(['x', 'y', 'z']);
@@ -132,6 +133,9 @@ function normalizeOptimization(optimization = {}) {
 
 function normalizeModelMetadata(input, options = {}) {
     const raw = parseMetadata(input);
+    // All model writes/imports use this normalizer. Never allow the broad PUT
+    // or a package import to bypass strict loading-port validation.
+    if (Object.hasOwn(raw, 'loadingPorts')) raw.loadingPorts = normalizeLoadingPorts(raw.loadingPorts);
     const assetSpec = normalizeAssetSpec(raw.assetSpec || raw.asset_spec || {}, options.name);
     const partBindings = Array.isArray(raw.partBindings)
         ? raw.partBindings.map((binding, index) => normalizeBinding(binding, index))

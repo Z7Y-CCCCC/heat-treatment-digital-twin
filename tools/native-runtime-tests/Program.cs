@@ -15,11 +15,13 @@ internal static partial class Program
         {
             ("native loading uses the shared light/dark choice and preserves malformed setting failures", LoadingThemesMatch),
             ("motion signals freeze on stale, invalid or wrong point identity; interpolation follows authored coordinates", MotionSignalsAreSafe),
+            ("dual endpoint feedback confirms poses and freezes unknown, conflicting, stale or mismatched signals", MotionEndpointSignalsAreSafe),
             ("authored motion downloads allow only local managed asset namespaces", MotionPathsAreBounded),
             ("manual orbit retains direction across half turns and many full revolutions", OrbitRetainsWinding),
             ("world drag out and back never becomes a selection click", WorldClickRetainsGesture),
             ("industrial floor, pits, platforms and device heights match the shared Web/Unity contract", IndustrialGroundMatchesContract),
             ("factory activation and scoped configuration changes select reload or live update correctly", ConfigurationChangesAreScoped),
+            ("model/action refresh selects affected instances without importing layout or another factory", ModelRefreshKeepsScene),
             ("realtime receive progresses while the render synchronization context is idle", ReceiveDoesNotWaitForRender),
             ("cancelled send cannot release another owner's semaphore", CancelledSendKeepsLock),
             ("stale queued send cannot move to a replacement session", QueuedSendKeepsSession),
@@ -79,10 +81,18 @@ internal static partial class Program
         var wrong=Frame(1);wrong["pointMeta"]["doors.open"]["id"]="other";state.Receive(wrong,binding,11);
         if(state.Usable)throw new Exception("wrong device point moved animation");
         state.Receive(JObject.Parse("{doors:{open:null}}"),binding,12);if(state.Usable)throw new Exception("missing sample interpreted as zero");
-        binding["invert"]=true;binding["transitionSeconds"]=0;state.Receive(Frame(0),binding,13);if(state.Position!=1)throw new Exception("explicit inversion");
+        binding["invert"]=true;binding["transitionSeconds"]=0;state.Receive(Frame(0),binding,13);if(state.Target!=1)throw new Exception("explicit inversion target");
+        state.Step(.2,13.2,5000,binding);if(state.Position!=1)throw new Exception("explicit inversion after existing reconnect smoothing");
         var clip=JObject.Parse("{count:2,duration:1}");var track=JObject.Parse("{size:3,channel:'p',values:[0,0,0,2,4,6]}");
         var v=HeatTreatment.DigitalTwin.Rendering.MotionSignalState.Sample(clip,track,.25);
         if(v[0]!=.5||v[1]!=1||v[2]!=1.5)throw new Exception("native portable track interpolation differs");
+        var loopBinding=JObject.Parse("{actionId:'clip:fan',kind:'clip',mode:'continuous',dataItemId:'point:fan',speed:1,trigger:{mode:'condition',operator:'eq',value:true}}");
+        var loopFrame=JObject.Parse("{timestamp:1000000,motionInputOnly:true,motionInputs:{'clip:fan':{dataItemId:'point:fan',value:true,quality:'good',timestamp:1000000,staleMs:5000}}}");
+        var loopState=new HeatTreatment.DigitalTwin.Rendering.MotionSignalState();loopState.Receive(loopFrame,loopBinding,0);loopState.Step(.5,.5,5000,loopBinding);
+        var loopRestored=new HeatTreatment.DigitalTwin.Rendering.MotionSignalState();
+        if(!loopRestored.RestoreDisplayState(loopBinding,loopState.CaptureDisplayState(loopBinding))||loopRestored.Seconds!=loopState.Seconds||loopRestored.Running!=loopState.Running)throw new Exception("unmodified clip lost its current display clock during model action refresh");
+        var changedLoop=(JObject)loopBinding.DeepClone();changedLoop["dataItemId"]="point:other";
+        if(new HeatTreatment.DigitalTwin.Rendering.MotionSignalState().RestoreDisplayState(changedLoop,loopState.CaptureDisplayState(loopBinding)))throw new Exception("changed source inherited a prior clip timer");
         return Task.CompletedTask;
     }
 
@@ -99,6 +109,29 @@ internal static partial class Program
         Check(ConfigurationSyncPolicy.ChangeAction(new JObject { ["keys"] = new JArray("layout") }, newFactory) == "reload", "Legacy invalidation without settings was lost.");
         Check(!ConfigurationSyncPolicy.MatchesFactory(new JObject { ["factoryId"] = newFactory }, oldFactory), "An old scene can acknowledge navigation to a different factory.");
         Check(ConfigurationSyncPolicy.MatchesFactory(new JObject { ["factoryId"] = newFactory }, newFactory), "Target factory cannot acknowledge its own navigation.");
+        Check(ConfigurationSyncPolicy.ChangeAction(JObject.Parse("{resource:'models',reloadRequired:true}"), newFactory) == "models", "Model generic event still rebuilds the hall.");
+        Check(ConfigurationSyncPolicy.ChangeAction(JObject.Parse("{resource:'device-animations',reloadRequired:true}"), newFactory) == "models", "Action data binding still rebuilds the hall.");
+        return Task.CompletedTask;
+    }
+
+    private static Task ModelRefreshKeepsScene()
+    {
+        var current = Newtonsoft.Json.JsonConvert.DeserializeObject<FactoryConfigDto>("{factoryId:'one',models:[{id:'cart',file_path:'/assets/a.glb',metadata:{partBindings:[]}},{id:'furnace',file_path:'/assets/b.glb'}],workshops:[{id:'w',layout_json:{x:8},lines:[{id:'l',devices:[{id:'c',model_type:'cart',pos_x:4,instance_config:{caption:'unsaved',animationBindings:{bindings:[]}}},{id:'f',model_type:'furnace'}]}]}]}");
+        var latest = Newtonsoft.Json.JsonConvert.DeserializeObject<FactoryConfigDto>(Newtonsoft.Json.JsonConvert.SerializeObject(current));
+        latest.Models[0].Metadata = JObject.Parse("{partBindings:[{id:'new',action:'rotate_angle'}]}");
+        ModelHotRefreshPolicy.Devices(latest).First().PositionX = 100;
+        ModelHotRefreshPolicy.Devices(latest).First().InstanceConfig = JObject.Parse("{caption:'other',animationBindings:{bindings:[{actionId:'part:new'}]}}");
+        var merged = ModelHotRefreshPolicy.Merge(current, latest, out var affected);
+        Check(affected.SetEquals(new[] { "c" }), "Unchanged furnace was selected for replacement.");
+        var cart = ModelHotRefreshPolicy.Devices(merged).First();
+        Check(cart.PositionX == 4 && cart.InstanceConfigObject.Value<string>("caption") == "unsaved", "Model event imported unrelated saved layout/settings.");
+        Check(cart.InstanceConfigObject["animationBindings"]["bindings"].Count() == 1, "Changed action inputs were lost.");
+        Check(ModelHotRefreshPolicy.Devices(current).First().InstanceConfigObject["animationBindings"]["bindings"].Count() == 0, "Planning mutated the active config before commit.");
+        var repeated = ModelHotRefreshPolicy.Merge(merged, latest, out affected); Check(affected.Count == 0, "Duplicate generic/specific event replaced unchanged instances.");
+        Check(ModelHotRefreshPolicy.ScaleRatio(new ModelAssetDto { DefaultScale = 2 }, new ModelAssetDto { DefaultScale = 3 }) == 1.5f, "Changing model scale swallowed the instance/preview scale multiplier.");
+        latest.Models[0].Metadata = JObject.Parse("{partBindings:[]}");
+        ModelHotRefreshPolicy.Merge(repeated, latest, out affected); Check(affected.SetEquals(new[] { "c" }), "Deleting a part action failed to invalidate its model.");
+        latest.FactoryId = "another"; Check(ModelHotRefreshPolicy.Merge(current, latest, out _) == null, "Cross-factory read overwrote this scene.");
         return Task.CompletedTask;
     }
 

@@ -4,6 +4,8 @@ import { readFile } from 'node:fs/promises'
 import { createRenderer, h, nextTick } from 'vue'
 import { parse, compileScript, compileStyle } from 'vue/compiler-sfc'
 import { installBrowser } from './helpers.mjs'
+import { catalogBinding } from '../src/runtime/dataCatalog.js'
+import { createTooltipContext } from '../src/runtime/tooltipContext.js'
 
 const charts = []
 mock.module('echarts', { namedExports: { init: element => {
@@ -497,6 +499,80 @@ test('one device card rotates live samples, updates immediately and locks to the
  await view.render({...props,playbackNow:3000,runtimeContext:{viewId:'device_exploded',viewMode:'device',deviceId:'a'}});assert.match(textContent(view.root),/设备 A/);assert.doesNotMatch(textContent(view.root),/850|999/);
 })
 
+test('rotating headings and metadata follow the selected curve, not a stale preview device name',async t=>{
+ const view=fixture(t),widget={id:'identity',type:'hud_chart_dock',title:'炉温实时趋势',content:{chartType:'line',statPath:'device.analog.temperature'},data:{mode:'runtime',path:'device.analog.temperature',deviceScope:'rotation',rotationDeviceIds:['a','b'],rotationIntervalMs:2000,refreshMs:1000}}
+ const base={widget,deviceCatalog:[{id:'a',name:'3#多用炉',workshopName:'甲车间',lineName:'甲线'},{id:'b',name:'2#多用炉',workshopName:'乙车间',lineName:'乙线'}],runtimeContext:{viewMode:'factory'},deviceDataMap:{a:{analog:{temperature:111}},b:{analog:{temperature:222}}},databaseValues:{identity:{deviceId:'a',deviceName:'3#多用炉'}}}
+ await view.render({...base,playbackNow:0})
+ assert.match(textContent(view.root),/3#多用炉.*1.*\/.*2/)
+ await view.render({...base,playbackNow:1000})
+ assert.deepEqual(charts.at(-1).options.at(-1)[0].series[0].data,[111])
+ await view.render({...base,playbackNow:2000})
+ assert.match(textContent(view.root),/2#多用炉.*2.*\/.*2/)
+ assert.doesNotMatch(textContent(view.root),/3#多用炉/)
+ assert.deepEqual(charts.at(-1).options.at(-1)[0].series[0].data,[222])
+ const textWidget={...widget,type:'text',content:{text:'{value}'},data:{...widget.data,path:'deviceInfo.lineName'}}
+ await view.render({...base,widget:textWidget,playbackNow:2000})
+ assert.match(textContent(view.root),/乙线/);assert.doesNotMatch(textContent(view.root),/甲线/)
+})
+
+test('rotating external cards discard foreign or untagged results rather than relabeling another device data',async t=>{
+ const view=fixture(t),catalog=[{id:'a',name:'炉 A'},{id:'b',name:'炉 B'}]
+ for(const mode of ['dataset','database','http_api']){
+  const widget={id:'external_identity',type:'hud_chart_dock',title:'炉温趋势',content:{chartType:'line',value:9876},data:{mode,datasetField:'temperature',deviceScope:'rotation',rotationDeviceIds:['a','b'],rotationIntervalMs:2000}}
+  const base={widget,deviceCatalog:catalog,runtimeContext:{viewMode:'factory'},trendPoints:[{time:'GLOBAL',value:9999}]},record={quality:'good',deviceId:'a',deviceName:'过期名称',value:111,rows:[{time:'a',value:111}]}
+  await view.render({...base,playbackNow:0,databaseValues:{external_identity:record}})
+  assert.match(textContent(view.root),/炉 A/);assert.doesNotMatch(textContent(view.root),/过期名称/)
+  assert.deepEqual(charts.at(-1).options.at(-1)[0].series[0].data,[111])
+  await view.render({...base,playbackNow:2000,databaseValues:{external_identity:record}})
+  assert.match(textContent(view.root),/炉 B/);assert.doesNotMatch(textContent(view.root),/过期名称|111|9876|9999/)
+  assert.deepEqual(charts.at(-1).options.at(-1)[0].series[0]?.data || [],[])
+  await view.render({...base,playbackNow:2200,databaseValues:{external_identity:{...record,deviceId:'b',deviceName:'错误名称',value:222,rows:[{time:'b',value:222}]}}})
+  assert.match(textContent(view.root),/炉 B/);assert.doesNotMatch(textContent(view.root),/错误名称|111/)
+  assert.deepEqual(charts.at(-1).options.at(-1)[0].series[0].data,[222])
+  const {deviceId,...untagged}=record
+  await view.render({...base,playbackNow:2400,databaseValues:{external_identity:untagged}})
+  assert.deepEqual(charts.at(-1).options.at(-1)[0].series[0]?.data || [],[])
+ }
+})
+
+test('hover holds rotation while live points and history continue, then resumes the remaining interval',async t=>{
+ const view=fixture(t),widget={id:'hover',type:'hud_chart_dock',title:'炉温趋势',content:{chartType:'line'},data:{mode:'plc',pointKey:'analog.temperature',path:'analog.temperature',requireConfiguredPoint:true,deviceScope:'rotation',rotationDeviceIds:['a','b'],rotationIntervalMs:2000,refreshMs:1000}}
+ const base={widget,deviceCatalog:[{id:'a',name:'炉 A'},{id:'b',name:'炉 B'}],runtimeContext:{viewMode:'factory'},interactive:true,overlayMode:true}
+ const readings=(time,value)=>({pa:{id:'pa',device_id:'a',category:'analog',value_role:'temperature',quality:'good',lastReadAt:time,value},pb:{id:'pb',device_id:'b',category:'analog',value_role:'temperature',quality:'good',lastReadAt:time,value:850}})
+ await view.render({...base,playbackNow:1500,pointValues:readings(1500,111)})
+ view.root.children[0].props.onMouseenter()
+ for(const [time,value] of [[2500,112],[4500,113],[6500,114]]){
+  await view.render({...base,playbackNow:time,pointValues:readings(time,value)})
+  assert.match(textContent(view.root),/炉 A.*1.*\/.*2/);assert.doesNotMatch(textContent(view.root),/炉 B/)
+  assert.equal(charts.at(-1).options.at(-1)[0].series[0].data.at(-1),value)
+ }
+ view.root.children[0].props.onMouseleave()
+ await view.render({...base,playbackNow:6999,pointValues:readings(6999,115)})
+ assert.match(textContent(view.root),/炉 A/)
+ await view.render({...base,playbackNow:7000,pointValues:readings(7000,116)})
+ assert.match(textContent(view.root),/炉 B.*2.*\/.*2/)
+ assert.deepEqual(charts.at(-1).options.at(-1)[0].series[0].data,[850])
+})
+
+test('layout editing does not rotate; interactive preview rotates and a scope change releases the hold',async t=>{
+ const view=fixture(t),widget={id:'preview_hover',type:'value',data:{mode:'runtime',path:'device.analog.temperature',deviceScope:'rotation',rotationDeviceIds:['a','b'],rotationIntervalMs:2000}}
+ const base={widget,preview:true,deviceCatalog:[{id:'a',name:'炉 A'},{id:'b',name:'炉 B'}],runtimeContext:{viewMode:'factory'},deviceDataMap:{a:{analog:{temperature:111}},b:{analog:{temperature:222}}}}
+ await view.render({...base,interactive:false,playbackNow:2000})
+ assert.match(textContent(view.root),/炉 A/)
+ view.root.children[0].props.onMouseenter()
+ await view.render({...base,interactive:false,playbackNow:6000})
+ assert.match(textContent(view.root),/炉 A/)
+ await view.render({...base,interactive:true,playbackNow:6500})
+ assert.match(textContent(view.root),/炉 B/)
+ view.root.children[0].props.onMouseenter()
+ await view.render({...base,interactive:true,playbackNow:10000})
+ assert.match(textContent(view.root),/炉 B/)
+ await view.render({...base,interactive:true,playbackNow:11000,runtimeContext:{viewMode:'device',deviceId:'a'}})
+ assert.match(textContent(view.root),/炉 A/)
+ await view.render({...base,interactive:true,playbackNow:12000})
+ assert.match(textContent(view.root),/炉 A/)
+})
+
 
 test('unchanged refreshed dataset samples do not rebuild or reanimate the chart',async t=>{
  const view=fixture(t),widget={id:'stable_chart',type:'trend',content:{chartType:'line'},data:{mode:'dataset',datasetField:'temperature'}};
@@ -512,6 +588,8 @@ test('business cards render their own selected-device response rather than the s
  assert.match(textContent(view.root),/BATCH_A/);assert.doesNotMatch(textContent(view.root),/GLOBAL_NOT_SELECTED/);
  await view.render({...props,playbackNow:2000,databaseValues:{business:{quality:'empty',deviceId:'b',deviceName:'B',businessSection:{available:true,rows:[]}}}});
  assert.doesNotMatch(textContent(view.root),/BATCH_A|GLOBAL_NOT_SELECTED/);assert.match(textContent(view.root),/暂无记录/);
+ await view.render({...props,playbackNow:2000,databaseValues:{business:{quality:'good',deviceId:'a',deviceName:'A',businessSection:{available:true,rows:[{batchNo:'BATCH_A'}]}}}});
+ assert.match(textContent(view.root),/B/);assert.doesNotMatch(textContent(view.root),/BATCH_A|GLOBAL_NOT_SELECTED/);
 })
 
 
@@ -554,4 +632,64 @@ test('PLC point, device reading and selected part update without advancing the p
  await view.render({...base,widget:partWidget,selectedPart:{id:'part-a',points:[{value:555,quality:'good'}]}});assert.match(textContent(view.root),/555/);
  await view.render({...base,widget:partWidget,selectedPart:{id:'part-a',points:[{value:666,quality:'good'}]}});assert.match(textContent(view.root),/666/);
  await view.render({...base,widget:partWidget,selectedPart:{id:'wrong-part',points:[{value:777,quality:'good'}]}});assert.doesNotMatch(textContent(view.root),/777/);
+})
+
+test('normal catalog data-status text comes from actual quality rather than process flags, timestamps or a healthy fallback', async t => {
+    const view = fixture(t)
+    const widget = { id: 'catalog_data_status', type: 'text', content: { text: '{value}', showTitle: false, showDeviceLabel: false, fallback: '数据正常' },
+        data: { mode: 'runtime', path: 'deviceInfo.dataStatus', deviceScope: 'current' } }
+    const base = { widget, deviceCatalog: [{ id: 'a', name: '设备 A' }], runtimeContext: { viewMode: 'device', deviceId: 'a' }, playbackNow: 1000 }
+    for (const [status, expected] of [
+        [{ quality: 'good', online: true, running: false, alarm: true }, '数据正常'],
+        [{ quality: 'bad', online: true, running: true, alarm: false, lastSeen: Date.now() }, '数据异常 / 未连接'],
+        [{ quality: 'stale', online: true, running: true, lastSeen: Date.now() }, '数据已过期'],
+        [{ quality: 'good', online: false, running: true }, '数据异常 / 未连接'],
+        [{ quality: 'unknown', online: true, running: true, lastSeen: Date.now() }, '暂无实时数据'],
+        [{ quality: 'offline', online: false, running: true }, '数据异常 / 未连接'],
+        [{ running: true, alarm: false, lastSeen: Date.now() }, '暂无实时数据'],
+        [{ quality: 'good', online: true, running: true, alarm: false }, '数据正常']
+    ]) {
+        await view.render({ ...base, deviceStatusMap: { a: status, unrelated: { quality: 'good', online: true } } })
+        assert.match(textContent(view.root), new RegExp(expected.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+        if (expected !== '数据正常') assert.doesNotMatch(textContent(view.root), /数据正常/)
+    }
+})
+
+test('normal catalog model metadata follows the same carousel device and updates without advancing its clock', async t => {
+    const view = fixture(t)
+    const widget = { id: 'catalog_model_name', type: 'text', content: { text: '{value}', showTitle: false, showDeviceLabel: false },
+        data: { mode: 'runtime', path: 'deviceInfo.modelName', deviceScope: 'rotation', rotationDeviceIds: ['a', 'b'], rotationIntervalMs: 2000, refreshMs: 1000 } }
+    const base = { widget, runtimeContext: { viewMode: 'factory' }, deviceCatalog: [{ id: 'a', name: '炉 A', model_name: 'MODEL_A' }, { id: 'b', name: '炉 B', model_type: 'MODEL_B' }],
+        deviceStatusMap: { a: { quality: 'good' }, b: { quality: 'bad' } } }
+    await view.render({ ...base, playbackNow: 0 })
+    assert.match(textContent(view.root), /MODEL_A/); assert.doesNotMatch(textContent(view.root), /MODEL_B/)
+    await view.render({ ...base, playbackNow: 2000 })
+    assert.match(textContent(view.root), /MODEL_B/); assert.doesNotMatch(textContent(view.root), /MODEL_A/)
+    await view.render({ ...base, playbackNow: 2000, deviceCatalog: [base.deviceCatalog[0], { ...base.deviceCatalog[1], modelName: 'MODEL_B_UPDATED' }] })
+    assert.match(textContent(view.root), /MODEL_B_UPDATED/); assert.doesNotMatch(textContent(view.root), /MODEL_A/)
+    await view.render({ ...base, playbackNow: 4000 })
+    assert.match(textContent(view.root), /MODEL_A/); assert.doesNotMatch(textContent(view.root), /MODEL_B/)
+})
+
+for (const withUnitPath of [false, true]) test(`tooltip PLC unit uses the actual hovered point ${withUnitPath ? 'dynamic unit path' : 'point-record fallback'} rather than the catalog sample unit`, async t => {
+    const view = fixture(t), points = {
+        a: { id: 'point-a', device_id: 'a', category: 'analog', value_role: 'temp', value: 0, unit: '℃', quality: 'good' },
+        b: { id: 'point-b', device_id: 'b', category: 'analog', value_role: 'temp', value: 275, unit: 'K', quality: 'good' }
+    }
+    const binding = catalogBinding({ unit: 'OLD_SAMPLE_UNIT', objectScope: 'device', tooltipBinding: { mode: 'plc', pointKey: 'analog.temp', requireConfiguredPoint: true, deviceScope: 'current' } }, { tooltip: true })
+    assert.equal(binding.unit, '')
+    if (!withUnitPath) delete binding.unitPath
+    const widget = { id: `catalog_unit_${withUnitPath}`, type: 'text', content: { text: '{value}{unit}', showTitle: false, showDeviceLabel: false }, data: { ...binding, decimals: 0 } }
+    const base = { widget, pointValues: points, deviceCatalog: [{ id: 'a' }, { id: 'b' }], playbackNow: 1000 }
+    for (const [id, expected] of [['a', '0 ℃'], ['b', '275 K'], ['a', '0 ℃']]) {
+        const runtimeContext = createTooltipContext({ device: { id }, points: Object.values(points), status: { quality: 'good' } })
+        await view.render({ ...base, runtimeContext })
+        assert.match(textContent(view.root), new RegExp(expected))
+        assert.doesNotMatch(textContent(view.root), /OLD_SAMPLE_UNIT/)
+        if (id === 'b') assert.doesNotMatch(textContent(view.root), /℃/)
+        else assert.doesNotMatch(textContent(view.root), /275 K/)
+    }
+    const missing = createTooltipContext({ device: { id: 'c' }, points: Object.values(points), status: { quality: 'good' } })
+    await view.render({ ...base, runtimeContext: missing })
+    assert.doesNotMatch(textContent(view.root), /0 ℃|275 K|OLD_SAMPLE_UNIT/)
 })

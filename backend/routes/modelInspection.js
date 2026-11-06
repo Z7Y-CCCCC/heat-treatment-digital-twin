@@ -8,6 +8,25 @@ const { normalizeModelMetadata } = require('../services/modelAssetMetadata');
 const { canonicalJson } = require('../services/deviceInspection');
 const authoring = require('../services/motionAuthoring');
 const { actionsForModel } = require('../services/deviceAnimations');
+const { loadModelLoadingPorts, publicModelLoadingPorts, saveModelLoadingPorts } = require('../services/loadingPorts');
+
+router.get('/:id/loading-ports', async (req, res) => {
+    try {
+        const loaded = await loadModelLoadingPorts(await getDb(), req.params.id, req.factoryId);
+        res.setHeader('Cache-Control', 'no-store'); res.json(publicModelLoadingPorts(loaded));
+    } catch (error) { res.status(error.statusCode || 400).json({ error: error.message, code: error.code }); }
+});
+router.put('/:id/loading-ports', configurationMutation('models'), async (req, res) => {
+    try {
+        const db = await getDb();
+        const saved = await db.transaction(async tx => {
+            const loaded = await loadModelLoadingPorts(tx, req.params.id, req.factoryId);
+            return saveModelLoadingPorts(tx, loaded, req.body, req.factoryId, getDbStatus().type);
+        });
+        global.wsServer?.broadcastToRole?.('model_metadata_changed', { modelId: req.params.id, timestamp: Date.now() }, 'unity');
+        res.json(publicModelLoadingPorts(saved));
+    } catch (error) { res.status(error.statusCode || 400).json({ error: error.message, code: error.code }); }
+});
 
 router.get('/:id/motion-actions', async (req, res) => {
     try {

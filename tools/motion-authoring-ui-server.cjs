@@ -15,7 +15,7 @@ const { findFreePort, waitForHttp, requireTestPath } = require('../backend/scrip
     for (const id of ['author_device', 'author_peer']) db.prepare('INSERT INTO devices(id,name,line_id,model_type,plc_enabled,instance_config) VALUES(?,?,?,?,?,?)').run(id,id==='author_device'?'备料台 · 动作验收':'备料台 · 独立实例',line,modelId,0,'{"inspection":{"enabled":false}}');
     const pointId = String(db.prepare("INSERT INTO data_points(device_id,name,label,plc_tag,data_type,category,value_role,sample_interval_ms,access_type,quality) VALUES(?,?,?,?,?,?,?,?,?,?)").run('author_device','stroke','行程反馈','DB1.DBD0','REAL','analog','stroke',100,'READ','good').lastInsertRowid); db.close();
     const port = await findFreePort(), origin = `http://127.0.0.1:${port}`;
-    Object.assign(process.env,sandbox.env,{PORT:String(port),HOST:'127.0.0.1',FRONTEND_DIST:path.resolve(__dirname,'../frontend/dist')});
+    Object.assign(process.env,sandbox.env,{PORT:String(port),HOST:'127.0.0.1',FRONTEND_DIST:process.env.UI_FRONTEND_DIST || path.resolve(__dirname,'../frontend/dist')});
     require('../backend/server.js'); await waitForHttp(origin+'/api/health'); const session = await createSmokeSession(origin,sandbox);
     if (process.env.MOTION_TEST_IMPORT_ASSET) {
         const headers = { Origin: origin, 'X-Admin-Request': '1', Cookie: session.cookie, 'X-CSRF-Token': session.csrfToken };
@@ -39,7 +39,7 @@ const { findFreePort, waitForHttp, requireTestPath } = require('../backend/scrip
     let value = 0, offline = false, paused = false;
     const control = http.createServer((req,res) => { let raw='';req.on('data',chunk=>raw+=chunk);req.on('end',()=>{try{const body=JSON.parse(raw||'{}');if(body.value!==undefined)value=Number(body.value);if(body.offline!==undefined)offline=!!body.offline;if(body.paused!==undefined)paused=!!body.paused;res.setHeader('Content-Type','application/json');res.end(JSON.stringify({value,offline,paused}))}catch{res.statusCode=400;res.end()}}) });
     await new Promise(resolve=>control.listen(0,'127.0.0.1',resolve));
-    setInterval(()=>{if(!paused)global.wsServer?.broadcastDeviceData([{furnace_id:'author_device',timestamp:Date.now(),status:{online:!offline,quality:offline?'bad':'good'},quality:{overall:offline?'bad':'good'},analog:{stroke:value},pointMeta:{'analog.stroke':{id:pointId}}}])},100);
+    setInterval(()=>{if(!paused){const timestamp=Date.now(),quality=offline?'bad':'good';global.wsServer?.broadcastDeviceData([{furnace_id:'author_device',timestamp,status:{online:!offline,quality},quality:{overall:quality,analog:{stroke:quality}},analog:{stroke:value},pointMeta:{'analog.stroke':{id:pointId,timestamp}}}])}},100);
     const info={origin,control:`http://127.0.0.1:${control.address().port}`,modelId,deviceId:'author_device',pointId,directory:sandbox.directory,database:sandbox.filename,username:'admin',password:sandbox.password,session,env:sandbox.env};
     fs.writeFileSync(requireTestPath(process.env.MOTION_AUTHORING_INFO_FILE),JSON.stringify(info,null,2));
 })().catch(error=>{console.error(error);process.exit(1)});

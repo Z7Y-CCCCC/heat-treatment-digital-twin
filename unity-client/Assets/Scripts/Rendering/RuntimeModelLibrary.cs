@@ -13,6 +13,14 @@ using UnityEngine;
 
 namespace HeatTreatment.DigitalTwin.Rendering
 {
+    // glTF clones share imported Mesh/Material objects. Retiring a template must
+    // not dispose those resources while its previous visible instance is alive.
+    public sealed class RuntimeModelLease : MonoBehaviour
+    {
+        internal Action Release;
+        private void OnDestroy() { var release = Release; Release = null; release?.Invoke(); }
+    }
+
     public sealed class RuntimeModelInstance
     {
         public GameObject Root { get; internal set; }
@@ -41,19 +49,25 @@ namespace HeatTreatment.DigitalTwin.Rendering
             public bool IsFallback;
             public string LoadError;
             public JObject MotionPackage;
+            public int Instances;
+            public bool Retired;
+            public bool Disposed;
         }
 
         private readonly Dictionary<string, ModelAssetDto> _assets = new Dictionary<string, ModelAssetDto>();
         private readonly Dictionary<string, TemplateEntry> _templates = new Dictionary<string, TemplateEntry>();
+        private readonly HashSet<TemplateEntry> _retiredTemplates = new HashSet<TemplateEntry>();
         private string _backendBaseUrl;
         private float _loadTimeoutSeconds = 30f;
         private Transform _templateContainer;
         private bool _destroyed;
+        private int _configurationVersion;
 
         public int LoadedTemplateCount => _templates.Count;
 
         public void Configure(string backendBaseUrl, IEnumerable<ModelAssetDto> assets, float loadTimeoutSeconds)
         {
+            ++_configurationVersion;
             var previousBaseUrl = _backendBaseUrl;
             _backendBaseUrl = (backendBaseUrl ?? string.Empty).TrimEnd('/');
             _loadTimeoutSeconds = float.IsNaN(loadTimeoutSeconds) || float.IsInfinity(loadTimeoutSeconds)
@@ -67,11 +81,11 @@ namespace HeatTreatment.DigitalTwin.Rendering
             // A configuration reload is also the retry boundary for transient
             // model failures. Do not keep an offline placeholder forever, nor
             // reuse bindings/scale from an older metadata revision.
-            var currentKeys = new HashSet<string>(_assets.Values.SelectMany(asset => new[] { CacheKey(asset, asset.Id), CacheKey(asset, asset.Id) + ":motion" }));
+            var currentKeys = new HashSet<string>(_assets.Values.SelectMany(asset => new[] { CacheKey(asset, asset.Id), CacheKey(asset, asset.Id, true) + ":motion" }));
             foreach (var entry in _templates.ToArray())
             {
                 if (previousBaseUrl == _backendBaseUrl && !entry.Value.IsFallback && currentKeys.Contains(entry.Key)) continue;
-                DisposeTemplate(entry.Value);
+                RetireTemplate(entry.Value);
                 _templates.Remove(entry.Key);
             }
 
@@ -92,16 +106,18 @@ namespace HeatTreatment.DigitalTwin.Rendering
             if (device == null) throw new ArgumentNullException(nameof(device));
             cancellationToken.ThrowIfCancellationRequested();
             if (_destroyed) throw new ObjectDisposedException(nameof(RuntimeModelLibrary));
+            var configurationVersion = _configurationVersion;
             var asset = ResolveAsset(device.ModelType);
             var useMotion = asset?.MotionPackage != null && device.InstanceConfigObject?["animationBindings"]?["bindings"]?.OfType<JObject>().Any(b => b.Value<bool?>("enabled") == true && b.Value<string>("kind") == "clip") == true;
-            var key = CacheKey(asset, device.ModelType) + (useMotion ? ":motion" : "");
+            var key = CacheKey(asset, device.ModelType, useMotion) + (useMotion ? ":motion" : "");
             if (!_templates.TryGetValue(key, out var template))
             {
                 template = await LoadTemplateSafeAsync(asset, device.ModelType, cancellationToken, useMotion);
-                if (cancellationToken.IsCancellationRequested || _destroyed)
+                if (cancellationToken.IsCancellationRequested || _destroyed || configurationVersion != _configurationVersion)
                 {
                     DisposeTemplate(template);
                     cancellationToken.ThrowIfCancellationRequested();
+                    if (configurationVersion != _configurationVersion) throw new OperationCanceledException("Model metadata changed during template preparation");
                     throw new ObjectDisposedException(nameof(RuntimeModelLibrary));
                 }
                 if (_templates.TryGetValue(key, out var existing))
@@ -112,29 +128,44 @@ namespace HeatTreatment.DigitalTwin.Rendering
                 else _templates[key] = template;
             }
 
-            var inspection = InspectionConfigResolver.Resolve(template.Asset, device);
+            template.Instances++;
+            var leased = template;
+            var transferredLease = false;
+            try
+            {
+            // Templates own immutable geometry/resources, not current action
+            // definitions. A new part binding on an already preserved CAD node
+            // must not download/import the same rig again.
+            var currentAsset = asset ?? template.Asset;
+            var currentBindings = ReadBindings(currentAsset.MetadataObject);
+            var inspection = InspectionConfigResolver.Resolve(currentAsset, device);
             await InspectionMeshSurface.PrepareStaticIndexesAsync(template.Root, cancellationToken);
             cancellationToken.ThrowIfCancellationRequested();
             if (_destroyed) throw new ObjectDisposedException(nameof(RuntimeModelLibrary));
+            if (configurationVersion != _configurationVersion || template.Disposed) throw new OperationCanceledException("Model metadata changed during instance preparation");
             var clone = Instantiate(template.Root, parent, false);
+            clone.AddComponent<RuntimeModelLease>().Release = () => ReleaseTemplate(leased);
+            transferredLease = true;
             clone.name = string.IsNullOrWhiteSpace(device.Name) ? device.Id : device.Name;
-            ApplyDeviceTransform(clone.transform, device, template.Asset);
+            ApplyDeviceTransform(clone.transform, device, currentAsset);
             clone.SetActive(true);
 
             var driver = clone.AddComponent<ModelBindingDriver>();
-            driver.Configure(DeviceBindings(template.Bindings, device));
+            driver.Configure(DeviceBindings(currentBindings, device), device.InstanceConfigObject?["animationBindings"] as JObject);
             driver.DataTimeoutSeconds = (device.InstanceConfigObject?["animationBindings"]?.Value<float?>("staleMs") ?? 10000) / 1000f;
             if (template.MotionPackage != null) clone.AddComponent<DeviceAnimationDriver>().Configure(device, template.MotionPackage);
             return new RuntimeModelInstance
             {
                 Root = clone,
-                Asset = template.Asset,
-                Bindings = template.Bindings,
+                Asset = currentAsset,
+                Bindings = currentBindings,
                 Inspection = inspection,
                 OptimizationReport = template.OptimizationReport,
                 IsFallback = template.IsFallback,
                 LoadError = template.LoadError
             };
+            }
+            finally { if (!transferredLease) ReleaseTemplate(leased); }
         }
 
         public void ApplyPreviewTransform(Transform target, DeviceDto device)
@@ -317,11 +348,21 @@ namespace HeatTreatment.DigitalTwin.Rendering
             return new Uri(origin, filePath.TrimStart('/')).AbsoluteUri;
         }
 
-        private static string CacheKey(ModelAssetDto asset, string modelType)
+        private static string CacheKey(ModelAssetDto asset, string modelType, bool useMotion = false)
         {
-            return asset == null
-                ? $"fallback:{modelType}"
-                : $"{asset.Id}:{asset.FilePath}:{asset.DefaultScale.ToString("R", System.Globalization.CultureInfo.InvariantCulture)}:{asset.MetadataObject.ToString(Newtonsoft.Json.Formatting.None)}:{asset.MotionPackage?.Value<string>("clipSha256")}";
+            if (asset == null) return $"fallback:{modelType}";
+            var metadata = (JObject)asset.MetadataObject.DeepClone();
+            var preserveAllNodes = useMotion || InspectionConfigResolver.Resolve(asset, null).Enabled;
+            if (preserveAllNodes) {
+                metadata.Remove("partBindings"); metadata.Remove("inspection");
+                // Saving the first/last action toggles this driver-only flag.
+                // It does not change the preserved geometry/material hierarchy.
+                (metadata["runtime"] as JObject)?.Remove("enableGenericBindings");
+                if (metadata["runtime"] is JObject runtime && runtime.Count == 0) metadata.Remove("runtime");
+            }
+            // When batching is enabled, part protection affects optimized geometry
+            // and remains in the key. Only all-node-preserved models may reuse it.
+            return $"{asset.Id}:{asset.FilePath}:{preserveAllNodes}:{metadata.ToString(Newtonsoft.Json.Formatting.None)}:{asset.MotionPackage?.Value<string>("sourceSha256")}:{asset.MotionPackage?.Value<string>("rigSha256")}:{asset.MotionPackage?.Value<string>("clipSha256")}";
         }
 
         private async Task<byte[]> ReadVerifiedMotionBytes(string relative, string expectedHash, int maximum, CancellationToken token)
@@ -369,12 +410,13 @@ namespace HeatTreatment.DigitalTwin.Rendering
                 var row = rows.FirstOrDefault(b => b.Value<string>("actionId") == id && b.Value<bool?>("enabled") == true);
                 if (row == null) continue;
                 var binding = JObject.FromObject(source).ToObject<PartBindingDto>();
+                if (string.IsNullOrEmpty(binding.Id)) binding.Id = (i - 1).ToString();
                 binding.SourceGroup = row.Value<string>("sourceGroup"); binding.SourceKey = row.Value<string>("sourceKey");
                 binding.PointId = row.Value<string>("pointId");
                 binding.AuthoringSpace = true;
                 binding.InputMin = row.Value<float>("inputMin"); binding.InputMax = row.Value<float>("inputMax"); binding.TransitionDuration = row.Value<float>("transitionSeconds");
-                if (binding.Action == "rotate_speed") binding.SpeedFactor *= row.Value<float>("speed") * (row.Value<bool?>("invert") == true ? -1 : 1);
-                else if (row.Value<bool?>("invert") == true) { var value = binding.OutputMin; binding.OutputMin = binding.OutputMax; binding.OutputMax = value; }
+                // Signal interpretation (range/condition/inversion) is shared with clips;
+                // never apply inversion twice by also reversing the authored output range.
                 binding.Invert = row.Value<bool?>("invert") ?? false;
                 result.Add(binding);
             }
@@ -514,10 +556,27 @@ namespace HeatTreatment.DigitalTwin.Rendering
                 DisposeTemplate(template);
             }
             _templates.Clear();
+            foreach (var template in _retiredTemplates) DisposeTemplate(template);
+            _retiredTemplates.Clear();
+        }
+
+        private void RetireTemplate(TemplateEntry template)
+        {
+            template.Retired = true;
+            if (template.Instances == 0) DisposeTemplate(template);
+            else _retiredTemplates.Add(template);
+        }
+
+        private void ReleaseTemplate(TemplateEntry template)
+        {
+            template.Instances--;
+            if (template.Retired && template.Instances == 0) { DisposeTemplate(template); _retiredTemplates.Remove(template); }
         }
 
         private static void DisposeTemplate(TemplateEntry template)
         {
+            if (template.Disposed) return;
+            template.Disposed = true;
             if (template.Root != null) Destroy(template.Root);
             template.Importer?.Dispose();
         }

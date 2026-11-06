@@ -22,27 +22,39 @@ function changed(reset=false) {
     emit('change')
 }
 async function preview() {
-    if (!selected.value || !props.binding.datasetField) { message.value='请选择数据集和字段'; return }
+    if (!selected.value || !props.binding.datasetField) { message.value='请选择数据表和字段'; return }
     const seq=++sequence, key=JSON.stringify(props.binding), context=JSON.stringify(props.context); busy.value=true; message.value=''
+    const device=previewDevice(), deviceId=device?.id || '', deviceName=device?.name || ''
+    const stillCurrent=()=>!disposed && seq===sequence && key===JSON.stringify(props.binding) && context===JSON.stringify(props.context) && deviceId===(previewDevice()?.id || '')
+    const tagged=value=>({...value,deviceId,deviceName})
     try {
-        const data=await adminApi.previewDataSet({datasetId:props.binding.datasetId,binding:props.binding,context:{...props.context,...(props.devices?.length?{deviceId:playbackSelection(props.binding,props.context,props.devices,props.playbackNow || Date.now()).device?.id || ''}:props.binding.deviceScope==='fixed'?{deviceId:props.binding.deviceId}: {})}})
-        if (disposed || seq!==sequence || key!==JSON.stringify(props.binding) || context!==JSON.stringify(props.context)) return
-        result.value=data.result; emit('preview',data.result)
-    } catch(error) { if (!disposed && seq===sequence) { message.value=error.message; emit('preview',{value:null,rows:[],series:[],quality:'bad',error:error.message}) } }
+        if (!device) throw new Error('当前范围内没有可预览的设备')
+        const scoped={...props.context,deviceId,lineId:device.lineId || device.line_id || '',workshopId:device.workshopId || device.workshop_id || ''}
+        const data=await adminApi.previewDataSet({datasetId:props.binding.datasetId,binding:JSON.parse(key),context:scoped})
+        if (!stillCurrent()) return
+        result.value=tagged(data.result); emit('preview',result.value)
+    } catch(error) { if (stillCurrent()) { message.value=error.message;result.value=tagged({value:null,rows:[],series:[],quality:'bad',error:error.message});emit('preview',result.value) } }
     finally { if (seq===sequence) busy.value=false }
+}
+function previewDevice() {
+    if (props.binding.deviceScope==='global') return {id:'',name:'',lineId:'',workshopId:''}
+    // Standalone field editors may receive just a selected context, not the
+    // full catalog. Preserve that known identity, without inventing readings.
+    const devices=props.devices?.length ? props.devices : [...new Set([props.context?.deviceId,props.binding.deviceId].filter(Boolean))].map(id=>({id:String(id),name:'',lineId:props.context?.lineId || '',workshopId:props.context?.workshopId || ''}))
+    return playbackSelection(props.binding,props.context,devices,props.playbackNow ?? Date.now()).device
 }
 watch(()=>props.context,()=>{sequence++;busy.value=false;result.value=null;emit('invalidate')},{deep:true})
 onMounted(()=>{load();window.addEventListener('digital-twin-data-sets-changed',load)})
 onBeforeUnmount(()=>{disposed=true;sequence++;loadSequence++;window.removeEventListener('digital-twin-data-sets-changed',load)})
 </script>
 <template>
-  <section class="dataset-binding" aria-label="组件数据集绑定">
+  <section class="dataset-binding" aria-label="组件数据表绑定">
     <div class="binding-group">
-      <label class="dataset-choice"><span>数据集</span><select v-model="binding.datasetId" aria-label="组件数据集" :disabled="disabled || loading" @change="changed(true)"><option value="">选择数据集</option><option v-if="binding.datasetId && !selected" :value="binding.datasetId" disabled>{{loading?'读取中…':'数据集不可用'}}</option><option v-for="d in datasets" :key="d.id" :value="d.id">{{d.name}}{{d.enabled?'':'（已停用）'}}</option></select><button class="refresh-button" type="button" aria-label="刷新数据集列表" @click="load"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 10a8 8 0 1 0-1 7M20 4v6h-6"/></svg></button></label>
-      <label><span>字段</span><select v-model="binding.datasetField" aria-label="组件数据集字段" :disabled="disabled || !selected" @change="changed()"><option value="">选择字段</option><option v-if="binding.datasetField && !selected?.columns?.some(c=>c.name===binding.datasetField)" :value="binding.datasetField" disabled>{{binding.datasetField}}</option><option v-for="c in selected?.columns || []" :key="c.name" :value="c.name">{{c.label}}{{c.unit?' · '+c.unit:''}}</option></select></label>
+      <label class="dataset-choice"><span>数据表</span><select v-model="binding.datasetId" aria-label="组件数据表" :disabled="disabled || loading" @change="changed(true)"><option value="">选择数据表</option><option v-if="binding.datasetId && !selected" :value="binding.datasetId" disabled>{{loading?'读取中…':'数据表不可用'}}</option><option v-for="d in datasets" :key="d.id" :value="d.id">{{d.name}}{{d.enabled?'':'（已停用）'}}</option></select><button class="refresh-button" type="button" aria-label="刷新数据表列表" @click="load"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 10a8 8 0 1 0-1 7M20 4v6h-6"/></svg></button></label>
+      <label><span>字段</span><select v-model="binding.datasetField" aria-label="组件数据表字段" :disabled="disabled || !selected" @change="changed()"><option value="">选择字段</option><option v-if="binding.datasetField && !selected?.columns?.some(c=>c.name===binding.datasetField)" :value="binding.datasetField" disabled>{{binding.datasetField}}</option><option v-for="c in selected?.columns || []" :key="c.name" :value="c.name">{{c.label}}{{c.unit?' · '+c.unit:''}}</option></select></label>
     </div>
     <details v-if="multiple && selected" class="binding-more"><summary>图表数值列</summary><label v-for="column in selected.columns.filter(c=>c.type==='number')" :key="column.name"><input type="checkbox" :checked="column.name===binding.datasetField || binding.datasetFields?.includes(column.name)" :disabled="disabled || column.name===binding.datasetField" @change="binding.datasetFields=$event.target.checked?[...new Set([...(binding.datasetFields || []),column.name])].slice(0,12):(binding.datasetFields || []).filter(v=>v!==column.name);changed()" />{{column.label}}</label></details>
-    <details class="binding-more" :open="binding.datasetMode && binding.datasetMode!=='first'"><summary>更多设置 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg></summary><label><span>取值</span><select v-model="binding.datasetMode" aria-label="组件数据集取值" :disabled="disabled" @change="changed()"><option value="first">第一条 / 图表序列</option><option value="count">记录数量</option><option value="sum">合计</option><option value="avg">平均值</option><option value="min">最小值</option><option value="max">最大值</option></select></label></details>
+    <details class="binding-more" :open="binding.datasetMode && binding.datasetMode!=='first'"><summary>更多设置 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg></summary><label><span>取值</span><select v-model="binding.datasetMode" aria-label="组件数据表取值" :disabled="disabled" @change="changed()"><option value="first">第一条 / 图表序列</option><option value="count">记录数量</option><option value="sum">合计</option><option value="avg">平均值</option><option value="min">最小值</option><option value="max">最大值</option></select></label></details>
     <div class="binding-preview">
       <header><span>数据预览</span><button type="button" :disabled="busy || !selected || !binding.datasetField" @click="preview"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 10 7-10 7Z"/></svg>{{busy?'读取中…':'读取预览'}}</button></header>
       <div v-if="result" class="binding-result" :class="{bad:!['good','empty'].includes(result.quality)}"><strong>{{result.value ?? '—'}}<span>{{result.unit}}</span></strong><small><i></i>{{result.quality==='good'?'正常':result.quality==='empty'?'无记录':'异常'}}<b>·</b>{{result.rows.length}} 条</small></div>

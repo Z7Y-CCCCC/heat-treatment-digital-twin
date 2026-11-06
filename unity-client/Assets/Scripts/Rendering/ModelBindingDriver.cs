@@ -21,18 +21,61 @@ namespace HeatTreatment.DigitalTwin.Rendering
             public float TargetOffset;
             public bool HasPose;
             public bool Suspended;
+            public JObject RuntimeBinding;
+            public MotionSignalState Signal;
         }
 
         private readonly List<BindingState> _states = new List<BindingState>();
         private MaterialPropertyBlock _propertyBlock;
         private float _lastRealtimeAt = float.NegativeInfinity;
         public float DataTimeoutSeconds { get; set; } = 10f;
+        public JObject CaptureEndpointDisplayStates()
+        {
+            var result = new JObject();
+            foreach (var state in _states) {
+                var snapshot = state.Signal.CaptureDisplayState(state.RuntimeBinding);
+                if (snapshot == null) continue;
+                snapshot["definition"] = JObject.FromObject(state.Binding);
+                var p = state.Target.localPosition; var q = state.Target.localRotation;
+                snapshot["actualPosition"] = new JArray(p.x, p.y, p.z); snapshot["actualRotation"] = new JArray(q.x, q.y, q.z, q.w);
+                result[state.RuntimeBinding.Value<string>("actionId")] = snapshot;
+            }
+            return result;
+        }
+        public void RestoreEndpointDisplayStates(JObject snapshots)
+        {
+            foreach (var state in _states)
+            {
+                var snapshot = snapshots?[state.RuntimeBinding?.Value<string>("actionId") ?? ""] as JObject;
+                if (snapshot == null || !state.Signal.RestoreDisplayState(state.RuntimeBinding, snapshot)) continue;
+                if (state.Binding.Action == "rotate_speed" && JToken.DeepEquals(snapshot["definition"], JObject.FromObject(state.Binding)))
+                {
+                    var p = snapshot["actualPosition"].Values<float>().ToArray(); var q = snapshot["actualRotation"].Values<float>().ToArray();
+                    state.Target.localPosition = new Vector3(p[0], p[1], p[2]); state.Target.localRotation = new Quaternion(q[0], q[1], q[2], q[3]);
+                }
+                ApplyRuntimeState(state, true);
+            }
+        }
+        public JArray CaptureDiagnosticActions()
+        {
+            var actions = new JArray();
+            foreach (var state in _states)
+            {
+                if (state.RuntimeBinding == null || state.Target == null) continue;
+                var p = state.Target.localPosition; var q = state.Target.localRotation;
+                actions.Add(new JObject { ["actionId"] = state.RuntimeBinding["actionId"], ["node"] = state.Target.name,
+                    ["position"] = state.Signal.Position, ["target"] = state.Signal.Target, ["usable"] = state.Signal.Usable, ["reason"] = state.Signal.Reason,
+                    ["actualPosition"] = new JArray(p.x, p.y, p.z), ["actualRotation"] = new JArray(q.x, q.y, q.z, q.w) });
+            }
+            return actions;
+        }
 
-        public void Configure(IEnumerable<PartBindingDto> bindings)
+        public void Configure(IEnumerable<PartBindingDto> bindings, JObject runtimeConfig = null)
         {
             _states.Clear();
             var transforms = GetComponentsInChildren<Transform>(true);
             var pathMap = BuildPathMap(transform);
+            var rows = runtimeConfig?["bindings"]?.OfType<JObject>().ToArray() ?? Array.Empty<JObject>();
             foreach (var binding in bindings ?? Array.Empty<PartBindingDto>())
             {
                 Transform target = null;
@@ -48,17 +91,27 @@ namespace HeatTreatment.DigitalTwin.Rendering
                     Binding = binding,
                     Target = target,
                     BasePosition = target.localPosition,
-                    BaseRotation = target.localRotation
+                    BaseRotation = target.localRotation,
+                    RuntimeBinding = rows.FirstOrDefault(row => row.Value<bool?>("enabled") == true && row.Value<string>("actionId") == "part:" + binding.Id),
+                    Signal = new MotionSignalState()
                 });
             }
         }
 
-        public void ApplyRealtime(JObject deviceData)
+        public void ApplyRealtime(JObject deviceData, double? now = null)
         {
-            _lastRealtimeAt = Time.realtimeSinceStartup;
+            var receivedAt = now ?? Time.realtimeSinceStartupAsDouble;
+            _lastRealtimeAt = (float)receivedAt;
             foreach (var state in _states)
             {
                 var binding = state.Binding;
+                if (state.RuntimeBinding != null)
+                {
+                    state.Signal.Receive(deviceData, state.RuntimeBinding, receivedAt);
+                    state.Signal.Step(0, receivedAt, DataTimeoutSeconds * 1000, state.RuntimeBinding);
+                    ApplyRuntimeState(state);
+                    continue;
+                }
                 var token = ReadBindingValue(deviceData, binding, out var group);
                 state.Suspended = !IsUsable(deviceData, group, binding.SourceKey)
                     || (!string.IsNullOrEmpty(binding.PointId) && deviceData?["pointMeta"]?[group + "." + binding.SourceKey]?["id"] != null && deviceData["pointMeta"][group + "." + binding.SourceKey].Value<string>("id") != binding.PointId)
@@ -96,17 +149,36 @@ namespace HeatTreatment.DigitalTwin.Rendering
             }
         }
 
+        public void ApplyMotionInputs(JObject deviceData, double? now = null)
+        {
+            var receivedAt = now ?? Time.realtimeSinceStartupAsDouble;
+            foreach (var state in _states)
+            {
+                if (!MotionSignalState.IsCatalogBinding(state.RuntimeBinding)) continue;
+                state.Signal.Receive(deviceData, state.RuntimeBinding, receivedAt);
+                state.Signal.Step(0, receivedAt, DataTimeoutSeconds * 1000, state.RuntimeBinding);
+                ApplyRuntimeState(state);
+            }
+        }
+
         private void Update()
         {
             if (Time.realtimeSinceStartup - _lastRealtimeAt > DataTimeoutSeconds) foreach (var state in _states) { state.Suspended = true; state.AngularSpeedDegrees = 0; }
             AdvanceMotion(Time.deltaTime);
         }
 
-        public void AdvanceMotion(float deltaTime)
+        public void AdvanceMotion(float deltaTime, double? now = null)
         {
             if (float.IsNaN(deltaTime) || float.IsInfinity(deltaTime) || deltaTime <= 0) return;
             foreach (var state in _states)
             {
+                if (state.RuntimeBinding != null)
+                {
+                    state.Signal.Step(deltaTime, now ?? Time.realtimeSinceStartupAsDouble, DataTimeoutSeconds * 1000, state.RuntimeBinding);
+                    ApplyRuntimeState(state);
+                    if (!state.Suspended && state.Binding.Action == "rotate_speed") state.Target.Rotate(RotationAxis(state.Binding), state.AngularSpeedDegrees * deltaTime, Space.Self);
+                    continue;
+                }
                 if (state.Suspended || state.Target == null) continue;
                 if ((state.Binding.Action ?? "rotate_speed") == "rotate_speed")
                     state.Target.Rotate(RotationAxis(state.Binding), state.AngularSpeedDegrees * deltaTime, Space.Self);
@@ -118,6 +190,27 @@ namespace HeatTreatment.DigitalTwin.Rendering
                     ApplyPose(state);
                 }
             }
+        }
+
+        private void ApplyRuntimeState(BindingState state, bool restoreFrozenPose = false)
+        {
+            state.Suspended = !state.Signal.Usable || !state.Signal.HasSample || state.Target == null;
+            if (state.Target == null) return;
+            if (state.Suspended && !restoreFrozenPose) { state.AngularSpeedDegrees = 0; return; }
+            var binding = state.Binding; var action = binding.Action ?? "rotate_speed";
+            if (action == "rotate_speed")
+            {
+                var condition = state.RuntimeBinding["trigger"]?.Value<string>("mode") == "condition";
+                var direction = !condition && state.RuntimeBinding.Value<bool?>("invert") == true ? -1 : 1;
+                state.AngularSpeedDegrees = (float)state.Signal.NumericValue * binding.SpeedFactor * Mathf.Rad2Deg * (state.RuntimeBinding.Value<float?>("speed") ?? 1) * direction;
+            }
+            else if (action == "translate" || action == "rotate_angle")
+            {
+                state.Offset = binding.OutputMin + (binding.OutputMax - binding.OutputMin) * (float)state.Signal.Position;
+                state.HasPose = true; ApplyPose(state);
+            }
+            else if (action == "visibility") state.Target.gameObject.SetActive(state.Signal.Position > .5);
+            else if (action == "color") ApplyColor(state.Target, state.Signal.Position > .5 ? binding.OnColor : binding.OffColor, binding.AuthoringSpace);
         }
 
         private static void ApplyPose(BindingState state)

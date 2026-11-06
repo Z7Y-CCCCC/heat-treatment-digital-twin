@@ -24,9 +24,11 @@ class Simulator {
     constructor(options = {}) {
         this.options = options;
         this.pollTimer = null;
+        this.pollIntervalMs = 2000;
         this.onData = null;
         this.onStatusChange = null;
         this.devices = [];
+        this.pointsByDevice = new Map();
         this.runVersion = 0;
         this.stopped = true;
         // 每台设备的持久状态（模拟真实运行时的渐变效果）
@@ -60,6 +62,14 @@ class Simulator {
         const settingsRows = await db.all('SELECT * FROM settings');
         if (this.stopped || runVersion !== this.runVersion) return;
         this.devices = devices;
+        const ownedIds = new Set(devices.map(device => String(device.id)));
+        const points = (await db.all('SELECT * FROM data_points')).filter(point => ownedIds.has(String(point.device_id)) && String(point.access_type || 'READ').toUpperCase() === 'READ');
+        if (this.stopped || runVersion !== this.runVersion) return;
+        this.pointsByDevice = new Map();
+        for (const point of points) {
+            const id = String(point.device_id), list = this.pointsByDevice.get(id) || [];
+            list.push(point); this.pointsByDevice.set(id, list);
+        }
         const factorySettings = await db.all('SELECT `key`, value FROM factory_settings WHERE factory_id = ?', [factoryId]);
         if (this.stopped || runVersion !== this.runVersion) return;
         this.deviceStates = Object.create(null);
@@ -111,6 +121,7 @@ class Simulator {
         const interval = Number.isFinite(configuredInterval) && configuredInterval >= 100 && configuredInterval <= 60000
             ? Math.round(configuredInterval)
             : 2000;
+        this.pollIntervalMs = interval;
 
         // 开始模拟
         if (this.stopped || runVersion !== this.runVersion) return;
@@ -185,6 +196,7 @@ class Simulator {
 
             deviceDataArray.push({
                 furnace_id: device.id,
+                sourceMode: 'simulation',
                 furnace_name: device.name,
                 timestamp: Date.now(),
                 analog: {
@@ -274,6 +286,14 @@ class Simulator {
                     'motors.oil_stir_4_speed': { label: '油搅拌4转速', unit: 'rpm', display_format: '0' }
                 }
             });
+            const frame = deviceDataArray[deviceDataArray.length - 1];
+            for (const point of this.pointsByDevice.get(String(device.id)) || []) {
+                const group = point.category || 'analog', field = point.value_role || point.name;
+                if (!Object.prototype.hasOwnProperty.call(frame[group] || {}, field)) continue;
+                const key = `${group}.${field}`;
+                frame.pointMeta[key] = { ...frame.pointMeta[key], id:String(point.id), timestamp:frame.timestamp,
+                    name:point.name, label:point.label || point.name, unit:point.unit || '', sample_interval_ms:point.sample_interval_ms || this.pollIntervalMs };
+            }
         });
 
         if (this.onData && deviceDataArray.length > 0) {

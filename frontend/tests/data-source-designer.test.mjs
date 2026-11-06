@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises'
 import { createRenderer, h, nextTick, ref } from 'vue'
 import { parse, compileScript } from 'vue/compiler-sfc'
 import { adminApi } from '../src/config/factoryConfig.js'
+import { adminSession } from '../src/runtime/adminSession.js'
 import { deferred, installBrowser, settle } from './helpers.mjs'
 import { exportDashboardTemplate, importDashboardTemplate, dashboardTemplateReferences, rebindDashboardTemplate } from '../src/runtime/dashboardTemplate.js'
 import { normalizeDashboardDocument } from '../src/runtime/dashboardSchema.js'
@@ -59,8 +60,223 @@ function fixture(t, connections) {
     const app = renderer.createApp({ render: () => h(Designer, { ref: instance }) })
     app.mount({})
     environment.beforeRestore(() => app.unmount())
-    return { instance }
+    return { instance, browser: environment.browser }
 }
+
+function pointerEvent(overrides = {}) {
+    return { button: 0, pointerId: 7, detail: 1, clientX: 100, clientY: 100,
+        preventDefault() {}, stopPropagation() {}, ...overrides }
+}
+
+async function canvasSelectionFixture(t, widgets = []) {
+    const { instance, browser } = fixture(t, [])
+    await settle()
+    const state = instance.value.$.setupState
+    const items = widgets.length ? widgets : [
+        { id: 'a', type: 'text', frame: { x: 100, y: 50, width: 100, height: 60 } },
+        { id: 'b', type: 'text', frame: { x: 300, y: 150, width: 100, height: 60 } }
+    ]
+    const ids = new Set(items.map(widget => widget.id))
+    state.documentModel = normalizeDashboardDocument({ canvas: { width: 800, height: 500, gridSize: 1 }, widgets: items })
+    state.documentModel.widgets = state.documentModel.widgets.filter(widget => ids.has(widget.id))
+    state.selectedViewId = 'factory_overview'
+    state.currentView.componentState = { show: [...ids], hide: [], hideNonTargetDevices: false }
+    state.viewportRef = { querySelector: selector => selector === '.designer-canvas-stage'
+        ? { getBoundingClientRect: () => ({ left: 0, top: 0 }) } : null }
+    state.zoom = 1
+    state.selectedIds = []
+    state.resetHistory()
+    return { state, browser, widget: id => state.documentModel.widgets.find(widget => widget.id === id) }
+}
+
+function canvasClick(state, widget, modifiers = {}) {
+    const event = pointerEvent(modifiers)
+    state.beginMove(event, widget)
+    state.endPointerOperation()
+    state.selectCanvasWidget(widget, event)
+}
+
+test('canvas selection uses a dedicated click handler while layer clicks stay independent and the multi-select hint is visible', () => {
+    const canvasArticle = descriptor.template.content.match(/<article\s+[\s\S]*?:data-widget-id="widget.id"[\s\S]*?>/)?.[0]
+    assert.match(canvasArticle, /@pointerdown\.stop="beginMove\(\$event, widget\)"/)
+    assert.match(canvasArticle, /@click\.stop="selectCanvasWidget\(widget, \$event\)"/)
+    assert.match(descriptor.template.content, /@click="selectWidget\(widget, \$event, \{ focusCanvas: true \}\)"/)
+    assert.match(descriptor.template.content, /Ctrl \/ Command 点击多选，再点取消/)
+})
+
+test('real pointerdown to click Ctrl and Meta gestures add or remove once, without no-op history or fallback movement', async t => {
+    const { state, browser, widget } = await canvasSelectionFixture(t)
+    for (const modifier of ['ctrlKey', 'metaKey']) {
+        state.selectedIds = []
+        const before = JSON.stringify(state.documentModel)
+        canvasClick(state, widget('a'))
+        canvasClick(state, widget('b'), { [modifier]: true })
+        assert.deepEqual(state.selectedIds, ['a', 'b'])
+        const event = pointerEvent({ [modifier]: true })
+        state.beginMove(event, widget('b'))
+        state.handlePointerMove(pointerEvent({ clientX: 250, clientY: 220 }))
+        assert.equal(browser.listeners.get('pointermove')?.size || 0, 0, 'cancelled primary must not drag remaining selection')
+        state.endPointerOperation()
+        state.selectCanvasWidget(widget('b'), event)
+        assert.deepEqual(state.selectedIds, ['a'])
+        canvasClick(state, widget('a'), { [modifier]: true })
+        state.handlePointerMove(pointerEvent({ clientX: 250, clientY: 220 }))
+        assert.deepEqual(state.selectedIds, [], 'cancelling the last selected item must not fall back to dragging it')
+        assert.equal(JSON.stringify(state.documentModel), before)
+        assert.equal(state.history.length, 1)
+        assert.equal(state.canUndo, false)
+    }
+})
+
+test('Ctrl group selection adds a partially selected group atomically and removes a fully selected group', async t => {
+    const { state, widget } = await canvasSelectionFixture(t, [
+        { id: 'a', type: 'text' }, { id: 'g1', type: 'text', groupId: 'group' }, { id: 'g2', type: 'text', groupId: 'group' }
+    ])
+    state.selectedIds = ['a', 'g1']
+    canvasClick(state, widget('g2'), { ctrlKey: true })
+    assert.deepEqual(state.selectedIds, ['a', 'g1', 'g2'])
+    canvasClick(state, widget('g1'), { ctrlKey: true })
+    assert.deepEqual(state.selectedIds, ['a'])
+    canvasClick(state, widget('g2'))
+    assert.deepEqual(state.selectedIds, ['g1', 'g2'], 'a plain click on an unselected group replaces selection')
+    assert.equal(state.history.length, 1)
+})
+
+test('Shift adds selection while keyboard clicks and layer clicks are not swallowed by canvas pointer deduplication', async t => {
+    const { state, widget } = await canvasSelectionFixture(t)
+    canvasClick(state, widget('a'))
+    canvasClick(state, widget('b'), { shiftKey: true })
+    canvasClick(state, widget('a'), { shiftKey: true })
+    assert.deepEqual(state.selectedIds, ['a', 'b'])
+    state.beginMove(pointerEvent({ ctrlKey: true }), widget('b'))
+    state.endPointerOperation()
+    assert.deepEqual(state.selectedIds, ['a'])
+    state.selectWidget(widget('b'), { ctrlKey: true }, { focusCanvas: true })
+    assert.deepEqual(state.selectedIds, ['a', 'b'], 'the independent layer click must still toggle')
+    state.selectCanvasWidget(widget('b'), pointerEvent({ ctrlKey: true, detail: 0 }))
+    assert.deepEqual(state.selectedIds, ['a'], 'keyboard click must still toggle even with a previous pointer marker')
+    assert.equal(state.history.length, 1)
+})
+
+test('plain dragging a selected item retains multi-selection and uses the same displacement for each item', async t => {
+    const { state, widget } = await canvasSelectionFixture(t)
+    state.selectedIds = ['a', 'b']
+    state.beginMove(pointerEvent(), widget('a'))
+    state.handlePointerMove(pointerEvent({ clientX: 150, clientY: 130 }))
+    assert.deepEqual(state.selectedIds, ['a', 'b'])
+    assert.deepEqual([widget('a').frame.x, widget('a').frame.y, widget('b').frame.x, widget('b').frame.y], [150, 80, 350, 180])
+    state.endPointerOperation()
+    state.selectCanvasWidget(widget('a'), pointerEvent())
+    assert.deepEqual(state.selectedIds, ['a', 'b'])
+    assert.equal(state.history.length, 2)
+    state.undo()
+    assert.deepEqual([widget('a').frame.x, widget('a').frame.y, widget('b').frame.x, widget('b').frame.y], [100, 50, 300, 150])
+})
+
+test('Ctrl-add dragging moves all selected items once and canvas edges do not distort their relative positions', async t => {
+    const { state, widget } = await canvasSelectionFixture(t)
+    state.selectedIds = ['a']
+    const event = pointerEvent({ ctrlKey: true })
+    state.beginMove(event, widget('b'))
+    state.handlePointerMove(pointerEvent({ clientX: 150, clientY: 130 }))
+    state.endPointerOperation()
+    state.selectCanvasWidget(widget('b'), event)
+    assert.deepEqual(state.selectedIds, ['a', 'b'])
+    assert.deepEqual([widget('a').frame.x, widget('a').frame.y, widget('b').frame.x, widget('b').frame.y], [150, 80, 350, 180])
+    state.beginMove(pointerEvent(), widget('a'))
+    state.handlePointerMove(pointerEvent({ clientX: 1100, clientY: 1100 }))
+    assert.deepEqual([widget('a').frame.x, widget('a').frame.y, widget('b').frame.x, widget('b').frame.y], [500, 340, 700, 440])
+    state.endPointerOperation()
+    state.beginMove(pointerEvent(), widget('b'))
+    state.handlePointerMove(pointerEvent({ clientX: -1000, clientY: -1000 }))
+    assert.deepEqual([widget('a').frame.x, widget('a').frame.y, widget('b').frame.x, widget('b').frame.y], [0, 0, 200, 100])
+    state.endPointerOperation()
+})
+
+test('locked canvas items remain selectable but cannot drag themselves or the other selected items', async t => {
+    const { state, browser, widget } = await canvasSelectionFixture(t)
+    widget('b').locked = true
+    state.resetHistory()
+    state.selectedIds = ['a']
+    const before = JSON.stringify(state.documentModel)
+    const event = pointerEvent({ ctrlKey: true })
+    state.beginMove(event, widget('b'))
+    assert.deepEqual(state.selectedIds, ['a', 'b'])
+    state.handlePointerMove(pointerEvent({ clientX: 150, clientY: 130 }))
+    assert.equal(browser.listeners.get('pointermove')?.size || 0, 0)
+    state.selectCanvasWidget(widget('b'), event)
+    assert.deepEqual(state.selectedIds, ['a', 'b'])
+    assert.equal(JSON.stringify(state.documentModel), before)
+    canvasClick(state, widget('b'), { ctrlKey: true })
+    assert.deepEqual(state.selectedIds, ['a'])
+    state.selectedIds = []
+    canvasClick(state, widget('b'))
+    assert.deepEqual(state.selectedIds, ['b'])
+    state.selectedIds = ['a', 'b']
+    state.beginMove(pointerEvent(), widget('a'))
+    state.handlePointerMove(pointerEvent({ clientX: 150, clientY: 130 }))
+    assert.deepEqual([widget('a').frame.x, widget('b').frame.x], [150, 300], 'dragging an unlocked item excludes the locked item')
+    state.endPointerOperation()
+    assert.equal(state.history.length, 2)
+})
+
+test('resize does not toggle selection on a Ctrl gesture or its generated click and pointer cancellation cleans all listeners', async t => {
+    const { state, browser, widget } = await canvasSelectionFixture(t)
+    state.selectedIds = ['a']
+    const event = pointerEvent({ ctrlKey: true })
+    state.beginResize(event, widget('a'), 'se')
+    state.handlePointerMove(pointerEvent({ clientX: 120, clientY: 115 }))
+    for (const handler of [...(browser.listeners.get('pointercancel') || [])]) handler()
+    state.selectCanvasWidget(widget('a'), event)
+    assert.deepEqual(state.selectedIds, ['a'])
+    assert.deepEqual([widget('a').frame.width, widget('a').frame.height], [120, 75])
+    assert.equal(state.history.length, 2)
+    for (const name of ['pointermove', 'pointerup', 'pointercancel']) assert.equal(browser.listeners.get(name)?.size || 0, 0)
+    state.beginMove(pointerEvent(), widget('a'))
+    state.beginMove(pointerEvent({ ctrlKey: true }), widget('a'))
+    assert.deepEqual(state.selectedIds, [])
+    assert.equal(browser.listeners.get('pointermove')?.size || 0, 0, 'a new cancelled pointer closes any preceding operation')
+    assert.equal(state.history.length, 2, 'repeated no-op pointers must not create history')
+})
+
+test('preview widget interaction and non-left pointers do not edit selection or geometry', async t => {
+    const { state, browser, widget } = await canvasSelectionFixture(t)
+    state.selectedIds = ['a']
+    const before = JSON.stringify(state.documentModel)
+    state.previewMode = true
+    canvasClick(state, widget('b'), { ctrlKey: true })
+    state.beginResize(pointerEvent(), widget('a'), 'se')
+    state.handlePointerMove(pointerEvent({ clientX: 150, clientY: 130 }))
+    assert.deepEqual(state.selectedIds, ['a'])
+    state.previewMode = false
+    state.beginMove(pointerEvent({ button: 2, ctrlKey: true }), widget('b'))
+    state.beginResize(pointerEvent({ button: 2 }), widget('a'), 'se')
+    assert.deepEqual(state.selectedIds, ['a'])
+    assert.equal(JSON.stringify(state.documentModel), before)
+    assert.equal(state.history.length, 1)
+    assert.equal(browser.listeners.get('pointermove')?.size || 0, 0)
+})
+
+test('marquee keeps additive selection, selects full groups and clears on plain empty-canvas clicks without document history', async t => {
+    const { state, widget } = await canvasSelectionFixture(t, [
+        { id: 'a', type: 'text', groupId: 'group', frame: { x: 100, y: 50, width: 100, height: 60 } },
+        { id: 'outside-group', type: 'text', groupId: 'group', frame: { x: 400, y: 50, width: 100, height: 60 } },
+        { id: 'b', type: 'text', locked: true, frame: { x: 600, y: 200, width: 100, height: 60 } }
+    ])
+    assert.ok(state.currentViewWidgets.some(item => item.id === widget('a').id))
+    state.selectedIds = ['b']
+    state.beginMarqueeSelection(pointerEvent({ clientX: 0, clientY: 0, shiftKey: true }))
+    state.handlePointerMove(pointerEvent({ clientX: 210, clientY: 120 }))
+    assert.deepEqual(state.selectedIds, ['b', 'a', 'outside-group'])
+    state.endPointerOperation()
+    state.beginMarqueeSelection(pointerEvent({ clientX: 0, clientY: 0, ctrlKey: true }))
+    state.endPointerOperation()
+    assert.deepEqual(state.selectedIds, ['b', 'a', 'outside-group'], 'additive empty click preserves selection')
+    state.beginMarqueeSelection(pointerEvent({ clientX: 0, clientY: 0 }))
+    state.endPointerOperation()
+    assert.deepEqual(state.selectedIds, [])
+    assert.equal(state.history.length, 1)
+})
 
 test('layer controls contain only top/bottom and place a widget beyond the actual stack bounds', async t => {
     const controls = descriptor.template.content.match(/class="layer-actions"[^>]*>(.*?)<\/div>/s)?.[1]
@@ -138,6 +354,102 @@ test('revision conflicts preserve the local draft and never publish', async t =>
     assert.equal(state.status.tone, 'danger')
     assert.equal(state.publishNotice.tone, 'error')
     assert.match(state.publishNotice.text, /保存失败.*修订冲突/)
+})
+
+test('incomplete draft bindings save without data loss and explain why publishing is deferred', async t => {
+    const { instance } = fixture(t, [])
+    await settle()
+    const state = instance.value.$.setupState
+    state.documentModel.widgets = normalizeDashboardDocument({ widgets: [
+        { id: 'pending_filter', type: 'filter', title: '产线筛选', content: { parameterKey: '' } },
+        { id: 'pending_business', type: 'business_summary', title: '业务统计', data: { mode: 'business', connectionId: '' } }
+    ] }).widgets
+    state.documentModel.tooltipTemplates.templates[0].widgets[1].content.text = '我编辑的悬停提示'
+    const beforeBindings = state.documentModel.widgets.filter(widget => widget.id.startsWith('pending_')).map(widget => ({ id: widget.id, title: widget.title, data: { ...widget.data }, content: { ...widget.content } }))
+    t.mock.method(adminApi, 'saveDashboardDraft', async (_id, document) => ({ revision: 2, document, warnings: [
+        '第 1 个组件“产线筛选”（pending_filter）请选择已定义的大屏参数',
+        '第 2 个组件 的业务只读组件必须选择外部数据库连接'
+    ] }))
+    const publish = t.mock.method(adminApi, 'publishDashboard', async () => { throw new Error('must not publish an incomplete saved draft') })
+    await state.publishVersion()
+    assert.deepEqual(state.documentModel.widgets.filter(widget => widget.id.startsWith('pending_')).map(widget => ({ id: widget.id, title: widget.title, data: { ...widget.data }, content: { ...widget.content } })), beforeBindings)
+    assert.equal(state.documentModel.tooltipTemplates.templates[0].widgets[1].content.text, '我编辑的悬停提示')
+    assert.equal(state.revision, 2)
+    assert.equal(state.isDirty, false)
+    assert.equal(state.status.tone, 'warning')
+    assert.equal(state.publishNotice.tone, 'warning')
+    assert.match(state.publishNotice.text, /草稿已保存，尚未发布/)
+    assert.equal(publish.mock.callCount(), 0)
+    assert.deepEqual(state.validationIssues.map(issue => issue.widgetId), ['pending_filter', 'pending_business'])
+    assert.match(state.validationIssues[0].label, /产线筛选.*pending_filter/)
+})
+
+test('configuration issue location selects exactly the failing main widget without editing its content', async t => {
+    const { instance } = fixture(t, [])
+    await settle()
+    const state = instance.value.$.setupState
+    state.documentModel.widgets = normalizeDashboardDocument({ widgets: [
+        { id: 'filter_a', type: 'filter', title: '设备筛选', groupId: 'same_group', visibility: { viewIds: ['workshop_overview'] } },
+        { id: 'business_b', type: 'business_summary', title: '报表', groupId: 'same_group', data: { mode: 'business', connectionId: '' }, visibility: { viewIds: ['workshop_overview'] } }
+    ] }).widgets
+    state.setValidationIssues(['第 2 个组件 的业务只读组件必须选择外部数据库连接'], 'draft')
+    const before = JSON.stringify(state.documentModel)
+    state.designerMode = 'tooltips'
+    state.panelLayout.leftCollapsed = true
+    state.panelLayout.rightCollapsed = true
+    state.layersCollapsed = true
+    await state.locateValidationIssue(state.validationIssues[0])
+    assert.equal(state.designerMode, 'layout')
+    assert.equal(state.selectedViewId, 'workshop_overview')
+    assert.deepEqual(state.selectedIds, ['business_b'])
+    assert.equal(state.inspectorTab, 'data')
+    assert.equal(state.layerVisibilityFilter, 'all')
+    assert.equal(state.layersCollapsed, false)
+    assert.equal(state.panelLayout.leftCollapsed, false)
+    assert.equal(state.panelLayout.rightCollapsed, false)
+    assert.equal(JSON.stringify(state.documentModel), before)
+})
+
+test('validation diagnostics prefer stable component IDs and never mistake nested tooltip indices for main widgets', async t => {
+    const { instance } = fixture(t, [])
+    await settle()
+    const state = instance.value.$.setupState
+    state.documentModel.widgets = normalizeDashboardDocument({ widgets: [
+        { id: 'main_a', type: 'filter', title: '主筛选 A' },
+        { id: 'main_b', type: 'filter', title: '主筛选 B' }
+    ] }).widgets
+    const template = state.documentModel.tooltipTemplates.templates[0]
+    state.setValidationIssues([
+        '第 1 个组件“主筛选 B”（main_b）请选择已定义的大屏参数',
+        `悬停模板“${template.name}”：第 1 个组件 尺寸不合法`
+    ])
+    assert.equal(state.validationIssues[0].widgetId, 'main_b')
+    assert.equal(state.validationIssues[1].templateId, template.id)
+    assert.equal(state.validationIssues[1].widgetId, template.widgets[0].id)
+    state.selectedIds = ['main_a']
+    await state.locateValidationIssue(state.validationIssues[1])
+    assert.deepEqual(state.selectedIds, ['main_a'])
+    const markup = descriptor.template.content
+    assert.match(markup, /aria-label="组件配置问题"/)
+    assert.match(markup, /@click="locateValidationIssue\(issue\)"/)
+})
+
+test('structured save errors retain local edits and a later successful save clears issue warnings', async t => {
+    const { instance } = fixture(t, [])
+    await settle()
+    const state = instance.value.$.setupState
+    state.documentModel.name = '必须保留的提示模板修改'
+    const warning = '第 1 个组件“导航状态”（widget_navigation）请选择已定义的大屏参数'
+    t.mock.method(adminApi, 'saveDashboardDraft', async () => ({ error: warning, errors: [warning] }))
+    assert.equal(await state.saveDraft(), false)
+    assert.equal(state.documentModel.name, '必须保留的提示模板修改')
+    assert.equal(state.isDirty, true)
+    assert.equal(state.validationIssues.length, 1)
+    t.mock.method(adminApi, 'saveDashboardDraft', async (_id, document) => ({ revision: 2, document, warnings: [] }))
+    assert.equal(await state.saveDraft(), true)
+    assert.equal(state.validationIssues.length, 0)
+    assert.equal(state.status.tone, 'success')
+    assert.equal(state.isDirty, false)
 })
 
 test('template import stays in the target scene and can be undone without publishing', async t => {
@@ -448,4 +760,106 @@ test('global map HTTP preview reads without any device catalog and passes the se
  let context
  await state.previewExternalBinding(widget,async c=>{context=c;return {result:{value:42,quality:'good'}}})
  assert.equal(context.deviceId,'');assert.equal(context.regionCode,'120000');assert.equal(context.regionLevel,'province');assert.equal(state.databasePreviewValues.global_map.value,42)
+})
+
+test('fullscreen preview holds a hovered device while its readings and neighboring devices keep refreshing', async t => {
+  t.mock.method(globalThis, 'setInterval', () => 0)
+  const calls = []
+  t.mock.method(adminApi, 'previewDataSet', async payload => {
+    calls.push(payload.context.deviceId)
+    return { result: { value: calls.length, rows: [], quality: 'good' } }
+  })
+  const data = { mode: 'dataset', datasetId: 'owned', datasetField: 'temperature', deviceScope: 'rotation', rotationDeviceIds: ['a', 'b'], rotationIntervalMs: 2000, refreshMs: 1000 }
+  const { state, widget } = await canvasSelectionFixture(t, [
+    { id: 'held', type: 'trend', data }, { id: 'peer', type: 'value', data }
+  ])
+  state.devices = [{ id: 'a', name: '设备 A' }, { id: 'b', name: '设备 B' }]
+  state.playbackNow = 1000
+  await state.enterPreviewMode()
+  assert.equal(state.databasePreviewValues.held.deviceId, 'a')
+  state.playbackController.setHovered(widget('held'), true, 1000)
+  state.playbackNow = 3000
+  await nextTick(); await settle()
+  assert.equal(state.previewDevice(widget('held')).id, 'a')
+  assert.equal(state.databasePreviewValues.held.deviceId, 'a')
+  assert.equal(state.databasePreviewValues.peer.deviceId, 'b')
+  const heldValue = state.databasePreviewValues.held.value
+  state.playbackNow = 5000
+  await nextTick(); await settle()
+  assert.equal(state.databasePreviewValues.held.deviceId, 'a')
+  assert.ok(state.databasePreviewValues.held.value > heldValue)
+  assert.equal(state.databasePreviewValues.held.deviceName, '设备 A')
+  state.playbackController.setHovered(widget('held'), false, 5000)
+  assert.equal(state.previewDevice(widget('held')).id, 'a')
+  state.playbackNow = 5999
+  assert.equal(state.previewDevice(widget('held')).id, 'a')
+  state.playbackNow = 6000
+  assert.equal(state.previewDevice(widget('held')).id, 'b')
+})
+
+test('leaving fullscreen or changing preview scope clears the previous hover pause', async t => {
+  t.mock.method(globalThis, 'setInterval', () => 0)
+  const { state, widget } = await canvasSelectionFixture(t, [{ id: 'held', type: 'trend', data: { mode: 'plc', deviceScope: 'rotation', rotationDeviceIds: ['a', 'b'], rotationIntervalMs: 2000 } }])
+  state.devices = [{ id: 'a' }, { id: 'b' }]
+  state.previewMode = true
+  state.playbackNow = 1000
+  state.playbackController.setHovered(widget('held'), true, 1000)
+  state.playbackNow = 3000
+  assert.equal(state.previewDevice(widget('held')).id, 'a')
+  state.previewMode = false
+  state.previewMode = true
+  assert.equal(state.previewDevice(widget('held')).id, 'b')
+  state.playbackController.setHovered(widget('held'), true, 3000)
+  state.playbackNow = 4000
+  assert.equal(state.previewDevice(widget('held')).id, 'b')
+  state.previewContext.viewId = 'workshop_overview'
+  assert.equal(state.previewDevice(widget('held')).id, 'a')
+  state.playbackController.setHovered(widget('held'), true, 4000)
+  state.deactivateDesigner()
+  assert.equal(state.playbackController.timeFor(widget('held'), 120000), 120000)
+})
+
+test('ordinary catalog binding cleans source-specific fields, keeps a fixed actual device and is one undoable operation', async t => {
+    const authenticated = adminSession.authenticated, permissions = adminSession.pagePermissions
+    t.after(() => { adminSession.authenticated = authenticated; adminSession.pagePermissions = permissions })
+    adminSession.authenticated = true
+    adminSession.pagePermissions = { 'platform.designer': { view: true, edit: true } }
+    const { state, widget } = await canvasSelectionFixture(t, [{ id: 'a', type: 'text', content: { text: '原有固定标题' }, data: { mode: 'static', connectionId: 'old-http', jsonPath: 'old.path' } }])
+    const originalMode = widget('a').data.mode
+    state.selectedIds = ['a']
+    state.chooseCatalogData({ id: 'real-temperature', label: '炉温', unit: '℃', type: 'number', objectScope: 'device', sourceType: 'plc',
+        binding: { mode: 'plc', deviceScope: 'fixed', deviceId: 'actual-device', pointId: 'real-point', pointKey: 'analog.temp', path: 'analog.temp', requireConfiguredPoint: true } })
+    assert.equal(widget('a').data.mode, 'plc')
+    assert.equal(widget('a').data.deviceId, 'actual-device')
+    assert.equal(widget('a').data.pointId, 'real-point')
+    assert.equal(widget('a').data.unit, '℃')
+    assert.equal(widget('a').data.connectionId, undefined)
+    assert.equal(widget('a').data.jsonPath, undefined)
+    assert.equal(widget('a').content.text, '{value}{unit}')
+    assert.equal(state.history.length, 2)
+    state.undo()
+    assert.equal(widget('a').data.mode, originalMode, 'undo restores the original normalized binding, including legacy migration')
+    assert.equal(widget('a').content.text, '原有固定标题')
+    state.redo()
+    assert.equal(widget('a').data.pointKey, 'analog.temp')
+})
+
+test('catalog choices obey edit permissions and do not allow metadata to replace a numerical trend', async t => {
+    const authenticated = adminSession.authenticated, permissions = adminSession.pagePermissions
+    t.after(() => { adminSession.authenticated = authenticated; adminSession.pagePermissions = permissions })
+    adminSession.authenticated = true
+    adminSession.pagePermissions = { 'platform.designer': { view: true, edit: false } }
+    const { state, widget } = await canvasSelectionFixture(t, [{ id: 'a', type: 'trend' }])
+    state.selectedIds = ['a']
+    const before = JSON.stringify(widget('a'))
+    const point = { type: 'number', binding: { mode: 'plc', pointKey: 'analog.temp', deviceScope: 'fixed', deviceId: 'actual', pointId: 'p' } }
+    state.chooseCatalogData(point)
+    assert.equal(JSON.stringify(widget('a')), before)
+    adminSession.pagePermissions['platform.designer'].edit = true
+    state.chooseCatalogData({ type: 'string', binding: { mode: 'runtime', path: 'deviceInfo.name' } })
+    assert.equal(JSON.stringify(widget('a')), before)
+    assert.equal(state.history.length, 1)
+    state.chooseCatalogData(point)
+    assert.equal(widget('a').data.mode, 'plc')
+    assert.equal(state.history.length, 2)
 })

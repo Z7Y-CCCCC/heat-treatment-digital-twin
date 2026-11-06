@@ -14,6 +14,11 @@ namespace HeatTreatment.DigitalTwin.Backend
             var factoryId = payload.Value<string>("factoryId");
             if (!string.IsNullOrWhiteSpace(factoryId) && !string.IsNullOrWhiteSpace(currentFactoryId)
                 && !string.Equals(factoryId, currentFactoryId, StringComparison.Ordinal)) return "ignore";
+            // Model definitions and resolved action inputs do not alter the hall,
+            // hierarchy or view. Both specific and generic notifications share a
+            // single authoritative, diff-based refresh in FactoryRuntime.
+            var resource = payload.Value<string>("resource");
+            if (resource == "models" || resource == "device-animations") return "models";
             if (payload.Value<bool?>("reloadRequired") == true) return "reload";
             if (!(payload["settings"] is JObject settings)) return "reload";
             // Environment dimensions/floors depend on the complete hierarchy.

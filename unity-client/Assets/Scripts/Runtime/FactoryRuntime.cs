@@ -31,12 +31,24 @@ namespace HeatTreatment.DigitalTwin.Runtime
             public string WorkshopId;
             public string LineId;
         }
+        private sealed class ModelReplacement
+        {
+            public DeviceDto Device;
+            public Transform Previous;
+            public RuntimeModelInstance Instance;
+            public int PreviewVersion;
+            public ModelBindingDriver Driver;
+            public DeviceStatusVisual Visual;
+            public MobileDeviceMotion Motion;
+        }
 
         private static FactoryRuntime _instance;
         private readonly Dictionary<string, ModelBindingDriver> _drivers = new Dictionary<string, ModelBindingDriver>();
         private readonly Dictionary<string, DeviceStatusVisual> _visuals = new Dictionary<string, DeviceStatusVisual>();
         private readonly Dictionary<string, MobileDeviceMotion> _motions = new Dictionary<string, MobileDeviceMotion>();
         private readonly Dictionary<string, JObject> _latestDeviceFrames = new Dictionary<string, JObject>();
+        private readonly MotionInputFrameCache _latestMotionInputs = new MotionInputFrameCache();
+        private readonly Dictionary<string, JObject> _endpointDisplayStates = new Dictionary<string, JObject>();
         private readonly Dictionary<string, Transform> _deviceRoots = new Dictionary<string, Transform>();
         private readonly Dictionary<string, Renderer[]> _projectionRenderers = new Dictionary<string, Renderer[]>();
         private readonly Dictionary<string, Transform> _workshopRoots = new Dictionary<string, Transform>();
@@ -61,6 +73,9 @@ namespace HeatTreatment.DigitalTwin.Runtime
         private CancellationTokenSource _lifetime;
         private CancellationTokenSource _reload;
         private int _configurationReloadVersion;
+        private CancellationTokenSource _modelRefresh;
+        private int _modelRefreshVersion;
+        private bool _pendingModelRefresh;
         private JObject _pendingFactoryNavigation;
         private Thread _nativeAuthPipeThread;
         private CancellationToken _nativeAuthPipeToken;
@@ -483,6 +498,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
         private void BeginReload()
         {
             ++_configurationReloadVersion;
+            CancelModelRefresh();
             if (!_authenticated)
             {
                 _diagnostics?.RequireAuthentication();
@@ -502,6 +518,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
         private async void QueueConfigurationReload()
         {
             var version = ++_configurationReloadVersion;
+            CancelModelRefresh();
             try
             {
                 // Bulk layout saves generate several committed writes. Read the
@@ -511,6 +528,173 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 BeginReload();
             }
             catch (OperationCanceledException) { }
+        }
+
+        private void CancelModelRefresh()
+        {
+            ++_modelRefreshVersion;
+            _modelRefresh?.Cancel();
+            _modelRefresh?.Dispose();
+            _modelRefresh = null;
+        }
+
+        private async void QueueModelRefresh()
+        {
+            if (!_authenticated) return;
+            if (!_sceneReady || _config == null || _factoryRoot == null) { _pendingModelRefresh = true; return; }
+            CancelModelRefresh();
+            var version = _modelRefreshVersion;
+            _modelRefresh = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
+            var token = _modelRefresh.Token;
+            try
+            {
+                // The bindings route emits model_metadata_changed followed by a
+                // generic models event. Treat both, and bulk action saves, as one
+                // final authoritative read, not two whole-factory rebuilds.
+                await Task.Delay(180, token);
+                if (version != _modelRefreshVersion) return;
+                await RefreshModelDefinitionsAsync(version, token);
+            }
+            catch (OperationCanceledException) { }
+            catch (BackendRequestException exception) when (exception.StatusCode == 401 || exception.StatusCode == 403)
+            {
+                ClearNativeSession("登录状态或大屏权限已失效，请重新登录。");
+            }
+            catch (Exception exception)
+            {
+                _diagnostics.Activity = "Action synchronization failed; existing scene preserved";
+                Debug.LogWarning($"[FactoryRuntime] Model/action refresh failed; previous models retained: {exception.Message}");
+            }
+        }
+
+        private async Task RefreshModelDefinitionsAsync(int version, CancellationToken token)
+        {
+            var previousConfig = _config; var factoryRoot = _factoryRoot; var authGeneration = _authGeneration;
+            var evidenceBefore = CaptureModelRefreshEvidence();
+            var latest = await _api.GetFactoryConfigAsync(token);
+            token.ThrowIfCancellationRequested();
+            if (version != _modelRefreshVersion || _config != previousConfig || _factoryRoot != factoryRoot || authGeneration != _authGeneration) return;
+            var merged = ModelHotRefreshPolicy.Merge(previousConfig, latest, out var affected);
+            if (merged == null) { QueueConfigurationReload(); return; }
+            var candidates = new List<ModelReplacement>(); var committed = false;
+            _modelLibrary.Configure(_settings.backendHttpUrl, merged.Models, _settings.modelLoadTimeoutSeconds);
+            try
+            {
+                foreach (var device in ModelHotRefreshPolicy.Devices(merged).Where(device => affected.Contains(device.Id)))
+                {
+                    if (!_deviceRoots.TryGetValue(device.Id, out var previousRoot) || previousRoot == null) continue;
+                    var previewVersion = _previewModelVersions.TryGetValue(device.Id, out var savedPreviewVersion) ? savedPreviewVersion : 0;
+                    var instance = await _modelLibrary.InstantiateAsync(device, previousRoot.parent, token);
+                    instance.Root.SetActive(false);
+                    candidates.Add(new ModelReplacement { Device = device, Previous = previousRoot, Instance = instance, PreviewVersion = previewVersion });
+                    token.ThrowIfCancellationRequested();
+                    if (instance.IsFallback) throw new InvalidOperationException(instance.LoadError ?? "Model replacement used fallback geometry");
+                    if (version != _modelRefreshVersion || _config != previousConfig || _factoryRoot != factoryRoot || authGeneration != _authGeneration) return;
+                    if (!_deviceRoots.TryGetValue(device.Id, out var actualRoot) || actualRoot != previousRoot) return;
+                }
+                token.ThrowIfCancellationRequested();
+                if (version != _modelRefreshVersion || _config != previousConfig || _factoryRoot != factoryRoot || authGeneration != _authGeneration) return;
+                // A previously prepared candidate can be superseded while a
+                // later model is loading, including by an in-flight preview.
+                foreach (var candidate in candidates)
+                    if (!_deviceRoots.TryGetValue(candidate.Device.Id, out var actualRoot) || actualRoot != candidate.Previous
+                        || (_previewModelVersions.TryGetValue(candidate.Device.Id, out var previewVersion) ? previewVersion : 0) != candidate.PreviewVersion) return;
+                // Capture at commit time: the old drivers kept receiving data
+                // and rendering while the replacement was being prepared.
+                foreach (var candidate in candidates) RememberEndpointDisplayStates(candidate.Device.Id, candidate.Previous);
+                foreach (var candidate in candidates)
+                {
+                    var device = candidate.Device; var instance = candidate.Instance; var root = instance.Root;
+                    var previousRoot = candidate.Previous;
+                    root.transform.localPosition = previousRoot.localPosition;
+                    root.transform.localRotation = previousRoot.localRotation;
+                    var oldAsset = previousConfig.Models.FirstOrDefault(model => model.Id == device.ModelType);
+                    var newAsset = merged.Models.FirstOrDefault(model => model.Id == device.ModelType);
+                    root.transform.localScale = previousRoot.localScale * ModelHotRefreshPolicy.ScaleRatio(oldAsset, newAsset);
+                    var driver = root.GetComponent<ModelBindingDriver>();
+                    RestoreEndpointDisplayStates(device, driver, merged);
+                    var visual = root.AddComponent<DeviceStatusVisual>(); visual.Initialize(device, instance.Asset);
+                    var motion = root.AddComponent<MobileDeviceMotion>(); motion.Initialize(device);
+                    candidate.Driver = driver; candidate.Visual = visual; candidate.Motion = motion;
+                    if (_latestDeviceFrames.TryGetValue(device.Id, out var frame))
+                    {
+                        driver.ApplyRealtime(frame); driver.GetComponent<DeviceAnimationDriver>()?.ApplyRealtime(frame);
+                        visual.ApplyRealtime(frame); motion.ApplyRealtime(frame);
+                    }
+                    if (_latestMotionInputs.TryGet(device.Id, out var catalogFrame))
+                    {
+                        driver.ApplyMotionInputs(catalogFrame); driver.GetComponent<DeviceAnimationDriver>()?.ApplyMotionInputs(catalogFrame);
+                    }
+                }
+                // All potentially failing loading/driver initialization finished
+                // while old roots were still visible. Publish as one transaction.
+                _config = merged;
+                foreach (var candidate in candidates)
+                {
+                    var device = candidate.Device; var root = candidate.Instance.Root;
+                    _drivers[device.Id] = candidate.Driver; _visuals[device.Id] = candidate.Visual; _motions[device.Id] = candidate.Motion;
+                    _deviceRoots[device.Id] = root.transform;
+                    _projectionRenderers[device.Id] = root.GetComponentsInChildren<Renderer>(true);
+                    _previewModelVersions[device.Id] = candidate.PreviewVersion + 1;
+                    _dashboard.ApplyPreviewDevice(device, root, candidate.Instance.Inspection);
+                    if (_latestDeviceFrames.TryGetValue(device.Id, out var frame)) _dashboard.ApplyRealtime(device.Id, frame);
+                    root.SetActive(candidate.Previous.gameObject.activeSelf);
+                }
+                committed = true;
+                foreach (var candidate in candidates) { candidate.Previous.gameObject.SetActive(false); Destroy(candidate.Previous.gameObject); }
+                if (candidates.Count > 0) _dashboard.UpdatePreviewFactoryBounds(CalculateFactoryOverviewBounds());
+                _diagnostics.TemplateCount = _modelLibrary.LoadedTemplateCount;
+                _diagnostics.Activity = $"Model/action definitions refreshed: devices={candidates.Count}; hall and camera preserved";
+                Debug.Log($"[FactoryRuntime] {_diagnostics.Activity}");
+                if (evidenceBefore != null) Debug.Log("[ModelRefresh] " + new JObject {
+                    ["timestamp"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), ["affected"] = new JArray(candidates.Select(candidate => candidate.Device.Id)),
+                    ["before"] = evidenceBefore, ["after"] = CaptureModelRefreshEvidence()
+                }.ToString(Formatting.None));
+            }
+            finally
+            {
+                if (!committed)
+                {
+                    if (_config == merged)
+                    {
+                        _config = previousConfig;
+                        foreach (var candidate in candidates)
+                        {
+                            var id = candidate.Device.Id; var oldRoot = candidate.Previous;
+                            if (oldRoot == null) continue;
+                            _drivers[id] = oldRoot.GetComponent<ModelBindingDriver>(); _visuals[id] = oldRoot.GetComponent<DeviceStatusVisual>(); _motions[id] = oldRoot.GetComponent<MobileDeviceMotion>();
+                            _deviceRoots[id] = oldRoot; _projectionRenderers[id] = oldRoot.GetComponentsInChildren<Renderer>(true); _previewModelVersions[id] = candidate.PreviewVersion;
+                            var oldDevice = ModelHotRefreshPolicy.Devices(previousConfig).FirstOrDefault(device => device.Id == id);
+                            if (oldDevice != null)
+                            {
+                                try { _dashboard.ApplyPreviewDevice(oldDevice, oldRoot.gameObject, InspectionConfigResolver.Resolve(previousConfig.Models.FirstOrDefault(model => model.Id == oldDevice.ModelType), oldDevice)); }
+                                catch (Exception exception) { Debug.LogWarning($"[FactoryRuntime] Preview registration rollback: {exception.Message}"); }
+                            }
+                        }
+                    }
+                    foreach (var candidate in candidates) if (candidate.Instance.Root != null) Destroy(candidate.Instance.Root);
+                    // A superseding full reload owns the library now. Roll back
+                    // only if this still is the scene for which we prepared.
+                    if (version == _modelRefreshVersion && _config == previousConfig && _factoryRoot == factoryRoot)
+                        _modelLibrary.Configure(_settings.backendHttpUrl, previousConfig.Models, _settings.modelLoadTimeoutSeconds);
+                }
+            }
+        }
+
+        private JObject CaptureModelRefreshEvidence()
+        {
+            if (Environment.GetEnvironmentVariable("DEVICE_ANIMATION_DIAGNOSTICS") != "1") return null;
+            var devices = new JObject(); foreach (var item in _deviceRoots) devices[item.Key] = item.Value != null ? item.Value.GetInstanceID() : 0;
+            var environmentRoots = new JObject();
+            foreach (Transform child in transform)
+                if (child != _factoryRoot && child.name != "__RuntimeModelTemplates") environmentRoots[child.name] = child.GetInstanceID();
+            return new JObject {
+                ["factoryId"] = _config?.FactoryId, ["factoryRoot"] = _factoryRoot != null ? _factoryRoot.GetInstanceID() : 0,
+                ["environmentRoots"] = environmentRoots, ["deviceRoots"] = devices, ["sceneReady"] = _sceneReady,
+                ["cameraPosition"] = ProjectionVector(_camera.transform.position),
+                ["cameraRotation"] = new JArray(_camera.transform.rotation.x, _camera.transform.rotation.y, _camera.transform.rotation.z, _camera.transform.rotation.w),
+                ["viewId"] = _dashboard?.ActiveViewId, ["loadingId"] = _sceneLoadId
+            };
         }
 
         private async Task LoadConfigurationLoopAsync(CancellationToken cancellationToken)
@@ -593,6 +777,12 @@ namespace HeatTreatment.DigitalTwin.Runtime
             cancellationToken.ThrowIfCancellationRequested();
             _diagnostics.UpdateLoading(0.18f, "正在构建设备层级");
             SetInspectionSceneIsolation(false);
+            if (!string.Equals(_config?.FactoryId, config.FactoryId, StringComparison.Ordinal))
+            {
+                _latestDeviceFrames.Clear();
+                _latestMotionInputs.Clear();
+                _endpointDisplayStates.Clear();
+            }
             DestroyCurrentFactory();
             _config = config;
             ApplyLoadingTheme(config.Settings);
@@ -647,12 +837,19 @@ namespace HeatTreatment.DigitalTwin.Runtime
                     _deviceModelTypes[device.Id] = device.ModelType ?? string.Empty;
                     _deviceLineIds[device.Id] = placement.LineId ?? device.LineId ?? string.Empty;
                     _deviceWorkshopIds[device.Id] = placement.WorkshopId ?? string.Empty;
+                    RestoreEndpointDisplayStates(device, driver);
                     if (_latestDeviceFrames.TryGetValue(device.Id, out var latest))
                     {
                         driver.ApplyRealtime(latest);
+                        driver.GetComponent<DeviceAnimationDriver>()?.ApplyRealtime(latest);
                         visual.ApplyRealtime(latest);
                         motion.ApplyRealtime(latest);
                         _dashboard.ApplyRealtime(device.Id, latest);
+                    }
+                    if (_latestMotionInputs.TryGet(device.Id, out var catalogFrame))
+                    {
+                        driver.ApplyMotionInputs(catalogFrame);
+                        driver.GetComponent<DeviceAnimationDriver>()?.ApplyMotionInputs(catalogFrame);
                     }
                 }
                 _diagnostics.ReadyDeviceCount += 1;
@@ -684,6 +881,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 $"[FactoryRuntime] {_diagnostics.Activity}: devices={_diagnostics.ReadyDeviceCount}, "
                 + $"fallback={_diagnostics.FallbackDeviceCount}, templates={_diagnostics.TemplateCount}"
             );
+            if (_pendingModelRefresh) { _pendingModelRefresh = false; QueueModelRefresh(); }
             var navigation = _pendingFactoryNavigation;
             _pendingFactoryNavigation = null;
             if (navigation != null && ConfigurationSyncPolicy.MatchesFactory(navigation, _config?.FactoryId))
@@ -770,21 +968,39 @@ namespace HeatTreatment.DigitalTwin.Runtime
             if (type == "realtime_frame")
             {
                 var payload = message["payload"] as JObject;
+                var requestedFactory = payload?.Value<string>("factoryId") ?? payload?.Value<string>("factory_id");
+                if (!string.IsNullOrWhiteSpace(requestedFactory) && !string.Equals(requestedFactory, _config?.FactoryId, StringComparison.Ordinal)) return;
                 var devices = payload?["devices"] as JArray;
                 if (devices == null) return;
+                var telemetryCount = 0;
                 foreach (var token in devices)
                 {
                     if (!(token is JObject deviceData)) continue;
+                    var deviceFactory = deviceData.Value<string>("factoryId") ?? deviceData.Value<string>("factory_id");
+                    if (!string.IsNullOrWhiteSpace(deviceFactory) && !string.Equals(deviceFactory, _config?.FactoryId, StringComparison.Ordinal)) continue;
                     var id = deviceData.Value<string>("furnace_id");
                     if (string.IsNullOrWhiteSpace(id)) continue;
+                    _latestMotionInputs.Remember(id, deviceData);
+                    if (deviceData.Value<bool?>("motionInputOnly") == true)
+                    {
+                        // Partial catalog refreshes are not PLC telemetry. Do not update
+                        // dashboards, connection visuals, mobile travel or PLC receipt age.
+                        if (_drivers.TryGetValue(id, out var catalogDriver))
+                        {
+                            catalogDriver.ApplyMotionInputs(deviceData);
+                            catalogDriver.GetComponent<DeviceAnimationDriver>()?.ApplyMotionInputs(deviceData);
+                        }
+                        continue;
+                    }
                     _latestDeviceFrames[id] = deviceData;
+                    telemetryCount++;
                     if (_drivers.TryGetValue(id, out var driver)) driver.ApplyRealtime(deviceData);
                     if (driver != null) driver.GetComponent<DeviceAnimationDriver>()?.ApplyRealtime(deviceData);
                     if (_visuals.TryGetValue(id, out var visual)) visual.ApplyRealtime(deviceData);
                     if (_motions.TryGetValue(id, out var motion)) motion.ApplyRealtime(deviceData);
                     _dashboard.ApplyRealtime(id, deviceData);
                 }
-                _diagnostics.RecordRealtimeFrame(payload.Value<long?>("timestamp") ?? 0L, devices.Count);
+                if (telemetryCount > 0) _diagnostics.RecordRealtimeFrame(payload.Value<long?>("timestamp") ?? 0L, telemetryCount);
             }
             else if (type == "plc_status")
             {
@@ -799,6 +1015,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 var payload = message["payload"] as JObject;
                 var action = ConfigurationSyncPolicy.ChangeAction(payload, _config?.FactoryId);
                 if (action == "reload") QueueConfigurationReload();
+                else if (action == "models") QueueModelRefresh();
                 else if (action == "settings") ApplyLiveSettings(payload);
             }
             else if (type == "device_configuration_changed")
@@ -808,11 +1025,10 @@ namespace HeatTreatment.DigitalTwin.Runtime
             else if (type == "model_metadata_changed")
             {
                 var modelId = message["payload"]?.Value<string>("modelId") ?? string.Empty;
-                _diagnostics.Activity = string.IsNullOrWhiteSpace(modelId)
-                    ? "Model metadata changed; reloading"
-                    : $"Model metadata changed ({modelId}); reloading";
-                Debug.Log($"[FactoryRuntime] {_diagnostics.Activity}");
-                BeginReload();
+                if (!string.IsNullOrWhiteSpace(modelId) && _config != null
+                    && !(_config.Models ?? new List<ModelAssetDto>()).Any(model => model.Id == modelId)
+                    && !EnumerateConfigDevices(_config).Any(device => device.ModelType == modelId)) return;
+                QueueModelRefresh();
             }
             else if (type == "native_scene_preview")
             {
@@ -1015,6 +1231,8 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 var root = instance.Root;
                 root.SetActive(wasActive);
                 var driver = root.GetComponent<ModelBindingDriver>();
+                RememberEndpointDisplayStates(device.Id, previousRoot);
+                RestoreEndpointDisplayStates(device, driver);
                 var visual = root.AddComponent<DeviceStatusVisual>();
                 visual.Initialize(device, instance.Asset);
                 var motion = root.AddComponent<MobileDeviceMotion>();
@@ -1033,6 +1251,11 @@ namespace HeatTreatment.DigitalTwin.Runtime
                     visual.ApplyRealtime(latest);
                     motion.ApplyRealtime(latest);
                     _dashboard.ApplyRealtime(device.Id, latest);
+                }
+                if (_latestMotionInputs.TryGet(device.Id, out var catalogFrame))
+                {
+                    driver?.ApplyMotionInputs(catalogFrame);
+                    driver?.GetComponent<DeviceAnimationDriver>()?.ApplyMotionInputs(catalogFrame);
                 }
                 if (instance.IsFallback)
                 {
@@ -1702,6 +1925,8 @@ namespace HeatTreatment.DigitalTwin.Runtime
 
         private void DestroyCurrentFactory()
         {
+            CancelModelRefresh();
+            foreach (var entry in _deviceRoots) RememberEndpointDisplayStates(entry.Key, entry.Value);
             _drivers.Clear();
             _visuals.Clear();
             _motions.Clear();
@@ -1722,6 +1947,30 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 _diagnostics.DeviceCount = 0;
                 _diagnostics.FallbackDeviceCount = 0;
             }
+        }
+        private JObject EndpointDisplayIdentity(string modelType, FactoryConfigDto config = null)
+        {
+            config = config ?? _config;
+            var model = config?.Models?.FirstOrDefault(item => item.Id == modelType);
+            return new JObject {
+                ["factoryId"] = config?.FactoryId, ["modelType"] = modelType, ["filePath"] = model?.FilePath,
+                ["sourceSha256"] = (model?.MotionPackage?["sourceSha256"] ?? model?.MetadataObject?["motionBundle"]?["sourceSha256"])?.DeepClone()
+                , ["rigSha256"] = model?.MotionPackage?["rigSha256"]?.DeepClone(), ["clipSha256"] = model?.MotionPackage?["clipSha256"]?.DeepClone()
+            };
+        }
+        private void RememberEndpointDisplayStates(string deviceId, Transform root)
+        {
+            if (root == null || string.IsNullOrEmpty(deviceId) || !_deviceModelTypes.TryGetValue(deviceId, out var modelType)) return;
+            var parts = root.GetComponent<ModelBindingDriver>()?.CaptureEndpointDisplayStates();
+            var clips = root.GetComponent<DeviceAnimationDriver>()?.CaptureEndpointDisplayStates();
+            if ((parts?.Count ?? 0) == 0 && (clips?.Count ?? 0) == 0) return;
+            _endpointDisplayStates[deviceId] = new JObject { ["identity"] = EndpointDisplayIdentity(modelType), ["parts"] = parts, ["clips"] = clips };
+        }
+        private void RestoreEndpointDisplayStates(DeviceDto device, ModelBindingDriver driver, FactoryConfigDto config = null)
+        {
+            if (driver == null || !_endpointDisplayStates.TryGetValue(device.Id, out var snapshot) || !JToken.DeepEquals(snapshot["identity"], EndpointDisplayIdentity(device.ModelType, config))) return;
+            driver.RestoreEndpointDisplayStates(snapshot["parts"] as JObject);
+            driver.GetComponent<DeviceAnimationDriver>()?.RestoreEndpointDisplayStates(snapshot["clips"] as JObject);
         }
 
         private static Bounds CalculateRendererBounds(Transform root)
@@ -1780,6 +2029,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
             if (_windowMenu != null) _windowMenu.SettingsRequested -= OpenAdminSettings;
             _reload?.Cancel();
             _reload?.Dispose();
+            CancelModelRefresh();
             _lifetime?.Cancel();
             var listener = _nativeAuthPipeThread;
             if (listener != null && listener != Thread.CurrentThread && listener.IsAlive && !listener.Join(500))
