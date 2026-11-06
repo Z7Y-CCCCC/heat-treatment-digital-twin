@@ -1,7 +1,7 @@
 import * as T from 'three'
 import {CAD_MOTION_PROFILES,cadMotionFrame} from './cadMotionProfiles.js'
 import {connectedGeometryParts} from './cadGeometryParts.js'
-import {CART_FEED,locateCartChain,sampleCartChain} from './cartFeedMechanism.js'
+import {CART_FEED,CART_WORK_CHAIN,locateCartChain,sampleCartChain,cartWorkingChainLength,sampleCartWorkingChain} from './cartFeedMechanism.js'
 import {CLEANER_BATH} from './cleanerBathLayout.js'
 import {TRANSFER_DATUM,transferAuthoringY} from '../../../shared/equipmentTransferDatum.mjs'
 import {buildLineSimulation,sampleLineSimulation} from './lineSimulation.js'
@@ -119,13 +119,51 @@ export class CadMotionRig {
             if(at.error>.0001)throw Error('料车链节偏离回链轨迹')
             const pivot=this.pivot('return_link_'+index,center,pieces);this.cartChain.push({pivot,distance:at.distance,angle:at.angle})
         })
+        this.prepareWorkingChain()
+    }
+    prepareWorkingChain(){
+        const c=CART_WORK_CHAIN,metal=new T.MeshStandardMaterial({color:'#74828a',metalness:.85,roughness:.33})
+        const guide=new T.Mesh(new T.BoxGeometry(1.315,.018,.065),metal)
+        guide.name='preview_working_chain_guide';guide.position.set(0,c.y-.022,c.z);this.root.add(guide)
+        const entry=new T.Mesh(new T.BoxGeometry(.065,.038,.065),metal)
+        entry.name='preview_chain_case_entry';entry.position.set(c.caseX,c.caseY-.018,c.z);this.root.add(entry)
+        const anchor=new T.Group();anchor.name='preview_chain_carriage_anchor';anchor.position.set(c.anchorX,c.y,c.z)
+        const shoe=new T.Mesh(new T.BoxGeometry(.045,.028,.055),metal);shoe.position.x=-.012;anchor.add(shoe)
+        const pin=new T.Mesh(new T.CylinderGeometry(.006,.006,.068,12),metal);pin.rotation.x=Math.PI/2;anchor.add(pin)
+        this.root.add(anchor);this.root.updateMatrixWorld(true);this.node('feed_carriage').attach(anchor)
+        this.workingChainAnchor=anchor;this.workingChainLinks=[]
+        const source=this.cartChain[0]
+        this.workingChainTemplate=new T.Group();this.workingChainTemplate.rotation.z=-source.angle
+        for(const mesh of source.pivot.children)this.workingChainTemplate.add(mesh.clone())
+        this.ensureWorkingChainLinks(40)
+        this.poseWorkingChain()
+    }
+    ensureWorkingChainLinks(count){
+        while(this.workingChainLinks.length<count){
+            const index=this.workingChainLinks.length,link=new T.Group();link.name='preview_working_chain_link_'+index;link.position.set(CART_WORK_CHAIN.caseX,CART_WORK_CHAIN.caseY,CART_WORK_CHAIN.z)
+            const template=this.workingChainTemplate.clone(true);template.name='preview_working_chain_shape_'+index
+            template.traverse((n)=>{if(n.isMesh)n.name='preview_working_chain_piece_'+index+'_'+template.children.indexOf(n)})
+            link.add(template);link.visible=false;this.root.add(link);this.workingChainLinks.push(link)
+            if(this.baselines)link.traverse(o=>this.baselines.push({o,p:o.position.clone(),q:o.quaternion.clone(),s:o.scale.clone(),visible:o.visible}))
+        }
+    }
+    poseWorkingChain(){
+        this.root.updateMatrixWorld(true)
+        const anchor=this.root.worldToLocal(this.workingChainAnchor.getWorldPosition(new T.Vector3())),length=cartWorkingChainLength(anchor.x)
+        this.ensureWorkingChainLinks(Math.ceil(length/CART_WORK_CHAIN.pitch)+1)
+        this.workingChainLinks.forEach((link,index)=>{
+            const d=index*CART_WORK_CHAIN.pitch;link.visible=d<=length
+            if(!link.visible)return
+            const sample=sampleCartWorkingChain(anchor.x,d);link.position.fromArray(sample.position);link.rotation.z=sample.angle
+        })
     }
     setCartFeed(progress,travel=CART_FEED.stroke,engaged=true){
         const distance=progress*travel
         this.move(this.node('feed_carriage')?'feed_carriage':'pusher','x',-progress*travel)
         const latch=this.node('hook_latch');if(latch)latch.rotation.z=-.65*(1-Number(engaged))
         this.joints.feed_gear.rotation.z=distance/CART_FEED.sprocketRadius
-        this.cartChain.forEach(({pivot,distance:phase,angle})=>{const at=sampleCartChain(phase+distance);pivot.position.fromArray(at.position);pivot.rotation.z=at.angle-angle})
+        this.cartChain.forEach(({pivot,distance:phase,angle})=>{const at=sampleCartChain(phase-distance);pivot.position.fromArray(at.position);pivot.rotation.z=at.angle-angle})
+        this.poseWorkingChain()
     }
     prepareMultipurpose(){
         this.processPlan=buildLineSimulation([{id:'demo_cart',model_type:'transfer_cart'},{id:'demo_furnace',model_type:this.id}],[{id:this.id,file_path:'/preview-only.glb'}])
@@ -141,26 +179,47 @@ export class CadMotionRig {
         this.node('radiant_tubes')?.traverse(o=>{if(!o.isMesh)return;const materials=[].concat(o.material).map(m=>{const c=m.clone();this.heatMaterials.push({material:c,emissive:c.emissive.clone(),intensity:c.emissiveIntensity});return c});o.material=Array.isArray(o.material)?materials:materials[0]})
     }
     prepareLift(){
+        const base=new T.Vector3(.48,this.authoringY(.16),0),mid=new T.Vector3(.20,this.authoringY(.59),0),tip=new T.Vector3(.03,this.authoringY(.83),0)
+        const upperParts=[],nearMount=(part,point)=>Math.hypot(part.center.x-point.x,part.center.y-point.y)<.06&&Math.abs(part.center.z)<.09
         for(const part of this.parts('lift_edge')){
             // Determine the original slope from covariance; keep each rigid arm's length.
             const a=part.mesh.geometry.attributes.position,v=new T.Vector3();let covariance=0
             for(let i=0;i<a.count;i++){v.fromBufferAttribute(a,i).applyMatrix4(part.mesh.matrixWorld).sub(part.center);covariance+=v.x*v.y}
             const sign=Math.sign(covariance),pivot=this.pivot('scissor_'+this.scissor.length,part.center,[part]);this.scissor.push({pivot,sign})
         }
-        this.liftPins=[...this.parts('lift_stainless'),...this.parts('pivot_detail'),...this.parts('slide_detail')].map((p,i)=>({pivot:this.pivot('lift_pin_'+i,p.center,[p]),fraction:T.MathUtils.clamp((p.center.y-this.authoringY(.14))/this.liftHeight,0,1)}))
+        this.liftPins=[]
+        for(const part of [...this.parts('lift_stainless'),...this.parts('pivot_detail'),...this.parts('slide_detail')]){
+            if(nearMount(part,tip)){upperParts.push(part);continue}
+            if(nearMount(part,base))continue // Base mounting pin and washers stay fixed.
+            this.liftPins.push({pivot:this.pivot('lift_pin_'+this.liftPins.length,part.center,[part]),fraction:T.MathUtils.clamp((part.center.y-this.authoringY(.14))/this.liftHeight,0,1)})
+        }
         this.topSupports=this.node('lift_steel')
         const bodyParts=this.parts('hydraulics_teal'),rodParts=this.parts('hydraulics_stainless')
         this.hydraulicDeck=[]
         for(const p of this.parts('hydraulics_metal')){
             if(p.center.y>.9)this.hydraulicDeck.push(this.pivot('hydraulic_deck_'+this.hydraulicDeck.length,p.center,[p]))
-            else if(p.center.y>.5)rodParts.push(p)
+            else if(nearMount(p,tip))upperParts.push(p)
         }
         for(const p of this.parts('hydraulics_brass')){
             if(p.center.y>.9)this.hydraulicDeck.push(this.pivot('hydraulic_deck_'+this.hydraulicDeck.length,p.center,[p]))
             else bodyParts.push(p)
         }
-        this.cylinderBase=new T.Vector3(.48,this.authoringY(.16),0);this.cylinderVector=new T.Vector3(-.45,this.authoringY(.83)-this.authoringY(.16),0)
-        this.cylinder=this.pivot('cylinder',this.cylinderBase,bodyParts);this.rod=this.pivot('cylinder_rod',this.cylinderBase,rodParts)
+        this.cylinderBase=base
+        this.cylinderAxis=mid.clone().sub(base).normalize();this.rodAxis=tip.clone().sub(mid).normalize()
+        this.cylinder=this.pivot('cylinder',base,bodyParts)
+        // Anchor the rigid rod at its upper eye, so its lower end telescopes
+        // inside the barrel instead of translating the whole rod away from it.
+        this.rod=this.pivot('cylinder_rod',tip,rodParts)
+        upperParts.forEach((part,index)=>{part.mesh.name=part.mesh.name.includes('hydraulics_metal')?'preview_lift_upper_eye':'preview_lift_upper_fastener_'+index})
+        this.cylinderEye=this.pivot('cylinder_eye',tip,upperParts)
+        const metal=new T.MeshStandardMaterial({color:'#63757b',metalness:.75,roughness:.38})
+        this.liftCrosshead=new T.Mesh(new T.CylinderGeometry(.018,.018,.78,24),metal)
+        this.liftCrosshead.name='preview_lift_crosshead';this.liftCrosshead.rotation.x=Math.PI/2;this.root.add(this.liftCrosshead)
+        const support=new T.Group();support.name='preview_lift_cylinder_base';this.root.add(support)
+        const beam=new T.Mesh(new T.BoxGeometry(.08,.06,.65),metal);beam.position.set(base.x,this.authoringY(.12),0);support.add(beam)
+        for(const z of [-.045,.045]){const ear=new T.Mesh(new T.BoxGeometry(.085,.08,.012),metal);ear.position.set(base.x,base.y-.015,z);support.add(ear)}
+        const pin=new T.Mesh(new T.CylinderGeometry(.018,.018,.13,20),metal);pin.rotation.x=Math.PI/2;pin.position.copy(base);support.add(pin)
+        this.poseLiftCylinder(this.liftHeight)
     }
     prepareEffects(){
         this.effects=new T.Group();this.effects.name='preview_process_effects';this.root.add(this.effects)
@@ -265,7 +324,7 @@ export class CadMotionRig {
             this.showDrips(t,actionId==='fill'?1.4:.35,actionId==='drain')
         }
         if(actionId==='spray'||actionId==='blow')this.showJets(t,actionId==='blow')
-        if(this.id==='cad_cleaner_170700'&&['spray','blow'].includes(actionId))this.setCleanerBasket(actionId==='spray'?1:0,true)
+        if(this.id==='cad_cleaner_170700'&&actionId==='spray')this.setCleanerBasket(0,true)
         this.root.updateMatrixWorld(true);return f
     }
     applyLift(height){
@@ -275,9 +334,13 @@ export class CadMotionRig {
         for(const name of ['roller_bed','roller_details','stop_detail'])this.move(name,'y',delta)
         if(this.topSupports)this.topSupports.position.y+=delta
         this.hydraulicDeck.forEach(pivot=>{pivot.position.y+=delta})
-        const b=new T.Vector3(.03*ratio,this.authoringY(.14)+(this.authoringY(.83)-this.authoringY(.14))/this.liftHeight*height,0),direction=b.sub(this.cylinderBase),q=new T.Quaternion().setFromUnitVectors(this.cylinderVector.clone().normalize(),direction.clone().normalize())
-        this.cylinder.quaternion.copy(q);this.rod.quaternion.copy(q)
-        this.rod.position.add(direction.clone().normalize().multiplyScalar(direction.length()-this.cylinderVector.length()))
+        this.poseLiftCylinder(height)
+    }
+    poseLiftCylinder(height){
+        const top=new T.Vector3(0,this.authoringY(.14)+height/2,0),axis=top.clone().sub(this.cylinderBase).normalize()
+        this.liftCrosshead.position.copy(top);this.cylinderEye.position.copy(top)
+        this.cylinder.position.copy(this.cylinderBase);this.cylinder.quaternion.setFromUnitVectors(this.cylinderAxis,axis)
+        this.rod.position.copy(top);this.rod.quaternion.setFromUnitVectors(this.rodAxis,axis)
     }
     applyLinked(state={}){
         this.reset()

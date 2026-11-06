@@ -81,7 +81,23 @@ test('portable cleaner keeps the lower bath visible and exports full downward an
   const clip=data.clips.find(c=>c.id===id),track=clip.tracks.find(t=>t.channel==='p'&&t.node.endsWith('_internal_rollers'))
   for(const p of [0,.25,.5,.75,1])assert.ok(Math.abs(sampleMotionTrack(clip,track,p*clip.duration)[1]+.8*(id==='basket_down'?p:1-p))<.00001)
  }
+ assert.ok(!data.clips.some(c=>c.id==='blow'),'ordinary cleaner has no air blow action')
+ const rinse=data.clips.find(c=>c.id==='spray');assert.equal(rinse.label,'喷清水')
+ assert.ok(!rinse.tracks.some(t=>t.channel==='p'&&t.node.endsWith('_internal_rollers')),'rinse must not lower the deck into alkali')
+ const charge=rinse.tracks.find(t=>t.channel==='p'&&t.node==='preview_cleaner_charge')
+ if(charge)for(let i=1;i<charge.values.length;i+=charge.size)assert.ok(charge.values[i]>=1.29-1e-6,'PLC rinse clip keeps its load at the raised transfer level')
  for(const clip of data.clips)assert.ok(!clip.tracks.some(t=>volumes.some(n=>n.name===t.node)),'water level never animates')
+})
+test('PLC clean-water rinse keeps the actual cleaner deck and load raised above the resident alkali',async()=>{
+ const manifest=registry.models.cad_cleaner_170700,b=fs.readFileSync(new URL('../../backend'+manifest.rigPath,import.meta.url)),data=JSON.parse(fs.readFileSync(new URL('../../backend'+manifest.clipPath,import.meta.url)))
+ const gltf=await new GLTFLoader().parseAsync(b.buffer.slice(b.byteOffset,b.byteOffset+b.byteLength),'');restoreGltfNodeNames(gltf)
+ const root=gltf.scene,deck=root.getObjectByName('cad_washing_machine_v1_internal_rollers'),charge=root.getObjectByName('preview_cleaner_charge')
+ const player=new PortableMotionPlayer(root,data,[{...binding,mode:'running',clipId:'spray',transitionSeconds:0}])
+ for(const t of [0,.5,2,4]){
+  player.receive(frame(1),t);player.advance(.2,t);root.updateMatrixWorld(true)
+  assert.ok(Math.abs(deck.position.y)<1e-6);assert.equal(charge.visible,true)
+  assert.ok(new T.Box3().setFromObject(charge).min.y>1.20,'actual exported load must be above the bath during rinse')
+ }
 })
 test('running is read-only, stops without accumulating angle, and input inversion is explicit',()=>{
  const b={...binding,mode:'running',invert:true,transitionSeconds:0,speed:2},s={seconds:0}

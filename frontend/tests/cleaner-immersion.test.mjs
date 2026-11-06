@@ -26,10 +26,12 @@ test('the actual coordinated cleaner lowers the entire load with its deck below 
   const water=()=>rig.bathVolumes.map(n=>[...n.position,...n.scale,n.visible]),waterPose=water()
   const deckHome=new T.Box3().setFromObject(rig.node('internal_rollers')).getCenter(new T.Vector3()).y
   at('lower',.5);const middle=localLoadBounds();assert.ok(Math.abs(home.min.y-middle.min.y-.4)<1e-6)
-  at('spray');const submerged=localLoadBounds();assert.ok(submerged.max.y<1.20&&submerged.min.y>.106,'whole real load stays within the filled central tank')
+  at('immersion');const submerged=localLoadBounds();assert.ok(submerged.max.y<1.20&&submerged.min.y>.106,'whole real load stays within the filled central tank')
   assert.ok(submerged.min.x>-.609&&submerged.max.x<.609&&submerged.min.z>-.954&&submerged.max.z<.954)
   assert.ok(Math.abs(deckHome-new T.Box3().setFromObject(rig.node('internal_rollers')).getCenter(new T.Vector3()).y-1.6*.8)<1e-6)
   assert.deepEqual(water(),waterPose);assert.equal(rig.cleanerCharge.visible,false,'line has one material load, without a duplicate preview charge')
+  at('raise',.5);assert.ok(Math.abs(localLoadBounds().min.y-home.min.y+.4)<1e-6);assert.equal(rig.drops.visible,false,'no fresh-water jets during raising')
+  at('spray');assert.ok(localLoadBounds().min.y>1.20,'rinse the load only after it is fully raised');assert.ok(Math.abs(new T.Box3().setFromObject(rig.node('internal_rollers')).getCenter(new T.Vector3()).y-deckHome)<1e-6);assert.equal(rig.drops.visible,true)
   at('open_out');assert.ok(localLoadBounds().min.y>1.20);assert.deepEqual(water(),waterPose)
  }finally{rig.dispose()}
 })

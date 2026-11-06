@@ -19,7 +19,7 @@ export function planLineGroupMove(rows, anchorId, desiredX, target, targets) {
   const max = Math.min(...placed.map(row => number(row.binding.item.length) / 2 - number(row.x)))
   if (min > max) throw new Error('设备组超出目标设备线长度')
   const delta = Math.min(max, Math.max(min, Math.round((number(desiredX) - number(anchor.x)) * 2) / 2))
-  return placed.map(row => ({ ...row, x: rounded(number(row.x) + delta), z: number(row.binding.item.offsetZ) }))
+  return placed.map(row => ({ ...row, x: rounded(number(row.x) + delta), z: rounded(number(row.z ?? (number(row.binding.item.offsetZ)-dz)) + dz) }))
 }
 export function spaceLineDevices(rows, gap) {
   if (rows.length < 2 || rows.some(row => !row.binding)) throw new Error('请先多选设备')
@@ -29,7 +29,7 @@ export function spaceLineDevices(rows, gap) {
   if (gap === undefined && rows.length < 3) throw new Error('自动等间距至少需要三台设备')
   const spacing = gap === undefined ? (number(sorted.at(-1).x) - number(sorted[0].x)) / (rows.length - 1) : number(gap)
   if (spacing <= 0) throw new Error('请填写大于零的设备中心间距')
-  const positions = sorted.map((row, i) => ({ ...row, x: rounded(number(sorted[0].x) + i * spacing), z: number(binding.item.offsetZ) }))
+  const positions = sorted.map((row, i) => ({ ...row, x: rounded(number(sorted[0].x) + i * spacing), z: number(row.z ?? binding.item.offsetZ) }))
   if (positions.some(row => Math.abs(row.x) > number(binding.item.length) / 2 + .000001)) throw new Error('间距超出设备线长度，请减小间距')
   return positions
 }

@@ -87,6 +87,8 @@ for(const [id,profile] of Object.entries(CAD_MOTION_PROFILES))test(`${id}: each 
         assert.ok(new T.Box3().setFromObject(rig.cleanerCharge).max.y<waterBox.max.y-.1,'the whole charge must be submerged at the end of lowering')
         assert.ok(Math.abs(deck.position.y+.8)<1e-7);assert.ok(new T.Box3().setFromObject(deck).min.y>waterBox.min.y,'deck must not pass through the tank floor')
         rig.apply('basket_up',8);assert.ok(Math.abs(deck.position.y)<1e-7);assert.ok(new T.Box3().setFromObject(rig.cleanerCharge).min.y>waterBox.max.y)
+        assert.ok(!CAD_MOTION_PROFILES[id].actions.some(a=>a.id==='blow'))
+        for(const time of [0,2,4,8]){rig.apply('spray',time);assert.ok(Math.abs(deck.position.y)<1e-7);assert.ok(new T.Box3().setFromObject(rig.cleanerCharge).min.y>waterBox.max.y,'clean-water rinse stays above the alkali bath');assertWater()}
         for(const basket of [0,.5,1,0]){rig.applyLinked({basket,level:0});assertWater();assert.ok(Math.abs(deck.position.y+.8*basket)<1e-7);assert.equal(rig.cleanerCharge.visible,false)}
         gltf.scene.updateMatrixWorld(true);fixed.forEach((n,i)=>assert.ok(n.matrixWorld.equals(matrices[i]),'water tanks, shell and pump housings stay fixed'))
         rig.reset();assertWater()
@@ -129,7 +131,7 @@ test('CAD preview actions coexist with bindings and preserve edit indices',()=>{
     const extras=CAD_MOTION_PROFILES.cad_cleaner_170700.actions
     const rows=motionEntries([binding],false,'',b=>b.name,extras)
     assert.equal(rows.length,extras.length+1);assert.equal(rows.at(-1).index,0)
-    assert.equal(motionEntries([binding],false,'喷淋',b=>b.name,extras)[0].process.id,'spray')
+    assert.ok(motionEntries([binding],false,'喷清水',b=>b.name,extras).some(row=>row.process?.id==='spray'))
     assert.equal(cadMotionFrame('cad_cleaner_170700','door',Infinity).complete,true)
     assert.throws(()=>cadMotionFrame('cad_cleaner_170700','unknown',1))
 })

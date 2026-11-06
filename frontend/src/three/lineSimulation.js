@@ -21,7 +21,7 @@ export function simulationCapabilities(device,models){
     switch(device.model_type){
         case 'cad_tempering_furnace_091300':process=['tempering_heat','tempering_hold'];break
         case 'cad_multipurpose_furnace_082000':process=[...MULTIPURPOSE_PROCESS_KINDS];break
-        case 'cad_cleaner_170700':process=['lower','spray','raise','blow'];break
+        case 'cad_cleaner_170700':process=['lower','immersion','raise','spray'];break
         case 'ultrasonic_cleaner_cad':process=['fill','heat','spray','ultrasonic','drain','blow'];break
         case 'cad_water_cooling_tank_471000':process=['lower','quench','raise','drip'];break
         case 'cad_lifting_load_table_111400':process=['lift','rollers'];break
@@ -52,8 +52,9 @@ export function buildLineSimulation(devices,models,{process=true}={}){
         if(cart){push(station,'approach','料车定位',4);if(c.door)push(station,'open','开门');push(station,'feed','送料',4);push(station,'retract','退链');if(c.door)push(station,'close','关门')}
         if(process)for(const kind of c.process){
             const multi=station.model_type==='cad_multipurpose_furnace_082000'?MULTIPURPOSE_CYCLE.find(s=>s.kind===kind):null
-            const label=multi?.label||(station.model_type==='cad_cleaner_170700'&&['lower','raise'].includes(kind)?(kind==='lower'?'料盘下降浸没':'料盘升起出水'):kind==='drip'?'沥水':LABELS[kind])
-            push(station,kind,label,multi?.duration||(['spray','quench','fans','ultrasonic','heat_treat','tempering_heat','tempering_hold'].includes(kind)?6:4))
+            const cleanerLabels={lower:'料盘下降浸入碱液',immersion:'碱液浸洗',raise:'料盘升出碱水槽',spray:'喷清水'}
+            const label=multi?.label||(station.model_type==='cad_cleaner_170700'?cleanerLabels[kind]:null)||(kind==='drip'?'沥水':LABELS[kind])
+            push(station,kind,label,multi?.duration||(['immersion','spray','quench','fans','ultrasonic','heat_treat','tempering_heat','tempering_hold'].includes(kind)?6:4))
         }
         if(!cart&&c.door)push(station,'door_cycle','开关门演示',6)
         if(cart){if(c.door)push(station,'open_out','出料开门');push(station,'pickup_extend','取料伸链',2);push(station,'reclaim','物料回车',4);if(c.door)push(station,'close_out','出料关门');previous=station.id}
@@ -87,6 +88,7 @@ export function sampleLineSimulation(plan,time){
             case 'drain':state.level=1-p;break
             case 'lower':state.basket=s;break
             case 'raise':state.basket=1-s;break
+            case 'immersion':state.run=active;state.runTime+=local;break
             case 'lift':state.lift=Math.sin(Math.PI*p)**2;break
             case 'gate_open':case 'gate_open_return':state.gate=s;break
             case 'gate_close':case 'gate_close_return':state.gate=1-s;break
