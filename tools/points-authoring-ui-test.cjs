@@ -16,18 +16,24 @@ const check=name=>{checks.push(name);console.log('PASS '+name)};
  db.prepare('UPDATE devices SET name=?,plc_protocol=?,plc_enabled=0 WHERE id=?').run(longName,'S7',info.devices[0]);db.close();
  browser=await playwright.chromium.launch({headless:true,...(process.env.BROWSER_EXECUTABLE?{executablePath:process.env.BROWSER_EXECUTABLE}:{}),args:['--enable-unsafe-swiftshader']});
  const context=await browser.newContext({viewport:{width:1440,height:1000}});
- await context.addInitScript(()=>localStorage.setItem('digital_twin_admin_ui_state_v1',JSON.stringify({activeTab:'points',selectedDeviceForPoints:'all',pointsSubpage:'mapping'})));
+ await context.addInitScript(()=>localStorage.setItem('digital_twin_admin_ui_state_v1',JSON.stringify({activeTab:'data-center',dataCenterSection:'mapping',isDataCenterMenuOpen:true,selectedDeviceForPoints:'all',pointsSubpage:'mapping'})));
  page=await context.newPage();page.setDefaultTimeout(20000);page.on('pageerror',e=>errors.push(e.message));
  await page.goto(info.origin+'/admin');await page.getByRole('textbox',{name:'账号',exact:true}).fill(info.username);await page.getByLabel('后台密码',{exact:true}).fill(info.password);await page.getByRole('button',{name:'解锁后台',exact:true}).click();
  const workspace=page.getByTestId('points-workspace');await workspace.waitFor();
+ // Keep both independent drafts visible even when the fixture already ends at a page boundary.
+ await workspace.locator('#points-panel-mapping .page-size-select').selectOption('0');
  const add=page.getByTestId('add-data-point');await add.click();await add.click();
- const rows=page.locator('.points-table tr.is-new-point');assert.equal(await rows.count(),2);
+ const list=workspace.getByRole('list',{name:'点位配置列表',exact:true});
+ const rows=list.locator('.point-mapping-card.is-new-point');assert.equal(await rows.count(),2);
+ const draftIds=await rows.evaluateAll(elements=>elements.map(element=>element.getAttribute('data-point-id')));
+ assert.equal(new Set(draftIds).size,2);assert.ok(draftIds.every(Boolean));
  for(let i=0;i<2;i++){
    const row=rows.nth(i);await row.locator('.point-name-input').fill(`新增绿色点位${i+1}`);await row.locator('.plc-address-input').fill(`DB90.DBW${i*2}`);
-   assert.equal(await row.locator('td').first().evaluate(el=>getComputedStyle(el).borderTopColor),'rgb(66, 184, 131)');
+   assert.deepEqual(await row.evaluate(el=>{const style=getComputedStyle(el);return ['borderTopColor','borderRightColor','borderBottomColor','borderLeftColor'].map(key=>style[key])}),Array(4).fill('rgb(66, 184, 131)'));
  }
+ assert.deepEqual(await rows.evaluateAll(elements=>elements.map(element=>element.getAttribute('data-point-id'))),draftIds);
  await rows.last().screenshot({path:path.join(directory,'01-new-green-point.png')});
- check('every newly added point row has a green enclosing border; multiple blank rows have independent stable keys while editing');
+ check('every newly added point card has a green enclosing border; multiple blank cards have independent stable keys while editing');
  const trigger=rows.last().getByRole('button',{name:'选择点位所属设备',exact:true});
  await trigger.click();const popup=page.getByRole('region',{name:'点位设备选项'});await popup.waitFor();
  const search=popup.getByRole('textbox',{name:'搜索点位设备'});await search.fill('长名称完整显示验证');

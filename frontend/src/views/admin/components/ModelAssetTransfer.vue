@@ -25,10 +25,16 @@ function assertScope() { if (getFactoryScope() !== batchScope) throw Error('工�
 async function request(operation, row) {
   assertScope(); controller = new AbortController()
   const form = new FormData(); form.append('file', row.file)
-  if (operation === 'import') form.append('inspectedSha256', row.checked.inspectedSha256)
+  if (operation === 'import') {
+    form.append('inspectedSha256', row.checked.inspectedSha256)
+    form.append('importPlan', JSON.stringify(row.checked.isCollection ? row.checked.models.map(item => item.importDecision) : row.checked.importDecision))
+  }
   const response = await adminFetch(`${API_BASE}/models/asset-${operation}`, { method: 'POST', headers: { ...(batchScope ? { 'X-Factory-ID': batchScope } : {}), ...(operation === 'import' ? { 'X-Asset-Request-ID': row.requestId } : {}) }, body: form, signal: controller.signal })
   const data = await response.json()
-  if (!response.ok || !data.success) throw Error(data.error || '动作包处理失败')
+  if (!response.ok || !data.success) {
+    if (['IMPORT_PLAN_STALE', 'IMPORT_CONFIRMATION_REQUIRED', 'IMPORT_TARGET_AMBIGUOUS'].includes(data.code)) row.checked = null
+    throw Error(data.error || '动作包处理失败')
+  }
   return data
 }
 async function choose(event) {
@@ -52,15 +58,23 @@ async function importAssets() {
   try {
     await runPackageQueue(rows.value, async row => {
       row.status = 'importing'; row.error = ''
-      try { const result = await request('import', row); if (!disposed) { row.status = 'imported'; imported.push(...(result.models || [result.model])) } }
+      try { const result = await request('import', row); if (!disposed) { row.status = 'imported'; row.outcomes = result.outcomes || [{ outcome: result.outcome || (result.reused ? 'reuse' : 'create') }]; imported.push(...(result.models || [result.model])) } }
       catch (cause) { if (!disposed) { row.status = 'error'; row.error = cause.message }; throw cause }
     }, { eligible: row => row.checked && row.status !== 'imported', stopped: () => disposed })
     if (!disposed) {
       if (imported.length) emit('imported', imported.at(-1))
       const doneRows = rows.value.filter(r => r.status === 'imported'), done = doneRows.reduce((n, row) => n + (row.checked.models?.length || 1), 0), failed = rows.value.filter(r => r.status === 'error').length
-      message.value = rows.value.length === 1 && done === 1 ? '动作包已导入' : `已导入 ${done} 个${failed ? `，失败 ${failed} 个` : ''}`
+      const effects = doneRows.flatMap(row => row.outcomes || [])
+      message.value = `已处理 ${done} 个模型：新建 ${effects.filter(item => item.outcome === 'create').length}，复用 ${effects.filter(item => item.outcome === 'reuse').length}，更新动作 ${effects.filter(item => item.outcome === 'update_actions').length}${failed ? `；失败 ${failed} 个文件` : ''}`
     }
   } finally { if (!disposed) busy.value = false }
+}
+async function recheck(row) {
+  if (busy.value) return
+  busy.value = true; row.status = 'checking'; row.error = ''; message.value = ''
+  try { const data = await request('inspect', row); if (!disposed) { row.checked = data; row.requestId = crypto.randomUUID(); row.status = 'ready' } }
+  catch (cause) { if (!disposed) { row.status = 'error'; row.error = cause.message } }
+  finally { if (!disposed) busy.value = false }
 }
 async function exportAssets() {
   if (busy.value || !exportIds.value.length) return
@@ -88,6 +102,13 @@ async function exportAssets() {
   } finally { if (!disposed) busy.value = false }
 }
 const statuses = { waiting: '等待', checking: '读取中…', ready: '可导入', importing: '导入中…', imported: '已导入', exporting: '导出中…', exported: '已导出', error: '失败' }
+function effectLabel(item) {
+  const plan = item?.importDecision
+  if (!plan) return ''
+  if (plan.kind === 'reuse') return `复用「${plan.targetName}」，不新增模型`
+  if (plan.kind === 'update_actions') return `更新「${plan.targetName}」的部件动作（${plan.bindingCount} 项）${plan.shared ? '；所有引用此共享模型的工厂均生效' : '；引用此模型的设备均生效'}`
+  return '新建模型（模型文件或非动作配置与现有模型不同）'
+}
 </script>
 <template>
   <div class="motion-package-actions" role="group" aria-label="动作包导入导出">
@@ -100,10 +121,11 @@ const statuses = { waiting: '等待', checking: '读取中…', ready: '可导�
       <header><h3>{{ operation === 'import' ? '导入动作包' : '导出动作包' }}</h3><button type="button" class="dialog-close" aria-label="关闭动作包弹窗" :disabled="busy" @click="closeDialog">×</button></header>
       <div class="package-dialog-body">
         <div v-if="operation === 'export' && !message" class="package-model-field"><span>模型</span><ModelActionPicker v-model="exportIds" :models="models" :disabled="busy" /></div>
-        <ul v-if="rows.length" class="package-file-list" aria-label="动作包处理结果"><li v-for="row in rows" :key="row.id" :data-status="row.status"><div><strong>{{ row.checked?.model?.name || row.name }}</strong><small v-if="row.checked">{{ row.checked.isCollection ? `${row.checked.models.length} 个模型` : `${row.checked.actions.length} 个动作` }}</small><span>{{ statuses[row.status] }}</span></div><p v-if="row.checked?.actions?.length" class="package-action-names">{{ row.checked.actions.map(a=>a.label).join('、') }}</p>
-          <details v-if="row.checked?.isCollection" class="collection-models" :open="rows.length === 1"><summary>包内模型</summary><ul><li v-for="item in row.checked.models" :key="item.model.id"><div><strong>{{ item.model.name }}</strong><small>{{ item.actions.length }} 个动作</small></div><p v-if="item.actions.length" class="package-action-names">{{ item.actions.map(a=>a.label).join('、') }}</p></li></ul></details>
-          <p v-if="row.error" role="alert">{{ row.error }}</p></li></ul>
-        <p v-if="operation === 'import' && readyImports.length" class="import-effect">导入为新模型，保留现有模型与设备绑定。</p>
+        <ul v-if="rows.length" class="package-file-list" aria-label="动作包处理结果"><li v-for="row in rows" :key="row.id" :data-status="row.status"><div><strong>{{ row.checked?.model?.name || row.name }}</strong><small v-if="row.checked">{{ row.checked.isCollection ? `${row.checked.models.length} 个模型` : `${row.checked.partBindingCount || 0} 个部件动作` }}</small><span>{{ statuses[row.status] }}</span></div><p v-if="row.checked?.actions?.length" class="package-action-names">{{ row.checked.actions.map(a=>a.label).join('、') }}</p>
+          <p v-if="row.checked && !row.checked.isCollection" class="package-import-decision">{{ effectLabel(row.checked) }}</p>
+          <details v-if="row.checked?.isCollection" class="collection-models" :open="rows.length === 1"><summary>包内模型</summary><ul><li v-for="item in row.checked.models" :key="item.model.id"><div><strong>{{ item.model.name }}</strong><small>{{ item.partBindingCount || 0 }} 个部件动作</small></div><p class="package-import-decision">{{ effectLabel(item) }}</p><p v-if="item.actions.length" class="package-action-names">{{ item.actions.map(a=>a.label).join('、') }}</p></li></ul></details>
+          <p v-if="row.error" role="alert">{{ row.error }}</p><button v-if="operation === 'import' && row.status === 'error' && !row.checked" type="button" class="btn btn-sm" :disabled="busy" @click="recheck(row)">重新检查</button></li></ul>
+        <p v-if="operation === 'import' && readyImports.length" class="import-effect">动作包包含模型文件和动作。同源模型优先复用；确认后仅替换模型层部件动作及随包动作资源，保留进出料口、拆解布局、设备实例、PLC 点位和设备联动配置。</p>
         <p v-if="error" role="alert">{{ error }}</p><p v-if="message" role="status">{{ message }}</p>
       </div>
       <footer>
@@ -135,4 +157,5 @@ const statuses = { waiting: '等待', checking: '读取中…', ready: '可导�
 [role=alert] { color: #b42318; }
 .package-model-field{display:grid;gap:8px}.package-file-list{list-style:none;margin:0;padding:0;max-height:300px;overflow:auto}.package-file-list li{padding:10px 0;border-bottom:1px solid #edf0f5}.package-file-list li>div{display:flex;align-items:center;gap:8px}.package-file-list strong{flex:1;min-width:0;overflow-wrap:anywhere}.package-file-list small,.package-action-names,.import-effect{color:#7b8ca3;font-size:calc(12px * var(--admin-font-scale, 1))}.package-file-list li[data-status=imported] span,.package-file-list li[data-status=exported] span{color:#16815b}.package-file-list li[data-status=error] span{color:#b42318}
 .collection-models{margin-top:8px}.collection-models summary{cursor:pointer;color:#506580}.collection-models ul{list-style:none;padding:0 0 0 12px;margin:4px 0;border-left:2px solid #e4ebf4}.collection-models li:last-child{border-bottom:0}
+.package-import-decision{color:#2457a6;font-weight:600}.import-effect{color:#475467}
 </style>

@@ -69,6 +69,18 @@ test('failed preview and table discovery show real backend errors, not a fake em
   await state.loadTables();assert.equal(state.tablesError,'数据库权限不足')
 })
 
+test('successful preview displays source update time locally without mutating raw source records',async t=>{
+  const {state}=await fixture(t),updatedAt='2026-11-07T07:44:16.837Z'
+  const columns=[{name:'updatedAt',label:'更新时间',type:'string',role:'time'}]
+  const result={columns,rows:[{updatedAt}],fetchedAt:'2026-11-07T07:44:20.000Z',quality:'good'}
+  t.mock.method(adminApi,'previewDataSet',async()=>({success:true,result}))
+  await state.preview()
+  assert.equal(state.result.rows[0].updatedAt,updatedAt)
+  assert.match(state.displayPreviewValue(columns[0],updatedAt),/^2026-11-07 \d\d:\d\d:\d\d$/)
+  assert.ok(state.previewValueTitle(columns[0],updatedAt).includes(updatedAt))
+  assert.equal(state.section,'preview');assert.equal(state.failed,false)
+})
+
 test('successful pending save clears factory cache while discard restores saved data-table draft',async t=>{
   const {state}=await fixture(t);state.draft.name='更新名';await settle()
   t.mock.method(adminApi,'saveDataSet',async()=>({success:true,dataset:{...state.draft,revision:'r2'}}))

@@ -18,7 +18,18 @@ async function loadModelInspection(db, id, factoryId) {
 }
 
 function patchModelInspectionLayout(loaded, body) {
-    try { return patchDeviceInspectionLayout(loaded, body); }
+    try {
+        const metadata = patchDeviceInspectionLayout(loaded, body);
+        const hasTarget = metadata.inspection.parts.some(part =>
+            [part.node_path, part.node_name, ...(part.node_paths || []), ...(part.node_names || [])]
+                .some(target => typeof target === 'string' && target.trim().length > 0));
+        // Only this explicit model-layout save establishes authoring provenance.
+        // Bindings/motion saves share the persistence helper below, and normal
+        // metadata normalization may synthesize zero-offset parts automatically.
+        // An intentional original-position or disabled layout is still authored.
+        if (hasTarget) return { ...metadata, disassemblyLayout: { version: 1, configured: true } };
+        return metadata;
+    }
     catch (error) {
         if (error.code === 'DEVICE_INSPECTION_CONFLICT') throw conflict();
         if (error.code?.startsWith('DEVICE_INSPECTION_')) error.code = error.code.replace('DEVICE_', 'MODEL_');

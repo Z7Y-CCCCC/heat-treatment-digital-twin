@@ -35,7 +35,17 @@ export const DATA_SOURCE_CATALOG = Object.freeze([
     ...planned.map(([key, name, group, color]) => ({ key, name, group, color, status: 'planned', badge: name.slice(0, 3), description: '后续批次接入验证' }))
 ].sort((a, b) => order.indexOf(a.key) - order.indexOf(b.key)).map(entry => ({ ...entry, image: `/images/data-sources/${entry.key}.svg` })))
 export const SOURCE_GROUPS = [{ key: 'all', label: '全部类型' }, { key: 'database', label: '关系数据库' }, { key: 'http', label: 'HTTP 接口' }, { key: 'stream', label: '消息 / 网络' }, { key: 'industrial', label: '工业协议' }, { key: 'nosql', label: 'NoSQL / 时序' }, { key: 'file', label: '文件' }]
-export function capabilityLabel(entry) { return ({ ready: '已接入', device: '设备采集', planned: '待接入' })[entry.status] }
+// Adapter availability is not evidence that the factory has saved a connection.
+export function capabilityLabel(entry) { return ({ ready: '可接入', device: '设备采集', planned: '待接入' })[entry.status] }
+
+export function sourceConnectionSummary(connections = []) {
+    const saved = connections.filter(item => !item.primary)
+    return {
+        total: saved.length,
+        enabled: saved.filter(item => item.enabled === true).length,
+        checkedHealthy: saved.filter(item => item.enabled === true && item.health?.status === 'healthy').length
+    }
+}
 
 export function sourceCatalogEntry(connection = {}) {
     const kind = connection.connector === 'file' && /\.xlsx$/i.test(connection.baseUrl || '') ? 'excel' : connection.connector

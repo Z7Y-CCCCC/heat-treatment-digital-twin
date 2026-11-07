@@ -6,7 +6,7 @@ const { getBuiltinModels } = require('../backend/services/builtinModels');
 const { createSmokeSandbox, createSmokeSession, stopOwnedSmokeProcess } = require('../desktop/scripts/smoke-sandbox.cjs');
 const { BACKEND_DIR, findFreePort, startLoggedProcess, waitForOwnedBackend, requireTestPath } = require('../backend/scripts/integration-test-utils.cjs');
 
-async function startLoadingPortsFixture() {
+async function startLoadingPortsFixture({ templateId = 'pit_furnace_2_v1' } = {}) {
     const root = path.resolve(__dirname, '..'), sandbox = await createSmokeSandbox('loading-ports-ui-fixture');
     sandbox.password = 'LoadingPorts-' + crypto.randomBytes(18).toString('hex') + '!';
     const db = new Database(requireTestPath(sandbox.filename));
@@ -14,7 +14,7 @@ async function startLoadingPortsFixture() {
     try {
         const line = db.prepare('SELECT l.*,w.factory_id FROM lines l JOIN workshops w ON w.id=l.workshop_id WHERE l.id=(SELECT line_id FROM devices WHERE line_id IS NOT NULL ORDER BY id LIMIT 1)').get();
         if (!line) throw new Error('An isolated seeded line/workshop is required');
-        const template = getBuiltinModels().find(model => model.id === 'pit_furnace_2_v1');
+        const template = getBuiltinModels().find(model => model.id === templateId);
         if (!template?.file_path) throw new Error('Read-only packaged GLB fixture is required');
         const modelIds = ['loading_ui_model_a', 'loading_ui_model_b'];
         const names = ['送料型号 A', '送料型号 B'];
@@ -25,7 +25,7 @@ async function startLoadingPortsFixture() {
             metadata.loadingPortPreservationMarker = { Case: 'KEEP-ABC', nested: [index, { untouched: true }] };
             metadata.inspection.loadingPortTestMarker = { retained: id };
             db.prepare('INSERT INTO models (id,name,file_path,metadata,default_scale,placement_level,asset_type) VALUES (?,?,?,?,?,?,?)')
-                .run(id, names[index], template.file_path, JSON.stringify(metadata), 1, 'device', 'model');
+                .run(id, names[index], template.file_path, JSON.stringify(metadata), template.default_scale || 1, 'device', 'model');
         }
         const layout = { version: 2, coordinateSpace: 'workshop_local', placementPending: false, transform: { x: 0, y: 0, z: 0, rotationY: 0 }, flowDirection: 'right',
             lanes: [{ id: 'loading_ui_lane', name: '送料设备线', offsetZ: -10, length: 70, sort_order: 0 }],

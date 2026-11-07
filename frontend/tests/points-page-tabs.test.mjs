@@ -8,7 +8,7 @@ test('add point is a single top-toolbar action, not a footer action', () => {
   assert.equal((page.match(/@click="addDataPoint\('normal'\)"/g) || []).length, 1)
   const add = page.indexOf('data-testid="add-data-point"')
   assert.ok(add > page.indexOf('points-filter-toolbar') && add < page.indexOf('导入点表'))
-  assert.ok(add < page.indexOf('class="data-table points-table"'))
+  assert.ok(add < page.indexOf('class="point-table-scroll"'))
   assert.doesNotMatch(page.slice(page.indexOf('data-testid="points-savebar"')), /添加点位/)
   assert.match(page, /data-testid="add-data-point" :disabled="pointsLoading \|\| pointsSaving \|\| !devices\.length" v-permission=/)
 })

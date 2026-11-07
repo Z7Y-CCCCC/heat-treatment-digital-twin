@@ -3,7 +3,7 @@
 // 依赖注入:devices(工厂树)、alert/confirm(弹窗)、storedAdminUiState(持久化初值)、
 // loadEngineStatus(引擎)、selectedDeviceForMonitor + loadRealtimePointValues(实时监视,保存后联动)。
 
-import { ref, reactive, computed, watch, nextTick, onScopeDispose } from 'vue'
+import { ref, reactive, computed, watch, nextTick, onScopeDispose, toRaw } from 'vue'
 import { adminApi } from '../../../config/factoryConfig.js'
 import {
     getPlcAddressHint,
@@ -29,6 +29,9 @@ export function useDataPoints({
     const rowKeys = new WeakMap()
     let nextRowKey = 0
     function pointRowKey(point) {
+        // A newly added raw object and the reactive row in the template share
+        // one identity, including the later scroll-to-new-row callback.
+        point = toRaw(point)
         if (!rowKeys.has(point)) rowKeys.set(point, `point-row-${++nextRowKey}`)
         return rowKeys.get(point)
     }
@@ -418,14 +421,13 @@ export function useDataPoints({
         dataPoints.value.push(point)
         isPointsDirty.value = true
 
-        nextTick(() => {
+        nextTick(async () => {
             if (pointsPageSize.value > 0) {
                 pointsCurrentPage.value = totalPointPages.value
             }
-            const tableContainer = document.querySelector('.table-scroll')
-            if (tableContainer) {
-                tableContainer.scrollTo({ top: tableContainer.scrollHeight, behavior: 'smooth' })
-            }
+            await nextTick()
+            if (pointsDisposed) return
+            document.getElementById?.(pointRowKey(point))?.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' })
         })
     }
 

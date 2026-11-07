@@ -37,6 +37,7 @@ const {
 } = require('./db/database');
 const { getBuiltinModels, mergeBuiltinModels } = require('./services/builtinModels');
 const { stringifyModelMetadata } = require('./services/modelAssetMetadata');
+const { withModelImportLock, findDuplicateModel } = require('./services/modelDuplicates');
 const { assertModelPublishPermission } = require('./services/modelPublicationPermission');
 const { getInspectionPresets } = require('./services/inspectionPresets');
 const { publicProtocolDefinitions } = require('./services/plcProtocolConfig');
@@ -323,17 +324,13 @@ app.post('/api/models/upload', upload.single('modelFile'), async (req, res) => {
         if (getBuiltinModels().some(model => model.id === modelId)) {
             throw Object.assign(new Error('系统内置模型 ID 不能被上传文件覆盖'), { statusCode: 409 });
         }
-        const existing = await db.get('SELECT factory_id FROM models WHERE id = ?', [modelId]);
-        if (existing && existing.factory_id !== req.factoryId) {
-            throw Object.assign(new Error('该模型 ID 已属于共享库或其他工厂，请换一个 ID'), { statusCode: 409 });
-        }
         const level = asset_type === 'environment' ? 'factory' : String(placement_level || 'device');
         if (!['factory', 'workshop', 'line', 'device'].includes(level)) {
             throw Object.assign(new Error('模型适用层级无效'), { statusCode: 400 });
         }
         const normalizedMetadata = stringifyModelMetadata(metadata || '{}', { name: modelName });
         assertModelPublishPermission(req, {}, normalizedMetadata);
-        await db.upsert('models', {
+        const model = {
             id: modelId,
             name: modelName,
             file_path: filePath,
@@ -344,8 +341,23 @@ app.post('/api/models/upload', upload.single('modelFile'), async (req, res) => {
             thumbnail: null,
             default_scale: modelScale(default_scale),
             metadata: normalizedMetadata
-        }, 'id');
-        res.json({ success: true, filePath });
+        };
+        const result = await withModelImportLock(() => db.transaction(async tx => {
+            if (databaseOperationBusy) throw Object.assign(new Error('数据库或备份维护中，请完成后重新上传模型'), { statusCode: 409 });
+            const existing = await tx.get('SELECT factory_id FROM models WHERE id = ?', [modelId]);
+            if (existing && existing.factory_id !== req.factoryId) {
+                throw Object.assign(new Error('该模型 ID 已属于共享库或其他工厂，请换一个 ID'), { statusCode: 409 });
+            }
+            const duplicate = await findDuplicateModel(tx, model, req.factoryId);
+            if (duplicate) {
+                assertModelPublishPermission(req, {}, duplicate.metadata);
+                return { model: duplicate, reused: true };
+            }
+            await tx.upsert('models', model, 'id');
+            return { model, reused: false };
+        }));
+        if (result.reused) fs.rmSync(req.file.path, { force: true });
+        res.json({ success: true, filePath: result.model.file_path, modelId: result.model.id, ...result });
     } catch (e) {
         if (req.file?.path) fs.rmSync(req.file.path, { force: true });
         res.status(e.statusCode || 400).json({ error: e.message });

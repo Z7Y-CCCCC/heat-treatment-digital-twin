@@ -182,9 +182,18 @@ async function buildCatalog(factoryId, deviceId = '', state = null, previewDevic
             : !connection ? '来源连接未配置或已移除，请先在数据源中重新接入'
             : connection.enabled === false ? '来源连接已停用，请先在数据源中启用'
             : !compatible ? '数据表与来源连接类型不一致，请检查数据表接入设置' : '';
+        // The catalog grant does not imply permission to read external records.
+        // The selected table's UI can request a real sample through /records,
+        // where the source-read grant and any required object scope are checked.
+        const previewState = 'not_read';
+        const previewHint = sourceError || (objectScope === 'part'
+            ? '尚未读取实际样本；请选择设备和部件，并确认具有数据表读取权限'
+            : objectScope === 'device'
+                ? '尚未读取实际样本；请选择对应设备，并确认具有数据表读取权限'
+                : '尚未读取实际样本；需具有数据表读取权限，实际值以读取结果为准');
         const tableId = stableId('dataset', dataset.id);
-        table({ id: tableId, datasetId: dataset.id, datasetRevision: dataset.revision, name: dataset.name, sourceType: 'dataset', sourceLabel: dataset.source === 'http' ? '接口 / 文件' : '外部数据库', categoryId: 'uncategorized', objectScope, enabled, sourceReady, quality, sourceError, description: sourceError || '已整理字段，可在设计器直接选取；对象参数沿用数据表映射，实际读取状态以预览为准' });
-        for (const column of dataset.columns || []) item({ id: stableId('field', dataset.id, column.name), tableId, datasetId: dataset.id, datasetRevision: dataset.revision, label: column.label || column.name, categoryId: 'uncategorized', sourceType: 'dataset', type: column.type, unit: column.unit || '', objectScope, enabled, sourceReady, sourceError, quality,
+        table({ id: tableId, datasetId: dataset.id, datasetRevision: dataset.revision, name: dataset.name, sourceType: 'dataset', sourceLabel: dataset.source === 'http' ? '接口 / 文件' : '外部数据库', categoryId: 'uncategorized', objectScope, enabled, sourceReady, quality, sourceError, previewState, previewHint, description: sourceError || '已整理字段，可在设计器直接选取；对象参数沿用数据表映射，实际读取状态以预览为准' });
+        for (const column of dataset.columns || []) item({ id: stableId('field', dataset.id, column.name), tableId, datasetId: dataset.id, datasetRevision: dataset.revision, label: column.label || column.name, fieldName: column.name, fieldRole: column.role || '', categoryId: 'uncategorized', sourceType: 'dataset', type: column.type, unit: column.unit || '', objectScope, enabled, sourceReady, sourceError, quality, previewState, previewHint,
             binding: { mode: 'dataset', datasetId: dataset.id, datasetField: column.name, datasetMode: 'first', deviceScope: scope },
             tooltipBinding: { mode: 'dataset', datasetId: dataset.id, datasetField: column.name, datasetMode: 'first', deviceScope: scope } });
     }

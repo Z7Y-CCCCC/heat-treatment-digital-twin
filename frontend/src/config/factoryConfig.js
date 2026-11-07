@@ -222,6 +222,15 @@ export const adminApi = {
         const params = new URLSearchParams({ ...(deviceId ? { device_id: deviceId } : {}), ...(previewDeviceId ? { preview_device_id: previewDeviceId } : {}) })
         return readApiJson(await fetch(`${API_BASE}/data-center/catalog${params.size ? `?${params}` : ''}`, { cache: 'no-store', ...(factoryId ? { headers: { 'X-Factory-ID': factoryId } } : {}) }), '读取数据中心失败', true)
     },
+    async getDataTableRecords({ tableId, factoryId = '', mode = 'current', q = '', deviceId = '', partId = '', fieldId = '', page = 1, pageSize = 20, start = '', end = '', signal } = {}) {
+        const params = new URLSearchParams({ mode, page: String(page), page_size: String(pageSize),
+            ...(q ? { q } : {}), ...(deviceId ? { device_id: deviceId } : {}), ...(partId ? { part_id: partId } : {}), ...(fieldId ? { field_id: fieldId } : {}),
+            ...(start ? { start } : {}), ...(end ? { end } : {}) })
+        return readApiJson(await fetch(`${API_BASE}/data-center/tables/${pathId(tableId)}/records?${params}`, {
+            cache: 'no-store', signal,
+            ...(factoryId ? { headers: { 'X-Factory-ID': factoryId } } : {})
+        }), '读取数据表实际记录失败', true)
+    },
     async saveDataCategory(definition) { return readApiJson(await fetch(`${API_BASE}/data-center/categories`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(definition) }), '保存数据分类失败', true) },
     async deleteDataCategory(id, revision) { return readApiJson(await fetch(`${API_BASE}/data-center/categories/${pathId(id)}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ revision: typeof revision === 'object' ? revision?.revision : revision }) }), '删除数据分类失败', true) },
     async saveDataItemMetadata(id, definition) { return readApiJson(await fetch(`${API_BASE}/data-center/items/${pathId(id)}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(definition) }), '保存数据项分类失败', true) },

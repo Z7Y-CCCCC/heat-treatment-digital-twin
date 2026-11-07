@@ -81,7 +81,7 @@ async function main() {
         }
         fs.mkdirSync(out, { recursive: true });
         fs.writeFileSync(path.join(out, '资产清单.json'), JSON.stringify(inventory, null, 2));
-        fs.writeFileSync(path.join(out, '使用说明.md'), '# 项目导入文件\n\n本目录不进入安装包，不是数据库备份。\n\n- 项目资产：当前启动器所保存的各工厂引用的模型，活动工厂见资产清单。\n- 正式模型资产：后续 CAD 设备和厂房的可选导入包。\n- 建模源工程：供后续修改的 Blender 文件；不是运行依赖。格式不能说明模型粗糙。\n- 每个模型有同名 ZIP 与展开目录。ZIP 可在后台模型管理/模型动画的“导入模型 / 厂房 / 动作包”中先检查再导入。展开目录有 model.glb，以及模型存在动作时的 motion.glb、motion.json。\n- 导入始终创建新模型，保留拆解、部位绑定、动作及配方。不自动绑定现有设备、不复制工厂/数据库/PLC/API凭据。\n- 单独 GLB 使用“导入模型”；要带动作请导入对应 ZIP，不能把 motion.glb 当作原始模型导入。\n- 源工程 ZIP 的旧重复分发件与厂房 backup-before-detail-v2 不进入本目录或新安装包。\n');
+        fs.writeFileSync(path.join(out, '使用说明.md'), '# 项目导入文件\n\n本目录不进入安装包，不是数据库备份。\n\n- 项目资产：当前启动器所保存的各工厂引用的模型，活动工厂见资产清单。\n- 正式模型资产：后续 CAD 设备和厂房的可选导入包。\n- 建模源工程：供后续修改的 Blender 文件；不是运行依赖。格式不能说明模型粗糙。\n- 每个模型有同名 ZIP 与展开目录。ZIP 可在后台模型管理/模型动画的“导入模型 / 厂房 / 动作包”中先检查再导入。展开目录有 model.glb，以及模型存在动作时的 motion.glb、motion.json。\n- 动作包包含模型文件和动作。导入前显示新建、复用或更新动作的结果；同源模型优先复用，不重复创建。更新动作需明确确认，并保留原有进出料口、拆解布局、设备实例、PLC 点位和设备联动配置。不自动绑定现有设备、不复制工厂/数据库/PLC/API凭据。\n- 单独 GLB 使用“导入模型”；要带动作请导入对应 ZIP，不能把 motion.glb 当作原始模型导入。\n- 源工程 ZIP 的旧重复分发件与厂房 backup-before-detail-v2 不进入本目录或新安装包。\n');
         console.log(JSON.stringify({ directory: out, projects: inventory.projects.map(p => ({ id: p.id, active: p.active, models: p.models.length })), formalAssets: inventory.library.length, sourceFiles: inventory.sources.filter(s => s.file.endsWith('.blend')).length }, null, 2));
     } finally { await db.end(); }
 }

@@ -4,6 +4,8 @@
 const fs = require('node:fs'), path = require('node:path'), crypto = require('node:crypto');
 const unzipper = require('unzipper'), single = require('./modelAssetBundle');
 const { mergeBuiltinModels } = require('./builtinModels');
+const { withModelImportLock, fingerprintModel } = require('./modelDuplicates');
+const { decideImport, revision } = require('./modelAssetImportPlan');
 const FORMAT = 'digital-twin-model-collection', MAX_MODELS = 32;
 const MAX_BYTES = 512 * 1024 * 1024, MAX_EXPANDED = 480 * 1024 * 1024, MAX_FILES = MAX_MODELS * 4 + 1;
 const sha = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
@@ -98,51 +100,78 @@ async function readModel(collection, descriptor, budget) {
 function summary(asset) {
     const m = asset.manifest.model;
     return { model: { id: m.id, name: m.name, assetType: m.asset_type, placementLevel: m.placement_level },
-        actions: asset.actions.map(({ id, label, mode, duration }) => ({ id, label, mode, duration })), files: asset.manifest.files };
+        actions: asset.actions.map(({ id, label, mode, duration }) => ({ id, label, mode, duration })), files: asset.manifest.files,
+        partBindingCount: require('./modelAssetMetadata').normalizeModelMetadata(m.metadata).partBindings.length };
 }
-async function inspectPackage(filename) {
+async function inspectPackage(filename, db = null, factoryId = '') {
     const collection = await openZip(filename);
-    if (collection.single) return { ...await single.inspectAsset(filename), isCollection: false };
+    if (collection.single) return { ...await single.inspectAsset(filename, db, factoryId), isCollection: false };
     const models = [], budget = { bytes: collection.manifestBytes };
-    for (const descriptor of collection.manifest.models) models.push(summary(await readModel(collection, descriptor, budget)));
+    const targets = new Set(), packageIdentities = new Map();
+    for (const [index, descriptor] of collection.manifest.models.entries()) {
+        const asset = await readModel(collection, descriptor, budget), item = summary(asset);
+        if (db) {
+            let identity;
+            try { identity = await fingerprintModel(asset.manifest.model, asset); } catch { /* Leave unverifiable legacy extensions to ordinary import validation. */ }
+            const previous = identity ? packageIdentities.get(identity) : null;
+            if (previous && ['create', 'update_actions'].includes(previous.kind)) item.importDecision = {
+                kind: 'reuse', targetId: previous.id, targetName: previous.name, revision: '', fromPackage: previous.index
+            };
+            else item.importDecision = (await decideImport(db, asset, factoryId)).decision;
+            if (item.importDecision.kind === 'update_actions') {
+                if (targets.has(item.importDecision.targetId)) fail('合集内多个模型将覆盖同一模型动作，请拆分并核对后导入');
+                targets.add(item.importDecision.targetId);
+            }
+            if (identity && !previous) packageIdentities.set(identity, { index, id: item.model.id, name: item.model.name, kind: item.importDecision.kind });
+        }
+        models.push(item);
+    }
     return { inspectedSha256: await single.fileSha(filename), isCollection: true, models };
 }
-async function importPackage(db, filename, factoryId, inspectedSha256, authorize = () => {}, requestId = '') {
+async function importPackage(db, filename, factoryId, inspectedSha256, authorize = () => {}, requestId = '', importPlan = null) {
+    return withModelImportLock(() => importPackageLocked(db, filename, factoryId, inspectedSha256, authorize, requestId, importPlan));
+}
+async function importPackageLocked(db, filename, factoryId, inspectedSha256, authorize = () => {}, requestId = '', importPlan = null) {
     if (!/^[a-f0-9]{64}$/.test(inspectedSha256 || '') || await single.fileSha(filename) !== inspectedSha256) fail('请先检查动作包，文件变化后需重新检查');
     const collection = await openZip(filename);
-    if (collection.single) return single.importValidatedAsset(db, await single.readAsset(filename), factoryId, inspectedSha256, authorize, requestId);
+    if (collection.single) return single.importValidatedAsset(db, await single.readAsset(filename), factoryId, inspectedSha256, authorize, requestId, importPlan);
     if (requestId && !/^[a-zA-Z0-9-]{16,80}$/.test(requestId)) fail('导入请求标识无效');
     // Preflight the entire archive before creating any uploaded file or row.
     const preflight = { bytes: collection.manifestBytes };
     for (const descriptor of collection.manifest.models) await readModel(collection, descriptor, preflight);
-    const models = [], created = [], batchId = requestId || crypto.randomUUID();
+    if (importPlan != null && (!Array.isArray(importPlan) || importPlan.length !== collection.manifest.models.length)) fail('动作包确认计划无效，请重新检查');
+    const models = [], owned = [], outcomes = [], batchId = requestId || crypto.randomUUID();
     try {
         await db.transaction(async tx => {
-            const nested = Object.create(tx); nested.transaction = fn => fn(tx);
+            const nested = Object.create(tx); nested.transaction = fn => fn(tx); nested.assetCollectionTransaction = true;
             const budget = { bytes: collection.manifestBytes };
             for (const [index, descriptor] of collection.manifest.models.entries()) {
                 const itemId = sha(Buffer.from(batchId + '\0' + index));
                 const asset = await readModel(collection, descriptor, budget);
                 let result;
-                try { result = await single.importValidatedAsset(nested, asset, factoryId, inspectedSha256, authorize, itemId); }
-                catch (error) { error.message = descriptor.name + '：' + error.message; throw error; }
-                models.push(result.model); if (!result.reused) created.push(result.model);
+                try {
+                    let confirmed = importPlan?.[index];
+                    if (confirmed?.fromPackage != null) {
+                        if (!Number.isInteger(confirmed.fromPackage) || confirmed.fromPackage < 0 || confirmed.fromPackage >= index) fail('合集模型复用顺序无效，请重新检查');
+                        const previous = models[confirmed.fromPackage];
+                        // Only a real, already-processed model can be referenced.
+                        // The single importer still verifies identical actions;
+                        // this cannot convert a changed action into an update.
+                        confirmed = { kind: 'reuse', targetId: previous.id, revision: revision(previous) };
+                    }
+                    result = await single.importValidatedAsset(nested, asset, factoryId, inspectedSha256, authorize, itemId, confirmed);
+                }
+                catch (error) { if (error.ownedImport) owned.push(error.ownedImport); error.message = descriptor.name + '：' + error.message; throw error; }
+                models.push(result.model); outcomes.push({ id: result.model.id, outcome: result.outcome || (result.reused ? 'reuse' : 'create') });
+                if (result.ownedImport) owned.push(result.ownedImport);
             }
         });
     } catch (error) {
         // On an uncertain database commit, retain assets rather than deleting
         // a possibly committed model. Clean only our known, rolled-back rows.
-        for (const model of created) {
-            let exists = true;
-            try { exists = !!await db.get('SELECT id FROM models WHERE id = ? AND factory_id = ?', [model.id, factoryId]); } catch { /* keep files until database is available */ }
-            if (exists) continue;
-            const root = path.resolve(process.env.UPLOADS_DIR || path.join(__dirname, '../uploads'));
-            const dest = path.join(root, 'projects', model.id.slice('asset_'.length));
-            if (!/^asset_[a-f0-9]{32}$/.test(model.id) || path.dirname(dest) !== path.join(root, 'projects')) throw new Error('Invalid owned import directory');
-            fs.rmSync(dest, { recursive: true, force: true });
-        }
+        for (const item of owned) await single.cleanupOwnedImport(db, item, factoryId);
         throw error;
     }
-    return { isCollection: true, models };
+    return { isCollection: true, models, outcomes };
 }
 module.exports = { FORMAT, MAX_MODELS, MAX_BYTES, MAX_EXPANDED, exportCollection, inspectPackage, importPackage, openZip };

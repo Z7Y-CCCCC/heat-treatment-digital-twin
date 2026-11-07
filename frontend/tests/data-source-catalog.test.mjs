@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { DATA_SOURCE_CATALOG, filterSources, sourceCatalogEntry, sourceEndpoint, sourceStatus } from '../src/views/admin/utils/dataSourceCatalog.js'
+import { DATA_SOURCE_CATALOG, filterSources, sourceCatalogEntry, sourceEndpoint, sourceStatus, capabilityLabel, sourceConnectionSummary } from '../src/views/admin/utils/dataSourceCatalog.js'
 test('complete catalog distinguishes real adapters, device channels and planned connectors', () => {
     assert.equal(DATA_SOURCE_CATALOG.length, 28)
     assert.equal(DATA_SOURCE_CATALOG.filter(entry => entry.status === 'ready').length, 14)
@@ -34,4 +34,20 @@ test('disabled sources are not presented as healthy and unknown is not mistaken 
     assert.equal(sourceStatus({ enabled: false, health: { status: 'healthy' } }).label, '已停用')
     assert.equal(sourceStatus({ enabled: true }).label, '未检查')
     assert.equal(sourceStatus({ enabled: true, health: { status: 'healthy' } }).label, '检查通过')
+})
+
+test('factory source counts only saved external connections, never supported types or the primary database', () => {
+    assert.deepEqual(sourceConnectionSummary(), { total: 0, enabled: 0, checkedHealthy: 0 })
+    const connections = [
+        { id: 'primary', primary: true, enabled: true, health: { status: 'healthy' } },
+        { id: 'a', enabled: true, health: { status: 'healthy' } },
+        { id: 'b', enabled: false, health: { status: 'healthy' } },
+        { id: 'c', enabled: true },
+        { id: 'd', enabled: true, health: { status: 'network_error' } }
+    ]
+    const before = structuredClone(connections)
+    assert.deepEqual(sourceConnectionSummary(connections), { total: 4, enabled: 3, checkedHealthy: 1 })
+    assert.deepEqual(connections, before)
+    assert.equal(capabilityLabel(DATA_SOURCE_CATALOG.find(entry => entry.key === 'mysql')), '可接入')
+    assert.equal(capabilityLabel(DATA_SOURCE_CATALOG.find(entry => entry.key === 'oracle')), '待接入')
 })

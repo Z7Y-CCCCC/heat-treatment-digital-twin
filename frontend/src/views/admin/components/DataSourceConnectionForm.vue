@@ -114,12 +114,13 @@ async function importFile(event) {
 <style scoped src="../styles/form-controls.css"></style>
 <style scoped>
 * { box-sizing: border-box; }
-.source-form { min-width: 0; padding: 0; margin: 0; border: 0; }
+.source-form { font-size:calc(15px * var(--admin-font-scale,1)); line-height:1.6; min-width: 0; padding: 0; margin: 0; border: 0; }
 .source-fields { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:18px 22px; padding:21px 0; }
-label { display: flex; flex-direction: column; gap: 8px; font-size: calc(12px * var(--admin-font-scale, 1)); color: #536176; min-width: 0; }
-.input { width: 100%; min-width: 0; font: inherit; min-height:36px; border-color:#dce1e8; background:#fff; border-radius:6px; color:#344054; }
+label { display: flex; flex-direction: column; gap: 8px; font-size: calc(14px * var(--admin-font-scale, 1)); color: #536176; min-width: 0; }
+.input { width: 100%; min-width: 0; font: inherit; font-size:calc(15px * var(--admin-font-scale,1)); min-height:42px; border-color:#dce1e8; background:#fff; border-radius:6px; color:#344054; }
+.input::placeholder { color:#667085; }
 .wide { grid-column: 1 / -1; }
 .check { flex-direction: row; align-items: center; align-self: end; min-height:36px; border-color:#dce1e8; background:#fff; border-radius:6px; color:#344054; }
-.hint { margin: 0; color: #8490a1; font-size: calc(12px * var(--admin-font-scale, 1)); line-height: 1.6; }
+.hint { margin: 0; color: #526174; font-size: calc(13px * var(--admin-font-scale, 1)); line-height: 1.6; }
 @media(max-width: 700px) { .source-fields { grid-template-columns: minmax(0, 1fr); } }
 </style>

@@ -13,7 +13,7 @@ test('point device picker compiles, has accessible wrap-capable options and boun
   const admin = await read('../src/views/AdminPanel.vue')
   assert.match(admin, /<PointDeviceSelect\s[\s\S]*?:disabled="pointsLoading \|\| pointsSaving \|\| !canAdminPage\(controlPermissionPage, 'edit'\)"/)
   assert.match(admin, /:key="pointRowKey\(p\)" :class="\{ 'is-new-point': !p\.id \}"/)
-  assert.match(admin, /\.points-table tr\.is-new-point > td[\s\S]*?#42b883/)
+  assert.match(admin, /\.points-table tr\.is-new-point>td[^}]*#42b883/)
 })
 test('motion-package transfer belongs to animation authoring, never scene/lighting', async () => {
   const environment = await read('../src/views/admin/components/NativeEnvironmentSettings.vue')

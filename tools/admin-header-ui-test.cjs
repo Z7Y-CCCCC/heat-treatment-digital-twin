@@ -23,14 +23,18 @@ let server, browser, page;
     await page.getByRole('button', { name: '解锁后台', exact: true }).click();
     const header = page.getByRole('banner', { name: '后台工具栏', exact: true }); await header.waitFor();
     assert.equal(await header.getByText('数字孪生后台配置管理', { exact: true }).count(), 0);
+    assert.equal(await header.locator('.admin-setup-flow, .admin-setup-step').count(), 0);
+    assert.equal(await header.getByText('配置顺序', { exact: true }).count(), 0);
     const lock = header.getByRole('button', { name: '立即锁定', exact: true });
     const guide = header.getByRole('button', { name: '打开系统常见问题向导', exact: true });
     assert.equal((await lock.textContent()).trim(), ''); assert.equal(await lock.locator('svg').count(), 1);
     assert.match(await lock.getAttribute('title'), /立即锁定/);
     assert.deepEqual(await header.locator('.admin-connection-strip').evaluate(el => [...el.children].map(node =>
-        node.matches('.admin-connection-pill') ? 'status' : node.matches('.admin-lock-button') ? 'lock' : node.matches('.help-guide-launch') ? 'guide' : 'unexpected')),
-        ['status', 'status', 'lock', 'guide']);
-    check('long heading is absent; two status badges precede an icon-only, accessibly named lock and the guide');
+        node.matches('.admin-connection-controls') ? 'connections' : node.matches('.admin-reading-settings') ? 'reading' : node.matches('.admin-lock-button') ? 'lock' : node.matches('.help-guide-launch') ? 'guide' : 'unexpected')),
+        ['connections', 'reading', 'lock', 'guide']);
+    assert.deepEqual(await header.locator('.admin-connection-pill').evaluateAll(nodes => nodes.map(node => node.dataset.connectionKind)), ['unity', 'devices']);
+    assert.equal(await header.getByRole('button', { name: '外观设置', exact: true }).count(), 1);
+    check('long heading and configuration-order strip are absent; connection, reading, icon-only lock and guide remain');
 
     for (const width of [1920, 1626, 1440, 1280, 1024, 720]) {
         await page.setViewportSize({ width, height: 1000 });
@@ -38,12 +42,12 @@ let server, browser, page;
         const bounds = await header.evaluate(el => {
             const rect = node => { const r = node.getBoundingClientRect(); return { x: r.x, y: r.y, right: r.right, bottom: r.bottom, width: r.width, height: r.height }; };
             return { header: rect(el), guide: rect(el.querySelector('.help-guide-launch')), lock: rect(el.querySelector('.admin-lock-button')),
-                flow: rect(el.querySelector('.admin-setup-flow')), status: rect(el.querySelector('.admin-connection-pill')),
+                logo: rect(el.querySelector('.header-logo-section')), status: rect(el.querySelector('.admin-connection-pill')),
                 padding: parseFloat(getComputedStyle(el).paddingRight) };
         });
         assert.ok(Math.abs(bounds.guide.right - (bounds.header.right - bounds.padding)) < 2, `guide must be rightmost at ${width}px`);
         assert.ok(bounds.lock.right < bounds.guide.x && bounds.guide.x - bounds.lock.right <= 9, `lock immediately before guide at ${width}px`);
-        assert.ok(bounds.flow.right <= bounds.status.x, `setup steps must not overlap status at ${width}px`);
+        assert.ok(bounds.logo.right <= bounds.status.x, `logo must not overlap status at ${width}px`);
         assert.ok(bounds.lock.width === 36 && bounds.lock.height === 36);
         assert.ok(bounds.lock.y >= bounds.header.y && bounds.guide.bottom <= bounds.header.bottom);
         await header.screenshot({ path: path.join(directory, `header-${width}.png`) });

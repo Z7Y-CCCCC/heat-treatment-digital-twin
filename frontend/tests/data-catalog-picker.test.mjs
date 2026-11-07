@@ -8,7 +8,7 @@ import { deferred, installBrowser, settle } from './helpers.mjs'
 
 const url = new URL('../src/views/admin/components/DataCatalogPicker.vue', import.meta.url)
 const source = await readFile(url, 'utf8')
-const { descriptor } = parse(source.replace('</script>', '\ndefineExpose({ catalog, loading, error, categoryId, tableId, query, chosenId, items, tables, chosen, current, load, choose })\n</script>'))
+const { descriptor } = parse(source.replace('</script>', '\ndefineExpose({ catalog, loading, error, categoryId, tableId, chosenId, items, tables, chosen, current, load, choose })\n</script>'))
 let compiled = compileScript(descriptor, { id: 'catalog-test' }).content
 for (const match of [...compiled.matchAll(/from\s+(['"])([^'"]+)\1/g)]) {
   const name = match[2], target = name.startsWith('.') ? new URL(name, url).href : import.meta.resolve(name)
@@ -45,7 +45,7 @@ test('picker keeps the original binding until an explicit choice and carries sou
   assert.equal(f.calls[0].previewDeviceId, 'A')
   assert.equal(f.calls[0].deviceId, undefined, 'ordinary canvases keep the full catalog, not only the preview device')
   assert.equal(JSON.stringify(binding), before)
-  f.vm.query = '不匹配'; await nextTick()
+  f.vm.categoryId = '不匹配'; await nextTick()
   assert.equal(f.vm.chosenId, '')
   assert.equal(f.vm.items.length, 0)
 })
@@ -59,6 +59,35 @@ test('immediate row picker emits only a valid explicit field selection and reado
   f.vm.chosenId = ''; await nextTick(); f.vm.chosenId = 'temp-A'; await nextTick(); f.vm.choose()
   assert.equal(f.emitted.filter(Boolean).length, 1)
   assert.equal(f.emitted.includes(null), true)
+})
+
+test('category and table menus remain sufficient to select data without search or changing the old binding', async t => {
+  const A = apiResult('A'), B = apiResult('B')
+  B.items[0].categoryId = 'business'
+  const catalog = { success: true,
+    categories: [...A.categories, { id: 'business', name: '生产业务' }, { id: 'empty', name: '空分类' }],
+    tables: [...A.tables, ...B.tables], items: [...A.items, ...B.items] }
+  const binding = { mode: 'runtime', path: 'old.path' }, before = JSON.stringify(binding)
+  const f = await fixture(t, async () => catalog, { binding })
+  assert.deepEqual(f.vm.items.map(item => item.id), ['temp-A', 'temp-B'])
+  f.vm.tableId = 'plc-A'; f.vm.chosenId = 'temp-A'; await nextTick()
+  assert.deepEqual(f.vm.items.map(item => item.id), ['temp-A'])
+  f.vm.categoryId = 'business'; await nextTick()
+  assert.equal(f.vm.tableId, '')
+  assert.equal(f.vm.chosenId, '')
+  assert.deepEqual(f.vm.tables.map(table => table.id), ['plc-B'])
+  f.vm.tableId = 'plc-B'; f.vm.chosenId = 'temp-B'; await nextTick()
+  assert.equal(f.emitted.length, 0)
+  f.vm.choose()
+  assert.equal(f.emitted[0].id, 'temp-B')
+  assert.equal(f.emitted[0].binding.pointId, 'point-B')
+  assert.equal(JSON.stringify(binding), before)
+  f.vm.categoryId = 'empty'; await nextTick()
+  assert.equal(f.vm.tableId, '')
+  assert.equal(f.vm.chosenId, '')
+  assert.deepEqual(f.vm.items, [])
+  assert.deepEqual(f.vm.tables, [])
+  assert.equal(f.emitted.length, 1)
 })
 
 test('factory/device transitions clear the old catalog immediately and reject a late previous response', async t => {
@@ -93,6 +122,8 @@ test('picker template compiles with native labels, beginner copy and no technica
   const parsed = parse(source).descriptor
   const script = compileScript(parsed, { id: 'catalog-compile' })
   assert.deepEqual(compileTemplate({ source: parsed.template.content, filename: 'DataCatalogPicker.vue', id: 'catalog-compile', compilerOptions: { bindingMetadata: script.bindings } }).errors, [])
-  for (const label of ['数据用途分类', '选择数据表', '选择具体数据', '搜索数据项']) assert.ok(source.includes(label))
+  for (const label of ['数据用途分类', '选择数据表', '选择具体数据']) assert.ok(source.includes(label))
+  assert.doesNotMatch(source, /搜索数据项|搜索中文名称|type="search"|\bquery\b/)
+  assert.doesNotMatch(parsed.template.content, /<input\b/)
   assert.doesNotMatch(parsed.template.content, /jsonPath|pointKey|apiPath|connectionId/)
 })

@@ -59,10 +59,25 @@ const action = (nodes, id = 'user_door_lift') => ({ id, label: '门升降与转�
     const deviceRoute=`/api/devices/${device.id}/animations`, animation=await ok(deviceRoute);
     assert.ok(animation.actions.some(a=>a.id==='clip:'+draft.id));
     const binding={actionId:'clip:'+draft.id,enabled:true,pointId:String(point.id),inputMin:0,inputMax:100,invert:false,speed:1,transitionSeconds:0};
-    await ok(deviceRoute,'PUT',{revision:animation.revision,config:{version:1,staleMs:1500,bindings:[binding]}});
+    const beforeRejectedBinding=await ok(`/api/devices/${device.id}`);
+    const rejectedBinding=await request(deviceRoute,'PUT',{revision:animation.revision,config:{version:1,staleMs:1500,bindings:[binding]}});
+    assert.equal(rejectedBinding.status,400,'retired custom clips cannot acquire newly enabled device bindings');
+    assert.match(rejectedBinding.data.error,/旧自定义动画.*不能再启用/);
+    assert.deepEqual(await ok(`/api/devices/${device.id}`),beforeRejectedBinding,'rejected activation cannot mutate any stored device fields');
+    // Seed only this owned output database to represent a pre-retirement device.
+    // The public API must never create that enabled legacy state now.
+    const historicalBinding={...binding,kind:'clip',mode:'position',clipId:draft.id,partId:'',sourceGroup:'analog',sourceKey:'stroke'};
+    const historicalInstance={...JSON.parse(beforeRejectedBinding.instance_config||'{}'),animationBindings:{version:1,staleMs:1500,bindings:[historicalBinding]}};
+    const historyDb=new Database(path.join(data,'factory.db'));
+    try { historyDb.prepare('UPDATE devices SET instance_config=? WHERE id=?').run(JSON.stringify(historicalInstance),device.id); }
+    finally { historyDb.close(); }
     assert.equal((await request(route,'PUT',{revision:saved.revision,actions:[]})).status,409,'cannot delete a bound action');
     assert.equal((await request(route,'PUT',{revision:saved.revision,actions:[{...draft,mode:'running'}]})).status,409,'cannot silently alter bound driving mode');
     const edited={...draft,tracks:[{...draft.tracks[0],to:1.2},draft.tracks[1]]}, editedSaved=await ok(route,'PUT',{revision:saved.revision,actions:[edited]});assert.notEqual(editedSaved.bundle.clipSha256,saved.bundle.clipSha256);
+    const historical=await ok(deviceRoute),disabled=await ok(deviceRoute,'PUT',{revision:historical.revision,config:{...historical.config,bindings:historical.config.bindings.map(row=>({...row,enabled:false}))}});
+    assert.equal(disabled.config.bindings[0].enabled,false);
+    const afterRetirement=JSON.parse((await ok(`/api/devices/${device.id}`)).instance_config);
+    assert.deepEqual(afterRetirement,{...historicalInstance,animationBindings:{...historicalInstance.animationBindings,bindings:[{...historicalBinding,enabled:false}]}},'explicit retirement changes only the legacy enabled flag, not its stored definition or other device fields');
     assert.equal((await request(route,'GET',null,'factory_pit_furnaces_v1')).status,404);
     const cadRoute=`/api/models/${template.id}/motion-actions`, cad=await ok(cadRoute), cadDraft=action(cad.nodes,'user_extra');
     const originalCadClips=JSON.parse(fs.readFileSync(author.localFile(template.motion_package.clipPath))).clips;
@@ -85,6 +100,6 @@ const action = (nodes, id = 'user_door_lift') => ({ id, label: '门升降与转�
     const migratedBytes=Buffer.from(await (await fetch(origin+migrated.motion_package.clipPath)).arrayBuffer());assert.equal(hash(migratedBytes),migrated.motion_package.clipSha256);assert.equal(JSON.parse(migratedBytes).modelId,migrated.id);
     const reopened=await ok(`/api/models/${migrated.id}/motion-actions`,'GET',null,imported.factoryId);assert.equal(reopened.actions[0].id,draft.id);
     await ok(`/api/models/${migrated.id}/motion-actions`,'PUT',{revision:reopened.revision,actions:reopened.actions},imported.factoryId);
-    const result={success:true,directory,checks:['generic GLB including duplicate names','preview cannot publish','immutable source and hash verified assets','sampled position/rotation','CAS, invalid targets/timing/duplicate channel validation','per-device point binding','bound deletion/mode protection','editing changes portable hash without Unity code changes','preserves all built-in CAD clips','factory isolation','project export/import preserves clips, rewrites model identity and hashes, and permits re-editing']};
+    const result={success:true,directory,checks:['generic GLB including duplicate names','preview cannot publish','immutable source and hash verified assets','sampled position/rotation','CAS, invalid targets/timing/duplicate channel validation','retired custom clip activation denied without stored changes','explicit retirement preserves the historical binding and other device fields','existing bound history deletion/mode protection','editing changes portable hash without Unity code changes','preserves all built-in CAD clips','factory isolation','project export/import preserves clips, rewrites model identity and hashes, and permits re-editing']};
     fs.writeFileSync(path.join(directory,'result.json'),JSON.stringify(result,null,2));console.log(JSON.stringify(result,null,2));
 })().catch(error=>{console.error(error);process.exitCode=1}).finally(()=>forceStop(server));

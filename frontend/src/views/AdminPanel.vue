@@ -76,6 +76,7 @@ import CadMotionPreview from './admin/components/CadMotionPreview.vue'
 import DeviceAnimationLink from './admin/components/DeviceAnimationLink.vue'
 import { cadMotionActions } from '../three/cadMotionProfiles.js'
 import { CLEANER_ACTIONS, motionEntries } from './admin/utils/motionEntries.js'
+import { formatModelSetupOption } from './admin/utils/modelSetupStatus.js'
 import ManualDisassemblyLayout from './admin/components/ManualDisassemblyLayout.vue'
 import { useManualDisassemblyPage } from './admin/composables/useManualDisassemblyPage.js'
 import ModelInspectionEditor from './admin/components/ModelInspectionEditor.vue'
@@ -1610,7 +1611,7 @@ const modelFileInputRef = ref(null)
 const selectedModelFile = ref(null)
 const MODEL_LIBRARY_STEPS = [
     { key: 'library', label: '模型资产', description: '选择与管理模型' },
-    { key: 'ports', label: '进出料口', description: '配置入口、出口、送料高度与方向' },
+    { key: 'ports', label: '进出料口', optional: true, description: '可选：点击口下沿，设置动画对齐基准' },
     { key: 'inspection', label: '拆解检查', description: '配置外壳、关键部件、镜头与点位上下文' },
     { key: 'bindings', label: '部位绑定', description: '把模型节点绑定到实时点位' }
 ]
@@ -3413,16 +3414,17 @@ async function uploadModel() {
         const result = await adminApi.uploadModel(fd)
         if (result?.error) return alert(result.error, { title: '上传模型失败', type: 'danger' })
         if (!result?.success) return alert('上传模型失败：后端没有返回成功状态', { title: '上传模型失败', type: 'danger' })
-        const uploadedId = modelImportForm.id
-        const uploadedName = modelImportForm.name
+        const uploadedId = result.model?.id || result.modelId || modelImportForm.id
+        const uploadedName = result.model?.name || modelImportForm.name
         clearSelectedModelFile()
         await loadModels()
         const uploadedModel = models.value.find(model => model.id === uploadedId)
         if (uploadedModel) await previewExistingModel(uploadedModel, { afterUpload: true })
         modelLibraryStep.value = 'library'
         modelLevelFilter.value = 'all'
-        modelPreviewStatus.value = `已上传：${uploadedName}`
-        await alert(`模型「${uploadedName}」已上传`, { title: '上传成功', type: 'success' })
+        const displayedName = uploadedModel?.name || uploadedName
+        modelPreviewStatus.value = result.reused ? `已复用已有模型：${displayedName}` : `已上传：${displayedName}`
+        await alert(result.reused ? `模型「${displayedName}」已在模型库中，已直接复用，不重复创建。` : `模型「${displayedName}」已上传`, { title: result.reused ? '已复用模型' : '上传成功', type: 'success' })
     } finally {
         modelUploading.value = false
     }
@@ -4195,6 +4197,16 @@ function deviceHierarchyLabel(device) {
     const workshop = workshops.value.find(item => item.id === getDeviceWorkshopId(device))
     const line = lines.value.find(item => item.id === device.line_id)
     return [workshop?.name || '未分配车间', line?.name || '车间级', device.name || device.id || '未知设备'].join(' / ')
+}
+
+function pointMonitorDevice(point = {}) {
+    return devices.value.find(device => String(device.id) === String(point.device_id))
+        || { id: point.device_id, name: point.device_name }
+}
+
+function pointMonitorDeviceName(point) {
+    const device = pointMonitorDevice(point)
+    return device.name || device.id || '未知设备'
 }
 
 function buildDevicePayloadForSave(device, workshopId) {
@@ -7176,18 +7188,6 @@ function savePointsPage() {
     return canAdminPage('points', 'edit') ? saveAllPoints() : saveAlarmTexts()
 }
 
-const adminSetupFlow = [
-    { key: 'system', label: '系统', tab: 'settings', settingsSubpage: 'database', description: '确认数据库、运行服务与数据通路' },
-    { key: 'workshop', label: '车间', tab: 'workshops', description: '建立车间并确定空间范围' },
-    { key: 'line', label: '产线', tab: 'lines', description: '创建产线、设备线与导轨结构' },
-    { key: 'model', label: '模型', tab: 'models', description: '导入与配置设备 3D 模型' },
-    { key: 'device', label: '设备', tab: 'devices', description: '创建设备并关联产线和模型' },
-    { key: 'composer', label: '编排', tab: 'composer', description: '调整设备位置、朝向与缩放' },
-    { key: 'points', label: '点位', tab: 'points', description: '配置 PLC 点位名称、地址与周期' },
-    { key: 'screen', label: '画面', tab: 'platform', platformSubpage: 'designer', description: '设计组件、绑定数据并发布画面' },
-    { key: 'verify', label: '验收', tab: 'point-monitor', description: '检查实时值、数据质量与连接状态' }
-]
-
 async function openAdminSetupStep(step) {
     if (!step?.tab || !canSelectTab(step.tab)
         || step.settingsSubpage && !canAdminPage(`settings.${step.settingsSubpage}`)
@@ -7218,26 +7218,6 @@ async function openAdminSetupStep(step) {
                     </svg>
                 </span>
             </div>
-            <nav class="admin-setup-flow" aria-label="推荐配置顺序">
-                <span class="admin-setup-flow-title">配置顺序</span>
-                <div class="admin-setup-flow-track">
-                    <template v-for="(step, index) in adminSetupFlow.filter(step => canSelectTab(step.tab) && (!step.platformSubpage || canAdminPage(`platform.${step.platformSubpage}`)) && (!step.settingsSubpage || canAdminPage(`settings.${step.settingsSubpage}`)))" :key="step.key">
-                        <button
-                            type="button"
-                            class="admin-setup-step"
-                            :class="{ active: activeTab === step.tab }"
-                            :aria-current="activeTab === step.tab ? 'step' : undefined"
-                            :aria-label="`第 ${index + 1} 步：${step.label}，${step.description}`"
-                            :title="`${index + 1}. ${step.label} · ${step.description}`"
-                            @click="openAdminSetupStep(step)"
-                        >
-                            <span class="admin-setup-step-index">{{ index + 1 }}</span>
-                            <span class="admin-setup-step-label">{{ step.label }}</span>
-                        </button>
-                        <span v-if="index < adminSetupFlow.length - 1" class="admin-setup-flow-connector" aria-hidden="true"></span>
-                    </template>
-                </div>
-            </nav>
             <div class="admin-connection-strip" aria-label="系统连接状态" aria-live="polite">
                 <AdminConnectionStatus
                     :unity-connected="nativeScenePreviewConnected"
@@ -8339,7 +8319,6 @@ async function openAdminSetupStep(step) {
                                         </div>
                                     </td>
                                     <td>
-                                        <button type="button" @click="openDeviceLoadingPorts(d)" class="btn btn-sm" v-permission="{ page: 'devices', action: 'edit' }">进出料口微调</button>
                                         <button @click="openEditDevice(d)" class="btn btn-sm" v-permission="{ page: controlPermissionPage, action: 'edit' }">编辑</button>
                                         <button @click="deleteDevice(d.id)" class="btn btn-danger btn-sm" v-permission="{ page: controlPermissionPage, action: 'delete' }">删除</button>
                                     </td>
@@ -8381,7 +8360,6 @@ async function openAdminSetupStep(step) {
                                         </div>
                                     </td>
                                     <td>
-                                        <button type="button" @click="openDeviceLoadingPorts(d)" class="btn btn-sm" v-permission="{ page: 'devices', action: 'edit' }">进出料口微调</button>
                                         <button @click="openEditDevice(d)" class="btn btn-sm" v-permission="{ page: controlPermissionPage, action: 'edit' }">编辑</button>
                                         <button @click="deleteDevice(d.id)" class="btn btn-danger btn-sm" v-permission="{ page: controlPermissionPage, action: 'delete' }">删除</button>
                                     </td>
@@ -8408,7 +8386,7 @@ async function openAdminSetupStep(step) {
                         <label>选择模型
                             <select :value="manualDisassemblyModelId" aria-label="选择拆解布局模型" :disabled="manualDisassemblySaving || manualDisassemblyLoading" @change="changeManualDisassemblyModel">
                                 <option v-if="!manualDisassemblyChoices.length" value="">模型库暂无设备模型</option>
-                                <option v-for="item in manualDisassemblyChoices" :key="item.id" :value="item.id">{{ item.name || item.id }}</option>
+                                <option v-for="item in manualDisassemblyChoices" :key="item.id" :value="item.id">{{ formatModelSetupOption(item, 'disassembly') }}</option>
                             </select>
                         </label>
                     </header>
@@ -8430,10 +8408,11 @@ async function openAdminSetupStep(step) {
                     <template v-if="activeTab === 'model-animations'">
                         <div class="manual-layout-page-heading">
                             <div><h2>动作动画</h2><p class="desc">{{ motionWorkspaceMode === 'live' ? '按现场层级选设备，从数据中心选数据，设置动作触发条件并同步 Unity。' : motionWorkspaceMode === 'transfer' ? '选择设备编排联动预览。' : '配置模型部件动作。' }}</p></div>
+                            <div v-if="motionWorkspaceMode === 'live'" id="motion-live-device-picker" class="motion-live-device-picker-slot"></div>
                             <label v-if="motionWorkspaceMode === 'parts'" class="manual-layout-model-picker">选择模型
                                 <select :value="selectedPreviewModelId" aria-label="选择动作动画模型" :disabled="modelBindingSaving || modelNameSaving" @change="changeMotionModel">
                                     <option v-if="!motionModelOptions.length" value="">暂无可配置的设备模型</option>
-                                    <option v-for="model in motionModelOptions" :key="model.id" :value="model.id">{{ model.name || model.id }}</option>
+                                    <option v-for="model in motionModelOptions" :key="model.id" :value="model.id">{{ formatModelSetupOption(model, 'parts') }}</option>
                                 </select>
                             </label>
                         </div>
@@ -8453,7 +8432,7 @@ async function openAdminSetupStep(step) {
                         <p class="desc">管理模型资产、拆解检查与部位绑定。</p>
                         <label v-if="modelLibraryStep === 'ports'" class="loading-port-model-picker">选择模型
                             <select :value="selectedPreviewModelId" aria-label="选择进出料口模型" :disabled="modelLoadingPortRef?.busy" @change="changeLoadingPortModel">
-                                <option v-for="model in loadingPortModelOptions" :key="model.id" :value="model.id">{{ model.name || model.id }}</option>
+                                <option v-for="model in loadingPortModelOptions" :key="model.id" :value="model.id">{{ formatModelSetupOption(model, 'ports') }}</option>
                             </select>
                         </label>
                     </template>
@@ -8472,7 +8451,7 @@ async function openAdminSetupStep(step) {
                             >
                                 <span class="secondary-page-number">{{ String(index + 1).padStart(2, '0') }}</span>
                                 <span class="secondary-page-copy">
-                                    <strong>{{ step.label }}</strong>
+                                    <strong>{{ step.label }}<span v-if="step.optional" class="model-step-optional">可选</span></strong>
                                     <small>{{ step.description }}</small>
                                 </span>
                                 <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m7.5 4.75 5.25 5.25-5.25 5.25" /></svg>
@@ -8482,7 +8461,7 @@ async function openAdminSetupStep(step) {
 
                     <LineEquipmentSequence v-if="activeTab === 'model-animations' && motionWorkspaceMode === 'transfer'" :models="models" :lines="lines" :devices="devices" :workshops="workshops" />
                     <p v-if="activeTab === 'model-animations' && motionWorkspaceMode === 'live' && motionFactoryError" role="alert">{{ motionFactoryError }} <button type="button" class="btn btn-sm" @click="loadMotionFactories">重试</button></p>
-                    <DeviceAnimationLink v-if="activeTab === 'model-animations' && motionWorkspaceMode === 'live' && motionFactoryId" ref="deviceAnimationLinkRef" :models="models" :devices="devices" :workshops="workshops" :lines="lines" :factories="motionFactories" :factory-id="motionFactoryId" :request-factory-switch="requestMotionFactorySwitch" :confirm="confirm" />
+                    <DeviceAnimationLink v-if="activeTab === 'model-animations' && motionWorkspaceMode === 'live' && motionFactoryId" ref="deviceAnimationLinkRef" device-picker-target="#motion-live-device-picker" :models="models" :devices="devices" :workshops="workshops" :lines="lines" :factories="motionFactories" :factory-id="motionFactoryId" :request-factory-switch="requestMotionFactorySwitch" :confirm="confirm" />
                     <LoadingPortEditor v-if="activeTab === 'models' && modelLibraryStep === 'ports' && activePreviewModel" ref="modelLoadingPortRef"
                         :model="activePreviewModel" :confirm="confirm" @saved="applySavedLoadingPorts" />
                     <div v-if="activeTab === 'model-animations' ? motionWorkspaceMode === 'parts' : modelLibraryStep !== 'ports'" class="model-library-layout" :class="{ 'inspection-workspace': modelLibraryStep === 'inspection', 'animation-workspace': activeTab === 'model-animations' }">
@@ -8549,7 +8528,6 @@ async function openAdminSetupStep(step) {
                                             <td>{{ getModelBindingCount(m) }}</td>
                                             <td :title="m.file_path || '（内置）'">{{ m.file_path || '（内置）' }}</td>
                                             <td>
-                                                <button v-if="(m.placement_level || 'device') === 'device' && m.file_path && !isEnvironmentModel(m)" type="button" class="btn btn-sm" @click.stop="openModelLoadingPorts(m)">进出料口</button>
                                                 <button v-if="!m.is_builtin || DELETABLE_RETIRED_MODEL_IDS.has(m.id)" @click.stop="deleteModel(m.id)" class="btn btn-danger btn-sm" v-permission="{ page: controlPermissionPage, action: 'delete' }">删除</button>
                                                 <span v-else style="color:#888">系统内置</span>
                                             </td>
@@ -8600,8 +8578,8 @@ async function openAdminSetupStep(step) {
                                         <div><strong>设备动作 <span>{{ cadPreviewActions.length }}</span></strong><small>选择下方节点，在本页预览</small></div>
                                         <div class="cleaner-process-action-grid"><button v-for="action in cadPreviewActions" :key="action.id" type="button" :aria-label="`预览 CAD 动作：${action.label}`" :aria-pressed="motionInlineProcess === action.id" @click="previewInlineCleanerProcess(action.id, true)"><span>{{ action.label }}</span><small>选中</small></button></div>
                                     </section>
-                                    <section v-if="activeTab === 'model-animations' && selectedPreviewModelId === 'ultrasonic_cleaner_cad'" class="cleaner-process-actions" aria-label="清洗机工艺动作">
-                                        <div><strong>工艺动作 <span>{{ cleanerProcessActions.length }}</span></strong><small>选择下方节点，在本页预览</small></div>
+                                    <section v-if="activeTab === 'model-animations' && selectedPreviewModelId === 'ultrasonic_cleaner_cad'" class="cleaner-process-actions" aria-label="清洗机内置部件动作">
+                                        <div><strong>内置部件动作 <span>{{ cleanerProcessActions.length }}</span></strong><small>选择下方节点，在本页预览</small></div>
                                         <div class="cleaner-process-action-grid"><button v-for="action in cleanerProcessActions" :key="action.id" type="button" :aria-label="`预览工艺：${action.label}`" :aria-pressed="motionInlineProcess === action.id" @click="previewInlineCleanerProcess(action.id, true)"><span>{{ action.label }}</span><small>选中</small></button></div>
                                     </section>
                                     <nav v-if="activeTab === 'model-animations'" class="motion-panel-tabs" aria-label="动作编辑面板">
@@ -8616,7 +8594,7 @@ async function openAdminSetupStep(step) {
                                         <div class="motion-binding-cards">
                                             <article v-for="{ binding, index, process } in motionBindingPageEntries" :key="process ? `process_${process.id}` : binding.id" class="motion-binding-card" :class="{ active: process ? motionInlineProcess === process.id : !motionInlineProcess && previewModelBindingIndex === index }">
                                                 <template v-if="process">
-                                                    <button type="button" class="motion-binding-select" @click="previewInlineCleanerProcess(process.id)"><strong>{{ process.label }}</strong><code>{{ process.detail }}</code><small>工艺动作 · 模拟预览</small></button>
+                                                    <button type="button" class="motion-binding-select" @click="previewInlineCleanerProcess(process.id)"><strong>{{ process.label }}</strong><code>{{ process.detail }}</code><small>内置部件动作 · 模拟预览</small></button>
                                                     <div class="motion-card-actions"><button type="button" class="btn btn-sm" :aria-label="`预览工艺节点：${process.label}`" @click="previewInlineCleanerProcess(process.id)">预览</button></div>
                                                 </template>
                                                 <template v-else>
@@ -8753,7 +8731,7 @@ async function openAdminSetupStep(step) {
                             </section>
                         </section>
 
-                        <aside v-if="inlineCleanerPreview" class="model-preview-panel inline-process-panel" aria-label="工艺动作本页预览">
+                        <aside v-if="inlineCleanerPreview" class="model-preview-panel inline-process-panel" aria-label="内置部件动作本页预览">
                             <ModelTransferSequence ref="motionInlinePreviewRef" :models="models" :initial-stage="motionInlineProcess" inline-preview @close-preview="stopMotionPreview" />
                         </aside>
                         <aside v-if="inlineCadPreview" class="model-preview-panel inline-process-panel" aria-label="CAD 设备动作本页预览">
@@ -9104,7 +9082,7 @@ async function openAdminSetupStep(step) {
                     <div class="form-row points-filter-toolbar">
                         <div>
                             <label style="font-size:calc(12px * var(--admin-font-scale, 1)); color:#86868b; display:block; margin-bottom:5px;">筛选设备</label>
-                            <select v-model="selectedDeviceForPoints" aria-label="筛选点位设备" @change="loadDataPoints" :disabled="pointsSaving" class="input" style="width:250px">
+                            <select v-model="selectedDeviceForPoints" aria-label="筛选点位设备" @change="loadDataPoints" :disabled="pointsSaving" class="input" style="width:min(100%, 360px)">
                                 <option value="all">全部设备</option>
                                 <option v-for="d in devices" :key="d.id" :value="d.id">{{ deviceHierarchyLabel(d) }}</option>
                             </select>
@@ -9125,87 +9103,44 @@ async function openAdminSetupStep(step) {
                     <div v-if="selectedDeviceForPoints">
                         <section id="points-panel-mapping" v-show="pointsSubpage === 'mapping'">
                         <div class="point-toolbar">
-                            <button @click="showPointAdvancedFields = !showPointAdvancedFields" class="btn btn-sm">
+                            <FactoryVoiceToggle />
+                            <button type="button" @click="showPointAdvancedFields = !showPointAdvancedFields" :aria-expanded="showPointAdvancedFields" class="btn btn-sm">
                                 {{ showPointAdvancedFields ? '收起换算字段' : '显示换算字段' }}
                             </button>
                         </div>
-                        <div class="table-scroll">
-                            <table class="data-table points-table" :class="{ 'points-table-advanced': showPointAdvancedFields }">
-                                <thead>
-                                    <tr>
-                                        <th v-if="isAllPointsMode">设备</th>
-                                        <th>点位名称</th><th>点位用途</th><th>数据类型</th><th>PLC 地址</th>
-                                        <th>采集周期(ms)</th><th>读写</th>
-                                        <th v-if="showPointAdvancedFields" title="PLC 原始值乘以这个数，常用于把整数缩放成工程值">换算倍率</th>
-                                        <th v-if="showPointAdvancedFields" title="倍率换算后再加上的修正值，常用于传感器零点校准">偏移修正</th>
-                                        <th v-if="showPointAdvancedFields" title="控制画面显示的小数位，例如 0、0.0、0.00">显示小数</th>
-                                        <th>单位</th><th>报警说明</th><th><FactoryVoiceToggle /></th><th></th>
-                                    </tr>
-                                </thead>
+                        <div class="point-table-scroll" role="region" aria-label="点位配置列表" tabindex="0">
+                            <table class="data-table points-table point-mapping-table" :class="{ 'points-table-all': isAllPointsMode, 'points-table-advanced': showPointAdvancedFields }">
+                                <colgroup>
+                                    <col v-if="isAllPointsMode" class="point-col-device"/><col class="point-col-name"/><col class="point-col-usage"/><col class="point-col-type"/><col class="point-col-address"/><col class="point-col-sample"/><col class="point-col-access"/>
+                                    <col v-if="showPointAdvancedFields" class="point-col-number"/><col v-if="showPointAdvancedFields" class="point-col-number"/><col v-if="showPointAdvancedFields" class="point-col-number"/>
+                                    <col class="point-col-unit"/><col class="point-col-alarm"/><col class="point-col-action"/><col class="point-col-action"/>
+                                </colgroup>
+                                <thead><tr><th v-if="isAllPointsMode">设备</th><th>点位名称</th><th>用途</th><th>数据类型</th><th>PLC 地址</th><th title="采集周期（毫秒）">周期(ms)</th><th>读写</th>
+                                    <th v-if="showPointAdvancedFields" title="PLC 原始值的换算倍率">倍率</th><th v-if="showPointAdvancedFields" title="换算后增加的偏移修正">偏移</th><th v-if="showPointAdvancedFields" title="画面显示的小数格式">小数</th>
+                                    <th>单位</th><th>报警说明</th><th class="point-voice-cell" aria-label="语音" title="配置此点位的语音规则"><svg class="point-column-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9h4l5-4v14l-5-4H4zM16 8a6 6 0 0 1 0 8"/></svg></th><th class="point-delete-cell"><span class="sr-only">删除</span></th>
+                                </tr></thead>
                                 <tbody>
-                                    <tr v-for="p in paginatedDataPoints" :key="pointRowKey(p)" :class="{ 'is-new-point': !p.id }">
-                                        <td v-if="isAllPointsMode">
-                                            <PointDeviceSelect v-model="p.device_id" @change="markPointsDirty" :options="devices.map(d => ({ value: d.id, label: deviceHierarchyLabel(d) }))" :disabled="pointsLoading || pointsSaving || !canAdminPage(controlPermissionPage, 'edit')" />
-                                        </td>
-                                        <td><input v-model="p.label" @input="markPointsDirty" class="input input-sm point-name-input" placeholder="实际温度 / bj1"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></td>
-                                        <td>
-                                            <select v-model="p.__usage" @change="setPointUsage(p, p.__usage)" class="input input-sm point-usage-input" v-permission="{ page: controlPermissionPage, action: 'edit' }">
-                                                <option v-for="item in pointUsageOptions" :key="item.value" :value="item.value">{{ item.label }}</option>
-                                            </select>
-                                        </td>
-                                        <td>
-                                            <select v-model="p.data_type" @change="handlePointDataTypeChange(p)" class="input input-sm point-datatype-select" v-permission="{ page: controlPermissionPage, action: 'edit' }">
-                                                <option v-for="type in pointDataTypes" :key="type.value" :value="type.value">{{ type.label }}</option>
-                                            </select>
-                                        </td>
-                                        <td class="plc-address-td">
-                                            <div class="plc-address-wrap">
-                                                <input v-model="p.plc_tag" @input="markPointsDirty" 
-                                                       class="input input-sm plc-address-input" 
-                                                       :class="{ 'has-warning': !!getPlcAddressWarning(p), 'has-duplicate': !!getPlcDuplicateWarning(p) }"
-                                                       :title="getPlcDuplicateWarning(p) || getPlcAddressWarning(p) || getPointAddressTitle(p)"
-                                                       :placeholder="getPointAddressPlaceholder(p)"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/>
-                                                <span v-if="getPlcDuplicateWarning(p)" class="plc-warning-icon plc-duplicate-icon" :title="getPlcDuplicateWarning(p)">
-                                                    <svg viewBox="0 0 16 16" width="14" height="14" fill="none">
-                                                        <rect x="1" y="1" width="10" height="10" rx="2" stroke="#ff3b30" stroke-width="1.3" fill="rgba(255, 59, 48, 0.1)"/>
-                                                        <rect x="5" y="5" width="10" height="10" rx="2" stroke="#ff3b30" stroke-width="1.3" fill="rgba(255, 59, 48, 0.1)"/>
-                                                    </svg>
-                                                </span>
-                                                <span v-else-if="getPlcAddressWarning(p)" class="plc-warning-icon" :title="getPlcAddressWarning(p)">
-                                                    <svg viewBox="0 0 16 16" width="14" height="14" fill="none">
-                                                        <path d="M8 1.85L14.4 13.35C14.52 13.56 14.37 13.8 14.13 13.8H1.87C1.63 13.8 1.48 13.56 1.6 13.35L8 1.85Z" fill="rgba(255, 149, 0, 0.16)" stroke="#ff9500" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
-                                                        <line x1="8" y1="6" x2="8" y2="9.3" stroke="#ff9500" stroke-width="1.5" stroke-linecap="round"/>
-                                                        <circle cx="8" cy="11.5" r="0.8" fill="#ff9500"/>
-                                                    </svg>
-                                                </span>
-                                            </div>
-                                        </td>
-                                        <td><input v-model.number="p.sample_interval_ms" @input="markPointsDirty" type="number" min="100" step="50" class="input input-sm sample-input" placeholder="1000"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></td>
-                                        <td>
-                                            <select v-model="p.access_type" @change="markPointsDirty" class="input input-sm access-input" v-permission="{ page: controlPermissionPage, action: 'edit' }">
-                                                <option value="READ">读</option>
-                                                <option value="READ_WRITE">读写</option>
-                                                <option value="WRITE">仅写</option>
-                                            </select>
-                                        </td>
-                                        <td v-if="showPointAdvancedFields"><input v-model.number="p.scale" @input="markPointsDirty" type="number" step="0.001" class="input input-sm number-input" placeholder="1" title="PLC 原始值乘以这个数，例如原始值 253、倍率 0.1，得到 25.3"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></td>
-                                        <td v-if="showPointAdvancedFields"><input v-model.number="p.offset" @input="markPointsDirty" type="number" step="0.001" class="input input-sm number-input" placeholder="0" title="倍率换算后再加上的修正值，例如传感器整体偏低 2 度就填 2"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></td>
-                                        <td v-if="showPointAdvancedFields"><input v-model="p.display_format" @input="markPointsDirty" class="input input-sm unit-input" placeholder="如 0.0" title="控制画面显示的小数位，例如 0 表示整数，0.0 表示 1 位小数，0.00 表示 2 位小数"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></td>
-                                        <td><input v-model="p.unit" @input="markPointsDirty" class="input input-sm unit-input" :disabled="isBoolPoint(p)" :placeholder="isBoolPoint(p) ? '无' : '°C'"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></td>
-                                        <td>
-                                            <input v-if="normalizePointUsage(p) === 'alarm_trigger'" v-model="p.alarm_text" @input="markPointsDirty" class="input input-sm alarm-text-input" placeholder="报警说明"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/>
-                                            <span v-else class="muted-cell">-</span>
-                                        </td>
-                                        <td>
-                                            <button @click="openVoiceConfig(p)" class="btn btn-sm voice-config-button" :class="{ configured: enabledVoiceRuleCount(p) > 0 }">
-                                                {{ enabledVoiceRuleCount(p) > 0 ? `${enabledVoiceRuleCount(p)} 条` : '配置' }}
-                                            </button>
-                                        </td>
-                                        <td><button @click="removeDataPoint(p)" class="btn btn-danger btn-sm" v-permission="{ page: controlPermissionPage, action: 'edit' }">✕</button></td>
+                                    <tr v-for="p in paginatedDataPoints" :key="pointRowKey(p)" :class="{ 'is-new-point': !p.id }" class="point-mapping-row" :id="pointRowKey(p)" :data-point-id="p.id || pointRowKey(p)" :aria-label="`点位 ${p.label || p.name || '未命名点位'}${!p.id ? '（未保存）' : ''}`">
+                                        <td v-if="isAllPointsMode"><PointDeviceSelect compact v-model="p.device_id" @change="markPointsDirty" :options="devices.map(d => ({ value: d.id, label: deviceHierarchyLabel(d), shortLabel: d.name || d.id }))" :disabled="pointsLoading || pointsSaving || !canAdminPage(controlPermissionPage, 'edit')" /></td>
+                                        <td><input v-model="p.label" @input="markPointsDirty" class="input input-sm point-name-input" aria-label="点位名称" placeholder="实际温度 / bj1" :title="p.label || p.name" :disabled="pointsLoading || pointsSaving" v-permission="{ page: controlPermissionPage, action: 'edit' }"/></td>
+                                        <td><div class="point-short-select"><select v-model="p.__usage" @change="setPointUsage(p, p.__usage)" class="input input-sm point-usage-input" aria-label="点位用途" :title="normalizePointUsage(p) === 'alarm_trigger' ? '报警触发' : '常规监控'" :disabled="pointsLoading || pointsSaving" v-permission="{ page: controlPermissionPage, action: 'edit' }"><option v-for="item in pointUsageOptions" :key="item.value" :value="item.value">{{ item.label }}</option></select><span aria-hidden="true">{{ normalizePointUsage(p) === 'alarm_trigger' ? '报警' : '监控' }}</span></div></td>
+                                        <td><div class="point-short-select"><select v-model="p.data_type" @change="handlePointDataTypeChange(p)" class="input input-sm point-datatype-select" aria-label="数据类型" :title="pointDataTypes.find(type => type.value === p.data_type)?.label || p.data_type" :disabled="pointsLoading || pointsSaving" v-permission="{ page: controlPermissionPage, action: 'edit' }"><option v-for="type in pointDataTypes" :key="type.value" :value="type.value">{{ type.label }}</option></select><span aria-hidden="true">{{ p.data_type }}</span></div></td>
+                                        <td><div class="plc-address-wrap">
+                                            <input v-model="p.plc_tag" @input="markPointsDirty" class="input input-sm plc-address-input" aria-label="PLC 地址" :class="{ 'has-warning': !!getPlcAddressWarning(p), 'has-duplicate': !!getPlcDuplicateWarning(p) }" :title="getPlcDuplicateWarning(p) || getPlcAddressWarning(p) || getPointAddressTitle(p)" :placeholder="getPointAddressPlaceholder(p)" :disabled="pointsLoading || pointsSaving" v-permission="{ page: controlPermissionPage, action: 'edit' }"/>
+                                            <span v-if="getPlcDuplicateWarning(p)" class="plc-warning-icon plc-duplicate-icon" :title="getPlcDuplicateWarning(p)"><svg viewBox="0 0 16 16" width="14" height="14" fill="none"><rect x="1" y="1" width="10" height="10" rx="2" stroke="#ff3b30" stroke-width="1.3" fill="rgba(255, 59, 48, 0.1)"/><rect x="5" y="5" width="10" height="10" rx="2" stroke="#ff3b30" stroke-width="1.3" fill="rgba(255, 59, 48, 0.1)"/></svg></span>
+                                            <span v-else-if="getPlcAddressWarning(p)" class="plc-warning-icon" :title="getPlcAddressWarning(p)"><svg viewBox="0 0 16 16" width="14" height="14" fill="none"><path d="M8 1.85L14.4 13.35C14.52 13.56 14.37 13.8 14.13 13.8H1.87C1.63 13.8 1.48 13.56 1.6 13.35L8 1.85Z" fill="rgba(255, 149, 0, 0.16)" stroke="#ff9500" stroke-width="1.3"/><path d="M8 6v3.3" stroke="#ff9500" stroke-width="1.5"/><circle cx="8" cy="11.5" r="0.8" fill="#ff9500"/></svg></span>
+                                        </div></td>
+                                        <td><input v-model.number="p.sample_interval_ms" @input="markPointsDirty" type="number" min="100" step="50" class="input input-sm sample-input" aria-label="采集周期 ms" placeholder="1000" :disabled="pointsLoading || pointsSaving" v-permission="{ page: controlPermissionPage, action: 'edit' }"/></td>
+                                        <td><select v-model="p.access_type" @change="markPointsDirty" class="input input-sm access-input" aria-label="读写" :disabled="pointsLoading || pointsSaving" v-permission="{ page: controlPermissionPage, action: 'edit' }"><option value="READ">读</option><option value="READ_WRITE">读写</option><option value="WRITE">仅写</option></select></td>
+                                        <td v-if="showPointAdvancedFields"><input v-model.number="p.scale" @input="markPointsDirty" type="number" step="0.001" class="input input-sm number-input" aria-label="换算倍率" placeholder="1" title="PLC 原始值乘以这个数，例如原始值 253、倍率 0.1，得到 25.3" :disabled="pointsLoading || pointsSaving" v-permission="{ page: controlPermissionPage, action: 'edit' }"/></td>
+                                        <td v-if="showPointAdvancedFields"><input v-model.number="p.offset" @input="markPointsDirty" type="number" step="0.001" class="input input-sm number-input" aria-label="偏移修正" placeholder="0" title="倍率换算后再加上的修正值" :disabled="pointsLoading || pointsSaving" v-permission="{ page: controlPermissionPage, action: 'edit' }"/></td>
+                                        <td v-if="showPointAdvancedFields"><input v-model="p.display_format" @input="markPointsDirty" class="input input-sm unit-input" aria-label="显示小数" placeholder="如 0.0" title="0 为整数，0.0 为一位小数，0.00 为两位小数" :disabled="pointsLoading || pointsSaving" v-permission="{ page: controlPermissionPage, action: 'edit' }"/></td>
+                                        <td><input v-model="p.unit" @input="markPointsDirty" class="input input-sm unit-input" aria-label="单位" :title="p.unit" :disabled="isBoolPoint(p) || pointsLoading || pointsSaving" :placeholder="isBoolPoint(p) ? '无' : '°C'" v-permission="{ page: controlPermissionPage, action: 'edit' }"/></td>
+                                        <td><input v-if="normalizePointUsage(p) === 'alarm_trigger'" v-model="p.alarm_text" @input="markPointsDirty" class="input input-sm alarm-text-input" aria-label="报警说明" placeholder="报警说明" :title="p.alarm_text" :disabled="pointsLoading || pointsSaving" v-permission="{ page: controlPermissionPage, action: 'edit' }"/><span v-else class="muted-cell">—</span></td>
+                                        <td class="point-voice-cell"><button type="button" @click="openVoiceConfig(p)" class="btn btn-sm voice-config-button point-row-icon" :class="{ configured: enabledVoiceRuleCount(p) > 0 }" :disabled="pointsLoading || pointsSaving" :aria-label="`配置点位语音 ${p.label || p.name || '未命名点位'}`" :title="`语音规则：${enabledVoiceRuleCount(p)} 条`"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9h4l5-4v14l-5-4H4zM16 8a6 6 0 0 1 0 8M19 5a10 10 0 0 1 0 14"/></svg></button></td>
+                                        <td class="point-delete-cell"><button type="button" @click="removeDataPoint(p)" class="btn btn-danger btn-sm point-delete-button point-row-icon" :disabled="pointsLoading || pointsSaving" :aria-label="`删除点位 ${p.label || p.name || '未命名点位'}`" :title="`删除点位 ${p.label || p.name || '未命名点位'}`" v-permission="{ page: controlPermissionPage, action: 'edit' }"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v5M14 11v5"/></svg></button></td>
                                     </tr>
-                                    <tr v-if="dataPoints.length === 0">
-                                        <td :colspan="(showPointAdvancedFields ? 13 : 10) + (isAllPointsMode ? 1 : 0)" style="text-align:center; padding: 20px; color: #86868b;">暂无点位配置，请手动添加或从其他设备复制。</td>
-                                    </tr>
+                                    <tr v-if="dataPoints.length === 0"><td :colspan="(showPointAdvancedFields ? 13 : 10) + (isAllPointsMode ? 1 : 0)" class="point-mapping-empty" role="status">暂无点位配置，请手动添加或从其他设备复制。</td></tr>
                                 </tbody>
                             </table>
                         </div>
@@ -9456,7 +9391,7 @@ async function openAdminSetupStep(step) {
                             </thead>
                             <tbody>
                                 <tr v-for="point in paginatedRealtimePointRows" :key="point.__runtimeKey">
-                                    <td>{{ deviceHierarchyLabel(devices.find(device => device.id === point.device_id) || { id: point.device_id, name: point.device_name }) }}</td>
+                                    <td class="point-monitor-device-name" :title="deviceHierarchyLabel(pointMonitorDevice(point))">{{ pointMonitorDeviceName(point) }}</td>
                                     <td>{{ pointDisplayName(point) || '-' }}</td>
                                     <td>{{ formatPointUsage(point) }}</td>
                                     <td class="point-value-cell">{{ formatPointValue(point) }}</td>
@@ -10226,114 +10161,6 @@ async function openAdminSetupStep(step) {
     stroke-linecap: round;
     stroke-linejoin: round;
 }
-.admin-setup-flow {
-    display: flex;
-    flex: 1 1 860px;
-    align-items: center;
-    justify-content: center;
-    min-width: 0;
-    max-width: 1080px;
-    min-height: 44px;
-    padding: 4px 9px 4px 13px;
-    gap: 9px;
-    background: rgba(246, 247, 249, .92);
-    border: 1px solid rgba(0, 0, 0, .07);
-    border-radius: 18px;
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, .85);
-}
-.admin-setup-flow-title {
-    flex: 0 0 auto;
-    color: #86868b;
-    font-size: calc(12px * var(--admin-font-scale, 1));
-    font-weight: 700;
-    letter-spacing: .06em;
-    white-space: nowrap;
-}
-.admin-setup-flow-track {
-    display: flex;
-    flex: 1;
-    align-items: center;
-    min-width: 0;
-    overflow-x: auto;
-    overscroll-behavior-x: contain;
-    scrollbar-width: none;
-}
-.admin-setup-flow-track::-webkit-scrollbar { display: none; }
-.admin-setup-step {
-    appearance: none;
-    display: inline-flex;
-    flex: 0 0 auto;
-    align-items: center;
-    min-height: 36px;
-    padding: 5px 9px;
-    gap: 7px;
-    color: #66686c;
-    background: transparent;
-    border: 0;
-    border-radius: 11px;
-    cursor: pointer;
-    font-family: inherit;
-    transition: color .18s ease, background .18s ease, box-shadow .18s ease, transform .18s ease;
-}
-.admin-setup-step:hover {
-    color: #1d1d1f;
-    background: rgba(255, 255, 255, .9);
-    box-shadow: 0 2px 8px rgba(0, 0, 0, .07);
-    transform: translateY(-1px);
-}
-.admin-setup-step:focus-visible {
-    outline: 2px solid rgba(0, 113, 227, .38);
-    outline-offset: 1px;
-}
-.admin-setup-step.active {
-    color: #005eb8;
-    background: #ffffff;
-    box-shadow: 0 3px 10px rgba(0, 71, 145, .12), 0 0 0 1px rgba(0, 113, 227, .09);
-}
-.admin-setup-step-index {
-    display: inline-grid;
-    width: 23px;
-    height: 23px;
-    flex: 0 0 23px;
-    place-items: center;
-    color: #777a7f;
-    background: #e6e8eb;
-    border-radius: 50%;
-    font-size: calc(12px * var(--admin-font-scale, 1));
-    font-weight: 750;
-    line-height: 1;
-}
-.admin-setup-step.active .admin-setup-step-index {
-    color: #ffffff;
-    background: linear-gradient(145deg, #0a84ff, #0066cc);
-    box-shadow: 0 2px 6px rgba(0, 102, 204, .3);
-}
-.admin-setup-step-label {
-    font-size: calc(14px * var(--admin-font-scale, 1));
-    font-weight: 650;
-    line-height: 1;
-    white-space: nowrap;
-}
-.admin-setup-flow-connector {
-    position: relative;
-    flex: 1 1 18px;
-    min-width: 6px;
-    max-width: 22px;
-    height: 1px;
-    margin: 0 1px;
-    background: #cfd3d8;
-}
-.admin-setup-flow-connector::after {
-    content: '';
-    position: absolute;
-    right: 0;
-    top: -2px;
-    width: 4px;
-    height: 4px;
-    border-top: 1px solid #aeb4bc;
-    border-right: 1px solid #aeb4bc;
-    transform: rotate(45deg);
-}
 .admin-connection-strip {
     display: flex;
     flex: 0 0 auto;
@@ -10373,10 +10200,6 @@ async function openAdminSetupStep(step) {
 .admin-connection-pill.is-unknown { color: #667085; background: #f2f4f7; border-color: #dfe3e8; }
 @media (max-width: 1380px) {
     .admin-header { gap: 10px; padding-right: 20px; padding-left: 20px; }
-    .admin-setup-flow { padding-left: 7px; gap: 0; }
-    .admin-setup-flow-title { display: none; }
-    .admin-setup-step { padding-right: 7px; padding-left: 7px; }
-    .admin-setup-flow-connector { flex-basis: 8px; max-width: 12px; }
 }
 .admin-body { --admin-nav-width: 250px; display: flex; flex: 1; min-height: 0; overflow: hidden; position: relative; }
 .admin-container.line-planner-active .admin-body {
@@ -10590,8 +10413,9 @@ async function openAdminSetupStep(step) {
 .manual-layout-page-heading { display: flex; flex: 0 0 auto; align-items: center; justify-content: space-between; gap: 18px; padding: 6px 4px; }
 .manual-layout-page-heading h2 { margin: 0 0 4px; font-size: calc(22px * var(--admin-font-scale, 1)); }
 .manual-layout-page-heading p, .manual-layout-page-note { margin: 0; font-size: calc(12px * var(--admin-font-scale, 1)); color: #697b8d; line-height: 1.6; }
-.manual-layout-page-heading label { display: grid; gap: 5px; font-size: calc(11px * var(--admin-font-scale, 1)); color: #52687d; min-width: 230px; max-width: 430px; }
+.manual-layout-page-heading label { display: grid; gap: 5px; font-size: calc(11px * var(--admin-font-scale, 1)); color: #52687d; min-width: 230px; max-width: 560px; }
 .manual-layout-page-heading select { max-width: 100%; padding: 9px 12px; border: 1px solid #d5dfea; border-radius: 8px; background: white; color: #293d52; }
+.tab-content .loading-port-model-picker select { max-width: min(520px, 100%); }
 .manual-layout-page-note { flex: 0 0 auto; padding: 0 4px; }
 .manual-layout-page-state { flex: 1; display: flex; flex-direction: column; gap: 16px; align-items: center; justify-content: center; padding: 24px; border-radius: 14px; background: #fff; color: #637b90; text-align: center; }
 .manual-disassembly-tab :deep(.manual-layout) { display: flex; flex: 1; flex-direction: column; min-height: 0; }
@@ -12127,9 +11951,6 @@ button:enabled:active {
     padding: 16px 18px; border-bottom: 1px solid rgba(0, 0, 0, 0.04); color: #1d1d1f;
     vertical-align: top;
 }
-.points-table td {
-    vertical-align: middle;
-}
 .data-table tbody tr { transition: background-color 0.2s ease; }
 .data-table tbody tr:hover { background: rgba(0, 0, 0, 0.015); }
 .data-table code {
@@ -12167,23 +11988,45 @@ button:enabled:active {
     background: #007aff;
     background-clip: content-box;
 }
-.point-toolbar {
-    display: flex;
-    justify-content: flex-end;
-    margin: 0 0 10px;
-}
-.points-table { min-width: 960px; }
-.points-table.points-table-advanced { min-width: 1420px; }
-.points-table td { padding: 10px 6px; }
-.points-table .input-sm { width: 100%; }
-.points-table .number-input { width: 90px; }
-.points-table .bit-input { width: 64px; }
-.points-table .sample-input { width: 110px; }
-.points-table .access-input { width: 86px; }
-.points-table .point-name-input { min-width: 150px; }
-.points-table .point-usage-input { min-width: 88px; width: 95px; }
-.points-table .point-datatype-select { min-width: 128px; width: 135px; }
-.points-table .plc-address-input { min-width: 110px; width: 120px; }
+.point-toolbar { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:12px; margin:0 0 14px; color:#40546f; font-size:calc(14px * var(--admin-font-scale,1)); }
+.point-table-scroll { min-width:0; width:100%; overflow:auto; margin-bottom:20px; border:1px solid #dce3ed; border-radius:10px; background:#fff; overscroll-behavior:contain; }
+.point-table-scroll:focus-visible { outline:2px solid #2b5db6; outline-offset:2px; }
+.points-table { --point-column-scale:max(1, calc(var(--admin-font-scale,1) / 1.15)); width:100%; min-width:calc(800px * var(--point-column-scale)); margin:0; table-layout:fixed; }
+.points-table.points-table-all { min-width:calc(900px * var(--point-column-scale)); }
+.points-table.points-table-advanced { min-width:calc(1010px * var(--point-column-scale)); }
+.points-table.points-table-all.points-table-advanced { min-width:calc(1110px * var(--point-column-scale)); }
+.points-table th { padding:12px 2px; white-space:nowrap; color:#40546f; font-size:calc(13px * var(--admin-font-scale,1)); }
+.points-table td { padding:6px 2px; vertical-align:middle; white-space:nowrap; background:#fff; }
+.points-table .point-col-device { width:calc(100px * var(--point-column-scale)); }
+.points-table .point-col-usage { width:calc(66px * var(--point-column-scale)); }
+.points-table .point-col-type { width:calc(90px * var(--point-column-scale)); }
+.points-table .point-col-address { width:calc(140px * var(--point-column-scale)); }
+.points-table .point-col-sample { width:calc(76px * var(--point-column-scale)); }
+.points-table .point-col-access { width:calc(64px * var(--point-column-scale)); }
+.points-table .point-col-number { width:calc(70px * var(--point-column-scale)); }
+.points-table .point-col-unit { width:calc(48px * var(--point-column-scale)); }
+.points-table .point-col-alarm { width:calc(116px * var(--point-column-scale)); }
+.points-table .point-col-action { width:32px; }
+.points-table .sr-only { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
+.points-table .input-sm { box-sizing:border-box; width:100%; min-width:0; height:calc(32px * var(--point-column-scale)); padding:4px 5px; color:#24364b; font-size:calc(13px * var(--admin-font-scale,1)); border-color:#cbd5e3; background:#fff; }
+.points-table .input-sm:disabled { color:#526177; background:#f3f5f8; }
+.points-table .plc-address-input { font-family:Consolas,'Noto Sans SC Variable',monospace; }
+.point-short-select { position:relative; min-width:0; }
+.points-table .point-short-select select { color:transparent; }
+.points-table .point-short-select select:disabled { color:transparent; }
+.points-table .point-short-select select option { color:#24364b; }
+.point-short-select>span { position:absolute; left:6px; right:21px; top:50%; transform:translateY(-50%); white-space:nowrap; overflow:hidden; pointer-events:none; color:#24364b; font-size:calc(13px * var(--admin-font-scale,1)); }
+.points-table .point-row-icon { display:grid; place-items:center; width:28px; min-width:0; height:calc(32px * var(--point-column-scale)); margin:0; padding:0; }
+.point-row-icon svg { width:17px; height:17px; fill:none; stroke:currentColor; stroke-width:1.6; }
+.point-column-icon { width:16px; height:16px; fill:none; stroke:currentColor; stroke-width:1.6; vertical-align:middle; }
+.points-table .voice-config-button.configured { color:#23694b; border-color:#96c5aa; background:#edf7f1; }
+.points-table .point-voice-cell,.points-table .point-delete-cell { position:sticky; z-index:2; background:#fff; }
+.points-table .point-voice-cell { right:32px; }
+.points-table .point-delete-cell { right:0; }
+.points-table tr.is-new-point>td { background:#f3fcf7; border-top:1px solid #42b883; border-bottom:1px solid #42b883; }
+.points-table tr.is-new-point>td:first-child { border-left:1px solid #42b883; }
+.points-table tr.is-new-point>td:last-child { border-right:1px solid #42b883; }
+.points-table .point-mapping-empty { padding:30px 18px; text-align:center; color:#526177; font-size:calc(14px * var(--admin-font-scale,1)); }
 .plc-address-wrap {
     position: relative;
     display: inline-flex;
@@ -12210,13 +12053,6 @@ button:enabled:active {
     user-select: none;
     line-height: 1;
 }
-.points-table .expression-input { min-width: 150px; }
-.points-table .unit-input { width: 80px; }
-.points-table .alarm-text-input { min-width: 180px; }
-.points-table .device-point-select { min-width: 180px; }
-.points-table tr.is-new-point > td { background:#f3fcf7; border-top:1px solid #42b883; border-bottom:1px solid #42b883; }
-.points-table tr.is-new-point > td:first-child { border-left:1px solid #42b883; border-radius:7px 0 0 7px; }
-.points-table tr.is-new-point > td:last-child { border-right:1px solid #42b883; border-radius:0 7px 7px 0; }
 .points-pagination-bar {
     display: flex;
     align-items: center;
@@ -12595,6 +12431,7 @@ button:enabled:active {
     white-space: pre-line;
 }
 .realtime-points-table { min-width: 1180px; margin-bottom: 0; }
+.realtime-points-table .point-monitor-device-name { white-space: nowrap; }
 .point-value-cell {
     color: #111827;
     font-weight: 700;
@@ -13690,6 +13527,7 @@ button:enabled:active {
 .animation-workspace .model-preview-node-card { max-width: min(300px, calc(100% - 120px)); }
 .motion-preview-tools { display: flex; align-items: center; gap: 8px; }
 .motion-workspace-toolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px 16px; }
+.motion-live-device-picker-slot { flex:0 0 auto; min-width:0; max-width:min(560px,100%); }
 .motion-workspace-modes { display: flex; flex: 0 0 auto; gap: 6px; padding: 3px; align-self: flex-start; border: 1px solid #e0e7f1; border-radius: 10px; background: #ecf0f6; }
 .motion-workspace-modes button { padding: 8px 18px; color: #7b8ca3; border: 0; border-radius: 7px; background: transparent; cursor: pointer; font-size: calc(12px * var(--admin-font-scale, 1)); font-weight: 600; }
 .motion-workspace-modes .active { color: #3378d7; background: #fff; box-shadow: 0 2px 5px #253b5710; }
@@ -14321,5 +14159,6 @@ button:enabled:active {
 </style>
 
 <style scoped>
-.device-loading-port-dialog{width:min(1250px,calc(100vw - 32px));max-height:92vh;padding:18px;border:1px solid #dce5ef;border-radius:16px;background:#f7f9fc;color:#30445c;overflow:auto;box-shadow:0 28px 90px #10254145}.device-loading-port-dialog::backdrop{background:#13283b65;backdrop-filter:blur(3px)}.device-loading-port-heading{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:4px 4px 16px}.device-loading-port-heading h2{font-size:20px;margin:0 0 7px}.device-loading-port-heading p{font-size:12px;color:#7d90a5;margin:0}.loading-port-model-picker{display:flex;align-items:center;gap:10px;justify-content:flex-end;margin-bottom:12px;font-size:12px;color:#6a7d93}.loading-port-model-picker select{max-width:360px;padding:9px 12px;border:1px solid #d9e3ef;background:white;color:#30445c;border-radius:8px}
+.model-step-optional{display:inline-flex;align-items:center;margin-left:8px;padding:2px 7px;border-radius:5px;background:#edf3ff;color:#2456a6;font-size:calc(13px * var(--admin-font-scale,1));font-weight:500}
+.device-loading-port-dialog{width:min(1250px,calc(100vw - 32px));max-height:92vh;padding:18px;border:1px solid #dce5ef;border-radius:16px;background:#f7f9fc;color:#30445c;overflow:auto;box-shadow:0 28px 90px #10254145}.device-loading-port-dialog::backdrop{background:#13283b65;backdrop-filter:blur(3px)}.device-loading-port-heading{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:4px 4px 16px}.device-loading-port-heading h2{font-size:20px;margin:0 0 7px}.device-loading-port-heading p{font-size:12px;color:#7d90a5;margin:0}.loading-port-model-picker{display:flex;flex-wrap:wrap;align-items:center;gap:10px;justify-content:flex-end;margin-bottom:12px;font-size:calc(14px * var(--admin-font-scale,1));color:#475467}.loading-port-model-picker select{max-width:360px;padding:9px 12px;border:1px solid #d9e3ef;background:white;color:#30445c;border-radius:8px}
 </style>

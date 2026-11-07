@@ -7,7 +7,7 @@ const bundle = require('../services/modelAssetBundle');
 const collection = require('../services/modelAssetCollection');
 const { assertModelPublishPermission } = require('../services/modelPublicationPermission');
 const temp = path.join(os.tmpdir(), 'digital-twin-model-assets'); fs.mkdirSync(temp, { recursive: true });
-const upload = multer({ dest: temp, limits: { fileSize: collection.MAX_BYTES, files: 1, fields: 1, fieldSize: 128 } });
+const upload = multer({ dest: temp, limits: { fileSize: collection.MAX_BYTES, files: 1, fields: 2, fieldSize: 32768 } });
 // This router shares /api/models with ordinary model editing routes. Apply the
 // asset-transfer budget only to its own endpoints, never to fall-through reads
 // or inspection saves handled by the model library router.
@@ -35,10 +35,24 @@ for (const operation of ['inspect', 'import']) router.post('/asset-' + operation
         try {
             if (error) throw new Error(error.code === 'LIMIT_FILE_SIZE' ? '动作包超过 512 MB' : '模型动作包上传失败');
             if (!req.file) throw new Error('请选择模型资产 ZIP');
-            const result = operation === 'inspect' ? await collection.inspectPackage(req.file.path)
-                : await collection.importPackage(await getDb(), req.file.path, req.factoryId, req.body.inspectedSha256, metadata => assertModelPublishPermission(req, {}, metadata), req.get('x-asset-request-id') || '');
+            const db = await getDb();
+            const plan = req.body.importPlan ? JSON.parse(req.body.importPlan) : null;
+            const result = operation === 'inspect' ? await collection.inspectPackage(req.file.path, db, req.factoryId)
+                : await collection.importPackage(db, req.file.path, req.factoryId, req.body.inspectedSha256, metadata => assertModelPublishPermission(req, {}, metadata), req.get('x-asset-request-id') || '', plan);
+            if (operation === 'import') {
+                const outcomes = result.outcomes || [{ id: result.model.id, outcome: result.outcome }];
+                const updatedIds = new Set(outcomes.filter(item => item.outcome === 'update_actions').map(item => item.id));
+                const updated = (result.models || [result.model]).filter(model => updatedIds.has(model.id));
+                if (updated.length) res.once('finish', () => {
+                    if (res.statusCode < 200 || res.statusCode >= 300) return;
+                    for (const model of updated) global.wsServer?.broadcastToRole?.('model_metadata_changed', { modelId: model.id, timestamp: Date.now() }, 'unity');
+                    // Shared model changes affect already-open screens in other
+                    // factories too; a factory-local invalidation is insufficient.
+                    if (updated.some(model => model.factory_id == null)) global.wsServer?.broadcast?.('configuration_changed', { resource: 'models', reloadRequired: true, timestamp: Date.now() });
+                });
+            }
             res.status(operation === 'import' ? 201 : 200).json({ success: true, ...result });
-        } catch (e) { res.status(e.statusCode || 400).json({ success: false, error: e.message }); }
+        } catch (e) { res.status(e.statusCode || 400).json({ success: false, error: e.message, ...(e.code ? { code: e.code } : {}) }); }
         finally { if (req.file) fs.rmSync(req.file.path, { force: true }); }
     });
 });

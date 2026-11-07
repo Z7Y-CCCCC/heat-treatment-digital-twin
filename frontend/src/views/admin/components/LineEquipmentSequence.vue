@@ -65,7 +65,7 @@ onUnmounted(()=>{disposed=true;invalidate()});onDeactivated(()=>{playing.value=f
     </article></div>
     <div class="pagination"><span>{{ filtered.length }} 台 · {{ equipmentPage+1 }}/{{ equipmentPages }} 页</span><button type="button" :disabled="equipmentPage===0" @click="equipmentPage--">上一页</button><button type="button" :disabled="equipmentPage>=equipmentPages-1" @click="equipmentPage++">下一页</button></div>
     <label class="field">预览排布<select v-model="arrangement" aria-label="联动预览排布"><option value="scheme">按模拟顺序排列</option><option value="site">沿用现场设备位置</option></select></label>
-    <label class="check"><input v-model="includeProcess" type="checkbox">送料后继续执行设备工艺动作</label>
+    <label class="check"><input v-model="includeProcess" type="checkbox">送料后继续执行设备内置部件动作</label>
     <p class="hint">{{ arrangement==='scheme'?'仅排列本次预览，不改动现场布局。':'沿用设备坐标、朝向和缩放；料车路线为示意，不进行避障规划。' }}</p>
     <p v-if="draft.error&&selected.length" class="problem" role="alert">{{ draft.error }}</p>
    </template>
@@ -79,7 +79,7 @@ onUnmounted(()=>{disposed=true;invalidate()});onDeactivated(()=>{playing.value=f
    <button v-if="!ready" type="button" :disabled="busy||!draft.plan" @click="prepare(false)">预览选中设备</button>
    <p class="hint">仅使用本产线选中的设备实例。工步和物料流转为模拟，不读写 PLC。</p>
   </aside>
-  <div class="preview"><header><div><strong>{{ lineName }} · {{ selected.length }} 台设备</strong><small>{{ plan?.cart?'料车定位 → 开门送料 → 设备工艺 → 取料转运':'自选产线设备 · 动作模拟' }}</small></div><div class="preview-tools"><label><input v-model="cutaway" type="checkbox" @change="runtime?.setCutaway(cutaway)">内部透视</label><button type="button" :disabled="!ready" @click="focusDevice(frame.step.deviceId)">当前设备</button><button type="button" :disabled="!ready" @click="fullView">完整视图</button></div></header>
+  <div class="preview"><header><div><strong>{{ lineName }} · {{ selected.length }} 台设备</strong><small>{{ plan?.cart?'料车定位 → 开门送料 → 设备部件动作 → 取料转运':'自选产线设备 · 动作模拟' }}</small></div><div class="preview-tools"><label><input v-model="cutaway" type="checkbox" @change="runtime?.setCutaway(cutaway)">内部透视</label><button type="button" :disabled="!ready" @click="focusDevice(frame.step.deviceId)">当前设备</button><button type="button" :disabled="!ready" @click="fullView">完整视图</button></div></header>
    <div class="view-navigation" aria-label="产线视角导航">
     <div class="view-modes" role="group" aria-label="鼠标拖动方式"><button type="button" :aria-pressed="navigationMode==='rotate'" @click="navigationMode='rotate'">旋转查看</button><button type="button" :aria-pressed="navigationMode==='pan'" @click="navigationMode='pan'">平移浏览</button></div>
     <label class="device-location">定位设备<select v-model="viewDeviceId" :disabled="!ready" aria-label="定位查看设备" @change="focusDevice(viewDeviceId)"><option value="">选择要查看的设备</option><option v-for="device in plan?.rows||[]" :key="device.id" :value="device.id">{{ device.name||device.id }}</option></select></label>

@@ -13,7 +13,10 @@ let server, browser, page;
     browser = await playwright.chromium.launch({ headless: true, ...(process.env.BROWSER_EXECUTABLE ? { executablePath: process.env.BROWSER_EXECUTABLE } : {}), args: ['--enable-unsafe-swiftshader'] });
     const context = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
     await context.addInitScript(() => localStorage.setItem('digital_twin_admin_ui_state_v1', JSON.stringify({ activeTab: 'models', modelLibraryStep: 'library' })));
-    page = await context.newPage(); page.setDefaultTimeout(30000); page.on('pageerror', e => errors.push(e.message));
+    page = await context.newPage(); page.setDefaultTimeout(120000); page.on('pageerror', e => errors.push(e.message));
+    const assetStarted = new Map(), assetTimings = [];
+    page.on('request', request => { if (/\/asset-(?:inspect|import)(?:\?|$)/.test(request.url())) { assert.equal(server.exitCode, null, 'owned archive backend must remain running'); assetStarted.set(request, Date.now()); } });
+    page.on('response', response => { const began = assetStarted.get(response.request()); if (began) { assert.equal(server.exitCode, null, 'owned archive backend must remain running'); const row = { operation: new URL(response.url()).pathname.split('/').at(-1), status: response.status(), milliseconds: Date.now() - began }; assetTimings.push(row); console.log('ASSET ' + JSON.stringify(row)); } });
     await page.goto(info.origin + '/admin'); await page.getByRole('textbox', { name: '账号', exact: true }).fill(info.username); await page.getByLabel('后台密码', { exact: true }).fill(info.password);
     await page.getByRole('button', { name: '解锁后台', exact: true }).click();
     const transfer = page.getByRole('group', { name: '动作包导入导出' });
@@ -33,15 +36,18 @@ let server, browser, page;
     const choose = async file => { const chooser = page.waitForEvent('filechooser'); await transfer.getByRole('button', { name: '导入动作包', exact: true }).click(); await (await chooser).setFiles(file); };
     await choose({ name: 'invalid.zip', mimeType: 'application/zip', buffer: Buffer.from('not a ZIP') });
     let modal = page.getByRole('dialog', { name: '导入动作包', exact: true });
+    const waitForImportPlan = () => waitUntil(async () => { assert.equal(server.exitCode, null, 'owned archive backend must remain running'); const button = modal.getByRole('button', { name: '确认导入', exact: true }); return await button.count() > 0 && await button.isVisible() && await button.isEnabled(); }, 120000, 'owned archive inspection and import plan');
     await modal.getByRole('alert').waitFor(); assert.equal(await modal.getByRole('button', { name: '确认导入', exact: true }).count(), 0);
     await modal.getByRole('button', { name: '关闭动作包弹窗', exact: true }).click();
     await choose(path.join(root, '导入文件/正式模型资产/cad_fixed_load_table_112200.zip'));
-    await modal.getByRole('button', { name: '确认导入', exact: true }).waitFor();
+    await waitForImportPlan();
+    assert.match(await modal.locator('.package-import-decision').innerText(), /新建模型/);
+    assert.match(await modal.locator('.import-effect').innerText(), /动作包包含模型文件和动作/);
     await page.mouse.move(700, 430); await page.mouse.down(); await page.mouse.move(5, 5); await page.mouse.up();
     assert.ok(await modal.isVisible(), 'dragging outside the dialog must not dismiss an inspected package');
     await page.screenshot({ path: path.join(directory, '02-inspected-model-motion-package.png'), fullPage: true });
     await modal.getByRole('button', { name: '确认导入', exact: true }).click();
-    await modal.getByRole('status').getByText('动作包已导入', { exact: true }).waitFor();
+    await modal.getByRole('status').getByText('已处理 1 个模型：新建 1，复用 0，更新动作 0', { exact: true }).waitFor();
     await modal.getByRole('button', { name: '完成', exact: true }).click();
     const models = await (await page.request.get(info.origin + '/api/models',{maxRetries:2})).json(); assert.equal(models.length, 1); assert.ok(models[0].motion_package?.actions.length);
     await page.getByLabel('选择动作动画模型', { exact: true }).selectOption(models[0].id);
@@ -75,6 +81,16 @@ let server, browser, page;
     const validated = await require('../backend/services/modelAssetBundle').inspectAsset(downloaded); assert.ok(validated.actions.length);
     await modal.getByRole('status').getByText('动作包已导出', { exact: true }).waitFor();
     await modal.getByRole('button', { name: '完成', exact: true }).click();
+    await choose(downloaded); modal = page.getByRole('dialog', { name: '导入动作包', exact: true });
+    await waitForImportPlan();
+    assert.match(await modal.locator('.package-import-decision').innerText(), /复用「.*」，不新增模型/);
+    await modal.screenshot({ path: path.join(directory, '03-single-reimport-reuse-preview.png') });
+    await modal.getByRole('button', { name: '确认导入', exact: true }).click();
+    await modal.getByRole('status').getByText('已处理 1 个模型：新建 0，复用 1，更新动作 0', { exact: true }).waitFor();
+    const reusedModels = await (await page.request.get(info.origin + '/api/models', { maxRetries: 2 })).json();
+    assert.deepEqual(reusedModels, models, 'reimporting an exported package must preserve model IDs, metadata and model count');
+    await modal.getByRole('button', { name: '完成', exact: true }).click();
+    checks.push('same single-model package previews reuse before explicit confirmation and imports without changing existing model identity, metadata or count');
     fs.writeFileSync(path.join(directory,'broken.zip'),'invalid ZIP');
     await choose([
       path.join(root, '导入文件/正式模型资产/cad_air_cooling_table_115800ht.zip'),
@@ -82,9 +98,11 @@ let server, browser, page;
       path.join(directory,'broken.zip')
     ]);
     modal = page.getByRole('dialog', { name:'导入动作包',exact:true });
-    await modal.locator('li[data-status="ready"]').nth(1).waitFor(); await modal.locator('li[data-status="error"]').waitFor();
+    // Legacy ZIPs are inspected serially. Keep a bounded deadline and verify
+    // the owned server remains alive while archive/content checks complete.
+    await waitUntil(async () => { assert.equal(server.exitCode, null); return await modal.locator('li[data-status="ready"]').count() === 2 && await modal.locator('li[data-status="error"]').count() === 1; }, 120000, 'owned batch archive inspection');
     await modal.getByRole('button', {name:'确认导入',exact:true}).click();
-    await modal.getByRole('status').getByText('已导入 2 个，失败 1 个',{exact:true}).waitFor();
+    await modal.getByRole('status').getByText('已处理 2 个模型：新建 2，复用 0，更新动作 0；失败 1 个文件',{exact:true}).waitFor();
     assert.equal(await modal.locator('li[data-status="imported"]').count(),2);
     assert.equal(await modal.getByRole('button',{name:'重试未完成项',exact:true}).count(),0);
     await modal.getByRole('button',{name:'完成',exact:true}).click();
@@ -114,22 +132,38 @@ let server, browser, page;
     assert.equal(combinedInfo.models.length,2); assert.ok(combinedInfo.models.every(item=>item.actions.length));
     await modal.screenshot({path:path.join(directory,'05-one-archive-exported.png')});
     await modal.getByRole('button',{name:'完成',exact:true}).click();
-    const beforeCombined = (await (await page.request.get(info.origin+'/api/models',{maxRetries:2})).json()).length;
+    const beforeCombined = await (await page.request.get(info.origin+'/api/models',{maxRetries:2})).json();
     await choose(combined); modal=page.getByRole('dialog',{name:'导入动作包',exact:true});
-    await modal.getByRole('button',{name:'确认导入',exact:true}).waitFor();
+    await waitForImportPlan();
     assert.equal(await modal.locator('.package-file-list>li').count(),1);
     assert.equal(await modal.locator('.collection-models li').count(),2);
+    assert.ok((await modal.locator('.collection-models .package-import-decision').allTextContents()).every(text => /复用「.*」，不新增模型/.test(text)));
     await modal.screenshot({path:path.join(directory,'06-collection-import-preview.png')});
     await modal.getByRole('button',{name:'确认导入',exact:true}).click();
-    await modal.getByRole('status').getByText('已导入 2 个',{exact:true}).waitFor();
-    assert.equal((await (await page.request.get(info.origin+'/api/models',{maxRetries:2})).json()).length,beforeCombined+2);
+    await modal.getByRole('status').getByText('已处理 2 个模型：新建 0，复用 2，更新动作 0',{exact:true}).waitFor();
+    assert.deepEqual(await (await page.request.get(info.origin+'/api/models',{maxRetries:2})).json(),beforeCombined, 'collection reimport must not create duplicate models or rewrite preserved settings');
+    await modal.screenshot({path:path.join(directory,'07-collection-reimport-no-duplicates.png')});
     await modal.getByRole('button',{name:'完成',exact:true}).click();
-    checks.push('multiple legacy files tolerate one bad ZIP; model action details retained; multi-model export downloads exactly one directory-structured archive and the same archive imports all models');
+    checks.push('multiple legacy files tolerate one bad ZIP; model action details retained; multi-model export downloads one archive and reimport reuses all models without creating duplicates');
+    const coreResult = { success: true, scope: 'package-import-export-dedup-core', checks: [...checks], errors: [...errors], assetTimings: [...assetTimings], directory };
+    fs.writeFileSync(path.join(directory, 'core-result.json'), JSON.stringify(coreResult, null, 2));
+    // The import proof is complete. Check the shared toolbar in a fresh page
+    // of this same owned fixture, rather than carrying a long-lived WebGL
+    // preview through every ZIP import. No unsaved fields were edited here.
+    assert.equal(await page.getByRole('dialog').count(), 0);
+    assert.equal(await modal.isVisible(), false);
+    const freshState = await context.storageState(); await context.close();
+    const freshContext = await browser.newContext({ viewport: { width: 1600, height: 1000 }, storageState: freshState });
+    await freshContext.addInitScript(() => { const key = 'digital_twin_admin_ui_state_v1'; let state = {}; try { state = JSON.parse(localStorage.getItem(key) || '{}'); } catch {} localStorage.setItem(key, JSON.stringify({ ...state, activeTab: 'model-animations', motionWorkspaceMode: 'live' })); });
+    page = await freshContext.newPage(); page.setDefaultTimeout(120000); page.on('pageerror', e => errors.push(e.message)); await page.goto(info.origin + '/admin');
+    await page.getByRole('banner', { name: '后台工具栏' }).waitFor();
+    const freshTransfer = page.getByRole('group', { name: '动作包导入导出' });
     for (const mode of ['实时联动', '设备联动', '部件动作']) {
-      await page.getByRole('navigation', { name: '动作动画模式' }).getByRole('button', { name: mode, exact: true }).click();
-      assert.equal(await transfer.getByRole('button').count(), 2); assert.equal(await page.getByText('项目导入文件', { exact: true }).count(), 0);
+      const modeButton = page.getByRole('navigation', { name: '动作动画模式' }).getByRole('button', { name: mode, exact: true }); await modeButton.click({ noWaitAfter: true });
+      await waitUntil(async () => { assert.equal(server.exitCode, null); return await modeButton.getAttribute('aria-pressed') === 'true'; }, 120000, 'owned animation workspace mode');
+      assert.equal(await freshTransfer.getByRole('button').count(), 2); assert.equal(await page.getByText('项目导入文件', { exact: true }).count(), 0);
     }
     checks.push('right-aligned compact actions survive all motion tabs and narrow windows; dialogs reject invalid ZIPs, resist accidental dismissal and export a valid model+motion package');
-    assert.deepEqual(errors, []); fs.writeFileSync(path.join(directory, 'result.json'), JSON.stringify({ success: true, checks, errors, directory }, null, 2)); console.log(JSON.stringify({ success: true, checks, directory }, null, 2));
+    assert.deepEqual(errors, []); fs.writeFileSync(path.join(directory, 'result.json'), JSON.stringify({ success: true, checks, errors, assetTimings, directory }, null, 2)); console.log(JSON.stringify({ success: true, checks, assetTimings, directory }, null, 2));
 })().catch(async error => { await page?.screenshot({ path: path.join(directory, 'failure.png'), fullPage: true }).catch(() => {}); console.error(error); process.exitCode = 1; })
     .finally(async () => { await browser?.close(); await stopOwnedSmokeProcess(server); });

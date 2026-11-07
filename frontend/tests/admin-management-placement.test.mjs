@@ -70,6 +70,28 @@ test('header removes the long title and ends with an accessible icon-only lock f
   assert.match(panel, /\.admin-lock-button\s*\{[^}]*width: 36px; height: 36px; padding: 0/)
 })
 
+test('header omits the configuration-order strip but retains connection, reading, locking and help navigation', async () => {
+  const panel = await source('../src/views/AdminPanel.vue')
+  assert.doesNotMatch(panel, /adminSetupFlow|admin-setup-flow|admin-setup-step|推荐配置顺序|配置顺序/)
+  const header = panel.slice(panel.indexOf('<header class="admin-header"'), panel.indexOf('</header>', panel.indexOf('<header class="admin-header"')))
+  assert.match(header, /<AdminConnectionStatus[\s\S]*<AdminReadingSettings\s*\/>[\s\S]*@click="lockAdmin"[\s\S]*<AdminHelpGuide @navigate="openAdminSetupStep"/)
+  const navigate = panel.slice(panel.indexOf('async function openAdminSetupStep(step)'), panel.indexOf('</script>', panel.indexOf('async function openAdminSetupStep(step)')))
+  assert.match(navigate, /canSelectTab\(step\.tab\)/)
+  assert.match(navigate, /canAdminPage\(`settings\.\$\{step\.settingsSubpage\}`\)/)
+  assert.match(navigate, /selectAdminTab\(step\.tab\)/)
+})
+
+test('live animation hierarchy target is rendered at the page-heading right and only for live mode', async () => {
+  const panel = await source('../src/views/AdminPanel.vue')
+  const heading = panel.slice(panel.indexOf('<template v-if="activeTab === \'model-animations\'">'), panel.indexOf('<h2>3D 模型库</h2>'))
+  assert.match(heading, /class="manual-layout-page-heading"[\s\S]*?<h2>动作动画<\/h2>[\s\S]*?<div v-if="motionWorkspaceMode === 'live'" id="motion-live-device-picker" class="motion-live-device-picker-slot"><\/div>/)
+  assert.match(panel, /<DeviceAnimationLink v-if="activeTab === 'model-animations' && motionWorkspaceMode === 'live' && motionFactoryId"[^>]*device-picker-target="#motion-live-device-picker"[^>]*:request-factory-switch="requestMotionFactorySwitch"[^>]*:confirm="confirm"/)
+  assert.equal((panel.match(/id="motion-live-device-picker"/g) || []).length, 1)
+  assert.ok(panel.indexOf('id="motion-live-device-picker"') < panel.indexOf('<DeviceAnimationLink'))
+  assert.match(panel, /\.manual-layout-page-heading\s*\{[^}]*justify-content: space-between/)
+  assert.match(panel, /\.motion-live-device-picker-slot\s*\{[^}]*flex:0 0 auto;[^}]*max-width:min\(560px,100%\)/)
+})
+
 test('manual layout keeps offset fields reachable in short and narrow desktop windows', async () => {
   const panel = await source('../src/views/AdminPanel.vue')
   assert.match(panel, /\.manual-disassembly-tab :deep\(\.part-sidebar\)\s*\{[^}]*overflow-y: auto/)
@@ -224,7 +246,7 @@ test('layout selection lists library models rather than site instances and hides
   assert.match(panel, /useManualDisassemblyPage\(\{ models, api: adminApi, scope: 'model'/)
   const layout = panel.slice(panel.indexOf('data-testid="manual-disassembly-page"'), panel.indexOf('<h2>3D 模型库</h2>'))
   assert.match(layout, /aria-label="选择拆解布局模型"/)
-  assert.match(layout, /item\.name \|\| item\.id/)
+  assert.match(layout, /formatModelSetupOption\(item, 'disassembly'\)/)
   assert.doesNotMatch(layout, /deviceHierarchyLabel|manualDisassemblyDevice|本设备独立布局/)
   assert.doesNotMatch(panel, /page-readonly-notice|此页面为只读权限/)
   assert.match(panel, /v-permission="\{ page: controlPermissionPage, action: 'edit' \}"/)

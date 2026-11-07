@@ -269,7 +269,7 @@ test('motion-only broadcasts update prepared inputs without refreshing legacy PL
   ] } }) })
   const stamp = Date.now()
   f.store.handler({ furnace_id: 'a', factory_id: 'other-factory', timestamp: stamp, analog: { temp: 1 } })
-  assert.equal(f.vm.frame, null)
+  assert.deepEqual(f.vm.states, {})
   f.store.handler({ furnace_id: 'a', factory_id: 'factory-motion-test', timestamp: stamp, analog: { temp: .25 }, pointMeta: { 'analog.temp': { id: 'a-temp', timestamp: stamp } }, quality: { analog: { temp: 'good' } }, status: { online: true, quality: 'good' }, motionInputs: { 'clip:fan': { dataItemId: 'bool-a', value: true, quality: 'good', timestamp: stamp, staleMs: 5000 } } })
   const legacyAt = f.vm.states['clip:door'].receivedAt
   assert.equal(f.vm.states['clip:door'].position, .25)
@@ -278,7 +278,7 @@ test('motion-only broadcasts update prepared inputs without refreshing legacy PL
   assert.equal(f.vm.states['clip:fan'].running, false)
   assert.equal(f.vm.states['clip:door'].receivedAt, legacyAt)
   assert.equal(f.vm.states['clip:door'].position, .25)
-  assert.equal(f.vm.frame.motionInputOnly, true)
+  assert.equal(f.vm.states['clip:fan'].usable, true)
   f.store.motionHandler({ furnace_id: 'a', factoryId: 'factory-motion-test', motionInputOnly: true, timestamp: stamp + 30, motionInputs: { 'clip:fan': { dataItemId: 'foreign-data-id', value: true, quality: 'good', timestamp: stamp + 30, staleMs: 5000 } } })
   assert.equal(f.vm.states['clip:fan'].usable, false)
   assert.equal(f.vm.states['clip:door'].receivedAt, legacyAt)
@@ -341,13 +341,151 @@ test('motion-only endpoint frames use independent prepared feedback even with no
   send(true, true); assert.equal(f.vm.states['clip:door'].position, 1); assert.equal(f.vm.states['clip:door'].reason, '到位反馈冲突')
 })
 
-test('device-animation template compiles and puts technical legacy selectors behind a closed advanced entry', () => {
+test('retired custom clips are not selectable or monitored; explicit confirmed save disables but preserves their stored fields', async t => {
+  const retired = { actionId: 'clip:user_legacy', enabled: true, pointId: 'removed-point', dataItemId: 'removed-source', trigger: { mode: 'condition', operator: 'eq', value: true, hysteresis: 0 }, inputMin: 0, inputMax: 1, invert: false, speed: 1, transitionSeconds: 1 }
+  const data = id => ({ ...animation(id), actions: [{ id: retired.actionId, kind: 'clip', mode: 'position', label: '旧自定义动画' }, ...actions], config: { version: 1, staleMs: 5000, bindings: [structuredClone(retired)] } })
+  const confirmations = []
+  const f = await fixture(t, { load: async id => data(id), save: async (id, body) => ({ success: true, ...data(id), config: structuredClone(body.config), revision: 'saved' }), props: { confirm: async text => { confirmations.push(text); return false } } })
+  assert.equal(f.vm.activeId, 'clip:door')
+  assert.equal(f.vm.selectableActions.some(action => action.id === retired.actionId), false)
+  assert.equal(f.vm.resolvedBindings.some(binding => binding.actionId === retired.actionId), false)
+  assert.deepEqual(f.vm.draft.bindings.find(binding => binding.actionId === retired.actionId), retired)
+  assert.equal(f.vm.dirty, false); assert.equal(f.vm.retirementPending, true); assert.equal(f.vm.saveProblem, '')
+  assert.equal(f.calls.saves.length, 0, 'reading a retired binding never writes to the server')
+  assert.equal(await f.vm.save(), false); assert.equal(f.calls.saves.length, 0)
+  assert.match(confirmations[0], /停用旧动画绑定.*保留动作定义和历史数据/)
+  await f.render({ confirm: async () => true })
+  assert.equal(await f.vm.save(), true)
+  assert.deepEqual(f.calls.saves[0].body.config.bindings.find(binding => binding.actionId === retired.actionId), { ...retired, enabled: false })
+  assert.equal(f.vm.retirementPending, false); assert.equal(f.vm.dirty, false)
+})
+
+test('missing retired package definitions remain preservable and can be disabled without blocking current part bindings', async t => {
+  const retired = { actionId: 'clip:user_missing', enabled: true, pointId: 'removed-point', inputMin: 0, inputMax: 1, invert: false, speed: 1, transitionSeconds: 1 }
+  const data = id => ({ ...animation(id), config: { version: 1, staleMs: 5000, bindings: [structuredClone(retired)] } })
+  const f = await fixture(t, { load: async id => data(id), save: async (id, body) => ({ success: true, ...data(id), revision: 'saved', config: structuredClone(body.config) }) })
+  assert.equal(f.vm.retirementPending, true)
+  assert.equal(f.vm.draft.bindings.filter(binding => binding.actionId === retired.actionId).length, 1)
+  f.vm.chooseDataItem(directory('a').items[0]); f.vm.row.enabled = true
+  assert.equal(await f.vm.save(), true)
+  assert.deepEqual(f.calls.saves[0].body.config.bindings.find(binding => binding.actionId === retired.actionId), { ...retired, enabled: false })
+  assert.equal(f.calls.saves[0].body.config.bindings.find(binding => binding.actionId === 'clip:door').dataItemId, 'temp-a')
+})
+
+test('retirement save rebases hidden disabled history while preserving newer visible edits', async t => {
+  const pending = deferred(), retired = { actionId: 'clip:user_legacy', enabled: true, pointId: 'removed', inputMin: 0, inputMax: 1, invert: false, speed: 1, transitionSeconds: 1 }
+  const data = id => ({ ...animation(id), actions: [{ id: retired.actionId, kind: 'clip', mode: 'position' }, ...actions], config: { version: 1, staleMs: 5000, bindings: [structuredClone(retired)] } })
+  const f = await fixture(t, { load: async id => data(id), save: () => pending.promise })
+  f.vm.chooseDataItem(directory('a').items[0])
+  const saving = f.vm.save(); await settle()
+  f.vm.row.inputMax = 9
+  pending.resolve({ success: true, ...data('a'), revision: 'saved', config: structuredClone(f.calls.saves[0].body.config) })
+  assert.equal(await saving, true)
+  assert.equal(f.vm.row.inputMax, 9); assert.equal(f.vm.dirty, true)
+  assert.equal(f.vm.retirementPending, false)
+  assert.equal(f.vm.draft.bindings.find(binding => binding.actionId === retired.actionId).enabled, false)
+  assert.equal(readFactoryDraft('factory-motion-test', 'animation:a').config.bindings.find(binding => binding.actionId === 'clip:door').inputMax, 9)
+})
+
+test('pending retirement confirmation cannot save another device and canceled approvals keep old bindings intact', async t => {
+  const approval = deferred(), retired = { actionId: 'clip:user_legacy', enabled: true, pointId: 'removed', inputMin: 0, inputMax: 1, invert: false, speed: 1, transitionSeconds: 1 }
+  const f = await fixture(t, { load: async id => ({ ...animation(id), config: { version: 1, staleMs: 5000, bindings: [structuredClone(retired)] } }), props: { confirm: () => approval.promise } })
+  const saving = f.vm.save()
+  f.vm.selectedId = 'b'; await settle()
+  approval.resolve(true)
+  assert.equal(await saving, false); assert.equal(f.calls.saves.length, 0)
+  assert.equal(f.vm.draft.bindings.find(binding => binding.actionId === retired.actionId).enabled, true)
+})
+
+test('device-animation template compiles with a scrollable part configuration and no retired direct-point entry', () => {
   const parsed = parse(source).descriptor, script = compileScript(parsed, { id: 'motion-compile' })
   assert.deepEqual(compileTemplate({ source: parsed.template.content, filename: 'DeviceAnimationLink.vue', id: 'motion-compile', compilerOptions: { bindingMetadata: script.bindings } }).errors, [])
   assert.ok(source.includes('DeviceHierarchyPicker'))
   assert.ok(source.includes('MotionDataPicker'))
   assert.ok(source.includes('新绑定待保存'))
-  assert.match(source, /<details v-if="!endpointMode" class="trigger-advanced"><summary>兼容旧配置/)
-  assert.ok(source.includes('MotionEndpointPicker')); assert.ok(source.includes('测试两端未到位'))
+  assert.doesNotMatch(source, /兼容旧配置 · 采集点位直连|aria-label="联动采集点位"|function selectPoint\(/)
+  assert.match(source, /class="link-config" role="region" aria-label="部件动作联动配置" tabindex="0"/)
+  assert.ok(source.includes('MotionEndpointPicker'))
+  assert.doesNotMatch(source, /MotionLinkPreview|link-preview|previewMode|testValue|previewBindings|本页试动作|跟随采集|试动作进度|测试两端未到位/)
+  assert.match(source, /\.link-content\{[^}]*grid-template-columns:minmax\(0,1fr\)/)
+  assert.match(source, /class="health-connection" role="status"/)
   assert.doesNotMatch(source, /setFactoryScope|window\.location\.reload/)
+})
+
+test('configuration-only page keeps monitoring saved feedback without constructing a WebGL preview', async t => {
+  const f = await fixture(t, { load: async id => ({ ...animation(id), config: { version: 1, staleMs: 5000, bindings: [{ actionId: 'clip:door', enabled: true, trigger: { mode: 'endpoints', extended: { dataItemId: `extended-${id}` }, retracted: { dataItemId: `retracted-${id}` } }, inputMin: 0, inputMax: 1, speed: 1, invert: false, transitionSeconds: 0 }] } }) })
+  const timestamp = Date.now()
+  f.vm.section = 'health'
+  f.store.motionHandler({ furnace_id: 'a', factoryId: 'factory-motion-test', motionInputOnly: true, motionInputs: { 'clip:door': { quality: 'good', endpointFeedback: { extended: { dataItemId: 'extended-a', value: true, quality: 'good', timestamp }, retracted: { dataItemId: 'retracted-a', value: false, quality: 'good', timestamp } } } } })
+  assert.equal(f.vm.stateFor('clip:door').reason, '推料到位')
+  assert.equal(f.vm.stateFor('clip:door').usable, true)
+  assert.equal(f.vm.dirty, false)
+  assert.equal(f.calls.saves.length, 0)
+  assert.equal('runtime' in f.vm, false)
+  assert.equal('frame' in f.vm, false)
+  f.unmount()
+  assert.equal(f.store.disposed, true)
+})
+
+test('hierarchy relocates through a deferred target without duplicating the selector or changing device selection guards', async t => {
+  const template = parse(source).descriptor.template.content
+  assert.equal((template.match(/<DeviceHierarchyPicker\b/g) || []).length, 1)
+  assert.match(source, /devicePickerTarget: \{ type: String, default: '' \}/)
+  assert.match(template, /<aside class="link-devices">\s*<Teleport defer :to="devicePickerTarget \|\| 'body'" :disabled="!devicePickerTarget">/)
+  assert.match(template, /:factory-id="factory" :device-id="selectedId" :disabled="busy \|\| !scopeValid" :request-factory-switch="requestFactorySwitch" scope-only/)
+  assert.match(template, /:scope-workshop-id="deviceRange.workshopId" :scope-line-id="deviceRange.lineId" @scope-change="filterDeviceRange"/)
+  assert.doesNotMatch(template, /:request-device="choose"/)
+  assert.match(template, /<\/Teleport>\s*<input v-model="query"[^>]*aria-label="搜索联动设备"[\s\S]*?<div class="link-device-list">/)
+  const f = await fixture(t, { props: { devicePickerTarget: '#owned-heading-picker', confirm: async () => false } })
+  assert.equal(f.vm.selectedId, 'a'); assert.equal(f.vm.dirty, false)
+  f.vm.row.enabled = true
+  assert.equal(await f.vm.choose('b'), false)
+  assert.equal(f.vm.selectedId, 'a'); assert.equal(f.vm.dirty, true)
+  await f.render({ devicePickerTarget: '' })
+  assert.equal(f.vm.selectedId, 'a'); assert.equal(f.vm.dirty, true)
+  assert.equal(f.calls.saves.length, 0)
+  f.unmount(); assert.equal(f.store.disposed, true)
+})
+
+test('three-level scope filters the single device list without selecting a device, modifying its draft or making a request', async t => {
+  const f = await fixture(t, { props: {
+    workshops: [{ id: 'w1' }, { id: 'w2' }],
+    lines: [{ id: 'l1', workshop_id: 'w1' }, { id: 'l2', workshop_id: 'w1' }, { id: 'l3', workshop_id: 'w2' }],
+    devices: [{ id: 'a', name: '一号炉', line_id: 'l1' }, { id: 'b', name: '二号炉', line_id: 'l2' }, { id: 'c', name: '另一车间炉', line_id: 'l3' },
+      { id: 'aux', name: '辅助设备', instance_config: '{"workshop_id":"w1"}' }, { id: 'orphan', name: '未分配设备', line_id: 'deleted', instance_config: 'null' }],
+    confirm: async () => false
+  } })
+  const initialLoads = f.calls.loads.length
+  f.vm.row.enabled = true
+  const draft = JSON.stringify(f.vm.draft)
+  assert.equal(f.vm.filterDeviceRange({ workshopId: 'w1', lineId: '' }), true)
+  assert.deepEqual(f.vm.options.map(row => row.id), ['a', 'b', 'aux'])
+  assert.equal(f.vm.filterDeviceRange({ workshopId: 'w1', lineId: 'l2' }), true)
+  assert.deepEqual(f.vm.options.map(row => row.id), ['b'])
+  assert.equal(f.vm.selectedId, 'a'); assert.equal(JSON.stringify(f.vm.draft), draft)
+  assert.equal(f.calls.loads.length, initialLoads); assert.equal(f.calls.saves.length, 0)
+  assert.equal(await f.vm.choose('b'), false, 'the below-list choice still confirms the dirty device')
+  assert.equal(f.vm.selectedId, 'a'); assert.equal(JSON.stringify(f.vm.draft), draft)
+  f.vm.query = '一号'; assert.deepEqual(f.vm.options, [], 'search cannot leak a device outside the selected line')
+  f.vm.query = ''
+  assert.equal(f.vm.filterDeviceRange({ workshopId: 'w1', lineId: '__unassigned' }), true)
+  assert.deepEqual(f.vm.options.map(row => row.id), ['aux'])
+  assert.equal(f.vm.filterDeviceRange({ workshopId: '__unassigned', lineId: '__unassigned' }), true)
+  assert.deepEqual(f.vm.options.map(row => row.id), ['orphan'])
+  assert.equal(f.vm.filterDeviceRange({ workshopId: '', lineId: '' }), true)
+  assert.equal(f.vm.options.length, 5)
+})
+
+test('device list rejects invalid or pending scope changes without changing the current filter', async t => {
+  const f = await fixture(t, { props: { workshops: [{ id: 'w1' }, { id: 'w2' }], lines: [{ id: 'l1', workshop_id: 'w1' }] } })
+  assert.equal(f.vm.filterDeviceRange({ workshopId: 'w1', lineId: 'l1' }), true)
+  const current = { ...f.vm.deviceRange }
+  for (const range of [{ workshopId: '', lineId: 'l1' }, { workshopId: 'missing', lineId: '' }, { workshopId: 'w2', lineId: 'l1' }]) {
+    assert.equal(f.vm.filterDeviceRange(range), false); assert.deepEqual(f.vm.deviceRange, current)
+  }
+  f.vm.busy = true
+  assert.equal(f.vm.filterDeviceRange({ workshopId: '', lineId: '' }), false); assert.deepEqual(f.vm.deviceRange, current)
+  f.vm.busy = false
+  f.unmount()
+  assert.equal(f.vm.filterDeviceRange({ workshopId: '', lineId: '' }), false)
 })

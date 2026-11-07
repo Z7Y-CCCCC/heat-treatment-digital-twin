@@ -5,6 +5,14 @@ const { buildCatalog, loadCatalogState } = require('./dataCenter');
 const { listDataSets } = require('./dataSets');
 const groups = new Set(['analog', 'motors', 'doors', 'gas', 'mechanisms', 'status']);
 const PUBLIC_BINDING_FIELDS = ['actionId','enabled','pointId','dataItemId','trigger','inputMin','inputMax','invert','speed','transitionSeconds'];
+function isRetiredMotionAction(action) {
+    return action?.kind === 'clip' && typeof action.id === 'string' && action.id.startsWith('clip:user_');
+}
+function publicAnimationBinding(row) {
+    const result = Object.fromEntries(PUBLIC_BINDING_FIELDS.filter(k => row[k] !== undefined).map(k => [k,row[k]]));
+    if (row.trigger?.mode === 'endpoints') result.trigger = {mode:'endpoints', extended:{dataItemId:row.trigger.extended?.dataItemId || ''}, retracted:{dataItemId:row.trigger.retracted?.dataItemId || ''}};
+    return result;
+}
 const comparisons = new Set(['eq','ne','gt','gte','lt','lte']);
 const object = value => { try { const x = typeof value === 'string' ? JSON.parse(value || '{}') : value; return x && !Array.isArray(x) && typeof x === 'object' ? x : {}; } catch { return {}; } };
 const error = (message, statusCode = 400) => Object.assign(new Error(message), { statusCode });
@@ -156,6 +164,16 @@ function validateDeviceAnimations(loaded, body) {
     if (body.revision !== loaded.revision) throw error('配置或点位已更新，请重新读取后保存', 409);
     const config = body.config;
     if (!config || config.version !== 1 || Object.keys(config).some(k => !['version','staleMs','bindings'].includes(k)) || !Number.isInteger(config.staleMs) || config.staleMs < 1000 || config.staleMs > 60000 || !Array.isArray(config.bindings) || config.bindings.length > 100) throw error('动画配置格式无效');
+    // Retired custom clips remain readable for history/package compatibility.
+    // A save can only disable an existing binding, never edit or activate it.
+    const retiredOriginals = new Map((loaded.config?.bindings || []).filter(binding => {
+        const action = loaded.actions.find(action => action.id === binding.actionId);
+        // Early public-shaped snapshots lack kind. Only an existing orphaned
+        // clip:user_* history row may use its namespace as the fallback;
+        // a known current/archived part action is never treated as retired.
+        return action ? isRetiredMotionAction(action)
+            : isRetiredMotionAction({id:binding.actionId,kind:binding.kind ?? 'clip'});
+    }).map(binding => [binding.actionId,binding]));
     const ids = new Set(), occupied = new Map();
     const bindings = config.bindings.map(row => {
         if (!row || Array.isArray(row) || Object.keys(row).some(k => !PUBLIC_BINDING_FIELDS.includes(k)) || typeof row.enabled !== 'boolean' || typeof row.invert !== 'boolean'
@@ -163,6 +181,16 @@ function validateDeviceAnimations(loaded, body) {
             || (row.dataItemId || '').length > 100 || ids.has(row.actionId)) throw error('动作配置无效或重复');
         ids.add(row.actionId);
         const action = loaded.actions.find(a => a.id === row.actionId);
+        if (isRetiredMotionAction(action) || retiredOriginals.has(row.actionId)) {
+            if (row.enabled) throw error('旧自定义动画已移除，不能再启用；请停用后保存');
+            const original = retiredOriginals.get(row.actionId);
+            if (!original) return null; // UI-only disabled defaults never create a retired binding.
+            const expected = publicAnimationBinding({ ...original, enabled:false });
+            if (canonicalJson(row) !== canonicalJson(expected)) throw error('旧自定义动画只允许停用，不能修改历史绑定字段');
+            // Do not resolve a removed source or recompile its trigger. Retain
+            // its full stored definition/fingerprint, with only enabled changed.
+            return { ...JSON.parse(JSON.stringify(original)), enabled:false };
+        }
         if (!action) throw error('模型动作不存在，请重新读取');
         const endpoints = row.trigger?.mode === 'endpoints';
         if (endpoints && action.mode !== 'position') throw error('双到位反馈只适用于位移或角度等行程动作，不用于连续运行动作');
@@ -187,15 +215,18 @@ function validateDeviceAnimations(loaded, body) {
             pointId: point && (!item || item.binding.mode === 'plc') ? String(point.id) : '', kind: action.kind, mode: action.mode,
             clipId: action.kind === 'clip' ? row.actionId.slice(5) : '', partId: action.kind === 'part' ? row.actionId.slice(5) : '',
             sourceGroup, sourceKey: !item || item.binding.mode === 'plc' ? point?.value_role || point?.name || '' : '' };
-    });
+    }).filter(Boolean);
+    for (const [actionId,original] of retiredOriginals) {
+        if (ids.has(actionId)) continue;
+        if (original.enabled) throw error('仍有已启用的旧自定义动画，请显式停用后保存');
+        // Omitting disabled history cannot silently delete its definition.
+        bindings.push(JSON.parse(JSON.stringify(original)));
+    }
+    if (bindings.length > 100) throw error('动画配置格式无效：动作绑定最多保留 100 项');
     return { version: 1, staleMs: config.staleMs, bindings };
 }
 function publicDeviceAnimations(loaded) {
-    const config = { ...loaded.config, bindings: (loaded.config.bindings || []).map(row => {
-        const result = Object.fromEntries(PUBLIC_BINDING_FIELDS.filter(k => row[k] !== undefined).map(k => [k,row[k]]));
-        if (row.trigger?.mode === 'endpoints') result.trigger = {mode:'endpoints', extended:{dataItemId:row.trigger.extended?.dataItemId || ''}, retracted:{dataItemId:row.trigger.retracted?.dataItemId || ''}};
-        return result;
-    }) };
+    const config = { ...loaded.config, bindings: (loaded.config.bindings || []).map(publicAnimationBinding) };
     const dataItems = (loaded.catalog?.items || []).map(item => {
         try {
             validateMotionSource(loaded, item);
@@ -207,4 +238,4 @@ function publicDeviceAnimations(loaded) {
     return { deviceId: loaded.device.id, modelId: loaded.model.id, revision: loaded.revision, config, catalogRevision:loaded.catalog?.revision,
         dataItems, actions: loaded.actions.map(({ channels, binding, ...a }) => a), motionPackage: loaded.motionPackage };
 }
-module.exports = { loadDeviceAnimations, validateDeviceAnimations, publicDeviceAnimations, actionsForModel, validateTrigger, validateCatalogItem, validateMotionSource, sourceFingerprint, pointType, validateEndpointTrigger, validateEndpointSource, endpointSourceIdentity };
+module.exports = { loadDeviceAnimations, validateDeviceAnimations, publicDeviceAnimations, actionsForModel, isRetiredMotionAction, validateTrigger, validateCatalogItem, validateMotionSource, sourceFingerprint, pointType, validateEndpointTrigger, validateEndpointSource, endpointSourceIdentity };

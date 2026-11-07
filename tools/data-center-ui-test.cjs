@@ -63,9 +63,14 @@ async function saveDesigner() {
   await page.locator('.category-choice').filter({ hasText: '自定义能耗' }).waitFor();
   pass('用途分类支持新增与重命名并持久化');
   await page.locator('.category-choice').filter({ hasText: '全部数据' }).click();
-  await page.getByLabel('整理数据项 设备名称', { exact: true }).click();
-  await page.locator('.field-form select').selectOption(custom.id);
-  await page.locator('.field-form').getByRole('button', { name: '保存', exact: true }).click();
+  const fieldRow = page.locator('[data-field-id="internal_device_name"]');
+  assert.equal(await page.locator('.field-form').count(), 0, 'metadata is edited in its row, not a detached bottom form');
+  const editField = fieldRow.getByRole('button', { name: '整理数据项 设备名称', exact: true });
+  assert.equal(await editField.locator('svg').count(), 1);
+  await editField.click();
+  await fieldRow.getByLabel('数据项显示名称', { exact: true }).waitFor();
+  await fieldRow.getByLabel('数据项用途分类', { exact: true }).selectOption(custom.id);
+  await fieldRow.getByRole('button', { name: '保存数据项 设备名称', exact: true }).click();
   await waitUntil(async () => (await api('/data-center/catalog')).items.find(i => i.id === 'internal_device_name').categoryId === custom.id, 5000);
   const boundBefore = initial.items.find(i => i.id === 'internal_device_name').binding;
   await page.locator('.category-choice').filter({ hasText: '自定义能耗' }).click();

@@ -4,6 +4,8 @@
 
 此次不删除已有模型动作包、设备绑定或历史配置，原有包的导入、导出及 Three.js / Unity 播放能力保持兼容。下方为旧版实现记录，不再是当前操作指引。
 
+2026-11-07 补充退役收口：旧 `clip:user_*` 自定义动画不再出现在实时联动的可选动作中；内置清洗效果归到“内置部件动作”，仍保留正常门、风机、推料等动作。实时联动配置页的重复 3D 画布及本页试动作控件亦已移除，部件动作预览和 Unity 播放保持原有。若设备仍有启用的旧自定义绑定，页面显示清理提示；仅在用户确认“保存并同步”后停用旧绑定，保留其动作定义、点位和历史配置，不在打开页面时改写数据库。后台拒绝重新启用或修改旧绑定；丢失旧来源或动作包也可完成停用。停用后由现有配置同步流程发送到 Unity，本轮不冒充已实测当前运行的 Unity 播放器。
+
 ## 旧版操作记录（入口已停用）
 
 模型库 → 动作动画 → **工艺动作**：选择模型，点 ＋，为动作命名。
@@ -42,7 +44,7 @@
 
 - `node backend/scripts/motion-authoring-test.cjs`：实际 API 创建/预览/保存/修改、原文件不变、重复节点、版本冲突、非法范围、设备点位绑定、保护正在使用的动作、保留原 CAD 动作、跨工厂限制、项目迁移后再编辑。
 - `node --test frontend/tests/motion-authoring.test.mjs`：实际 Three 对象验证位移/旋转/完整转圈/非均匀缩放下的转轴/显隐/变色/时序/往返，保留旧动作。
-- `node tools/motion-authoring-ui-test.cjs`：真实浏览器完成新动作、多部件预览、点选和拖动隔离、保存、切实时联动、绑定点位、质量丢失与恢复、同型号独立设备、未保存切页保护。
+- `node tools/motion-authoring-ui-test.cjs`：当前退役回归，隔离准备历史动作包，真实浏览器验证编辑入口已消失、历史绑定显式确认后停用且完整保留、合法部件数据绑定和真实运行状况、同型号独立设备，以及实时联动不再挂载重复预览。几何播放由部件预览和原生脚本分别验证，不以本页状态文本代替 Unity 播放结果。
 - `node tools/motion-authoring-native-test.cjs`：隔离 Windows Unity 进程读取新动作包，校验真实 Transform 与同一采样值一致；修改动作后同一进程自动加载新版，坏质量/停帧冻结和恢复。通过 `MOTION_TEST_UNITY_EXE` 指向框架更新版，无需覆盖运行中的客户端。
 
 本机证据：后端 `output/motion-authoring-20261104T020022093Z-8704-RAjsVT/result.json`；浏览器 `output/motion-authoring-browser-20261104T015601556Z-4664-t28UXZ/result.json`；原生 `output/motion-authoring-native-20261104T020222960Z-27368-pqSlsv/result.json`。原生报告同时记录 exe 与 `Assembly-CSharp.dll` 的 SHA-256，新增和修改动作期间两者均未改变、该进程未重启。下载路径策略另通过实际 C# 测试。

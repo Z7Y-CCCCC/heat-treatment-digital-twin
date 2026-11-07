@@ -1,3 +1,5 @@
+import { formatDataTime, isDataTimeField } from './dataRecordTime.js'
+
 export const DATA_CENTER_SECTIONS = Object.freeze([
   { key: 'tables', label: '数据表', hint: '整理并选用数据' },
   { key: 'sources', label: '数据源', hint: '连接接口与数据库' },
@@ -16,6 +18,7 @@ export function dataCenterQuality(quality) {
 
 export function dataCenterPreview(item) {
   const value = item.previewValue
+  if (isDataTimeField(item)) return formatDataTime(value)
   if (value == null || typeof value === 'object') return '—'
   if (typeof value === 'boolean') return value ? '是' : '否'
   return String(value)

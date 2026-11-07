@@ -9,7 +9,7 @@ import { useDataPoints } from '../src/views/admin/composables/useDataPoints.js'
 import { usePointMonitor } from '../src/views/admin/composables/usePointMonitor.js'
 import { useCastDevices } from '../src/views/admin/composables/useCastDevices.js'
 import { summarizeDeviceConnections } from '../src/views/admin/utils/connectionStatus.js'
-import { deferred, installBrowser } from './helpers.mjs'
+import { deferred, installBrowser, settle } from './helpers.mjs'
 
 const runtimePayload = (patch = {}) => ({
     auto_start_enabled: true, auto_start_supported: true, packaged: false,
@@ -164,6 +164,22 @@ test('point row keys survive edits and stay out of stored point payloads', async
     assert.equal(points.pointRowKey(point), key)
     assert.notEqual(points.pointRowKey(points.normalizeLoadedPoint({ name: 'changed' })), key)
     assert.doesNotMatch(JSON.stringify(point), /point-row-/)
+})
+
+test('adding a point reveals its own card on the last page after pagination renders, not an unrelated table', async t => {
+    const { points } = pointsFixture(t), scrolled=[]
+    points.pointsPageSize.value=10
+    points.dataPoints.value=Array.from({length:20},(_,index)=>points.normalizeLoadedPoint({id:index+1,device_id:'A',name:`point_${index}`}))
+    document.querySelector=()=>{assert.fail('point authoring must not scroll the first unrelated table')}
+    document.getElementById=id=>({scrollIntoView(options){scrolled.push({id,options,page:points.pointsCurrentPage.value,visible:points.paginatedDataPoints.value.map(p=>points.pointRowKey(p))})}})
+    points.addDataPoint()
+    const added=points.dataPoints.value.at(-1), key=points.pointRowKey(added)
+    assert.equal(scrolled.length,0)
+    await settle()
+    assert.equal(points.pointsCurrentPage.value,3)
+    assert.deepEqual(scrolled,[{id:key,options:{block:'nearest',behavior:'smooth'},page:3,visible:[key]}])
+    assert.equal(points.isPointsDirty.value,true)
+    assert.doesNotMatch(JSON.stringify(added),/point-row-/)
 })
 
 test('alarm save errors and concurrent typing preserve the latest dirty draft', async t => {

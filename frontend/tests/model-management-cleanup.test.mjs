@@ -59,3 +59,29 @@ test('package dialogs keep explicit import confirmation, checksum validation and
   assert.doesNotMatch(transfer, /const id = props.selectedId \|\| exportId.value/)
   assert.match(transfer, /onUnmounted\(\(\) => \{ disposed = true; controller\?\.abort\(\)/)
 })
+
+test('model asset table has no repeated loading-port shortcut, while its dedicated step and deletion remain', () => {
+  const table = panel.slice(panel.indexOf('<table class="data-table model-table">'), panel.indexOf('</table>', panel.indexOf('<table class="data-table model-table">')))
+  assert.doesNotMatch(table, /openModelLoadingPorts|>进出料口</)
+  assert.match(table, /deleteModel\(m\.id\)/)
+  assert.match(panel, /key: 'ports', label: '进出料口'/)
+  assert.match(panel, /modelLibraryStep === 'ports' && activePreviewModel/)
+})
+
+for (const reused of [false, true]) test(`raw model upload selects the server's ${reused ? 'reused' : 'new'} identity and reports it truthfully`, async () => {
+  const models = { value: [] }, previews = [], alerts = [], modelUploading = { value: false }
+  const form = { id: 'new-request-id', name: '上传名称', placement_level: 'device', default_scale: 1, metadata: '{}' }
+  const serverModel = { id: reused ? 'existing-id' : form.id, name: reused ? '已有模型' : form.name }
+  const state = { modelUploading, canAdminPage: () => true, selectedModelFile: { value: new Blob(['fixture']) }, modelImportForm: form,
+    alert: async (message, options) => alerts.push({ message, options }), adminApi: { uploadModel: async () => ({ success: true, reused, modelId: serverModel.id, model: serverModel }) },
+    clearSelectedModelFile: () => { form.id = ''; form.name = '' }, loadModels: async () => { models.value = [serverModel] }, models,
+    previewExistingModel: async (model, options) => previews.push({ model, options }), modelLibraryStep: { value: 'ports' },
+    modelLevelFilter: { value: 'device' }, modelPreviewStatus: { value: '' } }
+  const body = panel.slice(panel.indexOf('async function uploadModel()'), panel.indexOf('async function previewExistingModel('))
+  const upload = new Function(...Object.keys(state), `${body}; return uploadModel`)(...Object.values(state))
+  await upload()
+  assert.equal(previews[0].model.id, serverModel.id); assert.equal(previews[0].options.afterUpload, true)
+  assert.equal(modelUploading.value, false); assert.equal(state.modelLibraryStep.value, 'library')
+  assert.match(alerts[0].message, reused ? /直接复用，不重复创建/ : /已上传/)
+  assert.match(state.modelPreviewStatus.value, reused ? /已复用已有模型/ : /已上传/)
+})

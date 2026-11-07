@@ -14,6 +14,16 @@ test('model and device loading port editors are discoverable and distinct', () =
   assert.match(panel, /ref="deviceLoadingPortRef"[^>]*:model="loadingPortDeviceModel"[^>]*:device="loadingPortDevice"/)
   assert.match(panel, /showDeviceForm\.value\) return alert\('请先保存或取消/)
 })
+test('device tables expose only edit and delete actions, not repeated loading-port shortcuts', () => {
+  const tables = panel.slice(panel.indexOf('<!-- 设备列表 -->'), panel.indexOf('<DeviceModelHoverPreview'))
+  assert.equal((tables.match(/<table class="data-table">/g) || []).length, 2, 'placed and auxiliary device tables are both covered')
+  assert.doesNotMatch(tables, /进出料口|openDeviceLoadingPorts/)
+  assert.equal((tables.match(/@click="openEditDevice\(d\)"/g) || []).length, 2)
+  assert.equal((tables.match(/@click="deleteDevice\(d\.id\)"/g) || []).length, 2)
+  assert.match(tables, /formatPlcDeviceStatus\(d\)/)
+  assert.match(panel, /@click="openDeviceLoadingPorts\(getLineDeviceById\(selectedLineDeviceIds\[0\]\)\)"/)
+  assert.equal((panel.match(/@click="openDeviceLoadingPorts/g) || []).length, 1, 'only the existing line-layout calibration entry remains')
+})
 test('port editors guard navigation and save or discard explicitly during a factory switch', () => {
   assert.match(panel, /modelLoadingPortRef\.value && !await modelLoadingPortRef\.value\.canLeave\(\)/)
   assert.match(panel, /deviceLoadingPortRef\.value && !await deviceLoadingPortRef\.value\.canLeave\(\)/)

@@ -4,6 +4,10 @@ const path = require('node:path');
 const WebSocket = require('ws');
 const { BACKEND_DIR, createRunDirectory, createTestDatabase, findFreePort, startLoggedProcess, waitForHttp, testFetch, waitUntil, forceStop } = require('./integration-test-utils.cjs');
 const { getBuiltinModels } = require('../services/builtinModels');
+const { patchModelInspectionLayout } = require('../services/modelInspection');
+const { effectiveInspection, patchDeviceInspectionLayout } = require('../services/deviceInspection');
+const { normalizeModelMetadata, stringifyModelMetadata } = require('../services/modelAssetMetadata');
+const { buildEntries } = require('../services/modelAssetBundle');
 let backend, socket;
 (async () => {
     const directory = createRunDirectory('model-inspection-layout'), dataDir = path.join(directory, 'data');
@@ -17,6 +21,42 @@ let backend, socket;
     };
     const api = async (...args) => { const result = await request(...args); assert.ok(result.status >= 200 && result.status < 300, JSON.stringify(result)); return result.payload; };
     const checks = [], check = name => { checks.push(name); console.log('PASS ' + name); };
+    const normalized = normalizeModelMetadata({ customer_note: { Case: 'ABC' }, partBindings: [{
+        id: 'fallback_door', node_name: 'door', source_key: 'door_open', action: 'translate'
+    }] });
+    assert.ok(normalized.inspection.parts.length);
+    assert.equal(normalized.disassemblyLayout, undefined, 'normalizing bindings must not imply a saved layout');
+    const fixture = metadata => ({ instance: metadata, ...effectiveInspection(metadata, {}), revision: 'a'.repeat(64) });
+    const authored = fixture(normalized), original = JSON.stringify(authored);
+    const marked = patchModelInspectionLayout(authored, { revision: authored.revision, enabled: true,
+        parts: [{ id: 'fallback_door', explode_offset: [0, 0, 0] }] });
+    assert.deepEqual(marked.disassemblyLayout, { version: 1, configured: true });
+    assert.deepEqual(marked.customer_note, normalized.customer_note);
+    assert.equal(JSON.stringify(authored), original, 'patches must not mutate the loaded CAS baseline');
+    const empty = fixture({ inspection: { parts: [] }, customer_note: 'empty' });
+    assert.equal(patchModelInspectionLayout(empty, { revision: empty.revision, parts: [] }).disassemblyLayout, undefined);
+    const untargeted = fixture({ inspection: { parts: [{ id: 'disabled', enabled: false, explode_offset: [0, 0, 0] }] } });
+    assert.equal(patchModelInspectionLayout(untargeted, { revision: untargeted.revision, parts: [] }).disassemblyLayout, undefined);
+    const disabledTarget = fixture({ inspection: { enabled: false,
+        parts: [{ id: 'disabled', enabled: false, node_name: 'door', explode_offset: [0, 0, 0] }] } });
+    const disabledSaved = patchModelInspectionLayout(disabledTarget, { revision: disabledTarget.revision, parts: [] });
+    assert.deepEqual(disabledSaved.disassemblyLayout, { version: 1, configured: true });
+    assert.equal(disabledSaved.inspection.enabled, false);
+    assert.equal(disabledSaved.inspection.parts[0].enabled, false);
+    const whitespaceTarget = fixture({ inspection: { parts: [{ id: 'blank', enabled: false, node_name: '  ', explode_offset: [0, 0, 0] }] } });
+    assert.equal(patchModelInspectionLayout(whitespaceTarget, { revision: whitespaceTarget.revision, parts: [] }).disassemblyLayout, undefined);
+    assert.equal(patchDeviceInspectionLayout(authored, { revision: authored.revision,
+        parts: [{ id: 'fallback_door', explode_offset: [1, 0, 0] }] }).disassemblyLayout, undefined);
+    assert.throws(() => patchModelInspectionLayout(authored, { revision: 'b'.repeat(64), parts: [] }),
+        error => error.code === 'MODEL_INSPECTION_CONFLICT');
+    assert.throws(() => patchModelInspectionLayout(authored, { revision: authored.revision,
+        parts: [{ id: 'fallback_door', explode_offset: [null, 0, 0] }] }),
+        error => error.code === 'MODEL_INSPECTION_INVALID');
+    assert.equal(JSON.stringify(authored), original);
+    const preserved = fixture({ ...marked, inspection: { parts: [] } });
+    assert.deepEqual(patchModelInspectionLayout(preserved, { revision: preserved.revision, parts: [] }).disassemblyLayout,
+        marked.disassemblyLayout, 'existing provenance is preserved, but it cannot supply missing targets');
+    check('only an explicit valid model layout save marks provenance, including intentional zero offsets; empty/default/device saves do not');
     const modelId = 'pit_furnace_2_v1', peerId = 'pit_furnace_1_v1', route = `/api/models/${modelId}/inspection`;
     const before = await api(route), peerInitial = await api(`/api/models/${peerId}/inspection`);
     await api(`/api/models/${peerId}/inspection`, 'PUT', { revision: peerInitial.revision, parts: [] });
@@ -33,6 +73,7 @@ let backend, socket;
             instance_config: id.endsWith('override') ? { inspection: { parts: [{ ...baseline.inspection.parts[0], explode_offset: [90, 91, 92] }] }, marker: id } : { marker: id } });
     }
     const devices = await api('/api/devices'), modelBefore = (await api('/api/models')).find(m => m.id === modelId);
+    assert.equal(JSON.parse(modelBefore.metadata).disassemblyLayout, undefined);
     const events = [];
     socket = new WebSocket(origin.replace('http:', 'ws:') + '/ws'); socket.on('message', raw => events.push(JSON.parse(String(raw))));
     await new Promise((resolve, reject) => { socket.once('open', resolve); socket.once('error', reject); });
@@ -49,6 +90,11 @@ let backend, socket;
     assert.deepEqual(await api(`/api/models/${peerId}/inspection`), peer);
     const modelAfter = (await api('/api/models')).find(m => m.id === modelId), stored = typeof modelAfter.metadata === 'string' ? JSON.parse(modelAfter.metadata) : modelAfter.metadata;
     assert.deepEqual(stored.customer_note, { Case: 'ABC' });
+    assert.deepEqual(stored.disassemblyLayout, { version: 1, configured: true });
+    assert.deepEqual(JSON.parse(saved.model.metadata).disassemblyLayout, stored.disassemblyLayout);
+    const exportedMetadata = JSON.parse(buildEntries(modelAfter).get('manifest.json')).model.metadata;
+    assert.deepEqual(exportedMetadata.disassemblyLayout, stored.disassemblyLayout);
+    assert.deepEqual(JSON.parse(stringifyModelMetadata(exportedMetadata)).disassemblyLayout, stored.disassemblyLayout);
     assert.equal(stored.inspection.parts[0].duration, JSON.parse(modelBefore.metadata).inspection.parts[0].duration);
     assert.deepEqual(saved.inspection.parts.slice(1), baseline.inspection.parts.slice(1));
     for (const key of Object.keys(modelBefore)) if (key !== 'metadata') assert.deepEqual(modelAfter[key], modelBefore[key]);
