@@ -48,6 +48,10 @@ export function devicePoint(binding, deviceId, pointValues = {}) {
   const rows=[...new Map(Object.values(pointValues).filter(p=>p && String(p.device_id)===String(deviceId)).map(p=>[String(p.id),p])).values()]
   const exact=rows.find(p=>String(p.id)===String(binding.pointId || ''))
   if (exact) return exact
+  // A fixed source with an explicit ID cannot silently switch to another
+  // same-role point after deletion. Detail-view context overrides remain
+  // reusable on a different device, as do current/rotating bindings.
+  if (binding.deviceScope==='fixed' && binding.pointId && String(binding.deviceId || '')===String(deviceId)) return null
   const template=pointValues[binding.pointId], key=String(binding.pointKey || (template ? `${template.category || 'analog'}.${template.value_role || template.name || ''}` : binding.path || ''))
   const matches=rows.filter(p=>`${p.category || 'analog'}.${p.value_role || p.name || ''}`===key)
   return matches.length===1 ? matches[0] : null

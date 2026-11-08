@@ -693,7 +693,7 @@ async function saveMotion() {
                 <h2>设备运动配置</h2>
                 <p class="desc">将设备模型绑定到 PLC 位置点位，收到实时位置后直接驱动 Unity 中的模型移动。</p>
             </div>
-            <span class="motion-latency-badge">实时通道 · 100ms</span>
+            <span class="motion-latency-badge" title="保存运动绑定后，相关点位的采集周期设为 100ms。这不是实测传输延迟，画面响应还受 PLC 通信、数据传输和 Unity 渲染影响。">运动点位采集周期 · 100ms</span>
         </div>
 
         <div v-if="!mobileDevices.length" class="empty-state">暂无辅助设备，请先在“设备管理”中添加小车或其他辅助设备。</div>

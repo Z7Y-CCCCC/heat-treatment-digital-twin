@@ -15,6 +15,16 @@ const {
 } = require('../utils/dashboardDocument');
 const { resolveConnection } = require('./dataSources');
 const { orderedReleases, orderedRows } = require('../utils/orderedReleases');
+const { cleanupDeletedDeviceContent } = require('../../shared/dashboardDeviceDeletion.mjs');
+const { readDashboardCleanupHistory, confirmedMissingDeviceIds, factoryDeviceIds,
+    projectPublishedDeviceDeletion } = require('./dashboardDeviceDeletion');
+
+async function pruneConfirmedDeletedDraft(db, document, factoryId, options = {}) {
+    const deviceIds = await confirmedMissingDeviceIds(db, factoryId, options);
+    return deviceIds.length ? cleanupDeletedDeviceContent(document, {
+        deviceIds, existingDeviceIds: [...await factoryDeviceIds(db, factoryId, options)]
+    }) : { document, changed: false };
+}
 
 function releaseTimestamp(row) {
     const publishedAt = safeJsonParse(row?.snapshot_json, {})?.metadata?.publishedAt;
@@ -95,8 +105,11 @@ async function loadPublishedDocument(db, project, scene) {
     }
     const snapshot = safeJsonParse(release?.snapshot_json, null);
     if (release && isCanonicalDocument(snapshot)) {
+        const runtime = await require('./globalViewNavigation').runtimeDocument(db, normalizeDocument(upgradeWidgetPlaybackDocument(snapshot), { project, scene, source: 'release' }));
         return {
-            document: await require('./globalViewNavigation').runtimeDocument(db, normalizeDocument(upgradeWidgetPlaybackDocument(snapshot), { project, scene, source: 'release' })),
+            // A read-only projection: historical snapshot and current pointer
+            // stay byte-for-byte intact when a device is deleted.
+            document: await projectPublishedDeviceDeletion(db, runtime, { factoryId: project.factory_id, releaseTimestamp: releaseTimestamp(release) }),
             release: releasePayload(release)
         };
     }
@@ -146,31 +159,71 @@ async function validatePlcBindings(db, document, options = {}) {
     }
     const bindings = bindingWidgets
         .filter(widget => widget.data?.mode === 'plc')
-        .filter(widget => !(widget.data.requireConfiguredPoint === true && !widget.data.pointId))
         .map(widget => ({
+            widget,
             widgetId: widget.id,
             deviceScope: widget.data.deviceScope !== 'fixed' ? 'current' : 'fixed',
             deviceId: String(widget.data.deviceId || ''),
-            pointId: String(widget.data.pointId || '')
+            pointId: String(widget.data.pointId || ''),
+            pointConfigured: !(widget.data.requireConfiguredPoint === true && !widget.data.pointId)
         }));
-    if (!bindings.length) return;
+    if (!bindings.length) return [];
 
-    const ids = [...new Set(bindings.map(item => item.pointId))];
-    const placeholders = ids.map(() => '?').join(',');
-    const points = await db.all(`SELECT id, device_id, access_type FROM data_points WHERE id IN (${placeholders})`, ids);
+    const ids = [...new Set(bindings.filter(item => item.pointConfigured).map(item => item.pointId))];
+    const points = ids.length
+        ? await db.all(`SELECT id, device_id, access_type FROM data_points WHERE id IN (${ids.map(() => '?').join(',')})`, ids)
+        : [];
     const pointsById = new Map(points.map(point => [String(point.id), point]));
-    const errors = [];
+    const deviceIds = [...new Set([...bindings.filter(item => item.deviceScope === 'fixed').map(item => item.deviceId),
+        ...points.map(point => String(point.device_id))].filter(Boolean))];
+    const devices = deviceIds.length ? await db.all(`SELECT d.id, d.line_id, d.instance_config, w.factory_id AS line_factory_id
+        FROM devices d LEFT JOIN \`lines\` l ON l.id = d.line_id LEFT JOIN workshops w ON w.id = l.workshop_id
+        WHERE d.id IN (${deviceIds.map(() => '?').join(',')})`, deviceIds) : [];
+    const devicesById = new Map(devices.map(device => [String(device.id), device]));
+    const workshopIds = new Set((devices.some(device => !device.line_id)
+        ? await db.all('SELECT id FROM workshops WHERE factory_id = ?', [bindingFactoryId]) : []).map(row => String(row.id)));
+    const deviceOwned = device => device.line_id
+        ? String(device.line_factory_id || '') === String(bindingFactoryId)
+        : workshopIds.has(String(objectValue(device.instance_config).workshop_id || objectValue(device.instance_config).workshopId || ''));
+    const templateByWidget = new Map((document.tooltipTemplates?.templates || [])
+        .flatMap(template => (template.widgets || []).map(widget => [widget, template])));
+    const issue = (binding, detail) => {
+        const template = templateByWidget.get(binding.widget);
+        const prefix = template ? `悬停模板“${template.name || template.id}”：` : '';
+        const contentTitle = typeof binding.widget.content?.title === 'string' ? binding.widget.content.title.trim() : '';
+        const title = binding.widget.title || contentTitle || ({ trend: '趋势图', hud_chart_dock: '曲线图', value: '数值', status: '状态', text: '文字' })[binding.widget.type] || '数据组件';
+        return `${prefix}组件 ${binding.widgetId} ${detail}（${title}）`;
+    };
+    const errors = [], warnings = [];
+    const unavailable = (binding, detail) => {
+        const message = issue(binding, detail);
+        if (options.allowIncompleteBindings === true) warnings.push(`${message}；原动态绑定已保留，请重新选择数据或移除不再需要的组件。`);
+        else errors.push(message);
+    };
     for (const binding of bindings) {
         const point = pointsById.get(binding.pointId);
-        if (!point) {
-            errors.push(`组件 ${binding.widgetId} 绑定的点位不存在：${binding.pointId}`);
-            continue;
+        // Deleted references may be retained in a draft, but access violations
+        // and cross-object/cross-factory bindings are never incomplete drafts.
+        if (point && binding.deviceScope !== 'current' && String(point.device_id) !== binding.deviceId) {
+            errors.push(issue(binding, '的设备与点位不匹配'));
         }
-        if (binding.deviceScope !== 'current' && String(point.device_id) !== binding.deviceId) {
-            errors.push(`组件 ${binding.widgetId} 的设备与点位不匹配`);
+        if (point && String(point.access_type || 'READ').toUpperCase() !== 'READ') {
+            errors.push(issue(binding, '只能绑定 READ 只读点位'));
         }
-        if (String(point.access_type || 'READ').toUpperCase() !== 'READ') {
-            errors.push(`组件 ${binding.widgetId} 只能绑定 READ 只读点位`);
+        const fixedDevice = binding.deviceScope === 'fixed' ? devicesById.get(binding.deviceId) : null;
+        if (binding.deviceScope === 'fixed') {
+            if (!fixedDevice) unavailable(binding, `绑定的设备不存在：${binding.deviceId}`);
+            else if (!deviceOwned(fixedDevice)) errors.push(issue(binding, '绑定的设备不属于当前工厂'));
+        }
+        if (binding.pointConfigured) {
+            if (!point) unavailable(binding, `绑定的点位不存在：${binding.pointId}`);
+            else {
+                const pointDevice = devicesById.get(String(point.device_id));
+                if (!pointDevice) {
+                    if (binding.deviceScope === 'current' || String(point.device_id) !== binding.deviceId)
+                        unavailable(binding, `点位所属设备不存在：${String(point.device_id)}`);
+                } else if (!deviceOwned(pointDevice)) errors.push(issue(binding, '绑定的点位不属于当前工厂'));
+            }
         }
     }
     if (errors.length) {
@@ -178,6 +231,7 @@ async function validatePlcBindings(db, document, options = {}) {
         error.validationErrors = errors;
         throw error;
     }
+    return warnings;
 }
 
 async function syncLegacyWidgets(tx, document) {
@@ -224,7 +278,8 @@ async function saveDraft(db, { sceneId, document: input, expectedRevision, facto
         throw error;
     }
     assertNoForbiddenWriteIntent(input);
-    const document = normalizeDocument(input, { project, scene, source: 'designer' });
+    const pruned = await pruneConfirmedDeletedDraft(db, input, project.factory_id);
+    const document = normalizeDocument(pruned.document, { project, scene, source: 'designer' });
     // Normalize first so deleting a view can repair legacy visibility/event
     // references before validation instead of returning one error per widget.
     const draftValidation = { allowIncompleteBindings: true };
@@ -232,8 +287,8 @@ async function saveDraft(db, { sceneId, document: input, expectedRevision, facto
     document.projectId = String(project.id);
     document.sceneId = String(scene.id);
     document.scene.id = String(scene.id);
-    await validatePlcBindings(db, document, draftValidation);
-    const warnings = validateDocument(document, { throwOnError: false });
+    const bindingWarnings = await validatePlcBindings(db, document, draftValidation);
+    const warnings = [...validateDocument(document, { throwOnError: false }), ...(bindingWarnings || [])];
     const nextRevision = currentRevision + 1;
     document.metadata = {
         ...objectValue(document.metadata, {}),
@@ -243,6 +298,13 @@ async function saveDraft(db, { sceneId, document: input, expectedRevision, facto
     };
 
     await db.transaction(async (tx) => {
+        // Serialize with lifecycle deletions, including the case where their
+        // current stored draft had no private widgets (and no revision bump).
+        await tx.run('UPDATE factories SET id=id WHERE id=?', [project.factory_id]);
+        if ((await pruneConfirmedDeletedDraft(tx, document, project.factory_id, { locking: true })).changed) {
+            const error = new Error('设备已在保存过程中删除，请重新保存以清理设备专属组件');
+            error.code = 'DRAFT_CONFLICT'; error.status = 409; throw error;
+        }
         const updated = await tx.run(`UPDATE scenes SET draft_json = ?, draft_revision = ?, updated_at = CURRENT_TIMESTAMP
             WHERE id = ? AND COALESCE(draft_revision, 0) = ?`, [JSON.stringify(document), nextRevision, scene.id, currentRevision]);
         if (!Number(updated.changes)) {
@@ -390,7 +452,8 @@ async function loadDesignerState(db, sceneId = '', factoryId = '') {
         revision: Number(scene?.draft_revision || 0),
         document,
         releases: sortReleasesNewestFirst(releases).map(releasePayload),
-        currentRelease: releasePayload(currentRelease)
+        currentRelease: releasePayload(currentRelease),
+        dashboardCleanupHistory: await readDashboardCleanupHistory(db, project?.factory_id || factoryId)
     };
 }
 

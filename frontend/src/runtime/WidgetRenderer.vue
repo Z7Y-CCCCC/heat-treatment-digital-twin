@@ -7,6 +7,7 @@ import {extendedChartOption} from './dashboardCharts.js'
 import { splitHudKpiValue } from './hudPresentation.js'
 import { resolveHudText } from './hudTextConfig.js'
 import { colorChannels, colorAtOpacity, effectiveWidgetBackground, widgetAppearanceVariables } from './widgetAppearance.js'
+import { resolveWidgetViewStyle, widgetSurfacePresentation } from './widgetSurfaceSkin.js'
 import { configureTrendAxes, appendTrendSample } from './trendChart.js'
 import MapRegionList from './MapRegionList.vue'
 import { tooltipBindingContext, tooltipPlaybackSelection, tooltipPathQuality, tooltipRuntimeValue, tooltipMetadataPath, mappedWidgetValue, deviceStatusText } from './tooltipContext.js'
@@ -65,11 +66,14 @@ function objectValue(value, fallback = {}) {
 const type = computed(() => props.widget.type || props.widget.widget_type || 'text')
 const content = computed(() => objectValue(props.widget.content, objectValue(props.widget.config, {})))
 const hudCopy = computed(() => resolveHudText(type.value, content.value))
-const widgetStyle = computed(() => objectValue(props.widget.style, objectValue(props.widget.config?.style, {})))
-const dataBinding = computed(() => {
+const widgetStyle = computed(() => resolveWidgetViewStyle(objectValue(props.widget.style, objectValue(props.widget.config?.style, {})), props.runtimeContext.viewId))
+const surfacePresentation = computed(() => widgetSurfacePresentation(widgetStyle.value, content.value.lineColor || '#a2a7ed'))
+const bindingContext = computed(() => {
   const data = objectValue(props.widget.data, objectValue(props.widget.binding, {}))
-  return props.runtimeContext.tooltipScope ? tooltipBindingContext({ ...props.widget, data }, props.runtimeContext).widget.data : data
+  return tooltipBindingContext({ ...props.widget, data }, props.runtimeContext)
 })
+const dataBinding = computed(() => bindingContext.value.widget.data)
+const pointReferenceBinding = computed(() => bindingContext.value.sourceWidget.data)
 const conditions = computed(() => Array.isArray(props.widget.conditions) ? props.widget.conditions : (Array.isArray(props.widget.config?.conditions) ? props.widget.config.conditions : []))
 const animation = computed(() => objectValue(props.widget.animation, objectValue(props.widget.config?.animation, { type: 'none' })))
 const widgetEvents = computed(() => Array.isArray(props.widget.events) ? props.widget.events : (Array.isArray(props.widget.config?.events) ? props.widget.config.events : []))
@@ -116,7 +120,7 @@ watch(()=>JSON.stringify([props.widget.id,dataBinding.value,props.interactive,pr
 const sampledDevice=computed(()=>{
  const id=playback.value.device?.id || ''
  return {id,reading:props.deviceDataMap[id] || {},status:props.deviceStatusMap[id] || {},
-   part:props.runtimeContext.tooltipScope ? props.runtimeContext.tooltipSelectedPart || props.selectedPart : props.selectedPart,point:devicePoint(dataBinding.value,id,props.pointValues)}
+   part:props.runtimeContext.tooltipScope ? props.runtimeContext.tooltipSelectedPart || props.selectedPart : props.selectedPart,point:devicePoint(pointReferenceBinding.value,id,props.pointValues)}
 })
 // A cached preview/HTTP result cannot override the identity selected for the
 // current curve. Late records for the previous device are rejected below.
@@ -364,9 +368,10 @@ const shellStyle = computed(() => {
   }
   return {
     ...widgetAppearanceVariables(style, condition),
+    ...surfacePresentation.value.variables,
     background: style.background ? effectiveWidgetBackground(style) : glassBackground,
-    backdropFilter:'blur(12px) saturate(125%)',
-    WebkitBackdropFilter:'blur(12px) saturate(125%)',
+    backdropFilter:surfacePresentation.value.backdrop ?? 'blur(12px) saturate(125%)',
+    WebkitBackdropFilter:surfacePresentation.value.backdrop ?? 'blur(12px) saturate(125%)',
     color: condition.color || style.color,
     borderColor: condition.borderColor || style.borderColor,
     borderRadius: cssSize(style.borderRadius, undefined),
@@ -843,6 +848,7 @@ onUnmounted(() => {
       { 'data-pending': dataPending },
       { 'hud-module-shell': isHudModule },
       { 'hud-module-compact': isHudModule && (content.compact || isTrend && Number(widget.frame?.height || 300) <= 260) },
+      { 'widget-surface-glass': surfacePresentation.skin === 'glass', 'widget-surface-inline': surfacePresentation.skin === 'inline', 'has-surface-backdrop': surfacePresentation.backdrop !== undefined },
       { 'has-authored-padding': widgetStyle.padding !== undefined, 'has-authored-radius': widgetStyle.borderRadius !== undefined, 'has-authored-border': !!(activeCondition?.borderColor || widgetStyle.borderColor), 'has-authored-shadow': !!widgetStyle.shadow || !!widgetStyle.boxShadow },
       animationClass,
       `quality-${boundQuality}`,
@@ -1047,3 +1053,4 @@ onUnmounted(() => {
 </style>
 <style src="./hudWidgets.css"></style>
 <style src="./hudModules.css"></style>
+<style src="./widgetSurfaceSkin.css"></style>

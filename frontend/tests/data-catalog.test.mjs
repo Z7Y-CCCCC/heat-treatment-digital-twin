@@ -58,6 +58,15 @@ test('catalog search is Chinese/category/table aware and never presents stale/fa
   assert.equal(catalogMatchesBinding(point, point.tooltipBinding, { tooltip: true }), true)
   assert.equal(catalogMatchesBinding(table, { ...table.binding, datasetField: 'different' }), false)
 })
+test('catalog current labels require exact fixed PLC IDs but retain current and tooltip role matching', () => {
+  const original = JSON.stringify(point)
+  assert.equal(catalogMatchesBinding(point, { ...point.binding, pointId: 'deleted' }), false)
+  assert.equal(catalogMatchesBinding(point, { ...point.binding, pointId: 7 }), true)
+  assert.equal(catalogMatchesBinding(point, { ...point.binding, deviceScope: 'current', pointId: 'sample' }), true)
+  assert.equal(catalogMatchesBinding(point, { ...point.tooltipBinding, pointId: 'deleted_sample' }, { tooltip: true }), true)
+  assert.equal(catalogMatchesBinding(point, { ...point.binding, pointId: 'deleted' }, { tooltip: true }), true)
+  assert.equal(JSON.stringify(point), original)
+})
 
 for (const kind of ['device', 'part']) test(`new ${kind} data row keeps basic widgets/styles and moves the hint while growing only the background`, () => {
   const source = createTooltipTemplate(kind), original = JSON.stringify(source)

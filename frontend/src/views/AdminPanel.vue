@@ -67,6 +67,7 @@ import ProjectMigrationSettings from './admin/components/ProjectMigrationSetting
 import ModelAssetTransfer from './admin/components/ModelAssetTransfer.vue'
 import PointDeviceSelect from './admin/components/PointDeviceSelect.vue'
 import DeviceModelHoverPreview from './admin/components/DeviceModelHoverPreview.vue'
+import DeviceManagementBrowser from './admin/components/DeviceManagementBrowser.vue'
 import PlatformUsersSettings from './admin/components/PlatformUsersSettings.vue'
 import AdminHelpGuide from './admin/components/AdminHelpGuide.vue'
 import MobileDeviceMotion from './admin/components/MobileDeviceMotion.vue'
@@ -5250,19 +5251,6 @@ onUnmounted(() => {
     disposeModelPreview({ revokeObjectUrl: true })
 })
 
-// 设备按产线分组
-const devicesByLine = computed(() => {
-    const map = {}
-    devices.value.forEach(d => {
-        if (isAuxiliaryDeviceConfig(d)) return
-        if (!map[d.line_id]) map[d.line_id] = []
-        map[d.line_id].push(d)
-    })
-    return map
-})
-
-const auxiliaryDevices = computed(() => devices.value.filter(device => isAuxiliaryDeviceConfig(device)))
-
 const deviceFormLines = computed(() => {
     if (!isAuxiliaryDeviceConfig(editingDevice)) return lines.value
     if (!editingDeviceWorkshopId.value) return lines.value
@@ -8137,12 +8125,7 @@ async function openAdminSetupStep(step) {
                 </Teleport>
 
                 <!-- ======== 设备管理 ======== -->
-                <div v-if="activeTab === 'devices'" class="tab-content">
-                    <h2>设备管理</h2>
-                    <p class="desc">管理所有设备，包括设备名称、所属产线、使用模型和数据连接。</p>
-
-                    <button @click="openCreateDevice" class="btn btn-primary" style="margin-bottom:20px" v-permission="{ page: controlPermissionPage, action: 'edit' }">+ 添加设备</button>
-
+                <div v-if="activeTab === 'devices'" class="tab-content device-management-tab">
                     <!-- 设备表单弹窗 -->
                     <Transition name="modal-fade">
                         <div v-if="showDeviceForm" class="modal-overlay">
@@ -8288,85 +8271,26 @@ async function openAdminSetupStep(step) {
                         </div>
                     </Transition>
 
-                    <!-- 设备列表 -->
-                    <div v-for="line in lines" :key="line.id" class="device-group">
-                        <h3 class="group-title">{{ workshops.find(item => item.id === line.workshop_id)?.name || '未分配车间' }} / {{ line.name }}</h3>
-                        <table class="data-table">
-                            <thead>
-                                <tr><th>ID</th><th>名称</th><th>模型</th><th>PLC</th><th>操作</th></tr>
-                            </thead>
-                            <tbody>
-                                <tr v-for="d in (devicesByLine[line.id] || [])" :key="d.id">
-                                    <td><code>{{ d.id }}</code></td>
-                                    <td>{{ d.name }}</td>
-                                    <td class="model-name-cell">
-                                        <button type="button" class="model-hover-trigger" :aria-label="'预览模型：' + formatModelName(d.model_type)"
-                                            :title="formatModelName(d.model_type)"
-                                            @mouseenter="deviceModelHover?.show(d, $event.currentTarget)" @mouseleave="deviceModelHover?.hide()"
-                                            @focus="deviceModelHover?.show(d, $event.currentTarget)" @blur="deviceModelHover?.hide()">
-                                            <strong>{{ formatModelName(d.model_type) }}</strong>
-                                            <small>{{ d.model_type }}</small>
-                                        </button>
-                                    </td>
-                                    <td>
-                                        <span class="plc-status-pill" :class="'plc-' + (plcStatusByDevice[d.id]?.status || (Number(d.plc_enabled || 0) ? 'idle' : 'disabled'))">
-                                            {{ formatPlcDeviceStatus(d) }}
-                                        </span>
-                                        <small>{{ formatPlcEndpoint(d) }}</small>
-                                        <div class="plc-meta-lines" v-if="Number(d.plc_enabled || 0)">
-                                            <span>上次连接：{{ formatPlcTime(plcStatusByDevice[d.id]?.lastConnectedAt) }}</span>
-                                            <span>最近读取：{{ formatPlcTime(plcStatusByDevice[d.id]?.lastReadAt) }}</span>
-                                        </div>
-                                    </td>
-                                    <td>
-                                        <button @click="openEditDevice(d)" class="btn btn-sm" v-permission="{ page: controlPermissionPage, action: 'edit' }">编辑</button>
-                                        <button @click="deleteDevice(d.id)" class="btn btn-danger btn-sm" v-permission="{ page: controlPermissionPage, action: 'delete' }">删除</button>
-                                    </td>
-                                </tr>
-                                <tr v-if="! (devicesByLine[line.id] || []).length">
-                                    <td colspan="5" style="text-align:center;color:#888">暂无设备</td>
-                                </tr>
-                            </tbody>
-                        </table>
-                    </div>
-                    <div class="device-group" v-if="auxiliaryDevices.length">
-                        <h3 class="group-title">辅助设备</h3>
-                        <table class="data-table">
-                            <thead>
-                                <tr><th>ID</th><th>名称</th><th>车间</th><th>模型</th><th>PLC</th><th>操作</th></tr>
-                            </thead>
-                            <tbody>
-                                <tr v-for="d in auxiliaryDevices" :key="d.id">
-                                    <td><code>{{ d.id }}</code></td>
-                                    <td>{{ d.name }}</td>
-                                    <td>{{ workshops.find(w => w.id === getDeviceWorkshopId(d))?.name || getDeviceWorkshopId(d) || '未设置' }}</td>
-                                    <td class="model-name-cell">
-                                        <button type="button" class="model-hover-trigger" :aria-label="'预览模型：' + formatModelName(d.model_type)"
-                                            :title="formatModelName(d.model_type)"
-                                            @mouseenter="deviceModelHover?.show(d, $event.currentTarget)" @mouseleave="deviceModelHover?.hide()"
-                                            @focus="deviceModelHover?.show(d, $event.currentTarget)" @blur="deviceModelHover?.hide()">
-                                            <strong>{{ formatModelName(d.model_type) }}</strong>
-                                            <small>{{ d.model_type }}</small>
-                                        </button>
-                                    </td>
-                                    <td>
-                                        <span class="plc-status-pill" :class="'plc-' + (plcStatusByDevice[d.id]?.status || (Number(d.plc_enabled || 0) ? 'idle' : 'disabled'))">
-                                            {{ formatPlcDeviceStatus(d) }}
-                                        </span>
-                                        <small>{{ formatPlcEndpoint(d) }}</small>
-                                        <div class="plc-meta-lines" v-if="Number(d.plc_enabled || 0)">
-                                            <span>上次连接：{{ formatPlcTime(plcStatusByDevice[d.id]?.lastConnectedAt) }}</span>
-                                            <span>最近读取：{{ formatPlcTime(plcStatusByDevice[d.id]?.lastReadAt) }}</span>
-                                        </div>
-                                    </td>
-                                    <td>
-                                        <button @click="openEditDevice(d)" class="btn btn-sm" v-permission="{ page: controlPermissionPage, action: 'edit' }">编辑</button>
-                                        <button @click="deleteDevice(d.id)" class="btn btn-danger btn-sm" v-permission="{ page: controlPermissionPage, action: 'delete' }">删除</button>
-                                    </td>
-                                </tr>
-                            </tbody>
-                        </table>
-                    </div>
+                    <DeviceManagementBrowser :key="dataCenterFactoryId" :factory-id="dataCenterFactoryId" :devices="devices" :workshops="workshops" :lines="lines">
+                        <template #actions><button type="button" @click="openCreateDevice" class="btn btn-primary" v-permission="{ page: controlPermissionPage, action: 'edit' }">+ 添加设备</button></template>
+                        <template #model="{ device: d }">
+                            <button type="button" class="model-hover-trigger" :aria-label="'预览模型：' + formatModelName(d.model_type)" :title="formatModelName(d.model_type)"
+                                @mouseenter="deviceModelHover?.show(d, $event.currentTarget)" @mouseleave="deviceModelHover?.hide()"
+                                @focus="deviceModelHover?.show(d, $event.currentTarget)" @blur="deviceModelHover?.hide()">
+                                <strong>{{ formatModelName(d.model_type) }}</strong><small>{{ d.model_type }}</small>
+                            </button>
+                        </template>
+                        <template #connection="{ device: d }">
+                            <span class="plc-status-pill" :class="'plc-' + (plcStatusByDevice[d.id]?.status || (Number(d.plc_enabled || 0) ? 'idle' : 'disabled'))"
+                                :title="Number(d.plc_enabled || 0) ? '上次连接：' + formatPlcTime(plcStatusByDevice[d.id]?.lastConnectedAt) + '\n最近读取：' + formatPlcTime(plcStatusByDevice[d.id]?.lastReadAt) : '未启用 PLC 采集'">{{ formatPlcDeviceStatus(d) }}</span>
+                            <small :title="formatPlcEndpoint(d)">{{ formatPlcEndpoint(d) }}</small>
+                            <small v-if="Number(d.plc_enabled || 0)" :title="'最近读取：' + formatPlcTime(plcStatusByDevice[d.id]?.lastReadAt)">读取：{{ formatPlcTime(plcStatusByDevice[d.id]?.lastReadAt) }}</small>
+                        </template>
+                        <template #row-actions="{ device: d }">
+                            <button type="button" @click="openEditDevice(d)" class="btn btn-sm device-row-icon" :aria-label="'编辑设备：' + d.name" title="编辑设备" v-permission="{ page: controlPermissionPage, action: 'edit' }"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 5 4 4M4 20l4-1L20 7a2.8 2.8 0 0 0-4-4L4 15Z"/></svg></button>
+                            <button type="button" @click="deleteDevice(d.id)" class="btn btn-danger btn-sm device-row-icon" :aria-label="'删除设备：' + d.name" title="删除设备" v-permission="{ page: controlPermissionPage, action: 'delete' }"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M9 6V3h6v3M6 6l1 15h10l1-15M10 10v7m4-7v7"/></svg></button>
+                        </template>
+                    </DeviceManagementBrowser>
                 </div>
 
                 <DeviceModelHoverPreview v-if="activeTab === 'devices'" ref="deviceModelHover" :models="models" />
@@ -10399,6 +10323,8 @@ async function openAdminSetupStep(step) {
     transform: translateY(-4px);
 }
 
+.device-management-tab .device-row-icon { display: inline-grid; place-items: center; width: 30px; height: 30px; min-width: 30px; padding: 0; border-radius: 6px; margin: 0; }
+.device-management-tab .device-row-icon svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
 .tab-content {
     background: #ffffff; padding: 32px; border-radius: 16px;
     box-shadow: 0 4px 24px rgba(0, 0, 0, 0.03), 0 1px 2px rgba(0, 0, 0, 0.02);

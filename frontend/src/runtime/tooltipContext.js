@@ -98,7 +98,7 @@ export function createTooltipContext({ kind = 'device', device, part, status, fr
 /** Prepare a transient widget for existing readers without persisting sample IDs. */
 export function tooltipBindingContext(widget, context = {}) {
   const raw = object(widget)
-  if (!context.tooltipScope) return { widget: raw, runtimeContext: context, selectedPart: context.tooltipSelectedPart || {} }
+  if (!context.tooltipScope) return { widget: raw, sourceWidget: raw, runtimeContext: context, selectedPart: context.tooltipSelectedPart || {} }
   const source = restoreTooltipDynamicBinding(raw), data = object(source.data)
   const mode = normalizePlayback(data).deviceScope
   // Global and explicitly fixed sources are deliberate exceptions. Current
@@ -106,7 +106,10 @@ export function tooltipBindingContext(widget, context = {}) {
   const scopedData = mode === 'global' ? { ...data, deviceScope: 'global' }
     : data.deviceScope === 'fixed' && data.deviceId ? { ...data }
       : { ...data, deviceScope: 'fixed', deviceId: idOf(context.deviceId), rotationDeviceIds: [] }
-  return { widget: { ...source, data: scopedData }, runtimeContext: context, selectedPart: context.tooltipSelectedPart || {} }
+  // The temporary fixed scope pins readers to the hover target; it is not an
+  // authored fixed point reference. Keep the source separate so PLC role
+  // resolution can distinguish current/rotation from deliberate fixed IDs.
+  return { widget: { ...source, data: scopedData }, sourceWidget: source, runtimeContext: context, selectedPart: context.tooltipSelectedPart || {} }
 }
 
 /** Unlike normal overview playback, no eligible-device fallback is permitted. */

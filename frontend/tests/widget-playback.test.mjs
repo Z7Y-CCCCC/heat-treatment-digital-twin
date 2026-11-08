@@ -36,6 +36,17 @@ test('same-role point reuse never falls back to another device, including ambigu
  assert.equal(devicePoint({pointId:'template'},'b',values).value,0);assert.equal(devicePoint({pointId:'template'},'unknown',values),null)
  assert.equal(devicePoint({pointId:'template'},'b',{...values,two:{...values.one,id:'two'}}),null)
 })
+test('deleted explicit fixed points stay empty instead of silently reading a same-role replacement',()=>{
+ const fixed={deviceScope:'fixed',deviceId:'a',pointId:'deleted',pointKey:'analog.temp'}
+ const values={replacement:{id:'replacement',device_id:'a',category:'analog',value_role:'temp',value:999},peer:{id:'peer',device_id:'b',category:'analog',value_role:'temp',value:0}}
+ assert.equal(devicePoint(fixed,'a',values),null)
+ // The same overview template remains usable on another device in a focused
+ // device/xray/exploded/part context; only its own fixed source is strict.
+ assert.equal(devicePoint(fixed,'b',values).value,0)
+ assert.equal(devicePoint({...fixed,deviceScope:'rotation'},'a',values).value,999)
+ assert.equal(devicePoint({...fixed,deviceScope:'current'},'a',values).value,999)
+ assert.equal(devicePoint(fixed,'a',{...values,deleted:{id:'deleted',device_id:'a',category:'analog',value_role:'temp',value:0}}).value,0)
+})
 function scheduler(read){let context={viewMode:'factory'},parameters={},now=0;const values={},removed=[];const widget={id:'w',data:{mode:'dataset',...binding}}
  const reader=createWidgetReadScheduler({context:()=>context,parameters:()=>parameters,devices:()=>devices,widgets:()=>[widget],read,put:(id,v)=>{values[id]=v},remove:id=>{delete values[id];removed.push(id)}})
  return {reader,values,removed,context(value){context=value},params(value){parameters=value}}

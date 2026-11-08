@@ -18,7 +18,8 @@ const props = defineProps({
   devices: { type: Array, default: () => [] }, points: { type: Array, default: () => [] },
   workshops: { type: Array, default: () => [] }, lines: { type: Array, default: () => [] },
   metrics: Object, deviceStatusMap: Object, deviceDataMap: Object, pointValues: Object,
-  playbackNow: Number, sourceMode: String, readonly: Boolean, factoryId: String, parameters: Object
+  playbackNow: Number, sourceMode: String, readonly: Boolean, factoryId: String, parameters: Object,
+  diagnosticFocus: { type: Object, default: null }
 })
 const emit = defineEmits(['change', 'notice'])
 const kind = ref('device'), templateId = ref(''), selectedIds = ref([])
@@ -26,6 +27,9 @@ const previewDeviceId = ref(''), previewPartId = ref(''), bindingViewId = ref(''
 const parts = ref([]), partsBusy = ref(false), partsError = ref('')
 const zoom = ref(1.5), snap = ref(true), inspectorTab = ref('content')
 const previewSurfaceRef = ref(null)
+// Diagnostic focus is transient editor UI, never a template edit or binding.
+const diagnosticTarget = ref(null), diagnosticViewportRef = ref(null), diagnosticFrameRef = ref(null)
+let diagnosticFocusRequest = 0, pendingDiagnostic = null
 const addingDataRow = ref(false), dataRowLabel = ref(''), dataRowItem = ref(null)
 const previewValues = reactive({})
 let partSequence = 0, operation = null, disposed = false, dataPreviewSequence = 0, dataPreviewQueue = 0
@@ -37,6 +41,16 @@ const backgroundWidget = computed(() => tooltipBackgroundWidget(template.value))
 const selected = computed(() => template.value?.widgets.find(item => item.id === selectedIds.value[0]))
 const selectedWidgets = computed(() => template.value?.widgets.filter(item => selectedIds.value.includes(item.id)) || [])
 const layers = computed(() => [...(template.value?.widgets || [])].sort((a, b) => b.zIndex - a.zIndex))
+const diagnosticWidget = computed(() => diagnosticTarget.value?.templateId === template.value?.id
+  ? template.value?.widgets.find(widget => widget.id === diagnosticTarget.value.widgetId) || null : null)
+const diagnosticStyle = computed(() => diagnosticWidget.value ? {
+  ...selectionStyle(diagnosticWidget.value), opacity: 1, zIndex: 4000,
+  // Integer CSS pixels avoid Chromium rounding a thin fractional border down.
+  '--diagnostic-border-width': `${Math.ceil(2.5 / zoom.value)}px`,
+  '--diagnostic-font-size': `${11 / zoom.value}px`,
+  '--diagnostic-padding': `${4 / zoom.value}px`,
+  '--diagnostic-gap': `${5 / zoom.value}px`
+} : {})
 const bindingViews = computed(() => props.views.filter(view => kind.value === 'device' ? ['factory', 'workshop', 'line'].includes(view.mode) : view.mode === 'device'))
 const bindingView = computed(() => bindingViews.value.find(view => view.id === bindingViewId.value) || bindingViews.value[0])
 const viewRef = computed(() => bindingView.value?.metadata?.tooltipTemplates?.[kind.value] || 'inherit')
@@ -168,6 +182,57 @@ watch(() => [templates.value.map(item => item.id), templateId.value], () => {
   if (!templates.value.some(item => item.id === templateId.value)) templateId.value = templates.value.find(item => item.id === model.value?.defaults?.[kind.value])?.id || templates.value[0]?.id || ''
   selectedIds.value = selectedIds.value.filter(id => template.value?.widgets.some(widget => widget.id === id))
 }, { immediate: true })
+function clearDiagnosticFocus() {
+  diagnosticFocusRequest++
+  pendingDiagnostic = null
+  diagnosticTarget.value = null
+}
+function scrollToDiagnosticFrame() {
+  const viewport = diagnosticViewportRef.value, frame = diagnosticFrameRef.value
+  if (!viewport?.getBoundingClientRect || !frame?.getBoundingClientRect) return
+  const bounds = viewport.getBoundingClientRect(), target = frame.getBoundingClientRect()
+  viewport.scrollTo?.({
+    left: Math.max(0, viewport.scrollLeft + target.left - bounds.left - Math.max(0, (viewport.clientWidth - target.width) / 2)),
+    top: Math.max(0, viewport.scrollTop + target.top - bounds.top - Math.max(0, (viewport.clientHeight - target.height) / 2)),
+    behavior: 'auto'
+  })
+  // Centering the card viewport alone does not reveal a card below the page.
+  frame.scrollIntoView?.({ block: 'nearest', inline: 'nearest', behavior: 'auto' })
+}
+async function focusDiagnostic(value) {
+  clearDiagnosticFocus()
+  const request = diagnosticFocusRequest
+  if (!value?.isTooltip || !value.templateId || !value.widgetId || disposed) return
+  const targetTemplate = model.value?.templates.find(item => item.id === value.templateId)
+  if (!targetTemplate || !['device', 'part'].includes(targetTemplate.kind)
+    || !targetTemplate.widgets?.some(widget => widget.id === value.widgetId)) return
+  const target = { templateId: targetTemplate.id, kind: targetTemplate.kind, widgetId: value.widgetId, sequence: value.sequence }
+  pendingDiagnostic = target
+  // Let the existing template/kind reset watchers finish before selecting the
+  // exact nested widget. Identically named main-canvas widgets are unrelated.
+  kind.value = target.kind
+  templateId.value = target.templateId
+  await nextTick()
+  if (disposed || request !== diagnosticFocusRequest || template.value?.id !== target.templateId
+    || !template.value?.widgets.some(widget => widget.id === target.widgetId)) return
+  selectedIds.value = [target.widgetId]
+  inspectorTab.value = 'data'
+  diagnosticTarget.value = target
+  pendingDiagnostic = null
+  await nextTick()
+  if (!disposed && request === diagnosticFocusRequest && diagnosticWidget.value) scrollToDiagnosticFrame()
+}
+watch(() => [props.diagnosticFocus?.sequence, props.diagnosticFocus?.isTooltip,
+  props.diagnosticFocus?.templateId, props.diagnosticFocus?.widgetId], () => focusDiagnostic(props.diagnosticFocus), { immediate: true })
+watch([kind, () => template.value?.id, selectedIds,
+  () => model.value?.templates.map(item => [item.id, item.kind, item.widgets?.map(widget => widget.id)])], () => {
+  const target = diagnosticTarget.value || pendingDiagnostic
+  if (!target) return
+  const owner = model.value?.templates.find(item => item.id === target.templateId)
+  if (kind.value !== target.kind || template.value?.id !== target.templateId
+    || !owner?.widgets?.some(widget => widget.id === target.widgetId)
+    || diagnosticTarget.value && (selectedIds.value.length !== 1 || selectedIds.value[0] !== target.widgetId)) clearDiagnosticFocus()
+}, { deep: true })
 async function loadParts() {
   const id = previewDeviceId.value, sequence = ++partSequence
   parts.value = []; previewPartId.value = ''; partsError.value = ''; partsBusy.value = false
@@ -182,7 +247,7 @@ async function loadParts() {
   finally { if (sequence === partSequence) partsBusy.value = false }
 }
 watch(() => [previewDeviceId.value, kind.value], loadParts, { immediate: true })
-function chooseTemplate(id) { templateId.value = id }
+function chooseTemplate(id) { clearDiagnosticFocus(); templateId.value = id }
 function newTemplate(copy = false) {
   if (props.readonly || !model.value || model.value.templates.length >= 24) return
   repairDynamicBindings()
@@ -216,6 +281,7 @@ function setViewRef(value) {
 function selectWidget(id, event = {}) {
   const widget = template.value?.widgets.find(item => item.id === id)
   if (!widget) return
+  if (diagnosticTarget.value?.widgetId !== id || pendingDiagnostic) clearDiagnosticFocus()
   const members = widget.groupId ? template.value.widgets.filter(item => item.groupId === widget.groupId).map(item => item.id) : [id]
   const ids = [id, ...members.filter(item => item !== id)]
   if (event.ctrlKey || event.metaKey) {
@@ -495,7 +561,7 @@ function keys(event) {
     selectedWidgets.value.filter(widget => !widget.locked).forEach(widget => { widget.frame.x += event.key === 'ArrowLeft' ? -step : event.key === 'ArrowRight' ? step : 0; widget.frame.y += event.key === 'ArrowUp' ? -step : event.key === 'ArrowDown' ? step : 0 }); geometryChanged()
   }
 }
-onBeforeUnmount(() => { disposed = true; partSequence++; pointerEnd() })
+onBeforeUnmount(() => { disposed = true; partSequence++; clearDiagnosticFocus(); pointerEnd() })
 </script>
 
 <template>
@@ -527,7 +593,7 @@ onBeforeUnmount(() => { disposed = true; partSequence++; pointerEnd() })
         <DataCatalogPicker :key="`row-${template?.id}`" :factory-id="factoryId" :device-id="previewDeviceId" tooltip :kind="kind" widget-type="text" :disabled="readonly" immediate @select="chooseRowData" />
         <footer><span>{{ dataRowItem ? `右侧：${dataRowItem.label}` : '请选择右侧的实际数据' }}</span><button type="button" :disabled="readonly || !dataRowItem || !dataRowLabel.trim()" @click="confirmDataRow">添加这一行</button></footer>
       </section>
-      <div class="tooltip-canvas-viewport" @pointerdown.self="selectedIds = []">
+      <div ref="diagnosticViewportRef" class="tooltip-canvas-viewport" @pointerdown.self="selectedIds = []">
         <div v-if="template" class="tooltip-canvas-stage" :style="stageStyle"><div class="tooltip-small-canvas" :style="canvasStyle" :data-tooltip-canvas="template.id">
           <TooltipSurface ref="previewSurfaceRef" :template="template" :context="context" preview :database-values="previewValues" :metrics="metrics" :device-status-map="deviceStatusMap" :device-data-map="deviceDataMap" :point-values="pointValues" :device-catalog="previewDevice ? [previewDevice] : []" :parameters="parameters || {}" :parameter-definitions="document.parameters || []" :playback-now="playbackNow" :data-ready="true" />
           <button v-if="!readonly" type="button" class="tooltip-canvas-resize-handle s" aria-label="调整悬停模板高度" title="拖动调整提示高度，背景自动贴合；方向键微调" @pointerdown="beginCanvasResize($event, 'height')" @keydown="canvasResizeKey"></button>
@@ -543,6 +609,13 @@ onBeforeUnmount(() => { disposed = true; partSequence++; pointerEnd() })
                 <button type="button" class="tooltip-element-delete" :disabled="readonly || widget.locked" :aria-label="`删除悬停元素 ${widget.title || widgetTypeLabel(widget.type)}`" :title="widget.locked ? '锁定元素不能删除' : '删除此元素'" @click="deleteWidget(widget)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13M10 11v5M14 11v5"/></svg></button>
               </div>
               <span v-if="!readonly && !widget.locked" class="tooltip-resize-handle" @pointerdown="beginPointer($event, widget, true)"></span>
+            </div>
+          </div>
+          <div v-if="diagnosticWidget" class="tooltip-diagnostic-layer">
+            <div ref="diagnosticFrameRef" class="tooltip-diagnostic-frame" :style="diagnosticStyle"
+              :data-tooltip-diagnostic-widget-id="diagnosticWidget.id" :data-tooltip-diagnostic-template-id="template.id"
+              :aria-label="`问题组件：${diagnosticWidget.title || widgetTypeLabel(diagnosticWidget.type)}`">
+              <span class="tooltip-diagnostic-label" aria-hidden="true">问题组件</span>
             </div>
           </div>
         </div></div>
@@ -585,6 +658,7 @@ onBeforeUnmount(() => { disposed = true; partSequence++; pointerEnd() })
 </template>
 
 <style scoped>
+.tooltip-diagnostic-layer{position:absolute;inset:0;z-index:4000;pointer-events:none;overflow:visible}.tooltip-diagnostic-frame{position:absolute;box-sizing:border-box;transform-origin:center;border:var(--diagnostic-border-width,2.5px) dashed #ff4d4f;pointer-events:none;opacity:1}.tooltip-diagnostic-label{position:absolute;left:0;bottom:calc(100% + var(--diagnostic-gap,5px));padding:var(--diagnostic-padding,4px) calc(var(--diagnostic-padding,4px) * 1.5);border-radius:3px;background:#c52d32;color:#fff;font-size:var(--diagnostic-font-size,11px);font-weight:700;line-height:1.35;white-space:nowrap;pointer-events:none}
 .tooltip-template-editor .tooltip-add-data-row{color:#3166ad;border-color:#bed2ed;background:#f0f6ff;font-weight:600}.tooltip-data-row-form{display:grid;gap:10px;padding:15px;margin:0 16px 12px;border:1px solid #cbdcf3;border-radius:10px;background:#f9fbff;color:#445879}.tooltip-data-row-form header,.tooltip-data-row-form footer{display:flex;align-items:center;justify-content:space-between;gap:12px}.tooltip-data-row-form header strong{font-size:13px}.tooltip-data-row-form header button{border:0;background:none;padding:2px 6px;font-size:18px;color:#8192ab}.tooltip-data-row-form>p{margin:0;font-size:11px;color:#8693a6;line-height:1.6}.tooltip-data-row-form>label{display:grid;gap:6px;font-size:12px}.tooltip-data-row-form>label input{padding:8px 10px;border:1px solid #d9e2f0;border-radius:6px;font:inherit}.tooltip-data-row-form footer span{font-size:11px;color:#7a8da9}.tooltip-data-row-form footer button{padding:8px 14px;border:1px solid #3b73c6;border-radius:6px;background:#3b73c6;color:#fff}.tooltip-data-row-form button:disabled{opacity:.4}.tooltip-binding-advanced{margin-top:14px;border-top:1px solid #e4eaf2;padding-top:10px}.tooltip-binding-advanced>summary{margin-bottom:12px;color:#8994a5;font-size:11px;cursor:pointer}
 
 .tooltip-template-editor{display:grid;grid-template-columns:220px minmax(340px,1fr) 300px;flex:1;min-height:0;overflow:auto;background:#f5f6f8;color:#344054;font-size:calc(12px * var(--admin-font-scale,1));font-family:inherit}

@@ -37,6 +37,19 @@ test('legacy device temperature charts migrate to explicit configured point bind
  const empty=migrateDeviceTrend(old,[]);assert.equal(empty.data.pointId,'');assert.equal(empty.data.requireConfiguredPoint,true)
  assert.equal(normalizeDashboardWidget(empty).data.requireConfiguredPoint,true)
 })
+test('fixed trend references never migrate or resolve against a different device or replacement point',()=>{
+ const point={id:'new',device_id:'other',category:'analog',value_role:'actual_temp',access_type:'READ'}
+ const binding={deviceScope:'fixed',deviceId:'deleted',pointId:'638',pointKey:'analog.actual_temp'}
+ assert.equal(findBoundPoint(binding,'deleted',[{...point,device_id:'deleted'}]),null)
+ assert.equal(findBoundPoint(binding,'other',[point]),null)
+ const old={type:'trend',data:{...binding,mode:'runtime',path:'device.analog.actual_temp'}}
+ for(const rows of [[point],[{...point,device_id:'deleted',access_type:'WRITE'}],[{...point,device_id:'deleted'},{...point,id:'new2',device_id:'deleted'}],[{...point,device_id:'deleted'}]])assert.equal(migrateDeviceTrend(old,rows).data.pointId,'638')
+ const roleOnly={...old,data:{...old.data,pointId:''}}
+ assert.equal(migrateDeviceTrend(roleOnly,[point]).data.pointId,'')
+ assert.equal(migrateDeviceTrend(roleOnly,[{...point,device_id:'deleted',access_type:'WRITE'}]).data.pointId,'')
+ assert.equal(migrateDeviceTrend(roleOnly,[{...point,device_id:'deleted'},{...point,id:'new2',device_id:'deleted'}]).data.pointId,'')
+ assert.equal(migrateDeviceTrend(roleOnly,[{...point,device_id:'deleted'}]).data.pointId,'new')
+})
 
 test('stacked series bounds include totals and the smooth switch controls the actual rendered curve',()=>{
  const input={content:{smooth:false},sourceSeries:[{name:'A',rows:[{time:1,value:10}]},{name:'B',rows:[{time:1,value:20}]}]}

@@ -1,5 +1,6 @@
 const express = require('express');
 const router = express.Router();
+const { cleanupDashboardDeviceDeletion, broadcastDashboardCleanup } = require('../services/dashboardDeviceDeletion');
 const { getDb } = require('../db/database');
 const { normalizeLineLayout } = require('../utils/spatialLayout');
 
@@ -52,7 +53,7 @@ router.get('/:id/deletion-impact', async (req, res) => {
         const owned = await db.get(`SELECT l.id FROM \`lines\` l JOIN workshops w ON w.id = l.workshop_id
             WHERE l.id = ? AND w.factory_id = ?`, [req.params.id, req.factoryId]);
         if (!owned) return res.status(404).json({ error: '产线不存在，可能已经被删除或 ID 未正确编码' });
-        const impact = await getLineDeletionImpact(db, req.params.id);
+        const impact = await getLineDeletionImpact(db, req.params.id, req.factoryId);
         if (!impact) return res.status(404).json({ error: '产线不存在，可能已经被删除或 ID 未正确编码' });
         res.json(publicDeletionImpact(impact));
     } catch (e) {
@@ -111,7 +112,9 @@ router.put('/:id', async (req, res) => {
 router.delete('/:id', async (req, res) => {
     try {
         const db = await getDb();
-        const deletedImpact = await db.transaction(async (tx) => {
+        const deletion = await db.transaction(async (tx) => {
+            // Acquire the lifecycle lock before any snapshot-producing reads.
+            await tx.run('UPDATE factories SET id=id WHERE id=?', [req.factoryId]);
             const owned = await tx.get(`SELECT l.id FROM \`lines\` l JOIN workshops w ON w.id = l.workshop_id
                 WHERE l.id = ? AND w.factory_id = ?`, [req.params.id, req.factoryId]);
             if (!owned) {
@@ -119,22 +122,24 @@ router.delete('/:id', async (req, res) => {
                 error.statusCode = 404;
                 throw error;
             }
-            const impact = await getLineDeletionImpact(tx, req.params.id);
+            const impact = await getLineDeletionImpact(tx, req.params.id, req.factoryId);
             if (!impact) {
                 const error = new Error('产线不存在，可能已经被删除或 ID 未正确编码');
                 error.statusCode = 404;
                 throw error;
             }
             assertDeletionConfirmation(req.body, impact.name);
+            const dashboardCleanup = await cleanupDashboardDeviceDeletion(tx, { factoryId: req.factoryId, deviceIds: impact.deviceIds });
             if (impact.deviceIds.length) {
                 const placeholders = impact.deviceIds.map(() => '?').join(',');
                 await tx.run(`DELETE FROM data_points WHERE device_id IN (${placeholders})`, impact.deviceIds);
                 await tx.run(`DELETE FROM devices WHERE id IN (${placeholders})`, impact.deviceIds);
             }
             await tx.run('DELETE FROM `lines` WHERE id = ?', [req.params.id]);
-            return impact;
+            return { impact, dashboardCleanup };
         });
-        res.json({ success: true, impact: publicDeletionImpact(deletedImpact) });
+        broadcastDashboardCleanup(deletion.dashboardCleanup);
+        res.json({ success: true, impact: publicDeletionImpact(deletion.impact), dashboardCleanup: deletion.dashboardCleanup });
     } catch (e) {
         res.status(e.statusCode || 400).json({ error: e.message });
     }

@@ -7,6 +7,7 @@ import WidgetPlaybackEditor from './WidgetPlaybackEditor.vue'
 import DevicePointBindingEditor from './DevicePointBindingEditor.vue'
 import TrendChartSettings from './TrendChartSettings.vue'
 import { migrateDeviceTrend, findBoundPoint } from '../../../runtime/pointBinding.js'
+import { bindingReferenceDiagnostics, isMissingBindingMessage, validationComponentId } from '../../../runtime/bindingReferenceDiagnostics.js'
 import { createDashboardDataStore } from '../../../runtime/DataStore.js'
 import {useWidgetClock,createWidgetPlaybackController,WidgetPlaybackKey} from '../../../runtime/widgetPlayback.js'
 import {playbackSelection} from '../../../../../shared/widgetPlayback.mjs'
@@ -41,6 +42,7 @@ import { DEFAULT_STREET_IMAGE, normalizeSiteSceneConfig } from '../../../runtime
 import { upgradeMapDesignerDocument, createMapDesignerContext, MAP_DESIGNER_FIELDS } from '../../../runtime/mapDesigner.js'
 import { getFactoryScope } from '../../../runtime/factoryScope.js'
 import { cacheFactoryDraft, clearFactoryDraft, readFactoryDraft } from '../../../runtime/factoryDraftCache.js'
+import { DASHBOARD_DEVICE_DELETION_EVENT, dashboardDeletionAcknowledgementKey, normalizeDashboardDeletionCleanup, reconcileDashboardDeletionPayload, syncDashboardDeletionCaches } from '../../../runtime/dashboardDeletionSync.js'
 import { exportDashboardTemplate, importDashboardTemplate, dashboardTemplateReferences, rebindDashboardTemplate, MAX_TEMPLATE_BYTES } from '../../../runtime/dashboardTemplate.js'
 import {
   DASHBOARD_WIDGET_LIBRARY,
@@ -70,8 +72,16 @@ const templateMapping = reactive({})
 const templateKinds = { devices: '设备', points: '点位', datasets: '数据表', connections: '数据源', workshops: '车间', lines: '产线' }
 const templateCatalog = computed(() => ({ devices: devices.value, points: points.value, datasets: dataSetDefinitions.value, connections: [...dataSources.value, ...httpApiSources.value], workshops: workshops.value, lines: lines.value }))
 const draftFactoryId = getFactoryScope()
+// Empty scope means the backend's active factory, not every factory. Resolve
+// its identity from the trusted project response; keep the original cache key
+// so the admin's existing cross-page draft/save workflow remains unchanged.
+const documentFactoryId = ref(draftFactoryId)
 const documentModel = ref(normalizeDashboardDocument())
 const revision = ref(0)
+const deletionSyncConflict = ref(null)
+const deletionSyncAcknowledgements = ref([])
+const pendingDeletionCleanups = []
+let deletionHistoryReadAt = 0, deletionHistoryRequest = null, deletionHistorySequence = 0
 const releases = ref([])
 const currentRelease = ref(null)
 const loading = ref(true)
@@ -82,6 +92,9 @@ const publishNotice = ref(null)
 const validationIssues = ref([])
 const validationIssuesExpanded = ref(true)
 const validationIssuePhase = ref('')
+// Presentation only: never write diagnostic focus into a widget or draft.
+const diagnosticFocus = ref(null)
+let diagnosticLocateSequence = 0
 let publishNoticeTimer = null, publishNoticeSequence = 0
 const acceptanceReport = ref(null)
 const acceptanceLoading = ref(false)
@@ -101,6 +114,8 @@ const guides = reactive({ x: [], y: [] })
 const selectionBox = reactive({ active: false, x: 0, y: 0, width: 0, height: 0 })
 const devices = ref([])
 const points = ref([])
+const bindingCatalogPoints = ref([])
+const bindingCatalogReady = ref(false)
 const workshops = ref([])
 const lines = ref([])
 const dataSources = ref([])
@@ -151,6 +166,10 @@ function startDesignerData() {
   stopDesignerEvents = watch(designerStore.events, value => { liveEvents.value=value }, {immediate:true})
   liveDeviceStatus.value = designerStore.deviceStatusMap
   liveDeviceData.value = designerStore.deviceDataMap
+  designerStore.setMessageHandler(message => {
+    if (message.type === 'device_configuration_changed' && message.payload?.dashboardCleanup) onDashboardDeviceDeleted(message.payload.dashboardCleanup)
+    if (message.type === 'device_configuration_changed' || message.type === 'configuration_changed') onBindingCatalogChanged()
+  })
   designerStore.connect()
 }
 const history = ref([])
@@ -180,7 +199,7 @@ function setDesignerMode(mode) {
   if (previewMode.value) return
   endPointerOperation()
   designerMode.value = mode
-  nextTick(() => { if (mode === 'layout') fitCanvas('comfortable') })
+  nextTick(() => { if (mode === 'layout' && designerMode.value === mode) fitCanvas('comfortable') })
 }
 const viewPanelCollapsed = ref(false)
 const PANEL_LAYOUT_KEY = 'dashboard-designer-panel-layout-v1'
@@ -201,6 +220,9 @@ let designerActive = true
 let realtimeRequestSeq = 0
 let realtimeInFlight = false
 let viewPreviewTimer = 0
+let bindingCatalogSequence = 0
+let bindingCatalogRequest = null
+let bindingCatalogReadAt = 0
 
 function readPanelLayout() {
   try {
@@ -413,7 +435,14 @@ const selectedBindingDeviceId = computed(() => {
   if (selectedWidget.value?.data?.deviceScope !== 'fixed') {
     return String(editorDeviceId.value || previewContext.deviceId || devices.value[0]?.id || '')
   }
-  return String(selectedWidget.value?.data?.deviceId || devices.value[0]?.id || '')
+  return String(selectedWidget.value?.data?.deviceId || '')
+})
+const safeCatalogPreviewDeviceId = computed(() => {
+  const id = selectedBindingDeviceId.value
+  // A confirmed deleted reference is retained in the binding editor, but is
+  // not a valid preview target for the factory-wide list of replacement data.
+  // A failed/incomplete directory read alone is never evidence of deletion.
+  return bindingCatalogReady.value && id && !devices.value.some(device => String(device.id) === id) ? '' : id
 })
 const selectedDataSource = computed(() => dataSources.value.find(item => item.id === selectedWidget.value?.data?.connectionId) || null)
 const groupOptions = computed(() => {
@@ -487,6 +516,24 @@ const layerWidgets = computed(() => overlayWidgets.value.filter(widget => {
 const selectedDisplayState = computed(() => selectedWidget.value && componentDisplayStates.value[selectedWidget.value.id])
 const canvasWidgets = computed(() => overlayWidgets.value.filter(widget => widgetAllowedInCurrentView(widget))
   .filter(widget => !previewMode.value || componentDisplayStates.value[widget.id].visible))
+const diagnosticTarget = computed(() => {
+  const focus = diagnosticFocus.value
+  if (!focus || focus.isTooltip || previewMode.value || designerMode.value !== 'layout'
+    || focus.viewId !== selectedViewId.value || !selectedIds.value.includes(focus.widgetId)) return null
+  return documentModel.value.widgets.find(widget => widget.id === focus.widgetId) || null
+})
+const diagnosticFrameStyle = computed(() => {
+  const widget = diagnosticTarget.value
+  if (!widget) return {}
+  const screenScale = 1 / Math.max(.1, Number(zoom.value) || 1)
+  // Browsers quantize border widths to whole CSS pixels before scaling.
+  // Round up so the red outline never becomes thinner at fractional zoom.
+  return { ...widgetFrameStyle(widget), zIndex: 2147483000, opacity: 1,
+    borderWidth: `${Math.ceil(2.5 * screenScale)}px`, '--diagnostic-ui-scale': screenScale }
+})
+const diagnosticTargetHidden = computed(() => diagnosticTarget.value
+  && (!canvasWidgets.value.some(widget => widget.id === diagnosticTarget.value.id)
+    || !componentDisplayStates.value[diagnosticTarget.value.id]?.visible))
 const canvasTransformStyle = computed(() => ({
   width: `${canvas.value.width}px`,
   height: `${canvas.value.height}px`,
@@ -515,8 +562,7 @@ function setValidationIssues(messages, phase = 'error') {
     const templateName = message.match(/^悬停模板[“"]([^”"]+)[”"]/)?.[1]
     const template = templateName ? templates.find(item => item.name === templateName || item.id === templateName) : null
     const widgets = templateName ? template?.widgets || [] : documentModel.value.widgets
-    const explicitId = message.match(/[”"]\s*[（(]([a-zA-Z0-9_-]+)[）)]/)?.[1]
-      || message.match(/个组件\s*[（(]([a-zA-Z0-9_-]+)[）)]/)?.[1]
+    const explicitId = validationComponentId(message)
     const index = Number(message.match(/第\s*(\d+)\s*个组件/)?.[1]) - 1
     const widget = widgets.find(item => item.id === explicitId)
       || (!explicitId && Number.isInteger(index) && index >= 0 ? widgets[index] : null)
@@ -526,6 +572,149 @@ function setValidationIssues(messages, phase = 'error') {
   validationIssuesExpanded.value = true
 }
 
+function syncBindingReferenceIssues() {
+  if (loading.value || !bindingCatalogReady.value || designerDisposed) return
+  const retained = validationIssues.value.filter(issue => !isMissingBindingMessage(issue.message)).map(issue => issue.message)
+  const references = bindingReferenceDiagnostics(documentModel.value, devices.value,
+    [...bindingCatalogPoints.value, ...points.value])
+  const phase = retained.length || validationIssuePhase.value === 'draft'
+    ? validationIssuePhase.value : 'reference'
+  setValidationIssues([...retained, ...references], phase)
+}
+
+async function refreshBindingCatalog({ force = false } = {}) {
+  if (designerDisposed || !designerActive || loading.value) return false
+  if (bindingCatalogRequest && !force) return bindingCatalogRequest
+  const sequence = ++bindingCatalogSequence
+  // Failed reads keep the last complete catalog, but must also respect the
+  // polling interval instead of retrying every realtime tick.
+  bindingCatalogReadAt = Date.now()
+  const work = (async () => {
+    try {
+      const [deviceRows, pointRows] = await Promise.all([adminApi.getDevices(), adminApi.getDataPoints('all')])
+      if (designerDisposed || !designerActive || sequence !== bindingCatalogSequence) return false
+      if (!Array.isArray(deviceRows) || !Array.isArray(pointRows)) throw new Error('后台未返回完整的设备与点位目录')
+      devices.value = deviceRows
+      bindingCatalogPoints.value = pointRows
+      points.value = pointRows.filter(point => String(point.access_type || 'READ').toUpperCase() === 'READ')
+      designerStore?.syncDevices(devices.value)
+      bindingCatalogReady.value = true
+      bindingCatalogReadAt = Date.now()
+      const pointIds = new Set(points.value.map(point => String(point.id)))
+      pointValues.value = Object.fromEntries(Object.entries(pointValues.value).filter(([, point]) => pointIds.has(String(point.id))))
+      syncBindingReferenceIssues()
+      return true
+    } catch (error) {
+      if (!designerDisposed && designerActive && sequence === bindingCatalogSequence) setStatus(error.message || '设备与点位目录读取失败', 'warning')
+      return false
+    } finally { if (sequence === bindingCatalogSequence) bindingCatalogRequest = null }
+  })()
+  bindingCatalogRequest = work
+  return work
+}
+
+function onBindingCatalogChanged() {
+  if (!loading.value && designerActive && !designerDisposed) void refreshBindingCatalog({ force: true })
+}
+
+function deletionConflictMessage() {
+  return '设备专属内容已移除；服务端另有修订，本机未保存编辑仍已保留。请先导出模板备份，再重新加载并核对修改，避免覆盖其他编辑。'
+}
+
+function applyDashboardDeviceDeleted(cleanup) {
+  if (designerDisposed || cleanup.factoryId !== documentFactoryId.value) return false
+  const sceneChange = cleanup.scenes.find(scene => scene.sceneId === documentModel.value.sceneId)
+  if (deletionSyncAcknowledgements.value.includes(dashboardDeletionAcknowledgementKey(cleanup)) || sceneChange && revision.value > sceneChange.revision) return false
+  // Finish and record an unrelated drag before cloning its history. No stale
+  // pointer may keep writing into a component that is about to disappear.
+  endPointerOperation()
+  let baselineDocument
+  try { baselineDocument = JSON.parse(lastSavedSnapshot.value) } catch { baselineDocument = null }
+  const result = reconcileDashboardDeletionPayload({
+    sceneId: documentModel.value.sceneId, revision: revision.value, document: documentModel.value,
+    baselineDocument, history: history.value, selectedIds: selectedIds.value,
+    selectedViewId: selectedViewId.value, editorDeviceId: editorDeviceId.value,
+    deletionConflict: deletionSyncConflict.value, deletionAcknowledgements: deletionSyncAcknowledgements.value
+  }, cleanup, { factoryId: documentFactoryId.value })
+  if (!result.changed) return false
+  const editorState = captureEditorState(), next = result.payload
+  documentModel.value = next.document
+  revision.value = next.revision
+  if (next.baselineDocument) lastSavedSnapshot.value = snapshot(next.baselineDocument)
+  history.value = next.history || history.value
+  deletionSyncConflict.value = next.deletionConflict || null
+  deletionSyncAcknowledgements.value = next.deletionAcknowledgements || []
+  const deletedDeviceIds = new Set(cleanup.deletedDeviceIds)
+  devices.value = devices.value.filter(device => !deletedDeviceIds.has(String(device.id)))
+  points.value = points.value.filter(point => !deletedDeviceIds.has(String(point.device_id || point.deviceId || '')))
+  bindingCatalogPoints.value = bindingCatalogPoints.value.filter(point => !deletedDeviceIds.has(String(point.device_id || point.deviceId || '')))
+  designerStore?.syncDevices(devices.value)
+  editorState.selectedIds = next.selectedIds
+  editorState.viewId = next.selectedViewId
+  editorState.editorDeviceId = next.editorDeviceId
+  restoreEditorState(editorState)
+  playbackController.reset(); previewPlaybackKeys.clear()
+  syncBindingReferenceIssues()
+  if (isDirty.value) persistLocalDraft()
+  else { clearLocalDraft(); clearFactoryDraft(draftFactoryId, `dashboard:${documentModel.value.sceneId}`) }
+  setStatus(result.conflict ? deletionConflictMessage() : '已同步设备删除：专属组件及关联引用已移除，其他画面和未保存编辑保持不变。', result.conflict ? 'warning' : 'success')
+  return true
+}
+
+function flushPendingDashboardDeletions() {
+  if (loading.value || saving.value || publishing.value || designerDisposed) return
+  for (const cleanup of pendingDeletionCleanups.splice(0)) applyDashboardDeviceDeleted(cleanup)
+}
+
+function onDashboardDeviceDeleted(value, { refreshCatalog = true } = {}) {
+  const cleanup = normalizeDashboardDeletionCleanup(value?.detail || value)
+  if (!cleanup || designerDisposed || documentFactoryId.value && cleanup.factoryId !== documentFactoryId.value) return
+  // During the first default-factory load its authoritative identity has not
+  // arrived yet. Queue, then verify ownership before applying each event.
+  if (!documentFactoryId.value) {
+    if (loading.value) { pendingDeletionCleanups.push(cleanup); return true }
+    return false
+  }
+  // This also protects a dirty canvas whose component has already unmounted.
+  syncDashboardDeletionCaches(cleanup)
+  let changed = false
+  if (loading.value || saving.value || publishing.value) { pendingDeletionCleanups.push(cleanup); changed = true }
+  else changed = applyDashboardDeviceDeleted(cleanup)
+  if (changed && refreshCatalog && !loading.value && designerActive) void refreshBindingCatalog({ force: true })
+  return changed
+}
+
+async function refreshDashboardDeletionHistory({ force = false } = {}) {
+  if (loading.value || designerDisposed || !designerActive) return false
+  if (deletionHistoryRequest && !force) return deletionHistoryRequest
+  if (!force && deletionHistoryReadAt && Date.now() - deletionHistoryReadAt < 5000) return false
+  const sequence = ++deletionHistorySequence, sceneId = documentModel.value.sceneId
+  deletionHistoryReadAt = Date.now()
+  const work = (async () => {
+    try {
+      // Read deletion evidence only. A late state response must never replace
+      // the canvas, its baseline, or another engineer's unsaved local edits.
+      const state = await adminApi.getDashboardDesigner(sceneId)
+      if (designerDisposed || !designerActive || sequence !== deletionHistorySequence || sceneId !== documentModel.value.sceneId) return false
+      if (state?.error) throw new Error(state.error)
+      let changed = false
+      for (const cleanup of Array.isArray(state?.dashboardCleanupHistory) ? state.dashboardCleanupHistory : []) changed = onDashboardDeviceDeleted(cleanup, { refreshCatalog: false }) || changed
+      if (changed) void refreshBindingCatalog({ force: true })
+      return true
+    } catch (error) {
+      if (!designerDisposed && designerActive && sequence === deletionHistorySequence) setStatus('设备删除同步记录暂时无法读取；本机编辑已保留，请稍后重试。', 'warning')
+      return false
+    } finally { if (sequence === deletionHistorySequence) deletionHistoryRequest = null }
+  })()
+  deletionHistoryRequest = work
+  return work
+}
+
+function onDesignerFocus() {
+  onBindingCatalogChanged()
+  void refreshDashboardDeletionHistory()
+}
+
 function validationFailure(result) {
   const error = new Error(result.error)
   error.validationErrors = result.errors
@@ -533,9 +722,28 @@ function validationFailure(result) {
 }
 
 async function locateValidationIssue(issue) {
-  const widget = documentModel.value.widgets.find(item => item.id === issue.widgetId)
-  if (!widget || issue.isTooltip) return
+  const sequence = ++diagnosticLocateSequence
+  diagnosticFocus.value = null
+  const document = documentModel.value
   if (previewMode.value || fullscreenActive.value) await toggleFullscreenPreview()
+  if (sequence !== diagnosticLocateSequence || designerDisposed || document !== documentModel.value) return
+  if (issue.isTooltip) {
+    // A nested template ID is never a main-canvas component ID.
+    setDesignerMode('tooltips')
+    const template = document.tooltipTemplates?.templates.find(item => item.id === issue.templateId)
+    if (!template?.widgets.some(widget => widget.id === issue.widgetId)) {
+      setStatus('此问题的悬停元素已不存在，请重新检查模板；没有定位到其他同名组件。', 'warning')
+      return
+    }
+    await nextTick()
+    if (sequence !== diagnosticLocateSequence || designerDisposed || document !== documentModel.value
+      || designerMode.value !== 'tooltips' || previewMode.value) return
+    diagnosticFocus.value = { ...issue, sequence }
+    setStatus('已定位悬停提示中的问题元素，红色虚线标出了需检查的位置。', 'warning')
+    return
+  }
+  const widget = documentModel.value.widgets.find(item => item.id === issue.widgetId)
+  if (!widget) return
   setDesignerMode('layout')
   if (!widgetAllowedInCurrentView(widget)) {
     const view = views.value.find(item => widget.visibility?.viewIds?.includes(item.id))
@@ -553,8 +761,20 @@ async function locateValidationIssue(issue) {
   selectedIds.value = [widget.id]
   inspectorTab.value = widget.type === 'filter' ? 'content' : 'data'
   revealRightPanel()
+  const viewId = selectedViewId.value
+  const deviceId = editorDeviceId.value
   await nextTick()
-  focusWidgetInCanvas(widget)
+  if (sequence !== diagnosticLocateSequence || designerDisposed || document !== documentModel.value
+    || designerMode.value !== 'layout' || previewMode.value
+    || viewId !== selectedViewId.value || deviceId !== editorDeviceId.value || !selectedIds.value.includes(widget.id)
+    || !documentModel.value.widgets.some(item => item.id === widget.id)) return
+  diagnosticFocus.value = { ...issue, isTooltip: false, sequence, viewId }
+  await nextTick()
+  if (sequence !== diagnosticLocateSequence || !diagnosticTarget.value) return
+  focusWidgetInCanvas(widget, { diagnostic: true })
+  setStatus(diagnosticTargetHidden.value
+    ? '已定位问题组件：当前预览中隐藏，红色虚线标出了它的实际布局位置；原显隐设置未改变。'
+    : '已定位问题组件，红色虚线标出了需检查的位置。', 'warning')
 }
 
 function clearPublishNotice() {
@@ -621,11 +841,11 @@ function localDraftKey(sceneId = documentModel.value.sceneId) {
   return `dashboard-designer-draft:${sceneId}`
 }
 
-function readLocalDraft(sceneId, serverRevision) {
+function readLocalDraftRecord(sceneId) {
   try {
     const value = JSON.parse(localStorage.getItem(localDraftKey(sceneId)) || 'null')
-    if (!value || Number(value.serverRevision) !== Number(serverRevision) || !value.document) return null
-    return normalizeDashboardDocument(value.document)
+    if (!value?.document || !Array.isArray(value.document.widgets) || value.factoryId && value.factoryId !== documentFactoryId.value) return null
+    return value
   } catch {
     return null
   }
@@ -636,9 +856,12 @@ function persistLocalDraft() {
   if (!documentModel.value?.sceneId || !isDirty.value) return
   try {
     localStorage.setItem(localDraftKey(), JSON.stringify({
+      factoryId: documentFactoryId.value,
       serverRevision: revision.value,
       savedAt: new Date().toISOString(),
-      document: documentModel.value
+      document: documentModel.value,
+      ...(deletionSyncConflict.value ? { deletionConflict: deletionSyncConflict.value } : {}),
+      deletionAcknowledgements: deletionSyncAcknowledgements.value
     }))
   } catch {
     // 浏览器存储不可用时不影响服务端草稿。
@@ -726,6 +949,8 @@ function restoreEditorState(state) {
 }
 
 async function loadDesigner({ allowLocal = true } = {}) {
+  diagnosticLocateSequence++
+  diagnosticFocus.value = null
   const pendingEditorState = editorStateBeforeReload
   let restored = false
   loading.value = true
@@ -742,20 +967,54 @@ async function loadDesigner({ allowLocal = true } = {}) {
     ])
     if (designerDisposed) return
     if (designer?.error) throw new Error(designer.error)
+    const ownerFactoryId = String(designer.project?.factory_id || '')
+    if (ownerFactoryId && draftFactoryId && ownerFactoryId !== draftFactoryId) throw new Error('设计器工厂与当前选择不一致，已保留本机草稿，请重新读取。')
+    if (ownerFactoryId) documentFactoryId.value = ownerFactoryId
+    previewContext.factoryId = documentFactoryId.value
     validationIssues.value = []
     globalViewPolicy.value = normalizeGlobalViews(settings.global_view_navigation)
     revision.value = Number(designer.revision || 0)
     const serverDocument = normalizeDashboardDocument(designer.document || {})
-    const cached = allowLocal ? readFactoryDraft(draftFactoryId, `dashboard:${serverDocument.sceneId}`) : null
-    const localDocument = cached && Number(cached.revision) === revision.value
-      ? cached.document
-      : allowLocal ? readLocalDraft(serverDocument.sceneId, revision.value) : null
+    // This ledger comes from the backend's deletion transaction, not from the
+    // imported document or an incomplete device directory. Recover missed
+    // acknowledgements before comparing cache revisions.
+    const trustedCleanups = (Array.isArray(designer.dashboardCleanupHistory) ? designer.dashboardCleanupHistory : [])
+      .map(normalizeDashboardDeletionCleanup).filter(cleanup => cleanup && cleanup.factoryId === documentFactoryId.value)
+    for (const cleanup of trustedCleanups) syncDashboardDeletionCaches(cleanup, { trustedSceneIds: [serverDocument.sceneId] })
+    const trustedDeletionKeys = new Set(trustedCleanups.map(dashboardDeletionAcknowledgementKey))
+    const preserveOlderCleanedDraft = value => {
+      if (!value || value.factoryId && value.factoryId !== documentFactoryId.value) return null
+      if (value.deletionConflict) return value
+      const base = value.revision ?? value.serverRevision
+      if (!Number.isSafeInteger(base) || base < 0 || base === revision.value) return value
+      if (!Array.isArray(value.deletionAcknowledgements) || !value.deletionAcknowledgements.some(key => trustedDeletionKeys.has(key))) return value
+      // An old deletion may be represented only by a tombstone snapshot with
+      // no revision. Retain the cleaned edits, but never fabricate a newer CAS
+      // base when intervening non-deletion edits cannot be ruled out.
+      return { ...value, deletionConflict: { factoryId: documentFactoryId.value,
+        sceneId: serverDocument.sceneId, originalRevision: base, serverRevision: revision.value,
+        reason: 'missed-deletion-history' } }
+    }
+    const cached = preserveOlderCleanedDraft(allowLocal ? readFactoryDraft(draftFactoryId, `dashboard:${serverDocument.sceneId}`) : null)
+    const localRecord = preserveOlderCleanedDraft(allowLocal ? readLocalDraftRecord(serverDocument.sceneId) : null)
+    const localPayload = cached && (Number(cached.revision) === revision.value || cached.deletionConflict)
+      ? cached : localRecord && (Number(localRecord.serverRevision) === revision.value || localRecord.deletionConflict) ? localRecord : null
+    const localDocument = localPayload?.document || null
+    deletionSyncConflict.value = localPayload?.deletionConflict || null
+    deletionSyncAcknowledgements.value = localPayload?.deletionAcknowledgements || []
+    if (deletionSyncConflict.value) {
+      const localRevision = localPayload.revision ?? localPayload.serverRevision
+      revision.value = Number.isSafeInteger(localRevision) && localRevision >= 0 ? localRevision : 0
+    }
     documentModel.value = normalizeDashboardDocument(upgradeMapDesignerDocument(applyFactoryHudModules(applyReferenceHudLayout(localDocument || serverDocument)), settings.group_portal_config))
     releases.value = designer.releases || []
     currentRelease.value = designer.currentRelease || null
     devices.value = Array.isArray(deviceRows) ? deviceRows : []
     designerStore?.syncDevices(devices.value)
     points.value = (Array.isArray(pointRows) ? pointRows : []).filter(point => String(point.access_type || 'READ').toUpperCase() === 'READ')
+    bindingCatalogPoints.value = Array.isArray(pointRows) ? pointRows : []
+    bindingCatalogReady.value = Array.isArray(deviceRows) && Array.isArray(pointRows)
+    bindingCatalogReadAt = Date.now()
     documentModel.value.widgets = documentModel.value.widgets.map(widget => migrateDeviceTrend(widget, points.value))
     pointSourceMode.value = settings.data_mode || ''
     dataSetDefinitions.value = datasetResult?.datasets || []
@@ -779,7 +1038,7 @@ async function loadDesigner({ allowLocal = true } = {}) {
     restoreEditorState(savedEditorState)
     restored = true
     if (selectedViewId.value) emit('view-change', selectedViewId.value)
-    setStatus(localDocument ? '已恢复本机未保存的编辑内容' : `草稿修订 ${revision.value}，运行中版本 ${designer.currentRelease?.version || '未发布'}`, localDocument ? 'warning' : 'success')
+    setStatus(deletionSyncConflict.value ? deletionConflictMessage() : localDocument ? '已恢复本机未保存的编辑内容' : `草稿修订 ${revision.value}，运行中版本 ${designer.currentRelease?.version || '未发布'}`, localDocument ? 'warning' : 'success')
     await nextTick()
     fitCanvas('comfortable')
     await refreshRealtimePoints()
@@ -787,7 +1046,11 @@ async function loadDesigner({ allowLocal = true } = {}) {
     setStatus(error.message || '设计器加载失败', 'danger')
   } finally {
     loading.value = false
+    syncBindingReferenceIssues()
+    if (validationIssuePhase.value === 'reference' && validationIssues.value.length) setStatus(`${validationIssues.value.length} 项数据绑定已失效；组件与原绑定已保留，请定位后重新绑定或删除旧组件。`, 'warning')
+    if (deletionSyncConflict.value) setStatus(deletionConflictMessage(), 'warning')
     if (restored) persistEditorState()
+    flushPendingDashboardDeletions()
     scheduleCurrentViewPreview({ immediate: true })
   }
 }
@@ -993,6 +1256,7 @@ async function refreshMapPreview() {
 
 async function refreshRealtimePoints() {
   if (designerDisposed || !designerActive || realtimeInFlight) return
+  if (!loading.value && Date.now() - bindingCatalogReadAt >= 5000) void refreshBindingCatalog()
   const requestSeq = ++realtimeRequestSeq
   realtimeInFlight = true
   try {
@@ -1018,6 +1282,13 @@ async function refreshRealtimePoints() {
 
 function centerCanvas() {
   nextTick(() => {
+    // A late mode-switch/ResizeObserver fit must not recenter away from the
+    // problem the user just located. Re-focus after any fitted zoom settles.
+    const diagnostic = diagnosticTarget.value
+    if (diagnostic) {
+      focusWidgetInCanvas(diagnostic, { diagnostic: true })
+      return
+    }
     const scroll = viewportRef.value?.querySelector?.('.designer-canvas-scroll')
     if (!scroll) return
     scroll.scrollLeft = Math.max(0, (scroll.scrollWidth - scroll.clientWidth) / 2)
@@ -1106,7 +1377,10 @@ function previewValueForWidget(widget) {
       if (point) return pointValues.value[`${deviceId}:${point.id}`]?.value
       return pointValues.value[`${deviceId}:${binding.pointId}`]?.value
     }
-    return pointValues.value[`${deviceId}:${binding.pointId}`]?.value ?? pointValues.value[binding.pointId]?.value
+    const point = findBoundPoint(binding, deviceId, points.value)
+    if (!point) return undefined
+    const reading = pointValues.value[`${deviceId}:${point.id}`] || pointValues.value[String(point.id)]
+    return reading?.quality === 'good' ? reading.value : undefined
   }
   if (binding.mode === 'runtime') {
     const context = { map:mapPreviewData.value, context: previewContext, selectedPart: previewSelectedPart.value }
@@ -1169,11 +1443,15 @@ function layerWidgetDetail(widget) {
   return String(content.label || content.title || widget?.id || widgetTypeLabel(widget?.type))
 }
 
-function focusWidgetInCanvas(widget) {
+function focusWidgetInCanvas(widget, { diagnostic = false } = {}) {
   nextTick(() => {
+    // A later manual selection/context switch cancels the queued scroll too.
+    if (diagnostic && diagnosticTarget.value?.id !== widget?.id) return
     const scroll = viewportRef.value?.querySelector?.('.designer-canvas-scroll')
     if (!scroll) return
-    const element = [...scroll.querySelectorAll('.designer-widget')]
+    const diagnosticElement = diagnostic ? [...scroll.querySelectorAll('[data-diagnostic-widget-id]')]
+      .find(item => item.dataset.diagnosticWidgetId === String(widget?.id || '')) : null
+    const element = diagnosticElement || [...scroll.querySelectorAll('.designer-widget')]
       .find(item => item.dataset.widgetId === String(widget?.id || ''))
     if (!element) return
 
@@ -1188,7 +1466,14 @@ function focusWidgetInCanvas(widget) {
       && elementRect.right <= visibleRight
       && elementRect.top >= visibleTop
       && elementRect.bottom <= visibleBottom
-    if (alreadyVisible) return
+    const revealDiagnosticAncestors = () => diagnosticElement?.scrollIntoView?.({
+      block: 'nearest', inline: 'nearest', behavior: 'auto'
+    })
+    if (alreadyVisible) {
+      // It can be visible inside the canvas yet below the outer admin page.
+      if (diagnostic) revealDiagnosticAncestors()
+      return
+    }
 
     const targetLeft = scroll.scrollLeft + (elementRect.left - scrollRect.left)
       - Math.max(0, (scroll.clientWidth - elementRect.width) / 2)
@@ -1197,8 +1482,10 @@ function focusWidgetInCanvas(widget) {
     scroll.scrollTo({
       left: Math.max(0, targetLeft),
       top: Math.max(0, targetTop),
-      behavior: 'smooth'
+      // Finish the inner move before revealing all outer scrolling ancestors.
+      behavior: diagnostic ? 'auto' : 'smooth'
     })
+    if (diagnostic) revealDiagnosticAncestors()
   })
 }
 
@@ -1716,15 +2003,21 @@ function previewBindingDevice(id) {
   const widget=selectedWidget.value
   if(!widget)return
   if(widget.data.deviceScope==='fixed') {
+    // This is an explicit user selection, not a metadata refresh. Keep the
+    // semantic role, but resolve it against the newly selected device only.
+    if(String(widget.data.deviceId || '')!==String(id || ''))widget.data.pointId=''
     widget.data.deviceId=id
     const point=findBoundPoint(widget.data,id,points.value)
     bindSelectedPoint(point ? String(point.id) : '')
   } else editorDeviceId.value=id
 }
 
-function pointPlaybackChanged() {
+function pointPlaybackChanged(change) {
   const widget=selectedWidget.value
-  if(widget?.data.deviceScope==='fixed')previewBindingDevice(String(widget.data.deviceId || editorDeviceId.value || devices.value[0]?.id || ''))
+  if(widget?.data.deviceScope==='fixed' && change?.deviceChanged) {
+    widget.data.pointId=''
+    previewBindingDevice(String(widget.data.deviceId || ''))
+  }
   recordProperty('修改设备数据播放')
 }
 
@@ -2366,12 +2659,15 @@ function applyPublishedRelease(release) {
 
 async function saveDraft() {
   if (saving.value) return false
+  if (deletionSyncConflict.value) { setStatus(deletionConflictMessage(), 'warning'); persistLocalDraft(); return false }
   const editorState = rememberEditorState()
   saving.value = true
   try {
     documentModel.value.widgets.forEach(widget => { widget.data.readOnly = true })
     const submitted = deepClone(documentModel.value)
     const submittedSnapshot = snapshot(submitted)
+    await refreshBindingCatalog({ force: true })
+    if (designerDisposed) return false
     const result = await adminApi.saveDashboardDraft(submitted.sceneId, submitted, revision.value)
     if (result?.error) throw validationFailure(result)
     if (designerDisposed) return false
@@ -2391,6 +2687,7 @@ async function saveDraft() {
       setStatus(`草稿已保存，修订 ${revision.value}；现场仍运行已发布版本`, 'success')
     }
     setValidationIssues(result.warnings || [], 'draft')
+    syncBindingReferenceIssues()
     if (validationIssues.value.length) setStatus(`草稿已保存，修订 ${revision.value}；${validationIssues.value.length} 项配置待完善，暂不能发布${editedDuringSave ? '；新修改请再次保存' : ''}`, 'warning')
     emit('reload')
     return true
@@ -2401,34 +2698,39 @@ async function saveDraft() {
     return false
   } finally {
     saving.value = false
+    flushPendingDashboardDeletions()
   }
 }
 
 async function publishVersion() {
   if (publishing.value || saving.value) return
-  clearPublishNotice()
-  rememberEditorState()
-  let savedBeforePublish = false
-  if (isDirty.value) {
-    if (!await saveDraft()) {
-      showPublishNotice(`保存失败：${status.text || '请重试'}`)
-      return
-    }
-    if (isDirty.value) {
-      showPublishNotice('尚未发布：保存期间有新修改，请再次保存并发布', 'warning')
-      return
-    }
-    savedBeforePublish = true
-  }
-  if (validationIssuePhase.value === 'draft' && validationIssues.value.length) {
-    validationIssuesExpanded.value = true
-    const message = `草稿已保存，尚未发布：${validationIssues.value.length} 项组件配置待完善，请点击“定位组件”处理`
-    setStatus(message, 'warning')
-    showPublishNotice(message, 'warning')
-    return
-  }
+  if (deletionSyncConflict.value) { setStatus(deletionConflictMessage(), 'warning'); showPublishNotice('尚未发布：本机编辑与服务端修订需要先核对，已保留本机草稿。', 'warning'); return }
+  // Lock before any asynchronous preflight so repeated clicks cannot race.
   publishing.value = true
+  let savedBeforePublish = false
   try {
+    clearPublishNotice()
+    rememberEditorState()
+    await refreshBindingCatalog({ force: true })
+    if (designerDisposed) return
+    if (isDirty.value) {
+      if (!await saveDraft()) {
+        showPublishNotice(`保存失败：${status.text || '请重试'}`)
+        return
+      }
+      if (isDirty.value) {
+        showPublishNotice('尚未发布：保存期间有新修改，请再次保存并发布', 'warning')
+        return
+      }
+      savedBeforePublish = true
+    }
+    if (['draft', 'reference'].includes(validationIssuePhase.value) && validationIssues.value.length) {
+      validationIssuesExpanded.value = true
+      const message = `${savedBeforePublish || validationIssuePhase.value === 'draft' ? '草稿已保存，' : ''}尚未发布：${validationIssues.value.length} 项组件配置待完善，请点击“定位组件”处理`
+      setStatus(message, 'warning')
+      showPublishNotice(message, 'warning')
+      return
+    }
     const result = await adminApi.publishDashboard(documentModel.value.sceneId, publishForm.version, publishForm.notes)
     if (result?.error) throw validationFailure(result)
     // 发布接口已经返回新版本信息。设计器当前内存中的文档就是刚刚保存
@@ -2444,6 +2746,7 @@ async function publishVersion() {
     showPublishNotice(`${savedBeforePublish ? '草稿已保存，尚未发布' : '发布失败'}：${error.message || '请重试'}`)
   } finally {
     publishing.value = false
+    flushPendingDashboardDeletions()
   }
 }
 
@@ -2504,6 +2807,21 @@ function handleKeydown(event) {
 }
 
 watch(documentModel, scheduleLocalPersist, { deep: true })
+watch([selectedViewId, editorDeviceId, designerMode, previewMode], () => { diagnosticFocus.value = null }, { flush: 'sync' })
+watch(selectedIds, ids => {
+  if (diagnosticFocus.value && !diagnosticFocus.value.isTooltip && !ids.includes(diagnosticFocus.value.widgetId)) diagnosticFocus.value = null
+}, { deep: true, flush: 'sync' })
+watch(() => [validationIssues.value, documentModel.value.widgets.map(widget => widget.id),
+  documentModel.value.tooltipTemplates?.templates?.map(template => [template.id, (template.widgets || []).map(widget => widget.id)])], () => {
+  const focus = diagnosticFocus.value
+  if (!focus) return
+  const exists = focus.isTooltip
+    ? documentModel.value.tooltipTemplates?.templates.some(template => template.id === focus.templateId && template.widgets.some(widget => widget.id === focus.widgetId))
+    : documentModel.value.widgets.some(widget => widget.id === focus.widgetId)
+  if (!exists || !validationIssues.value.some(issue => issue.widgetId === focus.widgetId
+    && !!issue.isTooltip === !!focus.isTooltip && (!focus.isTooltip || issue.templateId === focus.templateId))) diagnosticFocus.value = null
+}, { deep: true, flush: 'sync' })
+watch([documentModel, devices, points, bindingCatalogPoints], syncBindingReferenceIssues, { deep: true })
 watch(() => [canvas.value.width, canvas.value.height], ([width, height]) => {
   canvasPreset.value = `${width}x${height}`
 }, { immediate: true, flush: 'sync' })
@@ -2534,17 +2852,33 @@ function activateDesigner() {
   if (!loading.value) ensureAvailableEntry()
   startDesignerData()
   if(mapPreviewConfig.value)void refreshMapPreview()
+  if (!loading.value) void refreshBindingCatalog()
+  if (!loading.value) void refreshDashboardDeletionHistory({ force: true })
+  window.addEventListener('digital-twin-data-center-changed', onBindingCatalogChanged)
+  window.addEventListener('digital-twin-data-sets-changed', onBindingCatalogChanged)
+  window.addEventListener(DASHBOARD_DEVICE_DELETION_EVENT, onDashboardDeviceDeleted)
+  window.addEventListener('focus', onDesignerFocus)
   window.addEventListener('keydown', handleKeydown)
   if (!realtimeTimer) realtimeTimer = window.setInterval(refreshRealtimePoints, 1000)
   if (viewportRef.value) viewportObserver?.observe(viewportRef.value)
 }
 
 function deactivateDesigner() {
+  diagnosticLocateSequence++
+  diagnosticFocus.value = null
   playbackController.reset()
   previewPlaybackKeys.clear()
   clearPublishNotice()
   scheduleCurrentViewPreview({ immediate: true })
   designerActive = false
+  bindingCatalogSequence++
+  bindingCatalogRequest = null
+  deletionHistorySequence++
+  deletionHistoryRequest = null
+  window.removeEventListener('digital-twin-data-center-changed', onBindingCatalogChanged)
+  window.removeEventListener('digital-twin-data-sets-changed', onBindingCatalogChanged)
+  window.removeEventListener(DASHBOARD_DEVICE_DELETION_EVENT, onDashboardDeviceDeleted)
+  window.removeEventListener('focus', onDesignerFocus)
   stopDesignerEvents?.()
   stopDesignerEvents=null
   designerStore?.dispose()
@@ -2587,9 +2921,12 @@ onBeforeUnmount(() => {
   if (!loading.value && isDirty.value && documentModel.value?.sceneId) {
     persistLocalDraft()
     cacheFactoryDraft(draftFactoryId, `dashboard:${documentModel.value.sceneId}`, 'dashboard', {
+      factoryId: documentFactoryId.value,
       sceneId: documentModel.value.sceneId,
       revision: revision.value,
-      document: JSON.parse(JSON.stringify(documentModel.value))
+      document: JSON.parse(JSON.stringify(documentModel.value)),
+      ...(deletionSyncConflict.value ? { deletionConflict: deletionSyncConflict.value } : {}),
+      deletionAcknowledgements: deletionSyncAcknowledgements.value
     })
   } else if (!loading.value && documentModel.value?.sceneId) {
     clearLocalDraft()
@@ -2688,12 +3025,12 @@ onBeforeUnmount(() => {
       </div>
     </header>
 
-    <details v-if="validationIssues.length" class="designer-validation-issues" :class="{ 'is-error': validationIssuePhase !== 'draft' }" :open="validationIssuesExpanded" @toggle="validationIssuesExpanded = $event.target.open" aria-label="组件配置问题">
-      <summary><strong>{{ validationIssuePhase === 'draft' ? '草稿已保存，发布前请完善配置' : '保存 / 发布检查未通过' }}</strong><span>{{ validationIssues.length }} 项 · 可定位组件</span></summary>
+    <details v-if="validationIssues.length" class="designer-validation-issues" :class="{ 'is-error': !['draft','reference'].includes(validationIssuePhase) }" :open="validationIssuesExpanded" @toggle="validationIssuesExpanded = $event.target.open" aria-label="组件配置问题">
+      <summary><strong>{{ validationIssuePhase === 'reference' ? '发现已失效的数据绑定，请重新绑定或删除旧组件' : validationIssuePhase === 'draft' ? '草稿已保存，发布前请完善配置' : '保存 / 发布检查未通过' }}</strong><span>{{ validationIssues.length }} 项 · 可定位组件</span></summary>
       <ul>
         <li v-for="(issue, index) in validationIssues" :key="`${index}-${issue.message}`" :data-diagnostic-component-id="issue.widgetId">
           <div><strong v-if="issue.label">{{ issue.label }}</strong><span>{{ issue.message }}</span></div>
-          <button v-if="issue.widgetId && !issue.isTooltip" type="button" :aria-label="`定位组件 ${issue.label}`" @click="locateValidationIssue(issue)">定位组件</button>
+          <button v-if="issue.widgetId && (!issue.isTooltip || issue.templateId)" type="button" :aria-label="`定位组件 ${issue.label}`" @click="locateValidationIssue(issue)">定位组件</button>
         </li>
       </ul>
     </details>
@@ -2709,7 +3046,7 @@ onBeforeUnmount(() => {
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3v6H3M15 3v6h6M9 21v-6H3M21 15h-6v6"></path></svg>
     </button>
 
-    <TooltipTemplateEditor v-if="designerMode==='tooltips' && !loading" :document="documentModel" :factory-id="draftFactoryId" :parameters="previewContext.parameters || {}" :views="views" :current-view-id="selectedViewId" :devices="devices" :points="points" :workshops="workshops" :lines="lines" :metrics="liveMetrics" :device-status-map="liveDeviceStatus" :device-data-map="liveDeviceData" :point-values="pointValues" :playback-now="playbackNow" :source-mode="pointSourceMode" :readonly="!canAdminPage('platform.designer','edit') || saving || publishing" @change="commitHistory" @notice="setStatus($event,'warning')" />
+    <TooltipTemplateEditor v-if="designerMode==='tooltips' && !loading" :diagnostic-focus="diagnosticFocus?.isTooltip ? diagnosticFocus : null" :document="documentModel" :factory-id="draftFactoryId" :parameters="previewContext.parameters || {}" :views="views" :current-view-id="selectedViewId" :devices="devices" :points="points" :workshops="workshops" :lines="lines" :metrics="liveMetrics" :device-status-map="liveDeviceStatus" :device-data-map="liveDeviceData" :point-values="pointValues" :playback-now="playbackNow" :source-mode="pointSourceMode" :readonly="!canAdminPage('platform.designer','edit') || saving || publishing" @change="commitHistory" @notice="setStatus($event,'warning')" />
     <div v-show="designerMode==='layout'" class="designer-main" :class="{ 'is-left-panel-collapsed': panelLayout.leftCollapsed, 'is-right-panel-collapsed': panelLayout.rightCollapsed }">
       <aside :id="leftPanelId" v-show="!panelLayout.leftCollapsed" class="designer-left-panel" aria-label="视角与组件面板">
         <div class="view-panel-heading" @click="viewPanelCollapsed = !viewPanelCollapsed">
@@ -2814,6 +3151,7 @@ onBeforeUnmount(() => {
             <span>预览设备</span>
             <select v-model="editorDeviceId" @change="updateEditorDevice" v-permission="{ page: 'platform.designer', action: 'edit' }">
               <option value="">请选择设备</option>
+              <option v-if="editorDeviceId && !devices.some(device => String(device.id) === String(editorDeviceId))" :value="editorDeviceId" disabled>已删除或不可用：{{ editorDeviceId }}</option>
               <option v-for="device in devices" :key="`preview-${device.id}`" :value="String(device.id)">{{ device.name || device.id }}（{{ device.id }}）</option>
             </select>
           </label>
@@ -2872,6 +3210,17 @@ onBeforeUnmount(() => {
                   <i v-for="direction in ['n','ne','e','se','s','sw','w','nw']" :key="direction" class="resize-handle" :class="direction" @pointerdown.stop="beginResize($event, widget, direction)"></i>
                 </template>
               </article>
+
+              <div
+                v-if="diagnosticTarget"
+                :key="diagnosticFocus.sequence"
+                class="designer-diagnostic-frame"
+                :style="diagnosticFrameStyle"
+                :data-diagnostic-widget-id="diagnosticTarget.id"
+                :title="diagnosticFocus.message"
+              >
+                <span class="diagnostic-focus-label" role="status" aria-live="polite">问题组件 · {{ layerWidgetTitle(diagnosticTarget) }}{{ diagnosticTargetHidden ? '（当前预览中隐藏）' : '' }}</span>
+              </div>
 
               <div
                 v-if="!previewMode && selectionBox.active"
@@ -3087,7 +3436,7 @@ onBeforeUnmount(() => {
 
             <section v-else-if="inspectorTab === 'data'" class="inspector-section">
               <div v-if="previewContext.viewMode==='device'" class="binding-part-preview"><label>预览部件<select v-model="previewContext.partId" aria-label="预览部件" :disabled="previewPartsBusy || !previewParts.length" @change="changePreviewPart"><option value="">请选择部件</option><option v-for="part in previewParts" :key="part.id" :value="part.id">{{part.name}}</option></select></label><button type="button" :disabled="previewPartsBusy || !previewContext.deviceId" @click="loadPreviewParts">{{previewPartsBusy?'读取中…':'读取当前设备部件'}}</button><small v-if="previewPartsError" role="status">{{previewPartsError}}</small></div>
-              <DataCatalogPicker :key="selectedWidget.id" :binding="selectedWidget.data" :factory-id="previewContext.factoryId" :device-id="selectedBindingDeviceId" :widget-type="selectedWidget.type" :map-context="currentViewIsMapSurface" :disabled="!canAdminPage('platform.designer','edit')" @select="chooseCatalogData" />
+              <DataCatalogPicker :key="selectedWidget.id" :binding="selectedWidget.data" :factory-id="previewContext.factoryId" :device-id="safeCatalogPreviewDeviceId" :widget-type="selectedWidget.type" :map-context="currentViewIsMapSurface" :disabled="!canAdminPage('platform.designer','edit')" @select="chooseCatalogData" />
               <details class="data-catalog-advanced"><summary>高级绑定设置（原有配置、播放范围与预览）</summary>
               <label>数据来源<select v-model="selectedWidget.data.mode" aria-label="组件数据来源" @change="changeBindingMode"><option v-for="choice in widgetBindingChoices(selectedWidget,{mapContext:currentViewIsMapSurface})" :key="choice.id" :value="choice.id">{{choice.label}}</option></select></label>
               <DevicePointBindingEditor v-if="selectedWidget.data.mode==='plc'" :binding="selectedWidget.data" :devices="devices" :points="points" :values="pointValues" :device-id="selectedBindingDeviceId" :source-mode="pointSourceMode" :error="pointReadError" :disabled="!canAdminPage('platform.designer','edit')" @select-point="bindSelectedPoint" @preview-device="previewBindingDevice" @refresh="refreshRealtimePoints" />
@@ -3230,7 +3579,6 @@ onBeforeUnmount(() => {
               <fieldset v-if="deviceTooltipSupported || partTooltipSupported" class="device-tooltip-settings">
                 <legend>悬停提示模板</legend>
                 <label>{{ partTooltipSupported ? '部件提示' : '设备提示' }}<select :value="currentView.metadata?.tooltipTemplates?.[partTooltipSupported?'part':'device'] || 'inherit'" aria-label="当前视角悬停模板" @change="updateViewTooltipReference(partTooltipSupported?'part':'device',$event.target.value)" v-permission="{page:'platform.designer',action:'edit'}"><option value="inherit">继承默认模板</option><option value="disabled">关闭提示</option><option v-for="item in documentModel.tooltipTemplates?.templates.filter(item=>item.kind===(partTooltipSupported?'part':'device')) || []" :key="item.id" :value="item.id">{{ item.name }}</option></select></label>
-                <button type="button" @click="setDesignerMode('tooltips')">编辑悬停提示内容与数据来源</button>
                 <p class="readonly-banner">共享模板内部的文字、数值、区域均可单独编辑。保存并发布后同步到大屏。</p>
               </fieldset>
               <label class="visibility-bound-device"><input v-model="currentView.componentState.hideNonTargetDevices" type="checkbox" @change="commitHistory('修改目标设备显隐')"  v-permission="{ page: 'platform.designer', action: 'edit' }"/> 只显示目标范围内的设备</label>
@@ -3304,6 +3652,8 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+.designer-diagnostic-frame{position:absolute;box-sizing:border-box;transform-origin:center;border-style:dashed;border-color:#ff4d4f;background:transparent;pointer-events:none;box-shadow:0 0 0 calc(1px * var(--diagnostic-ui-scale,1)) rgba(10,15,24,.8)}
+.diagnostic-focus-label{position:absolute;left:0;bottom:calc(100% + 6px * var(--diagnostic-ui-scale,1));max-width:calc(330px * var(--diagnostic-ui-scale,1));box-sizing:border-box;padding:calc(4px * var(--diagnostic-ui-scale,1)) calc(7px * var(--diagnostic-ui-scale,1));border-radius:calc(4px * var(--diagnostic-ui-scale,1));color:#fff;background:#c92c38;font-size:calc(12px * var(--diagnostic-ui-scale,1));font-weight:600;line-height:1.4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;pointer-events:none}
 .data-catalog-advanced{margin-top:14px;border-top:1px solid #e6ebf3;padding-top:12px}.data-catalog-advanced>summary{font-size:11px;color:#8995a8;cursor:pointer;margin-bottom:13px;line-height:1.6}.data-catalog-advanced[open]>summary{color:#557baa}
 
 .designer-publish-notice{position:fixed;z-index:10020;top:24px;left:50%;transform:translateX(-50%);display:flex;align-items:flex-start;gap:10px;box-sizing:border-box;width:max-content;max-width:min(520px,calc(100vw - 32px));padding:12px 14px;border:1px solid #e1e6ee;border-radius:8px;background:#fff;color:#b42318;box-shadow:0 8px 28px #141d2b29;font-size:13px;line-height:1.5}

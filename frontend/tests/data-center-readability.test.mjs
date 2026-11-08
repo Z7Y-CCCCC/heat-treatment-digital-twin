@@ -71,7 +71,7 @@ test('all data center text preserves admin scaling and no helper text falls belo
 
 test('normal text, field names, values, category counts and actions meet WCAG 4.5:1 on their actual light surfaces', () => {
   const cases = [
-    ['.data-center'], ['.center-title p'], ['.center-flow'], ['.catalog-topline p'],
+    ['.data-center'], ['.catalog-topline p'],
     ['.center-button', '.center-button'], ['.center-button.primary', '.center-button.primary'],
     ['.category-sidebar>header', '.category-sidebar'], ['.category-choice', '.category-sidebar'],
     ['.category-choice', '.category-choice:hover'], ['.category-choice small', '.category-sidebar'],

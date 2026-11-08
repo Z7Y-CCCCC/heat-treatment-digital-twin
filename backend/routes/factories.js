@@ -137,6 +137,8 @@ router.post('/', async (req, res) => {
                 VALUES (?, ?, ?, 'factory_overview', '{}', '{}', '{}', 1, 0)`, [sceneId, projectId, `${name}总览`]);
             const defaults = await tx.all('SELECT `key`, value FROM factory_settings WHERE factory_id = ?', ['factory_default']);
             for (const setting of defaults) {
+                // Lifecycle confirmations are private to their original factory.
+                if (setting.key === require('../services/dashboardDeviceDeletion').KEY) continue;
                 await tx.run('INSERT INTO factory_settings (factory_id, `key`, value) VALUES (?, ?, ?)', [factoryId, setting.key, setting.value]);
             }
             const active = await tx.get('SELECT value FROM settings WHERE `key` = ?', ['active_factory_id']);

@@ -5,6 +5,7 @@ import { parse, compileScript, compileTemplate } from 'vue/compiler-sfc'
 
 const panel = await readFile(new URL('../src/views/AdminPanel.vue', import.meta.url), 'utf8')
 const dialog = await readFile(new URL('../src/views/admin/components/LoadingAlignmentDialog.vue', import.meta.url), 'utf8')
+const browser = await readFile(new URL('../src/views/admin/components/DeviceManagementBrowser.vue', import.meta.url), 'utf8')
 test('model and device loading port editors are discoverable and distinct', () => {
   assert.match(panel, /key: 'ports', label: '进出料口'/)
   assert.match(panel, /aria-label="选择进出料口模型"/)
@@ -14,12 +15,15 @@ test('model and device loading port editors are discoverable and distinct', () =
   assert.match(panel, /ref="deviceLoadingPortRef"[^>]*:model="loadingPortDeviceModel"[^>]*:device="loadingPortDevice"/)
   assert.match(panel, /showDeviceForm\.value\) return alert\('请先保存或取消/)
 })
-test('device tables expose only edit and delete actions, not repeated loading-port shortcuts', () => {
-  const tables = panel.slice(panel.indexOf('<!-- 设备列表 -->'), panel.indexOf('<DeviceModelHoverPreview'))
-  assert.equal((tables.match(/<table class="data-table">/g) || []).length, 2, 'placed and auxiliary device tables are both covered')
-  assert.doesNotMatch(tables, /进出料口|openDeviceLoadingPorts/)
-  assert.equal((tables.match(/@click="openEditDevice\(d\)"/g) || []).length, 2)
-  assert.equal((tables.match(/@click="deleteDevice\(d\.id\)"/g) || []).length, 2)
+test('the shared fixed/auxiliary directory table exposes only edit and delete, not repeated loading-port shortcuts', () => {
+  const tables = panel.slice(panel.indexOf('<DeviceManagementBrowser'), panel.indexOf('<DeviceModelHoverPreview'))
+  assert.equal((browser.match(/<table\b/g) || []).length, 1, 'fixed and auxiliary categories share one table')
+  assert.match(browser, /v-for="row in selected.rows"/)
+  assert.match(browser, /<slot name="row-actions" :device="row.device"/)
+  assert.match(tables, /<template #row-actions="\{ device: d \}">/)
+  assert.doesNotMatch(tables + browser, /进出料口|openDeviceLoadingPorts/)
+  assert.equal((tables.match(/@click="openEditDevice\(d\)"/g) || []).length, 1)
+  assert.equal((tables.match(/@click="deleteDevice\(d\.id\)"/g) || []).length, 1)
   assert.match(tables, /formatPlcDeviceStatus\(d\)/)
   assert.match(panel, /@click="openDeviceLoadingPorts\(getLineDeviceById\(selectedLineDeviceIds\[0\]\)\)"/)
   assert.equal((panel.match(/@click="openDeviceLoadingPorts/g) || []).length, 1, 'only the existing line-layout calibration entry remains')

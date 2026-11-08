@@ -19,6 +19,7 @@ test('hover scope is isolated from navigation and never selects an overview rota
     const prepared = tooltipBindingContext(widget, context)
     assert.equal(prepared.widget.data.deviceId, 'b')
     assert.equal(prepared.widget.data.deviceScope, 'fixed')
+    assert.deepEqual(prepared.sourceWidget.data, data, 'scheduler pinning must not replace the authored point reference scope')
     assert.equal(tooltipPlaybackSelection(data, context, devices).device.id, 'b')
     assert.equal(JSON.stringify(widget), old)
   }

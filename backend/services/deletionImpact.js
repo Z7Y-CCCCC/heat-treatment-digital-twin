@@ -1,4 +1,17 @@
 const { configuredDeviceWorkshopId, safeObject } = require('../utils/spatialLayout');
+const { predictDashboardDeviceDeletion } = require('./dashboardDeviceDeletion');
+
+async function dashboardAssociations(client, factoryId, deviceIds) {
+    if (!deviceIds.length) return [];
+    const plan = await predictDashboardDeviceDeletion(client, { factoryId, deviceIds });
+    return [
+        { key: 'dashboardWidgets', label: '设备专属画面组件', count: plan.removedWidgetCount },
+        { key: 'dashboardViews', label: '设备专属视角', count: plan.removedViewCount },
+        { key: 'tooltipTemplates', label: '设备专属悬停模板', count: plan.removedTooltipTemplateCount },
+        { key: 'tooltipWidgets', label: '设备专属悬停组件', count: plan.removedTooltipWidgetCount },
+        { key: 'dashboardBindings', label: '专属组件绑定', count: plan.removedBindingCount }
+    ].filter(item => item.count > 0);
+}
 
 function numericCount(row) {
     const value = Number(row?.total ?? row?.count ?? 0);
@@ -34,10 +47,9 @@ async function getWorkshopDeletionImpact(client, workshopId, factoryId = 'factor
     const lineIdSet = new Set(lineIds);
     const allDevices = await client.all('SELECT id, line_id, instance_config FROM devices');
     const deviceIds = allDevices
-        .filter(device => (
-            lineIdSet.has(String(device.line_id || ''))
-            || configuredDeviceWorkshopId(device) === String(workshopId)
-        ))
+        .filter(device => device.line_id
+            ? lineIdSet.has(String(device.line_id))
+            : configuredDeviceWorkshopId(device) === String(workshopId))
         .map(device => String(device.id));
     const dataPointCount = await countDataPoints(client, deviceIds);
 
@@ -51,11 +63,12 @@ async function getWorkshopDeletionImpact(client, workshopId, factoryId = 'factor
         { key: 'lines', label: '产线', count: lineIds.length },
         { key: 'devices', label: '设备', count: deviceIds.length },
         { key: 'dataPoints', label: '数据点位', count: dataPointCount },
-        { key: 'walls', label: '围墙配置', count: wallCount }
+        { key: 'walls', label: '围墙配置', count: wallCount },
+        ...await dashboardAssociations(client, factoryId, deviceIds)
     ], { lineIds, deviceIds });
 }
 
-async function getLineDeletionImpact(client, lineId) {
+async function getLineDeletionImpact(client, lineId, factoryId = 'factory_default') {
     const line = await client.get('SELECT id, name FROM `lines` WHERE id = ?', [lineId]);
     if (!line) return null;
     const deviceRows = await client.all('SELECT id FROM devices WHERE line_id = ?', [lineId]);
@@ -63,11 +76,12 @@ async function getLineDeletionImpact(client, lineId) {
     const dataPointCount = await countDataPoints(client, deviceIds);
     return makeImpact('line', line, [
         { key: 'devices', label: '设备', count: deviceIds.length },
-        { key: 'dataPoints', label: '数据点位', count: dataPointCount }
+        { key: 'dataPoints', label: '数据点位', count: dataPointCount },
+        ...await dashboardAssociations(client, factoryId, deviceIds)
     ], { deviceIds });
 }
 
-async function getDeviceDeletionImpact(client, deviceId) {
+async function getDeviceDeletionImpact(client, deviceId, factoryId = 'factory_default') {
     const device = await client.get('SELECT id, name FROM devices WHERE id = ?', [deviceId]);
     if (!device) return null;
     const dataPointCount = numericCount(await client.get(
@@ -75,7 +89,8 @@ async function getDeviceDeletionImpact(client, deviceId) {
         [deviceId]
     ));
     return makeImpact('device', device, [
-        { key: 'dataPoints', label: '数据点位', count: dataPointCount }
+        { key: 'dataPoints', label: '数据点位', count: dataPointCount },
+        ...await dashboardAssociations(client, factoryId, [String(deviceId)])
     ]);
 }
 

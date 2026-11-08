@@ -12,10 +12,17 @@ const compiled = compileScript(descriptor, { id: 'tooltip-renderer', inlineTempl
   .replace(/from (['"])(vue|echarts)\1/g, (_, _quote, name) => `from ${JSON.stringify(import.meta.resolve(name))}`)
   .replace(/from (['"])(\.\.?\/[^'"]+)\1/g, (_, _quote, name) => `from ${JSON.stringify(new URL(name, url).href)}`)
   .replace(/from (["'])([^"']+\.vue)\1/g, `from 'data:text/javascript,export default {}'`)
-const { default: WidgetRenderer } = await import(`data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`)
+const rendererModuleUrl = `data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`
+const { default: WidgetRenderer } = await import(rendererModuleUrl)
+const surfaceUrl = new URL('../src/runtime/TooltipSurface.vue', import.meta.url)
+const surfaceDescriptor = parse(await readFile(surfaceUrl, 'utf8')).descriptor
+const surfaceCompiled = compileScript(surfaceDescriptor, { id: 'tooltip-surface-renderer', inlineTemplate: true }).content
+  .replace(/from (['"])([^'"]+)\1/g, (_, _quote, name) => `from ${JSON.stringify(name.endsWith('/WidgetRenderer.vue') ? rendererModuleUrl
+    : name.startsWith('.') ? new URL(name, surfaceUrl).href : import.meta.resolve(name))}`)
+const { default: TooltipSurface } = await import(`data:text/javascript;base64,${Buffer.from(surfaceCompiled).toString('base64')}`)
 const node = (type, text = '') => ({ type, text, children: [], props: {}, parent: null })
 const text = root => [root.text, ...root.children.map(text)].join(' ')
-function fixture(t) {
+function fixture(t, Component = WidgetRenderer) {
   const environment = installBrowser(t)
   const renderer = createRenderer({
     createElement: type => node(type), createText: value => node('#text', value), createComment: value => node('#comment', value),
@@ -35,7 +42,7 @@ function fixture(t) {
   const root = node('root')
   environment.beforeRestore(() => renderer.render(null, root))
   let vm
-  return { root, get vm() { return vm }, async render(props) { const vnode = h(WidgetRenderer, props); renderer.render(vnode, root); vm = vnode.component.exposed; await nextTick(); await nextTick() } }
+  return { root, get vm() { return vm }, async render(props) { const vnode = h(Component, props); renderer.render(vnode, root); vm = vnode.component.exposed; await nextTick(); await nextTick() } }
 }
 
 test('tooltip identity is current hover metadata even before PLC readiness and never the selected device', async t => {
@@ -58,6 +65,55 @@ test('current tooltip PLC bindings resolve matching current-device points and wi
   assert.doesNotMatch(text(view.root), /666|999/)
   await view.render({ widget, runtimeContext, pointValues: { template_a: points.template_a } })
   assert.doesNotMatch(text(view.root), /999|0\.0/)
+})
+
+test('hover-pinned current and rotating PLC references reuse only a unique hovered-device role after the sample ID disappears', async t => {
+  const view = fixture(t)
+  const context = createTooltipContext({ device: { id: 'b', name: 'B' } })
+  const widget = { id: 'reading', type: 'text', content: { text: '{value} {unit}', fallback: '未连接' },
+    data: { mode: 'plc', deviceScope: 'current', pointId: 'deleted_sample', pointKey: 'analog.temp', unit: '°C', decimals: 1 } }
+  const points = { b: { id: 'p_b', device_id: 'b', category: 'analog', value_role: 'temp', value: 0, quality: 'good' },
+    foreign: { id: 'p_a', device_id: 'a', category: 'analog', value_role: 'temp', value: 999, quality: 'good' } }
+  const before = JSON.stringify(widget)
+  for (const deviceScope of ['current', 'rotation']) {
+    await view.render({ widget: { ...widget, data: { ...widget.data, deviceScope, rotationDeviceIds: ['a', 'b'] } }, runtimeContext: context,
+      pointValues: points, deviceCatalog: [{ id: 'a' }, { id: 'b' }] })
+    assert.equal(view.vm.getRenderedText(), '0.0 °C')
+    await view.render({ widget: { ...widget, data: { ...widget.data, deviceScope } }, runtimeContext: context,
+      pointValues: { ...points, duplicate: { ...points.b, id: 'duplicate', value: 666 } } })
+    assert.equal(view.vm.getRenderedText(), '未连接 °C', 'ambiguous roles cannot silently pick a reading')
+  }
+  assert.equal(JSON.stringify(widget), before)
+})
+
+test('explicit fixed tooltip PLC references remain strict and never read a same-role replacement or hovered peer', async t => {
+  const view = fixture(t), runtimeContext = createTooltipContext({ device: { id: 'b', name: 'B' } })
+  const widget = { id: 'fixed', type: 'text', content: { text: '{value}', fallback: '原绑定失效' },
+    data: { mode: 'plc', deviceScope: 'fixed', deviceId: 'a', pointId: 'deleted', pointKey: 'analog.temp', decimals: 0 } }
+  const pointValues = { replacement: { id: 'replacement', device_id: 'a', category: 'analog', value_role: 'temp', value: 777, quality: 'good' },
+    peer: { id: 'peer', device_id: 'b', category: 'analog', value_role: 'temp', value: 999, quality: 'good' } }
+  await view.render({ widget, runtimeContext, pointValues, deviceCatalog: [{ id: 'a' }, { id: 'b' }] })
+  assert.equal(view.vm.getRenderedText(), '原绑定失效')
+  await view.render({ widget, runtimeContext, pointValues: { ...pointValues, deleted: { ...pointValues.replacement, id: 'deleted', value: 0 } },
+    deviceCatalog: [{ id: 'a' }, { id: 'b' }] })
+  assert.equal(view.vm.getRenderedText(), '0', 'an available exact fixed point is still displayed')
+})
+
+test('real TooltipSurface preserves authored PLC scope before passing a hover-pinned widget to the renderer', async t => {
+  const view = fixture(t, TooltipSurface)
+  const widget = { id: 'surface_reading', type: 'text', frame: { width: 150, height: 30 }, content: { text: '{value}', fallback: '未连接' },
+    data: { mode: 'plc', deviceScope: 'current', pointId: 'old_sample', pointKey: 'analog.temp', decimals: 0 } }
+  const template = { id: 'surface', canvas: { width: 280, height: 230 }, widgets: [widget] }
+  const before = JSON.stringify(template)
+  const pointValues = { b: { id: 'p_b', device_id: 'b', category: 'analog', value_role: 'temp', value: 0, quality: 'good' },
+    a: { id: 'p_a', device_id: 'a', category: 'analog', value_role: 'temp', value: 999, quality: 'good' } }
+  const context = createTooltipContext({ device: { id: 'b' } })
+  await view.render({ template, context, preview: true, pointValues, deviceCatalog: [{ id: 'a' }, { id: 'b' }] })
+  assert.equal(view.vm.getRenderedText(widget.id), '0')
+  const fixed = { ...template, widgets: [{ ...widget, data: { ...widget.data, deviceScope: 'fixed', deviceId: 'a' } }] }
+  await view.render({ template: fixed, context, preview: true, pointValues, deviceCatalog: [{ id: 'a' }, { id: 'b' }] })
+  assert.equal(view.vm.getRenderedText(widget.id), '未连接')
+  assert.equal(JSON.stringify(template), before)
 })
 
 test('tooltip part text and per-field mappings preserve real zero and clear obsolete values', async t => {

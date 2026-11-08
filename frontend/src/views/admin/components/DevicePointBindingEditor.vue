@@ -5,6 +5,9 @@ const props=defineProps({binding:Object,devices:Array,points:Array,values:Object
 const emit=defineEmits(['select-point','preview-device','refresh'])
 const choices=computed(()=>(props.points || []).filter(p=>String(p.device_id)===props.deviceId && String(p.access_type || 'READ').toUpperCase()==='READ'))
 const bound=computed(()=>findBoundPoint(props.binding,props.deviceId,props.points || []))
+const missingDevice=computed(()=>!!props.deviceId && !(props.devices || []).some(device=>String(device.id)===String(props.deviceId)))
+const missingPoint=computed(()=>!!props.binding?.pointId && !bound.value)
+const pointSelection=computed(()=>bound.value ? String(bound.value.id) : missingPoint.value ? String(props.binding.pointId) : '')
 const reading=computed(()=>bound.value ? props.values?.[`${props.deviceId}:${bound.value.id}`] || props.values?.[String(bound.value.id)] : null)
 const mode=computed(()=>({'simulation':'内置模拟器','integrated_plc':'实时采集进程','external':'外部接口'})[props.sourceMode] || '尚未连接数据引擎')
 const time=computed(()=>reading.value?.lastReadAt ? new Date(reading.value.lastReadAt).toLocaleString('zh-CN',{hour12:false}) : '尚未读取')
@@ -12,9 +15,11 @@ const time=computed(()=>reading.value?.lastReadAt ? new Date(reading.value.lastR
 <template>
 <section class="point-binding-editor" aria-label="设备采集点位绑定">
  <div class="source-line" :class="{simulation:sourceMode==='simulation'}"><span>当前工厂数据源</span><strong>{{mode}}</strong></div>
- <label>预览设备<select :value="deviceId" aria-label="点位预览设备" :disabled="disabled && binding.deviceScope==='fixed'" @change="emit('preview-device',$event.target.value)"><option v-for="device in devices" :key="device.id" :value="String(device.id)">{{device.name}}</option></select></label>
- <label>采集点位（只读）<select :value="bound ? String(bound.id) : ''" aria-label="绑定采集点位" :disabled="disabled || !choices.length" @change="emit('select-point',$event.target.value)"><option value="">请选择点位</option><option v-for="point in choices" :key="point.id" :value="String(point.id)">{{point.label || point.name}} · {{point.plc_tag || '地址未配置'}}{{point.unit ? ' · '+point.unit : ''}}</option></select></label>
- <p v-if="!choices.length" class="missing" role="status">该设备没有采集点位，请先在“点位映射”配置。未配置时不生成曲线。</p>
+ <label>预览设备<select :value="deviceId" aria-label="点位预览设备" :disabled="disabled && binding.deviceScope==='fixed'" @change="emit('preview-device',$event.target.value)"><option value="">请选择设备</option><option v-if="missingDevice" :value="deviceId" disabled>已删除或不可用：{{deviceId}}</option><option v-for="device in devices" :key="device.id" :value="String(device.id)">{{device.name}}</option></select></label>
+ <label>采集点位（只读）<select :value="pointSelection" aria-label="绑定采集点位" :disabled="disabled || !choices.length" @change="emit('select-point',$event.target.value)"><option value="">请选择点位</option><option v-if="missingPoint" :value="String(binding.pointId)" disabled>原绑定已删除或不可用：{{binding.pointId}}</option><option v-for="point in choices" :key="point.id" :value="String(point.id)">{{point.label || point.name}} · {{point.plc_tag || '地址未配置'}}{{point.unit ? ' · '+point.unit : ''}}</option></select></label>
+ <p v-if="missingDevice" class="missing" role="status">原绑定设备已删除或当前工厂不可用。组件及原绑定已保留，请选择其他设备和点位，或删除不再需要的组件；不会自动读取其他设备。</p>
+ <p v-else-if="missingPoint" class="missing" role="status">原绑定点位已删除或不可用。请选择实际采集点位；不会按同名点位自动替换固定绑定。</p>
+ <p v-else-if="!choices.length" class="missing" role="status">该设备没有采集点位，请先在“点位映射”配置。未配置时不生成曲线。</p>
  <p v-else-if="!bound" class="missing" role="status">尚未绑定有效点位，不使用设备示例字段替代。</p>
  <dl v-if="bound"><dt>点位名称</dt><dd>{{bound.label || bound.name}}</dd><dt>PLC 地址</dt><dd>{{bound.plc_tag || '未配置'}}</dd><dt>当前读数</dt><dd>{{reading?.quality==='good' && reading?.value!=null ? reading.value : '—'}} {{bound.unit}}</dd><dt>质量</dt><dd>{{({good:'正常',stale:'数据过期',bad:'异常'})[reading?.quality] || '尚无数据'}}</dd><dt>采样时间</dt><dd>{{time}}</dd></dl>
  <button type="button" @click="emit('refresh')">读取后台最新值</button><small v-if="error" role="alert">{{error}}</small>

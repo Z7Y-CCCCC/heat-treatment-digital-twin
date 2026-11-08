@@ -49,7 +49,7 @@ test('data center sections consolidate source, point mapping, monitoring and ala
   assert.match(descriptor.template.content, /table-editor/)
   assert.doesNotMatch(descriptor.template.content, /center-nav|role="tablist"|data-center-tab-/)
   assert.match(descriptor.template.content, /role="region" aria-label="数据表"/)
-  assert.match(descriptor.template.content, /aria-label="数据使用流程"/)
+  assert.doesNotMatch(descriptor.template.content, /aria-label="数据使用流程"/)
 })
 
 test('catalog filters per field category rather than table category and searches units/object names',()=>{

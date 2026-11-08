@@ -35,7 +35,11 @@ export function catalogMatchesBinding(item, binding, options = {}) {
   const source = catalogBinding(item, options)
   if (!source || !binding || source.mode !== binding.mode) return false
   if (source.mode === 'dataset') return source.datasetId === binding.datasetId && source.datasetField === binding.datasetField
-  if (source.mode === 'plc') return source.pointKey === binding.pointKey && (options.tooltip || !source.deviceId || String(source.deviceId) === String(binding.deviceId))
+  if (source.mode === 'plc') {
+    if (!options.tooltip && binding.deviceScope === 'fixed' && binding.pointId
+      && String(source.pointId || '') !== String(binding.pointId)) return false
+    return source.pointKey === binding.pointKey && (options.tooltip || !source.deviceId || String(source.deviceId) === String(binding.deviceId))
+  }
   return (source.path || source.source) === (binding.path || binding.source)
 }
 export function filterCatalogItems(items, { categoryId = '', tableId = '', query = '', ...options } = {}) {

@@ -37,3 +37,10 @@ test('submenu changes and factory switches protect metadata, source and live/cac
   assert.equal((panel.match(/<DataSourceWorkspace\b/g) || []).length, 1)
   assert.doesNotMatch(panel, /database-panel-sources|label: '外部数据源'/)
 })
+
+test('the five data center subpages no longer repeat the shared title and introductory flow banner', () => {
+  assert.equal(adminSubpages('data-center').length, 5)
+  assert.doesNotMatch(center, /center-heading|center-title|center-symbol|center-flow|先整理好数据，再轻松搭建画面|数据使用流程/)
+  assert.match(center, /aria-label="数据表"/)
+  assert.match(center, /:aria-label="activeRegionLabel"/)
+})

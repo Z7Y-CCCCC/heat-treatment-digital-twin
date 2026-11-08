@@ -2,6 +2,7 @@ import { reactive, ref } from 'vue'
 import { API_BASE } from '../runtime/backendEndpoint.js'
 import { adminFetch as fetch } from '../runtime/adminSession.js'
 import { deviceTransformPayload } from '../../../shared/deviceAuthoring.mjs'
+import { notifyDashboardDeviceDeletion } from '../runtime/dashboardDeletionSync.js'
 
 // 全局响应式配置状态
 const factoryConfig = reactive({
@@ -135,14 +136,22 @@ export const adminApi = {
     async updateWorkshopGround(id, data) { return readApiJson(await fetch(`${API_BASE}/workshops/${pathId(id)}/ground`, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) }), '保存地面失败') },
     async updateWorkshop(id, data) { return readApiJson(await fetch(`${API_BASE}/workshops/${pathId(id)}`, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) }), '保存车间失败') },
     async getWorkshopDeletionImpact(id) { return readApiJson(await fetch(`${API_BASE}/workshops/${pathId(id)}/deletion-impact`), '读取车间关联项失败') },
-    async deleteWorkshop(id, confirmationName) { return readApiJson(await fetch(`${API_BASE}/workshops/${pathId(id)}`, { method: 'DELETE', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ confirmationName }) }), '删除车间失败') },
+    async deleteWorkshop(id, confirmationName) {
+        const result = await readApiJson(await fetch(`${API_BASE}/workshops/${pathId(id)}`, { method: 'DELETE', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ confirmationName }) }), '删除车间失败')
+        if (result?.success === true) notifyDashboardDeviceDeletion(result.dashboardCleanup)
+        return result
+    },
 
     // 产线
     async getLines() { return (await fetch(`${API_BASE}/lines`)).json() },
     async createLine(data) { return readApiJson(await fetch(`${API_BASE}/lines`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) }), '创建产线失败') },
     async updateLine(id, data) { return readApiJson(await fetch(`${API_BASE}/lines/${pathId(id)}`, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) }), '保存产线失败') },
     async getLineDeletionImpact(id) { return readApiJson(await fetch(`${API_BASE}/lines/${pathId(id)}/deletion-impact`), '读取产线关联项失败') },
-    async deleteLine(id, confirmationName) { return readApiJson(await fetch(`${API_BASE}/lines/${pathId(id)}`, { method: 'DELETE', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ confirmationName }) }), '删除产线失败') },
+    async deleteLine(id, confirmationName) {
+        const result = await readApiJson(await fetch(`${API_BASE}/lines/${pathId(id)}`, { method: 'DELETE', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ confirmationName }) }), '删除产线失败')
+        if (result?.success === true) notifyDashboardDeviceDeletion(result.dashboardCleanup)
+        return result
+    },
 
     // 设备
     async getDevices(lineId) { 
@@ -155,7 +164,11 @@ export const adminApi = {
     async createDevice(data) { return readApiJson(await fetch(`${API_BASE}/devices`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) }), '创建设备失败') },
     async updateDevice(id, data) { return readApiJson(await fetch(`${API_BASE}/devices/${pathId(id)}`, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) }), '保存设备失败') },
     async getDeviceDeletionImpact(id) { return readApiJson(await fetch(`${API_BASE}/devices/${pathId(id)}/deletion-impact`), '读取设备关联项失败') },
-    async deleteDevice(id, confirmationName) { return readApiJson(await fetch(`${API_BASE}/devices/${pathId(id)}`, { method: 'DELETE', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ confirmationName }) }), '删除设备失败') },
+    async deleteDevice(id, confirmationName) {
+        const result = await readApiJson(await fetch(`${API_BASE}/devices/${pathId(id)}`, { method: 'DELETE', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ confirmationName }) }), '删除设备失败')
+        if (result?.success === true) notifyDashboardDeviceDeletion(result.dashboardCleanup)
+        return result
+    },
 
     // 点位
     async getDataPoints(deviceId) {

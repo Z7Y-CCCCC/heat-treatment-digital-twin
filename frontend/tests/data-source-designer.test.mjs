@@ -5,11 +5,13 @@ import { createRenderer, h, nextTick, ref } from 'vue'
 import { parse, compileScript } from 'vue/compiler-sfc'
 import { adminApi } from '../src/config/factoryConfig.js'
 import { adminSession } from '../src/runtime/adminSession.js'
-import { deferred, installBrowser, settle } from './helpers.mjs'
+import { deferred, installBrowser, json, settle } from './helpers.mjs'
 import { exportDashboardTemplate, importDashboardTemplate, dashboardTemplateReferences, rebindDashboardTemplate } from '../src/runtime/dashboardTemplate.js'
 import { normalizeDashboardDocument } from '../src/runtime/dashboardSchema.js'
 import { widgetBindingChoices, DATASET_WIDGETS, POINT_WIDGETS } from '../src/runtime/widgetBindingChoices.js'
+import { bindingReferenceDiagnostics } from '../src/runtime/bindingReferenceDiagnostics.js'
 import { applyTemplateFieldBindings, templateFieldBindings } from '../src/runtime/templateFieldMapping.js'
+import { cacheFactoryDraft, clearFactoryDraft, readFactoryDraft } from '../src/runtime/factoryDraftCache.js'
 
 // Run the real SFC setup/load path; child renderers are irrelevant to the source
 // selection and are stubbed so no canvas, GL context or browser is required.
@@ -35,14 +37,25 @@ for (const match of [...compiled.matchAll(/from\s+(['"])([^'"]+)\1/g)]) {
 }
 const { default: Designer } = await import(`data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`)
 Designer.render = () => null
+const pickerUrl = new URL('../src/views/admin/components/DataCatalogPicker.vue', import.meta.url)
+const pickerDescriptor = parse(await readFile(pickerUrl, 'utf8')).descriptor
+let pickerCompiled = compileScript(pickerDescriptor, { id: 'designer-catalog-reference-test' }).content
+for (const match of [...pickerCompiled.matchAll(/from\s+(['"])([^'"]+)\1/g)]) {
+    const name = match[2], target = name.startsWith('.') ? new URL(name, pickerUrl).href : import.meta.resolve(name)
+    pickerCompiled = pickerCompiled.replace(match[0], `from ${JSON.stringify(target)}`)
+}
+const { default: CatalogPicker } = await import(`data:text/javascript;base64,${Buffer.from(pickerCompiled).toString('base64')}`)
+CatalogPicker.render = () => null
 
-function fixture(t, connections) {
+function fixture(t, connections, { factoryId = '', storage, designerState } = {}) {
     const environment = installBrowser(t)
     environment.browser.cancelAnimationFrame = () => {}
     environment.browser.requestAnimationFrame = () => 0
     environment.replace('ResizeObserver', class { observe() {} disconnect() {} })
-    environment.replace('localStorage', { getItem: () => null, setItem() {}, removeItem() {} })
-    t.mock.method(adminApi, 'getDashboardDesigner', async () => ({ revision: 1, document: {} }))
+    const local = storage || { getItem: key => key === 'digital_twin_factory_scope_v1' ? factoryId : null, setItem() {}, removeItem() {} }
+    environment.replace('localStorage', local)
+    environment.browser.localStorage = local
+    t.mock.method(adminApi, 'getDashboardDesigner', async () => designerState || ({ revision: 1, document: {} }))
     for (const method of ['getDevices', 'getDataPoints', 'getWorkshops', 'getLines']) t.mock.method(adminApi, method, async () => [])
     t.mock.method(adminApi, 'getRealtimePointValues', async () => ({ points: [] }))
     t.mock.method(adminApi, 'getDataSources', async () => ({ connections }))
@@ -60,7 +73,7 @@ function fixture(t, connections) {
     const app = renderer.createApp({ render: () => h(Designer, { ref: instance }) })
     app.mount({})
     environment.beforeRestore(() => app.unmount())
-    return { instance, browser: environment.browser }
+    return { instance, browser: environment.browser, app, renderer, beforeRestore: environment.beforeRestore }
 }
 
 function pointerEvent(overrides = {}) {
@@ -331,6 +344,7 @@ test('saving retains edits and the newer selection made while the server is pend
     const saving = state.saveDraft()
     state.documentModel.name = '保存期间的新修改'
     state.selectedIds = ['new-selection']
+    await settle()
     pending.resolve({ revision: 2, document: submitted })
     assert.equal(await saving, true)
     assert.equal(submitted.name, '提交版本')
@@ -399,6 +413,9 @@ test('configuration issue location selects exactly the failing main widget witho
     state.panelLayout.rightCollapsed = true
     state.layersCollapsed = true
     await state.locateValidationIssue(state.validationIssues[0])
+    assert.equal(state.diagnosticTarget.id, 'business_b')
+    assert.equal(state.diagnosticFocus.isTooltip, false)
+    assert.ok(Number.parseFloat(state.diagnosticFrameStyle.borderWidth) * state.zoom >= 2.5)
     assert.equal(state.designerMode, 'layout')
     assert.equal(state.selectedViewId, 'workshop_overview')
     assert.deepEqual(state.selectedIds, ['business_b'])
@@ -429,9 +446,190 @@ test('validation diagnostics prefer stable component IDs and never mistake neste
     state.selectedIds = ['main_a']
     await state.locateValidationIssue(state.validationIssues[1])
     assert.deepEqual(state.selectedIds, ['main_a'])
+    assert.equal(state.diagnosticTarget, null)
+    assert.equal(state.diagnosticFocus.templateId, template.id)
+    assert.equal(state.diagnosticFocus.widgetId, template.widgets[0].id)
+    assert.equal(state.diagnosticFocus.isTooltip, true)
     const markup = descriptor.template.content
     assert.match(markup, /aria-label="组件配置问题"/)
     assert.match(markup, /@click="locateValidationIssue\(issue\)"/)
+})
+
+test('diagnostic overlay locates a hidden locked target without revealing it or changing its authoring', async t => {
+    const { instance } = fixture(t, [])
+    await settle()
+    const state = instance.value.$.setupState
+    state.documentModel.widgets = normalizeDashboardDocument({ widgets: [{
+        id: 'hidden_problem', type: 'text', visible: false, locked: true,
+        frame: { x: 900, y: 700, width: 200, height: 80, rotation: 12 },
+        visibility: { viewIds: ['workshop_overview'], rules: [{ source: 'context', path: 'deviceId', operator: '==', value: 'not_current' }] }
+    }] }).widgets
+    state.setValidationIssues(['组件 hidden_problem 绑定的设备不存在：not_current'], 'reference')
+    const before = JSON.stringify(state.documentModel)
+    const calls = [], ancestorScrolls = []
+    const scroll = {
+        scrollLeft: 0, scrollTop: 0, clientWidth: 400, clientHeight: 300,
+        scrollWidth: 400, scrollHeight: 300,
+        getBoundingClientRect: () => ({ left: 0, top: 0, right: 400, bottom: 300 }),
+        querySelectorAll: selector => selector === '[data-diagnostic-widget-id]' ? [{
+            dataset: { diagnosticWidgetId: 'hidden_problem' },
+            scrollIntoView: value => ancestorScrolls.push(value),
+            getBoundingClientRect: () => ({ left: 900, top: 700, right: 1100, bottom: 780, width: 200, height: 80 })
+        }] : [],
+        scrollTo: value => calls.push(value)
+    }
+    state.viewportRef = { querySelector: () => scroll }
+    await state.locateValidationIssue(state.validationIssues[0])
+    await settle()
+    assert.equal(state.diagnosticTarget.id, 'hidden_problem')
+    assert.equal(state.canvasWidgets.some(widget => widget.id === 'hidden_problem'), false)
+    assert.equal(state.diagnosticTargetHidden, true)
+    assert.equal(state.diagnosticFrameStyle.opacity, 1)
+    assert.equal(state.diagnosticFrameStyle.transform, 'rotate(12deg)')
+    for (const zoom of [.25, .5, .75, 1, 1.25, 1.5, 1.75, 2.5]) {
+        state.zoom = zoom
+        const border = Number.parseFloat(state.diagnosticFrameStyle.borderWidth)
+        assert.equal(border, Math.ceil(2.5 / zoom))
+        assert.ok(Math.floor(border) * zoom >= 2.5)
+        assert.ok(border * zoom < 2.5 + zoom)
+    }
+    assert.deepEqual(calls.at(-1), { left: 800, top: 590, behavior: 'auto' })
+    assert.ok(ancestorScrolls.length >= 1)
+    for (const options of ancestorScrolls) assert.deepEqual(options, { block: 'nearest', inline: 'nearest', behavior: 'auto' })
+    assert.equal(JSON.stringify(state.documentModel), before)
+    assert.match(state.status.text, /隐藏.*原显隐设置未改变/)
+})
+
+test('a diagnostic already visible inside the canvas still reveals outer page ancestors while ordinary selection does not', async t => {
+    const { instance } = fixture(t, [])
+    await settle()
+    const state = instance.value.$.setupState
+    state.documentModel.widgets = normalizeDashboardDocument({ widgets: [
+        { id: 'outer_page_problem', type: 'text', visibility: { viewIds: ['workshop_overview'] } }
+    ] }).widgets
+    state.setValidationIssues(['组件 outer_page_problem 绑定的设备不存在：missing'], 'reference')
+    const calls = [], ancestorScrolls = []
+    const element = { dataset: { diagnosticWidgetId: 'outer_page_problem', widgetId: 'outer_page_problem' },
+        getBoundingClientRect: () => ({ left: 100, top: 900, right: 300, bottom: 980, width: 200, height: 80 }),
+        scrollIntoView: value => ancestorScrolls.push(value) }
+    const scroll = { scrollLeft: 0, scrollTop: 0, clientWidth: 400, clientHeight: 300,
+        scrollWidth: 400, scrollHeight: 300,
+        getBoundingClientRect: () => ({ left: 0, top: 850, right: 400, bottom: 1150 }),
+        querySelectorAll: () => [element], scrollTo: value => calls.push(value) }
+    state.viewportRef = { querySelector: () => scroll }
+    await state.locateValidationIssue(state.validationIssues[0])
+    await settle()
+    assert.deepEqual(calls, [])
+    assert.ok(ancestorScrolls.length >= 1)
+    for (const options of ancestorScrolls) assert.deepEqual(options, { block: 'nearest', inline: 'nearest', behavior: 'auto' })
+    const diagnosticScrollCount = ancestorScrolls.length
+    state.selectWidget(state.documentModel.widgets[0], {}, { focusCanvas: true })
+    await settle()
+    assert.equal(ancestorScrolls.length, diagnosticScrollCount)
+})
+
+test('diagnostic focus clears with other selections, contexts, repaired issues and deletion; repeats target only the last request', async t => {
+    const { instance } = fixture(t, [])
+    await settle()
+    const state = instance.value.$.setupState
+    state.documentModel.widgets = normalizeDashboardDocument({ widgets: [
+        { id: 'problem_a', type: 'text', visibility: { viewIds: ['workshop_overview'] } },
+        { id: 'problem_b', type: 'text', visibility: { viewIds: ['workshop_overview'] } }
+    ] }).widgets
+    state.setValidationIssues(['组件 problem_a 绑定的设备不存在：a', '组件 problem_b 绑定的设备不存在：b'], 'reference')
+    const [a, b] = state.validationIssues
+    await state.locateValidationIssue(a)
+    const firstSequence = state.diagnosticFocus.sequence
+    state.selectedIds = ['problem_b']
+    assert.equal(state.diagnosticFocus, null)
+    await state.locateValidationIssue(a)
+    assert.ok(state.diagnosticFocus.sequence > firstSequence)
+    await Promise.all([state.locateValidationIssue(a), state.locateValidationIssue(b)])
+    assert.equal(state.diagnosticTarget.id, 'problem_b')
+    state.setValidationIssues(['组件 problem_a 绑定的设备不存在：a'], 'reference')
+    assert.equal(state.diagnosticFocus, null)
+    await state.locateValidationIssue(a)
+    state.editorDeviceId = 'another_device'
+    assert.equal(state.diagnosticFocus, null)
+    await state.locateValidationIssue(a)
+    state.documentModel.widgets = state.documentModel.widgets.filter(widget => widget.id !== 'problem_a')
+    assert.equal(state.diagnosticFocus, null)
+})
+
+test('late center and fitted-mode callbacks retain the diagnostic location until normal selection clears it', async t => {
+    const { instance } = fixture(t, [])
+    await settle()
+    const state = instance.value.$.setupState
+    state.documentModel.widgets = normalizeDashboardDocument({ widgets: [
+        { id: 'late_fit_problem', type: 'text', visibility: { viewIds: ['workshop_overview'] } },
+        { id: 'ordinary_after_fit', type: 'text', visibility: { viewIds: ['workshop_overview'] } }
+    ] }).widgets
+    state.setValidationIssues(['组件 late_fit_problem 绑定的设备不存在：missing'], 'reference')
+    const ancestorScrolls = []
+    const scroll = { scrollLeft: 0, scrollTop: 0, clientWidth: 400, clientHeight: 300,
+        scrollWidth: 2000, scrollHeight: 4000,
+        getBoundingClientRect: () => ({ left: 0, top: 0, right: 400, bottom: 300 }),
+        scrollTo({ left, top }) { this.scrollLeft = left; this.scrollTop = top },
+        querySelectorAll: () => [{ dataset: { diagnosticWidgetId: 'late_fit_problem' },
+            getBoundingClientRect: () => ({ left: 900 - scroll.scrollLeft, top: 1400 - scroll.scrollTop,
+                right: 1100 - scroll.scrollLeft, bottom: 1480 - scroll.scrollTop, width: 200, height: 80 }),
+            scrollIntoView: value => ancestorScrolls.push(value) }] }
+    state.viewportRef = { querySelector: () => scroll }
+    state.designerMode = 'tooltips'
+    await state.locateValidationIssue(state.validationIssues[0])
+    await settle()
+    assert.equal(scroll.scrollLeft, 800)
+    assert.equal(scroll.scrollTop, 1290)
+    state.centerCanvas()
+    await settle()
+    assert.equal(scroll.scrollTop, 1290)
+    state.fitCanvas('comfortable')
+    await settle()
+    assert.equal(scroll.scrollTop, 1290)
+    assert.ok(ancestorScrolls.length >= 3)
+    state.selectedIds = ['ordinary_after_fit']
+    state.centerCanvas()
+    await settle()
+    assert.equal(scroll.scrollTop, 1850)
+    assert.equal(state.diagnosticFocus, null)
+})
+
+test('manual device or editor-mode changes cancel a pending diagnostic request before it restores a stale red frame', async t => {
+    const { instance } = fixture(t, [])
+    await settle()
+    const state = instance.value.$.setupState
+    state.documentModel.widgets = normalizeDashboardDocument({ widgets: [
+        { id: 'pending_problem', type: 'text', visibility: { viewIds: ['workshop_overview'] } }
+    ] }).widgets
+    state.setValidationIssues(['组件 pending_problem 绑定的设备不存在：missing'], 'reference')
+    const issue = state.validationIssues[0]
+    const deviceRequest = state.locateValidationIssue(issue)
+    state.editorDeviceId = 'manually_chosen_device'
+    await deviceRequest
+    assert.equal(state.diagnosticFocus, null)
+    assert.equal(state.diagnosticTarget, null)
+
+    const modeRequest = state.locateValidationIssue(issue)
+    state.designerMode = 'tooltips'
+    await modeRequest
+    assert.equal(state.diagnosticFocus, null)
+
+    const owner = state.documentModel.tooltipTemplates.templates[0]
+    state.setValidationIssues([`悬停模板“${owner.name}”：第 1 个组件 尺寸不合法`])
+    const tooltipRequest = state.locateValidationIssue(state.validationIssues[0])
+    state.designerMode = 'layout'
+    await tooltipRequest
+    assert.equal(state.diagnosticFocus, null)
+    assert.equal(state.diagnosticTarget, null)
+})
+
+test('diagnostic framing is a separate pointer-transparent red dashed presentation layer, not widget styling', () => {
+    const markup = descriptor.template.content, css = descriptor.styles.map(style => style.content).join('\n')
+    assert.match(markup, /class="designer-diagnostic-frame"/)
+    assert.match(markup, /:data-diagnostic-widget-id="diagnosticTarget.id"/)
+    assert.match(markup, /:diagnostic-focus="diagnosticFocus\?\.isTooltip \? diagnosticFocus : null"/)
+    assert.match(css, /\.designer-diagnostic-frame\{[^}]*border-style:dashed[^}]*border-color:#ff4d4f[^}]*pointer-events:none/)
+    assert.match(css, /\.designer-widget\.selected::after\{border:2px solid #43b9ff/)
 })
 
 test('structured save errors retain local edits and a later successful save clears issue warnings', async t => {
@@ -615,6 +813,9 @@ test('publish success reports the saved release without claiming an unacknowledg
     const { instance } = fixture(t, [])
     await settle()
     const state = instance.value.$.setupState
+    // This success fixture has no catalog; do not leave default PLC demo
+    // references pointing at devices that this fixture says do not exist.
+    state.documentModel.widgets = []
     t.mock.method(adminApi, 'saveDashboardDraft', async (_id, document) => ({ revision: 2, document }))
     t.mock.method(adminApi, 'publishDashboard', async () => ({ release: { id: 'release-test', version: '1.0.1' } }))
     await state.publishVersion()
@@ -862,4 +1063,456 @@ test('catalog choices obey edit permissions and do not allow metadata to replace
     state.chooseCatalogData(point)
     assert.equal(widget('a').data.mode, 'plc')
     assert.equal(state.history.length, 2)
+})
+
+function staleReferenceDocument() {
+    return normalizeDashboardDocument({ widgets: [{ id: 'cfg_device_trend_Furnace_03', type: 'trend',
+        title: '炉温趋势', frame: { x: 83, y: 47, width: 520, height: 260 },
+        data: { mode: 'plc', deviceScope: 'fixed', deviceId: 'Furnace_03', pointId: '638', pointKey: 'analog.actual_temp', readOnly: true },
+        visibility: { viewIds: ['factory_overview'], matchBoundDevice: true }, content: { text: '保留标题' }
+    }] })
+}
+
+test('reference diagnostics are read-only and distinguish nested template components with the same ID', () => {
+    const document = staleReferenceDocument()
+    document.tooltipTemplates.templates = [{ id: 'tip', name: '设备提示', widgets: [JSON.parse(JSON.stringify(document.widgets[0]))] }]
+    const before = JSON.stringify(document)
+    const issues = bindingReferenceDiagnostics(document, [], [])
+    assert.equal(issues.length, 4)
+    assert.match(issues[0], /组件 cfg_device_trend_Furnace_03 绑定的设备不存在：Furnace_03（炉温趋势）/)
+    assert.match(issues[1], /绑定的点位不存在：638/)
+    assert.match(issues[2], /^悬停模板“设备提示”：组件 cfg_device_trend_Furnace_03/)
+    assert.equal(JSON.stringify(document), before)
+    assert.deepEqual(bindingReferenceDiagnostics(document, [{ id: 'Furnace_03' }], [{ id: 638 }]), [])
+    const untitled = { widgets: [{ id: 'raw-id', type: 'trend', data: { mode: 'plc', deviceScope: 'fixed', deviceId: 'gone' } }] }
+    assert.match(bindingReferenceDiagnostics(untitled, [], [])[0], /（趋势图）/)
+})
+
+test('deleted-device refresh reports and locates the stale component without mutating layout or rebinding', async t => {
+    const { instance } = fixture(t, [])
+    await settle()
+    const state = instance.value.$.setupState
+    state.documentModel = staleReferenceDocument()
+    const before = JSON.stringify(state.documentModel), revision = state.revision
+    state.pointValues = { 638: { id: 638, device_id: 'Furnace_03', value: 999, quality: 'good' } }
+    t.mock.method(adminApi, 'getDevices', async () => [{ id: 'other', name: '其它设备' }])
+    t.mock.method(adminApi, 'getDataPoints', async () => [{ id: 'new', device_id: 'other', category: 'analog', value_role: 'actual_temp', access_type: 'READ' }])
+    assert.equal(await state.refreshBindingCatalog({ force: true }), true)
+    await nextTick()
+    assert.equal(JSON.stringify(state.documentModel), before)
+    assert.equal(state.revision, revision)
+    assert.equal(state.validationIssuePhase, 'reference')
+    assert.equal(state.validationIssues.length, 2)
+    assert.ok(state.validationIssues.every(issue => issue.widgetId === 'cfg_device_trend_Furnace_03'))
+    assert.equal(state.pointValues[638], undefined)
+    await state.locateValidationIssue(state.validationIssues[0])
+    assert.deepEqual(state.selectedIds, ['cfg_device_trend_Furnace_03'])
+    assert.equal(state.selectedBindingDeviceId, 'Furnace_03')
+    assert.equal(state.editorDeviceId, 'Furnace_03')
+    assert.equal(state.editorDevice, null)
+    assert.equal(state.safeCatalogPreviewDeviceId, '')
+    assert.equal(state.previewValueForWidget(state.selectedWidget), undefined)
+    assert.equal(JSON.stringify(state.documentModel), before)
+})
+
+test('stale dynamic IDs save as warnings, survive normalization, and clear only after explicit repair or removal', async t => {
+    const { instance } = fixture(t, [])
+    await settle()
+    const state = instance.value.$.setupState
+    state.documentModel = staleReferenceDocument()
+    state.selectedIds = ['cfg_device_trend_Furnace_03']
+    state.documentModel.name = '修改布局后的草稿'
+    let submitted
+    t.mock.method(adminApi, 'saveDashboardDraft', async (_id, document) => {
+        submitted = JSON.parse(JSON.stringify(document))
+        return { revision: 136, document, warnings: bindingReferenceDiagnostics(document, [], []) }
+    })
+    assert.equal(await state.saveDraft(), true)
+    const saved = state.documentModel.widgets[0]
+    assert.equal(submitted.widgets[0].data.deviceId, 'Furnace_03')
+    assert.equal(saved.data.mode, 'plc')
+    assert.equal(saved.data.deviceId, 'Furnace_03')
+    assert.equal(saved.data.pointId, '638')
+    assert.equal(saved.frame.x, 83)
+    assert.equal(saved.content.text, '保留标题')
+    assert.equal(state.revision, 136)
+    assert.equal(state.validationIssuePhase, 'draft')
+    assert.equal(state.validationIssues.length, 2)
+    assert.match(state.status.text, /草稿已保存.*暂不能发布/)
+    state.documentModel.widgets = []
+    await nextTick()
+    assert.equal(state.validationIssues.length, 0)
+})
+
+test('late catalog requests cannot replace newer metadata or update a deactivated or unmounted designer', async t => {
+    const { instance, app } = fixture(t, [])
+    await settle()
+    const state = instance.value.$.setupState
+    state.documentModel = staleReferenceDocument()
+    const before = JSON.stringify(state.documentModel)
+    const firstDevices = deferred(), firstPoints = deferred(), secondDevices = deferred(), secondPoints = deferred()
+    let deviceCalls = 0, pointCalls = 0
+    t.mock.method(adminApi, 'getDevices', () => ++deviceCalls === 1 ? firstDevices.promise : secondDevices.promise)
+    t.mock.method(adminApi, 'getDataPoints', () => ++pointCalls === 1 ? firstPoints.promise : secondPoints.promise)
+    const first = state.refreshBindingCatalog({ force: true }), second = state.refreshBindingCatalog({ force: true })
+    secondDevices.resolve([{ id: 'current' }]); secondPoints.resolve([{ id: 'current-point', device_id: 'current', access_type: 'READ' }])
+    assert.equal(await second, true)
+    firstDevices.resolve([{ id: 'old' }]); firstPoints.resolve([{ id: 'old-point', device_id: 'old' }])
+    assert.equal(await first, false)
+    assert.equal(state.devices[0].id, 'current')
+    assert.equal(state.points[0].id, 'current-point')
+    assert.equal(JSON.stringify(state.documentModel), before)
+    const inactiveDevices = deferred(), inactivePoints = deferred()
+    t.mock.method(adminApi, 'getDevices', () => inactiveDevices.promise)
+    t.mock.method(adminApi, 'getDataPoints', () => inactivePoints.promise)
+    const inactive = state.refreshBindingCatalog({ force: true })
+    state.deactivateDesigner()
+    inactiveDevices.resolve([{ id: 'inactive' }]); inactivePoints.resolve([])
+    assert.equal(await inactive, false)
+    assert.equal(state.devices[0].id, 'current')
+    const unmountedDevices = deferred(), unmountedPoints = deferred()
+    t.mock.method(adminApi, 'getDevices', () => unmountedDevices.promise)
+    t.mock.method(adminApi, 'getDataPoints', () => unmountedPoints.promise)
+    state.activateDesigner()
+    const unmounted = state.refreshBindingCatalog()
+    app.unmount()
+    unmountedDevices.resolve([{ id: 'unmounted' }]); unmountedPoints.resolve([])
+    assert.equal(await unmounted, false)
+    assert.equal(state.devices[0].id, 'current')
+})
+
+test('catalog failures retain the last complete directory and retry only after five seconds', async t => {
+    const { instance } = fixture(t, [])
+    await settle()
+    const state = instance.value.$.setupState
+    const device = { id: 'Furnace_03' }, point = { id: 638, device_id: 'Furnace_03', access_type: 'READ' }
+    state.documentModel = staleReferenceDocument()
+    state.selectedIds = ['cfg_device_trend_Furnace_03']
+    state.devices = [device]; state.points = [point]; state.bindingCatalogPoints = [point]
+    let now = 100000
+    t.mock.method(Date, 'now', () => now)
+    const devicesRead = t.mock.method(adminApi, 'getDevices', async () => [{ id: 'not-a-complete-catalog' }])
+    const pointsRead = t.mock.method(adminApi, 'getDataPoints', async () => { throw Error('暂时断开') })
+    assert.equal(await state.refreshBindingCatalog({ force: true }), false)
+    for (now = 101000; now <= 104000; now += 1000) { await state.refreshRealtimePoints(); await settle() }
+    assert.equal(pointsRead.mock.callCount(), 1)
+    assert.equal(devicesRead.mock.callCount(), 1)
+    await state.refreshRealtimePoints(); await settle()
+    assert.equal(pointsRead.mock.callCount(), 2)
+    assert.equal(state.devices[0].id, 'Furnace_03')
+    assert.equal(state.points[0].id, 638)
+    assert.equal(state.safeCatalogPreviewDeviceId, 'Furnace_03', 'a failed directory cannot mark an existing reference as deleted')
+    assert.equal(state.validationIssues.length, 0, 'empty realtime frames and failed metadata reads are not proof of deletion')
+    assert.equal(state.documentModel.widgets[0].data.pointId, '638')
+})
+
+test('publishing locks before pending metadata preflight and releases on success and reference rejection', async t => {
+    const { instance } = fixture(t, [])
+    await settle()
+    const state = instance.value.$.setupState
+    state.documentModel.widgets = []
+    state.lastSavedSnapshot = state.snapshot()
+    const devices = deferred(), points = deferred()
+    const directory = t.mock.method(adminApi, 'getDevices', () => devices.promise)
+    t.mock.method(adminApi, 'getDataPoints', () => points.promise)
+    const publish = t.mock.method(adminApi, 'publishDashboard', async () => ({ release: { id: 'one-release', version: '1.2.3' } }))
+    const first = state.publishVersion(), second = state.publishVersion()
+    assert.equal(state.publishing, true)
+    assert.equal(directory.mock.callCount(), 1)
+    assert.equal(publish.mock.callCount(), 0)
+    devices.resolve([]); points.resolve([])
+    await Promise.all([first, second])
+    assert.equal(publish.mock.callCount(), 1)
+    assert.equal(state.publishing, false)
+    state.documentModel = staleReferenceDocument()
+    state.lastSavedSnapshot = state.snapshot()
+    state.validationIssuePhase = 'reference'
+    await state.publishVersion()
+    assert.equal(publish.mock.callCount(), 1)
+    assert.equal(state.publishing, false)
+    assert.equal(state.publishNotice.tone, 'warning')
+    assert.match(state.publishNotice.text, /尚未发布/)
+    assert.doesNotMatch(state.publishNotice.text, /草稿已保存/)
+})
+
+test('changing playback controls does not clear stale IDs or auto-select the first registered device', async t => {
+    const { instance } = fixture(t, [])
+    await settle()
+    const state = instance.value.$.setupState
+    state.documentModel = staleReferenceDocument()
+    state.selectedIds = ['cfg_device_trend_Furnace_03']
+    state.devices = [{ id: 'other' }]
+    state.points = [{ id: 'new', device_id: 'other', category: 'analog', value_role: 'actual_temp' }]
+    state.editorDeviceId = 'other'
+    state.pointPlaybackChanged()
+    assert.equal(state.selectedWidget.data.pointId, '638')
+    assert.equal(state.selectedWidget.data.deviceId, 'Furnace_03')
+    state.selectedWidget.data.deviceId = ''
+    state.pointPlaybackChanged()
+    assert.equal(state.selectedWidget.data.deviceId, '')
+    assert.equal(state.selectedWidget.data.pointId, '638')
+    // The compatibility selector has already applied its v-model value before
+    // notifying the parent; its explicit device-change event may rebind.
+    state.selectedWidget.data.deviceId = 'other'
+    state.pointPlaybackChanged({ deviceChanged: true })
+    assert.equal(state.selectedWidget.data.pointId, 'new')
+})
+
+test('a confirmed deleted binding loads the factory replacement catalog without sending its deleted preview ID or changing the binding', async t => {
+    const { instance, renderer, beforeRestore } = fixture(t, [])
+    await settle()
+    const state = instance.value.$.setupState
+    state.documentModel = staleReferenceDocument()
+    state.selectedIds = ['cfg_device_trend_Furnace_03']
+    state.bindingCatalogReady = false
+    assert.equal(state.safeCatalogPreviewDeviceId, 'Furnace_03', 'without a complete directory the ID is not presumed deleted')
+    t.mock.method(adminApi, 'getDevices', async () => [{ id: 'other', name: '其它设备' }])
+    t.mock.method(adminApi, 'getDataPoints', async () => [{ id: 'new', device_id: 'other', category: 'analog', value_role: 'actual_temp', access_type: 'READ' }])
+    t.mock.method(adminApi, 'getDeviceInspection', async () => ({ inspection: { parts: [] } }))
+    await state.refreshBindingCatalog({ force: true })
+    await state.locateValidationIssue(state.validationIssues[0])
+    assert.equal(state.safeCatalogPreviewDeviceId, '')
+    assert.equal(state.selectedBindingDeviceId, 'Furnace_03')
+    const before = JSON.stringify(state.documentModel), requests = [], selections = [], picker = ref(null)
+    t.mock.method(globalThis, 'fetch', async (input, options) => {
+        const url = new URL(input)
+        assert.equal(url.pathname, '/api/data-center/catalog')
+        assert.equal(url.searchParams.has('preview_device_id'), false)
+        assert.equal(url.searchParams.has('device_id'), false)
+        assert.equal(new Headers(options.headers).get('X-Factory-ID'), 'factory-test')
+        requests.push(url.href)
+        return json({ success: true, categories: [{ id: 'realtime', name: '实时采集' }], tables: [{ id: 'plc-other', name: '其它设备采集' }],
+            items: [{ id: 'new-temp', categoryId: 'realtime', tableId: 'plc-other', label: '炉内温度', type: 'number', sourceType: 'plc',
+                deviceName: '其它设备', previewValue: 888, quality: 'good', binding: { mode: 'plc', deviceScope: 'fixed', deviceId: 'other', pointId: 'new', pointKey: 'analog.actual_temp' } }] })
+    })
+    const pickerApp = renderer.createApp({ render: () => h(CatalogPicker, { ref: picker, binding: state.selectedWidget.data,
+        factoryId: 'factory-test', deviceId: state.safeCatalogPreviewDeviceId, widgetType: state.selectedWidget.type,
+        onSelect: item => selections.push(item) }) })
+    pickerApp.mount({})
+    beforeRestore(() => pickerApp.unmount())
+    await settle(); await nextTick()
+    const pickerState = picker.value.$.setupState
+    assert.equal(requests.length, 1)
+    assert.equal(pickerState.error, '')
+    assert.deepEqual(pickerState.items.map(item => item.id), ['new-temp'])
+    assert.equal(pickerState.current, undefined, 'replacement samples are not labelled as the original binding')
+    assert.equal(selections.length, 0)
+    assert.equal(state.previewValueForWidget(state.selectedWidget), undefined, 'catalog samples never become the deleted binding reading')
+    assert.equal(state.selectedWidget.data.pointId, '638')
+    assert.equal(state.selectedWidget.data.deviceId, 'Furnace_03')
+    assert.equal(JSON.stringify(state.documentModel), before)
+    assert.match(descriptor.template.content, /<DataCatalogPicker[^>]*:device-id="safeCatalogPreviewDeviceId"/)
+})
+
+function deletionSyncDocument() {
+    return normalizeDashboardDocument({ sceneId: 'deletion-scene', metadata: { revision: 5 }, scene: { defaultViewId: 'overview', views: [
+        { id: 'overview', mode: 'factory' }, { id: 'device', mode: 'device', targetId: '' }
+    ] }, widgets: [
+        { id: 'device-private', type: 'text', data: { mode: 'static', value: '设备说明' }, content: { text: '专属说明' },
+            visibility: { viewIds: ['device'], rules: [{ source: 'context', path: 'deviceId', operator: '==', value: 'deleted-owner' }] } },
+        { id: 'general-title', type: 'text', data: { mode: 'static', value: '原标题' }, content: { text: '原公共标题' }, visibility: { viewIds: ['overview'] } },
+        { id: 'general-fixed', type: 'trend', data: { mode: 'plc', deviceScope: 'fixed', deviceId: 'deleted-owner', pointId: '638' }, visibility: { viewIds: ['overview'] } }
+    ] })
+}
+
+function deletionSyncPlan(factoryId, beforeRevision = 5, nextRevision = 6) {
+    return { id: `${factoryId}-delete-${beforeRevision}`, factoryId, deletedDeviceIds: ['deleted-owner'], remainingDeviceIds: ['remaining-owner'],
+        scenes: [{ sceneId: 'deletion-scene', beforeRevision, revision: nextRevision, removedWidgetIds: ['device-private'], removedViewIds: [],
+            removedTooltipTemplateIds: [], removedTooltipWidgetIds: [], updatedWidgetIds: [] }] }
+}
+
+function deletionStorage(factoryId) {
+    const values = new Map([['digital_twin_factory_scope_v1', factoryId]])
+    return { get length() { return values.size }, key: index => [...values.keys()][index],
+        getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, String(value)), removeItem: key => values.delete(key) }
+}
+
+test('backend-confirmed device deletion updates the real designer, baseline and undo stack while preserving unrelated edits', async t => {
+    const factoryId = 'deletion-live-sfc', { instance } = fixture(t, [], { factoryId })
+    await settle()
+    const state = instance.value.$.setupState, baseline = deletionSyncDocument(), edited = structuredClone(baseline)
+    edited.widgets.find(w => w.id === 'general-title').content.text = '未保存的新标题'
+    state.documentModel = edited; state.revision = 5; state.lastSavedSnapshot = state.snapshot(baseline)
+    state.history = [{ document: baseline, label: '原稿' }, { document: edited, label: '修改标题' }]; state.historyIndex = 1
+    state.selectedIds = ['device-private', 'general-title']; state.editorDeviceId = 'deleted-owner'
+    state.devices = [{ id: 'deleted-owner' }, { id: 'remaining-owner' }]
+    state.onDashboardDeviceDeleted(deletionSyncPlan(factoryId))
+    assert.equal(state.revision, 6); assert.equal(state.isDirty, true)
+    assert.ok(!state.documentModel.widgets.some(w => w.id === 'device-private'))
+    assert.equal(state.documentModel.widgets.find(w => w.id === 'general-title').content.text, '未保存的新标题')
+    assert.equal(state.documentModel.widgets.find(w => w.id === 'general-fixed').data.pointId, '638', 'shared fixed sources are not silently rebound')
+    for (const entry of state.history) assert.ok(!entry.document.widgets.some(w => w.id === 'device-private'))
+    assert.ok(!state.selectedIds.includes('device-private')); assert.notEqual(state.editorDeviceId, 'deleted-owner')
+    state.undo()
+    assert.ok(!state.documentModel.widgets.some(w => w.id === 'device-private'), 'Ctrl+Z must not restore a deleted device component')
+    assert.equal(state.documentModel.widgets.find(w => w.id === 'general-title').content.text, '原公共标题')
+    await settle()
+})
+
+test('a deletion from another factory never changes the active designer', async t => {
+    const { instance } = fixture(t, [], { factoryId: 'deletion-isolated-sfc' }); await settle()
+    const state = instance.value.$.setupState; state.documentModel = deletionSyncDocument(); state.revision = 5
+    const before = state.snapshot()
+    state.onDashboardDeviceDeleted(deletionSyncPlan('different-factory'))
+    assert.equal(state.snapshot(), before); assert.equal(state.revision, 5)
+})
+
+test('real designer revision conflicts keep edited content and block save/publish rather than overwriting another revision', async t => {
+    const factoryId = 'deletion-conflict-sfc', { instance } = fixture(t, [], { factoryId }); await settle()
+    const state = instance.value.$.setupState; state.documentModel = deletionSyncDocument(); state.revision = 2
+    state.documentModel.widgets.find(w => w.id === 'general-title').content.text = '不能丢的修改'
+    state.lastSavedSnapshot = state.snapshot()
+    const save = t.mock.method(adminApi, 'saveDashboardDraft', async () => { throw Error('must not save a conflicting draft') })
+    const publish = t.mock.method(adminApi, 'publishDashboard', async () => { throw Error('must not publish a conflicting draft') })
+    state.onDashboardDeviceDeleted(deletionSyncPlan(factoryId))
+    assert.equal(state.revision, 2); assert.ok(state.deletionSyncConflict)
+    assert.ok(!state.documentModel.widgets.some(w => w.id === 'device-private'))
+    assert.equal(state.documentModel.widgets.find(w => w.id === 'general-title').content.text, '不能丢的修改')
+    assert.equal(await state.saveDraft(), false); await state.publishVersion()
+    assert.equal(save.mock.callCount(), 0); assert.equal(publish.mock.callCount(), 0)
+    assert.match(state.status.text, /本机未保存编辑仍已保留/)
+    await settle()
+})
+
+test('a deletion acknowledgement during an in-flight successful save is applied after its response and cannot resurrect a component', async t => {
+    const factoryId = 'deletion-save-race-sfc', { instance } = fixture(t, [], { factoryId }); await settle()
+    const state = instance.value.$.setupState; state.documentModel = deletionSyncDocument(); state.revision = 5; state.lastSavedSnapshot = state.snapshot()
+    const pending = deferred(); let submitted
+    t.mock.method(adminApi, 'saveDashboardDraft', async (_scene, document) => { submitted = structuredClone(document); return pending.promise })
+    const saving = state.saveDraft(); await settle(); assert.ok(submitted)
+    state.onDashboardDeviceDeleted(deletionSyncPlan(factoryId, 6, 7))
+    assert.ok(state.documentModel.widgets.some(w => w.id === 'device-private'), 'do not race the pending save response')
+    submitted.metadata.revision = 6; pending.resolve({ document: submitted, revision: 6, warnings: [] })
+    assert.equal(await saving, true)
+    assert.equal(state.revision, 7); assert.equal(state.deletionSyncConflict, null)
+    assert.ok(!state.documentModel.widgets.some(w => w.id === 'device-private'))
+    assert.ok(!JSON.parse(state.lastSavedSnapshot).widgets.some(w => w.id === 'device-private'))
+    await settle()
+})
+
+test('reopening the designer replays trusted backend deletion history into an unmounted dirty cache', async t => {
+    const factoryId = 'deletion-reopen-sfc', original = deletionSyncDocument(), edited = structuredClone(original)
+    edited.widgets.find(w => w.id === 'general-title').content.text = '跨页面保留的编辑'
+    cacheFactoryDraft(factoryId, 'dashboard:deletion-scene', 'dashboard', { sceneId: 'deletion-scene', revision: 5, document: edited })
+    t.after(() => clearFactoryDraft(factoryId, 'dashboard:deletion-scene'))
+    const server = structuredClone(original); server.widgets = server.widgets.filter(w => w.id !== 'device-private'); server.metadata.revision = 6
+    const { instance } = fixture(t, [], { factoryId, storage: deletionStorage(factoryId),
+        designerState: { revision: 6, document: server, dashboardCleanupHistory: [deletionSyncPlan(factoryId)] } })
+    await settle(); await nextTick()
+    const state = instance.value.$.setupState
+    assert.equal(state.revision, 6); assert.equal(state.deletionSyncConflict, null)
+    assert.ok(!state.documentModel.widgets.some(w => w.id === 'device-private'))
+    assert.equal(state.documentModel.widgets.find(w => w.id === 'general-title').content.text, '跨页面保留的编辑')
+    assert.equal(readFactoryDraft(factoryId, 'dashboard:deletion-scene').revision, 6)
+})
+
+test('reopening a conflicting deleted-device cache displays preserved editing instead of silently replacing it with the server', async t => {
+    const factoryId = 'deletion-reopen-conflict-sfc', original = deletionSyncDocument(), edited = structuredClone(original)
+    edited.widgets.find(w => w.id === 'general-title').content.text = '旧修订上的重要编辑'; edited.metadata.revision = 2
+    cacheFactoryDraft(factoryId, 'dashboard:deletion-scene', 'dashboard', { sceneId: 'deletion-scene', revision: 2, document: edited })
+    t.after(() => clearFactoryDraft(factoryId, 'dashboard:deletion-scene'))
+    const server = structuredClone(original); server.widgets = server.widgets.filter(w => w.id !== 'device-private'); server.metadata.revision = 6
+    const { instance } = fixture(t, [], { factoryId, storage: deletionStorage(factoryId),
+        designerState: { revision: 6, document: server, dashboardCleanupHistory: [deletionSyncPlan(factoryId)] } })
+    await settle(); await nextTick()
+    const state = instance.value.$.setupState
+    assert.equal(state.revision, 2); assert.ok(state.deletionSyncConflict)
+    assert.ok(!state.documentModel.widgets.some(w => w.id === 'device-private'))
+    assert.equal(state.documentModel.widgets.find(w => w.id === 'general-title').content.text, '旧修订上的重要编辑')
+    assert.match(state.status.text, /本机未保存编辑仍已保留/)
+})
+
+test('a late designer load response replays queued cleanup instead of putting removed device components back', async t => {
+    const factoryId = 'deletion-load-race-sfc', pending = deferred()
+    const { instance } = fixture(t, [], { factoryId, designerState: pending.promise })
+    const state = instance.value.$.setupState
+    assert.equal(state.loading, true)
+    state.onDashboardDeviceDeleted(deletionSyncPlan(factoryId))
+    pending.resolve({ revision: 5, document: deletionSyncDocument() })
+    await settle(); await nextTick()
+    assert.equal(state.loading, false); assert.equal(state.revision, 6)
+    assert.ok(!state.documentModel.widgets.some(w => w.id === 'device-private'))
+    assert.ok(!JSON.parse(state.lastSavedSnapshot).widgets.some(w => w.id === 'device-private'))
+})
+
+test('cleanup ends and records an unrelated active drag before sanitizing history', async t => {
+    const factoryId = 'deletion-drag-sfc', { instance, browser } = fixture(t, [], { factoryId }); await settle()
+    const state = instance.value.$.setupState, baseline = deletionSyncDocument()
+    state.documentModel = baseline; state.revision = 5; state.lastSavedSnapshot = state.snapshot(); state.resetHistory()
+    state.selectedIds = ['general-title']
+    const widget = state.documentModel.widgets.find(w => w.id === 'general-title')
+    state.beginMove(pointerEvent(), widget)
+    state.handlePointerMove(pointerEvent({ clientX: 170, clientY: 120 }))
+    const moved = JSON.parse(JSON.stringify(widget.frame))
+    assert.ok(browser.listeners.get('pointermove')?.size)
+    state.onDashboardDeviceDeleted(deletionSyncPlan(factoryId))
+    assert.deepEqual(state.documentModel.widgets.find(w => w.id === 'general-title').frame, moved)
+    assert.equal(browser.listeners.get('pointermove')?.size, 0)
+    assert.ok(state.history.some(entry => entry.label === '移动组件'))
+    for (const entry of state.history) assert.ok(!entry.document.widgets.some(w => w.id === 'device-private'))
+    state.handlePointerMove(pointerEvent({ clientX: 600, clientY: 700 }))
+    assert.deepEqual(state.documentModel.widgets.find(w => w.id === 'general-title').frame, moved, 'the old pointer cannot write after cleanup')
+    await settle()
+})
+
+test('focus deletion-history reconciliation ignores the returned canvas and preserves local edits', async t => {
+    const factoryId = 'deletion-history-focus-sfc', { instance } = fixture(t, [], { factoryId }); await settle()
+    const state = instance.value.$.setupState; state.documentModel = deletionSyncDocument(); state.revision = 5; state.lastSavedSnapshot = state.snapshot()
+    state.documentModel.widgets.find(w => w.id === 'general-title').content.text = '仍在编辑的标题'
+    t.mock.method(adminApi, 'getDashboardDesigner', async () => ({ revision: 6, document: { widgets: [{ id: 'do-not-load' }] }, dashboardCleanupHistory: [deletionSyncPlan(factoryId)] }))
+    assert.equal(await state.refreshDashboardDeletionHistory({ force: true }), true)
+    assert.equal(state.documentModel.widgets.find(w => w.id === 'general-title').content.text, '仍在编辑的标题')
+    assert.ok(!state.documentModel.widgets.some(w => w.id === 'do-not-load'))
+    assert.ok(!state.documentModel.widgets.some(w => w.id === 'device-private'))
+    assert.equal(state.revision, 6); assert.equal(state.isDirty, true)
+    await settle()
+})
+
+test('default factory identity comes only from the trusted project and queued cleanup verifies that identity', async t => {
+    const pending = deferred(), { instance } = fixture(t, [], { designerState: pending.promise })
+    const state = instance.value.$.setupState
+    state.onDashboardDeviceDeleted(deletionSyncPlan('other-owner'))
+    state.onDashboardDeviceDeleted(deletionSyncPlan('factory_default'))
+    pending.resolve({ project: { factory_id: 'factory_default' }, revision: 5, document: deletionSyncDocument() })
+    await settle(); await nextTick()
+    assert.equal(state.documentFactoryId, 'factory_default'); assert.equal(state.previewContext.factoryId, 'factory_default')
+    assert.equal(state.revision, 6); assert.ok(!state.deletionSyncConflict)
+    assert.ok(!state.documentModel.widgets.some(widget => widget.id === 'device-private'))
+    const before = state.snapshot()
+    state.onDashboardDeviceDeleted(deletionSyncPlan('other-owner', 6, 7))
+    assert.equal(state.snapshot(), before); assert.equal(state.revision, 6)
+    await settle()
+})
+
+test('an old default-factory cache cleaned by the trusted tombstone snapshot preserves edits and the old CAS base', async t => {
+    const factoryId = 'factory_default', edited = deletionSyncDocument(), storage = deletionStorage('')
+    edited.metadata.revision = 2; edited.widgets.find(widget => widget.id === 'general-title').content.text = '很久以前尚未保存的编辑'
+    cacheFactoryDraft('', 'dashboard:deletion-scene', 'dashboard', { sceneId: 'deletion-scene', revision: 2, document: edited })
+    t.after(() => clearFactoryDraft('', 'dashboard:deletion-scene'))
+    const server = deletionSyncDocument(); server.widgets = server.widgets.filter(widget => widget.id !== 'device-private')
+    const snapshot = { id: 'history_snapshot_old', factoryId, deletedDeviceIds: ['deleted-owner'], remainingDeviceIds: ['remaining-owner'], scenes: [] }
+    const events = Array.from({ length: 100 }, (_, index) => ({ id: `recent-${index}`, factoryId, deletedDeviceIds: [`unrelated-${index}`], scenes: [] }))
+    const { instance } = fixture(t, [], { storage, designerState: { project: { factory_id: factoryId }, revision: 200, document: server, dashboardCleanupHistory: [...events, snapshot] } })
+    await settle(); await nextTick()
+    const state = instance.value.$.setupState
+    assert.equal(state.revision, 2); assert.equal(state.deletionSyncConflict.reason, 'missed-deletion-history')
+    assert.equal(state.documentModel.widgets.find(widget => widget.id === 'general-title').content.text, '很久以前尚未保存的编辑')
+    assert.ok(!state.documentModel.widgets.some(widget => widget.id === 'device-private'))
+    assert.equal(state.documentModel.widgets.find(widget => widget.id === 'general-fixed').data.pointId, '638')
+    assert.equal(await state.saveDraft(), false)
+    assert.match(state.status.text, /本机未保存编辑仍已保留/)
+})
+
+test('a legacy localStorage draft cleaned by a scene-free tombstone is retained without advancing its old revision', async t => {
+    const factoryId = 'old-storage-owner', storage = deletionStorage(factoryId), edited = deletionSyncDocument()
+    edited.metadata.revision = 2; edited.widgets.find(widget => widget.id === 'general-title').content.text = '本地存储里的重要修改'
+    storage.setItem('dashboard-designer-draft:deletion-scene', JSON.stringify({ serverRevision: 2, document: edited }))
+    const server = deletionSyncDocument(); server.widgets = server.widgets.filter(widget => widget.id !== 'device-private')
+    const cleanup = { id: 'snapshot-storage', factoryId, deletedDeviceIds: ['deleted-owner'], remainingDeviceIds: ['remaining-owner'], scenes: [] }
+    const { instance } = fixture(t, [], { factoryId, storage, designerState: { project: { factory_id: factoryId }, revision: 200, document: server, dashboardCleanupHistory: [cleanup] } })
+    await settle(); await nextTick()
+    const state = instance.value.$.setupState
+    assert.equal(state.revision, 2); assert.equal(state.deletionSyncConflict.reason, 'missed-deletion-history')
+    assert.ok(!state.documentModel.widgets.some(widget => widget.id === 'device-private'))
+    assert.equal(state.documentModel.widgets.find(widget => widget.id === 'general-title').content.text, '本地存储里的重要修改')
 })

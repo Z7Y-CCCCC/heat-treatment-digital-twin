@@ -74,7 +74,7 @@ onBeforeUnmount(() => reader.dispose())
     <div class="tooltip-surface-canvas" :style="canvasStyle">
       <div v-for="entry in widgets" :key="entry.widget.id" class="tooltip-surface-widget"
         :data-tooltip-widget-id="entry.widget.id" :style="elementStyle(entry.widget)">
-        <WidgetRenderer :ref="renderer => setWidgetRenderer(entry.widget.id, renderer)" :widget="entry.widget" :runtime-context="entry.runtimeContext" :selected-part="entry.selectedPart"
+        <WidgetRenderer :ref="renderer => setWidgetRenderer(entry.widget.id, renderer)" :widget="entry.sourceWidget" :runtime-context="entry.runtimeContext" :selected-part="entry.selectedPart"
           :metrics="metrics" :events="events" :trend-points="trendPoints" :device-status-map="deviceStatusMap"
           :device-data-map="deviceDataMap" :point-values="pointValues" :database-values="records"
           :device-catalog="deviceCatalog" :parameters="parameters" :parameter-definitions="parameterDefinitions"

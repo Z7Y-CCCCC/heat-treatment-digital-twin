@@ -245,10 +245,6 @@ defineExpose({ load, canLeave, isBusy: workspaceBusy, savePending, discardPendin
 
 <template>
   <section class="data-center" data-testid="data-center-workspace">
-    <header class="center-heading">
-      <div class="center-title"><span class="center-symbol" aria-hidden="true"><svg viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v6c0 4 16 4 16 0V5M4 11v7c0 4 16 4 16 0v-7"/></svg></span><div><h2>数据中心</h2><p>先整理好数据，再轻松搭建画面</p></div></div>
-      <ol class="center-flow" aria-label="数据使用流程"><li><b>1</b><span>接入数据</span></li><li aria-hidden="true">›</li><li><b>2</b><span>整理数据表</span></li><li aria-hidden="true">›</li><li><b>3</b><span>设计器选取</span></li></ol>
-    </header>
     <div v-if="isTables" id="data-center-panel-tables" role="region" aria-label="数据表" class="center-catalog">
       <div class="catalog-topline"><div><h3>数据表</h3><p>设备资料与采集点位自动收录，外部数据配置一次、处处复用。</p></div><div class="catalog-actions"><button type="button" :disabled="loading || workspaceBusy" class="center-button" @click="refreshCatalog"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 10a8 8 0 1 0-1 7M20 4v6h-6"/></svg>刷新</button><button v-if="sections.some(section=>section.key==='sources')" type="button" class="center-button primary" :disabled="workspaceBusy" @click="navigateCatalog('table-editor')">{{canEdit?'＋ 新建 / 管理外部数据表':'查看外部数据表'}}</button></div></div>
       <div v-if="message" class="center-message" :class="{error:failed}" role="status">{{message}}<button v-if="failed" type="button" :disabled="loading || workspaceBusy" @click="refreshCatalog">重新读取</button></div>
@@ -292,15 +288,6 @@ defineExpose({ load, canLeave, isBusy: workspaceBusy, savePending, discardPendin
 .field-sample-note { margin:0; padding:10px 16px; font-size:calc(13px * var(--admin-font-scale,1)); line-height:1.6; color:#52637a; background:#f7faff; border-bottom:1px solid #e6edf7; }
 .field-sample-note span { margin-left:12px; white-space:nowrap; }
 .data-center { color:#24364b; font-size:calc(15px * var(--admin-font-scale,1)); line-height:1.6; width:100%; min-width:0; }
-.center-heading { display:flex; flex-wrap:wrap; justify-content:space-between; align-items:center; gap:24px; margin-bottom:24px; }
-.center-title { display:flex; align-items:center; gap:14px; }
-.center-symbol { display:grid; place-items:center; width:48px; height:48px; border-radius:13px; background:#eaf1ff; color:#2459a6; }
-.center-symbol svg { width:25px; height:25px; fill:none; stroke:currentColor; stroke-width:1.6; }
-.center-title h2 { margin:0 0 5px; font-size:calc(24px * var(--admin-font-scale,1)); font-weight:650; letter-spacing:-.5px; }
-.center-title p { margin:0; font-size:calc(14px * var(--admin-font-scale,1)); color:#526177; }
-.center-flow { display:flex; flex-wrap:wrap; align-items:center; gap:14px; list-style:none; margin:0; padding:0; color:#5b6b82; }
-.center-flow li { display:flex; align-items:center; gap:8px; white-space:nowrap; font-size:calc(14px * var(--admin-font-scale,1)); }
-.center-flow b { display:grid; place-items:center; width:calc(26px * var(--admin-font-scale,1)); height:calc(26px * var(--admin-font-scale,1)); border:1px solid #cbd7e8; border-radius:50%; color:#2459a6; background:#fff; font-size:calc(13px * var(--admin-font-scale,1)); font-weight:600; }
 .catalog-topline { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:18px; margin-bottom:20px; }
 .catalog-topline h3 { margin:0 0 7px; font-size:calc(19px * var(--admin-font-scale,1)); font-weight:600; }
 .catalog-topline p { margin:0; color:#526177; font-size:calc(14px * var(--admin-font-scale,1)); }
@@ -412,7 +399,6 @@ defineExpose({ load, canLeave, isBusy: workspaceBusy, savePending, discardPendin
 .data-center input:focus,.data-center select:focus { outline:0; border-color:#2b5db6; box-shadow:0 0 0 2px #2b5db620; }
 .catalog-search:focus-within { border-color:#2b5db6; }
 @media(max-width:1150px) {
-  .center-flow { gap:8px; }
   .catalog-layout { grid-template-columns:190px minmax(0,1fr); }
   .catalog-main { padding:16px; }
   .catalog-tools { flex-wrap:wrap; }
@@ -421,7 +407,6 @@ defineExpose({ load, canLeave, isBusy: workspaceBusy, savePending, discardPendin
   .catalog-caption>small { display:none; }
 }
 @media(max-width:760px) {
-  .center-heading { align-items:flex-start; flex-direction:column; gap:15px; }
   .catalog-topline { align-items:flex-start; flex-direction:column; }
   .catalog-layout { grid-template-columns:minmax(0,1fr); }
   .category-sidebar { border-right:0; border-bottom:1px solid #e0e6ef; display:flex; gap:4px; flex-wrap:wrap; padding:12px; }

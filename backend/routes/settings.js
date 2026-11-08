@@ -1,5 +1,6 @@
 const express = require('express');
 const { getDb } = require('../db/database');
+const { KEY: DASHBOARD_DELETION_HISTORY_KEY } = require('../services/dashboardDeviceDeletion');
 const { parseDataPath } = require('../utils/externalDataPayload');
 
 const MAX_DASHBOARD_CONFIG_BYTES = 256 * 1024;
@@ -333,7 +334,7 @@ module.exports = function createSettingsRouter(controller = {}) {
             const rows = await db.all('SELECT * FROM settings');
             const settings = {};
             rows.forEach(r => {
-                if (LEGACY_WEB_SETTING_KEYS.has(r.key) || r.key === 'factory_directory' || r.key === 'lan_display_pin') return;
+                if (r.key === DASHBOARD_DELETION_HISTORY_KEY || LEGACY_WEB_SETTING_KEYS.has(r.key) || r.key === 'factory_directory' || r.key === 'lan_display_pin') return;
                 settings[r.key] = ['factory_location','factory_directory'].includes(r.key)
                     ? normalizeSettingValue(r.key, r.value)
                     : r.value;
@@ -359,6 +360,7 @@ module.exports = function createSettingsRouter(controller = {}) {
             if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) {
                 throw new Error('设置内容必须是 JSON 对象');
             }
+            if (Object.hasOwn(req.body, DASHBOARD_DELETION_HISTORY_KEY)) throw new Error('设备删除确认记录仅由删除事务维护，不能通过设置写入');
             if (Object.hasOwn(req.body, 'global_view_navigation')) return res.status(400).json({ error: '请在视角编排中设置全局视角' });
             const changed = Object.fromEntries(Object.entries(req.body)
                 .filter(([key]) => !LEGACY_WEB_SETTING_KEYS.has(key))

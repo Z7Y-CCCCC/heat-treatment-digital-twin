@@ -1,5 +1,6 @@
 const express = require('express');
 const router = express.Router();
+const { cleanupDashboardDeviceDeletion, broadcastDashboardCleanup } = require('../services/dashboardDeviceDeletion');
 const { getDb, getDbStatus } = require('../db/database');
 const { safeObject, normalizeWorkshopLayout } = require('../utils/spatialLayout');
 const { createHash } = require('crypto');
@@ -118,7 +119,9 @@ router.put('/:id', async (req, res) => {
 router.delete('/:id', async (req, res) => {
     try {
         const db = await getDb();
-        const deletedImpact = await db.transaction(async (tx) => {
+        const deletion = await db.transaction(async (tx) => {
+            // Acquire the lifecycle lock before any snapshot-producing reads.
+            await tx.run('UPDATE factories SET id=id WHERE id=?', [req.factoryId]);
             const owned = await tx.get('SELECT id FROM workshops WHERE id = ? AND factory_id = ?', [req.params.id, req.factoryId]);
             if (!owned) {
                 const error = new Error('车间不存在，可能已经被删除或 ID 未正确编码');
@@ -132,6 +135,7 @@ router.delete('/:id', async (req, res) => {
                 throw error;
             }
             assertDeletionConfirmation(req.body, impact.name);
+            const dashboardCleanup = await cleanupDashboardDeviceDeletion(tx, { factoryId: req.factoryId, deviceIds: impact.deviceIds });
             if (impact.deviceIds.length) {
                 const placeholders = impact.deviceIds.map(() => '?').join(',');
                 await tx.run(`DELETE FROM data_points WHERE device_id IN (${placeholders})`, impact.deviceIds);
@@ -154,9 +158,10 @@ router.delete('/:id', async (req, res) => {
                 ]);
             }
             await tx.run('DELETE FROM workshops WHERE id = ? AND factory_id = ?', [req.params.id, req.factoryId]);
-            return impact;
+            return { impact, dashboardCleanup };
         });
-        res.json({ success: true, impact: publicDeletionImpact(deletedImpact) });
+        broadcastDashboardCleanup(deletion.dashboardCleanup);
+        res.json({ success: true, impact: publicDeletionImpact(deletion.impact), dashboardCleanup: deletion.dashboardCleanup });
     } catch (e) {
         res.status(e.statusCode || 400).json({ error: e.message });
     }
