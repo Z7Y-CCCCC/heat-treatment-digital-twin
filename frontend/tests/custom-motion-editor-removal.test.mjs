@@ -85,7 +85,7 @@ test('allowed workspace changes still select the part model or dispose the obsol
 test('built-in cleaner processes and CAD inline previews remain in the part-action workspace', () => {
   assert.match(panel, /import \{ CLEANER_ACTIONS, motionEntries \}/)
   assert.match(panel, /const cleanerProcessActions = CLEANER_ACTIONS/)
-  assert.match(panel, /const cadPreviewActions = computed\(\(\) => cadMotionActions\(selectedPreviewModelId\.value\)\)/)
+  assert.match(panel, /const cadPreviewActions = computed\(\(\) => cadMotionActions\(selectedPreviewModelId\.value\)\.filter\(action => !isRetiredMotionAction/)
   assert.match(template, /selectedPreviewModelId === 'ultrasonic_cleaner_cad'[^>]*aria-label="清洗机内置部件动作"/)
   assert.doesNotMatch(template, /工艺动作/)
   assert.match(template, /v-for="action in cleanerProcessActions"/)

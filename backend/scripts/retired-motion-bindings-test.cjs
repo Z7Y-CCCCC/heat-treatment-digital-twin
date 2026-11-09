@@ -30,10 +30,11 @@ const save = (loaded, bindings, revision = loaded.revision) => validateDeviceAni
 const ordinaryRow = () => ({actionId:partAction.id,enabled:true,pointId:point.id,inputMin:0,inputMax:1,
     invert:false,speed:1,transitionSeconds:.5});
 
-test('retirement is exactly the legacy custom clip prefix, never a CAD or part action', () => {
+test('retirement is the legacy custom prefix and exact complete-process clip, never ordinary parts or other clips', () => {
     assert.equal(isRetiredMotionAction(oldAction), true);
+    assert.equal(isRetiredMotionAction({kind:'clip',id:'clip:process_cycle'}), true);
     for (const action of [null,{},partAction,{kind:'part',id:oldAction.id},{kind:'clip',id:'clip:door'},
-        {kind:'clip',id:'clip:process_cycle'},{kind:'clip',id:'part:user_door'},{kind:'clip',id:'user_old_cycle'},
+        {kind:'part',id:'clip:process_cycle'},{kind:'clip',id:'clip:process_cycle_extra'},{kind:'clip',id:'part:user_door'},{kind:'clip',id:'user_old_cycle'},
         {kind:'clip',id:42}]) assert.equal(isRetiredMotionAction(action), false);
 });
 

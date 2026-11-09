@@ -3,7 +3,7 @@ const router = express.Router();
 const { cleanupDashboardDeviceDeletion, broadcastDashboardCleanup } = require('../services/dashboardDeviceDeletion');
 const { getDb, getDbStatus } = require('../db/database');
 const { loadDeviceInspection, publicInspection, patchDeviceInspectionLayout,
-    saveDeviceInspectionLayout } = require('../services/deviceInspection');
+    saveDeviceInspectionLayout, canonicalJson, exactJsonEquals } = require('../services/deviceInspection');
 const { getBuiltinModels } = require('../services/builtinModels');
 const { TRANSFORM_FIELDS, LAYOUT_CONFIG_FIELDS } = require('../../shared/deviceAuthoring.mjs');
 const { normalizeDeviceGround } = require('../../shared/industrialGround.mjs');
@@ -50,7 +50,15 @@ router.put('/:id/animations', async (req, res) => {
             const config = validateDeviceAnimations(loaded, req.body);
             // Re-resolve point ownership and model identity within the transaction.
             const instance = { ...loaded.instance, animationBindings: config };
-            const result = await tx.run('UPDATE devices SET instance_config=? WHERE id=? AND COALESCE(instance_config,\'\')=?', [JSON.stringify(instance), loaded.device.id, loaded.device.instance_config || '']);
+            const dialect = getDbStatus().type;
+            // MySQL returns native JSON objects; raw COALESCE(JSON, '') compares
+            // unlike representations and can falsely reject an unchanged row.
+            // Use the same semantic JSON CAS as inspection/loading-port saves;
+            // textual engines retain their exact authored snapshot comparison.
+            const previous = ['mysql', 'postgres'].includes(dialect)
+                ? canonicalJson(loaded.device.instance_config) : loaded.device.instance_config ?? '';
+            const result = await tx.run(`UPDATE devices SET instance_config=? WHERE id=? AND ${exactJsonEquals('instance_config', dialect)}`,
+                [JSON.stringify(instance), loaded.device.id, previous]);
             if (!result.changes && !result.affectedRows) throw Object.assign(new Error('设备配置已更新，请重新读取后保存'), { statusCode:409 });
             return publicDeviceAnimations(await loadDeviceAnimations(tx, req.params.id, req.factoryId));
         });

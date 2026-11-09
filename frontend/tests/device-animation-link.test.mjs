@@ -10,13 +10,19 @@ import { deferred, installBrowser, settle } from './helpers.mjs'
 
 const url = new URL('../src/views/admin/components/DeviceAnimationLink.vue', import.meta.url), source = await readFile(url, 'utf8')
 const { descriptor } = parse(source.replace(/import \{ createDashboardDataStore \} from [^\n]+/, 'const createDashboardDataStore = () => globalThis.__motionUiStore'))
-let compiled = compileScript(descriptor, { id: 'motion-ui-test' }).content
+const script = compileScript(descriptor, { id: 'motion-ui-test' })
+let compiled = script.content
 for (const match of [...compiled.matchAll(/from\s+(['"])([^'"]+)\1/g)]) {
   const name = match[2], target = name.endsWith('.vue') ? 'data:text/javascript,export default {render:()=>null}' : name.startsWith('.') ? new URL(name, url).href : import.meta.resolve(name)
   compiled = compiled.replace(match[0], `from ${JSON.stringify(target)}`)
 }
 const { default: Component } = await import(`data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`)
 Component.render = () => null
+const template = compileTemplate({ source: descriptor.template.content, filename: 'DeviceAnimationLink.vue', id: 'motion-ui-test', compilerOptions: { bindingMetadata: script.bindings } })
+assert.deepEqual(template.errors, [])
+const templateCode = template.code.replace(/from\s+(['"])([^'"]+)\1/g, (_match, _quote, name) => `from ${JSON.stringify(import.meta.resolve(name))}`)
+const { render: actualTemplate } = await import(`data:text/javascript;base64,${Buffer.from(templateCode).toString('base64')}`)
+const TemplateComponent = { ...Component, render: actualTemplate }
 const actions = [{ id: 'clip:door', label: '炉门', kind: 'clip', mode: 'position' }, { id: 'clip:fan', label: '风机', kind: 'clip', mode: 'running' }]
 const animation = id => ({ deviceId: id, revision: `revision-${id}`, modelId: 'm', actions, dataItems: directory(id).items.map(item => ({ ...item, motionReady: true, motionError: '' })), config: { version: 1, staleMs: 5000, bindings: [] } })
 const pointRows = id => [{ id: `${id}-temp`, device_id: id, name: '炉温', category: 'analog', value_role: 'temp', data_type: 'REAL', access_type: 'READ' }, { id: `${id}-bool`, device_id: id, name: '运行反馈', category: 'status', value_role: 'running', data_type: 'BOOL', access_type: 'READ' }, ...['extended', 'retracted'].map(side => ({ id: `${id}-${side}`, device_id: id, name: side === 'extended' ? '推料到位' : '退回到位', category: 'mechanisms', value_role: side, data_type: 'BOOL', access_type: 'READ' }))]
@@ -29,23 +35,46 @@ const directory = id => ({ success: true, categories: [{ id: 'realtime', name: '
   ...['extended', 'retracted'].map(side => ({ id: `${side}-${id}`, tableId: 'real', label: side === 'extended' ? '推料到位' : '退回到位', type: 'boolean', sourceType: 'plc', objectScope: 'device', enabled: true, endpointReady: true, binding: { mode: 'plc', deviceId: id, pointId: `${id}-${side}`, pointKey: `mechanisms.${side}` } }))
 ] })
 
+// Native controls rendered by the actual compiled SFC, entirely in memory.
+// This is not a browser/Computer Use session and every API is mocked below.
+function memoryHost() {
+  const makeNode = (tag, text = '') => ({ tag, text, props: {}, children: [], parent: null, value: '', checked: false,
+    get options() { return this.children.filter(node => node.tag === 'option') },
+    addEventListener() {}, setAttribute(key, value) { this.props[key] = value }, removeAttribute(key) { delete this.props[key] } })
+  const root = makeNode('#root')
+  const remove = node => { if (node.parent) { const siblings = node.parent.children, index = siblings.indexOf(node); if (index >= 0) siblings.splice(index, 1); node.parent = null } }
+  const renderer = createRenderer({
+    createElement: tag => makeNode(tag), createText: text => makeNode('#text', text), createComment: text => makeNode('#comment', text),
+    setText: (node, text) => { node.text = text }, setElementText: (node, text) => { node.text = text; node.children = [] },
+    parentNode: node => node.parent, nextSibling: node => node.parent?.children[node.parent.children.indexOf(node) + 1] || null,
+    insert(node, parent, anchor) { remove(node); const index = anchor ? parent.children.indexOf(anchor) : -1; parent.children.splice(index >= 0 ? index : parent.children.length, 0, node); node.parent = parent },
+    remove, querySelector: () => root,
+    patchProp(node, key, _previous, value) { node.props[key] = value; if (key === 'value') { node._value = value; node.value = String(value ?? '') } else if (key === 'disabled') node.disabled = value === '' || value === true }
+  })
+  const nodes = () => { const result = []; const visit = node => { result.push(node); node.children.forEach(visit) }; visit(root); return result }
+  const text = node => node.text + node.children.map(text).join('')
+  const click = async label => { const node = nodes().find(node => node.tag === 'button' && text(node) === label); assert.ok(node, `${label} rendered by the actual template`); assert.notEqual(node.disabled, true); await node.props.onClick?.({ target: node, currentTarget: node }); await nextTick(); await settle() }
+  return { renderer, root, nodes, text, click }
+}
+
 async function fixture(t, overrides = {}) {
   const environment = installBrowser(t), previous = { authenticated: adminSession.authenticated, pagePermissions: adminSession.pagePermissions }
   adminSession.authenticated = true; adminSession.pagePermissions = { 'model-animations': { view: true, edit: true } }
   t.after(() => { Object.assign(adminSession, previous); discardFactoryDrafts('factory-motion-test') })
   const store = { wsConnected: ref(false), connect() {}, dispose() { this.disposed = true }, setDeviceDataHandler(handler) { this.handler = handler }, setMotionInputHandler(handler) { this.motionHandler = handler } }
   environment.replace('__motionUiStore', store)
+  environment.replace('fetch', () => { throw Error('Unexpected network request: device animation fixture APIs must remain mocked') })
   const calls = { loads: [], catalogs: [], saves: [] }
   t.mock.method(adminApi, 'getDeviceAnimations', id => { calls.loads.push(id); return overrides.load ? overrides.load(id) : Promise.resolve(animation(id)) })
   t.mock.method(adminApi, 'getDataPoints', async id => pointRows(id))
   t.mock.method(adminApi, 'getDataCenterCatalog', options => { calls.catalogs.push(options); return overrides.catalog ? overrides.catalog(options) : Promise.resolve(directory(options.deviceId)) })
   t.mock.method(adminApi, 'saveDeviceAnimations', (id, body) => { calls.saves.push({ id, body }); return overrides.save ? overrides.save(id, body) : Promise.resolve({ success: true, ...animation(id), revision: 'saved', config: structuredClone(body.config) }) })
-  const renderer = createRenderer({ createElement: () => ({}), createText: () => ({}), createComment: () => ({}), setText() {}, setElementText() {}, parentNode: () => null, nextSibling: () => null, patchProp() {}, insert() {}, remove() {} })
-  const root = {}, props = { factoryId: 'factory-motion-test', devices: [{ id: 'a', name: 'A', model_type: 'm' }, { id: 'b', name: 'B', model_type: 'm' }], models: [{ id: 'm', name: '设备模型' }], confirm: async () => true, ...overrides.props }; let vm, exposed
-  async function render(next = {}) { Object.assign(props, next); const vnode = h(Component, { ...props }); renderer.render(vnode, root); vm = vnode.component.setupState; exposed = vnode.component.exposed; await nextTick(); await settle() }
+  const host = memoryHost(), { renderer, root } = host
+  const props = { factoryId: 'factory-motion-test', devices: [{ id: 'a', name: 'A', model_type: 'm' }, { id: 'b', name: 'B', model_type: 'm' }], models: [{ id: 'm', name: '设备模型' }], confirm: async () => true, ...overrides.props }; let vm, exposed
+  async function render(next = {}) { Object.assign(props, next); const vnode = h(overrides.template ? TemplateComponent : Component, { ...props }); renderer.render(vnode, root); vm = vnode.component.setupState; exposed = vnode.component.exposed; await nextTick(); await settle() }
   environment.beforeRestore(() => renderer.render(null, root))
   await render()
-  return { get vm() { return vm }, get exposed() { return exposed }, props, calls, store, render, unmount: () => renderer.render(null, root) }
+  return { get vm() { return vm }, get exposed() { return exposed }, props, calls, store, host, render, unmount: () => renderer.render(null, root) }
 }
 
 test('animation setup reads a device-scoped prepared directory and retains source types without part-context fields', async t => {
@@ -395,6 +424,99 @@ test('pending retirement confirmation cannot save another device and canceled ap
   approval.resolve(true)
   assert.equal(await saving, false); assert.equal(f.calls.saves.length, 0)
   assert.equal(f.vm.draft.bindings.find(binding => binding.actionId === retired.actionId).enabled, true)
+})
+
+test('actual SFC action list excludes the full process cycle without creating a new binding or hiding ordinary parts and clips', async t => {
+  const available = [...actions, { id: 'part:process_cycle', kind: 'part', mode: 'position', label: '工艺部件位移' },
+    { id: 'part:user_part', kind: 'part', mode: 'position', label: '普通部件动作' },
+    { id: 'clip:process_cycle_extra', kind: 'clip', mode: 'position', label: '独立普通片段' }]
+  const payload = { ...animation('a'), actions: [{ id: 'clip:process_cycle', kind: 'clip', mode: 'position', label: '完整工艺循环' }, ...available] }
+  const before = JSON.stringify(payload), f = await fixture(t, { template: true, load: async () => structuredClone(payload) })
+  const list = f.host.nodes().find(node => node.props['aria-label'] === '可绑定动作')
+  assert.ok(list, 'the actual SFC action list is rendered in memory')
+  assert.deepEqual(list.children.filter(node => node.tag === 'button').map(node => f.host.text(node.children.find(child => child.tag === 'span'))), available.map(action => action.label))
+  assert.equal(f.vm.selectableActions.some(action => action.id === 'clip:process_cycle'), false)
+  assert.equal(f.vm.draft.bindings.some(binding => binding.actionId === 'clip:process_cycle'), false)
+  assert.equal(f.vm.resolvedBindings.some(binding => binding.actionId === 'clip:process_cycle'), false)
+  assert.equal(f.vm.retirementPending, false); assert.equal(f.vm.dirty, false)
+  assert.equal(f.calls.saves.length, 0, 'opening a model with an archived cycle cannot create or disable a binding')
+  assert.equal(JSON.stringify(payload), before)
+})
+
+test('actual SFC identifies an enabled saved full cycle and only an explicitly confirmed save disables its preserved history', async t => {
+  const retired = { actionId: 'clip:process_cycle', enabled: true, pointId: 'removed-cycle-point', dataItemId: 'removed-cycle-source',
+    trigger: { mode: 'condition', operator: 'eq', value: '旧工艺', hysteresis: 0 }, inputMin: null, inputMax: null, invert: false, speed: null, transitionSeconds: null }
+  const payload = { ...animation('a'), actions: [{ id: retired.actionId, kind: 'clip', mode: 'position', label: '完整工艺循环' }, ...actions], config: { version: 1, staleMs: 5000, bindings: [structuredClone(retired)] } }
+  const confirmations = [], before = JSON.stringify(payload)
+  const f = await fixture(t, { template: true, load: async () => structuredClone(payload), props: { confirm: async message => { confirmations.push(message); return false } } })
+  assert.equal(f.vm.activeId, 'clip:door'); assert.equal(f.vm.saveProblem, '')
+  assert.equal(f.vm.retirementPending, true); assert.equal(f.vm.dirty, false)
+  assert.deepEqual(f.vm.draft.bindings.find(binding => binding.actionId === retired.actionId), retired)
+  assert.match(f.host.text(f.host.root), /完整工艺循环绑定.*确认停用.*历史配置保留/)
+  assert.doesNotMatch(f.host.text(f.host.root), /旧自定义动画/)
+  await f.host.click('保存并同步')
+  assert.equal(f.calls.saves.length, 0)
+  assert.match(confirmations[0], /完整工艺循环已从可绑定动作中移除.*停用旧动画绑定.*保留动作定义和历史数据/)
+  assert.deepEqual(f.vm.draft.bindings.find(binding => binding.actionId === retired.actionId), retired)
+  const timestamp = Date.now()
+  f.store.motionHandler({ furnace_id: 'a', factoryId: 'factory-motion-test', motionInputOnly: true, timestamp,
+    motionInputs: { 'clip:process_cycle': { dataItemId: retired.dataItemId, value: true, quality: 'good', timestamp } } })
+  assert.equal(f.vm.states['clip:process_cycle'], undefined, 'removed cycles are not monitored by the configuration page')
+  await f.render({ confirm: async () => true })
+  await f.host.click('保存并同步')
+  assert.deepEqual(f.calls.saves[0].body.config.bindings.find(binding => binding.actionId === retired.actionId), { ...retired, enabled: false })
+  assert.deepEqual(f.vm.draft.bindings.find(binding => binding.actionId === retired.actionId), { ...retired, enabled: false })
+  assert.equal(f.vm.retirementPending, false); assert.equal(f.vm.dirty, false)
+  assert.equal(JSON.stringify(payload), before, 'reading or explicitly disabling cannot rewrite the source snapshot')
+})
+
+test('actual SFC retains a disabled full-cycle row without adding trigger/source defaults and lets ordinary actions save unchanged history', async t => {
+  const retired = { actionId: 'clip:process_cycle', enabled: false, pointId: 'removed', inputMin: null, inputMax: null, invert: true, speed: null, transitionSeconds: null }
+  const payload = { ...animation('a'), actions: [{ id: retired.actionId, kind: 'clip', mode: 'position', label: '完整工艺循环' }, ...actions], config: { version: 1, staleMs: 5000, bindings: [structuredClone(retired)] } }
+  const confirmations = [], f = await fixture(t, { template: true, load: async () => structuredClone(payload), props: { confirm: async message => { confirmations.push(message); return false } } })
+  const row = f.vm.draft.bindings.find(binding => binding.actionId === retired.actionId)
+  assert.deepEqual(row, retired); assert.equal(Object.hasOwn(row, 'trigger'), false); assert.equal(Object.hasOwn(row, 'dataItemId'), false)
+  assert.equal(f.vm.retirementPending, false); assert.equal(f.vm.saveProblem, '')
+  assert.equal(f.calls.saves.length, 0)
+  f.vm.chooseDataItem(f.vm.availableDataItems.find(item => item.id === 'temp-a')); f.vm.row.enabled = true; await nextTick()
+  await f.host.click('保存并同步')
+  assert.deepEqual(f.calls.saves[0].body.config.bindings.find(binding => binding.actionId === retired.actionId), retired)
+  assert.equal(f.calls.saves[0].body.config.bindings.find(binding => binding.actionId === 'clip:door').enabled, true)
+  assert.deepEqual(confirmations, [], 'an already disabled archive is preserved, not re-enabled or newly approved')
+  assert.deepEqual(f.vm.draft.bindings.find(binding => binding.actionId === retired.actionId), retired)
+})
+
+test('actual SFC preserves an orphan full-cycle history row and can explicitly disable it without recreating the missing action', async t => {
+  const retired = { actionId: 'clip:process_cycle', enabled: true, pointId: 'removed-cycle-point', inputMin: 0, inputMax: 1, invert: false, speed: 1, transitionSeconds: 1 }
+  const payload = { ...animation('a'), config: { version: 1, staleMs: 5000, bindings: [structuredClone(retired)] } }
+  const f = await fixture(t, { template: true, load: async () => structuredClone(payload) })
+  assert.equal(f.vm.loaded.actions.some(action => action.id === retired.actionId), false)
+  assert.equal(f.vm.draft.bindings.filter(binding => binding.actionId === retired.actionId).length, 1)
+  assert.deepEqual(f.vm.draft.bindings.find(binding => binding.actionId === retired.actionId), retired)
+  assert.equal(f.vm.retirementPending, true); assert.equal(f.vm.saveProblem, '')
+  assert.match(f.host.text(f.host.root), /完整工艺循环绑定.*历史配置保留/)
+  await f.host.click('保存并同步')
+  const saved = f.calls.saves[0].body.config.bindings.find(binding => binding.actionId === retired.actionId)
+  assert.deepEqual(saved, { ...retired, enabled: false })
+  assert.equal(Object.hasOwn(saved, 'dataItemId'), false); assert.equal(Object.hasOwn(saved, 'trigger'), false)
+  assert.equal(f.vm.loaded.actions.some(action => action.id === retired.actionId), false)
+  assert.equal(f.vm.selectableActions.some(action => action.id === retired.actionId), false)
+})
+
+test('actual SFC uses the shared kind-aware retirement rule and does not retire genuine part actions with legacy-looking ids', async t => {
+  const parts = [{ id: 'clip:process_cycle', kind: 'part', mode: 'position', label: '合法部件动作' },
+    { id: 'clip:user_legitimate', kind: 'part', mode: 'running', label: '合法运转部件' }]
+  const f = await fixture(t, { template: true, load: async id => ({ ...animation(id), actions: [...parts, ...actions] }),
+    save: async (id, body) => ({ success: true, ...animation(id), actions: [...parts, ...actions], revision: 'saved', config: structuredClone(body.config) }) })
+  const list = f.host.nodes().find(node => node.props['aria-label'] === '可绑定动作')
+  assert.deepEqual(list.children.filter(node => node.tag === 'button').map(node => f.host.text(node.children.find(child => child.tag === 'span'))), [...parts, ...actions].map(action => action.label))
+  assert.equal(f.vm.retirementPending, false); assert.equal(f.vm.activeId, parts[0].id)
+  f.vm.chooseDataItem(f.vm.availableDataItems.find(item => item.id === 'temp-a')); f.vm.row.enabled = true; await nextTick()
+  await f.host.click('保存并同步')
+  assert.equal(f.calls.saves[0].body.config.bindings.find(binding => binding.actionId === parts[0].id).enabled, true)
+  assert.equal(f.vm.retirementPending, false); assert.equal(f.vm.dirty, false)
+  assert.match(source, /import \{ isRetiredMotionAction \} from ['"]\.\.\/\.\.\/\.\.\/\.\.\/\.\.\/shared\/motionActionAvailability\.mjs['"]/)
+  assert.doesNotMatch(source, /const isRetiredAction\s*=|startsWith\(['"]clip:user_['"]\)/)
 })
 
 test('device-animation template compiles with a scrollable part configuration and no retired direct-point entry', () => {

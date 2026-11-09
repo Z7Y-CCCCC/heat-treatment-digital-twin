@@ -7,6 +7,7 @@ import { getFactoryScope } from '../../../runtime/factoryScope.js'
 import { cacheFactoryDraft, readFactoryDraft, clearFactoryDraft } from '../../../runtime/factoryDraftCache.js'
 import { createDashboardDataStore } from '../../../runtime/DataStore.js'
 import { receiveMotionSignal, stepMotionSignal } from '../../../three/PortableMotionPlayer.js'
+import { isRetiredMotionAction } from '../../../../../shared/motionActionAvailability.mjs'
 import DeviceHierarchyPicker from './DeviceHierarchyPicker.vue'
 import MotionDataPicker from './MotionDataPicker.vue'
 import MotionEndpointPicker from './MotionEndpointPicker.vue'
@@ -44,10 +45,10 @@ function filterDeviceRange(range = {}) {
 }
 const dirty = computed(() => !!draft.value && JSON.stringify(draft.value) !== saved.value)
 const action = computed(() => loaded.value?.actions.find(a => a.id === activeId.value))
-const isRetiredAction = action => action?.kind === 'clip' && String(action.id).startsWith('clip:user_')
-function isRetiredBinding(binding, data = loaded.value) { return isRetiredAction(data?.actions?.find(action => action.id === binding.actionId) || { kind: 'clip', id: binding.actionId }) }
-const selectableActions = computed(() => (loaded.value?.actions || []).filter(action => !isRetiredAction(action)))
+function isRetiredBinding(binding, data = loaded.value) { return isRetiredMotionAction(data?.actions?.find(action => action.id === binding.actionId) || { kind: binding.kind ?? 'clip', id: binding.actionId }) }
+const selectableActions = computed(() => (loaded.value?.actions || []).filter(action => !isRetiredMotionAction(action)))
 const retirementPending = computed(() => !!draft.value?.bindings.some(binding => binding.enabled && isRetiredBinding(binding)))
+const retirementLabel = computed(() => [...new Set((draft.value?.bindings || []).filter(binding => binding.enabled && isRetiredBinding(binding)).map(binding => binding.actionId === 'clip:process_cycle' ? '完整工艺循环' : '旧自定义动画'))].join('、'))
 const row = computed(() => draft.value?.bindings.find(b => b.actionId === activeId.value))
 const readPoints = computed(() => points.value.filter(p => String(p.access_type || 'READ').toUpperCase() === 'READ'))
 const availableDataItems = computed(() => catalog.value.items.filter(item => item.motionReady === true && item.enabled !== false && item.sourceReady !== false && item.objectScope !== 'part' && ['number', 'boolean', 'string'].includes(item.type) && ['runtime', 'plc', 'dataset'].includes(item.binding?.mode)))
@@ -71,7 +72,7 @@ function prepareConfig(data) {
   const existingRows = data.config?.bindings || []
   const bindings = (data.actions || []).flatMap(a => {
     const existing = existingRows.find(binding => binding.actionId === a.id)
-    if (isRetiredAction(a)) return existing ? [clone(existing)] : []
+    if (isRetiredMotionAction(a)) return existing ? [clone(existing)] : []
     const binding = clone(existing || { actionId: a.id, enabled: false, pointId: '', inputMin: 0, inputMax: 1, invert: false, speed: 1, transitionSeconds: a.mode === 'position' ? 1 : 0 })
     binding.dataItemId ||= ''; binding.trigger ||= triggerFor(typeFor(binding))
     return [binding]
@@ -173,7 +174,7 @@ async function save() {
   if (!loaded.value || busy.value || !editable.value || !scopeValid.value) return false
   if (saveProblem.value) { error.value = saveProblem.value; return false }
   const confirmationGeneration = generation, confirmationDevice = selectedId.value
-  if (retirementPending.value && !await props.confirm('自定义模型动画功能已移除。保存将停用旧动画绑定，但保留动作定义和历史数据配置，继续？')) return false
+  if (retirementPending.value && !await props.confirm(`${retirementLabel.value}已从可绑定动作中移除。保存将停用旧动画绑定，但保留动作定义和历史数据配置，继续？`)) return false
   if (disposed || confirmationGeneration !== generation || confirmationDevice !== selectedId.value || !loaded.value || busy.value || !editable.value || !scopeValid.value) return false
   if (saveProblem.value) { error.value = saveProblem.value; return false }
   busy.value = true; error.value = ''; message.value = ''
@@ -233,7 +234,7 @@ defineExpose({ canLeave, savePending: () => dirty.value ? save() : true, discard
  </aside>
  <main class="link-main"><header class="link-heading"><div><h3>{{ device?.name||'选择设备' }}</h3><small>{{ model?.name||loaded?.modelId }}</small></div><span v-if="dirty" class="unsaved">未保存</span><button class="btn" :disabled="busy" @click="reloadConfig">重新读取</button><button class="btn btn-primary" :disabled="busy || (!dirty && !retirementPending) || !editable || !!saveProblem" v-permission="{page:'model-animations',action:'edit'}" @click="save">{{busy?'处理中…':'保存并同步'}}</button></header>
  <p v-if="error" class="link-error" role="alert">{{error}}</p><p v-if="message" class="link-message" role="status">{{message}}</p>
- <p v-if="retirementPending" class="link-message" role="status">存在旧自定义动画绑定；保存时会确认停用，历史配置保留。</p>
+ <p v-if="retirementPending" class="link-message" role="status">存在已移除的{{ retirementLabel }}绑定；保存时会确认停用，历史配置保留。</p>
  <div v-if="loaded&&draft" class="link-content"><section class="link-config" role="region" aria-label="部件动作联动配置" tabindex="0"><nav class="link-tabs" aria-label="动画联动设置"><button type="button" :aria-selected="section==='bindings'" @click="section='bindings'">动作绑定</button><button type="button" :aria-selected="section==='health'" @click="section='health'">运行状况</button></nav>
  <template v-if="section==='bindings'"><div class="action-list" aria-label="可绑定动作"><button v-for="a in selectableActions" :key="a.id" type="button" :class="{active:activeId===a.id}" @click="activeId=a.id"><span>{{a.label}}</span><small>{{draft.bindings.find(b=>b.actionId===a.id)?.enabled?'已启用':'未启用'}}</small></button><p v-if="!selectableActions.length" class="hint">该型号尚无动作。在“部件动作”中配置模型节点即可。</p></div>
  <fieldset v-if="row" class="binding-fields" :disabled="busy || !editable"><label class="enable-line"><span>{{ action.label }}</span><input v-model="row.enabled" type="checkbox" role="switch" aria-label="启用动作联动" v-permission="{page:'model-animations',action:'edit'}"></label>

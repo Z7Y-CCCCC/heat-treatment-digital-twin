@@ -6,12 +6,11 @@ const {
     createTestDatabase,
     createRunDirectory,
     findFreePort,
-    forceStop,
     requestJson,
+    requireTestPath,
     sleep,
     startLoggedProcess,
     testFetch,
-    waitForExit,
     waitForHttp,
     waitUntil
 } = require('./integration-test-utils.cjs');
@@ -24,9 +23,145 @@ let backend = null;
 let backendOrigin = null;
 let runDirectory = null;
 let launchIndex = 0;
+const processLifetimes = new WeakMap();
+const fixtureDatabaseHandles = new Set();
+const lifetimeProofs = [];
+const sidecarRemovalProofs = [];
+
+function openRecoveryDatabase(filename, options) {
+    const db = new Database(filename, options);
+    fixtureDatabaseHandles.add(db);
+    return db;
+}
+
+function closeRecoveryDatabase(db) {
+    db.close();
+    fixtureDatabaseHandles.delete(db);
+}
+
+// Register immediately after spawn: exit can precede stdio close. A sent kill
+// signal or the integration helper's best-effort timeout is not an ownership
+// release and must never authorize another backend or a WAL unlink.
+function trackRecoveryProcess(child) {
+    if (!child || typeof child.once !== 'function') throw new Error('Recovery lifetime requires an owned child process');
+    if (processLifetimes.has(child)) return processLifetimes.get(child);
+    const state = { pid: child.pid, exitObserved: child.exitCode != null || child.signalCode != null,
+        closeObserved: false, exitAt: null, closeAt: null, killRequestedAt: null, error: null, confirmedAt: null };
+    state.exitPromise = new Promise(resolve => {
+        if (state.exitObserved) return resolve();
+        child.once('exit', () => { state.exitObserved = true; state.exitAt = Date.now(); resolve(); });
+    });
+    state.closePromise = new Promise(resolve => {
+        child.once('close', () => { state.closeObserved = true; state.closeAt = Date.now(); resolve(); });
+    });
+    child.once('error', error => { state.error = { code: error.code, message: error.message }; });
+    processLifetimes.set(child, state);
+    return state;
+}
+
+function recoveryProcessSnapshot(child) {
+    const state = processLifetimes.get(child);
+    return { pid: child?.pid, exitObserved: state?.exitObserved === true, closeObserved: state?.closeObserved === true,
+        exitCode: child?.exitCode, signalCode: child?.signalCode, killed: child?.killed === true,
+        exitAt: state?.exitAt, closeAt: state?.closeAt, killRequestedAt: state?.killRequestedAt,
+        confirmedAt: state?.confirmedAt, error: state?.error,
+        localDatabaseHandles: fixtureDatabaseHandles.size };
+}
+
+async function waitForRecoveryProcessClose(child, { timeoutMs = 15000 } = {}) {
+    const state = processLifetimes.get(child);
+    if (!state) throw new Error('Refusing to wait on an unowned recovery process');
+    let timer;
+    try {
+        await Promise.race([
+            Promise.all([state.exitPromise, state.closePromise]),
+            new Promise((_, reject) => { timer = setTimeout(() => {
+                const error = new Error(`Recovery process ${state.pid} did not exit and close in ${timeoutMs}ms: ${JSON.stringify(recoveryProcessSnapshot(child))}`);
+                error.code = 'RECOVERY_PROCESS_LIFETIME_TIMEOUT'; reject(error);
+            }, timeoutMs); })
+        ]);
+    } finally { clearTimeout(timer); }
+    if (!state.exitObserved || !state.closeObserved || child.exitCode == null && child.signalCode == null || state.error) {
+        throw new Error(`Recovery process ownership was not released: ${JSON.stringify(recoveryProcessSnapshot(child))}`);
+    }
+    state.confirmedAt = Date.now();
+    return recoveryProcessSnapshot(child);
+}
+
+async function stopRecoveryProcess(child, options = {}) {
+    const state = processLifetimes.get(child);
+    if (!state) throw new Error('Refusing to terminate an unowned recovery process');
+    if (!state.exitObserved && child.exitCode == null && child.signalCode == null && !state.killRequestedAt) {
+        state.killRequestedAt = Date.now();
+        try { child.kill('SIGKILL'); }
+        catch (error) {
+            if (error.code !== 'ESRCH') throw error;
+            // ESRCH alone is not a close acknowledgement. The registered child
+            // lifecycle still has to confirm termination below.
+        }
+    }
+    return waitForRecoveryProcessClose(child, options);
+}
+
+async function forceStopBackend(phase) {
+    if (!backend) return null;
+    const child = backend;
+    const proof = await stopRecoveryProcess(child);
+    lifetimeProofs.push({ phase, ...proof });
+    if (backend === child) backend = null;
+    return proof;
+}
+
+function recoveryArtifactPath(filename, fixtureDirectory) {
+    const fixture = requireTestPath(fixtureDirectory), absolute = requireTestPath(filename);
+    const within = (base, target) => { const relative = path.relative(base, target); return !!relative && relative !== '..'
+        && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative); };
+    if (!within(fixture, absolute)) throw new Error('Recovery sidecar must remain in this exact fixture directory');
+    let ancestor = absolute;
+    const missing = [];
+    while (!fs.existsSync(ancestor)) { missing.unshift(path.basename(ancestor)); ancestor = path.dirname(ancestor); }
+    const realTarget = path.resolve(fs.realpathSync(ancestor), ...missing);
+    if (!within(fs.realpathSync(fixture), realTarget)) throw new Error('Recovery sidecar resolves outside this exact fixture directory');
+    return absolute;
+}
+
+async function removeClosedRecoverySidecars(databaseFile, fixtureDirectory, child,
+    { timeoutMs = 3000, intervalMs = 50, remove = filename => fs.rmSync(filename, { force: true }), pause = sleep } = {}) {
+    const released = () => {
+        const state = processLifetimes.get(child);
+        if (!state?.confirmedAt || !state.exitObserved || !state.closeObserved || child.exitCode == null && child.signalCode == null) {
+            throw new Error(`Refusing WAL unlink before owned backend exit/close: ${JSON.stringify(recoveryProcessSnapshot(child))}`);
+        }
+        if (fixtureDatabaseHandles.size) throw new Error(`Refusing WAL unlink with ${fixtureDatabaseHandles.size} open local SQLite handle(s)`);
+    };
+    released();
+    const database = recoveryArtifactPath(databaseFile, fixtureDirectory);
+    const targets = ['-wal', '-shm'].map(suffix => recoveryArtifactPath(`${database}${suffix}`, fixtureDirectory));
+    const proof = { owner: recoveryProcessSnapshot(child), databaseFile: database, files: [] };
+    for (const filename of targets) {
+        const startedAt = Date.now(), attempts = [];
+        while (true) {
+            released();
+            const target = recoveryArtifactPath(filename, fixtureDirectory);
+            try { remove(target); attempts.push({ at: Date.now(), outcome: 'removed-or-absent' }); break; }
+            catch (error) {
+                attempts.push({ at: Date.now(), code: error.code });
+                // A bounded residual Windows lock wait is permitted only AFTER
+                // the actual owner/stdio closed and every local DB handle closed.
+                if (!['EBUSY', 'EPERM', 'EACCES'].includes(error.code) || Date.now() - startedAt >= timeoutMs) {
+                    error.message += `; closed-owner WAL cleanup ${JSON.stringify({ filename: target, owner: recoveryProcessSnapshot(child), attempts })}`;
+                    throw error;
+                }
+                await pause(intervalMs);
+            }
+        }
+        proof.files.push({ filename, durationMs: Date.now() - startedAt, attempts });
+    }
+    return proof;
+}
 
 function configureDatabase(filename) {
-    const db = new Database(filename);
+    const db = openRecoveryDatabase(filename);
     try {
         db.prepare("INSERT INTO settings (key, value) VALUES ('data_mode', 'simulation') ON CONFLICT(key) DO UPDATE SET value=excluded.value").run();
         db.prepare('DELETE FROM settings WHERE key IN (?, ?)').run(ACK_KEY, RECOVERY_KEY);
@@ -35,12 +170,12 @@ function configureDatabase(filename) {
         const integrity = db.pragma('quick_check', { simple: true });
         if (integrity !== 'ok') throw new Error(`Test database quick_check failed: ${integrity}`);
     } finally {
-        db.close();
+        closeRecoveryDatabase(db);
     }
 }
 
 function inspectDatabase(filename) {
-    const db = new Database(filename, { readonly: true, fileMustExist: true });
+    const db = openRecoveryDatabase(filename, { readonly: true, fileMustExist: true });
     try {
         return {
             quickCheck: db.pragma('quick_check', { simple: true }),
@@ -49,13 +184,13 @@ function inspectDatabase(filename) {
             recoveryValue: db.prepare('SELECT value FROM settings WHERE key=?').get(RECOVERY_KEY)?.value ?? null
         };
     } finally {
-        db.close();
+        closeRecoveryDatabase(db);
     }
 }
 
 function startBackend(dataDir, port) {
     launchIndex += 1;
-    return startLoggedProcess(process.execPath, [path.join(BACKEND_DIR, 'server.js')], {
+    const child = startLoggedProcess(process.execPath, [path.join(BACKEND_DIR, 'server.js')], {
         cwd: BACKEND_DIR,
         env: {
             ...process.env,
@@ -69,6 +204,8 @@ function startBackend(dataDir, port) {
         },
         logFile: path.join(runDirectory, `backend-${launchIndex}.log`)
     });
+    trackRecoveryProcess(child);
+    return child;
 }
 
 async function waitForDatabase() {
@@ -85,14 +222,19 @@ async function putSettings(values) {
 }
 
 async function gracefulStop() {
-    if (!backend || backend.exitCode !== null || backend.signalCode !== null) return null;
+    if (!backend) return null;
+    const child = backend;
     const acceptedAt = Date.now();
-    await requestJson(`${backendOrigin}/api/internal/shutdown`, {
-        method: 'POST',
-        headers: { 'x-shutdown-token': SHUTDOWN_TOKEN }
-    });
-    const code = await waitForExit(backend, 15000);
-    backend = null;
+    if (child.exitCode == null && child.signalCode == null) {
+        await requestJson(`${backendOrigin}/api/internal/shutdown`, {
+            method: 'POST',
+            headers: { 'x-shutdown-token': SHUTDOWN_TOKEN }
+        });
+    }
+    const proof = await waitForRecoveryProcessClose(child, { timeoutMs: 15000 });
+    lifetimeProofs.push({ phase: 'graceful-shutdown', ...proof });
+    const code = child.exitCode;
+    if (backend === child) backend = null;
     return { code, durationMs: Date.now() - acceptedAt };
 }
 
@@ -101,7 +243,7 @@ async function downloadAndVerifyBackup(filename) {
     if (!response.ok) throw new Error(`Backup download failed: HTTP ${response.status}`);
     const destination = path.join(runDirectory, `downloaded-${filename}`);
     fs.writeFileSync(destination, Buffer.from(await response.arrayBuffer()));
-    const db = new Database(destination, { readonly: true, fileMustExist: true });
+    const db = openRecoveryDatabase(destination, { readonly: true, fileMustExist: true });
     try {
         return {
             file: destination,
@@ -110,7 +252,7 @@ async function downloadAndVerifyBackup(filename) {
             recoveryValue: db.prepare('SELECT value FROM settings WHERE key=?').get(RECOVERY_KEY)?.value ?? null
         };
     } finally {
-        db.close();
+        closeRecoveryDatabase(db);
     }
 }
 
@@ -161,8 +303,7 @@ async function main() {
         })();
         await sleep(2500);
         const powerCutAt = Date.now();
-        await forceStop(backend);
-        backend = null;
+        await forceStopBackend('power-cut');
         keepWriting = false;
         await writer;
         if (lastAcknowledged < 1) throw new Error('No write was acknowledged before the forced power cut');
@@ -189,13 +330,12 @@ async function main() {
         const downloadedBackup = await downloadAndVerifyBackup(recoveryBackup.filename);
 
         await putSettings({ [RECOVERY_KEY]: 'unbacked-value-before-corruption' });
-        await forceStop(backend);
-        backend = null;
+        const corruptionOwner = backend;
+        await forceStopBackend('before-corruption');
         // A valid WAL can replay page 1 and repair a damaged main database header.
         // Remove the closed database sidecars first so this branch tests the actual
         // backup-recovery path instead of SQLite's normal WAL crash recovery path.
-        fs.rmSync(`${databaseFile}-wal`, { force: true });
-        fs.rmSync(`${databaseFile}-shm`, { force: true });
+        sidecarRemovalProofs.push(await removeClosedRecoverySidecars(databaseFile, runDirectory, corruptionOwner));
         const corruptHandle = fs.openSync(databaseFile, 'r+');
         try {
             fs.writeSync(corruptHandle, Buffer.alloc(4096, 0x58), 0, 4096, 0);
@@ -283,13 +423,24 @@ async function main() {
         };
         process.exitCode = 1;
     } finally {
-        await forceStop(backend);
+        try { await forceStopBackend('final-cleanup'); }
+        catch (error) {
+            result = { ...(result || {}), success: false, cleanupError: error.stack || error.message,
+                remainingOwnedProcess: recoveryProcessSnapshot(backend) };
+            process.exitCode = 1;
+        }
+        result.processLifetimes = lifetimeProofs;
+        result.sidecarRemovalProofs = sidecarRemovalProofs;
+        result.openLocalDatabaseHandles = fixtureDatabaseHandles.size;
         fs.writeFileSync(resultFile, JSON.stringify(result, null, 2));
         console.log(JSON.stringify({ resultFile, ...result }, null, 2));
     }
 }
 
-main().catch(error => {
+module.exports = { trackRecoveryProcess, recoveryProcessSnapshot, waitForRecoveryProcessClose,
+    stopRecoveryProcess, recoveryArtifactPath, removeClosedRecoverySidecars,
+    openRecoveryDatabase, closeRecoveryDatabase };
+if (require.main === module) main().catch(error => {
     console.error(error);
     process.exitCode = 1;
 });

@@ -76,6 +76,7 @@ import LineEquipmentSequence from './admin/components/LineEquipmentSequence.vue'
 import CadMotionPreview from './admin/components/CadMotionPreview.vue'
 import DeviceAnimationLink from './admin/components/DeviceAnimationLink.vue'
 import { cadMotionActions } from '../three/cadMotionProfiles.js'
+import { isRetiredMotionAction } from '../../../shared/motionActionAvailability.mjs'
 import { CLEANER_ACTIONS, motionEntries } from './admin/utils/motionEntries.js'
 import { formatModelSetupOption } from './admin/utils/modelSetupStatus.js'
 import ManualDisassemblyLayout from './admin/components/ManualDisassemblyLayout.vue'
@@ -1745,7 +1746,7 @@ const motionInlineProcess = ref('')
 const motionInlinePreviewRef = ref(null)
 const canPreviewCleanerProcesses = computed(() => activeTab.value === 'model-animations' && selectedPreviewModelId.value === 'ultrasonic_cleaner_cad')
 const inlineCleanerPreview = computed(() => canPreviewCleanerProcesses.value && motionWorkspaceMode.value === 'parts' && !!motionInlineProcess.value)
-const cadPreviewActions = computed(() => cadMotionActions(selectedPreviewModelId.value))
+const cadPreviewActions = computed(() => cadMotionActions(selectedPreviewModelId.value).filter(action => !isRetiredMotionAction({ kind: 'clip', id: `clip:${action.id}` })))
 const inlineCadPreview = computed(() => activeTab.value === 'model-animations' && motionWorkspaceMode.value === 'parts' && cadPreviewActions.value.some(a => a.id === motionInlineProcess.value))
 const inlineProcessPreview = computed(() => inlineCleanerPreview.value || inlineCadPreview.value)
 const motionFormStep = ref('binding')

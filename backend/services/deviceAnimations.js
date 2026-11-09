@@ -3,11 +3,10 @@ const { mergeBuiltinModels } = require('./builtinModels');
 const { canonicalJson } = require('./deviceInspection');
 const { buildCatalog, loadCatalogState } = require('./dataCenter');
 const { listDataSets } = require('./dataSets');
+const { isRetiredMotionAction } = require('../../shared/motionActionAvailability.mjs');
 const groups = new Set(['analog', 'motors', 'doors', 'gas', 'mechanisms', 'status']);
 const PUBLIC_BINDING_FIELDS = ['actionId','enabled','pointId','dataItemId','trigger','inputMin','inputMax','invert','speed','transitionSeconds'];
-function isRetiredMotionAction(action) {
-    return action?.kind === 'clip' && typeof action.id === 'string' && action.id.startsWith('clip:user_');
-}
+const retiredActionLabel = id => id === 'clip:process_cycle' ? '完整工艺循环' : '旧自定义动画';
 function publicAnimationBinding(row) {
     const result = Object.fromEntries(PUBLIC_BINDING_FIELDS.filter(k => row[k] !== undefined).map(k => [k,row[k]]));
     if (row.trigger?.mode === 'endpoints') result.trigger = {mode:'endpoints', extended:{dataItemId:row.trigger.extended?.dataItemId || ''}, retracted:{dataItemId:row.trigger.retracted?.dataItemId || ''}};
@@ -164,12 +163,12 @@ function validateDeviceAnimations(loaded, body) {
     if (body.revision !== loaded.revision) throw error('配置或点位已更新，请重新读取后保存', 409);
     const config = body.config;
     if (!config || config.version !== 1 || Object.keys(config).some(k => !['version','staleMs','bindings'].includes(k)) || !Number.isInteger(config.staleMs) || config.staleMs < 1000 || config.staleMs > 60000 || !Array.isArray(config.bindings) || config.bindings.length > 100) throw error('动画配置格式无效');
-    // Retired custom clips remain readable for history/package compatibility.
+    // Retired custom clips and the complete process remain readable for history.
     // A save can only disable an existing binding, never edit or activate it.
     const retiredOriginals = new Map((loaded.config?.bindings || []).filter(binding => {
         const action = loaded.actions.find(action => action.id === binding.actionId);
         // Early public-shaped snapshots lack kind. Only an existing orphaned
-        // clip:user_* history row may use its namespace as the fallback;
+        // retired clip history row may use its namespace as the fallback;
         // a known current/archived part action is never treated as retired.
         return action ? isRetiredMotionAction(action)
             : isRetiredMotionAction({id:binding.actionId,kind:binding.kind ?? 'clip'});
@@ -182,11 +181,11 @@ function validateDeviceAnimations(loaded, body) {
         ids.add(row.actionId);
         const action = loaded.actions.find(a => a.id === row.actionId);
         if (isRetiredMotionAction(action) || retiredOriginals.has(row.actionId)) {
-            if (row.enabled) throw error('旧自定义动画已移除，不能再启用；请停用后保存');
+            if (row.enabled) throw error(`${retiredActionLabel(row.actionId)}已从部件动作中移除，不能再启用；请停用后保存`);
             const original = retiredOriginals.get(row.actionId);
             if (!original) return null; // UI-only disabled defaults never create a retired binding.
             const expected = publicAnimationBinding({ ...original, enabled:false });
-            if (canonicalJson(row) !== canonicalJson(expected)) throw error('旧自定义动画只允许停用，不能修改历史绑定字段');
+            if (canonicalJson(row) !== canonicalJson(expected)) throw error(`${retiredActionLabel(row.actionId)}只允许停用，不能修改历史绑定字段`);
             // Do not resolve a removed source or recompile its trigger. Retain
             // its full stored definition/fingerprint, with only enabled changed.
             return { ...JSON.parse(JSON.stringify(original)), enabled:false };
@@ -206,7 +205,11 @@ function validateDeviceAnimations(loaded, body) {
         }
         const trigger = endpoints ? validateEndpointTrigger(loaded, row.trigger, row.enabled) : validateTrigger(row.trigger, item?.type || pointType(point), !!item);
         if (['inputMin','inputMax','speed','transitionSeconds'].some(k => typeof row[k] !== 'number' || !Number.isFinite(row[k])) || row.inputMin >= row.inputMax || Math.max(Math.abs(row.inputMin),Math.abs(row.inputMax)) > 1e12 || row.speed < .05 || row.speed > 10 || row.transitionSeconds < 0 || row.transitionSeconds > 60) throw error('输入范围、速度或过渡时间无效');
-        if (row.enabled) for (const channel of new Set(action.channels.map(c => c.replace(/:c\d+$/, ':c')))) {
+        // Independent actuators may share housing/material tint. A shared c/cN
+        // display channel is not an exclusive mechanical movement channel.
+        // Position/rotation/scale/visibility and other authored channels still
+        // participate in the original conflict protection.
+        if (row.enabled) for (const channel of new Set(action.channels.filter(c => !/:c\d*$/.test(c)))) {
             if (occupied.has(channel)) throw error(`“${action.label}”与“${occupied.get(channel)}”控制同一部件，请保留一个`);
             occupied.set(channel, action.label);
         }
@@ -218,7 +221,7 @@ function validateDeviceAnimations(loaded, body) {
     }).filter(Boolean);
     for (const [actionId,original] of retiredOriginals) {
         if (ids.has(actionId)) continue;
-        if (original.enabled) throw error('仍有已启用的旧自定义动画，请显式停用后保存');
+        if (original.enabled) throw error(`仍有已启用的${retiredActionLabel(actionId)}，请显式停用后保存`);
         // Omitting disabled history cannot silently delete its definition.
         bindings.push(JSON.parse(JSON.stringify(original)));
     }

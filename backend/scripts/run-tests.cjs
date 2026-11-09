@@ -19,7 +19,7 @@ const scripts = [
     'data-point-sync-test.cjs', 'deletion-safety-test.cjs', 'dashboard-device-deletion-test.cjs',
     'native-dashboard-config-test.cjs', 'inspection-hover-test.cjs', 'device-hover-test.cjs', 'dashboard-designer-test.cjs', 'tooltip-template-integration-test.cjs', 'tooltip-dynamic-binding-test.cjs', 'mcp-platform-integration-test.cjs', 'plc-protocol-test.cjs',
     'plc-value-precision-test.cjs', 's7-read-safety-test.cjs', 'collector-isolation-test.cjs', 'plc-empty-connectivity-test.cjs',
-    'inspection-platform-test.cjs', 'device-inspection-layout-test.cjs', 'model-inspection-layout-test.cjs', 'tempering-inspection-defaults-test.cjs', 'model-asset-collection-test.cjs', 'model-duplicates-test.cjs', 'model-action-package-update-test.cjs', 'model-name-test.cjs', 'ultrasonic-cleaner-profile.test.cjs', 'device-animations-test.cjs', 'motion-data-center-test.cjs', 'boolean-endpoints-test.cjs', 'retired-motion-bindings-test.cjs', 'motion-authoring-test.cjs',
+    'inspection-platform-test.cjs', 'device-inspection-layout-test.cjs', 'model-inspection-layout-test.cjs', 'tempering-inspection-defaults-test.cjs', 'model-asset-collection-test.cjs', 'model-duplicates-test.cjs', 'model-action-package-update-test.cjs', 'model-name-test.cjs', 'ultrasonic-cleaner-profile.test.cjs', 'device-animation-regressions-test.cjs', 'device-animations-test.cjs', 'motion-data-center-test.cjs', 'boolean-endpoints-test.cjs', 'retired-motion-bindings-test.cjs', 'motion-authoring-test.cjs',
     'database-retention-test.cjs', 'database-backup-ties-test.cjs', 'site-backup-test.cjs', 'backup-storage-test.cjs', 'project-bundle-test.cjs',
     'power-recovery-test.cjs', 'runtime-display-test.cjs', 'http-integrity-test.cjs'
 ];
