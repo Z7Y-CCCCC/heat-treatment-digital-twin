@@ -5,6 +5,7 @@ import LoadingExperience from '../components/LoadingExperience.vue'
 import SceneLoadingIndicator from '../components/SceneLoadingIndicator.vue'
 import { useFactoryConfig } from '../config/factoryConfig.js'
 import { createDashboardDataStore } from '../runtime/DataStore.js'
+import { createPointValueIndex } from '../runtime/pointValueIndex.js'
 import { API_BASE } from '../runtime/backendEndpoint.js'
 import { adminFetch, adminSession } from '../runtime/adminSession.js'
 import { createVoiceAnnouncer } from '../runtime/VoiceAnnouncer.js'
@@ -372,25 +373,13 @@ function getByPath(source, path) {
     return String(path).split('.').reduce((current, key) => current?.[key], source)
 }
 
-const pointValues = computed(() => {
-    const result = {}
-    for (const workshop of getWorkshops() || []) {
-        const workshopDevices = [...(workshop.devices || []), ...(workshop.lines || []).flatMap(line => line.devices || [])]
-        for (const device of workshopDevices) {
-            const frame = dataStore.deviceDataMap[device.id] || {}
-            for (const point of device.dataPoints || []) {
-                const category = point.category || point.category_resolved || 'analog'
-                const field = point.value_role || point.name
-                const value = getByPath(frame, `${category}.${field}`)
-                const quality = getByPath(frame, `quality.${category}.${field}`) || dataStore.deviceStatusMap[device.id]?.quality || 'bad'
-                const record = { ...point, value, quality, device_id: device.id, lastReadAt: frame.pointMeta?.[`${category}.${field}`]?.lastReadAt || frame.timestamp || null }
-                result[String(point.id)] = record
-                result[`${device.id}:${point.id}`] = record
-            }
-        }
-    }
-    return result
-})
+const pointIndex = createPointValueIndex(reactive)
+const pointIndexDevices = computed(() => (getWorkshops() || []).flatMap(workshop => [
+    ...(workshop.devices || []), ...(workshop.lines || []).flatMap(line => line.devices || [])
+]).map(device => ({ id: device.id, points: device.dataPoints || [], revision: JSON.stringify(device.dataPoints || []) })))
+watch(() => pointIndexDevices.value.map(device => ({ ...device, frame: dataStore.deviceDataMap[device.id],
+    quality: dataStore.deviceStatusMap[device.id]?.quality || 'bad' })), rows => pointIndex.update(rows), { immediate: true })
+const pointValues = computed(() => pointIndex.records)
 
 function pointForContextKey(deviceId, key) {
     const value = String(key || '').trim()
@@ -1206,6 +1195,7 @@ onUnmounted(() => {
                     :device-catalog="playbackDevices" :runtime-context="runtimeContext" :parameters="integration.parameters.value" :parameter-definitions="integration.definitions.value"
                     :selected-part="selectedPart"
                     overlay-mode
+                    native-realtime
                     :preview="true"
                     :data-ready="dataStore.health.readiness.displayReady === true"
                     @action="handleWidgetAction"

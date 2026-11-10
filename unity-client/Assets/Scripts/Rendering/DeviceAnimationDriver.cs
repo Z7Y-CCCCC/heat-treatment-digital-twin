@@ -170,6 +170,7 @@ namespace HeatTreatment.DigitalTwin.Rendering
         private void Update() { Advance(Time.unscaledDeltaTime, Time.realtimeSinceStartupAsDouble); }
         public void Advance(double delta, double now)
         {
+            using var work = HeatTreatment.DigitalTwin.Runtime.RuntimeWorkMetrics.Measure(HeatTreatment.DigitalTwin.Runtime.RuntimeWorkMetrics.Section.ClipAdvance);
             var eventDiagnostic=false;
             foreach (var entry in _entries)
             {

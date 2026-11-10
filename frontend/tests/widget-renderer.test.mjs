@@ -384,6 +384,16 @@ test('HUD KPIs keep the live value and unit in separate typography elements', as
     assert.doesNotMatch(view.root.children[0].props.class, /text-is-kpi/)
 })
 
+test('live native HUD preserves all chart observations without restarting a canvas transition per PLC scan', async t => {
+    const view = fixture(t)
+    await view.render({ overlayMode: true, preview: true, nativeRealtime: true, widget: { type: 'hud_chart_dock', content: { chartType: 'area' } },
+        trendPoints: [{ time: '10:00', value: 0 }, { time: '10:01', value: 42 }, { time: '10:02', value: null }] })
+    const chart = charts.at(-1).options.at(-1)[0]
+    assert.deepEqual(chart.series[0].data, [0, 42, null])
+    assert.equal(chart.animation, false); assert.equal(chart.animationDurationUpdate, 0)
+    assert.equal(chart.series[0].animation, false); assert.equal(chart.yAxis.scale, true)
+})
+
 test('heading styling is attached to the renderer in every preview context', async t => {
     const view = fixture(t)
     await view.render({ overlayMode: true, widget: { id: 'heading', type: 'text', content: { text: '▸ 生产运行参数', showTitle: false } } })

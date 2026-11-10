@@ -6,6 +6,7 @@
     <Nullable>disable</Nullable>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="../../unity-client/Assets/Scripts/Runtime/RuntimeWorkMetrics.cs" Link="RuntimeWorkMetrics.cs" />
     <Compile Include="../../unity-client/Assets/Scripts/Runtime/TransferReachPolicy.cs" Link="TransferReachPolicy.cs" />
     <Compile Include="../../unity-client/Assets/Scripts/Runtime/SceneUnitPolicy.cs" Link="SceneUnitPolicy.cs" />
     <Compile Include="../../unity-client/Assets/Scripts/Runtime/LoadingPortPolicy.cs" Link="LoadingPortPolicy.cs" />

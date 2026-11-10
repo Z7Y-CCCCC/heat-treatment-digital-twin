@@ -392,6 +392,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 if (!_sceneProjectionRequested || !_sceneReady || _camera == null
                     || _camera.orthographic || _webSocket?.IsConnected != true) continue;
 
+                using var projectionWork = RuntimeWorkMetrics.Measure(RuntimeWorkMetrics.Section.SceneProjection);
                 var devices = new JArray();
                 foreach (var pair in _deviceRoots)
                 {
@@ -971,6 +972,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
 
         private void OnRealtimeMessage(JObject message)
         {
+            using var work = RuntimeWorkMetrics.Measure(RuntimeWorkMetrics.Section.RealtimeApply);
             var type = message.Value<string>("type");
             if (type == "realtime_frame")
             {
@@ -987,7 +989,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
                     if (!string.IsNullOrWhiteSpace(deviceFactory) && !string.Equals(deviceFactory, _config?.FactoryId, StringComparison.Ordinal)) continue;
                     var id = deviceData.Value<string>("furnace_id");
                     if (string.IsNullOrWhiteSpace(id)) continue;
-                    _latestMotionInputs.Remember(id, deviceData);
+                    using (RuntimeWorkMetrics.Measure(RuntimeWorkMetrics.Section.MotionInputCache)) _latestMotionInputs.Remember(id, deviceData);
                     _transferCoordinator?.ApplyInputs(id, deviceData);
                     if (deviceData.Value<bool?>("motionInputOnly") == true)
                     {
@@ -1000,13 +1002,15 @@ namespace HeatTreatment.DigitalTwin.Runtime
                         }
                         continue;
                     }
-                    _latestDeviceFrames.Remember(id, deviceData, Time.realtimeSinceStartupAsDouble);
+                    using (RuntimeWorkMetrics.Measure(RuntimeWorkMetrics.Section.TelemetryCache)) _latestDeviceFrames.RememberOwned(id, deviceData, Time.realtimeSinceStartupAsDouble);
                     telemetryCount++;
+                    using (RuntimeWorkMetrics.Measure(RuntimeWorkMetrics.Section.ActuatorReceive)) {
                     if (_drivers.TryGetValue(id, out var driver)) driver.ApplyRealtime(deviceData);
                     if (driver != null) driver.GetComponent<DeviceAnimationDriver>()?.ApplyRealtime(deviceData);
+                    }
                     if (_visuals.TryGetValue(id, out var visual)) visual.ApplyRealtime(deviceData);
                     if (_motions.TryGetValue(id, out var motion)) motion.ApplyRealtime(deviceData);
-                    _dashboard.ApplyRealtime(id, deviceData);
+                    using (RuntimeWorkMetrics.Measure(RuntimeWorkMetrics.Section.DashboardReceive)) _dashboard.ApplyRealtime(id, deviceData);
                 }
                 if (telemetryCount > 0) _diagnostics.RecordRealtimeFrame(payload.Value<long?>("timestamp") ?? 0L, telemetryCount);
             }

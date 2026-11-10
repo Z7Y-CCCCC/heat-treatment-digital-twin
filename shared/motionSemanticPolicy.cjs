@@ -8,7 +8,7 @@ const text = value => typeof value === 'string' && value.length > 0 && value.len
 const own = (value, key) => Object.prototype.hasOwnProperty.call(value, key);
 const operators = new Set(['eq', 'ne', 'gt', 'gte', 'lt', 'lte']);
 const numericOperators = new Set(['gt', 'gte', 'lt', 'lte']);
-const MAX_DECLARATIONS = 102;
+const MAX_DECLARATIONS = 103;
 const pointId = value => {
     const id = typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? String(value) : value;
     return text(id) && id.length <= 120 ? id : '';
@@ -77,13 +77,18 @@ function deriveMotionSemantics(instance, modelMetadata = null, pointContext = nu
             // feedback, not the legacy WORD/numeric start gate. Reuse the
             // existing typed condition declaration so false/invalid/false stays
             // a causal fault boundary without introducing a new wire kind.
-            if (start) add(movement.valueMode === 'station' && movement.stationInputMeaning === 'last-confirmed'
+            if (start) add(movement.valueMode === 'station' && (movement.stationInputMeaning === 'last-confirmed' || movement.arrivalPositionPointId)
                 ? { key: 'movement:start', kind: 'condition', source: { pointId: start }, operator: 'eq', value: true, hysteresis: 0 }
                 : { key: 'movement:start', kind: 'running_gate', source: { pointId: start } });
             if (movement.valueMode === 'station') {
                 const position = pointId(movement.currentPositionPointId ?? movement.current_position_point_id);
                 if (!position || !Array.isArray(movement.stations)) throw Error('Missing configured station point/values');
                 add({ key: 'movement:station', kind: 'station', source: { pointId: position }, values: movement.stations.map(station => station?.value) });
+                if (movement.arrivalPositionPointId) {
+                    const arrival = pointId(movement.arrivalPositionPointId);
+                    if (!arrival || arrival === position || !start || movement.stationInputMeaning !== 'target') throw Error('Invalid independent arrival observation');
+                    add({ key: 'movement:arrival', kind: 'station', source: { pointId: arrival }, values: movement.stations.map(station => station?.value) });
+                }
             }
         }
         const hasRuntimeConfig = own(instance, 'animationBindings');

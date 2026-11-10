@@ -51,6 +51,9 @@ namespace HeatTreatment.DigitalTwin.Runtime
             public Matrix4x4 HoverMatrix;
             public Mesh HoverGeometry;
             public bool HoverVisible;
+            public bool HoverRayRelevant;
+            public int HoverMatrixBatchIndex = -1;
+            public Bounds HoverLocalBounds;
             public bool PickProjectionValid, PickProjectionFine;
             public Matrix4x4 PickProjectionMatrix;
             public Mesh PickProjectionGeometry;
@@ -88,6 +91,9 @@ namespace HeatTreatment.DigitalTwin.Runtime
             public Matrix4x4 HoverCameraView, HoverCameraProjection;
             public Rect HoverCameraRect;
             public float HoverClock, HoverXray;
+            public bool HoverRaySnapshotValid;
+            public Matrix4x4 OverviewRootMatrix;
+            public bool OverviewRootValid, OverviewRootActive;
             public bool HoverBlocked;
             public bool HoverHitsSurface;
             public int PickQueryCount;
@@ -1100,6 +1106,12 @@ namespace HeatTreatment.DigitalTwin.Runtime
         }
 
         private bool InspectionHoverChanged(DeviceInspectionRuntime runtime, Vector3 pointer, bool blocked)
+            => ObserveHoverInputs(runtime, pointer, blocked, false);
+
+        private bool OverviewHoverChanged(DeviceInspectionRuntime runtime, Vector3 pointer)
+            => ObserveHoverInputs(runtime, pointer, false, true);
+
+        private bool ObserveHoverInputs(DeviceInspectionRuntime runtime, Vector3 pointer, bool blocked, bool rayRelevantOnly)
         {
             if (blocked)
             {
@@ -1111,6 +1123,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 runtime.HoverPointer = pointer;
                 runtime.HoverBlocked = true;
                 runtime.HoverSnapshotValid = false;
+                runtime.HoverRaySnapshotValid = false;
                 return blockedChanged;
             }
             var changed = !runtime.HoverSnapshotValid || !runtime.HoverPointer.Equals(pointer)
@@ -1119,6 +1132,9 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 || !runtime.HoverCameraRect.Equals(_camera.pixelRect)
                 || runtime.HoverBlocked != blocked || runtime.HoverClock != runtime.Clock
                 || runtime.HoverXray != runtime.XrayAmount;
+            var rayChanged = changed || !runtime.HoverRaySnapshotValid;
+            var ray = rayRelevantOnly ? _camera.ScreenPointToRay(pointer) : default;
+            if (rayRelevantOnly && rayChanged) changed = true;
             runtime.HoverPointer = pointer;
             runtime.HoverCameraView = _camera.worldToCameraMatrix;
             runtime.HoverCameraProjection = _camera.projectionMatrix;
@@ -1129,16 +1145,42 @@ namespace HeatTreatment.DigitalTwin.Runtime
 #if UNITY_EDITOR
                 HoverRendererObservations++;
 #endif
-                var visible = state.Surface.IsVisible;
-                var matrix = state.Renderer != null ? state.Renderer.localToWorldMatrix : Matrix4x4.identity;
-                var geometry = state.Surface.Geometry;
-                changed |= visible != state.HoverVisible || !matrix.Equals(state.HoverMatrix)
+                var matrix = state.Renderer == null ? Matrix4x4.identity
+                    : rayRelevantOnly && _overviewMatricesActive && state.HoverMatrixBatchIndex >= 0
+                        ? _overviewMatrices.Get(state.HoverMatrixBatchIndex) : state.Renderer.localToWorldMatrix;
+                var geometry = state.Renderer != null ? state.Surface.Geometry : null;
+                var localBounds = rayRelevantOnly && geometry != null ? geometry.bounds : default;
+                // A mesh wholly outside the ray cannot affect selection even
+                // if its enabled/force-off/active flags change. Avoid thousands
+                // of native visibility queries for those irrelevant surfaces.
+                // Keep observing actual mesh bounds and transforms every frame.
+                var candidate = !rayRelevantOnly || state.Surface.HasDynamicGeometry
+                    || state.Renderer != null && state.Renderer.isPartOfStaticBatch
+                    || geometry != null && HoverRayBroadphase.Intersects(localBounds, matrix, ray);
+                var visible = candidate && state.Surface.IsVisible;
+                var surfaceChanged = visible != state.HoverVisible || !matrix.Equals(state.HoverMatrix)
                     || !ReferenceEquals(geometry, state.HoverGeometry)
+                    || rayRelevantOnly && !localBounds.Equals(state.HoverLocalBounds)
                     // Skinned deformation may change even with a stationary transform.
                     || (visible && state.Surface.HasDynamicGeometry);
-                state.HoverVisible = visible; state.HoverMatrix = matrix; state.HoverGeometry = geometry;
+                if (rayRelevantOnly)
+                {
+                    // Still observe every real transform/visibility/mesh, but a
+                    // fan moving away from this stationary ray cannot alter its
+                    // nearest triangle hit. Test current AND previous bounds so
+                    // entering/leaving the ray always forces an exact repick.
+                    if (rayChanged || surfaceChanged)
+                    {
+                        var relevant = visible && state.Renderer != null && state.Renderer.bounds.IntersectRay(ray);
+                        changed |= surfaceChanged && (state.HoverRayRelevant || relevant);
+                        state.HoverRayRelevant = relevant;
+                    }
+                }
+                else changed |= surfaceChanged;
+                state.HoverVisible = visible; state.HoverMatrix = matrix; state.HoverGeometry = geometry; state.HoverLocalBounds = localBounds;
             }
             runtime.HoverSnapshotValid = true;
+            runtime.HoverRaySnapshotValid = rayRelevantOnly;
             return changed;
         }
 
@@ -1185,8 +1227,11 @@ namespace HeatTreatment.DigitalTwin.Runtime
 
         private void LateUpdate()
         {
-            _occlusionFader.SetFocus(_camera, _mode == DashboardMode.Detail ? _selected?.Root?.transform : null, transform);
-            _occlusionFader.Tick(Time.unscaledTimeAsDouble, Time.unscaledDeltaTime);
+            using var work = RuntimeWorkMetrics.Measure(RuntimeWorkMetrics.Section.Inspection);
+            using (RuntimeWorkMetrics.Measure(RuntimeWorkMetrics.Section.Occlusion)) {
+                _occlusionFader.SetFocus(_camera, _mode == DashboardMode.Detail ? _selected?.Root?.transform : null, transform);
+                _occlusionFader.Tick(Time.unscaledTimeAsDouble, Time.unscaledDeltaTime);
+            }
             if (_mode == DashboardMode.Overview) { UpdateDeviceHover(); DrawDeviceHover(); return; }
             UpdateDeviceHoverAt(Input.mousePosition, true);
             var runtime = _selected?.Inspection;

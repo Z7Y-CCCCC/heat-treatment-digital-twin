@@ -1,6 +1,7 @@
 <script setup>
 import { computed, inject, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import HudMetricRing from './HudMetricRing.vue'
+import { realtimeChartOption } from './realtimeChartPolicy.js'
 import * as echarts from 'echarts'
 import { playbackSelection,normalizePlayback,isDeviceBinding,devicePoint } from '../../../shared/widgetPlayback.mjs'
 import { bindingForDevice } from '../../../shared/widgetBindingWorkflow.mjs'
@@ -40,6 +41,7 @@ const props = defineProps({
   selectedPart: { type: Object, default: () => ({}) },
   overlayMode: { type: Boolean, default: false },
   preview: { type: Boolean, default: false },
+  nativeRealtime: { type: Boolean, default: false },
   dataReady: { type: Boolean, default: true },
   showContainerPlaceholder: { type: Boolean, default: false }
 })
@@ -768,7 +770,7 @@ function presentChart(option) {
       }
     }
   }
-  chart.setOption(option, true, true)
+  chart.setOption(realtimeChartOption(option, props.nativeRealtime), true, true)
 }
 
 const chartSignature=computed(()=>{

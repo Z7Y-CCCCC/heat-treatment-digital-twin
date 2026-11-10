@@ -1025,25 +1025,31 @@ async function startServer() {
         console.log(`   WebSocket:   ws://${HOST}:${PORT}/ws\n`);
 
         setTimeout(() => {
-            Promise.resolve().then(() => assertNoPendingSiteRecovery()).then(() => getDb())
-                .then(db => recoverPendingModelDeletions(db))
-                .then(() => startDatabaseMaintenance())
-                .then(async () => {
+            require('./services/startupServices').startRuntimeServices({
+                prepare: async () => {
+                    assertNoPendingSiteRecovery();
+                    await recoverPendingModelDeletions(await getDb());
+                },
+                isStopping: () => shuttingDown,
+                collector: () => {
+                    if (isLicenseEnforced() && !getLicenseStatus().valid) return;
+                    return dataEngine.start();
+                },
+                maintenance: async () => {
+                    await startDatabaseMaintenance();
+                    if (shuttingDown) return;
                     const db = await getDb();
                     const activeFactory = await db.get('SELECT value FROM settings WHERE `key` = ?', ['active_factory_id']);
-                    return startDataSourceMaintenance(activeFactory?.value || 'factory_default');
-                })
-                .then(() => lanDisplay.loadFromSettings())
-                .then(() => startSiteBackupMaintenance(uploadsRootDir))
-                .then(() => {
-                    if (isLicenseEnforced() && !getLicenseStatus().valid) return;
-                    return dataEngine.start().catch(error => {
-                        // Collection has its own recovery loop. It must not prevent
-                        // the API's maintenance and management tools from running.
-                        console.error('[CollectorProcess] 独立采集启动失败，自动恢复中:', error.message);
-                    });
-                })
-                .then(() => { if (!shuttingDown) historyRetention.start(); })
+                    await startDataSourceMaintenance(activeFactory?.value || 'factory_default');
+                    if (shuttingDown) return;
+                    await lanDisplay.loadFromSettings();
+                    if (shuttingDown) return;
+                    await startSiteBackupMaintenance(uploadsRootDir);
+                    if (!shuttingDown) historyRetention.start();
+                },
+                onError: (service, error) => console.error(service === 'collector'
+                    ? '[CollectorProcess] 独立采集启动失败，自动恢复中:' : '[Maintenance] 后台维护启动失败:', error.message)
+            })
                 .catch((error) => {
                     console.error('[DataEngine] 启动失败:', error.message);
                     console.error('[DataEngine] 可在后台“数据库连接”中修改并测试数据库配置。');

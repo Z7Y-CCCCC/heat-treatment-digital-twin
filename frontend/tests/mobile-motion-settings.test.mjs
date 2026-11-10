@@ -187,6 +187,26 @@ const sourceChoices = () => [
   { id: 'PLC_OTHER', data_type: 'BOOL', access_type: 'READ', device_id: 'another-device' }
 ]
 
+test('target estimates persist a separate arrival station and typed moving feedback through the actual existing page', async t => {
+  const points=[...sourceChoices(),{id:'PLC_ARRIVAL',label:'最后到位工位',device_id:'cart',data_type:'WORD',access_type:'READ'}]
+  const movement={...originalMovement(),stationInputMeaning:'target',simulationEnabled:true,startActionPointId:'PLC_RUN',arrivalPositionPointId:'PLC_ARRIVAL'}
+  const f=await fixture(t,movement,undefined,points)
+  assert.equal(f.field('独立到位工位反馈点位').value,'PLC_ARRIVAL')
+  assert.ok(!f.field('独立到位工位反馈点位').options.some(option=>option._value==='PLC_POS'))
+  assert.ok(!f.field('移动开始或实际移动反馈点位').options.some(option=>option._value==='PLC_COMMAND'))
+  await f.save();assert.equal(f.saves.length,1)
+  assert.equal(f.saved.instance_config.movement.arrivalPositionPointId,'PLC_ARRIVAL')
+  assert.deepEqual(f.saves[0].pointIds,['PLC_POS','PLC_RUN','PLC_ARRIVAL'])
+  await f.reopen();assert.equal(f.field('独立到位工位反馈点位').value,'PLC_ARRIVAL')
+  f.field('独立到位工位反馈点位').fire('change','');await f.save()
+  assert.equal(f.saved.instance_config.movement.arrivalPositionPointId,undefined)
+})
+
+test('target estimates cannot use a numeric command to certify independent arrival',async t=>{
+  const f=await fixture(t,{...originalMovement(),stationInputMeaning:'target',simulationEnabled:true,arrivalPositionPointId:'PLC_COMMAND',startActionPointId:'PLC_COMMAND'},undefined,sourceChoices())
+  await f.save();assert.equal(f.saves.length,0);assert.match(f.vm.errorMessage,/实际移动 BOOL/)
+})
+
 test('last-confirmed retains an invalid WORD start command visibly until the human unbinds it, without selecting overall running', async t => {
   const f = await fixture(t, { ...originalMovement(), startActionPointId: 'PLC_COMMAND' }, undefined, sourceChoices())
   f.field('工位编号数据含义').fire('change', 'last-confirmed'); await settled()

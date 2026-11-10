@@ -227,6 +227,7 @@ namespace HeatTreatment.DigitalTwin.Rendering
 
         public void AdvanceMotion(float deltaTime, double? now = null)
         {
+            using var work = HeatTreatment.DigitalTwin.Runtime.RuntimeWorkMetrics.Measure(HeatTreatment.DigitalTwin.Runtime.RuntimeWorkMetrics.Section.PartAdvance);
             if (float.IsNaN(deltaTime) || float.IsInfinity(deltaTime) || deltaTime <= 0) return;
             foreach (var state in _states)
             {
