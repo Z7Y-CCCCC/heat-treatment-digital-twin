@@ -21,7 +21,7 @@ const scripts = [
     'plc-value-precision-test.cjs', 's7-read-safety-test.cjs', 'collector-isolation-test.cjs', 'plc-empty-connectivity-test.cjs',
     'inspection-platform-test.cjs', 'device-inspection-layout-test.cjs', 'model-inspection-layout-test.cjs', 'tempering-inspection-defaults-test.cjs', 'model-asset-collection-test.cjs', 'model-duplicates-test.cjs', 'model-action-package-update-test.cjs', 'model-name-test.cjs', 'ultrasonic-cleaner-profile.test.cjs', 'device-animation-regressions-test.cjs', 'device-animations-test.cjs', 'realtime-transfer-link-test.cjs', 'motion-data-center-test.cjs', 'boolean-endpoints-test.cjs', 'retired-motion-bindings-test.cjs', 'motion-authoring-test.cjs',
     'device-line-units-test.cjs', 'line-spacing-precision-test.cjs', 'motion-device-context-test.cjs', 'database-retention-test.cjs', 'database-backup-ties-test.cjs', 'site-backup-test.cjs', 'site-backup-retention-test.cjs', 'backup-storage-test.cjs', 'project-bundle-test.cjs',
-    'power-recovery-test.cjs', 'runtime-display-test.cjs', 'http-integrity-test.cjs'
+    'power-recovery-lifetime.test.cjs', 'power-recovery-test.cjs', 'runtime-display-test.cjs', 'http-integrity-test.cjs'
 ];
 if (process.platform === 'win32') scripts.push('voice-feature-test.cjs');
 if (process.argv.includes('--with-plc-simulators')) scripts.push('plc-integration-test.cjs', 'plc-simulator-protocol-integration-test.cjs');

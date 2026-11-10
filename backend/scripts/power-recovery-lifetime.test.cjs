@@ -141,3 +141,23 @@ test('the local lifetime helper cannot terminate an unowned process handle', asy
     await assert.rejects(stopRecoveryProcess(child), /unowned recovery process/);
     assert.equal(kills, 0);
 });
+
+test('sidecar disappearance during realpath resolution still verifies the exact fixture parent', () => {
+    const files = fixture('sidecar-realpath-race'), sidecar = `${files.databaseFile}-shm`;
+    fs.writeFileSync(sidecar, 'transient SQLite sidecar');
+    let raced = false;
+    const resolved = recoveryArtifactPath(sidecar, files.fixtureDirectory, filename => {
+        if (filename === sidecar && !raced) { raced = true; fs.unlinkSync(sidecar); }
+        return fs.realpathSync(filename);
+    });
+    assert.equal(raced, true);
+    assert.equal(resolved, sidecar);
+    assert.equal(fs.existsSync(sidecar), false);
+    observations.push({ name: 'disappearing-sidecar-realpath', raced, resolved });
+});
+
+test('sidecar realpath errors other than absence are never treated as successful cleanup', () => {
+    const files = fixture('sidecar-realpath-denied');
+    assert.throws(() => recoveryArtifactPath(`${files.databaseFile}-shm`, files.fixtureDirectory,
+        () => { throw Object.assign(new Error('denied'), { code: 'EACCES' }); }), error => error.code === 'EACCES');
+});
