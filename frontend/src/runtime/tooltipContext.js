@@ -95,6 +95,23 @@ export function createTooltipContext({ kind = 'device', device, part, status, fr
     hover: { device: hoveredDevice, part: kind === 'part' ? hoveredPart : null }, tooltipSelectedPart: selectedPart }
 }
 
+/** Content owns identity/readings; high-rate pointer fields remain lazy paths. */
+export function createTooltipContentContext(options = {}) {
+  const parent = object(options.runtimeContext)
+  const pointerFields = ['deviceHoverPointer', 'inspectionHoverPointer']
+  // Filtering BEFORE reading a property is important: spreading a reactive
+  // parent first would still subscribe this expensive map to every pointermove.
+  const snapshot = Object.fromEntries(Object.keys(parent).filter(key => !pointerFields.includes(key))
+    .map(key => [key, parent[key]]))
+  const context = createTooltipContext({ ...options, runtimeContext: snapshot })
+  // Custom authored runtime paths can still read the current pointer. Only a
+  // widget actually bound to that path observes it, not every tooltip widget.
+  for (const key of pointerFields) Object.defineProperty(context, key, {
+    enumerable: true, configurable: true, get: () => parent[key]
+  })
+  return context
+}
+
 /** Prepare a transient widget for existing readers without persisting sample IDs. */
 export function tooltipBindingContext(widget, context = {}) {
   const raw = object(widget)

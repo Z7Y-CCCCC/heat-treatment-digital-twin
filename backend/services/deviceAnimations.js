@@ -8,7 +8,7 @@ const { modelPositionOwnership, assertMotionPositionOwnership } = require('./mot
 const { listDataSets } = require('./dataSets');
 const { isRetiredMotionAction } = require('../../shared/motionActionAvailability.mjs');
 const groups = new Set(['analog', 'motors', 'doors', 'gas', 'mechanisms', 'status']);
-const PUBLIC_BINDING_FIELDS = ['actionId','enabled','pointId','dataItemId','trigger','inputMin','inputMax','invert','speed','transitionSeconds'];
+const PUBLIC_BINDING_FIELDS = ['actionId','enabled','pointId','dataItemId','trigger','inputMin','inputMax','invert','speed','transitionSeconds','feedbackSmoothingMs'];
 const retiredActionLabel = id => id === 'clip:process_cycle' ? '完整工艺循环' : '旧自定义动画';
 function publicAnimationBinding(row) {
     const result = Object.fromEntries(PUBLIC_BINDING_FIELDS.filter(k => row[k] !== undefined).map(k => [k,row[k]]));
@@ -222,6 +222,9 @@ function validateDeviceAnimations(loaded, body) {
         }
         const trigger = endpoints ? validateEndpointTrigger(loaded, row.trigger, row.enabled) : validateTrigger(row.trigger, item?.type || pointType(point), !!item);
         if (['inputMin','inputMax','speed','transitionSeconds'].some(k => typeof row[k] !== 'number' || !Number.isFinite(row[k])) || row.inputMin >= row.inputMax || Math.max(Math.abs(row.inputMin),Math.abs(row.inputMax)) > 1e12 || row.speed < .05 || row.speed > 10 || row.transitionSeconds < 0 || row.transitionSeconds > 60) throw error('输入范围、速度或过渡时间无效');
+        const feedbackSmoothingMs = row.feedbackSmoothingMs === undefined ? 0 : row.feedbackSmoothingMs;
+        if (typeof feedbackSmoothingMs !== 'number' || !Number.isFinite(feedbackSmoothingMs) || feedbackSmoothingMs < 0 || feedbackSmoothingMs > 1000)
+            throw error('数值反馈平滑必须是 0～1000 毫秒的有效数值');
         // Independent actuators may share housing/material tint. A shared c/cN
         // display channel is not an exclusive mechanical movement channel.
         // Position/rotation/scale/visibility and other authored channels still
@@ -231,7 +234,7 @@ function validateDeviceAnimations(loaded, body) {
             occupied.set(channel, action.label);
         }
         const sourceGroup = groups.has(point?.category) ? point.category : 'analog';
-        return { ...row, ...(endpoints ? {dataItemId:''} : {}), ...(dataItemId ? {dataItemId, sourceFingerprint:sourceFingerprint(item)} : {}), ...(trigger ? {trigger} : {}),
+        return { ...row, feedbackSmoothingMs, ...(endpoints ? {dataItemId:''} : {}), ...(dataItemId ? {dataItemId, sourceFingerprint:sourceFingerprint(item)} : {}), ...(trigger ? {trigger} : {}),
             pointId: point && (!item || item.binding.mode === 'plc') ? String(point.id) : '', kind: action.kind, mode: action.mode,
             clipId: action.kind === 'clip' ? row.actionId.slice(5) : '', partId: action.kind === 'part' ? row.actionId.slice(5) : '',
             sourceGroup, sourceKey: !item || item.binding.mode === 'plc' ? point?.value_role || point?.name || '' : '' };

@@ -1,10 +1,11 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
-import { createRenderer, h, nextTick } from 'vue'
+import { createRenderer, h, nextTick, provide, reactive } from 'vue'
 import { parse, compileScript } from 'vue/compiler-sfc'
-import { installBrowser } from './helpers.mjs'
+import { deferred, installBrowser, json, settle } from './helpers.mjs'
 import { createTooltipContext } from '../src/runtime/tooltipContext.js'
+import { WidgetClockKey, useWidgetClock } from '../src/runtime/widgetPlayback.js'
 
 const url = new URL('../src/runtime/WidgetRenderer.vue', import.meta.url)
 const { descriptor } = parse(await readFile(url, 'utf8'))
@@ -20,17 +21,30 @@ const surfaceCompiled = compileScript(surfaceDescriptor, { id: 'tooltip-surface-
   .replace(/from (['"])([^'"]+)\1/g, (_, _quote, name) => `from ${JSON.stringify(name.endsWith('/WidgetRenderer.vue') ? rendererModuleUrl
     : name.startsWith('.') ? new URL(name, surfaceUrl).href : import.meta.resolve(name))}`)
 const { default: TooltipSurface } = await import(`data:text/javascript;base64,${Buffer.from(surfaceCompiled).toString('base64')}`)
+
+test('tooltip surface leaves an omitted clock undefined so live renderers inherit the shared ref', () => {
+  assert.equal(TooltipSurface.props.playbackNow.default, undefined)
+})
 const node = (type, text = '') => ({ type, text, children: [], props: {}, parent: null })
 const text = root => [root.text, ...root.children.map(text)].join(' ')
-function fixture(t, Component = WidgetRenderer) {
+function fixture(t, Component = WidgetRenderer, { liveClock = false } = {}) {
   const environment = installBrowser(t)
+  const placementWork = { hosts:0, children:0, canvases:0 }
   const renderer = createRenderer({
     createElement: type => node(type), createText: value => node('#text', value), createComment: value => node('#comment', value),
     setText: (element, value) => element.text = value,
     setElementText: (element, value) => { element.text = value; element.children = [] },
     parentNode: element => element.parent,
     nextSibling: element => element.parent?.children[element.parent.children.indexOf(element) + 1] || null,
-    patchProp: (element, key, previous, value) => element.props[key] = value,
+    patchProp: (element, key, previous, value) => {
+      if (key === 'style') {
+        const classes = String(element.props.class || '')
+        if (classes.includes('tooltip-surface-widget')) placementWork.children++
+        else if (classes.includes('tooltip-surface-canvas')) placementWork.canvases++
+        else if (classes.includes('tooltip-surface')) placementWork.hosts++
+      }
+      element.props[key] = value
+    },
     insert(element, parent, anchor = null) {
       if (element.parent) element.parent.children = element.parent.children.filter(child => child !== element)
       element.parent = parent
@@ -40,10 +54,137 @@ function fixture(t, Component = WidgetRenderer) {
     remove(element) { if (element?.parent) element.parent.children = element.parent.children.filter(child => child !== element) }
   })
   const root = node('root')
+  let clock
+  const component = liveClock ? {
+    inheritAttrs: false,
+    setup(_props, { attrs }) {
+      clock = useWidgetClock(); provide(WidgetClockKey, clock)
+      return () => h(Component, attrs)
+    }
+  } : Component
   environment.beforeRestore(() => renderer.render(null, root))
   let vm
-  return { root, get vm() { return vm }, async render(props) { const vnode = h(Component, props); renderer.render(vnode, root); vm = vnode.component.exposed; await nextTick(); await nextTick() } }
+  return { root, placementWork, get vm() { return vm }, get clock() { return clock }, async render(props) {
+    const vnode = h(component, props); renderer.render(vnode, root)
+    vm = (liveClock ? vnode.component.subTree.component : vnode.component).exposed
+    await nextTick(); await nextTick()
+  } }
 }
+
+test('real tooltip SFC follows native pointer provider immediately with zero content/canvas style work or clock/API wait', async t => {
+  t.mock.timers.enable({ apis:['Date', 'setInterval', 'setTimeout'], now:100000 })
+  const calls = []
+  t.mock.method(globalThis, 'fetch', async (...args) => { calls.push(args); return json({}) })
+  const view = fixture(t, TooltipSurface, { liveClock:true })
+  const pointer = reactive({ visible:true, x:.2, y:.3 })
+  const context = createTooltipContext({ device:{ id:'a', name:'炉 A' }, runtimeContext:{ factoryId:'f', viewId:'overview', viewMode:'factory' } })
+  const template = { id:'configured-canvas', kind:'device', canvas:{ width:200, height:80 },
+    widgets:Array.from({ length:24 }, (_, index) => ({ id:`text-${index}`, type:'text',
+      frame:{ x:0, y:index * 2, width:200, height:20 }, content:{ text:'{value}' }, data:{ mode:'runtime', path:'hover.device.name' } })) }
+  await view.render({ context, template, pointerSource:() => pointer, viewport:{ width:1000, height:500 } })
+  const before = { ...view.placementWork }, clock = view.clock.value, requests = calls.length
+  for (let index = 0; index < 120; index++) {
+    pointer.x = .2 + index / 500
+    await nextTick()
+    const host = view.root.children.find(element => element.type === 'aside')
+    assert.equal(host.props.style.transform, `translate3d(${pointer.x * 1000 + 16}px, 166px, 0)`)
+    assert.equal(host.props.style.left, '0px')
+    assert.equal(host.props.style.top, '0px')
+    assert.equal(view.vm.getRenderedText('text-0'), '炉 A')
+  }
+  assert.equal(view.placementWork.children, before.children, 'pointer motion must not patch 24 authored widget frames')
+  assert.equal(view.placementWork.canvases, before.canvases, 'unchanged scale/background must not repatch the canvas')
+  assert.equal(view.placementWork.hosts - before.hosts, 119)
+  assert.equal(view.clock.value, clock)
+  assert.equal(calls.length, requests)
+  pointer.visible = false; await nextTick()
+  assert.equal(view.root.children.some(element => element.type === 'aside'), false, 'provider null/invalid never becomes an inline live card')
+})
+
+test('tooltip content memo preserves reactive PLC reads and does not retain a hidden or previous-device response', async t => {
+  const view = fixture(t, TooltipSurface)
+  const pointer = reactive({ visible:true, x:.2, y:.3 })
+  const points = reactive({ a:{ id:'pa', device_id:'a', category:'analog', name:'temp', value:0, quality:'good' },
+    b:{ id:'pb', device_id:'b', category:'analog', name:'temp', value:999, quality:'good' } })
+  const template = { id:'live-plc', canvas:{ width:200, height:80 }, widgets:[{ id:'reading', type:'text',
+    frame:{ x:0, y:0, width:200, height:30 }, content:{ text:'{value}', fallback:'未连接' },
+    data:{ mode:'plc', deviceScope:'current', pointKey:'analog.temp', decimals:0 } }] }
+  const context = createTooltipContext({ device:{ id:'a' } })
+  const props = { context, template, pointerSource:() => pointer, viewport:{ width:1000, height:500 },
+    pointValues:points, deviceCatalog:[{ id:'a' }, { id:'b' }] }
+  await view.render(props)
+  assert.equal(view.vm.getRenderedText('reading'), '0')
+  const contentStyles = view.placementWork.children
+  points.a.value = 456; await nextTick()
+  assert.equal(view.vm.getRenderedText('reading'), '456', 'reactive child readers update even when the surface content vnode is memoized')
+  assert.equal(view.placementWork.children, contentStyles)
+  await view.render({ ...props, context:createTooltipContext({ device:{ id:'b' } }) })
+  assert.equal(view.vm.getRenderedText('reading'), '999', 'a real device switch invalidates the content memo')
+  points.b.quality = 'stale'; await nextTick()
+  assert.equal(view.vm.getRenderedText('reading'), '未连接')
+})
+
+test('tooltip dataset reader consumes the injected real timer without polling hidden or preview surfaces', async t => {
+  t.mock.timers.enable({ apis: ['Date', 'setInterval', 'setTimeout'], now: 100000 })
+  const calls = []
+  t.mock.method(globalThis, 'fetch', async url => {
+    const query = new URL(url).searchParams
+    calls.push({ at: Date.now(), deviceId: query.get('device_id'), playbackAt: Number(query.get('playback_at')) })
+    const value = 400 + calls.length * 10
+    return json({ values: { reading: { quality: 'good', deviceId: query.get('device_id'), value,
+      rows: [{ temperature: value }], refreshAfterMs: 250 } } })
+  })
+  const view = fixture(t, TooltipSurface, { liveClock: true })
+  const context = reactive(createTooltipContext({ device: { id: 'a', name: '炉 A' },
+    runtimeContext: { factoryId: 'factory', viewId: 'overview', viewMode: 'factory' } }))
+  const pointer = reactive({ visible: true, x: .5, y: .5 })
+  const props = { context, pointer, viewport: { width: 1000, height: 500 }, deviceCatalog: [{ id: 'a' }, { id: 'b' }],
+    template: { id: 'live-dataset', kind: 'device', canvas: { width: 200, height: 80 }, widgets: [{
+      id: 'reading', type: 'value', frame: { x: 0, y: 0, width: 200, height: 80 }, content: { label: '温度' },
+      data: { mode: 'dataset', deviceScope: 'current', datasetId: 'temperature', datasetField: 'temperature', refreshMs: 250 } }] } }
+  await view.render(props); await settle()
+  assert.deepEqual(calls, [{ at: 100000, deviceId: 'a', playbackAt: 100000 }]); assert.match(text(view.root), /410/)
+  t.mock.timers.tick(200); await settle(); assert.equal(calls.length, 1)
+  t.mock.timers.tick(100); await settle(); assert.equal(view.clock.value, 100300)
+  assert.equal(calls.length, 2); assert.match(text(view.root), /420/)
+  pointer.visible = false; await settle()
+  t.mock.timers.tick(2000); await settle(); assert.equal(calls.length, 2, 'hidden hover surfaces must not poll')
+  Object.assign(context, createTooltipContext({ device: { id: 'b', name: '炉 B' },
+    runtimeContext: { factoryId: 'factory', viewId: 'overview', viewMode: 'factory' } }))
+  await settle(); assert.equal(calls.length, 2)
+  pointer.visible = true; await settle()
+  assert.equal(calls.length, 3); assert.equal(calls.at(-1).deviceId, 'b'); assert.match(text(view.root), /430/)
+  await view.render({ ...props, preview: true }); await settle()
+  t.mock.timers.tick(2000); await settle(); assert.equal(calls.length, 3, 'layout previews retain their supplied records and do not poll')
+})
+
+test('hiding a tooltip cancels its pending dataset result and a later hover reads only the new device', async t => {
+  t.mock.timers.enable({ apis: ['Date', 'setInterval', 'setTimeout'], now: 100000 })
+  const pending = deferred(), calls = []
+  t.mock.method(globalThis, 'fetch', (url, options) => {
+    const deviceId = new URL(url).searchParams.get('device_id')
+    calls.push({ deviceId, signal: options.signal })
+    return calls.length === 1 ? pending.promise : Promise.resolve(json({ values: { reading: {
+      quality: 'good', deviceId, value: 720, rows: [{ temperature: 720 }], refreshAfterMs: 250
+    } } }))
+  })
+  const view = fixture(t, TooltipSurface, { liveClock: true })
+  const context = reactive(createTooltipContext({ device: { id: 'a', name: '炉 A' }, runtimeContext: { factoryId: 'factory', viewMode: 'factory' } }))
+  const pointer = reactive({ visible: true, x: .5, y: .5 })
+  await view.render({ context, pointer, viewport: { width: 1000, height: 500 }, deviceCatalog: [{ id: 'a' }, { id: 'b' }],
+    template: { id: 'pending-dataset', kind: 'device', canvas: { width: 200, height: 80 }, widgets: [{
+      id: 'reading', type: 'value', frame: { x: 0, y: 0, width: 200, height: 80 },
+      data: { mode: 'dataset', deviceScope: 'current', datasetId: 'temperature', datasetField: 'temperature', refreshMs: 250 }
+    }] } })
+  assert.equal(calls.length, 1); assert.equal(calls[0].signal.aborted, false)
+  pointer.visible = false; await settle(); assert.equal(calls[0].signal.aborted, true)
+  pending.resolve(json({ values: { reading: { quality: 'good', deviceId: 'a', value: 9999, rows: [{ temperature: 9999 }] } } }))
+  t.mock.timers.tick(1000); await settle(); assert.equal(calls.length, 1)
+  Object.assign(context, createTooltipContext({ device: { id: 'b', name: '炉 B' }, runtimeContext: { factoryId: 'factory', viewMode: 'factory' } }))
+  pointer.visible = true; await settle()
+  assert.equal(calls.length, 2); assert.equal(calls[1].deviceId, 'b')
+  assert.match(text(view.root), /720/); assert.doesNotMatch(text(view.root), /9999/)
+})
 
 test('tooltip identity is current hover metadata even before PLC readiness and never the selected device', async t => {
   const view = fixture(t), runtimeContext = createTooltipContext({ device: { id: 'b', name: '悬停设备 B' }, runtimeContext: { viewMode: 'factory', deviceId: 'a' } })

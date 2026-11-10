@@ -11533,6 +11533,1427 @@
           }
         }
       ]
+    },
+    {
+      "name": "declared last-confirmed BOOL false numeric-zero invalid false retains fault recovery clocks",
+      "messages": [
+        {
+          "type": "realtime_frame",
+          "payload": {
+            "timestamp": 20000,
+            "devices": [
+              {
+                "furnace_id": "last_confirmed_cart",
+                "factoryId": "factory",
+                "timestamp": 20000,
+                "status": {
+                  "online": true
+                },
+                "analog": {
+                  "moving": false,
+                  "last_station": 10
+                },
+                "quality": {
+                  "analog": {
+                    "moving": "good",
+                    "last_station": "good"
+                  }
+                },
+                "pointMeta": {
+                  "analog.moving": {
+                    "id": "603",
+                    "category": "analog",
+                    "field_name": "moving",
+                    "timestamp": 20000
+                  },
+                  "analog.last_station": {
+                    "id": "1245",
+                    "category": "analog",
+                    "field_name": "last_station",
+                    "timestamp": 20000
+                  }
+                },
+                "motionSemantics": {
+                  "version": 1,
+                  "ready": true,
+                  "generation": 1,
+                  "revision": "last-confirmed-bool-r1",
+                  "factoryId": "factory",
+                  "bindings": [
+                    {
+                      "key": "movement:start",
+                      "kind": "condition",
+                      "source": {
+                        "pointId": "603"
+                      },
+                      "operator": "eq",
+                      "value": true,
+                      "hysteresis": 0
+                    },
+                    {
+                      "key": "movement:station",
+                      "kind": "station",
+                      "source": {
+                        "pointId": "1245"
+                      },
+                      "values": [
+                        10,
+                        20
+                      ]
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        {
+          "type": "realtime_frame",
+          "payload": {
+            "timestamp": 20001,
+            "devices": [
+              {
+                "furnace_id": "last_confirmed_cart",
+                "factoryId": "factory",
+                "timestamp": 20001,
+                "status": {
+                  "online": true
+                },
+                "analog": {
+                  "moving": 0,
+                  "last_station": 10
+                },
+                "quality": {
+                  "analog": {
+                    "moving": "good",
+                    "last_station": "good"
+                  }
+                },
+                "pointMeta": {
+                  "analog.moving": {
+                    "id": "603",
+                    "category": "analog",
+                    "field_name": "moving",
+                    "timestamp": 20001
+                  },
+                  "analog.last_station": {
+                    "id": "1245",
+                    "category": "analog",
+                    "field_name": "last_station",
+                    "timestamp": 20001
+                  }
+                },
+                "motionSemantics": {
+                  "version": 1,
+                  "ready": true,
+                  "generation": 1,
+                  "revision": "last-confirmed-bool-r1",
+                  "factoryId": "factory",
+                  "bindings": [
+                    {
+                      "key": "movement:start",
+                      "kind": "condition",
+                      "source": {
+                        "pointId": "603"
+                      },
+                      "operator": "eq",
+                      "value": true,
+                      "hysteresis": 0
+                    },
+                    {
+                      "key": "movement:station",
+                      "kind": "station",
+                      "source": {
+                        "pointId": "1245"
+                      },
+                      "values": [
+                        10,
+                        20
+                      ]
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        {
+          "type": "realtime_frame",
+          "payload": {
+            "timestamp": 20002,
+            "devices": [
+              {
+                "furnace_id": "last_confirmed_cart",
+                "factoryId": "factory",
+                "timestamp": 20002,
+                "status": {
+                  "online": true
+                },
+                "analog": {
+                  "moving": false,
+                  "last_station": 10
+                },
+                "quality": {
+                  "analog": {
+                    "moving": "good",
+                    "last_station": "good"
+                  }
+                },
+                "pointMeta": {
+                  "analog.moving": {
+                    "id": "603",
+                    "category": "analog",
+                    "field_name": "moving",
+                    "timestamp": 20002
+                  },
+                  "analog.last_station": {
+                    "id": "1245",
+                    "category": "analog",
+                    "field_name": "last_station",
+                    "timestamp": 20002
+                  }
+                },
+                "motionSemantics": {
+                  "version": 1,
+                  "ready": true,
+                  "generation": 1,
+                  "revision": "last-confirmed-bool-r1",
+                  "factoryId": "factory",
+                  "bindings": [
+                    {
+                      "key": "movement:start",
+                      "kind": "condition",
+                      "source": {
+                        "pointId": "603"
+                      },
+                      "operator": "eq",
+                      "value": true,
+                      "hysteresis": 0
+                    },
+                    {
+                      "key": "movement:station",
+                      "kind": "station",
+                      "source": {
+                        "pointId": "1245"
+                      },
+                      "values": [
+                        10,
+                        20
+                      ]
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        }
+      ],
+      "expected": [
+        {
+          "type": "realtime_frame",
+          "payload": {
+            "timestamp": 20000,
+            "devices": [
+              {
+                "furnace_id": "last_confirmed_cart",
+                "factoryId": "factory",
+                "timestamp": 20000,
+                "status": {
+                  "online": true
+                },
+                "analog": {
+                  "moving": false,
+                  "last_station": 10
+                },
+                "quality": {
+                  "analog": {
+                    "moving": "good",
+                    "last_station": "good"
+                  }
+                },
+                "pointMeta": {
+                  "analog.moving": {
+                    "id": "603",
+                    "category": "analog",
+                    "field_name": "moving",
+                    "timestamp": 20000
+                  },
+                  "analog.last_station": {
+                    "id": "1245",
+                    "category": "analog",
+                    "field_name": "last_station",
+                    "timestamp": 20000
+                  }
+                },
+                "motionSemantics": {
+                  "version": 1,
+                  "ready": true,
+                  "generation": 1,
+                  "revision": "last-confirmed-bool-r1",
+                  "factoryId": "factory",
+                  "bindings": [
+                    {
+                      "key": "movement:start",
+                      "kind": "condition",
+                      "source": {
+                        "pointId": "603"
+                      },
+                      "operator": "eq",
+                      "value": true,
+                      "hysteresis": 0
+                    },
+                    {
+                      "key": "movement:station",
+                      "kind": "station",
+                      "source": {
+                        "pointId": "1245"
+                      },
+                      "values": [
+                        10,
+                        20
+                      ]
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        {
+          "type": "realtime_frame",
+          "payload": {
+            "timestamp": 20001,
+            "devices": [
+              {
+                "furnace_id": "last_confirmed_cart",
+                "factoryId": "factory",
+                "timestamp": 20001,
+                "status": {
+                  "online": true
+                },
+                "analog": {
+                  "moving": 0,
+                  "last_station": 10
+                },
+                "quality": {
+                  "analog": {
+                    "moving": "good",
+                    "last_station": "good"
+                  }
+                },
+                "pointMeta": {
+                  "analog.moving": {
+                    "id": "603",
+                    "category": "analog",
+                    "field_name": "moving",
+                    "timestamp": 20001
+                  },
+                  "analog.last_station": {
+                    "id": "1245",
+                    "category": "analog",
+                    "field_name": "last_station",
+                    "timestamp": 20001
+                  }
+                },
+                "motionSemantics": {
+                  "version": 1,
+                  "ready": true,
+                  "generation": 1,
+                  "revision": "last-confirmed-bool-r1",
+                  "factoryId": "factory",
+                  "bindings": [
+                    {
+                      "key": "movement:start",
+                      "kind": "condition",
+                      "source": {
+                        "pointId": "603"
+                      },
+                      "operator": "eq",
+                      "value": true,
+                      "hysteresis": 0
+                    },
+                    {
+                      "key": "movement:station",
+                      "kind": "station",
+                      "source": {
+                        "pointId": "1245"
+                      },
+                      "values": [
+                        10,
+                        20
+                      ]
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        {
+          "type": "realtime_frame",
+          "payload": {
+            "timestamp": 20002,
+            "devices": [
+              {
+                "furnace_id": "last_confirmed_cart",
+                "factoryId": "factory",
+                "timestamp": 20002,
+                "status": {
+                  "online": true
+                },
+                "analog": {
+                  "moving": false,
+                  "last_station": 10
+                },
+                "quality": {
+                  "analog": {
+                    "moving": "good",
+                    "last_station": "good"
+                  }
+                },
+                "pointMeta": {
+                  "analog.moving": {
+                    "id": "603",
+                    "category": "analog",
+                    "field_name": "moving",
+                    "timestamp": 20002
+                  },
+                  "analog.last_station": {
+                    "id": "1245",
+                    "category": "analog",
+                    "field_name": "last_station",
+                    "timestamp": 20002
+                  }
+                },
+                "motionSemantics": {
+                  "version": 1,
+                  "ready": true,
+                  "generation": 1,
+                  "revision": "last-confirmed-bool-r1",
+                  "factoryId": "factory",
+                  "bindings": [
+                    {
+                      "key": "movement:start",
+                      "kind": "condition",
+                      "source": {
+                        "pointId": "603"
+                      },
+                      "operator": "eq",
+                      "value": true,
+                      "hysteresis": 0
+                    },
+                    {
+                      "key": "movement:station",
+                      "kind": "station",
+                      "source": {
+                        "pointId": "1245"
+                      },
+                      "values": [
+                        10,
+                        20
+                      ]
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "declared last-confirmed BOOL true numeric-one invalid true retains fault recovery clocks",
+      "messages": [
+        {
+          "type": "realtime_frame",
+          "payload": {
+            "timestamp": 20100,
+            "devices": [
+              {
+                "furnace_id": "last_confirmed_cart",
+                "factoryId": "factory",
+                "timestamp": 20100,
+                "status": {
+                  "online": true
+                },
+                "analog": {
+                  "moving": true,
+                  "last_station": 10
+                },
+                "quality": {
+                  "analog": {
+                    "moving": "good",
+                    "last_station": "good"
+                  }
+                },
+                "pointMeta": {
+                  "analog.moving": {
+                    "id": "603",
+                    "category": "analog",
+                    "field_name": "moving",
+                    "timestamp": 20100
+                  },
+                  "analog.last_station": {
+                    "id": "1245",
+                    "category": "analog",
+                    "field_name": "last_station",
+                    "timestamp": 20100
+                  }
+                },
+                "motionSemantics": {
+                  "version": 1,
+                  "ready": true,
+                  "generation": 1,
+                  "revision": "last-confirmed-bool-r1",
+                  "factoryId": "factory",
+                  "bindings": [
+                    {
+                      "key": "movement:start",
+                      "kind": "condition",
+                      "source": {
+                        "pointId": "603"
+                      },
+                      "operator": "eq",
+                      "value": true,
+                      "hysteresis": 0
+                    },
+                    {
+                      "key": "movement:station",
+                      "kind": "station",
+                      "source": {
+                        "pointId": "1245"
+                      },
+                      "values": [
+                        10,
+                        20
+                      ]
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        {
+          "type": "realtime_frame",
+          "payload": {
+            "timestamp": 20101,
+            "devices": [
+              {
+                "furnace_id": "last_confirmed_cart",
+                "factoryId": "factory",
+                "timestamp": 20101,
+                "status": {
+                  "online": true
+                },
+                "analog": {
+                  "moving": 1,
+                  "last_station": 10
+                },
+                "quality": {
+                  "analog": {
+                    "moving": "good",
+                    "last_station": "good"
+                  }
+                },
+                "pointMeta": {
+                  "analog.moving": {
+                    "id": "603",
+                    "category": "analog",
+                    "field_name": "moving",
+                    "timestamp": 20101
+                  },
+                  "analog.last_station": {
+                    "id": "1245",
+                    "category": "analog",
+                    "field_name": "last_station",
+                    "timestamp": 20101
+                  }
+                },
+                "motionSemantics": {
+                  "version": 1,
+                  "ready": true,
+                  "generation": 1,
+                  "revision": "last-confirmed-bool-r1",
+                  "factoryId": "factory",
+                  "bindings": [
+                    {
+                      "key": "movement:start",
+                      "kind": "condition",
+                      "source": {
+                        "pointId": "603"
+                      },
+                      "operator": "eq",
+                      "value": true,
+                      "hysteresis": 0
+                    },
+                    {
+                      "key": "movement:station",
+                      "kind": "station",
+                      "source": {
+                        "pointId": "1245"
+                      },
+                      "values": [
+                        10,
+                        20
+                      ]
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        {
+          "type": "realtime_frame",
+          "payload": {
+            "timestamp": 20102,
+            "devices": [
+              {
+                "furnace_id": "last_confirmed_cart",
+                "factoryId": "factory",
+                "timestamp": 20102,
+                "status": {
+                  "online": true
+                },
+                "analog": {
+                  "moving": true,
+                  "last_station": 10
+                },
+                "quality": {
+                  "analog": {
+                    "moving": "good",
+                    "last_station": "good"
+                  }
+                },
+                "pointMeta": {
+                  "analog.moving": {
+                    "id": "603",
+                    "category": "analog",
+                    "field_name": "moving",
+                    "timestamp": 20102
+                  },
+                  "analog.last_station": {
+                    "id": "1245",
+                    "category": "analog",
+                    "field_name": "last_station",
+                    "timestamp": 20102
+                  }
+                },
+                "motionSemantics": {
+                  "version": 1,
+                  "ready": true,
+                  "generation": 1,
+                  "revision": "last-confirmed-bool-r1",
+                  "factoryId": "factory",
+                  "bindings": [
+                    {
+                      "key": "movement:start",
+                      "kind": "condition",
+                      "source": {
+                        "pointId": "603"
+                      },
+                      "operator": "eq",
+                      "value": true,
+                      "hysteresis": 0
+                    },
+                    {
+                      "key": "movement:station",
+                      "kind": "station",
+                      "source": {
+                        "pointId": "1245"
+                      },
+                      "values": [
+                        10,
+                        20
+                      ]
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        }
+      ],
+      "expected": [
+        {
+          "type": "realtime_frame",
+          "payload": {
+            "timestamp": 20100,
+            "devices": [
+              {
+                "furnace_id": "last_confirmed_cart",
+                "factoryId": "factory",
+                "timestamp": 20100,
+                "status": {
+                  "online": true
+                },
+                "analog": {
+                  "moving": true,
+                  "last_station": 10
+                },
+                "quality": {
+                  "analog": {
+                    "moving": "good",
+                    "last_station": "good"
+                  }
+                },
+                "pointMeta": {
+                  "analog.moving": {
+                    "id": "603",
+                    "category": "analog",
+                    "field_name": "moving",
+                    "timestamp": 20100
+                  },
+                  "analog.last_station": {
+                    "id": "1245",
+                    "category": "analog",
+                    "field_name": "last_station",
+                    "timestamp": 20100
+                  }
+                },
+                "motionSemantics": {
+                  "version": 1,
+                  "ready": true,
+                  "generation": 1,
+                  "revision": "last-confirmed-bool-r1",
+                  "factoryId": "factory",
+                  "bindings": [
+                    {
+                      "key": "movement:start",
+                      "kind": "condition",
+                      "source": {
+                        "pointId": "603"
+                      },
+                      "operator": "eq",
+                      "value": true,
+                      "hysteresis": 0
+                    },
+                    {
+                      "key": "movement:station",
+                      "kind": "station",
+                      "source": {
+                        "pointId": "1245"
+                      },
+                      "values": [
+                        10,
+                        20
+                      ]
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        {
+          "type": "realtime_frame",
+          "payload": {
+            "timestamp": 20101,
+            "devices": [
+              {
+                "furnace_id": "last_confirmed_cart",
+                "factoryId": "factory",
+                "timestamp": 20101,
+                "status": {
+                  "online": true
+                },
+                "analog": {
+                  "moving": 1,
+                  "last_station": 10
+                },
+                "quality": {
+                  "analog": {
+                    "moving": "good",
+                    "last_station": "good"
+                  }
+                },
+                "pointMeta": {
+                  "analog.moving": {
+                    "id": "603",
+                    "category": "analog",
+                    "field_name": "moving",
+                    "timestamp": 20101
+                  },
+                  "analog.last_station": {
+                    "id": "1245",
+                    "category": "analog",
+                    "field_name": "last_station",
+                    "timestamp": 20101
+                  }
+                },
+                "motionSemantics": {
+                  "version": 1,
+                  "ready": true,
+                  "generation": 1,
+                  "revision": "last-confirmed-bool-r1",
+                  "factoryId": "factory",
+                  "bindings": [
+                    {
+                      "key": "movement:start",
+                      "kind": "condition",
+                      "source": {
+                        "pointId": "603"
+                      },
+                      "operator": "eq",
+                      "value": true,
+                      "hysteresis": 0
+                    },
+                    {
+                      "key": "movement:station",
+                      "kind": "station",
+                      "source": {
+                        "pointId": "1245"
+                      },
+                      "values": [
+                        10,
+                        20
+                      ]
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        {
+          "type": "realtime_frame",
+          "payload": {
+            "timestamp": 20102,
+            "devices": [
+              {
+                "furnace_id": "last_confirmed_cart",
+                "factoryId": "factory",
+                "timestamp": 20102,
+                "status": {
+                  "online": true
+                },
+                "analog": {
+                  "moving": true,
+                  "last_station": 10
+                },
+                "quality": {
+                  "analog": {
+                    "moving": "good",
+                    "last_station": "good"
+                  }
+                },
+                "pointMeta": {
+                  "analog.moving": {
+                    "id": "603",
+                    "category": "analog",
+                    "field_name": "moving",
+                    "timestamp": 20102
+                  },
+                  "analog.last_station": {
+                    "id": "1245",
+                    "category": "analog",
+                    "field_name": "last_station",
+                    "timestamp": 20102
+                  }
+                },
+                "motionSemantics": {
+                  "version": 1,
+                  "ready": true,
+                  "generation": 1,
+                  "revision": "last-confirmed-bool-r1",
+                  "factoryId": "factory",
+                  "bindings": [
+                    {
+                      "key": "movement:start",
+                      "kind": "condition",
+                      "source": {
+                        "pointId": "603"
+                      },
+                      "operator": "eq",
+                      "value": true,
+                      "hysteresis": 0
+                    },
+                    {
+                      "key": "movement:station",
+                      "kind": "station",
+                      "source": {
+                        "pointId": "1245"
+                      },
+                      "values": [
+                        10,
+                        20
+                      ]
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "declared last-confirmed BOOL invalid numeric burst stays latest without erasing fault recovery",
+      "messages": [
+        {
+          "type": "realtime_frame",
+          "payload": {
+            "timestamp": 20200,
+            "devices": [
+              {
+                "furnace_id": "last_confirmed_cart",
+                "factoryId": "factory",
+                "timestamp": 20200,
+                "status": {
+                  "online": true
+                },
+                "analog": {
+                  "moving": false,
+                  "last_station": 10
+                },
+                "quality": {
+                  "analog": {
+                    "moving": "good",
+                    "last_station": "good"
+                  }
+                },
+                "pointMeta": {
+                  "analog.moving": {
+                    "id": "603",
+                    "category": "analog",
+                    "field_name": "moving",
+                    "timestamp": 20200
+                  },
+                  "analog.last_station": {
+                    "id": "1245",
+                    "category": "analog",
+                    "field_name": "last_station",
+                    "timestamp": 20200
+                  }
+                },
+                "motionSemantics": {
+                  "version": 1,
+                  "ready": true,
+                  "generation": 1,
+                  "revision": "last-confirmed-bool-r1",
+                  "factoryId": "factory",
+                  "bindings": [
+                    {
+                      "key": "movement:start",
+                      "kind": "condition",
+                      "source": {
+                        "pointId": "603"
+                      },
+                      "operator": "eq",
+                      "value": true,
+                      "hysteresis": 0
+                    },
+                    {
+                      "key": "movement:station",
+                      "kind": "station",
+                      "source": {
+                        "pointId": "1245"
+                      },
+                      "values": [
+                        10,
+                        20
+                      ]
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        {
+          "type": "realtime_frame",
+          "payload": {
+            "timestamp": 20201,
+            "devices": [
+              {
+                "furnace_id": "last_confirmed_cart",
+                "factoryId": "factory",
+                "timestamp": 20201,
+                "status": {
+                  "online": true
+                },
+                "analog": {
+                  "moving": 0,
+                  "last_station": 10
+                },
+                "quality": {
+                  "analog": {
+                    "moving": "good",
+                    "last_station": "good"
+                  }
+                },
+                "pointMeta": {
+                  "analog.moving": {
+                    "id": "603",
+                    "category": "analog",
+                    "field_name": "moving",
+                    "timestamp": 20201
+                  },
+                  "analog.last_station": {
+                    "id": "1245",
+                    "category": "analog",
+                    "field_name": "last_station",
+                    "timestamp": 20201
+                  }
+                },
+                "motionSemantics": {
+                  "version": 1,
+                  "ready": true,
+                  "generation": 1,
+                  "revision": "last-confirmed-bool-r1",
+                  "factoryId": "factory",
+                  "bindings": [
+                    {
+                      "key": "movement:start",
+                      "kind": "condition",
+                      "source": {
+                        "pointId": "603"
+                      },
+                      "operator": "eq",
+                      "value": true,
+                      "hysteresis": 0
+                    },
+                    {
+                      "key": "movement:station",
+                      "kind": "station",
+                      "source": {
+                        "pointId": "1245"
+                      },
+                      "values": [
+                        10,
+                        20
+                      ]
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        {
+          "type": "realtime_frame",
+          "payload": {
+            "timestamp": 20202,
+            "devices": [
+              {
+                "furnace_id": "last_confirmed_cart",
+                "factoryId": "factory",
+                "timestamp": 20202,
+                "status": {
+                  "online": true
+                },
+                "analog": {
+                  "moving": 1,
+                  "last_station": 10
+                },
+                "quality": {
+                  "analog": {
+                    "moving": "good",
+                    "last_station": "good"
+                  }
+                },
+                "pointMeta": {
+                  "analog.moving": {
+                    "id": "603",
+                    "category": "analog",
+                    "field_name": "moving",
+                    "timestamp": 20202
+                  },
+                  "analog.last_station": {
+                    "id": "1245",
+                    "category": "analog",
+                    "field_name": "last_station",
+                    "timestamp": 20202
+                  }
+                },
+                "motionSemantics": {
+                  "version": 1,
+                  "ready": true,
+                  "generation": 1,
+                  "revision": "last-confirmed-bool-r1",
+                  "factoryId": "factory",
+                  "bindings": [
+                    {
+                      "key": "movement:start",
+                      "kind": "condition",
+                      "source": {
+                        "pointId": "603"
+                      },
+                      "operator": "eq",
+                      "value": true,
+                      "hysteresis": 0
+                    },
+                    {
+                      "key": "movement:station",
+                      "kind": "station",
+                      "source": {
+                        "pointId": "1245"
+                      },
+                      "values": [
+                        10,
+                        20
+                      ]
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        {
+          "type": "realtime_frame",
+          "payload": {
+            "timestamp": 20203,
+            "devices": [
+              {
+                "furnace_id": "last_confirmed_cart",
+                "factoryId": "factory",
+                "timestamp": 20203,
+                "status": {
+                  "online": true
+                },
+                "analog": {
+                  "moving": 0,
+                  "last_station": 10
+                },
+                "quality": {
+                  "analog": {
+                    "moving": "good",
+                    "last_station": "good"
+                  }
+                },
+                "pointMeta": {
+                  "analog.moving": {
+                    "id": "603",
+                    "category": "analog",
+                    "field_name": "moving",
+                    "timestamp": 20203
+                  },
+                  "analog.last_station": {
+                    "id": "1245",
+                    "category": "analog",
+                    "field_name": "last_station",
+                    "timestamp": 20203
+                  }
+                },
+                "motionSemantics": {
+                  "version": 1,
+                  "ready": true,
+                  "generation": 1,
+                  "revision": "last-confirmed-bool-r1",
+                  "factoryId": "factory",
+                  "bindings": [
+                    {
+                      "key": "movement:start",
+                      "kind": "condition",
+                      "source": {
+                        "pointId": "603"
+                      },
+                      "operator": "eq",
+                      "value": true,
+                      "hysteresis": 0
+                    },
+                    {
+                      "key": "movement:station",
+                      "kind": "station",
+                      "source": {
+                        "pointId": "1245"
+                      },
+                      "values": [
+                        10,
+                        20
+                      ]
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        {
+          "type": "realtime_frame",
+          "payload": {
+            "timestamp": 20204,
+            "devices": [
+              {
+                "furnace_id": "last_confirmed_cart",
+                "factoryId": "factory",
+                "timestamp": 20204,
+                "status": {
+                  "online": true
+                },
+                "analog": {
+                  "moving": false,
+                  "last_station": 10
+                },
+                "quality": {
+                  "analog": {
+                    "moving": "good",
+                    "last_station": "good"
+                  }
+                },
+                "pointMeta": {
+                  "analog.moving": {
+                    "id": "603",
+                    "category": "analog",
+                    "field_name": "moving",
+                    "timestamp": 20204
+                  },
+                  "analog.last_station": {
+                    "id": "1245",
+                    "category": "analog",
+                    "field_name": "last_station",
+                    "timestamp": 20204
+                  }
+                },
+                "motionSemantics": {
+                  "version": 1,
+                  "ready": true,
+                  "generation": 1,
+                  "revision": "last-confirmed-bool-r1",
+                  "factoryId": "factory",
+                  "bindings": [
+                    {
+                      "key": "movement:start",
+                      "kind": "condition",
+                      "source": {
+                        "pointId": "603"
+                      },
+                      "operator": "eq",
+                      "value": true,
+                      "hysteresis": 0
+                    },
+                    {
+                      "key": "movement:station",
+                      "kind": "station",
+                      "source": {
+                        "pointId": "1245"
+                      },
+                      "values": [
+                        10,
+                        20
+                      ]
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        }
+      ],
+      "expected": [
+        {
+          "type": "realtime_frame",
+          "payload": {
+            "timestamp": 20200,
+            "devices": [
+              {
+                "furnace_id": "last_confirmed_cart",
+                "factoryId": "factory",
+                "timestamp": 20200,
+                "status": {
+                  "online": true
+                },
+                "analog": {
+                  "moving": false,
+                  "last_station": 10
+                },
+                "quality": {
+                  "analog": {
+                    "moving": "good",
+                    "last_station": "good"
+                  }
+                },
+                "pointMeta": {
+                  "analog.moving": {
+                    "id": "603",
+                    "category": "analog",
+                    "field_name": "moving",
+                    "timestamp": 20200
+                  },
+                  "analog.last_station": {
+                    "id": "1245",
+                    "category": "analog",
+                    "field_name": "last_station",
+                    "timestamp": 20200
+                  }
+                },
+                "motionSemantics": {
+                  "version": 1,
+                  "ready": true,
+                  "generation": 1,
+                  "revision": "last-confirmed-bool-r1",
+                  "factoryId": "factory",
+                  "bindings": [
+                    {
+                      "key": "movement:start",
+                      "kind": "condition",
+                      "source": {
+                        "pointId": "603"
+                      },
+                      "operator": "eq",
+                      "value": true,
+                      "hysteresis": 0
+                    },
+                    {
+                      "key": "movement:station",
+                      "kind": "station",
+                      "source": {
+                        "pointId": "1245"
+                      },
+                      "values": [
+                        10,
+                        20
+                      ]
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        {
+          "type": "realtime_frame",
+          "payload": {
+            "timestamp": 20203,
+            "devices": [
+              {
+                "furnace_id": "last_confirmed_cart",
+                "factoryId": "factory",
+                "timestamp": 20203,
+                "status": {
+                  "online": true
+                },
+                "analog": {
+                  "moving": 0,
+                  "last_station": 10
+                },
+                "quality": {
+                  "analog": {
+                    "moving": "good",
+                    "last_station": "good"
+                  }
+                },
+                "pointMeta": {
+                  "analog.moving": {
+                    "id": "603",
+                    "category": "analog",
+                    "field_name": "moving",
+                    "timestamp": 20203
+                  },
+                  "analog.last_station": {
+                    "id": "1245",
+                    "category": "analog",
+                    "field_name": "last_station",
+                    "timestamp": 20203
+                  }
+                },
+                "motionSemantics": {
+                  "version": 1,
+                  "ready": true,
+                  "generation": 1,
+                  "revision": "last-confirmed-bool-r1",
+                  "factoryId": "factory",
+                  "bindings": [
+                    {
+                      "key": "movement:start",
+                      "kind": "condition",
+                      "source": {
+                        "pointId": "603"
+                      },
+                      "operator": "eq",
+                      "value": true,
+                      "hysteresis": 0
+                    },
+                    {
+                      "key": "movement:station",
+                      "kind": "station",
+                      "source": {
+                        "pointId": "1245"
+                      },
+                      "values": [
+                        10,
+                        20
+                      ]
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        {
+          "type": "realtime_frame",
+          "payload": {
+            "timestamp": 20204,
+            "devices": [
+              {
+                "furnace_id": "last_confirmed_cart",
+                "factoryId": "factory",
+                "timestamp": 20204,
+                "status": {
+                  "online": true
+                },
+                "analog": {
+                  "moving": false,
+                  "last_station": 10
+                },
+                "quality": {
+                  "analog": {
+                    "moving": "good",
+                    "last_station": "good"
+                  }
+                },
+                "pointMeta": {
+                  "analog.moving": {
+                    "id": "603",
+                    "category": "analog",
+                    "field_name": "moving",
+                    "timestamp": 20204
+                  },
+                  "analog.last_station": {
+                    "id": "1245",
+                    "category": "analog",
+                    "field_name": "last_station",
+                    "timestamp": 20204
+                  }
+                },
+                "motionSemantics": {
+                  "version": 1,
+                  "ready": true,
+                  "generation": 1,
+                  "revision": "last-confirmed-bool-r1",
+                  "factoryId": "factory",
+                  "bindings": [
+                    {
+                      "key": "movement:start",
+                      "kind": "condition",
+                      "source": {
+                        "pointId": "603"
+                      },
+                      "operator": "eq",
+                      "value": true,
+                      "hysteresis": 0
+                    },
+                    {
+                      "key": "movement:station",
+                      "kind": "station",
+                      "source": {
+                        "pointId": "1245"
+                      },
+                      "values": [
+                        10,
+                        20
+                      ]
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        }
+      ]
     }
   ]
 }

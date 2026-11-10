@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { copyAndHash } = require('../utils/backupStorage');
+const { renameAtomic } = require('../utils/atomicRename');
 
 const dataDirectory = process.env.APP_DATA_DIR ? path.resolve(process.env.APP_DATA_DIR) : path.join(__dirname, '..', 'data');
 const intentFilename = path.join(dataDirectory, 'site-recovery-intent.json');
@@ -42,7 +43,7 @@ async function durableWrite(intent, { createOnly = false } = {}) {
         await file.sync();
         await file.close(); file = null;
         if (createOnly) await fs.promises.link(temporary, intentFilename);
-        else await fs.promises.rename(temporary, intentFilename);
+        else await renameAtomic(temporary, intentFilename);
         // Windows does not expose directory fsync. On systems that do, flush
         // the directory rename as well as the intent file contents.
         if (process.platform !== 'win32') {
@@ -101,7 +102,7 @@ async function finishSiteRecoveryIntent(intent, phase) {
     }
     // An atomic move first retires the authority only after both commits (or
     // all rollbacks). If Windows refuses the move, all pending evidence stays.
-    await fs.promises.rename(intentFilename, path.join(resolved, 'completed-intent.json'));
+    await renameAtomic(intentFilename, path.join(resolved, 'completed-intent.json'));
     try { await fs.promises.rm(resolved, { recursive: true, force: true }); return {}; }
     catch (error) { return { cleanupWarning: error.message, evidenceDirectory: resolved }; }
 }

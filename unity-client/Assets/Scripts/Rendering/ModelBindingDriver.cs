@@ -24,10 +24,27 @@ namespace HeatTreatment.DigitalTwin.Rendering
             public JObject RuntimeBinding;
             public JObject LegacyObservationBinding;
             public MotionSignalState Signal;
+            public bool HasRotationPose, HasAppliedRotation;
+            public float RotationOffset;
+            public Vector3 PoseRotationAxis;
+            public Quaternion RequestedRotation, AppliedRotation;
+            public bool HasParsedColor, ColorValid, ColorAuthoringSpace, ColorIsLinear;
+            public string ColorText;
+            public Color ParsedColor;
+            public bool HasColorSnapshot;
+            public Color ColorRequested, BaseColorApplied, ColorApplied, BaseColorFactorApplied;
+            public ColorSpace ColorSnapshotSpace;
         }
 
         private readonly List<BindingState> _states = new List<BindingState>();
         private MaterialPropertyBlock _propertyBlock;
+        private readonly List<Renderer> _colorRenderers = new List<Renderer>();
+        private static readonly int BaseColorId = Shader.PropertyToID("_BaseColor");
+        private static readonly int ColorId = Shader.PropertyToID("_Color");
+        private static readonly int BaseColorFactorId = Shader.PropertyToID("baseColorFactor");
+#if UNITY_EDITOR
+        public long PropertyBlockApplications { get; private set; }
+#endif
         private float _lastRealtimeAt = float.NegativeInfinity;
         public float DataTimeoutSeconds { get; set; } = 10f;
         public JObject TransferDiagnostic { get; set; }
@@ -67,8 +84,11 @@ namespace HeatTreatment.DigitalTwin.Rendering
             foreach (var state in _states)
             {
                 var snapshot = snapshots?[state.RuntimeBinding?.Value<string>("actionId") ?? ""] as JObject;
-                if (snapshot == null || !state.Signal.RestoreDisplayState(state.RuntimeBinding, snapshot)) continue;
-                if (state.Binding.Action == "rotate_speed" && JToken.DeepEquals(snapshot["definition"], JObject.FromObject(state.Binding)))
+                // A different node/axis/calibration is a new display binding,
+                // even when its source and action ID happen to be unchanged.
+                if (snapshot == null || !JToken.DeepEquals(snapshot["definition"], JObject.FromObject(state.Binding))
+                    || !state.Signal.RestoreDisplayState(state.RuntimeBinding, snapshot)) continue;
+                if (state.Binding.Action == "rotate_speed")
                 {
                     var p = snapshot["actualPosition"].Values<float>().ToArray(); var q = snapshot["actualRotation"].Values<float>().ToArray();
                     state.Target.localPosition = new Vector3(p[0], p[1], p[2]); state.Target.localRotation = new Quaternion(q[0], q[1], q[2], q[3]);
@@ -93,6 +113,9 @@ namespace HeatTreatment.DigitalTwin.Rendering
         public void Configure(IEnumerable<PartBindingDto> bindings, JObject runtimeConfig = null)
         {
             _states.Clear();
+#if UNITY_EDITOR
+            PropertyBlockApplications = 0;
+#endif
             var transforms = GetComponentsInChildren<Transform>(true);
             var pathMap = BuildPathMap(transform);
             var rows = runtimeConfig?["bindings"]?.OfType<JObject>().ToArray() ?? Array.Empty<JObject>();
@@ -173,13 +196,13 @@ namespace HeatTreatment.DigitalTwin.Rendering
                 {
                     if (binding.AuthoringSpace && !TryFloat(token, out value)) { state.Suspended = true; if (state.LegacyObservationBinding != null) state.Signal.Suspend("部件来源数据类型无效"); continue; }
                     var visible = binding.AuthoringSpace ? Map(value, binding.InputMin, binding.InputMax, 0, 1) > .5f : ToBool(token);
-                    state.Target.gameObject.SetActive(binding.Invert ? !visible : visible);
+                    SetVisibility(state.Target, binding.Invert ? !visible : visible);
                 }
                 else if (action == "color")
                 {
                     if (binding.AuthoringSpace && !TryFloat(token, out value)) { state.Suspended = true; if (state.LegacyObservationBinding != null) state.Signal.Suspend("部件来源数据类型无效"); continue; }
                     var active = binding.AuthoringSpace ? Map(value, binding.InputMin, binding.InputMax, 0, 1) > .5f : ToBool(token);
-                    ApplyColor(state.Target, (active != binding.Invert) ? binding.OnColor : binding.OffColor, binding.AuthoringSpace);
+                    ApplyColor(state, (active != binding.Invert) ? binding.OnColor : binding.OffColor, binding.AuthoringSpace);
                 }
             }
         }
@@ -249,8 +272,8 @@ namespace HeatTreatment.DigitalTwin.Rendering
                 state.Offset = binding.OutputMin + (binding.OutputMax - binding.OutputMin) * (float)state.Signal.Position;
                 state.HasPose = true; ApplyPose(state);
             }
-            else if (action == "visibility") state.Target.gameObject.SetActive(state.Signal.Position > .5);
-            else if (action == "color") ApplyColor(state.Target, state.Signal.Position > .5 ? binding.OnColor : binding.OffColor, binding.AuthoringSpace);
+            else if (action == "visibility") SetVisibility(state.Target, state.Signal.Position > .5);
+            else if (action == "color") ApplyColor(state, state.Signal.Position > .5 ? binding.OnColor : binding.OffColor, binding.AuthoringSpace);
         }
 
         private static void SetAngularSpeed(BindingState state, float speed)
@@ -268,32 +291,83 @@ namespace HeatTreatment.DigitalTwin.Rendering
                 state.AngularSpeedDegrees = 0; state.Suspended = true;
                 state.Signal.Suspend("部件旋转步长超出可显示范围"); return;
             }
+            if (angle == 0f) return;
             state.Target.Rotate(RotationAxis(state.Binding), angle, Space.Self);
         }
 
         private static void ApplyPose(BindingState state)
         {
             if (state.Binding.Action == "translate")
-                state.Target.localPosition = state.BasePosition + (state.Binding.AuthoringSpace && state.Binding.Axis == "x" ? Vector3.left : Axis(state.Binding.Axis)) * state.Offset;
+            {
+                var position = state.BasePosition + (state.Binding.AuthoringSpace && state.Binding.Axis == "x" ? Vector3.left : Axis(state.Binding.Axis)) * state.Offset;
+                if (!state.Target.localPosition.Equals(position)) state.Target.localPosition = position;
+            }
             else
-                state.Target.localRotation = state.BaseRotation * Quaternion.AngleAxis(state.Offset, RotationAxis(state.Binding));
+            {
+                var axis = RotationAxis(state.Binding);
+                if (!state.HasRotationPose || !state.RotationOffset.Equals(state.Offset) || !state.PoseRotationAxis.Equals(axis))
+                {
+                    state.RotationOffset = state.Offset; state.PoseRotationAxis = axis;
+                    state.RequestedRotation = state.BaseRotation * Quaternion.AngleAxis(state.Offset, axis);
+                    state.HasRotationPose = true; state.HasAppliedRotation = false;
+                }
+                var actual = state.Target.localRotation;
+                if (state.HasAppliedRotation && actual.Equals(state.AppliedRotation)) return;
+                if (!actual.Equals(state.RequestedRotation))
+                { state.Target.localRotation = state.RequestedRotation; actual = state.Target.localRotation; }
+                state.AppliedRotation = actual; state.HasAppliedRotation = true;
+            }
         }
         private static Vector3 RotationAxis(PartBindingDto binding) => binding.AuthoringSpace && binding.Axis != "x" ? -Axis(binding.Axis) : Axis(binding.Axis);
 
-        private void ApplyColor(Transform target, string htmlColor, bool authoringSpace)
+        private static void SetVisibility(Transform target, bool visible)
         {
-            if (!ColorUtility.TryParseHtmlString(htmlColor, out var color)) return;
-            if (authoringSpace && QualitySettings.activeColorSpace == ColorSpace.Linear) color = color.linear;
+            if (target.gameObject.activeSelf != visible) target.gameObject.SetActive(visible);
+        }
+
+        private void ApplyColor(BindingState state, string htmlColor, bool authoringSpace)
+        {
+            var colorSpace = QualitySettings.activeColorSpace;
+            var linear = authoringSpace && colorSpace == ColorSpace.Linear;
+            if (!state.HasParsedColor || !string.Equals(state.ColorText, htmlColor, StringComparison.Ordinal)
+                || state.ColorAuthoringSpace != authoringSpace || state.ColorIsLinear != linear)
+            {
+                state.ColorText = htmlColor; state.ColorAuthoringSpace = authoringSpace; state.ColorIsLinear = linear;
+                state.ColorValid = ColorUtility.TryParseHtmlString(htmlColor, out state.ParsedColor);
+                if (state.ColorValid && linear) state.ParsedColor = state.ParsedColor.linear;
+                state.HasParsedColor = true;
+            }
+            if (!state.ColorValid) return;
+            var color = state.ParsedColor;
             _propertyBlock ??= new MaterialPropertyBlock();
-            foreach (var renderer in target.GetComponentsInChildren<Renderer>(true))
+            // Keep the original dynamic subtree semantics for inspection
+            // reparenting/new renderers without allocating an array per frame.
+            _colorRenderers.Clear();
+            state.Target.GetComponentsInChildren<Renderer>(true, _colorRenderers);
+            foreach (var renderer in _colorRenderers)
             {
                 renderer.GetPropertyBlock(_propertyBlock);
-                _propertyBlock.SetColor("_BaseColor", color);
-                _propertyBlock.SetColor("_Color", color);
-                _propertyBlock.SetColor("baseColorFactor", color);
+                if (state.HasColorSnapshot && state.ColorSnapshotSpace == colorSpace && state.ColorRequested.Equals(color)
+                    && HasExactColor(_propertyBlock, BaseColorId, state.BaseColorApplied)
+                    && HasExactColor(_propertyBlock, ColorId, state.ColorApplied)
+                    && HasExactColor(_propertyBlock, BaseColorFactorId, state.BaseColorFactorApplied)) continue;
+                _propertyBlock.SetColor(BaseColorId, color);
+                _propertyBlock.SetColor(ColorId, color);
+                _propertyBlock.SetColor(BaseColorFactorId, color);
+                // The native linear/gamma round-trip is shared across this
+                // color request, not across renderer membership. Always query
+                // each current descendant and preserve other owners' values.
+                state.ColorRequested = color; state.ColorSnapshotSpace = colorSpace;
+                state.BaseColorApplied = _propertyBlock.GetColor(BaseColorId); state.ColorApplied = _propertyBlock.GetColor(ColorId);
+                state.BaseColorFactorApplied = _propertyBlock.GetColor(BaseColorFactorId); state.HasColorSnapshot = true;
                 renderer.SetPropertyBlock(_propertyBlock);
+#if UNITY_EDITOR
+                PropertyBlockApplications++;
+#endif
             }
         }
+        private static bool HasExactColor(MaterialPropertyBlock block, int property, Color color)
+            => block.HasColor(property) && block.GetColor(property).Equals(color);
 
         private static float Map(float value, float inputMin, float inputMax, float outputMin, float outputMax)
         {

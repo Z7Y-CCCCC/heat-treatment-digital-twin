@@ -3,6 +3,9 @@ import { onMounted,onBeforeUnmount,onActivated,onDeactivated,reactive,ref } from
 // One controller per surface is shared by renderers and external readers. Only
 // this virtual selection clock is paused; the real clock still refreshes data.
 export const WidgetPlaybackKey = Symbol('widget-playback')
+// Inject the ref, not a ticking scalar prop: static cards and unchanged
+// quantized selections must not be re-rendered on every 100ms reader tick.
+export const WidgetClockKey = Symbol('widget-clock')
 export function createWidgetPlaybackController({ now = () => Date.now() } = {}) {
   const states = reactive(new Map())
   const keyFor = widget => String((widget && typeof widget === 'object' ? widget.id : widget) ?? '')

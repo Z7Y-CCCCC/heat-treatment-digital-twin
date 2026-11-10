@@ -1,7 +1,14 @@
 'use strict';
 const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path');
 const {WsOutboundQueue}=require('../utils/wsOutboundQueue');
+const {deriveMotionSemantics}=require('../../shared/motionSemanticPolicy.cjs');
 const fixtures=JSON.parse(fs.readFileSync(path.join(__dirname,'../../shared/realtime-motion-queue-fixtures.json'),'utf8'));
+const strictDeclarations=deriveMotionSemantics({movement:{enabled:true,valueMode:'station',stationInputMeaning:'last-confirmed',
+ currentPositionPointId:'1245',startActionPointId:'603',stations:[{value:10},{value:20}]},animationBindings:{bindings:[]}}).bindings;
+const strictCases=fixtures.cases.filter(fixture=>fixture.name.startsWith('declared last-confirmed BOOL '));
+assert.equal(strictCases.length,3,'shared BOOL fault and recovery regressions are registered');
+for(const fixture of strictCases)for(const message of fixture.messages)
+ assert.deepEqual(message.payload.devices[0].motionSemantics.bindings,strictDeclarations,'fixture declarations must come from saved last-confirmed settings');
 class HeldSocket{
  constructor(){this.readyState=1;this.bufferedAmount=0;this.sent=[];this.callbacks=[];}
  send(text,callback){this.sent.push(JSON.parse(text));this.callbacks.push(callback);}
@@ -11,6 +18,7 @@ class HeldSocket{
 }
 for(const fixture of fixtures.cases){
  const socket=new HeldSocket(),queue=new WsOutboundQueue(socket);
+ const original=JSON.stringify(fixture.messages);
  try{
   assert.ok(queue.enqueue({type:'welcome'}));
   for(const message of fixture.messages)assert.ok(queue.enqueue(message),fixture.name);
@@ -21,6 +29,7 @@ for(const fixture of fixtures.cases){
   if(fixture.expectedStages)assert.deepEqual(actual.map(x=>x.payload.devices[0].motionInputs.feed.stage),fixture.expectedStages,fixture.name);
   if(fixture.expectedDataItemIds)assert.deepEqual(actual.map(x=>x.payload.devices[0].motionInputs.feed.dataItemId),fixture.expectedDataItemIds,fixture.name);
   if(fixture.expectedStatus)assert.deepEqual(actual.map(x=>x.payload.devices[0].status.start_feed),fixture.expectedStatus,fixture.name);
+  assert.equal(JSON.stringify(fixture.messages),original,fixture.name+' must not coerce source values or clocks');
   assert.equal(queue.bytes,0);
   console.log('PASS '+fixture.name);
  }finally{queue.dispose();}

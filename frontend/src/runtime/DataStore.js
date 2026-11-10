@@ -172,7 +172,7 @@ export function createDashboardDataStore(options = {}) {
         });
     }
 
-    function registerDevice(deviceCfg) {
+    function registerDevice(deviceCfg, deferMetrics = false) {
         if (disposed || !deviceCfg?.id) return;
         if (deviceStatusMap[deviceCfg.id]) {
             deviceStatusMap[deviceCfg.id].name = deviceCfg.name;
@@ -189,7 +189,7 @@ export function createDashboardDataStore(options = {}) {
             lastSeen: null
         };
         if (onDeviceData) onDeviceData(createDeviceConnectionData(deviceCfg.id, 'bad'));
-        recomputeMetricsFromRuntime();
+        if (!deferMetrics) recomputeMetricsFromRuntime();
     }
 
     function syncDevices(devices) {
@@ -205,7 +205,7 @@ export function createDashboardDataStore(options = {}) {
             lastSeenMap.delete(deviceId);
         }
         if (selectedDeviceId.value != null && !configuredDeviceIds.has(String(selectedDeviceId.value))) selectDevice(null);
-        configured.forEach(registerDevice);
+        for (const device of configured) registerDevice(device, true);
         recomputeMetricsFromRuntime();
     }
 
@@ -220,7 +220,7 @@ export function createDashboardDataStore(options = {}) {
         if (cachedData) Object.assign(selectedDeviceData, cachedData);
     }
 
-    function applyDeviceRealtimeData(data) {
+    function applyDeviceRealtimeData(data, deferMetrics = false) {
         if (disposed || !data?.furnace_id || !acceptsDevice(data.furnace_id)) return;
         if (data.motionInputs) latestMotionDataMap.set(data.furnace_id, { data, receivedAt: Date.now() });
         if (data.motionInputOnly === true) {
@@ -230,7 +230,11 @@ export function createDashboardDataStore(options = {}) {
             if (previous) {
                 const merged = { ...previous, motionInputs: data.motionInputs || {} };
                 latestDeviceDataMap.set(data.furnace_id, merged);
-                deviceDataMap[data.furnace_id] = merged;
+                // Motion-only publications must notify motion readers without
+                // invalidating every telemetry/point reader for this device.
+                // Snapshot copies below keep received frames immutable while
+                // this reactive presentation object retains its identity.
+                deviceDataMap[data.furnace_id].motionInputs = merged.motionInputs;
                 if (selectedDeviceId.value === data.furnace_id) selectedDeviceData.motionInputs = merged.motionInputs;
             }
             onMotionInput?.(data);
@@ -239,7 +243,7 @@ export function createDashboardDataStore(options = {}) {
 
         lastRealtimeFrameAt = Date.now();
         latestDeviceDataMap.set(data.furnace_id, data);
-        deviceDataMap[data.furnace_id] = data;
+        deviceDataMap[data.furnace_id] = { ...data };
         lastSeenMap.set(data.furnace_id, Date.now());
 
         const quality = getDeviceQuality(data);
@@ -260,7 +264,8 @@ export function createDashboardDataStore(options = {}) {
         }
 
         if (onDeviceData) onDeviceData(data);
-        recomputeMetricsFromRuntime();
+        if (!deferMetrics) recomputeMetricsFromRuntime();
+        return true;
     }
 
     function qualityFromPlcStatus(status) {
@@ -338,7 +343,7 @@ export function createDashboardDataStore(options = {}) {
                     }
                     : createDeviceConnectionData(deviceId, quality, deviceStatus);
                 latestDeviceDataMap.set(deviceId, connectionData);
-                deviceDataMap[deviceId] = connectionData;
+                deviceDataMap[deviceId] = { ...connectionData };
                 if (selectedDeviceId.value === deviceId) {
                     Object.keys(selectedDeviceData).forEach(key => delete selectedDeviceData[key]);
                     Object.assign(selectedDeviceData, connectionData);
@@ -366,9 +371,12 @@ export function createDashboardDataStore(options = {}) {
     }
 
     function applyFrame(payload) {
-        const devices = (Array.isArray(payload?.devices) ? payload.devices : []).filter(device => acceptsDevice(device?.furnace_id));
-        devices.forEach(applyDeviceRealtimeData);
-        const telemetry = devices.filter(device => device.motionInputOnly !== true);
+        const telemetry = [];
+        // Preserve every source update and its order, including multiple
+        // transitions for one device. Only the aggregate HUD work is batched.
+        for (const device of Array.isArray(payload?.devices) ? payload.devices : []) {
+            if (applyDeviceRealtimeData(device, true)) telemetry.push(device);
+        }
         if (!telemetry.length) return;
         updateRollingTrend(telemetry);
         recomputeMetricsFromRuntime();
@@ -382,10 +390,17 @@ export function createDashboardDataStore(options = {}) {
 
     function recomputeMetricsFromRuntime() {
         const statuses = Object.values(deviceStatusMap);
+        let online = 0, running = 0, alarms = 0;
+        for (const status of statuses) {
+            if (!status.online) continue;
+            online++;
+            if (status.running) running++;
+            if (status.alarm) alarms++;
+        }
         metrics.total_devices = statuses.length;
-        metrics.online_devices = statuses.filter(s => s.online).length;
-        metrics.running_devices = statuses.filter(s => s.online && s.running).length;
-        metrics.alarm_devices = statuses.filter(s => s.online && s.alarm).length;
+        metrics.online_devices = online;
+        metrics.running_devices = running;
+        metrics.alarm_devices = alarms;
 
         if (!hasRecentRealtimeFrame() || metrics.online_devices === 0) {
             metrics.current_output = 0;
@@ -424,7 +439,7 @@ export function createDashboardDataStore(options = {}) {
                     if (cachedData) {
                         const staleData = cloneDataWithQuality(cachedData, nextQuality);
                         latestDeviceDataMap.set(deviceId, staleData);
-                        deviceDataMap[deviceId] = staleData;
+                        deviceDataMap[deviceId] = { ...staleData };
                         if (selectedDeviceId.value === deviceId) {
                             Object.keys(selectedDeviceData).forEach(key => delete selectedDeviceData[key]);
                             Object.assign(selectedDeviceData, staleData);
@@ -600,7 +615,7 @@ export function createDashboardDataStore(options = {}) {
                         applyFrame(msg.payload);
                     } else if (msg.type === 'device_data') {
                         applyDeviceRealtimeData(msg.payload);
-                        refreshMetrics();
+                        if (msg.payload?.motionInputOnly !== true) refreshMetrics();
                     } else if (msg.type === 'plc_status') {
                         applyPlcStatus(msg.payload);
                     }

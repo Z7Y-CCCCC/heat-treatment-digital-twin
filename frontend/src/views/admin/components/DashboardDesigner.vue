@@ -1,6 +1,6 @@
 <script setup>
 import {MAX_DASHBOARD_WIDGETS} from '../../../../../shared/dashboardLimits.mjs'
-import { createWidgetInstanceRegistry, dashboardWidgetIdentityIssues, widgetIdError, renameDashboardWidget, allocateNewWidgetIds } from '../../../../../shared/dashboardWidgetIdentity.mjs'
+import { createWidgetInstanceRegistry, dashboardWidgetIdentityIssues, widgetIdError, renameDashboardWidget, allocateNewWidgetIds, prepareDashboardWidgetIdentities } from '../../../../../shared/dashboardWidgetIdentity.mjs'
 import DashboardIntegrationPanel from './DashboardIntegrationPanel.vue'
 import { useDashboardIntegration, SOFTWARE_METHODS } from '../../../runtime/dashboardIntegration.js'
 import {DASHBOARD_CHARTS,CHART_FIELD_ROLES} from '../../../../../shared/dashboardCharts.mjs'
@@ -3061,12 +3061,32 @@ function applyPublishedRelease(release) {
   currentRelease.value = nextRelease
 }
 
+function prepareWidgetIdentitiesForSave() {
+  const before = documentModel.value
+  const result = prepareDashboardWidgetIdentities(before)
+  if (!result.changed) return false
+  const selected = new Set(selectedIds.value)
+  const focusedIndex = before.widgets.indexOf(selectedWidget.value)
+  documentModel.value = result.document
+  for (const { oldId, newId } of result.changes) {
+    if (Object.hasOwn(previewWidgetVisibility, oldId)) previewWidgetVisibility[newId] = previewWidgetVisibility[oldId]
+  }
+  selectedIds.value = result.document.widgets.filter((widget, index) => selected.has(before.widgets[index].id)).map(widget => widget.id)
+  const focused = result.document.widgets[focusedIndex]
+  inspectorInstanceKey.value = focused && selectedIds.value.includes(focused.id) ? widgetInstanceKey(focused) : ''
+  widgetIdEditError.value = ''
+  invalidateDataSetPreview()
+  commitHistory('整理重复组件标识')
+  return true
+}
+
 async function saveDraft({ conflictChoice = '' } = {}) {
   if (saving.value) return false
-  const editorState = rememberEditorState()
+  let editorState = rememberEditorState()
   saving.value = true
   try {
     if (deletionSyncConflict.value && !await resolveDraftConflict(conflictChoice)) return false
+    if (prepareWidgetIdentitiesForSave()) editorState = rememberEditorState()
     const identityIssues = dashboardWidgetIdentityIssues(documentModel.value)
     if (identityIssues.length) throw new Error(identityIssues.map(issue => issue.message).join('；'))
     documentModel.value.widgets.forEach(widget => { widget.data.readOnly = true })
@@ -3116,6 +3136,7 @@ async function publishVersion() {
   let savedBeforePublish = false
   try {
     clearPublishNotice()
+    prepareWidgetIdentitiesForSave()
     rememberEditorState()
     const identityIssues = dashboardWidgetIdentityIssues(documentModel.value)
     if (identityIssues.length) throw new Error(identityIssues.map(issue => issue.message).join('；'))

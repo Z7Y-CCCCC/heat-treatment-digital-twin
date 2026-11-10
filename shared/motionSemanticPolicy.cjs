@@ -73,7 +73,13 @@ function deriveMotionSemantics(instance, modelMetadata = null, pointContext = nu
             const rawStart = movement.startActionPointId ?? movement.start_action_point_id;
             const start = pointId(rawStart);
             if (rawStart != null && rawStart !== '' && !start) throw Error('Invalid configured movement gate');
-            if (start) add({ key: 'movement:start', kind: 'running_gate', source: { pointId: start } });
+            // Last-confirmed stations optionally observe an actual BOOL moving
+            // feedback, not the legacy WORD/numeric start gate. Reuse the
+            // existing typed condition declaration so false/invalid/false stays
+            // a causal fault boundary without introducing a new wire kind.
+            if (start) add(movement.valueMode === 'station' && movement.stationInputMeaning === 'last-confirmed'
+                ? { key: 'movement:start', kind: 'condition', source: { pointId: start }, operator: 'eq', value: true, hysteresis: 0 }
+                : { key: 'movement:start', kind: 'running_gate', source: { pointId: start } });
             if (movement.valueMode === 'station') {
                 const position = pointId(movement.currentPositionPointId ?? movement.current_position_point_id);
                 if (!position || !Array.isArray(movement.stations)) throw Error('Missing configured station point/values');

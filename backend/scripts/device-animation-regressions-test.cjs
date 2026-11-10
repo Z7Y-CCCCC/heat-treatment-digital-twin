@@ -80,6 +80,67 @@ test('shared unindexed tint is also decorative, but duplicate transform/actuator
     assert.throws(() => save(loaded(), [row('heating'),row('circulation')]), /控制同一部件/, 'real shared rotating actuator still conflicts');
 });
 
+test('absent numeric feedback smoothing saves as zero without rewriting the original snapshot', () => {
+    const snapshot = loaded([row('door')]), original = clone(snapshot.config);
+    const result = save(snapshot, publicDeviceAnimations(snapshot).config.bindings);
+    assert.equal(result.bindings[0].feedbackSmoothingMs, 0);
+    assert.equal(publicDeviceAnimations({ ...snapshot, config: result }).config.bindings[0].feedbackSmoothingMs, 0);
+    assert.deepEqual(snapshot.config, original);
+    assert.equal(Object.hasOwn(snapshot.config.bindings[0], 'feedbackSmoothingMs'), false);
+});
+
+test('numeric feedback smoothing survives public source and binding roundtrips with the old transition preserved', () => {
+    const snapshot = loaded();
+    snapshot.points.find(point => point.id === 'p-door').data_type = 'REAL';
+    snapshot.catalog.items = [{ id: 'fixture-stroke', type: 'number', enabled: true, objectScope: 'device', sourceType: 'plc',
+        binding: { mode: 'plc', deviceId: 'fixture', pointId: 'p-door', pointKey: 'doors.door' } }];
+    const requested = row('door', { pointId: '', dataItemId: 'fixture-stroke', trigger: { mode: 'range' },
+        inputMax: 100, transitionSeconds: 2, feedbackSmoothingMs: 200 });
+    const result = save(snapshot, [requested]), binding = result.bindings[0];
+    assert.equal(binding.feedbackSmoothingMs, 200);
+    assert.equal(binding.transitionSeconds, 2);
+    assert.equal(binding.dataItemId, 'fixture-stroke');
+    assert.equal(binding.pointId, 'p-door');
+    assert.equal(binding.mode, 'position');
+    assert.equal(binding.sourceGroup, 'doors');
+    assert.equal(binding.sourceKey, 'door');
+    assert.match(binding.sourceFingerprint, /^[a-f0-9]{64}$/);
+    const reloaded = { ...snapshot, config: result }, published = publicDeviceAnimations(reloaded);
+    assert.equal(published.config.bindings[0].feedbackSmoothingMs, 200);
+    assert.equal(published.dataItems[0].id, 'fixture-stroke');
+    assert.equal(published.dataItems[0].motionReady, true);
+    assert.deepEqual(save(reloaded, published.config.bindings), result);
+    assert.deepEqual(requested, row('door', { pointId: '', dataItemId: 'fixture-stroke', trigger: { mode: 'range' },
+        inputMax: 100, transitionSeconds: 2, feedbackSmoothingMs: 200 }), 'validation never mutates the requested source');
+});
+
+test('numeric feedback smoothing accepts finite bounds including fractional milliseconds', () => {
+    for (const feedbackSmoothingMs of [0, .5, 200, 1000]) {
+        const result = save(loaded(), [row('door', { feedbackSmoothingMs })]);
+        assert.equal(result.bindings[0].feedbackSmoothingMs, feedbackSmoothingMs);
+    }
+});
+
+test('numeric feedback smoothing rejects coerced, nonfinite and out-of-range values even on disabled bindings', () => {
+    for (const feedbackSmoothingMs of [null, true, false, '200', '', NaN, Infinity, -Infinity, -1, 1000.001, {}, []]) {
+        for (const enabled of [false, true]) {
+            assert.throws(() => save(loaded(), [row('door', { enabled, feedbackSmoothingMs })]), /数值反馈平滑.*有效数值/);
+        }
+    }
+});
+
+test('adding numeric feedback smoothing never adds a default to retired history or loosens disable-only validation', () => {
+    for (const settings of [{}, { feedbackSmoothingMs: 200 }]) {
+        const stored = row('process_cycle', { pointId: 'removed-point', kind: 'clip', clipId: 'process_cycle', ...settings });
+        const snapshot = loaded([stored]), published = publicDeviceAnimations(snapshot).config.bindings[0];
+        assert.equal(Object.hasOwn(published, 'feedbackSmoothingMs'), Object.hasOwn(settings, 'feedbackSmoothingMs'));
+        const disabled = { ...published, enabled: false };
+        const result = save(snapshot, [disabled]);
+        assert.deepEqual(result.bindings, [{ ...stored, enabled: false }]);
+        assert.throws(() => save(snapshot, [{ ...disabled, feedbackSmoothingMs: 0 }]), /只允许停用.*历史绑定字段/);
+    }
+});
+
 const routeFile = path.resolve(__dirname, '../routes/devices.js');
 const routeSource = fs.readFileSync(routeFile, 'utf8'), routeRequire = createRequire(routeFile);
 function animationHandler(database, animations) {

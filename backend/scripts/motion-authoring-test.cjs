@@ -22,6 +22,63 @@ const action = (nodes, id = 'user_door_lift') => ({ id, label: '门升降与转�
         } finally { fs.writeFileSync = originalWrite; }
         const folder = path.join(uploads,compiled.folder); assert.deepEqual(fs.readdirSync(folder),[],'interrupted file writes leave no published partial blob');
         author.storeCompiled(prepared,compiled);const file=path.join(folder,compiled.clipName);fs.writeFileSync(file,'interrupted old output');author.storeCompiled(prepared,compiled);assert.equal(hash(fs.readFileSync(file)),compiled.bundle.clipSha256,'retry repairs an old corrupt generated file without changing model data');
+        const rename = fs.renameSync;
+        fs.writeFileSync(file, 'old complete snapshot during transient lock'); let attempts = 0;
+        fs.renameSync = function(from, to) {
+            if (to === file && attempts++ < 2) {
+                assert.equal(fs.readFileSync(file, 'utf8'), 'old complete snapshot during transient lock');
+                throw Object.assign(new Error('transient compiled sharing violation'), { code: 'EPERM' });
+            }
+            return rename(from, to);
+        };
+        try { author.storeCompiled(prepared, compiled); }
+        finally { fs.renameSync = rename; }
+        assert.ok(attempts >= 3 && attempts <= 4, 'compiled publication retries are bounded');
+        assert.equal(hash(fs.readFileSync(file)), compiled.bundle.clipSha256);
+        for (const code of ['EPERM', 'EACCES', 'EBUSY', 'EIO']) {
+            const previous = `previous complete snapshot ${code}`; fs.writeFileSync(file, previous);
+            const failure = Object.assign(new Error(`injected compiled ${code}`), { code }); let calls = 0;
+            fs.renameSync = function(from, to) { if (to === file) { calls++; throw failure; } return rename(from, to); };
+            try { assert.throws(() => author.storeCompiled(prepared, compiled), error => error === failure); }
+            finally { fs.renameSync = rename; }
+            assert.equal(calls, code === 'EIO' ? 1 : 4);
+            assert.equal(fs.readFileSync(file, 'utf8'), previous, 'failed replacement must never remove or truncate the old target');
+            assert.deepEqual(fs.readdirSync(folder).filter(name => name.endsWith('.tmp')), [], 'failed publication cleans only its owned temporary');
+        }
+        // Another publisher can independently complete this exact hash. That
+        // idempotent race does not justify swallowing an unrelated disk failure.
+        fs.writeFileSync(file, 'concurrent publisher fixture');
+        const ioFailure = Object.assign(new Error('compiled EIO after another publisher'), { code: 'EIO' }); let ioCalls = 0;
+        fs.renameSync = function(from, to) {
+            if (to === file) { ioCalls++; fs.writeFileSync(file, compiled.bytes); throw ioFailure; }
+            return rename(from, to);
+        };
+        try { assert.throws(() => author.storeCompiled(prepared, compiled), error => error === ioFailure); }
+        finally { fs.renameSync = rename; }
+        assert.equal(ioCalls, 1); assert.equal(hash(fs.readFileSync(file)), compiled.bundle.clipSha256);
+        fs.writeFileSync(file, 'concurrent valid sharing-lock fixture');
+        const lockFailure = Object.assign(new Error('concurrent complete compiled blob is held'), { code: 'EPERM' }); let lockCalls = 0;
+        fs.renameSync = function(from, to) {
+            if (to === file) { lockCalls++; fs.writeFileSync(file, compiled.bytes); throw lockFailure; }
+            return rename(from, to);
+        };
+        try { author.storeCompiled(prepared, compiled); }
+        finally { fs.renameSync = rename; }
+        assert.equal(lockCalls, 4); assert.equal(hash(fs.readFileSync(file)), compiled.bundle.clipSha256);
+        fs.writeFileSync(file, 'cleanup failure must preserve old target');
+        const publicationFailure = Object.assign(new Error('original compiled publication EIO'), { code: 'EIO' });
+        const remove = fs.rmSync;
+        fs.renameSync = function(from, to) { if (to === file) throw publicationFailure; return rename(from, to); };
+        fs.rmSync = function(filename, ...options) {
+            if (path.dirname(filename) === folder && filename.endsWith('.tmp')) throw Object.assign(new Error('secondary temporary cleanup failure'), { code: 'EPERM' });
+            return remove(filename, ...options);
+        };
+        try { assert.throws(() => author.storeCompiled(prepared, compiled), error => error === publicationFailure); }
+        finally { fs.renameSync = rename; fs.rmSync = remove; }
+        assert.equal(fs.readFileSync(file, 'utf8'), 'cleanup failure must preserve old target');
+        const ownedTemporary = fs.readdirSync(folder).filter(name => name.startsWith(compiled.clipName + '.') && name.endsWith('.tmp'));
+        assert.equal(ownedTemporary.length, 1);
+        for (const name of ownedTemporary) remove(path.join(folder, name), { force: true });
     } finally { if(priorUploads === undefined) delete process.env.UPLOADS_DIR; else process.env.UPLOADS_DIR = priorUploads; }
     let originalClips = 0;
     for (const builtin of getBuiltinModels().filter(model => model.motion_package)) {
@@ -100,6 +157,6 @@ const action = (nodes, id = 'user_door_lift') => ({ id, label: '门升降与转�
     const migratedBytes=Buffer.from(await (await fetch(origin+migrated.motion_package.clipPath)).arrayBuffer());assert.equal(hash(migratedBytes),migrated.motion_package.clipSha256);assert.equal(JSON.parse(migratedBytes).modelId,migrated.id);
     const reopened=await ok(`/api/models/${migrated.id}/motion-actions`,'GET',null,imported.factoryId);assert.equal(reopened.actions[0].id,draft.id);
     await ok(`/api/models/${migrated.id}/motion-actions`,'PUT',{revision:reopened.revision,actions:reopened.actions},imported.factoryId);
-    const result={success:true,directory,checks:['generic GLB including duplicate names','preview cannot publish','immutable source and hash verified assets','sampled position/rotation','CAS, invalid targets/timing/duplicate channel validation','retired custom clip activation denied without stored changes','explicit retirement preserves the historical binding and other device fields','existing bound history deletion/mode protection','editing changes portable hash without Unity code changes','preserves all built-in CAD clips','factory isolation','project export/import preserves clips, rewrites model identity and hashes, and permits re-editing']};
+    const result={success:true,directory,checks:['generic GLB including duplicate names','atomic compiled publication retries transient locks within a bounded old-target-preserving window','persistent compiled locks and EIO retain the original error without partial publication','concurrent complete blobs remain idempotent but never mask EIO','temporary cleanup cannot replace the original publication error','preview cannot publish','immutable source and hash verified assets','sampled position/rotation','CAS, invalid targets/timing/duplicate channel validation','retired custom clip activation denied without stored changes','explicit retirement preserves the historical binding and other device fields','existing bound history deletion/mode protection','editing changes portable hash without Unity code changes','preserves all built-in CAD clips','factory isolation','project export/import preserves clips, rewrites model identity and hashes, and permits re-editing']};
     fs.writeFileSync(path.join(directory,'result.json'),JSON.stringify(result,null,2));console.log(JSON.stringify(result,null,2));
 })().catch(error=>{console.error(error);process.exitCode=1}).finally(()=>forceStop(server));

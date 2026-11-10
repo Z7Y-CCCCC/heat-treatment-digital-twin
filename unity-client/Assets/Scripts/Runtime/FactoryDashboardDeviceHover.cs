@@ -13,6 +13,17 @@ namespace HeatTreatment.DigitalTwin.Runtime
         private Vector3 _deviceHoverPointer;
         private int _deviceHoverCount = -1;
         private bool _deviceHoverEnabled;
+        private bool _deviceHoverNeedsRebuild = true;
+        private NativePointerWindowGuard _hoverPointerWindowGuard = new NativePointerWindowGuard();
+
+        private bool TryGetHoverPointer(out Vector3 pointer)
+        {
+            var legacy = Input.mousePosition;
+            var owned = _hoverPointerWindowGuard.TryResolvePointer(_webOverlayActive, Application.isFocused,
+                Time.frameCount, Screen.width, Screen.height, legacy.x, legacy.y, out var x, out var y);
+            pointer = new Vector3(x, y, legacy.z);
+            return owned;
+        }
 
         // Reuse the already prepared exact mesh surfaces. Bounds alone would
         // select the empty space around a CAD model and between its parts.
@@ -27,19 +38,27 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 && (view == null || view.Mode == "factory" || view.Mode == "workshop" || view.Mode == "line")
                 && tooltipEnabled;
             var contextChanged = _deviceHoverView != _activeViewId || _deviceHoverCount != _devices.Count;
-            var changed = contextChanged || _deviceHoverEnabled != enabled || !_deviceHoverPointer.Equals(pointer);
+            var changed = contextChanged || _deviceHoverNeedsRebuild || _deviceHoverEnabled != enabled || !_deviceHoverPointer.Equals(pointer);
             _deviceHoverEnabled = enabled;
+            var pickable = enabled && !blocked && float.IsFinite(pointer.x) && float.IsFinite(pointer.y)
+                && _camera.pixelRect.Contains(new Vector2(pointer.x, pointer.y));
             // Include model visibility, moving models and camera changes, not
-            // just mouse motion. Disabled tooltips do no geometry/raycast work.
-            if (enabled)
+            // just mouse motion. A blocked/outside pointer must not scan the
+            // entire CAD hierarchy. Rebuild on re-entry even if it moved away
+            // and back while no snapshots were observed.
+            if (pickable)
+            {
                 foreach (var device in _devices.Values)
-                    if (device.Inspection != null) changed |= InspectionHoverChanged(device.Inspection, pointer, blocked);
+                    if (device.Inspection != null) changed |= InspectionHoverChanged(device.Inspection, pointer, false);
+                _deviceHoverNeedsRebuild = false;
+            }
+            else _deviceHoverNeedsRebuild = true;
             var next = string.Empty;
-            if (enabled && !blocked && changed)
+            if (pickable && changed)
             {
                 next = PickOverviewDevice(pointer)?.Device?.Id ?? string.Empty;
             }
-            else if (enabled && !blocked && !changed) return;
+            else if (pickable && !changed) return;
             var publish = contextChanged || next != _hoveredDeviceId
                 || (next.Length > 0 && !_deviceHoverPointer.Equals(pointer));
             _hoveredDeviceId = next;
@@ -82,9 +101,9 @@ namespace HeatTreatment.DigitalTwin.Runtime
 
         private void UpdateDeviceHover()
         {
-            var pointer = Input.mousePosition;
-            var blocked = (!_webOverlayActive && IsPointerOverDashboard(ScreenToDesign(pointer)))
-                || (!_webOverlayActive && !Application.isFocused)
+            var pointerOwned = TryGetHoverPointer(out var pointer);
+            var blocked = !pointerOwned
+                || (!_webOverlayActive && IsPointerOverDashboard(ScreenToDesign(pointer)))
                 || pointer.x < 0 || pointer.y < 0 || pointer.x > Screen.width || pointer.y > Screen.height;
             UpdateDeviceHoverAt(pointer, blocked);
         }

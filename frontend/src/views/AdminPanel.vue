@@ -52,6 +52,7 @@ import {
 } from './admin/utils/lineLayout.js'
 import { chooseLineDevices, planLineGroupMove, spaceLineDevices } from './admin/utils/lineDeviceSelection.js'
 import { editLineRailSpacing, shiftRailMovement, lineSceneUnitsPerMeter } from '../../../shared/lineRailSpacing.mjs'
+import { isLastConfirmedMotion, lastConfirmedMotionError } from './admin/utils/mobileMotionPolicy.js'
 import { buildModelDisplayIds, createShortModelId } from './admin/utils/modelIds.js'
 import { useAppDialog } from './admin/composables/useAppDialog.js'
 import { useSystemSettings } from './admin/composables/useSystemSettings.js'
@@ -374,18 +375,22 @@ async function requestFactorySwitch({ factoryName }) {
             },
             'mobile-motion': async ({ deviceId, motion, devicePayload, selectedPointIds, missingStationDistances, expectedMovement, requiresMovementReload }) => {
                 if (requiresMovementReload) throw new Error(`设备「${deviceId}」的旧移动草稿没有配置快照，请重新读取后配置，未覆盖当前路径`)
+                const inputPolicyError = lastConfirmedMotionError(motion) || lastConfirmedMotionError(devicePayload?.instance_config?.movement)
+                if (inputPolicyError) throw new Error(`设备「${deviceId}」：${inputPolicyError}`)
                 if (motion?.enabled && !motion.currentPositionPointId) throw new Error(`设备「${deviceId}」未绑定当前位置点位`)
                 if (motion?.valueMode === 'range' && Number(motion.valueMax) <= Number(motion.valueMin)) throw new Error(`设备「${deviceId}」的输入范围无效`)
                 if (motion?.valueMode === 'station') {
                     const ids = (motion.stations || []).map(station => station.value)
                     if (!ids.length || ids.some(id => typeof id !== 'number' || !Number.isFinite(id)) || new Set(ids).size !== ids.length) throw new Error(`设备「${deviceId}」的工位编号无效`)
-                    const simulate = motion.simulationEnabled && motion.stationInputMeaning !== 'current'
+                    const simulate = motion.simulationEnabled && motion.stationInputMeaning !== 'current' && !isLastConfirmedMotion(motion)
                     if (simulate && Number(missingStationDistances) > 0) throw new Error(`设备「${deviceId}」的工位间距尚未填写完整`)
                     if (simulate && Number(motion.acceleration) <= 0) throw new Error(`设备「${deviceId}」的加速度无效`)
                 }
                 const latest = await adminApi.getDevice(deviceId)
                 if (!latest || latest.error) throw new Error(latest?.error || `设备「${deviceId}」读取失败`)
                 const config = { ...parseInstanceConfig(latest.instance_config), movement: devicePayload.instance_config.movement }
+                const sourcePolicyError = lastConfirmedMotionError(config.movement, latest.dataPoints || [], deviceId)
+                if (sourcePolicyError) throw new Error(`设备「${deviceId}」：${sourcePolicyError}`)
                 const result = await adminApi.updateDeviceMovement(deviceId, config.movement, (selectedPointIds || []).filter(Boolean), expectedMovement)
                 if (result?.error || !result?.success) throw new Error(result?.error || `设备「${deviceId}」运动配置保存失败`)
             },
@@ -7958,9 +7963,10 @@ async function openAdminSetupStep(step) {
                                 :lines="lines" :workshops="workshops" :selected-id="selectedLineEditorId" :layout="selectedLineLayout"
                                 :saved-snapshot="savedLineLayoutSnapshots[selectedLineEditorId] || ''"
                                 :draft="newLine" :busy="lineDeviceLayoutBusy" :creating="lineCreating"
+                                :layout-dirty="lineLayoutDirty" :layout-saving="lineLayoutSaving"
                                 :device-count="selectedLineEditorDevices.length" :total-devices="selectedLineTotalDeviceCount"
                                 @select="selectLineEditor" @delete="deleteLine" @create="createLine" @edit="editLineDetails"
-                                @add-item="addLineLayoutItem" @remove-item="removeLineLayoutItem" @change-item="changeLineLayoutItem" @change-rail-spacing="changeLineRailSpacing" @focus-item="focusLineStructure"
+                                @add-item="addLineLayoutItem" @remove-item="removeLineLayoutItem" @change-item="changeLineLayoutItem" @change-rail-spacing="changeLineRailSpacing" @save-layout="saveSelectedLineLayout" @focus-item="focusLineStructure"
                             />
 
                             <section class="line-planner-preview">

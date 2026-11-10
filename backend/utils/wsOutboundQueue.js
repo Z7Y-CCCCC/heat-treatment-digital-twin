@@ -99,21 +99,39 @@ class WsOutboundQueue {
                         : message.type === 'device_hover_changed' ? 'device-hover' : 'reliable';
             const tail = this.queue[this.queue.length - 1];
             let entry = { message, text, size, kind };
+            // Hover/projection are disposable display snapshots. Adjacent-only
+            // replacement accumulates obsolete cursor positions whenever those
+            // streams interleave with telemetry. Retain one latest snapshot of
+            // each kind in the current reliable/navigation segment. Remove the
+            // old sample and append the new one at its ARRIVAL position: never
+            // hoist hover ahead of any control/fault/motion edge or reorder or
+            // discard the reliable/realtime entries between the two samples.
+            const latestSnapshot = ['projection', 'hover', 'device-hover'].includes(kind);
+            let obsoleteIndex = -1;
+            if (latestSnapshot) for (let index = this.queue.length - 1; index >= 0; index--) {
+                if (this.queue[index].kind === 'reliable') break;
+                if (this.queue[index].kind === kind) { obsoleteIndex = index; break; }
+            }
             // Reliable entries are barriers: never move a patch across a control/fault event.
-            const replacing = kind !== 'reliable' && tail?.kind === kind
+            const replacing = !latestSnapshot && kind !== 'reliable' && tail?.kind === kind
                 && (!['realtime', 'motion-input'].includes(kind) || !hasMotionBoundary(tail.message, message));
             if (replacing) {
                 const merged = ['realtime','motion-input'].includes(kind) ? mergeRealtime(tail.message, message) : message;
                 const mergedText = JSON.stringify(merged);
                 entry = { message: merged, text: mergedText, size: Buffer.byteLength(mergedText), kind };
             }
-            const bytes = this.bytes - (replacing ? tail.size : 0) + entry.size;
+            const obsolete = replacing ? tail : obsoleteIndex >= 0 ? this.queue[obsoleteIndex] : null;
+            const bytes = this.bytes - (obsolete?.size || 0) + entry.size;
             if (entry.size > this.options.maxMessageBytes || bytes + this.inflightBytes + this.socket.bufferedAmount > this.options.maxBytes
-                || this.queue.length + (replacing ? 0 : 1) + (this.inflight ? 1 : 0) > this.options.maxMessages)
+                || this.queue.length + (obsolete ? 0 : 1) + (this.inflight ? 1 : 0) > this.options.maxMessages)
                 return this.fail('outbound queue limit', true);
             this.bytes = bytes;
-            if (replacing) { this.queue[this.queue.length - 1] = entry; this.stats.merged++; }
-            else this.queue.push(entry);
+            if (replacing) this.queue[this.queue.length - 1] = entry;
+            else {
+                if (obsoleteIndex >= 0) this.queue.splice(obsoleteIndex, 1);
+                this.queue.push(entry);
+            }
+            if (obsolete) this.stats.merged++;
             this.stats.accepted++;
             this.pump(); return true;
         } catch (error) { return this.fail(`send serialization: ${error.message}`); }

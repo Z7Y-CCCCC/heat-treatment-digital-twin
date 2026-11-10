@@ -142,7 +142,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
             if (!_enabled) return;
             if (!preserveCurrentPosition)
             {
-                transform.localPosition = _stationMode && _stationInputMeaning == StationInputMeaning.Target ? fallback
+                transform.localPosition = _stationMode && (_stationInputMeaning == StationInputMeaning.Target || _stationInputMeaning == StationInputMeaning.LastConfirmed) ? fallback
                     : _stationMode && _stations.Count > 0
                     ? _stations[0].Position
                     : _start;
@@ -204,7 +204,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
             {
                 _hasPositionSample = true;
                 _snapNextPositionSample = false;
-                transform.localPosition = _targetPosition;
+                if (!transform.localPosition.Equals(_targetPosition)) transform.localPosition = _targetPosition;
                 _motionSpeed = 0f;
                 _hasTarget = false;
                 _motionIndicatorUntil = 0f;
@@ -273,11 +273,12 @@ namespace HeatTreatment.DigitalTwin.Runtime
         // Target commands and legacy station estimates must never manufacture
         // a cargo location between physically unobserved stations.
         public bool HasReliableSourcePose => HasFreshPosition && (!_stationMode
-            || _stationInputMeaning == StationInputMeaning.Current && HasConfirmedPosition
+            || (_stationInputMeaning == StationInputMeaning.Current || _stationInputMeaning == StationInputMeaning.LastConfirmed) && HasConfirmedPosition
             || _stationInputMeaning == StationInputMeaning.Legacy && !_simulationEnabled && !_hasTarget);
         public double CurrentPositionValue => _positionSignal.Value;
         public string PositionReason => _positionSignal.Reason;
-        private bool EstimateStationTravel => _stationMode && _simulationEnabled && _stationInputMeaning != StationInputMeaning.Current;
+        private bool EstimateStationTravel => _stationMode && _simulationEnabled
+            && _stationInputMeaning != StationInputMeaning.Current && _stationInputMeaning != StationInputMeaning.LastConfirmed;
         private void StopAtCurrentPose()
         {
             _hasTarget = false; _motionSpeed = 0f; _motionIndicatorUntil = 0f;

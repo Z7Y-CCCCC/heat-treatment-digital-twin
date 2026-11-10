@@ -6,7 +6,7 @@ using Newtonsoft.Json.Linq;
 
 namespace HeatTreatment.DigitalTwin.Runtime
 {
-    public enum StationInputMeaning { Legacy, Current, Target, Invalid }
+    public enum StationInputMeaning { Legacy, Current, Target, Invalid, LastConfirmed }
 
     // Interpretation only: no model transforms, PLC writes, polling, prediction,
     // or Unity clock. The renderer supplies its monotonic and UTC clocks.
@@ -24,6 +24,8 @@ namespace HeatTreatment.DigitalTwin.Runtime
         public string Reason { get; private set; } = "等待位置数据";
         private double _gateTimestamp = double.NaN;
         private double _gateReceivedAt = double.NegativeInfinity;
+        private double _lastConfirmedPositionWatermark = double.NaN;
+        private double _lastConfirmedGateWatermark = double.NaN;
         private double _sourceTimeoutMs = double.PositiveInfinity;
         private double _gateTimeoutMs = double.PositiveInfinity;
         private bool _resync = true;
@@ -35,6 +37,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
             if (token.Type != JTokenType.String) return StationInputMeaning.Invalid;
             if (string.Equals(token.Value<string>(), "current", StringComparison.Ordinal)) return StationInputMeaning.Current;
             if (string.Equals(token.Value<string>(), "target", StringComparison.Ordinal)) return StationInputMeaning.Target;
+            if (string.Equals(token.Value<string>(), "last-confirmed", StringComparison.Ordinal)) return StationInputMeaning.LastConfirmed;
             return StationInputMeaning.Invalid;
         }
 
@@ -76,7 +79,27 @@ namespace HeatTreatment.DigitalTwin.Runtime
             InputMeaning = StationInputMeaning.Legacy;
             _arrivalConfirmed = false;
             _gateTimestamp = double.NaN; _gateReceivedAt = double.NegativeInfinity;
+            _lastConfirmedPositionWatermark = _lastConfirmedGateWatermark = double.NaN;
             _sourceTimeoutMs = _gateTimeoutMs = double.PositiveInfinity; Suspend("等待位置数据");
+        }
+        private static double LastConfirmedSourceStamp(DeviceDto device, JObject frame, string pointId, double reference)
+        {
+            if (device == null || !long.TryParse(pointId, NumberStyles.Integer, CultureInfo.InvariantCulture, out var id)) return double.NaN;
+            var point = device.DataPoints?.FirstOrDefault(row => row != null && row.Id == id);
+            if (point == null || !string.IsNullOrEmpty(point.DeviceId) && point.DeviceId != device.Id) return double.NaN;
+            var category = point.Category ?? "analog"; var key = string.IsNullOrWhiteSpace(point.ValueRole) ? point.Name : point.ValueRole;
+            var pointMeta = frame["pointMeta"] as JObject;
+            JObject metadata = null;
+            foreach (var item in pointMeta?.Properties() ?? Enumerable.Empty<JProperty>())
+            {
+                if (!(item.Value is JObject candidate) || candidate["id"]?.ToString() != pointId) continue;
+                if (metadata != null) return double.NaN;
+                if (candidate["category"] is JContainer || candidate["field_name"] is JContainer) return double.NaN;
+                metadata = candidate; category = candidate.Value<string>("category") ?? category; key = candidate.Value<string>("field_name") ?? key;
+            }
+            if (metadata == null || string.IsNullOrWhiteSpace(key) || !ReferenceEquals(metadata, pointMeta?[category + "." + key])) return double.NaN;
+            var stamp = Timestamp(metadata["timestamp"]);
+            return Finite(stamp) && stamp <= reference + 1000 ? stamp : double.NaN;
         }
         private bool Point(DeviceDto device, JObject frame, string pointId, double reference, double now,
             out JToken value, out double stamp, out double receivedAt, out double timeout)
@@ -131,37 +154,66 @@ namespace HeatTreatment.DigitalTwin.Runtime
             // station number while moving). Its quality/age remains checked.
             if (!Finite(now) || !Finite(wallNow)) { Suspend("位置时间基准无效"); return false; }
             if (frame?.Value<bool?>("motionInputOnly") == true) return false;
+            var envelope = Timestamp(frame?["timestamp"]);
+            var reference = Math.Max(wallNow, Finite(envelope) ? envelope : wallNow);
+            if (inputMeaning == StationInputMeaning.LastConfirmed && frame != null && (!Finite(envelope) || envelope <= wallNow + 1000))
+            {
+                // A newer typed, quality or offline fault is still an ordering
+                // barrier when its owned point timestamp is trustworthy. Keep
+                // this separate from accepted values and freshness: it cannot
+                // make invalid data usable or renew a previous observation.
+                var positionStamp = LastConfirmedSourceStamp(device, frame, positionPointId, reference);
+                var movingStamp = LastConfirmedSourceStamp(device, frame, startPointId, reference);
+                if (Finite(positionStamp) && (!Finite(_lastConfirmedPositionWatermark) || positionStamp > _lastConfirmedPositionWatermark)) _lastConfirmedPositionWatermark = positionStamp;
+                if (Finite(movingStamp) && (!Finite(_lastConfirmedGateWatermark) || movingStamp > _lastConfirmedGateWatermark)) _lastConfirmedGateWatermark = movingStamp;
+            }
             if (frame == null || frame["status"]?["online"]?.ToString().Equals("false", StringComparison.OrdinalIgnoreCase) == true
                 || !Good(frame["status"]?["quality"]) || !Good(frame["quality"] is JObject quality ? quality["overall"] : frame["quality"]))
             { Suspend("位置采集连接无效"); return false; }
-            var envelope = Timestamp(frame["timestamp"]);
             if (Finite(envelope) && envelope > wallNow + 1000) { Suspend("位置数据时间无效"); return false; }
             // Backend and Unity run on the same local host: count queue/network
             // age as well as time since dispatch. Replaying a cache is not a read.
-            var reference = Math.Max(wallNow, Finite(envelope) ? envelope : wallNow);
             if (!Point(device, frame, positionPointId, reference, now, out var position, out var stamp, out var at, out var timeout)) return false;
             if (!Number(position, out var value)) { Suspend("位置数据类型无效"); return false; }
             var gateStamp = double.NaN; var gateAt = now; var gateTimeout = double.PositiveInfinity;
             var running = true;
             if (!string.IsNullOrEmpty(startPointId))
             {
+                if (inputMeaning == StationInputMeaning.LastConfirmed)
+                {
+                    var feedbackPoint = device.DataPoints?.FirstOrDefault(row => row != null && row.Id.ToString(CultureInfo.InvariantCulture) == startPointId);
+                    if (feedbackPoint == null || !string.Equals(feedbackPoint.DataType, "BOOL", StringComparison.OrdinalIgnoreCase)
+                        || !string.Equals(feedbackPoint.AccessType ?? "READ", "READ", StringComparison.OrdinalIgnoreCase))
+                    { Suspend("实际移动状态反馈必须是本设备的只读 BOOL 点位"); return false; }
+                }
                 if (!Point(device, frame, startPointId, reference, now, out var gate, out gateStamp, out gateAt, out gateTimeout)) return false;
+                if (inputMeaning == StationInputMeaning.LastConfirmed && gate.Type != JTokenType.Boolean)
+                { Suspend("实际移动状态反馈不是 BOOL 读数"); return false; }
                 if (!Boolean(gate, out running)) { Suspend("移动开始信号无效"); return false; }
             }
             if (Finite(stamp) && Finite(SourceTimestamp) && stamp < SourceTimestamp
                 || Finite(gateStamp) && Finite(_gateTimestamp) && gateStamp < _gateTimestamp) return false;
+            if (inputMeaning == StationInputMeaning.LastConfirmed
+                && (Finite(_lastConfirmedPositionWatermark) && stamp < _lastConfirmedPositionWatermark
+                    || Finite(gateStamp) && Finite(_lastConfirmedGateWatermark) && gateStamp < _lastConfirmedGateWatermark)) return false;
             ReceivedAt = Finite(stamp) && stamp == SourceTimestamp ? Math.Min(ReceivedAt, at) : at;
             _gateReceivedAt = Finite(gateStamp) && gateStamp == _gateTimestamp ? Math.Min(_gateReceivedAt, gateAt) : gateAt;
             SourceTimestamp = stamp; _gateTimestamp = gateStamp; _sourceTimeoutMs = timeout; _gateTimeoutMs = gateTimeout;
             if (Expired(now, staleMs, !string.IsNullOrEmpty(startPointId))) { Suspend("位置数据超时"); return false; }
-            if (!running && !actualPositionFeedback && inputMeaning != StationInputMeaning.Current) { Suspend("移动开始信号关闭"); return false; }
+            if (!running && !actualPositionFeedback && inputMeaning != StationInputMeaning.Current && inputMeaning != StationInputMeaning.LastConfirmed) { Suspend("移动开始信号关闭"); return false; }
             Value = value;
-            SnapOnReceive = inputMeaning == StationInputMeaning.Current
+            SnapOnReceive = inputMeaning == StationInputMeaning.Current || inputMeaning == StationInputMeaning.LastConfirmed
                 || inputMeaning != StationInputMeaning.Target && (!HasSample || _resync || actualPositionFeedback && !running);
             HasSample = true; Usable = true; _resync = false;
-            _arrivalConfirmed = inputMeaning != StationInputMeaning.Target
+            // A PLC can retain its last station throughout a journey. That
+            // number is a last-known observation, not proof it is still docked.
+            // Only an explicitly bound, good actual BOOL movement feedback
+            // which is false may confirm docking in this opted-in mode.
+            _arrivalConfirmed = inputMeaning == StationInputMeaning.LastConfirmed ? !string.IsNullOrEmpty(startPointId) && !running : inputMeaning != StationInputMeaning.Target
                 && (!actualPositionFeedback && inputMeaning != StationInputMeaning.Current || string.IsNullOrEmpty(startPointId) || !running);
-            Reason = inputMeaning == StationInputMeaning.Target ? "目标工位命令有效，实际到位未确认"
+            Reason = inputMeaning == StationInputMeaning.LastConfirmed ? string.IsNullOrEmpty(startPointId) ? "最后到位工位有效，途中位置及当前停靠未确认"
+                    : running ? "料车移动中，保持最后到位工位" : "当前工位已确认，实际移动反馈停止"
+                : inputMeaning == StationInputMeaning.Target ? "目标工位命令有效，实际到位未确认"
                 : !_arrivalConfirmed ? actualPositionFeedback ? "实测位置数据有效，料车移动中" : "当前工位反馈有效，料车移动中" : "位置数据正常";
             return true;
         }

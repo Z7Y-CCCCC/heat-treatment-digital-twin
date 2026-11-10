@@ -18,6 +18,12 @@ namespace HeatTreatment.DigitalTwin.Rendering
             public int MaterialSlot;
             public double[] Samples, RestSamples;
             public Vector3 PositionRest, MaximumPositionDisplacement;
+            public bool HasSampledValues, HasRotationValue, HasAppliedRotation;
+            public double SampleTime;
+            public Quaternion RotationInput, RotationRequested, RotationApplied;
+            public bool HasColorSnapshot;
+            public Color ColorRequested, PrimaryColorApplied, SecondaryColorApplied, FactorColorApplied;
+            public ColorSpace ColorSnapshotSpace;
         }
         private sealed class Entry
         {
@@ -37,6 +43,15 @@ namespace HeatTreatment.DigitalTwin.Rendering
         private readonly Dictionary<string, JObject> _base = new Dictionary<string, JObject>();
         private double _staleMs = 5000;
         private MaterialPropertyBlock _block;
+        private static readonly int BaseColorId = Shader.PropertyToID("_BaseColor");
+        private static readonly int ColorId = Shader.PropertyToID("_Color");
+        private static readonly int BaseColorFactorId = Shader.PropertyToID("baseColorFactor");
+        private static readonly int EmissionColorId = Shader.PropertyToID("_EmissionColor");
+        private static readonly int EmissiveFactorId = Shader.PropertyToID("emissiveFactor");
+#if UNITY_EDITOR
+        public long PoseSampleEvaluations { get; private set; }
+        public long PropertyBlockApplications { get; private set; }
+#endif
         private readonly Dictionary<string, double[]> _restSamples = new Dictionary<string, double[]>();
         // Opt-in, read-only evidence for an isolated player/collector acceptance run.
         // Never enabled by the installer or by an ordinary dashboard account.
@@ -76,6 +91,9 @@ namespace HeatTreatment.DigitalTwin.Rendering
         {
             _deviceId = device.Id;
             _entries.Clear(); _actionEntries.Clear(); _nodes.Clear(); _base.Clear(); _restSamples.Clear();
+#if UNITY_EDITOR
+            PoseSampleEvaluations = PropertyBlockApplications = 0;
+#endif
             if (package == null) return;
             foreach (var node in GetComponentsInChildren<Transform>(true)) if (!_nodes.ContainsKey(node.name)) _nodes[node.name] = node;
             foreach (var row in package["nodes"].OfType<JObject>()) _base[row.Value<string>("name")] = row;
@@ -182,7 +200,17 @@ namespace HeatTreatment.DigitalTwin.Rendering
             {
                 var off = running && !signal.Running && (track.Kind == ChannelKind.Visibility || track.Kind == ChannelKind.Emission || track.Kind == ChannelKind.Color);
                 var values = off ? track.RestSamples : track.Samples;
-                if (!off && !track.Sampler.SampleInto(time, values)) { signal.Suspend("动画采样数据无效"); return; }
+                // Keep checking source freshness and the actual native pose on
+                // every frame. Only typed sampling at an identical time is
+                // redundant; a stopped visual may not have been sampled yet.
+                if (!off && (!track.HasSampledValues || !track.SampleTime.Equals(time)))
+                {
+#if UNITY_EDITOR
+                    PoseSampleEvaluations++;
+#endif
+                    if (!track.Sampler.SampleInto(time, values)) { signal.Suspend("动画采样数据无效"); return; }
+                    track.SampleTime = time; track.HasSampledValues = true;
+                }
                 if (values != null) ApplyChannel(track, values);
             }
         }
@@ -224,18 +252,79 @@ namespace HeatTreatment.DigitalTwin.Rendering
         {
             var target = track.Node;
             // glTFast mirrors X from glTF's right-handed coordinates.
-            if (track.Kind == ChannelKind.Position) target.localPosition = new Vector3(-(float)v[0], (float)v[1], (float)v[2]);
-            else if (track.Kind == ChannelKind.Rotation) target.localRotation = new Quaternion((float)v[0], -(float)v[1], -(float)v[2], (float)v[3]).normalized;
-            else if (track.Kind == ChannelKind.Scale) target.localScale = new Vector3((float)v[0], (float)v[1], (float)v[2]);
-            else if (track.Kind == ChannelKind.Visibility) target.gameObject.SetActive(v[0] > .5);
+            // Equals compares each Float32 field exactly; Unity's approximate
+            // vector/quaternion == would suppress small real PLC movements.
+            if (track.Kind == ChannelKind.Position)
+            {
+                var position = new Vector3(-(float)v[0], (float)v[1], (float)v[2]);
+                if (!target.localPosition.Equals(position)) target.localPosition = position;
+            }
+            else if (track.Kind == ChannelKind.Rotation)
+            {
+                var input = new Quaternion((float)v[0], -(float)v[1], -(float)v[2], (float)v[3]);
+                if (!track.HasRotationValue || !track.RotationInput.Equals(input))
+                {
+                    track.RotationInput = input; track.RotationRequested = input.normalized;
+                    track.HasRotationValue = true; track.HasAppliedRotation = false;
+                }
+                var actual = target.localRotation;
+                // The native setter can normalize again. Remember its exact
+                // result, but reread it to detect external inspection edits.
+                if (track.HasAppliedRotation && actual.Equals(track.RotationApplied)) return;
+                if (!actual.Equals(track.RotationRequested))
+                { target.localRotation = track.RotationRequested; actual = target.localRotation; }
+                track.RotationApplied = actual; track.HasAppliedRotation = true;
+            }
+            else if (track.Kind == ChannelKind.Scale)
+            {
+                var scale = new Vector3((float)v[0], (float)v[1], (float)v[2]);
+                if (!target.localScale.Equals(scale)) target.localScale = scale;
+            }
+            else if (track.Kind == ChannelKind.Visibility)
+            {
+                var visible = v[0] > .5;
+                if (target.gameObject.activeSelf != visible) target.gameObject.SetActive(visible);
+            }
             else
             {
                 var renderer = track.Renderer; var slot = track.MaterialSlot; if (renderer == null) return;
                 _block ??= new MaterialPropertyBlock(); renderer.GetPropertyBlock(_block, slot);
-                if (track.Kind == ChannelKind.Emission) {var emission=new Color((float)(v[0]*v[3]), (float)(v[1]*v[3]), (float)(v[2]*v[3]));_block.SetColor("_EmissionColor",emission);_block.SetColor("emissiveFactor",emission);}
-                else { var color = new Color((float)v[0],(float)v[1],(float)v[2],(float)v[3]); _block.SetColor("_BaseColor",color); _block.SetColor("_Color",color); _block.SetColor("baseColorFactor",color); }
+                var colorSpace = QualitySettings.activeColorSpace;
+                if (track.Kind == ChannelKind.Emission)
+                {
+                    var emission = new Color((float)(v[0]*v[3]), (float)(v[1]*v[3]), (float)(v[2]*v[3]));
+                    if (track.HasColorSnapshot && track.ColorSnapshotSpace == colorSpace && track.ColorRequested.Equals(emission)
+                        && HasExactColor(_block, EmissionColorId, track.PrimaryColorApplied)
+                        && HasExactColor(_block, EmissiveFactorId, track.SecondaryColorApplied)) return;
+                    _block.SetColor(EmissionColorId, emission); _block.SetColor(EmissiveFactorId, emission);
+                    track.ColorRequested = emission;
+                    track.PrimaryColorApplied = _block.GetColor(EmissionColorId); track.SecondaryColorApplied = _block.GetColor(EmissiveFactorId);
+                }
+                else
+                {
+                    var color = new Color((float)v[0], (float)v[1], (float)v[2], (float)v[3]);
+                    if (track.HasColorSnapshot && track.ColorSnapshotSpace == colorSpace && track.ColorRequested.Equals(color)
+                        && HasExactColor(_block, BaseColorId, track.PrimaryColorApplied)
+                        && HasExactColor(_block, ColorId, track.SecondaryColorApplied)
+                        && HasExactColor(_block, BaseColorFactorId, track.FactorColorApplied)) return;
+                    _block.SetColor(BaseColorId, color); _block.SetColor(ColorId, color); _block.SetColor(BaseColorFactorId, color);
+                    track.ColorRequested = color;
+                    track.PrimaryColorApplied = _block.GetColor(BaseColorId); track.SecondaryColorApplied = _block.GetColor(ColorId);
+                    track.FactorColorApplied = _block.GetColor(BaseColorFactorId);
+                }
+                // Linear SetColor/GetColor can round-trip to slightly different
+                // Float32 fields. Compare future frames to these native values,
+                // not a tolerance or the original gamma-space request.
+                track.ColorSnapshotSpace = colorSpace; track.HasColorSnapshot = true;
+                // Preserve properties supplied by other owners. A missing
+                // alias is not equivalent to an explicitly authored black.
                 renderer.SetPropertyBlock(_block,slot);
+#if UNITY_EDITOR
+                PropertyBlockApplications++;
+#endif
             }
         }
+        private static bool HasExactColor(MaterialPropertyBlock block, int property, Color color)
+            => block.HasColor(property) && block.GetColor(property).Equals(color);
     }
 }

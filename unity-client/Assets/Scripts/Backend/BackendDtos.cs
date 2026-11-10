@@ -109,6 +109,7 @@ namespace HeatTreatment.DigitalTwin.Backend
         [JsonProperty("label")] public string Label { get; set; }
         [JsonProperty("plc_tag")] public string PlcTag { get; set; }
         [JsonProperty("data_type")] public string DataType { get; set; }
+        [JsonProperty("access_type")] public string AccessType { get; set; }
         [JsonProperty("category")] public string Category { get; set; }
         [JsonProperty("value_role")] public string ValueRole { get; set; }
         [JsonProperty("unit")] public string Unit { get; set; }

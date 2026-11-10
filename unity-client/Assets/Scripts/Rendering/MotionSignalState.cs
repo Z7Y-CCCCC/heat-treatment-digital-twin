@@ -16,6 +16,14 @@ namespace HeatTreatment.DigitalTwin.Rendering
         private bool _endpointNeedsResync = true;
         private bool? _condition;
         private bool _observationAccepted;
+        // A bounded, display-only source history. Target/NumericValue/Running
+        // continue to describe the newest real observation, never this buffer.
+        private const int FeedbackHistoryCapacity = 64;
+        private readonly double[] _feedbackTimes = new double[FeedbackHistoryCapacity];
+        private readonly double[] _feedbackPositions = new double[FeedbackHistoryCapacity];
+        private int _feedbackStart, _feedbackCount;
+        private bool _feedbackNumeric;
+        private double _feedbackDelay, _feedbackPlayhead = double.NegativeInfinity;
         public string Reason = "等待数据";
         private static bool Finite(double value) => !double.IsNaN(value) && !double.IsInfinity(value);
         private static bool Good(JToken value) => value == null || string.Equals(value.ToString(), "good", StringComparison.OrdinalIgnoreCase);
@@ -32,7 +40,68 @@ namespace HeatTreatment.DigitalTwin.Rendering
             return token != null && (token.Type == JTokenType.Integer || token.Type == JTokenType.Float || token.Type == JTokenType.String)
                 && double.TryParse(token.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out number) && Finite(number);
         }
-        private void Freeze(string reason) { Usable = false; Running = false; Reason = reason; }
+        private void ClearFeedbackHistory()
+        {
+            _feedbackStart = _feedbackCount = 0;
+            _feedbackNumeric = false; _feedbackDelay = 0; _feedbackPlayhead = double.NegativeInfinity;
+        }
+        private static double FeedbackDelay(JObject binding)
+        {
+            var mode = binding?.Value<string>("mode"); var triggerMode = binding?["trigger"]?.Value<string>("mode");
+            if (mode != "position" || triggerMode == "condition" || triggerMode == "endpoints") return 0;
+            var token = binding?["feedbackSmoothingMs"];
+            if (token?.Type != JTokenType.Integer && token?.Type != JTokenType.Float) return 0;
+            var milliseconds = (double)token;
+            return Finite(milliseconds) && milliseconds > 0 && milliseconds <= 1000 ? milliseconds / 1000 : 0;
+        }
+        private int FeedbackIndex(int offset) => (_feedbackStart + offset) % FeedbackHistoryCapacity;
+        private void SeedFeedback(double sourceAt, double position, double delay)
+        {
+            ClearFeedbackHistory(); _feedbackNumeric = true; _feedbackDelay = delay;
+            _feedbackTimes[0] = sourceAt; _feedbackPositions[0] = position; _feedbackCount = 1;
+            Position = position;
+        }
+        private void PruneFeedback(double playhead)
+        {
+            // Retain the last sample on the left of the displayed time. A full
+            // buffer must not discard an unshown peak/reversal to make room.
+            while (_feedbackCount > 1 && _feedbackTimes[FeedbackIndex(1)] <= playhead)
+            { _feedbackStart = FeedbackIndex(1); _feedbackCount--; }
+        }
+        private void ReceiveFeedback(double position, double numeric, double priorNumeric, double stamp, double priorStamp,
+            double sourceAt, double delay, bool align)
+        {
+            if (align || !_feedbackNumeric || _feedbackDelay != delay || _feedbackCount == 0)
+            { SeedFeedback(sourceAt, position, delay); Recovering = false; return; }
+            if (Finite(stamp) && stamp == priorStamp)
+            {
+                // Duplicate wrappers neither add invented samples nor renew
+                // freshness. Conflicting values with the same source time
+                // retain the old raw interpretation but cannot form a slope.
+                if (numeric != priorNumeric) SeedFeedback(sourceAt, position, delay);
+                return;
+            }
+            if (sourceAt <= _feedbackTimes[FeedbackIndex(_feedbackCount - 1)])
+            { SeedFeedback(sourceAt, position, delay); return; }
+            if (_feedbackCount == FeedbackHistoryCapacity) PruneFeedback(_feedbackPlayhead);
+            if (_feedbackCount == FeedbackHistoryCapacity)
+            { SeedFeedback(sourceAt, position, delay); return; }
+            var index = FeedbackIndex(_feedbackCount++);
+            _feedbackTimes[index] = sourceAt; _feedbackPositions[index] = position;
+        }
+        private void StepFeedback(double now)
+        {
+            if (!Finite(now) || _feedbackCount == 0) return;
+            var playhead = now - _feedbackDelay;
+            if (playhead < _feedbackPlayhead) return;
+            PruneFeedback(playhead); _feedbackPlayhead = Math.Max(_feedbackPlayhead, playhead);
+            var left = _feedbackStart; var leftAt = _feedbackTimes[left];
+            if (_feedbackCount == 1 || playhead <= leftAt) { Position = _feedbackPositions[left]; return; }
+            var right = FeedbackIndex(1); var rightAt = _feedbackTimes[right];
+            var t = Math.Max(0, Math.Min(1, (playhead - leftAt) / (rightAt - leftAt)));
+            Position = _feedbackPositions[left] + (_feedbackPositions[right] - _feedbackPositions[left]) * t;
+        }
+        private void Freeze(string reason) { Usable = false; Running = false; Reason = reason; ClearFeedbackHistory(); }
         private void FreezeEndpoint(string reason, string stage = "invalid") { EndpointStage = stage; if (stage != "waiting") _endpointNeedsResync = true; Freeze(reason); }
         public void Suspend(string reason = "采集连接中断")
         {
@@ -48,7 +117,7 @@ namespace HeatTreatment.DigitalTwin.Rendering
         public JObject CaptureDisplayState(JObject binding)
         {
             if (binding == null || !HasSample) return null;
-            return new JObject {
+            var snapshot = new JObject {
                 ["binding"] = binding.DeepClone(), ["position"] = Position, ["target"] = Target, ["numericValue"] = NumericValue,
                 ["usable"] = Usable, ["receivedAt"] = ReceivedAt, ["sourceTimestamp"] = SourceTimestamp, ["sourceStaleMs"] = SourceStaleMs,
                 ["extendedTimestamp"] = _extendedTimestamp, ["retractedTimestamp"] = _retractedTimestamp,
@@ -56,8 +125,17 @@ namespace HeatTreatment.DigitalTwin.Rendering
                 ["extendedStaleMs"] = _extendedStaleMs, ["retractedStaleMs"] = _retractedStaleMs,
                 ["needsResync"] = _endpointNeedsResync, ["reason"] = Reason, ["stage"] = EndpointStage,
                 ["seconds"] = Seconds, ["running"] = Running, ["recovering"] = Recovering,
-                ["condition"] = _condition
+                ["condition"] = _condition, ["feedbackNumeric"] = _feedbackNumeric
             };
+            if (_feedbackNumeric && _feedbackCount > 0 && FeedbackDelay(binding) == _feedbackDelay)
+            {
+                var history = new JArray();
+                for (var i = 0; i < _feedbackCount; i++)
+                { var index = FeedbackIndex(i); history.Add(new JArray(_feedbackTimes[index], _feedbackPositions[index])); }
+                snapshot["feedbackHistory"] = history; snapshot["feedbackDelay"] = _feedbackDelay;
+                snapshot["feedbackPlayhead"] = _feedbackPlayhead;
+            }
+            return snapshot;
         }
         public bool RestoreEndpointDisplayState(JObject binding, JObject snapshot)
         {
@@ -76,10 +154,37 @@ namespace HeatTreatment.DigitalTwin.Rendering
             _extendedReceivedAt = snapshot.Value<double>("extendedReceivedAt"); _retractedReceivedAt = snapshot.Value<double>("retractedReceivedAt");
             _extendedStaleMs = snapshot.Value<double>("extendedStaleMs"); _retractedStaleMs = snapshot.Value<double>("retractedStaleMs");
             _endpointNeedsResync = snapshot.Value<bool>("needsResync"); Reason = snapshot.Value<string>("reason"); EndpointStage = snapshot.Value<string>("stage");
+            ClearFeedbackHistory();
+            var delay = FeedbackDelay(binding);
+            var history = snapshot["feedbackHistory"] as JArray;
+            if (Usable && delay > 0 && snapshot.Value<bool?>("feedbackNumeric") == true)
+            {
+                var valid = snapshot.Value<double?>("feedbackDelay") == delay && history != null && history.Count > 0 && history.Count <= FeedbackHistoryCapacity;
+                var lastAt = double.NegativeInfinity;
+                for (var i = 0; valid && i < history.Count; i++)
+                {
+                    var token = history[i];
+                    var pair = token as JArray;
+                    if (pair == null || pair.Count != 2
+                        || pair[0].Type != JTokenType.Integer && pair[0].Type != JTokenType.Float
+                        || pair[1].Type != JTokenType.Integer && pair[1].Type != JTokenType.Float
+                        || !Number(pair[0], out var at) || !Number(pair[1], out var p) || at <= lastAt || p < 0 || p > 1)
+                    { valid = false; break; }
+                    _feedbackTimes[_feedbackCount] = at; _feedbackPositions[_feedbackCount++] = p; lastAt = at;
+                }
+                if (valid && _feedbackPositions[_feedbackCount - 1] == Target)
+                {
+                    _feedbackNumeric = true; _feedbackDelay = delay;
+                    var playhead = snapshot.Value<double?>("feedbackPlayhead") ?? double.NegativeInfinity;
+                    _feedbackPlayhead = Finite(playhead) ? playhead : double.NegativeInfinity;
+                }
+                else { ClearFeedbackHistory(); SeedFeedback(ReceivedAt, Target, delay); }
+            }
             return true;
         }
         private void ReceiveEndpoints(JObject frame, JObject binding, double now, double? wallNow)
         {
+            ClearFeedbackHistory();
             var trigger = binding["trigger"] as JObject;
             var item = frame?["motionInputs"]?[binding.Value<string>("actionId") ?? ""] as JObject;
             var feedback = item?["endpointFeedback"] as JObject;
@@ -180,6 +285,7 @@ namespace HeatTreatment.DigitalTwin.Rendering
             { Freeze("数据无效"); return; }
             if (wallNow.HasValue && Finite(wallNow.Value) && Finite(envelope) && envelope > wallNow.Value + 1000) { Freeze("数据时间无效"); return; }
             var wasUsable = Usable;
+            var priorStamp = SourceTimestamp; var priorNumeric = NumericValue;
             var identity = catalog ? item != null && item.Value<string>("dataItemId") == binding.Value<string>("dataItemId")
                 : meta?["id"] == null || meta.Value<string>("id") == binding.Value<string>("pointId");
             // A valid catalog observation (e.g. online=false) is independent of PLC connectivity.
@@ -202,6 +308,7 @@ namespace HeatTreatment.DigitalTwin.Rendering
             if (now - ReceivedAt > SourceStaleMs / 1000) { Freeze("数据超时"); return; }
             if (observationOnly)
             {
+                ClearFeedbackHistory();
                 Usable = true; HasSample = true; Reason = "来源数据正常"; _observationAccepted = true; return;
             }
             var minimum = binding.Value<double?>("inputMin") ?? 0; var maximum = binding.Value<double?>("inputMax") ?? 1;
@@ -222,7 +329,14 @@ namespace HeatTreatment.DigitalTwin.Rendering
             if (binding.Value<bool?>("invert") == true) p = 1 - p;
             Target = p; NumericValue = condition ? p : value;
             Recovering = HasSample && !wasUsable || Recovering;
-            if (!HasSample || (binding.Value<double?>("transitionSeconds") ?? 0) <= 0 && !Recovering) Position = p;
+            var delay = FeedbackDelay(binding);
+            if (delay > 0 && !condition && (token?.Type == JTokenType.Integer || token?.Type == JTokenType.Float))
+                ReceiveFeedback(p, value, priorNumeric, stamp, priorStamp, ReceivedAt, delay, !HasSample || !wasUsable || Recovering);
+            else
+            {
+                ClearFeedbackHistory();
+                if (!HasSample || (binding.Value<double?>("transitionSeconds") ?? 0) <= 0 && !Recovering) Position = p;
+            }
             Usable = true; Running = p > .5; HasSample = true; Reason = Running ? "运行" : "停止";
         }
         public void Step(double delta, double now, double staleMs, JObject binding)
@@ -242,9 +356,21 @@ namespace HeatTreatment.DigitalTwin.Rendering
             var timeout = Math.Min(Finite(staleMs) && staleMs > 0 ? staleMs : 5000, SourceStaleMs);
             if (now - ReceivedAt > timeout / 1000) Freeze("数据超时");
             if (!Usable || delta <= 0 || double.IsNaN(delta) || double.IsInfinity(delta)) return;
-            var duration = binding.Value<double?>("transitionSeconds") ?? 0; if (duration <= 0 && Recovering) duration = .2;
-            var step = duration > 0 ? delta / duration : double.PositiveInfinity;
-            Position += Math.Sign(Target - Position) * Math.Min(Math.Abs(Target - Position), step);
+            var feedbackDelay = FeedbackDelay(binding);
+            if (_feedbackNumeric && feedbackDelay > 0)
+            {
+                if (_feedbackDelay != feedbackDelay) SeedFeedback(ReceivedAt, Target, feedbackDelay);
+                // Do not stack the old full-span slew on top of the bounded
+                // source interpolation: that could add seconds of lag.
+                StepFeedback(now);
+            }
+            else
+            {
+                ClearFeedbackHistory();
+                var duration = binding.Value<double?>("transitionSeconds") ?? 0; if (duration <= 0 && Recovering) duration = .2;
+                var step = duration > 0 ? delta / duration : double.PositiveInfinity;
+                Position += Math.Sign(Target - Position) * Math.Min(Math.Abs(Target - Position), step);
+            }
             if (Position == Target) Recovering = false;
             if (Running) Seconds += delta * (binding.Value<double?>("speed") ?? 1);
         }

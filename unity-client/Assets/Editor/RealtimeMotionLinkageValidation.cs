@@ -396,6 +396,54 @@ namespace HeatTreatment.DigitalTwin.EditorTests
             Require(Count(JObject.Parse("{animationBindings:{bindings:[{actionId:'part:fan',enabled:true,sourceGroup:'motors',sourceKey:'rpm',pointId:'702',inputMin:0,inputMax:1000,transitionSeconds:0}]}}")) == 1,
                 "A valid explicit enabled part was disabled by the legacy-declaration isolation guard.");
         }
+        private static void ValidateLastConfirmedStationFeedback(GameObject factory)
+        {
+            var root = new GameObject("Retained last-arrival feedback only"); root.transform.SetParent(factory.transform, false);
+            var config = JObject.Parse("{enabled:true,currentPositionPointId:'101',startActionPointId:'',valueMode:'station',stationInputMeaning:'last-confirmed',simulationEnabled:true,smoothingMs:200,maxSpeed:2,acceleration:1,start:{x:0,y:0,z:0},end:{x:10,y:0,z:0},stations:[{value:1,position:{x:0,y:0,z:0}},{value:2,position:{x:10,y:0,z:0}}]}");
+            var device = new DeviceDto { Id = "last-station-fixture", PositionX = 42, InstanceConfig = new JObject { ["movement"] = config },
+                DataPoints = new List<DataPointDto> {
+                    new DataPointDto { Id = 101, DeviceId = "last-station-fixture", DataType = "WORD", AccessType = "READ", Category = "analog", ValueRole = "position" },
+                    new DataPointDto { Id = 102, DeviceId = "last-station-fixture", DataType = "BOOL", AccessType = "READ", Category = "motors", ValueRole = "moving" } } };
+            var motion = root.AddComponent<MobileDeviceMotion>(); motion.Initialize(device);
+            Near(root.transform.localPosition, new Vector3(42, 0, 0), "Missing last-arrival observation guessed a start station.");
+            Require(!motion.HasFreshPosition && !motion.HasConfirmedPosition && !motion.HasReliableSourcePose, "An authored initial pose became a real station observation.");
+            JObject Frame(int station, bool moving = true, string gateQuality = "good")
+            {
+                var stamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                return new JObject { ["furnace_id"] = device.Id, ["timestamp"] = stamp,
+                    ["analog"] = new JObject { ["position"] = station }, ["motors"] = new JObject { ["moving"] = moving },
+                    ["status"] = new JObject { ["online"] = true, ["quality"] = "good" },
+                    ["quality"] = new JObject { ["overall"] = "good", ["analog"] = new JObject { ["position"] = "good" }, ["motors"] = new JObject { ["moving"] = gateQuality } },
+                    ["pointMeta"] = new JObject {
+                        ["analog.position"] = new JObject { ["id"] = 101, ["category"] = "analog", ["field_name"] = "position", ["timestamp"] = stamp },
+                        ["motors.moving"] = new JObject { ["id"] = 102, ["category"] = "motors", ["field_name"] = "moving", ["timestamp"] = stamp } } };
+            }
+            motion.ApplyRealtime(Frame(1));
+            Near(root.transform.localPosition, Vector3.zero, "First last-arrival observation did not directly align to station 1.");
+            Require(motion.HasFreshPosition && !motion.HasConfirmedPosition && !motion.HasReliableSourcePose && motion.CurrentPositionValue == 1,
+                "A held station number without actual movement feedback confirmed ongoing docking.");
+            root.transform.hasChanged = false;
+            for (var i = 0; i < 120; i++)
+            {
+                motion.ApplyRealtime(Frame(1)); motion.AdvanceMotion(.00001f, Time.realtimeSinceStartupAsDouble + .00001);
+                Require(motion.CurrentPositionValue == 1 && root.transform.localPosition.Equals(Vector3.zero) && !motion.HasConfirmedPosition,
+                    "Repeated last-arrival feedback generated an intermediate percentage/station or arrival.");
+            }
+            Require(!root.transform.hasChanged, "Unchanged last-arrival reads kept dirtying native transforms.");
+            motion.ApplyRealtime(Frame(2));
+            Near(root.transform.localPosition, new Vector3(10, 0, 0), "New last-arrival feedback replayed an estimated journey after arrival.");
+            Require(motion.CurrentPositionValue == 2 && !motion.HasConfirmedPosition, "New last-arrival number guessed continued docking.");
+            motion.AdvanceMotion(.1f, Time.realtimeSinceStartupAsDouble + .1);
+            Near(root.transform.localPosition, new Vector3(10, 0, 0), "Imported simulation/smoothing fields estimated an unobserved intermediate trip.");
+            config["startActionPointId"] = "102"; motion.Initialize(device); motion.ApplyRealtime(Frame(1, true));
+            Require(motion.HasFreshPosition && !motion.HasConfirmedPosition && !motion.HasReliableSourcePose,
+                "Actual BOOL moving feedback allowed a last-station cargo docking claim.");
+            motion.ApplyRealtime(Frame(1, false));
+            Require(motion.HasConfirmedPosition && motion.HasReliableSourcePose, "Actual owned BOOL stopped feedback could not confirm the held station.");
+            motion.ApplyRealtime(Frame(1, false, "bad"));
+            Require(!motion.HasFreshPosition && !motion.HasConfirmedPosition && !motion.HasReliableSourcePose,
+                "Bad actual movement feedback remained a confirmed cargo source.");
+        }
         public static void Run()
         {
             var factory = (GameObject)null;
@@ -409,6 +457,7 @@ namespace HeatTreatment.DigitalTwin.EditorTests
                 var bytes = File.ReadAllBytes(Path.Combine(root, "backend/assets/motions/cad_transfer_cart_101300.glb"));
                 var gltf = JObject.Parse(System.Text.Encoding.UTF8.GetString(bytes, 20, BitConverter.ToInt32(bytes, 12)));
                 factory = new GameObject("Isolated transfer acceptance");
+                ValidateLastConfirmedStationFeedback(factory);
                 var cart = Rig(gltf); cart.transform.SetParent(factory.transform, false); cart.transform.localPosition = new Vector3(10, 0, 20);
                 var furnace = new GameObject("Configured fixed equipment"); furnace.transform.SetParent(factory.transform, false); furnace.transform.localPosition = new Vector3(12.6f, 0, 20);
                 var transfer = JObject.Parse("{enabled:true,actionId:'clip:feed',driveNodeName:'cad_transfer_cart_v1_feed_carriage',targetMode:'fixed',targetDeviceId:'furnace',sourcePort:'outlet',targetPort:'inlet',presenceDataItemId:'point:material',materialSize:[.5,.1,.4],materialColor:'#dca34f',heightToleranceMeters:.02,lateralToleranceMeters:.02,angleToleranceDegrees:1}");

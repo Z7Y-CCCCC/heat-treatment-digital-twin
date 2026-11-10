@@ -169,16 +169,113 @@ async function fieldFixture(t, options = {}) {
     loadDevices: async () => { devices.value = api.rows(); savedDeviceLayoutSnapshots.value = Object.fromEntries(devices.value.map(row => [row.id, { serialized: JSON.stringify({ pos_x: row.pos_x, pos_z: row.pos_z }) }])) },
     reloadSavedNativeScenePreview: async () => true }
   const handlers = new Function(...Object.keys(dependencies), parentFunctions + '\nreturn {changeLineRailSpacing,saveSelectedLineLayout}')(...Object.values(dependencies))
-  let app
+  let app, pendingSave
   const mount = async () => {
-    app = host.renderer.createApp({ setup: () => () => h('section', [h(Planner, { lines: [line.value], workshops: [{ id: 'W', name: '当前车间' }], selectedId: 'L', layout: line.value.layout, draft: {}, busy: busy.value,
-      savedSnapshot: savedLineLayoutSnapshots.value.L, onChangeRailSpacing: handlers.changeLineRailSpacing }), h('button', { 'aria-label': '保存产线结构', onClick: handlers.saveSelectedLineLayout }, '保存产线结构')]) })
-    app.mount(host.root); await host.field('管理小车导轨').fire('click'); await settled()
+    app = host.renderer.createApp({ setup: () => () => h('section', [h(Planner, { lines: [line.value], workshops: [{ id: 'W', name: '当前车间' }], selectedId: 'L', layout: line.value.layout, draft: {}, busy: busy.value || saving.value,
+      layoutDirty: JSON.stringify(line.value.layout) !== savedLineLayoutSnapshots.value.L, layoutSaving: saving.value,
+      savedSnapshot: savedLineLayoutSnapshots.value.L, onChangeRailSpacing: handlers.changeLineRailSpacing,
+      onSaveLayout: () => { pendingSave = handlers.saveSelectedLineLayout(); return pendingSave } })]) })
+    app.mount(host.root)
+    if (options.openRailPopup !== false) await host.field('管理小车导轨').fire('click')
+    await settled()
   }
   await mount(); host.beforeRestore(() => app.unmount())
-  return { ...api, ...host, line, devices, busy, alerts, requests, save: async () => { await host.field('保存产线结构').fire('click'); await settled() },
+  return { ...api, ...host, line, devices, busy, saving, alerts, requests, save: async () => { await host.field('保存设备线与轨道设置').fire('click'); await pendingSave; await settled() },
     reopen: async () => { app.unmount(); await dependencies.loadLines(); await dependencies.loadDevices(); await mount() } }
 }
+
+test('legacy unassociated rail exposes real spacing fields in the normal toolbar without opening a popup; manual fields and its actual save button persist through the original batch API and reopen', async t => {
+  const f = await fieldFixture(t, { openRailPopup: false }), original = f.snapshot()
+  const inMainTree = field => { let current = field; while (current && current !== f.root) current = current.parent; return current === f.root }
+  const labels = ['小车导轨 关联设备线', '小车导轨 设备线与轨道中心距（米）', '小车导轨 相对设备线方向']
+  for (const label of labels) assert.ok(inMainTree(f.field(label)), label + ' is in the ordinary toolbar, not Teleport')
+  assert.equal(f.elements().some(node => String(node.props.class || '').includes('line-control-popup')), false)
+  assert.equal(f.field(labels[0]).value, ''); assert.equal(f.field(labels[1]).value, ''); assert.equal(f.field(labels[2]).value, '')
+  assert.equal(f.field(labels[1]).props.disabled, true); assert.equal(f.field(labels[2]).props.disabled, true)
+  assert.equal(f.field('保存设备线与轨道设置').props.disabled, true)
+  assert.equal(Object.hasOwn(f.line.value.layout.rails[0], 'spacing'), false); assert.deepEqual(f.snapshot(), original); assert.equal(f.requests.length, 0)
+  const untouched = JSON.stringify({ layout: f.line.value.layout, devices: f.devices.value })
+  await f.field(labels[1]).fire('change', '.25')
+  assert.equal(JSON.stringify({ layout: f.line.value.layout, devices: f.devices.value }), untouched, 'Disabled unassociated distance cannot invent a lane even if an event is dispatched')
+  await f.field(labels[0]).fire('change', 'lane')
+  assert.equal(f.field(labels[1]).value, '0.6'); assert.equal(f.field(labels[2]).value, 'positive')
+  assert.equal(f.line.value.layout.rails[0].offsetZ, .6, 'Explicit lane selection measures the actual existing gap, without moving the rail')
+  await f.field(labels[1]).fire('change', '.25'); await f.field(labels[2]).fire('change', 'negative')
+  assert.equal(f.line.value.layout.rails[0].offsetZ, -.25)
+  assert.deepEqual(f.line.value.layout.rails[0].spacing, { laneId: 'lane', distanceMeters: .25, side: 'negative' })
+  assert.equal(f.field('保存设备线与轨道设置').props.disabled, false)
+  assert.ok(f.elements().some(node => node.props.role === 'status' && node.text === '有未保存修改'))
+  assert.deepEqual(f.snapshot(), original, 'The visible fields update the draft and linked path, not the database before Save')
+  await f.save(); assert.equal(f.alerts.at(-1).options.type, 'success', f.alerts.at(-1).message)
+  const put = f.requests.find(row => row.method === 'PUT')
+  assert.ok(put); assert.equal(Object.hasOwn(put.body.expectedLayout.rails[0], 'spacing'), false)
+  assert.deepEqual(put.body.layout.rails[0].spacing, { laneId: 'lane', distanceMeters: .25, side: 'negative' })
+  assert.deepEqual(put.body.devicePositions[0].expected, { pos_x: -10.125, pos_z: .6 })
+  const saved = f.rows()[0], savedMovement = JSON.parse(saved.instance_config).movement
+  assert.equal(saved.pos_z, -.25); approximate(savedMovement.start.z, -.15); approximate(savedMovement.end.z, -.15)
+  approximate(savedMovement.stations[0].position.z, -.15)
+  await f.reopen()
+  assert.equal(f.field(labels[0]).value, 'lane'); assert.equal(f.field(labels[1]).value, '0.25'); assert.equal(f.field(labels[2]).value, 'negative')
+  assert.equal(f.field('保存设备线与轨道设置').props.disabled, true)
+  assert.ok(f.elements().some(node => node.props.role === 'status' && node.text === '已保存'))
+  for (const label of labels) assert.ok(inMainTree(f.field(label)), 'Reopen remains directly reachable: ' + label)
+  await f.field('管理小车导轨').fire('click'); await settled()
+  for (const label of labels) assert.ok(inMainTree(f.field(label)), 'Opening the structural popup does not duplicate spacing fields: ' + label)
+  await f.field('管理小车导轨').fire('click'); await settled()
+  assert.equal(f.requests.filter(row => row.method === 'PUT').length, 1, 'Opening and closing the popup never saves or repositions anything')
+})
+
+test('normal multi-rail fields require the user-selected lane ID, apply calibrated metre spacing only to its rail and preserve another unassociated rail through save/reopen', async t => {
+  const layout = { ...legacyLayout(), sceneUnitsPerMeter: 2,
+    lanes: [{ id: 'lane-a', name: '设备线 A', offsetZ: -2, length: 60 }, { id: 'lane-b', name: '设备线 B', offsetZ: 6, length: 60 }],
+    rails: [{ id: 'rail', name: '送料轨道', offsetZ: 10, length: 60 }, { id: 'return', name: '回程轨道', offsetZ: -4, length: 60 }] }
+  const source = carrier('cart', 2, { pos_z: 10 })
+  for (const position of [source.instance_config.movement.start, source.instance_config.movement.end, source.instance_config.movement.stations[0].position]) position.z = 10.1
+  const f = await fieldFixture(t, { layout, devices: [source], openRailPopup: false }), original = f.snapshot()
+  assert.equal(f.field('送料轨道 关联设备线').value, ''); assert.equal(f.field('回程轨道 关联设备线').value, '')
+  assert.equal(f.field('送料轨道 设备线与轨道中心距（米）').value, ''); assert.equal(f.field('回程轨道 设备线与轨道中心距（米）').value, '')
+  await f.reopen(); assert.deepEqual(f.snapshot(), original)
+  assert.equal(f.field('送料轨道 关联设备线').value, '', 'Even multiple nearby lanes never receive a guessed association on reopen')
+  await f.field('送料轨道 关联设备线').fire('change', 'lane-b')
+  assert.equal(f.field('送料轨道 设备线与轨道中心距（米）').value, '2'); assert.equal(f.line.value.layout.rails[0].offsetZ, 10)
+  await f.field('送料轨道 设备线与轨道中心距（米）').fire('change', '.75')
+  await f.field('送料轨道 相对设备线方向').fire('change', 'negative')
+  assert.equal(f.line.value.layout.rails[0].offsetZ, 4.5, 'Actual offset is lane B at 6 minus .75 metres times 2 scene units/metre')
+  assert.deepEqual(f.line.value.layout.rails[0].spacing, { laneId: 'lane-b', distanceMeters: .75, side: 'negative' })
+  assert.equal(f.line.value.layout.rails[1].offsetZ, -4); assert.equal(Object.hasOwn(f.line.value.layout.rails[1], 'spacing'), false)
+  assert.equal(f.field('回程轨道 设备线与轨道中心距（米）').props.disabled, true)
+  await f.save(); assert.equal(f.alerts.at(-1).options.type, 'success', f.alerts.at(-1).message)
+  const savedMovement = JSON.parse(f.rows()[0].instance_config).movement
+  assert.equal(f.rows()[0].pos_z, 4.5); approximate(savedMovement.start.z, 4.6); approximate(savedMovement.end.z, 4.6)
+  await f.reopen()
+  assert.equal(f.field('送料轨道 关联设备线').value, 'lane-b'); assert.equal(f.field('送料轨道 设备线与轨道中心距（米）').value, '0.75')
+  assert.equal(f.field('送料轨道 相对设备线方向').value, 'negative'); assert.equal(f.field('回程轨道 关联设备线').value, '')
+  assert.equal(f.field('回程轨道 设备线与轨道中心距（米）').value, '')
+})
+
+test('the visible spacing save action is disabled while busy and retains dirty draft values when the original batch API rejects a stale layout', async t => {
+  const f = await fieldFixture(t, { openRailPopup: false })
+  await f.field('小车导轨 关联设备线').fire('change', 'lane')
+  await f.field('小车导轨 设备线与轨道中心距（米）').fire('change', '.4')
+  const draft = JSON.stringify({ layout: f.line.value.layout, devices: f.devices.value })
+  for (const state of [f.busy, f.saving]) {
+    state.value = true; await settled()
+    assert.equal(f.field('保存设备线与轨道设置').props.disabled, true)
+    await f.save(); assert.equal(f.requests.filter(row => row.method === 'PUT').length, 0)
+    state.value = false; await settled()
+  }
+  const external = { ...legacyLayout(), rails: [{ ...legacyLayout().rails[0], offsetZ: .9 }] }
+  f.sqlite.prepare('UPDATE lines SET layout_json=? WHERE id=?').run(JSON.stringify(external), 'L')
+  const changedElsewhere = f.snapshot()
+  await f.save()
+  assert.equal(f.alerts.at(-1).options.type, 'danger'); assert.match(f.alerts.at(-1).message, /产线结构已被更新/)
+  assert.deepEqual(f.snapshot(), changedElsewhere, 'A stale line does not partly save its linked carrier or source paths')
+  assert.equal(JSON.stringify({ layout: f.line.value.layout, devices: f.devices.value }), draft)
+  assert.equal(f.field('小车导轨 设备线与轨道中心距（米）').value, '0.4')
+  assert.equal(f.field('保存设备线与轨道设置').props.disabled, false)
+  assert.ok(f.elements().some(node => node.props.role === 'status' && node.text === '有未保存修改'))
+  assert.equal(f.saving.value, false)
+})
 
 for (const units of [.8, 1.25, 2]) test(`actual line ${units} units/m and .6m spacing field -> original parent save/API -> isolated SQL -> GET -> controls reopen preserves precise carrier/path/CAS`, async t => {
   const initial = carrier('cart', units), f = await fieldFixture(t, { devices: [initial] }), rawBefore = f.snapshot()
@@ -317,4 +414,14 @@ test('unit-field and preview Vue scripts/styles compile without a browser', asyn
     assert.doesNotThrow(() => compileScript(descriptor, { id: 'line-units-compile', inlineTemplate: true }))
     for (const style of descriptor.styles.filter(row => !row.src)) assert.deepEqual(compileStyle({ source: style.content, filename: path, id: 'line-units-compile', scoped: style.scoped }).errors, [])
   }
+})
+
+test('ordinary line spacing save receives the real page dirty/saving state and the original transactional save callback', async () => {
+  const { descriptor } = parse(await readFile(new URL('../src/views/AdminPanel.vue', import.meta.url), 'utf8'))
+  const controls = descriptor.template.content.match(/<LinePlannerControls\b[\s\S]*?\/>/)?.[0]
+  assert.ok(controls, 'Normal production line-management controls')
+  assert.match(controls, /:layout-dirty="lineLayoutDirty"/)
+  assert.match(controls, /:layout-saving="lineLayoutSaving"/)
+  assert.match(controls, /@change-rail-spacing="changeLineRailSpacing"/)
+  assert.match(controls, /@save-layout="saveSelectedLineLayout"/)
 })

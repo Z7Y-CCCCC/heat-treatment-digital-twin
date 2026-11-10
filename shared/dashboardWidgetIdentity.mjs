@@ -92,3 +92,68 @@ export function allocateNewWidgetIds(existingWidgets, newWidgets) {
   }
   return remapped
 }
+
+// Main-canvas IDs are document-wide, not view-local: views only filter the
+// same widget array. Historical presets may contain multiple real instances
+// under one ID. Allocate their technical identities only for an explicit
+// human save/publish, never while reading a document or activating a release.
+// Keep the first identity stable and preserve the old broadcast semantics of
+// show/hide, overrides and widget visibility events for all its instances.
+// Tooltip templates have their own identity scope and are not re-keyed here.
+export function prepareDashboardWidgetIdentities(document) {
+  const issues = dashboardWidgetIdentityIssues(document)
+  const invalid = issues.filter(issue => issue.code === 'invalid-widget-id')
+  if (invalid.length) throw new Error(invalid.map(issue => issue.message).join('；'))
+  if (!issues.some(issue => issue.code === 'duplicate-widget-id')) {
+    return { document, changed: false, changes: [] }
+  }
+
+  const repaired = copyValue(document)
+  const used = new Set(repaired.widgets.map(widget => widget.id))
+  const reserveTarget = target => {
+    const id = String(target || '').replace(/^widget:/, '')
+    if (/^[A-Za-z0-9_-]{1,128}$/.test(id)) used.add(id)
+  }
+  // Do not accidentally turn a dangling authored reference into a reference
+  // to a newly named widget, or overwrite a separately authored override.
+  for (const view of repaired.scene?.views || []) {
+    const state = view.componentState || view.components
+    for (const target of [...(state?.show || []), ...(state?.hide || []), ...Object.keys(state?.overrides || {})]) reserveTarget(target)
+  }
+  for (const widget of repaired.widgets) for (const event of widget.events || []) {
+    if (event?.targetType === 'widget') reserveTarget(event.targetId)
+  }
+
+  const seen = new Set(), changes = [], targets = new Map()
+  repaired.widgets.forEach((widget, index) => {
+    const oldId = widget.id
+    if (!seen.has(oldId)) { seen.add(oldId); return }
+    let suffix = 1, newId = oldId
+    while (used.has(newId)) {
+      const tail = `_${++suffix}`
+      newId = oldId.slice(0, 128 - tail.length) + tail
+    }
+    used.add(newId)
+    renameDashboardWidget(repaired, widget, newId)
+    changes.push({ index, oldId, newId })
+    if (!targets.has(oldId)) targets.set(oldId, [])
+    targets.get(oldId).push(newId)
+  })
+
+  for (const widget of repaired.widgets) {
+    if (!Array.isArray(widget.events)) continue
+    const events = widget.events.flatMap(event => {
+      const additional = event?.targetType === 'widget' && ['set_visibility', 'toggle_visibility'].includes(event.action)
+        ? targets.get(event.targetId) : null
+      return additional?.length ? [event, ...additional.map(targetId => ({ ...copyValue(event), targetId }))] : [event]
+    })
+    // The persisted event schema currently accepts twelve events. Reject an
+    // unsafe repair atomically instead of letting normalization silently drop
+    // authored actions. Ordinary duplicate HUD presets have no such events.
+    if (events.length > 12 && events.length > widget.events.length) {
+      throw new Error(`组件“${widget.title || widget.id}”的重复标识关联了过多显隐事件；保留全部动作需要超过 12 个事件，未修改草稿`)
+    }
+    widget.events = events
+  }
+  return { document: repaired, changed: true, changes }
+}
