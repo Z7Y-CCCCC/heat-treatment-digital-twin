@@ -11,7 +11,7 @@ import { createVoiceAnnouncer } from '../runtime/VoiceAnnouncer.js'
 import { createFactoryVoiceController } from '../runtime/factoryVoice.js'
 import { resolveBackendAssetUrl } from '../three/ModelFactory.js'
 import { useDashboardIntegration } from '../runtime/dashboardIntegration.js'
-import {useWidgetClock,createWidgetPlaybackController,WidgetPlaybackKey} from '../runtime/widgetPlayback.js'
+import {useWidgetClock,createWidgetPlaybackController,WidgetPlaybackKey,WidgetClockKey} from '../runtime/widgetPlayback.js'
 import {createWidgetReadScheduler} from '../runtime/widgetReadScheduler.js'
 import {flattenPlaybackDevices,playbackSelection,devicePoint} from '../../../shared/widgetPlayback.mjs'
 import {bindingForDevice} from '../../../shared/widgetBindingWorkflow.mjs'
@@ -32,8 +32,9 @@ import { createGroupHierarchyPath } from '../runtime/groupHierarchyPath.js'
 import { applyInspectionHover } from '../runtime/inspectionHover.js'
 import { applyDeviceHover, tooltipDevices } from '../runtime/deviceHover.js'
 import TooltipSurface from '../runtime/TooltipSurface.vue'
-import { createTooltipContext } from '../runtime/tooltipContext.js'
-import { tooltipHoverTarget } from '../runtime/tooltipRuntime.js'
+import { createTooltipContentContext } from '../runtime/tooltipContext.js'
+import { tooltipHoverContentTarget, tooltipHoverPointer } from '../runtime/tooltipRuntime.js'
+import { reconcileOverlayHitTargets } from '../runtime/overlayHitRegions.js'
 import { resolveTooltipTemplate } from '../../../shared/tooltipTemplates.mjs'
 import { overviewEntryStatus } from '../runtime/factoryNavigationReadiness.js'
 
@@ -89,9 +90,10 @@ const runtimeContext = reactive({
     factoryId: '', viewId: 'factory_overview', viewMode: 'factory', sceneReady: false, sceneId: '', workshopId: '', lineId: '', deviceId: '', returnOrigin: null,
     inspectionStage: '', partId: '', partName: '', partDescription: '', partPointIds: [], partPointKeys: [], partDetailViewId: '',
     inspectionEnabled: false, inspectionProgress: 0, inspectionAnimating: false, inspectionPhase: '', inspectionIsolated: false,
-    inspectionLabelsEnabled: false, inspectionLeaderLines: false, inspectionHoveredPartId: '', inspectionIssues: [], inspectionParts: []
+    inspectionLabelsEnabled: false, inspectionLeaderLines: false, inspectionHoveredPartId: '', inspectionHoverPointer: { visible: false }, inspectionIssues: [], inspectionParts: []
 })
 const playbackNow=useWidgetClock()
+provide(WidgetClockKey,playbackNow)
 const playbackController=createWidgetPlaybackController()
 provide(WidgetPlaybackKey,playbackController)
 watch(()=>['factoryId','sceneId','viewId','viewMode','workshopId','lineId','deviceId','partId'].map(key=>runtimeContext[key]),()=>playbackController.reset(),{flush:'sync'})
@@ -425,13 +427,20 @@ const selectedPart = computed(() => {
     }
 })
 const deviceHoverCatalog = computed(() => tooltipDevices(getWorkshops() || [], config.models || []))
-const tooltipTarget = computed(() => tooltipHoverTarget(runtimeContext, deviceHoverCatalog.value, pointValues.value, pointForContextKey))
-const activeTooltipTemplate = computed(() => tooltipTarget.value
-    ? resolveTooltipTemplate(presentationDocument.value, currentView.value, tooltipTarget.value.kind) : null)
+const tooltipContentTarget = computed(() => tooltipHoverContentTarget(runtimeContext, deviceHoverCatalog.value, pointValues.value, pointForContextKey))
+function getTooltipPointer() { return tooltipHoverPointer(runtimeContext, tooltipContentTarget.value) }
+// Combined read-only API remains available without subscribing the live HUD
+// template to cursor updates. The stable provider is read by TooltipSurface.
+const tooltipTarget = computed(() => {
+    const target = tooltipContentTarget.value, pointer = getTooltipPointer()
+    return pointer ? { ...target, pointer: { ...pointer } } : null
+})
+const activeTooltipTemplate = computed(() => tooltipContentTarget.value
+    ? resolveTooltipTemplate(presentationDocument.value, currentView.value, tooltipContentTarget.value.kind) : null)
 const tooltipContext = computed(() => {
-    const target = tooltipTarget.value
+    const target = tooltipContentTarget.value
     if (!target) return {}
-    return createTooltipContext({ ...target, runtimeContext, status: dataStore.deviceStatusMap[target.device.id] || {},
+    return createTooltipContentContext({ ...target, runtimeContext, status: dataStore.deviceStatusMap[target.device.id] || {},
         frame: dataStore.deviceDataMap[target.device.id] || {} })
 })
 watch(dataStore.wsConnected, connected => {
@@ -1038,18 +1047,9 @@ onMounted(async () => {
     // flashes. ResizeObserver handles geometry changes; MutationObserver is
     // limited to structural changes so newly mounted hit targets are picked up.
     mutationObserver = new MutationObserver(mutations => {
-        let structuralChange=false
-        for (const mutation of mutations) {
-            if ([...mutation.addedNodes,...mutation.removedNodes].some(node=>node.nodeType===Node.ELEMENT_NODE)) structuralChange=true
-            for (const node of mutation.addedNodes || []) {
-                if (node.nodeType !== Node.ELEMENT_NODE) continue
-                if (node.matches?.('[data-overlay-hit="true"]')) resizeObserver.observe(node)
-                node.querySelectorAll?.('[data-overlay-hit="true"]').forEach(element => resizeObserver.observe(element))
-            }
-        }
         // Vue setElementText replaces text nodes on every PLC update. These
-        // are NOT new hit targets; ResizeObserver handles resulting size changes.
-        if(structuralChange) scheduleRegionReport()
+        // and noninteractive tooltip nodes are NOT new native hit targets.
+        if (reconcileOverlayHitTargets(mutations, resizeObserver)) scheduleRegionReport()
     })
     mutationObserver.observe(rootRef.value, { childList: true, subtree: true })
     window.addEventListener('resize', scheduleRegionReport)
@@ -1203,7 +1203,7 @@ onUnmounted(() => {
         :point-values="pointValues"
                     :database-values="databaseValues"
                     :business-data="businessData"
-                    :playback-now="playbackNow" :device-catalog="playbackDevices" :runtime-context="runtimeContext" :parameters="integration.parameters.value" :parameter-definitions="integration.definitions.value"
+                    :device-catalog="playbackDevices" :runtime-context="runtimeContext" :parameters="integration.parameters.value" :parameter-definitions="integration.definitions.value"
                     :selected-part="selectedPart"
                     overlay-mode
                     :preview="true"
@@ -1212,11 +1212,11 @@ onUnmounted(() => {
                 />
             </div>
         </div>
-        <TooltipSurface v-if="tooltipTarget && activeTooltipTemplate" :template="activeTooltipTemplate"
-            :context="tooltipContext" :pointer="tooltipTarget.pointer" :viewport="overlayViewport"
+        <TooltipSurface v-if="tooltipContentTarget && activeTooltipTemplate" :template="activeTooltipTemplate"
+            :context="tooltipContext" :pointer-source="getTooltipPointer" :viewport="overlayViewport"
             :metrics="dataStore.metrics" :events="dataStore.events.value" :trend-points="dataStore.trendPoints.value"
             :device-status-map="dataStore.deviceStatusMap" :device-data-map="dataStore.deviceDataMap" :point-values="pointValues"
-            :device-catalog="playbackDevices" :playback-now="playbackNow" :parameters="integration.parameters.value"
+            :device-catalog="playbackDevices" :parameters="integration.parameters.value"
             :parameter-definitions="integration.definitions.value" :data-ready="dataStore.health.readiness.displayReady === true" />
     </div>
 </template>

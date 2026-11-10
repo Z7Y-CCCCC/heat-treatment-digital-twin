@@ -112,15 +112,25 @@ async function forceStopBackend(phase) {
     return proof;
 }
 
-function recoveryArtifactPath(filename, fixtureDirectory) {
+function recoveryArtifactPath(filename, fixtureDirectory, resolveRealPath = fs.realpathSync) {
     const fixture = requireTestPath(fixtureDirectory), absolute = requireTestPath(filename);
     const within = (base, target) => { const relative = path.relative(base, target); return !!relative && relative !== '..'
         && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative); };
     if (!within(fixture, absolute)) throw new Error('Recovery sidecar must remain in this exact fixture directory');
     let ancestor = absolute;
     const missing = [];
-    while (!fs.existsSync(ancestor)) { missing.unshift(path.basename(ancestor)); ancestor = path.dirname(ancestor); }
-    const realTarget = path.resolve(fs.realpathSync(ancestor), ...missing);
+    let realTarget;
+    // SQLite may unlink a sidecar between existsSync and realpathSync while
+    // completing its closed connection cleanup. Resolve directly and walk up
+    // only on ENOENT; retain the realpath containment check for existing links.
+    while (true) {
+        try { realTarget = path.resolve(resolveRealPath(ancestor), ...missing); break; }
+        catch (error) {
+            const parent = path.dirname(ancestor);
+            if (error.code !== 'ENOENT' || parent === ancestor) throw error;
+            missing.unshift(path.basename(ancestor)); ancestor = parent;
+        }
+    }
     if (!within(fs.realpathSync(fixture), realTarget)) throw new Error('Recovery sidecar resolves outside this exact fixture directory');
     return absolute;
 }

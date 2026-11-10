@@ -82,6 +82,134 @@ internal static partial class Program
         MobileExplicitObservationsAndContinuousFeedback();
         return Task.CompletedTask;
     }
+    private static Task LastConfirmedStationIsObservationOnly()
+    {
+        LinkageCheck(MobileMotionSignalState.ParseStationInputMeaning(new JValue("last-confirmed")) == StationInputMeaning.LastConfirmed,
+            "Retained last-arrival meaning was not parsed explicitly.");
+        var device = LinkageMobile(); device.DataPoints[0].DataType = "WORD"; device.DataPoints[1].DataType = "BOOL";
+        var held = new MobileMotionSignalState();
+        for (var i = 0; i < 20; i++)
+        {
+            var stamp = 8000000 + i * 200;
+            LinkageCheck(held.Receive(device, LinkageFrame(stamp, 1), "1", "", i * .2, stamp, 5000, StationInputMeaning.LastConfirmed)
+                && held.Usable && held.SnapOnReceive && held.Value == 1 && !held.HasConfirmedPosition,
+                "A repeated last-arrival number invented a percentage trajectory or current docking without feedback.");
+            LinkageCheck(held.Advance(i * .2 + .1, 5000, false) && held.Value == 1 && !held.HasConfirmedPosition,
+                "Render time invented a new intermediate station or confirmed a stale last-arrival number.");
+        }
+        LinkageCheck(held.Receive(device, LinkageFrame(8004000, 2), "1", "", 4, 8004000, 5000, StationInputMeaning.LastConfirmed)
+            && held.SnapOnReceive && held.Value == 2 && !held.HasConfirmedPosition,
+            "A new last-arrival feedback failed to update the observed station, or guessed ongoing docking.");
+        var old = LinkageFrame(8003000, 1); old["timestamp"] = 8004100;
+        LinkageCheck(!held.Receive(device, old, "1", "", 4.1, 8004100, 5000, StationInputMeaning.LastConfirmed) && held.Value == 2,
+            "Older last-arrival feedback rewound the observed station.");
+        var duplicate = LinkageFrame(8004000, 2); duplicate["timestamp"] = 8004800;
+        LinkageCheck(held.Receive(device, duplicate, "1", "", 4.8, 8004800, 1000, StationInputMeaning.LastConfirmed) && held.ReceivedAt == 4,
+            "Retained source feedback renewed its lifetime from the wrapper clock.");
+        LinkageCheck(!held.Advance(5.1, 1000, false) && !held.HasConfirmedPosition, "Expired held feedback remained a docking observation.");
+        held.Suspend();
+        LinkageCheck(held.Receive(device, LinkageFrame(8006000, 3, true), "1", "2", 6, 8006000, 1000, StationInputMeaning.LastConfirmed)
+            && held.Value == 3 && held.SnapOnReceive && !held.HasConfirmedPosition,
+            "A held last station became docked while the actual movement feedback was true.");
+        LinkageCheck(held.Receive(device, LinkageFrame(8006100, 3, false), "1", "2", 6.1, 8006100, 1000, StationInputMeaning.LastConfirmed)
+            && held.Value == 3 && held.SnapOnReceive && held.HasConfirmedPosition,
+            "Good owned actual BOOL stopped feedback did not confirm the known station.");
+        var bad = LinkageFrame(8006200, 3, false); bad["quality"]["motors"]["start"] = "bad";
+        LinkageCheck(!held.Receive(device, bad, "1", "2", 6.2, 8006200, 1000, StationInputMeaning.LastConfirmed)
+            && !held.Usable && !held.HasConfirmedPosition, "Faulted movement feedback confirmed docking in retained-station mode.");
+        var wordGate = LinkageMobile(); wordGate.DataPoints[1].DataType = "WORD";
+        LinkageCheck(!new MobileMotionSignalState().Receive(wordGate, LinkageFrame(9000000, 1, false), "1", "2", 0, 9000000, 1000, StationInputMeaning.LastConfirmed),
+            "A numeric start command was substituted for actual BOOL movement feedback.");
+        foreach (var raw in new JToken[] { new JValue(0), new JValue(1), new JValue("false"), new JValue("true"), new JValue("0"), new JValue("1"), JValue.CreateNull() })
+        {
+            var nonBoolean = LinkageFrame(9000000, 1, false); nonBoolean["motors"]["start"] = raw;
+            LinkageCheck(!new MobileMotionSignalState().Receive(device, nonBoolean, "1", "2", 0, 9000000, 1000, StationInputMeaning.LastConfirmed),
+                "A non-Boolean value was coerced into actual movement/stopped BOOL feedback.");
+        }
+        foreach (var mutate in new Action<DeviceDto>[] {
+            row => row.DataPoints[1].DeviceId = "other-cart",
+            row => row.DataPoints[1].AccessType = "WRITE",
+            row => row.DataPoints[1].DataType = "INT"
+        })
+        {
+            var invalidSource = LinkageMobile(); invalidSource.DataPoints[1].DataType = "BOOL"; mutate(invalidSource);
+            LinkageCheck(!new MobileMotionSignalState().Receive(invalidSource, LinkageFrame(9000000, 1, false), "1", "2", 0, 9000000, 1000, StationInputMeaning.LastConfirmed),
+                "A foreign, writable or non-BOOL point confirmed held-station docking.");
+        }
+        foreach (var fault in new Action<JObject>[] {
+            frame => frame["motors"]["start"] = 0,
+            frame => frame["quality"]["motors"]["start"] = "bad",
+            frame => frame["quality"]["analog"]["position"] = "bad",
+            frame => frame["status"]["online"] = false
+        })
+        {
+            var recovery = new MobileMotionSignalState();
+            LinkageCheck(recovery.Receive(device, LinkageFrame(9100000, 2, true), "1", "2", 0, 9100000, 1000, StationInputMeaning.LastConfirmed),
+                "Held-station recovery fixture did not establish its first actual observation.");
+            var faulted = LinkageFrame(9100200, 2, true); fault(faulted);
+            LinkageCheck(!recovery.Receive(device, faulted, "1", "2", .2, 9100200, 1000, StationInputMeaning.LastConfirmed) && !recovery.Usable,
+                "A typed/quality/offline held-station fault did not immediately suspend the observation.");
+            LinkageCheck(recovery.ReceivedAt == 0 && recovery.SourceTimestamp == 9100000 && recovery.Value == 2,
+                "A fault watermark changed the accepted position or renewed its source lifetime.");
+            LinkageCheck(!recovery.Receive(device, LinkageFrame(9100100, 1, false), "1", "2", .3, 9100300, 1000, StationInputMeaning.LastConfirmed)
+                && !recovery.Usable && !recovery.HasConfirmedPosition && recovery.Value == 2,
+                "A delayed valid BOOL/source read older than a newer held-station fault revived docking or rewound the observed station.");
+            var oldGate = LinkageFrame(9100350, 2, false); oldGate["pointMeta"]["motors.start"]["timestamp"] = 9100100;
+            LinkageCheck(!recovery.Receive(device, oldGate, "1", "2", .35, 9100350, 1000, StationInputMeaning.LastConfirmed)
+                && !recovery.Usable && !recovery.HasConfirmedPosition && recovery.Value == 2,
+                "A fresh position wrapper hid an actual BOOL read older than the held-station fault.");
+            var oldPosition = LinkageFrame(9100375, 1, false); oldPosition["pointMeta"]["analog.position"]["timestamp"] = 9100100;
+            LinkageCheck(!recovery.Receive(device, oldPosition, "1", "2", .375, 9100375, 1000, StationInputMeaning.LastConfirmed)
+                && !recovery.Usable && !recovery.HasConfirmedPosition && recovery.Value == 2,
+                "A fresh actual BOOL wrapper hid a position read older than the held-station fault.");
+            LinkageCheck(recovery.Receive(device, LinkageFrame(9100400, 3, false), "1", "2", .4, 9100400, 1000, StationInputMeaning.LastConfirmed)
+                && recovery.SnapOnReceive && recovery.HasConfirmedPosition && recovery.Value == 3,
+                "A fresh owned stopped feedback could not directly recover beyond the held-station fault watermark.");
+            recovery.Reset();
+            LinkageCheck(recovery.Receive(device, LinkageFrame(9000000, 1, false), "1", "2", 0, 9000000, 1000, StationInputMeaning.LastConfirmed)
+                && recovery.HasConfirmedPosition && recovery.Value == 1,
+                "A reset inherited another scene/configuration's held-station fault watermark.");
+        }
+        var staleMoving = new MobileMotionSignalState();
+        LinkageCheck(staleMoving.Receive(device, LinkageFrame(9200000, 1, false), "1", "2", 0, 9200000, 1000, StationInputMeaning.LastConfirmed)
+            && staleMoving.HasConfirmedPosition, "Held-station gate-age fixture did not confirm its fresh stopped read.");
+        var freshPositionOldGate = LinkageFrame(9202000, 2, false); freshPositionOldGate["pointMeta"]["motors.start"]["timestamp"] = 9200000;
+        LinkageCheck(!staleMoving.Receive(device, freshPositionOldGate, "1", "2", 2, 9202000, 1000, StationInputMeaning.LastConfirmed)
+            && !staleMoving.HasConfirmedPosition && staleMoving.Value == 1,
+            "Fresh station reads renewed an independently expired stopped BOOL feedback.");
+        foreach (var untrusted in new Action<JObject>[] {
+            frame => frame["pointMeta"]["analog.position"]["id"] = 999,
+            frame => frame.Remove("pointMeta"),
+            frame => { var meta = frame["pointMeta"]["analog.position"]; ((JObject)frame["pointMeta"]).Remove("analog.position"); frame["pointMeta"]["analog.unowned"] = meta; },
+            frame => frame["pointMeta"]["analog.duplicate"] = frame["pointMeta"]["analog.position"].DeepClone(),
+            frame => frame["pointMeta"]["analog.position"]["timestamp"] = 9310000,
+            frame => { frame["status"]["online"] = false; frame["pointMeta"]["analog.position"]["category"] = new JArray("analog"); },
+            frame => { frame["status"]["online"] = false; frame["pointMeta"]["analog.position"]["field_name"] = new JObject { ["unknown"] = "position" }; }
+        })
+        {
+            var known = new MobileMotionSignalState();
+            LinkageCheck(known.Receive(device, LinkageFrame(9300000, 2), "1", "", 0, 9300000, 5000, StationInputMeaning.LastConfirmed),
+                "Untrusted-metadata fixture did not establish its owned station observation.");
+            var unknown = LinkageFrame(9301000, 1); untrusted(unknown);
+            LinkageCheck(!known.Receive(device, unknown, "1", "", 1, 9301000, 5000, StationInputMeaning.LastConfirmed)
+                && !known.Usable && known.Value == 2,
+                "Unknown, missing, misaddressed, duplicate or future point metadata became a held-station read.");
+            LinkageCheck(known.Receive(device, LinkageFrame(9300200, 3), "1", "", 1.2, 9301200, 5000, StationInputMeaning.LastConfirmed)
+                && known.SnapOnReceive && known.Value == 3 && !known.HasConfirmedPosition && Math.Abs(known.ReceivedAt - .2) < 1e-9,
+                "Untrusted point metadata poisoned the held-station watermark or manufactured a new source receipt clock.");
+        }
+        var ownedGate = new MobileMotionSignalState();
+        LinkageCheck(ownedGate.Receive(device, LinkageFrame(9400000, 2, true), "1", "2", 0, 9400000, 5000, StationInputMeaning.LastConfirmed),
+            "Unknown gate-metadata fixture did not establish its owned moving read.");
+        var unknownGate = LinkageFrame(9401000, 1, false);
+        unknownGate["pointMeta"]["analog.position"]["timestamp"] = 9400000; unknownGate["pointMeta"]["motors.start"]["id"] = 999;
+        LinkageCheck(!ownedGate.Receive(device, unknownGate, "1", "2", 1, 9401000, 5000, StationInputMeaning.LastConfirmed) && !ownedGate.HasConfirmedPosition,
+            "Unknown actual moving feedback metadata confirmed docking.");
+        LinkageCheck(ownedGate.Receive(device, LinkageFrame(9400200, 3, false), "1", "2", 1.2, 9401200, 5000, StationInputMeaning.LastConfirmed)
+            && ownedGate.HasConfirmedPosition && ownedGate.Value == 3,
+            "Unknown actual moving feedback metadata poisoned a later owned stopped read.");
+        return Task.CompletedTask;
+    }
     private static void MobileExplicitObservationsAndContinuousFeedback()
     {
         var device = LinkageMobile();

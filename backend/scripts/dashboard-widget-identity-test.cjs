@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs'), path = require('node:path');
 const { createLinkageFixture } = require('./realtime-linkage-fixture.cjs');
 const { normalizeDocument } = require('../utils/dashboardDocument');
-const { renameDashboardWidget, dashboardWidgetIdentityIssues } = require('../../shared/dashboardWidgetIdentity.mjs');
+const { renameDashboardWidget, dashboardWidgetIdentityIssues, prepareDashboardWidgetIdentities } = require('../../shared/dashboardWidgetIdentity.mjs');
 const clone = value => JSON.parse(JSON.stringify(value));
 const checks = [];
 let fixture;
@@ -134,6 +134,63 @@ const passed = name => { checks.push(name); console.log('PASS ' + name); };
     assert.equal(sql.prepare('SELECT COUNT(*) AS count FROM releases WHERE is_current=1 AND project_id=?').get(state.project.id).count, 1);
     assert.equal(sql.prepare('SELECT snapshot_json FROM releases WHERE id=?').get(badReleaseId).snapshot_json, historicalJson);
     passed('activation rejects malformed historical snapshots atomically while valid explicit identities publish and activate');
+
+    // Reproduce the four historical HUD preset collisions. Loading stays
+    // read-only; the normal human Save/Publish preparation emits unique IDs
+    // and goes through the unchanged strict HTTP/SQL write path.
+    const hudIds = ['hud_factory_kpi', 'hud_factory_devices', 'hud_factory_alarms', 'hud_factory_trend'];
+    const hudHistorical = clone(reopened.document);
+    hudHistorical.widgets = [
+        ...hudIds.flatMap((id, index) => [first, second].map((source, copy) => ({ ...clone(source), id,
+            title: `现场人工配置 ${index}/${copy}`, content: { ...clone(source.content), label: `独立内容 ${index}/${copy}` },
+            frame: { ...clone(source.frame), x: 40 + index * 300, y: 80 + copy * 200 }, groupId: 'authored_hud_group' }))),
+        ...reopened.document.widgets.filter(widget => ['navigation', 'return_button'].includes(widget.type)),
+        { ...clone(first), id: 'hud_visibility_control', groupId: '', events: [
+            { trigger: 'click', action: 'toggle_visibility', targetType: 'widget', targetId: 'hud_factory_kpi' },
+            { trigger: 'click', action: 'set_visibility', targetType: 'group', targetId: 'authored_hud_group', visibility: 'hide' }
+        ] }
+    ];
+    for (const view of hudHistorical.scene.views) view.componentState = { show: [], hide: [], hideNonTargetDevices: false };
+    hudHistorical.scene.views[0].componentState.show = [...hudIds, 'hud_visibility_control', 'widget_navigation', 'widget_return_button'];
+    hudHistorical.scene.views[1].componentState.hide = hudIds;
+    const hudBytes = JSON.stringify(hudHistorical);
+    sql.prepare('UPDATE scenes SET draft_json=? WHERE id=?').run(hudBytes, sceneId);
+    const beforeHudLoad = storage();
+    const hudLoaded = await ok('/api/platform/designer?scene_id=' + encodeURIComponent(sceneId));
+    assert.deepEqual(storage(), beforeHudLoad);
+    assert.equal(sql.prepare('SELECT draft_json FROM scenes WHERE id=?').get(sceneId).draft_json, hudBytes);
+    for (const id of hudIds) assert.equal(hudLoaded.document.widgets.filter(widget => widget.id === id).length, 2);
+    const loadedBefore = clone(hudLoaded.document);
+    const prepared = prepareDashboardWidgetIdentities(hudLoaded.document);
+    assert.equal(prepared.changes.length, 4);
+    assert.deepEqual(hudLoaded.document, loadedBefore);
+    assert.deepEqual(storage(), beforeHudLoad, 'preparing technical identities does not write a configuration');
+    assert.deepEqual(dashboardWidgetIdentityIssues(prepared.document), []);
+    const repairedHud = await ok('/api/platform/designer/draft', 'PUT', {
+        sceneId, document: prepared.document, expectedRevision: hudLoaded.revision
+    });
+    const savedHudBytes = sql.prepare('SELECT draft_json FROM scenes WHERE id=?').get(sceneId).draft_json;
+    const hudReopened = await ok('/api/platform/designer?scene_id=' + encodeURIComponent(sceneId));
+    assert.equal(repairedHud.revision, hudLoaded.revision + 1);
+    assert.equal(hudReopened.document.widgets.length, prepared.document.widgets.length);
+    for (const expected of prepared.document.widgets) {
+        const actual = hudReopened.document.widgets.find(widget => widget.id === expected.id);
+        assert.ok(actual, expected.id);
+        for (const property of ['content', 'data', 'frame', 'groupId', 'visibility', 'style', 'events']) assert.deepEqual(actual[property], expected[property], `${expected.id}.${property}`);
+        const row = sql.prepare('SELECT binding_json,config_json FROM widgets WHERE id=? AND scene_id=?').get(expected.id, sceneId);
+        assert.ok(row, expected.id);
+        assert.deepEqual(JSON.parse(row.binding_json), expected.data);
+    }
+    assert.deepEqual(hudReopened.document.scene.views.map(view => view.componentState), prepared.document.scene.views.map(view => view.componentState));
+    assert.deepEqual(hudReopened.document.widgets.find(widget => widget.id === 'hud_visibility_control').events.map(event => event.targetId),
+        ['hud_factory_kpi', 'hud_factory_kpi_2', 'authored_hud_group']);
+    const hudRelease = await ok('/api/platform/releases', 'POST', { sceneId, version: '97.1.3' });
+    assert.deepEqual(dashboardWidgetIdentityIssues(hudRelease.document), []);
+    const hudSnapshot = JSON.parse(sql.prepare('SELECT snapshot_json FROM releases WHERE id=?').get(hudRelease.release.id).snapshot_json);
+    assert.equal(hudSnapshot.widgets.length, prepared.document.widgets.length);
+    assert.deepEqual(hudSnapshot.widgets.map(widget => widget.id), prepared.document.widgets.map(widget => widget.id));
+    assert.equal(sql.prepare('SELECT draft_json FROM scenes WHERE id=?').get(sceneId).draft_json, savedHudBytes);
+    passed('human save preparation fixes all four historical HUD IDs and persists every independent source, frame, view reference and visibility action through HTTP, SQL reopen and publication');
 
     const result = { success: true, checks, isolatedDirectory: fixture.directory, browserOperations: 0, liveConfigurationWrites: 0 };
     fs.writeFileSync(path.join(fixture.directory, 'result.json'), JSON.stringify(result, null, 2));

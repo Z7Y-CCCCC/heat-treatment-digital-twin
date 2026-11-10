@@ -14,6 +14,7 @@ import { applyTemplateFieldBindings, templateFieldBindings } from '../src/runtim
 import { cacheFactoryDraft, clearFactoryDraft, readFactoryDraft } from '../src/runtime/factoryDraftCache.js'
 import { approvedOverviewFixture } from './fixtures/approved-overview.mjs'
 import { legacyWorkflow } from '../../shared/widgetBindingWorkflow.mjs'
+import { dashboardWidgetIdentityIssues } from '../../shared/dashboardWidgetIdentity.mjs'
 
 // Run the real SFC setup/load path; child renderers are irrelevant to the source
 // selection and are stubbed so no canvas, GL context or browser is required.
@@ -1018,6 +1019,82 @@ test('actual new widget, copy and HUD preset paths avoid existing ID collisions 
     assert.deepEqual(state.documentModel.scene.views.at(-1).componentState.show, additions.slice(-4).map(widget => widget.id))
     assert.equal(state.documentModel.widgets.filter(widget => widget.id === 'hud_factory_kpi').length, 2)
     assert.equal(state.selectedWidget, state.documentModel.widgets.at(-4), 'new preset focuses its first actual instance')
+})
+
+function historicalHudIdDocument() {
+    const ids = ['hud_factory_kpi', 'hud_factory_devices', 'hud_factory_alarms', 'hud_factory_trend']
+    const doc = normalizeDashboardDocument({ sceneId: 'historical-hud-scene', name: '保留现场大屏', widgets: ids.flatMap((id, index) => [0, 1].map(copy => ({
+        id, type: 'value', title: `真实配置 ${index}/${copy}`, content: { value: index * 100 + copy, label: `人工配置 ${copy}` },
+        data: { mode: 'static' }, frame: { x: index * 140 + copy * 10, y: 150 + copy * 120, width: 130, height: 110 }, groupId: 'authored-hud-group'
+    }))) })
+    doc.scene.views[0].componentState.show = [...ids, 'widget_navigation', 'widget_return_button']
+    doc.scene.views[1].componentState.hide = ids
+    return doc
+}
+
+test('the normal publish button repairs the four historical HUD IDs, saves once and retains every authored instance and focused selection', async t => {
+    const original = historicalHudIdDocument(), originalBytes = JSON.stringify(original)
+    const { instance, ready } = fixture(t, [], { designerState: { revision: 3, document: original } })
+    await ready()
+    const state = instance.value.$.setupState
+    assert.equal(JSON.stringify(original), originalBytes)
+    assert.equal(state.documentModel.widgets.filter(widget => widget.id === 'hud_factory_kpi').length, 2, 'opening a document is still read-only')
+    const before = JSON.parse(JSON.stringify(state.documentModel))
+    const focused = state.documentModel.widgets[1]
+    state.selectWidget(focused)
+    state.previewWidgetVisibility.hud_factory_kpi = false
+    const save = t.mock.method(adminApi, 'saveDashboardDraft', async (_sceneId, document, revision) => {
+        assert.equal(revision, 3)
+        assert.deepEqual(dashboardWidgetIdentityIssues(document), [])
+        return { revision: 4, document, warnings: [] }
+    })
+    const publish = t.mock.method(adminApi, 'publishDashboard', async () => ({ release: { id: 'hud-repaired-release', version: '3.2.1' } }))
+    await state.publishVersion()
+    assert.equal(save.mock.callCount(), 1)
+    assert.equal(publish.mock.callCount(), 1)
+    assert.equal(state.revision, 4)
+    assert.equal(state.isDirty, false)
+    assert.equal(state.documentModel.widgets.length, before.widgets.length)
+    state.documentModel.widgets.forEach((widget, index) => assert.deepEqual({ ...widget, id: before.widgets[index].id }, before.widgets[index]))
+    assert.equal(state.selectedWidget, state.documentModel.widgets[1])
+    assert.equal(state.selectedWidget.id, 'hud_factory_kpi_2')
+    assert.equal(state.previewWidgetVisibility.hud_factory_kpi, false)
+    assert.equal(state.previewWidgetVisibility.hud_factory_kpi_2, false, 'saving does not briefly reveal a duplicate that was hidden by the old shared event target')
+    assert.equal(state.documentModel.scene.defaultViewId, before.scene.defaultViewId)
+    assert.deepEqual(dashboardWidgetIdentityIssues(state.documentModel), [])
+    assert.equal(state.publishNotice.tone, 'success')
+    assert.doesNotMatch(state.publishNotice.text, /重复|填写唯一/)
+})
+
+test('failed save after historical identity repair retains all content locally and never publishes or retries a conflicting write', async t => {
+    const { instance, ready } = fixture(t, [], { designerState: { revision: 9, document: historicalHudIdDocument() } })
+    await ready()
+    const state = instance.value.$.setupState, before = JSON.parse(JSON.stringify(state.documentModel))
+    const save = t.mock.method(adminApi, 'saveDashboardDraft', async () => { throw new Error('修订冲突，未写入') })
+    const publish = t.mock.method(adminApi, 'publishDashboard', async () => { throw new Error('must not publish a conflicting draft') })
+    await state.publishVersion()
+    assert.equal(save.mock.callCount(), 1)
+    assert.equal(publish.mock.callCount(), 0)
+    assert.equal(state.revision, 9)
+    assert.equal(state.isDirty, true)
+    assert.equal(state.documentModel.widgets.length, before.widgets.length)
+    state.documentModel.widgets.forEach((widget, index) => assert.deepEqual({ ...widget, id: before.widgets[index].id }, before.widgets[index]))
+    assert.deepEqual(dashboardWidgetIdentityIssues(state.documentModel), [])
+    assert.match(state.publishNotice.text, /保存失败.*修订冲突/)
+})
+
+test('save does not turn malformed identifiers into valid names while repairing another duplicate', async t => {
+    const { instance, ready } = fixture(t, [])
+    await ready()
+    const state = instance.value.$.setupState
+    state.documentModel = historicalHudIdDocument()
+    state.documentModel.widgets[0].id = ' malformed / identifier '
+    const before = state.snapshot()
+    const save = t.mock.method(adminApi, 'saveDashboardDraft', async () => { throw new Error('must not write malformed identities') })
+    assert.equal(await state.saveDraft(), false)
+    assert.equal(save.mock.callCount(), 0)
+    assert.equal(state.snapshot(), before)
+    assert.match(state.status.text, /组件标识不合法/)
 })
 
 

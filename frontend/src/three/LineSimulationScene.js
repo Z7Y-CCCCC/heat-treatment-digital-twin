@@ -14,6 +14,7 @@ import {fitCameraBox} from '../utils/cameraBoxFit.js'
 import {CART_FEED} from './cartFeedMechanism.js'
 import {CLEANER_BATH} from './cleanerBathLayout.js'
 import {TRANSFER_DATUM} from '../../../shared/equipmentTransferDatum.mjs'
+import {measureEquipmentLoadCenters,equipmentLoadPoint} from './equipmentLoadCenter.js'
 import {siteDeviceTransform,siteLoadingDatum,siteCarrierPath,siteCarrierInitialPosition,assertSiteTransferDriver,solveSiteTransferPose,siteSceneUnitsPerMeter,siteWorldVector,siteWorldPoint,siteParentPoint,applySitePayloadMetrics} from './siteTransferAlignment.js'
 
 function bounds(root){const result=new T.Box3();root.traverse(n=>{if(!n.isMesh)return;for(let p=n;p;p=p.parent)if(!p.visible)return;result.union(new T.Box3().setFromObject(n))});return result}
@@ -43,11 +44,12 @@ export class LineSimulationScene extends CadMotionScene {
             if(this.disposed){this.release(asset);throw Error('加载已取消')}
             if(row.model_type==='ultrasonic_cleaner_cad'){const detached=asset.getObjectByName('221_气动管路');if(detached)detached.visible=false}
             const box=bounds(asset),center=box.getCenter(new T.Vector3())
+            const loadCenters=row.capabilities.cart?null:measureEquipmentLoadCenters(asset,row.model_type)
             const rig=CAD_MOTION_PROFILES[row.model_type]?new CadMotionRig(asset,row.model_type):new LineSimulationRig(asset,model||{id:row.model_type})
             if(!CAD_MOTION_PROFILES[row.model_type]&&row.capabilities.door&&!rig.bindings.some(b=>b.binding.source_group==='doors')){
                 this.release(asset);throw Error(`${row.name||row.id} 缺少已配置的门体动作节点`)
             }
-            const entry={row,asset,rig,offset:new T.Group(),wrapper:new T.Group(),baseBox:box,scale:1,feedDirection:row.model_type==='cad_transfer_cart_101300'?-1:1}
+            const entry={row,asset,rig,loadCenters,offset:new T.Group(),wrapper:new T.Group(),baseBox:box,scale:1,feedDirection:row.model_type==='cad_transfer_cart_101300'?-1:1}
             this.entries.set(row.id,entry)
             rig.applyLinked({door:0,feed:0,level:['cad_water_cooling_tank_471000','cad_cleaner_170700'].includes(row.model_type)?1:0,runTime:0,time:0})
             if(row.model_type==='ultrasonic_cleaner_cad')entry.effects=new CleanerProcessEffects(asset,asset)
@@ -71,11 +73,6 @@ export class LineSimulationScene extends CadMotionScene {
             entry.port=local
             if(rig.transferAlignment)entry.port.y=TRANSFER_DATUM.loadY+entry.offset.position.y
             else if(row.model_type==='cad_cleaner_170700')entry.port.y=CLEANER_BATH.loadY+entry.offset.position.y
-            if(row.model_type==='cad_multipurpose_furnace_082000'){
-                const loadY=rig.transferAlignment?TRANSFER_DATUM.loadY:1.68
-                entry.frontInside=new T.Vector3(0,loadY,-.985).add(entry.offset.position)
-                entry.hotInside=new T.Vector3(0,loadY,-3.05).add(entry.offset.position)
-            }
             if(mode==='site'){
                 const transform=siteDeviceTransform(row,model||{},lines,workshops),savedLink=c.animationBindings?.transferLink
                 const kind=cartLink?.enabled ? (row.capabilities.cart ? cartLink.sourcePort : cartLink.targetPort) : 'inlet'
@@ -139,10 +136,13 @@ export class LineSimulationScene extends CadMotionScene {
     }
     port(id,inside=false,state){
         const entry=this.entries.get(id);if(!entry)return new T.Vector3()
-        const cleaner=entry.row.model_type==='cad_cleaner_170700'
-        const p=inside&&cleaner?new T.Vector3(0,entry.rig.cleanerLoadY??CLEANER_BATH.loadY,0).add(entry.offset.position):inside&&entry.frontInside?entry.frontInside.clone().lerp(entry.hotInside,state?.chamber||0):entry.port.clone()
-        if(inside&&!cleaner&&!entry.row.capabilities.cart&&!entry.frontInside)p.addScaledVector(entry.normal,-.45)
-        if(state?.basket)p.y-=(cleaner?CLEANER_BATH.stroke:entry.rig.basketStroke||1.05)*state.basket
+        if(inside&&entry.loadCenters){
+            const stroke=entry.row.model_type==='cad_cleaner_170700'?CLEANER_BATH.stroke:entry.rig.basketStroke||1.05
+            return entry.asset.localToWorld(equipmentLoadPoint(entry.loadCenters,state,stroke))
+        }
+        const p=entry.port.clone()
+        if(inside&&!entry.row.capabilities.cart)p.addScaledVector(entry.normal,-.45)
+        if(state?.basket)p.y-=(entry.rig.basketStroke||1.05)*state.basket
         if(state?.lift)p.y+=.24*state.lift
         return entry.wrapper.localToWorld(p)
     }

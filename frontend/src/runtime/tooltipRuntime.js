@@ -28,28 +28,41 @@ function scopedDevice(context, devices, id) {
     && (!context.lineId || String(device.lineId || device.line_id || '') === String(context.lineId))) || null
 }
 
-// Never replace the selected/navigation object just to render a hover card.
-export function tooltipHoverTarget(context = {}, devices = [], pointValues = {}, resolvePointKey = () => null) {
+// Identity/readings are separate from cursor placement. A native pointer sample
+// must not normalize every device point or invalidate the dashboard vnode tree.
+export function tooltipHoverContentTarget(context = {}, devices = [], pointValues = {}, resolvePointKey = () => null) {
   if (context.sceneReady === false) return null
   if (context.viewMode === 'device' && context.inspectionEnabled && context.inspectionHoveredPartId) {
     const device = devices.find(item => String(item.id) === String(context.deviceId))
     const part = context.inspectionParts?.find(item => String(item.id) === String(context.inspectionHoveredPartId))
     if (!device || !part) return null
-    const cursor = context.inspectionHoverPointer
-    const pointer = validPointer(cursor) ? { ...cursor } : part.anchor?.visible === true
-      && Number.isFinite(Number(part.anchor.x)) && Number.isFinite(Number(part.anchor.y))
-      ? { visible: true, x: clamp(Number(part.anchor.x) + .025, 0, 1), y: clamp(Number(part.anchor.y) - .055, 0, 1) } : null
-    if (!pointer) return null
     const byId = (part.pointIds || part.point_ids || []).map(id => pointValues[`${device.id}:${id}`] || pointValues[String(id)])
     const byKey = (part.pointKeys || part.point_keys || []).map(key => resolvePointKey(String(device.id), key))
     const points = [...new Map([...byId, ...byKey].filter(point => point
       && (!point.device_id || String(point.device_id) === String(device.id)))
       .map((point, index) => [String(point.id || `${point.category || ''}.${point.value_role || point.name || index}`), point])).values()]
-    return { kind: 'part', device, part: { ...part, points }, points, pointer }
+    return { kind: 'part', device, part: { ...part, points }, points }
   }
-  if (!['factory', 'workshop', 'line'].includes(context.viewMode) || !context.hoveredDeviceId || !validPointer(context.deviceHoverPointer)) return null
+  if (!['factory', 'workshop', 'line'].includes(context.viewMode) || !context.hoveredDeviceId) return null
   const device = scopedDevice(context, devices, context.hoveredDeviceId)
-  return device ? { kind: 'device', device, part: null, points: pointValues, pointer: { ...context.deviceHoverPointer } } : null
+  return device ? { kind: 'device', device, part: null, points: pointValues } : null
+}
+
+export function tooltipHoverPointer(context = {}, target = null) {
+  if (!target || context.sceneReady === false) return null
+  if (target.kind === 'device') return validPointer(context.deviceHoverPointer) ? context.deviceHoverPointer : null
+  const cursor = context.inspectionHoverPointer, anchor = target.part?.anchor
+  return validPointer(cursor) ? cursor : anchor?.visible === true
+    && Number.isFinite(Number(anchor.x)) && Number.isFinite(Number(anchor.y))
+    ? { visible: true, x: clamp(Number(anchor.x) + .025, 0, 1), y: clamp(Number(anchor.y) - .055, 0, 1) } : null
+}
+
+// Retain the combined API for previews/consumers which explicitly need both.
+// The live overlay instead lets TooltipSurface observe placement locally.
+export function tooltipHoverTarget(context = {}, devices = [], pointValues = {}, resolvePointKey = () => null) {
+  const target = tooltipHoverContentTarget(context, devices, pointValues, resolvePointKey)
+  const pointer = tooltipHoverPointer(context, target)
+  return pointer ? { ...target, pointer: { ...pointer } } : null
 }
 
 // Exclude pointer/live readings from the request key: a pointermove never means a DB query.

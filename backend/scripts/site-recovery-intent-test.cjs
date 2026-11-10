@@ -73,9 +73,11 @@ async function main() {
         const intent = await recovery.beginSiteRecoveryIntent(intentOptions);
         const originalHash = hash(recovery.intentFilename);
         const rename = fs.promises.rename;
-        fs.promises.rename = async (from, to) => { if (to === recovery.intentFilename) throw Object.assign(new Error('injected phase EACCES'), { code: 'EACCES' }); return rename(from, to); };
-        try { await assert.rejects(recovery.updateSiteRecoveryIntent(intent, 'business-restored'), /EACCES/); }
+        const failure = Object.assign(new Error('injected phase EACCES'), { code: 'EACCES' }); let attempts = 0;
+        fs.promises.rename = async (from, to) => { if (to === recovery.intentFilename) { attempts++; throw failure; } return rename(from, to); };
+        try { await assert.rejects(recovery.updateSiteRecoveryIntent(intent, 'business-restored'), error => error === failure); }
         finally { fs.promises.rename = rename; }
+        assert.equal(attempts, 4, 'a persistent lock must remain bounded and propagate the original failure');
         assert.equal(hash(recovery.intentFilename), originalHash);
         assert.ok(fs.existsSync(intent.files['source.zip'].filename));
         await recovery.finishSiteRecoveryIntent(intent, 'rolled-back');
@@ -83,13 +85,65 @@ async function main() {
     await check('intent retirement failure leaves pending evidence intact', async () => {
         const intent = await recovery.beginSiteRecoveryIntent(intentOptions);
         const rename = fs.promises.rename;
-        fs.promises.rename = async (from, to) => { if (from === recovery.intentFilename) throw Object.assign(new Error('injected retirement EACCES'), { code: 'EACCES' }); return rename(from, to); };
-        try { await assert.rejects(recovery.finishSiteRecoveryIntent(intent, 'spool-committed'), /EACCES/); }
+        const failure = Object.assign(new Error('injected retirement EACCES'), { code: 'EACCES' }); let attempts = 0;
+        fs.promises.rename = async (from, to) => { if (from === recovery.intentFilename) { attempts++; throw failure; } return rename(from, to); };
+        try { await assert.rejects(recovery.finishSiteRecoveryIntent(intent, 'spool-committed'), error => error === failure); }
         finally { fs.promises.rename = rename; }
+        assert.equal(attempts, 4, 'a persistent retirement lock must not become an unbounded wait');
         assert.equal(recovery.siteRecoveryStatus().pending, true);
         assert.ok(fs.existsSync(intent.files['source.zip'].filename));
         assert.ok(fs.existsSync(intent.files['database-before.db'].filename));
         await recovery.finishSiteRecoveryIntent(intent, 'spool-committed');
+    });
+    await check('transient phase and retirement locks retry without removing complete pending evidence', async () => {
+        const intent = await recovery.beginSiteRecoveryIntent(intentOptions);
+        const originalHash = hash(recovery.intentFilename), rename = fs.promises.rename; let phaseAttempts = 0;
+        fs.promises.rename = async (from, to) => {
+            if (to === recovery.intentFilename && phaseAttempts++ < 2) {
+                assert.equal(hash(recovery.intentFilename), originalHash);
+                assert.ok(fs.existsSync(intent.files['source.zip'].filename));
+                throw Object.assign(new Error('transient phase sharing violation'), { code: 'EPERM' });
+            }
+            return rename(from, to);
+        };
+        try { await recovery.updateSiteRecoveryIntent(intent, 'business-restored'); }
+        finally { fs.promises.rename = rename; }
+        assert.ok(phaseAttempts >= 3 && phaseAttempts <= 4);
+        assert.equal(recovery.siteRecoveryStatus().phase, 'business-restored');
+        let retireAttempts = 0;
+        fs.promises.rename = async (from, to) => {
+            if (from === recovery.intentFilename && retireAttempts++ < 2) {
+                assert.equal(recovery.siteRecoveryStatus().pending, true);
+                assert.ok(fs.existsSync(intent.files['source.zip'].filename));
+                assert.ok(fs.existsSync(intent.files['database-before.db'].filename));
+                throw Object.assign(new Error('transient retirement sharing violation'), { code: 'EBUSY' });
+            }
+            return rename(from, to);
+        };
+        try { await recovery.finishSiteRecoveryIntent(intent, 'spool-committed'); }
+        finally { fs.promises.rename = rename; }
+        assert.ok(retireAttempts >= 3 && retireAttempts <= 4);
+        assert.equal(recovery.siteRecoveryStatus().pending, false);
+    });
+    await check('non-sharing I/O failures propagate once and cannot hide pending recovery evidence', async () => {
+        const intent = await recovery.beginSiteRecoveryIntent(intentOptions);
+        const originalHash = hash(recovery.intentFilename), rename = fs.promises.rename;
+        const phaseFailure = Object.assign(new Error('injected phase EIO'), { code: 'EIO' }); let phaseAttempts = 0;
+        fs.promises.rename = async (from, to) => { if (to === recovery.intentFilename) { phaseAttempts++; throw phaseFailure; } return rename(from, to); };
+        try { await assert.rejects(recovery.updateSiteRecoveryIntent(intent, 'business-restored'), error => error === phaseFailure); }
+        finally { fs.promises.rename = rename; }
+        assert.equal(phaseAttempts, 1);
+        assert.equal(hash(recovery.intentFilename), originalHash);
+        assert.equal(intent.phase, 'prepared');
+        const retireFailure = Object.assign(new Error('injected retirement EIO'), { code: 'EIO' }); let retireAttempts = 0;
+        fs.promises.rename = async (from, to) => { if (from === recovery.intentFilename) { retireAttempts++; throw retireFailure; } return rename(from, to); };
+        try { await assert.rejects(recovery.finishSiteRecoveryIntent(intent, 'rolled-back'), error => error === retireFailure); }
+        finally { fs.promises.rename = rename; }
+        assert.equal(retireAttempts, 1);
+        assert.equal(recovery.siteRecoveryStatus().pending, true);
+        assert.ok(fs.existsSync(intent.files['source.zip'].filename));
+        assert.ok(fs.existsSync(intent.files['database-before.db'].filename));
+        await recovery.finishSiteRecoveryIntent(intent, 'rolled-back');
     });
     await check('completed evidence cleanup failure is reported after atomic retirement without changing restored data', async () => {
         const intent = await recovery.beginSiteRecoveryIntent(intentOptions);

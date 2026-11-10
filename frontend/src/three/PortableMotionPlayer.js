@@ -1,3 +1,4 @@
+import { FeedbackPositionBuffer, feedbackSmoothingDelay } from './FeedbackPositionBuffer.js'
 const finite=value=>typeof value==='number'&&Number.isFinite(value)
 const numericValue=value=>typeof value==='boolean'?Number(value):finite(value)?value:typeof value==='string'&&/^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/.test(value.trim())?Number(value):NaN
 const good=value=>value==null||String(value).toLowerCase()==='good'
@@ -6,6 +7,12 @@ const timestamp=value=>{
  if(typeof value!=='string'||!value.trim())return NaN
  const numeric=Number(value),date=Number.isFinite(numeric)?numeric:Date.parse(value)
  return date>0?date:NaN
+}
+function clearFeedbackDisplay(state){if(state.feedbackPositionBuffer){state.feedbackPositionBuffer.clear();state.feedbackNumeric=false}}
+function resetChangedFeedback(state,binding,data){
+ if(state.feedbackPositionBuffer&&!state.feedbackPositionBuffer.matchesInput(binding,data||{})){
+  delete state.feedbackPositionBuffer;delete state.feedbackNumeric
+ }
 }
 
 // Only comparison thresholds have a dead band. Equality never coerces a text or boolean into a number.
@@ -41,6 +48,7 @@ export function motionTestValue(binding,progress){
 
 // Two switches confirm only the endpoints. Neither switch means "in transit" and never supplies a position.
 export function receiveMotionEndpointFeedback(state,binding,data,now,wallNow){
+ clearFeedbackDisplay(state)
  if(!finite(now))return
  if(!data?.motionInputOnly&&!Object.hasOwn(data||{},'motionInputs')){if(!state.hasSample){state.usable=false;state.running=false;state.reason='等待来源数据'}return}
  const envelope=timestamp(data?.timestamp),input=data?.motionInputs?.[binding.actionId],feedback=input?.endpointFeedback
@@ -81,6 +89,7 @@ export function receiveMotionEndpointFeedback(state,binding,data,now,wallNow){
 }
 
 export function receiveMotionSignal(state,binding,data,now,wallNow){
+ resetChangedFeedback(state,binding,data)
  if(binding.trigger?.mode==='endpoints'){receiveMotionEndpointFeedback(state,binding,data,now,wallNow);return}
  if(!finite(now))return
  const group=binding.sourceGroup||'analog',key=binding.sourceKey||'',q=data?.quality,meta=data?.pointMeta?.[`${group}.${key}`]
@@ -92,7 +101,7 @@ export function receiveMotionSignal(state,binding,data,now,wallNow){
  if(!catalog&&(data?.motionInputOnly||data?.motionInputs&&!data[group]&&!data.pointMeta&&!data.status&&!data.quality))return
  const stamp=timestamp(catalog?item?.timestamp:meta?.timestamp),envelope=timestamp(data?.timestamp)
  const wasUsable=state.usable===true
- const fail=reason=>{state.usable=false;state.running=false;state.reason=reason}
+ const fail=reason=>{state.usable=false;state.running=false;state.reason=reason;clearFeedbackDisplay(state)}
  // Real point-ID bindings need an actual confirmation, not a wrapper clock.
  // Controlled local preview and old unbound model-level definitions retain
  // their previous protocol only when no live wall clock/point ID is supplied.
@@ -127,17 +136,35 @@ export function receiveMotionSignal(state,binding,data,now,wallNow){
  if(binding.invert)p=1-p
  state.target=p;state.rawValue=raw;state.numericValue=condition?p:numeric
  state.recovering=state.hasSample&&!wasUsable||state.recovering===true
- if(!state.hasSample||!(binding.transitionSeconds>0)&&!state.recovering)state.position=p
+ const feedback=feedbackSmoothingDelay(binding)>0&&finite(raw)
+ if(feedback){
+  state.feedbackNumeric=true
+  state.feedbackPositionBuffer||=new FeedbackPositionBuffer(binding,data||{})
+  if(!wasUsable)state.feedbackPositionBuffer.clear()
+  if(state.feedbackPositionBuffer.append(state.receivedAt,p,state.sourceTimestamp,numeric))state.position=p
+  // This separate bounded observation delay never adds the old full-span slew.
+  state.recovering=false
+ }else{
+  clearFeedbackDisplay(state)
+  if(!state.hasSample||!(binding.transitionSeconds>0)&&!state.recovering)state.position=p
+ }
  state.usable=true;state.running=p>.5;state.hasSample=true;state.reason=state.running?'运行':'停止'
 }
 export function stepMotionSignal(state,binding,delta,now,staleMs){
  const timeout=Math.min(finite(staleMs)&&staleMs>0?staleMs:5000,state.sourceStaleMs??Infinity)
  const expired=binding.trigger?.mode==='endpoints'?['extended','retracted'].some(side=>now-(state.endpointReceivedAt?.[side]??-Infinity)>Math.min(finite(staleMs)&&staleMs>0?staleMs:5000,state.endpointStaleMs?.[side]??Infinity)/1000):now-(state.receivedAt??-Infinity)>timeout/1000
- if(expired){state.usable=false;state.running=false;state.reason='数据超时';if(binding.trigger?.mode==='endpoints'){state.endpointNeedsResync=true;state.endpointStage='invalid'}}
+ if(expired){state.usable=false;state.running=false;state.reason='数据超时';clearFeedbackDisplay(state);if(binding.trigger?.mode==='endpoints'){state.endpointNeedsResync=true;state.endpointStage='invalid'}}
  if(!state.usable||!Number.isFinite(delta)||delta<=0)return
- const duration=binding.transitionSeconds>0?binding.transitionSeconds:state.recovering?0.2:0
- const step=duration>0?delta/duration:Infinity,d=state.target-state.position
- state.position+=Math.sign(d)*Math.min(Math.abs(d),step)
+ const delay=feedbackSmoothingDelay(binding),buffer=state.feedbackPositionBuffer
+ if(delay>0&&state.feedbackNumeric&&buffer?.matchesBinding(binding)){
+  const presentation=buffer.sample(now-delay)
+  if(finite(presentation))state.position=presentation
+ }else{
+  if(buffer&&!buffer.matchesBinding(binding)){delete state.feedbackPositionBuffer;delete state.feedbackNumeric}
+  const duration=binding.transitionSeconds>0?binding.transitionSeconds:state.recovering?0.2:0
+  const step=duration>0?delta/duration:Infinity,d=state.target-state.position
+  state.position+=Math.sign(d)*Math.min(Math.abs(d),step)
+ }
  if(state.position===state.target)state.recovering=false
  if(state.running)state.seconds=(state.seconds||0)+delta*(binding.speed||1)
 }

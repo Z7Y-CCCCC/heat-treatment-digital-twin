@@ -13,7 +13,7 @@ import { resolveWidgetViewStyle, widgetSurfacePresentation } from './widgetSurfa
 import { configureTrendAxes, appendTrendSample } from './trendChart.js'
 import MapRegionList from './MapRegionList.vue'
 import { tooltipBindingContext, tooltipPlaybackSelection, tooltipPathQuality, tooltipRuntimeValue, tooltipMetadataPath, mappedWidgetValue, deviceStatusText } from './tooltipContext.js'
-import { WidgetPlaybackKey, createWidgetPlaybackController } from './widgetPlayback.js'
+import { WidgetPlaybackKey, WidgetClockKey, createWidgetPlaybackController } from './widgetPlayback.js'
 import { effectiveMetricItems, metricValueSource, mapListTitle, resolveNavigationContent, resolveWidgetImageUrl, widgetStatSource, widgetChartSeriesSource, widgetChartSeriesPath } from './widgetContentConfig.js'
 
 const HUD_FONT_TEXT = 'SF Pro Text, Inter Variable, Inter, Noto Sans SC Variable, Segoe UI, PingFang SC, Microsoft YaHei UI, sans-serif'
@@ -35,7 +35,7 @@ const props = defineProps({
   parameters: { type:Object, default:()=>({}) },
   parameterDefinitions: { type:Array, default:()=>[] },
   interactive: { type:Boolean, default:true },
-  playbackNow: {type:Number,default:()=>Date.now()},
+  playbackNow: {type:Number,default:undefined},
   deviceCatalog: {type:Array,default:null},
   selectedPart: { type: Object, default: () => ({}) },
   overlayMode: { type: Boolean, default: false },
@@ -48,6 +48,9 @@ const emit = defineEmits(['action'])
 // The surface reader and its renderers must select the same device, including
 // while one card is held under the pointer. Standalone previews use a local clock.
 const playbackController = inject(WidgetPlaybackKey, null) || createWidgetPlaybackController()
+const sharedClock = inject(WidgetClockKey, null)
+const initialClock = Date.now()
+const clockNow = computed(() => props.playbackNow ?? sharedClock?.value ?? initialClock)
 const pointerHovered = ref(false)
 const chartRef = ref(null)
 const localTrend = ref([])
@@ -96,18 +99,23 @@ const progressPercent = computed(() => {
 })
 
 const playbackCatalog=computed(()=>props.deviceCatalog ?? [...new Set([...Object.keys(props.deviceDataMap),String(baseDataBinding.value.deviceId || '')].filter(Boolean))].map(id=>({id,name:id})))
+const playbackAnchor=computed(()=>props.runtimeContext.tooltipScope
+  ? tooltipPlaybackSelection(baseDataBinding.value,props.runtimeContext,playbackCatalog.value)
+  : playbackSelection(baseDataBinding.value,props.runtimeContext,playbackCatalog.value,0))
 // A 100ms API scheduler tick need not invalidate every device snapshot.
 const playbackTime=computed(()=>{
+ if(playbackAnchor.value.mode!=='rotation' || playbackAnchor.value.total<=1 || props.preview && !props.interactive)return 0
  const interval=normalizePlayback(baseDataBinding.value).rotationIntervalMs
- const now=props.runtimeContext.tooltipScope ? props.playbackNow : playbackController.timeFor(props.widget,props.playbackNow)
- return props.preview && !props.interactive ? 0 : Math.floor(now/interval)*interval
+ const now=playbackController.timeFor(props.widget,clockNow.value)
+ return Math.floor(now/interval)*interval
 })
+const localHistoryEnabled=computed(()=>isTrend.value && (dataBinding.value.mode==='plc' || dataBinding.value.pointId || dataBinding.value.point_id || dataBinding.value.mode==='runtime'))
 const historyClock=computed(()=>{
+ if(!localHistoryEnabled.value)return 0
  const interval=Math.max(1000,normalizePlayback(dataBinding.value).refreshMs)
- return Math.floor(props.playbackNow/interval)*interval
+ return Math.floor(clockNow.value/interval)*interval
 })
-const playback=computed(()=>props.runtimeContext.tooltipScope
-  ? tooltipPlaybackSelection(baseDataBinding.value,props.runtimeContext,playbackCatalog.value)
+const playback=computed(()=>playbackTime.value===0 ? playbackAnchor.value
   : playbackSelection(baseDataBinding.value,props.runtimeContext,playbackCatalog.value,playbackTime.value))
 const scopedDeviceBinding=computed(()=>isDeviceBinding(dataBinding.value))
 const bindingUnavailable=computed(()=>{
@@ -123,7 +131,7 @@ const bindingUnavailable=computed(()=>{
 const hoverCanPause=computed(()=>props.interactive && !props.runtimeContext.tooltipScope && scopedDeviceBinding.value && playback.value.mode==='rotation' && playback.value.total>1)
 function setPlaybackHovered(hovered) {
  pointerHovered.value=hovered
- if(!props.runtimeContext.tooltipScope)playbackController.setHovered(props.widget,hovered && hoverCanPause.value,props.playbackNow)
+ if(!props.runtimeContext.tooltipScope)playbackController.setHovered(props.widget,hovered && hoverCanPause.value,clockNow.value)
 }
 watch(hoverCanPause,allowed=>{if(!allowed && pointerHovered.value)setPlaybackHovered(false)},{flush:'sync'})
 watch(()=>JSON.stringify([props.widget.id,dataBinding.value,props.interactive,props.preview,
@@ -763,13 +771,18 @@ function presentChart(option) {
   chart.setOption(option, true, true)
 }
 
+const chartSignature=computed(()=>{
+  // Do not traverse whole metrics/events/business snapshots for every card.
+  // A chart subscribes only to the values that enter its actual option.
+  if (usesSharedMetricRing.value || !isTrend.value && type.value!=='metrics' || type.value==='metrics' && content.value.layout==='list') return ''
+  return JSON.stringify([type.value,overlayMode.value,props.preview,content.value,widgetStyle.value,boundQuality.value,displayUnit.value,activeCondition.value?.color,
+    scopedDeviceBinding.value?sampledDevice.value.id:'',isTrend.value?chartSeries.value:hudRingValue.value])
+})
 function renderChart() {
   if (widgetDisposed) return
-  if (usesSharedMetricRing.value) { disposeChart(); return }
-  if (!isTrend.value && type.value !== 'metrics') { disposeChart(); return }
-  if (type.value === 'metrics' && content.value.layout === 'list') { disposeChart(); return }
+  const signature=chartSignature.value
+  if (!signature) { disposeChart(); return }
   if (!chartRef.value) return
-  const signature=JSON.stringify([type.value,overlayMode.value,props.preview,content.value,widgetStyle.value,boundQuality.value,scopedDeviceBinding.value?sampledDevice.value.id:'',isTrend.value?chartSeries.value:[metricItems.value,hudRingValue.value]])
   if(chart && signature===lastChartSignature)return
   lastChartSignature=signature
   if (!chart) chart = echarts.init(chartRef.value)
@@ -875,8 +888,9 @@ function triggerEvents(trigger, domEvent) {
   widgetEvents.value.filter(event => (event.trigger || 'click') === trigger).forEach(event => emit('action', { event, widget: props.widget, domEvent }))
 }
 
-watch(() => [boundValue.value,historyClock.value], ([value]) => {
-  if (!(dataBinding.value.mode === 'plc' || dataBinding.value.pointId || dataBinding.value.point_id || dataBinding.value.mode==='runtime' && isTrend.value)) return
+watch(() => localHistoryEnabled.value ? [boundValue.value,historyClock.value] : null, sample => {
+  if (!sample) return
+  const [value]=sample
   const number = numericValue(value)
   const sourceTime=pointRecord.value?.lastReadAt || pointRecord.value?.timestamp || sampledDevice.value.reading?.timestamp || (/^map(?:\.|$)/.test(dataBinding.value.path || '') ? props.mapData.timestamp : null)
   const now = boundQuality.value !== 'good' ? historyClock.value : typeof sourceTime === 'string' ? Date.parse(sourceTime) : Number(sourceTime || historyClock.value)
@@ -895,7 +909,7 @@ watch(chartRef, element => {
   nextTick(renderChart)
 })
 
-watch(() => [props.widget, props.metrics, props.trendPoints, props.events, databaseRecord.value, playback.value.device?.id, props.businessData, localTrend.value], () => nextTick(renderChart), { deep: true })
+watch(chartSignature,renderChart,{flush:'post'})
 
 onMounted(() => {
   if (typeof ResizeObserver !== 'undefined') {

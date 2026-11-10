@@ -7,6 +7,7 @@ import { cacheFactoryDraft, clearFactoryDraft, readFactoryDraft } from '../../..
 import AdminNotice from './AdminNotice.vue'
 import { useAdminNotice } from '../composables/useAdminNotice.js'
 import { lineSceneUnitsPerMeter, movementSceneUnitsPerMeter } from '../../../../../shared/lineRailSpacing.mjs'
+import { isLastConfirmedMotion, isActualMovingFeedback, lastConfirmedMotionError } from '../utils/mobileMotionPolicy.js'
 
 defineOptions({ name: 'MobileDeviceMotion' })
 
@@ -150,7 +151,7 @@ function normalizeMotion(device) {
         currentPositionPointId: pointIdOr(source.currentPositionPointId ?? source.current_position_point_id),
         startActionPointId: pointIdOr(source.startActionPointId ?? source.start_action_point_id),
         valueMode: ['normalized', 'range', 'station'].includes(source.valueMode) ? source.valueMode : fallback.valueMode,
-        stationInputMeaning: ['current', 'target'].includes(source.stationInputMeaning) ? source.stationInputMeaning : '',
+        stationInputMeaning: ['current', 'target', 'last-confirmed'].includes(source.stationInputMeaning) ? source.stationInputMeaning : '',
         valueMin: numberOr(source.valueMin ?? source.value_min, fallback.valueMin),
         valueMax: numberOr(source.valueMax ?? source.value_max, fallback.valueMax),
         smoothingMs: Math.max(0, Math.min(1000, numberOr(source.smoothingMs ?? source.smoothing_ms, 0))),
@@ -346,9 +347,23 @@ const numericPoints = computed(() => dataPoints.value.filter(point => {
     return String(point.access_type || 'READ').toUpperCase() === 'READ'
         && !['BOOL', 'STRING', 'CHAR', 'DT', 'DTZ', 'DTL', 'DTLZ', 'DATE', 'TIME', 'TOD'].includes(type)
 }))
+const lastConfirmedMotion = computed(() => isLastConfirmedMotion(motion.value))
+const directStationFeedback = computed(() => ['current', 'last-confirmed'].includes(motion.value.stationInputMeaning))
 const actionPoints = computed(() => dataPoints.value.filter(point => (
     String(point.access_type || 'READ').toUpperCase() === 'READ'
+    && (!lastConfirmedMotion.value || isActualMovingFeedback(point, deviceDetail.value?.id))
 )))
+
+function changeStationInputMeaning() {
+    if (!lastConfirmedMotion.value) return
+    // This is an explicit user selection, not a silent rewrite on reopening.
+    // Keep the old signal selection visible so a command cannot masquerade as
+    // movement feedback; the user must remove it or choose a valid BOOL.
+    motion.value.simulationEnabled = false
+    motion.value.smoothingMs = 0
+    if (Object.hasOwn(motion.value, 'simulation_enabled')) motion.value.simulation_enabled = false
+    if (Object.hasOwn(motion.value, 'smoothing_ms')) motion.value.smoothing_ms = 0
+}
 
 function pointLabel(point) {
     const name = point.label || point.name || `点位 ${point.id}`
@@ -394,7 +409,7 @@ function motionDraftPayload() {
             currentPositionPointId: pointIdOr(motion.value.currentPositionPointId),
             startActionPointId: pointIdOr(motion.value.startActionPointId),
             valueMode: ['range', 'station'].includes(motion.value.valueMode) ? motion.value.valueMode : 'normalized',
-            ...(['current', 'target'].includes(motion.value.stationInputMeaning) ? { stationInputMeaning: motion.value.stationInputMeaning } : {}),
+            ...(['current', 'target', 'last-confirmed'].includes(motion.value.stationInputMeaning) ? { stationInputMeaning: motion.value.stationInputMeaning } : {}),
             valueMin: numberOr(motion.value.valueMin), valueMax: numberOr(motion.value.valueMax, 100),
             smoothingMs: Math.max(0, Math.min(1000, numberOr(motion.value.smoothingMs))),
             staleMs: motion.value.staleMs,
@@ -671,6 +686,8 @@ async function saveMotion() {
     if (saving.value || loading.value) return
     message.value = ''; errorMessage.value = ''
     if (!deviceDetail.value?.id) return
+    const inputPolicyError = lastConfirmedMotionError(motion.value, dataPoints.value, deviceDetail.value.id)
+    if (inputPolicyError) { errorMessage.value = inputPolicyError; return }
     if (requiresMovementReload) {
         errorMessage.value = '此旧草稿没有保存时的移动配置快照，请先放弃本页修改并重新读取，未覆盖当前路径'
         return
@@ -698,7 +715,7 @@ async function saveMotion() {
         return
     }
     if (motion.value.valueMode === 'station') {
-        const simulate = motion.value.simulationEnabled && motion.value.stationInputMeaning !== 'current'
+        const simulate = motion.value.simulationEnabled && !directStationFeedback.value
         if (motion.value.enabled && motion.value.stationInputMeaning === 'target' && !motion.value.simulationEnabled) {
             errorMessage.value = '目标工位命令不是当前到位反馈；请开启运动细节模拟以估算过程，或选择实际当前位置反馈'
             return
@@ -810,7 +827,7 @@ async function saveMotion() {
                 <div class="motion-card-header">
                     <div>
                         <h3>移动控制</h3>
-                        <p>推荐流程：绑定 PLC 的当前工位编号 → 导入产线工位 → 填写现场间距 → 保存。你不需要填写 Unity 坐标。</p>
+                        <p>{{ lastConfirmedMotion ? '推荐流程：绑定 PLC 的最后到位工位编号 → 导入产线工位 → 保存。运动中保持上一工位，不推测途中位置。' : '推荐流程：绑定 PLC 的当前工位编号 → 导入产线工位 → 填写现场间距 → 保存。你不需要填写 Unity 坐标。' }}</p>
                     </div>
                     <label class="motion-switch">
                         <input v-model="motion.enabled" type="checkbox"  v-permission="{ page: 'mobile-devices', action: 'edit' }"/>
@@ -819,29 +836,29 @@ async function saveMotion() {
                 </div>
 
                 <section class="motion-step-card">
-                    <div class="motion-step-title"><span>1</span><div><strong>绑定 PLC 位置点位</strong><small>PLC 只需要传 1、2、3… 这样的当前工位编号。</small></div></div>
+                    <div class="motion-step-title"><span>1</span><div><strong>绑定 PLC 位置点位</strong><small>{{ lastConfirmedMotion ? 'PLC 工位编号只在到位时更新，运动中保持上一工位。' : 'PLC 只需要传 1、2、3… 这样的当前工位编号。' }}</small></div></div>
                     <div class="motion-form-grid">
                     <label>
-                        <span class="motion-field-label">{{ motion.stationInputMeaning === 'target' ? 'PLC 目标工位命令点位' : 'PLC 当前工位编号点位' }} <span class="motion-required">*</span></span>
-                        <select v-model="motion.currentPositionPointId" class="input" v-permission="{ page: 'mobile-devices', action: 'edit' }">
+                        <span class="motion-field-label">{{ motion.stationInputMeaning === 'target' ? 'PLC 目标工位命令点位' : lastConfirmedMotion ? 'PLC 最后到位工位编号点位' : 'PLC 当前工位编号点位' }} <span class="motion-required">*</span></span>
+                        <select v-model="motion.currentPositionPointId" class="input" aria-label="移动位置数值点位" v-permission="{ page: 'mobile-devices', action: 'edit' }">
                             <option value="">请选择 PLC 数值点位</option>
                             <option v-if="motion.currentPositionPointId && !numericPoints.some(point => String(point.id) === motion.currentPositionPointId)" :value="motion.currentPositionPointId">已保存点位 {{ motion.currentPositionPointId }}（位置反馈类型或归属无效，请重新选择）</option>
                             <option v-for="point in numericPoints" :key="point.id" :value="String(point.id)">
                                 {{ pointLabel(point) }}
                             </option>
                         </select>
-                        <small>例如：PLC 当前值为 1，小车就停在 1 号工位；变为 2，就移动到 2 号工位。</small>
+                        <small>{{ lastConfirmedMotion ? '编号只代表最后到位工位；运动中保持上一站，不推测途中位置或当前停靠状态。' : '例如：PLC 当前值为 1，小车就停在 1 号工位；变为 2，就移动到 2 号工位。' }}</small>
                     </label>
                     <label>
-                        <span class="motion-field-label">移动开始信号（可选）</span>
-                        <select v-model="motion.startActionPointId" class="input" v-permission="{ page: 'mobile-devices', action: 'edit' }">
-                            <option value="">不绑定（收到编号就移动）</option>
-                            <option v-if="motion.startActionPointId && !actionPoints.some(point => String(point.id) === motion.startActionPointId)" :value="motion.startActionPointId">已保存点位 {{ motion.startActionPointId }}（只读采集点位无效，请重新选择）</option>
+                        <span class="motion-field-label">{{ lastConfirmedMotion ? '实际移动状态反馈（可选，仅 BOOL）' : '移动开始信号（可选）' }}</span>
+                        <select v-model="motion.startActionPointId" class="input" aria-label="移动开始或实际移动反馈点位" v-permission="{ page: 'mobile-devices', action: 'edit' }">
+                            <option value="">{{ lastConfirmedMotion ? '不绑定（不确认当前停靠）' : '不绑定（收到编号就移动）' }}</option>
+                            <option v-if="motion.startActionPointId && !actionPoints.some(point => String(point.id) === motion.startActionPointId)" :value="motion.startActionPointId">已保存点位 {{ motion.startActionPointId }}（{{ lastConfirmedMotion ? '非本设备只读 BOOL 实际移动反馈，请解除绑定或重新选择' : '只读采集点位无效，请重新选择' }}）</option>
                             <option v-for="point in actionPoints" :key="point.id" :value="String(point.id)">
                                 {{ pointLabel(point) }}
                             </option>
                         </select>
-                        <small>如果现场没有单独的启动信号，保持“不绑定”即可。</small>
+                        <small>{{ lastConfirmedMotion ? '仅选择实际移动状态：true 表示正在移动，false 才能辅助确认停靠；未绑定时不确认停靠。' : '如果现场没有单独的启动信号，保持“不绑定”即可。' }}</small>
                     </label>
                     <label>数据过期阈值（毫秒）
                         <input v-model.number="motion.staleMs" class="input" type="number" min="1000" max="60000" step="100" aria-label="移动数据过期阈值（毫秒）" v-permission="{ page: 'mobile-devices', action: 'edit' }" />
@@ -860,15 +877,16 @@ async function saveMotion() {
                             </select>
                         </label>
                         <label v-if="motion.valueMode === 'station'">工位编号数据含义
-                            <select v-model="motion.stationInputMeaning" class="input" aria-label="工位编号数据含义" v-permission="{ page: 'mobile-devices', action: 'edit' }">
+                            <select v-model="motion.stationInputMeaning" class="input" aria-label="工位编号数据含义" @change="changeStationInputMeaning" v-permission="{ page: 'mobile-devices', action: 'edit' }">
                                 <option value="">兼容旧设置（未指定）</option>
                                 <option value="current">PLC 当前到位反馈（直接还原位置）</option>
+                                <option value="last-confirmed">最后到位工位，运动中保持上一工位</option>
                                 <option value="target">PLC 目标工位命令（估算移动过程）</option>
                             </select>
                         </label>
                         <label>视觉平滑时间（ms）
-                            <input v-model.number="motion.smoothingMs" type="number" min="0" max="1000" step="10" class="input"  v-permission="{ page: 'mobile-devices', action: 'edit' }"/>
-                            <small>只影响画面跟手程度，不是现场速度。0 表示延迟最低。</small>
+                            <input v-model.number="motion.smoothingMs" type="number" min="0" max="1000" step="10" class="input" aria-label="移动视觉平滑时间（毫秒）" :disabled="lastConfirmedMotion" v-permission="{ page: 'mobile-devices', action: 'edit' }"/>
+                            <small>{{ lastConfirmedMotion ? '最后到位编号不提供途中位置，因此不启用视觉过渡。' : '只影响画面跟手程度，不是现场速度。0 表示延迟最低。' }}</small>
                         </label>
                         <label class="motion-check"><input v-model="motion.diagnosticLogging" type="checkbox" aria-label="启用移动运行诊断记录" v-permission="{ page: 'mobile-devices', action: 'edit' }" />启用移动运行诊断记录</label>
                         <label v-if="motion.diagnosticLogging">诊断记录间隔（秒）<input v-model.number="motion.diagnosticIntervalSeconds" class="input" type="number" min="1" max="60" step="1" aria-label="移动诊断记录间隔（秒）" v-permission="{ page: 'mobile-devices', action: 'edit' }" /></label>
@@ -928,12 +946,12 @@ async function saveMotion() {
                 </section>
 
                 <section v-if="motion.valueMode === 'station'" class="motion-step-card motion-simulation-panel">
-                    <div class="motion-step-title"><span>3</span><div><strong>选择移动效果</strong><small>你只需要提供小车加速度；最大速度可以由系统按现场间距自动估算。</small></div></div>
+                    <div class="motion-step-title"><span>3</span><div><strong>选择移动效果</strong><small>{{ lastConfirmedMotion ? '只显示最后到位工位；不使用速度、加速度估算途中位置。' : '你只需要提供小车加速度；最大速度可以由系统按现场间距自动估算。' }}</small></div></div>
                     <label class="motion-switch motion-simulation-switch">
-                        <input v-model="motion.simulationEnabled" type="checkbox" aria-label="开启移动运动细节模拟" :disabled="motion.stationInputMeaning === 'current'" v-permission="{ page: 'mobile-devices', action: 'edit' }"/>
+                        <input v-model="motion.simulationEnabled" type="checkbox" aria-label="开启移动运动细节模拟" :disabled="directStationFeedback" v-permission="{ page: 'mobile-devices', action: 'edit' }"/>
                         开启运动细节模拟
                     </label>
-                    <div v-if="motion.simulationEnabled && motion.stationInputMeaning !== 'current'" class="motion-simulation-fields">
+                    <div v-if="motion.simulationEnabled && !directStationFeedback" class="motion-simulation-fields">
                         <label>小车加速度（米 / 秒²）
                             <input v-model.number="motion.acceleration" type="number" min="0.01" step="0.1" class="input"  v-permission="{ page: 'mobile-devices', action: 'edit' }"/>
                             <small>向电气工程人员要这个参数即可。</small>
@@ -949,7 +967,7 @@ async function saveMotion() {
                             <input v-model.number="motion.maxSpeed" type="number" min="0.01" step="0.1" class="input"  v-permission="{ page: 'mobile-devices', action: 'edit' }"/>
                         </label>
                     </div>
-                    <p class="motion-simulation-note">{{ motion.stationInputMeaning === 'current' ? '当前位置反馈表示现场已到位，直接还原到该工位，不再叠加估算移动时间。' : motion.stationInputMeaning === 'target' ? '目标工位命令仅用于估算移动，不能证明设备到位。未开启模拟时保持原位置，不用目标编号伪造现场位置。' : '运动细节模拟用于估算工位之间的移动，不等同于现场到位反馈；未开启时直接显示接收的工位位置。' }}</p>
+                    <p class="motion-simulation-note" aria-label="移动反馈显示说明">{{ lastConfirmedMotion ? '最后到位工位编号不提供途中位置。画面保持上一次到位位置，在新编号到达时直接更新；未绑定有效实际移动 BOOL 反馈时，不确认当前停靠。' : motion.stationInputMeaning === 'current' ? '当前位置反馈表示现场已到位，直接还原到该工位，不再叠加估算移动时间。' : motion.stationInputMeaning === 'target' ? '目标工位命令仅用于估算移动，不能证明设备到位。未开启模拟时保持原位置，不用目标编号伪造现场位置。' : '运动细节模拟用于估算工位之间的移动，不等同于现场到位反馈；未开启时直接显示接收的工位位置。' }}</p>
                 </section>
 
                 <div class="motion-position-section">

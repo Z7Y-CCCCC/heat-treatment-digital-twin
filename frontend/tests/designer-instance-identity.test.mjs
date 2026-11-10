@@ -3,11 +3,12 @@ import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import { createRequire } from 'node:module'
+import { isAbsolute } from 'node:path'
 import { createRenderer, h, nextTick, ref } from 'vue'
 import { parse, compileScript } from '@vue/compiler-sfc'
 import { baseParse } from '@vue/compiler-dom'
 import { parse as parseJavaScript } from '@babel/parser'
-import { normalizeDashboardDocument } from '../src/runtime/dashboardSchema.js'
+import { normalizeDashboardDocument, createDashboardWidgetPreset } from '../src/runtime/dashboardSchema.js'
 import { createWidgetReadScheduler } from '../src/runtime/widgetReadScheduler.js'
 import { dashboardWidgetIdentityIssues } from '../../shared/dashboardWidgetIdentity.mjs'
 import { installBrowser } from './helpers.mjs'
@@ -39,7 +40,7 @@ const hostNode = controlAst.program.body.find(node => node.type === 'FunctionDec
 const memoryHost = new Function('installBrowser','createRenderer','baseParse','assert', `${controlTests.slice(hostNode.start,hostNode.end)};return memoryHost`)(installBrowser,createRenderer,baseParse,assert)
 const contentNames = controlAst.program.body.find(node => node.type === 'VariableDeclaration'
   && node.declarations.some(item => item.id.name === 'handlerNames')).declarations.find(item => item.id.name === 'handlerNames').init.elements.map(item => item.value)
-const handlers = [...new Set([...contentNames,'selectWidget','selectCanvasWidget','renameSelectedWidget','findWidget','recordProperty','saveDraft',
+const handlers = [...new Set([...contentNames,'selectWidget','selectCanvasWidget','renameSelectedWidget','findWidget','recordProperty','prepareWidgetIdentitiesForSave','saveDraft',
   'movableSelection','beginMove','beginResize','handlePointerMove','endPointerOperation','alignedPosition','snap'])].map(declarations).join('\n')
 const selected = ['widgetInstances','inspectorInstanceKey','widgetIdEditError','widgetInstanceKey','selectedWidgets','selectedWidget','selectedWidgetIdIssue','selectedUsesBindingWorkflow'].map(declarations).join('\n')
 
@@ -59,7 +60,7 @@ const fixtureSource = `<script setup>
 import {computed,ref,toRaw} from 'vue'
 import WidgetDataBindingEditor from './WidgetDataBindingEditor.vue'
 import {deepClone,widgetTypeLabel,normalizeDashboardDocument} from '../../../runtime/dashboardSchema.js'
-import {createWidgetInstanceRegistry,dashboardWidgetIdentityIssues,widgetIdError,renameDashboardWidget,allocateNewWidgetIds} from '../../../../../shared/dashboardWidgetIdentity.mjs'
+import {createWidgetInstanceRegistry,dashboardWidgetIdentityIssues,widgetIdError,renameDashboardWidget,allocateNewWidgetIds,prepareDashboardWidgetIdentities} from '../../../../../shared/dashboardWidgetIdentity.mjs'
 import {editableWidgetText,updateWidgetTextContent,effectiveMetricItems,metricValueSource,deviceListDataSource,widgetImageSource,widgetStatSource,widgetChartSeriesSource,widgetChartSeriesPath} from '../../../runtime/widgetContentConfig.js'
 import {bindingForDevice} from '../../../../../shared/widgetBindingWorkflow.mjs'
 import {hudTextFields} from '../../../runtime/hudTextConfig.js'
@@ -76,7 +77,7 @@ const liveMetrics=ref({}),mapPreviewData=ref({}),dataSetDefinitions=ref([]),view
 const devices=ref([{id:'A',name:'A设备'},{id:'B',name:'B设备'}]),safeCatalogPreviewDeviceId=ref('A')
 const chartPalettes=[],previewContext={viewMode:'factory',factoryId:'fixture',deviceId:'A'},selectedWidgetSupportsData=true,currentViewIsMapSurface=false
 const NavigationContentSettings={render:()=>null},TrendChartSettings={render:()=>null},ColorField={render:()=>null},DataCatalogPicker={render:()=>null},DevicePointBindingEditor={render:()=>null},WidgetPlaybackEditor={render:()=>null},DataSetBindingEditor={render:()=>null}
-const previewParts=[],previewPartsBusy=false,previewPartsError='',pointValues={},databasePreviewValues={},playbackDevices=[],playbackNow=0,previewMode=false
+const previewParts=[],previewPartsBusy=false,previewPartsError='',pointValues={},databasePreviewValues={},previewWidgetVisibility={},playbackDevices=[],playbackNow=0,previewMode=false
 const vPermission={},canAdminPage=()=>true,commits=ref([]),commitHistory=label=>commits.value.push(label),invalidateDataSetPreview=()=>{}
 const chooseCatalogData=()=>{},changeReusableBinding=()=>{},changeBindingMode=()=>{},setWidgetVisibility=()=>{}
 const revealRightPanel=()=>{},focusWidgetInCanvas=()=>{},layerWidgetTitle=w=>w.title,layerWidgetDetail=w=>w.id,toggleLayerVisibility=()=>{},toggleLayerLock=()=>{},widgetFrameStyle=()=>({})
@@ -95,18 +96,41 @@ const designer = await component(sourceUrl,fixtureSource,{'./WidgetDataBindingEd
 const settled = async()=>{await nextTick();await nextTick();await nextTick()}
 
 async function mount(t,document) {
-  const host=memoryHost(t),saved=[],store={save:async(value,revision)=>{assert.deepEqual(dashboardWidgetIdentityIssues(value),[]);const doc=normalizeDocument(clone(value));saved.push(doc);return {document:doc,revision:revision+1}}}
+  const host=memoryHost(t),saved=[],submitted=[],store={save:async(value,revision)=>{assert.deepEqual(dashboardWidgetIdentityIssues(value),[]);submitted.push(clone(value));const doc=normalizeDocument(clone(value));saved.push(doc);return {document:doc,revision:revision+1}}}
   let vm
   const app=host.renderer.createApp({setup:()=>()=>h(designer.component,{ref:value=>vm=value,document,store})})
   app.config.warnHandler=()=>{}
   app.mount(host.root);await settled();t.after(()=>app.unmount())
   const click=async(index,canvas=false)=>{const key=vm.widgetInstanceKey(vm.documentModel.widgets[index]);const prop=canvas?'data-widget-instance':'data-component-instance';const node=host.all().find(node=>node.props[prop]===key);assert.ok(node,`actual instance ${index} rendered`);node.fire('click');await settled();return node}
-  return {...host,saved,store,click,get vm(){return vm}}
+  return {...host,saved,submitted,store,click,get vm(){return vm}}
 }
 
-test('current 317 draft: each of all eight duplicate instances is reachable through real canvas/layer clicks without changing raw IDs or content', async t=>{
-  const draftUrl=new URL('../../output/realtime-linkage-configuration-20261110-20261109T205029667Z/initial-local-draft/local-editor-document.json',import.meta.url)
-  const bytes=await readFile(draftUrl),hash=createHash('sha256').update(bytes).digest('hex'),raw=JSON.parse(bytes)
+function constructedHistorical317Draft() {
+  // Required clean-checkout fixture: deterministic public schema defaults,
+  // never copied site content, credentials or ignored output artifacts.
+  const widgets=Array.from({length:317},(_,index)=>({id:`fixture_widget_${index}`,type:'text',
+    title:`构造组件 ${index}`,content:{text:`配置内容 ${index}`},data:{mode:'static'},
+    frame:{x:(index%12)*140,y:Math.floor(index/12)*24,width:130,height:24}}))
+  widgets[0]={id:'widget_navigation',type:'navigation',content:{projectLabel:'隔离回归工厂'}}
+  widgets[1]={id:'widget_return_button',type:'return_button'}
+  for(const [start,scope] of [[288,'factory_overview'],[313,'workshop_overview']]) {
+    const modules=createDashboardWidgetPreset('factory_hud_modules',{groupId:'fixture_hud_group',viewIds:[scope]})
+    modules.forEach((widget,index)=>{
+      widget.title=`${scope} 独立配置 ${index}`
+      widget.content.fixtureMarker=`${scope}/${index}`
+      widget.style.viewOverrides={[scope]:{opacity:start === 288 ? .8 : .6}}
+      widgets[start+index]=widget
+    })
+  }
+  const document=normalizeDashboardDocument({sceneId:'isolated_historical_hud_317',widgets})
+  const hudIds=widgets.slice(288,292).map(widget=>widget.id)
+  document.scene.views[0].componentState.show=[...hudIds,'widget_navigation','widget_return_button']
+  document.scene.views[1].componentState.hide=hudIds
+  return document
+}
+
+async function verifyHistorical317Draft(t,{raw,bytes,evidenceSource,readCurrentBytes}) {
+  const hash=createHash('sha256').update(bytes).digest('hex')
   assert.equal(raw.widgets.length,317)
   const f=await mount(t,raw),before=JSON.stringify(f.vm.documentModel),evidence=[]
   for(const index of [288,289,290,291,313,314,315,316]){
@@ -124,12 +148,48 @@ test('current 317 draft: each of all eight duplicate instances is reachable thro
       inspectorComponentIdentifierMatched:true,workflowEnabled:f.vm.selectedUsesBindingWorkflow})
   }
   assert.equal(JSON.stringify(f.vm.documentModel),before)
-  assert.equal(await f.vm.saveDraft(),false)
-  assert.equal(f.saved.length,0)
-  assert.equal(createHash('sha256').update(await readFile(draftUrl)).digest('hex'),hash)
+  assert.equal(f.saved.length,0,'opening and clicking every historical instance never writes a document')
+  assert.equal(await f.vm.saveDraft(),true,f.vm.status)
+  assert.equal(f.saved.length,1,'only the normal explicit save prepares technical identities and writes once')
+  assert.equal(f.submitted[0].widgets.length,raw.widgets.length)
+  assert.deepEqual(dashboardWidgetIdentityIssues(f.submitted[0]),[])
+  f.submitted[0].widgets.forEach((widget,index)=>{
+    for(const property of ['content','frame','style','groupId','visibility']) assert.deepEqual(widget[property],raw.widgets[index][property],`instance ${index} ${property}`)
+    assert.deepEqual(widget.data,{...raw.widgets[index].data,readOnly:true},`instance ${index} keeps its original configured source`)
+  })
+  for(const index of [288,289,290,291]) assert.equal(f.submitted[0].widgets[index].id,raw.widgets[index].id)
+  for(const index of [313,314,315,316]) assert.equal(f.submitted[0].widgets[index].id,`${raw.widgets[index].id}_2`)
+  assert.equal(f.submitted[0].scene.defaultViewId,raw.scene.defaultViewId)
+  raw.scene.views.forEach((view,index)=>{
+    const actual=f.submitted[0].scene.views[index]
+    assert.deepEqual({...actual,componentState:view.componentState},view,'save changes neither a view nor its camera/target/metadata')
+    for(const field of ['show','hide']) {
+      const expected=(view.componentState?.[field] || []).flatMap(target=>{
+        const duplicate=raw.widgets.slice(313,317).some(widget=>widget.id===target)
+        return duplicate?[target,`${target}_2`]:[target]
+      })
+      assert.deepEqual(actual.componentState?.[field] || [],[...new Set(expected)],`view ${view.id} preserves ${field} for every former same-ID instance`)
+    }
+  })
+  assert.equal(createHash('sha256').update(await readCurrentBytes()).digest('hex'),hash)
   assert.equal(f.requests(),0)
-  console.log(JSON.stringify({evidence:'current-duplicate-instance-reachability',draftSha256:hash,canvasCount:317,instances:evidence,
-    documentUnchanged:true,unrepairedDuplicateSaveBlocked:true,transportRequests:0}))
+  console.log(JSON.stringify({evidence:'historical-duplicate-instance-reachability',evidenceSource,draftSha256:hash,canvasCount:317,instances:evidence,
+    documentUnchangedBeforeExplicitSave:true,explicitSavePreparedUniqueIdentities:true,allAuthoredInstancesAndSourcesRetained:true,transportRequests:0}))
+}
+
+test('constructed 317-component historical HUD draft: every duplicate is reachable, then explicit save preserves all sources and view membership with unique IDs',async t=>{
+  const raw=constructedHistorical317Draft(),bytes=Buffer.from(JSON.stringify(raw))
+  await verifyHistorical317Draft(t,{raw,bytes,evidenceSource:'sealed-constructed-fixture',readCurrentBytes:async()=>Buffer.from(JSON.stringify(raw))})
+})
+
+// Optional local evidence is additional to, not a substitute for, the required
+// sealed fixture above. Clean CI always executes all core assertions; there is
+// no skipped test and no production-data export into the repository.
+const localDraftPath=process.env.DASHBOARD_IDENTITY_LOCAL_SNAPSHOT_PATH || ''
+if(localDraftPath && !isAbsolute(localDraftPath)) throw new Error('Local identity evidence requires an absolute read-only snapshot path')
+const localDraftBytes=localDraftPath ? await readFile(localDraftPath) : null
+if(localDraftBytes) test('additional read-only local 317 snapshot: native duplicate controls and explicit save retain every authored instance without changing the snapshot',async t=>{
+  await verifyHistorical317Draft(t,{raw:JSON.parse(localDraftBytes),bytes:localDraftBytes,evidenceSource:'actual-local-readonly-snapshot',readCurrentBytes:()=>readFile(localDraftPath)})
 })
 
 test('native component identifier rejects duplicate/illegal edits atomically; explicit repair preserves other content and normal view references', async t=>{

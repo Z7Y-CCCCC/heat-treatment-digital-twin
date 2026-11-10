@@ -18,6 +18,9 @@ namespace HeatTreatment.DigitalTwin.Runtime
             public Transform OffsetRoot;
             public int SiblingIndex;
             public Vector3 PivotInParent;
+            public bool HasAppliedPose;
+            public Vector3 RequestedPosition, AppliedPosition;
+            public Quaternion RequestedRotation, AppliedRotation;
         }
 
         private sealed class InspectionPartState
@@ -97,6 +100,18 @@ namespace HeatTreatment.DigitalTwin.Runtime
 
         private readonly List<Rect> _inspectionHitRects = new List<Rect>();
         private Material _inspectionOutlineMaterial;
+        private static readonly int InspectionWorldToModelId = Shader.PropertyToID("_InspectionWorldToModel");
+        private static readonly int InspectionClipAxisId = Shader.PropertyToID("_ClipAxis");
+        private static readonly int InspectionClipRangeId = Shader.PropertyToID("_ClipRange");
+        private static readonly int InspectionOpacityId = Shader.PropertyToID("_Opacity");
+        private static readonly int InspectionWireframeId = Shader.PropertyToID("_Wireframe");
+        private static readonly int InspectionZWriteId = Shader.PropertyToID("_ZWrite");
+#if UNITY_EDITOR
+        public long InspectionOffsetWrites { get; private set; }
+        public long InspectionVisibilityWrites { get; private set; }
+        public long InspectionMaterialWrites { get; private set; }
+        public long HoverRendererObservations { get; private set; }
+#endif
 
         public bool RefitInspectionCamera()
         {
@@ -530,7 +545,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 {
                     if (target.OffsetRoot == null || target.Parent == null) continue;
                     InspectionOffsetPose(runtime, part, target, amount, out var position, out var rotation);
-                    target.OffsetRoot.SetLocalPositionAndRotation(position, rotation);
+                    ApplyInspectionTargetPose(target, position, rotation);
                 }
                 part.WorldBounds = InspectionBounds(part.Renderers, runtime.ModelRoot.position);
             }
@@ -539,11 +554,42 @@ namespace HeatTreatment.DigitalTwin.Runtime
             {
                 if (state.Renderer == null) continue;
                 var isolatedAway = runtime.Isolated && runtime.SelectedPart != null && state.Part != runtime.SelectedPart;
-                state.Renderer.forceRenderingOff = state.OriginalForceOff || isolatedAway || (state.IsShell && shellProgress >= .99999f);
+                SetInspectionForceOff(state.Renderer, state.OriginalForceOff || isolatedAway || (state.IsShell && shellProgress >= .99999f));
                 if (state.Part != null && !state.IsShell) ApplyInspectionFocusMaterials(runtime, state);
                 if (!state.IsShell) continue;
                 ApplyInspectionShell(runtime, state, shellProgress);
             }
+        }
+
+        private void ApplyInspectionTargetPose(InspectionTargetState target, Vector3 position, Quaternion rotation)
+        {
+            var actualPosition = target.OffsetRoot.localPosition;
+            var actualRotation = target.OffsetRoot.localRotation;
+            // Exact Float32 inputs, not approximate Unity ==. Remember the
+            // native quaternion normalization result but always reread actual
+            // pose, so external edits are corrected and moving PLC children
+            // retain ownership of their own local TRS below this offset root.
+            if (target.HasAppliedPose && target.RequestedPosition.Equals(position) && target.RequestedRotation.Equals(rotation)
+                && target.AppliedPosition.Equals(actualPosition) && target.AppliedRotation.Equals(actualRotation)) return;
+            target.RequestedPosition = position; target.RequestedRotation = rotation;
+            if (!actualPosition.Equals(position) || !actualRotation.Equals(rotation))
+            {
+                target.OffsetRoot.SetLocalPositionAndRotation(position, rotation);
+#if UNITY_EDITOR
+                InspectionOffsetWrites++;
+#endif
+            }
+            target.AppliedPosition = target.OffsetRoot.localPosition; target.AppliedRotation = target.OffsetRoot.localRotation;
+            target.HasAppliedPose = true;
+        }
+
+        private void SetInspectionForceOff(Renderer renderer, bool value)
+        {
+            if (renderer.forceRenderingOff == value) return;
+            renderer.forceRenderingOff = value;
+#if UNITY_EDITOR
+            InspectionVisibilityWrites++;
+#endif
         }
 
         private void ApplyInspectionFocusMaterials(DeviceInspectionRuntime runtime, InspectionRendererState state)
@@ -579,7 +625,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
             state.FrostedApplied = true;
         }
 
-        private static void ApplyInspectionShell(DeviceInspectionRuntime runtime, InspectionRendererState state, float progress)
+        private void ApplyInspectionShell(DeviceInspectionRuntime runtime, InspectionRendererState state, float progress)
         {
             var needsSurface = progress > 0f || runtime.XrayAmount > 0f;
             if (!needsSurface)
@@ -619,14 +665,48 @@ namespace HeatTreatment.DigitalTwin.Runtime
             foreach (var material in state.RuntimeMaterials)
             {
                 if (material == null) continue;
-                material.SetMatrix("_InspectionWorldToModel", runtime.ModelRoot.worldToLocalMatrix);
-                material.SetVector("_ClipAxis", axis);
-                material.SetVector("_ClipRange", new Vector4(minimum, maximum, InspectionShellDirection(runtime), clipProgress));
-                material.SetFloat("_Opacity", alpha);
-                material.SetFloat("_Wireframe", shell.Wireframe && runtime.XrayAmount > .5f ? 1f : 0f);
-                material.SetFloat("_ZWrite", alpha >= .999f ? 1f : 0f);
-                material.renderQueue = alpha >= .999f ? (int)RenderQueue.Geometry + 1 : (int)RenderQueue.Transparent;
+                SetInspectionMaterialMatrix(material, InspectionWorldToModelId, runtime.ModelRoot.worldToLocalMatrix);
+                SetInspectionMaterialVector(material, InspectionClipAxisId, axis);
+                SetInspectionMaterialVector(material, InspectionClipRangeId, new Vector4(minimum, maximum, InspectionShellDirection(runtime), clipProgress));
+                SetInspectionMaterialFloat(material, InspectionOpacityId, alpha);
+                SetInspectionMaterialFloat(material, InspectionWireframeId, shell.Wireframe && runtime.XrayAmount > .5f ? 1f : 0f);
+                SetInspectionMaterialFloat(material, InspectionZWriteId, alpha >= .999f ? 1f : 0f);
+                var queue = alpha >= .999f ? (int)RenderQueue.Geometry + 1 : (int)RenderQueue.Transparent;
+                if (material.renderQueue != queue)
+                {
+                    material.renderQueue = queue;
+#if UNITY_EDITOR
+                    InspectionMaterialWrites++;
+#endif
+                }
             }
+        }
+
+        // Shader uniforms need not occur in ShaderLab Properties. Read their
+        // actual native values, never use HasProperty to suppress an override.
+        private void SetInspectionMaterialFloat(Material material, int property, float value)
+        {
+            if (material.GetFloat(property).Equals(value)) return;
+            material.SetFloat(property, value);
+#if UNITY_EDITOR
+            InspectionMaterialWrites++;
+#endif
+        }
+        private void SetInspectionMaterialVector(Material material, int property, Vector4 value)
+        {
+            if (material.GetVector(property).Equals(value)) return;
+            material.SetVector(property, value);
+#if UNITY_EDITOR
+            InspectionMaterialWrites++;
+#endif
+        }
+        private void SetInspectionMaterialMatrix(Material material, int property, Matrix4x4 value)
+        {
+            if (material.GetMatrix(property).Equals(value)) return;
+            material.SetMatrix(property, value);
+#if UNITY_EDITOR
+            InspectionMaterialWrites++;
+#endif
         }
 
         private static Material CreateInspectionShellMaterial(Material original, Shader shader)
@@ -691,7 +771,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
             {
                 if (state.Renderer == null) continue;
                 if (state.SurfaceApplied || state.FrostedApplied) state.Renderer.sharedMaterials = state.OriginalMaterials;
-                state.Renderer.forceRenderingOff = state.OriginalForceOff;
+                SetInspectionForceOff(state.Renderer, state.OriginalForceOff);
                 state.Renderer.shadowCastingMode = state.OriginalShadowCasting;
                 state.Renderer.receiveShadows = state.OriginalReceiveShadows;
                 state.SurfaceApplied = false;
@@ -702,7 +782,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 foreach (var target in part.Targets)
                 {
                     if (target.OffsetRoot == null) continue;
-                    target.OffsetRoot.SetLocalPositionAndRotation(Vector3.zero, Quaternion.identity);
+                    ApplyInspectionTargetPose(target, Vector3.zero, Quaternion.identity);
                     if (!dispose) continue;
                     if (target.Target != null)
                     {
@@ -1021,6 +1101,18 @@ namespace HeatTreatment.DigitalTwin.Runtime
 
         private bool InspectionHoverChanged(DeviceInspectionRuntime runtime, Vector3 pointer, bool blocked)
         {
+            if (blocked)
+            {
+                // Occluded/outside pointers must not observe any CAD renderer.
+                // Invalidate the snapshot, so re-entry still repicks geometry
+                // which moved away and back while another window covered us.
+                var blockedChanged = runtime.HoverSnapshotValid || !runtime.HoverBlocked
+                    || !runtime.HoverPointer.Equals(pointer) || runtime.HoveredPart != null || runtime.HoverHitsSurface;
+                runtime.HoverPointer = pointer;
+                runtime.HoverBlocked = true;
+                runtime.HoverSnapshotValid = false;
+                return blockedChanged;
+            }
             var changed = !runtime.HoverSnapshotValid || !runtime.HoverPointer.Equals(pointer)
                 || !runtime.HoverCameraView.Equals(_camera.worldToCameraMatrix)
                 || !runtime.HoverCameraProjection.Equals(_camera.projectionMatrix)
@@ -1034,6 +1126,9 @@ namespace HeatTreatment.DigitalTwin.Runtime
             runtime.HoverBlocked = blocked; runtime.HoverClock = runtime.Clock; runtime.HoverXray = runtime.XrayAmount;
             foreach (var state in runtime.Renderers)
             {
+#if UNITY_EDITOR
+                HoverRendererObservations++;
+#endif
                 var visible = state.Surface.IsVisible;
                 var matrix = state.Renderer != null ? state.Renderer.localToWorldMatrix : Matrix4x4.identity;
                 var geometry = state.Surface.Geometry;
@@ -1051,9 +1146,10 @@ namespace HeatTreatment.DigitalTwin.Runtime
         {
             var runtime = _selected?.Inspection;
             if (_mode != DashboardMode.Detail || runtime == null || _camera == null || !runtime.Valid) return;
-            var pointer = Input.mousePosition;
-            var blocked = (!_webOverlayActive && IsPointerOverDashboard(ScreenToDesign(pointer)))
-                || (!_webOverlayActive && !Application.isFocused) || pointer.x < 0 || pointer.y < 0 || pointer.x > Screen.width || pointer.y > Screen.height;
+            var pointerOwned = TryGetHoverPointer(out var pointer);
+            var blocked = !pointerOwned
+                || (!_webOverlayActive && IsPointerOverDashboard(ScreenToDesign(pointer)))
+                || pointer.x < 0 || pointer.y < 0 || pointer.x > Screen.width || pointer.y > Screen.height;
             UpdateInspectionHoverAt(pointer, blocked);
         }
 
@@ -1061,6 +1157,8 @@ namespace HeatTreatment.DigitalTwin.Runtime
         {
             var runtime = _selected?.Inspection;
             if (_mode != DashboardMode.Detail || runtime == null || _camera == null || !runtime.Valid) return;
+            blocked |= !float.IsFinite(pointer.x) || !float.IsFinite(pointer.y)
+                || !_camera.pixelRect.Contains(new Vector2(pointer.x, pointer.y));
             // Keep drawing the last outline every frame. Only the expensive
             // exact picking is skipped when every input to the pick is unchanged.
             var previousPointer = runtime.HoverPointer;

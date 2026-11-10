@@ -5,6 +5,7 @@ const fs = require('node:fs'), path = require('node:path'), crypto = require('no
 let mathLibrary;
 const math = () => mathLibrary ||= require('three'); // load only while authoring, not for ordinary collection/config reads
 const { canonicalJson } = require('./deviceInspection');
+const { renameAtomicSync, isTransientRenameError } = require('../utils/atomicRename');
 const fail = (message, statusCode = 400) => Object.assign(new Error(message), { statusCode });
 const sha = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 const uploadsRoot = () => path.resolve(process.env.UPLOADS_DIR || path.join(__dirname, '../uploads'));
@@ -156,10 +157,25 @@ function storeCompiled(prepared, compiled, previewOnly = false) {
         const valid = () => fs.existsSync(file) && fs.statSync(file).size === bytes.length && sha(fs.readFileSync(file)) === sha(bytes);
         if (valid()) continue;
         const temporary = path.join(directory, `${name}.${crypto.randomUUID()}.tmp`);
+        let failure;
         try {
             fs.writeFileSync(temporary, bytes, { flag: 'wx' });
-            try { fs.renameSync(temporary, file); } catch (error) { if (!valid()) throw error; }
-        } finally { fs.rmSync(temporary, { force: true }); }
+            try { renameAtomicSync(temporary, file); }
+            catch (error) {
+                // A concurrent publisher of the same complete content-addressed
+                // blob is idempotent. Unrelated disk/I/O failures are not success,
+                // and a failed verification must retain the original rename error.
+                let published = false;
+                if (isTransientRenameError(error) || error.code === 'EEXIST') {
+                    try { published = valid(); } catch { /* Keep the rename failure. */ }
+                }
+                if (!published) throw error;
+            }
+        } catch (error) { failure = error; throw error; }
+        finally {
+            try { fs.rmSync(temporary, { force: true }); }
+            catch (error) { if (!failure) throw error; }
+        }
     }
 }
 module.exports = { prepare, compile, storeCompiled, validateActions, localFile, glb, encodeGlb };

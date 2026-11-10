@@ -14,14 +14,14 @@ const scripts = [
     'data-source-http-regression-test.cjs', 'data-source-designer-test.cjs', 'widget-binding-workflow-test.cjs', 'dashboard-widget-identity-test.cjs', 'dashboard-draft-incomplete-test.cjs', 'dashboard-stale-bindings-test.cjs', 'excel-data-file-test.cjs',
     'spatial-hierarchy-test.cjs', 'spatial-bootstrap-idempotency-test.cjs', 'industrial-ground-test.cjs', 'loading-ports-test.cjs', 'cast-discovery-test.cjs', 'cast-history-test.cjs',
     'backend-concurrency-test.cjs', 'backend-long-runtime-test.cjs', 'backend-recovery-edge-test.cjs',
-    'backend-service-failure-test.cjs', 'alarm-outbox-test.cjs', 'mysql-runtime-safety-test.cjs', 'site-recovery-intent-test.cjs', 'ws-queue-test.cjs', 'motion-semantics-test.cjs', 'motion-inheritance-semantics-test.cjs', 'realtime-motion-queue-test.cjs', 'scene-loading-test.cjs',
+    'backend-service-failure-test.cjs', 'alarm-outbox-test.cjs', 'mysql-runtime-safety-test.cjs', 'atomic-rename-test.cjs', 'site-recovery-intent-test.cjs', 'ws-queue-test.cjs', 'motion-semantics-test.cjs', 'motion-inheritance-semantics-test.cjs', 'realtime-motion-queue-test.cjs', 'scene-loading-test.cjs',
     'admin-auth-integration-test.cjs', 'factory-isolation-test.cjs', 'factory-display-collection-test.cjs', 'factory-collection-summary-test.cjs', 'configuration-sync-test.cjs', 'factory-geocoder-test.cjs', 'production-readiness-test.cjs',
     'data-point-sync-test.cjs', 'deletion-safety-test.cjs', 'dashboard-device-deletion-test.cjs',
     'native-dashboard-config-test.cjs', 'device-return-navigation-test.cjs', 'inspection-hover-test.cjs', 'device-hover-test.cjs', 'dashboard-designer-test.cjs', 'tooltip-template-integration-test.cjs', 'tooltip-dynamic-binding-test.cjs', 'mcp-platform-integration-test.cjs', 'plc-protocol-test.cjs',
     'plc-value-precision-test.cjs', 's7-read-safety-test.cjs', 'collector-isolation-test.cjs', 'plc-empty-connectivity-test.cjs',
     'inspection-platform-test.cjs', 'device-inspection-layout-test.cjs', 'model-inspection-layout-test.cjs', 'tempering-inspection-defaults-test.cjs', 'model-asset-collection-test.cjs', 'model-duplicates-test.cjs', 'model-action-package-update-test.cjs', 'model-name-test.cjs', 'ultrasonic-cleaner-profile.test.cjs', 'device-animation-regressions-test.cjs', 'device-animations-test.cjs', 'realtime-transfer-link-test.cjs', 'motion-data-center-test.cjs', 'boolean-endpoints-test.cjs', 'retired-motion-bindings-test.cjs', 'motion-authoring-test.cjs',
     'device-line-units-test.cjs', 'line-spacing-precision-test.cjs', 'motion-device-context-test.cjs', 'database-retention-test.cjs', 'database-backup-ties-test.cjs', 'site-backup-test.cjs', 'site-backup-retention-test.cjs', 'backup-storage-test.cjs', 'project-bundle-test.cjs',
-    'power-recovery-test.cjs', 'runtime-display-test.cjs', 'http-integrity-test.cjs'
+    'power-recovery-lifetime.test.cjs', 'power-recovery-test.cjs', 'runtime-display-test.cjs', 'http-integrity-test.cjs'
 ];
 if (process.platform === 'win32') scripts.push('voice-feature-test.cjs');
 if (process.argv.includes('--with-plc-simulators')) scripts.push('plc-integration-test.cjs', 'plc-simulator-protocol-integration-test.cjs');

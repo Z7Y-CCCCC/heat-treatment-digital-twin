@@ -1,5 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { computed } from 'vue'
 import { createDashboardDataStore } from '../src/runtime/DataStore.js'
 import { deferred, installBrowser, installSockets, json, settle } from './helpers.mjs'
 
@@ -11,6 +12,70 @@ function fixture(t, options) {
     t.after(() => store.dispose())
     return { store, sockets }
 }
+
+test('realtime batches aggregate once while retaining every same-device transition in source order', t => {
+    const { store, sockets } = fixture(t)
+    let scans = 0
+    const values = Object.values
+    t.mock.method(Object, 'values', object => {
+        if (object === store.deviceStatusMap) scans++
+        return values(object)
+    })
+    const devices = Array.from({ length: 100 }, (_, index) => ({ id: `D${index}`, name: `设备 ${index}` }))
+    store.syncDevices(devices)
+    assert.equal(scans, 1, 'configuration bootstrap must not scan the entire station per registered device')
+    const received = []
+    store.setDeviceDataHandler(data => received.push([data.furnace_id, data.analog?.actual_temp]))
+    store.connect(); received.length = 0; scans = 0
+    const telemetry = devices.map((device, index) => ({ furnace_id: device.id, timestamp: 100000,
+        analog: { actual_temp: index }, status: { running: index % 2 === 0, alarm: index % 10 === 0 },
+        quality: { analog: { actual_temp: 'good' } } }))
+    const batch = [telemetry[0], { ...telemetry[0], analog: { actual_temp: 1 } }, ...telemetry.slice(1)]
+    sockets[0].emit('realtime_frame', { devices: batch })
+    assert.equal(scans, 1, '101 telemetry records still require one aggregate, not 102 full-station scans')
+    assert.deepEqual(received, batch.map(data => [data.furnace_id, data.analog.actual_temp]))
+    assert.equal(store.deviceDataMap.D0.analog.actual_temp, 1)
+    assert.equal(store.metrics.total_devices, 100)
+    assert.equal(store.metrics.online_devices, 100)
+    assert.equal(store.metrics.running_devices, 50)
+    assert.equal(store.metrics.alarm_devices, 10)
+    scans = 0
+    sockets[0].emit('device_data', { ...telemetry[0], status: { running: false, alarm: false } })
+    assert.equal(scans, 1, 'standalone telemetry must still update metrics immediately')
+    assert.equal(store.metrics.running_devices, 49); assert.equal(store.metrics.alarm_devices, 9)
+})
+
+test('motion-only updates notify every transition without replacing or rescanning unrelated telemetry', t => {
+    t.mock.timers.enable({ apis: ['Date'], now: 100000 })
+    const { store, sockets } = fixture(t)
+    store.syncDevices([{ id: 'A', name: '设备 A' }]); store.selectDevice('A')
+    const received = [], motions = []
+    store.setDeviceDataHandler(data => { received.push(data); Object.freeze(data) })
+    store.setMotionInputHandler(data => motions.push(data)); store.connect()
+    sockets[0].emit('realtime_frame', { devices: [{ furnace_id: 'A', timestamp: 99000,
+        analog: { actual_temp: 700 }, status: { running: true }, quality: { analog: { actual_temp: 'good' } } }] })
+    const snapshot = store.deviceDataMap.A, status = store.deviceStatusMap.A, original = received.at(-1)
+    let reads = 0, scans = 0
+    const point = computed(() => { reads++; return `${store.deviceDataMap.A.analog.actual_temp}:${store.deviceDataMap.A.timestamp}` })
+    assert.equal(point.value, '700:99000')
+    const values = Object.values
+    t.mock.method(Object, 'values', object => { if (object === store.deviceStatusMap) scans++; return values(object) })
+    const updates = [0, 1, 0].map(value => ({ furnace_id: 'A', timestamp: 100000, motionInputOnly: true,
+        motionInputs: { lift: { value, quality: 'good', timestamp: 98500 } } }))
+    sockets[0].emit('realtime_frame', { devices: updates.slice(0, 2) })
+    sockets[0].emit('device_data', updates[2])
+    assert.equal(store.deviceDataMap.A, snapshot)
+    assert.equal(store.deviceStatusMap.A, status)
+    assert.equal(point.value, '700:99000'); assert.equal(reads, 1)
+    assert.equal(scans, 0, 'a motion-only publication is not new telemetry or a metrics refresh trigger')
+    assert.deepEqual(motions.map(data => data.motionInputs.lift.value), [0, 1, 0])
+    assert.equal(motions.at(-1).motionInputs.lift.timestamp, 98500)
+    assert.equal(store.latestDeviceDataMap.get('A').timestamp, 99000)
+    assert.equal(store.selectedDeviceData.motionInputs.lift.value, 0)
+    assert.equal(store.selectedDeviceData.timestamp, 99000)
+    assert.equal(status.lastSeen, 100000)
+    assert.equal(original.motionInputs, undefined, 'received telemetry may be frozen; motion must not mutate it')
+})
 
 test('motion-only data table frames neither invent PLC health nor erase live telemetry', t => {
     const { store, sockets } = fixture(t)

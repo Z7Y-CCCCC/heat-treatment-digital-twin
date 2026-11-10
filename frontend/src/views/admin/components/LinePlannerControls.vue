@@ -7,10 +7,11 @@ const props = defineProps({
   lines: { type: Array, default: () => [] }, workshops: { type: Array, default: () => [] },
   selectedId: { type: String, default: '' }, layout: { type: Object, required: true },
   draft: { type: Object, required: true }, busy: Boolean, creating: Boolean,
+  layoutDirty: Boolean, layoutSaving: Boolean,
   savedSnapshot: { type: String, default: '' },
   deviceCount: { type: Number, default: 0 }, totalDevices: { type: Number, default: 0 }
 })
-const emit = defineEmits(['select', 'delete', 'create', 'edit', 'add-item', 'remove-item', 'change-item', 'change-rail-spacing', 'focus-item'])
+const emit = defineEmits(['select', 'delete', 'create', 'edit', 'add-item', 'remove-item', 'change-item', 'change-rail-spacing', 'save-layout', 'focus-item'])
 const popup = ref(''), popupElement = ref(null), popupStyle = ref({}), modal = ref(''), modalElement = ref(null)
 const lineTrigger = ref(null), laneTrigger = ref(null), railTrigger = ref(null), createTrigger = ref(null)
 const lineQuery = ref(''), editDraft = ref({})
@@ -88,15 +89,21 @@ async function changeItem(id, field, event) {
   await restoreItemField(id, field, event)
 }
 async function changeSpacing(id, field, event) {
-  if (!props.busy && canEdit.value) emit('change-rail-spacing', { railId: id, field, value: event.target.value })
-  await nextTick()
   const item = props.layout.rails.find(item => item.id === id)
-  if (item) event.target.value = item.spacing?.[field] ?? ''
+  if (!props.busy && !props.creating && canEdit.value && selected.value && (field === 'laneId' || item?.spacing)) {
+    emit('change-rail-spacing', { railId: id, field, value: event.target.value })
+  }
+  await nextTick()
+  const current = props.layout.rails.find(item => item.id === id)
+  if (current) event.target.value = current.spacing?.[field] ?? ''
 }
 async function changeLayoutUnits(event) {
-  if (!props.busy && canEdit.value && selected.value) emit('change-rail-spacing', { railId: '', field: 'sceneUnitsPerMeter', value: event.target.value })
+  if (!props.busy && !props.creating && canEdit.value && selected.value) emit('change-rail-spacing', { railId: '', field: 'sceneUnitsPerMeter', value: event.target.value })
   await nextTick()
   event.target.value = layoutUnits.value
+}
+function saveLayout() {
+  if (canEdit.value && !props.busy && !props.creating && !props.layoutSaving && props.layoutDirty && selected.value) emit('save-layout')
 }
 async function openModal(kind, line) {
   if (!canEdit.value || props.busy) return
@@ -150,6 +157,19 @@ defineExpose({ closeCreation: () => { modal.value = ''; modalReturnFocus?.focus?
       <button ref="railTrigger" type="button" class="structure-pill rail-pill" aria-label="管理小车导轨" aria-haspopup="dialog" :aria-expanded="popup === 'rail'" :disabled="!selected || creating" @click="togglePopup('rail', $event)">{{ layout.rails.length }} 条导轨<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 10 4 4 4-4"/></svg></button>
       <span class="device-count">{{ deviceCount }}/{{ totalDevices }} 台设备</span>
     </div>
+    <div v-if="selected" class="line-rail-spacing-config" role="group" aria-label="设备线与小车轨道间距设置">
+      <div v-for="rail in layout.rails" :key="rail.id" class="rail-spacing-row" :data-rail-spacing-id="rail.id">
+        <strong class="rail-spacing-name">{{ rail.name || rail.id }}</strong>
+        <label class="structure-field"><span>关联设备线</span><select :value="rail.spacing?.laneId || ''" :aria-label="`${rail.name} 关联设备线`" class="input" :disabled="!canEdit || busy || creating" @change="changeSpacing(rail.id, 'laneId', $event)"><option value="">选择设备线（不关联则自由偏移）</option><option v-for="lane in layout.lanes" :key="lane.id" :value="lane.id">{{ lane.name || lane.id }}</option></select></label>
+        <label class="structure-field"><span>设备线—轨道中心距（米）</span><input :value="rail.spacing?.distanceMeters ?? ''" :aria-label="`${rail.name} 设备线与轨道中心距（米）`" class="input" type="number" min="0" max="10000" step="any" :placeholder="rail.spacing ? '' : '先选择设备线'" :disabled="!canEdit || busy || creating || !rail.spacing" @change="changeSpacing(rail.id, 'distanceMeters', $event)" /></label>
+        <label class="structure-field"><span>设备线哪一侧</span><select :value="rail.spacing?.side || ''" :aria-label="`${rail.name} 相对设备线方向`" class="input" :disabled="!canEdit || busy || creating || !rail.spacing" @change="changeSpacing(rail.id, 'side', $event)"><option value="" disabled>先选择设备线</option><option value="positive">+Z 侧</option><option value="negative">−Z 侧</option></select></label>
+      </div>
+      <div class="line-spacing-actions">
+        <label class="structure-field layout-units"><span>产线场景单位 / 米</span><input :value="layoutUnits" aria-label="产线场景单位每米" class="input" type="number" min="0" max="100000" step="any" :disabled="!canEdit || busy || creating" @change="changeLayoutUnits($event)" /></label>
+        <span class="line-spacing-save-state" role="status">{{ layoutSaving ? '保存中…' : layoutDirty ? '有未保存修改' : '已保存' }}</span>
+        <button type="button" class="btn btn-primary btn-sm" aria-label="保存设备线与轨道设置" :disabled="!canEdit || busy || creating || layoutSaving || !layoutDirty" @click="saveLayout">{{ layoutSaving ? '保存中…' : '保存产线结构' }}</button>
+      </div>
+    </div>
     <Teleport to="body">
       <section v-if="popup" ref="popupElement" class="line-control-popup" :class="{ 'line-list-popup': popup === 'lines' }" :style="popupStyle" role="dialog" :aria-label="popup === 'lines' ? '产线选择' : `${itemLabel}管理`">
         <template v-if="popup === 'lines'">
@@ -163,18 +183,12 @@ defineExpose({ closeCreation: () => { modal.value = ''; modalReturnFocus?.focus?
         </template>
         <template v-else>
           <header><strong>{{ itemLabel }}</strong><button class="btn btn-sm" type="button" :disabled="!canEdit || busy" @click="addItem">+ {{ itemLabel }}</button></header>
-          <label class="structure-field layout-units"><span>产线场景单位 / 米</span><input :value="layoutUnits" aria-label="产线场景单位每米" class="input" type="number" min="0" max="100000" step="any" :disabled="!canEdit || busy || !selected" @change="changeLayoutUnits($event)" /></label>
           <div v-for="item in items" :key="item.id" class="structure-row" :class="{ 'is-new': isNewItem(item.id) }" :data-structure-id="item.id" role="group" :aria-label="item.name" tabindex="0" @click="selectItem(item.id)" @keydown="selectItemWithKeyboard(item.id, $event)">
             <span v-if="isNewItem(item.id)" class="new-item-corner"><span>新增</span></span>
             <div class="structure-field structure-name"><span>名称</span><input :value="item.name" :aria-label="`${item.name} 名称`" class="input" :disabled="!canEdit || busy" @click.stop @input="changeItem(item.id, 'name', $event)" /></div>
             <div class="structure-field"><span>偏移Z（场景坐标）</span><input :value="item.offsetZ" :aria-label="`${item.name} 偏移Z`" type="number" step="0.5" class="input" :disabled="!canEdit || busy || !!item.spacing" @click.stop @input="changeItem(item.id, 'offsetZ', $event)" @change="restoreItemField(item.id, 'offsetZ', $event)" /></div>
             <div class="structure-field"><span>长度（场景坐标）</span><input :value="item.length" :aria-label="`${item.name} 长度`" type="number" min="1" step="0.5" class="input" :disabled="!canEdit || busy" @click.stop @input="changeItem(item.id, 'length', $event)" @change="restoreItemField(item.id, 'length', $event)" /></div>
             <div class="structure-row-actions"><button type="button" class="line-icon-button danger" :aria-label="`删除 ${item.name}`" title="删除" :disabled="!canEdit || busy" @click.stop="removeItem(item.id)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7m4-7v7"/></svg></button></div>
-            <template v-if="popup === 'rail'">
-              <div class="structure-field spacing-lane"><span>关联设备线</span><select :value="item.spacing?.laneId || ''" :aria-label="`${item.name} 关联设备线`" class="input" :disabled="!canEdit || busy" @click.stop @change="changeSpacing(item.id, 'laneId', $event)"><option value="">自由偏移（不关联）</option><option v-for="lane in layout.lanes" :key="lane.id" :value="lane.id">{{ lane.name }}</option></select></div>
-              <div v-if="item.spacing" class="structure-field"><span>设备线—轨道中心距（米）</span><input :value="item.spacing.distanceMeters" :aria-label="`${item.name} 设备线与轨道中心距（米）`" class="input" type="number" min="0.001" max="10000" step="0.01" :disabled="!canEdit || busy" @click.stop @change="changeSpacing(item.id, 'distanceMeters', $event)" /></div>
-              <div v-if="item.spacing" class="structure-field"><span>设备线哪一侧</span><select :value="item.spacing.side" :aria-label="`${item.name} 相对设备线方向`" class="input" :disabled="!canEdit || busy" @click.stop @change="changeSpacing(item.id, 'side', $event)"><option value="positive">+Z 侧</option><option value="negative">−Z 侧</option></select></div>
-            </template>
           </div>
           <p v-if="!items.length" class="line-empty">暂无{{ itemLabel }}</p>
         </template>
@@ -207,6 +221,13 @@ defineExpose({ closeCreation: () => { modal.value = ''; modalReturnFocus?.focus?
 .line-picker-trigger span { min-width:0; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 svg { flex-shrink:0; width:16px; height:16px; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
 .line-preview-metrics { display:flex; align-items:center; flex-wrap:wrap; gap:8px; margin-left:auto; font-size:calc(12px * var(--admin-font-scale,1)); }
+.line-rail-spacing-config { flex:1 0 100%; display:grid; gap:8px; min-width:0; padding-top:10px; border-top:1px solid #e8edf4; }
+.rail-spacing-row { display:grid; grid-template-columns:minmax(100px,.7fr) minmax(150px,1fr) minmax(180px,1fr) minmax(110px,.65fr); align-items:end; gap:10px; }
+.rail-spacing-name { align-self:center; overflow:hidden; text-overflow:ellipsis; color:#52687d; }
+.rail-spacing-row .input { box-sizing:border-box; width:100%; min-width:0; }
+.line-spacing-actions { display:flex; align-items:center; flex-wrap:wrap; gap:10px; }
+.line-spacing-actions .layout-units { flex:0 1 340px; margin:0; }
+.line-spacing-save-state { margin-left:auto; font-size:calc(12px * var(--admin-font-scale,1)); }
 .structure-pill { display:flex; align-items:center; gap:5px; min-height:34px; padding:5px 10px; color:#35566c; background:linear-gradient(#fff,#edf2f7); border:1px solid #c2cedb; border-bottom-width:2px; border-radius:999px; box-shadow:0 2px 4px #22385816,inset 0 1px #fff; font:inherit; font-weight:650; cursor:pointer; transition:box-shadow .15s,background .15s; }
 .structure-pill:hover:not(:disabled),.structure-pill[aria-expanded=true] { color:#2457a6; background:#edf4ff; border-color:#8bacdc; box-shadow:0 3px 9px #2457a622; }
 .structure-pill:active:not(:disabled) { box-shadow:inset 0 1px 3px #22385820; }
@@ -237,7 +258,6 @@ svg { flex-shrink:0; width:16px; height:16px; fill:none; stroke:currentColor; st
 .layout-units input { box-sizing:border-box; width:100%; min-width:0; }
 .structure-row input { box-sizing:border-box; width:100%; min-width:0; padding:6px 8px; }
 .structure-row-actions { display:flex; align-items:center; gap:4px; }
-.spacing-lane { grid-column:1 / -1; }
 .line-empty { color:#8995a6; margin:16px 6px; }
 .line-modal-backdrop { position:fixed; z-index:2000; inset:0; display:grid; place-items:center; padding:16px; background:#17203355; }
 .line-create-dialog { box-sizing:border-box; width:min(480px,100%); max-height:calc(100dvh - 32px); overflow:auto; overscroll-behavior:contain; border:1px solid #dce3ec; border-radius:14px; background:#fff; box-shadow:0 20px 70px #17203335; color:#344054; font:calc(13px * var(--admin-font-scale,1)) 'Inter Variable','Noto Sans SC Variable',sans-serif; }
@@ -249,6 +269,7 @@ svg { flex-shrink:0; width:16px; height:16px; fill:none; stroke:currentColor; st
 .line-create-row footer { display:flex; justify-content:flex-end; gap:8px; padding-top:4px; }
 button:focus-visible { outline:2px solid #4389e9; outline-offset:2px; }
 button:disabled { opacity:.45; cursor:not-allowed; }
-@media(max-width:600px) { .structure-row { grid-template-columns:minmax(80px,1fr) minmax(60px,.6fr) minmax(60px,.6fr); } .structure-row-actions { grid-column:1/-1; justify-content:flex-end; } }
+@media(max-width:760px) { .rail-spacing-row { grid-template-columns:minmax(0,1fr) minmax(0,1fr); } .rail-spacing-name { grid-column:1 / -1; } }
+@media(max-width:600px) { .structure-row { grid-template-columns:minmax(80px,1fr) minmax(60px,.6fr) minmax(60px,.6fr); } .structure-row-actions { grid-column:1/-1; justify-content:flex-end; } .rail-spacing-row { grid-template-columns:minmax(0,1fr); } }
 @media(prefers-reduced-motion:reduce) { .structure-pill { transition:none; } }
 </style>

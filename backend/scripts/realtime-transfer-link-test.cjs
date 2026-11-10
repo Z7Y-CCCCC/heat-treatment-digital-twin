@@ -1,12 +1,54 @@
 'use strict';
 const assert = require('node:assert/strict'), fs = require('node:fs'), path = require('node:path');
 const { createLinkageFixture } = require('./realtime-linkage-fixture.cjs');
+const { validateMovementConfig, validateMovementSources } = require('../services/movementConfig');
 let fixture;
 const checks = [];
 const check = (name, details={}) => { checks.push({name,...details});console.log('PASS '+name); };
 const clone = value => JSON.parse(JSON.stringify(value));
 
 (async()=>{
+    const heldStation={enabled:true,valueMode:'station',stationInputMeaning:'last-confirmed',currentPositionPointId:'436',startActionPointId:'',
+        start:{x:0,y:0,z:0},end:{x:10,y:0,z:0},stations:[{value:1,position:{x:0,y:0,z:0}}]};
+    for(const settings of [{},{simulationEnabled:false,simulation_enabled:false,smoothingMs:0,smoothing_ms:0}]) {
+        const value={...heldStation,...settings},before=clone(value);
+        assert.equal(validateMovementConfig(value),value);assert.deepEqual(value,before);
+    }
+    for(const enabled of [true,false]) for(const patch of [
+        {valueMode:'range'},{valueMode:'normalized'},{valueMode:undefined},
+        {simulationEnabled:true},{simulation_enabled:true},{simulationEnabled:false,simulation_enabled:true},
+        {smoothingMs:1},{smoothing_ms:.5},{smoothingMs:0,smoothing_ms:1}
+    ]) assert.throws(()=>validateMovementConfig({...heldStation,enabled,...patch}),error=>error.statusCode===400 && error.code==='MOVEMENT_CONFIG_INVALID');
+    for(const stationInputMeaning of ['guessed',null,true,1]) assert.throws(()=>validateMovementConfig({...heldStation,stationInputMeaning}),/工位输入含义/);
+    check('last-confirmed validates without coercion or mutation and rejects estimates/transitions in both field spellings');
+    for(const old of [
+        {...heldStation,stationInputMeaning:undefined,simulationEnabled:true,smoothingMs:500},
+        {...heldStation,stationInputMeaning:'current',simulationEnabled:true,smoothingMs:500},
+        {...heldStation,stationInputMeaning:'target',simulationEnabled:true,smoothingMs:500},
+        {...heldStation,stationInputMeaning:'target',simulationEnabled:false,simulation_enabled:true},
+        {...heldStation,stationInputMeaning:'target',enabled:false,simulationEnabled:false},
+        {...heldStation,stationInputMeaning:'current',valueMode:'range',simulationEnabled:false},
+        {...heldStation,stationInputMeaning:'target',valueMode:'range',simulationEnabled:false}
+    ]) {const before=clone(old);assert.equal(validateMovementConfig(old),old);assert.deepEqual(clone(old),before);}
+    assert.throws(()=>validateMovementConfig({...heldStation,stationInputMeaning:'target',simulationEnabled:false}),/目标工位是运动命令/);
+    check('current, target and absent legacy semantics preserve their existing configuration acceptance');
+    const sourceDevice={id:'isolated-cart'},sourcePoints=[{id:'436',device_id:sourceDevice.id,data_type:'WORD',access_type:'READ'},
+        {id:'moving-bool',device_id:sourceDevice.id,data_type:'BOOL',access_type:'READ'},
+        {id:'603',device_id:sourceDevice.id,data_type:'WORD',access_type:'READ'},
+        {id:'moving-real',device_id:sourceDevice.id,data_type:'REAL',access_type:'READ'},
+        {id:'moving-string',device_id:sourceDevice.id,data_type:'STRING',access_type:'READ'},
+        {id:'moving-write',device_id:sourceDevice.id,data_type:'BOOL',access_type:'WRITE'},
+        {id:'foreign-bool',device_id:'another-cart',data_type:'BOOL',access_type:'READ'}];
+    const sourceReads=[],sourceDb={async get(query,params){assert.match(query,/^SELECT \* FROM data_points WHERE id=\? AND device_id=\?/);sourceReads.push(params[0]);return sourcePoints.find(point=>point.id===String(params[0])&&point.device_id===params[1]);},
+        async all(query,params){assert.match(query,/^SELECT id,line_id,instance_config FROM devices WHERE id<>\?/);assert.deepEqual(params,[sourceDevice.id]);return [];}};
+    await validateMovementSources(sourceDb,sourceDevice,heldStation,'isolated-factory',async()=>true);
+    assert.deepEqual(sourceReads,['436'],'empty moving feedback must not select or invent a gate');
+    await validateMovementSources(sourceDb,sourceDevice,{...heldStation,startActionPointId:'moving-bool'},'isolated-factory',async()=>true);
+    for(const startActionPointId of ['603','moving-real','moving-string','moving-write','foreign-bool','missing'])
+        await assert.rejects(validateMovementSources(sourceDb,sourceDevice,{...heldStation,startActionPointId},'isolated-factory',async()=>true),error=>error.statusCode===400 && error.code==='MOVEMENT_CONFIG_INVALID');
+    for(const stationInputMeaning of [undefined,'current','target'])
+        await validateMovementSources(sourceDb,sourceDevice,{...heldStation,stationInputMeaning,startActionPointId:'603'},'isolated-factory',async()=>true);
+    check('only last-confirmed requires an optional owned read-only BOOL moving source; old WORD gates stay compatible');
     fixture = await createLinkageFixture();
     const {ok,request,cartId,targetId,foreignId,points,sql,facade,line} = fixture;
     const route = '/api/devices/'+cartId+'/animations', movementRoute='/api/devices/'+cartId+'/movement';
@@ -100,6 +142,24 @@ const clone = value => JSON.parse(JSON.stringify(value));
     await ok(movementRoute,'PUT',{movement:targetMovement,expectedMovement:stationMovement});
     assert.equal(JSON.parse((await ok('/api/devices/'+cartId)).instance_config).movement.stationInputMeaning,'target');
     check('current/target meaning and explicit station associations survive real save/reopen without guessing targets');
+    const lastConfirmedMovement={...stationMovement,stationInputMeaning:'last-confirmed',startActionPointId:'',simulationEnabled:false,smoothingMs:0};
+    const previousInstance=JSON.parse((await ok('/api/devices/'+cartId)).instance_config);
+    await ok(movementRoute,'PUT',{movement:lastConfirmedMovement,expectedMovement:targetMovement});
+    const savedHeldInstance=JSON.parse((await ok('/api/devices/'+cartId)).instance_config);
+    assert.deepEqual(savedHeldInstance,{...previousInstance,movement:lastConfirmedMovement});
+    assert.deepEqual(savedHeldInstance.movement.stations,targetMovement.stations);
+    assert.equal(savedHeldInstance.movement.startActionPointId,'');
+    assert.equal((await request(movementRoute,'PUT',{movement:lastConfirmedMovement,expectedMovement:targetMovement})).status,409);
+    for(const patch of [{startActionPointId:points.start},{simulationEnabled:true},{simulation_enabled:true},{smoothingMs:1},{smoothing_ms:1}]) {
+        const rejected=await request(movementRoute,'PUT',{movement:{...lastConfirmedMovement,...patch},expectedMovement:lastConfirmedMovement});
+        assert.equal(rejected.status,400,JSON.stringify(rejected));
+        assert.deepEqual(JSON.parse((await ok('/api/devices/'+cartId)).instance_config),savedHeldInstance);
+    }
+    const withBoolMoving={...lastConfirmedMovement,startActionPointId:points.presence};
+    await ok(movementRoute,'PUT',{movement:withBoolMoving,expectedMovement:lastConfirmedMovement});
+    assert.deepEqual(JSON.parse((await ok('/api/devices/'+cartId)).instance_config).movement,withBoolMoving);
+    await ok(movementRoute,'PUT',{movement:targetMovement,expectedMovement:withBoolMoving});
+    check('last-confirmed narrow PUT/GET preserves station coordinates and unrelated configuration, enforces CAS and rejects false source semantics atomically');
     // Use the real resolver against the same isolated persisted rows. Imports
     // below occur only after isolation, and all DB queries use this facade.
     Object.assign(process.env,{APP_DATA_DIR:fixture.dataDir,DB_TYPE:'sqlite',SQLITE_FILE:fixture.filename,DATA_SOURCE_BACKUP_DIR:path.join(fixture.dataDir,'backups')});

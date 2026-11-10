@@ -202,6 +202,8 @@ namespace HeatTreatment.DigitalTwin.Runtime
         public string SelectedPartId => _selected?.Inspection?.SelectedPart?.Config?.Id ?? string.Empty;
         public string InspectionStageName => InspectionStageKey(_selected?.Inspection?.Stage ?? InspectionStage.Solid);
         public string ActiveViewId => _activeViewId;
+        public string ActiveFactoryId => _config?.FactoryId ?? string.Empty;
+        public string ActiveSceneId => ((_config?.Platform?["activeScene"] as JObject)?["id"] as JValue)?.Value as string ?? string.Empty;
         public event Action<string, string> ViewContextChanged;
         public event Action<JObject> InspectionContextChanged;
         public event Action<JObject> InspectionHoverUpdated;

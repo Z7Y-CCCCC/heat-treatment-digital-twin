@@ -19,6 +19,9 @@ const instance = {
     animationBindings: { bindings: [{ actionId: 'feed', enabled: true, mode: 'position', pointId: '1242', sourceGroup: 'mechanisms', sourceKey: 'feed',
         trigger: { mode: 'condition', operator: 'gt', value: 50, hysteresis: 5 }, inputMin: 0, inputMax: 100, invert: false }] }
 };
+const lastConfirmedInstance = { movement: { enabled: true, valueMode: 'station', stationInputMeaning: 'last-confirmed',
+    currentPositionPointId: '1245', startActionPointId: '603', stations: [{ value: 10 }, { value: 20 }] },
+    animationBindings: { bindings: [] } };
 const rawFrame = (gate, feed = 20, stamp = 1000) => ({ furnace_id: 'semantic_cart', factoryId: 'factory_default', timestamp: stamp,
     analog: { start_word: gate, position: 10 }, mechanisms: { feed }, status: { online: true },
     quality: { analog: { start_word: 'good', position: 'good' }, mechanisms: { feed: 'good' } },
@@ -50,6 +53,38 @@ check('running gate exactly retains negative/nonzero and .0001 stop semantics', 
     const gate = deriveMotionSemantics(instance).bindings[0];
     for (const [value, expected] of [[0, 'stopped'], [.0001, 'stopped'], [-.0001, 'stopped'], [-.00011, 'running'], [1, 'running'], [-3, 'running'], ['1', 'running'], ['OFF', 'stopped'], [' true ', 'invalid']])
         assert.equal(semanticState(rawFrame(value), gate), expected, String(value));
+});
+check('only last-confirmed station moving feedback derives the existing strict BOOL condition', () => {
+    const before = JSON.stringify(lastConfirmedInstance), derived = deriveMotionSemantics(lastConfirmedInstance);
+    assert.equal(derived.valid, true);
+    assert.deepEqual(derived.bindings, [
+        { key: 'movement:start', kind: 'condition', source: { pointId: '603' }, operator: 'eq', value: true, hysteresis: 0 },
+        { key: 'movement:station', kind: 'station', source: { pointId: '1245' }, values: [10, 20] }
+    ]);
+    assert.equal(validSnapshot(snapshot(derived.bindings)), true, 'the existing wire condition kind needs no protocol extension');
+    assert.equal(JSON.stringify(lastConfirmedInstance), before, 'derivation cannot rewrite saved movement settings');
+    for (const meaning of [undefined, 'current', 'target']) {
+        const movement = { ...lastConfirmedInstance.movement, stationInputMeaning: meaning };
+        assert.deepEqual(deriveMotionSemantics({ movement }).bindings[0], { key: 'movement:start', kind: 'running_gate', source: { pointId: '603' } });
+    }
+    const { startActionPointId, ...aliased } = lastConfirmedInstance.movement;
+    assert.equal(deriveMotionSemantics({ movement: { ...aliased, start_action_point_id: 603 } }).bindings[0].kind, 'condition');
+    assert.deepEqual(deriveMotionSemantics({ movement: { ...lastConfirmedInstance.movement, startActionPointId: '', start_action_point_id: '603' } }).bindings,
+        [derived.bindings[1]], 'an optional empty moving source never reactivates a historical alias');
+    assert.equal(deriveMotionSemantics({ movement: { ...lastConfirmedInstance.movement, valueMode: 'range' } }).bindings[0].kind, 'running_gate',
+        'non-station motion continues the actual Native legacy interpretation');
+});
+check('last-confirmed BOOL false numeric-zero invalid false forms two declared fault boundaries without coercion', () => {
+    const bindings = deriveMotionSemantics(lastConfirmedInstance).bindings, moving = bindings[0];
+    for (const [value, expected] of [[false, '00'], [true, '11'], [0, 'invalid'], [1, 'invalid'], ['false', 'invalid'], ['true', 'invalid']])
+        assert.equal(semanticState(rawFrame(value), moving), expected, String(value));
+    const frames = [false, 0, false].map((value, index) => ({ ...rawFrame(value, 20, 15000 + index), motionSemantics: snapshot(bindings) }));
+    assert.equal(hasDeclaredMotionBoundary(frames[0], frames[1]), true);
+    assert.equal(hasDeclaredMotionBoundary(frames[1], frames[2]), true);
+    const legacy = deriveMotionSemantics(instance).bindings[0];
+    assert.equal(semanticState(rawFrame(false), legacy), semanticState(rawFrame(0), legacy), 'old permissive gate remains deliberately compatible');
+    assert.deepEqual(frames.map(frame => frame.analog.start_word), [false, 0, false]);
+    assert.deepEqual(frames.map(frame => frame.pointMeta['analog.start_word'].timestamp), [15000, 15001, 15002]);
 });
 check('both hysteresis outcomes preserve consumer transitions without retaining same-state noise', () => {
     for (const operator of ['gt', 'gte', 'lt', 'lte']) for (const hysteresis of [0, 5, 25]) {
@@ -100,6 +135,7 @@ let closeDb, hub, resolver, cold, fallback, restoreInstallPolicy;
     const database = require('../db/database'); closeDb = database.closeDb; const db = await database.getDb();
     const line = await db.get('SELECT l.id FROM `lines` l JOIN workshops w ON w.id=l.workshop_id WHERE w.factory_id=? LIMIT 1', ['factory_default']);
     await db.run('INSERT INTO devices (id,name,line_id,model_type,instance_config) VALUES (?,?,?,?,?)', ['semantic_cart', 'Semantic fixture', line.id, '', JSON.stringify(instance)]);
+    await db.run('INSERT INTO devices (id,name,line_id,model_type,instance_config) VALUES (?,?,?,?,?)', ['semantic_last_confirmed', 'Strict BOOL last-confirmed fixture', line.id, '', JSON.stringify(lastConfirmedInstance)]);
     await db.run('INSERT INTO models (id,name,file_path,metadata,asset_type,placement_level) VALUES (?,?,?,?,?,?)', ['semantic_rpm_model', 'RPM metadata fixture', '', JSON.stringify(speedMetadata), 'model', 'device']);
     await db.run('INSERT INTO devices (id,name,line_id,model_type,instance_config) VALUES (?,?,?,?,?)', ['semantic_rpm', 'RPM fixture', line.id, 'semantic_rpm_model', JSON.stringify(speedInstance)]);
     await db.run('INSERT INTO factories (id,name) VALUES (?,?)', ['semantic_foreign', 'Other fixture factory']);
@@ -210,6 +246,20 @@ let closeDb, hub, resolver, cold, fallback, restoreInstallPolicy;
         assert.deepEqual(frames.map(frame => frame.mechanisms.feed), [20, 60, 20]);
         assert.ok(frames.every(frame => frame.motionSemantics.ready));
         assert.ok(frames.every(frame => frame.pointMeta['analog.start_word'].timestamp === frame.timestamp));
+    });
+    const strictPeer = new HeldSocket(); hub.clients.add(strictPeer); hub.send(strictPeer, { type: 'welcome' });
+    const strictSources = [false, 0, false].map((gate, index) => ({ ...rawFrame(gate, 20, 17000 + index), furnace_id: 'semantic_last_confirmed' }));
+    const strictBefore = JSON.stringify(strictSources);
+    for (const frame of strictSources) hub.broadcastDeviceData([frame]);
+    while (strictPeer.callbacks.length) strictPeer.flush();
+    check('actual saved last-confirmed config and outbound queue retain BOOL invalid numeric recovery with original clocks', () => {
+        const frames = strictPeer.sent.filter(message => message.type === 'realtime_frame').map(message => message.payload.devices[0]);
+        assert.deepEqual(frames.map(frame => frame.analog.start_word), [false, 0, false]);
+        assert.deepEqual(frames.map(frame => frame.pointMeta['analog.start_word'].timestamp), [17000, 17001, 17002]);
+        assert.ok(frames.every(frame => frame.motionSemantics.ready));
+        assert.ok(frames.every(frame => frame.motionSemantics.bindings[0].kind === 'condition' && frame.motionSemantics.bindings[0].value === true));
+        assert.deepEqual(frames.map(frame => semanticState(frame, frame.motionSemantics.bindings[0])), ['00', 'invalid', '00']);
+        assert.equal(JSON.stringify(strictSources), strictBefore, 'transport decoration must not coerce raw moving values or clocks');
     });
     let release; const wait = new Promise(resolve => { release = resolve; });
     cold = new MotionSemanticResolver({ getDb: async () => { await wait; return db; } });

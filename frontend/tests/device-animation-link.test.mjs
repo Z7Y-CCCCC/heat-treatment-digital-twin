@@ -38,9 +38,12 @@ const directory = id => ({ success: true, categories: [{ id: 'realtime', name: '
 // Native controls rendered by the actual compiled SFC, entirely in memory.
 // This is not a browser/Computer Use session and every API is mocked below.
 function memoryHost() {
-  const makeNode = (tag, text = '') => ({ tag, text, props: {}, children: [], parent: null, value: '', checked: false,
+  const makeNode = (tag, text = '') => ({ tag, text, props: {}, children: [], parent: null, value: '', checked: false, listeners: new Map(),
     get options() { return this.children.filter(node => node.tag === 'option') },
-    addEventListener() {}, setAttribute(key, value) { this.props[key] = value }, removeAttribute(key) { delete this.props[key] } })
+    addEventListener(name, handler) { if (!this.listeners.has(name)) this.listeners.set(name, new Set()); this.listeners.get(name).add(handler) },
+    removeEventListener(name, handler) { this.listeners.get(name)?.delete(handler) },
+    getRootNode() { let node = this; while (node.parent) node = node.parent; return node },
+    setAttribute(key, value) { this.props[key] = value }, removeAttribute(key) { delete this.props[key] } })
   const root = makeNode('#root')
   const remove = node => { if (node.parent) { const siblings = node.parent.children, index = siblings.indexOf(node); if (index >= 0) siblings.splice(index, 1); node.parent = null } }
   const renderer = createRenderer({
@@ -49,12 +52,23 @@ function memoryHost() {
     parentNode: node => node.parent, nextSibling: node => node.parent?.children[node.parent.children.indexOf(node) + 1] || null,
     insert(node, parent, anchor) { remove(node); const index = anchor ? parent.children.indexOf(anchor) : -1; parent.children.splice(index >= 0 ? index : parent.children.length, 0, node); node.parent = parent },
     remove, querySelector: () => root,
-    patchProp(node, key, _previous, value) { node.props[key] = value; if (key === 'value') { node._value = value; node.value = String(value ?? '') } else if (key === 'disabled') node.disabled = value === '' || value === true }
+    patchProp(node, key, _previous, value) { node.props[key] = value; if (key === 'value') { node._value = value; node.value = String(value ?? '') } else if (key === 'disabled') node.disabled = value === '' || value === true; else if (key === 'type') node.type = value }
   })
   const nodes = () => { const result = []; const visit = node => { result.push(node); node.children.forEach(visit) }; visit(root); return result }
   const text = node => node.text + node.children.map(text).join('')
   const click = async label => { const node = nodes().find(node => node.tag === 'button' && text(node) === label); assert.ok(node, `${label} rendered by the actual template`); assert.notEqual(node.disabled, true); await node.props.onClick?.({ target: node, currentTarget: node }); await nextTick(); await settle() }
-  return { renderer, root, nodes, text, click }
+  const control = label => { const node = nodes().find(node => node.props['aria-label'] === label); assert.ok(node, `${label} rendered by the actual template`); return node }
+  const dispatch = async (node, name) => {
+    assert.notEqual(node.disabled, true, `${node.props['aria-label']} disabled`)
+    for (let parent = node.parent; parent; parent = parent.parent) assert.notEqual(parent.tag === 'fieldset' && parent.disabled, true, 'owning fieldset disabled')
+    const event = { type: name, target: node, currentTarget: node }
+    for (const handler of node.listeners.get(name) || []) await handler(event)
+    await node.props[`on${name[0].toUpperCase()}${name.slice(1)}`]?.(event)
+    await nextTick(); await settle()
+  }
+  const input = async (label, value) => { const node = control(label); node.value = String(value); await dispatch(node, 'input') }
+  const toggle = async (label, checked) => { const node = control(label); node.checked = checked; await dispatch(node, 'change') }
+  return { renderer, root, nodes, text, click, control, input, toggle }
 }
 
 async function fixture(t, overrides = {}) {
@@ -63,6 +77,7 @@ async function fixture(t, overrides = {}) {
   t.after(() => { Object.assign(adminSession, previous); discardFactoryDrafts('factory-motion-test') })
   const store = { wsConnected: ref(false), connect() {}, dispose() { this.disposed = true }, setDeviceDataHandler(handler) { this.handler = handler }, setMotionInputHandler(handler) { this.motionHandler = handler } }
   environment.replace('__motionUiStore', store)
+  if (overrides.template) { environment.replace('Document', class {}); environment.replace('ShadowRoot', class {}) }
   environment.replace('fetch', () => { throw Error('Unexpected network request: device animation fixture APIs must remain mocked') })
   const calls = { loads: [], catalogs: [], saves: [] }
   t.mock.method(adminApi, 'getDeviceAnimations', id => { calls.loads.push(id); return overrides.load ? overrides.load(id) : Promise.resolve(animation(id)) })
@@ -610,4 +625,87 @@ test('device list rejects invalid or pending scope changes without changing the 
   f.vm.busy = false
   f.unmount()
   assert.equal(f.vm.filterDeviceRange({ workshopId: '', lineId: '' }), false)
+})
+
+test('actual numeric feedback control manually saves 200ms, reloads it and restores the retained transition when set to zero', async t => {
+  let stored
+  const payload = id => ({ ...animation(id), ...(stored ? { revision: 'saved', config: structuredClone(stored) } : {}) })
+  const f = await fixture(t, { template: true, load: async id => payload(id), save: async (id, body) => {
+    stored = structuredClone(body.config)
+    for (const binding of stored.bindings) if (binding.trigger?.mode === 'range') binding.trigger = { mode: 'range' }
+    return { success: true, ...payload(id) }
+  } })
+  f.vm.chooseDataItem(f.vm.availableDataItems.find(item => item.id === 'temp-a')); await nextTick()
+  assert.equal(f.vm.row.feedbackSmoothingMs, 0); assert.equal(f.vm.feedbackPosition, true); assert.equal(f.vm.feedbackEnabled, false)
+  const smoothing = f.host.control('数值反馈平滑毫秒')
+  assert.equal(smoothing.props.type, 'number'); assert.equal(smoothing.props.min, '0'); assert.equal(smoothing.props.max, '1000'); assert.equal(smoothing.props.step, 'any')
+  await f.host.toggle('启用动作联动', true)
+  await f.host.input('动作过渡秒数', '2')
+  await f.host.input('数值反馈平滑毫秒', '200')
+  assert.equal(f.vm.row.feedbackSmoothingMs, 200, 'actual Vue .number input receives a number, not a descriptive label')
+  assert.equal(f.vm.feedbackEnabled, true); assert.equal(f.vm.row.transitionSeconds, 2)
+  assert.equal(f.host.control('动作过渡秒数').disabled, true)
+  assert.match(f.host.text(f.host.root), /原全行程过渡（保留，不叠加）/)
+  assert.match(f.host.text(f.host.root), /0 保留原还原与过渡设置/)
+  await f.host.click('保存并同步')
+  const saved = f.calls.saves[0].body.config.bindings.find(binding => binding.actionId === 'clip:door')
+  assert.equal(saved.feedbackSmoothingMs, 200); assert.equal(saved.transitionSeconds, 2); assert.equal(saved.dataItemId, 'temp-a')
+  assert.equal(saved.enabled, true); assert.equal(f.vm.dirty, false)
+  await f.host.click('重新读取')
+  assert.equal(f.vm.row.feedbackSmoothingMs, 200); assert.equal(f.vm.row.transitionSeconds, 2); assert.equal(f.vm.row.dataItemId, 'temp-a')
+  assert.equal(f.vm.dirty, false); assert.equal(f.host.control('数值反馈平滑毫秒').value, 200)
+  assert.equal(f.host.control('动作过渡秒数').disabled, true)
+  await f.host.input('数值反馈平滑毫秒', '0')
+  assert.equal(f.vm.feedbackEnabled, false); assert.equal(f.vm.row.transitionSeconds, 2)
+  assert.equal(f.host.control('动作过渡秒数').disabled, false)
+  await f.host.click('保存并同步'); await f.host.click('重新读取')
+  assert.equal(f.vm.row.feedbackSmoothingMs, 0); assert.equal(f.vm.row.transitionSeconds, 2); assert.equal(f.vm.dirty, false)
+  assert.equal(f.calls.saves[1].body.config.bindings.find(binding => binding.actionId === 'clip:door').feedbackSmoothingMs, 0)
+})
+
+test('numeric smoothing control is not exposed or enabled for BOOL, text, condition, endpoints or running actions', async t => {
+  const f = await fixture(t, { template: true })
+  const visible = () => f.host.nodes().some(node => node.props['aria-label'] === '数值反馈平滑毫秒')
+  f.vm.chooseDataItem(f.vm.availableDataItems.find(item => item.id === 'temp-a')); await nextTick()
+  assert.equal(visible(), true); await f.host.input('数值反馈平滑毫秒', '200')
+  f.vm.changeTriggerMode('condition'); await nextTick()
+  assert.equal(visible(), false); assert.equal(f.vm.feedbackEnabled, false); assert.equal(f.host.control('动作过渡秒数').disabled, false)
+  for (const id of ['bool-a', 'mes-a']) {
+    f.vm.chooseDataItem(f.vm.availableDataItems.find(item => item.id === id)); await nextTick()
+    assert.equal(visible(), false); assert.equal(f.vm.feedbackEnabled, false)
+    assert.equal(f.vm.row.feedbackSmoothingMs, 200, 'hidden authored setting is preserved, not applied to a different source type')
+    assert.equal(f.host.control('动作过渡秒数').disabled, false)
+  }
+  f.vm.changeTriggerMode('endpoints'); await nextTick()
+  assert.equal(visible(), false); assert.equal(f.vm.feedbackEnabled, false); assert.equal(f.vm.endpointMode, true)
+  assert.equal(f.host.control('动作过渡秒数').disabled, false)
+  f.vm.activeId = 'clip:fan'; f.vm.chooseDataItem(f.vm.availableDataItems.find(item => item.id === 'temp-a'))
+  f.vm.changeTriggerMode('range'); await nextTick()
+  assert.equal(visible(), false); assert.equal(f.vm.feedbackEnabled, false)
+  assert.ok(f.host.control('动作运行速度')); assert.equal(f.host.nodes().some(node => node.props['aria-label'] === '动作过渡秒数'), false)
+})
+
+test('actual smoothing input rejects invalid ranges or an empty value before saving even for a disabled action', async t => {
+  const f = await fixture(t, { template: true })
+  f.vm.chooseDataItem(f.vm.availableDataItems.find(item => item.id === 'temp-a')); await nextTick()
+  assert.equal(f.vm.row.enabled, false)
+  for (const value of ['-1', '1001', '']) {
+    await f.host.input('数值反馈平滑毫秒', value)
+    assert.match(f.vm.saveProblem, /数值反馈平滑.*有效数值/)
+    assert.equal(await f.vm.save(), false)
+  }
+  assert.equal(f.calls.saves.length, 0)
+  await f.host.input('数值反馈平滑毫秒', '.5')
+  assert.equal(f.vm.row.feedbackSmoothingMs, .5); assert.equal(f.vm.saveProblem, '')
+})
+
+test('actual smoothing field obeys existing edit permission and cannot be manually changed in readonly mode', async t => {
+  const f = await fixture(t, { template: true })
+  f.vm.chooseDataItem(f.vm.availableDataItems.find(item => item.id === 'temp-a')); await nextTick()
+  const before = JSON.stringify(f.vm.draft)
+  adminSession.pagePermissions['model-animations'].edit = false; await nextTick()
+  assert.equal(f.host.control('数值反馈平滑毫秒').disabled, true)
+  await assert.rejects(f.host.input('数值反馈平滑毫秒', '200'), /disabled/)
+  assert.equal(JSON.stringify(f.vm.draft), before)
+  assert.equal(await f.vm.save(), false); assert.equal(f.calls.saves.length, 0)
 })

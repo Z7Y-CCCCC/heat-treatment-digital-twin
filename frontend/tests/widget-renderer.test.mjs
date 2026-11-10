@@ -1,11 +1,12 @@
 import test, { mock } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
-import { createRenderer, h, nextTick } from 'vue'
+import { createRenderer, h, nextTick, provide, reactive, ref } from 'vue'
 import { parse, compileScript, compileStyle } from 'vue/compiler-sfc'
 import { installBrowser } from './helpers.mjs'
 import { catalogBinding } from '../src/runtime/dataCatalog.js'
 import { createTooltipContext } from '../src/runtime/tooltipContext.js'
+import { WidgetClockKey, WidgetPlaybackKey, createWidgetPlaybackController } from '../src/runtime/widgetPlayback.js'
 
 const charts = []
 mock.module('echarts', { namedExports: { init: element => {
@@ -47,7 +48,7 @@ function hudDeclarations(selector) {
 }
 
 function node(type, text = '') { return { type, text, children: [], props: {}, style: {}, parent: null } }
-function fixture(t) {
+function fixture(t, { clock, controller } = {}) {
     const environment = installBrowser(t)
     charts.length = 0
     const observers = []
@@ -75,14 +76,93 @@ function fixture(t) {
         }
     })
     const root = node('root')
+    let updates = 0
+    const component = clock ? {
+        inheritAttrs: false,
+        setup(_props, { attrs }) {
+            provide(WidgetClockKey, clock)
+            if (controller) provide(WidgetPlaybackKey, controller)
+            return () => h(WidgetRenderer, { ...attrs, onVnodeUpdated: () => { updates++ } })
+        }
+    } : WidgetRenderer
     environment.beforeRestore(() => renderer.render(null, root))
     return {
-        root, observers,
-        render: async props => { renderer.render(h(WidgetRenderer, props), root); await nextTick(); await nextTick() }
+        root, observers, updates: () => updates,
+        render: async props => { renderer.render(h(component, props), root); await nextTick(); await nextTick() }
     }
 }
 
 const textContent = root => [root.text, ...root.children.map(textContent)].join(' ')
+
+test('shared reader clock causes no component updates for static or unchanged fixed-device cards', async t => {
+    const clock = ref(1000), view = fixture(t, { clock })
+    await view.render({ widget: { id: 'static', type: 'text', content: { text: '生产现场' }, data: { mode: 'static', deviceScope: 'global' } } })
+    const initial = view.updates()
+    for (let time = 1100; time <= 12100; time += 100) { clock.value = time; await nextTick(); await nextTick() }
+    assert.equal(view.updates(), initial, 'a static card must not patch 111 times for the external-reader timer')
+    const readings = reactive({ a: { analog: { temperature: 700 } } })
+    await view.render({ widget: { id: 'fixed', type: 'value', data: { mode: 'runtime', path: 'device.analog.temperature', deviceScope: 'fixed', deviceId: 'a' } },
+        deviceCatalog: [{ id: 'a', name: '炉 A' }], deviceDataMap: readings })
+    const fixed = view.updates()
+    for (let time = 12200; time <= 25000; time += 100) { clock.value = time; await nextTick(); await nextTick() }
+    assert.equal(view.updates(), fixed)
+    readings.a.analog.temperature = 701; await nextTick(); await nextTick()
+    assert.equal(view.updates(), fixed + 1, 'live data still patches immediately, without advancing the clock')
+    assert.match(textContent(view.root), /701/)
+})
+
+test('injected clock keeps rotation and hover remaining time exact while live PLC history advances', async t => {
+    const clock = ref(1500), controller = createWidgetPlaybackController(), view = fixture(t, { clock, controller })
+    const widget = { id: 'injected-hover', type: 'hud_chart_dock', title: '炉温', content: { chartType: 'line' },
+        data: { mode: 'plc', pointKey: 'analog.temperature', path: 'analog.temperature', requireConfiguredPoint: true,
+            deviceScope: 'rotation', rotationDeviceIds: ['a', 'b'], rotationIntervalMs: 2000, refreshMs: 1000 } }
+    const points = reactive({ pa: { id: 'pa', device_id: 'a', category: 'analog', value_role: 'temperature', quality: 'good', lastReadAt: 1500, value: 111 },
+        pb: { id: 'pb', device_id: 'b', category: 'analog', value_role: 'temperature', quality: 'good', lastReadAt: 1500, value: 850 } })
+    await view.render({ widget, deviceCatalog: [{ id: 'a', name: '炉 A' }, { id: 'b', name: '炉 B' }],
+        runtimeContext: { viewMode: 'factory' }, interactive: true, overlayMode: true, pointValues: points })
+    clock.value = 1650; await nextTick(); await nextTick()
+    view.root.children[0].props.onMouseenter()
+    assert.equal(controller.timeFor(widget, 6000), 1650, 'hover must use raw time, not the quantized start of the rotation slot')
+    for (const [time, value] of [[2500, 112], [4500, 113], [6500, 114]]) {
+        clock.value = time; points.pa.value = value; points.pa.lastReadAt = time
+        await nextTick(); await nextTick()
+        assert.match(textContent(view.root), /炉 A/)
+        assert.equal(charts.at(-1).options.at(-1)[0].series[0].data.at(-1), value)
+    }
+    view.root.children[0].props.onMouseleave()
+    clock.value = 6849; await nextTick(); await nextTick(); assert.match(textContent(view.root), /炉 A/)
+    clock.value = 6850; await nextTick(); await nextTick(); assert.match(textContent(view.root), /炉 B/)
+    assert.deepEqual(charts.at(-1).options.at(-1)[0].series[0].data, [850])
+})
+
+test('explicit designer clock still overrides an injected live surface clock', async t => {
+    const clock = ref(100000), view = fixture(t, { clock })
+    const props = { widget: { id: 'explicit', type: 'value', data: { mode: 'runtime', path: 'device.analog.temperature',
+        deviceScope: 'rotation', rotationDeviceIds: ['a', 'b'], rotationIntervalMs: 2000 } },
+        deviceCatalog: [{ id: 'a', name: '炉 A' }, { id: 'b', name: '炉 B' }], deviceDataMap: { a: { analog: { temperature: 1 } }, b: { analog: { temperature: 2 } } } }
+    await view.render({ ...props, playbackNow: 0 }); assert.match(textContent(view.root), /炉 A/)
+    const initial = view.updates(); clock.value = 102000; await nextTick(); await nextTick()
+    assert.equal(view.updates(), initial); assert.match(textContent(view.root), /炉 A/)
+    await view.render({ ...props, playbackNow: 2000 }); assert.match(textContent(view.root), /炉 B/)
+})
+
+test('chart watchers never traverse unrelated telemetry/events/business data but still render real sample changes', async t => {
+    const view = fixture(t), visits = { metrics: 0, events: 0, business: 0 }
+    const unrelated = name => reactive(Object.defineProperty({ revision: 0 }, 'unrelated', {
+        enumerable: true, get() { visits[name]++; return Array.from({ length: 1000 }, (_, index) => index) }
+    }))
+    const metrics = unrelated('metrics'), events = reactive([unrelated('events')]), businessData = unrelated('business')
+    const points = reactive([{ time: '10:00', value: 42 }])
+    await view.render({ widget: { id: 'narrow-chart', type: 'trend', content: { chartType: 'line' },
+        data: { mode: 'runtime', deviceScope: 'global', path: 'trendPoints' } }, metrics, events, businessData, trendPoints: points })
+    assert.deepEqual(visits, { metrics: 0, events: 0, business: 0 })
+    const chart = charts.at(-1), rendered = chart.options.length
+    metrics.revision++; events[0].revision++; businessData.revision++; await nextTick(); await nextTick()
+    assert.deepEqual(visits, { metrics: 0, events: 0, business: 0 }); assert.equal(chart.options.length, rendered)
+    points.push({ time: '10:01', value: 43 }); await nextTick(); await nextTick()
+    assert.equal(chart.options.length, rendered + 1)
+    assert.deepEqual(chart.options.at(-1)[0].series[0].data, [42, 43])
+})
 
 test('approved basic efficiency gauges reuse the actual HUD SVG ring and the unchanged bound reading', async t => {
     const view = fixture(t), widget = { id: 'old_efficiency_gauge', type: 'trend',

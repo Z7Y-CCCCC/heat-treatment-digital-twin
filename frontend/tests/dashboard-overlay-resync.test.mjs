@@ -1,10 +1,11 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
-import { createRenderer, h, ref } from 'vue'
+import { createRenderer, h, nextTick, ref } from 'vue'
 import { parse, compileScript, compileTemplate } from 'vue/compiler-sfc'
 import { routerKey, routeLocationKey } from 'vue-router'
 import { installBrowser, installSockets, json, settle } from './helpers.mjs'
+import { WidgetClockKey } from '../src/runtime/widgetPlayback.js'
 
 test.mock.module('../src/runtime/adminSession.js', { namedExports: {
     adminFetch: (...args) => globalThis.fetch(...args), adminSession: {displayAuthenticated:true,permissions:{view:true},user:{username:'owned'}}
@@ -48,8 +49,17 @@ function fixture(t, { platform = {} } = {}) {
     app.provide(routeLocationKey, { query: {} })
     app.mount({})
     environment.beforeRestore(() => app.unmount())
-    return { state: instance.value.$.setupState, sockets, request, replacements, pushes, replace: environment.replace, hide() { visible = false }, setDevices(next) { devices = next }, fail() { failure = true } }
+    return { state: instance.value.$.setupState, provides: instance.value.$.provides, sockets, request, replacements, pushes, replace: environment.replace, hide() { visible = false }, setDevices(next) { devices = next }, fail() { failure = true } }
 }
+
+test('live overlay provides one shared clock without ticking scalar props in the HUD template', async t => {
+    const view = fixture(t); await settle()
+    const clock = view.provides[WidgetClockKey]
+    assert.ok(clock && typeof clock.value === 'number')
+    clock.value = 123456; assert.equal(view.state.playbackNow, 123456)
+    assert.doesNotMatch(descriptor.template.content, /:playback-now\s*=/,
+        'forwarding the raw ticking scalar would force every HUD card to re-render')
+})
 
 test('explicit root return-button click works even when the automatic navigation shortcut is unavailable', async t => {
     const view = fixture(t); await settle()
@@ -169,4 +179,66 @@ test('full hierarchy navigation is not gated by the reference HUD layout migrati
     assert.match(template,/<nav class="overlay-hierarchy"/)
     assert.doesNotMatch(template,/<nav v-if="presentationDocument\?\.metadata\?\.referenceHud/)
     assert.doesNotMatch(template,/class="group-map-return"/)
+})
+
+test('native device pointer sweeps preserve overlay content/input-map identities without clock ticks or HTTP', async t => {
+    t.mock.timers.enable({ apis: ['Date', 'setInterval', 'setTimeout'], now: 100000 })
+    const view = fixture(t); await settle()
+    const state = view.state
+    Object.assign(state.runtimeContext, { factoryId:'pit', viewId:'factory_overview', viewMode:'factory', sceneReady:true })
+    const hover = x => ({ type:'device_hover_changed', payload:{ factoryId:'pit', viewId:'factory_overview',
+        hoveredDeviceId:'old', deviceHoverPointer:{ x, y:.4, visible:true } } })
+    await state.handleRuntimeMessage(hover(.2)); await nextTick()
+    const content = state.tooltipContext, target = state.tooltipContentTarget, points = state.pointValues
+    const devices = state.playbackDevices, calls = view.request.mock.callCount(), clock = state.playbackNow
+    for (let index = 0; index < 120; index++) {
+        const x = .2 + index / 500
+        const pending = state.handleRuntimeMessage(hover(x))
+        assert.equal(state.getTooltipPointer().x, x, 'position is available before awaiting the message promise')
+        await pending; await nextTick()
+        assert.equal(state.tooltipContext, content, 'pointermove must not normalize all owned point maps')
+        assert.equal(state.tooltipContentTarget, target)
+        assert.equal(state.pointValues, points)
+        assert.equal(state.playbackDevices, devices)
+    }
+    assert.equal(view.request.mock.callCount(), calls)
+    assert.equal(state.playbackNow, clock)
+    assert.equal(state.tooltipContext.hover.device.name, 'Old device')
+    assert.equal(state.runtimeContext.deviceId, '', 'hover must not replace the selected navigation device')
+    assert.match(descriptor.template.content, /:pointer-source="getTooltipPointer"/)
+    assert.doesNotMatch(descriptor.template.content, /:pointer="tooltipTarget\.pointer"|v-if="tooltipTarget &&/)
+})
+
+test('part pointer sweeps keep owned descriptors/readings stable and reject late previous-device or view samples', async t => {
+    t.mock.timers.enable({ apis: ['Date', 'setInterval', 'setTimeout'], now: 100000 })
+    const view = fixture(t); await settle()
+    const state = view.state
+    state.applyRuntimeContext({ factoryId:'pit', viewId:'device_detail', viewMode:'device', deviceId:'old', sceneReady:true,
+        inspectionEnabled:true, inspectionStage:'exploded', inspectionParts:[{ id:'shell', name:'外壳' }] })
+    const hover = (x, changes = {}) => ({ type:'inspection_hover_changed', payload:{ factoryId:'pit', viewId:'device_detail',
+        deviceId:'old', inspectionStage:'exploded', inspectionHoveredPartId:'shell',
+        inspectionHoverPointer:{ x, y:.4, visible:true }, ...changes } })
+    await state.handleRuntimeMessage(hover(.2)); await nextTick()
+    const content = state.tooltipContext, target = state.tooltipContentTarget, parts = state.runtimeContext.inspectionParts
+    const points = state.pointValues, calls = view.request.mock.callCount(), clock = state.playbackNow
+    for (let index = 0; index < 120; index++) {
+        const x = .2 + index / 500
+        const pending = state.handleRuntimeMessage(hover(x))
+        assert.equal(state.getTooltipPointer().x, x)
+        await pending; await nextTick()
+        assert.equal(state.tooltipContext, content)
+        assert.equal(state.tooltipContentTarget, target)
+        assert.equal(state.pointValues, points)
+        assert.equal(state.runtimeContext.inspectionParts, parts)
+    }
+    for (const changes of [{ deviceId:'unassigned' }, { viewId:'old_view' }, { inspectionStage:'xray' }]) {
+        await state.handleRuntimeMessage(hover(.99, changes))
+        assert.notEqual(state.getTooltipPointer().x, .99, 'obsolete native scope cannot move the current tooltip')
+        assert.equal(state.tooltipContext, content)
+    }
+    assert.equal(view.request.mock.callCount(), calls)
+    assert.equal(state.playbackNow, clock)
+    await state.handleRuntimeMessage(hover(.4, { inspectionHoveredPartId:'', inspectionHoverPointer:{ visible:false } }))
+    assert.equal(state.tooltipContentTarget, null)
+    assert.equal(state.getTooltipPointer(), null)
 })

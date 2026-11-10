@@ -67,6 +67,14 @@ async function main() {
             await copySqliteDatabase(databaseFile, destination);
             setAge(destination, backup.ageDays);
         }
+        // createTestDatabase correctly declares its empty database a new
+        // installation. This case instead exercises an existing old-default
+        // deployment: seed that historical policy explicitly, not by relying
+        // on later backups to relabel an already initialized new installation.
+        fs.writeFileSync(path.join(dataDir, 'backup-storage-database.json'), JSON.stringify({
+            maxTotalBytes: 20 * 1024 ** 3, source: 'legacy-preserved',
+            configuredAt: '2001-02-03T04:05:06.007Z'
+        }, null, 2));
         const orphanTemporary = path.join(backupDir, 'factory-orphan.db.999.tmp-wal');
 
         const port = await findFreePort(3621);
