@@ -29,7 +29,7 @@ namespace HeatTreatment.DigitalTwin.Rendering
         {
             public JObject Binding;
             public string ActionId, DefinitionReason;
-            public bool Valid, RunningMode;
+            public bool Valid, RunningMode, PresentationOnly;
             public double Duration;
             public TrackState[] Tracks = Array.Empty<TrackState>();
             public readonly Dictionary<string, TrackState> PositionTracks = new Dictionary<string, TrackState>(StringComparer.Ordinal);
@@ -59,6 +59,8 @@ namespace HeatTreatment.DigitalTwin.Rendering
         private double _diagnosticIntervalSeconds = 5;
         private string _deviceId;
         private double _nextDiagnostic;
+        private bool _presentationControlled;
+        private int _presentationSide;
         public int ActiveBindings => _entries.Count;
         public JObject TransferDiagnostic { get; set; }
         public bool TryGetTransferDrive(string actionId, string nodeName, out Transform node, out Vector3 rest,
@@ -102,12 +104,18 @@ namespace HeatTreatment.DigitalTwin.Rendering
             var config = device.InstanceConfigObject?["animationBindings"]; _staleMs = config?.Value<double?>("staleMs") ?? 5000;
             _diagnostics = config?.Value<bool?>("diagnosticLogging") ?? Environment.GetEnvironmentVariable("DEVICE_ANIMATION_DIAGNOSTICS") == "1";
             _diagnosticIntervalSeconds = Math.Max(1, Math.Min(60, config?.Value<double?>("diagnosticIntervalSeconds") ?? 5));
-            foreach (var binding in config?["bindings"]?.OfType<JObject>() ?? Enumerable.Empty<JObject>())
+            _presentationControlled=config?["transferLink"]?["cycle"]?.Value<bool?>("enabled")==true;
+            _presentationSide=0;
+            var configured=(config?["bindings"]?.OfType<JObject>()??Enumerable.Empty<JObject>()).ToList();
+            if(_presentationControlled)foreach(var name in new[]{"feed","hook","feed_opposite","hook_opposite"})
+                configured.Add(new JObject{["actionId"]="clip:"+name,["clipId"]=name,["kind"]="clip",["mode"]="position",["enabled"]=true,["presentationOnly"]=true});
+            foreach (var binding in configured)
             {
                 if (binding.Value<bool?>("enabled") != true || binding.Value<string>("kind") != "clip") continue;
+                if(_presentationControlled&&binding.Value<bool?>("presentationOnly")!=true&&new[]{"clip:feed","clip:hook","clip:feed_opposite","clip:hook_opposite"}.Contains(binding.Value<string>("actionId")))continue;
                 var clip = package["clips"].OfType<JObject>().FirstOrDefault(c => c.Value<string>("id") == binding.Value<string>("clipId"));
                 if (clip == null) throw new InvalidOperationException("Motion clip missing: " + binding["actionId"]);
-                var entry = new Entry { Binding = binding, ActionId = binding.Value<string>("actionId"), RunningMode = binding.Value<string>("mode") == "running", Valid = true };
+                var entry = new Entry { Binding = binding, ActionId = binding.Value<string>("actionId"), RunningMode = binding.Value<string>("mode") == "running", Valid = true,PresentationOnly=binding.Value<bool?>("presentationOnly")==true };
                 var tracks = new List<TrackState>();
                 var definitions = clip["tracks"] as JArray;
                 if (definitions == null || definitions.Count == 0) { entry.Valid = false; entry.DefinitionReason = "动画轨迹未配置"; }
@@ -158,6 +166,7 @@ namespace HeatTreatment.DigitalTwin.Rendering
         {
             foreach (var entry in _entries)
             {
+                if(entry.PresentationOnly)continue;
                 if (!entry.Valid) { entry.Signal.Suspend(entry.DefinitionReason); continue; }
                 if (catalogOnly && !MotionSignalState.IsCatalogBinding(entry.Binding)) continue;
                 var priorTarget=entry.Signal.Target; var priorUsable=entry.Signal.Usable; var priorSample=entry.Signal.HasSample;
@@ -174,6 +183,7 @@ namespace HeatTreatment.DigitalTwin.Rendering
             var eventDiagnostic=false;
             foreach (var entry in _entries)
             {
+                if(entry.PresentationOnly)continue;
                 var priorPosition=entry.Signal.Position; var priorSeconds=entry.Signal.Seconds;
                 var signal = entry.Signal; signal.Step(delta, now, _staleMs, entry.Binding);
                 if (!signal.HasSample || !signal.Usable) continue;
@@ -197,9 +207,13 @@ namespace HeatTreatment.DigitalTwin.Rendering
             var running = entry.RunningMode; var duration = entry.Duration;
             var time = running ? signal.Seconds % duration : signal.Position * duration;
             if (double.IsNaN(time) || double.IsInfinity(time)) { signal.Suspend("动画采样时间无效"); return; }
+            ApplyEntryPoseAt(entry,time,running&&!signal.Running);
+        }
+        private void ApplyEntryPoseAt(Entry entry,double time,bool effectsOff=false)
+        {
             foreach (var track in entry.Tracks)
             {
-                var off = running && !signal.Running && (track.Kind == ChannelKind.Visibility || track.Kind == ChannelKind.Emission || track.Kind == ChannelKind.Color);
+                var off = effectsOff && (track.Kind == ChannelKind.Visibility || track.Kind == ChannelKind.Emission || track.Kind == ChannelKind.Color);
                 var values = off ? track.RestSamples : track.Samples;
                 // Keep checking source freshness and the actual native pose on
                 // every frame. Only typed sampling at an identical time is
@@ -209,11 +223,33 @@ namespace HeatTreatment.DigitalTwin.Rendering
 #if UNITY_EDITOR
                     PoseSampleEvaluations++;
 #endif
-                    if (!track.Sampler.SampleInto(time, values)) { signal.Suspend("动画采样数据无效"); return; }
+                    if (!track.Sampler.SampleInto(time, values)) { entry.Signal.Suspend("动画采样数据无效"); return; }
                     track.SampleTime = time; track.HasSampledValues = true;
                 }
                 if (values != null) ApplyChannel(track, values);
             }
+        }
+        public bool SetTransferPresentation(int side,double feed,double hook,out string reason)
+        {
+            reason="双侧同源动作包尚未配置";
+            if(!_presentationControlled||!double.IsFinite(feed)||!double.IsFinite(hook)||feed<0||feed>1||hook<0||hook>1)return false;
+            var suffix=side<0?"_opposite":"";
+            if(!_actionEntries.TryGetValue("clip:feed"+suffix,out var f)||!f.Valid||!_actionEntries.TryGetValue("clip:hook"+suffix,out var h)||!h.Valid)return false;
+            if(_presentationSide!=side){
+                foreach(var name in new[]{"feed","hook","feed_opposite","hook_opposite"})if(_actionEntries.TryGetValue("clip:"+name,out var entry)&&entry.Valid)ApplyEntryPoseAt(entry,0);
+                _presentationSide=side;
+            }
+            ApplyEntryPoseAt(f,feed*f.Duration);ApplyEntryPoseAt(h,hook*h.Duration);
+            if(_nodes.TryGetValue("preview_feed_primary",out var primary))primary.gameObject.SetActive(side>=0);
+            if(_nodes.TryGetValue("preview_feed_opposite",out var opposite))opposite.gameObject.SetActive(side<0);
+            reason="双侧同源动作包显示估算";return true;
+        }
+        public bool TryGetPresentationDrive(int side,out Transform node,out Vector3 rest,out Vector3 maximum)
+        {
+            node=null;rest=maximum=Vector3.zero;
+            var action="clip:feed"+(side<0?"_opposite":"");var name=(side<0?"opposite__":"")+"cad_transfer_cart_v1_feed_carriage";
+            if(!_presentationControlled||!_actionEntries.TryGetValue(action,out var entry)||!entry.Valid||!entry.PositionTracks.TryGetValue(name,out var track))return false;
+            node=track.Node;rest=track.PositionRest;maximum=track.MaximumPositionDisplacement;return node!=null;
         }
         public JObject CaptureDiagnostic()
         {

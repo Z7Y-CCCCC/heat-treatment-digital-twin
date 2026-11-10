@@ -1145,6 +1145,14 @@ namespace HeatTreatment.DigitalTwin.Runtime
 #if UNITY_EDITOR
                 HoverRendererObservations++;
 #endif
+                // The opposite cart mechanism is a real exported subtree but
+                // only one side is displayed at a time. An inactive subtree
+                // cannot affect any ray; keep its old pose snapshot and observe
+                // the current matrix/mesh immediately when it becomes active.
+                if(state.Renderer!=null&&!state.Renderer.gameObject.activeInHierarchy){
+                    changed|=rayRelevantOnly?state.HoverRayRelevant:state.HoverVisible;
+                    state.HoverVisible=false;state.HoverRayRelevant=false;continue;
+                }
                 var matrix = state.Renderer == null ? Matrix4x4.identity
                     : rayRelevantOnly && _overviewMatricesActive && state.HoverMatrixBatchIndex >= 0
                         ? _overviewMatrices.Get(state.HoverMatrixBatchIndex) : state.Renderer.localToWorldMatrix;

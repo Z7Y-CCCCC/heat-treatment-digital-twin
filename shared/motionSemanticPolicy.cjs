@@ -8,7 +8,7 @@ const text = value => typeof value === 'string' && value.length > 0 && value.len
 const own = (value, key) => Object.prototype.hasOwnProperty.call(value, key);
 const operators = new Set(['eq', 'ne', 'gt', 'gte', 'lt', 'lte']);
 const numericOperators = new Set(['gt', 'gte', 'lt', 'lte']);
-const MAX_DECLARATIONS = 103;
+const MAX_DECLARATIONS = 106;
 const pointId = value => {
     const id = typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? String(value) : value;
     return text(id) && id.length <= 120 ? id : '';
@@ -141,6 +141,16 @@ function deriveMotionSemantics(instance, modelMetadata = null, pointContext = nu
             }
             else add({ key: 'action:' + row.actionId, kind: 'running', source,
                 inputMin: row.inputMin ?? 0, inputMax: row.inputMax ?? 1, invert: row.invert ?? false });
+        }
+        const transfer=instance.animationBindings?.transferLink;
+        if(transfer?.enabled&&transfer.cycle?.enabled)for(const name of ['presence','start','pickup']){
+            const item=name==='presence'?transfer.presenceDataItemId:transfer.cycle[name+'DataItemId'];
+            add({key:'transfer:'+name,kind:'condition',source:{dataItemId:item,actionId:'__transfer_'+name},operator:'eq',value:true,hysteresis:0});
+        }
+        for(const id of pointContext?.transferPresencePointIds||[]){
+            const point=pointContext.points?.find(p=>String(p.id)===String(id)&&String(p.device_id)===String(pointContext.deviceId)&&String(p.access_type||'READ').toUpperCase()==='READ');
+            if(!point)throw Error('Missing owned transfer presence point');
+            add({key:'transfer:target:'+id,kind:'condition',source:{pointId:String(id),pointKey:(point.category||'analog')+'.'+(point.value_role||point.name)},operator:'eq',value:true,hysteresis:0});
         }
         return { valid: true, bindings };
     } catch { return { valid: false, bindings: [] }; }

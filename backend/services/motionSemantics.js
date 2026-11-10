@@ -60,14 +60,23 @@ class MotionSemanticResolver {
                     factoryModels.set(factoryId, new Map(this.mergeModels(models.filter(row => row.factory_id == null || String(row.factory_id) === factoryId))
                         .map(model => [String(model.id), parse(model.metadata)])));
                 }
-                const records = new Map();
+                const records = new Map(),transferPresence=new Map(),deviceMap=new Map(devices.map(d=>[String(d.id),d]));
+                const factoryOf=device=>{const i=parse(device?.instance_config),line=deviceLineId(device||{},i||{});return workshopMap.get(line?lineMap.get(String(line)):String(i?.workshop_id??i?.workshopId??''))||'';};
+                for(const source of devices){const i=parse(source.instance_config),link=i?.animationBindings?.transferLink;
+                    if(!link?.enabled||!link.cycle?.enabled)continue;
+                    for(const s of link.cycle.stations||[]){const target=deviceMap.get(String(s.targetDeviceId));
+                        if(!target||!factoryOf(source)||factoryOf(source)!==factoryOf(target))continue;
+                        const point=(devicePoints.get(String(target.id))||[]).find(p=>String(p.id)===String(s.presencePointId)&&String(p.access_type||'READ').toUpperCase()==='READ');
+                        if(!point)continue;if(!transferPresence.has(String(target.id)))transferPresence.set(String(target.id),new Set());transferPresence.get(String(target.id)).add(String(point.id));
+                    }
+                }
                 for (const device of devices.slice(0, this.maxDevices)) {
                     const instance = parse(device.instance_config);
                     const lineId = deviceLineId(device, instance || {});
                     const workshop = lineId ? lineMap.get(String(lineId)) : String(instance?.workshop_id ?? instance?.workshopId ?? '');
                     const factoryId = workshopMap.get(workshop) || '';
                     const metadata = factoryModels.get(factoryId)?.get(String(device.model_type)) || null;
-                    const definition = deriveMotionSemantics(instance, metadata, { deviceId: String(device.id), points: devicePoints.get(String(device.id)) || [] });
+                    const definition = deriveMotionSemantics(instance, metadata, { deviceId: String(device.id), points: devicePoints.get(String(device.id)) || [],transferPresencePointIds:[...(transferPresence.get(String(device.id))||[])] });
                     const bindings = Object.freeze(definition.bindings.map(binding => Object.freeze({ ...binding,
                         source: Object.freeze({ ...binding.source }), ...(binding.values ? { values: Object.freeze([...binding.values]) } : {}) })));
                     records.set(String(device.id), { factoryId, valid: definition.valid && !!factoryId,

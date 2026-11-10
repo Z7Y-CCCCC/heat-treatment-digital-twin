@@ -128,6 +128,15 @@ export class LineSimulationScene extends CadMotionScene {
             const cart=this.entries.get(plan.cart.id),position=cart.wrapper.position.clone(),yaw=cart.wrapper.rotation.y
             for(const station of plan.stations.filter(s=>s.capabilities.animated)){
                 const dock=this.dock(station.id);cart.wrapper.position.copy(dock.position);cart.wrapper.rotation.y=dock.yaw;cart.wrapper.updateMatrixWorld(true);this.bounds.union(bounds(cart.wrapper))
+                if(cart.savedLink?.cycle?.enabled){
+                    const cycle=cart.savedLink.cycle,s=cycle.stations.find(s=>s.targetDeviceId===station.id),target=this.entries.get(station.id)
+                    const seat=target.asset.getObjectByName(s.seatNodeName);if(!seat)throw Error('缺少已配置承料节点：'+s.seatNodeName)
+                    const home=siteWorldPoint(new T.Vector3(...cycle.cartHome),cart.wrapper),inside=siteWorldPoint(new T.Vector3(...s.seatNodeLocal),seat)
+                    const mouth=siteLoadingDatum(target.row,target.row.capabilities.model||{},target.siteTransform,cart.savedLink.targetPort).position,path=inside.clone().sub(home)
+                    const fraction=mouth.clone().sub(home).dot(path)/path.lengthSq()
+                    if(!Number.isFinite(fraction)||fraction<=0||fraction>=1)throw Error('设备口不在车上承料位与设备内承料位之间')
+                    plan.transferMouthFractions||={};plan.transferMouthFractions[station.id]=fraction
+                }
             }
             cart.wrapper.position.copy(position);cart.wrapper.rotation.y=yaw;cart.wrapper.updateMatrixWorld(true)
         }
@@ -164,6 +173,8 @@ export class LineSimulationScene extends CadMotionScene {
         cart.port.copy(datum.local);cart.normal.fromArray(datum.port.direction)
         cart.siteStrokeLocal=Math.abs(signed);cart.siteFeedTravel=photo?signed:-signed;cart.siteFeedHome=home
         cart.siteDriveMaximum=new T.Vector3(signed,0,0)
+        cart.sitePrimaryDriveNode=cart.asset.getObjectByName('cad_transfer_cart_v1_feed_carriage')
+        cart.siteOppositeDriveNode=cart.asset.getObjectByName('opposite__cad_transfer_cart_v1_feed_carriage')
         if(photo)cart.siteDriveRest.copy(cart.rig.shuttleBase).add(new T.Vector3(home,0,0))
         cart.basePosition.copy(siteCarrierInitialPosition(path,cart.siteSavedPosition))
         return cart.savedLink
@@ -177,10 +188,15 @@ export class LineSimulationScene extends CadMotionScene {
                 const datum=siteLoadingDatum(station.row,station.row.capabilities.model||{},station.siteTransform,link.targetPort||'inlet')
                 station.port.copy(datum.local);station.normal.fromArray(datum.port.direction)
             }
+            const side=link?.cycle?.enabled&&link.cycle.stations.find(s=>s.targetDeviceId===String(id))?.side==='opposite'?-1:1
+            const localPort=cart.port.clone(),localDirection=cart.normal.clone()
+            if(side<0){localPort.x*=-1;localPort.z*=-1;localDirection.x*=-1;localDirection.z*=-1}
+            const driveNode=side<0?cart.siteOppositeDriveNode:cart.siteDriveNode
+            if(!driveNode?.parent)throw Error('缺少已配置的送料侧机构')
             const normal=siteWorldVector(station.normal,station.wrapper).normalize()
-            const offset=siteWorldVector(cart.port,cart.wrapper)
-            const maximumDriveWorld=siteWorldVector(cart.siteDriveMaximum,cart.siteDriveNode.parent),feed=maximumDriveWorld.clone().normalize()
-            const sourceDirection=siteWorldVector(cart.normal,cart.wrapper).normalize()
+            const offset=siteWorldVector(localPort,cart.wrapper)
+            const maximumDriveWorld=siteWorldVector(cart.siteDriveMaximum,driveNode.parent),feed=maximumDriveWorld.clone().normalize()
+            const sourceDirection=siteWorldVector(localDirection,cart.wrapper).normalize()
             const sourceAngle=Math.acos(T.MathUtils.clamp(sourceDirection.dot(feed),-1,1))*180/Math.PI
             if(sourceAngle>(link||this.transferTolerances).angleToleranceDegrees+.0001)throw Error(`${cart.row.name||cart.row.id} 已配置进出料口的朝向与实际送料驱动不一致，请校准进出料口；未忽略该配置或旋转料车`)
             let fixedPosition
@@ -191,7 +207,7 @@ export class LineSimulationScene extends CadMotionScene {
             }
             const result=solveSiteTransferPose({start:siteWorldPoint(cart.sitePath.start,cart.wrapper.parent),end:siteWorldPoint(cart.sitePath.end,cart.wrapper.parent),cartPortOffset:offset,feedDirection:feed,stationPosition:siteWorldPoint(station.port,station.wrapper),stationDirection:normal,
                 stroke:maximumDriveWorld.length(),fixedPosition,...(link||this.transferTolerances),sceneUnitsPerMeter:cart.sceneUnitsPerMeter,name:station.row.name||id})
-            return {...result,worldPosition:result.position.clone(),position:siteParentPoint(result.position,cart.wrapper.parent),yaw:cart.baseYaw,feedDirection:feed,cartPortOffset:offset,maximumDriveWorld}
+            return {...result,worldPosition:result.position.clone(),position:siteParentPoint(result.position,cart.wrapper.parent),yaw:cart.baseYaw,feedDirection:feed,cartPortOffset:offset,maximumDriveWorld,feedSide:side}
         }
         const normal=station.normal.clone().transformDirection(station.wrapper.matrixWorld)
         const yaw=Math.atan2(normal.z,-normal.x)+(cart?.wrapper.scale.x<0?Math.PI:0)+(cart?.feedDirection<0?Math.PI:0)
@@ -240,9 +256,9 @@ export class LineSimulationScene extends CadMotionScene {
             if(entry.row.capabilities.cart){
                 const travel=frame.cart.segments.reduce((sum,segment)=>{const a=segment.from?this.dock(segment.from).position:entry.basePosition,b=this.dock(segment.to).position;return sum+a.distanceTo(b)*segment.progress},0)
                 Object.assign(state,{feed:frame.cart.feed,travel:travel/entry.scale,runTime:frame.cart.runTime})
-                if(this.mode==='site'){state.feedTravel=entry.siteFeedTravel;state.feedHome=entry.siteFeedHome}
+                if(this.mode==='site'){state.feedTravel=entry.siteFeedTravel;state.feedHome=entry.siteFeedHome;state.feedSide=frame.cart.to?this.dock(frame.cart.to).feedSide:frame.cart.feedSide}
                 if(entry.rig.node?.('push_hook')){
-                    state.hookEngaged=['feed','reclaim'].includes(frame.step.kind)
+                    state.hookEngaged=entry.savedLink?.cycle?.enabled?1-Number(frame.cart.hookRelease||0):['feed','reclaim'].includes(frame.step.kind)
                     if(frame.cart.to&&this.mode!=='site'){
                         const home=entry.wrapper.worldToLocal(this.loadPort(id)),destination=entry.wrapper.worldToLocal(this.loadPort(frame.cart.to,true,frame.states[frame.cart.to]))
                         state.feedTravel=Math.max(0,(destination.x-home.x)*entry.feedDirection)
@@ -256,7 +272,13 @@ export class LineSimulationScene extends CadMotionScene {
         if(this.material.visible){
             const m=frame.material,point=id=>this.loadPort(id,id!==this.plan.cart?.id,frame.states[id])
             let p
-            if(this.mode==='site'&&cart){
+            if(m.cyclePath&&cart?.savedLink?.cycle?.enabled){
+                const c=cart.savedLink.cycle,s=c.stations.find(s=>s.targetDeviceId===m.to),target=this.entries.get(m.to),node=target?.asset.getObjectByName(s?.seatNodeName||'')
+                if(!node)throw Error('缺少已配置设备内承料节点')
+                const home=siteWorldPoint(new T.Vector3(...c.cartHome),cart.wrapper),seat=siteWorldPoint(new T.Vector3(...s.seatNodeLocal),node)
+                p=home.lerp(seat,m.progress)
+                const metrics=applySitePayloadMetrics(this.material,cart.wrapper,cart.savedLink.materialSize,cart.sceneUnitsPerMeter);p.y+=metrics.worldHeight*.5
+            }else if(this.mode==='site'&&cart){
                 const target=frame.cart.to,home=siteWorldPoint(cart.port,cart.wrapper),dock=target?this.dock(target):null
                 const displacement=siteWorldVector(cart.siteDriveNode.position.clone().sub(cart.siteDriveRest),cart.siteDriveNode.parent)
                 const destination=id=>{

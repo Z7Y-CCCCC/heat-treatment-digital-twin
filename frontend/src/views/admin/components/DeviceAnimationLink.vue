@@ -220,7 +220,10 @@ watch(selectedId, load, { immediate: true })
 watch(() => props.factoryId, () => { if (!scopeValid.value) { persist(); generation++; catalogGeneration++; loaded.value = null; draft.value = null; selectedId.value = ''; points.value = []; catalog.value = { categories: [], tables: [], items: [] }; error.value = '工厂已改变，请刷新页面后继续'; busy.value = false; catalogBusy.value = false } })
 watch(draft, () => { states.value = {}; if (dirty.value) discardOnExit = false; persist() }, { deep: true })
 function setDiagnosticLogging(enabled) { if (!editable.value || busy.value || !draft.value) return; draft.value.diagnosticLogging = enabled; if (enabled && draft.value.diagnosticIntervalSeconds == null) draft.value.diagnosticIntervalSeconds = 5 }
-function updateTransferLink(value) { if (editable.value && !busy.value && draft.value) draft.value.transferLink = clone(value) }
+function updateTransferLink(value) { if (editable.value && !busy.value && draft.value) {
+ draft.value.transferLink = clone(value)
+ if(value.cycle?.enabled)for(const b of draft.value.bindings||[])if(['clip:feed','clip:hook','clip:feed_opposite','clip:hook_opposite'].includes(b.actionId))b.enabled=false
+} }
 function receiveFrame(data) { const incomingFactory = data.factoryId || data.factory_id; if (!scopeValid.value || String(data.furnace_id) !== selectedId.value || incomingFactory && String(incomingFactory) !== factory) return; const now = performance.now() / 1000; for (const b of resolvedBindings.value) { if (!b.enabled || data.motionInputOnly && !b.dataItemId && b.trigger?.mode !== 'endpoints') continue; const state = states.value[b.actionId] || { seconds: 0 }; receiveMotionSignal(state, b, data, now, Date.now()); states.value[b.actionId] = state } }
 store.setDeviceDataHandler(receiveFrame)
 store.setMotionInputHandler(receiveFrame)

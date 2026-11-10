@@ -115,7 +115,8 @@ namespace HeatTreatment.DigitalTwin.Rendering
             // without throwing out the whole factory during a legacy import.
             if (animationToken != null && animationConfig == null)
                 Debug.LogWarning($"[RuntimeModelLibrary] Invalid animation configuration for device {device.Id}; actions are disabled.");
-            var useMotion = asset?.MotionPackage != null && animationConfig?["bindings"]?.OfType<JObject>().Any(b => b.Value<bool?>("enabled") == true && b.Value<string>("kind") == "clip") == true;
+            var useMotion = asset?.MotionPackage != null && (animationConfig?["bindings"]?.OfType<JObject>().Any(b => b.Value<bool?>("enabled") == true && b.Value<string>("kind") == "clip") == true
+                || animationConfig?["transferLink"]?["cycle"]?.Value<bool?>("enabled")==true);
             var key = CacheKey(asset, device.ModelType, useMotion) + (useMotion ? ":motion" : "");
             if (!_templates.TryGetValue(key, out var template))
             {

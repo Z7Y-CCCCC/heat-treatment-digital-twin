@@ -23,7 +23,9 @@ export const CAD_MOTION_PROFILES = {
     cad_transfer_cart_101300: {prefix:'cad_transfer_cart_v1_',actions:[
         action('travel','料车往返行走','车体平移，行走轮按轮径同步滚动。'),
         action('feed','推料伸出 / 退回','抓钩通过连接销接住中间导槽内的送料链；送料链接入后方链条盒，与链轮同步进退，带动抓钩往返。'),
+        action('feed_opposite','另一侧推料伸出 / 退回','固定反向送料机构；车体与导轨不转向，不改变原机构行程。'),
         action('hook','推拉钩脱开 / 勾合','钩头绕横向轴翻转，演示脱开与勾合；实际角度及信号需现场标定。'),
+        action('hook_opposite','另一侧推拉钩脱开 / 勾合','反向机构钩头脱开与勾合；与正向机构使用同一显示时长。'),
         action('rollers','承料辊转动','仅辊轴和辊筒转动，支架及轴承座保持固定。')
     ]},
     cad_lifting_load_table_111400: {prefix:'cad_lifting_staging_table_v1_',actions:[

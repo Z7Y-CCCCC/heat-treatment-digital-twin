@@ -23,7 +23,10 @@ for(const [id,profile] of Object.entries(CAD_MOTION_PROFILES))test(`${id}: each 
         rig.reset();assert.deepEqual(snapshot(),base,`${action.id} reset`)
     }
     // Splitting material buckets must preserve all original surface bounds at rest.
-    const partsBox=new T.Box3();gltf.scene.traverse(o=>{if(o.isMesh&&!rig.effects.getObjectsByProperty('uuid',o.uuid).length){let inFx=false;for(let p=o;p;p=p.parent)if(p===rig.effects)inFx=true;if(!inFx)partsBox.union(new T.Box3().setFromObject(o))}})
+    // The derived opposite-facing assembly is new geometry, not a change to
+    // the original CAD surfaces. Hidden meshes also enter Box3, so exclude it
+    // explicitly and still enforce the original assembly's exact bounds.
+    const partsBox=new T.Box3();gltf.scene.traverse(o=>{if(o.isMesh){let added=false;for(let p=o;p;p=p.parent)if(p===rig.effects||p===rig.oppositeFeedRoot)added=true;if(!added)partsBox.union(new T.Box3().setFromObject(o))}})
     assert.ok(initial.min.distanceTo(partsBox.min)<1e-5);assert.ok(initial.max.distanceTo(partsBox.max)<1e-5)
     if(id==='cad_transfer_cart_101300'){
         const hook=rig.node('push_hook'),carriage=rig.node('feed_carriage'),latch=rig.node('hook_latch')

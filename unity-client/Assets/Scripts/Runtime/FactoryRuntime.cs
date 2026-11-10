@@ -990,9 +990,9 @@ namespace HeatTreatment.DigitalTwin.Runtime
                     var id = deviceData.Value<string>("furnace_id");
                     if (string.IsNullOrWhiteSpace(id)) continue;
                     using (RuntimeWorkMetrics.Measure(RuntimeWorkMetrics.Section.MotionInputCache)) _latestMotionInputs.Remember(id, deviceData);
-                    _transferCoordinator?.ApplyInputs(id, deviceData);
                     if (deviceData.Value<bool?>("motionInputOnly") == true)
                     {
+                        _transferCoordinator?.ApplyInputs(id, deviceData);
                         // Partial catalog refreshes are not PLC telemetry. Do not update
                         // dashboards, connection visuals, mobile travel or PLC receipt age.
                         if (_drivers.TryGetValue(id, out var catalogDriver))
@@ -1010,6 +1010,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
                     }
                     if (_visuals.TryGetValue(id, out var visual)) visual.ApplyRealtime(deviceData);
                     if (_motions.TryGetValue(id, out var motion)) motion.ApplyRealtime(deviceData);
+                    _transferCoordinator?.ApplyInputs(id, deviceData);
                     using (RuntimeWorkMetrics.Measure(RuntimeWorkMetrics.Section.DashboardReceive)) _dashboard.ApplyRealtime(id, deviceData);
                 }
                 if (telemetryCount > 0) _diagnostics.RecordRealtimeFrame(payload.Value<long?>("timestamp") ?? 0L, telemetryCount);

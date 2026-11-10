@@ -55,6 +55,7 @@ export class CadMotionRig {
             for(const x of [-.7125,.7125])this.wheels.push(this.pivot('wheel_'+x,new T.Vector3(x,.148,0),parts.filter(p=>Math.abs(p.center.x-x)<.1)))
             const gear=this.node('feed_sprocket');if(gear){this.pivot('feed_gear',new T.Vector3(.806,1.16,0),[{mesh:gear}])}
             this.prepareCartChain()
+            this.prepareOppositeCartFeed()
         }
         if(this.id==='cad_air_cooling_table_115800ht'){
             this.fans=[];const parts=[...this.parts('fans_metal'),...this.parts('fans_stainless')]
@@ -164,6 +165,35 @@ export class CadMotionRig {
         this.joints.feed_gear.rotation.z=distance/CART_FEED.sprocketRadius
         this.cartChain.forEach(({pivot,distance:phase,angle})=>{const at=sampleCartChain(phase-distance);pivot.position.fromArray(at.position);pivot.rotation.z=at.angle-angle})
         this.poseWorkingChain()
+    }
+    prepareOppositeCartFeed(){
+        // A fixed opposite-facing mechanism, NOT a turn of the rail chassis.
+        // This is a display representation of the confirmed two-sided cart;
+        // both sides retain the same authored 1.085 local-unit stroke.
+        const primary=new T.Group();primary.name='preview_feed_primary'
+        const opposite=new T.Group();opposite.name='preview_feed_opposite';opposite.rotation.y=Math.PI
+        this.root.add(primary,opposite)
+        const roots=[this.node('pusher'),this.node('feed_motor'),this.node('feed_interlock'),this.node('return_chain'),
+            this.joints.feed_gear,...this.cartChain.map(link=>link.pivot),...this.workingChainLinks,
+            this.root.getObjectByName('preview_working_chain_guide'),this.root.getObjectByName('preview_chain_case_entry')].filter(Boolean)
+        this.oppositeFeedPairs=[]
+        for(const node of new Set(roots)){
+            primary.attach(node)
+            const clone=node.clone(true);opposite.add(clone)
+            const from=[],to=[];node.traverse(n=>from.push(n));clone.traverse(n=>to.push(n))
+            from.forEach((original,index)=>{to[index].name='opposite__'+original.name;this.oppositeFeedPairs.push({original,clone:to[index]})})
+        }
+        this.primaryFeedRoot=primary;this.oppositeFeedRoot=opposite;opposite.visible=false
+    }
+    setOppositeCartFeed(progress,travel=CART_FEED.stroke,engaged=true){
+        this.setCartFeed(progress,travel,engaged)
+        for(const {original,clone} of this.oppositeFeedPairs){clone.position.copy(original.position);clone.quaternion.copy(original.quaternion);clone.scale.copy(original.scale);clone.visible=original.visible}
+        this.setCartFeed(0,CART_FEED.stroke,true)
+        this.selectCartFeedSide(-1)
+    }
+    selectCartFeedSide(side){
+        if(this.primaryFeedRoot)this.primaryFeedRoot.visible=side!==-1
+        if(this.oppositeFeedRoot)this.oppositeFeedRoot.visible=side===-1
     }
     prepareMultipurpose(){
         this.processPlan=buildLineSimulation([{id:'demo_cart',model_type:'transfer_cart'},{id:'demo_furnace',model_type:this.id}],[{id:this.id,file_path:'/preview-only.glb'}])
@@ -282,7 +312,12 @@ export class CadMotionRig {
         this.reset();const f=cadMotionFrame(this.id,actionId,time),s=f.amount,t=f.elapsed,angle=t*Math.PI*2
         if(actionId==='travel'){this.root.position.x+=s*.8;this.wheels.forEach(n=>n.rotation.z=-s*.8/.13)}
         if(actionId==='feed')this.setCartFeed(s,CART_FEED.stroke,f.progress<=.5)
+        if(actionId==='feed_opposite')this.setOppositeCartFeed(s,CART_FEED.stroke,f.progress<=.5)
         if(actionId==='hook'){const latch=this.node('hook_latch');if(latch)latch.rotation.z=-s*.65}
+        if(actionId==='hook_opposite'){
+            this.setOppositeCartFeed(0,CART_FEED.stroke,true)
+            const latch=this.root.getObjectByName('opposite__'+this.profile.prefix+'hook_latch');if(latch)latch.rotation.z=-s*.65
+        }
         if(actionId==='rollers')this.rollers.forEach(n=>n.rotation.z=angle*.6)
         if(actionId==='rollers')this.temperingRollers?.forEach(n=>n.rotation.x=-angle*.6)
         if(actionId==='fans')this.fans.forEach(n=>n.rotation.y=angle*2)
@@ -348,7 +383,8 @@ export class CadMotionRig {
         const air=this.id==='cad_air_cooling_table_115800ht'
         for(const name of ['door','door_carriages'])this.move(name,'y',air ? -.9*(1-s.door) : .9*s.door)
         if(this.id==='cad_transfer_cart_101300'){
-            this.setCartFeed(s.feed,s.feedTravel??CART_FEED.stroke,s.hookEngaged??true)
+            if(s.feedSide===-1)this.setOppositeCartFeed(s.feed,s.feedTravel??CART_FEED.stroke,s.hookEngaged??true)
+            else this.setCartFeed(s.feed,s.feedTravel??CART_FEED.stroke,s.hookEngaged??true)
             this.wheels.forEach(n=>n.rotation.z=-(s.travel||0)/.13)
         }
         this.rollers.forEach(n=>n.rotation.z=angle*.6)
