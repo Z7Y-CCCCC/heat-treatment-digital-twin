@@ -65,6 +65,9 @@ jobs:
           MONGODB_TEST_ADMIN_PASSWORD: ci-disposable-only
       - uses: actions/upload-artifact@v4
         if: failure()
+        # Evidence storage is optional; repository-wide quota must not change
+        # the result of required tests (whose failure still fails this job).
+        continue-on-error: true
         with:
           name: backend-test-logs
           path: |
@@ -106,6 +109,7 @@ jobs:
       - name: Upload HTTP mapping evidence
         uses: actions/upload-artifact@v4
         if: always()
+        continue-on-error: true
         with:
           name: http-template-mapping-evidence
           path: |
@@ -115,6 +119,9 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
       - uses: actions/upload-artifact@v4
+        # Build already succeeded; unavailable artifact storage is not a build
+        # failure. Release packaging remains a separate mandatory workflow.
+        continue-on-error: true
         with:
           name: frontend-production
           path: frontend/dist
