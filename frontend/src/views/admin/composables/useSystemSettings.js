@@ -458,9 +458,19 @@ export function useSystemSettings({
     const siteBackupStatus = reactive({
         supported: false,
         retention: 0,
+        retentionDays: 30,
+        retentionDaysMin: 1,
+        retentionDaysMax: 3650,
+        totalBackupBytes: 0,
+        localDirectory: '',
+        oldestBackup: null,
+        newestBackup: null,
         externalCopyRequired: true,
         backups: []
     })
+    const siteBackupPolicy = reactive({ retentionDays: 30 })
+    let savedSiteRetentionDays = 30
+    const siteBackupPolicySaving = ref(false)
     const siteBackupConfig = reactive({
         autoEnabled: true,
         intervalHours: 24,
@@ -469,6 +479,33 @@ export function useSystemSettings({
     const initialSiteBackupFingerprint = JSON.stringify(siteBackupConfig)
     let savedSiteBackupFingerprint = ''
     const siteBackupConfigSaving = ref(false)
+
+    function assignSiteBackupStatus(status = {}, submittedRetentionDays) {
+        Object.assign(siteBackupStatus, status, { backups: status.backups || [] })
+        const retentionDays = Number(status.retentionDays ?? status.config?.retentionDays)
+        if (Number.isFinite(retentionDays)) {
+            siteBackupStatus.retentionDays = retentionDays
+            const pendingDraft = Number(siteBackupPolicy.retentionDays) !== savedSiteRetentionDays
+            if (!pendingDraft || Number(siteBackupPolicy.retentionDays) === submittedRetentionDays)
+                siteBackupPolicy.retentionDays = retentionDays
+            savedSiteRetentionDays = retentionDays
+        }
+    }
+
+    function assignSiteBackupConfig(config, submittedFingerprint) {
+        if (!config) return
+        // Keep the automatic-backup draft separate from retention: saving one
+        // must never silently save or discard the other (which can delete files).
+        const next = {
+            autoEnabled: config.autoEnabled ?? siteBackupConfig.autoEnabled,
+            intervalHours: config.intervalHours ?? siteBackupConfig.intervalHours,
+            mirrorDirectory: config.mirrorDirectory ?? siteBackupConfig.mirrorDirectory
+        }
+        const current = JSON.stringify(siteBackupConfig)
+        const baseline = savedSiteBackupFingerprint || initialSiteBackupFingerprint
+        if (current === baseline || current === submittedFingerprint) Object.assign(siteBackupConfig, next)
+        savedSiteBackupFingerprint = JSON.stringify(next)
+    }
     const databaseDefaultPorts = {
         mysql: 3307,
         postgres: 5432,
@@ -795,31 +832,63 @@ export function useSystemSettings({
     async function loadSiteBackups() {
         try {
             const status = await adminApi.getSiteBackups()
-            if (status?.error) throw new Error(status.error)
-            Object.assign(siteBackupStatus, status, { backups: status.backups || [] })
-            if (status.config) Object.assign(siteBackupConfig, status.config)
-            savedSiteBackupFingerprint = JSON.stringify(siteBackupConfig)
+            if (status?.error || status?.success === false || !Array.isArray(status?.backups)) throw new Error(status?.error || '灾备列表响应无效')
+            assignSiteBackupStatus(status)
+            assignSiteBackupConfig(status.config)
         } catch (e) {
             siteBackupMessage.value = `整站灾备状态读取失败：${e.message || e}`
         }
     }
 
     async function saveSiteBackupConfiguration() {
+        if (siteBackupConfigSaving.value || siteBackupPolicySaving.value || siteBackupBusy.value) return
+        const submitted = { ...siteBackupConfig }
         siteBackupConfigSaving.value = true
         siteBackupMessage.value = '正在保存自动灾备配置...'
         try {
-            const result = await adminApi.saveSiteBackupConfig(siteBackupConfig)
+            const result = await adminApi.saveSiteBackupConfig(submitted)
             if (result?.error || !result?.success) throw new Error(result?.error || '后端没有返回成功状态')
-            Object.assign(siteBackupConfig, result.config || {})
-            savedSiteBackupFingerprint = JSON.stringify(siteBackupConfig)
-            Object.assign(siteBackupStatus, result.status || {}, { backups: result.status?.backups || [] })
-            siteBackupMessage.value = siteBackupConfig.mirrorDirectory
-                ? `自动灾备已保存，将同步到：${siteBackupConfig.mirrorDirectory}`
+            assignSiteBackupConfig(result.config, JSON.stringify(submitted))
+            assignSiteBackupStatus(result.status || {})
+            siteBackupMessage.value = result.config?.mirrorDirectory
+                ? `自动灾备已保存，将同步到：${result.config.mirrorDirectory}`
                 : '自动灾备已保存；尚未配置外部目录，电脑丢失时本机副本无法使用。'
         } catch (e) {
             siteBackupMessage.value = `自动灾备配置保存失败：${e.message || e}`
         } finally {
             siteBackupConfigSaving.value = false
+        }
+    }
+
+    function selectSiteBackupRetention(days) {
+        siteBackupPolicy.retentionDays = Number(days)
+    }
+
+    async function saveSiteBackupPolicy() {
+        if (siteBackupPolicySaving.value || siteBackupConfigSaving.value || siteBackupBusy.value) return
+        const minimum = Number(siteBackupStatus.retentionDaysMin || 1)
+        const maximum = Number(siteBackupStatus.retentionDaysMax || 3650)
+        const retentionDays = Number(siteBackupPolicy.retentionDays)
+        if (!Number.isInteger(retentionDays) || retentionDays < minimum || retentionDays > maximum) {
+            siteBackupMessage.value = `保留天数请输入 ${minimum}-${maximum} 之间的整数。`
+            return
+        }
+        siteBackupPolicySaving.value = true
+        siteBackupMessage.value = '正在保存整站保留策略并清理过期备份...'
+        try {
+            const result = await adminApi.saveSiteBackupConfig({ retentionDays })
+            if (!result?.success || !Array.isArray(result.status?.backups)) throw new Error(result?.error || '保留策略响应无效')
+            assignSiteBackupStatus(result.status, retentionDays)
+            assignSiteBackupConfig(result.config)
+            const deletedCount = Number(result.cleanup?.deletedCount || 0)
+            const failedCount = Array.isArray(result.cleanup?.errors) ? result.cleanup.errors.length : 0
+            siteBackupMessage.value = failedCount
+                ? `整站策略已保存，已清理 ${deletedCount} 份备份，另有 ${failedCount} 份清理失败。`
+                : (deletedCount ? `整站策略已保存，已自动清理 ${deletedCount} 份过期备份。` : '整站备份保留策略已保存。')
+        } catch (e) {
+            siteBackupMessage.value = `整站保留策略保存失败：${e.message || e}`
+        } finally {
+            siteBackupPolicySaving.value = false
         }
     }
 
@@ -833,6 +902,7 @@ export function useSystemSettings({
     }
 
     async function exportSiteBackup() {
+        if (siteBackupBusy.value || siteBackupPolicySaving.value || siteBackupConfigSaving.value) return
         siteBackupBusy.value = true
         siteBackupMessage.value = '正在生成整站灾备包并校验文件，请稍候...'
         try {
@@ -840,7 +910,7 @@ export function useSystemSettings({
             if (result?.error || !result?.success || !result.backup?.filename) {
                 throw new Error(result?.error || '后端没有返回灾备文件')
             }
-            Object.assign(siteBackupStatus, result.status || {}, { backups: result.status?.backups || [] })
+            assignSiteBackupStatus(result.status || {})
             siteBackupMessage.value = `灾备包已生成：${result.backup.filename}。请选择 U 盘、移动硬盘或 NAS 保存。`
             downloadSiteBackup(result.backup)
         } catch (e) {
@@ -851,12 +921,14 @@ export function useSystemSettings({
     }
 
     function chooseSiteBackupFile() {
+        if (siteBackupBusy.value || siteBackupPolicySaving.value || siteBackupConfigSaving.value) return
         if (!siteBackupFileInput.value) return
         siteBackupFileInput.value.value = ''
         siteBackupFileInput.value.click()
     }
 
     async function restoreSiteBackupFromFile(event) {
+        if (siteBackupBusy.value || siteBackupPolicySaving.value || siteBackupConfigSaving.value) return
         const file = event.target.files?.[0]
         if (!file) return
         if (!(await confirm(
@@ -869,7 +941,7 @@ export function useSystemSettings({
         try {
             const result = await adminApi.restoreSiteBackup(file)
             if (result?.error || !result?.success) throw new Error(result?.error || '后端没有返回成功状态')
-            Object.assign(siteBackupStatus, result.status || {}, { backups: result.status?.backups || [] })
+            assignSiteBackupStatus(result.status || {})
             assignDatabaseBackupStatus(result.databaseStatus || {})
             await loadWorkshops()
             await Promise.all([loadLines(), loadDevices(), loadSettings(), loadModels(), loadPlatform()])
@@ -1209,6 +1281,8 @@ export function useSystemSettings({
             throw new Error('数据库连接配置尚未读取成功，请先检查并单独保存')
         if (Number(databaseBackupPolicy.retentionDays) !== savedRetentionDays)
             throw new Error('备份保留策略有未保存修改；请先单独保存或恢复，以免切换时触发备份清理')
+        if (Number(siteBackupPolicy.retentionDays) !== savedSiteRetentionDays)
+            throw new Error('整站备份保留策略有未保存修改；请先单独保存或恢复，以免切换时触发备份清理')
         if (!savedSettingsFingerprint && JSON.stringify({ data_mode: settings.data_mode, native_quality_profile: settings.native_quality_profile }) !== initialSettingsFingerprint)
             throw new Error('系统设置尚未读取成功，当前修改不能确认保存')
         if (!savedEnvironmentFingerprint && JSON.stringify(normalizeNativeEnvironmentConfig(nativeEnvironmentConfig)) !== initialEnvironmentFingerprint)
@@ -1217,7 +1291,7 @@ export function useSystemSettings({
             throw new Error('整站灾备配置尚未读取成功，当前修改不能确认保存')
         if (!savedDataSourceBackupFingerprint && JSON.stringify(dataSourceBackupConfig) !== initialDataSourceBackupFingerprint)
             throw new Error('数据源备份配置尚未读取成功，当前修改不能确认保存')
-        if (dataSourceBusy.value || databaseSaving.value || siteBackupConfigSaving.value || dataSourceBackupBusy.value)
+        if (dataSourceBusy.value || databaseSaving.value || siteBackupConfigSaving.value || siteBackupPolicySaving.value || dataSourceBackupBusy.value)
             throw new Error('有设置正在保存，请等待完成后再切换工厂')
 
         const sourceFingerprint = dataSourceDraftFingerprint()
@@ -1331,6 +1405,10 @@ export function useSystemSettings({
         siteBackupStatus,
         siteBackupConfig,
         siteBackupConfigSaving,
+        siteBackupPolicy,
+        siteBackupPolicySaving,
+        selectSiteBackupRetention,
+        saveSiteBackupPolicy,
         loadDatabaseConfig,
         loadSiteBackups,
         saveSiteBackupConfiguration,

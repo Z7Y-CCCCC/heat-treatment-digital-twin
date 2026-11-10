@@ -390,14 +390,16 @@ export function normalizeDashboardWidget(source = {}, canvas = DEFAULT_DASHBOARD
   const normalizedMode = requestedMode === 'plc' || requestedMode === 'database' || requestedMode === 'http_api' || requestedMode === 'dataset' || requestedMode === 'runtime' || requestedMode === 'business'
     ? requestedMode
     : 'static'
-  const resolvedDataMode = normalizedMode === 'static'
+  let resolvedDataMode = normalizedMode === 'static'
     ? (type === 'business_summary' ? 'business' : (data.connectionId || data.connection_id ? 'database' : (data.pointId || data.point_id ? 'plc' : 'static')))
     : normalizedMode
   const rawDeviceId = data.deviceId || data.device_id || ''
   const requestedDeviceScope = String(data.deviceScope || data.device_scope || '').toLowerCase()
-  const deviceScope = ['current','fixed','rotation','global'].includes(requestedDeviceScope)
+  let deviceScope = ['current','fixed','rotation','global'].includes(requestedDeviceScope)
     ? requestedDeviceScope
     : (rawDeviceId ? 'fixed' : 'current')
+  const implicitEvents = ['alarm_list','hud_alarm_panel','marquee'].includes(type) && resolvedDataMode==='static'
+  if(implicitEvents){resolvedDataMode='runtime';deviceScope='global'}
   const legacyDataset = normalizeDatabaseDataset(data, data, 0)
   const datasets = (Array.isArray(data.datasets) && data.datasets.length ? data.datasets : [legacyDataset])
     .slice(0, 12)
@@ -447,7 +449,7 @@ export function normalizeDashboardWidget(source = {}, canvas = DEFAULT_DASHBOARD
       pointId: String(data.pointId || data.point_id || ''),
       pointKey: String(data.pointKey || data.point_key || ''),
       requireConfiguredPoint: data.requireConfiguredPoint === true,
-      path: resolvedDataMode === 'static' ? '' : String(data.path || ''),
+      path: implicitEvents ? 'events' : resolvedDataMode === 'static' ? '' : String(data.path || ''),
       source: resolvedDataMode === 'static' ? '' : String(data.source || ''),
       datasetId: String(data.datasetId || '').slice(0, 80),
       datasetField: String(data.datasetField || '').slice(0, 64),

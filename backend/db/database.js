@@ -195,6 +195,7 @@ function backupDescriptor(filename, options = {}) {
     const stat = fs.statSync(filename);
     return {
         filename: path.basename(filename),
+        fullPath: path.resolve(filename),
         size: stat.size,
         createdAt: stat.mtime.toISOString(),
         valid: options.valid ?? null,
@@ -2629,6 +2630,24 @@ function hasSpatialLayout(value) {
     return Number(source.version || 0) >= 2 && source.transform && typeof source.transform === 'object';
 }
 
+function migratedSpatialLayout(source, normalized) {
+    // A necessary legacy coordinate conversion may add the current structural
+    // fields, but is not permission to discard another author's extensions.
+    const result = { ...safeObject(source), ...normalized,
+        transform: { ...safeObject(source?.transform), ...normalized.transform } };
+    for (const field of ['size', 'boundary']) {
+        if (normalized[field]) result[field] = { ...safeObject(source?.[field]), ...normalized[field] };
+    }
+    for (const field of ['lanes', 'rails']) {
+        if (!Array.isArray(normalized[field])) continue;
+        const originals = Array.isArray(source?.[field]) ? source[field] : [];
+        result[field] = normalized[field].map((item, index) => ({
+            ...safeObject(originals.find(original => String(original?.id || '') === item.id) || originals[index]), ...item
+        }));
+    }
+    return result;
+}
+
 function addSpatialPoint(bounds, point) {
     if (!point || !Number.isFinite(Number(point.x)) || !Number.isFinite(Number(point.z))) return bounds;
     const x = Number(point.x);
@@ -2664,6 +2683,34 @@ async function migrateSpatialHierarchyV2(db) {
     const firstWorkshopId = workshops[0].id;
     const workshopById = new Map(workshops.map(workshop => [String(workshop.id), workshop]));
     const lineById = new Map(lines.map(line => [String(line.id), line]));
+    const workshopMigrationIds = new Set(workshops.filter(workshop => !hasSpatialLayout(workshop.layout_json)).map(workshop => String(workshop.id)));
+    const lineMigrationIds = new Set(lines.filter(line => !hasSpatialLayout(line.layout_json)
+        || workshopMigrationIds.has(String(line.workshop_id))).map(line => String(line.id)));
+    const deviceMigrationIds = new Set(devices.filter(device => {
+        const line = lineById.get(effectiveDeviceLineId(device));
+        const configuredWorkshopId = configuredDeviceWorkshopId(device);
+        const workshopId = String(line?.workshop_id || configuredWorkshopId || firstWorkshopId);
+        // Explicit local coordinates belong to their saved parent, not to the
+        // set of other objects still needing migration. A v2 line can itself
+        // be rebased into a newly derived workshop while retaining its world
+        // basis; its already-local devices must not be rounded or relinked.
+        if (device.coordinate_space === 'line_local' && line && hasSpatialLayout(line.layout_json)) return false;
+        if (device.coordinate_space === 'workshop_local' && (line || configuredWorkshopId)
+            && workshopById.has(workshopId) && !workshopMigrationIds.has(workshopId)) return false;
+        return true;
+    }).map(device => String(device.id)));
+    const environmentRow = await db.get('SELECT value FROM settings WHERE `key` = ?', ['native_environment_config']);
+    const environment = safeObject(environmentRow?.value);
+    const walls = Array.isArray(environment.walls) ? environment.walls : [];
+    const wallMigrationIndices = new Set(walls.flatMap((wall, index) => {
+        const workshopId = String(wall?.workshopId || wall?.workshop_id || '').trim();
+        return wall?.coordinateSpace === 'workshop_local' && workshopById.has(workshopId)
+            && !workshopMigrationIds.has(workshopId) ? [] : [index];
+    }));
+    // No new marker: the saved coordinate/layout contract is the authority.
+    // Besides preventing repeated +/-PI wrapping, this preserves the exact
+    // authored precision and JSON bytes on every commissioned-app restart.
+    if (!workshopMigrationIds.size && !lineMigrationIds.size && !deviceMigrationIds.size && !wallMigrationIndices.size) return;
     const initialWorkshopTransforms = new Map();
     const initialLineWorldTransforms = new Map();
     const lineLayoutSources = new Map();
@@ -2747,12 +2794,10 @@ async function migrateSpatialHierarchyV2(db) {
         } else {
             const initialWorld = initialLineWorldTransforms.get(lineId) || normalizeSpatialTransform({});
             const localPosition = parentToLocalPoint(initialWorld, workshopLayout.transform);
-            lineLayout = normalizeLineLayout(source, {
-                x: localPosition.x,
-                y: localPosition.y,
-                z: localPosition.z,
+            lineLayout = normalizeLineLayout({ ...source, transform: { ...safeObject(source.transform),
+                x: localPosition.x, y: localPosition.y, z: localPosition.z,
                 rotationY: normalizeAngleDegrees(initialWorld.rotationY - workshopLayout.transform.rotationY)
-            });
+            } });
         }
         finalLineLayouts.set(lineId, lineLayout);
         finalLineWorldTransforms.set(
@@ -2761,9 +2806,8 @@ async function migrateSpatialHierarchyV2(db) {
         );
     });
 
-    const environmentRow = await db.get('SELECT value FROM settings WHERE `key` = ?', ['native_environment_config']);
-    const environment = safeObject(environmentRow?.value);
-    const normalizedWalls = (Array.isArray(environment.walls) ? environment.walls : []).map((rawWall, index) => {
+    const normalizedWalls = walls.map((rawWall, index) => {
+        if (!wallMigrationIndices.has(index)) return rawWall;
         const wall = rawWall && typeof rawWall === 'object' ? { ...rawWall } : {};
         const existingWorkshopId = String(wall.workshopId || wall.workshop_id || '').trim();
         let workshopId = workshopById.has(existingWorkshopId) ? existingWorkshopId : '';
@@ -2811,14 +2855,21 @@ async function migrateSpatialHierarchyV2(db) {
 
     await db.transaction(async (tx) => {
         for (const workshop of workshops) {
+            if (!workshopMigrationIds.has(String(workshop.id))) continue;
             const layout = finalWorkshopLayouts.get(String(workshop.id)) || defaultWorkshopLayout();
-            await tx.run('UPDATE workshops SET layout_json = ? WHERE id = ?', [JSON.stringify(layout), workshop.id]);
+            await tx.run('UPDATE workshops SET layout_json = ? WHERE id = ?', [
+                JSON.stringify(migratedSpatialLayout(safeObject(workshop.layout_json), layout)), workshop.id
+            ]);
         }
         for (const line of lines) {
+            if (!lineMigrationIds.has(String(line.id))) continue;
             const layout = finalLineLayouts.get(String(line.id)) || normalizeLineLayout(line.layout_json);
-            await tx.run('UPDATE `lines` SET layout_json = ? WHERE id = ?', [JSON.stringify(layout), line.id]);
+            await tx.run('UPDATE `lines` SET layout_json = ? WHERE id = ?', [
+                JSON.stringify(migratedSpatialLayout(safeObject(line.layout_json), layout)), line.id
+            ]);
         }
         for (const device of devices) {
+            if (!deviceMigrationIds.has(String(device.id))) continue;
             const inferredLineId = effectiveDeviceLineId(device);
             const line = lineById.get(inferredLineId);
             const workshopId = String(line?.workshop_id || configuredDeviceWorkshopId(device) || firstWorkshopId);
@@ -2858,10 +2909,12 @@ async function migrateSpatialHierarchyV2(db) {
                 device.id
             ]);
         }
-        await tx.run('UPDATE settings SET value = ? WHERE `key` = ?', [
-            JSON.stringify({ ...environment, version: 3, walls: normalizedWalls }),
-            'native_environment_config'
-        ]);
+        if (wallMigrationIndices.size) {
+            await tx.run('UPDATE settings SET value = ? WHERE `key` = ?', [
+                JSON.stringify({ ...environment, version: 3, walls: normalizedWalls }),
+                'native_environment_config'
+            ]);
+        }
     });
 }
 

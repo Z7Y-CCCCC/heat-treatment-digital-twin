@@ -47,6 +47,7 @@ const {
     getSiteBackupStatus,
     loadSiteBackupConfig,
     saveSiteBackupConfig,
+    cleanupSiteBackups,
     startSiteBackupMaintenance,
     stopSiteBackupMaintenance,
     resolveSiteBackupPath,
@@ -817,8 +818,9 @@ app.get('/api/site-backups/config', (req, res) => {
 app.put('/api/site-backups/config', backupOperationLimiter, runDatabaseOperation(async (req, res) => {
     try {
         const config = saveSiteBackupConfig(req.body || {});
-        await startSiteBackupMaintenance(uploadsRootDir);
-        res.json({ success: true, config, status: getSiteBackupStatus() });
+        const cleanup = await cleanupSiteBackups('policy-save');
+        await startSiteBackupMaintenance(uploadsRootDir, { skipCleanup: true });
+        res.json({ success: true, config, cleanup, status: getSiteBackupStatus() });
     } catch (e) {
         res.status(400).json({ success: false, error: e.message });
     }

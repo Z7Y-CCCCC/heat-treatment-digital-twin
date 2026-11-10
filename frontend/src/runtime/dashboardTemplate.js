@@ -1,5 +1,6 @@
 import {MAX_DASHBOARD_WIDGETS} from '../../../shared/dashboardLimits.mjs'
 import { DASHBOARD_SCHEMA_VERSION, normalizeDashboardDocument } from './dashboardSchema.js'
+import { sourceBindingEntries } from '../../../shared/widgetBindingWorkflow.mjs'
 import { MAX_TOOLTIP_TEMPLATES, MAX_TOOLTIP_WIDGETS, tooltipDocumentWidgets } from '../../../shared/tooltipTemplates.mjs'
 
 export const DASHBOARD_TEMPLATE_FORMAT = 'dashboard-template'
@@ -86,10 +87,11 @@ export function rebindDashboardTemplate(document, mapping, catalog) {
     owner[field] = target
   })
   for (const widget of tooltipDocumentWidgets(result)) {
-    const data = widget.data
+    for(const entry of sourceBindingEntries(widget)){
+    const data = entry.binding
     const point = (catalog.points || []).find(row => String(row.id) === data.pointId)
-    if (data.deviceId && data.pointId) {
-      if (point?.device_id && String(point.device_id) !== data.deviceId) throw new Error(`组件“${widget.title || widget.id}”的点位不属于所选设备`)
+    if (entry.deviceId && data.pointId) {
+      if (point?.device_id && String(point.device_id) !== entry.deviceId) throw new Error(`组件“${widget.title || widget.id}”的点位不属于所选设备`)
     }
     if (data.mode === 'plc' && point) {
       const key = point.value_role || point.field_name || point.name
@@ -108,6 +110,7 @@ export function rebindDashboardTemplate(document, mapping, catalog) {
         if (source?.sourceType === 'http_api' || source?.type === 'http_api') throw new Error(`组件“${widget.title || widget.id}”的数据集必须绑定数据库`)
       }
     }
+  }
   }
   return normalizeDashboardDocument(result)
 }

@@ -72,15 +72,17 @@ async function main() {
         q.enqueue(frame(motion('a','run',true,1000)));
         q.enqueue(frame(motion('b','open',false,1100)));
         q.enqueue(frame(motion('a','speed',0,1200)));
-        assert.equal(q.queue.length,1); assert.equal(q.queue[0].kind,'motion-input');
-        const merged = q.queue[0].message.payload.devices.find(d=>d.furnace_id==='a');
-        assert.equal(merged.motionInputOnly,true); assert.equal(merged.analog,undefined);
-        assert.equal(merged.motionInputs.run.timestamp,1000); assert.equal(merged.motionInputs.speed.timestamp,1200);
+        assert.equal(q.queue.length,2); assert.equal(q.queue[0].kind,'motion-input');
+        const first = q.queue[0].message.payload.devices.find(d=>d.furnace_id==='a');
+        const latest = q.queue[1].message.payload.devices.find(d=>d.furnace_id==='a');
+        assert.equal(latest.motionInputOnly,true); assert.equal(latest.analog,undefined);
+        assert.equal(first.motionInputs.run.timestamp,1000); assert.equal(latest.motionInputs.speed.timestamp,1200);
+        assert.equal(latest.motionInputs.run,undefined,'complete source snapshots must not resurrect omitted actions');
         q.enqueue(frame(motion('a','run',null,1000,'bad')));
         q.enqueue(frame(motion('a','run',true,1300)));
-        assert.deepEqual(q.queue.map(entry=>entry.kind),['motion-input','reliable','motion-input'],'bad motion quality is a reliable ordering barrier');
+        assert.deepEqual(q.queue.map(entry=>entry.kind),['motion-input','motion-input','reliable','motion-input'],'bad motion quality is a reliable ordering barrier');
         while (socket.callbacks.length) socket.flush();
-        assert.equal(socket.sent[2].payload.devices[0].motionInputs.run.quality,'bad'); q.dispose();
+        assert.equal(socket.sent[3].payload.devices[0].motionInputs.run.quality,'bad'); q.dispose();
     }
     console.log('PASS motion-only coalescing remains separate from complete telemetry and preserves sample/fault clocks');
 

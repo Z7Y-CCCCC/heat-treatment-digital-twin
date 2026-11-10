@@ -25,9 +25,13 @@ export function catalogItemUsable(item, options = {}) {
   if (options.tooltip) return !options.widgetType || ['text', 'value', 'status'].includes(options.widgetType)
   if (options.mapContext && binding.mode !== 'dataset') return false
   if (!options.widgetType) return true
+  if (options.widgetType === 'image') return item.type === 'string' && ['runtime', 'plc', 'dataset'].includes(binding.mode)
   if (binding.mode === 'dataset') return DATASET_WIDGETS.has(options.widgetType)
   if (!POINT_WIDGETS.has(options.widgetType)) return false
   if (['trend', 'hud_chart_dock'].includes(options.widgetType)) return binding.mode === 'plc' && item.type === 'number'
+  if (['metrics','hud_kpi_panel'].includes(options.widgetType)) return binding.mode === 'plc' && item.type === 'number'
+    || binding.mode === 'runtime' && (String(binding.path || '').startsWith('metrics.') || /^selectedPart\.points\.\d+\.value$/.test(binding.path || ''))
+  if (['alarm_list','hud_alarm_panel','marquee'].includes(options.widgetType)) return binding.mode === 'runtime' && binding.path === 'events'
   if (!['text', 'value', 'status'].includes(options.widgetType)) return binding.mode === 'runtime' && String(binding.path || '').startsWith('metrics.')
   return true
 }

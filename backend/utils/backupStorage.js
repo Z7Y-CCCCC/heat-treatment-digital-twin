@@ -24,8 +24,16 @@ function resolveBackupBudget({ dataDir, directory, kind, envValue, defaultBytes,
         }
     }
     if (Number.isFinite(explicit) && explicit > 0) {
-        stored = { maxTotalBytes: Math.round(explicit), source: 'environment', configuredAt: new Date().toISOString() };
+        const maxTotalBytes = Math.round(explicit);
+        // Loading an unchanged policy is a read, not a new configuration event.
+        // Retain its exact bytes, authoring time and any operator extensions.
+        if (stored?.source === 'environment' && stored.maxTotalBytes === maxTotalBytes) return stored;
+        stored = { ...stored, maxTotalBytes, source: 'environment', configuredAt: new Date().toISOString() };
     } else if (stored && !['legacy-preserved', 'new-install', 'default-migrated'].includes(stored.source)) {
+        return stored;
+    } else if (stored && ['new-install', 'default-migrated'].includes(stored.source) && stored.maxTotalBytes === defaultBytes) {
+        // A new installation remains one after its first backup is created.
+        // Only an actual old-budget migration should change this declaration.
         return stored;
     } else {
         let existing = false;
@@ -35,6 +43,7 @@ function resolveBackupBudget({ dataDir, directory, kind, envValue, defaultBytes,
             if (error.code !== 'ENOENT') return { maxTotalBytes: 20 * GiB, source: 'inspection-error-preserved', warning: error.message };
         }
         stored = {
+            ...stored,
             maxTotalBytes: defaultBytes,
             source: existing ? 'default-migrated' : 'new-install',
             configuredAt: new Date().toISOString(),

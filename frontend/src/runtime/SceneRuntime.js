@@ -4,6 +4,7 @@ import { applyConfiguredDeviceTransform, applyRealtimeToDeviceModel, createConfi
 import { createBatchedDeviceRenderer, getBatchableModelInfo } from './BatchDeviceRenderer.js';
 import { shouldOptimizeModelGroup } from './modelOptimization.js';
 import { deviceLocalToWorld, normalizeSpatialTransform } from '../utils/spatialLayout.js';
+import { resolveLineRailSpacing } from '../../../shared/lineRailSpacing.mjs';
 
 function parseInstanceConfig(raw) {
     if (!raw) return {};
@@ -44,7 +45,8 @@ function normalizeLineLayoutItems(items, type) {
             type: isRail ? 'cart_rail' : 'device_lane',
             offsetZ: numberOrDefault(item?.offsetZ ?? item?.offset_z ?? item?.z, isRail ? 4 : 0),
             length: Math.max(1, numberOrDefault(item?.length, 60)),
-            sort_order: numberOrDefault(item?.sort_order, index)
+            sort_order: numberOrDefault(item?.sort_order, index),
+            ...(isRail && item?.spacing != null ? { spacing: item.spacing } : {})
         }))
         .sort((a, b) => a.sort_order - b.sort_order);
 }
@@ -64,14 +66,14 @@ function getLineLayout(line) {
             sort_order: 0
         });
     }
-    return {
+    return resolveLineRailSpacing({
         version: Number(source.version || 1),
         coordinateSpace: source.coordinateSpace || (Number(source.version || 0) >= 2 ? 'workshop_local' : 'legacy_world'),
         transform: normalizeSpatialTransform(source.transform),
         flowDirection,
         lanes,
         rails
-    };
+    });
 }
 
 function lineUsesStructuredLayout(line) {
@@ -143,7 +145,11 @@ function applyLineLayoutToDevice(deviceCfg, line, globalLineIndex, targetOverrid
         return next;
     }
 
-    next.pos_z = getLineBaseZ(globalLineIndex, line) + layoutOffsetToSceneZ(target.item.offsetZ);
+    // A saved line-local origin can differ from the centre line after real
+    // loading-port calibration. Do not undo that user configuration at render.
+    if (!lineUsesStructuredLayout(line) || next.pos_z === undefined || next.pos_z === null || next.pos_z === '') {
+        next.pos_z = getLineBaseZ(globalLineIndex, line) + layoutOffsetToSceneZ(target.item.offsetZ);
+    }
 
     if (target.type === 'rail') {
         config.role = next.model_type === 'transfer_cart' ? 'transfer_cart' : (config.role || 'auxiliary');

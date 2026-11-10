@@ -8,6 +8,11 @@ const { getBuiltinModels } = require('../services/builtinModels');
 const { TRANSFORM_FIELDS, LAYOUT_CONFIG_FIELDS } = require('../../shared/deviceAuthoring.mjs');
 const { normalizeDeviceGround } = require('../../shared/industrialGround.mjs');
 const { loadDeviceAnimations, validateDeviceAnimations, publicDeviceAnimations } = require('../services/deviceAnimations');
+const { assertMotionPositionOwnership } = require('../services/motionPositionOwnership');
+const { validateMovementConfig, validateMovementSources } = require('../services/movementConfig');
+const { assertDeviceLineUnits, loadDeviceLineContext } = require('../services/deviceLineUnits');
+const { validateTransferSelection, publicTransferLink } = require('../services/transferLink');
+const { validateEndpointSource, sourceFingerprint } = require('../services/deviceAnimations');
 const { loadDeviceLoadingPorts, publicDeviceLoadingPorts, saveDeviceLoadingPorts, normalizeInstanceLoadingPorts } = require('../services/loadingPorts');
 const { saveLoadingAlignment } = require('../services/deviceLoadingAlignment');
 
@@ -50,6 +55,7 @@ router.put('/:id/animations', async (req, res) => {
             const config = validateDeviceAnimations(loaded, req.body);
             // Re-resolve point ownership and model identity within the transaction.
             const instance = { ...loaded.instance, animationBindings: config };
+            await assertDeviceLineUnits(tx, loaded.device, instance, req.factoryId);
             const dialect = getDbStatus().type;
             // MySQL returns native JSON objects; raw COALESCE(JSON, '') compares
             // unlike representations and can falsely reject an unchanged row.
@@ -102,6 +108,7 @@ async function applyTransform(tx, id, body, factoryId) {
     for (const [key, value] of Object.entries(body.layoutConfig || {})) { if (value === null) delete config[key]; else config[key] = value; }
     for (const key of ['workshop_id', 'workshopId']) if (config[key] && !await tx.get('SELECT id FROM workshops WHERE id = ? AND factory_id = ?', [config[key], factoryId])) throw new Error('车间不属于当前工厂');
     for (const key of ['laneLineId', 'railLineId']) if (config[key] && !await lineBelongsToFactory(tx, config[key], factoryId)) throw new Error('绑定产线不属于当前工厂');
+    await assertDeviceLineUnits(tx, { ...device, line_id: lineId }, config, factoryId);
     const fields = TRANSFORM_FIELDS.filter(key => body[key] !== undefined);
     await tx.run(`UPDATE devices SET ${fields.map(key => `${key}=?`).concat('instance_config=?').join(',')} WHERE id=?`,
         [...fields.map(key => body[key]), JSON.stringify(config), id]);
@@ -140,16 +147,30 @@ router.put('/:id/transform', async (req, res) => {
 router.put('/:id/movement', async (req, res) => {
     try {
         const body = req.body;
-        if (!body || Array.isArray(body) || Object.keys(body).some(key => !['movement', 'pointIds'].includes(key))
+        if (!body || Array.isArray(body) || Object.keys(body).some(key => !['movement', 'pointIds', 'expectedMovement'].includes(key))
             || !body.movement || typeof body.movement !== 'object' || Array.isArray(body.movement)
             || Buffer.byteLength(JSON.stringify(body.movement)) > 32768) throw new Error('设备运动配置格式无效');
+        validateMovementConfig(body.movement);
+        if (body.expectedMovement !== undefined && body.expectedMovement !== null
+            && (typeof body.expectedMovement !== 'object' || Array.isArray(body.expectedMovement)
+                || Buffer.byteLength(JSON.stringify(body.expectedMovement)) > 32768)) throw new Error('运动配置比较快照无效');
         const ids = body.pointIds || [];
         if (!Array.isArray(ids) || ids.length > 2 || ids.some(id => !['string', 'number'].includes(typeof id) || String(id).length > 120)) throw new Error('运动点位无效');
         const db = await getDb();
         const config = await db.transaction(async tx => {
             const device = await tx.get('SELECT * FROM devices WHERE id = ?', [req.params.id]);
             if (!await deviceBelongsToFactory(tx, device, req.factoryId)) throw Object.assign(new Error('设备不存在'), { statusCode: 404 });
-            const config = { ...parseJson(device.instance_config), movement: body.movement };
+            const previous = parseJson(device.instance_config);
+            if (body.expectedMovement !== undefined && canonicalJson(previous.movement ?? null) !== canonicalJson(body.expectedMovement)) throw Object.assign(new Error('移动配置或导轨间距已更新，请重新读取后保存'), { statusCode:409 });
+            await validateMovementSources(tx, device, body.movement, req.factoryId, deviceBelongsToFactory);
+            const config = { ...previous, movement: body.movement };
+            await assertDeviceLineUnits(tx, device, config, req.factoryId);
+            if (body.movement.enabled === true || config.animationBindings?.transferLink?.enabled === true) {
+                const hasTransfer = config.animationBindings?.transferLink?.enabled === true;
+                const animations = await loadDeviceAnimations(tx, device.id, req.factoryId, { includeTransferTargets:hasTransfer, includePositionOwnership:body.movement.enabled === true });
+                assertMotionPositionOwnership(animations, config.animationBindings?.bindings, body.movement);
+                if (hasTransfer) validateTransferSelection({ ...animations, instance:config }, publicTransferLink(config.animationBindings.transferLink), config.animationBindings.bindings || [], validateEndpointSource, sourceFingerprint);
+            }
             for (const id of new Set(ids.map(String))) {
                 if (!await tx.get('SELECT id FROM data_points WHERE id = ? AND device_id = ?', [id, device.id])) throw new Error('运动点位不属于此设备');
                 await tx.run('UPDATE data_points SET sample_interval_ms = ? WHERE id = ? AND device_id = ?', [100, id, device.id]);
@@ -339,7 +360,8 @@ router.get('/:id', async (req, res) => {
         if (!await deviceBelongsToFactory(db, device, req.factoryId)) return res.status(404).json({ error: '设备不存在' });
 
         const dataPoints = await db.all('SELECT * FROM data_points WHERE device_id = ?', [req.params.id]);
-        res.json({ ...publicDevice(device), dataPoints });
+        const line = await loadDeviceLineContext(db, device, parseJson(device.instance_config), req.factoryId);
+        res.json({ ...publicDevice(device), dataPoints, ...(line ? { lineLayout: line.layout } : {}) });
     } catch (e) {
         res.status(500).json({ error: e.message });
     }
@@ -374,7 +396,9 @@ router.post('/', async (req, res) => {
         }
         const protocol = normalizeProtocolValue(plc_protocol || 'S7');
         const normalizedOptions = normalizePlcOptionsValue(protocol, plc_options);
-        await db.run(`INSERT INTO devices (
+        await db.transaction(async tx => {
+        await assertDeviceLineUnits(tx, { id, name, line_id }, instance_config, req.factoryId);
+        await tx.run(`INSERT INTO devices (
             id, name, line_id, model_type, model_file, template_id, instance_config,
             pos_x, pos_y, pos_z, rotation_y, scale, coordinate_space, sort_order,
             plc_enabled, plc_protocol, plc_ip, plc_port, plc_rack, plc_slot,
@@ -411,6 +435,7 @@ router.post('/', async (req, res) => {
             numberWithDefault(plc_max_retries, 0),
             normalizedOptions
         ]);
+        });
         restartDataEngineSoon('create device', req.factoryId);
         broadcastDeviceConfigurationChanged(id, instance_config);
         res.json({ success: true, id });
@@ -458,7 +483,9 @@ router.put('/:id', async (req, res) => {
             ? coordinate_space
             : (nextLineId ? 'line_local' : 'workshop_local');
 
-        await db.run(`UPDATE devices SET name=?, line_id=?, model_type=?, model_file=?,
+        await db.transaction(async tx => {
+        await assertDeviceLineUnits(tx, { ...existing, line_id: nextLineId, name }, nextInstanceConfig, req.factoryId);
+        await tx.run(`UPDATE devices SET name=?, line_id=?, model_type=?, model_file=?,
             template_id=?, instance_config=?, pos_x=?, pos_y=?, pos_z=?,
             rotation_y=?, scale=?, coordinate_space=?, sort_order=?, plc_enabled=?, plc_protocol=?, plc_ip=?,
             plc_port=?, plc_options=?, plc_rack=?, plc_slot=?, plc_timeout=?, plc_retry_interval=?,
@@ -488,6 +515,7 @@ router.put('/:id', async (req, res) => {
             numberWithDefault(plc_max_retries, 0),
             req.params.id
         ]);
+        });
         restartDataEngineSoon('update device', req.factoryId);
         broadcastDeviceConfigurationChanged(req.params.id, nextInstanceConfig);
         res.json({ success: true });

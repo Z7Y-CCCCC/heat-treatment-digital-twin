@@ -22,6 +22,7 @@ namespace HeatTreatment.DigitalTwin.Rendering
             public bool HasPose;
             public bool Suspended;
             public JObject RuntimeBinding;
+            public JObject LegacyObservationBinding;
             public MotionSignalState Signal;
         }
 
@@ -29,6 +30,25 @@ namespace HeatTreatment.DigitalTwin.Rendering
         private MaterialPropertyBlock _propertyBlock;
         private float _lastRealtimeAt = float.NegativeInfinity;
         public float DataTimeoutSeconds { get; set; } = 10f;
+        public JObject TransferDiagnostic { get; set; }
+        public bool TryGetTransferDrive(string actionId, string nodeName, out Transform node, out Vector3 rest,
+            out Vector3 maximumDisplacement, out string reason)
+        {
+            node = null; rest = maximumDisplacement = Vector3.zero; reason = "送料动作未启用";
+            var state = _states.FirstOrDefault(item => item.RuntimeBinding?.Value<string>("actionId") == actionId);
+            if (state == null) return false;
+            if (state.Binding.Action != "translate" || state.Target?.name != nodeName) { reason = "送料参考节点不属于该动作的位置通道"; return false; }
+            if (!state.Signal.Usable || !state.Signal.HasSample) { reason = state.Signal.Reason; return false; }
+            node = state.Target;
+            var axis = state.Binding.AuthoringSpace && state.Binding.Axis == "x" ? Vector3.left : Axis(state.Binding.Axis);
+            rest = state.BasePosition + axis * state.Binding.OutputMin;
+            maximumDisplacement = axis * (state.Binding.OutputMax - state.Binding.OutputMin);
+            reason = "送料动作数据正常"; return maximumDisplacement.sqrMagnitude > .00000001f;
+        }
+        public void SuspendInputs(string reason = "采集连接中断")
+        {
+            foreach (var state in _states) { state.Signal.Suspend(reason); state.Suspended = true; state.AngularSpeedDegrees = 0; }
+        }
         public JObject CaptureEndpointDisplayStates()
         {
             var result = new JObject();
@@ -93,6 +113,8 @@ namespace HeatTreatment.DigitalTwin.Rendering
                     BasePosition = target.localPosition,
                     BaseRotation = target.localRotation,
                     RuntimeBinding = rows.FirstOrDefault(row => row.Value<bool?>("enabled") == true && row.Value<string>("actionId") == "part:" + binding.Id),
+                    LegacyObservationBinding = string.IsNullOrWhiteSpace(binding.PointId) ? null : new JObject {
+                        ["pointId"] = binding.PointId, ["sourceGroup"] = binding.SourceGroup ?? "analog", ["sourceKey"] = binding.SourceKey ?? "" },
                     Signal = new MotionSignalState()
                 });
             }
@@ -107,42 +129,55 @@ namespace HeatTreatment.DigitalTwin.Rendering
                 var binding = state.Binding;
                 if (state.RuntimeBinding != null)
                 {
-                    state.Signal.Receive(deviceData, state.RuntimeBinding, receivedAt);
+                    state.Signal.Receive(deviceData, state.RuntimeBinding, receivedAt, now.HasValue ? (double?)null : DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
                     state.Signal.Step(0, receivedAt, DataTimeoutSeconds * 1000, state.RuntimeBinding);
                     ApplyRuntimeState(state);
                     continue;
+                }
+                if (deviceData?.Value<bool?>("motionInputOnly") == true) continue;
+                var freshAcquisition = state.LegacyObservationBinding != null && (!state.Signal.HasSample || !state.Signal.Usable);
+                if (state.LegacyObservationBinding != null)
+                {
+                    var accepted = state.Signal.ReceiveObservationOnly(deviceData, state.LegacyObservationBinding, receivedAt,
+                        now.HasValue ? (double?)null : DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+                    state.Signal.Step(0, receivedAt, DataTimeoutSeconds * 1000, state.LegacyObservationBinding);
+                    if (!accepted || !state.Signal.Usable)
+                    {
+                        if (!state.Signal.Usable) { state.Suspended = true; state.AngularSpeedDegrees = 0; }
+                        continue;
+                    }
                 }
                 var token = ReadBindingValue(deviceData, binding, out var group);
                 state.Suspended = !IsUsable(deviceData, group, binding.SourceKey)
                     || (!string.IsNullOrEmpty(binding.PointId) && deviceData?["pointMeta"]?[group + "." + binding.SourceKey]?["id"] != null && deviceData["pointMeta"][group + "." + binding.SourceKey].Value<string>("id") != binding.PointId)
                     || token == null || token.Type == JTokenType.Null;
-                if (state.Suspended) { state.AngularSpeedDegrees = 0; continue; }
+                if (state.Suspended) { state.AngularSpeedDegrees = 0; if (state.LegacyObservationBinding != null) state.Signal.Suspend("部件来源数据无效"); continue; }
                 var action = binding.Action ?? "rotate_speed";
                 var numeric = action == "rotate_speed" || action == "rotate_angle" || action == "translate";
                 var value = 0f;
                 if (numeric && !TryFloat(token, out value))
-                { state.Suspended = true; state.AngularSpeedDegrees = 0; continue; }
+                { state.Suspended = true; state.AngularSpeedDegrees = 0; if (state.LegacyObservationBinding != null) state.Signal.Suspend("部件来源数据类型无效"); continue; }
                 if (action == "rotate_speed")
                 {
-                    state.AngularSpeedDegrees = value * binding.SpeedFactor * Mathf.Rad2Deg;
+                    SetAngularSpeed(state, value * binding.SpeedFactor * Mathf.Rad2Deg);
                 }
                 else if (action == "rotate_angle" || action == "translate")
                 {
                     state.TargetOffset = Map(value, binding.InputMin, binding.InputMax, binding.OutputMin, binding.OutputMax);
                     // First acquisition establishes the observed pose, without replaying a fictitious opening.
-                    if (!state.HasPose || binding.TransitionDuration <= 0)
+                    if (!state.HasPose || binding.TransitionDuration <= 0 || freshAcquisition)
                     { state.Offset = state.TargetOffset; ApplyPose(state); }
                     state.HasPose = true;
                 }
                 else if (action == "visibility")
                 {
-                    if (binding.AuthoringSpace && !TryFloat(token, out value)) { state.Suspended = true; continue; }
+                    if (binding.AuthoringSpace && !TryFloat(token, out value)) { state.Suspended = true; if (state.LegacyObservationBinding != null) state.Signal.Suspend("部件来源数据类型无效"); continue; }
                     var visible = binding.AuthoringSpace ? Map(value, binding.InputMin, binding.InputMax, 0, 1) > .5f : ToBool(token);
                     state.Target.gameObject.SetActive(binding.Invert ? !visible : visible);
                 }
                 else if (action == "color")
                 {
-                    if (binding.AuthoringSpace && !TryFloat(token, out value)) { state.Suspended = true; continue; }
+                    if (binding.AuthoringSpace && !TryFloat(token, out value)) { state.Suspended = true; if (state.LegacyObservationBinding != null) state.Signal.Suspend("部件来源数据类型无效"); continue; }
                     var active = binding.AuthoringSpace ? Map(value, binding.InputMin, binding.InputMax, 0, 1) > .5f : ToBool(token);
                     ApplyColor(state.Target, (active != binding.Invert) ? binding.OnColor : binding.OffColor, binding.AuthoringSpace);
                 }
@@ -155,7 +190,7 @@ namespace HeatTreatment.DigitalTwin.Rendering
             foreach (var state in _states)
             {
                 if (!MotionSignalState.IsCatalogBinding(state.RuntimeBinding)) continue;
-                state.Signal.Receive(deviceData, state.RuntimeBinding, receivedAt);
+                state.Signal.Receive(deviceData, state.RuntimeBinding, receivedAt, now.HasValue ? (double?)null : DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
                 state.Signal.Step(0, receivedAt, DataTimeoutSeconds * 1000, state.RuntimeBinding);
                 ApplyRuntimeState(state);
             }
@@ -164,7 +199,7 @@ namespace HeatTreatment.DigitalTwin.Rendering
         private void Update()
         {
             if (Time.realtimeSinceStartup - _lastRealtimeAt > DataTimeoutSeconds) foreach (var state in _states) { state.Suspended = true; state.AngularSpeedDegrees = 0; }
-            AdvanceMotion(Time.deltaTime);
+            AdvanceMotion(Time.unscaledDeltaTime);
         }
 
         public void AdvanceMotion(float deltaTime, double? now = null)
@@ -176,12 +211,17 @@ namespace HeatTreatment.DigitalTwin.Rendering
                 {
                     state.Signal.Step(deltaTime, now ?? Time.realtimeSinceStartupAsDouble, DataTimeoutSeconds * 1000, state.RuntimeBinding);
                     ApplyRuntimeState(state);
-                    if (!state.Suspended && state.Binding.Action == "rotate_speed") state.Target.Rotate(RotationAxis(state.Binding), state.AngularSpeedDegrees * deltaTime, Space.Self);
+                    if (!state.Suspended && state.Binding.Action == "rotate_speed") RotateAtSpeed(state, deltaTime);
                     continue;
+                }
+                if (state.LegacyObservationBinding != null)
+                {
+                    state.Signal.Step(0, now ?? Time.realtimeSinceStartupAsDouble, DataTimeoutSeconds * 1000, state.LegacyObservationBinding);
+                    if (!state.Signal.Usable) { state.Suspended = true; state.AngularSpeedDegrees = 0; }
                 }
                 if (state.Suspended || state.Target == null) continue;
                 if ((state.Binding.Action ?? "rotate_speed") == "rotate_speed")
-                    state.Target.Rotate(RotationAxis(state.Binding), state.AngularSpeedDegrees * deltaTime, Space.Self);
+                    RotateAtSpeed(state, deltaTime);
                 else if (state.HasPose && state.Binding.TransitionDuration > 0)
                 {
                     var range = Mathf.Abs(state.Binding.OutputMax - state.Binding.OutputMin);
@@ -202,7 +242,7 @@ namespace HeatTreatment.DigitalTwin.Rendering
             {
                 var condition = state.RuntimeBinding["trigger"]?.Value<string>("mode") == "condition";
                 var direction = !condition && state.RuntimeBinding.Value<bool?>("invert") == true ? -1 : 1;
-                state.AngularSpeedDegrees = (float)state.Signal.NumericValue * binding.SpeedFactor * Mathf.Rad2Deg * (state.RuntimeBinding.Value<float?>("speed") ?? 1) * direction;
+                SetAngularSpeed(state, (float)state.Signal.NumericValue * binding.SpeedFactor * Mathf.Rad2Deg * (state.RuntimeBinding.Value<float?>("speed") ?? 1) * direction);
             }
             else if (action == "translate" || action == "rotate_angle")
             {
@@ -211,6 +251,24 @@ namespace HeatTreatment.DigitalTwin.Rendering
             }
             else if (action == "visibility") state.Target.gameObject.SetActive(state.Signal.Position > .5);
             else if (action == "color") ApplyColor(state.Target, state.Signal.Position > .5 ? binding.OnColor : binding.OffColor, binding.AuthoringSpace);
+        }
+
+        private static void SetAngularSpeed(BindingState state, float speed)
+        {
+            if (!float.IsNaN(speed) && !float.IsInfinity(speed)) { state.AngularSpeedDegrees = speed; return; }
+            state.AngularSpeedDegrees = 0; state.Suspended = true;
+            state.Signal.Suspend("部件转速超出可显示范围");
+        }
+
+        private static void RotateAtSpeed(BindingState state, float deltaTime)
+        {
+            var angle = state.AngularSpeedDegrees * deltaTime;
+            if (float.IsNaN(angle) || float.IsInfinity(angle))
+            {
+                state.AngularSpeedDegrees = 0; state.Suspended = true;
+                state.Signal.Suspend("部件旋转步长超出可显示范围"); return;
+            }
+            state.Target.Rotate(RotationAxis(state.Binding), angle, Space.Self);
         }
 
         private static void ApplyPose(BindingState state)

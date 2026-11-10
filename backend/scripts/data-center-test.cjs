@@ -46,7 +46,7 @@ let closeDb;
     const bad = await center.buildCatalog(factoryId, point.deviceId);
     assert.equal(bad.items.find(i => i.id === point.id).previewValue, null); assert.equal(bad.items.find(i => i.id === point.id).quality, 'bad');
     assert.equal(bad.items.find(i => i.id === 'internal_device_status').previewValue, '数据异常 / 未连接');
-    global.dataEngine = { getPointRuntimeValues: async deviceId => ({ deviceStatus: { quality: 'good' }, points: [{ id: point.binding.pointId, device_id: deviceId, value: 0, quality: 'good' }] }) };
+    global.dataEngine = { getPointRuntimeValues: async deviceId => ({ deviceStatus: { quality: 'good' }, points: [{ id: point.binding.pointId, device_id: deviceId, value: 0, quality: 'good', lastReadAt:Date.now() }] }) };
     const live = await center.buildCatalog(factoryId, point.deviceId);
     assert.equal(live.items.find(i => i.id === point.id).previewValue, 0);
     assert.equal(live.items.find(i => i.id === 'internal_device_status').previewValue, '数据正常');

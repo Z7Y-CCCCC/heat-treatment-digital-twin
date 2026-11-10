@@ -2,6 +2,7 @@ const assert = require('assert/strict');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { spawnSync } = require('child_process');
 const { GiB, resolveBackupBudget, copyAndHash, ensureDiskSpace, shouldStore } = require('../utils/backupStorage');
 const { createRunDirectory } = require('./integration-test-utils.cjs');
 
@@ -16,12 +17,53 @@ function savePolicy(options, policy) {
     fs.writeFileSync(path.join(options.dataDir, `backup-storage-${options.kind}.json`), JSON.stringify(policy));
 }
 
+function policyFile(options) { return path.join(options.dataDir, `backup-storage-${options.kind}.json`); }
+function resolveAfterRestart(options) {
+    // The real resolver in a new Node process, with only an isolated test data
+    // directory. No server initialization, live profile or database access.
+    const script = `const {resolveBackupBudget}=require(${JSON.stringify(require.resolve('../utils/backupStorage'))});
+        const options=JSON.parse(process.argv[1]);options.matches=name=>/\\.(db|sql\\.gz|zip)$/i.test(name);
+        process.stdout.write(JSON.stringify(resolveBackupBudget(options)));`;
+    const result = spawnSync(process.execPath, ['-e', script, JSON.stringify(options)], { encoding: 'utf8', timeout: 15000 });
+    assert.equal(result.status, 0, result.stderr || result.error?.message);
+    assert.equal(result.stderr, '');
+    return JSON.parse(result.stdout);
+}
+function assertUnchangedPolicy(options, expected, { restarts = true } = {}) {
+    const file = policyFile(options), before = fs.readFileSync(file), beforeStat = fs.statSync(file, { bigint: true });
+    for (let n = 0; n < 3; n++) {
+        assert.deepEqual(resolveBackupBudget(options), expected);
+        if (restarts) assert.deepEqual(resolveAfterRestart(options), expected);
+        assert.ok(fs.readFileSync(file).equals(before), 'Reading a policy must preserve its exact original bytes');
+    }
+    const afterStat = fs.statSync(file, { bigint: true });
+    assert.equal(afterStat.mtimeNs, beforeStat.mtimeNs, 'Unchanged policy must not be rewritten');
+    assert.equal(afterStat.ctimeNs, beforeStat.ctimeNs, 'Unchanged policy must not be atomically replaced');
+}
+
 async function main() {
     const fresh = policyOptions('fresh');
     assert.equal(resolveBackupBudget(fresh).maxTotalBytes, 2 * GiB);
     const site = policyOptions('site', { kind: 'site', defaultBytes: 4 * GiB });
     assert.equal(resolveBackupBudget(site).maxTotalBytes, 4 * GiB);
     checks.newCombinedDefaultIsSixGiB = true;
+
+    const freshPolicy = JSON.parse(fs.readFileSync(policyFile(fresh), 'utf8'));
+    assertUnchangedPolicy(fresh, freshPolicy);
+    fs.mkdirSync(fresh.directory, { recursive: true });
+    fs.writeFileSync(path.join(fresh.directory, 'first.db'), 'first recovery point');
+    assertUnchangedPolicy(fresh, freshPolicy);
+    assertUnchangedPolicy(site, JSON.parse(fs.readFileSync(policyFile(site), 'utf8')));
+    checks.newInstallRepeatedReadsAndRestartsPreservePolicyBytes = true;
+
+    for (const source of ['new-install', 'default-migrated']) {
+        const stable = policyOptions(`stable-${source}`);
+        const policy = { maxTotalBytes: 2 * GiB, source, configuredAt: '2001-02-03T04:05:06.007Z',
+            note: 'operator retained text', extension: { site: 'fixture', calibration: [0, 1] } };
+        savePolicy(stable, policy);
+        assertUnchangedPolicy(stable, policy);
+    }
+    checks.currentDefaultBudgetsRetainAuthoringTimeAndUnknownExtensions = true;
 
     const legacy = policyOptions('legacy');
     fs.mkdirSync(legacy.directory, { recursive: true });
@@ -33,6 +75,20 @@ async function main() {
     assert.equal(fs.readFileSync(oldBackup, 'utf8'), 'keep this recovery point');
     checks.legacyDefaultMigratesWithoutDeletingBackups = true;
 
+    const migratedPolicy = JSON.parse(fs.readFileSync(policyFile(legacy), 'utf8'));
+    assert.equal(migratedPolicy.source, 'default-migrated');
+    assertUnchangedPolicy(legacy, migratedPolicy);
+    for (const source of ['legacy-preserved', 'new-install', 'default-migrated']) {
+        const old = policyOptions(`old-${source}`), oldTime = '2001-02-03T04:05:06.007Z';
+        savePolicy(old, { maxTotalBytes: 20 * GiB, source, configuredAt: oldTime, extension: { retained: true } });
+        const migrated = resolveBackupBudget(old);
+        assert.equal(migrated.maxTotalBytes, 2 * GiB);
+        assert.notEqual(migrated.configuredAt, oldTime, 'A real old-budget migration remains a configuration event');
+        assert.deepEqual(migrated.extension, { retained: true });
+        assertUnchangedPolicy(old, migrated);
+    }
+    checks.oldTwentyGiBBudgetsMigrateOnceAndRetainUnknownExtensions = true;
+
     const explicit = policyOptions('explicit', { envValue: String(7 * GiB) });
     assert.equal(resolveBackupBudget(explicit).maxTotalBytes, 7 * GiB);
     assert.equal(resolveBackupBudget({ ...explicit, envValue: undefined }).maxTotalBytes, 7 * GiB);
@@ -40,12 +96,36 @@ async function main() {
     assert.equal(resolveBackupBudget({ ...explicit, envValue: undefined }).maxTotalBytes, 9 * GiB);
     checks.explicitBudgetsSurviveRestartAndUpgrade = true;
 
+    const operatorPolicy = { maxTotalBytes: 9 * GiB, source: 'operator', configuredAt: '2001-02-03T04:05:06.007Z',
+        note: 'explicit operator setting', extension: { retention: 'keep' } };
+    savePolicy(explicit, operatorPolicy);
+    assertUnchangedPolicy({ ...explicit, envValue: undefined }, operatorPolicy);
+    const environmentPolicy = { ...operatorPolicy, maxTotalBytes: 7 * GiB, source: 'environment' };
+    savePolicy(explicit, environmentPolicy);
+    assertUnchangedPolicy(explicit, environmentPolicy);
+    const changedEnv = { ...explicit, envValue: String(8 * GiB) }, changedPolicy = resolveBackupBudget(changedEnv);
+    assert.equal(changedPolicy.maxTotalBytes, 8 * GiB);
+    assert.equal(changedPolicy.source, 'environment');
+    assert.notEqual(changedPolicy.configuredAt, environmentPolicy.configuredAt);
+    assert.equal(changedPolicy.note, environmentPolicy.note);
+    assert.deepEqual(changedPolicy.extension, environmentPolicy.extension);
+    assertUnchangedPolicy(changedEnv, changedPolicy);
+    checks.operatorAndSameEnvironmentBudgetPreserveBytesWhileChangedEnvironmentWritesOnce = true;
+
     const broken = policyOptions('broken');
     savePolicy(broken, { maxTotalBytes: -1 });
     const protectedPolicy = resolveBackupBudget(broken);
     assert.equal(protectedPolicy.source, 'policy-error-preserved');
     assert.ok(protectedPolicy.warning);
     checks.invalidPolicyDoesNotSilentlyLowerOperatorBudget = true;
+
+    const invalidBytes = fs.readFileSync(policyFile(broken));
+    for (let n = 0; n < 3; n++) {
+        assert.equal(resolveBackupBudget(broken).source, 'policy-error-preserved');
+        assert.equal(resolveAfterRestart(broken).source, 'policy-error-preserved');
+        assert.ok(fs.readFileSync(policyFile(broken)).equals(invalidBytes), 'Invalid stored policy must remain untouched');
+    }
+    checks.invalidPolicyRepeatedReadsAndRestartsNeverRewriteIt = true;
 
     // Simulated volumes exercise combined peak accounting without filling disks.
     const diskA = path.join(root, 'disk-a');

@@ -79,11 +79,13 @@ test('switching a point source clears stale identifiers and preserves only commo
   assert.equal(widget.content.text, '{value}{unit}')
   const boundSnapshot = JSON.stringify(widget), beforeChanges = f.changes.length
   f.vm.changeSource('static')
-  assert.equal(widget.data.path, 'hover.device.name')
-  assert.equal(widget.data.mode, 'runtime')
-  assert.equal(JSON.stringify(widget), boundSnapshot)
-  assert.equal(f.changes.length, beforeChanges)
-  assert.equal(f.notices.length, 1)
+  assert.equal(widget.data.path, undefined)
+  assert.equal(widget.data.mode, 'static')
+  assert.notEqual(JSON.stringify(widget), boundSnapshot)
+  assert.equal(widget.content.text, '')
+  assert.equal(widget.content.dataSourceConfigured, true)
+  assert.equal(f.changes.length, beforeChanges + 1)
+  assert.equal(f.notices.length, 0)
 })
 
 test('group dragging clamps one shared delta and save/undo shortcuts finish pointer edits', async t => {
@@ -320,14 +322,14 @@ test('copying templates remaps their background but copying/deleting an element 
 })
 
 test('numeric labels are authored separately from text format, and all mutations share parent history', () => {
-  assert.match(source, /v-model="selected\.content\.text"/)
+  assert.match(source, /@input="updateFixedText\(\$event\.target\.value\)"/)
   assert.match(source, /@change="changeBoundText\(\$event\)"/)
   assert.match(source, /v-model="selected\.content\.label" aria-label="悬停数值标签"/)
   assert.match(source, /emit\('change', label\)/)
   assert.doesNotMatch(source, /tooltip-element-hitbox\.selected\{[^}]*z-index/)
 })
 
-test('object fields and live data have no static source option and cannot be frozen as custom text', async t => {
+test('every dynamic source can deliberately become fixed copy without snapshotting the preview or changing sibling layers', async t => {
   const f = await fixture(t), [widget, sibling] = f.vm.template.widgets.filter(widget => widget.type === 'text')
   f.vm.selectedIds = [widget.id, sibling.id]
   const wording = '当前部件的完整说明。\n第二行 · 0 rpm'
@@ -342,18 +344,23 @@ test('object fields and live data have no static source option and cannot be fro
     widget.data = binding
     widget.content = { ...widget.content, text: '{value}', lines: ['{value}'], datasetTextMode: 'template', valueMap: [{ value: 1, text: '运行' }] }
     await nextTick()
-    const before = JSON.stringify(widget), otherBefore = JSON.stringify(sibling), beforeChanges = f.changes.length, beforeNotices = f.notices.length
+    const otherBefore = JSON.stringify(sibling), beforeChanges = f.changes.length, beforeNotices = f.notices.length
     assert.equal(f.vm.selectedTextPreview, wording)
-    assert.equal(f.vm.bindingSources.some(item => item.id === 'static'), false, binding.path || binding.mode)
+    assert.equal(f.vm.bindingSources.some(item => item.id === 'static'), true, binding.path || binding.mode)
     f.vm.changeSource('static')
-    assert.equal(JSON.stringify(widget), before, binding.path || binding.mode)
+    assert.equal(widget.data.mode, 'static', binding.path || binding.mode)
+    assert.equal(widget.content.text, '')
+    assert.equal(widget.content.dataSourceConfigured, true)
+    assert.equal(widget.dynamicBinding, undefined)
+    assert.equal(widget.dynamicField, undefined)
     assert.equal(JSON.stringify(sibling), otherBefore)
     assert.deepEqual(f.vm.selectedIds, [widget.id, sibling.id])
-    assert.equal(f.changes.length, beforeChanges)
-    assert.equal(f.notices.length, beforeNotices + 1)
+    assert.equal(f.changes.length, beforeChanges + 1)
+    assert.equal(f.notices.length, beforeNotices)
   }
   assert.doesNotMatch(source, /改为自定义文字|tooltip-custom-text-button/)
-  assert.match(source, /aria-label="悬停文字当前显示"[^>]*readonly/)
+  assert.match(source, /aria-label="悬停内容来源"/)
+  assert.doesNotMatch(source, /<div[^>]*class="tooltip-text-binding-info"/)
 })
 
 test('genuine fixed copy stays directly editable and can still be deliberately bound to a source', async t => {
@@ -374,18 +381,18 @@ test('genuine fixed copy stays directly editable and can still be deliberately b
   assert.equal(widget.data.path, 'hover.device.name')
 })
 
-test('missing preview data does not allow a dynamic field to become fixed copy', async t => {
+test('fixed source selection needs no preview data and never invents a snapshot value', async t => {
   const f = await fixture(t), widget = f.vm.template.widgets.find(widget => widget.type === 'text')
   widget.data = { mode: 'runtime', path: 'hover.device.name', readOnly: true }
   widget.content.text = '{value}'
   f.vm.selectedIds = [widget.id]
   await nextTick()
   assert.equal(f.vm.selectedTextPreview, undefined)
-  const before = JSON.stringify(widget)
   f.vm.changeSource('static')
-  assert.equal(JSON.stringify(widget), before)
-  assert.equal(widget.content.text, '{value}')
-  assert.equal(f.changes.length, 0)
+  assert.equal(widget.data.mode, 'static')
+  assert.equal(widget.content.text, '')
+  assert.equal(widget.content.dataSourceConfigured, true)
+  assert.equal(f.changes.length, 1)
 })
 
 test('point data format rejects literal replacement but keeps multiline prefixes and the live value token', async t => {
@@ -440,26 +447,30 @@ test('legacy frozen status is repaired before inspector classification without c
   assert.equal(repaired.frame.width, 150)
   assert.equal(repaired.style.fontSize, 17)
   assert.equal(f.vm.template.widgets.find(widget => widget.id === label.id).content.text, '自定义数据状态标题')
-  assert.equal(f.vm.bindingSources.some(item => item.id === 'static'), false)
+  assert.equal(f.vm.bindingSources.some(item => item.id === 'static'), true)
   assert.equal(f.changes.length, 0)
 })
 
-test('status and association metadata cannot change display text or source even through inspector handlers', async t => {
+test('association formats keep their live value but an explicit source choice can replace even a preset field', async t => {
   const f = await fixture(t)
   for (const key of ['status_value', 'workshop_value', 'line_value', 'name']) {
     const widget = f.vm.template.widgets.find(widget => widget.id.endsWith(`_${key}`))
     f.vm.selectedIds = [widget.id]; await nextTick()
     assert.equal(f.vm.selectedLinkedMetadata, true)
     const before = JSON.stringify(widget), changes = f.changes.length
-    for (const format of ['强行固定', '前缀 {value}', '{value}']) {
-      const event = { target: { value: format } }
-      f.vm.changeBoundText(event)
-      assert.equal(event.target.value, '{value}')
-      assert.equal(JSON.stringify(widget), before)
-    }
-    f.vm.changeSource('static'); f.vm.changeSource('dataset')
+    const event = { target: { value: '没有绑定值的常量' } }
+    f.vm.changeBoundText(event)
+    assert.equal(event.target.value, '{value}')
     assert.equal(JSON.stringify(widget), before)
-    assert.equal(f.changes.length, changes)
+    f.vm.changeBoundText({ target: { value: '前缀 {value}' } })
+    assert.equal(widget.content.text, '前缀 {value}')
+    assert.equal(widget.data.mode, 'runtime')
+    f.vm.changeSource('static'); f.vm.changeSource('dataset')
+    assert.equal(widget.data.mode, 'dataset')
+    assert.equal(widget.data.deviceId, '')
+    assert.equal(widget.content.dataSourceConfigured, true)
+    assert.equal(widget.dynamicField, undefined)
+    assert.equal(f.changes.length, changes + 3)
   }
 })
 
@@ -491,10 +502,11 @@ test('new generic text can choose a real dynamic source without unlocking its cu
   assert.equal(f.vm.selectedSystemMetadata, false)
   widget.data.path = 'hover.device.workshopName'; await nextTick()
   assert.equal(widget.data.path, 'hover.device.workshopName')
-  const before = JSON.stringify(widget)
   f.vm.changeBoundText({ target: { value: '自定义车间 {value}' } })
+  assert.equal(widget.content.text, '自定义车间 {value}')
   f.vm.changeSource('static')
-  assert.equal(JSON.stringify(widget), before)
+  assert.equal(widget.data.mode, 'static')
+  assert.equal(widget.content.text, '')
   f.vm.changeSource('dataset')
   assert.equal(widget.data.mode, 'dataset', 'choosing another real source is still supported for generic data elements')
 })
@@ -674,14 +686,16 @@ test('quick row uses an editable caption plus a live semantic point, and commits
   assert.equal(f.vm.template.canvas.height, height)
 })
 
-test('catalog selection replaces generic sources without allowing protected system metadata to change', async t => {
+test('a deliberate catalog selection replaces generic and original preset sources while retaining hovered identity', async t => {
   const f = await fixture(t)
   const system = f.vm.template.widgets.find(widget => widget.data.path === 'hover.device.status')
   f.vm.selectedIds = [system.id]
-  const before = JSON.stringify(system)
   f.vm.chooseCatalogData(catalogTemperature)
-  assert.equal(JSON.stringify(system), before)
-  assert.equal(f.changes.length, 0)
+  assert.equal(system.data.mode, 'plc')
+  assert.equal(system.data.deviceId, '')
+  assert.equal(system.content.dataSourceConfigured, true)
+  assert.equal(system.dynamicField, undefined)
+  assert.equal(f.changes.length, 1)
   f.vm.addWidget('text')
   const generic = f.vm.template.widgets.find(widget => widget.id === f.vm.selectedIds[0])
   f.vm.chooseCatalogData(catalogTemperature); await nextTick()
@@ -690,10 +704,11 @@ test('catalog selection replaces generic sources without allowing protected syst
   assert.equal(generic.data.unit, '')
   assert.equal(generic.data.unitPath, 'hover.device.pointMap.analog.temperature.unit')
   assert.equal(generic.data.deviceId, '')
-  const afterBinding = JSON.stringify(generic), count = f.changes.length
+  const count = f.changes.length
   f.vm.changeSource('static')
-  assert.equal(JSON.stringify(generic), afterBinding)
-  assert.equal(f.changes.length, count)
+  assert.equal(generic.data.mode, 'static')
+  assert.equal(generic.content.text, '')
+  assert.equal(f.changes.length, count + 1)
 })
 
 test('readonly or over-height quick row never changes the template or creates no-op undo history', async t => {

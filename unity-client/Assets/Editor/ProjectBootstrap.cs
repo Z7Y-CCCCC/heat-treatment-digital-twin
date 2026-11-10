@@ -55,6 +55,7 @@ namespace HeatTreatment.DigitalTwin.Editor
         public static void BuildWindowsClient()
         {
             BootstrapProject();
+            DeviceEntryNavigationValidation.Validate();
             ValidateAuthoredHallMaterials();
             ValidateSceneShadowCoverage();
             EditorUserBuildSettings.SwitchActiveBuildTarget(BuildTargetGroup.Standalone, BuildTarget.StandaloneWindows64);

@@ -5,6 +5,8 @@
 const { getDb } = require('../db/database');
 const { loadDeviceAnimations, validateCatalogItem, sourceFingerprint } = require('./deviceAnimations');
 const { readDefinition, bindingResult } = require('./dataSets');
+const { MotionSemanticResolver } = require('./motionSemantics');
+const { deviceLineId } = require('./deviceLineUnits');
 const parseObject = value => { try { return typeof value === 'string' ? JSON.parse(value || '{}') : value || {}; } catch { return {}; } };
 function milliseconds(value) {
     if (value == null || value === '') return 0;
@@ -71,7 +73,12 @@ function motionSources(row) {
     return sources.filter(source => source?.dataItemId).map(source => ({ ...source, enabled:row.enabled }));
 }
 function hasCatalogBindings(config, enabledOnly = false) {
-    return (config?.bindings || []).some(row => (!enabledOnly || row.enabled) && motionSources(row).length);
+    return configuredMotionSources(config).some(row => (!enabledOnly || row.enabled) && row.dataItemId);
+}
+function configuredMotionSources(config) {
+    const rows = (config?.bindings || []).flatMap(motionSources), transfer = config?.transferLink;
+    if (transfer?.presenceDataItemId) rows.push({ enabled:transfer.enabled === true, dataItemId:transfer.presenceDataItemId, sourceFingerprint:transfer.presenceSourceFingerprint });
+    return rows;
 }
 function endpointFeedbackSample(row, loaded, frame, datasets, now, readAt) {
     const endpointFeedback = {};
@@ -99,6 +106,7 @@ function endpointFeedbackSample(row, loaded, frame, datasets, now, readAt) {
 class MotionInputResolver {
     constructor(options = {}) {
         this.getDb = options.getDb || getDb;
+        this.semanticResolver = options.semanticResolver || new MotionSemanticResolver({ getDb: this.getDb, now: options.now, maxDevices: options.maxDevices });
         this.loadDevice = options.loadDevice || loadDeviceAnimations;
         this.readDefinition = options.readDefinition || readDefinition;
         this.bindingResult = options.bindingResult || bindingResult;
@@ -111,6 +119,7 @@ class MotionInputResolver {
     }
     start(publish, active = () => true) {
         this.publish = publish; this.active = active;
+        this.semanticResolver.start();
         this.timer = setInterval(() => this.poll().catch(() => {}), this.reloadMs);
         this.timer.unref?.();
     }
@@ -145,11 +154,12 @@ class MotionInputResolver {
                 if (!hasCatalogBindings(instance.animationBindings)) {
                     entry.loaded = null; entry.datasets.clear(); entry.nextReload = this.now() + Math.max(10000, this.reloadMs); return;
                 }
-                const owner = device.line_id
-                    ? await db.get('SELECT w.factory_id FROM `lines` l JOIN workshops w ON w.id=l.workshop_id WHERE l.id=?', [device.line_id])
+                const lineId = deviceLineId(device, instance);
+                const owner = lineId
+                    ? await db.get('SELECT w.factory_id FROM `lines` l JOIN workshops w ON w.id=l.workshop_id WHERE l.id=?', [lineId])
                     : await db.get('SELECT factory_id FROM workshops WHERE id=?', [instance.workshop_id || instance.workshopId || '']);
                 if (!owner) throw Error('设备范围不存在');
-                const loaded = await this.loadDevice(db, entry.id, owner.factory_id), readAt = this.now();
+                const loaded = await this.loadDevice(db, entry.id, owner.factory_id, { includeTransferTargets:false }), readAt = this.now();
                 if (this.closed || generation !== this.generation || token !== entry.loadToken) return;
                 const previous = entry.loaded?.revision;
                 entry.loaded = loaded; entry.readAt = readAt;
@@ -167,7 +177,7 @@ class MotionInputResolver {
     scheduleDatasets(entry) {
         const loaded = entry.loaded;
         if (!loaded || this.closed) return;
-        for (const row of (loaded.config.bindings || []).flatMap(motionSources)) {
+        for (const row of configuredMotionSources(loaded.config)) {
             if (!row.enabled || !row.dataItemId || entry.datasetBusy.has(row.dataItemId)) continue;
             const item = loaded.catalog.items.find(i => i.id === row.dataItemId);
             if (item?.binding?.mode !== 'dataset') continue;
@@ -183,13 +193,14 @@ class MotionInputResolver {
                 let record;
                 try {
                     const scope = loaded.catalog.devices.find(d => String(d.id) === entry.id);
+                    const instance = parseObject(loaded.device.instance_config), lineId = deviceLineId(loaded.device, instance);
                     const context = { factoryId:loaded.factoryId, deviceId:entry.id,
-                        lineId:loaded.device.line_id || '', workshopId:scope?.workshopId || parseObject(loaded.device.instance_config).workshop_id || '',
+                        lineId, workshopId:scope?.workshopId || instance.workshop_id || instance.workshopId || '',
                         widgetRefreshMs:definition.refreshMs };
                     // Catalog device summaries intentionally omit internal IDs;
                     // resolve them from the owned relationships when required.
-                    if (loaded.device.line_id) {
-                        const db = await this.getDb(), line = await db.get('SELECT workshop_id FROM `lines` WHERE id=?', [loaded.device.line_id]);
+                    if (lineId) {
+                        const db = await this.getDb(), line = await db.get('SELECT workshop_id FROM `lines` WHERE id=?', [lineId]);
                         context.workshopId = line?.workshop_id || '';
                     }
                     const result = this.bindingResult(await this.readDefinition(definition, context, loaded.factoryId), item.binding);
@@ -225,6 +236,13 @@ class MotionInputResolver {
                 ? catalogSample(row, item, loaded, frame, entry.datasets, this.now(), entry.readAt)
                 : sample(row, null, 'bad', 0, this.now(), loaded.config.staleMs);
         }
+        const transfer = loaded.config.transferLink;
+        if (transfer?.enabled === true) {
+            const row = { dataItemId:transfer.presenceDataItemId, sourceFingerprint:transfer.presenceSourceFingerprint };
+            const item = loaded.catalog.items.find(item => item.id === row.dataItemId);
+            const input = catalogSample(row, item, loaded, frame, entry.datasets, this.now(), entry.readAt);
+            result.__transfer_presence = typeof input.value === 'boolean' || input.quality !== 'good' ? input : { ...input, value:null, quality:'bad' };
+        }
         return result;
     }
     decorate(devices) {
@@ -239,6 +257,7 @@ class MotionInputResolver {
             return { ...frame, motionInputs:this.inputs(entry, frame) };
         });
     }
+    decorateSemantics(devices) { return this.semanticResolver.decorate(devices); }
     async poll() {
         if (this.closed || this.discoveryBusy || this.active?.() === false) return;
         this.discoveryBusy = true;
@@ -254,11 +273,12 @@ class MotionInputResolver {
             for (const [id, entry] of this.entries) if (!owned.has(id) && this.now() - entry.readAt > 60000) this.entries.delete(id);
         } finally { this.discoveryBusy = false; }
     }
-    invalidate() {
+    invalidate(type, payload) {
         this.generation++;
+        this.semanticResolver.invalidate(type, payload);
         for (const entry of this.entries.values()) { entry.loaded = null; entry.datasets.clear(); entry.datasetBusy.clear(); entry.loadToken++; entry.loading = false; entry.nextReload = 0; }
         this.queue.clear();
     }
-    dispose() { this.closed = true; clearInterval(this.timer); this.invalidate(); this.entries.clear(); }
+    dispose() { this.closed = true; clearInterval(this.timer); this.semanticResolver.dispose(); this.invalidate(); this.entries.clear(); }
 }
-module.exports = { MotionInputResolver, catalogSample, sample, milliseconds, qualityLeaves, motionSources, hasCatalogBindings, endpointFeedbackSample };
+module.exports = { MotionInputResolver, catalogSample, sample, milliseconds, qualityLeaves, motionSources, configuredMotionSources, hasCatalogBindings, endpointFeedbackSample };

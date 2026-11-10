@@ -31,7 +31,12 @@ const DATA_DIR = process.env.APP_DATA_DIR
 const SITE_BACKUP_DIR = path.resolve(process.env.SITE_BACKUP_DIR || path.join(DATA_DIR, 'site-backups'));
 const SITE_IMPORT_DIR = path.resolve(process.env.SITE_IMPORT_DIR || path.join(DATA_DIR, 'site-imports'));
 const SITE_BACKUP_CONFIG_PATH = path.join(DATA_DIR, 'site-backup-config.json');
-const SITE_BACKUP_RETENTION = positiveInteger(process.env.SITE_BACKUP_RETENTION, 5);
+// Day-based retention is the default; a legacy/operator count cap is opt-in.
+const SITE_BACKUP_RETENTION = process.env.SITE_BACKUP_RETENTION
+    ? positiveInteger(process.env.SITE_BACKUP_RETENTION, null) : null;
+const SITE_BACKUP_RETENTION_DAYS_MIN = 1;
+const SITE_BACKUP_RETENTION_DAYS_MAX = 3650;
+const DAY_MS = 24 * 60 * 60 * 1000;
 const SITE_BACKUP_STORAGE_POLICY = resolveBackupBudget({
     dataDir: DATA_DIR, directory: SITE_BACKUP_DIR, kind: 'site',
     envValue: process.env.SITE_BACKUP_MAX_TOTAL_BYTES, defaultBytes: 4 * GiB,
@@ -52,10 +57,13 @@ const MAX_ARCHIVE_CONTENT_BYTES = 2 * 1024 * 1024 * 1024;
 let activeSiteBackupOperation = null;
 let siteBackupTimer = null;
 let siteBackupInitialTimer = null;
+let siteBackupCleanupTimer = null;
 let maintenanceUploadsRootDir = null;
 let lastAutomaticBackup = null;
 let lastSiteBackupError = null;
 let lastMirrorCopy = null;
+let lastSiteBackupCleanup = null;
+const verifiedSiteBackups = new Map();
 
 function positiveInteger(value, fallback) {
     const parsed = Number(value);
@@ -106,6 +114,20 @@ function clampNumber(value, min, max, fallback) {
     return Number.isFinite(parsed) ? Math.max(min, Math.min(max, parsed)) : fallback;
 }
 
+function retentionDays(value, fallback = 30) {
+    const parsed = Number(value);
+    return Number.isInteger(parsed) && parsed >= SITE_BACKUP_RETENTION_DAYS_MIN
+        && parsed <= SITE_BACKUP_RETENTION_DAYS_MAX ? parsed : fallback;
+}
+
+function parseRetentionDays(value) {
+    const parsed = Number(value);
+    if (!Number.isInteger(parsed) || parsed < SITE_BACKUP_RETENTION_DAYS_MIN || parsed > SITE_BACKUP_RETENTION_DAYS_MAX) {
+        throw new Error(`灾备保留天数必须是 ${SITE_BACKUP_RETENTION_DAYS_MIN}-${SITE_BACKUP_RETENTION_DAYS_MAX} 之间的整数`);
+    }
+    return parsed;
+}
+
 function loadSiteBackupConfig() {
     let stored = {};
     try {
@@ -124,18 +146,20 @@ function loadSiteBackupConfig() {
             168,
             24
         ),
-        mirrorDirectory: configuredMirror ? path.resolve(configuredMirror) : ''
+        mirrorDirectory: configuredMirror ? path.resolve(configuredMirror) : '',
+        retentionDays: retentionDays(stored.retentionDays, retentionDays(process.env.SITE_BACKUP_RETENTION_DAYS))
     };
 }
 
 function saveSiteBackupConfig(input = {}) {
     ensureDirectory(DATA_DIR);
+    const current = loadSiteBackupConfig();
     const config = {
-        autoEnabled: input.autoEnabled !== false,
-        intervalHours: clampNumber(input.intervalHours, 1, 168, 24),
-        mirrorDirectory: String(input.mirrorDirectory || '').trim()
-            ? path.resolve(String(input.mirrorDirectory).trim())
-            : ''
+        autoEnabled: input.autoEnabled === undefined ? current.autoEnabled : input.autoEnabled !== false,
+        intervalHours: input.intervalHours === undefined ? current.intervalHours : clampNumber(input.intervalHours, 1, 168, 24),
+        mirrorDirectory: input.mirrorDirectory === undefined ? current.mirrorDirectory
+            : (String(input.mirrorDirectory || '').trim() ? path.resolve(String(input.mirrorDirectory).trim()) : ''),
+        retentionDays: input.retentionDays === undefined ? current.retentionDays : parseRetentionDays(input.retentionDays)
     };
     const temporary = `${SITE_BACKUP_CONFIG_PATH}.${process.pid}.tmp`;
     fs.writeFileSync(temporary, JSON.stringify(config, null, 2), 'utf8');
@@ -166,7 +190,10 @@ async function managedBackupFiles(directory) {
     const files = [];
     for (const entry of entries.filter(item => item.isFile() && isManagedSiteBackup(item.name))) {
         const filename = path.join(directory, entry.name);
-        files.push({ filename, stat: await fs.promises.stat(filename) });
+        try {
+            const stat = await fs.promises.lstat(filename);
+            if (stat.isFile() && !stat.isSymbolicLink()) files.push({ filename, stat });
+        } catch (error) { if (error.code !== 'ENOENT') throw error; }
     }
     return files.sort((a, b) => b.stat.mtimeMs - a.stat.mtimeMs);
 }
@@ -220,6 +247,7 @@ function backupDescriptor(filename) {
     const stat = fs.statSync(filename);
     return {
         filename: path.basename(filename),
+        fullPath: path.resolve(filename),
         size: stat.size,
         createdAt: stat.mtime.toISOString()
     };
@@ -234,22 +262,81 @@ function listSiteBackups() {
         .map(backupDescriptor);
 }
 
-async function pruneSiteBackups(protectedFilename) {
+async function verifyRetainedSiteBackup(item, errors) {
+    const signature = `${item.stat.size}:${item.stat.mtimeMs}:${item.stat.ctimeMs}:${item.stat.ino}`;
+    const cached = verifiedSiteBackups.get(item.filename);
+    if (cached?.signature === signature) return cached.valid;
+    const stagingDirectory = path.join(SITE_IMPORT_DIR, `verify-${timestampToken()}-${process.pid}-${crypto.randomBytes(4).toString('hex')}`);
+    let valid = false;
+    try {
+        await extractValidatedArchive(item.filename, stagingDirectory, async ({ declared }) => {
+            await ensureDiskSpace([{ directory: SITE_IMPORT_DIR, bytes: [...declared.values()].reduce((sum, file) => sum + file.size, 0) }], SITE_BACKUP_MIN_FREE_BYTES);
+        });
+        valid = true;
+    } catch { /* Unverified archives must never displace a known good recovery point. */ }
+    finally {
+        try { await fs.promises.rm(stagingDirectory, { recursive: true, force: true }); }
+        catch (error) {
+            errors.push({ filename: path.basename(item.filename), error: `校验暂存目录清理失败 (${stagingDirectory}): ${error.message}` });
+        }
+    }
+    verifiedSiteBackups.set(item.filename, { signature, valid });
+    if (verifiedSiteBackups.size > 256) verifiedSiteBackups.delete(verifiedSiteBackups.keys().next().value);
+    return valid;
+}
+
+async function pruneSiteBackups(protectedFilename, reason = 'automatic') {
+    ensureDirectory(SITE_BACKUP_DIR);
     const files = await managedBackupFiles(SITE_BACKUP_DIR);
-    const retained = [];
-    for (let index = 0; index < files.length; index++) {
-        const item = files[index];
-        if (index >= SITE_BACKUP_RETENTION && item.filename !== protectedFilename) {
-            await fs.promises.rm(item.filename, { force: true });
-        } else retained.push(item);
+    const config = loadSiteBackupConfig();
+    const protectedFiles = new Set([protectedFilename, files[0]?.filename].filter(Boolean));
+    const deleted = [];
+    const errors = [];
+    let latestValid = null;
+    // A just-created package has a verified business snapshot and streamed hashes.
+    if (protectedFilename && files.some(item => item.filename === protectedFilename)) latestValid = protectedFilename;
+    else for (const item of files) {
+        if (await verifyRetainedSiteBackup(item, errors)) { latestValid = item.filename; break; }
     }
-    let totalBytes = retained.reduce((sum, backup) => sum + backup.stat.size, 0);
-    for (const backup of retained.slice(1).reverse()) {
+    if (latestValid) protectedFiles.add(latestValid);
+    else for (const item of files) protectedFiles.add(item.filename);
+    const deletedNames = new Set();
+    const remove = async (item, cause) => {
+        if (protectedFiles.has(item.filename) || deletedNames.has(item.filename)) return false;
+        try {
+            // Only exact managed, regular files directly in the configured root.
+            if (path.dirname(item.filename) !== SITE_BACKUP_DIR || !isManagedSiteBackup(path.basename(item.filename))) return false;
+            const stat = await fs.promises.lstat(item.filename);
+            if (!stat.isFile() || stat.isSymbolicLink() || stat.mtimeMs !== item.stat.mtimeMs || stat.size !== item.stat.size) return false;
+            await fs.promises.unlink(item.filename);
+            deletedNames.add(item.filename);
+            verifiedSiteBackups.delete(item.filename);
+            deleted.push({ filename: path.basename(item.filename), size: stat.size, cause });
+            return true;
+        } catch (error) { errors.push({ filename: path.basename(item.filename), error: error.message }); return false; }
+    };
+    const remaining = () => files.filter(item => !deletedNames.has(item.filename));
+    const cutoffMs = Date.now() - config.retentionDays * DAY_MS;
+    for (const item of [...files].reverse()) if (item.stat.mtimeMs < cutoffMs) await remove(item, 'expired');
+    if (SITE_BACKUP_RETENTION) for (const item of [...remaining()].reverse()) {
+        if (remaining().length <= SITE_BACKUP_RETENTION) break;
+        await remove(item, 'count-limit');
+    }
+    let totalBytes = remaining().reduce((sum, backup) => sum + backup.stat.size, 0);
+    for (const backup of [...remaining()].reverse()) {
         if (totalBytes <= SITE_BACKUP_MAX_TOTAL_BYTES) break;
-        if (backup.filename === protectedFilename) continue;
-        await fs.promises.rm(backup.filename, { force: true });
-        totalBytes -= backup.stat.size;
+        if (await remove(backup, 'size-limit')) totalBytes -= backup.stat.size;
     }
+    lastSiteBackupCleanup = {
+        at: new Date().toISOString(), reason, retentionDays: config.retentionDays,
+        deletedCount: deleted.length, deletedBytes: deleted.reduce((sum, item) => sum + item.size, 0),
+        remainingCount: remaining().length, remainingBytes: totalBytes, deleted, errors
+    };
+    return lastSiteBackupCleanup;
+}
+
+async function cleanupSiteBackups(reason = 'automatic') {
+    return runSiteBackupOperation('清理', () => pruneSiteBackups(null, reason));
 }
 
 function resolveSiteBackupPath(filename) {
@@ -268,16 +355,24 @@ function resolveSiteBackupPath(filename) {
 function getSiteBackupStatus() {
     const databaseStatus = getDatabaseBackupStatus({ validate: false });
     const config = loadSiteBackupConfig();
+    const backups = databaseStatus.supported ? listSiteBackups() : [];
     return {
         supported: databaseStatus.supported,
         databaseType: databaseStatus.type,
         format: SITE_BACKUP_FORMAT,
         version: SITE_BACKUP_VERSION,
         retention: SITE_BACKUP_RETENTION,
+        retentionDays: config.retentionDays,
+        retentionDaysMin: SITE_BACKUP_RETENTION_DAYS_MIN,
+        retentionDaysMax: SITE_BACKUP_RETENTION_DAYS_MAX,
         maxTotalBytes: SITE_BACKUP_MAX_TOTAL_BYTES,
         storagePolicy: SITE_BACKUP_STORAGE_POLICY,
         minFreeBytes: SITE_BACKUP_MIN_FREE_BYTES,
         localDirectory: SITE_BACKUP_DIR,
+        totalBackupBytes: backups.reduce((sum, backup) => sum + Number(backup.size || 0), 0),
+        newestBackup: backups[0] || null,
+        oldestBackup: backups[backups.length - 1] || null,
+        lastCleanup: lastSiteBackupCleanup,
         externalCopyRequired: true,
         config,
         lastAutomaticBackup,
@@ -286,12 +381,17 @@ function getSiteBackupStatus() {
         mirrorConfigured: Boolean(config.mirrorDirectory),
         toolError: databaseStatus.toolError || null,
         busy: activeSiteBackupOperation?.name || null,
-        backups: databaseStatus.supported ? listSiteBackups() : []
+        backups
     };
 }
 
 async function runSiteBackupOperation(name, callback) {
     assertNoPendingSiteRecovery();
+    // Startup/hourly cleanup is background work, not a reason to reject a
+    // foreground export or policy save immediately after the health endpoint.
+    while (activeSiteBackupOperation?.name === '清理') {
+        await activeSiteBackupOperation.promise.catch(() => {});
+    }
     if (activeSiteBackupOperation) {
         throw new Error(`整站灾备正在${activeSiteBackupOperation.name}，请稍后再试`);
     }
@@ -844,13 +944,21 @@ async function runAutomaticSiteBackup() {
     }
 }
 
-async function startSiteBackupMaintenance(uploadsRootDir) {
+async function startSiteBackupMaintenance(uploadsRootDir, options = {}) {
     maintenanceUploadsRootDir = path.resolve(uploadsRootDir);
     if (siteBackupTimer) clearInterval(siteBackupTimer);
     if (siteBackupInitialTimer) clearTimeout(siteBackupInitialTimer);
+    if (siteBackupCleanupTimer) clearInterval(siteBackupCleanupTimer);
     siteBackupTimer = null;
     siteBackupInitialTimer = null;
+    siteBackupCleanupTimer = null;
     const config = loadSiteBackupConfig();
+    if (!options.skipCleanup) await cleanupSiteBackups('startup');
+    if (process.env.NODE_ENV !== 'test') {
+        // Retention stays active even when automatic exports are turned off.
+        siteBackupCleanupTimer = setInterval(() => cleanupSiteBackups('scheduled').catch(() => {}), 60 * 60 * 1000);
+        siteBackupCleanupTimer.unref?.();
+    }
     if (!config.autoEnabled || process.env.NODE_ENV === 'test') return getSiteBackupStatus();
 
     const intervalMs = Math.max(60 * 60 * 1000, config.intervalHours * 60 * 60 * 1000);
@@ -874,8 +982,10 @@ async function startSiteBackupMaintenance(uploadsRootDir) {
 async function stopSiteBackupMaintenance() {
     if (siteBackupTimer) clearInterval(siteBackupTimer);
     if (siteBackupInitialTimer) clearTimeout(siteBackupInitialTimer);
+    if (siteBackupCleanupTimer) clearInterval(siteBackupCleanupTimer);
     siteBackupTimer = null;
     siteBackupInitialTimer = null;
+    siteBackupCleanupTimer = null;
     maintenanceUploadsRootDir = null;
     if (activeSiteBackupOperation?.promise) {
         await activeSiteBackupOperation.promise.catch(() => {});
@@ -887,6 +997,7 @@ module.exports = {
     restoreSiteBackup,
     loadSiteBackupConfig,
     saveSiteBackupConfig,
+    cleanupSiteBackups,
     startSiteBackupMaintenance,
     stopSiteBackupMaintenance,
     getSiteBackupStatus,

@@ -9,13 +9,16 @@ const line = { id: 'line_overview', mode: 'line', targetType: 'line', parentView
 const widget = { id: 'reading', type: 'text', visible: true, data: {}, visibility: {} }
 const runtime = (view = factory, extra = {}) => ({ view, context: { viewId: view.id, viewMode: view.mode, sceneReady: true, ...extra } })
 
-test('return button keeps automatic root hiding and editor reports the reason instead of changing the document', () => {
+test('authored return button follows its display checkbox at the root as well as child views', () => {
   const button = { ...widget, id: 'widget_return_button', type: 'return_button', runtimeTarget: 'unity' }
   const before = JSON.stringify(button)
   const root = widgetPresentationState(button, runtime())
-  assert.equal(root.visible, false)
-  assert.equal(root.code, 'root-return')
-  assert.match(root.reason, /首层/)
+  assert.equal(root.visible, true)
+  assert.equal(root.code, 'visible')
+  for (const visible of [false, 0]) {
+    assert.equal(widgetPresentationState({ ...button, visible }, runtime()).visible, false)
+    assert.equal(widgetPresentationState({ ...button, visible }, runtime(line, { lineId: 'line_a' })).visible, false)
+  }
   assert.equal(widgetPresentationState(button, runtime(line, { lineId: 'line_a' })).visible, true)
   assert.equal(JSON.stringify(button), before)
   assert.equal(button.visible, true)
@@ -71,15 +74,21 @@ test('disabled/hidden views and legacy Unity-tagged navigation are handled consi
   assert.equal(widgetPresentationState(widget,runtime({...factory,metadata:{hierarchyHidden:true,runtimeHidden:false}})).visible,true) // runtime rescue prevents a blank scene
 })
 
-test('designer status, preview, maps and native HUD consume the shared evaluator, without removing root hiding', async () => {
+test('designer has one direct display checkbox and native HUD has no second automatic return-button gate', async () => {
   const source=async path=>readFile(new URL(path,import.meta.url),'utf8')
   for (const file of ['../src/views/admin/components/DashboardDesigner.vue','../src/views/DashboardOverlay.vue','../src/views/MapSurfaceWidgets.vue']) assert.match(await source(file),/widgetPresentationState\(/)
   const overlay=await source('../src/views/DashboardOverlay.vue')
   assert.match(overlay,/canNavigateToParentView = computed\(\(\) => returnNavigationVisibility/)
-  assert.match(overlay,/v-if="canReturnToParentView"/)
+  assert.doesNotMatch(overlay,/v-if="canReturnToParentView"/)
+  assert.match(overlay,/returnButtonWidgets = computed\(\(\) => authoredControls.value.filter/)
   const designer=await source('../src/views/admin/components/DashboardDesigner.vue')
-  assert.match(designer,/aria-label="组件大屏显隐"/)
+  assert.match(designer,/aria-label="组件显示设置"/)
+  assert.match(designer,/aria-label="显示组件"/)
+  assert.match(designer,/@change="setWidgetVisibility\(selectedWidget, \$event.target.checked\)"/)
+  assert.doesNotMatch(designer,/启用组件显示|selectedDisplayState|大屏：/)
   assert.match(designer,/aria-label="组件显隐范围"/)
   assert.match(designer,/data-component-id="widget.id"/)
-  assert.match(designer,/!previewMode.value \|\| componentDisplayStates.value\[widget.id\].visible/)
+  assert.match(designer,/!previewMode.value \|\| componentDisplayStates.value\[widgetInstanceKey\(widget\)\].visible/)
+  assert.match(designer,/states\[widgetInstanceKey\(widget\)\] = state/)
+  assert.match(designer,/:data-component-instance="widgetInstanceKey\(widget\)"/)
 })

@@ -14,6 +14,7 @@ import {fitCameraBox} from '../utils/cameraBoxFit.js'
 import {CART_FEED} from './cartFeedMechanism.js'
 import {CLEANER_BATH} from './cleanerBathLayout.js'
 import {TRANSFER_DATUM} from '../../../shared/equipmentTransferDatum.mjs'
+import {siteDeviceTransform,siteLoadingDatum,siteCarrierPath,siteCarrierInitialPosition,assertSiteTransferDriver,solveSiteTransferPose,siteSceneUnitsPerMeter,siteWorldVector,siteWorldPoint,siteParentPoint,applySitePayloadMetrics} from './siteTransferAlignment.js'
 
 function bounds(root){const result=new T.Box3();root.traverse(n=>{if(!n.isMesh)return;for(let p=n;p;p=p.parent)if(!p.visible)return;result.union(new T.Box3().setFromObject(n))});return result}
 function label(name){const canvas=document.createElement('canvas');canvas.width=768;canvas.height=96;const c=canvas.getContext('2d');c.fillStyle='#203d52e8';c.fillRect(0,0,768,96);c.font='36px Microsoft YaHei';c.fillStyle='#ffffff';c.textAlign='center';c.fillText(name,384,61,730);const texture=new T.CanvasTexture(canvas);const sprite=new T.Sprite(new T.SpriteMaterial({map:texture,depthTest:false}));sprite.scale.set(3,.375,1);return sprite}
@@ -28,7 +29,9 @@ export class LineSimulationScene extends CadMotionScene {
         this.controls.touches.TWO=T.TOUCH.DOLLY_PAN
         this.renderer.domElement.style.cursor=pan?'grab':'auto'
     }
-    async loadPlan(plan,lines,workshops,mode){
+    async loadPlan(plan,lines,workshops,mode,{transferTolerances={heightToleranceMeters:0,lateralToleranceMeters:0,angleToleranceDegrees:0}}={}){
+        this.mode=mode;this.transferTolerances=transferTolerances;this.siteLines=lines;this.siteWorkshops=workshops
+        const cartLink=parseSimulationConfig(plan.cart?.instance_config).animationBindings?.transferLink
         let cursor=0
         for(const row of plan.rows){
             if(this.disposed)throw Error('加载已取消')
@@ -48,7 +51,8 @@ export class LineSimulationScene extends CadMotionScene {
             this.entries.set(row.id,entry)
             rig.applyLinked({door:0,feed:0,level:['cad_water_cooling_tank_471000','cad_cleaner_170700'].includes(row.model_type)?1:0,runTime:0,time:0})
             if(row.model_type==='ultrasonic_cleaner_cad')entry.effects=new CleanerProcessEffects(asset,asset)
-            entry.offset.position.set(-center.x,-box.min.y,-center.z);entry.offset.add(asset);entry.wrapper.add(entry.offset);this.scene.add(entry.wrapper)
+            if(mode!=='site')entry.offset.position.set(-center.x,-box.min.y,-center.z)
+            entry.offset.add(asset);entry.wrapper.add(entry.offset);this.scene.add(entry.wrapper)
             const c=parseSimulationConfig(row.instance_config),scale=Math.max(.0001,(Number(row.scale)||1)*(Number(model?.default_scale)||1)*(Number(c.scaleMultiplier)||1));entry.scale=scale
             entry.wrapper.scale.set((c.mirrorX??c.mirror_x)?-scale:scale,scale,scale)
             entry.wrapper.updateMatrixWorld(true)
@@ -73,13 +77,18 @@ export class LineSimulationScene extends CadMotionScene {
                 entry.hotInside=new T.Vector3(0,loadY,-3.05).add(entry.offset.position)
             }
             if(mode==='site'){
-                const line=lines.find(l=>String(l.id)===String(row.line_id||c.railLineId||c.laneLineId||plan.stations[0]?.line_id)),ws=workshops.find(w=>String(w.id)===String(line?.workshop_id||c.workshop_id||c.workshopId))
-                const p=deviceLocalToWorld(row,ws,line);entry.wrapper.position.set(p.x,p.y,p.z);entry.wrapper.rotation.y=p.rotationY
+                const transform=siteDeviceTransform(row,model||{},lines,workshops),savedLink=c.animationBindings?.transferLink
+                const kind=cartLink?.enabled ? (row.capabilities.cart ? cartLink.sourcePort : cartLink.targetPort) : 'inlet'
+                const datum=siteLoadingDatum(row,model||{},transform,kind||'inlet')
+                entry.port.copy(datum.local);entry.normal.fromArray(datum.port.direction)
+                entry.wrapper.position.set(transform.position.x,transform.position.y,transform.position.z);entry.wrapper.rotation.y=transform.yaw;entry.wrapper.scale.fromArray(transform.scale)
+                entry.siteTransform=transform;entry.savedLink=savedLink
             }else if(!row.capabilities.cart){
                 const size=box.getSize(new T.Vector3());entry.wrapper.rotation.y=-Math.atan2(entry.normal.x,entry.normal.z)
                 entry.wrapper.position.x=cursor;cursor+=Math.max(size.x,size.z)*scale+3
             }
             entry.wrapper.updateMatrixWorld(true);entry.basePosition=entry.wrapper.position.clone();entry.baseYaw=entry.wrapper.rotation.y
+            if(mode==='site')entry.siteSavedPosition=entry.basePosition.clone()
             const caption=label(row.name||row.id);caption.position.set(0,box.getSize(new T.Vector3()).y+.35,0);entry.wrapper.add(caption)
             const shellNames=[...new Set([...parseSimulationConfig(model?.metadata).inspection?.shell?.node_names||[],...(CAD_MOTION_PROFILES[row.model_type]?['housing','lining','hood','upper_housing','tank','tanks','central_lower_body','lower_collection','fans_enamel','cold_housing','hot_housing','refractory','vault_bricks','partition_shell','partition_lining','hot_access_panels','hot_rear_hatch','quench_tank','quench_liquid'].map(n=>CAD_MOTION_PROFILES[row.model_type].prefix+n):[])])]
             for(const name of shellNames)asset.getObjectByName(name)?.traverse(n=>{if(n.isMesh){const materials=[].concat(n.material).map(m=>{const c=m.clone();c.userData.previewOpacity=m.opacity;c.userData.previewTransparent=m.transparent;return c});n.material=Array.isArray(n.material)?materials:materials[0];this.shell.push(...materials)}})
@@ -87,12 +96,36 @@ export class LineSimulationScene extends CadMotionScene {
         this.plan=plan
         if(plan.cart){
             const cart=this.entries.get(plan.cart.id),first=plan.stations.find(s=>s.capabilities.animated)
+            if(mode==='site'){
+                // Capture the actual rendered home, not the asset origin or the
+                // current animated pose. Later frames use this same baseline.
+                cart.siteDriveNode=cart.row.model_type==='cad_transfer_cart_101300'?cart.rig.node?.('feed_carriage'):cart.rig.shuttle
+                cart.siteDriveRest=cart.siteDriveNode?.position.clone()
+                this.configureSiteCart(cart)
+                cart.wrapper.position.copy(cart.basePosition);cart.wrapper.updateMatrixWorld(true)
+                for(const station of plan.stations.filter(s=>s.capabilities.animated))this.dock(station.id)
+                const railMaterial=new T.LineBasicMaterial({color:'#c99437'})
+                for(const offset of [-.32,.32]){
+                    const direction=cart.sitePath.end.clone().sub(cart.sitePath.start).normalize(),normal=new T.Vector3(-direction.z,0,direction.x).multiplyScalar(offset)
+                    const geometry=new T.BufferGeometry().setFromPoints([cart.sitePath.start.clone().add(normal),cart.sitePath.end.clone().add(normal)])
+                    this.scene.add(new T.Line(geometry,railMaterial))
+                }
+            }
             if(mode!=='site'&&first){const dock=this.dock(first.id);cart.basePosition.copy(dock.position).add(new T.Vector3(3,0,3));cart.baseYaw=dock.yaw;cart.wrapper.position.copy(cart.basePosition);cart.wrapper.rotation.y=cart.baseYaw}
         }
-        this.material=new T.Group();const mat=new T.MeshStandardMaterial({color:'#dca34f',metalness:.5,roughness:.4})
-        const pallet=new T.Mesh(new T.BoxGeometry(.55,.08,.4),mat);this.material.add(pallet)
-        for(let i=0;i<3;i++){const billet=new T.Mesh(new T.CylinderGeometry(.075,.075,.24,16),new T.MeshStandardMaterial({color:'#8eaeb8',metalness:.7}));billet.position.set((i-1)*.15,.16,0);this.material.add(billet)}
+        this.material=new T.Group();this.material.visible=false;this.siteMaterialConfigured=mode==='site'&&!!cartLink?.enabled
+        const mat=new T.MeshStandardMaterial({color:this.siteMaterialConfigured?cartLink.materialColor:'#dca34f',metalness:.5,roughness:.4})
+        if(mode==='site'&&cartLink?.enabled){
+            if(!Array.isArray(cartLink.materialSize)||cartLink.materialSize.length!==3||cartLink.materialSize.some(value=>typeof value!=='number'||!Number.isFinite(value)||value<=0))throw Error('已配置的物料示意尺寸无效')
+            // A unit cube permits metre dimensions to be compensated for the
+            // actual payload parent, separately from the source model scale.
+            this.material.add(new T.Mesh(new T.BoxGeometry(1,1,1),mat))
+        }else{
+            const pallet=new T.Mesh(new T.BoxGeometry(.55,.08,.4),mat);this.material.add(pallet)
+            for(let i=0;i<3;i++){const billet=new T.Mesh(new T.CylinderGeometry(.075,.075,.24,16),new T.MeshStandardMaterial({color:'#8eaeb8',metalness:.7}));billet.position.set((i-1)*.15,.16,0);this.material.add(billet)}
+        }
         this.scene.add(this.material)
+        if(this.siteMaterialConfigured){const cart=this.entries.get(plan.cart.id);applySitePayloadMetrics(this.material,cart.wrapper,cart.savedLink.materialSize,cart.sceneUnitsPerMeter)}
         this.bounds=new T.Box3();for(const entry of this.entries.values())this.bounds.union(bounds(entry.wrapper))
         if(plan.cart){
             const cart=this.entries.get(plan.cart.id),position=cart.wrapper.position.clone(),yaw=cart.wrapper.rotation.y
@@ -113,8 +146,53 @@ export class LineSimulationScene extends CadMotionScene {
         if(state?.lift)p.y+=.24*state.lift
         return entry.wrapper.localToWorld(p)
     }
+    configureSiteCart(cart){
+        // Read current saved settings on every reconfiguration/frame. Neither a
+        // hot units/port change nor a changed parent may reuse a stale dock.
+        const config=parseSimulationConfig(cart.row.instance_config),link=config.animationBindings?.transferLink
+        assertSiteTransferDriver(cart.row,cart.rig,cart.asset)
+        const datum=siteLoadingDatum(cart.row,cart.row.capabilities.model||{},cart.siteTransform,link?.enabled?link.sourcePort:'inlet')
+        const metadata=parseSimulationConfig(cart.row.capabilities.model?.metadata)
+        const binding=(metadata.partBindings||[]).find(row=>row.source_key==='cart_feed_extension'&&row.action==='translate'&&row.axis==='x')
+        const photo=cart.row.model_type==='photo_transfer_cart_v6',home=photo?Number(binding?.output_min??0):0
+        // The supported CAD rig really moves its carriage -1.085 on local X;
+        // metadata preview-only overrides must not invent a longer real drive.
+        const signed=photo&&binding?Number(binding.output_max)-home:cart.row.model_type==='cad_transfer_cart_101300'?-CART_FEED.stroke:NaN
+        if(!cart.siteDriveNode?.parent||!cart.siteDriveRest||!Number.isFinite(home)||!Number.isFinite(signed)||signed===0)throw Error(`${cart.row.name||cart.row.id} 没有可核验的推链行程，不能用演示假定现场可达`)
+        const path=siteCarrierPath(cart.row,this.siteLines,this.siteWorkshops),units=siteSceneUnitsPerMeter(cart.row,this.siteLines)
+        cart.savedLink=link?.enabled?link:null;cart.sitePath=path;cart.sceneUnitsPerMeter=units
+        cart.port.copy(datum.local);cart.normal.fromArray(datum.port.direction)
+        cart.siteStrokeLocal=Math.abs(signed);cart.siteFeedTravel=photo?signed:-signed;cart.siteFeedHome=home
+        cart.siteDriveMaximum=new T.Vector3(signed,0,0)
+        if(photo)cart.siteDriveRest.copy(cart.rig.shuttleBase).add(new T.Vector3(home,0,0))
+        cart.basePosition.copy(siteCarrierInitialPosition(path,cart.siteSavedPosition))
+        return cart.savedLink
+    }
     dock(id){
         const station=this.entries.get(id),cart=this.entries.get(this.plan?.cart?.id||[...this.entries.values()].find(e=>e.row.capabilities.cart)?.row.id)
+        if(this.mode==='site'){
+            const link=this.siteFrameCart===cart?cart.savedLink:this.configureSiteCart(cart)
+            if(link?.targetMode==='fixed'&&String(link.targetDeviceId)!==String(id))throw Error(`${station.row.name||id} 不是料车已配置的联动目标`)
+            if(link){
+                const datum=siteLoadingDatum(station.row,station.row.capabilities.model||{},station.siteTransform,link.targetPort||'inlet')
+                station.port.copy(datum.local);station.normal.fromArray(datum.port.direction)
+            }
+            const normal=siteWorldVector(station.normal,station.wrapper).normalize()
+            const offset=siteWorldVector(cart.port,cart.wrapper)
+            const maximumDriveWorld=siteWorldVector(cart.siteDriveMaximum,cart.siteDriveNode.parent),feed=maximumDriveWorld.clone().normalize()
+            const sourceDirection=siteWorldVector(cart.normal,cart.wrapper).normalize()
+            const sourceAngle=Math.acos(T.MathUtils.clamp(sourceDirection.dot(feed),-1,1))*180/Math.PI
+            if(sourceAngle>(link||this.transferTolerances).angleToleranceDegrees+.0001)throw Error(`${cart.row.name||cart.row.id} 已配置进出料口的朝向与实际送料驱动不一致，请校准进出料口；未忽略该配置或旋转料车`)
+            let fixedPosition
+            if(cart.sitePath.stations){
+                const anchors=cart.sitePath.stations.filter(station=>String(station.anchorDeviceId)===String(id))
+                if(anchors.length!==1||cart.sitePath.stations.filter(station=>Math.abs(station.value-anchors[0].value)<.0001).length!==1)throw Error(`${station.row.name||id} 没有唯一的已配置料车工位编号和关联设备，请在移动设备中配置；不能用模拟停靠替代真实工位`)
+                fixedPosition=siteWorldPoint(anchors[0].position,cart.wrapper.parent)
+            }
+            const result=solveSiteTransferPose({start:siteWorldPoint(cart.sitePath.start,cart.wrapper.parent),end:siteWorldPoint(cart.sitePath.end,cart.wrapper.parent),cartPortOffset:offset,feedDirection:feed,stationPosition:siteWorldPoint(station.port,station.wrapper),stationDirection:normal,
+                stroke:maximumDriveWorld.length(),fixedPosition,...(link||this.transferTolerances),sceneUnitsPerMeter:cart.sceneUnitsPerMeter,name:station.row.name||id})
+            return {...result,worldPosition:result.position.clone(),position:siteParentPoint(result.position,cart.wrapper.parent),yaw:cart.baseYaw,feedDirection:feed,cartPortOffset:offset,maximumDriveWorld}
+        }
         const normal=station.normal.clone().transformDirection(station.wrapper.matrixWorld)
         const yaw=Math.atan2(normal.z,-normal.x)+(cart?.wrapper.scale.x<0?Math.PI:0)+(cart?.feedDirection<0?Math.PI:0)
         const offset=cart?cart.port.clone().setY(0).multiply(cart.wrapper.scale).applyAxisAngle(new T.Vector3(0,1,0),yaw):new T.Vector3()
@@ -132,8 +210,24 @@ export class LineSimulationScene extends CadMotionScene {
         return this.port(id,inside,state)
     }
     applyFrame(frame){
+        try{
+            this.applySimulationFrame(frame)
+            this.siteTransferReason='';if(this.material)this.material.userData.siteTransferReason=''
+            return {usable:true,reason:''}
+        }catch(error){
+            if(this.mode!=='site')throw error
+            // Invalid hot metrics/affine transforms must not leave yesterday's
+            // cuboid displayed as a valid current measurement. A valid next
+            // frame can recover without an asset reload or invented PLC input.
+            this.siteTransferReason=error.message||String(error)
+            if(this.material){this.material.visible=false;this.material.userData.siteTransferReason=this.siteTransferReason}
+            return {usable:false,reason:this.siteTransferReason}
+        }finally{this.siteFrameCart=null}
+    }
+    applySimulationFrame(frame){
         if(!this.plan)return
         const cart=this.entries.get(this.plan.cart?.id)
+        if(this.mode==='site'&&cart){this.configureSiteCart(cart);this.siteFrameCart=cart}
         if(cart){
             const start=frame.cart.from?this.dock(frame.cart.from):{position:cart.basePosition,yaw:cart.baseYaw}
             const end=frame.cart.to?this.dock(frame.cart.to):start
@@ -146,9 +240,10 @@ export class LineSimulationScene extends CadMotionScene {
             if(entry.row.capabilities.cart){
                 const travel=frame.cart.segments.reduce((sum,segment)=>{const a=segment.from?this.dock(segment.from).position:entry.basePosition,b=this.dock(segment.to).position;return sum+a.distanceTo(b)*segment.progress},0)
                 Object.assign(state,{feed:frame.cart.feed,travel:travel/entry.scale,runTime:frame.cart.runTime})
+                if(this.mode==='site'){state.feedTravel=entry.siteFeedTravel;state.feedHome=entry.siteFeedHome}
                 if(entry.rig.node?.('push_hook')){
                     state.hookEngaged=['feed','reclaim'].includes(frame.step.kind)
-                    if(frame.cart.to){
+                    if(frame.cart.to&&this.mode!=='site'){
                         const home=entry.wrapper.worldToLocal(this.loadPort(id)),destination=entry.wrapper.worldToLocal(this.loadPort(frame.cart.to,true,frame.states[frame.cart.to]))
                         state.feedTravel=Math.max(0,(destination.x-home.x)*entry.feedDirection)
                     }
@@ -160,9 +255,30 @@ export class LineSimulationScene extends CadMotionScene {
         this.material.visible=!!frame.material.holder
         if(this.material.visible){
             const m=frame.material,point=id=>this.loadPort(id,id!==this.plan.cart?.id,frame.states[id])
-            const p=m.to&&m.progress<1?point(m.from).lerp(point(m.to),m.progress):point(m.holder)
-            this.material.position.copy(p)
-            this.material.rotation.y=cart?.wrapper.rotation.y||0
+            let p
+            if(this.mode==='site'&&cart){
+                const target=frame.cart.to,home=siteWorldPoint(cart.port,cart.wrapper),dock=target?this.dock(target):null
+                const displacement=siteWorldVector(cart.siteDriveNode.position.clone().sub(cart.siteDriveRest),cart.siteDriveNode.parent)
+                const destination=id=>{
+                    const d=this.dock(id),local=siteParentPoint(d.worldPosition.clone().add(d.cartPortOffset).add(d.maximumDriveWorld),this.entries.get(id).wrapper)
+                    const state=frame.states[id],station=this.entries.get(id)
+                    if(state?.basket)local.y-=(station.rig.basketStroke||1.05)*state.basket
+                    if(state?.lift)local.y+=.24*state.lift
+                    return siteWorldPoint(local,station.wrapper)
+                }
+                if((['feed','reclaim'].includes(frame.step.kind)&&dock)||m.holder===this.plan.cart.id)p=home.add(displacement)
+                else p=destination(m.holder)
+                if(cart.savedLink){
+                    if(!this.siteMaterialConfigured)throw Error('现场物料联动已启用，请重新加载预览以使用已配置的物料')
+                    if(typeof cart.savedLink.materialColor!=='string'||!/^#[0-9a-f]{6}$/i.test(cart.savedLink.materialColor))throw Error('已配置的物料示意颜色无效')
+                    const metrics=applySitePayloadMetrics(this.material,cart.wrapper,cart.savedLink.materialSize,cart.sceneUnitsPerMeter)
+                    this.material.children[0].material.color.set(cart.savedLink.materialColor)
+                    p.y+=metrics.worldHeight*.5
+                }else if(this.siteMaterialConfigured){this.material.visible=false;return}
+            }else p=m.to&&m.progress<1?point(m.from).lerp(point(m.to),m.progress):point(m.holder)
+            this.material.position.copy(this.mode==='site'?siteParentPoint(p,this.material.parent):p)
+            if(!this.siteMaterialConfigured)this.material.rotation.y=cart?.wrapper.rotation.y||0
+            this.material.updateWorldMatrix(true,true)
         }
     }
     focus(id){

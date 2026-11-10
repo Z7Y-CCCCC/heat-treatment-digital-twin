@@ -1,6 +1,6 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
-const props = defineProps({ catalog: Object, dataItemId: String, pointId: String, disabled: Boolean, busy: Boolean, error: String })
+const props = defineProps({ catalog: Object, dataItemId: String, pointId: String, disabled: Boolean, busy: Boolean, error: String, clearLabel: {type:String,default:'解除绑定'}, clearHint: {type:String,default:'同时停用此动作'} })
 const emit = defineEmits(['select', 'refresh', 'clear'])
 const categoryId = ref(''), tableId = ref('')
 const categories = computed(() => props.catalog?.categories || [])
@@ -39,7 +39,7 @@ watch([selectedCategory, tables], ([category, nextTables]) => {
     <div class="motion-data-filters"><label>用途分类<select :value="categoryId" aria-label="动作数据用途分类" :disabled="busy || !categories.length" @change="changeCategory($event.target.value)"><option value="">{{ categories.length ? '请选择分类' : '暂无可用分类' }}</option><option v-for="category in categories" :key="category.id" :value="category.id">{{ category.name }}</option></select></label><label>数据表<select :value="tableId" aria-label="动作数据表" :disabled="busy || !selectedCategory || !tables.length" @change="changeTable($event.target.value)"><option value="">{{ tablePlaceholder }}</option><option v-for="table in tables" :key="table.id" :value="table.id">{{ table.name }}</option></select></label></div>
     <label>具体数据<select :value="selectedInScope ? selected.id : ''" aria-label="动作驱动数据项" :disabled="disabled || busy || !selectedTable || !items.length" @change="choose($event.target.value)"><option value="">{{ itemPlaceholder }}</option><option v-for="item in items" :key="item.id" :value="item.id">{{ item.label }} · {{ typeLabel(item.type) }}{{ item.unit ? ` · ${item.unit}` : '' }}</option></select></label>
     <p v-if="selectedCategory && !busy && !tables.length" role="status">当前设备在该分类下暂无可用数据表，请切换分类或先到数据中心整理数据。</p>
-    <button v-if="dataItemId || pointId" type="button" class="motion-clear-binding" aria-label="解除动作数据绑定" :disabled="disabled || busy" @click="clear">解除绑定<span>同时停用此动作</span></button>
+    <button v-if="dataItemId || pointId" type="button" class="motion-clear-binding" :aria-label="clearLabel === '解除绑定' ? '解除动作数据绑定' : clearLabel" :disabled="disabled || busy" @click="clear">{{ clearLabel }}<span>{{ clearHint }}</span></button>
     <div v-if="selected" class="motion-source-summary"><strong>当前绑定：{{ selected.label }}</strong><small>{{ typeLabel(selected.type) }}{{ selected.unit ? ` · ${selected.unit}` : '' }} · {{ selected.sourceType === 'plc' ? '本设备只读采集点位' : selected.sourceType === 'internal' ? '当前设备关联资料' : '已配置的数据表' }}</small><span>{{ selected.quality === 'good' && selected.previewValue != null ? `预览：${selected.previewValue}${selected.unit ? ` ${selected.unit}` : ''}` : '以现场实际读取结果为准，异常或超时会停止联动' }}</span></div>
     <p v-if="unavailable" class="motion-picker-error" role="alert">{{ unavailable.label }}：{{ unavailable.motionError || '当前设备无法读取此数据项，请检查数据中心的来源与对象映射后刷新目录。' }}</p>
     <p v-if="error" class="motion-picker-error" role="alert">{{ error }}</p><p v-else-if="!busy && !availableItems.length">此设备暂无可执行的数据项。请先在数据中心接入并整理；部件资料需在具备部件上下文的悬停编辑器中使用。</p>

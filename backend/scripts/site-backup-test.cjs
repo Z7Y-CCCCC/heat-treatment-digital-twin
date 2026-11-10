@@ -137,6 +137,12 @@ async function main() {
         if (!configured.success || path.resolve(configured.config?.mirrorDirectory || '') !== path.resolve(mirrorDir)) {
             throw new Error('External backup mirror configuration was not persisted');
         }
+        const policy = await requestJson(`${backendOrigin}/api/site-backups/config`, {
+            method: 'PUT', body: JSON.stringify({ retentionDays: 90 })
+        });
+        const invalidPolicy = await testFetch(`${backendOrigin}/api/site-backups/config`, {
+            method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ retentionDays: 0 })
+        });
 
         await putSetting(ORIGINAL_SETTING);
         const savedDataSource = await requestJson(`${backendOrigin}/api/data-sources/connections`, {
@@ -240,6 +246,15 @@ async function main() {
         const corruptedImport = await importArchive(corruptedArchive);
 
         const checks = {
+            retentionPolicySavedWithoutResettingAutomaticOrMirrorConfig: policy.success
+                && policy.config?.retentionDays === 90 && policy.config?.autoEnabled === true
+                && policy.config?.intervalHours === 24 && policy.config?.mirrorDirectory === mirrorDir
+                && policy.cleanup?.reason === 'policy-save',
+            invalidRetentionPolicyRejected: invalidPolicy.status === 400,
+            siteBackupFullPathReturned: exported.backup.fullPath === path.join(dataDir, 'site-backups', exported.backup.filename),
+            siteBackupStorageStatisticsReturned: exported.status?.retentionDays === 90
+                && exported.status?.totalBackupBytes === exported.status.backups.reduce((sum, item) => sum + item.size, 0)
+                && exported.status.newestBackup?.filename === exported.backup.filename,
             excelFileIncludedAndRestored: archivePaths.has(`config/data-source-files/${scopedFactoryId}/${excelName}`)
                 && fs.readFileSync(excelFilename).equals(excelBytes),
             manifestFormatValid: manifest.format === 'heat-treatment-digital-twin-site-backup' && manifest.version === 4,

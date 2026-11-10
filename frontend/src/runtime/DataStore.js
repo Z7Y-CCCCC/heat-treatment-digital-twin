@@ -18,7 +18,12 @@ function formatEvent(row) {
         time: formatEventTime(date),
         occurred_at: row?.occurred_at || null,
         msg: row?.title || row?.message || '系统事件',
-        level: row?.level || 'info'
+        level: row?.level || 'info',
+        // These identities survive presentation formatting: the component's
+        // current-device filter must operate on the real record owner.
+        ...Object.fromEntries(['source_id', 'sourceId', 'device_id', 'deviceId',
+            'factory_id', 'factoryId', 'event_type', 'quality'].filter(key => row?.[key] !== undefined)
+            .map(key => [key, row[key]]))
     };
 }
 
@@ -64,7 +69,7 @@ export function createDashboardDataStore(options = {}) {
         online_devices: 0,
         total_devices: 0
     });
-    const events = ref([{ id: 'boot', time: new Date().toLocaleTimeString(), msg: '等待实时事件接入', level: 'info' }]);
+    const events = ref([{ id: 'boot', time: new Date().toLocaleTimeString(), msg: '等待实时事件接入', level: 'info', placeholder: true }]);
     const trendPoints = ref([]);
     const eventQueryOptions = reactive({
         limit: options.eventLimit || 20,
@@ -141,6 +146,19 @@ export function createDashboardDataStore(options = {}) {
 
     function setMessageHandler(handler) {
         onMessage = typeof handler === 'function' ? handler : null;
+    }
+
+    function suspendMotionInputs() {
+        const invalidate = input => ({ ...input, value:null, quality:'bad',
+            ...(input?.endpointFeedback ? { endpointFeedback:Object.fromEntries(Object.entries(input.endpointFeedback)
+                .map(([key, endpoint]) => [key, { ...endpoint, value:null, quality:'bad' }])) } : {}) });
+        for (const { data } of [...latestMotionDataMap.values()]) {
+            // This is a display-connection fault, never a new PLC read. Keep
+            // source timestamps and telemetry/lastSeen unchanged; cached good
+            // animation data must not continue after the socket has failed.
+            applyDeviceRealtimeData({ furnace_id:data.furnace_id, timestamp:Date.now(), motionInputOnly:true,
+                motionInputs:Object.fromEntries(Object.entries(data.motionInputs || {}).map(([key, input]) => [key, invalidate(input)])) });
+        }
     }
 
     function setMotionInputHandler(handler) {
@@ -436,7 +454,7 @@ export function createDashboardDataStore(options = {}) {
             const emptyMsg = windowHours > 0
                 ? `最近 ${windowHours} 小时暂无报警履历`
                 : '暂无报警履历';
-            events.value = rows.length ? rows.map(formatEvent) : [{ id: 'empty', time: new Date().toLocaleTimeString(), msg: emptyMsg, level: 'info' }];
+            events.value = rows.length ? rows.map(formatEvent) : [{ id: 'empty', time: new Date().toLocaleTimeString(), msg: emptyMsg, level: 'info', placeholder: true }];
         } catch (e) {
             // 离线时保留当前列表。
         } finally {
@@ -533,6 +551,7 @@ export function createDashboardDataStore(options = {}) {
             }
             wsClient = null;
             wsConnected.value = false;
+            suspendMotionInputs();
             plcStatusText.value = '连接断开，重连中...';
             reconnectTimer = setTimeout(() => connect(), 5000);
         };
@@ -599,6 +618,7 @@ export function createDashboardDataStore(options = {}) {
             socket.onerror = () => {
                 if (disposed || wsClient !== socket) return;
                 wsConnected.value = false;
+                suspendMotionInputs();
             };
         }
 

@@ -190,6 +190,36 @@ test('a superseded events response cannot overwrite the current filter', async t
     assert.equal(store.events.value[0].id, 'new')
 })
 
+test('event formatting preserves actual record ownership for current-device alarm filtering', async t => {
+    const { store } = fixture(t)
+    const rows = [
+        { id: 'a', title: 'A炉警告', level: 'warning', source_id: 'A', factory_id: 'factory-a', event_type: 'alarm', quality: 'good', occurred_at: '2026-11-09T05:00:00.000Z' },
+        { id: 'b', title: 'B炉报警', level: 'critical', device_id: 'B', factory_id: 'factory-a', occurred_at: '2026-11-09T05:01:00.000Z' },
+        { id: 'camel', title: 'A炉事件', sourceId: 'A', factoryId: 'factory-a' }
+    ]
+    t.mock.method(globalThis, 'fetch', async () => json(rows))
+    await store.refreshEvents(true)
+    assert.equal(store.events.value[0].source_id, 'A')
+    assert.equal(store.events.value[0].factory_id, 'factory-a')
+    assert.equal(store.events.value[0].event_type, 'alarm')
+    assert.equal(store.events.value[0].quality, 'good')
+    assert.equal(store.events.value[1].device_id, 'B')
+    assert.equal(store.events.value[2].sourceId, 'A')
+    assert.equal(store.events.value[2].factoryId, 'factory-a')
+    const active = store.events.value.filter(row => String(row.source_id || row.sourceId || row.device_id || row.deviceId) === 'A')
+    assert.deepEqual(active.map(row => row.id), ['a', 'camel'])
+    assert.equal(active[0].msg, 'A炉警告')
+    assert.equal(active[0].occurred_at, rows[0].occurred_at)
+})
+
+test('empty event notices remain marked as presentation placeholders, not actual event records', async t => {
+    const { store } = fixture(t)
+    assert.equal(store.events.value[0].placeholder, true)
+    await store.refreshEvents(true)
+    assert.equal(store.events.value[0].id, 'empty')
+    assert.equal(store.events.value[0].placeholder, true)
+})
+
 test('dispose aborts pending reads and suppresses late response mutation', async t => {
     const { store } = fixture(t)
     const response = deferred()

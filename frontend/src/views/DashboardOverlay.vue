@@ -13,11 +13,15 @@ import { resolveBackendAssetUrl } from '../three/ModelFactory.js'
 import { useDashboardIntegration } from '../runtime/dashboardIntegration.js'
 import {useWidgetClock,createWidgetPlaybackController,WidgetPlaybackKey} from '../runtime/widgetPlayback.js'
 import {createWidgetReadScheduler} from '../runtime/widgetReadScheduler.js'
-import {flattenPlaybackDevices} from '../../../shared/widgetPlayback.mjs'
+import {flattenPlaybackDevices,playbackSelection,devicePoint} from '../../../shared/widgetPlayback.mjs'
+import {bindingForDevice} from '../../../shared/widgetBindingWorkflow.mjs'
 import WidgetRenderer from '../runtime/WidgetRenderer.vue'
+import { resolveNavigationContent } from '../runtime/widgetContentConfig.js'
 import { applyReferenceHudLayout } from '../runtime/referenceHudLayout.js'
 import { applyFactoryHudModules } from '../runtime/factoryHudModules.js'
+import { applyApprovedOverviewStyle } from '../runtime/approvedOverviewStyle.js'
 import { createNativeViewNavigator } from '../runtime/nativeViewNavigation.js'
+import { deviceReturnOrigin, deviceBackRequest } from '../runtime/deviceReturnNavigation.js'
 import { fitHudCanvas } from '../runtime/hudPresentation.js'
 import { applyVisibilityAction, widgetRuntimeVisible } from '../runtime/dashboardRules.js'
 import { widgetPresentationState, returnNavigationVisibility } from '../runtime/widgetPresentation.js'
@@ -82,7 +86,7 @@ const businessData = reactive({
 })
 const runtimeContext = reactive({
     hoveredDeviceId: '', deviceHoverPointer: { visible: false },
-    factoryId: '', viewId: 'factory_overview', viewMode: 'factory', sceneReady: false, sceneId: '', workshopId: '', lineId: '', deviceId: '',
+    factoryId: '', viewId: 'factory_overview', viewMode: 'factory', sceneReady: false, sceneId: '', workshopId: '', lineId: '', deviceId: '', returnOrigin: null,
     inspectionStage: '', partId: '', partName: '', partDescription: '', partPointIds: [], partPointKeys: [], partDetailViewId: '',
     inspectionEnabled: false, inspectionProgress: 0, inspectionAnimating: false, inspectionPhase: '', inspectionIsolated: false,
     inspectionLabelsEnabled: false, inspectionLeaderLines: false, inspectionHoveredPartId: '', inspectionIssues: [], inspectionParts: []
@@ -233,7 +237,7 @@ const CONFIG_ONLY_WIDGET_TYPES = new Set([
 ])
 
 const platform = computed(() => getPlatform() || {})
-const presentationDocument = computed(() => applyFactoryHudModules(applyReferenceHudLayout(platform.value.document)))
+const presentationDocument = computed(() => applyApprovedOverviewStyle(applyFactoryHudModules(applyReferenceHudLayout(platform.value.document))))
 const dashboardViews = computed(() => {
     const views = presentationDocument.value?.scene?.views || platform.value.activeScene?.views || []
     return Array.isArray(views) && views.length
@@ -247,12 +251,12 @@ const defaultViewId = computed(() => presentationDocument.value?.scene?.defaultV
     || platform.value.activeScene?.defaultViewId
     || 'factory_overview')
 const canNavigateToParentView = computed(() => returnNavigationVisibility(currentView.value, runtimeContext, defaultViewId.value).visible)
-// The return control must follow the actual navigation context. Depending on
-// a transient "this WebView saw the click" flag made it disappear when Unity
-// entered a deep view first or delivered its context update a frame later.
-const canReturnToParentView = computed(() => canNavigateToParentView.value)
+// Authored return buttons use their component's display checkbox. Navigation
+// availability remains separate for the Escape shortcut and parent routing.
 
 function parentViewIdForCurrent() {
+    const origin = deviceReturnOrigin(runtimeContext, dashboardViews.value)
+    if (origin) return origin.viewId
     const configured = currentView.value?.returnViewId || currentView.value?.parentViewId
     if (configured) return configured
     const targetType = String(currentView.value?.targetType || '').toLowerCase()
@@ -280,7 +284,7 @@ function applyRuntimeContext(payload, { userNavigation = false } = {}) {
         runtimeContext.hoveredDeviceId = ''
         runtimeContext.deviceHoverPointer = { visible: false }
     }
-    Object.assign(runtimeContext, payload)
+    Object.assign(runtimeContext, payload, { returnOrigin: payload.returnOrigin || null })
     nextTick(scheduleRegionReport)
     if (!Object.prototype.hasOwnProperty.call(payload, 'sceneReady')) runtimeContext.sceneReady = true
     const nextDataContext = [runtimeContext.viewId, runtimeContext.workshopId, runtimeContext.lineId, runtimeContext.deviceId, runtimeContext.partId].join('|')
@@ -304,6 +308,8 @@ const parentViewName = computed(() => {
     if (runtimeContext.inspectionStage === 'part') return '设备拆解视角'
     if (runtimeContext.inspectionStage === 'exploded') return '设备透视视角'
     if (runtimeContext.inspectionStage === 'xray') return '设备实体视角'
+    const origin = deviceReturnOrigin(runtimeContext, dashboardViews.value)
+    if (origin) return origin.name
     const parentId = parentViewIdForCurrent()
     return dashboardViews.value.find(view => view.id === parentId)?.name || '上一级视角'
 })
@@ -467,6 +473,7 @@ function handleInspectionCommand(command) {
 
 function runtimeValueForWidget(widget) {
     const binding = widget?.data || widget?.binding || {}
+    if(binding.bindingVersion===2){const selected=playbackSelection(binding,runtimeContext,playbackDevices.value,playbackController.timeFor(widget,playbackNow.value)),source=bindingForDevice(binding,selected.device?.id || '');if(source.mode==='dataset')return databaseValues[widget.id]?.value;if(source.mode==='plc'){const point=devicePoint(binding,selected.device?.id || '',pointValues.value);return point?.quality==='good'?point.value:undefined}}
     if (binding.mode === 'database' || binding.mode === 'http_api' || binding.mode === 'dataset') return databaseValues[widget.id]?.value
     if (binding.mode === 'plc' || binding.pointId || binding.point_id) {
         const pointId = String(binding.pointId || binding.point_id || '')
@@ -498,7 +505,8 @@ function runtimeValueForWidget(widget) {
     return widget?.content?.value
 }
 
-const navigationCopy = widget => widget.content || widget.config || {}
+const widgetSystemData = computed(() => ({ factoryName: config.settings?.factory_name ?? '', collectionStatus: dataStore.plcStatusText.value ?? '' }))
+const navigationCopy = widget => resolveNavigationContent(widget, widgetSystemData.value)
 
 let resizeObserver = null
 let mutationObserver = null
@@ -703,32 +711,31 @@ async function focusNativeView(viewId, event = {}) {
 }
 
 async function returnToParentView() {
-    if ((!canNavigateToParentView.value && !runtimeContextIsRoot()) || parentReturnBusy.value) return
+    if (parentReturnBusy.value) return
     parentReturnBusy.value = true
     try {
-        if (runtimeContextIsRoot()) {
+        const targetType = String(currentView.value?.targetType || '').toLowerCase()
+        const mode = String(runtimeContext.viewMode || currentView.value?.mode || targetType || '').toLowerCase()
+        const isDeviceView = mode === 'device' || targetType === 'device' || targetType === 'device_part'
+        if (!isDeviceView && runtimeContextIsRoot()) {
             const mapSegment = [...hierarchyTrail.value].reverse().find(segment => segment.to?.path === '/group')
             await router.push(mapSegment?.to || { path:'/group', query:{ embedded:route.query.embedded } })
             return
         }
-        const targetType = String(currentView.value?.targetType || '').toLowerCase()
-        const mode = String(runtimeContext.viewMode || currentView.value?.mode || targetType || '').toLowerCase()
-        const isDeviceView = mode === 'device' || targetType === 'device' || targetType === 'device_part'
-        if (isDeviceView && runtimeContext.inspectionStage && runtimeContext.inspectionStage !== 'solid') {
+        if (isDeviceView) {
             const response = await adminFetch(`${API_BASE}/native-preview/navigate`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                // viewId makes this idempotent if Unity and the WebView happen
-                // to receive the same Escape key during a focus transition.
-                body: JSON.stringify({
-                    action: 'inspection_back',
-                    source: 'dashboard_overlay',
-                    viewId: runtimeContext.viewId,
-                    focus: { mode: 'device', deviceId: runtimeContext.deviceId }
-                })
+                // Unity owns the entry camera, including entry by a world click.
+                // One guarded back path handles inspection stages AND solid view.
+                body: JSON.stringify(deviceBackRequest(runtimeContext))
             })
-            if (!response.ok) return false
-            return
+            const result = await response.json()
+            if (!response.ok || result?.sent === 0) {
+                hierarchyError.value = result?.error || 'Unity 尚未连接，未执行返回'
+                return false
+            }
+            return true
         }
         const parentId = parentViewIdForCurrent()
         if (parentId) await focusNativeView(parentId)
@@ -1137,7 +1144,6 @@ onUnmounted(() => {
             <div v-for="widget in returnButtonWidgets" :key="widget.id" :data-widget-id="widget.id" class="overlay-return-widget" :style="controlStyle(widget, 'return_button')">
                 <button
                     type="button"
-                    v-if="canReturnToParentView"
                     class="overlay-line-return"
                     :class="{ 'is-busy': parentReturnBusy }"
                     :disabled="parentReturnBusy"
@@ -1192,6 +1198,7 @@ onUnmounted(() => {
                     :events="dataStore.events.value"
                     :trend-points="dataStore.trendPoints.value"
                     :device-status-map="dataStore.deviceStatusMap"
+                    :system-data="widgetSystemData"
         :device-data-map="dataStore.deviceDataMap"
         :point-values="pointValues"
                     :database-values="databaseValues"

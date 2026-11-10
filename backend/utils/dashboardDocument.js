@@ -8,6 +8,7 @@ const { normalizeViewTooltipMetadata } = require('../../shared/deviceTooltip.mjs
 const { normalizeTooltipTemplates, normalizeTooltipTemplateRefs, MAX_TOOLTIP_TEMPLATES, MAX_TOOLTIP_WIDGETS, TOOLTIP_WIDGET_TYPES } = require('../../shared/tooltipTemplates.mjs');
 
 const { normalizePlayback } = require('../../shared/widgetPlayback.mjs');
+const { widgetWorkflowIssues, expandedBindingWidgets } = require('../../shared/widgetBindingWorkflow.mjs');
 const SCHEMA_VERSION = 3;
 const SUPPORTED_SCHEMA_VERSIONS = new Set([1, 2, 3]);
 const DEFAULT_CANVAS = Object.freeze({
@@ -484,6 +485,8 @@ function normalizeWidget(source, canvas, index = 0) {
     const legacyNavigationSeed = type === 'navigation' && !hasCanonicalFrame
         && Number(widget.x || 0) === 0 && Number(widget.y || 0) === 0
         && Number(widget.w || 0) === 5 && Number(widget.h || 0) === 5;
+    const normalizedData=normalizeDataBinding(widget.data,binding);
+    if(['alarm_list','hud_alarm_panel','marquee'].includes(type) && normalizedData.mode==='static')Object.assign(normalizedData,{mode:'runtime',path:'events',source:'',deviceScope:'global'});
     return {
         id: cleanId(widget.id, `widget_${type}_${index + 1}`),
         type,
@@ -500,7 +503,7 @@ function normalizeWidget(source, canvas, index = 0) {
             : normalizeFrame(widget.frame, canvas, legacyType ? widget : null),
         content,
         style,
-        data: normalizeDataBinding(widget.data, binding),
+        data: normalizedData,
         visibility,
         conditions: conditions.slice(0, 20).map(item => objectValue(item, {})),
         animation: {
@@ -770,29 +773,35 @@ function validateDocument(document, options = {}) {
         }
         if (!widget?.frame || Number(widget.frame.width) < 20 || Number(widget.frame.height) < 20) errors.push(`${label} 尺寸不合法`);
         if (widget?.data?.readOnly === false) errors.push(`${label} 禁止启用 PLC 写入`);
-        if (widget?.data?.mode === 'plc') {
-            if(widget.data.deviceScope==='global')errors.push(`${label} 的设备点位不能使用全局范围`);
-            const currentDeviceScope = widget.data.deviceScope !== 'fixed';
-            if ((!currentDeviceScope && !widget.data.deviceId) || (!widget.data.pointId && widget.data.requireConfiguredPoint !== true)) {
+        if(!allowIncompleteBindings)errors.push(...widgetWorkflowIssues(widget,label));
+        // V2 row sources are authoritative. Stale first-row display metadata
+        // must not invalidate a reordered list or a mixed PLC/dataset panel.
+        for(const sourceWidget of expandedBindingWidgets([widget])){
+        const data=sourceWidget.data || {};
+        if(sourceWidget.__sourceWidget && data.mode!=='static' && data.deviceScope==='fixed' && !data.deviceId && !allowIncompleteBindings)errors.push(`${label} 的指标请选择指定设备`);
+        if (data.mode === 'plc') {
+            if(data.deviceScope==='global')errors.push(`${label} 的设备点位不能使用全局范围`);
+            const currentDeviceScope = data.deviceScope !== 'fixed';
+            if ((!currentDeviceScope && !data.deviceId) || (!data.pointId && data.requireConfiguredPoint !== true)) {
                 errors.push(`${label} 的 PLC 绑定必须选择点位${currentDeviceScope ? '' : '和设备'}`);
             }
         }
-        if (widget?.data?.mode === 'business' && !widget.data.connectionId && !allowIncompleteBindings) {
+        if (data.mode === 'business' && !data.connectionId && !allowIncompleteBindings) {
             errors.push(`${label} 的业务只读组件必须选择外部数据库连接`);
         }
-        if (widget?.data?.mode === 'dataset' && (!/^[a-zA-Z0-9_-]{1,80}$/.test(widget.data.datasetId) || !/^[a-zA-Z_][a-zA-Z0-9_]{0,63}$/.test(widget.data.datasetField))) errors.push(`${label} 请完整选择数据集与字段`);
-        if (widget?.data?.mode === 'http_api') {
-            if (!widget.data.connectionId || !widget.data.apiPath || !widget.data.jsonPath)
+        if (data.mode === 'dataset' && (!/^[a-zA-Z0-9_-]{1,80}$/.test(data.datasetId) || !/^[a-zA-Z_][a-zA-Z0-9_]{0,63}$/.test(data.datasetField))) errors.push(`${label} 请完整选择数据集与字段`);
+        if (data.mode === 'http_api') {
+            if (!data.connectionId || !data.apiPath || !data.jsonPath)
                 errors.push(`${label} 的 HTTP 接口绑定必须选择连接、接口路径和 JSON 字段`);
-            if (String(widget.data.apiPath || '').startsWith('//') || /(^|\/)\.\.(\/|$)/.test(String(widget.data.apiPath || '')))
+            if (String(data.apiPath || '').startsWith('//') || /(^|\/)\.\.(\/|$)/.test(String(data.apiPath || '')))
                 errors.push(`${label} 的 HTTP 接口路径必须位于已登记的根地址下`);
-            try { parseDataPath(widget.data.jsonPath); }
+            try { parseDataPath(data.jsonPath); }
             catch { errors.push(`${label} 的接口字段路径格式不正确`); }
         }
-        if (widget?.data?.mode === 'database') {
-            const datasets = Array.isArray(widget.data.datasets) && widget.data.datasets.length
-                ? widget.data.datasets
-                : [widget.data];
+        if (data.mode === 'database') {
+            const datasets = Array.isArray(data.datasets) && data.datasets.length
+                ? data.datasets
+                : [data];
             const aliases = new Set();
             datasets.forEach((dataset, datasetIndex) => {
                 const datasetLabel = `${label}的第 ${datasetIndex + 1} 个数据项`;
@@ -804,13 +813,14 @@ function validateDocument(document, options = {}) {
                 aliases.add(dataset.alias);
                 if (dataset.contextKey && !dataset.contextField) errors.push(`${datasetLabel}启用了上下文过滤，但未选择表字段`);
             });
-            if (widget.data.formula) {
+            if (data.formula) {
                 try {
-                    evaluateVariableExpression(widget.data.formula, Object.fromEntries([...aliases].map(alias => [alias, 1])), '数据 ');
+                    evaluateVariableExpression(data.formula, Object.fromEntries([...aliases].map(alias => [alias, 1])), '数据 ');
                 } catch (error) {
                     errors.push(`${label}的${error.message}`);
                 }
             }
+        }
         }
         for (const viewId of widget?.visibility?.viewIds || []) {
             if (viewIds.size && !viewIds.has(viewId)) errors.push(`${label} 指定的视角不存在：${viewId}`);

@@ -1,4 +1,5 @@
 import { normalizeDashboardDocument } from './dashboardSchema.js'
+import { sourceBindingEntries } from '../../../shared/widgetBindingWorkflow.mjs'
 
 const clone = value => JSON.parse(JSON.stringify(value))
 export const DATABASE_FIELD_ROLES = ['field', 'timeField', 'orderBy', 'contextField']
@@ -39,13 +40,19 @@ export function suggestTemplateFields(source, fields, expectedType = '') {
 export function templateFieldBindings(document) {
   const entries = [...(document.widgets || []).map(widget => ({ widget, templateId: '' })), ...(document.tooltipTemplates?.templates || []).flatMap(template => (template.widgets || []).map(widget => ({ widget, templateId: template.id })))]
   return entries.flatMap(({ widget, templateId }) => {
-    const data = widget.data || {}
     const prefix = templateId ? `${templateId}/` : ''
     const owner = templateId ? { templateId } : {}
-    if (data.mode === 'dataset') return [{key:`${prefix}${widget.id}:dataset`,widgetId:widget.id,...owner,label:widget.title || widget.id,kind:'dataset',source:clone(data)}]
-    if (data.mode === 'http_api') return [{ key: `${prefix}${widget.id}:http`, widgetId: widget.id,...owner, label: widget.title || widget.id, kind: 'http', source: clone(data) }]
-    if (data.mode !== 'database') return []
-    return (data.datasets?.length ? data.datasets : [data]).map((source, index) => ({ key: `${prefix}${widget.id}:${index}`, widgetId: widget.id,...owner, index, label: `${widget.title || widget.id} / ${source.label || source.alias || index + 1}`, kind: 'database', source: clone(source) }))
+    return sourceBindingEntries(widget).flatMap(({binding:data,deviceId,deviceBindingIndex,metricIndex})=>{
+      const locator={...owner,...(Number.isInteger(metricIndex)?{metricIndex}:{}),...(Number.isInteger(deviceBindingIndex)?{deviceBindingIndex,deviceId}: {})}
+      const key=`${prefix}${widget.id}${Number.isInteger(metricIndex)?`:metric_${metricIndex}`:''}${Number.isInteger(deviceBindingIndex)?`:device_${deviceBindingIndex}`:''}`
+      const label=[widget.title || widget.id,Number.isInteger(metricIndex) ? widget.content.items[metricIndex].label || `指标 ${metricIndex+1}` : '',Number.isInteger(deviceBindingIndex) ? `设备 ${deviceId}` : ''].filter(Boolean).join(' / ')
+      const source=clone(data)
+      if(Number.isInteger(deviceBindingIndex))Object.assign(source,{deviceScope:'fixed',deviceId})
+      if (data.mode === 'dataset') return [{key:`${key}:dataset`,widgetId:widget.id,...locator,label,kind:'dataset',source}]
+      if (data.mode === 'http_api') return [{key:`${key}:http`,widgetId:widget.id,...locator,label,kind:'http',source}]
+      if (data.mode !== 'database') return []
+      return (data.datasets?.length ? data.datasets : [data]).map((source,index)=>({key:`${key}:${index}`,widgetId:widget.id,...locator,index,label:`${label} / ${source.label || source.alias || index+1}`,kind:'database',source:clone(source)}))
+    })
   })
 }
 
@@ -55,12 +62,19 @@ export function applyTemplateFieldBindings(document, bindings) {
     const widgets = binding.templateId ? result.tooltipTemplates?.templates?.find(template => template.id === binding.templateId)?.widgets : result.widgets
     const widget = widgets?.find(row => row.id === binding.widgetId)
     if (!widget) throw new Error('模板组件已改变，请重新载入')
-    if (binding.kind === 'http' || binding.kind === 'dataset') Object.assign(widget.data, binding.target)
+    let data=Number.isInteger(binding.metricIndex) ? widget.content?.items?.[binding.metricIndex]?.binding : widget.data
+    if(!data)throw new Error('模板指标已改变，请重新载入')
+    if(Number.isInteger(binding.deviceBindingIndex)){
+      const row=data.bindingVersion===2 ? data.deviceBindings?.[binding.deviceBindingIndex] : null
+      if(!row?.binding || String(row.deviceId)!==String(binding.deviceId))throw new Error('模板设备清单已改变，请重新载入')
+      data=row.binding
+    }
+    if (binding.kind === 'http' || binding.kind === 'dataset') Object.assign(data, binding.target)
     else {
-      if (!widget.data.datasets?.length) widget.data.datasets = [clone(widget.data)]
-      widget.data.datasets[binding.index] = clone(binding.target)
+      if (!data.datasets?.length) data.datasets = [clone(data)]
+      data.datasets[binding.index] = clone(binding.target)
       // Keep the legacy single-dataset readers and canonical runtime aligned.
-      if (binding.index === 0) for (const field of ['connectionId', 'schema', 'table', ...DATABASE_FIELD_ROLES]) widget.data[field] = binding.target[field] || ''
+      if (binding.index === 0) for (const field of ['connectionId', 'schema', 'table', ...DATABASE_FIELD_ROLES]) data[field] = binding.target[field] || ''
     }
   }
   return normalizeDashboardDocument(result)

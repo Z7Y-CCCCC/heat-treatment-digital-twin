@@ -59,6 +59,36 @@ test('mapping preserves formulas, aliases and mapped filter/sort fields across s
   assert.throws(() => validateTemplateFieldBinding(rows[0]), /映射/)
 })
 
+test('explicit device rows and HUD metrics map only their own dataset fields without changing playback',()=>{
+ const row=(deviceId,datasetField)=>({deviceId,binding:{mode:'dataset',datasetId:'set',datasetField,datasetMode:'first'}})
+ const document=documentFor({mode:'dataset',bindingVersion:2,deviceScope:'rotation',rotationIntervalMs:12000,refreshMs:1500,datasetId:'set',datasetField:'first',deviceBindings:[row('a','first'),row('b','second')]})
+ const widget=document.widgets.find(widget=>widget.id==='meter')
+ widget.content.items=[{label:'运行时长',binding:{mode:'dataset',bindingVersion:2,deviceScope:'current',deviceBindings:[row('a','hours_a'),row('b','hours_b')]}}]
+ const original=JSON.stringify(document),rows=templateFieldBindings(document).filter(row=>row.widgetId==='meter')
+ assert.equal(rows.length,4);assert.equal(new Set(rows.map(row=>row.key)).size,4)
+ const primaryB=rows.find(row=>row.metricIndex===undefined&&row.deviceId==='b'),metricA=rows.find(row=>row.metricIndex===0&&row.deviceId==='a')
+ primaryB.target={...primaryB.source,datasetField:'new_second'};metricA.target={...metricA.source,datasetField:'new_hours_a'}
+ const mapped=applyTemplateFieldBindings(document,[primaryB,metricA]).widgets.find(widget=>widget.id==='meter')
+ assert.equal(mapped.data.deviceBindings[0].binding.datasetField,'first')
+ assert.equal(mapped.data.deviceBindings[1].binding.datasetField,'new_second')
+ assert.equal(mapped.content.items[0].binding.deviceBindings[0].binding.datasetField,'new_hours_a')
+ assert.equal(mapped.content.items[0].binding.deviceBindings[1].binding.datasetField,'hours_b')
+ assert.equal(mapped.data.rotationIntervalMs,12000);assert.equal(mapped.data.refreshMs,1500)
+ assert.equal(mapped.data.deviceScope,'rotation');assert.equal(JSON.stringify(document),original)
+ const reordered=structuredClone(document);reordered.widgets.find(widget=>widget.id==='meter').data.deviceBindings.reverse()
+ assert.throws(()=>applyTemplateFieldBindings(reordered,[primaryB]),/已改变/,'a stale row locator cannot map another device')
+})
+
+test('explicit dataset mapper previews each assigned device instead of the current navigation device',async t=>{
+ const rows=[{deviceId:'a',binding:{mode:'dataset',datasetId:'set',datasetField:'reading'}},{deviceId:'b',binding:{mode:'dataset',datasetId:'set',datasetField:'reading'}}]
+ const document=documentFor({mode:'dataset',bindingVersion:2,deviceScope:'rotation',datasetId:'set',datasetField:'reading',deviceBindings:rows})
+ t.mock.method(adminApi,'getDataSets',async()=>({datasets:[{id:'set',columns:[{name:'reading'}]}]}))
+ const requests=[];t.mock.method(adminApi,'previewDataSet',async data=>{requests.push(data);return {result:{value:42,quality:'good'}}})
+ const {state}=fixture(t,document);await settle();assert.equal(state.rows.length,2)
+ for(const row of state.rows)await state.preview(row)
+ assert.deepEqual(requests.map(request=>request.context.deviceId),['a','b'])
+})
+
 test('tooltip field mapper previews and applies the nested template owner without main-widget lookup', async t => {
   t.mock.method(adminApi, 'getDataSets', async () => ({ datasets: [{ id:'tooltip_set',columns:[{name:'reading',label:'读数'}] }] }))
   const requests=[]

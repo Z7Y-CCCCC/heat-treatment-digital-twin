@@ -1,5 +1,6 @@
 // Reference diagnostics are presentation-only: retain the original component,
 // source IDs and layout until the user explicitly rebinds or removes it.
+import { expandedBindingWidgets, widgetWorkflowIssues } from '../../../shared/widgetBindingWorkflow.mjs'
 export function isMissingBindingMessage(message = '') {
   return /绑定的(?:设备|点位)不存在：/.test(message)
 }
@@ -9,7 +10,8 @@ export function bindingReferenceDiagnostics(document = {}, devices = [], points 
   const pointIds = new Set(points.map(point => String(point.id)))
   const results = []
   const inspect = (widgets = [], prefix = '') => {
-    for (const widget of widgets) {
+    for (const widget of widgets)results.push(...widgetWorkflowIssues(widget,`${prefix}组件 ${widget.id}`))
+    for (const widget of expandedBindingWidgets(widgets)) {
       const binding = widget.data || {}
       if (binding.mode !== 'plc') continue
       const label = `${prefix}组件 ${widget.id}`

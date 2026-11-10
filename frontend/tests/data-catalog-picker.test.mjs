@@ -8,7 +8,7 @@ import { deferred, installBrowser, settle } from './helpers.mjs'
 
 const url = new URL('../src/views/admin/components/DataCatalogPicker.vue', import.meta.url)
 const source = await readFile(url, 'utf8')
-const { descriptor } = parse(source.replace('</script>', '\ndefineExpose({ catalog, loading, error, categoryId, tableId, chosenId, items, tables, chosen, current, load, choose })\n</script>'))
+const { descriptor } = parse(source.replace('</script>', '\ndefineExpose({ catalog, loading, error, categoryId, tableId, chosenId, items, tables, chosen, current, load, choose, selectChoice })\n</script>'))
 let compiled = compileScript(descriptor, { id: 'catalog-test' }).content
 for (const match of [...compiled.matchAll(/from\s+(['"])([^'"]+)\1/g)]) {
   const name = match[2], target = name.startsWith('.') ? new URL(name, url).href : import.meta.resolve(name)
@@ -53,12 +53,15 @@ test('picker keeps the original binding until an explicit choice and carries sou
 test('immediate row picker emits only a valid explicit field selection and readonly prevents selection', async t => {
   const f = await fixture(t, async () => apiResult(), { tooltip: true, immediate: true })
   assert.equal(f.emitted.length, 0)
-  f.vm.chosenId = 'temp-A'; await nextTick()
+  f.vm.selectChoice('temp-A'); await nextTick()
   assert.equal(f.emitted.filter(Boolean).length, 1)
+  f.vm.selectChoice(''); await nextTick()
+  assert.equal(f.emitted.includes(null), true, 'an explicit writable clear may clear the row')
+  f.vm.selectChoice('temp-A'); await nextTick()
   await f.render({ disabled: true })
-  f.vm.chosenId = ''; await nextTick(); f.vm.chosenId = 'temp-A'; await nextTick(); f.vm.choose()
-  assert.equal(f.emitted.filter(Boolean).length, 1)
-  assert.equal(f.emitted.includes(null), true)
+  const before=f.emitted.length
+  f.vm.selectChoice(''); await nextTick(); f.vm.selectChoice('temp-A'); await nextTick(); f.vm.choose()
+  assert.equal(f.emitted.length, before, 'readonly selections/clears cannot emit changes')
 })
 
 test('category and table menus remain sufficient to select data without search or changing the old binding', async t => {
@@ -126,4 +129,15 @@ test('picker template compiles with native labels, beginner copy and no technica
   assert.doesNotMatch(source, /搜索数据项|搜索中文名称|type="search"|\bquery\b/)
   assert.doesNotMatch(parsed.template.content, /<input\b/)
   assert.doesNotMatch(parsed.template.content, /jsonPath|pointKey|apiPath|connectionId/)
+})
+
+test('global-only picker lists only real global sources and cannot apply an unavailable device field',async t=>{
+  const catalog=apiResult('A')
+  catalog.tables.push({id:'global-energy',name:'工厂能耗表'})
+  catalog.items.push({id:'factory-energy',tableId:'global-energy',categoryId:'realtime',label:'工厂耗电量',type:'number',unit:'kWh',objectScope:'factory',sourceType:'dataset',binding:{mode:'dataset',datasetId:'energy',datasetField:'value',deviceScope:'global'}})
+  const f=await fixture(t,async()=>catalog,{globalOnly:true,widgetType:'hud_kpi_panel',binding:catalog.items[1].binding})
+  assert.deepEqual(f.vm.items.map(item=>item.id),['factory-energy'])
+  assert.equal(f.vm.chosenId,'factory-energy');assert.equal(f.vm.tableId,'global-energy')
+  f.vm.selectChoice('temp-A');f.vm.choose();assert.equal(f.emitted.length,0)
+  f.vm.selectChoice('factory-energy');f.vm.choose();assert.equal(f.emitted[0].binding.deviceScope,'global')
 })

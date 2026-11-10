@@ -7,16 +7,9 @@
   --module-muted: #9aa6bf;
   --module-faint: #75829e;
   --module-rule: rgba(178, 193, 229, .12);
-  position: relative;
-  isolation: isolate;
   container-type: inline-size;
   box-sizing: border-box;
   padding: var(--widget-padding, 17px 19px);
-  overflow: hidden;
-  border: 1px solid var(--widget-border-color, rgba(137, 149, 245, .24)) !important;
-  border-radius: var(--widget-radius, 8px);
-  background: var(--hud-glass-bg, linear-gradient(135deg, rgba(18, 24, 43, .20), rgba(8, 13, 27, .12))) !important;
-  box-shadow: var(--widget-shadow, 0 10px 28px rgba(1, 7, 18, .14)) !important;
   color: var(--module-text);
   font-family: var(--hud-font-text, "Segoe UI Variable", "Microsoft YaHei UI", sans-serif);
   font-synthesis: none;
@@ -24,6 +17,21 @@
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
   transition: border-color .22s ease, box-shadow .22s ease, background-color .22s ease;
+}
+/* One implementation for the approved modules AND authored basic cards.
+   Flow, padding and font sizing above deliberately stay module-only. */
+.widget-shell.hud-module-shell,
+.hud-widget .widget-shell.hud-module-shell,
+.widget-shell.widget-surface-glass,
+.hud-widget .widget-shell.widget-surface-glass,
+.hud-widget.widget-type-trend .widget-shell.widget-surface-glass {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  border: 1px solid var(--widget-border-color, rgba(137, 149, 245, .24)) !important;
+  border-radius: var(--widget-radius, 8px);
+  background: var(--hud-glass-bg, linear-gradient(135deg, rgba(18, 24, 43, .20), rgba(8, 13, 27, .12))) !important;
+  box-shadow: var(--widget-shadow, 0 10px 28px rgba(1, 7, 18, .14)) !important;
 }
 .widget-shell.hud-module-shell.widget-kind-hud_kpi_panel { --module-accent: #a8a2f1; }
 .widget-shell.hud-module-shell.widget-kind-hud_device_status { --module-accent: #79cbbb; }
@@ -33,7 +41,9 @@
 /* A restrained glass bloom and hairline give the panel a crafted edge without
    adding a second card or reducing visibility of the 3D scene beneath it. */
 .widget-shell.hud-module-shell::before,
-.hud-widget .widget-shell.hud-module-shell::before {
+.hud-widget .widget-shell.hud-module-shell::before,
+.widget-shell.widget-surface-glass::before,
+.hud-widget .widget-shell.widget-surface-glass::before {
   content: "";
   display: block !important;
   position: absolute;
@@ -43,7 +53,10 @@
   background: radial-gradient(ellipse at 0 0, color-mix(in srgb, var(--module-accent) 12%, transparent), transparent 58%);
 }
 .widget-shell.hud-module-shell::after,
-.hud-widget .widget-shell.hud-module-shell::after {
+.hud-widget .widget-shell.hud-module-shell::after,
+.widget-shell.widget-surface-glass::after,
+.hud-widget .widget-shell.widget-surface-glass::after,
+.hud-widget.widget-type-trend .widget-shell.widget-surface-glass::after {
   content: "";
   display: block !important;
   position: absolute;
@@ -57,7 +70,9 @@
   box-shadow: 0 0 9px color-mix(in srgb, var(--module-accent) 24%, transparent);
 }
 .hud-module-shell > * { position: relative; z-index: 1; box-sizing: border-box; }
-.hud-module-shell:hover {
+.hud-module-shell:hover,
+.widget-surface-glass:hover,
+.hud-widget:hover .widget-shell.widget-surface-glass {
   border-color: var(--widget-border-color, rgba(137, 149, 245, .32)) !important;
   box-shadow: var(--widget-shadow, 0 12px 30px rgba(1, 7, 18, .18)) !important;
 }

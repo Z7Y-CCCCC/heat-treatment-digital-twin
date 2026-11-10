@@ -1,6 +1,7 @@
 const WORKSHOP_LAYOUT_VERSION = 2;
 const LINE_LAYOUT_VERSION = 2;
 const { normalizeGround } = require('../../shared/industrialGround.mjs');
+const { resolveLineRailSpacing, lineSceneUnitsPerMeter } = require('../../shared/lineRailSpacing.mjs');
 
 function safeObject(value) {
     if (!value) return {};
@@ -104,7 +105,8 @@ function normalizeLineLayoutItems(items, type) {
             type: isRail ? 'cart_rail' : 'device_lane',
             offsetZ: finiteNumber(item?.offsetZ ?? item?.offset_z ?? item?.z, isRail ? 4 : 0, -10000, 10000),
             length: finiteNumber(item?.length, 60, 1, 10000),
-            sort_order: finiteNumber(item?.sort_order, index, -10000, 10000)
+            sort_order: finiteNumber(item?.sort_order, index, -10000, 10000),
+            ...(isRail && item?.spacing != null ? { spacing: item.spacing } : {})
         }))
         .sort((a, b) => a.sort_order - b.sort_order);
 }
@@ -115,7 +117,7 @@ function normalizeLineLayout(value, transformFallback = null) {
     const lanes = normalizeLineLayoutItems(source.lanes, 'lane');
     const rails = normalizeLineLayoutItems(source.rails, 'rail');
     if (!lanes.length) lanes.push(defaults.lanes[0]);
-    return {
+    return resolveLineRailSpacing({
         version: LINE_LAYOUT_VERSION,
         coordinateSpace: 'workshop_local',
         placementPending: source.placementPending === true,
@@ -123,9 +125,10 @@ function normalizeLineLayout(value, transformFallback = null) {
         flowDirection: ['right', 'left', 'none'].includes(source.flowDirection)
             ? source.flowDirection
             : defaults.flowDirection,
+        ...(Object.prototype.hasOwnProperty.call(source, 'sceneUnitsPerMeter') ? { sceneUnitsPerMeter: lineSceneUnitsPerMeter(source) } : {}),
         lanes,
         rails
-    };
+    });
 }
 
 function degreesToRadians(value) {

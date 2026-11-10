@@ -1,7 +1,11 @@
 const WebSocket = require('ws');
+const { createLinkageFixture } = require('./realtime-linkage-fixture.cjs');
+const { testFetch } = require('./integration-test-utils.cjs');
 
-const port = Number(process.env.PORT || 3001);
-const baseUrl = `http://127.0.0.1:${port}`;
+// Never connect a synthetic Unity subscriber or preview request to the
+// commissioned application. This standalone regression owns its own backend.
+let fixture, port, baseUrl;
+const sockets = [];
 const managementHeaders = {
     'Content-Type': 'application/json',
     ...(process.env.ADMIN_API_TOKEN ? { 'X-Admin-Token': process.env.ADMIN_API_TOKEN } : {}),
@@ -23,7 +27,10 @@ function waitForEvent(socket, type, timeoutMs = 5000) {
 }
 
 async function main() {
+    fixture = await createLinkageFixture('native-scene-preview');
+    baseUrl = fixture.origin; port = new URL(baseUrl).port;
     const socket = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+    sockets.push(socket);
     await new Promise((resolve, reject) => {
         const timer = setTimeout(() => reject(new Error('WebSocket 连接超时')), 5000);
         socket.once('open', () => {
@@ -56,6 +63,7 @@ async function main() {
     await pongPromise;
 
     const webSocket = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+    sockets.push(webSocket);
     await new Promise((resolve, reject) => {
         const timer = setTimeout(() => reject(new Error('Web 数据层连接超时')), 5000);
         webSocket.once('open', () => {
@@ -73,7 +81,7 @@ async function main() {
     if (contextEvent.payload?.partPointKeys?.[0] !== 'doors.front_door_open') throw new Error('部件点位键未转发到 Web 数据层');
 
     const eventPromise = waitForEvent(socket, 'native_scene_preview');
-    const response = await fetch(`${baseUrl}/api/native-preview`, {
+    const response = await testFetch(`${baseUrl}/api/native-preview`, {
         method: 'POST',
         headers: managementHeaders,
         body: JSON.stringify({
@@ -128,7 +136,7 @@ async function main() {
     if (event.payload?.devices?.some(device => device.id === 'pending_preview_device')) throw new Error('待放置产线设备不应进入 Unity 实时预览');
 
     const returnEventPromise = waitForEvent(socket, 'native_scene_preview');
-    const returnResponse = await fetch(`${baseUrl}/api/native-preview`, {
+    const returnResponse = await testFetch(`${baseUrl}/api/native-preview`, {
         method: 'POST',
         headers: managementHeaders,
         body: JSON.stringify({
@@ -170,6 +178,8 @@ async function main() {
     webSocket.close();
     console.log(JSON.stringify({
         success: true,
+        directory: fixture.directory,
+        isolatedBackend: true,
         type: event.type,
         action: event.payload.action,
         unityClients: result.unityClients,
@@ -183,5 +193,5 @@ async function main() {
 
 main().catch(error => {
     console.error(error.stack || error.message || error);
-    process.exit(1);
-});
+    process.exitCode = 1;
+}).finally(async()=>{for(const socket of sockets)socket.terminate();await fixture?.close();});

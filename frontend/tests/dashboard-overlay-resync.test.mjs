@@ -21,7 +21,7 @@ for (const match of [...code.matchAll(/from\s+(['"])([^'"]+)\1/g)]) {
 const { default: Overlay } = await import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`)
 Overlay.render = () => null
 
-function fixture(t) {
+function fixture(t, { platform = {} } = {}) {
     const environment = installBrowser(t)
     const sockets = installSockets(environment.replace)
     window.dispatchEvent = () => {}
@@ -33,7 +33,7 @@ function fixture(t) {
     const request = t.mock.method(globalThis, 'fetch', async url => {
         if (String(url).endsWith('/config')) return failure ? json({}, 503) : json({
             workshops: [{ id: 'w', devices: [{ id: 'unassigned', name: 'Unassigned' }], lines: [{ id: 'l', devices }] }],
-            factoryId: 'factory_a', factories: [{ id: 'factory_a', enabled: visible }], settings: {}, models: [], platform: {}
+            factoryId: 'factory_a', factories: [{ id: 'factory_a', enabled: visible }], settings: {}, models: [], platform
         })
         if (String(url).includes('/events')) return json([])
         return json({})
@@ -43,13 +43,56 @@ function fixture(t) {
     const renderer = createRenderer({ createElement: () => ({}), createText: () => ({}), createComment: () => ({}), setText() {}, setElementText() {}, parentNode: () => null, nextSibling: () => null, patchProp() {}, insert() {}, remove() {} })
     const instance = ref(null)
     const app = renderer.createApp({ render: () => h(Overlay, { ref: instance }) })
-    const replacements = []
-    app.provide(routerKey, { push() {}, replace(target) { replacements.push(target) } })
+    const replacements = [], pushes = []
+    app.provide(routerKey, { push(target) { pushes.push(target) }, replace(target) { replacements.push(target) } })
     app.provide(routeLocationKey, { query: {} })
     app.mount({})
     environment.beforeRestore(() => app.unmount())
-    return { state: instance.value.$.setupState, sockets, request, replacements, hide() { visible = false }, setDevices(next) { devices = next }, fail() { failure = true } }
+    return { state: instance.value.$.setupState, sockets, request, replacements, pushes, replace: environment.replace, hide() { visible = false }, setDevices(next) { devices = next }, fail() { failure = true } }
 }
+
+test('explicit root return-button click works even when the automatic navigation shortcut is unavailable', async t => {
+    const view = fixture(t); await settle()
+    Object.assign(view.state.runtimeContext, { viewId: 'factory_overview', viewMode: 'factory', sceneReady: true })
+    assert.equal(view.state.canNavigateToParentView, false)
+    await view.state.returnToParentView()
+    assert.equal(view.pushes.at(-1).path, '/group')
+    assert.equal(view.state.parentReturnBusy, false)
+})
+
+test('solid-device Esc and the return button both ask native to restore the workshop entry, without a fixed-line detour', async t => {
+    const views = [{ id:'factory_overview', mode:'factory', name:'全厂总览' }, { id:'workshop_overview', mode:'workshop', name:'车间总览' },
+        { id:'line_overview', mode:'line', name:'产线视角' }, { id:'device_detail', mode:'device', parentViewId:'line_overview', name:'设备' }]
+    const view = fixture(t, { platform: { document: { widgets:[], scene:{ defaultViewId:'factory_overview',views } } } }); await settle()
+    view.replace('Element', class {})
+    const returnOrigin = { factoryId:'factory_a',sceneId:'scene_a',viewMode:'workshop',viewId:'workshop_overview',workshopId:'original-workshop' }
+    view.state.applyRuntimeContext({ factoryId:'factory_a',sceneId:'scene_a',viewMode:'device',viewId:'device_detail',deviceId:'device-one',inspectionStage:'solid',sceneReady:true,returnOrigin })
+    assert.equal(view.state.parentViewName, '车间总览')
+    const before = view.request.mock.callCount()
+    let prevented = false
+    view.state.handleOverlayKeydown({ key:'Escape',target:null,preventDefault(){ prevented=true },stopPropagation(){} })
+    await settle()
+    await view.state.activateControl({ id:'back',type:'return_button',events:[] })
+    const writes = view.request.mock.calls.slice(before).filter(call => String(call.arguments[0]).endsWith('/native-preview/navigate'))
+    assert.equal(prevented, true); assert.equal(writes.length, 2)
+    for (const call of writes) {
+        const body = JSON.parse(call.arguments[1].body)
+        assert.equal(body.action, 'inspection_back'); assert.equal(body.viewId, 'device_detail')
+        assert.deepEqual(body.focus, { mode:'device',deviceId:'device-one',inspectionStage:'solid' })
+    }
+    view.state.applyRuntimeContext({ factoryId:'factory_b',sceneId:'another-scene',viewMode:'factory',viewId:'factory_overview',sceneReady:true })
+    assert.equal(view.state.runtimeContext.returnOrigin, null, 'stale entry must not leak into another factory')
+})
+
+test('failed device return does not pretend to navigate or fall back to a different line', async t => {
+    const view = fixture(t); await settle()
+    Object.assign(view.state.runtimeContext, { viewMode:'device',viewId:'device_detail',deviceId:'one',inspectionStage:'solid',sceneReady:true })
+    t.mock.method(globalThis, 'fetch', async () => json({ success:true,sent:0 }))
+    assert.equal(await view.state.returnToParentView(), false)
+    assert.match(view.state.hierarchyError, /未执行返回/)
+    assert.equal(view.state.runtimeContext.viewId, 'device_detail')
+    assert.equal(view.state.parentReturnBusy, false)
+})
 
 test('hiding the displayed factory returns to the map without rebuilding the scene or changing acquisition', async t => {
     const view = fixture(t); await settle()

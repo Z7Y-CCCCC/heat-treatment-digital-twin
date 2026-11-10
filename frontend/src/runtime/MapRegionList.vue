@@ -9,11 +9,11 @@ function select(row){if(row.allowed===false)return;const kind=field(row,'kindFie
 <template>
  <section class="map-record-list" aria-label="区域与工厂列表">
   <div v-if="title" class="map-record-title">{{title}}</div>
-  <button v-for="(row,index) in rows" :key="row.id || row.code || index" type="button" :disabled="row.allowed===false" :title="row.message || ''" class="map-record" @click.stop="select(row)" @mouseenter="emit('action',{action:'map_hover_region',id:String(row.code || '')})" @mouseleave="emit('action',{action:'map_hover_region',id:''})">
-   <span><strong>{{field(row,'nameField','name') || '未命名'}}</strong><small v-if="row.kind==='factory'">{{row.workshops ?? '—'}} 车间 · {{row.lines ?? '—'}} 产线 · {{row.devices ?? '—'}} 设备</small><small v-else-if="content.showMeters!==false">{{row.localCount ?? '—'}} 已接入 · {{row.registeredCount ?? '—'}} 仅登记</small></span>
+  <button v-for="(row,index) in rows" :key="field(row,'idField','id') || field(row,'codeField','code') || index" type="button" :disabled="row.allowed===false" :title="row.message || ''" class="map-record" @click.stop="select(row)" @mouseenter="emit('action',{action:'map_hover_region',id:String(field(row,'codeField','code') || '')})" @mouseleave="emit('action',{action:'map_hover_region',id:''})">
+   <span><strong>{{field(row,'nameField','name') || '未命名'}}</strong><small v-if="field(row,'kindField','kind')==='factory'">{{field(row,'workshopsField','workshops') ?? '—'}} 车间 · {{field(row,'linesField','lines') ?? '—'}} 产线 · {{field(row,'devicesField','devices') ?? '—'}} 设备</small><small v-else-if="content.showMeters!==false">{{field(row,'localCountField','localCount') ?? '—'}} 已接入 · {{field(row,'registeredCountField','registeredCount') ?? '—'}} 仅登记</small></span>
    <b v-if="content.showCounts!==false">{{field(row,'countField','count') ?? '—'}}</b><i>↗</i>
   </button>
-  <p v-if="!rows.length" class="map-record-empty">{{content.emptyText || '暂无记录'}}</p>
+  <p v-if="!rows.length" class="map-record-empty">{{content.emptyText ?? '暂无记录'}}</p>
  </section>
 </template>
 <style scoped>

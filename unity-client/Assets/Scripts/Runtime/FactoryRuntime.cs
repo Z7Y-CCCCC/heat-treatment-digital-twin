@@ -46,8 +46,9 @@ namespace HeatTreatment.DigitalTwin.Runtime
         private readonly Dictionary<string, ModelBindingDriver> _drivers = new Dictionary<string, ModelBindingDriver>();
         private readonly Dictionary<string, DeviceStatusVisual> _visuals = new Dictionary<string, DeviceStatusVisual>();
         private readonly Dictionary<string, MobileDeviceMotion> _motions = new Dictionary<string, MobileDeviceMotion>();
-        private readonly Dictionary<string, JObject> _latestDeviceFrames = new Dictionary<string, JObject>();
+        private readonly RealtimeDeviceFrameCache _latestDeviceFrames = new RealtimeDeviceFrameCache();
         private readonly MotionInputFrameCache _latestMotionInputs = new MotionInputFrameCache();
+        private RealtimeTransferCoordinator _transferCoordinator;
         private readonly Dictionary<string, JObject> _endpointDisplayStates = new Dictionary<string, JObject>();
         private readonly Dictionary<string, Transform> _deviceRoots = new Dictionary<string, Transform>();
         private readonly Dictionary<string, Renderer[]> _projectionRenderers = new Dictionary<string, Renderer[]>();
@@ -77,6 +78,8 @@ namespace HeatTreatment.DigitalTwin.Runtime
         private int _modelRefreshVersion;
         private bool _pendingModelRefresh;
         private JObject _pendingFactoryNavigation;
+        private readonly DeviceEntryNavigation<OrbitCameraController.ViewState> _deviceEntryNavigation
+            = new DeviceEntryNavigation<OrbitCameraController.ViewState>();
         private Thread _nativeAuthPipeThread;
         private CancellationToken _nativeAuthPipeToken;
         private bool _nativeAuthPipeFailureReported;
@@ -160,6 +163,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
             _dashboard.InspectionHoverUpdated += OnInspectionHoverUpdated;
             _dashboard.DeviceHoverUpdated += OnDeviceHoverUpdated;
             _dashboard.ParentNavigationRequested += NavigateToParentCamera;
+            _dashboard.DeviceEntryStarting += RememberDeviceEntry;
 
             _modelLibrary = GetOrAdd<RuntimeModelLibrary>();
             _webSocket = GetOrAdd<RealtimeWebSocketClient>();
@@ -497,6 +501,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
 
         private void BeginReload()
         {
+            _deviceEntryNavigation.Clear();
             ++_configurationReloadVersion;
             CancelModelRefresh();
             if (!_authenticated)
@@ -614,9 +619,9 @@ namespace HeatTreatment.DigitalTwin.Runtime
                     var driver = root.GetComponent<ModelBindingDriver>();
                     RestoreEndpointDisplayStates(device, driver, merged);
                     var visual = root.AddComponent<DeviceStatusVisual>(); visual.Initialize(device, instance.Asset);
-                    var motion = root.AddComponent<MobileDeviceMotion>(); motion.Initialize(device);
+                    var motion = root.AddComponent<MobileDeviceMotion>(); motion.Initialize(device, ResolveMotionLineLayout(device));
                     candidate.Driver = driver; candidate.Visual = visual; candidate.Motion = motion;
-                    if (_latestDeviceFrames.TryGetValue(device.Id, out var frame))
+                    if (_latestDeviceFrames.TryGet(device.Id, out var frame, Time.realtimeSinceStartupAsDouble))
                     {
                         driver.ApplyRealtime(frame); driver.GetComponent<DeviceAnimationDriver>()?.ApplyRealtime(frame);
                         visual.ApplyRealtime(frame); motion.ApplyRealtime(frame);
@@ -637,10 +642,11 @@ namespace HeatTreatment.DigitalTwin.Runtime
                     _projectionRenderers[device.Id] = root.GetComponentsInChildren<Renderer>(true);
                     _previewModelVersions[device.Id] = candidate.PreviewVersion + 1;
                     _dashboard.ApplyPreviewDevice(device, root, candidate.Instance.Inspection);
-                    if (_latestDeviceFrames.TryGetValue(device.Id, out var frame)) _dashboard.ApplyRealtime(device.Id, frame);
+                    if (_latestDeviceFrames.TryGet(device.Id, out var frame, Time.realtimeSinceStartupAsDouble)) _dashboard.ApplyRealtime(device.Id, frame);
                     root.SetActive(candidate.Previous.gameObject.activeSelf);
                 }
                 committed = true;
+                RefreshTransferLinks();
                 foreach (var candidate in candidates) { candidate.Previous.gameObject.SetActive(false); Destroy(candidate.Previous.gameObject); }
                 if (candidates.Count > 0) _dashboard.UpdatePreviewFactoryBounds(CalculateFactoryOverviewBounds());
                 _diagnostics.TemplateCount = _modelLibrary.LoadedTemplateCount;
@@ -825,7 +831,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 var visual = instance.Root.AddComponent<DeviceStatusVisual>();
                 visual.Initialize(device, instance.Asset);
                 var motion = instance.Root.AddComponent<MobileDeviceMotion>();
-                motion.Initialize(device);
+                motion.Initialize(device, ResolveMotionLineLayout(device));
                 _dashboard.RegisterDevice(device, instance.Root, instance.Inspection);
                 if (!string.IsNullOrWhiteSpace(device.Id))
                 {
@@ -838,7 +844,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
                     _deviceLineIds[device.Id] = placement.LineId ?? device.LineId ?? string.Empty;
                     _deviceWorkshopIds[device.Id] = placement.WorkshopId ?? string.Empty;
                     RestoreEndpointDisplayStates(device, driver);
-                    if (_latestDeviceFrames.TryGetValue(device.Id, out var latest))
+                    if (_latestDeviceFrames.TryGet(device.Id, out var latest, Time.realtimeSinceStartupAsDouble))
                     {
                         driver.ApplyRealtime(latest);
                         driver.GetComponent<DeviceAnimationDriver>()?.ApplyRealtime(latest);
@@ -867,6 +873,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
 
             cancellationToken.ThrowIfCancellationRequested();
             var bounds = CalculateFactoryOverviewBounds();
+            RefreshTransferLinks();
             SetSceneLoading("scene", loadedPlacements, placements.Count);
             _sceneReady = true;
             NormalizeFactoryOverviewViewForEnvironment("factory_overview", "factory");
@@ -981,6 +988,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
                     var id = deviceData.Value<string>("furnace_id");
                     if (string.IsNullOrWhiteSpace(id)) continue;
                     _latestMotionInputs.Remember(id, deviceData);
+                    _transferCoordinator?.ApplyInputs(id, deviceData);
                     if (deviceData.Value<bool?>("motionInputOnly") == true)
                     {
                         // Partial catalog refreshes are not PLC telemetry. Do not update
@@ -992,7 +1000,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
                         }
                         continue;
                     }
-                    _latestDeviceFrames[id] = deviceData;
+                    _latestDeviceFrames.Remember(id, deviceData, Time.realtimeSinceStartupAsDouble);
                     telemetryCount++;
                     if (_drivers.TryGetValue(id, out var driver)) driver.ApplyRealtime(deviceData);
                     if (driver != null) driver.GetComponent<DeviceAnimationDriver>()?.ApplyRealtime(deviceData);
@@ -1082,12 +1090,17 @@ namespace HeatTreatment.DigitalTwin.Runtime
             if (string.Equals(action, "inspection_back", StringComparison.OrdinalIgnoreCase))
             {
                 var expectedViewId = payload.Value<string>("viewId");
+                var expectedFocus = payload["focus"] as JObject;
+                var expectedDeviceId = expectedFocus?.Value<string>("deviceId");
+                var expectedStage = expectedFocus?.Value<string>("inspectionStage");
+                if (!string.IsNullOrWhiteSpace(expectedDeviceId) && !string.Equals(expectedDeviceId, _dashboard.SelectedDeviceId, StringComparison.Ordinal)) return;
+                if (!string.IsNullOrWhiteSpace(expectedStage) && !string.Equals(expectedStage, _dashboard.InspectionStageName, StringComparison.OrdinalIgnoreCase)) return;
                 // Escape can arrive through Unity's input loop and the WebView
                 // bridge for the same physical key. Use the same frame/time
                 // gate for both paths so one key moves exactly one level.
                 if (!TryBeginBackNavigation(expectedViewId, "WebView")) return;
                 _dashboard.NavigateBack();
-                _diagnostics.Activity = "Inspection level returned";
+                _diagnostics.Activity = "Device back navigation applied";
                 return;
             }
 
@@ -1209,7 +1222,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
             if (_motions.TryGetValue(device.Id, out var motion))
             {
                 var motionDevice = ResolveRuntimeDeviceForMotion(device);
-                motion.Reconfigure(motionDevice, true);
+                motion.Reconfigure(motionDevice, true, ResolveMotionLineLayout(motionDevice));
             }
             if (!string.IsNullOrWhiteSpace(device.Name)) root.name = device.Name;
             _dashboard.ApplyPreviewDevice(device, root.gameObject);
@@ -1236,7 +1249,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 var visual = root.AddComponent<DeviceStatusVisual>();
                 visual.Initialize(device, instance.Asset);
                 var motion = root.AddComponent<MobileDeviceMotion>();
-                motion.Initialize(device);
+                motion.Initialize(device, ResolveMotionLineLayout(device));
                 _drivers[device.Id] = driver;
                 _visuals[device.Id] = visual;
                 _motions[device.Id] = motion;
@@ -1244,7 +1257,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 _projectionRenderers[device.Id] = root.GetComponentsInChildren<Renderer>(true);
                 _deviceModelTypes[device.Id] = device.ModelType ?? string.Empty;
                 _dashboard.ApplyPreviewDevice(device, root, instance.Inspection);
-                if (_latestDeviceFrames.TryGetValue(device.Id, out var latest))
+                if (_latestDeviceFrames.TryGet(device.Id, out var latest, Time.realtimeSinceStartupAsDouble))
                 {
                     driver?.ApplyRealtime(latest);
                     driver?.GetComponent<DeviceAnimationDriver>()?.ApplyRealtime(latest);
@@ -1257,6 +1270,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
                     driver?.ApplyMotionInputs(catalogFrame);
                     driver?.GetComponent<DeviceAnimationDriver>()?.ApplyMotionInputs(catalogFrame);
                 }
+                RefreshTransferLinks();
                 if (instance.IsFallback)
                 {
                     _diagnostics.ReportModelError(device.Name ?? device.Id, device.ModelType, instance.LoadError);
@@ -1354,7 +1368,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
             );
         }
 
-        private void ApplyPreviewFocus(JObject focus, Bounds factoryBounds, string viewId = "")
+        private void ApplyPreviewFocus(JObject focus, Bounds factoryBounds, string viewId = "", bool restoreEntry = false)
         {
             var mode = focus?.Value<string>("mode") ?? "factory";
             var configuredView = _dashboard?.GetConfiguredView(viewId, mode);
@@ -1403,7 +1417,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
             if (string.Equals(effectiveMode, "line", StringComparison.OrdinalIgnoreCase))
             {
                 var lineId = focus?.Value<string>("lineId");
-                if (string.IsNullOrWhiteSpace(lineId))
+                if (string.IsNullOrWhiteSpace(lineId) && !restoreEntry)
                 {
                     var selectedDeviceId = _dashboard?.SelectedDeviceId;
                     if (!string.IsNullOrWhiteSpace(selectedDeviceId))
@@ -1467,9 +1481,46 @@ namespace HeatTreatment.DigitalTwin.Runtime
             PublishDashboardContext(effectiveMode, deviceId: deviceId, viewId: view?.Id ?? _dashboard?.ActiveViewId ?? string.Empty);
         }
 
+        private void RememberDeviceEntry()
+        {
+            var context = (JObject)_lastDashboardContext.DeepClone();
+            var view = _dashboard?.GetConfiguredView(context.Value<string>("viewId"), context.Value<string>("viewMode"));
+            context["viewName"] = view?.Name ?? string.Empty;
+            _deviceEntryNavigation.Capture(context, _orbit?.CaptureViewState());
+        }
+
+        private bool TryReturnToDeviceEntry()
+        {
+            if (!_deviceEntryNavigation.TryTake(_config?.FactoryId ?? string.Empty,
+                _config?.Platform?["activeScene"]?["id"]?.Value<string>() ?? string.Empty, out var entry)) return false;
+            var origin = entry.Context;
+            var viewId = origin.Value<string>("viewId"); var mode = origin.Value<string>("viewMode");
+            var view = _dashboard.GetConfiguredView(viewId, mode);
+            if (view == null || !string.Equals(view.Id, viewId, StringComparison.Ordinal)
+                || (view.Metadata?.Value<bool?>("runtimeHidden") ?? view.Metadata?.Value<bool?>("hierarchyHidden") ?? false)) return false;
+            var effectiveMode = view.Mode == "custom" ? view.TargetType : view.Mode;
+            if (!string.Equals(effectiveMode, mode, StringComparison.OrdinalIgnoreCase)) return false;
+            var targetId = mode == "line" ? origin.Value<string>("lineId") : mode == "workshop" ? origin.Value<string>("workshopId") : origin.Value<string>("factoryId");
+            if (!string.IsNullOrWhiteSpace(view.TargetId) && view.TargetId != targetId) return false;
+            if (mode == "workshop" && !string.IsNullOrWhiteSpace(targetId) && _config.Workshops?.Any(workshop => workshop.Id == targetId) != true) return false;
+            if (mode == "line" && !string.IsNullOrWhiteSpace(targetId) && _config.Workshops?.Any(workshop => workshop.Lines?.Any(line => line.Id == targetId) == true) != true) return false;
+            var focus = new JObject { ["mode"] = mode,
+                ["lineId"] = origin.Value<string>("lineId") ?? string.Empty,
+                ["workshopId"] = origin.Value<string>("workshopId") ?? string.Empty };
+            // An intentionally unscoped line overview must not inherit the
+            // currently selected device's line on its way back.
+            ApplyPreviewFocus(focus, CalculateFactoryOverviewBounds(), view.Id, restoreEntry: true);
+            _orbit?.RestoreViewState(entry.Camera);
+            _diagnostics.Activity = $"Returned to entry view {view.Name}";
+            Debug.Log($"[FactoryRuntime] Device entry restored: view={view.Id}, target={targetId}");
+            return true;
+        }
+
         private void NavigateToParentCamera()
         {
             if (_dashboard == null || _factoryRoot == null) return;
+            if (string.Equals(_lastDashboardContext?.Value<string>("viewMode"), "device", StringComparison.OrdinalIgnoreCase)
+                && TryReturnToDeviceEntry()) return;
 
             var currentMode = _lastDashboardContext?.Value<string>("viewMode") ?? "factory";
             var current = _dashboard.GetConfiguredView(_dashboard.ActiveViewId, currentMode);
@@ -1633,6 +1684,8 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 ["partPointKeys"] = new JArray(),
                 ["partDetailViewId"] = string.Empty
             };
+            _deviceEntryNavigation.Observe(_lastDashboardContext);
+            _lastDashboardContext["returnOrigin"] = _deviceEntryNavigation.Current?.PublicContext();
             _webSocket?.SendMessage(new JObject
             {
                 ["type"] = "dashboard_context",
@@ -1870,7 +1923,8 @@ namespace HeatTreatment.DigitalTwin.Runtime
             var device = EnumerateConfigDevices(_config).FirstOrDefault(item => item?.Id == deviceId);
             if (device == null) return;
             if (payload["instanceConfig"] != null) device.InstanceConfig = payload["instanceConfig"].DeepClone();
-            if (_motions.TryGetValue(deviceId, out var motion)) motion.Reconfigure(device, true);
+            if (_motions.TryGetValue(deviceId, out var motion)) motion.Reconfigure(device, true, ResolveMotionLineLayout(device));
+            RefreshTransferLinks();
             _diagnostics.Activity = "Mobile device configuration updated live";
         }
 
@@ -1913,6 +1967,13 @@ namespace HeatTreatment.DigitalTwin.Runtime
         {
             _diagnostics.BackendState = state ?? "unknown";
             _dashboard.BackendState = _diagnostics.BackendState;
+            if (!string.Equals(state, "connected", StringComparison.OrdinalIgnoreCase))
+            {
+                foreach (var driver in _drivers.Values)
+                { driver?.SuspendInputs(); driver?.GetComponent<DeviceAnimationDriver>()?.SuspendInputs(); }
+                foreach (var motion in _motions.Values) motion?.SuspendInputs();
+                _transferCoordinator?.SuspendInputs();
+            }
             if (string.Equals(state, "connected", StringComparison.OrdinalIgnoreCase))
             {
                 _webSocket?.SendMessage(new JObject
@@ -1930,6 +1991,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
             _drivers.Clear();
             _visuals.Clear();
             _motions.Clear();
+            _transferCoordinator = null;
             _deviceRoots.Clear();
             _projectionRenderers.Clear();
             _workshopRoots.Clear();
@@ -1947,6 +2009,23 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 _diagnostics.DeviceCount = 0;
                 _diagnostics.FallbackDeviceCount = 0;
             }
+        }
+        private JObject ResolveMotionLineLayout(DeviceDto device)
+        {
+            var id = ResolveDeviceLineId(device);
+            return (_config?.Workshops ?? new List<WorkshopDto>()).SelectMany(workshop => workshop.Lines ?? new List<LineDto>())
+                .FirstOrDefault(line => line?.Id == id)?.LayoutObject;
+        }
+        private void RefreshTransferLinks()
+        {
+            if (_factoryRoot == null || _config == null) return;
+            foreach (var device in EnumerateConfigDevices(_config))
+                if (_motions.TryGetValue(device.Id, out var motion)) motion.UpdateLineCalibration(device, ResolveMotionLineLayout(device));
+            if (_transferCoordinator == null) _transferCoordinator = _factoryRoot.gameObject.AddComponent<RealtimeTransferCoordinator>();
+            _transferCoordinator.Configure(EnumerateConfigDevices(_config), _config.Models, _deviceRoots, _motions,
+                (_config.Workshops ?? new List<WorkshopDto>()).SelectMany(workshop => workshop.Lines ?? new List<LineDto>()));
+            foreach (var device in EnumerateConfigDevices(_config))
+                if (_latestMotionInputs.TryGet(device.Id, out var input)) _transferCoordinator.ApplyInputs(device.Id, input);
         }
         private JObject EndpointDisplayIdentity(string modelType, FactoryConfigDto config = null)
         {
@@ -2026,6 +2105,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
             if (_dashboard != null) _dashboard.InspectionHoverUpdated -= OnInspectionHoverUpdated;
             if (_dashboard != null) _dashboard.DeviceHoverUpdated -= OnDeviceHoverUpdated;
             if (_dashboard != null) _dashboard.ParentNavigationRequested -= NavigateToParentCamera;
+            if (_dashboard != null) _dashboard.DeviceEntryStarting -= RememberDeviceEntry;
             if (_windowMenu != null) _windowMenu.SettingsRequested -= OpenAdminSettings;
             _reload?.Cancel();
             _reload?.Dispose();

@@ -21,11 +21,16 @@ mock.module('echarts', { namedExports: { init: element => {
 
 const source = await readFile(new URL('../src/runtime/WidgetRenderer.vue', import.meta.url), 'utf8')
 const { descriptor } = parse(source)
+const ringDescriptor = parse(await readFile(new URL('../src/runtime/HudMetricRing.vue', import.meta.url), 'utf8')).descriptor
+const ringCode = compileScript(ringDescriptor, { id: 'shared-hud-ring-regression', inlineTemplate: true }).content
+    .replace(/from (['"])vue\1/g, `from ${JSON.stringify(import.meta.resolve('vue'))}`)
+const ringModule = `data:text/javascript;base64,${Buffer.from(ringCode).toString('base64')}`
 let compiled = compileScript(descriptor, { id: 'widget-regression', inlineTemplate: true }).content
     .replace(/from (['"])(vue|echarts)\1/g, (_, _quote, name) => `from ${JSON.stringify(import.meta.resolve(name))}`)
     .replace(/from (['"])\.\/hudPresentation\.js\1/g, `from ${JSON.stringify(new URL('../src/runtime/hudPresentation.js', import.meta.url).href)}`)
     .replace(/from (['"])\.\.\/\.\.\/\.\.\/shared\/dashboardParameters\.mjs\1/g, `from ${JSON.stringify(new URL('../../shared/dashboardParameters.mjs', import.meta.url).href)}`)
 compiled=compiled.replace(/from (['"])(\.\.?\/[^'"]+)\1/g,(_m,_q,name)=>`from ${JSON.stringify(new URL(name,new URL('../src/runtime/WidgetRenderer.vue',import.meta.url)).href)}`)
+compiled=compiled.replace(/from (["'])([^"']*HudMetricRing\.vue)\1/g, `from ${JSON.stringify(ringModule)}`)
 compiled=compiled.replace(/from (["'])([^"']+\.vue)\1/g, `from 'data:text/javascript,export default {}'`)
 const { default: WidgetRenderer } = await import(`data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`)
 const hudSource = await readFile(new URL('../src/runtime/hudWidgets.css', import.meta.url), 'utf8')
@@ -78,6 +83,21 @@ function fixture(t) {
 }
 
 const textContent = root => [root.text, ...root.children.map(textContent)].join(' ')
+
+test('approved basic efficiency gauges reuse the actual HUD SVG ring and the unchanged bound reading', async t => {
+    const view = fixture(t), widget = { id: 'old_efficiency_gauge', type: 'trend',
+        style: { surfaceSkin: 'inline' }, data: { mode: 'runtime', path: 'metrics.overall_oee', unit: '%' },
+        content: { chartType: 'gauge', min: 0, max: 100, showTitle: false } }
+    const before = JSON.stringify(widget)
+    await view.render({ widget, overlayMode: true, metrics: { overall_oee: 92.2 } })
+    assert.match(textContent(view.root), /92.2/)
+    const walk = node => [node, ...node.children.flatMap(walk)]
+    assert.ok(walk(view.root).some(node => String(node.props.class || '').includes('hud-module-ring')))
+    assert.equal(charts.length, 0, 'do not draw the old blue ECharts half-gauge behind the shared source ring')
+    await view.render({ widget, overlayMode: true, metrics: { overall_oee: 84.6 } })
+    assert.match(textContent(view.root), /84.6/); assert.doesNotMatch(textContent(view.root), /92.2/)
+    assert.equal(JSON.stringify(widget), before)
+})
 test('dataset numeric cards and gauges inherit the output unit, while an explicit widget unit wins', async t => {
  const view=fixture(t),widget={id:'with_unit',type:'value',data:{mode:'dataset',datasetField:'temperature'},content:{}};
  const record={quality:'good',value:0,unit:'°C',rows:[{temperature:0}]};
@@ -692,4 +712,88 @@ for (const withUnitPath of [false, true]) test(`tooltip PLC unit uses the actual
     const missing = createTooltipContext({ device: { id: 'c' }, points: Object.values(points), status: { quality: 'good' } })
     await view.render({ ...base, runtimeContext: missing })
     assert.doesNotMatch(textContent(view.root), /0 ℃|275 K|OLD_SAMPLE_UNIT/)
+})
+
+test('explicit carousel renders each assigned point even when field names differ and a device view is open',async t=>{
+ const view=fixture(t),widget={id:'explicit',type:'value',content:{showTitle:false},data:{mode:'plc',bindingVersion:2,deviceScope:'rotation',rotationIntervalMs:2000,decimals:0,pointId:'pa',deviceBindings:[{deviceId:'a',binding:{mode:'plc',pointId:'pa'}},{deviceId:'b',binding:{mode:'plc',pointId:'pb'}}]}}
+ const base={widget,deviceCatalog:[{id:'a'},{id:'b'}],runtimeContext:{viewId:'device_detail',deviceId:'a'},pointValues:{pa:{id:'pa',device_id:'a',quality:'good',value:111},pb:{id:'pb',device_id:'b',quality:'good',value:222}}}
+ await view.render({...base,playbackNow:0});assert.match(textContent(view.root),/111/)
+ await view.render({...base,playbackNow:2000});assert.match(textContent(view.root),/222/);assert.doesNotMatch(textContent(view.root),/111/)
+ widget.data.deviceScope='fixed';widget.data.deviceId='b';await view.render({...base,playbackNow:4000});assert.match(textContent(view.root),/222/)
+ widget.data.deviceScope='current';await view.render({...base,runtimeContext:{},playbackNow:4000});assert.doesNotMatch(textContent(view.root),/111|222/)
+})
+
+test('HUD ring and individual panel metrics render their assigned PLC sources, with bad values unavailable',async t=>{
+ const view=fixture(t),source=pointId=>({mode:'plc',bindingVersion:2,deviceScope:'fixed',deviceId:'a',deviceBindings:[{deviceId:'a',binding:{mode:'plc',pointId}}]})
+ const widget={id:'bound-kpi',type:'hud_kpi_panel',content:{useBoundRing:true,chartLabel:'日使用率',items:[{label:'运行小时',binding:source('hours'),unit:'h'}]},data:source('percent')}
+ const base={widget,overlayMode:true,deviceCatalog:[{id:'a'}],runtimeContext:{deviceId:'a',viewMode:'device'},pointValues:{percent:{id:'percent',device_id:'a',quality:'good',value:37.5},hours:{id:'hours',device_id:'a',quality:'good',value:9}}}
+ await view.render(base);assert.match(textContent(view.root),/37\.5/);assert.match(textContent(view.root),/9h/)
+ await view.render({...base,pointValues:{...base.pointValues,percent:{...base.pointValues.percent,quality:'bad',value:88}}});assert.doesNotMatch(textContent(view.root),/88|37\.5/)
+})
+
+test('events source applies the authored factory/device and severity filters to real input events',async t=>{
+ const view=fixture(t),widget={id:'events',type:'hud_alarm_panel',data:{mode:'runtime',path:'events',deviceScope:'global'},content:{eventFilters:{scope:'current',level:'warning'}}}
+ const base={widget,runtimeContext:{deviceId:'a'},events:[{id:1,source_id:'a',level:'warning',message:'A真实报警'},{id:2,source_id:'b',level:'warning',message:'B真实报警'},{id:3,source_id:'a',level:'info',message:'A提示'}]}
+ await view.render(base);assert.match(textContent(view.root),/A真实报警/);assert.doesNotMatch(textContent(view.root),/B真实报警|A提示/)
+ await view.render({...base,runtimeContext:{}});assert.doesNotMatch(textContent(view.root),/A真实报警|B真实报警|A提示/)
+})
+
+test('system event placeholders are never presented as real alarm or event records',async t=>{
+ const view=fixture(t),widget={id:'real-events',type:'hud_alarm_panel',data:{mode:'runtime',path:'events',deviceScope:'global'},content:{emptyText:'暂无真实事件'}}
+ const placeholders=[{id:'boot',placeholder:true,level:'info',msg:'等待实时事件接入'},{id:'empty',placeholder:true,level:'info',msg:'最近24小时暂无报警履历'}]
+ await view.render({widget,events:placeholders});assert.match(textContent(view.root),/暂无真实事件/);assert.doesNotMatch(textContent(view.root),/等待实时事件接入|最近24小时/)
+ await view.render({widget,events:[...placeholders,{id:'boot',level:'info',msg:'真实工艺完成记录'}]});assert.match(textContent(view.root),/真实工艺完成记录/);assert.doesNotMatch(textContent(view.root),/等待实时事件接入|最近24小时/)
+})
+
+test('switching factories immediately rejects cached events owned by the previous factory',async t=>{
+ const view=fixture(t),widget={id:'factory-events',type:'hud_alarm_panel',data:{mode:'runtime',path:'events',deviceScope:'global'},content:{eventFilters:{scope:'current',level:'warning'},emptyText:'暂无当前设备事件'}}
+ const events=[{id:'old',factory_id:'old-factory',source_id:'a',level:'warning',msg:'旧工厂缓存报警'},{id:'new',factoryId:'new-factory',deviceId:'a',level:'warning',msg:'新工厂真实报警'}]
+ await view.render({widget,events,runtimeContext:{factoryId:'new-factory',deviceId:'a'}});assert.match(textContent(view.root),/新工厂真实报警/);assert.doesNotMatch(textContent(view.root),/旧工厂缓存报警/)
+ await view.render({widget,events,runtimeContext:{factoryId:'empty-factory',deviceId:'a'}});assert.match(textContent(view.root),/暂无当前设备事件/);assert.doesNotMatch(textContent(view.root),/旧工厂缓存报警|新工厂真实报警/)
+})
+
+test('external event tables honor the same explicit device and level filters as internal records',async t=>{
+ const view=fixture(t),rows=[{source_id:'a',level:'warning',message:'A表记录'},{deviceId:'b',level:'warning',message:'B表记录'},{sourceId:'a',level:'info',message:'A表提示'}]
+ for(const mode of ['dataset','database','http_api']){
+  const widget={id:'external-events',type:'hud_alarm_panel',data:{mode,datasetId:'events',datasetField:'message',deviceScope:'global'},content:{eventFilters:{scope:'current',level:'warning'},emptyText:'暂无所选事件'}}
+  const props={widget,databaseValues:{'external-events':{quality:'good',rows}},runtimeContext:{deviceId:'a'}}
+  await view.render(props);assert.match(textContent(view.root),/A表记录/);assert.doesNotMatch(textContent(view.root),/B表记录|A表提示/)
+  await view.render({...props,runtimeContext:{}});assert.match(textContent(view.root),/暂无所选事件/);assert.doesNotMatch(textContent(view.root),/A表记录|B表记录/)
+  if(mode==='dataset'){await view.render({...props,databaseValues:{'external-events':{quality:'bad',rows}}});assert.doesNotMatch(textContent(view.root),/A表记录/)}
+ }
+})
+
+test('explicit current/fixed/list sources explain missing context and assignments instead of spinning or substituting a device',async t=>{
+ const view=fixture(t),data={mode:'plc',bindingVersion:2,deviceScope:'current',deviceId:'a',pointId:'pa',deviceBindings:[{deviceId:'a',binding:{mode:'plc',pointId:'pa'}}]}
+ const base={widget:{id:'source-notice',type:'value',data,content:{showTitle:false}},overlayMode:true,dataReady:false,deviceCatalog:[{id:'a',name:'炉 A'},{id:'b',name:'炉 B'}],pointValues:{pa:{id:'pa',device_id:'a',quality:'good',value:111}}}
+ await view.render({...base,runtimeContext:{}})
+ assert.match(textContent(view.root),/未选择当前查看设备/);assert.doesNotMatch(textContent(view.root),/111|正在同步/)
+ await view.render({...base,runtimeContext:{deviceId:'b'}})
+ assert.match(textContent(view.root),/炉 B.*未选择对应数据/);assert.doesNotMatch(textContent(view.root),/111|正在同步/)
+ await view.render({...base,widget:{...base.widget,data:{...data,deviceScope:'fixed',deviceId:'deleted'}},runtimeContext:{deviceId:'a'}})
+ assert.match(textContent(view.root),/指定设备不存在或不可用/);assert.doesNotMatch(textContent(view.root),/111|正在同步/)
+ await view.render({...base,widget:{...base.widget,data:{...data,deviceScope:'rotation',deviceBindings:[]}},runtimeContext:{deviceId:'a'}})
+ assert.match(textContent(view.root),/轮播清单没有设备与对应数据/);assert.doesNotMatch(textContent(view.root),/111|正在同步/)
+ await view.render({...base,runtimeContext:{deviceId:'a'},dataReady:true})
+ assert.match(textContent(view.root),/111/);assert.doesNotMatch(textContent(view.root),/未选择|没有设备|不可用/)
+})
+
+test('HUD external metrics reject a different device result but allow an explicitly global metric',async t=>{
+ const view=fixture(t),source={mode:'dataset',bindingVersion:2,deviceScope:'current',deviceBindings:[{deviceId:'a',binding:{mode:'dataset',datasetId:'set',datasetField:'hours'}}]}
+ const widget={id:'metric-owner',type:'hud_kpi_panel',content:{showRing:false,items:[{label:'运行小时',binding:source},{label:'全厂产出',binding:{mode:'dataset',datasetId:'total',datasetField:'quantity',deviceScope:'global'}}]},data:{mode:'plc',bindingVersion:2,deviceScope:'fixed',deviceId:'a',deviceBindings:[{deviceId:'a',binding:{mode:'plc',pointId:'pa'}}]}}
+ const base={widget,deviceCatalog:[{id:'a'}],pointValues:{pa:{id:'pa',device_id:'a',quality:'good',value:37.5}},databaseValues:{'metric-owner':{deviceId:'a',quality:'good',metrics:{0:{quality:'good',value:999,deviceId:'b'},1:{quality:'good',value:42,deviceId:''}}}}}
+ await view.render(base);assert.doesNotMatch(textContent(view.root),/999/);assert.match(textContent(view.root),/42/)
+ await view.render({...base,databaseValues:{'metric-owner':{...base.databaseValues['metric-owner'],metrics:{0:{quality:'good',value:9,deviceId:'a'},1:{quality:'good',value:42,deviceId:''}}}}})
+ assert.match(textContent(view.root),/9/);assert.match(textContent(view.root),/42/)
+})
+
+test('a global HUD panel reads explicitly fixed secondary PLC, dataset and device metadata from their own device',async t=>{
+ const view=fixture(t),widget={id:'global-metric-owner',type:'hud_kpi_panel',data:{mode:'runtime',path:'metrics.overall_oee',deviceScope:'global'},content:{showRing:false,items:[
+  {label:'设备小时',binding:{mode:'plc',deviceScope:'fixed',deviceId:'b',pointId:'hours',requireConfiguredPoint:true}},
+  {label:'设备能耗',binding:{mode:'dataset',deviceScope:'fixed',deviceId:'b',datasetId:'set',datasetField:'energy'}},
+  {label:'设备名称',binding:{mode:'runtime',deviceScope:'fixed',deviceId:'b',path:'deviceInfo.name'}}]}}
+ const base={widget,deviceCatalog:[{id:'a',name:'炉 A'},{id:'b',name:'炉 B'}],runtimeContext:{deviceId:'a'},pointValues:{hours:{id:'hours',device_id:'b',value:9,quality:'good'}},databaseValues:{'global-metric-owner':{deviceId:'',quality:'good',metrics:{1:{quality:'good',value:42,deviceId:'b'}}}}}
+ await view.render(base);assert.match(textContent(view.root),/9/);assert.match(textContent(view.root),/42/);assert.match(textContent(view.root),/炉 B/);assert.doesNotMatch(textContent(view.root),/炉 A/)
+ await view.render({...base,runtimeContext:{deviceId:''}});assert.match(textContent(view.root),/9/);assert.match(textContent(view.root),/42/);assert.match(textContent(view.root),/炉 B/)
+ await view.render({...base,deviceCatalog:[{id:'a',name:'炉 A'}]});assert.doesNotMatch(textContent(view.root),/9|42|炉 B/,'removed devices cannot be reconstructed from stale cached records')
 })

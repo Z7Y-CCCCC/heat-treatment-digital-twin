@@ -97,6 +97,11 @@ function pruneSelectionLists(owner, deletedDevices, deletedPoints) {
   if (!record(owner)) return false
   let emptyDeviceSelection = false
   for (const [key, value] of Object.entries(owner)) {
+    if(key==='deviceBindings' && Array.isArray(value)){
+      const next=value.filter(row=>!deletedDevices.has(textId(row?.deviceId)))
+      if(next.length!==value.length){owner[key]=next;if(value.length && !next.length)emptyDeviceSelection=true}
+      continue
+    }
     if (Array.isArray(value) && ['deviceIds', 'device_ids', 'rotationDeviceIds'].includes(key)) {
       const next = value.filter(id => !deletedDevices.has(textId(id)))
       if (next.length !== value.length) {
@@ -107,7 +112,7 @@ function pruneSelectionLists(owner, deletedDevices, deletedPoints) {
       owner[key] = value.filter(id => !deletedPoints.has(textId(id)))
     } else if (record(value)) {
       if (pruneSelectionLists(value, deletedDevices, deletedPoints)) emptyDeviceSelection = true
-    } else if (Array.isArray(value) && ['datasets', 'series'].includes(key)) {
+    } else if (Array.isArray(value) && ['datasets', 'series','items'].includes(key)) {
       for (const item of value) if (pruneSelectionLists(item, deletedDevices, deletedPoints)) emptyDeviceSelection = true
     }
   }
@@ -177,7 +182,7 @@ export function dashboardReferencedDeviceIds(document = {}) {
       }
       else if (Array.isArray(value) && ['deviceIds', 'device_ids', 'rotationDeviceIds'].includes(key)) value.forEach(add)
       else if (record(value)) walkSelections(value)
-      else if (Array.isArray(value) && ['datasets', 'series'].includes(key)) value.forEach(walkSelections)
+      else if (Array.isArray(value) && ['datasets', 'series','items','deviceBindings'].includes(key)) value.forEach(walkSelections)
     }
   }
   for (const view of document.scene?.views || []) { add(explicitViewDevice(view)); add(view.metadata?.ownerDeviceId) }

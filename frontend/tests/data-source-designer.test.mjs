@@ -1,21 +1,24 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
-import { createRenderer, h, nextTick, ref } from 'vue'
+import { createRenderer, h, nextTick, ref, watch } from 'vue'
 import { parse, compileScript } from 'vue/compiler-sfc'
 import { adminApi } from '../src/config/factoryConfig.js'
 import { adminSession } from '../src/runtime/adminSession.js'
-import { deferred, installBrowser, json, settle } from './helpers.mjs'
+import { deferred, installBrowser, installSockets, json, settle } from './helpers.mjs'
 import { exportDashboardTemplate, importDashboardTemplate, dashboardTemplateReferences, rebindDashboardTemplate } from '../src/runtime/dashboardTemplate.js'
 import { normalizeDashboardDocument } from '../src/runtime/dashboardSchema.js'
 import { widgetBindingChoices, DATASET_WIDGETS, POINT_WIDGETS } from '../src/runtime/widgetBindingChoices.js'
 import { bindingReferenceDiagnostics } from '../src/runtime/bindingReferenceDiagnostics.js'
 import { applyTemplateFieldBindings, templateFieldBindings } from '../src/runtime/templateFieldMapping.js'
 import { cacheFactoryDraft, clearFactoryDraft, readFactoryDraft } from '../src/runtime/factoryDraftCache.js'
+import { approvedOverviewFixture } from './fixtures/approved-overview.mjs'
+import { legacyWorkflow } from '../../shared/widgetBindingWorkflow.mjs'
 
 // Run the real SFC setup/load path; child renderers are irrelevant to the source
 // selection and are stubbed so no canvas, GL context or browser is required.
 const sourceUrl = new URL('../src/views/admin/components/DashboardDesigner.vue', import.meta.url)
+const originalFetch = globalThis.fetch
 test('source choices are short, unique, supported by the widget and preserve existing direct bindings',()=>{
   for(const type of [...DATASET_WIDGETS,'image','container','navigation'])for(const mode of ['static','dataset','database','http_api','business','plc']){
     const choices=widgetBindingChoices({type,data:{mode}})
@@ -47,8 +50,17 @@ for (const match of [...pickerCompiled.matchAll(/from\s+(['"])([^'"]+)\1/g)]) {
 const { default: CatalogPicker } = await import(`data:text/javascript;base64,${Buffer.from(pickerCompiled).toString('base64')}`)
 CatalogPicker.render = () => null
 
-function fixture(t, connections, { factoryId = '', storage, designerState } = {}) {
+function fixture(t, connections, { factoryId = '', storage, designerState, datasetState } = {}) {
     const environment = installBrowser(t)
+    const sockets = installSockets(environment.replace)
+    const fetchRequests = []
+    // Keep explicit per-test fetch mocks, but otherwise seal the real store's
+    // polling/preview transport. A late localhost 401 can revoke adminSession
+    // even after its originating store was disposed by a previous fixture.
+    if (globalThis.fetch === originalFetch) environment.replace('fetch', async input => {
+        fetchRequests.push(String(input instanceof Request ? input.url : input))
+        return json({ success: true, result: { quality: 'good', value: 0, rows: [] } })
+    })
     environment.browser.cancelAnimationFrame = () => {}
     environment.browser.requestAnimationFrame = () => 0
     environment.replace('ResizeObserver', class { observe() {} disconnect() {} })
@@ -61,7 +73,7 @@ function fixture(t, connections, { factoryId = '', storage, designerState } = {}
     t.mock.method(adminApi, 'getDataSources', async () => ({ connections }))
     // Dataset loading is part of the real startup Promise.all too. Never let a
     // unit fixture race an actual localhost request (or the next fixture).
-    t.mock.method(adminApi, 'getDataSets', async () => ({ datasets: [] }))
+    t.mock.method(adminApi, 'getDataSets', async () => datasetState || ({ datasets: [] }))
     t.mock.method(adminApi, 'getSettings', async () => ({}))
     t.mock.method(adminApi, 'listFactories', async () => ({factories:[]}))
     const renderer = createRenderer({
@@ -73,7 +85,23 @@ function fixture(t, connections, { factoryId = '', storage, designerState } = {}
     const app = renderer.createApp({ render: () => h(Designer, { ref: instance }) })
     app.mount({})
     environment.beforeRestore(() => app.unmount())
-    return { instance, browser: environment.browser, app, renderer, beforeRestore: environment.beforeRestore }
+    const ready = async () => {
+        const state = instance.value.$.setupState
+        if (state.loading) await new Promise((resolve, reject) => {
+            const timeout = setTimeout(() => {
+                stop()
+                reject(new Error(`Designer fixture startup timed out: ${state.status.text}`))
+            }, 10000)
+            const stop = watch(() => state.loading, loading => {
+                if (loading) return
+                clearTimeout(timeout)
+                stop()
+                resolve()
+            }, { flush: 'post' })
+        })
+        await nextTick()
+    }
+    return { instance, browser: environment.browser, app, renderer, ready, sockets, fetchRequests, beforeRestore: environment.beforeRestore }
 }
 
 function pointerEvent(overrides = {}) {
@@ -81,9 +109,9 @@ function pointerEvent(overrides = {}) {
         preventDefault() {}, stopPropagation() {}, ...overrides }
 }
 
-async function canvasSelectionFixture(t, widgets = []) {
-    const { instance, browser } = fixture(t, [])
-    await settle()
+async function canvasSelectionFixture(t, widgets = [], options = {}) {
+    const { instance, browser, ready } = fixture(t, [], options)
+    await ready()
     const state = instance.value.$.setupState
     const items = widgets.length ? widgets : [
         { id: 'a', type: 'text', frame: { x: 100, y: 50, width: 100, height: 60 } },
@@ -101,6 +129,39 @@ async function canvasSelectionFixture(t, widgets = []) {
     state.resetHistory()
     return { state, browser, widget: id => state.documentModel.widgets.find(widget => widget.id === id) }
 }
+
+test('canvas fixtures wait for the completed startup load before replacing the document and selection', async t => {
+    const pending = deferred()
+    t.after(() => pending.resolve({ datasets: [] }))
+    let prepared = false
+    const preparing = canvasSelectionFixture(t, [{ id: 'after-startup', type: 'text' }], { datasetState: pending.promise })
+        .then(result => { prepared = true; return result })
+    await settle()
+    assert.equal(prepared, false, 'one event-loop turn is not a completed-load barrier')
+    pending.resolve({ datasets: [] })
+    const { state, widget } = await preparing
+    assert.equal(state.loading, false)
+    assert.equal(widget('after-startup').id, 'after-startup')
+    state.selectedIds = ['after-startup']
+    await nextTick(); await settle()
+    assert.deepEqual(state.selectedIds, ['after-startup'])
+    assert.deepEqual(state.documentModel.widgets.map(item => item.id), ['after-startup'])
+})
+
+test('designer fixture polling uses isolated HTTP and socket transports instead of a live localhost session', async t => {
+    const timers = []
+    t.mock.method(globalThis, 'setInterval', (callback, delay) => { timers.push({ callback, delay }); return timers.length })
+    t.mock.method(globalThis, 'clearInterval', () => {})
+    const { ready, sockets, fetchRequests } = fixture(t, [])
+    await ready()
+    assert.equal(sockets.length, 1)
+    assert.equal(sockets[0].readyState, 0, 'the fixture does not open a real socket')
+    assert.notEqual(globalThis.fetch, originalFetch)
+    for (const timer of timers.filter(timer => timer.delay === 1000)) timer.callback()
+    await settle()
+    assert.ok(fetchRequests.some(url => new URL(url).pathname.endsWith('/platform/metrics/latest')))
+    assert.ok(fetchRequests.some(url => new URL(url).pathname.endsWith('/health')))
+})
 
 function canvasClick(state, widget, modifiers = {}) {
     const event = pointerEvent(modifiers)
@@ -931,6 +992,34 @@ test('HUD preset adds an isolated view without changing the existing view or def
     assert.equal(state.documentModel.widgets.length, count, 'repeated click should focus, not duplicate')
 })
 
+test('actual new widget, copy and HUD preset paths avoid existing ID collisions without repairing any loaded duplicate', async t => {
+    const { state } = await canvasSelectionFixture(t, [
+        { id: 'hud_factory_kpi', type: 'value', content: { value: 1 } },
+        { id: 'hud_factory_kpi', type: 'value', content: { value: 2 } },
+        { id: 'hud_factory_devices', type: 'value' },
+        { id: 'hud_factory_alarms', type: 'value' },
+        { id: 'hud_factory_trend', type: 'value' }
+    ])
+    t.mock.method(Date, 'now', () => 123456789)
+    const original = JSON.parse(JSON.stringify(state.documentModel.widgets))
+    const originalCount = original.length
+    state.addWidget('value')
+    state.addWidget('value')
+    state.selectedIds = [state.documentModel.widgets[originalCount].id]
+    state.copySelected()
+    state.selectedIds = [state.documentModel.widgets[originalCount].id]
+    state.copySelected()
+    state.addWidgetPreset({ id: 'factory_hud_modules', label: '工厂 HUD' })
+    assert.deepEqual(JSON.parse(JSON.stringify(state.documentModel.widgets.slice(0, originalCount))), original)
+    const additions = state.documentModel.widgets.slice(originalCount)
+    assert.equal(additions.length, 8)
+    assert.equal(new Set(additions.map(widget => widget.id)).size, 8)
+    assert.ok(additions.every(widget => !original.some(existing => existing.id === widget.id)))
+    assert.deepEqual(state.documentModel.scene.views.at(-1).componentState.show, additions.slice(-4).map(widget => widget.id))
+    assert.equal(state.documentModel.widgets.filter(widget => widget.id === 'hud_factory_kpi').length, 2)
+    assert.equal(state.selectedWidget, state.documentModel.widgets.at(-4), 'new preset focuses its first actual instance')
+})
+
 
 test('designer previews real backend point records and clears cached healthy values after a failed read',async t=>{
  const {instance}=fixture(t,[]);await settle();const state=instance.value.$.setupState
@@ -1515,4 +1604,342 @@ test('a legacy localStorage draft cleaned by a scene-free tombstone is retained 
     assert.equal(state.revision, 2); assert.equal(state.deletionSyncConflict.reason, 'missed-deletion-history')
     assert.ok(!state.documentModel.widgets.some(widget => widget.id === 'device-private'))
     assert.equal(state.documentModel.widgets.find(widget => widget.id === 'general-title').content.text, '本地存储里的重要修改')
+})
+
+async function resolvableConflictFixture(t, conflicting = false) {
+    const factoryId = 'resolvable-conflict', storage = deletionStorage(factoryId), original = deletionSyncDocument()
+    original.widgets = original.widgets.filter(widget => widget.id !== 'general-fixed')
+    const { instance } = fixture(t, [], { factoryId, storage, designerState: { revision: 2, document: original } })
+    await settle()
+    const state = instance.value.$.setupState, server = structuredClone(JSON.parse(state.snapshot()))
+    state.documentModel.widgets.find(widget => widget.id === 'general-title').content.text = '保留本机标题'
+    server.widgets = server.widgets.filter(widget => widget.id !== 'device-private')
+    server.widgets.find(widget => widget.id === 'general-title').frame.x = 325
+    if (conflicting) server.widgets.find(widget => widget.id === 'general-title').content.text = '服务端不同标题'
+    t.mock.method(adminApi, 'getDashboardDesigner', async () => ({ project: { factory_id: factoryId }, revision: 6, document: server, dashboardCleanupHistory: [deletionSyncPlan(factoryId)] }))
+    const save = t.mock.method(adminApi, 'saveDashboardDraft', async (_scene, document, expectedRevision) => {
+        assert.equal(expectedRevision, 6)
+        return { revision: 7, document: structuredClone(document), warnings: [] }
+    })
+    state.onDashboardDeviceDeleted(deletionSyncPlan(factoryId), { refreshCatalog: false })
+    assert.ok(state.deletionSyncConflict)
+    return { state, storage, server, save }
+}
+
+test('saving a deletion revision gap automatically merges disjoint edits and retains the latest CAS guard', async t => {
+    const { state, save } = await resolvableConflictFixture(t)
+    assert.equal(await state.saveDraft(), true)
+    assert.equal(save.mock.callCount(), 1)
+    const title = state.documentModel.widgets.find(widget => widget.id === 'general-title')
+    assert.equal(title.content.text, '保留本机标题'); assert.equal(title.frame.x, 325)
+    assert.equal(state.deletionSyncConflict, null); assert.equal(state.revision, 7)
+    assert.ok(!state.documentModel.widgets.some(widget => widget.id === 'device-private'))
+})
+
+test('a real conflict has an actionable local choice, backs up both drafts and preserves nonconflicting server edits', async t => {
+    const { state, storage, save } = await resolvableConflictFixture(t, true)
+    assert.equal(await state.saveDraft(), false); assert.equal(save.mock.callCount(), 0)
+    assert.ok(state.draftConflictDetails.includes('widgets[general-title].content.text'))
+    assert.match(descriptor.template.content, /保留本机并保存/)
+    assert.equal(await state.saveDraft({ conflictChoice: 'local' }), true)
+    assert.equal(state.deletionSyncConflict, null)
+    const title = state.documentModel.widgets.find(widget => widget.id === 'general-title')
+    assert.equal(title.content.text, '保留本机标题'); assert.equal(title.frame.x, 325)
+    const [backup] = JSON.parse(storage.getItem(state.conflictBackupKey()))
+    assert.equal(backup.localDocument.widgets.find(widget => widget.id === 'general-title').content.text, '保留本机标题')
+    assert.equal(backup.serverDocument.widgets.find(widget => widget.id === 'general-title').content.text, '服务端不同标题')
+})
+
+test('using the server draft backs up local edits, clears the conflict and never saves or publishes implicitly', async t => {
+    const { state, save } = await resolvableConflictFixture(t, true)
+    const publish = t.mock.method(adminApi, 'publishDashboard', async () => { throw Error('must not publish') })
+    await state.useServerDraft()
+    assert.equal(state.deletionSyncConflict, null); assert.equal(state.revision, 6)
+    assert.equal(state.documentModel.widgets.find(widget => widget.id === 'general-title').content.text, '服务端不同标题')
+    assert.equal(state.isDirty, false); assert.ok(state.conflictBackup)
+    assert.equal(save.mock.callCount(), 0); assert.equal(publish.mock.callCount(), 0)
+})
+
+test('failed recovery-backup storage never replaces the canvas or advances its revision', async t => {
+    const { state, storage, save } = await resolvableConflictFixture(t, true)
+    const before = state.snapshot(), revision = state.revision
+    t.mock.method(storage, 'setItem', () => { throw Error('quota exceeded') })
+    assert.equal(await state.saveDraft({ conflictChoice: 'local' }), false)
+    assert.equal(state.snapshot(), before); assert.equal(state.revision, revision)
+    assert.ok(state.deletionSyncConflict); assert.equal(save.mock.callCount(), 0)
+    assert.match(state.status.text, /恢复副本保存失败/)
+})
+
+test('the display checkbox assigns the requested boolean once, syncs layers/preview and supports undo without changing data or style', async t => {
+    const { instance } = fixture(t, []); await settle()
+    const state = instance.value.$.setupState
+    const widget = state.documentModel.widgets.find(widget => widget.type === 'return_button')
+    assert.ok(widget)
+    state.selectedViewId = 'factory_overview'
+    const before = JSON.parse(JSON.stringify(widget))
+    state.lastSavedSnapshot = state.snapshot(); state.resetHistory()
+    assert.equal(state.componentDisplayStates[widget.id].visible, true, 'root return button must not be secretly auto-hidden')
+    state.setWidgetVisibility(widget, false)
+    assert.equal(widget.visible, false); assert.equal(state.componentDisplayStates[widget.id].visible, false)
+    assert.equal(state.isDirty, true)
+    const count = state.history.length
+    state.setWidgetVisibility(widget, false)
+    assert.equal(state.history.length, count, 'repeated checkbox change cannot invert the requested state or add undo steps')
+    assert.deepEqual(JSON.parse(JSON.stringify(widget)), { ...before, visible: false })
+    state.previewMode = true
+    assert.ok(!state.canvasWidgets.some(item => item.id === widget.id))
+    state.toggleLayerVisibility(widget)
+    assert.equal(widget.visible, true); assert.ok(state.canvasWidgets.some(item => item.id === widget.id))
+    state.undo()
+    assert.equal(state.documentModel.widgets.find(item => item.id === widget.id).visible, false)
+    state.redo()
+    assert.deepEqual(JSON.parse(JSON.stringify(state.documentModel.widgets.find(item => item.id === widget.id))), before)
+})
+
+test('normal HUD panels use the same display assignment without changing bindings, content or layout', async t => {
+    const { instance } = fixture(t, []); await settle()
+    const state = instance.value.$.setupState
+    state.documentModel = normalizeDashboardDocument({ widgets: [{ id: 'parameters', type: 'hud_kpi_panel', content: { title: '生产运行参数' }, data: { mode: 'runtime', path: 'metrics.current_output' } }] })
+    const widget = state.documentModel.widgets.find(widget => widget.id === 'parameters')
+    const before = JSON.parse(JSON.stringify(widget)); state.resetHistory()
+    state.setWidgetVisibility(widget, false)
+    assert.deepEqual(JSON.parse(JSON.stringify(widget)), { ...before, visible: false })
+    state.setWidgetVisibility(widget, true)
+    assert.deepEqual(JSON.parse(JSON.stringify(widget)), before)
+})
+
+test('designer restores pending edits from an old blue cache using the approved source appearance, not the stale copied colors', async t => {
+    const factoryId = 'approved-style-reopen', authority = approvedOverviewFixture(), local = structuredClone(authority)
+    const runningSnapshot = structuredClone(authority)
+    delete authority.metadata.approvedOverviewStyle
+    delete local.metadata.approvedOverviewStyle
+    local.widgets.find(widget => widget.id === 'cfg_param_a_value').content.text = '还没保存的真实内容 {value}'
+    cacheFactoryDraft(factoryId, 'dashboard:approved-scene', 'dashboard', { revision: 137, document: local })
+    t.after(() => clearFactoryDraft(factoryId, 'dashboard:approved-scene'))
+    const { instance } = fixture(t, [], { factoryId, designerState: { revision: 137, document: authority, currentRelease: { id: 'approved-running', version: '1.0.75', snapshot: runningSnapshot } } })
+    await settle()
+    const state = instance.value.$.setupState
+    assert.equal(state.documentModel.widgets.find(widget => widget.id === 'detail_trend').style.background, '#241f2e')
+    assert.equal(state.documentModel.widgets.find(widget => widget.id === 'cfg_param_a_value').content.text, '还没保存的真实内容 {value}')
+    assert.equal(state.isDirty, true)
+    assert.equal(state.documentModel.metadata.approvedOverviewStyle.version, 2)
+    assert.deepEqual(state.documentModel.widgets.find(widget => widget.id === 'cfg_device_trend_Furnace_01').data,
+        authority.widgets.find(widget => widget.id === 'cfg_device_trend_Furnace_01').data)
+})
+
+test('the new binding workflow preserves HUD secondary metrics through undo, save and reopening', async t => {
+    const old = { authenticated:adminSession.authenticated, pagePermissions:adminSession.pagePermissions }
+    t.after(() => Object.assign(adminSession, old))
+    adminSession.authenticated = true
+    adminSession.pagePermissions = { 'platform.designer':{view:true,edit:true} }
+    const devices = [{id:'a',name:'A炉'},{id:'b',name:'B炉'}]
+    const points = devices.flatMap(device => [
+        {id:`${device.id}-temp`,device_id:device.id,category:'analog',value_role:'temp',access_type:'READ',unit:'℃'},
+        {id:`${device.id}-hours`,device_id:device.id,category:'analog',value_role:'hours',access_type:'READ',unit:'h'}
+    ])
+    const {state,widget} = await canvasSelectionFixture(t,[{
+        id:'workflow-kpi',type:'hud_kpi_panel',content:{items:[{label:'运行时长',path:'device.analog.hours',unit:'h'}]},
+        data:{mode:'plc',bindingVersion:2,deviceScope:'rotation',pointId:'a-temp',pointKey:'analog.temp',rotationIntervalMs:17000,
+            deviceBindings:devices.map(device=>({deviceId:device.id,binding:{mode:'plc',deviceId:device.id,pointId:`${device.id}-temp`,pointKey:'analog.temp',unit:'℃'}}))}
+    }])
+    state.devices = devices; state.points = points; state.selectedIds = ['workflow-kpi']; state.resetHistory()
+    const originalData = JSON.parse(JSON.stringify(widget('workflow-kpi').data))
+    const originalItems = JSON.parse(JSON.stringify(widget('workflow-kpi').content.items))
+    const changed = structuredClone(originalData)
+    changed.deviceBindings[1].binding.pointId = 'b-distinct-temperature'
+    changed.deviceBindings[1].binding.pointKey = 'analog.alternateTemperature'
+    state.applyDataWorkflow(changed)
+    assert.deepEqual(JSON.parse(JSON.stringify(widget('workflow-kpi').content.items)),originalItems)
+    assert.equal(widget('workflow-kpi').content.useBoundRing,true)
+    state.undo(); assert.deepEqual(JSON.parse(JSON.stringify(widget('workflow-kpi').data)),originalData)
+    state.redo(); assert.equal(widget('workflow-kpi').data.deviceBindings[1].binding.pointId,'b-distinct-temperature')
+    state.applyMetricSource({index:0,deviceId:'a',item:{id:'a-hour-item',tableId:'a-plc-table',unit:'h',binding:{mode:'plc',deviceId:'a',pointId:'a-hours-replacement',pointKey:'analog.hoursReplacement'}}})
+    const metric = widget('workflow-kpi').content.items[0]
+    assert.equal(metric.binding.deviceBindings.find(row=>row.deviceId==='a').binding.pointId,'a-hours-replacement')
+    assert.equal(metric.binding.deviceBindings.find(row=>row.deviceId==='b').binding.pointId,'b-hours')
+    state.applyMetricSource({index:0,deviceId:'a',item:null})
+    assert.equal(metric.binding.deviceBindings.find(row=>row.deviceId==='a').binding,null)
+    assert.equal(metric.binding.deviceBindings.find(row=>row.deviceId==='b').binding.pointId,'b-hours')
+    state.undo()
+    assert.equal(widget('workflow-kpi').content.items[0].binding.deviceBindings.find(row=>row.deviceId==='a').binding.pointId,'a-hours-replacement')
+    t.mock.method(adminApi,'getDevices',async()=>devices)
+    t.mock.method(adminApi,'getDataPoints',async()=>points)
+    let saved
+    t.mock.method(adminApi,'saveDashboardDraft',async(_scene,document)=>{
+        saved=JSON.parse(JSON.stringify(document));return {revision:2,document:saved,warnings:[]}
+    })
+    assert.equal(await state.saveDraft(),true)
+    const expected = JSON.parse(JSON.stringify(widget('workflow-kpi')))
+    t.mock.method(adminApi,'getDashboardDesigner',async()=>({revision:2,document:saved}))
+    await state.loadDesigner({allowLocal:false})
+    assert.deepEqual(JSON.parse(JSON.stringify(widget('workflow-kpi').data)),expected.data)
+    assert.deepEqual(JSON.parse(JSON.stringify(widget('workflow-kpi').content.items)),expected.content.items)
+    assert.equal(widget('workflow-kpi').data.rotationIntervalMs,17000)
+})
+
+test('global HUD secondary metrics keep actual global scope or a deliberately chosen fixed device without changing the main source',async t=>{
+    const old={authenticated:adminSession.authenticated,pagePermissions:adminSession.pagePermissions};t.after(()=>Object.assign(adminSession,old))
+    adminSession.authenticated=true;adminSession.pagePermissions={'platform.designer':{view:true,edit:true}}
+    const {state,widget}=await canvasSelectionFixture(t,[{id:'global-kpi',type:'hud_kpi_panel',content:{items:[{label:'指定炉运行时长',binding:{mode:'runtime',deviceScope:'global',path:''}},{label:'工厂能耗',binding:{mode:'dataset',deviceScope:'global',datasetId:'old-energy',datasetField:'value'}}]},data:{mode:'dataset',bindingVersion:2,deviceScope:'global',datasetId:'factory-main',datasetField:'value',deviceBindings:[]}}])
+    state.devices=[{id:'a',name:'A炉'},{id:'b',name:'B炉'}];state.selectedIds=['global-kpi'];state.resetHistory()
+    const original=JSON.parse(JSON.stringify(widget('global-kpi').data))
+    state.applyMetricScope({index:0,scope:'fixed'})
+    assert.equal(widget('global-kpi').content.items[0].binding.deviceId,'','no first-device default')
+    const item={id:'a-hours',tableId:'a-plc',unit:'h',binding:{mode:'plc',deviceId:'a',pointId:'pa',pointKey:'analog.hours',deviceScope:'fixed'}}
+    state.applyMetricSource({index:0,deviceId:'',item})
+    assert.equal(widget('global-kpi').content.items[0].binding.deviceId,'');assert.match(state.status.text,/先明确指定/)
+    state.applyMetricScope({index:0,scope:'fixed',deviceId:'a'})
+    state.applyMetricSource({index:0,deviceId:'a',item})
+    const fixed=widget('global-kpi').content.items[0].binding
+    assert.equal(fixed.bindingVersion,2);assert.equal(fixed.deviceScope,'fixed');assert.equal(fixed.deviceId,'a');assert.equal(fixed.deviceBindings.find(row=>row.deviceId==='a').binding.pointId,'pa')
+    state.applyMetricSource({index:1,deviceId:'',item:{id:'global-energy',tableId:'energy-table',unit:'kWh',binding:{mode:'dataset',datasetId:'actual-energy',datasetField:'usage',deviceScope:'global'}}})
+    const global=widget('global-kpi').content.items[1].binding
+    assert.equal(global.deviceScope,'global');assert.equal(global.datasetId,'actual-energy');assert.ok(!global.deviceBindings.some(row=>!row.deviceId))
+    assert.deepEqual(JSON.parse(JSON.stringify(widget('global-kpi').data)),original)
+    state.applyMetricSource({index:0,deviceId:'a',item:null})
+    assert.equal(widget('global-kpi').content.items[0].binding.deviceId,'a');assert.equal(widget('global-kpi').content.items[0].binding.deviceBindings.find(row=>row.deviceId==='a').binding,null)
+    state.undo();assert.equal(widget('global-kpi').content.items[0].binding.deviceBindings.find(row=>row.deviceId==='a').binding.pointId,'pa')
+})
+
+test('an existing explicit device workflow stays editable on map views while genuine map region fields retain their dedicated editor',async t=>{
+    const {state,widget}=await canvasSelectionFixture(t,[{id:'mapped-device-kpi',type:'hud_kpi_panel',data:{mode:'plc',bindingVersion:2,deviceScope:'rotation',pointId:'pa',pointKey:'analog.temp',deviceBindings:[{deviceId:'a',binding:{mode:'plc',pointId:'pa',pointKey:'analog.temp'}}]}}])
+    state.selectedIds=['mapped-device-kpi'];state.selectedViewId='map_world';await nextTick()
+    assert.equal(state.currentViewIsMapSurface,true);assert.equal(state.selectedUsesBindingWorkflow,true)
+    assert.equal(widget('mapped-device-kpi').data.deviceBindings[0].binding.pointId,'pa')
+    widget('mapped-device-kpi').data={mode:'runtime',path:'metrics.overall_oee',deviceScope:'global'};await nextTick()
+    assert.equal(state.selectedUsesBindingWorkflow,true,'legacy factory HUD metrics stay editable through the new workflow on a map/custom preview')
+    assert.equal(widget('mapped-device-kpi').data.path,'metrics.overall_oee','opening its editor cannot rewrite the existing running source')
+    widget('mapped-device-kpi').data.mode='runtime';widget('mapped-device-kpi').data.path='map.factsFactoryCount';await nextTick()
+    assert.equal(state.selectedUsesMapData,true);assert.equal(state.selectedUsesBindingWorkflow,false)
+})
+
+test('save and reopening restore independent global HUD metric catalogs without changing the main source', async t => {
+    const old = { authenticated: adminSession.authenticated, pagePermissions: adminSession.pagePermissions }
+    t.after(() => Object.assign(adminSession, old))
+    adminSession.authenticated = true
+    adminSession.pagePermissions = { 'platform.designer': { view: true, edit: true } }
+    t.mock.method(globalThis, 'fetch', async () => json({ success: true, result: { quality: 'good', value: 0, rows: [] } }))
+    const devices = [{ id: 'a', name: 'A炉' }, { id: 'b', name: 'B炉' }]
+    const points = [{ id: 'a-hours', device_id: 'a', category: 'analog', value_role: 'actual_hours', access_type: 'READ', unit: 'h' }]
+    const fixedItem = { id: 'actual-a-hours', categoryId: 'realtime', tableId: 'a-plc-table', deviceId: 'a', label: 'A炉实际运行时长', type: 'number', unit: 'h',
+        binding: { mode: 'plc', deviceId: 'a', pointId: 'a-hours', pointKey: 'analog.actual_hours', deviceScope: 'fixed' } }
+    const globalItem = { id: 'actual-global-energy', categoryId: 'energy', tableId: 'factory-energy-table', label: '全厂实际耗电量', type: 'number', unit: 'kWh',
+        binding: { mode: 'dataset', datasetId: 'actual-energy', datasetField: 'usage', deviceScope: 'global' } }
+    const { state, widget } = await canvasSelectionFixture(t, [{ id: 'global-save-kpi', type: 'hud_kpi_panel',
+        data: { mode: 'dataset', bindingVersion: 2, deviceScope: 'global', datasetId: 'factory-main', datasetField: 'overallProgress', deviceBindings: [] },
+        content: { items: [{ label: '指定炉运行时长', binding: { mode: 'runtime', deviceScope: 'global', path: '' } },
+            { label: '全厂耗电量', binding: { mode: 'dataset', deviceScope: 'global', datasetId: 'old-energy', datasetField: 'value' } }] } }])
+    state.devices = devices
+    state.points = points
+    state.selectedIds = ['global-save-kpi']
+    state.resetHistory()
+    const originalMain = JSON.parse(JSON.stringify(widget('global-save-kpi').data))
+    state.applyMetricScope({ index: 0, scope: 'fixed' })
+    assert.equal(widget('global-save-kpi').content.items[0].binding.deviceId, '', 'switching scope does not guess the first device')
+    state.applyMetricScope({ index: 0, scope: 'fixed', deviceId: 'a' })
+    state.applyMetricSource({ index: 0, deviceId: 'a', item: fixedItem })
+    state.applyMetricSource({ index: 1, deviceId: '', item: globalItem })
+    assert.deepEqual(JSON.parse(JSON.stringify(widget('global-save-kpi').data)), originalMain)
+    t.mock.method(adminApi, 'getDevices', async () => devices)
+    t.mock.method(adminApi, 'getDataPoints', async () => points)
+    t.mock.method(adminApi, 'getDataSets', async () => ({ datasets: [
+        { id: 'factory-main', name: '全厂工艺', columns: [{ name: 'overallProgress', type: 'number' }] },
+        { id: 'actual-energy', name: '全厂能耗', columns: [{ name: 'usage', type: 'number' }] }
+    ] }))
+    let saved
+    t.mock.method(adminApi, 'saveDashboardDraft', async (_scene, document) => {
+        saved = JSON.parse(JSON.stringify(document))
+        return { revision: 2, document: saved, warnings: [] }
+    })
+    assert.equal(await state.saveDraft(), true)
+    const expected = JSON.parse(JSON.stringify(widget('global-save-kpi').content.items))
+    assert.deepEqual(saved.widgets.find(item => item.id === 'global-save-kpi').data, originalMain)
+    t.mock.method(adminApi, 'getDashboardDesigner', async () => ({ revision: 2, document: saved }))
+    await state.loadDesigner({ allowLocal: false })
+    const restored = widget('global-save-kpi')
+    assert.deepEqual(JSON.parse(JSON.stringify(restored.data)), originalMain)
+    assert.deepEqual(JSON.parse(JSON.stringify(restored.content.items)), expected)
+    const fixed = restored.content.items[0].binding, global = restored.content.items[1].binding
+    assert.equal(fixed.bindingVersion, 2)
+    assert.equal(fixed.deviceScope, 'fixed')
+    assert.equal(fixed.deviceId, 'a')
+    const fixedRow = fixed.deviceBindings.find(row => row.deviceId === 'a').binding
+    assert.equal(fixedRow.pointId, 'a-hours')
+    assert.equal(fixedRow.pointKey, 'analog.actual_hours')
+    assert.equal(fixedRow.catalogItemId, fixedItem.id)
+    assert.equal(fixedRow.catalogTableId, fixedItem.tableId)
+    assert.equal(global.deviceScope, 'global')
+    assert.equal(global.datasetId, 'actual-energy')
+    assert.equal(global.datasetField, 'usage')
+    assert.equal(global.catalogItemId, globalItem.id)
+    assert.equal(global.catalogTableId, globalItem.tableId)
+
+    // Reopened picker setup resolves the saved binding identities back to the
+    // original category/table/field without emitting a new authoring change.
+    t.mock.method(adminApi, 'getDataCenterCatalog', async () => ({
+        categories: [{ id: 'realtime', name: '实时采集' }, { id: 'energy', name: '能源信息' }],
+        tables: [{ id: fixedItem.tableId, name: 'A炉采集点位' }, { id: globalItem.tableId, name: '全厂能耗数据表' }],
+        items: [fixedItem, globalItem]
+    }))
+    const renderer = createRenderer({ createElement: () => ({}), createText: () => ({}), createComment: () => ({}),
+        setText() {}, setElementText() {}, parentNode: () => null, nextSibling: () => null, patchProp() {}, insert() {}, remove() {} })
+    for (const [item, binding, scope] of [[fixedItem, { ...fixedRow, deviceId: 'a', deviceScope: 'fixed' }, { deviceId: 'a', deviceOnly: true }],
+        [globalItem, global, { globalOnly: true }]]) {
+        const picker = ref(null), changes = []
+        const app = renderer.createApp({ render: () => h(CatalogPicker, { ref: picker, binding, ...scope,
+            factoryId: 'factory_default', widgetType: 'hud_kpi_panel', immediate: true, onSelect: choice => changes.push(choice) }) })
+        app.mount({})
+        try {
+            await settle(); await settle(); await nextTick()
+            const setup = picker.value.$.setupState
+            assert.equal(setup.categoryId, item.categoryId)
+            assert.equal(setup.tableId, item.tableId)
+            assert.equal(setup.chosenId, item.id)
+            assert.deepEqual(changes, [], 'reopening must not author a new selection')
+        } finally { app.unmount() }
+    }
+})
+
+test('authored alarm filters survive two designer save and reopening round trips', async t => {
+    const old = { authenticated: adminSession.authenticated, pagePermissions: adminSession.pagePermissions }
+    t.after(() => Object.assign(adminSession, old))
+    adminSession.authenticated = true
+    adminSession.pagePermissions = { 'platform.designer': { view: true, edit: true } }
+    t.mock.method(globalThis, 'fetch', async () => json({ success: true, result: { quality: 'good', value: 0, rows: [] } }))
+    const { EVENT_BINDING } = await import('../../shared/widgetBindingWorkflow.mjs')
+    const { state, widget } = await canvasSelectionFixture(t, [{ id: 'saved-real-events', type: 'hud_alarm_panel',
+        data: { ...EVENT_BINDING }, content: { limit: 7, emptyText: '暂无真实事件' } }])
+    state.selectedIds = ['saved-real-events']
+    state.resetHistory()
+    const originalSource = JSON.parse(JSON.stringify(widget('saved-real-events').data))
+    let saved, savedRevision = 1, saves = 0
+    t.mock.method(adminApi, 'saveDashboardDraft', async (_scene, document, expectedRevision) => {
+        assert.equal(expectedRevision, savedRevision)
+        saved = JSON.parse(JSON.stringify(document))
+        saves++
+        return { revision: ++savedRevision, document: saved, warnings: [] }
+    })
+    t.mock.method(adminApi, 'getDashboardDesigner', async () => ({ revision: savedRevision, document: saved }))
+    for (const filters of [{ scope: 'current', level: 'warning' }, { scope: 'factory', level: 'critical' }]) {
+        state.selectedIds = ['saved-real-events']
+        assert.equal(state.selectedWidget.id, 'saved-real-events')
+        state.setEventFilter(filters)
+        assert.deepEqual(widget('saved-real-events').content.eventFilters, filters)
+        assert.deepEqual(JSON.parse(JSON.stringify(widget('saved-real-events').data)), originalSource)
+        assert.equal(await state.saveDraft(), true)
+        const stored = saved.widgets.find(item => item.id === 'saved-real-events')
+        assert.deepEqual(stored.content.eventFilters, filters)
+        assert.deepEqual(stored.data, originalSource)
+        await state.loadDesigner({ allowLocal: false })
+        const reopened = widget('saved-real-events')
+        assert.deepEqual(JSON.parse(JSON.stringify(reopened.content.eventFilters)), filters)
+        assert.deepEqual(JSON.parse(JSON.stringify(reopened.data)), originalSource)
+        assert.equal(reopened.data.mode, EVENT_BINDING.mode)
+        assert.equal(reopened.data.path, EVENT_BINDING.path)
+        assert.equal(reopened.data.deviceScope, 'global')
+        assert.equal(reopened.data.readOnly, true)
+        assert.equal(reopened.content.limit, 7)
+        assert.equal(reopened.content.emptyText, '暂无真实事件')
+    }
+    assert.equal(saves, 2)
 })

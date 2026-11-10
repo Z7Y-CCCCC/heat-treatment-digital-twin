@@ -44,7 +44,7 @@ function testFrame(){
  }
  return data
 }
-function receive(){if(!ready.value)return;const now=performance.now()/1000,data=props.test?testFrame():props.frame;if(!data)return;lastStamp=props.test||!Number.isFinite(props.frameTime)?now:props.frameTime;player?.receive(data,lastStamp);for(const p of parts)receiveMotionSignal(p.signal,p.binding,data,lastStamp)}
+function receive(){if(!ready.value)return;const now=performance.now()/1000,data=props.test?testFrame():props.frame;if(!data)return;lastStamp=props.test||!Number.isFinite(props.frameTime)?now:props.frameTime;player?.receive(data,lastStamp,props.test?undefined:Date.now());for(const p of parts)receiveMotionSignal(p.signal,p.binding,data,lastStamp,props.test?undefined:Date.now())}
 function advance(delta){
  if(!ready.value)return
  const now=performance.now()/1000;if(props.test)receive()

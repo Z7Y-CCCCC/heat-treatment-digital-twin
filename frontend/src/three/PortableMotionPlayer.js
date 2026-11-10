@@ -40,19 +40,22 @@ export function motionTestValue(binding,progress){
 }
 
 // Two switches confirm only the endpoints. Neither switch means "in transit" and never supplies a position.
-export function receiveMotionEndpointFeedback(state,binding,data,now,wallNow=Date.now()){
+export function receiveMotionEndpointFeedback(state,binding,data,now,wallNow){
  if(!finite(now))return
+ if(!data?.motionInputOnly&&!Object.hasOwn(data||{},'motionInputs')){if(!state.hasSample){state.usable=false;state.running=false;state.reason='等待来源数据'}return}
  const envelope=timestamp(data?.timestamp),input=data?.motionInputs?.[binding.actionId],feedback=input?.endpointFeedback
  const failed=reason=>{state.usable=false;state.running=false;state.reason=reason;state.endpointStage='invalid';state.endpointNeedsResync=true}
+ if(finite(wallNow)&&finite(envelope)&&envelope>wallNow+1000){failed('数据时间无效');return}
+ const reference=finite(wallNow)?Math.max(wallNow,finite(envelope)?envelope:wallNow):finite(envelope)?envelope:Date.now()
  const read={}
  for(const side of ['extended','retracted']){
   const definition=binding.trigger?.[side],item=feedback?.[side],stamp=timestamp(item?.timestamp)
   if(!definition?.dataItemId||!item||String(item.dataItemId)!==String(definition.dataItemId)||item.quality==null||!good(item.quality)||!finite(stamp)||typeof item.value!=='boolean'){
    failed(String(item?.quality).toLowerCase()==='stale'?'数据超时':'数据无效');return
   }
-  if(stamp>(finite(envelope)?envelope:wallNow)+1000){failed('数据时间无效');return}
+  if(stamp>reference+1000){failed('数据时间无效');return}
   if(finite(state.endpointSourceTimestamps?.[side])&&stamp<state.endpointSourceTimestamps[side])return
-  const age=Math.max(0,((finite(envelope)?envelope:wallNow)-stamp)/1000),sourceAt=now-age
+  const age=Math.max(0,(reference-stamp)/1000,finite(data?.cachedAgeMs)?data.cachedAgeMs/1000:0),sourceAt=now-age
   const receivedAt=stamp===state.endpointSourceTimestamps?.[side]?Math.min(state.endpointReceivedAt?.[side]??sourceAt,sourceAt):sourceAt
   const staleMs=finite(item.staleMs)&&item.staleMs>0?item.staleMs:5000
   if(now-receivedAt>staleMs/1000){failed('数据超时');return}
@@ -77,23 +80,32 @@ export function receiveMotionEndpointFeedback(state,binding,data,now,wallNow=Dat
  state.endpointStage=extended?'extended':'retracted';state.reason=extended?'推料到位':'退回到位'
 }
 
-export function receiveMotionSignal(state,binding,data,now,wallNow=Date.now()){
+export function receiveMotionSignal(state,binding,data,now,wallNow){
  if(binding.trigger?.mode==='endpoints'){receiveMotionEndpointFeedback(state,binding,data,now,wallNow);return}
  if(!finite(now))return
  const group=binding.sourceGroup||'analog',key=binding.sourceKey||'',q=data?.quality,meta=data?.pointMeta?.[`${group}.${key}`]
  const catalog=!!binding.dataItemId,item=catalog?data?.motionInputs?.[binding.actionId]:undefined,raw=catalog?item?.value:data?.[group]?.[key]
+ // Independent PLC-only packets are not an omitted catalog snapshot. Only an
+ // explicit complete motionInputs snapshot can remove/fault a catalog action.
+ if(catalog&&!data?.motionInputOnly&&!Object.hasOwn(data||{},'motionInputs')){if(!state.hasSample){state.usable=false;state.running=false;state.reason='等待来源数据'}return}
  // A motion-only catalog broadcast is not a new PLC observation.
  if(!catalog&&(data?.motionInputOnly||data?.motionInputs&&!data[group]&&!data.pointMeta&&!data.status&&!data.quality))return
  const stamp=timestamp(catalog?item?.timestamp:meta?.timestamp),envelope=timestamp(data?.timestamp)
  const wasUsable=state.usable===true
  const fail=reason=>{state.usable=false;state.running=false;state.reason=reason}
+ // Real point-ID bindings need an actual confirmation, not a wrapper clock.
+ // Controlled local preview and old unbound model-level definitions retain
+ // their previous protocol only when no live wall clock/point ID is supplied.
+ if(!catalog&&finite(wallNow)&&String(binding.pointId||'').trim()&&(!meta||String(meta.id)!==String(binding.pointId)||!finite(stamp)||!good(meta.quality))){fail('数据无效');return}
+ if(finite(wallNow)&&finite(envelope)&&envelope>wallNow+1000){fail('数据时间无效');return}
+ const reference=finite(wallNow)?Math.max(wallNow,finite(envelope)?envelope:wallNow):finite(envelope)?envelope:Date.now()
  const identity=catalog?!!item&&String(item.dataItemId)===String(binding.dataItemId):!meta?.id||String(meta.id)===String(binding.pointId)
  const quality=catalog?item?.quality!=null&&good(item.quality):!!data&&String(data.status?.online).toLowerCase()!=='false'&&good(data.status?.quality)&&good(typeof q==='string'?q:q?.overall)&&good(q?.[group]?.[key])
  // Missing/invalid inputs freeze immediately, even if an earlier packet carried a usable value.
  if(!identity||!quality||catalog&&!finite(stamp)){fail(String(item?.quality).toLowerCase()==='stale'?'数据超时':'数据无效');return}
  if(finite(stamp)&&finite(state.sourceTimestamp)&&stamp<state.sourceTimestamp)return
- const age=finite(stamp)?Math.max(0,((finite(envelope)?envelope:wallNow)-stamp)/1000):0
- if(finite(stamp)&&stamp>(finite(envelope)?envelope:wallNow)+1000){fail('数据时间无效');return}
+ const age=finite(stamp)?Math.max(0,(reference-stamp)/1000,finite(data?.cachedAgeMs)?data.cachedAgeMs/1000:0):0
+ if(finite(stamp)&&stamp>reference+1000){fail('数据时间无效');return}
  const sourceAt=now-age
  if(!finite(stamp)||stamp!==state.sourceTimestamp){state.receivedAt=sourceAt;state.sourceTimestamp=finite(stamp)?stamp:undefined}
  // Repeated transport packets must not extend the actual source's lifetime.
@@ -141,7 +153,7 @@ export class PortableMotionPlayer{
   for(const row of packageData.nodes){const n=this.nodes.get(row.name);if(!n)throw Error(`动作部件缺失：${row.name}`);n.visible=!!row.v[0];for(const [i,m] of [].concat(n.material||[]).entries()){const c=row['c'+i],e=row['e'+i];if(c){m.color?.fromArray(c);m.opacity=m.userData.linkCutaway?Math.min(.16,c[3]):c[3]}if(e){m.emissive?.fromArray(e);m.emissiveIntensity=e[3]}}}
   for(const e of this.entries)if(!e.clip)throw Error('动作包与绑定版本不一致')
  }
- receive(data,now=performance.now()/1000){for(const e of this.entries)receiveMotionSignal(e.signal,e.binding,data,now)}
+ receive(data,now=performance.now()/1000,wallNow){if(arguments.length===1)wallNow=Date.now();for(const e of this.entries)receiveMotionSignal(e.signal,e.binding,data,now,wallNow)}
  advance(delta,now=performance.now()/1000){
   for(const e of this.entries){const s=e.signal;stepMotionSignal(s,e.binding,delta,now,this.staleMs);if(!s.hasSample||!s.usable)continue
    const running=e.binding.mode==='running',time=running?s.seconds%e.clip.duration:s.position*e.clip.duration

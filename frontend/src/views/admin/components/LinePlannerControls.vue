@@ -1,6 +1,7 @@
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { canAdminPage } from '../../../runtime/adminSession.js'
+import { lineSceneUnitsPerMeter } from '../../../../../shared/lineRailSpacing.mjs'
 
 const props = defineProps({
   lines: { type: Array, default: () => [] }, workshops: { type: Array, default: () => [] },
@@ -9,7 +10,7 @@ const props = defineProps({
   savedSnapshot: { type: String, default: '' },
   deviceCount: { type: Number, default: 0 }, totalDevices: { type: Number, default: 0 }
 })
-const emit = defineEmits(['select', 'delete', 'create', 'edit', 'add-item', 'remove-item', 'change-item', 'focus-item'])
+const emit = defineEmits(['select', 'delete', 'create', 'edit', 'add-item', 'remove-item', 'change-item', 'change-rail-spacing', 'focus-item'])
 const popup = ref(''), popupElement = ref(null), popupStyle = ref({}), modal = ref(''), modalElement = ref(null)
 const lineTrigger = ref(null), laneTrigger = ref(null), railTrigger = ref(null), createTrigger = ref(null)
 const lineQuery = ref(''), editDraft = ref({})
@@ -20,6 +21,7 @@ const label = line => `${props.workshops.find(ws => ws.id === line?.workshop_id)
 const filteredLines = computed(() => props.lines.filter(line => `${label(line)} ${line.id}`.toLowerCase().includes(lineQuery.value.trim().toLowerCase())))
 const items = computed(() => popup.value === 'rail' ? props.layout.rails : props.layout.lanes)
 const itemLabel = computed(() => popup.value === 'rail' ? '小车导轨' : '设备线')
+const layoutUnits = computed(() => lineSceneUnitsPerMeter(props.layout))
 const savedItemIds = computed(() => {
   try {
     const layout = JSON.parse(props.savedSnapshot)
@@ -75,9 +77,26 @@ function selectItemWithKeyboard(id, event) {
 }
 function addItem() { if (!props.busy && canEdit.value) emit('add-item', popup.value) }
 function removeItem(id) { if (!props.busy && canEdit.value) emit('remove-item', popup.value, id) }
-function changeItem(id, field, event) {
+async function restoreItemField(id, field, event, type = popup.value) {
+  await nextTick()
+  const item = (type === 'rail' ? props.layout.rails : props.layout.lanes).find(item => item.id === id)
+  if (item) event.target.value = item[field]
+}
+async function changeItem(id, field, event) {
   if (field !== 'name' && event.target.value === '') return
   if (!props.busy && canEdit.value) emit('change-item', { type: popup.value, id, field, value: event.target.value })
+  await restoreItemField(id, field, event)
+}
+async function changeSpacing(id, field, event) {
+  if (!props.busy && canEdit.value) emit('change-rail-spacing', { railId: id, field, value: event.target.value })
+  await nextTick()
+  const item = props.layout.rails.find(item => item.id === id)
+  if (item) event.target.value = item.spacing?.[field] ?? ''
+}
+async function changeLayoutUnits(event) {
+  if (!props.busy && canEdit.value && selected.value) emit('change-rail-spacing', { railId: '', field: 'sceneUnitsPerMeter', value: event.target.value })
+  await nextTick()
+  event.target.value = layoutUnits.value
 }
 async function openModal(kind, line) {
   if (!canEdit.value || props.busy) return
@@ -144,12 +163,18 @@ defineExpose({ closeCreation: () => { modal.value = ''; modalReturnFocus?.focus?
         </template>
         <template v-else>
           <header><strong>{{ itemLabel }}</strong><button class="btn btn-sm" type="button" :disabled="!canEdit || busy" @click="addItem">+ {{ itemLabel }}</button></header>
+          <label class="structure-field layout-units"><span>产线场景单位 / 米</span><input :value="layoutUnits" aria-label="产线场景单位每米" class="input" type="number" min="0" max="100000" step="any" :disabled="!canEdit || busy || !selected" @change="changeLayoutUnits($event)" /></label>
           <div v-for="item in items" :key="item.id" class="structure-row" :class="{ 'is-new': isNewItem(item.id) }" :data-structure-id="item.id" role="group" :aria-label="item.name" tabindex="0" @click="selectItem(item.id)" @keydown="selectItemWithKeyboard(item.id, $event)">
             <span v-if="isNewItem(item.id)" class="new-item-corner"><span>新增</span></span>
             <div class="structure-field structure-name"><span>名称</span><input :value="item.name" :aria-label="`${item.name} 名称`" class="input" :disabled="!canEdit || busy" @click.stop @input="changeItem(item.id, 'name', $event)" /></div>
-            <div class="structure-field"><span>偏移Z</span><input :value="item.offsetZ" :aria-label="`${item.name} 偏移Z`" type="number" step="0.5" class="input" :disabled="!canEdit || busy" @click.stop @input="changeItem(item.id, 'offsetZ', $event)" /></div>
-            <div class="structure-field"><span>长度</span><input :value="item.length" :aria-label="`${item.name} 长度`" type="number" min="1" step="0.5" class="input" :disabled="!canEdit || busy" @click.stop @input="changeItem(item.id, 'length', $event)" /></div>
+            <div class="structure-field"><span>偏移Z（场景坐标）</span><input :value="item.offsetZ" :aria-label="`${item.name} 偏移Z`" type="number" step="0.5" class="input" :disabled="!canEdit || busy || !!item.spacing" @click.stop @input="changeItem(item.id, 'offsetZ', $event)" @change="restoreItemField(item.id, 'offsetZ', $event)" /></div>
+            <div class="structure-field"><span>长度（场景坐标）</span><input :value="item.length" :aria-label="`${item.name} 长度`" type="number" min="1" step="0.5" class="input" :disabled="!canEdit || busy" @click.stop @input="changeItem(item.id, 'length', $event)" @change="restoreItemField(item.id, 'length', $event)" /></div>
             <div class="structure-row-actions"><button type="button" class="line-icon-button danger" :aria-label="`删除 ${item.name}`" title="删除" :disabled="!canEdit || busy" @click.stop="removeItem(item.id)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7m4-7v7"/></svg></button></div>
+            <template v-if="popup === 'rail'">
+              <div class="structure-field spacing-lane"><span>关联设备线</span><select :value="item.spacing?.laneId || ''" :aria-label="`${item.name} 关联设备线`" class="input" :disabled="!canEdit || busy" @click.stop @change="changeSpacing(item.id, 'laneId', $event)"><option value="">自由偏移（不关联）</option><option v-for="lane in layout.lanes" :key="lane.id" :value="lane.id">{{ lane.name }}</option></select></div>
+              <div v-if="item.spacing" class="structure-field"><span>设备线—轨道中心距（米）</span><input :value="item.spacing.distanceMeters" :aria-label="`${item.name} 设备线与轨道中心距（米）`" class="input" type="number" min="0.001" max="10000" step="0.01" :disabled="!canEdit || busy" @click.stop @change="changeSpacing(item.id, 'distanceMeters', $event)" /></div>
+              <div v-if="item.spacing" class="structure-field"><span>设备线哪一侧</span><select :value="item.spacing.side" :aria-label="`${item.name} 相对设备线方向`" class="input" :disabled="!canEdit || busy" @click.stop @change="changeSpacing(item.id, 'side', $event)"><option value="positive">+Z 侧</option><option value="negative">−Z 侧</option></select></div>
+            </template>
           </div>
           <p v-if="!items.length" class="line-empty">暂无{{ itemLabel }}</p>
         </template>
@@ -208,8 +233,11 @@ svg { flex-shrink:0; width:16px; height:16px; fill:none; stroke:currentColor; st
 .new-item-corner > span { position:absolute; top:7px; left:-16px; width:65px; text-align:center; transform:rotate(-45deg); background:#25875d; color:#fff; font-size:10px; line-height:17px; letter-spacing:1px; }
 .structure-row:focus-visible { outline:2px solid #4389e9; outline-offset:2px; }
 .structure-field,.line-create-row label { display:grid; gap:6px; min-width:0; color:#65738a; font-size:calc(12px * var(--admin-font-scale,1)); }
+.layout-units { grid-template-columns:minmax(150px,1fr) 100px; align-items:center; max-width:320px; margin-bottom:12px; }
+.layout-units input { box-sizing:border-box; width:100%; min-width:0; }
 .structure-row input { box-sizing:border-box; width:100%; min-width:0; padding:6px 8px; }
 .structure-row-actions { display:flex; align-items:center; gap:4px; }
+.spacing-lane { grid-column:1 / -1; }
 .line-empty { color:#8995a6; margin:16px 6px; }
 .line-modal-backdrop { position:fixed; z-index:2000; inset:0; display:grid; place-items:center; padding:16px; background:#17203355; }
 .line-create-dialog { box-sizing:border-box; width:min(480px,100%); max-height:calc(100dvh - 32px); overflow:auto; overscroll-behavior:contain; border:1px solid #dce3ec; border-radius:14px; background:#fff; box-shadow:0 20px 70px #17203335; color:#344054; font:calc(13px * var(--admin-font-scale,1)) 'Inter Variable','Noto Sans SC Variable',sans-serif; }

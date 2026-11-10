@@ -1,7 +1,7 @@
 const assert = require('assert/strict');
 const crypto = require('crypto');
 const path = require('path');
-const { spawnSync } = require('child_process');
+const { spawn } = require('child_process');
 const { BACKEND_DIR, createRunDirectory, findFreePort, forceStop, startLoggedProcess, waitForHttp } = require('./integration-test-utils.cjs');
 const { createSmokeProgramData } = require('../../desktop/scripts/smoke-sandbox.cjs');
 
@@ -99,12 +99,19 @@ let backend;
         managementReadsDenied: managementReads.length, managementWritesDenied: 8, lockedDisplayReadable: true };
     const scripts = ['dashboard-designer-test.cjs', 'native-scene-preview-test.cjs'];
     for (const script of scripts) {
-        const result = spawnSync(process.execPath, [path.join(__dirname, script)], {
-            cwd: BACKEND_DIR, env: process.env, encoding: 'utf8', windowsHide: true, timeout: 45000
+        // Do not block this client's event loop for tens of seconds. Its HTTP
+        // pool must process idle socket closure while the nested fixture runs;
+        // spawnSync can leave stale keep-alive sockets for the next MCP request.
+        const child = spawn(process.execPath, [path.join(__dirname, script)], {
+            cwd: BACKEND_DIR, env: process.env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe']
         });
-        if (result.stdout) process.stdout.write(result.stdout);
-        if (result.stderr) process.stderr.write(result.stderr);
-        assert.equal(result.status, 0, `${script} did not pass`);
+        child.stdout.pipe(process.stdout, { end: false });
+        child.stderr.pipe(process.stderr, { end: false });
+        let timedOut = false;
+        const timer = setTimeout(() => { timedOut = true; forceStop(child).catch(() => {}); }, 45000);
+        const status = await new Promise((resolve, reject) => { child.once('error', reject); child.once('close', resolve); }).finally(() => clearTimeout(timer));
+        assert.equal(timedOut, false, `${script} exceeded its owned fixture deadline`);
+        assert.equal(status, 0, `${script} did not pass`);
     }
     // Verify MCP authorization and its nested HTTP calls without requiring a
     // commissioned factory / live Unity hardware in this isolated fixture.
@@ -129,5 +136,6 @@ let backend;
     console.log(JSON.stringify({ success: true, anonymousWriteBlocked: true, displayReadAuthorization, mcpNestedAuthorization: true, authenticatedRegressions: scripts, artifacts: directory }, null, 2));
 })().catch(error => {
     console.error(error.stack || error.message);
+    if (error.cause) console.error('REQUEST_ERROR_CAUSE', error.cause);
     process.exitCode = 1;
 }).finally(() => forceStop(backend));

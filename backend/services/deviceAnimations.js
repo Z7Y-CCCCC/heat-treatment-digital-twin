@@ -1,7 +1,10 @@
 const crypto = require('node:crypto');
 const { mergeBuiltinModels } = require('./builtinModels');
 const { canonicalJson } = require('./deviceInspection');
-const { buildCatalog, loadCatalogState } = require('./dataCenter');
+const { buildCatalog, loadCatalogState, scopedDevices } = require('./dataCenter');
+const { deviceLineId } = require('./deviceLineUnits');
+const { buildTransferCapabilities, validateTransferSelection, publicTransferLink } = require('./transferLink');
+const { modelPositionOwnership, assertMotionPositionOwnership } = require('./motionPositionOwnership');
 const { listDataSets } = require('./dataSets');
 const { isRetiredMotionAction } = require('../../shared/motionActionAvailability.mjs');
 const groups = new Set(['analog', 'motors', 'doors', 'gas', 'mechanisms', 'status']);
@@ -58,7 +61,7 @@ function validateMotionSource(loaded, item) {
         if (!definition || definition.match && !contextKeys.has(definition.match.contextKey)
             || (definition.request?.parameters || []).some(parameter => parameter.required !== false
                 && (parameter.source === 'parameter' || parameter.source === 'context' && !contextKeys.has(parameter.key)))) throw error('该数据表需要大屏参数或视角上下文，请先整理成按设备、产线或车间匹配的数据表');
-        if (!loaded.device.line_id && (definition.match?.contextKey === 'lineId'
+        if (!deviceLineId(loaded.device, loaded.instance || object(loaded.device.instance_config)) && (definition.match?.contextKey === 'lineId'
             || (definition.request?.parameters || []).some(parameter => parameter.required !== false && parameter.source === 'context' && parameter.key === 'lineId'))) throw error('当前设备没有所属产线，不能使用要求产线参数的数据表');
     }
     if (item.binding.mode === 'plc') {
@@ -126,12 +129,13 @@ function actionsForModel(model) {
         return { id: `part:${binding.id || i}`, kind: 'part', label: binding.name || binding.node_name || binding.id || `部件 ${i + 1}`, mode: binding.action === 'rotate_speed' ? 'running' : 'position', binding, channels: [`${node}:${channel}`] };
     })];
 }
-async function loadDeviceAnimations(db, id, factoryId) {
+async function loadDeviceAnimations(db, id, factoryId, options = {}) {
     const device = await db.get('SELECT * FROM devices WHERE id=?', [id]);
     if (!device) throw error('设备不存在', 404);
     const instance = object(device.instance_config);
-    const owner = device.line_id
-        ? await db.get('SELECT 1 FROM `lines` l JOIN workshops w ON w.id=l.workshop_id WHERE l.id=? AND w.factory_id=?', [device.line_id, factoryId])
+    const lineId = deviceLineId(device, instance);
+    const owner = lineId
+        ? await db.get('SELECT 1 FROM `lines` l JOIN workshops w ON w.id=l.workshop_id WHERE l.id=? AND w.factory_id=?', [lineId, factoryId])
         : await db.get('SELECT 1 FROM workshops WHERE id=? AND factory_id=?', [instance.workshop_id || instance.workshopId || '', factoryId]);
     if (!owner) throw error('设备不属于当前工厂', 404);
     const models = mergeBuiltinModels(await db.all('SELECT * FROM models WHERE factory_id IS NULL OR factory_id=?', [factoryId]));
@@ -153,16 +157,29 @@ async function loadDeviceAnimations(db, id, factoryId) {
             invert: ['visibility','color'].includes(b.action) && !!b.invert }];
     });
     const config = instance.animationBindings || { version: 1, staleMs: 5000, bindings: inherited };
+    const loaded = { device, instance, model, points, config, factoryId, catalog, datasets, actions: actionsForModel(model), motionPackage: model.motion_package };
+    if (options.includePositionOwnership === true || options.includeTransferTargets !== false || instance.movement?.enabled === true) loaded.positionOwnership = await modelPositionOwnership(model);
+    // Catalog polling does not need another full hierarchy query. Interactive
+    // reads/CAS saves include owned target geometry in their authoring revision.
+    if (options.includeTransferTargets !== false) {
+        const targets = (await scopedDevices(db, factoryId)).map(target => ({ ...target,
+            model: models.find(asset => asset.id === target.model_type), movementEnabled: object(target.instance_config).movement?.enabled === true }));
+        const lines = await db.all('SELECT l.* FROM `lines` l JOIN workshops w ON w.id=l.workshop_id WHERE w.factory_id=?', [factoryId]);
+        const workshops = await db.all('SELECT * FROM workshops WHERE factory_id=?', [factoryId]);
+        loaded.transferCapabilities = buildTransferCapabilities(loaded, targets, { lines, workshops });
+    }
     const revision = crypto.createHash('sha256').update(canonicalJson({model:device.model_type,path:model.file_path,metadata:object(model.metadata),motion:model.motion_package?.clipSha256,
         config, instance, points:points.map(p => [p.id,p.category,p.value_role,p.name,p.access_type,p.data_type,p.plc_tag,p.sample_interval_ms]),
-        catalogRevision:catalog.revision, sources:catalog.items.map(sourceFingerprint), datasets })).digest('hex');
-    return { device, instance, model, points, config, revision, factoryId, catalog, datasets, actions: actionsForModel(model), motionPackage: model.motion_package };
+        catalogRevision:catalog.revision, sources:catalog.items.map(sourceFingerprint), datasets, transferCapabilities:loaded.transferCapabilities, positionOwnership:loaded.positionOwnership })).digest('hex');
+    return { ...loaded, revision };
 }
 function validateDeviceAnimations(loaded, body) {
     if (!body || Array.isArray(body) || Object.keys(body).some(k => !['revision', 'config'].includes(k))) throw error('仅可保存动画联动配置');
     if (body.revision !== loaded.revision) throw error('配置或点位已更新，请重新读取后保存', 409);
     const config = body.config;
-    if (!config || config.version !== 1 || Object.keys(config).some(k => !['version','staleMs','bindings'].includes(k)) || !Number.isInteger(config.staleMs) || config.staleMs < 1000 || config.staleMs > 60000 || !Array.isArray(config.bindings) || config.bindings.length > 100) throw error('动画配置格式无效');
+    if (!config || config.version !== 1 || Object.keys(config).some(k => !['version','staleMs','bindings','transferLink','diagnosticLogging','diagnosticIntervalSeconds'].includes(k)) || !Number.isInteger(config.staleMs) || config.staleMs < 1000 || config.staleMs > 60000 || !Array.isArray(config.bindings) || config.bindings.length > 100) throw error('动画配置格式无效');
+    if (config.diagnosticLogging !== undefined && typeof config.diagnosticLogging !== 'boolean'
+        || config.diagnosticIntervalSeconds !== undefined && (typeof config.diagnosticIntervalSeconds !== 'number' || !Number.isFinite(config.diagnosticIntervalSeconds) || config.diagnosticIntervalSeconds < 1 || config.diagnosticIntervalSeconds > 60)) throw error('动画诊断开关或采样间隔无效');
     // Retired custom clips and the complete process remain readable for history.
     // A save can only disable an existing binding, never edit or activate it.
     const retiredOriginals = new Map((loaded.config?.bindings || []).filter(binding => {
@@ -226,10 +243,20 @@ function validateDeviceAnimations(loaded, body) {
         bindings.push(JSON.parse(JSON.stringify(original)));
     }
     if (bindings.length > 100) throw error('动画配置格式无效：动作绑定最多保留 100 项');
-    return { version: 1, staleMs: config.staleMs, bindings };
+    assertMotionPositionOwnership(loaded, bindings);
+    const result = { version: 1, staleMs: config.staleMs, bindings };
+    const transferInput = config.transferLink === undefined ? publicTransferLink(loaded.config.transferLink) : config.transferLink;
+    const transfer = validateTransferSelection(loaded, transferInput, bindings, validateEndpointSource, sourceFingerprint);
+    if (transfer !== undefined) result.transferLink = transfer;
+    for (const field of ['diagnosticLogging','diagnosticIntervalSeconds']) {
+        const value = config[field] ?? loaded.config[field];
+        if (value !== undefined) result[field] = value;
+    }
+    return result;
 }
 function publicDeviceAnimations(loaded) {
     const config = { ...loaded.config, bindings: (loaded.config.bindings || []).map(publicAnimationBinding) };
+    if (config.transferLink !== undefined) config.transferLink = publicTransferLink(config.transferLink);
     const dataItems = (loaded.catalog?.items || []).map(item => {
         try {
             validateMotionSource(loaded, item);
@@ -239,6 +266,7 @@ function publicDeviceAnimations(loaded) {
         catch (error) { return { ...item, motionReady:false, motionError:error.message }; }
     });
     return { deviceId: loaded.device.id, modelId: loaded.model.id, revision: loaded.revision, config, catalogRevision:loaded.catalog?.revision,
-        dataItems, actions: loaded.actions.map(({ channels, binding, ...a }) => a), motionPackage: loaded.motionPackage };
+        dataItems, actions: loaded.actions.map(({ channels, binding, ...a }) => ({ ...a, wholeModelTranslation:(channels || []).some(channel => /:p\d*$/.test(channel) && loaded.positionOwnership?.translationRootNodes.includes(channel.replace(/:p\d*$/,''))) })), motionPackage: loaded.motionPackage,
+        transferCapabilities: loaded.transferCapabilities };
 }
 module.exports = { loadDeviceAnimations, validateDeviceAnimations, publicDeviceAnimations, actionsForModel, isRetiredMotionAction, validateTrigger, validateCatalogItem, validateMotionSource, sourceFingerprint, pointType, validateEndpointTrigger, validateEndpointSource, endpointSourceIdentity };

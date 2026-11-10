@@ -1,5 +1,7 @@
 const {upgradeWidgetPlaybackDocument}=require('../../shared/widgetPlaybackProfile.mjs');
+const { expandedBindingWidgets }=require('../../shared/widgetBindingWorkflow.mjs');
 const { tooltipDocumentWidgets } = require('../../shared/tooltipTemplates.mjs');
+const { dashboardWidgetIdentityIssues } = require('../../shared/dashboardWidgetIdentity.mjs');
 const {
     SCHEMA_VERSION,
     safeJsonParse,
@@ -18,6 +20,20 @@ const { orderedReleases, orderedRows } = require('../utils/orderedReleases');
 const { cleanupDeletedDeviceContent } = require('../../shared/dashboardDeviceDeletion.mjs');
 const { readDashboardCleanupHistory, confirmedMissingDeviceIds, factoryDeviceIds,
     projectPublishedDeviceDeletion } = require('./dashboardDeviceDeletion');
+
+// Historical documents stay readable and are never silently renamed on load.
+// Validate the authored IDs before normalization on every document write path:
+// normalization must not turn two different invalid IDs into one runtime key.
+function assertWidgetWriteIdentity(document) {
+    const issues = dashboardWidgetIdentityIssues(document);
+    if (!issues.length) return;
+    const error = new Error(issues.map(issue => issue.message).join('；'));
+    error.code = 'DASHBOARD_WIDGET_IDENTITY_INVALID';
+    error.status = 400;
+    error.validationErrors = issues.map(issue => issue.message);
+    error.identityIssues = issues;
+    throw error;
+}
 
 async function pruneConfirmedDeletedDraft(db, document, factoryId, options = {}) {
     const deviceIds = await confirmedMissingDeviceIds(db, factoryId, options);
@@ -120,7 +136,17 @@ async function loadPublishedDocument(db, project, scene) {
 
 async function validatePlcBindings(db, document, options = {}) {
     validateDocument(document, { allowIncompleteBindings: options.allowIncompleteBindings === true });
-    const bindingWidgets = tooltipDocumentWidgets(document);
+    const sourceWidgets = tooltipDocumentWidgets(document);
+    const bindingWidgets = expandedBindingWidgets(sourceWidgets);
+    // Device ownership applies to every explicit row, including runtime and
+    // external-table sources; PLC point ownership alone is not sufficient.
+    const explicitDevices=sourceWidgets.flatMap(widget=>[widget.data,...(widget.content?.items || []).map(item=>item.binding)]
+        .flatMap((binding,index)=>{
+            if(!binding || binding.mode==='static' || binding.deviceScope==='global')return [];
+            const ids=binding.bindingVersion===2 ? (binding.deviceBindings || []).map(row=>row.deviceId)
+                : index>0 && binding.deviceScope==='fixed' ? [binding.deviceId] : [];
+            return ids.filter(Boolean).map(deviceId=>({widget,widgetId:widget.id,deviceId:String(deviceId)}));
+        }));
     const owner = await db.get('SELECT factory_id FROM projects WHERE id=?', [document.projectId]);
     const bindingFactoryId = owner?.factory_id || 'factory_default';
     const datasetWidgets = bindingWidgets.filter(widget => widget.data?.mode === 'dataset');
@@ -167,7 +193,7 @@ async function validatePlcBindings(db, document, options = {}) {
             pointId: String(widget.data.pointId || ''),
             pointConfigured: !(widget.data.requireConfiguredPoint === true && !widget.data.pointId)
         }));
-    if (!bindings.length) return [];
+    if (!bindings.length && !explicitDevices.length) return [];
 
     const ids = [...new Set(bindings.filter(item => item.pointConfigured).map(item => item.pointId))];
     const points = ids.length
@@ -175,7 +201,7 @@ async function validatePlcBindings(db, document, options = {}) {
         : [];
     const pointsById = new Map(points.map(point => [String(point.id), point]));
     const deviceIds = [...new Set([...bindings.filter(item => item.deviceScope === 'fixed').map(item => item.deviceId),
-        ...points.map(point => String(point.device_id))].filter(Boolean))];
+        ...points.map(point => String(point.device_id)),...explicitDevices.map(item=>item.deviceId)].filter(Boolean))];
     const devices = deviceIds.length ? await db.all(`SELECT d.id, d.line_id, d.instance_config, w.factory_id AS line_factory_id
         FROM devices d LEFT JOIN \`lines\` l ON l.id = d.line_id LEFT JOIN workshops w ON w.id = l.workshop_id
         WHERE d.id IN (${deviceIds.map(() => '?').join(',')})`, deviceIds) : [];
@@ -188,7 +214,7 @@ async function validatePlcBindings(db, document, options = {}) {
     const templateByWidget = new Map((document.tooltipTemplates?.templates || [])
         .flatMap(template => (template.widgets || []).map(widget => [widget, template])));
     const issue = (binding, detail) => {
-        const template = templateByWidget.get(binding.widget);
+        const template = templateByWidget.get(binding.widget.__sourceWidget || binding.widget);
         const prefix = template ? `悬停模板“${template.name || template.id}”：` : '';
         const contentTitle = typeof binding.widget.content?.title === 'string' ? binding.widget.content.title.trim() : '';
         const title = binding.widget.title || contentTitle || ({ trend: '趋势图', hud_chart_dock: '曲线图', value: '数值', status: '状态', text: '文字' })[binding.widget.type] || '数据组件';
@@ -200,6 +226,11 @@ async function validatePlcBindings(db, document, options = {}) {
         if (options.allowIncompleteBindings === true) warnings.push(`${message}；原动态绑定已保留，请重新选择数据或移除不再需要的组件。`);
         else errors.push(message);
     };
+    for(const binding of explicitDevices){
+        const device=devicesById.get(binding.deviceId);
+        if(!device)unavailable(binding,`绑定的设备不存在：${binding.deviceId}`);
+        else if(!deviceOwned(device))errors.push(issue(binding,'绑定的设备不属于当前工厂'));
+    }
     for (const binding of bindings) {
         const point = pointsById.get(binding.pointId);
         // Deleted references may be retained in a draft, but access violations
@@ -227,11 +258,12 @@ async function validatePlcBindings(db, document, options = {}) {
         }
     }
     if (errors.length) {
-        const error = new Error(errors.join('；'));
-        error.validationErrors = errors;
+        const uniqueErrors=[...new Set(errors)];
+        const error = new Error(uniqueErrors.join('；'));
+        error.validationErrors = uniqueErrors;
         throw error;
     }
-    return warnings;
+    return [...new Set(warnings)];
 }
 
 async function syncLegacyWidgets(tx, document) {
@@ -278,6 +310,7 @@ async function saveDraft(db, { sceneId, document: input, expectedRevision, facto
         throw error;
     }
     assertNoForbiddenWriteIntent(input);
+    assertWidgetWriteIdentity(input);
     const pruned = await pruneConfirmedDeletedDraft(db, input, project.factory_id);
     const document = normalizeDocument(pruned.document, { project, scene, source: 'designer' });
     // Normalize first so deleting a view can repair legacy visibility/event
@@ -346,8 +379,11 @@ function releaseId() {
 async function publishDraft(db, { sceneId, version, notes, factoryId = '' }) {
     const { project, scene } = await getProjectAndScene(db, sceneId, factoryId);
     if (!project || !scene) throw new Error('场景不存在');
-    assertNoForbiddenWriteIntent(safeJsonParse(scene.draft_json, null));
+    const storedDraft = safeJsonParse(scene.draft_json, null);
+    assertNoForbiddenWriteIntent(storedDraft);
+    assertWidgetWriteIdentity(storedDraft);
     const document = await loadDraftDocument(db, project, scene);
+    assertWidgetWriteIdentity(document);
     await validatePlcBindings(db, document);
     const id = releaseId();
     const snapshot = normalizeDocument(document, { project, scene, source: 'release' });
@@ -401,6 +437,7 @@ async function activateRelease(db, releaseIdValue, factoryId = '') {
     const snapshot = safeJsonParse(release.snapshot_json, null);
     if (!isCanonicalDocument(snapshot)) throw new Error('该版本不是完整快照，无法恢复');
     assertNoForbiddenWriteIntent(snapshot);
+    assertWidgetWriteIdentity(snapshot);
     const { project, scene } = await getProjectAndScene(db, release.scene_id || snapshot.sceneId, factoryId);
     if (!project || !scene || String(project.id) !== String(release.project_id)) throw new Error('发布版本对应的场景不存在');
     const document = normalizeDocument(snapshot, { project, scene, source: 'release' });

@@ -51,13 +51,14 @@ import {
     normalizeLineRecord
 } from './admin/utils/lineLayout.js'
 import { chooseLineDevices, planLineGroupMove, spaceLineDevices } from './admin/utils/lineDeviceSelection.js'
+import { editLineRailSpacing, shiftRailMovement, lineSceneUnitsPerMeter } from '../../../shared/lineRailSpacing.mjs'
 import { buildModelDisplayIds, createShortModelId } from './admin/utils/modelIds.js'
 import { useAppDialog } from './admin/composables/useAppDialog.js'
 import { useSystemSettings } from './admin/composables/useSystemSettings.js'
 import { useCastDevices } from './admin/composables/useCastDevices.js'
 import { usePointMonitor } from './admin/composables/usePointMonitor.js'
 import { useDataPoints } from './admin/composables/useDataPoints.js'
-import { formatPointValue, formatQualityLabel, formatPointTime } from './admin/utils/points.js'
+import { formatPointValue, formatQualityLabel, formatPointTime, formatPointDateTime } from './admin/utils/points.js'
 import NativeEnvironmentSettings from './admin/components/NativeEnvironmentSettings.vue'
 import FactoryLocationSettings from './admin/components/FactoryLocationSettings.vue'
 import UnifiedDashboardDesigner from './admin/components/UnifiedDashboardDesigner.vue'
@@ -83,6 +84,7 @@ import ManualDisassemblyLayout from './admin/components/ManualDisassemblyLayout.
 import { useManualDisassemblyPage } from './admin/composables/useManualDisassemblyPage.js'
 import ModelInspectionEditor from './admin/components/ModelInspectionEditor.vue'
 import ModelNameEditor from './admin/components/ModelNameEditor.vue'
+import CopyPathButton from './admin/components/CopyPathButton.vue'
 import ModelPlacementMenu from './admin/components/ModelPlacementMenu.vue'
 import LoadingPortEditor from './admin/components/LoadingPortEditor.vue'
 import LoadingAlignmentDialog from './admin/components/LoadingAlignmentDialog.vue'
@@ -370,22 +372,22 @@ async function requestFactorySwitch({ factoryName }) {
                 const result = await adminApi.saveDashboardDraft(sceneId, document, revision)
                 if (result?.error || !result?.success) throw new Error(result?.error || '大屏画面保存失败')
             },
-            'mobile-motion': async ({ deviceId, motion, devicePayload, selectedPointIds, missingStationDistances }) => {
+            'mobile-motion': async ({ deviceId, motion, devicePayload, selectedPointIds, missingStationDistances, expectedMovement, requiresMovementReload }) => {
+                if (requiresMovementReload) throw new Error(`设备「${deviceId}」的旧移动草稿没有配置快照，请重新读取后配置，未覆盖当前路径`)
                 if (motion?.enabled && !motion.currentPositionPointId) throw new Error(`设备「${deviceId}」未绑定当前位置点位`)
                 if (motion?.valueMode === 'range' && Number(motion.valueMax) <= Number(motion.valueMin)) throw new Error(`设备「${deviceId}」的输入范围无效`)
                 if (motion?.valueMode === 'station') {
-                    const ids = (motion.stations || []).map(station => Number(station.value))
-                    if (!ids.length || ids.some(id => !Number.isFinite(id)) || new Set(ids).size !== ids.length) throw new Error(`设备「${deviceId}」的工位编号无效`)
-                    if (motion.simulationEnabled && Number(missingStationDistances) > 0) throw new Error(`设备「${deviceId}」的工位间距尚未填写完整`)
-                    if (motion.simulationEnabled && Number(motion.acceleration) <= 0) throw new Error(`设备「${deviceId}」的加速度无效`)
+                    const ids = (motion.stations || []).map(station => station.value)
+                    if (!ids.length || ids.some(id => typeof id !== 'number' || !Number.isFinite(id)) || new Set(ids).size !== ids.length) throw new Error(`设备「${deviceId}」的工位编号无效`)
+                    const simulate = motion.simulationEnabled && motion.stationInputMeaning !== 'current'
+                    if (simulate && Number(missingStationDistances) > 0) throw new Error(`设备「${deviceId}」的工位间距尚未填写完整`)
+                    if (simulate && Number(motion.acceleration) <= 0) throw new Error(`设备「${deviceId}」的加速度无效`)
                 }
                 const latest = await adminApi.getDevice(deviceId)
                 if (!latest || latest.error) throw new Error(latest?.error || `设备「${deviceId}」读取失败`)
                 const config = { ...parseInstanceConfig(latest.instance_config), movement: devicePayload.instance_config.movement }
-                const payload = buildDevicePayloadForSave({ ...latest, instance_config: config }, getDeviceWorkshopId(latest))
-                const result = await adminApi.updateDeviceMovement(deviceId, config.movement, (selectedPointIds || []).filter(Boolean))
+                const result = await adminApi.updateDeviceMovement(deviceId, config.movement, (selectedPointIds || []).filter(Boolean), expectedMovement)
                 if (result?.error || !result?.success) throw new Error(result?.error || `设备「${deviceId}」运动配置保存失败`)
-                const selected = new Set((selectedPointIds || []).map(String))
             },
             'factory-record': async ({ id, name, location }) => {
                 if (!String(name || '').trim()) throw new Error('工厂名称未填写，不能保存新工厂')
@@ -459,6 +461,10 @@ const {
     siteBackupStatus,
     siteBackupConfig,
     siteBackupConfigSaving,
+    siteBackupPolicy,
+    siteBackupPolicySaving,
+    selectSiteBackupRetention,
+    saveSiteBackupPolicy,
     loadDatabaseConfig,
     loadDataSources,
     loadSiteBackups,
@@ -1470,6 +1476,15 @@ async function deleteDevice(id) {
 
 const {
     selectedDeviceForMonitor,
+    pointMonitorFilters,
+    pointMonitorWorkshops,
+    pointMonitorLines,
+    pointMonitorDevices,
+    pointMonitorCategories,
+    scopedRealtimePointRows,
+    filteredRealtimePointRows,
+    hasPointMonitorFilters,
+    resetPointMonitorFilters,
     realtimePointRows,
     realtimePointDeviceStatus,
     monitorCurrentPage,
@@ -1490,7 +1505,7 @@ const {
     loadRealtimePointValues,
     startPointMonitor,
     stopPointMonitor
-} = usePointMonitor({ devices, storedAdminUiState })
+} = usePointMonitor({ devices, workshops, lines, storedAdminUiState })
 
 const {
     selectedDeviceForPoints,
@@ -2054,6 +2069,12 @@ watch(models, () => {
         void manualDisassemblyPage.ensureSelection()
     }
 })
+
+function backupFilePath(filename, directory) {
+    if (!filename || !directory) return ''
+    const separator = directory.includes('\\') ? '\\' : '/'
+    return `${directory.replace(/[\\/]+$/, '')}${separator}${filename}`
+}
 
 async function copyModelId(id) {
     try {
@@ -5450,9 +5471,39 @@ function syncLineLayout(line, layout) {
     line.layout_json = JSON.stringify(normalized)
 }
 
-function touchLineLayout(line) {
+function applyLineLayoutDraft(line, candidate) {
     if (!line) return
-    line.layout_json = JSON.stringify(normalizeLineLayout(line.layout), null, 2)
+    const before = getLineLayout(line), normalized = normalizeLineLayout(candidate)
+    const sourceDevices = devices.value, patches = new Map()
+    // Build every affected device/path patch before changing any reactive draft.
+    // A bad carrier on a later rail must not leave the lane, first rail or first
+    // carrier moved while the user sees a rejection message.
+    for (const [type, key] of [['lane', 'lanes'], ['rail', 'rails']]) {
+        for (const item of normalized[key]) {
+            const previous = before[key]?.find(row => String(row.id) === String(item.id))
+            if (!previous || previous.offsetZ === item.offsetZ && previous.length === item.length && previous.name === item.name) continue
+            const deltaZ = numberOrDefault(item.offsetZ, 0) - numberOrDefault(previous.offsetZ, 0)
+            for (const device of getDevicesBoundToLayoutItem(type, item.id, line, sourceDevices)) {
+                patches.set(device.id, buildDeviceLayoutBindingPatch(device, type, item, line, deltaZ))
+            }
+        }
+    }
+    line.layout = normalized
+    line.layout_json = JSON.stringify(normalized, null, 2)
+    if (patches.size) devices.value = sourceDevices.map(device => patches.has(device.id) ? { ...device, ...patches.get(device.id) } : device)
+}
+
+function touchLineLayout(line) {
+    if (line) applyLineLayoutDraft(line, getLineLayout(line))
+}
+
+function changeLineRailSpacing({ railId, field, value }) {
+    if (!canAdminPage('lines', 'edit') || lineDeviceLayoutBusy.value) return
+    const line = selectedLineEditor.value
+    if (!line) return
+    try {
+        applyLineLayoutDraft(line, editLineRailSpacing(getLineLayout(line), railId, field, value))
+    } catch (error) { alert(error.message, { title: '设备线与轨道间距无效', type: 'warning' }) }
 }
 
 function selectLineEditor(lineId) {
@@ -5475,12 +5526,14 @@ function changeLineLayoutItem({ type, id, field, value }) {
     if (!canAdminPage('lines', 'edit') || lineDeviceLayoutBusy.value) return
     const item = findLineLayoutItem(type, id)
     if (!item || !['name', 'offsetZ', 'length'].includes(field)) return
+    if (type === 'rail' && field === 'offsetZ' && item.spacing) return
     const next = field === 'name' ? String(value) : Number(value)
     if (field !== 'name' && (!Number.isFinite(next) || field === 'length' && next < 1)) return
-    const previousZ=numberOrDefault(item.offsetZ,0)
-    item[field] = next
-    patchBoundDevicesForLayoutItem(type, id, item, selectedLineEditor.value, null, numberOrDefault(item.offsetZ,0)-previousZ)
-    touchLineLayout(selectedLineEditor.value)
+    const line = selectedLineEditor.value
+    const candidate = JSON.parse(JSON.stringify(getLineLayout(line)))
+    candidate[type === 'rail' ? 'rails' : 'lanes'].find(row => row.id === id)[field] = next
+    try { applyLineLayoutDraft(line, candidate) }
+    catch (error) { alert(error.message, { title: '产线结构未修改', type: 'warning' }) }
 }
 
 async function focusLineStructure({ type, id }) {
@@ -5631,6 +5684,10 @@ function removeLineLayoutItem(type, itemId) {
     if (!line) return
     const layout = getLineLayout(line)
     const key = type === 'rail' ? 'rails' : 'lanes'
+    if (key === 'lanes' && layout.rails.some(rail => rail.spacing?.laneId === itemId)) {
+        alert('该设备线仍关联小车导轨间距，请先在导轨设置中取消关联。')
+        return
+    }
     if (key === 'lanes' && layout.lanes.length <= 1) {
         alert('至少保留一条设备线')
         return
@@ -5639,6 +5696,20 @@ function removeLineLayoutItem(type, itemId) {
     layout[key].forEach((item, index) => { item.sort_order = index })
     syncLineLayout(line, layout)
     if (selectedLineStructure.value?.type === type && selectedLineStructure.value?.id === itemId) selectedLineStructure.value = null
+}
+
+function lineLayoutSavePayload(line, layout, boundDeviceIds) {
+    return {
+        name: line.name, workshop_id: line.workshop_id, sort_order: line.sort_order,
+        layout, layout_json: JSON.stringify(layout),
+        expectedLayout: savedLineLayoutSnapshots.value[line.id] ? JSON.parse(savedLineLayoutSnapshots.value[line.id]) : undefined,
+        devicePositions: boundDeviceIds.map(id => {
+            const device = getLineDeviceById(id), saved = savedDeviceLayoutSnapshots.value[id]
+            const expected = saved?.serialized ? JSON.parse(saved.serialized) : null
+            return { id: String(id), pos_x: Number(device.pos_x), pos_z: Number(device.pos_z),
+                ...(expected ? { expected: { pos_x: expected.pos_x, pos_z: expected.pos_z } } : {}) }
+        })
+    }
 }
 
 async function saveSelectedLineLayout() {
@@ -5651,23 +5722,15 @@ async function saveSelectedLineLayout() {
         line.layout = layout
         line.layout_json = JSON.stringify(layout, null, 2)
         const boundDeviceIds = syncLineBoundDevicesToLayout(line)
-        const result = await adminApi.updateLine(line.id, {
-            name: line.name,
-            workshop_id: line.workshop_id,
-            sort_order: line.sort_order,
-            layout,
-            layout_json: line.layout_json
-        })
+        const result = await adminApi.updateLine(line.id, lineLayoutSavePayload(line, layout, boundDeviceIds))
         if (result?.error) return alert(result.error, { title: '保存产线结构失败', type: 'danger' })
-        const deviceResult = await saveLineBoundDevices(boundDeviceIds, line)
-        if (deviceResult?.error) {
-            await loadDevices()
-            return alert(`${deviceResult.device?.name || deviceResult.device?.id || '设备'} 保存失败：${deviceResult.error}`, { title: '设备位置保存失败', type: 'danger' })
-        }
+        if (result?.success !== true || !Array.isArray(result.devices)) return alert('后端未确认整批保存，请重新读取核对。', { title: '保存产线结构失败', type: 'danger' })
         await loadLines()
         await loadDevices()
         await reloadSavedNativeScenePreview('lines')
-        return alert(deviceResult?.saved ? `产线结构已保存，${deviceResult.saved} 台设备位置已同步` : '产线结构已保存', { type: 'success' })
+        return alert(result.devices.length ? `产线结构与 ${result.devices.length} 台设备位置、移动路径已整批保存` : '产线结构已保存', { type: 'success' })
+    } catch (error) {
+        return alert(error.message, { title: '保存产线结构失败', type: 'danger' })
     } finally {
         lineLayoutSaving.value = false
     }
@@ -5844,11 +5907,15 @@ async function saveLineStationNumber(device) {
 }
 
 function buildDeviceLayoutBindingPatch(device, type, item, line, deltaZ = 0) {
+    if (device.coordinate_space && device.coordinate_space !== 'line_local') throw new Error('设备不是产线本地坐标，请先在设备编排中校准，未转换或挪动原坐标')
     const config = {
-        ...parseInstanceConfig(device.instance_config)
+        ...(type === 'rail' ? shiftRailMovement(parseInstanceConfig(device.instance_config), deltaZ, device.coordinate_space || 'line_local') : parseInstanceConfig(device.instance_config))
     }
     const halfLength = Math.max(1, numberOrDefault(item.length, 60) / 2)
-    const nextX = roundLineLayoutValue(Math.min(halfLength, Math.max(-halfLength, numberOrDefault(device.pos_x, 0))), 0.5)
+    // Spacing/name edits and save/reopen must retain sub-metre calibration;
+    // only the canvas placement gesture itself should snap to its grid.
+    const nextX = numberOrDefault(device.pos_x, 0)
+    if (Math.abs(nextX) > halfLength + .000001) throw new Error('设备位置超出调整后的设备线或导轨，请先调整设备位置再缩短长度')
     const nextZ = Number((numberOrDefault(device.pos_z, getLineBaseZ(line.id) + numberOrDefault(item.offsetZ, 0)) + deltaZ).toFixed(6))
 
     if (type === 'rail') {
@@ -5994,13 +6061,8 @@ async function saveCurrentFactoryPageDrafts() {
     for (const line of lines.value.filter(lineHasUnsavedLayout)) {
         const layout = normalizeLineLayout(getLineLayout(line))
         const boundDeviceIds = syncLineBoundDevicesToLayout(line)
-        const result = await adminApi.updateLine(line.id, {
-            name: line.name, workshop_id: line.workshop_id, sort_order: line.sort_order,
-            layout, layout_json: JSON.stringify(layout)
-        })
-        if (result?.error || !result?.success) throw new Error(`产线「${line.name}」保存失败：${result?.error || '后端未确认保存'}`)
-        const deviceResult = await saveLineBoundDevices(boundDeviceIds, line)
-        if (deviceResult?.error || !deviceResult?.success) throw new Error(`产线「${line.name}」设备位置保存失败：${deviceResult?.error || '后端未确认保存'}`)
+        const result = await adminApi.updateLine(line.id, lineLayoutSavePayload(line, layout, boundDeviceIds))
+        if (result?.error || result?.success !== true || !Array.isArray(result.devices)) throw new Error(`产线「${line.name}」结构、设备位置与移动路径整批保存失败：${result?.error || '后端未确认保存'}`)
         savedLineLayoutSnapshots.value[line.id] = lineLayoutSnapshot(line)
         savedLineRecordSnapshots.value[line.id] = lineRecordSnapshot(line)
         savedLinePlacementSnapshots.value[line.id] = linePlacementSnapshot(line)
@@ -6206,6 +6268,7 @@ function startLinePreviewDrag(type, itemId, mode, event) {
     const item = findLineLayoutItem(type, itemId)
     const stage = event.currentTarget.closest?.('.line-preview-stage')
     if (!item || !stage) return
+    if (type === 'rail' && mode === 'move' && item.spacing) return
     selectedLineStructure.value = { type, id: itemId }
     event.preventDefault()
     event.stopPropagation()
@@ -6233,16 +6296,20 @@ function handleLinePreviewDrag(event) {
     const item = findLineLayoutItem(state.type, state.itemId)
     if (!item) return
 
-    const previousZ=numberOrDefault(item.offsetZ,0)
+    const candidate = JSON.parse(JSON.stringify(getLineLayout(selectedLineEditor.value)))
+    const draftItem = candidate[state.type === 'rail' ? 'rails' : 'lanes'].find(row => row.id === state.itemId)
     if (state.mode === 'move') {
-        item.offsetZ = roundLineLayoutValue(previewClientYToZ(event.clientY, state), 0.5)
+        draftItem.offsetZ = roundLineLayoutValue(previewClientYToZ(event.clientY, state), 0.5)
     } else {
         const deltaUnits = previewDeltaXToUnits(event.clientX, state)
         const signedDelta = state.mode === 'resize-left' ? -deltaUnits : deltaUnits
-        item.length = Math.max(4, roundLineLayoutValue(state.startLength + signedDelta * 2, 0.5))
+        draftItem.length = Math.max(4, roundLineLayoutValue(state.startLength + signedDelta * 2, 0.5))
     }
-    patchBoundDevicesForLayoutItem(state.type, state.itemId, item, selectedLineEditor.value, state.boundDeviceIds, numberOrDefault(item.offsetZ,0)-previousZ)
-    touchLineLayout(selectedLineEditor.value)
+    try { applyLineLayoutDraft(selectedLineEditor.value, candidate) }
+    catch (error) {
+        finishLinePreviewDrag()
+        alert(error.message, { title: '产线结构未修改', type: 'warning' })
+    }
 }
 
 function finishLinePreviewDrag() {
@@ -6498,7 +6565,7 @@ async function applyLineDeviceSpacing(manual = false) {
     cancelLineDeviceDrag()
     try {
         const plan = spaceLineDevices(selectedLineDevices.value.map(device => ({ id: device.id, x: device.pos_x, z: numberOrDefault(device.pos_z,0)-getLineBaseZ(selectedLineEditor.value.id),
-            binding: resolveDeviceLayoutTarget(device, selectedLineEditor.value, { allowFallback: false }) })), manual ? lineDeviceGap.value : undefined)
+            binding: resolveDeviceLayoutTarget(device, selectedLineEditor.value, { allowFallback: false }) })), manual ? lineDeviceGap.value : undefined, lineSceneUnitsPerMeter(getLineLayout(selectedLineEditor.value)))
         await saveLineDevicePlan(plan, selectedLineEditor.value.id)
     } catch (error) { alert(error.message, { type: 'warning' }) }
 }
@@ -7893,7 +7960,7 @@ async function openAdminSetupStep(step) {
                                 :draft="newLine" :busy="lineDeviceLayoutBusy" :creating="lineCreating"
                                 :device-count="selectedLineEditorDevices.length" :total-devices="selectedLineTotalDeviceCount"
                                 @select="selectLineEditor" @delete="deleteLine" @create="createLine" @edit="editLineDetails"
-                                @add-item="addLineLayoutItem" @remove-item="removeLineLayoutItem" @change-item="changeLineLayoutItem" @focus-item="focusLineStructure"
+                                @add-item="addLineLayoutItem" @remove-item="removeLineLayoutItem" @change-item="changeLineLayoutItem" @change-rail-spacing="changeLineRailSpacing" @focus-item="focusLineStructure"
                             />
 
                             <section class="line-planner-preview">
@@ -8451,7 +8518,7 @@ async function openAdminSetupStep(step) {
                                             <td>{{ m.factory_id ? '当前工厂' : '集团共享' }}</td>
                                             <td>{{ modelLevelLabels[m.placement_level || 'device'] || '设备' }}级</td>
                                             <td>{{ getModelBindingCount(m) }}</td>
-                                            <td :title="m.file_path || '（内置）'">{{ m.file_path || '（内置）' }}</td>
+                                            <td><CopyPathButton v-if="m.file_path" :path="m.file_path" /><span v-else>（内置）</span></td>
                                             <td>
                                                 <button v-if="!m.is_builtin || DELETABLE_RETIRED_MODEL_IDS.has(m.id)" @click.stop="deleteModel(m.id)" class="btn btn-danger btn-sm" v-permission="{ page: controlPermissionPage, action: 'delete' }">删除</button>
                                                 <span v-else style="color:#888">系统内置</span>
@@ -9266,35 +9333,75 @@ async function openAdminSetupStep(step) {
                     <h2>PLC 点位实时监视</h2>
                     <p class="desc">查看已配置 PLC 点位的实时值、质量、标准地址和最近读取时间。这里读取的是后端采集缓存，不会因为刷新页面而强行插队读取 PLC。</p>
 
-                    <div class="form-row point-monitor-toolbar">
-                        <div>
-                            <label style="font-size:calc(12px * var(--admin-font-scale, 1)); color:#86868b; display:block; margin-bottom:5px;">筛选设备</label>
-                            <select v-model="selectedDeviceForMonitor" class="input" style="width:280px">
-                                <option value="all">全部设备</option>
-                                <option v-for="d in devices" :key="d.id" :value="d.id">{{ deviceHierarchyLabel(d) }}</option>
-                            </select>
+                    <div class="point-monitor-controls">
+                        <div class="form-row point-monitor-toolbar">
+                            <div class="point-monitor-hierarchy">
+                                <label>车间
+                                    <select v-model="pointMonitorFilters.workshopId" class="input" aria-label="监视车间">
+                                        <option value="all">全部车间</option>
+                                        <option v-for="workshop in pointMonitorWorkshops" :key="workshop.id" :value="workshop.id">{{ workshop.name }}</option>
+                                    </select>
+                                </label>
+                                <label>产线
+                                    <select v-model="pointMonitorFilters.lineId" class="input" aria-label="监视产线">
+                                        <option value="all">全部产线及车间级设备</option>
+                                        <option v-for="line in pointMonitorLines" :key="line.id" :value="line.id">{{ line.name }}{{ pointMonitorFilters.workshopId === 'all' && line.workshopName ? ' · ' + line.workshopName : '' }}</option>
+                                    </select>
+                                </label>
+                                <label>设备
+                                    <select v-model="selectedDeviceForMonitor" class="input" aria-label="监视设备">
+                                        <option value="all">当前范围全部设备</option>
+                                        <option v-for="d in pointMonitorDevices" :key="d.id" :value="String(d.id)" :title="deviceHierarchyLabel(d)">{{ d.name || d.id }}</option>
+                                    </select>
+                                </label>
+                            </div>
                         </div>
-                        <button @click="loadRealtimePointValues" class="btn" :disabled="realtimePointLoading">
-                            {{ realtimePointLoading ? '读取中...' : '读取最新缓存' }}
-                        </button>
-                        <label class="inline-toggle">
-                            <input v-model="pointMonitorAutoRefresh" type="checkbox" />
-                            自动刷新
-                        </label>
+
+                        <div class="point-monitor-status">
+                            <div>
+                                <span class="status-label">监视范围</span>
+                                <span class="plc-status-pill" :class="'plc-' + (pointMonitorStatusSummary?.status || 'idle')">
+                                    {{ isAllPointMonitorMode ? pointMonitorStatusSummary.message : (plcStatusLabels[realtimePointDeviceStatus?.status] || formatPlcDeviceStatus(selectedMonitorDevice || {})) }}
+                                </span>
+                            </div>
+                            <div>
+                                <span class="status-label">最近数据快照</span>
+                                <strong>{{ formatPointTime(realtimePointSnapshotAt) }}</strong>
+                            </div>
+                        </div>
                     </div>
 
-                    <div class="point-monitor-status">
-                        <div>
-                            <span class="status-label">监视范围</span>
-                            <span class="plc-status-pill" :class="'plc-' + (pointMonitorStatusSummary?.status || 'idle')">
-                                {{ isAllPointMonitorMode ? pointMonitorStatusSummary.message : (plcStatusLabels[realtimePointDeviceStatus?.status] || formatPlcDeviceStatus(selectedMonitorDevice || {})) }}
-                            </span>
-                        </div>
-                        <div>
-                            <span class="status-label">最近数据快照</span>
-                            <strong>{{ formatPointTime(realtimePointSnapshotAt) }}</strong>
+                    <div class="point-monitor-search-filters">
+                        <label class="point-monitor-search">快速搜索
+                            <input v-model="pointMonitorFilters.query" class="input" type="search" aria-label="搜索实时点位" placeholder="点位名称、设备、PLC 地址或报警说明" />
+                        </label>
+                        <label>点位分类
+                            <select v-model="pointMonitorFilters.category" class="input" aria-label="监视点位分类">
+                                <option value="all">全部分类</option>
+                                <option v-for="category in pointMonitorCategories" :key="category.id" :value="category.id">{{ category.name }}</option>
+                            </select>
+                        </label>
+                        <label>数据质量
+                            <select v-model="pointMonitorFilters.quality" class="input" aria-label="监视数据质量">
+                                <option value="all">全部质量</option>
+                                <option value="abnormal">仅看异常／过期</option>
+                                <option value="good">正常</option>
+                                <option value="stale">过期</option>
+                                <option value="bad">采集异常</option>
+                            </select>
+                        </label>
+                        <div class="point-monitor-actions">
+                            <button type="button" @click="loadRealtimePointValues" class="btn" :disabled="realtimePointLoading">
+                                {{ realtimePointLoading ? '读取中...' : '读取最新缓存' }}
+                            </button>
+                            <label class="inline-toggle">
+                                <input v-model="pointMonitorAutoRefresh" type="checkbox" />
+                                自动刷新
+                            </label>
+                            <button type="button" class="btn" :disabled="!hasPointMonitorFilters" @click="resetPointMonitorFilters">清空筛选</button>
                         </div>
                     </div>
+                    <div class="point-monitor-result-summary" aria-live="polite">找到 <strong>{{ filteredRealtimePointRows.length }}</strong> 条点位<span v-if="hasPointMonitorFilters"> / 当前设备范围共 {{ scopedRealtimePointRows.length }} 条</span></div>
 
                     <div v-if="realtimePointError" class="inline-error">{{ realtimePointError }}</div>
 
@@ -9329,25 +9436,25 @@ async function openAdminSetupStep(step) {
                                     <td>{{ point.data_type || '-' }}</td>
                                     <td>{{ point.sample_interval_ms || '-' }}ms</td>
                                     <td>{{ point.alarm_text || '-' }}</td>
-                                    <td>{{ formatPointTime(point.lastReadAt) }}</td>
+                                    <td class="point-monitor-read-time">{{ formatPointDateTime(point.lastReadAt) }}</td>
                                 </tr>
-                                <tr v-if="!realtimePointRows.length">
-                                    <td colspan="10" style="text-align:center; padding: 22px; color:#86868b;">暂无点位，先到“点位映射”里配置 PLC 地址。</td>
+                                <tr v-if="!filteredRealtimePointRows.length">
+                                    <td colspan="10" style="text-align:center; padding: 22px; color:#86868b;">{{ realtimePointLoading ? '正在读取点位…' : scopedRealtimePointRows.length ? '没有符合筛选条件的点位，请更换关键词或清空筛选。' : '当前设备范围暂无点位，请调整车间、产线或设备范围，或到“点位映射”配置 PLC 地址。' }}</td>
                                 </tr>
                             </tbody>
                         </table>
                     </div>
 
-                    <div v-if="realtimePointRows.length > 0" class="points-pagination-bar">
+                    <div v-if="filteredRealtimePointRows.length > 0" class="points-pagination-bar">
                         <div class="pagination-info">
-                            <span>共 <strong>{{ realtimePointRows.length }}</strong> 条点位</span>
+                            <span>共 <strong>{{ filteredRealtimePointRows.length }}</strong> 条点位</span>
                             <span v-if="monitorPageSize > 0">，第 <strong>{{ monitorCurrentPage }}</strong> / <strong>{{ totalMonitorPages }}</strong> 页</span>
                         </div>
 
                         <div class="pagination-controls">
                             <div class="page-size-selector">
                                 <span class="selector-label">每页显示：</span>
-                                <select v-model.number="monitorPageSize" class="input input-sm page-size-select" v-permission="{ page: controlPermissionPage, action: 'edit' }">
+                                <select v-model.number="monitorPageSize" class="input input-sm page-size-select">
                                     <option :value="10">10 条/页</option>
                                     <option :value="20">20 条/页</option>
                                     <option :value="50">50 条/页</option>
@@ -9680,11 +9787,16 @@ async function openAdminSetupStep(step) {
                                 <p class="database-local-only-notice">
                                     本机备份无法防止整机丢失；请在“整站灾备”标签中设置外部备份。
                                 </p>
+                                <div v-if="databaseBackupStatus.directory" class="backup-directory-path">
+                                    <span>本机备份目录（单击复制）</span>
+                                    <CopyPathButton :path="databaseBackupStatus.directory" />
+                                </div>
                                 <div class="database-backup-list">
                                     <div v-for="backup in databaseBackupStatus.backups" :key="backup.filename" class="database-backup-row">
                                         <div>
                                             <strong>{{ backup.filename }}</strong>
                                             <span>{{ formatBackupTime(backup.createdAt) }} · {{ formatBackupSize(backup.size) }}</span>
+                                            <div class="backup-file-path"><CopyPathButton :path="backup.fullPath || backup.path || backupFilePath(backup.filename, databaseBackupStatus.directory)" /></div>
                                         </div>
                                         <span class="backup-validity" :class="backup.valid === true ? 'is-valid' : backup.valid === false ? 'is-invalid' : 'is-unverified'">
                                             {{ backup.valid === true ? '已校验' : backup.valid === false ? '已损坏' : '恢复时校验' }}
@@ -9709,8 +9821,8 @@ async function openAdminSetupStep(step) {
                                         <p>一个 ZIP 包含一致性数据库、全部现场配置和所有上传模型，可在新电脑安装软件后直接导入复原。</p>
                                     </div>
                                     <div class="site-backup-actions">
-                                        <button @click="exportSiteBackup" class="btn btn-primary" :disabled="siteBackupBusy">导出整站备份</button>
-                                        <button @click="chooseSiteBackupFile" class="btn" :disabled="siteBackupBusy" v-permission="{ page: 'settings.security', action: 'edit' }">从整站备份恢复</button>
+                                        <button @click="exportSiteBackup" class="btn btn-primary" :disabled="siteBackupBusy || siteBackupPolicySaving || siteBackupConfigSaving">导出整站备份</button>
+                                        <button @click="chooseSiteBackupFile" class="btn" :disabled="siteBackupBusy || siteBackupPolicySaving || siteBackupConfigSaving" v-permission="{ page: 'settings.security', action: 'edit' }">从整站备份恢复</button>
                                         <input ref="siteBackupFileInput" class="site-backup-file-input" type="file" accept=".zip,application/zip" @change="restoreSiteBackupFromFile"  v-permission="{ page: 'settings.security', action: 'edit' }"/>
                                     </div>
                                 </div>
@@ -9728,8 +9840,67 @@ async function openAdminSetupStep(step) {
                                     <label class="site-backup-mirror-field">外部备份目录（U 盘 / NAS）
                                         <input v-model="siteBackupConfig.mirrorDirectory" class="input" placeholder="例如 E:\\数字孪生备份 或 \\\\NAS\\factory-backup"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/>
                                     </label>
-                                    <button type="button" class="btn btn-small" :disabled="siteBackupConfigSaving" @click="saveSiteBackupConfiguration" v-permission="{ page: controlPermissionPage, action: 'edit' }">保存自动灾备</button>
+                                    <button type="button" class="btn btn-small" :disabled="siteBackupConfigSaving || siteBackupPolicySaving || siteBackupBusy" @click="saveSiteBackupConfiguration" v-permission="{ page: controlPermissionPage, action: 'edit' }">保存自动灾备</button>
                                 </div>
+                                <div class="database-retention-card site-retention-card">
+                                    <div class="database-retention-heading">
+                                        <div class="database-retention-icon" aria-hidden="true">
+                                            <svg viewBox="0 0 24 24"><path d="M12 7v5l3 2" /><circle cx="12" cy="12" r="8" /></svg>
+                                        </div>
+                                        <div>
+                                            <strong>备份保留策略</strong>
+                                            <span>超过期限自动清理本机灾备，至少保留最近一份有效备份；外部副本独立保留。</span>
+                                        </div>
+                                        <em>当前 {{ siteBackupStatus.retentionDays || 30 }} 天</em>
+                                    </div>
+                                    <div class="database-retention-controls">
+                                        <div class="database-retention-presets" aria-label="整站备份常用保留天数">
+                                            <button
+                                                v-for="days in databaseBackupRetentionPresets"
+                                                :key="days"
+                                                type="button"
+                                                :class="{ active: Number(siteBackupPolicy.retentionDays) === days }"
+                                                :aria-pressed="Number(siteBackupPolicy.retentionDays) === days"
+                                                :disabled="siteBackupPolicySaving || siteBackupConfigSaving || siteBackupBusy"
+                                                @click="selectSiteBackupRetention(days)"
+                                                v-permission="{ page: controlPermissionPage, action: 'edit' }"
+                                            >{{ days }} 天</button>
+                                        </div>
+                                        <label class="database-retention-custom">
+                                            <span>自定义</span>
+                                            <span class="database-retention-input">
+                                                <input
+                                                    v-model.number="siteBackupPolicy.retentionDays"
+                                                    type="number"
+                                                    :min="siteBackupStatus.retentionDaysMin || 1"
+                                                    :max="siteBackupStatus.retentionDaysMax || 3650"
+                                                    step="1"
+                                                    inputmode="numeric"
+                                                    :disabled="siteBackupPolicySaving || siteBackupConfigSaving || siteBackupBusy"
+                                                    aria-label="整站备份保留天数"
+                                                    v-permission="{ page: controlPermissionPage, action: 'edit' }"
+                                                />
+                                                <em>天</em>
+                                            </span>
+                                        </label>
+                                        <button
+                                            type="button"
+                                            class="btn btn-primary database-retention-save"
+                                            :disabled="siteBackupPolicySaving || siteBackupConfigSaving || siteBackupBusy"
+                                            @click="saveSiteBackupPolicy"
+                                            v-permission="{ page: controlPermissionPage, action: 'edit' }"
+                                        >{{ siteBackupPolicySaving ? '保存中…' : '保存策略' }}</button>
+                                    </div>
+                                    <div class="database-retention-stats">
+                                        <div><span>现有备份</span><strong>{{ siteBackupStatus.backups.length }} 份</strong></div>
+                                        <div><span>占用空间</span><strong>{{ formatBackupSize(siteBackupStatus.totalBackupBytes) }}</strong></div>
+                                        <div><span>最早备份</span><strong>{{ formatBackupTime(siteBackupStatus.oldestBackup?.createdAt) }}</strong></div>
+                                        <div><span>最新备份</span><strong>{{ formatBackupTime(siteBackupStatus.newestBackup?.createdAt) }}</strong></div>
+                                    </div>
+                                </div>
+                                <p v-if="siteBackupStatus.maxTotalBytes || siteBackupStatus.retention" class="database-backup-message">
+                                    本机容量保护：<span v-if="siteBackupStatus.maxTotalBytes">最多 {{ formatBackupSize(siteBackupStatus.maxTotalBytes) }}</span><span v-if="siteBackupStatus.retention"> · 最多 {{ siteBackupStatus.retention }} 份</span>，达到上限会提前清理旧备份，仍保留最近一份有效备份。
+                                </p>
                                 <p v-if="siteBackupStatus.lastAutomaticBackup" class="database-backup-message">
                                     最近自动备份：{{ siteBackupStatus.lastAutomaticBackup.filename }}
                                     <span v-if="siteBackupStatus.lastAutomaticBackup.mirror">（已同步外部目录）</span>
@@ -9738,20 +9909,22 @@ async function openAdminSetupStep(step) {
                                     灾备提醒：{{ siteBackupStatus.lastError.error }}
                                 </p>
                                 <p v-if="siteBackupMessage" class="database-backup-message">{{ siteBackupMessage }}</p>
-                                <div v-if="siteBackupStatus.backups.length" class="site-backup-history">
-                                    <span>本机最近生成</span>
-                                    <button
-                                        v-for="backup in siteBackupStatus.backups.slice(0, 3)"
-                                        :key="backup.filename"
-                                        type="button"
-                                        class="site-backup-history-item"
-                                        :disabled="siteBackupBusy"
-                                        @click="downloadSiteBackup(backup)"
-                                    >
-                                        <strong>{{ backup.filename }}</strong>
-                                        <small>{{ formatBackupTime(backup.createdAt) }} · {{ formatBackupSize(backup.size) }} · 重新保存</small>
-                                    </button>
+                                <div v-if="siteBackupStatus.localDirectory" class="backup-directory-path">
+                                    <span>本机灾备目录（单击复制）</span>
+                                    <CopyPathButton :path="siteBackupStatus.localDirectory" />
                                 </div>
+                                <div v-if="siteBackupStatus.backups.length" class="site-backup-history">
+                                    <span>本机备份文件</span>
+                                    <div v-for="backup in siteBackupStatus.backups" :key="backup.filename" class="site-backup-history-row">
+                                        <div>
+                                            <strong>{{ backup.filename }}</strong>
+                                            <small>{{ formatBackupTime(backup.createdAt) }} · {{ formatBackupSize(backup.size) }}</small>
+                                            <div class="backup-file-path"><CopyPathButton :path="backup.fullPath || backup.path || backupFilePath(backup.filename, siteBackupStatus.localDirectory)" /></div>
+                                        </div>
+                                        <button type="button" class="btn btn-small" :disabled="siteBackupBusy" @click="downloadSiteBackup(backup)">重新保存</button>
+                                    </div>
+                                </div>
+                                <div v-else class="empty-hint">暂无整站备份</div>
                             </div>
                             <p v-if="databaseSection === 'site' && !siteBackupStatus.supported" id="database-panel-site" role="tabpanel" aria-labelledby="database-tab-site" class="empty-hint">当前整站灾备服务不可用。</p>
                         </div>
@@ -12303,10 +12476,64 @@ button:enabled:active {
     overflow: auto;
 }
 .plc-status-table { min-width: 980px; margin-bottom: 0; }
+.point-monitor-controls {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: 16px;
+    margin-bottom: 18px;
+}
 .point-monitor-toolbar {
+    flex: 1 1 520px;
+    min-width: 0;
+    flex-wrap: wrap;
     align-items: flex-end;
     gap: 12px;
-    margin-bottom: 18px;
+    margin-bottom: 0;
+}
+.point-monitor-toolbar > div { min-width: 0; }
+.point-monitor-toolbar select { max-width: 100%; }
+.point-monitor-hierarchy {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 12px;
+    width: 100%;
+}
+.point-monitor-hierarchy label,
+.point-monitor-search-filters label {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    gap: 6px;
+    color: #86868b;
+    font-size: calc(12px * var(--admin-font-scale, 1));
+}
+.point-monitor-hierarchy .input,
+.point-monitor-search-filters .input { width: 100%; min-width: 0; box-sizing: border-box; }
+.point-monitor-search-filters {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: 12px;
+    margin-bottom: 10px;
+}
+.point-monitor-search-filters > label { flex: 0 1 160px; }
+.point-monitor-search-filters > .point-monitor-search { flex: 1 1 320px; max-width: 400px; }
+.point-monitor-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 12px;
+    max-width: 100%;
+    margin-left: auto;
+}
+.point-monitor-actions .inline-toggle { flex-direction: row; white-space: nowrap; }
+.point-monitor-actions .btn { white-space: nowrap; }
+.point-monitor-result-summary { margin-bottom: 12px; color: #86868b; font-size: calc(12px * var(--admin-font-scale, 1)); }
+.point-monitor-result-summary strong { color: #1d1d1f; }
+@media (max-width: 520px) {
+    .point-monitor-hierarchy { grid-template-columns: minmax(0, 1fr); }
 }
 .inline-toggle {
     display: inline-flex;
@@ -12321,10 +12548,13 @@ button:enabled:active {
     background: #fbfbfd;
 }
 .point-monitor-status {
+    flex: 0 1 560px;
+    max-width: 100%;
+    margin-left: auto;
     display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 12px;
-    margin-bottom: 18px;
+    margin-bottom: 0;
 }
 .point-monitor-status > div {
     min-width: 0;
@@ -12359,6 +12589,7 @@ button:enabled:active {
 }
 .realtime-points-table { min-width: 1180px; margin-bottom: 0; }
 .realtime-points-table .point-monitor-device-name { white-space: nowrap; }
+.realtime-points-table .point-monitor-read-time { white-space: nowrap; font-variant-numeric: tabular-nums; }
 .point-value-cell {
     color: #111827;
     font-weight: 700;
@@ -13670,6 +13901,11 @@ button:enabled:active {
 .database-backup-row > div { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
 .database-backup-row strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: calc(13px * var(--admin-font-scale, 1)); }
 .database-backup-row span { color: #6e6e73; font-size: calc(12px * var(--admin-font-scale, 1)); }
+.backup-directory-path { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 8px 14px; margin-top: 14px; padding: 10px 12px; color: #515154; background: #f5f5f7; border: 1px solid #e5e5e7; border-radius: 8px; font-size: calc(12px * var(--admin-font-scale, 1)); }
+.backup-directory-path > span { padding-top: 2px; color: #6e6e73; }
+.backup-file-path { min-width: 0; color: #6e6e73; font-size: calc(11px * var(--admin-font-scale, 1)); }
+.backup-directory-path :deep(.copy-path-text), .backup-file-path :deep(.copy-path-text) { white-space: normal; overflow-wrap: anywhere; }
+.backup-file-path :deep(.copy-path-button) { align-items: flex-start; }
 .backup-validity { white-space: nowrap; }
 .backup-validity.is-valid { color: #16713a; }
 .backup-validity.is-invalid { color: #b42318; }
@@ -13688,10 +13924,11 @@ button:enabled:active {
 .site-backup-auto-config .input-small { width: 90px; }
 .site-backup-history { display: grid; grid-template-columns: 130px minmax(0, 1fr); gap: 8px 14px; align-items: start; margin-top: 16px; padding-top: 14px; border-top: 1px solid #e5e5e7; }
 .site-backup-history > span { padding-top: 8px; color: #6e6e73; font-size: calc(12px * var(--admin-font-scale, 1)); }
-.site-backup-history-item { grid-column: 2; display: flex; align-items: center; justify-content: space-between; gap: 16px; width: 100%; min-width: 0; padding: 8px 10px; color: #1d1d1f; background: transparent; border: 1px solid transparent; border-radius: 6px; text-align: left; cursor: pointer; transition: background-color 160ms ease, border-color 160ms ease; }
-.site-backup-history-item:hover:not(:disabled) { background: #f5f5f7; border-color: #e2e2e5; }
-.site-backup-history-item strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: calc(12px * var(--admin-font-scale, 1)); }
-.site-backup-history-item small { flex: 0 0 auto; color: #6e6e73; font-size: calc(11px * var(--admin-font-scale, 1)); }
+.site-backup-history { max-height: 420px; overflow: auto; }
+.site-backup-history-row { grid-column: 2; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 16px; min-width: 0; padding: 8px 0; border-bottom: 1px solid #ededee; }
+.site-backup-history-row > div { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.site-backup-history-row strong { min-width: 0; overflow-wrap: anywhere; font-size: calc(12px * var(--admin-font-scale, 1)); }
+.site-backup-history-row small { color: #6e6e73; font-size: calc(11px * var(--admin-font-scale, 1)); }
 .runtime-settings-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; }
 .runtime-card { min-width: 0; padding: 18px; background: #ffffff; border: 1px solid #e5e5e7; border-radius: 10px; }
 .runtime-card-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
@@ -13796,6 +14033,9 @@ button:enabled:active {
 }
 
 @media (max-width: 900px) {
+    .backup-directory-path { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+    .site-backup-history { grid-template-columns: minmax(0, 1fr); }
+    .site-backup-history-row { grid-column: 1; }
     .database-backup-trigger-grid { grid-template-columns: 1fr; }
     .database-retention-heading { grid-template-columns: auto minmax(0,1fr); }
     .database-retention-heading > em { grid-column: 2; justify-self: start; }

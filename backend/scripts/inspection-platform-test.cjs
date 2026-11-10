@@ -121,6 +121,15 @@ async function socket(origin, role, messages) {
     check('device exploded view forwards its inspection stage to Unity', () => assert.equal(explodedView.status, 200));
     const explodedMessage = await waitUntil(() => unityMessages.find(message => message.type === 'native_scene_preview' && message.payload?.action === 'view' && message.payload?.focus?.inspectionStage === 'exploded'), 5000, 'exploded view stage');
     check('Unity navigation payload identifies the completed exploded stage', () => assert.equal(explodedMessage.payload.focus.inspectionStage, 'exploded'));
+    for (const inspectionStage of ['solid', 'xray', 'exploded', 'part']) {
+        const response = await testFetch(`${origin}/api/native-preview/navigate`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'inspection_back', viewId: `device-${inspectionStage}`, focus: { mode: 'device', deviceId: 'fixture-device', inspectionStage }, returnOrigin: { viewId: 'client-forged' } }) });
+        assert.equal(response.status, 200);
+        const received = await waitUntil(() => unityMessages.find(message => message.payload?.action === 'inspection_back' && message.payload.viewId === `device-${inspectionStage}`), 5000, 'guarded device return');
+        assert.equal(received.payload.focus.deviceId, 'fixture-device'); assert.equal(received.payload.focus.inspectionStage, inspectionStage);
+        assert.equal(Object.hasOwn(received.payload, 'returnOrigin'), false);
+    }
+    checks.push('solid and inspection back commands preserve stale-device/stage guards without accepting a client-authored entry');
     const count = unityMessages.filter(message => message.type === 'native_scene_preview').length;
     for (const inspection of [{ command: 'delete' }, { command: 'stage', stage: 'bad' }, { command: 'progress', progress: -1 }, { command: 'isolate', enabled: 'false' }, { command: 'select' }]) {
         const response = await testFetch(`${origin}/api/native-preview/navigate`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'inspection', focus: { deviceId: 'fixture-device' }, inspection }) });

@@ -56,6 +56,9 @@ function presetBinding(widget, template = {}) {
 export function tooltipDynamicBinding(widget = {}, template = {}) {
   const source = object(widget), data = object(source.data || source.binding)
   if (dynamicModes.has(data.mode)) return { ...clone(data), readOnly: true }
+  // A deliberate source selection in the inspector is not a legacy freeze.
+  // Keep repairing old documents unless that ordinary control was used.
+  if (source.content?.dataSourceConfigured === true) return null
   const saved = object(source.dynamicBinding)
   if (dynamicModes.has(saved.mode)) return { ...clone(saved), readOnly: true }
   if (isTooltipMetadataPath(source.dynamicField)) return runtimeSource(source.dynamicField)
@@ -87,7 +90,8 @@ export function restoreTooltipDynamicBinding(widget = {}, template = {}) {
   }
   // Metadata cannot be relabelled to invented connection states or names.
   if (linkedMetadata) delete content.valueMap
-  const systemField = isTooltipMetadataPath(source.dynamicField) ? source.dynamicField : presetBinding(source, template)?.path
+  const systemField = source.content?.dataSourceConfigured === true ? undefined
+    : isTooltipMetadataPath(source.dynamicField) ? source.dynamicField : presetBinding(source, template)?.path
   const result = { ...source, data, content, dynamicBinding: clone(data) }
   // Only original preset fields own an immutable semantic role. A newly added
   // bound text must still be able to choose another actual dynamic field.

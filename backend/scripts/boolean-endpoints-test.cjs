@@ -97,6 +97,10 @@ async function idle(instance) {
     assert.throws(()=>validate({...tableRow,trigger:{...tableRow.trigger,extended:{dataItemId:globalItem.id}}}),/当前设备/);
     assert.throws(()=>validate({...tableRow,trigger:{...tableRow.trigger,retracted:{dataItemId:datasetItem('extended_alias').id}}}),/不同的数据源/,'same column path under two labels is not independent feedback');
     await db.run('UPDATE devices SET instance_config=? WHERE id=?',[JSON.stringify({...loaded.instance,animationBindings:tableConfig}),deviceId]);
+    // The controlled PLC clock above tests expiry and future samples. Real HTTP
+    // reads carry wall-clock fetchedAt, so this phase must use the same clock;
+    // freezing it across async setup incorrectly marks good reads as future.
+    resolver.now = Date.now;
     resolver.invalidate();resolver.decorate([source]);await idle(resolver);result=resolver.decorate([source])[0].motionInputs[row.actionId];
     assert.equal(result.stage,'extended');assert.equal(result.value,1);assert.equal(typeof result.endpointFeedback.retracted.value,'boolean');assert.ok(requests>=1,'nested endpoint dataset sources are queried, not replaced by catalog preview values');
 

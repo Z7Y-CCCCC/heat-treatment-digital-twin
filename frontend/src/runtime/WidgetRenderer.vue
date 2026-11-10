@@ -1,7 +1,9 @@
 <script setup>
 import { computed, inject, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import HudMetricRing from './HudMetricRing.vue'
 import * as echarts from 'echarts'
 import { playbackSelection,normalizePlayback,isDeviceBinding,devicePoint } from '../../../shared/widgetPlayback.mjs'
+import { bindingForDevice } from '../../../shared/widgetBindingWorkflow.mjs'
 import { parameterValue } from '../../../shared/dashboardParameters.mjs'
 import {extendedChartOption} from './dashboardCharts.js'
 import { splitHudKpiValue } from './hudPresentation.js'
@@ -12,6 +14,7 @@ import { configureTrendAxes, appendTrendSample } from './trendChart.js'
 import MapRegionList from './MapRegionList.vue'
 import { tooltipBindingContext, tooltipPlaybackSelection, tooltipPathQuality, tooltipRuntimeValue, tooltipMetadataPath, mappedWidgetValue, deviceStatusText } from './tooltipContext.js'
 import { WidgetPlaybackKey, createWidgetPlaybackController } from './widgetPlayback.js'
+import { effectiveMetricItems, metricValueSource, mapListTitle, resolveNavigationContent, resolveWidgetImageUrl, widgetStatSource, widgetChartSeriesSource, widgetChartSeriesPath } from './widgetContentConfig.js'
 
 const HUD_FONT_TEXT = 'SF Pro Text, Inter Variable, Inter, Noto Sans SC Variable, Segoe UI, PingFang SC, Microsoft YaHei UI, sans-serif'
 const HUD_FONT_NUMBER = 'SF Pro Display, Inter Variable, Inter, Segoe UI, Bahnschrift, sans-serif'
@@ -28,6 +31,7 @@ const props = defineProps({
   databaseValues: { type: Object, default: () => ({}) },
   businessData: { type: Object, default: () => ({}) },
   runtimeContext: { type: Object, default: () => ({}) },
+  systemData: { type: Object, default: () => ({}) },
   parameters: { type:Object, default:()=>({}) },
   parameterDefinitions: { type:Array, default:()=>[] },
   interactive: { type:Boolean, default:true },
@@ -65,6 +69,7 @@ function objectValue(value, fallback = {}) {
 
 const type = computed(() => props.widget.type || props.widget.widget_type || 'text')
 const content = computed(() => objectValue(props.widget.content, objectValue(props.widget.config, {})))
+const navigationCopy = computed(() => resolveNavigationContent(props.widget, props.systemData))
 const hudCopy = computed(() => resolveHudText(type.value, content.value))
 const widgetStyle = computed(() => resolveWidgetViewStyle(objectValue(props.widget.style, objectValue(props.widget.config?.style, {})), props.runtimeContext.viewId))
 const surfacePresentation = computed(() => widgetSurfacePresentation(widgetStyle.value, content.value.lineColor || '#a2a7ed'))
@@ -72,7 +77,8 @@ const bindingContext = computed(() => {
   const data = objectValue(props.widget.data, objectValue(props.widget.binding, {}))
   return tooltipBindingContext({ ...props.widget, data }, props.runtimeContext)
 })
-const dataBinding = computed(() => bindingContext.value.widget.data)
+const baseDataBinding = computed(() => bindingContext.value.widget.data)
+const dataBinding = computed(() => bindingForDevice(baseDataBinding.value,playback.value.device?.id || ''))
 const pointReferenceBinding = computed(() => bindingContext.value.sourceWidget.data)
 const conditions = computed(() => Array.isArray(props.widget.conditions) ? props.widget.conditions : (Array.isArray(props.widget.config?.conditions) ? props.widget.config.conditions : []))
 const animation = computed(() => objectValue(props.widget.animation, objectValue(props.widget.config?.animation, { type: 'none' })))
@@ -80,6 +86,7 @@ const widgetEvents = computed(() => Array.isArray(props.widget.events) ? props.w
 const widgetTitle = computed(() => props.widget.title ?? content.value.title ?? '')
 const overlayMode = computed(() => props.overlayMode === true)
 const isHudModule = computed(() => ['hud_kpi_panel', 'hud_device_status', 'hud_alarm_panel', 'hud_chart_dock'].includes(type.value))
+const usesHudChartAppearance = computed(() => isHudModule.value || !!surfacePresentation.value.skin)
 const isTrend = computed(() => ['trend', 'hud_chart_dock'].includes(type.value))
 
 const progressPercent = computed(() => {
@@ -88,10 +95,10 @@ const progressPercent = computed(() => {
   return Math.max(0, Math.min(100, target ? (output / target) * 100 : 0)).toFixed(1)
 })
 
-const playbackCatalog=computed(()=>props.deviceCatalog ?? [...new Set([...Object.keys(props.deviceDataMap),String(dataBinding.value.deviceId || '')].filter(Boolean))].map(id=>({id,name:id})))
+const playbackCatalog=computed(()=>props.deviceCatalog ?? [...new Set([...Object.keys(props.deviceDataMap),String(baseDataBinding.value.deviceId || '')].filter(Boolean))].map(id=>({id,name:id})))
 // A 100ms API scheduler tick need not invalidate every device snapshot.
 const playbackTime=computed(()=>{
- const interval=normalizePlayback(dataBinding.value).rotationIntervalMs
+ const interval=normalizePlayback(baseDataBinding.value).rotationIntervalMs
  const now=props.runtimeContext.tooltipScope ? props.playbackNow : playbackController.timeFor(props.widget,props.playbackNow)
  return props.preview && !props.interactive ? 0 : Math.floor(now/interval)*interval
 })
@@ -100,9 +107,19 @@ const historyClock=computed(()=>{
  return Math.floor(props.playbackNow/interval)*interval
 })
 const playback=computed(()=>props.runtimeContext.tooltipScope
-  ? tooltipPlaybackSelection(dataBinding.value,props.runtimeContext,playbackCatalog.value)
-  : playbackSelection(dataBinding.value,props.runtimeContext,playbackCatalog.value,playbackTime.value))
+  ? tooltipPlaybackSelection(baseDataBinding.value,props.runtimeContext,playbackCatalog.value)
+  : playbackSelection(baseDataBinding.value,props.runtimeContext,playbackCatalog.value,playbackTime.value))
 const scopedDeviceBinding=computed(()=>isDeviceBinding(dataBinding.value))
+const bindingUnavailable=computed(()=>{
+ const binding=baseDataBinding.value
+ if(binding.bindingVersion!==2 || binding.deviceScope==='global' || binding.mode==='static' || props.runtimeContext.tooltipScope)return ''
+ if(!playback.value.device){
+  if(playback.value.mode==='current')return props.runtimeContext.deviceId ? '当前查看设备不存在或不可用' : '未选择当前查看设备'
+  if(playback.value.mode==='fixed')return '指定设备不存在或不可用'
+  return playback.value.total ? '轮播清单中的设备不存在或不可用' : '轮播清单没有设备与对应数据'
+ }
+ return dataBinding.value.bindingMissing ? `设备“${playback.value.device.name || playback.value.device.id}”未选择对应数据` : ''
+})
 const hoverCanPause=computed(()=>props.interactive && !props.runtimeContext.tooltipScope && scopedDeviceBinding.value && playback.value.mode==='rotation' && playback.value.total>1)
 function setPlaybackHovered(hovered) {
  pointerHovered.value=hovered
@@ -158,6 +175,44 @@ function getWidgetValue(path) {
   return getByPath(dataContext.value, path)
 }
 
+function metricDeviceId(binding) {
+  if((baseDataBinding.value.deviceScope==='global' || baseDataBinding.value.mode==='static') && binding.deviceScope==='fixed'){
+    const id=String(binding.deviceId || '')
+    return playbackCatalog.value.some(device=>String(device.id)===id) ? id : ''
+  }
+  return playback.value.device?.id || ''
+}
+function metricRuntimeValue(source,id) {
+  const path=source.path || source.source
+  if(source.deviceScope==='global' || !id || id===sampledDevice.value.id)return getWidgetValue(path)
+  const reading=props.deviceDataMap[id] || {},status=props.deviceStatusMap[id] || {},device=playbackCatalog.value.find(device=>String(device.id)===String(id))
+  const match=/^(deviceDataMap|deviceStatusMap)\.[^.]+\.(.*)$/.exec(String(path || ''))
+  if(/^(device\.|deviceDataMap\.|deviceStatusMap\.)/.test(path || '') && ['bad','stale'].includes(status.quality))return undefined
+  if(match)return getByPath(match[1]==='deviceDataMap' ? reading : status,match[2])
+  const part=String(props.runtimeContext.deviceId || '')===String(id) ? props.selectedPart : {}
+  const pointPath=/^selectedPart\.points\.(\d+)\.value$/.exec(String(path || ''))
+  if(pointPath && (part?.id && props.runtimeContext.partId && String(part.id)!==String(props.runtimeContext.partId) || part?.points?.[Number(pointPath[1])]?.quality && part.points[Number(pointPath[1])].quality!=='good'))return undefined
+  return getByPath({...dataContext.value,device:reading,deviceDataMap:{[id]:reading},deviceStatusMap:{[id]:status},selectedPart:part,
+    deviceInfo:{id:device?.id,name:device?.name,dataStatus:device ? deviceStatusText(status) : undefined,modelName:device?.model_name || device?.modelName || device?.model_type,lineName:device?.lineName,workshopName:device?.workshopName,posY:device?.pos_y}},path)
+}
+function boundMetric(binding,index) {
+  const id=metricDeviceId(binding)
+  const source=bindingForDevice(binding,id)
+  if(source.bindingMissing || !id && isDeviceBinding(source))return undefined
+  if(source.mode==='plc') {
+    const point=devicePoint(binding,id,props.pointValues)
+    return point?.quality==='good' ? point.value : undefined
+  }
+  if(source.mode==='runtime')return metricRuntimeValue(source,id)
+  if(source.mode==='dataset'){
+    const record=databaseRecord.value?.metrics?.[index]
+    if(source.deviceScope!=='global' && (record?.deviceId !== undefined && String(record.deviceId || '')!==String(id)
+      || binding.bindingVersion===2 && (!id || playback.value.mode==='rotation' && record?.deviceId===undefined)))return undefined
+    return record?.quality==='good' ? record.value : undefined
+  }
+  return undefined
+}
+
 const pointRecord = computed(() => scopedDeviceBinding.value ? sampledDevice.value.point : props.pointValues[String(dataBinding.value.pointId || '')] || null)
 const databaseRecord = computed(() => {
  const record=props.databaseValues[String(props.widget.id || '')] || null
@@ -202,6 +257,7 @@ const dataDrivenWidget = computed(() => {
 })
 const dataPending = computed(() => {
   if (!overlayMode.value || !dataDrivenWidget.value) return false
+  if (bindingUnavailable.value) return false
   // Hover validity/scene readiness belongs to the floating surface. A missing
   // PLC point is a field fallback, not a reason to blur the object's identity.
   if (props.runtimeContext.tooltipScope) return ['dataset','database','http_api','business'].includes(dataBinding.value.mode) && !databaseRecord.value
@@ -255,6 +311,7 @@ function businessRowValue(row) {
 
 const boundValue = computed(() => {
   const binding = dataBinding.value
+  if (binding.mode === 'static') return content.value.value
   if (binding.mode === 'dataset') return ['good','empty'].includes(databaseRecord.value?.quality) ? (databaseRecord.value?.value ?? null) : null
   if (binding.mode === 'database' || binding.mode === 'http_api') return databaseRecord.value?.value ?? null
   if (binding.mode === 'plc' || binding.pointId || binding.point_id) {
@@ -274,6 +331,7 @@ const boundValue = computed(() => {
 })
 
 const boundQuality = computed(() => {
+  if (dataBinding.value.mode === 'static') return 'good'
   const hoverQuality = tooltipPathQuality(props.runtimeContext, dataBinding.value.path || dataBinding.value.source)
   if (hoverQuality && dataBinding.value.mode === 'runtime') return hoverQuality
   if (props.runtimeContext.tooltipScope && (!dataBinding.value.mode || dataBinding.value.mode === 'static')) return 'good'
@@ -310,7 +368,7 @@ function formatValue(value = boundValue.value) {
     ? undefined : mappedWidgetValue(value, content.value.valueMap)
   if (mapped !== undefined) return mapped
     if (dataBinding.value.mode === 'dataset' && databaseRecord.value?.columns?.find(column => column.name === dataBinding.value.datasetField)?.type === 'string') return String(value)
-  if (typeof value === 'boolean') return value ? (content.value.onText || '正常') : (content.value.offText || '停止')
+  if (typeof value === 'boolean') return value ? (content.value.onText ?? '正常') : (content.value.offText ?? '停止')
   const number = Number(value)
   if (Number.isFinite(number)) {
     const decimals = boundedDecimals(dataBinding.value.decimals ?? 1)
@@ -399,7 +457,7 @@ const shellStyle = computed(() => {
     '--widget-off-color': style.offColor || '#7c8d9d',
     '--widget-alarm-color': style.alarmColor || '#ff625f',
     '--widget-line-color': content.value.lineColor || '#55c7ff',
-    '--module-accent': content.value.lineColor || '#a2a7ed',
+    '--module-accent': surfacePresentation.value.variables['--surface-accent'] || content.value.lineColor || '#a2a7ed',
     '--hud-eyebrow-size': Number.isFinite(Number(style.eyebrowFontSize)) && Number(style.eyebrowFontSize) > 0 ? `${Math.max(8, Math.min(32, Number(style.eyebrowFontSize)))}px` : undefined,
     '--hud-eyebrow-color': style.eyebrowColor || undefined,
     animationDuration: `${Number(animation.value.duration || 1.2)}s`,
@@ -409,18 +467,16 @@ const shellStyle = computed(() => {
 })
 
 const metricItems = computed(() => {
-  const items = Array.isArray(content.value.items) ? content.value.items : [
-    { label: '今日产出', path: 'metrics.current_output' },
-    { label: '完成进度', path: 'metrics.progress_percent', unit: '%' },
-    { label: '能耗估算', path: 'metrics.energy_consumption' },
-    { label: '在线设备', path: 'metrics.online_devices', suffixPath: 'metrics.total_devices', separator: '/' }
-  ]
+  const items = effectiveMetricItems(content.value)
   const configured=content.value.usePartPoints ? [...items,...(sampledDevice.value.part?.points || []).slice(0,6).map((point,index)=>({label:point.label || point.name || point.id,path:`selectedPart.points.${index}.value`,unitPath:`selectedPart.points.${index}.unit`}))] : items
-  return configured.map(item => {
-    const rawValue = item.path ? getWidgetValue(item.path) : item.value
-    const suffix = item.suffixPath ? getWidgetValue(item.suffixPath) : undefined
-    const dynamicLabel = item.labelPath ? getWidgetValue(item.labelPath) : undefined
-    const dynamicUnit = item.unitPath ? getWidgetValue(item.unitPath) : undefined
+  return configured.map((item,index) => {
+    const deviceId=item.binding ? metricDeviceId(item.binding) : sampledDevice.value.id
+    const source=item.binding ? bindingForDevice(item.binding,deviceId) : null
+ const rawValue = item.binding ? boundMetric(item.binding,index) : metricValueSource(item) === 'field' ? getWidgetValue(item.path) : item.value
+    const runtimeValue=path=>source ? metricRuntimeValue({...source,path},deviceId) : getWidgetValue(path)
+    const suffix = item.suffixPath ? runtimeValue(item.suffixPath) : undefined
+    const dynamicLabel = item.labelPath ? runtimeValue(item.labelPath) : undefined
+    const dynamicUnit = item.unitPath || source?.unitPath ? runtimeValue(item.unitPath || source.unitPath) : source?.unit
     const hasValue = rawValue !== undefined && rawValue !== null && rawValue !== ''
     const decimals = Number(item.decimals)
     const formattedValue = hasValue && typeof rawValue === 'number' && Number.isFinite(decimals)
@@ -433,32 +489,48 @@ const metricItems = computed(() => {
         : `${formattedValue}${dynamicUnit ?? item.unit ?? ''}`,
       hasValue
     }
-  }).filter(item => overlayMode.value || content.value.hideEmptyItems !== true || item.hasValue)
+  }).filter(item => content.value.hideEmptyItems !== true || item.hasValue)
 })
 
 const eventRows = computed(() => {
-  if (dataBinding.value.mode === 'dataset') return boundQuality.value === 'good'
-    ? (databaseRecord.value?.rows || []).map(row => ({ ...row, message: row.msg || row.title || row.message || row.value })) : []
-  if (['database', 'http_api', 'dataset'].includes(dataBinding.value.mode)) return databaseRecord.value?.rows || []
   const source = dataBinding.value.source || dataBinding.value.path
   const bound = source ? getWidgetValue(source) : null
-  return Array.isArray(bound) ? bound : props.events
+  const rows=dataBinding.value.mode === 'dataset' ? boundQuality.value === 'good'
+    ? (databaseRecord.value?.rows || []).map(row => ({ ...row, message: row.msg || row.title || row.message || row.value })) : []
+    : ['database','http_api'].includes(dataBinding.value.mode) ? databaseRecord.value?.rows || []
+    : Array.isArray(bound) ? bound : props.events
+  const filters=content.value.eventFilters || {}
+  return rows.filter(event=>{
+    const factoryId=event.factory_id ?? event.factoryId
+    return event.placeholder!==true && (!factoryId || !props.runtimeContext.factoryId || String(factoryId)===String(props.runtimeContext.factoryId))
+      && (!filters.level || event.level===filters.level)
+      && (filters.scope!=='current' || !!props.runtimeContext.deviceId && String(event.source_id || event.sourceId || event.device_id || event.deviceId)===String(props.runtimeContext.deviceId))
+  })
 })
 
 const trendRows = computed(() => {
+  if (widgetChartSeriesSource(content.value, dataBinding.value) === 'field') {
+    const rows = getWidgetValue(widgetChartSeriesPath(content.value, dataBinding.value))
+    if (Array.isArray(rows)) return rows
+    // Retain the historical fallback only for an untouched legacy chart.
+    // An explicit missing/blank field is empty, never an unrelated curve.
+    return content.value.seriesSource === undefined && content.value.seriesPath === undefined ? props.trendPoints : []
+  }
   if (dataBinding.value.mode === 'dataset') return boundQuality.value === 'good' ? (databaseRecord.value?.rows || []) : []
   if (['database', 'http_api', 'dataset'].includes(dataBinding.value.mode)) return databaseRecord.value?.rows || []
-  const source = dataBinding.value.source
+  const source = dataBinding.value.source || dataBinding.value.path
   const bound = source ? getWidgetValue(source) : null
   if (Array.isArray(bound)) return bound
+  if (dataBinding.value.mode === 'static') return Array.isArray(boundValue.value) ? boundValue.value : []
   if (dataBinding.value.mode === 'plc' || dataBinding.value.pointId || scopedDeviceBinding.value && dataBinding.value.mode==='runtime' || dataBinding.value.mode==='runtime' && isTrend.value) return localTrend.value
-  return props.trendPoints
+  return content.value.seriesSource === 'binding' ? [] : props.trendPoints
 })
 
 const chartSeries = computed(() => {
-  if (dataBinding.value.mode === 'dataset' && boundQuality.value !== 'good') return []
+  const usePrimary = widgetChartSeriesSource(content.value, dataBinding.value) === 'binding'
+  if (usePrimary && dataBinding.value.mode === 'dataset' && boundQuality.value !== 'good') return []
   const recordSeries = databaseRecord.value?.series
-  if (['database', 'http_api', 'dataset'].includes(dataBinding.value.mode) && Array.isArray(recordSeries) && recordSeries.length) {
+  if (usePrimary && ['database', 'http_api', 'dataset'].includes(dataBinding.value.mode) && Array.isArray(recordSeries) && recordSeries.length) {
     return recordSeries.map((series, index) => ({
       id: series.id || `series_${index + 1}`,
       field:series.field || series.id,
@@ -483,7 +555,7 @@ const mapRecords = computed(()=>{
 function mapAction(event){if(props.interactive && !props.preview)emit('action',{event,widget:props.widget})}
 const hasTrendData = computed(() => chartSeries.value.some(series => Array.isArray(series.rows) && series.rows.length > 0))
 
-const imageUrl=computed(()=>content.value.url || (typeof boundValue.value==='string'?boundValue.value:''))
+const imageUrl=computed(()=>resolveWidgetImageUrl(content.value,dataBinding.value,boundValue.value,boundQuality.value))
 const textLines = computed(() => {
   if (dataBinding.value.mode === 'dataset' && content.value.datasetTextMode !== 'template') return [formatValue()]
   const rawText = Array.isArray(content.value.lines) ? content.value.lines.join('\n') : (content.value.text || content.value.label || '')
@@ -528,8 +600,8 @@ const statusText = computed(() => {
     return boundValue.value === undefined || boundValue.value === null || boundValue.value === ''
       ? '暂无实时数据' : String(boundValue.value)
   }
-  if (statusState.value === 'unknown') return content.value.unknownText || '离线'
-  return statusState.value === 'on' ? (content.value.onText || '正常') : (content.value.offText || '停止')
+  if (statusState.value === 'unknown') return content.value.unknownText ?? '离线'
+  return statusState.value === 'on' ? (content.value.onText ?? '正常') : (content.value.offText ?? '停止')
 })
 
 const externalDeviceRows=computed(()=>{
@@ -542,19 +614,26 @@ const externalDeviceRows=computed(()=>{
   return {id,name:get(row,'name') || id,online:bool(get(row,'online')),running:bool(get(row,'running')),alarm:bool(get(row,'alarm')),temp:get(row,'temp') ?? null,quality:get(row,'online')==null?'bad':'good'}
  }).filter(row=>row.id).map(row=>[row.id,row])).values()]
 })
-const deviceRows = computed(() => (externalDeviceRows.value || Object.entries(props.deviceStatusMap)
-  .map(([id, value]) => ({ id, ...value }))
-  )
+const allDeviceRows = computed(() => externalDeviceRows.value || Object.entries(props.deviceStatusMap).map(([id, value]) => {
+  const fields = content.value.deviceFields || {}, get = key => value[fields[key] || key]
+  return { ...value, id: String(get('id') ?? id), name: get('name'), online: get('online'), running: get('running'), alarm: get('alarm'), temp: get('temp') }
+}))
+const deviceRows = computed(() => allDeviceRows.value
   .filter(device => !Array.isArray(content.value.deviceIds) || !content.value.deviceIds.length || content.value.deviceIds.includes(device.id))
   .sort((a,b) => Array.isArray(content.value.deviceIds) ? content.value.deviceIds.indexOf(a.id) - content.value.deviceIds.indexOf(b.id) : 0)
   .slice(0, Number(content.value.limit || 12)))
 
 // An unknown measurement stays unknown: do not draw an invented zero or a
 // healthy-looking state while a source is disconnected or still loading.
-const hudRingValue = computed(() => numericValue(getWidgetValue(content.value.chartPath || 'metrics.overall_oee')))
+const hudRingValue = computed(() => content.value.useBoundRing ? boundQuality.value==='good' ? numericValue(boundValue.value) : null : numericValue(getWidgetValue(content.value.chartPath || 'metrics.overall_oee')))
 const hudRingPercent = computed(() => Math.max(0, Math.min(100, hudRingValue.value ?? 0)))
+const usesSharedMetricRing = computed(() => !!surfacePresentation.value.skin && (
+  type.value === 'metrics' && content.value.layout !== 'list'
+  || type.value === 'trend' && content.value.chartType === 'gauge' && displayUnit.value === '%'
+    && Number(content.value.min ?? 0) === 0 && Number(content.value.max ?? 100) === 100))
+const sharedMetricRingValue = computed(() => type.value === 'trend' ? numericValue(boundValue.value) : hudRingValue.value)
 const hudDeviceCounts = computed(() => {
-  const rows = externalDeviceRows.value || Object.values(props.deviceStatusMap)
+  const rows = allDeviceRows.value
   return { total: rows.length, online: rows.filter(device => device.online && device.quality !== 'bad').length, alarms: rows.filter(device => device.alarm).length }
 })
 function hudDeviceState(device) {
@@ -580,8 +659,10 @@ function enterHudDevice(device, domEvent) {
 const hudTrendReading = computed(() => {
   const valueField = content.value.valueField || 'value'
   const samples = trendRows.value.map(row => numericValue(row[valueField])).filter(value => value !== null)
-  const bound = dataBinding.value.mode && dataBinding.value.mode !== 'static'
-  const current = boundQuality.value !== 'good' ? null : content.value.statPath ? numericValue(getWidgetValue(content.value.statPath)) : (numericValue(boundValue.value) ?? (bound ? null : samples.at(-1)) ?? null)
+  const source = widgetStatSource(content.value, dataBinding.value)
+  const current = source === 'series' ? samples.at(-1) ?? null
+    : source === 'field' ? numericValue(content.value.statPath ? getWidgetValue(content.value.statPath) : undefined)
+    : boundQuality.value === 'good' ? numericValue(boundValue.value) : null
   return { current, min: samples.length ? Math.min(...samples) : null, max: samples.length ? Math.max(...samples) : null }
 })
 function hudNumber(value, decimals = 1) {
@@ -629,11 +710,11 @@ function presentChart(option) {
           ...series.lineStyle,
           color,
           width: Number(content.value.lineWidth || 2),
-          ...(isHudModule.value && series.type === 'line' ? { shadowBlur: 7, shadowColor: chartColorWithAlpha(color, .28) } : {})
+          ...(usesHudChartAppearance.value && series.type === 'line' ? { shadowBlur: 7, shadowColor: chartColorWithAlpha(color, .28) } : {})
         }
         const radius=Number(content.value.barRadius ?? 2)
         series.itemStyle = { ...series.itemStyle, color, borderRadius: series.type === 'bar' ? (content.value.chartType==='horizontalBar' ? [0,radius,radius,0] : [radius,radius,0,0]) : 0 }
-        series.symbolSize = isHudModule.value ? 3 : 4
+        series.symbolSize = usesHudChartAppearance.value ? 3 : 4
         if (series.type === 'bar') series.barMaxWidth = 12
         const areaOpacity=Math.max(0,Math.min(1,Number(content.value.areaOpacity ?? .24)))
         const fillColor = content.value.areaColor || color
@@ -645,7 +726,7 @@ function presentChart(option) {
             { offset: 1, color: chartColorWithAlpha(fillColor, areaOpacity*.03) }
           ]
         } }
-        if (isHudModule.value && series.type === 'line' && Array.isArray(series.data)) {
+        if (usesHudChartAppearance.value && series.type === 'line' && Array.isArray(series.data)) {
           let lastIndex = series.data.length - 1
           while (lastIndex >= 0 && numericValue(series.data[lastIndex]) === null) lastIndex -= 1
           if (lastIndex >= 0) {
@@ -684,6 +765,7 @@ function presentChart(option) {
 
 function renderChart() {
   if (widgetDisposed) return
+  if (usesSharedMetricRing.value) { disposeChart(); return }
   if (!isTrend.value && type.value !== 'metrics') { disposeChart(); return }
   if (type.value === 'metrics' && content.value.layout === 'list') { disposeChart(); return }
   if (!chartRef.value) return
@@ -692,7 +774,7 @@ function renderChart() {
   lastChartSignature=signature
   if (!chart) chart = echarts.init(chartRef.value)
   if (isTrend.value) {
-    const timeField = content.value.timeField || 'time'
+    const timeField = content.value.categoryField || content.value.timeField || 'time'
     const valueField = content.value.valueField || 'value'
     const chartType = content.value.chartType || 'line'
     const sourceSeries = chartSeries.value
@@ -760,18 +842,17 @@ function renderChart() {
     })
     return
   }
-  const chartPath = content.value.chartPath || 'metrics.overall_oee'
-  const chartValue = Number(getWidgetValue(chartPath) || 0)
-  const missing = dataBinding.value.mode === 'dataset' && numericValue(getWidgetValue(chartPath)) === null
+  const chartValue = hudRingValue.value
+  const missing = chartValue === null
   presentChart({
     animation: !props.preview,
     series: [{
       type: 'pie', radius: ['64%', '82%'], silent: true,
-      label: { show: true, position: 'center', formatter: missing ? '—' : `${chartValue.toFixed(1)}%\n${content.value.chartLabel || 'OEE'}`, color: '#eaf6ff', fontFamily: HUD_FONT_TEXT, fontSize: 15, fontWeight: 600 },
+      label: { show: true, position: 'center', formatter: missing ? '—' : `${chartValue.toFixed(1)}%\n${content.value.chartLabel ?? 'OEE'}`, color: '#eaf6ff', fontFamily: HUD_FONT_TEXT, fontSize: 15, fontWeight: 600 },
       itemStyle: { borderColor: '#12202d', borderWidth: 2 },
       data: [
         { value: missing ? 0 : chartValue, itemStyle: { color: content.value.chartColor || '#4fd09a' } },
-        { value: Math.max(0, 100 - chartValue), itemStyle: { color: 'rgba(122,151,171,.2)' } }
+        { value: missing ? 100 : Math.max(0, 100 - chartValue), itemStyle: { color: 'rgba(122,151,171,.2)' } }
       ]
     }]
   })
@@ -847,7 +928,7 @@ onUnmounted(() => {
       { 'text-is-state': overlayMode && type === 'text' && textLines.length === 1 && ['正常', '运行中', '在线', '报警', '离线', '停止', '待机'].includes(textLines[0]) },
       { 'data-pending': dataPending },
       { 'hud-module-shell': isHudModule },
-      { 'hud-module-compact': isHudModule && (content.compact || isTrend && Number(widget.frame?.height || 300) <= 260) },
+      { 'hud-module-compact': isHudModule && (content.compact ?? (isTrend && Number(widget.frame?.height || 300) <= 260)) },
       { 'widget-surface-glass': surfacePresentation.skin === 'glass', 'widget-surface-inline': surfacePresentation.skin === 'inline', 'has-surface-backdrop': surfacePresentation.backdrop !== undefined },
       { 'has-authored-padding': widgetStyle.padding !== undefined, 'has-authored-radius': widgetStyle.borderRadius !== undefined, 'has-authored-border': !!(activeCondition?.borderColor || widgetStyle.borderColor), 'has-authored-shadow': !!widgetStyle.shadow || !!widgetStyle.boxShadow },
       animationClass,
@@ -862,7 +943,7 @@ onUnmounted(() => {
   >
     <div v-if="widgetTitle && content.showTitle !== false && !isHudModule && !['image', 'navigation', 'return_button'].includes(type)" class="widget-title"><i></i><span>{{ widgetTitle }}</span></div>
 
-    <div v-if="scopedDeviceBinding && activeDeviceName && content.showDeviceLabel!==false && !['text','image'].includes(type)" class="widget-device-heading"><span>{{activeDeviceName}}</span><small v-if="playback.total>1">{{playback.index+1}} / {{playback.total}}</small></div>
+    <div v-if="scopedDeviceBinding && activeDeviceName && content.showDeviceLabel!==false && !['text','image','container'].includes(type)" class="widget-device-heading"><span>{{activeDeviceName}}</span><small v-if="playback.total>1">{{playback.index+1}} / {{playback.total}}</small></div>
     <header v-if="isHudModule && content.showTitle !== false" class="hud-module-heading">
       <span><small v-if="hudCopy.eyebrow" class="hud-module-eyebrow">{{ hudCopy.eyebrow }}</small><strong v-if="widgetTitle">{{ widgetTitle }}</strong></span>
       <svg class="hud-module-icon" :class="`icon-${type}`" viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -896,12 +977,11 @@ onUnmounted(() => {
       </div>
     </Transition>
 
+    <div v-if="bindingUnavailable" class="widget-binding-notice" role="status" aria-live="polite">{{ bindingUnavailable }}</div>
+
     <template v-if="type === 'hud_kpi_panel'">
       <div class="hud-module-kpis" :class="{ 'without-ring': content.showRing === false }">
-        <div v-if="content.showRing !== false" class="hud-module-ring" :aria-label="`${hudCopy.chartLabel} ${hudRingValue === null ? '暂无数据' : hudNumber(hudRingValue) + '%'}`">
-          <svg viewBox="0 0 120 120" aria-hidden="true"><circle class="ring-halo" cx="60" cy="60" r="53"/><g class="ring-ticks"><line v-for="tick in 48" :key="tick" x1="60" :y1="tick % 6 === 1 ? 1.5 : 3.5" x2="60" :y2="tick % 6 === 1 ? 7.5 : 6.5" :class="{'ring-tick-major':tick % 6 === 1}" :transform="`rotate(${(tick - 1) * 7.5} 60 60)`"/></g><circle class="ring-track" cx="60" cy="60" r="44"/><circle class="ring-progress" cx="60" cy="60" r="44" pathLength="100" :stroke-dasharray="`${hudRingPercent} 100`" transform="rotate(-90 60 60)"/><circle class="ring-inner" cx="60" cy="60" r="36"/></svg>
-          <span class="hud-module-ring-copy"><strong>{{ hudNumber(hudRingValue) }}<small v-if="hudRingValue !== null">%</small></strong><em v-if="hudCopy.chartLabel">{{ hudCopy.chartLabel }}</em></span>
-        </div>
+        <HudMetricRing v-if="content.showRing !== false" :value="hudRingValue" :label="hudCopy.chartLabel" />
         <dl class="hud-module-stat-list"><div v-for="(item,index) in metricItems" :key="index"><dt><i :class="`stat-dot-${index % 3}`"></i>{{ item.label }}</dt><dd>{{ item.value }}</dd></div></dl>
       </div>
       <p v-if="hudCopy.note" class="hud-module-note">{{ hudCopy.note }}</p>
@@ -925,7 +1005,7 @@ onUnmounted(() => {
     </template>
 
     <template v-else-if="type === 'hud_chart_dock'">
-      <div class="hud-module-reading"><span>{{ hudCopy.statLabel }}<strong>{{ hudNumber(hudTrendReading.current) }}<small>{{ content.statUnit ?? dataBinding.unit }}</small></strong></span><span class="hud-trend-range"><small v-if="hudCopy.rangeLabel">{{ hudCopy.rangeLabel }}</small>{{ hudNumber(hudTrendReading.min) }} <i>/</i> {{ hudNumber(hudTrendReading.max) }}</span></div>
+      <div class="hud-module-reading"><span>{{ hudCopy.statLabel }}<strong>{{ hudNumber(hudTrendReading.current) }}<small>{{ content.statUnit ?? displayUnit }}</small></strong></span><span class="hud-trend-range"><small v-if="hudCopy.rangeLabel">{{ hudCopy.rangeLabel }}</small>{{ hudNumber(hudTrendReading.min) }} <i>/</i> {{ hudNumber(hudTrendReading.max) }}</span></div>
       <div class="hud-module-chart"><div ref="chartRef" class="widget-chart"></div><span v-if="!dataPending && !hasTrendData && hudCopy.emptyText" class="hud-chart-empty">{{ hudCopy.emptyText }}</span></div>
     </template>
 
@@ -933,8 +1013,8 @@ onUnmounted(() => {
       <div class="navigation-widget-preview">
         <div class="navigation-preview-status">
           <span class="navigation-preview-dot"></span>
-          <span>{{ content.projectLabel ?? '' }}</span>
-          <strong>{{ content.statusText ?? '' }}</strong>
+          <span>{{ navigationCopy.projectLabel }}</span>
+          <strong>{{ navigationCopy.statusText }}</strong>
         </div>
       </div>
     </template>
@@ -946,16 +1026,17 @@ onUnmounted(() => {
     </template>
 
     <template v-else-if="type === 'map_region_list'">
-      <MapRegionList :rows="mapRecords" :content="content" :title="mapData.title" @action="mapAction" />
+      <MapRegionList :rows="mapRecords" :content="content" :title="mapListTitle(content,mapData)" @action="mapAction" />
     </template>
 
     <template v-else-if="type === 'metrics'">
-      <div class="metrics-layout" :class="{ 'list-only': content.layout === 'list' }"><div v-if="content.layout !== 'list'" ref="chartRef" class="widget-chart"></div><div class="metric-list"><div v-for="item in metricItems" :key="item.label" class="metric-row"><span>{{ item.label }}</span><strong>{{ item.value }}</strong></div><p v-if="!metricItems.length" class="metric-empty">{{ content.emptyText || '暂无指标数据' }}</p></div></div>
+      <div class="metrics-layout" :class="{ 'list-only': content.layout === 'list' }"><HudMetricRing v-if="usesSharedMetricRing" :value="sharedMetricRingValue" :label="content.chartLabel ?? 'OEE'" /><div v-else-if="content.layout !== 'list'" ref="chartRef" class="widget-chart"></div><div class="metric-list"><div v-for="item in metricItems" :key="item.label" class="metric-row"><span>{{ item.label }}</span><strong>{{ item.value }}</strong></div><p v-if="!metricItems.length" class="metric-empty">{{ content.emptyText ?? '暂无指标数据' }}</p></div></div>
     </template>
 
     <template v-else-if="type === 'trend'">
-      <div ref="chartRef" class="widget-chart trend-chart"></div>
-      <div v-if="!dataPending && !hasTrendData" class="widget-data-empty">暂无趋势数据</div>
+      <HudMetricRing v-if="usesSharedMetricRing" :value="sharedMetricRingValue" :label="content.chartLabel || ''" />
+      <div v-else ref="chartRef" class="widget-chart trend-chart"></div>
+      <div v-if="!usesSharedMetricRing && !dataPending && !hasTrendData" class="widget-data-empty">{{ content.emptyText ?? '暂无趋势数据' }}</div>
     </template>
 
     <template v-else-if="type === 'alarm_list'">
@@ -1006,12 +1087,12 @@ onUnmounted(() => {
     </template>
 
     <template v-else-if="type === 'image'">
-      <img v-if="imageUrl" class="image-widget" :src="imageUrl" :alt="content.alt || widgetTitle" :style="{ objectFit: content.fit || 'contain' }" />
+      <img v-if="imageUrl" class="image-widget" :src="imageUrl" :alt="content.alt ?? widgetTitle" :style="{ objectFit: content.fit || 'contain' }" />
       <div v-else class="image-placeholder"><span>▧</span><strong>选择图片</strong><small>在右侧内容属性填写地址</small></div>
     </template>
 
     <template v-else-if="type === 'container'">
-      <div v-if="showContainerPlaceholder" class="container-placeholder"><span></span><small>{{ content.previewLabel || '容器区域' }}</small></div>
+      <div v-if="showContainerPlaceholder" class="container-placeholder"><span></span><small>{{ content.previewLabel ?? '容器区域' }}</small></div>
     </template>
 
     <template v-else>
@@ -1028,6 +1109,7 @@ onUnmounted(() => {
  .widget-shell{box-sizing:border-box;position:relative;width:100%;height:100%;min-width:0;min-height:0;display:flex;flex-direction:column;overflow:hidden;padding:14px;border:1px solid rgba(91,169,219,.24);border-radius:14px;color:#edf7ff;background:transparent;box-shadow:none;font-family:"SF Pro Text","Inter","Segoe UI Variable","Segoe UI","PingFang SC","Microsoft YaHei UI",sans-serif;font-synthesis:none;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;transition:border-color .18s,filter .18s,transform .18s,opacity .42s ease}.widget-shell.interactive{cursor:pointer}.widget-shell.quality-bad{filter:saturate(.72)}
  .widget-shell.data-pending> :not(.widget-title):not(.widget-data-placeholder){opacity:.18;filter:blur(1.2px);transition:opacity .42s ease,filter .42s ease}
  .widget-data-placeholder{position:absolute;z-index:4;inset:34px 12px 10px;display:grid;align-content:center;justify-items:center;gap:9px;pointer-events:none}
+ .widget-binding-notice{position:absolute;z-index:5;inset:auto 10px 24px;padding:5px 7px;border-radius:5px;background:rgba(28,34,48,.88);color:#efc17c;font-size:10px;line-height:1.5;text-align:center;overflow-wrap:anywhere;pointer-events:none}
  .widget-skeleton-line{width:62%;height:8px;border-radius:99px;background:linear-gradient(90deg,rgba(141,160,207,.12),rgba(190,202,238,.35),rgba(141,160,207,.12));background-size:220% 100%;animation:widgetSkeletonShimmer 1.8s ease-in-out infinite}.widget-skeleton-line.is-wide{width:82%;height:10px}.widget-skeleton-line.is-short{width:42%;height:6px}.widget-data-placeholder small{margin-top:2px;color:rgba(187,201,231,.62);font-size:10px;letter-spacing:.04em}.widget-data-empty{position:absolute;inset:50% 0 auto;transform:translateY(-50%);color:rgba(167,183,214,.72);font-size:11px;text-align:center;pointer-events:none}.widget-data-fade-enter-active,.widget-data-fade-leave-active{transition:opacity .38s ease,transform .38s ease}.widget-data-fade-enter-from,.widget-data-fade-leave-to{opacity:0;transform:translateY(3px)}
  .widget-shell.overlay-mode{background:transparent;border-color:transparent;box-shadow:none}
  .widget-kind-navigation,.widget-kind-return_button{overflow:visible;padding:0;border-color:transparent!important;border-radius:0;background:transparent!important;box-shadow:none!important}

@@ -9,6 +9,20 @@ import {deferred,settle} from './helpers.mjs'
 const devices=[{id:'a',name:'A',lineId:'l',workshopId:'w'},{id:'b',name:'B',lineId:'l',workshopId:'w'},{id:'foreign',name:'C',lineId:'other',workshopId:'other'}]
 const binding={deviceScope:'rotation',rotationDeviceIds:['a','b'],rotationIntervalMs:2000,refreshMs:1000}
 
+test('explicit list readers require exact response device identity and reject untagged legacy results',async()=>{
+ const widget={id:'explicit-reader',data:{mode:'dataset',bindingVersion:2,deviceScope:'rotation',rotationIntervalMs:2000,refreshMs:1000,deviceBindings:[{deviceId:'a',binding:{mode:'dataset',datasetId:'set',datasetField:'value'}},{deviceId:'b',binding:{mode:'dataset',datasetId:'set',datasetField:'reading'}}]}}
+ let response={quality:'good',value:999,deviceId:''};const values={}
+ const reader=createWidgetReadScheduler({context:()=>({}),parameters:()=>({}),devices:()=>devices,widgets:()=>[widget],
+  read:async()=>({values:{'explicit-reader':response}}),put:(id,record)=>values[id]=record,remove:id=>delete values[id]})
+ try{
+  await reader.refresh(false,0);assert.equal(values['explicit-reader'].value,null);assert.equal(values['explicit-reader'].quality,'bad')
+  response={quality:'good',value:888};await reader.refresh(true,0);assert.equal(values['explicit-reader'].value,null)
+  response={quality:'good',value:111,deviceId:'a'};await reader.refresh(true,0);assert.equal(values['explicit-reader'].value,111)
+  response={quality:'good',value:111,deviceId:'a'};await reader.refresh(false,2000);assert.equal(values['explicit-reader'].value,null)
+  response={quality:'good',value:222,deviceId:'b'};await reader.refresh(true,2000);assert.equal(values['explicit-reader'].value,222)
+ }finally{reader.dispose()}
+})
+
 test('paused playback timestamps can be historical but cannot be unsafe, negative or too far in the future',()=>{
  const now=180000
  for(const at of [0,2000,now-120000,now,now+60000])assert.equal(isPlaybackTimestamp(at,now),true)

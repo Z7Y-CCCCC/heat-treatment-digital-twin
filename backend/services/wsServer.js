@@ -34,6 +34,21 @@ function projectedPoint(value) {
     return { x: valid ? Math.max(0, Math.min(1, value.x)) : 0, y: valid ? Math.max(0, Math.min(1, value.y)) : 0, visible: !!valid && value.visible === true };
 }
 
+// Entry history is owned by the native session. Relay only its small public
+// context, never camera state, and never carry it into another scene or scope.
+function deviceReturnContext(source, mode) {
+    const value = source.returnOrigin;
+    if (mode !== 'device' || source.sceneReady === false || !value || typeof value !== 'object' || Array.isArray(value)) return null;
+    const origin = {
+        factoryId: shortText(value.factoryId, 128), sceneId: shortText(value.sceneId, 128),
+        viewId: shortText(value.viewId, 128), viewMode: shortText(value.viewMode, 32),
+        viewName: shortText(value.viewName, 180), workshopId: shortText(value.workshopId, 128), lineId: shortText(value.lineId, 128)
+    };
+    if (!origin.factoryId || !origin.sceneId || !origin.viewId || !['factory', 'workshop', 'line'].includes(origin.viewMode)
+        || origin.factoryId !== shortText(source.factoryId, 128) || origin.sceneId !== shortText(source.sceneId, 128)) return null;
+    return origin;
+}
+
 function inspectionContext(source, mode) {
     const active = mode === 'device' && source.inspectionEnabled === true;
     return {
@@ -172,6 +187,7 @@ class WsServer {
                             workshopId: shortText(source.workshopId, 128),
                             lineId: shortText(source.lineId, 128),
                             deviceId: shortText(source.deviceId, 128),
+                            returnOrigin: deviceReturnContext(source, mode),
                             inspectionStage: ['solid', 'xray', 'exploded', 'part'].includes(shortText(source.inspectionStage, 32))
                                 ? shortText(source.inspectionStage, 32)
                                 : '',
@@ -269,12 +285,15 @@ class WsServer {
     _broadcastDeviceData(deviceDataArray) {
         if (this.clients.size === 0 || !Array.isArray(deviceDataArray) || !deviceDataArray.length) return;
 
+        const devices = this.motionInputResolver?.decorateSemantics
+            ? this.motionInputResolver.decorateSemantics(deviceDataArray) : deviceDataArray;
+
         const message = {
             type: 'realtime_frame',
             payload: {
                 seq: ++this.sequence,
                 timestamp: Date.now(),
-                devices: deviceDataArray
+                devices
             }
         };
 
@@ -298,7 +317,7 @@ class WsServer {
      * 这样 Unity 原生客户端无需轮询或手动按 F5。
      */
     broadcast(type, payload = {}) {
-        if (['configuration_changed','device_configuration_changed','model_metadata_changed'].includes(type)) this.motionInputResolver?.invalidate();
+        if (['configuration_changed','device_configuration_changed','model_metadata_changed'].includes(type)) this.motionInputResolver?.invalidate(type, payload);
         if (this.clients.size === 0) return 0;
 
         const message = { type, payload };
@@ -313,7 +332,7 @@ class WsServer {
     }
 
     broadcastToRole(type, payload = {}, role = '') {
-        if (type === 'model_metadata_changed') this.motionInputResolver?.invalidate();
+        if (type === 'model_metadata_changed') this.motionInputResolver?.invalidate(type, payload);
         if (this.clients.size === 0) return 0;
         const normalizedRole = String(role || '').trim().toLowerCase();
         const message = { type, payload };

@@ -21,8 +21,8 @@ export function widgetViewVisibility(widget, view) {
   return { visible: true, code: 'visible', reason: '' }
 }
 
-// Preserve the runtime's automatic return-button hiding policy. The editor
-// reports this state; it must not turn an automatic hide into a manual edit.
+// Navigation availability is separate from authored component visibility.
+// This policy is used by navigation shortcuts, not by the display checkbox.
 export function returnNavigationVisibility(view = {}, context = {}, defaultViewId = 'factory_overview') {
   const targetType = String(view.targetType || '').toLowerCase()
   const mode = String(context.viewMode || view.mode || targetType || 'factory').toLowerCase()
@@ -40,12 +40,11 @@ export function returnNavigationVisibility(view = {}, context = {}, defaultViewI
   return target ? yes : { visible: false, code: 'no-target', reason: '选择目标设备或区域后显示' }
 }
 
-export function widgetPresentationState(widget, { view, context = {}, policy, defaultViewId, ...runtime } = {}) {
+export function widgetPresentationState(widget, { view, context = {}, policy, defaultViewId: _defaultViewId, ...runtime } = {}) {
   const rules = widgetRuntimeVisibility(widget, { ...runtime, context })
   if (!rules.visible) return rules
   if (!view || runtimeViewHidden(view) || !globalViewEnabled(policy, view.id)) return { visible: false, code: 'view-disabled', reason: '当前视角已关闭或隐藏' }
   const membership = widgetViewVisibility(widget, view)
   if (!membership.visible) return membership
-  if ((widget.type || widget.widget_type) === 'return_button' && !MAP_SURFACE_VIEW_IDS.has(view.id)) return returnNavigationVisibility(view, context, defaultViewId)
   return rules
 }

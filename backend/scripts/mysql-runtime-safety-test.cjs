@@ -22,7 +22,7 @@ function pendingCheckouts(pool, count) {
     return checkouts;
 }
 
-async function createMysqlFixture({ handshake = true, connectTimeout = 1000 } = {}) {
+async function createMysqlFixture({ handshake = true, connectTimeout = 1000, onQuery = () => {} } = {}) {
     const mysql = require('mysql2');
     const server = mysql.createServer();
     const serverConnections = new Set(), serverSockets = new Set(), clientSockets = new Set();
@@ -43,6 +43,7 @@ async function createMysqlFixture({ handshake = true, connectTimeout = 1000 } = 
         connection.serverHandshake({ protocolVersion: 10, serverVersion: '5.7.0-isolated', connectionId: 1,
             statusFlags: 2, characterSet: 45, capabilityFlags: 0x00088200 });
         connection.on('query', query => {
+            onQuery(query);
             if (query === 'SELECT healthy') connection.writeOk();
             // All other commands and prepares deliberately receive no reply.
         });
@@ -60,18 +61,28 @@ async function createMysqlFixture({ handshake = true, connectTimeout = 1000 } = 
             if (closing) socket.destroy();
             return socket;
         } }).promise();
-    const destroyOwned = () => {
+    const destroyOwned = reason => {
         // mysql2 destroy() ends the stream; force destruction also closes a
         // stalled handshake. Server Connection.destroy() clears its timeout.
         const clients = [];
         for (let index = 0; index < pool.pool._allConnections.length; index += 1) clients.push(pool.pool._allConnections.get(index));
-        for (const connection of [...clients, ...serverConnections]) {
+        for (const connection of clients) {
+            // pool.end() may queue Quit behind a deliberately unanswered
+            // command. A bare Connection.destroy() sets _closing and causes
+            // mysql2's socket-close handler to skip every pending callback.
+            // Deliver an owned transport error first: mysql2 rejects both the
+            // live command and queued Quit instead of abandoning their promises.
+            if (reason) connection.stream.destroy(reason);
+            try { connection.destroy(); } finally { connection.stream.destroy(); }
+        }
+        for (const connection of serverConnections) {
             try { connection.destroy(); } finally { connection.stream.destroy(); }
         }
         for (const socket of [...serverSockets, ...clientSockets]) socket.destroy();
     };
     async function close(endPool = () => pool.end()) {
         closing = true;
+        const cancellation = Object.assign(new Error('isolated MySQL fixture closed'), { code: 'MYSQL_FIXTURE_CLOSED' });
         const closedSockets = [...new Set([...serverSockets, ...clientSockets])].map(socket =>
             socket.closed ? Promise.resolve() : new Promise(resolve => socket.once('close', resolve)));
         // Initiate both closes before awaiting either. A failed pool end must
@@ -80,7 +91,7 @@ async function createMysqlFixture({ handshake = true, connectTimeout = 1000 } = 
         let stoppingPool;
         try { stoppingPool = Promise.resolve(endPool()); } catch (error) { stoppingPool = Promise.reject(error); }
         const completed = Promise.allSettled([stoppingServer, stoppingPool, ...closedSockets]);
-        destroyOwned();
+        destroyOwned(cancellation);
         let timer;
         try {
             const result = await Promise.race([completed, new Promise((_, reject) => {
@@ -91,7 +102,10 @@ async function createMysqlFixture({ handshake = true, connectTimeout = 1000 } = 
             assert.equal(serverSockets.size, 0, 'fixture must close every accepted server socket');
             assert.equal(clientSockets.size, 0, 'fixture must close every client socket, including failed checkouts');
             assert.equal(serverConnections.size, 0, 'fixture must retire server-side handshake timers');
-            const rejected = result.find(row => row.status === 'rejected');
+            // This exact locally-created cancellation is a successful teardown
+            // of a pending command, not an arbitrary failed pool close. Keep
+            // awaiting pool.end(), and propagate every other failure unchanged.
+            const rejected = result.find(row => row.status === 'rejected' && row.reason !== cancellation);
             if (rejected) throw rejected.reason;
         } finally { clearTimeout(timer); destroyOwned(); }
     }
@@ -211,10 +225,55 @@ async function main() {
         } finally {
             await assert.rejects(fixture.close(() => {
                 fixture.pool.end().catch(() => {});
-                throw new Error('injected fixture pool end failure');
+                // Sharing the cancellation's code is not enough to hide an
+                // unrelated failure: close() must compare the owned object.
+                throw Object.assign(new Error('injected fixture pool end failure'), { code: 'MYSQL_FIXTURE_CLOSED' });
             }), /injected fixture pool end failure/);
         }
         assert.equal(fixture.serverSockets.size + fixture.clientSockets.size + fixture.serverConnections.size, 0);
+    });
+    await check('closing an executing black-hole query settles its command, queued checkouts and pool end', async () => {
+        const arrived = deferred();
+        const fixture = await createMysqlFixture({ onQuery: query => { if (query === 'SELECT black_hole') arrived.resolve(); } });
+        const unhandled = [], listener = error => unhandled.push(error);
+        process.on('unhandledRejection', listener);
+        let closingStarted = false, arrivalTimer;
+        try {
+            const connection = await fixture.pool.getConnection();
+            const query = connection.query('SELECT black_hole');
+            query.catch(() => {});
+            const waiting = pendingCheckouts(fixture.pool, 2);
+            await Promise.race([arrived.promise, new Promise((_, reject) => {
+                arrivalTimer = setTimeout(() => reject(new Error('fixture did not receive the black-hole query')), 1000);
+            })]);
+            clearTimeout(arrivalTimer);
+            assert.equal(connection.connection._command.constructor.name, 'Query', 'query must still be executing before teardown');
+            let endState = 'pending', endError;
+            closingStarted = true;
+            await fixture.close(() => {
+                const ending = fixture.pool.end();
+                ending.then(() => { endState = 'fulfilled'; }, error => { endState = 'rejected'; endError = error; });
+                return ending;
+            });
+            assert.equal(endState, 'rejected', 'pool end must settle its queued Quit callback, not be excluded from cleanup');
+            assert.equal(endError.code, 'MYSQL_FIXTURE_CLOSED');
+            await assert.rejects(query, error => error === endError, 'the executing query must receive the exact owned cancellation');
+            for (const checkout of waiting) await assert.rejects(checkout, /Pool is closed/);
+            assert.equal(connection.connection._command, null, 'teardown must retire the active command');
+            assert.equal(connection.connection._commands.length, 0, 'teardown must drain queued commands including Quit');
+            assert.equal(fixture.pool.pool._closed, true);
+            assert.equal(fixture.pool.pool._connectionQueue.length, 0);
+            assert.equal(fixture.serverSockets.size, 0);
+            assert.equal(fixture.clientSockets.size, 0);
+            assert.equal(fixture.serverConnections.size, 0);
+            assert.equal(connection.connection.stream.closed, true);
+            await nextTurn();
+            assert.equal(unhandled.length, 0);
+        } finally {
+            clearTimeout(arrivalTimer);
+            if (!closingStarted) await fixture.close();
+            process.off('unhandledRejection', listener);
+        }
     });
     await check('early fixture failure consumes queued checkout rejections and preserves the original error', async () => {
         const fixture = await createMysqlFixture();

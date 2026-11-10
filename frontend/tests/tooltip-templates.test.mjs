@@ -9,6 +9,29 @@ import { templateFieldBindings, applyTemplateFieldBindings } from '../src/runtim
 const require = createRequire(import.meta.url)
 const { normalizeDocument, validateDocument, documentToLegacyWidgets } = require('../../backend/utils/dashboardDocument.js')
 
+test('explicit inspector source choices survive preset restoration, frontend/backend reopening and template export/import', () => {
+  for (const data of [{mode:'static'}, {mode:'runtime',path:'hover.device.workshopName'}, {mode:'dataset',datasetId:'authored-table',datasetField:'caption'}]) {
+    const preset = createTooltipTemplate('device'), field = preset.widgets.find(widget => widget.id.endsWith('_status_value'))
+    field.content = { ...field.content, dataSourceConfigured:true, text:data.mode==='static'?'用户固定状态':'{value}' }
+    field.data = { ...data, deviceId:'',deviceScope:'current',readOnly:true }
+    // Leave the old provenance deliberately present: explicit choices must
+    // win over an original preset ID and its previously saved source.
+    assert.equal(field.dynamicBinding.path,'hover.device.status')
+    const doc = normalizeDashboardDocument({tooltipTemplates:{templates:[preset],defaults:{device:preset.id}}})
+    for (const version of [doc,normalizeDashboardDocument(normalizeDocument(doc)),importDashboardTemplate(exportDashboardTemplate(doc),doc)]) {
+      const actual = version.tooltipTemplates.templates.find(template=>template.id===preset.id).widgets.find(widget=>widget.id===field.id)
+      assert.equal(actual.content.dataSourceConfigured,true)
+      assert.equal(actual.data.mode,data.mode)
+      if(data.path)assert.equal(actual.data.path,data.path)
+      if(data.datasetId)assert.equal(actual.data.datasetId,data.datasetId)
+      assert.equal(actual.dynamicField,undefined)
+      assert.equal(actual.content.text,data.mode==='static'?'用户固定状态':'{value}')
+      assert.equal(actual.data.deviceId,'')
+      if(data.mode==='static')assert.equal(actual.dynamicBinding,undefined)
+    }
+  }
+})
+
 test('tooltips are two local basic-widget templates, never main canvas/Unity widgets', () => {
   const doc = normalizeDashboardDocument()
   assert.equal(doc.tooltipTemplates.templates.length, 2)

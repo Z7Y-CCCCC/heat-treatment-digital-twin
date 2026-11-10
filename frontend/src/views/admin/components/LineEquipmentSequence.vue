@@ -1,9 +1,11 @@
 <script setup>
 import {computed,nextTick,ref,watch,onUnmounted,onActivated,onDeactivated} from 'vue'
 import {LineSimulationScene} from '../../../three/LineSimulationScene.js'
-import {simulationLineMembers,simulationCapabilities,buildLineSimulation,sampleLineSimulation} from '../../../three/lineSimulation.js'
+import {simulationLineMembers,simulationCapabilities,buildLineSimulation,sampleLineSimulation,parseSimulationConfig} from '../../../three/lineSimulation.js'
+import {assertLineMovementUnits} from '../../../../../shared/lineRailSpacing.mjs'
 const props=defineProps({models:{type:Array,default:()=>[]},lines:{type:Array,default:()=>[]},devices:{type:Array,default:()=>[]},workshops:{type:Array,default:()=>[]}})
 const lineId=ref(''),selectedIds=ref([]),query=ref(''),equipmentPage=ref(0),stepPage=ref(0),panel=ref('setup'),arrangement=ref('scheme'),includeProcess=ref(true)
+const transferTolerances=ref({heightToleranceMeters:.01,lateralToleranceMeters:.01,angleToleranceDegrees:2})
 const viewport=ref(null),ready=ref(false),busy=ref(false),error=ref(''),elapsed=ref(0),playing=ref(false),speed=ref(1),cutaway=ref(true)
 const navigationMode=ref('rotate'),viewDeviceId=ref('')
 const members=computed(()=>simulationLineMembers(props.devices,lineId.value))
@@ -11,7 +13,30 @@ const filtered=computed(()=>members.value.filter(d=>(d.name+' '+d.id).toLowerCas
 const equipmentPages=computed(()=>Math.max(1,Math.ceil(filtered.value.length/6)))
 const visibleMembers=computed(()=>filtered.value.slice(equipmentPage.value*6,equipmentPage.value*6+6))
 const selected=computed(()=>selectedIds.value.map(id=>members.value.find(d=>d.id===id)).filter(Boolean))
-const draft=computed(()=>{try{return {plan:buildLineSimulation(selected.value,props.models,{process:includeProcess.value}),error:''}}catch(e){return {plan:null,error:e.message}}})
+const savedTransferLink=computed(()=>{
+    const carts=selected.value.filter(device=>simulationCapabilities(device,props.models).cart)
+    if(carts.length!==1)return null
+    const link=parseSimulationConfig(carts[0].instance_config).animationBindings?.transferLink
+    return link?.enabled===true?link:null
+})
+const effectiveTransferTolerances=computed(()=>savedTransferLink.value||transferTolerances.value)
+function changePreviewTolerance(field,value){if(!savedTransferLink.value)transferTolerances.value={...transferTolerances.value,[field]:Number(value)}}
+const draft=computed(()=>{
+    try{
+        const plan=buildLineSimulation(selected.value,props.models,{process:includeProcess.value})
+        if(arrangement.value==='site'){
+            const line=props.lines.find(row=>String(row.id)===String(lineId.value)),layout=parseSimulationConfig(line?.layout||line?.layout_json)
+            // Reading an uncalibrated legacy line does not migrate its source
+            // ratio. Only an explicit line-local calibration can claim parity;
+            // all authoring/save paths independently require the strict contract.
+            if('sceneUnitsPerMeter' in layout&&Object.prototype.hasOwnProperty.call(layout,'sceneUnitsPerMeter'))for(const row of plan.rows){
+                const config=parseSimulationConfig(row.instance_config),movement=parseSimulationConfig(config.movement)
+                if(movement.enabled===true||config.animationBindings?.transferLink?.enabled===true)assertLineMovementUnits(config.movement,layout,row.name||row.id)
+            }
+        }
+        return {plan,error:''}
+    }catch(e){return {plan:null,error:e.message}}
+})
 const plan=ref(null)
 const frame=computed(()=>plan.value?sampleLineSimulation(plan.value,elapsed.value):null)
 const stepPages=computed(()=>Math.max(1,Math.ceil((plan.value?.steps.length||0)/6)))
@@ -24,7 +49,7 @@ watch(()=>props.lines.map(l=>String(l.id)),ids=>{if(!ids.includes(lineId.value))
 watch(lineId,()=>{selectedIds.value=[];query.value='';equipmentPage.value=0;panel.value='setup';invalidate()})
 watch(query,()=>{equipmentPage.value=0})
 watch(equipmentPages,n=>{equipmentPage.value=Math.min(equipmentPage.value,n-1)})
-watch(()=>JSON.stringify({selected:selected.value.map(d=>({id:d.id,name:d.name,model:d.model_type,file:d.model_file,x:d.pos_x,y:d.pos_y,z:d.pos_z,rotation:d.rotation_y,scale:d.scale,config:d.instance_config})),models:props.models,lines:props.lines.map(l=>({id:l.id,workshop:l.workshop_id,layout:l.layout||l.layout_json})),workshops:props.workshops.map(w=>({id:w.id,layout:w.layout||w.layout_json})),arrangement:arrangement.value,process:includeProcess.value}),invalidate)
+watch(()=>JSON.stringify({selected:selected.value.map(d=>({id:d.id,name:d.name,model:d.model_type,file:d.model_file,x:d.pos_x,y:d.pos_y,z:d.pos_z,rotation:d.rotation_y,scale:d.scale,config:d.instance_config})),models:props.models,lines:props.lines.map(l=>({id:l.id,workshop:l.workshop_id,layout:l.layout||l.layout_json})),workshops:props.workshops.map(w=>({id:w.id,layout:w.layout||w.layout_json})),arrangement:arrangement.value,process:includeProcess.value,tolerances:transferTolerances.value}),invalidate)
 watch(()=>members.value.map(d=>d.id),ids=>{selectedIds.value=selectedIds.value.filter(id=>ids.includes(id))})
 function toggle(id){selectedIds.value=selectedIds.value.includes(id)?selectedIds.value.filter(v=>v!==id):[...selectedIds.value,id]}
 function move(id,direction){const index=selectedIds.value.indexOf(id),other=index+direction;if(index<0||other<0||other>=selectedIds.value.length)return;const next=[...selectedIds.value];[next[index],next[other]]=[next[other],next[index]];selectedIds.value=next}
@@ -35,7 +60,7 @@ async function prepare(play=false){
     let scene
     try{
         scene=new LineSimulationScene(viewport.value,delta=>{if(!ready.value||current!==version)return;if(playing.value){elapsed.value=Math.min(plan.value.total,elapsed.value+delta*speed.value);if(elapsed.value>=plan.value.total)playing.value=false}scene.applyFrame(frame.value)})
-        runtime=scene;scene.setNavigationMode(navigationMode.value);await scene.loadPlan(nextPlan,props.lines,props.workshops,arrangement.value)
+        runtime=scene;scene.setNavigationMode(navigationMode.value);await scene.loadPlan(nextPlan,props.lines,props.workshops,arrangement.value,{transferTolerances:effectiveTransferTolerances.value})
         if(disposed||current!==version){scene.dispose();return}
         plan.value=nextPlan;scene.setCutaway(cutaway.value);scene.applyFrame(sampleLineSimulation(nextPlan,0));ready.value=true;busy.value=false;playing.value=play;stepPage.value=0;panel.value='steps'
     }catch(e){scene?.dispose();if(current===version&&!disposed){error.value=`联动预览加载失败：${e.message||e}`;busy.value=false;runtime=null}}
@@ -65,8 +90,13 @@ onUnmounted(()=>{disposed=true;invalidate()});onDeactivated(()=>{playing.value=f
     </article></div>
     <div class="pagination"><span>{{ filtered.length }} 台 · {{ equipmentPage+1 }}/{{ equipmentPages }} 页</span><button type="button" :disabled="equipmentPage===0" @click="equipmentPage--">上一页</button><button type="button" :disabled="equipmentPage>=equipmentPages-1" @click="equipmentPage++">下一页</button></div>
     <label class="field">预览排布<select v-model="arrangement" aria-label="联动预览排布"><option value="scheme">按模拟顺序排列</option><option value="site">沿用现场设备位置</option></select></label>
+    <div v-if="arrangement==='site'" class="site-transfer-settings">
+     <label class="field">{{savedTransferLink?'已保存联动':'模拟预览'}}高度公差（米）<input :value="effectiveTransferTolerances.heightToleranceMeters" :disabled="!!savedTransferLink" @input="changePreviewTolerance('heightToleranceMeters',$event.target.value)" type="number" min="0" max="1" step=".001" aria-label="模拟预览高度公差（米）"></label>
+     <label class="field">{{savedTransferLink?'已保存联动':'模拟预览'}}横向公差（米）<input :value="effectiveTransferTolerances.lateralToleranceMeters" :disabled="!!savedTransferLink" @input="changePreviewTolerance('lateralToleranceMeters',$event.target.value)" type="number" min="0" max="1" step=".001" aria-label="模拟预览横向公差（米）"></label>
+     <label class="field">{{savedTransferLink?'已保存联动':'模拟预览'}}角度公差（度）<input :value="effectiveTransferTolerances.angleToleranceDegrees" :disabled="!!savedTransferLink" @input="changePreviewTolerance('angleToleranceDegrees',$event.target.value)" type="number" min="0" max="30" step=".1" aria-label="模拟预览角度公差（度）"></label>
+    </div>
     <label class="check"><input v-model="includeProcess" type="checkbox">送料后继续执行设备内置部件动作</label>
-    <p class="hint">{{ arrangement==='scheme'?'仅排列本次预览，不改动现场布局。':'沿用设备坐标、朝向和缩放；料车路线为示意，不进行避障规划。' }}</p>
+    <p class="hint">{{ arrangement==='scheme'?'仅排列本次预览，不改动现场布局。':'使用已配置的轨道、进出料口和实际模型行程；已启用实时物料联动时使用保存的联动公差。工步仍是模拟，不读写 PLC，也不作避障规划。' }}</p>
     <p v-if="draft.error&&selected.length" class="problem" role="alert">{{ draft.error }}</p>
    </template>
    <template v-else>

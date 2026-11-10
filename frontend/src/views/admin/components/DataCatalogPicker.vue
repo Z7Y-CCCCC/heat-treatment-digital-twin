@@ -3,22 +3,31 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { adminApi } from '../../../config/factoryConfig.js'
 import { catalogMatchesBinding, filterCatalogItems, catalogPreview, DATA_CATALOG_SOURCE_LABELS } from '../../../runtime/dataCatalog.js'
 
-const props = defineProps({ binding: Object, factoryId: String, deviceId: String, tooltip: Boolean, kind: { type: String, default: 'device' }, widgetType: String, mapContext: Boolean, disabled: Boolean, immediate: Boolean })
-const emit = defineEmits(['select'])
+const props = defineProps({ binding: Object, factoryId: String, deviceId: String, deviceOnly:Boolean, globalOnly:Boolean, values:Object, points:Array, tooltip: Boolean, kind: { type: String, default: 'device' }, widgetType: String, mapContext: Boolean, disabled: Boolean, immediate: Boolean })
+const emit = defineEmits(['select','catalog-loaded'])
 const catalog = ref({ categories: [], tables: [], items: [] }), loading = ref(false), error = ref('')
 const categoryId = ref(''), tableId = ref(''), chosenId = ref('')
 let sequence = 0, disposed = false, loadedScope = ''
 const options = computed(() => ({ tooltip: props.tooltip, kind: props.kind, widgetType: props.widgetType, mapContext: props.mapContext }))
-const items = computed(() => filterCatalogItems(catalog.value.items, { ...options.value, categoryId: categoryId.value, tableId: tableId.value }))
-const tables = computed(() => catalog.value.tables.filter(table => catalog.value.items.some(item => item.tableId === table.id && filterCatalogItems([item], { ...options.value, categoryId: categoryId.value }).length)))
+const scopeItems = computed(()=>catalog.value.items.filter(item=>(!props.deviceOnly || !item.deviceId || String(item.deviceId)===String(props.deviceId)) && (!props.globalOnly || item.binding?.deviceScope==='global')))
+const items = computed(() => filterCatalogItems(scopeItems.value, { ...options.value, categoryId: categoryId.value, tableId: tableId.value }))
+const tables = computed(() => catalog.value.tables.filter(table => scopeItems.value.some(item => item.tableId === table.id && filterCatalogItems([item], { ...options.value, categoryId: categoryId.value }).length)))
 const chosen = computed(() => items.value.find(item => item.id === chosenId.value))
-const current = computed(() => catalog.value.items.find(item => catalogMatchesBinding(item, props.binding, options.value)))
+const current = computed(() => scopeItems.value.find(item => catalogMatchesBinding(item, props.binding, options.value)))
+const selectedPoint=computed(()=>props.points?.find(point=>String(point.id)===String(chosen.value?.binding?.pointId || props.binding?.pointId || '')))
+const reading=computed(()=>props.values?.[String(selectedPoint.value?.id || '')] || props.values?.[`${props.deviceId}:${selectedPoint.value?.id}`])
+function syncSelection(){
+  const item=current.value
+  if(!item){categoryId.value='';tableId.value='';chosenId.value='';return}
+  categoryId.value=item.categoryId || '';tableId.value=item.tableId || '';chosenId.value=item.id
+}
+function selectChoice(id){if(props.disabled)return;chosenId.value=id;if(props.immediate){if(id)choose();else emit('select',null)}}
 async function load() {
   const request = ++sequence; loading.value = true; error.value = ''
   const scope = `${props.factoryId || ''}\n${props.deviceId || ''}`
   if (loadedScope !== scope) { catalog.value = { categories: [], tables: [], items: [] }; chosenId.value = ''; loadedScope = scope }
   try {
-    const response = await adminApi.getDataCenterCatalog({ ...(props.tooltip ? { deviceId: props.deviceId || '' } : { previewDeviceId: props.deviceId || '' }), factoryId: props.factoryId || '' })
+    const response = await adminApi.getDataCenterCatalog({ ...(props.tooltip || props.deviceOnly ? { deviceId: props.deviceId || '' } : { previewDeviceId: props.deviceId || '' }), factoryId: props.factoryId || '' })
     if (disposed || request !== sequence) return
     if (response.error || response.success === false) throw new Error(response.error || '数据目录读取失败')
     const sourceTables = response.tables || []
@@ -26,6 +35,8 @@ async function load() {
     catalog.value = { categories: response.categories || [], tables: sourceTables, items: sourceItems }
     if (!catalog.value.categories.some(item => item.id === categoryId.value)) categoryId.value = ''
     if (!tables.value.some(item => item.id === tableId.value)) tableId.value = ''
+    syncSelection()
+    emit('catalog-loaded',catalog.value)
   } catch (failure) { if (!disposed && request === sequence) { error.value = failure.message || '数据目录读取失败'; catalog.value = { categories: [], tables: [], items: [] }; chosenId.value = '' } }
   finally { if (!disposed && request === sequence) loading.value = false }
 }
@@ -37,20 +48,21 @@ watch(items, () => { if (chosenId.value && !items.value.some(item => item.id ===
 watch([categoryId, tableId], () => { if (!items.value.some(item => item.id === chosenId.value)) chosenId.value = '' })
 watch(categoryId, () => { if (!tables.value.some(item => item.id === tableId.value)) tableId.value = '' })
 watch(() => [props.factoryId, props.deviceId], load)
-watch(chosenId, () => { if (props.immediate) { if (chosenId.value) choose(); else emit('select', null) } })
+watch(()=>JSON.stringify(props.binding),syncSelection)
 onMounted(() => { load(); window.addEventListener('digital-twin-data-center-changed', load); window.addEventListener('digital-twin-data-sets-changed', load) })
 onBeforeUnmount(() => { disposed = true; sequence++; window.removeEventListener('digital-twin-data-center-changed', load); window.removeEventListener('digital-twin-data-sets-changed', load) })
 </script>
 <template>
   <section class="data-catalog-picker" aria-label="数据中心选取数据">
     <header><strong>选择数据</strong><button type="button" :disabled="loading" aria-label="刷新数据中心目录" @click="load"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 10a8 8 0 1 0-1 7M20 4v6h-6"/></svg></button></header>
-    <p>在数据中心整理一次，这里直接选取。{{ tooltip ? '数据随当前悬停对象变化。' : '原有绑定会保留，选取新数据后才替换。' }}</p>
+    <p>{{ tooltip ? '数据随当前悬停对象变化。' : '从已有数据表选择；修改这一项不会清空其他设备、顺序或轮播周期。' }}</p>
     <small v-if="current" class="catalog-current">已绑定：{{ current.tableName || catalog.tables.find(table => table.id === current.tableId)?.name }} / {{ current.label }}</small>
     <fieldset :disabled="disabled || loading">
       <label>用途分类<select v-model="categoryId" aria-label="数据用途分类"><option value="">全部分类</option><option v-for="category in catalog.categories" :key="category.id" :value="category.id">{{ category.name }}</option></select></label>
       <label>数据表<select v-model="tableId" aria-label="选择数据表"><option value="">全部数据表</option><option v-for="table in tables" :key="table.id" :value="table.id">{{ table.name }}</option></select></label>
-      <label>具体数据<select v-model="chosenId" aria-label="选择具体数据"><option value="">{{ loading ? '正在读取数据目录…' : '请选择数据项' }}</option><option v-for="item in items" :key="item.id" :value="item.id">{{ item.label }}{{ item.unit ? ` · ${item.unit}` : '' }}{{ item.deviceName ? ` · ${item.deviceName}` : '' }}{{ !tableId && item.tableName ? ` · ${item.tableName}` : '' }}</option></select></label>
+      <label>具体数据<select :value="chosenId" aria-label="选择具体数据" @change="selectChoice($event.target.value)"><option value="">{{ loading ? '正在读取数据目录…' : '请选择数据项' }}</option><option v-for="item in items" :key="item.id" :value="item.id">{{ item.label }}{{ item.unit ? ` · ${item.unit}` : '' }}{{ item.deviceName ? ` · ${item.deviceName}` : '' }}{{ !tableId && item.tableName ? ` · ${item.tableName}` : '' }}</option></select></label>
       <div v-if="chosen" class="catalog-detail"><strong>{{ chosen.label }}</strong><span>{{ DATA_CATALOG_SOURCE_LABELS[chosen.sourceType] || '数据表' }} · {{ tooltip ? chosen.tooltipBinding?.deviceScope === 'global' ? '工厂范围 · 不随悬停对象变化' : `当前悬停${kind === 'part' ? '部件／所属设备' : '设备'}` : chosen.deviceName || ({ factory: '工厂范围', device: '设备范围', part: '部件范围' })[chosen.objectScope] || '当前对象' }}</span><span>预览：{{ catalogPreview(chosen) }} <small>{{ chosen.quality === 'good' ? '读取正常' : '以实际运行读取为准' }}</small></span></div>
+      <div v-if="selectedPoint" class="catalog-detail"><span>PLC 地址：{{selectedPoint.plc_tag || '未配置'}}</span><span>当前读数：{{reading?.quality==='good' ? reading.value : '—'}} {{selectedPoint.unit}}</span><span>质量：{{({good:'正常',stale:'过期',bad:'异常'})[reading?.quality] || '尚未读取'}}</span><span>采样时间：{{reading?.lastReadAt ? new Date(reading.lastReadAt).toLocaleString('zh-CN',{hour12:false}) : '—'}}</span></div>
       <button v-if="!immediate" type="button" class="catalog-apply" :disabled="!chosen" @click="choose">使用所选数据</button>
     </fieldset>
     <p v-if="error" class="catalog-error" role="alert">{{ error }} <button type="button" @click="load">重试</button></p>

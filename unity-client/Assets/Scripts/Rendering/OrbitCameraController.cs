@@ -32,6 +32,40 @@ namespace HeatTreatment.DigitalTwin.Rendering
         public bool InteractionEnabled { get; set; } = true;
         public bool PointerInputBlocked { get; set; }
 
+        public sealed class ViewState
+        {
+            internal readonly Vector3 Target, Offset;
+            internal readonly Bounds Bounds;
+            internal readonly float Yaw, Pitch, Distance, MinimumDistance, TransitionSeconds, Near, Far;
+            internal readonly bool Precise, Manual;
+            internal ViewState(OrbitCameraController owner)
+            {
+                Target = owner._target; Offset = owner._targetOffset; Bounds = owner._lastBounds;
+                Yaw = owner._yaw; Pitch = owner._pitch; Distance = owner._distance;
+                MinimumDistance = owner._minimumDistance; TransitionSeconds = owner._transitionSeconds;
+                Precise = owner._lastPrecise; Manual = owner._manualControl;
+                var camera = owner.GetComponent<Camera>(); Near = camera.nearClipPlane; Far = camera.farClipPlane;
+            }
+        }
+
+        // Capture the rendered pose before entry, not an authored preset or a
+        // desired camera target that may still be moving toward another view.
+        public ViewState CaptureViewState() => new ViewState(this);
+
+        public void RestoreViewState(ViewState state, bool immediate = false)
+        {
+            if (state == null) return;
+            _lastBounds = state.Bounds; _targetOffset = state.Offset; _lastPrecise = state.Precise;
+            _minimumDistance = state.MinimumDistance; _transitionSeconds = state.TransitionSeconds;
+            _manualControl = state.Manual; _pointerButtons = 0;
+            _desiredTarget = state.Target; _desiredYaw = OrbitCameraMotion.NearestYaw(_yaw, state.Yaw);
+            _desiredPitch = state.Pitch; _desiredDistance = state.Distance;
+            var camera = GetComponent<Camera>(); camera.nearClipPlane = state.Near; camera.farClipPlane = state.Far;
+            if (!immediate) return;
+            _target = _desiredTarget; _yaw = _desiredYaw; _pitch = _desiredPitch; _distance = _desiredDistance;
+            ApplyTransform();
+        }
+
         public void SetTransitionDuration(float seconds)
         {
             _transitionSeconds = Mathf.Clamp(seconds, 0f, 10f);

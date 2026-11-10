@@ -6,6 +6,7 @@ import { getFactoryScope } from '../../../runtime/factoryScope.js'
 import { cacheFactoryDraft, clearFactoryDraft, readFactoryDraft } from '../../../runtime/factoryDraftCache.js'
 import AdminNotice from './AdminNotice.vue'
 import { useAdminNotice } from '../composables/useAdminNotice.js'
+import { lineSceneUnitsPerMeter, movementSceneUnitsPerMeter } from '../../../../../shared/lineRailSpacing.mjs'
 
 defineOptions({ name: 'MobileDeviceMotion' })
 
@@ -44,17 +45,29 @@ function positionOr(value, fallback) {
     }
 }
 
+function validPosition(value) {
+    return value && typeof value === 'object' && ['x', 'y', 'z'].every(axis => typeof value[axis] === 'number' && Number.isFinite(value[axis]) && Math.abs(value[axis]) <= 100000)
+}
+
+function authoredPosition(value) {
+    return Object.fromEntries(['x', 'y', 'z'].map(axis => [axis, typeof value?.[axis] === 'number' && Number.isFinite(value[axis]) ? value[axis] : '']))
+}
+
+function railBasisError(movement) {
+    if (!validPosition(movement.start) || !validPosition(movement.end)) return '请完整填写轨道基准和参考终点的 X / Y / Z 坐标'
+    if (Math.hypot(movement.end.x - movement.start.x, movement.end.z - movement.start.z) < .0001) return '轨道基准与参考终点的水平坐标不能重合，未推测导轨方向'
+    return ''
+}
+
 function normalizeStations(value, fallback) {
     if (!Array.isArray(value)) return fallback.map(station => ({ ...station, position: { ...station.position } }))
     const stations = value
         .map((station, index) => {
             const source = station && typeof station === 'object' ? station : {}
-            const defaultValue = fallback[index]?.value ?? index + 1
-            const defaultPosition = fallback[index]?.position || fallback[fallback.length - 1]?.position || { x: 0, y: 0, z: 0 }
-            const valueNumber = Number(source.value)
+            const valueNumber = typeof source.value === 'number' && Number.isFinite(source.value) ? source.value : ''
             return {
-                value: Number.isFinite(valueNumber) ? valueNumber : defaultValue,
-                label: String(source.label || `${Number.isFinite(valueNumber) ? valueNumber : defaultValue}号工位`),
+                value: valueNumber,
+                label: String(source.label || (valueNumber === '' ? '待配置工位' : `${valueNumber}号工位`)),
                 anchorDeviceId: pointIdOr(source.anchorDeviceId ?? source.anchor_device_id),
                 deviceLineKey: pointIdOr(source.deviceLineKey ?? source.device_line_key),
                 deviceLineName: String(source.deviceLineName ?? source.device_line_name ?? ''),
@@ -63,17 +76,16 @@ function normalizeStations(value, fallback) {
                     : (Number.isFinite(Number(source.distanceMeters ?? source.distance_meters))
                         ? Math.max(0, Number(source.distanceMeters ?? source.distance_meters))
                         : ''),
-                position: positionOr(source.position || source, defaultPosition)
+                position: authoredPosition(source.position || source)
             }
         })
-        .filter(station => Number.isFinite(station.value))
         .sort((left, right) => left.value - right.value)
-    return stations.length > 0
-        ? stations
-        : fallback.map(station => ({ ...station, position: { ...station.position } }))
+    return stations
 }
 
 function defaultMotion(device = {}) {
+    let units
+    try { units = lineSceneUnitsPerMeter(parseJson(device.lineLayout)) } catch { units = '' }
     const start = {
         x: numberOr(device.pos_x),
         y: numberOr(device.pos_y),
@@ -84,14 +96,18 @@ function defaultMotion(device = {}) {
         currentPositionPointId: '',
         startActionPointId: '',
         valueMode: 'station',
+        stationInputMeaning: '',
         valueMin: 0,
         valueMax: 100,
         smoothingMs: 0,
+        staleMs: 5000,
+        diagnosticLogging: false,
+        diagnosticIntervalSeconds: 5,
         simulationEnabled: false,
         speedMode: 'auto',
         maxSpeed: 2,
         acceleration: 1,
-        sceneUnitsPerMeter: 1,
+        sceneUnitsPerMeter: units,
         start,
         end: { ...start, x: start.x + 10 },
         stations: []
@@ -107,34 +123,20 @@ function isRailBoundDevice(device) {
         || Boolean(config.railId || config.rail_id || config.railLineId || config.rail_line_id)
 }
 
-function railAxisFor(device, movement = {}, stations = []) {
-    const start = positionOr(movement.start, defaultMotion(device).start)
-    const end = positionOr(movement.end, start)
-    const directX = Math.abs(end.x - start.x)
-    const directZ = Math.abs(end.z - start.z)
-    if (directX > 0.001 || directZ > 0.001) return directX >= directZ ? 'x' : 'z'
-
-    const positions = stations
-        .map(station => station?.position)
-        .filter(Boolean)
-    if (positions.length < 2) return 'x'
-    const xs = positions.map(position => numberOr(position.x))
-    const zs = positions.map(position => numberOr(position.z))
-    const xSpan = Math.max(...xs) - Math.min(...xs)
-    const zSpan = Math.max(...zs) - Math.min(...zs)
-    return xSpan >= zSpan ? 'x' : 'z'
-}
-
 // Fixed equipment supplies the station number and its longitudinal coordinate.
 // A mobile carrier must keep its own rail plane, otherwise importing a furnace's
 // Z coordinate would send the cart off its track.
 function projectStationPosition(device, position, movement = {}, stations = [], railDevice = device) {
-    const source = positionOr(position, defaultMotion(device).start)
+    if (!validPosition(position)) throw new Error('工位坐标不完整，未用默认坐标替代')
+    const source = { ...position }
     if (!isRailBoundDevice(railDevice)) return source
-    const railOrigin = positionOr(movement.start, defaultMotion(device).start)
-    return railAxisFor(device, movement, stations) === 'z'
-        ? { x: railOrigin.x, y: railOrigin.y, z: source.z }
-        : { x: source.x, y: railOrigin.y, z: railOrigin.z }
+    const invalid = railBasisError(movement)
+    if (invalid) throw new Error(invalid)
+    const railOrigin = movement.start, railEnd = movement.end
+    const dx = railEnd.x - railOrigin.x, dz = railEnd.z - railOrigin.z
+    const squared = dx * dx + dz * dz
+    const fraction = ((source.x - railOrigin.x) * dx + (source.z - railOrigin.z) * dz) / squared
+    return { x: railOrigin.x + dx * fraction, y: railOrigin.y, z: railOrigin.z + dz * fraction }
 }
 
 function normalizeMotion(device) {
@@ -148,21 +150,28 @@ function normalizeMotion(device) {
         currentPositionPointId: pointIdOr(source.currentPositionPointId ?? source.current_position_point_id),
         startActionPointId: pointIdOr(source.startActionPointId ?? source.start_action_point_id),
         valueMode: ['normalized', 'range', 'station'].includes(source.valueMode) ? source.valueMode : fallback.valueMode,
+        stationInputMeaning: ['current', 'target'].includes(source.stationInputMeaning) ? source.stationInputMeaning : '',
         valueMin: numberOr(source.valueMin ?? source.value_min, fallback.valueMin),
         valueMax: numberOr(source.valueMax ?? source.value_max, fallback.valueMax),
         smoothingMs: Math.max(0, Math.min(1000, numberOr(source.smoothingMs ?? source.smoothing_ms, 0))),
+        staleMs: Math.round(Math.max(1000, Math.min(60000, numberOr(source.staleMs ?? config.animationBindings?.staleMs, 5000)))),
+        diagnosticLogging: (source.diagnosticLogging ?? config.animationBindings?.diagnosticLogging) === true,
+        diagnosticIntervalSeconds: Math.max(1, Math.min(60, numberOr(source.diagnosticIntervalSeconds ?? config.animationBindings?.diagnosticIntervalSeconds, 5))),
         simulationEnabled: source.simulationEnabled === true || source.simulation_enabled === true,
         speedMode: String(source.speedMode ?? source.speed_mode ?? fallback.speedMode).toLowerCase() === 'fixed' ? 'fixed' : 'auto',
         maxSpeed: Math.max(0.01, numberOr(source.maxSpeed ?? source.max_speed, fallback.maxSpeed)),
         acceleration: Math.max(0.01, numberOr(source.acceleration, fallback.acceleration)),
-        sceneUnitsPerMeter: Math.max(0.0001, numberOr(source.sceneUnitsPerMeter ?? source.scene_units_per_meter, fallback.sceneUnitsPerMeter)),
-        start: positionOr(source.start, fallback.start),
-        end: positionOr(source.end, fallback.end),
+        sceneUnitsPerMeter: (() => {
+            if (!Object.hasOwn(source, 'sceneUnitsPerMeter') && !Object.hasOwn(source, 'scene_units_per_meter')) return fallback.sceneUnitsPerMeter
+            try { return movementSceneUnitsPerMeter(source) } catch { return '' }
+        })(),
+        start: source.enabled === true || source.start !== undefined ? authoredPosition(source.start) : fallback.start,
+        end: source.enabled === true || source.end !== undefined ? authoredPosition(source.end) : fallback.end,
         stations: Array.isArray(source.stations)
-            ? normalizeStations(source.stations, fallback.stations).map(station => ({
-                ...station,
-                position: projectStationPosition(device, station.position, source, source.stations)
-            }))
+            ? normalizeStations(source.stations, fallback.stations).map(station => {
+                try { return { ...station, position: projectStationPosition(device, station.position, source, source.stations) } }
+                catch { return station } // Leave invalid authored fields editable; save rejects them.
+            })
             : []
     }
 }
@@ -181,6 +190,8 @@ watch(errorMessage, value => { if (value) showNotice(value, 'error') }, { flush:
 let loadGeneration = 0
 const draftFactoryId = getFactoryScope()
 let savedMotionSnapshot = ''
+let savedMovementBaseline = null
+let requiresMovementReload = false
 const motionSnapshot = () => JSON.stringify(motion.value)
 
 function isAuxiliaryDevice(device) {
@@ -332,11 +343,11 @@ const stationGroups = computed(() => {
 })
 const numericPoints = computed(() => dataPoints.value.filter(point => {
     const type = String(point.data_type || '').toUpperCase()
-    return String(point.access_type || 'READ').toUpperCase() !== 'WRITE'
-        && !['BOOL', 'STRING', 'CHAR', 'DT', 'DTL'].includes(type)
+    return String(point.access_type || 'READ').toUpperCase() === 'READ'
+        && !['BOOL', 'STRING', 'CHAR', 'DT', 'DTZ', 'DTL', 'DTLZ', 'DATE', 'TIME', 'TOD'].includes(type)
 }))
 const actionPoints = computed(() => dataPoints.value.filter(point => (
-    String(point.access_type || 'READ').toUpperCase() !== 'WRITE'
+    String(point.access_type || 'READ').toUpperCase() === 'READ'
 )))
 
 function pointLabel(point) {
@@ -365,14 +376,14 @@ function motionDraftPayload() {
     const existingConfig = parseJson(detail.instance_config)
     const stations = stationGroups.value
         .flatMap(group => group.stations.map((station, index) => ({
-            value: numberOr(station.value),
+            value: station.value,
             label: String(station.label || `${numberOr(station.value)}号工位`),
             anchorDeviceId: pointIdOr(station.anchorDeviceId),
             deviceLineKey: String(station.deviceLineKey || group.key || ''),
             deviceLineName: String(station.deviceLineName || group.name || ''),
             distanceMeters: index === 0 ? 0 : Math.max(0, numberOr(station.distanceMeters)),
             position: {
-                x: numberOr(station.position?.x), y: numberOr(station.position?.y), z: numberOr(station.position?.z)
+                x: station.position?.x, y: station.position?.y, z: station.position?.z
             }
         })))
         .sort((left, right) => left.value - right.value)
@@ -383,16 +394,20 @@ function motionDraftPayload() {
             currentPositionPointId: pointIdOr(motion.value.currentPositionPointId),
             startActionPointId: pointIdOr(motion.value.startActionPointId),
             valueMode: ['range', 'station'].includes(motion.value.valueMode) ? motion.value.valueMode : 'normalized',
+            ...(['current', 'target'].includes(motion.value.stationInputMeaning) ? { stationInputMeaning: motion.value.stationInputMeaning } : {}),
             valueMin: numberOr(motion.value.valueMin), valueMax: numberOr(motion.value.valueMax, 100),
             smoothingMs: Math.max(0, Math.min(1000, numberOr(motion.value.smoothingMs))),
+            staleMs: motion.value.staleMs,
+            diagnosticLogging: motion.value.diagnosticLogging === true,
+            diagnosticIntervalSeconds: motion.value.diagnosticIntervalSeconds,
             simulationEnabled: motion.value.simulationEnabled === true,
             speedMode: motion.value.speedMode === 'fixed' ? 'fixed' : 'auto',
             maxSpeed: Math.max(0.01, numberOr(motion.value.maxSpeed, 2)),
             acceleration: Math.max(0.01, numberOr(motion.value.acceleration, 1)),
             sceneUnitsPerMeter: stationDistanceSummary.value.sceneUnitsPerMeter,
             stations,
-            start: { x: numberOr(motion.value.start.x), y: numberOr(motion.value.start.y), z: numberOr(motion.value.start.z) },
-            end: { x: numberOr(motion.value.end.x), y: numberOr(motion.value.end.y), z: numberOr(motion.value.end.z) }
+            start: { ...motion.value.start },
+            end: { ...motion.value.end, ...(motion.value.valueMode === 'station' ? { y: motion.value.start.y } : {}) }
         }
     }
     const selectedIds = new Set([
@@ -400,6 +415,8 @@ function motionDraftPayload() {
     ].filter(Boolean).map(String))
     return {
         deviceId: detail.id,
+        expectedMovement: JSON.parse(JSON.stringify(savedMovementBaseline)),
+        ...(requiresMovementReload ? { requiresMovementReload: true } : {}),
         motion: JSON.parse(motionSnapshot()),
         selectedPointIds: [...selectedIds],
         missingStationDistances: stationDistanceSummary.value.missingCount,
@@ -455,6 +472,8 @@ async function loadDevice(deviceId) {
         dataPoints.value = []
         motion.value = defaultMotion()
         savedMotionSnapshot = ''
+        savedMovementBaseline = null
+        requiresMovementReload = false
         return
     }
     loading.value = true
@@ -467,9 +486,15 @@ async function loadDevice(deviceId) {
         deviceDetail.value = detail
         dataPoints.value = Array.isArray(detail?.dataPoints) ? detail.dataPoints : []
         motion.value = normalizeMotion(detail)
+        savedMovementBaseline = JSON.parse(JSON.stringify(parseJson(detail.instance_config).movement ?? null))
+        requiresMovementReload = false
         savedMotionSnapshot = motionSnapshot()
         const pending = readFactoryDraft(draftFactoryId, `mobile-motion:${detail.id}`)
-        if (pending?.motion) motion.value = pending.motion
+        if (pending?.motion) {
+            motion.value = pending.motion
+            if (pending.expectedMovement !== undefined) savedMovementBaseline = pending.expectedMovement
+            requiresMovementReload = pending.requiresMovementReload === true || pending.expectedMovement === undefined
+        }
     } catch (error) {
         if (requestGeneration !== loadGeneration) return
         deviceDetail.value = null
@@ -535,11 +560,32 @@ function removeStation(station) {
 function applyStationAnchor(station) {
     const device = props.devices.find(item => String(item.id) === String(station.anchorDeviceId))
     if (!device) return
-    station.position = projectStationPosition(device, {
+    if ((device.coordinate_space || 'line_local') !== (deviceDetail.value?.coordinate_space || 'line_local')) {
+        errorMessage.value = '作业设备与小车的坐标系不同，请先在设备编排中统一坐标或手动配置工位'
+        return
+    }
+    try { station.position = projectStationPosition(device, {
         x: numberOr(device.pos_x),
         y: numberOr(device.pos_y),
         z: numberOr(device.pos_z)
-    }, motion.value, motion.value.stations, deviceDetail.value)
+    }, motion.value, motion.value.stations, deviceDetail.value) }
+    catch (error) { errorMessage.value = error.message; return }
+    const info = deviceLineInfo(device)
+    station.deviceLineKey = info.key
+    station.deviceLineName = info.name
+}
+
+function projectManualStation(station) {
+    try { station.position = projectStationPosition(deviceDetail.value || {}, station.position, motion.value, motion.value.stations, deviceDetail.value) }
+    catch (error) { errorMessage.value = error.message }
+}
+
+function updateRailBasis() {
+    try {
+        const positions = (motion.value.stations || []).map(station => projectStationPosition(deviceDetail.value || {}, station.position, motion.value, motion.value.stations, deviceDetail.value))
+        positions.forEach((position, index) => { motion.value.stations[index].position = position })
+        if (motion.value.valueMode === 'station') motion.value.end.y = motion.value.start.y
+    } catch (error) { errorMessage.value = error.message }
 }
 
 function syncStationsFromLine() {
@@ -552,7 +598,8 @@ function syncStationsFromLine() {
         return [`${info.key}::${Number(station.value)}`, station.distanceMeters]
     }))
     const groupIndexes = new Map()
-    motion.value.stations = lineStationDevices.value.map(device => {
+    try { motion.value.stations = lineStationDevices.value.map(device => {
+        if ((device.coordinate_space || 'line_local') !== (deviceDetail.value?.coordinate_space || 'line_local')) throw new Error('产线内设备与小车的坐标系不同，请先统一坐标或手动配置工位')
         const value = device.stationNumber
         const info = deviceLineInfo(device)
         const groupIndex = groupIndexes.get(info.key) || 0
@@ -576,7 +623,7 @@ function syncStationsFromLine() {
                 }
             })), deviceDetail.value)
         }
-    })
+    }) } catch (error) { errorMessage.value = error.message; return }
     message.value = `已按 ${deviceLineGroups.value.length} 条设备线导入 ${lineStationDevices.value.length} 个工位位置`
     errorMessage.value = ''
 }
@@ -586,6 +633,12 @@ function sceneDistance(left, right) {
     const dy = numberOr(right?.y) - numberOr(left?.y)
     const dz = numberOr(right?.z) - numberOr(left?.z)
     return Math.sqrt((dx * dx) + (dy * dy) + (dz * dz))
+}
+
+async function discardAndReloadMotion() {
+    if (saving.value || loading.value || !selectedDeviceId.value) return
+    clearFactoryDraft(draftFactoryId, `mobile-motion:${selectedDeviceId.value}`)
+    await loadDevice(selectedDeviceId.value)
 }
 
 const stationDistanceSummary = computed(() => {
@@ -610,7 +663,7 @@ const stationDistanceSummary = computed(() => {
         totalMeters,
         totalSceneUnits,
         missingCount,
-        sceneUnitsPerMeter: totalMeters > 0 && totalSceneUnits > 0 ? totalSceneUnits / totalMeters : 1
+        sceneUnitsPerMeter: missingCount === 0 && totalMeters > 0 && totalSceneUnits > 0 ? totalSceneUnits / totalMeters : numberOr(motion.value.sceneUnitsPerMeter, 1)
     }
 })
 
@@ -618,6 +671,10 @@ async function saveMotion() {
     if (saving.value || loading.value) return
     message.value = ''; errorMessage.value = ''
     if (!deviceDetail.value?.id) return
+    if (requiresMovementReload) {
+        errorMessage.value = '此旧草稿没有保存时的移动配置快照，请先放弃本页修改并重新读取，未覆盖当前路径'
+        return
+    }
     if (motion.value.enabled && !motion.value.currentPositionPointId) {
         errorMessage.value = '启用移动同步时，请先绑定“当前位置”数值点位'
         return
@@ -626,28 +683,56 @@ async function saveMotion() {
         errorMessage.value = '输入范围的最大值必须大于最小值'
         return
     }
+    if (!Number.isInteger(motion.value.staleMs) || motion.value.staleMs < 1000 || motion.value.staleMs > 60000) {
+        errorMessage.value = '数据过期阈值必须为 1000～60000 毫秒的整数'
+        return
+    }
+    if (!Number.isFinite(motion.value.diagnosticIntervalSeconds) || motion.value.diagnosticIntervalSeconds < 1 || motion.value.diagnosticIntervalSeconds > 60) {
+        errorMessage.value = '运行诊断记录间隔必须为 1～60 秒'
+        return
+    }
+    const invalidBasis = railBasisError(motion.value)
+    if (invalidBasis) { errorMessage.value = invalidBasis; return }
+    if (!Number.isFinite(motion.value.sceneUnitsPerMeter) || motion.value.sceneUnitsPerMeter <= 0 || motion.value.sceneUnitsPerMeter > 100000) {
+        errorMessage.value = '场景单位 / 米必须大于 0、不超过 100000'
+        return
+    }
     if (motion.value.valueMode === 'station') {
+        const simulate = motion.value.simulationEnabled && motion.value.stationInputMeaning !== 'current'
+        if (motion.value.enabled && motion.value.stationInputMeaning === 'target' && !motion.value.simulationEnabled) {
+            errorMessage.value = '目标工位命令不是当前到位反馈；请开启运动细节模拟以估算过程，或选择实际当前位置反馈'
+            return
+        }
         const stations = Array.isArray(motion.value.stations) ? motion.value.stations : []
-        const values = stations.map(station => Number(station.value))
-        if (stations.length === 0 || values.some(value => !Number.isFinite(value))) {
+        const values = stations.map(station => station.value)
+        if (stations.length === 0 || values.some(value => typeof value !== 'number' || !Number.isFinite(value))) {
             errorMessage.value = '工位编号模式至少需要配置一个有效的工位编号'
+            return
+        }
+        if (stations.some(station => !validPosition(station.position))) {
+            errorMessage.value = '请完整填写所有工位的 X / Y / Z 坐标，未使用默认坐标替代'
+            return
+        }
+        if (stations.some(station => station.anchorDeviceId && !lineStationDevices.value.some(device => String(device.id) === String(station.anchorDeviceId)
+            && (device.coordinate_space || 'line_local') === (deviceDetail.value?.coordinate_space || 'line_local')))) {
+            errorMessage.value = '关联工位的作业设备已不存在、移出产线或坐标系不同，请重新选择'
             return
         }
         if (new Set(values).size !== values.length) {
             errorMessage.value = '工位编号不能重复，请检查工位映射'
             return
         }
-        if (motion.value.simulationEnabled && motion.value.maxSpeed <= 0) {
+        if (simulate && motion.value.maxSpeed <= 0) {
             if (motion.value.speedMode === 'fixed') {
                 errorMessage.value = '选择固定速度时，最大速度必须大于 0'
                 return
             }
         }
-        if (motion.value.simulationEnabled && stationDistanceSummary.value.missingCount > 0) {
+        if (simulate && stationDistanceSummary.value.missingCount > 0) {
             errorMessage.value = '请填写同一设备线内相邻工位之间的现场间距；每条设备线的第一站不需要填写'
             return
         }
-        if (motion.value.simulationEnabled && motion.value.acceleration <= 0) {
+        if (simulate && motion.value.acceleration <= 0) {
             errorMessage.value = '启用运动细节模拟时，加速度必须大于 0'
             return
         }
@@ -661,7 +746,7 @@ async function saveMotion() {
         const draft = motionDraftPayload()
         if (!draft) throw new Error('设备运动配置尚未就绪')
         const selectedPointIds = [motion.value.currentPositionPointId, motion.value.startActionPointId].filter(Boolean)
-        const result = await adminApi.updateDeviceMovement(detail.id, draft.devicePayload.instance_config.movement, selectedPointIds)
+        const result = await adminApi.updateDeviceMovement(detail.id, draft.devicePayload.instance_config.movement, selectedPointIds, draft.expectedMovement)
         if (result?.error) throw new Error(result.error)
         if (!result?.success) throw new Error('后端没有返回成功状态')
 
@@ -673,6 +758,7 @@ async function saveMotion() {
         }
 
         deviceDetail.value = { ...detail, instance_config: draft.devicePayload.instance_config }
+        savedMovementBaseline = JSON.parse(JSON.stringify(draft.devicePayload.instance_config.movement))
         savedMotionSnapshot = motionSnapshot()
         clearFactoryDraft(draftFactoryId, `mobile-motion:${detail.id}`)
         message.value = '移动配置已保存'
@@ -736,9 +822,10 @@ async function saveMotion() {
                     <div class="motion-step-title"><span>1</span><div><strong>绑定 PLC 位置点位</strong><small>PLC 只需要传 1、2、3… 这样的当前工位编号。</small></div></div>
                     <div class="motion-form-grid">
                     <label>
-                        <span class="motion-field-label">PLC 当前工位编号点位 <span class="motion-required">*</span></span>
+                        <span class="motion-field-label">{{ motion.stationInputMeaning === 'target' ? 'PLC 目标工位命令点位' : 'PLC 当前工位编号点位' }} <span class="motion-required">*</span></span>
                         <select v-model="motion.currentPositionPointId" class="input" v-permission="{ page: 'mobile-devices', action: 'edit' }">
                             <option value="">请选择 PLC 数值点位</option>
+                            <option v-if="motion.currentPositionPointId && !numericPoints.some(point => String(point.id) === motion.currentPositionPointId)" :value="motion.currentPositionPointId">已保存点位 {{ motion.currentPositionPointId }}（位置反馈类型或归属无效，请重新选择）</option>
                             <option v-for="point in numericPoints" :key="point.id" :value="String(point.id)">
                                 {{ pointLabel(point) }}
                             </option>
@@ -749,11 +836,15 @@ async function saveMotion() {
                         <span class="motion-field-label">移动开始信号（可选）</span>
                         <select v-model="motion.startActionPointId" class="input" v-permission="{ page: 'mobile-devices', action: 'edit' }">
                             <option value="">不绑定（收到编号就移动）</option>
+                            <option v-if="motion.startActionPointId && !actionPoints.some(point => String(point.id) === motion.startActionPointId)" :value="motion.startActionPointId">已保存点位 {{ motion.startActionPointId }}（只读采集点位无效，请重新选择）</option>
                             <option v-for="point in actionPoints" :key="point.id" :value="String(point.id)">
                                 {{ pointLabel(point) }}
                             </option>
                         </select>
                         <small>如果现场没有单独的启动信号，保持“不绑定”即可。</small>
+                    </label>
+                    <label>数据过期阈值（毫秒）
+                        <input v-model.number="motion.staleMs" class="input" type="number" min="1000" max="60000" step="100" aria-label="移动数据过期阈值（毫秒）" v-permission="{ page: 'mobile-devices', action: 'edit' }" />
                     </label>
                     </div>
                 </section>
@@ -768,10 +859,20 @@ async function saveMotion() {
                                 <option value="range">输入范围映射（旧配置）</option>
                             </select>
                         </label>
+                        <label v-if="motion.valueMode === 'station'">工位编号数据含义
+                            <select v-model="motion.stationInputMeaning" class="input" aria-label="工位编号数据含义" v-permission="{ page: 'mobile-devices', action: 'edit' }">
+                                <option value="">兼容旧设置（未指定）</option>
+                                <option value="current">PLC 当前到位反馈（直接还原位置）</option>
+                                <option value="target">PLC 目标工位命令（估算移动过程）</option>
+                            </select>
+                        </label>
                         <label>视觉平滑时间（ms）
                             <input v-model.number="motion.smoothingMs" type="number" min="0" max="1000" step="10" class="input"  v-permission="{ page: 'mobile-devices', action: 'edit' }"/>
                             <small>只影响画面跟手程度，不是现场速度。0 表示延迟最低。</small>
                         </label>
+                        <label class="motion-check"><input v-model="motion.diagnosticLogging" type="checkbox" aria-label="启用移动运行诊断记录" v-permission="{ page: 'mobile-devices', action: 'edit' }" />启用移动运行诊断记录</label>
+                        <label v-if="motion.diagnosticLogging">诊断记录间隔（秒）<input v-model.number="motion.diagnosticIntervalSeconds" class="input" type="number" min="1" max="60" step="1" aria-label="移动诊断记录间隔（秒）" v-permission="{ page: 'mobile-devices', action: 'edit' }" /></label>
+                        <label>场景单位 / 米<input v-model.number="motion.sceneUnitsPerMeter" class="input" type="number" min="0.0001" max="100000" step="0.01" aria-label="移动场景单位每米" v-permission="{ page: 'mobile-devices', action: 'edit' }" /><small>完整填写工位实际间距后自动按间距计算；否则使用此已配置比例。</small></label>
                     </div>
                     <div v-if="motion.valueMode === 'range'" class="motion-range-row">
                         <label>输入最小值<input v-model.number="motion.valueMin" type="number" class="input"  v-permission="{ page: 'mobile-devices', action: 'edit' }"/></label>
@@ -808,9 +909,15 @@ async function saveMotion() {
                                     <div class="motion-station-order">{{ index + 1 }}</div>
                                     <label>PLC 编号<input v-model.number="station.value" type="number" step="1" class="input"  v-permission="{ page: 'mobile-devices', action: 'edit' }"/></label>
                                     <label>工位名称（可选）<input v-model="station.label" type="text" class="input" placeholder="例如：1号工位"  v-permission="{ page: 'mobile-devices', action: 'edit' }"/></label>
+                                    <label>关联作业设备<select v-model="station.anchorDeviceId" class="input" :aria-label="`工位 ${station.value} 关联作业设备`" @change="applyStationAnchor(station)" v-permission="{ page: 'mobile-devices', action: 'edit' }"><option value="">手动坐标（不关联设备）</option><option v-for="device in lineStationDevices" :key="device.id" :value="String(device.id)">{{ device.name || device.id }}</option></select></label>
                                     <label v-if="index > 0" class="motion-distance-field">与本设备线上一站间距（米）<input v-model.number="station.distanceMeters" type="number" min="0.01" step="0.1" class="input" placeholder="例如 8.5"  v-permission="{ page: 'mobile-devices', action: 'edit' }"/></label>
                                     <div v-else class="motion-start-station"><strong>本设备线首站</strong><small>不需要填写跨线间距</small></div>
                                     <button v-if="motion.stations.length > 1" type="button" class="motion-remove-station" title="删除工位" @click="removeStation(station)" v-permission="{ page: 'mobile-devices', action: 'edit' }">删除</button>
+                                    <div class="motion-station-coordinate-fields">
+                                        <label>工位 X<input v-model.number="station.position.x" class="input" type="number" step="0.01" :aria-label="`工位 ${station.value} X 坐标`" @change="projectManualStation(station)" v-permission="{ page: 'mobile-devices', action: 'edit' }" /></label>
+                                        <label>轨道基准 Y<input :value="motion.start.y" class="input" type="number" readonly :aria-label="`工位 ${station.value} 轨道基准 Y`" /></label>
+                                        <label>工位 Z<input v-model.number="station.position.z" class="input" type="number" step="0.01" :aria-label="`工位 ${station.value} Z 坐标`" @change="projectManualStation(station)" v-permission="{ page: 'mobile-devices', action: 'edit' }" /></label>
+                                    </div>
                                 </div>
                             </div>
                             <div v-else class="motion-device-line-empty">点击“添加到此设备线”，或先从当前产线导入现场工位。</div>
@@ -823,10 +930,10 @@ async function saveMotion() {
                 <section v-if="motion.valueMode === 'station'" class="motion-step-card motion-simulation-panel">
                     <div class="motion-step-title"><span>3</span><div><strong>选择移动效果</strong><small>你只需要提供小车加速度；最大速度可以由系统按现场间距自动估算。</small></div></div>
                     <label class="motion-switch motion-simulation-switch">
-                        <input v-model="motion.simulationEnabled" type="checkbox"  v-permission="{ page: 'mobile-devices', action: 'edit' }"/>
+                        <input v-model="motion.simulationEnabled" type="checkbox" aria-label="开启移动运动细节模拟" :disabled="motion.stationInputMeaning === 'current'" v-permission="{ page: 'mobile-devices', action: 'edit' }"/>
                         开启运动细节模拟
                     </label>
-                    <div v-if="motion.simulationEnabled" class="motion-simulation-fields">
+                    <div v-if="motion.simulationEnabled && motion.stationInputMeaning !== 'current'" class="motion-simulation-fields">
                         <label>小车加速度（米 / 秒²）
                             <input v-model.number="motion.acceleration" type="number" min="0.01" step="0.1" class="input"  v-permission="{ page: 'mobile-devices', action: 'edit' }"/>
                             <small>向电气工程人员要这个参数即可。</small>
@@ -842,26 +949,26 @@ async function saveMotion() {
                             <input v-model.number="motion.maxSpeed" type="number" min="0.01" step="0.1" class="input"  v-permission="{ page: 'mobile-devices', action: 'edit' }"/>
                         </label>
                     </div>
-                    <p class="motion-simulation-note">关闭模拟时，小车收到新编号后直接切换到目标工位，并显示短暂的“移动中”提示；这是无法取得完整现场参数时的保底方式。</p>
+                    <p class="motion-simulation-note">{{ motion.stationInputMeaning === 'current' ? '当前位置反馈表示现场已到位，直接还原到该工位，不再叠加估算移动时间。' : motion.stationInputMeaning === 'target' ? '目标工位命令仅用于估算移动，不能证明设备到位。未开启模拟时保持原位置，不用目标编号伪造现场位置。' : '运动细节模拟用于估算工位之间的移动，不等同于现场到位反馈；未开启时直接显示接收的工位位置。' }}</p>
                 </section>
 
-                <div v-if="motion.valueMode !== 'station'" class="motion-position-section">
-                    <div class="motion-section-title">旧模式的起始位置 / 终点位置</div>
+                <div class="motion-position-section">
+                    <div class="motion-section-title">{{ motion.valueMode === 'station' ? '工位轨道基准 / 方向参考（不限制工位编号）' : '连续位置反馈的起始位置 / 终点位置' }}</div>
                     <div class="motion-position-columns">
                         <div>
                             <strong>起始位置</strong>
                             <div class="motion-coordinate-grid">
-                                <label>X<input v-model.number="motion.start.x" type="number" step="0.1" class="input"  v-permission="{ page: 'mobile-devices', action: 'edit' }"/></label>
-                                <label>Y<input v-model.number="motion.start.y" type="number" step="0.1" class="input"  v-permission="{ page: 'mobile-devices', action: 'edit' }"/></label>
-                                <label>Z<input v-model.number="motion.start.z" type="number" step="0.1" class="input"  v-permission="{ page: 'mobile-devices', action: 'edit' }"/></label>
+                                <label>X<input v-model.number="motion.start.x" type="number" step="0.1" class="input" aria-label="移动轨道起始 X" @change="updateRailBasis" v-permission="{ page: 'mobile-devices', action: 'edit' }"/></label>
+                                <label>Y<input v-model.number="motion.start.y" type="number" step="0.1" class="input" aria-label="移动轨道基准 Y" @change="updateRailBasis" v-permission="{ page: 'mobile-devices', action: 'edit' }"/></label>
+                                <label>Z<input v-model.number="motion.start.z" type="number" step="0.1" class="input" aria-label="移动轨道起始 Z" @change="updateRailBasis" v-permission="{ page: 'mobile-devices', action: 'edit' }"/></label>
                             </div>
                         </div>
                         <div>
                             <strong>终点位置</strong>
                             <div class="motion-coordinate-grid">
-                                <label>X<input v-model.number="motion.end.x" type="number" step="0.1" class="input"  v-permission="{ page: 'mobile-devices', action: 'edit' }"/></label>
-                                <label>Y<input v-model.number="motion.end.y" type="number" step="0.1" class="input"  v-permission="{ page: 'mobile-devices', action: 'edit' }"/></label>
-                                <label>Z<input v-model.number="motion.end.z" type="number" step="0.1" class="input"  v-permission="{ page: 'mobile-devices', action: 'edit' }"/></label>
+                                <label>X<input v-model.number="motion.end.x" type="number" step="0.1" class="input" aria-label="移动轨道参考终点 X" @change="updateRailBasis" v-permission="{ page: 'mobile-devices', action: 'edit' }"/></label>
+                                <label>Y<input v-if="motion.valueMode === 'station'" :value="motion.start.y" type="number" class="input" aria-label="移动轨道终点 Y" readonly /><input v-else v-model.number="motion.end.y" type="number" step="0.1" class="input" aria-label="移动轨道终点 Y" @change="updateRailBasis" v-permission="{ page: 'mobile-devices', action: 'edit' }"/></label>
+                                <label>Z<input v-model.number="motion.end.z" type="number" step="0.1" class="input" aria-label="移动轨道参考终点 Z" @change="updateRailBasis" v-permission="{ page: 'mobile-devices', action: 'edit' }"/></label>
                             </div>
                         </div>
                     </div>
@@ -873,6 +980,7 @@ async function saveMotion() {
                 </div>
 
                 <div class="modal-actions motion-actions">
+                    <button type="button" class="btn btn-secondary" :disabled="saving || loading" aria-label="放弃移动修改并重新读取配置" @click="discardAndReloadMotion">放弃修改并重新读取</button>
                     <button type="button" class="btn btn-primary" :disabled="saving || loading" @click="saveMotion" v-permission="{ page: 'mobile-devices', action: 'edit' }">
                         {{ saving ? '保存中…' : '保存移动配置' }}
                     </button>
@@ -1010,7 +1118,8 @@ async function saveMotion() {
 .motion-device-line-group .motion-station-list { padding: 10px; }
 .motion-device-line-empty { padding: 14px; color: #8a97a8; background: #fbfcfe; font-size: calc(12px * var(--admin-font-scale, 1)); line-height: 1.5; text-align: center; }
 .motion-station-list { display: grid; gap: 10px; }
-.motion-station-row { display: grid; grid-template-columns: 32px minmax(100px, .7fr) minmax(160px, 1.2fr) minmax(180px, 1fr) 48px; gap: 10px; align-items: end; padding: 12px; border: 1px solid #e8ecf1; border-radius: 10px; background: #fff; }
+.motion-station-row { display: grid; grid-template-columns: 32px minmax(100px, .7fr) minmax(160px, 1.2fr) minmax(160px, 1fr) minmax(180px, 1fr) 48px; gap: 10px; align-items: end; padding: 12px; border: 1px solid #e8ecf1; border-radius: 10px; background: #fff; }
+.motion-station-coordinate-fields { display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;grid-column:2/-1; }
 .motion-station-order { display: grid; place-items: center; width: 28px; height: 28px; margin-bottom: 4px; border-radius: 8px; color: #24577a; background: #e8f2f9; font-size: calc(12px * var(--admin-font-scale, 1)); font-weight: 800; }
 .motion-station-row label { display: flex; flex-direction: column; gap: 7px; color: #344054; font-size: calc(12px * var(--admin-font-scale, 1)); font-weight: 600; }
 .motion-station-row .input { height: 36px; line-height: 36px; }

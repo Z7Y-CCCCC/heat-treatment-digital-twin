@@ -1,5 +1,7 @@
 'use strict';
 
+const { hasDeclaredMotionBoundary } = require('../../shared/motionSemanticPolicy.cjs');
+
 const defaults = { maxMessageBytes: 4 * 1024 * 1024, maxBytes: 16 * 1024 * 1024,
     maxMessages: 256, highWaterBytes: 512 * 1024, stallMs: 15000, pollMs: 25 };
 const object = value => value && typeof value === 'object' && !Array.isArray(value);
@@ -8,13 +10,62 @@ function mergePatch(previous, patch) {
     const result = { ...previous };
     for (const [key, value] of Object.entries(patch)) {
         if (['__proto__', 'constructor', 'prototype'].includes(key)) continue;
-        result[key] = object(value) && object(result[key]) ? mergePatch(result[key], value) : value;
+        // Motion inputs are complete per-device source snapshots, not PLC-task
+        // deltas. Unioning them resurrects removed/disabled actions and can
+        // manufacture endpoint combinations that were never observed.
+        result[key] = !['motionInputs', 'motionSemantics'].includes(key) && object(value) && object(result[key]) ? mergePatch(result[key], value) : value;
     }
     return result;
 }
 function hasFault(value) {
     if (object(value) || Array.isArray(value)) return Object.values(value).some(hasFault);
     return value === 'bad' || value === 'stale';
+}
+function hasMotionFault(inputs) {
+    return object(inputs) && Object.values(inputs).some(input => hasFault(input?.quality)
+        || object(input?.endpointFeedback) && Object.values(input.endpointFeedback).some(endpoint => hasFault(endpoint?.quality)));
+}
+function motionBoundary(previous, next) {
+    if ((previous.motionInputOnly === true) !== (next.motionInputOnly === true)) return true;
+    if (hasDeclaredMotionBoundary(previous, next)) return true;
+    const a = previous.motionInputs, b = next.motionInputs;
+    if (object(a) || object(b)) {
+        if (!object(a) || !object(b) || JSON.stringify(Object.keys(a).sort()) !== JSON.stringify(Object.keys(b).sort())) return true;
+        for (const key of Object.keys(b)) {
+            const before = a[key], after = b[key];
+            if (before?.dataItemId !== after?.dataItemId || before?.stage !== after?.stage) return true;
+            if ((typeof before?.value !== 'number' || typeof after?.value !== 'number') && before?.value !== after?.value) return true;
+            for (const endpoint of ['extended', 'retracted']) {
+                const old = before?.endpointFeedback?.[endpoint], current = after?.endpointFeedback?.[endpoint];
+                if (old?.dataItemId !== current?.dataItemId || old?.value !== current?.value) return true;
+            }
+        }
+    }
+    // Legacy point bindings still read PLC groups directly. Retain discrete
+    // actuator edges even when a render/network consumer is temporarily busy.
+    // PLC categories are configurable. A motor/door/custom BOOL edge has the
+    // same causal meaning as a status edge; never inspect protocol metadata
+    // clocks as actuator values or guess discrete semantics for numeric WORDs.
+    const protocolGroups = new Set(['pointMeta', 'quality', 'plc', 'motionInputs', 'motionSemantics']);
+    for (const group of Object.keys(next).filter(key => !protocolGroups.has(key) && object(next[key]))) {
+        if (!object(previous[group]) || !object(next[group])) continue;
+        for (const key of Object.keys(next[group])) {
+            if (!Object.prototype.hasOwnProperty.call(previous[group], key)) continue;
+            const before = previous[group][key], after = next[group][key];
+            if (object(before) || Array.isArray(before) || object(after) || Array.isArray(after)) continue;
+            if ((typeof before !== 'number' || typeof after !== 'number') && before !== after) return true;
+        }
+    }
+    return false;
+}
+function hasMotionBoundary(previous, next) {
+    const scope = payload => payload?.factoryId ?? payload?.factory_id ?? '';
+    if (scope(previous.payload) !== scope(next.payload)) return true;
+    const byId = new Map(previous.payload.devices.map(device => [device.furnace_id, device]));
+    return next.payload.devices.some(device => {
+        const before = byId.get(device.furnace_id);
+        return before && (scope(before) !== scope(device) || motionBoundary(before, device));
+    });
 }
 function mergeRealtime(previous, next) {
     const devices = new Map();
@@ -41,7 +92,7 @@ class WsOutboundQueue {
             const text = serialized === undefined ? JSON.stringify(message) : serialized;
             const size = Buffer.byteLength(text);
             if (size > this.options.maxMessageBytes) return this.fail('message size limit', true);
-            const kind = message.type === 'realtime_frame' && !message.payload.devices.some(d => hasFault(d.quality) || hasFault(d.motionInputs))
+            const kind = message.type === 'realtime_frame' && !message.payload.devices.some(d => hasFault(d.quality) || hasMotionFault(d.motionInputs))
                 ? message.payload.devices.every(d => d.motionInputOnly === true) ? 'motion-input' : 'realtime'
                 : message.type === 'scene_projection' ? 'projection'
                     : message.type === 'inspection_hover_changed' ? 'hover'
@@ -49,12 +100,13 @@ class WsOutboundQueue {
             const tail = this.queue[this.queue.length - 1];
             let entry = { message, text, size, kind };
             // Reliable entries are barriers: never move a patch across a control/fault event.
-            if (kind !== 'reliable' && tail?.kind === kind) {
+            const replacing = kind !== 'reliable' && tail?.kind === kind
+                && (!['realtime', 'motion-input'].includes(kind) || !hasMotionBoundary(tail.message, message));
+            if (replacing) {
                 const merged = ['realtime','motion-input'].includes(kind) ? mergeRealtime(tail.message, message) : message;
                 const mergedText = JSON.stringify(merged);
                 entry = { message: merged, text: mergedText, size: Buffer.byteLength(mergedText), kind };
             }
-            const replacing = kind !== 'reliable' && tail?.kind === kind;
             const bytes = this.bytes - (replacing ? tail.size : 0) + entry.size;
             if (entry.size > this.options.maxMessageBytes || bytes + this.inflightBytes + this.socket.bufferedAmount > this.options.maxBytes
                 || this.queue.length + (replacing ? 0 : 1) + (this.inflight ? 1 : 0) > this.options.maxMessages)
@@ -105,4 +157,4 @@ class WsOutboundQueue {
         this.queue.length = 0; this.bytes = 0; this.inflightBytes = 0; this.inflight = false;
     }
 }
-module.exports = { WsOutboundQueue, mergeRealtime, defaults };
+module.exports = { WsOutboundQueue, mergeRealtime, hasMotionBoundary, defaults };

@@ -3,6 +3,7 @@ const router = express.Router();
 const { cleanupDashboardDeviceDeletion, broadcastDashboardCleanup } = require('../services/dashboardDeviceDeletion');
 const { getDb } = require('../db/database');
 const { normalizeLineLayout } = require('../utils/spatialLayout');
+const { saveLineLayout } = require('../services/lineLayoutSave');
 
 router.put('/:id/placement', async (req, res) => {
     try {
@@ -82,30 +83,11 @@ router.post('/', async (req, res) => {
 });
 
 router.put('/:id', async (req, res) => {
-    const { name, workshop_id, sort_order, layout_json, layout } = req.body;
     try {
         const db = await getDb();
-        const current = await db.get(`SELECT l.* FROM \`lines\` l JOIN workshops w ON w.id = l.workshop_id
-            WHERE l.id = ? AND w.factory_id = ?`, [req.params.id, req.factoryId]);
-        if (!current) return res.status(404).json({ error: '产线不存在' });
-        const nextWorkshopId = workshop_id ?? current.workshop_id;
-        const workshop = await db.get('SELECT id FROM workshops WHERE id = ? AND factory_id = ?', [nextWorkshopId, req.factoryId]);
-        if (!workshop) return res.status(400).json({ error: '所选车间不属于当前工厂' });
-
-        const nextLayout = normalizeLineLayout(layout_json ?? layout ?? current.layout_json);
-        await db.run(
-            'UPDATE `lines` SET name = ?, workshop_id = ?, layout_json = ?, sort_order = ? WHERE id = ?',
-            [
-                name ?? current.name,
-                nextWorkshopId,
-                JSON.stringify(nextLayout),
-                sort_order ?? current.sort_order ?? 0,
-                req.params.id
-            ]
-        );
-        res.json({ success: true });
+        res.json(await db.transaction(tx => saveLineLayout(tx, req.params.id, req.factoryId, req.body || {})));
     } catch (e) {
-        res.status(400).json({ error: e.message });
+        res.status(e.statusCode || 400).json({ error: e.message });
     }
 });
 

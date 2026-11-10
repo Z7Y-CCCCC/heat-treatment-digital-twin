@@ -108,7 +108,14 @@ namespace HeatTreatment.DigitalTwin.Rendering
             if (_destroyed) throw new ObjectDisposedException(nameof(RuntimeModelLibrary));
             var configurationVersion = _configurationVersion;
             var asset = ResolveAsset(device.ModelType);
-            var useMotion = asset?.MotionPackage != null && device.InstanceConfigObject?["animationBindings"]?["bindings"]?.OfType<JObject>().Any(b => b.Value<bool?>("enabled") == true && b.Value<string>("kind") == "clip") == true;
+            var animationToken = device.InstanceConfigObject?["animationBindings"];
+            var animationConfig = animationToken as JObject;
+            // Missing configuration still inherits model-level parts. An
+            // explicit null/scalar/array is not "missing": disable its actions,
+            // without throwing out the whole factory during a legacy import.
+            if (animationToken != null && animationConfig == null)
+                Debug.LogWarning($"[RuntimeModelLibrary] Invalid animation configuration for device {device.Id}; actions are disabled.");
+            var useMotion = asset?.MotionPackage != null && animationConfig?["bindings"]?.OfType<JObject>().Any(b => b.Value<bool?>("enabled") == true && b.Value<string>("kind") == "clip") == true;
             var key = CacheKey(asset, device.ModelType, useMotion) + (useMotion ? ":motion" : "");
             if (!_templates.TryGetValue(key, out var template))
             {
@@ -151,8 +158,8 @@ namespace HeatTreatment.DigitalTwin.Rendering
             clone.SetActive(true);
 
             var driver = clone.AddComponent<ModelBindingDriver>();
-            driver.Configure(DeviceBindings(currentBindings, device), device.InstanceConfigObject?["animationBindings"] as JObject);
-            driver.DataTimeoutSeconds = (device.InstanceConfigObject?["animationBindings"]?.Value<float?>("staleMs") ?? 10000) / 1000f;
+            driver.Configure(DeviceBindings(currentBindings, device), animationConfig);
+            driver.DataTimeoutSeconds = (animationConfig?.Value<float?>("staleMs") ?? 10000) / 1000f;
             if (template.MotionPackage != null) clone.AddComponent<DeviceAnimationDriver>().Configure(device, template.MotionPackage);
             return new RuntimeModelInstance
             {
@@ -400,8 +407,9 @@ namespace HeatTreatment.DigitalTwin.Rendering
         }
         private static List<PartBindingDto> DeviceBindings(IEnumerable<PartBindingDto> bindings, DeviceDto device)
         {
-            var config = device.InstanceConfigObject?["animationBindings"];
-            if (config == null) return bindings.ToList();
+            var token = device.InstanceConfigObject?["animationBindings"];
+            if (token == null) return bindings.ToList();
+            if (!(token is JObject config)) return new List<PartBindingDto>();
             var rows = config["bindings"]?.OfType<JObject>().ToArray() ?? Array.Empty<JObject>();
             var result = new List<PartBindingDto>(); var i = 0;
             foreach (var source in bindings)

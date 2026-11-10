@@ -5,6 +5,8 @@ const { getDb } = require('../db/database');
 const { listDataSets } = require('./dataSets');
 const { mergeBuiltinModels } = require('./builtinModels');
 const { effectiveInspection } = require('./deviceInspection');
+const { deviceLineId } = require('./deviceLineUnits');
+const { normalizeRecordTimestamp: timestamp } = require('./dataRecordTime');
 const KEY = 'data_center_catalog_v1';
 const DEFAULT_CATEGORIES = Object.freeze([
     { id: 'device', name: '设备资料', builtin: true },
@@ -27,6 +29,15 @@ function deviceStatusText(status = {}) {
     if (status.quality === 'stale') return '数据已过期';
     if (status.online === false) return '数据异常 / 未连接';
     return status.quality === 'good' ? '数据正常' : '暂无实时数据';
+}
+function previewQuality(live, point, frame) {
+    let quality = ['good','bad','stale','unknown','disabled','empty'].includes(live?.quality) ? live.quality : 'unknown';
+    if (frame?.deviceStatus?.online === false || frame?.deviceStatus?.quality === 'bad') quality = 'bad';
+    else if (frame?.deviceStatus?.quality === 'stale') quality = 'stale';
+    const updatedAt = timestamp(live?.lastReadAt);
+    if (quality === 'good' && (!updatedAt || Date.parse(updatedAt) > Date.now() + 5000)) quality = 'unknown';
+    else if (quality === 'good' && Date.now() - Date.parse(updatedAt) > Math.max(6000, Number(point.sample_interval_ms || 1000) * 3)) quality = 'stale';
+    return { quality, lastReadAt: updatedAt };
 }
 function displayName(value, label = '名称') {
     if (typeof value !== 'string' || !value.trim() || value.trim().length > 100 || /[\u0000-\u001f\u007f]/.test(value)) throw error(`${label}请填写 1–100 个字符`);
@@ -80,9 +91,11 @@ async function scopedDevices(db, factoryId, deviceId = '') {
     const rows = deviceId ? [await db.get('SELECT * FROM devices WHERE id=?', [deviceId])].filter(Boolean)
         : await db.all('SELECT * FROM devices ORDER BY line_id,sort_order,id');
     const devices = rows.flatMap(d => {
-        // A foreign line can never be rescued by a local instance override.
-        if (d.line_id && !byLine.has(String(d.line_id))) return [];
-        const line = byLine.get(String(d.line_id)), instance = parseObject(d.instance_config);
+        const instance = parseObject(d.instance_config), lineId = deviceLineId(d, instance);
+        // Primary/rail/lane association follows the same precedence as the scene.
+        // A foreign association can never be rescued by a local workshop override.
+        if (lineId && !byLine.has(String(lineId))) return [];
+        const line = byLine.get(String(lineId));
         const workshop = byWorkshop.get(String(line?.workshop_id || instance.workshop_id || instance.workshopId || ''));
         return workshop ? [{ ...d, id: String(d.id), lineId: String(line?.id || ''), lineName: line?.name || '', workshopId: String(workshop.id), workshopName: workshop.name }] : [];
     }).slice(0, 5000);
@@ -104,6 +117,9 @@ async function buildCatalog(factoryId, deviceId = '', state = null, previewDevic
             sourceLabel: value.sourceLabel || (value.sourceType === 'plc' ? '设备采集' : value.sourceType === 'dataset' ? '外部数据表' : '内部资料'),
             label: override.label || value.label, categoryId: category(override.categoryId || value.categoryId) });
     }
+    table({ id:'internal_events', name:'报警／事件记录', sourceType:'internal', categoryId:'alarms', objectScope:'factory', description:'当前工厂已实际保存的报警及事件；只读，不生成示例报警' });
+    item({ id:'internal_event_records', tableId:'internal_events', label:'报警／事件列表', categoryId:'alarms', sourceType:'internal', type:'array', objectScope:'factory',
+        binding:{ mode:'runtime', path:'events', deviceScope:'global', readOnly:true } });
     if (devices.length) {
         table({ id: 'internal_devices', name: '设备资料', sourceType: 'internal', categoryId: 'device', objectScope: 'device', description: '来自设备管理，名称和所属关系随当前设备变化' });
         const fields = [
@@ -125,12 +141,14 @@ async function buildCatalog(factoryId, deviceId = '', state = null, previewDevic
         allPoints.push(...await db.all(`SELECT * FROM data_points WHERE device_id IN (${ids.map(() => '?').join(',')}) ORDER BY device_id,id`, ids));
     }
     const readable = allPoints.filter(p => String(p.access_type || 'READ').toUpperCase() === 'READ');
-    const runtime = new Map();
+    const runtime = new Map();let previewFrame = null;
     // Fetch only the selected sample's existing owned live frame. Definitions'
     // saved quality/value are never evidence of a healthy current reading.
     if (options.runtimePreview !== false && previewDevice && global.dataEngine?.getPointRuntimeValues) {
         try {
             const frame = await global.dataEngine.getPointRuntimeValues(previewDevice.id, readable.filter(p => String(p.device_id) === previewDevice.id), factoryId);
+            if (frame?.deviceStatus?.deviceId && String(frame.deviceStatus.deviceId) !== previewDevice.id) throw new Error('预览设备与采集帧不匹配');
+            previewFrame = frame;
             for (const p of frame.points || []) if (String(p.device_id ?? previewDevice.id) === previewDevice.id) runtime.set(String(p.id), p);
             const status = items.find(i => i.id === 'internal_device_status');
             if (status) { status.previewValue = deviceStatusText(frame.deviceStatus); status.quality = frame.deviceStatus?.quality || 'unknown'; }
@@ -143,26 +161,35 @@ async function buildCatalog(factoryId, deviceId = '', state = null, previewDevic
         const categoryId = p.category === 'alarm' || /^alarm(?:_|$)/.test(p.point_kind || '') || p.alarm_record_role || /^bj\d+$/i.test(p.name || '') ? 'alarms' : 'realtime';
         const tableId = stableId('plc', device.id);
         if (!tableIds.has(tableId)) table({ id: tableId, name: `${device.name || device.id} · 采集点位`, sourceType: 'plc', categoryId: 'realtime', objectScope: 'device', deviceId: device.id, deviceName: device.name, description: `${device.workshopName}${device.lineName ? ' / ' + device.lineName : ''}` });
-        const live = runtime.get(String(p.id)), quality = live?.quality || 'unknown';
+        const live = runtime.get(String(p.id)), { quality,lastReadAt } = previewQuality(live, p, String(p.device_id) === previewDevice?.id ? previewFrame : null);
         const pointDataType = String(p.data_type || '').toUpperCase();
         item({ id: stableId('point', p.id), tableId, label: p.label || p.display_name || p.name, categoryId, sourceType: 'plc', type: pointDataType === 'BOOL' ? 'boolean' : ['STRING','CHAR','DT','DTZ','DTL','DTLZ'].includes(pointDataType) ? 'string' : 'number', unit: p.unit || '', objectScope: 'device', deviceId: device.id, deviceName: device.name, pointKey,
-            previewValue: quality === 'good' ? live?.value ?? null : null, quality,
+            previewValue: quality === 'good' ? live?.value ?? null : null, quality, plcAddress:p.plc_tag || '', lastReadAt,
             binding: { mode: 'plc', pointId: String(p.id), deviceId: device.id, pointKey, path: pointKey, deviceScope: 'fixed', requireConfiguredPoint: true },
             tooltipBinding: { mode: 'plc', pointKey, path: pointKey, deviceScope: 'current', requireConfiguredPoint: true } });
     }
     const models = mergeBuiltinModels(await db.all('SELECT * FROM models WHERE factory_id IS NULL OR factory_id=?', [factoryId]));
-    let previewPart = null;
+    let previewPart = null;const catalogParts=[];
     for (const device of devices) {
         const model = models.find(m => String(m.id).toLowerCase() === String(device.model_type || '').toLowerCase()) || models.find(m => device.model_file && m.file_path === device.model_file);
         if (!model) continue;
         const metadata = parseObject(model.metadata), instance = parseObject(device.instance_config);
-        try { previewPart = effectiveInspection(metadata, instance).inspection.parts?.[0] || null; } catch { /* Invalid authored inspection is not a data source. */ }
-        if (previewPart) break;
+        try {
+            const parts=effectiveInspection(metadata, instance).inspection.parts || [];
+            catalogParts.push(...parts);
+            if (device.id === previewDevice?.id) previewPart=parts[0] || null;
+        } catch { /* Invalid authored inspection is not a data source. */ }
     }
-    if (previewPart) {
+    if (catalogParts.length) {
         table({ id: 'internal_parts', name: '部件资料', sourceType: 'internal', categoryId: 'parts', objectScope: 'part', description: '来自已有拆解模型，随当前悬停部件变化' });
-        for (const [key, label] of [['name','部件名称'],['id','部件编号'],['group','部件分组'],['description','部件说明']]) item({ id: `internal_part_${key}`, tableId: 'internal_parts', label, categoryId: 'parts', sourceType: 'internal', type: 'string', objectScope: 'part', previewValue: previewPart[key] || null, quality: previewPart[key] ? 'good' : 'empty',
+        for (const [key, label] of [['name','部件名称'],['id','部件编号'],['group','部件分组'],['description','部件说明']]) item({ id: `internal_part_${key}`, tableId: 'internal_parts', label, categoryId: 'parts', sourceType: 'internal', type: 'string', objectScope: 'part', previewValue: previewPart?.[key] || null, quality: previewPart?.[key] ? 'good' : 'empty',
             binding: { mode: 'runtime', path: `selectedPart.${key}`, deviceScope: 'current' }, tooltipBinding: { mode: 'runtime', path: `hover.part.${key}`, deviceScope: 'current' } });
+        const slots=Math.min(12,catalogParts.reduce((max,part)=>Math.max(max,(part.point_ids || part.pointIds || []).length),0));
+        for(let index=0;index<slots;index++){
+            const representative=catalogParts.map(part=>(part.point_ids || part.pointIds || [])[index]).map(id=>readable.find(point=>String(point.id)===String(id))).find(Boolean);
+            item({id:`internal_part_point_${index}`,tableId:'internal_parts',label:`当前部件采集参数 ${index+1}`,categoryId:'parts',sourceType:'internal',type:pointTypeForPart(representative),objectScope:'part',description:'读取当前所选部件已配置点位的对应项；未配置时为空',
+                binding:{mode:'runtime',path:`selectedPart.points.${index}.value`,unitPath:`selectedPart.points.${index}.unit`,deviceScope:'current'},tooltipBinding:{mode:'runtime',path:`hover.part.points.${index}.value`,unitPath:`hover.part.points.${index}.unit`,deviceScope:'current'}});
+        }
     }
     const sourceConnections = new Map(require('./dataSources').listDataSources(factoryId).connections.map(connection => [connection.id, connection]));
     for (const dataset of await listDataSets(factoryId, db)) {
@@ -204,6 +231,7 @@ async function buildCatalog(factoryId, deviceId = '', state = null, previewDevic
         devices: devices.map(d => ({ id: d.id, name: d.name, workshopName: d.workshopName, lineName: d.lineName })),
         previewDevice: previewDevice ? { id: previewDevice.id, name: previewDevice.name } : null, factoryId };
 }
+function pointTypeForPart(point){const type=String(point?.data_type || '').toUpperCase();return type==='BOOL'?'boolean':['STRING','CHAR','DT','DTZ','DTL','DTLZ'].includes(type)?'string':'number'}
 async function saveCategory(input, factoryId) {
     if (!object(input) || Object.keys(input).some(k => !['id','name','revision'].includes(k))) throw error('分类只允许修改名称');
     const state = await store(factoryId); checkRevision(state, input.revision);

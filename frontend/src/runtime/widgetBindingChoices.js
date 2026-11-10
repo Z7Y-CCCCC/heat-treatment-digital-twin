@@ -4,7 +4,7 @@ export const LEGACY_BINDINGS = Object.freeze([
   { id:'http_api', label:'接口直连' },
   { id:'business', label:'业务摘要' }
 ])
-export const DATASET_WIDGETS = new Set(['map_region_list','value','text','status','trend','hud_chart_dock','alarm_list','hud_alarm_panel','marquee','metrics','hud_kpi_panel','business_summary','device_list','hud_device_status'])
+export const DATASET_WIDGETS = new Set(['map_region_list','value','text','image','status','trend','hud_chart_dock','alarm_list','hud_alarm_panel','marquee','metrics','hud_kpi_panel','business_summary','device_list','hud_device_status'])
 export const POINT_WIDGETS = new Set([...DATASET_WIDGETS].filter(type=>!['business_summary','device_list','hud_device_status','map_region_list'].includes(type)))
 export function widgetBindingChoices(widget = {}, {mapContext=false} = {}) {
   const choices=[{id:'static',label:'静态内容'}]

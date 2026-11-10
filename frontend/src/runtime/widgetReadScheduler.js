@@ -1,4 +1,5 @@
 import { playbackSelection, normalizePlayback } from '../../../shared/widgetPlayback.mjs'
+import { hasExternalWidgetBindings } from '../../../shared/widgetBindingWorkflow.mjs'
 // One clock and one bounded, sequential batch reader per surface, not a timer
 // and a PLC connection per card. The existing backend cache remains the source.
 export function createWidgetReadScheduler(hooks) {
@@ -11,11 +12,11 @@ export function createWidgetReadScheduler(hooks) {
 function createReadLane(hooks) {
   const nextAt=new Map(),keys=new Map();let disposed=false,running=null,generation=0,latestNow=0
   function snapshotFor(now) {
-    const context=hooks.context(),params=hooks.parameters(),devices=hooks.devices(),widgets=hooks.widgets().filter(w=>['database','http_api','dataset','business'].includes(w.data?.mode))
+    const context=hooks.context(),params=hooks.parameters(),devices=hooks.devices(),widgets=hooks.widgets().filter(w=>hasExternalWidgetBindings(w))
     const entries=widgets.map(widget=>{
       const playbackAt=hooks.playbackTime?.(widget,now) ?? now
       const selection=playbackSelection(widget.data,context,devices,playbackAt)
-      const key=JSON.stringify([context,params,widget.data,selection.device?.id || ''])
+      const key=JSON.stringify([context,params,widget.data,widget.content?.items?.map(item=>item.binding),selection.device?.id || ''])
       return {widget,key,deviceId:selection.device?.id || '',playbackAt}
     })
     return {context,params,entries,byId:new Map(entries.map(e=>[e.widget.id,e])),scope:JSON.stringify([context,params])}
@@ -63,7 +64,9 @@ function createReadLane(hooks) {
         for(const e of batch){
           if(latest.byId.get(e.widget.id)?.key!==e.key)continue
           const record=payload.values?.[e.widget.id]
-          if(record && (!record.deviceId || record.deviceId===e.deviceId))hooks.put(e.widget.id,record)
+          const matches=record && (e.widget.data?.bindingVersion!==2 && !record.deviceId
+            || record.deviceId!==undefined && String(record.deviceId || '')===e.deviceId)
+          if(matches)hooks.put(e.widget.id,record)
           else hooks.put(e.widget.id,{value:null,rows:[],series:[],quality:'bad',deviceId:e.deviceId,error:'设备数据暂不可用'})
           // Backend reports remaining cache freshness, so a cache hit cannot add
           // a second complete refresh interval. Relative TTL avoids host clock skew.

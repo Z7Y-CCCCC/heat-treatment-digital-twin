@@ -120,6 +120,7 @@ export function useFactoryConfig() {
 
 // Admin API helpers
 export const adminApi = {
+    async getRuntimeConfig(factoryId = '', signal) { return readApiJson(await fetch(`${API_BASE}/config`, { cache: 'no-store', ...(signal ? { signal } : {}), ...(factoryId ? { headers: { 'X-Factory-ID': factoryId } } : {}) }), '读取当前工厂配置失败') },
     // 集团/工厂层级
     async listFactories() { return readApiJson(await fetch(`${API_BASE}/factories`), '读取工厂列表失败') },
     async getFactoryCollectionStatus(signal) { return readApiJson(await fetch(`${API_BASE}/factories/collection-status`, { cache: 'no-store', signal }), '读取工厂采集情况失败') },
@@ -345,7 +346,7 @@ export const adminApi = {
     async saveModelInspection(id, data) { return readApiJson(await fetch(`${API_BASE}/models/${pathId(id)}/inspection`, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) }), '保存模型拆解布局失败', true) },
     async updateDeviceTransforms(devices) { return readApiJson(await fetch(`${API_BASE}/devices/transforms`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ devices }) }), '保存设备组布局失败') },
     async updateDeviceTransform(id, data) { return readApiJson(await fetch(`${API_BASE}/devices/${pathId(id)}/transform`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(deviceTransformPayload(data)) }), '保存设备布局失败') },
-    async updateDeviceMovement(id, movement, pointIds = []) { return readApiJson(await fetch(`${API_BASE}/devices/${pathId(id)}/movement`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ movement, pointIds }) }), '保存设备运动失败') },
+    async updateDeviceMovement(id, movement, pointIds = [], expectedMovement) { return readApiJson(await fetch(`${API_BASE}/devices/${pathId(id)}/movement`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ movement, pointIds, ...(expectedMovement !== undefined ? { expectedMovement } : {}) }) }), '保存设备运动失败') },
     async updateLinePlacement(id, layout) { return readApiJson(await fetch(`${API_BASE}/lines/${pathId(id)}/placement`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ transform: layout.transform, placementPending: layout.placementPending }) }), '保存产线位置失败') },
     async uploadModel(formData) { return readApiJson(await fetch(`${API_BASE}/models/upload`, { method: 'POST', body: formData }), '上传模型失败') },
     async updateModel(id, data) { return readApiJson(await fetch(`${API_BASE}/models/${pathId(id)}`, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) }), '保存模型失败') },

@@ -15,6 +15,7 @@ namespace HeatTreatment.DigitalTwin.Rendering
         private double _extendedStaleMs = double.PositiveInfinity, _retractedStaleMs = double.PositiveInfinity;
         private bool _endpointNeedsResync = true;
         private bool? _condition;
+        private bool _observationAccepted;
         public string Reason = "等待数据";
         private static bool Finite(double value) => !double.IsNaN(value) && !double.IsInfinity(value);
         private static bool Good(JToken value) => value == null || string.Equals(value.ToString(), "good", StringComparison.OrdinalIgnoreCase);
@@ -33,6 +34,11 @@ namespace HeatTreatment.DigitalTwin.Rendering
         }
         private void Freeze(string reason) { Usable = false; Running = false; Reason = reason; }
         private void FreezeEndpoint(string reason, string stage = "invalid") { EndpointStage = stage; if (stage != "waiting") _endpointNeedsResync = true; Freeze(reason); }
+        public void Suspend(string reason = "采集连接中断")
+        {
+            if (HasSample) Recovering = true;
+            _endpointNeedsResync = true; Freeze(reason);
+        }
         public static bool IsEndpointBinding(JObject binding) => binding?["trigger"]?.Value<string>("mode") == "endpoints";
         public static bool IsCatalogBinding(JObject binding) => IsEndpointBinding(binding) || !string.IsNullOrEmpty(binding?.Value<string>("dataItemId"));
         public JObject CaptureEndpointDisplayState(JObject binding)
@@ -85,6 +91,8 @@ namespace HeatTreatment.DigitalTwin.Rendering
             { FreezeEndpoint("到位反馈无效"); return; }
             var extendedStamp = Timestamp(extended["timestamp"]); var retractedStamp = Timestamp(retracted["timestamp"]);
             var envelope = Timestamp(frame?["timestamp"]); var reference = Finite(envelope) ? envelope : wallNow ?? DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            if (wallNow.HasValue && Finite(wallNow.Value) && Finite(envelope) && envelope > wallNow.Value + 1000) { FreezeEndpoint("数据时间无效"); return; }
+            if (wallNow.HasValue && Finite(wallNow.Value)) reference = Math.Max(reference, wallNow.Value);
             var sourceStale = string.Equals(extended.Value<string>("quality"), "stale", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(retracted.Value<string>("quality"), "stale", StringComparison.OrdinalIgnoreCase);
             if (!Finite(extendedStamp) || !Finite(retractedStamp) || extended["quality"] == null || retracted["quality"] == null || !Good(extended["quality"]) || !Good(retracted["quality"]))
@@ -139,16 +147,38 @@ namespace HeatTreatment.DigitalTwin.Rendering
         }
         public void Receive(JObject frame, JObject binding, double now, double? wallNow = null)
         {
+            ReceiveCore(frame, binding, now, wallNow, false);
+        }
+        // Old part definitions retain their original value/action mapping.
+        // They can still share strict source identity, age and ordering without
+        // coercing visibility/color text into a numeric animation position.
+        public bool ReceiveObservationOnly(JObject frame, JObject binding, double now, double? wallNow = null)
+        {
+            ReceiveCore(frame, binding, now, wallNow, true);
+            return _observationAccepted;
+        }
+        private void ReceiveCore(JObject frame, JObject binding, double now, double? wallNow, bool observationOnly)
+        {
+            _observationAccepted = false;
             if (!Finite(now)) return;
             if (IsEndpointBinding(binding)) { ReceiveEndpoints(frame, binding, now, wallNow); return; }
             var group = binding.Value<string>("sourceGroup") ?? "analog";
             var key = binding.Value<string>("sourceKey") ?? "";
             var meta = frame?["pointMeta"]?[group + "." + key];
             var catalog = IsCatalogBinding(binding);
+            if (catalog && !(frame?["motionInputs"] is JObject) && frame?.Value<bool?>("motionInputOnly") != true) return;
             if (!catalog && (frame?.Value<bool?>("motionInputOnly") == true || frame?["motionInputs"] != null && frame[group] == null && frame["pointMeta"] == null && frame["status"] == null && frame["quality"] == null)) return;
             var item = catalog ? frame?["motionInputs"]?[binding.Value<string>("actionId") ?? ""] as JObject : null;
             var token = catalog ? item?["value"] : frame?[group]?[key];
             var stamp = Timestamp(catalog ? item?["timestamp"] : meta?["timestamp"]); var envelope = Timestamp(frame?["timestamp"]);
+            // Real, explicitly assigned point IDs require an owned source
+            // observation. The transport wrapper is not a PLC read. Controlled
+            // local preview (no wall clock) and older unbound model definitions
+            // retain their previous protocol without weakening live bindings.
+            if (!catalog && wallNow.HasValue && Finite(wallNow.Value) && !string.IsNullOrWhiteSpace(binding.Value<string>("pointId"))
+                && (!(meta is JObject) || meta.Value<string>("id") != binding.Value<string>("pointId") || !Finite(stamp) || !Good(meta["quality"])))
+            { Freeze("数据无效"); return; }
+            if (wallNow.HasValue && Finite(wallNow.Value) && Finite(envelope) && envelope > wallNow.Value + 1000) { Freeze("数据时间无效"); return; }
             var wasUsable = Usable;
             var identity = catalog ? item != null && item.Value<string>("dataItemId") == binding.Value<string>("dataItemId")
                 : meta?["id"] == null || meta.Value<string>("id") == binding.Value<string>("pointId");
@@ -160,12 +190,20 @@ namespace HeatTreatment.DigitalTwin.Rendering
             if (!identity || !qualityGood || catalog && !Finite(stamp)) { Freeze(string.Equals(item?["quality"]?.ToString(), "stale", StringComparison.OrdinalIgnoreCase) ? "数据超时" : "数据无效"); return; }
             if (Finite(stamp) && Finite(SourceTimestamp) && stamp < SourceTimestamp) return;
             var reference = Finite(envelope) ? envelope : wallNow ?? DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            if (wallNow.HasValue && Finite(wallNow.Value)) reference = Math.Max(reference, wallNow.Value);
             if (Finite(stamp) && stamp > reference + 1000) { Freeze("数据时间无效"); return; }
-            var sourceAt = now - (Finite(stamp) ? Math.Max(0, (reference - stamp) / 1000) : 0);
+            var cachedAge = frame?.Value<double?>("cachedAgeMs") ?? 0;
+            var age = Finite(stamp) ? Math.Max(0, (reference - stamp) / 1000) : 0;
+            if (Finite(cachedAge) && cachedAge > 0) age = Math.Max(age, cachedAge / 1000);
+            var sourceAt = now - age;
             if (!Finite(stamp) || stamp != SourceTimestamp) { ReceivedAt = sourceAt; SourceTimestamp = stamp; }
             else ReceivedAt = Math.Min(ReceivedAt, sourceAt);
             Number(item?["staleMs"], out var stale); SourceStaleMs = catalog && Finite(stale) && stale > 0 ? stale : double.PositiveInfinity;
             if (now - ReceivedAt > SourceStaleMs / 1000) { Freeze("数据超时"); return; }
+            if (observationOnly)
+            {
+                Usable = true; HasSample = true; Reason = "来源数据正常"; _observationAccepted = true; return;
+            }
             var minimum = binding.Value<double?>("inputMin") ?? 0; var maximum = binding.Value<double?>("inputMax") ?? 1;
             var condition = binding["trigger"] is JObject trigger && trigger.Value<string>("mode") == "condition";
             double p; double value = 0;
@@ -224,6 +262,83 @@ namespace HeatTreatment.DigitalTwin.Rendering
             var sign = 1d;
             if (track.Value<string>("channel") == "q") { double dot = 0; for (var i = 0; i < 4; i++) dot += values[left * size + i].Value<double>() * values[right * size + i].Value<double>(); if (dot < 0) sign = -1; }
             for (var i = 0; i < size; i++) result[i] = values[left * size + i].Value<double>() * (1 - t) + sign * values[right * size + i].Value<double>() * t;
+        }
+    }
+
+    // Immutable, validated track data compiled once when the motion package is
+    // configured. The hot sampling path neither traverses JSON nor allocates.
+    // Its interpolation is intentionally identical to SampleInto above.
+    public sealed class CompiledMotionTrack
+    {
+        public string NodeName { get; private set; }
+        public string Channel { get; private set; }
+        public int Size { get; private set; }
+        public int Count { get; private set; }
+        public double Duration { get; private set; }
+        private double[] _values;
+        public readonly double[] PositionRest = new double[3];
+        public readonly double[] MaximumPositionDisplacement = new double[3];
+        public bool HasPositionTravel { get; private set; }
+        private static bool Finite(double value) => !double.IsNaN(value) && !double.IsInfinity(value);
+
+        public static bool TryCompile(JObject clip, JObject track, out CompiledMotionTrack compiled, out string reason)
+        {
+            compiled = null; reason = "动画轨迹定义无效";
+            if (clip?["count"]?.Type != JTokenType.Integer || track?["size"]?.Type != JTokenType.Integer
+                || (clip["duration"]?.Type != JTokenType.Integer && clip["duration"]?.Type != JTokenType.Float)) return false;
+            if (!long.TryParse(clip["count"].ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var countValue)
+                || !long.TryParse(track["size"].ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var sizeValue)) return false;
+            var duration = clip.Value<double>("duration");
+            if (countValue < 2 || countValue > int.MaxValue || sizeValue < 1 || sizeValue > 4 || !Finite(duration) || duration <= 0) return false;
+            var count = (int)countValue; var size = (int)sizeValue;
+            if (track["channel"]?.Type != JTokenType.String || track["node"]?.Type != JTokenType.String) return false;
+            var values = track["values"] as JArray; var channel = track.Value<string>("channel"); var name = track.Value<string>("node");
+            if (values == null || values.Count != (long)count * size || string.IsNullOrEmpty(channel) || string.IsNullOrEmpty(name)
+                || channel == "q" && size != 4 || channel == "p" && size != 3 || channel == "s" && size != 3 || channel == "v" && size != 1) return false;
+            if (channel != "p" && channel != "q" && channel != "s" && channel != "v"
+                && (channel.Length < 2 || channel[0] != 'e' && channel[0] != 'c' || size != 4
+                    || !int.TryParse(channel.Substring(1), NumberStyles.None, CultureInfo.InvariantCulture, out var slot) || slot < 0)) return false;
+            var typed = new double[values.Count];
+            for (var index = 0; index < values.Count; index++)
+            {
+                if (values[index].Type != JTokenType.Integer && values[index].Type != JTokenType.Float) return false;
+                var value = values[index].Value<double>(); if (!Finite(value) || Math.Abs(value) > float.MaxValue) return false;
+                typed[index] = value;
+            }
+            compiled = new CompiledMotionTrack { NodeName = name, Channel = channel, Size = size, Count = count, Duration = duration, _values = typed };
+            if (channel == "p")
+            {
+                for (var index = 0; index < 3; index++) compiled.PositionRest[index] = typed[index];
+                double maximumSquared = 0;
+                for (var index = 3; index < typed.Length; index += 3)
+                {
+                    var x = typed[index] - typed[0]; var y = typed[index + 1] - typed[1]; var z = typed[index + 2] - typed[2];
+                    var squared = x * x + y * y + z * z;
+                    if (!Finite(squared)) { compiled = null; return false; }
+                    if (squared <= maximumSquared) continue;
+                    maximumSquared = squared;
+                    compiled.MaximumPositionDisplacement[0] = x; compiled.MaximumPositionDisplacement[1] = y; compiled.MaximumPositionDisplacement[2] = z;
+                }
+                compiled.HasPositionTravel = maximumSquared > .00000001;
+            }
+            reason = "动画轨迹定义正常"; return true;
+        }
+
+        public bool SampleInto(double seconds, double[] result)
+        {
+            if (!Finite(seconds) || result == null || result.Length != Size) return false;
+            var offset = Math.Max(0, Math.Min(1, seconds / Duration)) * (Count - 1);
+            var left = Math.Min(Count - 1, (int)Math.Floor(offset)); var right = Math.Min(Count - 1, left + 1); var t = offset - left;
+            if (Channel == "v") t = 0;
+            var sign = 1d;
+            if (Channel == "q")
+            {
+                double dot = 0;
+                for (var index = 0; index < 4; index++) dot += _values[left * Size + index] * _values[right * Size + index];
+                if (dot < 0) sign = -1;
+            }
+            for (var index = 0; index < Size; index++) result[index] = _values[left * Size + index] * (1 - t) + sign * _values[right * Size + index] * t;
+            return true;
         }
     }
 }

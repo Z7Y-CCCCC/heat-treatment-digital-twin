@@ -12,6 +12,7 @@ import DataCatalogPicker from './DataCatalogPicker.vue'
 import { catalogBinding } from '../../../runtime/dataCatalog.js'
 import { addTooltipDataRow } from '../../../runtime/tooltipDataRows.js'
 import { effectiveWidgetBackground, updateWidgetBackground } from '../../../runtime/widgetAppearance.js'
+import { editableWidgetText, updateWidgetTextContent, widgetImageSource } from '../../../runtime/widgetContentConfig.js'
 
 const props = defineProps({
   document: Object, views: { type: Array, default: () => [] }, currentViewId: String,
@@ -104,7 +105,7 @@ const canvasStyle = computed(() => ({ width: `${template.value?.canvas.width || 
 const stageStyle = computed(() => ({ width: `${(template.value?.canvas.width || 280) * zoom.value}px`, height: `${(template.value?.canvas.height || 230) * zoom.value}px` }))
 const pointChoices = computed(() => actualPoints.value.filter(point => String(point.access_type || 'READ').toUpperCase() === 'READ'))
 const selectedMode = computed(() => selected.value?.data.mode || 'static')
-const bindingSources = computed(() => [...(selectedMode.value === 'static' ? [{ id: 'static', label: '固定文案 / 数值' }] : []), { id: 'runtime', label: '悬停设备 / 部件字段' }, { id: 'plc', label: '当前悬停设备点位' }, { id: 'dataset', label: '外部数据表（数据库 / HTTP）' }, ...(!['static', 'runtime', 'plc', 'dataset'].includes(selectedMode.value) ? [{ id: selectedMode.value, label: '原有高级绑定（保留）' }] : [])])
+const bindingSources = computed(() => [{ id: 'static', label: '固定文案 / 数值' }, { id: 'runtime', label: '悬停设备 / 部件字段' }, { id: 'plc', label: '当前悬停设备点位' }, { id: 'dataset', label: '外部数据表（数据库 / HTTP）' }, ...(!['static', 'runtime', 'plc', 'dataset'].includes(selectedMode.value) ? [{ id: selectedMode.value, label: '原有高级绑定（保留）' }] : [])])
 const selectedTextPreview = computed(() => selected.value?.type === 'text' ? previewSurfaceRef.value?.getRenderedText?.(selected.value.id) : undefined)
 const selectedTextFormat = computed(() => Array.isArray(selected.value?.content.lines) ? selected.value.content.lines.join('\n') : String(selected.value?.content.text ?? ''))
 const selectedLinkedMetadata = computed(() => selectedMode.value === 'runtime' && tooltipMetadataPath(selected.value?.data.path || selected.value?.data.source))
@@ -158,13 +159,16 @@ function repairDynamicBindings() {
   try {
     for (const item of model.value?.templates || []) for (const widget of item.widgets || []) {
       const restored = restoreTooltipDynamicBinding(widget, item)
-      if (JSON.stringify(restored) !== JSON.stringify(widget)) Object.assign(widget, restored)
+      if (JSON.stringify(restored) !== JSON.stringify(widget)) {
+        for (const key of ['dynamicBinding','dynamicField']) if (!Object.hasOwn(restored,key)) delete widget[key]
+        Object.assign(widget, restored)
+      }
     }
   } finally { repairingBindings = false }
 }
 watch(() => model.value?.templates.map(item => [item.id, item.kind,
   item.widgets?.map(widget => [widget.id, widget.title, widget.data, widget.dynamicBinding, widget.dynamicField,
-    widget.content?.text, widget.content?.lines, widget.content?.valueMap])]),
+    widget.content?.text, widget.content?.lines, widget.content?.valueMap, widget.content?.dataSourceConfigured])]),
 repairDynamicBindings, { deep: true, immediate: true, flush: 'sync' })
 // Undo/redo replaces the document object, not the active template identity.
 // Compare each source so restoring content does not clear the selected layer.
@@ -293,9 +297,10 @@ function selectWidget(id, event = {}) {
   }
 }
 function chooseCatalogData(item) {
-  if (props.readonly || !selected.value || selectedSystemMetadata.value) return
+  if (props.readonly || !selected.value) return
   const binding = catalogBinding(item, { tooltip: true, kind: kind.value })
   if (!binding) return emit('notice', '此数据项不适用于当前悬停对象')
+  selected.value.content.dataSourceConfigured = true
   selected.value.data = binding
   selected.value.dynamicBinding = deepClone(binding)
   if (selected.value.type === 'text') {
@@ -498,19 +503,10 @@ function pointerEnd() {
 }
 function selectionStyle(widget) { return { left: `${widget.frame.x}px`, top: `${widget.frame.y}px`, width: `${widget.frame.width}px`, height: `${widget.frame.height}px`, zIndex: widget.zIndex, transform: `rotate(${widget.frame.rotation || 0}deg)` } }
 function changeSource(mode) {
-  if (props.readonly || !selected.value) return
+  if (props.readonly || !selected.value || !bindingSources.value.some(source => source.id === mode)) return
   repairDynamicBindings()
   const previous = selected.value.data
-  // A live/associated field is not an authored caption. Never snapshot its
-  // current value into fixed copy (including object descriptions and hints).
-  if (mode === 'static' && previous.mode && previous.mode !== 'static') {
-    emit('notice', '该元素随数据源或关联对象变化，不能改成固定文案；请编辑对应的标题、标签等固定文字图层。')
-    return
-  }
-  if (selectedSystemMetadata.value && mode !== previous.mode) {
-    emit('notice', '这是当前设备／部件的关联动态字段，不能改成其他内容；请修改对应的固定标题，或另加一个数据元素。')
-    return
-  }
+  selected.value.content.dataSourceConfigured = true
   const data = { ...previous, mode, deviceScope: 'current', deviceId: '', readOnly: true }
   if (mode !== previous.mode) {
     // A pointId is honored by the shared renderer even outside PLC mode.
@@ -521,18 +517,20 @@ function changeSource(mode) {
       'apiPath', 'jsonPath', 'businessSection', 'datasets', 'formula']) delete data[key]
   }
   selected.value.data = data
+  // Switching to fixed copy starts with authored content, never a snapshot of
+  // the preview device's live name, state, description or measurement.
+  if (mode === 'static' && previous.mode !== 'static' && selected.value.type === 'text') {
+    const text = editableWidgetText(selected.value.content)
+    selected.value.content = updateWidgetTextContent(selected.value.content, text.includes('{value}') ? '' : text)
+  }
   if (mode !== 'static' && selected.value.type === 'text') selected.value.content.text = '{value}{unit}'
+  if (mode !== 'static' && selected.value.type === 'text') delete selected.value.content.lines
   if (mode === 'dataset' && selected.value.type === 'text') selected.value.content.datasetTextMode = 'template'
   if (mode === 'runtime' && !selected.value.data.path?.startsWith('hover.')) selected.value.data.path = kind.value === 'part' ? 'hover.part.name' : 'hover.device.name'
   invalidate(); change('修改悬停文字数据来源')
 }
 function changeBoundText(event) {
   if (props.readonly || !selected.value || selected.value.type !== 'text' || selectedMode.value === 'static') return
-  if (selectedLinkedMetadata.value) {
-    if (event?.target) event.target.value = selectedTextFormat.value
-    emit('notice', '状态、名称、车间／产线等由真实数据和关联对象自动提供，不能自定义显示文字。')
-    return
-  }
   const format = String(event?.target?.value ?? '')
   if (!format.includes('{value}')) {
     if (event?.target) event.target.value = selectedTextFormat.value
@@ -543,9 +541,29 @@ function changeBoundText(event) {
   delete selected.value.content.lines
   change('修改悬停数据展示格式')
 }
+function updateFixedText(value) {
+  if (props.readonly || !selected.value || selected.value.type !== 'text' || selectedMode.value !== 'static') return
+  selected.value.content = updateWidgetTextContent(selected.value.content, value)
+}
+function fixedStatusValue(value) {
+  if (value === undefined || value === null || value === '') return ''
+  if (typeof value === 'string') {
+    if (['true','1','on','running','online','normal','正常','运行'].includes(value.toLowerCase())) return 'true'
+    if (['false','0','off','stopped','offline','停止','离线'].includes(value.toLowerCase())) return 'false'
+  }
+  const number = Number(value)
+  return Number.isFinite(number) ? number === 0 ? 'false' : 'true' : ''
+}
+function chooseRuntimeField(value) {
+  if (props.readonly || !selected.value) return
+  selected.value.content.dataSourceConfigured = true
+  selected.value.data = { ...selected.value.data, mode: 'runtime', path: String(value ?? ''), source: '', pointId: '', point_id: '', pointKey: '', requireConfiguredPoint: false, deviceScope: 'current', deviceId: '', readOnly: true }
+  invalidate(); change('修改悬停字段')
+}
 function choosePoint(id) {
   if (props.readonly || !selected.value) return
   const point = pointChoices.value.find(item => String(item.id) === id)
+  selected.value.content.dataSourceConfigured = true
   Object.assign(selected.value.data, { pointId: '', point_id: '', pointKey: point ? pointKey(point) : '', requireConfiguredPoint: true, path: '', unit: point?.unit || '', decimals: point?.decimals ?? 1, deviceId: '', deviceScope: 'current', readOnly: true })
   invalidate(); change('绑定悬停设备语义点位')
 }
@@ -628,27 +646,25 @@ onBeforeUnmount(() => { disposed = true; partSequence++; clearDiagnosticFocus();
         <div class="tooltip-panel-heading"><strong>{{ selected.title || widgetTypeLabel(selected.type) }}</strong><small>{{ selected === backgroundWidget ? '提示背景 · 随模板尺寸' : selectedIds.length > 1 ? '已多选，属性编辑首个元素' : '独立基础组件' }}</small></div>
         <nav class="tooltip-inspector-tabs"><button v-for="tab in [{ id: 'content', label: '内容' }, { id: 'style', label: '样式' }, { id: 'data', label: '数据来源' }]" :key="tab.id" type="button" :class="{ active: inspectorTab === tab.id }" @click="inspectorTab = tab.id">{{ tab.label }}</button></nav>
         <fieldset class="tooltip-element-properties" :disabled="readonly">
-          <template v-if="inspectorTab === 'content'"><label>图层名称<input v-model="selected.title" aria-label="悬停元素名称" @change="change('修改悬停图层名称')" /></label><template v-if="selected.type === 'text'">
-              <div v-if="selectedMode !== 'static'" class="tooltip-text-binding-info">
-                <strong>{{ selectedLinkedMetadata ? '关联动态文字 · 不可自定义' : '数据绑定文字' }}</strong>
-                <span>{{ selectedTextSource }}</span>
-                <label>当前显示<textarea :value="selectedTextPreview ?? ''" aria-label="悬停文字当前显示" rows="3" readonly placeholder="当前没有可预览的文字"></textarea></label>
-                <p>内容由数据源或当前设备／部件自动提供，会随关联对象变化，不能改成固定文案。标题、标签等写死文字，请选对应的固定文字图层修改。</p>
-                <p v-if="selected.data.path === 'hover.part.description'">部件说明来自部件资料；要修改这段说明，请编辑该部件的源说明，不要把所有部件改成同一段文字。</p>
-              </div>
-              <label v-if="selectedMode === 'static'">固定文案<textarea v-model="selected.content.text" aria-label="悬停元素文字" rows="3" placeholder="直接输入要显示的标题、标签或固定说明" @change="change('修改悬停固定文案')"></textarea></label>
-              <label v-else-if="!selectedLinkedMetadata">显示格式（保留 {value}）<textarea :value="selectedTextFormat" aria-label="悬停元素文字" rows="3" placeholder="必须保留 {value}；可设置单位或前后缀" @change="changeBoundText($event)"></textarea></label>
-              <p v-if="!selectedLinkedMetadata" class="tooltip-text-edit-hint">{{ selectedMode === 'static' ? '这里编辑的是写死的文案，不是连接状态、关联信息或实时数据。' : '{value} 代表真实数据或关联信息，不能删除或替换成常量。只修改展示格式，不改动数据本身。' }}</p>
-            </template><label v-if="['value', 'status'].includes(selected.type)">数值 / 状态标签<input v-model="selected.content.label" aria-label="悬停数值标签" @change="change('修改悬停数值标签')" /></label><label v-if="selected.type === 'image'">图片地址<input v-model="selected.content.url" @change="change('修改提示图片')" /></label><label>对齐<select v-model="selected.content.align" @change="change('修改悬停文字对齐')"><option value="left">左对齐</option><option value="center">居中</option><option value="right">右对齐</option></select></label><label v-if="!selectedLinkedMetadata">空值 / 异常时显示<input v-model="selected.content.fallback" aria-label="悬停空值文字" @change="change('修改悬停空值文字')" /></label><details v-if="['text', 'value'].includes(selected.type) && !selectedLinkedMetadata"><summary>状态文字映射</summary><div v-for="(entry, index) in selected.content.valueMap || []" :key="index" class="tooltip-mapping-row"><input v-model="entry.value" aria-label="映射原值" placeholder="原值" @change="change()" /><input v-model="entry.text" aria-label="映射文字" placeholder="显示文字" @change="change()" /><button type="button" @click="selected.content.valueMap.splice(index, 1); change()">×</button></div><button type="button" @click="addMap">＋ 映射规则</button></details></template>
+          <template v-if="inspectorTab === 'content'"><label>图层名称<input v-model="selected.title" aria-label="悬停元素名称" @change="change('修改悬停图层名称')" /></label>
+            <label v-if="selected.type !== 'image'"><input :checked="selected.content.showTitle !== false" type="checkbox" aria-label="悬停显示图层标题" @change="selected.content.showTitle=$event.target.checked;change('修改悬停标题显示')" /> 显示图层标题</label>
+            <label v-if="['text','value','status'].includes(selected.type)">内容来源<select :value="selectedMode" aria-label="悬停内容来源" @change="changeSource($event.target.value)"><option v-for="source in bindingSources" :key="source.id" :value="source.id">{{source.label}}</option></select></label>
+            <template v-if="selected.type === 'text'">
+              <label v-if="selectedMode === 'static'">固定文案<textarea :value="editableWidgetText(selected.content)" aria-label="悬停元素文字" rows="3" @input="updateFixedText($event.target.value)" @change="change('修改悬停固定文案')"></textarea></label>
+              <label v-else>显示格式（{value} 为绑定值）<textarea :value="selectedTextFormat" aria-label="悬停元素文字" rows="3" @change="changeBoundText($event)"></textarea></label>
+            </template>
+            <label v-if="['value', 'status'].includes(selected.type)">数值 / 状态标签<input v-model="selected.content.label" aria-label="悬停数值标签" @change="change('修改悬停数值标签')" /></label>
+            <label v-if="selected.type === 'value' && selectedMode === 'static'">固定数值<input v-model.number="selected.content.value" type="number" aria-label="悬停固定数值" @change="change('修改悬停固定数值')" /></label>
+            <template v-if="selected.type === 'status'"><label v-if="selectedMode === 'static'">固定状态<select :value="fixedStatusValue(selected.content.value)" aria-label="悬停固定状态" @change="selected.content.value=$event.target.value === '' ? null : $event.target.value === 'true';change('修改悬停固定状态')"><option value="">未知</option><option value="true">开启</option><option value="false">关闭</option></select></label><label>开启文字<input v-model="selected.content.onText" aria-label="悬停开启文字" @change="change()" /></label><label>关闭文字<input v-model="selected.content.offText" aria-label="悬停关闭文字" @change="change()" /></label><label>未知文字<input v-model="selected.content.unknownText" aria-label="悬停未知文字" @change="change()" /></label></template>
+            <template v-if="selected.type === 'image'"><label>图片地址来源<select :value="widgetImageSource(selected.content,selected.data)" aria-label="悬停图片地址来源" @change="selected.content.urlSource=$event.target.value;change('修改悬停图片来源')"><option value="fixed">固定地址</option><option value="binding">绑定数据项</option></select></label><label v-if="widgetImageSource(selected.content,selected.data)==='fixed'">图片地址<input v-model="selected.content.url" aria-label="悬停图片地址" @change="change('修改提示图片')" /></label><button v-else type="button" @click="inspectorTab='data'">选择图片数据项</button><label>填充方式<select v-model="selected.content.fit" aria-label="悬停图片填充" @change="change()"><option value="contain">完整显示</option><option value="cover">铺满裁切</option><option value="fill">拉伸填充</option></select></label><label>替代文字<input v-model="selected.content.alt" aria-label="悬停图片替代文字" @change="change()" /></label></template>
+            <label>对齐<select v-model="selected.content.align" @change="change('修改悬停文字对齐')"><option value="left">左对齐</option><option value="center">居中</option><option value="right">右对齐</option></select></label><label v-if="!selectedLinkedMetadata">空值 / 异常时显示<input v-model="selected.content.fallback" aria-label="悬停空值文字" @change="change('修改悬停空值文字')" /></label><details v-if="['text', 'value'].includes(selected.type) && !selectedLinkedMetadata"><summary>状态文字映射</summary><div v-for="(entry, index) in selected.content.valueMap || []" :key="index" class="tooltip-mapping-row"><input v-model="entry.value" aria-label="映射原值" placeholder="原值" @change="change()" /><input v-model="entry.text" aria-label="映射文字" placeholder="显示文字" @change="change()" /><button type="button" @click="selected.content.valueMap.splice(index, 1); change()">×</button></div><button type="button" @click="addMap">＋ 映射规则</button></details></template>
           <template v-else-if="inspectorTab === 'style'"><div class="tooltip-property-grid"><label>X<input v-model.number="selected.frame.x" type="number" @change="geometryChanged" /></label><label>Y<input v-model.number="selected.frame.y" type="number" @change="geometryChanged" /></label><label>宽度<input v-model.number="selected.frame.width" type="number" min="1" @change="geometryChanged" /></label><label>高度<input v-model.number="selected.frame.height" type="number" min="1" @change="geometryChanged" /></label><label>字号<input v-model.number="selected.style.fontSize" type="number" min="8" max="120" @change="change('修改悬停字号')" /></label><label>字重<select v-model.number="selected.style.fontWeight" @change="change()"><option :value="400">常规</option><option :value="500">中等</option><option :value="600">半粗</option><option :value="700">粗体</option></select></label><label>圆角<input v-model.number="selected.style.borderRadius" type="number" min="0" max="80" @change="change()" /></label><label>内边距<input v-model.number="selected.style.padding" type="number" min="0" max="100" @change="change()" /></label></div><ColorField v-model="selected.style.color" label="文字颜色" @commit="change('修改提示文字颜色')" /><ColorField v-if="selected.type === 'value'" v-model="selected.style.valueColor" label="数值颜色" @commit="change('修改提示数值颜色')" /><ColorField :model-value="effectiveWidgetBackground(selected.style)" label="背景颜色" @update:model-value="updateWidgetBackground(selected.style, $event)" @commit="change('修改提示背景颜色')" /><ColorField v-model="selected.style.borderColor" label="边框颜色" @commit="change()" /><label>边框宽度<input v-model.number="selected.style.borderWidth" type="number" min="0" max="10" @change="change()" /></label><div class="tooltip-button-row"><button type="button" @click="moveLayer(-1)">下移一层</button><button type="button" @click="moveLayer(1)">上移一层</button></div></template>
-          <template v-else-if="selectedSystemMetadata"><div class="tooltip-text-binding-info"><strong>关联动态字段 · 保留绑定</strong><span>{{ selectedTextSource }}</span><label>绑定字段<input :value="selected.data.path || selected.data.source" aria-label="悬停关联字段" readonly /></label><p>状态、名称、车间／产线等来自当前悬停对象，不能改成固定文字或换成其他内容。字体、颜色、位置仍可在样式中调整。</p></div></template>
-          <template v-else><DataCatalogPicker :key="selected.id" :binding="selected.data" :factory-id="factoryId" :device-id="previewDeviceId" tooltip :kind="kind" :widget-type="selected.type" :disabled="readonly" @select="chooseCatalogData" /><details class="tooltip-binding-advanced"><summary>高级绑定设置（保留原有配置）</summary><label>数据来源<select :value="selectedMode" aria-label="悬停元素数据来源" @change="changeSource($event.target.value)"><option v-for="source in bindingSources" :key="source.id" :value="source.id">{{ source.label }}</option></select></label><p class="tooltip-binding-hint">绑定范围：当前悬停{{ kind === 'part' ? '部件及所属设备' : '设备' }}。预览选择不会写入固定设备 ID。</p>
-            <template v-if="selectedMode === 'static'"><label v-if="selected.type === 'value'">固定数值<input v-model="selected.content.value" @change="change()" /></label></template>
-            <template v-else-if="selectedMode === 'runtime'"><label>字段<select v-model="selected.data.path" aria-label="悬停字段" @change="change('修改悬停字段')"><option v-if="selected.data.path && !runtimeFields.some(field => field.path === selected.data.path)" :value="selected.data.path">{{ selected.data.path }}</option><option v-for="field in runtimeFields" :key="field.path" :value="field.path">{{ field.label }}</option></select></label><label>自定义字段路径<input v-model="selected.data.path" placeholder="hover.device.name" @change="change('修改悬停自定义字段')" /></label></template>
+          <template v-else><label>数据来源<select :value="selectedMode" aria-label="悬停元素数据来源" @change="changeSource($event.target.value)"><option v-for="source in bindingSources" :key="source.id" :value="source.id">{{source.label}}</option></select></label><DataCatalogPicker :key="selected.id" :binding="selected.data" :factory-id="factoryId" :device-id="previewDeviceId" tooltip :kind="kind" :widget-type="selected.type" :disabled="readonly" @select="chooseCatalogData" /><details class="tooltip-binding-advanced"><summary>高级绑定设置（保留原有配置）</summary>
+            <template v-if="selectedMode === 'runtime'"><label>字段<select :value="selected.data.path" aria-label="悬停字段" @change="chooseRuntimeField($event.target.value)"><option v-if="selected.data.path && !runtimeFields.some(field => field.path === selected.data.path)" :value="selected.data.path">{{ selected.data.path }}</option><option v-for="field in runtimeFields" :key="field.path" :value="field.path">{{ field.label }}</option></select></label><label>自定义字段路径<input :value="selected.data.path" aria-label="悬停自定义字段" @change="chooseRuntimeField($event.target.value)" /></label></template>
             <template v-else-if="selectedMode === 'plc'"><label>预览设备的采集点位<select :value="pointChoices.find(point => pointKey(point) === selected.data.pointKey)?.id || ''" aria-label="悬停采集点位" @change="choosePoint($event.target.value)"><option value="">请选择只读点位</option><option v-for="point in pointChoices" :key="point.id" :value="String(point.id)">{{ point.label || point.display_name || point.name }} · {{ pointKey(point) }}</option></select></label><p v-if="!pointChoices.length" class="tooltip-binding-hint">该设备暂无采集点位，请先配置点位映射。</p><label>通用点位键<input v-model="selected.data.pointKey" placeholder="analog.temperature" @change="change('修改提示语义点位')" /></label></template>
             <DataSetBindingEditor v-else-if="selectedMode === 'dataset'" :key="`${selected.id}:${previewDeviceId}:${previewPartId}`" :binding="selected.data" :context="dataPreviewContext" :devices="previewDevice ? [previewDevice] : []" :playback-now="playbackNow" :disabled="readonly" @change="change('修改提示数据表')" @invalidate="invalidate" @preview="previewValues[selected.id] = $event" />
-            <p v-else class="tooltip-binding-hint">原有高级绑定已保留，可改用已配置的数据库或 HTTP 数据表。</p>
-            <div v-if="!selectedLinkedMetadata" class="tooltip-property-grid"><label>单位<input v-model="selected.data.unit" @change="change('修改悬停单位')" /></label><label>小数位<input v-model.number="selected.data.decimals" type="number" min="0" max="8" @change="change('修改悬停小数位')" /></label></div><label v-if="selectedMode === 'dataset'">刷新间隔（毫秒）<input v-model.number="selected.data.refreshMs" type="number" min="250" max="3600000" @change="change('修改提示刷新频率')" /></label>
+            <p v-else-if="selectedMode !== 'static'" class="tooltip-binding-hint">原有高级绑定已保留，可改用已配置的数据库或 HTTP 数据表。</p>
+            <div class="tooltip-property-grid"><label>单位<input v-model="selected.data.unit" aria-label="悬停数据单位" @change="change('修改悬停单位')" /></label><label>小数位<input v-model.number="selected.data.decimals" type="number" min="0" max="8" aria-label="悬停数据小数位" @change="change('修改悬停小数位')" /></label></div><label>单位字段<input v-model="selected.data.unitPath" aria-label="悬停数据单位字段" @change="change('修改悬停单位字段')" /></label><label v-if="selectedMode === 'dataset'">刷新间隔（毫秒）<input v-model.number="selected.data.refreshMs" type="number" min="250" max="3600000" @change="change('修改提示刷新频率')" /></label>
           </details></template>
         </fieldset>
       </template>

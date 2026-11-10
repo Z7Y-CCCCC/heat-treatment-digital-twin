@@ -3,6 +3,7 @@
 
 import { numberOrDefault, parseInstanceConfig } from './common.js'
 import { normalizeSpatialTransform } from '../../../utils/spatialLayout.js'
+import { resolveLineRailSpacing, lineSceneUnitsPerMeter } from '../../../../../shared/lineRailSpacing.mjs'
 
 export function makeLineLayoutItem(type, index = 0) {
     const isRail = type === 'rail'
@@ -39,7 +40,8 @@ export function normalizeLineLayoutItems(items, type) {
             type: isRail ? 'cart_rail' : 'device_lane',
             offsetZ: numberOrDefault(item?.offsetZ ?? item?.offset_z ?? item?.z, isRail ? 4 : 0),
             length: Math.max(1, numberOrDefault(item?.length, 60)),
-            sort_order: numberOrDefault(item?.sort_order, index)
+            sort_order: numberOrDefault(item?.sort_order, index),
+            ...(isRail && item?.spacing != null ? { spacing: item.spacing } : {})
         }))
         .sort((a, b) => a.sort_order - b.sort_order)
 }
@@ -50,15 +52,16 @@ export function normalizeLineLayout(value) {
     const rails = normalizeLineLayoutItems(source.rails, 'rail')
     const flowDirection = ['right', 'left', 'none'].includes(source.flowDirection) ? source.flowDirection : 'right'
     if (!lanes.length) lanes.push(defaultLineLayout().lanes[0])
-    return {
+    return resolveLineRailSpacing({
         version: 2,
         coordinateSpace: 'workshop_local',
         placementPending: source.placementPending === true,
         transform: normalizeSpatialTransform(source.transform),
         flowDirection,
+        ...(Object.prototype.hasOwnProperty.call(source, 'sceneUnitsPerMeter') ? { sceneUnitsPerMeter: lineSceneUnitsPerMeter(source) } : {}),
         lanes,
         rails
-    }
+    })
 }
 
 export function serializeLineLayout(layout) {

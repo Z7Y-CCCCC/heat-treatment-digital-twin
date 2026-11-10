@@ -42,6 +42,10 @@ async function main() {
     await createTestDatabase(databaseFile);
     fs.mkdirSync(models, { recursive: true });
     const valid = glb();
+    // Keep the scale-edit target separate from identical deletion fixtures.
+    // Uploads may legitimately return an existing canonical model ID on reuse.
+    const scaleFixture = glb({ asset: { version: '2.0' }, scenes: [{ name: 'http-integrity-scale-fixture' }], scene: 0 });
+    let uploadedScaleModelId;
     const seed = new Database(databaseFile);
     const recentEventTime = new Date(Date.now() - 30 * 60000).toISOString().slice(0, 19);
     const oldEventTime = new Date(Date.now() - 2 * 3600000).toISOString().slice(0, 19);
@@ -140,12 +144,38 @@ async function main() {
             }
         });
         await check('valid GLB and embedded GLTF remain supported', async () => {
-            assert.equal((await upload(valid, 'valid.glb', { id: 'valid-upload' })).status, 200);
+            const response = await upload(scaleFixture, 'valid.glb', { id: 'valid-upload' });
+            assert.equal(response.status, 200);
+            const result = await response.json();
+            assert.equal(result.success, true);
+            assert.ok(typeof result.modelId === 'string' && result.modelId.length > 0);
+            assert.equal(result.model.id, result.modelId);
+            uploadedScaleModelId = result.modelId;
             assert.equal((await upload(Buffer.from(JSON.stringify({ asset: { version: '2.0' }, buffers: [{ byteLength: 4, uri: 'data:application/octet-stream;base64,AAAAAA==' }] })), 'embedded.gltf')).status, 200);
         });
         await check('zero, negative and null model scales cannot hide or corrupt a model', async () => {
-            for (const value of [0, -1, null]) assert.equal((await put('/api/models/valid-upload', { default_scale: value })).status, 400);
-            assert.equal((await put('/api/models/valid-upload', { default_scale: 1.5 })).status, 200);
+            assert.ok(uploadedScaleModelId, 'the scale check requires a successful GLB upload');
+            const readModel = async () => (await requestJson(`${origin}/api/models`)).find(model => model.id === uploadedScaleModelId);
+            const before = await readModel();
+            assert.ok(before, 'the returned canonical model must be registered');
+            assert.match(before.file_path, /^\/uploads\/models\/[^/\\]+\.glb$/);
+            const modelFile = path.join(models, path.basename(before.file_path));
+            assert.deepEqual(fs.readFileSync(modelFile), scaleFixture);
+            const endpoint = `/api/models/${encodeURIComponent(uploadedScaleModelId)}`;
+            for (const value of [0, -1, null]) {
+                const response = await put(endpoint, { default_scale: value });
+                assert.equal(response.status, 400, `invalid scale ${value}`);
+                assert.match((await response.json()).error, /模型缩放/);
+                assert.deepEqual(await readModel(), before, 'invalid scales must not change persisted model configuration');
+                assert.deepEqual(fs.readFileSync(modelFile), scaleFixture, 'invalid scales must not change the model asset');
+            }
+            const response = await put(endpoint, { default_scale: 1.5 });
+            assert.equal(response.status, 200);
+            const updated = await response.json();
+            assert.equal(updated.model.id, uploadedScaleModelId);
+            assert.equal(updated.model.default_scale, 1.5);
+            assert.equal((await readModel()).default_scale, 1.5, 'valid scale changes must persist');
+            assert.deepEqual(fs.readFileSync(modelFile), scaleFixture);
         });
         await check('database deletion failure keeps the original model file', async () => {
             const response = await testFetch(`${origin}/api/models/blocked-model`, { method: 'DELETE' });

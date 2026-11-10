@@ -1,3 +1,4 @@
+import { normalizeBindingWorkflow, bindingForDevice } from './widgetBindingWorkflow.mjs'
 const bounded = (value, fallback, min, max) => Number.isFinite(Number(value)) ? Math.round(Math.min(max, Math.max(min, Number(value)))) : fallback
 // This timestamp only selects an allowed device; refreshing and cache freshness
 // keep using real time. A hover pause can legitimately retain an old clock.
@@ -7,7 +8,7 @@ export function isPlaybackTimestamp(value, currentTime = Date.now()) {
 export function normalizePlayback(binding = {}) {
   const scope = ['current','fixed','rotation','global'].includes(binding.deviceScope) ? binding.deviceScope : (binding.deviceId ? 'fixed' : 'current')
   const ids = Array.isArray(binding.rotationDeviceIds) ? [...new Set(binding.rotationDeviceIds.map(String).filter(id=>/^[\w.-]{1,128}$/.test(id)))].slice(0,100) : []
-  return { deviceScope:scope, rotationDeviceIds:ids, rotationIntervalMs:bounded(binding.rotationIntervalMs,10000,2000,3600000), refreshMs:bounded(binding.refreshMs,5000,250,3600000) }
+  return { deviceScope:scope, rotationDeviceIds:ids, rotationIntervalMs:bounded(binding.rotationIntervalMs,10000,2000,3600000), refreshMs:bounded(binding.refreshMs,5000,250,3600000), ...normalizeBindingWorkflow(binding) }
 }
 export function flattenPlaybackDevices(config = {}) {
   const rows=[]
@@ -20,6 +21,12 @@ export function flattenPlaybackDevices(config = {}) {
 export function playbackSelection(binding, context = {}, devices = [], now = Date.now()) {
   const config=normalizePlayback(binding), byId=new Map(devices.map(d=>[String(d.id),d]))
   if(config.deviceScope==='global')return {device:null,index:0,total:0,mode:'global'}
+  if (binding.bindingVersion === 2 && !context.tooltipTarget) {
+    if(config.deviceScope==='fixed')return {device:byId.get(String(binding.deviceId || '')) || null,index:0,total:1,mode:'fixed'}
+    if(config.deviceScope==='current')return {device:byId.get(String(context.deviceId || '')) || null,index:0,total:1,mode:'current'}
+    const rows=binding.deviceBindings || [], index=rows.length ? Math.floor(Math.max(0,now)/config.rotationIntervalMs)%rows.length : 0
+    return {device:byId.get(String(rows[index]?.deviceId || '')) || null,index,total:rows.length,mode:'rotation'}
+  }
   // Hover templates have their own object scope, never a rotating main-view
   // selection. Explicit fixed bindings still opt into another registered device.
   if(context.tooltipTarget===true) {
@@ -43,6 +50,10 @@ export function isDeviceBinding(binding = {}) {
 }
 export function devicePoint(binding, deviceId, pointValues = {}) {
   if (!deviceId) return null
+  if (binding.bindingVersion === 2) {
+    const selected=bindingForDevice(binding,deviceId), point=pointValues[String(selected.pointId || '')] || pointValues[`${deviceId}:${selected.pointId}`]
+    return !selected.bindingMissing && point && String(point.id)===String(selected.pointId) && String(point.device_id)===String(deviceId) ? point : null
+  }
   const direct=pointValues[String(binding.pointId || '')]
   if(direct && String(direct.id)===String(binding.pointId) && String(direct.device_id)===String(deviceId))return direct
   const rows=[...new Map(Object.values(pointValues).filter(p=>p && String(p.device_id)===String(deviceId)).map(p=>[String(p.id),p])).values()]

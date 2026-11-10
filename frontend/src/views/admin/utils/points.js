@@ -21,3 +21,12 @@ export function formatPointTime(value) {
     if (!Number.isFinite(timestamp) || timestamp <= 0) return '-'
     return new Date(timestamp).toLocaleTimeString()
 }
+
+export function formatPointDateTime(value) {
+    const timestamp = Number(value)
+    if (!Number.isFinite(timestamp) || timestamp <= 0) return '-'
+    const date = new Date(timestamp)
+    if (!Number.isFinite(date.getTime())) return '-'
+    const pad = part => String(part).padStart(2, '0')
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
+}

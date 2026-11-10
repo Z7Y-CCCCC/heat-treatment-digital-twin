@@ -6,6 +6,7 @@ const { listDataSets, normalizeDataSet, readDefinition } = require('./dataSets')
 const { mergeBuiltinModels } = require('./builtinModels');
 const { effectiveInspection } = require('./deviceInspection');
 const { normalizeRecordTimestamp: timestamp, resolveRecordTimeColumn } = require('./dataRecordTime');
+const { getDbStatus } = require('../db/database');
 const ID = /^[a-zA-Z0-9_-]{1,100}$/;
 const DAY = 86400000;
 const ALLOWED = new Set(['mode','q','device_id','part_id','field_id','page','page_size','start','end','factory_id']);
@@ -46,7 +47,7 @@ function normalizeQuery(input = {}, now = Date.now()) {
 function objectPath(device, part = null) { return [device.workshopName, device.lineName, device.name || device.id, part?.name || part?.id].filter(Boolean).join(' / '); }
 function row(device, field, part = null) {
     const objectId = part ? `${device.id}:${part.id}` : device.id;
-    return { id: center.stableId('record', objectId, field.id), objectId, deviceId: device.id,
+    return { id: center.stableId('record', objectId, field.id), objectId, deviceId: device.id, ...(part ? {partId:part.id} : {}),
         objectName: part?.name || part?.id || device.name || device.id, objectPath: objectPath(device, part),
         fieldId: field.id, fieldName: field.label, value: null, unit: field.unit || '', quality: 'unknown', updatedAt: null };
 }
@@ -54,7 +55,7 @@ function textMatch(record, q, includeValue = false) {
     if (!q) return true;
     const displayedValue = record.value === true ? '是' : record.value === false ? '否' : record.value;
     const aliases = includeValue && record.value != null ? [record.value, displayedValue, record.unit, `${displayedValue}${record.unit || ''}`, `${displayedValue} ${record.unit || ''}`] : [];
-    return [record.objectName, record.objectPath, record.fieldName, ...aliases].some(value => String(value ?? '').toLocaleLowerCase().includes(q.toLocaleLowerCase()));
+    return [record.objectName, record.objectPath, record.fieldName, record.title, record.level, record.sourceId, ...aliases].some(value => String(value ?? '').toLocaleLowerCase().includes(q.toLocaleLowerCase()));
 }
 function metadataValue(value) { return typeof value === 'string' ? value.slice(0, 2000) : typeof value === 'number' && Number.isFinite(value) || typeof value === 'boolean' ? value : null; }
 async function partContexts(db, factoryId, devices) {
@@ -95,6 +96,18 @@ function paginate(records, query) {
     const total = records.length, page = Math.min(query.page, Math.max(1, Math.ceil(total / query.pageSize)));
     return { records: records.slice((page - 1) * query.pageSize, page * query.pageSize), total, page, pageSize: query.pageSize, hasMore: page * query.pageSize < total };
 }
+function eventTime(value, dialect) {
+    // Match the platform event API: SQLite CURRENT_TIMESTAMP is UTC, while
+    // other SQL drivers retain their session/local-time representation.
+    if (dialect==='sqlite' && typeof value==='string' && /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?$/.test(value)) return timestamp(`${value.replace(' ','T')}Z`);
+    return timestamp(value);
+}
+function eventSqlTime(value, dialect) {
+    const date=new Date(value);
+    if(dialect==='sqlite')return date.toISOString().slice(0,19).replace('T',' ');
+    const pad=value=>String(value).padStart(2,'0');
+    return `${date.getFullYear()}-${pad(date.getMonth()+1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
 async function browseTable(factoryId, tableId, input = {}, options = {}) {
     if (typeof tableId !== 'string' || !ID.test(tableId)) throw fail('数据表标识不正确');
     const query = normalizeQuery(input), state = await center.loadCatalogState(factoryId, options.database || null);
@@ -110,6 +123,21 @@ async function browseTable(factoryId, tableId, input = {}, options = {}) {
         fields: fields.map(({ id,label,type,unit }) => ({ id,label,type,unit })), mode: query.mode,
         records: [], total: 0, page: 1, pageSize: query.pageSize, hasMore: false, readAt: new Date().toISOString(), capabilities: { history: false, deviceRequired: false, partRequired: false, searchSupportsValue: table.id !== 'internal_connection' } };
     if (query.part_id && table.objectScope !== 'part') throw fail('这张数据表不使用部件筛选');
+    if(table.id==='internal_events') {
+        const dialect=getDbStatus().type;
+        const where=['factory_id = ?'],params=[factoryId];
+        if(query.device_id){where.push('source_id = ?');params.push(query.device_id)}
+        if(query.mode==='history'){
+            // Use a conservative SQL window for both second-only SQLite values
+            // and fractional MySQL values, then apply the exact UTC range below.
+            where.push('occurred_at >= ? AND occurred_at < ?');
+            params.push(eventSqlTime(Date.parse(query.start),dialect),eventSqlTime(Date.parse(query.end)+1000,dialect));
+        }
+        const events=await state.db.all(`SELECT id,source_id,title,message,level,occurred_at FROM event_logs WHERE ${where.join(' AND ')} ORDER BY occurred_at DESC,id DESC LIMIT 5000`,params);
+        const byDevice=new Map(devices.map(device=>[String(device.id),device]));
+        const records=events.map(event=>({id:`event_${event.id}`,objectId:String(event.source_id || factoryId),deviceId:String(event.source_id || ''),sourceId:String(event.source_id || ''),objectName:byDevice.get(String(event.source_id))?.name || String(event.source_id || '') || '工厂事件',objectPath:byDevice.get(String(event.source_id)) ? objectPath(byDevice.get(String(event.source_id))) : ['当前工厂',event.source_id].filter(Boolean).join(' / '),fieldId:'internal_event_records',fieldName:'报警／事件内容',value:String(event.message || event.title || '').slice(0,2000),title:String(event.title || '').slice(0,2000),unit:'',quality:'good',updatedAt:eventTime(event.occurred_at,dialect),level:event.level})).filter(record=>(query.mode!=='history' || record.updatedAt && record.updatedAt>=query.start && record.updatedAt<=query.end) && textMatch(record,query.q,true));
+        return {...result,...paginate(records,query),capabilities:{...result.capabilities,history:true},notice:'读取当前工厂已保存的真实报警／事件记录，最多查询最近 5000 条；没有记录时显示为空，不使用示例事件。'};
+    }
     if (table.sourceType === 'dataset') {
         // Catalog visibility is deliberately broader than permission to read
         // actual prepared external records. Decide from the resolved source,
@@ -182,6 +210,19 @@ async function browseTable(factoryId, tableId, input = {}, options = {}) {
         const contexts = await partContexts(state.db, factoryId, devices);
         if (query.part_id && !contexts.some(context => context.part.id === query.part_id)) throw fail('部件不存在或不属于所选设备', 404);
         candidates = contexts.filter(context => !query.part_id || context.part.id === query.part_id).flatMap(({ device,part }) => selectedFields.map(field => withValue(row(device, field, part), part[field.id.replace('internal_part_', '')])));
+        if(selectedFields.some(field=>/^internal_part_point_\d+$/.test(field.id))){
+            await Promise.all(devices.map(async device=>{
+                const points=await state.db.all('SELECT * FROM data_points WHERE device_id=? ORDER BY id',[device.id]);
+                const readable=points.filter(point=>String(point.access_type || 'READ').toUpperCase()==='READ');
+                const frame=await runtimeFrame(device,readable,factoryId),live=new Map((frame?.points || []).filter(point=>String(point.device_id ?? device.id)===device.id).map(point=>[String(point.id),point]));
+                for(const record of candidates.filter(record=>record.deviceId===device.id)){
+                    const match=/^internal_part_point_(\d+)$/.exec(record.fieldId);if(!match)continue;
+                    const part=contexts.find(context=>context.device.id===device.id && context.part.id===record.partId)?.part;
+                    const id=(part?.point_ids || part?.pointIds || [])[Number(match[1])],point=readable.find(point=>String(point.id)===String(id)),reading=live.get(String(id));
+                    Object.assign(record,liveQuality(reading,point || {},frame));record.value=record.quality==='good'?metadataValue(reading?.value):null;record.unit=point?.unit || '';
+                }
+            }));
+        }
         result.notice = '逐设备列出模型已有部件资料及设备实例覆盖；没有配置的部件不会生成虚构记录。长文本最多显示前 2000 个字符。';
     } else if (table.id === 'internal_connection') {
         candidates = devices.flatMap(device => selectedFields.map(field => row(device, field)));

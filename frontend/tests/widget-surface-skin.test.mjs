@@ -55,14 +55,27 @@ test('normalization preserves skin and pure view style objects without normalizi
   assert.notEqual(widget.style.viewOverrides, style.viewOverrides)
 })
 
-test('renderer skin selectors are opt-in and never import module flow/type sizing', async () => {
+test('basic cards and approved modules share the actual surface rules without importing module flow/type sizing', async () => {
   const source = await readFile(new URL('../src/runtime/WidgetRenderer.vue', import.meta.url), 'utf8')
   const css = await readFile(new URL('../src/runtime/widgetSurfaceSkin.css', import.meta.url), 'utf8')
+  const modules = await readFile(new URL('../src/runtime/hudModules.css', import.meta.url), 'utf8')
   assert.match(source, /resolveWidgetViewStyle\(objectValue\(props\.widget\.style/)
   assert.match(source, /'widget-surface-glass': surfacePresentation\.skin === 'glass'/)
   assert.match(source, /<style src="\.\/widgetSurfaceSkin\.css"><\/style>/)
-  assert.match(css, /var\(--surface-accent\) 12%, transparent/)
-  assert.match(css, /width: min\(96px, 34%\)/)
-  assert.match(css, /\.hud-widget\.widget-type-trend \.widget-shell\.widget-surface-glass/)
+  assert.match(modules, /var\(--module-accent\) 12%, transparent/)
+  assert.match(modules, /width: min\(96px, 34%\)/)
+  assert.match(modules, /\.hud-widget\.widget-type-trend \.widget-shell\.widget-surface-glass/)
+  const { compileStyle } = await import('vue/compiler-sfc')
+  const { rawResult, errors } = compileStyle({ source: modules, id: 'shared-surface-contract' })
+  assert.deepEqual(errors, [])
+  const shared = []
+  rawResult.root.walkRules(rule => {
+    if (rule.selector.includes('.hud-module-shell') && rule.selector.includes('.widget-surface-glass')) shared.push(rule)
+  })
+  assert.ok(shared.length >= 4, 'base surface, bloom, hairline and hover all have one shared rule')
+  for (const rule of shared) rule.walkDecls(declaration => {
+    assert.ok(!['padding','font-size','font-weight','letter-spacing','container-type'].includes(declaration.prop), 'shared surfaces must not rearrange basic children')
+  })
+  assert.doesNotMatch(css, /radial-gradient|linear-gradient|widget-surface-glass\s*[{:]/)
   assert.doesNotMatch(css, /(?:font-size|font-weight|letter-spacing|padding|container-type)\s*:/)
 })

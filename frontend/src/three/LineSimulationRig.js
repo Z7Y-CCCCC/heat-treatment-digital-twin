@@ -15,6 +15,10 @@ export class LineSimulationRig {
         }
         if(model?.id==='photo_transfer_cart_v6'){
             this.shuttle=root.getObjectByName('cart_v6_node_cart_feed_shuttle');this.shuttleBase=this.shuttle?.position.clone()
+            const feed=(metadata.partBindings||[]).find(binding=>binding.source_key==='cart_feed_extension'&&binding.action==='translate'&&binding.axis==='x')
+            const stroke=feed?Number(feed.output_max)-Number(feed.output_min||0):NaN
+            this.shuttleStroke=Number.isFinite(stroke)?stroke:.6
+            this.shuttleHome=Number(feed?.output_min||0)
             this.wheels=[1,2].map(i=>root.getObjectByName(`cart_v6_node_cart_wheel_axle_${i}_rotate`)).filter(Boolean).map(node=>({node,r:node.rotation.clone()}))
         }
     }
@@ -29,7 +33,7 @@ export class LineSimulationRig {
             else if(state.run&&b.action==='translate')node.position[axis]+=Number(b.output_max||.1)*Math.sin(state.time*Math.PI/4)**2
             else if(state.run&&b.action==='rotate_angle')node.rotation[axis]+=T.MathUtils.degToRad(Number(b.output_max||90))*Math.sin(state.time*Math.PI/4)**2
         }
-        if(this.shuttle){this.shuttle.position.copy(this.shuttleBase);this.shuttle.position.x+=Number(state.feed||0)*.6}
+        if(this.shuttle){this.shuttle.position.copy(this.shuttleBase);this.shuttle.position.x+=Number(state.feedHome??this.shuttleHome)+Number(state.feed||0)*Number(state.feedTravel??this.shuttleStroke)}
         this.wheels?.forEach(({node,r})=>{node.rotation.copy(r);node.rotation.x+=Number(state.travel||0)/.223})
     }
     dispose(){}

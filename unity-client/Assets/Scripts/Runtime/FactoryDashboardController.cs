@@ -206,6 +206,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
         public event Action<JObject> InspectionContextChanged;
         public event Action<JObject> InspectionHoverUpdated;
         public event Action ParentNavigationRequested;
+        public event Action DeviceEntryStarting;
 
         /// <summary>
         /// Determines whether a native Unity component is enabled for the active
@@ -1010,6 +1011,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
         private void ShowDetail(DeviceView device, ConfiguredView configuredView = null)
         {
             if (device == null || device.Root == null) return;
+            if (_mode != DashboardMode.Detail) DeviceEntryStarting?.Invoke();
             _occlusionFader.Clear();
             if (_selected != null && _selected != device) ResetInspection(_selected, false);
             _selected = device;

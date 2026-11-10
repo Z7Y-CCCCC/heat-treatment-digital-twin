@@ -34,6 +34,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
         private float _motionSpeed;
         private bool _enabled;
         private bool _stationMode;
+        private StationInputMeaning _stationInputMeaning;
         private bool _hasTarget;
         private bool _hasPositionSample;
         private bool _snapNextPositionSample;
@@ -45,6 +46,12 @@ namespace HeatTreatment.DigitalTwin.Runtime
         private bool _diagnosticLogging;
         private float _diagnosticIntervalSeconds = 5f;
         private float _nextDiagnosticLogAt;
+        private readonly MobileMotionSignalState _positionSignal = new MobileMotionSignalState();
+        private string _movementIdentity;
+        private string _lineCalibrationIdentity = "absent";
+        private double _staleMs = 5000;
+        private Vector3 _interpolationStart;
+        private double _interpolationStartedAt;
 
         private sealed class StationAnchor
         {
@@ -53,21 +60,29 @@ namespace HeatTreatment.DigitalTwin.Runtime
             public float DistanceMeters;
         }
 
-        public void Initialize(DeviceDto device)
+        public void Initialize(DeviceDto device, JObject lineLayout = null)
         {
-            Reconfigure(device, false);
+            Reconfigure(device, false, lineLayout);
         }
 
-        public void Reconfigure(DeviceDto device, bool preserveCurrentPosition)
+        public void Reconfigure(DeviceDto device, bool preserveCurrentPosition, JObject lineLayout = null)
         {
+            _lineCalibrationIdentity = lineLayout?["sceneUnitsPerMeter"]?.ToString(Newtonsoft.Json.Formatting.None) ?? "absent";
+            var movementIdentity = device?.InstanceConfigObject?["movement"]?.ToString(Newtonsoft.Json.Formatting.None)
+                + "|lineUnits:" + _lineCalibrationIdentity;
+            if (!preserveCurrentPosition || _device?.Id != device?.Id || _movementIdentity != movementIdentity) _positionSignal.Reset();
+            _movementIdentity = movementIdentity;
             _device = device;
             EnsureMotionIndicator();
             var fallback = new Vector3(device?.PositionX ?? 0f, device?.PositionY ?? 0f, device?.PositionZ ?? 0f);
             var movement = device?.InstanceConfigObject?["movement"] as JObject;
+            _staleMs = movement?.Value<double?>("staleMs") ?? device?.InstanceConfigObject?["animationBindings"]?.Value<double?>("staleMs") ?? 5000;
             // Explicit opt-in diagnostics; sampling never gates position/animation updates.
-            _diagnosticLogging = movement?.Value<bool?>("diagnosticLogging") == true
-                || string.Equals(Environment.GetEnvironmentVariable("MOBILE_DEVICE_MOTION_DIAGNOSTICS"), "1", StringComparison.Ordinal);
-            _diagnosticIntervalSeconds = Mathf.Clamp(ReadNumber(movement?["diagnosticIntervalSeconds"], 5f), 1f, 60f);
+            _diagnosticLogging = movement?.Value<bool?>("diagnosticLogging")
+                ?? device?.InstanceConfigObject?["animationBindings"]?.Value<bool?>("diagnosticLogging")
+                ?? string.Equals(Environment.GetEnvironmentVariable("MOBILE_DEVICE_MOTION_DIAGNOSTICS"), "1", StringComparison.Ordinal);
+            _diagnosticIntervalSeconds = Mathf.Clamp(ReadNumber(movement?["diagnosticIntervalSeconds"]
+                ?? device?.InstanceConfigObject?["animationBindings"]?["diagnosticIntervalSeconds"], 5f), 1f, 60f);
             _enabled = movement?.Value<bool?>("enabled") == true;
             _currentPointId = ReadId(movement?["currentPositionPointId"] ?? movement?["current_position_point_id"]);
             _startActionPointId = ReadId(movement?["startActionPointId"] ?? movement?["start_action_point_id"]);
@@ -77,6 +92,8 @@ namespace HeatTreatment.DigitalTwin.Runtime
                     ? "station"
                     : "normalized";
             _stationMode = string.Equals(_valueMode, "station", StringComparison.OrdinalIgnoreCase);
+            _stationInputMeaning = _stationMode ? MobileMotionSignalState.ParseStationInputMeaning(movement?["stationInputMeaning"]) : StationInputMeaning.Legacy;
+            if (_stationInputMeaning == StationInputMeaning.Invalid) { _enabled = false; _positionSignal.Suspend("工位信号含义无效"); }
             _valueMin = ReadNumber(movement?["valueMin"] ?? movement?["value_min"], 0f);
             _valueMax = ReadNumber(movement?["valueMax"] ?? movement?["value_max"], 100f);
             _smoothingMs = Mathf.Clamp(Mathf.RoundToInt(ReadNumber(movement?["smoothingMs"] ?? movement?["smoothing_ms"], 0f)), 0, 1000);
@@ -88,19 +105,25 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 : string.Equals(speedMode.ToString(), "auto", StringComparison.OrdinalIgnoreCase) ? "auto" : "fixed";
             _maxSpeed = Mathf.Max(0.01f, ReadNumber(movement?["maxSpeed"] ?? movement?["max_speed"], 2f));
             _acceleration = Mathf.Max(0.01f, ReadNumber(movement?["acceleration"], 1f));
-            _sceneUnitsPerMeter = Mathf.Max(0.0001f, ReadNumber(movement?["sceneUnitsPerMeter"] ?? movement?["scene_units_per_meter"], 1f));
+            if (!SceneUnitPolicy.TryResolve(movement, lineLayout, out _sceneUnitsPerMeter, out var unitReason))
+            { _enabled = false; _positionSignal.Suspend(unitReason); }
             _motionSpeed = 0f;
             _start = ReadVector(movement?["start"] as JObject, fallback);
             _end = ReadVector(movement?["end"] as JObject, new Vector3(_start.x + 10f, _start.y, _start.z));
             _stations.Clear();
             if (string.Equals(_valueMode, "station", StringComparison.OrdinalIgnoreCase))
             {
-                _stations.AddRange(ReadStations(movement?["stations"] as JArray));
+                var completeAxis = TryReadVector(movement?["start"] as JObject, out _start) && TryReadVector(movement?["end"] as JObject, out _end)
+                    && RailPositionPolicy.ProjectStation(new[] { (double)_start.x, _start.y, _start.z },
+                        new[] { (double)_start.x, _start.y, _start.z }, new[] { (double)_end.x, _end.y, _end.z }) != null;
+                if (!completeAxis)
+                { _enabled = false; _positionSignal.Suspend("轨道参考轴未完整配置或已退化"); }
+                else _stations.AddRange(ReadStations(movement?["stations"] as JArray));
                 if (_stations.Count == 0)
                 {
-                    // Keep malformed or older configs usable with the same two-point fallback.
-                    _stations.Add(new StationAnchor { Value = 1f, Position = _start });
-                    _stations.Add(new StationAnchor { Value = 2f, Position = _end });
+                    // No invented workstation IDs/locations in a real scene.
+                    _enabled = false;
+                    if (completeAxis && _stationInputMeaning != StationInputMeaning.Invalid) _positionSignal.Suspend("工位坐标未配置");
                 }
             }
             _targetPosition = _start;
@@ -108,8 +131,8 @@ namespace HeatTreatment.DigitalTwin.Runtime
             // The first valid PLC position after startup is the last known
             //现场位置. It must establish the initial pose, not animate from
             // station 1 (or the configured start point) to that pose.
-            _hasPositionSample = preserveCurrentPosition;
-            _snapNextPositionSample = !preserveCurrentPosition;
+            _hasPositionSample = _positionSignal.HasSample;
+            _snapNextPositionSample = !preserveCurrentPosition || !_positionSignal.HasSample;
             _lastLoggedPositionValue = float.NaN;
             _nextDiagnosticLogAt = 0f;
 
@@ -119,7 +142,8 @@ namespace HeatTreatment.DigitalTwin.Runtime
             if (!_enabled) return;
             if (!preserveCurrentPosition)
             {
-                transform.localPosition = _stationMode && _stations.Count > 0
+                transform.localPosition = _stationMode && _stationInputMeaning == StationInputMeaning.Target ? fallback
+                    : _stationMode && _stations.Count > 0
                     ? _stations[0].Position
                     : _start;
                 return;
@@ -132,20 +156,33 @@ namespace HeatTreatment.DigitalTwin.Runtime
 
         private JObject _latestFrame;
 
+        public void UpdateLineCalibration(DeviceDto device, JObject lineLayout)
+        {
+            var identity = lineLayout?["sceneUnitsPerMeter"]?.ToString(Newtonsoft.Json.Formatting.None) ?? "absent";
+            if (identity != _lineCalibrationIdentity) Reconfigure(device, true, lineLayout);
+        }
+
         public void ApplyRealtime(JObject deviceData)
         {
+            if (deviceData?.Value<bool?>("motionInputOnly") == true) return;
             _latestFrame = deviceData;
-            if (!_enabled || deviceData == null || string.IsNullOrWhiteSpace(_currentPointId)) return;
-            JToken actionValue = null;
-            if (!string.IsNullOrWhiteSpace(_startActionPointId)
-                && !TryReadPointValue(deviceData, _startActionPointId, out actionValue)) return;
-            if (!string.IsNullOrWhiteSpace(_startActionPointId) && !AsBoolean(actionValue)) return;
-            if (!TryReadPointValue(deviceData, _currentPointId, out var positionValue)) return;
-            if (!TryReadNumber(positionValue, out var value)) return;
+            if (!_enabled) return;
+            if (deviceData == null || string.IsNullOrWhiteSpace(_currentPointId)) { SuspendInputs("位置采集数据未配置或无效"); return; }
+            if (!_positionSignal.Receive(_device, deviceData, _currentPointId, _startActionPointId,
+                Time.realtimeSinceStartupAsDouble, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), _staleMs, _stationInputMeaning,
+                actualPositionFeedback: !_stationMode))
+            {
+                if (!_positionSignal.Usable) StopAtCurrentPose();
+                return;
+            }
+            if (_stationInputMeaning == StationInputMeaning.Target && !_simulationEnabled)
+            { SuspendInputs("目标工位命令未启用运动估算，实际位置未确认"); return; }
+            var value = (float)_positionSignal.Value;
+            var previousTarget = _targetPosition;
 
             if (_stationMode)
             {
-                if (!TryResolveStationPosition(value, out _targetPosition)) return;
+                if (!TryResolveStationPosition(value, out _targetPosition)) { SuspendInputs("工位编号未配置"); return; }
             }
             else
             {
@@ -162,7 +199,8 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 Debug.Log($"[MobileDeviceMotion] {_device?.Id ?? string.Empty} PLC position={value.ToString(CultureInfo.InvariantCulture)} target={_targetPosition}");
             }
 
-            if (_snapNextPositionSample || !_hasPositionSample)
+            if (_stationInputMeaning != StationInputMeaning.Target
+                && (_positionSignal.SnapOnReceive || _snapNextPositionSample || !_hasPositionSample))
             {
                 _hasPositionSample = true;
                 _snapNextPositionSample = false;
@@ -177,11 +215,16 @@ namespace HeatTreatment.DigitalTwin.Runtime
             }
 
             _hasPositionSample = true;
-            _hasTarget = true;
-            ShowMotionIndicator();
-            if (_stationMode && _simulationEnabled)
+            var changed = (_targetPosition - previousTarget).sqrMagnitude > .00000001f;
+            _hasTarget = (_targetPosition - transform.localPosition).sqrMagnitude > .00000001f;
+            if (changed)
             {
-                _hasTarget = true;
+                _interpolationStart = transform.localPosition;
+                _interpolationStartedAt = Time.realtimeSinceStartupAsDouble;
+            }
+            ShowMotionIndicator();
+            if (EstimateStationTravel)
+            {
                 return;
             }
             if (_smoothingMs <= 0)
@@ -194,23 +237,54 @@ namespace HeatTreatment.DigitalTwin.Runtime
         private void Update()
         {
             UpdateMotionIndicator();
-            if (!_enabled || !_hasTarget) return;
-            if (_stationMode && _simulationEnabled)
+            AdvanceMotion(Time.unscaledDeltaTime, Time.realtimeSinceStartupAsDouble);
+        }
+
+        public void AdvanceMotion(float deltaTime, double now)
+        {
+            if (!_enabled) return;
+            if (!_positionSignal.Advance(now, _staleMs, !string.IsNullOrWhiteSpace(_startActionPointId)))
+            { StopAtCurrentPose(); return; }
+            if (!_hasTarget) return;
+            if (EstimateStationTravel)
             {
-                UpdatePhysicalMotion();
+                if (float.IsFinite(deltaTime) && deltaTime > 0) UpdatePhysicalMotion(deltaTime);
                 return;
             }
             if (_smoothingMs <= 0) return;
-            var blend = 1f - Mathf.Exp(-Time.unscaledDeltaTime * 1000f / Mathf.Max(1f, _smoothingMs));
-            transform.localPosition = Vector3.Lerp(transform.localPosition, _targetPosition, blend);
-            if ((transform.localPosition - _targetPosition).sqrMagnitude < 0.000001f)
+            // A configured 100 ms transition must finish in 100 ms, rather than
+            // the former exponential tail lasting many times that delay budget.
+            var blend = Mathf.Clamp01((float)((now - _interpolationStartedAt) * 1000 / Math.Max(1, _smoothingMs)));
+            transform.localPosition = Vector3.Lerp(_interpolationStart, _targetPosition, blend);
+            if (blend >= 1f)
             {
                 transform.localPosition = _targetPosition;
                 _hasTarget = false;
             }
         }
 
-        private void UpdatePhysicalMotion()
+        public void SuspendInputs(string reason = "采集连接中断")
+        {
+            _positionSignal.Suspend(reason); StopAtCurrentPose();
+        }
+        public bool HasFreshPosition => _enabled && _positionSignal.Usable && _positionSignal.HasSample;
+        public bool HasConfirmedPosition => _enabled && _positionSignal.HasConfirmedPosition;
+        // A continuous position is a measured source pose even while moving.
+        // Target commands and legacy station estimates must never manufacture
+        // a cargo location between physically unobserved stations.
+        public bool HasReliableSourcePose => HasFreshPosition && (!_stationMode
+            || _stationInputMeaning == StationInputMeaning.Current && HasConfirmedPosition
+            || _stationInputMeaning == StationInputMeaning.Legacy && !_simulationEnabled && !_hasTarget);
+        public double CurrentPositionValue => _positionSignal.Value;
+        public string PositionReason => _positionSignal.Reason;
+        private bool EstimateStationTravel => _stationMode && _simulationEnabled && _stationInputMeaning != StationInputMeaning.Current;
+        private void StopAtCurrentPose()
+        {
+            _hasTarget = false; _motionSpeed = 0f; _motionIndicatorUntil = 0f;
+            if (_motionIndicator != null) _motionIndicator.gameObject.SetActive(false);
+        }
+
+        private void UpdatePhysicalMotion(float deltaTime)
         {
             var delta = _targetPosition - transform.localPosition;
             var distance = delta.magnitude;
@@ -222,8 +296,8 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 return;
             }
 
-            var deltaTime = Mathf.Max(0.0001f, Time.unscaledDeltaTime);
-            var sceneUnitsPerMeter = Mathf.Max(0.0001f, _sceneUnitsPerMeter);
+            deltaTime = Mathf.Max(0.0001f, deltaTime);
+            var sceneUnitsPerMeter = _sceneUnitsPerMeter;
             var distanceMeters = distance / sceneUnitsPerMeter;
             var stoppingDistance = (_motionSpeed * _motionSpeed) / (2f * Mathf.Max(0.01f, _acceleration));
             var desiredSpeed = distanceMeters <= stoppingDistance
@@ -309,12 +383,18 @@ namespace HeatTreatment.DigitalTwin.Runtime
             return Mathf.Abs(_end.x - _start.x) >= Mathf.Abs(_end.z - _start.z) ? "x" : "z";
         }
 
-        private Vector3 NormalizeStationPosition(Vector3 source)
+        private bool TryNormalizeStationPosition(Vector3 source, out Vector3 position)
         {
-            if (!IsMobileCarrier()) return source;
-            return ResolveRailAxis() == "z"
-                ? new Vector3(_start.x, _start.y, source.z)
-                : new Vector3(source.x, _start.y, _start.z);
+            position = source;
+            if (!IsMobileCarrier()) return true;
+            // Project to the actual configured horizontal rail, including a
+            // diagonal/rotated line. Choosing its largest X/Z component moved
+            // a carrier away from the real loading datum on oblique layouts.
+            var projected = RailPositionPolicy.ProjectStation(new[] { (double)source.x, source.y, source.z },
+                new[] { (double)_start.x, _start.y, _start.z }, new[] { (double)_end.x, _end.y, _end.z });
+            if (projected == null) return false;
+            position = new Vector3((float)projected[0], (float)projected[1], (float)projected[2]);
+            return float.IsFinite(position.x) && float.IsFinite(position.y) && float.IsFinite(position.z);
         }
 
         private void ShowMotionIndicator()
@@ -341,10 +421,11 @@ namespace HeatTreatment.DigitalTwin.Runtime
             {
                 if (!(token is JObject station) || !TryReadNumber(station["value"], out var value)) continue;
                 var position = station["position"] as JObject ?? station;
+                if (!TryReadVector(position, out var source) || !TryNormalizeStationPosition(source, out var normalized)) continue;
                 result.Add(new StationAnchor
                 {
                     Value = value,
-                    Position = NormalizeStationPosition(ReadVector(position, _start)),
+                    Position = normalized,
                     DistanceMeters = ReadNumber(station["distanceMeters"] ?? station["distance_meters"], 0f)
                 });
             }
@@ -357,25 +438,17 @@ namespace HeatTreatment.DigitalTwin.Runtime
         {
             position = _start;
             if (_stations.Count == 0) return false;
-            if (_stations.Count == 1 || value <= _stations[0].Value)
+            StationAnchor match = null;
+            foreach (var station in _stations)
             {
-                position = _stations[0].Position;
-                return true;
+                if (Mathf.Abs(station.Value - value) > .0001f) continue;
+                if (match != null) return false;
+                match = station;
             }
-
-            for (var index = 1; index < _stations.Count; index += 1)
-            {
-                var previous = _stations[index - 1];
-                var next = _stations[index];
-                if (value > next.Value) continue;
-                var span = next.Value - previous.Value;
-                var progress = span <= Mathf.Epsilon ? 1f : Mathf.InverseLerp(previous.Value, next.Value, value);
-                position = Vector3.LerpUnclamped(previous.Position, next.Position, progress);
-                return true;
-            }
-
-            position = _stations[_stations.Count - 1].Position;
-            return true;
+            // A station ID is discrete feedback, not an invented interpolation
+            // between IDs or a clamp to a neighbouring/last known workstation.
+            if (match == null) return false;
+            position = match.Position; return true;
         }
 
         private bool TryReadPointValue(JObject frame, string pointId, out JToken value)
@@ -442,6 +515,14 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 ReadNumber(value["x"], fallback.x),
                 ReadNumber(value["y"], fallback.y),
                 ReadNumber(value["z"], fallback.z));
+        }
+
+        private static bool TryReadVector(JObject value, out Vector3 position)
+        {
+            position = Vector3.zero;
+            if (value == null || !TryReadNumber(value["x"], out var x) || !TryReadNumber(value["y"], out var y)
+                || !TryReadNumber(value["z"], out var z)) return false;
+            position = new Vector3(x, y, z); return true;
         }
 
         private void OnDestroy()
