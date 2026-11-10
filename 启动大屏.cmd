@@ -3,6 +3,8 @@ setlocal EnableExtensions
 title Digital Twin - Current Workspace
 rem Build changed source; reuse only a source-matched, verified interface.
 set "PROJECT_ROOT=%~dp0"
+rem Keep this workspace's desktop data beside its source and downloaded assets.
+set "APP_USER_DATA_DIR=%PROJECT_ROOT%backend\data\desktop-profile"
 set "APP_DIR=%PROJECT_ROOT%desktop"
 set "APP_EXE=%APP_DIR%\node_modules\electron\dist\electron.exe"
 set "NODE_EXE=%APP_DIR%\resources\runtime\node.exe"
@@ -29,7 +31,7 @@ set "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=%WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENT
 echo [2/2] Starting the current workspace application...
 pushd "%APP_DIR%"
 if errorlevel 1 goto failed
-start "" "%APP_EXE%" "%APP_DIR%" --disable-http-cache
+start "" "%APP_EXE%" "%APP_DIR%" --disable-http-cache --admin
 set "RESULT=%ERRORLEVEL%"
 popd
 if not "%RESULT%"=="0" goto failed

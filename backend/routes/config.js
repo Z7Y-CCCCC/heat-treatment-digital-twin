@@ -129,9 +129,18 @@ router.get('/', async (req, res) => {
         const environmentModel = models.find(m => m.id === environmentModelId && m.asset_type === 'environment') || null;
         const { project: activeProject, scene: activeScene } = await getProjectAndScene(db, '', req.factoryId);
         const published = await loadPublishedDocument(db, activeProject, activeScene);
-        const runtimeScene = published.document?.sceneId && published.document.sceneId !== activeScene?.id
+        const runtimeScene = activeProject?.id && published.document?.sceneId && published.document.sceneId !== activeScene?.id
             ? (await db.get('SELECT * FROM scenes WHERE id = ? AND project_id = ?', [published.document.sceneId, activeProject?.id]) || activeScene)
             : activeScene;
+        const platform = runtimePlatformPayload({
+            project: activeProject,
+            scene: runtimeScene,
+            document: published.document,
+            release: published.release
+        });
+        // Unity's JToken optional access handles a missing scene, but JSON null
+        // remains a JValue and cannot be indexed while building empty projects.
+        if (platform.activeScene === null) delete platform.activeScene;
 
         res.json({
             settings,
@@ -145,12 +154,7 @@ router.get('/', async (req, res) => {
             models,
             environmentModel,
             templatePacks: getHeatTreatmentTemplatePacks(),
-            platform: runtimePlatformPayload({
-                project: activeProject,
-                scene: runtimeScene,
-                document: published.document,
-                release: published.release
-            })
+            platform
         });
     } catch (e) {
         console.error('[Config] 加载配置失败:', e.stack || e.message);
