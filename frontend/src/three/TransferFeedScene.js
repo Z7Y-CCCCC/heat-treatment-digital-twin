@@ -5,6 +5,7 @@ import { restoreGltfNodeNames } from './gltfNodeIdentity.js'
 import { TRANSFER_MODEL_PROFILES, planFeedPlacement } from './feedSequence.js'
 import { CleanerProcessEffects } from './CleanerProcessEffects.js'
 import { cleanerEffectsFromSignals } from './cleanerProcess.js'
+import {measureEquipmentLoadCenters} from './equipmentLoadCenter.js'
 
 function disposeObject(root) {
     const geometries = new Set(), materials = new Set(), textures = new Set()
@@ -130,6 +131,10 @@ export class TransferFeedScene {
         Object.assign(this, planFeedPlacement({ mouthMaxX: mouthBox.max.x,
             mouthCenterZ: mouthBox.getCenter(new THREE.Vector3()).z, cartLeadingX: chassisBox.min.x,
             innerDoorX, materialLength: this.materialLength }))
+        const centers=measureEquipmentLoadCenters(this.furnace,modelId)
+        this.materialDestination=centers?this.furnace.localToWorld(centers.front.clone()):new THREE.Vector3(this.materialEndX,this.materialY,this.dockZ+.085)
+        this.materialEndX=this.materialDestination.x
+        this.feedDistance=this.materialStartX-this.materialEndX
         this.cart.position.set(this.dockX, 0, this.dockZ + this.approachDistance)
         this.material = this.makeMaterial()
         this.scene.add(this.material)
@@ -204,7 +209,7 @@ export class TransferFeedScene {
         this.cart.position.z = cartZ
         for (const door of this.doors) door.target.position[door.axis] = door.base[door.axis] + THREE.MathUtils.lerp(door.min, door.max, pose.door)
         this.shuttle.position.x = this.shuttleBase.x + this.feedDistance * pose.chain
-        this.material.position.set(THREE.MathUtils.lerp(this.materialStartX, this.materialEndX, pose.material), this.materialY, cartZ + .085)
+        this.material.position.set(this.materialStartX,this.materialY,cartZ+.085).lerp(this.materialDestination,pose.material)
         for (const { target, base } of this.rollers) target.rotation.z = base + pose.material * this.feedDistance / .054
         for (const { target, base } of this.wheels) target.rotation.x = base + pose.cart * this.approachDistance / .223
         this.processEffects?.apply(pose.process)
