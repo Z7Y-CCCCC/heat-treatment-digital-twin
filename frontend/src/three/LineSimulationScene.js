@@ -272,11 +272,14 @@ export class LineSimulationScene extends CadMotionScene {
         if(this.material.visible){
             const m=frame.material,point=id=>this.loadPort(id,id!==this.plan.cart?.id,frame.states[id])
             let p
-            if(m.cyclePath&&cart?.savedLink?.cycle?.enabled){
-                const c=cart.savedLink.cycle,s=c.stations.find(s=>s.targetDeviceId===m.to),target=this.entries.get(m.to),node=target?.asset.getObjectByName(s?.seatNodeName||'')
-                if(!node)throw Error('缺少已配置设备内承料节点')
-                const home=siteWorldPoint(new T.Vector3(...c.cartHome),cart.wrapper),seat=siteWorldPoint(new T.Vector3(...s.seatNodeLocal),node)
-                p=home.lerp(seat,m.progress)
+            if(cart?.savedLink?.cycle?.enabled&&(m.cyclePath||m.holder===this.plan.cart.id)){
+                const c=cart.savedLink.cycle,home=siteWorldPoint(new T.Vector3(...c.cartHome),cart.wrapper)
+                p=home
+                if(m.cyclePath){
+                    const s=c.stations.find(s=>s.targetDeviceId===m.to),target=this.entries.get(m.to),node=target?.asset.getObjectByName(s?.seatNodeName||'')
+                    if(!node)throw Error('缺少已配置设备内承料节点')
+                    p.lerp(siteWorldPoint(new T.Vector3(...s.seatNodeLocal),node),m.progress)
+                }
                 const metrics=applySitePayloadMetrics(this.material,cart.wrapper,cart.savedLink.materialSize,cart.sceneUnitsPerMeter);p.y+=metrics.worldHeight*.5
             }else if(this.mode==='site'&&cart){
                 const target=frame.cart.to,home=siteWorldPoint(cart.port,cart.wrapper),dock=target?this.dock(target):null
