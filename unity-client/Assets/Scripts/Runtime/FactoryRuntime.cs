@@ -96,6 +96,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
         private Transform _factoryRoot;
         private Camera _camera;
         private OrbitCameraController _orbit;
+        private StartupSceneRenderGate _startupRenderGate;
         private bool _sceneReady;
         private JObject _sceneLoading;
         private int _startupProgressSequence;
@@ -140,6 +141,8 @@ namespace HeatTreatment.DigitalTwin.Runtime
 
             _environment = GetOrAdd<FactoryEnvironmentBuilder>();
             _camera = _environment.EnsureCamera();
+            _startupRenderGate = new StartupSceneRenderGate(_camera);
+            _startupRenderGate.Pause();
             _orbit = _camera.GetComponent<OrbitCameraController>();
             _environment.BuildLightingAndPostProcessing();
 
@@ -517,6 +520,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
             _reload = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
             _sceneReady = false;
             _sceneLoadId = Guid.NewGuid().ToString("N");
+            _startupRenderGate.Pause();
             _startupProgressSequence = 0;
             _diagnostics?.BeginLoading();
             SetSceneLoading("config", 0, 0);
@@ -889,6 +893,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
             _dashboard.CompleteFactory(bounds);
             _environment.RefreshReflectionProbe();
             _diagnostics.UpdateLoading(.96f, "正在连接实时数据");
+            _startupRenderGate.Resume();
             _sceneReady = true;
             _diagnostics.CompleteLoading();
             PublishDashboardContext("factory", viewId: _dashboard.ActiveViewId ?? "factory_overview");
@@ -2118,6 +2123,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
         private void OnDestroy()
         {
             if (_instance == this) _instance = null;
+            _startupRenderGate?.Resume();
             if (_diagnostics != null) _diagnostics.LoadingChanged -= OnStartupLoadingChanged;
             if (_webSocket != null)
             {

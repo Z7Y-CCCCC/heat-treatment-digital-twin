@@ -5,6 +5,7 @@ using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using HeatTreatment.DigitalTwin.Rendering;
+using HeatTreatment.DigitalTwin.Runtime;
 using UnityEngine;
 
 namespace HeatTreatment.DigitalTwin.Editor
@@ -61,6 +62,15 @@ namespace HeatTreatment.DigitalTwin.Editor
                     try { pump.Complete(InspectionMeshSurface.PrepareStaticIndexesAsync(root, cancellation.Token)); } catch (OperationCanceledException) { cancelled=true; }
                     Check(cancelled,"Cancelled model work was not stopped");
                 }
+                var camera = root.AddComponent<Camera>();
+                var projection = camera.projectionMatrix; var gate = new StartupSceneRenderGate(camera);
+                gate.Pause(); Check(!camera.enabled,"Covered CAD scene still renders during loading");
+                gate.Pause(); gate.Resume(); Check(camera.enabled,"A retry forgot the original enabled camera state");
+                Check(camera.projectionMatrix.Equals(projection),"Loading changed the authored camera projection");
+                camera.enabled=false; gate.Pause(); gate.Resume(); Check(!camera.enabled,"Loading enabled a camera that was originally disabled");
+                camera.enabled=true; gate.Resume(); Check(camera.enabled,"An idle resume changed another owner's camera state");
+                gate.Pause(); UnityEngine.Object.DestroyImmediate(camera); gate.Resume();
+                Check(true,"Camera destruction during cancelled startup is safe");
                 Debug.Log($"[InspectionIndexBatchValidation] PASS {checks} checks; 120 unique meshes, <=2 main-thread continuations, exact hits/misses, cache and cancellation");
             }
             finally {
