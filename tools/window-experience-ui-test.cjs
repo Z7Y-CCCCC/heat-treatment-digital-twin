@@ -18,7 +18,8 @@ const source = read('frontend/src/components/LoadingExperience.vue');
 const { descriptor } = parse(source);
 const component = compileScript(descriptor, { id: 'loading-test', inlineTemplate: true }).content
   .replace(/from ['"]vue['"]/g, "from '/vue.js'")
-  .replace("'../runtime/loadingExperienceConfig.js'", "'/config.js'");
+  .replace("'../runtime/loadingExperienceConfig.js'", "'/config.js'")
+  .replace("'../../../shared/loadingPhaseProgress.mjs'", "'/phase-progress.js'");
 let browser, page, selectedTheme = 'light', delayAppearance = 0;
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, 'http://127.0.0.1');
@@ -26,6 +27,7 @@ const server = http.createServer((req, res) => {
   if (url.pathname === '/startup') return send('text/html', read('desktop/assets/startup.html'));
   if (url.pathname === '/vue.js') return send('text/javascript', read('frontend/node_modules/vue/dist/vue.esm-browser.js'));
   if (url.pathname === '/config.js') return send('text/javascript', read('frontend/src/runtime/loadingExperienceConfig.js'));
+  if (url.pathname === '/phase-progress.js') return send('text/javascript', read('shared/loadingPhaseProgress.mjs'));
   if (url.pathname === '/component.js') return send('text/javascript', component);
   if (url.pathname === '/vue') return send('text/html', `<style>${descriptor.styles[0].content}</style><div id="app"></div><script type="module">
     import {createApp,ref,h} from '/vue.js'; import Loading from '/component.js';

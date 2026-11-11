@@ -16,6 +16,7 @@ internal static partial class Program
             ("bidirectional native transfer fork, hook and cargo match all shared Three cycle traces",TransferCycleMatchesSharedTraces),
             ("transfer BOOL observations require owned typed sources and preserve bad/old/stale barriers",TransferBoolObservationsAreOwnedAndOrdered),
             ("native loading uses the shared light/dark choice and preserves malformed setting failures", LoadingThemesMatch),
+            ("loading phase rings wait for confirmed advancement and check the final stage at real 100 percent", LoadingPhaseRingsMatch),
             ("motion signals freeze on stale, invalid or wrong point identity; interpolation follows authored coordinates", MotionSignalsAreSafe),
             ("numeric feedback renders each source segment with a bounded delay and no stacked full-span slew", FeedbackSmoothingFollowsSourceSegments),
             ("feedback delay accounts for original source age and never predicts a missing sample", FeedbackSmoothingUsesSourceAge),

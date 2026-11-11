@@ -93,6 +93,17 @@ internal static class DashboardLoadingExperience
           `;
 
           let finished = false;
+          style.textContent += `
+            #digital-twin-loading-root .dtl-marker{border:0!important;background:transparent!important;box-shadow:none!important;color:var(--dtl-accent,#2563eb)}
+            #digital-twin-loading-root .dtl-marker svg{display:block;width:100%;height:100%;overflow:visible}
+            #digital-twin-loading-root .dtl-ring-track,#digital-twin-loading-root .dtl-ring-value{stroke:currentColor;stroke-width:1.8;fill:none}
+            #digital-twin-loading-root .dtl-ring-track{opacity:.18}#digital-twin-loading-root .dtl-ring-value{stroke-linecap:round;transition:stroke-dasharray .18s ease-out}
+            #digital-twin-loading-root .dtl-ring-check{stroke:currentColor;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round}
+            #digital-twin-loading-root .dtl-phases li:not(.complete):not(.current) .dtl-marker{color:#98a7bf}
+            #digital-twin-loading-root.is-dark .dtl-marker{color:var(--dtl-accent,#a8c3b1)}
+            #digital-twin-loading-root.is-dark .dtl-phases li.current .dtl-marker{color:#d1b17d}
+            #digital-twin-loading-root.is-dark .dtl-phases li:not(.complete):not(.current) .dtl-marker{color:#777871}
+            @media(prefers-reduced-motion:reduce){#digital-twin-loading-root .dtl-ring-value{transition:none}}          `;
           const root = document.createElement('div');
           root.id = 'digital-twin-loading-root';
           const appearanceCacheKey = 'digital_twin_loading_appearance_v1';
@@ -122,7 +133,7 @@ internal static class DashboardLoadingExperience
               <div class="dtl-art"><div class="dtl-glow"></div><div class="dtl-model" aria-label="拖动旋转厂房示意图，滚轮缩放，双击复位"><div class="dtl-model-stage"><img src="/loading/industrial-factory.png" alt="" draggable="false"/><span class="dtl-smoke" data-smoke-index="0" style="left:26%;top:47.6%"></span><span class="dtl-smoke" data-smoke-index="1" style="left:60.5%;top:37%"></span><button type="button" data-loading-effect="lamp" data-tone="cyan" style="left:5.6%;top:53.2%" aria-label="入口状态灯，点击切换" aria-pressed="true" title="入口状态灯 · 点击开关"><i></i></button><button type="button" data-loading-effect="lamp" data-tone="cyan" style="left:18.7%;top:65%" aria-label="输送线状态灯，点击切换" aria-pressed="true" title="输送线状态灯 · 点击开关"><i></i></button><button type="button" data-loading-effect="lamp" data-tone="cyan" style="left:44.6%;top:56.8%" aria-label="热处理设备状态灯，点击切换" aria-pressed="true" title="热处理设备状态灯 · 点击开关"><i></i></button><button type="button" data-loading-effect="lamp" data-tone="cyan" style="left:61.6%;top:53.9%" aria-label="中段设备状态灯，点击切换" aria-pressed="true" title="中段设备状态灯 · 点击开关"><i></i></button><button type="button" data-loading-effect="lamp" data-tone="amber" style="left:76.8%;top:48.9%" aria-label="炉体指示灯，点击切换" aria-pressed="true" title="炉体指示灯 · 点击开关"><i></i></button><button type="button" data-loading-effect="lamp" data-tone="amber" style="left:87.8%;top:42.2%" aria-label="末端设备状态灯，点击切换" aria-pressed="true" title="末端设备状态灯 · 点击开关"><i></i></button><button type="button" data-loading-effect="smoke" data-smoke-index="0" style="left:26%;top:47.6%" aria-label="前段排气烟囱，点击切换排烟" aria-pressed="true" title="前段排气烟囱 · 点击切换排烟"><i></i></button><button type="button" data-loading-effect="smoke" data-smoke-index="1" style="left:60.5%;top:37%" aria-label="主排气烟囱，点击切换排烟" aria-pressed="true" title="主排气烟囱 · 点击切换排烟"><i></i></button><button type="button" data-loading-effect="furnace" style="left:27.3%;top:71.3%" aria-label="入口加热炉，点击点火或熄火" aria-pressed="true" title="入口加热炉 · 点击点火或熄火"><i></i></button><button type="button" data-loading-effect="furnace" style="left:71.6%;top:49.4%" aria-label="主加热炉，点击点火或熄火" aria-pressed="true" title="主加热炉 · 点击点火或熄火"><i></i></button></div></div><span class="dtl-caption"><i></i> FACTORY SYSTEMS <b>INITIALIZING</b></span><span class="dtl-index">拖动旋转 · 滚轮缩放 · 点击设备互动</span></div>
               <div class="dtl-status"><div><h1>正在准备生产现场</h1><p class="dtl-step">正在读取现场配置</p></div><strong class="dtl-percent"><span>8</span><small>%</small></strong></div>
               <div class="dtl-track"><i class="dtl-fill"></i></div>
-              <ol class="dtl-phases"><li class="current"><span class="dtl-marker"><i></i></span><span class="dtl-copy"><strong>现场配置</strong><small>CONFIGURATION</small></span></li><li><span class="dtl-marker"><i></i></span><span class="dtl-copy"><strong>三维场景</strong><small>3D SCENE</small></span></li><li><span class="dtl-marker"><i></i></span><span class="dtl-copy"><strong>设备模型</strong><small>EQUIPMENT</small></span></li><li><span class="dtl-marker"><i></i></span><span class="dtl-copy"><strong>实时数据</strong><small>LIVE DATA</small></span></li></ol>
+              <ol class="dtl-phases"><li class="current"><span class="dtl-marker"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle class="dtl-ring-track" cx="12" cy="12" r="10"/><circle class="dtl-ring-value" cx="12" cy="12" r="10" pathLength="100" stroke-dasharray="0 100" transform="rotate(-90 12 12)"/><path class="dtl-ring-check" d="m7.5 12 3 3 6-6" style="display:none"/></svg></span><span class="dtl-copy"><strong>现场配置</strong><small>CONFIGURATION</small></span></li><li><span class="dtl-marker"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle class="dtl-ring-track" cx="12" cy="12" r="10"/><circle class="dtl-ring-value" cx="12" cy="12" r="10" pathLength="100" stroke-dasharray="0 100" transform="rotate(-90 12 12)"/><path class="dtl-ring-check" d="m7.5 12 3 3 6-6" style="display:none"/></svg></span><span class="dtl-copy"><strong>三维场景</strong><small>3D SCENE</small></span></li><li><span class="dtl-marker"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle class="dtl-ring-track" cx="12" cy="12" r="10"/><circle class="dtl-ring-value" cx="12" cy="12" r="10" pathLength="100" stroke-dasharray="0 100" transform="rotate(-90 12 12)"/><path class="dtl-ring-check" d="m7.5 12 3 3 6-6" style="display:none"/></svg></span><span class="dtl-copy"><strong>设备模型</strong><small>EQUIPMENT</small></span></li><li><span class="dtl-marker"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle class="dtl-ring-track" cx="12" cy="12" r="10"/><circle class="dtl-ring-value" cx="12" cy="12" r="10" pathLength="100" stroke-dasharray="0 100" transform="rotate(-90 12 12)"/><path class="dtl-ring-check" d="m7.5 12 3 3 6-6" style="display:none"/></svg></span><span class="dtl-copy"><strong>实时数据</strong><small>LIVE DATA</small></span></li></ol>
             </main>
             <footer class="dtl-footer"><span>PRODUCTION OPERATIONS</span><i></i><span>请稍候，正在同步现场状态</span></footer>`;
 
@@ -211,6 +222,13 @@ internal static class DashboardLoadingExperience
               root.classList.toggle('is-quiet', config.preset === 'quiet');
             }).catch(() => {});
 
+          // Mirrored from shared/loadingPhaseProgress.mjs; parity is regression tested.
+          function loadingPhaseState(value, phase, index) {
+            const number=Number(value), progress=Number.isFinite(number)?Math.max(0,Math.min(100,number)):0
+            const supplied=Number(phase), current=Math.max(0,Math.min(3,Number.isFinite(supplied)?Math.trunc(supplied):Math.floor(progress/25)))
+            const complete=index<current||progress>=100
+            return {complete,current:index===current&&!complete,progress:complete?1:index===current?Math.min(.99,Math.max(0,(progress-index*25)/25)):0}
+          }
           const phases = ['正在读取现场配置', '正在构建三维场景', '正在装配设备模型', '正在连接实时数据'];
           const fill = root.querySelector('.dtl-fill');
           const percent = root.querySelector('.dtl-percent span');
@@ -221,6 +239,7 @@ internal static class DashboardLoadingExperience
             const number = Number(value);
             const progress = Number.isFinite(number) ? Math.max(0, Math.min(100, number)) : 0;
             const current = Math.max(0, Math.min(3, Math.trunc(Number.isFinite(Number(phase)) ? Number(phase) : progress / 25)));
+            const phasesChanged = lastProgress !== progress || lastPhase !== current;
             if (lastProgress !== progress) {
               fill.style.transform = 'scaleX(' + progress / 100 + ')';
               percent.textContent = Math.round(progress);
@@ -228,14 +247,18 @@ internal static class DashboardLoadingExperience
             }
             const text = step || phases[current];
             if (lastStep !== text) { stepLabel.textContent = text; lastStep = text; }
-            if (lastPhase !== current) {
+            if (phasesChanged) {
               phaseItems.forEach((item, index) => {
-                item.classList.toggle('complete', index < current);
-                item.classList.toggle('current', index === current);
+                const state = loadingPhaseState(progress, current, index);
+                item.classList.toggle('complete', state.complete);
+                item.classList.toggle('current', state.current);
+                item.querySelector('.dtl-ring-value').setAttribute('stroke-dasharray', state.progress * 100 + ' 100');
+                item.querySelector('.dtl-ring-check').style.display = state.complete ? '' : 'none';
               });
               lastPhase = current;
             }
           };
+          setProgress(8, 0, phases[0]);
           let progressFrame = 0, pendingProgress = null;
           window.__DIGITAL_TWIN_LOADING_PROGRESS__ = detail => {
             if (finished) return;

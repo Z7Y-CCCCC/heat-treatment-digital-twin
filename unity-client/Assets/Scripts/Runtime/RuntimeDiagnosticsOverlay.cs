@@ -18,6 +18,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
         private Texture2D _loadingCardTexture;
         private Texture2D _loadingGlowTexture;
         private Texture2D _loadingDotTexture;
+        private readonly Texture2D[] _loadingPhaseRings = new Texture2D[101];
         private GUIStyle _loadingCardStyle;
         private GUIStyle _loadingKickerStyle;
         private GUIStyle _loadingTinyStyle;
@@ -296,15 +297,14 @@ namespace HeatTreatment.DigitalTwin.Runtime
             var knobX = x + 35f + 830f * Mathf.Clamp01(_loadingProgress);
             DrawLoadingDot(new Rect(knobX - 5f, y + 442.5f, 10f, 10f), LoadingColor(0xd1ad78, 0x2563eb));
 
-            var currentPhase = Mathf.Min(LoadingPhases.Length - 1, Mathf.FloorToInt(_loadingProgress * LoadingPhases.Length));
             for (var index = 0; index < LoadingPhases.Length; index += 1)
             {
                 var phaseX = x + 35f + index * 210f;
-                var markerColor = index < currentPhase
+                var state = LoadingPhaseProgress.State(_loadingProgress * 100, double.NaN, index);
+                var markerColor = state.Complete
                     ? LoadingColor(0x94c2a6, 0x2563eb)
-                    : index == currentPhase ? LoadingColor(0xd4b075, 0x2563eb) : LoadingColor(0x6e7373, 0xbac8dd);
-                DrawLoadingDot(new Rect(phaseX, y + 473f, 18f, 18f), markerColor);
-                DrawLoadingDot(new Rect(phaseX + 6f, y + 479f, 6f, 6f), LoadingColor(0x292b2e, 0xf5f7fb));
+                    : state.Current ? LoadingColor(0xd4b075, 0x2563eb) : LoadingColor(0x6e7373, 0xbac8dd);
+                DrawLoadingPhaseRing(new Rect(phaseX, y + 473f, 18f, 18f), state, markerColor);
                 GUI.Label(new Rect(phaseX + 27f, y + 468f, 165f, 17f), LoadingPhases[index], _loadingPhaseStyle);
                 GUI.Label(new Rect(phaseX + 27f, y + 484f, 165f, 15f), LoadingPhaseCaptions[index], _loadingPhaseCaptionStyle);
             }
@@ -326,6 +326,44 @@ namespace HeatTreatment.DigitalTwin.Runtime
             GUI.color = color;
             GUI.DrawTexture(rect, _loadingDotTexture);
             GUI.color = Color.white;
+        }
+
+        private Texture2D LoadingPhaseRing(int percent)
+        {
+            if (_loadingPhaseRings[percent] != null) return _loadingPhaseRings[percent];
+            var texture = new Texture2D(32, 32, TextureFormat.RGBA32, false) { name = "LoadingPhaseRing" + percent, filterMode = FilterMode.Bilinear, wrapMode = TextureWrapMode.Clamp };
+            for (var y = 0; y < 32; y++) for (var x = 0; x < 32; x++) {
+                var dx = x - 15.5f; var dy = y - 15.5f; var radius = Mathf.Sqrt(dx * dx + dy * dy);
+                var angle = Mathf.Atan2(dx, dy); if (angle < 0) angle += Mathf.PI * 2;
+                var alpha = Mathf.Clamp01(14.8f - radius) * Mathf.Clamp01(radius - 10.5f);
+                if (percent == 0 || angle > percent * Mathf.PI * 2 / 100) alpha = 0;
+                texture.SetPixel(x, y, new Color(1, 1, 1, alpha));
+            }
+            texture.Apply(false, true); _loadingPhaseRings[percent] = texture; return texture;
+        }
+
+        private void DrawLoadingPhaseRing(Rect rect, LoadingPhaseState state, Color color)
+        {
+            GUI.color = new Color(color.r, color.g, color.b, .22f); GUI.DrawTexture(rect, LoadingPhaseRing(100));
+            GUI.color = color; GUI.DrawTexture(rect, LoadingPhaseRing((int)Math.Round(state.Progress * 100)));
+            if (state.Complete) {
+                DrawLoadingCheckStroke(new Vector2(rect.x + rect.width * .28f, rect.y + rect.height * .51f), new Vector2(rect.x + rect.width * .44f, rect.y + rect.height * .67f), rect.width * .085f);
+                DrawLoadingCheckStroke(new Vector2(rect.x + rect.width * .44f, rect.y + rect.height * .67f), new Vector2(rect.x + rect.width * .76f, rect.y + rect.height * .32f), rect.width * .085f);
+            }
+            GUI.color = Color.white;
+        }
+
+        private static void DrawLoadingCheckStroke(Vector2 from, Vector2 to, float width)
+        {
+            var old = GUI.matrix; var delta = to - from;
+            GUIUtility.RotateAroundPivot(Mathf.Atan2(delta.y, delta.x) * Mathf.Rad2Deg, from);
+            GUI.DrawTexture(new Rect(from.x, from.y - width * .5f, delta.magnitude, width), Texture2D.whiteTexture);
+            GUI.matrix = old;
+        }
+
+        private void OnDestroy()
+        {
+            foreach (var texture in _loadingPhaseRings) if (texture != null) Destroy(texture);
         }
 
         private void EnsureLoadingStyles()
