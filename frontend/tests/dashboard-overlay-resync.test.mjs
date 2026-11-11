@@ -22,7 +22,7 @@ for (const match of [...code.matchAll(/from\s+(['"])([^'"]+)\1/g)]) {
 const { default: Overlay } = await import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`)
 Overlay.render = () => null
 
-function fixture(t, { platform = {} } = {}) {
+function fixture(t, { platform = {}, settings = {} } = {}) {
     const environment = installBrowser(t)
     const sockets = installSockets(environment.replace)
     window.dispatchEvent = () => {}
@@ -34,7 +34,7 @@ function fixture(t, { platform = {} } = {}) {
     const request = t.mock.method(globalThis, 'fetch', async url => {
         if (String(url).endsWith('/config')) return failure ? json({}, 503) : json({
             workshops: [{ id: 'w', devices: [{ id: 'unassigned', name: 'Unassigned' }], lines: [{ id: 'l', devices }] }],
-            factoryId: 'factory_a', factories: [{ id: 'factory_a', enabled: visible }], settings: {}, models: [], platform
+            factoryId: 'factory_a', factories: [{ id: 'factory_a', enabled: visible }], settings, models: [], platform
         })
         if (String(url).includes('/events')) return json([])
         return json({})
@@ -49,8 +49,29 @@ function fixture(t, { platform = {} } = {}) {
     app.provide(routeLocationKey, { query: {} })
     app.mount({})
     environment.beforeRestore(() => app.unmount())
-    return { state: instance.value.$.setupState, provides: instance.value.$.provides, sockets, request, replacements, pushes, replace: environment.replace, hide() { visible = false }, setDevices(next) { devices = next }, fail() { failure = true } }
+    return { state: instance.value.$.setupState, provides: instance.value.$.provides, sockets, request, replacements, pushes, replace: environment.replace, hide() { visible = false }, setDevices(next) { devices = next }, setConfig(next) { settings=next.settings;platform=next.platform }, fail() { failure = true } }
 }
+
+test('returning from designer revalidates the published navigation sources and factory name once, without publishing drafts', async t => {
+    const navigation=content=>({document:{widgets:[{id:'nav',type:'navigation',content}],scene:{views:[]}}})
+    const view=fixture(t,{settings:{factory_name:'天津工厂'},platform:navigation({projectLabel:'天津工厂',statusText:'实时采集异常'})})
+    await settle();const state=view.state
+    state.startupLoading=false;state.hostConnected=true
+    assert.equal(state.navigationCopy(state.navigationWidgets[0]).projectLabel,'天津工厂')
+    state.handleHostMessage({data:{type:'overlay_host_state',visible:false}})
+    view.setConfig({settings:{factory_name:'天津智能生产运行中心'},platform:navigation({projectLabel:'天津工厂',statusText:'实时采集异常',projectLabelSource:'factory',statusTextSource:'collection'})})
+    const before=view.request.mock.callCount()
+    state.handleHostMessage({data:{type:'overlay_host_state',visible:true}})
+    await settle()
+    assert.equal(state.navigationCopy(state.navigationWidgets[0]).projectLabel,'天津智能生产运行中心')
+    assert.equal(state.navigationCopy(state.navigationWidgets[0]).statusText,state.dataStore.plcStatusText.value)
+    const reads=()=>view.request.mock.calls.slice(before).filter(c=>String(c.arguments[0]).endsWith('/config'))
+    assert.equal(reads().length,1)
+    assert.equal(reads()[0].arguments[1].headers['X-Factory-ID'],'factory_a')
+    state.handleHostMessage({data:{type:'overlay_host_state',visible:true}});await settle()
+    assert.equal(reads().length,1,'ordinary host context ticks must not poll the full configuration')
+    assert.ok(!view.request.mock.calls.slice(before).some(c=>/platform\/(releases|designer\/draft)/.test(String(c.arguments[0]))))
+})
 
 test('live overlay provides one shared clock without ticking scalar props in the HUD template', async t => {
     const view = fixture(t); await settle()

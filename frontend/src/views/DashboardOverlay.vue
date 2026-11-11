@@ -824,7 +824,7 @@ async function handleRuntimeMessage(message) {
         }
         runtimeContext.hoveredDeviceId = ''
         runtimeContext.deviceHoverPointer = { visible: false }
-        const loaded = await loadConfig(activated)
+        const loaded = await loadConfig(activated || String(route.query.factoryId || config.factoryId || ''))
         if (overlayDisposed || !loaded) return
         if (await leaveHiddenFactory()) return
         factoryVoice.configure(config)
@@ -853,9 +853,18 @@ async function leaveHiddenFactory(hiddenId = '') {
 
 function handleHostMessage(event) {
     if (event.data?.type !== 'overlay_host_state') return
+    const becomingVisible = !hostConnected.value && event.data.visible !== false
     hostConnected.value = event.data.visible !== false
     if (event.data.context) {
         applyRuntimeContext(event.data.context)
+    }
+    // WebView can remain alive but suspended while the designer is on top.
+    // Revalidate published sources on re-entry; do not publish local drafts,
+    // rely on cached literal labels, or reload on every native context tick.
+    if (becomingVisible && !startupLoading.value) {
+        void handleRuntimeMessage({ type:'realtime_resync_required', payload:{ reason:'overlay_visible' } })
+            .catch(error => console.warn('[Overlay] 返回大屏配置同步失败:', error))
+        void dataStore.refreshHealth(true)
     }
     scheduleRegionReport()
 }
