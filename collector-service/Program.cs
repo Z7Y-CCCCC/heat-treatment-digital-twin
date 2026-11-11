@@ -10,11 +10,13 @@ internal static class Program
     public static int Main(string[] args)
     {
         if (HeatTreatment.Shared.DependencyArchive.TryRun(args, out var archiveExitCode)) return archiveExitCode;
-        Console.OutputEncoding = new System.Text.UTF8Encoding(false);
         var index = Array.IndexOf(args, "--config");
         if (index < 0 || index + 1 >= args.Length) { Console.Error.WriteLine("Requires --config <absolute file>"); return 2; }
         try
         {
+            // SCM launches services without console handles. Configuring a
+            // console before ServiceBase.Run crashes with ERROR_INVALID_HANDLE.
+            if (args.Contains("--console")) Console.OutputEncoding = new System.Text.UTF8Encoding(false);
             // Isolated console acceptance tests must not affect machine power.
             // SCM service launches always retain their production power request.
             var suppressPowerRequest = args.Contains("--console") && args.Contains("--no-power-request");
@@ -29,7 +31,12 @@ internal static class Program
             else ServiceBase.Run(service);
             return 0;
         }
-        catch (Exception error) { Console.Error.WriteLine(error); return 1; }
+        catch (Exception error)
+        {
+            if (args.Contains("--console")) Console.Error.WriteLine(error);
+            else { try { EventLog.WriteEntry("HeatTreatmentCollector", error.ToString(), EventLogEntryType.Error); } catch { } }
+            return 1;
+        }
     }
 }
 
@@ -56,14 +63,14 @@ internal sealed class CollectorService : ServiceBase
 
     protected override void OnStart(string[] args)
     {
-        RequestAdditionalTime(240000);
-        StartWorker();
+        RequestAdditionalTime(120000);
+        StartWorker(serviceControl: true);
     }
 
     protected override void OnStop() { RequestAdditionalTime(40000); StopWorker(); }
     protected override void OnShutdown() => StopWorker();
 
-    public void StartWorker()
+    public void StartWorker(bool serviceControl = false)
     {
         _stopping = false;
         using var config = JsonDocument.Parse(File.ReadAllText(_configFile));
@@ -118,7 +125,15 @@ internal sealed class CollectorService : ServiceBase
             // Node cannot spawn MySQL/backend before assignment to the job.
             _worker.StandardInput.WriteLine("start");
             _worker.StandardInput.Flush();
-            if (!ready.Task.Wait(TimeSpan.FromSeconds(220))) throw new System.TimeoutException("Collector initialization timed out");
+            // Cold dependency extraction on a synced/antivirus-scanned volume
+            // can exceed four minutes. Refresh SCM's pending-start checkpoint
+            // while retaining a hard upper bound; never report ready early.
+            var deadline = DateTime.UtcNow.AddMinutes(15);
+            while (!ready.Task.Wait(TimeSpan.FromSeconds(10)))
+            {
+                if (DateTime.UtcNow >= deadline) throw new System.TimeoutException("Collector initialization timed out; inspect service-host.log");
+                if (serviceControl) RequestAdditionalTime(120000);
+            }
             ready.Task.GetAwaiter().GetResult();
             Log("Collector ready; Windows session login is not required.");
         }

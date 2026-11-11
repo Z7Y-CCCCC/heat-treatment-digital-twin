@@ -6,6 +6,7 @@ import { parse, compileScript } from 'vue/compiler-sfc'
 import { deferred, installBrowser, json, settle } from './helpers.mjs'
 import { createTooltipContext } from '../src/runtime/tooltipContext.js'
 import { WidgetClockKey, useWidgetClock } from '../src/runtime/widgetPlayback.js'
+import { createTooltipTemplate, normalizeTooltipTemplates } from '../../shared/tooltipTemplates.mjs'
 
 const url = new URL('../src/runtime/WidgetRenderer.vue', import.meta.url)
 const { descriptor } = parse(await readFile(url, 'utf8'))
@@ -70,6 +71,24 @@ function fixture(t, Component = WidgetRenderer, { liveClock = false } = {}) {
     await nextTick(); await nextTick()
   } }
 }
+
+test('all component hover cards omit the old model description while keeping identity and actual point rows',async t=>{
+  const view=fixture(t,TooltipSurface),template=normalizeTooltipTemplates().templates.find(template=>template.kind==='part')
+  const model=JSON.parse(await readFile(new URL('../../backend/assets/models/cad_cleaner_170700_metadata.json',import.meta.url),'utf8'))
+  const before=JSON.stringify(model),point={id:'usage',device_id:'cleaner',label:'日使用率',unit:'%',value:0,quality:'good'}
+  assert.ok(model.inspection.parts.length>1)
+  for(const part of model.inspection.parts){
+    const context=createTooltipContext({kind:'part',device:{id:'cleaner'},part:{...part,point_ids:['usage']},points:[point],runtimeContext:{viewMode:'device',inspectionStage:'exploded'}})
+    await view.render({template,context,preview:true})
+    assert.equal(view.vm.getRenderedText(`${template.id}_name`),part.name)
+    assert.equal(view.vm.getRenderedText(`${template.id}_group`),part.group)
+    assert.equal(view.vm.getRenderedText(`${template.id}_point_0_value`),'0 %')
+    assert.equal(text(view.root).includes(part.description),false)
+    assert.equal(view.vm.getRenderedText(`${template.id}_description`),undefined)
+  }
+  assert.equal(JSON.stringify(model),before,'model descriptions remain available for detail/inspection pages')
+  assert.equal(createTooltipTemplate('part').canvas.height,224)
+})
 
 test('real tooltip SFC follows native pointer provider immediately with zero content/canvas style work or clock/API wait', async t => {
   t.mock.timers.enable({ apis:['Date', 'setInterval', 'setTimeout'], now:100000 })

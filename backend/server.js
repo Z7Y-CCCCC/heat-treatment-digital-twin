@@ -81,7 +81,7 @@ const assetModelsDir = path.join(assetsDir, 'models');
 // FRONTEND_DIST explicitly, but a native Unity/WebView host may start this
 // server directly; in that case the sibling frontend build is still the
 // authoritative UI instead of leaving /admin and /overlay as 404s.
-const frontendDistDir = process.env.FRONTEND_DIST
+const frontendDistDir = process.env.APP_RUNTIME_ROLE === 'collector' ? null : process.env.FRONTEND_DIST
     ? path.resolve(process.env.FRONTEND_DIST)
     : path.resolve(__dirname, '..', 'frontend', 'dist');
 const deprecatedDashboardPage = path.join(__dirname, 'deprecated-dashboard.html');
@@ -620,6 +620,7 @@ app.get('/api/health', (req, res) => {
     res.json({
         status: 'ok',
         timestamp: new Date().toISOString(),
+        runtime: require('./services/runtimeEngine').runtimeIdentity(),
         version: { ...loadReleaseManifest(), license },
         db: dbStatus,
         engine: engineStatus,

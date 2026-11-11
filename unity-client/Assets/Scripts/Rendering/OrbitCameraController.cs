@@ -7,7 +7,7 @@ namespace HeatTreatment.DigitalTwin.Rendering
     {
         [SerializeField] private float rotateSpeed = 0.22f;
         [SerializeField] private float panSpeed = 0.0022f;
-        [SerializeField] private float zoomSpeed = 0.11f;
+        [SerializeField] private float zoomSpeed = 0.22f;
         [SerializeField] private float keyboardPanSpeed = 14f;
 
         private Vector3 _target;
@@ -21,7 +21,7 @@ namespace HeatTreatment.DigitalTwin.Rendering
         private Bounds _lastBounds = new Bounds(Vector3.zero, new Vector3(40f, 8f, 30f));
         private float _transitionSeconds = 0.22f;
         private Vector3 _targetOffset = Vector3.zero;
-        private float _minimumDistance = 2.5f;
+        private float _minimumDistance = .3f;
         private bool _lastPrecise;
         private bool _manualControl;
         private int _pointerButtons;
@@ -115,7 +115,7 @@ namespace HeatTreatment.DigitalTwin.Rendering
             var verticalFov = Mathf.Max(12f, camera.fieldOfView * .5f) * Mathf.Deg2Rad;
             var horizontalFov = Mathf.Atan(Mathf.Tan(verticalFov) * Mathf.Max(.1f, camera.aspect));
             var halfFov = Mathf.Min(verticalFov, horizontalFov);
-            _minimumDistance = precise ? Mathf.Max(.0005f, radius * .05f) : 2.5f;
+            _minimumDistance = precise ? Mathf.Max(.0005f, radius * .05f) : .3f;
             _desiredDistance = Mathf.Clamp(radius / Mathf.Sin(halfFov) * Mathf.Max(precise ? .05f : .65f, padding), precise ? .001f : 6f, 1000f);
             // Large authored halls can legitimately need more than the original
             // placeholder scene's fixed 600 m far plane. Keep the full bounds
@@ -143,6 +143,32 @@ namespace HeatTreatment.DigitalTwin.Rendering
         {
             TakeManualControl();
             _desiredDistance = Mathf.Clamp(_desiredDistance * Mathf.Max(0.1f, multiplier), _minimumDistance, 1000f);
+        }
+
+        public void ZoomAtPointer(float detents, Vector2 screenPosition, float speedMultiplier = 1f)
+        {
+            if (!InteractionEnabled || PointerInputBlocked || Mathf.Abs(detents) < .0001f
+                || float.IsNaN(detents) || float.IsInfinity(detents)) return;
+            var camera = GetComponent<Camera>();
+            var viewport = camera.pixelRect;
+            if (viewport.height <= 0f || !viewport.Contains(screenPosition)) return;
+            TakeManualControl();
+            var previousDistance = _desiredDistance;
+            var nextDistance = OrbitCameraMotion.WheelDistance(previousDistance, detents,
+                zoomSpeed * Mathf.Clamp(speedMultiplier, .1f, 4f), _minimumDistance, 1000f);
+            if (Mathf.Approximately(previousDistance, nextDistance)) return;
+            // Compute the cursor ray in the DESIRED pose, not the still-damping
+            // rendered camera. Repeated wheel samples must accumulate instead
+            // of repeatedly restarting from an older rendered distance/pivot.
+            // Translate along that ray, keeping its point on the focus plane
+            // at the same screen pixel during the entire smooth movement.
+            var rotation = Quaternion.Euler(_desiredPitch, _desiredYaw, 0f);
+            var halfHeight = Mathf.Tan(camera.fieldOfView * .5f * Mathf.Deg2Rad) * previousDistance;
+            var x = (screenPosition.x - viewport.center.x) * 2f / viewport.width;
+            var y = (screenPosition.y - viewport.center.y) * 2f / viewport.height;
+            var offset = rotation * new Vector3(x * halfHeight * camera.aspect, y * halfHeight, 0f);
+            _desiredTarget += offset * (1f - nextDistance / previousDistance);
+            _desiredDistance = nextDistance;
         }
 
         private void Awake()
@@ -185,9 +211,9 @@ namespace HeatTreatment.DigitalTwin.Rendering
             var wheel = allowPointer ? Input.mouseScrollDelta.y : 0f;
             if (Mathf.Abs(wheel) > 0.001f)
             {
-                TakeManualControl();
-                _desiredDistance *= Mathf.Exp(-wheel * zoomSpeed);
-                _desiredDistance = Mathf.Clamp(_desiredDistance, _minimumDistance, 1000f);
+                var fine = Input.GetKey(KeyCode.LeftControl) || Input.GetKey(KeyCode.RightControl);
+                var fast = Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift);
+                ZoomAtPointer(wheel, Input.mousePosition, fine ? .25f : fast ? 2.5f : 1f);
             }
 
             var keyboard = InteractionEnabled

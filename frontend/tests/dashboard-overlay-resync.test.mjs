@@ -108,6 +108,30 @@ test('live overlay provides one shared clock without ticking scalar props in the
         'forwarding the raw ticking scalar would force every HUD card to re-render')
 })
 
+test('camera buttons send runtime-only navigation commands and fit retains the exact current scope', async t => {
+    const view = fixture(t); await settle()
+    const state = view.state
+    Object.assign(state.runtimeContext, { factoryId: 'factory_a', viewId: 'line_overview', viewMode: 'line', workshopId: 'w', lineId: 'l', sceneReady: true })
+    state.startupLoading = false
+    state.dataStore.wsConnected.value = true
+    const calls = []
+    t.mock.method(globalThis, 'fetch', async (url, options) => { calls.push([url, options]); return json({ success: true, sent: 1 }) })
+    for (const action of ['zoomIn', 'zoomOut', 'rotateLeft', 'rotateRight', 'fit']) assert.equal(await state.sendCameraAction(action), true)
+    assert.equal(calls.length, 5)
+    for (const [url, options] of calls) {
+        assert.match(url, /\/native-preview\/navigate$/)
+        const body = JSON.parse(options.body)
+        assert.equal(body.action, 'camera'); assert.equal(body.viewId, 'line_overview')
+        assert.equal(body.focus.mode, 'line'); assert.equal(body.focus.lineId, 'l'); assert.equal(body.focus.workshopId, 'w')
+        assert.equal(options.headers['X-Factory-ID'], 'factory_a')
+        assert.equal(body.devices, undefined); assert.equal(body.includeLayout, undefined)
+    }
+    state.runtimeContext.sceneReady = false
+    assert.equal(await state.sendCameraAction('zoomIn'), false)
+    assert.equal(calls.length, 5)
+    assert.match(descriptor.template.content, /<SceneCameraControls/)
+})
+
 test('explicit root return-button click works even when the automatic navigation shortcut is unavailable', async t => {
     const view = fixture(t); await settle()
     Object.assign(view.state.runtimeContext, { viewId: 'factory_overview', viewMode: 'factory', sceneReady: true })

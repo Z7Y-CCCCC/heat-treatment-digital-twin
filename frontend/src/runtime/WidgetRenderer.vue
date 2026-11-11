@@ -6,7 +6,7 @@ import * as echarts from 'echarts'
 import { playbackSelection,normalizePlayback,isDeviceBinding,devicePoint } from '../../../shared/widgetPlayback.mjs'
 import { bindingForDevice } from '../../../shared/widgetBindingWorkflow.mjs'
 import { parameterValue } from '../../../shared/dashboardParameters.mjs'
-import {extendedChartOption} from './dashboardCharts.js'
+import {extendedChartOption, gaugeChartRange} from './dashboardCharts.js'
 import { splitHudKpiValue } from './hudPresentation.js'
 import { resolveHudText } from './hudTextConfig.js'
 import { colorChannels, colorAtOpacity, effectiveWidgetBackground, widgetAppearanceVariables } from './widgetAppearance.js'
@@ -563,7 +563,8 @@ const mapRecords = computed(()=>{
  return Array.isArray(boundValue.value)?boundValue.value:[]
 })
 function mapAction(event){if(props.interactive && !props.preview)emit('action',{event,widget:props.widget})}
-const hasTrendData = computed(() => chartSeries.value.some(series => Array.isArray(series.rows) && series.rows.length > 0))
+const hasTrendData = computed(() => content.value.chartType === 'gauge' ? gaugeReading.value !== null
+  : chartSeries.value.some(series => Array.isArray(series.rows) && series.rows.length > 0))
 
 const imageUrl=computed(()=>resolveWidgetImageUrl(content.value,dataBinding.value,boundValue.value,boundQuality.value))
 const textLines = computed(() => {
@@ -641,7 +642,7 @@ const usesSharedMetricRing = computed(() => !!surfacePresentation.value.skin && 
   type.value === 'metrics' && content.value.layout !== 'list'
   || type.value === 'trend' && content.value.chartType === 'gauge' && displayUnit.value === '%'
     && Number(content.value.min ?? 0) === 0 && Number(content.value.max ?? 100) === 100))
-const sharedMetricRingValue = computed(() => type.value === 'trend' ? numericValue(boundValue.value) : hudRingValue.value)
+const sharedMetricRingValue = computed(() => type.value === 'trend' ? gaugeReading.value : hudRingValue.value)
 const hudDeviceCounts = computed(() => {
   const rows = allDeviceRows.value
   return { total: rows.length, online: rows.filter(device => device.online && device.quality !== 'bad').length, alarms: rows.filter(device => device.alarm).length }
@@ -675,6 +676,19 @@ const hudTrendReading = computed(() => {
     : boundQuality.value === 'good' ? numericValue(boundValue.value) : null
   return { current, min: samples.length ? Math.min(...samples) : null, max: samples.length ? Math.max(...samples) : null }
 })
+const gaugeReading = computed(() => {
+  const source = widgetStatSource(content.value, dataBinding.value)
+  if (source === 'field') return hudTrendReading.value.current
+  const lastSample = () => numericValue(trendRows.value.at(-1)?.[content.value.valueField || 'value'])
+  if (source === 'series') return lastSample()
+  if (boundQuality.value !== 'good') return null
+  const current = Array.isArray(boundValue.value) ? null : numericValue(boundValue.value)
+  if (current !== null) return current
+  // Array-backed charts have a current sample, not a scalar Number(array).
+  // Only implicit legacy series may fall back; an explicit binding stays empty.
+  return content.value.statSource === undefined && !content.value.statPath
+    && (Array.isArray(boundValue.value) || widgetChartSeriesSource(content.value, dataBinding.value) === 'field') ? lastSample() : null
+})
 function hudNumber(value, decimals = 1) {
   const number = numericValue(value)
   return number === null ? '—' : number.toLocaleString('zh-CN', { maximumFractionDigits: decimals })
@@ -692,7 +706,7 @@ function disposeChart() {
 // Apply the overlay art direction to every supported chart without changing
 // samples, axes ranges, bindings or the designer's non-overlay preview.
 function presentChart(option) {
-  if(isTrend.value)configureTrendAxes(option,content.value,displayUnit.value || content.value.statUnit || '',chartRef.value?.clientHeight || 160)
+  if(isTrend.value)configureTrendAxes(option,content.value,displayUnit.value || content.value.statUnit || '',chartRef.value?.clientHeight || 160,chartSeries.value)
   const textColor = activeCondition.value?.color || widgetStyle.value.color
   const fontScale = Math.max(10, Math.min(120, Number(widgetStyle.value.fontSize) || 14)) / 14
   if (overlayMode.value) {
@@ -705,7 +719,7 @@ function presentChart(option) {
     for (const axis of [option.xAxis, option.yAxis].filter(Boolean)) {
       axis.axisLabel = { ...axis.axisLabel, color: content.value.axisLabelColor || textColor || '#bac5de', fontSize: Number(content.value.axisFontSize || 11) * fontScale, fontFamily: HUD_FONT_TEXT, hideOverlap: true }
       if (axis.nameTextStyle) axis.nameTextStyle = { ...axis.nameTextStyle, color: content.value.axisLabelColor || textColor || '#bac5de', fontSize: 10 * fontScale }
-      axis.axisTick = { show: false }
+      axis.axisTick = { ...axis.axisTick, show: axis.axisTick?.show === true }
       axis.axisLine = { show: false }
       if (axis.splitLine) axis.splitLine = { ...axis.splitLine,lineStyle: { ...axis.splitLine.lineStyle,color: content.value.gridColor || 'rgba(173,185,224,.18)', type: 'dashed' } }
     }
@@ -737,8 +751,9 @@ function presentChart(option) {
           ]
         } }
         if (usesHudChartAppearance.value && series.type === 'line' && Array.isArray(series.data)) {
+          const sampleValue=sample=>numericValue(Array.isArray(sample)?sample[1]:sample)
           let lastIndex = series.data.length - 1
-          while (lastIndex >= 0 && numericValue(series.data[lastIndex]) === null) lastIndex -= 1
+          while (lastIndex >= 0 && sampleValue(series.data[lastIndex]) === null) lastIndex -= 1
           if (lastIndex >= 0) {
             series.markPoint = {
               ...series.markPoint,
@@ -746,7 +761,7 @@ function presentChart(option) {
               symbolSize: 7,
               label: { show: false },
               itemStyle: { color, borderColor: 'rgba(241, 244, 255, .9)', borderWidth: 1.4, shadowBlur: 9, shadowColor: chartColorWithAlpha(color, .5) },
-              data: [{ xAxis: lastIndex, yAxis: series.data[lastIndex] }]
+              data: [Array.isArray(series.data[lastIndex]) ? {coord:series.data[lastIndex]} : { xAxis: lastIndex, yAxis: series.data[lastIndex] }]
             }
           }
         }
@@ -761,7 +776,7 @@ function presentChart(option) {
         series.startAngle = 180
         series.endAngle = 0
         series.center = ['50%', '70%']
-        series.progress = { show: true, width: 4, itemStyle: { color } }
+        series.progress = { ...series.progress, width: 4, itemStyle: { color } }
         series.axisLine = { lineStyle: { width: 4, color: [[1, 'rgba(143,155,204,.15)']] } }
         series.pointer = { show: false }
         series.axisLabel = { color: textColor || '#8590aa', distance: 8, fontSize: 8 * fontScale, fontFamily: HUD_FONT_TEXT, formatter: value => value === series.min || value === series.max ? String(value) : '' }
@@ -778,7 +793,8 @@ const chartSignature=computed(()=>{
   // A chart subscribes only to the values that enter its actual option.
   if (usesSharedMetricRing.value || !isTrend.value && type.value!=='metrics' || type.value==='metrics' && content.value.layout==='list') return ''
   return JSON.stringify([type.value,overlayMode.value,props.preview,content.value,widgetStyle.value,boundQuality.value,displayUnit.value,activeCondition.value?.color,
-    scopedDeviceBinding.value?sampledDevice.value.id:'',isTrend.value?chartSeries.value:hudRingValue.value])
+    scopedDeviceBinding.value?sampledDevice.value.id:'',isTrend.value?chartSeries.value:hudRingValue.value,
+    isTrend.value && content.value.chartType === 'gauge' ? gaugeReading.value : null])
 })
 function renderChart() {
   if (widgetDisposed) return
@@ -822,15 +838,15 @@ function renderChart() {
       return
     }
     if (chartType === 'gauge') {
-      const minimum = Number(content.value.min ?? 0)
-      const maximum = Number(content.value.max ?? 100)
-      const missing = dataBinding.value.mode === 'dataset' && numericValue(boundValue.value) === null
+      const reading = gaugeReading.value
+      const { min: minimum, max: maximum } = gaugeChartRange(content.value, reading, displayUnit.value)
+      const missing = reading === null
       presentChart({ ...common, series: [{
         type: 'gauge', min: minimum, max: maximum, radius: '88%', center: ['50%', '58%'],
         progress: { show: !missing, width: 13 }, axisLine: { lineStyle: { width: 13 } }, axisTick: { show: false }, splitLine: { length: 8 },
         axisLabel: { color: '#829bae', distance: 18, fontSize: 9, fontFamily: HUD_FONT_TEXT }, pointer: { show: !missing, width: 4 },
         detail: { color: '#eef7ff', fontSize: 18, fontFamily: HUD_FONT_NUMBER, fontWeight: 600, offsetCenter: [0, '64%'], formatter: missing ? '—' : `{value}${displayUnit.value}` },
-        data: [{ value: missing ? null : Number(boundValue.value) || 0, name: content.value.seriesName || widgetTitle.value }]
+        data: [{ value: reading, name: content.value.seriesName || widgetTitle.value }]
       }] })
       return
     }

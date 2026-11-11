@@ -3,6 +3,7 @@ import { computed, nextTick, onMounted, onUnmounted, provide, reactive, ref, wat
 import { useRoute, useRouter } from 'vue-router'
 import LoadingExperience from '../components/LoadingExperience.vue'
 import SceneLoadingIndicator from '../components/SceneLoadingIndicator.vue'
+import SceneCameraControls from '../components/SceneCameraControls.vue'
 import { useFactoryConfig } from '../config/factoryConfig.js'
 import { createDashboardDataStore } from '../runtime/DataStore.js'
 import { createPointValueIndex } from '../runtime/pointValueIndex.js'
@@ -454,6 +455,26 @@ watch(dataStore.wsConnected, connected => {
         runtimeContext.inspectionHoveredPartId = ''; runtimeContext.inspectionHoverPointer = { visible: false }
     }
 })
+
+const cameraControlsAvailable = computed(() => !startupLoading.value && runtimeContext.sceneReady !== false && dataStore.wsConnected.value)
+async function sendCameraAction(cameraAction) {
+    if (!cameraControlsAvailable.value || !['zoomIn', 'zoomOut', 'rotateLeft', 'rotateRight', 'fit'].includes(cameraAction)) return false
+    // Only move the live camera. Never publish a view, modify layout, or enter
+    // another scope. In particular, fit must retain the current line/device.
+    const focus = {
+        mode: runtimeContext.viewMode || 'factory', workshopId: runtimeContext.workshopId || '',
+        lineId: runtimeContext.lineId || '', deviceId: runtimeContext.deviceId || '',
+        inspectionStage: runtimeContext.inspectionStage || '', partId: runtimeContext.partId || ''
+    }
+    const response = await adminFetch(`${API_BASE}/native-preview/navigate`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Factory-ID': runtimeContext.factoryId || config.factoryId || '' },
+        signal: overlayRequests.signal,
+        body: JSON.stringify({ action: 'camera', source: 'dashboard_overlay', cameraAction, viewId: runtimeContext.viewId, focus })
+    })
+    const result = await response.json()
+    if (!response.ok || !result.success || !result.sent) throw new Error(result.error || 'Unity 运行端未连接，视角未调整')
+    return true
+}
 
 async function sendInspectionCommand(inspection) {
     if (overlayDisposed || !runtimeContext.deviceId) return
@@ -1219,6 +1240,7 @@ onUnmounted(() => {
                 />
             </div>
         </div>
+        <SceneCameraControls v-if="route.query.noVisibleFactory !== '1'" :available="cameraControlsAvailable" :request-action="sendCameraAction" @geometry-change="trackHoverMotion" />
         <TooltipSurface v-if="tooltipContentTarget && activeTooltipTemplate" :template="activeTooltipTemplate"
             :context="tooltipContext" :pointer-source="getTooltipPointer" :viewport="overlayViewport"
             :metrics="dataStore.metrics" :events="dataStore.events.value" :trend-points="dataStore.trendPoints.value"

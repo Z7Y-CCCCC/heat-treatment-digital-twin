@@ -57,6 +57,7 @@ test('collector plugin gets an independent, complete resource tree without Unity
     fs.cpSync(path.join(root,'desktop','collector-plugin'),path.join(source,'desktop','collector-plugin'),{recursive:true});
     const target=prepareCollectorPlugin(display,path.join(directory,'plugin'),source);
     assert.equal(fs.existsSync(path.join(target,'resources','native-client')),false);
+    assert.equal(fs.existsSync(path.join(target,'resources','frontend')),false,'Collector package must not include display/admin UI');
     assert.equal(collectorAvailable(path.join(target,'resources','backend','services')),true);
     const manifest=JSON.parse(fs.readFileSync(path.join(target,'plugin-manifest.json')));
     assert.ok(manifest.files.length>10); assert.ok(manifest.files.every(f => f.sha256.length===64 && !f.path.includes('..')));

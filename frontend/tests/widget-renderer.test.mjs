@@ -512,6 +512,65 @@ test('chart options replace prior chart types and removed series instead of merg
     assert.equal(latest[2], true)
 })
 
+test('all five common forms switch on one live widget without changing samples or leaking axes and series', async t => {
+  const view=fixture(t), rows=[{time:'10:00',value:850.1},{time:'10:01',value:851.2}]
+  for(const type of ['trend','hud_chart_dock']) {
+    const widget=reactive({id:'switch-common',type,frame:{width:610,height:206},content:{chartType:'line',seriesSource:'binding',smooth:true},data:{mode:'dataset',datasetField:'value',unit:'°C'}})
+    const props={widget,preview:true,overlayMode:true,databaseValues:{'switch-common':{quality:'good',value:851.2,rows}}}
+    for(const chartType of ['line','area','bar','pie','gauge','line']) {
+      widget.content.chartType=chartType;await view.render(props)
+      const [option,notMerge,lazy]=charts.at(-1).options.at(-1),series=option.series[0]
+      assert.equal(series.type,['line','area'].includes(chartType)?'line':chartType)
+      assert.equal(notMerge,true);assert.equal(lazy,true)
+      if(['line','area','bar'].includes(chartType))assert.deepEqual(series.data,[850.1,851.2])
+      if(chartType==='line')assert.equal(series.areaStyle,undefined)
+      if(chartType==='area')assert.ok(series.areaStyle)
+      if(chartType==='pie')assert.deepEqual(series.data.map(item=>item.value),[850.1,851.2])
+      if(['pie','gauge'].includes(chartType)){assert.equal(option.xAxis,undefined);assert.equal(option.yAxis,undefined)}
+      if(chartType==='gauge'){assert.equal(series.data[0].value,851.2);assert.ok(series.max>851.2)}
+      assert.equal(widget.content.smooth,true)
+    }
+    assert.deepEqual(rows,[{time:'10:00',value:850.1},{time:'10:01',value:851.2}])
+  }
+})
+
+test('gauge reads an array latest sample, preserves zero and never fabricates PLC disconnection as zero', async t => {
+  const view=fixture(t)
+  const widget={id:'gauge',type:'trend',content:{chartType:'gauge',seriesSource:'field',seriesPath:'trendPoints'}}
+  await view.render({widget,trendPoints:[{time:'10:00',value:42}]})
+  assert.equal(charts.at(-1).options.at(-1)[0].series[0].data[0].value,42)
+  assert.doesNotMatch(textContent(view.root),/暂无趋势数据/)
+  await view.render({widget,trendPoints:[{time:'10:00',value:42},{time:'10:01',value:null}]})
+  assert.equal(charts.at(-1).options.at(-1)[0].series[0].data[0].value,null)
+  const plc={...widget,content:{chartType:'gauge'},data:{mode:'plc',deviceScope:'fixed',deviceId:'furnace',pointId:'p',requireConfiguredPoint:true,unit:'°C'}}
+  for(const [quality,value,expected] of [['good',0,0],['good',850.1,850.1],['bad',850.1,null],['stale',850.1,null]]) {
+    await view.render({widget:plc,overlayMode:true,deviceCatalog:[{id:'furnace',name:'炉一'}],pointValues:{p:{id:'p',device_id:'furnace',quality,value}}})
+    const series=charts.at(-1).options.at(-1)[0].series[0]
+    assert.equal(series.data[0].value,expected)
+    assert.equal(series.progress.show,quality==='good')
+    if(expected===null)assert.equal(series.detail.formatter,'—')
+  }
+})
+
+test('a gauge redraws for an explicitly configured current-value field independently of its series',async t=>{
+  const view=fixture(t),widget={id:'field-gauge',type:'trend',content:{chartType:'gauge',statSource:'field',statPath:'metrics.temperature'},data:{mode:'static'}}
+  for(const temperature of [42,0,850.1]) {
+    await view.render({widget,metrics:{temperature},trendPoints:[]})
+    assert.equal(charts.at(-1).options.at(-1)[0].series[0].data[0].value,temperature)
+  }
+})
+
+test('custom X/Y axis steps reach the actual HUD option while retaining endpoint markers, real values and outage gaps',async t=>{
+ const view=fixture(t),time=Date.parse('2026-11-11T10:00:00+08:00'),widget={id:'tick-chart',type:'hud_chart_dock',content:{chartType:'line',xTickMode:'time',xTickIntervalSeconds:10,yAxisMode:'fixed',yMin:840,yMax:860,yTickInterval:5},data:{mode:'dataset',datasetField:'value',unit:'°C'}}
+ const rows=[{time,value:850},{time:time+11000,value:null},{time:time+21000,value:852}]
+ await view.render({widget,overlayMode:true,databaseValues:{'tick-chart':{quality:'good',value:852,rows}}})
+ const option=charts.at(-1).options.at(-1)[0]
+ assert.equal(option.xAxis.interval,10000);assert.equal(option.yAxis.interval,5)
+ assert.equal(option.xAxis.axisTick.show,true);assert.equal(option.yAxis.axisTick.show,true)
+ assert.deepEqual(option.series[0].data,[[time,850],[time+11000,null],[time+21000,852]])
+ assert.deepEqual(option.series[0].markPoint.data,[{coord:[time+21000,852]}])
+})
+
 test('charts observe their own container and are recreated when chart DOM changes', async t => {
     const view = fixture(t)
     await view.render({ widget: { id: 'chart', type: 'metrics', content: {} } })

@@ -213,11 +213,11 @@ test('video removal and pit profile upgrade are idempotent and preserve custom w
  const upgraded=upgradeWidgetPlaybackDocument(source);assert.deepEqual(upgradeWidgetPlaybackDocument(upgraded),upgraded);assert.ok(upgraded.widgets.some(w=>w.id==='custom'));assert.ok(!upgraded.widgets.some(w=>/vms|camera/.test(w.id)));assert.equal(source.widgets.length,4);assert.equal(upgraded.metadata.custom,'keep')
  for(const w of upgraded.widgets.filter(w=>w.id.startsWith('pit_playback_')&&w.data.mode!=='static'))assert.equal(w.data.deviceScope,'rotation')
 })
-test('all advanced chart families consume real fields and never invent missing zeros',()=>{
- assert.equal(DASHBOARD_CHARTS.length,20)
+test('five common chart choices retain compatibility for saved advanced charts without inventing missing zeros',()=>{
+ assert.deepEqual(DASHBOARD_CHARTS.map(chart=>chart.id),['line','area','bar','pie','gauge'])
  const rows=[{time:'A',value:0,a:0,b:2,c:3,x:'X',y:'Y',open:1,close:2,low:0,high:3,min:0,q1:1,median:2,q3:3,max:4}]
  const series=['a','b','c'].map((id,i)=>({id,field:id,name:id,color:'#aaa',value:rows[0][id],rows:rows.map(r=>({...r,value:r[id]}))}))
- for(const type of DASHBOARD_CHARTS.map(c=>c.id).filter(id=>!['line','area','bar','stackedBar','gauge','scatter'].includes(id))){const option=extendedChartOption(type,{sourceSeries:series,content:{xField:'x',yField:'y'}});assert.ok(option,type);assert.ok(Array.isArray(option.series),type)}
+ for(const type of ['smoothLine','stepLine','stackedArea','horizontalBar','lineBar','pie','donut','rose','radar','funnel','heatmap','candlestick','boxplot','waterfall']){const option=extendedChartOption(type,{sourceSeries:series,content:{xField:'x',yField:'y'}});assert.ok(option,type);assert.ok(Array.isArray(option.series),type)}
  const pie=extendedChartOption('pie',{sourceSeries:[{name:'读数',value:null,rows:[{time:'未知',value:null},{time:'零',value:0}]}]});assert.deepEqual(pie.series[0].data.map(x=>x.value),[0])
  const candle=extendedChartOption('candlestick',{sourceSeries:[{rows:[{time:'missing',open:1}]}]});assert.equal(candle.series[0].data[0],null)
 })

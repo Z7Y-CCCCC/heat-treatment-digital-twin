@@ -12,6 +12,12 @@ export function dataCenterSourceLabel(type) {
   return ({ internal: '内部资料', metadata: '内部资料', runtime: '内部资料', plc: '设备采集', point: '设备采集', dataset: '外部数据表', external: '外部数据表', http: '外部数据表', database: '外部数据表' })[type] || '内部资料'
 }
 
+export function isAutoSyncedDataCenterTable(table) {
+  // Only system-owned sources qualify; a category or a healthy reading does
+  // not make a manually configured external table automatically maintained.
+  return table?.sourceType === 'internal' || table?.sourceType === 'plc'
+}
+
 export function dataCenterQuality(quality) {
   return ({ good: { label: '正常', key: 'good' }, configured: { label: '已配置', key: 'configured' }, config_error: { label: '连接未配置', key: 'bad' }, bad: { label: '异常', key: 'bad' }, stale: { label: '未更新', key: 'stale' }, offline: { label: '未连接', key: 'bad' }, empty: { label: '无数据', key: 'unknown' }, disabled: { label: '已停用', key: 'unknown' } })[quality] || { label: '未读取', key: 'unknown' }
 }

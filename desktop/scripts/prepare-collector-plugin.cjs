@@ -5,7 +5,7 @@ const { fileDigest } = require('./file-digest.cjs');
 const { COLLECTOR_FILES } = require('./prepare-display-distribution.cjs');
 const project = path.resolve(__dirname, '../..');
 // Independent service distribution, no Unity, Electron or WebView binary.
-const RESOURCE_NAMES = ['backend', 'backend-dependencies.tar', 'runtime', 'mysql', 'frontend', 'shared', 'licensing', 'templates', 'ffmpeg'];
+const RESOURCE_NAMES = ['backend', 'backend-dependencies.tar', 'runtime', 'mysql', 'shared', 'licensing', 'templates', 'ffmpeg'];
 function inventory(root) {
     const files = [];
     function walk(dir) {

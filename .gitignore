@@ -85,6 +85,8 @@ native-admin-host/bin/
 native-admin-host/obj/
 collector-service/bin/
 collector-service/obj/
+collector-runtime/
+collector-runtime.previous-*/
 
 # Local .NET test build outputs
 tools/*/bin/

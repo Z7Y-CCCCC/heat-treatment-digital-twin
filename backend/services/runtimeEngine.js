@@ -4,7 +4,8 @@ const path = require('node:path');
 
 // Distribution capability, not a user-editable settings switch. An environment
 // variable cannot turn a display package (which lacks readers) into a collector.
-function collectorAvailable(directory = __dirname) {
+function collectorAvailable(directory = __dirname, env = process.env) {
+    if (env.APP_RUNTIME_ROLE === 'display') return false;
     const file = path.join(directory, '..', 'distribution.json');
     let declared = false;
     if (fs.existsSync(file)) {
@@ -37,4 +38,10 @@ function createRuntimeEngine(wsServer) {
     }
     return new DisplayEngine();
 }
-module.exports = { createRuntimeEngine, collectorAvailable };
+function runtimeIdentity() {
+    const collector = collectorAvailable();
+    return { version: 1, role: collector ? 'collector' : 'display',
+        owner: collector && process.env.APP_RUNTIME_OWNER === 'windows-service' ? 'windows-service' : collector ? 'standalone' : 'display',
+        serviceName: collector && process.env.APP_RUNTIME_OWNER === 'windows-service' ? 'HeatTreatmentCollector' : null };
+}
+module.exports = { createRuntimeEngine, collectorAvailable, runtimeIdentity };

@@ -1,7 +1,8 @@
 ﻿[CmdletBinding()]
 param(
     [Parameter(Mandatory=$true)][ValidateSet('status','logs','install','start','stop','restart')][string]$Action,
-    [ValidatePattern('^HeatTreatmentOps-[a-f0-9]{48}$')][string]$PipeName
+    [ValidatePattern('^HeatTreatmentOps-[a-f0-9]{48}$')][string]$PipeName,
+    [string]$ImportDataDirectory
 )
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
@@ -73,7 +74,8 @@ try {
         $admin=([Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
         if(-not $admin) { throw '服务操作需要 Windows 管理员授权' }
         if($Action -eq 'install') {
-            & (Join-Path $PSScriptRoot '安装采集服务.ps1') -InstallRoot $PSScriptRoot | Out-Null
+            if(-not $ImportDataDirectory) { throw '首次安装必须明确原用户数据目录，不能隐式创建空工程。' }
+            & (Join-Path $PSScriptRoot 'Install-CollectorPlugin.ps1') -ImportDataDirectory $ImportDataDirectory | Out-Null
         } else {
             $s=Get-Service -Name $serviceName -ErrorAction Stop
             if($Action -in @('stop','restart') -and $s.Status -ne 'Stopped') {

@@ -136,6 +136,38 @@ export function normalizeTooltipTemplateRefs(metadata = {}) {
   return result
 }
 
+/** Remove the old default description block once, without deleting model data. */
+export function cleanLegacyPartTooltip(template) {
+  if (template?.kind !== 'part' || template.partDescriptionCleanupVersion === 1) return template
+  const widgets = Array.isArray(template.widgets) ? template.widgets : []
+  const descriptions = widgets.filter(widget => {
+    const binding = tooltipDynamicBinding(widget, template)
+    return binding?.mode === 'runtime' && (binding.path || binding.source) === 'hover.part.description'
+  })
+  const result = { ...clone(template), partDescriptionCleanupVersion: 1 }
+  const removed = new Set(descriptions)
+  result.widgets = clone(widgets.filter(widget => !removed.has(widget)))
+  // Close an ordinary full-width description row. Authored overlapping layouts
+  // keep their positions rather than having unrelated controls rearranged.
+  if (descriptions.length === 1 && !Number(descriptions[0].frame?.rotation || 0)) {
+    const frame = descriptions[0].frame, background = tooltipBackgroundWidget(result)
+    if (frame && Number.isFinite(frame.y) && Number.isFinite(frame.height)) {
+      const body = result.widgets.filter(widget => widget !== background && widget?.frame)
+      const below = body.filter(widget => widget.frame.y >= frame.y + frame.height)
+      const nextY = below.length ? Math.min(...below.map(widget => widget.frame.y)) : frame.y + frame.height
+      const overlap = body.some(widget => widget.frame.y < nextY && widget.frame.y + widget.frame.height > frame.y)
+      if (!overlap && nextY > frame.y && Number.isFinite(Number(result.canvas?.height))) {
+        const removedHeight = nextY - frame.y
+        for (const widget of below) widget.frame.y -= removedHeight
+        result.canvas.height = Math.max(80, result.canvas.height - removedHeight,
+          ...body.map(widget => widget.frame.y + widget.frame.height + 12))
+        if (background?.frame) background.frame.height = result.canvas.height
+      }
+    }
+  }
+  return result
+}
+
 // A preset is ordinary independently positioned widgets, not an opaque panel.
 export function createTooltipTemplate(kind = 'device', templateId = defaultIds[kind], legacyOptions) {
   kind = kind === 'part' ? 'part' : 'device'
@@ -182,8 +214,8 @@ export function createTooltipTemplate(kind = 'device', templateId = defaultIds[k
     label('title', '提示标题', 'COMPONENT / 部件', 12, { color: '#aeb9d4', fontSize: 9 })
     bound('name', '部件名称', 'hover.part.name', 34, {}, { fontSize: 16, fontWeight: 600 })
     bound('group', '部件分组', 'hover.part.group', 61, {}, { color: '#9ca9cb', fontSize: 10 })
-    bound('description', '部件说明', 'hover.part.description', 84, { height: 42 }, { color: '#c4c9dc' })
-    let y = 134
+    template.partDescriptionCleanupVersion = 1
+    let y = 84
     for (let index = 0; index < 3; index++) {
       row(`point_${index}`, `参数 ${index + 1}`, `hover.part.points.${index}.text`, y)
       const fieldLabel = template.widgets.find(widget => widget.id === `${template.id}_point_${index}_label`)
@@ -207,7 +239,8 @@ export function normalizeTooltipTemplates(source, views = [], normalizeWidget = 
   const input = object(source), fresh = !Array.isArray(input.templates)
   const raw = fresh ? [createTooltipTemplate('device'), createTooltipTemplate('part')] : input.templates.slice(0, MAX_TOOLTIP_TEMPLATES)
   const ids = new Set()
-  const templates = raw.filter(item => item && ['device', 'part'].includes(item.kind)).map((item, index) => {
+  const templates = raw.filter(item => item && ['device', 'part'].includes(item.kind)).map((source, index) => {
+    const item = cleanLegacyPartTooltip(source)
     let templateId = id(item.id, `tooltip_${item.kind}_${index + 1}`)
     while (ids.has(templateId)) templateId = `${templateId.slice(0, 116)}_${index + 1}_${ids.size}`
     ids.add(templateId)
@@ -230,7 +263,8 @@ export function normalizeTooltipTemplates(source, views = [], normalizeWidget = 
     })
     const background = widgets.find(widget => widget.id === backgroundWidgetId)
     if (background) background.frame = { ...background.frame, x: 0, y: 0, width: canvas.width, height: canvas.height, rotation: 0 }
-    return { id: templateId, name: text(item.name, item.kind === 'part' ? '部件提示' : '设备提示'), kind: item.kind, canvas, widgets, backgroundWidgetId }
+    return { id: templateId, name: text(item.name, item.kind === 'part' ? '部件提示' : '设备提示'), kind: item.kind, canvas, widgets, backgroundWidgetId,
+      ...(item.kind === 'part' ? { partDescriptionCleanupVersion: 1 } : {}) }
   })
   for (const kind of ['device', 'part']) if (!templates.some(template => template.kind === kind)) {
     let missingId = defaultIds[kind]
@@ -272,5 +306,5 @@ export function resolveTooltipTemplate(document, view, kind = 'device') {
   const ref = view?.metadata?.tooltipTemplates?.[kind] || 'inherit'
   if (ref === 'disabled') return null
   const target = ref === 'inherit' ? config.defaults?.[kind] : ref
-  return config.templates.find(template => template.id === target && template.kind === kind) || config.templates.find(template => template.id === config.defaults?.[kind] && template.kind === kind) || null
+  return cleanLegacyPartTooltip(config.templates.find(template => template.id === target && template.kind === kind) || config.templates.find(template => template.id === config.defaults?.[kind] && template.kind === kind) || null)
 }

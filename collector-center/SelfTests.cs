@@ -36,6 +36,13 @@ namespace HeatTreatmentCollectorCenter
                 Check(!observed.Healthy && observed.Normal==16 && observed.Abnormal==1 && observed.HealthLabel=="部分采集异常" && observed.Collection=="刚刚" && observed.Process.Contains("64 MB"),"shared observed collector health and counts");
                 bool rejected=false; try { Ops.Origin(Ops.Parse("{\"port\":1}")); } catch { rejected=true; }
                 Check(rejected,"invalid port");
+                foreach(var invalid in new[]{"{}","{\"runtime\":{\"role\":\"display\"}}","{\"runtime\":{\"role\":\"collector\",\"owner\":\"standalone\"}}"}) {
+                    bool refused=false;try{Ops.AssertCollectorHealth(Ops.Parse(invalid));}catch{refused=true;}Check(refused,"never attach to display/legacy collector");
+                }
+                Ops.AssertCollectorHealth(Ops.Parse("{\"runtime\":{\"role\":\"collector\",\"owner\":\"windows-service\",\"serviceName\":\"HeatTreatmentCollector\"}}"));
+                Check(!Ops.CompleteRuntime(Path.GetTempPath()),"a cache/single executable is not a complete collector install");
+                var unlicensed=Health(now);((IDictionary<string,object>)unlicensed)["version"]=Ops.Parse("{\"license\":{\"enforce\":true,\"valid\":false}}");
+                Check(Ops.Summarize(new Snapshot(),unlicensed,DateTime.UtcNow).HealthState=="activation_required","service awaiting activation is not healthy collection");
                 var points=PointRow.From(Ops.Parse("{\"points\":[{\"label\":\"温度\",\"plc_tag\":\"DB1,REAL0\",\"data_type\":\"REAL\",\"value\":0,\"quality\":\"good\"},{\"name\":\"报警\",\"value\":false,\"quality\":\"good\"},{\"name\":\"过期\",\"value\":100,\"quality\":\"stale\"}]}"));
                 Check(points.Count==3 && points[0].Name=="温度" && points[0].Address=="DB1,REAL0" && points[0].Value=="0" && points[1].Value=="0" && points[2].Value=="—","point projection");
                 var logs=Ops.ParseLogs(new[]{new KeyValuePair<string,string>("backend.log","[2026-10-30T12:00:00Z] 中文错误 password=SECRET\n<script>literal</script>"),new KeyValuePair<string,string>("database-config.json","SECRET")});
@@ -46,6 +53,11 @@ namespace HeatTreatmentCollectorCenter
                 File.WriteAllText(output,Ops.Serialize(new {success=true,tests=new[]{"credentials-redacted","freshness","database","process-health","secondary-factory-health","mixed-mode","unity-optional","simulation-labeled","fixed-log-files","chinese-log-level","literal-log-text","gzip-json-export","fixed-loopback","invalid-port"}}),Encoding.UTF8);
                 return 0;
             } catch(Exception error) { File.WriteAllText(output,Ops.Serialize(new {success=false,error=error.ToString()})); return 1; }
+        }
+        internal static int HealthApi(string origin,string output)
+        {
+            try { var health=Ops.FetchHealth(origin).GetAwaiter().GetResult();var s=Ops.Summarize(new Snapshot(),health,DateTime.UtcNow);File.WriteAllText(output,Ops.Serialize(new{success=true,s.HealthState,s.HealthLabel,s.Process,s.Database}));return 0; }
+            catch(Exception error){File.WriteAllText(output,Ops.Serialize(new{success=false,error=error.Message}));return 1;}
         }
         internal static int PointApi(string origin,string output)
         {

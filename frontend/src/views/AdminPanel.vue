@@ -52,6 +52,7 @@ import {
 } from './admin/utils/lineLayout.js'
 import { chooseLineDevices, planLineGroupMove, spaceLineDevices } from './admin/utils/lineDeviceSelection.js'
 import { editLineRailSpacing, shiftRailMovement, lineSceneUnitsPerMeter } from '../../../shared/lineRailSpacing.mjs'
+import { planLinePlacementTemplate, canMoveLineStructure, assertLineTemplateTransition, assertLineTemplateClearance } from '../../../shared/linePlacementTemplate.mjs'
 import { isLastConfirmedMotion, lastConfirmedMotionError } from './admin/utils/mobileMotionPolicy.js'
 import { buildModelDisplayIds, createShortModelId } from './admin/utils/modelIds.js'
 import { useAppDialog } from './admin/composables/useAppDialog.js'
@@ -5479,6 +5480,7 @@ function syncLineLayout(line, layout) {
 function applyLineLayoutDraft(line, candidate) {
     if (!line) return
     const before = getLineLayout(line), normalized = normalizeLineLayout(candidate)
+    if (normalized.placementTemplate) assertLineTemplateTransition(before, normalized)
     const sourceDevices = devices.value, patches = new Map()
     // Build every affected device/path patch before changing any reactive draft.
     // A bad carrier on a later rail must not leave the lane, first rail or first
@@ -5511,6 +5513,50 @@ function changeLineRailSpacing({ railId, field, value }) {
     } catch (error) { alert(error.message, { title: '设备线与轨道间距无效', type: 'warning' }) }
 }
 
+async function measureLineLayoutEnvelopes(line) {
+    const source = devices.value.filter(device => {
+        const config = parseInstanceConfig(device.instance_config)
+        return device.line_id === line.id || config.laneLineId === line.id || config.railLineId === line.id
+    })
+    const bindings = new Map(source.map(device => {
+        const binding = resolveDeviceLayoutTarget(device, line, { allowFallback: false })
+        if (!binding) throw Error(`「${device.name || device.id}」还没有明确的设备线或导轨绑定，请先绑定，不能猜测排布`)
+        if (device.coordinate_space && device.coordinate_space !== 'line_local') throw Error('设备不是产线本地坐标，请先在设备编排中校准')
+        return [device.id, binding]
+    }))
+    const { measureLineEnvelopes } = await import('../three/lineDeviceFootprints.js')
+    const rows = await measureLineEnvelopes(source, models.value)
+    return rows.map(row => {
+        const binding = bindings.get(row.id), device = source.find(item => item.id === row.id)
+        const movement = parseInstanceConfig(device.instance_config).movement
+        const points = movement?.enabled === true ? [movement.start, movement.end, ...(movement.stations || []).map(point => point.position || point)] : []
+        if (points.some(point => !point || !Number.isFinite(point.z))) throw Error(`「${device.name || device.id}」移动路径无效，未把未知位置当作安全通道`)
+        const zs = points.map(point => point?.z).filter(Number.isFinite)
+        return { ...row, [binding.type === 'rail' ? 'railId' : 'laneId']: binding.item.id,
+            ...(binding.type === 'rail' && zs.length ? { pathMinZ: Math.min(...zs), pathMaxZ: Math.max(...zs) } : {}) }
+    })
+}
+
+async function chooseLinePlacementTemplate(kind) {
+    if (!canAdminPage('lines', 'edit') || lineDeviceLayoutBusy.value || lineCreating.value) return
+    const line = selectedLineEditor.value
+    if (!line) return
+    const before = snapshotJson({ layout: getLineLayout(line), devices: devices.value, models: models.value }), scope = getFactoryScope()
+    lineLoadingMeasuring.value = true
+    try {
+        const rows = await measureLineLayoutEnvelopes(line)
+        const plan = planLinePlacementTemplate(getLineLayout(line), kind, rows)
+        const unchanged = () => !adminPanelDisposed && selectedLineEditor.value === line && getFactoryScope() === scope
+            && before === snapshotJson({ layout: getLineLayout(line), devices: devices.value, models: models.value })
+        if (!unchanged()) throw Error('测量期间产线或模型已改变，请重新选择模板')
+        const distance = Math.abs(plan.layout.lanes[0].offsetZ - plan.layout.rails[0].offsetZ) / lineSceneUnitsPerMeter(plan.layout)
+        if (!await confirm(`导轨保持原位，设备线按模型外形留出通道；显示中心距约 ${distance.toFixed(2)} 米。${kind === 'dual' ? '第一条线可在安全范围摆放，第二条线在导轨对侧跟随。' : '设备线可在所选侧的安全范围摆放。'}\n\n仅应用到当前草稿，不改模型尺寸、朝向、PLC 或运动配置。需要点击“保存产线结构”才会保存。`, { title: '应用布局模板' })) return
+        if (!unchanged()) throw Error('确认期间产线已改变，未覆盖新的草稿')
+        applyLineLayoutDraft(line, plan.layout)
+    } catch (error) { alert(error.message, { title: '布局模板未应用', type: 'warning' }) }
+    finally { lineLoadingMeasuring.value = false }
+}
+
 function selectLineEditor(lineId) {
     selectedLineEditorId.value = lineId
     selectedLineStructure.value = null
@@ -5531,6 +5577,7 @@ function changeLineLayoutItem({ type, id, field, value }) {
     if (!canAdminPage('lines', 'edit') || lineDeviceLayoutBusy.value) return
     const item = findLineLayoutItem(type, id)
     if (!item || !['name', 'offsetZ', 'length'].includes(field)) return
+    if (field === 'offsetZ' && (type === 'rail' || getLineLayout(selectedLineEditor.value).lanes.length > 1 && !canMoveLineStructure(getLineLayout(selectedLineEditor.value), type, id))) return
     if (type === 'rail' && field === 'offsetZ' && item.spacing) return
     const next = field === 'name' ? String(value) : Number(value)
     if (field !== 'name' && (!Number.isFinite(next) || field === 'length' && next < 1)) return
@@ -5668,6 +5715,7 @@ function addLineLayoutItem(type) {
     const line = selectedLineEditor.value
     if (!line) return
     const layout = getLineLayout(line)
+    if (layout.placementTemplate) return alert('模板中的导轨和设备线数量由模板决定，请使用上方模板切换。')
     const collection = type === 'rail' ? layout.rails : layout.lanes
     const item = makeLineLayoutItem(type, collection.length)
     const usedOffsets = [...layout.lanes, ...layout.rails].map(entry => numberOrDefault(entry.offsetZ, 0))
@@ -5688,6 +5736,7 @@ function removeLineLayoutItem(type, itemId) {
     const line = selectedLineEditor.value
     if (!line) return
     const layout = getLineLayout(line)
+    if (layout.placementTemplate) return alert('模板中的导轨和设备线数量由模板决定，请使用上方模板切换。')
     const key = type === 'rail' ? 'rails' : 'lanes'
     if (key === 'lanes' && layout.rails.some(rail => rail.spacing?.laneId === itemId)) {
         alert('该设备线仍关联小车导轨间距，请先在导轨设置中取消关联。')
@@ -5724,6 +5773,7 @@ async function saveSelectedLineLayout() {
     lineLayoutSaving.value = true
     try {
         const layout = normalizeLineLayout(getLineLayout(line))
+        if (layout.placementTemplate) assertLineTemplateClearance(layout, await measureLineLayoutEnvelopes(line))
         line.layout = layout
         line.layout_json = JSON.stringify(layout, null, 2)
         const boundDeviceIds = syncLineBoundDevicesToLayout(line)
@@ -6065,6 +6115,7 @@ async function saveCurrentFactoryPageDrafts() {
 
     for (const line of lines.value.filter(lineHasUnsavedLayout)) {
         const layout = normalizeLineLayout(getLineLayout(line))
+        if (layout.placementTemplate) assertLineTemplateClearance(layout, await measureLineLayoutEnvelopes(line))
         const boundDeviceIds = syncLineBoundDevicesToLayout(line)
         const result = await adminApi.updateLine(line.id, lineLayoutSavePayload(line, layout, boundDeviceIds))
         if (result?.error || result?.success !== true || !Array.isArray(result.devices)) throw new Error(`产线「${line.name}」结构、设备位置与移动路径整批保存失败：${result?.error || '后端未确认保存'}`)
@@ -6273,7 +6324,10 @@ function startLinePreviewDrag(type, itemId, mode, event) {
     const item = findLineLayoutItem(type, itemId)
     const stage = event.currentTarget.closest?.('.line-preview-stage')
     if (!item || !stage) return
-    if (type === 'rail' && mode === 'move' && item.spacing) return
+    if (mode === 'move' && !canMoveLineStructure(selectedLineLayout.value, type, itemId)) return
+    if (mode === 'move' && !selectedLineLayout.value.placementTemplate && selectedLineLayout.value.rails.some(rail => rail.spacing?.laneId === itemId)) {
+        return alert('旧布局使用导轨跟随关系，请先选择上方布局模板，再摆放设备线；导轨位置保持不动。', { type: 'warning' })
+    }
     selectedLineStructure.value = { type, id: itemId }
     event.preventDefault()
     event.stopPropagation()
@@ -7279,6 +7333,18 @@ async function openAdminSetupStep(step) {
                     </svg>
                 </span>
             </div>
+            <div class="admin-factory-switch-slot">
+                <AssetHierarchyBar
+                    v-if="assetHierarchyTabs.has(activeTab) && (activeTab !== 'settings' || ['database', 'performance', 'data'].includes(settingsSubpage))"
+                    :workshops="workshops"
+                    :lines="lines"
+                    :devices="devices"
+                    :workshop-id="assetHierarchyWorkshopId"
+                    :line-id="assetHierarchyLineId"
+                    :device-id="assetHierarchyDeviceId"
+                    :request-switch="requestFactorySwitch"
+                />
+            </div>
             <div class="admin-connection-strip" aria-label="系统连接状态" aria-live="polite">
                 <AdminConnectionStatus
                     :unity-connected="nativeScenePreviewConnected"
@@ -7420,16 +7486,6 @@ async function openAdminSetupStep(step) {
 
             <!-- 右侧内容区 -->
             <main ref="adminContentRef" class="admin-content">
-                <AssetHierarchyBar
-                    v-if="assetHierarchyTabs.has(activeTab) && (activeTab !== 'settings' || ['database', 'performance', 'data'].includes(settingsSubpage))"
-                    :workshops="workshops"
-                    :lines="lines"
-                    :devices="devices"
-                    :workshop-id="assetHierarchyWorkshopId"
-                    :line-id="assetHierarchyLineId"
-                    :device-id="assetHierarchyDeviceId"
-                    :request-switch="requestFactorySwitch"
-                />
                 <Transition name="tab-switch" mode="out-in">
                     <div v-if="canSelectTab(activeTab)" :key="activeTab" class="tab-transition-host">
 
@@ -7966,7 +8022,7 @@ async function openAdminSetupStep(step) {
                                 :layout-dirty="lineLayoutDirty" :layout-saving="lineLayoutSaving"
                                 :device-count="selectedLineEditorDevices.length" :total-devices="selectedLineTotalDeviceCount"
                                 @select="selectLineEditor" @delete="deleteLine" @create="createLine" @edit="editLineDetails"
-                                @add-item="addLineLayoutItem" @remove-item="removeLineLayoutItem" @change-item="changeLineLayoutItem" @change-rail-spacing="changeLineRailSpacing" @save-layout="saveSelectedLineLayout" @focus-item="focusLineStructure"
+                                @add-item="addLineLayoutItem" @remove-item="removeLineLayoutItem" @change-item="changeLineLayoutItem" @change-rail-spacing="changeLineRailSpacing" @choose-placement-template="chooseLinePlacementTemplate" @save-layout="saveSelectedLineLayout" @focus-item="focusLineStructure"
                             />
 
                             <section class="line-planner-preview">
@@ -8001,11 +8057,11 @@ async function openAdminSetupStep(step) {
                                         :key="lane.id"
                                         class="line-map-item line-map-lane"
                                         :class="linePreviewItemClass('lane', lane)"
-                                        :style="linePreviewItemStyle(lane)"
+                                        :style="[linePreviewItemStyle(lane), { cursor: canMoveLineStructure(selectedLineLayout, 'lane', lane.id) ? 'grab' : 'default' }]"
                                         data-line-target-type="lane"
                                         :data-line-target-id="lane.id"
                                         tabindex="-1" role="group" :aria-label="lane.name"
-                                        title="拖动调整设备线偏移，拖左右把手调整长度"
+                                        :title="canMoveLineStructure(selectedLineLayout, 'lane', lane.id) ? '拖动摆放第一条设备线，不能进入小车通道' : '第二条设备线在导轨对侧跟随，不能独立拖动'"
                                         @pointerdown="startLinePreviewDrag('lane', lane.id, 'move', $event)"
                                     >
                                         <span>{{ lane.name }}</span>
@@ -8046,12 +8102,12 @@ async function openAdminSetupStep(step) {
                                         :key="rail.id"
                                         class="line-map-item line-map-rail"
                                         :class="linePreviewItemClass('rail', rail)"
-                                        :style="linePreviewItemStyle(rail)"
+                                        :style="[linePreviewItemStyle(rail), { cursor: 'default' }]"
                                         data-line-target-type="rail"
                                         :data-line-target-id="rail.id"
                                         tabindex="-1" role="group" :aria-label="rail.name"
-                                        title="拖动调整小车导轨偏移，拖左右把手调整长度"
-                                        @pointerdown="startLinePreviewDrag('rail', rail.id, 'move', $event)"
+                                        title="小车导轨位置固定；左右把手可调整显示长度"
+                                        @pointerdown.stop="selectedLineStructure = { type: 'rail', id: rail.id }"
                                     >
                                         <span>{{ rail.name }}</span>
                                         <i class="line-map-handle handle-left" @pointerdown.stop="startLinePreviewDrag('rail', rail.id, 'resize-left', $event)"></i>
@@ -10233,6 +10289,13 @@ async function openAdminSetupStep(step) {
     white-space: nowrap; cursor: pointer;
     box-shadow: 0 6px 14px rgba(29, 41, 57, .18);
     transition: transform 180ms cubic-bezier(.22, 1, .36, 1), background 180ms ease, box-shadow 180ms ease;
+}
+.admin-factory-switch-slot {
+    display: flex;
+    flex: 1 1 0;
+    align-items: center;
+    justify-content: center;
+    min-width: 0;
 }
 .admin-lock-button:hover { background: linear-gradient(135deg, #475467 0%, #182230 100%); transform: translateY(-1px); box-shadow: 0 10px 22px rgba(29, 41, 57, .24); }
 .admin-lock-button:active { transform: translateY(0) scale(.985); }

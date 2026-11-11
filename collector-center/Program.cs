@@ -18,6 +18,8 @@ namespace HeatTreatmentCollectorCenter
         static int Main(string[] args)
         {
             if (args.Length == 2 && args[0] == "--self-test") return SelfTests.Run(args[1]);
+            if (args.Length == 2 && args[0] == "--status-json") { File.WriteAllText(args[1],Ops.Serialize(Ops.Status().GetAwaiter().GetResult())); return 0; }
+            if (args.Length == 3 && args[0] == "--health-api-test") return SelfTests.HealthApi(args[1],args[2]);
             if (args.Length == 3 && args[0] == "--point-api-test") return SelfTests.PointApi(args[1],args[2]);
             bool smoke = args.Length == 2 && args[0] == "--smoke-test";
             bool created;

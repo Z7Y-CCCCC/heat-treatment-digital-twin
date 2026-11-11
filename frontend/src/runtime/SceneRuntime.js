@@ -71,6 +71,7 @@ function getLineLayout(line) {
         coordinateSpace: source.coordinateSpace || (Number(source.version || 0) >= 2 ? 'workshop_local' : 'legacy_world'),
         transform: normalizeSpatialTransform(source.transform),
         flowDirection,
+        ...(source.placementTemplate !== undefined ? { placementTemplate: source.placementTemplate } : {}),
         lanes,
         rails
     });

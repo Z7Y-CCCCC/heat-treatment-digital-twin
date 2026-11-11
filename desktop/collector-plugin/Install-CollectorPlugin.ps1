@@ -1,7 +1,8 @@
 ﻿[CmdletBinding()]
 param(
     [string]$InstallRoot = (Join-Path $env:ProgramFiles 'HeatTreatmentCollectorPlugin'),
-    [string]$ImportDataDirectory = (Join-Path $env:APPDATA 'heat-treatment-digital-twin-desktop')
+    [string]$ImportDataDirectory = (Join-Path $env:APPDATA 'heat-treatment-digital-twin-desktop'),
+    [switch]$ResumeImportedData
 )
 $ErrorActionPreference = 'Stop'
 $source = [IO.Path]::GetFullPath($PSScriptRoot).TrimEnd('\') + '\'
@@ -34,17 +35,22 @@ if (-not ([Security.Principal.WindowsPrincipal]::new([Security.Principal.Windows
     # Capture the original user's APPDATA before elevation; never migrate the
     # administrator's unrelated account database by accident.
     foreach ($value in @($InstallRoot,$ImportDataDirectory,$PSCommandPath)) { if ($value.Contains('"')) { throw '路径含非法引号。' } }
-    $child = Start-Process -FilePath 'powershell.exe' -Verb RunAs -WindowStyle Hidden -Wait -PassThru -ArgumentList @(
+    $elevatedArguments=@(
         '-NoLogo','-NoProfile','-ExecutionPolicy','Bypass','-File',('"{0}"' -f $PSCommandPath),
         '-InstallRoot',('"{0}"' -f $InstallRoot),'-ImportDataDirectory',('"{0}"' -f $ImportDataDirectory))
+    if($ResumeImportedData){$elevatedArguments+='-ResumeImportedData'}
+    $child = Start-Process -FilePath 'powershell.exe' -Verb RunAs -WindowStyle Hidden -Wait -PassThru -ArgumentList $elevatedArguments
     if ($child.ExitCode -ne 0) { throw '采集插件安装失败，原始数据保留。' }
     Write-Host '采集插件已安装。重新打开大屏即可连接。'
     exit 0
 }
-if (Get-Process -Name '热处理数字孪生大屏','HeatTreatmentDigitalTwin','HeatTreatmentAdminHost','HeatTreatmentCollectorCenter' -ErrorAction SilentlyContinue) {
-    throw '请先保存并退出大屏、后台和运行中心；没有停止采集服务。'
+if (Get-Process -Name '热处理数字孪生大屏','HeatTreatmentDigitalTwin','HeatTreatmentAdminHost' -ErrorAction SilentlyContinue) {
+    throw '请先保存并退出大屏和后台；没有停止采集服务。'
 }
 $target = [IO.Path]::GetFullPath($InstallRoot).TrimEnd('\')
+if(Get-CimInstance Win32_Process -Filter "Name='HeatTreatmentCollectorCenter.exe'" | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith($target+'\',[StringComparison]::OrdinalIgnoreCase) }) {
+    throw '升级已安装的采集程序前，请先关闭其运行中心；解压包中的运行中心不影响首次安装。'
+}
 if ((Test-Path -LiteralPath (Join-Path $target '热处理数字孪生大屏.exe')) -or ($target + '\').StartsWith($source,[StringComparison]::OrdinalIgnoreCase)) { throw '请使用独立插件安装目录。' }
 if ($target -eq [IO.Path]::GetPathRoot($target).TrimEnd('\') -or ($source).StartsWith($target + '\',[StringComparison]::OrdinalIgnoreCase)) { throw '插件安装目录不能包含解压源目录或为磁盘根目录。' }
 $staging = $target + '.preparing-' + [Guid]::NewGuid().ToString('N')
@@ -57,6 +63,20 @@ $configFile = Join-Path $env:ProgramData 'HeatTreatmentDigitalTwin\collector-ser
 $previousConfig = if (Test-Path -LiteralPath $configFile) { [IO.File]::ReadAllBytes($configFile) } else { $null }
 $previousService = Get-CimInstance Win32_Service -Filter "Name='HeatTreatmentCollector'"
 $wasRunning = $previousService -and $previousService.State -eq 'Running'
+if($ResumeImportedData) {
+    if($previousConfig){throw '已有服务配置时无需恢复首次导入，请按正常升级流程执行。'}
+    $imported=Join-Path $env:ProgramData 'HeatTreatmentDigitalTwin\collector\data'
+    foreach($name in @('database-config.json','admin-security.json')){
+        $a=Join-Path (Join-Path $ImportDataDirectory 'data') $name;$b=Join-Path $imported $name
+        if(-not (Test-Path -LiteralPath $a) -or -not (Test-Path -LiteralPath $b) -or
+            (Get-FileHash -LiteralPath $a -Algorithm SHA256).Hash -ne (Get-FileHash -LiteralPath $b -Algorithm SHA256).Hash){throw '已导入数据与原工程不一致，拒绝自动恢复；原数据均保留。'}
+    }
+}
+if(-not $previousService) {
+    $preflight = & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $staging '安装采集服务.ps1') -InstallRoot $staging -CheckOnly
+    if($LASTEXITCODE -ne 0) { throw '独立采集包预检失败；未移动现有安装，未切换数据。' }
+    if(-not ($preflight | ConvertFrom-Json).portAvailable) { throw '服务端口仍被其他程序占用，请先保存并退出旧大屏。没有强制关闭任何进程。' }
+}
 $backup = $null
 try {
     if ($previousService -and $previousService.State -ne 'Stopped') {
@@ -75,7 +95,7 @@ try {
         if($LASTEXITCODE -ne 0){throw '采集插件运行环境未就绪，请重启 Windows 或修复 Visual C++ x64 运行库后重试。'}
     }
     $arguments = @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',(Join-Path $target '安装采集服务.ps1'),'-InstallRoot',$target)
-    if (-not $previousConfig -and (Test-Path -LiteralPath (Join-Path $ImportDataDirectory 'data\database-config.json'))) {
+    if (-not $previousConfig -and -not $ResumeImportedData -and (Test-Path -LiteralPath (Join-Path $ImportDataDirectory 'data\database-config.json'))) {
         $arguments += @('-ImportDataDirectory',$ImportDataDirectory)
     }
     & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" @arguments

@@ -49,6 +49,7 @@ let backendPort = null;
 let backendShutdownToken = null;
 let backendAdminToken = null;
 let applicationOrigin = null;
+let displayGateway = null;
 let writablePaths = null;
 let desktopSettingsTimer = null;
 let desktopSettingsSyncPromise = null;
@@ -552,6 +553,9 @@ function waitForHealth(url, timeoutMs = 30000, processToWatch = null) {
                         // HTTP listening is not database readiness: startup
                         // migrations may still be importing large documents.
                         if (response.statusCode === 200 && health.status === 'ok' && health.db?.connected === true) {
+                            if (deployment.mode === 'client' && (health.runtime?.role !== 'collector' || health.runtime?.owner !== 'windows-service' || health.runtime?.serviceName !== 'HeatTreatmentCollector')) {
+                                reject(new Error('连接地址不是独立采集服务，拒绝连接旧大屏内的数据进程')); return;
+                            }
                             resolve(); return;
                         }
                     } catch { /* Retry incomplete or invalid responses. */ }
@@ -778,7 +782,7 @@ function readRuntimeSettings(port) {
 function readStartupAppearance(port) {
     return new Promise((resolve, reject) => {
         const request = http.get({
-            host: '127.0.0.1', port, path: '/api/settings/loading-experience',
+            host: '127.0.0.1', port: port || (displayGateway ? new URL(displayGateway.origin).port : port), path: '/api/settings/loading-experience',
             headers: { Accept: 'application/json', 'X-Admin-Token': backendAdminToken || '' }
         }, response => {
             let body = '';
@@ -1321,6 +1325,8 @@ async function startBackend(port, writable) {
                 LICENSE_FILE: path.join(writable.dataDir, 'license.json')
             } : {}),
             FRONTEND_DIST: frontendDir,
+            APP_RUNTIME_ROLE: 'display',
+            APP_RUNTIME_OWNER: 'display',
             ENABLE_CORS: 'false',
             REMOTE_ACCESS_ENABLED: 'false',
             PUBLIC_ORIGIN: '',
@@ -1491,19 +1497,9 @@ function createTray() {
 }
 
 async function showCollectorCenter() {
-    let executable = app.isPackaged ? resourcePath('collector-center', 'HeatTreatmentCollectorCenter.exe')
-        : path.join(__dirname, '.cache', 'collector-center', 'HeatTreatmentCollectorCenter.exe');
-    if (app.isPackaged) {
-        const machine = path.join(process.env.ProgramData || 'C:\\ProgramData', 'HeatTreatmentDigitalTwin', 'collector-service.json');
-        if (fs.existsSync(machine)) {
-            const config = JSON.parse(fs.readFileSync(machine, 'utf8').replace(/^\uFEFF/, ''));
-            executable = path.join(config.resourcesRoot, 'collector-center', 'HeatTreatmentCollectorCenter.exe');
-        }
-    }
-    if (!fs.existsSync(executable)) {
-        await dialog.showMessageBox({ type: 'info', title: '数据采集', message: '请先安装独立数据采集插件', buttons: ['确定'] });
-        return;
-    }
+    let executable;
+    try { executable = require('./collectorLocation.cjs').collectorCenterExecutable({ projectRoot: app.isPackaged ? null : path.resolve(__dirname, '..') }); }
+    catch (error) { await dialog.showMessageBox({ type: 'info', title: '采集运行中心', message: error.message, buttons: ['确定'] }); return; }
     await new Promise((resolve, reject) => {
         // Independent native process; do not supervise it as a display child.
         const child = spawn(executable, [], { windowsHide: false, stdio: 'ignore', detached: true });
@@ -1681,7 +1677,12 @@ async function launchApplication() {
     updateStartupProgress('network', 25, deployment.mode === 'client' ? '正在连接采集服务' : '正在准备服务端口',
         deployment.mode === 'client' ? deployment.backendOrigin : '检测端口占用和通信环境');
     const port = deployment.mode === 'client' ? null : await findAvailablePort();
-    const origin = deployment.mode === 'client' ? deployment.backendOrigin : `http://127.0.0.1:${port}`;
+    if (deployment.mode === 'client') {
+        displayGateway = await require('./displayGateway.cjs').startDisplayGateway({ backendOrigin: deployment.backendOrigin,
+            portFile: path.join(app.getPath('userData'),'ui-gateway.json'),
+            frontendDir: app.isPackaged ? resourcePath('frontend') : path.resolve(__dirname, '..', 'frontend', 'dist') });
+    }
+    const origin = deployment.mode === 'client' ? displayGateway.origin : `http://127.0.0.1:${port}`;
     applicationOrigin = origin;
     // The backend needs this loopback channel in its environment so a DLNA
     // cast can switch the embedded host back to the Unity dashboard before
@@ -1847,7 +1848,8 @@ if (!app.requestSingleInstanceLock()) {
         Promise.allSettled([
             stopNativeClient(),
             stopBackend().finally(() => mysqlRuntime?.stop()),
-            stopDesktopControlServer()
+            stopDesktopControlServer(),
+            displayGateway?.close()
         ]).then(results => {
             for (const [index, result] of results.entries()) {
                 if (result.status === 'rejected') {

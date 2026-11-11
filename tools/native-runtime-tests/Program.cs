@@ -30,6 +30,7 @@ internal static partial class Program
             ("dual endpoint feedback confirms poses and freezes unknown, conflicting, stale or mismatched signals", MotionEndpointSignalsAreSafe),
             ("authored motion downloads allow only local managed asset namespaces", MotionPathsAreBounded),
             ("manual orbit retains direction across half turns and many full revolutions", OrbitRetainsWinding),
+            ("wheel zoom responds per detent, retains fractional input and respects speed modes and limits", WheelZoomIsResponsiveAndBounded),
             ("world drag out and back never becomes a selection click", WorldClickRetainsGesture),
             ("device return restores its actual factory/workshop/line entry without stacking device switches", DeviceEntryReturnsToSource),
             ("device entry never leaks across factories, scenes, reloads or explicit overview navigation", DeviceEntryIsSessionScoped),

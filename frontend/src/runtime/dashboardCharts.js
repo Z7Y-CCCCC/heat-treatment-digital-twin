@@ -1,5 +1,12 @@
 const numeric=value=>value===null || value===undefined || value==='' || typeof value==='boolean' || !Number.isFinite(Number(value)) ? null : Number(value)
 const numberAt=(row,key)=>numeric(row?.[key])
+export function gaugeChartRange(content = {}, reading = null, unit = '') {
+ const value = numeric(reading), configuredMin = numeric(content.min), configuredMax = numeric(content.max)
+ const nice = value => { const step = 10 ** Math.floor(Math.log10(Math.max(1, value))); return Math.ceil(value / step) * step }
+ const minimum = configuredMin ?? (value !== null && value < 0 ? -nice(Math.abs(value) * 1.1) : 0)
+ const maximum = configuredMax ?? (unit === '%' ? 100 : nice(Math.max(100, value === null ? 100 : value * 1.1)))
+ return minimum < maximum ? { min: minimum, max: maximum } : { min: 0, max: nice(Math.max(100, value === null ? 100 : value * 1.1)) }
+}
 export function extendedChartOption(type,{common={},sourceSeries=[],content={},binding={}}) {
  const rows=sourceSeries[0]?.rows || [], time=content.categoryField || content.timeField || 'time', value=content.valueField || 'value'
  const grid={left:45,right:22,top:28,bottom:38,containLabel:true}
@@ -8,11 +15,11 @@ export function extendedChartOption(type,{common={},sourceSeries=[],content={},b
  const points=rows.map((r,i)=>({name:categories[i],value:numberAt(r,value)})).filter(p=>p.value!==null)
  const axis={type:'category',data:categories,axisLabel:{color:'#9e99b7'},axisLine:{lineStyle:{color:'#d8d0ff22'}}},vertical={type:'value',splitLine:{lineStyle:{color:'#d8d0ff12'}},axisLabel:{color:'#9e99b7'}}
  if(['pie','donut','rose','funnel'].includes(type)) {
-  const data=content.pieDataMode==='series' || sourceSeries.length>1 ? sourceSeries.map(s=>({name:s.name,value:numeric(s.value)})).filter(p=>p.value!==null) : points
+  const data=(content.pieDataMode==='series' || sourceSeries.length>1 ? sourceSeries.map(s=>({name:s.name,value:numeric(s.value)})).filter(p=>p.value!==null) : points).filter(point=>point.value>=0)
   const palette=['#a995d8','#7f91cc','#71aaa3','#d2b783','#a37d9a','#8c9ac4'];data.forEach((p,i)=>{p.itemStyle={color:palette[i%palette.length]}})
   common={...common,legend:{...common.legend,show:content.showLegend!==false && data.length>1},tooltip:{...common.tooltip,trigger:'item'}}
   if(type==='funnel')return {...common,series:[{type:'funnel',top:26,bottom:15,left:'10%',width:'80%',sort:'descending',label:{...label,show:content.showDataLabel!==false},data}]}
-  return {...common,series:[{type:'pie',roseType:type==='rose'?'radius':undefined,radius:type==='donut'?[`${Number(content.donutRatio ?? 48)}%`,'76%']:['0%','76%'],center:['50%','55%'],label:{...label,show:content.showDataLabel!==false,formatter:'{b}\n{c}'},itemStyle:{borderColor:'#50456355',borderWidth:1},data}]}
+  return {...common,series:[{type:'pie',stillShowZeroSum:false,roseType:type==='rose'?'radius':undefined,radius:type==='donut'?[`${Number(content.donutRatio ?? 48)}%`,'76%']:['0%','76%'],center:['50%','55%'],label:{...label,show:content.showDataLabel!==false,formatter:'{b}\n{c}'},itemStyle:{borderColor:'#50456355',borderWidth:1},data}]}
  }
  if(type==='radar') {
   if(sourceSeries.length<3 || !rows.length)return {...common,series:[]}

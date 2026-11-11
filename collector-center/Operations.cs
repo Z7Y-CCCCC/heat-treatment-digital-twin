@@ -21,7 +21,7 @@ namespace HeatTreatmentCollectorCenter
     internal sealed class Snapshot
     {
         public string Service="未安装", Api="不可达", Database="未知", Mode="未知", Collection="暂无采样", Process="—", Error="", Root="", Origin="http://127.0.0.1:3001";
-        public bool Installed, Running, Healthy;
+        public bool Installed, Running, Healthy, RuntimeReady;
         public string HealthState="offline",HealthLabel="等待采集进程";
         public int Normal=-1,Abnormal=-1;
         public DateTime CheckedAt=DateTime.Now;
@@ -37,6 +37,17 @@ namespace HeatTreatmentCollectorCenter
         internal static readonly string ConfigFile=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),"HeatTreatmentDigitalTwin","collector-service.json");
         internal static readonly string InstallRoot=Path.GetFullPath(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"..",".."));
         internal static readonly string[] LogFiles={"service-host.log","backend.log","backend-error.log","operations.log"};
+        internal static bool CompleteRuntime(string root) {
+            try {
+                var manifest=Parse(File.ReadAllText(Path.Combine(root,"plugin-manifest.json")));
+                return Str(manifest,"product")=="collector-plugin" && new[]{"resources/collector-service/HeatTreatmentCollector.exe","resources/collector-service/worker.cjs","resources/runtime/node.exe","resources/backend/server.js","resources/backend-dependencies.tar","resources/templates/factory-template.db","安装采集服务.ps1","collector-operations.ps1"}.All(name=>File.Exists(Path.Combine(root,name.Replace('/',Path.DirectorySeparatorChar))));
+            } catch { return false; }
+        }
+        internal static void AssertCollectorHealth(object health) {
+            var runtime=Get(health,"runtime");
+            if(Str(runtime,"role")!="collector" || Str(runtime,"owner")!="windows-service" || Str(runtime,"serviceName")!=ServiceName)
+                throw new InvalidDataException("该端口不是独立采集服务，拒绝把大屏进程当作采集服务");
+        }
         static readonly HttpClient Client=new HttpClient(new HttpClientHandler { UseProxy=false, AllowAutoRedirect=false }) { Timeout=TimeSpan.FromSeconds(3) };
         static JavaScriptSerializer Json() { return new JavaScriptSerializer { MaxJsonLength=4*1024*1024, RecursionLimit=64 }; }
         internal static object Parse(string text) { return Json().DeserializeObject(text.TrimStart('\uFEFF')); }
@@ -78,12 +89,19 @@ namespace HeatTreatmentCollectorCenter
                     { if(memory.Length+count>1024*1024) throw new InvalidDataException("健康响应过大"); memory.Write(buffer,0,count); }
                     var health=Parse(Encoding.UTF8.GetString(memory.ToArray()));
                     if(Str(health,"status")!="ok" || Get(Get(health,"components"),"dataEngine")==null || Get(health,"db")==null) throw new InvalidDataException("端口不是采集服务");
+                    AssertCollectorHealth(health);
                     return health;
                 }
             }
         }
         internal static Snapshot Summarize(Snapshot s,object health,DateTime now)
         {
+            var licensing=Get(Get(health,"version"),"license");
+            if(Yes(Get(licensing,"enforce")) && !Yes(Get(licensing,"valid"))) {
+                s.Api="可达";s.Healthy=false;s.HealthState="activation_required";s.HealthLabel="等待正式激活";
+                s.Database=Yes(Get(Get(health,"db"),"connected"))?"已连接":"异常";
+                s.Error="采集服务已启动，授权未就绪；请通过大屏正常激活，未绕过授权校验";return s;
+            }
             var observed=Get(health,"collectorHealth");
             if(observed!=null) {
                 s.HealthState=Str(observed,"state");s.HealthLabel=Str(observed,"label");
@@ -125,7 +143,7 @@ namespace HeatTreatmentCollectorCenter
         }
         internal static async Task<Snapshot> Status()
         {
-            var s=new Snapshot();
+            var s=new Snapshot { RuntimeReady=CompleteRuntime(InstallRoot) };
             try {
                 using(var controller=new ServiceController(ServiceName)) {
                     var state=controller.Status; s.Installed=true; s.Running=state==ServiceControllerStatus.Running;
@@ -138,9 +156,10 @@ namespace HeatTreatmentCollectorCenter
             object config=null;
             try { config=ReadConfig(); s.Root=Str(config,"root"); s.Origin=Origin(config); }
             catch(Exception error) { s.Error=Redact(error.Message); return s; }
-            // A development/application-owned collector can be alive without an
-            // installed SCM service. Detect it; never claim boot collection exists.
-            if(config==null && s.Installed && s.Running) { s.Error="服务配置丢失"; return s; }
+            // Never guess port 3001 or attach to an application-owned collector.
+            if(config==null) { s.Error=s.Installed?"服务配置丢失":"独立采集服务尚未安装；不会连接大屏内的数据进程"; return s; }
+            if(!s.Installed) { s.Error="保留了采集配置，但 Windows 服务未安装；不会接管其他进程"; return s; }
+            if(!s.Running) { s.Error="采集服务未运行，不会读取同端口的其他程序"; return s; }
             try { Summarize(s,await FetchHealth(s.Origin).ConfigureAwait(false),DateTime.UtcNow); }
             catch(Exception error) { s.Error=Redact(error is TaskCanceledException ? "管理接口超时" : error.Message); }
             return s;
@@ -191,17 +210,21 @@ namespace HeatTreatmentCollectorCenter
         internal static async Task<object> Elevated(string action)
         {
             if(!new[]{"logs","install","start","stop","restart"}.Contains(action)) throw new InvalidOperationException("不支持的操作");
-            string script=Path.Combine(InstallRoot,"collector-operations.ps1");
+            if(action=="install" && !CompleteRuntime(InstallRoot)) throw new InvalidOperationException("缺少完整独立采集包；禁止从大屏目录安装服务");
+            var configured=ReadConfig();
+            string operationRoot=configured==null?InstallRoot:Path.GetDirectoryName(Str(configured,"resourcesRoot"));
+            string script=Path.Combine(operationRoot,"collector-operations.ps1");
             if(!File.Exists(script)) throw new FileNotFoundException("请使用完整安装包安装服务",script);
             string name="HeatTreatmentOps-"+Guid.NewGuid().ToString("N")+Guid.NewGuid().ToString("N").Substring(0,16);
             var security=new PipeSecurity();
             security.AddAccessRule(new PipeAccessRule(WindowsIdentity.GetCurrent().User,PipeAccessRights.FullControl,AccessControlType.Allow));
             security.AddAccessRule(new PipeAccessRule(new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid,null),PipeAccessRights.FullControl,AccessControlType.Allow));
             security.AddAccessRule(new PipeAccessRule(new SecurityIdentifier(WellKnownSidType.LocalSystemSid,null),PipeAccessRights.FullControl,AccessControlType.Allow));
-            using(var cancel=new CancellationTokenSource(TimeSpan.FromMinutes(5)))
+            using(var cancel=new CancellationTokenSource(TimeSpan.FromMinutes(20)))
             using(var pipe=new NamedPipeServerStream(name,PipeDirection.In,1,PipeTransmissionMode.Byte,PipeOptions.Asynchronous,4096,4096,security))
             {
                 string code="& '"+script.Replace("'","''")+"' -Action '"+action+"' -PipeName '"+name+"'";
+                if(action=="install") code+=" -ImportDataDirectory '"+Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),"heat-treatment-digital-twin-desktop").Replace("'","''")+"'";
                 string args="-NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand "+Convert.ToBase64String(Encoding.Unicode.GetBytes(code));
                 var info=new ProcessStartInfo(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System),"WindowsPowerShell","v1.0","powershell.exe"),args) { UseShellExecute=true,Verb="runas",WindowStyle=ProcessWindowStyle.Hidden };
                 using(var process=await Task.Run(()=>Process.Start(info)).ConfigureAwait(false)) {

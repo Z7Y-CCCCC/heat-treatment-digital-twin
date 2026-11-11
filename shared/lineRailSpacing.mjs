@@ -1,6 +1,7 @@
 // A rail's spacing is measured in metres between the rail/lane centre lines.
 // Authored offsets/lengths remain line-local scene coordinates. This calibration
 // is not a transform scale or a claim that a model transfer port is reachable.
+import { resolveLinePlacementTemplate } from './linePlacementTemplate.mjs'
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value)
 // Observe insertion/removal in reactive configuration objects while excluding
 // inherited prototype values from the explicit saved-field contract.
@@ -66,6 +67,7 @@ export function assertLineMovementUnits(movement, layout, name = '移动设备')
 }
 
 export function resolveLineRailSpacing(layout) {
+  if (layout.placementTemplate !== undefined) return resolveLinePlacementTemplate(layout)
   const lanes = layout.lanes || [], units = lineSceneUnitsPerMeter(layout)
   return { ...layout, rails: (layout.rails || []).map(rail => {
     if (!own(rail, 'spacing') || rail.spacing === null || rail.spacing === undefined) {

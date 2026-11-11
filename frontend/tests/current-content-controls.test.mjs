@@ -151,7 +151,7 @@ async function mountWidget(t,input,extra={}) {
 }
 async function mountTooltip(t,kind='device',extra={}) {
   const host=memoryHost(t),template=createTooltipTemplate(kind),doc=ref(normalizeDashboardDocument({tooltipTemplates:{templates:[template],defaults:{[kind]:template.id}}}))
-  const id=kind==='part'?`${template.id}_description`:`${template.id}_status_value`
+  const id=kind==='part'?`${template.id}_group`:`${template.id}_status_value`
   const hover=ref(createTooltipContext({device:{id:'b',name:'悬停 B',workshopName:'车间 B'},part:{id:'part-b',name:'部件 B',description:'说明 B'},status:{quality:'good',online:true},runtimeContext:{viewMode:'factory',deviceId:'a'}}))
   const widget=()=>doc.value.tooltipTemplates.templates.find(item=>item.id===template.id).widgets.find(item=>item.id===id),commits=[]
   let vm
