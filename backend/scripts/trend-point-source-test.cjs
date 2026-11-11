@@ -7,7 +7,8 @@ const {validatePlcBindings}=require('../services/dashboardDocuments');
 const {upgradeWidgetPlaybackDocument}=require('../../shared/widgetPlaybackProfile.mjs');
 (async()=>{
  const point={id:1,device_id:'d',name:'temp',value_role:'actual_temp',category:'analog',sample_interval_ms:1000,access_type:'READ'};
- const engine={currentMode:'simulation',deviceSnapshots:new Map([['d',{timestamp:Date.now(),status:{online:true},analog:{actual_temp:0}}]])};
+ // Keep the real snapshot helpers without constructing or starting an engine.
+ const engine=Object.assign(Object.create(DataEngine.prototype),{currentMode:'simulation',deviceSnapshots:new Map([['d',{timestamp:Date.now(),status:{online:true},analog:{actual_temp:0}}]])});
  const read=()=>DataEngine.prototype.getPointRuntimeValues.call(engine,'d',[point]);
  assert.equal(read().sourceMode,'simulation');assert.equal(read().points[0].value,0);assert.equal(read().points[0].quality,'good');
  engine.deviceSnapshots.get('d').timestamp=Date.now()-10000;assert.equal(read().points[0].quality,'stale');
