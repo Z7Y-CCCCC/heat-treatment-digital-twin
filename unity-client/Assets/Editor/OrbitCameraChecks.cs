@@ -69,6 +69,93 @@ namespace HeatTreatment.DigitalTwin.Editor
                     orbit.TrackBoundsCenter(bounds);
                     Check(Vector3.Distance(Vector("_desiredTarget"), bounds.center) < .001f, label + " explicit navigation re-enables authored target tracking");
                 }
+                // A null-graphics batch editor has a 1x1 screen; give projection
+                // tests their own render target rather than the operator's display.
+                var projectionTarget = new RenderTexture(1600, 900, 0);
+                camera.targetTexture = projectionTarget;
+                var viewport = new Rect(0, 0, 1600, 900);
+                camera.pixelRect = viewport; camera.aspect = viewport.width / viewport.height;
+                foreach (var precise in new[] { false, true })
+                foreach (var fps in new[] { 15, 30, 60, 144 })
+                foreach (var point in new[] { new Vector2(.5f, .5f), new Vector2(.76f, .68f), new Vector2(.04f, .13f) })
+                {
+                    var label = (precise ? "part" : "line") + " wheel " + fps + "fps " + point;
+                    var bounds = new Bounds(new Vector3(7, 2, 9), precise ? Vector3.one * .1f : new Vector3(120, 12, 24));
+                    orbit.FocusBounds(bounds, -39f, precise ? -30f : 33f, 1.08f, true, precise);
+                    var distance = Number("_distance");
+                    var pixel = new Vector2(point.x * viewport.width, point.y * viewport.height);
+                    // Avoid inverting an extreme far/near projection matrix for
+                    // sub-centimetre parts; that adds fixture-only pixel error.
+                    var halfHeight = Mathf.Tan(camera.fieldOfView * .5f * Mathf.Deg2Rad) * distance;
+                    var anchor = orbit.Target + camera.transform.right * ((point.x * 2f - 1f) * halfHeight * camera.aspect)
+                        + camera.transform.up * ((point.y * 2f - 1f) * halfHeight);
+                    var position = camera.transform.position;
+                    orbit.ZoomAtPointer(1, pixel);
+                    Check(Mathf.Abs(Number("_desiredDistance") / distance - Mathf.Exp(-.22f)) < .00001f,
+                        label + " one detent closes about 20 percent (ratio=" + Number("_desiredDistance") / distance + ", viewport=" + camera.pixelRect + ")");
+                    Check(Vector3.Distance(position, camera.transform.position) < .00001f, label + " input does not snap the rendered camera");
+                    var maximumPixelError = 0f;
+                    for (var frame = 0; frame < fps; frame++)
+                    {
+                        Step(1f / fps);
+                        var projected = camera.WorldToScreenPoint(anchor);
+                        maximumPixelError = Mathf.Max(maximumPixelError, Vector2.Distance(new Vector2(projected.x, projected.y), pixel));
+                    }
+                    Check(maximumPixelError < .1f, label + " cursor anchor stays fixed during smoothing and after settling (pixel error=" + maximumPixelError + ")");
+                    Check(Mathf.Abs(Number("_distance") / distance - Mathf.Exp(-.22f)) < .00001f, label + " final zoom is independent of frame rate");
+                    orbit.ZoomAtPointer(-1, pixel);
+                    for (var frame = 0; frame < fps; frame++) Step(1f / fps);
+                    Check(Vector3.Distance(position, camera.transform.position) / distance < .00001f, label + " opposite detent returns without pivot drift");
+                }
+                var lineBounds = new Bounds(new Vector3(7, 2, 9), new Vector3(120, 12, 24));
+                var cursor = new Vector2(1100, 650);
+                void ResetZoom() => orbit.FocusBounds(lineBounds, -39, 33, 1.08f, true);
+                ResetZoom();
+                var fullDistance = Number("_distance");
+                for (var i = 0; i < 4; i++) orbit.ZoomAtPointer(1, cursor);
+                var batchedDistance = Number("_desiredDistance"); var batchedTarget = Vector("_desiredTarget");
+                Check(batchedDistance / fullDistance < .5f, "four wheel detents more than halve the focus distance before a rendered frame");
+                ResetZoom();
+                for (var i = 0; i < 40; i++) { orbit.ZoomAtPointer(.1f, cursor); Step(1f / 144f); }
+                Check(Mathf.Abs(Number("_desiredDistance") - batchedDistance) / fullDistance < .00001f
+                    && Vector3.Distance(batchedTarget, Vector("_desiredTarget")) / fullDistance < .00001f,
+                    "fractional high-resolution input and intervening rendered frames retain the same distance and pivot");
+                ResetZoom(); orbit.ZoomAtPointer(1, cursor, 2.5f); var fast = Number("_desiredDistance");
+                ResetZoom(); orbit.ZoomAtPointer(1, cursor, .25f); var fine = Number("_desiredDistance");
+                Check(fast < fullDistance * .6f && fine > fullDistance * .94f, "fast and fine modes provide distinct coarse and precise movement");
+                ResetZoom();
+                orbit.SetTransitionDuration(8);
+                orbit.FocusBounds(new Bounds(Vector3.one * 30, Vector3.one * 5), 80, 55);
+                Step(.02f);
+                var renderedDistance = Number("_distance"); var renderedYaw = Number("_yaw");
+                orbit.ZoomAtPointer(1, cursor);
+                Check(Mathf.Abs(Number("_desiredDistance") / renderedDistance - Mathf.Exp(-.22f)) < .00001f
+                    && Mathf.Abs(Number("_desiredYaw") - renderedYaw) < .00001f,
+                    "wheel interrupts a slow authored transition from the rendered pose, not its future destination");
+                Step(.02f);
+                Check(Number("_distance") < renderedDistance * .88f, "manual zoom responds within 20ms despite an 8-second authored transition");
+                ResetZoom();
+                for (var i = 0; i < 100; i++) orbit.ZoomAtPointer(1, cursor);
+                Check(Mathf.Abs(Number("_desiredDistance") - .3f) < .00001f, "overview close-up is no longer blocked by the old 2.5-unit zoom floor");
+                var limitTarget = Vector("_desiredTarget");
+                orbit.ZoomAtPointer(100, cursor);
+                Check(Vector3.Distance(limitTarget, Vector("_desiredTarget")) < .00001f, "wheel at the near limit cannot creep the pivot");
+                orbit.ZoomAtPointer(-1, cursor);
+                Check(Number("_desiredDistance") > .3f, "zoom immediately reverses away from the near limit");
+                for (var i = 0; i < 100; i++) orbit.ZoomAtPointer(-1, cursor);
+                Check(Mathf.Abs(Number("_desiredDistance") - 1000f) < .00001f, "far zoom remains bounded");
+                limitTarget = Vector("_desiredTarget"); orbit.ZoomAtPointer(-100, cursor);
+                Check(Vector3.Distance(limitTarget, Vector("_desiredTarget")) < .00001f, "wheel at the far limit cannot creep the pivot");
+                orbit.ZoomAtPointer(1, cursor);
+                Check(Number("_desiredDistance") < 1000f, "zoom immediately reverses away from the far limit");
+                ResetZoom(); var blockedTarget = Vector("_desiredTarget");
+                orbit.PointerInputBlocked = true; orbit.ZoomAtPointer(1, cursor); orbit.PointerInputBlocked = false;
+                orbit.InteractionEnabled = false; orbit.ZoomAtPointer(1, cursor); orbit.InteractionEnabled = true;
+                orbit.ZoomAtPointer(1, new Vector2(-1, 50)); orbit.ZoomAtPointer(float.NaN, cursor);
+                orbit.ZoomAtPointer(float.PositiveInfinity, cursor); orbit.ZoomAtPointer(0, cursor);
+                Check(Number("_desiredDistance") == fullDistance && Vector3.Distance(blockedTarget, Vector("_desiredTarget")) == 0,
+                    "HUD blocking, disabled interaction, outside pixels and invalid/zero wheel cannot move the scene");
+                camera.targetTexture = null; Object.DestroyImmediate(projectionTarget);
                 var click = new PointerClickGesture(); click.Begin(10, 10, true); click.Move(200, 10);
                 Check(!click.End(10, 10, true), "returning a drag to its starting pixel cannot select or reframe a device");
                 Debug.Log("[OrbitCameraChecks] PASS " + checks.Count);

@@ -72,6 +72,9 @@ process.on('message', async message => {
             result = await engine.reloadFactoryConfiguration(payload.factoryId);
             telemetry.remove(result.removedDeviceIds);
             telemetry.flush();
+        } else if (method === 'simulationPoint' && started) {
+            result = engine.setSimulationPointValue(payload.point, payload.value, payload.reset, payload.factoryId);
+            telemetry.flush();
         } else if (method === 'points' && started) {
             const source = payload.factoryId && payload.factoryId !== engine.activeFactoryId
                 ? engine.factoryEngines.get(payload.factoryId) : engine;

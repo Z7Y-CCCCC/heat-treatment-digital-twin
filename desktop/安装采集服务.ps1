@@ -4,11 +4,13 @@ param(
     [ValidateRange(1024,65535)][int]$Port = 3001,
     [string]$DataRoot = (Join-Path $env:ProgramData 'HeatTreatmentDigitalTwin\collector'),
     [string]$ImportDataDirectory,
-    [switch]$Uninstall
+    [switch]$Uninstall,
+    [switch]$CheckOnly
 )
 $ErrorActionPreference = 'Stop'
+if($CheckOnly -and $Uninstall) { throw '预检不能同时执行卸载。' }
 $serviceName = 'HeatTreatmentCollector'
-if (-not ([Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+if ($Uninstall -and -not $CheckOnly -and -not ([Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     throw '安装、移除采集服务需要管理员权限；请以管理员身份运行本脚本。'
 }
 $installDirectory = (Resolve-Path -LiteralPath $InstallRoot).Path
@@ -29,6 +31,11 @@ if ($Uninstall) {
     exit 0
 }
 $resourcesDirectory = Join-Path $installDirectory 'resources'
+$distributionFile = Join-Path $resourcesDirectory 'backend\distribution.json'
+if(-not (Test-Path -LiteralPath $distributionFile) -or
+    (Get-Content -LiteralPath $distributionFile -Raw -Encoding UTF8 | ConvertFrom-Json).product -ne 'collector-plugin') {
+    throw '这里是大屏程序或不完整的开发缓存，不能安装采集服务。请从完整独立采集运行中心包安装。'
+}
 $hostExe = Join-Path $resourcesDirectory 'collector-service\HeatTreatmentCollector.exe'
 foreach ($required in @($hostExe, (Join-Path $resourcesDirectory 'collector-service\worker.cjs'),
     (Join-Path $resourcesDirectory 'runtime\node.exe'), (Join-Path $resourcesDirectory 'backend-dependencies.tar'),
@@ -43,6 +50,23 @@ if (Test-Path -LiteralPath $configFile) {
 }
 $dataDirectory = [IO.Path]::GetFullPath($DataRoot)
 if ($dataDirectory -eq [IO.Path]::GetPathRoot($dataDirectory)) { throw '服务数据目录不能是磁盘根目录。' }
+$probe = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, $Port)
+$portAvailable=$true
+try { $probe.Start() } catch { $portAvailable=$false } finally { $probe.Stop() }
+if($CheckOnly) {
+    [ordered]@{ resourcesReady=$true;serviceInstalled=($null-ne $service);port=$Port;portAvailable=$portAvailable;dataRoot=$dataDirectory;requiresAdministrator=$true } | ConvertTo-Json -Compress
+    exit 0
+}
+if(-not $service -and -not $portAvailable) { throw "端口 $Port 正由其他程序使用。请先保存并退出旧大屏，不能并行启动第二个采集器。" }
+if ($ImportDataDirectory) {
+    $source = (Resolve-Path -LiteralPath $ImportDataDirectory).Path
+    if((Test-Path -LiteralPath $dataDirectory) -and (Get-ChildItem -LiteralPath $dataDirectory -Force | Select-Object -First 1)) { throw '服务数据目录已有内容，拒绝覆盖；迁移请使用后台整站恢复。' }
+    $sourcePrefix=$source.TrimEnd('\')+'\'
+    if(Get-CimInstance Win32_Process -Filter "Name='mysqld.exe' OR Name='node.exe'" | Where-Object { $_.CommandLine -and $_.CommandLine.IndexOf($sourcePrefix,[StringComparison]::OrdinalIgnoreCase)-ge 0 }) {
+        throw '原工程数据库仍在运行。请保存并退出旧大屏，不能复制活动中的数据库。'
+    }
+}
+if (-not ([Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw '安装采集服务需要 Windows 管理员授权。' }
 # Validate resources and configuration before stopping a working installation.
 if ($service -and $service.Status -ne 'Stopped') {
     Stop-Service -Name $serviceName -ErrorAction Stop
@@ -127,11 +151,11 @@ New-Item -ItemType Directory -Force -Path $linksDirectory | Out-Null
 & "$env:SystemRoot\System32\icacls.exe" $linksDirectory '/grant:r' $serviceGrant
 if ($LASTEXITCODE -ne 0) { throw '无法设置 MySQL 兼容路径权限。' }
 Start-Service -Name $serviceName
-$readyDeadline = (Get-Date).AddMinutes(4)
+$readyDeadline = (Get-Date).AddMinutes(15)
 do {
     try {
         $health = Invoke-RestMethod -Uri "$($configuration.backendOrigin)/api/health" -TimeoutSec 3
-        if ($health.status -eq 'ok' -and $health.db.connected -eq $true) { break }
+        if ($health.status -eq 'ok' -and $health.db.connected -eq $true -and $health.runtime.role -eq 'collector' -and $health.runtime.owner -eq 'windows-service' -and $health.runtime.serviceName -eq $serviceName) { break }
     } catch { }
     if ((Get-Date) -gt $readyDeadline) { throw "采集服务启动超时，请查看 $dataDirectory\logs" }
     Start-Sleep -Seconds 1

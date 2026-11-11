@@ -22,10 +22,16 @@ for (const match of [...code.matchAll(/from\s+(['"])([^'"]+)\1/g)]) {
 const { default: Overlay } = await import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`)
 Overlay.render = () => null
 
-function fixture(t, { platform = {} } = {}) {
+function fixture(t, { platform = {}, settings = {}, native = false, realMount = false } = {}) {
     const environment = installBrowser(t)
     const sockets = installSockets(environment.replace)
-    window.dispatchEvent = () => {}
+    const progress=[],messages=[]
+    window.dispatchEvent = event => progress.push(event.detail)
+    if(native){window.__DIGITAL_TWIN_NATIVE_LOADING__=true;window.chrome={webview:{addEventListener(){},removeEventListener(){},postMessage:m=>messages.push(m)}}}
+    if(realMount){
+        environment.replace('ResizeObserver',class {observe(){}disconnect(){}})
+        environment.replace('MutationObserver',class {observe(){}disconnect(){}})
+    }
     window.requestAnimationFrame = () => 1
     window.cancelAnimationFrame = () => {}
     document.documentElement = { style: {} }
@@ -34,7 +40,7 @@ function fixture(t, { platform = {} } = {}) {
     const request = t.mock.method(globalThis, 'fetch', async url => {
         if (String(url).endsWith('/config')) return failure ? json({}, 503) : json({
             workshops: [{ id: 'w', devices: [{ id: 'unassigned', name: 'Unassigned' }], lines: [{ id: 'l', devices }] }],
-            factoryId: 'factory_a', factories: [{ id: 'factory_a', enabled: visible }], settings: {}, models: [], platform
+            factoryId: 'factory_a', factories: [{ id: 'factory_a', enabled: visible }], settings, models: [], platform
         })
         if (String(url).includes('/events')) return json([])
         return json({})
@@ -48,9 +54,50 @@ function fixture(t, { platform = {} } = {}) {
     app.provide(routerKey, { push(target) { pushes.push(target) }, replace(target) { replacements.push(target) } })
     app.provide(routeLocationKey, { query: {} })
     app.mount({})
+    if(realMount)instance.value.$.setupState.rootRef={querySelectorAll:()=>[]}
     environment.beforeRestore(() => app.unmount())
-    return { state: instance.value.$.setupState, provides: instance.value.$.provides, sockets, request, replacements, pushes, replace: environment.replace, hide() { visible = false }, setDevices(next) { devices = next }, fail() { failure = true } }
+    return { state: instance.value.$.setupState, provides: instance.value.$.provides, sockets, request, replacements, pushes, progress, messages, replace: environment.replace, hide() { visible = false }, setDevices(next) { devices = next }, setConfig(next) { settings=next.settings;platform=next.platform }, fail() { failure = true } }
 }
+
+test('mounted native overlay keeps the cover after web setup and consumes real scene progress before sending ready once',async t=>{
+    t.mock.timers.enable({apis:['Date','setInterval','setTimeout'],now:100000})
+    const view=fixture(t,{native:true,realMount:true})
+    await settle();t.mock.timers.tick(1000);await settle()
+    assert.equal(view.state.startupLoading,true)
+    assert.equal(view.messages.filter(m=>m.type==='overlay_ready').length,0)
+    const context=(progress,sequence,sceneReady=false)=>({factoryId:'factory_a',viewId:'factory_overview',sceneReady,
+        startupLoading:{loadId:'native-load',sequence,progress,step:'井式炉',detail:'精确拾取索引 64/120'}})
+    await view.state.handleRuntimeMessage({type:'dashboard_context_changed',payload:context(44,1)})
+    assert.equal(view.state.startupProgress,44);assert.match(view.state.startupStep,/64\/120/)
+    await view.state.handleRuntimeMessage({type:'dashboard_context_changed',payload:{sceneReady:true}})
+    assert.equal(view.state.startupLoading,true,'legacy UI fallback must not finish native loading')
+    await view.state.handleRuntimeMessage({type:'dashboard_context_changed',payload:context(100,2,true)})
+    assert.equal(view.state.startupLoading,false)
+    assert.deepEqual(view.messages.filter(m=>m.type==='overlay_ready'),[{type:'overlay_ready',pageReady:true,nativeSceneReady:true,loadId:'native-load'}])
+    assert.ok(view.progress.every(p=>p.source==='native'),'web 8/31/67 must not overwrite model progress')
+    assert.equal(view.progress.at(-1).progress,100)
+})
+
+test('returning from designer revalidates the published navigation sources and factory name once, without publishing drafts', async t => {
+    const navigation=content=>({document:{widgets:[{id:'nav',type:'navigation',content}],scene:{views:[]}}})
+    const view=fixture(t,{settings:{factory_name:'天津工厂'},platform:navigation({projectLabel:'天津工厂',statusText:'实时采集异常'})})
+    await settle();const state=view.state
+    state.startupLoading=false;state.hostConnected=true
+    assert.equal(state.navigationCopy(state.navigationWidgets[0]).projectLabel,'天津工厂')
+    state.handleHostMessage({data:{type:'overlay_host_state',visible:false}})
+    view.setConfig({settings:{factory_name:'天津智能生产运行中心'},platform:navigation({projectLabel:'天津工厂',statusText:'实时采集异常',projectLabelSource:'factory',statusTextSource:'collection'})})
+    const before=view.request.mock.callCount()
+    state.handleHostMessage({data:{type:'overlay_host_state',visible:true}})
+    await settle()
+    assert.equal(state.navigationCopy(state.navigationWidgets[0]).projectLabel,'天津智能生产运行中心')
+    assert.equal(state.navigationCopy(state.navigationWidgets[0]).statusText,state.dataStore.plcStatusText.value)
+    const reads=()=>view.request.mock.calls.slice(before).filter(c=>String(c.arguments[0]).endsWith('/config'))
+    assert.equal(reads().length,1)
+    assert.equal(reads()[0].arguments[1].headers['X-Factory-ID'],'factory_a')
+    state.handleHostMessage({data:{type:'overlay_host_state',visible:true}});await settle()
+    assert.equal(reads().length,1,'ordinary host context ticks must not poll the full configuration')
+    assert.ok(!view.request.mock.calls.slice(before).some(c=>/platform\/(releases|designer\/draft)/.test(String(c.arguments[0]))))
+})
 
 test('live overlay provides one shared clock without ticking scalar props in the HUD template', async t => {
     const view = fixture(t); await settle()
@@ -59,6 +106,30 @@ test('live overlay provides one shared clock without ticking scalar props in the
     clock.value = 123456; assert.equal(view.state.playbackNow, 123456)
     assert.doesNotMatch(descriptor.template.content, /:playback-now\s*=/,
         'forwarding the raw ticking scalar would force every HUD card to re-render')
+})
+
+test('camera buttons send runtime-only navigation commands and fit retains the exact current scope', async t => {
+    const view = fixture(t); await settle()
+    const state = view.state
+    Object.assign(state.runtimeContext, { factoryId: 'factory_a', viewId: 'line_overview', viewMode: 'line', workshopId: 'w', lineId: 'l', sceneReady: true })
+    state.startupLoading = false
+    state.dataStore.wsConnected.value = true
+    const calls = []
+    t.mock.method(globalThis, 'fetch', async (url, options) => { calls.push([url, options]); return json({ success: true, sent: 1 }) })
+    for (const action of ['zoomIn', 'zoomOut', 'rotateLeft', 'rotateRight', 'fit']) assert.equal(await state.sendCameraAction(action), true)
+    assert.equal(calls.length, 5)
+    for (const [url, options] of calls) {
+        assert.match(url, /\/native-preview\/navigate$/)
+        const body = JSON.parse(options.body)
+        assert.equal(body.action, 'camera'); assert.equal(body.viewId, 'line_overview')
+        assert.equal(body.focus.mode, 'line'); assert.equal(body.focus.lineId, 'l'); assert.equal(body.focus.workshopId, 'w')
+        assert.equal(options.headers['X-Factory-ID'], 'factory_a')
+        assert.equal(body.devices, undefined); assert.equal(body.includeLayout, undefined)
+    }
+    state.runtimeContext.sceneReady = false
+    assert.equal(await state.sendCameraAction('zoomIn'), false)
+    assert.equal(calls.length, 5)
+    assert.match(descriptor.template.content, /<SceneCameraControls/)
 })
 
 test('explicit root return-button click works even when the automatic navigation shortcut is unavailable', async t => {

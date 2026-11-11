@@ -395,9 +395,8 @@ namespace HeatTreatment.DigitalTwin.Editor
             Require(allProjected && GC.GetAllocatedBytesForCurrentThread() == before, "Steady native coordinate projection allocates no managed bytes.");
         }
 
-        public static void Validate()
+        public static JObject RunChecks()
         {
-            var code = 1;
             try {
                 _checks = 0; HoverSkipsIneligibleFrames(); PausedPoseKeepsPlcOwnership();
                 ExactSubEpsilonUpdates(); ForwardReverseAndReset();
@@ -410,17 +409,27 @@ namespace HeatTreatment.DigitalTwin.Editor
                     ["actualUnityTransformsRenderersAndMaterials"] = true, ["browserOperations"] = 0,
                     ["liveConfigurationWrites"] = 0, ["measuredVisualFps"] = false, ["measuredGpuLatency"] = false,
                     ["checkedAt"] = DateTimeOffset.UtcNow.ToString("o") };
-                var destination = Environment.GetEnvironmentVariable("NATIVE_INSPECTION_FRAME_VALIDATION_PATH");
-                if (!string.IsNullOrWhiteSpace(destination)) File.WriteAllText(destination, result.ToString());
-                Debug.Log("[InspectionFrameBudgetValidation] " + result.ToString(Newtonsoft.Json.Formatting.None)); code = 0;
+                Debug.Log("[InspectionFrameBudgetValidation] " + result.ToString(Newtonsoft.Json.Formatting.None));
+                return result;
             }
-            catch (Exception error) { Debug.LogException(error is TargetInvocationException && error.InnerException != null ? error.InnerException : error); }
             finally {
                 foreach (var controller in Controllers) if (controller != null) controller.ClearFactory();
                 Controllers.Clear();
                 for (var index = Owned.Count - 1; index >= 0; index--) if (Owned[index] != null) Object.DestroyImmediate(Owned[index]);
-                Owned.Clear(); EditorApplication.Exit(code);
+                Owned.Clear();
             }
+        }
+        public static void Validate()
+        {
+            var code = 1;
+            try {
+                var result = RunChecks();
+                var destination = Environment.GetEnvironmentVariable("NATIVE_INSPECTION_FRAME_VALIDATION_PATH");
+                if (!string.IsNullOrWhiteSpace(destination)) File.WriteAllText(destination, result.ToString());
+                code = 0;
+            }
+            catch (Exception error) { Debug.LogException(error is TargetInvocationException && error.InnerException != null ? error.InnerException : error); }
+            finally { EditorApplication.Exit(code); }
         }
     }
 }

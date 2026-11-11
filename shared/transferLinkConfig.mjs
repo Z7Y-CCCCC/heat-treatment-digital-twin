@@ -1,17 +1,18 @@
 // Explicit, optional display-only handoff configuration. Missing stays missing.
-export const TRANSFER_LINK_FIELDS=Object.freeze(['enabled','actionId','driveNodeName','targetMode','targetDeviceId','sourcePort','targetPort','presenceDataItemId','materialSize','materialColor','heightToleranceMeters','lateralToleranceMeters','angleToleranceDegrees'])
+import {normalizeTransferCycle,publicTransferCycle} from './transferCycleConfig.mjs'
+export const TRANSFER_LINK_FIELDS=Object.freeze(['enabled','actionId','driveNodeName','targetMode','targetDeviceId','sourcePort','targetPort','presenceDataItemId','materialSize','materialColor','heightToleranceMeters','lateralToleranceMeters','angleToleranceDegrees','cycle'])
 export function defaultTransferLink(){return {enabled:false,actionId:'',driveNodeName:'',targetMode:'fixed',targetDeviceId:'',sourcePort:'outlet',targetPort:'inlet',presenceDataItemId:'',materialSize:[.6,.3,.6],materialColor:'#E5A34A',heightToleranceMeters:.05,lateralToleranceMeters:.05,angleToleranceDegrees:5}}
 const object=value=>value&&typeof value==='object'&&!Array.isArray(value)
 const fail=message=>{throw Object.assign(new Error(message),{statusCode:400,code:'TRANSFER_LINK_INVALID'})}
 export function publicTransferLink(value){
  if(!object(value))return undefined
- return Object.fromEntries(TRANSFER_LINK_FIELDS.filter(key=>value[key]!==undefined).map(key=>[key,Array.isArray(value[key])?[...value[key]]:value[key]]))
+ return Object.fromEntries(TRANSFER_LINK_FIELDS.filter(key=>value[key]!==undefined).map(key=>[key,key==='cycle'?publicTransferCycle(value[key]):Array.isArray(value[key])?[...value[key]]:value[key]]))
 }
 export function normalizeTransferLink(value){
  if(value===undefined)return undefined
  if(!object(value)||Object.keys(value).some(key=>!TRANSFER_LINK_FIELDS.includes(key))||typeof value.enabled!=='boolean')fail('进出料联动配置格式无效')
  const result=publicTransferLink(value)
- const required=value.enabled?TRANSFER_LINK_FIELDS.filter(key=>key!=='targetDeviceId'||value.targetMode==='fixed'):Object.keys(value)
+ const required=value.enabled?TRANSFER_LINK_FIELDS.filter(key=>key!=='cycle'&&(key!=='targetDeviceId'||value.targetMode==='fixed')):Object.keys(value)
  for(const key of required)if(result[key]===undefined)fail('进出料联动缺少 '+key+' 设置')
  for(const key of ['actionId','driveNodeName','targetDeviceId','presenceDataItemId']){
   if(result[key]===undefined)continue
@@ -26,6 +27,7 @@ export function normalizeTransferLink(value){
  for(const [key,max] of [['heightToleranceMeters',1],['lateralToleranceMeters',1],['angleToleranceDegrees',30]]){
   if(result[key]!==undefined&&(typeof result[key]!=='number'||!Number.isFinite(result[key])||result[key]<0||result[key]>max))fail('交接允许偏差无效：'+key)
  }
+ if(value.cycle!==undefined)result.cycle=normalizeTransferCycle(value.cycle)
  return result
 }
 

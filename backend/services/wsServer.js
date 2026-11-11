@@ -17,7 +17,7 @@ const { getAdminAuth } = require('./adminAuth');
 const { WsOutboundQueue, defaults: queueDefaults } = require('../utils/wsOutboundQueue');
 const { normalizeInspectionHover } = require('../utils/inspectionHover');
 const { normalizeDeviceHover } = require('../utils/deviceHover');
-const { normalizeSceneLoading } = require('../../shared/sceneLoading.cjs');
+const { normalizeSceneLoading, normalizeStartupLoading } = require('../../shared/sceneLoading.cjs');
 
 function shortText(value, maxLength = 160) {
     return String(value || '').trim().slice(0, maxLength);
@@ -53,6 +53,9 @@ function inspectionContext(source, mode) {
     const active = mode === 'device' && source.inspectionEnabled === true;
     return {
         inspectionEnabled: active,
+        shellTransparencyAvailable: active && source.shellTransparencyAvailable === true,
+        shellTransparent: active && source.shellTransparent === true,
+        shellControlAnchor: projectedPoint(active ? source.shellControlAnchor : null),
         inspectionProgress: active && Number.isFinite(source.inspectionProgress) ? Math.max(0, Math.min(1, source.inspectionProgress)) : 0,
         inspectionAnimating: active && source.inspectionAnimating === true,
         inspectionPhase: active ? shortText(source.inspectionPhase, 32) : '',
@@ -182,6 +185,7 @@ class WsServer {
                                 ? source.sceneReady !== false
                                 : true,
                             sceneLoading: normalizeSceneLoading(source.sceneLoading, source.sceneReady !== false),
+                            startupLoading: normalizeStartupLoading(source.startupLoading),
                             viewMode: mode,
                             sceneId: shortText(source.sceneId, 128),
                             workshopId: shortText(source.workshopId, 128),

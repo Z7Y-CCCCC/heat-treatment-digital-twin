@@ -1,5 +1,6 @@
 import {CAD_MOTION_PROFILES} from './cadMotionProfiles.js'
 import {MULTIPURPOSE_CYCLE,MULTIPURPOSE_PROCESS_KINDS} from './multipurposeProcess.js'
+import {sampleTransferCycleAt} from '../../../shared/transferCycle.mjs'
 export const parseSimulationConfig=value=>{try{return typeof value==='string'?JSON.parse(value):value||{}}catch{return {}}}
 const CART_MODELS=new Set(['transfer_cart','photo_transfer_cart_v6','cad_transfer_cart_101300'])
 export const isSimulationCart=device=>CART_MODELS.has(device.model_type)
@@ -61,6 +62,8 @@ export function buildLineSimulation(devices,models,{process=true}={}){
         else if(!c.process.length&&!c.door)push(station,'display','静态展示',3)
     }
     if(!steps.length)throw Error('所选设备没有可模拟工步。')
+    const cycle=parseSimulationConfig(cart?.instance_config).animationBindings?.transferLink?.cycle
+    if(cycle?.enabled)for(const step of steps){if(['feed','pickup_extend'].includes(step.kind))step.duration=cycle.extendSeconds;else if(['retract','reclaim'].includes(step.kind))step.duration=cycle.latchSeconds+cycle.retractSeconds}
     let start=0;for(const step of steps){step.start=start;start+=step.duration;step.end=start}
     return {rows,stations,cart,steps,total:start}
 }
@@ -99,6 +102,14 @@ export function sampleLineSimulation(plan,time){
             case 'spray':case 'blow':case 'heat':case 'ultrasonic':case 'drip':state[step.kind]=active;state.run=active;state.runTime+=local;break
             case 'quench':state.stirTime+=local;state.run=active;state.runTime+=local;break
             case 'fans':case 'rollers':case 'run':state.run=active;state.runTime+=local;break
+        }
+        const cycle=parseSimulationConfig(plan.cart?.instance_config).animationBindings?.transferLink?.cycle
+        if(cycle?.enabled&&['feed','retract','pickup_extend','reclaim'].includes(step.kind)){
+            const pickup=['pickup_extend','reclaim'].includes(step.kind),past=['retract','reclaim'].includes(step.kind)
+            const estimate=sampleTransferCycleAt(cycle,(past?cycle.extendSeconds:0)+local,pickup,plan.transferMouthFractions?.[step.deviceId]??.5)
+            cart.feed=estimate.feed;cart.hookRelease=estimate.hook
+            cart.feedSide=cycle.stations.find(s=>s.targetDeviceId===step.deviceId)?.side==='opposite'?-1:1
+            material={holder:estimate.confirmed?(pickup?step.cartId:step.deviceId):(pickup?step.deviceId:step.cartId),from:step.cartId,to:step.deviceId,progress:estimate.cargo,cyclePath:true}
         }
         // Completed operations retain their final positions but never leave effects running.
         if(!active){state.run=false;for(const key of ['spray','blow','heat','ultrasonic','drip'])state[key]=false}

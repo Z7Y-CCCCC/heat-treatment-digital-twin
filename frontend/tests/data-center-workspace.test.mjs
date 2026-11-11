@@ -5,7 +5,7 @@ import { createRenderer, h, nextTick, ref } from 'vue'
 import { parse, compileScript, compileTemplate } from 'vue/compiler-sfc'
 import { adminApi } from '../src/config/factoryConfig.js'
 import { installBrowser, settle, deferred } from './helpers.mjs'
-import { DATA_CENTER_SECTIONS, dataCenterPreview, dataCenterQuality, dataCenterObjectLabel, filterDataCenterItems } from '../src/views/admin/utils/dataCenterCatalog.js'
+import { DATA_CENTER_SECTIONS, dataCenterPreview, dataCenterQuality, dataCenterObjectLabel, filterDataCenterItems, isAutoSyncedDataCenterTable } from '../src/views/admin/utils/dataCenterCatalog.js'
 import { firstDataCenterSample } from '../src/views/admin/utils/dataCenterFieldSamples.js'
 
 const sourceUrl = new URL('../src/views/admin/components/DataCenterWorkspace.vue', import.meta.url)
@@ -60,6 +60,28 @@ test('catalog filters per field category rather than table category and searches
   assert.deepEqual(filterDataCenterItems(entries,{sourceType:'外部数据表'}).map(item=>item.id), ['orders'])
   assert.equal(dataCenterObjectLabel(entries[0]),'1#炉')
   assert.equal(dataCenterObjectLabel(entries[2]),'当前工厂')
+})
+
+test('automatic sync marks only system-owned tables regardless of category or live quality', () => {
+  for (const sourceType of ['internal', 'plc']) {
+    for (const quality of ['good', 'bad', 'unknown', 'disabled']) {
+      assert.equal(isAutoSyncedDataCenterTable({ sourceType, categoryId: 'custom', quality }), true)
+    }
+  }
+  for (const sourceType of ['dataset', 'external', 'http', 'database', 'unknown', undefined]) {
+    assert.equal(isAutoSyncedDataCenterTable({ sourceType, categoryId: 'device', quality: 'good' }), false)
+  }
+  assert.equal(isAutoSyncedDataCenterTable(null), false)
+  assert.equal(isAutoSyncedDataCenterTable(), false)
+})
+
+test('automatic tables have green dashed borders and a diagonal upper-left sync ribbon even when selected', () => {
+  assert.match(descriptor.template.content, /'auto-synced':isAutoSyncedDataCenterTable\(table\)/)
+  assert.match(descriptor.template.content, /v-if="isAutoSyncedDataCenterTable\(table\)" class="table-sync-ribbon"[^>]*>自动同步<\/span>/)
+  const styles = descriptor.styles.map(style => style.content).join('\n')
+  assert.match(styles, /\.table-card\.auto-synced\s*\{[^}]*border:1px dashed #399365/)
+  assert.match(styles, /\.table-card\.auto-synced\.active\s*\{[^}]*border-color:#237348/)
+  assert.match(styles, /\.table-sync-ribbon\s*\{[^}]*top:calc\(15px \* var\(--admin-font-scale,1\)\);[^}]*left:calc\(-27px \* var\(--admin-font-scale,1\)\);[^}]*transform:rotate\(-45deg\)/)
 })
 
 test('previews preserve zero, false and unknown quality without inventing a healthy status',()=>{

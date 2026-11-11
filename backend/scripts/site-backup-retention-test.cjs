@@ -24,19 +24,22 @@ function setAge(filename, days) {
     fs.utimesSync(filename, date, date);
 }
 
-async function archive(filename, bytes) {
+async function archive(filename, bytes, tamperPayload = false) {
     const zip = archiver('zip', { zlib: { level: 1 } });
     const out = fs.createWriteStream(filename, { flags: 'wx' });
     const completion = new Promise((resolve, reject) => {
         out.once('close', resolve); out.once('error', reject); zip.once('error', reject);
     });
     zip.pipe(out);
+    const payload = Buffer.alloc(65536, 0xab);
     const manifest = {
         format: 'heat-treatment-digital-twin-site-backup', version: 4,
         databaseType: 'sqlite', databasePath: 'database/factory.db', uploadGroups: [],
-        files: [{ path: 'database/factory.db', size: bytes.length, sha256: crypto.createHash('sha256').update(bytes).digest('hex') }]
+        files: [{ path: 'database/factory.db', size: bytes.length, sha256: crypto.createHash('sha256').update(bytes).digest('hex') },
+            { path: 'uploads/models/retained-payload.glb', size: payload.length, sha256: crypto.createHash('sha256').update(payload).digest('hex') }]
     };
     zip.append(bytes, { name: 'database/factory.db' });
+    zip.append(tamperPayload ? Buffer.alloc(payload.length, 0xcd) : payload, { name: 'uploads/models/retained-payload.glb' });
     zip.append(JSON.stringify(manifest), { name: 'manifest.json' });
     await Promise.all([zip.finalize(), completion]);
 }
@@ -69,7 +72,18 @@ async function main() {
     assert.equal(config.autoEnabled, false);
     assert.equal(config.intervalHours, 12);
     assert.equal(config.mirrorDirectory, mirrorDirectory);
-    const cleanup = await service.cleanupSiteBackups('policy-save');
+    const originalWrite = fs.createWriteStream;
+    const uploadWrites = [];
+    let cleanup;
+    try {
+        fs.createWriteStream = function(filename, ...args) {
+            if (String(filename).startsWith(path.join(dataDir, 'site-imports') + path.sep) && String(filename).includes(path.sep + 'uploads' + path.sep)) uploadWrites.push(filename);
+            return originalWrite.call(this, filename, ...args);
+        };
+        cleanup = await service.cleanupSiteBackups('policy-save');
+    } finally { fs.createWriteStream = originalWrite; }
+    assert.deepEqual(uploadWrites, [], 'Retention verification must hash model payloads without expanding them to disk');
+    checks.retainedAssetsVerifiedWithoutDiskExpansion = true;
     assert.equal(cleanup.deletedCount, 2);
     assert.ok(cleanup.deleted.every(item => item.cause === 'expired'));
     assert.ok(names.slice(2).every(name => fs.existsSync(path.join(backupDir, name))));
@@ -123,6 +137,12 @@ async function main() {
         await originalRm(filename, { recursive: true, force: true });
     }
     checks.verificationCleanupFailureReportedWithoutFailingPolicy = true;
+    setAge(validAgain, 90);
+    const tampered = path.join(backupDir, 'heat-treatment-site-backup-20260401T000000000Z.zip');
+    await archive(tampered, databaseBytes, true); setAge(tampered, 89);
+    await service.cleanupSiteBackups('tampered-payload');
+    assert.ok(fs.existsSync(validAgain), 'A tampered streamed payload must not displace the older valid recovery point');
+    checks.streamedPayloadHashStillProtectsKnownGoodRecovery = true;
     const before = fs.readFileSync(path.join(dataDir, 'site-backup-config.json'), 'utf8');
     for (const invalid of [0, 3651, 1.5, 'no']) assert.throws(() => service.saveSiteBackupConfig({ retentionDays: invalid }), /1-3650/);
     assert.equal(fs.readFileSync(path.join(dataDir, 'site-backup-config.json'), 'utf8'), before);

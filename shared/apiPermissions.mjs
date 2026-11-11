@@ -104,6 +104,7 @@ export function apiPermission(path, method = 'GET', body) {
   if (/^\/api\/factories\/[^/]+\/collection$/.test(path)) return any('admin', p('settings.data', 'edit'))
   if (resource('factories')) return safe ? read(PAGE_PERMISSIONS.map(p => p.key), true) : any('admin', p('factories', 'edit'))
   if (resource('datapoints')) {
+    if (/^\/api\/datapoints\/[^/]+\/simulation$/.test(path) && ['PUT','DELETE'].includes(method)) return any('admin', p('points', 'edit'))
     if (path === '/api/datapoints/alarm-texts' && method === 'POST') return any('admin', p('points.alarms', 'edit'))
     if (path === '/api/datapoints/batch' && !safe) return any('admin', all(p('points', 'edit'), p('points', 'delete')))
     return safe ? read(['points', 'points.alarms', 'point-monitor', 'mobile-devices', 'model-animations', 'platform.designer'], true) : any('admin', p('points', action))

@@ -20,6 +20,9 @@ const savedTransferLink=computed(()=>{
     return link?.enabled===true?link:null
 })
 const effectiveTransferTolerances=computed(()=>savedTransferLink.value||transferTolerances.value)
+// A saved dual-side cycle must first be checked at its authored stations;
+// scheme layout is still an explicit, separate demonstration option.
+watch(()=>savedTransferLink.value?.cycle?.enabled,enabled=>{if(enabled)arrangement.value='site'})
 function changePreviewTolerance(field,value){if(!savedTransferLink.value)transferTolerances.value={...transferTolerances.value,[field]:Number(value)}}
 const draft=computed(()=>{
     try{
@@ -89,6 +92,7 @@ onUnmounted(()=>{disposed=true;invalidate()});onDeactivated(()=>{playing.value=f
      <div v-if="selectedIds.includes(device.id)" class="order"><span>{{ caps(device).cart?'配送':selectedIds.indexOf(device.id)+1 }}</span><button type="button" :aria-label="`上移${device.name||device.id}`" :disabled="selectedIds.indexOf(device.id)===0" @click="move(device.id,-1)">↑</button><button type="button" :aria-label="`下移${device.name||device.id}`" :disabled="selectedIds.indexOf(device.id)===selectedIds.length-1" @click="move(device.id,1)">↓</button></div>
     </article></div>
     <div class="pagination"><span>{{ filtered.length }} 台 · {{ equipmentPage+1 }}/{{ equipmentPages }} 页</span><button type="button" :disabled="equipmentPage===0" @click="equipmentPage--">上一页</button><button type="button" :disabled="equipmentPage>=equipmentPages-1" @click="equipmentPage++">下一页</button></div>
+    <p v-if="savedTransferLink?.cycle?.enabled" class="hint" role="status">使用设备动画联动中保存的双侧机构、工位、承料位与时长；与 Unity 共用动作包及循环规则。此处使用模拟 BOOL 反馈预览，前台使用实时 BOOL 反馈，动画中间位置仅为显示估算；此页不读写 PLC。</p>
     <label class="field">预览排布<select v-model="arrangement" aria-label="联动预览排布"><option value="scheme">按模拟顺序排列</option><option value="site">沿用现场设备位置</option></select></label>
     <div v-if="arrangement==='site'" class="site-transfer-settings">
      <label class="field">{{savedTransferLink?'已保存联动':'模拟预览'}}高度公差（米）<input :value="effectiveTransferTolerances.heightToleranceMeters" :disabled="!!savedTransferLink" @input="changePreviewTolerance('heightToleranceMeters',$event.target.value)" type="number" min="0" max="1" step=".001" aria-label="模拟预览高度公差（米）"></label>

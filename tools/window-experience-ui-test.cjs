@@ -18,7 +18,8 @@ const source = read('frontend/src/components/LoadingExperience.vue');
 const { descriptor } = parse(source);
 const component = compileScript(descriptor, { id: 'loading-test', inlineTemplate: true }).content
   .replace(/from ['"]vue['"]/g, "from '/vue.js'")
-  .replace("'../runtime/loadingExperienceConfig.js'", "'/config.js'");
+  .replace("'../runtime/loadingExperienceConfig.js'", "'/config.js'")
+  .replace("'../../../shared/loadingPhaseProgress.mjs'", "'/phase-progress.js'");
 let browser, page, selectedTheme = 'light', delayAppearance = 0;
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, 'http://127.0.0.1');
@@ -26,6 +27,7 @@ const server = http.createServer((req, res) => {
   if (url.pathname === '/startup') return send('text/html', read('desktop/assets/startup.html'));
   if (url.pathname === '/vue.js') return send('text/javascript', read('frontend/node_modules/vue/dist/vue.esm-browser.js'));
   if (url.pathname === '/config.js') return send('text/javascript', read('frontend/src/runtime/loadingExperienceConfig.js'));
+  if (url.pathname === '/phase-progress.js') return send('text/javascript', read('shared/loadingPhaseProgress.mjs'));
   if (url.pathname === '/component.js') return send('text/javascript', component);
   if (url.pathname === '/vue') return send('text/html', `<style>${descriptor.styles[0].content}</style><div id="app"></div><script type="module">
     import {createApp,ref,h} from '/vue.js'; import Loading from '/component.js';
@@ -84,14 +86,14 @@ const server = http.createServer((req, res) => {
   await page.waitForFunction(() => document.querySelector('#digital-twin-loading-root').style.getPropertyValue('--dtl-background'));
   assert.equal(await surface.evaluate(el => getComputedStyle(el).backgroundColor), 'rgb(245, 247, 251)');
   await page.evaluate(() => {
-    window.__DIGITAL_TWIN_LOADING_PROGRESS__({ progress: 35, phase: 1, step: '正在装配 7 / 20 个模型' });
+    window.__DIGITAL_TWIN_LOADING_PROGRESS__({ source:'native',loadId:'fixture-load',sequence:1,progress: 35, phase: 1, step: '正在装配 7 / 20 个模型' });
   });
   await page.getByText('35', { exact: true }).waitFor();
   await page.waitForTimeout(650); assert.equal(await page.locator('.dtl-percent span').textContent(), '35');
   await page.evaluate(async () => {
     const node = document.querySelector('.dtl-fill'); window.writes = 0;
     new MutationObserver(m => window.writes += m.length).observe(node, { attributes: true });
-    for (let n = 0; n < 100; n++) window.__DIGITAL_TWIN_LOADING_PROGRESS__({ progress: 62, phase: 2, step: '设备模型' });
+    for (let n = 0; n < 100; n++) window.__DIGITAL_TWIN_LOADING_PROGRESS__({ source:'native',loadId:'fixture-load',sequence:2+n,progress: 62, phase: 2, step: '设备模型' });
     await new Promise(requestAnimationFrame); await new Promise(requestAnimationFrame);
   });
   assert.equal(await page.evaluate(() => window.writes), 1);
@@ -106,7 +108,7 @@ const server = http.createServer((req, res) => {
   check('native loading uses real milestones, coalesces 100 updates into one frame and keeps model dragging without costly image filters');
   await page.emulateMedia({ reducedMotion: 'reduce' });
   assert.equal(await surface.evaluate(el => getComputedStyle(el).transitionDuration), '0s');
-  await page.evaluate(() => { window.__DIGITAL_TWIN_FINISH_LOADING__(); window.__DIGITAL_TWIN_FINISH_LOADING__(); window.__DIGITAL_TWIN_LOADING_PROGRESS__({ progress: 2 }); });
+  await page.evaluate(() => { window.__DIGITAL_TWIN_LOADING_PROGRESS__({source:'native',loadId:'fixture-load',sequence:102,progress:100,phase:3,ready:true,sceneReady:true,webReady:true});window.__DIGITAL_TWIN_FINISH_LOADING__(); window.__DIGITAL_TWIN_FINISH_LOADING__(); window.__DIGITAL_TWIN_LOADING_PROGRESS__({ progress: 2 }); });
   await surface.waitFor({ state: 'detached', timeout: 1500 });
   check('finish is idempotent, clears work/listeners and removes the native cover promptly; reduced-motion is respected');
 

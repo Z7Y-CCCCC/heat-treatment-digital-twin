@@ -36,7 +36,7 @@ async function fixture(t, options = {}) {
   return { state: instance.value.$.setupState, props, writes }
 }
 
-test('compact context contains only workshop, line and device; factory is shown once in its selector', async t => {
+test('factory card keeps workshop, line and device context available in its tooltip', async t => {
   const { state, props } = await fixture(t)
   assert.equal(state.currentFactory.name, '当前工厂')
   assert.deepEqual(state.hierarchy.map(({ level, name }) => [level, name]), [['车间', '全部'], ['产线', '全部'], ['设备', '全部']])
@@ -46,6 +46,8 @@ test('compact context contains only workshop, line and device; factory is shown 
   props.devices[0].name = '更新后的设备名称'
   await settle()
   assert.equal(state.hierarchy[2].name, '更新后的设备名称')
+  assert.equal(state.scopeTitle, '当前工厂\n车间：第一车间\n产线：第一产线\n设备：更新后的设备名称')
+  assert.equal(state.factoryLabel, '当前工厂')
 })
 
 test('unnamed and workshop-level devices do not pretend to select every device or production line', async t => {
@@ -59,40 +61,95 @@ test('unnamed and workshop-level devices do not pretend to select every device o
 test('factory switching still waits for draft approval and restores a cancelled selection', async t => {
   const response = deferred()
   const { state, props, writes } = await fixture(t, { props: { requestSwitch: () => response.promise } })
-  const event = { target: { value: 'f2' } }
-  const pending = state.changeFactory(event)
+  state.toggleMenu()
+  const pending = state.changeFactory('f2')
   assert.equal(state.switching, true)
+  assert.equal(state.open, false)
+  assert.equal(state.factoryLabel, '正在切换…')
   assert.deepEqual(writes, [])
   response.resolve(false)
   await pending
-  assert.equal(event.target.value, 'f1')
   assert.equal(state.factoryId, 'f1')
   assert.deepEqual(writes, [])
   props.requestSwitch = async args => { assert.deepEqual(args, { factoryId: 'f2', factoryName: '另一个工厂' }); return true }
   await settle()
-  await state.changeFactory({ target: { value: 'f2' } })
+  await state.changeFactory('f2')
   assert.deepEqual(writes, ['f2', 'reload'])
   assert.equal(state.factoryId, 'f2')
 })
 
 test('switching errors retain the current scope and successful directory refresh clears stale errors', async t => {
   const { state, writes } = await fixture(t, { props: { requestSwitch: async () => { throw new Error('草稿尚未保存') } } })
-  const event = { target: { value: 'f2' } }
-  await state.changeFactory(event)
+  await state.changeFactory('f2')
   assert.equal(state.error, '草稿尚未保存')
   assert.equal(state.switching, false)
-  assert.equal(event.target.value, 'f1')
+  assert.equal(state.factoryId, 'f1')
   assert.deepEqual(writes, [])
   await state.reloadFactories()
   assert.equal(state.error, '')
 })
 
-test('no permanent explanatory paragraphs or repeated factory tile; long names retain full tooltips', () => {
+test('reference-style factory card has a custom listbox with selected markers instead of native dropdown styling', () => {
   assert.doesNotMatch(descriptor.template.content, /资产归属|asset-hierarchy-heading|asset-hierarchy-note|此处只|适用层级/)
   assert.match(descriptor.template.content, /aria-label="当前编辑工厂"/)
-  assert.match(descriptor.template.content, /:title="`\$\{item.level\}：\$\{item.name\}`"/)
+  assert.match(descriptor.template.content, /当前工厂 \/ 区域/)
+  assert.match(descriptor.template.content, /asset-factory-icon/)
+  assert.match(descriptor.template.content, /asset-factory-dot/)
+  assert.match(descriptor.template.content, /:title="scopeTitle"/)
+  assert.match(descriptor.template.content, /:aria-busy="switching"/)
+  assert.match(descriptor.template.content, /role="combobox"/)
+  assert.match(descriptor.template.content, /role="listbox"/)
+  assert.match(descriptor.template.content, /:aria-selected="factory.id === factoryId"/)
+  assert.match(descriptor.template.content, /asset-factory-selected-mark/)
+  assert.doesNotMatch(descriptor.template.content, /<select/)
+  assert.doesNotMatch(descriptor.template.content, /<ol|asset-hierarchy-path/)
   const css = descriptor.styles.map(style => style.content).join('')
-  assert.match(css, /width:fit-content;max-width:100%/)
-  assert.match(css, /padding:6px 10px/)
+  assert.match(css, /width:340px;max-width:100%/)
+  assert.match(css, /min-height:52px/)
+  assert.match(css, /:focus-visible/)
   assert.match(css, /text-overflow:ellipsis;white-space:nowrap/)
+})
+
+test('custom factory menu supports keyboard navigation, escape, tab and invalid selections safely', async t => {
+  const { state, writes } = await fixture(t)
+  const key = key => state.keydown({ key, preventDefault() {}, stopPropagation() {} })
+  key('ArrowDown')
+  assert.equal(state.open, true)
+  assert.equal(state.highlightedIndex, 0)
+  assert.match(state.activeOptionId, /-0$/)
+  key('ArrowDown')
+  assert.equal(state.highlightedIndex, 1)
+  key('ArrowDown')
+  assert.equal(state.highlightedIndex, 0)
+  key('End')
+  assert.equal(state.highlightedIndex, 1)
+  key('Home')
+  assert.equal(state.highlightedIndex, 0)
+  key('Escape')
+  assert.equal(state.open, false)
+  assert.equal(state.activeOptionId, undefined)
+  state.toggleMenu()
+  key('Tab')
+  assert.equal(state.open, false)
+  await state.changeFactory('unknown')
+  await state.changeFactory('f1')
+  assert.deepEqual(writes, [])
+})
+
+test('factory menu uses actual counts and closes on outside interaction', async t => {
+  const { state } = await fixture(t)
+  assert.equal(state.factorySummary({ workshopCount: 2, lineCount: 3, deviceCount: 12 }), '2 个车间 · 3 条产线 · 12 台设备')
+  assert.equal(state.factorySummary({}), '独立工厂配置')
+  state.toggleMenu()
+  state.outside({ target: {} })
+  assert.equal(state.open, false)
+})
+
+test('factory card lives in the top toolbar rather than the scrolling content', async () => {
+  const panel = await readFile(new URL('../src/views/AdminPanel.vue', import.meta.url), 'utf8')
+  const header = panel.slice(panel.indexOf('<header class="admin-header"'), panel.indexOf('</header>', panel.indexOf('<header class="admin-header"')))
+  const main = panel.slice(panel.indexOf('<main ref="adminContentRef"'))
+  assert.match(header, /admin-factory-switch-slot[\s\S]*<AssetHierarchyBar/)
+  assert.doesNotMatch(main, /<AssetHierarchyBar/)
+  assert.equal((panel.match(/<AssetHierarchyBar/g) || []).length, 1)
 })

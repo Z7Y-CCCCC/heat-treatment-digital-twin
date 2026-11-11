@@ -1,7 +1,7 @@
 <script setup>
 import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { adminApi } from '../../../config/factoryConfig.js'
-import { DATA_CENTER_SECTIONS, dataCenterSourceLabel, dataCenterQuality, dataCenterPreview, dataCenterObjectLabel, filterDataCenterItems } from '../utils/dataCenterCatalog.js'
+import { DATA_CENTER_SECTIONS, dataCenterSourceLabel, isAutoSyncedDataCenterTable, dataCenterQuality, dataCenterPreview, dataCenterObjectLabel, filterDataCenterItems } from '../utils/dataCenterCatalog.js'
 import { firstDataCenterSample } from '../utils/dataCenterFieldSamples.js'
 import { dataBrowserErrorMessage, fullRecordTime, recordTime } from '../utils/dataTableBrowser.js'
 const DataTableBrowser = defineAsyncComponent(() => import('./DataTableBrowser.vue'))
@@ -260,7 +260,12 @@ defineExpose({ load, canLeave, isBusy: workspaceBusy, savePending, discardPendin
         <div class="catalog-main">
           <div class="catalog-tools"><label class="catalog-search"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4 4"/></svg><input :value="query" :disabled="workspaceBusy || loading" @input="changeCatalogInput('query',$event)" type="search" aria-label="搜索数据项" placeholder="搜索名称、单位或适用对象" /></label><select :value="sourceType" :disabled="workspaceBusy || loading" @change="changeCatalogInput('sourceType',$event)" aria-label="筛选数据来源"><option value="all">全部来源</option><option v-for="option in sourceOptions" :key="option" :value="option">{{option}}</option></select><select v-if="previewDevices.length && tableView==='fields'" :value="previewDeviceId" :disabled="workspaceBusy || loading" @change="changeCatalogInput('previewDeviceId',$event)" aria-label="预览设备"><option value="">预览：自动选择设备</option><option v-for="device in previewDevices" :key="device.id" :value="String(device.id)">预览：{{device.name}}</option></select></div>
           <div class="catalog-caption"><span>{{currentCategory?.name || '全部数据'}} <b>{{tables.length}}</b> 张表 <span class="caption-divider">·</span> <b>{{items.length}}</b> 个数据项</span><small>{{loading?'正在读取…':'只显示当前工厂实际已有的数据'}}</small></div>
-          <div v-if="tables.length" class="table-cards" aria-label="选择数据表"><button v-for="table in tables" :key="table.id" type="button" class="table-card" :class="{active:selectedTable?.id===table.id}" :aria-pressed="selectedTable?.id===table.id" :disabled="workspaceBusy || loading" @click="changeCatalogSelection('selectedTableId',table.id)"><span class="table-card-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M3 10h18M10 10v10M3 15h18"/></svg></span><strong>{{table.name}}</strong><span class="table-card-meta">{{dataCenterSourceLabel(table.sourceType)}}<i>·</i>{{countTable(table.id)}} 项</span><small>{{table.description || table.objectScope || '随当前对象读取，保持真实数据绑定'}}</small></button></div>
+          <div v-if="tables.length" class="table-cards" aria-label="选择数据表">
+            <button v-for="table in tables" :key="table.id" type="button" class="table-card" :class="{active:selectedTable?.id===table.id,'auto-synced':isAutoSyncedDataCenterTable(table)}" :title="isAutoSyncedDataCenterTable(table) ? '系统自动维护，随来源数据变化；不代表设备在线或数据正常' : undefined" :aria-pressed="selectedTable?.id===table.id" :disabled="workspaceBusy || loading" @click="changeCatalogSelection('selectedTableId',table.id)">
+              <span v-if="isAutoSyncedDataCenterTable(table)" class="table-sync-ribbon">自动同步</span>
+              <span class="table-card-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M3 10h18M10 10v10M3 15h18"/></svg></span><strong>{{table.name}}</strong><span class="table-card-meta">{{dataCenterSourceLabel(table.sourceType)}}<i>·</i>{{countTable(table.id)}} 项</span><small>{{table.description || table.objectScope || '随当前对象读取，保持真实数据绑定'}}</small>
+            </button>
+          </div>
           <section v-if="selectedTable" class="fields-section" aria-label="数据表字段">
             <header><div><h4>{{selectedTable.name}}</h4><p>{{tableView==='fields' ? '字段目录整理名称与分类；右侧切换数据浏览，查看实际记录。' : '按对象和数据项查看实际记录，不修改原始数据或组件绑定。'}}</p></div><div class="table-view-switch" role="group" aria-label="数据表查看方式"><button type="button" :aria-pressed="tableView==='fields'" :class="{active:tableView==='fields'}" :disabled="workspaceBusy || loading" @click="changeTableView('fields')">字段目录</button><button type="button" :aria-pressed="tableView==='records'" :class="{active:tableView==='records'}" :disabled="workspaceBusy || loading" @click="changeTableView('records')">数据浏览</button></div></header>
             <template v-if="tableView==='fields'">
@@ -340,6 +345,10 @@ defineExpose({ load, canLeave, isBusy: workspaceBusy, savePending, discardPendin
 .table-card { position:relative; display:grid; grid-template-columns:32px minmax(0,1fr); align-items:center; column-gap:10px; row-gap:7px; padding:16px; border:1px solid #dce3ed; border-radius:8px; background:#fff; text-align:left; font:inherit; cursor:pointer; min-width:0; }
 .table-card.active { border-color:#658ac4; background:#f8faff; box-shadow:0 0 0 1px #dbe6f7 inset; }
 .table-card:hover { border-color:#658ac4; }
+.table-card.auto-synced { overflow:hidden; padding-top:calc(42px * var(--admin-font-scale,1)); border:1px dashed #399365; }
+.table-card.auto-synced:hover { border-color:#237348; }
+.table-card.auto-synced.active { border-color:#237348; background:#f3faf6; box-shadow:0 0 0 1px #c8e5d3 inset; }
+.table-sync-ribbon { position:absolute; top:calc(15px * var(--admin-font-scale,1)); left:calc(-27px * var(--admin-font-scale,1)); width:calc(108px * var(--admin-font-scale,1)); padding:calc(2px * var(--admin-font-scale,1)) 0; transform:rotate(-45deg); background:#e5f4eb; color:#237348; text-align:center; font-size:calc(13px * var(--admin-font-scale,1)); font-weight:600; line-height:calc(18px * var(--admin-font-scale,1)); letter-spacing:1px; white-space:nowrap; pointer-events:none; }
 .table-card-icon { grid-row:1 / 3; display:grid; place-items:center; width:32px; height:36px; border-radius:7px; background:#eef2f8; color:#456a9d; }
 .table-card.active .table-card-icon { background:#eaf1ff; color:#2459a6; }
 .table-card-icon svg { width:20px; height:20px; fill:none; stroke:currentColor; stroke-width:1.5; }

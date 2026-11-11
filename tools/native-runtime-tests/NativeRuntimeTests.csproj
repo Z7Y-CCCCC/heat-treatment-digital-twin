@@ -6,6 +6,11 @@
     <Nullable>disable</Nullable>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="../../unity-client/Assets/Scripts/Runtime/LoadingPhaseProgress.cs" Link="LoadingPhaseProgress.cs" />
+    <Compile Include="../../unity-client/Assets/Scripts/Runtime/TransferCycleState.cs" Link="TransferCycleState.cs" />
+    <Compile Include="../../unity-client/Assets/Scripts/Runtime/TransferBooleanObservation.cs" Link="TransferBooleanObservation.cs" />
+    <None Include="../../shared/transfer-cycle-fixtures.json" Link="transfer-cycle-fixtures.json" CopyToOutputDirectory="PreserveNewest" />
+    <Compile Include="../../unity-client/Assets/Scripts/Runtime/RuntimeWorkMetrics.cs" Link="RuntimeWorkMetrics.cs" />
     <Compile Include="../../unity-client/Assets/Scripts/Runtime/TransferReachPolicy.cs" Link="TransferReachPolicy.cs" />
     <Compile Include="../../unity-client/Assets/Scripts/Runtime/SceneUnitPolicy.cs" Link="SceneUnitPolicy.cs" />
     <Compile Include="../../unity-client/Assets/Scripts/Runtime/LoadingPortPolicy.cs" Link="LoadingPortPolicy.cs" />
@@ -28,5 +33,6 @@
     <Compile Include="../../unity-client/Assets/Scripts/Backend/RealtimeMessageQueue.cs" Link="RealtimeMessageQueue.cs" />
     <Compile Include="../../unity-client/Assets/Scripts/Backend/LoopbackDownloadProvider.cs" Link="LoopbackDownloadProvider.cs" />
     <Compile Include="../../native-admin-host/WebContentPolicy.cs" Link="WebContentPolicy.cs" />
+    <Compile Include="../../native-admin-host/StartupReadiness.cs" Link="StartupReadiness.cs" />
   </ItemGroup>
 </Project>

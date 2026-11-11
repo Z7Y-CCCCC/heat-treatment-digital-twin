@@ -96,6 +96,7 @@ function loadDesktop({ createLog, spawnProcess, userDataPath, deploymentConfig, 
     const exits = [];
     const logs = [];
     const logStreams = [];
+    const gateway = { origin:'http://127.0.0.1:34123', options:null, closed:false, async close(){this.closed=true;} };
     let spawnCalls = 0;
     app.commandLine = { appendSwitch() {} };
     app.requestSingleInstanceLock = () => true;
@@ -139,6 +140,7 @@ function loadDesktop({ createLog, spawnProcess, userDataPath, deploymentConfig, 
             // Activation IPC/network has dedicated integration tests. A VM
             // supervision unit must never contact a real local installation.
             if (name === './activation.cjs') return { runStartupActivation: async () => {} };
+            if (name === './displayGateway.cjs') return {startDisplayGateway:async options=>{gateway.options=options;return gateway;}};
             if (name === './logManager.cjs') return {
                 cleanupLogArchives() {},
                 createRotatingLogWriter: createLog || (async () => {
@@ -155,7 +157,7 @@ function loadDesktop({ createLog, spawnProcess, userDataPath, deploymentConfig, 
     vm.runInContext(fs.readFileSync(path.join(desktopDir, 'main.cjs'), 'utf8'), context);
     vm.runInContext('logDesktopError = (kind, error) => recordedLogs.push({ kind, message: error.message });', context);
     return {
-        app, timers, intervals, exits, logs, logStreams, context,
+        app, timers, intervals, exits, logs, logStreams, context, gateway,
         run: source => vm.runInContext(source, context),
         get spawnCalls() { return spawnCalls; }
     };
@@ -413,6 +415,8 @@ test('service-connected Unity startup and exit never own or stop the collector',
         guardLogStream = stream => stream;
         startLogMaintenance = () => {};
         configureAutoStart = () => {};
+        readStartupAppearance = async () => ({});
+        applyStartupAppearance = async () => {};
         startDesktopControlServer = async () => {};
         createTray = () => {};
         startBackend = () => { throw new Error('client must not collect'); };
@@ -426,9 +430,12 @@ test('service-connected Unity startup and exit never own or stop the collector',
         requestBackendShutdown = () => { throw new Error('client must never shut down remote collector'); };
     `);
     await desktop.run('launchApplication()');
-    assert.equal(desktop.run('remoteNativeOrigin'), 'http://127.0.0.1:3901');
-    assert.equal(desktop.run('remoteHealthUrl'), 'http://127.0.0.1:3901/api/health');
+    assert.equal(desktop.run('remoteNativeOrigin'), desktop.gateway.origin);
+    assert.equal(desktop.run('remoteHealthUrl'), desktop.gateway.origin+'/api/health');
+    assert.equal(desktop.gateway.options.backendOrigin,'http://127.0.0.1:3901');
+    assert.ok(desktop.gateway.options.portFile.endsWith('ui-gateway.json'));
     await desktop.run('stopBackend()');
+    await desktop.run('displayGateway.close()');assert.equal(desktop.gateway.closed,true);
     assert.equal(desktop.spawnCalls, 0);
 });
 

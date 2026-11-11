@@ -68,7 +68,7 @@ namespace HeatTreatmentCollectorCenter
             start.BackColor=Color.FromArgb(56,116,216);start.ForeColor=Color.White;start.FlatAppearance.BorderSize=0;
             var more=new SoftButton();Setup(more,"更多 ···",async()=>await Task.FromResult(0));var menu=new ContextMenuStrip();
             menu.Items.Add("刷新状态",null,async(s,e)=>await RefreshAll());
-            menu.Items.Add("后台配置",null,(s,e)=>{if(snapshot.Api=="可达")Process.Start(new ProcessStartInfo(snapshot.Origin+"/admin"){UseShellExecute=true});});
+            menu.Items.Add("后台配置说明",null,(s,e)=>MessageBox.Show(this,"请打开大屏软件的「后台管理」进行工程配置。\n\n本运行中心只管理独立采集服务和查看点位，不包含大屏或后台网页；关闭大屏不会停止采集。",Text,MessageBoxButtons.OK,MessageBoxIcon.Information));
             menu.Items.Add("导出诊断",null,async(s,e)=>{try{await Export();}catch(Exception error){MessageBox.Show(this,Ops.Redact(error.Message),Text);}});
             more.Click+=(s,e)=>menu.Show(more,new Point(0,more.Height));buttons.Controls.AddRange(new Control[]{install,start,stop,restart,more});root.Controls.Add(buttons,0,1);
             tabs.Dock=DockStyle.Fill;
@@ -128,16 +128,17 @@ namespace HeatTreatmentCollectorCenter
             normalValue.Text=snapshot.Normal<0?"—":snapshot.Normal.ToString();abnormalValue.Text=snapshot.Abnormal<0?"—":snapshot.Abnormal.ToString();abnormalValue.ForeColor=snapshot.Abnormal>0?Color.FromArgb(185,92,73):Color.FromArgb(49,69,97);sampleValue.Text=snapshot.Collection;
             summary.Text=snapshot.Error;
             bool pending=snapshot.Installed && snapshot.Service!="已停止" && !snapshot.Running;
-            install.Visible=!snapshot.Installed; install.Enabled=!busy && snapshot.Service!="无法查询";
+            install.Visible=!snapshot.Installed; install.Enabled=!busy && snapshot.Service!="无法查询" && snapshot.RuntimeReady;
             start.Enabled=!busy && snapshot.Installed && snapshot.Service=="已停止";
             stop.Enabled=!busy && snapshot.Running; restart.Enabled=!busy && snapshot.Installed && !pending;
-            footer.Text=snapshot.CheckedAt.ToString("HH:mm:ss")+" 更新  ·  关闭窗口不影响采集";
+            footer.Text=snapshot.CheckedAt.ToString("HH:mm:ss")+" 更新  ·  "+(snapshot.Installed?"范围：本机全部工厂 · 关闭窗口不停止服务":"服务未安装，不会使用大屏内采集进程");
         }
         async Task ServiceAction(string action)
         {
             if(busy) return;
+            if(action=="install" && !snapshot.RuntimeReady) throw new InvalidOperationException("需要完整的独立采集运行中心安装包；不能从大屏资源目录安装服务。");
             string caption=action=="install" ? "安装并启动服务" : action=="start" ? "启动服务" : action=="stop" ? "停止服务" : "重启服务";
-            string detail=action=="install" ? "安装开机采集服务，使用独立数据目录。需要管理员授权。" : action=="stop" || action=="restart" ? "将影响所有设备采集。需要管理员授权。" : "需要管理员授权。";
+            string detail=action=="install" ? "将采集程序安装到独立目录。首次安装需先保存并退出大屏，再导入当前工程；原数据保留。需要管理员授权。" : action=="stop" || action=="restart" ? "将影响所有设备采集。需要管理员授权。" : "需要管理员授权。";
             if(MessageBox.Show(this,detail,caption,MessageBoxButtons.OKCancel,MessageBoxIcon.Warning,MessageBoxDefaultButton.Button2)!=DialogResult.OK) return;
             busy=true; RenderStatus(); footer.Text="正在操作，请稍候…";
             try { await Ops.Elevated(action); entries.Clear(); protectedLogs=false; authorizedSnapshot=false; }

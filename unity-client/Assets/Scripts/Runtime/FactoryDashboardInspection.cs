@@ -43,6 +43,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
             public ShadowCastingMode OriginalShadowCasting;
             public bool OriginalReceiveShadows;
             public bool IsShell;
+            public bool IsViewShell;
             public bool SurfaceApplied;
             public bool FrostedApplied;
             public InspectionPartState Part;
@@ -51,6 +52,9 @@ namespace HeatTreatment.DigitalTwin.Runtime
             public Matrix4x4 HoverMatrix;
             public Mesh HoverGeometry;
             public bool HoverVisible;
+            public bool HoverRayRelevant;
+            public int HoverMatrixBatchIndex = -1;
+            public Bounds HoverLocalBounds;
             public bool PickProjectionValid, PickProjectionFine;
             public Matrix4x4 PickProjectionMatrix;
             public Mesh PickProjectionGeometry;
@@ -81,6 +85,11 @@ namespace HeatTreatment.DigitalTwin.Runtime
             public float TotalDuration = 1f;
             public float XrayAmount;
             public float XrayTarget;
+            public bool ShellTransparent;
+            public bool ShellTransparencyControlled;
+            public bool HasAuthoredShell;
+            public float ShellTransparencyAmount;
+            public int ViewShellCount;
             public float NextContextAt;
             public InspectionContextCache ContextCache;
             public bool HoverSnapshotValid;
@@ -88,6 +97,9 @@ namespace HeatTreatment.DigitalTwin.Runtime
             public Matrix4x4 HoverCameraView, HoverCameraProjection;
             public Rect HoverCameraRect;
             public float HoverClock, HoverXray;
+            public bool HoverRaySnapshotValid;
+            public Matrix4x4 OverviewRootMatrix;
+            public bool OverviewRootValid, OverviewRootActive;
             public bool HoverBlocked;
             public bool HoverHitsSurface;
             public int PickQueryCount;
@@ -95,7 +107,8 @@ namespace HeatTreatment.DigitalTwin.Runtime
             public Matrix4x4 PickCameraView, PickCameraProjection;
             public Rect PickCameraRect;
             public Bounds ShellLocalBounds;
-            public bool TransitionActive => !Paused && (Mathf.Abs(Clock - TargetClock) > .0001f || Mathf.Abs(XrayAmount - XrayTarget) > .0001f);
+            public bool TransitionActive => (!Paused && (Mathf.Abs(Clock - TargetClock) > .0001f || Mathf.Abs(XrayAmount - XrayTarget) > .0001f))
+                || Mathf.Abs(ShellTransparencyAmount - (ShellTransparent ? 1f : 0f)) > .0001f;
         }
 
         private readonly List<Rect> _inspectionHitRects = new List<Rect>();
@@ -132,7 +145,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 return false;
             }
             var action = command?.Value<string>("command") ?? string.Empty;
-            if (!new[] { "stage", "select", "clear", "progress", "isolate", "labels", "pause", "resume" }.Contains(action))
+            if (!new[] { "stage", "select", "clear", "progress", "isolate", "labels", "pause", "resume", "shell_transparency" }.Contains(action))
             {
                 error = "Unknown inspection command.";
                 return false;
@@ -141,6 +154,11 @@ namespace HeatTreatment.DigitalTwin.Runtime
             if (action == "stage" && stageName != "solid" && stageName != "xray" && stageName != "exploded")
             {
                 error = "Unknown inspection stage.";
+                return false;
+            }
+            if (action == "shell_transparency" && (_selected != device || _mode != DashboardMode.Detail))
+            {
+                error = "Shell transparency requires the currently focused device.";
                 return false;
             }
             if (_selected != device || _mode != DashboardMode.Detail) ShowDetail(device);
@@ -154,6 +172,19 @@ namespace HeatTreatment.DigitalTwin.Runtime
             }
             switch (action)
             {
+                case "shell_transparency":
+                    if (command["enabled"]?.Type != JTokenType.Boolean || runtime.ViewShellCount == 0
+                        || (runtime.Stage != InspectionStage.Solid && runtime.Stage != InspectionStage.Xray)
+                        || Resources.Load<Shader>("RuntimeShaders/InspectionShell") == null)
+                    {
+                        error = "Shell transparency requires an assembled view and configured cover meshes.";
+                        return false;
+                    }
+                    runtime.ShellTransparent = command.Value<bool>("enabled");
+                    runtime.ShellTransparencyControlled = true;
+                    runtime.HoverSnapshotValid = false;
+                    PublishInspectionContext(device);
+                    return true; // No camera, timeline, animation or PLC changes.
                 case "stage":
                     SetInspectionStage(device, ParseInspectionStage(stageName));
                     return true;
@@ -180,6 +211,8 @@ namespace HeatTreatment.DigitalTwin.Runtime
                         error = "Inspection progress must be between 0 and 1.";
                         return false;
                     }
+                    runtime.ShellTransparent = runtime.ShellTransparencyControlled = false;
+                    runtime.ShellTransparencyAmount = 0f;
                     var reversing = runtime.TargetClock < runtime.Clock;
                     runtime.Paused = true;
                     runtime.Clock = progress * runtime.TotalDuration;
@@ -336,12 +369,25 @@ namespace HeatTreatment.DigitalTwin.Runtime
                     OriginalShadowCasting = oldState?.OriginalShadowCasting ?? renderer.shadowCastingMode,
                     OriginalReceiveShadows = oldState?.OriginalReceiveShadows ?? renderer.receiveShadows,
                     IsShell = shells.Contains(renderer),
+                    IsViewShell = IsPackagedCoverRenderer(renderer.transform, runtime.ModelRoot, shells.Contains(renderer)),
                     Part = owner.part,
                     Target = owner.part?.Targets.FirstOrDefault(target => target.Target == owner.node),
                     Surface = new InspectionMeshSurface(renderer)
                 });
             }
+            runtime.ViewShellCount = runtime.Renderers.Count(state => state.IsViewShell);
+            runtime.HasAuthoredShell = runtime.Renderers.Any(state => state.IsShell);
             return runtime;
+        }
+
+        private static bool IsPackagedCoverRenderer(Transform node, Transform root, bool authoredShell)
+        {
+            for (var current = node; current != null && current != root; current = current.parent)
+            {
+                if (ShellTransparencyTargets.IsOpaqueNode(current.name)) return false;
+                if (ShellTransparencyTargets.IsCoverNode(current.name)) return true;
+            }
+            return authoredShell;
         }
 
         private static List<Transform> ResolveInspectionTargets(DeviceInspectionRuntime runtime, string legacyPath, string legacyName,
@@ -498,6 +544,8 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 && runtime.SelectedPart == selectedPart) return;
             runtime.SelectedPart = selectedPart;
             runtime.Stage = stage;
+            runtime.ShellTransparent = runtime.ShellTransparencyControlled = false;
+            runtime.ShellTransparencyAmount = 0f;
             runtime.Isolated = false;
             runtime.HoveredPart = null;
             runtime.HoverSnapshotValid = false;
@@ -520,6 +568,9 @@ namespace HeatTreatment.DigitalTwin.Runtime
             var runtime = _selected?.Inspection;
             if (_mode != DashboardMode.Detail || runtime == null || !runtime.Prepared) return;
             var wasAnimating = runtime.TransitionActive;
+            // Presentation fade is independent of inspection pause and live motion.
+            runtime.ShellTransparencyAmount = Mathf.MoveTowards(runtime.ShellTransparencyAmount,
+                runtime.ShellTransparent ? 1f : 0f, Time.unscaledDeltaTime / .2f);
             if (!runtime.Paused)
             {
                 var playbackSeconds = Time.unscaledDeltaTime * Mathf.Clamp(runtime.Config.PlaybackSpeed, .25f, 3f);
@@ -555,9 +606,10 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 if (state.Renderer == null) continue;
                 var isolatedAway = runtime.Isolated && runtime.SelectedPart != null && state.Part != runtime.SelectedPart;
                 SetInspectionForceOff(state.Renderer, state.OriginalForceOff || isolatedAway || (state.IsShell && shellProgress >= .99999f));
+                if (state.IsShell) ApplyInspectionShell(runtime, state, shellProgress);
+                else if (state.IsViewShell && (runtime.ShellTransparencyAmount > 0f || state.SurfaceApplied))
+                    ApplyInspectionShell(runtime, state, 0f);
                 if (state.Part != null && !state.IsShell) ApplyInspectionFocusMaterials(runtime, state);
-                if (!state.IsShell) continue;
-                ApplyInspectionShell(runtime, state, shellProgress);
             }
         }
 
@@ -627,7 +679,8 @@ namespace HeatTreatment.DigitalTwin.Runtime
 
         private void ApplyInspectionShell(DeviceInspectionRuntime runtime, InspectionRendererState state, float progress)
         {
-            var needsSurface = progress > 0f || runtime.XrayAmount > 0f;
+            var needsSurface = progress > 0f || (!runtime.ShellTransparencyControlled && state.IsShell && runtime.XrayAmount > 0f)
+                || (state.IsViewShell && runtime.ShellTransparencyAmount > 0f);
             if (!needsSurface)
             {
                 if (!state.SurfaceApplied) return;
@@ -656,7 +709,9 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 state.SurfaceApplied = true;
             }
             var shell = runtime.Config.Shell;
-            var alpha = Mathf.Lerp(1f, shell.Opacity, InspectionTimeline.Ease(runtime.XrayAmount, runtime.Config.Easing));
+            var alpha = state.IsShell ? Mathf.Lerp(1f, shell.Opacity, InspectionTimeline.Ease(runtime.XrayAmount, runtime.Config.Easing)) : 1f;
+            if (state.IsViewShell && runtime.ShellTransparencyControlled)
+                alpha = Mathf.Lerp(1f, ShellTransparencyTargets.GhostOpacity, InspectionTimeline.Ease(runtime.ShellTransparencyAmount, "smoothstep"));
             var clipProgress = shell.Transition == "clip" ? progress : 0f;
             if (shell.Transition == "fade") alpha *= 1f - progress;
             var axis = shell.Axis == "x" ? Vector3.right : shell.Axis == "z" ? Vector3.forward : Vector3.up;
@@ -713,6 +768,9 @@ namespace HeatTreatment.DigitalTwin.Runtime
         {
             if (original == null) return null;
             var material = new Material(shader) { name = $"{original.name} / inspection", hideFlags = HideFlags.DontSave };
+            // Matrix uniforms are not ShaderLab Properties. Seed the native
+            // override before the first read (GetMatrix otherwise logs an error).
+            material.SetMatrix(InspectionWorldToModelId, Matrix4x4.identity);
             string First(params string[] names) => names.FirstOrDefault(original.HasProperty);
             var color = First("baseColorFactor", "_BaseColor", "_Color");
             if (color != null) material.SetColor("_BaseColor", original.GetColor(color));
@@ -763,6 +821,9 @@ namespace HeatTreatment.DigitalTwin.Runtime
             var runtime = device?.Inspection;
             if (runtime == null) return;
             runtime.Clock = runtime.TargetClock = runtime.XrayAmount = runtime.XrayTarget = 0f;
+            runtime.ShellTransparent = false;
+            runtime.ShellTransparencyControlled = false;
+            runtime.ShellTransparencyAmount = 0f;
             runtime.Paused = runtime.Isolated = false;
             runtime.SelectedPart = runtime.HoveredPart = null;
             runtime.HoverSnapshotValid = false;
@@ -1100,6 +1161,12 @@ namespace HeatTreatment.DigitalTwin.Runtime
         }
 
         private bool InspectionHoverChanged(DeviceInspectionRuntime runtime, Vector3 pointer, bool blocked)
+            => ObserveHoverInputs(runtime, pointer, blocked, false);
+
+        private bool OverviewHoverChanged(DeviceInspectionRuntime runtime, Vector3 pointer)
+            => ObserveHoverInputs(runtime, pointer, false, true);
+
+        private bool ObserveHoverInputs(DeviceInspectionRuntime runtime, Vector3 pointer, bool blocked, bool rayRelevantOnly)
         {
             if (blocked)
             {
@@ -1111,6 +1178,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 runtime.HoverPointer = pointer;
                 runtime.HoverBlocked = true;
                 runtime.HoverSnapshotValid = false;
+                runtime.HoverRaySnapshotValid = false;
                 return blockedChanged;
             }
             var changed = !runtime.HoverSnapshotValid || !runtime.HoverPointer.Equals(pointer)
@@ -1119,6 +1187,9 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 || !runtime.HoverCameraRect.Equals(_camera.pixelRect)
                 || runtime.HoverBlocked != blocked || runtime.HoverClock != runtime.Clock
                 || runtime.HoverXray != runtime.XrayAmount;
+            var rayChanged = changed || !runtime.HoverRaySnapshotValid;
+            var ray = rayRelevantOnly ? _camera.ScreenPointToRay(pointer) : default;
+            if (rayRelevantOnly && rayChanged) changed = true;
             runtime.HoverPointer = pointer;
             runtime.HoverCameraView = _camera.worldToCameraMatrix;
             runtime.HoverCameraProjection = _camera.projectionMatrix;
@@ -1129,16 +1200,50 @@ namespace HeatTreatment.DigitalTwin.Runtime
 #if UNITY_EDITOR
                 HoverRendererObservations++;
 #endif
-                var visible = state.Surface.IsVisible;
-                var matrix = state.Renderer != null ? state.Renderer.localToWorldMatrix : Matrix4x4.identity;
-                var geometry = state.Surface.Geometry;
-                changed |= visible != state.HoverVisible || !matrix.Equals(state.HoverMatrix)
+                // The opposite cart mechanism is a real exported subtree but
+                // only one side is displayed at a time. An inactive subtree
+                // cannot affect any ray; keep its old pose snapshot and observe
+                // the current matrix/mesh immediately when it becomes active.
+                if(state.Renderer!=null&&!state.Renderer.gameObject.activeInHierarchy){
+                    changed|=rayRelevantOnly?state.HoverRayRelevant:state.HoverVisible;
+                    state.HoverVisible=false;state.HoverRayRelevant=false;continue;
+                }
+                var matrix = state.Renderer == null ? Matrix4x4.identity
+                    : rayRelevantOnly && _overviewMatricesActive && state.HoverMatrixBatchIndex >= 0
+                        ? _overviewMatrices.Get(state.HoverMatrixBatchIndex) : state.Renderer.localToWorldMatrix;
+                var geometry = state.Renderer != null ? state.Surface.Geometry : null;
+                var localBounds = rayRelevantOnly && geometry != null ? geometry.bounds : default;
+                // A mesh wholly outside the ray cannot affect selection even
+                // if its enabled/force-off/active flags change. Avoid thousands
+                // of native visibility queries for those irrelevant surfaces.
+                // Keep observing actual mesh bounds and transforms every frame.
+                var candidate = !rayRelevantOnly || state.Surface.HasDynamicGeometry
+                    || state.Renderer != null && state.Renderer.isPartOfStaticBatch
+                    || geometry != null && HoverRayBroadphase.Intersects(localBounds, matrix, ray);
+                var visible = candidate && state.Surface.IsVisible;
+                var surfaceChanged = visible != state.HoverVisible || !matrix.Equals(state.HoverMatrix)
                     || !ReferenceEquals(geometry, state.HoverGeometry)
+                    || rayRelevantOnly && !localBounds.Equals(state.HoverLocalBounds)
                     // Skinned deformation may change even with a stationary transform.
                     || (visible && state.Surface.HasDynamicGeometry);
-                state.HoverVisible = visible; state.HoverMatrix = matrix; state.HoverGeometry = geometry;
+                if (rayRelevantOnly)
+                {
+                    // Still observe every real transform/visibility/mesh, but a
+                    // fan moving away from this stationary ray cannot alter its
+                    // nearest triangle hit. Test current AND previous bounds so
+                    // entering/leaving the ray always forces an exact repick.
+                    if (rayChanged || surfaceChanged)
+                    {
+                        var relevant = visible && state.Renderer != null && state.Renderer.bounds.IntersectRay(ray);
+                        changed |= surfaceChanged && (state.HoverRayRelevant || relevant);
+                        state.HoverRayRelevant = relevant;
+                    }
+                }
+                else changed |= surfaceChanged;
+                state.HoverVisible = visible; state.HoverMatrix = matrix; state.HoverGeometry = geometry; state.HoverLocalBounds = localBounds;
             }
             runtime.HoverSnapshotValid = true;
+            runtime.HoverRaySnapshotValid = rayRelevantOnly;
             return changed;
         }
 
@@ -1185,8 +1290,11 @@ namespace HeatTreatment.DigitalTwin.Runtime
 
         private void LateUpdate()
         {
-            _occlusionFader.SetFocus(_camera, _mode == DashboardMode.Detail ? _selected?.Root?.transform : null, transform);
-            _occlusionFader.Tick(Time.unscaledTimeAsDouble, Time.unscaledDeltaTime);
+            using var work = RuntimeWorkMetrics.Measure(RuntimeWorkMetrics.Section.Inspection);
+            using (RuntimeWorkMetrics.Measure(RuntimeWorkMetrics.Section.Occlusion)) {
+                _occlusionFader.SetFocus(_camera, _mode == DashboardMode.Detail ? _selected?.Root?.transform : null, transform);
+                _occlusionFader.Tick(Time.unscaledTimeAsDouble, Time.unscaledDeltaTime);
+            }
             if (_mode == DashboardMode.Overview) { UpdateDeviceHover(); DrawDeviceHover(); return; }
             UpdateDeviceHoverAt(Input.mousePosition, true);
             var runtime = _selected?.Inspection;
@@ -1280,6 +1388,24 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 } };
             }
             var context = cache.Context;
+            // Reproject the device bounds as the camera moves; never pin this
+            // control to the hierarchy toolbar or to a fixed screen position.
+            if (!(context["shellControlAnchor"] is JObject controlAnchor))
+                context["shellControlAnchor"] = controlAnchor = new JObject();
+            var controlLeft = float.PositiveInfinity; var controlRight = float.NegativeInfinity;
+            var controlTop = float.NegativeInfinity; var controlVisible = false;
+            var controlBounds = device.WorldBounds;
+            for (var corner = 0; corner < 8 && _camera != null; corner++)
+            {
+                var point = _camera.WorldToViewportPoint(controlBounds.center + Vector3.Scale(controlBounds.extents,
+                    new Vector3((corner & 1) == 0 ? -1 : 1, (corner & 2) == 0 ? -1 : 1, (corner & 4) == 0 ? -1 : 1)));
+                if (!float.IsFinite(point.x) || !float.IsFinite(point.y) || point.z <= _camera.nearClipPlane) continue;
+                controlVisible = true;
+                controlLeft = Mathf.Min(controlLeft, point.x); controlRight = Mathf.Max(controlRight, point.x); controlTop = Mathf.Max(controlTop, point.y);
+            }
+            SetInspectionContextValue(controlAnchor, "x", controlVisible ? Mathf.Clamp01((controlLeft + controlRight) * .5f) : .5f);
+            SetInspectionContextValue(controlAnchor, "y", controlVisible ? Mathf.Clamp01(1f - controlTop) : 0f);
+            SetInspectionContextValue(controlAnchor, "visible", controlVisible && controlRight >= 0 && controlLeft <= 1);
             var parts = (JArray)context["inspectionParts"];
             for (var index = 0; index < runtime.Parts.Count; index++)
             {
@@ -1318,6 +1444,9 @@ namespace HeatTreatment.DigitalTwin.Runtime
             }
             SetInspectionContextValue(context, "viewId", _activeViewId ?? string.Empty);
             SetInspectionContextValue(context, "inspectionStage", InspectionStageKey(runtime.Stage));
+            SetInspectionContextValue(context, "shellTransparencyAvailable", runtime.Config.Enabled && runtime.Valid && runtime.ViewShellCount > 0
+                && (runtime.Stage == InspectionStage.Solid || runtime.Stage == InspectionStage.Xray));
+            SetInspectionContextValue(context, "shellTransparent", runtime.ShellTransparencyControlled ? runtime.ShellTransparent : runtime.Stage == InspectionStage.Xray && runtime.HasAuthoredShell);
             SetInspectionContextValue(context, "inspectionProgress", Mathf.Clamp01(runtime.Clock / runtime.TotalDuration));
             SetInspectionContextValue(context, "inspectionAnimating", runtime.TransitionActive);
             SetInspectionContextValue(context, "inspectionPhase", phase);

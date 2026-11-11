@@ -568,6 +568,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
 
         public void ClearFactory()
         {
+            ClearOverviewMatrices();
             InspectionOutlineRenderer.Release(_camera);
             _occlusionFader.Clear();
             _worldClick.Cancel();
@@ -1616,6 +1617,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
 
         private void OnDestroy()
         {
+            ClearOverviewMatrices();
             ClearFactory();
             DisposeInspectionHighlight();
             if (_whiteTexture != null) Destroy(_whiteTexture);

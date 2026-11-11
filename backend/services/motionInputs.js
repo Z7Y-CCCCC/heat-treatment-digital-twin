@@ -78,6 +78,7 @@ function hasCatalogBindings(config, enabledOnly = false) {
 function configuredMotionSources(config) {
     const rows = (config?.bindings || []).flatMap(motionSources), transfer = config?.transferLink;
     if (transfer?.presenceDataItemId) rows.push({ enabled:transfer.enabled === true, dataItemId:transfer.presenceDataItemId, sourceFingerprint:transfer.presenceSourceFingerprint });
+    if(transfer?.enabled&&transfer.cycle?.enabled)for(const name of ['start','pickup'])rows.push({enabled:true,dataItemId:transfer.cycle[name+'DataItemId'],sourceFingerprint:transfer.cycle[name+'SourceFingerprint']});
     return rows;
 }
 function endpointFeedbackSample(row, loaded, frame, datasets, now, readAt) {
@@ -242,6 +243,11 @@ class MotionInputResolver {
             const item = loaded.catalog.items.find(item => item.id === row.dataItemId);
             const input = catalogSample(row, item, loaded, frame, entry.datasets, this.now(), entry.readAt);
             result.__transfer_presence = typeof input.value === 'boolean' || input.quality !== 'good' ? input : { ...input, value:null, quality:'bad' };
+            if(transfer.cycle?.enabled)for(const name of ['start','pickup']){
+                const source={dataItemId:transfer.cycle[name+'DataItemId'],sourceFingerprint:transfer.cycle[name+'SourceFingerprint']};
+                const item=loaded.catalog.items.find(item=>item.id===source.dataItemId),value=catalogSample(source,item,loaded,frame,entry.datasets,this.now(),entry.readAt);
+                result['__transfer_'+name]=typeof value.value==='boolean'||value.quality!=='good'?value:{...value,value:null,quality:'bad'};
+            }
         }
         return result;
     }

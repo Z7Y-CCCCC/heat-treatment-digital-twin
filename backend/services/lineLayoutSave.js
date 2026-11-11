@@ -1,5 +1,6 @@
 const { normalizeLineLayout, safeObject } = require('../utils/spatialLayout');
 const { lineRailSpacingDeltas, shiftRailMovement, assertLineMovementUnits } = require('../../shared/lineRailSpacing.mjs');
+const { assertLineTemplateTransition } = require('../../shared/linePlacementTemplate.mjs');
 const fail = (message, statusCode = 400) => { throw Object.assign(new Error(message), { statusCode }); };
 const canonical = value => Array.isArray(value) ? value.map(canonical) : value && typeof value === 'object'
     ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])])) : value;
@@ -14,6 +15,7 @@ async function saveLineLayout(tx, id, factoryId, body) {
     const workshopId = body.workshop_id ?? current.workshop_id;
     if (!await tx.get('SELECT id FROM workshops WHERE id=? AND factory_id=?', [workshopId, factoryId])) fail('所选车间不属于当前工厂');
     const before = normalizeLineLayout(current.layout_json), next = normalizeLineLayout(body.layout_json ?? body.layout ?? current.layout_json);
+    assertLineTemplateTransition(before, next);
     if (body.expectedLayout !== undefined && !same(before, normalizeLineLayout(body.expectedLayout))) fail('产线结构已被更新，请重新读取后保存', 409);
     const requested = body.devicePositions;
     if (requested !== undefined && (!Array.isArray(requested) || requested.length > 1000)) fail('产线设备位置批次无效');
@@ -50,12 +52,14 @@ async function saveLineLayout(tx, id, factoryId, body) {
             if (!item) fail('设备关联的设备线或导轨不存在或编号重复，请在现有产线结构中重新绑定');
         }
         const railDelta = railBound ? deltas.get(String(instance.railId)) || 0 : 0;
-        if (!row && railDelta === 0) continue;
+        const oldLane = laneBound && before.lanes.find(lane => lane.id === instance.laneId);
+        const laneDelta = next.placementTemplate && oldLane && item ? item.offsetZ - oldLane.offsetZ : 0;
+        if (!row && railDelta === 0 && laneDelta === 0) continue;
         if (!item) fail('设备关联的设备线或导轨已不存在，请先重新绑定设备');
         if (device.coordinate_space && device.coordinate_space !== 'line_local') fail('设备位置不是产线本地坐标，请先在设备编排中校准后保存产线结构');
         if (row?.expected && (!validNumber(row.expected.pos_x) || !validNumber(row.expected.pos_z)
             || Math.abs(Number(device.pos_x) - row.expected.pos_x) > .0000001 || Math.abs(Number(device.pos_z) - row.expected.pos_z) > .0000001)) fail('设备位置已被更新，请重新读取后保存', 409);
-        const x = row ? row.pos_x : Number(device.pos_x), z = row ? row.pos_z : Number(device.pos_z) + railDelta;
+        const x = row ? row.pos_x : Number(device.pos_x), z = row ? row.pos_z : Number(device.pos_z) + railDelta + laneDelta;
         if (!validNumber(x) || !validNumber(z)) fail('计算后的设备位置超出范围');
         const delta = z - Number(device.pos_z);
         const nativeOrigin = Math.fround(Number(device.pos_z)), nativeResult = Math.fround(z), nativeDelta = Math.fround(delta);

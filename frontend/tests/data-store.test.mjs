@@ -341,6 +341,42 @@ test('forced health refreshes coalesce while one request is outstanding', async 
     await first
 })
 
+test('collection header keeps the exact PLC summary instead of replacing it with generic display readiness', async t => {
+    const { store, sockets } = fixture(t)
+    const message='设备离线：0/9 台设备在线，9 台已超过离线阈值'
+    const status={status:'offline',message,timestamp:1000,devices:[]}
+    store.connect();sockets[0].open();sockets[0].emit('plc_status',status)
+    assert.equal(store.plcStatusText.value,message)
+    t.mock.method(globalThis,'fetch',async()=>json({readiness:{displayReady:false,failures:['data_engine','data_freshness']},engine:{mode:'integrated_plc',plcStatus:status}}))
+    await store.refreshHealth(true)
+    assert.equal(store.plcStatusText.value,message)
+})
+
+test('an older HTTP PLC summary cannot replace a newer websocket collection observation', async t => {
+    const { store, sockets } = fixture(t),pending=deferred()
+    store.connect();sockets[0].open()
+    t.mock.method(globalThis,'fetch',()=>pending.promise)
+    const request=store.refreshHealth(true)
+    const message='PLC 数据正常：9/9 台设备在线'
+    sockets[0].emit('plc_status',{status:'connected',message,timestamp:2000,devices:[]})
+    pending.resolve(json({readiness:{displayReady:false,failures:['data_engine']},engine:{mode:'integrated_plc',plcStatus:{status:'offline',message:'设备离线：0/9 台设备在线',timestamp:1000}}}))
+    await request
+    assert.equal(store.plcStatusText.value,message)
+})
+
+test('a factory device-scope change clears collector ordering and discards an old in-flight health summary', async t => {
+    const { store,sockets }=fixture(t),pending=deferred()
+    store.syncDevices([{id:'A'}]);store.connect();sockets[0].open()
+    sockets[0].emit('plc_status',{status:'connected',message:'PLC 数据正常：9/9 台设备在线',timestamp:2000,devices:[]})
+    t.mock.method(globalThis,'fetch',()=>pending.promise)
+    const request=store.refreshHealth(true)
+    store.syncDevices([{id:'B'}]);assert.equal(store.plcStatusText.value,'等待采集状态...')
+    const message='设备离线：0/2 台设备在线，2 台已超过离线阈值'
+    sockets[0].emit('plc_status',{status:'offline',message,timestamp:1000,devices:[]})
+    pending.resolve(json({readiness:{displayReady:true},engine:{mode:'integrated_plc',plcStatus:{status:'connected',message:'PLC 数据正常：9/9 台设备在线',timestamp:2000}}}))
+    await request;assert.equal(store.plcStatusText.value,message)
+})
+
 test('explicit UTC event times render in the user time zone without reinterpreting local SQL text', async t => {
     const previousTimeZone = process.env.TZ
     process.env.TZ = 'Asia/Hong_Kong'

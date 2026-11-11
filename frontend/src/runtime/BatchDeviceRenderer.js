@@ -5,6 +5,7 @@ import { clone as cloneObject3D } from 'three/examples/jsm/utils/SkeletonUtils.j
 import { loadGltf, resolveBackendAssetUrl } from '../three/ModelFactory.js';
 import { resolveDeviceQuality } from './DeviceRenderer.js';
 import { ensureConnectionBadge3D, setConnectionBadge3D } from './ConnectionBadge3D.js';
+import { layoutEditorMaterial } from './layoutEditorAppearance.js';
 import { buildDeviceLabelMarkup, updateDeviceLabelElements, applyDeviceLabelStyle } from './uiConfig.js';
 import {
     enhanceModelMaterial,
@@ -40,6 +41,7 @@ const tempPosition = new THREE.Vector3();
 const tempQuaternion = new THREE.Quaternion();
 const tempScale = new THREE.Vector3();
 const identityQuaternion = new THREE.Quaternion();
+const reflectionX = new THREE.Matrix4().makeScale(-1, 1, 1);
 
 function parseJson(value, fallback) {
     if (!value) return fallback;
@@ -714,12 +716,20 @@ class DeviceBatchRenderer extends THREE.Group {
         this.showStatusLight = options.showStatusLight === true || metadata.runtime?.showStatusLight === true;
         this.supportsXRay = options.supportsXRay === true || metadata.runtime?.allowXRay === true;
 
-        parts.forEach(({ geometry, material, key }) => {
+        parts.forEach(({ geometry, material: sourceMaterial, key }) => {
+            const material = options.renderProfile === 'layout-editor'
+                ? layoutEditorMaterial(sourceMaterial, { instanced: true }) : sourceMaterial;
+            if (material !== sourceMaterial) sourceMaterial.dispose();
             if (this.hasMirroredInstances) {
                 material.side = THREE.DoubleSide;
                 material.needsUpdate = true;
             }
             const mesh = new THREE.InstancedMesh(geometry, material, definitions.length);
+            // WebGLRenderer flips triangle facing from the OBJECT matrix, not
+            // each instance matrix. A negative instance determinant + DoubleSide
+            // alone inverts fragment normals. Keep instances positive and put
+            // the common reflection on the draw object: R * (R * W) = W.
+            if (this.hasMirroredInstances) mesh.scale.x = -1;
             mesh.name = `batch_${modelInfo.id}_${key}`;
             mesh.frustumCulled = false;
             mesh.castShadow = false;
@@ -748,6 +758,7 @@ class DeviceBatchRenderer extends THREE.Group {
                 `batch_${modelInfo.id}_contact_shadow`
             );
             this.contactShadowMesh = shadow.mesh;
+            if (this.hasMirroredInstances) this.contactShadowMesh.scale.x = -1;
             this.contactShadowTexture = shadow.texture;
             this.add(this.contactShadowMesh);
         }
@@ -871,12 +882,18 @@ class DeviceBatchRenderer extends THREE.Group {
         tempScale.copy(proxy.scale).multiplyScalar(visibleScale);
         tempMatrix.compose(tempPosition, tempQuaternion, tempScale);
 
+        if (this.hasMirroredInstances) tempMatrix.premultiply(reflectionX);
+
         this.instancedMeshes.forEach(mesh => {
             mesh.setMatrixAt(index, tempMatrix);
         });
         if (this.contactShadowMesh) {
             this.contactShadowMesh.setMatrixAt(index, tempMatrix);
         }
+
+        // Status markers are ordinary positive-handed spheres; their anchor
+        // must still use the original device transform exactly once.
+        if (this.hasMirroredInstances) tempMatrix.premultiply(reflectionX);
 
         if (this.statusLightMesh) {
             tempPosition.set(0, this.statusLightOffsets[index], 0).applyMatrix4(tempMatrix);
@@ -949,6 +966,10 @@ class DeviceBatchRenderer extends THREE.Group {
 }
 
 export async function createBatchedDeviceRenderer(modelInfo, definitions, options = {}) {
+    const reflected = definitions.map(definition => shouldMirrorX(parseJson(definition.deviceCfg.instance_config, {})));
+    if (reflected.some(Boolean) && !reflected.every(Boolean)) {
+        throw new Error('镜像与非镜像实例不能共用一个实例绘制，请按镜像方向分组');
+    }
     if (modelInfo.id === 'transfer_cart') {
         const { parts, rootBox } = createCompactTransferCartParts();
         const batchRenderer = new DeviceBatchRenderer(modelInfo, parts, rootBox, definitions, {

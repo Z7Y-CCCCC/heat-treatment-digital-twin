@@ -269,6 +269,7 @@ namespace HeatTreatment.DigitalTwin.Backend
 
         private void Update()
         {
+            using var work = HeatTreatment.DigitalTwin.Runtime.RuntimeWorkMetrics.Measure(HeatTreatment.DigitalTwin.Runtime.RuntimeWorkMetrics.Section.RealtimeDispatch);
             var processed = 0;
             while (processed < 20 && _messages.TryDequeue(_generation, out var message))
             {

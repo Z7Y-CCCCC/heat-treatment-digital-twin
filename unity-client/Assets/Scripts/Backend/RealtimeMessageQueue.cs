@@ -1,8 +1,11 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.IO;
 using System.Linq;
 using System.Text;
+using System.Threading;
+using HeatTreatment.DigitalTwin.Runtime;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 
@@ -35,8 +38,13 @@ namespace HeatTreatment.DigitalTwin.Backend
         }
         public bool TryEnqueue(int generation, JObject message)
         {
+            using var work = RuntimeWorkMetrics.Measure(RuntimeWorkMetrics.Section.QueueProducer);
+            // Count canonical UTF-8 without allocating a throwaway JSON string,
+            // and outside the shared gate for the normal (unmerged) packet.
+            var incomingBytes = SerializedBytes(message);
             lock (_gate)
             {
+                using var critical = RuntimeWorkMetrics.Measure(RuntimeWorkMetrics.Section.QueueCritical);
                 if (generation != _generation) return true; // obsolete producer, not overload
                 var type = message.Value<string>("type");
                 var patches = message["payload"]?["devices"] as JArray;
@@ -48,23 +56,51 @@ namespace HeatTreatment.DigitalTwin.Backend
                 var replacing = kind != "reliable" && previous?.Kind == kind
                     && (!realtime || !HasMotionBoundary(previous.Message, message));
                 var merged = replacing && realtime ? MergeRealtime(previous.Message, message) : message;
-                var size = Encoding.UTF8.GetByteCount(merged.ToString(Formatting.None));
-                var bytes = _bytes - (replacing ? previous.Bytes : 0) + size;
+                var size = ReferenceEquals(merged, message) ? incomingBytes : SerializedBytes(merged);
+                var bytes = (long)_bytes - (replacing ? previous.Bytes : 0) + size;
                 if (size > MaxMessageBytes || bytes > _maxBytes || _entries.Count + (replacing ? 0 : 1) > _maxMessages) return false;
                 var entry = new Entry { Message = merged, Bytes = size, Kind = kind };
                 if (replacing) _entries.Last.Value = entry; else _entries.AddLast(entry);
-                _bytes = bytes; return true;
+                _bytes = (int)bytes; return true;
             }
+        }
+        private static int SerializedBytes(JObject message)
+        {
+            using var counter = new Utf8Counter();
+            using (var writer = new JsonTextWriter(counter) { Formatting = Formatting.None }) message.WriteTo(writer);
+            return counter.ByteCount;
+        }
+        // JsonTextWriter can split surrogate pairs across writes. Match UTF-8's
+        // replacement fallback exactly, including unpaired UTF-16 surrogates.
+        private sealed class Utf8Counter : TextWriter
+        {
+            private long _bytes;
+            private bool _high;
+            public override Encoding Encoding => Encoding.UTF8;
+            public int ByteCount => (int)Math.Min(int.MaxValue, _bytes + (_high ? 3 : 0));
+            public override void Write(char value)
+            {
+                if (_high) { _high = false; if (char.IsLowSurrogate(value)) { _bytes += 4; return; } _bytes += 3; }
+                if (char.IsHighSurrogate(value)) _high = true;
+                else _bytes += value < 0x80 ? 1 : value < 0x800 ? 2 : 3;
+            }
+            public override void Write(string value) { if (value != null) for (var i = 0; i < value.Length; i++) Write(value[i]); }
+            public override void Write(char[] buffer, int index, int count) { for (var i = index; i < index + count; i++) Write(buffer[i]); }
         }
         public bool TryDequeue(int generation, out JObject message)
         {
-            lock (_gate)
+            message = null;
+            // The I/O producer may be merging or byte-accounting a large JSON
+            // frame. Never park Unity's render thread behind that work. Keep
+            // the exact FIFO/edge barriers; retry the unchanged inbox next frame.
+            if (!Monitor.TryEnter(_gate)) { RuntimeWorkMetrics.ReadContended(); return false; }
+            try
             {
-                message = null;
                 if (generation != _generation || _entries.First == null) return false;
                 var entry = _entries.First.Value; _entries.RemoveFirst(); _bytes -= entry.Bytes;
                 message = entry.Message; return true;
             }
+            finally { Monitor.Exit(_gate); }
         }
         private static bool HasFault(JToken token)
         {
@@ -182,7 +218,7 @@ namespace HeatTreatment.DigitalTwin.Backend
             if (value == null || !Only(value, "version", "ready", "generation", "revision", "factoryId", "bindings")
                 || !Numeric(value["version"]) || value.Value<double>("version") != 1 || value["ready"]?.Type != JTokenType.Boolean || !value.Value<bool>("ready")
                 || !Numeric(value["generation"]) || !Number(value["generation"], out var generation) || generation < 0 || generation > 9007199254740991d || generation != Math.Truncate(generation)
-                || !Text(value["revision"], 128, true) || !Text(value["factoryId"], 128, true) || !(value["bindings"] is JArray bindings) || bindings.Count > 102) return false;
+                || !Text(value["revision"], 128, true) || !Text(value["factoryId"], 128, true) || !(value["bindings"] is JArray bindings) || bindings.Count > 106) return false;
             var keys = new HashSet<string>(StringComparer.Ordinal);
             foreach (var binding in bindings) if (!ValidDeclaration(binding) || !keys.Add(binding.Value<string>("key"))) return false;
             return true;

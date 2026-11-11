@@ -56,6 +56,13 @@ namespace HeatTreatment.DigitalTwin.Editor
         {
             BootstrapProject();
             DeviceEntryNavigationValidation.Validate();
+            DeviceHoverRuntimeChecks.Run();
+            InspectionFrameBudgetValidation.RunChecks();
+            InspectionIndexBatchValidation.Validate();
+            RuntimeFrameMetricsValidation.Validate();
+            HoverTransformBatchValidation.Validate();
+            IndependentArrivalValidation.Validate();
+            BidirectionalTransferValidation.Validate();
             ValidateAuthoredHallMaterials();
             ValidateSceneShadowCoverage();
             EditorUserBuildSettings.SwitchActiveBuildTarget(BuildTargetGroup.Standalone, BuildTarget.StandaloneWindows64);

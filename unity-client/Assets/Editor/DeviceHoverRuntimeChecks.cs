@@ -41,6 +41,7 @@ namespace HeatTreatment.DigitalTwin.Editor
                 }
                 var front = Cube("front", Vector3.zero);
                 Cube("rear", new Vector3(0, 0, 2));
+                var distant = Cube("distant-animated", new Vector3(100, 0, 0));
                 var method = typeof(FactoryDashboardController).GetMethod("UpdateDeviceHoverAt", BindingFlags.Instance | BindingFlags.NonPublic);
                 var draw = typeof(FactoryDashboardController).GetMethod("DrawDeviceHover", BindingFlags.Instance | BindingFlags.NonPublic);
                 var outline = typeof(FactoryDashboardController).GetField("_inspectionOutlineMaterial", BindingFlags.Instance | BindingFlags.NonPublic);
@@ -66,6 +67,14 @@ namespace HeatTreatment.DigitalTwin.Editor
                 Check(front.GetComponent<Renderer>().sharedMaterial == originalMaterial, "hover does not replace equipment PBR material");
                 var count = events; Pick();
                 Check(count == events, "stationary unchanged scene does not resend hover");
+                var picks = controller.OverviewPickEvaluations;
+                for (var index = 0; index < 20; index++) { distant.transform.Rotate(0, 13, 0); Pick(); }
+                Check(controller.OverviewPickEvaluations == picks && payload.Value<string>("hoveredDeviceId") == "front", "animation outside both previous and current ray bounds does not repick the whole factory");
+                distant.transform.position = new Vector3(0, 0, -2); Pick();
+                Check(controller.OverviewPickEvaluations == picks + 1 && payload.Value<string>("hoveredDeviceId") == "distant-animated", "moving geometry entering a stationary ray forces an exact nearest mesh pick");
+                distant.transform.position = new Vector3(100, 0, 0); Pick();
+                Check(payload.Value<string>("hoveredDeviceId") == "front", "moving geometry leaving the ray cannot retain a stale hover");
+                count = events;
                 pointer.x += 3; Pick();
                 Check(events == count + 1 && payload["deviceHoverPointer"].Value<bool>("visible"), "pointer motion updates compact tooltip position immediately");
                 Pick(true); Check(payload.Value<string>("hoveredDeviceId") == "", "blocked UI clears device hover");
@@ -96,6 +105,21 @@ namespace HeatTreatment.DigitalTwin.Editor
                 controller.FocusPreviewDevice("rear"); Pick();
                 Check(payload.Value<string>("hoveredDeviceId") == "", "device detail clears overview hover and preserves part tooltip ownership");
                 Check(Draw() == 0, "whole-device outline never persists into detail/part inspection");
+                View("factory_overview");
+                var carrier = Create("stationary device root");
+                var child = GameObject.CreatePrimitive(PrimitiveType.Cube); roots.Add(child);
+                Object.DestroyImmediate(child.GetComponent<Collider>());
+                child.transform.SetParent(carrier.transform, false); child.transform.localPosition = new Vector3(100, 0, 0);
+                controller.RegisterDevice(new DeviceDto { Id = "internal-motion", Name = "internal-motion" }, carrier, new DeviceInspectionConfigDto { Enabled = false });
+                Pick();
+                var phaseField = typeof(FactoryDashboardController).GetField("_overviewScanPhase", BindingFlags.Instance | BindingFlags.NonPublic);
+                phaseField.SetValue(controller, 2); Pick();
+                Check((int)phaseField.GetValue(controller) == 0, "stationary-pointer scan phase stays bounded for continuous operation");
+                child.transform.localPosition = new Vector3(0, 0, -2);
+                for (var i = 0; i < 3; i++) Pick();
+                Check(payload.Value<string>("hoveredDeviceId") == "internal-motion", "unrelated internal animation entering a stationary pointer is exact-picked within three hover observations");
+                child.transform.localPosition = new Vector3(100, 0, 0); Pick();
+                Check(payload.Value<string>("hoveredDeviceId") == "front", "currently hovered internal geometry leaving the ray is cleared immediately");
                 controller.ClearFactory();
                 Check(Draw() == 0, "factory switch clears the previous equipment outline");
                 Debug.Log("[DeviceHoverChecks] PASS " + checks.Count + " checks");

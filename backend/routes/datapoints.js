@@ -327,6 +327,25 @@ function normalizedPointId(value, rowLabel) {
 const { reloadCollectorSoon } = require('../utils/collectorReload');
 function restartDataEngineSoon(reason, factoryId) { reloadCollectorSoon(factoryId, reason); }
 
+async function simulationValue(req, res) {
+    try {
+        const db = await getDb(), point = await db.get('SELECT * FROM data_points WHERE id = ?', [req.params.id]);
+        if (!point || !await deviceInFactory(db, point.device_id, req.factoryId)) return res.status(404).json({ error: '点位不存在' });
+        const reset = req.method === 'DELETE';
+        let value;
+        try {
+            const { readable, manualValue } = require('../services/simulationPoints');
+            if (!readable(point)) throw new Error('只写点位不能修改模拟读取值');
+            if (!reset) value = manualValue(point, req.body?.value);
+        } catch (error) { return res.status(400).json({ error: error.message }); }
+        if (!global.dataEngine?.setSimulationPointValue) return res.status(409).json({ error: '模拟运行引擎未就绪' });
+        const result = await global.dataEngine.setSimulationPointValue(point, value, reset, req.factoryId);
+        res.json(result);
+    } catch (error) { res.status(409).json({ error: error.message }); }
+}
+router.put('/:id/simulation', simulationValue);
+router.delete('/:id/simulation', simulationValue);
+
 router.get('/', async (req, res) => {
     try {
         const db = await getDb();

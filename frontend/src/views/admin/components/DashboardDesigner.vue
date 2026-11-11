@@ -31,6 +31,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, onActivated, onDeactiva
 import { widgetBindingChoices, LEGACY_BINDINGS } from '../../../runtime/widgetBindingChoices.js'
 import { adminApi } from '../../../config/factoryConfig.js'
 import WidgetRenderer from '../../../runtime/WidgetRenderer.vue'
+import DashboardChartTypeSelect from './DashboardChartTypeSelect.vue'
 import { hudTextFields } from '../../../runtime/hudTextConfig.js'
 import { effectiveWidgetBackground, updateWidgetBackground, updateWidgetBackgroundOpacity } from '../../../runtime/widgetAppearance.js'
 import { applyReferenceHudLayout } from '../../../runtime/referenceHudLayout.js'
@@ -2633,6 +2634,15 @@ function setChartSeriesSource(source) {
   widget.content.seriesSource = source
   recordProperty('修改图表序列来源')
 }
+function setChartType(chartType) {
+  const widget = selectedWidget.value
+  if (!widget || !canAdminPage('platform.designer','edit') || !['trend','hud_chart_dock'].includes(widget.type)
+    || !DASHBOARD_CHARTS.some(chart => chart.id === chartType) || widget.content.chartType === chartType) return
+  // Changing presentation must not reset the point binding, collected history,
+  // authored frame, or the independently configured smooth-curve switch.
+  widget.content.chartType = chartType
+  recordProperty('修改图表类型')
+}
 function metricFormatBinding(metric, deviceId) {
   if (!metric.binding) return null
   if (metric.binding.bindingVersion !== 2 || metric.binding.deviceScope === 'global') return metric.binding
@@ -3846,20 +3856,20 @@ onBeforeUnmount(() => {
               </template>
               <template v-if="['trend','hud_chart_dock'].includes(selectedWidget.type)">
                 <label v-if="selectedWidget.type === 'trend'">无采样文字<input :value="selectedWidget.content.emptyText ?? '暂无趋势数据'" aria-label="图表无采样文字" @input="updateContentField('emptyText',$event.target.value)" @change="recordProperty('修改图表无采样文字')" /></label>
-                <label>图表形式<select v-model="selectedWidget.content.chartType" aria-label="图表类型" @change="selectedWidget.content.smooth=selectedWidget.content.chartType==='smoothLine';recordProperty('修改图表类型')"><option v-for="chart in DASHBOARD_CHARTS" :key="chart.id" :value="chart.id">{{chart.label}}</option></select></label>
+                <DashboardChartTypeSelect :model-value="selectedWidget.content.chartType" @update:model-value="setChartType" />
                 <label>配色预设<select v-model="selectedWidget.content.chartPalette" @change="applyChartPalette" ><option v-for="palette in chartPalettes" :key="palette.id" :value="palette.id">{{ palette.label }}</option></select></label>
                 <label>图表名称<input v-model="selectedWidget.content.seriesName" @change="recordProperty()" /></label>
                 <TrendChartSettings :content="selectedWidget.content" :unit="selectedWidget.data.unit" @change="recordProperty('修改图表坐标与时间')" />
                 <label>保留数据点<input v-model.number="selectedWidget.content.historyLength" type="number" min="8" max="600" @change="recordProperty()" /></label>
                 <label class="visibility-bound-device"><input v-model="selectedWidget.content.showLegend" type="checkbox" @change="recordProperty('修改图例')" /> 显示多数据项图例</label>
                 <label v-if="selectedWidget.content.showLegend">图例位置<select v-model="selectedWidget.content.legendPosition" @change="recordProperty('修改图例位置')"><option value="top">顶部</option><option value="bottom">底部</option><option value="right">右侧</option></select></label>
-                <div class="property-grid two"><label class="visibility-bound-device"><input v-model="selectedWidget.content.showAxis" type="checkbox" @change="recordProperty('修改坐标轴')" /> 显示坐标轴</label><label class="visibility-bound-device"><input v-model="selectedWidget.content.showDataLabel" type="checkbox" @change="recordProperty('修改数据标签')" /> 显示数据标签</label></div>
+                <div class="property-grid two"><label v-if="['line','area','bar'].includes(selectedWidget.content.chartType)" class="visibility-bound-device"><input v-model="selectedWidget.content.showAxis" type="checkbox" @change="recordProperty('修改坐标轴')" /> 显示坐标轴</label><label v-if="selectedWidget.content.chartType!=='gauge'" class="visibility-bound-device"><input v-model="selectedWidget.content.showDataLabel" type="checkbox" @change="recordProperty('修改数据标签')" /> 显示数据标签</label></div>
                 <template v-if="['line','area','scatter','smoothLine','stepLine','stackedArea','lineBar'].includes(selectedWidget.content.chartType)"><div class="property-grid two"><label class="visibility-bound-device"><input v-model="selectedWidget.content.smooth" type="checkbox" :disabled="['scatter','stepLine'].includes(selectedWidget.content.chartType)" @change="recordProperty('修改曲线')" /> 平滑曲线</label><label class="visibility-bound-device"><input v-model="selectedWidget.content.showSymbol" type="checkbox" @change="recordProperty('修改数据点')" /> 显示数据点</label></div><label>线宽<input v-model.number="selectedWidget.content.lineWidth" type="range" min="1" max="8" step="1" @change="recordProperty('修改线宽')" /><small class="field-hint">{{ selectedWidget.content.lineWidth || 2 }} px</small></label></template>
                 <label v-if="selectedWidget.content.chartType === 'area'">面积透明度<input v-model.number="selectedWidget.content.areaOpacity" type="range" min="0.05" max="0.9" step="0.05" @change="recordProperty('修改面积透明度')" /><small class="field-hint">{{ Math.round((selectedWidget.content.areaOpacity ?? .2) * 100) }}%</small></label>
                 <label v-if="['bar','stackedBar'].includes(selectedWidget.content.chartType)">柱体圆角<input v-model.number="selectedWidget.content.barRadius" type="range" min="0" max="20" step="1" @change="recordProperty('修改柱体圆角')" /><small class="field-hint">{{ selectedWidget.content.barRadius || 0 }} px</small></label>
                 <details class="chart-field-mapping"><summary>图表字段映射</summary><label>序列来源<select :value="widgetChartSeriesSource(selectedWidget.content, selectedWidget.data)" aria-label="图表序列来源" @change="setChartSeriesSource($event.target.value)"><option value="binding">跟随主数据序列 / 采样</option><option value="field">指定上下文字段</option></select></label><label v-if="widgetChartSeriesSource(selectedWidget.content, selectedWidget.data)==='field'">序列字段<input :value="widgetChartSeriesPath(selectedWidget.content, selectedWidget.data)" list="chart-series-fields" aria-label="图表序列字段" @input="updateContentField('seriesPath',$event.target.value)" @change="recordProperty('修改图表序列字段')" /></label><datalist id="chart-series-fields"><option value="trendPoints"></option><option value="map.records"></option><option value="events"></option></datalist><label>分类 / 时间字段<input :value="selectedWidget.content.categoryField || selectedWidget.content.timeField || 'time'" list="chart-output-fields" aria-label="图表分类时间字段" @input="selectedWidget.content.categoryField=$event.target.value" @change="recordProperty()" /></label><label v-for="role in (CHART_FIELD_ROLES[selectedWidget.content.chartType] || [['valueField','数值字段']])" :key="role[0]">{{role[1]}}<input v-model="selectedWidget.content[role[0]]" list="chart-output-fields" :aria-label="`图表字段 ${role[1]}`" @change="recordProperty()" /></label><datalist id="chart-output-fields"><option v-for="column in dataSetDefinitions.find(d=>d.id===selectedWidget.data.datasetId)?.columns || []" :key="column.name" :value="column.name">{{column.label}}</option></datalist></details>
                 <label v-if="selectedWidget.content.chartType === 'donut'">内环比例<input v-model.number="selectedWidget.content.donutRatio" type="range" min="20" max="75" step="1" @change="recordProperty('修改内环')" /><small class="field-hint">{{ selectedWidget.content.donutRatio || 48 }}%</small></label>
-                <div v-if="selectedWidget.content.chartType === 'gauge'" class="property-grid two"><label>最小值<input v-model.number="selectedWidget.content.min" type="number" @change="recordProperty()" /></label><label>最大值<input v-model.number="selectedWidget.content.max" type="number" @change="recordProperty()" /></label></div>
+                <div v-if="selectedWidget.content.chartType === 'gauge'" class="property-grid two"><label>最小值<input v-model.number="selectedWidget.content.min" type="number" placeholder="自动" @change="recordProperty()" /></label><label>最大值<input v-model.number="selectedWidget.content.max" type="number" placeholder="自动" @change="recordProperty()" /></label></div>
               </template>
               <template v-if="selectedWidget.type === 'marquee'">
                 <label>滚动周期（秒）<input v-model.number="selectedWidget.content.speed" type="number" min="5" max="180" @change="recordProperty()" /></label>

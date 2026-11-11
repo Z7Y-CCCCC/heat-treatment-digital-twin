@@ -87,6 +87,11 @@ namespace HeatTreatment.DigitalTwin.Editor
                 var b = Cube("B", parentB, new Vector3(0,.2f,.1f));
                 var plate = Cube("Plate", parentA, new Vector3(0, 1.5f, 0));
                 var c = Cube("C", model.transform, new Vector3(0,0,2));
+                var cadHousing = Cube("cad_tempering_furnace_v1_housing", model.transform, new Vector3(-3,0,0));
+                var cadFan = Cube("cad_tempering_furnace_v1_internal_fan", model.transform, new Vector3(-3,0,.1f));
+                cadFan.transform.SetParent(cadHousing.transform, false);cadFan.transform.localPosition=Vector3.zero;
+                var cadReference=Cube("cad_tempering_furnace_v1_door_guides",cadHousing.transform,Vector3.right*.25f);
+                var cadDoor = Cube("cad_tempering_furnace_v1_door", model.transform, new Vector3(-3,0,-.1f));
                 var originalPosition = a.transform.localPosition;
                 var originalRotation = a.transform.localRotation;
                 var originalSibling = a.transform.GetSiblingIndex();
@@ -156,6 +161,45 @@ namespace HeatTreatment.DigitalTwin.Editor
                 Check(Command("progress", .7f) && Vector3.Distance(a.transform.localPosition, originalPosition + Vector3.right * .4f) < .0001f, "live PLC translation survives partial disassembly");
                 Check(Command("progress", 0), "scrub back to assembled");
                 Check(plate.GetComponent<Renderer>().sharedMaterial == material && !plate.GetComponent<Renderer>().forceRenderingOff, "assembly restores original shell material and visibility");
+                Check(dashboard.ApplyInspectionCommand(device.Id,new JObject { ["command"]="stage", ["stage"]="solid" },out _), "enter assembled live-action view before shell toggle");
+                var shellRuntimeDevice = typeof(FactoryDashboardController).GetField("_selected", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(dashboard);
+                var shellRuntime = shellRuntimeDevice.GetType().GetField("Inspection").GetValue(shellRuntimeDevice);
+                var shellAmount = shellRuntime.GetType().GetField("ShellTransparencyAmount");
+                var applyShellPose = typeof(FactoryDashboardController).GetMethod("ApplyInspectionPose", BindingFlags.Instance | BindingFlags.NonPublic);
+                bool Shell(bool enabled) => dashboard.ApplyInspectionCommand(device.Id, new JObject { ["command"]="shell_transparency", ["enabled"]=enabled }, out _);
+                var shellCameraPosition = camera.transform.position;
+                Check(Shell(true) && context.Value<bool>("shellTransparencyAvailable") && context.Value<bool>("shellTransparent"), "shell command acknowledges its actual local presentation state");
+                shellAmount.SetValue(shellRuntime, 1f); applyShellPose.Invoke(dashboard, new[] { shellRuntime });
+                Check(Mathf.Abs(plate.GetComponent<Renderer>().sharedMaterial.GetFloat("_Opacity") - .025f) < .001f
+                    && plate.GetComponent<Renderer>().sharedMaterial.GetFloat("_ZWrite") == 0f, "nested cover materials leave only a faint skin without occluding internal depth");
+                Check(Mathf.Abs(cadHousing.GetComponent<Renderer>().sharedMaterial.GetFloat("_Opacity") - .025f) < .001f
+                    && cadFan.GetComponent<Renderer>().sharedMaterial==material, "CAD covers work without legacy shell targets while the internal fan remains solid");
+                Check(Mathf.Abs(cadDoor.GetComponent<Renderer>().sharedMaterial.GetFloat("_Opacity")-.025f)<.001f,
+                    "the formerly opaque furnace door no longer blocks the internal action view");
+                Check(cadReference.GetComponent<Renderer>().sharedMaterial==material && !cadReference.GetComponent<Renderer>().forceRenderingOff,
+                    "static guides stay solid even when nested under a transparent housing; the view is not moving-parts-only");
+                Check(a.GetComponent<Renderer>().sharedMaterial == material && !a.GetComponent<Renderer>().forceRenderingOff
+                    && a.transform.localPosition == originalPosition + Vector3.right * .4f && camera.transform.position == shellCameraPosition,
+                    "shell transparency preserves internal material, current motion pose and camera");
+                var clipDriver = model.AddComponent<DeviceAnimationDriver>();
+                clipDriver.Configure(new DeviceDto { Id="clip-shell-fixture", InstanceConfig=JObject.Parse(@"{animationBindings:{staleMs:600000,bindings:[{actionId:'clip:inside',clipId:'inside',dataItemId:'point:inside',enabled:true,kind:'clip',mode:'position',inputMin:0,inputMax:1,speed:1,transitionSeconds:0,trigger:{mode:'range'}}]}}") },
+                    JObject.Parse(@"{nodes:[{name:'B',p:[0,0.2,0.1],v:[1]}],clips:[{id:'inside',count:2,duration:1,tracks:[{node:'B',channel:'p',size:3,values:[0,0.2,0.1,1,0.2,0.1]}]}]}"));
+                void MoveInside(double value) {
+                    clipDriver.ApplyMotionInputs(new JObject { ["timestamp"]=1000000, ["motionInputOnly"]=true, ["motionInputs"]=new JObject {
+                        ["clip:inside"]=new JObject { ["dataItemId"]="point:inside", ["value"]=value, ["quality"]="good", ["timestamp"]=1000000, ["staleMs"]=600000 } } }, 0);
+                    clipDriver.Advance(.001, 0);
+                }
+                MoveInside(.25);var insidePosition=b.transform.localPosition;MoveInside(.75);applyShellPose.Invoke(dashboard,new[] {shellRuntime});
+                Check(Vector3.Distance(insidePosition,b.transform.localPosition) > .4f && b.GetComponent<Renderer>().sharedMaterial==material,
+                    "the actual action-animation driver keeps advancing internal tracks while the shell is transparent");
+                Check(Shell(false), "restore cover command is accepted");shellAmount.SetValue(shellRuntime,0f);applyShellPose.Invoke(dashboard,new[] {shellRuntime});
+                Check(plate.GetComponent<Renderer>().sharedMaterial==material && plate.GetComponent<Renderer>().shadowCastingMode==UnityEngine.Rendering.ShadowCastingMode.On,
+                    "restoring shell reinstates exact original material and shadows");
+                Check(!dashboard.ApplyInspectionCommand(device.Id,new JObject { ["command"]="shell_transparency", ["enabled"]="true" },out _), "native shell command rejects non-boolean flags");
+                Check(ShellTransparencyTargets.IsCoverNode("cad_tempering_furnace_v1_housing") && ShellTransparencyTargets.IsCoverNode("cad_tempering_furnace_v1_lining")
+                    && ShellTransparencyTargets.IsCoverNode("cad_tempering_furnace_v1_door_seals") && ShellTransparencyTargets.IsCoverNode("cad_tempering_furnace_v1_panel_fasteners")
+                    && !ShellTransparencyTargets.IsCoverNode("cad_tempering_furnace_v1_internal_fan") && !ShellTransparencyTargets.IsCoverNode("cad_tempering_furnace_v1_door_chains"),
+                    "packaged CAD housing/lining are explicit covers, never internal fans or chains");
                 var tiny = new Bounds(Vector3.zero, Vector3.one * .02f);
                 orbit.FocusBounds(tiny, 20, 20, 1.1f, true, true);
                 var distance = (float)typeof(OrbitCameraController).GetField("_desiredDistance", BindingFlags.NonPublic | BindingFlags.Instance).GetValue(orbit);

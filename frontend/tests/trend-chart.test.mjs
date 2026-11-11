@@ -1,8 +1,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { configureTrendAxes,appendTrendSample,timeLabel } from '../src/runtime/trendChart.js'
+import { configureTrendAxes,appendTrendSample,timeLabel,chartTickError } from '../src/runtime/trendChart.js'
 import { migrateDeviceTrend,findBoundPoint } from '../src/runtime/pointBinding.js'
-import { extendedChartOption } from '../src/runtime/dashboardCharts.js'
+import { extendedChartOption, gaugeChartRange } from '../src/runtime/dashboardCharts.js'
 import { normalizeDashboardWidget } from '../src/runtime/dashboardSchema.js'
 test('temperature smooth curves have a readable auto scale, unit, grid and 24-hour timestamps',()=>{
  const time=Date.now(),option=extendedChartOption('smoothLine',{sourceSeries:[{name:'炉温',rows:[{time,value:857.3},{time:time+1000,value:859.8}]}]})
@@ -56,4 +56,59 @@ test('stacked series bounds include totals and the smooth switch controls the ac
  const stacked=configureTrendAxes(extendedChartOption('stackedArea',input),{chartType:'stackedArea'})
  assert.ok(stacked.yAxis.max>=30);assert.ok(stacked.yAxis.min<=0)
  assert.equal(extendedChartOption('smoothLine',input).series[0].smooth,false)
+})
+
+test('gauge auto range fits actual temperatures, preserves explicit bounds and rejects blank or invalid ranges', () => {
+ const automatic=gaugeChartRange({},850.1,'°C')
+ assert.equal(automatic.min,0);assert.ok(automatic.max>850.1)
+ assert.deepEqual(gaugeChartRange({min:0,max:1200},850.1,'°C'),{min:0,max:1200})
+ assert.deepEqual(gaugeChartRange({min:'',max:''},850.1,'°C'),automatic)
+ assert.deepEqual(gaugeChartRange({min:900,max:10},850.1,'°C'),automatic)
+ assert.deepEqual(gaugeChartRange({},0,'%'),{min:0,max:100})
+ assert.ok(gaugeChartRange({},-20,'°C').min<-20)
+})
+
+test('pie excludes negative and missing slices, preserves real zero and never draws equal fake zero-sum sectors', () => {
+ const pie=extendedChartOption('pie',{sourceSeries:[{rows:[{time:'A',value:10},{time:'B',value:0},{time:'negative',value:-2},{time:'missing',value:null}]}]})
+ assert.deepEqual(pie.series[0].data.map(point=>point.value),[10,0])
+ assert.equal(pie.series[0].stillShowZeroSum,false)
+})
+
+test('explicit Y tick spacing respects fixed bounds and aligns automatic bounds without changing samples',()=>{
+ const base=()=>({xAxis:{type:'category',data:['A','B']},yAxis:{type:'value'},series:[{type:'line',data:[850.1,852.7]}]})
+ const fixed=configureTrendAxes(base(),{yAxisMode:'fixed',yMin:840,yMax:860,yTickInterval:5},'°C')
+ assert.equal(fixed.yAxis.interval,5);assert.equal(fixed.yAxis.min,840);assert.equal(fixed.yAxis.max,860)
+ const automatic=configureTrendAxes(base(),{yTickInterval:5},'°C')
+ assert.equal(automatic.yAxis.min%5,0);assert.equal(automatic.yAxis.max%5,0)
+ assert.deepEqual(automatic.series[0].data,[850.1,852.7])
+ for(const value of ['',0,-1,NaN,Infinity])assert.equal(configureTrendAxes(base(),{yTickInterval:value}).yAxis.interval,undefined)
+ assert.equal(configureTrendAxes(base(),{yAxisMode:'fixed',yMin:0,yMax:1000,yTickInterval:.001}).yAxis.interval,undefined)
+ assert.match(chartTickError({yTickInterval:-1}),/大于 0/)
+ assert.match(chartTickError({yAxisMode:'fixed',yMin:0,yMax:1000,yTickInterval:.001}),/过密/)
+})
+
+test('explicit X time spacing uses real timestamps and exact millisecond intervals, including gaps and distinct series times',()=>{
+ const time=Date.parse('2026-11-11T10:00:00+08:00'),source=[{rows:[{time,value:0},{time:time+17000,value:null}]},{rows:[{time:time+3000,value:1},{time:time+27000,value:2}]}]
+ const base={tooltip:{},xAxis:{type:'category',data:source[0].rows.map(r=>r.time)},yAxis:{type:'value'},series:source.map(s=>({type:'line',data:s.rows.map(r=>r.value)}))}
+ const result=configureTrendAxes(base,{xTickMode:'time',xTickIntervalSeconds:10},'°C',160,source)
+ assert.equal(result.xAxis.type,'value');assert.equal(result.xAxis.interval,10000)
+ assert.equal(result.xAxis.splitLine.show,true);assert.equal(result.xAxis.splitLine.lineStyle.type,'dashed')
+ assert.ok(result.xAxis.max>=time+27000);assert.equal(result.xAxis.data,undefined)
+ assert.deepEqual(result.series[0].data,[[time,0],[time+17000,null]])
+ assert.deepEqual(result.series[1].data,[[time+3000,1],[time+27000,2]])
+ assert.equal(result.tooltip.valueFormatter([time,0]),'0 °C');assert.equal(result.tooltip.valueFormatter([time,null]),'—')
+ assert.match(result.xAxis.axisLabel.formatter(time),/^\d\d:\d\d:\d\d$/)
+})
+
+test('category tick cadence, plain clock values across midnight and invalid time inputs remain safe',()=>{
+ const base=labels=>({xAxis:{type:'category',data:labels},yAxis:{type:'value'},series:[{type:'line',data:labels.map(()=>1)}]})
+ const category=configureTrendAxes(base(['A','B','C']),{xTickMode:'category',xLabelEvery:2})
+ assert.equal(category.xAxis.axisLabel.interval,1);assert.equal(category.xAxis.axisTick.interval,1)
+ const clock=configureTrendAxes(base(['23:59:55','00:00:05']),{xTickMode:'time',xTickIntervalSeconds:5})
+ assert.equal(clock.series[0].data[1][0]-clock.series[0].data[0][0],10000)
+ assert.equal(clock.xAxis.interval,5000)
+ assert.equal(configureTrendAxes(base(['A','B']),{xTickMode:'time',xTickIntervalSeconds:10}).xAxis.type,'category')
+ for(const step of [0,-1,NaN,Infinity])assert.equal(configureTrendAxes(base(['10:00:00','10:00:10']),{xTickMode:'time',xTickIntervalSeconds:step}).xAxis.type,'category')
+ assert.match(chartTickError({xTickMode:'time',xTickIntervalSeconds:0}),/大于 0/)
+ assert.match(chartTickError({xTickMode:'category',xLabelEvery:1.5}),/整数/)
 })

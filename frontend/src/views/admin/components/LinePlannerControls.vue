@@ -2,6 +2,7 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { canAdminPage } from '../../../runtime/adminSession.js'
 import { lineSceneUnitsPerMeter } from '../../../../../shared/lineRailSpacing.mjs'
+import { LINE_PLACEMENT_TEMPLATES, canMoveLineStructure } from '../../../../../shared/linePlacementTemplate.mjs'
 
 const props = defineProps({
   lines: { type: Array, default: () => [] }, workshops: { type: Array, default: () => [] },
@@ -11,7 +12,7 @@ const props = defineProps({
   savedSnapshot: { type: String, default: '' },
   deviceCount: { type: Number, default: 0 }, totalDevices: { type: Number, default: 0 }
 })
-const emit = defineEmits(['select', 'delete', 'create', 'edit', 'add-item', 'remove-item', 'change-item', 'change-rail-spacing', 'save-layout', 'focus-item'])
+const emit = defineEmits(['select', 'delete', 'create', 'edit', 'add-item', 'remove-item', 'change-item', 'change-rail-spacing', 'choose-placement-template', 'save-layout', 'focus-item'])
 const popup = ref(''), popupElement = ref(null), popupStyle = ref({}), modal = ref(''), modalElement = ref(null)
 const lineTrigger = ref(null), laneTrigger = ref(null), railTrigger = ref(null), createTrigger = ref(null)
 const lineQuery = ref(''), editDraft = ref({})
@@ -85,6 +86,7 @@ async function restoreItemField(id, field, event, type = popup.value) {
 }
 async function changeItem(id, field, event) {
   if (field !== 'name' && event.target.value === '') return
+  if (field === 'offsetZ' && !canMoveLineStructure(props.layout, popup.value, id)) { await restoreItemField(id, field, event); return }
   if (!props.busy && canEdit.value) emit('change-item', { type: popup.value, id, field, value: event.target.value })
   await restoreItemField(id, field, event)
 }
@@ -157,13 +159,25 @@ defineExpose({ closeCreation: () => { modal.value = ''; modalReturnFocus?.focus?
       <button ref="railTrigger" type="button" class="structure-pill rail-pill" aria-label="管理小车导轨" aria-haspopup="dialog" :aria-expanded="popup === 'rail'" :disabled="!selected || creating" @click="togglePopup('rail', $event)">{{ layout.rails.length }} 条导轨<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 10 4 4 4-4"/></svg></button>
       <span class="device-count">{{ deviceCount }}/{{ totalDevices }} 台设备</span>
     </div>
+    <div v-if="selected" class="line-placement-templates" role="group" aria-label="产线布局模板">
+      <div class="placement-heading"><strong>布局模板</strong><span>导轨固定 · 设备线围绕导轨摆放</span></div>
+      <div class="placement-options">
+        <button v-for="option in LINE_PLACEMENT_TEMPLATES" :key="option.id" type="button" class="placement-option" :class="{ active: layout.placementTemplate?.kind === option.id }" :aria-pressed="layout.placementTemplate?.kind === option.id" :disabled="!canEdit || busy || creating" @click="emit('choose-placement-template', option.id)">
+          <svg viewBox="0 0 100 44" aria-hidden="true"><path v-if="option.id !== 'single-positive'" class="template-lane" d="M14 9h72"/><path class="template-rail" d="M8 20h84M8 24h84"/><path v-if="option.id !== 'single-negative'" class="template-lane" d="M14 35h72"/></svg>
+          <span>{{ option.label }}</span><small>{{ option.id === 'dual' ? '第二条线受约束跟随' : '设备线在导轨一侧' }}</small>
+        </button>
+      </div>
+      <p>{{ layout.placementTemplate ? '第一条设备线可在安全范围摆放；双侧模板的第二条线保持在导轨对侧，随第一条线调整。设备仍可沿各自设备线调整前后顺序。' : '现有布局不会自动改变。选择模板后先核对并应用草稿，再保存。上／下以本页俯视图为准。' }}</p>
+    </div>
     <div v-if="selected" class="line-rail-spacing-config" role="group" aria-label="设备线与小车轨道间距设置">
+      <details v-if="!layout.placementTemplate" class="legacy-spacing-settings"><summary>旧布局兼容设置（模板未应用）</summary>
       <div v-for="rail in layout.rails" :key="rail.id" class="rail-spacing-row" :data-rail-spacing-id="rail.id">
         <strong class="rail-spacing-name">{{ rail.name || rail.id }}</strong>
         <label class="structure-field"><span>关联设备线</span><select :value="rail.spacing?.laneId || ''" :aria-label="`${rail.name} 关联设备线`" class="input" :disabled="!canEdit || busy || creating" @change="changeSpacing(rail.id, 'laneId', $event)"><option value="">选择设备线（不关联则自由偏移）</option><option v-for="lane in layout.lanes" :key="lane.id" :value="lane.id">{{ lane.name || lane.id }}</option></select></label>
         <label class="structure-field"><span>设备线—轨道中心距（米）</span><input :value="rail.spacing?.distanceMeters ?? ''" :aria-label="`${rail.name} 设备线与轨道中心距（米）`" class="input" type="number" min="0" max="10000" step="any" :placeholder="rail.spacing ? '' : '先选择设备线'" :disabled="!canEdit || busy || creating || !rail.spacing" @change="changeSpacing(rail.id, 'distanceMeters', $event)" /></label>
         <label class="structure-field"><span>设备线哪一侧</span><select :value="rail.spacing?.side || ''" :aria-label="`${rail.name} 相对设备线方向`" class="input" :disabled="!canEdit || busy || creating || !rail.spacing" @change="changeSpacing(rail.id, 'side', $event)"><option value="" disabled>先选择设备线</option><option value="positive">+Z 侧</option><option value="negative">−Z 侧</option></select></label>
       </div>
+      </details>
       <div class="line-spacing-actions">
         <label class="structure-field layout-units"><span>产线场景单位 / 米</span><input :value="layoutUnits" aria-label="产线场景单位每米" class="input" type="number" min="0" max="100000" step="any" :disabled="!canEdit || busy || creating" @change="changeLayoutUnits($event)" /></label>
         <span class="line-spacing-save-state" role="status">{{ layoutSaving ? '保存中…' : layoutDirty ? '有未保存修改' : '已保存' }}</span>
@@ -182,13 +196,13 @@ defineExpose({ closeCreation: () => { modal.value = ''; modalReturnFocus?.focus?
           <p v-if="!filteredLines.length" class="line-empty">{{ lines.length ? '没有匹配的产线' : '暂无产线' }}</p>
         </template>
         <template v-else>
-          <header><strong>{{ itemLabel }}</strong><button class="btn btn-sm" type="button" :disabled="!canEdit || busy" @click="addItem">+ {{ itemLabel }}</button></header>
+          <header><strong>{{ itemLabel }}</strong><button class="btn btn-sm" type="button" :disabled="!canEdit || busy || !!layout.placementTemplate" @click="addItem">+ {{ itemLabel }}</button></header>
           <div v-for="item in items" :key="item.id" class="structure-row" :class="{ 'is-new': isNewItem(item.id) }" :data-structure-id="item.id" role="group" :aria-label="item.name" tabindex="0" @click="selectItem(item.id)" @keydown="selectItemWithKeyboard(item.id, $event)">
             <span v-if="isNewItem(item.id)" class="new-item-corner"><span>新增</span></span>
             <div class="structure-field structure-name"><span>名称</span><input :value="item.name" :aria-label="`${item.name} 名称`" class="input" :disabled="!canEdit || busy" @click.stop @input="changeItem(item.id, 'name', $event)" /></div>
-            <div class="structure-field"><span>偏移Z（场景坐标）</span><input :value="item.offsetZ" :aria-label="`${item.name} 偏移Z`" type="number" step="0.5" class="input" :disabled="!canEdit || busy || !!item.spacing" @click.stop @input="changeItem(item.id, 'offsetZ', $event)" @change="restoreItemField(item.id, 'offsetZ', $event)" /></div>
+            <div class="structure-field"><span>{{ canMoveLineStructure(layout, popup, item.id) ? '偏移Z（场景坐标）' : '固定基准 / 约束跟随' }}</span><input :value="item.offsetZ" :aria-label="`${item.name} 偏移Z`" type="number" step="0.5" class="input" :disabled="!canEdit || busy || !canMoveLineStructure(layout, popup, item.id)" @click.stop @input="changeItem(item.id, 'offsetZ', $event)" @change="restoreItemField(item.id, 'offsetZ', $event)" /></div>
             <div class="structure-field"><span>长度（场景坐标）</span><input :value="item.length" :aria-label="`${item.name} 长度`" type="number" min="1" step="0.5" class="input" :disabled="!canEdit || busy" @click.stop @input="changeItem(item.id, 'length', $event)" @change="restoreItemField(item.id, 'length', $event)" /></div>
-            <div class="structure-row-actions"><button type="button" class="line-icon-button danger" :aria-label="`删除 ${item.name}`" title="删除" :disabled="!canEdit || busy" @click.stop="removeItem(item.id)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7m4-7v7"/></svg></button></div>
+            <div class="structure-row-actions"><button type="button" class="line-icon-button danger" :aria-label="`删除 ${item.name}`" title="删除" :disabled="!canEdit || busy || !!layout.placementTemplate" @click.stop="removeItem(item.id)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7m4-7v7"/></svg></button></div>
           </div>
           <p v-if="!items.length" class="line-empty">暂无{{ itemLabel }}</p>
         </template>
@@ -216,6 +230,15 @@ defineExpose({ closeCreation: () => { modal.value = ''; modalReturnFocus?.focus?
 
 <style scoped src="../styles/form-controls.css"></style>
 <style scoped>
+.line-placement-templates{flex-basis:100%;background:#fff;border:1px solid #dce5f1;border-radius:12px;padding:14px;box-sizing:border-box}
+.placement-heading{display:flex;align-items:center;gap:12px;font-size:calc(14px * var(--admin-font-scale, 1));color:#29456a}.placement-heading span,.line-placement-templates p{font-size:calc(13px * var(--admin-font-scale, 1));color:#677d98}
+.placement-options{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:12px}
+.placement-option{display:grid;grid-template-columns:88px 1fr;align-items:center;text-align:left;gap:3px 12px;padding:10px 14px;border:1px solid #dce5f1;border-radius:9px;background:#f9fbfe;color:#29456a;cursor:pointer;min-width:0}
+.placement-option.active{background:#eff5ff;border-color:#3479f6;box-shadow:0 0 0 1px #3479f6}.placement-option:disabled{opacity:.55;cursor:not-allowed}.placement-option:focus-visible{outline:2px solid #3479f6;outline-offset:3px}
+.placement-option svg{grid-row:span 2;width:88px;height:42px;fill:none;stroke-linecap:round}.template-lane{stroke:#4c83d5;stroke-width:5}.template-rail{stroke:#b18a4b;stroke-width:2}
+.placement-option span{font-size:calc(14px * var(--admin-font-scale, 1));font-weight:600}.placement-option small{font-size:calc(13px * var(--admin-font-scale, 1));color:#71849e}.line-placement-templates p{margin:12px 0 0;line-height:1.7}
+.legacy-spacing-settings{width:100%}.legacy-spacing-settings summary{font-size:12px;color:#71849e;cursor:pointer;margin:4px 0 12px}
+@media(max-width:760px){.placement-option{grid-template-columns:1fr;padding:9px}.placement-option svg{grid-row:auto;width:100%;max-width:88px}.placement-heading{flex-wrap:wrap}}
 .line-config-toolbar { display:flex; align-items:center; flex-wrap:wrap; gap:10px; padding:10px 16px; color:#52687d; font-size:calc(13px * var(--admin-font-scale,1)); }
 .line-picker-trigger { display:flex; align-items:center; gap:12px; width:clamp(220px,24vw,380px); min-height:36px; padding:7px 10px; border:1px solid #ccd5e2; border-radius:8px; background:#fff; color:#344054; font:inherit; text-align:left; cursor:pointer; }
 .line-picker-trigger span { min-width:0; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }

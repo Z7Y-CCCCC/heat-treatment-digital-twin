@@ -111,12 +111,13 @@ async function socket(origin, role, messages) {
     check('engineer preview forwards full config but never persists it', () => assert.deepEqual(received.payload.inspectionConfig, draft));
     const unchanged = (await requestJson(`${origin}/api/models`)).find(model => model.id === modelId);
     check('preview leaves saved model metadata unchanged', () => assert.equal(unchanged.metadata, result.model.metadata));
-    for (const inspection of [{ command: 'stage', stage: 'exploded' }, { command: 'stage', stage: 'solid' }, { command: 'select', partId: saved.parts[0].id }, { command: 'progress', progress: .37 }, { command: 'isolate', enabled: true }, { command: 'labels', enabled: false }, { command: 'clear' }, { command: 'pause' }, { command: 'resume' }]) {
+    for (const inspection of [{ command: 'stage', stage: 'exploded' }, { command: 'stage', stage: 'solid' }, { command: 'select', partId: saved.parts[0].id }, { command: 'progress', progress: .37 }, { command: 'isolate', enabled: true }, { command: 'labels', enabled: false }, { command: 'clear' }, { command: 'pause' }, { command: 'resume' }, {command:'shell_transparency',enabled:true}, {command:'shell_transparency',enabled:false}]) {
         const response = await testFetch(`${origin}/api/native-preview/navigate`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'inspection', focus: { mode: 'device', deviceId: 'fixture-device' }, inspection }) });
         assert.equal(response.status, 200);
     }
-    await waitUntil(() => unityMessages.filter(message => message.payload?.action === 'inspection').length === 9, 5000, 'view-only commands');
-    checks.push('nine viewing-only inspection commands reach Unity while admin is locked');
+    await waitUntil(() => unityMessages.filter(message => message.payload?.action === 'inspection').length === 11, 5000, 'view-only commands');
+    assert.deepEqual(unityMessages.filter(message=>message.payload?.inspection?.command==='shell_transparency').map(message=>message.payload.inspection.enabled),[true,false]);
+    checks.push('eleven viewing-only inspection commands including shell transparency reach Unity while admin is locked');
     const explodedView = await testFetch(`${origin}/api/native-preview/navigate`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'view', viewId: 'device_exploded', focus: { mode: 'device', deviceId: 'fixture-device', inspectionStage: 'exploded' } }) });
     check('device exploded view forwards its inspection stage to Unity', () => assert.equal(explodedView.status, 200));
     const explodedMessage = await waitUntil(() => unityMessages.find(message => message.type === 'native_scene_preview' && message.payload?.action === 'view' && message.payload?.focus?.inspectionStage === 'exploded'), 5000, 'exploded view stage');
@@ -131,12 +132,12 @@ async function socket(origin, role, messages) {
     }
     checks.push('solid and inspection back commands preserve stale-device/stage guards without accepting a client-authored entry');
     const count = unityMessages.filter(message => message.type === 'native_scene_preview').length;
-    for (const inspection of [{ command: 'delete' }, { command: 'stage', stage: 'bad' }, { command: 'progress', progress: -1 }, { command: 'isolate', enabled: 'false' }, { command: 'select' }]) {
+    for (const inspection of [{ command: 'delete' }, { command: 'stage', stage: 'bad' }, { command: 'progress', progress: -1 }, { command: 'isolate', enabled: 'false' }, { command: 'select' }, {command:'shell_transparency',enabled:'true'}, {command:'shell_transparency'}]) {
         const response = await testFetch(`${origin}/api/native-preview/navigate`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'inspection', focus: { deviceId: 'fixture-device' }, inspection }) });
         assert.equal(response.status, 400);
     }
     check('invalid commands fail without broadcasting', () => assert.equal(unityMessages.filter(message => message.type === 'native_scene_preview').length, count));
-    const context = { viewMode: 'device', viewId: 'device_exploded', deviceId: 'fixture-device', inspectionEnabled: true, inspectionStage: 'exploded', inspectionProgress: .37,
+    const context = { viewMode: 'device', viewId: 'device_exploded', deviceId: 'fixture-device', inspectionEnabled: true, shellTransparencyAvailable:true, shellTransparent:true, shellControlAnchor:{x:.6,y:.2,visible:true}, inspectionStage: 'exploded', inspectionProgress: .37,
         inspectionAnimating: true, inspectionPhase: 'exploding', inspectionIsolated: false, inspectionLabelsEnabled: true, inspectionLeaderLines: true,
         inspectionHoveredPartId: 'part-1', inspectionIssues: [{ code: 'note', message: '结构示意', severity: 'warning' }],
         inspectionParts: [{ id: 'part-1', name: '泵组', group: 'drive', description: 'configured', pointIds: ['p1'], pointKeys: ['motors.speed'], selected: true,
@@ -147,10 +148,12 @@ async function socket(origin, role, messages) {
         assert.deepEqual(frame.payload.inspectionParts, context.inspectionParts);
         assert.equal(frame.payload.inspectionIssues[0].message, '结构示意');
         assert.equal(frame.payload.inspectionPhase, 'exploding');
+        assert.equal(frame.payload.shellTransparencyAvailable,true);assert.equal(frame.payload.shellTransparent,true);
+        assert.deepEqual(frame.payload.shellControlAnchor,{x:.6,y:.2,visible:true});
     });
     unity.send(JSON.stringify({ type: 'dashboard_context', payload: { ...context, viewMode: 'factory', viewId: 'factory_overview' } }));
     const exited = await waitUntil(() => webMessages.find(message => message.payload?.viewMode === 'factory'), 5000, 'inspection exit');
-    check('leaving device view clears inspection and selected-part state', () => { assert.equal(exited.payload.inspectionEnabled, false); assert.deepEqual(exited.payload.inspectionParts, []); assert.equal(exited.payload.partId, ''); });
+    check('leaving device view clears inspection and selected-part state', () => { assert.equal(exited.payload.inspectionEnabled, false); assert.equal(exited.payload.shellTransparencyAvailable,false); assert.equal(exited.payload.shellTransparent,false); assert.deepEqual(exited.payload.inspectionParts, []); assert.equal(exited.payload.partId, ''); });
     const evidence = { success: true, checks, origin, directory };
     fs.writeFileSync(path.join(directory, 'result.json'), JSON.stringify(evidence, null, 2));
     console.log(JSON.stringify(evidence, null, 2));

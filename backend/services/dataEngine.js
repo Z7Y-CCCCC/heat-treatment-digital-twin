@@ -152,6 +152,8 @@ class DataEngine {
         const mode = source._normalizeMode(local?.value ?? (await db.get('SELECT value FROM settings WHERE `key`=?', ['data_mode']))?.value);
         if (Number(factory?.collection_enabled ?? 1) !== 0 && source.currentMode === mode && source.plcReader) {
             await source.plcReader.reloadConfiguration(); source.configLoadedAt = Date.now();
+        } else if (Number(factory?.collection_enabled ?? 1) !== 0 && source.currentMode === mode && mode === 'simulation' && source.simulator) {
+            await source.simulator.reloadConfiguration(); source.configLoadedAt = Date.now();
         } else await source.start({ ownFactoryOnly: true });
         const present = source.plcReader ? new Set(source.plcReader.deviceStatus.keys()) : new Set((source.simulator?.devices || []).map(d => d.id));
         for (const key of source.deviceSnapshots.keys()) if (!present.has(key)) source.deviceSnapshots.delete(key);
@@ -266,7 +268,7 @@ class DataEngine {
             return { ...this.plcReader.getPointRuntimeValues(deviceId, points), sourceMode: this.currentMode };
         }
 
-        const deviceStatus = (this.plcStatus?.devices || []).find(device => device.deviceId === deviceId) || null;
+        const deviceStatus = (this.currentMode === 'simulation' ? this._simulationDeviceStatuses(Date.now()) : this.plcStatus?.devices || []).find(device => device.deviceId === deviceId) || null;
         const snapshot = this.deviceSnapshots?.get(deviceId);
         return {
             sourceMode: this.currentMode,
@@ -274,20 +276,31 @@ class DataEngine {
             snapshotTimestamp: snapshot?.timestamp || null,
             points: points.map(point => {
                 const category = point.category || 'analog', field = point.value_role || point.name;
-                const value = snapshot?.[category]?.[field] ?? null;
-                const timestamp = new Date(snapshot?.timestamp || 0).getTime();
-                const stale = !timestamp || Date.now() - timestamp > Math.max(6000, Number(point.sample_interval_ms || 1000) * 3);
+                const reading = this.currentMode === 'simulation' ? snapshot?.simulationPoints?.[String(point.id)] : null;
+                const value = this.currentMode === 'simulation' && snapshot?.simulationPoints
+                    ? reading?.value ?? null : snapshot?.[category]?.[field] ?? null;
+                const timestamp = new Date(reading?.timestamp || snapshot?.timestamp || 0).getTime();
+                const sampleMs = this.currentMode === 'simulation' ? Math.max(Number(point.sample_interval_ms || 1000), this.simulator?.pollIntervalMs || 0) : Number(point.sample_interval_ms || 1000);
+                const stale = !timestamp || Date.now() - timestamp > Math.max(6000, sampleMs * 3);
                 return ({
                 ...point,
                 category_resolved: point.category || 'analog',
                 field_name: point.value_role || point.name,
                 plc_address: point.plc_tag || '',
                 value,
-                quality: value === null || snapshot?.status?.online === false ? 'bad' : stale ? 'stale' : snapshot?.quality?.[category]?.[field] || deviceStatus?.quality || 'good',
-                lastReadAt: snapshot?.timestamp || null,
+                quality: value === null || snapshot?.status?.online === false ? 'bad' : stale ? 'stale' : reading?.quality || snapshot?.quality?.[category]?.[field] || deviceStatus?.quality || 'good',
+                lastReadAt: value === null ? null : reading?.timestamp || snapshot?.timestamp || null,
+                simulationManual: this.currentMode === 'simulation' && reading?.manual === true,
+                simulationOverriddenAt: reading?.overriddenAt || null,
                 sourceMode: this.currentMode
             }); })
         };
+    }
+
+    setSimulationPointValue(point, value, reset = false, factoryId = '') {
+        const id = String(factoryId || this.activeFactoryId || ''), source = id === this.activeFactoryId ? this : this.factoryEngines.get(id);
+        if (!source || source.currentMode !== 'simulation' || !source.simulator || source.simulator.stopped) throw new Error('仅运行中的模拟模式允许修改模拟值；不会写入 PLC');
+        return source.simulator.setPointValue(point, value, reset);
     }
 
     _normalizeMode(mode) {

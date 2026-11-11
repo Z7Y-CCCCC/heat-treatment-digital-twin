@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createRequire } from 'node:module'
-import { createTooltipTemplate, normalizeTooltipTemplates, resolveTooltipTemplate, tooltipDocumentWidgets, tooltipBackgroundWidget, tooltipDynamicBinding, restoreTooltipDynamicBinding, isTooltipMetadataPath, MAX_TOOLTIP_TEMPLATES, MAX_TOOLTIP_WIDGETS } from '../../shared/tooltipTemplates.mjs'
+import { createTooltipTemplate, normalizeTooltipTemplates, resolveTooltipTemplate, tooltipDocumentWidgets, tooltipBackgroundWidget, tooltipDynamicBinding, restoreTooltipDynamicBinding, isTooltipMetadataPath, cleanLegacyPartTooltip, MAX_TOOLTIP_TEMPLATES, MAX_TOOLTIP_WIDGETS } from '../../shared/tooltipTemplates.mjs'
 import { playbackSelection } from '../../shared/widgetPlayback.mjs'
 import { normalizeDashboardDocument } from '../src/runtime/dashboardSchema.js'
 import { exportDashboardTemplate, importDashboardTemplate, dashboardTemplateReferences, rebindDashboardTemplate } from '../src/runtime/dashboardTemplate.js'
@@ -325,19 +325,74 @@ test('dynamic provenance survives ID/title changes, copies, frontend/backend nor
   assert.equal(restoreTooltipDynamicBinding(residual).data.mode, 'runtime')
 })
 
-test('part association metadata stays dynamic while device fixed description and custom labels remain editable', () => {
+test('part identity and point metadata stay dynamic without a default description, while device copy remains editable', () => {
   const part = createTooltipTemplate('part')
-  for (const key of ['name', 'group', 'description', 'hint', 'point_0_label', 'point_0_value']) {
+  assert.equal(part.widgets.some(widget=>widget.data.path==='hover.part.description'),false)
+  for (const key of ['name', 'group', 'hint', 'point_0_label', 'point_0_value']) {
     const widget = part.widgets.find(row => row.id === `${part.id}_${key}`)
     delete widget.dynamicBinding; delete widget.dynamicField; widget.data = { mode: 'static' }; widget.content.text = '旧部件'
   }
   const normalized = normalizeTooltipTemplates({ templates: [part] }).templates.find(row => row.kind === 'part')
-  for (const key of ['name', 'group', 'description', 'hint', 'point_0_label', 'point_0_value']) assert.equal(normalized.widgets.find(row => row.id === `${part.id}_${key}`).data.mode, 'runtime')
+  for (const key of ['name', 'group', 'hint', 'point_0_label', 'point_0_value']) assert.equal(normalized.widgets.find(row => row.id === `${part.id}_${key}`).data.mode, 'runtime')
   assert.equal(normalized.widgets.find(row => row.id === `${part.id}_title`).data.mode, 'static')
   const device = createTooltipTemplate('device', 'tooltip_custom', { description: '固定补充说明' })
   const result = normalizeTooltipTemplates({ templates: [device] }).templates[0]
   assert.equal(result.widgets.find(row => row.id === `${device.id}_description`).data.mode, 'static')
   assert.equal(result.widgets.find(row => row.id === `${device.id}_description`).content.text, '固定补充说明')
+})
+
+function legacyPartTooltip(id='tooltip_part') {
+  const template=createTooltipTemplate('part',id)
+  delete template.partDescriptionCleanupVersion
+  template.canvas.height+=50
+  for(const widget of template.widgets)if(widget.frame.y>=84)widget.frame.y+=50
+  tooltipBackgroundWidget(template).frame.height=template.canvas.height
+  const description=JSON.parse(JSON.stringify(template.widgets.find(widget=>widget.id===`${id}_name`)))
+  Object.assign(description,{id:`${id}_description`,title:'部件说明',frame:{x:20,y:84,width:240,height:42,rotation:0},dynamicField:'hover.part.description'})
+  description.data.path='hover.part.description';description.dynamicBinding.path='hover.part.description'
+  template.widgets.push(description)
+  return template
+}
+
+test('all saved part tooltip templates lose the generated description once, compact the gap and keep real data bindings',()=>{
+ const templates=[legacyPartTooltip(),legacyPartTooltip('copied_part')]
+ const frozen=templates[1].widgets.find(widget=>widget.title==='部件说明')
+ frozen.id='copied_part_99';frozen.data={mode:'static'};frozen.content.text='原 GLB 总成拆解展示；保留节点内部相对位置，不代表实际检修顺序。'
+ const original=JSON.stringify(templates)
+ const raw={tooltipTemplates:{templates,defaults:{part:'tooltip_part'}}}
+ for(const normalize of [normalizeDashboardDocument,normalizeDocument]){
+  const document=normalize(raw)
+  for(const template of document.tooltipTemplates.templates.filter(template=>template.kind==='part')){
+   assert.equal(template.widgets.some(widget=>widget.title==='部件说明'),false)
+   assert.equal(template.widgets.some(widget=>widget.data.path==='hover.part.description'),false)
+   assert.equal(template.widgets.find(widget=>widget.id===`${template.id}_point_0_value`).frame.y,88)
+   assert.equal(template.canvas.height,224)
+   assert.equal(tooltipBackgroundWidget(template).frame.height,224)
+   assert.equal(template.widgets.find(widget=>widget.id===`${template.id}_name`).data.path,'hover.part.name')
+   assert.equal(template.widgets.find(widget=>widget.id===`${template.id}_point_0_value`).data.path,'hover.part.points.0.text')
+  }
+  assert.deepEqual(normalize(document).tooltipTemplates,document.tooltipTemplates)
+ }
+ assert.equal(JSON.stringify(templates),original,'cleanup must not mutate stored model/template inputs')
+ const resolved=resolveTooltipTemplate(raw,{metadata:{}},'part')
+ assert.equal(resolved.widgets.some(widget=>widget.title==='部件说明'),false,'old published snapshots are clean before being edited or saved')
+})
+
+test('part description cleanup preserves overlapping authored layouts, other captions and deliberately reconfigured fields',()=>{
+ const source=legacyPartTooltip(),caption=JSON.parse(JSON.stringify(source.widgets.find(widget=>widget.title==='部件分组')))
+ caption.id='authored-caption';caption.title='自定标题';caption.frame.y=100;caption.data={mode:'static'};delete caption.dynamicField;delete caption.dynamicBinding
+ caption.content={text:'用户自定说明'};source.widgets.push(caption)
+ const cleaned=cleanLegacyPartTooltip(source)
+ assert.equal(cleaned.widgets.find(widget=>widget.id===caption.id).content.text,'用户自定说明')
+ assert.equal(cleaned.widgets.find(widget=>widget.id==='tooltip_part_point_0_value').frame.y,138)
+ const edited=legacyPartTooltip(),description=edited.widgets.find(widget=>widget.title==='部件说明')
+ description.data={mode:'plc',pointId:'real-reading'};description.content.dataSourceConfigured=true
+ assert.equal(cleanLegacyPartTooltip(edited).widgets.find(widget=>widget.id===description.id).data.pointId,'real-reading')
+ assert.deepEqual(cleanLegacyPartTooltip(cleaned),cleaned)
+ const duplicate=legacyPartTooltip(),name=duplicate.widgets.find(widget=>widget.title==='部件名称')
+ name.id='tooltip_part_description'
+ assert.ok(cleanLegacyPartTooltip(duplicate).widgets.some(widget=>widget.title==='部件名称'),'duplicate IDs cannot delete an unrelated name/data field')
+ assert.doesNotThrow(()=>normalizeTooltipTemplates({templates:[{kind:'part',widgets:{}}]}))
 })
 
 test('external and numeric bindings keep authored data source/format, and their remembered source cannot be frozen by a mode toggle', () => {

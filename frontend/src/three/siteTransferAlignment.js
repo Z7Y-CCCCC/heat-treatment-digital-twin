@@ -182,6 +182,10 @@ export function siteCarrierInitialPosition(path, savedPosition) {
 export function assertSiteTransferDriver(row, rig, asset) {
   const config = parse(row.instance_config), link = config.animationBindings?.transferLink
   if (!link?.enabled) return
+  if(link.cycle?.enabled){
+    if(row.model_type!=='cad_transfer_cart_101300'||!rig.oppositeFeedRoot||asset.getObjectsByProperty('name','opposite__cad_transfer_cart_v1_feed_carriage').length!==1)throw error(row,'缺少与 Unity 同源的双侧送料机构')
+    return
+  }
   const model = row.capabilities?.model || {}, metadata = parse(model.metadata)
   let actionId, nodeName
   if (row.model_type === 'cad_transfer_cart_101300') {

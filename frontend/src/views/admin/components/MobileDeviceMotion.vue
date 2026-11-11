@@ -96,6 +96,7 @@ function defaultMotion(device = {}) {
         enabled: false,
         currentPositionPointId: '',
         startActionPointId: '',
+        arrivalPositionPointId: '',
         valueMode: 'station',
         stationInputMeaning: '',
         valueMin: 0,
@@ -150,6 +151,7 @@ function normalizeMotion(device) {
         enabled: source.enabled === true,
         currentPositionPointId: pointIdOr(source.currentPositionPointId ?? source.current_position_point_id),
         startActionPointId: pointIdOr(source.startActionPointId ?? source.start_action_point_id),
+        arrivalPositionPointId: pointIdOr(source.arrivalPositionPointId),
         valueMode: ['normalized', 'range', 'station'].includes(source.valueMode) ? source.valueMode : fallback.valueMode,
         stationInputMeaning: ['current', 'target', 'last-confirmed'].includes(source.stationInputMeaning) ? source.stationInputMeaning : '',
         valueMin: numberOr(source.valueMin ?? source.value_min, fallback.valueMin),
@@ -351,10 +353,11 @@ const lastConfirmedMotion = computed(() => isLastConfirmedMotion(motion.value))
 const directStationFeedback = computed(() => ['current', 'last-confirmed'].includes(motion.value.stationInputMeaning))
 const actionPoints = computed(() => dataPoints.value.filter(point => (
     String(point.access_type || 'READ').toUpperCase() === 'READ'
-    && (!lastConfirmedMotion.value || isActualMovingFeedback(point, deviceDetail.value?.id))
+    && (!(lastConfirmedMotion.value || motion.value.arrivalPositionPointId) || isActualMovingFeedback(point, deviceDetail.value?.id))
 )))
 
 function changeStationInputMeaning() {
+    if (motion.value.stationInputMeaning !== 'target') motion.value.arrivalPositionPointId = ''
     if (!lastConfirmedMotion.value) return
     // This is an explicit user selection, not a silent rewrite on reopening.
     // Keep the old signal selection visible so a command cannot masquerade as
@@ -408,6 +411,7 @@ function motionDraftPayload() {
             enabled: motion.value.enabled === true,
             currentPositionPointId: pointIdOr(motion.value.currentPositionPointId),
             startActionPointId: pointIdOr(motion.value.startActionPointId),
+            ...(motion.value.arrivalPositionPointId ? { arrivalPositionPointId: pointIdOr(motion.value.arrivalPositionPointId) } : {}),
             valueMode: ['range', 'station'].includes(motion.value.valueMode) ? motion.value.valueMode : 'normalized',
             ...(['current', 'target', 'last-confirmed'].includes(motion.value.stationInputMeaning) ? { stationInputMeaning: motion.value.stationInputMeaning } : {}),
             valueMin: numberOr(motion.value.valueMin), valueMax: numberOr(motion.value.valueMax, 100),
@@ -426,7 +430,7 @@ function motionDraftPayload() {
         }
     }
     const selectedIds = new Set([
-        motion.value.currentPositionPointId, motion.value.startActionPointId
+        motion.value.currentPositionPointId, motion.value.startActionPointId, motion.value.arrivalPositionPointId
     ].filter(Boolean).map(String))
     return {
         deviceId: detail.id,
@@ -696,6 +700,12 @@ async function saveMotion() {
         errorMessage.value = '启用移动同步时，请先绑定“当前位置”数值点位'
         return
     }
+    if (motion.value.arrivalPositionPointId && (motion.value.stationInputMeaning !== 'target' || motion.value.valueMode !== 'station'
+        || motion.value.arrivalPositionPointId === motion.value.currentPositionPointId
+        || !actionPoints.value.some(point => String(point.id) === motion.value.startActionPointId && isActualMovingFeedback(point, deviceDetail.value?.id)))) {
+        errorMessage.value = '独立到位反馈需要目标工位模式、不同的到位数值点位，以及本设备的实际移动 BOOL 反馈'
+        return
+    }
     if (motion.value.valueMode === 'range' && motion.value.valueMax <= motion.value.valueMin) {
         errorMessage.value = '输入范围的最大值必须大于最小值'
         return
@@ -762,13 +772,13 @@ async function saveMotion() {
         const detail = deviceDetail.value
         const draft = motionDraftPayload()
         if (!draft) throw new Error('设备运动配置尚未就绪')
-        const selectedPointIds = [motion.value.currentPositionPointId, motion.value.startActionPointId].filter(Boolean)
+        const selectedPointIds = [motion.value.currentPositionPointId, motion.value.startActionPointId, motion.value.arrivalPositionPointId].filter(Boolean)
         const result = await adminApi.updateDeviceMovement(detail.id, draft.devicePayload.instance_config.movement, selectedPointIds, draft.expectedMovement)
         if (result?.error) throw new Error(result.error)
         if (!result?.success) throw new Error('后端没有返回成功状态')
 
         if (draft.pointRows.length) {
-            const selectedIds = new Set([motion.value.currentPositionPointId, motion.value.startActionPointId].filter(Boolean).map(String))
+            const selectedIds = new Set([motion.value.currentPositionPointId, motion.value.startActionPointId, motion.value.arrivalPositionPointId].filter(Boolean).map(String))
             dataPoints.value = dataPoints.value.map(point => selectedIds.has(String(point.id))
                 ? { ...point, sample_interval_ms: 100 }
                 : point)
@@ -850,7 +860,7 @@ async function saveMotion() {
                         <small>{{ lastConfirmedMotion ? '编号只代表最后到位工位；运动中保持上一站，不推测途中位置或当前停靠状态。' : '例如：PLC 当前值为 1，小车就停在 1 号工位；变为 2，就移动到 2 号工位。' }}</small>
                     </label>
                     <label>
-                        <span class="motion-field-label">{{ lastConfirmedMotion ? '实际移动状态反馈（可选，仅 BOOL）' : '移动开始信号（可选）' }}</span>
+                        <span class="motion-field-label">{{ lastConfirmedMotion || motion.arrivalPositionPointId ? '实际移动状态反馈（仅 BOOL）' : '移动开始信号（可选）' }}</span>
                         <select v-model="motion.startActionPointId" class="input" aria-label="移动开始或实际移动反馈点位" v-permission="{ page: 'mobile-devices', action: 'edit' }">
                             <option value="">{{ lastConfirmedMotion ? '不绑定（不确认当前停靠）' : '不绑定（收到编号就移动）' }}</option>
                             <option v-if="motion.startActionPointId && !actionPoints.some(point => String(point.id) === motion.startActionPointId)" :value="motion.startActionPointId">已保存点位 {{ motion.startActionPointId }}（{{ lastConfirmedMotion ? '非本设备只读 BOOL 实际移动反馈，请解除绑定或重新选择' : '只读采集点位无效，请重新选择' }}）</option>
@@ -858,7 +868,16 @@ async function saveMotion() {
                                 {{ pointLabel(point) }}
                             </option>
                         </select>
-                        <small>{{ lastConfirmedMotion ? '仅选择实际移动状态：true 表示正在移动，false 才能辅助确认停靠；未绑定时不确认停靠。' : '如果现场没有单独的启动信号，保持“不绑定”即可。' }}</small>
+                        <small>{{ lastConfirmedMotion || motion.arrivalPositionPointId ? '仅选择实际移动状态：true 表示正在移动，false 才能辅助确认停靠；未绑定时不确认停靠。' : '如果现场没有单独的启动信号，保持“不绑定”即可。' }}</small>
+                    </label>
+                    <label v-if="motion.valueMode === 'station' && motion.stationInputMeaning === 'target'">
+                        <span class="motion-field-label">独立到位工位反馈（可选）</span>
+                        <select v-model="motion.arrivalPositionPointId" class="input" aria-label="独立到位工位反馈点位" v-permission="{ page: 'mobile-devices', action: 'edit' }">
+                            <option value="">不绑定（仅估算，不确认停靠与交接）</option>
+                            <option v-if="motion.arrivalPositionPointId && !numericPoints.some(point => String(point.id) === motion.arrivalPositionPointId)" :value="motion.arrivalPositionPointId">已保存点位 {{ motion.arrivalPositionPointId }}（类型或归属无效）</option>
+                            <option v-for="point in numericPoints.filter(point => String(point.id) !== motion.currentPositionPointId)" :key="point.id" :value="String(point.id)">{{ pointLabel(point) }}</option>
+                        </select>
+                        <small>保留目标工位＋速度/加速度估算途中画面；仅当此到位编号和实际移动 BOOL 均有效、且 BOOL 为 false 时，确认停靠。估算完成不等于现场到位。</small>
                     </label>
                     <label>数据过期阈值（毫秒）
                         <input v-model.number="motion.staleMs" class="input" type="number" min="1000" max="60000" step="100" aria-label="移动数据过期阈值（毫秒）" v-permission="{ page: 'mobile-devices', action: 'edit' }" />

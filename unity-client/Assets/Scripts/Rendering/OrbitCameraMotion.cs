@@ -6,6 +6,16 @@ namespace HeatTreatment.DigitalTwin.Rendering
     // takes the shortest route; a user's +240 degree drag must never become -120.
     public static class OrbitCameraMotion
     {
+        // Unity supplies wheel detents, including fractional high-resolution
+        // samples. Never round them or multiply by frame time: both lose input.
+        public static float WheelDistance(float distance, float detents, float sensitivity, float minimum, float maximum)
+        {
+            if (float.IsNaN(detents) || float.IsInfinity(detents)
+                || float.IsNaN(sensitivity) || float.IsInfinity(sensitivity)) return distance;
+            var exponent = Math.Max(-1.5d, Math.Min(1.5d, -detents * Math.Max(0f, sensitivity)));
+            return (float)Math.Max(minimum, Math.Min(maximum, distance * Math.Exp(exponent)));
+        }
+
         public static float NearestYaw(float current, float authored)
         {
             var delta = authored - current;

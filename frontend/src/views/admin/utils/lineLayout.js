@@ -58,6 +58,7 @@ export function normalizeLineLayout(value) {
         placementPending: source.placementPending === true,
         transform: normalizeSpatialTransform(source.transform),
         flowDirection,
+        ...(source.placementTemplate !== undefined ? { placementTemplate: source.placementTemplate } : {}),
         ...(Object.prototype.hasOwnProperty.call(source, 'sceneUnitsPerMeter') ? { sceneUnitsPerMeter: lineSceneUnitsPerMeter(source) } : {}),
         lanes,
         rails

@@ -9,6 +9,8 @@ import QualityCapsule from '../components/QualityCapsule.vue'
 import QualityNotice from '../components/QualityNotice.vue'
 import QuickCastPanel from '../components/QuickCastPanel.vue'
 import { useNativeQuality } from '../runtime/nativeQuality.js'
+import EdgeFoldTab from '../components/EdgeFoldTab.vue'
+import { useEdgeReveal } from '../runtime/useEdgeReveal.js'
 const route=useRoute(),router=useRouter()
 const {qualityState,setQuality,queryQuality}=useNativeQuality()
 const adminSurface=computed(()=>isNativeUnitySurface(route.query.embedded,window.chrome?.webview) && route.query.surface==='admin')
@@ -27,8 +29,9 @@ async function switchAccount(account){if(account.slotId===adminSession.accountSl
 async function signOut(){accountBusy.value=true;accountError.value='';accountNotice.value='';try{await logoutCurrentAdminAccount();accountPasswordMode.value=false;accountAddOpen.value=false;await loadAccountSessions();accountNotice.value=accountSessions.value.length?'当前账户已退出，可从下方切换到其他已登录账户':'当前账户已退出'}catch(error){accountError.value=error.message}finally{accountBusy.value=false}}
 async function changeOwnPassword(){accountBusy.value=true;accountError.value='';try{await changeAdminPassword(accountCurrentPassword.value,accountNewPassword.value);accountCurrentPassword.value='';accountNewPassword.value='';accountPasswordMode.value=false;await loadAccountSessions();accountNotice.value='密码已更新，其他会话已退出'}catch(error){accountError.value=error.message}finally{accountBusy.value=false}}
 
-const dock=ref(null), menu=ref(null), hidden=ref(false)
-let timer=0, hovering=false, motionFrame=0, dockObserver
+const dock=ref(null), menu=ref(null), accountTrigger=ref(null)
+const {hidden,reveal,enter,leave,arm}=useEdgeReveal({element:dock,keepOpen:()=>accountOpen.value||accountBusy.value})
+let motionFrame=0, dockObserver
 function geometry(){window.dispatchEvent(new Event('account-dock-geometry'))}
 function trackMotion(){
   cancelAnimationFrame(motionFrame)
@@ -36,29 +39,21 @@ function trackMotion(){
   function frame(){geometry();if(performance.now()<until)motionFrame=requestAnimationFrame(frame)}
   motionFrame=requestAnimationFrame(frame)
 }
-function arm(){
-  clearTimeout(timer)
-  timer=setTimeout(()=>{
-    if(accountOpen.value || accountBusy.value || hovering || dock.value?.querySelector(':focus-visible,input:focus'))return
-    hidden.value=true
-  },2500)
-}
-function reveal(){hidden.value=false;arm()}
-function enter(){hovering=true;reveal()}
-function leave(){hovering=false;arm()}
+async function revealTab(focus=false){reveal();await nextTick();if(focus)accountTrigger.value?.focus({preventScroll:true})}
 function escape(event){if(event.key==='Escape' && accountOpen.value){if(castingOpen.value)castingOpen.value=false;else accountOpen.value=false;event.preventDefault();event.stopPropagation();arm()}}
 watch(()=>qualityState.notice,()=>nextTick(trackMotion))
 watch(menu,(element,previous)=>{if(previous)dockObserver?.unobserve(previous);if(element)dockObserver?.observe(element);geometry()})
 watch([hidden,accountOpen,castingOpen],()=>{nextTick(trackMotion);if(!accountOpen.value){castingOpen.value=false;arm()}})
 watch(()=>route.path,()=>{accountOpen.value=false;accountAddPassword.value='';accountCurrentPassword.value='';accountNewPassword.value='';hidden.value=false;arm();nextTick(refreshAdminSession)})
 onMounted(()=>{void refreshAdminSession();arm();window.addEventListener('keydown',escape,true);dockObserver=new ResizeObserver(geometry);if(dock.value)dockObserver.observe(dock.value);geometry()})
-onUnmounted(()=>{dockObserver?.disconnect();clearTimeout(timer);cancelAnimationFrame(motionFrame);window.removeEventListener('keydown',escape,true);geometry()})
+onUnmounted(()=>{dockObserver?.disconnect();cancelAnimationFrame(motionFrame);window.removeEventListener('keydown',escape,true);geometry()})
 </script>
 
 <template>
 <QualityNotice :state="qualityState" />
 <div ref="dock" class="account-dock" :class="{'is-hidden':hidden}" data-overlay-hit="true" data-account-hit="true" aria-label="右上角账户入口" @pointerenter="enter" @pointermove="reveal" @pointerleave="leave" @focusin="reveal" @focusout="arm">
-    <button class="group-user" type="button" :aria-label="`${accessStatus}，打开账户菜单`" :aria-expanded="accountOpen" @click="toggleAccount"><span class="group-user-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm-7 8a7 7 0 0 1 14 0" /></svg></span><span><strong>{{ adminSession.user?.displayName || (adminSession.configured ? '账户':'后台账户') }}</strong><small>{{ adminSession.displayAuthenticated ? accessStatus : '点击登录' }}</small></span><i class="group-user-state" :class="{verified:adminSession.displayAuthenticated}" aria-hidden="true"></i></button>
+    <EdgeFoldTab class="account-fold" :visible="hidden" label="展开账户入口" @reveal="revealTab" />
+    <button ref="accountTrigger" class="group-user" type="button" :inert="hidden" :aria-hidden="hidden || undefined" :aria-label="`${accessStatus}，打开账户菜单`" :aria-expanded="accountOpen" @click="toggleAccount"><span class="group-user-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm-7 8a7 7 0 0 1 14 0" /></svg></span><span><strong>{{ adminSession.user?.displayName || (adminSession.configured ? '账户':'后台账户') }}</strong><small>{{ adminSession.displayAuthenticated ? accessStatus : '点击登录' }}</small></span><i class="group-user-state" :class="{verified:adminSession.displayAuthenticated}" aria-hidden="true"></i></button>
     <div v-if="accountOpen" ref="menu" class="group-account-menu" data-overlay-hit="true" data-account-hit="true" role="region" aria-label="账户设置">
       <QuickCastPanel v-if="castingOpen" @back="castingOpen=false" />
       <template v-else>
@@ -100,6 +95,7 @@ onUnmounted(()=>{dockObserver?.disconnect();clearTimeout(timer);cancelAnimationF
 .group-account-action{display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;margin:7px 0 0;padding:10px 11px;border:1px solid rgba(224,222,214,.13);border-radius:9px;background:rgba(225,223,215,.065);color:#e8e7e1;font:500 11px/1.25 var(--hud-font-text,'Inter','Noto Sans SC',sans-serif);text-align:left;cursor:pointer;transition:background .16s ease,border-color .16s ease}.group-account-action:hover:not(:disabled){border-color:rgba(224,222,214,.26);background:rgba(225,223,215,.105)}.group-account-action>span{color:#b8c8bd;font-size:14px}.group-account-menu .group-account-primary{border-color:rgba(205,213,204,.27);background:linear-gradient(110deg,rgba(205,213,204,.17),rgba(205,213,204,.09));color:#f0efea}.group-account-menu .group-account-primary:hover:not(:disabled){border-color:rgba(215,223,214,.43);background:rgba(205,213,204,.19)}.group-account-form{display:grid;gap:9px;margin:12px 0 4px;padding:12px;border:1px solid rgba(224,222,214,.11);border-radius:10px;background:rgba(16,16,18,.12)}.group-account-form label{display:grid;gap:5px;color:#bcbab4;font-size:9px}.group-account-form input{box-sizing:border-box;width:100%;padding:9px 10px;border:1px solid rgba(224,222,214,.19);border-radius:7px;background:rgba(17,17,19,.28);color:#f0efeb;font:inherit;font-size:11px}.group-account-form input:focus{border-color:rgba(205,213,204,.48);outline:0;box-shadow:0 0 0 2px rgba(205,213,204,.08)}.group-account-form .group-account-primary{margin-top:2px;text-align:left}.group-account-form .group-account-primary>span{margin-left:auto}
 .group-account-menu .group-account-exit{margin-top:12px;color:#ddc5bd}.group-account-menu button:disabled{opacity:.56;cursor:wait}.group-account-message{margin:11px 2px 0;color:#b8d4c1;font-size:10px;line-height:1.5}.group-account-message.error{color:#ecaaa1}
 .account-dock{position:fixed;right:0;top:0;width:180px;height:54px;z-index:2000;font-family:var(--hud-font-text,Inter,'Noto Sans SC',sans-serif)}
+.account-dock.is-hidden{width:62px}.account-fold{top:7px}
 .account-dock .group-user{position:absolute;right:0;top:0;max-width:180px;min-height:44px;border-top-right-radius:0;border-bottom-right-radius:0;transition:transform .24s ease,opacity .24s ease;transform:translateX(0)}
 .account-dock.is-hidden .group-user{transform:translateX(calc(100% + 2px));opacity:0;pointer-events:none}
 .account-dock .group-account-menu{position:fixed;right:0;top:50px;max-height:calc(100dvh - 54px);width:min(318px,100vw);border-top-right-radius:0;border-bottom-right-radius:0}

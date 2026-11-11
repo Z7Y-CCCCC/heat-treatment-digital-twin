@@ -76,9 +76,9 @@ test('saved part actions count valid unique bindings, including legacy field ali
 })
 
 test('built-in CAD and cleaner actions are distinguished from saved PLC bindings', () => {
-    assert.equal(partMotionSetupStatus({ id: 'cad_transfer_cart_101300', metadata: {} }), '内置 4 项')
+    assert.equal(partMotionSetupStatus({ id: 'cad_transfer_cart_101300', metadata: {} }), '内置 6 项')
     assert.equal(partMotionSetupStatus({ id: 'ultrasonic_cleaner_cad', metadata: {} }), '内置 6 项')
-    assert.equal(partMotionSetupStatus({ id: 'cad_transfer_cart_101300', metadata: { partBindings: [binding()] } }), '已设置 1 项／内置 4 项')
+    assert.equal(partMotionSetupStatus({ id: 'cad_transfer_cart_101300', metadata: { partBindings: [binding()] } }), '已设置 1 项／内置 6 项')
 })
 
 test('retired custom process animations and action packages do not count as part actions', () => {

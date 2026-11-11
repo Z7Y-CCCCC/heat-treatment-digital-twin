@@ -83,6 +83,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
 
         private void Begin(string path)
         {
+            RuntimeWorkMetrics.Enable();
             _sessionId = Guid.NewGuid().ToString("N");
             _measurementTag = Environment.GetEnvironmentVariable("DIGITAL_TWIN_FRAME_METRICS_TAG") ?? string.Empty;
             _log = new RuntimeMetricLog(path);
@@ -202,6 +203,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 ["contextStable"] = _contextStable, ["cameraStable"] = _cameraStable,
                 ["cameraSwitches"] = _windowCameraSwitches, ["context"] = Context(),
                 ["nativeCounters"] = counters,
+                ["work"] = RuntimeWorkMetrics.CaptureWindow(),
                 ["frameTiming"] = new JObject
                 {
                     ["featureEnabled"] = _timingEnabled, ["available"] = timingCount > 0,
@@ -357,6 +359,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
         {
             if (_stopped || _log == null) return;
             _stopped = true;
+            RuntimeWorkMetrics.Disable();
             RenderPipelineManager.beginCameraRendering -= BeforeCameraRendering;
             if (flush && _statistics.Frames > 0) EmitWindow(Time.realtimeSinceStartupAsDouble, true);
             if (_counters != null) foreach (var counter in _counters) if (counter.Recorder.Valid) counter.Recorder.Dispose();

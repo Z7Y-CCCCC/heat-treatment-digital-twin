@@ -6,6 +6,7 @@
  */
 
 const { getDb } = require('../db/database');
+const { readable, signature, pointPath, manualValue, automaticValue } = require('./simulationPoints');
 
 const GAS_VALVE_KEYS = [
     'valve_1',
@@ -33,9 +34,11 @@ class Simulator {
         this.stopped = true;
         // 每台设备的持久状态（模拟真实运行时的渐变效果）
         this.deviceStates = Object.create(null);
+        this.manualValues = new Map();
+        this.tickCount = 0;
     }
 
-    async start(onData, onStatusChange) {
+    async start(onData, onStatusChange, { preserveState = false } = {}) {
         const runVersion = ++this.runVersion;
         if (this.pollTimer) clearInterval(this.pollTimer);
         this.pollTimer = null;
@@ -63,7 +66,7 @@ class Simulator {
         if (this.stopped || runVersion !== this.runVersion) return;
         this.devices = devices;
         const ownedIds = new Set(devices.map(device => String(device.id)));
-        const points = (await db.all('SELECT * FROM data_points')).filter(point => ownedIds.has(String(point.device_id)) && String(point.access_type || 'READ').toUpperCase() === 'READ');
+        const points = (await db.all('SELECT * FROM data_points')).filter(point => ownedIds.has(String(point.device_id)) && readable(point));
         if (this.stopped || runVersion !== this.runVersion) return;
         this.pointsByDevice = new Map();
         for (const point of points) {
@@ -72,11 +75,15 @@ class Simulator {
         }
         const factorySettings = await db.all('SELECT `key`, value FROM factory_settings WHERE factory_id = ?', [factoryId]);
         if (this.stopped || runVersion !== this.runVersion) return;
+        const previousStates = preserveState ? this.deviceStates : Object.create(null);
         this.deviceStates = Object.create(null);
+        if (!preserveState) { this.manualValues.clear(); this.tickCount = 0; }
+        const definitions = new Map(points.map(point => [String(point.id), signature(point)]));
+        for (const [id, override] of this.manualValues) if (definitions.get(id) !== override.signature) this.manualValues.delete(id);
 
         // 为每台设备初始化模拟状态
         this.devices.forEach(device => {
-            this.deviceStates[device.id] = {
+            this.deviceStates[device.id] = previousStates[device.id] || {
                 actual_temp: 820 + Math.random() * 60,       // 820-880°C
                 setpoint_temp: 860,
                 actual_carbon: 0.75 + Math.random() * 0.2,   // 0.75-0.95%
@@ -135,6 +142,7 @@ class Simulator {
     stop() {
         this.stopped = true;
         this.runVersion += 1;
+        this.manualValues.clear();
         if (this.pollTimer) {
             clearInterval(this.pollTimer);
             this.pollTimer = null;
@@ -150,8 +158,24 @@ class Simulator {
         await this.start(onData || this.onData, onStatusChange || this.onStatusChange);
     }
 
+    async reloadConfiguration() {
+        await this.start(this.onData, this.onStatusChange, { preserveState: true });
+    }
+
+    setPointValue(point, value, reset = false) {
+        if (this.stopped) throw new Error('模拟运行已停止');
+        const known = (this.pointsByDevice.get(String(point.device_id)) || []).find(row => String(row.id) === String(point.id));
+        if (!known || signature(known) !== signature(point)) throw new Error('点位配置正在刷新，请稍后重试');
+        pointPath(known);
+        if (reset) this.manualValues.delete(String(point.id));
+        else this.manualValues.set(String(point.id), { value: manualValue(known, value), signature: signature(known), updatedAt: Date.now() });
+        this._tick();
+        return { success: true, pointId: String(point.id), manual: !reset };
+    }
+
     _tick() {
         if (this.stopped) return;
+        this.tickCount++;
         const deviceDataArray = [];
 
         this.devices.forEach(device => {
@@ -287,12 +311,25 @@ class Simulator {
                 }
             });
             const frame = deviceDataArray[deviceDataArray.length - 1];
+            frame.simulationPoints = Object.create(null);
+            const builtinValues = new Map(Object.keys(frame.quality).flatMap(group => Object.entries(frame[group] || {}).map(([field, value]) => [`${group}.${field}`, value])));
             for (const point of this.pointsByDevice.get(String(device.id)) || []) {
-                const group = point.category || 'analog', field = point.value_role || point.name;
-                if (!Object.prototype.hasOwnProperty.call(frame[group] || {}, field)) continue;
+                let path;
+                try { path = pointPath(point); } catch { continue; }
+                const { group, field } = path;
+                const override = this.manualValues.get(String(point.id));
+                const value = override ? override.value : automaticValue(point, builtinValues.get(`${group}.${field}`), this.tickCount, frame.timestamp);
+                frame[group] ||= Object.create(null);
+                frame.quality[group] ||= Object.create(null);
+                frame[group][field] = value;
+                frame.quality[group][field] = value === null ? 'bad' : 'good';
+                frame.simulationPoints[String(point.id)] = { value, quality: value === null ? 'bad' : 'good', timestamp: frame.timestamp,
+                    manual: !!override, overriddenAt: override?.updatedAt || null };
                 const key = `${group}.${field}`;
                 frame.pointMeta[key] = { ...frame.pointMeta[key], id:String(point.id), timestamp:frame.timestamp,
-                    name:point.name, label:point.label || point.name, unit:point.unit || '', sample_interval_ms:point.sample_interval_ms || this.pollIntervalMs };
+                    name:point.name, label:point.label || point.name, unit:point.unit || '', display_format:point.display_format || '',
+                    category:group, field_name:field, plc_address:point.plc_tag || '', voice_config:point.voice_config || '',
+                    sample_interval_ms:point.sample_interval_ms || this.pollIntervalMs, sourceMode:'simulation', simulationManual:!!override };
             }
         });
 

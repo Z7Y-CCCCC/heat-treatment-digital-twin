@@ -9,6 +9,7 @@ import { editableWidgetText, updateWidgetTextContent, effectiveMetricItems, DEFA
 import { normalizeDashboardDocument } from '../src/runtime/dashboardSchema.js'
 import { bindingForDevice, legacyWorkflow, sourceFromCatalog } from '../../shared/widgetBindingWorkflow.mjs'
 import { installBrowser } from './helpers.mjs'
+import { DASHBOARD_CHARTS } from '../../shared/dashboardCharts.mjs'
 
 const require = createRequire(import.meta.url)
 const { normalizeDocument } = require('../../backend/utils/dashboardDocument.js')
@@ -17,7 +18,7 @@ const designer = await readFile(designerUrl, 'utf8')
 const script = parse(designer).descriptor.scriptSetup.content
 const ast = parseJavaScript(script, { sourceType: 'module' })
 const clone = value => JSON.parse(JSON.stringify(value))
-const names = ['updateNavigationContent','updateTextContent','staticStatusValue','editableMetric','applyMetricLabel','applyMetricLabelSource','updateMetricPath','setStatSource','setStatUnitSource','metricFormatBinding','metricConfiguredUnit','applyMetricFormat','applyMetricSource','applyMetricScope','addBoundMetric','removeBoundMetric','applyDataWorkflow']
+const names = ['updateNavigationContent','updateTextContent','staticStatusValue','editableMetric','applyMetricLabel','applyMetricLabelSource','updateMetricPath','setStatSource','setStatUnitSource','setChartType','metricFormatBinding','metricConfiguredUnit','applyMetricFormat','applyMetricSource','applyMetricScope','addBoundMetric','removeBoundMetric','applyDataWorkflow']
 const functions = names.map(name => {
   const fn = ast.program.body.find(node => node.type === 'FunctionDeclaration' && node.id?.name === name)
   assert.ok(fn, 'Missing real designer handler: ' + name)
@@ -28,7 +29,7 @@ function handlers(widget, disabled = false) {
   const selectedWidget = ref(clone(widget)), commits = []
   const dependencies = { selectedWidget, safeCatalogPreviewDeviceId: ref('a'), devices: ref([{id:'a',name:'A'},{id:'b',name:'B'}]), points: ref([]),
     canAdminPage: () => !disabled, deepClone: clone, commitHistory: reason => commits.push(reason), recordProperty: reason => commits.push(reason),
-    invalidateDataSetPreview: () => {}, editableWidgetText, updateWidgetTextContent, effectiveMetricItems, bindingForDevice, legacyWorkflow, sourceFromCatalog }
+    invalidateDataSetPreview: () => {}, editableWidgetText, updateWidgetTextContent, effectiveMetricItems, bindingForDevice, legacyWorkflow, sourceFromCatalog, DASHBOARD_CHARTS }
   const factory = new Function(...Object.keys(dependencies), functions + '\nreturn {' + names.join(',') + '}')
   return { selectedWidget, commits, ...factory(...Object.values(dependencies)) }
 }
@@ -64,7 +65,62 @@ async function component(url, renderer = false) {
   return (await import('data:text/javascript;base64,' + Buffer.from(code).toString('base64'))).default
 }
 const NavigationSettings = await component(new URL('../src/views/admin/components/NavigationContentSettings.vue', import.meta.url))
+const ChartTypeSelect = await component(new URL('../src/views/admin/components/DashboardChartTypeSelect.vue', import.meta.url))
+const TrendSettings = await component(new URL('../src/views/admin/components/TrendChartSettings.vue', import.meta.url))
 const Renderer = await component(new URL('../src/runtime/WidgetRenderer.vue', import.meta.url), true)
+
+test('real chart selector offers five common forms and safely retains imported legacy charts until changed', async t => {
+  installBrowser(t)
+  const state = handlers({ id: 'chart-config', type: 'hud_chart_dock', frame: {x:5,y:10,width:610,height:206,rotation:0},
+    content: {chartType:'scatter',smooth:true,historyLength:120}, data: {mode:'plc',pointId:'actual-temperature',deviceId:'furnace',unit:'°C'} })
+  const host = memoryHost(), originalData = clone(state.selectedWidget.value.data), originalFrame = clone(state.selectedWidget.value.frame)
+  const app = host.renderer.createApp({render:()=>h(ChartTypeSelect,{modelValue:state.selectedWidget.value.content.chartType,'onUpdate:modelValue':state.setChartType})})
+  app.mount(host.root)
+  try {
+    const collectOptions = (node, result=[]) => { if(node.type==='option')result.push(node);for(const child of node.children)collectOptions(child,result);return result }
+    assert.deepEqual(collectOptions(host.root).filter(option=>!Object.hasOwn(option.props,'hidden')).map(option=>option.props.value), ['line','area','bar','pie','gauge'])
+    assert.match(host.text(), /旧版图表/)
+    assert.equal(state.selectedWidget.value.content.chartType, 'scatter', 'inspection must not rewrite a saved chart')
+    for (const chart of DASHBOARD_CHARTS) {
+      host.find(node=>node.props['aria-label']==='图表类型').props.onChange({target:{value:chart.id}})
+      await nextTick()
+      assert.equal(state.selectedWidget.value.content.chartType, chart.id)
+      state.selectedWidget.value = reopen(state.selectedWidget.value); await nextTick()
+      assert.equal(state.selectedWidget.value.content.chartType, chart.id)
+      assert.equal(state.selectedWidget.value.content.smooth, true)
+      assert.equal(state.selectedWidget.value.content.historyLength, 120)
+      assert.deepEqual(state.selectedWidget.value.frame, originalFrame)
+      assert.equal(state.selectedWidget.value.data.pointId, originalData.pointId)
+      assert.equal(state.selectedWidget.value.data.deviceId, originalData.deviceId)
+      assert.equal(collectOptions(host.root).length, 5)
+    }
+    assert.equal(state.commits.length, 5)
+    state.setChartType('scatter'); assert.equal(state.selectedWidget.value.content.chartType, 'gauge')
+    const denied = handlers(state.selectedWidget.value, true); denied.setChartType('line')
+    assert.equal(denied.selectedWidget.value.content.chartType, 'gauge')
+  } finally { app.unmount() }
+})
+
+test('actual axis controls accept custom X/Y intervals, persist on save/reopen and retain safe automatic defaults',async t=>{
+ installBrowser(t)
+ const state=handlers({id:'axis-config',type:'trend',content:{chartType:'line',yAxisMode:'fixed',yMin:840,yMax:860},data:{mode:'plc',path:'analog.t',pointId:'t',deviceId:'furnace',deviceScope:'fixed',unit:'°C'}})
+ const host=memoryHost(),app=host.renderer.createApp({render:()=>h(TrendSettings,{content:state.selectedWidget.value.content,unit:'°C',onChange:()=>state.commits.push('axis')})})
+ app.mount(host.root)
+ const set=async(label,value)=>{host.find(node=>node.props['aria-label']===label).props.onChange({target:{value}});await nextTick()}
+ try {
+  await set('Y轴刻度间隔','5');await set('X轴刻度模式','time');await set('X轴时间刻度间隔秒','10')
+  state.selectedWidget.value=reopen(state.selectedWidget.value);await nextTick()
+  assert.equal(state.selectedWidget.value.content.yTickInterval,5);assert.equal(state.selectedWidget.value.content.xTickIntervalSeconds,10)
+  assert.equal(host.find(node=>node.props['aria-label']==='X轴刻度模式').props.value,'time')
+  await set('X轴刻度模式','category');await set('X轴数据项刻度间隔','3')
+  state.selectedWidget.value=reopen(state.selectedWidget.value);await nextTick()
+  assert.equal(state.selectedWidget.value.content.xLabelEvery,3)
+  await set('Y轴刻度间隔','-1');assert.match(host.text(),/Y 轴刻度间隔须大于 0/)
+  await set('Y轴刻度间隔','');await set('X轴刻度模式','auto')
+  assert.equal(state.selectedWidget.value.content.yTickInterval,'');assert.equal(state.selectedWidget.value.content.xTickMode,'auto')
+  assert.equal(state.selectedWidget.value.data.path,'analog.t')
+ } finally {app.unmount()}
+})
 
 test('real navigation fields edit, save, reopen and drive the actual renderer with factory/collection changes', async t => {
   installBrowser(t)

@@ -23,15 +23,15 @@ function authoredTransform(device,context={}){
 }
 function buildTransferCapabilities(loaded,targets=[],context={}){
  const ownPorts=ports(loaded.model,loaded.device);
- return {sourcePorts:ownPorts,sourceTransform:authoredTransform(loaded.device,context),actions:(loaded.actions||[]).filter(action=>!isRetiredMotionAction(action)&&action.mode==='position'&&driveNodes(action).length).map(action=>({id:action.id,label:action.label,driveNodes:driveNodes(action)})),
- targetDevices:targets.filter(target=>String(target.id)!==String(loaded.device.id)&&!target.movementEnabled).map(target=>({id:String(target.id),name:target.name||String(target.id),lineId:String(target.line_id||''),ports:ports(target.model,target),transform:authoredTransform(target,context)}))};
+ return {sourcePorts:ownPorts,sourceMovement:loaded.instance?.movement,sourceTransform:authoredTransform(loaded.device,context),actions:(loaded.actions||[]).filter(action=>!isRetiredMotionAction(action)&&action.mode==='position'&&driveNodes(action).length).map(action=>({id:action.id,label:action.label,driveNodes:driveNodes(action)})),
+ targetDevices:targets.filter(target=>String(target.id)!==String(loaded.device.id)&&!target.movementEnabled).map(target=>({id:String(target.id),name:target.name||String(target.id),lineId:String(target.line_id||''),ports:ports(target.model,target),transform:authoredTransform(target,context),presencePoints:target.presencePoints||[]}))};
 }
 function validateTransferSelection(loaded,value,bindings,validatePresence,sourceFingerprint){
  const transfer=normalizeTransferLink(value);
  if(!transfer?.enabled)return transfer;
  const action=loaded.actions.find(action=>action.id===transfer.actionId);
  if(!action||action.mode!=='position'||!driveNodes(action).includes(transfer.driveNodeName))fail('请选择真实位置动作的承料移动节点');
- if(!bindings.some(row=>row.actionId===transfer.actionId&&row.enabled))fail('请先启用所选送料动作并配置实时驱动数据');
+ if(!transfer.cycle?.enabled&&!bindings.some(row=>row.actionId===transfer.actionId&&row.enabled))fail('请先启用所选送料动作并配置实时驱动数据');
  const capabilities=loaded.transferCapabilities;
  if(!capabilities?.sourcePorts?.[transfer.sourcePort])fail('来源设备未配置所选进出料口，请先在进出料口设置中配置真实送料基准');
  const item=loaded.catalog?.items.find(item=>item.id===transfer.presenceDataItemId);
@@ -50,6 +50,22 @@ function validateTransferSelection(loaded,value,bindings,validatePresence,source
   const target=capabilities?.targetDevices?.find(target=>target.id===String(id));
   if(!target)fail('联动目标不存在、不是当前工厂的固定设备或正在移动');
   if(!target.ports?.[transfer.targetPort])fail('目标设备 '+target.name+' 未配置所选进出料口');
+ }
+ if(transfer.cycle?.enabled){
+  if(transfer.targetMode!=='station'||movement?.stationInputMeaning!=='target'||!movement.arrivalPositionPointId||!movement.startActionPointId)fail('双侧循环需要目标工位、独立到位工位及实际移动 BOOL 反馈');
+  const owned=['clip:feed','clip:hook','clip:feed_opposite','clip:hook_opposite'];
+  if(loaded.device.model_type!=='cad_transfer_cart_101300'||owned.some(id=>!loaded.actions.some(a=>a.id===id&&a.mode==='position')))fail('该模型缺少同源导出的双侧送料和脱钩动作包');
+  if(bindings.some(b=>b.enabled&&owned.includes(b.actionId)))fail('双侧循环统一驱动送料/脱钩，请先停用这四项的独立绑定，避免互相覆盖');
+  for(const name of ['start','pickup']){
+   const item=loaded.catalog?.items.find(item=>item.id===transfer.cycle[name+'DataItemId']);validatePresence(loaded,item);
+   transfer.cycle[name+'SourceFingerprint']=sourceFingerprint(item);
+  }
+  if(transfer.cycle.stations.length!==(movement.stations||[]).length)fail('请逐一配置所有料车工位的送料侧、在位反馈和承料位');
+  for(const station of transfer.cycle.stations){
+   const anchor=(movement.stations||[]).find(s=>s.value===station.value&&String(s.anchorDeviceId)===station.targetDeviceId);
+   const target=capabilities.targetDevices.find(t=>t.id===station.targetDeviceId);
+   if(!anchor||!target?.presencePoints.some(p=>String(p.id)===station.presencePointId))fail('工位目标不匹配，或目标物料反馈不是该固定设备的只读 BOOL');
+  }
  }
  return {...transfer,presenceSourceFingerprint:sourceFingerprint(item)};
 }

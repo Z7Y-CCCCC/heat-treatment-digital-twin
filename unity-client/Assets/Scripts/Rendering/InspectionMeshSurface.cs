@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
@@ -55,22 +56,41 @@ namespace HeatTreatment.DigitalTwin.Rendering
             EnsureIndex(_filter?.sharedMesh);
         }
 
-        public static async Task PrepareStaticIndexesAsync(GameObject root, CancellationToken cancellationToken)
+        public static async Task PrepareStaticIndexesAsync(GameObject root, CancellationToken cancellationToken, Action<int, int> progress = null)
         {
             // Copy Unity mesh data on its owning thread. Only the CPU-only BVH
             // build runs on a worker, keeping the loading screen responsive.
+            var meshes = new List<Mesh>(); var unique = new HashSet<Mesh>();
             foreach (var filter in root.GetComponentsInChildren<MeshFilter>(true))
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 if (filter == null) continue;
                 var mesh = filter.sharedMesh;
-                if (mesh == null || !mesh.isReadable || StaticIndexes.TryGetValue(mesh, out _)) continue;
-                var vertices = mesh.vertices;
-                var triangles = mesh.triangles;
-                var index = await Task.Run(() => new TriangleRayIndex(vertices, triangles), cancellationToken);
-                cancellationToken.ThrowIfCancellationRequested();
-                if (mesh != null) StaticIndexes.GetValue(mesh, _ => index);
+                if (mesh == null || !mesh.isReadable || StaticIndexes.TryGetValue(mesh, out _) || !unique.Add(mesh)) continue;
+                meshes.Add(mesh);
             }
+            var started = System.Diagnostics.Stopwatch.StartNew(); var batches = 0; var completed = 0;
+            progress?.Invoke(0, meshes.Count);
+            while (completed < meshes.Count) {
+                cancellationToken.ThrowIfCancellationRequested();
+                var selected = new List<Mesh>(64); var vertices = new List<Vector3[]>(64); var triangles = new List<int[]>(64); var indices = 0;
+                // One await per tiny CAD mesh used to consume one Unity frame
+                // per mesh. Batch exact, unchanged geometry; Unity API access
+                // stays on its owning thread, CPU indexes stay on the worker.
+                while (completed + selected.Count < meshes.Count && selected.Count < 64 && indices < 300000) {
+                    var mesh = meshes[completed + selected.Count];
+                    selected.Add(mesh); vertices.Add(mesh.vertices); var data = mesh.triangles; triangles.Add(data); indices += data.Length;
+                }
+                var built = await Task.Run(() => {
+                    var result = new TriangleRayIndex[selected.Count];
+                    for (var i = 0; i < result.Length; i++) { cancellationToken.ThrowIfCancellationRequested(); result[i] = new TriangleRayIndex(vertices[i], triangles[i]); }
+                    return result;
+                }, cancellationToken);
+                cancellationToken.ThrowIfCancellationRequested();
+                for (var i = 0; i < selected.Count; i++) { var index = built[i]; if (selected[i] != null) StaticIndexes.GetValue(selected[i], _ => index); }
+                completed += selected.Count; batches++; progress?.Invoke(completed, meshes.Count);
+            }
+            if (meshes.Count > 0) Debug.Log($"[InspectionIndexes] meshes={meshes.Count}, workerBatches={batches}, elapsedMs={started.ElapsedMilliseconds}");
         }
 
         private void EnsureIndex(Mesh mesh)

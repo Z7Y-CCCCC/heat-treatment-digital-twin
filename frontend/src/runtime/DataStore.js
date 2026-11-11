@@ -98,6 +98,9 @@ export function createDashboardDataStore(options = {}) {
     let eventsInFlight = false;
     let healthInFlight = false;
     let lastHealthRefreshAt = 0;
+    let collectionStatusTimestamp = -Infinity;
+    let collectionStatusMessage = '';
+    let collectionScopeGeneration = 0;
     let eventsRequestId = 0;
     const pendingRequests = new Set();
 
@@ -195,7 +198,14 @@ export function createDashboardDataStore(options = {}) {
     function syncDevices(devices) {
         if (disposed) return;
         const configured = (Array.isArray(devices) ? devices : []).filter(device => device?.id);
-        configuredDeviceIds = new Set(configured.map(device => String(device.id)));
+        const nextIds = new Set(configured.map(device => String(device.id)));
+        if (configuredDeviceIds && (configuredDeviceIds.size !== nextIds.size || [...nextIds].some(id => !configuredDeviceIds.has(id)))) {
+            collectionScopeGeneration++;
+            collectionStatusTimestamp = -Infinity;
+            collectionStatusMessage = '';
+            plcStatusText.value = '等待采集状态...';
+        }
+        configuredDeviceIds = nextIds;
         for (const deviceId of new Set([...Object.keys(deviceStatusMap), ...Object.keys(deviceDataMap), ...latestDeviceDataMap.keys(), ...latestMotionDataMap.keys(), ...lastSeenMap.keys()])) {
             if (configuredDeviceIds.has(String(deviceId))) continue;
             delete deviceStatusMap[deviceId];
@@ -308,9 +318,22 @@ export function createDashboardDataStore(options = {}) {
         };
     }
 
+    function resolveCollectionStatus(payload) {
+        const message = typeof payload?.message === 'string' ? payload.message.trim() : '';
+        if (!message) return null;
+        const timestamp = typeof payload.timestamp === 'number' ? payload.timestamp : Date.parse(payload.timestamp);
+        // HTTP health and WebSocket PLC status describe the same collector.
+        // Their arrival order must not replace a newer observation with an old
+        // request's response (or collapse its details into display readiness).
+        if (Number.isFinite(timestamp) && timestamp < collectionStatusTimestamp) return collectionStatusMessage;
+        if (Number.isFinite(timestamp)) collectionStatusTimestamp = timestamp;
+        collectionStatusMessage = message;
+        return message;
+    }
+
     function applyPlcStatus(payload) {
         if (disposed) return;
-        plcStatusText.value = payload?.message || payload?.status || '状态未知';
+        plcStatusText.value = resolveCollectionStatus(payload) || payload?.status || '状态未知';
         (Array.isArray(payload?.devices) ? payload.devices : []).forEach((deviceStatus) => {
             const deviceId = deviceStatus.deviceId;
             if (!deviceId || !acceptsDevice(deviceId)) return;
@@ -520,17 +543,22 @@ export function createDashboardDataStore(options = {}) {
         const now = Date.now();
         if (disposed || healthInFlight || (!force && now - lastHealthRefreshAt < 5000)) return;
         healthInFlight = true;
+        const scopeGeneration = collectionScopeGeneration;
         try {
             const payload = await readJson(`${API_BASE}/health`, { cache: 'no-store' });
-            if (disposed) return;
+            if (disposed || scopeGeneration !== collectionScopeGeneration) return;
             if (!payload) throw new Error('健康检查失败');
             health.status = payload.status || 'unknown';
             health.readiness = payload.readiness || { status: 'unknown', displayReady: false, failures: ['backend'] };
             health.components = payload.components || {};
             health.checkedAt = payload.timestamp || new Date().toISOString();
-            plcStatusText.value = healthLabel(payload);
+            // "当前采集状态" is the collector's real, detailed summary, not
+            // whether Unity/database/display readiness happens to be healthy.
+            const collection = String(payload.engine?.mode || '').toLowerCase() === 'integrated_plc'
+                ? resolveCollectionStatus(payload.engine?.plcStatus) : null;
+            plcStatusText.value = collection || healthLabel(payload);
         } catch (error) {
-            if (disposed) return;
+            if (disposed || scopeGeneration !== collectionScopeGeneration) return;
             health.status = 'offline';
             health.readiness = { status: 'not_ready', displayReady: false, failures: ['backend'] };
             health.components = { backend: { status: 'error' } };

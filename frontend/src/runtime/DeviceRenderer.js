@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { createDeviceModel } from '../three/ModelFactory.js';
 import { setConnectionBadge3D } from './ConnectionBadge3D.js';
+import { applyLayoutEditorAppearance } from './layoutEditorAppearance.js';
 
 const OFFLINE_GRAY = new THREE.Color(0xa8b0b0);
 
@@ -46,6 +47,7 @@ function makeMaterialsMirrorSafe(deviceModel) {
 export async function createConfiguredDeviceModel(definition, models = [], options = {}) {
     const { deviceCfg } = definition;
     const deviceModel = await createDeviceModel(deviceCfg, models, options);
+    if (options.renderProfile === 'layout-editor') applyLayoutEditorAppearance(deviceModel);
     applyConfiguredDeviceTransform(deviceModel, definition);
     applyDeviceConnectionVisual(deviceModel, 'bad');
     return deviceModel;

@@ -155,7 +155,7 @@ router.put('/:id/movement', async (req, res) => {
             && (typeof body.expectedMovement !== 'object' || Array.isArray(body.expectedMovement)
                 || Buffer.byteLength(JSON.stringify(body.expectedMovement)) > 32768)) throw new Error('运动配置比较快照无效');
         const ids = body.pointIds || [];
-        if (!Array.isArray(ids) || ids.length > 2 || ids.some(id => !['string', 'number'].includes(typeof id) || String(id).length > 120)) throw new Error('运动点位无效');
+        if (!Array.isArray(ids) || ids.length > 3 || ids.some(id => !['string', 'number'].includes(typeof id) || String(id).length > 120)) throw new Error('运动点位无效');
         const db = await getDb();
         const config = await db.transaction(async tx => {
             const device = await tx.get('SELECT * FROM devices WHERE id = ?', [req.params.id]);

@@ -8,6 +8,7 @@
   },
   "scripts": {
     "test": "node scripts/run-tests.cjs",
+    "test:simulation-points": "node scripts/simulation-points-test.cjs",
     "test:concurrency": "node scripts/backend-concurrency-test.cjs",
     "test:realtime-linkage": "node scripts/motion-semantics-test.cjs && node scripts/motion-inheritance-semantics-test.cjs && node scripts/realtime-motion-queue-test.cjs && node scripts/ws-queue-test.cjs && node scripts/realtime-transfer-link-test.cjs && node scripts/motion-device-context-test.cjs && node scripts/device-line-units-test.cjs && node scripts/line-spacing-precision-test.cjs",
     "test:recovery-edge": "node scripts/backend-recovery-edge-test.cjs",

@@ -73,8 +73,9 @@ async function main() {
         log('Preparing backend dependencies');
         await new Promise((resolve, reject) => {
             const extractor = spawn(path.join(__dirname, 'HeatTreatmentCollector.exe'),
-                ['--extract-dependencies', archive, staging], { windowsHide: true, stdio: 'ignore' });
-            extractor.once('error', reject); extractor.once('close', code => code === 0 ? resolve() : reject(new Error(`Dependency extraction failed: ${code}`)));
+                ['--extract-dependencies', archive, staging], { windowsHide: true, stdio: ['ignore','ignore','pipe'] });
+            let detail='';extractor.stderr.on('data',chunk=>{if(detail.length<4096)detail+=chunk.toString().slice(0,4096-detail.length);});
+            extractor.once('error', reject); extractor.once('close', code => code === 0 ? resolve() : reject(new Error(`Dependency extraction failed: ${code}; ${detail.trim()}`)));
         });
         for (const name of ['express', 'mysql2', 'better-sqlite3', 'ws']) {
             if (!fs.existsSync(path.join(staging, name, 'package.json'))) throw new Error(`Missing backend dependency: ${name}`);
@@ -110,7 +111,8 @@ async function main() {
     backend = spawn(path.join(resources, 'runtime', 'node.exe'), [path.join(resources, 'backend', 'server.js')], {
         cwd: path.join(resources, 'backend'), windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
         env: { ...environment, NODE_ENV: 'production', HOST: '127.0.0.1', PORT: String(port),
-            APP_DATA_DIR: dataDir, UPLOADS_DIR: uploadsDir, FRONTEND_DIST: path.join(resources, 'frontend'),
+            APP_DATA_DIR: dataDir, UPLOADS_DIR: uploadsDir, FRONTEND_DIST: '',
+            APP_RUNTIME_ROLE: 'collector', APP_RUNTIME_OWNER: 'windows-service',
             DB_BACKUP_DIR: path.join(dataDir, 'backups'), DB_RECOVERY_DIR: path.join(dataDir, 'recovery'),
             SITE_BACKUP_DIR: path.join(dataDir, 'site-backups'), SITE_IMPORT_DIR: path.join(dataDir, 'site-imports'),
             SITE_BACKUP_MIRROR_DIR: '', DATA_SOURCE_BACKUP_DIR: path.join(dataDir, 'data-source-backups'),
@@ -133,14 +135,18 @@ async function main() {
         try {
             const response = await request('/api/health');
             const readyHealth = JSON.parse(response.body);
-            if (response.status === 200 && readyHealth.status === 'ok' && readyHealth.db?.connected === true) {
+            if (response.status === 200 && readyHealth.status === 'ok' && readyHealth.db?.connected === true
+                && readyHealth.runtime?.role === 'collector' && readyHealth.runtime?.owner === 'windows-service'
+                && readyHealth.components?.backend?.processId === backend.pid) {
                 let healthFailures = 0, probing = false;
                 watchdog = setInterval(async () => {
                     if (stopping || probing) return;
                     probing = true;
                     try {
                         const health = await request('/api/health');
-                        if (health.status !== 200 || JSON.parse(health.body).status !== 'ok') throw new Error('Invalid collector health');
+                        const observed=JSON.parse(health.body);
+                        if (health.status !== 200 || observed.status !== 'ok' || observed.components?.backend?.processId !== backend.pid
+                            || observed.runtime?.role !== 'collector' || observed.runtime?.owner !== 'windows-service') throw new Error('Invalid collector health/ownership');
                         healthFailures = 0;
                     } catch (error) {
                         if (++healthFailures >= 3 && !stopping) {

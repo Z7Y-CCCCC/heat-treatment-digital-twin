@@ -1,0 +1,10 @@
+'use strict';
+const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),{spawnSync}=require('node:child_process');
+const root=path.resolve(__dirname,'..'),directory=path.join(root,'output/shell-transparency-native-checks');fs.mkdirSync(directory,{recursive:true});
+const editor=process.env.UNITY_EDITOR_PATH||'C:/Program Files/Unity 2022.3.34f1c1/Editor/Unity.exe',log=path.join(directory,'unity.log'),start=Date.now();
+const result=spawnSync(editor,['-batchmode','-quit','-force-d3d11','-projectPath',path.join(root,'unity-client'),'-executeMethod','HeatTreatment.DigitalTwin.Editor.InspectionRuntimeChecks.Run','-logFile',log],{cwd:root,windowsHide:true,timeout:360000,stdio:'inherit'});
+if(result.error)throw result.error;
+const text=fs.readFileSync(log,'utf8'),summary=text.match(/\[InspectionChecks\] ALL (\d+) native checks passed/);
+assert.equal(result.status,0,'Native shell checks failed; see '+log);assert.ok(summary&&fs.statSync(log).mtimeMs>=start,'Missing fresh success report');
+assert.ok(text.includes('actual action-animation driver keeps advancing internal tracks'));
+const evidence={success:true,checks:Number(summary[1]),log};fs.writeFileSync(path.join(directory,'result.json'),JSON.stringify(evidence,null,2));console.log(JSON.stringify(evidence));

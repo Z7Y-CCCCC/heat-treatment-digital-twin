@@ -2,6 +2,26 @@ using HeatTreatment.DigitalTwin.Rendering;
 
 internal static partial class Program
 {
+    private static Task WheelZoomIsResponsiveAndBounded()
+    {
+        float Zoom(float distance, float detents, float multiplier = 1f) => OrbitCameraMotion.WheelDistance(distance, detents, .22f * multiplier, .3f, 1000f);
+        var normal = Zoom(100f, 1f);
+        Check(normal > 79f && normal < 81f, "one detent must close about 20 percent, not the legacy 10 percent");
+        Check(Zoom(100f, 4f) < 50f, "four normal detents must more than halve the distance");
+        Check(Zoom(100f, 1f, 2.5f) < normal && Zoom(100f, 1f, .25f) > normal, "Shift acceleration and Ctrl fine mode must differ from normal");
+        var split = 100f;
+        for (var i = 0; i < 10; i++) split = Zoom(split, .1f);
+        Check(Math.Abs(split - normal) < .0001f, "fractional touchpad wheel samples must not be lost or accelerated");
+        Check(Math.Abs(Zoom(normal, -1f) - 100f) < .0001f, "opposite detents must reverse without zoom drift");
+        Check(Zoom(.3f, 1f) == .3f && Zoom(1000f, -1f) == 1000f, "zoom must respect near and far limits");
+        Check(Zoom(.3f, -1f) > .3f && Zoom(1000f, 1f) < 1000f, "zoom must immediately reverse away from either limit");
+        foreach (var invalid in new[] { float.NaN, float.NegativeInfinity, float.PositiveInfinity })
+            Check(Zoom(100f, invalid) == 100f, "invalid wheel samples cannot poison camera coordinates");
+        Check(Zoom(100f, 0) == 100f, "no wheel input must not move the camera");
+        Check(Zoom(100f, 10000f) > 20f && Zoom(100f, -10000f) < 450f, "a broken device's huge single delta must stay bounded");
+        return Task.CompletedTask;
+    }
+
     private static Task OrbitRetainsWinding()
     {
         // Old LerpAngle chooses -120 instead of the user's +240 degree input.

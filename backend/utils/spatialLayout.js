@@ -126,6 +126,7 @@ function normalizeLineLayout(value, transformFallback = null) {
             ? source.flowDirection
             : defaults.flowDirection,
         ...(Object.prototype.hasOwnProperty.call(source, 'sceneUnitsPerMeter') ? { sceneUnitsPerMeter: lineSceneUnitsPerMeter(source) } : {}),
+        ...(source.placementTemplate !== undefined ? { placementTemplate: source.placementTemplate } : {}),
         lanes,
         rails
     });

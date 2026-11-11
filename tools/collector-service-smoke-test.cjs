@@ -21,7 +21,7 @@ let child;
     console.log(`Collector smoke workspace: ${run}`);
     fs.mkdirSync(resources);
     const testIssuer = createTestIssuer(resources);
-    for (const name of ['runtime', 'mysql', 'ffmpeg', 'frontend', 'backend', 'shared']) {
+    for (const name of ['runtime', 'mysql', 'ffmpeg', 'backend', 'shared']) {
         let from = path.join(source, name);
         if (!fs.existsSync(from)) from = name === 'frontend' ? path.join(project, 'frontend', 'dist') : path.join(project, name);
         fs.symlinkSync(from, path.join(resources, name), 'junction');
@@ -54,7 +54,7 @@ let child;
     const port = await findFreePort(3941), backendOrigin = `http://127.0.0.1:${port}`;
     const filename = path.join(run, 'collector-service.json');
     fs.writeFileSync(filename, JSON.stringify({ version: 1, root, resourcesRoot: resources, port, backendOrigin }));
-    let connection;
+    let connection, gateway;
     const launches = [];
     const desktopExe = path.join(path.dirname(source), '热处理数字孪生大屏.exe');
     let packagedFrontendVerified = false;
@@ -70,8 +70,10 @@ let child;
             await waitUntil(() => {
                 if (child.exitCode !== null) throw new Error(`Service host failed: ${stdout}\n${stderr}\n${run}`);
                 return stdout.includes('COLLECTOR_SERVICE_READY');
-            }, 240000, 'service worker ready', 300);
-            await activateFixture(backendOrigin, testIssuer);
+            }, 900000, 'service worker ready', 300);
+            gateway = await require('../desktop/displayGateway.cjs').startDisplayGateway({ backendOrigin, frontendDir: path.join(project,'frontend','dist') });
+            assert.equal((await fetch(gateway.origin+'/admin')).status,200,'UI belongs to the display gateway, not collector');
+            await activateFixture(gateway.origin, testIssuer);
             const config = JSON.parse(fs.readFileSync(path.join(root, 'data', 'database-config.json'), 'utf8'));
             connection = await mysql.createConnection({ host: config.host, port: config.port, user: config.user,
                 password: config.password, database: config.database });
@@ -92,7 +94,20 @@ let child;
             assert.equal(health.historyRetention.metricDays, 90);
             assert.equal(health.historyRetention.eventDays, null);
             const frames = health.engine.collectorStatus.frames;
-            if (phase === 'first-start' && fs.existsSync(desktopExe)) {
+            assert.equal(health.runtime.role, 'collector');
+            assert.equal(health.runtime.owner, 'windows-service');
+            assert.equal(health.runtime.serviceName, 'HeatTreatmentCollector');
+            assert.equal((await fetch(`${backendOrigin}/admin`)).status,404,'Collector must not host the display/admin UI');
+            const authStatus=await (await fetch(gateway.origin+'/api/admin-auth/session')).json();
+            if(authStatus.configured===false) {
+                const response=await fetch(gateway.origin+'/api/admin-auth/setup',{method:'POST',headers:{Origin:gateway.origin,'X-Admin-Request':'1','Content-Type':'application/json'},body:JSON.stringify({username:'隔离验收',password:'Fixture-483029!'})});
+                const session=await response.json();assert.equal(response.status,200);assert.equal(session.authenticated,true);
+                const cookie=response.headers.getSetCookie().map(value=>value.split(';')[0]).join('; ');
+                const reopened=await (await fetch(gateway.origin+'/api/admin-auth/session',{headers:{Cookie:cookie}})).json();assert.equal(reopened.authenticated,true,'Real HttpOnly cookie session survives the display-to-collector hop');
+                let touched=await fetch(gateway.origin+'/api/admin-auth/touch',{method:'POST',headers:{Origin:gateway.origin,'X-Admin-Request':'1',Cookie:cookie}});assert.equal(touched.status,403,'Gateway must not bypass CSRF');
+                touched=await fetch(gateway.origin+'/api/admin-auth/touch',{method:'POST',headers:{Origin:gateway.origin,'X-Admin-Request':'1',Cookie:cookie,'X-CSRF-Token':session.csrfToken}});assert.equal(touched.status,200);
+            }
+            if (phase === 'first-start' && !process.argv.includes('--headless') && fs.existsSync(desktopExe)) {
                 const frontendRoot = path.join(run, 'frontend-user');
                 const env = { ...machineEnv, APP_USER_DATA_DIR: frontendRoot,
                     DIGITAL_TWIN_COLLECTOR_CONFIG: filename, NATIVE_CLIENT_SMOKE_MODE: 'true',
@@ -113,7 +128,7 @@ let child;
             }
             // A client reads and closes its HTTP connection. The collector has
             // no desktop process parent and must keep producing fresh frames.
-            await (await fetch(`${backendOrigin}/admin`)).text();
+            await gateway.close();gateway=null;
             await waitUntil(async () => {
                 const next = await (await fetch(`${backendOrigin}/api/health`)).json();
                 return next.engine.collectorStatus.frames > frames;
@@ -134,6 +149,7 @@ let child;
             assert.throws(() => process.kill(mysqlPid, 0), { code: 'ESRCH' }, 'service stop must not leave MySQL orphaned');
             launches.push({ phase, frames, zeroUnityClients: true, mysqlStopped: true, graceful: phase !== 'host-crash' });
         } finally {
+            await gateway?.close();gateway=null;
             await connection?.end().catch(() => {});
             if (child?.exitCode === null) await stopOwnedSmokeProcess(child);
         }

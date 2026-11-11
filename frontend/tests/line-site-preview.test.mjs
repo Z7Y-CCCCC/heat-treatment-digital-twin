@@ -274,3 +274,17 @@ test('hot source/target port changes use current saved datums and reject explici
   f.models[0].metadata.loadingPorts.outlet.direction = [1, 0, 0]
   assert.equal(f.scene.applyFrame(frame).usable, true); assert.equal(f.scene.material.visible, true); approx(f.scene.material.position.z, 1.06, 'Valid port recovery uses latest source position')
 })
+
+test('saved cycle uses its authored cart home before first feed, not the legacy hook datum', () => {
+  const scene=new LineSimulationScene({},()=>{}),wrapper=new T.Group(),material=new T.Group();material.add(new T.Mesh(new T.BoxGeometry(1,1,1),new T.MeshStandardMaterial()));
+  wrapper.position.set(10,2,4);wrapper.scale.set(2,2,2);wrapper.updateMatrixWorld(true);
+  const cart={row:{id:'cart',capabilities:{cart:true}},wrapper,scale:2,basePosition:wrapper.position.clone(),baseYaw:0,
+    port:new T.Vector3(-30,0,0),rig:{node:()=>null,applyLinked(){}},sceneUnitsPerMeter:.8,
+    savedLink:{cycle:{enabled:true,cartHome:[0,1.25,0],stations:[]},materialSize:[.6,.3,.6]}};
+  scene.scene.add(wrapper,material);scene.plan={cart:{id:'cart'}};scene.mode='site';scene.entries=new Map([['cart',cart]]);scene.material=material;scene.siteMaterialConfigured=true;
+  scene.configureSiteCart=()=>cart.savedLink;
+  const result=scene.applyFrame({cart:{from:null,to:null,progress:0,feed:0,runTime:0,segments:[]},states:{cart:{}},step:{deviceId:'cart',kind:'approach'},material:{holder:'cart',from:'',to:'',progress:0},elapsed:0});
+  assert.equal(result.usable,true,result.reason);
+  const expected=wrapper.localToWorld(new T.Vector3(0,1.25,0)).add(new T.Vector3(0,.3*.8/2,0));
+  assert.ok(material.getWorldPosition(new T.Vector3()).distanceTo(expected)<1e-8);
+})

@@ -22,6 +22,15 @@ test('read-only device and point-monitor users can read connection counts but ca
   }
 })
 
+test('simulation value overrides require point editing, including reset; point-monitor view alone cannot write',t=>{
+  fixture(t,{'point-monitor':{view:true}})
+  for(const method of ['PUT','DELETE']) assert.equal(canAdminApi('/api/datapoints/42/simulation',method),false)
+  adminSession.pagePermissions=normalizePagePermissions({points:{view:true,edit:true}})
+  assert.equal(canAdminApi('/api/datapoints/42/simulation','PUT'),true)
+  assert.equal(canAdminApi('/api/datapoints/42/simulation','DELETE'),true)
+  assert.equal(canAdminApi('/api/datapoints/42','DELETE'),false,'resuming automatic simulation does not grant point deletion')
+})
+
 function fixture(t, grants, permissions = {}) {
   installBrowser(t)
   const before = { ...adminSession }

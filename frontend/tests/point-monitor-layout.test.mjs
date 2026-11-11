@@ -5,6 +5,13 @@ import { compileStyle, compileTemplate, parse } from 'vue/compiler-sfc'
 import { formatPointDateTime } from '../src/views/admin/utils/points.js'
 
 const panel = await readFile(new URL('../src/views/AdminPanel.vue', import.meta.url), 'utf8')
+test('a restored monitor tab starts reading on initial mount after the device catalog loads', () => {
+  const initialize = panel.slice(panel.indexOf('async function initializeAdminPanel()'), panel.indexOf('onMounted(() => initializeAdminPanel()'))
+  const catalog = initialize.indexOf('[loadDevices()]')
+  const start = initialize.indexOf('if (isPointMonitorWorkspace.value) startPointMonitor()')
+  assert.ok(catalog >= 0 && start > catalog, 'page reload must not depend on a tab-change or auto-refresh toggle')
+})
+
 test('monitor summary cards share a top row with the existing left-side filters', () => {
   const start = panel.indexOf('<div class="point-monitor-controls">')
   assert.ok(start >= 0)

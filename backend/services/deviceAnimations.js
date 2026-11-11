@@ -164,6 +164,9 @@ async function loadDeviceAnimations(db, id, factoryId, options = {}) {
     if (options.includeTransferTargets !== false) {
         const targets = (await scopedDevices(db, factoryId)).map(target => ({ ...target,
             model: models.find(asset => asset.id === target.model_type), movementEnabled: object(target.instance_config).movement?.enabled === true }));
+        const targetIds=targets.map(target=>target.id);
+        const targetPoints=targetIds.length?await db.all('SELECT id,device_id,name,label,data_type,access_type,category,value_role FROM data_points WHERE device_id IN ('+targetIds.map(()=>'?').join(',')+')',targetIds):[];
+        for(const target of targets)target.presencePoints=targetPoints.filter(point=>String(point.device_id)===String(target.id)&&String(point.data_type).toUpperCase()==='BOOL'&&String(point.access_type||'READ').toUpperCase()==='READ');
         const lines = await db.all('SELECT l.* FROM `lines` l JOIN workshops w ON w.id=l.workshop_id WHERE w.factory_id=?', [factoryId]);
         const workshops = await db.all('SELECT * FROM workshops WHERE factory_id=?', [factoryId]);
         loaded.transferCapabilities = buildTransferCapabilities(loaded, targets, { lines, workshops });

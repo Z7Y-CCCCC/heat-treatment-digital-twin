@@ -460,8 +460,8 @@
     },
     {
       "path": "backend/assets/motions/cad_transfer_cart_101300.glb",
-      "bytes": 7875816,
-      "sha256": "c49a811db61bc2af216afbcc2c7af2be19d2079c8335c5898a72d539d31b9296"
+      "bytes": 7941592,
+      "sha256": "e84bbe6cb38e2f9dbc4f8dc8a532b33e3692df9233172ca9bc2f5f55c2f0d3e4"
     },
     {
       "path": "backend/assets/motions/cad_water_cooling_tank_471000.glb",

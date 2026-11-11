@@ -12,6 +12,9 @@ import QualityNotice from '../components/QualityNotice.vue'
 import AdminReadingSettings from './admin/components/AdminReadingSettings.vue'
 import AdminConnectionStatus from './admin/components/AdminConnectionStatus.vue'
 import LinePlannerControls from './admin/components/LinePlannerControls.vue'
+import LineAdjustmentOverlay from './admin/components/LineAdjustmentOverlay.vue'
+import { useLineAdjustmentBand } from './admin/composables/useLineAdjustmentBand.js'
+import { clampLineAdjustment, lineAdjustmentBand } from '../../../shared/lineAdjustmentBand.mjs'
 import FactoryVoiceToggle from './admin/components/FactoryVoiceToggle.vue'
 import WorkshopGroundEditor from './admin/components/WorkshopGroundEditor.vue'
 import DataSourceWorkspace from './admin/components/DataSourceWorkspace.vue'
@@ -52,6 +55,7 @@ import {
 } from './admin/utils/lineLayout.js'
 import { chooseLineDevices, planLineGroupMove, spaceLineDevices } from './admin/utils/lineDeviceSelection.js'
 import { editLineRailSpacing, shiftRailMovement, lineSceneUnitsPerMeter } from '../../../shared/lineRailSpacing.mjs'
+import { planLinePlacementTemplate, canMoveLineStructure, assertLineTemplateTransition, assertLineTemplateClearance } from '../../../shared/linePlacementTemplate.mjs'
 import { isLastConfirmedMotion, lastConfirmedMotionError } from './admin/utils/mobileMotionPolicy.js'
 import { buildModelDisplayIds, createShortModelId } from './admin/utils/modelIds.js'
 import { useAppDialog } from './admin/composables/useAppDialog.js'
@@ -93,6 +97,7 @@ import GroupPortalSettings from './admin/components/GroupPortalSettings.vue'
 import LoadingExperienceSettings from './admin/components/LoadingExperienceSettings.vue'
 import ModelInspectionPreviewOverlay from './admin/components/ModelInspectionPreviewOverlay.vue'
 import AssetHierarchyBar from './admin/components/AssetHierarchyBar.vue'
+import SimulationPointValue from './admin/components/SimulationPointValue.vue'
 import { InspectionPreview, inspectionCameraPose } from '../runtime/InspectionPreview.js'
 import inspectionConfig from '../../../shared/inspectionConfig.mjs'
 import { adminSession, adminPageCatalog, lockAdmin, refreshAdminSession, canAdminPage, canAdminApi } from '../runtime/adminSession.js'
@@ -5191,6 +5196,9 @@ async function initializeAdminPanel() {
     if (selectedDeviceForPoints.value !== 'all' && !devices.value.some(device => device.id === selectedDeviceForPoints.value)) {
         selectedDeviceForPoints.value = 'all'
     }
+    // A restored monitor tab does not trigger the tab-change watcher on mount.
+    // Start after the authenticated device catalog is ready, including reloads.
+    if (isPointMonitorWorkspace.value) startPointMonitor()
     if (isPointMappingWorkspace.value) await loadDataPoints()
     if (adminPanelDisposed) return
     ensureComposerSelection()
@@ -5479,6 +5487,7 @@ function syncLineLayout(line, layout) {
 function applyLineLayoutDraft(line, candidate) {
     if (!line) return
     const before = getLineLayout(line), normalized = normalizeLineLayout(candidate)
+    if (normalized.placementTemplate) assertLineTemplateTransition(before, normalized)
     const sourceDevices = devices.value, patches = new Map()
     // Build every affected device/path patch before changing any reactive draft.
     // A bad carrier on a later rail must not leave the lane, first rail or first
@@ -5511,6 +5520,77 @@ function changeLineRailSpacing({ railId, field, value }) {
     } catch (error) { alert(error.message, { title: '设备线与轨道间距无效', type: 'warning' }) }
 }
 
+async function measureLineLayoutEnvelopes(line) {
+    const source = devices.value.filter(device => {
+        const config = parseInstanceConfig(device.instance_config)
+        return device.line_id === line.id || config.laneLineId === line.id || config.railLineId === line.id
+    })
+    const bindings = new Map(source.map(device => {
+        const binding = resolveDeviceLayoutTarget(device, line, { allowFallback: false })
+        if (!binding) throw Error(`「${device.name || device.id}」还没有明确的设备线或导轨绑定，请先绑定，不能猜测排布`)
+        if (device.coordinate_space && device.coordinate_space !== 'line_local') throw Error('设备不是产线本地坐标，请先在设备编排中校准')
+        return [device.id, binding]
+    }))
+    const { measureLineEnvelopes } = await import('../three/lineDeviceFootprints.js')
+    const rows = await measureLineEnvelopes(source, models.value)
+    return rows.map(row => {
+        const binding = bindings.get(row.id), device = source.find(item => item.id === row.id)
+        const movement = parseInstanceConfig(device.instance_config).movement
+        const points = movement?.enabled === true ? [movement.start, movement.end, ...(movement.stations || []).map(point => point.position || point)] : []
+        if (points.some(point => !point || !Number.isFinite(point.z))) throw Error(`「${device.name || device.id}」移动路径无效，未把未知位置当作安全通道`)
+        const zs = points.map(point => point?.z).filter(Number.isFinite)
+        return { ...row, [binding.type === 'rail' ? 'railId' : 'laneId']: binding.item.id,
+            ...(binding.type === 'rail' && zs.length ? { pathMinZ: Math.min(...zs), pathMaxZ: Math.max(...zs) } : {}) }
+    })
+}
+
+function lineAdjustmentRequest() {
+    const line = selectedLineEditor.value, layout = line && getLineLayout(line)
+    if (activeTab.value !== 'lines' || !layout?.placementTemplate) return null
+    const source = devices.value.filter(device => {
+        const config = parseInstanceConfig(device.instance_config)
+        return device.line_id === line.id || config.laneLineId === line.id || config.railLineId === line.id
+    })
+    const geometry = source.map(device => {
+        const config = parseInstanceConfig(device.instance_config), model = models.value.find(row => row.id === device.model_type)
+        const lane = layout.lanes.find(row => row.id === config.laneId)
+        return { id: device.id, file: device.model_file || model?.file_path, modelId: device.model_type,
+            modelRevision: model?.updated_at, modelMetadata: model?.metadata, modelScale: model?.default_scale,
+            y: device.pos_y, relativeZ: lane ? Number((Number(device.pos_z) - lane.offsetZ).toFixed(6)) : device.pos_z,
+            scale: device.scale, rotation: device.rotation_y, coordinateSpace: device.coordinate_space, config }
+    })
+    const key = snapshotJson({ factory: getFactoryScope(), line: line.id, template: layout.placementTemplate,
+        units: layout.sceneUnitsPerMeter, rails: layout.rails, lanes: layout.lanes.map(({ offsetZ, ...row }) => row), geometry })
+    return { key, layout: JSON.parse(JSON.stringify(layout)), measure: () => measureLineLayoutEnvelopes(line) }
+}
+const { band: lineAdjustmentMeasuredBand, pending: lineAdjustmentPending, error: lineAdjustmentError, refresh: recheckLineAdjustmentBand } = useLineAdjustmentBand(lineAdjustmentRequest)
+const lineAdjustmentDisplayBand = computed(() => {
+    const band = lineAdjustmentMeasuredBand.value
+    if (!band) return null
+    const lane = selectedLineLayout.value.lanes.find(row => row.id === band.laneId)
+    return { ...band, currentInside: !!lane && lane.offsetZ >= band.minZ - 1e-6 && lane.offsetZ <= band.maxZ + 1e-6 }
+})
+
+async function chooseLinePlacementTemplate(kind) {
+    if (!canAdminPage('lines', 'edit') || lineDeviceLayoutBusy.value || lineCreating.value) return
+    const line = selectedLineEditor.value
+    if (!line) return
+    const before = snapshotJson({ layout: getLineLayout(line), devices: devices.value, models: models.value }), scope = getFactoryScope()
+    lineLoadingMeasuring.value = true
+    try {
+        const rows = await measureLineLayoutEnvelopes(line)
+        const plan = planLinePlacementTemplate(getLineLayout(line), kind, rows)
+        const unchanged = () => !adminPanelDisposed && selectedLineEditor.value === line && getFactoryScope() === scope
+            && before === snapshotJson({ layout: getLineLayout(line), devices: devices.value, models: models.value })
+        if (!unchanged()) throw Error('测量期间产线或模型已改变，请重新选择模板')
+        const distance = Math.abs(plan.layout.lanes[0].offsetZ - plan.layout.rails[0].offsetZ) / lineSceneUnitsPerMeter(plan.layout)
+        if (!await confirm(`导轨保持原位，设备线按模型外形留出通道；显示中心距约 ${distance.toFixed(2)} 米。${kind === 'dual' ? '第一条线可在安全范围摆放，第二条线在导轨对侧跟随。' : '设备线可在所选侧的安全范围摆放。'}\n\n仅应用到当前草稿，不改模型尺寸、朝向、PLC 或运动配置。需要点击“保存产线结构”才会保存。`, { title: '应用布局模板' })) return
+        if (!unchanged()) throw Error('确认期间产线已改变，未覆盖新的草稿')
+        applyLineLayoutDraft(line, plan.layout)
+    } catch (error) { alert(error.message, { title: '布局模板未应用', type: 'warning' }) }
+    finally { lineLoadingMeasuring.value = false }
+}
+
 function selectLineEditor(lineId) {
     selectedLineEditorId.value = lineId
     selectedLineStructure.value = null
@@ -5531,11 +5611,16 @@ function changeLineLayoutItem({ type, id, field, value }) {
     if (!canAdminPage('lines', 'edit') || lineDeviceLayoutBusy.value) return
     const item = findLineLayoutItem(type, id)
     if (!item || !['name', 'offsetZ', 'length'].includes(field)) return
+    if (field === 'offsetZ' && (type === 'rail' || getLineLayout(selectedLineEditor.value).lanes.length > 1 && !canMoveLineStructure(getLineLayout(selectedLineEditor.value), type, id))) return
     if (type === 'rail' && field === 'offsetZ' && item.spacing) return
     const next = field === 'name' ? String(value) : Number(value)
     if (field !== 'name' && (!Number.isFinite(next) || field === 'length' && next < 1)) return
     const line = selectedLineEditor.value
     const candidate = JSON.parse(JSON.stringify(getLineLayout(line)))
+    if (field === 'offsetZ' && candidate.placementTemplate) {
+        const band = lineAdjustmentDisplayBand.value
+        if (lineAdjustmentPending.value || !band?.currentInside || next < band.minZ || next > band.maxZ) return alert('请在画布红色虚线范围内微调；范围未检查或已变更时，请先重新检查并确认模板。', { type: 'warning' })
+    }
     candidate[type === 'rail' ? 'rails' : 'lanes'].find(row => row.id === id)[field] = next
     try { applyLineLayoutDraft(line, candidate) }
     catch (error) { alert(error.message, { title: '产线结构未修改', type: 'warning' }) }
@@ -5668,6 +5753,7 @@ function addLineLayoutItem(type) {
     const line = selectedLineEditor.value
     if (!line) return
     const layout = getLineLayout(line)
+    if (layout.placementTemplate) return alert('模板中的导轨和设备线数量由模板决定，请使用上方模板切换。')
     const collection = type === 'rail' ? layout.rails : layout.lanes
     const item = makeLineLayoutItem(type, collection.length)
     const usedOffsets = [...layout.lanes, ...layout.rails].map(entry => numberOrDefault(entry.offsetZ, 0))
@@ -5688,6 +5774,7 @@ function removeLineLayoutItem(type, itemId) {
     const line = selectedLineEditor.value
     if (!line) return
     const layout = getLineLayout(line)
+    if (layout.placementTemplate) return alert('模板中的导轨和设备线数量由模板决定，请使用上方模板切换。')
     const key = type === 'rail' ? 'rails' : 'lanes'
     if (key === 'lanes' && layout.rails.some(rail => rail.spacing?.laneId === itemId)) {
         alert('该设备线仍关联小车导轨间距，请先在导轨设置中取消关联。')
@@ -5724,6 +5811,11 @@ async function saveSelectedLineLayout() {
     lineLayoutSaving.value = true
     try {
         const layout = normalizeLineLayout(getLineLayout(line))
+        if (layout.placementTemplate) {
+            const rows = await measureLineLayoutEnvelopes(line)
+            assertLineTemplateClearance(layout, rows)
+            if (!lineAdjustmentBand(layout, rows)?.currentInside) throw Error('设备线超出红色虚线微调范围，请重新检查模型并确认布局模板后保存；原布局未覆盖')
+        }
         line.layout = layout
         line.layout_json = JSON.stringify(layout, null, 2)
         const boundDeviceIds = syncLineBoundDevicesToLayout(line)
@@ -6065,6 +6157,11 @@ async function saveCurrentFactoryPageDrafts() {
 
     for (const line of lines.value.filter(lineHasUnsavedLayout)) {
         const layout = normalizeLineLayout(getLineLayout(line))
+        if (layout.placementTemplate) {
+            const rows = await measureLineLayoutEnvelopes(line)
+            assertLineTemplateClearance(layout, rows)
+            if (!lineAdjustmentBand(layout, rows)?.currentInside) throw Error('设备线超出红色虚线微调范围，请重新检查模型并确认布局模板后保存；原布局未覆盖')
+        }
         const boundDeviceIds = syncLineBoundDevicesToLayout(line)
         const result = await adminApi.updateLine(line.id, lineLayoutSavePayload(line, layout, boundDeviceIds))
         if (result?.error || result?.success !== true || !Array.isArray(result.devices)) throw new Error(`产线「${line.name}」结构、设备位置与移动路径整批保存失败：${result?.error || '后端未确认保存'}`)
@@ -6187,6 +6284,7 @@ function getDeviceRelativeZOnLine(device, line = selectedLineEditor.value) {
 }
 
 function linePreviewBounds(line) {
+    if (linePreviewDragState?.lineId === line?.id) return linePreviewDragState.bounds
     const layout = getLineLayout(line)
     const baseZ = getLineBaseZ(line?.id)
     const lineDevices = line?.id === selectedLineEditor.value?.id
@@ -6201,7 +6299,8 @@ function linePreviewBounds(line) {
         ...layout.lanes.map(item => Number(item.offsetZ)),
         ...layout.rails.map(item => Number(item.offsetZ)),
         ...lineDevices.map(device => getDeviceRelativeZOnLine(device, line)),
-        ...carts.map(device => getDeviceRelativeZOnLine(device, line))
+        ...carts.map(device => getDeviceRelativeZOnLine(device, line)),
+        ...(line?.id === selectedLineEditor.value?.id && lineAdjustmentMeasuredBand.value ? [lineAdjustmentMeasuredBand.value.minZ, lineAdjustmentMeasuredBand.value.maxZ] : [])
     ].filter(Number.isFinite)
     const maxHalfLength = Math.max(24, ...[...layout.lanes, ...layout.rails].map(item => numberOrDefault(item.length, 60) / 2), ...allX.map(Math.abs)) + 6
     const minZ = Math.min(-8, ...allZ) - 4
@@ -6273,12 +6372,21 @@ function startLinePreviewDrag(type, itemId, mode, event) {
     const item = findLineLayoutItem(type, itemId)
     const stage = event.currentTarget.closest?.('.line-preview-stage')
     if (!item || !stage) return
-    if (type === 'rail' && mode === 'move' && item.spacing) return
+    if (mode === 'move' && !canMoveLineStructure(selectedLineLayout.value, type, itemId)) return
+    if (mode === 'move' && selectedLineLayout.value.placementTemplate) {
+        const band = lineAdjustmentDisplayBand.value
+        if (lineAdjustmentPending.value || !band?.currentInside) return alert('请先检查微调范围；当前设备线在范围外时，重新选择模板并确认预览，不会自动挪动原布局。', { type: 'warning' })
+    }
+    if (mode === 'move' && !selectedLineLayout.value.placementTemplate && selectedLineLayout.value.rails.some(rail => rail.spacing?.laneId === itemId)) {
+        return alert('旧布局使用导轨跟随关系，请先选择上方布局模板，再摆放设备线；导轨位置保持不动。', { type: 'warning' })
+    }
     selectedLineStructure.value = { type, id: itemId }
     event.preventDefault()
     event.stopPropagation()
 
     linePreviewDragState = {
+        lineId: selectedLineEditor.value.id,
+        adjustmentBand: mode === 'move' && selectedLineLayout.value.placementTemplate ? { ...lineAdjustmentDisplayBand.value } : null,
         type,
         itemId,
         mode,
@@ -6304,7 +6412,10 @@ function handleLinePreviewDrag(event) {
     const candidate = JSON.parse(JSON.stringify(getLineLayout(selectedLineEditor.value)))
     const draftItem = candidate[state.type === 'rail' ? 'rails' : 'lanes'].find(row => row.id === state.itemId)
     if (state.mode === 'move') {
-        draftItem.offsetZ = roundLineLayoutValue(previewClientYToZ(event.clientY, state), 0.5)
+        const rawZ = state.startOffsetZ + (event.clientY - state.startY) / Math.max(1, state.rect.height) * (state.bounds.maxZ - state.bounds.minZ)
+        if (state.adjustmentBand && (!lineAdjustmentDisplayBand.value || lineAdjustmentPending.value)) { finishLinePreviewDrag(); return }
+        draftItem.offsetZ = state.adjustmentBand ? clampLineAdjustment(rawZ, state.adjustmentBand) : roundLineLayoutValue(rawZ, 0.5)
+        if (state.adjustmentBand) lineSelectionFeedback.value = rawZ < state.adjustmentBand.minZ || rawZ > state.adjustmentBand.maxZ ? '已到红色虚线边界，不能继续靠近或远离导轨' : '在红色虚线范围内微调；保存后生效'
     } else {
         const deltaUnits = previewDeltaXToUnits(event.clientX, state)
         const signedDelta = state.mode === 'resize-left' ? -deltaUnits : deltaUnits
@@ -7279,6 +7390,18 @@ async function openAdminSetupStep(step) {
                     </svg>
                 </span>
             </div>
+            <div class="admin-factory-switch-slot">
+                <AssetHierarchyBar
+                    v-if="assetHierarchyTabs.has(activeTab) && (activeTab !== 'settings' || ['database', 'performance', 'data'].includes(settingsSubpage))"
+                    :workshops="workshops"
+                    :lines="lines"
+                    :devices="devices"
+                    :workshop-id="assetHierarchyWorkshopId"
+                    :line-id="assetHierarchyLineId"
+                    :device-id="assetHierarchyDeviceId"
+                    :request-switch="requestFactorySwitch"
+                />
+            </div>
             <div class="admin-connection-strip" aria-label="系统连接状态" aria-live="polite">
                 <AdminConnectionStatus
                     :unity-connected="nativeScenePreviewConnected"
@@ -7420,16 +7543,6 @@ async function openAdminSetupStep(step) {
 
             <!-- 右侧内容区 -->
             <main ref="adminContentRef" class="admin-content">
-                <AssetHierarchyBar
-                    v-if="assetHierarchyTabs.has(activeTab) && (activeTab !== 'settings' || ['database', 'performance', 'data'].includes(settingsSubpage))"
-                    :workshops="workshops"
-                    :lines="lines"
-                    :devices="devices"
-                    :workshop-id="assetHierarchyWorkshopId"
-                    :line-id="assetHierarchyLineId"
-                    :device-id="assetHierarchyDeviceId"
-                    :request-switch="requestFactorySwitch"
-                />
                 <Transition name="tab-switch" mode="out-in">
                     <div v-if="canSelectTab(activeTab)" :key="activeTab" class="tab-transition-host">
 
@@ -7966,10 +8079,17 @@ async function openAdminSetupStep(step) {
                                 :layout-dirty="lineLayoutDirty" :layout-saving="lineLayoutSaving"
                                 :device-count="selectedLineEditorDevices.length" :total-devices="selectedLineTotalDeviceCount"
                                 @select="selectLineEditor" @delete="deleteLine" @create="createLine" @edit="editLineDetails"
-                                @add-item="addLineLayoutItem" @remove-item="removeLineLayoutItem" @change-item="changeLineLayoutItem" @change-rail-spacing="changeLineRailSpacing" @save-layout="saveSelectedLineLayout" @focus-item="focusLineStructure"
+                                @add-item="addLineLayoutItem" @remove-item="removeLineLayoutItem" @change-item="changeLineLayoutItem" @change-rail-spacing="changeLineRailSpacing" @choose-placement-template="chooseLinePlacementTemplate" @save-layout="saveSelectedLineLayout" @focus-item="focusLineStructure"
                             />
 
                             <section class="line-planner-preview">
+                                <div v-if="selectedLineLayout.placementTemplate" class="line-adjustment-notice" role="status" aria-live="polite">
+                                    <span v-if="lineAdjustmentPending">正在按当前模型检查微调范围；设备位置不变…</span>
+                                    <span v-else-if="lineAdjustmentError">微调范围未就绪：{{ lineAdjustmentError }}</span>
+                                    <span v-else-if="lineAdjustmentDisplayBand && !lineAdjustmentDisplayBand.currentInside">当前布局超出建议微调范围。请重新选择模板，核对预览后应用；不会自动挪设备。</span>
+                                    <span v-else>红色虚线框内可微调设备线，拖到边界即停止。第二条线由系统约束定位；这是显示布局范围，不是机械行程。</span>
+                                    <button type="button" class="btn btn-sm" :disabled="lineAdjustmentPending || lineDeviceLayoutBusy" @click="recheckLineAdjustmentBand">重新检查范围</button>
+                                </div>
                                 <div v-if="selectedLineEditor" class="line-selection-toolbar" role="toolbar" aria-label="设备多选与间距">
                                     <span class="line-selection-hint">Ctrl / Shift 多选</span>
                                     <button type="button" class="btn btn-sm" :disabled="lineDeviceLayoutBusy" title="仅调整前后位置；选择范围、核对预览后应用" @click="openLineLoadingAlignment('faces')" v-permission="{ page: 'lines', action: 'edit' }">进料面前后对齐</button>
@@ -7988,9 +8108,13 @@ async function openAdminSetupStep(step) {
                                         <span><i class="legend-rail"></i>小车导轨</span>
                                         <span><i class="legend-device"></i>设备</span>
                                         <span><i class="legend-cart"></i>小车</span>
+                                        <span v-if="lineAdjustmentDisplayBand"><i class="legend-adjustment"></i>可微调范围</span>
                                     </div>
                                     <div class="line-preview-axis axis-x">X 方向</div>
                                     <div class="line-preview-axis axis-z">Z 偏移</div>
+                                    <LineAdjustmentOverlay v-if="lineAdjustmentDisplayBand"
+                                        :band="lineAdjustmentDisplayBand" :bounds="linePreviewBounds(selectedLineEditor)"
+                                        :length="selectedLineLayout.lanes.find(row => row.id === lineAdjustmentDisplayBand.laneId)?.length || 60" />
                                     <div
                                         v-if="lineDeviceDrag.active && lineDeviceDrag.alignActive"
                                         class="line-align-guide"
@@ -8001,11 +8125,11 @@ async function openAdminSetupStep(step) {
                                         :key="lane.id"
                                         class="line-map-item line-map-lane"
                                         :class="linePreviewItemClass('lane', lane)"
-                                        :style="linePreviewItemStyle(lane)"
+                                        :style="[linePreviewItemStyle(lane), { cursor: canMoveLineStructure(selectedLineLayout, 'lane', lane.id) ? 'grab' : 'default' }]"
                                         data-line-target-type="lane"
                                         :data-line-target-id="lane.id"
                                         tabindex="-1" role="group" :aria-label="lane.name"
-                                        title="拖动调整设备线偏移，拖左右把手调整长度"
+                                        :title="canMoveLineStructure(selectedLineLayout, 'lane', lane.id) ? '拖动摆放第一条设备线，不能进入小车通道' : '第二条设备线在导轨对侧跟随，不能独立拖动'"
                                         @pointerdown="startLinePreviewDrag('lane', lane.id, 'move', $event)"
                                     >
                                         <span>{{ lane.name }}</span>
@@ -8046,12 +8170,12 @@ async function openAdminSetupStep(step) {
                                         :key="rail.id"
                                         class="line-map-item line-map-rail"
                                         :class="linePreviewItemClass('rail', rail)"
-                                        :style="linePreviewItemStyle(rail)"
+                                        :style="[linePreviewItemStyle(rail), { cursor: 'default' }]"
                                         data-line-target-type="rail"
                                         :data-line-target-id="rail.id"
                                         tabindex="-1" role="group" :aria-label="rail.name"
-                                        title="拖动调整小车导轨偏移，拖左右把手调整长度"
-                                        @pointerdown="startLinePreviewDrag('rail', rail.id, 'move', $event)"
+                                        title="小车导轨位置固定；左右把手可调整显示长度"
+                                        @pointerdown.stop="selectedLineStructure = { type: 'rail', id: rail.id }"
                                     >
                                         <span>{{ rail.name }}</span>
                                         <i class="line-map-handle handle-left" @pointerdown.stop="startLinePreviewDrag('rail', rail.id, 'resize-left', $event)"></i>
@@ -9432,7 +9556,7 @@ async function openAdminSetupStep(step) {
                                     <td class="point-monitor-device-name" :title="deviceHierarchyLabel(pointMonitorDevice(point))">{{ pointMonitorDeviceName(point) }}</td>
                                     <td>{{ pointDisplayName(point) || '-' }}</td>
                                     <td>{{ formatPointUsage(point) }}</td>
-                                    <td class="point-value-cell">{{ formatPointValue(point) }}</td>
+                                    <td class="point-value-cell"><SimulationPointValue :point="point" :current-mode="engineStatus.mode" :can-edit="canAdminApi(`/api/datapoints/${encodeURIComponent(point.id)}/simulation`, 'PUT')" @saved="loadRealtimePointValues()" /></td>
                                     <td>
                                         <span class="point-quality-pill" :class="'quality-' + (point.quality || 'bad')">
                                             {{ formatQualityLabel(point.quality) }}
@@ -10234,6 +10358,13 @@ async function openAdminSetupStep(step) {
     box-shadow: 0 6px 14px rgba(29, 41, 57, .18);
     transition: transform 180ms cubic-bezier(.22, 1, .36, 1), background 180ms ease, box-shadow 180ms ease;
 }
+.admin-factory-switch-slot {
+    display: flex;
+    flex: 1 1 0;
+    align-items: center;
+    justify-content: center;
+    min-width: 0;
+}
 .admin-lock-button:hover { background: linear-gradient(135deg, #475467 0%, #182230 100%); transform: translateY(-1px); box-shadow: 0 10px 22px rgba(29, 41, 57, .24); }
 .admin-lock-button:active { transform: translateY(0) scale(.985); }
 .admin-lock-button:focus-visible { outline: 2px solid #84caff; outline-offset: 2px; }
@@ -10853,6 +10984,7 @@ async function openAdminSetupStep(step) {
     background-size: 34px 34px;
     box-shadow: inset 0 0 0 1px rgba(255,255,255,.62);
 }
+.line-adjustment-notice{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;padding:10px 14px;margin:10px 12px 0;border:1px solid #f0d1d3;border-radius:8px;background:#fff8f8;color:#9d3f45;font-size:calc(13px * var(--admin-font-scale,1));line-height:1.6}
 .line-preview-stage::before {
     content: '';
     position: absolute;
@@ -10900,6 +11032,7 @@ async function openAdminSetupStep(step) {
 .legend-rail { background: #c9953e; }
 .legend-device { background: #596873; }
 .legend-cart { background: #d4a43c; }
+.line-preview-legend i.legend-adjustment { height:10px; width:18px; border:1.5px dashed #d34e53; border-radius:2px; background:transparent; }
 .line-preview-axis {
     position: absolute;
     z-index: 4;

@@ -3,8 +3,12 @@ import { computed, nextTick, onMounted, onUnmounted, provide, reactive, ref, wat
 import { useRoute, useRouter } from 'vue-router'
 import LoadingExperience from '../components/LoadingExperience.vue'
 import SceneLoadingIndicator from '../components/SceneLoadingIndicator.vue'
+import SceneCameraControls from '../components/SceneCameraControls.vue'
+import ShellTransparencyButton from '../components/ShellTransparencyButton.vue'
+import { useShellTransparency } from '../runtime/useShellTransparency.js'
 import { useFactoryConfig } from '../config/factoryConfig.js'
 import { createDashboardDataStore } from '../runtime/DataStore.js'
+import { createPointValueIndex } from '../runtime/pointValueIndex.js'
 import { API_BASE } from '../runtime/backendEndpoint.js'
 import { adminFetch, adminSession } from '../runtime/adminSession.js'
 import { createVoiceAnnouncer } from '../runtime/VoiceAnnouncer.js'
@@ -37,12 +41,27 @@ import { tooltipHoverContentTarget, tooltipHoverPointer } from '../runtime/toolt
 import { reconcileOverlayHitTargets } from '../runtime/overlayHitRegions.js'
 import { resolveTooltipTemplate } from '../../../shared/tooltipTemplates.mjs'
 import { overviewEntryStatus } from '../runtime/factoryNavigationReadiness.js'
+import { createOverlayStartup } from '../../../shared/startupLoading.mjs'
 
 const rootRef = ref(null)
 const route = useRoute()
 const router = useRouter()
-const startupLoading = ref(true), startupProgress = ref(6), startupPhase = ref(0), startupStep = ref('正在读取现场配置')
+const startupLoading = ref(true), startupProgress = ref(0), startupPhase = ref(0), startupStep = ref('正在读取现场配置')
 const nativeLoadingManaged = ref(Boolean(window.__DIGITAL_TWIN_NATIVE_LOADING__))
+const startup = createOverlayStartup({
+    requiresNative: Boolean(window.chrome?.webview) && route.query.noVisibleFactory !== '1',
+    onProgress(detail) {
+        if (overlayDisposed) return
+        startupProgress.value = detail.progress; startupPhase.value = detail.phase; startupStep.value = detail.step
+        window.dispatchEvent(new CustomEvent('digital-twin-loading-progress', { detail }))
+    },
+    onReady(detail) {
+        if (overlayDisposed) return
+        postHostMessage({ type:'overlay_ready', pageReady:true, nativeSceneReady:detail.sceneReady, loadId:detail.loadId })
+        startupLoading.value = false
+        scheduleRegionReport()
+    }
+})
 let overlayDisposed = false
 const overlayRequests = new AbortController()
 const voiceAnnouncer = createVoiceAnnouncer() // Explicit designer play_voice actions.
@@ -90,6 +109,7 @@ const runtimeContext = reactive({
     factoryId: '', viewId: 'factory_overview', viewMode: 'factory', sceneReady: false, sceneId: '', workshopId: '', lineId: '', deviceId: '', returnOrigin: null,
     inspectionStage: '', partId: '', partName: '', partDescription: '', partPointIds: [], partPointKeys: [], partDetailViewId: '',
     inspectionEnabled: false, inspectionProgress: 0, inspectionAnimating: false, inspectionPhase: '', inspectionIsolated: false,
+    shellTransparencyAvailable: false, shellTransparent: false, shellControlAnchor: {visible:false},
     inspectionLabelsEnabled: false, inspectionLeaderLines: false, inspectionHoveredPartId: '', inspectionHoverPointer: { visible: false }, inspectionIssues: [], inspectionParts: []
 })
 const playbackNow=useWidgetClock()
@@ -279,12 +299,17 @@ function runtimeContextIsRoot() {
 function applyRuntimeContext(payload, { userNavigation = false } = {}) {
     if (overlayDisposed) return
     if (!payload || typeof payload !== 'object') return
+    startup.nativeContext(payload)
     receivedRuntimeContext = true
     const previousDataContext = [runtimeContext.viewId, runtimeContext.workshopId, runtimeContext.lineId, runtimeContext.deviceId, runtimeContext.partId].join('|')
     const hoverScope = ['factoryId', 'viewId', 'viewMode', 'workshopId', 'lineId']
     if (payload.sceneReady === false || hoverScope.some(key => Object.hasOwn(payload, key) && String(payload[key] || '') !== String(runtimeContext[key] || ''))) {
         runtimeContext.hoveredDeviceId = ''
         runtimeContext.deviceHoverPointer = { visible: false }
+    }
+    if (Object.hasOwn(payload, 'deviceId') && payload.deviceId !== runtimeContext.deviceId
+        || Object.hasOwn(payload, 'viewMode') && payload.viewMode !== 'device') {
+        runtimeContext.shellTransparencyAvailable = false; runtimeContext.shellTransparent = false; runtimeContext.shellControlAnchor = {visible:false}
     }
     Object.assign(runtimeContext, payload, { returnOrigin: payload.returnOrigin || null })
     nextTick(scheduleRegionReport)
@@ -372,25 +397,13 @@ function getByPath(source, path) {
     return String(path).split('.').reduce((current, key) => current?.[key], source)
 }
 
-const pointValues = computed(() => {
-    const result = {}
-    for (const workshop of getWorkshops() || []) {
-        const workshopDevices = [...(workshop.devices || []), ...(workshop.lines || []).flatMap(line => line.devices || [])]
-        for (const device of workshopDevices) {
-            const frame = dataStore.deviceDataMap[device.id] || {}
-            for (const point of device.dataPoints || []) {
-                const category = point.category || point.category_resolved || 'analog'
-                const field = point.value_role || point.name
-                const value = getByPath(frame, `${category}.${field}`)
-                const quality = getByPath(frame, `quality.${category}.${field}`) || dataStore.deviceStatusMap[device.id]?.quality || 'bad'
-                const record = { ...point, value, quality, device_id: device.id, lastReadAt: frame.pointMeta?.[`${category}.${field}`]?.lastReadAt || frame.timestamp || null }
-                result[String(point.id)] = record
-                result[`${device.id}:${point.id}`] = record
-            }
-        }
-    }
-    return result
-})
+const pointIndex = createPointValueIndex(reactive)
+const pointIndexDevices = computed(() => (getWorkshops() || []).flatMap(workshop => [
+    ...(workshop.devices || []), ...(workshop.lines || []).flatMap(line => line.devices || [])
+]).map(device => ({ id: device.id, points: device.dataPoints || [], revision: JSON.stringify(device.dataPoints || []) })))
+watch(() => pointIndexDevices.value.map(device => ({ ...device, frame: dataStore.deviceDataMap[device.id],
+    quality: dataStore.deviceStatusMap[device.id]?.quality || 'bad' })), rows => pointIndex.update(rows), { immediate: true })
+const pointValues = computed(() => pointIndex.records)
 
 function pointForContextKey(deviceId, key) {
     const value = String(key || '').trim()
@@ -450,8 +463,28 @@ watch(dataStore.wsConnected, connected => {
     }
 })
 
+const cameraControlsAvailable = computed(() => !startupLoading.value && runtimeContext.sceneReady !== false && dataStore.wsConnected.value)
+async function sendCameraAction(cameraAction) {
+    if (!cameraControlsAvailable.value || !['zoomIn', 'zoomOut', 'rotateLeft', 'rotateRight', 'fit'].includes(cameraAction)) return false
+    // Only move the live camera. Never publish a view, modify layout, or enter
+    // another scope. In particular, fit must retain the current line/device.
+    const focus = {
+        mode: runtimeContext.viewMode || 'factory', workshopId: runtimeContext.workshopId || '',
+        lineId: runtimeContext.lineId || '', deviceId: runtimeContext.deviceId || '',
+        inspectionStage: runtimeContext.inspectionStage || '', partId: runtimeContext.partId || ''
+    }
+    const response = await adminFetch(`${API_BASE}/native-preview/navigate`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Factory-ID': runtimeContext.factoryId || config.factoryId || '' },
+        signal: overlayRequests.signal,
+        body: JSON.stringify({ action: 'camera', source: 'dashboard_overlay', cameraAction, viewId: runtimeContext.viewId, focus })
+    })
+    const result = await response.json()
+    if (!response.ok || !result.success || !result.sent) throw new Error(result.error || 'Unity 运行端未连接，视角未调整')
+    return true
+}
+
 async function sendInspectionCommand(inspection) {
-    if (overlayDisposed || !runtimeContext.deviceId) return
+    if (overlayDisposed || !runtimeContext.deviceId) return false
     inspectionCommandError.value = ''
     try {
         const response = await adminFetch(`${API_BASE}/native-preview/navigate`, {
@@ -460,8 +493,11 @@ async function sendInspectionCommand(inspection) {
         })
         const result = await response.json()
         if (!response.ok || !result.success || !result.sent) throw new Error(result.error || 'Unity 运行端未连接，操作未执行')
-    } catch (error) { if (!overlayDisposed && error.name !== 'AbortError') inspectionCommandError.value = error.message }
+        return true
+    } catch (error) { if (!overlayDisposed && error.name !== 'AbortError') inspectionCommandError.value = error.message; return false }
 }
+
+const shellTransparency = useShellTransparency({ context:runtimeContext, connected:() => hostConnected.value, send:sendInspectionCommand })
 
 function handleInspectionCommand(command) {
     if (command.command !== 'progress') {
@@ -835,7 +871,7 @@ async function handleRuntimeMessage(message) {
         }
         runtimeContext.hoveredDeviceId = ''
         runtimeContext.deviceHoverPointer = { visible: false }
-        const loaded = await loadConfig(activated)
+        const loaded = await loadConfig(activated || String(route.query.factoryId || config.factoryId || ''))
         if (overlayDisposed || !loaded) return
         if (await leaveHiddenFactory()) return
         factoryVoice.configure(config)
@@ -864,9 +900,18 @@ async function leaveHiddenFactory(hiddenId = '') {
 
 function handleHostMessage(event) {
     if (event.data?.type !== 'overlay_host_state') return
+    const becomingVisible = !hostConnected.value && event.data.visible !== false
     hostConnected.value = event.data.visible !== false
     if (event.data.context) {
         applyRuntimeContext(event.data.context)
+    }
+    // WebView can remain alive but suspended while the designer is on top.
+    // Revalidate published sources on re-entry; do not publish local drafts,
+    // rely on cached literal labels, or reload on every native context tick.
+    if (becomingVisible && !startupLoading.value) {
+        void handleRuntimeMessage({ type:'realtime_resync_required', payload:{ reason:'overlay_visible' } })
+            .catch(error => console.warn('[Overlay] 返回大屏配置同步失败:', error))
+        void dataStore.refreshHealth(true)
     }
     scheduleRegionReport()
 }
@@ -972,12 +1017,7 @@ onMounted(async () => {
     const startupBegan = performance.now()
     standalonePreview.value = !window.chrome?.webview
     nativeLoadingManaged.value = Boolean(window.__DIGITAL_TWIN_NATIVE_LOADING__)
-    const reportStartup = (progress, phase, step) => {
-        startupProgress.value = progress
-        startupPhase.value = phase
-        startupStep.value = step
-        window.dispatchEvent(new CustomEvent('digital-twin-loading-progress', { detail: { progress, phase, step } }))
-    }
+    const reportStartup = startup.webProgress
     reportStartup(8, 0, '正在读取现场配置')
     previousDocumentBackground = document.documentElement.style.background
     previousBodyBackground = document.body.style.background
@@ -1064,13 +1104,10 @@ onMounted(async () => {
     modelProbeTimer = window.setInterval(probeConfiguredModels, 15000)
 
     hostConnected.value = true
-    reportStartup(100, 3, '生产现场已就绪')
     const startupDwell = Math.max(0, 760 - (performance.now() - startupBegan))
     if (startupDwell) await new Promise(resolve => setTimeout(resolve, startupDwell))
     if (overlayDisposed) return
-    postHostMessage({ type: 'overlay_ready' })
-    startupLoading.value = false
-    scheduleRegionReport()
+    startup.webReady()
 })
 
 onUnmounted(() => {
@@ -1122,9 +1159,13 @@ onUnmounted(() => {
                     <button type="button" class="overlay-hierarchy-action" @click="sendInspectionCommand({command:'stage',stage:'exploded'})">拆解</button>
                     <select v-if="runtimeContext.inspectionParts?.length" aria-label="选择部件" :value="runtimeContext.partId || ''" @change="sendInspectionCommand({command:'select',partId:$event.target.value})"><option disabled value="">查看部件</option><option v-for="part in runtimeContext.inspectionParts" :key="part.id" :value="part.id">{{ part.name || part.id }}</option></select>
                 </template>
-                <small v-if="hierarchyBusy" class="overlay-hierarchy-status"><i></i>正在切换</small><small v-if="hierarchyError || inspectionCommandError" class="hierarchy-error" role="alert">{{ hierarchyError || inspectionCommandError }}</small>
+                <small v-if="hierarchyBusy" class="overlay-hierarchy-status"><i></i>正在切换</small><small v-if="hierarchyError || inspectionCommandError || shellTransparency.error.value" class="hierarchy-error" role="alert">{{ hierarchyError || inspectionCommandError || shellTransparency.error.value }}</small>
             </div>
         </nav>
+        <div v-if="runtimeContext.viewMode === 'device' && runtimeContext.inspectionEnabled && ['solid','xray'].includes(runtimeContext.inspectionStage)"
+            class="device-shell-control" data-overlay-hit="true" @pointerenter="trackHoverMotion" @pointerleave="trackHoverMotion" @pointerdown.stop @dblclick.stop>
+            <ShellTransparencyButton :enabled="runtimeContext.shellTransparent" :available="shellTransparency.available.value" :pending="shellTransparency.pending.value" @toggle="shellTransparency.toggle" />
+        </div>
         <div class="overlay-canvas" :class="{ 'is-reference-canvas': presentationDocument?.metadata?.referenceHud === 1 && runtimeContext.viewId === 'factory_overview' }" :style="presentationDocument?.metadata?.referenceHud === 1 && runtimeContext.viewId === 'factory_overview' ? fitHudCanvas(dashboardCanvas, overlayViewport) : undefined">
             <div v-for="widget in navigationWidgets" :key="widget.id" :data-widget-id="widget.id" class="overlay-navigation" :style="controlStyle(widget, 'navigation')">
                 <button
@@ -1206,12 +1247,14 @@ onUnmounted(() => {
                     :device-catalog="playbackDevices" :runtime-context="runtimeContext" :parameters="integration.parameters.value" :parameter-definitions="integration.definitions.value"
                     :selected-part="selectedPart"
                     overlay-mode
+                    native-realtime
                     :preview="true"
                     :data-ready="dataStore.health.readiness.displayReady === true"
                     @action="handleWidgetAction"
                 />
             </div>
         </div>
+        <SceneCameraControls v-if="route.query.noVisibleFactory !== '1'" :available="cameraControlsAvailable" :request-action="sendCameraAction" @geometry-change="trackHoverMotion" />
         <TooltipSurface v-if="tooltipContentTarget && activeTooltipTemplate" :template="activeTooltipTemplate"
             :context="tooltipContext" :pointer-source="getTooltipPointer" :viewport="overlayViewport"
             :metrics="dataStore.metrics" :events="dataStore.events.value" :trend-points="dataStore.trendPoints.value"
@@ -1222,6 +1265,7 @@ onUnmounted(() => {
 </template>
 
 <style>
+.device-shell-control{position:absolute;left:clamp(40px,calc(50% + 190px),calc(100% - 80px));top:12px;z-index:1041;padding:6px;transform:translateX(-50%);pointer-events:auto}
 .empty-factory-surface{position:fixed;inset:0;z-index:10;display:grid;place-items:center;background:#262634;color:#b9bacd;font-size:16px}
 .device-hover-card{max-height:calc(100vh - 24px);overflow:auto}.device-hover-card .inspection-hover-point b{overflow-wrap:anywhere}
 .group-map-return{position:absolute;pointer-events:auto;left:24px;top:100px;z-index:1002;padding:7px 11px;border:1px solid #8598c333;border-radius:16px;color:#aebddd;background:#151d2b44;text-decoration:none;font-size:11px}

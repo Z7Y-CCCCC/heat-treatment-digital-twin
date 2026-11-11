@@ -45,11 +45,13 @@ namespace HeatTreatment.DigitalTwin.Runtime
         private readonly Dictionary<string, JObject> _lineLayouts = new Dictionary<string, JObject>(StringComparer.Ordinal);
         private IReadOnlyDictionary<string, Transform> _roots;
         private IReadOnlyDictionary<string, MobileDeviceMotion> _motions;
+        private readonly BidirectionalTransferRuntime _bidirectional=new BidirectionalTransferRuntime();
 
         public void Configure(IEnumerable<DeviceDto> devices, IEnumerable<ModelAssetDto> models,
             IReadOnlyDictionary<string, Transform> roots, IReadOnlyDictionary<string, MobileDeviceMotion> motions, IEnumerable<LineDto> lines = null)
         {
             _roots = roots; _motions = motions; _devices.Clear(); _movingDevices.Clear(); _inletPorts.Clear(); _outletPorts.Clear();
+            _bidirectional.Configure(devices,models,roots,motions,lines);
             _lineLayouts.Clear();
             foreach (var line in lines ?? Enumerable.Empty<LineDto>())
                 if (line != null && !string.IsNullOrEmpty(line.Id)) _lineLayouts[line.Id] = line.LayoutObject;
@@ -70,6 +72,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 var animation = device.InstanceConfigObject["animationBindings"] as JObject;
                 var config = animation?["transferLink"] as JObject;
                 if (config?.Value<bool?>("enabled") != true) continue;
+                if(config["cycle"]?.Value<bool?>("enabled")==true)continue;
                 retained.Add(device.Id);
                 if (_links.TryGetValue(device.Id, out var prior) && JToken.DeepEquals(prior.Config, config))
                 {
@@ -176,11 +179,13 @@ namespace HeatTreatment.DigitalTwin.Runtime
         private static bool FinitePositive(float value) => float.IsFinite(value) && value > 0;
         public void ApplyInputs(string deviceId, JObject frame)
         {
+            _bidirectional.ApplyInputs(deviceId,frame);
             if (_links.TryGetValue(deviceId ?? "", out var link))
                 link.Presence.Receive(frame, link.PresenceBinding, Time.realtimeSinceStartupAsDouble, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
         }
         public void SuspendInputs()
         {
+            _bidirectional.Suspend();
             foreach (var link in _links.Values) { link.Presence.Suspend(); Hide(link, "采集连接中断"); }
         }
         private string Target(Link link)
@@ -215,6 +220,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
         }
         public void Advance(float deltaTime, double now)
         {
+            _bidirectional.Advance(deltaTime,now);
             foreach (var link in _links.Values)
             {
                 link.Presence.Step(deltaTime, now, link.StaleMs, link.PresenceBinding);
@@ -295,6 +301,6 @@ namespace HeatTreatment.DigitalTwin.Runtime
             if (link.Payload != null) { if (Application.isPlaying) Destroy(link.Payload); else DestroyImmediate(link.Payload); }
             if (link.Material != null) { if (Application.isPlaying) Destroy(link.Material); else DestroyImmediate(link.Material); }
         }
-        private void OnDestroy() { foreach (var link in _links.Values) DisposeLink(link); _links.Clear(); }
+        private void OnDestroy() { _bidirectional.Dispose();foreach (var link in _links.Values) DisposeLink(link); _links.Clear(); }
     }
 }

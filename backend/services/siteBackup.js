@@ -1,7 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { Transform } = require('stream');
+const { Transform, Writable } = require('stream');
 const { pipeline } = require('stream/promises');
 const archiver = require('archiver');
 const unzipper = require('unzipper');
@@ -269,9 +269,9 @@ async function verifyRetainedSiteBackup(item, errors) {
     const stagingDirectory = path.join(SITE_IMPORT_DIR, `verify-${timestampToken()}-${process.pid}-${crypto.randomBytes(4).toString('hex')}`);
     let valid = false;
     try {
-        await extractValidatedArchive(item.filename, stagingDirectory, async ({ declared }) => {
-            await ensureDiskSpace([{ directory: SITE_IMPORT_DIR, bytes: [...declared.values()].reduce((sum, file) => sum + file.size, 0) }], SITE_BACKUP_MIN_FREE_BYTES);
-        });
+        await extractValidatedArchive(item.filename, stagingDirectory, async ({ extractionBytes }) => {
+            await ensureDiskSpace([{ directory: SITE_IMPORT_DIR, bytes: extractionBytes }], SITE_BACKUP_MIN_FREE_BYTES);
+        }, { verificationOnly: true });
         valid = true;
     } catch { /* Unverified archives must never displace a known good recovery point. */ }
     finally {
@@ -635,7 +635,7 @@ function validateManifest(manifest) {
     return { declared, databaseType, databasePath, configPaths };
 }
 
-async function extractValidatedArchive(archiveFilename, stagingDirectory, reserveSpace) {
+async function extractValidatedArchive(archiveFilename, stagingDirectory, reserveSpace, { verificationOnly = false } = {}) {
     const directory = await unzipper.Open.file(archiveFilename);
     const entries = directory.files.filter(entry => entry.type === 'File');
     if (entries.length > MAX_ARCHIVE_ENTRIES) throw new Error('整站备份文件数量超过安全限制');
@@ -655,7 +655,12 @@ async function extractValidatedArchive(archiveFilename, stagingDirectory, reserv
     }
     const manifest = JSON.parse((await readEntryBuffer(manifestEntry, MAX_MANIFEST_BYTES)).toString('utf8'));
     const { declared, databaseType, databasePath, configPaths } = validateManifest(manifest);
-    if (reserveSpace) await reserveSpace({ declared, configPaths });
+    // Retention must still authenticate every byte, but expanding hundreds of
+    // GLBs/audio files only to delete them causes disk/antivirus storms during
+    // realtime rendering. Only DB/outbox integrity checks require real files.
+    const mustMaterialize = archivePath => !verificationOnly || archivePath === databasePath || archivePath === ALARM_OUTBOX_ARCHIVE_PATH;
+    const extractionBytes = [...declared.values()].filter(file => mustMaterialize(file.path)).reduce((sum, file) => sum + file.size, 0);
+    if (reserveSpace) await reserveSpace({ declared, configPaths, extractionBytes });
 
     for (const archivePath of entryMap.keys()) {
         if (archivePath !== 'manifest.json' && !declared.has(archivePath)) {
@@ -668,6 +673,10 @@ async function extractValidatedArchive(archiveFilename, stagingDirectory, reserv
         const declaredEntrySize = Number(entry.uncompressedSize ?? entry.size);
         if (Number.isFinite(declaredEntrySize) && declaredEntrySize !== file.size) {
             throw new Error(`整站备份文件大小校验失败: ${file.path}`);
+        }
+        if (!mustMaterialize(file.path)) {
+            await verifyEntryWithoutExtraction(entry, file);
+            continue;
         }
         const destination = path.join(stagingDirectory, ...file.path.split('/'));
         await fs.promises.mkdir(path.dirname(destination), { recursive: true });
@@ -687,6 +696,19 @@ async function extractValidatedArchive(archiveFilename, stagingDirectory, reserv
         ? path.join(stagingDirectory, ...ALARM_OUTBOX_ARCHIVE_PATH.split('/')) : null;
     if (alarmOutboxFilename) verifyAlarmOutboxSnapshot(alarmOutboxFilename);
     return { manifest, databaseFilename, configPaths, alarmOutboxFilename };
+}
+
+async function verifyEntryWithoutExtraction(entry, file) {
+    let bytes = 0;
+    const hash = crypto.createHash('sha256');
+    const sink = new Writable({ write(chunk, encoding, callback) {
+        bytes += chunk.length;
+        if (bytes > file.size) return callback(new Error(`整站备份文件超过清单大小: ${file.path}`));
+        hash.update(chunk); callback();
+    } });
+    await pipeline(entry.stream(), sink);
+    if (bytes !== file.size) throw new Error(`整站备份文件大小校验失败: ${file.path}`);
+    if (hash.digest('hex') !== file.sha256) throw new Error(`整站备份文件校验失败: ${file.path}`);
 }
 
 async function readEntryBuffer(entry, maxBytes) {

@@ -1,6 +1,7 @@
 <script setup>
 import { computed, onUnmounted, ref } from 'vue'
 import { initialLoadingExperience } from '../runtime/loadingExperienceConfig.js'
+import { loadingPhaseState } from '../../../shared/loadingPhaseProgress.mjs'
 
 const props = defineProps({
   show: { type: Boolean, default: true },
@@ -17,7 +18,8 @@ const phases = [
   { label: '设备模型', caption: 'EQUIPMENT' },
   { label: '实时数据', caption: 'LIVE DATA' }
 ]
-const percentage = computed(() => Math.max(0, Math.min(100, Math.round(Number(props.progress) || 0))))
+const percentage = computed(() => { const n=Number(props.progress); return Number.isFinite(n)?Math.max(0,Math.min(100,Math.round(n))):0 })
+const phaseStates = computed(() => phases.map((_,index)=>loadingPhaseState(props.progress,props.phase,index)))
 
 const modelTiltX = ref(0)
 const modelTiltY = ref(0)
@@ -193,8 +195,14 @@ onUnmounted(() => { cancelAnimationFrame(poseFrame); modelPointer = null })
         </div>
 
         <ol class="loading-phases" aria-hidden="true">
-          <li v-for="(item, index) in phases" :key="item.caption" :class="{ complete: index < phase, current: index === phase }">
-            <span class="loading-phase-marker"><i></i></span>
+          <li v-for="(item, index) in phases" :key="item.caption" :class="{ complete: phaseStates[index].complete, current: phaseStates[index].current }">
+            <span class="loading-phase-marker">
+              <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <circle class="phase-ring-track" cx="12" cy="12" r="10" />
+                <circle class="phase-ring-value" cx="12" cy="12" r="10" pathLength="100" :stroke-dasharray="`${phaseStates[index].progress*100} 100`" transform="rotate(-90 12 12)" />
+                <path v-if="phaseStates[index].complete" class="phase-ring-check" d="m7.5 12 3 3 6-6" />
+              </svg>
+            </span>
             <span class="loading-phase-copy"><strong>{{ item.label }}</strong><small>{{ item.caption }}</small></span>
           </li>
         </ol>
@@ -263,4 +271,15 @@ onUnmounted(() => { cancelAnimationFrame(poseFrame); modelPointer = null })
 .loading-experience.dark .loading-footer{color:#7f8079}
 .loading-experience.dark .loading-footer i{background:#b99c71}
 .loading-experience.dark .loading-progress-track i{background:var(--loading-accent,#a8c3b1)}
+.loading-phase-marker{border:0!important;background:transparent!important;box-shadow:none!important;color:var(--loading-accent,#2563eb)}
+.loading-phase-marker svg{display:block;width:100%;height:100%;overflow:visible}
+.phase-ring-track,.phase-ring-value{stroke:currentColor;stroke-width:1.8;fill:none}
+.phase-ring-track{opacity:.18}.phase-ring-value{stroke-linecap:round;transition:stroke-dasharray .18s ease-out}
+.phase-ring-check{stroke:currentColor;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round}
+.loading-phases li:not(.complete):not(.current) .loading-phase-marker{color:#98a7bf}
+.loading-experience.dark .loading-phase-marker{color:var(--loading-accent,#a8c3b1)}
+.loading-experience.dark .loading-phases li.current .loading-phase-marker{color:#d1b17d}
+.loading-experience.dark .loading-phases li:not(.complete):not(.current) .loading-phase-marker{color:#777871}
+@media(prefers-reduced-motion:reduce){.phase-ring-value{transition:none}}
+
 </style>
