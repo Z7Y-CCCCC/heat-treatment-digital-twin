@@ -9,4 +9,12 @@ function normalizeSceneLoading(value, sceneReady = false) {
     return { loadId, stage: value.stage, total, completed, modelName: text(value.modelName, 180),
         progress: value.stage === 'models' && total > 0 ? completed / total : null };
 }
-module.exports = { normalizeSceneLoading };
+function normalizeStartupLoading(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    const loadId = typeof value.loadId === 'string' ? value.loadId.trim().slice(0, 80) : '';
+    if (!loadId || !Number.isFinite(value.progress) || !Number.isSafeInteger(value.sequence) || value.sequence < 0) return null;
+    const text = (v, limit) => typeof v === 'string' ? v.trim().slice(0, limit) : '';
+    return { loadId, sequence: value.sequence, progress: Math.max(0, Math.min(100, value.progress)),
+        step: text(value.step, 240), detail: text(value.detail, 240) };
+}
+module.exports = { normalizeSceneLoading, normalizeStartupLoading };

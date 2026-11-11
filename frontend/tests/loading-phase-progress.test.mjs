@@ -37,14 +37,14 @@ test('compiled Vue draws four rings, advances only the current arc and replaces 
     patchProp:(n,key,old,value)=>n.props[key]=value,
     insert(n,parent,anchor){n.parent=parent;const old=parent.children.indexOf(n);if(old>=0)parent.children.splice(old,1);const at=parent.children.indexOf(anchor);parent.children.splice(at<0?parent.children.length:at,0,n)},
     remove(n){const at=n.parent?.children.indexOf(n);if(at>=0)n.parent.children.splice(at,1)},parentNode:n=>n.parent,nextSibling:()=>null
-  }),root=node('root'),progress=ref(62),phase=ref(2)
+  }),root=node('root'),progress=ref(61),phase=ref(2)
   const app=renderer.createApp({render:()=>h(Loading,{progress:progress.value,phase:phase.value,config:{theme:'light'}})})
   app.mount(root);environment.beforeRestore(()=>app.unmount())
   const all=(n,p)=>[...(p(n)?[n]:[]),...n.children.flatMap(c=>all(c,p))]
   const arcs=()=>all(root,n=>n.props.class==='phase-ring-value'),checks=()=>all(root,n=>n.props.class==='phase-ring-check')
   assert.equal(arcs().length,4);assert.equal(checks().length,2)
-  assert.equal(arcs()[2].props['stroke-dasharray'],'48 100')
-  progress.value=70;await nextTick();assert.equal(arcs()[2].props['stroke-dasharray'],'80 100');assert.equal(checks().length,2)
+  assert.equal(arcs()[2].props['stroke-dasharray'],'50 100')
+  progress.value=75.5;await nextTick();assert.equal(arcs()[2].props['stroke-dasharray'],'75 100');assert.equal(checks().length,2)
   progress.value=99.9;phase.value=3;await nextTick();assert.equal(checks().length,3)
   progress.value=100;await nextTick();assert.equal(checks().length,4)
   progress.value=0;phase.value=0;await nextTick();assert.equal(checks().length,0,'a real new load resets completion')

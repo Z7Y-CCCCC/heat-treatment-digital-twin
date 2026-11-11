@@ -17,7 +17,7 @@ const { getAdminAuth } = require('./adminAuth');
 const { WsOutboundQueue, defaults: queueDefaults } = require('../utils/wsOutboundQueue');
 const { normalizeInspectionHover } = require('../utils/inspectionHover');
 const { normalizeDeviceHover } = require('../utils/deviceHover');
-const { normalizeSceneLoading } = require('../../shared/sceneLoading.cjs');
+const { normalizeSceneLoading, normalizeStartupLoading } = require('../../shared/sceneLoading.cjs');
 
 function shortText(value, maxLength = 160) {
     return String(value || '').trim().slice(0, maxLength);
@@ -182,6 +182,7 @@ class WsServer {
                                 ? source.sceneReady !== false
                                 : true,
                             sceneLoading: normalizeSceneLoading(source.sceneLoading, source.sceneReady !== false),
+                            startupLoading: normalizeStartupLoading(source.startupLoading),
                             viewMode: mode,
                             sceneId: shortText(source.sceneId, 128),
                             workshopId: shortText(source.workshopId, 128),

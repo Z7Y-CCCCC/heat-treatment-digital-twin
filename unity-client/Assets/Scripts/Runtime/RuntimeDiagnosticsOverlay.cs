@@ -45,6 +45,10 @@ namespace HeatTreatment.DigitalTwin.Runtime
         private bool _darkLoadingTheme;
 
         public bool LoadingVisible => _loadingVisible;
+        public float LoadingProgress => _loadingProgress;
+        public string LoadingStep => _loadingStep;
+        public string LoadingDetail => _loadingDetail;
+        public event Action LoadingChanged;
         public string LoadingThemeName => _darkLoadingTheme ? "dark" : "light";
 
         public void SetLoadingTheme(string theme)
@@ -133,7 +137,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
         public void UpdateLoading(float progress, string step, string detail = null)
         {
             _loadingVisible = true;
-            _loadingProgress = Mathf.Clamp01(progress);
+            _loadingProgress = Mathf.Max(_loadingProgress, Mathf.Clamp01(progress));
             if (!string.IsNullOrWhiteSpace(step)) _loadingStep = step;
             _loadingDetail = string.IsNullOrWhiteSpace(detail) ? string.Empty : detail.Trim();
             ReportLoadingProgress();
@@ -160,6 +164,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
             var safeDetail = (_loadingDetail ?? string.Empty).Replace('\r', ' ').Replace('\n', ' ').Replace('|', ' ');
             var progressText = string.IsNullOrEmpty(safeDetail) ? safeStep : $"{safeStep} · 原因：{safeDetail}";
             Debug.Log($"[StartupProgress] {Mathf.RoundToInt(_loadingProgress * 100f)}|{progressText}");
+            LoadingChanged?.Invoke();
         }
 
         public void RecordRealtimeFrame(long timestamp, int deviceCount)

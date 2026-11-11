@@ -101,8 +101,9 @@ namespace HeatTreatment.DigitalTwin.Rendering
         public async Task<RuntimeModelInstance> InstantiateAsync(
             DeviceDto device,
             Transform parent,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken, Action<string, int, int> loadingProgress = null)
         {
+            var timing = System.Diagnostics.Stopwatch.StartNew();
             if (device == null) throw new ArgumentNullException(nameof(device));
             cancellationToken.ThrowIfCancellationRequested();
             if (_destroyed) throw new ObjectDisposedException(nameof(RuntimeModelLibrary));
@@ -120,6 +121,7 @@ namespace HeatTreatment.DigitalTwin.Rendering
             var key = CacheKey(asset, device.ModelType, useMotion) + (useMotion ? ":motion" : "");
             if (!_templates.TryGetValue(key, out var template))
             {
+                loadingProgress?.Invoke("asset", 0, 0);
                 template = await LoadTemplateSafeAsync(asset, device.ModelType, cancellationToken, useMotion);
                 if (cancellationToken.IsCancellationRequested || _destroyed || configurationVersion != _configurationVersion)
                 {
@@ -135,6 +137,7 @@ namespace HeatTreatment.DigitalTwin.Rendering
                 }
                 else _templates[key] = template;
             }
+            var templateMs = timing.ElapsedMilliseconds;
 
             template.Instances++;
             var leased = template;
@@ -147,7 +150,9 @@ namespace HeatTreatment.DigitalTwin.Rendering
             var currentAsset = asset ?? template.Asset;
             var currentBindings = ReadBindings(currentAsset.MetadataObject);
             var inspection = InspectionConfigResolver.Resolve(currentAsset, device);
-            await InspectionMeshSurface.PrepareStaticIndexesAsync(template.Root, cancellationToken);
+            await InspectionMeshSurface.PrepareStaticIndexesAsync(template.Root, cancellationToken,
+                (done, total) => loadingProgress?.Invoke("picking", done, total));
+            var indexMs = timing.ElapsedMilliseconds - templateMs;
             cancellationToken.ThrowIfCancellationRequested();
             if (_destroyed) throw new ObjectDisposedException(nameof(RuntimeModelLibrary));
             if (configurationVersion != _configurationVersion || template.Disposed) throw new OperationCanceledException("Model metadata changed during instance preparation");
@@ -162,6 +167,7 @@ namespace HeatTreatment.DigitalTwin.Rendering
             driver.Configure(DeviceBindings(currentBindings, device), animationConfig);
             driver.DataTimeoutSeconds = (animationConfig?.Value<float?>("staleMs") ?? 10000) / 1000f;
             if (template.MotionPackage != null) clone.AddComponent<DeviceAnimationDriver>().Configure(device, template.MotionPackage);
+            Debug.Log($"[ModelLoadTiming] device={device.Id}, model={device.ModelType}, templateMs={templateMs}, indexesMs={indexMs}, totalMs={timing.ElapsedMilliseconds}");
             return new RuntimeModelInstance
             {
                 Root = clone,

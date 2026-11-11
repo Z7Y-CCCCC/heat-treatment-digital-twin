@@ -86,14 +86,14 @@ const server = http.createServer((req, res) => {
   await page.waitForFunction(() => document.querySelector('#digital-twin-loading-root').style.getPropertyValue('--dtl-background'));
   assert.equal(await surface.evaluate(el => getComputedStyle(el).backgroundColor), 'rgb(245, 247, 251)');
   await page.evaluate(() => {
-    window.__DIGITAL_TWIN_LOADING_PROGRESS__({ progress: 35, phase: 1, step: '正在装配 7 / 20 个模型' });
+    window.__DIGITAL_TWIN_LOADING_PROGRESS__({ source:'native',loadId:'fixture-load',sequence:1,progress: 35, phase: 1, step: '正在装配 7 / 20 个模型' });
   });
   await page.getByText('35', { exact: true }).waitFor();
   await page.waitForTimeout(650); assert.equal(await page.locator('.dtl-percent span').textContent(), '35');
   await page.evaluate(async () => {
     const node = document.querySelector('.dtl-fill'); window.writes = 0;
     new MutationObserver(m => window.writes += m.length).observe(node, { attributes: true });
-    for (let n = 0; n < 100; n++) window.__DIGITAL_TWIN_LOADING_PROGRESS__({ progress: 62, phase: 2, step: '设备模型' });
+    for (let n = 0; n < 100; n++) window.__DIGITAL_TWIN_LOADING_PROGRESS__({ source:'native',loadId:'fixture-load',sequence:2+n,progress: 62, phase: 2, step: '设备模型' });
     await new Promise(requestAnimationFrame); await new Promise(requestAnimationFrame);
   });
   assert.equal(await page.evaluate(() => window.writes), 1);
@@ -108,7 +108,7 @@ const server = http.createServer((req, res) => {
   check('native loading uses real milestones, coalesces 100 updates into one frame and keeps model dragging without costly image filters');
   await page.emulateMedia({ reducedMotion: 'reduce' });
   assert.equal(await surface.evaluate(el => getComputedStyle(el).transitionDuration), '0s');
-  await page.evaluate(() => { window.__DIGITAL_TWIN_FINISH_LOADING__(); window.__DIGITAL_TWIN_FINISH_LOADING__(); window.__DIGITAL_TWIN_LOADING_PROGRESS__({ progress: 2 }); });
+  await page.evaluate(() => { window.__DIGITAL_TWIN_LOADING_PROGRESS__({source:'native',loadId:'fixture-load',sequence:102,progress:100,phase:3,ready:true,sceneReady:true,webReady:true});window.__DIGITAL_TWIN_FINISH_LOADING__(); window.__DIGITAL_TWIN_FINISH_LOADING__(); window.__DIGITAL_TWIN_LOADING_PROGRESS__({ progress: 2 }); });
   await surface.waitFor({ state: 'detached', timeout: 1500 });
   check('finish is idempotent, clears work/listeners and removes the native cover promptly; reduced-motion is respected');
 

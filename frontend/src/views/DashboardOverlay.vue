@@ -38,12 +38,27 @@ import { tooltipHoverContentTarget, tooltipHoverPointer } from '../runtime/toolt
 import { reconcileOverlayHitTargets } from '../runtime/overlayHitRegions.js'
 import { resolveTooltipTemplate } from '../../../shared/tooltipTemplates.mjs'
 import { overviewEntryStatus } from '../runtime/factoryNavigationReadiness.js'
+import { createOverlayStartup } from '../../../shared/startupLoading.mjs'
 
 const rootRef = ref(null)
 const route = useRoute()
 const router = useRouter()
-const startupLoading = ref(true), startupProgress = ref(6), startupPhase = ref(0), startupStep = ref('正在读取现场配置')
+const startupLoading = ref(true), startupProgress = ref(0), startupPhase = ref(0), startupStep = ref('正在读取现场配置')
 const nativeLoadingManaged = ref(Boolean(window.__DIGITAL_TWIN_NATIVE_LOADING__))
+const startup = createOverlayStartup({
+    requiresNative: Boolean(window.chrome?.webview) && route.query.noVisibleFactory !== '1',
+    onProgress(detail) {
+        if (overlayDisposed) return
+        startupProgress.value = detail.progress; startupPhase.value = detail.phase; startupStep.value = detail.step
+        window.dispatchEvent(new CustomEvent('digital-twin-loading-progress', { detail }))
+    },
+    onReady(detail) {
+        if (overlayDisposed) return
+        postHostMessage({ type:'overlay_ready', pageReady:true, nativeSceneReady:detail.sceneReady, loadId:detail.loadId })
+        startupLoading.value = false
+        scheduleRegionReport()
+    }
+})
 let overlayDisposed = false
 const overlayRequests = new AbortController()
 const voiceAnnouncer = createVoiceAnnouncer() // Explicit designer play_voice actions.
@@ -280,6 +295,7 @@ function runtimeContextIsRoot() {
 function applyRuntimeContext(payload, { userNavigation = false } = {}) {
     if (overlayDisposed) return
     if (!payload || typeof payload !== 'object') return
+    startup.nativeContext(payload)
     receivedRuntimeContext = true
     const previousDataContext = [runtimeContext.viewId, runtimeContext.workshopId, runtimeContext.lineId, runtimeContext.deviceId, runtimeContext.partId].join('|')
     const hoverScope = ['factoryId', 'viewId', 'viewMode', 'workshopId', 'lineId']
@@ -970,12 +986,7 @@ onMounted(async () => {
     const startupBegan = performance.now()
     standalonePreview.value = !window.chrome?.webview
     nativeLoadingManaged.value = Boolean(window.__DIGITAL_TWIN_NATIVE_LOADING__)
-    const reportStartup = (progress, phase, step) => {
-        startupProgress.value = progress
-        startupPhase.value = phase
-        startupStep.value = step
-        window.dispatchEvent(new CustomEvent('digital-twin-loading-progress', { detail: { progress, phase, step } }))
-    }
+    const reportStartup = startup.webProgress
     reportStartup(8, 0, '正在读取现场配置')
     previousDocumentBackground = document.documentElement.style.background
     previousBodyBackground = document.body.style.background
@@ -1062,13 +1073,10 @@ onMounted(async () => {
     modelProbeTimer = window.setInterval(probeConfiguredModels, 15000)
 
     hostConnected.value = true
-    reportStartup(100, 3, '生产现场已就绪')
     const startupDwell = Math.max(0, 760 - (performance.now() - startupBegan))
     if (startupDwell) await new Promise(resolve => setTimeout(resolve, startupDwell))
     if (overlayDisposed) return
-    postHostMessage({ type: 'overlay_ready' })
-    startupLoading.value = false
-    scheduleRegionReport()
+    startup.webReady()
 })
 
 onUnmounted(() => {

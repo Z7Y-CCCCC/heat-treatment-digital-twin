@@ -131,7 +131,7 @@ internal static class DashboardLoadingExperience
             <main class="dtl-card">
               <header class="dtl-heading"><span class="dtl-mark" aria-hidden="true"><i></i><i></i><i></i></span><span class="dtl-kicker">HEAT TREATMENT <i>/</i> DIGITAL TWIN</span><span class="dtl-live"><i></i> SYSTEM STARTUP</span></header>
               <div class="dtl-art"><div class="dtl-glow"></div><div class="dtl-model" aria-label="拖动旋转厂房示意图，滚轮缩放，双击复位"><div class="dtl-model-stage"><img src="/loading/industrial-factory.png" alt="" draggable="false"/><span class="dtl-smoke" data-smoke-index="0" style="left:26%;top:47.6%"></span><span class="dtl-smoke" data-smoke-index="1" style="left:60.5%;top:37%"></span><button type="button" data-loading-effect="lamp" data-tone="cyan" style="left:5.6%;top:53.2%" aria-label="入口状态灯，点击切换" aria-pressed="true" title="入口状态灯 · 点击开关"><i></i></button><button type="button" data-loading-effect="lamp" data-tone="cyan" style="left:18.7%;top:65%" aria-label="输送线状态灯，点击切换" aria-pressed="true" title="输送线状态灯 · 点击开关"><i></i></button><button type="button" data-loading-effect="lamp" data-tone="cyan" style="left:44.6%;top:56.8%" aria-label="热处理设备状态灯，点击切换" aria-pressed="true" title="热处理设备状态灯 · 点击开关"><i></i></button><button type="button" data-loading-effect="lamp" data-tone="cyan" style="left:61.6%;top:53.9%" aria-label="中段设备状态灯，点击切换" aria-pressed="true" title="中段设备状态灯 · 点击开关"><i></i></button><button type="button" data-loading-effect="lamp" data-tone="amber" style="left:76.8%;top:48.9%" aria-label="炉体指示灯，点击切换" aria-pressed="true" title="炉体指示灯 · 点击开关"><i></i></button><button type="button" data-loading-effect="lamp" data-tone="amber" style="left:87.8%;top:42.2%" aria-label="末端设备状态灯，点击切换" aria-pressed="true" title="末端设备状态灯 · 点击开关"><i></i></button><button type="button" data-loading-effect="smoke" data-smoke-index="0" style="left:26%;top:47.6%" aria-label="前段排气烟囱，点击切换排烟" aria-pressed="true" title="前段排气烟囱 · 点击切换排烟"><i></i></button><button type="button" data-loading-effect="smoke" data-smoke-index="1" style="left:60.5%;top:37%" aria-label="主排气烟囱，点击切换排烟" aria-pressed="true" title="主排气烟囱 · 点击切换排烟"><i></i></button><button type="button" data-loading-effect="furnace" style="left:27.3%;top:71.3%" aria-label="入口加热炉，点击点火或熄火" aria-pressed="true" title="入口加热炉 · 点击点火或熄火"><i></i></button><button type="button" data-loading-effect="furnace" style="left:71.6%;top:49.4%" aria-label="主加热炉，点击点火或熄火" aria-pressed="true" title="主加热炉 · 点击点火或熄火"><i></i></button></div></div><span class="dtl-caption"><i></i> FACTORY SYSTEMS <b>INITIALIZING</b></span><span class="dtl-index">拖动旋转 · 滚轮缩放 · 点击设备互动</span></div>
-              <div class="dtl-status"><div><h1>正在准备生产现场</h1><p class="dtl-step">正在读取现场配置</p></div><strong class="dtl-percent"><span>8</span><small>%</small></strong></div>
+              <div class="dtl-status"><div><h1>正在准备生产现场</h1><p class="dtl-step">正在读取现场配置</p></div><strong class="dtl-percent"><span>0</span><small>%</small></strong></div>
               <div class="dtl-track"><i class="dtl-fill"></i></div>
               <ol class="dtl-phases"><li class="current"><span class="dtl-marker"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle class="dtl-ring-track" cx="12" cy="12" r="10"/><circle class="dtl-ring-value" cx="12" cy="12" r="10" pathLength="100" stroke-dasharray="0 100" transform="rotate(-90 12 12)"/><path class="dtl-ring-check" d="m7.5 12 3 3 6-6" style="display:none"/></svg></span><span class="dtl-copy"><strong>现场配置</strong><small>CONFIGURATION</small></span></li><li><span class="dtl-marker"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle class="dtl-ring-track" cx="12" cy="12" r="10"/><circle class="dtl-ring-value" cx="12" cy="12" r="10" pathLength="100" stroke-dasharray="0 100" transform="rotate(-90 12 12)"/><path class="dtl-ring-check" d="m7.5 12 3 3 6-6" style="display:none"/></svg></span><span class="dtl-copy"><strong>三维场景</strong><small>3D SCENE</small></span></li><li><span class="dtl-marker"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle class="dtl-ring-track" cx="12" cy="12" r="10"/><circle class="dtl-ring-value" cx="12" cy="12" r="10" pathLength="100" stroke-dasharray="0 100" transform="rotate(-90 12 12)"/><path class="dtl-ring-check" d="m7.5 12 3 3 6-6" style="display:none"/></svg></span><span class="dtl-copy"><strong>设备模型</strong><small>EQUIPMENT</small></span></li><li><span class="dtl-marker"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle class="dtl-ring-track" cx="12" cy="12" r="10"/><circle class="dtl-ring-value" cx="12" cy="12" r="10" pathLength="100" stroke-dasharray="0 100" transform="rotate(-90 12 12)"/><path class="dtl-ring-check" d="m7.5 12 3 3 6-6" style="display:none"/></svg></span><span class="dtl-copy"><strong>实时数据</strong><small>LIVE DATA</small></span></li></ol>
             </main>
@@ -225,9 +225,10 @@ internal static class DashboardLoadingExperience
           // Mirrored from shared/loadingPhaseProgress.mjs; parity is regression tested.
           function loadingPhaseState(value, phase, index) {
             const number=Number(value), progress=Number.isFinite(number)?Math.max(0,Math.min(100,number)):0
-            const supplied=Number(phase), current=Math.max(0,Math.min(3,Number.isFinite(supplied)?Math.trunc(supplied):Math.floor(progress/25)))
+            const bounds=[0,18,32,90,100]
+            const supplied=Number(phase), current=Math.max(0,Math.min(3,Number.isFinite(supplied)?Math.trunc(supplied):progress<18?0:progress<32?1:progress<90?2:3))
             const complete=index<current||progress>=100
-            return {complete,current:index===current&&!complete,progress:complete?1:index===current?Math.min(.99,Math.max(0,(progress-index*25)/25)):0}
+            return {complete,current:index===current&&!complete,progress:complete?1:index===current?Math.min(.99,Math.max(0,(progress-bounds[index])/(bounds[index+1]-bounds[index]))):0}
           }
           const phases = ['正在读取现场配置', '正在构建三维场景', '正在装配设备模型', '正在连接实时数据'];
           const fill = root.querySelector('.dtl-fill');
@@ -238,7 +239,7 @@ internal static class DashboardLoadingExperience
           const setProgress = (value, phase, step) => {
             const number = Number(value);
             const progress = Number.isFinite(number) ? Math.max(0, Math.min(100, number)) : 0;
-            const current = Math.max(0, Math.min(3, Math.trunc(Number.isFinite(Number(phase)) ? Number(phase) : progress / 25)));
+            const current = Math.max(0, Math.min(3, Math.trunc(Number.isFinite(Number(phase)) ? Number(phase) : progress < 18 ? 0 : progress < 32 ? 1 : progress < 90 ? 2 : 3)));
             const phasesChanged = lastProgress !== progress || lastPhase !== current;
             if (lastProgress !== progress) {
               fill.style.transform = 'scaleX(' + progress / 100 + ')';
@@ -258,11 +259,35 @@ internal static class DashboardLoadingExperience
               lastPhase = current;
             }
           };
-          setProgress(8, 0, phases[0]);
+          setProgress(0, 0, phases[0]);
+          // Mirrored from shared/startupLoading.mjs; VM parity tests run without a browser.
+          function createLoadingProgressTracker(requireNative) {
+            let loadId='',progress=0,phase=0,sequence=-1
+            const retired=new Set()
+            return detail=>{
+              if(!detail||!Number.isFinite(Number(detail.progress)))return null
+              if(requireNative){
+                if(detail.source!=='native'||typeof detail.loadId!=='string'||!detail.loadId||retired.has(detail.loadId)||!Number.isInteger(detail.sequence))return null
+                if(detail.loadId!==loadId){if(loadId)retired.add(loadId);loadId=detail.loadId;progress=0;phase=0;sequence=-1}
+                if(detail.sequence<sequence)return null
+                sequence=detail.sequence
+              }
+              const ready=detail.ready===true&&detail.sceneReady===true&&detail.webReady===true
+              progress=Math.max(progress,Math.max(0,Math.min(requireNative&&!ready?99:100,Number(detail.progress))))
+              phase=Math.max(phase,Math.max(0,Math.min(3,Math.trunc(Number(detail.phase)||0))))
+              return {...detail,loadId,progress,phase,ready}
+            }
+          }
+          const requireNative = window.location.pathname === '/overlay' && new URLSearchParams(window.location.search).get('noVisibleFactory') !== '1';
+          const trackProgress = createLoadingProgressTracker(requireNative);
+          let nativeReady = false;
           let progressFrame = 0, pendingProgress = null;
           window.__DIGITAL_TWIN_LOADING_PROGRESS__ = detail => {
             if (finished) return;
-            pendingProgress = detail;
+            const accepted = trackProgress(detail);
+            if (!accepted) return;
+            nativeReady = accepted.ready;
+            pendingProgress = accepted;
             if (progressFrame) return;
             progressFrame = requestAnimationFrame(() => {
               progressFrame = 0;
@@ -272,7 +297,8 @@ internal static class DashboardLoadingExperience
           const onProgress = event => window.__DIGITAL_TWIN_LOADING_PROGRESS__(event.detail);
           window.addEventListener('digital-twin-loading-progress', onProgress);
           window.__DIGITAL_TWIN_FINISH_LOADING__ = () => {
-            if (finished) return;
+            if (finished) return true;
+            if (requireNative && !nativeReady) return false;
             finished = true;
             cancelAnimationFrame(progressFrame);
             cancelAnimationFrame(modelFrame);
@@ -286,6 +312,7 @@ internal static class DashboardLoadingExperience
               window.__DIGITAL_TWIN_LOADING_PROGRESS__ = null;
               window.__DIGITAL_TWIN_FINISH_LOADING__ = null;
             }, 200);
+            return true;
           };
           // Progress comes from real configuration/model/data milestones. Do not
           // wake the UI every 140ms or overwrite actual progress with a timer.

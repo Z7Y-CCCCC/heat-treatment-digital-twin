@@ -37,6 +37,7 @@ internal sealed class DashboardOverlayForm : Form
     private bool _initialized;
     private bool _navigationReady;
     private bool _pageReportedReady;
+    private readonly Stopwatch _startupTimer = Stopwatch.StartNew();
     private int _navigationVersion;
     private bool _visibleRequested;
     private bool _presentationMode;
@@ -119,6 +120,7 @@ internal sealed class DashboardOverlayForm : Form
             _navigationVersion++;
             _navigationReady = false;
             _pageReportedReady = false;
+            _startupTimer.Restart();
             _webView.IsVisible = false;
             ApplyEmptyInteractionRegion();
         };
@@ -702,6 +704,8 @@ internal sealed class DashboardOverlayForm : Form
             }
             if (type == "overlay_ready")
             {
+                if (!StartupReadiness.CanFinish(args.Source, root)) return;
+                WriteOverlayError($"[StartupGate] pageReady=true, nativeSceneReady={root.TryGetProperty("nativeSceneReady", out var ready) && ready.ValueKind == JsonValueKind.True}, elapsedMs={_startupTimer.ElapsedMilliseconds}");
                 _pageReportedReady = true;
                 if (_navigationReady) _ = FinishLoadingAsync();
                 PostHostState();
@@ -723,10 +727,13 @@ internal sealed class DashboardOverlayForm : Form
         try
         {
             var result = await _webView.CoreWebView2.ExecuteScriptAsync(
-                "(function(){if(typeof window.__DIGITAL_TWIN_FINISH_LOADING__!=='function')return false;window.__DIGITAL_TWIN_FINISH_LOADING__();return true;})()"
+                "(function(){if(typeof window.__DIGITAL_TWIN_FINISH_LOADING__!=='function')return false;return window.__DIGITAL_TWIN_FINISH_LOADING__()===true;})()"
             );
             if (result == "true" && !IsDisposed && _navigationReady && navigationVersion == _navigationVersion)
+            {
                 _reloadCover?.HideCover();
+                WriteOverlayError($"[StartupGate] coverFinished=true, elapsedMs={_startupTimer.ElapsedMilliseconds}");
+            }
         }
         catch (Exception exception)
         {

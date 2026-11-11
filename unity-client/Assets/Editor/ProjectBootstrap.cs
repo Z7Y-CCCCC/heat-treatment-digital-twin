@@ -58,6 +58,7 @@ namespace HeatTreatment.DigitalTwin.Editor
             DeviceEntryNavigationValidation.Validate();
             DeviceHoverRuntimeChecks.Run();
             InspectionFrameBudgetValidation.RunChecks();
+            InspectionIndexBatchValidation.Validate();
             RuntimeFrameMetricsValidation.Validate();
             HoverTransformBatchValidation.Validate();
             IndependentArrivalValidation.Validate();

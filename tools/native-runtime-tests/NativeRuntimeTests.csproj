@@ -33,5 +33,6 @@
     <Compile Include="../../unity-client/Assets/Scripts/Backend/RealtimeMessageQueue.cs" Link="RealtimeMessageQueue.cs" />
     <Compile Include="../../unity-client/Assets/Scripts/Backend/LoopbackDownloadProvider.cs" Link="LoopbackDownloadProvider.cs" />
     <Compile Include="../../native-admin-host/WebContentPolicy.cs" Link="WebContentPolicy.cs" />
+    <Compile Include="../../native-admin-host/StartupReadiness.cs" Link="StartupReadiness.cs" />
   </ItemGroup>
 </Project>

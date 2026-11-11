@@ -98,6 +98,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
         private OrbitCameraController _orbit;
         private bool _sceneReady;
         private JObject _sceneLoading;
+        private int _startupProgressSequence;
         private string _sceneLoadId = string.Empty;
         private bool _inspectionIsolated;
         private CameraClearFlags _inspectionPreviousClearFlags;
@@ -150,6 +151,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
             _diagnostics.SetLoadingTheme(Environment.GetEnvironmentVariable("DIGITAL_TWIN_WINDOW_THEME"));
             _diagnostics.Visible = _settings.showDiagnostics;
             _diagnostics.QualityController = _quality;
+            _diagnostics.LoadingChanged += OnStartupLoadingChanged;
             _diagnostics.BeginLoading();
 
             _dashboard = GetOrAdd<FactoryDashboardController>();
@@ -513,9 +515,10 @@ namespace HeatTreatment.DigitalTwin.Runtime
             _reload?.Cancel();
             _reload?.Dispose();
             _reload = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
-            _diagnostics?.BeginLoading();
             _sceneReady = false;
             _sceneLoadId = Guid.NewGuid().ToString("N");
+            _startupProgressSequence = 0;
+            _diagnostics?.BeginLoading();
             SetSceneLoading("config", 0, 0);
             DestroyCurrentFactory();
             _ = LoadConfigurationLoopAsync(_reload.Token);
@@ -822,7 +825,13 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 var device = placement.Device;
                 SetSceneLoading("models", loadedPlacements, placements.Count, device.Name ?? device.Id);
                 _diagnostics.Activity = $"Loading {device.Name ?? device.Id}";
-                var instance = await _modelLibrary.InstantiateAsync(device, placement.Parent, cancellationToken);
+                var instance = await _modelLibrary.InstantiateAsync(device, placement.Parent, cancellationToken, (stage, done, total) => {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var detail = stage == "asset" ? "正在读取与解析模型资源" : total > 0 ? $"精确拾取索引 {done}/{total}" : "复用精确拾取索引缓存";
+                    var partial = stage == "asset" ? 0 : .5f + .4f * (total > 0 ? (float)done / total : 1);
+                    _diagnostics.UpdateLoading(.32f + .55f * (loadedPlacements + partial) / totalPlacements,
+                        $"正在加载设备模型（{loadedPlacements}/{totalPlacements}）· {device.Name ?? device.Id}", detail);
+                });
                 if (cancellationToken.IsCancellationRequested)
                 {
                     if (instance.Root != null) Destroy(instance.Root);
@@ -876,12 +885,13 @@ namespace HeatTreatment.DigitalTwin.Runtime
             var bounds = CalculateFactoryOverviewBounds();
             RefreshTransferLinks();
             SetSceneLoading("scene", loadedPlacements, placements.Count);
-            _sceneReady = true;
             NormalizeFactoryOverviewViewForEnvironment("factory_overview", "factory");
             _dashboard.CompleteFactory(bounds);
             _environment.RefreshReflectionProbe();
             _diagnostics.UpdateLoading(.96f, "正在连接实时数据");
+            _sceneReady = true;
             _diagnostics.CompleteLoading();
+            PublishDashboardContext("factory", viewId: _dashboard.ActiveViewId ?? "factory_overview");
             _diagnostics.Activity = _diagnostics.FallbackDeviceCount == 0
                 ? "Native factory ready"
                 : "Factory ready; one or more model files used fallback geometry";
@@ -1651,6 +1661,13 @@ namespace HeatTreatment.DigitalTwin.Runtime
             if (_webSocket != null && !_sceneReady) PublishDashboardContext("factory", viewId: "factory_overview");
         }
 
+        private void OnStartupLoadingChanged()
+        {
+            _startupProgressSequence++;
+            if (_authenticated && _webSocket != null && !_sceneReady)
+                PublishDashboardContext("factory", viewId: "factory_overview");
+        }
+
         private void PublishDashboardContext(string mode, string deviceId = "", string lineId = "", string workshopId = "", string viewId = "")
         {
             var normalizedMode = string.IsNullOrWhiteSpace(mode) ? "factory" : mode.ToLowerInvariant();
@@ -1666,6 +1683,8 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 ["viewId"] = viewId ?? string.Empty,
                 ["sceneReady"] = _sceneReady,
                 ["sceneLoading"] = _sceneReady ? null : _sceneLoading?.DeepClone(),
+                ["startupLoading"] = new JObject { ["loadId"] = _sceneLoadId, ["sequence"] = _startupProgressSequence, ["progress"] = _diagnostics.LoadingProgress * 100,
+                    ["step"] = _diagnostics.LoadingStep ?? "", ["detail"] = _diagnostics.LoadingDetail ?? "" },
                 ["viewMode"] = normalizedMode,
                 ["sceneId"] = _config?.Platform?["activeScene"]?["id"]?.Value<string>() ?? string.Empty,
                 ["workshopId"] = workshopId ?? string.Empty,
@@ -2099,6 +2118,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
         private void OnDestroy()
         {
             if (_instance == this) _instance = null;
+            if (_diagnostics != null) _diagnostics.LoadingChanged -= OnStartupLoadingChanged;
             if (_webSocket != null)
             {
                 _webSocket.MessageReceived -= OnRealtimeMessage;

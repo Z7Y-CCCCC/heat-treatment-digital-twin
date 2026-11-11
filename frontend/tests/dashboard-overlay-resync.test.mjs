@@ -22,10 +22,16 @@ for (const match of [...code.matchAll(/from\s+(['"])([^'"]+)\1/g)]) {
 const { default: Overlay } = await import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`)
 Overlay.render = () => null
 
-function fixture(t, { platform = {}, settings = {} } = {}) {
+function fixture(t, { platform = {}, settings = {}, native = false, realMount = false } = {}) {
     const environment = installBrowser(t)
     const sockets = installSockets(environment.replace)
-    window.dispatchEvent = () => {}
+    const progress=[],messages=[]
+    window.dispatchEvent = event => progress.push(event.detail)
+    if(native){window.__DIGITAL_TWIN_NATIVE_LOADING__=true;window.chrome={webview:{addEventListener(){},removeEventListener(){},postMessage:m=>messages.push(m)}}}
+    if(realMount){
+        environment.replace('ResizeObserver',class {observe(){}disconnect(){}})
+        environment.replace('MutationObserver',class {observe(){}disconnect(){}})
+    }
     window.requestAnimationFrame = () => 1
     window.cancelAnimationFrame = () => {}
     document.documentElement = { style: {} }
@@ -48,9 +54,29 @@ function fixture(t, { platform = {}, settings = {} } = {}) {
     app.provide(routerKey, { push(target) { pushes.push(target) }, replace(target) { replacements.push(target) } })
     app.provide(routeLocationKey, { query: {} })
     app.mount({})
+    if(realMount)instance.value.$.setupState.rootRef={querySelectorAll:()=>[]}
     environment.beforeRestore(() => app.unmount())
-    return { state: instance.value.$.setupState, provides: instance.value.$.provides, sockets, request, replacements, pushes, replace: environment.replace, hide() { visible = false }, setDevices(next) { devices = next }, setConfig(next) { settings=next.settings;platform=next.platform }, fail() { failure = true } }
+    return { state: instance.value.$.setupState, provides: instance.value.$.provides, sockets, request, replacements, pushes, progress, messages, replace: environment.replace, hide() { visible = false }, setDevices(next) { devices = next }, setConfig(next) { settings=next.settings;platform=next.platform }, fail() { failure = true } }
 }
+
+test('mounted native overlay keeps the cover after web setup and consumes real scene progress before sending ready once',async t=>{
+    t.mock.timers.enable({apis:['Date','setInterval','setTimeout'],now:100000})
+    const view=fixture(t,{native:true,realMount:true})
+    await settle();t.mock.timers.tick(1000);await settle()
+    assert.equal(view.state.startupLoading,true)
+    assert.equal(view.messages.filter(m=>m.type==='overlay_ready').length,0)
+    const context=(progress,sequence,sceneReady=false)=>({factoryId:'factory_a',viewId:'factory_overview',sceneReady,
+        startupLoading:{loadId:'native-load',sequence,progress,step:'井式炉',detail:'精确拾取索引 64/120'}})
+    await view.state.handleRuntimeMessage({type:'dashboard_context_changed',payload:context(44,1)})
+    assert.equal(view.state.startupProgress,44);assert.match(view.state.startupStep,/64\/120/)
+    await view.state.handleRuntimeMessage({type:'dashboard_context_changed',payload:{sceneReady:true}})
+    assert.equal(view.state.startupLoading,true,'legacy UI fallback must not finish native loading')
+    await view.state.handleRuntimeMessage({type:'dashboard_context_changed',payload:context(100,2,true)})
+    assert.equal(view.state.startupLoading,false)
+    assert.deepEqual(view.messages.filter(m=>m.type==='overlay_ready'),[{type:'overlay_ready',pageReady:true,nativeSceneReady:true,loadId:'native-load'}])
+    assert.ok(view.progress.every(p=>p.source==='native'),'web 8/31/67 must not overwrite model progress')
+    assert.equal(view.progress.at(-1).progress,100)
+})
 
 test('returning from designer revalidates the published navigation sources and factory name once, without publishing drafts', async t => {
     const navigation=content=>({document:{widgets:[{id:'nav',type:'navigation',content}],scene:{views:[]}}})
