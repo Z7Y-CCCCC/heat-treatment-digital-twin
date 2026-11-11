@@ -132,3 +132,30 @@ test('a late batch renderer is reclaimed when its owner was disposed during load
     assert.equal(batch.disposeCount, 1)
     assert.equal(managers[0].batches.length, 0)
 })
+
+test('mirrored and ordinary instances use separate draw groups; changing handedness rebuilds rather than uploading a negative instance matrix',async t=>{
+    const runtime=fixture(t,3),received=[]
+    const devices=runtime.options.workshops[0].lines[0].devices
+    devices[0].instance_config={mirrorX:true};devices[1].instance_config={mirror_x:true}
+    batchInfo={id:'furnace',file_path:'/furnace.glb'};shouldBatch=true
+    batchFactory=(_info,definitions)=>{
+        received.push(definitions.map(d=>d.deviceCfg.id))
+        return Promise.resolve({batchRenderer:{dispose(){}},deviceModels:definitions.map(()=>model())})
+    }
+    await runtime.start()
+    assert.deepEqual(received,[['D0','D1'],['D2']])
+    assert.equal(runtime.furnaces.size,3)
+    devices[0].instance_config={mirrorX:false}
+    assert.equal(runtime.updateDeviceLayout(runtime.options.workshops,'D0'),false,'handedness changes cannot remain in the previous draw group')
+})
+
+test('composer forwards its lightweight material profile through both ordinary and instanced model paths',async t=>{
+ for(const batched of [false,true]){
+  const runtime=fixture(t);runtime.options.renderOptions={profile:'layout-editor'}
+  const options=[]
+  modelFactory=(_definition,_models,o)=>{options.push(o);return Promise.resolve(model())}
+  batchInfo=batched?{id:'batch',file_path:'/batch.glb'}:null;shouldBatch=batched
+  batchFactory=(_info,_definitions,o)=>{options.push(o);return Promise.resolve({batchRenderer:{dispose(){}},deviceModels:[model()]})}
+  await runtime.start();assert.equal(options[0].renderProfile,'layout-editor')
+ }
+})

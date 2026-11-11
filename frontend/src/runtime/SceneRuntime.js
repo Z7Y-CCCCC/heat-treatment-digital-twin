@@ -258,8 +258,14 @@ function runtimeModelKey(deviceCfg, models = []) {
         deviceCfg?.model_file || '',
         deviceCfg?.template_id || '',
         modelInfo?.file_path || '',
-        deviceCfg?.name || ''
+        deviceCfg?.name || '',
+        mirroredDevice(deviceCfg)
     ]);
+}
+
+function mirroredDevice(deviceCfg) {
+    const config = parseInstanceConfig(deviceCfg?.instance_config);
+    return config.mirrorX === true || config.mirror_x === true || config.mirrorAxis === 'x' || config.mirror_axis === 'x';
 }
 
 export class SceneRuntime {
@@ -314,7 +320,7 @@ export class SceneRuntime {
         definitions.forEach((definition, index) => {
             const modelInfo = getBatchableModelInfo(definition.deviceCfg, models || []);
             if (!modelInfo) return;
-            const batchKey = `${modelInfo.id}:${modelInfo.file_path}`;
+            const batchKey = `${modelInfo.id}:${modelInfo.file_path}:${mirroredDevice(definition.deviceCfg) ? 'mirrored' : 'normal'}`;
             if (!batchGroups.has(batchKey)) {
                 batchGroups.set(batchKey, { modelInfo, items: [] });
             }
@@ -328,7 +334,7 @@ export class SceneRuntime {
                 const batch = await createBatchedDeviceRenderer(
                     group.modelInfo,
                     group.items.map(item => item.definition),
-                    { labelConfig: this.options.deviceLabelConfig || {} }
+                    { labelConfig: this.options.deviceLabelConfig || {}, renderProfile: renderOptions?.profile }
                 );
                 if (this.disposed) {
                     batch.batchRenderer.dispose();
@@ -350,7 +356,7 @@ export class SceneRuntime {
 
         await Promise.all(definitions.map(async (definition, index) => {
             if (batchedIndexes.has(index)) return;
-            const deviceModel = await createConfiguredDeviceModel(definition, models || [], { labelConfig: this.options.deviceLabelConfig || {} });
+            const deviceModel = await createConfiguredDeviceModel(definition, models || [], { labelConfig: this.options.deviceLabelConfig || {}, renderProfile: renderOptions?.profile });
             if (this.disposed) {
                 deviceModel.dispose?.();
                 return;
