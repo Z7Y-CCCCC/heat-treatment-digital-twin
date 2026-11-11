@@ -4,6 +4,8 @@ import { useRoute, useRouter } from 'vue-router'
 import LoadingExperience from '../components/LoadingExperience.vue'
 import SceneLoadingIndicator from '../components/SceneLoadingIndicator.vue'
 import SceneCameraControls from '../components/SceneCameraControls.vue'
+import ShellTransparencyButton from '../components/ShellTransparencyButton.vue'
+import { useShellTransparency } from '../runtime/useShellTransparency.js'
 import { useFactoryConfig } from '../config/factoryConfig.js'
 import { createDashboardDataStore } from '../runtime/DataStore.js'
 import { createPointValueIndex } from '../runtime/pointValueIndex.js'
@@ -107,6 +109,7 @@ const runtimeContext = reactive({
     factoryId: '', viewId: 'factory_overview', viewMode: 'factory', sceneReady: false, sceneId: '', workshopId: '', lineId: '', deviceId: '', returnOrigin: null,
     inspectionStage: '', partId: '', partName: '', partDescription: '', partPointIds: [], partPointKeys: [], partDetailViewId: '',
     inspectionEnabled: false, inspectionProgress: 0, inspectionAnimating: false, inspectionPhase: '', inspectionIsolated: false,
+    shellTransparencyAvailable: false, shellTransparent: false, shellControlAnchor: {visible:false},
     inspectionLabelsEnabled: false, inspectionLeaderLines: false, inspectionHoveredPartId: '', inspectionHoverPointer: { visible: false }, inspectionIssues: [], inspectionParts: []
 })
 const playbackNow=useWidgetClock()
@@ -304,6 +307,10 @@ function applyRuntimeContext(payload, { userNavigation = false } = {}) {
         runtimeContext.hoveredDeviceId = ''
         runtimeContext.deviceHoverPointer = { visible: false }
     }
+    if (Object.hasOwn(payload, 'deviceId') && payload.deviceId !== runtimeContext.deviceId
+        || Object.hasOwn(payload, 'viewMode') && payload.viewMode !== 'device') {
+        runtimeContext.shellTransparencyAvailable = false; runtimeContext.shellTransparent = false; runtimeContext.shellControlAnchor = {visible:false}
+    }
     Object.assign(runtimeContext, payload, { returnOrigin: payload.returnOrigin || null })
     nextTick(scheduleRegionReport)
     if (!Object.prototype.hasOwnProperty.call(payload, 'sceneReady')) runtimeContext.sceneReady = true
@@ -477,7 +484,7 @@ async function sendCameraAction(cameraAction) {
 }
 
 async function sendInspectionCommand(inspection) {
-    if (overlayDisposed || !runtimeContext.deviceId) return
+    if (overlayDisposed || !runtimeContext.deviceId) return false
     inspectionCommandError.value = ''
     try {
         const response = await adminFetch(`${API_BASE}/native-preview/navigate`, {
@@ -486,8 +493,11 @@ async function sendInspectionCommand(inspection) {
         })
         const result = await response.json()
         if (!response.ok || !result.success || !result.sent) throw new Error(result.error || 'Unity 运行端未连接，操作未执行')
-    } catch (error) { if (!overlayDisposed && error.name !== 'AbortError') inspectionCommandError.value = error.message }
+        return true
+    } catch (error) { if (!overlayDisposed && error.name !== 'AbortError') inspectionCommandError.value = error.message; return false }
 }
+
+const shellTransparency = useShellTransparency({ context:runtimeContext, connected:() => hostConnected.value, send:sendInspectionCommand })
 
 function handleInspectionCommand(command) {
     if (command.command !== 'progress') {
@@ -1149,9 +1159,13 @@ onUnmounted(() => {
                     <button type="button" class="overlay-hierarchy-action" @click="sendInspectionCommand({command:'stage',stage:'exploded'})">拆解</button>
                     <select v-if="runtimeContext.inspectionParts?.length" aria-label="选择部件" :value="runtimeContext.partId || ''" @change="sendInspectionCommand({command:'select',partId:$event.target.value})"><option disabled value="">查看部件</option><option v-for="part in runtimeContext.inspectionParts" :key="part.id" :value="part.id">{{ part.name || part.id }}</option></select>
                 </template>
-                <small v-if="hierarchyBusy" class="overlay-hierarchy-status"><i></i>正在切换</small><small v-if="hierarchyError || inspectionCommandError" class="hierarchy-error" role="alert">{{ hierarchyError || inspectionCommandError }}</small>
+                <small v-if="hierarchyBusy" class="overlay-hierarchy-status"><i></i>正在切换</small><small v-if="hierarchyError || inspectionCommandError || shellTransparency.error.value" class="hierarchy-error" role="alert">{{ hierarchyError || inspectionCommandError || shellTransparency.error.value }}</small>
             </div>
         </nav>
+        <div v-if="runtimeContext.viewMode === 'device' && runtimeContext.inspectionEnabled && ['solid','xray'].includes(runtimeContext.inspectionStage)"
+            class="device-shell-control" data-overlay-hit="true" @pointerenter="trackHoverMotion" @pointerleave="trackHoverMotion" @pointerdown.stop @dblclick.stop>
+            <ShellTransparencyButton :enabled="runtimeContext.shellTransparent" :available="shellTransparency.available.value" :pending="shellTransparency.pending.value" @toggle="shellTransparency.toggle" />
+        </div>
         <div class="overlay-canvas" :class="{ 'is-reference-canvas': presentationDocument?.metadata?.referenceHud === 1 && runtimeContext.viewId === 'factory_overview' }" :style="presentationDocument?.metadata?.referenceHud === 1 && runtimeContext.viewId === 'factory_overview' ? fitHudCanvas(dashboardCanvas, overlayViewport) : undefined">
             <div v-for="widget in navigationWidgets" :key="widget.id" :data-widget-id="widget.id" class="overlay-navigation" :style="controlStyle(widget, 'navigation')">
                 <button
@@ -1251,6 +1265,7 @@ onUnmounted(() => {
 </template>
 
 <style>
+.device-shell-control{position:absolute;left:clamp(40px,calc(50% + 190px),calc(100% - 80px));top:12px;z-index:1041;padding:6px;transform:translateX(-50%);pointer-events:auto}
 .empty-factory-surface{position:fixed;inset:0;z-index:10;display:grid;place-items:center;background:#262634;color:#b9bacd;font-size:16px}
 .device-hover-card{max-height:calc(100vh - 24px);overflow:auto}.device-hover-card .inspection-hover-point b{overflow-wrap:anywhere}
 .group-map-return{position:absolute;pointer-events:auto;left:24px;top:100px;z-index:1002;padding:7px 11px;border:1px solid #8598c333;border-radius:16px;color:#aebddd;background:#151d2b44;text-decoration:none;font-size:11px}

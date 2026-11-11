@@ -53,6 +53,9 @@ function inspectionContext(source, mode) {
     const active = mode === 'device' && source.inspectionEnabled === true;
     return {
         inspectionEnabled: active,
+        shellTransparencyAvailable: active && source.shellTransparencyAvailable === true,
+        shellTransparent: active && source.shellTransparent === true,
+        shellControlAnchor: projectedPoint(active ? source.shellControlAnchor : null),
         inspectionProgress: active && Number.isFinite(source.inspectionProgress) ? Math.max(0, Math.min(1, source.inspectionProgress)) : 0,
         inspectionAnimating: active && source.inspectionAnimating === true,
         inspectionPhase: active ? shortText(source.inspectionPhase, 32) : '',

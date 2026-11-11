@@ -8,7 +8,8 @@ import { deferred, installBrowser, settle } from './helpers.mjs'
 const url = new URL('../src/components/SceneCameraControls.vue', import.meta.url)
 const source = await readFile(url, 'utf8'), { descriptor } = parse(source)
 assert.deepEqual(compileTemplate({ source: descriptor.template.content, filename: url.pathname, id: 'camera-controls' }).errors, [])
-const compiled = compileScript(descriptor, { id: 'camera-controls' }).content.replace("from 'vue'", `from ${JSON.stringify(import.meta.resolve('vue'))}`)
+let compiled = compileScript(descriptor, { id: 'camera-controls' }).content.replace(/^import EdgeFoldTab from .+$/m, 'const EdgeFoldTab = {}')
+for (const match of [...compiled.matchAll(/from\s+(['"])([^'"]+)\1/g)]) compiled=compiled.replace(match[0],`from ${JSON.stringify(match[2].startsWith('.')?new URL(match[2],url).href:import.meta.resolve(match[2]))}`)
 const { default: Component } = await import(`data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`)
 Component.render = () => null
 async function fixture(t, initial = {}) {
@@ -27,8 +28,9 @@ test('small camera control expands on click and all actions work without wheel i
   assert.deepEqual(f.actions, ['zoomIn', 'zoomOut', 'rotateLeft', 'rotateRight', 'fit'])
   assert.equal(f.state.open, true)
   assert.match(source, /data-overlay-hit="true"/)
-  assert.match(source, /right:max\(16px/)
-  assert.match(source, /bottom:max\(20px/)
+  assert.match(source, /right:max\(6px/)
+  assert.match(source, /bottom:max\(6px/)
+  assert.match(source, /'is-hidden': hidden/)
   assert.match(source, /无需滚轮/)
   assert.doesNotMatch(source, /@wheel|setInterval/)
 })

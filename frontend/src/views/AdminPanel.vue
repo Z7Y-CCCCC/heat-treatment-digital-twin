@@ -12,6 +12,9 @@ import QualityNotice from '../components/QualityNotice.vue'
 import AdminReadingSettings from './admin/components/AdminReadingSettings.vue'
 import AdminConnectionStatus from './admin/components/AdminConnectionStatus.vue'
 import LinePlannerControls from './admin/components/LinePlannerControls.vue'
+import LineAdjustmentOverlay from './admin/components/LineAdjustmentOverlay.vue'
+import { useLineAdjustmentBand } from './admin/composables/useLineAdjustmentBand.js'
+import { clampLineAdjustment, lineAdjustmentBand } from '../../../shared/lineAdjustmentBand.mjs'
 import FactoryVoiceToggle from './admin/components/FactoryVoiceToggle.vue'
 import WorkshopGroundEditor from './admin/components/WorkshopGroundEditor.vue'
 import DataSourceWorkspace from './admin/components/DataSourceWorkspace.vue'
@@ -94,6 +97,7 @@ import GroupPortalSettings from './admin/components/GroupPortalSettings.vue'
 import LoadingExperienceSettings from './admin/components/LoadingExperienceSettings.vue'
 import ModelInspectionPreviewOverlay from './admin/components/ModelInspectionPreviewOverlay.vue'
 import AssetHierarchyBar from './admin/components/AssetHierarchyBar.vue'
+import SimulationPointValue from './admin/components/SimulationPointValue.vue'
 import { InspectionPreview, inspectionCameraPose } from '../runtime/InspectionPreview.js'
 import inspectionConfig from '../../../shared/inspectionConfig.mjs'
 import { adminSession, adminPageCatalog, lockAdmin, refreshAdminSession, canAdminPage, canAdminApi } from '../runtime/adminSession.js'
@@ -5192,6 +5196,9 @@ async function initializeAdminPanel() {
     if (selectedDeviceForPoints.value !== 'all' && !devices.value.some(device => device.id === selectedDeviceForPoints.value)) {
         selectedDeviceForPoints.value = 'all'
     }
+    // A restored monitor tab does not trigger the tab-change watcher on mount.
+    // Start after the authenticated device catalog is ready, including reloads.
+    if (isPointMonitorWorkspace.value) startPointMonitor()
     if (isPointMappingWorkspace.value) await loadDataPoints()
     if (adminPanelDisposed) return
     ensureComposerSelection()
@@ -5537,6 +5544,33 @@ async function measureLineLayoutEnvelopes(line) {
     })
 }
 
+function lineAdjustmentRequest() {
+    const line = selectedLineEditor.value, layout = line && getLineLayout(line)
+    if (activeTab.value !== 'lines' || !layout?.placementTemplate) return null
+    const source = devices.value.filter(device => {
+        const config = parseInstanceConfig(device.instance_config)
+        return device.line_id === line.id || config.laneLineId === line.id || config.railLineId === line.id
+    })
+    const geometry = source.map(device => {
+        const config = parseInstanceConfig(device.instance_config), model = models.value.find(row => row.id === device.model_type)
+        const lane = layout.lanes.find(row => row.id === config.laneId)
+        return { id: device.id, file: device.model_file || model?.file_path, modelId: device.model_type,
+            modelRevision: model?.updated_at, modelMetadata: model?.metadata, modelScale: model?.default_scale,
+            y: device.pos_y, relativeZ: lane ? Number((Number(device.pos_z) - lane.offsetZ).toFixed(6)) : device.pos_z,
+            scale: device.scale, rotation: device.rotation_y, coordinateSpace: device.coordinate_space, config }
+    })
+    const key = snapshotJson({ factory: getFactoryScope(), line: line.id, template: layout.placementTemplate,
+        units: layout.sceneUnitsPerMeter, rails: layout.rails, lanes: layout.lanes.map(({ offsetZ, ...row }) => row), geometry })
+    return { key, layout: JSON.parse(JSON.stringify(layout)), measure: () => measureLineLayoutEnvelopes(line) }
+}
+const { band: lineAdjustmentMeasuredBand, pending: lineAdjustmentPending, error: lineAdjustmentError, refresh: recheckLineAdjustmentBand } = useLineAdjustmentBand(lineAdjustmentRequest)
+const lineAdjustmentDisplayBand = computed(() => {
+    const band = lineAdjustmentMeasuredBand.value
+    if (!band) return null
+    const lane = selectedLineLayout.value.lanes.find(row => row.id === band.laneId)
+    return { ...band, currentInside: !!lane && lane.offsetZ >= band.minZ - 1e-6 && lane.offsetZ <= band.maxZ + 1e-6 }
+})
+
 async function chooseLinePlacementTemplate(kind) {
     if (!canAdminPage('lines', 'edit') || lineDeviceLayoutBusy.value || lineCreating.value) return
     const line = selectedLineEditor.value
@@ -5583,6 +5617,10 @@ function changeLineLayoutItem({ type, id, field, value }) {
     if (field !== 'name' && (!Number.isFinite(next) || field === 'length' && next < 1)) return
     const line = selectedLineEditor.value
     const candidate = JSON.parse(JSON.stringify(getLineLayout(line)))
+    if (field === 'offsetZ' && candidate.placementTemplate) {
+        const band = lineAdjustmentDisplayBand.value
+        if (lineAdjustmentPending.value || !band?.currentInside || next < band.minZ || next > band.maxZ) return alert('请在画布红色虚线范围内微调；范围未检查或已变更时，请先重新检查并确认模板。', { type: 'warning' })
+    }
     candidate[type === 'rail' ? 'rails' : 'lanes'].find(row => row.id === id)[field] = next
     try { applyLineLayoutDraft(line, candidate) }
     catch (error) { alert(error.message, { title: '产线结构未修改', type: 'warning' }) }
@@ -5773,7 +5811,11 @@ async function saveSelectedLineLayout() {
     lineLayoutSaving.value = true
     try {
         const layout = normalizeLineLayout(getLineLayout(line))
-        if (layout.placementTemplate) assertLineTemplateClearance(layout, await measureLineLayoutEnvelopes(line))
+        if (layout.placementTemplate) {
+            const rows = await measureLineLayoutEnvelopes(line)
+            assertLineTemplateClearance(layout, rows)
+            if (!lineAdjustmentBand(layout, rows)?.currentInside) throw Error('设备线超出红色虚线微调范围，请重新检查模型并确认布局模板后保存；原布局未覆盖')
+        }
         line.layout = layout
         line.layout_json = JSON.stringify(layout, null, 2)
         const boundDeviceIds = syncLineBoundDevicesToLayout(line)
@@ -6115,7 +6157,11 @@ async function saveCurrentFactoryPageDrafts() {
 
     for (const line of lines.value.filter(lineHasUnsavedLayout)) {
         const layout = normalizeLineLayout(getLineLayout(line))
-        if (layout.placementTemplate) assertLineTemplateClearance(layout, await measureLineLayoutEnvelopes(line))
+        if (layout.placementTemplate) {
+            const rows = await measureLineLayoutEnvelopes(line)
+            assertLineTemplateClearance(layout, rows)
+            if (!lineAdjustmentBand(layout, rows)?.currentInside) throw Error('设备线超出红色虚线微调范围，请重新检查模型并确认布局模板后保存；原布局未覆盖')
+        }
         const boundDeviceIds = syncLineBoundDevicesToLayout(line)
         const result = await adminApi.updateLine(line.id, lineLayoutSavePayload(line, layout, boundDeviceIds))
         if (result?.error || result?.success !== true || !Array.isArray(result.devices)) throw new Error(`产线「${line.name}」结构、设备位置与移动路径整批保存失败：${result?.error || '后端未确认保存'}`)
@@ -6238,6 +6284,7 @@ function getDeviceRelativeZOnLine(device, line = selectedLineEditor.value) {
 }
 
 function linePreviewBounds(line) {
+    if (linePreviewDragState?.lineId === line?.id) return linePreviewDragState.bounds
     const layout = getLineLayout(line)
     const baseZ = getLineBaseZ(line?.id)
     const lineDevices = line?.id === selectedLineEditor.value?.id
@@ -6252,7 +6299,8 @@ function linePreviewBounds(line) {
         ...layout.lanes.map(item => Number(item.offsetZ)),
         ...layout.rails.map(item => Number(item.offsetZ)),
         ...lineDevices.map(device => getDeviceRelativeZOnLine(device, line)),
-        ...carts.map(device => getDeviceRelativeZOnLine(device, line))
+        ...carts.map(device => getDeviceRelativeZOnLine(device, line)),
+        ...(line?.id === selectedLineEditor.value?.id && lineAdjustmentMeasuredBand.value ? [lineAdjustmentMeasuredBand.value.minZ, lineAdjustmentMeasuredBand.value.maxZ] : [])
     ].filter(Number.isFinite)
     const maxHalfLength = Math.max(24, ...[...layout.lanes, ...layout.rails].map(item => numberOrDefault(item.length, 60) / 2), ...allX.map(Math.abs)) + 6
     const minZ = Math.min(-8, ...allZ) - 4
@@ -6325,6 +6373,10 @@ function startLinePreviewDrag(type, itemId, mode, event) {
     const stage = event.currentTarget.closest?.('.line-preview-stage')
     if (!item || !stage) return
     if (mode === 'move' && !canMoveLineStructure(selectedLineLayout.value, type, itemId)) return
+    if (mode === 'move' && selectedLineLayout.value.placementTemplate) {
+        const band = lineAdjustmentDisplayBand.value
+        if (lineAdjustmentPending.value || !band?.currentInside) return alert('请先检查微调范围；当前设备线在范围外时，重新选择模板并确认预览，不会自动挪动原布局。', { type: 'warning' })
+    }
     if (mode === 'move' && !selectedLineLayout.value.placementTemplate && selectedLineLayout.value.rails.some(rail => rail.spacing?.laneId === itemId)) {
         return alert('旧布局使用导轨跟随关系，请先选择上方布局模板，再摆放设备线；导轨位置保持不动。', { type: 'warning' })
     }
@@ -6333,6 +6385,8 @@ function startLinePreviewDrag(type, itemId, mode, event) {
     event.stopPropagation()
 
     linePreviewDragState = {
+        lineId: selectedLineEditor.value.id,
+        adjustmentBand: mode === 'move' && selectedLineLayout.value.placementTemplate ? { ...lineAdjustmentDisplayBand.value } : null,
         type,
         itemId,
         mode,
@@ -6358,7 +6412,10 @@ function handleLinePreviewDrag(event) {
     const candidate = JSON.parse(JSON.stringify(getLineLayout(selectedLineEditor.value)))
     const draftItem = candidate[state.type === 'rail' ? 'rails' : 'lanes'].find(row => row.id === state.itemId)
     if (state.mode === 'move') {
-        draftItem.offsetZ = roundLineLayoutValue(previewClientYToZ(event.clientY, state), 0.5)
+        const rawZ = state.startOffsetZ + (event.clientY - state.startY) / Math.max(1, state.rect.height) * (state.bounds.maxZ - state.bounds.minZ)
+        if (state.adjustmentBand && (!lineAdjustmentDisplayBand.value || lineAdjustmentPending.value)) { finishLinePreviewDrag(); return }
+        draftItem.offsetZ = state.adjustmentBand ? clampLineAdjustment(rawZ, state.adjustmentBand) : roundLineLayoutValue(rawZ, 0.5)
+        if (state.adjustmentBand) lineSelectionFeedback.value = rawZ < state.adjustmentBand.minZ || rawZ > state.adjustmentBand.maxZ ? '已到红色虚线边界，不能继续靠近或远离导轨' : '在红色虚线范围内微调；保存后生效'
     } else {
         const deltaUnits = previewDeltaXToUnits(event.clientX, state)
         const signedDelta = state.mode === 'resize-left' ? -deltaUnits : deltaUnits
@@ -8026,6 +8083,13 @@ async function openAdminSetupStep(step) {
                             />
 
                             <section class="line-planner-preview">
+                                <div v-if="selectedLineLayout.placementTemplate" class="line-adjustment-notice" role="status" aria-live="polite">
+                                    <span v-if="lineAdjustmentPending">正在按当前模型检查微调范围；设备位置不变…</span>
+                                    <span v-else-if="lineAdjustmentError">微调范围未就绪：{{ lineAdjustmentError }}</span>
+                                    <span v-else-if="lineAdjustmentDisplayBand && !lineAdjustmentDisplayBand.currentInside">当前布局超出建议微调范围。请重新选择模板，核对预览后应用；不会自动挪设备。</span>
+                                    <span v-else>红色虚线框内可微调设备线，拖到边界即停止。第二条线由系统约束定位；这是显示布局范围，不是机械行程。</span>
+                                    <button type="button" class="btn btn-sm" :disabled="lineAdjustmentPending || lineDeviceLayoutBusy" @click="recheckLineAdjustmentBand">重新检查范围</button>
+                                </div>
                                 <div v-if="selectedLineEditor" class="line-selection-toolbar" role="toolbar" aria-label="设备多选与间距">
                                     <span class="line-selection-hint">Ctrl / Shift 多选</span>
                                     <button type="button" class="btn btn-sm" :disabled="lineDeviceLayoutBusy" title="仅调整前后位置；选择范围、核对预览后应用" @click="openLineLoadingAlignment('faces')" v-permission="{ page: 'lines', action: 'edit' }">进料面前后对齐</button>
@@ -8044,9 +8108,13 @@ async function openAdminSetupStep(step) {
                                         <span><i class="legend-rail"></i>小车导轨</span>
                                         <span><i class="legend-device"></i>设备</span>
                                         <span><i class="legend-cart"></i>小车</span>
+                                        <span v-if="lineAdjustmentDisplayBand"><i class="legend-adjustment"></i>可微调范围</span>
                                     </div>
                                     <div class="line-preview-axis axis-x">X 方向</div>
                                     <div class="line-preview-axis axis-z">Z 偏移</div>
+                                    <LineAdjustmentOverlay v-if="lineAdjustmentDisplayBand"
+                                        :band="lineAdjustmentDisplayBand" :bounds="linePreviewBounds(selectedLineEditor)"
+                                        :length="selectedLineLayout.lanes.find(row => row.id === lineAdjustmentDisplayBand.laneId)?.length || 60" />
                                     <div
                                         v-if="lineDeviceDrag.active && lineDeviceDrag.alignActive"
                                         class="line-align-guide"
@@ -9488,7 +9556,7 @@ async function openAdminSetupStep(step) {
                                     <td class="point-monitor-device-name" :title="deviceHierarchyLabel(pointMonitorDevice(point))">{{ pointMonitorDeviceName(point) }}</td>
                                     <td>{{ pointDisplayName(point) || '-' }}</td>
                                     <td>{{ formatPointUsage(point) }}</td>
-                                    <td class="point-value-cell">{{ formatPointValue(point) }}</td>
+                                    <td class="point-value-cell"><SimulationPointValue :point="point" :current-mode="engineStatus.mode" :can-edit="canAdminApi(`/api/datapoints/${encodeURIComponent(point.id)}/simulation`, 'PUT')" @saved="loadRealtimePointValues()" /></td>
                                     <td>
                                         <span class="point-quality-pill" :class="'quality-' + (point.quality || 'bad')">
                                             {{ formatQualityLabel(point.quality) }}
@@ -10916,6 +10984,7 @@ async function openAdminSetupStep(step) {
     background-size: 34px 34px;
     box-shadow: inset 0 0 0 1px rgba(255,255,255,.62);
 }
+.line-adjustment-notice{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;padding:10px 14px;margin:10px 12px 0;border:1px solid #f0d1d3;border-radius:8px;background:#fff8f8;color:#9d3f45;font-size:calc(13px * var(--admin-font-scale,1));line-height:1.6}
 .line-preview-stage::before {
     content: '';
     position: absolute;
@@ -10963,6 +11032,7 @@ async function openAdminSetupStep(step) {
 .legend-rail { background: #c9953e; }
 .legend-device { background: #596873; }
 .legend-cart { background: #d4a43c; }
+.line-preview-legend i.legend-adjustment { height:10px; width:18px; border:1.5px dashed #d34e53; border-radius:2px; background:transparent; }
 .line-preview-axis {
     position: absolute;
     z-index: 4;

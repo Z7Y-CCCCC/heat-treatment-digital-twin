@@ -62,7 +62,7 @@ function normalizeFocus(value) {
 function inspectionCommand(value) {
     const source = safeObject(value);
     const command = source.command;
-    if (!['stage', 'select', 'clear', 'progress', 'isolate', 'labels', 'pause', 'resume'].includes(command)) {
+    if (!['stage', 'select', 'clear', 'progress', 'isolate', 'labels', 'pause', 'resume', 'shell_transparency'].includes(command)) {
         throw new Error('未知的拆解操作');
     }
     const result = { command };
@@ -78,7 +78,7 @@ function inspectionCommand(value) {
         if (typeof source.progress !== 'number' || !Number.isFinite(source.progress) || source.progress < 0 || source.progress > 1) throw new Error('拆解进度必须在 0 到 1 之间');
         result.progress = source.progress;
     }
-    if (command === 'isolate' || command === 'labels') {
+    if (command === 'isolate' || command === 'labels' || command === 'shell_transparency') {
         if (typeof source.enabled !== 'boolean') throw new Error('拆解开关必须为布尔值');
         result.enabled = source.enabled;
     }

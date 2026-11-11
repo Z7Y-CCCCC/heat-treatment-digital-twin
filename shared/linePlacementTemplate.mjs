@@ -103,7 +103,8 @@ export function planLinePlacementTemplate(layout, kind, rows, gapMeters = .6) {
     }
   }
   minimum = Math.ceil(minimum * 10) / 10 // Readable display distance, not a surveyed value.
-  const distance = Math.max(minimum, Math.abs(primary.offsetZ - rail.offsetZ))
+  // Only explicit, confirmed template application selects the measured gap.
+  const distance = minimum
   delete rail.spacing
   next.placementTemplate = { version: 1, kind, railId: rail.id, railOffsetZ: rail.offsetZ, primaryLaneId: primary.id, primarySide: side,
     ...(dual ? { secondaryLaneId: secondary.id } : {}), minimumDistance: minimum }

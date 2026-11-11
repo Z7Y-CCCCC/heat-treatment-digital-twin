@@ -123,6 +123,8 @@ export const adminApi = {
     async getRuntimeConfig(factoryId = '', signal) { return readApiJson(await fetch(`${API_BASE}/config`, { cache: 'no-store', ...(signal ? { signal } : {}), ...(factoryId ? { headers: { 'X-Factory-ID': factoryId } } : {}) }), '读取当前工厂配置失败') },
     // 集团/工厂层级
     async listFactories() { return readApiJson(await fetch(`${API_BASE}/factories`), '读取工厂列表失败') },
+    async setSimulationPointValue(id, value) { return readApiJson(await fetch(`${API_BASE}/datapoints/${pathId(id)}/simulation`, { method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify({value}) }), '修改模拟值失败') },
+    async resetSimulationPointValue(id) { return readApiJson(await fetch(`${API_BASE}/datapoints/${pathId(id)}/simulation`, { method:'DELETE' }), '恢复自动模拟失败') },
     async getFactoryCollectionStatus(signal) { return readApiJson(await fetch(`${API_BASE}/factories/collection-status`, { cache: 'no-store', signal }), '读取工厂采集情况失败') },
     async searchFactoryPlace(countryCode, query) { return readApiJson(await fetch(`${API_BASE}/factories/place-search`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ countryCode, query }) }), '查询海外地点失败') },
     async createFactory(data) { return readApiJson(await fetch(`${API_BASE}/factories`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) }), '创建工厂失败') },

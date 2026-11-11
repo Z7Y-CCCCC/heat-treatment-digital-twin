@@ -128,6 +128,13 @@ class CollectorProcess {
         }
     }
 
+    setSimulationPointValue(point, value, reset = false, factoryId = '') {
+        return this._enqueue(async () => {
+            if (this.closed || this.processStatus.status !== 'running') throw new Error('模拟运行进程未连接');
+            return this._rpc('simulationPoint', { point, value, reset, factoryId }, 3000);
+        });
+    }
+
     _offline(status, message) {
         this.processStatus.status = status;
         this.state = { ...this.state, mode: null,

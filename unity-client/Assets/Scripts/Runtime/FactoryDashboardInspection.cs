@@ -43,6 +43,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
             public ShadowCastingMode OriginalShadowCasting;
             public bool OriginalReceiveShadows;
             public bool IsShell;
+            public bool IsViewShell;
             public bool SurfaceApplied;
             public bool FrostedApplied;
             public InspectionPartState Part;
@@ -84,6 +85,11 @@ namespace HeatTreatment.DigitalTwin.Runtime
             public float TotalDuration = 1f;
             public float XrayAmount;
             public float XrayTarget;
+            public bool ShellTransparent;
+            public bool ShellTransparencyControlled;
+            public bool HasAuthoredShell;
+            public float ShellTransparencyAmount;
+            public int ViewShellCount;
             public float NextContextAt;
             public InspectionContextCache ContextCache;
             public bool HoverSnapshotValid;
@@ -101,7 +107,8 @@ namespace HeatTreatment.DigitalTwin.Runtime
             public Matrix4x4 PickCameraView, PickCameraProjection;
             public Rect PickCameraRect;
             public Bounds ShellLocalBounds;
-            public bool TransitionActive => !Paused && (Mathf.Abs(Clock - TargetClock) > .0001f || Mathf.Abs(XrayAmount - XrayTarget) > .0001f);
+            public bool TransitionActive => (!Paused && (Mathf.Abs(Clock - TargetClock) > .0001f || Mathf.Abs(XrayAmount - XrayTarget) > .0001f))
+                || Mathf.Abs(ShellTransparencyAmount - (ShellTransparent ? 1f : 0f)) > .0001f;
         }
 
         private readonly List<Rect> _inspectionHitRects = new List<Rect>();
@@ -138,7 +145,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 return false;
             }
             var action = command?.Value<string>("command") ?? string.Empty;
-            if (!new[] { "stage", "select", "clear", "progress", "isolate", "labels", "pause", "resume" }.Contains(action))
+            if (!new[] { "stage", "select", "clear", "progress", "isolate", "labels", "pause", "resume", "shell_transparency" }.Contains(action))
             {
                 error = "Unknown inspection command.";
                 return false;
@@ -147,6 +154,11 @@ namespace HeatTreatment.DigitalTwin.Runtime
             if (action == "stage" && stageName != "solid" && stageName != "xray" && stageName != "exploded")
             {
                 error = "Unknown inspection stage.";
+                return false;
+            }
+            if (action == "shell_transparency" && (_selected != device || _mode != DashboardMode.Detail))
+            {
+                error = "Shell transparency requires the currently focused device.";
                 return false;
             }
             if (_selected != device || _mode != DashboardMode.Detail) ShowDetail(device);
@@ -160,6 +172,19 @@ namespace HeatTreatment.DigitalTwin.Runtime
             }
             switch (action)
             {
+                case "shell_transparency":
+                    if (command["enabled"]?.Type != JTokenType.Boolean || runtime.ViewShellCount == 0
+                        || (runtime.Stage != InspectionStage.Solid && runtime.Stage != InspectionStage.Xray)
+                        || Resources.Load<Shader>("RuntimeShaders/InspectionShell") == null)
+                    {
+                        error = "Shell transparency requires an assembled view and configured cover meshes.";
+                        return false;
+                    }
+                    runtime.ShellTransparent = command.Value<bool>("enabled");
+                    runtime.ShellTransparencyControlled = true;
+                    runtime.HoverSnapshotValid = false;
+                    PublishInspectionContext(device);
+                    return true; // No camera, timeline, animation or PLC changes.
                 case "stage":
                     SetInspectionStage(device, ParseInspectionStage(stageName));
                     return true;
@@ -186,6 +211,8 @@ namespace HeatTreatment.DigitalTwin.Runtime
                         error = "Inspection progress must be between 0 and 1.";
                         return false;
                     }
+                    runtime.ShellTransparent = runtime.ShellTransparencyControlled = false;
+                    runtime.ShellTransparencyAmount = 0f;
                     var reversing = runtime.TargetClock < runtime.Clock;
                     runtime.Paused = true;
                     runtime.Clock = progress * runtime.TotalDuration;
@@ -342,12 +369,25 @@ namespace HeatTreatment.DigitalTwin.Runtime
                     OriginalShadowCasting = oldState?.OriginalShadowCasting ?? renderer.shadowCastingMode,
                     OriginalReceiveShadows = oldState?.OriginalReceiveShadows ?? renderer.receiveShadows,
                     IsShell = shells.Contains(renderer),
+                    IsViewShell = IsPackagedCoverRenderer(renderer.transform, runtime.ModelRoot, shells.Contains(renderer)),
                     Part = owner.part,
                     Target = owner.part?.Targets.FirstOrDefault(target => target.Target == owner.node),
                     Surface = new InspectionMeshSurface(renderer)
                 });
             }
+            runtime.ViewShellCount = runtime.Renderers.Count(state => state.IsViewShell);
+            runtime.HasAuthoredShell = runtime.Renderers.Any(state => state.IsShell);
             return runtime;
+        }
+
+        private static bool IsPackagedCoverRenderer(Transform node, Transform root, bool authoredShell)
+        {
+            for (var current = node; current != null && current != root; current = current.parent)
+            {
+                if (ShellTransparencyTargets.IsOpaqueNode(current.name)) return false;
+                if (ShellTransparencyTargets.IsCoverNode(current.name)) return true;
+            }
+            return authoredShell;
         }
 
         private static List<Transform> ResolveInspectionTargets(DeviceInspectionRuntime runtime, string legacyPath, string legacyName,
@@ -504,6 +544,8 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 && runtime.SelectedPart == selectedPart) return;
             runtime.SelectedPart = selectedPart;
             runtime.Stage = stage;
+            runtime.ShellTransparent = runtime.ShellTransparencyControlled = false;
+            runtime.ShellTransparencyAmount = 0f;
             runtime.Isolated = false;
             runtime.HoveredPart = null;
             runtime.HoverSnapshotValid = false;
@@ -526,6 +568,9 @@ namespace HeatTreatment.DigitalTwin.Runtime
             var runtime = _selected?.Inspection;
             if (_mode != DashboardMode.Detail || runtime == null || !runtime.Prepared) return;
             var wasAnimating = runtime.TransitionActive;
+            // Presentation fade is independent of inspection pause and live motion.
+            runtime.ShellTransparencyAmount = Mathf.MoveTowards(runtime.ShellTransparencyAmount,
+                runtime.ShellTransparent ? 1f : 0f, Time.unscaledDeltaTime / .2f);
             if (!runtime.Paused)
             {
                 var playbackSeconds = Time.unscaledDeltaTime * Mathf.Clamp(runtime.Config.PlaybackSpeed, .25f, 3f);
@@ -561,9 +606,10 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 if (state.Renderer == null) continue;
                 var isolatedAway = runtime.Isolated && runtime.SelectedPart != null && state.Part != runtime.SelectedPart;
                 SetInspectionForceOff(state.Renderer, state.OriginalForceOff || isolatedAway || (state.IsShell && shellProgress >= .99999f));
+                if (state.IsShell) ApplyInspectionShell(runtime, state, shellProgress);
+                else if (state.IsViewShell && (runtime.ShellTransparencyAmount > 0f || state.SurfaceApplied))
+                    ApplyInspectionShell(runtime, state, 0f);
                 if (state.Part != null && !state.IsShell) ApplyInspectionFocusMaterials(runtime, state);
-                if (!state.IsShell) continue;
-                ApplyInspectionShell(runtime, state, shellProgress);
             }
         }
 
@@ -633,7 +679,8 @@ namespace HeatTreatment.DigitalTwin.Runtime
 
         private void ApplyInspectionShell(DeviceInspectionRuntime runtime, InspectionRendererState state, float progress)
         {
-            var needsSurface = progress > 0f || runtime.XrayAmount > 0f;
+            var needsSurface = progress > 0f || (!runtime.ShellTransparencyControlled && state.IsShell && runtime.XrayAmount > 0f)
+                || (state.IsViewShell && runtime.ShellTransparencyAmount > 0f);
             if (!needsSurface)
             {
                 if (!state.SurfaceApplied) return;
@@ -662,7 +709,9 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 state.SurfaceApplied = true;
             }
             var shell = runtime.Config.Shell;
-            var alpha = Mathf.Lerp(1f, shell.Opacity, InspectionTimeline.Ease(runtime.XrayAmount, runtime.Config.Easing));
+            var alpha = state.IsShell ? Mathf.Lerp(1f, shell.Opacity, InspectionTimeline.Ease(runtime.XrayAmount, runtime.Config.Easing)) : 1f;
+            if (state.IsViewShell && runtime.ShellTransparencyControlled)
+                alpha = Mathf.Lerp(1f, ShellTransparencyTargets.GhostOpacity, InspectionTimeline.Ease(runtime.ShellTransparencyAmount, "smoothstep"));
             var clipProgress = shell.Transition == "clip" ? progress : 0f;
             if (shell.Transition == "fade") alpha *= 1f - progress;
             var axis = shell.Axis == "x" ? Vector3.right : shell.Axis == "z" ? Vector3.forward : Vector3.up;
@@ -719,6 +768,9 @@ namespace HeatTreatment.DigitalTwin.Runtime
         {
             if (original == null) return null;
             var material = new Material(shader) { name = $"{original.name} / inspection", hideFlags = HideFlags.DontSave };
+            // Matrix uniforms are not ShaderLab Properties. Seed the native
+            // override before the first read (GetMatrix otherwise logs an error).
+            material.SetMatrix(InspectionWorldToModelId, Matrix4x4.identity);
             string First(params string[] names) => names.FirstOrDefault(original.HasProperty);
             var color = First("baseColorFactor", "_BaseColor", "_Color");
             if (color != null) material.SetColor("_BaseColor", original.GetColor(color));
@@ -769,6 +821,9 @@ namespace HeatTreatment.DigitalTwin.Runtime
             var runtime = device?.Inspection;
             if (runtime == null) return;
             runtime.Clock = runtime.TargetClock = runtime.XrayAmount = runtime.XrayTarget = 0f;
+            runtime.ShellTransparent = false;
+            runtime.ShellTransparencyControlled = false;
+            runtime.ShellTransparencyAmount = 0f;
             runtime.Paused = runtime.Isolated = false;
             runtime.SelectedPart = runtime.HoveredPart = null;
             runtime.HoverSnapshotValid = false;
@@ -1333,6 +1388,24 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 } };
             }
             var context = cache.Context;
+            // Reproject the device bounds as the camera moves; never pin this
+            // control to the hierarchy toolbar or to a fixed screen position.
+            if (!(context["shellControlAnchor"] is JObject controlAnchor))
+                context["shellControlAnchor"] = controlAnchor = new JObject();
+            var controlLeft = float.PositiveInfinity; var controlRight = float.NegativeInfinity;
+            var controlTop = float.NegativeInfinity; var controlVisible = false;
+            var controlBounds = device.WorldBounds;
+            for (var corner = 0; corner < 8 && _camera != null; corner++)
+            {
+                var point = _camera.WorldToViewportPoint(controlBounds.center + Vector3.Scale(controlBounds.extents,
+                    new Vector3((corner & 1) == 0 ? -1 : 1, (corner & 2) == 0 ? -1 : 1, (corner & 4) == 0 ? -1 : 1)));
+                if (!float.IsFinite(point.x) || !float.IsFinite(point.y) || point.z <= _camera.nearClipPlane) continue;
+                controlVisible = true;
+                controlLeft = Mathf.Min(controlLeft, point.x); controlRight = Mathf.Max(controlRight, point.x); controlTop = Mathf.Max(controlTop, point.y);
+            }
+            SetInspectionContextValue(controlAnchor, "x", controlVisible ? Mathf.Clamp01((controlLeft + controlRight) * .5f) : .5f);
+            SetInspectionContextValue(controlAnchor, "y", controlVisible ? Mathf.Clamp01(1f - controlTop) : 0f);
+            SetInspectionContextValue(controlAnchor, "visible", controlVisible && controlRight >= 0 && controlLeft <= 1);
             var parts = (JArray)context["inspectionParts"];
             for (var index = 0; index < runtime.Parts.Count; index++)
             {
@@ -1371,6 +1444,9 @@ namespace HeatTreatment.DigitalTwin.Runtime
             }
             SetInspectionContextValue(context, "viewId", _activeViewId ?? string.Empty);
             SetInspectionContextValue(context, "inspectionStage", InspectionStageKey(runtime.Stage));
+            SetInspectionContextValue(context, "shellTransparencyAvailable", runtime.Config.Enabled && runtime.Valid && runtime.ViewShellCount > 0
+                && (runtime.Stage == InspectionStage.Solid || runtime.Stage == InspectionStage.Xray));
+            SetInspectionContextValue(context, "shellTransparent", runtime.ShellTransparencyControlled ? runtime.ShellTransparent : runtime.Stage == InspectionStage.Xray && runtime.HasAuthoredShell);
             SetInspectionContextValue(context, "inspectionProgress", Mathf.Clamp01(runtime.Clock / runtime.TotalDuration));
             SetInspectionContextValue(context, "inspectionAnimating", runtime.TransitionActive);
             SetInspectionContextValue(context, "inspectionPhase", phase);

@@ -15,7 +15,9 @@ let backend, unity, web;
     if (!fs.existsSync(executable)) throw new Error('Build the current Unity client before running this test');
     const sandbox = await createSmokeSandbox('native-inspection');
     const tempering = require('../backend/services/builtinModels').getBuiltinModels().find(model => model.id === 'cad_tempering_furnace_091300');
-    const presets = [...getInspectionPresets(), { modelId: tempering.id, inspection: JSON.parse(tempering.metadata).inspection }];
+    const allPresets = [...getInspectionPresets(), { modelId: tempering.id, inspection: JSON.parse(tempering.metadata).inspection }];
+    const presets = process.env.NATIVE_INSPECTION_MODEL ? allPresets.filter(preset=>preset.modelId===process.env.NATIVE_INSPECTION_MODEL) : allPresets;
+    assert.ok(presets.length, 'Requested inspection smoke model does not exist');
     const db = new Database(sandbox.filename);
     // Cover every registered preset (including the five pit furnaces), not
     // four seeded devices followed by an assertion against all nine models.
@@ -82,6 +84,15 @@ let backend, unity, web;
         await send(deviceId, { command: 'stage', stage: 'solid' });
         const assembled = await next(deviceId, fence, frame => frame.inspectionProgress === 0 && !frame.inspectionAnimating && frame.inspectionStage === 'solid', 'reverse assembly');
         assert.equal(assembled.partId, '');
+        if (assembled.shellTransparencyAvailable) {
+            assert.equal(assembled.shellControlAnchor.visible,true,'the device projects a visible above-model control anchor');
+            fence=contexts.length;await send(deviceId,{command:'shell_transparency',enabled:true});
+            const transparent=await next(deviceId,fence,frame=>frame.shellTransparent===true,'native shell transparency');
+            assert.equal(transparent.viewId,assembled.viewId);assert.equal(transparent.inspectionStage,'solid');assert.equal(transparent.inspectionProgress,0);
+            fence=contexts.length;await send(deviceId,{command:'shell_transparency',enabled:false});
+            await next(deviceId,fence,frame=>frame.shellTransparent===false&&!frame.inspectionAnimating,'native restored shell');
+            console.log(`PASS real Unity ${preset.modelId}: cover transparency/restoration preserves the assembled view and timeline`);
+        }
         results.push({ modelId: preset.modelId, deviceId, parts: exploded.inspectionParts.length, visibleLabels: projected.inspectionParts.filter(part => part.anchor.visible && part.label.visible).length, pointKeys: selected.partPointKeys, checks: ['actual GLB loaded', 'shell and staged explosion', 'spatial labels', 'selected part + PLC context', 'isolation', 'scrub/pause', 'continuous reverse assembly'] });
         console.log(`PASS real Unity ${preset.modelId} (${exploded.inspectionParts.length} parts)`);
     }
