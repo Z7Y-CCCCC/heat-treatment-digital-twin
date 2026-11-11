@@ -26,13 +26,18 @@ function requireTestPath(filename) {
     }
     let ancestor = resolved;
     const missing = [];
-    while (!fs.existsSync(ancestor)) {
-        missing.unshift(path.basename(ancestor));
-        const parent = path.dirname(ancestor);
-        if (parent === ancestor) throw new Error('Cannot resolve the test artifact parent');
-        ancestor = parent;
+    let realDestination;
+    // SQLite can remove a sidecar after an existence probe. Resolve directly
+    // and walk to its parent only on ENOENT, retaining realpath containment
+    // for existing links and propagating permission/other filesystem errors.
+    while (true) {
+        try { realDestination = path.resolve(fs.realpathSync(ancestor), ...missing); break; }
+        catch (error) {
+            const parent = path.dirname(ancestor);
+            if (error.code !== 'ENOENT' || parent === ancestor) throw error;
+            missing.unshift(path.basename(ancestor)); ancestor = parent;
+        }
     }
-    const realDestination = path.resolve(fs.realpathSync(ancestor), ...missing);
     const realRelative = path.relative(rootReal, realDestination);
     if (!realRelative || realRelative === '..' || realRelative.startsWith(`..${path.sep}`) || path.isAbsolute(realRelative)) {
         throw new Error('A test artifact path links outside the dedicated output directory');

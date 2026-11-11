@@ -13,6 +13,29 @@ const { createRunDirectory, requireTestPath, findFreePort, startLoggedProcess, w
     assert.throws(() => createRunDirectory('nested/path'));
     assert.throws(() => requireTestPath(path.join(directory, '..', '..', 'backend', 'data', 'factory.db')));
     assert.notEqual(createRunDirectory('unique-test-run'), createRunDirectory('unique-test-run'));
+    // Reproduce SQLite removing a sidecar at the initial artifact guard,
+    // before the recovery-specific realpath check can handle its absence.
+    const sidecar = path.join(directory, 'factory.db-wal'), originalRealpath = fs.realpathSync;
+    fs.writeFileSync(sidecar, 'owned transient sidecar');
+    let raced = false;
+    try {
+        fs.realpathSync = function (filename, ...args) {
+            if (filename === sidecar && !raced) { raced = true; fs.unlinkSync(sidecar); }
+            return originalRealpath.call(this, filename, ...args);
+        };
+        assert.equal(requireTestPath(sidecar), sidecar);
+        assert.equal(raced, true);
+        assert.equal(fs.existsSync(sidecar), false);
+    } finally { fs.realpathSync = originalRealpath; }
+    fs.writeFileSync(sidecar, 'owned permission fixture');
+    try {
+        fs.realpathSync = function (filename, ...args) {
+            if (filename === sidecar) throw Object.assign(new Error('fixture access denied'), { code: 'EACCES' });
+            return originalRealpath.call(this, filename, ...args);
+        };
+        assert.throws(() => requireTestPath(sidecar), error => error.code === 'EACCES');
+    } finally { fs.realpathSync = originalRealpath; }
+    assert.equal(fs.readFileSync(sidecar, 'utf8'), 'owned permission fixture');
     const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'digital-twin-sandbox-target-'));
     const link = path.join(directory, 'outside-link');
     try {
@@ -60,5 +83,5 @@ const { createRunDirectory, requireTestPath, findFreePort, startLoggedProcess, w
     // The stream may finish flushing in the next turn after child close.
     await new Promise(resolve => setImmediate(resolve));
     assert.equal(fs.readFileSync(logFile, 'utf8').length, 262144);
-    console.log(JSON.stringify({ success: true, checks: 13, artifacts: directory }, null, 2));
+    console.log(JSON.stringify({ success: true, checks: 18, artifacts: directory }, null, 2));
 })().catch(error => { console.error(error.stack || error.message); process.exitCode = 1; });
