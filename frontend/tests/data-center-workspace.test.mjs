@@ -43,7 +43,7 @@ function fixture(t, options = {}) {
 }
 
 test('data center sections consolidate source, point mapping, monitoring and alarm setup',()=>{
-  assert.deepEqual(DATA_CENTER_SECTIONS.map(section=>section.key), ['tables','sources','mapping','monitor','alarms'])
+  assert.deepEqual(DATA_CENTER_SECTIONS.map(section=>section.key), ['tables','sources','mapping','monitor'])
   assert.match(descriptor.template.content, /删除分类不会删除数据或已绑定的组件/)
   assert.match(descriptor.template.content, /不改变原始值或绑定/)
   assert.match(descriptor.template.content, /table-editor/)

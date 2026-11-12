@@ -29,7 +29,11 @@ async function main() {
     const binding = (id, point) => ({ actionId: 'clip:' + id, enabled: true, pointId: point,
         inputMin: 0, inputMax: 1, invert: false, speed: 1, transitionSeconds: 2 });
     await request('/api/devices/motion_one/animations', { method: 'PUT', body: JSON.stringify({ revision: selected.revision,
-        config: { version: 1, staleMs: 1500, bindings: [binding('door', info.pointIds[0]), binding('pumps', info.pointIds[1])] } }) });
+        // The normal five-second diagnostic cadence cannot observe a two-
+        // second stroke. Sample the isolated rig once a second, keeping the
+        // intermediate-pose assertion (not just an endpoint/status check).
+        config: { version: 1, staleMs: 1500, diagnosticLogging:true, diagnosticIntervalSeconds:1,
+            bindings: [binding('door', info.pointIds[0]), binding('pumps', info.pointIds[1])] } }) });
     const exe = path.join(root, 'unity-client/Builds/Windows/HeatTreatmentDigitalTwin.exe');
     const log = path.join(directory, 'unity.log');
     unity = spawn(exe, ['-batchmode', '-force-d3d11', '-screen-fullscreen', '0', '-screen-width', '1280', '-screen-height', '800', '-logFile', log], {

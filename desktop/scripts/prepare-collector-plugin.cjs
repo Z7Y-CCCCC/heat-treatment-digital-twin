@@ -23,6 +23,10 @@ function prepareCollectorPlugin(displayResources, destination, source = project)
     const resources = path.join(destination, 'resources');
     fs.mkdirSync(resources, { recursive: true });
     for (const name of RESOURCE_NAMES) fs.cpSync(path.join(displayResources, name), path.join(resources, name), { recursive: true });
+    // Runtime helper, not a test/build script. Older display resources omitted it.
+    const speechScripts = path.join(resources, 'backend', 'scripts');
+    fs.mkdirSync(speechScripts, { recursive: true });
+    fs.copyFileSync(path.join(source, 'backend', 'scripts', 'generate-voice.ps1'), path.join(speechScripts, 'generate-voice.ps1'));
     for (const name of ['collector-center', 'collector-service']) fs.cpSync(path.join(source, 'desktop', '.cache', name), path.join(resources, name), { recursive: true });
     for (const file of COLLECTOR_FILES) fs.copyFileSync(path.join(source, 'backend', 'services', file), path.join(resources, 'backend', 'services', file));
     fs.writeFileSync(path.join(resources, 'backend', 'distribution.json'), JSON.stringify({ product: 'collector-plugin', collector: true, contentPolicy: 'empty-v1' }));

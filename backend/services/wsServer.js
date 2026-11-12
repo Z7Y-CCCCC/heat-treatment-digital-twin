@@ -18,6 +18,7 @@ const { WsOutboundQueue, defaults: queueDefaults } = require('../utils/wsOutboun
 const { normalizeInspectionHover } = require('../utils/inspectionHover');
 const { normalizeDeviceHover } = require('../utils/deviceHover');
 const { normalizeSceneLoading, normalizeStartupLoading } = require('../../shared/sceneLoading.cjs');
+const HEARTBEAT_INTERVAL_MS = 5000, HEARTBEAT_TIMEOUT_MS = 15000;
 
 function shortText(value, maxLength = 160) {
     return String(value || '').trim().slice(0, maxLength);
@@ -87,6 +88,8 @@ class WsServer {
         this.sceneProjection = null;
         this.sceneProjectionOwner = null;
         this.motionInputResolver = null;
+        this.heartbeatTimer = null;
+        this.lastCommunicationByRole = new Map();
     }
 
     setMotionInputResolver(resolver) {
@@ -108,6 +111,13 @@ class WsServer {
         });
         this.wss = this.wss || wss;
         this.wssInstances.add(wss);
+        // A connected TCP socket alone is not proof of a healthy peer. Native
+        // and browser clients answer standard WebSocket control pings without
+        // a new application protocol or changes to PLC sampling.
+        if (!this.heartbeatTimer) {
+            this.heartbeatTimer = setInterval(() => this.checkHeartbeats(), HEARTBEAT_INTERVAL_MS);
+            this.heartbeatTimer.unref?.();
+        }
 
         // 监听器端口被占用时，底层 WebSocketServer 也会转发 HTTP server 的 error。
         // 必须消费该事件，否则 Node 会把它视为未处理异常并结束整个后台进程。
@@ -120,6 +130,12 @@ class WsServer {
             const clientIp = req.socket.remoteAddress;
             console.log(`[WebSocket] 客户端已连接: ${clientIp} (当前 ${this.clients.size + 1} 个连接)`);
             this.clients.add(ws);
+            ws.lastCommunicationAt = Date.now();
+            const markCommunication = () => {
+                ws.lastCommunicationAt = Date.now();
+                if (ws.clientRole) this.lastCommunicationByRole.set(ws.clientRole, ws.lastCommunicationAt);
+            };
+            ws.on('pong', markCommunication);
             this.outbound.set(ws, new WsOutboundQueue(ws, this.queueOptions));
             if (req.adminSessionToken) {
                 ws.sessionCheckTimer = setInterval(() => {
@@ -134,11 +150,15 @@ class WsServer {
             ws.on('message', (msg) => {
                 try {
                     const data = JSON.parse(msg);
+                    markCommunication();
                     if (data.type === 'ping') {
                         this.send(ws, { type: 'pong', timestamp: Date.now() });
                     } else if (data.type === 'client_hello') {
                         const role = String(data.role || data.payload?.role || '').trim().toLowerCase();
-                        ws.clientRole = ['unity', 'web', 'admin'].includes(role) ? role : '';
+                        const nextRole = ['unity', 'web', 'admin'].includes(role) ? role : '';
+                        if (nextRole !== ws.clientRole) ws.sceneReady = false;
+                        ws.clientRole = nextRole;
+                        markCommunication();
                         if (ws.clientRole === 'web' && this.dashboardContext && ws.readyState === 1) {
                             this.send(ws, { type: 'dashboard_context_changed', payload: this.dashboardContext });
                         }
@@ -204,6 +224,7 @@ class WsServer {
                             ...inspectionContext(source, mode),
                             timestamp: Date.now()
                         };
+                        ws.sceneReady = this.dashboardContext.sceneReady;
                         this.broadcastToRole('dashboard_context_changed', this.dashboardContext, 'web');
                         if(this.dashboardContext.sceneReady===false){this.sceneProjection=null;this.broadcastProjection({available:false,receivedAt:Date.now()});}
                     }
@@ -361,10 +382,33 @@ class WsServer {
         return count;
     }
 
+    checkHeartbeats(now = Date.now()) {
+        for (const client of this.clients) {
+            if (client.readyState !== 1) continue;
+            if (!(client.lastCommunicationAt > 0) || now - client.lastCommunicationAt > HEARTBEAT_TIMEOUT_MS) { client.terminate(); continue; }
+            try { client.ping(); } catch { client.terminate(); }
+        }
+    }
+
+    connectionHealth(role = 'unity', now = Date.now()) {
+        const peers = [...this.clients].filter(client => client.readyState === 1 && client.clientRole === role);
+        const fresh = peers.filter(client => Number(client.lastCommunicationAt) > 0 && now - client.lastCommunicationAt <= HEARTBEAT_TIMEOUT_MS);
+        const lastCommunicationAt = Math.max(0, this.lastCommunicationByRole.get(role) || 0, ...peers.map(client => Number(client.lastCommunicationAt) || 0)) || null;
+        return {
+            status: fresh.length ? 'online' : peers.length ? 'stale' : 'offline',
+            clients: peers.length, connectedClients: fresh.length,
+            sceneReadyClients: fresh.filter(client => client.sceneReady === true).length,
+            lastCommunicationAt, ageMs: lastCommunicationAt ? Math.max(0, now - lastCommunicationAt) : null,
+            heartbeatIntervalMs: HEARTBEAT_INTERVAL_MS, heartbeatTimeoutMs: HEARTBEAT_TIMEOUT_MS
+        };
+    }
+
     /**
      * 关闭 WebSocket 服务
      */
     close() {
+        if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
+        this.heartbeatTimer = null;
         this.motionInputResolver?.dispose();
         this.motionInputResolver = null;
         for (const client of this.clients) {
@@ -379,6 +423,7 @@ class WsServer {
         this.wssInstances.clear();
         this.wss = null;
         this.clients.clear();
+        this.lastCommunicationByRole.clear();
         this.sceneProjection=null;
         this.sceneProjectionOwner=null;
         console.log('[WebSocket] 服务已关闭');

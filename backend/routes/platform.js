@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { getDb, getDbStatus } = require('../db/database');
+const { alarmEventDetails } = require('../services/pointAlarm');
 const {
     releasePayload,
     sortReleasesNewestFirst,
@@ -61,6 +62,7 @@ function formatSqlDateTime(date) {
 }
 
 function publicEvents(rows) {
+    rows = rows.map(row => ({ ...row, ...alarmEventDetails(row) }));
     if (getDbStatus().type !== 'sqlite') return rows;
     return rows.map(row => {
         const value = row.occurred_at;

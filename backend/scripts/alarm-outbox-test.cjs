@@ -16,6 +16,7 @@ delete process.env.SQLITE_RECOVERY_TEMPLATE;
 delete process.env.SQLITE_UPGRADE_TEMPLATE;
 const database = require('../db/database');
 const { AlarmOutbox, getAlarmOutbox, closeAlarmOutbox, snapshotAlarmOutbox } = require('../services/alarmOutbox');
+const { evaluateAlarm, pointAlarmReadings, alarmEventDetails } = require('../services/pointAlarm');
 const results = [];
 const engines = [];
 const journals = [];
@@ -61,6 +62,101 @@ async function check(name, callback) {
 
 async function main() {
     db = await database.getDb();
+    await check('point trigger conditions distinguish zero, nonzero, booleans, legacy thresholds and invalid readings', async () => {
+        for (const [value, expected] of [[0,false],[false,false],[1,true],[true,true],[2,true],[-3,true],['0',false],['2',true]]) {
+            assert.equal(evaluateAlarm(value), expected);
+        }
+        for (const value of [null,undefined,'',' ',NaN,Infinity,'fault',{},[]]) assert.equal(evaluateAlarm(value), null);
+        assert.equal(evaluateAlarm(2,'=1'),false); assert.equal(evaluateAlarm(0,'=0'),true);
+        assert.equal(evaluateAlarm(41,'>40'),true); assert.equal(evaluateAlarm(40,'>=40'),true);
+        assert.equal(evaluateAlarm(0,'not a condition'),null);
+    });
+    await check('simultaneous point alarms record independent text/start/end, ignore bad/stale values and retain history through rename/restart', async () => {
+        const outbox = journal('point-lifecycle'), engine = engineWithDatabase(db, outbox);
+        const start = Date.now() - 2000;
+        function frame(values, timestamp, qualities = {}) {
+            return [{ furnace_id:'point-device', furnace_name:'炉A', timestamp, status:{...values},
+                quality:{status:Object.fromEntries(Object.keys(values).map(key=>[key,qualities[key] || 'good']))},
+                pointMeta:Object.fromEntries(Object.keys(values).map(key=>[`status.${key}`, {
+                    id:key === 'bj1' ? '101' : '102', name:key, label:key === 'bj1' ? '风机过热' : '水压过低',
+                    point_kind:'alarm', alarm_condition:'!=0', timestamp, sample_interval_ms:500
+                }])) }];
+        }
+        await engine._recordAlarmEvents(frame({bj1:0,bj2:0},start));
+        assert.equal(outbox.pending('factory_default'),0);
+        await engine._recordAlarmEvents(frame({bj1:2,bj2:-1},start+100));
+        for(let index=0;index<100;index++) await engine._recordAlarmEvents(frame({bj1:2,bj2:-1},start+200));
+        assert.equal((await db.get("SELECT COUNT(*) AS count FROM event_logs WHERE source_id='point-device'")).count,2);
+        await engine._recordAlarmEvents(frame({bj1:0,bj2:null},start+300,{bj1:'bad'}));
+        await engine._recordAlarmEvents(frame({bj1:0,bj2:0},start-60000));
+        assert.equal((await db.get("SELECT COUNT(*) AS count FROM event_logs WHERE source_id='point-device'")).count,2);
+        await engine.stop();
+        const recovered = engineWithDatabase(db,outbox);
+        const renamed = frame({bj1:0,bj2:2},start+500); renamed[0].pointMeta['status.bj1'].label='已改名称';
+        await recovered._recordAlarmEvents(renamed);
+        const events = await db.all("SELECT * FROM event_logs WHERE source_id='point-device' ORDER BY id");
+        assert.equal(events.length,3);
+        const trigger=alarmEventDetails(events[0]), recovery=alarmEventDetails(events[2]);
+        assert.equal(recovery.alarm_text,'风机过热'); assert.equal(recovery.point_id,'101');
+        assert.equal(recovery.alarm_started_at,new Date(start+100).toISOString());
+        assert.equal(recovery.alarm_ended_at,new Date(start+500).toISOString());
+        assert.equal(recovery.alarm_active,false); assert.deepEqual(trigger,recovery);
+        assert.equal(alarmEventDetails(events[1]).alarm_ended_at,null);
+        const browse = require('../services/dataCenterBrowse');
+        const browsed = await browse.browseTable('factory_default','internal_events',{q:'风机过热'});
+        assert.equal(browsed.records.find(row=>row.id===`event_${events[0].id}`).alarm_ended_at,recovery.alarm_ended_at);
+        const app = require('express')();
+        app.use((req,res,next)=>{req.factoryId='factory_default';next()});
+        app.use('/api/platform',require('../routes/platform'));
+        const server = await new Promise(resolve=>{const listener=app.listen(0,'127.0.0.1',()=>resolve(listener))});
+        try {
+            const publicRows=await (await fetch(`http://127.0.0.1:${server.address().port}/api/platform/events`)).json();
+            assert.equal(publicRows.find(row=>row.id===events[0].id).alarm_ended_at,recovery.alarm_ended_at);
+            assert.equal(publicRows.find(row=>row.id===events[0].id).alarm_text,'风机过热');
+        } finally { await new Promise(resolve=>server.close(resolve)); }
+        assert.equal(new Date(events[0].occurred_at.replace(' ','T')+'Z').getTime(),Math.floor((start+100)/1000)*1000,'SQLite event time is UTC, not shifted eight hours');
+        await recovered._recordAlarmEvents(frame({bj1:2,bj2:2},start+400));
+        assert.equal((await db.get("SELECT COUNT(*) AS count FROM event_logs WHERE source_id='point-device'")).count,3,'older samples cannot reopen a recovered occurrence');
+        await recovered._recordAlarmEvents(frame({bj1:2,bj2:0},start+600));
+        const next=await db.all("SELECT * FROM event_logs WHERE source_id='point-device' ORDER BY id");
+        assert.equal(next.length,5); assert.notEqual(alarmEventDetails(next[3]).alarm_occurrence_id,trigger.alarm_occurrence_id);
+        const foreign=engineWithDatabase(db,outbox,'other_factory');
+        await foreign._recordAlarmEvents(frame({bj1:2},start+700));
+        assert.equal((await db.get("SELECT COUNT(*) AS count FROM event_logs WHERE source_id='point-device' AND factory_id='other_factory'")).count,1);
+        const recordFields=frame({bj1:1},start+800); recordFields[0].pointMeta['status.bj1'].alarm_record_role='txt_record';
+        assert.equal(pointAlarmReadings(recordFields[0]).length,0,'PLC record fields are not triggers');
+        await foreign.stop(); await recovered.stop();
+    });
+    await check('point recovery delivery remains complete and idempotent across an acknowledgement failure', async () => {
+        const outbox=journal('point-recovery-ack'), engine=engineWithDatabase(db,outbox), timestamp=Date.now()-500;
+        const record={deviceId:'point-ack',deviceName:'炉C',pointId:'7',pointName:'bj7',alarmText:'传动故障',condition:'!=0',alarm:true,quality:'good',occurredAt:timestamp};
+        outbox.record('factory_default',[record]); await engine._drainAlarmEvents();
+        outbox.record('factory_default',[{...record,alarm:false,occurredAt:timestamp+100}]);
+        const acknowledge=outbox.acknowledge.bind(outbox);
+        outbox.acknowledge=()=>{throw new Error('point ack lost')};
+        await assert.rejects(engine._drainAlarmEvents(),/point ack lost/); await engine.stop();
+        outbox.acknowledge=acknowledge;
+        const restarted=engineWithDatabase(db,outbox); await restarted._drainAlarmEvents();
+        const rows=await db.all("SELECT * FROM event_logs WHERE source_id='point-ack' ORDER BY id");
+        assert.equal(rows.length,2); assert.equal(outbox.pending('factory_default'),0);
+        assert.equal(alarmEventDetails(rows[0]).alarm_ended_at,new Date(timestamp+100).toISOString());
+        assert.deepEqual(alarmEventDetails(rows[0]),alarmEventDetails(rows[1])); await restarted.stop();
+    });
+    await check('point alarm snapshots preserve active occurrence and pending delivery without overwriting newer live state', async () => {
+        const source=journal('point-portable-source'), filename=path.join(directory,'point-portable.db');
+        const start=Date.now()-1000;
+        const record={deviceId:'portable-point-device',deviceName:'炉B',pointId:'9',pointName:'alarm9',alarmText:'电机故障',condition:'!=0',alarm:true,quality:'good',occurredAt:start};
+        source.record('factory_default',[record]);
+        await snapshotAlarmOutbox(path.join(directory,'point-portable-source.db'),filename);
+        const target=journal('point-portable-target'), restoring=target.beginImportSnapshot(filename); restoring.commit();
+        target.record('factory_default',[{...record,alarm:false,occurredAt:start+100}]);
+        assert.equal(target.batch('factory_default')[1].startedAt,start);
+        assert.equal(target.batch('factory_default')[1].endedAt,start+100);
+        const repeated=target.beginImportSnapshot(filename); repeated.commit();
+        assert.equal(target.observedPoint.get('factory_default',record.deviceId,record.pointId).alarm,0);
+        const rollbackTarget=journal('point-portable-rollback'), rolling=rollbackTarget.beginImportSnapshot(filename); rolling.rollback();
+        assert.equal(rollbackTarget.observedPoint.get('factory_default',record.deviceId,record.pointId),undefined);
+    });
     await check('10,000 unchanged PLC frames retain one durable transition and one delivery worker', async () => {
         const outbox = journal('unchanged');
         const entered = deferred(), release = deferred();

@@ -1,14 +1,20 @@
 <script setup>
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { chartTickError } from '../../../runtime/trendChart.js'
 const props = defineProps({ content: {type:Object,required:true}, unit:String })
 const emit = defineEmits(['change'])
 const cartesian = computed(() => !['pie','donut','rose','funnel','radar','gauge','heatmap','candlestick','boxplot','waterfall'].includes(props.content.chartType))
 const invalidRange = computed(() => props.content.yAxisMode === 'fixed' && (!(Number(props.content.yMin) < Number(props.content.yMax)) || props.content.yMin === '' || props.content.yMax === ''))
 const tickError = computed(() => chartTickError(props.content))
+const windowError=ref('')
+function setWindowMinutes(event){
+  const seconds=Number(event.target.value)*60
+  if(!Number.isSafeInteger(seconds) || seconds<60 || seconds>8640000000000){windowError.value='实时窗口须为至少 1 分钟的有效时长。';return}
+  windowError.value='';set('timeWindowSeconds',seconds)
+}
 function set(key,value) {
   props.content[key]=value
-  if(key==='timeWindowSeconds')props.content.historyLength=Math.min(600,Math.max(8,Math.ceil(value)))
+  if(key==='timeWindowSeconds')props.content.historyLength=Math.min(20000,Math.max(2000,Math.ceil(value)))
   emit('change')
 }
 </script>
@@ -32,8 +38,9 @@ function set(key,value) {
     <label v-if="content.xTickMode==='category'">每隔多少个数据项显示刻度<input aria-label="X轴数据项刻度间隔" type="number" min="1" step="1" :value="content.xLabelEvery ?? 1" @change="set('xLabelEvery',Number($event.target.value))" /></label>
     <small v-if="content.xTickMode==='time'" class="note">例如 10 表示每 10 秒一格，按真实时间距离绘制；分类数据请选择“按数据项间隔”。</small>
     <small v-if="tickError" role="alert">{{tickError}}</small>
-    <div class="pair"><label>实时窗口（分钟）<input aria-label="实时窗口分钟" type="number" min="1" max="10" :value="(content.timeWindowSeconds || 600)/60" @change="set('timeWindowSeconds',Math.max(60,Math.min(600,Number($event.target.value)*60)))" /></label><label>时间格式<select aria-label="时间轴格式" :value="content.timeFormat || 'time'" @change="set('timeFormat',$event.target.value)"><option value="time">时:分:秒</option><option value="dateTime">月-日 时:分:秒</option></select></label></div>
-    <small class="note">实时窗口从打开页面后累积；轮播时各设备独立记录，断线留空。每轴最多 200 格，过密时使用自动间隔；标签重叠时自动避让。</small>
+    <div class="pair"><label>实时窗口（分钟）<input aria-label="实时窗口分钟" type="number" min="1" :value="(content.timeWindowSeconds || 600)/60" @change="setWindowMinutes" /></label><label>时间格式<select aria-label="时间轴格式" :value="content.timeFormat || 'time'" @change="set('timeFormat',$event.target.value)"><option value="time">时:分:秒</option><option value="dateTime">月-日 时:分:秒</option></select></label></div>
+    <small v-if="windowError" role="alert">{{windowError}}</small>
+    <small class="note">30 表示最近 30 分钟，60 表示最近 1 小时，可设置更长时段。窗口只影响显示，不修改后台保留策略；保留期内的已采集历史从后台补读，轮播按设备隔离，断线留空。记录开关及期限在数据中心的“趋势与历史记录”配置，默认近期 24 小时、长期按点位可选。超过保留期或未记录的时段留空；每轴最多 200 格，过密时自动调整刻度。</small>
   </section>
 </template>
 <style scoped>

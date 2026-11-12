@@ -1,4 +1,4 @@
-// 点位映射模块:点位 CRUD、分页、语音播报规则(生成/上传/预览)、报警触发点位与报警文本导入、
+// 点位映射模块:点位 CRUD、分页、语音播报规则(生成/上传/预览)、报警触发条件与名称、
 // PLC 地址自动转换与重复/格式校验、点位保存(联动实时监视与引擎)、跨设备复制与同产线同步。
 // 依赖注入:devices(工厂树)、alert/confirm(弹窗)、storedAdminUiState(持久化初值)、
 // loadEngineStatus(引擎)、selectedDeviceForMonitor + loadRealtimePointValues(实时监视,保存后联动)。
@@ -40,12 +40,8 @@ export function useDataPoints({
     const pointsSaving = ref(false)
     let loadedPointSelection = selectedDeviceForPoints.value
     let pointsLoaded = false
-    let loadedDefinitionSnapshot = ''
-    const definitionSnapshot = rows => JSON.stringify(rows.map(({ alarm_text, ...point }) => point))
     const showPointAdvancedFields = ref(!!storedAdminUiState.showPointAdvancedFields)
     const loadedPointDeviceIds = ref([])
-    const alarmTextImportRaw = ref('')
-    const alarmTextFileInput = ref(null)
     const selectedVoicePointIndex = ref(-1)
     const voiceFileInput = ref(null)
     const voiceUploadTarget = reactive({ pointIndex: -1, ruleIndex: -1 })
@@ -71,6 +67,11 @@ export function useDataPoints({
         { value: 'below', label: '向下跨过阈值' }
     ]
     const selectedVoicePoint = computed(() => dataPoints.value[selectedVoicePointIndex.value] || null)
+    const alarmConditionOptions = [
+        { value: '!=0', label: '非 0 触发' },
+        { value: '=0', label: '等于 0 触发' },
+        { value: '=1', label: '等于 1 触发' }
+    ]
     const pointUsageOptions = [
         { value: 'normal', label: '常规监控' },
         { value: 'alarm_trigger', label: '报警触发' }
@@ -163,7 +164,9 @@ export function useDataPoints({
 
     function normalizeLoadedPoint(point) {
         const usage = normalizePointUsage(point)
-        const displayName = pointDisplayName(point)
+        // Old imported descriptions become the editable display name only in the draft.
+        // Existing IDs, internal names, bindings and the database remain untouched until save.
+        const displayName = usage === 'alarm_trigger' ? String(point.alarm_text || '').trim() || pointDisplayName(point) : pointDisplayName(point)
         const voiceConfig = parseVoiceConfig(point.voice_config)
         const deviceId = point.device_id || (isAllPointsMode.value ? devices.value[0]?.id || '' : selectedDeviceForPoints.value)
         return {
@@ -193,7 +196,7 @@ export function useDataPoints({
             alarm_record_role: point.alarm_record_role || '',
             alarm_text: point.alarm_text || '',
             alarm_level: point.alarm_level || 'WARNING',
-            alarm_condition: point.alarm_condition || '=1',
+            alarm_condition: point.alarm_condition || '!=0',
             voice_config: point.voice_config || '',
             __voiceRules: voiceConfig.rules.map((rule, index) => normalizeVoiceRule(rule, index))
         }
@@ -216,8 +219,8 @@ export function useDataPoints({
     }
 
     function defaultVoiceText(point) {
-        if (normalizePointUsage(point) === 'alarm_trigger' && point.alarm_text) {
-            return `{设备}：${point.alarm_text}`
+        if (normalizePointUsage(point) === 'alarm_trigger') {
+            return `{设备}：${pointDisplayName(point) || '报警'}`
         }
         return `{设备} ${pointDisplayName(point) || '点位'} 发生变化，当前值 {值}{单位}`
     }
@@ -381,7 +384,6 @@ export function useDataPoints({
             if (!Array.isArray(points)) throw new Error(points?.error || '后端返回了无效的点位列表')
             loadedPointDeviceIds.value = [...new Set(points.map(point => point.device_id).filter(Boolean))]
             dataPoints.value = points.map(normalizeLoadedPoint)
-            loadedDefinitionSnapshot = definitionSnapshot(dataPoints.value)
             isPointsDirty.value = false
             loadedPointSelection = deviceId
             pointsLoaded = true
@@ -443,7 +445,7 @@ export function useDataPoints({
             sample_interval_ms: 500,
             access_type: 'READ',
             point_kind: 'alarm',
-            alarm_condition: '=1',
+            alarm_condition: '!=0',
             alarm_level: 'WARNING'
         })
         setPointUsage(point, 'alarm_trigger', { markDirty: false })
@@ -658,16 +660,18 @@ export function useDataPoints({
     }
 
     function setPointUsage(point, usage, options = {}) {
+        // v-model has already changed __usage before the change handler runs.
+        const previousUsage = normalizePointUsage({ ...point, __usage: undefined })
         const nextUsage = usage || 'normal'
         const currentType = String(point.data_type || '').toUpperCase()
         point.__usage = nextUsage
         point.point_kind = nextUsage === 'normal' ? 'normal' : 'alarm'
         point.alarm_record_role = ''
         if (nextUsage === 'alarm_trigger') {
-            if (!currentType || currentType === 'WORD') point.data_type = 'BOOL'
+            if (!currentType) point.data_type = 'BOOL'
             point.unit = ''
             point.sample_interval_ms = point.sample_interval_ms || 500
-            point.alarm_condition = point.alarm_condition || '=1'
+            point.alarm_condition = previousUsage === 'alarm_trigger' ? point.alarm_condition || '!=0' : '!=0'
             point.alarm_level = point.alarm_level || 'WARNING'
         } else {
             const recordMeta = Object.entries(alarmRecordRoleMeta).find(([, meta]) => meta.usage === nextUsage)?.[1]
@@ -702,134 +706,9 @@ export function useDataPoints({
         .map((point, index) => ({ point, number: getAlarmPointNumber(point, index) }))
         .sort((a, b) => a.number - b.number))
 
-    const alarmRecordPointStatus = computed(() => Object.entries(alarmRecordRoleMeta).map(([role, meta]) => ({
-        role,
-        label: meta.label,
-        configured: dataPoints.value.some(point => normalizePointUsage(point) === meta.usage),
-        point: dataPoints.value.find(point => normalizePointUsage(point) === meta.usage)
-    })))
-
     function getNextAlarmPointIndex() {
         const used = currentAlarmTriggerPoints.value.map(item => item.number).filter(Number.isFinite)
         return used.length ? Math.max(...used) + 1 : 1
-    }
-
-    function parseAlarmText(text) {
-        const raw = String(text || '')
-        const lines = raw.split(/\r?\n/)
-        const map = new Map()
-        const hasArrowFormat = /=>/.test(raw)
-        let sequence = 1
-
-        lines.forEach((line) => {
-            const source = String(line || '').trim()
-            if (!source) return
-            if (hasArrowFormat) {
-                const match = source.match(/(\d+)\s*=>\s*["'“”‘’（(]?(.*?)["'“”‘’）)]?\s*[,，;；]?$/)
-                if (!match) return
-                const number = Number(match[1])
-                const message = String(match[2] || '').trim()
-                if (Number.isFinite(number) && message) map.set(number, message)
-                return
-            }
-
-            const message = source
-                .replace(/^\d+[\s.、:：-]+/, '')
-                .replace(/^["'“”‘’（(,\s]+|["'“”‘’）),\s;，；]+$/g, '')
-                .trim()
-            if (message && !/^[\]\};,.\s]+$/.test(message)) {
-                map.set(sequence, message)
-                sequence += 1
-            }
-        })
-
-        return map
-    }
-
-    const parsedAlarmTextEntries = computed(() => Array.from(parseAlarmText(alarmTextImportRaw.value).entries())
-        .map(([number, text]) => ({ number, text }))
-        .sort((a, b) => a.number - b.number))
-
-    const alarmTextImportSummary = computed(() => {
-        const alarmCount = currentAlarmTriggerPoints.value.length
-        const textCount = parsedAlarmTextEntries.value.length
-        if (!alarmTextImportRaw.value.trim()) return `当前设备已配置 ${alarmCount} 个报警触发点位`
-        if (alarmCount === textCount) return `数量匹配：${alarmCount} 个报警点位，${textCount} 条报警说明`
-        return `数量不一致：当前 ${alarmCount} 个报警点位，导入文本 ${textCount} 条，请核对`
-    })
-
-    function fillAlarmTextTemplate() {
-        if (isAllPointsMode.value) {
-            return alert('请先筛选到某一台设备，再生成该设备的报警文本模板。', { title: '需要选择设备', type: 'warning' })
-        }
-        alarmTextImportRaw.value = currentAlarmTriggerPoints.value
-            .map(({ point, number }) => `    ${number} => "${point.alarm_text || point.label || ''}",`)
-            .join('\n')
-    }
-
-    function triggerAlarmTextFileSelect() {
-        alarmTextFileInput.value?.click()
-    }
-
-    async function handleAlarmTextFileChange(event) {
-        const file = event?.target?.files?.[0]
-        if (!file) return
-        alarmTextImportRaw.value = await file.text()
-        event.target.value = ''
-    }
-
-    async function applyAlarmTextImport() {
-        if (isAllPointsMode.value) {
-            return alert('请先筛选到某一台设备，再导入该设备的报警文本。', { title: '需要选择设备', type: 'warning' })
-        }
-        const textMap = parseAlarmText(alarmTextImportRaw.value)
-        if (textMap.size === 0) {
-            return alert('没有解析到报警文本。可以粘贴 1 => "报警内容" 这种格式，也可以一行一条按顺序粘贴。', { title: '报警文本为空', type: 'warning' })
-        }
-        const triggers = currentAlarmTriggerPoints.value
-        if (triggers.length === 0) {
-            return alert('当前设备还没有报警触发点位，请先添加 bj1、bj2 这类报警点位并填写 PLC 地址。', { title: '没有报警点位', type: 'warning' })
-        }
-
-        let updated = 0
-        triggers.forEach(({ point, number }) => {
-            const text = textMap.get(number)
-            if (!text) return
-            point.alarm_text = text
-            updated += 1
-        })
-        markPointsDirty()
-        await alert(`已匹配 ${updated} 条报警说明。请点击“保存点位配置”写入数据库。`, { title: '报警文本已导入', type: 'success' })
-    }
-
-    function ensureAlarmRecordPoints() {
-        if (isAllPointsMode.value) {
-            return alert('请先筛选到某一台设备，再补齐报警记录字段。', { title: '需要选择设备', type: 'warning' })
-        }
-        let added = 0
-        Object.entries(alarmRecordRoleMeta).forEach(([role, meta]) => {
-            if (role === 'num_record' || role === 'state_record') return
-            if (dataPoints.value.some(point => normalizePointUsage(point) === meta.usage)) return
-            const point = normalizeLoadedPoint({
-                device_id: selectedDeviceForPoints.value,
-                name: meta.pointName,
-                label: meta.label,
-                plc_tag: '',
-                data_type: meta.dataType,
-                sample_interval_ms: 1000,
-                access_type: 'READ',
-                point_kind: 'alarm',
-                alarm_record_role: role
-            })
-            setPointUsage(point, meta.usage, { markDirty: false })
-            dataPoints.value.push(point)
-            added += 1
-        })
-        if (added > 0) markPointsDirty()
-        alert(added > 0 ? `已添加 ${added} 个报警记录字段，请补 PLC 地址后保存。` : '报警内容、开始时间、结束时间字段已经存在。', {
-            title: added > 0 ? '已补齐字段' : '无需重复添加',
-            type: added > 0 ? 'success' : 'info'
-        })
     }
 
     function validatePointRows(points) {
@@ -858,6 +737,9 @@ export function useDataPoints({
 
             if (!allowedTypes.includes(String(point.data_type || '').toUpperCase())) {
                 errors.push(`第 ${row} 行：数据类型不正确`)
+            }
+            if (normalizePointUsage(point) === 'alarm_trigger' && ['STRING', 'CHAR', 'DT', 'DTL'].includes(point.data_type)) {
+                errors.push(`第 ${row} 行：报警触发点位必须使用开关量或数值类型`)
             }
             const interval = Number(point.sample_interval_ms)
             if (!Number.isFinite(interval) || interval < 100 || interval > 60000) {
@@ -913,9 +795,9 @@ export function useDataPoints({
             bit_offset: plcTag ? null : optionalNumber(payload.bit_offset),
             point_kind: usage === 'normal' ? 'normal' : 'alarm',
             alarm_record_role: usage === 'alarm_trigger' || usage === 'normal' ? '' : fieldName,
-            alarm_text: String(payload.alarm_text || '').trim(),
+            alarm_text: usage === 'alarm_trigger' ? displayName : String(payload.alarm_text || '').trim(),
             alarm_level: payload.alarm_level || 'WARNING',
-            alarm_condition: payload.alarm_condition || '=1',
+            alarm_condition: payload.alarm_condition || '!=0',
             alarm_high: optionalNumber(alarm_high),
             alarm_low: optionalNumber(alarm_low),
             voice_config: JSON.stringify({
@@ -945,24 +827,6 @@ export function useDataPoints({
         if (summary.deleted > 0) parts.push(`删除 ${summary.deleted} 条`)
         const skipped = summary.unchanged > 0 ? `其余 ${summary.unchanged} 条未重复写入。` : ''
         return `保存成功：${parts.join('，')}。${skipped}`
-    }
-
-    async function saveAlarmTexts() {
-        if (pointsSaving.value) return
-        if (pointsLoading.value || !pointsLoaded || isAllPointsMode.value) return alert('请先选择并读取一台设备的报警点位。')
-        if (definitionSnapshot(dataPoints.value) !== loadedDefinitionSnapshot) return alert('还有点位定义未保存，请先在 PLC 点位映射中保存。', { title: '点位定义未保存', type: 'warning' })
-        const selection = selectedDeviceForPoints.value, snapshot = JSON.stringify(dataPoints.value)
-        const points = currentAlarmTriggerPoints.value.map(({ point }) => ({ id: point.id, alarm_text: point.alarm_text || '' }))
-        if (points.some(point => !point.id)) return alert('请先在 PLC 点位映射中保存新增的报警点位。')
-        pointsSaving.value = true
-        try {
-            const result = await adminApi.saveAlarmTexts(selection, points)
-            if (result?.error || !result?.success) throw new Error(result?.error || '后端未确认保存')
-            await alert(`已保存 ${result.updated || 0} 条报警文本。`, { title: '报警文本已保存', type: 'success' })
-            if (pointsDisposed || selection !== selectedDeviceForPoints.value || snapshot !== JSON.stringify(dataPoints.value)) return
-            isPointsDirty.value = false; await loadDataPoints()
-        } catch (error) { if (!pointsDisposed) await alert(error.message || '保存报警文本失败', { title: '保存失败', type: 'danger' }) }
-        finally { if (!pointsDisposed) pointsSaving.value = false }
     }
 
     async function saveAllPoints() {
@@ -1080,8 +944,6 @@ export function useDataPoints({
         pointsSaving,
         showPointAdvancedFields,
         loadedPointDeviceIds,
-        alarmTextImportRaw,
-        alarmTextFileInput,
         selectedVoicePointIndex,
         voiceFileInput,
         voiceUploadTarget,
@@ -1093,6 +955,7 @@ export function useDataPoints({
         voiceTriggerOptions,
         selectedVoicePoint,
         pointUsageOptions,
+        alarmConditionOptions,
         pointsCurrentPage,
         pointsPageSize,
         totalPointPages,
@@ -1142,20 +1005,10 @@ export function useDataPoints({
         isTextPointType,
         getAlarmPointNumber,
         currentAlarmTriggerPoints,
-        alarmRecordPointStatus,
         getNextAlarmPointIndex,
-        parseAlarmText,
-        parsedAlarmTextEntries,
-        alarmTextImportSummary,
-        fillAlarmTextTemplate,
-        triggerAlarmTextFileSelect,
-        handleAlarmTextFileChange,
-        applyAlarmTextImport,
-        ensureAlarmRecordPoints,
         validatePointRows,
         buildDataPointPayload,
         saveAllPoints,
-        saveAlarmTexts,
         copyPointsFrom,
         syncToLine
     }

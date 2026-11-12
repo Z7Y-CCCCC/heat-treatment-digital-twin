@@ -2,6 +2,7 @@ const express = require('express');
 const { getDb } = require('../db/database');
 const { KEY: DASHBOARD_DELETION_HISTORY_KEY } = require('../services/dashboardDeviceDeletion');
 const { parseDataPath } = require('../utils/externalDataPayload');
+const { KEY: HISTORY_POLICY_KEY, parsePolicy } = require('../services/historyPolicy');
 
 const MAX_DASHBOARD_CONFIG_BYTES = 256 * 1024;
 const JSON_OBJECT_SETTING_LABELS = {
@@ -28,6 +29,7 @@ const FACTORY_SETTING_KEYS = new Set([
 ]);
 
 function normalizeSettingValue(key, value) {
+    if (key === HISTORY_POLICY_KEY) return JSON.stringify(parsePolicy(typeof value === 'string' ? value : JSON.stringify(value)));
     if (key === 'voice_enabled') {
         if (![true, false, 'true', 'false'].includes(value)) throw new Error('工厂语音开关必须为布尔值');
         return String(value);
@@ -361,6 +363,7 @@ module.exports = function createSettingsRouter(controller = {}) {
                 throw new Error('设置内容必须是 JSON 对象');
             }
             if (Object.hasOwn(req.body, DASHBOARD_DELETION_HISTORY_KEY)) throw new Error('设备删除确认记录仅由删除事务维护，不能通过设置写入');
+            if (Object.hasOwn(req.body, HISTORY_POLICY_KEY)) throw new Error('请在数据中心的趋势与历史记录中保存策略');
             if (Object.hasOwn(req.body, 'global_view_navigation')) return res.status(400).json({ error: '请在视角编排中设置全局视角' });
             const changed = Object.fromEntries(Object.entries(req.body)
                 .filter(([key]) => !LEGACY_WEB_SETTING_KEYS.has(key))

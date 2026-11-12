@@ -114,11 +114,20 @@ async function main() {
         class FakeSimulator { async start() {} stop() {} }
         const DataEngine = requireWithStubs('../services/dataEngine', {
             '../db/database': { getDb: async () => ({
-                get: async () => { if (++lookups === 1) { entered.resolve(); return release.promise; } return { value: 'new_factory' }; },
+                get: async sql => {
+                    if (sql.includes('FROM settings')) {
+                        if (++lookups === 1) { entered.resolve(); return release.promise; }
+                        return { value: 'new_factory' };
+                    }
+                    if (sql.includes('FROM factories')) return { collection_enabled: 1 };
+                    if (sql.includes('FROM factory_settings')) return null;
+                    throw new Error(`Unexpected get query: ${sql}`);
+                },
                 all: async (sql, values) => {
-                    if (sql.includes('factory_settings')) { factoryLookups.push(values[0]); return []; }
-                    if (sql.includes('FROM factories')) return [];
-                    return [{ key: 'data_mode', value: 'simulation' }];
+                    if (sql.includes('FROM factory_settings')) { factoryLookups.push(values[0]); return []; }
+                    if (sql.includes('FROM settings')) return [{ key: 'data_mode', value: 'simulation' }];
+                    if (sql.includes('FROM factories') || sql.includes('FROM workshops') || sql.includes('FROM data_points')) return [];
+                    throw new Error(`Unexpected all query: ${sql}`);
                 }
             }) },
             '../services/simulator': FakeSimulator
@@ -131,6 +140,7 @@ async function main() {
         release.resolve({ value: 'old_factory' });
         await oldStarting;
         assert.equal(engine.activeFactoryId, 'new_factory');
+        assert.equal(lookups, 2);
         assert.deepEqual(factoryLookups, ['new_factory']);
         await engine.stop();
     });

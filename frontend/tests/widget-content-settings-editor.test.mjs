@@ -69,6 +69,18 @@ const ChartTypeSelect = await component(new URL('../src/views/admin/components/D
 const TrendSettings = await component(new URL('../src/views/admin/components/TrendChartSettings.vue', import.meta.url))
 const Renderer = await component(new URL('../src/runtime/WidgetRenderer.vue', import.meta.url), true)
 
+test('real window control saves 30 minutes, one hour and longer without changing data bindings or the factory baseline',async()=>{
+  const content=reactive({timeWindowSeconds:600,historyLength:600}),host=memoryHost(),changes=[];
+  const app=host.renderer.createApp({render:()=>h(TrendSettings,{content,onChange:()=>changes.push(content.timeWindowSeconds)})});app.mount(host.root);
+  try{
+    const input=host.find(node=>node.props['aria-label']==='实时窗口分钟');assert.equal(input.props.max,undefined);
+    for(const minutes of [30,60,240]){input.props.onChange({target:{value:String(minutes)}});await nextTick();assert.equal(content.timeWindowSeconds,minutes*60);
+      const saved=reopen({id:'hour-window',type:'trend',content:{...content},data:{mode:'plc',deviceId:'device_a',pointId:'1'}});assert.equal(saved.content.timeWindowSeconds,minutes*60);assert.equal(saved.data.pointId,'1');}
+    assert.deepEqual(changes,[1800,3600,14400]);assert.match(host.text(),/默认近期 24 小时、长期按点位可选/);
+    assert.match(host.text(),/超过保留期或未记录的时段留空/);
+  }finally{app.unmount();}
+})
+
 test('real chart selector offers five common forms and safely retains imported legacy charts until changed', async t => {
   installBrowser(t)
   const state = handlers({ id: 'chart-config', type: 'hud_chart_dock', frame: {x:5,y:10,width:610,height:206,rotation:0},

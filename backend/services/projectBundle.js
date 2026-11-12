@@ -12,7 +12,7 @@ const FORMAT = 'digital-twin-factory-bundle';
 const MAX_BYTES = 512 * 1024 * 1024;
 const MAX_JSON = 16 * 1024 * 1024;
 const MAX_ENTRIES = 2000;
-const SETTINGS = ['data_mode', 'simulation_interval_ms', 'realtime_stale_ms', 'native_quality_profile', 'native_environment_config', 'native_dashboard_config', 'site_scene_config', 'external_dataset_config', 'data_center_catalog_v1', 'voice_enabled'];
+const SETTINGS = ['data_mode', 'simulation_interval_ms', 'realtime_stale_ms', 'native_quality_profile', 'native_environment_config', 'native_dashboard_config', 'site_scene_config', 'external_dataset_config', 'data_center_catalog_v1', 'voice_enabled', 'history_policy_v1'];
 const SHARED_APPEARANCE = ['group_portal_config', 'loading_experience_config'];
 // Explicit columns make the archive a portable configuration format, never an SQL dump.
 const COLUMNS = Object.fromEntries(Object.entries({
@@ -20,7 +20,7 @@ const COLUMNS = Object.fromEntries(Object.entries({
     workshops: 'id factory_id name sort_order layout_json',
     lines: 'id name workshop_id layout_json sort_order',
     devices: 'id name line_id model_type model_file template_id instance_config pos_x pos_y pos_z rotation_y scale coordinate_space sort_order plc_enabled plc_protocol plc_ip plc_port plc_options plc_rack plc_slot plc_timeout plc_retry_interval plc_max_retries',
-    data_points: 'id device_id name label plc_tag data_type category value_role quality scale offset expression display_format unit sample_interval_ms access_type db_number db_byte_offset bit_offset point_kind alarm_record_role alarm_text alarm_level alarm_condition voice_config alarm_high alarm_low',
+    data_points: 'id device_id name label plc_tag data_type category value_role quality scale offset expression display_format unit sample_interval_ms access_type db_number db_byte_offset bit_offset point_kind alarm_record_role alarm_text alarm_level alarm_condition voice_config alarm_high alarm_low history_mode history_days',
     models: 'id name file_path factory_id placement_level asset_type tags thumbnail default_scale metadata',
     device_templates: 'id name model_type default_config',
     datapoint_templates: 'id device_template_id name label category value_role data_type unit scale offset expression display_format sort_order',
@@ -221,6 +221,7 @@ function validateTables(tables) {
         }
     }
     if (tables.factories.length !== 1 || !String(tables.factories[0].name || '').trim()) throw new Error('迁移包必须包含一个工厂');
+    for (const row of tables.data_points) require('./historyPolicy').normalizePointPolicy({mode:row.history_mode ?? 'recent',days:row.history_days ?? 30});
     const relations = { workshops: ['factory_id', 'factories'], lines: ['workshop_id', 'workshops'], devices: ['line_id', 'lines'], data_points: ['device_id', 'devices'], projects: ['factory_id', 'factories'], scenes: ['project_id', 'projects'], widgets: ['scene_id', 'scenes'], bindings: ['widget_id', 'widgets'], releases: ['project_id', 'projects'], datapoint_templates: ['device_template_id', 'device_templates'], factory_settings: ['factory_id', 'factories'] };
     for (const [table, [key, parent]] of Object.entries(relations)) {
         const ids = new Set(tables[parent].map(row => String(row.id)));
@@ -235,6 +236,7 @@ function validateTables(tables) {
     const settings = new Set();
     for (const row of tables.factory_settings) {
         if (!SETTINGS.includes(row.key) || settings.has(row.key)) throw new Error('工厂设置无效或重复');
+        if (row.key === 'history_policy_v1') normalizeSettingValue(row.key,row.value);
         if (row.key === 'data_center_catalog_v1') {
             dataCenterConfig(row.value);
         }

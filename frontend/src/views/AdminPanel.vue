@@ -17,6 +17,7 @@ import LineAdjustmentOverlay from './admin/components/LineAdjustmentOverlay.vue'
 import { useLineAdjustmentBand } from './admin/composables/useLineAdjustmentBand.js'
 import { clampLineAdjustment, lineAdjustmentBand } from '../../../shared/lineAdjustmentBand.mjs'
 import FactoryVoiceToggle from './admin/components/FactoryVoiceToggle.vue'
+import PointHistorySettings from './admin/components/PointHistorySettings.vue'
 import WorkshopGroundEditor from './admin/components/WorkshopGroundEditor.vue'
 import DataSourceWorkspace from './admin/components/DataSourceWorkspace.vue'
 import DataCenterWorkspace from './admin/components/DataCenterWorkspace.vue'
@@ -146,7 +147,7 @@ if (['points', 'point-monitor'].includes(storedAdminUiState.activeTab)) {
     storedAdminUiState.dataCenterSection = storedAdminUiState.activeTab === 'point-monitor' ? 'monitor' : storedAdminUiState.pointsSubpage || 'mapping'
     storedAdminUiState.activeTab = 'data-center'
 }
-const DATA_CENTER_SUBPAGES = computed(() => adminSubpages('data-center', adminPageCatalog.value).sort((a, b) => ['tables','sources','mapping','monitor','alarms'].indexOf(a.key) - ['tables','sources','mapping','monitor','alarms'].indexOf(b.key)))
+const DATA_CENTER_SUBPAGES = computed(() => adminSubpages('data-center', adminPageCatalog.value).sort((a, b) => ['tables','sources','mapping','monitor'].indexOf(a.key) - ['tables','sources','mapping','monitor'].indexOf(b.key)))
 const visibleDataCenterSubpages = computed(() => DATA_CENTER_SUBPAGES.value.filter(page => page.viewPages ? page.viewPages.some(key => canAdminPage(key)) : canAdminPage(page.permissionKey)))
 const PLATFORM_SUBPAGES = computed(() => adminSubpages('platform', adminPageCatalog.value))
 const POINTS_SUBPAGES = computed(() => adminSubpages('points', adminPageCatalog.value))
@@ -196,14 +197,14 @@ async function databaseTabKey(event, index) {
 }
 
 const pointsSubpage = ref(restoreSubpage(storedAdminUiState.pointsSubpage, POINTS_SUBPAGES.value, 'mapping'))
-const dataCenterSection = ref(storedAdminUiState.dataCenterSection || 'tables')
+const dataCenterSection = ref(storedAdminUiState.dataCenterSection === 'alarms' ? 'mapping' : storedAdminUiState.dataCenterSection || 'tables')
 const dataCenterFactoryId = ref(getFactoryScope())
 const dataCenterRef = ref(null)
 const dataCenterSourceRef = ref(null)
 function syncDataCenterFactory(event) { dataCenterFactoryId.value = event.detail?.factoryId || getFactoryScope() }
-const isPointMappingWorkspace = computed(() => activeTab.value === 'data-center' && ['mapping', 'alarms'].includes(dataCenterSection.value))
+const isPointMappingWorkspace = computed(() => activeTab.value === 'data-center' && dataCenterSection.value === 'mapping')
 const isPointMonitorWorkspace = computed(() => activeTab.value === 'data-center' && dataCenterSection.value === 'monitor')
-watch(dataCenterSection, section => { if (['mapping','alarms'].includes(section)) pointsSubpage.value = section }, { immediate: true, flush: 'sync' })
+watch(dataCenterSection, section => { if (section === 'mapping') pointsSubpage.value = section }, { immediate: true, flush: 'sync' })
 const currentPermissionPage = computed(() => activeTab.value === 'platform' ? `platform.${platformSubpage.value}`
     : activeTab.value === 'settings' ? `settings.${settingsSubpage.value}`
     : activeTab.value === 'data-center' ? DATA_CENTER_SUBPAGES.value.find(page => page.key === (dataCenterSection.value === 'table-editor' ? 'tables' : dataCenterSection.value))?.permissionKey || ''
@@ -1526,8 +1527,6 @@ const {
     pointsSaving,
     showPointAdvancedFields,
     loadedPointDeviceIds,
-    alarmTextImportRaw,
-    alarmTextFileInput,
     selectedVoicePointIndex,
     voiceFileInput,
     voiceUploadTarget,
@@ -1539,6 +1538,7 @@ const {
     voiceTriggerOptions,
     selectedVoicePoint,
     pointUsageOptions,
+    alarmConditionOptions,
     pointsCurrentPage,
     pointsPageSize,
     totalPointPages,
@@ -1588,20 +1588,10 @@ const {
     isTextPointType,
     getAlarmPointNumber,
     currentAlarmTriggerPoints,
-    alarmRecordPointStatus,
     getNextAlarmPointIndex,
-    parseAlarmText,
-    parsedAlarmTextEntries,
-    alarmTextImportSummary,
-    fillAlarmTextTemplate,
-    triggerAlarmTextFileSelect,
-    handleAlarmTextFileChange,
-    applyAlarmTextImport,
-    ensureAlarmRecordPoints,
     validatePointRows,
     buildDataPointPayload,
     saveAllPoints,
-    saveAlarmTexts,
     copyPointsFrom,
     syncToLine
 } = useDataPoints({
@@ -7336,7 +7326,7 @@ const visibleMainTabs = computed(() => mainTabs.value.filter(tab => tab.key === 
 const visibleFactoryTabs = computed(() => factoryTabs.value.filter(tab => canSelectTab(tab.key)))
 
 function savePointsPage() {
-    return canAdminPage('points', 'edit') ? saveAllPoints() : saveAlarmTexts()
+    return saveAllPoints()
 }
 
 async function openAdminSetupStep(step) {
@@ -7488,7 +7478,7 @@ async function openAdminSetupStep(step) {
                                 :class="{ active: activeTab === 'data-center' && child.key === (dataCenterSection === 'table-editor' ? 'tables' : dataCenterSection) }"
                                 :aria-current="activeTab === 'data-center' && child.key === (dataCenterSection === 'table-editor' ? 'tables' : dataCenterSection) ? 'page' : undefined"
                                 :title="child.label" :data-data-center-section="child.key" @click="openDataCenterSection(child.key)">
-                                <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path v-for="(path, index) in (navIconPaths[child.key === 'mapping' || child.key === 'alarms' ? 'points' : child.key === 'monitor' ? 'point-monitor' : child.key === 'tables' ? 'data-tables' : 'data-sources'])" :key="index" :d="path" /></svg></span>
+                                <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path v-for="(path, index) in (navIconPaths[child.key === 'mapping' ? 'points' : child.key === 'monitor' ? 'point-monitor' : child.key === 'tables' ? 'data-tables' : 'data-sources'])" :key="index" :d="path" /></svg></span>
                                 <span class="nav-label">{{ child.label }}</span>
                             </button>
                         </div>
@@ -9021,7 +9011,7 @@ async function openAdminSetupStep(step) {
                 <!-- ======== 点位映射 ======== -->
                 <div v-if="isPointMappingWorkspace" class="tab-content" data-testid="points-workspace">
 
-                    <p class="desc">{{ pointsSubpage === 'mapping' ? '配置点位名称、PLC 地址和采集周期。' : '配置报警点位与报警文本。' }}</p>
+                    <p class="desc">配置点位名称、PLC 地址和采集周期。报警点位名称即报警文本，触发条件在同一行设置。</p>
 
                     <div class="form-row points-filter-toolbar">
                         <div>
@@ -9046,12 +9036,14 @@ async function openAdminSetupStep(step) {
 
                     <div v-if="selectedDeviceForPoints">
                         <section id="points-panel-mapping" v-show="pointsSubpage === 'mapping'">
+                        <PointHistorySettings :factory-id="dataCenterFactoryId" :device-id="selectedDeviceForPoints" :can-edit="canAdminPage('points','edit')" />
                         <div class="point-toolbar">
                             <FactoryVoiceToggle />
                             <button type="button" @click="showPointAdvancedFields = !showPointAdvancedFields" :aria-expanded="showPointAdvancedFields" class="btn btn-sm">
                                 {{ showPointAdvancedFields ? '收起换算字段' : '显示换算字段' }}
                             </button>
                         </div>
+                        <p class="point-alarm-help" data-testid="point-alarm-help">用途选“报警触发”，点位名称填写报警文本。默认非 0 触发、0 恢复（BOOL 为 true / false）；系统自动记录开始与结束时间，断线或无效读数不视为恢复，无需另配时间点位。</p>
                         <div class="point-table-scroll" role="region" aria-label="点位配置列表" tabindex="0">
                             <table class="data-table points-table point-mapping-table" :class="{ 'points-table-all': isAllPointsMode, 'points-table-advanced': showPointAdvancedFields }">
                                 <colgroup>
@@ -9061,12 +9053,12 @@ async function openAdminSetupStep(step) {
                                 </colgroup>
                                 <thead><tr><th v-if="isAllPointsMode">设备</th><th>点位名称</th><th>用途</th><th>数据类型</th><th>PLC 地址</th><th title="采集周期（毫秒）">周期(ms)</th><th>读写</th>
                                     <th v-if="showPointAdvancedFields" title="PLC 原始值的换算倍率">倍率</th><th v-if="showPointAdvancedFields" title="换算后增加的偏移修正">偏移</th><th v-if="showPointAdvancedFields" title="画面显示的小数格式">小数</th>
-                                    <th>单位</th><th>报警说明</th><th class="point-voice-cell" aria-label="语音" title="配置此点位的语音规则"><svg class="point-column-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9h4l5-4v14l-5-4H4zM16 8a6 6 0 0 1 0 8"/></svg></th><th class="point-delete-cell"><span class="sr-only">删除</span></th>
+                                    <th>单位</th><th title="报警点位按条件触发，条件不成立时记录结束时间">报警触发</th><th class="point-voice-cell" aria-label="语音" title="配置此点位的语音规则"><svg class="point-column-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9h4l5-4v14l-5-4H4zM16 8a6 6 0 0 1 0 8"/></svg></th><th class="point-delete-cell"><span class="sr-only">删除</span></th>
                                 </tr></thead>
                                 <tbody>
                                     <tr v-for="p in paginatedDataPoints" :key="pointRowKey(p)" :class="{ 'is-new-point': !p.id }" class="point-mapping-row" :id="pointRowKey(p)" :data-point-id="p.id || pointRowKey(p)" :aria-label="`点位 ${p.label || p.name || '未命名点位'}${!p.id ? '（未保存）' : ''}`">
                                         <td v-if="isAllPointsMode"><PointDeviceSelect compact v-model="p.device_id" @change="markPointsDirty" :options="devices.map(d => ({ value: d.id, label: deviceHierarchyLabel(d), shortLabel: d.name || d.id }))" :disabled="pointsLoading || pointsSaving || !canAdminPage(controlPermissionPage, 'edit')" /></td>
-                                        <td><input v-model="p.label" @input="markPointsDirty" class="input input-sm point-name-input" aria-label="点位名称" placeholder="实际温度 / bj1" :title="p.label || p.name" :disabled="pointsLoading || pointsSaving" v-permission="{ page: controlPermissionPage, action: 'edit' }"/></td>
+                                        <td><input v-model="p.label" @input="markPointsDirty" class="input input-sm point-name-input" aria-label="点位名称" placeholder="实际温度 / 超温报警" :title="p.label || p.name" :disabled="pointsLoading || pointsSaving" v-permission="{ page: controlPermissionPage, action: 'edit' }"/></td>
                                         <td><div class="point-short-select"><select v-model="p.__usage" @change="setPointUsage(p, p.__usage)" class="input input-sm point-usage-input" aria-label="点位用途" :title="normalizePointUsage(p) === 'alarm_trigger' ? '报警触发' : '常规监控'" :disabled="pointsLoading || pointsSaving" v-permission="{ page: controlPermissionPage, action: 'edit' }"><option v-for="item in pointUsageOptions" :key="item.value" :value="item.value">{{ item.label }}</option></select><span aria-hidden="true">{{ normalizePointUsage(p) === 'alarm_trigger' ? '报警' : '监控' }}</span></div></td>
                                         <td><div class="point-short-select"><select v-model="p.data_type" @change="handlePointDataTypeChange(p)" class="input input-sm point-datatype-select" aria-label="数据类型" :title="pointDataTypes.find(type => type.value === p.data_type)?.label || p.data_type" :disabled="pointsLoading || pointsSaving" v-permission="{ page: controlPermissionPage, action: 'edit' }"><option v-for="type in pointDataTypes" :key="type.value" :value="type.value">{{ type.label }}</option></select><span aria-hidden="true">{{ p.data_type }}</span></div></td>
                                         <td><div class="plc-address-wrap">
@@ -9080,7 +9072,7 @@ async function openAdminSetupStep(step) {
                                         <td v-if="showPointAdvancedFields"><input v-model.number="p.offset" @input="markPointsDirty" type="number" step="0.001" class="input input-sm number-input" aria-label="偏移修正" placeholder="0" title="倍率换算后再加上的修正值" :disabled="pointsLoading || pointsSaving" v-permission="{ page: controlPermissionPage, action: 'edit' }"/></td>
                                         <td v-if="showPointAdvancedFields"><input v-model="p.display_format" @input="markPointsDirty" class="input input-sm unit-input" aria-label="显示小数" placeholder="如 0.0" title="0 为整数，0.0 为一位小数，0.00 为两位小数" :disabled="pointsLoading || pointsSaving" v-permission="{ page: controlPermissionPage, action: 'edit' }"/></td>
                                         <td><input v-model="p.unit" @input="markPointsDirty" class="input input-sm unit-input" aria-label="单位" :title="p.unit" :disabled="isBoolPoint(p) || pointsLoading || pointsSaving" :placeholder="isBoolPoint(p) ? '无' : '°C'" v-permission="{ page: controlPermissionPage, action: 'edit' }"/></td>
-                                        <td><input v-if="normalizePointUsage(p) === 'alarm_trigger'" v-model="p.alarm_text" @input="markPointsDirty" class="input input-sm alarm-text-input" aria-label="报警说明" placeholder="报警说明" :title="p.alarm_text" :disabled="pointsLoading || pointsSaving" v-permission="{ page: controlPermissionPage, action: 'edit' }"/><span v-else class="muted-cell">—</span></td>
+                                        <td><select v-if="normalizePointUsage(p) === 'alarm_trigger'" v-model="p.alarm_condition" @change="markPointsDirty" class="input input-sm alarm-condition-input" aria-label="报警触发条件" :title="'点位名称即报警文本；' + (alarmConditionOptions.find(item => item.value === p.alarm_condition)?.label || p.alarm_condition)" :disabled="pointsLoading || pointsSaving" v-permission="{ page: controlPermissionPage, action: 'edit' }"><option v-for="item in alarmConditionOptions" :key="item.value" :value="item.value">{{ item.label }}</option><option v-if="!alarmConditionOptions.some(item => item.value === p.alarm_condition)" :value="p.alarm_condition">原条件 {{ p.alarm_condition }}</option></select><span v-else class="muted-cell">—</span></td>
                                         <td class="point-voice-cell"><button type="button" @click="openVoiceConfig(p)" class="btn btn-sm voice-config-button point-row-icon" :class="{ configured: enabledVoiceRuleCount(p) > 0 }" :disabled="pointsLoading || pointsSaving" :aria-label="`配置点位语音 ${p.label || p.name || '未命名点位'}`" :title="`语音规则：${enabledVoiceRuleCount(p)} 条`"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9h4l5-4v14l-5-4H4zM16 8a6 6 0 0 1 0 8M19 5a10 10 0 0 1 0 14"/></svg></button></td>
                                         <td class="point-delete-cell"><button type="button" @click="removeDataPoint(p)" class="btn btn-danger btn-sm point-delete-button point-row-icon" :disabled="pointsLoading || pointsSaving" :aria-label="`删除点位 ${p.label || p.name || '未命名点位'}`" :title="`删除点位 ${p.label || p.name || '未命名点位'}`" v-permission="{ page: controlPermissionPage, action: 'edit' }"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v5M14 11v5"/></svg></button></td>
                                     </tr>
@@ -9125,47 +9117,6 @@ async function openAdminSetupStep(step) {
                             </div>
                         </div>
 
-                        </section>
-
-                        <section id="points-panel-alarms" v-show="pointsSubpage === 'alarms'" class="alarm-config-card">
-                            <header class="alarm-config-header">
-                                <div>
-                                    <h3>报警点位与报警文本</h3>
-                                    <p>支持 bj1、bj2…编号，可按编号匹配或导入报警文本。</p>
-                                </div>
-                                <span class="alarm-config-header-actions">
-                                    <span class="alarm-config-count">{{ alarmTextImportSummary }}</span>
-                                </span>
-                            </header>
-                                <div class="collapsible-section-body">
-                                    <div class="alarm-record-status">
-                                        <div v-for="item in alarmRecordPointStatus.slice(0, 3)" :key="item.role" :class="{ configured: item.configured }">
-                                            <span>{{ item.label }}</span>
-                                            <strong>{{ item.configured ? '已配置' : '未配置' }}</strong>
-                                        </div>
-                                    </div>
-
-                                    <div class="alarm-import-layout">
-                                        <textarea v-model="alarmTextImportRaw" class="input alarm-textarea" placeholder="例如：
-1 => &quot;循环风扇冷却水流量低故障&quot;,
-2 => &quot;油搅拌1不运行&quot;,
-3 => &quot;内推链电机空开跌落&quot;,"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/>
-                                        <div class="alarm-import-side">
-                                            <button @click="fillAlarmTextTemplate" class="btn" :disabled="isAllPointsMode">生成当前报警模板</button>
-                                            <button @click="triggerAlarmTextFileSelect" class="btn" :disabled="isAllPointsMode">导入文本文件</button>
-                                            <button @click="applyAlarmTextImport" class="btn btn-primary" :disabled="isAllPointsMode" v-permission="{ page: controlPermissionPage, action: 'edit' }">匹配到报警点位</button>
-                                            <input ref="alarmTextFileInput" type="file" accept=".txt,.csv" style="display:none" @change="handleAlarmTextFileChange" />
-                                            <div class="alarm-preview">
-                                                <strong>解析预览</strong>
-                                                <div v-if="parsedAlarmTextEntries.length === 0" class="muted-cell">暂无可解析文本</div>
-                                                <div v-for="entry in parsedAlarmTextEntries.slice(0, 8)" :key="entry.number">
-                                                    bj{{ entry.number }}：{{ entry.text }}
-                                                </div>
-                                                <div v-if="parsedAlarmTextEntries.length > 8" class="muted-cell">还有 {{ parsedAlarmTextEntries.length - 8 }} 条...</div>
-                                            </div>
-                                        </div>
-                                    </div>
-                                </div>
                         </section>
 
                         <Transition name="modal-fade">
@@ -12354,88 +12305,12 @@ button:enabled:active {
 .points-filter-toolbar { margin-bottom: 20px; align-items: flex-end; flex-wrap: wrap; gap: 12px; }
 .points-filter-actions { display: flex; flex-wrap: wrap; gap: 10px; }
 .points-savebar { display: flex; justify-content: flex-end; align-items: center; margin-top: 15px; }
-.alarm-config-card {
-    margin-top: 0;
-    padding: 18px;
-    background: #fff;
-    border: 1px solid rgba(0, 0, 0, 0.08);
-    border-radius: 8px;
-}
-.alarm-config-header {
-    width: 100%;
-    display: flex;
-    justify-content: space-between;
-    align-items: flex-start;
-    gap: 20px;
-    padding: 0;
-    color: inherit;
-    background: transparent;
-    border: 0;
-    text-align: left;
-    margin-bottom: 14px;
-}
-.alarm-config-header h3 { margin: 0 0 6px; font-size: calc(16px * var(--admin-font-scale, 1)); color: #1d1d1f; }
-.alarm-config-header p { margin: 0; color: #6e6e73; font-size: calc(13px * var(--admin-font-scale, 1)); line-height: 1.6; }
-.alarm-config-header-actions { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 9px; }
-.alarm-config-count {
-    white-space: nowrap;
-    padding: 6px 10px;
-    border-radius: 999px;
-    background: #f5f5f7;
-    color: #515154;
-    font-size: calc(12px * var(--admin-font-scale, 1));
-}
+.point-alarm-help { margin: 0 0 12px; color: #6e6e73; font-size: calc(12px * var(--admin-font-scale, 1)); line-height: 1.65; overflow-wrap: anywhere; }
 .collapse-chevron { width: 18px; height: 18px; fill: none; stroke: #6e6e73; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; transition: transform 180ms ease; }
 .section-collapse-enter-active,
 .section-collapse-leave-active { transition: opacity 170ms ease, transform 170ms ease; }
 .section-collapse-enter-from,
 .section-collapse-leave-to { opacity: 0; transform: translateY(-6px); }
-.alarm-record-status {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 10px;
-    margin-bottom: 14px;
-}
-.alarm-record-status > div {
-    padding: 10px 12px;
-    border-radius: 8px;
-    background: #f5f5f7;
-    color: #6e6e73;
-    display: flex;
-    justify-content: space-between;
-    font-size: calc(13px * var(--admin-font-scale, 1));
-}
-.alarm-record-status > div.configured {
-    background: #eef7f1;
-    color: #1f7a3a;
-}
-.alarm-import-layout {
-    display: grid;
-    grid-template-columns: minmax(320px, 1fr) 260px;
-    gap: 14px;
-}
-.alarm-textarea {
-    min-height: 170px;
-    resize: vertical;
-    line-height: 1.6;
-    font-family: Consolas, "Microsoft YaHei", monospace;
-}
-.alarm-import-side {
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-}
-.alarm-preview {
-    flex: 1;
-    min-height: 80px;
-    padding: 10px 12px;
-    border-radius: 8px;
-    background: #f5f5f7;
-    color: #515154;
-    font-size: calc(12px * var(--admin-font-scale, 1));
-    line-height: 1.7;
-    overflow: auto;
-}
 .plc-status-table { min-width: 980px; margin-bottom: 0; }
 .point-monitor-controls {
     display: flex;

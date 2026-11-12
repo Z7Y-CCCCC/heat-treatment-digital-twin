@@ -41,6 +41,7 @@ const { BACKEND_DIR, createRunDirectory, createTestDatabase, findFreePort,
         collectorPid = initial.engine.process.pid;
         assert.ok(Array.isArray(initial.collectorFactories) && initial.collectorFactories.length > 0,
             'health includes multi-factory operations telemetry');
+        assert.equal(initial.components.displayConnection.status, 'offline', 'health polling is not a connected display');
         for (const factory of initial.collectorFactories) {
             assert.ok(Array.isArray(factory.devices));
             assert.equal(factory.mode, 'simulation');
@@ -48,11 +49,40 @@ const { BACKEND_DIR, createRunDirectory, createTestDatabase, findFreePort,
         }
         ws = new WebSocket(`${origin.replace('http:', 'ws:')}/ws`);
         await once(ws, 'open');
+        ws.send(JSON.stringify({ type:'client_hello', role:'unity' }));
+        ws.send(JSON.stringify({ type:'dashboard_context', payload:{sceneReady:true} }));
+        const linked = await waitUntil(async () => {
+            const value = await health();
+            return value.components.displayConnection.sceneReadyClients === 1 && value;
+        }, 5000, 'native display health in real backend');
+        assert.equal(linked.components.displayConnection.status, 'online');
+        assert.equal(linked.components.displayConnection.connectedClients, 1);
         ws.close();
         await once(ws, 'close');
         ws = null;
+        await waitUntil(async () => (await health()).components.displayConnection.status === 'offline', 5000, 'display disconnect without collector stop');
         const firstFrame = initial.engine.collectorStatus.frames;
         await waitUntil(async () => (await health()).engine.collectorStatus.frames > firstFrame + 1, 5000, 'collection without UI');
+        const sampleDb=new Database(filename,{readonly:true});
+        let storedPoint;
+        try{storedPoint=await waitUntil(()=>sampleDb.prepare('SELECT * FROM point_samples ORDER BY sampled_at DESC LIMIT 1').get(),5000,'raw point history without display');}finally{sampleDb.close();}
+        const historyQuery=new URLSearchParams({device_id:storedPoint.device_id,point_id:storedPoint.point_id,source_mode:storedPoint.source_mode,from:String(Math.max(0,storedPoint.sampled_at-3600000)),to:String(Math.ceil(Date.now()))});
+        const history=await requestJson(`${origin}/api/datapoints/history?${historyQuery}`,{headers:{'X-Factory-Id':storedPoint.factory_id}});
+        assert.equal(history.retention,'configured');assert.equal(history.factoryId,storedPoint.factory_id);assert.ok(history.rows.length>0);
+        assert.equal(history.retentionPolicy.recentEnabled,true);assert.equal(history.retentionPolicy.recentHours,24);
+        assert.equal(history.pointPolicy.mode,'recent');assert.equal(storedPoint.retention_until,storedPoint.sampled_at+24*3600000);
+        const wrongScope=await fetch(`${origin}/api/datapoints/history?${new URLSearchParams({...Object.fromEntries(historyQuery),device_id:'NOT_THIS_DEVICE'})}`,{headers:{'X-Factory-Id':storedPoint.factory_id,'X-Admin-Token':env.ADMIN_API_TOKEN}});
+        assert.equal(wrongScope.status,404);
+        const policyHeaders={'X-Factory-Id':storedPoint.factory_id,'X-Admin-Token':env.ADMIN_API_TOKEN};
+        const liveSamples=new Database(filename,{readonly:true});
+        try {
+            await requestJson(`${origin}/api/datapoints/history-policy`,{method:'PUT',headers:policyHeaders,body:JSON.stringify({...history.retentionPolicy,recentHours:2})});
+            await waitUntil(()=>liveSamples.prepare('SELECT sample_key FROM point_samples WHERE factory_id=? AND retention_until-sampled_at=? LIMIT 1').get(storedPoint.factory_id,2*3600000),10000,'factory retention hot reload over real collector IPC');
+            await requestJson(`${origin}/api/datapoints/history-policy/points/${storedPoint.point_id}`,{method:'PUT',headers:policyHeaders,body:JSON.stringify({mode:'finite',days:3})});
+            await waitUntil(()=>liveSamples.prepare('SELECT sample_key FROM point_samples WHERE factory_id=? AND device_id=? AND point_id=? AND retention_until-sampled_at=? LIMIT 1').get(storedPoint.factory_id,storedPoint.device_id,storedPoint.point_id,3*24*3600000),10000,'point retention hot reload over real collector IPC');
+            assert.equal(liveSamples.prepare('SELECT retention_until FROM point_samples WHERE sample_key=?').get(storedPoint.sample_key).retention_until,storedPoint.retention_until,'hot reload never rewrites old sample deadlines');
+            assert.equal((await health()).engine.process.pid,collectorPid,'policy saves do not restart the collector process');
+        } finally {liveSamples.close();}
         process.kill(collectorPid, 'SIGKILL');
         const unavailable = await waitUntil(async () => {
             const value = await health();
@@ -90,6 +120,6 @@ const { BACKEND_DIR, createRunDirectory, createTestDatabase, findFreePort,
         if (collectorPid) await sleep(200);
     }
     console.log(JSON.stringify({ success: true, apiSurvivesCollectorCrash: true, collectionWithoutUi: true,
-        automaticRecovery: true, ipcPointMonitoring: true, independentManualRestart: true,
+        automaticRecovery: true, ipcPointMonitoring: true, historyPolicyHotReload:true, independentManualRestart: true,
         gracefulDatabaseShutdown: true, directory }, null, 2));
 })().catch(error => { console.error(error); process.exitCode = 1; });

@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const root = path.resolve(__dirname, '../..');
+require('../../backend/services/defaultDashboardTemplate').verifyDefaultDashboardTemplate();
 const desktop = require(path.join(root, 'desktop/package.json'));
 const manifest = require(path.join(root, 'release-manifest.json'));
 if (!/^\d+\.\d+\.\d+$/.test(desktop.version)) throw new Error('Desktop version must be X.Y.Z');

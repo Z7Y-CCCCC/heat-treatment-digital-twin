@@ -71,7 +71,12 @@ async function main() {
         assert.ok(otherDemo.deviceIds.every(id => !configured.deviceIds.includes(id)));
         const otherState = await rpc('get_project_state', {}, factoryId);
         assert.equal(otherState.devices.length, 3);
-        assert.equal(otherState.designer.document.widgets.filter(widget => widget.groupId === 'group_device_part_detail').length, 3);
+        // A new factory already has the frozen part-detail panel. Explicit demo
+        // setup must reuse every existing widget rather than append the legacy
+        // three-widget sample, duplicate layouts, or rebuild the fixed baseline.
+        assert.equal(secondary.designer.document.widgets.length, 35);
+        assert.deepEqual(otherState.designer.document.widgets, secondary.designer.document.widgets);
+        assert.deepEqual(otherState.designer.document.metadata.defaultTemplate, secondary.designer.document.metadata.defaultTemplate);
         assert.equal((await rpc('get_project_state')).designer.currentRelease.id, after.designer.currentRelease.id);
         // A factory can already report simulation while another factory is
         // loading or a debounced config restart is pending. Verify the whole

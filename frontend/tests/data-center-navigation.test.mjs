@@ -10,7 +10,8 @@ test('data-center is a first-level sidebar group whose child destinations reuse 
   const destinations = adminSubpages('data-center')
   assert.equal(destinations.find(page => page.key === 'mapping').permissionKey, 'points')
   assert.equal(destinations.find(page => page.key === 'monitor').permissionKey, 'point-monitor')
-  assert.equal(destinations.find(page => page.key === 'alarms').permissionKey, 'points.alarms')
+  assert.equal(destinations.some(page => page.key === 'alarms'), false)
+  assert.equal(ADMIN_PAGES.find(page => page.key === 'points.alarms').retired, true)
   for (const key of ['tables','sources']) assert.equal(destinations.find(page => page.key === key).permissionKey, 'settings.database')
   assert.deepEqual(adminNavPages('data'), [])
   assert.match(panel, /data-testid="data-center-nav"[\s\S]*v-for="child in visibleDataCenterSubpages"[\s\S]*@click="openDataCenterSection\(child.key\)"/)
@@ -38,8 +39,8 @@ test('submenu changes and factory switches protect metadata, source and live/cac
   assert.doesNotMatch(panel, /database-panel-sources|label: '外部数据源'/)
 })
 
-test('the five data center subpages no longer repeat the shared title and introductory flow banner', () => {
-  assert.equal(adminSubpages('data-center').length, 5)
+test('the four data center subpages no longer repeat the shared title and introductory flow banner', () => {
+  assert.equal(adminSubpages('data-center').length, 4)
   assert.doesNotMatch(center, /center-heading|center-title|center-symbol|center-flow|先整理好数据，再轻松搭建画面|数据使用流程/)
   assert.match(center, /aria-label="数据表"/)
   assert.match(center, /:aria-label="activeRegionLabel"/)

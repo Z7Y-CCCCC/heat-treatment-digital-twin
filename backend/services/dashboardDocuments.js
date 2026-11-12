@@ -495,9 +495,8 @@ async function loadDesignerState(db, sceneId = '', factoryId = '') {
 }
 
 function runtimePlatformPayload({ project, scene, document, release }) {
-    // A factory created while the backend is already running has no published
-    // release yet. Normalize its deliberately sparse empty document before
-    // projecting widgets; raw seed widgets do not contain every runtime field.
+    // Normalize both the explicit new-factory default release and older sparse
+    // scenes before projection; raw legacy widgets can lack runtime fields.
     const runtimeDocument = normalizeDocument(document || createEmptyDocument({ project, scene }), {
         project,
         scene,

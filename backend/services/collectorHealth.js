@@ -44,7 +44,7 @@ function collectorHealth(engine = {}, factories = {}, { now = Date.now(), databa
         state = ['starting', 'recovering'].includes(proc.status) ? 'starting' : proc.status === 'stopped' ? 'stopped' : 'offline';
         label = { starting: '采集进程恢复中', stopped: '采集已停止', offline: '采集进程未连接' }[state];
         reason = heartbeatAgeMs > (proc.heartbeatTimeoutMs || 15000) ? '心跳超时' : '';
-    } else if (summaries.some(f => f.state === 'degraded') || engine.eventStorageStatus?.status === 'error') {
+    } else if (summaries.some(f => f.state === 'degraded') || engine.eventStorageStatus?.status === 'error' || engine.historyStorageStatus?.status==='error' || sources.some(([,source])=>source.historyStorageStatus?.status==='error')) {
         state = 'degraded'; label = counts.normal ? '部分采集异常' : '采集异常'; reason = counts.abnormal ? `${counts.abnormal} 台设备异常${counts.normal ? '，其余设备继续采集' : ''}` : '采集任务或历史存储异常';
     } else if (Number(proc.eventLoopLagMs) > 250) { state = 'degraded'; label = '采集调度延迟'; }
     else if (summaries.every(f => f.state === 'paused')) { state = 'paused'; label = '工厂采集已暂停'; }

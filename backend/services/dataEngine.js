@@ -1,8 +1,11 @@
-const { getDb } = require('../db/database');
+const { getDb, getDbStatus } = require('../db/database');
 const PlcReader = require('./runtimeEngine').collectorAvailable() ? require('./plcReader') : null;
 const Simulator = require('./simulator');
 const { getAlarmOutbox } = require('./alarmOutbox');
 const { assertNoPendingSiteRecovery } = require('./siteRecoveryIntent');
+const { pointAlarmReadings, alarmEventValue } = require('./pointAlarm');
+const { observedSamples } = require('./pointHistory');
+const { DEFAULT_POLICY, readPolicy, readHistoryPoints, normalizePointPolicy, selectSamples, DAY_MS } = require('./historyPolicy');
 
 class DataEngine {
     constructor(wsServer, options = {}) {
@@ -35,6 +38,11 @@ class DataEngine {
         this.metricSummary = null;
         this.metricSnapshotIntervalMs = 5000;
         this.metricWritePending = null;
+        this.historyWritePending=null;this.historyRetryTimer=null;this.historyStopped=false;
+        this.historyStorageStatus={status:'idle',pendingSamples:0,lastError:null};
+        this.historyJournalError=null;
+        this.historyPolicy = { ...DEFAULT_POLICY };
+        this.pointHistoryPolicies = new Map();
         this.runVersion = 0;
     }
 
@@ -42,6 +50,8 @@ class DataEngine {
         assertNoPendingSiteRecovery();
         const runVersion = ++this.runVersion;
         this.alarmStorageStopped = false;
+        this.historyStopped=false;
+        clearTimeout(this.historyRetryTimer);this.historyRetryTimer=null;
         clearTimeout(this.alarmRetryTimer);
         this.alarmRetryTimer = null;
         if (!ownFactoryOnly) await this._stopSecondaryEngines();
@@ -58,6 +68,7 @@ class DataEngine {
         if (runVersion !== this.runVersion) return;
         const factoryId = this.fixedFactoryId || String(activeFactory?.value || 'factory_default');
         this.activeFactoryId = factoryId;
+        this._flushPointSamples().catch(()=>{});
         const factory = await db.get('SELECT collection_enabled FROM factories WHERE id = ?', [factoryId]);
         if (runVersion !== this.runVersion) return;
         if (Number(factory?.collection_enabled ?? 1) === 0) {
@@ -75,6 +86,7 @@ class DataEngine {
         const factoryRows = await db.all('SELECT `key`, value FROM factory_settings WHERE factory_id = ?', [factoryId]);
         if (runVersion !== this.runVersion) return;
         factoryRows.forEach(row => { settings[row.key] = row.value; });
+        if (!await this._loadHistoryPolicies(db, factoryId, runVersion)) return;
         this._drainAlarmEvents().catch(() => {});
 
         const mode = this._normalizeMode(settings.data_mode);
@@ -106,6 +118,16 @@ class DataEngine {
         }
         if (!this.isSecondary && !ownFactoryOnly && runVersion === this.runVersion) await this._startSecondaryEngines(db, runVersion);
         if (runVersion === this.runVersion) this.configLoadedAt = Date.now();
+    }
+
+    async _loadHistoryPolicies(db, factoryId, runVersion = this.runVersion) {
+        const policy = await readPolicy(db, factoryId), points = await readHistoryPoints(db, factoryId);
+        if (runVersion !== this.runVersion) return false;
+        this.historyPolicy = policy;
+        this.pointHistoryPolicies = new Map(points.map(p => [String(p.id), {
+            ...normalizePointPolicy({mode:p.history_mode ?? 'recent',days:p.history_days ?? 30}), deviceId:String(p.device_id)
+        }]));
+        return true;
     }
 
     async _startSecondaryEngines(db, runVersion) {
@@ -150,6 +172,9 @@ class DataEngine {
         const factory = await db.get('SELECT collection_enabled FROM factories WHERE id=?', [id]);
         const local = await db.get('SELECT value FROM factory_settings WHERE factory_id=? AND `key`=?', [id,'data_mode']);
         const mode = source._normalizeMode(local?.value ?? (await db.get('SELECT value FROM settings WHERE `key`=?', ['data_mode']))?.value);
+        // Configuration reloads deliberately keep the running reader/timers;
+        // retention policy must still refresh before the next sampling frame.
+        if (!await source._loadHistoryPolicies(db, id)) return {factoryId:id,status:source.getStatus(),removedDeviceIds:[]};
         if (Number(factory?.collection_enabled ?? 1) !== 0 && source.currentMode === mode && source.plcReader) {
             await source.plcReader.reloadConfiguration(); source.configLoadedAt = Date.now();
         } else if (Number(factory?.collection_enabled ?? 1) !== 0 && source.currentMode === mode && mode === 'simulation' && source.simulator) {
@@ -191,6 +216,7 @@ class DataEngine {
     stop() {
         this.runVersion += 1;
         this.alarmStorageStopped = true;
+        this.historyStopped=true;clearTimeout(this.historyRetryTimer);this.historyRetryTimer=null;
         clearTimeout(this.alarmRetryTimer);
         this.alarmRetryTimer = null;
         const secondaryStopping = this._stopSecondaryEngines();
@@ -199,7 +225,7 @@ class DataEngine {
         this.plcStatus = { status: 'stopped', message: '采集器已停止', timestamp: Date.now() };
         this.collectorStatus = { ...this.collectorStatus, ...this.plcStatus };
         console.log('[DataEngine] 所有数据源已停止');
-        return Promise.allSettled([secondaryStopping, this.alarmWritePending, this.metricWritePending]);
+        return Promise.allSettled([secondaryStopping, this.alarmWritePending, this.metricWritePending, this.historyWritePending]);
     }
 
     async restart() {
@@ -221,7 +247,8 @@ class DataEngine {
             mode: this.currentMode,
             plcStatus: simulationDevices ? { ...this.plcStatus, devices: simulationDevices } : this.plcStatus,
             collectorStatus: this.collectorStatus,
-            eventStorageStatus: { ...this.eventStorageStatus }
+            eventStorageStatus: { ...this.eventStorageStatus },
+            historyStorageStatus:{...this.historyStorageStatus,retention:'configured',policy:{...this.historyPolicy}}
         };
     }
 
@@ -311,7 +338,25 @@ class DataEngine {
 
     _publishRealtimeData(deviceDataArray) {
         if (!Array.isArray(deviceDataArray) || deviceDataArray.length === 0) return;
+        if(!this.historyStopped && ['simulation','integrated_plc'].includes(this.currentMode)) {
+            try {
+                const records=selectSamples(observedSamples(this.activeFactoryId || this.fixedFactoryId || 'factory_default',deviceDataArray,this.currentMode),this.historyPolicy,this.pointHistoryPolicies);
+                if(records.length){this.alarmOutboxProvider().recordSamples(this.activeFactoryId || this.fixedFactoryId || 'factory_default',records);this.historyJournalError=null;this._flushPointSamples().catch(()=>{});}
+            } catch(error){this.historyJournalError=error.message;this.historyStorageStatus={status:'error',stage:'journal',pendingSamples:this.historyStorageStatus.pendingSamples,lastError:error.message};console.warn('[PointHistory] 原始采样持久记录失败:',error.message);}
+        }
         for (const device of deviceDataArray) {
+            const pointAlarms = pointAlarmReadings(device);
+            if (pointAlarms.length) {
+                const active = pointAlarms.some(point => point.alarm === true);
+                const unknown = pointAlarms.some(point => point.alarm === null);
+                device.alarmSummary = { active: active ? true : unknown ? null : false, quality: !active && unknown ? 'stale' : 'good' };
+                // A configured status.alarm is also a raw point reading; don't overwrite
+                // it with an aggregate boolean (e.g. an inverted =0 or numeric threshold).
+                if (!device.pointMeta?.['status.alarm']) {
+                    device.status = { ...device.status, alarm: device.alarmSummary.active };
+                    device.quality = { ...device.quality, status: { ...device.quality?.status, alarm: device.alarmSummary.quality } };
+                }
+            }
             if (device?.furnace_id) this.deviceSnapshots.set(device.furnace_id, device);
         }
         const snapshots = [...this.deviceSnapshots.values()];
@@ -344,6 +389,37 @@ class DataEngine {
         return tracked;
     }
 
+    _flushPointSamples() {
+        if(this.historyStopped)return Promise.resolve();
+        if(this.historyWritePending)return this.historyWritePending;
+        const factoryId=this.activeFactoryId || this.fixedFactoryId || 'factory_default';
+        const tracked=(async()=>{
+            const journal=this.alarmOutboxProvider();
+            if(typeof journal.sampleBatch!=='function')return;
+            try {
+                for(let batch=0;batch<16 && !this.historyStopped;batch++) {
+                    const records=journal.sampleBatch(factoryId,128);if(!records.length)break;
+                    const db=await getDb();
+                    await db.transaction(async tx=>{
+                        const existing=new Set((await tx.all(`SELECT sample_key FROM point_samples WHERE sample_key IN (${records.map(()=>'?').join(',')})`,records.map(r=>r.sampleKey))).map(r=>r.sample_key));
+                        const missing=records.filter(r=>!existing.has(r.sampleKey));if(!missing.length)return;
+                        await tx.run(`INSERT INTO point_samples (sample_key,factory_id,device_id,point_id,point_key,point_name,unit,source_mode,sampled_at,value_json,value_number,quality,retention_until)
+                            VALUES ${missing.map(()=>'(?,?,?,?,?,?,?,?,?,?,?,?,?)').join(',')}`,missing.flatMap(r=>[r.sampleKey,r.factoryId,r.deviceId,r.pointId,r.pointKey,r.pointName,r.unit,r.sourceMode,r.sampledAt,r.valueJson,r.valueNumber,r.quality,r.retentionUntil ?? null]));
+                    });
+                    for(const record of records)journal.acknowledgeSample(record);
+                    await new Promise(resolve=>setImmediate(resolve));
+                }
+                this.historyStorageStatus=this.historyJournalError?{status:'error',stage:'journal',pendingSamples:journal.pendingSamples(factoryId),lastError:this.historyJournalError}:{status:'healthy',pendingSamples:journal.pendingSamples(factoryId),lastError:null};
+            }catch(error){this.historyStorageStatus={status:'error',pendingSamples:journal.pendingSamples(factoryId),lastError:error.message};}
+            finally {
+                if(!this.historyStopped && (this.historyStorageStatus.pendingSamples || this.historyStorageStatus.status==='error')) {
+                    clearTimeout(this.historyRetryTimer);this.historyRetryTimer=setTimeout(()=>{this.historyRetryTimer=null;this._flushPointSamples().catch(()=>{});},this.historyStorageStatus.status==='error'?3000:10);this.historyRetryTimer.unref?.();
+                }
+            }
+        })().finally(()=>{if(this.historyWritePending===tracked)this.historyWritePending=null;});
+        this.historyWritePending=tracked;return tracked;
+    }
+
     async _writeMetrics(deviceDataArray) {
         const runVersion = this.runVersion;
         const now = Date.now();
@@ -363,10 +439,10 @@ class DataEngine {
         const overallOee = totalDevices ? Math.max(0, Math.min(99.9, (runningDevices / totalDevices) * 92 - alarmDevices * 4)) : 0;
         const energyConsumption = Math.round((avgTemp || 0) * Math.max(runningDevices, 1) * 0.72);
 
-        await db.run(`INSERT INTO metric_snapshots (
+        if (this.historyPolicy.metricMode !== 'off') await db.run(`INSERT INTO metric_snapshots (
             factory_id, current_output, daily_target, overall_oee, energy_consumption,
-            running_devices, alarm_devices, online_devices, total_devices
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
+            running_devices, alarm_devices, online_devices, total_devices, retention_until
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
             factoryId,
             currentOutput,
             dailyTarget,
@@ -375,10 +451,11 @@ class DataEngine {
             runningDevices,
             alarmDevices,
             onlineDevices,
-            totalDevices
+            totalDevices,
+            this.historyPolicy.metricMode === 'permanent' ? null : now + this.historyPolicy.metricDays * DAY_MS
         ]);
         if (runVersion === this.runVersion) {
-            this.lastMetricSavedAt = Date.now();
+            if (this.historyPolicy.metricMode !== 'off') this.lastMetricSavedAt = Date.now();
             this.metricSummary = { currentOutput, dailyTarget, overallOee: parseFloat(overallOee.toFixed(1)), energyConsumption, runningDevices, alarmDevices, onlineDevices, totalDevices };
         }
     }
@@ -391,6 +468,12 @@ class DataEngine {
         try {
             const records = [];
             for (const device of deviceDataArray) {
+                if (!device.furnace_id) continue;
+                const pointAlarms = pointAlarmReadings(device);
+                if (pointAlarms.length) {
+                    records.push(...pointAlarms.filter(point => point.alarm !== null));
+                    continue; // No duplicate device-total event for configured trigger points.
+                }
                 if (!device.furnace_id || device.status?.alarm == null || ['bad', 'stale'].includes(device.quality?.status?.alarm)) continue;
                 if (this.alarmState.has(device.furnace_id) && this.alarmState.get(device.furnace_id) === !!device.status.alarm) continue;
                 records.push({ deviceId: String(device.furnace_id), deviceName: String(device.furnace_name || device.furnace_id).slice(0, 180),
@@ -399,7 +482,7 @@ class DataEngine {
             if (!records.length) return Promise.resolve();
             const outbox = this.alarmOutboxProvider();
             const added = outbox.record(factoryId, records);
-            for (const record of records) this.alarmState.set(record.deviceId, record.alarm);
+            for (const record of records) if (!record.pointId) this.alarmState.set(record.deviceId, record.alarm);
             this.eventStorageStatus.pendingEvents = outbox.pending(factoryId);
             // Unchanged samples never create pending Promise chains or retain
             // full PLC frames while the business database is blocked.
@@ -434,6 +517,13 @@ class DataEngine {
                     if (this.alarmStorageStopped || runVersion !== this.runVersion) return;
                     const existing = await db.get('SELECT collector_event_id FROM event_logs WHERE collector_event_id = ?', [event.eventKey]);
                     if (this.alarmStorageStopped || runVersion !== this.runVersion) return;
+                    const value = event.pointId ? alarmEventValue(event) : String(event.alarm);
+                    if (event.pointId && !event.alarm) {
+                        // Keep the original trigger record complete as well as the recovery event.
+                        // Replays are idempotent after a lost acknowledgement.
+                        await db.run('UPDATE event_logs SET value=? WHERE factory_id=? AND collector_event_id=?',
+                            [value, event.factoryId, event.occurrenceId]);
+                    }
                     if (existing?.collector_event_id !== event.eventKey) {
                         // The unique collector key handles a commit followed by
                         // a lost response/crash before the local acknowledgement.
@@ -441,9 +531,10 @@ class DataEngine {
                             factory_id, event_type, level, source_id, title, message, value, quality, collector_event_id, occurred_at
                         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
                             event.factoryId, 'alarm', event.alarm ? 'critical' : 'info', event.deviceId,
-                            `${event.deviceName} ${event.alarm ? '报警触发' : '报警恢复'}`,
-                            event.alarm ? '设备实时数据出现报警状态' : '报警状态已恢复', String(event.alarm), event.quality, event.eventKey,
-                            new Date(event.occurredAt + 8 * 3600000).toISOString().slice(0, 19).replace('T', ' ')
+                            `${event.deviceName} ${event.alarm ? '报警触发' : '报警恢复'}`.slice(0, 255),
+                            event.pointId ? event.alarmText : event.alarm ? '设备实时数据出现报警状态' : '报警状态已恢复',
+                            value, event.quality, event.eventKey,
+                            new Date(event.occurredAt + ((getDbStatus?.().type || 'sqlite') === 'sqlite' ? 0 : 8 * 3600000)).toISOString().slice(0, 19).replace('T', ' ')
                         ]);
                     }
                     outbox.acknowledge(event);

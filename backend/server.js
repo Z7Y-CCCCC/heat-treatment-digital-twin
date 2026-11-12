@@ -650,6 +650,10 @@ app.get('/api/health', (req, res) => {
                 fresh: dataFresh
             },
             unity: { status: nativeSceneReady ? 'healthy' : 'offline', clients: unityClients },
+            // Aggregate authenticated/native WS liveness, not HTTP probes,
+            // process presence, or the number of open admin browsers. No IPs,
+            // account tokens, host fingerprints or persistent site data.
+            displayConnection: wsServer?.connectionHealth?.('unity') || { status: 'offline', clients: 0, connectedClients: 0, sceneReadyClients: 0, lastCommunicationAt: null, ageMs: null },
             dashboard: { status: webClients > 0 ? 'healthy' : 'idle', clients: webClients },
             license: {
                 status: licenseReady ? (license.valid ? 'healthy' : 'not_enforced') : 'error',

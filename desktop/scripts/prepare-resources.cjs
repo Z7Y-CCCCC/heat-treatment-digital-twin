@@ -218,6 +218,7 @@ async function prepareDatabaseTemplate(stagingDirectory, outputDb) {
 }
 
 async function main() {
+    require('../../backend/services/defaultDashboardTemplate').verifyDefaultDashboardTemplate();
     for (const required of ['HeatTreatmentDigitalTwin.exe', 'UnityPlayer.dll', 'HeatTreatmentDigitalTwin_Data']) {
         if (!fs.existsSync(path.join(nativeClientSourceDir, required))) {
             throw new Error(`找不到 Unity 原生客户端产物：${path.join(nativeClientSourceDir, required)}`);

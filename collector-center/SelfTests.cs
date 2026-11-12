@@ -21,6 +21,24 @@ namespace HeatTreatmentCollectorCenter
                 double now=(DateTime.UtcNow-new DateTime(1970,1,1,0,0,0,DateTimeKind.Utc)).TotalMilliseconds;
                 var s=Ops.Summarize(new Snapshot(),Health(now-1000),DateTime.UtcNow);
                 Check(s.Healthy && s.Mode=="模拟数据","Unity must be optional, simulation explicit");
+                Check(s.DisplayState=="unknown" && s.DisplayNote.Contains("更新"),"legacy health must not invent a display connection");
+                foreach(string state in new[]{"online","stale","offline"}) {
+                    var displayHealth=Health(now-1000);
+                    ((IDictionary<string,object>)Ops.Get(displayHealth,"components"))["displayConnection"]=Ops.Parse("{\"status\":\""+state+"\",\"connectedClients\":"+(state=="online"?"2":"0")+",\"sceneReadyClients\":1,\"ageMs\":"+(state=="online"?"500":"17000")+"}");
+                    var ds=Ops.Summarize(new Snapshot(),displayHealth,DateTime.UtcNow);
+                    Check(ds.Healthy && ds.DisplayState==state,"display disconnection cannot stop or degrade collection: "+state);
+                    Check(state=="online"?ds.DisplayConnection.Contains("2 个大屏") && ds.DisplayNote.Contains("就绪") && ds.DisplayLastCommunication=="刚刚":state=="stale"?ds.DisplayConnection=="通信超时" && ds.DisplayNote.Contains("15 秒"):ds.DisplayConnection=="未连接大屏" && ds.DisplayNote.Contains("不影响"),"display projection: "+state);
+                }
+                var loading=Health(now);
+                ((IDictionary<string,object>)Ops.Get(loading,"components"))["displayConnection"]=Ops.Parse("{\"status\":\"online\",\"connectedClients\":1,\"sceneReadyClients\":0,\"ageMs\":null}");
+                var displayLoading=Ops.Summarize(new Snapshot(),loading,DateTime.UtcNow);
+                Check(displayLoading.DisplayNote.Contains("加载中") && displayLoading.DisplayLastCommunication=="暂无通信","connection and scene readiness are distinct");
+                ((IDictionary<string,object>)loading)["version"]=Ops.Parse("{\"license\":{\"enforce\":true,\"valid\":false}}");
+                Check(Ops.Summarize(new Snapshot(),loading,DateTime.UtcNow).DisplayState=="online","activation status cannot hide connection health");
+                ((IDictionary<string,object>)Ops.Get(loading,"components"))["displayConnection"]=Ops.Parse("{\"status\":\"online\",\"connectedClients\":0,\"ageMs\":-3}");
+                var malformed=Ops.Summarize(new Snapshot(),loading,DateTime.UtcNow);
+                Check(malformed.DisplayState=="unknown" && malformed.DisplayLastCommunication=="暂无通信","malformed telemetry cannot be healthy");
+                Check(Ops.Summarize(displayLoading,Health(now),DateTime.UtcNow).DisplayState=="unknown","missing telemetry resets old healthy state");
                 Check(!Ops.Summarize(new Snapshot(),Health(now-20000),DateTime.UtcNow).Healthy,"stale data");
                 var h=Health(now); ((IDictionary<string,object>)Ops.Get(h,"db"))["connected"]=false;
                 Check(!Ops.Summarize(new Snapshot(),h,DateTime.UtcNow).Healthy,"database error");
@@ -50,7 +68,7 @@ namespace HeatTreatmentCollectorCenter
                 string diagnostic=output+".json.gz"; Ops.Export(diagnostic,s,logs,"");
                 using(var file=File.OpenRead(diagnostic)) using(var gzip=new GZipStream(file,CompressionMode.Decompress)) using(var reader=new StreamReader(gzip)) { var report=reader.ReadToEnd(); Check(!report.Contains("SECRET"),"diagnostic redaction"); Ops.Parse(report); }
                 Check(Ops.Origin(Ops.Parse("{\"port\":4567,\"backendOrigin\":\"https://evil.test\"}"))=="http://127.0.0.1:4567","fixed local origin");
-                File.WriteAllText(output,Ops.Serialize(new {success=true,tests=new[]{"credentials-redacted","freshness","database","process-health","secondary-factory-health","mixed-mode","unity-optional","simulation-labeled","fixed-log-files","chinese-log-level","literal-log-text","gzip-json-export","fixed-loopback","invalid-port"}}),Encoding.UTF8);
+                File.WriteAllText(output,Ops.Serialize(new {success=true,tests=new[]{"credentials-redacted","freshness","database","process-health","secondary-factory-health","mixed-mode","unity-optional","simulation-labeled","display-online","display-stale","display-offline","display-legacy-unknown","display-scene-loading","display-unlicensed","display-malformed","display-no-stale-healthy","fixed-log-files","chinese-log-level","literal-log-text","gzip-json-export","fixed-loopback","invalid-port"}}),Encoding.UTF8);
                 return 0;
             } catch(Exception error) { File.WriteAllText(output,Ops.Serialize(new {success=false,error=error.ToString()})); return 1; }
         }

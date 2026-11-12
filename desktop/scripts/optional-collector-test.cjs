@@ -13,6 +13,8 @@ test('main installer excludes the collector implementation, binaries and service
     const build = require('../package.json').build;
     const backend = build.extraResources.find(r => r.to === 'backend');
     for (const name of COLLECTOR_FILES) assert.ok(backend.filter.includes(`!services/${name}`));
+    assert.ok(backend.filter.includes('!scripts/**/*'), 'Backend test/build scripts stay excluded');
+    assert.ok(build.extraResources.some(r => r.from === '../backend/scripts/generate-voice.ps1' && r.to === 'backend/scripts/generate-voice.ps1'), 'The speech runtime helper must be explicitly included');
     for (const name of ['collector-center','collector-service']) assert.ok(!build.extraResources.some(r => r.to === name));
     assert.ok(!build.extraFiles.some(r => r.to === '安装采集服务.ps1'));
     assert.equal(build.nsis.include, 'display-installer.nsh');
@@ -51,6 +53,9 @@ test('collector plugin gets an independent, complete resource tree without Unity
         const target=path.join(source,'desktop','.cache',name); fs.mkdirSync(target,{recursive:true}); fs.writeFileSync(path.join(target,'native.exe'),'fixture');
     }
     fs.mkdirSync(path.join(source,'backend','services'),{recursive:true});
+    fs.mkdirSync(path.join(source,'backend','scripts'));
+    fs.copyFileSync(path.join(root,'backend','scripts','generate-voice.ps1'),path.join(source,'backend','scripts','generate-voice.ps1'));
+    fs.writeFileSync(path.join(source,'backend','scripts','do-not-ship-test.cjs'),'must not ship');
     for (const name of COLLECTOR_FILES) fs.writeFileSync(path.join(source,'backend','services',name),name);
     fs.writeFileSync(path.join(source,'desktop','package.json'),'{"version":"2.3.2"}');
     for (const name of ['安装采集服务.ps1','采集运行中心.cmd','collector-operations.ps1']) fs.copyFileSync(path.join(root,'desktop',name),path.join(source,'desktop',name));
@@ -59,8 +64,11 @@ test('collector plugin gets an independent, complete resource tree without Unity
     assert.equal(fs.existsSync(path.join(target,'resources','native-client')),false);
     assert.equal(fs.existsSync(path.join(target,'resources','frontend')),false,'Collector package must not include display/admin UI');
     assert.equal(collectorAvailable(path.join(target,'resources','backend','services')),true);
+    assert.deepEqual(fs.readFileSync(path.join(target,'resources','backend','scripts','generate-voice.ps1')),fs.readFileSync(path.join(root,'backend','scripts','generate-voice.ps1')));
+    assert.deepEqual(fs.readdirSync(path.join(target,'resources','backend','scripts')),['generate-voice.ps1']);
     const manifest=JSON.parse(fs.readFileSync(path.join(target,'plugin-manifest.json')));
     assert.ok(manifest.files.length>10); assert.ok(manifest.files.every(f => f.sha256.length===64 && !f.path.includes('..')));
+    assert.ok(manifest.files.some(f => f.path === 'resources/backend/scripts/generate-voice.ps1'));
     assert.throws(() => prepareCollectorPlugin(display,target,source),/must be new/);
 });
 

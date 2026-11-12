@@ -89,7 +89,7 @@ class Child extends EventEmitter {
     exit(code = 0, signal = null) { this.exitCode = code; this.signalCode = signal; this.emit('exit', code, signal); }
 }
 
-function loadDesktop({ createLog, spawnProcess, userDataPath, deploymentConfig, fileSystem, electron = {} } = {}) {
+function loadDesktop({ createLog, spawnProcess, userDataPath, deploymentConfig, fileSystem, probeConnection, electron = {} } = {}) {
     const app = new EventEmitter();
     const timers = [];
     const intervals = [];
@@ -135,8 +135,11 @@ function loadDesktop({ createLog, spawnProcess, userDataPath, deploymentConfig, 
             // This VM tests supervision with fake paths/filesystems. Template
             // seeding has dedicated tests and must not touch the real disk here.
             if (name === './templateData.cjs') return { seedTemplateConfiguration: async () => {} };
+            // Never let installed machine configuration change a VM fixture's
+            // mode, contact a commissioned service, or bypass local assertions.
             if (name === './deployment.cjs') return { ...require('../deployment.cjs'),
-                ...(deploymentConfig ? { resolveDeployment: () => deploymentConfig } : {}) };
+                resolveDeployment: () => deploymentConfig || {mode:'local'} };
+            if (name === './connectionHealth.cjs') return {probeCollectorConnection:probeConnection || (()=>{throw Error('unexpected network probe in supervisor test');})};
             // Activation IPC/network has dedicated integration tests. A VM
             // supervision unit must never contact a real local installation.
             if (name === './activation.cjs') return { runStartupActivation: async () => {} };
@@ -187,6 +190,26 @@ function downloadWindowFixture() {
         getFilename: () => 'backup.zip', setSavePath() {} });
     return { desktop, session, windows, saves, item };
 }
+
+test('deployment health IPC permits only its top-level window, is read-only and preserves safe errors', async () => {
+    const handlers=new Map(),windows=[],probes=[];
+    class Window extends EventEmitter {
+        constructor(options){super();this.options=options;this.webContents=Object.assign(new EventEmitter(),{mainFrame:{},setWindowOpenHandler(){}});windows.push(this);}
+        isDestroyed(){return false;} show(){} focus(){} loadFile(){}
+    }
+    const desktop=loadDesktop({electron:{BrowserWindow:Window,ipcMain:{handle:(name,handler)=>handlers.set(name,handler)}},
+        probeConnection:async raw=>{probes.push(raw);if(raw.backendOrigin==='INVALID')throw Error('PRIVATE_FIXTURE');return {state:'online'};}});
+    await desktop.run('showDeploymentWindow()');const window=windows[0], handler=handlers.get('deployment:probe');
+    assert.ok(handler);assert.equal(window.options.webPreferences.sandbox,true);assert.equal(window.options.resizable,true);
+    await assert.rejects(handler({sender:{},senderFrame:window.webContents.mainFrame},{mode:'client'}),/拒绝访问/);
+    await assert.rejects(handler({sender:window.webContents,senderFrame:{}},{mode:'client'}),/拒绝访问/);
+    assert.equal(probes.length,0);
+    const event={sender:window.webContents,senderFrame:window.webContents.mainFrame};
+    assert.equal((await handler(event,{mode:'client',backendOrigin:'http://127.0.0.1:4567'})).state,'online');
+    assert.equal(probes[0].backendOrigin,'http://127.0.0.1:4567');assert.equal(desktop.spawnCalls,0);assert.equal(desktop.run('isQuitting'),false);
+    const invalid=await handler(event,{mode:'client',backendOrigin:'INVALID'});assert.equal(invalid.state,'invalid');assert.doesNotMatch(JSON.stringify(invalid),/PRIVATE_FIXTURE/);
+    window.emit('closed');await assert.rejects(handler(event,{mode:'client'}),/拒绝访问/);
+});
 
 test('collector-center compatibility entry hands off to native UI without database, backend, power request or Unity', async () => {
     const desktop = loadDesktop();

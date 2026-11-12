@@ -4,6 +4,7 @@ const { getDb } = require('../db/database');
 const { normalizeSettingValue } = require('./settings');
 const { searchFactoryPlace } = require('../services/factoryGeocoder');
 const { summarizeFactoryCollection } = require('../services/factoryCollectionSummary');
+const { initializeDefaultDashboard } = require('../services/defaultDashboardTemplate');
 
 const router = express.Router();
 
@@ -135,6 +136,7 @@ router.post('/', async (req, res) => {
                 VALUES (?, ?, ?, ?, 1)`, [projectId, factoryId, `${name}数字孪生项目`, '按工厂独立维护的场景项目']);
             await tx.run(`INSERT INTO scenes (id, project_id, name, scene_type, layout_json, camera_json, theme_json, is_active, sort_order)
                 VALUES (?, ?, ?, 'factory_overview', '{}', '{}', '{}', 1, 0)`, [sceneId, projectId, `${name}总览`]);
+            await initializeDefaultDashboard(tx, { projectId, sceneId, name: `${name}总览` });
             const defaults = await tx.all('SELECT `key`, value FROM factory_settings WHERE factory_id = ?', ['factory_default']);
             for (const setting of defaults) {
                 // Lifecycle confirmations are private to their original factory.

@@ -24,6 +24,7 @@ namespace HeatTreatmentCollectorCenter
         public bool Installed, Running, Healthy, RuntimeReady;
         public string HealthState="offline",HealthLabel="等待采集进程";
         public int Normal=-1,Abnormal=-1;
+        public string DisplayConnection="未知（尚未检测）", DisplayState="unknown", DisplayLastCommunication="—", DisplayNote="服务未连接时无法确认大屏状态";
         public DateTime CheckedAt=DateTime.Now;
     }
     internal sealed class LogLine
@@ -96,6 +97,18 @@ namespace HeatTreatmentCollectorCenter
         }
         internal static Snapshot Summarize(Snapshot s,object health,DateTime now)
         {
+            var display=Get(Get(health,"components"),"displayConnection");
+            s.DisplayState="unknown";s.DisplayConnection="状态未知";s.DisplayLastCommunication="—";s.DisplayNote="需更新采集服务版本";
+            if(display!=null) {
+                int count=(int)Num(Get(display,"connectedClients"));
+                string displayState=Str(display,"status");
+                if(new[]{"online","stale","offline"}.Contains(displayState) && (displayState!="online" || count>0))s.DisplayState=displayState;
+                s.DisplayConnection=s.DisplayState=="online"?"已连接 · "+count+" 个大屏":s.DisplayState=="stale"?"通信超时":s.DisplayState=="offline"?"未连接大屏":"状态未知";
+                double displayAge=Get(display,"ageMs")==null?double.PositiveInfinity:Num(Get(display,"ageMs"));
+                if(double.IsNaN(displayAge) || displayAge<0)displayAge=double.PositiveInfinity;
+                s.DisplayLastCommunication=double.IsInfinity(displayAge)?"暂无通信":displayAge<1000?"刚刚":displayAge<60000?(displayAge/1000).ToString("0.0")+" 秒前":(displayAge/60000).ToString("0")+" 分钟前";
+                s.DisplayNote=s.DisplayState=="online"?Num(Get(display,"sceneReadyClients"))>0?"通道正常 · 场景就绪":"通道正常 · 场景加载中":s.DisplayState=="stale"?"大屏心跳超过 15 秒":s.DisplayState=="offline"?"不影响后台采集":"健康状态格式未知";
+            }
             var licensing=Get(Get(health,"version"),"license");
             if(Yes(Get(licensing,"enforce")) && !Yes(Get(licensing,"valid"))) {
                 s.Api="可达";s.Healthy=false;s.HealthState="activation_required";s.HealthLabel="等待正式激活";
@@ -110,7 +123,7 @@ namespace HeatTreatmentCollectorCenter
                 s.Api="可达";s.Database=Yes(Get(Get(health,"db"),"connected"))?"已连接":"异常";
                 var observedModes=Items(Get(health,"collectorFactories")).Select(f=>Str(f,"mode")).Where(x=>x!="").Distinct().ToArray();
                 if(observedModes.Length==0)observedModes=new[]{Str(Get(health,"engine"),"mode")};
-                s.Mode=observedModes.All(x=>x=="")?"未运行":observedModes.Length>1?"混合来源":observedModes.Contains("simulation")?"模拟演示":"现场采集";
+                s.Mode=observedModes.All(x=>x=="")?"未运行":observedModes.Length>1?observedModes.Contains("simulation")?"混合（含模拟）":"混合来源":observedModes.Contains("simulation")?"模拟演示":"现场采集";
                 double sampleAge=Get(observed,"lastSampleAgeMs")==null?double.PositiveInfinity:Num(Get(observed,"lastSampleAgeMs"));
                 s.Collection=double.IsInfinity(sampleAge)?"—":sampleAge<1000?"刚刚":(sampleAge/1000).ToString("0.0")+" 秒前";
                 var process=Get(observed,"process");

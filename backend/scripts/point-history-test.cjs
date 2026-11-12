@@ -1,0 +1,40 @@
+'use strict';
+const assert=require('node:assert/strict'),path=require('node:path');
+const {createRunDirectory}=require('./integration-test-utils.cjs');
+const directory=createRunDirectory('point-history'),data=path.join(directory,'data');
+Object.assign(process.env,{APP_DATA_DIR:data,DB_TYPE:'sqlite',SQLITE_FILE:path.join(data,'factory.db'),UPLOADS_DIR:path.join(directory,'uploads'),LICENSE_ENFORCE:'false',INSTALL_CONTENT_POLICY:'empty-v1'});
+for(const key of ['MYSQL_HOST','MYSQL_USER','MYSQL_PASSWORD','MYSQL_DATABASE','DB_HOST','DB_USER','DB_PASSWORD','DB_NAME'])delete process.env[key];
+const {getDb,closeDb}=require('../db/database'),{AlarmOutbox,snapshotAlarmOutbox}=require('../services/alarmOutbox');
+const {observedSamples,trendHistory,rawHistory}=require('../services/pointHistory'),DataEngine=require('../services/dataEngine');
+let journal,engine;
+(async()=>{
+    const db=await getDb(),filename=path.join(data,'test-journal.db');journal=new AlarmOutbox(filename);
+    engine=new DataEngine({broadcastDeviceData(){},broadcastStatus(){}},{alarmOutbox:()=>journal});engine.activeFactoryId='history_factory';engine.currentMode='simulation';
+    const at=Date.now()-2*3600000;
+    const device=(timestamp,value,quality='good',id='device_a',pointId='1')=>({furnace_id:id,timestamp,analog:{temp:value},quality:{analog:{temp:quality}},pointMeta:{'analog.temp':{id:pointId,timestamp,label:'温度',unit:'°C'}}});
+    const records=[];for(let i=0;i<=3600;i++)records.push(...observedSamples('history_factory',[device(at+i*1000,i===1800?999:i===1700?null:i%100,i===1700?'bad':'good')],'simulation'));
+    assert.equal(records.length,3601);assert.equal(journal.recordSamples('history_factory',records),3601);assert.equal(journal.pendingSamples('history_factory'),3601);
+    assert.equal(journal.recordSamples('history_factory',[records.at(-1)]),0,'replayed cached samples are not new observations');
+    journal.close();journal=new AlarmOutbox(filename);assert.equal(journal.pendingSamples('history_factory'),3601,'crash/restart retains every queued sample');
+    await snapshotAlarmOutbox(filename,path.join(directory,'snapshot.db'));
+    while(journal.pendingSamples('history_factory'))await engine._flushPointSamples();
+    assert.equal((await db.get('SELECT COUNT(*) n FROM point_samples')).n,3601);
+    const curve=await trendHistory(db,{factoryId:'history_factory',deviceId:'device_a',pointId:'1',sourceMode:'simulation'},{from:at,to:at+3600000,limit:2000});
+    assert.ok(curve.rows.length<=2000);assert.equal(curve.rows[0].timestamp,at);assert.equal(curve.rows.at(-1).timestamp,at+3600000);
+    assert.ok(curve.rows.some(row=>row.value===999),'downsampling preserves a spike');assert.ok(curve.rows.some(row=>row.value===null),'outage remains a gap');
+    assert.ok(curve.rows.some(row=>row.value===0),'zero is a real sample');assert.equal(curve.retention,'configured');
+    for(const scope of [{factoryId:'other',deviceId:'device_a',pointId:'1',sourceMode:'simulation'},{factoryId:'history_factory',deviceId:'device_b',pointId:'1',sourceMode:'simulation'}, {factoryId:'history_factory',deviceId:'device_a',pointId:'1',sourceMode:'integrated_plc'}])assert.equal((await trendHistory(db,scope,{from:at,to:at+3600000})).rows.length,0);
+    assert.equal((await db.get('SELECT COUNT(*) n FROM point_samples')).n,3601,'drawing/window changes never delete raw records');
+    let cursor={},rawCount=0;do{const page=await rawHistory(db,{factoryId:'history_factory',deviceId:'device_a',pointId:'1'},{from:at,to:at+3600000,limit:500,...cursor});rawCount+=page.rows.length;cursor=page.next;}while(cursor);assert.equal(rawCount,3601,'paginated records are full-resolution, not chart samples');
+    // Lost acknowledgement after a successful commit retries idempotently.
+    journal.recordSamples('history_factory',observedSamples('history_factory',[device(at+3601000,123)],'simulation'));
+    const ack=journal.acknowledgeSample.bind(journal);journal.acknowledgeSample=()=>{throw Error('fixture lost acknowledgement');};
+    await engine._flushPointSamples();assert.equal(engine.historyStorageStatus.status,'error');assert.equal(journal.pendingSamples('history_factory'),1);
+    journal.acknowledgeSample=ack;await engine._flushPointSamples();assert.equal(journal.pendingSamples('history_factory'),0);assert.equal((await db.get('SELECT COUNT(*) n FROM point_samples')).n,3602);
+    engine._publishRealtimeData([device(at+3602000,456)]);await engine.historyWritePending;assert.equal((await db.get('SELECT COUNT(*) n FROM point_samples')).n,3603,'collector persists without any display attached');
+    const current=await db.get('SELECT retention_until FROM point_samples WHERE sampled_at=?',[at+3602000]);
+    assert.equal(current.retention_until,at+3602000+24*3600000,'default point sampling has a finite recent deadline');
+    assert.equal((await db.get('SELECT COUNT(*) n FROM point_samples WHERE retention_until IS NULL')).n,3602,'legacy queued samples remain permanent during upgrade');
+    const restored=new AlarmOutbox(path.join(data,'restored.db'));try{const imported=restored.beginImportSnapshot(path.join(directory,'snapshot.db'));imported.commit();assert.equal(restored.pendingSamples('history_factory'),3601);}finally{restored.close();}
+    console.log(JSON.stringify({success:true,rawSamples:3603,drawingPoints:curve.rows.length,oneHour:true,recentDefault:true,legacyPreserved:true,durableQueue:true,idempotentRetry:true,scopeIsolation:true,directory}));
+})().catch(error=>{console.error(error);process.exitCode=1;}).finally(async()=>{await engine?.stop();journal?.close();await closeDb();});

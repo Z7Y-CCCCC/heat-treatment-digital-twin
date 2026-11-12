@@ -84,6 +84,14 @@ async function main() {
         });
         await waitForHttp(`${origin}/api/health`);
         await requestJson(`${origin}/api/settings`);
+        // HTTP/database readiness precedes the delayed maintenance startup.
+        // Let its real startup backup finish before testing database switches
+        // and sole-backup retention; otherwise it can prune the manual fixture
+        // while the restore request is stopping background maintenance.
+        await waitUntil(async () => {
+            const { status } = await requestJson(`${origin}/api/data-sources/backups/status`);
+            return status.lastBackupRun?.reason === 'startup' && !status.running;
+        }, 30000, 'startup backup maintenance completion', 50);
 
         await check('HTTP security headers allow local Blob model preview without opening remote HTTP or script sources', async () => {
             // Check the actual HTML response consumed by the model preview as

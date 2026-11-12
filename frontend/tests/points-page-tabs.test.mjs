@@ -13,15 +13,15 @@ test('add point is a single top-toolbar action, not a footer action', () => {
   assert.match(page, /data-testid="add-data-point" :disabled="pointsLoading \|\| pointsSaving \|\| !devices\.length" v-permission=/)
 })
 
-test('mapping and alarms are peer tabpanels sharing the device filter and save action', () => {
+test('alarms are configured inline with mapping, not a separate text-import page', () => {
   assert.match(panel, /<DataCenterWorkspace[^>]*:active-section="dataCenterSection"/)
-  assert.match(page, /<section id="points-panel-mapping"[^>]*v-show="pointsSubpage === 'mapping'"/)
-  assert.match(page, /<\/section>\s*<section id="points-panel-alarms"[^>]*v-show="pointsSubpage === 'alarms'"/)
+  assert.match(page, /<section id="points-panel-mapping"/)
+  assert.doesNotMatch(page, /points-panel-alarms|alarm-config-header|报警说明|匹配到报警点位|导入文本文件/)
+  assert.match(page, /v-model="p.alarm_condition"[\s\S]*aria-label="报警触发条件"/)
+  assert.match(page, /点位名称填写报警文本/)
   assert.equal((page.match(/aria-label="筛选点位设备"/g) || []).length, 1)
   assert.equal((page.match(/@click="savePointsPage"/g) || []).length, 1)
-  assert.match(page, /<header class="alarm-config-header">/)
-  assert.doesNotMatch(panel, /isAlarmConfigOpen/)
-  assert.match(panel, /pointsSubpage: pointsSubpage\.value/)
+  assert.match(panel, /storedAdminUiState.dataCenterSection === 'alarms' \? 'mapping'/)
 })
 
 test('tab keyboard navigation wraps, focuses and never reloads the point draft', async () => {

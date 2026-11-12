@@ -30,7 +30,7 @@ const compact = value => String(value || '').replace(/\s+/g, '')
 const children = (node, tag) => (node.children || []).filter(child => child.type === 1 && (!tag || child.tag === tag))
 const one = predicate => { const matches = entries.filter(({ node, ancestors }) => predicate(node, ancestors)); assert.equal(matches.length, 1); return matches[0] }
 const field = model => one(node => expression(node, 'model') === model)
-const nativeModels = ['p.label', 'p.__usage', 'p.data_type', 'p.plc_tag', 'p.sample_interval_ms', 'p.access_type', 'p.unit', 'p.alarm_text', 'p.scale', 'p.offset', 'p.display_format']
+const nativeModels = ['p.label', 'p.__usage', 'p.data_type', 'p.plc_tag', 'p.sample_interval_ms', 'p.access_type', 'p.unit', 'p.alarm_condition', 'p.scale', 'p.offset', 'p.display_format']
 const advancedModels = ['p.scale', 'p.offset', 'p.display_format']
 const styles = parsedPanel.descriptor.styles.filter(style => !style.src).map(style => compileStyle({ source: style.content, filename: panelUrl.pathname, id: 'point-mapping-layout' }))
 const pickerStyles = parsedPicker.descriptor.styles.filter(style => !style.src).map(style => compileStyle({ source: style.content, filename: pickerUrl.pathname, id: 'point-mapping-picker' }))
@@ -134,14 +134,15 @@ test('selected short usage/type overlays are aria-hidden and keep the full Chine
 })
 
 test('dirty tracking, access modes, protocol address hints, alarm inputs and row actions preserve original point objects', () => {
-  for (const model of nativeModels.filter(value => !['p.__usage', 'p.data_type', 'p.access_type'].includes(value))) assert.equal(expression(field(model).node, 'on', 'input'), 'markPointsDirty')
+  for (const model of nativeModels.filter(value => !['p.__usage', 'p.data_type', 'p.access_type', 'p.alarm_condition'].includes(value))) assert.equal(expression(field(model).node, 'on', 'input'), 'markPointsDirty')
+  assert.equal(expression(field('p.alarm_condition').node, 'on', 'change'), 'markPointsDirty');
   assert.equal(expression(field('p.access_type').node, 'on', 'change'), 'markPointsDirty'); assert.equal(expression(field('p.device_id').node, 'on', 'change'), 'markPointsDirty')
   const address = field('p.plc_tag').node
   assert.equal(expression(address, 'bind', 'title'), 'getPlcDuplicateWarning(p) || getPlcAddressWarning(p) || getPointAddressTitle(p)'); assert.equal(expression(address, 'bind', 'placeholder'), 'getPointAddressPlaceholder(p)')
   assert.match(expression(address, 'bind', 'class'), /'has-warning': !!getPlcAddressWarning\(p\)/); assert.match(expression(address, 'bind', 'class'), /'has-duplicate': !!getPlcDuplicateWarning\(p\)/)
   assert.ok(mapping.indexOf('v-if="getPlcDuplicateWarning(p)"') < mapping.indexOf('v-else-if="getPlcAddressWarning(p)"'))
   assert.equal(expression(one(node => classed(node, 'point-delete-button')).node, 'on', 'click'), 'removeDataPoint(p)'); assert.equal(expression(one(node => classed(node, 'voice-config-button')).node, 'on', 'click'), 'openVoiceConfig(p)')
-  assert.equal(expression(field('p.alarm_text').node, 'if'), "normalizePointUsage(p) === 'alarm_trigger'")
+  assert.equal(expression(field('p.alarm_condition').node, 'if'), "normalizePointUsage(p) === 'alarm_trigger'")
   assert.deepEqual(elements(field('p.access_type').node).filter(({ node }) => node.tag === 'option').map(({ node }) => attr(node, 'value')), ['READ', 'READ_WRITE', 'WRITE'])
   assert.match(composable, /function pointRowKey\(point\)[\s\S]*?point = toRaw\(point\)[\s\S]*?rowKeys\.get\(point\)/)
   assert.match(composable, /function removeDataPoint\(target\)[\s\S]*?dataPoints\.value\.indexOf\(target\)/)
