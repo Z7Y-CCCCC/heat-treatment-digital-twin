@@ -11,6 +11,7 @@ import QuickCastPanel from '../components/QuickCastPanel.vue'
 import { useNativeQuality } from '../runtime/nativeQuality.js'
 import EdgeFoldTab from '../components/EdgeFoldTab.vue'
 import { useEdgeReveal } from '../runtime/useEdgeReveal.js'
+import { useOutsideDismiss } from '../runtime/useOutsideDismiss.js'
 const route=useRoute(),router=useRouter()
 const {qualityState,setQuality,queryQuality}=useNativeQuality()
 const adminSurface=computed(()=>isNativeUnitySurface(route.query.embedded,window.chrome?.webview) && route.query.surface==='admin')
@@ -31,6 +32,7 @@ async function changeOwnPassword(){accountBusy.value=true;accountError.value='';
 
 const dock=ref(null), menu=ref(null), accountTrigger=ref(null)
 const {hidden,reveal,enter,leave,arm}=useEdgeReveal({element:dock,keepOpen:()=>accountOpen.value||accountBusy.value})
+useOutsideDismiss({element:dock,isOpen:()=>accountOpen.value,dismiss:()=>{accountOpen.value=false}})
 let motionFrame=0, dockObserver
 function geometry(){window.dispatchEvent(new Event('account-dock-geometry'))}
 function trackMotion(){
@@ -54,6 +56,7 @@ onUnmounted(()=>{dockObserver?.disconnect();cancelAnimationFrame(motionFrame);wi
 <div ref="dock" class="account-dock" :class="{'is-hidden':hidden}" data-overlay-hit="true" data-account-hit="true" aria-label="右上角账户入口" @pointerenter="enter" @pointermove="reveal" @pointerleave="leave" @focusin="reveal" @focusout="arm">
     <EdgeFoldTab class="account-fold" :visible="hidden" label="展开账户入口" @reveal="revealTab" />
     <button ref="accountTrigger" class="group-user" type="button" :inert="hidden" :aria-hidden="hidden || undefined" :aria-label="`${accessStatus}，打开账户菜单`" :aria-expanded="accountOpen" @click="toggleAccount"><span class="group-user-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm-7 8a7 7 0 0 1 14 0" /></svg></span><span><strong>{{ adminSession.user?.displayName || (adminSession.configured ? '账户':'后台账户') }}</strong><small>{{ adminSession.displayAuthenticated ? accessStatus : '点击登录' }}</small></span><i class="group-user-state" :class="{verified:adminSession.displayAuthenticated}" aria-hidden="true"></i></button>
+    <Transition name="account-panel" @before-enter="element => element.inert = false" @before-leave="element => element.inert = true" @after-enter="geometry" @after-leave="geometry">
     <div v-if="accountOpen" ref="menu" class="group-account-menu" data-overlay-hit="true" data-account-hit="true" role="region" aria-label="账户设置">
       <QuickCastPanel v-if="castingOpen" @back="castingOpen=false" />
       <template v-else>
@@ -82,6 +85,7 @@ onUnmounted(()=>{dockObserver?.disconnect();cancelAnimationFrame(motionFrame);wi
       </template>
     </div>
 
+    </Transition>
 </div>
 </template>
 <style scoped>
@@ -96,9 +100,12 @@ onUnmounted(()=>{dockObserver?.disconnect();cancelAnimationFrame(motionFrame);wi
 .group-account-menu .group-account-exit{margin-top:12px;color:#ddc5bd}.group-account-menu button:disabled{opacity:.56;cursor:wait}.group-account-message{margin:11px 2px 0;color:#b8d4c1;font-size:10px;line-height:1.5}.group-account-message.error{color:#ecaaa1}
 .account-dock{position:fixed;right:0;top:0;width:180px;height:54px;z-index:2000;font-family:var(--hud-font-text,Inter,'Noto Sans SC',sans-serif)}
 .account-dock.is-hidden{width:62px}.account-fold{top:7px}
-.account-dock .group-user{position:absolute;right:0;top:0;max-width:180px;min-height:44px;border-top-right-radius:0;border-bottom-right-radius:0;transition:transform .24s ease,opacity .24s ease;transform:translateX(0)}
+.account-dock .group-user{position:absolute;right:0;top:0;width:max-content;max-width:180px;min-height:44px;border-top-right-radius:0;border-bottom-right-radius:0;transition:transform .24s cubic-bezier(.22,1,.36,1),opacity .24s ease;transform:translateX(0)}
 .account-dock.is-hidden .group-user{transform:translateX(calc(100% + 2px));opacity:0;pointer-events:none}
 .account-dock .group-account-menu{position:fixed;right:0;top:50px;max-height:calc(100dvh - 54px);width:min(318px,100vw);border-top-right-radius:0;border-bottom-right-radius:0}
-@media(prefers-reduced-motion:reduce){.account-dock .group-user{transition:none}}
+.account-panel-enter-active,.account-panel-leave-active{transition:transform .2s cubic-bezier(.22,1,.36,1),opacity .2s ease;transform-origin:top right}
+.account-panel-enter-from,.account-panel-leave-to{transform:translateX(16px) scale(.98);opacity:0}
+.account-panel-leave-active{pointer-events:none}
+@media(prefers-reduced-motion:reduce){.account-dock .group-user,.account-panel-enter-active,.account-panel-leave-active{transition:none}}
 
 </style>

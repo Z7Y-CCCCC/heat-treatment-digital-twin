@@ -42,6 +42,7 @@ internal sealed class DashboardOverlayForm : Form
     private bool _visibleRequested;
     private bool _presentationMode;
     private bool _forwardingMouse;
+    private bool _webViewPointerActive;
     private int _escapeDispatchPending;
     private NativeQualityState? _qualityState;
     private string _lastQualityHotkey = "";
@@ -457,15 +458,40 @@ internal sealed class DashboardOverlayForm : Form
             return;
         }
         if (Capture || IsInteractivePoint(e.Location))
+        {
+            _webViewPointerActive = true;
             _webView?.SendMouseInput(CoreWebView2MouseEventKind.Move, MouseKeyState(), 0, e.Location);
+        }
         else
+        {
+            LeaveWebPointer();
             ForwardMouseMessage(NativeMethods.WmMouseMove, e.Button, e.Location);
+        }
     }
 
     protected override void OnMouseLeave(EventArgs e)
     {
         base.OnMouseLeave(e);
+        LeaveWebPointer();
+    }
+
+    private void LeaveWebPointer()
+    {
+        if (!_webViewPointerActive) return;
+        _webViewPointerActive = false;
         _webView?.SendMouseInput(CoreWebView2MouseEventKind.Leave, CoreWebView2MouseEventVirtualKeys.None, 0, Point.Empty);
+    }
+
+    private void NotifyScenePointerDown()
+    {
+        try
+        {
+            _webView?.CoreWebView2.PostWebMessageAsJson("{\"type\":\"overlay_scene_pointerdown\"}");
+        }
+        catch (Exception error) when (error is InvalidOperationException or COMException)
+        {
+            // A navigating/disposed WebView must never interrupt Unity input.
+        }
     }
 
     protected override void OnMouseDown(MouseEventArgs e)
@@ -474,6 +500,8 @@ internal sealed class DashboardOverlayForm : Form
         if (_webView == null) return;
         if (!IsInteractivePoint(e.Location))
         {
+            LeaveWebPointer();
+            NotifyScenePointerDown();
             _forwardingMouse = true;
             // The transparent overlay is a full-size owned popup. Without
             // capture, a drag can be retargeted when it crosses one of the
@@ -483,6 +511,7 @@ internal sealed class DashboardOverlayForm : Form
             return;
         }
         Capture = true;
+        _webViewPointerActive = true;
         _webView.MoveFocus(CoreWebView2MoveFocusReason.Programmatic);
         var kind = e.Button switch
         {

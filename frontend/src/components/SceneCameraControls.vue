@@ -2,6 +2,7 @@
 import { nextTick, onMounted, onUnmounted, ref, useId, watch } from 'vue'
 import EdgeFoldTab from './EdgeFoldTab.vue'
 import { useEdgeReveal } from '../runtime/useEdgeReveal.js'
+import { useOutsideDismiss } from '../runtime/useOutsideDismiss.js'
 
 const props = defineProps({
   available: { type: Boolean, default: false },
@@ -21,7 +22,7 @@ const actions = [
 function close(restoreFocus = false) { open.value = false; if (restoreFocus) trigger.value?.focus() }
 function toggle() { error.value = ''; open.value = !open.value }
 async function revealTab(focus = false) { reveal(); await nextTick(); if (focus) trigger.value?.focus({ preventScroll:true }) }
-function outside(event) { if (open.value && !host.value?.contains(event.target)) close() }
+const { outside } = useOutsideDismiss({ element:host, isOpen:() => open.value, dismiss:() => close() })
 function escape(event) {
   if (!open.value || event.key !== 'Escape') return
   // Closing this local panel must not also navigate back out of a device.
@@ -40,14 +41,10 @@ async function run(action) {
 }
 watch([open, error, hidden], async () => { await nextTick(); if (!disposed) emit('geometry-change') })
 onMounted(() => {
-  document.addEventListener('pointerdown', outside, true)
-  document.addEventListener('focusin', outside)
   window.addEventListener('keydown', escape, true)
 })
 onUnmounted(() => {
   disposed = true
-  document.removeEventListener('pointerdown', outside, true)
-  document.removeEventListener('focusin', outside)
   window.removeEventListener('keydown', escape, true)
 })
 </script>
@@ -55,7 +52,7 @@ onUnmounted(() => {
 <template>
   <div ref="host" class="scene-camera-controls" :class="{ 'is-hidden': hidden }" data-overlay-hit="true" @pointerenter="enter" @pointerleave="leave" @focusin="reveal" @focusout="arm" @pointerdown.stop @dblclick.stop>
     <EdgeFoldTab class="scene-camera-fold" :visible="hidden" label="展开视角入口" @reveal="revealTab" />
-    <Transition name="camera-panel">
+    <Transition name="camera-panel" @before-enter="element => element.inert = false" @before-leave="element => element.inert = true" @after-enter="emit('geometry-change')" @after-leave="emit('geometry-change')">
       <section v-if="open" :id="panelId" class="scene-camera-panel" role="group" aria-label="视角调整" data-overlay-hit="true" :aria-busy="pending">
         <header><strong>视角调整</strong><button type="button" aria-label="关闭视角调整" title="收起" @click="close(true)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10M17 7 7 17"/></svg></button></header>
         <div class="scene-camera-actions">
@@ -77,7 +74,7 @@ onUnmounted(() => {
 <style scoped>
 .scene-camera-controls{position:absolute;right:0;bottom:0;width:max(62px,calc(46px + env(safe-area-inset-right)));height:max(62px,calc(46px + env(safe-area-inset-bottom)));z-index:1040;pointer-events:auto;color:#d9e5f5;font-family:"Inter","Microsoft YaHei UI",sans-serif}
 .scene-camera-fold{bottom:max(6px,env(safe-area-inset-bottom))}
-.scene-camera-trigger{position:absolute;right:max(6px,env(safe-area-inset-right));bottom:max(6px,env(safe-area-inset-bottom));display:grid;place-items:center;box-sizing:border-box;width:40px;height:40px;padding:0;border:1px solid #9db4dc47;border-radius:12px;background:linear-gradient(145deg,#29384be8,#172333e8);box-shadow:0 4px 14px #08111f30,inset 0 1px 0 #d7e8ff0d;color:#d3e4fa;cursor:pointer;pointer-events:auto;backdrop-filter:blur(14px);transform:translateX(0);opacity:1;transition:transform .2s ease,opacity .16s ease,background .16s ease,border-color .16s ease,box-shadow .16s ease}
+.scene-camera-trigger{position:absolute;right:max(6px,env(safe-area-inset-right));bottom:max(6px,env(safe-area-inset-bottom));display:grid;place-items:center;box-sizing:border-box;width:40px;height:40px;padding:0;border:1px solid #9db4dc47;border-radius:12px;background:linear-gradient(145deg,#29384be8,#172333e8);box-shadow:0 4px 14px #08111f30,inset 0 1px 0 #d7e8ff0d;color:#d3e4fa;cursor:pointer;pointer-events:auto;backdrop-filter:blur(14px);transform:translateX(0);opacity:1;transition:transform .24s cubic-bezier(.22,1,.36,1),opacity .24s ease,background .16s ease,border-color .16s ease,box-shadow .16s ease}
 .scene-camera-controls.is-hidden .scene-camera-trigger{transform:translateX(calc(100% + 8px));opacity:0;pointer-events:none}
 .scene-camera-trigger:hover,.scene-camera-trigger.is-open{border-color:#a7c5f69c;background:linear-gradient(145deg,#345078f0,#223953f0);box-shadow:0 4px 16px #08111f40}
 .scene-camera-trigger svg{width:21px;height:21px}.scene-camera-controls svg{fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round;flex:none}
@@ -86,6 +83,7 @@ onUnmounted(() => {
 .scene-camera-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px}.scene-camera-actions button,.scene-camera-fit{display:flex;align-items:center;justify-content:center;gap:7px;box-sizing:border-box;min-height:43px;padding:8px 5px;border:1px solid #9db4dc29;border-radius:8px;background:#b4cefa0a;color:#d0ddf0;font:inherit;font-size:11px;cursor:pointer;transition:background .15s ease,border-color .15s ease}.scene-camera-actions button:hover:not(:disabled),.scene-camera-fit:hover:not(:disabled){border-color:#93b8ef73;background:#82aff129;color:#f0f6ff}.scene-camera-actions button:active:not(:disabled),.scene-camera-fit:active:not(:disabled){background:#82aff142}.scene-camera-actions svg,.scene-camera-fit svg{width:17px;height:17px}
 .scene-camera-fit{width:100%;margin-top:8px;border-color:#91b8ee47;background:#83b1f21a;color:#bfd8fb}.scene-camera-controls button:disabled{opacity:.4;cursor:not-allowed}.scene-camera-controls button[aria-disabled=true]:not(:disabled){cursor:wait}.scene-camera-controls button:focus-visible{outline:2px solid #9cc7ff;outline-offset:2px}
 .scene-camera-hint{margin:11px 0 1px;color:#8297b2;text-align:center;font-size:10px;line-height:1.5}.scene-camera-error{margin:9px 0 0;padding:7px;border-radius:6px;background:#ff889311;color:#f0aab5;font-size:11px;line-height:1.5;overflow-wrap:anywhere}
-.camera-panel-enter-active,.camera-panel-leave-active{transition:opacity .14s ease,transform .14s ease}.camera-panel-enter-from,.camera-panel-leave-to{opacity:0;transform:translateY(5px) scale(.97)}
+.camera-panel-enter-active,.camera-panel-leave-active{transition:opacity .2s ease,transform .2s cubic-bezier(.22,1,.36,1)}.camera-panel-enter-from,.camera-panel-leave-to{opacity:0;transform:translateX(16px) scale(.98)}
+.camera-panel-leave-active{pointer-events:none}
 @media(prefers-reduced-motion:reduce){.scene-camera-trigger,.scene-camera-actions button,.scene-camera-fit,.camera-panel-enter-active,.camera-panel-leave-active{transition:none}}
 </style>
