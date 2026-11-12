@@ -137,8 +137,10 @@ namespace HeatTreatment.DigitalTwin.Editor
                 dashboard.InspectionContextChanged += value => context = value;
                 dashboard.RegisterDevice(device, model, config);
                 dashboard.FocusPreviewDevice(device.Id);
-                Check(context.Value<bool>("shellTransparent") && context.Value<string>("inspectionStage") == "solid"
-                    && context.Value<float>("inspectionProgress") == 0, "device entry automatically exposes internals without exploding the assembly");
+                Check(!context.Value<bool>("shellTransparent") && context.Value<string>("inspectionStage") == "solid"
+                    && context.Value<float>("inspectionProgress") == 0, "device entry stays opaque without exploding or automatically exposing the assembly");
+                Check(cadHousing.GetComponent<Renderer>().sharedMaterial == material && cadDoor.GetComponent<Renderer>().sharedMaterial == material,
+                    "initial device selection retains original opaque cover materials");
                 bool Command(string command, JToken value = null)
                 {
                     var payload = new JObject { ["command"] = command };
@@ -217,21 +219,27 @@ namespace HeatTreatment.DigitalTwin.Editor
                     && !ShellTransparencyTargets.IsCoverNode("cad_tempering_furnace_v1_internal_fan") && !ShellTransparencyTargets.IsCoverNode("cad_tempering_furnace_v1_door_chains"),
                     "packaged CAD housing/lining are explicit covers, never internal fans or chains");
                 dashboard.FocusPreviewDevice(device.Id, inspectionStage: "solid");
-                Check(context.Value<bool>("shellTransparent"), "configured solid detail entry also defaults to transparent covers");
+                Check(context.Value<bool>("shellTransparencyAvailable") && !context.Value<bool>("shellTransparent"), "configured solid detail entry keeps opaque covers and the upper toggle available");
+                Check(cadHousing.GetComponent<Renderer>().sharedMaterial == material && cadDoor.GetComponent<Renderer>().sharedMaterial == material
+                    && !coverEdges.gameObject.activeSelf,
+                    "entering device detail does not ghost covers or reveal inspection-only lines");
+                Check(Shell(true) && context.Value<bool>("shellTransparent"), "only an explicit upper-button shell command enables transparent covers");
                 shellAmount.SetValue(shellRuntime, 1f); applyShellPose.Invoke(dashboard, new[] { shellRuntime });
                 Check(cadHousing.GetComponent<Renderer>().sharedMaterial != material && cadFan.GetComponent<Renderer>().sharedMaterial == material,
-                    "automatic detail presentation ghosts only covers, leaving shared internal materials intact");
+                    "button-enabled presentation ghosts only covers, leaving shared internal materials intact");
                 dashboard.FocusPreviewBounds(new Bounds(Vector3.zero, Vector3.one * 20));
                 Check(cadHousing.GetComponent<Renderer>().sharedMaterial == material && cadDoor.GetComponent<Renderer>().sharedMaterial == material
                     && cadHousing.GetComponent<Renderer>().shadowCastingMode == UnityEngine.Rendering.ShadowCastingMode.On,
                     "returning to production overview restores exact original covers and shadows");
                 Check(!coverEdges.gameObject.activeSelf, "production overview contains no inspection line overlays");
                 dashboard.FocusPreviewDevice(device.Id);
-                Check(context.Value<bool>("shellTransparent"), "reentering a device reapplies its transparent entry presentation");
-                Check(Shell(false) && !context.Value<bool>("shellTransparent"), "manual restore remains available after automatic entry");
+                Check(!context.Value<bool>("shellTransparent") && cadHousing.GetComponent<Renderer>().sharedMaterial == material,
+                    "reentering a previously transparent device starts opaque again");
+                Check(Shell(true) && context.Value<bool>("shellTransparent"), "the upper button can enable transparency after reentry");
+                Check(Shell(false) && !context.Value<bool>("shellTransparent"), "the same upper button restores solid covers");
                 shellAmount.SetValue(shellRuntime, 0f); applyShellPose.Invoke(dashboard, new[] { shellRuntime });
                 Check(cadHousing.GetComponent<Renderer>().sharedMaterial == material,
-                    "automatic entry does not override the user's subsequent restore command");
+                    "device entry does not override the user's subsequent restore command");
                 Check(ShellTransparencyTargets.IsCoverNode("cad_multipurpose_furnace_600_v1_quench_tank")
                     && ShellTransparencyTargets.IsCoverNode("cad_multipurpose_furnace_600_v1_partition_shell")
                     && ShellTransparencyTargets.IsCoverNode("cad_multipurpose_furnace_600_v1_cold_front_hatches")

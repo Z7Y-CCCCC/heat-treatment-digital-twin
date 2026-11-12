@@ -549,12 +549,6 @@ namespace HeatTreatment.DigitalTwin.Runtime
             if (!string.IsNullOrWhiteSpace(inspectionStage))
             {
                 SetInspectionStage(device, ParseInspectionStage(inspectionStage), false, partId);
-                // A configured assembled view has the same entry presentation as a click.
-                if (device.Inspection?.Stage == InspectionStage.Solid)
-                {
-                    EnableDetailShellTransparency(device);
-                    PublishInspectionContext(device);
-                }
             }
         }
 
@@ -1049,7 +1043,8 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 PrepareInspection(device);
             }
             device.Inspection.Stage = InspectionStage.Solid;
-            EnableDetailShellTransparency(device);
+            // Enter with the original solid covers. The upper shell button
+            // explicitly enables the transparent presentation when requested.
             foreach (var entry in _devices.Values)
             {
                 // A device inspection is always a single-machine view, even

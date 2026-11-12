@@ -71,7 +71,7 @@ let backend, unity, web;
         let fence = contexts.length;
         await requestJson(`${origin}/api/native-preview/navigate`, { method: 'POST', body: JSON.stringify({ action: 'focus', focus: { mode: 'device', deviceId, inspectionStage: 'solid' } }) });
         const entry = await next(deviceId, fence, frame => frame.inspectionStage === 'solid' && frame.inspectionProgress === 0, 'assembled device entry');
-        if (entry.shellTransparencyAvailable) assert.equal(entry.shellTransparent, true, `${preset.modelId} defaults to transparent covers on entry`);
+        assert.equal(entry.shellTransparent, false, `${preset.modelId} stays opaque until the upper shell button is used`);
         fence = contexts.length;
         await send(deviceId, { command: 'stage', stage: 'exploded' });
         const exploded = await next(deviceId, fence, frame => frame.inspectionProgress > .999 && !frame.inspectionAnimating, 'complete staged explosion');

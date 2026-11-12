@@ -535,17 +535,6 @@ namespace HeatTreatment.DigitalTwin.Runtime
         private static int InspectionShellDirection(DeviceInspectionRuntime runtime)
             => runtime.Config.Shell.Direction * (runtime.Config.OffsetSpace == "model" && runtime.Config.Shell.Axis == "x" ? -1 : 1);
 
-        private void EnableDetailShellTransparency(DeviceView device)
-        {
-            var runtime = device?.Inspection;
-            if (runtime == null || !runtime.Prepared || !runtime.Config.Enabled || !runtime.Valid
-                || runtime.ViewShellCount <= 0 || Resources.Load<Shader>("RuntimeShaders/InspectionShell") == null) return;
-            // Entry only: subsequent manual shell/stage controls retain their own state.
-            runtime.ShellTransparent = true;
-            runtime.ShellTransparencyControlled = true;
-            runtime.HoverSnapshotValid = false;
-        }
-
         private void SetInspectionStage(DeviceView device, InspectionStage stage, bool immediate = false, string partId = "")
         {
             PrepareInspection(device);

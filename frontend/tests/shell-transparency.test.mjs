@@ -12,6 +12,18 @@ function fixture(t, send = async()=>true) {
   const scope=effectScope(),state=scope.run(()=>useShellTransparency({context,connected:()=>link.connected,send:command=>{sent.push(command);return send(command)}}))
   t.after(()=>scope.stop());return {state,context,link,sent,scope}
 }
+test('device entry and switching devices keep covers opaque without sending an automatic toggle',async t=>{
+  const f=fixture(t)
+  assert.equal(f.state.available.value,true)
+  assert.equal(f.context.shellTransparent,false)
+  assert.deepEqual(f.sent,[])
+  f.context.deviceId='device-b'
+  assert.equal(f.context.shellTransparent,false)
+  assert.deepEqual(f.sent,[])
+  await f.state.toggle()
+  assert.deepEqual(f.sent,[{command:'shell_transparency',enabled:true}])
+})
+
 test('shell toggle uses the native acknowledgement, not the successful HTTP relay, to show its pressed icon',async t=>{
   const f=fixture(t);assert.equal(await f.state.toggle(),true);assert.deepEqual(f.sent,[{command:'shell_transparency',enabled:true}]);assert.equal(f.state.pending.value,true);assert.equal(f.context.shellTransparent,false)
   assert.equal(await f.state.toggle(),false)
