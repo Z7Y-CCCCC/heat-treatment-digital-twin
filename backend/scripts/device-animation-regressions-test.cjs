@@ -66,7 +66,35 @@ test('enabled complete-cycle history cannot be omitted, reactivated, or retarget
 test('front chamber door and middle isolation door may share tint while moving independent actuators', () => {
     const door = actions.find(action => action.id === 'clip:door'), gate = actions.find(action => action.id === 'clip:gate');
     const shared = door.channels.filter(channel => gate.channels.includes(channel));
-    assert.deepEqual(shared.sort(), ['motion_node_361:c0', 'motion_node_362:c0', 'motion_node_363:c0']);
+    // Exported leaf IDs can change when the CAD bath topology changes. Resolve
+    // the decorative effect surfaces from their authored assembly instead.
+    const rigBytes = fs.readFileSync(path.join(__dirname, '..', packageRecord.rigPath.replace(/^\/+/, '')));
+    assert.equal(rigBytes.toString('ascii', 0, 4), 'glTF', 'the real motion rig must be hydrated');
+    const rig = JSON.parse(rigBytes.subarray(20, 20 + rigBytes.readUInt32LE(12)).toString('utf8'));
+    const effectRoot = rig.nodes.findIndex(node => node.name === 'preview_process_effects');
+    assert.ok(effectRoot >= 0, 'the authored process-effect assembly exists');
+    const effectNames = new Set();
+    function visit(index) {
+        const node = rig.nodes[index]; effectNames.add(node.name);
+        for (const child of node.children || []) visit(child);
+    }
+    visit(effectRoot);
+    const nativeClip = JSON.parse(fs.readFileSync(path.join(__dirname, '..', packageRecord.clipPath.replace(/^\/+/, '')), 'utf8'));
+    const authoredChannels = new Map(nativeClip.clips.map(clip => [`clip:${clip.id}`,
+        clip.tracks.map(track => `${track.node}:${track.channel}`)]));
+    const expectedTint = authoredChannels.get(door.id)
+        .filter(channel => /:c\d*$/.test(channel) && authoredChannels.get(gate.id).includes(channel)).sort();
+    assert.equal(expectedTint.length, 3, 'all three authored decorative surfaces remain covered');
+    assert.deepEqual(shared.sort(), expectedTint, 'only decorative tint channels may be shared');
+    for (const tint of expectedTint) {
+        const nodeName = tint.slice(0, tint.lastIndexOf(':'));
+        assert.ok(effectNames.has(nodeName), 'shared tint targets belong to the decorative assembly');
+        assert.ok(Array.isArray(nativeClip.nodes.find(node => node.name === nodeName)?.c0), 'shared tint targets have real material color channels');
+    }
+    assert.deepEqual(door.channels.filter(channel => !/:c\d*$/.test(channel)).sort(), [
+        'cad_multipurpose_furnace_600_v1_door:p', 'cad_multipurpose_furnace_600_v1_door_carriages:p'
+    ]);
+    assert.deepEqual(gate.channels.filter(channel => !/:c\d*$/.test(channel)), ['cad_multipurpose_furnace_600_v1_intermediate_gate:p']);
     const result = save(loaded(), [row('door'), row('gate')]);
     assert.deepEqual(result.bindings.map(binding => [binding.actionId, binding.pointId]), [['clip:door','p-door'], ['clip:gate','p-gate']]);
 });
