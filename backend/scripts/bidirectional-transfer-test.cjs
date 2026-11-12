@@ -32,6 +32,22 @@ let fixture;
  const raw=JSON.parse((await ok('/api/devices/'+cartId)).instance_config);
  for(const name of ['start','pickup'])assert.match(raw.animationBindings.transferLink.cycle[name+'SourceFingerprint'],/^[a-f0-9]{64}$/);
  assert.equal(raw.marker,'must survive');
+ const snapshot=()=>({devices:sql.prepare('SELECT * FROM devices ORDER BY id').all(),points:sql.prepare('SELECT * FROM data_points ORDER BY id').all(),lines:sql.prepare('SELECT * FROM `lines` ORDER BY id').all()});
+ for(const [patch,field] of [[{arrivalPositionPointId:''},'arrivalPositionPointId'],[{stationInputMeaning:'current',arrivalPositionPointId:''},'stationInputMeaning'],[{stations:[{...movement.stations[0],value:2}]},'stations']]){
+  const before=snapshot(),response=await request('/api/devices/'+cartId+'/movement','PUT',{movement:{...movement,...patch},expectedMovement:movement});
+  assert.equal(response.status,200,'legacy cycle settings cannot block normal movement editing: '+field);
+  const savedInstance=JSON.parse((await ok('/api/devices/'+cartId)).instance_config);
+  assert.deepEqual(savedInstance.animationBindings,raw.animationBindings);
+  assert.deepEqual(snapshot().points,before.points);assert.deepEqual(snapshot().lines,before.lines);
+  await ok('/api/devices/'+cartId+'/movement','PUT',{movement,expectedMovement:{...movement,...patch}});
+ }
+ const stale=JSON.parse(JSON.stringify(raw));stale.animationBindings.transferLink.driveNodeName='removed_carriage_node';
+ sql.prepare('UPDATE devices SET instance_config=? WHERE id=?').run(JSON.stringify(stale),cartId);
+ const faster={...movement,maxSpeed:2.5};
+ await ok('/api/devices/'+cartId+'/movement','PUT',{movement:faster,expectedMovement:movement});
+ assert.deepEqual(JSON.parse((await ok('/api/devices/'+cartId)).instance_config),{...stale,movement:faster});
+ sql.prepare('UPDATE devices SET instance_config=? WHERE id=?').run(JSON.stringify(raw),cartId);
+ loaded=await ok(route);
  for(const patch of [
   {startDataItemId:item(points.feed)},{pickupDataItemId:'point_'+points.write},
   {startDataItemId:item(pickup)},{startSourceFingerprint:'forged'},

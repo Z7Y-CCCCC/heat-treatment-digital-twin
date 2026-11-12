@@ -1,0 +1,18 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>导入动作包 · 只读动作列表隔离验收</title><link rel="icon" href="data:,">
+<style>*{box-sizing:border-box}body{margin:0;padding:24px;background:#f3f5f9;font:14px 'Microsoft YaHei',sans-serif;color:#34455d}.fixture-controls{display:flex;align-items:center;gap:12px;margin-bottom:16px}.fixture-controls button{padding:8px 12px;border:1px solid #d5dfee;border-radius:7px;background:white;color:#3d6094}.fixture-panel{width:440px;height:610px;padding:16px;background:white;border:1px solid #e1e7f1;border-radius:12px;display:flex;flex-direction:column;gap:14px}.fixture-panel h3{margin:0;font-size:16px}output{margin-top:15px;display:block;color:#7a8ca6}</style>
+<div id="app"></div><script type="module">
+import {createApp,h,ref,computed,watch} from 'vue'
+import List from '/src/views/admin/components/ModelPartActionList.vue'
+const names=['前室门开启 / 关闭','中间隔热门开启 / 关闭','承料架下降淬火','承料架升起沥油','热室循环叶轮','淬火双搅拌叶轮','热室辊道运转','冷热室内移料','加热与热风循环']
+const actions=names.map((label,index)=>({process:{id:'sample_'+index,label,detail:'动作包动作'},index:-1}))
+const populated=ref(false),search=ref(''),page=ref(1),selected=ref('')
+const all=computed(()=>populated.value?actions:[]),filtered=computed(()=>all.value.filter(entry=>entry.process.label.includes(search.value)))
+const pageCount=computed(()=>Math.max(1,Math.ceil(filtered.value.length/4))),entries=computed(()=>filtered.value.slice((page.value-1)*4,page.value*4))
+watch([search,populated],()=>{page.value=1;selected.value=''})
+const choose=value=>{populated.value=value;search.value=''}
+createApp({render:()=>h('main',[
+ h('div',{class:'fixture-controls'},[h('span','仅隔离验收，不访问采集服务'),h('button',{onClick:()=>choose(false)},'无动作模型'),h('button',{onClick:()=>choose(true)},'已导入动作包示例')]),
+ h('section',{class:'fixture-panel'},[h('h3','部件动作'),h(List,{entries:entries.value,total:filtered.value.length,nodeCount:all.value.length,search:search.value,page:page.value,pageCount:pageCount.value,activeProcessId:selected.value,'onUpdate:search':v=>search.value=v,'onUpdate:page':v=>page.value=v,onPreviewProcess:id=>selected.value=id})]),
+ h('output',{'data-testid':'preview-result'},selected.value?'预览事件：'+selected.value:'尚未预览')
+])}).mount('#app')
+</script></html>

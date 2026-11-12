@@ -21,10 +21,27 @@ const clone = value => JSON.parse(JSON.stringify(value));
     assert.deepEqual(JSON.parse(saved.instance_config).movement, movement);
     check('real device GET exposes authored parent calibration and matching movement PUT persists without conversion');
 
+    const precisionBaseline = raw();
+    let expectedMovement = movement;
+    for (const units of [.79999999616123, Math.fround(.8), .7999993351999881]) {
+        const noisy = { ...movement, sceneUnitsPerMeter: units };
+        await ok(cartRoute + '/movement', 'PUT', { movement: noisy, expectedMovement });
+        const reopened = await ok(cartRoute);
+        assert.equal(reopened.lineLayout.sceneUnitsPerMeter, .8);
+        assert.deepEqual(JSON.parse(reopened.instance_config).movement, noisy, 'Saving must not silently rewrite authored values');
+        const after = raw();
+        assert.deepEqual(after.lines, precisionBaseline.lines, 'Accepting precision tails must not move the line');
+        assert.deepEqual(after.points, precisionBaseline.points, 'Accepting precision tails must not change PLC definitions');
+        assert.deepEqual(after.devices.filter(row => row.id !== cartId), precisionBaseline.devices.filter(row => row.id !== cartId));
+        expectedMovement = noisy;
+    }
+    await ok(cartRoute + '/movement', 'PUT', { movement, expectedMovement });
+    check('actual movement HTTP save accepts screenshot and Float32 precision tails without rewriting calibration, layout or PLC definitions');
+
     let before = raw();
-    for (const units of [1, 1.25, 2]) {
+    for (const units of [.81, 1, 1.25, 2]) {
         const rejected = await request(cartRoute + '/movement', 'PUT', { movement: { ...movement, sceneUnitsPerMeter: units }, expectedMovement: movement });
-        assert.equal(rejected.status, 400); assert.match(rejected.data.error, /不一致.*现有产线结构与移动设置/); assert.deepEqual(raw(), before);
+        assert.equal(rejected.status, 400); assert.match(rejected.data.error, /不一致.*改为 0\.8 后保存/); assert.deepEqual(raw(), before);
     }
     check('movement editor rejects conflicting calibration atomically, including original point sampling settings');
     const unitsLine = (await ok('/api/lines')).find(row => row.id === line.id);

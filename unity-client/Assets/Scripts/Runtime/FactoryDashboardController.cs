@@ -238,10 +238,18 @@ namespace HeatTreatment.DigitalTwin.Runtime
         public void BeginFactory(FactoryConfigDto config)
         {
             ClearFactory();
-            _config = config;
-            ApplyPublishedViews(config?.Platform?["document"] as JObject);
-            _lineNames.Clear();
+            UpdateFactoryDefinition(config, true);
             ApplySettings(config?.Settings);
+        }
+
+        // Definition refresh is not navigation. Do not reset selected device,
+        // shell transparency, disassembly, camera or the visible widget state.
+        public void UpdateFactoryDefinition(FactoryConfigDto config, bool publishedViewsChanged = false)
+        {
+            var documentChanged = !JToken.DeepEquals(_config?.Platform?["document"], config?.Platform?["document"]);
+            _config = config;
+            if (publishedViewsChanged || documentChanged) ApplyPublishedViews(config?.Platform?["document"] as JObject);
+            _lineNames.Clear();
 
             foreach (var workshop in config?.Workshops ?? new List<WorkshopDto>())
             {
@@ -494,6 +502,13 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 return;
             }
             RegisterDevice(device, root, inspection);
+        }
+
+        public void UpdateLiveDeviceDefinition(DeviceDto device, bool boundsChanged)
+        {
+            if (device == null || !_devices.TryGetValue(device.Id, out var existing)) return;
+            existing.Device = device;
+            if (boundsChanged && existing.Root != null) existing.WorldBounds = CalculateBounds(existing.Root);
         }
 
         public void UpdatePreviewFactoryBounds(Bounds factoryBounds)

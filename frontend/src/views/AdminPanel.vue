@@ -1,4 +1,5 @@
 <script setup>
+import ModelPartActionList from './admin/components/ModelPartActionList.vue'
 import { ref, reactive, onMounted, onUnmounted, onActivated, onDeactivated, computed, watch, nextTick } from 'vue'
 import * as THREE from 'three'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
@@ -1763,7 +1764,6 @@ const canPreviewDoorEndpoints = computed(() => {
 const motionBindingPage = ref(1)
 const motionBindingPageSize = 4
 const motionBindingSearch = ref('')
-const motionEditorPanel = ref('list')
 const motionWorkspaceMode = ref('parts')
 const deviceAnimationLinkRef = ref(null)
 const cleanerProcessActions = CLEANER_ACTIONS
@@ -1774,7 +1774,6 @@ const inlineCleanerPreview = computed(() => canPreviewCleanerProcesses.value && 
 const cadPreviewActions = computed(() => cadMotionActions(selectedPreviewModelId.value).filter(action => !isRetiredMotionAction({ kind: 'clip', id: `clip:${action.id}` })))
 const inlineCadPreview = computed(() => activeTab.value === 'model-animations' && motionWorkspaceMode.value === 'parts' && cadPreviewActions.value.some(a => a.id === motionInlineProcess.value))
 const inlineProcessPreview = computed(() => inlineCleanerPreview.value || inlineCadPreview.value)
-const motionFormStep = ref('binding')
 const motionBindingEntries = computed(() => motionEntries(modelPartBindings.value, canPreviewCleanerProcesses.value, motionBindingSearch.value, formatModelBindingPartName, cadPreviewActions.value))
 const motionNodeCount = computed(() => modelPartBindings.value.length + (canPreviewCleanerProcesses.value ? cleanerProcessActions.length : 0) + cadPreviewActions.value.length)
 const motionBindingPageCount = computed(() => Math.max(1, Math.ceil(motionBindingEntries.value.length / motionBindingPageSize)))
@@ -1790,7 +1789,6 @@ function previewInlineCleanerProcess(id, reveal = false) {
     previewModelBindingIndex.value = -1
     if (motionInlineProcess.value === id) motionInlinePreviewRef.value?.previewProcessStage(id)
     motionInlineProcess.value = id
-    motionEditorPanel.value = 'list'
     modelBindingStatus.value = cadAction ? '正在本页预览 CAD 动作；现场信号尚未映射。' : '正在本页预览清洗工艺；工艺效果为模拟演示。'
     if (reveal) {
         motionBindingSearch.value = ''
@@ -1799,12 +1797,6 @@ function previewInlineCleanerProcess(id, reveal = false) {
             if (index >= 0) motionBindingPage.value = Math.floor(index / motionBindingPageSize) + 1
         })
     }
-}
-
-function newMotionBinding() {
-    resetModelBindingForm()
-    motionEditorPanel.value = 'edit'
-    motionFormStep.value = 'binding'
 }
 
 function stopMotionPreview() {
@@ -3198,8 +3190,6 @@ function applyMotionPreset(kind) {
 function loadModelBindingState(model) {
     motionBindingSearch.value = ''
     motionBindingPage.value = 1
-    motionEditorPanel.value = 'list'
-    motionFormStep.value = 'binding'
     loadModelInspectionState(model)
     const metadata = parseModelMetadata(model)
     const rawBindings = Array.isArray(metadata.partBindings)
@@ -3224,16 +3214,6 @@ function selectPreviewNode(path) {
     const node = modelPreviewNodes.value.find(item => item.path === path)
     if (node && !modelBindingForm.name) modelBindingForm.name = node.displayName || node.name
     highlightPreviewNode(path)
-}
-
-function editModelBinding(index) {
-    const binding = modelPartBindings.value[index]
-    if (!binding) return
-    Object.assign(modelBindingForm, normalizeModelBinding(binding))
-    selectedModelBindingIndex.value = index
-    motionEditorPanel.value = 'edit'
-    motionFormStep.value = 'binding'
-    previewModelBinding(index)
 }
 
 async function removeModelBinding(index) {
@@ -3305,7 +3285,6 @@ function saveModelBindingDraft() {
         : (selectedModelBindingIndex.value >= 0 ? '绑定已更新，保存后生效' : '绑定已加入，保存后生效')
     resetModelBindingForm()
     if (activeTab.value === 'model-animations') {
-        motionEditorPanel.value = 'list'
         motionBindingSearch.value = ''
         nextTick(() => {
             const index = modelPartBindings.value.findIndex(item => item.id === binding.id)
@@ -8685,171 +8664,14 @@ async function openAdminSetupStep(step) {
                             </section>
 
                             <section v-if="activePreviewModel && !activePreviewIsEnvironment" v-show="modelLibraryStep === 'bindings'" class="model-binding-editor model-library-step-panel">
-                                <div class="model-binding-header">
-                                    <div>
-                                        <h3>{{ activeTab === 'model-animations' ? '部件动作' : '部位与点位绑定' }}</h3>
-                                        <p>{{ canEditModelBindings ? '选择模型节点，把 PLC 实时点位映射成旋转、平移、显隐或变色动作。' : '内置程序化模型不可编辑部位绑定，请使用上传的完整 GLB/GLTF 模型。' }}</p>
-                                    </div>
-                                    <button class="btn btn-primary" type="button" @click="saveModelPartBindings" :disabled="!canEditModelBindings || modelBindingSaving" v-permission="{ page: controlPermissionPage, action: 'edit' }">
-                                        {{ modelBindingSaving ? '保存中...' : '保存绑定' }}
-                                    </button>
-                                </div>
-
-                                <template v-if="canEditModelBindings">
-                                    <section v-if="activeTab === 'model-animations' && cadPreviewActions.length" class="cleaner-process-actions" aria-label="CAD 设备动作">
-                                        <div><strong>设备动作 <span>{{ cadPreviewActions.length }}</span></strong><small>选择下方节点，在本页预览</small></div>
-                                        <div class="cleaner-process-action-grid"><button v-for="action in cadPreviewActions" :key="action.id" type="button" :aria-label="`预览 CAD 动作：${action.label}`" :aria-pressed="motionInlineProcess === action.id" @click="previewInlineCleanerProcess(action.id, true)"><span>{{ action.label }}</span><small>选中</small></button></div>
-                                    </section>
-                                    <section v-if="activeTab === 'model-animations' && selectedPreviewModelId === 'ultrasonic_cleaner_cad'" class="cleaner-process-actions" aria-label="清洗机内置部件动作">
-                                        <div><strong>内置部件动作 <span>{{ cleanerProcessActions.length }}</span></strong><small>选择下方节点，在本页预览</small></div>
-                                        <div class="cleaner-process-action-grid"><button v-for="action in cleanerProcessActions" :key="action.id" type="button" :aria-label="`预览工艺：${action.label}`" :aria-pressed="motionInlineProcess === action.id" @click="previewInlineCleanerProcess(action.id, true)"><span>{{ action.label }}</span><small>选中</small></button></div>
-                                    </section>
-                                    <nav v-if="activeTab === 'model-animations'" class="motion-panel-tabs" aria-label="动作编辑面板">
-                                        <button type="button" :class="{ active: motionEditorPanel === 'list' }" :aria-pressed="motionEditorPanel === 'list'" @click="motionEditorPanel = 'list'">动作节点 <span>{{ motionNodeCount }}</span></button>
-                                        <button type="button" :class="{ active: motionEditorPanel === 'edit' }" :aria-pressed="motionEditorPanel === 'edit'" @click="motionEditorPanel = 'edit'">参数配置</button>
-                                    </nav>
-                                    <section v-if="activeTab === 'model-animations' && motionEditorPanel === 'list'" class="motion-binding-browser" aria-label="动作节点列表">
-                                        <div class="motion-list-tools">
-                                            <input v-model="motionBindingSearch" class="input" aria-label="搜索动作节点" placeholder="搜索动作名称或信号…" />
-                                            <button class="btn" type="button" @click="newMotionBinding" v-permission="{ page: controlPermissionPage, action: 'edit' }">新增动作</button>
-                                        </div>
-                                        <div class="motion-binding-cards">
-                                            <article v-for="{ binding, index, process } in motionBindingPageEntries" :key="process ? `process_${process.id}` : binding.id" class="motion-binding-card" :class="{ active: process ? motionInlineProcess === process.id : !motionInlineProcess && previewModelBindingIndex === index }">
-                                                <template v-if="process">
-                                                    <button type="button" class="motion-binding-select" @click="previewInlineCleanerProcess(process.id)"><strong>{{ process.label }}</strong><code>{{ process.detail }}</code><small>内置部件动作 · 模拟预览</small></button>
-                                                    <div class="motion-card-actions"><button type="button" class="btn btn-sm" :aria-label="`预览工艺节点：${process.label}`" @click="previewInlineCleanerProcess(process.id)">预览</button></div>
-                                                </template>
-                                                <template v-else>
-                                                <button type="button" class="motion-binding-select" :title="formatModelBindingPartName(binding)" @click="previewModelBinding(index)">
-                                                    <strong>{{ formatModelBindingPartName(binding) }}</strong>
-                                                    <code :title="`${binding.source_group}.${binding.source_key}`">{{ binding.source_group }}.{{ binding.source_key }}</code>
-                                                    <small>{{ formatModelBindingAction(binding.action) }} · {{ formatModelAxis(binding.axis) }} 轴</small>
-                                                </button>
-                                                <div class="motion-card-actions">
-                                                    <button type="button" class="btn btn-sm" @click="previewModelBinding(index)" :aria-label="`预览${formatModelBindingPartName(binding)}`">预览</button>
-                                                    <button type="button" class="btn btn-sm" @click="editModelBinding(index)" :aria-label="`编辑${formatModelBindingPartName(binding)}`">编辑</button>
-                                                    <button type="button" class="btn btn-danger btn-sm" @click="removeModelBinding(index)" :aria-label="`删除${formatModelBindingPartName(binding)}`" v-permission="{ page: controlPermissionPage, action: 'edit' }">删除</button>
-                                                </div>
-                                                </template>
-                                            </article>
-                                            <p v-if="!motionBindingPageEntries.length" class="motion-list-empty">{{ motionBindingSearch ? '没有匹配的动作节点' : '暂无动作，请新增并配置部件信号。' }}</p>
-                                        </div>
-                                        <nav class="motion-pagination" aria-label="动作节点分页">
-                                            <span aria-live="polite">{{ motionBindingEntries.length }} 项 · 第 {{ motionBindingPage }} / {{ motionBindingPageCount }} 页</span>
-                                            <div>
-                                                <button class="btn btn-sm" type="button" :disabled="motionBindingPage <= 1" @click="motionBindingPage--" aria-label="上一页动作节点">上一页</button>
-                                                <select v-model.number="motionBindingPage" aria-label="跳转动作节点页码"><option v-for="page in motionBindingPageCount" :key="page" :value="page">{{ page }}</option></select>
-                                                <button class="btn btn-sm" type="button" :disabled="motionBindingPage >= motionBindingPageCount" @click="motionBindingPage++" aria-label="下一页动作节点">下一页</button>
-                                            </div>
-                                        </nav>
-                                    </section>
-                                    <div v-show="activeTab !== 'model-animations' || motionEditorPanel === 'edit'" class="motion-editor-body">
-                                    <nav v-if="activeTab === 'model-animations'" class="motion-form-steps" aria-label="动作参数步骤">
-                                        <button class="btn btn-sm" type="button" :class="{ active: motionFormStep === 'binding' }" @click="motionFormStep = 'binding'">1 部件与信号</button>
-                                        <button class="btn btn-sm" type="button" :class="{ active: motionFormStep === 'motion' }" @click="motionFormStep = 'motion'">2 运动参数</button>
-                                    </nav>
-                                    <div class="model-binding-actions">
-                                        <button class="btn" type="button" @click="applyMotionPreset('door')" v-permission="{ page: controlPermissionPage, action: 'edit' }">炉门升降示例</button>
-                                        <button class="btn" type="button" @click="applyMotionPreset('valve')" v-permission="{ page: controlPermissionPage, action: 'edit' }">阀门开关示例</button>
-                                        <button class="btn" type="button" @click="applyMotionPreset('material')" v-permission="{ page: controlPermissionPage, action: 'edit' }">有料显示示例</button>
-                                        <small class="field-hint">仅使用开关量时，运动中间过程为示意，不代表实际开度。数据质量异常时保持最后姿态。</small>
-                                    </div>
-                                    <div class="model-binding-form">
-                                        <template v-if="activeTab !== 'model-animations' || motionFormStep === 'binding'">
-                                        <label class="model-node-picker">模型部位
-                                            <div class="model-node-tools">
-                                                <input v-model="modelNodeSearchText" class="input" placeholder="搜索节点名称 / 路径"  />
-                                                <span class="inline-toggle node-filter-toggle">
-                                                    <input v-model="showOnlyBindableNodes" type="checkbox"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/>
-                                                    只看可绑定网格
-                                                </span>
-                                            </div>
-                                            <select v-model="selectedModelNodePath" class="input" @change="selectPreviewNode(selectedModelNodePath)">
-                                                <option value="">选择右侧预览解析出的节点</option>
-                                                <option v-for="node in filteredModelPreviewNodes" :key="node.path" :value="node.path">
-                                                    {{ formatModelNodeOption(node) }}
-                                                </option>
-                                            </select>
-                                            <small class="field-hint">当前显示 {{ filteredModelPreviewNodes.length }} / {{ modelPreviewNodes.length }} 个节点。若列表全是 bolt、chain 这类名字，说明模型导出时节点命名还没按资产规范整理。</small>
-                                        </label>
-                                        <label>绑定名称<input v-model="modelBindingForm.name" class="input" placeholder="如 后室循环风扇"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
-                                        <label>数据分组
-                                            <select v-model="modelBindingForm.source_group" class="input" v-permission="{ page: controlPermissionPage, action: 'edit' }">
-                                                <option v-for="group in modelSourceGroups" :key="group.value" :value="group.value">{{ group.label }}</option>
-                                            </select>
-                                        </label>
-                                        <label>点位字段<input v-model="modelBindingForm.source_key" class="input" placeholder="如 rear_fan_rpm"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
-                                        <label>动作
-                                            <select v-model="modelBindingForm.action" class="input" v-permission="{ page: controlPermissionPage, action: 'edit' }">
-                                                <option v-for="action in modelBindingActions" :key="action.value" :value="action.value">{{ action.label }}</option>
-                                            </select>
-                                        </label>
-                                        </template>
-                                        <template v-if="activeTab !== 'model-animations' || motionFormStep === 'motion'">
-                                        <label>轴向
-                                            <select v-model="modelBindingForm.axis" class="input" v-permission="{ page: controlPermissionPage, action: 'edit' }">
-                                                <option v-for="axis in modelBindingAxes" :key="axis.value" :value="axis.value">{{ axis.label }}</option>
-                                            </select>
-                                        </label>
-                                        <label>输入最小<input v-model.number="modelBindingForm.input_min" type="number" class="input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
-                                        <label>输入最大<input v-model.number="modelBindingForm.input_max" type="number" class="input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
-                                        <label>输出最小<input v-model.number="modelBindingForm.output_min" type="number" class="input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
-                                        <label>输出最大<input v-model.number="modelBindingForm.output_max" type="number" class="input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
-                                        <label v-if="activeTab !== 'model-animations' || modelBindingForm.action === 'rotate_speed'">转速系数<input v-model.number="modelBindingForm.speed_factor" type="number" step="0.001" class="input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
-                                        <label v-if="['translate', 'rotate_angle'].includes(modelBindingForm.action)">全行程时间（秒）<input v-model.number="modelBindingForm.transition_duration" type="number" min="0" max="60" step="0.1" class="input" v-permission="{ page: controlPermissionPage, action: 'edit' }"/><small class="field-hint">0 表示直接跟随开度；大于 0 按设定时间平滑运动。仅有开关信号时，中间过程为示意。</small></label>
-                                        <label>反向
-                                            <select v-model="modelBindingForm.invert" class="input" v-permission="{ page: controlPermissionPage, action: 'edit' }">
-                                                <option :value="false">否</option>
-                                                <option :value="true">是</option>
-                                            </select>
-                                        </label>
-                                        <label v-if="activeTab !== 'model-animations' || modelBindingForm.action === 'color'">开启颜色<input v-model="modelBindingForm.on_color" type="color" class="input color-input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
-                                        <label v-if="activeTab !== 'model-animations' || modelBindingForm.action === 'color'">关闭颜色<input v-model="modelBindingForm.off_color" type="color" class="input color-input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
-                                        </template>
-                                        <div class="model-binding-actions">
-                                            <button class="btn btn-primary" type="button" @click="saveModelBindingDraft" v-permission="{ page: controlPermissionPage, action: 'edit' }">
-                                                {{ selectedModelBindingIndex >= 0 ? '更新此绑定' : '加入绑定列表' }}
-                                            </button>
-                                            <button class="btn" type="button" @click="resetModelBindingForm">清空表单</button>
-                                        </div>
-                                    </div>
-                                    </div>
-
-                                    <table v-if="activeTab !== 'model-animations'" class="data-table model-binding-table">
-                                        <thead>
-                                            <tr><th>部位</th><th>点位</th><th>动作</th><th>轴</th><th>操作</th></tr>
-                                        </thead>
-                                        <tbody>
-                                            <tr
-                                                v-for="(binding, index) in modelPartBindings"
-                                                :key="binding.id"
-                                                class="model-binding-row"
-                                                :class="{ active: previewModelBindingIndex === index }"
-                                                @click="previewModelBinding(index)"
-                                            >
-                                                <td>{{ formatModelBindingPartName(binding) }}</td>
-                                                <td><code>{{ formatModelSourceGroup(binding.source_group) }}.{{ binding.source_key }}</code></td>
-                                                <td>{{ formatModelBindingAction(binding.action) }}</td>
-                                                <td>{{ formatModelAxis(binding.axis) }}</td>
-                                                <td>
-                                                    <button class="btn btn-sm" type="button" @click.stop="previewModelBinding(index)">预览</button>
-                                                    <button class="btn btn-sm" type="button" @click.stop="editModelBinding(index)">编辑</button>
-                                                    <button class="btn btn-danger btn-sm" type="button" @click.stop="removeModelBinding(index)" v-permission="{ page: controlPermissionPage, action: 'edit' }">删除</button>
-                                                </td>
-                                            </tr>
-                                            <tr v-if="!modelPartBindings.length">
-                                                <td colspan="5" style="text-align:center;color:#888">暂无部位绑定</td>
-                                            </tr>
-                                        </tbody>
-                                    </table>
-                                    <div v-if="activeTab !== 'model-animations'" class="model-binding-bottom-actions">
-                                        <span>修改绑定后请保存；删除操作会自动保存。</span>
-                                        <button class="btn btn-primary" type="button" @click="saveModelPartBindings" :disabled="modelBindingSaving" v-permission="{ page: controlPermissionPage, action: 'edit' }">
-                                            {{ modelBindingSaving ? '保存中...' : '保存绑定' }}
-                                        </button>
-                                    </div>
-                                </template>
-                                <div class="model-binding-status">{{ modelBindingStatus }}</div>
+                                <div class="model-binding-header"><div><h3>部件动作</h3><p>动作通过动作包导入，选择动作即可预览。</p></div></div>
+                                <ModelPartActionList
+                                    :entries="motionBindingPageEntries" :total="motionBindingEntries.length" :node-count="motionNodeCount"
+                                    v-model:search="motionBindingSearch" v-model:page="motionBindingPage" :page-count="motionBindingPageCount"
+                                    :active-binding-index="previewModelBindingIndex" :active-process-id="motionInlineProcess"
+                                    :format-binding-name="formatModelBindingPartName"
+                                    @preview-binding="previewModelBinding" @preview-process="previewInlineCleanerProcess"
+                                />
                             </section>
                         </section>
 

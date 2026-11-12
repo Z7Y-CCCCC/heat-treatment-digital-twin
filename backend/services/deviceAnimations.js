@@ -251,9 +251,15 @@ function validateDeviceAnimations(loaded, body) {
     if (bindings.length > 100) throw error('动画配置格式无效：动作绑定最多保留 100 项');
     assertMotionPositionOwnership(loaded, bindings);
     const result = { version: 1, staleMs: config.staleMs, bindings };
-    const transferInput = config.transferLink === undefined ? publicTransferLink(loaded.config.transferLink) : config.transferLink;
-    const transfer = validateTransferSelection(loaded, transferInput, bindings, validateEndpointSource, sourceFingerprint);
-    if (transfer !== undefined) result.transferLink = transfer;
+    if (Object.hasOwn(config, 'transferLink')) {
+        // Compatibility for explicit legacy API clients, not the part-binding UI.
+        const transfer = validateTransferSelection(loaded, config.transferLink, bindings, validateEndpointSource, sourceFingerprint);
+        if (transfer !== undefined) result.transferLink = transfer;
+    } else if (loaded.config.transferLink !== undefined) {
+        // Saving ordinary actuator bindings must neither edit nor revalidate a
+        // removed inter-device form's stale action/node/port selections.
+        result.transferLink = JSON.parse(JSON.stringify(loaded.config.transferLink));
+    }
     for (const field of ['diagnosticLogging','diagnosticIntervalSeconds']) {
         const value = config[field] ?? loaded.config[field];
         if (value !== undefined) result[field] = value;
