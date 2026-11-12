@@ -1,0 +1,25 @@
+'use strict';
+const {test}=require('node:test'), assert=require('node:assert/strict');
+const fs=require('node:fs'),os=require('node:os'),path=require('node:path');
+const {execFileSync}=require('node:child_process');
+const {sourceSnapshot,verifySource}=require('./release-source-snapshot.cjs');
+test('cached releases bind uncommitted Chinese sources and the complete file set',t=>{
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'release-input-test-'));
+  t.after(()=>{const relative=path.relative(os.tmpdir(),root);if(!relative.startsWith('release-input-test-')||relative.includes(path.sep))throw Error('Unsafe fixture cleanup');fs.rmSync(root,{recursive:true,force:true});});
+  const git=args=>execFileSync('git',['-C',root,...args],{windowsHide:true,stdio:'ignore'});
+  git(['init']);fs.mkdirSync(path.join(root,'frontend'));
+  fs.writeFileSync(path.join(root,'.gitignore'),'frontend/.env*\n');
+  const file=path.join(root,'frontend','清洗机.js');fs.writeFileSync(file,'first');git(['add','.']);
+  fs.writeFileSync(file,'uncommitted local change');
+  const original=sourceSnapshot(root);assert.equal(verifySource(root,original).sha256,original.sha256);
+  fs.mkdirSync(path.join(root,'desktop/assets'),{recursive:true});fs.writeFileSync(path.join(root,'desktop/assets/installer-art.bmp'),'new installer art');
+  assert.equal(verifySource(root,original).sha256,original.sha256,'UI-only changes reuse the actual dirty-source build');
+  fs.writeFileSync(path.join(root,'desktop/THIRD_PARTY_NOTICES.txt'),'generated dependency notices\n');
+  assert.equal(verifySource(root,original).sha256,original.sha256,'generated notices use their separate installed-payload check');
+  const localEnv=path.join(root,'frontend/.env.local');fs.writeFileSync(localEnv,'VITE_MODE=changed');
+  assert.throws(()=>verifySource(root,original),/inputs changed/,'ignored Vite configuration invalidates reuse');fs.unlinkSync(localEnv);
+  fs.writeFileSync(file,'second local change');assert.throws(()=>verifySource(root,original),/inputs changed/);
+  fs.writeFileSync(file,'uncommitted local change');
+  const added=path.join(root,'frontend','新增.js');fs.writeFileSync(added,'new');assert.throws(()=>verifySource(root,original),/inputs changed/);
+  fs.unlinkSync(added);fs.unlinkSync(file);assert.throws(()=>verifySource(root,original),/inputs changed/);
+});

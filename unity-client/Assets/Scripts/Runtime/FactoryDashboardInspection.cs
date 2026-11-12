@@ -49,6 +49,8 @@ namespace HeatTreatment.DigitalTwin.Runtime
             public InspectionPartState Part;
             public InspectionTargetState Target;
             public InspectionMeshSurface Surface;
+            public GameObject FeatureEdges;
+            public bool FeatureEdgesPrepared;
             public Matrix4x4 HoverMatrix;
             public Mesh HoverGeometry;
             public bool HoverVisible;
@@ -72,6 +74,8 @@ namespace HeatTreatment.DigitalTwin.Runtime
             public readonly List<InspectionPartState> Parts = new List<InspectionPartState>();
             public readonly List<InspectionRendererState> Renderers = new List<InspectionRendererState>();
             public readonly JArray Issues = new JArray();
+            public readonly Dictionary<Mesh, Mesh> FeatureEdgeMeshes = new Dictionary<Mesh, Mesh>();
+            public Material FeatureEdgeMaterial;
             public InspectionPartState SelectedPart;
             public InspectionPartState HoveredPart;
             public InspectionStage Stage = InspectionStage.Solid;
@@ -335,7 +339,8 @@ namespace HeatTreatment.DigitalTwin.Runtime
                     part.Targets.Add(new InspectionTargetState { Target = node });
                     claimed.Add((node, part));
                 }
-                part.Renderers = nodes.SelectMany(node => node.GetComponentsInChildren<Renderer>(true)).Distinct().ToArray();
+                part.Renderers = nodes.SelectMany(node => node.GetComponentsInChildren<Renderer>(true))
+                    .Where(renderer => renderer.GetComponent<InspectionFeatureEdgeOverlay>() == null).Distinct().ToArray();
                 if (part.Renderers.Length == 0) AddInspectionIssue(runtime, "empty_part", partConfig.Id, $"部件 {partConfig.Name} 没有可展示的网格。", false);
                 if (nodes.Count == 0) AddInspectionIssue(runtime, "missing_part_target", partConfig.Id, $"部件 {partConfig.Name} 未指定可解析的模型节点。", true);
                 runtime.Parts.Add(part);
@@ -354,11 +359,13 @@ namespace HeatTreatment.DigitalTwin.Runtime
                     continue;
                 }
                 var children = shell.GetComponentsInChildren<Renderer>(true);
-                foreach (var renderer in children) if (!retained.Contains(renderer)) shells.Add(renderer);
+                foreach (var renderer in children)
+                    if (renderer.GetComponent<InspectionFeatureEdgeOverlay>() == null && !retained.Contains(renderer)) shells.Add(renderer);
             }
             // Capture originals only; planning is read-only so rejected previews cannot leak materials.
             foreach (var renderer in device.Root.GetComponentsInChildren<Renderer>(true))
             {
+                if (renderer.GetComponent<InspectionFeatureEdgeOverlay>() != null) continue;
                 var oldState = device.Inspection?.Renderers.FirstOrDefault(state => state.Renderer == renderer);
                 var owner = claimed.FirstOrDefault(item => renderer.transform == item.node || renderer.transform.IsChildOf(item.node));
                 runtime.Renderers.Add(new InspectionRendererState
@@ -679,6 +686,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
 
         private void ApplyInspectionShell(DeviceInspectionRuntime runtime, InspectionRendererState state, float progress)
         {
+            ApplyShellFeatureEdges(runtime, state, progress);
             var needsSurface = progress > 0f || (!runtime.ShellTransparencyControlled && state.IsShell && runtime.XrayAmount > 0f)
                 || (state.IsViewShell && runtime.ShellTransparencyAmount > 0f);
             if (!needsSurface)
@@ -735,6 +743,41 @@ namespace HeatTreatment.DigitalTwin.Runtime
 #endif
                 }
             }
+        }
+
+        private void ApplyShellFeatureEdges(DeviceInspectionRuntime runtime, InspectionRendererState state, float progress)
+        {
+            var visible = state.IsViewShell && runtime.ShellTransparencyControlled && runtime.ShellTransparencyAmount > .001f
+                && progress <= 0f && !state.Renderer.forceRenderingOff;
+            if (visible && !state.FeatureEdgesPrepared)
+            {
+                state.FeatureEdgesPrepared = true;
+                var source = state.Renderer.GetComponent<MeshFilter>()?.sharedMesh;
+                var shader = Resources.Load<Shader>("RuntimeShaders/InspectionFeatureEdges");
+                if (source != null && shader != null)
+                {
+                    if (!runtime.FeatureEdgeMeshes.TryGetValue(source, out var edges))
+                    {
+                        edges = InspectionFeatureEdges.Build(source);
+                        runtime.FeatureEdgeMeshes.Add(source, edges);
+                    }
+                    if (edges != null)
+                    {
+                        if (runtime.FeatureEdgeMaterial == null)
+                            runtime.FeatureEdgeMaterial = new Material(shader) { hideFlags = HideFlags.DontSave };
+                        var overlay = new GameObject("__InspectionFeatureEdges") { hideFlags = HideFlags.DontSave, layer = state.Renderer.gameObject.layer };
+                        overlay.transform.SetParent(state.Renderer.transform, false);
+                        overlay.AddComponent<InspectionFeatureEdgeOverlay>();
+                        overlay.AddComponent<MeshFilter>().sharedMesh = edges;
+                        var renderer = overlay.AddComponent<MeshRenderer>();
+                        renderer.sharedMaterial = runtime.FeatureEdgeMaterial;
+                        renderer.shadowCastingMode = ShadowCastingMode.Off;
+                        renderer.receiveShadows = false;
+                        state.FeatureEdges = overlay;
+                    }
+                }
+            }
+            if (state.FeatureEdges != null && state.FeatureEdges.activeSelf != visible) state.FeatureEdges.SetActive(visible);
         }
 
         // Shader uniforms need not occur in ShaderLab Properties. Read their
@@ -837,6 +880,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 state.Renderer.receiveShadows = state.OriginalReceiveShadows;
                 state.SurfaceApplied = false;
                 state.FrostedApplied = false;
+                if (state.FeatureEdges != null) state.FeatureEdges.SetActive(false);
             }
             foreach (var part in runtime.Parts)
             {
@@ -870,7 +914,16 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 foreach (var material in state.RuntimeMaterials ?? Array.Empty<Material>()) DestroyInspectionObject(material);
                 foreach (var material in state.FrostedMaterials ?? Array.Empty<Material>()) DestroyInspectionObject(material);
                 state.Surface?.Dispose();
+                if (state.FeatureEdges != null)
+                {
+                    state.FeatureEdges.transform.SetParent(null, false);
+                    state.FeatureEdges.SetActive(false);
+                    DestroyInspectionObject(state.FeatureEdges);
+                }
             }
+            foreach (var mesh in runtime.FeatureEdgeMeshes.Values) DestroyInspectionObject(mesh);
+            runtime.FeatureEdgeMeshes.Clear();
+            DestroyInspectionObject(runtime.FeatureEdgeMaterial);
             runtime.Renderers.Clear();
         }
 

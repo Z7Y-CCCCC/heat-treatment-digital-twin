@@ -440,13 +440,16 @@ def check_mechanisms(a,key):
         lower=objects('wash_lower_shell');assert len(lower)==1
         shell=lower[0]
         assert shell.parent==a.group('central_lower_body')
-        assert abs(shell.dimensions.x-1.200)<.0001
+        assert abs(shell.dimensions.x-2.600)<.0001
         assert abs(min(v.co.z for v in shell.data.vertices)-.100)<.0001
-        assert abs(max(v.co.z for v in shell.data.vertices)-1.295)<.0001
-        bm=bmesh.new();bm.from_mesh(shell.data)
+        assert abs(max(v.co.z for v in shell.data.vertices)-1.280)<.0001
+        assert len(shell.data.polygons)==5,'Only four perimeter walls and the tank bottom are allowed'
+        evaluated=shell.evaluated_get(bpy.context.evaluated_depsgraph_get());mesh=evaluated.to_mesh()
+        bm=bmesh.new();bm.from_mesh(mesh)
         assert bm.edges and all(edge.is_manifold for edge in bm.edges)
-        bm.free()
-        checked.append('central lower sheet enclosure from base top to chamber underside; not an open bay')
+        bm.free();evaluated.to_mesh_clear()
+        assert not objects('wash_side_tank'),'Former left/right tanks must not leave internal dividing walls'
+        checked.append('one continuous open lower bath; no central lid or internal dividing walls')
     a.root['cad_geometry_checks']=json.dumps(checked)
     return checked
 

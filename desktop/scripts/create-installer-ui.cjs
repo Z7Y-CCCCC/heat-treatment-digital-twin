@@ -6,7 +6,8 @@ const { execFileSync } = require('node:child_process');
 const { layout, dialogResource, resourceManifest } = require('./installer-layout.cjs');
 if (process.platform !== 'win32') throw new Error('Generate native installer resources on Windows');
 const root = path.resolve(__dirname, '..');
-const seed = process.env.NSIS_UI_SEED || path.join(process.env.LOCALAPPDATA, 'electron-builder/Cache/nsis/nsis-3.0.4.1/Contrib/UIs/modern.exe');
+async function main() {
+const seed = process.env.NSIS_UI_SEED || (await require('./nsis-toolchain.cjs').nsisToolchain()).seed;
 const target = path.join(root, 'assets/installer-ui.bin');
 const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'display-installer-ui-'));
 try {
@@ -41,3 +42,5 @@ try { ${layout.dialogs.map(d => `$b=[Convert]::FromBase64String('${dialogResourc
   if (!relative || relative.startsWith('..') || path.isAbsolute(relative) || !path.basename(scratch).startsWith('display-installer-ui-')) throw new Error('Refusing unsafe temporary cleanup');
   fs.rmSync(scratch, { recursive: true, force: true });
 }
+}
+main().catch(error=>{console.error(error.stack);process.exitCode=1;});

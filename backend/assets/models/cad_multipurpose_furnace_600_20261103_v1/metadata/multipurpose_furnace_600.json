@@ -33,7 +33,8 @@
   "notes": [
     "按 600多用炉总图.DWG／08.20.00 建模；单台前室＋淬火槽＋后加热室，不复制虚线表示的第二篮位置。",
     "图示地坪比淬火槽底高 400 mm；1230 mm 工作标高对应模型底部起 1630 mm。",
-    "总图未给出零件完整尺寸的部位按三视图比例重建；本 GLB 不替代制造图。"
+    "总图未给出零件完整尺寸的部位按三视图比例重建；本 GLB 不替代制造图。",
+    "2026-11-11 用户确认下部为整体贯通油池，无中间隔断；两侧搅拌叶轮浸在同一油池内。"
   ],
   "bounds_blender_m": [
     -1.3899999856948853,
@@ -48,11 +49,11 @@
     4.663000106811523,
     6.080000162124634
   ],
-  "editable_meshes": 1676,
-  "runtime_meshes": 169,
-  "triangles": 161148,
-  "bytes": 8680332,
-  "sha256": "fa859b50f7675f27ae939847942311b6f3a2851e3962b6db035a69100b533f68",
+  "editable_meshes": 1674,
+  "runtime_meshes": 168,
+  "triangles": 160932,
+  "bytes": 8664216,
+  "sha256": "f8239255d7d945b3bb6dc97b4fd0b659583978b47f6783bee7703551fe9f9b3f",
   "roundtrip_max_error_m": 0.0,
   "functional_groups": [
     "agitator_impellers",
@@ -92,6 +93,7 @@
     "hot_housing",
     "hot_rear_hatch",
     "hot_rollers",
+    "hot_roof_end_caps",
     "intermediate_gate",
     "intermediate_gate_guides",
     "lifting_eyes",
@@ -118,15 +120,13 @@
     "service_ladder",
     "side_feed_motor",
     "side_feed_return",
-    "tank_baffles",
     "tank_instruments",
     "tank_lids",
     "temporary",
     "thermocouples",
     "upper_guards",
     "upper_service_panels",
-    "vault_bricks",
-    "hot_roof_end_caps"
+    "vault_bricks"
   ],
   "runtime": {
     "enableGenericBindings": false,

@@ -59,14 +59,13 @@ def tanks_and_base(a):
     a.box('quench_bath_bottom',(0,.975,.190),(2.64,1.82,.100),'enamel','quench_tank')
     for x in [-1.35,1.35]:a.box('outer_tank_side',(x,.975,.84),(.070,1.95,1.38),'enamel','quench_tank')
     for y in [.035,1.915]:a.box('tank_end_wall',(0,y,.84),(2.70,.070,1.38),'enamel','quench_tank')
-    # The two side compartments and central elevator bath share the same lower vessel.
-    for x in [-.66,.66]:a.box('internal_oil_baffle',(x,.975,.82),(.045,1.80,1.25),'metal','tank_baffles')
+    # User confirmed 2026-11-11: the lower vessel is one open connected oil bath.
     for x in [-1.005,1.005]:
         a.box('agitator_tank_lid',(x,.975,1.550),(.745,1.950,.045),'enamel','tank_lids')
         for y in [.10,1.85]:
             for xx in [x-.30,x+.30]:hw(a,(xx,y,1.582),'Z',.008,'tank_lids')
         a.box('side_lid_rim',(x,.975,1.516),(.77,1.96,.04),'edge','tank_lids')
-    a.box('oil_surface',(0,.975,1.31),(1.20,1.78,.008),'water','quench_liquid')
+    a.box('oil_surface',(0,.975,1.31),(2.60,1.78,.008),'water','quench_liquid')
     for x in [-1.005,1.005]:
         detail.hatch(a,(x,-.018,.81),.54,1.08,'cold_front_hatches')
         detail.hatch(a,(x,1.962,.81),.54,1.08,'cold_rear_hatches',facing=1)
@@ -85,7 +84,7 @@ def agitation_and_services(a):
         a.cyl('agitator_coupling',(x,1.03,2.00),.070,.13,'metal','Z','agitators',32)
         a.motor((x,1.03,2.24),'Z',.125,.38,'agitators')
         a.box('agitator_motor_junction',(x+.115,1.03,2.24),(.12,.14,.14),'teal','agitators')
-        a.cyl('agitator_long_shaft',(x,1.03,1.02),.023,1.97,'stainless','Z','agitators',24)
+        a.cyl('agitator_long_shaft',(x,1.03,1.1525),.023,1.705,'stainless','Z','agitators',24)
         for z in [.40,1.54]:a.ring('agitator_guide_bush',(x,1.03,z),.043,.024,.09,'metal','Z','agitators',24)
         for i in range(3):
             t=i*2*math.pi/3;o=a.box('agitator_impeller',(x+.13*math.cos(t),1.03+.13*math.sin(t),.40),(.23,.05,.018),'stainless','agitator_impellers',.004);o.rotation_euler.z=t+.24
@@ -298,6 +297,22 @@ CONTRACT={'oil_heater_boss':6,'agitator_impeller':6,'agitator_long_shaft':2,'ele
           'radiant_u_tube':6,'vault_keystone':26,'circulation_blade':8,'oil_heater_cap':6,'ladder_rung':9,'process_instrument':3,
           'grooved_pulley':2,'side_return_chain_plate':1,'front_hoist_cross_shaft':1,'main_open_flue':1,'intermediate_hoist_cylinder':1,'hot_roof_end_cap':2}
 
+def update_saved_oil_bath(a):
+    """Apply this local correction without rebuilding unrelated CAD assemblies."""
+    detail.delete_group(a,'tank_baffles')
+    for obj in a.root.children_recursive:
+        if obj.type!='MESH':continue
+        if obj.name==a.id+'_oil_surface':
+            width=max(v.co.x for v in obj.data.vertices)-min(v.co.x for v in obj.data.vertices)
+            for vertex in obj.data.vertices:vertex.co.x*=2.60/width
+        if obj.name==a.id+'_agitator_long_shaft' or obj.name.startswith(a.id+'_agitator_long_shaft.'):
+            low=min(v.co.z for v in obj.data.vertices);high=max(v.co.z for v in obj.data.vertices)
+            for vertex in obj.data.vertices:
+                world_z=.300+(vertex.co.z-low)/(high-low)*1.705
+                vertex.co.z=world_z-obj.location.z
+        obj.data.update()
+    a.root['continuous_oil_bath']='User confirmed 2026-11-11: one connected lower oil bath, no internal partitions'
+
 def main():
     if not bpy.app.background:raise RuntimeError('Separate background Blender required')
     source=(json.loads((CAD/'sources.json').read_text(encoding='utf-8-sig'))[0] if (CAD/'sources.json').exists()
@@ -311,7 +326,8 @@ def main():
     a=common.Asset(KEY,'600普通多用炉','08.20.00_600普通多用炉',DIMENSIONS,
       ['按 600多用炉总图.DWG／08.20.00 建模；单台前室＋淬火槽＋后加热室，不复制虚线表示的第二篮位置。',
        '图示地坪比淬火槽底高 400 mm；1230 mm 工作标高对应模型底部起 1630 mm。',
-       '总图未给出零件完整尺寸的部位按三视图比例重建；本 GLB 不替代制造图。'])
+       '总图未给出零件完整尺寸的部位按三视图比例重建；本 GLB 不替代制造图。',
+       '2026-11-11 用户确认下部为整体贯通油池，无中间隔断；两侧搅拌叶轮浸在同一油池内。'])
     if '--resume-source' in sys.argv:
         bpy.ops.wm.open_mainfile(filepath=str(OUT/'sources'/(a.filename+'.blend')))
         common.palette()
@@ -321,10 +337,13 @@ def main():
         keep={a.root,*a.root.children_recursive}
         for obj in list(a.scene.objects):
             if obj not in keep:bpy.data.objects.remove(obj,do_unlink=True)
+        if '--update-oil-bath' in sys.argv:update_saved_oil_bath(a)
     else:
         for builder in [tanks_and_base,agitation_and_services,cold_chamber_and_elevator,intermediate_gate,hot_body,roof_fan_and_ports,exhaust_hood,upper_guards_and_ladder,instrumentation]:
             builder(a);print('BUILT '+builder.__name__,flush=True)
     close_vault_end_caps(a)
+    oil_material=common.MATS['water'];oil_material.diffuse_color=(.26,.10,.028,1)
+    oil_material.node_tree.nodes.get('Principled BSDF').inputs['Base Color'].default_value=(.26,.10,.028,1)
     bpy.context.view_layer.update()
     counts={name:sum(o.name==a.id+'_'+name or o.name.startswith(a.id+'_'+name+'.') for o in a.root.children_recursive) for name in CONTRACT}
     assert counts==CONTRACT,(counts,CONTRACT)

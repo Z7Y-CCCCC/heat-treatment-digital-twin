@@ -59,7 +59,10 @@ function launch(args) {
     assert.ok(fs.existsSync(executable));
     assert.ok(fs.existsSync(path.join(resources, 'mysql/bin/mysqld.exe')));
     const resourcesBefore = await snapshotTree(resources);
-    privateMysql = new EnduranceMysql(directory, path.join(resources, 'mysql'));
+    // Cold Windows PowerShell/CIM discovery can exceed five seconds while
+    // release checks run concurrently. Keep ownership checks intact and allow
+    // their startup cost rather than declaring an intact process unidentifiable.
+    privateMysql = new EnduranceMysql(directory, path.join(resources, 'mysql'), { processTimeoutMs: 15000 });
     // Use the fixture's creator as well as its disposer. Its namespace, target
     // validation and unique datadir together are the ownership contract.
     privateMysql.prepareAliases();

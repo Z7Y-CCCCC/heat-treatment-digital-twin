@@ -35,8 +35,8 @@
     },
     {
       "path": "backend/assets/models/cad_cleaner_170700.glb",
-      "bytes": 5284476,
-      "sha256": "2052be6b23dfe35a43ae3aad542e976b744aaf3378323b65b2e63e1a7b6b02bb"
+      "bytes": 5252552,
+      "sha256": "622e227e2322357c1aeb13552bd98fe2726996be9bdb44552240f8d83833e185"
     },
     {
       "path": "backend/assets/models/cad_fixed_load_table_112200.glb",
@@ -70,8 +70,8 @@
     },
     {
       "path": "backend/assets/models/cad_general_20261103_v1/17.07.00_清洗机.glb",
-      "bytes": 5284204,
-      "sha256": "e5b45809e4218f82b8e3a5fc67fe054b81c010f13edcc5902b9286659b473a33"
+      "bytes": 5252280,
+      "sha256": "5726774aabd02536a2c61b6bb4e6e072a59aa46f18e4ee7558d4d0f701ef1cc2"
     },
     {
       "path": "backend/assets/models/cad_general_20261103_v1/47.10.00_水冷槽.glb",
@@ -105,8 +105,8 @@
     },
     {
       "path": "backend/assets/models/cad_general_20261103_v1/sources/17.07.00_清洗机.blend",
-      "bytes": 752291,
-      "sha256": "0c628221e5fe255f47c935816f642bb556ab87cd7a5b8496962ab7654c7ee56d"
+      "bytes": 738154,
+      "sha256": "3df4410823b754ea7c7083de37cb8f4c99f2436ecb0b93901754b82e00e96e21"
     },
     {
       "path": "backend/assets/models/cad_general_20261103_v1/sources/47.10.00_水冷槽.blend",
@@ -120,18 +120,18 @@
     },
     {
       "path": "backend/assets/models/cad_multipurpose_furnace_082000.glb",
-      "bytes": 8680648,
-      "sha256": "773dd70b490e00b864cffdb853205a89382166003300791096742d747ff7d7c0"
+      "bytes": 8664504,
+      "sha256": "0959d556dc34b0c40708b33e97cf4938cc76eab901b51e50cc762b43bdf961db"
     },
     {
       "path": "backend/assets/models/cad_multipurpose_furnace_600_20261103_v1/08.20.00_600普通多用炉.glb",
-      "bytes": 8680332,
-      "sha256": "fa859b50f7675f27ae939847942311b6f3a2851e3962b6db035a69100b533f68"
+      "bytes": 8664216,
+      "sha256": "f8239255d7d945b3bb6dc97b4fd0b659583978b47f6783bee7703551fe9f9b3f"
     },
     {
       "path": "backend/assets/models/cad_multipurpose_furnace_600_20261103_v1/sources/08.20.00_600普通多用炉.blend",
-      "bytes": 1107793,
-      "sha256": "66023c4a53c238e621ccc6fcfe5ed175024d005092e498d381959e2fc9696846"
+      "bytes": 1092985,
+      "sha256": "88289e501bd535c66527742321151357b421656437604232c1a4c4e49cd9b11f"
     },
     {
       "path": "backend/assets/models/cad_tempering_furnace_091300.glb",
@@ -435,8 +435,8 @@
     },
     {
       "path": "backend/assets/motions/cad_cleaner_170700.glb",
-      "bytes": 5390604,
-      "sha256": "c464de35267f77b7074ce024260e0949780ac35d1704ca91de0c1510d77a55e4"
+      "bytes": 5358228,
+      "sha256": "4e2de36d75acee4f39c8ee6e7435e035812bb7cc534e13ada0449fffdda47484"
     },
     {
       "path": "backend/assets/motions/cad_fixed_load_table_112200.glb",
@@ -450,8 +450,8 @@
     },
     {
       "path": "backend/assets/motions/cad_multipurpose_furnace_082000.glb",
-      "bytes": 8932868,
-      "sha256": "f6a20d40b9d7c978afbe422ef4d5c8ea21ebdaca021b1ddb55fe94c92a233512"
+      "bytes": 8916432,
+      "sha256": "5977b0ca55c65ebb8d58ea918a997e9f038bd41a4d9b96761614a8296cda5129"
     },
     {
       "path": "backend/assets/motions/cad_tempering_furnace_091300.glb",

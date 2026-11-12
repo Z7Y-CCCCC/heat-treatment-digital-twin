@@ -16,7 +16,7 @@ const PROFILES = {
         ['前室升降承料架', ['elevator_basket'], [0,1.3,1]],
         ['承料架导向', ['basket_guides'], [1.7,.3,.6]],
         ['前室提升与传动', ['basket_hoist','front_lift_chains','front_transmission'], [-1.8,1.3,0]],
-        ['淬火槽及挡流板', ['quench_tank','tank_baffles'], [0,-.5,1.6]],
+        ['整体淬火油槽', ['quench_tank'], [0,-.5,1.6]],
         ['淬火液示意层', ['quench_liquid'], [0,.8,1.8]],
         ['淬火搅拌驱动与盖板', ['agitators','agitator_lids'], [2,.6,1]],
         ['淬火搅拌叶轮', ['agitator_impellers'], [-2,-.1,1.1]],

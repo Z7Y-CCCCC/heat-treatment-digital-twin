@@ -1043,6 +1043,8 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 PrepareInspection(device);
             }
             device.Inspection.Stage = InspectionStage.Solid;
+            // Enter with the original solid covers. The upper shell button
+            // explicitly enables the transparent presentation when requested.
             foreach (var entry in _devices.Values)
             {
                 // A device inspection is always a single-machine view, even

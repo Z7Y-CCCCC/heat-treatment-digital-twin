@@ -11,7 +11,7 @@
     "node_naming_rule": "role_part_action，例如 fan_rear_rotate、door_front_lift、valve_gas_01",
     "delivery_status": "review",
     "owner": "",
-    "notes": "用户提供的 08.20.00_600普通多用炉.glb 原文件入库；保留原始节点、材质和坐标。 统一展示送料基准为 1.25 m；门板密封搭边保留，原 CAD 交付文件保留。"
+    "notes": "2026-11-11：按用户确认，下部为贯通整体淬火油池，不设中间隔断；油液覆盖中央料篮及两侧搅拌叶轮。保留原设备外形、转轴和电机位置，壁厚及未标注细节为展示推定，不作为制造图。统一展示送料面仍为 1.25 m。"
   },
   "optimization": {
     "mode": "auto",
@@ -566,15 +566,13 @@
       },
       {
         "id": "cad_multipurpose_furnace_082000_assembly_15",
-        "name": "淬火槽及挡流板",
+        "name": "整体淬火油槽",
         "group": "cad_multipurpose_furnace_082000",
         "enabled": true,
         "node_path": "",
         "node_name": "cad_multipurpose_furnace_600_v1_quench_tank",
         "node_paths": [],
-        "node_names": [
-          "cad_multipurpose_furnace_600_v1_tank_baffles"
-        ],
+        "node_names": [],
         "explode_offset": [
           0,
           -0.5,
@@ -1239,49 +1237,17 @@
         "point_keys": [],
         "detail_view_id": "",
         "camera": null
-      },
-      {
-        "id": "cad_multipurpose_furnace_082000_reference",
-        "name": "模型参考标记",
-        "group": "参考",
-        "enabled": true,
-        "node_path": "",
-        "node_name": "cad_multipurpose_furnace_600_v1_review",
-        "node_paths": [],
-        "node_names": [],
-        "explode_offset": [
-          0,
-          0,
-          0
-        ],
-        "explode_rotation": [
-          0,
-          0,
-          0
-        ],
-        "delay": 0,
-        "duration": 0,
-        "label_offset": [
-          0,
-          0.35,
-          0
-        ],
-        "description": "",
-        "point_ids": [],
-        "point_keys": [],
-        "detail_view_id": "",
-        "camera": null
       }
     ]
   },
   "partBindings": [],
   "sourceAsset": {
     "filename": "08.20.00_600普通多用炉.glb",
-    "sha256": "773dd70b490e00b864cffdb853205a89382166003300791096742d747ff7d7c0",
+    "sha256": "0959d556dc34b0c40708b33e97cf4938cc76eab901b51e50cc762b43bdf961db",
     "stats": {
-      "nodes": 243,
-      "meshes": 169,
-      "triangles": 161148,
+      "nodes": 240,
+      "meshes": 168,
+      "triangles": 160932,
       "materials": 14,
       "size": [
         3.0649999380111694,
@@ -1319,14 +1285,21 @@
     "surfaceY": 1.25,
     "loadY": 1.29,
     "basketStroke": 0.8,
-    "sourceSha256": "fa859b50f7675f27ae939847942311b6f3a2851e3962b6db035a69100b533f68",
+    "sourceSha256": "f8239255d7d945b3bb6dc97b4fd0b659583978b47f6783bee7703551fe9f9b3f",
     "note": "Display transfer-height alignment; door sealing overlap retained; original CAD deliveries preserved.",
-    "assetSha256": "773dd70b490e00b864cffdb853205a89382166003300791096742d747ff7d7c0",
+    "assetSha256": "0959d556dc34b0c40708b33e97cf4938cc76eab901b51e50cc762b43bdf961db",
     "calibration": {
       "floor": 0.14,
       "knot": 1.53,
       "delta": -0.38,
       "basketStroke": 0.8
     }
+  },
+  "cadCorrection": {
+    "revision": "2026-11-11-continuous-oil-bath",
+    "evidence": "User confirmed the complete lower section is one vessel and side cutaway must reveal oil with submerged rotating agitators",
+    "internalPartitions": 0,
+    "oilWidthMeters": 2.6,
+    "retained": "upper furnace, motor housings, bearings, basket and authored motion durations"
   }
 }

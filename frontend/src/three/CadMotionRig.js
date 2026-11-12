@@ -291,9 +291,11 @@ export class CadMotionRig {
         this.flow=new T.Group();this.effects.add(this.flow);this.flow.visible=false
         for(const from of this.nozzles){const to=from.clone();to.x*=.18;to.y-=.08;const line=new T.Line(new T.BufferGeometry().setFromPoints([from,to]),new T.LineBasicMaterial({color:'#54ccef',transparent:true,opacity:.35}));this.flow.add(line)}
         if(this.id==='cad_multipurpose_furnace_082000'){
-            this.fluid={x:0,z:-.985,w:1.04,d:1.7,min:this.authoringY(.2),max:this.authoringY(1.31)}
-            this.water.material.color.set('#8b531d');this.water.material.opacity=.32;this.water.material.roughness=.18;this.showWater(1)
-            this.node('quench_liquid')?.traverse(node=>{if(!node.isMesh)return;const mats=[].concat(node.material).map(m=>{const c=m.clone();c.color.set('#8b531d');return c});node.material=Array.isArray(node.material)?mats:mats[0]})
+            this.fluid={x:0,z:-.975,w:2.60,d:1.78,min:this.authoringY(.245),max:this.authoringY(1.31)}
+            this.water.material.color.set('#8b531d');this.water.material.opacity=.24;this.water.material.roughness=.18;this.showWater(1)
+            // One resident oil volume covers the basket and both submerged
+            // impellers. Avoid an opaque duplicate surface hiding their motion.
+            const sourceOil=this.node('quench_liquid');if(sourceOil)sourceOil.visible=false
             this.oilSites=[[-.27,-.45],[.27,.45],[.27,-.45],[-.27,.45],[-.27,0],[.27,0],[-.09,-.48],[.12,.48]]
             this.oilFilaments=new T.Group();this.oilFilaments.name='preview_oil_filaments';this.oilFilaments.visible=false;this.effects.add(this.oilFilaments)
             const threadGeometry=new T.CylinderGeometry(.0025,.0045,1,7)

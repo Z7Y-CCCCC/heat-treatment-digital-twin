@@ -1,6 +1,6 @@
 'use strict';
 // Deterministic extension of the project's original code-native NSIS artwork.
-// Ice-blue isometric campus: no browser, extra plugin or customer dependency.
+// Restrained midnight-blue factory illustration; no runtime dependencies.
 const fs = require('node:fs'), path = require('node:path');
 function bitmap(width, height) {
   const stride = (width * 3 + 3) & ~3, pixels = Buffer.alloc(stride * height);
@@ -12,7 +12,8 @@ function bitmap(width, height) {
   }
   for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
     const glow = Math.max(0, 1 - Math.hypot((x - width * .55) / width, (y - height * .55) / height));
-    dot(x, y, y < height * .24 ? [237, 248, 252] : [237 - glow * 12, 248 - glow * 2, 252]);
+    const t=Math.max(0,Math.min(1,(y/height-.24)/.60));
+    dot(x, y, [20-4*t+glow*2,40-8*t+glow*4,63-9*t+glow*7]);
   }
   function line(a, b, color, alpha = 1, thickness = 1) {
     const steps = Math.max(1, Math.ceil(Math.max(Math.abs(b[0] - a[0]), Math.abs(b[1] - a[1]))));
@@ -31,16 +32,16 @@ function bitmap(width, height) {
       for (let i = 0; i + 1 < xs.length; i += 2) for (let x = Math.ceil(xs[i]); x <= xs[i + 1]; x++) dot(x, y, color, alpha);
     }
   }
-  const s = width / 600, origin = [width * .5, height * .65];
+  const s = width / 600, origin = [width * .5, height * .64];
   const iso = (x, y, z = 0) => [origin[0] + (x - y) * .86 * s, origin[1] + ((x + y) * .45 - z) * s];
-  const edge = [109, 190, 218];
+  const edge = [72, 136, 175];
   function box(x, y, w, d, h, colors = [[166, 221, 240], [98, 184, 218], [222, 248, 252]], z = 0) {
     const a = iso(x, y, h + z), b = iso(x + w, y, h + z), c = iso(x + w, y + d, h + z), e = iso(x, y + d, h + z);
     const B = iso(x + w, y, z), C = iso(x + w, y + d, z), E = iso(x, y + d, z);
     polygon([e, c, C, E], colors[0]); polygon([b, c, C, B], colors[1]); polygon([a, b, c, e], colors[2]);
     for (const [p, q] of [[a,b],[b,c],[c,e],[e,a],[b,B],[c,C],[e,E],[E,C],[C,B]]) line(p,q,edge,.7,Math.max(1,Math.round(s)));
   }
-  for (let n = -420; n <= 420; n += 55) { line(iso(-440,n),iso(440,n),[153,210,230],.32); line(iso(n,-440),iso(n,440),[153,210,230],.32); }
+  for (let n = -420; n <= 420; n += 55) { line(iso(-440,n),iso(440,n),[70,127,163],.12); line(iso(n,-440),iso(n,440),[70,127,163],.12); }
   for (let i = 24; i > 0; i--) polygon([iso(-170,-135,-i),iso(170,-135,-i),iso(170,135,-i),iso(-170,135,-i)],[120,181,210],.014);
   box(-165,-125,330,250,16,[[209,233,245],[174,216,237],[251,254,255]],-12);
   for (let n = -130; n <= 130; n += 32) {line(iso(-150,n,6),iso(150,n,6),[180,224,239],.8);line(iso(n,-110,6),iso(n,110,6),[180,224,239],.8);}
@@ -61,7 +62,7 @@ function bitmap(width, height) {
   polygon([pts[0],pts[1],pts[6],pts[5]],[205,240,249],.8);polygon([pts[1],pts[2],pts[3],pts[6]],[116,197,228],.25);
   for(const [a,b] of [[0,1],[1,2],[2,3],[3,4],[4,5],[5,0],[1,6],[5,6],[6,3]])line(pts[a],pts[b],[93,184,214],.5);
   line([width*.23,height*.28],[width*.23,height*.40],[85,188,205],.5);
-  for(let i=0;i<14;i++){const x=width*(.12+(i*37%75)/100),y=height*(.36+(i*13%48)/100);dot(x,y,[70,177,201],.55);dot(x+1,y,[70,177,201],.55);}
+  for(let i=0;i<5;i++){const x=width*(.12+(i*37%75)/100),y=height*(.36+(i*13%48)/100);dot(x,y,[70,177,201],.55);dot(x+1,y,[70,177,201],.55);}
   const data = Buffer.alloc(54 + pixels.length); data.write('BM'); data.writeUInt32LE(data.length,2);data.writeUInt32LE(54,10);data.writeUInt32LE(40,14);data.writeInt32LE(width,18);data.writeInt32LE(height,22);data.writeUInt16LE(1,26);data.writeUInt16LE(24,28); pixels.copy(data,54); return data;
 }
 if (require.main === module) {
