@@ -14,6 +14,7 @@ import {fitCameraBox} from '../utils/cameraBoxFit.js'
 import {CART_FEED} from './cartFeedMechanism.js'
 import {CLEANER_BATH} from './cleanerBathLayout.js'
 import {TRANSFER_DATUM} from '../../../shared/equipmentTransferDatum.mjs'
+import {buildAdaptiveTransferPath,sampleAdaptiveTransferPath,sameAdaptiveTransferGeometry} from '../../../shared/adaptiveTransferPath.mjs'
 import {measureEquipmentLoadCenters,equipmentLoadPoint} from './equipmentLoadCenter.js'
 import {siteDeviceTransform,siteLoadingDatum,siteCarrierPath,siteCarrierInitialPosition,assertSiteTransferDriver,solveSiteTransferPose,siteSceneUnitsPerMeter,siteWorldVector,siteWorldPoint,siteParentPoint,applySitePayloadMetrics} from './siteTransferAlignment.js'
 
@@ -122,6 +123,7 @@ export class LineSimulationScene extends CadMotionScene {
             for(let i=0;i<3;i++){const billet=new T.Mesh(new T.CylinderGeometry(.075,.075,.24,16),new T.MeshStandardMaterial({color:'#8eaeb8',metalness:.7}));billet.position.set((i-1)*.15,.16,0);this.material.add(billet)}
         }
         this.scene.add(this.material)
+        if(mode!=='site'&&plan.cart)this.material.scale.setScalar(this.entries.get(plan.cart.id).scale)
         if(this.siteMaterialConfigured){const cart=this.entries.get(plan.cart.id);applySitePayloadMetrics(this.material,cart.wrapper,cart.savedLink.materialSize,cart.sceneUnitsPerMeter)}
         this.bounds=new T.Box3();for(const entry of this.entries.values())this.bounds.union(bounds(entry.wrapper))
         if(plan.cart){
@@ -133,9 +135,11 @@ export class LineSimulationScene extends CadMotionScene {
                     const seat=target.asset.getObjectByName(s.seatNodeName);if(!seat)throw Error('缺少已配置承料节点：'+s.seatNodeName)
                     const home=siteWorldPoint(new T.Vector3(...cycle.cartHome),cart.wrapper),inside=siteWorldPoint(new T.Vector3(...s.seatNodeLocal),seat)
                     const mouth=siteLoadingDatum(target.row,target.row.capabilities.model||{},target.siteTransform,cart.savedLink.targetPort).position,path=inside.clone().sub(home)
-                    const fraction=mouth.clone().sub(home).dot(path)/path.lengthSq()
+                    const adaptive=this.adaptivePathFor(cart,target,dock)
+                    const fraction=adaptive?adaptive.mouthFraction:mouth.clone().sub(home).dot(path)/path.lengthSq()
                     if(!Number.isFinite(fraction)||fraction<=0||fraction>=1)throw Error('设备口不在车上承料位与设备内承料位之间')
                     plan.transferMouthFractions||={};plan.transferMouthFractions[station.id]=fraction
+                    if(adaptive){plan.transferPaths||={};plan.transferPaths[station.id]=adaptive}
                 }
             }
             cart.wrapper.position.copy(position);cart.wrapper.rotation.y=yaw;cart.wrapper.updateMatrixWorld(true)
@@ -206,15 +210,23 @@ export class LineSimulationScene extends CadMotionScene {
                 fixedPosition=siteWorldPoint(anchors[0].position,cart.wrapper.parent)
             }
             const result=solveSiteTransferPose({start:siteWorldPoint(cart.sitePath.start,cart.wrapper.parent),end:siteWorldPoint(cart.sitePath.end,cart.wrapper.parent),cartPortOffset:offset,feedDirection:feed,stationPosition:siteWorldPoint(station.port,station.wrapper),stationDirection:normal,
-                stroke:maximumDriveWorld.length(),fixedPosition,...(link||this.transferTolerances),sceneUnitsPerMeter:cart.sceneUnitsPerMeter,name:station.row.name||id})
+                stroke:maximumDriveWorld.length(),fixedPosition,...(link||this.transferTolerances),handoffMode:link?.cycle?.enabled?link.cycle.handoffMode||'mechanism':'mechanism',sceneUnitsPerMeter:cart.sceneUnitsPerMeter,name:station.row.name||id})
             return {...result,worldPosition:result.position.clone(),position:siteParentPoint(result.position,cart.wrapper.parent),yaw:cart.baseYaw,feedDirection:feed,cartPortOffset:offset,maximumDriveWorld,feedSide:side}
         }
         const normal=station.normal.clone().transformDirection(station.wrapper.matrixWorld)
         const yaw=Math.atan2(normal.z,-normal.x)+(cart?.wrapper.scale.x<0?Math.PI:0)+(cart?.feedDirection<0?Math.PI:0)
         const offset=cart?cart.port.clone().setY(0).multiply(cart.wrapper.scale).applyAxisAngle(new T.Vector3(0,1,0),yaw):new T.Vector3()
-        const position=this.port(id).addScaledVector(normal,.35).sub(offset)
+        const position=this.port(id).addScaledVector(normal,.15*(cart?.scale||1)).sub(offset)
         position.y=cart?.basePosition?.y||0
         return {position,yaw}
+    }
+    adaptivePathFor(cart,target,dock){
+        const cycle=cart.savedLink.cycle,station=cycle.stations.find(s=>s.targetDeviceId===target.row.id)
+        const nodes=target.asset.getObjectsByProperty('name',station?.seatNodeName||'')
+        if(nodes.length!==1)throw Error('设备内承料节点缺失或重名')
+        const units=cart.sceneUnitsPerMeter,toMeters=v=>v.toArray().map(n=>n/units)
+        const home=dock.worldPosition.clone().add(siteWorldVector(new T.Vector3(...cycle.cartHome),cart.wrapper))
+        return buildAdaptiveTransferPath({...cart.savedLink,home:toMeters(home),sourcePort:toMeters(dock.worldPosition.clone().add(dock.cartPortOffset)),sourceDirection:dock.feedDirection.toArray(),mouth:toMeters(siteWorldPoint(target.port,target.wrapper)),targetDirection:siteWorldVector(target.normal,target.wrapper).normalize().toArray(),seat:toMeters(siteWorldPoint(new T.Vector3(...station.seatNodeLocal),nodes[0])),maximumDrive:toMeters(dock.maximumDriveWorld)})
     }
     loadPort(id,inside=false,state){
         const entry=this.entries.get(id)
@@ -259,14 +271,19 @@ export class LineSimulationScene extends CadMotionScene {
                 if(this.mode==='site'){state.feedTravel=entry.siteFeedTravel;state.feedHome=entry.siteFeedHome;state.feedSide=frame.cart.to?this.dock(frame.cart.to).feedSide:frame.cart.feedSide}
                 if(entry.rig.node?.('push_hook')){
                     state.hookEngaged=entry.savedLink?.cycle?.enabled?1-Number(frame.cart.hookRelease||0):['feed','reclaim'].includes(frame.step.kind)
-                    if(frame.cart.to&&this.mode!=='site'){
-                        const home=entry.wrapper.worldToLocal(this.loadPort(id)),destination=entry.wrapper.worldToLocal(this.loadPort(frame.cart.to,true,frame.states[frame.cart.to]))
-                        state.feedTravel=Math.max(0,(destination.x-home.x)*entry.feedDirection)
-                    }
+                    // Demonstration also retains the original stroke. The
+                    // device rollers finish the inside segment; no long belt.
                 }
             }
             entry.rig.applyLinked({...state,previewCharge:!this.plan.cart&&frame.step.deviceId===id})
             entry.effects?.apply({time:frame.elapsed,level:state.level,temperature:state.heat?55:25,fill:state.operation==='fill',heat:state.heat,spray:state.spray,ultrasonic:state.ultrasonic,drain:state.operation==='drain',blow:state.blow,wetness:state.level})
+        }
+        let adaptivePath
+        if(this.mode==='site'&&cart?.savedLink?.cycle?.enabled&&['feed','retract','pickup_extend','reclaim'].includes(frame.step.kind)){
+            const target=this.entries.get(frame.step.deviceId),dock=this.dock(target.row.id)
+            adaptivePath=this.adaptivePathFor(cart,target,dock)
+            const savedFraction=this.plan.transferMouthFractions?.[target.row.id]
+            if(!Number.isFinite(savedFraction)||Math.abs(adaptivePath.mouthFraction-savedFraction)>1e-6||!sameAdaptiveTransferGeometry(adaptivePath,this.plan.transferPaths?.[target.row.id]))throw Error('承料路径已变化，请重新生成联动预览')
         }
         this.material.visible=!!frame.material.holder
         if(this.material.visible){
@@ -278,7 +295,8 @@ export class LineSimulationScene extends CadMotionScene {
                 if(m.cyclePath){
                     const s=c.stations.find(s=>s.targetDeviceId===m.to),target=this.entries.get(m.to),node=target?.asset.getObjectByName(s?.seatNodeName||'')
                     if(!node)throw Error('缺少已配置设备内承料节点')
-                    p.lerp(siteWorldPoint(new T.Vector3(...s.seatNodeLocal),node),m.progress)
+                    if(adaptivePath)p.fromArray(sampleAdaptiveTransferPath(adaptivePath,m.progress)).multiplyScalar(cart.sceneUnitsPerMeter)
+                    else p.lerp(siteWorldPoint(new T.Vector3(...s.seatNodeLocal),node),m.progress)
                 }
                 const metrics=applySitePayloadMetrics(this.material,cart.wrapper,cart.savedLink.materialSize,cart.sceneUnitsPerMeter);p.y+=metrics.worldHeight*.5
             }else if(this.mode==='site'&&cart){
@@ -300,6 +318,17 @@ export class LineSimulationScene extends CadMotionScene {
                     this.material.children[0].material.color.set(cart.savedLink.materialColor)
                     p.y+=metrics.worldHeight*.5
                 }else if(this.siteMaterialConfigured){this.material.visible=false;return}
+            }else if(cart?.rig.node?.('push_hook')&&['feed','retract','pickup_extend','reclaim'].includes(frame.step.kind)){
+                // Normal demo: the hook pushes/pulls over its ORIGINAL stroke.
+                // During empty-chain travel, the device's rollers carry the
+                // tray between the handoff point and its inside bearing seat.
+                // Both phases meet at the same point, including timeline seeks.
+                const home=point(cart.row.id),drive=siteWorldVector(new T.Vector3(-CART_FEED.stroke,0,0),cart.wrapper)
+                const extended=home.clone().add(drive),inside=point(frame.step.deviceId)
+                const fraction=T.MathUtils.clamp(frame.progress,0,1),smooth=fraction*fraction*(3-2*fraction)
+                if(frame.step.kind==='retract')p=extended.lerp(inside,smooth)
+                else if(frame.step.kind==='pickup_extend')p=inside.lerp(extended,smooth)
+                else p=home.addScaledVector(drive,frame.cart.feed)
             }else p=m.to&&m.progress<1?point(m.from).lerp(point(m.to),m.progress):point(m.holder)
             this.material.position.copy(this.mode==='site'?siteParentPoint(p,this.material.parent):p)
             if(!this.siteMaterialConfigured)this.material.rotation.y=cart?.wrapper.rotation.y||0

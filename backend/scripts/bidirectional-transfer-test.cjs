@@ -23,6 +23,12 @@ let fixture;
  assert.ok(loaded.transferCapabilities.targetDevices.find(t=>t.id===targetId).presencePoints.some(p=>String(p.id)===present));
  loaded=await ok(route,'PUT',{revision:loaded.revision,config:{version:1,staleMs:3000,bindings:[],transferLink:transfer}});
  assert.deepEqual(loaded.config.transferLink,transfer);assert.deepEqual((await ok(route)).config,loaded.config);
+ const originalDevices=await ok('/api/devices'),originalLines=await ok('/api/lines');
+ transfer.cycle.handoffMode='adaptive';
+ loaded=await ok(route,'PUT',{revision:loaded.revision,config:{...loaded.config,transferLink:transfer}});
+ assert.deepEqual((await ok(route)).config.transferLink,transfer);
+ const afterDevices=await ok('/api/devices');for(const before of originalDevices){const after=afterDevices.find(d=>d.id===before.id);for(const key of ['pos_x','pos_y','pos_z','rotation_y','scale','plc_enabled'])assert.deepEqual(after[key],before[key]);}
+ assert.deepEqual(await ok('/api/lines'),originalLines);
  const raw=JSON.parse((await ok('/api/devices/'+cartId)).instance_config);
  for(const name of ['start','pickup'])assert.match(raw.animationBindings.transferLink.cycle[name+'SourceFingerprint'],/^[a-f0-9]{64}$/);
  assert.equal(raw.marker,'must survive');
@@ -32,7 +38,7 @@ let fixture;
   {stations:[]},{stations:[{...transfer.cycle.stations[0],targetDeviceId:foreignId}]},
   {stations:[{...transfer.cycle.stations[0],presencePointId:points.foreign}]},
   {stations:[{...transfer.cycle.stations[0],presencePointId:points.targetPosition}]},
-  {stations:[{...transfer.cycle.stations[0],side:'guessed'}]}
+  {stations:[{...transfer.cycle.stations[0],side:'guessed'}]},{handoffMode:'stretch-original-chain'}
  ]){
   const r=await request(route,'PUT',{revision:loaded.revision,config:{...loaded.config,transferLink:{...transfer,cycle:{...transfer.cycle,...patch}}}});
   assert.equal(r.status,400,JSON.stringify(r));assert.deepEqual((await ok(route)).config,loaded.config);

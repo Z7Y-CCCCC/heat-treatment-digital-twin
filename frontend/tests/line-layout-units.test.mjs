@@ -62,7 +62,7 @@ test('explicit line/movement unit fields reject every invalid canonical/alias va
     assert.equal(assertLineMovementUnits({ scene_units_per_meter: String(units) }, { sceneUnitsPerMeter: units }), units)
     assert.equal(assertLineMovementUnits({ sceneUnitsPerMeter: units, scene_units_per_meter: 3 }, { sceneUnitsPerMeter: units }), units)
   }
-  assert.throws(() => assertLineMovementUnits({ sceneUnitsPerMeter: .8 }, {}, '现场料车'), /现场料车.*产线结构.*不一致.*现有产线结构与移动设置/)
+  assert.throws(() => assertLineMovementUnits({ sceneUnitsPerMeter: .8 }, {}, '现场料车'), /现场料车.*不一致.*改为 1 后保存/)
 })
 
 async function component(path, expose = '') {
@@ -124,6 +124,25 @@ function memoryHost(t) {
   return { root, renderer, elements, field, beforeRestore: env.beforeRestore }
 }
 const settled = async () => { await nextTick(); await settle(); await nextTick() }
+
+test('ordinary preview auto-selects one cart and devices without forcing saved cycle or distant site calibration', async t => {
+  const host=memoryHost(t),devices=ref([]),lines=ref([]),models=[{id:'cad_transfer_cart_101300',file_path:'/isolated.glb'},{id:'station',file_path:'/isolated.glb'}]
+  let vm
+  const app=host.renderer.createApp({setup:()=>()=>h(Sequence,{devices:devices.value,models,lines:lines.value,ref:value=>{vm=value}})})
+  app.mount(host.root);host.beforeRestore(()=>app.unmount())
+  const saved=carrier('cart',.79999999616123);saved.model_type='cad_transfer_cart_101300'
+  saved.instance_config.animationBindings.transferLink={enabled:true,cycle:{enabled:true,extendSeconds:17,retractSeconds:13,stations:[]}}
+  devices.value=[saved,{...saved,id:'second-cart'},{id:'station',line_id:'L',name:'炉体',model_type:'station',pos_z:100},{id:'missing',line_id:'L',model_type:'unavailable'}]
+  lines.value=[{id:'L',layout:{...legacyLayout(),sceneUnitsPerMeter:.8}}];await settled()
+  assert.deepEqual(vm.selectedIds,['cart','station']);assert.equal(vm.arrangement,'scheme');assert.ok(vm.draft.plan);assert.equal(vm.draft.plan.useSavedCycle,false)
+  assert.equal(host.elements().find(n=>n.type==='details').props.open,undefined,'Advanced calibration is closed by default')
+  assert.equal(host.elements().find(n=>n.type==='button'&&n.text==='一键演示').props.disabled,false)
+  const before=JSON.stringify({devices:devices.value,lines:lines.value})
+  devices.value[0].instance_config.movement.sceneUnitsPerMeter=.81;await settled()
+  assert.ok(vm.draft.plan,'A real saved-site mismatch does not prevent ordinary animation demo')
+  devices.value[0].instance_config.movement.sceneUnitsPerMeter=.79999999616123;await settled()
+  assert.equal(JSON.stringify({devices:devices.value,lines:lines.value}),before)
+})
 
 async function apiFixture(t, { layout = legacyLayout(), devices = [carrier()], includeMovementRoute = false } = {}) {
   const Database = require('better-sqlite3'), sqlite = new Database(':memory:')
@@ -325,8 +344,15 @@ test('line-save unit guard checks every owned bound active source on delta=0 and
   later.instance_config.movement.scene_units_per_meter = 1.25
   const f = await apiFixture(t, { layout, devices: [first, later] }), before = f.snapshot()
   const result = await f.call({ name: '不应保存', layout, devicePositions: [{ id: 'a', pos_x: first.pos_x, pos_z: .58 }] })
-  assert.equal(result.status, 400); assert.match(result.body.error, /现场料车 b.*不一致.*现有产线结构与移动设置/); assert.deepEqual(f.snapshot(), before)
+  assert.equal(result.status, 400); assert.match(result.body.error, /现场料车 b.*不一致.*改为 0\.8 后保存/); assert.deepEqual(f.snapshot(), before)
   const nameOnly = await f.call({ name: '仍不应保存', layout }); assert.equal(nameOnly.status, 400); assert.deepEqual(f.snapshot(), before)
+})
+
+test('actual line save API accepts screenshot Float32 tails on an active cart without migrating unrelated configuration',async t=>{
+  const layout={...legacyLayout(),sceneUnitsPerMeter:.8},device=carrier('cart',.79999999616123)
+  const f=await apiFixture(t,{layout,devices:[device]}),before=f.rows()
+  const result=await f.call({name:'正常保存',layout});assert.equal(result.status,200,result.body.error);assert.deepEqual(f.rows(),before)
+  assert.equal(JSON.parse(f.rows()[0].instance_config).movement.sceneUnitsPerMeter,.79999999616123)
 })
 
 test('zero-delta guard includes active lane-bound transfer and fallback line_id ownership, excludes foreign workshop/line rows, and does not rewrite inherited units', async t => {
@@ -389,7 +415,7 @@ test('actual site-selection controls reject an explicitly mismatched source rati
   vm.selectedIds = ['cart', 'station']; await host.field('联动预览排布').fire('change', 'site'); await settled()
   assert.equal(vm.arrangement, 'site'); assert.ok(vm.draft.plan); const before = JSON.stringify(devices.value)
   devices.value[0].instance_config.movement.scene_units_per_meter = 1.25; await settled()
-  assert.equal(vm.draft.plan, null); assert.match(vm.draft.error, /不一致.*现有产线结构与移动设置/)
+  assert.equal(vm.draft.plan, null); assert.match(vm.draft.error, /不一致.*改为 0\.8 后保存/)
   delete devices.value[0].instance_config.movement.scene_units_per_meter; await settled()
   assert.ok(vm.draft.plan); assert.equal(JSON.stringify(devices.value), before)
 })

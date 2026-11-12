@@ -46,6 +46,7 @@ function homeCoordinate(axis,value){const p=[...cycle.value.cartHome];p[axis]=Nu
    <label class="enable-transfer"><span>双侧送料 / 取料循环（Three.js 与 Unity 同源）</span><input type="checkbox" :checked="cycle.enabled" aria-label="启用双侧进出料循环" @change="updateCycle('enabled',$event.target.checked)"></label>
    <template v-if="cycle.enabled">
     <p>本循环统一驱动两侧送料与脱钩，启用后停用这四项的独立动作绑定。中间姿态按时长估算；物料交接必须等待车上和设备内两个 BOOL 在位反馈确认，估算完成不等于实际交接。</p>
+    <p>使用原小车机构，不加延长带。普通“设备联动”可直接一键演示，无需先配置下面的现场反馈。</p>
     <div class="presence-field">循环命令 BOOL（上升沿触发）<MotionDataPicker :catalog="catalog" :data-item-id="cycle.startDataItemId" :disabled="disabled" @select="item=>cycleSource('start',item)" @clear="updateCycle('startDataItemId','')" @refresh="emit('refresh')" /></div>
     <div class="presence-field">取料 / 送料 BOOL（true 取料，false 送料）<MotionDataPicker :catalog="catalog" :data-item-id="cycle.pickupDataItemId" :disabled="disabled" @select="item=>cycleSource('pickup',item)" @clear="updateCycle('pickupDataItemId','')" @refresh="emit('refresh')" /></div>
     <div class="transfer-grid"><label v-for="[key,label] in [['extendSeconds','伸链显示时长'],['latchSeconds','脱钩 / 勾合显示时长'],['retractSeconds','退链显示时长'],['conveySeconds','设备辊道接料显示时长'],['confirmTimeoutSeconds','等待反馈超时']]" :key="key">{{label}}（秒）<input type="number" min=".1" max="120" step=".1" :aria-label="label" :value="cycle[key]" @input="updateCycle(key,Number($event.target.value))"></label></div>
@@ -62,7 +63,7 @@ function homeCoordinate(axis,value){const p=[...cycle.value.cartHome];p[axis]=Nu
     </article>
    </template>
   </fieldset>
-  <small>在位反馈只接受真实开关量。中间动作只是显示估算，不是实际行程百分比。轨道、送料口或承料高度不可达时冻结交接，不拉长推链，也不旋转整个车体。</small>
+  <small>现场在位反馈使用 BOOL；普通演示不读取 PLC。动画不加长小车机构，间距由产线布局控制。</small>
  </fieldset>
 </template>
 <style scoped>

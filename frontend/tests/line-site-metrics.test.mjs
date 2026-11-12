@@ -47,7 +47,7 @@ test('metre height/lateral boundaries and numerical margin scale to source world
     assert.throws(() => solveSiteTransferPose({ ...accepted, stationPosition: accepted.stationPosition.clone().add(new T.Vector3(.000002 * units, 0, 0)) }), /横向错位/)
     assert.throws(() => solveSiteTransferPose({ ...accepted, stationPosition: accepted.stationPosition.clone().add(new T.Vector3(0, .000002 * units, 0)) }), /送料高度/)
     assert.doesNotThrow(() => solveSiteTransferPose({ ...accepted, stationPosition: accepted.stationPosition.clone().add(new T.Vector3(.0000005 * units, .0000005 * units, 0)) }))
-    assert.throws(() => solveSiteTransferPose({ ...input, stationPosition: new T.Vector3(3, 1, 4 - 1.25).multiplyScalar(units), stroke: .92 * units }), /距离 1\.250 米超出推链行程 0\.920 米/)
+    assert.throws(() => solveSiteTransferPose({ ...input, stationPosition: new T.Vector3(3, 1, 4 - 1.25).multiplyScalar(units), stroke: .92 * units }), /距离 1\.25 米超出推链行程 0\.92 米.*自动排布并演示/)
   }
   for (const field of ['feedDirection', 'stationDirection']) assert.throws(() => solveSiteTransferPose({ ...pose(), [field]: new T.Vector3() }), /朝向无效/)
   for (const units of [0, -1, NaN, Infinity]) assert.throws(() => solveSiteTransferPose({ ...pose(), sceneUnitsPerMeter: units }), /米制比例无效/)

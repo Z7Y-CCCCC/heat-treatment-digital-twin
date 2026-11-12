@@ -1,6 +1,8 @@
 // A bounded DISPLAY-layout band, not a PLC position or mechanical reach claim.
-// The 0.5 m outward allowance is a presentation policy, not a surveyed distance.
+// Compact templates allow up to 0.2 m, bounded by the original mechanism.
+// Legacy layouts retain their 0.5 m presentation allowance until reapplied.
 const fail = message => { throw Error(message) }
+import {lineTemplateSpacingLimits} from './linePlacementTemplate.mjs'
 export function lineAdjustmentBand(layout, rows, allowanceMeters = .5) {
   const t = layout?.placementTemplate
   if (!t) return null
@@ -25,12 +27,16 @@ export function lineAdjustmentBand(layout, rows, allowanceMeters = .5) {
     const relative = row.z - lane.offsetZ
     minimum = Math.max(minimum, side < 0 ? rail.offsetZ - low + gap + relative + row.maxZ : high - rail.offsetZ + gap - relative - row.minZ)
   }
-  minimum = Math.ceil((minimum - 1e-8) * 10) / 10
-  const maximum = Number((minimum + allowanceMeters * units).toFixed(6))
+  let reachMaximum=Infinity
+  if(t.compact){const limits=lineTemplateSpacingLimits(layout,rows,lanes,rail,t.clearanceGapMeters??.15);minimum=Math.max(t.minimumDistance,Math.ceil((limits.minimum/units-1e-8)*20)/20*units);reachMaximum=limits.maximum;allowanceMeters=Math.min(allowanceMeters,.2)}
+  else minimum = Math.ceil((minimum - 1e-8) * 10) / 10
+  let maximum = Number(Math.min(minimum + allowanceMeters * units,reachMaximum).toFixed(6))
+  if(maximum<minimum-1e-6)fail('这排设备距离不合适，请先点“进料面前后对齐”并重新选择布局模板')
+  if (t.compact && (maximum < minimum || Math.fround(rail.offsetZ + sign * minimum) === Math.fround(rail.offsetZ + sign * maximum))) maximum = minimum
   const ends = [rail.offsetZ + sign * minimum, rail.offsetZ + sign * maximum]
   const minZ = Math.min(...ends), maxZ = Math.max(...ends)
   if (![minZ,maxZ].every(value => Number.isFinite(value) && Math.abs(value) <= 10000)
-      || Math.fround(minZ) === Math.fround(maxZ)) fail('当前坐标精度不足以表示微调范围')
+      || !t.compact && Math.fround(minZ) === Math.fround(maxZ)) fail('当前坐标精度不足以表示微调范围')
   const currentDistance = (primary.offsetZ - rail.offsetZ) * sign
   return { laneId: primary.id, name: primary.name || primary.id, railId: rail.id, minZ, maxZ,
     minDistanceMeters: minimum / units, maxDistanceMeters: maximum / units,

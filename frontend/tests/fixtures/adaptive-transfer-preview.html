@@ -1,0 +1,27 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>小车进出料 · 隔离动画验证</title>
+<style>body{margin:0;background:#eff4f7;font:14px "Microsoft YaHei",sans-serif;color:#32455b}header.fixture{padding:14px 20px;background:white;display:flex;gap:16px;align-items:center;border-bottom:1px solid #ccd7df}header.fixture small{margin-left:auto;color:#718296}header.fixture select{padding:7px;border:1px solid #b8c7d0;border-radius:6px}#app{padding:14px}.line-sequence{height:calc(100vh - 105px)!important}#status{white-space:pre-wrap;padding:10px}</style>
+<header class="fixture"><strong>小车送料 / 取料 · 实际 CAD 验证</strong><label>布局<select id="kind"><option value="single-negative">单侧上排</option><option value="single-positive">单侧下排</option><option value="dual">双侧设备线</option></select></label><label>红框位置<select id="micro"><option value="0">近端</option><option value="0.25">中间</option><option value="0.5">远端</option></select></label><small>隔离样例 · 模拟 BOOL · 不连接 PLC / 原数据库</small></header><div id="app"></div><div id="status"></div>
+<script type="module">
+import {createApp} from 'vue'
+import LineEquipmentSequence from '../../src/views/admin/components/LineEquipmentSequence.vue'
+import {LineSimulationScene} from '../../src/three/LineSimulationScene.js'
+import MobileDeviceMotion from '../../src/views/admin/components/MobileDeviceMotion.vue'
+import {adminApi} from '../../src/config/factoryConfig.js'
+import {adminSession} from '../../src/runtime/adminSession.js'
+import {normalizePagePermissions} from '../../../shared/pagePermissions.mjs'
+import {assertLineMovementUnits} from '../../../shared/lineRailSpacing.mjs'
+// Test-only observation of the production scene; no alternate animator.
+const load=LineSimulationScene.prototype.loadPlan
+LineSimulationScene.prototype.loadPlan=async function(...args){await load.apply(this,args);window.fixtureScene=this}
+const query=new URLSearchParams(location.search),kind=document.querySelector('#kind'),micro=document.querySelector('#micro');kind.value=query.get('kind')||'single-negative';micro.value=query.get('micro')||'0'
+for(const el of [kind,micro])el.onchange=()=>{query.set('kind',kind.value);query.set('micro',micro.value);location.search=query}
+try{
+ const data=await(await fetch('/fixture.json?'+query)).json();if(data.error)throw Error(data.error);window.fixtureEvidence=data.evidence
+ if(query.get('view')==='motion'){
+  adminSession.authenticated=true;adminSession.user={role:'owner'};adminSession.pagePermissions=normalizePagePermissions({},{owner:true})
+  adminApi.getDevice=async id=>structuredClone(data.devices.find(d=>d.id===id))
+  adminApi.updateDeviceMovement=async(id,movement)=>{assertLineMovementUnits(movement,data.lines[0].layout,'料车');window.fixtureSavedMovement=structuredClone(movement);return {success:true}}
+  createApp(MobileDeviceMotion,{devices:data.devices}).mount('#app')
+ }else createApp(LineEquipmentSequence,data).mount('#app')
+}catch(e){document.querySelector('#status').textContent=e.stack}
+</script></html>

@@ -40,9 +40,9 @@ namespace HeatTreatment.DigitalTwin.Runtime
             { reason = "场景单位 / 米配置无效，请在产线结构或移动设置中填写有限正数"; return false; }
             var explicitMovement = currentPresent || legacyPresent;
             var selected = currentPresent ? current : legacyPresent ? legacy : line;
-            if (linePresent && explicitMovement && selected != line)
-            { reason = "产线与移动设备的场景单位 / 米不一致，请在现有配置中统一校准"; return false; }
-            units = (float)selected;
+            if (linePresent && explicitMovement && Math.Abs(selected-line)>Math.Max(Math.Abs(selected),Math.Abs(line))*1e-6)
+            { reason = "移动比例与产线比例不一致，请将移动设置里的“场景单位 / 米”改为 " + line.ToString("G6", CultureInfo.InvariantCulture) + " 后保存"; return false; }
+            units = (float)(linePresent ? line : selected);
             if (float.IsNaN(units) || float.IsInfinity(units) || units <= 0)
             { units = float.NaN; reason = "场景单位 / 米超出可表示范围"; return false; }
             return true;

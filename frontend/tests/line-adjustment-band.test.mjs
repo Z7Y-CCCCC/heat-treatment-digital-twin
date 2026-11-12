@@ -31,6 +31,17 @@ test('red band has two finite edges measured from actual envelopes; no data writ
   assert.equal(lineAdjustmentBand(old(),rows()),null,'Legacy unconfirmed layouts do not receive an invented safe band')
 })
 
+test('compact parts avoid the high hood false collision and lock a single reachable distance instead of reporting precision error',()=>{
+  const layout={sceneUnitsPerMeter:1,lanes:[{id:'a',offsetZ:5,length:12}],rails:[{id:'r',offsetZ:0,length:12}]}
+  const body={minX:-1,maxX:1,minY:0,maxY:2,minZ:-.8,maxZ:.8}
+  const rows=[{id:'cart',railId:'r',x:0,y:0,z:0,...body,collisionBoxes:[body],transferReach:{stroke:1,positiveFaceZ:.8,negativeFaceZ:-.8}},
+    {id:'furnace',laneId:'a',x:4,y:0,z:5,...body,maxY:4,minZ:-3,maxZ:3,loadingFaceZ:-.2,collisionBoxes:[body,{...body,minY:3,maxY:4,minZ:-3,maxZ:3}]}]
+  const p=planLinePlacementTemplate(layout,'single-positive',rows);assert.equal(p.layout.placementTemplate.compact,true)
+  assert.equal(p.layout.lanes[0].offsetZ,2,'High hood does not push the low cart to 4+ metres')
+  const band=lineAdjustmentBand(p.layout,p.rows);assert.equal(band.minZ,2);assert.equal(band.maxZ,2);assert.equal(band.currentInside,true)
+  assert.equal(clampLineAdjustment(100,band),2)
+})
+
 test('both single sides, non-unit calibration, opposite row and full cart path affect the band consistently',()=>{
   for(const kind of ['single-negative','single-positive']) {
     const p=planLinePlacementTemplate(old(),kind,rows().filter(row=>row.id!=='cleaner'))

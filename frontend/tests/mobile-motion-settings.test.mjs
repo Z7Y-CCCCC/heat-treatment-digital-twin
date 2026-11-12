@@ -137,6 +137,18 @@ test('existing mobile unit field displays inherited authored line calibration wi
   await f.reopen(); assert.equal(f.field('移动场景单位每米').value, '0.8')
 })
 
+test('actual mobile coordinate and distance fields hide numeric tails without changing stored values on open',async t=>{
+  const movement={...originalMovement(),sceneUnitsPerMeter:.79999999616123,start:{x:-20.99998053,y:.098441,z:.5},end:{x:20.999983800000005,y:.098441,z:.5},stations:[
+    {value:1,anchorDeviceId:'station',position:{x:6.999986399999998,y:.098441,z:.5}},
+    {value:2,position:{x:20.999983800000005,y:.098441,z:.5},distanceMeters:17.49999968}]}
+  const f=await fixture(t,movement,{sceneUnitsPerMeter:.8}),before=JSON.stringify(f.saved.instance_config)
+  assert.equal(f.field('移动场景单位每米').value,'0.8');assert.equal(f.field('工位 1 X 坐标').value,'7')
+  assert.equal(f.field('工位 1 轨道基准 Y').value,'0.1');assert.equal(f.field('移动轨道起始 X').value,'-21')
+  assert.equal(f.field('移动轨道参考终点 X').value,'21');assert.equal(f.field('移动轨道终点 Y').value,'0.1')
+  const distance=f.elements().find(n=>n.type==='input'&&n.props.placeholder==='例如 8.5');assert.equal(distance.value,'17.5')
+  assert.equal(f.vm.motion.stations[1].distanceMeters,17.49999968);assert.equal(f.saves.length,0);assert.equal(JSON.stringify(f.saved.instance_config),before)
+})
+
 test('current meaning accepts missing estimation distances; target cannot pretend to arrive without explicit simulation', async t => {
   const motion = { ...originalMovement(), simulationEnabled: false }
   const f = await fixture(t, motion)
