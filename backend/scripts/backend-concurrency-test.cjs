@@ -214,10 +214,18 @@ async function main() {
         }
         const DataEngine = requireWithStubs('../services/dataEngine', {
             '../db/database': { getDb: async () => ({
-                get: async () => ({ value: 'factory_default' }),
-                all: async sql => sql.includes('FROM factories')
-                    ? [{ id: 'factory_default' }, { id: 'factory_north' }]
-                    : [{ key: 'data_mode', value: 'simulation' }]
+                get: async sql => {
+                    if (sql.includes('FROM settings')) return { value: 'factory_default' };
+                    if (sql.includes('FROM factories')) return { collection_enabled: 1 };
+                    if (sql.includes('FROM factory_settings')) return null;
+                    throw new Error(`Unexpected get query: ${sql}`);
+                },
+                all: async sql => {
+                    if (sql.includes('FROM factories')) return [{ id: 'factory_default' }, { id: 'factory_north' }];
+                    if (sql.includes('FROM settings')) return [{ key: 'data_mode', value: 'simulation' }];
+                    if (sql.includes('FROM factory_settings') || sql.includes('FROM workshops') || sql.includes('FROM data_points')) return [];
+                    throw new Error(`Unexpected all query: ${sql}`);
+                }
             }) },
             '../services/simulator': FakeSimulator
         });
