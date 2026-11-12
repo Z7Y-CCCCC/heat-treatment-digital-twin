@@ -8,7 +8,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { EventEmitter } = require('node:events');
 const { createRunDirectory, requireTestPath, forceStop, sleep } = require('./integration-test-utils.cjs');
-const { trackRecoveryProcess, recoveryProcessSnapshot, waitForRecoveryProcessClose, stopRecoveryProcess,
+const { trackRecoveryProcess, trackRecoveryWorker, recoveryProcessSnapshot, waitForRecoveryProcessClose, stopRecoveryProcess,
     recoveryArtifactPath, removeClosedRecoverySidecars, openRecoveryDatabase, closeRecoveryDatabase } = require('./power-recovery-test.cjs');
 
 const directory = createRunDirectory('power-recovery-lifetime');
@@ -62,6 +62,34 @@ test('strict owned stop stays pending after exit until the actual captured close
     assert.equal(proof.exitObserved, true); assert.equal(proof.closeObserved, true);
     assert.ok(proof.confirmedAt >= proof.closeAt); assert.equal(child.killCalls, 1);
     observations.push({ name: 'new-boundary-waits-for-close', proof });
+});
+
+test('closed API owner cannot authorize WAL cleanup while its captured collector worker is still alive', async () => {
+    const child = fakeChild(), files = fixture('live-worker');
+    trackRecoveryWorker(child, 10000003);
+    child.kill(); child.emit('close', null, 'SIGKILL');
+    let workerAlive = true, resolved = false, attempts = 0;
+    const pending = waitForRecoveryProcessClose(child, { workerExited: pid => {
+        assert.equal(pid, 10000003); return !workerAlive;
+    } }).then(proof => { resolved = true; return proof; });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(resolved, false);
+    await assert.rejects(removeClosedRecoverySidecars(files.databaseFile, files.fixtureDirectory, child,
+        { remove: () => { attempts++; } }), /before owned backend exit\/close/);
+    assert.equal(attempts, 0);
+    workerAlive = false;
+    const proof = await pending;
+    assert.equal(proof.workerExitObserved, true);
+    observations.push({ name: 'collector-worker-release-boundary', attempts, proof });
+});
+
+test('a stuck captured collector times out rather than permitting corruption of an open database', async () => {
+    const child = fakeChild(); trackRecoveryWorker(child, 10000004);
+    child.kill(); child.emit('close', null, 'SIGKILL');
+    await assert.rejects(waitForRecoveryProcessClose(child, { timeoutMs: 10, workerExited: () => false }),
+        error => error.code === 'RECOVERY_PROCESS_LIFETIME_TIMEOUT');
+    assert.equal(recoveryProcessSnapshot(child).confirmedAt, null);
+    await waitForRecoveryProcessClose(child, { workerExited: () => true });
 });
 
 test('killed-but-live owners time out explicitly and never authorize WAL deletion or lose their handle', async () => {

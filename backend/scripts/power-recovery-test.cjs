@@ -12,6 +12,7 @@ const {
     startLoggedProcess,
     testFetch,
     waitForHttp,
+    waitForOwnedBackend,
     waitUntil
 } = require('./integration-test-utils.cjs');
 
@@ -65,22 +66,49 @@ function recoveryProcessSnapshot(child) {
         exitCode: child?.exitCode, signalCode: child?.signalCode, killed: child?.killed === true,
         exitAt: state?.exitAt, closeAt: state?.closeAt, killRequestedAt: state?.killRequestedAt,
         confirmedAt: state?.confirmedAt, error: state?.error,
+        workerPid: state?.workerPid, workerExitObserved: state?.workerExitObserved,
         localDatabaseHandles: fixtureDatabaseHandles.size };
 }
 
-async function waitForRecoveryProcessClose(child, { timeoutMs = 15000 } = {}) {
+function trackRecoveryWorker(child, pid) {
+    const state = processLifetimes.get(child);
+    if (!state || state.exitObserved || !Number.isSafeInteger(pid) || pid <= 0 || pid === process.pid || pid === child.pid)
+        throw new Error('Recovery worker requires a live owned backend and a distinct worker PID');
+    state.workerPid = pid;
+    state.workerExitObserved = false;
+}
+
+function recoveryWorkerExited(pid) {
+    try { process.kill(pid, 0); }
+    catch (error) { if (error.code === 'ESRCH') return true; throw error; }
+    // An orphan can be a zombie until init reaps it. It has already released
+    // every SQLite handle; unlike a live process it cannot rewrite our fixture.
+    if (process.platform === 'linux') {
+        try { return /\) [ZX] /.test(fs.readFileSync(`/proc/${pid}/stat`, 'utf8')); }
+        catch (error) { if (error.code === 'ENOENT') return true; throw error; }
+    }
+    return false;
+}
+
+async function waitForRecoveryProcessClose(child, { timeoutMs = 15000, workerExited = recoveryWorkerExited } = {}) {
     const state = processLifetimes.get(child);
     if (!state) throw new Error('Refusing to wait on an unowned recovery process');
-    let timer;
+    let timer, cancelled = false;
     try {
         await Promise.race([
-            Promise.all([state.exitPromise, state.closePromise]),
+            (async () => {
+                await Promise.all([state.exitPromise, state.closePromise]);
+                if (state.workerPid) {
+                    while (!cancelled && !workerExited(state.workerPid)) await sleep(25);
+                    if (!cancelled) state.workerExitObserved = true;
+                }
+            })(),
             new Promise((_, reject) => { timer = setTimeout(() => {
                 const error = new Error(`Recovery process ${state.pid} did not exit and close in ${timeoutMs}ms: ${JSON.stringify(recoveryProcessSnapshot(child))}`);
                 error.code = 'RECOVERY_PROCESS_LIFETIME_TIMEOUT'; reject(error);
             }, timeoutMs); })
         ]);
-    } finally { clearTimeout(timer); }
+    } finally { cancelled = true; clearTimeout(timer); }
     if (!state.exitObserved || !state.closeObserved || child.exitCode == null && child.signalCode == null || state.error) {
         throw new Error(`Recovery process ownership was not released: ${JSON.stringify(recoveryProcessSnapshot(child))}`);
     }
@@ -142,6 +170,7 @@ async function removeClosedRecoverySidecars(databaseFile, fixtureDirectory, chil
         if (!state?.confirmedAt || !state.exitObserved || !state.closeObserved || child.exitCode == null && child.signalCode == null) {
             throw new Error(`Refusing WAL unlink before owned backend exit/close: ${JSON.stringify(recoveryProcessSnapshot(child))}`);
         }
+        if (state.workerPid && !state.workerExitObserved) throw new Error('Refusing WAL unlink before owned collector worker exit');
         if (fixtureDatabaseHandles.size) throw new Error(`Refusing WAL unlink with ${fixtureDatabaseHandles.size} open local SQLite handle(s)`);
     };
     released();
@@ -224,6 +253,14 @@ async function waitForDatabase() {
     }, 30000, 'database API readiness', 100);
 }
 
+async function captureRecoveryWorker(child) {
+    const health = await waitUntil(async () => {
+        const value = await waitForOwnedBackend(backendOrigin, child);
+        return value.engine?.process?.status === 'running' && value.engine.process.pid && value;
+    }, 30000, 'owned recovery collector readiness', 50);
+    trackRecoveryWorker(child, health.engine.process.pid);
+}
+
 async function putSettings(values) {
     return requestJson(`${backendOrigin}/api/settings`, {
         method: 'PUT',
@@ -288,6 +325,7 @@ async function main() {
         backend = startBackend(dataDir, port);
         await waitForHttp(`${backendOrigin}/api/health`, 30000);
         await waitForDatabase();
+        await captureRecoveryWorker(backend);
         const initialBackupStatus = await waitUntil(async () => {
             try {
                 const status = await requestJson(`${backendOrigin}/api/database/backups`);
@@ -322,6 +360,7 @@ async function main() {
         backend = startBackend(dataDir, port);
         await waitForHttp(`${backendOrigin}/api/health`, 30000);
         const settingsAfterCut = await waitForDatabase();
+        await captureRecoveryWorker(backend);
         const recoveredAcknowledged = Number(settingsAfterCut[ACK_KEY]);
         const postCutInspection = inspectDatabase(databaseFile);
         const postCutBackupStatus = await waitUntil(async () => {
@@ -357,6 +396,7 @@ async function main() {
         backend = startBackend(dataDir, port);
         await waitForHttp(`${backendOrigin}/api/health`, 30000);
         const settingsAfterCorruption = await waitForDatabase();
+        await captureRecoveryWorker(backend);
         const recoveryStatus = await requestJson(`${backendOrigin}/api/database/backups`);
         const recoveryFiles = fs.existsSync(path.join(dataDir, 'recovery'))
             ? fs.readdirSync(path.join(dataDir, 'recovery'))
@@ -447,7 +487,7 @@ async function main() {
     }
 }
 
-module.exports = { trackRecoveryProcess, recoveryProcessSnapshot, waitForRecoveryProcessClose,
+module.exports = { trackRecoveryProcess, trackRecoveryWorker, recoveryProcessSnapshot, waitForRecoveryProcessClose,
     stopRecoveryProcess, recoveryArtifactPath, removeClosedRecoverySidecars,
     openRecoveryDatabase, closeRecoveryDatabase };
 if (require.main === module) main().catch(error => {

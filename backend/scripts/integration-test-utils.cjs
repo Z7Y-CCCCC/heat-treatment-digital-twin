@@ -3,6 +3,7 @@ const net = require('net');
 const path = require('path');
 const crypto = require('crypto');
 const { spawn, spawnSync } = require('child_process');
+const { finished } = require('node:stream/promises');
 
 const BACKEND_DIR = path.resolve(__dirname, '..');
 const REPO_DIR = path.resolve(BACKEND_DIR, '..');
@@ -162,6 +163,10 @@ function startLoggedProcess(command, args, options) {
         testBackends.set(testOrigin, env.ADMIN_API_TOKEN);
     }
     const log = fs.createWriteStream(requireTestPath(options.logFile), { flags: 'a' });
+    const logFinished = finished(log);
+    // Some callers do not read logs. Retain rejection for callers that await
+    // the boundary without creating an unhandled rejection for other tests.
+    logFinished.catch(() => {});
     const child = spawn(command, args, {
         cwd: options.cwd,
         env,
@@ -177,6 +182,7 @@ function startLoggedProcess(command, args, options) {
         log.end();
         if (testOrigin && testBackends.get(testOrigin) === env.ADMIN_API_TOKEN) testBackends.delete(testOrigin);
     });
+    child.logFinished = logFinished;
     return child;
 }
 

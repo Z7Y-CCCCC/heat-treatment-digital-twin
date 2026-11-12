@@ -4,6 +4,7 @@ const os = require('os');
 const path = require('path');
 const net = require('net');
 const http = require('node:http');
+const { Writable } = require('node:stream');
 const { once } = require('events');
 const { createRunDirectory, requireTestPath, findFreePort, startLoggedProcess, waitForOwnedBackend } = require('./integration-test-utils.cjs');
 
@@ -80,8 +81,33 @@ const { createRunDirectory, requireTestPath, findFreePort, startLoggedProcess, w
     const logFile = path.join(directory, 'large-output.log');
     const child = startLoggedProcess(process.execPath, ['-e', "process.stdout.write('x'.repeat(262144))"], { cwd: directory, logFile });
     await once(child, 'close');
-    // The stream may finish flushing in the next turn after child close.
-    await new Promise(resolve => setImmediate(resolve));
+    // Child close only ends the writer; it does not acknowledge disk flushing.
+    await child.logFinished;
     assert.equal(fs.readFileSync(logFile, 'utf8').length, 262144);
-    console.log(JSON.stringify({ success: true, checks: 18, artifacts: directory }, null, 2));
+    // Deterministically delay the log's final acknowledgement beyond child
+    // close, rather than hoping a busy filesystem reproduces the race.
+    const createWriteStream = fs.createWriteStream;
+    let releaseLog, enterFinal;
+    const finalEntered = new Promise(resolve => { enterFinal = resolve; });
+    const logRelease = new Promise(resolve => { releaseLog = resolve; });
+    let delayedChild, loggedBytes = 0;
+    try {
+        fs.createWriteStream = () => new Writable({
+            write(chunk, encoding, done) { loggedBytes += chunk.length; done(); },
+            final(done) { enterFinal(); logRelease.then(() => done()); }
+        });
+        delayedChild = startLoggedProcess(process.execPath, ['-e', "process.stdout.write('owned log')"], {
+            cwd: directory, logFile: path.join(directory, 'delayed-output.log')
+        });
+    } finally { fs.createWriteStream = createWriteStream; }
+    await once(delayedChild, 'close');
+    await finalEntered;
+    let logComplete = false;
+    delayedChild.logFinished.then(() => { logComplete = true; });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(logComplete, false, 'child close must not stand in for the log flush acknowledgement');
+    releaseLog();
+    await delayedChild.logFinished;
+    assert.equal(loggedBytes, Buffer.byteLength('owned log'));
+    console.log(JSON.stringify({ success: true, checks: 20, artifacts: directory }, null, 2));
 })().catch(error => { console.error(error.stack || error.message); process.exitCode = 1; });
