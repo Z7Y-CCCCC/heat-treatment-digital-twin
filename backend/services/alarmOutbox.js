@@ -46,7 +46,15 @@ class AlarmOutbox {
                 }return added;
             });
             this.readSamples=this.database.prepare('SELECT id,payload FROM pending_point_sample WHERE factory_id=? ORDER BY id LIMIT ?');
-            this.removeSample=this.database.prepare('DELETE FROM pending_point_sample WHERE id=? AND sample_key=?');
+            this.removeSample=this.database.prepare('DELETE FROM pending_point_sample WHERE id=? AND sample_key=? AND factory_id=?');
+            this.removeSampleBatch = this.database.transaction(records => {
+                const removedByFactory = new Map();
+                for (const record of records) {
+                    const removed = this.removeSample.run(record.journalId, record.sampleKey, record.factoryId).changes;
+                    if (removed) removedByFactory.set(record.factoryId, (removedByFactory.get(record.factoryId) || 0) + removed);
+                }
+                return removedByFactory;
+            });
             this.observedPoint = this.database.prepare('SELECT * FROM observed_point_alarm WHERE factory_id=? AND device_id=? AND point_id=?');
             this.saveObservedPoint = this.database.prepare(`INSERT INTO observed_point_alarm
                 (factory_id, device_id, point_id, alarm, occurrence_id, started_at, observed_at, details) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -116,7 +124,22 @@ class AlarmOutbox {
     close() { this.database.close(); }
     recordSamples(factoryId,records){const before=this.pendingSamples(factoryId),added=this.recordSampleBatch(records);this.sampleCountCache.set(factoryId,before+added);return added;}
     sampleBatch(factoryId,limit=256){return this.readSamples.all(factoryId,limit).map(row=>({...JSON.parse(row.payload),journalId:row.id}));}
-    acknowledgeSample(record){const before=this.pendingSamples(record.factoryId),removed=this.removeSample.run(record.journalId,record.sampleKey).changes;this.sampleCountCache.set(record.factoryId,Math.max(0,before-removed));}
+    acknowledgeSample(record) { return this.acknowledgeSamples([record]); }
+    acknowledgeSamples(records) {
+        if (!records.length) return 0;
+        // Keep FULL durability, but pay for one journal commit per delivered
+        // batch rather than one fsync per point. Update counts only after the
+        // transaction commits; a failed delete must leave rows and cache intact.
+        const removedByFactory = this.removeSampleBatch(records);
+        let total = 0;
+        for (const [factoryId, removed] of removedByFactory) {
+            if (this.sampleCountCache.has(factoryId)) {
+                this.sampleCountCache.set(factoryId, Math.max(0, this.sampleCountCache.get(factoryId) - removed));
+            }
+            total += removed;
+        }
+        return total;
+    }
     pendingSamples(factoryId){if(!this.sampleCountCache.has(factoryId))this.sampleCountCache.set(factoryId,this.database.prepare('SELECT COUNT(*) n FROM pending_point_sample WHERE factory_id=?').get(factoryId).n);return this.sampleCountCache.get(factoryId);}
 
     beginImportSnapshot(filename) {

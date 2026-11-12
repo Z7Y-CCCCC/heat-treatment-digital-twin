@@ -406,7 +406,10 @@ class DataEngine {
                         await tx.run(`INSERT INTO point_samples (sample_key,factory_id,device_id,point_id,point_key,point_name,unit,source_mode,sampled_at,value_json,value_number,quality,retention_until)
                             VALUES ${missing.map(()=>'(?,?,?,?,?,?,?,?,?,?,?,?,?)').join(',')}`,missing.flatMap(r=>[r.sampleKey,r.factoryId,r.deviceId,r.pointId,r.pointKey,r.pointName,r.unit,r.sourceMode,r.sampledAt,r.valueJson,r.valueNumber,r.quality,r.retentionUntil ?? null]));
                     });
-                    for(const record of records)journal.acknowledgeSample(record);
+                    // The business transaction above is durable before any
+                    // queue removal. Lost batch acknowledgements replay safely
+                    // through sample_key deduplication on the next attempt.
+                    journal.acknowledgeSamples(records);
                     await new Promise(resolve=>setImmediate(resolve));
                 }
                 this.historyStorageStatus=this.historyJournalError?{status:'error',stage:'journal',pendingSamples:journal.pendingSamples(factoryId),lastError:this.historyJournalError}:{status:'healthy',pendingSamples:journal.pendingSamples(factoryId),lastError:null};

@@ -28,9 +28,10 @@ let journal,engine;
     let cursor={},rawCount=0;do{const page=await rawHistory(db,{factoryId:'history_factory',deviceId:'device_a',pointId:'1'},{from:at,to:at+3600000,limit:500,...cursor});rawCount+=page.rows.length;cursor=page.next;}while(cursor);assert.equal(rawCount,3601,'paginated records are full-resolution, not chart samples');
     // Lost acknowledgement after a successful commit retries idempotently.
     journal.recordSamples('history_factory',observedSamples('history_factory',[device(at+3601000,123)],'simulation'));
-    const ack=journal.acknowledgeSample.bind(journal);journal.acknowledgeSample=()=>{throw Error('fixture lost acknowledgement');};
+    const ack=journal.acknowledgeSamples.bind(journal);journal.acknowledgeSamples=()=>{throw Error('fixture lost acknowledgement');};
     await engine._flushPointSamples();assert.equal(engine.historyStorageStatus.status,'error');assert.equal(journal.pendingSamples('history_factory'),1);
-    journal.acknowledgeSample=ack;await engine._flushPointSamples();assert.equal(journal.pendingSamples('history_factory'),0);assert.equal((await db.get('SELECT COUNT(*) n FROM point_samples')).n,3602);
+    assert.equal((await db.get('SELECT COUNT(*) n FROM point_samples')).n,3602,'business commit precedes batch acknowledgement');
+    journal.acknowledgeSamples=ack;await engine._flushPointSamples();assert.equal(journal.pendingSamples('history_factory'),0);assert.equal((await db.get('SELECT COUNT(*) n FROM point_samples')).n,3602);
     engine._publishRealtimeData([device(at+3602000,456)]);await engine.historyWritePending;assert.equal((await db.get('SELECT COUNT(*) n FROM point_samples')).n,3603,'collector persists without any display attached');
     const current=await db.get('SELECT retention_until FROM point_samples WHERE sampled_at=?',[at+3602000]);
     assert.equal(current.retention_until,at+3602000+24*3600000,'default point sampling has a finite recent deadline');
