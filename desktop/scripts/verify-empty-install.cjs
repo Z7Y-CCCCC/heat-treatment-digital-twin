@@ -5,6 +5,7 @@ function files(directory) {
     return fs.readdirSync(directory, { withFileTypes: true }).flatMap(e => e.isDirectory() ? files(path.join(directory, e.name)) : [path.join(directory, e.name)]);
 }
 function verify(resources) {
+    const defaultTemplate = require('./verify-default-dashboard-template.cjs').verifyPackagedDefaultTemplate(resources);
     const Database = require('../../backend/node_modules/better-sqlite3');
     const db = new Database(path.join(resources, 'templates/factory-template.db'), { readonly: true, fileMustExist: true });
     const counts = {};
@@ -22,7 +23,7 @@ function verify(resources) {
     const models = files(path.join(resources, 'native-client')).filter(f => /\.(glb|gltf|blend\d*|zip)$/i.test(f)); assert.deepEqual(models, []);
     const registry = JSON.parse(fs.readFileSync(path.join(resources, 'shared/motionPackages.json'))); assert.deepEqual(registry.models, {});
     const policy = JSON.parse(fs.readFileSync(path.join(resources, 'backend/distribution.json'))); assert.equal(policy.contentPolicy, 'empty-v1');
-    return { contentPolicy: 'empty-v1', counts, packagedModels: 0, packagedMotions: 0, nativeModelFiles: 0, siteConfigurationIncluded: false };
+    return { contentPolicy: 'empty-v1', defaultTemplate, counts, packagedModels: 0, packagedMotions: 0, nativeModelFiles: 0, siteConfigurationIncluded: false };
 }
 if (require.main === module) console.log(JSON.stringify(verify(path.resolve(process.argv[2])), null, 2));
 module.exports = { verify };

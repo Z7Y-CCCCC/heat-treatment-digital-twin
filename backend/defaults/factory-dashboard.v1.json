@@ -1,0 +1,3481 @@
+{
+  "schemaVersion": 1,
+  "id": "builtin-factory-dashboard-v1",
+  "version": 1,
+  "canvas": {
+    "width": 1920,
+    "height": 1080,
+    "gridSize": 10,
+    "safeArea": 24,
+    "background": "transparent",
+    "legacyGrid": {
+      "rows": 12,
+      "columns": 24
+    }
+  },
+  "theme": {
+    "title": "热处理车间智能监控平台",
+    "preset": "industrial_twin",
+    "fontFamily": "Microsoft YaHei UI",
+    "accentColor": "#55c7ff"
+  },
+  "views": [
+    {
+      "id": "factory_overview",
+      "mode": "factory",
+      "name": "全厂总览",
+      "camera": {
+        "yaw": -25,
+        "pitch": 34,
+        "targetOffset": [
+          0,
+          -2,
+          0
+        ],
+        "distanceScale": 0.1,
+        "relativeToTarget": false,
+        "transitionSeconds": 0.8
+      },
+      "metadata": {
+        "hierarchyOrder": 7
+      },
+      "targetId": "",
+      "targetType": "factory",
+      "parentViewId": "site_factory",
+      "returnViewId": "site_factory",
+      "componentState": {
+        "hide": [
+          "builtin_widget_01",
+          "builtin_widget_06",
+          "builtin_widget_07",
+          "builtin_widget_05",
+          "builtin_widget_04",
+          "builtin_widget_08"
+        ],
+        "show": [],
+        "hideNonTargetDevices": false
+      }
+    },
+    {
+      "id": "workshop_overview",
+      "mode": "workshop",
+      "name": "车间视角",
+      "camera": {
+        "yaw": -50,
+        "pitch": 38,
+        "targetOffset": [
+          0,
+          -2,
+          0
+        ],
+        "distanceScale": 1.2,
+        "relativeToTarget": false,
+        "transitionSeconds": 0.7
+      },
+      "metadata": {
+        "hierarchyOrder": 8
+      },
+      "targetId": "",
+      "targetType": "workshop",
+      "parentViewId": "factory_overview",
+      "returnViewId": "factory_overview",
+      "componentState": {
+        "hide": [
+          "builtin_widget_10",
+          "builtin_widget_11",
+          "builtin_widget_12",
+          "builtin_widget_13",
+          "builtin_widget_14",
+          "builtin_widget_15",
+          "builtin_widget_16",
+          "builtin_widget_17",
+          "builtin_widget_18",
+          "builtin_widget_19",
+          "builtin_widget_20",
+          "builtin_widget_21",
+          "builtin_widget_22",
+          "builtin_widget_25",
+          "builtin_widget_26",
+          "builtin_widget_27",
+          "builtin_widget_28",
+          "builtin_widget_29",
+          "builtin_widget_30",
+          "builtin_widget_31",
+          "builtin_widget_32",
+          "builtin_widget_33",
+          "builtin_widget_34",
+          "builtin_widget_35"
+        ],
+        "show": [],
+        "hideNonTargetDevices": false
+      }
+    },
+    {
+      "id": "line_overview",
+      "mode": "line",
+      "name": "产线视角",
+      "camera": {
+        "yaw": -15,
+        "pitch": 28,
+        "targetOffset": [
+          0,
+          -1,
+          0
+        ],
+        "distanceScale": 1.12,
+        "relativeToTarget": false,
+        "transitionSeconds": 0.65
+      },
+      "metadata": {
+        "hierarchyOrder": 9
+      },
+      "targetId": "",
+      "targetType": "line",
+      "parentViewId": "workshop_overview",
+      "returnViewId": "workshop_overview",
+      "componentState": {
+        "hide": [
+          "builtin_widget_10",
+          "builtin_widget_11",
+          "builtin_widget_12",
+          "builtin_widget_13",
+          "builtin_widget_14",
+          "builtin_widget_15",
+          "builtin_widget_16",
+          "builtin_widget_17",
+          "builtin_widget_18",
+          "builtin_widget_19",
+          "builtin_widget_20",
+          "builtin_widget_21",
+          "builtin_widget_22",
+          "builtin_widget_25",
+          "builtin_widget_26",
+          "builtin_widget_27",
+          "builtin_widget_28",
+          "builtin_widget_29",
+          "builtin_widget_30",
+          "builtin_widget_31",
+          "builtin_widget_32",
+          "builtin_widget_33",
+          "builtin_widget_34",
+          "builtin_widget_35"
+        ],
+        "show": [],
+        "hideNonTargetDevices": false
+      }
+    },
+    {
+      "id": "device_detail",
+      "mode": "device",
+      "name": "设备实体视角",
+      "camera": {
+        "yaw": 238,
+        "pitch": 19,
+        "targetOffset": [
+          0,
+          0,
+          0
+        ],
+        "distanceScale": 1.12,
+        "relativeToTarget": true,
+        "transitionSeconds": 0.55
+      },
+      "metadata": {
+        "hierarchyOrder": 10,
+        "inspectionStage": "solid"
+      },
+      "targetId": "",
+      "targetType": "device",
+      "parentViewId": "line_overview",
+      "returnViewId": "line_overview",
+      "componentState": {
+        "hide": [
+          "builtin_widget_11",
+          "builtin_widget_01",
+          "builtin_widget_04",
+          "builtin_widget_05",
+          "builtin_widget_06",
+          "builtin_widget_07",
+          "builtin_widget_08",
+          "builtin_widget_25",
+          "builtin_widget_26",
+          "builtin_widget_27",
+          "builtin_widget_28",
+          "builtin_widget_29",
+          "builtin_widget_30",
+          "builtin_widget_31",
+          "builtin_widget_32",
+          "builtin_widget_33",
+          "builtin_widget_34",
+          "builtin_widget_35"
+        ],
+        "show": [],
+        "hideNonTargetDevices": true
+      }
+    },
+    {
+      "id": "device_xray",
+      "mode": "device",
+      "name": "设备外壳透视视角",
+      "camera": {
+        "yaw": 238,
+        "pitch": 19,
+        "targetOffset": [
+          0,
+          0.2,
+          0
+        ],
+        "distanceScale": 1.08,
+        "relativeToTarget": true,
+        "transitionSeconds": 0.65
+      },
+      "metadata": {
+        "hierarchyOrder": 11,
+        "inspectionStage": "xray"
+      },
+      "targetId": "",
+      "targetType": "device",
+      "parentViewId": "device_detail",
+      "returnViewId": "device_detail",
+      "componentState": {
+        "hide": [
+          "builtin_widget_01",
+          "builtin_widget_04",
+          "builtin_widget_05",
+          "builtin_widget_06",
+          "builtin_widget_07",
+          "builtin_widget_08",
+          "builtin_widget_19",
+          "builtin_widget_25",
+          "builtin_widget_26",
+          "builtin_widget_27",
+          "builtin_widget_28",
+          "builtin_widget_29",
+          "builtin_widget_30",
+          "builtin_widget_31",
+          "builtin_widget_32",
+          "builtin_widget_33",
+          "builtin_widget_34",
+          "builtin_widget_35"
+        ],
+        "show": [],
+        "hideNonTargetDevices": true
+      }
+    },
+    {
+      "id": "device_exploded",
+      "mode": "device",
+      "name": "设备内部拆解视角",
+      "camera": {
+        "yaw": 238,
+        "pitch": 22,
+        "targetOffset": [
+          0,
+          0.35,
+          0
+        ],
+        "distanceScale": 1.22,
+        "relativeToTarget": true,
+        "transitionSeconds": 0.7
+      },
+      "metadata": {
+        "hierarchyOrder": 12,
+        "inspectionStage": "exploded"
+      },
+      "targetId": "",
+      "targetType": "device",
+      "parentViewId": "device_xray",
+      "returnViewId": "device_xray",
+      "componentState": {
+        "hide": [
+          "builtin_widget_10",
+          "builtin_widget_20",
+          "builtin_widget_01",
+          "builtin_widget_04",
+          "builtin_widget_05",
+          "builtin_widget_06",
+          "builtin_widget_07",
+          "builtin_widget_08",
+          "builtin_widget_19",
+          "builtin_widget_25",
+          "builtin_widget_26",
+          "builtin_widget_27",
+          "builtin_widget_28",
+          "builtin_widget_29",
+          "builtin_widget_30",
+          "builtin_widget_31",
+          "builtin_widget_32",
+          "builtin_widget_33",
+          "builtin_widget_34",
+          "builtin_widget_35"
+        ],
+        "show": [],
+        "hideNonTargetDevices": true
+      }
+    },
+    {
+      "id": "device_part",
+      "mode": "device",
+      "name": "关键部件详情视角",
+      "camera": {
+        "yaw": 238,
+        "pitch": 18,
+        "targetOffset": [
+          0,
+          0,
+          0
+        ],
+        "distanceScale": 1.35,
+        "relativeToTarget": true,
+        "transitionSeconds": 0.55
+      },
+      "metadata": {
+        "hierarchyOrder": 13,
+        "inspectionStage": "part"
+      },
+      "targetId": "",
+      "targetType": "device_part",
+      "parentViewId": "device_exploded",
+      "returnViewId": "device_exploded",
+      "componentState": {
+        "hide": [
+          "builtin_widget_01",
+          "builtin_widget_04",
+          "builtin_widget_05",
+          "builtin_widget_06",
+          "builtin_widget_07",
+          "builtin_widget_08",
+          "builtin_widget_10",
+          "builtin_widget_11",
+          "builtin_widget_12",
+          "builtin_widget_13",
+          "builtin_widget_25",
+          "builtin_widget_26",
+          "builtin_widget_27",
+          "builtin_widget_28",
+          "builtin_widget_29",
+          "builtin_widget_14",
+          "builtin_widget_15",
+          "builtin_widget_16",
+          "builtin_widget_17",
+          "builtin_widget_18",
+          "builtin_widget_19",
+          "builtin_widget_20",
+          "builtin_widget_21",
+          "builtin_widget_22",
+          "builtin_widget_30"
+        ],
+        "show": [],
+        "hideNonTargetDevices": true
+      }
+    }
+  ],
+  "widgets": [
+    {
+      "id": "builtin_widget_01",
+      "data": {
+        "mode": "plc",
+        "path": "",
+        "unit": "%",
+        "decimals": 1,
+        "deviceScope": "current",
+        "deviceId": "",
+        "pointId": "",
+        "pointKey": "",
+        "connectionId": "",
+        "datasetId": "",
+        "readOnly": true,
+        "requireConfiguredPoint": true,
+        "refreshMs": 5000
+      },
+      "type": "hud_kpi_panel",
+      "frame": {
+        "x": 1536,
+        "y": 142,
+        "width": 344,
+        "height": 196,
+        "rotation": 0
+      },
+      "style": {
+        "color": "#eef7ff",
+        "shadow": "soft",
+        "opacity": 1,
+        "background": "rgba(10, 18, 34, .12)",
+        "borderColor": "rgba(137, 149, 245, .24)",
+        "borderRadius": 18,
+        "backgroundOpacity": 0.12
+      },
+      "title": "当日设备使用率",
+      "events": [],
+      "locked": false,
+      "zIndex": 2,
+      "content": {
+        "note": "",
+        "items": [
+          {
+            "path": "",
+            "unit": "h",
+            "label": "当日运行",
+            "decimals": 2
+          },
+          {
+            "path": "",
+            "unit": "kWh",
+            "label": "当日用电",
+            "decimals": 2
+          }
+        ],
+        "compact": true,
+        "eyebrow": "",
+        "showRing": true,
+        "chartPath": "",
+        "chartLabel": "日使用率"
+      },
+      "groupId": "",
+      "visible": true,
+      "animation": {
+        "type": "none",
+        "delay": 0,
+        "duration": 1.2,
+        "iteration": "infinite"
+      },
+      "conditions": [],
+      "visibility": {
+        "rules": [],
+        "viewIds": [
+          "workshop_overview",
+          "line_overview"
+        ],
+        "ruleMode": "all",
+        "viewModes": [],
+        "matchBoundDevice": false
+      },
+      "runtimeTarget": "overlay"
+    },
+    {
+      "id": "builtin_widget_02",
+      "data": {
+        "mode": "plc",
+        "path": "",
+        "unit": "kWh",
+        "decimals": 1,
+        "deviceScope": "current",
+        "deviceId": "",
+        "pointId": "",
+        "pointKey": "",
+        "connectionId": "",
+        "datasetId": "",
+        "readOnly": true,
+        "requireConfiguredPoint": true,
+        "refreshMs": 5000
+      },
+      "type": "text",
+      "frame": {
+        "x": 1540,
+        "y": 60,
+        "width": 164,
+        "height": 66,
+        "rotation": 0
+      },
+      "style": {
+        "color": "#67DDF5",
+        "shadow": "none",
+        "opacity": 1,
+        "padding": 8,
+        "fontSize": 25,
+        "background": "#10334B",
+        "borderColor": "#32637C",
+        "borderRadius": 6,
+        "backgroundOpacity": 0.12
+      },
+      "title": "",
+      "events": [],
+      "locked": false,
+      "zIndex": 5,
+      "content": {
+        "text": "今日用电\n{value} kWh",
+        "tone": "normal",
+        "align": "center",
+        "fallback": "--",
+        "showTitle": false
+      },
+      "groupId": "",
+      "visible": true,
+      "animation": {
+        "type": "none",
+        "delay": 0,
+        "duration": 1.2,
+        "iteration": "infinite"
+      },
+      "conditions": [],
+      "visibility": {
+        "rules": [],
+        "viewIds": [
+          "factory_overview",
+          "workshop_overview",
+          "line_overview"
+        ],
+        "ruleMode": "all",
+        "viewModes": [
+          "factory",
+          "workshop",
+          "line"
+        ],
+        "matchBoundDevice": false
+      },
+      "runtimeTarget": "overlay"
+    },
+    {
+      "id": "builtin_widget_03",
+      "data": {
+        "mode": "plc",
+        "path": "",
+        "unit": "%",
+        "decimals": 1,
+        "deviceScope": "current",
+        "deviceId": "",
+        "pointId": "",
+        "pointKey": "",
+        "connectionId": "",
+        "datasetId": "",
+        "readOnly": true,
+        "requireConfiguredPoint": true,
+        "refreshMs": 5000
+      },
+      "type": "text",
+      "frame": {
+        "x": 1716,
+        "y": 60,
+        "width": 164,
+        "height": 66,
+        "rotation": 0
+      },
+      "style": {
+        "color": "#60E6C1",
+        "shadow": "none",
+        "opacity": 1,
+        "padding": 8,
+        "fontSize": 25,
+        "background": "#10334B",
+        "borderColor": "#32637C",
+        "borderRadius": 6,
+        "backgroundOpacity": 0.12
+      },
+      "title": "",
+      "events": [],
+      "locked": true,
+      "zIndex": 5,
+      "content": {
+        "text": "今日使用率\n{value}%",
+        "tone": "normal",
+        "align": "center",
+        "fallback": "--",
+        "showTitle": false
+      },
+      "groupId": "",
+      "visible": true,
+      "animation": {
+        "type": "none",
+        "delay": 0,
+        "duration": 1.2,
+        "iteration": "infinite"
+      },
+      "conditions": [],
+      "visibility": {
+        "rules": [],
+        "viewIds": [
+          "factory_overview",
+          "workshop_overview",
+          "line_overview"
+        ],
+        "ruleMode": "all",
+        "viewModes": [
+          "factory",
+          "workshop",
+          "line"
+        ],
+        "matchBoundDevice": false
+      },
+      "runtimeTarget": "overlay"
+    },
+    {
+      "id": "builtin_widget_04",
+      "data": {
+        "mode": "plc",
+        "path": "",
+        "unit": "Nm³/h",
+        "decimals": 1,
+        "deviceScope": "current",
+        "deviceId": "",
+        "pointId": "",
+        "pointKey": "",
+        "connectionId": "",
+        "datasetId": "",
+        "readOnly": true,
+        "requireConfiguredPoint": true,
+        "refreshMs": 5000
+      },
+      "type": "hud_chart_dock",
+      "frame": {
+        "x": 28,
+        "y": 822,
+        "width": 400,
+        "height": 206,
+        "rotation": 0
+      },
+      "style": {
+        "color": "#eef7ff",
+        "shadow": "soft",
+        "opacity": 1,
+        "background": "rgba(10, 18, 34, .12)",
+        "borderColor": "rgba(137, 149, 245, .24)",
+        "borderRadius": 18,
+        "backgroundOpacity": 0.12
+      },
+      "title": "氨气流量趋势",
+      "events": [],
+      "locked": false,
+      "zIndex": 2,
+      "content": {
+        "note": "",
+        "items": [
+          {
+            "path": "",
+            "unit": "Nm³/h",
+            "label": "氨气流量",
+            "decimals": 1
+          },
+          {
+            "path": "",
+            "unit": "Nm³/h",
+            "label": "甲醇气体流量",
+            "decimals": 1
+          }
+        ],
+        "smooth": true,
+        "compact": true,
+        "eyebrow": "",
+        "showAxis": true,
+        "showRing": false,
+        "statPath": "",
+        "statUnit": "Nm³/h",
+        "areaColor": "rgba(137,149,245,.18)",
+        "chartPath": "",
+        "chartType": "line",
+        "emptyText": "等待PLC采样",
+        "lineColor": "#a2a7ed",
+        "lineWidth": 1.5,
+        "showTitle": true,
+        "statLabel": "实时读数",
+        "timeField": "time",
+        "chartLabel": "综合效率",
+        "rangeLabel": "区间最低 / 最高",
+        "seriesName": "氨气流量趋势 · 多用炉轮播",
+        "showLegend": false,
+        "showSymbol": false,
+        "valueField": "value",
+        "areaOpacity": 0.1,
+        "historyLength": 600,
+        "showDataLabel": false,
+        "showDeviceLabel": true,
+        "timeWindowSeconds": 600
+      },
+      "groupId": "",
+      "visible": true,
+      "animation": {
+        "type": "none",
+        "delay": 0,
+        "duration": 1.2,
+        "iteration": "infinite"
+      },
+      "conditions": [],
+      "visibility": {
+        "rules": [],
+        "viewIds": [
+          "workshop_overview",
+          "line_overview"
+        ],
+        "ruleMode": "all",
+        "viewModes": [],
+        "matchBoundDevice": false
+      },
+      "runtimeTarget": "overlay"
+    },
+    {
+      "id": "builtin_widget_05",
+      "data": {
+        "mode": "plc",
+        "path": "",
+        "unit": "℃",
+        "decimals": 1,
+        "deviceScope": "current",
+        "deviceId": "",
+        "pointId": "",
+        "pointKey": "",
+        "connectionId": "",
+        "datasetId": "",
+        "readOnly": true,
+        "requireConfiguredPoint": true,
+        "refreshMs": 5000
+      },
+      "type": "hud_chart_dock",
+      "frame": {
+        "x": 448,
+        "y": 822,
+        "width": 610,
+        "height": 206,
+        "rotation": 0
+      },
+      "style": {
+        "color": "#eef7ff",
+        "shadow": "soft",
+        "opacity": 1,
+        "fontSize": "",
+        "background": "rgba(10, 18, 34, 0.12)",
+        "borderColor": "rgba(137, 149, 245, .24)",
+        "borderRadius": 10,
+        "backgroundOpacity": 0.12
+      },
+      "title": "温度趋势",
+      "events": [],
+      "locked": false,
+      "zIndex": 2,
+      "content": {
+        "smooth": false,
+        "compact": true,
+        "eyebrow": "",
+        "showAxis": true,
+        "statPath": "",
+        "statUnit": "℃",
+        "areaColor": "#ffc45f",
+        "barRadius": 4,
+        "chartType": "scatter",
+        "emptyText": "等待PLC采样",
+        "lineColor": "#a2a7ed",
+        "lineWidth": 1.5,
+        "showTitle": true,
+        "statLabel": "实时读数",
+        "timeField": "time",
+        "donutRatio": 48,
+        "rangeLabel": "区间最低 / 最高",
+        "seriesName": "温度趋势 · 设备轮播",
+        "showLegend": false,
+        "showSymbol": false,
+        "valueField": "value",
+        "areaOpacity": 0.1,
+        "chartPalette": "industrial",
+        "historyLength": 600,
+        "showDataLabel": false,
+        "legendPosition": "top",
+        "showDeviceLabel": true,
+        "timeWindowSeconds": 600
+      },
+      "groupId": "",
+      "visible": true,
+      "animation": {
+        "type": "none",
+        "delay": 0,
+        "duration": 1.2,
+        "iteration": "infinite"
+      },
+      "conditions": [],
+      "visibility": {
+        "rules": [],
+        "viewIds": [
+          "workshop_overview",
+          "line_overview"
+        ],
+        "ruleMode": "all",
+        "viewModes": [],
+        "matchBoundDevice": false
+      },
+      "runtimeTarget": "overlay"
+    },
+    {
+      "id": "builtin_widget_06",
+      "data": {
+        "mode": "plc",
+        "path": "",
+        "unit": "Nm³/h",
+        "decimals": 1,
+        "deviceScope": "current",
+        "deviceId": "",
+        "pointId": "",
+        "pointKey": "",
+        "connectionId": "",
+        "datasetId": "",
+        "readOnly": true,
+        "requireConfiguredPoint": true,
+        "refreshMs": 5000
+      },
+      "type": "hud_chart_dock",
+      "frame": {
+        "x": 1536,
+        "y": 354,
+        "width": 344,
+        "height": 358,
+        "rotation": 0
+      },
+      "style": {
+        "color": "#eef7ff",
+        "shadow": "soft",
+        "opacity": 1,
+        "background": "rgba(10, 18, 34, .12)",
+        "borderColor": "rgba(113, 203, 216, .2)",
+        "borderRadius": 18,
+        "backgroundOpacity": 0.12
+      },
+      "title": "氮气流量趋势",
+      "events": [],
+      "locked": false,
+      "zIndex": 2,
+      "content": {
+        "limit": 6,
+        "smooth": true,
+        "compact": true,
+        "eyebrow": "EQUIPMENT",
+        "idleText": "待机",
+        "showAxis": true,
+        "statPath": "",
+        "statUnit": "Nm³/h",
+        "alarmText": "报警",
+        "areaColor": "rgba(137,149,245,.18)",
+        "chartType": "line",
+        "deviceIds": [],
+        "emptyHint": "接入后自动显示运行状态",
+        "emptyText": "等待PLC采样",
+        "lineColor": "#a2a7ed",
+        "lineWidth": 1.5,
+        "showTitle": true,
+        "staleText": "数据延迟",
+        "statLabel": "实时读数",
+        "timeField": "time",
+        "alarmLabel": "报警",
+        "rangeLabel": "区间最低 / 最高",
+        "seriesName": "氮气流量趋势 · 多用炉轮播",
+        "showLegend": false,
+        "showSymbol": false,
+        "valueField": "value",
+        "areaOpacity": 0.1,
+        "offlineText": "离线",
+        "onlineLabel": "在线",
+        "runningText": "运行中",
+        "deviceActions": {},
+        "historyLength": 600,
+        "showDataLabel": false,
+        "showDeviceLabel": true,
+        "showTemperature": false,
+        "temperatureUnit": "°C",
+        "timeWindowSeconds": 600
+      },
+      "groupId": "",
+      "visible": true,
+      "animation": {
+        "type": "none",
+        "delay": 0,
+        "duration": 1.2,
+        "iteration": "infinite"
+      },
+      "conditions": [],
+      "visibility": {
+        "rules": [],
+        "viewIds": [
+          "workshop_overview",
+          "line_overview"
+        ],
+        "ruleMode": "all",
+        "viewModes": [],
+        "matchBoundDevice": false
+      },
+      "runtimeTarget": "overlay"
+    },
+    {
+      "id": "builtin_widget_07",
+      "data": {
+        "mode": "runtime",
+        "path": "events",
+        "unit": "",
+        "decimals": 1,
+        "deviceScope": "current",
+        "deviceId": "",
+        "pointId": "",
+        "pointKey": "",
+        "connectionId": "",
+        "datasetId": "",
+        "readOnly": true,
+        "requireConfiguredPoint": true,
+        "refreshMs": 5000
+      },
+      "type": "hud_alarm_panel",
+      "frame": {
+        "x": 1536,
+        "y": 728,
+        "width": 344,
+        "height": 300,
+        "rotation": 0
+      },
+      "style": {
+        "color": "#eef7ff",
+        "shadow": "soft",
+        "opacity": 1,
+        "background": "rgba(10, 18, 34, .12)",
+        "borderColor": "rgba(231, 127, 152, .2)",
+        "borderRadius": 18,
+        "backgroundOpacity": 0.12
+      },
+      "title": "报警 / 事件履历",
+      "events": [],
+      "locked": false,
+      "zIndex": 2,
+      "content": {
+        "limit": 4,
+        "eyebrow": "EVENT LOG",
+        "showTime": true,
+        "emptyHint": "新事件将在此自动更新",
+        "emptyText": "暂无事件记录",
+        "infoLabel": "事件",
+        "showLevel": true,
+        "warningLabel": "警告",
+        "criticalLabel": "报警",
+        "missingTimeText": "时间未提供",
+        "fallbackEventText": "事件记录"
+      },
+      "groupId": "",
+      "visible": true,
+      "animation": {
+        "type": "none",
+        "delay": 0,
+        "duration": 1.2,
+        "iteration": "infinite"
+      },
+      "conditions": [],
+      "visibility": {
+        "rules": [],
+        "viewIds": [
+          "workshop_overview",
+          "line_overview"
+        ],
+        "ruleMode": "all",
+        "viewModes": [],
+        "matchBoundDevice": false
+      },
+      "runtimeTarget": "overlay"
+    },
+    {
+      "id": "builtin_widget_08",
+      "data": {
+        "mode": "plc",
+        "path": "",
+        "unit": "kWh",
+        "decimals": 1,
+        "deviceScope": "current",
+        "deviceId": "",
+        "pointId": "",
+        "pointKey": "",
+        "connectionId": "",
+        "datasetId": "",
+        "readOnly": true,
+        "requireConfiguredPoint": true,
+        "refreshMs": 5000
+      },
+      "type": "hud_chart_dock",
+      "frame": {
+        "x": 1080,
+        "y": 830,
+        "width": 438,
+        "height": 206,
+        "rotation": 0
+      },
+      "style": {
+        "color": "#eef7ff",
+        "shadow": "soft",
+        "opacity": 1,
+        "background": "rgba(10, 18, 34, .12)",
+        "borderColor": "rgba(137, 149, 245, .24)",
+        "borderRadius": 18,
+        "backgroundOpacity": 0.12
+      },
+      "title": "当日耗电量趋势",
+      "events": [],
+      "locked": false,
+      "zIndex": 2,
+      "content": {
+        "note": "",
+        "items": [
+          {
+            "path": "",
+            "unit": "",
+            "label": "氨气累计",
+            "value": "",
+            "decimals": 1
+          },
+          {
+            "path": "",
+            "unit": "",
+            "label": "甲醇累计",
+            "value": "",
+            "decimals": 1
+          }
+        ],
+        "smooth": true,
+        "compact": true,
+        "eyebrow": "",
+        "showAxis": true,
+        "showRing": true,
+        "statPath": "",
+        "statUnit": "kWh",
+        "areaColor": "rgba(137,149,245,.18)",
+        "chartPath": "",
+        "chartType": "line",
+        "emptyText": "等待PLC采样",
+        "lineColor": "#a2a7ed",
+        "lineWidth": 1.5,
+        "showTitle": true,
+        "statLabel": "实时读数",
+        "timeField": "time",
+        "chartLabel": "综合效率",
+        "rangeLabel": "区间最低 / 最高",
+        "seriesName": "当日耗电量趋势 · 设备轮播",
+        "showLegend": false,
+        "showSymbol": false,
+        "valueField": "value",
+        "areaOpacity": 0.1,
+        "historyLength": 600,
+        "showDataLabel": false,
+        "showDeviceLabel": true,
+        "timeWindowSeconds": 600
+      },
+      "groupId": "",
+      "visible": true,
+      "animation": {
+        "type": "none",
+        "delay": 0,
+        "duration": 1.2,
+        "iteration": "infinite"
+      },
+      "conditions": [],
+      "visibility": {
+        "rules": [],
+        "viewIds": [
+          "workshop_overview",
+          "line_overview"
+        ],
+        "ruleMode": "all",
+        "viewModes": [],
+        "matchBoundDevice": false
+      },
+      "runtimeTarget": "overlay"
+    },
+    {
+      "id": "builtin_widget_09",
+      "data": {
+        "mode": "runtime",
+        "path": "events",
+        "unit": "",
+        "decimals": 1,
+        "deviceScope": "current",
+        "deviceId": "",
+        "pointId": "",
+        "pointKey": "",
+        "connectionId": "",
+        "datasetId": "",
+        "readOnly": true,
+        "requireConfiguredPoint": true,
+        "refreshMs": 5000
+      },
+      "type": "marquee",
+      "frame": {
+        "x": 28,
+        "y": 1040,
+        "width": 1852,
+        "height": 28,
+        "rotation": 0
+      },
+      "style": {
+        "color": "#d5edf9",
+        "shadow": "none",
+        "opacity": 1,
+        "padding": 0,
+        "background": "#071C2D",
+        "borderColor": "#28536C",
+        "borderRadius": 21,
+        "backgroundOpacity": 0.12
+      },
+      "title": "实时事件",
+      "events": [],
+      "locked": false,
+      "zIndex": 30,
+      "content": {
+        "limit": 50,
+        "speed": 36,
+        "eventType": "alarm",
+        "eventWindowHours": 1
+      },
+      "groupId": "",
+      "visible": true,
+      "animation": {
+        "type": "none",
+        "delay": 0,
+        "duration": 1.2,
+        "iteration": "infinite"
+      },
+      "conditions": [],
+      "visibility": {
+        "rules": [],
+        "viewIds": [
+          "factory_overview",
+          "workshop_overview",
+          "line_overview"
+        ],
+        "ruleMode": "all",
+        "viewModes": [
+          "factory",
+          "workshop",
+          "line"
+        ],
+        "matchBoundDevice": false
+      },
+      "runtimeTarget": "overlay"
+    },
+    {
+      "id": "builtin_widget_10",
+      "data": {
+        "mode": "plc",
+        "path": "",
+        "unit": "%C",
+        "decimals": 3,
+        "deviceScope": "current",
+        "deviceId": "",
+        "pointId": "",
+        "pointKey": "",
+        "connectionId": "",
+        "datasetId": "",
+        "readOnly": true,
+        "requireConfiguredPoint": true,
+        "refreshMs": 5000
+      },
+      "type": "hud_chart_dock",
+      "frame": {
+        "x": 40,
+        "y": 150,
+        "width": 430,
+        "height": 400,
+        "rotation": 0
+      },
+      "style": {
+        "color": "#dbeeff",
+        "shadow": "soft",
+        "opacity": 1,
+        "fontSize": "",
+        "background": "rgba(88, 79, 137, 0)",
+        "borderColor": "rgba(89, 178, 238, .18)",
+        "borderRadius": 10,
+        "backgroundOpacity": 0
+      },
+      "title": "碳势趋势",
+      "events": [],
+      "locked": false,
+      "zIndex": 2,
+      "content": {
+        "smooth": true,
+        "compact": true,
+        "eyebrow": "",
+        "showAxis": true,
+        "statPath": "",
+        "statUnit": "%C",
+        "areaColor": "#ffc45f",
+        "barRadius": 4,
+        "chartType": "line",
+        "emptyText": "等待PLC采样",
+        "lineColor": "#a2a7ed",
+        "lineWidth": 1.5,
+        "showTitle": true,
+        "statLabel": "实时读数",
+        "timeField": "time",
+        "donutRatio": 48,
+        "rangeLabel": "区间最低 / 最高",
+        "seriesName": "碳势",
+        "showLegend": false,
+        "showSymbol": false,
+        "valueField": "value",
+        "areaOpacity": 0.1,
+        "chartPalette": "industrial",
+        "historyLength": 600,
+        "showDataLabel": false,
+        "legendPosition": "top",
+        "showDeviceLabel": false,
+        "timeWindowSeconds": 600
+      },
+      "groupId": "",
+      "visible": true,
+      "animation": {
+        "type": "none",
+        "delay": 0,
+        "duration": 1.2,
+        "iteration": "infinite"
+      },
+      "conditions": [],
+      "visibility": {
+        "rules": [],
+        "viewIds": [
+          "device_detail",
+          "device_xray"
+        ],
+        "ruleMode": "any",
+        "viewModes": [
+          "device"
+        ],
+        "matchBoundDevice": false
+      },
+      "runtimeTarget": "overlay"
+    },
+    {
+      "id": "builtin_widget_11",
+      "data": {
+        "mode": "plc",
+        "path": "",
+        "unit": "℃",
+        "decimals": 1,
+        "deviceScope": "current",
+        "deviceId": "",
+        "pointId": "",
+        "pointKey": "",
+        "connectionId": "",
+        "datasetId": "",
+        "readOnly": true,
+        "requireConfiguredPoint": true,
+        "refreshMs": 5000
+      },
+      "type": "hud_chart_dock",
+      "frame": {
+        "x": 36,
+        "y": 566,
+        "width": 430,
+        "height": 470,
+        "rotation": 0
+      },
+      "style": {
+        "color": "#dbeeff",
+        "shadow": "soft",
+        "opacity": 1,
+        "fontSize": "",
+        "background": "rgba(88, 79, 137, 0)",
+        "borderColor": "rgba(89, 178, 238, .18)",
+        "borderRadius": 10,
+        "backgroundOpacity": 0
+      },
+      "title": "温度趋势",
+      "events": [],
+      "locked": false,
+      "zIndex": 2,
+      "content": {
+        "smooth": true,
+        "compact": true,
+        "eyebrow": "",
+        "showAxis": true,
+        "statPath": "",
+        "statUnit": "℃",
+        "areaColor": "#ffc45f",
+        "barRadius": 4,
+        "chartType": "line",
+        "emptyText": "等待PLC采样",
+        "lineColor": "#a2a7ed",
+        "lineWidth": 1.5,
+        "showTitle": true,
+        "statLabel": "实时读数",
+        "timeField": "time",
+        "donutRatio": 48,
+        "rangeLabel": "区间最低 / 最高",
+        "seriesName": "温度趋势 · 设备轮播",
+        "showLegend": false,
+        "showSymbol": false,
+        "valueField": "value",
+        "areaOpacity": 0.1,
+        "chartPalette": "industrial",
+        "historyLength": 600,
+        "showDataLabel": false,
+        "legendPosition": "top",
+        "showDeviceLabel": false,
+        "timeWindowSeconds": 600
+      },
+      "groupId": "",
+      "visible": true,
+      "animation": {
+        "type": "none",
+        "delay": 0,
+        "duration": 1.2,
+        "iteration": "infinite"
+      },
+      "conditions": [],
+      "visibility": {
+        "rules": [],
+        "viewIds": [
+          "device_xray",
+          "device_exploded"
+        ],
+        "ruleMode": "all",
+        "viewModes": [
+          "device"
+        ],
+        "matchBoundDevice": false
+      },
+      "runtimeTarget": "overlay"
+    },
+    {
+      "id": "builtin_widget_12",
+      "data": {
+        "mode": "static",
+        "path": "",
+        "unit": "%",
+        "decimals": 1,
+        "deviceScope": "current",
+        "deviceId": "",
+        "pointId": "",
+        "pointKey": "",
+        "connectionId": "",
+        "datasetId": "",
+        "readOnly": true,
+        "requireConfiguredPoint": true,
+        "refreshMs": 5000
+      },
+      "type": "hud_kpi_panel",
+      "frame": {
+        "x": 1454,
+        "y": 446,
+        "width": 430,
+        "height": 310,
+        "rotation": 0
+      },
+      "style": {
+        "color": "#eef7ff",
+        "shadow": "soft",
+        "opacity": 1,
+        "background": "rgba(10, 18, 34, .12)",
+        "borderColor": "rgba(137, 149, 245, .24)",
+        "borderRadius": 18,
+        "backgroundOpacity": 0.12
+      },
+      "title": "",
+      "events": [],
+      "locked": false,
+      "zIndex": 2,
+      "content": {
+        "note": "",
+        "items": [],
+        "compact": true,
+        "eyebrow": "",
+        "showRing": false,
+        "chartPath": "",
+        "showTitle": false,
+        "chartLabel": "日使用率",
+        "showDeviceLabel": false
+      },
+      "groupId": "",
+      "visible": true,
+      "animation": {
+        "type": "none",
+        "delay": 0,
+        "duration": 1.2,
+        "iteration": "infinite"
+      },
+      "conditions": [],
+      "visibility": {
+        "rules": [],
+        "viewIds": [
+          "device_detail",
+          "device_xray",
+          "device_exploded"
+        ],
+        "ruleMode": "all",
+        "viewModes": [
+          "device"
+        ],
+        "matchBoundDevice": false
+      },
+      "runtimeTarget": "overlay"
+    },
+    {
+      "id": "builtin_widget_13",
+      "data": {
+        "mode": "static",
+        "path": "",
+        "unit": "%",
+        "decimals": 1,
+        "deviceScope": "current",
+        "deviceId": "",
+        "pointId": "",
+        "pointKey": "",
+        "connectionId": "",
+        "datasetId": "",
+        "readOnly": true,
+        "requireConfiguredPoint": true,
+        "refreshMs": 5000
+      },
+      "type": "hud_kpi_panel",
+      "frame": {
+        "x": 1454,
+        "y": 146,
+        "width": 430,
+        "height": 280,
+        "rotation": 0
+      },
+      "style": {
+        "color": "#eef7ff",
+        "shadow": "soft",
+        "opacity": 1,
+        "background": "rgba(10, 18, 34, .12)",
+        "borderColor": "rgba(137, 149, 245, .24)",
+        "borderRadius": 18,
+        "backgroundOpacity": 0.12
+      },
+      "title": "",
+      "events": [],
+      "locked": false,
+      "zIndex": 2,
+      "content": {
+        "note": "",
+        "items": [],
+        "compact": true,
+        "eyebrow": "",
+        "showRing": false,
+        "chartPath": "",
+        "showTitle": false,
+        "chartLabel": "日使用率",
+        "showDeviceLabel": false
+      },
+      "groupId": "",
+      "visible": true,
+      "animation": {
+        "type": "none",
+        "delay": 0,
+        "duration": 1.2,
+        "iteration": "infinite"
+      },
+      "conditions": [],
+      "visibility": {
+        "rules": [],
+        "viewIds": [
+          "device_detail",
+          "device_xray",
+          "device_exploded"
+        ],
+        "ruleMode": "all",
+        "viewModes": [
+          "device"
+        ],
+        "matchBoundDevice": false
+      },
+      "runtimeTarget": "overlay"
+    },
+    {
+      "id": "builtin_widget_14",
+      "data": {
+        "mode": "plc",
+        "path": "",
+        "unit": "%",
+        "decimals": 1,
+        "deviceScope": "current",
+        "deviceId": "",
+        "pointId": "",
+        "pointKey": "",
+        "connectionId": "",
+        "datasetId": "",
+        "readOnly": true,
+        "requireConfiguredPoint": true,
+        "refreshMs": 5000
+      },
+      "type": "hud_kpi_panel",
+      "frame": {
+        "x": 1466,
+        "y": 156,
+        "width": 406,
+        "height": 194,
+        "rotation": 0
+      },
+      "style": {
+        "color": "#eef7ff",
+        "shadow": "none",
+        "opacity": 1,
+        "padding": 4,
+        "boxShadow": "none",
+        "background": "transparent",
+        "borderColor": "transparent",
+        "surfaceSkin": "inline",
+        "borderRadius": 0,
+        "backdropFilter": "none",
+        "backgroundOpacity": 0
+      },
+      "title": "当日使用率",
+      "events": [],
+      "locked": false,
+      "zIndex": 5,
+      "content": {
+        "note": "",
+        "items": [
+          {
+            "path": "",
+            "unit": "h",
+            "label": "当日运行",
+            "decimals": 2
+          },
+          {
+            "path": "",
+            "unit": "kWh",
+            "label": "当日用电",
+            "decimals": 2
+          }
+        ],
+        "compact": true,
+        "eyebrow": "",
+        "showRing": true,
+        "chartPath": "",
+        "chartLabel": "日使用率",
+        "showDeviceLabel": false
+      },
+      "groupId": "",
+      "visible": true,
+      "animation": {
+        "type": "none",
+        "delay": 0,
+        "duration": 1.2,
+        "iteration": "infinite"
+      },
+      "conditions": [],
+      "visibility": {
+        "rules": [],
+        "viewIds": [
+          "device_detail",
+          "device_xray",
+          "device_exploded"
+        ],
+        "ruleMode": "all",
+        "viewModes": [
+          "device"
+        ],
+        "matchBoundDevice": false
+      },
+      "runtimeTarget": "overlay"
+    },
+    {
+      "id": "builtin_widget_15",
+      "data": {
+        "mode": "plc",
+        "path": "",
+        "unit": "",
+        "decimals": 1,
+        "deviceScope": "current",
+        "deviceId": "",
+        "pointId": "",
+        "pointKey": "",
+        "connectionId": "",
+        "datasetId": "",
+        "readOnly": true,
+        "requireConfiguredPoint": true,
+        "refreshMs": 5000
+      },
+      "type": "text",
+      "frame": {
+        "x": 1472,
+        "y": 361,
+        "width": 394,
+        "height": 26,
+        "rotation": 0
+      },
+      "style": {
+        "color": "#eef7ff",
+        "shadow": "none",
+        "opacity": 1,
+        "padding": 4,
+        "fontSize": 12,
+        "boxShadow": "none",
+        "background": "transparent",
+        "borderColor": "transparent",
+        "surfaceSkin": "inline",
+        "borderRadius": 0,
+        "backdropFilter": "none",
+        "backgroundOpacity": 0
+      },
+      "title": "",
+      "events": [],
+      "locked": false,
+      "zIndex": 5,
+      "content": {
+        "note": "",
+        "text": "驱动报警：{value}",
+        "tone": "normal",
+        "align": "left",
+        "items": [
+          {
+            "path": "",
+            "unit": "h",
+            "label": "当日运行",
+            "decimals": 2
+          },
+          {
+            "path": "",
+            "unit": "kWh",
+            "label": "当日用电",
+            "decimals": 2
+          }
+        ],
+        "onText": "驱动过载",
+        "compact": true,
+        "eyebrow": "",
+        "offText": "无报警",
+        "showRing": true,
+        "chartPath": "",
+        "showTitle": false,
+        "chartLabel": "日使用率"
+      },
+      "groupId": "",
+      "visible": true,
+      "animation": {
+        "type": "none",
+        "delay": 0,
+        "duration": 1.2,
+        "iteration": "infinite"
+      },
+      "conditions": [
+        {
+          "color": "#FF8C93",
+          "operator": "truthy",
+          "background": "#4B2633"
+        }
+      ],
+      "visibility": {
+        "rules": [],
+        "viewIds": [
+          "device_detail",
+          "device_xray",
+          "device_exploded"
+        ],
+        "ruleMode": "all",
+        "viewModes": [
+          "device"
+        ],
+        "matchBoundDevice": false
+      },
+      "runtimeTarget": "overlay"
+    },
+    {
+      "id": "builtin_widget_16",
+      "data": {
+        "mode": "plc",
+        "path": "",
+        "unit": "",
+        "decimals": 1,
+        "deviceScope": "current",
+        "deviceId": "",
+        "pointId": "",
+        "pointKey": "",
+        "connectionId": "",
+        "datasetId": "",
+        "readOnly": true,
+        "requireConfiguredPoint": true,
+        "refreshMs": 5000
+      },
+      "type": "text",
+      "frame": {
+        "x": 1472,
+        "y": 389,
+        "width": 394,
+        "height": 26,
+        "rotation": 0
+      },
+      "style": {
+        "color": "#eef7ff",
+        "shadow": "none",
+        "opacity": 1,
+        "padding": 4,
+        "fontSize": 12,
+        "boxShadow": "none",
+        "background": "transparent",
+        "borderColor": "transparent",
+        "surfaceSkin": "inline",
+        "borderRadius": 0,
+        "backdropFilter": "none",
+        "backgroundOpacity": 0
+      },
+      "title": "",
+      "events": [],
+      "locked": false,
+      "zIndex": 5,
+      "content": {
+        "note": "",
+        "text": "工艺偏差：{value}",
+        "tone": "normal",
+        "align": "left",
+        "items": [
+          {
+            "path": "",
+            "unit": "h",
+            "label": "当日运行",
+            "decimals": 2
+          },
+          {
+            "path": "",
+            "unit": "kWh",
+            "label": "当日用电",
+            "decimals": 2
+          }
+        ],
+        "onText": "温度/工艺偏差",
+        "compact": true,
+        "eyebrow": "",
+        "offText": "无报警",
+        "showRing": true,
+        "chartPath": "",
+        "showTitle": false,
+        "chartLabel": "日使用率"
+      },
+      "groupId": "",
+      "visible": true,
+      "animation": {
+        "type": "none",
+        "delay": 0,
+        "duration": 1.2,
+        "iteration": "infinite"
+      },
+      "conditions": [],
+      "visibility": {
+        "rules": [],
+        "viewIds": [
+          "device_detail",
+          "device_xray",
+          "device_exploded"
+        ],
+        "ruleMode": "all",
+        "viewModes": [
+          "device"
+        ],
+        "matchBoundDevice": false
+      },
+      "runtimeTarget": "overlay"
+    },
+    {
+      "id": "builtin_widget_17",
+      "data": {
+        "mode": "plc",
+        "path": "",
+        "unit": "Nm³/h",
+        "decimals": 1,
+        "deviceScope": "current",
+        "deviceId": "",
+        "pointId": "",
+        "pointKey": "",
+        "connectionId": "",
+        "datasetId": "",
+        "readOnly": true,
+        "requireConfiguredPoint": true,
+        "refreshMs": 5000
+      },
+      "type": "hud_chart_dock",
+      "frame": {
+        "x": 1464,
+        "y": 454,
+        "width": 410,
+        "height": 141,
+        "rotation": 0
+      },
+      "style": {
+        "color": "#eef7ff",
+        "shadow": "none",
+        "opacity": 1,
+        "padding": 4,
+        "boxShadow": "none",
+        "background": "transparent",
+        "borderColor": "transparent",
+        "surfaceSkin": "inline",
+        "borderRadius": 0,
+        "backdropFilter": "none",
+        "backgroundOpacity": 0
+      },
+      "title": "氨气流量",
+      "events": [],
+      "locked": false,
+      "zIndex": 5,
+      "content": {
+        "note": "",
+        "items": [
+          {
+            "path": "",
+            "unit": "Nm³/h",
+            "label": "氨气流量",
+            "decimals": 1
+          },
+          {
+            "path": "",
+            "unit": "Nm³/h",
+            "label": "甲醇气体流量",
+            "decimals": 1
+          }
+        ],
+        "smooth": true,
+        "compact": true,
+        "eyebrow": "",
+        "showAxis": true,
+        "showRing": false,
+        "statPath": "",
+        "statUnit": "Nm³/h",
+        "areaColor": "rgba(137,149,245,.18)",
+        "chartPath": "",
+        "chartType": "line",
+        "emptyText": "等待PLC采样",
+        "lineColor": "#a2a7ed",
+        "lineWidth": 1.5,
+        "showTitle": true,
+        "statLabel": "",
+        "timeField": "time",
+        "chartLabel": "综合效率",
+        "rangeLabel": "",
+        "seriesName": "氨气流量趋势 · 多用炉轮播",
+        "showLegend": false,
+        "showSymbol": false,
+        "valueField": "value",
+        "areaOpacity": 0.1,
+        "historyLength": 600,
+        "showDataLabel": false,
+        "showDeviceLabel": false,
+        "timeWindowSeconds": 600
+      },
+      "groupId": "",
+      "visible": true,
+      "animation": {
+        "type": "none",
+        "delay": 0,
+        "duration": 1.2,
+        "iteration": "infinite"
+      },
+      "conditions": [],
+      "visibility": {
+        "rules": [],
+        "viewIds": [
+          "device_detail",
+          "device_xray",
+          "device_exploded"
+        ],
+        "ruleMode": "any",
+        "viewModes": [
+          "device"
+        ],
+        "matchBoundDevice": false
+      },
+      "runtimeTarget": "overlay"
+    },
+    {
+      "id": "builtin_widget_18",
+      "data": {
+        "mode": "plc",
+        "path": "",
+        "unit": "Nm³/h",
+        "decimals": 1,
+        "deviceScope": "current",
+        "deviceId": "",
+        "pointId": "",
+        "pointKey": "",
+        "connectionId": "",
+        "datasetId": "",
+        "readOnly": true,
+        "requireConfiguredPoint": true,
+        "refreshMs": 5000
+      },
+      "type": "hud_chart_dock",
+      "frame": {
+        "x": 1464,
+        "y": 603,
+        "width": 410,
+        "height": 141,
+        "rotation": 0
+      },
+      "style": {
+        "color": "#eef7ff",
+        "shadow": "none",
+        "opacity": 1,
+        "padding": 4,
+        "boxShadow": "none",
+        "background": "transparent",
+        "borderColor": "transparent",
+        "surfaceSkin": "inline",
+        "borderRadius": 0,
+        "backdropFilter": "none",
+        "backgroundOpacity": 0
+      },
+      "title": "氮气流量",
+      "events": [],
+      "locked": false,
+      "zIndex": 5,
+      "content": {
+        "limit": 6,
+        "smooth": true,
+        "compact": true,
+        "eyebrow": "EQUIPMENT",
+        "idleText": "待机",
+        "showAxis": true,
+        "statPath": "",
+        "statUnit": "Nm³/h",
+        "alarmText": "报警",
+        "areaColor": "rgba(137,149,245,.18)",
+        "chartType": "line",
+        "deviceIds": [],
+        "emptyHint": "接入后自动显示运行状态",
+        "emptyText": "等待PLC采样",
+        "lineColor": "#a2a7ed",
+        "lineWidth": 1.5,
+        "showTitle": true,
+        "staleText": "数据延迟",
+        "statLabel": "",
+        "timeField": "time",
+        "alarmLabel": "报警",
+        "rangeLabel": "",
+        "seriesName": "氮气流量趋势 · 多用炉轮播",
+        "showLegend": false,
+        "showSymbol": false,
+        "valueField": "value",
+        "areaOpacity": 0.1,
+        "offlineText": "离线",
+        "onlineLabel": "在线",
+        "runningText": "运行中",
+        "deviceActions": {},
+        "historyLength": 600,
+        "showDataLabel": false,
+        "showDeviceLabel": false,
+        "showTemperature": false,
+        "temperatureUnit": "°C",
+        "timeWindowSeconds": 600
+      },
+      "groupId": "",
+      "visible": true,
+      "animation": {
+        "type": "none",
+        "delay": 0,
+        "duration": 1.2,
+        "iteration": "infinite"
+      },
+      "conditions": [],
+      "visibility": {
+        "rules": [],
+        "viewIds": [
+          "device_detail",
+          "device_xray",
+          "device_exploded"
+        ],
+        "ruleMode": "any",
+        "viewModes": [
+          "device"
+        ],
+        "matchBoundDevice": false
+      },
+      "runtimeTarget": "overlay"
+    },
+    {
+      "id": "builtin_widget_19",
+      "data": {
+        "mode": "plc",
+        "path": "",
+        "unit": "℃",
+        "decimals": 1,
+        "deviceScope": "current",
+        "deviceId": "",
+        "pointId": "",
+        "pointKey": "",
+        "connectionId": "",
+        "datasetId": "",
+        "readOnly": true,
+        "requireConfiguredPoint": true,
+        "refreshMs": 5000
+      },
+      "type": "hud_chart_dock",
+      "frame": {
+        "x": 48,
+        "y": 627,
+        "width": 406,
+        "height": 392,
+        "rotation": 0
+      },
+      "style": {
+        "color": "#dbeeff",
+        "shadow": "soft",
+        "opacity": 1,
+        "fontSize": "",
+        "background": "rgba(88, 79, 137, 0)",
+        "borderColor": "rgba(89, 178, 238, .18)",
+        "borderRadius": 10,
+        "backgroundOpacity": 0
+      },
+      "title": "温度趋势",
+      "events": [],
+      "locked": false,
+      "zIndex": 5,
+      "content": {
+        "smooth": true,
+        "compact": true,
+        "eyebrow": "",
+        "showAxis": true,
+        "statPath": "",
+        "statUnit": "℃",
+        "areaColor": "#ffc45f",
+        "barRadius": 4,
+        "chartType": "line",
+        "emptyText": "等待PLC采样",
+        "lineColor": "#a2a7ed",
+        "lineWidth": 1.5,
+        "showTitle": true,
+        "statLabel": "实时读数",
+        "timeField": "time",
+        "donutRatio": 48,
+        "rangeLabel": "区间最低 / 最高",
+        "seriesName": "温度趋势 · 设备轮播",
+        "showLegend": false,
+        "showSymbol": false,
+        "valueField": "value",
+        "areaOpacity": 0.1,
+        "chartPalette": "industrial",
+        "historyLength": 600,
+        "showDataLabel": false,
+        "legendPosition": "top",
+        "showDeviceLabel": false,
+        "timeWindowSeconds": 600
+      },
+      "groupId": "",
+      "visible": true,
+      "animation": {
+        "type": "none",
+        "delay": 0,
+        "duration": 1.2,
+        "iteration": "infinite"
+      },
+      "conditions": [],
+      "visibility": {
+        "rules": [],
+        "viewIds": [
+          "device_detail"
+        ],
+        "ruleMode": "all",
+        "viewModes": [
+          "device"
+        ],
+        "matchBoundDevice": false
+      },
+      "runtimeTarget": "overlay"
+    },
+    {
+      "id": "builtin_widget_20",
+      "data": {
+        "mode": "plc",
+        "path": "",
+        "unit": "kW",
+        "decimals": 1,
+        "deviceScope": "current",
+        "deviceId": "",
+        "pointId": "",
+        "pointKey": "",
+        "connectionId": "",
+        "datasetId": "",
+        "readOnly": true,
+        "requireConfiguredPoint": true,
+        "refreshMs": 5000
+      },
+      "type": "hud_chart_dock",
+      "frame": {
+        "x": 40,
+        "y": 150,
+        "width": 430,
+        "height": 400,
+        "rotation": 0
+      },
+      "style": {
+        "color": "#eef7ff",
+        "shadow": "soft",
+        "opacity": 1,
+        "background": "rgba(10, 18, 34, .12)",
+        "borderColor": "rgba(137, 149, 245, .24)",
+        "borderRadius": 18,
+        "backgroundOpacity": 0.12
+      },
+      "title": "有功功率",
+      "events": [],
+      "locked": false,
+      "zIndex": 5,
+      "content": {
+        "note": "",
+        "items": [
+          {
+            "path": "",
+            "unit": "",
+            "label": "氨气累计",
+            "value": "",
+            "decimals": 1
+          },
+          {
+            "path": "",
+            "unit": "",
+            "label": "甲醇累计",
+            "value": "",
+            "decimals": 1
+          }
+        ],
+        "smooth": true,
+        "compact": true,
+        "eyebrow": "",
+        "showAxis": true,
+        "showRing": true,
+        "statPath": "",
+        "statUnit": "kW",
+        "areaColor": "rgba(137,149,245,.18)",
+        "chartPath": "",
+        "chartType": "line",
+        "emptyText": "等待PLC采样",
+        "lineColor": "#a2a7ed",
+        "lineWidth": 1.5,
+        "showTitle": true,
+        "statLabel": "实时读数",
+        "timeField": "time",
+        "chartLabel": "综合效率",
+        "rangeLabel": "区间最低 / 最高",
+        "seriesName": "有功功率",
+        "showLegend": false,
+        "showSymbol": false,
+        "valueField": "value",
+        "areaOpacity": 0.1,
+        "historyLength": 600,
+        "showDataLabel": false,
+        "showDeviceLabel": false,
+        "timeWindowSeconds": 600
+      },
+      "groupId": "",
+      "visible": true,
+      "animation": {
+        "type": "none",
+        "delay": 0,
+        "duration": 1.2,
+        "iteration": "infinite"
+      },
+      "conditions": [],
+      "visibility": {
+        "rules": [],
+        "viewIds": [
+          "device_detail",
+          "device_xray"
+        ],
+        "ruleMode": "any",
+        "viewModes": [
+          "device"
+        ],
+        "matchBoundDevice": false
+      },
+      "runtimeTarget": "overlay"
+    },
+    {
+      "id": "builtin_widget_21",
+      "data": {
+        "mode": "plc",
+        "path": "",
+        "unit": "kW",
+        "decimals": 1,
+        "deviceScope": "current",
+        "deviceId": "",
+        "pointId": "",
+        "pointKey": "",
+        "connectionId": "",
+        "datasetId": "",
+        "readOnly": true,
+        "requireConfiguredPoint": true,
+        "refreshMs": 5000
+      },
+      "type": "hud_chart_dock",
+      "frame": {
+        "x": 1464,
+        "y": 454,
+        "width": 410,
+        "height": 141,
+        "rotation": 0
+      },
+      "style": {
+        "color": "#eef7ff",
+        "shadow": "none",
+        "opacity": 1,
+        "padding": 4,
+        "boxShadow": "none",
+        "background": "transparent",
+        "borderColor": "transparent",
+        "surfaceSkin": "inline",
+        "borderRadius": 0,
+        "backdropFilter": "none",
+        "backgroundOpacity": 0
+      },
+      "title": "有功功率",
+      "events": [],
+      "locked": false,
+      "zIndex": 5,
+      "content": {
+        "note": "",
+        "items": [
+          {
+            "path": "",
+            "unit": "",
+            "label": "氨气累计",
+            "value": "",
+            "decimals": 1
+          },
+          {
+            "path": "",
+            "unit": "",
+            "label": "甲醇累计",
+            "value": "",
+            "decimals": 1
+          }
+        ],
+        "smooth": true,
+        "compact": true,
+        "eyebrow": "",
+        "showAxis": true,
+        "showRing": true,
+        "statPath": "",
+        "statUnit": "kW",
+        "areaColor": "rgba(137,149,245,.18)",
+        "chartPath": "",
+        "chartType": "line",
+        "emptyText": "等待PLC采样",
+        "lineColor": "#a2a7ed",
+        "lineWidth": 1.5,
+        "showTitle": true,
+        "statLabel": "",
+        "timeField": "time",
+        "chartLabel": "综合效率",
+        "rangeLabel": "",
+        "seriesName": "当日耗电量趋势 · 设备轮播",
+        "showLegend": false,
+        "showSymbol": false,
+        "valueField": "value",
+        "areaOpacity": 0.1,
+        "historyLength": 600,
+        "showDataLabel": false,
+        "showDeviceLabel": false,
+        "timeWindowSeconds": 600
+      },
+      "groupId": "",
+      "visible": true,
+      "animation": {
+        "type": "none",
+        "delay": 0,
+        "duration": 1.2,
+        "iteration": "infinite"
+      },
+      "conditions": [],
+      "visibility": {
+        "rules": [],
+        "viewIds": [
+          "device_detail",
+          "device_xray",
+          "device_exploded"
+        ],
+        "ruleMode": "any",
+        "viewModes": [
+          "device"
+        ],
+        "matchBoundDevice": false
+      },
+      "runtimeTarget": "overlay"
+    },
+    {
+      "id": "builtin_widget_22",
+      "data": {
+        "mode": "plc",
+        "path": "",
+        "unit": "kWh",
+        "decimals": 1,
+        "deviceScope": "current",
+        "deviceId": "",
+        "pointId": "",
+        "pointKey": "",
+        "connectionId": "",
+        "datasetId": "",
+        "readOnly": true,
+        "requireConfiguredPoint": true,
+        "refreshMs": 5000
+      },
+      "type": "hud_chart_dock",
+      "frame": {
+        "x": 1464,
+        "y": 603,
+        "width": 410,
+        "height": 141,
+        "rotation": 0
+      },
+      "style": {
+        "color": "#eef7ff",
+        "shadow": "none",
+        "opacity": 1,
+        "padding": 4,
+        "boxShadow": "none",
+        "background": "transparent",
+        "borderColor": "transparent",
+        "surfaceSkin": "inline",
+        "borderRadius": 0,
+        "backdropFilter": "none",
+        "backgroundOpacity": 0
+      },
+      "title": "当日耗电量",
+      "events": [],
+      "locked": false,
+      "zIndex": 5,
+      "content": {
+        "note": "",
+        "items": [
+          {
+            "path": "",
+            "unit": "",
+            "label": "氨气累计",
+            "value": "",
+            "decimals": 1
+          },
+          {
+            "path": "",
+            "unit": "",
+            "label": "甲醇累计",
+            "value": "",
+            "decimals": 1
+          }
+        ],
+        "smooth": true,
+        "compact": true,
+        "eyebrow": "",
+        "showAxis": true,
+        "showRing": true,
+        "statPath": "",
+        "statUnit": "kWh",
+        "areaColor": "rgba(137,149,245,.18)",
+        "chartPath": "",
+        "chartType": "line",
+        "emptyText": "等待PLC采样",
+        "lineColor": "#a2a7ed",
+        "lineWidth": 1.5,
+        "showTitle": true,
+        "statLabel": "",
+        "timeField": "time",
+        "chartLabel": "综合效率",
+        "rangeLabel": "",
+        "seriesName": "当日耗电量趋势 · 设备轮播",
+        "showLegend": false,
+        "showSymbol": false,
+        "valueField": "value",
+        "areaOpacity": 0.1,
+        "historyLength": 600,
+        "showDataLabel": false,
+        "showDeviceLabel": false,
+        "timeWindowSeconds": 600
+      },
+      "groupId": "",
+      "visible": true,
+      "animation": {
+        "type": "none",
+        "delay": 0,
+        "duration": 1.2,
+        "iteration": "infinite"
+      },
+      "conditions": [],
+      "visibility": {
+        "rules": [],
+        "viewIds": [
+          "device_detail",
+          "device_xray",
+          "device_exploded"
+        ],
+        "ruleMode": "any",
+        "viewModes": [
+          "device"
+        ],
+        "matchBoundDevice": false
+      },
+      "runtimeTarget": "overlay"
+    },
+    {
+      "id": "builtin_widget_23",
+      "data": {
+        "mode": "static",
+        "path": "",
+        "unit": "",
+        "decimals": 1,
+        "deviceScope": "current",
+        "deviceId": "",
+        "pointId": "",
+        "pointKey": "",
+        "connectionId": "",
+        "datasetId": "",
+        "readOnly": true,
+        "requireConfiguredPoint": true,
+        "refreshMs": 5000
+      },
+      "type": "navigation",
+      "frame": {
+        "x": 660,
+        "y": 40,
+        "width": 600,
+        "height": 42,
+        "rotation": 0
+      },
+      "style": {
+        "color": "#eef7ff",
+        "opacity": 1,
+        "background": "transparent",
+        "borderColor": "transparent",
+        "borderRadius": 0,
+        "backgroundOpacity": 0
+      },
+      "title": "场景导航与返回",
+      "events": [],
+      "locked": false,
+      "zIndex": 1000,
+      "content": {
+        "showTitle": false,
+        "statusText": "实时采集正常",
+        "projectLabel": "天津工厂",
+        "statusTextSource": "collection",
+        "projectLabelSource": "factory"
+      },
+      "groupId": "",
+      "visible": true,
+      "animation": {
+        "type": "none",
+        "delay": 0,
+        "duration": 1.2,
+        "iteration": "infinite"
+      },
+      "conditions": [],
+      "visibility": {
+        "rules": [],
+        "viewIds": [],
+        "ruleMode": "all",
+        "viewModes": [],
+        "matchBoundDevice": false
+      },
+      "runtimeTarget": "unity"
+    },
+    {
+      "id": "builtin_widget_24",
+      "data": {
+        "mode": "static",
+        "path": "",
+        "unit": "",
+        "decimals": 1,
+        "deviceScope": "current",
+        "deviceId": "",
+        "pointId": "",
+        "pointKey": "",
+        "connectionId": "",
+        "datasetId": "",
+        "readOnly": true,
+        "requireConfiguredPoint": true,
+        "refreshMs": 5000
+      },
+      "type": "return_button",
+      "frame": {
+        "x": 120,
+        "y": 20,
+        "width": 42,
+        "height": 42,
+        "rotation": 0
+      },
+      "style": {
+        "color": "#eef7ff",
+        "opacity": 1,
+        "background": "transparent",
+        "borderColor": "transparent",
+        "borderRadius": 0,
+        "backgroundOpacity": 0
+      },
+      "title": "返回键",
+      "events": [],
+      "locked": false,
+      "zIndex": 1001,
+      "content": {
+        "showTitle": false
+      },
+      "groupId": "",
+      "visible": false,
+      "animation": {
+        "type": "none",
+        "delay": 0,
+        "duration": 1.2,
+        "iteration": "infinite"
+      },
+      "conditions": [],
+      "visibility": {
+        "rules": [],
+        "viewIds": [],
+        "ruleMode": "all",
+        "viewModes": [],
+        "matchBoundDevice": false
+      },
+      "runtimeTarget": "unity"
+    },
+    {
+      "id": "builtin_widget_25",
+      "data": {
+        "mode": "plc",
+        "path": "",
+        "unit": "%",
+        "decimals": 1,
+        "deviceScope": "current",
+        "deviceId": "",
+        "pointId": "",
+        "pointKey": "",
+        "connectionId": "",
+        "datasetId": "",
+        "readOnly": true,
+        "requireConfiguredPoint": true,
+        "refreshMs": 5000
+      },
+      "type": "hud_kpi_panel",
+      "frame": {
+        "x": 1536,
+        "y": 142,
+        "width": 344,
+        "height": 196,
+        "rotation": 0
+      },
+      "style": {
+        "color": "#eef7ff",
+        "shadow": "soft",
+        "opacity": 1,
+        "background": "rgba(10, 18, 34, .12)",
+        "borderColor": "rgba(137, 149, 245, .24)",
+        "borderRadius": 18,
+        "backgroundOpacity": 0.12
+      },
+      "title": "当日设备使用率",
+      "events": [],
+      "locked": false,
+      "zIndex": 2,
+      "content": {
+        "note": "",
+        "items": [
+          {
+            "path": "",
+            "unit": "h",
+            "label": "当日运行",
+            "decimals": 2
+          },
+          {
+            "path": "",
+            "unit": "kWh",
+            "label": "当日用电",
+            "decimals": 2
+          }
+        ],
+        "compact": true,
+        "eyebrow": "",
+        "showRing": true,
+        "chartPath": "",
+        "chartLabel": "日使用率"
+      },
+      "groupId": "",
+      "visible": true,
+      "animation": {
+        "type": "none",
+        "delay": 0,
+        "duration": 1.2,
+        "iteration": "infinite"
+      },
+      "conditions": [],
+      "visibility": {
+        "rules": [],
+        "viewIds": [
+          "factory_overview"
+        ],
+        "ruleMode": "all",
+        "viewModes": [
+          "factory",
+          "workshop",
+          "line"
+        ],
+        "matchBoundDevice": false
+      },
+      "runtimeTarget": "overlay"
+    },
+    {
+      "id": "builtin_widget_26",
+      "data": {
+        "mode": "plc",
+        "path": "",
+        "unit": "Nm³/h",
+        "decimals": 1,
+        "deviceScope": "current",
+        "deviceId": "",
+        "pointId": "",
+        "pointKey": "",
+        "connectionId": "",
+        "datasetId": "",
+        "readOnly": true,
+        "requireConfiguredPoint": true,
+        "refreshMs": 5000
+      },
+      "type": "hud_chart_dock",
+      "frame": {
+        "x": 1536,
+        "y": 354,
+        "width": 344,
+        "height": 358,
+        "rotation": 0
+      },
+      "style": {
+        "color": "#eef7ff",
+        "shadow": "soft",
+        "opacity": 1,
+        "background": "rgba(10, 18, 34, .12)",
+        "borderColor": "rgba(113, 203, 216, .2)",
+        "borderRadius": 18,
+        "backgroundOpacity": 0.12
+      },
+      "title": "氮气流量趋势",
+      "events": [],
+      "locked": false,
+      "zIndex": 2,
+      "content": {
+        "limit": 6,
+        "smooth": true,
+        "compact": true,
+        "eyebrow": "EQUIPMENT",
+        "idleText": "待机",
+        "showAxis": true,
+        "statPath": "",
+        "statUnit": "Nm³/h",
+        "alarmText": "报警",
+        "areaColor": "rgba(137,149,245,.18)",
+        "chartType": "line",
+        "deviceIds": [],
+        "emptyHint": "接入后自动显示运行状态",
+        "emptyText": "等待PLC采样",
+        "lineColor": "#a2a7ed",
+        "lineWidth": 1.5,
+        "showTitle": true,
+        "staleText": "数据延迟",
+        "statLabel": "实时读数",
+        "timeField": "time",
+        "alarmLabel": "报警",
+        "rangeLabel": "区间最低 / 最高",
+        "seriesName": "氮气流量趋势 · 多用炉轮播",
+        "showLegend": false,
+        "showSymbol": false,
+        "valueField": "value",
+        "areaOpacity": 0.1,
+        "offlineText": "离线",
+        "onlineLabel": "在线",
+        "runningText": "运行中",
+        "deviceActions": {},
+        "historyLength": 600,
+        "showDataLabel": false,
+        "showDeviceLabel": true,
+        "showTemperature": false,
+        "temperatureUnit": "°C",
+        "timeWindowSeconds": 600
+      },
+      "groupId": "",
+      "visible": true,
+      "animation": {
+        "type": "none",
+        "delay": 0,
+        "duration": 1.2,
+        "iteration": "infinite"
+      },
+      "conditions": [],
+      "visibility": {
+        "rules": [],
+        "viewIds": [
+          "factory_overview"
+        ],
+        "ruleMode": "all",
+        "viewModes": [
+          "factory",
+          "workshop",
+          "line"
+        ],
+        "matchBoundDevice": false
+      },
+      "runtimeTarget": "overlay"
+    },
+    {
+      "id": "builtin_widget_27",
+      "data": {
+        "mode": "runtime",
+        "path": "events",
+        "unit": "",
+        "decimals": 1,
+        "deviceScope": "current",
+        "deviceId": "",
+        "pointId": "",
+        "pointKey": "",
+        "connectionId": "",
+        "datasetId": "",
+        "readOnly": true,
+        "requireConfiguredPoint": true,
+        "refreshMs": 5000
+      },
+      "type": "hud_alarm_panel",
+      "frame": {
+        "x": 1536,
+        "y": 728,
+        "width": 344,
+        "height": 300,
+        "rotation": 0
+      },
+      "style": {
+        "color": "#eef7ff",
+        "shadow": "soft",
+        "opacity": 1,
+        "background": "rgba(10, 18, 34, .12)",
+        "borderColor": "rgba(231, 127, 152, .2)",
+        "borderRadius": 18,
+        "backgroundOpacity": 0.12
+      },
+      "title": "报警 / 事件履历",
+      "events": [],
+      "locked": false,
+      "zIndex": 2,
+      "content": {
+        "limit": 4,
+        "eyebrow": "EVENT LOG",
+        "showTime": true,
+        "emptyHint": "新事件将在此自动更新",
+        "emptyText": "暂无事件记录",
+        "infoLabel": "事件",
+        "showLevel": true,
+        "warningLabel": "警告",
+        "criticalLabel": "报警",
+        "missingTimeText": "时间未提供",
+        "fallbackEventText": "事件记录"
+      },
+      "groupId": "",
+      "visible": true,
+      "animation": {
+        "type": "none",
+        "delay": 0,
+        "duration": 1.2,
+        "iteration": "1"
+      },
+      "conditions": [],
+      "visibility": {
+        "rules": [],
+        "viewIds": [
+          "factory_overview"
+        ],
+        "ruleMode": "all",
+        "viewModes": [
+          "factory",
+          "workshop",
+          "line"
+        ],
+        "matchBoundDevice": false
+      },
+      "runtimeTarget": "overlay"
+    },
+    {
+      "id": "builtin_widget_28",
+      "data": {
+        "mode": "plc",
+        "path": "",
+        "unit": "℃",
+        "decimals": 1,
+        "deviceScope": "current",
+        "deviceId": "",
+        "pointId": "",
+        "pointKey": "",
+        "connectionId": "",
+        "datasetId": "",
+        "readOnly": true,
+        "requireConfiguredPoint": true,
+        "refreshMs": 5000
+      },
+      "type": "hud_chart_dock",
+      "frame": {
+        "x": 450,
+        "y": 820,
+        "width": 590,
+        "height": 220,
+        "rotation": 0
+      },
+      "style": {
+        "color": "#eef7ff",
+        "shadow": "soft",
+        "opacity": 1,
+        "fontSize": "",
+        "background": "rgba(10, 18, 34, 0.12)",
+        "borderColor": "rgba(137, 149, 245, .24)",
+        "borderRadius": 18,
+        "backgroundOpacity": 0.12
+      },
+      "title": "温度趋势",
+      "events": [],
+      "locked": false,
+      "zIndex": 2,
+      "content": {
+        "smooth": true,
+        "compact": true,
+        "eyebrow": "",
+        "showAxis": true,
+        "statPath": "",
+        "statUnit": "℃",
+        "areaColor": "#ffc45f",
+        "barRadius": 4,
+        "chartType": "line",
+        "emptyText": "等待PLC采样",
+        "lineColor": "#a2a7ed",
+        "lineWidth": 1.5,
+        "showTitle": true,
+        "statLabel": "实时读数",
+        "timeField": "time",
+        "donutRatio": 48,
+        "rangeLabel": "区间最低 / 最高",
+        "seriesName": "温度趋势 · 设备轮播",
+        "showLegend": false,
+        "showSymbol": false,
+        "valueField": "value",
+        "areaOpacity": 0.1,
+        "chartPalette": "industrial",
+        "historyLength": 600,
+        "showDataLabel": false,
+        "legendPosition": "top",
+        "showDeviceLabel": true,
+        "timeWindowSeconds": 600
+      },
+      "groupId": "",
+      "visible": true,
+      "animation": {
+        "type": "none",
+        "delay": 0,
+        "duration": 1.2,
+        "iteration": "infinite"
+      },
+      "conditions": [],
+      "visibility": {
+        "rules": [],
+        "viewIds": [
+          "factory_overview"
+        ],
+        "ruleMode": "all",
+        "viewModes": [
+          "factory",
+          "workshop",
+          "line"
+        ],
+        "matchBoundDevice": false
+      },
+      "runtimeTarget": "overlay"
+    },
+    {
+      "id": "builtin_widget_29",
+      "data": {
+        "mode": "plc",
+        "path": "",
+        "unit": "Nm³/h",
+        "decimals": 1,
+        "deviceScope": "current",
+        "deviceId": "",
+        "pointId": "",
+        "pointKey": "",
+        "connectionId": "",
+        "datasetId": "",
+        "readOnly": true,
+        "requireConfiguredPoint": true,
+        "refreshMs": 5000
+      },
+      "type": "hud_chart_dock",
+      "frame": {
+        "x": 30,
+        "y": 820,
+        "width": 400,
+        "height": 206,
+        "rotation": 0
+      },
+      "style": {
+        "color": "#eef7ff",
+        "shadow": "soft",
+        "opacity": 1,
+        "background": "rgba(10, 18, 34, .12)",
+        "borderColor": "rgba(137, 149, 245, .24)",
+        "borderRadius": 18,
+        "backgroundOpacity": 0.12
+      },
+      "title": "氨气流量趋势",
+      "events": [],
+      "locked": false,
+      "zIndex": 2,
+      "content": {
+        "note": "",
+        "items": [
+          {
+            "path": "",
+            "unit": "Nm³/h",
+            "label": "氨气流量",
+            "decimals": 1
+          },
+          {
+            "path": "",
+            "unit": "Nm³/h",
+            "label": "甲醇气体流量",
+            "decimals": 1
+          }
+        ],
+        "smooth": true,
+        "compact": true,
+        "eyebrow": "",
+        "showAxis": true,
+        "showRing": false,
+        "statPath": "",
+        "statUnit": "Nm³/h",
+        "areaColor": "rgba(137,149,245,.18)",
+        "chartPath": "",
+        "chartType": "line",
+        "emptyText": "等待PLC采样",
+        "lineColor": "#a2a7ed",
+        "lineWidth": 1.5,
+        "showTitle": true,
+        "statLabel": "实时读数",
+        "timeField": "time",
+        "chartLabel": "综合效率",
+        "rangeLabel": "区间最低 / 最高",
+        "seriesName": "氨气流量趋势 · 多用炉轮播",
+        "showLegend": false,
+        "showSymbol": false,
+        "valueField": "value",
+        "areaOpacity": 0.1,
+        "historyLength": 600,
+        "showDataLabel": false,
+        "showDeviceLabel": true,
+        "timeWindowSeconds": 600
+      },
+      "groupId": "",
+      "visible": true,
+      "animation": {
+        "type": "none",
+        "delay": 0,
+        "duration": 1.2,
+        "iteration": "infinite"
+      },
+      "conditions": [],
+      "visibility": {
+        "rules": [],
+        "viewIds": [
+          "factory_overview"
+        ],
+        "ruleMode": "all",
+        "viewModes": [
+          "factory"
+        ],
+        "matchBoundDevice": false
+      },
+      "runtimeTarget": "overlay"
+    },
+    {
+      "id": "builtin_widget_30",
+      "data": {
+        "mode": "plc",
+        "path": "",
+        "unit": "kWh",
+        "decimals": 1,
+        "deviceScope": "current",
+        "deviceId": "",
+        "pointId": "",
+        "pointKey": "",
+        "connectionId": "",
+        "datasetId": "",
+        "readOnly": true,
+        "requireConfiguredPoint": true,
+        "refreshMs": 5000
+      },
+      "type": "hud_chart_dock",
+      "frame": {
+        "x": 1090,
+        "y": 820,
+        "width": 438,
+        "height": 206,
+        "rotation": 0
+      },
+      "style": {
+        "color": "#eef7ff",
+        "shadow": "soft",
+        "opacity": 1,
+        "background": "rgba(10, 18, 34, .12)",
+        "borderColor": "rgba(137, 149, 245, .24)",
+        "borderRadius": 18,
+        "backgroundOpacity": 0.12
+      },
+      "title": "当日耗电量趋势",
+      "events": [],
+      "locked": false,
+      "zIndex": 1030,
+      "content": {
+        "note": "",
+        "items": [
+          {
+            "path": "",
+            "unit": "",
+            "label": "氨气累计",
+            "value": "",
+            "decimals": 1
+          },
+          {
+            "path": "",
+            "unit": "",
+            "label": "甲醇累计",
+            "value": "",
+            "decimals": 1
+          }
+        ],
+        "smooth": true,
+        "compact": true,
+        "eyebrow": "",
+        "showAxis": true,
+        "showRing": true,
+        "statPath": "",
+        "statUnit": "kWh",
+        "areaColor": "rgba(137,149,245,.18)",
+        "chartPath": "",
+        "chartType": "line",
+        "emptyText": "等待PLC采样",
+        "lineColor": "#a2a7ed",
+        "lineWidth": 1.5,
+        "showTitle": true,
+        "statLabel": "实时读数",
+        "timeField": "time",
+        "chartLabel": "综合效率",
+        "rangeLabel": "区间最低 / 最高",
+        "seriesName": "当日耗电量趋势 · 设备轮播",
+        "showLegend": false,
+        "showSymbol": false,
+        "valueField": "value",
+        "areaOpacity": 0.1,
+        "historyLength": 600,
+        "showDataLabel": false,
+        "showDeviceLabel": true,
+        "timeWindowSeconds": 600
+      },
+      "groupId": "",
+      "visible": true,
+      "animation": {
+        "type": "none",
+        "delay": 0,
+        "duration": 1.2,
+        "iteration": "infinite"
+      },
+      "conditions": [],
+      "visibility": {
+        "rules": [],
+        "viewIds": [
+          "factory_overview"
+        ],
+        "ruleMode": "all",
+        "viewModes": [
+          "factory"
+        ],
+        "matchBoundDevice": false
+      },
+      "runtimeTarget": "overlay"
+    },
+    {
+      "id": "builtin_widget_31",
+      "data": {
+        "mode": "static",
+        "path": "",
+        "unit": "%",
+        "decimals": 1,
+        "deviceScope": "current",
+        "deviceId": "",
+        "pointId": "",
+        "pointKey": "",
+        "connectionId": "",
+        "datasetId": "",
+        "readOnly": true,
+        "requireConfiguredPoint": true,
+        "refreshMs": 5000
+      },
+      "type": "hud_kpi_panel",
+      "frame": {
+        "x": 1393,
+        "y": 130,
+        "width": 500,
+        "height": 820,
+        "rotation": 0
+      },
+      "style": {
+        "color": "#eef7ff",
+        "shadow": "soft",
+        "opacity": 1,
+        "background": "rgba(10, 18, 34, .12)",
+        "borderColor": "rgba(137, 149, 245, .24)",
+        "borderRadius": 18,
+        "backgroundOpacity": 0.12
+      },
+      "title": "",
+      "events": [],
+      "locked": true,
+      "zIndex": 1031,
+      "content": {
+        "note": "",
+        "items": [],
+        "compact": true,
+        "eyebrow": "",
+        "showRing": false,
+        "chartPath": "",
+        "showTitle": false,
+        "chartLabel": "日使用率",
+        "showDeviceLabel": false
+      },
+      "groupId": "",
+      "visible": true,
+      "animation": {
+        "type": "none",
+        "delay": 0,
+        "duration": 1.2,
+        "iteration": "infinite"
+      },
+      "conditions": [],
+      "visibility": {
+        "rules": [],
+        "viewIds": [
+          "device_part"
+        ],
+        "ruleMode": "all",
+        "viewModes": [
+          "device"
+        ],
+        "matchBoundDevice": false
+      },
+      "runtimeTarget": "overlay"
+    },
+    {
+      "id": "builtin_widget_32",
+      "data": {
+        "mode": "runtime",
+        "path": "selectedPart.name",
+        "unit": "",
+        "decimals": 1,
+        "deviceScope": "current",
+        "deviceId": "",
+        "pointId": "",
+        "pointKey": "",
+        "connectionId": "",
+        "datasetId": "",
+        "readOnly": true,
+        "requireConfiguredPoint": true,
+        "refreshMs": 5000
+      },
+      "type": "text",
+      "frame": {
+        "x": 1421,
+        "y": 158,
+        "width": 444,
+        "height": 115,
+        "rotation": 0
+      },
+      "style": {
+        "color": "#eef7ff",
+        "shadow": "none",
+        "opacity": 1,
+        "padding": 16,
+        "fontSize": 14,
+        "background": "transparent",
+        "borderColor": "transparent",
+        "surfaceSkin": "inline",
+        "borderRadius": 0,
+        "backdropFilter": "none",
+        "backgroundOpacity": 0
+      },
+      "title": "已选部件",
+      "events": [],
+      "locked": false,
+      "zIndex": 1032,
+      "content": {
+        "text": "{value}",
+        "tone": "normal",
+        "align": "left"
+      },
+      "groupId": "",
+      "visible": true,
+      "animation": {
+        "type": "none",
+        "delay": 0,
+        "duration": 1.2,
+        "iteration": "infinite"
+      },
+      "conditions": [],
+      "visibility": {
+        "rules": [
+          {
+            "path": "inspectionStage",
+            "value": "part",
+            "source": "context",
+            "operator": "=="
+          }
+        ],
+        "viewIds": [
+          "device_part"
+        ],
+        "ruleMode": "all",
+        "viewModes": [
+          "device"
+        ],
+        "matchBoundDevice": false
+      },
+      "runtimeTarget": "overlay"
+    },
+    {
+      "id": "builtin_widget_33",
+      "data": {
+        "mode": "runtime",
+        "path": "selectedPart.description",
+        "unit": "",
+        "decimals": 1,
+        "deviceScope": "current",
+        "deviceId": "",
+        "pointId": "",
+        "pointKey": "",
+        "connectionId": "",
+        "datasetId": "",
+        "readOnly": true,
+        "requireConfiguredPoint": true,
+        "refreshMs": 5000
+      },
+      "type": "text",
+      "frame": {
+        "x": 1421,
+        "y": 289,
+        "width": 444,
+        "height": 148,
+        "rotation": 0
+      },
+      "style": {
+        "color": "#eef7ff",
+        "shadow": "none",
+        "opacity": 1,
+        "padding": 16,
+        "fontSize": 11,
+        "background": "transparent",
+        "borderColor": "transparent",
+        "surfaceSkin": "inline",
+        "borderRadius": 0,
+        "backdropFilter": "none",
+        "backgroundOpacity": 0
+      },
+      "title": "部件说明",
+      "events": [],
+      "locked": false,
+      "zIndex": 1033,
+      "content": {
+        "text": "{value}",
+        "tone": "normal",
+        "align": "left"
+      },
+      "groupId": "",
+      "visible": true,
+      "animation": {
+        "type": "none",
+        "delay": 0,
+        "duration": 1.2,
+        "iteration": "infinite"
+      },
+      "conditions": [],
+      "visibility": {
+        "rules": [
+          {
+            "path": "inspectionStage",
+            "value": "part",
+            "source": "context",
+            "operator": "=="
+          }
+        ],
+        "viewIds": [
+          "device_part"
+        ],
+        "ruleMode": "all",
+        "viewModes": [
+          "device"
+        ],
+        "matchBoundDevice": false
+      },
+      "runtimeTarget": "overlay"
+    },
+    {
+      "id": "builtin_widget_34",
+      "data": {
+        "mode": "runtime",
+        "path": "selectedPart.points.0.value",
+        "unit": "",
+        "decimals": 1,
+        "deviceScope": "current",
+        "deviceId": "",
+        "pointId": "",
+        "pointKey": "",
+        "connectionId": "",
+        "datasetId": "",
+        "readOnly": true,
+        "requireConfiguredPoint": true,
+        "refreshMs": 5000
+      },
+      "type": "hud_kpi_panel",
+      "frame": {
+        "x": 1421,
+        "y": 453,
+        "width": 444,
+        "height": 383,
+        "rotation": 0
+      },
+      "style": {
+        "color": "#eef7ff",
+        "shadow": "none",
+        "opacity": 1,
+        "padding": 4,
+        "boxShadow": "none",
+        "background": "transparent",
+        "borderColor": "transparent",
+        "surfaceSkin": "inline",
+        "borderRadius": 0,
+        "backdropFilter": "none",
+        "backgroundOpacity": 0
+      },
+      "title": "部件使用率",
+      "events": [],
+      "locked": false,
+      "zIndex": 1034,
+      "content": {
+        "note": "",
+        "items": [
+          {
+            "path": "selectedPart.points.1.value",
+            "decimals": 2,
+            "unitPath": "selectedPart.points.1.unit",
+            "labelPath": "selectedPart.points.1.label"
+          },
+          {
+            "path": "selectedPart.points.2.value",
+            "decimals": 2,
+            "unitPath": "selectedPart.points.2.unit",
+            "labelPath": "selectedPart.points.2.label"
+          },
+          {
+            "path": "selectedPart.points.3.value",
+            "decimals": 2,
+            "unitPath": "selectedPart.points.3.unit",
+            "labelPath": "selectedPart.points.3.label"
+          },
+          {
+            "path": "selectedPart.points.4.value",
+            "decimals": 2,
+            "unitPath": "selectedPart.points.4.unit",
+            "labelPath": "selectedPart.points.4.label"
+          },
+          {
+            "path": "selectedPart.points.5.value",
+            "decimals": 2,
+            "unitPath": "selectedPart.points.5.unit",
+            "labelPath": "selectedPart.points.5.label"
+          }
+        ],
+        "compact": true,
+        "eyebrow": "",
+        "showRing": true,
+        "chartPath": "selectedPart.points.0.value",
+        "chartLabel": "日使用率",
+        "showDeviceLabel": false
+      },
+      "groupId": "",
+      "visible": true,
+      "animation": {
+        "type": "none",
+        "delay": 0,
+        "duration": 1.2,
+        "iteration": "infinite"
+      },
+      "conditions": [],
+      "visibility": {
+        "rules": [],
+        "viewIds": [
+          "device_part"
+        ],
+        "ruleMode": "all",
+        "viewModes": [
+          "device"
+        ],
+        "matchBoundDevice": false
+      },
+      "runtimeTarget": "overlay"
+    },
+    {
+      "id": "builtin_widget_35",
+      "data": {
+        "mode": "runtime",
+        "path": "selectedPart.id",
+        "unit": "",
+        "decimals": 1,
+        "deviceScope": "current",
+        "deviceId": "",
+        "pointId": "",
+        "pointKey": "",
+        "connectionId": "",
+        "datasetId": "",
+        "readOnly": true,
+        "requireConfiguredPoint": true,
+        "refreshMs": 5000
+      },
+      "type": "text",
+      "frame": {
+        "x": 1421,
+        "y": 852,
+        "width": 444,
+        "height": 70,
+        "rotation": 0
+      },
+      "style": {
+        "color": "#eef7ff",
+        "shadow": "none",
+        "opacity": 1,
+        "padding": 14,
+        "fontSize": 11,
+        "background": "transparent",
+        "borderColor": "transparent",
+        "surfaceSkin": "inline",
+        "borderRadius": 0,
+        "backdropFilter": "none",
+        "backgroundOpacity": 0
+      },
+      "title": "",
+      "events": [],
+      "locked": false,
+      "zIndex": 1035,
+      "content": {
+        "text": "部件编号  {value}",
+        "tone": "normal",
+        "align": "left",
+        "showTitle": false
+      },
+      "groupId": "",
+      "visible": true,
+      "animation": {
+        "type": "none",
+        "delay": 0,
+        "duration": 1.2,
+        "iteration": "infinite"
+      },
+      "conditions": [],
+      "visibility": {
+        "rules": [
+          {
+            "path": "inspectionStage",
+            "value": "part",
+            "source": "context",
+            "operator": "=="
+          }
+        ],
+        "viewIds": [
+          "device_part"
+        ],
+        "ruleMode": "all",
+        "viewModes": [
+          "device"
+        ],
+        "matchBoundDevice": false
+      },
+      "runtimeTarget": "overlay"
+    }
+  ]
+}

@@ -137,23 +137,34 @@ function pointsFixture(t) {
     return { points, messages }
 }
 
-test('text-only alarm save cannot clear or silently save point-definition drafts', async t => {
-    const { points, messages } = pointsFixture(t)
-    t.mock.method(adminApi, 'getDataPoints', async () => [{ id: 1, device_id: 'A', name: 'bj1', data_type: 'BOOL', plc_tag: 'DB1.DBX0.0', alarm_text: 'old' }])
-    const save = t.mock.method(adminApi, 'saveAlarmTexts', async () => ({ success: true, updated: 1 }))
+test('old alarm text becomes the point display name without changing IDs/bindings or writing on load', async t => {
+    const { points } = pointsFixture(t)
+    const original = { id: 1, device_id: 'A', name: 'bj1', label: 'bj1', data_type: 'BOOL', plc_tag: 'DB1.DBX0.0', alarm_text: '风机故障', alarm_condition: '=1' }
+    t.mock.method(adminApi, 'getDataPoints', async () => [original])
+    const save = t.mock.method(adminApi, 'syncDataPoints', async () => ({ success: true, updated: 1 }))
     await points.loadDataPoints()
-    points.dataPoints.value[0].plc_tag = 'DB1.DBX0.1'
-    points.isPointsDirty.value = true
-    await points.saveAlarmTexts()
     assert.equal(save.mock.callCount(), 0)
-    assert.equal(points.isPointsDirty.value, true)
-    assert.match(messages.at(-1), /点位定义未保存/)
-    points.dataPoints.value[0].plc_tag = 'DB1.DBX0.0'
-    points.dataPoints.value[0].alarm_text = 'new'
-    await points.saveAlarmTexts()
-    assert.equal(save.mock.callCount(), 1)
-    assert.deepEqual(save.mock.calls[0].arguments, ['A', [{ id: 1, alarm_text: 'new' }]])
-    assert.equal(points.isPointsDirty.value, false)
+    assert.equal(original.label, 'bj1')
+    const row = points.dataPoints.value[0]
+    assert.equal(row.label, '风机故障'); assert.equal(row.name, 'bj1'); assert.equal(row.id, 1)
+    assert.equal(row.alarm_condition, '=1', 'explicit old condition is preserved')
+    row.label = '风机过热'; row.alarm_condition = '!=0'; points.markPointsDirty()
+    await points.saveAllPoints()
+    const payload = save.mock.calls[0].arguments[1][0]
+    assert.equal(payload.alarm_text, '风机过热'); assert.equal(payload.label, '风机过热')
+    assert.equal(payload.id, 1); assert.equal(payload.name, 'bj1'); assert.equal(payload.value_role, 'bj1')
+    assert.equal(payload.alarm_condition, '!=0')
+})
+
+test('new alarm usage defaults to nonzero and preserves numeric type; voice text follows the edited point name', t => {
+    const { points } = pointsFixture(t)
+    const row = points.normalizeLoadedPoint({ name: 'custom_alarm', label: '压力过高', data_type: 'WORD', alarm_condition: '=1' })
+    row.__usage = 'alarm_trigger' // Native v-model changes the UI field before @change.
+    points.setPointUsage(row, 'alarm_trigger')
+    assert.equal(row.alarm_condition, '!=0'); assert.equal(row.data_type, 'WORD')
+    row.alarm_text = 'old description'; row.label = '新报警名称'
+    assert.equal(points.defaultVoiceText(row), '{设备}：新报警名称')
+    assert.deepEqual(points.alarmConditionOptions.map(item => item.value), ['!=0', '=0', '=1'])
 })
 
 test('point row keys survive edits and stay out of stored point payloads', async t => {
@@ -182,24 +193,21 @@ test('adding a point reveals its own card on the last page after pagination rend
     assert.doesNotMatch(JSON.stringify(added),/point-row-/)
 })
 
-test('alarm save errors and concurrent typing preserve the latest dirty draft', async t => {
+test('full alarm save errors and concurrent name edits preserve the latest dirty draft', async t => {
     const { points } = pointsFixture(t)
-    t.mock.method(adminApi, 'getDataPoints', async () => [{ id: 1, name: 'bj1', device_id: 'A', alarm_text: 'old' }])
+    t.mock.method(adminApi, 'getDataPoints', async () => [{ id: 1, name: 'bj1', device_id: 'A', data_type: 'BOOL', plc_tag: 'DB1.DBX0.0', alarm_text: 'old' }])
     const response = deferred()
-    t.mock.method(adminApi, 'saveAlarmTexts', () => response.promise)
+    t.mock.method(adminApi, 'syncDataPoints', () => response.promise)
     await points.loadDataPoints()
-    points.dataPoints.value[0].alarm_text = 'first'
-    points.isPointsDirty.value = true
-    const pending = points.saveAlarmTexts()
-    points.dataPoints.value[0].alarm_text = 'second'
+    points.dataPoints.value[0].label = 'first'; points.markPointsDirty()
+    const pending = points.saveAllPoints()
+    points.dataPoints.value[0].label = 'second'
     response.resolve({ success: true, updated: 1 })
     await pending
-    assert.equal(points.dataPoints.value[0].alarm_text, 'second')
-    assert.equal(points.isPointsDirty.value, true)
-    t.mock.method(adminApi, 'saveAlarmTexts', async () => { throw new Error('offline') })
-    await points.saveAlarmTexts()
-    assert.equal(points.isPointsDirty.value, true)
-    assert.equal(points.dataPoints.value[0].alarm_text, 'second')
+    assert.equal(points.dataPoints.value[0].label, 'second'); assert.equal(points.isPointsDirty.value, true)
+    t.mock.method(adminApi, 'syncDataPoints', async () => { throw new Error('offline') })
+    await points.saveAllPoints()
+    assert.equal(points.isPointsDirty.value, true); assert.equal(points.dataPoints.value[0].label, 'second')
 })
 
 test('blank PLC DB fields stay blank instead of turning into DB0.DBW0', t => {

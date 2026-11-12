@@ -4,8 +4,7 @@ export const DATA_CENTER_SECTIONS = Object.freeze([
   { key: 'tables', label: '数据表', hint: '整理并选用数据' },
   { key: 'sources', label: '数据源', hint: '连接接口与数据库' },
   { key: 'mapping', label: '点位映射', hint: '配置设备采集点位' },
-  { key: 'monitor', label: '点位监视', hint: '检查实时值与质量' },
-  { key: 'alarms', label: '报警配置', hint: '配置报警规则' }
+  { key: 'monitor', label: '点位监视', hint: '检查实时值与质量' }
 ])
 
 export function dataCenterSourceLabel(type) {

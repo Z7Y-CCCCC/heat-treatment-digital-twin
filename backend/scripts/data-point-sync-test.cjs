@@ -135,6 +135,22 @@ async function main() {
             throw new Error(`最终点位状态不正确: ${JSON.stringify(finalRows)}`);
         }
 
+        const alarm = { ...point('named_alarm','风机过热报警','DB1.DBW8'), point_kind:'alarm' };
+        const alarmSave=await requestJson(`${origin}/api/datapoints/sync`, {
+            method:'POST',body:JSON.stringify({device_id:deviceId,points:[...finalRows,alarm]})
+        });
+        assertResult(alarmSave,{inserted:1,updated:0,deleted:0},'新增具名报警');
+        const withAlarm=await requestJson(`${origin}/api/datapoints?device_id=${encodeURIComponent(deviceId)}`);
+        if(withAlarm.at(-1).alarm_condition!=='!=0') throw new Error('新报警必须默认非0触发');
+        for(const invalid of [{alarm_condition:'invalid'}, {data_type:'STRING',plc_tag:'DB1,S20.20'}]) {
+            let rejected=false;
+            try { await requestJson(`${origin}/api/datapoints/sync`,{method:'POST',body:JSON.stringify({device_id:deviceId,points:[...withAlarm.slice(0,-1),{...withAlarm.at(-1),...invalid}]})}); }
+            catch(error) { rejected=/400/.test(error.message); }
+            if(!rejected) throw new Error('无效报警条件/类型必须拒绝');
+            const unchanged=await requestJson(`${origin}/api/datapoints?device_id=${encodeURIComponent(deviceId)}`);
+            if(JSON.stringify(unchanged)!==JSON.stringify(withAlarm)) throw new Error('无效报警配置不得改写任何点位');
+        }
+        console.log('PASS named alarm defaults to nonzero; invalid conditions/text triggers rejected atomically');
         await requestJson(`${origin}/api/internal/shutdown`, {
             method: 'POST',
             headers: { 'x-shutdown-token': SHUTDOWN_TOKEN }

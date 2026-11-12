@@ -8,7 +8,7 @@ const STATE_TABLE = '_desktop_seed_state';
 const APPLICATION_TABLES = [
     'factories', 'factory_settings', 'workshops', 'lines', 'devices', 'data_points',
     'models', 'projects', 'scenes', 'device_templates', 'datapoint_templates',
-    'widgets', 'bindings', 'releases', 'event_logs', 'metric_snapshots', 'settings'
+    'widgets', 'bindings', 'releases', 'event_logs', 'metric_snapshots', 'point_samples', 'settings'
 ];
 
 function identifier(value) {

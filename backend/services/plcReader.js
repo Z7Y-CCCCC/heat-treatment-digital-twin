@@ -151,6 +151,7 @@ class PlcReader {
                     sample_interval_ms: this._resolveSampleInterval(point),
                     value,
                     quality,
+                    sourceMode:'integrated_plc',
                     lastReadAt: snapshot?.pointMeta?.[`${category}.${fieldName}`]?.timestamp || null
                 };
             })
@@ -579,6 +580,7 @@ class PlcReader {
             data[category][fieldName] = value;
             data.quality[category][fieldName] = quality;
             data.pointMeta[`${category}.${fieldName}`] = {
+                sourceMode:'integrated_plc',
                 id: point.id || '',
                 timestamp: data.timestamp,
                 name: point.name || fieldName,
@@ -588,6 +590,10 @@ class PlcReader {
                 unit: point.unit || '',
                 display_format: point.display_format || '',
                 sample_interval_ms: this._resolveSampleInterval(point),
+                point_kind: point.point_kind,
+                alarm_record_role: point.alarm_record_role || '',
+                alarm_text: point.alarm_text || '',
+                alarm_condition: point.alarm_condition || '!=0',
                 plc_address: point.plc_address || point.plc_tag || '',
                 voice_config: point.voice_config || ''
             };
@@ -609,6 +615,7 @@ class PlcReader {
                 patch[category][fieldName] = previous[category]?.[fieldName] ?? null;
                 patch.quality[category][fieldName] = 'bad';
                 patch.pointMeta[`${category}.${fieldName}`] = {
+                    sourceMode:'integrated_plc',
                     id: point.id || '',
                     timestamp: previous.pointMeta?.[`${category}.${fieldName}`]?.timestamp || 0,
                     name: point.name || fieldName,
@@ -618,6 +625,10 @@ class PlcReader {
                     unit: point.unit || '',
                     display_format: point.display_format || '',
                     sample_interval_ms: this._resolveSampleInterval(point),
+                    point_kind: point.point_kind,
+                    alarm_record_role: point.alarm_record_role || '',
+                    alarm_text: point.alarm_text || '',
+                    alarm_condition: point.alarm_condition || '!=0',
                     plc_address: point.plc_address || point.plc_tag || '',
                     voice_config: point.voice_config || ''
                 };

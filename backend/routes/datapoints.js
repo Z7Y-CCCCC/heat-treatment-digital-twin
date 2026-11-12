@@ -1,6 +1,75 @@
 const express = require('express');
 const router = express.Router();
 const { getDb } = require('../db/database');
+const { parseAlarmCondition } = require('../services/pointAlarm');
+const { trendHistory, queryRange,rawHistory } = require('../services/pointHistory');
+const { KEY: HISTORY_POLICY_KEY, readPolicy, readHistoryPoints, normalizePolicy, normalizePointPolicy } = require('../services/historyPolicy');
+
+router.use(['/history-policy', '/history'], (req, res, next) => {
+    res.setHeader('Cache-Control', 'no-store');
+    next();
+});
+
+router.get('/history-policy', async (req, res) => {
+    try {
+        const db = await getDb(), deviceId = String(req.query.device_id || '');
+        if (deviceId && !await deviceInFactory(db, deviceId, req.factoryId)) return res.status(404).json({error:'设备不属于当前工厂'});
+        const points = await readHistoryPoints(db, req.factoryId, deviceId);
+        res.json({success:true,factoryId:req.factoryId,policy:await readPolicy(db,req.factoryId),points});
+    } catch (error) { res.status(400).json({error:error.message}); }
+});
+router.put('/history-policy', async (req, res) => {
+    try {
+        const policy = normalizePolicy(req.body), db = await getDb();
+        await db.transaction(async tx => {
+            if (!await tx.get('SELECT id FROM factories WHERE id=?',[req.factoryId])) throw Error('当前工厂不存在');
+            const existing = await tx.get('SELECT 1 FROM factory_settings WHERE factory_id=? AND `key`=?',[req.factoryId,HISTORY_POLICY_KEY]);
+            if (existing) await tx.run('UPDATE factory_settings SET value=?,updated_at=CURRENT_TIMESTAMP WHERE factory_id=? AND `key`=?',[JSON.stringify(policy),req.factoryId,HISTORY_POLICY_KEY]);
+            else await tx.run('INSERT INTO factory_settings (factory_id,`key`,value) VALUES (?,?,?)',[req.factoryId,HISTORY_POLICY_KEY,JSON.stringify(policy)]);
+        });
+        restartDataEngineSoon('update history policy',req.factoryId);
+        res.json({success:true,factoryId:req.factoryId,policy,futureSamplesOnly:true});
+    } catch (error) { res.status(400).json({error:error.message}); }
+});
+router.put('/history-policy/points/:id', async (req, res) => {
+    try {
+        const policy = normalizePointPolicy(req.body), db = await getDb();
+        const updated = await db.transaction(async tx => {
+            const point = await tx.get('SELECT id,device_id FROM data_points WHERE id=?',[req.params.id]);
+            if (!point || !await deviceInFactory(tx,point.device_id,req.factoryId)) return false;
+            await tx.run('UPDATE data_points SET history_mode=?,history_days=? WHERE id=? AND device_id=?',[policy.mode,policy.days,point.id,point.device_id]);
+            return true;
+        });
+        if (!updated) return res.status(404).json({error:'点位不属于当前工厂'});
+        restartDataEngineSoon('update point history policy',req.factoryId);
+        res.json({success:true,factoryId:req.factoryId,pointId:req.params.id,policy,futureSamplesOnly:true});
+    } catch (error) { res.status(400).json({error:error.message}); }
+});
+
+router.get('/history/records',async(req,res)=>{
+    try{
+        queryRange(req.query);const db=await getDb(),deviceId=String(req.query.device_id || ''),pointId=String(req.query.point_id || '');
+        if(!await deviceInFactory(db,deviceId,req.factoryId) || !await db.get('SELECT id FROM data_points WHERE id=? AND device_id=?',[pointId,deviceId]))return res.status(404).json({error:'设备或点位不属于当前工厂'});
+        const point=await db.get('SELECT history_mode,history_days FROM data_points WHERE id=?',[pointId]);
+        res.json({...await rawHistory(db,{factoryId:req.factoryId,deviceId,pointId},req.query),factoryId:req.factoryId,deviceId,pointId,
+            retentionPolicy:await readPolicy(db,req.factoryId),pointPolicy:normalizePointPolicy({mode:point.history_mode,days:point.history_days})});
+    }catch(error){res.status(400).json({error:error.message});}
+});
+
+router.get('/history', async(req,res)=>{
+    try {
+        queryRange(req.query);
+        const db=await getDb(),deviceId=String(req.query.device_id || ''),pointId=String(req.query.point_id || '');
+        if(!await deviceInFactory(db,deviceId,req.factoryId) || !await db.get('SELECT id FROM data_points WHERE id=? AND device_id=?',[pointId,deviceId]))return res.status(404).json({error:'设备或点位不属于当前工厂'});
+        const status=global.dataEngine?.getFactoryStatuses?.()?.[req.factoryId] || global.dataEngine?.getStatus?.();
+        const mode=String(req.query.source_mode || status?.mode || 'integrated_plc');
+        if(!['simulation','integrated_plc'].includes(mode))return res.status(400).json({error:'采样来源无效'});
+        const result=await trendHistory(db,{factoryId:req.factoryId,deviceId,pointId,sourceMode:mode},req.query);
+        const point=await db.get('SELECT history_mode,history_days FROM data_points WHERE id=?',[pointId]);
+        res.json({...result,factoryId:req.factoryId,deviceId,pointId,sourceMode:mode,storage:status?.historyStorageStatus || null,
+            retentionPolicy:await readPolicy(db,req.factoryId),pointPolicy:normalizePointPolicy({mode:point.history_mode,days:point.history_days})});
+    }catch(error){res.status(400).json({error:error.message});}
+});
 const {
     normalizePlcOptions,
     normalizeProtocol,
@@ -176,7 +245,7 @@ function normalizePointPayload(point, fallback = '') {
         alarm_record_role: usage === 'normal' || usage === 'alarm_trigger' ? '' : role,
         alarm_text: String(point.alarm_text || '').trim(),
         alarm_level: point.alarm_level || 'WARNING',
-        alarm_condition: point.alarm_condition || '=1',
+        alarm_condition: point.alarm_condition || '!=0',
         voice_config: normalizeVoiceConfig(point.voice_config),
         alarm_high: nullableNumber(point.alarm_high),
         alarm_low: nullableNumber(point.alarm_low)
@@ -195,6 +264,12 @@ function validatePointPayload(point, rowLabel = '点位', protocolValue = 'S7', 
     }
 
     if (isBlank(normalized.label)) errors.push(`${rowLabel}: 点位名称不能为空`);
+    if (normalizeUsage(normalized) === 'alarm_trigger' && !parseAlarmCondition(normalized.alarm_condition)) {
+        errors.push(`${rowLabel}: 报警触发条件无效，请使用 !=0、=0、=1 或数值比较条件`);
+    }
+    if (normalizeUsage(normalized) === 'alarm_trigger' && ['STRING', 'CHAR', 'DT', 'DTZ', 'DTL', 'DTLZ'].includes(normalized.data_type)) {
+        errors.push(`${rowLabel}: 报警触发点位必须使用开关量或数值类型`);
+    }
 
     const hasPlcTag = !isBlank(normalized.plc_tag);
     const hasDbNumber = !isBlank(normalized.db_number);

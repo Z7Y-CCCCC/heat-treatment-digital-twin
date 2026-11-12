@@ -11,7 +11,8 @@ import { splitHudKpiValue } from './hudPresentation.js'
 import { resolveHudText } from './hudTextConfig.js'
 import { colorChannels, colorAtOpacity, effectiveWidgetBackground, widgetAppearanceVariables } from './widgetAppearance.js'
 import { resolveWidgetViewStyle, widgetSurfacePresentation } from './widgetSurfaceSkin.js'
-import { configureTrendAxes, appendTrendSample } from './trendChart.js'
+import { configureTrendAxes, appendTrendSample, compactTrendRows, trendWindowSeconds } from './trendChart.js'
+import { createPointHistoryClient } from './pointHistoryClient.js'
 import MapRegionList from './MapRegionList.vue'
 import { tooltipBindingContext, tooltipPlaybackSelection, tooltipPathQuality, tooltipRuntimeValue, tooltipMetadataPath, mappedWidgetValue, deviceStatusText } from './tooltipContext.js'
 import { WidgetPlaybackKey, WidgetClockKey, createWidgetPlaybackController } from './widgetPlayback.js'
@@ -57,11 +58,14 @@ const pointerHovered = ref(false)
 const chartRef = ref(null)
 const localTrend = ref([])
 const localHistories=new Map()
-const historyKey=()=>`${props.runtimeContext.factoryId || ''}:${playback.value.device?.id || ''}:${props.runtimeContext.partId || ''}:${/^map(?:\.|$)/.test(dataBinding.value.path || '') ? props.mapData.code || props.runtimeContext.viewId || '' : ''}:${dataBinding.value.pointKey || dataBinding.value.pointId || dataBinding.value.path || ''}`
+const historyKey=()=>`${props.runtimeContext.factoryId || ''}:${playback.value.device?.id || ''}:${props.runtimeContext.partId || ''}:${/^map(?:\.|$)/.test(dataBinding.value.path || '') ? props.mapData.code || props.runtimeContext.viewId || '' : ''}:${dataBinding.value.pointKey || dataBinding.value.pointId || dataBinding.value.path || ''}:${pointRecord.value?.sourceMode || ''}`
 let chart = null
 let lastChartSignature = ''
 let chartResizeObserver = null
 let widgetDisposed = false
+const historyClient=createPointHistoryClient(typeof window!=='undefined' && window.fetch ? window.fetch.bind(window) : null)
+const historyLoadError=ref('')
+let historyLoadTimer=null,historyGeneration=0
 
 function getByPath(source, path) {
   if (!path) return undefined
@@ -906,6 +910,25 @@ function triggerEvents(trigger, domEvent) {
   widgetEvents.value.filter(event => (event.trigger || 'click') === trigger).forEach(event => emit('action', { event, widget: props.widget, domEvent }))
 }
 
+async function loadStoredHistory(){
+  clearTimeout(historyLoadTimer);const version=++historyGeneration,key=historyKey()
+  const pointId=pointRecord.value?.id,deviceId=playback.value.device?.id || dataBinding.value.deviceId,factoryId=props.runtimeContext.factoryId
+  if(!localHistoryEnabled.value || !pointId || !deviceId || !factoryId || !props.dataReady){historyClient.cancel();return}
+  const seconds=trendWindowSeconds(content.value.timeWindowSeconds),limit=content.value.historyLength || 2000,now=Date.now()
+  try{
+    const result=await historyClient.read({factoryId,deviceId,pointId,sourceMode:pointRecord.value?.sourceMode},{windowSeconds:seconds,limit,now})
+    if(!result || widgetDisposed || version!==historyGeneration || key!==historyKey())return
+    const merged=new Map(result.rows.map(row=>[row.timestamp,row]))
+    for(const row of localHistories.get(key)||[])if(row.timestamp>=now-seconds*1000)merged.set(row.timestamp,row)
+    const rows=compactTrendRows([...merged.values()].sort((a,b)=>a.timestamp-b.timestamp),limit)
+    if(!localHistories.has(key) && localHistories.size>=32)localHistories.delete(localHistories.keys().next().value)
+    localHistories.set(key,rows);localTrend.value=rows
+    historyLoadError.value=result.storage?.status==='error'?result.storage.stage==='journal'?'历史写盘失败，请检查磁盘；部分采样尚未安全保存':'历史入库异常；采样在本机可靠队列中待重试':''
+  }catch(error){if(!widgetDisposed && version===historyGeneration)historyLoadError.value='历史读取失败，当前仅显示已收到的实时数据'}
+  finally{if(!widgetDisposed && version===historyGeneration){historyLoadTimer=setTimeout(loadStoredHistory,15000);historyLoadTimer?.unref?.()}}
+}
+watch(()=>[historyKey(),pointRecord.value?.id,content.value.timeWindowSeconds,props.dataReady],()=>{historyClient.cancel();historyLoadError.value='';void loadStoredHistory()},{immediate:true})
+
 watch(() => localHistoryEnabled.value ? [boundValue.value,historyClock.value] : null, sample => {
   if (!sample) return
   const [value]=sample
@@ -939,6 +962,7 @@ onMounted(() => {
 })
 onUnmounted(() => {
   widgetDisposed = true
+    ++historyGeneration;clearTimeout(historyLoadTimer);historyClient.dispose()
   if(!props.runtimeContext.tooltipScope)playbackController.remove(props.widget)
   window.removeEventListener('resize', resizeChart)
   chartResizeObserver?.disconnect()
@@ -1130,10 +1154,12 @@ onUnmounted(() => {
     <template v-else>
       <div class="unknown-widget"><strong>{{ widgetTitle || type }}</strong><small>该组件由 {{ widget.runtimeTarget || 'Unity' }} 运行时处理</small></div>
     </template>
+    <small v-if="isTrend && historyLoadError" class="trend-history-warning" role="status">{{historyLoadError}}</small>
   </div>
 </template>
 
 <style scoped>
+.trend-history-warning{position:absolute;bottom:3px;left:8px;right:8px;color:#d69b64;font-size:10px;line-height:1.4;z-index:2;background:rgba(20,24,35,.85);padding:3px 5px}
 .widget-device-heading{display:flex;justify-content:space-between;align-items:center;gap:8px;flex:none;font-size:11px;color:#c0bce5;margin:0 0 8px;line-height:1.3}.widget-device-heading span{overflow:hidden;white-space:nowrap;text-overflow:ellipsis}.widget-device-heading small{font-size:10px;color:#9996bb}
 
 .parameter-filter{padding:8px 14px;display:flex;flex-direction:column;align-items:stretch;gap:5px;min-width:0}.filter-error{color:#f28e8e;font-size:11px}.parameter-filter select,.parameter-filter input:not([type=checkbox]){width:100%;min-width:0;padding:9px 12px;border:1px solid #8aa0b955;border-radius:8px;background:rgba(82,65,122,.3);color:#e9e2f5;font:inherit}.parameter-filter option{background:#352c4e;color:#eee8fa}.parameter-filter label{display:flex;align-items:center;gap:8px}

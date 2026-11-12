@@ -6,7 +6,7 @@ const { spawn } = require('child_process');
 const { BACKEND_DIR, createRunDirectory } = require('./integration-test-utils.cjs');
 
 const scripts = [
-    'startup-services.test.cjs', 'simulation-points-test.cjs',
+    'startup-services.test.cjs', 'simulation-points-test.cjs', 'display-connection-health-test.cjs', 'point-history-test.cjs', 'history-policy-test.cjs',
     'independent-arrival.test.cjs', 'bidirectional-transfer-test.cjs',
     'endurance-continuity.test.cjs', 'endurance-memory.test.cjs', 'endurance-mysql-memory.test.cjs', 'endurance-mysql-cleanup.test.cjs', 'endurance-report-io.test.cjs',
     'test-isolation-test.cjs', 'display-only-runtime-test.cjs', 'collector-process-test.cjs', 'collector-process-integration-test.cjs', 'collector-mode-persistence-test.cjs', 'simulation-connection-status-test.cjs', 'database-readiness-test.cjs', 'bounded-process-log-test.cjs', 'history-retention-test.cjs', 'map-surface-schema-test.cjs',

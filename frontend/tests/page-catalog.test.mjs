@@ -26,7 +26,8 @@ test('one registration feeds navigation, nested tabs and the authorization matri
   for (const group of ['factory', 'models']) assert.match(panel, new RegExp(`adminNavPages\\('${group}', adminPageCatalog\\.value\\)`))
   for (const group of ['platform', 'settings', 'points', 'data-center']) assert.match(panel, new RegExp(`adminSubpages\\('${group}', adminPageCatalog\\.value\\)`))
   assert.equal(adminNavPages('models').find(p => p.key === 'disassembly-layout').label, '拆解布局')
-  assert.ok(adminSubpages('points').some(p => p.permissionKey === 'points.alarms'))
+  assert.equal(adminSubpages('points').some(p => p.permissionKey === 'points.alarms'), false)
+  assert.equal(ADMIN_PAGES.find(p => p.key === 'points.alarms').retired, true)
   assert.equal(new Set(PAGE_PERMISSIONS.map(p => p.key)).size, PAGE_PERMISSIONS.length)
 })
 

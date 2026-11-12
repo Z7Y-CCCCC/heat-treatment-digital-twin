@@ -178,6 +178,19 @@ export const adminApi = {
         const suffix = deviceId && deviceId !== 'all' ? `?device_id=${encodeURIComponent(deviceId)}` : ''
         return (await fetch(`${API_BASE}/datapoints${suffix}`)).json()
     },
+    async getHistoryPolicy(factoryId, deviceId = '') {
+        const suffix = deviceId && deviceId !== 'all' ? '?device_id=' + pathId(deviceId) : ''
+        const response = await fetch(`${API_BASE}/datapoints/history-policy${suffix}`, { ...(factoryId ? {headers:{'X-Factory-ID':factoryId}} : {}), cache:'no-store' })
+        const result = await readApiJson(response, '读取历史策略失败')
+        if (response.status === 404 && ['接口不存在', '读取历史策略失败: 404'].includes(result.error)) return {error:'当前采集服务版本尚不支持历史策略，请更新采集服务后重试。'}
+        return result
+    },
+    async saveHistoryPolicy(factoryId, policy) {
+        return readApiJson(await fetch(`${API_BASE}/datapoints/history-policy`, { method:'PUT', headers:{'Content-Type':'application/json','X-Factory-ID':factoryId}, body:JSON.stringify(policy) }), '保存历史策略失败')
+    },
+    async savePointHistoryPolicy(factoryId, pointId, policy) {
+        return readApiJson(await fetch(`${API_BASE}/datapoints/history-policy/points/${pathId(pointId)}`, { method:'PUT', headers:{'Content-Type':'application/json','X-Factory-ID':factoryId}, body:JSON.stringify(policy) }), '保存点位历史策略失败')
+    },
     async saveAlarmTexts(deviceId, points) { return readApiJson(await fetch(`${API_BASE}/datapoints/alarm-texts`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ device_id: deviceId, points }) }), '保存报警文本失败') },
     async saveDataPointsBatch(deviceId, points) { 
         return readApiJson(await fetch(`${API_BASE}/datapoints/batch`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ device_id: deviceId, points }) }), '保存点位失败')

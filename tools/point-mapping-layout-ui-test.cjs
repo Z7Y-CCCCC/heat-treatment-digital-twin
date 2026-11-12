@@ -202,7 +202,7 @@ async function audit(name, width, textSize) {
     const selectedDevice = row(pointIds.real).getByRole('button', { name: '选择点位所属设备', exact: true });
     assert.equal((await selectedDevice.innerText()).trim(), '现场设备A · 温控与传动完整名称');
     assert.ok((await selectedDevice.getAttribute('title')).includes('默认车间'), 'the compact device label keeps the full hierarchy in its title');
-    assert.equal(await row(pointIds.alarm).locator('.point-usage-input').inputValue(), 'alarm_trigger'); assert.equal(await row(pointIds.alarm).locator('.alarm-text-input').inputValue(), '风机过热报警：请检查现场设备');
+    assert.equal(await row(pointIds.alarm).locator('.point-usage-input').inputValue(), 'alarm_trigger'); assert.equal(await row(pointIds.alarm).locator('.point-name-input').inputValue(), '风机过热报警：请检查现场设备');
     assert.equal(await row(pointIds.bool).getByLabel('单位', { exact: true }).isDisabled(), true);
     await audit(`${textSize}-${width}-common`, width, textSize);
     await showAdvanced(true); assert.equal(Number(await row(pointIds.real).getByLabel('换算倍率', { exact: true }).inputValue()), .125); assert.equal(Number(await row(pointIds.real).getByLabel('偏移修正', { exact: true }).inputValue()), -2.5); assert.equal(await row(pointIds.real).getByLabel('显示小数', { exact: true }).inputValue(), '0.00');
@@ -221,6 +221,11 @@ async function audit(name, width, textSize) {
   check('short device name is readable on its own, long device names never become paths, and real native hover titles/full-path selection options remain intact');
   const initialPoints = await api('/api/datapoints'), initialDevices = await api('/api/devices'), initialModels = await api('/api/models'), initialCatalog = await api('/api/data-center/catalog');
   const writesBefore = mutations.filter(row => row.path === '/api/datapoints/sync').length;
+  assert.equal(await page.getByRole('button', { name: '报警配置', exact: true }).count(), 0);
+  assert.equal(await page.locator('#points-panel-alarms').count(), 0);
+  assert.equal(await row(pointIds.alarm).getByLabel('报警触发条件', { exact: true }).inputValue(), '!=0');
+  await row(pointIds.alarm).getByLabel('报警触发条件', { exact: true }).selectOption('=0');
+  await row(pointIds.alarm).locator('.point-name-input').fill('风机报警新名称');
   await row(pointIds.real).locator('.point-name-input').fill('实际温度 · 布局整理');
   await page.getByTestId('add-data-point').click(); await page.getByTestId('add-data-point').click(); assert.equal(await page.locator('.point-mapping-row.is-new-point').count(), 2);
   const firstNew = page.locator('.point-mapping-row.is-new-point').first(), secondNew = page.locator('.point-mapping-row.is-new-point').last();
@@ -243,19 +248,19 @@ async function audit(name, width, textSize) {
   check('a deliberate409 save failure preserves all edited/new row drafts and leaves the database untouched');
   await saveButton().click(); await closeAlert('点位配置已保存'); await waitUntil(async () => await page.locator('.point-mapping-row.is-new-point').count() === 0, 10000, 'saved IDs assigned');
   let savedPoints = await api('/api/datapoints'); const added = savedPoints.find(point => point.label === '新增布局验收点位'); assert.ok(added?.id); assert.equal(savedPoints.length, initialPoints.length + 1);
-  for (const original of initialPoints) { const saved = savedPoints.find(point => point.id === original.id); assert.ok(saved); const expected = { ...original, ...(original.id === pointIds.real ? { label: '实际温度 · 布局整理' } : {}) }; assert.deepEqual(saved, expected, `point ${original.id} technical definition remains stable`); }
+  for (const original of initialPoints) { const saved = savedPoints.find(point => point.id === original.id); assert.ok(saved); const expected = { ...original, ...(original.id === pointIds.real ? { label: '实际温度 · 布局整理' } : original.id === pointIds.alarm ? {label:'风机报警新名称',alarm_text:'风机报警新名称',alarm_condition:'=0'} : {}) }; assert.deepEqual(saved, expected, `point ${original.id} technical definition remains stable`); }
   assert.deepEqual(await api('/api/devices'), initialDevices); assert.deepEqual(await api('/api/models'), initialModels);
   const savedCatalog = await api('/api/data-center/catalog'); const beforeBinding = initialCatalog.items.find(item => item.binding?.pointId === String(pointIds.real)), afterBinding = savedCatalog.items.find(item => item.binding?.pointId === String(pointIds.real)); assert.ok(beforeBinding && afterBinding); assert.deepEqual(afterBinding.binding, beforeBinding.binding); assert.deepEqual(afterBinding.tooltipBinding, beforeBinding.tooltipBinding);
   assert.ok(mutations.filter(row => row.path === '/api/datapoints/sync').every(row => row.body.points.every(point => !Object.keys(point).some(key => key.startsWith('__')))));
   check('explicit API save assigns IDs and persists only intended edits/addition; existing address/type/name/unit/conversion/voice bindings, devices and models stay unchanged');
-  await page.reload(); await loaded(6); assert.equal(await row(pointIds.real).locator('.point-name-input').inputValue(), '实际温度 · 布局整理'); assert.equal(await row(added.id).locator('.plc-address-input').inputValue(), 'DB92.DBW0');
+  await page.reload(); await loaded(6); assert.equal(await row(pointIds.alarm).getByLabel('报警触发条件',{exact:true}).inputValue(),'=0'); assert.equal(await row(pointIds.alarm).locator('.point-name-input').inputValue(),'风机报警新名称'); assert.equal(await row(pointIds.real).locator('.point-name-input').inputValue(), '实际温度 · 布局整理'); assert.equal(await row(added.id).locator('.plc-address-input').inputValue(), 'DB92.DBW0');
   await removeButton(row(added.id)).click(); assert.equal((await api('/api/datapoints')).length, 6); await saveButton().click(); await closeAlert('点位配置已保存'); await loaded(); savedPoints = await api('/api/datapoints'); assert.equal(savedPoints.length, 5); assert.ok(!savedPoints.some(point => point.id === added.id)); await snap('functional-saved-reloaded');
-  check('reload restores saved rows; deleting a saved row remains a draft until explicit save, without touching peer definitions');
+  check('alarm name/condition save and reload together without a standalone configuration page; reload restores saved rows; deleting a saved row remains a draft until explicit save, without touching peer definitions');
   await api('/api/admin-auth/users', 'POST', { username: 'point_layout_reader', password: info.password, role: 'viewer', permissions: { view: false }, pagePermissions: { points: { view: true, edit: false }, 'points.alarms': { view: true, edit: false } } }, 201);
   const readerContext = await contextFor(1024, 200); await makePage(readerContext, 'point_layout_reader');
   assert.equal(await page.getByTestId('add-data-point').isDisabled(), true); assert.equal(await saveButton().isDisabled(), true);
   for (const id of Object.values(pointIds)) { const entry = row(id); for (const selector of ['.point-name-input', '.point-usage-input', '.point-datatype-select', '.plc-address-input', '.sample-input', '.access-input', '.unit-input']) assert.equal(await entry.locator(selector).isDisabled(), true); assert.equal(await removeButton(entry).isDisabled(), true); assert.equal(await entry.getByRole('button', { name: '选择点位所属设备', exact: true }).isDisabled(), true); }
-  assert.equal(await row(pointIds.alarm).locator('.alarm-text-input').isDisabled(), true);
+  assert.equal(await row(pointIds.alarm).locator('.alarm-condition-input').isDisabled(), true);
   await audit('200-1024-readonly', 1024, 200); await showAdvanced(true);
   for (const id of Object.values(pointIds)) for (const name of ['换算倍率', '偏移修正', '显示小数']) assert.equal(await row(id).getByLabel(name, { exact: true }).isDisabled(), true);
   await audit('200-1024-readonly-advanced', 1024, 200); await showAdvanced(false);

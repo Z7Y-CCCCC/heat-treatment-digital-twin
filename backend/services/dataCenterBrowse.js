@@ -1,4 +1,5 @@
 'use strict';
+const { alarmEventDetails } = require('./pointAlarm');
 // A bounded, read-only view of existing sources. This is neither a collector
 // nor a second historical store, and never promotes catalog sample values.
 const center = require('./dataCenter');
@@ -133,9 +134,9 @@ async function browseTable(factoryId, tableId, input = {}, options = {}) {
             where.push('occurred_at >= ? AND occurred_at < ?');
             params.push(eventSqlTime(Date.parse(query.start),dialect),eventSqlTime(Date.parse(query.end)+1000,dialect));
         }
-        const events=await state.db.all(`SELECT id,source_id,title,message,level,occurred_at FROM event_logs WHERE ${where.join(' AND ')} ORDER BY occurred_at DESC,id DESC LIMIT 5000`,params);
+        const events=await state.db.all(`SELECT id,source_id,title,message,value,level,occurred_at FROM event_logs WHERE ${where.join(' AND ')} ORDER BY occurred_at DESC,id DESC LIMIT 5000`,params);
         const byDevice=new Map(devices.map(device=>[String(device.id),device]));
-        const records=events.map(event=>({id:`event_${event.id}`,objectId:String(event.source_id || factoryId),deviceId:String(event.source_id || ''),sourceId:String(event.source_id || ''),objectName:byDevice.get(String(event.source_id))?.name || String(event.source_id || '') || '工厂事件',objectPath:byDevice.get(String(event.source_id)) ? objectPath(byDevice.get(String(event.source_id))) : ['当前工厂',event.source_id].filter(Boolean).join(' / '),fieldId:'internal_event_records',fieldName:'报警／事件内容',value:String(event.message || event.title || '').slice(0,2000),title:String(event.title || '').slice(0,2000),unit:'',quality:'good',updatedAt:eventTime(event.occurred_at,dialect),level:event.level})).filter(record=>(query.mode!=='history' || record.updatedAt && record.updatedAt>=query.start && record.updatedAt<=query.end) && textMatch(record,query.q,true));
+        const records=events.map(event=>({id:`event_${event.id}`,objectId:String(event.source_id || factoryId),deviceId:String(event.source_id || ''),sourceId:String(event.source_id || ''),objectName:byDevice.get(String(event.source_id))?.name || String(event.source_id || '') || '工厂事件',objectPath:byDevice.get(String(event.source_id)) ? objectPath(byDevice.get(String(event.source_id))) : ['当前工厂',event.source_id].filter(Boolean).join(' / '),fieldId:'internal_event_records',fieldName:'报警／事件内容',value:String(event.message || event.title || '').slice(0,2000),title:String(event.title || '').slice(0,2000),unit:'',quality:'good',updatedAt:eventTime(event.occurred_at,dialect),level:event.level,...alarmEventDetails(event)})).filter(record=>(query.mode!=='history' || record.updatedAt && record.updatedAt>=query.start && record.updatedAt<=query.end) && textMatch(record,query.q,true));
         return {...result,...paginate(records,query),capabilities:{...result.capabilities,history:true},notice:'读取当前工厂已保存的真实报警／事件记录，最多查询最近 5000 条；没有记录时显示为空，不使用示例事件。'};
     }
     if (table.sourceType === 'dataset') {

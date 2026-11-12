@@ -1,6 +1,27 @@
 const number = v => v === null || v === undefined || v === '' || typeof v === 'boolean' || !Number.isFinite(Number(v)) ? null : Number(v)
 const positive = value => { const n=number(value); return n !== null && n>0 ? n : null }
 const MAX_AXIS_INTERVALS = 200
+export function trendWindowSeconds(value=600) {
+  const seconds=Number(value)
+  return Number.isSafeInteger(seconds) && seconds>=60 && seconds<=8640000000000 ? seconds : 600
+}
+// Drawing budget, not a storage policy. Keep extrema/outages and the complete
+// time span instead of silently turning a one-hour window into its last 600 points.
+export function compactTrendRows(rows,limit=2000) {
+  const budget=Math.max(8,Math.min(20000,Math.floor(Number(limit)||2000)))
+  if(rows.length<=budget)return rows
+  const size=Math.ceil(rows.length/Math.floor(budget/5)),selected=new Map()
+  for(let start=0;start<rows.length;start+=size){
+    const end=Math.min(rows.length,start+size);let minimum=start,maximum=start,fault=-1
+    for(let i=start;i<end;i++){
+      if(rows[i].value===null){if(fault<0)fault=i;continue}
+      if(rows[minimum].value===null || rows[i].value<rows[minimum].value)minimum=i
+      if(rows[maximum].value===null || rows[i].value>rows[maximum].value)maximum=i
+    }
+    for(const index of [start,end-1,minimum,maximum,fault])if(index>=0)selected.set(index,rows[index])
+  }
+  return [...selected.entries()].sort((a,b)=>a[0]-b[0]).map(([,row])=>row)
+}
 function chartTimes(values) {
   let previous=null, day=0
   return values.map(value=>{
@@ -103,5 +124,5 @@ export function appendTrendSample(rows, sample, { limit = 120, windowSeconds = 6
   const last = rows.at(-1)
   if (last && timestamp <= last.timestamp) return rows
   const next = [...rows,{time:timestamp,timestamp,value:sample.quality === 'good' ? value : null}]
-  return next.filter(row=>row.timestamp>=timestamp-Math.max(10,Number(windowSeconds)||600)*1000).slice(-Math.max(8,Math.min(600,Number(limit)||120)))
+  return compactTrendRows(next.filter(row=>row.timestamp>=timestamp-Math.max(10,Number(windowSeconds)||600)*1000),limit)
 }

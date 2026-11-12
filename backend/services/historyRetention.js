@@ -1,16 +1,13 @@
+'use strict';
 const { getDb } = require('../db/database');
-
-const RETENTION_DAYS = 90;
-const BATCH_SIZE = 500;
-const MAX_BATCHES = 20;
-const DAY_MS = 86400000;
+const BATCH_SIZE = 500, MAX_BATCHES = 20;
 
 class HistoryRetention {
     constructor({ database = getDb, intervalMs = 60000, clock = Date.now, enabled = true } = {}) {
         this.database = database; this.intervalMs = intervalMs; this.clock = clock; this.enabled = enabled;
         this.timer = null; this.pending = null; this.stopped = true; this.nextRun = 0;
-        this.state = { enabled, metricDays: RETENTION_DAYS, eventDays: null,
-            lastRunAt: null, deleted: 0, backlog: false, error: null };
+        this.state = { enabled, policy:'record-deadline',eventDays:null,
+            lastRunAt: null, deleted: 0, pointDeleted:0,metricDeleted:0,backlog: false, error: null };
     }
     status() { return { ...this.state, running: !!this.pending }; }
     start() {
@@ -33,33 +30,35 @@ class HistoryRetention {
         return this.pending;
     }
     async prune() {
-        const db = await this.database();
-        const cutoff = new Date(this.clock() - RETENTION_DAYS * DAY_MS).toISOString().slice(0, 19).replace('T', ' ');
-        let deleted = 0, backlog = false;
+        const counts={pointDeleted:0,metricDeleted:0};
+        let backlog = false;
         try {
-            for (let batch = 0; batch < MAX_BATCHES && !this.stopped; batch++) {
-                // Existing time index bounds each query. Yield between batches
-                // to avoid holding a long transaction or blocking PLC writes.
-                const keys = await db.all(`SELECT id FROM metric_snapshots WHERE snapshot_time < ?
-                    ORDER BY snapshot_time ASC, id ASC LIMIT ${BATCH_SIZE}`, [cutoff]);
-                if (this.stopped || !keys.length) { backlog = false; break; }
-                const ids = keys.map(row => row.id);
-                const result = await db.run(`DELETE FROM metric_snapshots WHERE snapshot_time < ?
-                    AND id IN (${ids.map(() => '?').join(',')})`, [cutoff, ...ids]);
-                deleted += Number(result.changes ?? result.affectedRows ?? 0);
-                backlog = keys.length === BATCH_SIZE;
-                if (!backlog) break;
-                await new Promise(resolve => setImmediate(resolve));
+            const db=await this.database(),cutoff=this.clock();
+            for(const [table,key,counter] of [['point_samples','sample_key','pointDeleted'],['metric_snapshots','id','metricDeleted']]) {
+                for (let batch = 0; batch < MAX_BATCHES && !this.stopped; batch++) {
+                    // NULL deadlines (legacy/permanent) and exact boundaries
+                    // survive. Configuration saves never rewrite old deadlines.
+                    const keys=await db.all(`SELECT ${key} FROM ${table} WHERE retention_until < ?
+                        ORDER BY retention_until,${key} LIMIT ${BATCH_SIZE}`,[cutoff]);
+                    if(this.stopped || !keys.length)break;
+                    const ids=keys.map(row=>row[key]);
+                    const result=await db.run(`DELETE FROM ${table} WHERE retention_until < ?
+                        AND ${key} IN (${ids.map(()=>'?').join(',')})`,[cutoff,...ids]);
+                    counts[counter]+=Number(result.changes ?? result.affectedRows ?? 0);
+                    if(keys.length<BATCH_SIZE)break;
+                    if(batch===MAX_BATCHES-1)backlog=true;
+                    await new Promise(resolve=>setImmediate(resolve));
+                }
             }
-            this.state = { ...this.state, lastRunAt: new Date(this.clock()).toISOString(), deleted, backlog, error: null };
-            this.nextRun = this.clock() + (backlog ? 5 * 60000 : 6 * 3600000);
+            this.state = { ...this.state,...counts, lastRunAt: new Date(this.clock()).toISOString(),deleted:counts.pointDeleted+counts.metricDeleted, backlog, error: null };
+            this.nextRun = this.clock() + (backlog ? 5000 : 60000);
             return this.status();
         } catch (error) {
             this.state.error = error.message;
-            this.nextRun = this.clock() + 5 * 60000;
+            this.nextRun = this.clock() + 60000;
             throw error;
         }
     }
 }
 const historyRetention = new HistoryRetention();
-module.exports = { HistoryRetention, historyRetention, RETENTION_DAYS };
+module.exports = { HistoryRetention, historyRetention };

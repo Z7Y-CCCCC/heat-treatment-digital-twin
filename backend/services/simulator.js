@@ -327,6 +327,8 @@ class Simulator {
                     manual: !!override, overriddenAt: override?.updatedAt || null };
                 const key = `${group}.${field}`;
                 frame.pointMeta[key] = { ...frame.pointMeta[key], id:String(point.id), timestamp:frame.timestamp,
+                    point_kind:point.point_kind, alarm_record_role:point.alarm_record_role || '',
+                    alarm_text:point.alarm_text || '', alarm_condition:point.alarm_condition || '!=0',
                     name:point.name, label:point.label || point.name, unit:point.unit || '', display_format:point.display_format || '',
                     category:group, field_name:field, plc_address:point.plc_tag || '', voice_config:point.voice_config || '',
                     sample_interval_ms:point.sample_interval_ms || this.pollIntervalMs, sourceMode:'simulation', simulationManual:!!override };

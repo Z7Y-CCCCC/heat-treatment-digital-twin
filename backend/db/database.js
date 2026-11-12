@@ -1911,6 +1911,10 @@ async function ensureSchemaColumns() {
     await ensureColumn('event_logs', 'factory_id', `${t.string(128)} NULL`);
     await ensureColumn('event_logs', 'collector_event_id', `${t.string(80)} NULL`);
     await ensureColumn('metric_snapshots', 'factory_id', `${t.string(128)} NULL`);
+    // Only newly recorded finite-lifetime rows expire. Legacy history is never
+    // assigned a deadline during startup/migration or a configuration save.
+    await ensureColumn('metric_snapshots', 'retention_until', `${t.double} NULL`);
+    await ensureColumn('point_samples', 'retention_until', `${t.double} NULL`);
 
     await ensureColumn('devices', 'coordinate_space', `${t.string(32)} DEFAULT 'legacy_world'`);
     await ensureColumn('devices', 'plc_enabled', `${t.bool} DEFAULT 0`);
@@ -1925,6 +1929,8 @@ async function ensureSchemaColumns() {
     await ensureColumn('devices', 'plc_max_retries', `${t.int} DEFAULT 0`);
 
     await ensureColumn('data_points', 'sample_interval_ms', `${t.int} DEFAULT 1000`);
+    await ensureColumn('data_points', 'history_mode', `${t.string(32)} DEFAULT 'recent'`);
+    await ensureColumn('data_points', 'history_days', `${t.int} DEFAULT 30`);
     await ensureColumn('data_points', 'access_type', `${t.string(32)} DEFAULT 'READ'`);
     await ensureColumn('data_points', 'db_number', `${t.int} NULL`);
     await ensureColumn('data_points', 'db_byte_offset', `${t.int} NULL`);
@@ -1933,7 +1939,7 @@ async function ensureSchemaColumns() {
     await ensureColumn('data_points', 'alarm_record_role', `${t.string(64)} DEFAULT ''`);
     await ensureColumn('data_points', 'alarm_text', `${t.text}`);
     await ensureColumn('data_points', 'alarm_level', `${t.string(32)} DEFAULT 'WARNING'`);
-    await ensureColumn('data_points', 'alarm_condition', `${t.string(64)} DEFAULT '=1'`);
+    await ensureColumn('data_points', 'alarm_condition', `${t.string(64)} DEFAULT '!=0'`);
     await ensureColumn('data_points', 'voice_config', `${t.text}`);
 
     await ensureColumn('scenes', 'draft_json', `${t.json}`);
@@ -2040,7 +2046,7 @@ async function initTables() {
         alarm_record_role ${t.string(64)} DEFAULT '',
         alarm_text ${t.text},
         alarm_level ${t.string(32)} DEFAULT 'WARNING',
-        alarm_condition ${t.string(64)} DEFAULT '=1',
+        alarm_condition ${t.string(64)} DEFAULT '!=0',
         voice_config ${t.text},
         alarm_high ${t.double} NULL,
         alarm_low ${t.double} NULL
@@ -2162,6 +2168,21 @@ async function initTables() {
         value ${t.text} NOT NULL
     `);
 
+    // Raw configured-point history is independent of a dashboard's viewport.
+    // No cascade delete: backups include this ordinary business table.
+    await createTable('point_samples', `
+        sample_key ${t.string(64)} PRIMARY KEY,
+        factory_id ${t.string(128)} NOT NULL,
+        device_id ${t.string(128)} NOT NULL,
+        point_id ${t.string(128)} NOT NULL,
+        point_key ${t.string(255)} NOT NULL,
+        point_name ${t.string(255)}, unit ${t.string(64)},
+        source_mode ${t.string(32)} NOT NULL,
+        sampled_at ${t.double} NOT NULL,
+        value_json ${t.text}, value_number ${t.double},
+        quality ${t.string(32)} NOT NULL
+    `);
+
     await ensureSchemaColumns();
 
     await createIndex('idx_workshops_factory', 'workshops', `${quoteIdentifier('factory_id')}, ${quoteIdentifier('sort_order')}`);
@@ -2171,6 +2192,9 @@ async function initTables() {
     await createIndex('idx_event_logs_factory_time', 'event_logs', `${quoteIdentifier('factory_id')}, ${quoteIdentifier('occurred_at')} DESC, ${quoteIdentifier('id')} DESC`);
     await createIndex('idx_event_logs_collector_event', 'event_logs', quoteIdentifier('collector_event_id'), { unique: true });
     await createIndex('idx_metrics_factory_time', 'metric_snapshots', `${quoteIdentifier('factory_id')}, ${quoteIdentifier('snapshot_time')} DESC, ${quoteIdentifier('id')} DESC`);
+    await createIndex('idx_point_samples_scope_time', 'point_samples', `${quoteIdentifier('factory_id')}, ${quoteIdentifier('device_id')}, ${quoteIdentifier('point_id')}, ${quoteIdentifier('sampled_at')}`);
+    await createIndex('idx_point_samples_expiry', 'point_samples', `${quoteIdentifier('retention_until')}, ${quoteIdentifier('sample_key')}`);
+    await createIndex('idx_metric_snapshots_expiry', 'metric_snapshots', `${quoteIdentifier('retention_until')}, ${quoteIdentifier('id')}`);
     await createIndex('idx_factory_settings_key', 'factory_settings', `${quoteIdentifier('factory_id')}, ${quoteIdentifier('key')}`);
     await createIndex('idx_lines_workshop', 'lines', `${quoteIdentifier('workshop_id')}, ${quoteIdentifier('sort_order')}`);
     await createIndex('idx_devices_line', 'devices', `${quoteIdentifier('line_id')}, ${quoteIdentifier('sort_order')}`);

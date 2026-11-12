@@ -13,6 +13,8 @@ function sourceFingerprint(){
         if(entry.isDirectory())walk(file,relative+'/');else if(entry.isFile()){hash.update(relative+'\0');hash.update(fs.readFileSync(file));}
     }};
     walk(path.join(project,'backend'));walk(path.join(project,'shared'));
+    hash.update('backend/scripts/generate-voice.ps1\0');
+    hash.update(fs.readFileSync(path.join(project,'backend/scripts/generate-voice.ps1')));
     return hash.digest('hex');
 }
 async function buildCollectorRuntime({includeWorkspaceAssets=false}={}){

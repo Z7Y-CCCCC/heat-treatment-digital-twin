@@ -255,6 +255,8 @@ try {
 }
 
 $node = Resolve-RequiredCommand -Names @('node.exe', 'node') -InstallHint '未找到 Node.js，请先安装 Node.js 22.12 或更高版本。'
+& $node (Join-Path $desktopDirectory 'scripts/verify-default-dashboard-template.cjs')
+if ($LASTEXITCODE -ne 0) { throw '固定出厂模板不符合仓库约束，请先阅读打包必看.md。' }
 if (-not $ResumeCandidate) {
 $npm = Resolve-RequiredCommand -Names @('npm.cmd', 'npm') -InstallHint '未找到 npm，请重新安装包含 npm 的 Node.js。'
 $null = Resolve-RequiredCommand -Names @('dotnet.exe', 'dotnet') -InstallHint '未找到 .NET SDK，请先安装支持 .NET 8 的 SDK。'
@@ -456,6 +458,9 @@ Invoke-CheckedCommand -Label '核对实际安装资源为空系统（业务库�
 )
 Invoke-CheckedCommand -Label '生成独立可选采集插件目录（不进入大屏安装包）' -Executable $node -ArgumentList @(
     (Join-Path $desktopDirectory 'scripts/prepare-collector-plugin.cjs'), $displayResources, $pluginDirectory
+)
+Invoke-CheckedCommand -Label '确认采集插件同样只含固定画面模板与空现场数据' -Executable $node -ArgumentList @(
+    (Join-Path $desktopDirectory 'scripts/verify-empty-install.cjs'), (Join-Path $pluginDirectory 'resources')
 )
 $resourceGuard = Join-Path $projectDirectory 'tools/package-resource-integrity.cjs'
 Invoke-CheckedCommand -Label '在不可变基线前准备可验证的 NSIS 提权助手' -Executable $node -ArgumentList @(

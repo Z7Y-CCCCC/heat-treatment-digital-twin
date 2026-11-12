@@ -41,6 +41,9 @@ async function zipFile(filename, entries) {
         await db.run('INSERT INTO devices (id, name, line_id, model_type, model_file, template_id, plc_enabled, plc_ip, plc_options) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', ['portable_device', '设备', 'portable_line', 'portable_model', '/uploads/models/sample.gltf', 'portable_template', 1, '192.168.10.123', JSON.stringify({ password: 'must-never-export' })]);
         const point = await db.run('INSERT INTO data_points (device_id, name, label, plc_tag, voice_config) VALUES (?, ?, ?, ?, ?)', ['portable_device', 'temp', '温度', 'DB1.DBD0', JSON.stringify({ url: '/uploads/audio/alarm.wav' })]);
         const pointId = Number(point.insertId);
+        const historyPolicy = require('../services/historyPolicy').normalizePolicy({ recentEnabled: false, metricMode: 'off' });
+        await db.run('UPDATE data_points SET history_mode=?,history_days=? WHERE id=?', ['finite', 7, pointId]);
+        await db.run('INSERT INTO factory_settings (factory_id,`key`,value) VALUES (?,?,?)', ['portable_source', 'history_policy_v1', JSON.stringify(historyPolicy)]);
         const document = { schemaVersion: 1, projectId: 'portable_project', sceneId: 'portable_scene', widgets: [{ id: 'portable_widget', data: { mode: 'plc', deviceId: 'portable_device', pointId: String(pointId), connectionId: 'primary' }, image: '/uploads/appearance/picture.png', password: 'json-secret' }] };
         await db.run('UPDATE devices SET instance_config = ? WHERE id = ?', [JSON.stringify({ pointId }), 'portable_device']);
         await db.run('INSERT INTO projects (id, factory_id, name, is_active) VALUES (?, ?, ?, ?)', ['portable_project', 'portable_source', '项目', 1]);
@@ -72,6 +75,10 @@ async function zipFile(filename, entries) {
         const configText = entries.find(([name]) => name === 'config.json')[1].toString();
         assert.ok(!configText.includes('must-never-export') && !configText.includes('192.168.10.123') && !configText.includes('json-secret'));
         assert.ok(JSON.parse(configText).tables.factory_settings.some(row => row.key === 'data_center_catalog_v1'));
+        const exportedTables = JSON.parse(configText).tables;
+        assert.equal(exportedTables.data_points[0].history_mode, 'finite');
+        assert.equal(exportedTables.data_points[0].history_days, 7);
+        assert.ok(!Object.hasOwn(exportedTables, 'point_samples') && !Object.hasOwn(exportedTables, 'metric_snapshots'), 'configuration packages never carry historical samples');
         const first = await importBundle(archive, { name: '一号副本', inspectedSha256: checked.sha256 }, options);
         const second = await importBundle(archive, { name: '二号副本', inspectedSha256: checked.sha256 }, options);
         assert.notEqual(first.factoryId, second.factoryId);
@@ -82,6 +89,9 @@ async function zipFile(filename, entries) {
         const newPoint = await db.get('SELECT * FROM data_points WHERE id = ?', [draft.widgets[0].data.pointId]);
         assert.notEqual(newDevice.id, 'portable_device'); assert.equal(newPoint.device_id, newDevice.id);
         assert.notEqual(newPoint.id, pointId); assert.equal(JSON.parse(newDevice.instance_config).pointId, newPoint.id);
+        assert.equal(newPoint.history_mode, 'finite'); assert.equal(newPoint.history_days, 7);
+        assert.deepEqual(await require('../services/historyPolicy').readPolicy(db, first.factoryId), historyPolicy);
+        assert.deepEqual(await require('../services/historyPolicy').readPolicy(db, 'unrelated_factory'), require('../services/historyPolicy').DEFAULT_POLICY);
         assert.equal(newDevice.plc_enabled, 0); assert.equal(newDevice.plc_ip, '');
         const importedCatalog = await dataCenter.buildCatalog(first.factoryId);
         const newCatalogPoint = importedCatalog.items.find(item => item.binding?.pointId === String(newPoint.id));
@@ -133,6 +143,18 @@ async function zipFile(filename, entries) {
         await zipFile(malformedCatalog, entries.map(([name, bytes]) => [name, name === 'config.json' ? brokenConfigBytes : name === 'manifest.json' ? Buffer.from(JSON.stringify(brokenManifest)) : bytes]));
         await assert.rejects(inspectBundle(malformedCatalog), /数据中心/);
         assert.equal((await db.get('SELECT COUNT(*) AS n FROM factories')).n, count, 'malformed data-center metadata is rejected before creating any new factory');
+        for (const invalidHistory of ['factory', 'point']) {
+            const invalidConfig = JSON.parse(configText);
+            if (invalidHistory === 'factory') invalidConfig.tables.factory_settings.find(row => row.key === 'history_policy_v1').value = JSON.stringify({ recentHours: 0 });
+            else invalidConfig.tables.data_points[0].history_days = -1;
+            const bytes = Buffer.from(JSON.stringify(invalidConfig)), manifest = JSON.parse(entries.find(([name]) => name === 'manifest.json')[1]);
+            manifest.config.size = bytes.length; manifest.config.sha256 = crypto.createHash('sha256').update(bytes).digest('hex');
+            const filename = path.join(directory, `invalid-history-${invalidHistory}.zip`);
+            await zipFile(filename, entries.map(([name, value]) => [name, name === 'config.json' ? bytes : name === 'manifest.json' ? Buffer.from(JSON.stringify(manifest)) : value]));
+            const inspectedSha256 = crypto.createHash('sha256').update(fs.readFileSync(filename)).digest('hex');
+            await assert.rejects(importBundle(filename, { inspectedSha256 }, options), /小时数|保留天数/);
+            assert.equal((await db.get('SELECT COUNT(*) AS n FROM factories')).n, count, 'invalid history policy is rejected before creating a factory');
+        }
         // A late failure must roll back even after every row and file was written.
         await assert.rejects(importBundle(archive, { inspectedSha256: checked.sha256 }, { ...options, beforeCommit: () => { throw new Error('injected rollback'); } }), /injected rollback/);
         assert.equal((await db.get('SELECT COUNT(*) AS n FROM factories')).n, count);
@@ -143,6 +165,9 @@ async function zipFile(filename, entries) {
         const againCheck = await inspectBundle(again);
         const third = await importBundle(again, { inspectedSha256: againCheck.sha256 }, options);
         const thirdCatalog = await dataCenter.buildCatalog(third.factoryId);
+        assert.deepEqual(await require('../services/historyPolicy').readPolicy(db, third.factoryId), historyPolicy);
+        const thirdPoint = await db.get(`SELECT p.* FROM data_points p JOIN devices d ON d.id=p.device_id JOIN lines l ON l.id=d.line_id JOIN workshops w ON w.id=l.workshop_id WHERE w.factory_id=?`, [third.factoryId]);
+        assert.equal(thirdPoint.history_mode, 'finite'); assert.equal(thirdPoint.history_days, 7);
         assert.equal(thirdCatalog.items.find(item => item.sourceType === 'plc').label, 'portable_line');
         assert.equal(thirdCatalog.items.find(item => item.id === sourceField.id).categoryId, 'production');
         // Shared appearance travels with the package but only applies by opt-in.

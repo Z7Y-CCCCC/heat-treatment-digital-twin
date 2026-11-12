@@ -13,7 +13,8 @@ export const ADMIN_PAGES = [
   page('disassembly-layout', '模型库 · 拆解布局', { navGroup: 'models', navLabel: '拆解布局', icon: 'disassembly-layout' }),
   page('model-animations', '模型库 · 动作动画', { navGroup: 'models', navLabel: '动作动画', icon: 'animation' }),
   page('points', '数据中心 · 点位映射', { icon: 'points', container: 'points', subpage: 'mapping', tabLabel: '点位映射', destinations: [{ container: 'data-center', subpage: 'mapping', tabLabel: '点位映射' }], actions: ['view', 'edit', 'delete'] }),
-  page('points.alarms', '数据中心 · 报警配置', { container: 'points', subpage: 'alarms', tabLabel: '报警配置', destinations: [{ container: 'data-center', subpage: 'alarms', tabLabel: '报警配置' }] }),
+  // Retain the old permission key/API for existing integrations, not a second editor.
+  page('points.alarms', '报警文本（旧接口）', { retired: true }),
   page('point-monitor', '数据中心 · 点位监视', { icon: 'point-monitor', destinations: [{ container: 'data-center', subpage: 'monitor', tabLabel: '点位监视' }], actions: ['view'] }),
   page('platform.designer', '组件配置 · 大屏设计器', { container: 'platform', subpage: 'designer', tabLabel: '大屏设计器', description: '多级视角、图层与场景组件', actions: ['view', 'edit', 'delete', 'publish'] }),
   page('platform.map', '组件配置 · 地图底图与主题', { container: 'platform', subpage: 'map', tabLabel: '地图底图与主题', description: '地图底图、品牌默认值与配色', migratedFrom: 'platform.designer' }),

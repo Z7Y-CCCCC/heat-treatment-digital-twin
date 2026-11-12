@@ -1531,10 +1531,15 @@ async function showDeploymentWindow() {
                 return { success: true };
             } catch (error) { return { success: false, error: error.message }; }
         });
+        ipcMain.handle('deployment:probe', async (event, raw) => {
+            assertSender(event);
+            try { return await require('./connectionHealth.cjs').probeCollectorConnection(raw); }
+            catch { return { state: 'invalid', checkedAt:Date.now(), transport: '地址格式无效', collection: '未检测', display: null, message: '请填写完整的 http:// 或 https:// 服务地址和端口，不含账号、路径或查询参数。' }; }
+        });
         deploymentHandlersRegistered = true;
     }
     deploymentWindow = new BrowserWindow({
-        title: '部署与连接', width: 740, height: 655, resizable: false,
+        title: '部署与连接', width: 760, height: 850, resizable: true, minWidth: 700, minHeight: 760,
         autoHideMenuBar: true, backgroundColor: '#f4f6fa',
         icon: path.join(__dirname, 'assets', 'icon.png'),
         webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true,

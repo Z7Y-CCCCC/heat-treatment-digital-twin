@@ -52,6 +52,7 @@ import { cacheFactoryDraft, clearFactoryDraft, readFactoryDraft } from '../../..
 import { DASHBOARD_DEVICE_DELETION_EVENT, dashboardDeletionAcknowledgementKey, normalizeDashboardDeletionCleanup, reconcileDashboardDeletionPayload, syncDashboardDeletionCaches } from '../../../runtime/dashboardDeletionSync.js'
 import { mergeDashboardDrafts } from '../../../runtime/dashboardDraftMerge.js'
 import { exportDashboardTemplate, importDashboardTemplate, dashboardTemplateReferences, rebindDashboardTemplate, MAX_TEMPLATE_BYTES } from '../../../runtime/dashboardTemplate.js'
+import { DEFAULT_DASHBOARD_TEMPLATE } from '../../../../../shared/defaultDashboardTemplate.mjs'
 import {
   DASHBOARD_WIDGET_LIBRARY,
   DASHBOARD_VIEW_MODES,
@@ -3443,7 +3444,10 @@ onBeforeUnmount(() => {
         <input ref="templateFileRef" type="file" accept=".json,application/json" hidden @change="loadTemplateFile" />
         <button type="button" :disabled="loading" title="导出布局、视角和数据绑定引用" @click="downloadTemplate">导出模板</button>
         <button type="button" :disabled="loading || saving || publishing" title="替换当前草稿，可通过撤销恢复；不会自动发布" @click="templateFileRef?.click()">导入模板</button>
-        <button type="button" :disabled="loading || saving || publishing" title="迁移项目后选择新数据源，核对字段并预览实际数据" @click="rebindCurrentTemplate">重绑定数据</button>
+        <span class="builtin-template-badge" role="note" aria-label="固定的内置默认模板" title="固定随软件交付的出厂画面基线；现场编辑不会改写它。新增设备自动沿用共享设备视角布局，删除设备不删除公共模板。模型、动作包和数据需另行导入配置。">
+          <svg viewBox="0 0 20 20" aria-hidden="true"><rect x="4.5" y="8.5" width="11" height="8" rx="2"/><path d="M7 8.5V6a3 3 0 0 1 6 0v2.5M10 11.5v2"/></svg>
+          <span>{{ DEFAULT_DASHBOARD_TEMPLATE.name }}<small>{{ DEFAULT_DASHBOARD_TEMPLATE.factoryViewCount }} 个视角 · 固定出厂基线</small></span>
+        </span>
         <select v-if="previewMode" :value="selectedViewId" title="模拟 Unity 当前视角" @change="selectView($event.target.value, { enterPreview: true })">
           <option v-for="view in views" :key="view.id" :value="view.id">{{ view.name }}</option>
         </select>
@@ -3860,7 +3864,7 @@ onBeforeUnmount(() => {
                 <label>配色预设<select v-model="selectedWidget.content.chartPalette" @change="applyChartPalette" ><option v-for="palette in chartPalettes" :key="palette.id" :value="palette.id">{{ palette.label }}</option></select></label>
                 <label>图表名称<input v-model="selectedWidget.content.seriesName" @change="recordProperty()" /></label>
                 <TrendChartSettings :content="selectedWidget.content" :unit="selectedWidget.data.unit" @change="recordProperty('修改图表坐标与时间')" />
-                <label>保留数据点<input v-model.number="selectedWidget.content.historyLength" type="number" min="8" max="600" @change="recordProperty()" /></label>
+                <label>画面绘制点数（不影响原始记录保存）<input v-model.number="selectedWidget.content.historyLength" type="number" min="8" max="20000" @change="recordProperty()" /></label>
                 <label class="visibility-bound-device"><input v-model="selectedWidget.content.showLegend" type="checkbox" @change="recordProperty('修改图例')" /> 显示多数据项图例</label>
                 <label v-if="selectedWidget.content.showLegend">图例位置<select v-model="selectedWidget.content.legendPosition" @change="recordProperty('修改图例位置')"><option value="top">顶部</option><option value="bottom">底部</option><option value="right">右侧</option></select></label>
                 <div class="property-grid two"><label v-if="['line','area','bar'].includes(selectedWidget.content.chartType)" class="visibility-bound-device"><input v-model="selectedWidget.content.showAxis" type="checkbox" @change="recordProperty('修改坐标轴')" /> 显示坐标轴</label><label v-if="selectedWidget.content.chartType!=='gauge'" class="visibility-bound-device"><input v-model="selectedWidget.content.showDataLabel" type="checkbox" @change="recordProperty('修改数据标签')" /> 显示数据标签</label></div>
@@ -4140,6 +4144,8 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+.builtin-template-badge{display:inline-flex;align-items:center;gap:7px;box-sizing:border-box;min-height:34px;padding:5px 10px;border:1px solid #c8d8ed;border-radius:7px;background:#f0f5fc;color:#355782;cursor:default;white-space:nowrap}.builtin-template-badge>svg{width:17px;height:17px;flex:none;fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}.builtin-template-badge>span{display:grid;gap:2px;font-size:11px;font-weight:600;line-height:1.2}.builtin-template-badge small{font-size:9px;font-weight:400;color:#7488a3}
+
 .designer-draft-conflict{display:flex;flex:0 0 auto;align-items:center;justify-content:space-between;gap:16px;padding:12px 16px;border-bottom:1px solid #e7d4a6;background:#fff9ec;color:#71551c;font-size:12px;overflow-wrap:anywhere}.designer-draft-conflict p{margin:5px 0;line-height:1.6}.designer-draft-conflict ul{max-height:120px;overflow:auto;padding-left:18px}.draft-conflict-actions{display:flex;flex-wrap:wrap;flex-shrink:0;gap:8px}.draft-conflict-actions button{padding:8px 12px;border:1px solid #d4bd8b;border-radius:7px;background:white;color:#71551c;cursor:pointer}.draft-conflict-actions .keep-local-draft{background:#275fe8;border-color:#275fe8;color:white}.draft-conflict-actions button:disabled{opacity:.5;cursor:wait}@media(max-width:900px){.designer-draft-conflict{align-items:flex-start;flex-direction:column;gap:8px}}
 .designer-diagnostic-frame{position:absolute;box-sizing:border-box;transform-origin:center;border-style:dashed;border-color:#ff4d4f;background:transparent;pointer-events:none;box-shadow:0 0 0 calc(1px * var(--diagnostic-ui-scale,1)) rgba(10,15,24,.8)}
 .diagnostic-focus-label{position:absolute;left:0;bottom:calc(100% + 6px * var(--diagnostic-ui-scale,1));max-width:calc(330px * var(--diagnostic-ui-scale,1));box-sizing:border-box;padding:calc(4px * var(--diagnostic-ui-scale,1)) calc(7px * var(--diagnostic-ui-scale,1));border-radius:calc(4px * var(--diagnostic-ui-scale,1));color:#fff;background:#c92c38;font-size:calc(12px * var(--diagnostic-ui-scale,1));font-weight:600;line-height:1.4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;pointer-events:none}
