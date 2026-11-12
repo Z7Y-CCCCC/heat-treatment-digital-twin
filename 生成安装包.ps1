@@ -9,15 +9,19 @@ param(
     [switch]$IncludeHistory,
     [switch]$RefreshDependencies,
     [switch]$ForceUnityBuild,
+    [switch]$FullBuild,
     [switch]$StarterTemplate = $true,
     [switch]$SkipSmokeTest,
     [string]$ReleaseDirectory,
+    [switch]$ResumeCandidate,
     [string]$BuildOutputRoot,
     [switch]$NoPause
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+if ($ResumeCandidate -and -not $ReleaseDirectory) { throw '续建必须指定未交付的候选目录。' }
+if ($ResumeCandidate -and ($FullBuild -or $ForceUnityBuild -or $RefreshDependencies)) { throw '续建与强制重新构建选项不能同时使用。' }
 
 $projectDirectory = $PSScriptRoot
 $desktopDirectory = Join-Path $projectDirectory 'desktop'
@@ -200,6 +204,22 @@ function Assert-ApplicationIsClosed {
     }
 }
 
+# Reuse only a completed release with identical application input bytes,
+# including local uncommitted changes. Runs before Unity/SDK/dependency setup.
+if (-not ($FullBuild -or $ForceUnityBuild -or $RefreshDependencies -or $SkipSmokeTest -or $ReleaseDirectory)) {
+    $reuseNode = Resolve-RequiredCommand -Names @('node.exe', 'node') -InstallHint '请先安装 Node.js。'
+    & $reuseNode (Join-Path $projectDirectory 'tools/installer-repack.cjs') '--try-reuse'
+    if ($LASTEXITCODE -eq 0) { if (-not $NoPause) { [void](Read-Host '打包完成，按回车关闭') }; return }
+    if ($LASTEXITCODE -ne 10) { throw '快速打包失败，请查看上面的具体原因。' }
+}
+
+function Get-ReleaseSha256([string]$File) {
+    $stream = [IO.File]::OpenRead($File)
+    $digest = [Security.Cryptography.SHA256]::Create()
+    try { return ([BitConverter]::ToString($digest.ComputeHash($stream))).Replace('-', '').ToLowerInvariant() }
+    finally { $stream.Dispose(); $digest.Dispose() }
+}
+
 $buildFailed = $false
 $buildStartedAt = (Get-Date).ToString('o')
 $buildSourceCommit = $null
@@ -235,6 +255,7 @@ try {
 }
 
 $node = Resolve-RequiredCommand -Names @('node.exe', 'node') -InstallHint '未找到 Node.js，请先安装 Node.js 22.12 或更高版本。'
+if (-not $ResumeCandidate) {
 $npm = Resolve-RequiredCommand -Names @('npm.cmd', 'npm') -InstallHint '未找到 npm，请重新安装包含 npm 的 Node.js。'
 $null = Resolve-RequiredCommand -Names @('dotnet.exe', 'dotnet') -InstallHint '未找到 .NET SDK，请先安装支持 .NET 8 的 SDK。'
 $unityEditor = Resolve-UnityEditor
@@ -306,6 +327,7 @@ $environmentNames = @(
     'DESKTOP_MYSQL_USER',
     'DESKTOP_MYSQL_PASSWORD',
     'DESKTOP_MYSQL_DATABASE',
+    'DESKTOP_MYSQL_RUNTIME_SOURCE',
     'DIGITAL_TWIN_UNITY_BUILD_DIR',
     'DESKTOP_RESOURCES_DIR',
     'DESKTOP_TEMPLATE_INCLUDE_HISTORY',
@@ -322,6 +344,11 @@ foreach ($name in $environmentNames) {
 
 try {
     $env:UNITY_EDITOR_PATH = $unityEditor
+    $installedMysql = Join-Path $env:ProgramFiles 'MySQL/MySQL Server 9.2/bin/mysqld.exe'
+    $localMysql = Join-Path $desktopDirectory 'resources/mysql'
+    if (-not $env:DESKTOP_MYSQL_RUNTIME_SOURCE -and -not (Test-Path -LiteralPath $installedMysql) -and (Test-Path -LiteralPath (Join-Path $localMysql 'bin/mysqld.exe'))) {
+        $env:DESKTOP_MYSQL_RUNTIME_SOURCE = $localMysql
+    }
     $env:DESKTOP_MYSQL_HOST = $DatabaseHost
     $env:DESKTOP_MYSQL_PORT = [string]$DatabasePort
     $env:DESKTOP_MYSQL_USER = $DatabaseUser
@@ -342,7 +369,17 @@ try {
     $env:DESKTOP_FORCE_UNITY_REBUILD = if ($ForceUnityBuild) { 'true' } else { 'false' }
 
     $installerName = "热处理数字孪生大屏-安装包-$version-x64.exe"
-    foreach ($buildStep in @('build:frontend', 'build:unity', 'build:admin-host', 'build:collector-service', 'build:collector-center', 'prepare:resources')) {
+    foreach ($uiScript in @('create-installer-brand.cjs', 'create-installer-ui.cjs')) {
+        Invoke-CheckedCommand -Label "更新安装界面：$uiScript" -Executable $node -ArgumentList @((Join-Path $desktopDirectory "scripts/$uiScript"))
+    }
+    # Unity owns generation of serialized scene/material settings. Capture the
+    # application inputs after that generation, before building the web/hosts.
+    Invoke-CheckedCommand -Label 'build:unity' -Executable $npm -ArgumentList @('--prefix', $desktopDirectory, 'run', 'build:unity')
+    $sourceSnapshot = Join-Path $outputDirectory 'source-inputs.json'
+    Invoke-CheckedCommand -Label '记录程序源码内容（包含本地未提交修改）' -Executable $node -ArgumentList @(
+        (Join-Path $projectDirectory 'tools/release-source-snapshot.cjs'), 'record', $projectDirectory, $sourceSnapshot
+    )
+    foreach ($buildStep in @('build:frontend', 'build:admin-host', 'build:collector-service', 'build:collector-center', 'prepare:resources')) {
         Invoke-CheckedCommand -Label $buildStep -Executable $npm -ArgumentList @('--prefix', $desktopDirectory, 'run', $buildStep)
     }
     $builderCli = Join-Path $desktopDirectory 'node_modules/electron-builder/out/cli/cli.js'
@@ -366,6 +403,39 @@ try {
     foreach ($name in $environmentNames) {
         [Environment]::SetEnvironmentVariable($name, $previousEnvironment[$name], 'Process')
     }
+}
+} else {
+    $priorTimingsFile = Join-Path $outputDirectory 'build-timings.json'
+    $priorTimings = Get-Content -LiteralPath $priorTimingsFile -Raw -Encoding UTF8 | ConvertFrom-Json
+    $preparationProof = $priorTimings
+    for ($attempt = 0; $attempt -lt 8; $attempt++) {
+        if (@($preparationProof.stages | Where-Object { $_.name -eq '生成可验证的 Windows x64 程序目录' -and $_.exitCode -eq 0 }).Count -eq 1) { break }
+        $previousProof = $preparationProof.PSObject.Properties['preparedBuildTimings']
+        if (-not $previousProof -or -not $previousProof.Value) { throw '缺少候选程序的编译记录。' }
+        $proofPath = [IO.Path]::GetFullPath([string]$previousProof.Value)
+        if (-not $proofPath.StartsWith($outputDirectory.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) { throw '编译记录不属于当前候选目录。' }
+        $preparationProof = Get-Content -LiteralPath $proofPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    }
+    foreach ($requiredStage in @('build:frontend', 'build:unity', 'build:admin-host', 'build:collector-service', 'build:collector-center', 'prepare:resources', '生成可验证的 Windows x64 程序目录')) {
+        if (@($preparationProof.stages | Where-Object { $_.name -eq $requiredStage -and $_.exitCode -eq 0 }).Count -ne 1) { throw "候选程序未完成准备：$requiredStage" }
+    }
+    $preparedTimingsFile = Join-Path $outputDirectory ("prepared-build-timings-{0}.json" -f (Get-Date -Format 'yyyyMMdd-HHmmss-fff'))
+    Copy-Item -LiteralPath $priorTimingsFile -Destination $preparedTimingsFile
+    $sourceSnapshot = Join-Path $outputDirectory 'source-inputs.json'
+    Invoke-CheckedCommand -Label '续建前验证候选源码内容' -Executable $node -ArgumentList @(
+        (Join-Path $projectDirectory 'tools/release-source-snapshot.cjs'), 'verify', $projectDirectory, $sourceSnapshot
+    )
+    $resumeBaseline = Join-Path $outputDirectory 'installation-resource-baseline.json'
+    $baselineProperty = $priorTimings.PSObject.Properties['resourceBaseline']
+    if ($baselineProperty -and $baselineProperty.Value) { $resumeBaseline = [string]$baselineProperty.Value }
+    Invoke-CheckedCommand -Label '续建前验证候选程序完整性' -Executable $node -ArgumentList @(
+        (Join-Path $projectDirectory 'tools/package-resource-integrity.cjs'), '--verify', (Join-Path $outputDirectory 'win-unpacked'), $resumeBaseline
+    )
+    $desktopPackage = Get-Content -Raw -LiteralPath $packageFile -Encoding UTF8 | ConvertFrom-Json
+    $version = [string]$desktopPackage.version
+    $installerName = "热处理数字孪生大屏-安装包-$version-x64.exe"
+    $builderCli = Join-Path $desktopDirectory 'node_modules/electron-builder/out/cli/cli.js'
+    $sourceUploadsDirectory = $null
 }
 
 $unpacked = Join-Path (Join-Path $outputDirectory 'win-unpacked') "$($desktopPackage.build.productName).exe"
@@ -392,8 +462,7 @@ Invoke-CheckedCommand -Label '在不可变基线前准备可验证的 NSIS 提�
     (Join-Path $projectDirectory 'tools/package-nsis-integrity.cjs'), '--prepare', (Join-Path $outputDirectory 'win-unpacked')
 )
 $resourceBaseline = Join-Path $outputDirectory 'installation-resource-baseline.json'
-# A resumed, unfinished release is rebuilt above. Keep the earlier immutable
-# baseline for diagnosis instead of overwriting it or comparing new bits to it.
+# Keep the original immutable baseline and all unsuccessful test evidence.
 if (Test-Path -LiteralPath $resourceBaseline) {
     $resourceBaseline = Join-Path $outputDirectory ("installation-resource-baseline-{0}.json" -f (Get-Date -Format 'yyyyMMdd-HHmmss-fff'))
 }
@@ -405,17 +474,9 @@ Invoke-CheckedCommand -Label '记录安装资源不可变基线' -Executable $no
     $resourceGuard, '--snapshot', (Join-Path $outputDirectory 'win-unpacked'), $resourceBaseline
 )
 if (-not $SkipSmokeTest) {
-    Invoke-CheckedCommand -Label '独立采集服务：无 Unity 采集、重启持久化与安全停库验证' -Executable $node -ArgumentList @(
-        (Join-Path $projectDirectory 'tools/collector-service-smoke-test.cjs'),
-        (Join-Path $pluginDirectory 'resources')
-    )
-    Invoke-CheckedCommand -Label '首次运行随包 MySQL 验证' -Executable $node -ArgumentList @(
-        (Join-Path $projectDirectory 'tools/packaged-mysql-smoke-test.cjs'),
-        $unpacked
-    )
-    Invoke-CheckedCommand -Label '随包 MySQL 项目迁移与回滚验证' -Executable $node -ArgumentList @(
-        (Join-Path $projectDirectory 'tools/packaged-project-bundle-mysql-test.cjs'),
-        $unpacked
+    Invoke-CheckedCommand -Label '并行验证项目迁移及独立运行环境（保留全部检查）' -Executable $node -ArgumentList @(
+        (Join-Path $projectDirectory 'tools/release-runtime-checks.cjs'),
+        $unpacked, (Join-Path $pluginDirectory 'resources'), (Join-Path $outputDirectory 'runtime-checks')
     )
 } else {
     Write-Warning '本次已明确跳过首次运行和项目迁移 MySQL 验证，不应宣称已通过新电脑验证。'
@@ -454,22 +515,30 @@ if (-not (Test-Path -LiteralPath $installerPath)) {
 $installer = Get-Item -LiteralPath $installerPath
 if ($installer.Length -le 0) { throw "安装包文件为空：$installerPath" }
 
-$hash = Get-FileHash -LiteralPath $installerPath -Algorithm SHA256
+$installerHash = Get-ReleaseSha256 $installerPath
 $checksumPath = "$installerPath.sha256.txt"
-Set-Content -LiteralPath $checksumPath -Encoding UTF8 -Value "$($hash.Hash.ToLowerInvariant())  $installerName"
+Set-Content -LiteralPath $checksumPath -Encoding UTF8 -Value "$installerHash  $installerName"
 $pluginName = "HeatTreatmentCollector-Plugin-$version-x64.zip"
 $pluginPath = Join-Path $outputDirectory $pluginName
 Invoke-CheckedCommand -Label '单独压缩可选采集插件' -Executable $node -ArgumentList @(
     (Join-Path $desktopDirectory 'scripts/archive-collector-plugin.cjs'), $pluginDirectory, $pluginPath
 )
-$pluginHash = (Get-FileHash -LiteralPath $pluginPath -Algorithm SHA256).Hash.ToLowerInvariant()
+$pluginHash = Get-ReleaseSha256 $pluginPath
+Invoke-CheckedCommand -Label '确认构建期间程序源码未改变' -Executable $node -ArgumentList @(
+    (Join-Path $projectDirectory 'tools/release-source-snapshot.cjs'), 'verify', $projectDirectory, $sourceSnapshot
+)
+Invoke-CheckedCommand -Label '确认版权说明与已验证程序一致' -Executable $node -ArgumentList @(
+    (Join-Path $projectDirectory 'tools/verify-generated-notice.cjs'), $projectDirectory, (Join-Path $outputDirectory 'win-unpacked')
+)
 $releaseManifest = [ordered]@{
     version = $version
     buildSourceCommit = $buildSourceCommit
     createdAt = (Get-Date).ToString('o')
     installer = $installerPath
     size = $installer.Length
-    sha256 = $hash.Hash.ToLowerInvariant()
+    sha256 = $installerHash
+    sourceSnapshot = $sourceSnapshot
+    stagingDirectory = $outputDirectory
     mysqlBundled = $true
     collectorBundled = $false
     collectorPlugin = [ordered]@{ file=$pluginName; size=(Get-Item -LiteralPath $pluginPath).Length; sha256=$pluginHash; smokeTest=$(if ($SkipSmokeTest) { 'skipped' } else { 'passed' }) }
@@ -503,7 +572,7 @@ Write-Host "`n安装包生成完成。" -ForegroundColor Green
 Write-Host "安装包：$installerPath"
 Write-Host "交付目录：$deliveryDirectory"
 Write-Host "文件大小：$([Math]::Round($installer.Length / 1MB, 1)) MB"
-Write-Host "SHA-256：$($hash.Hash)"
+Write-Host "SHA-256：$installerHash"
 Write-Host "校验文件：$checksumPath"
 
 } catch {
@@ -522,11 +591,17 @@ Write-Host "校验文件：$checksumPath"
                 success = -not $buildFailed
                 totalSeconds = [Math]::Round($buildTimer.Elapsed.TotalSeconds, 3)
                 stages = @($buildStages.ToArray())
+                resumedCandidate = [bool]$ResumeCandidate
+                preparedBuildTimings = $(if ($ResumeCandidate -and (Test-Path Variable:preparedTimingsFile)) { $preparedTimingsFile } else { $null })
+                resourceBaseline = $(if (Test-Path Variable:resourceBaseline) { $resourceBaseline } else { $null })
             }
             $timingJson = $timingReport | ConvertTo-Json -Depth 5
             $timingJson | Set-Content -LiteralPath $timingPath -Encoding UTF8
             if (-not $buildFailed -and (Test-Path Variable:deliveryDirectory)) {
                 $timingJson | Set-Content -LiteralPath (Join-Path $deliveryDirectory 'build-timings.json') -Encoding UTF8
+                if (-not $SkipSmokeTest) {
+                    @{ directory = $deliveryDirectory } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $desktopDirectory '.cache/last-verified-release.json') -Encoding UTF8
+                }
             }
             $timingCache = Join-Path $desktopDirectory '.cache'
             New-Item -ItemType Directory -Force -Path $timingCache | Out-Null

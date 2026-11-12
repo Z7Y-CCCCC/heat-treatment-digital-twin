@@ -17,18 +17,31 @@ let server,browser;
  const row=page.locator(`[data-model-id="${id}"]`);await row.waitFor();await row.locator('td').nth(2).click();await page.waitForFunction(()=>document.querySelector('.model-preview-footer')?.textContent?.includes('600普通多用炉'));
  const api=async route=>{const r=await page.request.get(info.origin+route);assert.equal(r.status(),200);return r.json()};
  const models=await api('/api/models'),model=models.find(m=>m.id===id),metadata=JSON.parse(model.metadata),asset=await page.request.get(info.origin+model.file_path);
- assert.equal(crypto.createHash('sha256').update(await asset.body()).digest('hex'),metadata.sourceAsset.sha256);assert.equal(metadata.inspection.parts.length,35);checks.push('model is listed once and original GLB bytes are intact');
+ assert.equal(crypto.createHash('sha256').update(await asset.body()).digest('hex'),metadata.sourceAsset.sha256);assert.equal(metadata.inspection.parts.length,34);checks.push('model is listed once and updated GLB hashes agree');
  await page.locator('.model-preview-stage').screenshot({path:path.resolve(__dirname,'../output/multipurpose-600-model.png')});
  await page.getByRole('navigation',{name:'模型库操作步骤'}).getByRole('button',{name:/拆解检查/}).click();await page.getByRole('button',{name:'▶ 演示拆解',exact:true}).click();await page.waitForFunction(()=>Number(document.querySelector('input[aria-label="拆解进度"]')?.value)>.999);
  await page.locator('.model-preview-stage').screenshot({path:path.resolve(__dirname,'../output/multipurpose-600-exploded.png')});
- await page.getByRole('button',{name:'↶ 反向组装',exact:true}).click();await page.waitForFunction(()=>Number(document.querySelector('input[aria-label="拆解进度"]')?.value)===0);checks.push('35 assembly groups explode and reassemble in the real UI');
+ await page.getByRole('button',{name:'↶ 反向组装',exact:true}).click();await page.waitForFunction(()=>Number(document.querySelector('input[aria-label="拆解进度"]')?.value)===0);checks.push('34 assembly groups explode and reassemble after removing the internal baffles');
  await page.getByRole('button',{name:'动作动画',exact:true}).click();await page.getByRole('combobox',{name:'选择动作动画模型',exact:true}).selectOption(id);
  const setTime=async(selector,value)=>{await selector.evaluate((el,v)=>{el.value=String(v);el.dispatchEvent(new Event('input',{bubbles:true}))},value);await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))))};
- for(const action of cadMotionActions(id)){
+ // The full process clip is retired as an individual authoring choice; its
+ // complete flow is exercised below through the coordinated line preview.
+ for(const action of cadMotionActions(id).filter(action=>action.id!=='process_cycle')){
   await page.getByRole('button',{name:'预览 CAD 动作：'+action.label,exact:true}).click();const preview=page.locator('.cad-motion-preview');await preview.locator('.loading').waitFor({state:'hidden'});await preview.getByRole('button',{name:'暂停',exact:true}).click();
   const slider=preview.getByRole('slider',{name:'CAD 动作进度',exact:true}),cycle=action.id==='process_cycle'?buildLineSimulation([{id:'cart',model_type:'transfer_cart'},{id:'furnace',model_type:id}],models):null;
   const stageTime=kind=>{const s=cycle.steps.find(s=>s.kind===kind);return s.start+s.duration/2};await setTime(slider,cycle?stageTime('feed'):1.3);const a=await preview.locator('canvas').screenshot();await setTime(slider,cycle?stageTime('heat_treat'):3.7);const b=await preview.locator('canvas').screenshot();assert.equal(a.equals(b),false,action.label+' should change rendered geometry/effects');
   if(cycle){for(const kind of ['feed','heat_treat','hot_return','quench','raise','drip','reclaim']){await setTime(slider,stageTime(kind));assert.equal(await preview.locator('.cycle-stage').textContent(),cycle.steps.find(s=>s.kind===kind).label);await preview.screenshot({path:path.join(directory,'complete-cycle-'+kind+'.png')})}}
+  if(action.id==='agitator'){
+   const canvas=preview.locator('canvas'),box=await canvas.boundingBox(),x=box.x+box.width*.5,y=box.y+box.height*.55;
+   await page.mouse.move(x,y);await page.mouse.down();await page.mouse.move(x+box.width*.20,y,{steps:12});await page.mouse.up();await setTime(slider,1.3);
+   const left=await canvas.screenshot({path:path.join(directory,'continuous-oil-side-left.png')});
+   await setTime(slider,2.1);assert.equal(left.equals(await canvas.screenshot()),false,'submerged agitation changes the side-view rendering');
+   await page.mouse.move(x,y);await page.mouse.down();await page.mouse.move(x-box.width*.40,y,{steps:16});await page.mouse.up();await setTime(slider,1.3);
+   await canvas.screenshot({path:path.join(directory,'continuous-oil-side-right.png')});
+   await preview.getByRole('checkbox',{name:'内部透视',exact:true}).uncheck();await setTime(slider,1.3);const solid=await canvas.screenshot();
+   await preview.getByRole('checkbox',{name:'内部透视',exact:true}).check();await setTime(slider,1.3);assert.equal(solid.equals(await canvas.screenshot()),false,'ordinary internal cutaway reveals the oil bath without entering oil-closeup mode');
+   checks.push('continuous lower oil bath and submerged agitation visible from both sides in ordinary cutaway');
+  }
   if(action.id==='basket_up'){
    const closeup=preview.getByRole('button',{name:'沥油近景',exact:true});await closeup.waitFor();
    const near=await preview.locator('canvas').screenshot();await preview.getByRole('button',{name:'完整视图',exact:true}).click();await setTime(slider,3.7);
@@ -38,7 +51,7 @@ let server,browser;
   if(['internal_transfer','heating','basket_up'].includes(action.id))await preview.screenshot({path:path.resolve(__dirname,'../output/multipurpose-600-'+action.id+'.png')});
   await preview.getByRole('button',{name:'复位',exact:true}).click();assert.equal(await slider.inputValue(),'0');console.log('PASS '+action.label);
  }
- checks.push('all ten actions render changing frames and support seek/pause/reset; complete cycle displays front/rear processing, quenching, drainage and unloading');
+ checks.push('all nine available individual actions render changing frames and support seek/pause/reset; complete process is validated through the coordinated line preview');
  await page.getByRole('button',{name:'设备联动',exact:true}).click();await page.getByRole('combobox',{name:'选择联动产线',exact:true}).selectOption('simulation_line_a');
  await page.getByRole('checkbox',{name:'参与联动：料车实例 A',exact:true}).check();await page.getByRole('textbox',{name:'搜索联动设备',exact:true}).fill('多用炉实例 A');await page.getByRole('checkbox',{name:'参与联动：多用炉实例 A',exact:true}).check();
  const devices=await api('/api/devices'),before=JSON.stringify(devices),selected=['sim_0','sim_6'].map(v=>devices.find(d=>d.id===v)),plan=buildLineSimulation(selected,models);

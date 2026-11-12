@@ -16,6 +16,7 @@ import {CLEANER_BATH} from './cleanerBathLayout.js'
 import {TRANSFER_DATUM} from '../../../shared/equipmentTransferDatum.mjs'
 import {buildAdaptiveTransferPath,sampleAdaptiveTransferPath,sameAdaptiveTransferGeometry} from '../../../shared/adaptiveTransferPath.mjs'
 import {measureEquipmentLoadCenters,equipmentLoadPoint} from './equipmentLoadCenter.js'
+import {CAD_CUTAWAY_SUFFIXES,collectCutawayMaterials} from './cadCutaway.js'
 import {siteDeviceTransform,siteLoadingDatum,siteCarrierPath,siteCarrierInitialPosition,assertSiteTransferDriver,solveSiteTransferPose,siteSceneUnitsPerMeter,siteWorldVector,siteWorldPoint,siteParentPoint,applySitePayloadMetrics} from './siteTransferAlignment.js'
 
 function bounds(root){const result=new T.Box3();root.traverse(n=>{if(!n.isMesh)return;for(let p=n;p;p=p.parent)if(!p.visible)return;result.union(new T.Box3().setFromObject(n))});return result}
@@ -88,8 +89,8 @@ export class LineSimulationScene extends CadMotionScene {
             entry.wrapper.updateMatrixWorld(true);entry.basePosition=entry.wrapper.position.clone();entry.baseYaw=entry.wrapper.rotation.y
             if(mode==='site')entry.siteSavedPosition=entry.basePosition.clone()
             const caption=label(row.name||row.id);caption.position.set(0,box.getSize(new T.Vector3()).y+.35,0);entry.wrapper.add(caption)
-            const shellNames=[...new Set([...parseSimulationConfig(model?.metadata).inspection?.shell?.node_names||[],...(CAD_MOTION_PROFILES[row.model_type]?['housing','lining','hood','upper_housing','tank','tanks','central_lower_body','lower_collection','fans_enamel','cold_housing','hot_housing','refractory','vault_bricks','partition_shell','partition_lining','hot_access_panels','hot_rear_hatch','quench_tank','quench_liquid'].map(n=>CAD_MOTION_PROFILES[row.model_type].prefix+n):[])])]
-            for(const name of shellNames)asset.getObjectByName(name)?.traverse(n=>{if(n.isMesh){const materials=[].concat(n.material).map(m=>{const c=m.clone();c.userData.previewOpacity=m.opacity;c.userData.previewTransparent=m.transparent;return c});n.material=Array.isArray(n.material)?materials:materials[0];this.shell.push(...materials)}})
+            const shellNames=[...new Set([...parseSimulationConfig(model?.metadata).inspection?.shell?.node_names||[],...(CAD_MOTION_PROFILES[row.model_type]?CAD_CUTAWAY_SUFFIXES.map(n=>CAD_MOTION_PROFILES[row.model_type].prefix+n):[])])]
+            this.shell.push(...collectCutawayMaterials(asset,shellNames))
         }
         this.plan=plan
         if(plan.cart){

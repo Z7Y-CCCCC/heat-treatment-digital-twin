@@ -31,19 +31,10 @@ Var displayBrandFont
 Function DisplayUIInit
   SetAutoClose true
   SetCtlColors $HWNDPARENT "233E52" "FFFFFF"
-  ; Explicit Chinese charset avoids machine-dependent Han font substitution.
-  System::Call 'user32::GetDC(p $HWNDPARENT) p.r0'
-  System::Call 'gdi32::GetDeviceCaps(p r0, i 90) i.r1'
-  System::Call 'user32::ReleaseDC(p $HWNDPARENT, p r0)'
-  System::Call 'kernel32::MulDiv(i -10, i r1, i 72) i.r2'
-  System::Call 'gdi32::CreateFontW(i r2, i 0, i 0, i 0, i 400, i 0, i 0, i 0, i 134, i 0, i 0, i 5, i 0, w "Microsoft YaHei UI") p.s'
-  Pop $displayFont
-  System::Call 'kernel32::MulDiv(i -15, i r1, i 72) i.r2'
-  System::Call 'gdi32::CreateFontW(i r2, i 0, i 0, i 0, i 600, i 0, i 0, i 0, i 134, i 0, i 0, i 5, i 0, w "Microsoft YaHei UI") p.s'
-  Pop $displayTitleFont
-  System::Call 'kernel32::MulDiv(i -8, i r1, i 72) i.r2'
-  System::Call 'gdi32::CreateFontW(i r2, i 0, i 0, i 0, i 400, i 0, i 0, i 0, i 134, i 0, i 0, i 5, i 0, w "Microsoft YaHei UI") p.s'
-  Pop $displaySmallFont
+  ; Native NSIS font creation keeps the current language charset and DPI.
+  CreateFont $displayFont "Microsoft YaHei UI" 10 400
+  CreateFont $displayTitleFont "Microsoft YaHei UI" 16 700
+  CreateFont $displaySmallFont "Microsoft YaHei UI" 9 400
   !ifdef DISPLAY_UI_PREVIEW
     System::Call 'user32::GetDC(p $HWNDPARENT) p.r0'
     System::Call 'gdi32::SelectObject(p r0, p $displayFont) p.r1'
@@ -113,20 +104,20 @@ Function DisplayPaintSidebar
   GetDlgItem $0 $HWNDPARENT 1039
   ShowWindow $0 ${SW_SHOW}
   SendMessage $0 ${WM_SETFONT} $displayBrandFont 1
-  SetCtlColors $0 "159EBD" "EDF8FC"
+  SetCtlColors $0 "FFFFFF" transparent
   GetDlgItem $0 $HWNDPARENT 1035
   ShowWindow $0 ${SW_SHOW}
   SendMessage $0 ${WM_SETFONT} $displaySmallFont 1
-  SetCtlColors $0 "568797" "EDF8FC"
+  SetCtlColors $0 "79D7E2" transparent
   GetDlgItem $0 $HWNDPARENT 1034
   ShowWindow $0 ${SW_SHOW}
   SendMessage $0 ${WM_SETFONT} $displaySmallFont 1
-  SetCtlColors $0 "568797" "EDF8FC"
+  SetCtlColors $0 "9FB6CD" transparent
 FunctionEnd
 
 Function DisplayRefreshFonts
   GetDlgItem $0 $HWNDPARENT 1035
-  SendMessage $0 ${WM_SETTEXT} 0 "STR:数字孪生 · 智慧工业"
+  SendMessage $0 ${WM_SETTEXT} 0 "STR:DIGITAL TWIN"
   ShowWindow $0 ${SW_SHOW}
   ; NSIS assigns the language font after .onGUIInit; apply typography on each
   ; page as well, so the Chinese NLF's legacy SimSun cannot win that race.
@@ -161,7 +152,7 @@ Function DisplayPaintAction
   System::Call 'gdi32::CreateSolidBrush(i 0xFFFFFF) p.R8'
   System::Call 'user32::FillRect(p R5, p R1, p R8)'
   System::Call 'gdi32::DeleteObject(p R8)'
-  System::Call 'gdi32::CreateSolidBrush(i 0xBFA510) p.R8'
+  System::Call 'gdi32::CreateSolidBrush(i 0xC87525) p.R8'
   System::Call 'gdi32::SelectObject(p R5, p R8) p.R9'
   System::Call 'gdi32::GetStockObject(i 8) p.s'
   Pop $0
@@ -191,7 +182,7 @@ Function DisplayPaintAction
 FunctionEnd
 
 Function DisplaySettingsPage
-  !insertmacro MUI_HEADER_TEXT "热处理数字孪生大屏" "实时大屏 · 后台管理 · 外部接口"
+  !insertmacro MUI_HEADER_TEXT "热处理数字孪生大屏" "让产线运行，一目了然"
   Call DisplayRefreshFonts
   GetDlgItem $0 $HWNDPARENT 1
   SendMessage $0 ${WM_SETTEXT} 0 "STR:立即安装"
@@ -201,31 +192,30 @@ Function DisplaySettingsPage
   nsDialogs::Create 1018
   Pop $0
   SetCtlColors $0 "233E52" "FFFFFF"
-  !insertmacro DisplayLabel 0 0 260u 14u "安装位置" "233E52"
-  ${NSD_CreateLabel} 0 20u 260u 28u ""
+  !insertmacro DisplayLabel 0 0 260u 18u "欢迎使用数字化工厂工作台" "233E52"
+  !insertmacro DisplayLabel 0 31u 260u 16u "安装位置" "6D8798"
+  ${NSD_CreateLabel} 0 53u 260u 29u ""
   Pop $displayPathPanel
-  SetCtlColors $displayPathPanel "F0F8FC" "F0F8FC"
-  ${NSD_CreateDirRequest} 9u 26u 191u 14u "$INSTDIR"
+  SetCtlColors $displayPathPanel "F3F6FA" "F3F6FA"
+  ${NSD_CreateDirRequest} 9u 60u 191u 16u "$INSTDIR"
   Pop $displayPath
   SendMessage $displayPath ${WM_SETFONT} $displayFont 1
-  SetCtlColors $displayPath "364154" "F0F8FC"
+  SetCtlColors $displayPath "364154" "F3F6FA"
   System::Call 'user32::GetWindowLongW(p $displayPath, i -20) i.r1'
   IntOp $1 $1 & 0xFFFFFDFF
   System::Call 'user32::SetWindowLongW(p $displayPath, i -20, i r1)'
   System::Call 'user32::SetWindowPos(p $displayPath, p 0, i 0, i 0, i 0, i 0, i 0x37)'
-  ${NSD_CreateLink} 210u 25u 46u 16u "更改"
+  ${NSD_CreateLink} 210u 59u 46u 18u "更改"
   Pop $0
   SendMessage $0 ${WM_SETFONT} $displayFont 1
-  SetCtlColors $0 "087FB4" "F0F8FC"
+  SetCtlColors $0 "2575C8" "F3F6FA"
   ${NSD_OnClick} $0 DisplayBrowsePath
-  ${NSD_CreateLabel} 0 49u 260u 18u ""
+  ${NSD_CreateLabel} 0 84u 260u 18u ""
   Pop $displayPathError
   SetCtlColors $displayPathError "C13F55" "FFFFFF"
   SendMessage $displayPathError ${WM_SETFONT} $displaySmallFont 1
-  !insertmacro DisplayLabel 0 67u 260u 14u "运行环境自动配置 · 数据保留" "6D8798"
   System::Call 'user32::SetWindowPos(p $displayPathPanel, p 1, i 0, i 0, i 0, i 0, i 0x13)'
-  !insertmacro DisplayLabel 0 94u 260u 16u "实时大屏 / 后台管理 / 外部接口" "233E52"
-  !insertmacro DisplayLabel 0 115u 260u 14u "PLC 采集插件仍支持独立安装。" "6D8798"
+  !insertmacro DisplayLabel 0 107u 260u 16u "自动配置运行环境 · 升级保留已有工程" "6D8798"
   ${NSD_OnChange} $displayPath DisplayPathChanged
   nsDialogs::Show
 FunctionEnd
@@ -352,7 +342,7 @@ Function DisplayInstallingShow
   GetDlgItem $0 $mui.InstFilesPage 1230
   SetCtlColors $0 "6D8798" "FFFFFF"
   System::Call 'uxtheme::SetWindowTheme(p $mui.InstFilesPage.ProgressBar, w "", w "")'
-  SendMessage $mui.InstFilesPage.ProgressBar 0x409 0 0xBFA510
+  SendMessage $mui.InstFilesPage.ProgressBar 0x409 0 0xC87525
   SendMessage $mui.InstFilesPage.ProgressBar 0x2001 0 0xF8EDE2
 FunctionEnd
 

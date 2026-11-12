@@ -8,7 +8,9 @@ import { routerKey, routeLocationKey } from 'vue-router'
 import { deferred, installBrowser, installSockets, json, settle } from './helpers.mjs'
 
 const mounted = []
-test.mock.module('vue', { namedExports: { ...Vue, onMounted: callback => mounted.push(callback) } })
+// Node 26 adds a CJS interop marker, not a valid identifier for mock exports.
+const vueExports = Object.fromEntries(Object.entries(Vue).filter(([name]) => name !== 'module.exports'))
+test.mock.module('vue', { namedExports: { ...vueExports, onMounted: callback => mounted.push(callback) } })
 class Renderer {
     domElement = {}; shadowMap = {}
     setPixelRatio() {} setSize() {} setRenderTarget() {} clear() {} render() {} dispose() {}

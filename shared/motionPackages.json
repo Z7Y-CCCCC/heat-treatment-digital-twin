@@ -61,11 +61,11 @@
     },
     "cad_multipurpose_furnace_082000": {
       "sourcePath": "/assets/models/cad_multipurpose_furnace_082000.glb",
-      "sourceSha256": "773dd70b490e00b864cffdb853205a89382166003300791096742d747ff7d7c0",
+      "sourceSha256": "0959d556dc34b0c40708b33e97cf4938cc76eab901b51e50cc762b43bdf961db",
       "rigPath": "/assets/motions/cad_multipurpose_furnace_082000.glb",
-      "rigSha256": "f6a20d40b9d7c978afbe422ef4d5c8ea21ebdaca021b1ddb55fe94c92a233512",
+      "rigSha256": "5977b0ca55c65ebb8d58ea918a997e9f038bd41a4d9b96761614a8296cda5129",
       "clipPath": "/assets/motions/cad_multipurpose_furnace_082000.json",
-      "clipSha256": "c35e285206ab8344f08454430976496a0df8a945fe2fe59803d888b7f0f6940d",
+      "clipSha256": "735dd39f3f409ad665a8932865a928f17da5f26539be688f9fd179527166d1ba",
       "actions": [
         {
           "id": "process_cycle",
@@ -89,7 +89,7 @@
             "preview_hot_roller_4:q",
             "preview_hot_roller_5:q",
             "preview_hot_roller_6:q",
-            "motion_node_287:v",
+            "motion_node_284:v",
             "preview_oil_drop_0:p",
             "preview_oil_drop_0:s",
             "preview_oil_drop_0:v",
@@ -194,13 +194,13 @@
             "preview_internal_charge:p",
             "preview_internal_charge:v",
             "preview_cycle_pallet:v",
-            "motion_node_360:v",
-            "motion_node_361:s",
-            "motion_node_361:c0",
-            "motion_node_362:s",
-            "motion_node_362:c0",
-            "motion_node_363:s",
-            "motion_node_363:c0"
+            "motion_node_357:v",
+            "motion_node_358:s",
+            "motion_node_358:c0",
+            "motion_node_359:s",
+            "motion_node_359:c0",
+            "motion_node_360:s",
+            "motion_node_360:c0"
           ]
         },
         {
@@ -211,9 +211,9 @@
           "channels": [
             "cad_multipurpose_furnace_600_v1_door:p",
             "cad_multipurpose_furnace_600_v1_door_carriages:p",
-            "motion_node_361:c0",
-            "motion_node_362:c0",
-            "motion_node_363:c0"
+            "motion_node_358:c0",
+            "motion_node_359:c0",
+            "motion_node_360:c0"
           ]
         },
         {
@@ -223,9 +223,9 @@
           "duration": 4,
           "channels": [
             "cad_multipurpose_furnace_600_v1_intermediate_gate:p",
-            "motion_node_361:c0",
-            "motion_node_362:c0",
-            "motion_node_363:c0"
+            "motion_node_358:c0",
+            "motion_node_359:c0",
+            "motion_node_360:c0"
           ]
         },
         {
@@ -237,9 +237,9 @@
             "cad_multipurpose_furnace_600_v1_elevator_basket:p",
             "preview_internal_charge:p",
             "preview_internal_charge:v",
-            "motion_node_361:c0",
-            "motion_node_362:c0",
-            "motion_node_363:c0"
+            "motion_node_358:c0",
+            "motion_node_359:c0",
+            "motion_node_360:c0"
           ]
         },
         {
@@ -249,7 +249,7 @@
           "duration": 4,
           "channels": [
             "cad_multipurpose_furnace_600_v1_elevator_basket:p",
-            "motion_node_287:v",
+            "motion_node_284:v",
             "preview_oil_drop_0:p",
             "preview_oil_drop_0:s",
             "preview_oil_drop_0:v",
@@ -341,9 +341,9 @@
             "preview_oil_filament_7:v",
             "preview_internal_charge:p",
             "preview_internal_charge:v",
-            "motion_node_361:c0",
-            "motion_node_362:c0",
-            "motion_node_363:c0"
+            "motion_node_358:c0",
+            "motion_node_359:c0",
+            "motion_node_360:c0"
           ]
         },
         {
@@ -353,9 +353,9 @@
           "duration": 5,
           "channels": [
             "preview_hot_circulation:q",
-            "motion_node_361:c0",
-            "motion_node_362:c0",
-            "motion_node_363:c0"
+            "motion_node_358:c0",
+            "motion_node_359:c0",
+            "motion_node_360:c0"
           ]
         },
         {
@@ -366,13 +366,13 @@
           "channels": [
             "preview_quench_agitator_0:q",
             "preview_quench_agitator_1:q",
-            "motion_node_360:v",
-            "motion_node_361:s",
-            "motion_node_361:c0",
-            "motion_node_362:s",
-            "motion_node_362:c0",
-            "motion_node_363:s",
-            "motion_node_363:c0"
+            "motion_node_357:v",
+            "motion_node_358:s",
+            "motion_node_358:c0",
+            "motion_node_359:s",
+            "motion_node_359:c0",
+            "motion_node_360:s",
+            "motion_node_360:c0"
           ]
         },
         {
@@ -388,9 +388,9 @@
             "preview_hot_roller_4:q",
             "preview_hot_roller_5:q",
             "preview_hot_roller_6:q",
-            "motion_node_361:c0",
-            "motion_node_362:c0",
-            "motion_node_363:c0"
+            "motion_node_358:c0",
+            "motion_node_359:c0",
+            "motion_node_360:c0"
           ]
         },
         {
@@ -409,9 +409,9 @@
             "preview_hot_roller_6:q",
             "preview_internal_charge:p",
             "preview_internal_charge:v",
-            "motion_node_361:c0",
-            "motion_node_362:c0",
-            "motion_node_363:c0"
+            "motion_node_358:c0",
+            "motion_node_359:c0",
+            "motion_node_360:c0"
           ]
         },
         {
@@ -423,9 +423,9 @@
             "cad_multipurpose_furnace_600_v1_radiant_tubes_black:e0",
             "cad_multipurpose_furnace_600_v1_radiant_tubes_enamel:e0",
             "preview_hot_circulation:q",
-            "motion_node_361:c0",
-            "motion_node_362:c0",
-            "motion_node_363:c0"
+            "motion_node_358:c0",
+            "motion_node_359:c0",
+            "motion_node_360:c0"
           ]
         }
       ]
@@ -1104,11 +1104,11 @@
     },
     "cad_cleaner_170700": {
       "sourcePath": "/assets/models/cad_cleaner_170700.glb",
-      "sourceSha256": "2052be6b23dfe35a43ae3aad542e976b744aaf3378323b65b2e63e1a7b6b02bb",
+      "sourceSha256": "622e227e2322357c1aeb13552bd98fe2726996be9bdb44552240f8d83833e185",
       "rigPath": "/assets/motions/cad_cleaner_170700.glb",
-      "rigSha256": "c464de35267f77b7074ce024260e0949780ac35d1704ca91de0c1510d77a55e4",
+      "rigSha256": "4e2de36d75acee4f39c8ee6e7435e035812bb7cc534e13ada0449fffdda47484",
       "clipPath": "/assets/motions/cad_cleaner_170700.json",
-      "clipSha256": "907e242c2c82cb48f3352e1532dfd9903dcf47b4e1542431a68f57098246c619",
+      "clipSha256": "562255bdde3dcd490e0b733f37730b64dd0be12c6bac473dcaad36487fbc440d",
       "actions": [
         {
           "id": "door",
@@ -1160,7 +1160,8 @@
           "channels": [
             "preview_pump_0:q",
             "preview_pump_1:q",
-            "motion_node_128:v",
+            "motion_node_127:v",
+            "motion_node_128:p",
             "motion_node_129:p",
             "motion_node_130:p",
             "motion_node_131:p",
@@ -1220,9 +1221,8 @@
             "motion_node_185:p",
             "motion_node_186:p",
             "motion_node_187:p",
-            "motion_node_188:p",
             "preview_cleaner_charge:v",
-            "motion_node_196:v"
+            "motion_node_193:v"
           ]
         }
       ]

@@ -5,8 +5,6 @@ const scenario=process.argv.find(value=>value.startsWith('--scenario='))?.split(
 if(!['normal','reboot','failure','cancel'].includes(scenario))throw Error('Unknown preview scenario');
 const root=path.resolve(__dirname,'../..'),output=path.join(root,'output','installer-preview',scenario);
 fs.mkdirSync(output,{recursive:true});
-const cache=path.join(process.env.LOCALAPPDATA,'electron-builder','Cache','nsis','nsis-3.0.4.1');
-const executable=path.join(cache,'makensis.exe');
 const source=`Unicode true
 Name "热处理数字孪生大屏"
 Caption "热处理数字孪生大屏安装 · 预览"
@@ -44,5 +42,7 @@ Section
 SectionEnd
 `;
 const file=path.join(output,'preview.nsi');fs.writeFileSync(file,source,'utf8');
-execFileSync(executable,['/INPUTCHARSET','UTF8',file],{cwd:output,stdio:'inherit',windowsHide:true});
-console.log(path.join(output,'InstallerPreview.exe'));
+require('./nsis-toolchain.cjs').nsisToolchain().then(tool=>{
+  execFileSync(tool.path,['/INPUTCHARSET','UTF8',file],{cwd:output,stdio:'inherit',windowsHide:true,env:{...process.env,...tool.env}});
+  console.log(path.join(output,'InstallerPreview.exe'));
+}).catch(error=>{console.error(error.message);process.exitCode=1;});

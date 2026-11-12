@@ -14,9 +14,13 @@ let backend, unity, web;
 (async () => {
     if (!fs.existsSync(executable)) throw new Error('Build the current Unity client before running this test');
     const sandbox = await createSmokeSandbox('native-inspection');
-    const tempering = require('../backend/services/builtinModels').getBuiltinModels().find(model => model.id === 'cad_tempering_furnace_091300');
-    const allPresets = [...getInspectionPresets(), { modelId: tempering.id, inspection: JSON.parse(tempering.metadata).inspection }];
-    const presets = process.env.NATIVE_INSPECTION_MODEL ? allPresets.filter(preset=>preset.modelId===process.env.NATIVE_INSPECTION_MODEL) : allPresets;
+    const cadPresets = require('../backend/services/builtinModels').getBuiltinModels()
+        .filter(model => model.id.startsWith('cad_'))
+        .map(model => ({ modelId: model.id, inspection: JSON.parse(model.metadata).inspection }))
+        .filter(preset => preset.inspection?.enabled);
+    const allPresets = [...getInspectionPresets(), ...cadPresets];
+    const requested = process.env.NATIVE_INSPECTION_MODEL?.split(',');
+    const presets = requested ? allPresets.filter(preset => requested.includes(preset.modelId)) : allPresets;
     assert.ok(presets.length, 'Requested inspection smoke model does not exist');
     const db = new Database(sandbox.filename);
     // Cover every registered preset (including the five pit furnaces), not
@@ -40,7 +44,9 @@ let backend, unity, web;
     web.send(JSON.stringify({ type: 'client_hello', role: 'web' }));
     unity = spawn(executable, ['-batchmode', '-force-d3d11', '-screen-fullscreen', '0', '-screen-width', '1600', '-screen-height', '900', '-logFile', logFile], {
         cwd: path.dirname(executable), windowsHide: true, stdio: 'ignore',
-        env: { ...sandbox.env, NO_PROXY: '127.0.0.1,localhost', DIGITAL_TWIN_BACKEND_HTTP_URL: origin, DIGITAL_TWIN_BACKEND_WEBSOCKET_URL: origin.replace('http:', 'ws:') + '/ws' }
+        // This fixture owns its authentication pipe. Do not also start a WebView
+        // host with a different browser session that can replace that handoff.
+        env: { ...sandbox.env, NO_PROXY: '127.0.0.1,localhost', DIGITAL_TWIN_APPLICATION_CHROME: 'false', DIGITAL_TWIN_BACKEND_HTTP_URL: origin, DIGITAL_TWIN_BACKEND_WEBSOCKET_URL: origin.replace('http:', 'ws:') + '/ws' }
     });
     await authorizeSmokeUnity(origin, unity, session);
     const log = () => fs.existsSync(logFile) ? fs.readFileSync(logFile, 'utf8') : '';
@@ -63,6 +69,10 @@ let backend, unity, web;
     for (let index = 0; index < devices.length; index++) {
         const deviceId = devices[index].id, preset = presets[index];
         let fence = contexts.length;
+        await requestJson(`${origin}/api/native-preview/navigate`, { method: 'POST', body: JSON.stringify({ action: 'focus', focus: { mode: 'device', deviceId, inspectionStage: 'solid' } }) });
+        const entry = await next(deviceId, fence, frame => frame.inspectionStage === 'solid' && frame.inspectionProgress === 0, 'assembled device entry');
+        if (entry.shellTransparencyAvailable) assert.equal(entry.shellTransparent, true, `${preset.modelId} defaults to transparent covers on entry`);
+        fence = contexts.length;
         await send(deviceId, { command: 'stage', stage: 'exploded' });
         const exploded = await next(deviceId, fence, frame => frame.inspectionProgress > .999 && !frame.inspectionAnimating, 'complete staged explosion');
         assert.deepEqual(exploded.inspectionIssues.filter(issue => issue.severity === 'error'), [], preset.modelId);

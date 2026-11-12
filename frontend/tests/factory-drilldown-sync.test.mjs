@@ -17,7 +17,9 @@ for (const match of [...code.matchAll(/from\s+(['"])([^'"]+)\1/g)]) {
     code = code.replace(match[0], `from ${JSON.stringify(resolved)}`)
 }
 // Vue mounted callbacks are intentionally inert in this isolated transport test.
-test.mock.module('vue', { namedExports: { ...Vue, onMounted() {} } })
+// Node 26 adds a CJS interop marker, not a valid identifier for mock exports.
+const vueExports = Object.fromEntries(Object.entries(Vue).filter(([name]) => name !== 'module.exports'))
+test.mock.module('vue', { namedExports: { ...vueExports, onMounted() {} } })
 const { default: Drilldown } = await import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`)
 Drilldown.render = () => null
 

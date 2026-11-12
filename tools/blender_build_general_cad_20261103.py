@@ -335,31 +335,18 @@ def temper(a):
     for z in [.98,1.08]:a.cyl('control_button',(-.66,front-.18,z),.016,.02,'red' if z<1 else 'green','Y','electrics',16)
 
 def wash_lower_body(a):
-    """Restore the lower enclosure visible in both 17.07.00 K and side views.
+    """User correction 2026-11-11: one open lower bath, no internal partitions.
 
-    This is sheet enclosure geometry, NOT an invented solid process tank or an
-    exposed X-braced frame. The drawing's diagonal panel lines are represented
-    as shallow pressed facets; sheet gauge and fold relief are display-scale
-    assumptions, not manufacturing dimensions. Keep the chamber/door opening.
+    Retain the existing overall envelope and upper chamber. Wall gauge remains
+    an inferred display detail; this correction is not a manufacturing drawing.
     """
-    # K-view LINE 282E6 spans 1200 mm; its elevation is 1121 mm above
-    # drawing datum 4964.3063. The existing model's base covers the first
-    # 100 mm. Keep the original chamber depth/alignment, rather than moving
-    # the whole machine during a local omission repair.
-    width,depth=1.200,1.922
-    front,bottom,fold_top,top=-.960,.100,1.121,1.295
-    back=front+depth;half=width/2;middle=(bottom+fold_top)/2
-    vertices=[(x,front,z) for z in [bottom,fold_top,top] for x in [-half,0,half]]
-    vertices += [(-half/2,front-.003,middle),(half/2,front-.003,middle)]
-    vertices += [(x,back,z) for z in [bottom,fold_top,top] for x in [-half,0,half]]
-    # Two continuous folded front panels, closed sides, rear, top and bottom.
-    faces=[(0,1,9),(1,4,9),(4,3,9),(3,0,9),
-           (1,2,10),(2,5,10),(5,4,10),(4,1,10),
-           (3,4,7,6),(4,5,8,7),
-           (0,3,14,11),(3,6,17,14),(2,13,16,5),(5,16,19,8),
-           (6,7,18,17),(7,8,19,18),
-           (0,11,12,1),(1,12,13,2),
-           (11,14,15,12),(12,15,16,13),(14,17,18,15),(15,18,19,16)]
+    width,depth=2.600,2.080
+    front,bottom,top=-depth/2,.100,1.280
+    back=front+depth;half=width/2
+    vertices=[(-half,front,bottom),(half,front,bottom),(half,back,bottom),(-half,back,bottom),
+              (-half,front,top),(half,front,top),(half,back,top),(-half,back,top)]
+    # Four perimeter walls and one bottom: no lid, central box or side partitions.
+    faces=[(3,2,1,0),(0,1,5,4),(1,2,6,5),(2,3,7,6),(3,0,4,7)]
     mesh=bpy.data.meshes.new('wash_lower_sheet_enclosure')
     mesh.from_pydata(vertices,[],faces);mesh.update()
     bm=bmesh.new();bm.from_mesh(mesh)
@@ -368,12 +355,13 @@ def wash_lower_body(a):
     a.finish(obj,'wash_lower_shell','enamel','central_lower_body')
     solid=obj.modifiers.new('Inferred 6 mm display sheet','SOLIDIFY')
     solid.thickness=.006;solid.offset=-1;solid.use_even_offset=True
-    obj['cad_evidence']='17.07.00 K elevation lower centre enclosure and matching side-view walls'
-    obj['inferred_details']='6 mm sheet gauge; 3 mm pressed-panel relief; not manufacturing data'
-    obj['cad_panel_width_mm']=1200
-    obj['cad_panel_top_elevation_mm']=1121
+    obj['correction_evidence']='User confirmed 2026-11-11: entire lower bath is connected with no middle partition'
+    obj['inferred_details']='6 mm display sheet gauge; retained external envelope; not manufacturing data'
+    obj['continuous_lower_bath']=True
     for x in [-half,half]:
         a.box('wash_lower_top_rail',(x,(front+back)/2,top-.018),(.040,depth,.036),'edge','central_lower_body',.002)
+    for y in [front,back]:
+        a.box('wash_lower_top_rail',(0,y,top-.018),(width,.040,.036),'edge','central_lower_body',.002)
     wash_lower_collector(a,front)
 
 
@@ -399,14 +387,12 @@ def wash_lower_collector(a,front=-.960):
 
 
 def wash(a):
-    # Twin side-tank arrangement in 17.07.00, not the photo-derived V7 rear extension.
+    # One lower bath; side service fittings do not create separate water tanks.
     w,d=2.650,2.442
     a.box('continuous_base',(0,0,.05),(w,d,.10),'steel')
     wash_lower_body(a)
     for x in [-1.02,1.02]:
-        a.box('wash_side_tank',(x,0,.69),(.56,2.08,1.18),'enamel','tanks')
         a.panel('tank_inspection_cover',(x,-1.06,.68),.43,.78,'enamel','tanks')
-        for z in [.23,1.22]:a.box('tank_rim',(x,0,z),(.62,2.12,.055),'edge','tanks')
         # Paired threaded heater/inspection ports on the two tank tops.
         for y in [.28,.55,.82]:
             for xx in [x-.13,x+.13]:a.cyl('heater_boss',(xx,y,1.31),.048,.075,'stainless','Z','tanks',20)
@@ -573,7 +559,7 @@ JOBS=[
  ('air_cooling_table','风冷台','11.58.00HT_风冷台',{'length':1816,'width':862,'hood_height':2373,'gantry_height':3052,'working_level':1250},['选用 HT 升降门版本；不是同文件中的 XQ 简版。'],air_cool),
  ('water_cooling_tank','水冷槽','47.10.00_水冷槽',{'tank_length':1654,'tank_width':2172,'overall_height':4320,'working_level_above_floor':1250,'below_floor':383},['完整显示下部槽体；安装时地坪基准比模型底部高 383 mm。液面为静态可移除组件。'],water_tank),
  ('tempering_furnace','回火炉','09.13.00_回火炉',{'body_width':1798,'body_depth':1930,'overall_height':4024,'door_width':600,'door_height':650,'door_sill':1230},['选用 600KG／09.13.00 原总图；不混用 4424 mm 加高或 XQ 版本。炉内滚道、加热元件和循环机构依剖视图重建，未标注零件尺寸按视图比例推定。'],temper),
- ('washing_machine','清洗机','17.07.00_清洗机',{'base_width':2650,'body_depth':2442,'service_envelope_depth':2900,'max_height':4107,'door_width':600,'door_height':650,'installation_depth':150},['选用 17.07.00 高提升版本（MAX 4107），保留双侧水箱、循环管路及驱动；不是照片 V7 外形。'],wash),
+ ('washing_machine','清洗机','17.07.00_清洗机',{'base_width':2650,'body_depth':2442,'service_envelope_depth':2900,'max_height':4107,'door_width':600,'door_height':650,'installation_depth':150},['选用 17.07.00 高提升版本（MAX 4107）；2026-11-11 用户确认下部为贯通整体水槽，无中间隔断，保留循环管路及驱动。'],wash),
 ]
 
 def main():

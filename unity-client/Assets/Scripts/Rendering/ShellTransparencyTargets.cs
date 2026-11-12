@@ -9,8 +9,9 @@ namespace HeatTreatment.DigitalTwin.Rendering
     public static class ShellTransparencyTargets
     {
         // CAD skins contain several nested sheets; a stronger tint stacks into
-        // an opaque-looking wall. Keep only a faint outline of those skins.
-        public const float GhostOpacity = .025f;
+        // an opaque-looking wall. A faint skin plus explicit structural edges
+        // keeps the furnace recognizable without hiding its internal mechanisms.
+        public const float GhostOpacity = .045f;
         private static readonly HashSet<string> CoverNodes = new HashSet<string>(StringComparer.Ordinal)
         {
             "cad_tempering_furnace_v1_housing", "cad_tempering_furnace_v1_lining",
@@ -28,6 +29,9 @@ namespace HeatTreatment.DigitalTwin.Rendering
             "cad_water_cooling_tank_v1_rear_tank_hatch", "cad_water_cooling_tank_v1_tank",
             "cad_water_cooling_tank_v1_lifting_eyes", "cad_water_cooling_tank_v1_door", "cad_water_cooling_tank_v1_door_seals",
             "cad_multipurpose_furnace_600_v1_cold_housing", "cad_multipurpose_furnace_600_v1_hot_housing",
+            "cad_multipurpose_furnace_600_v1_cold_front_hatches", "cad_multipurpose_furnace_600_v1_cold_rear_hatches",
+            "cad_multipurpose_furnace_600_v1_partition_shell", "cad_multipurpose_furnace_600_v1_partition_lining",
+            "cad_multipurpose_furnace_600_v1_quench_tank",
             "cad_multipurpose_furnace_600_v1_lining", "cad_multipurpose_furnace_600_v1_tank_lids",
             "cad_multipurpose_furnace_600_v1_extraction", "cad_multipurpose_furnace_600_v1_hot_access_panels",
             "cad_multipurpose_furnace_600_v1_hot_roof_end_caps", "cad_multipurpose_furnace_600_v1_refractory", "cad_multipurpose_furnace_600_v1_vault_bricks",

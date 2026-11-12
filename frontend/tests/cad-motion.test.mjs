@@ -81,8 +81,8 @@ for(const [id,profile] of Object.entries(CAD_MOTION_PROFILES))test(`${id}: each 
     if(id==='cad_cleaner_170700'){
         const deck=rig.node('internal_rollers'),fixed=['central_lower_body','tanks','housing','pumps_blue'].map(n=>rig.node(n))
         rig.reset();gltf.scene.updateMatrixWorld(true);const matrices=fixed.map(n=>n.matrixWorld.clone()),waterPose=rig.bathVolumes.map(n=>[...n.position,...n.scale,Number(n.visible)])
-        const assertWater=()=>assert.deepEqual(rig.bathVolumes.map(n=>[...n.position,...n.scale,Number(n.visible)]),waterPose,'all three lower water volumes stay full')
-        assert.equal(rig.bathVolumes.length,3);assert.ok(rig.bathVolumes.every(n=>n.visible))
+        const assertWater=()=>assert.deepEqual(rig.bathVolumes.map(n=>[...n.position,...n.scale,Number(n.visible)]),waterPose,'the continuous lower bath stays full')
+        assert.equal(rig.bathVolumes.length,1);assert.ok(rig.bathVolumes.every(n=>n.visible))
         const waterBox=new T.Box3().setFromObject(rig.water)
         assert.ok(waterBox.min.x<-.60&&waterBox.max.x>.60&&waterBox.min.z<-.95&&waterBox.max.z>.95,'central lower chamber is filled, not just a small rear corner')
         rig.apply('basket_down',0);const home=new T.Box3().setFromObject(rig.cleanerCharge);assert.ok(home.min.y>waterBox.max.y,'load starts above the permanent water')

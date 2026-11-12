@@ -11,7 +11,7 @@
     "node_naming_rule": "role_part_action，例如 fan_rear_rotate、door_front_lift、valve_gas_01",
     "delivery_status": "review",
     "owner": "",
-    "notes": "2026-11-04: restored central lower sheet enclosure, rectangular lower attachment and drain from DWG K/side views; unknown sheet gauge/projection depth remain inferred. 统一展示送料基准为 1.25 m；门板密封搭边保留，原 CAD 交付文件保留。"
+    "notes": "2026-11-11：按用户确认，下部改为一个贯通整体水槽，去除中央盖板和内部隔墙，保留上部清洗室、料台与外部管泵。统一展示送料面仍为 1.25 m；6 mm 壁厚和沿用外形尺寸为展示推定。"
   },
   "optimization": {
     "mode": "auto",
@@ -664,11 +664,11 @@
   "partBindings": [],
   "sourceAsset": {
     "filename": "17.07.00_清洗机.glb",
-    "sha256": "2052be6b23dfe35a43ae3aad542e976b744aaf3378323b65b2e63e1a7b6b02bb",
+    "sha256": "622e227e2322357c1aeb13552bd98fe2726996be9bdb44552240f8d83833e185",
     "stats": {
-      "nodes": 112,
-      "meshes": 80,
-      "triangles": 104582,
+      "nodes": 111,
+      "meshes": 79,
+      "triangles": 104106,
       "materials": 14,
       "size": [
         3.0399999991059303,
@@ -701,32 +701,43 @@
     "published_at": "",
     "history": []
   },
-  "cadCorrection": {
-    "revision": "2026-11-04-central-lower-enclosure",
-    "sourceDwgSha256": "540e0bb8b7776239ce4020a3003cc67ac075c69b6099d099e5a33a7d2000d3c6",
-    "panelWidthMm": 1200,
-    "panelTopElevationMm": 1121,
-    "inferred": [
-      "6 mm sheet gauge",
-      "3 mm fold relief",
-      "130 mm attachment projection",
-      "existing chamber depth retained"
-    ]
-  },
   "transferAlignment": {
     "version": 1,
     "surfaceY": 1.25,
     "loadY": 1.29,
     "basketStroke": 0.8,
-    "sourceSha256": "e5b45809e4218f82b8e3a5fc67fe054b81c010f13edcc5902b9286659b473a33",
+    "sourceSha256": "5726774aabd02536a2c61b6bb4e6e072a59aa46f18e4ee7558d4d0f701ef1cc2",
     "note": "Display transfer-height alignment; door sealing overlap retained; original CAD deliveries preserved.",
-    "assetSha256": "2052be6b23dfe35a43ae3aad542e976b744aaf3378323b65b2e63e1a7b6b02bb",
+    "assetSha256": "622e227e2322357c1aeb13552bd98fe2726996be9bdb44552240f8d83833e185",
     "calibration": {
       "floor": 0.1,
       "knot": 1.1,
       "delta": -0.045,
       "rollerCorrection": -0.002,
       "basketStroke": 0.8
+    }
+  },
+  "cadCorrection": {
+    "revision": "2026-11-11-continuous-lower-bath",
+    "evidence": "User explicitly confirmed one continuous lower bath without any middle partition",
+    "outerWidthMeters": 2.6,
+    "outerDepthMeters": 2.08,
+    "internalPartitions": 0,
+    "inferred": [
+      "6 mm display sheet gauge",
+      "retained external envelope, not manufacturing dimensions"
+    ],
+    "previousCorrection": {
+      "revision": "2026-11-04-central-lower-enclosure",
+      "sourceDwgSha256": "540e0bb8b7776239ce4020a3003cc67ac075c69b6099d099e5a33a7d2000d3c6",
+      "panelWidthMm": 1200,
+      "panelTopElevationMm": 1121,
+      "inferred": [
+        "6 mm sheet gauge",
+        "3 mm fold relief",
+        "130 mm attachment projection",
+        "existing chamber depth retained"
+      ]
     }
   }
 }

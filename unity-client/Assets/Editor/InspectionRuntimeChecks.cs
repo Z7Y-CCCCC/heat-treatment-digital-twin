@@ -50,7 +50,7 @@ namespace HeatTreatment.DigitalTwin.Editor
             }
             try
             {
-                foreach (var resource in new[] { "InspectionShell", "InspectionOutline" })
+                foreach (var resource in new[] { "InspectionShell", "InspectionOutline", "InspectionFeatureEdges" })
                 {
                     AssetDatabase.ImportAsset($"Assets/Resources/RuntimeShaders/{resource}.shader", ImportAssetOptions.ForceUpdate);
                     var shader = Resources.Load<Shader>($"RuntimeShaders/{resource}");
@@ -68,6 +68,14 @@ namespace HeatTreatment.DigitalTwin.Editor
                 };
                 mesh.triangles = new[] { 0,2,1,0,3,2,4,5,6,4,6,7,0,1,5,0,5,4,2,3,7,2,7,6,0,4,7,0,7,3,1,2,6,1,6,5 };
                 mesh.RecalculateNormals(); mesh.RecalculateBounds(); fixtures.Add(mesh);
+                var structuralEdges = InspectionFeatureEdges.Build(mesh); fixtures.Add(structuralEdges);
+                Check(structuralEdges != null && structuralEdges.GetTopology(0) == MeshTopology.Lines && structuralEdges.GetIndexCount(0) == 24,
+                    "cube keeps twelve structural edges without six face triangulation diagonals");
+                var splitMesh = new Mesh { vertices = mesh.triangles.Select(index => mesh.vertices[index]).ToArray(),
+                    triangles = Enumerable.Range(0, mesh.triangles.Length).ToArray() };
+                splitMesh.RecalculateBounds(); fixtures.Add(splitMesh);
+                var weldedEdges = InspectionFeatureEdges.Build(splitMesh); fixtures.Add(weldedEdges);
+                Check(weldedEdges.GetIndexCount(0) == 24, "CAD face vertex splits are welded before selecting structural edges");
                 GameObject Cube(string name, Transform parent, Vector3 position)
                 {
                     var cube = Create(name, parent);
@@ -128,6 +136,9 @@ namespace HeatTreatment.DigitalTwin.Editor
                 JObject context = null;
                 dashboard.InspectionContextChanged += value => context = value;
                 dashboard.RegisterDevice(device, model, config);
+                dashboard.FocusPreviewDevice(device.Id);
+                Check(context.Value<bool>("shellTransparent") && context.Value<string>("inspectionStage") == "solid"
+                    && context.Value<float>("inspectionProgress") == 0, "device entry automatically exposes internals without exploding the assembly");
                 bool Command(string command, JToken value = null)
                 {
                     var payload = new JObject { ["command"] = command };
@@ -170,12 +181,16 @@ namespace HeatTreatment.DigitalTwin.Editor
                 var shellCameraPosition = camera.transform.position;
                 Check(Shell(true) && context.Value<bool>("shellTransparencyAvailable") && context.Value<bool>("shellTransparent"), "shell command acknowledges its actual local presentation state");
                 shellAmount.SetValue(shellRuntime, 1f); applyShellPose.Invoke(dashboard, new[] { shellRuntime });
-                Check(Mathf.Abs(plate.GetComponent<Renderer>().sharedMaterial.GetFloat("_Opacity") - .025f) < .001f
+                Check(Mathf.Abs(plate.GetComponent<Renderer>().sharedMaterial.GetFloat("_Opacity") - ShellTransparencyTargets.GhostOpacity) < .001f
                     && plate.GetComponent<Renderer>().sharedMaterial.GetFloat("_ZWrite") == 0f, "nested cover materials leave only a faint skin without occluding internal depth");
-                Check(Mathf.Abs(cadHousing.GetComponent<Renderer>().sharedMaterial.GetFloat("_Opacity") - .025f) < .001f
+                Check(Mathf.Abs(cadHousing.GetComponent<Renderer>().sharedMaterial.GetFloat("_Opacity") - ShellTransparencyTargets.GhostOpacity) < .001f
                     && cadFan.GetComponent<Renderer>().sharedMaterial==material, "CAD covers work without legacy shell targets while the internal fan remains solid");
-                Check(Mathf.Abs(cadDoor.GetComponent<Renderer>().sharedMaterial.GetFloat("_Opacity")-.025f)<.001f,
+                Check(Mathf.Abs(cadDoor.GetComponent<Renderer>().sharedMaterial.GetFloat("_Opacity")-ShellTransparencyTargets.GhostOpacity)<.001f,
                     "the formerly opaque furnace door no longer blocks the internal action view");
+                var coverEdges = cadHousing.transform.Find("__InspectionFeatureEdges");
+                Check(coverEdges != null && coverEdges.gameObject.activeSelf && coverEdges.GetComponent<MeshFilter>().sharedMesh.GetIndexCount(0) == 24
+                    && cadFan.transform.Find("__InspectionFeatureEdges") == null,
+                    "transparent housing retains structural lines while internal fan geometry and materials stay original");
                 Check(cadReference.GetComponent<Renderer>().sharedMaterial==material && !cadReference.GetComponent<Renderer>().forceRenderingOff,
                     "static guides stay solid even when nested under a transparent housing; the view is not moving-parts-only");
                 Check(a.GetComponent<Renderer>().sharedMaterial == material && !a.GetComponent<Renderer>().forceRenderingOff
@@ -195,11 +210,33 @@ namespace HeatTreatment.DigitalTwin.Editor
                 Check(Shell(false), "restore cover command is accepted");shellAmount.SetValue(shellRuntime,0f);applyShellPose.Invoke(dashboard,new[] {shellRuntime});
                 Check(plate.GetComponent<Renderer>().sharedMaterial==material && plate.GetComponent<Renderer>().shadowCastingMode==UnityEngine.Rendering.ShadowCastingMode.On,
                     "restoring shell reinstates exact original material and shadows");
+                Check(!coverEdges.gameObject.activeSelf, "manual solid restore also hides inspection-only structural lines");
                 Check(!dashboard.ApplyInspectionCommand(device.Id,new JObject { ["command"]="shell_transparency", ["enabled"]="true" },out _), "native shell command rejects non-boolean flags");
                 Check(ShellTransparencyTargets.IsCoverNode("cad_tempering_furnace_v1_housing") && ShellTransparencyTargets.IsCoverNode("cad_tempering_furnace_v1_lining")
                     && ShellTransparencyTargets.IsCoverNode("cad_tempering_furnace_v1_door_seals") && ShellTransparencyTargets.IsCoverNode("cad_tempering_furnace_v1_panel_fasteners")
                     && !ShellTransparencyTargets.IsCoverNode("cad_tempering_furnace_v1_internal_fan") && !ShellTransparencyTargets.IsCoverNode("cad_tempering_furnace_v1_door_chains"),
                     "packaged CAD housing/lining are explicit covers, never internal fans or chains");
+                dashboard.FocusPreviewDevice(device.Id, inspectionStage: "solid");
+                Check(context.Value<bool>("shellTransparent"), "configured solid detail entry also defaults to transparent covers");
+                shellAmount.SetValue(shellRuntime, 1f); applyShellPose.Invoke(dashboard, new[] { shellRuntime });
+                Check(cadHousing.GetComponent<Renderer>().sharedMaterial != material && cadFan.GetComponent<Renderer>().sharedMaterial == material,
+                    "automatic detail presentation ghosts only covers, leaving shared internal materials intact");
+                dashboard.FocusPreviewBounds(new Bounds(Vector3.zero, Vector3.one * 20));
+                Check(cadHousing.GetComponent<Renderer>().sharedMaterial == material && cadDoor.GetComponent<Renderer>().sharedMaterial == material
+                    && cadHousing.GetComponent<Renderer>().shadowCastingMode == UnityEngine.Rendering.ShadowCastingMode.On,
+                    "returning to production overview restores exact original covers and shadows");
+                Check(!coverEdges.gameObject.activeSelf, "production overview contains no inspection line overlays");
+                dashboard.FocusPreviewDevice(device.Id);
+                Check(context.Value<bool>("shellTransparent"), "reentering a device reapplies its transparent entry presentation");
+                Check(Shell(false) && !context.Value<bool>("shellTransparent"), "manual restore remains available after automatic entry");
+                shellAmount.SetValue(shellRuntime, 0f); applyShellPose.Invoke(dashboard, new[] { shellRuntime });
+                Check(cadHousing.GetComponent<Renderer>().sharedMaterial == material,
+                    "automatic entry does not override the user's subsequent restore command");
+                Check(ShellTransparencyTargets.IsCoverNode("cad_multipurpose_furnace_600_v1_quench_tank")
+                    && ShellTransparencyTargets.IsCoverNode("cad_multipurpose_furnace_600_v1_partition_shell")
+                    && ShellTransparencyTargets.IsCoverNode("cad_multipurpose_furnace_600_v1_cold_front_hatches")
+                    && !ShellTransparencyTargets.IsCoverNode("cad_multipurpose_furnace_600_v1_quench_liquid"),
+                    "multipurpose side hatches, partitions and tank skin expose the original oil and mechanisms");
                 var tiny = new Bounds(Vector3.zero, Vector3.one * .02f);
                 orbit.FocusBounds(tiny, 20, 20, 1.1f, true, true);
                 var distance = (float)typeof(OrbitCameraController).GetField("_desiredDistance", BindingFlags.NonPublic | BindingFlags.Instance).GetValue(orbit);

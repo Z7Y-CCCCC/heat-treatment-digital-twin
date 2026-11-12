@@ -14,7 +14,7 @@ test('custom installer illustration and stock uninstaller sidebar use their own 
   }
 });
 
-test('the real NSIS package uses the ice-blue native layout, not stock directory/sidebar pages', () => {
+test('the real NSIS package uses the custom native layout, not stock directory/sidebar pages', () => {
   assert.equal(pkg.build.nsis.include, 'display-installer.nsh');
   assert.equal(pkg.build.nsis.allowToChangeInstallationDirectory, false);
   assert.equal(pkg.build.nsis.oneClick, false);

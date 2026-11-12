@@ -9,6 +9,10 @@ param(
     [switch]$IncludeHistory,
     [switch]$RefreshDependencies,
     [switch]$ForceUnityBuild,
+    [switch]$FullBuild,
+    [switch]$ResumeCandidate,
+    [string]$ReleaseDirectory,
+    [string]$BuildOutputRoot,
     [switch]$StarterTemplate,
     [switch]$SkipSmokeTest
 )
