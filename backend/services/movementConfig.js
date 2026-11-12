@@ -71,22 +71,7 @@ async function validateMovementSources(db, device, movement, factoryId, belongsT
         const target = await db.get('SELECT * FROM devices WHERE id=?', [targetId]);
         if (String(targetId) === String(device.id) || !await belongsToFactory(db, target, factoryId)) fail('工位关联设备不存在或不属于当前工厂');
     }
-    if (movement.enabled === true) {
-        // A fixed target must not become mobile behind another editor's back.
-        // The runtime independently rejects such a target after hot refresh,
-        // including legacy/imported configurations that bypass this endpoint.
-        const sources = await db.all('SELECT id,line_id,instance_config FROM devices WHERE id<>?', [device.id]);
-        for (const source of sources) {
-            let instance;
-            try { instance = typeof source.instance_config === 'string' ? JSON.parse(source.instance_config || '{}') : source.instance_config || {}; } catch { continue; }
-            const transfer = instance.animationBindings?.transferLink;
-            if (transfer?.enabled !== true) continue;
-            const referencesTarget = transfer.targetMode === 'fixed' ? String(transfer.targetDeviceId) === String(device.id)
-                : transfer.targetMode === 'station' && Array.isArray(instance.movement?.stations)
-                    && instance.movement.stations.some(station => String(station?.anchorDeviceId || '') === String(device.id));
-            if (referencesTarget && await belongsToFactory(db, source, factoryId)) fail('该设备是来源设备 '+source.id+' 已启用进出料联动的固定目标，请先停用或重新配置来源设备联动，再启用目标设备移动');
-        }
-    }
+
 }
 
 module.exports = { validateMovementConfig, validateMovementSources };

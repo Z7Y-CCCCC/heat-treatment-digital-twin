@@ -49,6 +49,8 @@ namespace HeatTreatment.DigitalTwin.Rendering
             public bool IsFallback;
             public string LoadError;
             public JObject MotionPackage;
+            public string MotionClipSha;
+            public string MotionClipPath;
             public int Instances;
             public bool Retired;
             public bool Disposed;
@@ -64,6 +66,9 @@ namespace HeatTreatment.DigitalTwin.Rendering
         private int _configurationVersion;
 
         public int LoadedTemplateCount => _templates.Count;
+        public long TemplateLoadCount { get; private set; }
+        public long InstanceCreationCount { get; private set; }
+        public long MotionPackageReadCount { get; private set; }
 
         public void Configure(string backendBaseUrl, IEnumerable<ModelAssetDto> assets, float loadTimeoutSeconds)
         {
@@ -116,8 +121,7 @@ namespace HeatTreatment.DigitalTwin.Rendering
             // without throwing out the whole factory during a legacy import.
             if (animationToken != null && animationConfig == null)
                 Debug.LogWarning($"[RuntimeModelLibrary] Invalid animation configuration for device {device.Id}; actions are disabled.");
-            var useMotion = asset?.MotionPackage != null && (animationConfig?["bindings"]?.OfType<JObject>().Any(b => b.Value<bool?>("enabled") == true && b.Value<string>("kind") == "clip") == true
-                || animationConfig?["transferLink"]?["cycle"]?.Value<bool?>("enabled")==true);
+            var useMotion = ModelCacheIdentity.UsesMotion(asset, device);
             var key = CacheKey(asset, device.ModelType, useMotion) + (useMotion ? ":motion" : "");
             if (!_templates.TryGetValue(key, out var template))
             {
@@ -136,6 +140,18 @@ namespace HeatTreatment.DigitalTwin.Rendering
                     template = existing;
                 }
                 else _templates[key] = template;
+            }
+            // Updated tracks reuse the already verified/imported rig. Action
+            // JSON is refreshed separately, never cached forever with geometry.
+            if (useMotion && !template.IsFallback && (template.MotionClipSha != asset.MotionPackage.Value<string>("clipSha256")
+                || template.MotionClipPath != asset.MotionPackage.Value<string>("clipPath")))
+            {
+                var package = await LoadMotionPackage(asset, cancellationToken);
+                cancellationToken.ThrowIfCancellationRequested();
+                if (_destroyed || configurationVersion != _configurationVersion || template.Disposed) throw new OperationCanceledException("Motion definitions superseded");
+                template.MotionPackage = package;
+                template.MotionClipSha = asset.MotionPackage.Value<string>("clipSha256");
+                template.MotionClipPath = asset.MotionPackage.Value<string>("clipPath");
             }
             var templateMs = timing.ElapsedMilliseconds;
 
@@ -157,6 +173,7 @@ namespace HeatTreatment.DigitalTwin.Rendering
             if (_destroyed) throw new ObjectDisposedException(nameof(RuntimeModelLibrary));
             if (configurationVersion != _configurationVersion || template.Disposed) throw new OperationCanceledException("Model metadata changed during instance preparation");
             var clone = Instantiate(template.Root, parent, false);
+            ++InstanceCreationCount;
             clone.AddComponent<RuntimeModelLease>().Release = () => ReleaseTemplate(leased);
             transferredLease = true;
             clone.name = string.IsNullOrWhiteSpace(device.Name) ? device.Id : device.Name;
@@ -193,6 +210,7 @@ namespace HeatTreatment.DigitalTwin.Rendering
             string requestedModelType,
             CancellationToken cancellationToken, bool useMotion = false)
         {
+            ++TemplateLoadCount;
             if (asset == null || string.IsNullOrWhiteSpace(asset.FilePath))
             {
                 var reason = asset == null
@@ -290,6 +308,8 @@ namespace HeatTreatment.DigitalTwin.Rendering
                     OptimizationReport = report,
                     Importer = importer,
                     MotionPackage = motionPackage,
+                    MotionClipSha = useMotion ? asset.MotionPackage.Value<string>("clipSha256") : null,
+                    MotionClipPath = useMotion ? asset.MotionPackage.Value<string>("clipPath") : null,
                     IsFallback = false
                 };
             }
@@ -298,7 +318,7 @@ namespace HeatTreatment.DigitalTwin.Rendering
                 if (!completed)
                 {
                     try { importer?.Dispose(); }
-                    finally { if (root != null) Destroy(root); }
+                    finally { if (root != null) DestroyOwned(root); }
                 }
             }
         }
@@ -365,18 +385,9 @@ namespace HeatTreatment.DigitalTwin.Rendering
         private static string CacheKey(ModelAssetDto asset, string modelType, bool useMotion = false)
         {
             if (asset == null) return $"fallback:{modelType}";
-            var metadata = (JObject)asset.MetadataObject.DeepClone();
             var preserveAllNodes = useMotion || InspectionConfigResolver.Resolve(asset, null).Enabled;
-            if (preserveAllNodes) {
-                metadata.Remove("partBindings"); metadata.Remove("inspection");
-                // Saving the first/last action toggles this driver-only flag.
-                // It does not change the preserved geometry/material hierarchy.
-                (metadata["runtime"] as JObject)?.Remove("enableGenericBindings");
-                if (metadata["runtime"] is JObject runtime && runtime.Count == 0) metadata.Remove("runtime");
-            }
-            // When batching is enabled, part protection affects optimized geometry
-            // and remains in the key. Only all-node-preserved models may reuse it.
-            return $"{asset.Id}:{asset.FilePath}:{preserveAllNodes}:{metadata.ToString(Newtonsoft.Json.Formatting.None)}:{asset.MotionPackage?.Value<string>("sourceSha256")}:{asset.MotionPackage?.Value<string>("rigSha256")}:{asset.MotionPackage?.Value<string>("clipSha256")}";
+            return ModelCacheIdentity.GeometryKey(asset, modelType, useMotion, preserveAllNodes,
+                preserveAllNodes ? null : ProtectedNodeNames(ReadBindings(asset.MetadataObject), InspectionConfigResolver.Resolve(asset, null)));
         }
 
         private async Task<byte[]> ReadVerifiedMotionBytes(string relative, string expectedHash, int maximum, CancellationToken token)
@@ -407,6 +418,7 @@ namespace HeatTreatment.DigitalTwin.Rendering
         }
         private async Task<JObject> LoadMotionPackage(ModelAssetDto asset, CancellationToken token)
         {
+            ++MotionPackageReadCount;
             var bytes = await ReadVerifiedMotionBytes(asset.MotionPackage.Value<string>("clipPath"), asset.MotionPackage.Value<string>("clipSha256"), 16 * 1024 * 1024, token);
             var result = JObject.Parse(System.Text.Encoding.UTF8.GetString(bytes));
             if (result.Value<int?>("schemaVersion") != 1 || result.Value<string>("modelId") != asset.Id || result.Value<string>("rigSha256") != asset.MotionPackage.Value<string>("rigSha256")) throw new InvalidOperationException("Motion package does not match model");
@@ -549,7 +561,7 @@ namespace HeatTreatment.DigitalTwin.Rendering
             var renderer = value.GetComponent<Renderer>();
             if (renderer != null) renderer.sharedMaterial = material;
             var collider = value.GetComponent<Collider>();
-            if (collider != null) Destroy(collider);
+            if (collider != null) DestroyOwned(collider);
             return value;
         }
 
@@ -588,11 +600,17 @@ namespace HeatTreatment.DigitalTwin.Rendering
             if (template.Retired && template.Instances == 0) { DisposeTemplate(template); _retiredTemplates.Remove(template); }
         }
 
+        private static void DestroyOwned(UnityEngine.Object value)
+        {
+            if (value == null) return;
+            if (Application.isPlaying) Destroy(value); else DestroyImmediate(value);
+        }
+
         private static void DisposeTemplate(TemplateEntry template)
         {
             if (template.Disposed) return;
             template.Disposed = true;
-            if (template.Root != null) Destroy(template.Root);
+            if (template.Root != null) DestroyOwned(template.Root);
             template.Importer?.Dispose();
         }
     }

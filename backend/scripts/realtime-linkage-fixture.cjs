@@ -4,7 +4,7 @@
 const fs = require('node:fs'), path = require('node:path'), assert = require('node:assert/strict');
 const { BACKEND_DIR, createRunDirectory, createTestDatabase, findFreePort, startLoggedProcess, waitForHttp, testFetch, forceStop } = require('./integration-test-utils.cjs');
 
-async function createLinkageFixture(prefix = 'realtime-transfer-link') {
+async function createLinkageFixture(prefix = 'realtime-transfer-link', options = {}) {
     const directory = createRunDirectory(prefix), dataDir = path.join(directory, 'data'), filename = path.join(dataDir, 'factory.db');
     await createTestDatabase(filename);
     const Database = require('better-sqlite3'), sql = new Database(filename);
@@ -43,7 +43,7 @@ async function createLinkageFixture(prefix = 'realtime-transfer-link') {
     let backend;
     try {
         backend = startLoggedProcess(process.execPath, ['server.js'], { cwd:BACKEND_DIR,
-            env:{...process.env,APP_DATA_DIR:dataDir,PORT:new URL(origin).port,HOST:'127.0.0.1'},logFile:path.join(directory,'backend.log') });
+            env:{...process.env,APP_DATA_DIR:dataDir,PORT:new URL(origin).port,HOST:'127.0.0.1',...(options.emptyInstallation === true ? {APP_EMPTY_INSTALL:'1'} : {})},logFile:path.join(directory,'backend.log') });
         await waitForHttp(origin+'/api/health');
     } catch (error) { sql.close(); await forceStop(backend); throw error; }
     const request = async (url, method = 'GET', body, factoryId = 'factory_default') => {

@@ -76,10 +76,11 @@ const clone = value => JSON.parse(JSON.stringify(value));
     const targetBefore=await ok('/api/devices/'+targetId);
     const moveTarget={enabled:true,currentPositionPointId:points.targetPosition,valueMode:'range',valueMin:0,valueMax:100,start:{x:1,y:0,z:0},end:{x:2,y:0,z:0}};
     const targetMoving=await request('/api/devices/'+targetId+'/movement','PUT',{movement:moveTarget,expectedMovement:null});
-    assert.equal(targetMoving.status,400);assert.match(targetMoving.data.error,/固定目标/);
-    assert.deepEqual(await ok('/api/devices/'+targetId),targetBefore,'rejected target role change cannot modify its layout or movement');
+    assert.equal(targetMoving.status,200,'removed inter-device settings cannot lock a normal movement editor');
+    assert.deepEqual(JSON.parse((await ok('/api/devices/'+targetId)).instance_config).movement,moveTarget);
+    sql.prepare('UPDATE devices SET instance_config=? WHERE id=?').run(targetBefore.instance_config,targetId);
     assert.deepEqual((await ok(route)).config,loaded.config);
-    check('a fixed handoff target cannot silently become mobile through its separate movement editor');
+    check('legacy handoff settings do not lock movement editing; their stored source configuration remains untouched');
     for(const [name,patch] of [
         ['foreign fixed target',{targetDeviceId:foreignId}],['unknown fixed target',{targetDeviceId:'missing'}],
         ['unbound action',{actionId:'clip:travel'}],['unknown drive node',{driveNodeName:'guessed_pusher'}],
@@ -135,7 +136,9 @@ const clone = value => JSON.parse(JSON.stringify(value));
     const stationTransfer={...transfer,targetMode:'station',targetDeviceId:''};
     loaded=await ok(route,'PUT',{revision:loaded.revision,config:{...loaded.config,transferLink:stationTransfer}});
     assert.deepEqual((await ok(route)).config.transferLink,stationTransfer);
-    assert.equal((await request(movementRoute,'PUT',{movement:{...stationMovement,valueMode:'range'},expectedMovement:stationMovement})).status,400,'a movement edit cannot silently break an enabled station handoff');
+    const rangedMovement={...stationMovement,valueMode:'range'};
+    assert.equal((await request(movementRoute,'PUT',{movement:rangedMovement,expectedMovement:stationMovement})).status,200,'removed inter-device settings cannot block the visible position mode');
+    await ok(movementRoute,'PUT',{movement:stationMovement,expectedMovement:rangedMovement});
     loaded=await ok(route);
     loaded=await ok(route,'PUT',{revision:loaded.revision,config:{...loaded.config,transferLink:{...stationTransfer,enabled:false}}});
     const targetMovement={...stationMovement,stationInputMeaning:'target',simulationEnabled:true};

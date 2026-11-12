@@ -709,3 +709,23 @@ test('actual smoothing field obeys existing edit permission and cannot be manual
   assert.equal(JSON.stringify(f.vm.draft), before)
   assert.equal(await f.vm.save(), false); assert.equal(f.calls.saves.length, 0)
 })
+
+test('existing model part actions all remain visible and bindable, with no inter-device settings entry', async t => {
+  const packages = JSON.parse(await readFile(new URL('../../shared/motionPackages.json', import.meta.url), 'utf8'))
+  const modelActions = packages.models.cad_multipurpose_furnace_082000.actions.map(action => ({ ...action, id: 'clip:' + action.id, kind: 'clip' }))
+  const legacy = { enabled: true, actionId: 'clip:removed', driveNodeName: 'removed-node', extension: 'keep historical data' }
+  const f = await fixture(t, { template: true, load: async id => ({ ...animation(id), actions: modelActions, config: { ...animation(id).config, transferLink: legacy } }) })
+  assert.equal(f.vm.selectableActions.length, 9)
+  for (const action of modelActions.filter(action => action.id !== 'clip:process_cycle')) {
+    assert.ok(f.host.nodes().some(node => node.tag === 'button' && f.host.text(node).includes(action.label)), action.label)
+    assert.ok(f.vm.draft.bindings.some(binding => binding.actionId === action.id))
+  }
+  assert.doesNotMatch(f.host.text(f.host.root), /进出料联动|承料移动节点|交接校准|高级：设备间/)
+  assert.doesNotMatch(source, /TransferLinkSettings|advanced-device-transfer/)
+  assert.equal(Object.hasOwn(f.vm.draft, 'transferLink'), false)
+  assert.equal(f.vm.dirty, false, 'reading legacy metadata does not invent a change')
+  f.vm.chooseDataItem(f.vm.availableDataItems.find(item => item.id === 'bool-a')); await nextTick()
+  assert.equal(await f.vm.save(), true, f.vm.error)
+  assert.equal(Object.hasOwn(f.calls.saves[0].body.config, 'transferLink'), false, 'normal save never edits the removed settings')
+  assert.deepEqual(legacy, { enabled: true, actionId: 'clip:removed', driveNodeName: 'removed-node', extension: 'keep historical data' })
+})

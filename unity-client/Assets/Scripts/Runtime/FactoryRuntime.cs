@@ -74,6 +74,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
         private CancellationTokenSource _lifetime;
         private CancellationTokenSource _reload;
         private int _configurationReloadVersion;
+        private CancellationTokenSource _configurationRefresh;
         private CancellationTokenSource _modelRefresh;
         private int _modelRefreshVersion;
         private bool _pendingModelRefresh;
@@ -509,6 +510,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
         {
             _deviceEntryNavigation.Clear();
             ++_configurationReloadVersion;
+            CancelConfigurationRefresh();
             CancelModelRefresh();
             if (!_authenticated)
             {
@@ -528,19 +530,122 @@ namespace HeatTreatment.DigitalTwin.Runtime
             _ = LoadConfigurationLoopAsync(_reload.Token);
         }
 
-        private async void QueueConfigurationReload()
+        private async void QueueConfigurationReload(int retry = 0)
         {
+            if (!_authenticated) return;
             var version = ++_configurationReloadVersion;
+            CancelConfigurationRefresh();
             CancelModelRefresh();
+            var modelVersion = _modelRefreshVersion;
+            _configurationRefresh = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
+            var token = _configurationRefresh.Token;
+            var authGeneration = _authGeneration;
             try
             {
                 // Bulk layout saves generate several committed writes. Read the
                 // final authoritative config once, rather than rebuilding per row.
-                await Task.Delay(180, _lifetime.Token);
+                await Task.Delay(180, token);
                 if (version != _configurationReloadVersion) return;
+                if (_sceneReady && _config != null && _factoryRoot != null)
+                {
+                    var current = _config; var factoryRoot = _factoryRoot; var generation = _authGeneration;
+                    var latest = await _api.GetFactoryConfigAsync(token);
+                    token.ThrowIfCancellationRequested();
+                    if (version != _configurationReloadVersion || generation != _authGeneration || factoryRoot != _factoryRoot) return;
+                    if (modelVersion != _modelRefreshVersion || current != _config) { QueueConfigurationReload(); return; }
+                    if (TryApplyConfigurationInPlace(latest, out var modelsChanged))
+                    {
+                        if (modelsChanged) QueueModelRefresh(latest);
+                        return;
+                    }
+                }
                 BeginReload();
             }
             catch (OperationCanceledException) { }
+            catch (BackendRequestException exception) when (exception.StatusCode == 401 || exception.StatusCode == 403)
+            { if (authGeneration == _authGeneration) ClearNativeSession("登录状态或大屏权限已失效，请重新登录。"); }
+            catch (Exception exception)
+            {
+                Debug.LogWarning($"[FactoryRuntime] Configuration synchronization failed; existing scene retained: {exception.Message}");
+                if (retry < 3 && _authenticated && authGeneration == _authGeneration)
+                {
+                    try {
+                        await Task.Delay(500 * (retry + 1), token);
+                        if (version == _configurationReloadVersion) QueueConfigurationReload(retry + 1);
+                    } catch (OperationCanceledException) { }
+                }
+            }
+        }
+
+        private void CancelConfigurationRefresh()
+        {
+            _configurationRefresh?.Cancel(); _configurationRefresh?.Dispose(); _configurationRefresh = null;
+        }
+
+        private bool TryApplyConfigurationInPlace(FactoryConfigDto latest, out bool modelsChanged)
+        {
+            modelsChanged = false;
+            if (!_sceneReady || _diagnostics?.FallbackDeviceCount > 0 || !ConfigurationRefreshPolicy.CanApplyInPlace(_config, latest)) return false;
+            var evidence = CaptureModelRefreshEvidence();
+            modelsChanged = ConfigurationRefreshPolicy.ActionUpdateRequired(_config, latest);
+            var changed = 0; var placementsChanged = false; var transferChanged = false;
+            var nextDevices = EnumerateConfigDevices(latest).ToDictionary(device => device.Id, StringComparer.Ordinal);
+            foreach (var workshop in _config.Workshops)
+            {
+                var nextWorkshop = latest.Workshops.First(row => row.Id == workshop.Id); workshop.Name = nextWorkshop.Name;
+                foreach (var line in workshop.Lines ?? new List<LineDto>()) line.Name = nextWorkshop.Lines.First(row => row.Id == line.Id).Name;
+            }
+            foreach (var device in EnumerateConfigDevices(_config))
+            {
+                var next = nextDevices[device.Id];
+                if (ConfigurationRefreshPolicy.SameDevice(device, next)) continue;
+                var placement = !ConfigurationRefreshPolicy.SamePlacement(device, next);
+                var prior = device.InstanceConfigObject;
+                var movementChanged = !JToken.DeepEquals(prior["movement"], next.InstanceConfigObject["movement"]);
+                var inspectionChanged = !JToken.DeepEquals(prior["inspection"], next.InstanceConfigObject["inspection"]);
+                var beaconChanged = new[] { "showStatusLight", "statusLightY", "labelY" }.Any(key => !JToken.DeepEquals(prior[key], next.InstanceConfigObject[key]));
+                var instance = ConfigurationRefreshPolicy.InstanceWithoutActionUpdate(device, next);
+                device.Name = next.Name; device.PositionX = next.PositionX; device.PositionY = next.PositionY; device.PositionZ = next.PositionZ;
+                device.RotationY = next.RotationY; device.Scale = next.Scale; device.CoordinateSpace = next.CoordinateSpace;
+                device.InstanceConfig = instance; device.DataPoints = next.DataPoints;
+                if (_deviceRoots.TryGetValue(device.Id, out var root) && root != null)
+                {
+                    if (placement) _modelLibrary?.ApplyPreviewTransform(root, device);
+                    if (!string.IsNullOrWhiteSpace(device.Name)) root.name = device.Name;
+                    if (inspectionChanged) _dashboard?.ApplyPreviewDevice(device, root.gameObject, InspectionConfigResolver.Resolve(_config.Models.FirstOrDefault(model => model.Id == device.ModelType), device));
+                    else _dashboard?.UpdateLiveDeviceDefinition(device, placement);
+                }
+                if ((movementChanged || placement) && _motions.TryGetValue(device.Id, out var motion))
+                    motion.Reconfigure(device, true, ResolveMotionLineLayout(device));
+                if (beaconChanged && _visuals.TryGetValue(device.Id, out var visual))
+                {
+                    visual.Initialize(device, _config.Models.FirstOrDefault(model => model.Id == device.ModelType));
+                    if (_latestDeviceFrames.TryGet(device.Id, out var frame, Time.realtimeSinceStartupAsDouble)) visual.ApplyRealtime(frame);
+                }
+                placementsChanged |= placement; transferChanged |= movementChanged || placement; ++changed;
+            }
+            var settings = latest.Settings ?? new Dictionary<string, string>(); var changedSettings = new JObject();
+            foreach (var key in (_config.Settings ?? new Dictionary<string, string>()).Keys.Concat(settings.Keys).Distinct())
+            {
+                var before = _config.Settings != null && _config.Settings.TryGetValue(key, out var prior) ? prior : null;
+                var after = settings.TryGetValue(key, out var next) ? next : null;
+                if (before != after) changedSettings[key] = after == null ? JValue.CreateNull() : new JValue(after);
+            }
+            _config.Settings = new Dictionary<string, string>(settings);
+            var viewsChanged = !JToken.DeepEquals(_config.Platform?["document"], latest.Platform?["document"]);
+            _config.Platform = latest.Platform; _config.EnvironmentModel = latest.EnvironmentModel;
+            _dashboard?.UpdateFactoryDefinition(_config, viewsChanged);
+            if (changedSettings.Count > 0) ApplyLiveSettings(new JObject { ["settings"] = changedSettings });
+            if (placementsChanged)
+            {
+                _environment?.UpdateFactoryGround(_config, EnumerateConfigDevices(_config).ToList());
+                _dashboard?.UpdatePreviewFactoryBounds(CalculateFactoryOverviewBounds());
+            }
+            if (transferChanged && (_transferCoordinator != null || EnumerateConfigDevices(_config).Any(device => device.InstanceConfigObject["animationBindings"]?["transferLink"]?.Value<bool?>("enabled") == true))) RefreshTransferLinks();
+            if (_diagnostics != null) _diagnostics.Activity = $"Configuration updated in place: devices={changed}; existing models retained";
+            if (evidence != null) Debug.Log("[ConfigurationRefresh] " + new JObject { ["changedDevices"] = changed, ["modelRefreshRequired"] = modelsChanged,
+                ["before"] = evidence, ["after"] = CaptureModelRefreshEvidence() }.ToString(Formatting.None));
+            return true;
         }
 
         private void CancelModelRefresh()
@@ -551,7 +656,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
             _modelRefresh = null;
         }
 
-        private async void QueueModelRefresh()
+        private async void QueueModelRefresh(FactoryConfigDto latestSnapshot = null)
         {
             if (!_authenticated) return;
             if (!_sceneReady || _config == null || _factoryRoot == null) { _pendingModelRefresh = true; return; }
@@ -559,6 +664,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
             var version = _modelRefreshVersion;
             _modelRefresh = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
             var token = _modelRefresh.Token;
+            var authGeneration = _authGeneration;
             try
             {
                 // The bindings route emits model_metadata_changed followed by a
@@ -566,12 +672,12 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 // final authoritative read, not two whole-factory rebuilds.
                 await Task.Delay(180, token);
                 if (version != _modelRefreshVersion) return;
-                await RefreshModelDefinitionsAsync(version, token);
+                await RefreshModelDefinitionsAsync(version, token, latestSnapshot);
             }
             catch (OperationCanceledException) { }
             catch (BackendRequestException exception) when (exception.StatusCode == 401 || exception.StatusCode == 403)
             {
-                ClearNativeSession("登录状态或大屏权限已失效，请重新登录。");
+                if (authGeneration == _authGeneration) ClearNativeSession("登录状态或大屏权限已失效，请重新登录。");
             }
             catch (Exception exception)
             {
@@ -580,11 +686,11 @@ namespace HeatTreatment.DigitalTwin.Runtime
             }
         }
 
-        private async Task RefreshModelDefinitionsAsync(int version, CancellationToken token)
+        private async Task RefreshModelDefinitionsAsync(int version, CancellationToken token, FactoryConfigDto latestSnapshot = null)
         {
             var previousConfig = _config; var factoryRoot = _factoryRoot; var authGeneration = _authGeneration;
             var evidenceBefore = CaptureModelRefreshEvidence();
-            var latest = await _api.GetFactoryConfigAsync(token);
+            var latest = latestSnapshot ?? await _api.GetFactoryConfigAsync(token);
             token.ThrowIfCancellationRequested();
             if (version != _modelRefreshVersion || _config != previousConfig || _factoryRoot != factoryRoot || authGeneration != _authGeneration) return;
             var merged = ModelHotRefreshPolicy.Merge(previousConfig, latest, out var affected);
@@ -642,6 +748,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 // All potentially failing loading/driver initialization finished
                 // while old roots were still visible. Publish as one transaction.
                 _config = merged;
+                _dashboard.UpdateFactoryDefinition(merged);
                 foreach (var candidate in candidates)
                 {
                     var device = candidate.Device; var root = candidate.Instance.Root;
@@ -654,8 +761,8 @@ namespace HeatTreatment.DigitalTwin.Runtime
                     root.SetActive(candidate.Previous.gameObject.activeSelf);
                 }
                 committed = true;
-                RefreshTransferLinks();
-                foreach (var candidate in candidates) { candidate.Previous.gameObject.SetActive(false); Destroy(candidate.Previous.gameObject); }
+                if (candidates.Count > 0) RefreshTransferLinks();
+                foreach (var candidate in candidates) { candidate.Previous.gameObject.SetActive(false); DestroyRefreshObject(candidate.Previous.gameObject); }
                 if (candidates.Count > 0) _dashboard.UpdatePreviewFactoryBounds(CalculateFactoryOverviewBounds());
                 _diagnostics.TemplateCount = _modelLibrary.LoadedTemplateCount;
                 _diagnostics.Activity = $"Model/action definitions refreshed: devices={candidates.Count}; hall and camera preserved";
@@ -672,6 +779,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
                     if (_config == merged)
                     {
                         _config = previousConfig;
+                        _dashboard.UpdateFactoryDefinition(previousConfig);
                         foreach (var candidate in candidates)
                         {
                             var id = candidate.Device.Id; var oldRoot = candidate.Previous;
@@ -686,7 +794,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
                             }
                         }
                     }
-                    foreach (var candidate in candidates) if (candidate.Instance.Root != null) Destroy(candidate.Instance.Root);
+                    foreach (var candidate in candidates) if (candidate.Instance.Root != null) DestroyRefreshObject(candidate.Instance.Root);
                     // A superseding full reload owns the library now. Roll back
                     // only if this still is the scene for which we prepared.
                     if (version == _modelRefreshVersion && _config == previousConfig && _factoryRoot == factoryRoot)
@@ -707,8 +815,16 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 ["environmentRoots"] = environmentRoots, ["deviceRoots"] = devices, ["sceneReady"] = _sceneReady,
                 ["cameraPosition"] = ProjectionVector(_camera.transform.position),
                 ["cameraRotation"] = new JArray(_camera.transform.rotation.x, _camera.transform.rotation.y, _camera.transform.rotation.z, _camera.transform.rotation.w),
-                ["viewId"] = _dashboard?.ActiveViewId, ["loadingId"] = _sceneLoadId
+                ["viewId"] = _dashboard?.ActiveViewId, ["loadingId"] = _sceneLoadId,
+                ["templateLoads"] = _modelLibrary?.TemplateLoadCount ?? 0, ["instanceCreations"] = _modelLibrary?.InstanceCreationCount ?? 0,
+                ["motionPackageReads"] = _modelLibrary?.MotionPackageReadCount ?? 0
             };
+        }
+
+        private static void DestroyRefreshObject(GameObject value)
+        {
+            if (value == null) return;
+            if (Application.isPlaying) Destroy(value); else DestroyImmediate(value);
         }
 
         private async Task LoadConfigurationLoopAsync(CancellationToken cancellationToken)
@@ -1042,7 +1158,8 @@ namespace HeatTreatment.DigitalTwin.Runtime
             {
                 var payload = message["payload"] as JObject;
                 var action = ConfigurationSyncPolicy.ChangeAction(payload, _config?.FactoryId);
-                if (action == "reload") QueueConfigurationReload();
+                if (action == "reload" && !string.IsNullOrWhiteSpace(payload?.Value<string>("activeFactoryId"))) BeginReload();
+                else if (action == "reload") QueueConfigurationReload();
                 else if (action == "models") QueueModelRefresh();
                 else if (action == "settings") ApplyLiveSettings(payload);
             }
@@ -1068,8 +1185,8 @@ namespace HeatTreatment.DigitalTwin.Runtime
             }
             else if (type == "dashboard_release_changed")
             {
-                _diagnostics.Activity = "Published dashboard version changed; reloading";
-                BeginReload();
+                _diagnostics.Activity = "Published dashboard version changed; synchronizing";
+                QueueConfigurationReload();
             }
         }
 
@@ -1927,17 +2044,18 @@ namespace HeatTreatment.DigitalTwin.Runtime
             var merged = _config?.Settings ?? new Dictionary<string, string>();
             foreach (var property in changedSettings.Properties())
             {
+                if (property.Value.Type == JTokenType.Null) { merged.Remove(property.Name); continue; }
                 merged[property.Name] = property.Value.Type == JTokenType.String
                     ? property.Value.Value<string>()
                     : property.Value.ToString();
             }
             if (_config != null) _config.Settings = merged;
             ApplyLoadingTheme(merged);
-            _dashboard.ApplySettings(merged);
-            _environment.ApplySettings(merged);
+            _dashboard?.ApplySettings(merged);
+            _environment?.ApplySettings(merged);
 
             if (changedSettings.Property("native_quality_profile") != null) ApplyBackendQuality(merged);
-            _diagnostics.Activity = "Dashboard configuration updated live";
+            if (_diagnostics != null) _diagnostics.Activity = "Dashboard configuration updated live";
             Debug.Log("[FactoryRuntime] Dashboard configuration updated live");
         }
 
@@ -2008,6 +2126,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
             }
             if (string.Equals(state, "connected", StringComparison.OrdinalIgnoreCase))
             {
+                if (_authenticated && _sceneReady) QueueConfigurationReload();
                 _webSocket?.SendMessage(new JObject
                 {
                     ["type"] = "dashboard_context",
@@ -2144,6 +2263,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
             _reload?.Cancel();
             _reload?.Dispose();
             CancelModelRefresh();
+            CancelConfigurationRefresh();
             _lifetime?.Cancel();
             var listener = _nativeAuthPipeThread;
             if (listener != null && listener != Thread.CurrentThread && listener.IsAlive && !listener.Join(500))
