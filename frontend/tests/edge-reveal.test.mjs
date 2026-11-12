@@ -43,8 +43,12 @@ test('both docks share the 14px folded tab and preserve native hover hotspots', 
     assert.deepEqual(compileStyle({source:descriptor.styles.map(s=>s.content).join('\n'),id:path}).errors,[])
     if(path.endsWith('EdgeFoldTab.vue')){
       assert.match(source,/width:14px;height:42px/);assert.match(source,/clip-path:polygon/);assert.match(source,/:aria-label="label"/)
+      assert.match(source,/<Transition name="edge-fold">/);assert.match(source,/:inert="!visible"/)
+      assert.match(source,/edge-fold-enter-active/);assert.match(source,/prefers-reduced-motion:reduce/)
     }else{
       assert.match(source,/useEdgeReveal/);assert.match(source,/<EdgeFoldTab/);assert.match(source,/data-overlay-hit="true"/);assert.match(source,/:inert="hidden"/)
+      assert.match(source,/useOutsideDismiss/);assert.match(source,/@before-leave="element => element.inert = true"/)
+      assert.match(source,/@after-leave=/);assert.match(source,/panel-leave-active\{pointer-events:none\}/)
     }
   }
 })

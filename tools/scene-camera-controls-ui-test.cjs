@@ -22,7 +22,11 @@ const pass = name => { checks.push(name); console.log('PASS ' + name); };
   await context.addInitScript(() => {
     window.__DIGITAL_TWIN_NATIVE_LOADING__ = true;
     window.__cameraHostMessages = [];
-    window.chrome = { webview: { postMessage(message) { window.__cameraHostMessages.push(message); }, addEventListener() {}, removeEventListener() {} } };
+    const listeners = new Map();
+    window.__emitNativeMessage = data => { for (const fn of listeners.get('message') || []) fn({ data }); };
+    window.chrome = { webview: { postMessage(message) { window.__cameraHostMessages.push(message); },
+      addEventListener(name, fn) { if (!listeners.has(name)) listeners.set(name, new Set()); listeners.get(name).add(fn); },
+      removeEventListener(name, fn) { listeners.get(name)?.delete(fn); } } };
   });
   page = await context.newPage(); page.setDefaultTimeout(20000); page.on('pageerror', e => errors.push(e.message));
   await page.goto(info.origin + '/admin');
@@ -41,6 +45,14 @@ const pass = name => { checks.push(name); console.log('PASS ' + name); };
   await page.goto(info.origin + '/overlay?embedded=unity&surface=overlay&scene=1&factoryId=' + scope.factoryId);
   const cameraDock = page.locator('.scene-camera-controls'), accountDock = page.locator('.account-dock');
   await cameraDock.waitFor(); await accountDock.waitFor();
+  await page.evaluate(() => {
+    window.__edgeTransitions = [];
+    for (const phase of ['transitionrun', 'transitionend']) document.addEventListener(phase, event => {
+      if (event.target.matches('.edge-fold-tab,.scene-camera-trigger,.group-user,.scene-camera-panel,.group-account-menu')) {
+        window.__edgeTransitions.push({ phase, classes:event.target.className, property:event.propertyName, inert:event.target.inert });
+      }
+    });
+  });
   assert.match(await cameraDock.getAttribute('class'), /is-hidden/);
   assert.match(await accountDock.getAttribute('class'), /is-hidden/);
   await page.getByRole('button', { name: '展开视角入口', exact:true }).waitFor();
@@ -87,7 +99,8 @@ const pass = name => { checks.push(name); console.log('PASS ' + name); };
   const accountMenu = page.getByRole('region', {name:'账户设置',exact:true}); await accountMenu.waitFor();
   await page.mouse.move(640,360);await page.waitForTimeout(1600);
   assert.doesNotMatch(await accountDock.getAttribute('class'),/is-hidden/);
-  await page.keyboard.press('Escape');await accountMenu.waitFor({state:'hidden'});
+  await accountMenu.locator('.group-account-profile').click(); assert.equal(await accountMenu.isVisible(), true, 'internal click keeps account menu open');
+  await page.mouse.click(640,360);await accountMenu.waitFor({state:'hidden'});
   await page.mouse.click(640,360);
   await waitUntil(async () => /is-hidden/.test(await accountDock.getAttribute('class')),5000,'account closes back to its folded tab');
   await page.getByRole('button', {name:'展开视角入口',exact:true}).focus();
@@ -96,6 +109,25 @@ const pass = name => { checks.push(name); console.log('PASS ' + name); };
   await waitUntil(async () => /is-hidden/.test(await cameraDock.getAttribute('class')),5000,'keyboard dismissal leaves a discoverable folded tab');
   await page.screenshot({ path: path.join(directory, 'camera-controls-collapsed.png'), animations: 'disabled' });
   pass('both folded edge hints reveal on approach, keep open menus visible, hide after leaving, and remain keyboard accessible; camera sits 6px from the right/bottom at 720–1598px widths');
+  await cameraDock.hover({position:{x:30,y:30}}); await trigger.click(); await panel.waitFor();
+  await accountDock.hover({position:{x:30,y:25}}); await accountTrigger.click(); await accountMenu.waitFor();
+  await panel.waitFor({state:'hidden'});
+  await page.evaluate(() => window.__emitNativeMessage({type:'overlay_host_state',visible:true}));
+  assert.equal(await accountMenu.isVisible(), true, 'unrelated native messages do not close menus');
+  await page.evaluate(() => window.__emitNativeMessage({type:'overlay_scene_pointerdown'})); await accountMenu.waitFor({state:'hidden'});
+  await cameraDock.hover({position:{x:30,y:30}}); await trigger.click(); await panel.waitFor();
+  await page.evaluate(() => window.__emitNativeMessage({type:'overlay_scene_pointerdown'})); await panel.waitFor({state:'hidden'});
+  pass('outside clicks close either panel, opening another dock closes the previous panel, and native scene pointer messages close both without a DOM click');
+  const transitions = await page.evaluate(() => window.__edgeTransitions);
+  for (const name of ['edge-fold-tab','scene-camera-trigger','group-user','scene-camera-panel','group-account-menu']) {
+    assert.ok(transitions.some(t => t.classes.includes(name) && t.phase === 'transitionrun' && t.property === 'transform'), name + ' animates');
+    assert.ok(transitions.some(t => t.classes.includes(name) && t.phase === 'transitionend'), name + ' finishes animating');
+  }
+  for (const name of ['scene-camera-panel','group-account-menu']) assert.ok(transitions.some(t => t.classes.includes(name) && t.classes.includes('leave') && t.inert), name + ' is inert during exit');
+  await page.emulateMedia({reducedMotion:'reduce'});
+  for (const button of [trigger, accountTrigger]) assert.ok(await button.evaluate(e => getComputedStyle(e).transitionDuration.split(',').every(t => parseFloat(t) <= .001)), 'reduced motion is at most one millisecond');
+  await page.emulateMedia({reducedMotion:'no-preference'});
+  pass('folded tabs, both triggers and both panels have real completed CSS transitions; exiting panels are inert and reduced-motion disables animation');
   await cameraDock.hover({position:{x:30,y:30}});
   await trigger.click(); await panel.waitFor(); publish(false);
   await waitUntil(async () => !(await panel.getByRole('button', { name: '拉近', exact: true }).isEnabled()), 5000, 'loading blocks commands');

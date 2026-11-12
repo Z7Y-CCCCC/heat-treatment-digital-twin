@@ -4,9 +4,11 @@ const emit = defineEmits(['reveal'])
 </script>
 
 <template>
-  <button v-show="visible" type="button" class="edge-fold-tab" :aria-label="label" :title="label" @click="emit('reveal', true)" @focus="emit('reveal', true)">
+  <Transition name="edge-fold">
+  <button v-show="visible" type="button" class="edge-fold-tab" :inert="!visible" :aria-hidden="!visible || undefined" :aria-label="label" :title="label" @click="emit('reveal', true)" @focus="emit('reveal', true)">
     <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m9.5 4.5-3.5 3.5 3.5 3.5" /></svg>
   </button>
+  </Transition>
 </template>
 
 <style scoped>
@@ -15,5 +17,9 @@ const emit = defineEmits(['reveal'])
 .edge-fold-tab svg{position:absolute;right:0;top:17px;width:12px;height:12px;fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}
 .edge-fold-tab:hover{background:linear-gradient(135deg,#879bb2,#4a607c 46%,#3d516b)}
 .edge-fold-tab:focus-visible{outline:2px solid #d3e6ff;outline-offset:-3px}
+.edge-fold-enter-active,.edge-fold-leave-active{transition:transform .24s cubic-bezier(.22,1,.36,1),opacity .24s ease}
+.edge-fold-enter-from,.edge-fold-leave-to{transform:translateX(14px);opacity:0}
+.edge-fold-leave-active{pointer-events:none}
+@media(prefers-reduced-motion:reduce){.edge-fold-enter-active,.edge-fold-leave-active{transition:none}}
 @media(forced-colors:active){.edge-fold-tab{background:ButtonFace;color:ButtonText;border:1px solid ButtonText}.edge-fold-tab::before{background:ButtonText}}
 </style>
