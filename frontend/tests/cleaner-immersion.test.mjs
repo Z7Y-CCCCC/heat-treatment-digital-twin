@@ -7,6 +7,8 @@ import {CadMotionRig} from '../src/three/CadMotionRig.js'
 import {LineSimulationScene} from '../src/three/LineSimulationScene.js'
 import {buildLineSimulation,sampleLineSimulation} from '../src/three/lineSimulation.js'
 import {measureEquipmentLoadCenters} from '../src/three/equipmentLoadCenter.js'
+import {CAD_CUTAWAY_SUFFIXES,collectCutawayMaterials} from '../src/three/cadCutaway.js'
+import {CadMotionScene} from '../src/three/CadMotionScene.js'
 
 test('the actual coordinated cleaner lowers the entire load with its deck below the permanent water surface, including transformed instances',async()=>{
  const bytes=fs.readFileSync(new URL('../../backend/assets/models/cad_cleaner_170700.glb',import.meta.url))
@@ -38,7 +40,7 @@ test('the actual coordinated cleaner lowers the entire load with its deck below 
  }finally{rig.dispose()}
 })
 
-test('the lower cleaner bath has a continuous liquid volume and no interior dividing walls or lid',async()=>{
+test('the lower cleaner bath stays connected below its normal top covers, without internal partitions or an immersion shelf',async()=>{
  const bytes=fs.readFileSync(new URL('../../backend/assets/models/cad_cleaner_170700.glb',import.meta.url))
  const {scene:root}=await new GLTFLoader().parseAsync(bytes.buffer.slice(bytes.byteOffset,bytes.byteOffset+bytes.byteLength),'')
  root.updateMatrixWorld(true)
@@ -64,4 +66,30 @@ test('the lower cleaner bath has a continuous liquid volume and no interior divi
   rig.apply('basket_down',8)
   assert.deepEqual([...rig.water.position,...rig.water.scale],before,'basket immersion does not split or move the bath')
  }finally{rig.dispose()}
+})
+
+test('the actual cleaner has opaque top covers outside its chamber, and the manual cutaway includes those covers',async()=>{
+ const bytes=fs.readFileSync(new URL('../../backend/assets/models/cad_cleaner_170700.glb',import.meta.url))
+ const {scene:root}=await new GLTFLoader().parseAsync(bytes.buffer.slice(bytes.byteOffset,bytes.byteOffset+bytes.byteLength),'')
+ root.updateMatrixWorld(true)
+ const shell=root.getObjectByName('cad_washing_machine_v1_central_lower_body')
+ assert.ok(shell)
+ for(const x of [-1.02,-.68,.68,1.02])for(const z of [-.7,0,.7]){
+  const hits=new T.Raycaster(new T.Vector3(x,2,z),new T.Vector3(0,-1,0),0,2).intersectObject(shell,true)
+  assert.ok(hits.length>0,'solid cover above the exposed tank area '+x+','+z)
+  assert.ok(hits[0].point.y>1.23&&hits[0].point.y<1.30,'cover is above the water, not a wall or bottom')
+  const material=[].concat(hits[0].object.material)[hits[0].face.materialIndex]
+  assert.equal(material.transparent,false);assert.equal(material.opacity,1)
+ }
+ const opening=new T.Raycaster(new T.Vector3(0,2,0),new T.Vector3(0,-1,0),0,1).intersectObject(shell,true)
+ assert.equal(opening.length,0,'the central chamber must stay open internally for the immersion stroke')
+ const materials=collectCutawayMaterials(root,CAD_CUTAWAY_SUFFIXES.map(s=>'cad_washing_machine_v1_'+s))
+ const covers=new Set();shell.traverse(node=>{if(node.isMesh)for(const m of [].concat(node.material))covers.add(m)})
+ assert.ok([...covers].every(material=>materials.includes(material)),'top cover materials respond to the existing explicit internal-view switch')
+ const preview={shell:materials}
+ CadMotionScene.prototype.setCutaway.call(preview,true)
+ assert.ok([...covers].every(material=>material.transparent&&material.opacity<=.16),'the manual internal-view control reveals the covered tank')
+ CadMotionScene.prototype.setCutaway.call(preview,false)
+ assert.ok([...covers].every(material=>!material.transparent&&material.opacity===1),'turning the control off restores the original opaque covers')
+ materials.forEach(material=>material.dispose())
 })

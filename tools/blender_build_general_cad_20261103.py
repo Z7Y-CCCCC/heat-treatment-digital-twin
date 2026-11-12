@@ -335,7 +335,7 @@ def temper(a):
     for z in [.98,1.08]:a.cyl('control_button',(-.66,front-.18,z),.016,.02,'red' if z<1 else 'green','Y','electrics',16)
 
 def wash_lower_body(a):
-    """User correction 2026-11-11: one open lower bath, no internal partitions.
+    """One connected lower bath, with solid top covers outside the chamber.
 
     Retain the existing overall envelope and upper chamber. Wall gauge remains
     an inferred display detail; this correction is not a manufacturing drawing.
@@ -345,7 +345,8 @@ def wash_lower_body(a):
     back=front+depth;half=width/2
     vertices=[(-half,front,bottom),(half,front,bottom),(half,back,bottom),(-half,back,bottom),
               (-half,front,top),(half,front,top),(half,back,top),(-half,back,top)]
-    # Four perimeter walls and one bottom: no lid, central box or side partitions.
+    # Four perimeter walls and one bottom; the removable covers are separate
+    # sheets, not internal partitions or a shelf under the loading basket.
     faces=[(3,2,1,0),(0,1,5,4),(1,2,6,5),(2,3,7,6),(3,0,4,7)]
     mesh=bpy.data.meshes.new('wash_lower_sheet_enclosure')
     mesh.from_pydata(vertices,[],faces);mesh.update()
@@ -362,7 +363,28 @@ def wash_lower_body(a):
         a.box('wash_lower_top_rail',(x,(front+back)/2,top-.018),(.040,depth,.036),'edge','central_lower_body',.002)
     for y in [front,back]:
         a.box('wash_lower_top_rail',(0,y,top-.018),(width,.040,.036),'edge','central_lower_body',.002)
+    wash_lower_covers(a,width,depth,top)
     wash_lower_collector(a,front)
+
+
+def wash_lower_covers(a,width=2.600,depth=2.080,top=1.280):
+    """Normally closed skin; retain the central chamber's immersion opening.
+
+    Cover gauge/overlap are display assumptions. Group with the existing tank
+    shell so the explicit shell-transparency switch reveals them, not the PLC
+    action driver. No cover-opening motion or extra internal walls are invented.
+    """
+    opening_width,opening_depth=1.240,1.922
+    thickness=.016
+    side_width=(width-opening_width)/2
+    for sign in [-1,1]:
+        a.box('wash_lower_side_cover',(sign*(opening_width+side_width)/2,0,top+thickness/2),
+              (side_width,depth,thickness),'enamel','central_lower_body',.002)
+    end_depth=(depth-opening_depth)/2
+    for sign in [-1,1]:
+        a.box('wash_lower_end_cover',(0,sign*(opening_depth+end_depth)/2,top+thickness/2),
+              (opening_width,end_depth,thickness),'enamel','central_lower_body',.002)
+    a.root['lower_bath_default_covers']='closed; central chamber immersion opening retained'
 
 
 def wash_lower_collector(a,front=-.960):
@@ -559,7 +581,7 @@ JOBS=[
  ('air_cooling_table','风冷台','11.58.00HT_风冷台',{'length':1816,'width':862,'hood_height':2373,'gantry_height':3052,'working_level':1250},['选用 HT 升降门版本；不是同文件中的 XQ 简版。'],air_cool),
  ('water_cooling_tank','水冷槽','47.10.00_水冷槽',{'tank_length':1654,'tank_width':2172,'overall_height':4320,'working_level_above_floor':1250,'below_floor':383},['完整显示下部槽体；安装时地坪基准比模型底部高 383 mm。液面为静态可移除组件。'],water_tank),
  ('tempering_furnace','回火炉','09.13.00_回火炉',{'body_width':1798,'body_depth':1930,'overall_height':4024,'door_width':600,'door_height':650,'door_sill':1230},['选用 600KG／09.13.00 原总图；不混用 4424 mm 加高或 XQ 版本。炉内滚道、加热元件和循环机构依剖视图重建，未标注零件尺寸按视图比例推定。'],temper),
- ('washing_machine','清洗机','17.07.00_清洗机',{'base_width':2650,'body_depth':2442,'service_envelope_depth':2900,'max_height':4107,'door_width':600,'door_height':650,'installation_depth':150},['选用 17.07.00 高提升版本（MAX 4107）；2026-11-11 用户确认下部为贯通整体水槽，无中间隔断，保留循环管路及驱动。'],wash),
+ ('washing_machine','清洗机','17.07.00_清洗机',{'base_width':2650,'body_depth':2442,'service_envelope_depth':2900,'max_height':4107,'door_width':600,'door_height':650,'installation_depth':150},['选用 17.07.00 高提升版本（MAX 4107）；下部为贯通整体水槽，无中间隔断；正常外观保留实体盖板，透视时才观察内部。保留循环管路及驱动。'],wash),
 ]
 
 def main():

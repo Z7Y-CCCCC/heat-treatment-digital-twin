@@ -449,7 +449,10 @@ def check_mechanisms(a,key):
         assert bm.edges and all(edge.is_manifold for edge in bm.edges)
         bm.free();evaluated.to_mesh_clear()
         assert not objects('wash_side_tank'),'Former left/right tanks must not leave internal dividing walls'
-        checked.append('one continuous open lower bath; no central lid or internal dividing walls')
+        assert len(objects('wash_lower_side_cover'))==2
+        assert len(objects('wash_lower_end_cover'))==2
+        assert all(o.parent==a.group('central_lower_body') for o in objects('wash_lower_side_cover')+objects('wash_lower_end_cover'))
+        checked.append('one continuous lower bath without internal dividing walls; four solid top covers leave only the central chamber opening')
     a.root['cad_geometry_checks']=json.dumps(checked)
     return checked
 

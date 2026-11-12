@@ -22,7 +22,7 @@
     "installation_depth": 150
   },
   "notes": [
-    "选用 17.07.00 高提升版本（MAX 4107）；2026-11-11 用户确认下部为贯通整体水槽，无中间隔断，保留循环管路及驱动。"
+    "17.07.00 MAX 4107: connected lower bath with normally closed solid top covers; no internal partitions."
   ],
   "bounds_blender_m": [
     -1.5600000619888306,
@@ -37,44 +37,44 @@
     4.10699987411499,
     2.9709999561309814
   ],
-  "editable_meshes": 1004,
+  "editable_meshes": 1008,
   "runtime_meshes": 79,
-  "triangles": 104106,
-  "bytes": 5252280,
-  "sha256": "5726774aabd02536a2c61b6bb4e6e072a59aa46f18e4ee7558d4d0f701ef1cc2",
+  "triangles": 104538,
+  "bytes": 5282952,
+  "sha256": "54a9f4112a7200a0cf8e993543e673cd35276a0a8d9d29f0e1546a8107f776b8",
   "roundtrip_max_error_m": 0.0,
   "functional_groups": [
-    "structure",
-    "central_lower_body",
-    "lower_collection",
-    "tanks",
-    "housing",
-    "lining",
-    "door",
-    "door_guides",
-    "door_drive",
-    "roof_equipment",
-    "pumps",
-    "pipes",
-    "electrics",
-    "valves",
-    "process_instruments",
-    "door_carriages",
-    "door_chains",
-    "door_seals",
-    "door_safety",
-    "internal_rollers",
-    "chamber_tubes",
-    "filter_tank",
-    "filter_connections",
-    "spray_headers",
     "belt_drive",
     "belt_motor",
-    "valve_detail",
-    "instrumentation",
+    "central_lower_body",
+    "chamber_tubes",
+    "door",
+    "door_carriages",
+    "door_chains",
+    "door_drive",
+    "door_guides",
+    "door_safety",
+    "door_seals",
+    "electrics",
+    "filter_connections",
+    "filter_tank",
     "heater_flanges",
+    "housing",
+    "instrumentation",
+    "internal_rollers",
+    "lifting_eyes",
+    "lining",
+    "lower_collection",
+    "pipes",
+    "process_instruments",
+    "pumps",
     "rear_inspection",
-    "lifting_eyes"
+    "roof_equipment",
+    "spray_headers",
+    "structure",
+    "tanks",
+    "valve_detail",
+    "valves"
   ],
   "runtime": {
     "enableGenericBindings": false,
@@ -96,10 +96,12 @@
     "wash_lower_shell": 1,
     "wash_lower_top_rail": 4,
     "wash_lower_collector_front": 1,
-    "wash_lower_drain_spout": 1
+    "wash_lower_drain_spout": 1,
+    "wash_lower_side_cover": 2,
+    "wash_lower_end_cover": 2
   },
   "mechanism_checks": [
-    "MAX 4107 revision without lower-revision blowers/furnace internals",
-    "one continuous open lower bath; no central lid or internal dividing walls"
+    "connected lower bath; no internal partitions",
+    "four opaque top covers with a central chamber opening"
   ]
 }
