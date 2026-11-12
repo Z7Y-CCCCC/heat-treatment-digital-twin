@@ -83,7 +83,9 @@ function getBuiltinModels() {
 }
 
 function builtinMotionForModel(model) {
-    if (require('./installContentPolicy').emptyInstallation()) return null;
+    // Empty installs must not seed the legacy model catalogue. They must still
+    // resolve actions for an existing/imported CAD with the exact managed source
+    // path and hash. Otherwise the part preview and device binding disagree.
     const motion = require('../../shared/motionPackages.json').models[model.id];
     let valid = false;
     if (motion && model.file_path === motion.sourcePath) {

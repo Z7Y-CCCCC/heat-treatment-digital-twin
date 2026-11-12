@@ -11,8 +11,6 @@ const { loadDeviceAnimations, validateDeviceAnimations, publicDeviceAnimations }
 const { assertMotionPositionOwnership } = require('../services/motionPositionOwnership');
 const { validateMovementConfig, validateMovementSources } = require('../services/movementConfig');
 const { assertDeviceLineUnits, loadDeviceLineContext } = require('../services/deviceLineUnits');
-const { validateTransferSelection, publicTransferLink } = require('../services/transferLink');
-const { validateEndpointSource, sourceFingerprint } = require('../services/deviceAnimations');
 const { loadDeviceLoadingPorts, publicDeviceLoadingPorts, saveDeviceLoadingPorts, normalizeInstanceLoadingPorts } = require('../services/loadingPorts');
 const { saveLoadingAlignment } = require('../services/deviceLoadingAlignment');
 
@@ -165,11 +163,9 @@ router.put('/:id/movement', async (req, res) => {
             await validateMovementSources(tx, device, body.movement, req.factoryId, deviceBelongsToFactory);
             const config = { ...previous, movement: body.movement };
             await assertDeviceLineUnits(tx, device, config, req.factoryId);
-            if (body.movement.enabled === true || config.animationBindings?.transferLink?.enabled === true) {
-                const hasTransfer = config.animationBindings?.transferLink?.enabled === true;
-                const animations = await loadDeviceAnimations(tx, device.id, req.factoryId, { includeTransferTargets:hasTransfer, includePositionOwnership:body.movement.enabled === true });
+            if (body.movement.enabled === true) {
+                const animations = await loadDeviceAnimations(tx, device.id, req.factoryId, { includeTransferTargets:false, includePositionOwnership:true });
                 assertMotionPositionOwnership(animations, config.animationBindings?.bindings, body.movement);
-                if (hasTransfer) validateTransferSelection({ ...animations, instance:config }, publicTransferLink(config.animationBindings.transferLink), config.animationBindings.bindings || [], validateEndpointSource, sourceFingerprint);
             }
             for (const id of new Set(ids.map(String))) {
                 if (!await tx.get('SELECT id FROM data_points WHERE id = ? AND device_id = ?', [id, device.id])) throw new Error('运动点位不属于此设备');
@@ -181,7 +177,7 @@ router.put('/:id/movement', async (req, res) => {
         if (ids.length) restartDataEngineSoon('update movement sampling', req.factoryId);
         broadcastDeviceConfigurationChanged(req.params.id, config);
         res.json({ success: true });
-    } catch (error) { res.status(error.statusCode || 400).json({ error: error.message }); }
+    } catch (error) { res.status(error.statusCode || 400).json({ error: error.message, code: error.code, field: error.field }); }
 });
 const {
     defaultPortForProtocol,

@@ -6,6 +6,8 @@
     <Nullable>disable</Nullable>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="../../unity-client/Assets/Scripts/Backend/ModelCacheIdentity.cs" Link="ModelCacheIdentity.cs" />
+    <Compile Include="../../unity-client/Assets/Scripts/Backend/ConfigurationRefreshPolicy.cs" Link="ConfigurationRefreshPolicy.cs" />
     <Compile Include="../../unity-client/Assets/Scripts/Runtime/LoadingPhaseProgress.cs" Link="LoadingPhaseProgress.cs" />
     <Compile Include="../../unity-client/Assets/Scripts/Runtime/TransferCycleState.cs" Link="TransferCycleState.cs" />
     <Compile Include="../../unity-client/Assets/Scripts/Runtime/AdaptiveTransferPath.cs" Link="AdaptiveTransferPath.cs" />

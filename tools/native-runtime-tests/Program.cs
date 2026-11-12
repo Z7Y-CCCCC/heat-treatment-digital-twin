@@ -38,6 +38,8 @@ internal static partial class Program
             ("industrial floor, pits, platforms and device heights match the shared Web/Unity contract", IndustrialGroundMatchesContract),
             ("factory activation and scoped configuration changes select reload or live update correctly", ConfigurationChangesAreScoped),
             ("model/action refresh selects affected instances without importing layout or another factory", ModelRefreshKeepsScene),
+            ("ordinary configuration edits preserve scene identity and structural edits remain explicit", ConfigurationRefreshIsScoped),
+            ("geometry identity ignores labels and track-only updates but invalidates changed rigs and optimization", GeometryCacheIsStable),
             ("realtime receive progresses while the render synchronization context is idle", ReceiveDoesNotWaitForRender),
             ("cancelled send cannot release another owner's semaphore", CancelledSendKeepsLock),
             ("stale queued send cannot move to a replacement session", QueuedSendKeepsSession),

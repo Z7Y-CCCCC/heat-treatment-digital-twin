@@ -1,0 +1,17 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>设备动作绑定 · 隔离验收</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#f3f5f9;color:#263c57;font:14px 'Microsoft YaHei',sans-serif}#app{margin:24px;height:calc(100vh - 48px);background:white;border:1px solid #dfe7f3;border-radius:12px;overflow:hidden}.animation-link{height:100%}.btn{padding:9px 14px;background:white;border:1px solid #d2deed;border-radius:8px;color:#3566ac}.btn-primary{background:#2359df;color:white;border-color:#2359df}.btn:disabled{opacity:.5}.input{padding:9px;border:1px solid #d2deed;border-radius:7px}.hint{color:#8090a8;line-height:1.7}:root{--admin-font-scale:1}
+</style><div id="app"></div><script type="module">
+import {createApp,h} from 'vue'
+import DeviceAnimationLink from '/src/views/admin/components/DeviceAnimationLink.vue'
+import {adminApi} from '/src/config/factoryConfig.js'
+import {adminSession} from '/src/runtime/adminSession.js'
+const data=await (await fetch('/__binding-fixture')).json()
+const json=async(url,options)=>{const response=await fetch(url,options),result=await response.json();if(!response.ok)throw Error(result.error||'Fixture request failed');return result}
+adminSession.authenticated=true;adminSession.pagePermissions={'model-animations':{view:true,edit:true}}
+adminApi.getDeviceAnimations=()=>json('/__binding-state')
+adminApi.getDataPoints=async()=>structuredClone(data.points)
+adminApi.getDataCenterCatalog=async()=>structuredClone(data.catalog)
+adminApi.saveDeviceAnimations=(_id,body)=>json('/__binding-save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+createApp({render:()=>h(DeviceAnimationLink,{factoryId:'factory_default',devices:[data.device],models:data.models,confirm:async()=>true})}).mount('#app')
+</script></html>

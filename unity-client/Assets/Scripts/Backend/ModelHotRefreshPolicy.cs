@@ -21,10 +21,7 @@ namespace HeatTreatment.DigitalTwin.Backend
                 (workshop.Devices ?? new List<DeviceDto>()).Concat(
                     (workshop.Lines ?? new List<LineDto>()).SelectMany(line => line.Devices ?? new List<DeviceDto>())));
 
-        private static JToken ModelSignature(ModelAssetDto model) => model == null ? null : new JObject {
-            ["id"] = model.Id, ["file"] = model.FilePath, ["scale"] = model.DefaultScale,
-            ["metadata"] = model.MetadataObject, ["motion"] = model.MotionPackage
-        };
+        private static JToken ModelSignature(ModelAssetDto model) => ModelCacheIdentity.RenderDefinition(model);
 
         public static FactoryConfigDto Merge(FactoryConfigDto current, FactoryConfigDto latest, out HashSet<string> affected)
         {
@@ -42,7 +39,12 @@ namespace HeatTreatment.DigitalTwin.Backend
             foreach (var device in Devices(merged))
             {
                 if (device == null || string.IsNullOrEmpty(device.Id)) continue;
-                if (changedModels.Contains(device.ModelType ?? string.Empty)) affected.Add(device.Id);
+                if (changedModels.Contains(device.ModelType ?? string.Empty))
+                {
+                    previousModels.TryGetValue(device.ModelType ?? string.Empty, out var beforeAsset);
+                    nextModels.TryGetValue(device.ModelType ?? string.Empty, out var afterAsset);
+                    if (!JToken.DeepEquals(ModelCacheIdentity.DeviceRenderDefinition(beforeAsset, device), ModelCacheIdentity.DeviceRenderDefinition(afterAsset, device))) affected.Add(device.Id);
+                }
                 if (!nextDevices.TryGetValue(device.Id, out var next) || next.ModelType != device.ModelType) continue;
                 var config = device.InstanceConfigObject;
                 var before = config["animationBindings"]; var after = next.InstanceConfigObject["animationBindings"];
