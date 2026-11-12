@@ -1104,11 +1104,11 @@
     },
     "cad_cleaner_170700": {
       "sourcePath": "/assets/models/cad_cleaner_170700.glb",
-      "sourceSha256": "622e227e2322357c1aeb13552bd98fe2726996be9bdb44552240f8d83833e185",
+      "sourceSha256": "f1b6094b130c79f4cb03e01cc26e7b19b04eaeece3618a4d813762be166c09fd",
       "rigPath": "/assets/motions/cad_cleaner_170700.glb",
-      "rigSha256": "4e2de36d75acee4f39c8ee6e7435e035812bb7cc534e13ada0449fffdda47484",
+      "rigSha256": "7a2dd9949e0018925b62e1e2c884518ce8eb5de79fb4870ea4b00df01f267a1d",
       "clipPath": "/assets/motions/cad_cleaner_170700.json",
-      "clipSha256": "562255bdde3dcd490e0b733f37730b64dd0be12c6bac473dcaad36487fbc440d",
+      "clipSha256": "5d0656ee23c95fcb3e7f18c7790e53fc262501107e53f4708b59cb8cd65890d9",
       "actions": [
         {
           "id": "door",
