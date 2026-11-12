@@ -7,6 +7,7 @@ import { cacheFactoryDraft, clearFactoryDraft, readFactoryDraft } from '../../..
 import AdminNotice from './AdminNotice.vue'
 import { useAdminNotice } from '../composables/useAdminNotice.js'
 import { lineSceneUnitsPerMeter, movementSceneUnitsPerMeter } from '../../../../../shared/lineRailSpacing.mjs'
+import {displayCoordinateNumber,displaySceneUnits} from '../../../../../shared/sceneNumberPolicy.mjs'
 import { isLastConfirmedMotion, isActualMovingFeedback, lastConfirmedMotionError } from '../utils/mobileMotionPolicy.js'
 
 defineOptions({ name: 'MobileDeviceMotion' })
@@ -909,7 +910,7 @@ async function saveMotion() {
                         </label>
                         <label class="motion-check"><input v-model="motion.diagnosticLogging" type="checkbox" aria-label="启用移动运行诊断记录" v-permission="{ page: 'mobile-devices', action: 'edit' }" />启用移动运行诊断记录</label>
                         <label v-if="motion.diagnosticLogging">诊断记录间隔（秒）<input v-model.number="motion.diagnosticIntervalSeconds" class="input" type="number" min="1" max="60" step="1" aria-label="移动诊断记录间隔（秒）" v-permission="{ page: 'mobile-devices', action: 'edit' }" /></label>
-                        <label>场景单位 / 米<input v-model.number="motion.sceneUnitsPerMeter" class="input" type="number" min="0.0001" max="100000" step="0.01" aria-label="移动场景单位每米" v-permission="{ page: 'mobile-devices', action: 'edit' }" /><small>完整填写工位实际间距后自动按间距计算；否则使用此已配置比例。</small></label>
+                        <label>场景单位 / 米<input :value="displaySceneUnits(motion.sceneUnitsPerMeter)" @input="motion.sceneUnitsPerMeter=($event.target.value===''?'':Number($event.target.value))" class="input" type="number" min="0.0001" max="100000" step="0.01" aria-label="移动场景单位每米" v-permission="{ page: 'mobile-devices', action: 'edit' }" /><small>完整填写工位实际间距后自动按间距计算；否则使用此已配置比例。</small></label>
                     </div>
                     <div v-if="motion.valueMode === 'range'" class="motion-range-row">
                         <label>输入最小值<input v-model.number="motion.valueMin" type="number" class="input"  v-permission="{ page: 'mobile-devices', action: 'edit' }"/></label>
@@ -947,13 +948,13 @@ async function saveMotion() {
                                     <label>PLC 编号<input v-model.number="station.value" type="number" step="1" class="input"  v-permission="{ page: 'mobile-devices', action: 'edit' }"/></label>
                                     <label>工位名称（可选）<input v-model="station.label" type="text" class="input" placeholder="例如：1号工位"  v-permission="{ page: 'mobile-devices', action: 'edit' }"/></label>
                                     <label>关联作业设备<select v-model="station.anchorDeviceId" class="input" :aria-label="`工位 ${station.value} 关联作业设备`" @change="applyStationAnchor(station)" v-permission="{ page: 'mobile-devices', action: 'edit' }"><option value="">手动坐标（不关联设备）</option><option v-for="device in lineStationDevices" :key="device.id" :value="String(device.id)">{{ device.name || device.id }}</option></select></label>
-                                    <label v-if="index > 0" class="motion-distance-field">与本设备线上一站间距（米）<input v-model.number="station.distanceMeters" type="number" min="0.01" step="0.1" class="input" placeholder="例如 8.5"  v-permission="{ page: 'mobile-devices', action: 'edit' }"/></label>
+                                    <label v-if="index > 0" class="motion-distance-field">与本设备线上一站间距（米）<input :value="station.distanceMeters===''?'':displayCoordinateNumber(station.distanceMeters)" @input="station.distanceMeters=$event.target.value===''?'':Number($event.target.value)" type="number" min="0.01" step="0.1" class="input" placeholder="例如 8.5"  v-permission="{ page: 'mobile-devices', action: 'edit' }"/></label>
                                     <div v-else class="motion-start-station"><strong>本设备线首站</strong><small>不需要填写跨线间距</small></div>
                                     <button v-if="motion.stations.length > 1" type="button" class="motion-remove-station" title="删除工位" @click="removeStation(station)" v-permission="{ page: 'mobile-devices', action: 'edit' }">删除</button>
                                     <div class="motion-station-coordinate-fields">
-                                        <label>工位 X<input v-model.number="station.position.x" class="input" type="number" step="0.01" :aria-label="`工位 ${station.value} X 坐标`" @change="projectManualStation(station)" v-permission="{ page: 'mobile-devices', action: 'edit' }" /></label>
-                                        <label>轨道基准 Y<input :value="motion.start.y" class="input" type="number" readonly :aria-label="`工位 ${station.value} 轨道基准 Y`" /></label>
-                                        <label>工位 Z<input v-model.number="station.position.z" class="input" type="number" step="0.01" :aria-label="`工位 ${station.value} Z 坐标`" @change="projectManualStation(station)" v-permission="{ page: 'mobile-devices', action: 'edit' }" /></label>
+                                        <label>工位 X<input :value="displayCoordinateNumber(station.position.x)" @input="station.position.x=($event.target.value===''?'':Number($event.target.value))" class="input" type="number" step="0.01" :aria-label="`工位 ${station.value} X 坐标`" @change="projectManualStation(station)" v-permission="{ page: 'mobile-devices', action: 'edit' }" /></label>
+                                        <label>轨道基准 Y<input :value="displayCoordinateNumber(motion.start.y)" class="input" type="number" readonly :aria-label="`工位 ${station.value} 轨道基准 Y`" /></label>
+                                        <label>工位 Z<input :value="displayCoordinateNumber(station.position.z)" @input="station.position.z=($event.target.value===''?'':Number($event.target.value))" class="input" type="number" step="0.01" :aria-label="`工位 ${station.value} Z 坐标`" @change="projectManualStation(station)" v-permission="{ page: 'mobile-devices', action: 'edit' }" /></label>
                                     </div>
                                 </div>
                             </div>
@@ -995,17 +996,17 @@ async function saveMotion() {
                         <div>
                             <strong>起始位置</strong>
                             <div class="motion-coordinate-grid">
-                                <label>X<input v-model.number="motion.start.x" type="number" step="0.1" class="input" aria-label="移动轨道起始 X" @change="updateRailBasis" v-permission="{ page: 'mobile-devices', action: 'edit' }"/></label>
-                                <label>Y<input v-model.number="motion.start.y" type="number" step="0.1" class="input" aria-label="移动轨道基准 Y" @change="updateRailBasis" v-permission="{ page: 'mobile-devices', action: 'edit' }"/></label>
-                                <label>Z<input v-model.number="motion.start.z" type="number" step="0.1" class="input" aria-label="移动轨道起始 Z" @change="updateRailBasis" v-permission="{ page: 'mobile-devices', action: 'edit' }"/></label>
+                                <label>X<input :value="displayCoordinateNumber(motion.start.x)" @input="motion.start.x=($event.target.value===''?'':Number($event.target.value))" type="number" step="0.1" class="input" aria-label="移动轨道起始 X" @change="updateRailBasis" v-permission="{ page: 'mobile-devices', action: 'edit' }"/></label>
+                                <label>Y<input :value="displayCoordinateNumber(motion.start.y)" @input="motion.start.y=($event.target.value===''?'':Number($event.target.value))" type="number" step="0.1" class="input" aria-label="移动轨道基准 Y" @change="updateRailBasis" v-permission="{ page: 'mobile-devices', action: 'edit' }"/></label>
+                                <label>Z<input :value="displayCoordinateNumber(motion.start.z)" @input="motion.start.z=($event.target.value===''?'':Number($event.target.value))" type="number" step="0.1" class="input" aria-label="移动轨道起始 Z" @change="updateRailBasis" v-permission="{ page: 'mobile-devices', action: 'edit' }"/></label>
                             </div>
                         </div>
                         <div>
                             <strong>终点位置</strong>
                             <div class="motion-coordinate-grid">
-                                <label>X<input v-model.number="motion.end.x" type="number" step="0.1" class="input" aria-label="移动轨道参考终点 X" @change="updateRailBasis" v-permission="{ page: 'mobile-devices', action: 'edit' }"/></label>
-                                <label>Y<input v-if="motion.valueMode === 'station'" :value="motion.start.y" type="number" class="input" aria-label="移动轨道终点 Y" readonly /><input v-else v-model.number="motion.end.y" type="number" step="0.1" class="input" aria-label="移动轨道终点 Y" @change="updateRailBasis" v-permission="{ page: 'mobile-devices', action: 'edit' }"/></label>
-                                <label>Z<input v-model.number="motion.end.z" type="number" step="0.1" class="input" aria-label="移动轨道参考终点 Z" @change="updateRailBasis" v-permission="{ page: 'mobile-devices', action: 'edit' }"/></label>
+                                <label>X<input :value="displayCoordinateNumber(motion.end.x)" @input="motion.end.x=($event.target.value===''?'':Number($event.target.value))" type="number" step="0.1" class="input" aria-label="移动轨道参考终点 X" @change="updateRailBasis" v-permission="{ page: 'mobile-devices', action: 'edit' }"/></label>
+                                <label>Y<input v-if="motion.valueMode === 'station'" :value="displayCoordinateNumber(motion.start.y)" type="number" class="input" aria-label="移动轨道终点 Y" readonly /><input v-else :value="displayCoordinateNumber(motion.end.y)" @input="motion.end.y=($event.target.value===''?'':Number($event.target.value))" type="number" step="0.1" class="input" aria-label="移动轨道终点 Y" @change="updateRailBasis" v-permission="{ page: 'mobile-devices', action: 'edit' }"/></label>
+                                <label>Z<input :value="displayCoordinateNumber(motion.end.z)" @input="motion.end.z=($event.target.value===''?'':Number($event.target.value))" type="number" step="0.1" class="input" aria-label="移动轨道参考终点 Z" @change="updateRailBasis" v-permission="{ page: 'mobile-devices', action: 'edit' }"/></label>
                             </div>
                         </div>
                     </div>

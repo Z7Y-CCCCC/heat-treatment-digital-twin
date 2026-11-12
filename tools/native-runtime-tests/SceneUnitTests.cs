@@ -42,7 +42,9 @@ internal static partial class Program
             Invalid(null, new JObject { ["sceneUnitsPerMeter"] = bad.DeepClone() });
         }
         Invalid(null, new JObject { ["sceneUnitsPerMeter"] = "1.25" }); // New line fields have a strict numeric schema.
-        Invalid(JObject.Parse("{sceneUnitsPerMeter:0.80000000001}"), JObject.Parse("{sceneUnitsPerMeter:0.8}"));
+        foreach (var noise in new[] { 0.80000000001, 0.79999999616123, (double)(float).8 })
+            Valid(new JObject { ["sceneUnitsPerMeter"] = noise }, JObject.Parse("{sceneUnitsPerMeter:0.8}"), .8f);
+        Invalid(JObject.Parse("{sceneUnitsPerMeter:0.81}"), JObject.Parse("{sceneUnitsPerMeter:0.8}"));
         return Task.CompletedTask;
     }
 }

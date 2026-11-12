@@ -13,6 +13,7 @@ internal static partial class Program
     {
         var tests = new (string Name, Func<Task> Run)[]
         {
+            ("adaptive display path preserves mouth, metre dimensions and strict direction/height boundaries",AdaptiveTransferGeometryMatches),
             ("bidirectional native transfer fork, hook and cargo match all shared Three cycle traces",TransferCycleMatchesSharedTraces),
             ("transfer BOOL observations require owned typed sources and preserve bad/old/stale barriers",TransferBoolObservationsAreOwnedAndOrdered),
             ("native loading uses the shared light/dark choice and preserves malformed setting failures", LoadingThemesMatch),

@@ -37,6 +37,11 @@ test('actual mounted hook contacts the tray edge during loading and pulling, and
   for(const kind of ['retract','pickup_extend']){
    sample(kind,.5);assert.ok(Math.abs(hook.rotation.z+.65)<1e-7,'empty travel releases the hook')
   }
+  const at=(kind,fraction)=>{sample(kind,fraction);return scene.material.position.clone()}
+  for(const [a,b] of [['feed','retract'],['retract','close'],['pickup_extend','reclaim'],['reclaim','close_out']]){
+   // Just before/after a phase boundary must not teleport the load.
+   assert.ok(at(a,1-1e-7).distanceTo(at(b,1e-7))<.00001,`${a} -> ${b}: cargo jumps at the handoff`)
+  }
   sample('feed',.4);const original=snapshot();sample('reclaim',.8);sample('feed',.4)
   snapshot().forEach((value,index)=>assert.ok(Math.abs(value-original[index])<1e-7,'seeking cannot depend on the previous frame'))
  }finally{rig.dispose()}

@@ -2,6 +2,7 @@
 // Authored offsets/lengths remain line-local scene coordinates. This calibration
 // is not a transform scale or a claim that a model transfer port is reachable.
 import { resolveLinePlacementTemplate } from './linePlacementTemplate.mjs'
+import {sceneUnitsEquivalent,displaySceneUnits} from './sceneNumberPolicy.mjs'
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value)
 // Observe insertion/removal in reactive configuration objects while excluding
 // inherited prototype values from the explicit saved-field contract.
@@ -62,8 +63,8 @@ export function assertLineMovementUnits(movement, layout, name = '移动设备')
   const source = movementObject(movement), lineUnits = lineSceneUnitsPerMeter(layout)
   if (!own(source, 'sceneUnitsPerMeter') && !own(source, 'scene_units_per_meter')) return lineUnits
   const units = movementSceneUnitsPerMeter(source)
-  if (units !== lineUnits) fail(`「${name}」移动设置的场景单位每米 (${units}) 与产线结构 (${lineUnits}) 不一致，请在现有产线结构与移动设置中统一校准后保存`)
-  return units
+  if (!sceneUnitsEquivalent(units,lineUnits)) fail(`「${name}」移动比例 ${displaySceneUnits(units)} 与产线比例 ${displaySceneUnits(lineUnits)} 不一致，请将移动设置里的“场景单位 / 米”改为 ${displaySceneUnits(lineUnits)} 后保存`)
+  return lineUnits
 }
 
 export function resolveLineRailSpacing(layout) {

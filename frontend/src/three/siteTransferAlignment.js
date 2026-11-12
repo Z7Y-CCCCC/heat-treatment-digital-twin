@@ -202,11 +202,12 @@ export function assertSiteTransferDriver(row, rig, asset) {
 
 // Solve longitudinal travel and pusher extension together; never rotate or
 // slide the cart sideways to make an unreachable installation look correct.
-export function solveSiteTransferPose({ start, end, cartPortOffset, feedDirection, stationPosition, stationDirection, stroke, fixedPosition, sceneUnitsPerMeter = 1, heightToleranceMeters = 0, lateralToleranceMeters = 0, angleToleranceDegrees = 0, name = '设备' }) {
+export function solveSiteTransferPose({ start, end, cartPortOffset, feedDirection, stationPosition, stationDirection, stroke, fixedPosition, handoffMode = 'mechanism', sceneUnitsPerMeter = 1, heightToleranceMeters = 0, lateralToleranceMeters = 0, angleToleranceDegrees = 0, name = '设备' }) {
   const fail = message => { throw Error(`「${name}」${message}；请在产线间距、移动设备和进出料口配置中调整，现场预览未移动设备`) }
   if (![start, end, cartPortOffset, feedDirection, stationPosition, stationDirection].every(v => v?.isVector3 && v.toArray().every(Number.isFinite))) fail('交接坐标无效')
   if (!Number.isFinite(sceneUnitsPerMeter) || sceneUnitsPerMeter <= 0) fail('现场米制比例无效')
   if (!Number.isFinite(stroke) || stroke <= 0) fail('没有可靠的推链行程')
+  if (!['mechanism', 'adaptive'].includes(handoffMode)) fail('交接显示方式无效')
   if (![heightToleranceMeters, lateralToleranceMeters, angleToleranceDegrees].every(Number.isFinite) || heightToleranceMeters < 0 || heightToleranceMeters > 1 || lateralToleranceMeters < 0 || lateralToleranceMeters > 1 || angleToleranceDegrees < 0 || angleToleranceDegrees > 30) fail('交接公差无效')
   const positionEpsilon = .0001 * sceneUnitsPerMeter, toleranceEpsilon = .000001 * sceneUnitsPerMeter
   const heightToleranceWorld = heightToleranceMeters * sceneUnitsPerMeter, lateralToleranceWorld = lateralToleranceMeters * sceneUnitsPerMeter
@@ -233,6 +234,7 @@ export function solveSiteTransferPose({ start, end, cartPortOffset, feedDirectio
   const position = fixedPosition ? fixedPosition.clone() : start.clone().addScaledVector(rail, Math.max(0, Math.min(length, distance)))
   if (Math.abs(stationPosition.y - position.y - cartPortOffset.y) > heightToleranceWorld + toleranceEpsilon) fail('料盘与设备进出料口送料高度不一致')
   if (extension < -positionEpsilon) fail('设备口位于料车推链背面，中心间距过小或方向错误')
-  if (extension > stroke + positionEpsilon) fail(`设备口距离 ${(extension / sceneUnitsPerMeter).toFixed(3)} 米超出推链行程 ${(stroke / sceneUnitsPerMeter).toFixed(3)} 米`)
-  return { position, extension: Math.max(0, Math.min(stroke, extension)), extensionMeters: Math.max(0, Math.min(stroke, extension)) / sceneUnitsPerMeter, strokeMeters: stroke / sceneUnitsPerMeter, railProgress: Math.max(0, Math.min(1, distance / length)) }
+  if (extension > stroke + positionEpsilon) fail(`设备口距离 ${(extension / sceneUnitsPerMeter).toFixed(2)} 米超出推链行程 ${(stroke / sceneUnitsPerMeter).toFixed(2)} 米。请缩短设备线与小车间距，或点击“自动排布并演示”先观看动画`)
+  const displayExtension = Math.max(0,Math.min(stroke,extension))
+  return { position, extension: displayExtension, extensionMeters: displayExtension / sceneUnitsPerMeter, strokeMeters: stroke / sceneUnitsPerMeter, bridgeMeters:0, uncoveredMeters:0, railProgress: Math.max(0, Math.min(1, distance / length)) }
 }

@@ -8,6 +8,7 @@
   <ItemGroup>
     <Compile Include="../../unity-client/Assets/Scripts/Runtime/LoadingPhaseProgress.cs" Link="LoadingPhaseProgress.cs" />
     <Compile Include="../../unity-client/Assets/Scripts/Runtime/TransferCycleState.cs" Link="TransferCycleState.cs" />
+    <Compile Include="../../unity-client/Assets/Scripts/Runtime/AdaptiveTransferPath.cs" Link="AdaptiveTransferPath.cs" />
     <Compile Include="../../unity-client/Assets/Scripts/Runtime/TransferBooleanObservation.cs" Link="TransferBooleanObservation.cs" />
     <None Include="../../shared/transfer-cycle-fixtures.json" Link="transfer-cycle-fixtures.json" CopyToOutputDirectory="PreserveNewest" />
     <Compile Include="../../unity-client/Assets/Scripts/Runtime/RuntimeWorkMetrics.cs" Link="RuntimeWorkMetrics.cs" />

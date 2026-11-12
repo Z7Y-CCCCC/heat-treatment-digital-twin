@@ -3,6 +3,8 @@
 const clone = value => JSON.parse(JSON.stringify(value))
 const fail = message => { throw Object.assign(Error(message), { code: 'LINE_PLACEMENT_INVALID', statusCode: 400 }) }
 const finite = value => typeof value === 'number' && Number.isFinite(value) && Math.abs(value) <= 10000
+const boxes=row=>row.collisionBoxes?.length?row.collisionBoxes:[row]
+const overlaps=(a,pa,b,pb)=>['X','Y','Z'].every(axis=>Math.min(a[axis.toLowerCase()]+pa['max'+axis],b[axis.toLowerCase()]+pb['max'+axis])-Math.max(a[axis.toLowerCase()]+pa['min'+axis],b[axis.toLowerCase()]+pb['min'+axis])>.00001)
 export const LINE_PLACEMENT_TEMPLATES = Object.freeze([
   { id: 'single-negative', label: '单侧上排' },
   { id: 'single-positive', label: '单侧下排' },
@@ -16,6 +18,8 @@ export function resolveLinePlacementTemplate(layout) {
       || !LINE_PLACEMENT_TEMPLATES.some(row => row.id === t.kind)
       || !['negative', 'positive'].includes(t.primarySide) || !finite(t.railOffsetZ)
       || !finite(t.minimumDistance) || t.minimumDistance <= 0) fail('产线布局模板无效')
+  if (t.compact !== undefined && typeof t.compact !== 'boolean'
+      || t.clearanceGapMeters !== undefined && (!Number.isFinite(t.clearanceGapMeters) || t.clearanceGapMeters <= 0 || t.clearanceGapMeters > 10)) fail('产线布局留缝设置无效')
   const rails = layout.rails || [], lanes = layout.lanes || []
   if (rails.length !== 1 || rails[0].id !== t.railId || rails[0].spacing != null
       || rails[0].offsetZ !== t.railOffsetZ) fail('模板中的小车导轨为固定基准，不能移动或关联旧式跟随间距')
@@ -56,8 +60,7 @@ export function lineEnvelopeIntersections(rows) {
   const result = []
   for (let i = 0; i < rows.length; i++) for (let j = i + 1; j < rows.length; j++) {
     const a = rows[i], b = rows[j]
-    if (['X', 'Y', 'Z'].every(axis => Math.min(a[axis.toLowerCase()] + a['max' + axis], b[axis.toLowerCase()] + b['max' + axis])
-        - Math.max(a[axis.toLowerCase()] + a['min' + axis], b[axis.toLowerCase()] + b['min' + axis]) > .00001)) result.push([a, b])
+    if (overlaps(a,a,b,b)&&boxes(a).some(pa=>boxes(b).some(pb=>overlaps(a,pa,b,pb)))) result.push([a, b])
   }
   return result
 }
@@ -70,15 +73,37 @@ export function assertLineTemplateClearance(layout, rows) {
     ...row, x: 0, minX: -rail.length / 2 + row.minX, maxX: rail.length / 2 + row.maxX,
     minZ: Math.min(row.z, row.pathMinZ ?? row.z) - row.z + row.minZ,
     maxZ: Math.max(row.z, row.pathMaxZ ?? row.z) - row.z + row.maxZ
+    ,...(row.collisionBoxes?{collisionBoxes:row.collisionBoxes.map(b=>({...b,minX:-rail.length/2+b.minX,maxX:rail.length/2+b.maxX,minZ:Math.min(row.z,row.pathMinZ??row.z)-row.z+b.minZ,maxZ:Math.max(row.z,row.pathMaxZ??row.z)-row.z+b.maxZ}))}:{})
   } : row)
   const collisions = lineEnvelopeIntersections(swept)
   if (collisions.length) fail(`模型外形仍重叠：${collisions.slice(0, 3).map(([a, b]) => `${a.name || a.id} / ${b.name || b.id}`).join('、')}。请调整同排设备前后间距；未缩小模型或挤动导轨。`)
 }
 
-export function planLinePlacementTemplate(layout, kind, rows, gapMeters = .6) {
+export function lineTemplateSpacingLimits(layout,rows,lanes,rail,gapMeters){
+  const units=layout.sceneUnitsPerMeter??1,carts=rows.filter(r=>r.railId===rail.id),gap=gapMeters*units
+  let minimum=2*units,maximum=Infinity
+  for(const [lane,side] of lanes)for(const row of rows.filter(r=>r.laneId===lane.id)){
+    const relative=row.z-lane.offsetZ
+    if(!carts.length)minimum=Math.max(minimum,.5*units+gap+(side<0?relative+row.maxZ:-relative-row.minZ))
+    for(const cart of carts){
+      for(const a of boxes(cart))for(const b of boxes(row)){
+        if(Math.min(cart.y+a.maxY,row.y+b.maxY)-Math.max(cart.y+a.minY,row.y+b.minY)<=.00001)continue
+        minimum=Math.max(minimum,side<0?rail.offsetZ-Math.min(cart.z,cart.pathMinZ??cart.z)-a.minZ+gap+relative+b.maxZ:Math.max(cart.z,cart.pathMaxZ??cart.z)+a.maxZ-rail.offsetZ+gap-relative-b.minZ)
+      }
+      if(cart.transferReach&&Number.isFinite(row.loadingFaceZ)){
+        const source=side<0?cart.transferReach.negativeFaceZ:cart.transferReach.positiveFaceZ
+        maximum=Math.min(maximum,cart.transferReach.stroke+side*(cart.z+source-rail.offsetZ-relative-row.loadingFaceZ))
+      }
+    }
+  }
+  return {minimum,maximum}
+}
+
+export function planLinePlacementTemplate(layout, kind, rows, gapMeters) {
   if (!LINE_PLACEMENT_TEMPLATES.some(row => row.id === kind)) fail('请选择一种布局模板')
   lineEnvelopeIntersections(rows)
   const next = clone(layout), units = next.sceneUnitsPerMeter ?? 1, dual = kind === 'dual'
+  const compact=rows.some(r=>r.collisionBoxes?.length);gapMeters??=compact?.15:.6
   if (!Number.isFinite(units) || units <= 0 || units > 100000 || !Number.isFinite(gapMeters) || gapMeters <= 0 || gapMeters > 10) fail('显示比例或安全留缝无效')
   if (next.rails.length > 1 || next.lanes.length > 2) fail('当前是多导轨或多排布局，不能套用单导轨模板；原布局未改动')
   if (!next.rails.length) next.rails.push({ id: 'rail_template_1', name: '小车导轨 1', type: 'cart_rail', offsetZ: 0, length: 60, sort_order: 0 })
@@ -92,22 +117,15 @@ export function planLinePlacementTemplate(layout, kind, rows, gapMeters = .6) {
   }
   next.lanes = dual ? [primary, secondary] : [primary]
   const side = dual ? (next.placementTemplate?.primarySide || (primary.offsetZ < rail.offsetZ ? 'negative' : 'positive')) : kind === 'single-negative' ? 'negative' : 'positive'
-  const sign = side === 'negative' ? -1 : 1, gap = gapMeters * units, carts = rows.filter(row => row.railId === rail.id)
-  const low = carts.length ? Math.min(...carts.map(row => Math.min(row.z, row.pathMinZ ?? row.z) + row.minZ)) : rail.offsetZ - .5 * units
-  const high = carts.length ? Math.max(...carts.map(row => Math.max(row.z, row.pathMaxZ ?? row.z) + row.maxZ)) : rail.offsetZ + .5 * units
-  let minimum = 2 * units
-  for (const [lane, laneSign] of [[primary, sign], ...(dual ? [[secondary, -sign]] : [])]) {
-    for (const row of rows.filter(row => row.laneId === lane.id)) {
-      const relative = row.z - lane.offsetZ
-      minimum = Math.max(minimum, laneSign < 0 ? rail.offsetZ - low + gap + relative + row.maxZ : high - rail.offsetZ + gap - relative - row.minZ)
-    }
-  }
-  minimum = Math.ceil(minimum * 10) / 10 // Readable display distance, not a surveyed value.
+  const sign = side === 'negative' ? -1 : 1
+  const limits=lineTemplateSpacingLimits(next,rows,[[primary,sign],...(dual?[[secondary,-sign]]:[])],rail,gapMeters)
+  let minimum=compact?Math.ceil((limits.minimum/units-1e-8)*20)/20*units:Math.ceil(limits.minimum*10)/10
+  if(minimum>limits.maximum+1e-6)fail(`这组设备的进料面没有对齐，无法同时留缝并在原行程内交接。请先点“进料面前后对齐”，再选择模板；设备联动的“一键演示”不受影响。`)
   // Only explicit, confirmed template application selects the measured gap.
   const distance = minimum
   delete rail.spacing
   next.placementTemplate = { version: 1, kind, railId: rail.id, railOffsetZ: rail.offsetZ, primaryLaneId: primary.id, primarySide: side,
-    ...(dual ? { secondaryLaneId: secondary.id } : {}), minimumDistance: minimum }
+    ...(dual ? { secondaryLaneId: secondary.id } : {}), minimumDistance: minimum,...(compact?{clearanceGapMeters:gapMeters,compact:true}: {}) }
   primary.offsetZ = Number((rail.offsetZ + sign * distance).toFixed(6))
   const resolved = resolveLinePlacementTemplate(next)
   const moved = rows.map(row => {

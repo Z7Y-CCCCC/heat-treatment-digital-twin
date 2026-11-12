@@ -34,7 +34,12 @@ export function simulationCapabilities(device,models){
     return {model,door,process,cart:isSimulationCart(device),usable,animated:door||process.length>0||isSimulationCart(device)}
 }
 const LABELS={tempering_heat:'回火加热',tempering_hold:'热风循环保温',fill:'注水',heat:'加热',spray:'喷淋清洗',ultrasonic:'超声清洗',drain:'排水',blow:'吹扫',lower:'承料架下降',quench:'搅拌冷却',raise:'承料架升起',drip:'沥液',lift:'升降备料',rollers:'辊道运转',fans:'风冷',run:'已配置部件运转',gate_open:'打开中间隔热门',hot_feed:'移料进入热室',gate_close:'关闭中间隔热门',heat_treat:'热室加热与循环',gate_open_return:'出热室开隔门',hot_return:'移料返回前室',gate_close_return:'淬火前关闭隔门'}
-export function buildLineSimulation(devices,models,{process=true}={}){
+export function defaultSimulationSelection(devices,models){
+ const usable=devices.filter(d=>simulationCapabilities(d,models).usable)
+ const cart=usable.find(d=>isSimulationCart(d))
+ return [...(cart?[cart]:[]),...usable.filter(d=>!isSimulationCart(d))].map(d=>d.id)
+}
+export function buildLineSimulation(devices,models,{process=true,useSavedCycle=true}={}){
     if(new Set(devices.map(d=>d.id)).size!==devices.length)throw Error('设备实例重复，请重新选择。')
     const rows=devices.map(d=>({...d,capabilities:simulationCapabilities(d,models)}))
     const carts=rows.filter(d=>d.capabilities.cart),stations=rows.filter(d=>!d.capabilities.cart)
@@ -62,10 +67,10 @@ export function buildLineSimulation(devices,models,{process=true}={}){
         else if(!c.process.length&&!c.door)push(station,'display','静态展示',3)
     }
     if(!steps.length)throw Error('所选设备没有可模拟工步。')
-    const cycle=parseSimulationConfig(cart?.instance_config).animationBindings?.transferLink?.cycle
+    const cycle=useSavedCycle?parseSimulationConfig(cart?.instance_config).animationBindings?.transferLink?.cycle:null
     if(cycle?.enabled)for(const step of steps){if(['feed','pickup_extend'].includes(step.kind))step.duration=cycle.extendSeconds;else if(['retract','reclaim'].includes(step.kind))step.duration=cycle.latchSeconds+cycle.retractSeconds}
     let start=0;for(const step of steps){step.start=start;start+=step.duration;step.end=start}
-    return {rows,stations,cart,steps,total:start}
+    return {rows,stations,cart,steps,total:start,useSavedCycle}
 }
 const smooth=x=>x*x*(3-2*x)
 export function sampleLineSimulation(plan,time){
@@ -103,7 +108,7 @@ export function sampleLineSimulation(plan,time){
             case 'quench':state.stirTime+=local;state.run=active;state.runTime+=local;break
             case 'fans':case 'rollers':case 'run':state.run=active;state.runTime+=local;break
         }
-        const cycle=parseSimulationConfig(plan.cart?.instance_config).animationBindings?.transferLink?.cycle
+        const cycle=plan.useSavedCycle===false?null:parseSimulationConfig(plan.cart?.instance_config).animationBindings?.transferLink?.cycle
         if(cycle?.enabled&&['feed','retract','pickup_extend','reclaim'].includes(step.kind)){
             const pickup=['pickup_extend','reclaim'].includes(step.kind),past=['retract','reclaim'].includes(step.kind)
             const estimate=sampleTransferCycleAt(cycle,(past?cycle.extendSeconds:0)+local,pickup,plan.transferMouthFractions?.[step.deviceId]??.5)

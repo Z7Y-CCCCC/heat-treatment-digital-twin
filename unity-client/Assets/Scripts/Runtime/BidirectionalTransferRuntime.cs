@@ -25,11 +25,12 @@ namespace HeatTreatment.DigitalTwin.Runtime
             public LoadingPortPose Port;public Vector3 Home;public float Units,Height;public double Stale,NextLog;
             public bool Logs;public int Side=1;public Target ActiveTarget;
             public Material Material;public GameObject Cargo;
+            public readonly AdaptiveTransferPath Path=new AdaptiveTransferPath(),CandidatePath=new AdaptiveTransferPath();
+            public readonly double[] HomeBuffer=new double[3],SeatBuffer=new double[3],CargoBuffer=new double[3];
             public TransferBooleanObservation Presence,Start,Pickup;
             public TransferCycleConfig Timing=new TransferCycleConfig();public TransferCycleState Cycle=new TransferCycleState();
             public readonly List<Target> Targets=new List<Target>();
             public readonly double[] A=new double[3],B=new double[3],C=new double[3],D=new double[3],E=new double[3];
-            public readonly TransferReachResult Reach=new TransferReachResult();
         }
         private readonly List<Link> _links=new List<Link>();
         private static Vector3 V(JToken a)=>new Vector3(-(float)a[0].Value<double>(),(float)a[1].Value<double>(),(float)a[2].Value<double>());
@@ -61,6 +62,8 @@ namespace HeatTreatment.DigitalTwin.Runtime
                     var size=(JArray)c["materialSize"];var dimensions=new Vector3(size[0].Value<float>(),size[1].Value<float>(),size[2].Value<float>())*units;
                     if(!float.IsFinite(dimensions.x)||!float.IsFinite(dimensions.y)||!float.IsFinite(dimensions.z)||dimensions.x<=0||dimensions.y<=0||dimensions.z<=0)throw new InvalidOperationException("物料米制尺寸无效");
                     link.Height=dimensions.y;link.Cargo=Cargo(link,"车上物料 "+source.Id,dimensions);
+                    var handoff=cycle.Value<string>("handoffMode")??"mechanism";
+                    if(handoff!="mechanism"&&handoff!="adaptive")throw new InvalidOperationException("交接显示方式无效");
                     foreach(var station in cycle["stations"].OfType<JObject>()){
                         var id=station.Value<string>("targetDeviceId");if(!deviceMap.TryGetValue(id,out var target)||!roots.TryGetValue(id,out var targetRoot)||targetRoot==null)throw new InvalidOperationException("工位目标尚未加载");
                         if(target.InstanceConfigObject["movement"]?.Value<bool?>("enabled")==true)throw new InvalidOperationException("交接目标不能是移动设备");
@@ -102,13 +105,14 @@ namespace HeatTreatment.DigitalTwin.Runtime
             if(!Upright(l.Root)||!Upright(t.Root)||!l.Driver.TryGetPresentationDrive(t.Side,out var node,out _,out var maximum)||node.parent==null)return false;
             var source=PortPoint(l.Root,l.Port,t.Side);var direction=PortDirection(l.Root,l.Port,t.Side);var target=PortPoint(t.Root,t.Port);var normal=PortDirection(t.Root,t.Port);
             M(source,l.Units,l.A);M(direction,1,l.B);M(target,l.Units,l.C);M(normal,1,l.D);M(node.parent.TransformVector(maximum),l.Units,l.E);
-            var reach=TransferReachPolicy.EvaluateInto(l.Reach,l.A,l.B,l.C,l.D,l.E,l.Config.Value<double>("heightToleranceMeters"),l.Config.Value<double>("lateralToleranceMeters"),l.Config.Value<double>("angleToleranceDegrees"));
-            reason=reach.Reason;if(!reach.Usable)return false;
-            var home=l.Root.TransformPoint(l.Home);var seat=Seat(t);var path=seat-home;
-            if(path.sqrMagnitude<.00000001f||Math.Abs(seat.y-home.y)>l.Config.Value<double>("heightToleranceMeters")*l.Units+.000001){reason="承料面不在同一送料高度";return false;}
-            mouthFraction=Vector3.Dot(target-home,path)/path.sqrMagnitude;
-            if(!Finite(mouthFraction)||mouthFraction<=0||mouthFraction>=1){reason="设备口不在车上承料位与设备内承料位之间";return false;}
-            reason="双侧机构、送料口与承料位可达";return true;
+            {
+                M(l.Root.TransformPoint(l.Home),l.Units,l.HomeBuffer);M(Seat(t),l.Units,l.SeatBuffer);
+                var adaptive=l.Cycle.Active?l.CandidatePath:l.Path;
+                var usable=adaptive.Build(l.HomeBuffer,l.A,l.B,l.C,l.D,l.SeatBuffer,l.E,l.Config.Value<double>("heightToleranceMeters"),l.Config.Value<double>("lateralToleranceMeters"),l.Config.Value<double>("angleToleranceDegrees"));
+                mouthFraction=l.Path.MouthFraction;reason=adaptive.Reason;
+                if(usable&&l.Cycle.Active&&!l.Path.SameGeometry(adaptive)){reason="交接途中承料路径已变化，显示冻结";return false;}
+                return usable;
+            }
         }
         private static void Place(Link l,GameObject cargo,Vector3 floor,bool visible)
         {
@@ -129,9 +133,12 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 l.Cycle.Advance(new TransferCycleInput{Valid=valid,Docked=docked&&geometry,Start=l.Start.Value,Pickup=l.Pickup.Value,SourcePresent=l.Presence.Value,TargetPresent=active?.Presence.Value??false,MouthFraction=fraction},delta,l.Timing);
                 foreach(var t in l.Targets)Place(l,t.Cargo,Seat(t),t.Root.gameObject.activeInHierarchy&&t.Presence.Usable&&t.Presence.HasSample&&t.Presence.Value&&!(l.Cycle.Active&&t==active));
                 if(l.Cycle.Active){
-                    if(!l.Root.gameObject.activeInHierarchy||!active.Root.gameObject.activeInHierarchy)Place(l,l.Cargo,Vector3.zero,false);
+                    if(!l.Root.gameObject.activeInHierarchy||!active.Root.gameObject.activeInHierarchy){Place(l,l.Cargo,Vector3.zero,false);}
                     if(!l.Cycle.Paused){
-                        if(l.Driver.SetTransferPresentation(l.Side,l.Cycle.Feed,l.Cycle.Hook,out reason))Place(l,l.Cargo,Vector3.Lerp(l.Root.TransformPoint(l.Home),Seat(active),(float)l.Cycle.Cargo),true);
+                        if(l.Driver.SetTransferPresentation(l.Side,l.Cycle.Feed,l.Cycle.Hook,out reason)){
+                            l.Path.Sample(l.Cycle.Cargo,l.CargoBuffer);var floor=World(l.CargoBuffer,l.Units);
+                            Place(l,l.Cargo,floor,true);
+                        }
                     }
                 }else{
                     l.Driver.SetTransferPresentation(l.Side,0,l.Cycle.Hook,out _);
@@ -143,12 +150,14 @@ namespace HeatTreatment.DigitalTwin.Runtime
                     var record=new JObject{["deviceId"]=l.Id,["targetDeviceId"]=active?.Id,["side"]=l.Side<0?"opposite":"primary",["phase"]=l.Cycle.Phase,["reason"]=l.Cycle.Paused?(!geometry?reason:l.Cycle.Reason):l.Cycle.Reason,
                         ["displayEstimated"]=true,["arrivalConfirmed"]=docked,["geometryUsable"]=geometry,["bothPresenceConfirmed"]=l.Cycle.Confirmed,["paused"]=l.Cycle.Paused,
                         ["feed"]=l.Cycle.Feed,["hook"]=l.Cycle.Hook,["cargoFraction"]=l.Cycle.Cargo,["sourceMaterialVisible"]=l.Cargo.activeSelf,["sourcePresent"]=l.Presence.Value,["targetPresent"]=active?.Presence.Value??false};
+                    record["handoffMode"]="mechanism";record["bridgeMeters"]=0;
                     l.Driver.TransferDiagnostic=record;if(l.Logs)Debug.Log("[DeviceTransferCycle] "+record.ToString(Newtonsoft.Json.Formatting.None));
                 }
             }
         }
         public void Suspend(){foreach(var l in _links){l.Presence.Suspend();l.Start.Suspend();l.Pickup.Suspend();foreach(var t in l.Targets)t.Presence.Suspend();}Advance(0,Time.realtimeSinceStartupAsDouble);}
         private static void Destroy(UnityEngine.Object o){if(o==null)return;if(Application.isPlaying)UnityEngine.Object.Destroy(o);else UnityEngine.Object.DestroyImmediate(o);}
+        private static Vector3 World(double[] p,float units)=>new Vector3((float)(p[0]*units),(float)(p[1]*units),(float)(p[2]*units));
         private static void DisposeLink(Link l){Destroy(l.Cargo);foreach(var t in l.Targets)Destroy(t.Cargo);Destroy(l.Material);}
         public void Dispose(){foreach(var l in _links)DisposeLink(l);_links.Clear();}
     }
