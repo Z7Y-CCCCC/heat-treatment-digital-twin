@@ -58,7 +58,8 @@ import {
 import { chooseLineDevices, planLineGroupMove, spaceLineDevices } from './admin/utils/lineDeviceSelection.js'
 import { editLineRailSpacing, shiftRailMovement, lineSceneUnitsPerMeter } from '../../../shared/lineRailSpacing.mjs'
 import { planLinePlacementTemplate, canMoveLineStructure, assertLineTemplateTransition, assertLineTemplateClearance } from '../../../shared/linePlacementTemplate.mjs'
-import { isLastConfirmedMotion, lastConfirmedMotionError } from './admin/utils/mobileMotionPolicy.js'
+import { simpleMotionError } from './admin/utils/mobileMotionPolicy.js'
+import { simpleMovementPayload } from './admin/utils/simpleMotionDraft.js'
 import { buildModelDisplayIds, createShortModelId } from './admin/utils/modelIds.js'
 import { useAppDialog } from './admin/composables/useAppDialog.js'
 import { useSystemSettings } from './admin/composables/useSystemSettings.js'
@@ -94,6 +95,7 @@ import ModelNameEditor from './admin/components/ModelNameEditor.vue'
 import CopyPathButton from './admin/components/CopyPathButton.vue'
 import ModelPlacementMenu from './admin/components/ModelPlacementMenu.vue'
 import LoadingPortEditor from './admin/components/LoadingPortEditor.vue'
+import LoadingPortWorkspace from './admin/components/LoadingPortWorkspace.vue'
 import LoadingAlignmentDialog from './admin/components/LoadingAlignmentDialog.vue'
 import GroupPortalSettings from './admin/components/GroupPortalSettings.vue'
 import LoadingExperienceSettings from './admin/components/LoadingExperienceSettings.vue'
@@ -380,25 +382,23 @@ async function requestFactorySwitch({ factoryName }) {
                 const result = await adminApi.saveDashboardDraft(sceneId, document, revision)
                 if (result?.error || !result?.success) throw new Error(result?.error || '大屏画面保存失败')
             },
-            'mobile-motion': async ({ deviceId, motion, devicePayload, selectedPointIds, missingStationDistances, expectedMovement, requiresMovementReload }) => {
+            'mobile-motion': async ({ deviceId, motion, devicePayload, expectedMovement, requiresMovementReload }) => {
                 if (requiresMovementReload) throw new Error(`设备「${deviceId}」的旧移动草稿没有配置快照，请重新读取后配置，未覆盖当前路径`)
-                const inputPolicyError = lastConfirmedMotionError(motion) || lastConfirmedMotionError(devicePayload?.instance_config?.movement)
+                if (motion?.displayMode !== 'simple' || devicePayload?.instance_config?.movement?.displayMode !== 'simple') throw new Error(`设备「${deviceId}」的旧移动草稿已停用，请重新读取并按目标编号＋到位信号保存`)
+                const inputPolicyError = simpleMotionError(motion) || simpleMotionError(devicePayload?.instance_config?.movement)
                 if (inputPolicyError) throw new Error(`设备「${deviceId}」：${inputPolicyError}`)
                 if (motion?.enabled && !motion.currentPositionPointId) throw new Error(`设备「${deviceId}」未绑定当前位置点位`)
-                if (motion?.valueMode === 'range' && Number(motion.valueMax) <= Number(motion.valueMin)) throw new Error(`设备「${deviceId}」的输入范围无效`)
-                if (motion?.valueMode === 'station') {
+                if (motion?.enabled) {
                     const ids = (motion.stations || []).map(station => station.value)
                     if (!ids.length || ids.some(id => typeof id !== 'number' || !Number.isFinite(id)) || new Set(ids).size !== ids.length) throw new Error(`设备「${deviceId}」的工位编号无效`)
-                    const simulate = motion.simulationEnabled && motion.stationInputMeaning !== 'current' && !isLastConfirmedMotion(motion)
-                    if (simulate && Number(missingStationDistances) > 0) throw new Error(`设备「${deviceId}」的工位间距尚未填写完整`)
-                    if (simulate && Number(motion.acceleration) <= 0) throw new Error(`设备「${deviceId}」的加速度无效`)
                 }
                 const latest = await adminApi.getDevice(deviceId)
                 if (!latest || latest.error) throw new Error(latest?.error || `设备「${deviceId}」读取失败`)
-                const config = { ...parseInstanceConfig(latest.instance_config), movement: devicePayload.instance_config.movement }
-                const sourcePolicyError = lastConfirmedMotionError(config.movement, latest.dataPoints || [], deviceId)
+                const config = { ...parseInstanceConfig(latest.instance_config), movement: simpleMovementPayload(devicePayload.instance_config.movement) }
+                const sourcePolicyError = simpleMotionError(config.movement, latest.dataPoints || [], deviceId)
                 if (sourcePolicyError) throw new Error(`设备「${deviceId}」：${sourcePolicyError}`)
-                const result = await adminApi.updateDeviceMovement(deviceId, config.movement, (selectedPointIds || []).filter(Boolean), expectedMovement)
+                const pointIds = [...new Set([config.movement.currentPositionPointId, config.movement.arrivalSignalPointId].filter(Boolean))]
+                const result = await adminApi.updateDeviceMovement(deviceId, config.movement, pointIds, expectedMovement)
                 if (result?.error || !result?.success) throw new Error(result?.error || `设备「${deviceId}」运动配置保存失败`)
             },
             'factory-record': async ({ id, name, location }) => {
@@ -1629,7 +1629,7 @@ const modelFileInputRef = ref(null)
 const selectedModelFile = ref(null)
 const MODEL_LIBRARY_STEPS = [
     { key: 'library', label: '模型资产', description: '选择与管理模型' },
-    { key: 'ports', label: '进出料口', optional: true, description: '可选：点击口下沿，设置动画对齐基准' },
+    { key: 'ports', label: '进出料口', optional: true, description: '料口位置与设备进出料信号' },
     { key: 'inspection', label: '拆解检查', description: '配置外壳、关键部件、镜头与点位上下文' },
     { key: 'bindings', label: '部位绑定', description: '把模型节点绑定到实时点位' }
 ]
@@ -3482,6 +3482,10 @@ function applySavedLoadingPorts(result) {
         const saved = parseInstanceConfig(result.device.instance_config)
         if (Object.hasOwn(saved, 'loadingPortOverrides')) instance.loadingPortOverrides = saved.loadingPortOverrides
         else delete instance.loadingPortOverrides
+        if (Object.hasOwn(saved, 'loadingPortSignals')) instance.loadingPortSignals = saved.loadingPortSignals
+        else delete instance.loadingPortSignals
+        if (Object.hasOwn(saved, 'cartTransfer')) instance.cartTransfer = saved.cartTransfer
+        else delete instance.cartTransfer
         patchDeviceLocally(result.device.id, { instance_config: JSON.stringify(instance) })
         savedDeviceLayoutSnapshots.value[result.device.id] = deviceLayoutSnapshot(result.device)
     }
@@ -8063,7 +8067,6 @@ async function openAdminSetupStep(step) {
                                     <span class="line-selection-hint">Ctrl / Shift 多选</span>
                                     <button type="button" class="btn btn-sm" :disabled="lineDeviceLayoutBusy" title="仅调整前后位置；选择范围、核对预览后应用" @click="openLineLoadingAlignment('faces')" v-permission="{ page: 'lines', action: 'edit' }">进料面前后对齐</button>
                                     <button type="button" class="btn btn-sm" :disabled="lineDeviceLayoutBusy" title="仅调整整体高度；选择基准设备、核对预览后应用" @click="openLineLoadingAlignment('heights')" v-permission="{ page: 'lines', action: 'edit' }">送料高度对齐</button>
-                                    <button v-if="selectedLineDeviceIds.length === 1 && canAdminPage('devices', 'edit')" type="button" class="btn btn-sm" :disabled="lineDeviceLayoutBusy" @click="openDeviceLoadingPorts(getLineDeviceById(selectedLineDeviceIds[0]))">进出料口微调</button>
                                     <span v-if="selectedLineDeviceIds.length">已选 {{ selectedLineDeviceIds.length }} 台</span>
                                     <button type="button" class="btn btn-sm" :disabled="lineDeviceLayoutBusy || !lineSelectionSameTarget || selectedLineDeviceIds.length < 3" title="固定两端，平均分配所选设备的中心间距" @click="applyLineDeviceSpacing()" v-permission="{ page: 'lines', action: 'edit' }">等间距</button>
                                     <label>中心距(m) <input v-model.number="lineDeviceGap" aria-label="设备中心间距（米）" type="number" min="0.01" step="0.5" :disabled="lineDeviceLayoutBusy || !lineSelectionSameTarget" /></label>
@@ -8286,7 +8289,7 @@ async function openAdminSetupStep(step) {
                 <Teleport to="body">
                     <dialog v-if="loadingPortDevice && loadingPortDeviceModel" ref="deviceLoadingPortDialog" class="device-loading-port-dialog"
                         aria-label="设备进出料口微调" @cancel.prevent="closeDeviceLoadingPorts">
-                        <header class="device-loading-port-heading"><div><h2>设备进出料口微调</h2><p>只调整「{{ loadingPortDevice.name }}」，同型号其他设备不变。</p></div><button type="button" class="btn" :disabled="deviceLoadingPortRef?.busy" aria-label="关闭设备进出料口微调" @click="closeDeviceLoadingPorts">关闭</button></header>
+                        <header class="device-loading-port-heading"><div><h2>{{ loadingPortDevice.name }} · 进出料口配置</h2></div><button type="button" class="btn" :disabled="deviceLoadingPortRef?.busy" aria-label="关闭设备进出料口配置" @click="closeDeviceLoadingPorts">关闭</button></header>
                         <LoadingPortEditor ref="deviceLoadingPortRef" :model="loadingPortDeviceModel" :device="loadingPortDevice" :confirm="confirmDeviceLoadingPorts" @saved="applySavedLoadingPorts" />
                     </dialog>
                 </Teleport>
@@ -8553,8 +8556,8 @@ async function openAdminSetupStep(step) {
                     <LineEquipmentSequence v-if="activeTab === 'model-animations' && motionWorkspaceMode === 'transfer'" :models="models" :lines="lines" :devices="devices" :workshops="workshops" />
                     <p v-if="activeTab === 'model-animations' && motionWorkspaceMode === 'live' && motionFactoryError" role="alert">{{ motionFactoryError }} <button type="button" class="btn btn-sm" @click="loadMotionFactories">重试</button></p>
                     <DeviceAnimationLink v-if="activeTab === 'model-animations' && motionWorkspaceMode === 'live' && motionFactoryId" ref="deviceAnimationLinkRef" device-picker-target="#motion-live-device-picker" :models="models" :devices="devices" :workshops="workshops" :lines="lines" :factories="motionFactories" :factory-id="motionFactoryId" :request-factory-switch="requestMotionFactorySwitch" :confirm="confirm" />
-                    <LoadingPortEditor v-if="activeTab === 'models' && modelLibraryStep === 'ports' && activePreviewModel" ref="modelLoadingPortRef"
-                        :model="activePreviewModel" :confirm="confirm" @saved="applySavedLoadingPorts" />
+                    <LoadingPortWorkspace v-if="activeTab === 'models' && modelLibraryStep === 'ports' && activePreviewModel" ref="modelLoadingPortRef"
+                        :model="activePreviewModel" :devices="devices" :confirm="confirm" @saved="applySavedLoadingPorts" />
                     <div v-if="activeTab === 'model-animations' ? motionWorkspaceMode === 'parts' : modelLibraryStep !== 'ports'" class="model-library-layout" :class="{ 'inspection-workspace': modelLibraryStep === 'inspection', 'animation-workspace': activeTab === 'model-animations' }">
                         <section class="model-library-main">
                             <section v-if="activeTab === 'models'" v-show="modelLibraryStep === 'library'" class="model-library-step-panel">

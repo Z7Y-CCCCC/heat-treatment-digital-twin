@@ -1365,8 +1365,9 @@ async function executeMysql(sql, params) {
     finally { session.release(); }
 }
 
-async function queryMysql(sql, params) {
+async function queryMysql(sql, params, schemaTimeoutMs) {
     const session = await mysqlSession();
+    if (schemaTimeoutMs) session.timeoutMs = Math.max(session.timeoutMs, schemaTimeoutMs);
     try { const result = await session.deadline('query', () => session.connection.query({ sql, timeout: session.timeoutMs }, params)); lastRuntimeDatabaseError = null; return result; }
     catch (error) { recordMysqlRuntimeError(error); throw error; }
     finally { session.release(); }
@@ -1954,7 +1955,11 @@ async function ensureSchemaColumns() {
 
 async function rawQuery(sql) {
     const dialect = dialectName();
-    if (dialect === 'mysql') return queryMysql(sql);
+    // Adding a column/index to an existing history table is not a realtime
+    // query. Keep ordinary reads/writes at their existing deadline; DDL gets
+    // its own bounded startup budget rather than failing a healthy upgrade
+    // after 10 seconds while MySQL is still completing the index build.
+    if (dialect === 'mysql') return queryMysql(sql, undefined, /^\s*(CREATE|ALTER)\s/i.test(sql) ? 60000 : undefined);
     if (dialect === 'postgres') return pool.query(sql);
     if (dialect === 'sqlserver') return pool.request().query(sql);
     return withSqliteConnection(connection => connection.exec(sql));

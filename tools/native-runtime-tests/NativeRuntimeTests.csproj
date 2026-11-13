@@ -19,6 +19,7 @@
     <Compile Include="../../unity-client/Assets/Scripts/Runtime/LoadingPortPolicy.cs" Link="LoadingPortPolicy.cs" />
     <Compile Include="../../unity-client/Assets/Scripts/Runtime/RailPositionPolicy.cs" Link="RailPositionPolicy.cs" />
     <Compile Include="../../unity-client/Assets/Scripts/Runtime/MobileMotionSignalState.cs" Link="MobileMotionSignalState.cs" />
+    <Compile Include="../../unity-client/Assets/Scripts/Runtime/SimpleStationMotionState.cs" Link="SimpleStationMotionState.cs" />
     <Compile Include="../../unity-client/Assets/Scripts/Rendering/RealtimeDeviceFrameCache.cs" Link="RealtimeDeviceFrameCache.cs" />
     <None Include="../../shared/realtime-motion-queue-fixtures.json" Link="realtime-motion-queue-fixtures.json" CopyToOutputDirectory="PreserveNewest" />
     <Compile Include="../../unity-client/Assets/Scripts/Runtime/LoadingThemePolicy.cs" Link="LoadingThemePolicy.cs" />

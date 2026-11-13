@@ -602,6 +602,10 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 var placement = !ConfigurationRefreshPolicy.SamePlacement(device, next);
                 var prior = device.InstanceConfigObject;
                 var movementChanged = !JToken.DeepEquals(prior["movement"], next.InstanceConfigObject["movement"]);
+                var loadingChanged = !JToken.DeepEquals(prior["loadingPortSignals"], next.InstanceConfigObject["loadingPortSignals"])
+                    || !JToken.DeepEquals(prior["cartTransfer"], next.InstanceConfigObject["cartTransfer"])
+                    || !JToken.DeepEquals(prior["loadingPortOverrides"], next.InstanceConfigObject["loadingPortOverrides"])
+                    || !JToken.DeepEquals(JArray.FromObject(device.DataPoints ?? new List<DataPointDto>()), JArray.FromObject(next.DataPoints ?? new List<DataPointDto>()));
                 var inspectionChanged = !JToken.DeepEquals(prior["inspection"], next.InstanceConfigObject["inspection"]);
                 var beaconChanged = new[] { "showStatusLight", "statusLightY", "labelY" }.Any(key => !JToken.DeepEquals(prior[key], next.InstanceConfigObject[key]));
                 var instance = ConfigurationRefreshPolicy.InstanceWithoutActionUpdate(device, next);
@@ -622,7 +626,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
                     visual.Initialize(device, _config.Models.FirstOrDefault(model => model.Id == device.ModelType));
                     if (_latestDeviceFrames.TryGet(device.Id, out var frame, Time.realtimeSinceStartupAsDouble)) visual.ApplyRealtime(frame);
                 }
-                placementsChanged |= placement; transferChanged |= movementChanged || placement; ++changed;
+                placementsChanged |= placement; transferChanged |= movementChanged || placement || loadingChanged; ++changed;
             }
             var settings = latest.Settings ?? new Dictionary<string, string>(); var changedSettings = new JObject();
             foreach (var key in (_config.Settings ?? new Dictionary<string, string>()).Keys.Concat(settings.Keys).Distinct())

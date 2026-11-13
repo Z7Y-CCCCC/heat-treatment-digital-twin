@@ -350,7 +350,7 @@ async function importBundle(filename, input = {}, options = {}) {
     }
     const rewrite = (value, key) => {
         if (key === 'clipSha256' && motionHashes.has(value)) return motionHashes.get(value);
-        if (/^(pointId|point_id|dataPointId|data_point_id)$/.test(key) && pointMappings.has(String(value))) return typeof value === 'number' ? pointMappings.get(String(value)) : String(pointMappings.get(String(value)));
+        if (/^(pointId|point_id|dataPointId|data_point_id|currentPositionPointId|current_position_point_id|startActionPointId|start_action_point_id|arrivalPositionPointId|arrivalSignalPointId|inletPointId|outletPointId)$/.test(key) && pointMappings.has(String(value))) return typeof value === 'number' ? pointMappings.get(String(value)) : String(pointMappings.get(String(value)));
         if (typeof value !== 'string') return value;
         if (/^(connectionId|connection_id|sourceConnectionId)$/.test(key) && value) return `unconfigured_${token}_${hash(Buffer.from(value)).slice(0, 12)}`;
         const local = localReference(value);

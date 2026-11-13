@@ -51,6 +51,7 @@ internal static partial class Program
             ("Web and native queues share exact source snapshot, actuator edge and endpoint ordering", RealtimeMotionQueueContract),
             ("numeric motion has no replay backlog and mechanical edge load remains bounded", RealtimeMotionQueueBoundedLoad),
             ("mobile travel freezes on invalid, expired, reordered or stopped feedback and follows diagonal rail", MobileMotionStopsOnInvalidInputs),
+            ("simple cart uses target plus arrival BOOL, rejects retained old arrival and freezes stale feedback without physical parameters", SimpleCartUsesTwoSignals),
             ("retained last-station feedback never invents travel or docking; only owned actual BOOL movement feedback can confirm stop", LastConfirmedStationIsObservationOnly),
             ("model replay retains original per-point age without renewing old readings", ReplayDoesNotRefreshObservations),
             ("motion signal freshness includes transport and queued receipt age", MotionSignalsCountTransportAge),

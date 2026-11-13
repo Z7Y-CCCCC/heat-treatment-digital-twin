@@ -104,7 +104,8 @@ namespace HeatTreatment.DigitalTwin.Rendering
             var config = device.InstanceConfigObject?["animationBindings"]; _staleMs = config?.Value<double?>("staleMs") ?? 5000;
             _diagnostics = config?.Value<bool?>("diagnosticLogging") ?? Environment.GetEnvironmentVariable("DEVICE_ANIMATION_DIAGNOSTICS") == "1";
             _diagnosticIntervalSeconds = Math.Max(1, Math.Min(60, config?.Value<double?>("diagnosticIntervalSeconds") ?? 5));
-            _presentationControlled=config?["transferLink"]?["cycle"]?.Value<bool?>("enabled")==true;
+            _presentationControlled=config?["transferLink"]?["cycle"]?.Value<bool?>("enabled")==true
+                && !HeatTreatment.DigitalTwin.Runtime.SimpleMaterialTransferRuntime.UsesSimpleTransfer(device);
             _presentationSide=0;
             var configured=(config?["bindings"]?.OfType<JObject>()??Enumerable.Empty<JObject>()).ToList();
             if(_presentationControlled)foreach(var name in new[]{"feed","hook","feed_opposite","hook_opposite"})

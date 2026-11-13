@@ -15,6 +15,7 @@ const DataEngine = require('../services/dataEngine');
 const express = require('express');
 let server, engine, journal;
 (async () => {
+    await require('../services/historyPolicy').readHistoryPoints({all:async sql=>{assert.doesNotMatch(sql,/JOIN\s+lines\s/i,'MySQL reserved table identifiers must remain quoted');return [];}},'fixture');
     const now = Date.now(), HOUR = DAY_MS / 24;
     assert.deepEqual(normalizePolicy(), {version:1,recentEnabled:true,recentHours:24,metricMode:'finite',metricDays:90});
     assert.deepEqual(normalizePointPolicy(), {mode:'recent',days:30});

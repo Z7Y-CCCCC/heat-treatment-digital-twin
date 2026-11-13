@@ -3,13 +3,16 @@ const { mergeBuiltinModels } = require('./builtinModels');
 const { loadModelInspection, saveModelInspectionLayout } = require('./modelInspection');
 const { canonicalJson, exactJsonEquals, exactTextEquals } = require('./deviceInspection');
 const { normalizeLoadingPorts, normalizeLoadingPortOverrides, resolveLoadingPort } = require('../../shared/loadingPorts.cjs');
+const { normalizeLoadingPortSignals } = require('../../shared/loadingPortSignals.mjs');
+const { validateLoadingPortSignalSources } = require('./loadingPortSignals');
+const { normalizeCartTransfer } = require('../../shared/cartTransferConfig.mjs');
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const error = (message, statusCode = 400, code = 'LOADING_PORT_INVALID') => Object.assign(new Error(message), { statusCode, code });
 const conflict = () => error('设备或模型配置已更新，请重新读取后保存；当前草稿仍保留', 409, 'LOADING_PORT_CONFLICT');
 const hash = value => crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
 
-function validateRequest(loaded, body, key) {
-    if (!object(body) || Object.keys(body).some(field => !['revision', key].includes(field)) || !Object.hasOwn(body, key)) {
+function validateRequest(loaded, body, key, extra = []) {
+    if (!object(body) || Object.keys(body).some(field => !['revision', key, ...extra].includes(field)) || !Object.hasOwn(body, key)) {
         throw error(`仅可提交 revision 和 ${key}`);
     }
     if (typeof body.revision !== 'string' || !/^[a-f0-9]{64}$/.test(body.revision)) throw error('保存需要读取时的 revision', 428, 'LOADING_PORT_REVISION_REQUIRED');
@@ -36,6 +39,7 @@ function normalizeInstanceLoadingPorts(input) {
         try { instance = JSON.parse(input); } catch { throw error('设备实例配置 JSON 格式不正确，未修改原配置'); }
     }
     if (!object(instance)) throw error('设备实例配置必须是对象，未修改原配置');
+    if (Object.hasOwn(instance, 'cartTransfer')) instance = { ...instance, cartTransfer: normalizeCartTransfer(instance.cartTransfer) };
     return Object.hasOwn(instance, 'loadingPortOverrides')
         ? { ...instance, loadingPortOverrides: normalizeLoadingPortOverrides(instance.loadingPortOverrides) } : instance;
 }
@@ -64,16 +68,29 @@ async function loadDeviceLoadingPorts(db, id, factoryId) {
     const overrides = normalizeLoadingPortOverrides(instance.loadingPortOverrides);
     const ports = { version: 1, inlet: resolveLoadingPort(loaded.model, { instance_config: instance }, 'inlet'),
         outlet: resolveLoadingPort(loaded.model, { instance_config: instance }, 'outlet') };
-    return { ...loaded, modelRevision: loaded.revision, device, instance, overrides, ports, scope,
+    const signals = normalizeLoadingPortSignals(instance.loadingPortSignals);
+    const cartTransfer = normalizeCartTransfer(instance.cartTransfer);
+    const cartSupported = !!(instance.movement || instance.railId || instance.rail_id || instance.railLineId || ['transfer_cart', 'auxiliary'].includes(instance.role) || loaded.metadata.cartPushHook || type === 'transfer_cart');
+    const signalPoints = await db.all('SELECT id, name, label, data_type, access_type, category, value_role FROM data_points WHERE device_id=?', [device.id]);
+    return { ...loaded, modelRevision: loaded.revision, device, instance, overrides, ports, scope, signals, signalPoints, cartTransfer, cartSupported,
         revision: hash([canonicalJson(device), loaded.revision]) };
 }
 function publicDeviceLoadingPorts(loaded, publicDevice = device => device) {
     return { success: true, device: publicDevice(loaded.device), model: loaded.model,
-        ports: loaded.ports, overrides: loaded.overrides, revision: loaded.revision };
+        ports: loaded.ports, overrides: loaded.overrides, signals: loaded.signals,
+        cartTransfer: loaded.cartTransfer, cartSupported: loaded.cartSupported,
+        signalPoints: loaded.signalPoints.filter(point => String(point.data_type).toUpperCase() === 'BOOL' && String(point.access_type || 'READ').toUpperCase() === 'READ'), revision: loaded.revision };
 }
 async function saveDeviceLoadingPorts(tx, loaded, body, factoryId, dialect) {
-    const overrides = normalizeLoadingPortOverrides(validateRequest(loaded, body, 'overrides'));
-    const serialized = JSON.stringify({ ...loaded.instance, loadingPortOverrides: overrides });
+    const overrides = normalizeLoadingPortOverrides(validateRequest(loaded, body, 'overrides', ['signals', 'cartTransfer']));
+    const cartTransfer = Object.hasOwn(body, 'cartTransfer') ? normalizeCartTransfer(body.cartTransfer) : null;
+    if (cartTransfer?.kind === 'rotating' && !loaded.cartSupported) throw error('旋转平台只用于移动小车');
+    if (cartTransfer?.kind === 'rotating' && !loaded.ports.inlet && !loaded.ports.outlet) throw error('请先设置小车料口位置');
+    const signals = Object.hasOwn(body, 'signals') ? await validateLoadingPortSignalSources(tx, loaded.device, body.signals) : null;
+    if (signals) for (const kind of ['inlet', 'outlet']) {
+        if (signals[kind + 'PointId'] && !loaded.ports[kind]) throw error('请先设置所选信号对应的模型进出料口位置；已有位置会直接复用');
+    }
+    const serialized = JSON.stringify({ ...loaded.instance, loadingPortOverrides: overrides, ...(signals ? { loadingPortSignals: signals } : {}), ...(cartTransfer ? { cartTransfer } : {}) });
     const jsonParameter = value => ['mysql', 'postgres'].includes(dialect) ? canonicalJson(value) : value ?? '';
     const textColumns = ['instance_config', 'model_type', 'model_file', 'line_id', 'coordinate_space'];
     const numericColumns = ['pos_x', 'pos_y', 'pos_z', 'rotation_y', 'scale'];
@@ -104,6 +121,8 @@ async function saveDeviceLoadingPorts(tx, loaded, body, factoryId, dialect) {
     }
     const result = await tx.run(`UPDATE devices SET instance_config=? WHERE id=? AND ${predicates.join(' AND ')}`, params);
     if (!result?.changes && !result?.affectedRows) throw conflict();
+    if (signals) for (const id of [signals.inletPointId, signals.outletPointId].filter(Boolean))
+        await tx.run('UPDATE data_points SET sample_interval_ms=? WHERE id=? AND device_id=?', [100, id, loaded.device.id]);
     return loadDeviceLoadingPorts(tx, loaded.device.id, factoryId);
 }
 

@@ -25,8 +25,8 @@ test('the shared fixed/auxiliary directory table exposes only edit and delete, n
   assert.equal((tables.match(/@click="openEditDevice\(d\)"/g) || []).length, 1)
   assert.equal((tables.match(/@click="deleteDevice\(d\.id\)"/g) || []).length, 1)
   assert.match(tables, /formatPlcDeviceStatus\(d\)/)
-  assert.match(panel, /@click="openDeviceLoadingPorts\(getLineDeviceById\(selectedLineDeviceIds\[0\]\)\)"/)
-  assert.equal((panel.match(/@click="openDeviceLoadingPorts/g) || []).length, 1, 'only the existing line-layout calibration entry remains')
+  assert.equal((panel.match(/@click="openDeviceLoadingPorts/g) || []).length, 0, 'port configuration belongs to model management, not the line-layout toolbar')
+  assert.match(panel, /<LoadingPortWorkspace[^>]*modelLibraryStep === 'ports'[^>]*ref="modelLoadingPortRef"[\s\S]*?:model="activePreviewModel" :devices="devices"/)
 })
 test('port editors guard navigation and save or discard explicitly during a factory switch', () => {
   assert.match(panel, /modelLoadingPortRef\.value && !await modelLoadingPortRef\.value\.canLeave\(\)/)

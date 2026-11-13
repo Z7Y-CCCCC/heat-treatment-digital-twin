@@ -296,11 +296,29 @@ test('the visible spacing save action is disabled while busy and retains dirty d
   assert.equal(f.saving.value, false)
 })
 
-for (const units of [.8, 1.25, 2]) test(`actual line ${units} units/m and .6m spacing field -> original parent save/API -> isolated SQL -> GET -> controls reopen preserves precise carrier/path/CAS`, async t => {
-  const initial = carrier('cart', units), f = await fieldFixture(t, { devices: [initial] }), rawBefore = f.snapshot()
-  assert.equal(f.field('产线场景单位每米').value, '1'); assert.equal(Object.hasOwn(f.line.value.layout, 'sceneUnitsPerMeter'), false)
+test('uncalibrated line needs no ratio input; opening, saving another setting and reopening never invent a ratio or move devices', async t => {
+  const f = await fieldFixture(t, { openRailPopup: false }), original = f.snapshot()
+  const assertNoCalibration = () => {
+    assert.equal(f.elements().some(node => node.props['aria-label'] === '产线场景单位每米'), false)
+    assert.doesNotMatch(f.elements().map(node => node.text).join(' '), /产线场景单位|场景单位\s*\/\s*米/)
+    assert.equal(Object.hasOwn(f.line.value.layout, 'sceneUnitsPerMeter'), false)
+  }
+  assertNoCalibration(); assert.deepEqual(f.snapshot(), original)
+  await f.field('小车导轨 关联设备线').fire('change', 'lane')
+  assert.equal(f.line.value.layout.rails[0].offsetZ, .6)
+  await f.save(); assert.equal(f.alerts.at(-1).options.type, 'success', f.alerts.at(-1).message)
+  const put = f.requests.find(row => row.method === 'PUT')
+  assert.ok(put); assert.equal(Object.hasOwn(put.body.layout, 'sceneUnitsPerMeter'), false)
+  assert.equal(Object.hasOwn(put.body.expectedLayout, 'sceneUnitsPerMeter'), false)
+  assert.deepEqual(f.rows(), original.devices, 'Removing a field is not a coordinate rescale or movement migration')
+  await f.reopen(); assertNoCalibration(); assert.deepEqual(f.rows(), original.devices)
+})
+
+for (const units of [.8, 1.25, 2]) test(`saved legacy line ${units} units/m has no calibration control; spacing save/API/reopen preserves its ratio, precise carrier/path and CAS`, async t => {
+  const initial = carrier('cart', units), layout = { ...legacyLayout(), sceneUnitsPerMeter: units }, f = await fieldFixture(t, { layout, devices: [initial] }), rawBefore = f.snapshot()
+  const hasCalibrationControl = () => f.elements().some(node => node.props['aria-label'] === '产线场景单位每米')
+  assert.equal(hasCalibrationControl(), false); assert.equal(f.line.value.layout.sceneUnitsPerMeter, units)
   assert.deepEqual(f.snapshot(), rawBefore, 'Merely GET/reopening old controls does not write/migrate the line or source')
-  await f.field('产线场景单位每米').fire('change', units)
   await f.field('小车导轨 关联设备线').fire('change', 'lane')
   approximate(Number(f.field('小车导轨 设备线与轨道中心距（米）').value), .6 / units)
   await f.field('小车导轨 设备线与轨道中心距（米）').fire('change', '.6')
@@ -309,7 +327,7 @@ for (const units of [.8, 1.25, 2]) test(`actual line ${units} units/m and .6m sp
   approximate(draftCarrier.pos_z, .6 + delta); approximate(draftMovement.start.z, .7 + delta); assert.equal(draftCarrier.pos_x, -10.125)
   await f.save(); assert.equal(f.alerts.at(-1).options.type, 'success', f.alerts.at(-1).message)
   const put = f.requests.find(row => row.method === 'PUT'); assert.ok(put); assert.equal(put.body.layout.sceneUnitsPerMeter, units)
-  assert.equal(Object.hasOwn(put.body.expectedLayout, 'sceneUnitsPerMeter'), false)
+  assert.equal(put.body.expectedLayout.sceneUnitsPerMeter, units, 'The original calibration remains part of CAS, not a new user input')
   assert.deepEqual(put.body.devicePositions[0].expected, { pos_x: -10.125, pos_z: .6 })
   const savedLine = await f.get(), saved = f.rows()[0], savedConfig = JSON.parse(saved.instance_config)
   assert.equal(savedLine.layout.sceneUnitsPerMeter, units); approximate(savedLine.layout.rails[0].offsetZ, .6 * units)
@@ -317,21 +335,20 @@ for (const units of [.8, 1.25, 2]) test(`actual line ${units} units/m and .6m sp
   for (const point of [savedConfig.movement.start, savedConfig.movement.end, savedConfig.movement.stations[0].position]) approximate(point.z, .7 + delta)
   assert.equal(savedConfig.movement.sceneUnitsPerMeter, units); assert.equal(savedConfig.movement.currentPositionPointId, 'PLC_POSITION')
   assert.deepEqual(savedConfig.animationBindings, initial.instance_config.animationBindings); assert.deepEqual(savedConfig.custom, initial.instance_config.custom)
-  await f.reopen(); assert.equal(f.field('产线场景单位每米').value, String(units)); assert.equal(f.field('小车导轨 设备线与轨道中心距（米）').value, '0.6')
+  await f.reopen(); assert.equal(hasCalibrationControl(), false); assert.equal(f.line.value.layout.sceneUnitsPerMeter, units); assert.equal(f.field('小车导轨 设备线与轨道中心距（米）').value, '0.6')
   approximate(Number(f.field('小车导轨 偏移Z').value), .6 * units)
   const text = f.elements().map(node => node.text).join(' '); assert.match(text, /固定基准 \/ 约束跟随/); assert.match(text, /长度（场景坐标）/); assert.doesNotMatch(text, /偏移Z（米）/)
   assert.equal(f.field('小车导轨 偏移Z').props.disabled, true, 'The carrier rail cannot be repositioned with the arbitrary offset control')
   const before = JSON.stringify({ layout: f.line.value.layout, devices: f.devices.value })
-  await f.field('产线场景单位每米').fire('change', '0'); assert.equal(JSON.stringify({ layout: f.line.value.layout, devices: f.devices.value }), before)
-  assert.equal(f.field('产线场景单位每米').value, String(units), 'Rejected input restores the actual field, not only its model')
-  f.busy.value = true; await settled(); await f.field('产线场景单位每米').fire('change', 99)
-  assert.equal(JSON.stringify({ layout: f.line.value.layout, devices: f.devices.value }), before); assert.equal(f.field('产线场景单位每米').value, String(units))
+  f.busy.value = true; await settled(); await f.field('小车导轨 设备线与轨道中心距（米）').fire('change', '99')
+  assert.equal(JSON.stringify({ layout: f.line.value.layout, devices: f.devices.value }), before); assert.equal(f.field('小车导轨 设备线与轨道中心距（米）').value, '0.6')
 })
 
-test('contextual line units can be configured and saved through actual fields without injecting an inherited ratio into source movement or fixed-source configuration', async t => {
+test('saved contextual line units survive actual fields without exposing calibration or injecting an inherited ratio into source movement or fixed-source configuration', async t => {
   const fixed = { id: 'fixed', name: '固定送料设备', line_id: 'L', pos_x: 5, pos_z: 0, instance_config: { laneLineId: 'L', laneId: 'lane', animationBindings: { transferLink: { enabled: true } }, custom: { preserve: true } } }
-  const f = await fieldFixture(t, { devices: [carrier(), fixed] })
-  await f.field('产线场景单位每米').fire('change', '.8'); await f.field('小车导轨 关联设备线').fire('change', 'lane'); await f.field('小车导轨 设备线与轨道中心距（米）').fire('change', '.6')
+  const f = await fieldFixture(t, { layout: { ...legacyLayout(), sceneUnitsPerMeter: .8 }, devices: [carrier(), fixed] })
+  assert.equal(f.elements().some(node => node.props['aria-label'] === '产线场景单位每米'), false)
+  await f.field('小车导轨 关联设备线').fire('change', 'lane'); await f.field('小车导轨 设备线与轨道中心距（米）').fire('change', '.6')
   await f.save(); assert.equal(f.alerts.at(-1).options.type, 'success', f.alerts.at(-1).message)
   const rows = f.rows(), mobile = JSON.parse(rows.find(row => row.id === 'cart').instance_config), stationary = JSON.parse(rows.find(row => row.id === 'fixed').instance_config)
   assert.equal(Object.hasOwn(mobile.movement, 'sceneUnitsPerMeter'), false); assert.equal(Object.hasOwn(mobile.movement, 'scene_units_per_meter'), false)
