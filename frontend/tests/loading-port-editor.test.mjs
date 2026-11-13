@@ -248,7 +248,7 @@ test('instance mode applies offsets and yaw to model defaults without saving mod
   assert.equal(f.vm.row, null); assert.deepEqual(f.vm.effectivePort, port())
   f.vm.setEnabled(true); f.vm.row.offset = [1, .25, -2]; f.vm.row.yawDegrees = 90
   assert.deepEqual(f.vm.effectivePort.position, [11, 2.25, 1]); assert.ok(Math.abs(f.vm.effectivePort.direction[0]) < 1e-10); assert.equal(f.vm.effectivePort.direction[2], -1)
-  assert.equal(await f.exposed.savePending(), true); assert.deepEqual(f.calls.deviceSaves[0].body, { revision: 'revision-d', overrides: { ...empty(), inlet: { offset: [1, .25, -2], yawDegrees: 90 } } })
+  assert.equal(await f.exposed.savePending(), true); assert.deepEqual(f.calls.deviceSaves[0].body, { revision: 'revision-d', signals: { version: 1, inletPointId: null, outletPointId: null }, overrides: { ...empty(), inlet: { offset: [1, .25, -2], yawDegrees: 90 } } })
   assert.equal(f.calls.modelSaves.length, 0); assert.deepEqual(f.props.model, original); assert.equal(f.vm.dirty, false)
 })
 
@@ -276,7 +276,7 @@ test('device surface clicks directly calculate local offset and preserve default
   runtime.handlers.onSurface({ position: [13, 2.75, -1], direction: [-1, 0, 0] })
   assert.deepEqual(f.vm.row, { offset: [3, .75, -4], yawDegrees: 45 }); assert.deepEqual(f.vm.effectivePort.direction, direction)
   assert.equal(await f.vm.save(), true); assert.equal(f.calls.modelSaves.length, 0)
-  assert.deepEqual(f.calls.deviceSaves[0].body, { revision: 'revision-d', overrides: { ...empty(), inlet: { offset: [3, .75, -4], yawDegrees: 45 } } })
+  assert.deepEqual(f.calls.deviceSaves[0].body, { revision: 'revision-d', signals: { version: 1, inletPointId: null, outletPointId: null }, overrides: { ...empty(), inlet: { offset: [3, .75, -4], yawDegrees: 45 } } })
   assert.deepEqual(f.props.model.metadata.loadingPorts, ports())
   f.vm.setEnabled(false); await nextTick(); assert.deepEqual(f.vm.effectivePort, port()); assert.equal(runtime.picking, true)
   runtime.handlers.onSurface({ position: [11, 2.125, 3] }); assert.deepEqual(f.vm.row, { offset: [1, .125, 0], yawDegrees: 0 })
@@ -430,4 +430,54 @@ test('narrow editor containers stack full-width preview below controls even insi
   }
   assert.equal(values(rootStyle).height, undefined)
   assert.doesNotMatch(descriptor.template.content, /<details[^>]*\sopen(?:\s|>)/)
+})
+
+test('cart and fixed-device signal-only edits save on the existing port page without touching geometry or shared model', async t => {
+  for (const id of ['cart', 'fixed']) {
+    const signals = { version: 1, inletPointId: null, outletPointId: null }
+    const signalPoints = [{ id: 101, name: 'in', data_type: 'BOOL' }, { id: 102, name: 'out', data_type: 'BOOL' }]
+    const base = { ...ports(), outlet: port() }
+    const f = await fixture(t, { props: { device: device(id) },
+      loadDevice: () => Promise.resolve({ ...deviceResult(id, empty(), base), signals, signalPoints }),
+      saveDevice: (savedId, body) => Promise.resolve({ ...deviceResult(savedId, body.overrides, base), signals: body.signals, signalPoints, revision: 'saved-signals' }) })
+    const before = JSON.parse(JSON.stringify(f.vm.draft))
+    f.vm.signalDraft.inletPointId = '101'; f.vm.signalDraft.outletPointId = '102'
+    await nextTick(); assert.equal(f.vm.dirty, true); assert.equal(f.vm.saveProblem, '')
+    assert.equal(await f.exposed.savePending(), true)
+    assert.deepEqual(f.calls.deviceSaves[0].body, { revision: 'revision-' + id, overrides: before, signals: { version: 1, inletPointId: '101', outletPointId: '102' } })
+    assert.equal(f.calls.modelSaves.length, 0); assert.equal(f.vm.dirty, false)
+    f.vm.signalDraft.inletPointId = null; await nextTick(); f.exposed.discardPending(); assert.equal(f.vm.signalDraft.inletPointId, '101')
+  }
+})
+
+test('missing ports, removed points, duplicate direction signals and stale revisions cannot silently save', async t => {
+  const f = await fixture(t, { props: { device: device() }, loadDevice: () => Promise.resolve({ ...deviceResult('d'), signals: { version: 1, inletPointId: null, outletPointId: null }, signalPoints: [{ id: 101, name: 'in' }] }) })
+  f.vm.signalDraft.inletPointId = 'missing'; await nextTick(); assert.match(f.vm.saveProblem, /不可用/); assert.equal(await f.vm.save(), false)
+  f.vm.signalDraft.inletPointId = '101'; f.vm.signalDraft.outletPointId = '101'; await nextTick(); assert.ok(f.vm.saveProblem); assert.equal(await f.vm.save(), false)
+  f.vm.signalDraft.inletPointId = null; await nextTick(); assert.match(f.vm.saveProblem, /料口位置/); assert.equal(await f.vm.save(), false)
+  assert.equal(f.calls.deviceSaves.length, 0)
+})
+
+test('signal draft guards device changes and model-only mode has no site PLC binding form', async t => {
+  const f = await fixture(t, { props: { device: device() }, confirm: false })
+  f.vm.signalDraft.inletPointId = '101'; await nextTick(); await f.render({ device: device('other') })
+  assert.equal(f.vm.context.device.id, 'd'); assert.equal(f.vm.pendingContext.device.id, 'other')
+  assert.equal(await f.vm.save(), false); assert.equal(await f.exposed.canLeave(), false)
+  const template = descriptor.template.content
+  assert.match(template, /<fieldset v-if="instanceMode"[^>]*signal-fields/)
+  assert.match(template, /aria-label="进料取料信号"/); assert.match(template, /aria-label="出料送料信号"/)
+  assert.doesNotMatch(template, /速度|加速度|间距|严格同步/)
+})
+
+test('rotating simple-cart choice is explicit and saves without adding points, stations or physical parameters', async t => {
+  const initial = { version: 1, kind: 'single', presentation: 'model', turntableNodeName: '' }
+  const f = await fixture(t, { props: { device: device() },
+    loadDevice: () => Promise.resolve({ ...deviceResult('d'), cartSupported: true, cartTransfer: initial }),
+    saveDevice: (id, body) => Promise.resolve({ ...deviceResult(id, body.overrides), cartSupported: true, cartTransfer: body.cartTransfer, signals: body.signals }) })
+  assert.equal(f.vm.cartMode, 'single'); assert.equal(f.calls.deviceSaves.length, 0)
+  f.vm.cartMode = 'simple'; await nextTick(); assert.equal(f.vm.dirty, true); assert.equal(await f.vm.save(), true)
+  assert.deepEqual(f.calls.deviceSaves[0].body.cartTransfer, { version: 1, kind: 'rotating', presentation: 'simple', turntableNodeName: '' })
+  assert.equal(Object.hasOwn(f.calls.deviceSaves[0].body, 'movement'), false); assert.equal(f.calls.modelSaves.length, 0)
+  f.vm.cartMode = 'model'; await nextTick(); assert.match(f.vm.saveProblem, /上转台节点/); assert.equal(await f.vm.save(), false)
+  f.exposed.discardPending(); assert.equal(f.vm.cartMode, 'simple')
 })

@@ -34,7 +34,7 @@ async function readHistoryPoints(db, factoryId, deviceId = '') {
     const workshops = new Set((await db.all('SELECT id FROM workshops WHERE factory_id=?', [factoryId])).map(row => String(row.id)));
     const rows = await db.all(`SELECT p.id,p.device_id,p.name,p.label,p.history_mode,p.history_days,d.name AS device_name,
         d.line_id,d.instance_config,w.factory_id AS line_factory_id FROM data_points p JOIN devices d ON d.id=p.device_id
-        LEFT JOIN lines l ON l.id=d.line_id LEFT JOIN workshops w ON w.id=l.workshop_id
+        LEFT JOIN \`lines\` l ON l.id=d.line_id LEFT JOIN workshops w ON w.id=l.workshop_id
         ${deviceId ? 'WHERE d.id=?' : ''} ORDER BY d.name,p.id`, deviceId ? [deviceId] : []);
     return rows.filter(row => {
         // Match collector ownership: an explicit line wins over workshop hints.

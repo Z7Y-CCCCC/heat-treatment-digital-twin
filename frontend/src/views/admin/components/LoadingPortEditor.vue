@@ -4,11 +4,15 @@ import { adminApi } from '../../../config/factoryConfig.js'
 import { canAdminPage } from '../../../runtime/adminSession.js'
 import { LoadingPortPreview } from '../../../three/LoadingPortPreview.js'
 import { normalizeLoadingPorts, normalizeLoadingPortOverrides, validateLoadingPorts, validateLoadingPortOverrides, resolveLoadingPort } from '../../../../../shared/loadingPorts.mjs'
+import { normalizeLoadingPortSignals } from '../../../../../shared/loadingPortSignals.mjs'
+import { normalizeCartTransfer } from '../../../../../shared/cartTransferConfig.mjs'
 
 const props = defineProps({ model: { type: Object, required: true }, device: { type: Object, default: null }, confirm: { type: Function, default: async () => false } })
 const emit = defineEmits(['saved'])
 const viewport = ref(null), loaded = ref(null), draft = ref(null), savedSignature = ref(''), activeKind = ref('inlet')
 const loading = ref(false), saving = ref(false), error = ref(''), message = ref(''), conflict = ref(false)
+const signalDraft = ref(normalizeLoadingPortSignals(null)), savedSignals = ref(''), signalPoints = ref([])
+const cartDraft = ref(normalizeCartTransfer(null)), savedCart = ref('')
 const previewLoading = ref(false), previewReady = ref(false), previewError = ref(''), nodes = ref([]), nodeQuery = ref(''), selectedNode = ref(''), suggestion = ref(null)
 const context = ref(null), pendingContext = ref(null)
 let generation = 0, disposed = false, mounted = false, requestAbort, saveAbort, previewAbort, preview
@@ -18,7 +22,9 @@ const metadataOf = model => typeof model?.metadata === 'string' ? JSON.parse(mod
 const requestedContext = () => ({ model: props.model, device: props.device, key: `${props.model?.id || ''}:${props.device?.id || ''}` })
 const instanceMode = computed(() => !!context.value?.device)
 const editable = computed(() => canAdminPage(instanceMode.value ? 'devices' : 'models', 'edit'))
-const dirty = computed(() => !!draft.value && JSON.stringify(draft.value) !== savedSignature.value)
+const dirty = computed(() => !!draft.value && (JSON.stringify(draft.value) !== savedSignature.value || instanceMode.value && (JSON.stringify(signalDraft.value) !== savedSignals.value || JSON.stringify(cartDraft.value) !== savedCart.value)))
+const cartMode = computed({ get: () => cartDraft.value.kind === 'single' ? 'single' : cartDraft.value.presentation,
+  set: value => { if (canChange()) cartDraft.value = value === 'single' ? normalizeCartTransfer(null) : { version: 1, kind: 'rotating', presentation: value, turntableNodeName: '' } } })
 const busy = computed(() => loading.value || saving.value)
 const title = computed(() => context.value?.device?.name || context.value?.model?.name || context.value?.model?.id || '模型')
 const kindLabel = computed(() => activeKind.value === 'inlet' ? '进料口' : '出料口')
@@ -31,7 +37,19 @@ const basePorts = computed(() => {
 const basePort = computed(() => basePorts.value[activeKind.value])
 const picking = computed(() => !!draft.value && previewReady.value && !previewLoading.value && !busy.value && editable.value && !conflict.value && !pendingContext.value && (!instanceMode.value || !!basePort.value))
 const validation = computed(() => !draft.value ? { valid: false, errors: [] } : (instanceMode.value ? validateLoadingPortOverrides(draft.value) : validateLoadingPorts(draft.value)))
-const saveProblem = computed(() => validation.value.errors[0]?.message || '')
+const saveProblem = computed(() => {
+  if (validation.value.errors[0]?.message) return validation.value.errors[0].message
+  if (!instanceMode.value) return ''
+  try { normalizeCartTransfer(cartDraft.value) } catch (cause) { return cause.message }
+  if (cartDraft.value.kind === 'rotating' && !basePorts.value.inlet && !basePorts.value.outlet) return '请先设置小车料口位置'
+  try { normalizeLoadingPortSignals(signalDraft.value) } catch (cause) { return cause.message }
+  for (const kind of ['inlet', 'outlet']) {
+    const id = signalDraft.value[kind + 'PointId']
+    if (id && !signalPoints.value.some(point => String(point.id) === id)) return '所选信号已不可用，请重新选择'
+    if (id && !basePorts.value[kind]) return '请先设置对应料口位置'
+  }
+  return ''
+})
 const effectivePorts = computed(() => {
   if (!validation.value.valid || !loaded.value) return emptyConfig()
   try {
@@ -149,6 +167,7 @@ async function preparePreview() {
     const entries = await runtime.load(loaded.value.model, { signal: controller.signal })
     if (disposed || generation !== version || preview !== runtime || controller.signal.aborted) return
     nodes.value = entries || []; previewReady.value = true; runtime.setPorts(effectivePorts.value, suggestion.value, activeKind.value)
+    runtime.setCartTransfer?.(instanceMode.value ? cartDraft.value : null, effectivePorts.value)
   } catch (cause) {
     if (!disposed && generation === version && !controller.signal.aborted) { previewError.value = `三维预览不可用：${cause.message || cause}`; preview?.dispose(); preview = null }
   } finally { if (!disposed && generation === version && previewAbort === controller) previewLoading.value = false }
@@ -179,6 +198,8 @@ async function loadContext(target = requestedContext()) {
     if (disposed || generation !== version || controller.signal.aborted) return false
     const value = checkResponse(result, target)
     loaded.value = result; draft.value = value; savedSignature.value = JSON.stringify(value)
+    signalDraft.value = normalizeLoadingPortSignals(result.signals); savedSignals.value = JSON.stringify(signalDraft.value); signalPoints.value = result.signalPoints || []
+    cartDraft.value = normalizeCartTransfer(result.cartTransfer); savedCart.value = JSON.stringify(cartDraft.value)
     void preparePreview()
     return true
   } catch (cause) { if (!disposed && generation === version && !controller.signal.aborted) error.value = `读取配置失败：${cause.message || cause}`; return false }
@@ -186,19 +207,23 @@ async function loadContext(target = requestedContext()) {
 }
 
 async function save() {
-  if (busy.value || !editable.value || !loaded.value || !draft.value || !validation.value.valid || conflict.value) return false
+  if (busy.value || !editable.value || !loaded.value || !draft.value || !validation.value.valid || saveProblem.value || conflict.value || pendingContext.value) return false
   if (!dirty.value) return true
   const version = generation, target = context.value, submitted = clone(validation.value.normalized)
   saveAbort?.abort(); saveAbort = new AbortController()
   const controller = saveAbort
   saving.value = true; error.value = ''; message.value = ''
   try {
-    const body = { revision: loaded.value.revision, [target.device ? 'overrides' : 'ports']: submitted }
+    const body = { revision: loaded.value.revision, [target.device ? 'overrides' : 'ports']: submitted,
+      ...(target.device ? { signals: normalizeLoadingPortSignals(clone(signalDraft.value)) } : {}),
+      ...(target.device && loaded.value.cartSupported ? { cartTransfer: normalizeCartTransfer(clone(cartDraft.value)) } : {}) }
     const result = target.device ? await adminApi.saveDeviceLoadingPorts(target.device.id, body, { signal: controller.signal }) : await adminApi.saveModelLoadingPorts(target.model.id, body, { signal: controller.signal })
     if (disposed || generation !== version || controller.signal.aborted) return false
     const value = checkResponse(result, target)
     loaded.value = result; draft.value = value; savedSignature.value = JSON.stringify(value)
-    message.value = target.device ? '此设备的进出料口微调已保存，模型默认配置未改变。' : '模型进出料口默认配置已保存，设备将按默认值与各自微调计算。'
+    signalDraft.value = normalizeLoadingPortSignals(result.signals); savedSignals.value = JSON.stringify(signalDraft.value); signalPoints.value = result.signalPoints || []
+    cartDraft.value = normalizeCartTransfer(result.cartTransfer); savedCart.value = JSON.stringify(cartDraft.value)
+    message.value = '已保存'
     emit('saved', result)
     return true
   } catch (cause) {
@@ -218,6 +243,8 @@ async function save() {
 function discardPending() {
   if (saving.value) return false
   if (savedSignature.value) draft.value = JSON.parse(savedSignature.value)
+  if (savedSignals.value) signalDraft.value = JSON.parse(savedSignals.value)
+  if (savedCart.value) cartDraft.value = JSON.parse(savedCart.value)
   suggestion.value = null
   // Discarding a draft does not refresh its stale revision. Keep the conflict
   // recovery visible until an explicit reload succeeds.
@@ -256,6 +283,7 @@ watch(activeKind, () => { suggestion.value = null; message.value = ''; selectedN
 watch(selectedNode, id => preview?.selectNode(id))
 watch(picking, value => preview?.setPicking(value))
 watch([effectivePorts, suggestion, activeKind], () => preview?.setPorts(effectivePorts.value, suggestion.value, activeKind.value), { deep: true })
+watch([cartDraft, effectivePorts], () => preview?.setCartTransfer?.(instanceMode.value ? cartDraft.value : null, effectivePorts.value), { deep: true })
 onMounted(async () => { mounted = true; await nextTick(); if (loaded.value) void preparePreview() })
 onUnmounted(() => { disposed = true; generation++; requestAbort?.abort(); saveAbort?.abort(); previewAbort?.abort(); preview?.dispose(); preview = null })
 defineExpose({ canLeave, savePending: () => dirty.value ? save() : !busy.value, discardPending, busy })
@@ -264,7 +292,7 @@ defineExpose({ canLeave, savePending: () => dirty.value ? save() : !busy.value, 
 <template>
   <section class="loading-port-editor" aria-label="进出料口配置" :aria-busy="busy">
     <header class="editor-heading">
-      <div><h3>{{ title }} · {{ instanceMode ? '进出料口微调' : '进出料口（可选）' }}</h3><p>{{ instanceMode ? '只微调此设备，模型默认不变；没有交接对齐需求可以跳过。' : '需要小车或设备交接对齐时再设置；没有此需求可以跳过。' }}</p></div>
+      <div><h3>{{ title }} · {{ instanceMode ? '进出料口配置' : '进出料口（可选）' }}</h3><p>{{ instanceMode ? '料口位置与进出料信号' : '需要小车或设备交接对齐时再设置；没有此需求可以跳过。' }}</p></div>
       <span v-if="dirty" class="dirty-badge">未保存</span>
     </header>
     <p v-if="pendingContext" class="warning" role="alert">已选择另一个对象，但当前草稿尚未处理。此处仍显示 {{ title }} 的配置。<button type="button" :disabled="busy" @click="acceptPendingContext">放弃草稿并切换</button></p>
@@ -273,6 +301,12 @@ defineExpose({ canLeave, savePending: () => dirty.value ? save() : !busy.value, 
     <div v-else-if="!draft" class="initial-state"><span>配置暂不可用，请重试读取。</span></div>
     <div v-else class="editor-body">
       <div class="config-panel">
+        <fieldset v-if="instanceMode" class="port-fields signal-fields" :disabled="busy || !editable || conflict || !!pendingContext">
+          <label v-if="loaded.cartSupported">小车机构<select v-model="cartMode" aria-label="小车机构"><option value="single">单向小车</option><option value="simple">旋转小车 · 简模</option><option value="model">旋转小车 · 模型转台</option></select></label>
+          <label v-if="loaded.cartSupported && cartMode === 'model'">上转台节点<input v-model="cartDraft.turntableNodeName" list="turntable-node-options" aria-label="上转台节点" maxlength="512"><datalist id="turntable-node-options"><option v-for="node in nodes.filter(node => node.name)" :key="node.id" :value="node.name">{{ node.path }}</option></datalist></label>
+          <label>进料／取料信号<select v-model="signalDraft.inletPointId" aria-label="进料取料信号"><option :value="null">不绑定</option><option v-for="point in signalPoints" :key="point.id" :value="String(point.id)">{{ point.label || point.name }} · {{ point.id }}</option><option v-if="signalDraft.inletPointId && !signalPoints.some(point => String(point.id) === signalDraft.inletPointId)" :value="signalDraft.inletPointId">原点位不可用</option></select></label>
+          <label>出料／送料信号<select v-model="signalDraft.outletPointId" aria-label="出料送料信号"><option :value="null">不绑定</option><option v-for="point in signalPoints" :key="point.id" :value="String(point.id)">{{ point.label || point.name }} · {{ point.id }}</option><option v-if="signalDraft.outletPointId && !signalPoints.some(point => String(point.id) === signalDraft.outletPointId)" :value="signalDraft.outletPointId">原点位不可用</option></select></label>
+        </fieldset>
         <nav class="port-tabs" aria-label="选择进出料口">
           <button v-for="kind in ['inlet','outlet']" :key="kind" type="button" :disabled="busy" :class="{ active: activeKind === kind, outlet: kind === 'outlet' }" :aria-pressed="activeKind === kind" @click="activeKind = kind"><strong>{{ kind === 'inlet' ? '进料口' : '出料口' }}</strong><small>{{ instanceMode ? basePorts[kind] ? draft[kind] ? '设备已微调' : '沿用模型默认' : '未设置 · 可跳过' : draft[kind] ? '已设置' : '未设置 · 可跳过' }}</small></button>
         </nav>
@@ -314,6 +348,7 @@ defineExpose({ canLeave, savePending: () => dirty.value ? save() : !busy.value, 
 </template>
 
 <style scoped>
+.signal-fields{padding-bottom:18px!important;margin-bottom:18px!important;border-bottom:1px solid #dfe6ef!important}
 .loading-port-editor{display:flex;flex-direction:column;min-width:0;min-height:0;color:#24364b;background:#fff;font-size:calc(15px * var(--admin-font-scale,1));line-height:1.6;container-type:inline-size;container-name:loading-port-editor}
 .editor-heading{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:20px;border-bottom:1px solid #dfe6ef;flex-wrap:wrap}
 .editor-heading h3{margin:0 0 6px;font-size:calc(18px * var(--admin-font-scale,1));color:#24364b}

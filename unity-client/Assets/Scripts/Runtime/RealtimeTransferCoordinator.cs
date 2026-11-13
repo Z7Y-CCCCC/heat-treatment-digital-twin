@@ -46,12 +46,15 @@ namespace HeatTreatment.DigitalTwin.Runtime
         private IReadOnlyDictionary<string, Transform> _roots;
         private IReadOnlyDictionary<string, MobileDeviceMotion> _motions;
         private readonly BidirectionalTransferRuntime _bidirectional=new BidirectionalTransferRuntime();
+        private readonly SimpleMaterialTransferRuntime _simpleMaterial = new SimpleMaterialTransferRuntime();
 
         public void Configure(IEnumerable<DeviceDto> devices, IEnumerable<ModelAssetDto> models,
             IReadOnlyDictionary<string, Transform> roots, IReadOnlyDictionary<string, MobileDeviceMotion> motions, IEnumerable<LineDto> lines = null)
         {
             _roots = roots; _motions = motions; _devices.Clear(); _movingDevices.Clear(); _inletPorts.Clear(); _outletPorts.Clear();
-            _bidirectional.Configure(devices,models,roots,motions,lines);
+            var deviceRows = (devices ?? Enumerable.Empty<DeviceDto>()).ToArray();
+            _simpleMaterial.Configure(deviceRows, models, roots, motions, transform);
+            _bidirectional.Configure(deviceRows,models,roots,motions,lines);
             _lineLayouts.Clear();
             foreach (var line in lines ?? Enumerable.Empty<LineDto>())
                 if (line != null && !string.IsNullOrEmpty(line.Id)) _lineLayouts[line.Id] = line.LayoutObject;
@@ -71,6 +74,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 }
                 var animation = device.InstanceConfigObject["animationBindings"] as JObject;
                 var config = animation?["transferLink"] as JObject;
+                if (SimpleMaterialTransferRuntime.UsesSimpleTransfer(device)) continue;
                 if (config?.Value<bool?>("enabled") != true) continue;
                 if(config["cycle"]?.Value<bool?>("enabled")==true)continue;
                 retained.Add(device.Id);
@@ -179,12 +183,14 @@ namespace HeatTreatment.DigitalTwin.Runtime
         private static bool FinitePositive(float value) => float.IsFinite(value) && value > 0;
         public void ApplyInputs(string deviceId, JObject frame)
         {
+            _simpleMaterial.Receive(deviceId, frame, Time.realtimeSinceStartupAsDouble, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
             _bidirectional.ApplyInputs(deviceId,frame);
             if (_links.TryGetValue(deviceId ?? "", out var link))
                 link.Presence.Receive(frame, link.PresenceBinding, Time.realtimeSinceStartupAsDouble, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
         }
         public void SuspendInputs()
         {
+            _simpleMaterial.Suspend();
             _bidirectional.Suspend();
             foreach (var link in _links.Values) { link.Presence.Suspend(); Hide(link, "采集连接中断"); }
         }
@@ -220,6 +226,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
         }
         public void Advance(float deltaTime, double now)
         {
+            _simpleMaterial.Advance(deltaTime, now);
             _bidirectional.Advance(deltaTime,now);
             foreach (var link in _links.Values)
             {
@@ -301,6 +308,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
             if (link.Payload != null) { if (Application.isPlaying) Destroy(link.Payload); else DestroyImmediate(link.Payload); }
             if (link.Material != null) { if (Application.isPlaying) Destroy(link.Material); else DestroyImmediate(link.Material); }
         }
-        private void OnDestroy() { _bidirectional.Dispose();foreach (var link in _links.Values) DisposeLink(link); _links.Clear(); }
+        public JObject SimpleMaterialDiagnostics() => _simpleMaterial.Describe();
+        private void OnDestroy() { _simpleMaterial.Dispose();_bidirectional.Dispose();foreach (var link in _links.Values) DisposeLink(link); _links.Clear(); }
     }
 }

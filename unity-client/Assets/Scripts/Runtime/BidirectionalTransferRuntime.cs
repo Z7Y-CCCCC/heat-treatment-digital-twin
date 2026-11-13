@@ -42,6 +42,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
             Dispose();var deviceMap=(devices??Enumerable.Empty<DeviceDto>()).Where(d=>d!=null&&!string.IsNullOrEmpty(d.Id)).GroupBy(d=>d.Id).ToDictionary(g=>g.Key,g=>g.First());var modelMap=(models??Enumerable.Empty<ModelAssetDto>()).Where(m=>m!=null&&!string.IsNullOrEmpty(m.Id)).GroupBy(m=>m.Id).ToDictionary(g=>g.Key,g=>g.First());
             var lineMap=(lines??Enumerable.Empty<LineDto>()).Where(l=>l!=null&&!string.IsNullOrEmpty(l.Id)).GroupBy(l=>l.Id).ToDictionary(g=>g.Key,g=>g.First().LayoutObject);
             foreach(var source in deviceMap.Values){
+                if(SimpleMaterialTransferRuntime.UsesSimpleTransfer(source))continue;
                 var a=source.InstanceConfigObject["animationBindings"] as JObject;var c=a?["transferLink"] as JObject;var cycle=c?["cycle"] as JObject;
                 if(c?.Value<bool?>("enabled")!=true||cycle?.Value<bool?>("enabled")!=true)continue;
                 Link link=null;

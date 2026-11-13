@@ -8,7 +8,7 @@ const text = value => typeof value === 'string' && value.length > 0 && value.len
 const own = (value, key) => Object.prototype.hasOwnProperty.call(value, key);
 const operators = new Set(['eq', 'ne', 'gt', 'gte', 'lt', 'lte']);
 const numericOperators = new Set(['gt', 'gte', 'lt', 'lte']);
-const MAX_DECLARATIONS = 106;
+const MAX_DECLARATIONS = 108;
 const pointId = value => {
     const id = typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? String(value) : value;
     return text(id) && id.length <= 120 ? id : '';
@@ -84,12 +84,22 @@ function deriveMotionSemantics(instance, modelMetadata = null, pointContext = nu
                 const position = pointId(movement.currentPositionPointId ?? movement.current_position_point_id);
                 if (!position || !Array.isArray(movement.stations)) throw Error('Missing configured station point/values');
                 add({ key: 'movement:station', kind: 'station', source: { pointId: position }, values: movement.stations.map(station => station?.value) });
+                if (movement.displayMode === 'simple') {
+                    const arrival = pointId(movement.arrivalSignalPointId);
+                    if (!arrival || arrival === position || movement.stationInputMeaning !== 'target') throw Error('Invalid simple arrival signal');
+                    add({ key: 'movement:arrival-signal', kind: 'condition', source: { pointId: arrival }, operator: 'eq', value: true, hysteresis: 0 });
+                }
                 if (movement.arrivalPositionPointId) {
                     const arrival = pointId(movement.arrivalPositionPointId);
                     if (!arrival || arrival === position || !start || movement.stationInputMeaning !== 'target') throw Error('Invalid independent arrival observation');
                     add({ key: 'movement:arrival', kind: 'station', source: { pointId: arrival }, values: movement.stations.map(station => station?.value) });
                 }
             }
+        }
+        if (instance.loadingPortSignals != null) {
+            const signals = require('./loadingPortSignals.mjs').normalizeLoadingPortSignals(instance.loadingPortSignals);
+            for (const kind of ['inlet', 'outlet']) if (signals[kind + 'PointId'])
+                add({ key: 'loading-port:' + kind, kind: 'condition', source: { pointId: signals[kind + 'PointId'] }, operator: 'eq', value: true, hysteresis: 0 });
         }
         const hasRuntimeConfig = own(instance, 'animationBindings');
         if (hasRuntimeConfig && !object(instance.animationBindings)) throw Error('Invalid animation configuration');

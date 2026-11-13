@@ -71,7 +71,12 @@ namespace HeatTreatment.DigitalTwin.Backend
             if (!SameModels(before, after)) return true;
             var previous = ModelHotRefreshPolicy.Devices(before).ToDictionary(row => row.Id, StringComparer.Ordinal);
             return ModelHotRefreshPolicy.Devices(after).Any(row => !previous.TryGetValue(row.Id, out var prior)
-                || !JToken.DeepEquals(prior.InstanceConfigObject["animationBindings"], row.InstanceConfigObject["animationBindings"]));
+                || !JToken.DeepEquals(prior.InstanceConfigObject["animationBindings"], row.InstanceConfigObject["animationBindings"])
+                || (prior.InstanceConfigObject["animationBindings"]?["transferLink"]?["cycle"]?.Value<bool?>("enabled") == true
+                    && HasLoadingSignals(prior) != HasLoadingSignals(row)));
         }
+        private static bool HasLoadingSignals(DeviceDto device) => device.InstanceConfigObject["cartTransfer"]?["kind"]?.Value<string>() == "rotating"
+            || device.InstanceConfigObject["loadingPortSignals"] is JObject signals
+                && signals.Value<int?>("version") == 1 && new[] { "inletPointId", "outletPointId" }.Any(key => signals[key]?.Type == JTokenType.String && !string.IsNullOrWhiteSpace(signals.Value<string>(key)));
     }
 }

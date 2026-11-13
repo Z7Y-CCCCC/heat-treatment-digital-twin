@@ -218,7 +218,7 @@ namespace HeatTreatment.DigitalTwin.Backend
             if (value == null || !Only(value, "version", "ready", "generation", "revision", "factoryId", "bindings")
                 || !Numeric(value["version"]) || value.Value<double>("version") != 1 || value["ready"]?.Type != JTokenType.Boolean || !value.Value<bool>("ready")
                 || !Numeric(value["generation"]) || !Number(value["generation"], out var generation) || generation < 0 || generation > 9007199254740991d || generation != Math.Truncate(generation)
-                || !Text(value["revision"], 128, true) || !Text(value["factoryId"], 128, true) || !(value["bindings"] is JArray bindings) || bindings.Count > 106) return false;
+                || !Text(value["revision"], 128, true) || !Text(value["factoryId"], 128, true) || !(value["bindings"] is JArray bindings) || bindings.Count > 108) return false;
             var keys = new HashSet<string>(StringComparer.Ordinal);
             foreach (var binding in bindings) if (!ValidDeclaration(binding) || !keys.Add(binding.Value<string>("key"))) return false;
             return true;

@@ -1,7 +1,6 @@
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { canAdminPage } from '../../../runtime/adminSession.js'
-import { lineSceneUnitsPerMeter } from '../../../../../shared/lineRailSpacing.mjs'
 import { LINE_PLACEMENT_TEMPLATES, canMoveLineStructure } from '../../../../../shared/linePlacementTemplate.mjs'
 
 const props = defineProps({
@@ -23,7 +22,6 @@ const label = line => `${props.workshops.find(ws => ws.id === line?.workshop_id)
 const filteredLines = computed(() => props.lines.filter(line => `${label(line)} ${line.id}`.toLowerCase().includes(lineQuery.value.trim().toLowerCase())))
 const items = computed(() => popup.value === 'rail' ? props.layout.rails : props.layout.lanes)
 const itemLabel = computed(() => popup.value === 'rail' ? '小车导轨' : '设备线')
-const layoutUnits = computed(() => lineSceneUnitsPerMeter(props.layout))
 const savedItemIds = computed(() => {
   try {
     const layout = JSON.parse(props.savedSnapshot)
@@ -98,11 +96,6 @@ async function changeSpacing(id, field, event) {
   await nextTick()
   const current = props.layout.rails.find(item => item.id === id)
   if (current) event.target.value = current.spacing?.[field] ?? ''
-}
-async function changeLayoutUnits(event) {
-  if (!props.busy && !props.creating && canEdit.value && selected.value) emit('change-rail-spacing', { railId: '', field: 'sceneUnitsPerMeter', value: event.target.value })
-  await nextTick()
-  event.target.value = layoutUnits.value
 }
 function saveLayout() {
   if (canEdit.value && !props.busy && !props.creating && !props.layoutSaving && props.layoutDirty && selected.value) emit('save-layout')
@@ -179,7 +172,6 @@ defineExpose({ closeCreation: () => { modal.value = ''; modalReturnFocus?.focus?
       </div>
       </details>
       <div class="line-spacing-actions">
-        <label class="structure-field layout-units"><span>产线场景单位 / 米</span><input :value="layoutUnits" aria-label="产线场景单位每米" class="input" type="number" min="0" max="100000" step="any" :disabled="!canEdit || busy || creating" @change="changeLayoutUnits($event)" /></label>
         <span class="line-spacing-save-state" role="status">{{ layoutSaving ? '保存中…' : layoutDirty ? '有未保存修改' : '已保存' }}</span>
         <button type="button" class="btn btn-primary btn-sm" aria-label="保存设备线与轨道设置" :disabled="!canEdit || busy || creating || layoutSaving || !layoutDirty" @click="saveLayout">{{ layoutSaving ? '保存中…' : '保存产线结构' }}</button>
       </div>
@@ -249,7 +241,6 @@ svg { flex-shrink:0; width:16px; height:16px; fill:none; stroke:currentColor; st
 .rail-spacing-name { align-self:center; overflow:hidden; text-overflow:ellipsis; color:#52687d; }
 .rail-spacing-row .input { box-sizing:border-box; width:100%; min-width:0; }
 .line-spacing-actions { display:flex; align-items:center; flex-wrap:wrap; gap:10px; }
-.line-spacing-actions .layout-units { flex:0 1 340px; margin:0; }
 .line-spacing-save-state { margin-left:auto; font-size:calc(12px * var(--admin-font-scale,1)); }
 .structure-pill { display:flex; align-items:center; gap:5px; min-height:34px; padding:5px 10px; color:#35566c; background:linear-gradient(#fff,#edf2f7); border:1px solid #c2cedb; border-bottom-width:2px; border-radius:999px; box-shadow:0 2px 4px #22385816,inset 0 1px #fff; font:inherit; font-weight:650; cursor:pointer; transition:box-shadow .15s,background .15s; }
 .structure-pill:hover:not(:disabled),.structure-pill[aria-expanded=true] { color:#2457a6; background:#edf4ff; border-color:#8bacdc; box-shadow:0 3px 9px #2457a622; }
@@ -277,8 +268,6 @@ svg { flex-shrink:0; width:16px; height:16px; fill:none; stroke:currentColor; st
 .new-item-corner > span { position:absolute; top:7px; left:-16px; width:65px; text-align:center; transform:rotate(-45deg); background:#25875d; color:#fff; font-size:10px; line-height:17px; letter-spacing:1px; }
 .structure-row:focus-visible { outline:2px solid #4389e9; outline-offset:2px; }
 .structure-field,.line-create-row label { display:grid; gap:6px; min-width:0; color:#65738a; font-size:calc(12px * var(--admin-font-scale,1)); }
-.layout-units { grid-template-columns:minmax(150px,1fr) 100px; align-items:center; max-width:320px; margin-bottom:12px; }
-.layout-units input { box-sizing:border-box; width:100%; min-width:0; }
 .structure-row input { box-sizing:border-box; width:100%; min-width:0; padding:6px 8px; }
 .structure-row-actions { display:flex; align-items:center; gap:4px; }
 .line-empty { color:#8995a6; margin:16px 6px; }

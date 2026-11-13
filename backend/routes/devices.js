@@ -13,6 +13,7 @@ const { validateMovementConfig, validateMovementSources } = require('../services
 const { assertDeviceLineUnits, loadDeviceLineContext } = require('../services/deviceLineUnits');
 const { loadDeviceLoadingPorts, publicDeviceLoadingPorts, saveDeviceLoadingPorts, normalizeInstanceLoadingPorts } = require('../services/loadingPorts');
 const { saveLoadingAlignment } = require('../services/deviceLoadingAlignment');
+const { validateLoadingPortSignalSources } = require('../services/loadingPortSignals');
 
 router.put('/loading-alignment', async (req, res) => {
     try {
@@ -37,6 +38,7 @@ router.put('/:id/loading-ports', async (req, res) => {
             return saveDeviceLoadingPorts(tx, loaded, req.body, req.factoryId, getDbStatus().type);
         });
         broadcastDeviceConfigurationChanged(saved.device.id, saved.instance);
+        if (Object.hasOwn(req.body, 'signals')) restartDataEngineSoon('update loading port signals', req.factoryId);
         res.json(publicDeviceLoadingPorts(saved, publicDevice));
     } catch (error) { res.status(error.statusCode || 400).json({ error: error.message, code: error.code }); }
 });
@@ -394,6 +396,7 @@ router.post('/', async (req, res) => {
         const normalizedOptions = normalizePlcOptionsValue(protocol, plc_options);
         await db.transaction(async tx => {
         await assertDeviceLineUnits(tx, { id, name, line_id }, instance_config, req.factoryId);
+        if (parseJson(instance_config).loadingPortSignals != null) await validateLoadingPortSignalSources(tx, { id }, parseJson(instance_config).loadingPortSignals);
         await tx.run(`INSERT INTO devices (
             id, name, line_id, model_type, model_file, template_id, instance_config,
             pos_x, pos_y, pos_z, rotation_y, scale, coordinate_space, sort_order,
@@ -481,6 +484,7 @@ router.put('/:id', async (req, res) => {
 
         await db.transaction(async tx => {
         await assertDeviceLineUnits(tx, { ...existing, line_id: nextLineId, name }, nextInstanceConfig, req.factoryId);
+        if (parseJson(nextInstanceConfig).loadingPortSignals != null) await validateLoadingPortSignalSources(tx, existing, parseJson(nextInstanceConfig).loadingPortSignals);
         await tx.run(`UPDATE devices SET name=?, line_id=?, model_type=?, model_file=?,
             template_id=?, instance_config=?, pos_x=?, pos_y=?, pos_z=?,
             rotation_y=?, scale=?, coordinate_space=?, sort_order=?, plc_enabled=?, plc_protocol=?, plc_ip=?,

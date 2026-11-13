@@ -11,6 +11,18 @@ export function isActualMovingFeedback(point, deviceId) {
         && (point?.device_id === undefined || String(point.device_id) === String(deviceId))
 }
 
+export function simpleMotionError(movement, points, deviceId) {
+    if (movement?.displayMode !== 'simple') return ''
+    if (movement.valueMode !== 'station' || movement.stationInputMeaning !== 'target') return '简易显示需要目标工位编号'
+    if (movement.enabled && !String(movement.currentPositionPointId || '').trim()) return '请选择 PLC 目标工位编号点位'
+    if (movement.enabled && !String(movement.arrivalSignalPointId || '').trim()) return '请选择本设备的到位 BOOL 信号'
+    if (movement.arrivalSignalPointId && points !== undefined) {
+        const point = points.find(row => String(row.id) === String(movement.arrivalSignalPointId))
+        if (!point || !isActualMovingFeedback(point, deviceId)) return '到位信号必须是本设备的只读 BOOL'
+    }
+    return ''
+}
+
 export function lastConfirmedMotionError(movement, points, deviceId) {
     if (!isLastConfirmedMotion(movement)) return ''
     if (movement.valueMode !== 'station') return '最后到位工位只适用于工位编号模式'

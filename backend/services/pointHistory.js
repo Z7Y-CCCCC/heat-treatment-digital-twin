@@ -22,25 +22,27 @@ function queryRange(input) {
     if(!Number.isInteger(limit) || limit<20 || limit>5000)throw Error('绘制点数须在 20～5000 之间');
     return {from,to,limit};
 }
-// Window functions retain actual timestamps/values, first/last samples, extrema
-// and outage gaps. Only the returned drawing is reduced; raw rows are untouched.
+// Bucket representatives work on MySQL 5.7 too (no CTE/window functions).
+// Both queries return bounded drawing data; full raw rows stay untouched.
 async function trendHistory(db, scope, input) {
     const {from,to,limit}=queryRange(input),width=Math.max(1,Math.ceil((to-from)/(Math.floor(limit/5)-1)));
-    const rows=await db.all(`WITH samples AS (
-        SELECT sampled_at, value_number, quality, source_mode, sample_key,
-            FLOOR((sampled_at - ?) / ?) AS bucket FROM point_samples
-        WHERE factory_id=? AND device_id=? AND point_id=? AND source_mode=? AND sampled_at>=? AND sampled_at<=?
-            AND (retention_until IS NULL OR retention_until>=?)
-    ), ranked AS (
-        SELECT *, ROW_NUMBER() OVER(PARTITION BY bucket ORDER BY sampled_at, sample_key) AS first_row,
-            ROW_NUMBER() OVER(PARTITION BY bucket ORDER BY sampled_at DESC, sample_key) AS last_row,
-            ROW_NUMBER() OVER(PARTITION BY bucket ORDER BY CASE WHEN value_number IS NULL THEN 1 ELSE 0 END, value_number, sampled_at) AS min_row,
-            ROW_NUMBER() OVER(PARTITION BY bucket ORDER BY CASE WHEN value_number IS NULL THEN 1 ELSE 0 END, value_number DESC, sampled_at) AS max_row,
-            ROW_NUMBER() OVER(PARTITION BY bucket ORDER BY CASE WHEN quality='good' THEN 1 ELSE 0 END, sampled_at) AS fault_row
-        FROM samples
-    ) SELECT sampled_at, value_number, quality, source_mode FROM ranked
-      WHERE first_row=1 OR last_row=1 OR min_row=1 OR max_row=1 OR (fault_row=1 AND quality<>'good')
-      ORDER BY sampled_at`,[from,width,scope.factoryId,scope.deviceId,scope.pointId,scope.sourceMode,from,to,Date.now()]);
+    const filter='factory_id=? AND device_id=? AND point_id=? AND source_mode=? AND sampled_at>=? AND sampled_at<=? AND (retention_until IS NULL OR retention_until>=?)';
+    const params=[scope.factoryId,scope.deviceId,scope.pointId,scope.sourceMode,from,to,Date.now()];
+    const representatives=await db.all(`SELECT
+        MIN(CASE WHEN s.sampled_at=b.first_time THEN s.sample_key END) AS first_key,
+        MIN(CASE WHEN s.sampled_at=b.last_time THEN s.sample_key END) AS last_key,
+        MIN(CASE WHEN s.value_number=b.min_value THEN s.sample_key END) AS min_key,
+        MIN(CASE WHEN s.value_number=b.max_value THEN s.sample_key END) AS max_key,
+        MIN(CASE WHEN s.quality<>'good' AND s.sampled_at=b.fault_time THEN s.sample_key END) AS fault_key
+      FROM (SELECT sample_key,sampled_at,value_number,quality,FLOOR((sampled_at-?)/?) AS bucket FROM point_samples WHERE ${filter}) s
+      JOIN (SELECT FLOOR((sampled_at-?)/?) AS bucket,MIN(sampled_at) AS first_time,MAX(sampled_at) AS last_time,
+        MIN(value_number) AS min_value,MAX(value_number) AS max_value,MIN(CASE WHEN quality<>'good' THEN sampled_at END) AS fault_time
+        FROM point_samples WHERE ${filter} GROUP BY FLOOR((sampled_at-?)/?)) b ON s.bucket=b.bucket
+      GROUP BY s.bucket`,[from,width,...params,from,width,...params,from,width]);
+    const keys=[...new Set(representatives.flatMap(row=>['first_key','last_key','min_key','max_key','fault_key'].map(key=>row[key]).filter(Boolean)))];
+    if(keys.length>limit)throw Error('历史抽样结果超过绘制上限');
+    const rows=keys.length?await db.all(`SELECT sampled_at,value_number,quality,source_mode FROM point_samples
+      WHERE sample_key IN (${keys.map(()=>'?').join(',')}) AND ${filter} ORDER BY sampled_at,sample_key`,[...keys,...params]):[];
     return {rows:rows.map(row=>({time:Number(row.sampled_at),timestamp:Number(row.sampled_at),value:row.quality==='good'?row.value_number:null,quality:row.quality,sourceMode:row.source_mode})),
         from,to,retention:'configured',drawingOnly:true,bucketMs:width};
 }

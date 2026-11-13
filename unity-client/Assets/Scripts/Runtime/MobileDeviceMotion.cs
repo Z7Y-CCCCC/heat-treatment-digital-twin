@@ -24,6 +24,10 @@ namespace HeatTreatment.DigitalTwin.Runtime
         private string _startActionPointId = string.Empty;
         private string _arrivalPointId = string.Empty;
         private readonly MobileMotionSignalState _arrivalSignal = new MobileMotionSignalState();
+        private bool _simpleDisplay, _arrivalSmoothing = true;
+        private SimpleStationMotionState _simpleSignal;
+        private string _simpleIdentity;
+        private double _visualDurationSeconds;
         private string _valueMode = "normalized";
         private float _valueMin;
         private float _valueMax = 100f;
@@ -89,6 +93,15 @@ namespace HeatTreatment.DigitalTwin.Runtime
             _currentPointId = ReadId(movement?["currentPositionPointId"] ?? movement?["current_position_point_id"]);
             _startActionPointId = ReadId(movement?["startActionPointId"] ?? movement?["start_action_point_id"]);
             _arrivalPointId = ReadId(movement?["arrivalPositionPointId"]);
+            _simpleDisplay = movement?.Value<string>("displayMode") == "simple";
+            _arrivalSmoothing = movement?.Value<bool?>("arrivalSmoothing") ?? true;
+            var simpleIdentity = device?.Id + "|" + _currentPointId + "|" + ReadId(movement?["arrivalSignalPointId"]);
+            simpleIdentity += "|" + string.Join("|", (device?.DataPoints ?? new List<DataPointDto>())
+                .Where(point => point != null && (point.Id.ToString(CultureInfo.InvariantCulture) == _currentPointId || point.Id.ToString(CultureInfo.InvariantCulture) == ReadId(movement?["arrivalSignalPointId"])))
+                .Select(point => point.Id + ":" + point.DeviceId + ":" + point.Category + ":" + point.ValueRole + ":" + point.Name + ":" + point.DataType + ":" + point.AccessType));
+            if (!preserveCurrentPosition || _simpleIdentity != simpleIdentity || _simpleSignal == null)
+                _simpleSignal = new SimpleStationMotionState(device, _currentPointId, ReadId(movement?["arrivalSignalPointId"]));
+            _simpleIdentity = simpleIdentity;
             _valueMode = string.Equals(movement?.Value<string>("valueMode"), "range", StringComparison.OrdinalIgnoreCase)
                 ? "range"
                 : string.Equals(movement?.Value<string>("valueMode"), "station", StringComparison.OrdinalIgnoreCase)
@@ -108,7 +121,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 : string.Equals(speedMode.ToString(), "auto", StringComparison.OrdinalIgnoreCase) ? "auto" : "fixed";
             _maxSpeed = Mathf.Max(0.01f, ReadNumber(movement?["maxSpeed"] ?? movement?["max_speed"], 2f));
             _acceleration = Mathf.Max(0.01f, ReadNumber(movement?["acceleration"], 1f));
-            if (!SceneUnitPolicy.TryResolve(movement, lineLayout, out _sceneUnitsPerMeter, out var unitReason))
+            if (!_simpleDisplay && !SceneUnitPolicy.TryResolve(movement, lineLayout, out _sceneUnitsPerMeter, out var unitReason))
             { _enabled = false; _positionSignal.Suspend(unitReason); }
             _motionSpeed = 0f;
             _start = ReadVector(movement?["start"] as JObject, fallback);
@@ -171,6 +184,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
             _latestFrame = deviceData;
             if (!_enabled) return;
             if (deviceData == null || string.IsNullOrWhiteSpace(_currentPointId)) { SuspendInputs("位置采集数据未配置或无效"); return; }
+            if (_simpleDisplay) { ApplySimpleRealtime(deviceData); return; }
             // Independent endpoint observation is never inferred from target
             // completion. A held last-arrival code only confirms docking when
             // its own fresh, owned BOOL actual-moving feedback is false.
@@ -261,6 +275,16 @@ namespace HeatTreatment.DigitalTwin.Runtime
         public void AdvanceMotion(float deltaTime, double now)
         {
             if (!_enabled) return;
+            if (_simpleDisplay)
+            {
+                if (!_simpleSignal.Advance(now, _staleMs)) { StopAtCurrentPose(); return; }
+                if (!_hasTarget) return;
+                var progress = Mathf.Clamp01((float)((now - _interpolationStartedAt) / Math.Max(.001, _visualDurationSeconds)));
+                var eased = progress * progress * (3f - 2f * progress);
+                transform.localPosition = Vector3.Lerp(_interpolationStart, _targetPosition, eased);
+                if (progress >= 1) { transform.localPosition = _targetPosition; _hasTarget = false; }
+                return;
+            }
             if (UsesIndependentArrival) _arrivalSignal.Advance(now, _staleMs, true);
             if (!_positionSignal.Advance(now, _staleMs, !string.IsNullOrWhiteSpace(_startActionPointId)))
             { StopAtCurrentPose(); return; }
@@ -284,22 +308,45 @@ namespace HeatTreatment.DigitalTwin.Runtime
 
         public void SuspendInputs(string reason = "采集连接中断")
         {
-            _positionSignal.Suspend(reason); _arrivalSignal.Suspend(reason); StopAtCurrentPose();
+            _positionSignal.Suspend(reason); _arrivalSignal.Suspend(reason); _simpleSignal?.Suspend(reason); StopAtCurrentPose();
         }
+        private void ApplySimpleRealtime(JObject frame)
+        {
+            var wasUsable = _simpleSignal.Usable;
+            if (!_simpleSignal.Receive(frame, Time.realtimeSinceStartupAsDouble, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), _staleMs, SameRotatingDock))
+            { StopAtCurrentPose(); return; }
+            if (!TryResolveStationPosition((float)_simpleSignal.Value, out var position)) { SuspendInputs("目标工位编号未配置"); return; }
+            if (_simpleSignal.TargetChanged || !_hasPositionSample || !wasUsable || _simpleSignal.ArrivalChanged)
+            {
+                _targetPosition = position;
+                _interpolationStart = transform.localPosition;
+                _interpolationStartedAt = Time.realtimeSinceStartupAsDouble;
+                _visualDurationSeconds = _simpleSignal.Confirmed ? (_arrivalSmoothing ? SimpleStationMotionState.ArrivalSeconds : 0) : SimpleStationMotionState.TravelSeconds;
+                _hasTarget = (position - transform.localPosition).sqrMagnitude > .00000001f;
+                if (_simpleSignal.Confirmed && !_arrivalSmoothing) { transform.localPosition = position; _hasTarget = false; }
+                _hasPositionSample = true; _snapNextPositionSample = false;
+                ShowMotionIndicator();
+            }
+        }
+        private bool SameRotatingDock(double before, double after) => CartTransferPresentation.IsRotating(_device) && !_hasTarget
+            && TryResolveStationPosition((float)before, out var prior) && TryResolveStationPosition((float)after, out var next)
+            && (prior - next).sqrMagnitude <= .00000001f && (transform.localPosition - prior).sqrMagnitude <= .00000001f;
+        private bool HasSimpleDock => _simpleDisplay && _simpleSignal != null && _simpleSignal.Confirmed && !_hasTarget
+            && TryResolveStationPosition((float)_simpleSignal.Value, out var position) && (transform.localPosition - position).sqrMagnitude <= .00000001f;
         private bool UsesIndependentArrival => _stationMode && _stationInputMeaning == StationInputMeaning.Target
             && !string.IsNullOrWhiteSpace(_arrivalPointId) && _arrivalPointId != _currentPointId && !string.IsNullOrWhiteSpace(_startActionPointId);
         private bool HasIndependentDock => UsesIndependentArrival && _arrivalSignal.HasConfirmedPosition
             && TryResolveStationPosition((float)_arrivalSignal.Value, out var position) && (transform.localPosition - position).sqrMagnitude <= .00000001f;
-        public bool HasFreshPosition => _enabled && (_positionSignal.Usable && _positionSignal.HasSample || HasIndependentDock);
-        public bool HasConfirmedPosition => _enabled && (UsesIndependentArrival ? HasIndependentDock : _positionSignal.HasConfirmedPosition);
+        public bool HasFreshPosition => _enabled && (_simpleDisplay ? _simpleSignal?.Usable == true : _positionSignal.Usable && _positionSignal.HasSample || HasIndependentDock);
+        public bool HasConfirmedPosition => _enabled && (_simpleDisplay ? HasSimpleDock : UsesIndependentArrival ? HasIndependentDock : _positionSignal.HasConfirmedPosition);
         // A continuous position is a measured source pose even while moving.
         // Target commands and legacy station estimates must never manufacture
         // a cargo location between physically unobserved stations.
-        public bool HasReliableSourcePose => HasIndependentDock || HasFreshPosition && (!_stationMode
+        public bool HasReliableSourcePose => _simpleDisplay ? _enabled && HasSimpleDock : HasIndependentDock || HasFreshPosition && (!_stationMode
             || (_stationInputMeaning == StationInputMeaning.Current || _stationInputMeaning == StationInputMeaning.LastConfirmed) && HasConfirmedPosition
             || _stationInputMeaning == StationInputMeaning.Legacy && !_simulationEnabled && !_hasTarget);
-        public double CurrentPositionValue => HasIndependentDock ? _arrivalSignal.Value : _positionSignal.Value;
-        public string PositionReason => HasIndependentDock ? "独立工位反馈已确认停靠，实际移动 BOOL 为停止" : _positionSignal.Reason;
+        public double CurrentPositionValue => _simpleDisplay ? _simpleSignal.Value : HasIndependentDock ? _arrivalSignal.Value : _positionSignal.Value;
+        public string PositionReason => _simpleDisplay ? _simpleSignal.Reason : HasIndependentDock ? "独立工位反馈已确认停靠，实际移动 BOOL 为停止" : _positionSignal.Reason;
         private bool EstimateStationTravel => _stationMode && _simulationEnabled
             && _stationInputMeaning != StationInputMeaning.Current && _stationInputMeaning != StationInputMeaning.LastConfirmed;
         private void StopAtCurrentPose()

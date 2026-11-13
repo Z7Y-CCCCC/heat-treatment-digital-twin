@@ -7,7 +7,7 @@ const { BACKEND_DIR, createRunDirectory } = require('./integration-test-utils.cj
 
 const scripts = [
     'startup-services.test.cjs', 'simulation-points-test.cjs', 'display-connection-health-test.cjs', 'point-history-test.cjs', 'point-history-ack-test.cjs', 'history-policy-test.cjs',
-    'independent-arrival.test.cjs', 'bidirectional-transfer-test.cjs',
+    'independent-arrival.test.cjs', 'simple-station-motion-test.cjs', 'loading-port-signals-test.cjs', 'rotating-cart-config-test.cjs', 'schema-ddl-budget-test.cjs', 'bidirectional-transfer-test.cjs',
     'endurance-continuity.test.cjs', 'endurance-memory.test.cjs', 'endurance-mysql-memory.test.cjs', 'endurance-mysql-cleanup.test.cjs', 'endurance-report-io.test.cjs',
     'test-isolation-test.cjs', 'display-only-runtime-test.cjs', 'collector-process-test.cjs', 'collector-process-integration-test.cjs', 'collector-mode-persistence-test.cjs', 'simulation-connection-status-test.cjs', 'database-readiness-test.cjs', 'bounded-process-log-test.cjs', 'history-retention-test.cjs', 'map-surface-schema-test.cjs',
     'global-view-navigation-test.cjs', 'group-portal-settings-test.cjs', 'appearance-assets-test.cjs',

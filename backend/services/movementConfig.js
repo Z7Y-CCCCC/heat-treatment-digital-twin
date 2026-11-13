@@ -11,15 +11,21 @@ const readId = (value, legacy) => value ?? legacy ?? '';
 
 function validateMovementConfig(movement) {
     if (!object(movement) || typeof movement.enabled !== 'boolean') fail('设备运动配置需要明确的启用状态');
-    for (const field of ['currentPositionPointId', 'startActionPointId', 'arrivalPositionPointId', 'current_position_point_id', 'start_action_point_id']) {
+    const simple = movement.displayMode === 'simple';
+    if (movement.displayMode !== undefined && !simple) fail('移动显示模式无效');
+    for (const field of ['currentPositionPointId', 'startActionPointId', 'arrivalPositionPointId', 'arrivalSignalPointId', 'current_position_point_id', 'start_action_point_id']) {
         if (movement[field] !== undefined && !(id(movement[field]) || Number.isSafeInteger(movement[field]) && movement[field] > 0)) fail('运动点位标识无效');
     }
-    for (const field of ['simulationEnabled', 'simulation_enabled', 'diagnosticLogging']) {
+    for (const field of ['simulationEnabled', 'simulation_enabled', 'diagnosticLogging', 'arrivalSmoothing']) {
         if (movement[field] !== undefined && typeof movement[field] !== 'boolean') fail('运动开关设置无效：' + field);
     }
     if (movement.valueMode !== undefined && !['normalized', 'range', 'station'].includes(movement.valueMode)) fail('运动位置模式无效');
     if (movement.stationInputMeaning !== undefined && !['current', 'target', 'last-confirmed'].includes(movement.stationInputMeaning)) fail('工位输入含义必须为当前到位反馈、最后到位工位或目标命令');
     if (movement.stationInputMeaning === 'last-confirmed' && movement.valueMode !== 'station') fail('最后到位工位只适用于工位编号模式');
+    if (simple && (movement.valueMode !== 'station' || movement.stationInputMeaning !== 'target')) fail('简易显示使用目标工位编号，不把到位编号当作目标');
+    if (simple && (movement.arrivalPositionPointId || readId(movement.startActionPointId, movement.start_action_point_id))) fail('简易显示只绑定目标编号和到位 BOOL，不混用旧到位编号或移动开始信号');
+    if (movement.arrivalSignalPointId && !simple) fail('到位 BOOL 仅用于简易工位显示');
+    if (simple && movement.enabled && !String(movement.arrivalSignalPointId || '').trim()) fail('请选择本设备的到位 BOOL 信号');
     if (movement.arrivalPositionPointId) {
         if (movement.valueMode !== 'station' || movement.stationInputMeaning !== 'target') fail('独立到位工位反馈仅适用于目标工位估算模式');
         if (String(movement.arrivalPositionPointId) === String(readId(movement.currentPositionPointId, movement.current_position_point_id))) fail('目标命令不能同时用作实际到位反馈');
@@ -53,18 +59,19 @@ function validateMovementConfig(movement) {
     if (movement.enabled && !String(readId(movement.currentPositionPointId, movement.current_position_point_id)).trim()) fail('请选择本设备的实时位置采集点位');
     if (movement.enabled && movement.valueMode === 'station' && !values.size) fail('请配置真实工位编号和坐标，未创建默认工位');
     if (movement.enabled && movement.valueMode === 'station' && movement.stationInputMeaning === 'target'
-        && movement.simulationEnabled !== true && movement.simulation_enabled !== true) fail('目标工位是运动命令而非到位反馈，请显式启用移动估算或改选真实当前到位反馈');
+        && !simple && movement.simulationEnabled !== true && movement.simulation_enabled !== true) fail('目标工位是运动命令而非到位反馈，请显式启用移动估算或改选真实当前到位反馈');
     return movement;
 }
 
 async function validateMovementSources(db, device, movement, factoryId, belongsToFactory) {
-    const fields = [['currentPositionPointId', 'current_position_point_id'], ['startActionPointId', 'start_action_point_id'], ['arrivalPositionPointId']];
+    const fields = [['currentPositionPointId', 'current_position_point_id'], ['startActionPointId', 'start_action_point_id'], ['arrivalPositionPointId'], ['arrivalSignalPointId']];
     for (const [field, legacy] of fields) {
         const pointId = readId(movement[field], movement[legacy]);
         if (!String(pointId).trim()) continue;
         const point = await db.get('SELECT * FROM data_points WHERE id=? AND device_id=?', [pointId, device.id]);
         if (!point || String(point.access_type || 'READ').toUpperCase() !== 'READ') fail('运动点位必须是本设备的只读采集点位');
-        if (field !== 'startActionPointId' && ['BOOL', 'STRING', 'CHAR', 'DT', 'DTZ', 'DTL', 'DTLZ', 'DATE', 'TIME', 'TOD'].includes(String(point.data_type || '').toUpperCase())) fail('实时位置点位必须是数值，不能把开关量、文字或日期当作位置');
+        if (field === 'arrivalSignalPointId' && String(point.data_type || '').toUpperCase() !== 'BOOL') fail('到位信号必须是本设备的只读 BOOL');
+        if (!['startActionPointId', 'arrivalSignalPointId'].includes(field) && ['BOOL', 'STRING', 'CHAR', 'DT', 'DTZ', 'DTL', 'DTLZ', 'DATE', 'TIME', 'TOD'].includes(String(point.data_type || '').toUpperCase())) fail('实时位置点位必须是数值，不能把开关量、文字或日期当作位置');
         if (field === 'startActionPointId' && (movement.stationInputMeaning === 'last-confirmed' || movement.arrivalPositionPointId) && String(point.data_type || '').toUpperCase() !== 'BOOL') fail('实际移动状态反馈必须是本设备只读 BOOL，不能使用开始命令或数值');
     }
     for (const targetId of new Set((movement.stations || []).map(station => station.anchorDeviceId).filter(Boolean))) {

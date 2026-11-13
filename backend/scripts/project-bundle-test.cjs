@@ -41,11 +41,15 @@ async function zipFile(filename, entries) {
         await db.run('INSERT INTO devices (id, name, line_id, model_type, model_file, template_id, plc_enabled, plc_ip, plc_options) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', ['portable_device', '设备', 'portable_line', 'portable_model', '/uploads/models/sample.gltf', 'portable_template', 1, '192.168.10.123', JSON.stringify({ password: 'must-never-export' })]);
         const point = await db.run('INSERT INTO data_points (device_id, name, label, plc_tag, voice_config) VALUES (?, ?, ?, ?, ?)', ['portable_device', 'temp', '温度', 'DB1.DBD0', JSON.stringify({ url: '/uploads/audio/alarm.wav' })]);
         const pointId = Number(point.insertId);
+        const boolPoint = await db.run('INSERT INTO data_points (device_id,name,label,plc_tag,data_type,category,value_role,access_type) VALUES (?,?,?,?,?,?,?,?)', ['portable_device','feed','出料中','DB1.DBX8.0','BOOL','status','feed','READ']);
+        const boolPointId = Number(boolPoint.insertId);
         const historyPolicy = require('../services/historyPolicy').normalizePolicy({ recentEnabled: false, metricMode: 'off' });
         await db.run('UPDATE data_points SET history_mode=?,history_days=? WHERE id=?', ['finite', 7, pointId]);
         await db.run('INSERT INTO factory_settings (factory_id,`key`,value) VALUES (?,?,?)', ['portable_source', 'history_policy_v1', JSON.stringify(historyPolicy)]);
         const document = { schemaVersion: 1, projectId: 'portable_project', sceneId: 'portable_scene', widgets: [{ id: 'portable_widget', data: { mode: 'plc', deviceId: 'portable_device', pointId: String(pointId), connectionId: 'primary' }, image: '/uploads/appearance/picture.png', password: 'json-secret' }] };
-        await db.run('UPDATE devices SET instance_config = ? WHERE id = ?', [JSON.stringify({ pointId }), 'portable_device']);
+        await db.run('UPDATE devices SET instance_config = ? WHERE id = ?', [JSON.stringify({ pointId,
+            movement: { currentPositionPointId: String(pointId), arrivalSignalPointId: String(boolPointId) },
+            loadingPortSignals: { version: 1, inletPointId: String(boolPointId), outletPointId: null } }), 'portable_device']);
         await db.run('INSERT INTO projects (id, factory_id, name, is_active) VALUES (?, ?, ?, ?)', ['portable_project', 'portable_source', '项目', 1]);
         await db.run('INSERT INTO scenes (id, project_id, name, draft_json, published_release_id, is_active) VALUES (?, ?, ?, ?, ?, ?)', ['portable_scene', 'portable_project', '场景', JSON.stringify(document), 'portable_release', 1]);
         await db.run('INSERT INTO widgets (id, scene_id, widget_type, binding_json) VALUES (?, ?, ?, ?)', ['portable_widget', 'portable_scene', 'kpi', JSON.stringify(document.widgets[0].data)]);
@@ -89,6 +93,12 @@ async function zipFile(filename, entries) {
         const newPoint = await db.get('SELECT * FROM data_points WHERE id = ?', [draft.widgets[0].data.pointId]);
         assert.notEqual(newDevice.id, 'portable_device'); assert.equal(newPoint.device_id, newDevice.id);
         assert.notEqual(newPoint.id, pointId); assert.equal(JSON.parse(newDevice.instance_config).pointId, newPoint.id);
+        const importedInstance = JSON.parse(newDevice.instance_config);
+        const importedBool = await db.get('SELECT * FROM data_points WHERE device_id=? AND name=?', [newDevice.id, 'feed']);
+        assert.notEqual(importedBool.id, boolPointId); assert.equal(importedBool.data_type, 'BOOL');
+        assert.equal(importedInstance.movement.currentPositionPointId, String(newPoint.id));
+        assert.equal(importedInstance.movement.arrivalSignalPointId, String(importedBool.id));
+        assert.equal(importedInstance.loadingPortSignals.inletPointId, String(importedBool.id));
         assert.equal(newPoint.history_mode, 'finite'); assert.equal(newPoint.history_days, 7);
         assert.deepEqual(await require('../services/historyPolicy').readPolicy(db, first.factoryId), historyPolicy);
         assert.deepEqual(await require('../services/historyPolicy').readPolicy(db, 'unrelated_factory'), require('../services/historyPolicy').DEFAULT_POLICY);
