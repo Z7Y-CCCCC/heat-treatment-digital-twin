@@ -101,6 +101,28 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 _carts[device.Id] = new CartTransferPresentation(root, device.InstanceConfigObject["cartTransfer"] as JObject, outlet?.Pose ?? inlet?.Pose);
             }
         }
+        public void ResolveDockingAnchors()
+        {
+            if (_motions == null || _roots == null) return;
+            foreach (var item in _motions) {
+                if (!_roots.TryGetValue(item.Key, out var root) || root == null) continue;
+                _ports.TryGetValue(Key(item.Key, "outlet"), out var cartPort);
+                if (cartPort?.Pose == null) _ports.TryGetValue(Key(item.Key, "inlet"), out cartPort);
+                item.Value.ResolveSimpleStationAnchors(_roots, (targetId, rail) => {
+                    _ports.TryGetValue(Key(targetId, "inlet"), out var fixedPort);
+                    if (fixedPort?.Pose == null) _ports.TryGetValue(Key(targetId, "outlet"), out fixedPort);
+                    if (cartPort?.Pose == null || fixedPort?.Pose == null || !WorldPort(fixedPort, out var mouth, out _)) return null;
+                    var offset = root.TransformVector(new Vector3(-(float)cartPort.Pose.Position[0], (float)cartPort.Pose.Position[1], (float)cartPort.Pose.Position[2]));
+                    if (_carts.TryGetValue(item.Key, out var rotating) && rotating.Ready) {
+                        var across = mouth - root.position; across -= rail * Vector3.Dot(across, rail); across.y = 0;
+                        if (across.sqrMagnitude > .000001f) offset = rotating.AlignedPortOffset(cartPort.Pose, across.normalized);
+                    }
+                    // Slide only along the existing rail. Heights, rail plane,
+                    // fixed-device placement and the saved station table stay intact.
+                    return mouth - offset;
+                });
+            }
+        }
         private static string Key(string device, string kind) => device + "\n" + kind;
         public void Receive(string id, JObject frame, double now, double wallNow)
         {
@@ -150,7 +172,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
         public void Advance(float delta, double now)
         {
             foreach (var port in _ports.Values) if (port.Signal != null && !port.Signal.Advance(now, 5000)) port.PendingAt = double.NegativeInfinity;
-            if (_suspended) return;
+            if (_suspended) { UpdateConveyorDirections(now); return; }
             foreach (var port in _ports.Values) if (Pending(port, now)) Echo(port, now);
             var docked = DockedPairs().ToArray();
             foreach (var item in _carts) {
@@ -217,6 +239,27 @@ namespace HeatTreatment.DigitalTwin.Runtime
                     TargetParticipated = targetPending || pair.Target.Signal?.Usable == true && pair.Target.Signal.Value });
                 Consume(pair.Source); Consume(pair.Target);
                 _reasons[pair.CartId] = pair.Pickup ? "取料示意" : "送料示意";
+            }
+            UpdateConveyorDirections(now);
+        }
+        private void UpdateConveyorDirections(double now)
+        {
+            if (_roots == null) return;
+            foreach (var device in _devices.Values) {
+                if (!UsesSimpleTransfer(device) || !_roots.TryGetValue(device.Id, out var root) || root == null) continue;
+                var driver = root.GetComponent<DeviceAnimationDriver>(); if (driver == null) continue;
+                _ports.TryGetValue(Key(device.Id, "inlet"), out var inlet); _ports.TryGetValue(Key(device.Id, "outlet"), out var outlet);
+                var taking = inlet?.Signal?.Usable == true && inlet.Signal.Value;
+                var sending = outlet?.Signal?.Usable == true && outlet.Signal.Value;
+                Port selected = null;
+                if (!_suspended && !(taking && sending)) {
+                    var active = _trips.FirstOrDefault(trip => (trip.Pair.Source.DeviceId == device.Id || trip.Pair.Target.DeviceId == device.Id) && Live(trip, now));
+                    selected = active != null ? (active.Pair.Source.DeviceId == device.Id ? active.Pair.Source : active.Pair.Target)
+                        : taking ? inlet : sending ? outlet : null;
+                }
+                var travel = Vector3.zero;
+                if (selected != null && WorldPort(selected, out _, out var outward)) travel = selected.Kind == "outlet" ? outward : -outward;
+                driver.SetConveyorTravel(travel);
             }
         }
         private static bool Pending(Port port, double now) => port.Signal != null && port.Signal.Usable && port.PendingStamp > port.ConsumedStamp && now - port.PendingAt <= PendingSeconds;
@@ -298,7 +341,18 @@ namespace HeatTreatment.DigitalTwin.Runtime
         }
         private static void Destroy(UnityEngine.Object value) { if (Application.isPlaying) UnityEngine.Object.Destroy(value); else UnityEngine.Object.DestroyImmediate(value); }
         public JObject Describe() => new JObject { ["activeTransfers"] = _trips.Count, ["estimatedCargoDevices"] = new JArray(_cargo.Keys.OrderBy(id => id)),
-            ["reasons"] = JObject.FromObject(_reasons), ["turntables"] = JObject.FromObject(_carts.ToDictionary(item => item.Key, item => item.Value.Describe())), ["displayOnly"] = true };
+            ["reasons"] = JObject.FromObject(_reasons), ["turntables"] = JObject.FromObject(_carts.ToDictionary(item => item.Key, item => item.Value.Describe())), ["displayOnly"] = true,
+            ["trips"] = new JArray(_trips.Select(trip => new JObject { ["cartId"] = trip.Pair.CartId, ["targetId"] = trip.Pair.TargetId,
+                ["pickup"] = trip.Pair.Pickup, ["elapsed"] = trip.Elapsed, ["position"] = Position(trip.Cargo),
+                ["instanceId"] = trip.Cargo != null ? trip.Cargo.GetInstanceID() : 0,
+                ["path"] = new JArray(trip.Path.Select(p => new JArray(p.x, p.y, p.z))) })),
+            ["cargo"] = new JArray(_cargo.OrderBy(item => item.Key).Select(item => new JObject { ["owner"] = item.Key,
+                ["instanceId"] = item.Value != null ? item.Value.GetInstanceID() : 0,
+                ["position"] = Position(item.Value), ["visible"] = item.Value != null && item.Value.activeInHierarchy })),
+            ["signals"] = new JArray(_ports.Values.Where(port => port.Signal != null).Select(port => new JObject {
+                ["deviceId"] = port.DeviceId, ["kind"] = port.Kind, ["pointId"] = port.Id,
+                ["usable"] = port.Signal.Usable, ["value"] = port.Signal.Value, ["timestamp"] = port.Signal.Timestamp })) };
+        private static JArray Position(GameObject value) => value == null ? null : new JArray(value.transform.position.x, value.transform.position.y, value.transform.position.z);
         public void Dispose()
         {
             foreach (var cargo in _cargo.Values.Concat(_trips.Select(trip => trip.Cargo)).Distinct()) RemoveCargo(cargo);
