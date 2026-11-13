@@ -6,9 +6,6 @@ export class LineSimulationRig {
         this.root=root;this.bindings=[];const metadata=parseSimulationConfig(model?.metadata),paths=new Map()
         function visit(parent,prefix=''){parent.children.forEach((o,i)=>{const segment=o.name.replaceAll('/','_')+'#'+i,path=prefix?prefix+'/'+segment:segment;paths.set(path,o);visit(o,path)})}visit(root)
         for(const binding of metadata.partBindings||[]){const node=paths.get(binding.node_path)||root.getObjectByName(binding.node_name||'');if(node)this.bindings.push({binding,node,p:node.position.clone(),r:node.rotation.clone(),visible:node.visible})}
-        if(model?.id==='builtin_furnace'){
-            const node=root.getObjectByName('front_lift_door');if(node)this.bindings.push({node,p:node.position.clone(),r:node.rotation.clone(),visible:node.visible,binding:{action:'translate',source_group:'doors',axis:'y',output_min:0,output_max:2.5}})
-        }
         if(model?.id==='cad_tempering_furnace_091300')for(const name of ['door','door_carriages']){
             const node=root.getObjectByName('cad_tempering_furnace_v1_'+name)
             if(node)this.bindings.push({node,p:node.position.clone(),r:node.rotation.clone(),visible:node.visible,binding:{action:'translate',source_group:'doors',axis:'y',output_min:0,output_max:.9}})

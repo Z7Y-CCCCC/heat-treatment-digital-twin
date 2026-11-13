@@ -8,7 +8,7 @@ import {buildLineSimulation,sampleLineSimulation} from '../src/three/lineSimulat
 import {MULTIPURPOSE_CYCLE_DURATION} from '../src/three/multipurposeProcess.js'
 import {sampleMotionTrack} from '../src/three/PortableMotionPlayer.js'
 const id='cad_multipurpose_furnace_082000'
-const plan=buildLineSimulation([{id:'cart',model_type:'transfer_cart'},{id:'furnace',model_type:id}],[{id,file_path:'/furnace.glb'}])
+const plan=buildLineSimulation([{id:'cart',model_type:'cad_transfer_cart_101300'},{id:'furnace',model_type:id}],[{id,file_path:'/furnace.glb'},{id:'cad_transfer_cart_101300',file_path:'/cart.glb'}])
 const at=(kind,p=.5)=>{const step=plan.steps.find(s=>s.kind===kind);return sampleLineSimulation(plan,step.start+step.duration*p)}
 test('multipurpose furnace loads front, processes rear, returns front, quenches, rises and drains before unloading',()=>{
  assert.equal(plan.total,MULTIPURPOSE_CYCLE_DURATION)

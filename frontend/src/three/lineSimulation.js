@@ -17,7 +17,7 @@ export function simulationCapabilities(device,models){
     const model=simulationModel(device,models),metadata=parseSimulationConfig(model?.metadata)
     const bindings=Array.isArray(metadata.partBindings)?metadata.partBindings:[]
     const cad=CAD_MOTION_PROFILES[device.model_type]
-    const door=!!cad?.actions.some(a=>a.id==='door')||bindings.some(b=>b.source_group==='doors'&&['translate','rotate_angle'].includes(b.action))||['builtin_furnace','cad_tempering_furnace_091300'].includes(device.model_type)
+    const door=!!cad?.actions.some(a=>a.id==='door')||bindings.some(b=>b.source_group==='doors'&&['translate','rotate_angle'].includes(b.action))||device.model_type==='cad_tempering_furnace_091300'
     let process=[]
     switch(device.model_type){
         case 'cad_tempering_furnace_091300':process=['tempering_heat','tempering_hold'];break
@@ -30,7 +30,7 @@ export function simulationCapabilities(device,models){
         case 'cad_air_cooling_table_115800ht':process=['fans'];break
         default:if(bindings.some(b=>b.source_group!=='doors'&&['translate','rotate_speed','rotate_angle'].includes(b.action)))process=['run']
     }
-    const usable=!!model?.file_path||device.model_type==='builtin_furnace'||device.model_type==='transfer_cart'
+    const usable=!!model?.file_path
     return {model,door,process,cart:isSimulationCart(device),usable,animated:door||process.length>0||isSimulationCart(device)}
 }
 const LABELS={tempering_heat:'回火加热',tempering_hold:'热风循环保温',fill:'注水',heat:'加热',spray:'喷淋清洗',ultrasonic:'超声清洗',drain:'排水',blow:'吹扫',lower:'承料架下降',quench:'搅拌冷却',raise:'承料架升起',drip:'沥液',lift:'升降备料',rollers:'辊道运转',fans:'风冷',run:'已配置部件运转',gate_open:'打开中间隔热门',hot_feed:'移料进入热室',gate_close:'关闭中间隔热门',heat_treat:'热室加热与循环',gate_open_return:'出热室开隔门',hot_return:'移料返回前室',gate_close_return:'淬火前关闭隔门'}

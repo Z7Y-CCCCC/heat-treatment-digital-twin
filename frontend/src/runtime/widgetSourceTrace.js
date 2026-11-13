@@ -419,7 +419,7 @@ export function systemSourceTrace() {
       'DataStore.plcStatusText 会被 /api/health 和 /ws PLC 消息共同覆盖，以最后一次写入为准。health 就绪时 engine.mode 仅等于 simulation 才标模拟，其他 / 缺省标实时；JS PLC 消息采用 message || status，message 优先。这不是原生头部 BackendState / PlcState 的同一映射',
       'dataStore.plcStatusText / /api/health / /ws', '健康检查每 5 秒；连接消息到达时更新，后到的消息可覆盖先前健康文案，不能仅凭该文字认定就绪', '当前工厂 / 后台'),
     record('当前视角 / 当前设备', '场景上下文', 'Unity / 原生场景已确认的视角与所选设备，不由点位值推测', 'context.viewId / context.deviceId', '导航或点选场景对象时更新', '当前视角'),
-    record('系统时钟', '本机时间', 'Web 数据层读取本机 Date；原生头部在 OnGUI 中逐帧读取 DateTime.Now（yyyy-MM-dd HH:mm:ss），不是 PLC 时间，也不来自未挂载的旧 App.vue 页面',
+    record('系统时钟', '本机时间', 'Web 数据层读取本机 Date；原生头部在 OnGUI 中逐帧读取 DateTime.Now（yyyy-MM-dd HH:mm:ss），不是 PLC 时间，也不依赖旧网页大屏',
       'Date / FactoryDashboardController.DateTime.Now', '随各自现有时钟 / 绘制机制更新；原生仍受头部显示门控制', '本机'),
     ...navigationTrace().filter(row => !['导航预览圆点颜色', '导航状态文案颜色'].includes(row.field))
   ]

@@ -173,6 +173,9 @@ function setConnectionBadge(deviceModel, quality) {
 
 export function applyDeviceConnectionVisual(deviceModel, quality) {
     if (!deviceModel) return;
+    // Missing assets remain diagnostic-only; do not draw a synthetic device
+    // or attach a status badge that would masquerade as a loaded model.
+    if (deviceModel.userData?.modelLoadError) return;
     const nextQuality = quality || 'bad';
     deviceModel.userData.quality = nextQuality;
     if (deviceModel.userData.connectionVisualQuality === nextQuality) return;

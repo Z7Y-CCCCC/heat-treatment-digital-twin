@@ -196,7 +196,9 @@ export class CadMotionRig {
         if(this.oppositeFeedRoot)this.oppositeFeedRoot.visible=side===-1
     }
     prepareMultipurpose(){
-        this.processPlan=buildLineSimulation([{id:'demo_cart',model_type:'transfer_cart'},{id:'demo_furnace',model_type:this.id}],[{id:this.id,file_path:'/preview-only.glb'}])
+        // This plan samples process timing only; preview geometry remains the
+        // authored CAD asset, never the retired procedural cart.
+        this.processPlan=buildLineSimulation([{id:'demo_cart',model_type:'cad_transfer_cart_101300'},{id:'demo_furnace',model_type:this.id}],[{id:this.id,file_path:'/preview-only.glb'},{id:'cad_transfer_cart_101300',file_path:'/assets/models/cad_transfer_cart_101300.glb'}])
         const impeller=this.parts('circulation_impeller_metal'),shaft=this.parts('circulation_impeller_stainless')
         this.multiCirculation=this.pivot('hot_circulation',new T.Vector3(0,this.authoringY(2.565),-3.015),[...impeller.filter(p=>p.size.y<.15),...shaft])
         const blades=this.parts('agitator_impellers'),shafts=this.parts('agitators_stainless').filter(p=>p.size.y>1&&p.size.x<.12&&p.size.z<.12)
