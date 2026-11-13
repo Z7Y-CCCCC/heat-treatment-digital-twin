@@ -26,7 +26,7 @@ import CollectorRuntimePanel from './admin/components/CollectorRuntimePanel.vue'
 import { normalizeGround, normalizeDeviceGround } from '../../../shared/industrialGround.mjs'
 import { createVoiceAnnouncer, normalizeVoiceRule, parseVoiceConfig } from '../runtime/VoiceAnnouncer.js'
 import WidgetRenderer from '../runtime/WidgetRenderer.vue'
-import { createDeviceModel, resolveBackendAssetUrl } from '../three/ModelFactory.js'
+import { resolveBackendAssetUrl } from '../three/ModelFactory.js'
 import { restoreGltfNodeNames } from '../three/gltfNodeIdentity.js'
 import { createMotionPreset } from '../three/bindingMotion.js'
 import {
@@ -1674,11 +1674,6 @@ const modelImportForm = reactive({
     default_scale: 1,
     metadata: defaultModelMetadataText()
 })
-const fallbackModelOptions = [
-    { id: 'builtin_furnace', name: '内置炉子' },
-    { id: 'box_atmosphere_furnace', name: '箱式气氛多用炉' },
-    { id: 'transfer_cart', name: '轨道料车 / 取料小车' }
-]
 const availableModelOptions = computed(() => {
     const merged = new Map() // project library only; no built-in device choices
     models.value
@@ -2917,76 +2912,9 @@ async function renderModelPreview(source) {
     }
 }
 
-async function renderBuiltinModelPreview(model) {
-    const source = { builtinId: model.id, label: model.name || model.id }
-    modelPreviewSource = source
-    await nextTick()
-    const container = modelPreviewRef.value
-    if (!container) return
-
-    disposeModelPreview()
-    const runtime = createModelPreviewRuntime(container)
-    modelPreviewRuntime = runtime
-    isModelPreviewActive.value = true
-    modelPreviewError.value = null
-    modelPreviewStatus.value = `正在生成：${source.label}`
-
-    try {
-        const previewDevice = {
-            id: `preview_${model.id}`,
-            name: model.name || model.id,
-            model_type: model.id,
-            model_file: null,
-            instance_config: '{}',
-            pos_x: 0,
-            pos_y: 0,
-            pos_z: 0,
-            rotation_y: 0,
-            scale: Number(model.default_scale || 1)
-        }
-        const deviceModel = await createDeviceModel(previewDevice, [model])
-        if (modelPreviewSource !== source || modelPreviewRuntime !== runtime) {
-            disposeThreeObject(deviceModel)
-            return
-        }
-
-        deviceModel.name = `${model.id}_preview_root`
-        deviceModel.position.set(0, 0, 0)
-        deviceModel.rotation.set(0, 0, 0)
-        deviceModel.scale.setScalar(Number(model.default_scale || 1))
-        deviceModel.setLabelVisible?.(false)
-        runtime.scene.add(deviceModel)
-        runtime.updatables.push(deviceModel)
-        modelPreviewRootObject = deviceModel
-
-        if (deviceModel.userData?.modelLoadError) {
-            modelPreviewError.value = buildModelPreviewError(null, source, deviceModel.userData.modelLoadError)
-            modelPreviewStatus.value = '模型未加载，当前显示占位几何体'
-        }
-
-        const { nodes, map } = collectModelPreviewNodes(deviceModel)
-        modelPreviewNodes.value = nodes
-        modelPreviewNodeMap = map
-        collectModelPreviewStats(deviceModel)
-        fitPreviewCamera(runtime.camera, runtime.controls, deviceModel)
-        if (modelBindingForm.node_path) highlightPreviewNode(modelBindingForm.node_path)
-        if (modelLibraryStep.value === 'inspection') applyInspectionPreviewStage(inspectionPreviewStage.value)
-        const box = new THREE.Box3().setFromObject(deviceModel)
-        const size = box.getSize(new THREE.Vector3())
-        if (!modelPreviewError.value) {
-            modelPreviewStatus.value = `预览：${source.label} | 尺寸 ${size.x.toFixed(2)} x ${size.y.toFixed(2)} x ${size.z.toFixed(2)} | 内置程序化模型`
-        }
-    } catch (e) {
-        if (modelPreviewSource !== source || modelPreviewRuntime !== runtime) return
-        modelPreviewError.value = buildModelPreviewError(e, source)
-        modelPreviewStatus.value = `模型未加载：${modelPreviewError.value.reason}`
-    }
-}
-
 function getActivePreviewModel() {
     if (!selectedPreviewModelId.value) return null
     return models.value.find(model => model.id === selectedPreviewModelId.value)
-        || fallbackModelOptions.find(model => model.id === selectedPreviewModelId.value)
         || modelPreviewModel
 }
 
@@ -3010,7 +2938,10 @@ async function renderSelectedModelPreview() {
     }
 
     if (!model.file_path) {
-        await renderBuiltinModelPreview(model)
+        disposeModelPreview()
+        modelPreviewSource = { label: model.name || model.id }
+        modelPreviewError.value = buildModelPreviewError(new Error('模型资产未配置文件'), modelPreviewSource, { modelId: model.id })
+        modelPreviewStatus.value = '模型资产未配置文件'
         return
     }
 
@@ -3189,7 +3120,7 @@ function loadModelBindingState(model) {
     selectedModelNodePath.value = ''
     modelBindingStatus.value = model?.file_path
         ? `已读取 ${modelPartBindings.value.length} 条部位绑定${rawBindings.length !== modelPartBindings.value.length ? `，已合并 ${rawBindings.length - modelPartBindings.value.length} 条重复绑定` : ''}`
-        : '内置程序化模型不可编辑部位绑定'
+        : '请先导入模型文件'
     resetModelBindingForm()
     savedModelEditorSnapshot.value = modelEditorSnapshot()
 }
@@ -7729,7 +7660,7 @@ async function openAdminSetupStep(step) {
                         </div>
                         <div ref="composerPreviewRef" class="composer-preview-stage">
                             <div v-if="composerPreviewErrors.length" class="composer-preview-error" role="alert">
-                                <strong>模型未加载（当前显示占位几何体）</strong>
+                                <strong>模型未加载</strong>
                                 <div v-for="error in composerPreviewErrors.slice(0, 4)" :key="`${error.deviceId || error.device}-${error.modelId || error.model}`" class="composer-preview-error-item">
                                     <span>{{ error.device }}<template v-if="error.deviceId">（{{ error.deviceId }}）</template></span>
                                     <small>{{ error.model }}<template v-if="error.modelId">（{{ error.modelId }}）</template>：{{ error.reason }}</small>

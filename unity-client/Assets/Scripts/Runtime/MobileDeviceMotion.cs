@@ -64,6 +64,33 @@ namespace HeatTreatment.DigitalTwin.Runtime
             public float Value;
             public Vector3 Position;
             public float DistanceMeters;
+            public string DeviceId;
+        }
+
+        // Simple stations follow their selected equipment in the current scene.
+        // A saved coordinate is not a second, independently maintained layout.
+        public void ResolveSimpleStationAnchors(IReadOnlyDictionary<string, Transform> roots,
+            Func<string, Vector3, Vector3?> resolveDockOrigin = null)
+        {
+            if (!_enabled || !_simpleDisplay || roots == null) return;
+            var changed = false;
+            foreach (var station in _stations.ToArray()) {
+                if (string.IsNullOrWhiteSpace(station.DeviceId)) continue; // Explicit legacy coordinate-only stations.
+                if (!roots.TryGetValue(station.DeviceId, out var target) || target == null || target == transform) {
+                    _stations.Remove(station); changed = true; continue;
+                }
+                var rail = _end - _start;
+                var worldRail = (transform.parent != null ? transform.parent.TransformVector(rail) : rail).normalized;
+                var origin = resolveDockOrigin?.Invoke(station.DeviceId, worldRail) ?? target.position;
+                var point = transform.parent != null ? transform.parent.InverseTransformPoint(origin) : origin;
+                var result = RailPositionPolicy.ProjectStation(new[] { (double)point.x, point.y, point.z },
+                    new[] { (double)_start.x, _start.y, _start.z }, new[] { (double)_end.x, _end.y, _end.z });
+                if (result == null) continue;
+                var projected = new Vector3((float)result[0], (float)result[1], (float)result[2]);
+                changed |= (station.Position - projected).sqrMagnitude > .00000001f;
+                station.Position = projected;
+            }
+            if (changed) { StopAtCurrentPose(); _hasPositionSample = false; }
         }
 
         public void Initialize(DeviceDto device, JObject lineLayout = null)
@@ -497,6 +524,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 {
                     Value = value,
                     Position = normalized,
+                    DeviceId = station.Value<string>("anchorDeviceId"),
                     DistanceMeters = ReadNumber(station["distanceMeters"] ?? station["distance_meters"], 0f)
                 });
             }

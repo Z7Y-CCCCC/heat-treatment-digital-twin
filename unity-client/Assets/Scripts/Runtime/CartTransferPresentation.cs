@@ -71,7 +71,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 _currentRotation = Quaternion.Slerp(_fromRotation, _targetRotation, Mathf.SmoothStep(0, 1, _elapsed / TurnSeconds));
             }
             _anchor.localRotation = _currentRotation;
-            if (conveying) foreach (var roller in _rollers) roller.Rotate(Vector3.up, Mathf.Max(0, delta) * (pickup ? -180 : 180), Space.Self);
+            if (conveying) foreach (var roller in _rollers) roller.Rotate(Vector3.up, Mathf.Max(0, delta) * (pickup ? 180 : -180), Space.Self);
         }
         public bool WorldPort(LoadingPortPose port, out Vector3 point, out Vector3 direction)
         {
@@ -80,6 +80,17 @@ namespace HeatTreatment.DigitalTwin.Runtime
             point = _anchor.TransformPoint(_rootToRest.MultiplyPoint3x4(new Vector3(-(float)port.Position[0], (float)port.Position[1], (float)port.Position[2])));
             direction = _anchor.TransformVector(_rootToRest.MultiplyVector(new Vector3(-(float)port.Direction[0], 0, (float)port.Direction[2]))).normalized;
             return true;
+        }
+        // Predict the physical mouth after turning, without moving the chassis,
+        // rotating the live platform or changing any authored loading datum.
+        public Vector3 AlignedPortOffset(LoadingPortPose port, Vector3 worldDirection)
+        {
+            var parent = _anchor.parent;
+            var desiredDirection = parent.InverseTransformVector(worldDirection); desiredDirection.y = 0;
+            var restDirection = parent.InverseTransformVector(_root.TransformVector(new Vector3(-(float)port.Direction[0], 0, (float)port.Direction[2]))); restDirection.y = 0;
+            var rotation = Quaternion.AngleAxis(Vector3.SignedAngle(restDirection, desiredDirection, Vector3.up), Vector3.up) * _restRotation;
+            var local = _rootToRest.MultiplyPoint3x4(new Vector3(-(float)port.Position[0], (float)port.Position[1], (float)port.Position[2]));
+            return parent.TransformPoint(_anchor.localPosition + rotation * Vector3.Scale(_anchor.localScale, local)) - _root.position;
         }
         public Vector3 Seat(Vector3 mouth, Vector3 direction, float height)
         {

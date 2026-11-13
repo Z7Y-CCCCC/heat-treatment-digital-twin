@@ -24,10 +24,6 @@ export function modelHoverSnapshot(source, signal) {
         const gltf = await loadConfiguredGltf(resolveBackendAssetUrl(source.file), { signal, timeoutMs: 20000 })
         root = gltf.scene || gltf.scenes?.[0]
       }
-      else if (['builtin_furnace', 'transfer_cart'].includes(source.model?.id || source.type)) {
-        const { createDeviceModel } = await import('../three/ModelFactory.js')
-        root = await createDeviceModel({ id: 'hover-preview', model_type: source.model?.id || source.type }, source.model ? [source.model] : [])
-      }
       signal.throwIfAborted()
       if (!root || root.userData.modelLoadError) throw new Error('模型不可用')
       root.updateMatrixWorld(true)

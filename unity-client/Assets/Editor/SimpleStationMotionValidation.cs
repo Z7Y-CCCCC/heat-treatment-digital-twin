@@ -21,7 +21,7 @@ namespace HeatTreatment.DigitalTwin.EditorTests
         };
         public static void Run()
         {
-            GameObject cart = null;
+            GameObject cart = null, parent = null, anchor = null;
             try {
                 _checks=0;
                 var movement=JObject.Parse("{enabled:true,displayMode:'simple',valueMode:'station',stationInputMeaning:'target',currentPositionPointId:'1',arrivalSignalPointId:'2',start:{x:0,y:0,z:0},end:{x:10,y:0,z:0},stations:[{value:1,position:{x:0,y:0,z:0}},{value:2,position:{x:10,y:0,z:0}}]}");
@@ -45,10 +45,21 @@ namespace HeatTreatment.DigitalTwin.EditorTests
                 Check(cart.transform.localPosition.sqrMagnitude<.000001f&&driver.HasConfirmedPosition,"Unchecked alignment did not snap immediately");
                 driver.ApplyRealtime(Frame(at+7,2,false));before=cart.transform.localPosition;driver.AdvanceMotion(1,Time.realtimeSinceStartupAsDouble+6);
                 Check((cart.transform.localPosition-before).sqrMagnitude<.000001f&&!driver.HasConfirmedPosition,"Stale source continued guessed movement");
+                parent = new GameObject("Rotated station frame"); parent.transform.position = new Vector3(30, 4, -12); parent.transform.rotation = Quaternion.Euler(0, 37, 0); parent.transform.localScale = new Vector3(2, 1, 2);
+                cart.transform.SetParent(parent.transform, false); anchor = new GameObject("Current selected station"); anchor.transform.SetParent(parent.transform, false); anchor.transform.localPosition = new Vector3(22, 9, 6);
+                movement["stations"][1]["anchorDeviceId"] = "furnace"; driver.Reconfigure(device, false);
+                driver.ResolveSimpleStationAnchors(new Dictionary<string, Transform> { ["furnace"] = anchor.transform });
+                driver.ApplyRealtime(Frame(at+8,2,true)); driver.AdvanceMotion(1,Time.realtimeSinceStartupAsDouble+1);
+                Check((cart.transform.localPosition-new Vector3(22,0,0)).sqrMagnitude<.000001f&&driver.HasConfirmedPosition,"Stale station coordinate overrode current equipment, or rail plane/parent transform was lost");
+                anchor.transform.localPosition = new Vector3(-7, 8, -15); driver.ResolveSimpleStationAnchors(new Dictionary<string, Transform> { ["furnace"] = anchor.transform });
+                driver.ApplyRealtime(Frame(at+9,2,true)); driver.AdvanceMotion(1,Time.realtimeSinceStartupAsDouble+1);
+                Check((cart.transform.localPosition-new Vector3(-7,0,0)).sqrMagnitude<.000001f,"An edited layout did not refresh its existing station without PLC renumbering");
+                driver.ResolveSimpleStationAnchors(new Dictionary<string, Transform>()); driver.ApplyRealtime(Frame(at+10,2,true));
+                Check(!driver.HasConfirmedPosition,"Missing selected equipment fell back to stale station coordinates");
                 var directory=Environment.GetEnvironmentVariable("SIMPLE_STATION_CHECK_DIRECTORY");
                 if(!string.IsNullOrEmpty(directory)){Directory.CreateDirectory(directory);File.WriteAllText(Path.Combine(directory,"result.json"),new JObject{["success"]=true,["checks"]=_checks,["actualUnityTransforms"]=true,["physicalParametersRequired"]=false}.ToString());}
                 Debug.Log("Simple station motion passed: "+_checks+" checks");EditorApplication.Exit(0);
-            }catch(Exception error){Debug.LogException(error);EditorApplication.Exit(1);}finally{if(cart!=null)UnityEngine.Object.DestroyImmediate(cart);}
+            }catch(Exception error){Debug.LogException(error);EditorApplication.Exit(1);}finally{if(cart!=null)UnityEngine.Object.DestroyImmediate(cart);if(anchor!=null)UnityEngine.Object.DestroyImmediate(anchor);if(parent!=null)UnityEngine.Object.DestroyImmediate(parent);}
         }
     }
 }

@@ -21,6 +21,9 @@ namespace HeatTreatment.DigitalTwin.Rendering
             public bool HasSampledValues, HasRotationValue, HasAppliedRotation;
             public double SampleTime;
             public Quaternion RotationInput, RotationRequested, RotationApplied;
+            public Vector3 ConveyorAxis;
+            public double ConveyorSeconds;
+            public int ConveyorSign = 1;
             public bool HasColorSnapshot;
             public Color ColorRequested, PrimaryColorApplied, SecondaryColorApplied, FactorColorApplied;
             public ColorSpace ColorSnapshotSpace;
@@ -29,7 +32,7 @@ namespace HeatTreatment.DigitalTwin.Rendering
         {
             public JObject Binding;
             public string ActionId, DefinitionReason;
-            public bool Valid, RunningMode, PresentationOnly;
+            public bool Valid, RunningMode, PresentationOnly, Conveyor;
             public double Duration;
             public TrackState[] Tracks = Array.Empty<TrackState>();
             public readonly Dictionary<string, TrackState> PositionTracks = new Dictionary<string, TrackState>(StringComparer.Ordinal);
@@ -63,6 +66,20 @@ namespace HeatTreatment.DigitalTwin.Rendering
         private int _presentationSide;
         public int ActiveBindings => _entries.Count;
         public JObject TransferDiagnostic { get; set; }
+        public void SetConveyorTravel(Vector3 worldTravel)
+        {
+            foreach (var entry in _entries) if (entry.Conveyor) foreach (var track in entry.Tracks) {
+                if (track.Kind != ChannelKind.Rotation || track.Node?.parent == null) continue;
+                var parent = track.Node.parent;
+                // Transport a point on the roller's upper surface, not a guessed
+                // model-local sign. This includes authored quaternion axes,
+                // glTF handedness, mirrored scale and device/workshop rotation.
+                var radial = parent.InverseTransformVector(Vector3.up);
+                var tangent = parent.TransformVector(Vector3.Cross(track.ConveyorAxis, radial));
+                var dot = Vector3.Dot(tangent.normalized, worldTravel.normalized);
+                track.ConveyorSign = worldTravel.sqrMagnitude < .00000001f || Mathf.Abs(dot) < .05f ? 0 : dot > 0 ? 1 : -1;
+            }
+        }
         public bool TryGetTransferDrive(string actionId, string nodeName, out Transform node, out Vector3 rest,
             out Vector3 maximumDisplacement, out string reason)
         {
@@ -117,6 +134,8 @@ namespace HeatTreatment.DigitalTwin.Rendering
                 var clip = package["clips"].OfType<JObject>().FirstOrDefault(c => c.Value<string>("id") == binding.Value<string>("clipId"));
                 if (clip == null) throw new InvalidOperationException("Motion clip missing: " + binding["actionId"]);
                 var entry = new Entry { Binding = binding, ActionId = binding.Value<string>("actionId"), RunningMode = binding.Value<string>("mode") == "running", Valid = true,PresentationOnly=binding.Value<bool?>("presentationOnly")==true };
+                entry.Conveyor = HeatTreatment.DigitalTwin.Runtime.SimpleMaterialTransferRuntime.UsesSimpleTransfer(device)
+                    && entry.RunningMode && new[] { "rollers", "hot_rollers" }.Contains(binding.Value<string>("clipId"));
                 var tracks = new List<TrackState>();
                 var definitions = clip["tracks"] as JArray;
                 if (definitions == null || definitions.Count == 0) { entry.Valid = false; entry.DefinitionReason = "动画轨迹未配置"; }
@@ -130,6 +149,15 @@ namespace HeatTreatment.DigitalTwin.Rendering
                         : sampler.Channel == "s" ? ChannelKind.Scale : sampler.Channel == "v" ? ChannelKind.Visibility
                         : sampler.Channel[0] == 'e' ? ChannelKind.Emission : ChannelKind.Color;
                     var state = new TrackState { Sampler = sampler, Node = node, Kind = kind, Samples = new double[sampler.Size] };
+                    if (entry.Conveyor && kind == ChannelKind.Rotation) {
+                        var a = new double[4]; var b = new double[4];
+                        if (sampler.SampleInto(0, a) && sampler.SampleInto(sampler.Duration * .001, b)) {
+                            Quaternion Q(double[] v) => new Quaternion((float)v[0], -(float)v[1], -(float)v[2], (float)v[3]).normalized;
+                            var step = Q(b) * Quaternion.Inverse(Q(a)); step.ToAngleAxis(out var angle, out var axis);
+                            state.ConveyorAxis = Mathf.Abs(angle) < .00001f ? Vector3.zero : axis * (angle > 180 ? -1 : 1);
+                        }
+                        state.ConveyorSign = 0;
+                    }
                     _restSamples.TryGetValue(sampler.NodeName + ":" + sampler.Channel, out state.RestSamples);
                     if (kind == ChannelKind.Emission || kind == ChannelKind.Color)
                     {
@@ -188,6 +216,8 @@ namespace HeatTreatment.DigitalTwin.Rendering
                 var priorPosition=entry.Signal.Position; var priorSeconds=entry.Signal.Seconds;
                 var signal = entry.Signal; signal.Step(delta, now, _staleMs, entry.Binding);
                 if (!signal.HasSample || !signal.Usable) continue;
+                if (entry.Conveyor) foreach (var track in entry.Tracks)
+                    track.ConveyorSeconds += (signal.Seconds - priorSeconds) * track.ConveyorSign;
                 ApplyEntryPose(entry);
                 // Timestamp the first actual phase/transform application after a target
                 // change, not the test process's later log polling time.
@@ -214,18 +244,20 @@ namespace HeatTreatment.DigitalTwin.Rendering
         {
             foreach (var track in entry.Tracks)
             {
+                var sampleTime = entry.Conveyor && track.Kind == ChannelKind.Rotation
+                    ? ((track.ConveyorSeconds % entry.Duration) + entry.Duration) % entry.Duration : time;
                 var off = effectsOff && (track.Kind == ChannelKind.Visibility || track.Kind == ChannelKind.Emission || track.Kind == ChannelKind.Color);
                 var values = off ? track.RestSamples : track.Samples;
                 // Keep checking source freshness and the actual native pose on
                 // every frame. Only typed sampling at an identical time is
                 // redundant; a stopped visual may not have been sampled yet.
-                if (!off && (!track.HasSampledValues || !track.SampleTime.Equals(time)))
+                if (!off && (!track.HasSampledValues || !track.SampleTime.Equals(sampleTime)))
                 {
 #if UNITY_EDITOR
                     PoseSampleEvaluations++;
 #endif
-                    if (!track.Sampler.SampleInto(time, values)) { entry.Signal.Suspend("动画采样数据无效"); return; }
-                    track.SampleTime = time; track.HasSampledValues = true;
+                    if (!track.Sampler.SampleInto(sampleTime, values)) { entry.Signal.Suspend("动画采样数据无效"); return; }
+                    track.SampleTime = sampleTime; track.HasSampledValues = true;
                 }
                 if (values != null) ApplyChannel(track, values);
             }
@@ -278,6 +310,7 @@ namespace HeatTreatment.DigitalTwin.Rendering
                     tracks.Add(new JObject { ["node"] = name, ["channel"] = channel, ["actual"] = values });
                 }
                 actions.Add(new JObject { ["actionId"] = entry.Binding["actionId"], ["clipId"] = entry.Binding["clipId"],
+                    ["conveyorDirections"] = entry.Conveyor ? new JArray(entry.Tracks.Where(track => track.Kind == ChannelKind.Rotation).Select(track => track.ConveyorSign)) : null,
                     ["target"] = entry.Signal.Target, ["sourceTimestamp"] = entry.Signal.SourceTimestamp, ["signalChangedAt"] = entry.SignalChangedAt, ["firstTransformAt"] = entry.FirstTransformAt,
                     ["usable"] = entry.Signal.Usable, ["running"] = entry.Signal.Running,
                     ["reason"] = entry.Signal.Reason, ["endpointStage"] = entry.Signal.EndpointStage, ["position"] = entry.Signal.Position, ["seconds"] = entry.Signal.Seconds, ["tracks"] = tracks });

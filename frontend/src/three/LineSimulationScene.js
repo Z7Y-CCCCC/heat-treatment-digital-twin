@@ -6,8 +6,7 @@ import {LineSimulationRig} from './LineSimulationRig.js'
 import {CleanerProcessEffects} from './CleanerProcessEffects.js'
 import {loadConfiguredGltf} from '../runtime/ConfiguredFactoryScene.js'
 import {restoreGltfNodeNames} from './gltfNodeIdentity.js'
-import {resolveBackendAssetUrl,createDeviceModel} from './ModelFactory.js'
-import {FurnaceModel} from './FurnaceModel.js'
+import {resolveBackendAssetUrl} from './ModelFactory.js'
 import {deviceLocalToWorld} from '../utils/spatialLayout.js'
 import {parseSimulationConfig} from './lineSimulation.js'
 import {fitCameraBox} from '../utils/cameraBoxFit.js'
@@ -39,10 +38,8 @@ export class LineSimulationScene extends CadMotionScene {
         for(const row of plan.rows){
             if(this.disposed)throw Error('加载已取消')
             const model=row.capabilities.model
-            let asset
-            if(row.model_type==='builtin_furnace')asset=new FurnaceModel(row.id,row.name)
-            else if(row.model_type==='transfer_cart'&&!model?.file_path)asset=await createDeviceModel(row,[])
-            else{const gltf=await loadConfiguredGltf(resolveBackendAssetUrl(model.file_path),{signal:this.abort.signal});restoreGltfNodeNames(gltf);asset=gltf.scene}
+            if(!model?.file_path)throw Error(`${row.name||row.id} 缺少可加载的模型资产`)
+            const gltf=await loadConfiguredGltf(resolveBackendAssetUrl(model.file_path),{signal:this.abort.signal});restoreGltfNodeNames(gltf);const asset=gltf.scene
             if(this.disposed){this.release(asset);throw Error('加载已取消')}
             if(row.model_type==='ultrasonic_cleaner_cad'){const detached=asset.getObjectByName('221_气动管路');if(detached)detached.visible=false}
             const box=bounds(asset),center=box.getCenter(new T.Vector3())

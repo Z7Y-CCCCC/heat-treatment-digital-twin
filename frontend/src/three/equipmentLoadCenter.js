@@ -10,8 +10,7 @@ const CAD_BEDS={
 const OTHER_BEDS={
     ultrasonic_cleaner_cad:'026_棍子座',
     photo_multipurpose_furnace_v6:'chamber_visible_brushed_metal',
-    photo_tempering_furnace_v6:'temper_v6_refractory_chamber_temper_lining',
-    builtin_furnace:'load_tray'
+    photo_tempering_furnace_v6:'temper_v6_refractory_chamber_temper_lining'
 }
 
 // Measure in the untouched asset's coordinate system before the preview rig

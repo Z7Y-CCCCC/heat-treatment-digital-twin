@@ -47,6 +47,11 @@ namespace HeatTreatment.DigitalTwin.Runtime
         private IReadOnlyDictionary<string, MobileDeviceMotion> _motions;
         private readonly BidirectionalTransferRuntime _bidirectional=new BidirectionalTransferRuntime();
         private readonly SimpleMaterialTransferRuntime _simpleMaterial = new SimpleMaterialTransferRuntime();
+        // Explicit local commissioning probe only. Normal launches perform no
+        // extra serialization or disk I/O; collecting a snapshot never drives motion.
+        private string _probeFile = Environment.GetEnvironmentVariable("DIGITAL_TWIN_TRANSFER_PROBE_FILE");
+        private double _nextProbe;
+        private int _probeSamples;
 
         public void Configure(IEnumerable<DeviceDto> devices, IEnumerable<ModelAssetDto> models,
             IReadOnlyDictionary<string, Transform> roots, IReadOnlyDictionary<string, MobileDeviceMotion> motions, IEnumerable<LineDto> lines = null)
@@ -54,6 +59,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
             _roots = roots; _motions = motions; _devices.Clear(); _movingDevices.Clear(); _inletPorts.Clear(); _outletPorts.Clear();
             var deviceRows = (devices ?? Enumerable.Empty<DeviceDto>()).ToArray();
             _simpleMaterial.Configure(deviceRows, models, roots, motions, transform);
+            _simpleMaterial.ResolveDockingAnchors();
             _bidirectional.Configure(deviceRows,models,roots,motions,lines);
             _lineLayouts.Clear();
             foreach (var line in lines ?? Enumerable.Empty<LineDto>())
@@ -223,6 +229,24 @@ namespace HeatTreatment.DigitalTwin.Runtime
         private void LateUpdate()
         {
             Advance(Time.unscaledDeltaTime, Time.realtimeSinceStartupAsDouble);
+            var now = Time.realtimeSinceStartupAsDouble;
+            if (string.IsNullOrWhiteSpace(_probeFile) || now < _nextProbe || _probeSamples >= 12000) return;
+            _nextProbe = now + .1;
+            try {
+                var snapshot = _simpleMaterial.Describe();
+                snapshot["capturedAt"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                snapshot["motions"] = new JArray((_motions ?? new Dictionary<string, MobileDeviceMotion>()).Select(item => new JObject {
+                    ["id"] = item.Key, ["confirmed"] = item.Value.HasConfirmedPosition, ["reliable"] = item.Value.HasReliableSourcePose,
+                    ["fresh"] = item.Value.HasFreshPosition, ["station"] = item.Value.CurrentPositionValue,
+                    ["position"] = new JArray(item.Value.transform.position.x, item.Value.transform.position.y, item.Value.transform.position.z) }));
+                // Probe-only animation evidence; ordinary launches allocate none.
+                snapshot["conveyors"] = new JArray((_roots ?? new Dictionary<string, Transform>()).Where(item => item.Value != null)
+                    .Select(item => new { item.Key, Driver = item.Value.GetComponent<DeviceAnimationDriver>() }).Where(item => item.Driver != null)
+                    .Select(item => new JObject { ["id"] = item.Key, ["actions"] = new JArray(item.Driver.CaptureDiagnostic()["actions"]
+                        .OfType<JObject>().Where(action => action["conveyorDirections"] is JArray).Select(action => action.DeepClone())) }));
+                System.IO.File.AppendAllText(_probeFile, snapshot.ToString(Newtonsoft.Json.Formatting.None) + Environment.NewLine);
+                _probeSamples++;
+            } catch (Exception error) { _probeFile = null; Debug.LogWarning("[SimpleTransferProbe] Recording stopped: " + error.Message); }
         }
         public void Advance(float deltaTime, double now)
         {
