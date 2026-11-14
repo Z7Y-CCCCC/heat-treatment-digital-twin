@@ -96,7 +96,7 @@ app.use(securityHeaders);
 if (process.env.ENABLE_CORS !== 'false') app.use(createCorsMiddleware());
 app.use((req, res, next) => {
     const requestPath = req.path.toLowerCase();
-    const diagnostic = ['/api/health', '/api/engine/status', '/api/collector/status', '/api/internal/shutdown'].includes(requestPath)
+    const diagnostic = ['/api/health', '/api/engine/status', '/api/collector/status', '/api/system/connections/status', '/api/internal/shutdown'].includes(requestPath)
         || requestPath.startsWith('/api/admin-auth');
     if (siteRecoveryStatus().pending && !diagnostic && (requestPath.startsWith('/api/') || requestPath.startsWith('/uploads/models'))) {
         res.status(503).json({ success: false, code: 'SITE_RECOVERY_PENDING', error: '整站恢复状态待确认，自动采集、维护及业务接口已暂停，恢复证据完整保留' });
@@ -173,6 +173,7 @@ app.get('/api/version', (req, res) => {
 // 仅供 Electron 本机管理“登录后自启”和局域网投屏，路由内部会拒绝非回环请求。
 const runtimeController = { lanDisplay: null };
 app.use('/api/system/runtime', require('./routes/runtime')(runtimeController));
+app.use('/api/system/connections', require('./routes/adminConnections')());
 
 // 局域网电视发现（SSDP）与 DLNA 一键投屏，同样只对本机开放。
 const castController = { discovery: null, screenCast: null };

@@ -152,6 +152,14 @@ module.exports = function createAdminAuthRouter(auth = getAdminAuth) {
     router.post('/native-exchange', handle((req, res, service) => {
         sendSession(req, res, service.exchangeNativeTicket(req.body?.ticket, suppliedAdminSessionForSlot(req, 'main')));
     }));
+    router.post('/native-confirm', handle((req, res, service) => {
+        if (!req.body || Object.keys(req.body).some(key => key !== 'ticket') || !/^[a-f0-9]{64}$/.test(req.body.ticket || '')) {
+            res.status(400).json({ success: false, code: 'NATIVE_CONFIRM_INVALID', error: '大屏连接确认请求无效' });
+            return;
+        }
+        res.json(service.confirmNativeTicket(suppliedAdminSession(req), req.get('x-csrf-token'), req.body.ticket,
+            (childSessionKey, now) => global.wsServer?.nativeSessionConnectionHealth?.(childSessionKey, now) || {}));
+    }));
     router.post('/setup', handle(async (req, res, service) => {
         const result = await service.setup(req.body?.password, req.socket.remoteAddress, suppliedAdminSessionForSlot(req, 'main'));
         sendSession(req, res, result, 'main', true);

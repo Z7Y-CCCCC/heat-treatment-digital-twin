@@ -13,6 +13,7 @@ const { seedTemplateConfiguration } = require('./templateData.cjs');
 const { deploymentFile, resolveDeployment, saveDeployment } = require('./deployment.cjs');
 const { runStartupActivation } = require('./activation.cjs');
 const { resolveNativeClientPath, validateNativeClientFiles } = require('./nativeClientPath.cjs');
+const { createServiceControl } = require('./serviceControl.cjs');
 const {
     cleanupLogArchives,
     createRotatingLogWriter
@@ -585,6 +586,7 @@ function isLoopbackAddress(address) {
 function startDesktopControlServer() {
     if (desktopControlServer) return Promise.resolve(desktopControlOrigin);
     desktopControlToken = crypto.randomBytes(32).toString('hex');
+    const serviceControl = createServiceControl({ restart: restartNativeClient, openCenter: () => showCollectorCenter({ strict: true }) });
     desktopControlServer = http.createServer((request, response) => {
         const pathname = new URL(request.url || '/', 'http://127.0.0.1').pathname;
         if (request.method === 'GET' && pathname === '/health') {
@@ -599,6 +601,8 @@ function startDesktopControlServer() {
             response.end(JSON.stringify({ success: false, error: '拒绝访问' }));
             return;
         }
+
+        if (serviceControl(request, response, pathname)) return;
 
         if (request.method === 'POST' && pathname === '/startup-ready') {
             response.writeHead(202, { 'content-type': 'application/json; charset=utf-8' });
@@ -1255,14 +1259,17 @@ function stopNativeClient() {
 }
 
 async function restartNativeClient() {
-    if (isQuitting || !applicationOrigin || !writablePaths) return;
+    if (isQuitting || !applicationOrigin || !writablePaths) throw new Error('当前桌面尚未就绪，不能重启大屏');
     try {
         await stopNativeClient();
         await startNativeClient(applicationOrigin, writablePaths);
+        await waitForNativeHostReady(45000);
+        if (isQuitting || !nativeProcess || hasProcessExited(nativeProcess)) throw new Error('新大屏进程未保持运行');
     } catch (error) {
         logDesktopError('native-client-restart', error);
         dialog.showErrorBox(APP_NAME, `原生大屏启动失败：${error.message}`);
         showAdminWindow();
+        throw error;
     }
 }
 
@@ -1496,10 +1503,13 @@ function createTray() {
     updateTrayMenu();
 }
 
-async function showCollectorCenter() {
+async function showCollectorCenter({ strict = false } = {}) {
     let executable;
     try { executable = require('./collectorLocation.cjs').collectorCenterExecutable({ projectRoot: app.isPackaged ? null : path.resolve(__dirname, '..') }); }
-    catch (error) { await dialog.showMessageBox({ type: 'info', title: '采集运行中心', message: error.message, buttons: ['确定'] }); return; }
+    catch (error) {
+        if (strict) throw error;
+        await dialog.showMessageBox({ type: 'info', title: '采集运行中心', message: error.message, buttons: ['确定'] }); return;
+    }
     await new Promise((resolve, reject) => {
         // Independent native process; do not supervise it as a display child.
         const child = spawn(executable, [], { windowsHide: false, stdio: 'ignore', detached: true });

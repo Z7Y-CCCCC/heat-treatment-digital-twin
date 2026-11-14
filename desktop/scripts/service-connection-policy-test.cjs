@@ -1,0 +1,31 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const { spawnSync } = require('node:child_process');
+const root = path.resolve(__dirname, '../..');
+const output = path.join(root, 'output', 'service-connection-policy');
+fs.mkdirSync(output, { recursive: true });
+const xml = value => value.replace(/&/g, '&amp;').replace(/"/g, '&quot;');
+fs.writeFileSync(path.join(output, 'PolicyTest.csproj'), `<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net8.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable></PropertyGroup><ItemGroup>${['ServiceConnectionPolicy.cs', 'WebContentPolicy.cs'].map(file => `<Compile Include="${xml(path.join(root, 'native-admin-host', file))}" Link="${file}" />`).join('')}</ItemGroup></Project>`);
+fs.writeFileSync(path.join(output, 'Program.cs'), `using System.Text.Json;
+using HeatTreatmentAdminHost;
+int checks=0;
+void Check(bool condition) { checks++; if(!condition) throw new Exception("Policy assertion "+checks); }
+var app="http://127.0.0.1:3001/admin?embedded=unity";
+Check(ServiceConnectionPolicy.IsAdminSource(app,app));
+foreach(var source in new[]{"http://127.0.0.1:3001/overlay","http://127.0.0.1:3002/admin","http://127.0.0.1.evil/admin","http://user@127.0.0.1:3001/admin","file:///admin"}) Check(!ServiceConnectionPolicy.IsAdminSource(source,app));
+foreach(var id in new[]{"",new string('a',81),"../admin","id\\nvalue","id<script>"}) Check(!ServiceConnectionPolicy.IsRequestId(id));
+Check(ServiceConnectionPolicy.IsRequestId("request_123-id")); Check(ServiceConnectionPolicy.IsOperationId(new string('a',32))); Check(!ServiceConnectionPolicy.IsOperationId("../quit"));
+JsonElement Read(string json)=>JsonDocument.Parse(json).RootElement.Clone();
+var owner=Read("{\\"authenticated\\":true,\\"user\\":{\\"role\\":\\"owner\\"},\\"permissions\\":{\\"launch\\":true,\\"view\\":true}}");
+foreach(var action in new[]{"unity_reconnect","unity_restart","data_reconnect","collector_center_runtime","collector_center_data","restart_status"}) Check(ServiceConnectionPolicy.Allows(owner,action));
+foreach(var action in new[]{"shell","quit","/service/collector-center","unity_restart;cmd"}) Check(!ServiceConnectionPolicy.Allows(owner,action));
+var locked=Read("{\\"authenticated\\":false,\\"displayAuthenticated\\":true,\\"user\\":{\\"role\\":\\"owner\\"}}"); Check(!ServiceConnectionPolicy.Allows(locked,"data_reconnect"));
+var data=Read("{\\"authenticated\\":true,\\"pagePermissions\\":{\\"settings.data\\":{\\"view\\":true,\\"edit\\":true}}}"); Check(ServiceConnectionPolicy.Allows(data,"collector_center_data")); Check(!ServiceConnectionPolicy.Allows(data,"unity_restart"));
+var runtime=Read("{\\"authenticated\\":true,\\"pagePermissions\\":{\\"settings.runtime\\":{\\"view\\":true,\\"edit\\":true}}}"); Check(ServiceConnectionPolicy.Allows(runtime,"data_reconnect")); Check(!ServiceConnectionPolicy.Allows(runtime,"unity_restart"));
+Console.WriteLine(JsonSerializer.Serialize(new{success=true,checks}));`);
+const result = spawnSync('dotnet', ['run', '--project', path.join(output, 'PolicyTest.csproj'), '--configuration', 'Release'],
+    { cwd: root, encoding: 'utf8', windowsHide: true, timeout: 120000 });
+if (result.error) throw result.error;
+assert.equal(result.status, 0, result.stdout + result.stderr);
+process.stdout.write(result.stdout);

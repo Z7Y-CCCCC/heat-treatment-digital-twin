@@ -47,6 +47,21 @@ internal sealed class DashboardOverlayForm : Form
     private NativeQualityState? _qualityState;
     private string _lastQualityHotkey = "";
     private long _lastQualityHotkeyAt;
+    private readonly Dictionary<string, TaskCompletionSource<int>> _channelReconnects = new();
+
+    public async Task<int> ReconnectActiveChannelsAsync(string requestId)
+    {
+        if (_webView?.CoreWebView2 == null || !_navigationReady || IsDisposed)
+            throw new InvalidOperationException("数据层尚未就绪");
+        var completion = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _channelReconnects.Add(requestId, completion);
+        try
+        {
+            _webView.CoreWebView2.PostWebMessageAsJson(JsonSerializer.Serialize(new { type = "service_channel_reconnect", requestId }));
+            return await completion.Task.WaitAsync(TimeSpan.FromSeconds(23));
+        }
+        finally { _channelReconnects.Remove(requestId); }
+    }
 
     public event Action<string?, bool>? AdminRequested;
     public event Action? CustomerOperationsRequested;
@@ -109,6 +124,7 @@ internal sealed class DashboardOverlayForm : Form
         _webView.CoreWebView2.Settings.IsStatusBarEnabled = false;
         _webView.CoreWebView2.Settings.AreDefaultContextMenusEnabled = false;
         _webView.CoreWebView2.Settings.IsZoomControlEnabled = false;
+        ServiceConnectionNavigationGuard.Install(_webView.CoreWebView2, _options.Url);
         await SetWindowThemeAsync(_windowTheme);
         UpdateDpiState();
         UpdateWebViewBounds();
@@ -712,6 +728,19 @@ internal sealed class DashboardOverlayForm : Form
             var root = document.RootElement;
             if (!root.TryGetProperty("type", out var typeElement)) return;
             var type = typeElement.GetString();
+            if (type == "service_channel_reconnect_result")
+            {
+                if (!Uri.TryCreate(args.Source, UriKind.Absolute, out var source) || source.AbsolutePath != "/overlay") return;
+                var requestId = root.TryGetProperty("requestId", out var id) && id.ValueKind == JsonValueKind.String ? id.GetString() : null;
+                if (requestId != null && _channelReconnects.TryGetValue(requestId, out var completion))
+                {
+                    if (root.TryGetProperty("success", out var success) && success.ValueKind == JsonValueKind.True
+                        && root.TryGetProperty("channels", out var count) && count.TryGetInt32(out var channels) && channels > 0)
+                        completion.TrySetResult(channels);
+                    else completion.TrySetException(new InvalidOperationException("没有活跃通道或新握手未确认"));
+                }
+                return;
+            }
             if (type == "host_action"
                 && root.TryGetProperty("action", out var actionElement)
                 && actionElement.GetString() == "show_admin")

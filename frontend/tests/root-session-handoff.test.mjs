@@ -9,6 +9,8 @@ import { deferred, installBrowser, settle } from './helpers.mjs'
 const session=reactive({ready:true,authenticated:true,displayAuthenticated:true,serviceUnavailable:false,accountSlotId:'main',user:{id:'owner'},permissions:{view:true,launch:true}})
 let issueTicket=async()=> 'owned-ticket',tracking=0
 test.mock.module('../src/runtime/adminSession.js',{namedExports:{adminSession:session,issueNativeSessionTicket:(...args)=>issueTicket(...args),logoutCurrentAdminAccount:async()=>{},refreshAdminSession:async()=>{},startAdminSessionTracking:()=>{tracking++},stopAdminSessionTracking:()=>{tracking--}}})
+// This suite tests account handoff, not the service channel implementation.
+test.mock.module('../src/runtime/DataStore.js',{namedExports:{reconnectActiveDashboardChannels:async()=>({success:true,channels:1})}})
 const file=new URL('../src/RootApp.vue',import.meta.url),{descriptor}=parse(await readFile(file,'utf8'))
 let source=compileScript(descriptor,{id:'root-handoff'}).content
 for(const match of [...source.matchAll(/from\s+(['"])([^'"]+)\1/g)])source=source.replace(match[0],`from ${JSON.stringify(match[2].endsWith('.vue')?'data:text/javascript,export default {}':match[2].startsWith('.')?new URL(match[2],file).href:import.meta.resolve(match[2]))}`)

@@ -2,6 +2,27 @@ import { reactive, ref } from 'vue';
 import { API_BASE, getWebSocketUrl } from './backendEndpoint.js';
 import { adminFetch } from './adminSession.js';
 
+// Only stores whose owners already requested a realtime channel participate.
+// A header action never creates a telemetry/metrics subscription by itself.
+const activeDashboardChannels = new Set();
+let activeChannelReconnect = null;
+export const getActiveDashboardChannelCount = () => activeDashboardChannels.size;
+export function reconnectActiveDashboardChannels(options = {}) {
+    if (activeChannelReconnect) return activeChannelReconnect;
+    if (!activeDashboardChannels.size) return Promise.reject(Object.assign(new Error('当前页面没有活跃实时通道'), { code: 'NO_ACTIVE_CHANNEL' }));
+    const operation = Promise.allSettled([...activeDashboardChannels].map(channel => channel.reconnect(options)))
+        .then(settled => {
+            const failed = settled.find(result => result.status === 'rejected');
+            if (failed) throw failed.reason;
+            const results = settled.map(result => result.value);
+            return { success: true, channels: results.length, results };
+        });
+    activeChannelReconnect = operation;
+    const clear = () => { if (activeChannelReconnect === operation) activeChannelReconnect = null; };
+    operation.then(clear, clear);
+    return operation;
+}
+
 function getDeviceQuality(data) {
     const groups = data?.quality || {};
     const values = Object.values(groups).flatMap(group => Object.values(group || {}));
@@ -82,6 +103,8 @@ export function createDashboardDataStore(options = {}) {
     const lastSeenMap = new Map();
     let configuredDeviceIds = null;
     let wsClient = null;
+    let manualReconnect = null;
+    const channelControl = { reconnect };
     let connectedOnce = false;
     let reconnectTimer = null;
     let connectionTimer = null;
@@ -570,22 +593,74 @@ export function createDashboardDataStore(options = {}) {
         }
     }
 
+    function detachSocket(socket) {
+        socket.onopen = null;
+        socket.onmessage = null;
+        socket.onclose = null;
+        socket.onerror = null;
+    }
+
+    function finishReconnect(error, result) {
+        const operation = manualReconnect;
+        if (!operation) return;
+        manualReconnect = null;
+        clearTimeout(operation.timer);
+        if (error) operation.reject(error);
+        else operation.resolve(result);
+    }
+
+    function reconnect({ timeoutMs = 15000 } = {}) {
+        if (disposed) return Promise.reject(Object.assign(new Error('实时通道已销毁'), { code: 'CHANNEL_DISPOSED' }));
+        if (manualReconnect) return manualReconnect.promise;
+        if (reconnectTimer) clearTimeout(reconnectTimer);
+        if (connectionTimer) clearTimeout(connectionTimer);
+        reconnectTimer = connectionTimer = null;
+        if (wsClient) {
+            detachSocket(wsClient);
+            try { wsClient.close(); } catch { /* continue with a fresh socket */ }
+            wsClient = null;
+        }
+        wsConnected.value = false;
+        suspendMotionInputs();
+        plcStatusText.value = '正在重建实时通道...';
+        let resolve, reject;
+        const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
+        const operation = { promise, resolve, reject, socket: null, timer: null };
+        manualReconnect = operation;
+        operation.timer = setTimeout(() => {
+            if (manualReconnect !== operation) return;
+            const socket = operation.socket;
+            finishReconnect(Object.assign(new Error('实时通道新握手超时'), { code: 'CHANNEL_HANDSHAKE_TIMEOUT' }));
+            if (socket && wsClient === socket) {
+                clearTimeout(connectionTimer);
+                connectionTimer = null;
+                detachSocket(socket);
+                try { socket.close(); } catch { /* already closed */ }
+                wsClient = null;
+                wsConnected.value = false;
+                suspendMotionInputs();
+                plcStatusText.value = '连接断开，重连中...';
+                reconnectTimer = setTimeout(() => connect(), 5000);
+            }
+        }, clampNumber(timeoutMs, 1000, 60000, 15000));
+        connect();
+        return promise;
+    }
+
     function connect() {
         if (disposed) return;
+        activeDashboardChannels.add(channelControl);
         if (wsClient && wsClient.readyState < 2) return;
         if (reconnectTimer) {
             clearTimeout(reconnectTimer);
             reconnectTimer = null;
         }
 
-        const detachSocket = socket => {
-            socket.onopen = null;
-            socket.onmessage = null;
-            socket.onclose = null;
-            socket.onerror = null;
-        };
         const retry = socket => {
             if (disposed || (socket && wsClient !== socket)) return;
+            if (manualReconnect && (!socket || manualReconnect.socket === socket)) {
+                finishReconnect(Object.assign(new Error('实时通道重连失败，未收到新握手'), { code: 'CHANNEL_RECONNECT_FAILED' }));
+            }
             clearTimeout(connectionTimer);
             connectionTimer = null;
             if (socket) {
@@ -604,6 +679,7 @@ export function createDashboardDataStore(options = {}) {
         catch { retry(); }
         if (socket) {
             wsClient = socket;
+            if (manualReconnect) manualReconnect.socket = socket;
             // A TCP connection whose upgrade never completes must not hold the
             // dashboard in CONNECTING forever and suppress all future attempts.
             connectionTimer = setTimeout(() => retry(socket), 15000);
@@ -633,6 +709,10 @@ export function createDashboardDataStore(options = {}) {
                 if (disposed || wsClient !== socket) return;
                 try {
                     const msg = JSON.parse(event.data);
+                    if (msg.type === 'welcome' && manualReconnect?.socket === socket && socket.readyState === 1
+                        && Number.isFinite(msg.payload?.timestamp) && msg.payload.timestamp > 0) {
+                        finishReconnect(null, { success: true, handshakeAt: Date.now(), serverTimestamp: msg.payload.timestamp });
+                    }
                     if (msg.type === 'configuration_changed' && msg.payload?.keys?.includes('global_view_navigation')) {
                         window.dispatchEvent(new CustomEvent('global-view-navigation-changed', { detail:msg.payload }));
                     }
@@ -662,6 +742,7 @@ export function createDashboardDataStore(options = {}) {
                 if (disposed || wsClient !== socket) return;
                 wsConnected.value = false;
                 suspendMotionInputs();
+                if (manualReconnect?.socket === socket) retry(socket);
             };
         }
 
@@ -677,6 +758,8 @@ export function createDashboardDataStore(options = {}) {
 
     function dispose() {
         disposed = true;
+        activeDashboardChannels.delete(channelControl);
+        finishReconnect(Object.assign(new Error('实时通道已销毁'), { code: 'CHANNEL_DISPOSED' }));
         wsConnected.value = false;
         eventsRequestId += 1;
         pendingRequests.forEach(controller => controller.abort());
@@ -723,6 +806,7 @@ export function createDashboardDataStore(options = {}) {
         syncDevices,
         selectDevice,
         connect,
+        reconnect,
         dispose,
         refreshEvents,
         refreshMetrics,

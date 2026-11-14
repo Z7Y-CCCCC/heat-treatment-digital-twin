@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { computed } from 'vue'
-import { createDashboardDataStore } from '../src/runtime/DataStore.js'
+import { createDashboardDataStore, getActiveDashboardChannelCount, reconnectActiveDashboardChannels } from '../src/runtime/DataStore.js'
 import { deferred, installBrowser, installSockets, json, settle } from './helpers.mjs'
 
 function fixture(t, options) {
@@ -140,6 +140,80 @@ test('connect is idempotent and dispose detaches every socket callback', t => {
     for (const event of ['onopen', 'onmessage', 'onclose', 'onerror']) assert.equal(sockets[0][event], null)
     store.connect()
     assert.equal(sockets.length, 1)
+})
+
+test('explicit reconnect replaces the live socket and waits for its new server handshake', async t => {
+    const { store, sockets } = fixture(t)
+    store.connect(); sockets[0].open()
+    sockets[0].emit('device_data', { furnace_id: 'A', analog: { actual_temp: 712 } })
+    const snapshot = store.deviceDataMap.A
+    const staleOpen = sockets[0].onopen, staleMessage = sockets[0].onmessage
+    let completed = false
+    const operation = store.reconnect().then(result => { completed = true; return result })
+    assert.equal(sockets.length, 2); assert.equal(sockets[0].readyState, 3)
+    for (const event of ['onopen', 'onmessage', 'onclose', 'onerror']) assert.equal(sockets[0][event], null)
+    staleOpen(); staleMessage({ data: JSON.stringify({ type: 'welcome', payload: { timestamp: Date.now() } }) })
+    sockets[1].open(); await settle(); assert.equal(completed, false, 'TCP/upgrade success alone is not a new handshake')
+    sockets[1].emit('welcome', {}); await settle(); assert.equal(completed, false)
+    sockets[1].emit('welcome', { timestamp: Date.now() })
+    assert.equal((await operation).success, true)
+    assert.equal(store.deviceDataMap.A, snapshot, 'reconnect must not clear telemetry or configuration')
+    assert.equal(store.deviceDataMap.A.analog.actual_temp, 712)
+})
+
+test('explicit reconnect coalesces repeated clicks and rejects an open channel without a handshake', async t => {
+    t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] })
+    const { store, sockets } = fixture(t)
+    store.connect(); sockets[0].open()
+    const operation = store.reconnect({ timeoutMs: 2000 })
+    const rejected = assert.rejects(operation, error => error.code === 'CHANNEL_HANDSHAKE_TIMEOUT')
+    assert.equal(store.reconnect(), operation)
+    sockets[1].open(); t.mock.timers.tick(2000); await rejected
+    assert.equal(store.wsConnected.value, false); assert.equal(sockets[1].readyState, 3)
+    assert.equal(sockets[1].onmessage, null)
+    t.mock.timers.tick(5000); assert.equal(sockets.length, 3, 'normal recovery continues after failed manual attempt')
+})
+
+test('explicit reconnect rejects socket errors, close, constructor failure and dispose without stale success', async t => {
+    const { store, sockets } = fixture(t)
+    const first = store.reconnect(), failed = assert.rejects(first, error => error.code === 'CHANNEL_RECONNECT_FAILED')
+    sockets[0].onerror(); await failed
+    const second = store.reconnect(), closed = assert.rejects(second, error => error.code === 'CHANNEL_RECONNECT_FAILED')
+    sockets[1].close(); await closed
+    const third = store.reconnect(), disposed = assert.rejects(third, error => error.code === 'CHANNEL_DISPOSED')
+    store.dispose(); await disposed
+    await assert.rejects(store.reconnect(), error => error.code === 'CHANNEL_DISPOSED')
+    const browser = installBrowser(t)
+    browser.replace('WebSocket', class { constructor() { throw Error('fixture constructor') } })
+    const broken = createDashboardDataStore(); t.after(() => broken.dispose())
+    await assert.rejects(broken.reconnect(), error => error.code === 'CHANNEL_RECONNECT_FAILED')
+})
+
+test('header reconnect touches only previously connected stores and reports no active channel honestly', async t => {
+    const { store, sockets } = fixture(t)
+    assert.equal(getActiveDashboardChannelCount(), 0)
+    await assert.rejects(reconnectActiveDashboardChannels(), error => error.code === 'NO_ACTIVE_CHANNEL')
+    assert.equal(sockets.length, 0, 'status header must not create a data subscription')
+    store.connect(); sockets[0].open()
+    const operation = reconnectActiveDashboardChannels()
+    assert.equal(reconnectActiveDashboardChannels(), operation)
+    assert.equal(getActiveDashboardChannelCount(), 1)
+    sockets[1].open(); sockets[1].emit('welcome', { timestamp: Date.now() })
+    assert.equal((await operation).channels, 1)
+    store.dispose(); assert.equal(getActiveDashboardChannelCount(), 0)
+})
+
+test('multi-channel reconnect remains mutually exclusive until every owned attempt has settled', async t => {
+    const { store, sockets } = fixture(t)
+    const second = createDashboardDataStore(); t.after(() => second.dispose())
+    store.connect(); sockets[0].open(); second.connect(); sockets[1].open()
+    const operation = reconnectActiveDashboardChannels()
+    const rejected = assert.rejects(operation, error => error.code === 'CHANNEL_RECONNECT_FAILED')
+    sockets[2].onerror(); await settle()
+    assert.equal(reconnectActiveDashboardChannels(), operation, 'a failed first channel must not reopen while the second is still running')
+    assert.equal(sockets.length, 4)
+    sockets[3].open(); sockets[3].emit('welcome', { timestamp: Date.now() })
+    await rejected
 })
 
 test('scene projection is opt-in and does not add traffic for normal dashboards',t=>{

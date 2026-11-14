@@ -149,6 +149,7 @@ jobs:
       - run: npm --prefix desktop ci --ignore-scripts
       - run: npm --prefix desktop run test:logs
       - run: npm --prefix desktop run test:processes
+      - run: npm --prefix desktop run test:deployment
       - run: npm --prefix desktop run test:resources
       - run: node --test tools/ci/collect-release.test.cjs tools/ci/workspace-idle.test.cjs tools/ci/release-environment.test.cjs
       - run: node tools/ci/check-release.cjs

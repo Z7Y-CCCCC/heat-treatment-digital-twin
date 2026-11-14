@@ -128,6 +128,7 @@ function loadDesktop({ createLog, spawnProcess, userDataPath, deploymentConfig, 
             } };
             if (name === './processLifecycle.cjs') return require('../processLifecycle.cjs');
             if (name === './mysqlRuntime.cjs') return require('../mysqlRuntime.cjs');
+            if (name === './serviceControl.cjs') return require('../serviceControl.cjs');
             if (name === './directoryPublish.cjs') return require('../directoryPublish.cjs');
             // Native path resolution has its own real-junction regression.
             // This supervisor VM uses nonexistent paths and a fake filesystem.
@@ -566,7 +567,7 @@ test('forced Unity exit closes the client before its error dialog and never open
     // A tray click, delayed ready-to-show, pipe request or queued restart may
     // arrive while the modal is up / child cleanup is still pending.
     desktop.run('showAdminWindow(); showNativeAdminPanel(); showNativeDashboard();');
-    await desktop.run('restartNativeClient()');
+    await assert.rejects(desktop.run('restartNativeClient()'), /当前桌面尚未就绪/);
     await tick();
     assert.equal(desktop.spawnCalls, 1);
     assert.equal(events.some(([name]) => name === 'create-admin'), false);

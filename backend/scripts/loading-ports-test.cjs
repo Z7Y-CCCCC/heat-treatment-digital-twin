@@ -217,6 +217,33 @@ async function main() {
         assert.equal((await browser('/api/devices/loading-alignment', 'PUT', alignLatest, credentials)).status, page === 'lines' ? 200 : 403);
     }
     check('real HTTP sessions and CSRF enforce separate models/devices/lines authoring capabilities');
+    const rectangle = { version: 1, corners: [[-1,1,3],[1,1,3],[1,4,3],[-1,4,3]], surfaceNormal: [0,0,1], nodeName: 'real_mouth' };
+    const regionPorts = { ...none(), inlet: { position: [0,1,3], direction: [0,0,1], nodeName: 'real_mouth', region: rectangle } };
+    const regionModelBefore = await api(modelRoute, 'GET', undefined, factoryId);
+    const regionDeviceBefore = await api('/api/devices/loading_a', 'GET', undefined, factoryId), regionPeerBefore = await api('/api/devices/loading_b', 'GET', undefined, factoryId);
+    const regionModel = await api(modelRoute, 'PUT', { revision: regionModelBefore.revision, ports: regionPorts }, factoryId);
+    assert.deepEqual((await api(modelRoute, 'GET', undefined, factoryId)).ports, regionPorts);
+    const regionLoaded = await api(route, 'GET', undefined, factoryId);
+    const regionOverride = { ...none(), inlet: { offset: [1,2,3], yawDegrees: 90, region: rectangle } };
+    const regionSaved = await api(route, 'PUT', { revision: regionLoaded.revision, overrides: regionOverride }, factoryId);
+    assert.deepEqual(regionSaved.overrides, regionOverride);
+    assert.deepEqual(regionSaved.ports.inlet.position, [1,3,6]);
+    assert.deepEqual(loading.loadingPortRegionDatum(regionSaved.ports.inlet.region), [1,3,6]);
+    assert.deepEqual((await api(route, 'GET', undefined, factoryId)).overrides, regionOverride);
+    assert.deepEqual(await api('/api/devices/loading_b', 'GET', undefined, factoryId), regionPeerBefore);
+    const regionDeviceAfter = await api('/api/devices/loading_a', 'GET', undefined, factoryId);
+    for (const key of Object.keys(regionDeviceBefore)) if (key !== 'instance_config') assert.deepEqual(regionDeviceAfter[key], regionDeviceBefore[key], key);
+    for (const key of Object.keys(JSON.parse(regionModelBefore.model.metadata))) if (key !== 'loadingPorts') assert.deepEqual(JSON.parse(regionModel.model.metadata)[key], JSON.parse(regionModelBefore.model.metadata)[key], key);
+    check('authored region model and relative instance roundtrip preserve placement, PLC, peers and unrelated metadata');
+    const blankModel = await api(modelRoute, 'GET', undefined, factoryId);
+    await api(modelRoute, 'PUT', { revision: blankModel.revision, ports: none() }, factoryId);
+    const blankDevice = await api(route, 'GET', undefined, factoryId), unchanged = await api('/api/devices/loading_a', 'GET', undefined, factoryId);
+    assert.equal((await response(route, 'PUT', { revision: blankDevice.revision, overrides: regionOverride }, factoryId)).status, 400);
+    assert.deepEqual(await api('/api/devices/loading_a', 'GET', undefined, factoryId), unchanged);
+    // Explicit old offsets remain compatible; no automatic rewrite on read/start.
+    const legacy = await api(route, 'PUT', { revision: blankDevice.revision, overrides: overrides() }, factoryId);
+    assert.equal(legacy.ports.inlet, null);
+    check('new instance regions reject missing model defaults without writes while old offset-only documents remain compatible');
     const evidence = { success: true, checks, directory, origin };
     fs.writeFileSync(path.join(directory, 'result.json'), JSON.stringify(evidence, null, 2));
     console.log(JSON.stringify(evidence, null, 2));
