@@ -1,4 +1,6 @@
 <script setup>
+import { conveyorPlaybackSign } from '../three/conveyorPreview.js'
+import { resolveLoadingPort } from '../../../shared/loadingPorts.mjs'
 import ModelPartActionList from './admin/components/ModelPartActionList.vue'
 import { ref, reactive, onMounted, onUnmounted, onActivated, onDeactivated, computed, watch, nextTick } from 'vue'
 import * as THREE from 'three'
@@ -1630,8 +1632,7 @@ const selectedModelFile = ref(null)
 const MODEL_LIBRARY_STEPS = [
     { key: 'library', label: '模型资产', description: '选择与管理模型' },
     { key: 'ports', label: '进出料口', optional: true, description: '料口位置与设备进出料信号' },
-    { key: 'inspection', label: '拆解检查', description: '配置外壳、关键部件、镜头与点位上下文' },
-    { key: 'bindings', label: '部位绑定', description: '把模型节点绑定到实时点位' }
+    { key: 'inspection', label: '拆解部件', description: '选择部件与关联节点' }
 ]
 const modelLibraryStep = ref(
     activeTab.value === 'model-animations' ? 'bindings' : MODEL_LIBRARY_STEPS.some(step => step.key === storedAdminUiState.modelLibraryStep)
@@ -1753,6 +1754,7 @@ const motionWorkspaceMode = ref('parts')
 const deviceAnimationLinkRef = ref(null)
 const cleanerProcessActions = CLEANER_ACTIONS
 const motionInlineProcess = ref('')
+const motionPreviewFlow = ref('')
 const motionInlinePreviewRef = ref(null)
 const canPreviewCleanerProcesses = computed(() => activeTab.value === 'model-animations' && selectedPreviewModelId.value === 'ultrasonic_cleaner_cad')
 const inlineCleanerPreview = computed(() => canPreviewCleanerProcesses.value && motionWorkspaceMode.value === 'parts' && !!motionInlineProcess.value)
@@ -1767,12 +1769,14 @@ watch([selectedPreviewModelId, motionBindingSearch], () => { motionBindingPage.v
 watch(motionBindingPageCount, count => { motionBindingPage.value = Math.min(motionBindingPage.value, count) })
 watch([selectedPreviewModelId, activeTab], () => { motionInlineProcess.value = '' })
 
-function previewInlineCleanerProcess(id, reveal = false) {
+function previewInlineCleanerProcess(id, reveal = false, flow = '') {
+    const previousFlow = motionPreviewFlow.value
+    motionPreviewFlow.value = flow
     const cadAction = cadPreviewActions.value.some(action => action.id === id)
     if (!cadAction && (!canPreviewCleanerProcesses.value || !cleanerProcessActions.some(action => action.id === id))) return
     clearModelPreviewAnimation()
     previewModelBindingIndex.value = -1
-    if (motionInlineProcess.value === id) motionInlinePreviewRef.value?.previewProcessStage(id)
+    if (motionInlineProcess.value === id && previousFlow === flow) motionInlinePreviewRef.value?.previewProcessStage(id)
     motionInlineProcess.value = id
     modelBindingStatus.value = cadAction ? '正在本页预览 CAD 动作；现场信号尚未映射。' : '正在本页预览清洗工艺；工艺效果为模拟演示。'
     if (reveal) {
@@ -1784,6 +1788,17 @@ function previewInlineCleanerProcess(id, reveal = false) {
     }
 }
 
+function previewConveyorFlow(entry, kind) {
+    if (entry.process) { previewInlineCleanerProcess(entry.process.id, false, kind); return }
+    previewModelBinding(entry.index)
+    const port = resolveLoadingPort(activePreviewModel.value, null, kind)
+    if (!port || !modelPreviewAnimationState) { clearModelPreviewAnimation(); modelBindingStatus.value = '请先配置对应进出料口'; return }
+    const travel = new THREE.Vector3(...port.direction).transformDirection(modelPreviewRootObject.matrixWorld).multiplyScalar(kind === 'inlet' ? -1 : 1)
+    try { for (const state of modelPreviewAnimationState.entries) {
+        const next = state.target.rotation.clone(); next[state.axis] += Math.sign(state.binding.speed_factor || 1) * .05
+        state.conveyorPreviewSign = conveyorPlaybackSign(state.target, state.target.quaternion, new THREE.Quaternion().setFromEuler(next), travel)
+    }} catch (error) { clearModelPreviewAnimation(); modelBindingStatus.value = error.message }
+}
 function stopMotionPreview() {
     motionInlineProcess.value = ''
     clearModelPreviewAnimation()
@@ -2045,6 +2060,11 @@ watch(manualDisassemblySaveRevision, () => {
         && activePreviewModel.value?.id === manualDisassemblyModelId.value) loadModelInspectionState(activePreviewModel.value)
 })
 
+async function openModelDisassemblyLayout() {
+    const id = selectedPreviewModelId.value
+    await selectAdminTab('disassembly-layout')
+    if (activeTab.value === 'disassembly-layout') await manualDisassemblyPage.selectModel(id)
+}
 async function changeManualDisassemblyModel(event) {
     await manualDisassemblyPage.selectModel(event.target.value)
     event.target.value = manualDisassemblyModelId.value
@@ -2640,7 +2660,7 @@ function updateModelPreviewBinding(state, delta) {
             Math.abs(toPreviewNumber(binding.input_max, 100)) || Math.abs(toPreviewNumber(binding.output_max, 90)) || 60
         )
         const factor = Number.isFinite(Number(binding.speed_factor)) ? Number(binding.speed_factor) : (Math.PI * 2 / 60)
-        target.rotation[axis] += delta * previewRpm * factor
+        target.rotation[axis] += delta * previewRpm * factor * (state.conveyorPreviewSign ?? 1)
         return
     }
 
@@ -8407,7 +8427,7 @@ async function openAdminSetupStep(step) {
                 <!-- ======== 模型库 ======== -->
                 <section v-if="activeTab === 'disassembly-layout'" class="manual-disassembly-tab" data-testid="manual-disassembly-page">
                     <header class="manual-layout-page-heading">
-                        <div><h2>拆解布局</h2><p>按模型型号摆放部件。</p></div>
+                        <div><h2>拆解布局</h2><p>部件摆放、播放效果与镜头设置</p></div>
                         <label>选择模型
                             <select :value="manualDisassemblyModelId" aria-label="选择拆解布局模型" :disabled="manualDisassemblySaving || manualDisassemblyLoading" @change="changeManualDisassemblyModel">
                                 <option v-if="!manualDisassemblyChoices.length" value="">模型库暂无设备模型</option>
@@ -8454,7 +8474,7 @@ async function openAdminSetupStep(step) {
                     <template v-else>
                         <ModelPlacementMenu ref="modelPlacementMenuRef" :busy="modelPlacementSaving || modelNameSaving || modelUploading" @change="saveModelPlacement" />
                         <h2>3D 模型库</h2>
-                        <p class="desc">管理模型资产、拆解检查与部位绑定。</p>
+                        <p class="desc">管理模型、进出料口与拆解部件。</p>
                         <label v-if="modelLibraryStep === 'ports'" class="loading-port-model-picker">选择模型
                             <select :value="selectedPreviewModelId" aria-label="选择进出料口模型" :disabled="modelLoadingPortRef?.busy" @change="changeLoadingPortModel">
                                 <option v-for="model in loadingPortModelOptions" :key="model.id" :value="model.id">{{ formatModelSetupOption(model, 'ports') }}</option>
@@ -8583,18 +8603,19 @@ async function openAdminSetupStep(step) {
                                     @command="inspectionPreviewCommand"
                                     @capture-camera="captureInspectionCamera"
                                     @native-preview="previewInspectionOnNativeDevice"
+                                    @open-layout="openModelDisassemblyLayout"
                                 />
                                 <p v-else-if="!canEditModelBindings">请选择具有真实节点结构的 GLB / GLTF 模型，再配置拆解。</p>
                             </section>
 
-                            <section v-if="activePreviewModel && !activePreviewIsEnvironment" v-show="modelLibraryStep === 'bindings'" class="model-binding-editor model-library-step-panel">
+                            <section v-if="activePreviewModel && !activePreviewIsEnvironment" v-show="activeTab === 'model-animations' && modelLibraryStep === 'bindings'" class="model-binding-editor model-library-step-panel">
                                 <div class="model-binding-header"><div><h3>部件动作</h3><p>动作通过动作包导入，选择动作即可预览。</p></div></div>
                                 <ModelPartActionList
                                     :entries="motionBindingPageEntries" :total="motionBindingEntries.length" :node-count="motionNodeCount"
                                     v-model:search="motionBindingSearch" v-model:page="motionBindingPage" :page-count="motionBindingPageCount"
                                     :active-binding-index="previewModelBindingIndex" :active-process-id="motionInlineProcess"
                                     :format-binding-name="formatModelBindingPartName"
-                                    @preview-binding="previewModelBinding" @preview-process="previewInlineCleanerProcess"
+                                    @preview-binding="previewModelBinding" @preview-process="previewInlineCleanerProcess" @preview-flow="previewConveyorFlow"
                                 />
                             </section>
                         </section>
@@ -8603,7 +8624,7 @@ async function openAdminSetupStep(step) {
                             <ModelTransferSequence ref="motionInlinePreviewRef" :models="models" :initial-stage="motionInlineProcess" inline-preview @close-preview="stopMotionPreview" />
                         </aside>
                         <aside v-if="inlineCadPreview" class="model-preview-panel inline-process-panel" aria-label="CAD 设备动作本页预览">
-                            <CadMotionPreview ref="motionInlinePreviewRef" :model="activePreviewModel" :action-id="motionInlineProcess" @close-preview="stopMotionPreview" />
+                            <CadMotionPreview ref="motionInlinePreviewRef" :model="activePreviewModel" :action-id="motionInlineProcess" :transfer-flow="motionPreviewFlow" @close-preview="stopMotionPreview" />
                         </aside>
                         <aside v-show="!inlineProcessPreview" class="model-preview-panel" :class="{ 'inspection-preview-panel': modelLibraryStep === 'inspection' }">
                             <div class="model-preview-header">
@@ -10396,6 +10417,16 @@ async function openAdminSetupStep(step) {
     .manual-disassembly-tab { min-height: 550px; }
 }
 @media (max-width: 900px) { .manual-layout-page-heading { align-items: stretch; flex-direction: column; gap: 7px; } }
+@media (max-width: 1050px) {
+    .manual-layout-active .tab-transition-host { flex: 0 0 auto; }
+    .manual-disassembly-tab { flex: 0 0 auto; min-height: 0; }
+    .manual-disassembly-tab :deep(.presentation-workspace) { display: block; flex: none; }
+    .manual-disassembly-tab :deep(.presentation-workspace .layout-body) { grid-template-columns: 1fr; flex: none; min-height: 0; overflow: visible; }
+    .manual-disassembly-tab :deep(.presentation-workspace .settings-sidebar) { max-height: 400px; overflow: auto; }
+    .manual-disassembly-tab :deep(.presentation-workspace .presentation-settings) { max-height: none; }
+    .manual-disassembly-tab :deep(.presentation-workspace .part-sidebar) { max-height: 400px; }
+    .manual-disassembly-tab :deep(.presentation-workspace .viewport-shell) { min-height: 550px; }
+}
 .tab-content h2 { margin: 0 0 6px 0; font-size: calc(24px * var(--admin-font-scale, 1)); color: #1d1d1f; font-weight: 600; letter-spacing: -0.5px; }
 .desc { color: #86868b; font-size: calc(14px * var(--admin-font-scale, 1)); margin-bottom: 28px; }
 .factory-hierarchy-note { margin: 0 0 18px; padding: 15px 17px; background: #f7f9fc; border: 1px solid #e3e8ef; border-radius: 10px; }
@@ -13075,7 +13106,7 @@ button:enabled:active {
 .model-library-main {
     min-width: 0;
 }
-.model-step-nav-shell .secondary-page-nav { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.model-step-nav-shell .secondary-page-nav { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .model-step-nav-shell .secondary-page-nav-item:disabled { color: #a1a1a6; background: rgba(248, 248, 250, .72); border-color: rgba(0, 0, 0, .035); box-shadow: none; cursor: not-allowed; opacity: .62; transform: none; }
 .model-step-nav-shell .secondary-page-nav-item:disabled:hover { color: #a1a1a6; background: rgba(248, 248, 250, .72); border-color: rgba(0, 0, 0, .035); box-shadow: none; transform: none; }
 .model-library-step-panel { animation: secondary-page-in 180ms cubic-bezier(.22, 1, .36, 1); }

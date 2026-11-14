@@ -7,11 +7,13 @@ import * as T from 'three'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { GLTFExporter } from 'three/examples/jsm/exporters/GLTFExporter.js'
 import { CadMotionRig } from '../src/three/CadMotionRig.js'
+import { canonicalDoorProgress, DOOR_ENDPOINT_CONVENTION } from '../../shared/motionEndpointConvention.mjs'
 import { CAD_MOTION_PROFILES } from '../src/three/cadMotionProfiles.js'
 import { CleanerProcessEffects } from '../src/three/CleanerProcessEffects.js'
 import { CLEANER_ACTIONS } from '../src/views/admin/utils/motionEntries.js'
 import { restoreGltfNodeNames } from '../src/three/gltfNodeIdentity.js'
-const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../..'),out=path.join(root,'backend/assets/motions')
+const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../..'),isolated=process.env.MOTION_PACKAGE_OUTPUT_DIR,
+ out=isolated?path.resolve(isolated):path.join(root,'backend/assets/motions')
 fs.mkdirSync(out,{recursive:true})
 globalThis.FileReader=class {readAsArrayBuffer(blob){blob.arrayBuffer().then(v=>{this.result=v;this.onloadend?.()})} readAsDataURL(blob){blob.arrayBuffer().then(v=>{this.result=`data:${blob.type};base64,${Buffer.from(v).toString('base64')}`;this.onloadend?.()})}}
 const sha=b=>crypto.createHash('sha256').update(b).digest('hex'),round=v=>Math.round(v*1e6)/1e6
@@ -24,13 +26,20 @@ for(const id of [...Object.keys(CAD_MOTION_PROFILES),'ultrasonic_cleaner_cad'].f
  const asset=gltf.scene,wrapper=new T.Group();wrapper.name='motion_asset_root';wrapper.add(asset)
  let rig,effects,apply,reset,actions
  if(CAD_MOTION_PROFILES[id]){
-   rig=new CadMotionRig(asset,id);reset=()=>rig.reset()
+   rig=new CadMotionRig(asset,id)
+   const convention=CAD_MOTION_PROFILES[id].legacyDoorEndpoints||DOOR_ENDPOINT_CONVENTION
+   const closeLegacyDoor=()=>{if(convention.closed===1){rig.move('door','y',-.9);rig.move('door_carriages','y',-.9)}}
+   reset=()=>{rig.reset();closeLegacyDoor()}
    actions=CAD_MOTION_PROFILES[id].actions.map(a=>({...a,mode:modes[a.id]||'running',duration:a.preserveDuration?a.duration:(modes[a.id]==='position' && !['fill','drain'].includes(a.id)&&!a.oneWay)?a.duration/2:(modes[a.id]==='position'?a.duration:5)}))
    // Preview demos ease out and back with sin². PLC position is a measured
    // stroke, not demo elapsed time: 25% feedback must show 25% of travel.
    // Keep the authored mechanism/geometry, invert only that demo easing.
-   apply=(a,t)=>rig.apply(a.id,a.mode==='position'&&!['fill','drain'].includes(a.id)&&!a.oneWay
-     ? CAD_MOTION_PROFILES[id].actions.find(x=>x.id===a.id).duration*Math.asin(Math.sqrt(Math.max(0,Math.min(1,t/a.duration))))/Math.PI : t)
+   apply=(a,t)=>{
+     const progress=Math.max(0,Math.min(1,t/a.duration)),canonical=a.id==='door'?canonicalDoorProgress(progress,convention):progress
+     rig.apply(a.id,a.mode==='position'&&!['fill','drain'].includes(a.id)&&!a.oneWay
+       ? CAD_MOTION_PROFILES[id].actions.find(x=>x.id===a.id).duration*Math.asin(Math.sqrt(canonical))/Math.PI : t)
+     if(a.id!=='door')closeLegacyDoor()
+   }
  }else{
    effects=new CleanerProcessEffects(asset,asset);reset=()=>effects.apply(null)
    actions=CLEANER_ACTIONS.map(a=>({id:a.id,label:a.label,mode:['fill','drain'].includes(a.id)?'position':'running',duration:['fill','drain'].includes(a.id)?a.seconds:5}))
@@ -70,13 +79,13 @@ for(const id of [...Object.keys(CAD_MOTION_PROFILES),'ultrasonic_cleaner_cad'].f
    clips.push({id:a.id,label:a.label,mode:a.mode,duration:a.duration,count,tracks})
  }
  reset();adapters.forEach(f=>f());wrapper.updateMatrixWorld(true)
- const binary=Buffer.from(await new GLTFExporter().parseAsync(wrapper,{binary:true,onlyVisible:false,trs:true})),packageData={schemaVersion:1,modelId:id,sourceSha256:sha(source),rigSha256:sha(binary),nodes:targets.map((n,i)=>({name:n.name,...baseline[i]})),clips}
+ const binary=Buffer.from(await new GLTFExporter().parseAsync(wrapper,{binary:true,onlyVisible:false,trs:true})),packageData={schemaVersion:1,modelId:id,sourceSha256:sha(source),rigSha256:sha(binary),endpointConvention:{door:DOOR_ENDPOINT_CONVENTION},nodes:targets.map((n,i)=>({name:n.name,...baseline[i]})),clips}
  const bytes=Buffer.from(JSON.stringify(packageData)),stem=id
  fs.writeFileSync(path.join(out,stem+'.glb'),binary);fs.writeFileSync(path.join(out,stem+'.json'),bytes)
- catalog.models[id]={sourcePath:`/assets/models/${id}.glb`,sourceSha256:sha(source),rigPath:`/assets/motions/${stem}.glb`,rigSha256:sha(binary),clipPath:`/assets/motions/${stem}.json`,clipSha256:sha(bytes),actions:clips.map(({id,label,mode,duration,tracks})=>({id,label,mode,duration,channels:tracks.map(t=>t.node+':'+t.channel)}))}
+ catalog.models[id]={sourcePath:`/assets/models/${id}.glb`,sourceSha256:sha(source),rigPath:`/assets/motions/${stem}.glb`,rigSha256:sha(binary),clipPath:`/assets/motions/${stem}.json`,clipSha256:sha(bytes),endpointConvention:packageData.endpointConvention,actions:clips.map(({id,label,mode,duration,tracks})=>({id,label,mode,duration,channels:tracks.map(t=>t.node+':'+t.channel)}))}
  console.log(`${id}: ${clips.length} clips, ${targets.length} nodes, ${Math.round(binary.length/1024)} KB rig, ${Math.round(bytes.length/1024)} KB tracks`)
  rig?.dispose()
 }
-const file=path.join(root,'shared/motionPackages.json')
+const file=isolated?path.join(out,'motionPackages.json'):path.join(root,'shared/motionPackages.json')
 if(matches.length&&fs.existsSync(file)){const previous=JSON.parse(fs.readFileSync(file));catalog.models={...previous.models,...catalog.models}}
 fs.writeFileSync(file,JSON.stringify(catalog,null,2)+'\n')

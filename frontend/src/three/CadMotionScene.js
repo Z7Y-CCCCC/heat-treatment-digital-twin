@@ -5,6 +5,10 @@ import {restoreGltfNodeNames} from './gltfNodeIdentity.js'
 import {CadMotionRig} from './CadMotionRig.js'
 import {fitCameraBox} from '../utils/cameraBoxFit.js'
 import {CAD_CUTAWAY_SUFFIXES,collectCutawayMaterials} from './cadCutaway.js'
+import { conveyorPlaybackSign } from './conveyorPreview.js'
+import { resolveLoadingPort } from '../../../shared/loadingPorts.mjs'
+import { canonicalDoorProgress } from '../../../shared/motionEndpointConvention.mjs'
+import { cadMotionFrame } from './cadMotionProfiles.js'
 export class CadMotionScene {
     constructor(container,onTick){
         this.container=container;this.scene=new T.Scene();this.scene.background=new T.Color('#eff4f7')
@@ -39,7 +43,37 @@ export class CadMotionScene {
         const apply=(material,enabled)=>{const opacity=material.userData.previewOpacity??1;material.transparent=enabled||!!material.userData.previewTransparent;material.opacity=enabled?Math.min(.16,opacity):opacity;material.depthWrite=!material.transparent}
         this.shell?.forEach(material=>apply(material,value));this.oilDoorShell?.forEach(material=>apply(material,value&&this.oilView))
     }
-    apply(id,time){return this.rig?.apply(id,time)}
+    setTransferFlow(model,id,kind){
+        this.modelInfo=model
+        const previous=this.flowAction===id?new Map((this.transferFlow||[]).map(state=>[state.node,state])):new Map()
+        this.transferFlow=null
+        if(!kind)return
+        const port=resolveLoadingPort(model,null,kind)
+        if(!port)throw Error('请先在模型管理中配置对应进出料口，再试播输送方向')
+        const nodes=id==='hot_rollers'?this.rig.hotRollers:[...this.rig.rollers,...(this.rig.temperingRollers||[])]
+        if(!nodes?.length)throw Error('此动作没有可核验的辊筒节点')
+        this.rig.apply(id,0);const rest=nodes.map(node=>node.quaternion.clone())
+        this.rig.apply(id,.1);this.model.updateMatrixWorld(true)
+        const travel=new T.Vector3(...port.direction).transformDirection(this.model.matrixWorld).multiplyScalar(kind==='inlet'?-1:1)
+        this.transferFlow=nodes.map((node,i)=>({node,rest:rest[i],raw:previous.get(node)?.raw||rest[i].clone(),actual:previous.get(node)?.actual||rest[i].clone(),sign:conveyorPlaybackSign(node,rest[i],node.quaternion,travel)}))
+        this.flowAction=id
+    }
+    apply(id,time){
+        let sampleTime=time
+        const convention=this.modelInfo?.motion_package?.endpointConvention?.door
+        if(id==='door'&&convention?.closed===0&&convention?.open===1&&this.rig?.profile.legacyDoorEndpoints){
+            const frame=cadMotionFrame(this.rig.id,id,time),duration=this.rig.profile.actions.find(action=>action.id===id).duration
+            sampleTime=duration*Math.asin(Math.sqrt(canonicalDoorProgress(frame.amount,this.rig.profile.legacyDoorEndpoints)))/Math.PI
+        }
+        const state=this.rig?.apply(id,sampleTime)
+        for(const entry of this.transferFlow||[]){
+            if(time<this.flowTime){entry.actual.copy(entry.rest);entry.raw.copy(entry.rest)}
+            const raw=entry.node.quaternion.clone(),delta=entry.raw.clone().invert().multiply(raw)
+            entry.actual.multiply(entry.sign<0?delta.invert():delta).normalize();entry.raw.copy(raw);entry.node.quaternion.copy(entry.actual)
+        }
+        this.flowTime=time
+        return state
+    }
     resize(){const rect=this.container.getBoundingClientRect();this.camera.aspect=Math.max(1,rect.width)/Math.max(1,rect.height);this.camera.updateProjectionMatrix();this.renderer.setSize(Math.max(1,rect.width),Math.max(1,rect.height))}
     resetCamera(){
         if(!this.bounds)return

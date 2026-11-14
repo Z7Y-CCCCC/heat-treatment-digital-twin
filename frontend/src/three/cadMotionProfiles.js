@@ -36,7 +36,7 @@ export const CAD_MOTION_PROFILES = {
     cad_fixed_load_table_112200: {prefix:'cad_fixed_staging_table_v1_',actions:[
         action('rollers','承料辊滚动','模拟物料通过时的辊筒滚动，固定台架不移动。')
     ]},
-    cad_air_cooling_table_115800ht: {prefix:'cad_air_cooling_table_v1_',actions:[
+    cad_air_cooling_table_115800ht: {prefix:'cad_air_cooling_table_v1_',legacyDoorEndpoints:{closed:1,open:0},actions:[
         action('door','风冷门关闭 / 打开','升降门和滑架同步运动，门导轨固定。'),
         action('fans','双风机运转','仅风机叶片和转轴转动，电机壳、防护网固定。'),
         action('rollers','承料辊转动','辊道支架固定，辊筒绕各自轴心转动。')

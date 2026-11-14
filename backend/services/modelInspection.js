@@ -3,6 +3,8 @@ const { mergeBuiltinModels } = require('./builtinModels');
 const { effectiveInspection, canonicalJson, patchDeviceInspectionLayout, exactTextEquals, exactJsonEquals } = require('./deviceInspection');
 const hash = value => crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const conflict = () => Object.assign(new Error('模型配置已更新，请重新读取后保存'), { statusCode: 409, code: 'MODEL_INSPECTION_CONFLICT' });
+const { assertPresentationPatch, mergePresentationSettings } = require('../../shared/inspectionPresentation.cjs');
+const { validateInspection } = require('../../shared/inspectionConfig.cjs');
 
 async function loadModelInspection(db, id, factoryId) {
     const records = await db.all('SELECT * FROM models WHERE factory_id IS NULL OR factory_id = ?', [factoryId]);
@@ -19,7 +21,15 @@ async function loadModelInspection(db, id, factoryId) {
 
 function patchModelInspectionLayout(loaded, body) {
     try {
-        const metadata = patchDeviceInspectionLayout(loaded, body);
+        const { presentation, ...layout } = body || {};
+        const metadata = patchDeviceInspectionLayout(loaded, layout);
+        if (presentation !== undefined) {
+            assertPresentationPatch(presentation);
+            const next = mergePresentationSettings(metadata.inspection, presentation);
+            const validation = validateInspection(next);
+            if (!validation.valid) throw new Error(validation.errors.map(error => error.message).join('；'));
+            metadata.inspection = next;
+        }
         const hasTarget = metadata.inspection.parts.some(part =>
             [part.node_path, part.node_name, ...(part.node_paths || []), ...(part.node_names || [])]
                 .some(target => typeof target === 'string' && target.trim().length > 0));
