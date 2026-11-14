@@ -1512,42 +1512,6 @@ namespace HeatTreatment.DigitalTwin.Runtime
             InspectionContextChanged?.Invoke(context);
         }
 
-        private void DrawInspectionControlsAndLabels(DeviceView device)
-        {
-            _inspectionHitRects.Clear();
-            var runtime = device?.Inspection;
-            if (runtime == null || !runtime.Config.Enabled) return;
-            var y = _dashboardConfig.Detail.Trends.Visible ? DetailTrendRect().y - 66f : DesignHeight - 90f;
-            var controls = new Rect(DesignWidth * .5f - 260f, y, 520f, 58f);
-            _inspectionHitRects.Add(controls);
-            DrawSolid(controls, PanelStrong);
-            var stages = new[] { InspectionStage.Solid, InspectionStage.Xray, InspectionStage.Exploded };
-            var names = new[] { "完整组装", "外壳透视", "拆解部件" };
-            for (var index = 0; index < 3; index++)
-                if (GUI.Button(new Rect(controls.x + 8 + index * 116, y + 5, 110, 29), names[index], _buttonStyle)) SetInspectionStage(device, stages[index]);
-            if (GUI.Button(new Rect(controls.x + 360, y + 5, 150, 29), runtime.Paused ? "继续动画" : "暂停动画", _buttonStyle))
-                ApplyInspectionCommand(device.Device.Id, new JObject { ["command"] = runtime.Paused ? "resume" : "pause" }, out _);
-            var progress = runtime.Clock / runtime.TotalDuration;
-            var next = GUI.HorizontalSlider(new Rect(controls.x + 16, y + 42, 488, 12), progress, 0f, 1f);
-            if (Mathf.Abs(next - progress) > .0001f) ApplyInspectionCommand(device.Device.Id, new JObject { ["command"] = "progress", ["progress"] = next }, out _);
-            if (!runtime.LabelsEnabled || runtime.Clock <= 0f) return;
-            foreach (var part in runtime.Parts)
-            {
-                if (InspectionTimeline.PartProgress(runtime.Config, part.Config, part.EnabledIndex, runtime.Clock) <= .02f) continue;
-                if (!part.Renderers.Any(renderer => renderer != null && renderer.enabled && !renderer.forceRenderingOff && renderer.gameObject.activeInHierarchy)) continue;
-                var anchor = part.WorldBounds.center;
-                var basis = runtime.Config.OffsetSpace == "model" ? runtime.ModelRoot : part.Targets.FirstOrDefault()?.Parent ?? runtime.ModelRoot;
-                var screen = _camera.WorldToScreenPoint(anchor + basis.TransformVector(InspectionAuthorVector(runtime, part.Config.LabelOffset)));
-                if (screen.z <= _camera.nearClipPlane) continue;
-                var position = ScreenToDesign(screen);
-                var rect = new Rect(position.x - 70, position.y - 14, 140, 28);
-                if (rect.x < 0 || rect.y < 0 || rect.xMax > DesignWidth || rect.yMax > DesignHeight) continue;
-                if (runtime.Config.Labels.LeaderLines) DrawLine(ScreenToDesign(_camera.WorldToScreenPoint(anchor)), position, new Color(.7f, .85f, 1f, .65f), 1f);
-                _inspectionHitRects.Add(rect);
-                if (GUI.Button(rect, part.Config.Name, _buttonStyle)) SetInspectionStage(device, InspectionStage.PartDetail, false, part.Config.Id);
-            }
-        }
-
         private static string InspectionStageKey(InspectionStage stage)
             => stage == InspectionStage.Xray ? "xray" : stage == InspectionStage.Exploded ? "exploded" : stage == InspectionStage.PartDetail ? "part" : "solid";
 

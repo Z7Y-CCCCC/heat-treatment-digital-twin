@@ -38,6 +38,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
             public GameObject Cargo;
             public float Elapsed;
             public Vector3[] Path;
+            public Vector3 Size;
             public string Starter;
             public bool SourceParticipated, TargetParticipated;
         }
@@ -48,6 +49,8 @@ namespace HeatTreatment.DigitalTwin.Runtime
         private readonly List<Material> _materials = new List<Material>();
         private readonly Dictionary<string, double> _partnerEcho = new Dictionary<string, double>();
         private readonly Dictionary<string, string> _reasons = new Dictionary<string, string>();
+        private readonly Dictionary<string, (bool Clear, double At)> _doorChecks = new Dictionary<string, (bool, double)>();
+        private readonly HashSet<string> _doorWaitingDevices = new HashSet<string>();
         private readonly Dictionary<string, CartTransferPresentation> _carts = new Dictionary<string, CartTransferPresentation>();
         private IReadOnlyDictionary<string, Transform> _roots;
         private IReadOnlyDictionary<string, MobileDeviceMotion> _motions;
@@ -171,6 +174,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
         private bool SameDock(Pair pair) => DockedPairs().Any(candidate => candidate.CartId == pair.CartId && candidate.TargetId == pair.TargetId && candidate.Pickup == pair.Pickup);
         public void Advance(float delta, double now)
         {
+            _doorWaitingDevices.Clear();
             foreach (var port in _ports.Values) if (port.Signal != null && !port.Signal.Advance(now, 5000)) port.PendingAt = double.NegativeInfinity;
             if (_suspended) { UpdateConveyorDirections(now); return; }
             foreach (var port in _ports.Values) if (Pending(port, now)) Echo(port, now);
@@ -194,6 +198,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
                     RemoveCargo(trip.Cargo); _trips.Remove(trip); _reasons[trip.Pair.CartId] = "对接已变化"; continue;
                 }
                 if (!Live(trip, now)) { _reasons[trip.Pair.CartId] = "信号过期，保持物料画面"; continue; }
+                if (!DoorsClear(trip.Pair, trip.Path, trip.Size, now)) continue;
                 if (_carts.TryGetValue(trip.Pair.CartId, out var turning)) turning.Advance(delta, false, true, trip.Pair.Pickup);
                 trip.SourceParticipated |= trip.Pair.Source.Signal?.Usable == true && trip.Pair.Source.Signal.Value;
                 trip.TargetParticipated |= trip.Pair.Target.Signal?.Usable == true && trip.Pair.Target.Signal.Value;
@@ -229,12 +234,13 @@ namespace HeatTreatment.DigitalTwin.Runtime
                     _reasons[pair.CartId] = "进出料信号同时有效"; continue;
                 }
                 if (!TryPath(pair, out var path, out var size)) continue;
+                if (!DoorsClear(pair, path, size, now)) continue;
                 var cargo = GetCargo(pair.Source.DeviceId, size);
                 cargo.transform.SetParent(_parent, true); cargo.transform.position = path[0]; cargo.SetActive(true);
                 _cargo.Remove(pair.Source.DeviceId);
                 var starter = sourcePending ? pair.Source : pair.Target;
                 _partnerEcho.Remove(Key(pair.Source.DeviceId, pair.Source.Kind)); _partnerEcho.Remove(Key(pair.Target.DeviceId, pair.Target.Kind));
-                _trips.Add(new Trip { Pair = pair, Cargo = cargo, Path = path, Starter = Key(starter.DeviceId, starter.Kind),
+                _trips.Add(new Trip { Pair = pair, Cargo = cargo, Path = path, Size = size, Starter = Key(starter.DeviceId, starter.Kind),
                     SourceParticipated = sourcePending || pair.Source.Signal?.Usable == true && pair.Source.Signal.Value,
                     TargetParticipated = targetPending || pair.Target.Signal?.Usable == true && pair.Target.Signal.Value });
                 Consume(pair.Source); Consume(pair.Target);
@@ -252,7 +258,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 var taking = inlet?.Signal?.Usable == true && inlet.Signal.Value;
                 var sending = outlet?.Signal?.Usable == true && outlet.Signal.Value;
                 Port selected = null;
-                if (!_suspended && !(taking && sending)) {
+                if (!_suspended && !(taking && sending) && !_doorWaitingDevices.Contains(device.Id)) {
                     var active = _trips.FirstOrDefault(trip => (trip.Pair.Source.DeviceId == device.Id || trip.Pair.Target.DeviceId == device.Id) && Live(trip, now));
                     selected = active != null ? (active.Pair.Source.DeviceId == device.Id ? active.Pair.Source : active.Pair.Target)
                         : taking ? inlet : sending ? outlet : null;
@@ -261,6 +267,29 @@ namespace HeatTreatment.DigitalTwin.Runtime
                 if (selected != null && WorldPort(selected, out _, out var outward)) travel = selected.Kind == "outlet" ? outward : -outward;
                 driver.SetConveyorTravel(travel);
             }
+        }
+        private bool DoorsClear(Pair pair, Vector3[] path, Vector3 size, double now)
+        {
+            var clear = true;
+            foreach (var port in new[] { pair.Source, pair.Target }) {
+                if (!_roots.TryGetValue(port.DeviceId, out var root) || root == null) continue;
+                var driver = root.GetComponent<DeviceAnimationDriver>();
+                if (driver == null || !driver.HasTransferDoor) continue; // Open tables do not acquire a fictional door.
+                var allowed = driver.TransferDoorPathClear(path, size, out var reason);
+                _doorChecks[Key(port.DeviceId, port.Kind)] = (allowed, now);
+                if (allowed) continue;
+                clear = false; _reasons[pair.CartId] = reason;
+                _doorWaitingDevices.Add(pair.Source.DeviceId); _doorWaitingDevices.Add(pair.Target.DeviceId);
+            }
+            if (!clear) foreach (var port in new[] { pair.Source, pair.Target }) {
+                // A fresh, held "in progress" command may wait for its door.
+                // Do not renew input freshness, fabricate another rising edge,
+                // or keep a released pulse alive beyond its existing window.
+                if (port.Signal?.Usable == true && port.Signal.Value && port.PendingStamp > port.ConsumedStamp) port.PendingAt = now;
+            }
+            if (clear && _reasons.TryGetValue(pair.CartId, out var previous) && (previous == "等待料口门打开" || previous == "门体几何尚不可核验"))
+                _reasons[pair.CartId] = pair.Pickup ? "取料示意" : "送料示意";
+            return clear;
         }
         private static bool Pending(Port port, double now) => port.Signal != null && port.Signal.Usable && port.PendingStamp > port.ConsumedStamp && now - port.PendingAt <= PendingSeconds;
         private static void Consume(Port port) { if (port.Signal != null && !double.IsNaN(port.Signal.Timestamp)) port.ConsumedStamp = Math.Max(port.ConsumedStamp, port.Signal.Timestamp); }
@@ -280,7 +309,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
             }
             return initialized && bounds.size.sqrMagnitude > .0000001f;
         }
-        private bool TryPath(Pair pair, out Vector3[] path, out Vector3 size)
+        private bool TryPath(Pair pair, out Vector3[] path, out Vector3 size, bool diagnose = true)
         {
             path = null; size = Vector3.zero;
             if (!_roots.TryGetValue(pair.Source.DeviceId, out var source) || source == null || !_roots.TryGetValue(pair.Target.DeviceId, out var target) || target == null
@@ -294,7 +323,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
             if (outward.sqrMagnitude < .00000001f) outward = -targetDirection;
             outward.Normalize();
             if (Vector3.Dot(sourceDirection, outward) <= .05f || Vector3.Dot(targetDirection, -outward) <= .05f) {
-                _reasons[pair.CartId] = "料口未朝向对接设备"; return false;
+                if (diagnose) _reasons[pair.CartId] = "料口未朝向对接设备"; return false;
             }
             Vector3 Mouth(Port port) => (port == pair.Source ? sourceMouth : targetMouth) + Vector3.up * height / 2;
             Vector3 Seat(Transform root, Port port, Bounds bounds, Vector3 mouth) {
@@ -340,8 +369,25 @@ namespace HeatTreatment.DigitalTwin.Runtime
             Destroy(cargo);
         }
         private static void Destroy(UnityEngine.Object value) { if (Application.isPlaying) UnityEngine.Object.Destroy(value); else UnityEngine.Object.DestroyImmediate(value); }
+        public JArray InspectDoorClearance()
+        {
+            // Explicit acceptance probe only: no commands are queued, consumed
+            // or driven, and no live display reason or PLC value is changed.
+            var result = new JArray();
+            foreach (var pair in DockedPairs()) {
+                if (!TryPath(pair, out var path, out var size, false)) continue;
+                foreach (var port in new[] { pair.Source, pair.Target }) {
+                    var driver = _roots[port.DeviceId].GetComponent<DeviceAnimationDriver>();
+                    if (driver == null || !driver.HasTransferDoor) continue;
+                    var clear = driver.TransferDoorPathClear(path, size, out var reason);
+                    result.Add(new JObject { ["deviceId"] = port.DeviceId, ["kind"] = port.Kind, ["clear"] = clear, ["reason"] = reason });
+                }
+            }
+            return result;
+        }
         public JObject Describe() => new JObject { ["activeTransfers"] = _trips.Count, ["estimatedCargoDevices"] = new JArray(_cargo.Keys.OrderBy(id => id)),
             ["reasons"] = JObject.FromObject(_reasons), ["turntables"] = JObject.FromObject(_carts.ToDictionary(item => item.Key, item => item.Value.Describe())), ["displayOnly"] = true,
+            ["doorChecks"] = new JArray(_doorChecks.Select(item => new JObject { ["deviceId"] = item.Key.Split('\n')[0], ["kind"] = item.Key.Split('\n')[1], ["clear"] = item.Value.Clear, ["observedAtSeconds"] = item.Value.At })),
             ["trips"] = new JArray(_trips.Select(trip => new JObject { ["cartId"] = trip.Pair.CartId, ["targetId"] = trip.Pair.TargetId,
                 ["pickup"] = trip.Pair.Pickup, ["elapsed"] = trip.Elapsed, ["position"] = Position(trip.Cargo),
                 ["instanceId"] = trip.Cargo != null ? trip.Cargo.GetInstanceID() : 0,
@@ -358,7 +404,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
             foreach (var cargo in _cargo.Values.Concat(_trips.Select(trip => trip.Cargo)).Distinct()) RemoveCargo(cargo);
             foreach (var material in _materials) if (material != null) Destroy(material);
             foreach (var cart in _carts.Values) cart.Dispose(); _carts.Clear();
-            _ports.Clear(); _cargo.Clear(); _trips.Clear(); _materials.Clear(); _partnerEcho.Clear(); _reasons.Clear(); _suspended = false; _identity = null;
+            _ports.Clear(); _cargo.Clear(); _trips.Clear(); _materials.Clear(); _partnerEcho.Clear(); _reasons.Clear(); _doorChecks.Clear(); _doorWaitingDevices.Clear(); _suspended = false; _identity = null;
         }
     }
 }
