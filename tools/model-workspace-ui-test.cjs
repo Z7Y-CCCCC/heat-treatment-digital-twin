@@ -16,7 +16,8 @@ const pass = name => { checks.push(name); console.log('PASS ' + name); };
     });
     await waitUntil(() => { assert.equal(server.exitCode, null); return fs.existsSync(infoFile); }, 60000, 'owned UI fixture');
     const info = JSON.parse(fs.readFileSync(infoFile));
-    browser = await chromium.launch({ channel: 'chrome', headless: true, args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
+    browser = await chromium.launch({ channel: 'chrome', headless: true, ignoreDefaultArgs: ['--hide-scrollbars'],
+        args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
     const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
     await context.addInitScript(({ model }) => { if (!localStorage.getItem('digital_twin_admin_ui_state_v1')) localStorage.setItem('digital_twin_admin_ui_state_v1', JSON.stringify({
         activeTab: 'models', modelLibraryStep: 'inspection', selectedPreviewModelId: model
@@ -51,6 +52,8 @@ const pass = name => { checks.push(name); console.log('PASS ' + name); };
     await modelPicker().selectOption(info.models[0]);
     const workspace = page.getByTestId('manual-disassembly-layout');
     await workspace.locator('canvas').waitFor(); await page.waitForTimeout(900);
+    assert.equal(await workspace.locator('.layout-playback, .preview-stage-caption, .model-preview-overlay').count(), 0,
+        'part placement is a clean draggable canvas without timeline or presentation overlays');
     await page.screenshot({ path: path.join(directory, '01-layout-desktop.png'), fullPage: true });
     await workspace.getByRole('button', { name: '外壳与时序', exact: true }).click();
     await workspace.getByLabel('退场时长 / 秒', { exact: true }).waitFor();
@@ -79,9 +82,9 @@ const pass = name => { checks.push(name); console.log('PASS ' + name); };
     assert.deepEqual(Object.keys(payload).sort(), ['enabled', 'parts', 'presentation', 'revision']);
     assert.equal(payload.parts[0].explode_offset[0], .25);
     await page.reload(); await modelPicker().selectOption(info.models[0]); await workspace.locator('canvas').waitFor();
-    assert.equal(await workspace.getByRole('combobox', { name: '拆解播放速度' }).inputValue(), '1.5');
     assert.equal(Number(await workspace.getByRole('spinbutton', { name: 'X轴拆解位移' }).inputValue()), .25);
     await workspace.getByRole('button', { name: '外壳与时序', exact: true }).click();
+    assert.equal(await workspace.getByRole('combobox', { name: '拆解播放速度' }).inputValue(), '1.5');
     assert.equal(Number(await workspace.getByLabel('退场时长 / 秒', { exact: true }).inputValue()), .7);
     await workspace.getByRole('button', { name: '镜头与标签', exact: true }).click();
     assert.equal(Number(await workspace.getByRole('spinbutton', { name: '完整设备水平角', exact: true }).inputValue()), 115);
@@ -97,7 +100,49 @@ const pass = name => { checks.push(name); console.log('PASS ' + name); };
     await workspace.getByRole('button', { name: '↶ 反向组装', exact: true }).click();
     await page.waitForTimeout(450); assert.ok(Number(await slider.inputValue()) < .7);
     await workspace.getByRole('button', { name: '返回摆放', exact: true }).click();
+    assert.equal(await workspace.getByRole('button', { name: '部件摆放', exact: true }).getAttribute('aria-current'), 'page');
+    assert.equal(await workspace.locator('.layout-playback').count(), 0);
+    assert.equal(await workspace.getByRole('spinbutton', { name: 'X轴拆解位移', exact: true }).isEnabled(), true,
+        'returning to placement stops the timeline and unlocks actual offset editing');
     pass('same real viewport plays, pauses, scrubs, reverses and returns to draggable layout');
+    // Fixed-height desktop hosts must scroll the full settings inside the
+    // sidebar, including the last card, even when the outer body clips.
+    for (const size of [{ width: 1440, height: 680 }, { width: 1024, height: 768 }]) {
+        await page.setViewportSize(size);
+        for (const label of ['外壳与时序', '镜头与标签']) {
+            await workspace.getByRole('button', { name: label, exact: true }).click();
+            await page.waitForTimeout(250);
+            const settings = workspace.locator('.presentation-settings');
+            await settings.locator('details.settings-card').evaluateAll(cards => cards.forEach(card => { card.open = true; }));
+            const scroll = await settings.evaluate(node => {
+                const sidebar = node.parentElement.getBoundingClientRect(), r = node.getBoundingClientRect();
+                node.scrollTop = node.scrollHeight;
+                const last = node.querySelector('fieldset').lastElementChild.getBoundingClientRect();
+                return { overflow: getComputedStyle(node).overflowY, scrollbarWidth: node.offsetWidth - node.clientWidth,
+                    width: node.clientWidth,
+                    scrollWidth: node.scrollWidth, clientHeight: node.clientHeight, scrollHeight: node.scrollHeight,
+                    scrollTop: node.scrollTop, contained: r.top >= sidebar.top - 1 && r.bottom <= sidebar.bottom + 1,
+                    finalVisible: last.bottom <= r.bottom + 1 && last.bottom > r.top };
+            });
+            assert.equal(scroll.overflow, 'scroll', 'visible scrollbar has one owner');
+            assert.ok(scroll.scrollbarWidth >= 10, 'scrollbar track occupies a visible draggable gutter');
+            assert.ok(scroll.clientHeight > 100 && scroll.contained, 'sidebar settings shrink to their actual host');
+            assert.ok(scroll.scrollTop > 0 && scroll.finalVisible, 'all expanded settings can be reached, not clipped');
+            assert.ok(scroll.scrollWidth <= scroll.width + 2, 'numeric fields must not overflow the sidebar horizontally');
+            await settings.evaluate(node => { node.scrollTop = 0; });
+            await page.screenshot({ path: path.join(directory, `settings-${label}-${size.width}x${size.height}.png`), fullPage: true });
+        }
+    }
+    pass('shell and camera sidebars expose visible scrollbars and all fields at short desktop heights');
+    await workspace.getByRole('button', { name: '部件摆放', exact: true }).click();
+    await workspace.getByRole('button', { name: '外壳与时序', exact: true }).click();
+    await workspace.getByRole('button', { name: '▶ 拆解演示', exact: true }).click();
+    await page.waitForTimeout(150);
+    await workspace.getByRole('button', { name: '部件摆放', exact: true }).click();
+    assert.equal(await workspace.locator('.layout-playback').count(), 0);
+    assert.equal(await workspace.getByRole('spinbutton', { name: 'X轴拆解位移', exact: true }).isEnabled(), true);
+    pass('switching tabs out of a running presentation restores placement without resetting the saved draft');
+    await workspace.getByRole('button', { name: '镜头与标签', exact: true }).click();
     await page.setViewportSize({ width: 760, height: 1000 }); await page.waitForTimeout(500);
     assert.equal(await workspace.evaluate(node => node.scrollWidth > node.clientWidth + 2), false);
     const narrow = await workspace.evaluate(root => { const a=root.querySelector('.settings-sidebar').getBoundingClientRect(),b=root.querySelector('.viewport-shell').getBoundingClientRect();return {settingsBottom:a.bottom,previewTop:b.top,previewHeight:b.height}; });

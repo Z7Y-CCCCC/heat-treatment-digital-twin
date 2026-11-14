@@ -264,3 +264,24 @@ test('real component KeepAlive cancels unfinished loads and reclaims late scenes
     assert.equal(disposals.filter(root => root === late).length, 1)
     assert.equal(environment.browser.listeners.get('beforeunload')?.size, 0)
 })
+
+
+test('model placement keeps presentation overlays out of the canvas and restores editable pose on tab return', async () => {
+    const source = await readFile(new URL('../src/views/admin/components/ManualDisassemblyLayout.vue', import.meta.url), 'utf8')
+    const { descriptor } = parse(source)
+    assert.match(descriptor.template.content, /ModelInspectionPreviewOverlay v-if="modelScope && section !== 'parts' && previewing"/)
+    assert.match(descriptor.template.content, /InspectionPlaybackControls v-if="modelScope && section !== 'parts'/)
+    assert.match(source, /function editLayout\(\)\s*\{\s*section.value = 'parts'/)
+    assert.match(source, /if \(id === 'parts'\) editLayout\(\)/)
+    assert.ok(compileScript(descriptor, { id: 'placement-layout', inlineTemplate: true }).content.includes('chooseSection'))
+})
+
+test('fixed-height presentation sidebar uses a shrinkable grid and one keyboard-scrollable owner', async () => {
+    const source = await readFile(new URL('../src/views/admin/components/ManualDisassemblyLayout.vue', import.meta.url), 'utf8')
+    const settings = await readFile(new URL('../src/views/admin/components/InspectionPresentationSettings.vue', import.meta.url), 'utf8')
+    assert.match(source, /grid-template-rows:minmax\(0,1fr\)/)
+    assert.match(source, /settings-sidebar\{display:flex;min-height:0;overflow:hidden\}/)
+    assert.match(settings, /class="presentation-settings" tabindex="0"/)
+    assert.match(settings, /min-height:0;max-height:none;overflow-y:scroll;overflow-x:hidden/)
+    assert.match(settings, /scrollbar-gutter:stable/)
+})
