@@ -6,7 +6,7 @@ import { showSaveFeedback } from '../../../runtime/saveFeedback.js'
 import { DockingCalibrationPreview } from '../../../three/DockingCalibrationPreview.js'
 import { dockingCandidates, prepareDockingCalibration, dockingPreview, dockingSavePayload } from '../utils/dockingCalibration.js'
 
-const props = defineProps({ model: Object, devices: { type: Array, default: () => [] }, lines: { type: Array, default: () => [] },
+const props = defineProps({ model: Object, preferredDeviceId: String, devices: { type: Array, default: () => [] }, lines: { type: Array, default: () => [] },
   models: { type: Array, default: () => [] }, confirm: { type: Function, default: async () => false }, canCalibrate: { type: Function, default: () => true } })
 const emit = defineEmits(['calibrated'])
 const stationId = ref(''), cartId = ref(''), deviceKind = ref('inlet'), cartKind = ref('outlet'), stepMm = ref(10)
@@ -109,9 +109,12 @@ watch(sourceSignature, () => {
   if (plan.value) { conflict.value = true; error.value = '设备、模型或产线来源已更新，请重新预览；当前位置草稿未保存。' }
 })
 watch(() => candidates.value.stations.map(r => r.device.id).join('|'), () => {
-  if (!station.value) { stationId.value = candidates.value.stations.find(r => r.device.model_type === props.model?.id)?.device.id || candidates.value.stations[0]?.device.id || ''; cartId.value = carts.value[0]?.device.id || '' }
+  if (!station.value) { stationId.value = candidates.value.stations.find(r => r.device.id === props.preferredDeviceId)?.device.id || candidates.value.stations.find(r => r.device.model_type === props.model?.id)?.device.id || candidates.value.stations[0]?.device.id || ''; cartId.value = carts.value[0]?.device.id || '' }
 }, { immediate: true })
 watch(() => carts.value.map(r => r.device.id).join('|'), () => { if (!carts.value.some(r => r.device.id === cartId.value)) cartId.value = carts.value[0]?.device.id || '' }, { immediate: true })
+watch(() => props.preferredDeviceId, id => {
+  if (!busy.value && !dirty.value && candidates.value.stations.some(r => r.device.id === id)) stationId.value = id
+})
 function beforeUnload(event) { if (dirty.value) { event.preventDefault(); event.returnValue = '' } }
 onMounted(() => window.addEventListener('beforeunload', beforeUnload))
 onDeactivated(() => {
@@ -121,12 +124,12 @@ onDeactivated(() => {
 })
 onActivated(() => { active = true; preview?.resume() })
 onBeforeUnmount(() => { disposed = true; reset(); window.removeEventListener('beforeunload', beforeUnload) })
-defineExpose({ canLeave, savePending: () => dirty.value ? save() : true, discardPending, busy })
+defineExpose({ canLeave, savePending: () => dirty.value ? save() : true, discardPending, busy, dirty })
 </script>
 
 <template>
   <section class="docking-calibration" aria-label="对接校准" data-testid="docking-calibration">
-    <header><div><h3>对接校准</h3><p>按工位同时核对小车与设备的真实料口。实体错位调整摆放；选点错误返回“料口选点”修正。</p></div><span class="permission-note" v-if="!editable">需要产线布局编辑权限才能调整和保存</span></header>
+    <header><div><h3>对接校准</h3><p>按工位同时核对小车与设备的真实料口。实体错位调整摆放；区域或基准点选错，请在上方重新画料口区域。</p></div><span class="permission-note" v-if="!editable">需要产线布局编辑权限才能调整和保存</span></header>
     <div class="calibration-pickers">
       <label>对接工位<select aria-label="选择对接工位" :value="stationId" :disabled="busy" @change="choose('stationId', $event)"><option v-if="!candidates.stations.length" value="">暂无已放置工位</option><option v-for="row in candidates.stations" :key="row.device.id" :value="row.device.id">{{ row.label }}</option></select></label>
       <label>对应小车<select aria-label="选择对接小车" :value="cartId" :disabled="busy" @change="choose('cartId', $event)"><option v-if="!carts.length" value="">该产线没有已放置小车</option><option v-for="row in carts" :key="row.device.id" :value="row.device.id">{{ row.device.name || row.device.id }}</option></select></label>

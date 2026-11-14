@@ -40,9 +40,13 @@ test('fine-model adapter only names a turntable node; no PLC rotation feedback o
 test('model-management workspace hosts the device picker and retains unsaved editor guards', async () => {
   const source = await readFile(new URL('../src/views/admin/components/LoadingPortWorkspace.vue', import.meta.url), 'utf8')
   assert.match(source, /aria-label="选择进出料配置设备"/); assert.match(source, /model_type\) === String\(props.model.id\)/)
-  assert.match(source, /!await editor.value.canLeave\(\)/); assert.match(source, /:device="selectedDevice"/)
-  assert.match(source, /const current = \(\) => section.value === 'calibration' \? calibration.value : editor.value/)
-  assert.match(source, /savePending: \(\) => current\(\)\?\.savePending\(\)/)
-  assert.match(source, /canLeave: \(\) => current\(\)\?\.canLeave\(\)/)
-  assert.match(source, /discardPending: \(\) => current\(\)\?\.discardPending\(\)/)
+  assert.match(source, /if \(!await canLeave\(\)\)/); assert.match(source, /:device="selectedDevice"/)
+  // The combined page must guard BOTH mounted editors, not whichever old tab
+  // was active. Detailed save/discard/confirmation races are exercised by
+  // loading-port-workspace-guards.test.mjs.
+  assert.match(source, /const editors=\(\)=>\[editor.value,calibration.value\]\.filter\(Boolean\)/)
+  assert.match(source, /for\(const item of editors\(\)\)if\(!await \(item\.savePending\?\.\(\)\?\?true\)\)return false/)
+  assert.match(source, /for\(const item of editors\(\)\)if\(!await \(item\.canLeave\?\.\(\)\?\?true\)\)return false/)
+  assert.match(source, /for\(const item of editors\(\)\)if\(item\.discardPending\?\.\(\)===false\)return false/)
+  assert.match(source, /defineExpose\(\{ canLeave, savePending, discardPending, busy, dirty \}\)/)
 })

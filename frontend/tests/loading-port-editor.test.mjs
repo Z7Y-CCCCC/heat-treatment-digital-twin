@@ -7,6 +7,7 @@ import { adminApi } from '../src/config/factoryConfig.js'
 import { adminSession } from '../src/runtime/adminSession.js'
 import { normalizePagePermissions } from '../../shared/pagePermissions.mjs'
 import { deferred, installBrowser, settle } from './helpers.mjs'
+import { loadingPortRegionFromSurfaces } from '../src/three/loadingPortRegion.js'
 
 const url = new URL('../src/views/admin/components/LoadingPortEditor.vue', import.meta.url)
 const source = await readFile(url, 'utf8')
@@ -24,6 +25,7 @@ const model = (id = 'm') => ({ id, name: `模型 ${id}`, file_path: `/${id}.glb`
 const device = (id = 'd') => ({ id, name: `设备 ${id}`, model_type: 'm', instance_config: { preserve: true, loadingPortOverrides: empty() } })
 const modelResult = (id, config = ports()) => ({ success: true, model: { ...model(id), metadata: { preserve: 123, loadingPorts: structuredClone(config) } }, ports: structuredClone(config), revision: `revision-${id}` })
 const deviceResult = (id, overrides = empty(), base = ports()) => ({ success: true, device: { ...device(id), instance_config: { preserve: true, loadingPortOverrides: structuredClone(overrides) } }, model: { ...model(), metadata: { preserve: 123, loadingPorts: structuredClone(base) } }, ports: base, overrides: structuredClone(overrides), revision: `revision-${id}` })
+const regionPort = () => loadingPortRegionFromSurfaces({position:[1,1,3],surfaceNormal:[0,0,1],nodeName:'mouth'},{position:[3,4,3],surfaceNormal:[0,0,1],nodeName:'mouth'})
 
 async function fixture(t, options = {}) {
   const env = installBrowser(t), before = { authenticated: adminSession.authenticated, pagePermissions: adminSession.pagePermissions }
@@ -41,7 +43,7 @@ async function fixture(t, options = {}) {
     else { const previous = Object.getOwnPropertyDescriptor(adminApi, key); Object.defineProperty(adminApi, key, { value: fn, configurable: true, writable: true }); t.after(() => previous ? Object.defineProperty(adminApi, key, previous) : delete adminApi[key]) }
   }
   class Preview {
-    constructor(container, handlers) { this.handlers = handlers; calls.previews.push(this) }
+    constructor(container, handlers) { this.handlers = handlers; calls.previews.push(this); handlers.onRegionState?.(false) }
     async load(record, request) { this.model = record; this.request = request; if (options.previewLoad) return options.previewLoad(record, request); return [{ id: 'mouth', name: 'mouth', path: 'mouth', meshCount: 1 }] }
     dispose() { this.disposed = true }
     setPorts(value, candidate, kind) { this.ports = value; this.suggestion = candidate; this.kind = kind }
@@ -69,6 +71,23 @@ test('loading an unconfigured model never infers, saves or changes metadata auto
   assert.equal(f.vm.picking, true); assert.equal(f.calls.previews[0].picking, true)
   assert.equal(f.calls.modelLoads[0].request.signal.aborted, false)
   assert.equal(f.calls.previews[0].model.file_path, '/m.glb')
+})
+test('real region callback writes model lower-edge datum, saves explicitly and reloads identical corners', async t => {
+  const f=await fixture(t,{ports:empty(),preview:true}),p=regionPort();f.calls.previews[0].handlers.onRegion(p)
+  assert.deepEqual(f.vm.draft.inlet,p);assert.equal(f.vm.dirty,true);assert.equal(f.calls.modelSaves.length,0)
+  assert.deepEqual(f.vm.effectivePort.position,[2,1,3]);assert.equal(await f.vm.save(),true)
+  assert.deepEqual(f.calls.modelSaves[0].body.ports.inlet,p);assert.deepEqual(f.vm.loaded.ports.inlet,p);assert.equal(f.vm.dirty,false)
+})
+test('partial selection is dirty, cannot be saved and explicit cancellation leaves stored ports untouched', async t => {
+  const f=await fixture(t,{preview:true}),runtime=f.calls.previews[0],before=JSON.parse(JSON.stringify(f.vm.draft))
+  runtime.handlers.onRegionState(true);assert.equal(f.vm.dirty,true);assert.equal(await f.vm.save(),false);assert.equal(f.calls.modelSaves.length,0)
+  f.vm.setDrawing(false);assert.equal(f.vm.regionSelecting,false);assert.equal(f.vm.dirty,false);assert.deepEqual(f.vm.draft,before)
+})
+test('instance region stores relative offset/yaw only for an existing default and cannot create a missing mouth', async t => {
+  const f=await fixture(t,{props:{device:device()},preview:true}),p=regionPort();assert.equal(f.vm.useRegion(p),true)
+  assert.deepEqual(f.vm.draft.inlet.offset,[-8,-1,0]);assert.equal(f.vm.draft.inlet.yawDegrees,-90);assert.deepEqual(f.vm.effectivePort.position,p.position)
+  assert.equal(await f.vm.save(),true);assert.equal(f.calls.modelSaves.length,0);assert.deepEqual(f.calls.deviceSaves[0].body.overrides.inlet.region,p.region)
+  const missing=await fixture(t,{ports:empty(),props:{device:device()},preview:true});assert.equal(missing.vm.useRegion(p),false);assert.deepEqual(missing.vm.draft,empty());assert.equal(missing.calls.deviceSaves.length,0)
 })
 
 test('model save submits only revision and canonical ports, preserving metadata and raw Y', async t => {
@@ -384,7 +403,8 @@ test('compiled UI has accessible labels, status/errors, explicit suggestions and
   assert.match(source, /ref="viewport"/); assert.match(source, /应用建议到草稿/); assert.match(source, /恢复模型默认/)
   const ordinary = descriptor.template.content.slice(descriptor.template.content.indexOf('<div class="config-panel">'), descriptor.template.content.indexOf('<details class="advanced-panel">'))
   assert.doesNotMatch(ordinary, /v-model\.number|type="checkbox"|type="number"|node-assistant|direction-buttons/)
-  assert.match(ordinary, /单个送料基准点|单点/); assert.match(ordinary, /可跳过/); assert.match(ordinary, /重新选点/); assert.match(ordinary, /清除选点/); assert.match(ordinary, /保存配置/)
+  assert.match(ordinary, /单点/); assert.match(ordinary, /可跳过/); assert.match(ordinary, /画料口区域/); assert.match(ordinary, /清除选区/); assert.match(ordinary, /保存配置/)
+  assert.match(ordinary, /下沿中点/); assert.match(ordinary, /同一个竖直料口面/)
   assert.doesNotMatch(descriptor.template.content, /<details[^>]*\sopen(?:\s|>)/)
   assert.doesNotMatch(descriptor.template.content, /取消表面定位|点击模型表面定位/)
   const fonts = [...descriptor.styles[0].content.matchAll(/font-size:calc\((\d+)px \* var\(--admin-font-scale,\s*1\)\)/g)].map(match => Number(match[1]))

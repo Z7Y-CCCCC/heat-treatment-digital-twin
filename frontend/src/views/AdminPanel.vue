@@ -11,6 +11,7 @@ import { API_BASE } from '../runtime/backendEndpoint.js'
 import { SceneRuntime } from '../runtime/SceneRuntime.js'
 import { usePreviewFullscreen } from '../runtime/usePreviewFullscreen.js'
 import { useNativeQuality } from '../runtime/nativeQuality.js'
+import { useServiceConnections } from './admin/composables/useServiceConnections.js'
 import QualityNotice from '../components/QualityNotice.vue'
 import AdminReadingSettings from './admin/components/AdminReadingSettings.vue'
 import AdminConnectionStatus from './admin/components/AdminConnectionStatus.vue'
@@ -116,7 +117,7 @@ import { normalizeWorkshopLayout } from '../utils/spatialLayout.js'
 import { summarizeDeviceConnections } from './admin/utils/connectionStatus.js'
 import { isNativeUnitySurface } from '../runtime/nativeSurfaceBridge.js'
 import { getFactoryScope, setFactoryScope, FACTORY_SCOPE_CHANGE_EVENT, FACTORY_DIRECTORY_CHANGE_EVENT } from '../runtime/factoryScope.js'
-import { discardFactoryDrafts, saveFactoryDrafts } from '../runtime/factoryDraftCache.js'
+import { discardFactoryDrafts, saveFactoryDrafts, listFactoryDrafts } from '../runtime/factoryDraftCache.js'
 import {
     PLC_PROTOCOL_OPTIONS,
     getPlcAddressHint,
@@ -286,6 +287,24 @@ const navIconPaths = {
 }
 
 const { appDialog, openAppDialog, closeAppDialog, alert, confirm } = useAppDialog()
+const { connectionState, connectionActions, refresh: refreshServiceConnections,
+    handleConnectionAction, recoverConnectionRestart } = useServiceConnections({ confirm, prepareRestart: prepareConnectionRestart })
+async function prepareConnectionRestart() {
+    // Reconnection never navigates. Restart does, so refuse known live drafts;
+    // never silently save/discard or invoke a canLeave that discards them.
+    const editors = [modelLoadingPortRef.value, deviceLoadingPortRef.value, groundEditorRef.value]
+    if (lineAlignmentMode.value || loadingPortDeviceId.value
+        || editors.some(editor => editor?.busy || editor?.dirty) || listFactoryDrafts(getFactoryScope()).length
+        || dirtyLineIds.value.length || modelInspectionDirty.value || manualDisassemblyDirty.value
+        || workshopSpatialDirty.value || workshopMapDirty.value || isPointsDirty.value
+        || showDeviceForm.value || newWorkshop.id || newWorkshop.name || newLine.id || newLine.name
+        || lineDeviceLayoutBusy.value || pointsSaving.value || composerSaving.value || composerBulkSaving.value
+        || dataCenterRef.value?.isBusy || dataCenterSourceRef.value?.isBusy || modelBindingSaving.value) {
+        await alert('当前有未保存的修改、编辑表单或正在执行的操作。请先保存 / 取消编辑，再重启大屏。重连数据通道不需要关闭页面。', { title: '已保留当前草稿' })
+        return false
+    }
+    return true
+}
 const unifiedDesignerRef = ref(null)
 const mapSettingsRef = ref(null), loadingSettingsRef = ref(null), modelPlacementMenuRef = ref(null)
 const mapSettingsLevel = ref('world')
@@ -1072,17 +1091,11 @@ async function refreshNativeScenePreviewStatus() {
 }
 
 async function refreshAdminConnectionStatus() {
-    const canReadUnityStatus = canAdminApi('/api/native-preview/status')
-    if (!canReadUnityStatus) {
-        nativeScenePreviewConnected.value = false
-        nativeScenePreviewChecked.value = true
-        nativeScenePreviewUnavailable.value = true
-        nativeScenePreviewStatus.value = '当前账户无法查看 Unity 连接状态'
-    }
-    await Promise.allSettled([
-        ...(canReadUnityStatus ? [refreshNativeScenePreviewStatus()] : []),
-        ...(canAdminApi('/api/engine/status') ? [loadEngineStatus()] : [])
-    ])
+    const result = await refreshServiceConnections()
+    nativeScenePreviewConnected.value = result?.unity?.state === 'ready'
+    nativeScenePreviewChecked.value = true
+    nativeScenePreviewUnavailable.value = !result
+    nativeScenePreviewStatus.value = result?.unity?.label || 'Unity 实时连接检测失败'
 }
 
 async function sendNativeScenePreview(payload, { quiet = false } = {}) {
@@ -5116,6 +5129,7 @@ async function initializeAdminPanel() {
     window.addEventListener('beforeunload', handleUnsavedCanvasBeforeUnload)
     // Connection telemetry must not wait for unrelated model/config requests.
     void refreshAdminConnectionStatus()
+    void recoverConnectionRestart()
     if (!nativeScenePreviewStatusTimer) nativeScenePreviewStatusTimer = setInterval(refreshAdminConnectionStatus, 3000)
     if (canAdminApi('/api/workshops')) await loadWorkshops()
     if (adminPanelDisposed) return
@@ -7351,6 +7365,11 @@ async function openAdminSetupStep(step) {
             </div>
             <div class="admin-connection-strip" aria-label="系统连接状态" aria-live="polite">
                 <AdminConnectionStatus
+                    :services="connectionState.services"
+                    :actions="connectionActions"
+                    :busy="connectionState.busy"
+                    :feedback="connectionState.feedback"
+                    @action="handleConnectionAction"
                     :unity-connected="nativeScenePreviewConnected"
                     :unity-class="nativeScenePreviewStatusClass"
                     :unity-label="nativeSceneHeaderLabel"

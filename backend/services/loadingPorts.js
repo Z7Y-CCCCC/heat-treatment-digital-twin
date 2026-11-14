@@ -83,6 +83,13 @@ function publicDeviceLoadingPorts(loaded, publicDevice = device => device) {
 }
 async function saveDeviceLoadingPorts(tx, loaded, body, factoryId, dialect) {
     const overrides = normalizeLoadingPortOverrides(validateRequest(loaded, body, 'overrides', ['signals', 'cartTransfer']));
+    const defaults = normalizeLoadingPorts(loaded.metadata.loadingPorts);
+    for (const kind of ['inlet', 'outlet']) {
+        // New authored regions require a real model datum. Legacy offset-only
+        // documents remain readable and are never silently migrated or reset.
+        if (overrides[kind]?.region && !defaults[kind]) throw error('请先为型号设置对应的默认料口，再保存设备区域');
+        resolveLoadingPort(loaded.model, { instance_config: { loadingPortOverrides: overrides } }, kind);
+    }
     const cartTransfer = Object.hasOwn(body, 'cartTransfer') ? normalizeCartTransfer(body.cartTransfer) : null;
     if (cartTransfer?.kind === 'rotating' && !loaded.cartSupported) throw error('旋转平台只用于移动小车');
     if (cartTransfer?.kind === 'rotating' && !loaded.ports.inlet && !loaded.ports.outlet) throw error('请先设置小车料口位置');

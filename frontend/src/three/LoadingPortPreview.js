@@ -5,6 +5,7 @@ import { resolveBackendAssetUrl } from './ModelFactory.js'
 import { restoreGltfNodeNames } from './gltfNodeIdentity.js'
 import { inferLoadingPort } from './lineLoadingAlignment.js'
 import { createSimpleRotatingCart } from './simpleRotatingCart.js'
+import { loadingPortRegionSurface, loadingPortRegionFromSurfaces } from './loadingPortRegion.js'
 
 function isEditorNode(node, root) {
   for (let item = node; item; item = item.parent) {
@@ -214,9 +215,10 @@ export function collectLoadingPortNodes(root) {
 }
 
 export class LoadingPortPreview {
-  constructor(container, { onSurface = () => {} } = {}) {
+  constructor(container, { onSurface = () => {}, onRegion = () => {}, onRegionError = () => {}, onRegionState = () => {} } = {}) {
     this.container = container
     this.onSurface = onSurface
+    this.onRegion = onRegion; this.onRegionError = onRegionError; this.onRegionState = onRegionState
     this.disposed = false
     this.scene = new THREE.Scene()
     this.scene.background = new THREE.Color(0xf1f5f9)
@@ -243,14 +245,42 @@ export class LoadingPortPreview {
     }
     this.down = event => {
       const eligible = this.picking && this.root && event.target === this.renderer.domElement && inside(event)
+      if (this.regionMode && this.regionStart && eligible && event.button !== 0) this.cancelRegion()
+      if (this.regionMode && eligible && event.button === 0) {
+        event.preventDefault(); event.stopImmediatePropagation()
+        if (this.regionDrag || event.isPrimary === false || event.ctrlKey || event.shiftKey || event.altKey || event.metaKey) { this.cancelRegion(); return }
+        stopLoadingPortOrbitDamping(this.controls,this.camera)
+        try {
+          const surface=this.regionSurfaceAt(event)
+          if (!this.regionStart) this.regionStart=surface
+          else loadingPortRegionFromSurfaces(this.regionStart,surface)
+          this.regionDrag={id:event.pointerId,x:event.clientX,y:event.clientY,second:!!this.regionWaiting,maxDistance:0}
+          this.regionWaiting=false;this.controls.enabled=false;this.onRegionState(true);this.renderer.domElement.setPointerCapture?.(event.pointerId)
+        } catch(error) { this.cancelRegion();this.onRegionError(error.message) }
+        return
+      }
       if (this.gesture.begin(event, eligible)) stopLoadingPortOrbitDamping(this.controls, this.camera)
     }
     this.move = event => {
+      if(this.regionMode&&this.regionStart) {
+        if(this.regionDrag&&this.regionDrag.id!==event.pointerId)return
+        if(this.regionDrag){event.preventDefault();event.stopImmediatePropagation();this.regionDrag.maxDistance=Math.max(this.regionDrag.maxDistance,Math.hypot(event.clientX-this.regionDrag.x,event.clientY-this.regionDrag.y))}
+        try { const candidate=loadingPortRegionFromSurfaces(this.regionStart,this.regionSurfaceAt(event));this.drawRegion(candidate.region) } catch { this.clearRegionOverlay() }
+        return
+      }
       // OrbitControls listens on ownerDocument. Suppress only sub-threshold
       // movement while a click is still possible; real drags remain normal orbit.
       if (this.gesture.move(event)) event.stopImmediatePropagation()
     }
     this.up = event => {
+      if(this.regionMode&&this.regionDrag?.id===event.pointerId) {
+        event.preventDefault();event.stopImmediatePropagation();const gesture=this.regionDrag
+        this.regionDrag=null;this.controls.enabled=true
+        if(!inside(event)||event.button!==0){this.cancelRegion();return}
+        if(!gesture.second&&gesture.maxDistance<=5){this.regionWaiting=true;return}
+        try { const candidate=loadingPortRegionFromSurfaces(this.regionStart,this.regionSurfaceAt(event));this.cancelRegion();this.onRegion(candidate) } catch(error) {this.cancelRegion();this.onRegionError(error.message)}
+        return
+      }
       const click = this.gesture.end(event, event.target === this.renderer.domElement && inside(event))
       if (!click || !this.picking || !this.root || this.disposed) return
       const rect = this.renderer.domElement.getBoundingClientRect()
@@ -263,13 +293,15 @@ export class LoadingPortPreview {
       const point = loadingPortSurfacePoint(hit, this.root)
       if (point) this.onSurface(point)
     }
-    this.cancel = event => this.gesture.cancel(event)
-    this.wheel = () => this.gesture.invalidate()
-    this.blur = () => this.gesture.reset()
+    this.cancel = event => {this.gesture.cancel(event);if(this.regionDrag?.id===event?.pointerId)this.cancelRegion()}
+    this.wheel = () => {this.gesture.invalidate();if(this.regionStart)this.cancelRegion()}
+    this.blur = () => {this.gesture.reset();this.cancelRegion()}
+    this.keydown=event=>{if(event.key==='Escape'&&this.regionStart){event.preventDefault();this.cancelRegion()}}
     for (const [name, handler] of [['pointerdown', this.down], ['pointermove', this.move], ['pointerup', this.up], ['pointercancel', this.cancel]]) this.pointerDocument.addEventListener(name, handler, true)
     this.renderer.domElement.addEventListener('lostpointercapture', this.cancel)
     this.renderer.domElement.addEventListener('wheel', this.wheel, { capture: true, passive: true })
     globalThis.window?.addEventListener('blur', this.blur)
+    globalThis.window?.addEventListener('keydown',this.keydown)
     this.resize = () => {
       if (this.disposed) return
       const width = Math.max(1, container.clientWidth), height = Math.max(1, container.clientHeight)
@@ -305,6 +337,7 @@ export class LoadingPortPreview {
 
   resetCamera() {
     if (!this.root || this.box?.isEmpty()) return
+    this.cancelRegion()
     stopLoadingPortOrbitDamping(this.controls, this.camera)
     const center = this.box.getCenter(new THREE.Vector3()), extent = this.extent
     this.camera.position.copy(center).add(new THREE.Vector3(.9, .65, 1.1).normalize().multiplyScalar(loadingPortCameraDistance(extent, this.camera.aspect)))
@@ -321,6 +354,7 @@ export class LoadingPortPreview {
 
   resizeCamera(aspect) {
     const previous = validLoadingPortAspect(this.camera.aspect), next = validLoadingPortAspect(aspect)
+    if (previous !== next) this.cancelRegion()
     if (previous === next || !this.root || !this.extent || this.box?.isEmpty()) {
       this.camera.aspect = next; this.camera.updateProjectionMatrix(); return
     }
@@ -333,7 +367,26 @@ export class LoadingPortPreview {
     updateCameraWithoutLoadingPortInertia(this.controls)
   }
 
-  setPicking(value) { this.picking = !!value; if (!value) this.gesture?.reset(); this.renderer.domElement.style.cursor = value ? 'crosshair' : 'grab' }
+  setPicking(value) { this.picking = !!value; if (!value) {this.gesture?.reset();this.cancelRegion()}; this.renderer.domElement.style.cursor = value ? 'crosshair' : 'grab' }
+  setRegionMode(value) {this.regionMode=!!value;this.cancelRegion();this.renderer.domElement.style.cursor=value&&this.picking?'crosshair':'grab'}
+  clearRegionOverlay(){if(this.regionOverlay){this.markers?.remove(this.regionOverlay);disposeSceneObject(this.regionOverlay);this.regionOverlay=null}}
+  cancelRegion(){this.regionStart=null;this.regionDrag=null;this.regionWaiting=false;this.clearRegionOverlay();if(this.controls)this.controls.enabled=true;this.onRegionState?.(false)}
+  regionSurfaceAt(event){
+    const rect=this.renderer.domElement.getBoundingClientRect();this.camera.updateMatrixWorld(true);this.root.updateMatrixWorld(true)
+    this.raycaster.setFromCamera(new THREE.Vector2((event.clientX-rect.left)/rect.width*2-1,-(event.clientY-rect.top)/rect.height*2+1),this.camera)
+    const meshes=[];this.root.traverseVisible(node=>{if(node.isMesh&&!isEditorNode(node,this.root))meshes.push(node)})
+    const hit=this.raycaster.intersectObjects(meshes,false)[0],view=this.raycaster.ray.direction.clone().transformDirection(this.root.matrixWorld.clone().invert()).toArray()
+    return loadingPortRegionSurface(hit,this.root,view)
+  }
+  drawRegion(region,parent=this.markers,color=0xd79412,candidate=true){
+    if(candidate)this.clearRegionOverlay()
+    if(!parent||!region)return
+    const group=new THREE.Group();group.userData.loadingPortEditor=true
+    const points=region.corners.map(p=>new THREE.Vector3(...p)),border=new THREE.Line(new THREE.BufferGeometry().setFromPoints([...points,points[0]]),new THREE.LineBasicMaterial({color,depthTest:false,depthWrite:false}))
+    const geometry=new THREE.BufferGeometry().setFromPoints([points[0],points[1],points[2],points[0],points[2],points[3]]),fill=new THREE.Mesh(geometry,new THREE.MeshBasicMaterial({color,transparent:true,opacity:.15,depthTest:false,depthWrite:false,side:THREE.DoubleSide}))
+    border.renderOrder=13;fill.renderOrder=12;group.add(fill,border);group.userData.loadingPortRole=candidate?'region-draft':'region';parent.add(group);if(candidate)this.regionOverlay=group
+    return group
+  }
 
   nodePoint(id, bottom = false) {
     const entry = this.nodes?.find(item => item.id === id)
@@ -385,6 +438,7 @@ export class LoadingPortPreview {
       point.userData.loadingPortLabel = labelText
       this.labels?.add(port, kind, active, candidate)
       this.portMarkers.add(point, line)
+      if(port.region)this.drawRegion(port.region,this.portMarkers,color,false)
       if (active) {
         const halo = new THREE.Mesh(new THREE.SphereGeometry(extent * .029, 20, 12), new THREE.MeshBasicMaterial({ color: 0x1766cc, depthTest: false, depthWrite: false, transparent: true, opacity: .28, wireframe: true }))
         halo.position.copy(point.position); halo.renderOrder = 11; halo.userData.loadingPortEditor = true; halo.userData.loadingPortRole = 'point-highlight'
@@ -422,6 +476,7 @@ export class LoadingPortPreview {
   clearAsset() {
     this.clearCartTransfer(); this.cartSignature = null
     this.gesture?.reset()
+    this.cancelRegion()
     this.labels?.clear()
     if (this.root) this.scene.remove(this.root)
     if (this.markers) this.scene.remove(this.markers)
@@ -437,6 +492,7 @@ export class LoadingPortPreview {
     this.renderer.domElement.removeEventListener('lostpointercapture', this.cancel)
     this.renderer.domElement.removeEventListener('wheel', this.wheel, true)
     globalThis.window?.removeEventListener('blur', this.blur); this.gesture?.reset()
+    globalThis.window?.removeEventListener('keydown',this.keydown)
     this.controls.dispose(); this.clearAsset(); this.labels?.dispose(); this.renderer.dispose(); this.renderer.forceContextLoss()
     this.renderer.domElement.remove()
   }

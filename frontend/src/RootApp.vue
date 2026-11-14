@@ -5,6 +5,7 @@ import { RouterView, useRoute, useRouter } from 'vue-router'
 import { adminSession, issueNativeSessionTicket, logoutCurrentAdminAccount, refreshAdminSession, startAdminSessionTracking, stopAdminSessionTracking } from './runtime/adminSession.js'
 import { isNativeOverlaySurface } from './runtime/nativeSurfaceBridge.js'
 import { openCustomerOperations } from './runtime/nativeAdminNavigation.js'
+import { reconnectActiveDashboardChannels } from './runtime/DataStore.js'
 
 const route = useRoute()
 const router = useRouter()
@@ -109,8 +110,35 @@ watch(isNativeOverlaySurfaceRoute, isOverlay => {
 // Tracking belongs to the WebView, not a cached admin route. Otherwise leaving
 // /admin drops BroadcastChannel and account changes in /group take a full poll
 // cycle to reach another surface (or never arrive during a service outage).
-onMounted(() => { startAdminSessionTracking(); void refreshAdminSession() })
-onUnmounted(() => { rootDisposed = true; nativeSessionSyncGeneration++; stopAdminSessionTracking(); window.clearInterval(overlayAuthPoll) })
+let channelReconnectBusy = false
+async function handleServiceChannelReconnect(event) {
+    const message = event.data
+    if (!isNativeOverlaySurfaceRoute.value || route.path !== '/overlay' || message?.type !== 'service_channel_reconnect'
+        || !adminSession.displayAuthenticated || !adminSession.permissions.view
+        || !/^[a-zA-Z0-9_-]{1,80}$/.test(message.requestId || '')) return
+    if (channelReconnectBusy) {
+        window.chrome?.webview?.postMessage({ type: 'service_channel_reconnect_result', requestId: message.requestId, success: false, code: 'BUSY' })
+        return
+    }
+    channelReconnectBusy = true
+    try {
+        const result = await reconnectActiveDashboardChannels({ timeoutMs: 20000 })
+        if (!rootDisposed && isNativeOverlaySurfaceRoute.value && route.path === '/overlay' && adminSession.displayAuthenticated)
+            window.chrome?.webview?.postMessage({ type: 'service_channel_reconnect_result',
+            requestId: message.requestId, success: true, channels: result.channels })
+    } catch {
+        if (!rootDisposed) window.chrome?.webview?.postMessage({ type: 'service_channel_reconnect_result',
+            requestId: message.requestId, success: false })
+    } finally { channelReconnectBusy = false }
+}
+onMounted(() => {
+    startAdminSessionTracking(); void refreshAdminSession()
+    window.chrome?.webview?.addEventListener?.('message', handleServiceChannelReconnect)
+})
+onUnmounted(() => {
+    rootDisposed = true; nativeSessionSyncGeneration++; stopAdminSessionTracking(); window.clearInterval(overlayAuthPoll)
+    window.chrome?.webview?.removeEventListener?.('message', handleServiceChannelReconnect)
+})
 </script>
 
 <template>

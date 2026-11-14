@@ -91,6 +91,9 @@ function createAdminAuth(options = {}) {
     const sessions = new Map();
     const attempts = new Map();
     const nativeTickets = new Map();
+    // Ephemeral reconnect proofs: never persisted, exposed or logged. Only the
+    // source session may observe the new child connection for its own ticket.
+    const nativeConfirmations = new Map();
     let passwordOperationBusy = false;
     let sessionGeneration = 0;
     let config = { version: 1, idleTimeoutMinutes: DEFAULT_IDLE_MINUTES, password: null, users: [] };
@@ -221,6 +224,17 @@ function createAdminAuth(options = {}) {
         }
         for (const [key, ticket] of nativeTickets) {
             if (time >= ticket.expiresAt) nativeTickets.delete(key);
+        }
+        for (const [key, confirmation] of nativeConfirmations) {
+            if (time >= confirmation.expiresAt || !sessions.has(confirmation.sourceSessionKey)
+                || confirmation.childSessionKey && !sessions.has(confirmation.childSessionKey)) {
+                // Keep an unexchanged grant until its original 30-second timer
+                // solely so exchange reports revoked source auth accurately.
+                // getSession/active checks still make it unusable immediately.
+                if (time >= confirmation.expiresAt || !nativeTickets.has(key)) clearTimeout(confirmation.timer);
+                nativeConfirmations.delete(key);
+                if (time >= confirmation.expiresAt) nativeTickets.delete(key);
+            }
         }
         saveSessions();
     }
@@ -379,13 +393,19 @@ function createAdminAuth(options = {}) {
         status,
         requireSession,
         createNativeTicket(token, csrfToken) {
-            const session = requireSession(token, csrfToken, { permission: 'launch' });
+            const session = requireSession(token, csrfToken, { permission: { all: ['session', 'launch', 'view'] } });
             if (!permissionsForSession(session).view) {
                 throw authError(403, 'ADMIN_PERMISSION_DENIED', '当前账户没有查看大屏的权限');
             }
+            if (nativeConfirmations.size >= 64 || nativeTickets.size >= 64) throw authError(429, 'NATIVE_TICKET_LIMIT', '大屏连接操作过于频繁，请稍后再试', 30);
             const ticket = crypto.randomBytes(32).toString('hex');
-            nativeTickets.set(tokenKey(ticket), { sourceToken: token, expiresAt: now() + 30000 });
-            return { ticket, expiresAt: now() + 30000 };
+            const key = tokenKey(ticket), expiresAt = now() + 30000;
+            const confirmation = { sourceSessionKey: tokenKey(token), childSessionKey: '', expiresAt,
+                timer: setTimeout(() => { nativeConfirmations.delete(key); nativeTickets.delete(key); }, 30000) };
+            confirmation.timer.unref?.();
+            nativeConfirmations.set(key, confirmation);
+            nativeTickets.set(key, { sourceToken: token, sourceSessionKey: tokenKey(token), expiresAt });
+            return { ticket, expiresAt };
         },
         exchangeNativeTicket(ticket, previousToken = '') {
             prune();
@@ -396,13 +416,28 @@ function createAdminAuth(options = {}) {
                 throw authError(401, 'NATIVE_TICKET_INVALID', '大屏登录凭据已失效，请重新切换到实时大屏');
             }
             const source = getSession(grant.sourceToken);
-            if (!source) throw authError(401, 'ADMIN_AUTH_REQUIRED', '后台会话已锁定，请重新登录');
+            if (!source || !adminActive(source)) throw authError(401, 'ADMIN_AUTH_REQUIRED', '后台会话已锁定，请重新登录');
             const permissions = permissionsForSession(source);
             if (!permissions.launch || !permissions.view) {
                 throw authError(403, 'ADMIN_PERMISSION_DENIED', '当前账户没有启动大屏的权限');
             }
             const previous = sessions.get(tokenKey(previousToken));
-            return issueSession(previous?.parentSessionKey ? previousToken : '', source.userId, grant.sourceToken);
+            const result = issueSession(previous?.parentSessionKey ? previousToken : '', source.userId, grant.sourceToken);
+            const confirmation = nativeConfirmations.get(key);
+            if (confirmation) confirmation.childSessionKey = tokenKey(result.token);
+            return result;
+        },
+        confirmNativeTicket(token, csrfToken, ticket, connectionProbe = () => ({})) {
+            requireSession(token, csrfToken, { permission: { all: ['session', 'launch', 'view'] } });
+            const key = tokenKey(ticket), confirmation = nativeConfirmations.get(key);
+            if (!confirmation || !equalSecret(confirmation.sourceSessionKey, tokenKey(token)) || now() >= confirmation.expiresAt) {
+                throw authError(401, 'NATIVE_CONFIRM_INVALID', '本次大屏连接确认已失效，请重新连接');
+            }
+            const child = confirmation.childSessionKey && sessions.get(confirmation.childSessionKey);
+            const exchanged = Boolean(child && child.parentSessionKey === confirmation.sourceSessionKey);
+            const connection = exchanged ? connectionProbe(confirmation.childSessionKey, now()) || {} : {};
+            return { success: true, exchanged, connected: exchanged && connection.connected === true,
+                sceneReady: exchanged && connection.connected === true && connection.sceneReady === true, observedAt: now() };
         },
         async setup(password, key, previousToken) {
             validatePassword(password);
@@ -455,6 +490,8 @@ function createAdminAuth(options = {}) {
                     for (const active of sessions.values()) active.adminLocked = true;
                 } else session.adminLocked = true;
                 nativeTickets.clear();
+                for (const confirmation of nativeConfirmations.values()) clearTimeout(confirmation.timer);
+                nativeConfirmations.clear();
                 sessionsDirty = true;
                 saveSessions();
             } else if (sessions.size > 0 && [...sessions.values()].some(adminActive)) {

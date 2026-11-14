@@ -130,6 +130,9 @@ class WsServer {
             const clientIp = req.socket.remoteAddress;
             console.log(`[WebSocket] 客户端已连接: ${clientIp} (当前 ${this.clients.size + 1} 个连接)`);
             this.clients.add(ws);
+            // Keep only a hash for the internal native-ticket proof lookup.
+            // This is never added to status, close diagnostics or page payloads.
+            ws.adminSessionKey = req.adminSessionToken ? require('node:crypto').createHash('sha256').update(req.adminSessionToken).digest('hex') : '';
             ws.lastCommunicationAt = Date.now();
             const markCommunication = () => {
                 ws.lastCommunicationAt = Date.now();
@@ -388,6 +391,14 @@ class WsServer {
             if (!(client.lastCommunicationAt > 0) || now - client.lastCommunicationAt > HEARTBEAT_TIMEOUT_MS) { client.terminate(); continue; }
             try { client.ping(); } catch { client.terminate(); }
         }
+    }
+
+    nativeSessionConnectionHealth(sessionKey, now = Date.now()) {
+        if (!/^[a-f0-9]{64}$/.test(sessionKey || '')) return { connected: false, sceneReady: false };
+        const peers = [...this.clients].filter(client => client.readyState === 1 && client.clientRole === 'unity'
+            && client.adminSessionKey === sessionKey && Number(client.lastCommunicationAt) > 0
+            && Number(client.lastCommunicationAt) <= now && now - client.lastCommunicationAt <= HEARTBEAT_TIMEOUT_MS);
+        return { connected: peers.length > 0, sceneReady: peers.some(client => client.sceneReady === true) };
     }
 
     connectionHealth(role = 'unity', now = Date.now()) {

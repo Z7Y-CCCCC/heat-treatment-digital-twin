@@ -6,12 +6,12 @@ const { spawn } = require('child_process');
 const { BACKEND_DIR, createRunDirectory } = require('./integration-test-utils.cjs');
 
 const scripts = [
-    'startup-services.test.cjs', 'simulation-points-test.cjs', 'display-connection-health-test.cjs', 'point-history-test.cjs', 'point-history-ack-test.cjs', 'history-policy-test.cjs',
+    'startup-services.test.cjs', 'simulation-points-test.cjs', 'display-connection-health-test.cjs', 'admin-connection-status-test.cjs', 'point-history-test.cjs', 'point-history-ack-test.cjs', 'history-policy-test.cjs',
     'independent-arrival.test.cjs', 'simple-station-motion-test.cjs', 'loading-port-signals-test.cjs', 'rotating-cart-config-test.cjs', 'schema-ddl-budget-test.cjs', 'bidirectional-transfer-test.cjs',
     'endurance-continuity.test.cjs', 'endurance-memory.test.cjs', 'endurance-mysql-memory.test.cjs', 'endurance-mysql-cleanup.test.cjs', 'endurance-report-io.test.cjs',
     'test-isolation-test.cjs', 'display-only-runtime-test.cjs', 'collector-process-test.cjs', 'collector-process-integration-test.cjs', 'collector-mode-persistence-test.cjs', 'simulation-connection-status-test.cjs', 'database-readiness-test.cjs', 'bounded-process-log-test.cjs', 'history-retention-test.cjs', 'map-surface-schema-test.cjs',
     'global-view-navigation-test.cjs', 'group-portal-settings-test.cjs', 'appearance-assets-test.cjs',
-    'admin-auth-test.cjs', 'admin-session-persistence-test.cjs', 'admin-login-history-test.cjs', 'page-permissions-test.cjs', 'page-permissions-integration-test.cjs', 'license-test.cjs', 'offline-activation-test.cjs', 'release-package-test.cjs', 'package-resource-isolation-test.cjs',
+    'admin-auth-test.cjs', 'native-connection-confirm-test.cjs', 'admin-session-persistence-test.cjs', 'admin-login-history-test.cjs', 'page-permissions-test.cjs', 'page-permissions-integration-test.cjs', 'license-test.cjs', 'offline-activation-test.cjs', 'release-package-test.cjs', 'package-resource-isolation-test.cjs',
     'math-expression-test.cjs', 'business-data-test.cjs', 'data-source-test.cjs', 'data-set-test.cjs', 'data-center-test.cjs', 'data-record-time-test.cjs', 'data-center-browse-test.cjs', 'data-center-http-test.cjs', 'trend-point-source-test.cjs',
     'data-source-http-regression-test.cjs', 'data-source-designer-test.cjs', 'widget-binding-workflow-test.cjs', 'dashboard-widget-identity-test.cjs', 'dashboard-draft-incomplete-test.cjs', 'dashboard-stale-bindings-test.cjs', 'excel-data-file-test.cjs',
     'spatial-hierarchy-test.cjs', 'spatial-bootstrap-idempotency-test.cjs', 'industrial-ground-test.cjs', 'loading-ports-test.cjs', 'docking-calibration-test.cjs', 'cast-discovery-test.cjs', 'cast-history-test.cjs',

@@ -8,7 +8,7 @@ using Microsoft.Web.WebView2.WinForms;
 
 namespace HeatTreatmentAdminHost;
 
-internal sealed class AdminPanelForm : Form
+internal sealed partial class AdminPanelForm : Form
 {
     private const int HeaderHeight = 46;
     private const int MinimumPanelWidth = 860;
@@ -246,6 +246,7 @@ internal sealed class AdminPanelForm : Form
             _webView.CoreWebView2.Settings.AreDevToolsEnabled = true;
             _webView.CoreWebView2.Settings.IsStatusBarEnabled = false;
             _webView.CoreWebView2.Settings.AreDefaultContextMenusEnabled = true;
+            ServiceConnectionNavigationGuard.Install(_webView.CoreWebView2, _options.Url);
             _webView.CoreWebView2.NewWindowRequested += HandleNewWindow;
             _webView.CoreWebView2.NavigationStarting += (_, args) =>
                 args.Cancel = !WebContentPolicy.IsSameOrigin(args.Uri, _options.Url);
@@ -392,6 +393,12 @@ internal sealed class AdminPanelForm : Form
             var root = document.RootElement;
             if (!root.TryGetProperty("type", out var typeElement)) return;
             var type = typeElement.GetString();
+            if (type == "service_connection_action")
+            {
+                if (ServiceConnectionPolicy.IsAdminSource(args.Source, _options.Url))
+                    _ = HandleServiceConnectionActionAsync(root.Clone());
+                return;
+            }
             if (type == "loading_appearance_changed")
             {
                 _ = RefreshWindowThemeAsync();
