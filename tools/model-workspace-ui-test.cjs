@@ -118,6 +118,8 @@ const pass = name => { checks.push(name); console.log('PASS ' + name); };
     assert.equal(await page.getByRole('button', { name: '部件结构', exact: true }).count(), 0);
     assert.equal(await workspace.getByRole('button', { name: '部件摆放', exact: true }).count(), 1);
     pass('complex structure editor is absent from both pages; existing layout and effects remain available');
+    await page.getByRole('button', { name: '模型管理', exact: true }).click();
+    await page.getByRole('columnheader', { name: '动作数', exact: true }).waitFor();
     assert.equal(await page.getByRole('columnheader', { name: '动作数', exact: true }).count(), 1);
     const actionCounts = {};
     for (const id of ['cad_transfer_cart_101300', 'cad_air_cooling_table_115800ht']) actionCounts[id] = Number(await page.locator(`[data-model-id="${id}"] td`).nth(4).textContent());
