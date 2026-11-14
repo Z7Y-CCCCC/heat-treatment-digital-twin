@@ -36,7 +36,7 @@ async function closeAlert(title) {
   await page.getByRole('button', { name: '确定', exact: true }).click();
 }
 async function showAdvanced(show) {
-  const action = page.getByRole('button', { name: show ? '显示换算字段' : '收起换算字段', exact: true });
+  const action = page.getByRole('button', { name: show ? '更多设置' : '收起更多设置', exact: true });
   if (await action.count()) await action.click();
 }
 async function loaded(expected = 5) {
@@ -121,10 +121,10 @@ async function audit(name, width, textSize) {
     assert.ok(!/[\\/]/.test(point.deviceCaption.text), 'the compact caption never falls back to a hierarchy path');
     assert.ok(point.deviceCaption.title.includes('默认车间') && point.deviceCaption.title.includes(' / ') && point.deviceCaption.title.endsWith(expectedDeviceName), 'hover title preserves the full hierarchy and device name');
     assert.ok(Math.abs(point.width - result.tableWidth) < 2, 'every point is exactly one full-width table row');
-    assert.equal(point.cells, advanced ? 14 : 11, 'all original point columns remain cells of one tr');
+    assert.equal(point.cells, advanced ? 15 : 11, 'all original point columns remain cells of one tr');
     const centers = point.controls.map(control => control.centerY);
     assert.ok(Math.max(...centers) - Math.min(...centers) <= 2, `${name} must not split a point into stacked lines: ${JSON.stringify(point)}`);
-    assert.equal(point.controls.length, (point.id === String(pointIds.alarm) ? 11 : 10) + (advanced ? 3 : 0), 'all common fields and operations remain represented exactly once');
+    assert.equal(point.controls.length, (point.id === String(pointIds.alarm) ? 11 : 10) + (advanced ? 4 : 0), 'all common fields and operations remain represented exactly once');
     for (const control of point.controls) {
       if (control.shortNativeSelect) assert.ok(transparent(control.color), `${name} native selected text must remain transparent, including disabled/read-only states: ${JSON.stringify(control)}`);
       assert.ok(control.name, 'each field/control has a visible or accessible label');

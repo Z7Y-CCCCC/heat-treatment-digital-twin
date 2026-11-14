@@ -1,17 +1,17 @@
 <script setup>
-import { computed, ref, watch, onUnmounted } from 'vue'
+import { ref, watch, onUnmounted } from 'vue'
+import { showSaveFeedback } from '../../../runtime/saveFeedback.js'
 import { adminApi } from '../../../config/factoryConfig.js'
 
 const props = defineProps({ factoryId:String, deviceId:String, canEdit:Boolean })
-const open = ref(false), loading = ref(false), busy = ref(false), policy = ref(null), points = ref([])
-const selectedId = ref(''), error = ref(''), message = ref('')
+const open = ref(false), loading = ref(false), busy = ref(false), policy = ref(null)
+const error = ref('')
 const loadedFactoryId = ref('')
-const selected = computed(() => points.value.find(point => String(point.id) === selectedId.value))
 let generation = 0, disposed = false
 function valid(version) { return !disposed && version === generation }
 async function load() {
   const version = ++generation, factoryId = props.factoryId
-  policy.value = null; points.value = []; selectedId.value = ''; loadedFactoryId.value = ''; error.value = ''; message.value = ''
+  policy.value = null; loadedFactoryId.value = ''; error.value = ''
   loading.value = true
   try {
     const result = await adminApi.getHistoryPolicy(factoryId, props.deviceId)
@@ -20,8 +20,7 @@ async function load() {
     // An unset browser preference means the server's current factory, not a
     // missing user selection. Pin subsequent writes to the confirmed response.
     loadedFactoryId.value = result.factoryId
-    policy.value = result.policy; points.value = result.points
-    selectedId.value = String(points.value[0]?.id || '')
+    policy.value = result.policy
   } catch (cause) { if (valid(version)) error.value = cause.message }
   finally { if (valid(version)) loading.value = false }
 }
@@ -31,21 +30,19 @@ function toggle(event) {
   if (open.value && !loading.value && !busy.value) void load()
 }
 watch(() => [props.factoryId, props.deviceId], () => {
-  generation++; loading.value = false; policy.value = null; points.value = []; selectedId.value = ''; loadedFactoryId.value = ''; error.value = ''; message.value = ''
+  generation++; loading.value = false; policy.value = null; loadedFactoryId.value = ''; error.value = ''
   if (open.value) void load()
 })
-async function save(pointOnly = false) {
-  if (!props.canEdit || busy.value || loading.value || !policy.value || !loadedFactoryId.value || pointOnly && !selected.value) return
-  const version = generation, factoryId = loadedFactoryId.value, point = selected.value
-  busy.value = true; error.value = ''; message.value = ''
+async function save() {
+  if (!props.canEdit || busy.value || loading.value || !policy.value || !loadedFactoryId.value) return
+  const version = generation, factoryId = loadedFactoryId.value
+  busy.value = true; error.value = ''
   try {
-    const result = pointOnly
-      ? await adminApi.savePointHistoryPolicy(factoryId, point.id, {mode:point.history_mode, days:point.history_days})
-      : await adminApi.saveHistoryPolicy(factoryId, {...policy.value})
+    const result = await adminApi.saveHistoryPolicy(factoryId, {...policy.value})
     if (!valid(version)) return
-    if (!result.success || result.factoryId !== factoryId || pointOnly && String(result.pointId) !== String(point.id)) throw Error(result.error || '保存未确认')
-    message.value = pointOnly ? '当前点位策略已保存，后续采样生效。' : '当前工厂策略已保存，后续采样生效。'
-  } catch (cause) { if (valid(version)) error.value = cause.message }
+    if (!result.success || result.factoryId !== factoryId) throw Error(result.error || '保存未确认')
+    showSaveFeedback('工厂历史策略已保存')
+  } catch (cause) { if (valid(version)) showSaveFeedback(`保存失败：${cause.message}`, 'error') }
   finally { busy.value = false }
 }
 onUnmounted(() => { disposed = true; generation++ })
@@ -67,25 +64,9 @@ onUnmounted(() => { disposed = true; generation++ })
             <label>全厂指标历史<select v-model="policy.metricMode" aria-label="全厂指标历史模式" class="input"><option value="off">关闭记录</option><option value="finite">按天保留</option><option value="permanent">永久保留</option></select></label>
             <label v-if="policy.metricMode === 'finite'">指标保留（天）<input v-model.number="policy.metricDays" aria-label="指标保留天数" class="input" type="number" min="1" max="36500" /></label>
           </div>
-          <button class="btn btn-primary" type="button" @click="save(false)">{{ busy ? '保存中…' : '保存工厂历史策略' }}</button>
+          <button class="btn btn-primary" type="button" @click="save">{{ busy ? '保存中…' : '保存工厂历史策略' }}</button>
         </fieldset>
-        <section class="history-point">
-          <h4>当前点位 · 长期历史</h4>
-          <label>选择已保存的点位<select v-model="selectedId" aria-label="历史策略点位" class="input" :disabled="busy || loading || !points.length"><option v-if="!points.length" value="">暂无已保存的点位</option><option v-for="point in points" :key="point.id" :value="String(point.id)">{{ point.device_name }} · {{ point.label || point.name }}（#{{ point.id }}）</option></select></label>
-          <fieldset v-if="selected" :disabled="!canEdit || busy || loading">
-            <legend>{{ selected.label || selected.name }}</legend>
-            <div class="history-fields">
-              <label>点位保存方式<select v-model="selected.history_mode" aria-label="点位历史保存方式" class="input"><option value="recent">仅近期趋势（默认）</option><option value="off">不记录此点位</option><option value="finite">开启长期 · 按天保留</option><option value="permanent">开启长期 · 永久保留</option></select></label>
-              <label v-if="selected.history_mode === 'finite'">长期保留（天）<input v-model.number="selected.history_days" aria-label="点位长期保留天数" class="input" type="number" min="1" max="36500" /></label>
-            </div>
-            <p v-if="selected.history_mode === 'finite'" class="history-note">实际期限取近期窗口与长期天数中较长的一项，原始采样不因绘图降采样而减少。</p>
-            <button class="btn btn-primary" type="button" @click="save(true)">保存当前点位历史策略</button>
-          </fieldset>
-          <p v-if="!points.length" class="history-note">先保存点位配置，再展开此面板设置历史策略。</p>
-        </section>
-        <p class="history-note">策略只决定后续采样的保存方式与到期时间；修改、关闭或缩短期限不会立即清除已有记录。旧版本未设置到期时间的历史继续保留；已经按有限期限记录的数据仍按原到期时间清理。采集服务停机期间无法补造数据；长期保存需磁盘空间与备份。</p>
       </template>
-      <p v-if="message" role="status">{{ message }}</p>
     </div>
   </details>
 </template>

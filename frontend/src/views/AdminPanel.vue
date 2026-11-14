@@ -20,6 +20,9 @@ import { useLineAdjustmentBand } from './admin/composables/useLineAdjustmentBand
 import { clampLineAdjustment, lineAdjustmentBand } from '../../../shared/lineAdjustmentBand.mjs'
 import FactoryVoiceToggle from './admin/components/FactoryVoiceToggle.vue'
 import PointHistorySettings from './admin/components/PointHistorySettings.vue'
+import PointHistoryPolicyCell from './admin/components/PointHistoryPolicyCell.vue'
+import SaveFeedbackToast from './admin/components/SaveFeedbackToast.vue'
+import { usePointHistoryColumn } from './admin/composables/usePointHistoryColumn.js'
 import WorkshopGroundEditor from './admin/components/WorkshopGroundEditor.vue'
 import DataSourceWorkspace from './admin/components/DataSourceWorkspace.vue'
 import DataCenterWorkspace from './admin/components/DataCenterWorkspace.vue'
@@ -1637,6 +1640,17 @@ const loadingPortModelOptions = computed(() => models.value.filter(model => (mod
 const deviceModelHover = ref(null)
 const modelDisplayIds = computed(() => buildModelDisplayIds(models.value.map(model => model.id)))
 const copiedModelId = ref('')
+showPointAdvancedFields.value = false
+const pointHistoryColumn = usePointHistoryColumn({ factoryId: dataCenterFactoryId, deviceId: selectedDeviceForPoints, canEdit: computed(() => canAdminPage('points','edit')) })
+async function togglePointExtraColumns() {
+    if (pointHistoryColumn.loading.value || pointHistoryColumn.anySaving.value) return
+    showPointAdvancedFields.value = !showPointAdvancedFields.value
+    if (pointHistoryColumn.visible.value !== showPointAdvancedFields.value) await pointHistoryColumn.toggle()
+}
+watch([() => dataPoints.value.map(point => point.id || '').join(','), pointHistoryColumn.anySaving], () => {
+    if (pointHistoryColumn.visible.value && !pointHistoryColumn.loading.value && !pointHistoryColumn.anySaving.value
+        && dataPoints.value.some(point => point.id && !pointHistoryColumn.rows.value[String(point.id)])) void pointHistoryColumn.load()
+})
 const DELETABLE_RETIRED_MODEL_IDS = new Set(['builtin_furnace', 'photo_multipurpose_furnace_v5', 'transfer_cart'])
 const modelPreviewRef = ref(null)
 const modelFullscreen = usePreviewFullscreen(modelPreviewRef)
@@ -7288,6 +7302,7 @@ async function openAdminSetupStep(step) {
 </script>
 
 <template>
+    <SaveFeedbackToast />
     <div class="admin-container" data-admin-workspace :class="{ 'unity-embedded': isUnityEmbedded, 'unity-dashboard-tab': isUnityEmbedded && unityHostState.attached && !unityHostState.adminVisible, 'nav-collapsed': isAdminNavCollapsed, 'composer-active': activeTab === 'composer', 'line-planner-active': activeTab === 'lines', 'manual-layout-active': activeTab === 'disassembly-layout', 'animation-active': activeTab === 'model-animations' }">
         <AdminWindowChrome v-if="isUnityEmbedded" @state="Object.assign(unityHostState, $event)" @before-dashboard="flushDashboardViewPreview" />
         <!-- 顶部工具栏 -->
@@ -8954,21 +8969,20 @@ async function openAdminSetupStep(step) {
                         <PointHistorySettings :factory-id="dataCenterFactoryId" :device-id="selectedDeviceForPoints" :can-edit="canAdminPage('points','edit')" />
                         <div class="point-toolbar">
                             <FactoryVoiceToggle />
-                            <button type="button" @click="showPointAdvancedFields = !showPointAdvancedFields" :aria-expanded="showPointAdvancedFields" class="btn btn-sm">
-                                {{ showPointAdvancedFields ? '收起换算字段' : '显示换算字段' }}
-                            </button>
+                            <button type="button" class="btn btn-sm" title="换算字段与点位保存策略" :aria-expanded="showPointAdvancedFields" :disabled="pointHistoryColumn.loading.value || pointHistoryColumn.anySaving.value" @click="togglePointExtraColumns">{{ showPointAdvancedFields ? '收起更多设置' : '更多设置' }}</button>
                         </div>
+                        <p v-if="pointHistoryColumn.visible.value && pointHistoryColumn.error.value" class="point-history-load-error" role="alert">{{ pointHistoryColumn.error.value }} <button type="button" class="btn btn-sm" @click="pointHistoryColumn.load()">重新读取策略</button></p>
                         <p class="point-alarm-help" data-testid="point-alarm-help">用途选“报警触发”，点位名称填写报警文本。默认非 0 触发、0 恢复（BOOL 为 true / false）；系统自动记录开始与结束时间，断线或无效读数不视为恢复，无需另配时间点位。</p>
                         <div class="point-table-scroll" role="region" aria-label="点位配置列表" tabindex="0">
-                            <table class="data-table points-table point-mapping-table" :class="{ 'points-table-all': isAllPointsMode, 'points-table-advanced': showPointAdvancedFields }">
+                            <table class="data-table points-table point-mapping-table" :class="{ 'points-table-all': isAllPointsMode, 'points-table-advanced': showPointAdvancedFields, 'points-table-history': pointHistoryColumn.visible.value }">
                                 <colgroup>
                                     <col v-if="isAllPointsMode" class="point-col-device"/><col class="point-col-name"/><col class="point-col-usage"/><col class="point-col-type"/><col class="point-col-address"/><col class="point-col-sample"/><col class="point-col-access"/>
                                     <col v-if="showPointAdvancedFields" class="point-col-number"/><col v-if="showPointAdvancedFields" class="point-col-number"/><col v-if="showPointAdvancedFields" class="point-col-number"/>
-                                    <col class="point-col-unit"/><col class="point-col-alarm"/><col class="point-col-action"/><col class="point-col-action"/>
+                                    <col class="point-col-unit"/><col class="point-col-alarm"/><col v-if="pointHistoryColumn.visible.value" class="point-col-history"/><col class="point-col-action"/><col class="point-col-action"/>
                                 </colgroup>
                                 <thead><tr><th v-if="isAllPointsMode">设备</th><th>点位名称</th><th>用途</th><th>数据类型</th><th>PLC 地址</th><th title="采集周期（毫秒）">周期(ms)</th><th>读写</th>
                                     <th v-if="showPointAdvancedFields" title="PLC 原始值的换算倍率">倍率</th><th v-if="showPointAdvancedFields" title="换算后增加的偏移修正">偏移</th><th v-if="showPointAdvancedFields" title="画面显示的小数格式">小数</th>
-                                    <th>单位</th><th title="报警点位按条件触发，条件不成立时记录结束时间">报警触发</th><th class="point-voice-cell" aria-label="语音" title="配置此点位的语音规则"><svg class="point-column-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9h4l5-4v14l-5-4H4zM16 8a6 6 0 0 1 0 8"/></svg></th><th class="point-delete-cell"><span class="sr-only">删除</span></th>
+                                    <th>单位</th><th title="报警点位按条件触发，条件不成立时记录结束时间">报警触发</th><th v-if="pointHistoryColumn.visible.value" title="修改后自动保存，仅影响后续采样">保存策略</th><th class="point-voice-cell" aria-label="语音" title="配置此点位的语音规则"><svg class="point-column-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9h4l5-4v14l-5-4H4zM16 8a6 6 0 0 1 0 8"/></svg></th><th class="point-delete-cell"><span class="sr-only">删除</span></th>
                                 </tr></thead>
                                 <tbody>
                                     <tr v-for="p in paginatedDataPoints" :key="pointRowKey(p)" :class="{ 'is-new-point': !p.id }" class="point-mapping-row" :id="pointRowKey(p)" :data-point-id="p.id || pointRowKey(p)" :aria-label="`点位 ${p.label || p.name || '未命名点位'}${!p.id ? '（未保存）' : ''}`">
@@ -8988,10 +9002,11 @@ async function openAdminSetupStep(step) {
                                         <td v-if="showPointAdvancedFields"><input v-model="p.display_format" @input="markPointsDirty" class="input input-sm unit-input" aria-label="显示小数" placeholder="如 0.0" title="0 为整数，0.0 为一位小数，0.00 为两位小数" :disabled="pointsLoading || pointsSaving" v-permission="{ page: controlPermissionPage, action: 'edit' }"/></td>
                                         <td><input v-model="p.unit" @input="markPointsDirty" class="input input-sm unit-input" aria-label="单位" :title="p.unit" :disabled="isBoolPoint(p) || pointsLoading || pointsSaving" :placeholder="isBoolPoint(p) ? '无' : '°C'" v-permission="{ page: controlPermissionPage, action: 'edit' }"/></td>
                                         <td><select v-if="normalizePointUsage(p) === 'alarm_trigger'" v-model="p.alarm_condition" @change="markPointsDirty" class="input input-sm alarm-condition-input" aria-label="报警触发条件" :title="'点位名称即报警文本；' + (alarmConditionOptions.find(item => item.value === p.alarm_condition)?.label || p.alarm_condition)" :disabled="pointsLoading || pointsSaving" v-permission="{ page: controlPermissionPage, action: 'edit' }"><option v-for="item in alarmConditionOptions" :key="item.value" :value="item.value">{{ item.label }}</option><option v-if="!alarmConditionOptions.some(item => item.value === p.alarm_condition)" :value="p.alarm_condition">原条件 {{ p.alarm_condition }}</option></select><span v-else class="muted-cell">—</span></td>
+                                        <td v-if="pointHistoryColumn.visible.value"><PointHistoryPolicyCell :policy="pointHistoryColumn.rows.value[String(p.id)]" :unavailable-label="p.id ? '未读取策略' : '先保存点位'" :loading="pointHistoryColumn.loading.value" :busy="!!pointHistoryColumn.saving.value[String(p.id)]" :disabled="pointsLoading || pointsSaving || !canAdminPage('points','edit')" :save-policy="policy => pointHistoryColumn.save(p.id, policy)" /></td>
                                         <td class="point-voice-cell"><button type="button" @click="openVoiceConfig(p)" class="btn btn-sm voice-config-button point-row-icon" :class="{ configured: enabledVoiceRuleCount(p) > 0 }" :disabled="pointsLoading || pointsSaving" :aria-label="`配置点位语音 ${p.label || p.name || '未命名点位'}`" :title="`语音规则：${enabledVoiceRuleCount(p)} 条`"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9h4l5-4v14l-5-4H4zM16 8a6 6 0 0 1 0 8M19 5a10 10 0 0 1 0 14"/></svg></button></td>
                                         <td class="point-delete-cell"><button type="button" @click="removeDataPoint(p)" class="btn btn-danger btn-sm point-delete-button point-row-icon" :disabled="pointsLoading || pointsSaving" :aria-label="`删除点位 ${p.label || p.name || '未命名点位'}`" :title="`删除点位 ${p.label || p.name || '未命名点位'}`" v-permission="{ page: controlPermissionPage, action: 'edit' }"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v5M14 11v5"/></svg></button></td>
                                     </tr>
-                                    <tr v-if="dataPoints.length === 0"><td :colspan="(showPointAdvancedFields ? 13 : 10) + (isAllPointsMode ? 1 : 0)" class="point-mapping-empty" role="status">暂无点位配置，请手动添加或从其他设备复制。</td></tr>
+                                    <tr v-if="dataPoints.length === 0"><td :colspan="(showPointAdvancedFields ? 13 : 10) + (isAllPointsMode ? 1 : 0) + (pointHistoryColumn.visible.value ? 1 : 0)" class="point-mapping-empty" role="status">暂无点位配置，请手动添加或从其他设备复制。</td></tr>
                                 </tbody>
                             </table>
                         </div>
@@ -14089,4 +14104,8 @@ button:enabled:active {
 <style scoped>
 .model-step-optional{display:inline-flex;align-items:center;margin-left:8px;padding:2px 7px;border-radius:5px;background:#edf3ff;color:#2456a6;font-size:calc(13px * var(--admin-font-scale,1));font-weight:500}
 .device-loading-port-dialog{width:min(1250px,calc(100vw - 32px));max-height:92vh;padding:18px;border:1px solid #dce5ef;border-radius:16px;background:#f7f9fc;color:#30445c;overflow:auto;box-shadow:0 28px 90px #10254145}.device-loading-port-dialog::backdrop{background:#13283b65;backdrop-filter:blur(3px)}.device-loading-port-heading{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:4px 4px 16px}.device-loading-port-heading h2{font-size:20px;margin:0 0 7px}.device-loading-port-heading p{font-size:12px;color:#7d90a5;margin:0}.loading-port-model-picker{display:flex;flex-wrap:wrap;align-items:center;gap:10px;justify-content:flex-end;margin-bottom:12px;font-size:calc(14px * var(--admin-font-scale,1));color:#475467}.loading-port-model-picker select{max-width:360px;padding:9px 12px;border:1px solid #d9e3ef;background:white;color:#30445c;border-radius:8px}
+</style>
+
+<style scoped>
+.points-table .point-col-history{width:calc(220px * var(--point-column-scale))}.points-table.points-table-history{min-width:calc(1020px * var(--point-column-scale))}.points-table.points-table-all.points-table-history{min-width:calc(1120px * var(--point-column-scale))}.points-table.points-table-advanced.points-table-history{min-width:calc(1230px * var(--point-column-scale))}.points-table.points-table-all.points-table-advanced.points-table-history{min-width:calc(1330px * var(--point-column-scale))}.point-history-load-error{color:#b33c35;font-size:13px}
 </style>

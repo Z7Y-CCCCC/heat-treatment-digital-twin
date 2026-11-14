@@ -69,17 +69,23 @@ test('one paginated point is one native table row with a stable key and pending 
   for (const name of ['voice-config-button', 'point-delete-button']) assert.equal(one(node => classed(node, name)).ancestors.findLast(node => node.tag === 'tr'), row)
 })
 
-test('colgroup, shared headers and cells align for all eleven ordinary columns plus three inline advanced columns', () => {
+test('colgroup, headers and cells align with ordinary, advanced and optional history columns', () => {
   const table = one(node => classed(node, 'point-mapping-table')).node
   assert.equal(children(table, 'colgroup').length, 1); assert.equal(children(table, 'thead').length, 1); assert.equal(children(table, 'tbody').length, 1)
   const columns = children(children(table, 'colgroup')[0], 'col'), headerRows = children(children(table, 'thead')[0], 'tr')
   assert.equal(headerRows.length, 1)
   const headers = children(headerRows[0], 'th'), cells = children(one(node => classed(node, 'point-mapping-row')).node, 'td')
-  assert.equal(columns.length, 14); assert.equal(headers.length, columns.length); assert.equal(cells.length, columns.length)
+  assert.equal(columns.length, 15); assert.equal(headers.length, columns.length); assert.equal(cells.length, columns.length)
   const conditions = nodes => nodes.map(node => compact(expression(node, 'if')))
   assert.deepEqual(conditions(headers), conditions(columns)); assert.deepEqual(conditions(cells), conditions(columns))
   assert.equal(conditions(cells).filter(condition => condition === 'isAllPointsMode').length, 1)
   assert.equal(conditions(cells).filter(condition => condition === 'showPointAdvancedFields').length, 3)
+  assert.equal(conditions(cells).filter(condition => condition === 'pointHistoryColumn.visible.value').length, 1)
+  for (const all of [false,true]) for (const advanced of [false,true]) for (const history of [false,true]) {
+    const enabled = {'':true,isAllPointsMode:all,showPointAdvancedFields:advanced,'pointHistoryColumn.visible.value':history}
+    const expected = 10 + Number(all) + 3 * Number(advanced) + Number(history)
+    for (const nodes of [columns,headers,cells]) assert.equal(conditions(nodes).filter(condition => enabled[condition]).length, expected)
+  }
   for (const model of advancedModels) assert.equal(expression(field(model).ancestors.findLast(node => node.tag === 'td'), 'if'), 'showPointAdvancedFields')
   assert.equal(expression(field('p.device_id').ancestors.findLast(node => node.tag === 'td'), 'if'), 'isAllPointsMode')
   for (const model of nativeModels) assert.ok(attr(field(model).node, 'aria-label') || expression(field(model).node, 'bind', 'aria-label'), `${model} has an accessible field name`)
@@ -151,8 +157,8 @@ test('dirty tracking, access modes, protocol address hints, alarm inputs and row
 test('one global voice toolbar and UI-only advanced state retain pending borders and original save/payload readiness guards', () => {
   assert.equal((template.match(/<FactoryVoiceToggle\b/g) || []).length, 1)
   const voice = one(node => node.tag === 'FactoryVoiceToggle'); assert.ok(voice.ancestors.some(parent => classed(parent, 'point-toolbar'))); assert.ok(!voice.ancestors.some(parent => parent.tag === 'tr'))
-  const toggle = one(node => expression(node, 'on', 'click')?.includes('showPointAdvancedFields =')).node
-  assert.equal(expression(toggle, 'on', 'click'), 'showPointAdvancedFields = !showPointAdvancedFields'); assert.equal(expression(toggle, 'bind', 'aria-expanded'), 'showPointAdvancedFields')
+  const toggle = one(node => expression(node, 'on', 'click') === 'togglePointExtraColumns').node
+  assert.equal(expression(toggle, 'on', 'click'), 'togglePointExtraColumns'); assert.equal(expression(toggle, 'bind', 'aria-expanded'), 'showPointAdvancedFields')
   assert.doesNotMatch(expression(toggle, 'on', 'click'), /\bp\.|markPointsDirty|save/); assert.equal(dir(toggle, 'permission'), undefined)
   assert.deepEqual(entries.map(({ node }) => expression(node, 'model')).filter(value => value?.startsWith('p.')).toSorted(), [...nativeModels, 'p.device_id'].toSorted())
   assert.match(composable, /const showPointAdvancedFields = ref\(!!storedAdminUiState\.showPointAdvancedFields\)/)
