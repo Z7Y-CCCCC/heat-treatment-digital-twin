@@ -92,7 +92,6 @@ import { CLEANER_ACTIONS, motionEntries } from './admin/utils/motionEntries.js'
 import { formatModelSetupOption } from './admin/utils/modelSetupStatus.js'
 import ManualDisassemblyLayout from './admin/components/ManualDisassemblyLayout.vue'
 import { useManualDisassemblyPage } from './admin/composables/useManualDisassemblyPage.js'
-import ModelInspectionEditor from './admin/components/ModelInspectionEditor.vue'
 import ModelNameEditor from './admin/components/ModelNameEditor.vue'
 import CopyPathButton from './admin/components/CopyPathButton.vue'
 import ModelPlacementMenu from './admin/components/ModelPlacementMenu.vue'
@@ -1631,8 +1630,7 @@ const modelFileInputRef = ref(null)
 const selectedModelFile = ref(null)
 const MODEL_LIBRARY_STEPS = [
     { key: 'library', label: '模型资产', description: '选择与管理模型' },
-    { key: 'ports', label: '进出料口', optional: true, description: '料口位置与设备进出料信号' },
-    { key: 'inspection', label: '拆解部件', description: '选择部件与关联节点' }
+    { key: 'ports', label: '进出料口', optional: true, description: '料口位置与设备进出料信号' }
 ]
 const modelLibraryStep = ref(
     activeTab.value === 'model-animations' ? 'bindings' : MODEL_LIBRARY_STEPS.some(step => step.key === storedAdminUiState.modelLibraryStep)
@@ -2007,7 +2005,7 @@ async function changeMotionModel(event) {
 }
 
 function modelLibraryStepRequiresModel(step) {
-    return step === 'inspection' || step === 'bindings' || step === 'ports'
+    return step === 'bindings' || step === 'ports'
 }
 
 function modelLibraryStepAvailable(step) {
@@ -2060,11 +2058,6 @@ watch(manualDisassemblySaveRevision, () => {
         && activePreviewModel.value?.id === manualDisassemblyModelId.value) loadModelInspectionState(activePreviewModel.value)
 })
 
-async function openModelDisassemblyLayout() {
-    const id = selectedPreviewModelId.value
-    await selectAdminTab('disassembly-layout')
-    if (activeTab.value === 'disassembly-layout') await manualDisassemblyPage.selectModel(id)
-}
 async function changeManualDisassemblyModel(event) {
     await manualDisassemblyPage.selectModel(event.target.value)
     event.target.value = manualDisassemblyModelId.value
@@ -2129,9 +2122,11 @@ function formatModelBounds(bounds) {
     return `${Number(bounds.x || 0).toFixed(2)} x ${Number(bounds.y || 0).toFixed(2)} x ${Number(bounds.z || 0).toFixed(2)}`
 }
 
-function getModelBindingCount(model) {
+function getModelActionCount(model) {
     const metadata = parseModelMetadata(model)
-    return Array.isArray(metadata.partBindings) ? metadata.partBindings.length : 0
+    const bindings = dedupeModelBindings((Array.isArray(metadata.partBindings) ? metadata.partBindings : []).map(normalizeModelBinding))
+    const actions = cadMotionActions(model?.id).filter(action => !isRetiredMotionAction({ kind: 'clip', id: `clip:${action.id}` }))
+    return motionEntries(bindings, model?.id === 'ultrasonic_cleaner_cad', '', formatModelBindingPartName, actions).length
 }
 
 function formatModelNodeOption(node) {
@@ -3262,30 +3257,6 @@ async function saveModelPartBindings(options = {}) {
         const message = `保存失败：${e.message || e}`
         modelBindingStatus.value = message
         if (showAlert) await alert(message, { title: '保存失败', type: 'danger' })
-        return false
-    } finally {
-        modelBindingSaving.value = false
-    }
-}
-
-async function saveModelInspection() {
-    const model = activePreviewModel.value
-    if (!model?.id || !canEditModelBindings.value) return false
-    const validation = validateInspection(modelInspection, modelPreviewNodes.value)
-    if (!modelPreviewNodes.value.length || !validation.valid) {
-        modelBindingStatus.value = !modelPreviewNodes.value.length ? '模型加载完成后才能校验并保存。' : `请先修正拆解配置：${validation.errors.map(item => item.message).join('；')}`
-        return false
-    }
-    modelBindingSaving.value = true
-    modelBindingStatus.value = '正在保存拆解检查配置...'
-    try {
-        const metadata = buildCurrentModelMetadata(model)
-        await persistModelMetadata(model, metadata, `已保存 ${modelInspectionParts.value.length} 个关键部件和 ${inspectionShellEntries.value.length} 个外壳节点`)
-        await alert('拆解配置已保存，并已通知 Unity 运行端自动重新加载；也可在“配置与运行端”推送草稿即时预览。', { title: '保存成功', type: 'success' })
-        return true
-    } catch (e) {
-        modelBindingStatus.value = `保存失败：${e.message || e}`
-        await alert(modelBindingStatus.value, { title: '保存失败', type: 'danger' })
         return false
     } finally {
         modelBindingSaving.value = false
@@ -5008,7 +4979,8 @@ watch(activeTab, async (tab) => {
         await nextTick()
         await ensureMotionModelSelection()
     } else if (tab === 'models') {
-        if (modelLibraryStepRequiresModel(modelLibraryStep.value) && !activePreviewModel.value) {
+        if (!MODEL_LIBRARY_STEPS.some(step => step.key === modelLibraryStep.value)
+            || modelLibraryStepRequiresModel(modelLibraryStep.value) && !activePreviewModel.value) {
             modelLibraryStep.value = 'library'
         }
         await nextTick()
@@ -8474,7 +8446,7 @@ async function openAdminSetupStep(step) {
                     <template v-else>
                         <ModelPlacementMenu ref="modelPlacementMenuRef" :busy="modelPlacementSaving || modelNameSaving || modelUploading" @change="saveModelPlacement" />
                         <h2>3D 模型库</h2>
-                        <p class="desc">管理模型、进出料口与拆解部件。</p>
+                        <p class="desc">管理模型与进出料口。</p>
                         <label v-if="modelLibraryStep === 'ports'" class="loading-port-model-picker">选择模型
                             <select :value="selectedPreviewModelId" aria-label="选择进出料口模型" :disabled="modelLoadingPortRef?.busy" @change="changeLoadingPortModel">
                                 <option v-for="model in loadingPortModelOptions" :key="model.id" :value="model.id">{{ formatModelSetupOption(model, 'ports') }}</option>
@@ -8509,7 +8481,7 @@ async function openAdminSetupStep(step) {
                     <DeviceAnimationLink v-if="activeTab === 'model-animations' && motionWorkspaceMode === 'live' && motionFactoryId" ref="deviceAnimationLinkRef" device-picker-target="#motion-live-device-picker" :models="models" :devices="devices" :workshops="workshops" :lines="lines" :factories="motionFactories" :factory-id="motionFactoryId" :request-factory-switch="requestMotionFactorySwitch" :confirm="confirm" />
                     <LoadingPortWorkspace v-if="activeTab === 'models' && modelLibraryStep === 'ports' && activePreviewModel" ref="modelLoadingPortRef"
                         :model="activePreviewModel" :devices="devices" :confirm="confirm" @saved="applySavedLoadingPorts" />
-                    <div v-if="activeTab === 'model-animations' ? motionWorkspaceMode === 'parts' : modelLibraryStep !== 'ports'" class="model-library-layout" :class="{ 'inspection-workspace': modelLibraryStep === 'inspection', 'animation-workspace': activeTab === 'model-animations' }">
+                    <div v-if="activeTab === 'model-animations' ? motionWorkspaceMode === 'parts' : modelLibraryStep !== 'ports'" class="model-library-layout" :class="{ 'animation-workspace': activeTab === 'model-animations' }">
                         <section class="model-library-main">
                             <section v-if="activeTab === 'models'" v-show="modelLibraryStep === 'library'" class="model-library-step-panel">
                                 <div class="model-step-heading">
@@ -8555,7 +8527,7 @@ async function openAdminSetupStep(step) {
                                         <col style="width:8%" /><col style="width:21%" /><col style="width:10%" />
                                     </colgroup>
                                     <thead>
-                                        <tr><th title="短编号仅用于列表显示，点击可复制完整模型 ID">编号</th><th>名称</th><th>归属</th><th>适用层级</th><th>绑定数</th><th>文件路径</th><th>操作</th></tr>
+                                        <tr><th title="短编号仅用于列表显示，点击可复制完整模型 ID">编号</th><th>名称</th><th>归属</th><th>适用层级</th><th>动作数</th><th>文件路径</th><th>操作</th></tr>
                                     </thead>
                                     <tbody>
                                         <tr
@@ -8570,7 +8542,7 @@ async function openAdminSetupStep(step) {
                                             <td><ModelNameEditor :model="m" :disabled="modelBindingSaving || modelUploading || modelPlacementSaving || modelNameSaving" @renamed="applyModelName" @saving="modelNameSaving = $event" @error="alert($event, { title: '保存模型名称失败', type: 'danger' })" /></td>
                                             <td>{{ m.factory_id ? '当前工厂' : '集团共享' }}</td>
                                             <td>{{ modelLevelLabels[m.placement_level || 'device'] || '设备' }}级</td>
-                                            <td>{{ getModelBindingCount(m) }}</td>
+                                            <td>{{ getModelActionCount(m) }}</td>
                                             <td><CopyPathButton v-if="m.file_path" :path="m.file_path" /><span v-else>（内置）</span></td>
                                             <td>
                                                 <button v-if="!m.is_builtin || DELETABLE_RETIRED_MODEL_IDS.has(m.id)" @click.stop="deleteModel(m.id)" class="btn btn-danger btn-sm" v-permission="{ page: controlPermissionPage, action: 'delete' }">删除</button>
@@ -8580,32 +8552,6 @@ async function openAdminSetupStep(step) {
                                     </tbody>
                                 </table>
                             </div>
-                            </section>
-
-                            <section v-if="activePreviewModel && !activePreviewIsEnvironment" v-show="modelLibraryStep === 'inspection'" class="model-binding-editor model-library-step-panel model-inspection-editor">
-                                <ModelInspectionEditor
-                                    v-if="canEditModelBindings && modelLibraryStep === 'inspection'"
-                                    :model-value="modelInspection"
-                                    :model-id="selectedPreviewModelId"
-                                    :nodes="modelPreviewNodes"
-                                    :part-bindings="modelPartBindings"
-                                    :preview-state="inspectionPreviewSnapshot"
-                                    :devices="devices"
-                                    v-model:preview-device-id="inspectionPreviewDeviceId"
-                                    :saving="modelBindingSaving"
-                                    :save-revision="modelInspectionSaveRevision"
-                                    :saved-signature="modelInspectionSavedSignature"
-                                    :native-preview-busy="inspectionNativePreviewBusy"
-                                    :status="modelBindingStatus"
-                                    @update:model-value="updateModelInspectionDraft"
-                                    @save="saveModelInspection"
-                                    @reload="loadModelInspectionState(activePreviewModel)"
-                                    @command="inspectionPreviewCommand"
-                                    @capture-camera="captureInspectionCamera"
-                                    @native-preview="previewInspectionOnNativeDevice"
-                                    @open-layout="openModelDisassemblyLayout"
-                                />
-                                <p v-else-if="!canEditModelBindings">请选择具有真实节点结构的 GLB / GLTF 模型，再配置拆解。</p>
                             </section>
 
                             <section v-if="activePreviewModel && !activePreviewIsEnvironment" v-show="activeTab === 'model-animations' && modelLibraryStep === 'bindings'" class="model-binding-editor model-library-step-panel">
@@ -8626,7 +8572,7 @@ async function openAdminSetupStep(step) {
                         <aside v-if="inlineCadPreview" class="model-preview-panel inline-process-panel" aria-label="CAD 设备动作本页预览">
                             <CadMotionPreview ref="motionInlinePreviewRef" :model="activePreviewModel" :action-id="motionInlineProcess" :transfer-flow="motionPreviewFlow" @close-preview="stopMotionPreview" />
                         </aside>
-                        <aside v-show="!inlineProcessPreview" class="model-preview-panel" :class="{ 'inspection-preview-panel': modelLibraryStep === 'inspection' }">
+                        <aside v-show="!inlineProcessPreview" class="model-preview-panel">
                             <div class="model-preview-header">
                                 <div class="model-preview-title">
                                     <strong>{{ activeTab === 'model-animations' ? '模型动画演示' : '模型预览' }}</strong>
@@ -8637,14 +8583,13 @@ async function openAdminSetupStep(step) {
                                     <span v-else class="model-preview-mode-badge">演示预览</span>
                                     <button class="btn btn-sm" type="button" :disabled="previewModelBindingIndex < 0" @click="stopMotionPreview">停止演示</button>
                                 </div>
-                                <span v-else class="model-preview-mode-badge">{{ modelLibraryStep === 'inspection' ? '拆解预览' : modelLibraryStep === 'bindings' ? '绑定预览' : '模型预览' }}</span>
+                                <span v-else class="model-preview-mode-badge">{{ modelLibraryStep === 'bindings' ? '绑定预览' : '模型预览' }}</span>
                             </div>
                             <Teleport to="body" :disabled="!isModelPreviewFullscreen">
                             <div ref="modelPreviewRef" class="model-preview-stage" :class="{ 'is-model-fullscreen': isModelPreviewFullscreen }"
                                 :role="isModelPreviewFullscreen ? 'dialog' : undefined" :aria-modal="isModelPreviewFullscreen ? true : undefined"
                                 :aria-label="isModelPreviewFullscreen ? '模型全屏预览' : undefined">
                                 <div v-if="isModelPreviewFullscreen" class="model-fullscreen-title">{{ selectedModelFile ? modelImportForm.name || selectedModelFile.name : activePreviewModel?.name }}</div>
-                                <ModelInspectionPreviewOverlay v-if="modelLibraryStep === 'inspection' && isModelPreviewActive && !modelPreviewError" :state="inspectionPreviewSnapshot" @command="inspectionPreviewCommand" />
                                 <div v-if="!isModelPreviewActive" class="model-preview-empty">选择文件或点击模型列表</div>
                                 <div v-if="modelPreviewError" class="model-preview-error" role="alert">
                                     <strong>模型未加载</strong>
@@ -8652,7 +8597,7 @@ async function openAdminSetupStep(step) {
                                     <small>{{ modelPreviewError.reason }}</small>
                                     <code v-if="modelPreviewError.url">{{ modelPreviewError.url }}</code>
                                 </div>
-                                <div v-if="selectedModelNodeInfo && modelLibraryStep !== 'inspection'" class="model-preview-node-card">
+                                <div v-if="selectedModelNodeInfo" class="model-preview-node-card">
                                     <strong>{{ selectedModelNodeInfo.displayName || selectedModelNodeInfo.name }}</strong>
                                     <span>{{ formatModelNodeType(selectedModelNodeInfo.type) }} · {{ formatMeshCount(selectedModelNodeInfo.meshCount) }}</span>
                                     <small>{{ selectedModelNodeInfo.path }}</small>
@@ -13106,7 +13051,7 @@ button:enabled:active {
 .model-library-main {
     min-width: 0;
 }
-.model-step-nav-shell .secondary-page-nav { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.model-step-nav-shell .secondary-page-nav { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .model-step-nav-shell .secondary-page-nav-item:disabled { color: #a1a1a6; background: rgba(248, 248, 250, .72); border-color: rgba(0, 0, 0, .035); box-shadow: none; cursor: not-allowed; opacity: .62; transform: none; }
 .model-step-nav-shell .secondary-page-nav-item:disabled:hover { color: #a1a1a6; background: rgba(248, 248, 250, .72); border-color: rgba(0, 0, 0, .035); box-shadow: none; transform: none; }
 .model-library-step-panel { animation: secondary-page-in 180ms cubic-bezier(.22, 1, .36, 1); }

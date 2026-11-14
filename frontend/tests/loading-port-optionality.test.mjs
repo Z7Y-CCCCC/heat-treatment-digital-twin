@@ -84,7 +84,7 @@ test('port workflow stays optional without the removed banner or skip button', (
     for (const step of steps) assert.equal(workflow.modelLibraryStepAvailable(step.key), true, `${step.key} must not depend on configured port completion`)
     workflow.state.activePreviewModel.value = null
     assert.equal(workflow.modelLibraryStepAvailable('library'), true)
-    assert.equal(workflow.modelLibraryStepAvailable('inspection'), false, 'selecting a model is still a real prerequisite')
+    assert.equal(workflow.modelLibraryStepAvailable('ports'), false, 'selecting a model is still a real prerequisite')
   }
 })
 
@@ -92,21 +92,25 @@ test('skipping an untouched empty port configuration reuses the normal leave gua
   let leaves = 0
   const workflow = modelWorkflow({ metadata: {}, canLeave: async () => { leaves++; return true } })
   const before = structuredClone(workflow.state.activePreviewModel.value)
-  await workflow.selectModelLibraryStep('inspection')
+  await workflow.selectModelLibraryStep('library')
   assert.equal(leaves, 1)
-  assert.equal(workflow.state.modelLibraryStep.value, 'inspection')
+  assert.equal(workflow.state.modelLibraryStep.value, 'library')
   assert.deepEqual(workflow.calls, ['tick', 'render'])
   assert.deepEqual(workflow.state.activePreviewModel.value, before)
 
+  await workflow.selectModelLibraryStep('inspection')
+  assert.equal(workflow.state.modelLibraryStep.value, 'library', 'removed structure step cannot be reopened')
+  assert.equal(leaves, 1, 'removed steps do not even start navigation')
+
   const declined = modelWorkflow({ canLeave: async () => false })
-  await declined.selectModelLibraryStep('inspection')
+  await declined.selectModelLibraryStep('library')
   assert.equal(declined.state.modelLibraryStep.value, 'ports', 'a dirty draft still requires explicit save/discard approval')
   assert.deepEqual(declined.calls, [])
 
   const ordinary = modelWorkflow({ editor: false })
-  ordinary.state.modelLibraryStep.value = 'library'
-  await ordinary.selectModelLibraryStep('inspection')
-  assert.equal(ordinary.state.modelLibraryStep.value, 'inspection', 'ordinary browsing must not open or save the optional editor')
+  ordinary.state.modelLibraryStep.value = 'ports'
+  await ordinary.selectModelLibraryStep('library')
+  assert.equal(ordinary.state.modelLibraryStep.value, 'library', 'ordinary browsing must not open or save the optional editor')
 })
 
 function alignmentFixture(mode, loadingPorts, kind) {
