@@ -55,6 +55,7 @@ namespace HeatTreatment.DigitalTwin.Editor
         public static void BuildWindowsClient()
         {
             BootstrapProject();
+            LegacyNativeHudRetirementValidation.Validate();
             DeviceEntryNavigationValidation.Validate();
             DeviceHoverRuntimeChecks.Run();
             InspectionRuntimeChecks.Run();

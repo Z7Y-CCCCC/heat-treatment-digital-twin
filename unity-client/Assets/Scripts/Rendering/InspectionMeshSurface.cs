@@ -105,7 +105,15 @@ namespace HeatTreatment.DigitalTwin.Rendering
         public bool Raycast(Ray ray, out float distance, Func<Vector3, bool> acceptWorldPoint = null, float maxDistance = float.PositiveInfinity)
         {
             distance = float.PositiveInfinity;
-            if (!IsVisible || !Renderer.bounds.IntersectRay(ray)) return false;
+            return IsVisible && RaycastGeometry(ray, out distance, acceptWorldPoint, maxDistance);
+        }
+
+        // Physical presentation checks must not change when a camera hides a
+        // renderer or an inspection view fades its material.
+        public bool RaycastGeometry(Ray ray, out float distance, Func<Vector3, bool> acceptWorldPoint = null, float maxDistance = float.PositiveInfinity)
+        {
+            distance = float.PositiveInfinity;
+            if (Renderer == null || !Renderer.bounds.IntersectRay(ray)) return false;
             var mesh = CurrentMesh();
             if (mesh == null) return false;
             if (!mesh.isReadable)

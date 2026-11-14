@@ -52,6 +52,21 @@ test('the retired dashboard entry, procedural furnace and entry-only layout help
   assert.doesNotMatch(fs.readFileSync(path.join(sourceRoot, 'views/AdminPanel.vue'), 'utf8'), /renderBuiltinModelPreview|fallbackModelOptions|内置程序化模型|内置炉子/)
 })
 
+test('Unity cannot resurrect the retired fixed-layout dashboard when its configured overlay is absent', () => {
+  const runtime = new URL('../../unity-client/Assets/Scripts/Runtime/', import.meta.url)
+  const files = fs.readdirSync(runtime).filter(name => /^FactoryDashboard.*\.cs$/.test(name))
+  for (const name of ['FactoryDashboardController.cs', 'FactoryDashboardInspection.cs', 'FactoryDashboardDeviceHover.cs']) assert.ok(files.includes(name), name)
+  for (const name of files) {
+    const source = fs.readFileSync(new URL(name, runtime), 'utf8')
+    assert.doesNotMatch(source, /\bOnGUI\s*\(|\bGUI(?:Utility)?\./, name)
+    assert.doesNotMatch(source, /全厂设备运行总览|OVERVIEW METRICS|CLICK TO OPEN DETAIL|现场 MySQL 数据库|当前数据与管理后台完全一致/, name)
+  }
+  const controller = fs.readFileSync(new URL('FactoryDashboardController.cs', runtime), 'utf8')
+  assert.match(controller, /public void SetWebOverlayActive\(bool active\)/)
+  assert.match(controller, /_inspectionHitRects\.Any\(rect => rect\.Contains\(pointer\)\)/)
+  assert.doesNotMatch(controller, /OverviewLeftRect|OverviewRightRect|DetailBackRect|DetailTrendRect/)
+})
+
 test('all current frontend local module imports resolve after deleting the legacy files', () => {
   const files = []
   function list(directory) { for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {

@@ -235,15 +235,19 @@ namespace HeatTreatment.DigitalTwin.Runtime
             try {
                 var snapshot = _simpleMaterial.Describe();
                 snapshot["capturedAt"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                snapshot["doorClearance"] = _simpleMaterial.InspectDoorClearance();
                 snapshot["motions"] = new JArray((_motions ?? new Dictionary<string, MobileDeviceMotion>()).Select(item => new JObject {
                     ["id"] = item.Key, ["confirmed"] = item.Value.HasConfirmedPosition, ["reliable"] = item.Value.HasReliableSourcePose,
                     ["fresh"] = item.Value.HasFreshPosition, ["station"] = item.Value.CurrentPositionValue,
                     ["position"] = new JArray(item.Value.transform.position.x, item.Value.transform.position.y, item.Value.transform.position.z) }));
                 // Probe-only animation evidence; ordinary launches allocate none.
-                snapshot["conveyors"] = new JArray((_roots ?? new Dictionary<string, Transform>()).Where(item => item.Value != null)
+                var animations = (_roots ?? new Dictionary<string, Transform>()).Where(item => item.Value != null)
                     .Select(item => new { item.Key, Driver = item.Value.GetComponent<DeviceAnimationDriver>() }).Where(item => item.Driver != null)
-                    .Select(item => new JObject { ["id"] = item.Key, ["actions"] = new JArray(item.Driver.CaptureDiagnostic()["actions"]
-                        .OfType<JObject>().Where(action => action["conveyorDirections"] is JArray).Select(action => action.DeepClone())) }));
+                    .Select(item => new { item.Key, Actions = item.Driver.CaptureDiagnostic()["actions"].OfType<JObject>().ToArray() }).ToArray();
+                snapshot["conveyors"] = new JArray(animations.Select(item => new JObject { ["id"] = item.Key,
+                    ["actions"] = new JArray(item.Actions.Where(action => action["conveyorDirections"] is JArray).Select(action => action.DeepClone())) }));
+                snapshot["doors"] = new JArray(animations.Where(item => item.Actions.Any(action => action.Value<string>("clipId") == "door"))
+                    .Select(item => new JObject { ["id"] = item.Key, ["actions"] = new JArray(item.Actions.Where(action => action.Value<string>("clipId") == "door").Select(action => action.DeepClone())) }));
                 System.IO.File.AppendAllText(_probeFile, snapshot.ToString(Newtonsoft.Json.Formatting.None) + Environment.NewLine);
                 _probeSamples++;
             } catch (Exception error) { _probeFile = null; Debug.LogWarning("[SimpleTransferProbe] Recording stopped: " + error.Message); }

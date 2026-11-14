@@ -44,6 +44,8 @@ namespace HeatTreatment.DigitalTwin.Rendering
         private readonly Dictionary<string, Entry> _actionEntries = new Dictionary<string, Entry>(StringComparer.Ordinal);
         private readonly Dictionary<string, Transform> _nodes = new Dictionary<string, Transform>();
         private readonly Dictionary<string, JObject> _base = new Dictionary<string, JObject>();
+        private readonly List<InspectionMeshSurface> _transferDoors = new List<InspectionMeshSurface>();
+        private bool _hasTransferDoor;
         private double _staleMs = 5000;
         private MaterialPropertyBlock _block;
         private static readonly int BaseColorId = Shader.PropertyToID("_BaseColor");
@@ -66,6 +68,53 @@ namespace HeatTreatment.DigitalTwin.Rendering
         private int _presentationSide;
         public int ActiveBindings => _entries.Count;
         public JObject TransferDiagnostic { get; set; }
+        public bool HasTransferDoor => _hasTransferDoor;
+        public bool TransferDoorPathClear(IReadOnlyList<Vector3> path, Vector3 size, out string reason)
+        {
+            reason = string.Empty;
+            if (!_hasTransferDoor) return true;
+            if (path == null || path.Count < 2) { reason = "门体通道尚不可核验"; return false; }
+            for (var i = 1; i < path.Count; i++) {
+                var delta = path[i] - path[i - 1];
+                if (delta.sqrMagnitude < .00000001f) continue;
+                if (!TransferDoorClear((path[i] + path[i - 1]) * .5f, delta.normalized, size, out reason, delta.magnitude * .5f)) return false;
+            }
+            return true;
+        }
+        public bool TransferDoorClear(Vector3 center, Vector3 travel, Vector3 size, out string reason, float halfTravel = -1)
+        {
+            reason = string.Empty;
+            if (!_hasTransferDoor) return true;
+            reason = "等待料口门打开";
+            if (_transferDoors.Count == 0) { reason = "门体几何尚不可核验"; return false; }
+            travel.y = 0;
+            if (travel.sqrMagnitude < .00000001f) return false;
+            travel.Normalize();
+            var side = Vector3.Cross(Vector3.up, travel).normalized;
+            var halfWidth = Mathf.Max(size.x, size.z) * .45f;
+            var halfHeight = size.y * .45f;
+            var reach = halfTravel >= 0 ? halfTravel + Mathf.Max(size.x, size.z) * .45f : Mathf.Max(size.x, size.z) * .7f + .05f;
+            foreach (var surface in _transferDoors) {
+                if (surface.Renderer == null) { reason = "门体几何尚不可核验"; return false; }
+                var geometry = surface.Geometry;
+                if (geometry == null) { reason = "门体几何尚不可核验"; return false; }
+                for (var x = -2; x <= 2; x++) for (var y = -1; y <= 1; y++) {
+                    var origin = center + side * (x * halfWidth / 2) + Vector3.up * (y * halfHeight) - travel * reach;
+                    var ray = new Ray(origin, travel);
+                    if (!surface.Renderer.bounds.IntersectRay(ray, out var entry) || entry > reach * 2) continue;
+                    // Shared triangle indexes distinguish a real door panel
+                    // from the empty aperture inside a moving carriage/frame.
+                    if (!geometry.isReadable) { reason = "门体几何尚不可核验"; return false; }
+                    if (surface.RaycastGeometry(ray, out _, null, reach * 2)) return false;
+                }
+            }
+            reason = "料口门已让开"; return true;
+        }
+        private void ClearTransferDoors()
+        {
+            foreach (var surface in _transferDoors) surface.Dispose();
+            _transferDoors.Clear(); _hasTransferDoor = false;
+        }
         public void SetConveyorTravel(Vector3 worldTravel)
         {
             foreach (var entry in _entries) if (entry.Conveyor) foreach (var track in entry.Tracks) {
@@ -109,12 +158,21 @@ namespace HeatTreatment.DigitalTwin.Rendering
         public void Configure(DeviceDto device, JObject package)
         {
             _deviceId = device.Id;
+            ClearTransferDoors();
             _entries.Clear(); _actionEntries.Clear(); _nodes.Clear(); _base.Clear(); _restSamples.Clear();
 #if UNITY_EDITOR
             PoseSampleEvaluations = PropertyBlockApplications = 0;
 #endif
             if (package == null) return;
             foreach (var node in GetComponentsInChildren<Transform>(true)) if (!_nodes.ContainsKey(node.name)) _nodes[node.name] = node;
+            var doorClip = package["clips"]?.OfType<JObject>().FirstOrDefault(clip => clip.Value<string>("id") == "door");
+            _hasTransferDoor = doorClip != null;
+            var doorRenderers = new HashSet<Renderer>();
+            foreach (var track in doorClip?["tracks"]?.OfType<JObject>() ?? Enumerable.Empty<JObject>()) {
+                if (!new[] { "p", "q", "s" }.Contains(track.Value<string>("channel")) || !_nodes.TryGetValue(track.Value<string>("node") ?? "", out var node)) continue;
+                foreach (var renderer in node.GetComponentsInChildren<Renderer>(true))
+                    if (!(renderer is LineRenderer) && !(renderer is ParticleSystemRenderer) && doorRenderers.Add(renderer)) _transferDoors.Add(new InspectionMeshSurface(renderer));
+            }
             foreach (var row in package["nodes"].OfType<JObject>()) _base[row.Value<string>("name")] = row;
             foreach (var row in _base.Values) if (_nodes.TryGetValue(row.Value<string>("name"), out var node)) node.gameObject.SetActive(row["v"]?[0]?.Value<int>() != 0);
             foreach (var row in _base.Values) foreach(var p in row.Properties()) if(p.Value is JArray a) _restSamples[row.Value<string>("name")+":"+p.Name]=a.Values<double>().ToArray();
@@ -397,5 +455,6 @@ namespace HeatTreatment.DigitalTwin.Rendering
         }
         private static bool HasExactColor(MaterialPropertyBlock block, int property, Color color)
             => block.HasColor(property) && block.GetColor(property).Equals(color);
+        private void OnDestroy() => ClearTransferDoors();
     }
 }
