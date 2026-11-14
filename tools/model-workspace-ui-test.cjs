@@ -118,10 +118,16 @@ const pass = name => { checks.push(name); console.log('PASS ' + name); };
     assert.equal(await page.getByRole('button', { name: '部件结构', exact: true }).count(), 0);
     assert.equal(await workspace.getByRole('button', { name: '部件摆放', exact: true }).count(), 1);
     pass('complex structure editor is absent from both pages; existing layout and effects remain available');
+    assert.equal(await page.getByRole('columnheader', { name: '动作数', exact: true }).count(), 1);
+    const actionCounts = {};
+    for (const id of ['cad_transfer_cart_101300', 'cad_air_cooling_table_115800ht']) actionCounts[id] = Number(await page.locator(`[data-model-id="${id}"] td`).nth(4).textContent());
     await page.getByRole('button', { name: '动作动画', exact: true }).click();
     await page.getByRole('button', { name: '部件动作', exact: true }).click();
     for (const id of ['cad_transfer_cart_101300', 'cad_air_cooling_table_115800ht']) {
         await page.getByRole('combobox', { name: '选择动作动画模型', exact: true }).selectOption(id);
+        await page.getByRole('textbox', { name: '搜索动作节点', exact: true }).fill('');
+        assert.equal(Number(await page.locator('.action-list-heading span').textContent()), actionCounts[id], 'model table and animation page must show the same total');
+        assert.ok(actionCounts[id] > 0, 'built-in actions must not be shown as zero merely because there are no PLC bindings');
         await page.getByRole('textbox', { name: '搜索动作节点', exact: true }).fill('辊');
         await page.getByRole('button', { name: '↙ 进料试播', exact: true }).first().click();
         const preview = page.getByRole('region', { name: 'CAD 动作本页预览', exact: true });

@@ -2122,9 +2122,11 @@ function formatModelBounds(bounds) {
     return `${Number(bounds.x || 0).toFixed(2)} x ${Number(bounds.y || 0).toFixed(2)} x ${Number(bounds.z || 0).toFixed(2)}`
 }
 
-function getModelBindingCount(model) {
+function getModelActionCount(model) {
     const metadata = parseModelMetadata(model)
-    return Array.isArray(metadata.partBindings) ? metadata.partBindings.length : 0
+    const bindings = dedupeModelBindings((Array.isArray(metadata.partBindings) ? metadata.partBindings : []).map(normalizeModelBinding))
+    const actions = cadMotionActions(model?.id).filter(action => !isRetiredMotionAction({ kind: 'clip', id: `clip:${action.id}` }))
+    return motionEntries(bindings, model?.id === 'ultrasonic_cleaner_cad', '', formatModelBindingPartName, actions).length
 }
 
 function formatModelNodeOption(node) {
@@ -8525,7 +8527,7 @@ async function openAdminSetupStep(step) {
                                         <col style="width:8%" /><col style="width:21%" /><col style="width:10%" />
                                     </colgroup>
                                     <thead>
-                                        <tr><th title="短编号仅用于列表显示，点击可复制完整模型 ID">编号</th><th>名称</th><th>归属</th><th>适用层级</th><th>绑定数</th><th>文件路径</th><th>操作</th></tr>
+                                        <tr><th title="短编号仅用于列表显示，点击可复制完整模型 ID">编号</th><th>名称</th><th>归属</th><th>适用层级</th><th>动作数</th><th>文件路径</th><th>操作</th></tr>
                                     </thead>
                                     <tbody>
                                         <tr
@@ -8540,7 +8542,7 @@ async function openAdminSetupStep(step) {
                                             <td><ModelNameEditor :model="m" :disabled="modelBindingSaving || modelUploading || modelPlacementSaving || modelNameSaving" @renamed="applyModelName" @saving="modelNameSaving = $event" @error="alert($event, { title: '保存模型名称失败', type: 'danger' })" /></td>
                                             <td>{{ m.factory_id ? '当前工厂' : '集团共享' }}</td>
                                             <td>{{ modelLevelLabels[m.placement_level || 'device'] || '设备' }}级</td>
-                                            <td>{{ getModelBindingCount(m) }}</td>
+                                            <td>{{ getModelActionCount(m) }}</td>
                                             <td><CopyPathButton v-if="m.file_path" :path="m.file_path" /><span v-else>（内置）</span></td>
                                             <td>
                                                 <button v-if="!m.is_builtin || DELETABLE_RETIRED_MODEL_IDS.has(m.id)" @click.stop="deleteModel(m.id)" class="btn btn-danger btn-sm" v-permission="{ page: controlPermissionPage, action: 'delete' }">删除</button>

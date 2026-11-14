@@ -1,6 +1,9 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
+import { cadMotionActions, CAD_MOTION_PROFILES } from '../src/three/cadMotionProfiles.js'
+import { isRetiredMotionAction } from '../../shared/motionActionAvailability.mjs'
+import { CLEANER_ACTIONS, motionEntries } from '../src/views/admin/utils/motionEntries.js'
 import { adminNavPages, ADMIN_PAGES } from '../../shared/adminPages.mjs'
 
 const panel = await readFile(new URL('../src/views/AdminPanel.vue', import.meta.url), 'utf8')
@@ -98,4 +101,28 @@ test('removed inspection and binding steps cannot be selected or mutate a model'
   const body = panel.slice(panel.indexOf('function modelLibraryStepRequiresModel('), panel.indexOf('async function loadModels('))
   const select = new Function(...Object.keys(deps), `${body};return selectModelLibraryStep`)(...Object.values(deps))
   for (const step of ['inspection', 'bindings']) { await select(step); assert.equal(modelLibraryStep.value, 'library') }
+})
+
+test('model action column uses the animation list, including built-ins and excluding retired clips', () => {
+  const body = panel.slice(panel.indexOf('function getModelActionCount('), panel.indexOf('function formatModelNodeOption('))
+  const normalizeCalls = [], dedupeCalls = []
+  const count = new Function('parseModelMetadata', 'dedupeModelBindings', 'normalizeModelBinding', 'cadMotionActions', 'isRetiredMotionAction', 'motionEntries', 'formatModelBindingPartName', `${body};return getModelActionCount`)(
+    m => typeof m?.metadata === 'string' ? JSON.parse(m.metadata) : m?.metadata || {},
+    rows => { dedupeCalls.push(rows); return [...new Map(rows.map(row => [row.id, row])).values()] },
+    row => { normalizeCalls.push(row); return { ...row } }, cadMotionActions, isRetiredMotionAction, motionEntries, row => row.name || '')
+  assert.match(panel, /<th>动作数<\/th>/)
+  assert.match(panel, /getModelActionCount\(m\)/)
+  assert.doesNotMatch(panel, /绑定数|getModelBindingCount/)
+  for (const id of Object.keys(CAD_MOTION_PROFILES)) {
+    const expected = motionEntries([], false, '', undefined, cadMotionActions(id).filter(a => !isRetiredMotionAction({ kind: 'clip', id: `clip:${a.id}` }))).length
+    assert.equal(count({ id }), expected, id)
+  }
+  assert.equal(count({ id: 'ultrasonic_cleaner_cad' }), CLEANER_ACTIONS.length)
+  assert.equal(count({ id: 'no-actions', metadata: { partBindings: 'invalid' } }), 0)
+  const bindings = [{ id: 'door', name: '门' }, { id: 'door', name: '门重复' }, { id: 'fan', name: '风机' }]
+  const model = { id: 'cad_transfer_cart_101300', metadata: JSON.stringify({ partBindings: bindings }) }
+  const before = JSON.stringify(model)
+  assert.equal(count(model), count({ id: model.id }) + 2, 'historical bindings use the same normalization and deduplication as the action page')
+  assert.equal(JSON.stringify(model), before, 'counting is read-only')
+  assert.ok(normalizeCalls.length >= 3 && dedupeCalls.some(rows => rows.length === 3))
 })
