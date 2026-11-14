@@ -645,6 +645,21 @@ const selectedWorkshopEditor = computed(() => (
     || null
 ))
 
+
+const workshopSpatialDirty = computed(() => {
+    const workshop = selectedWorkshopEditor.value
+    const saved = workshop && savedWorkshopLayoutSnapshots.value[workshop.id]
+    return !!saved && JSON.stringify(normalizeWorkshopLayout(getWorkshopLayout(workshop))) !== saved
+})
+
+async function resetWorkshopSpatialPreview() {
+    const workshop = selectedWorkshopEditor.value
+    if (!workshop || !workshopSpatialDirty.value || workshopSavingId.value === workshop.id) return
+    workshop.layout = normalizeWorkshopLayout(JSON.parse(savedWorkshopLayoutSnapshots.value[workshop.id]))
+    workshop.layout_json = JSON.stringify(workshop.layout)
+    await restoreSavedNativeScenePreview()
+}
+
 async function loadWorkshops() {
     const result = await adminApi.getWorkshops()
     if (!Array.isArray(result)) throw new Error(result?.error || '车间列表读取失败')
@@ -7744,7 +7759,7 @@ async function openAdminSetupStep(step) {
                                     <p>世界位置决定整个车间在工厂中的位置；宽度和深度会成为下一步产线布局画布的真实边界。</p>
                                 </div>
                                 <div class="line-native-actions">
-                                    <button type="button" class="btn" @click="restoreSavedNativeScenePreview">撤销未保存预览</button>
+                                    <button type="button" class="btn" :disabled="!workshopSpatialDirty || workshopSavingId === selectedWorkshopEditor.id" @click="resetWorkshopSpatialPreview">撤销未保存预览</button>
                                     <button type="button" class="btn btn-primary" :disabled="workshopSavingId === selectedWorkshopEditor.id" @click="saveWorkshopSpatialLayout()" v-permission="{ page: controlPermissionPage, action: 'edit' }">
                                         {{ workshopSavingId === selectedWorkshopEditor.id ? '保存中...' : '保存车间空间' }}
                                     </button>
