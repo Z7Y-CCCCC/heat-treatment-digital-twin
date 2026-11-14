@@ -213,6 +213,9 @@ test('real component KeepAlive cancels unfinished loads and reclaims late scenes
     for (const match of [...compiled.matchAll(/from\s+(['"])([^'"]+)\1/g)]) {
         const specifier = match[2]
         let resolved = specifier.startsWith('.') ? new URL(specifier, url).href : import.meta.resolve(specifier)
+        // Presentation children are absent in this device-scope lifecycle
+        // fixture. Their real model-scope behavior is tested separately.
+        if (specifier.endsWith('.vue')) resolved = moduleUrl('export default {render(){return null}}')
         if (specifier.endsWith('/ConfiguredFactoryScene.js')) resolved = moduleUrl('export const loadConfiguredGltf=(...args)=>globalThis.__manualLayoutTestLoad(...args); export const disposeSceneObject=(...args)=>globalThis.__manualLayoutTestDispose(...args)')
         if (specifier.endsWith('/ModelFactory.js')) resolved = moduleUrl('export const resolveBackendAssetUrl=value=>value')
         compiled = compiled.replace(match[0], `from ${JSON.stringify(resolved)}`)

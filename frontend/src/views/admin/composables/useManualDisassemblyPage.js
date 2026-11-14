@@ -1,4 +1,5 @@
 import { computed, ref } from 'vue'
+import { presentationChanges } from '../../../../../shared/inspectionPresentation.mjs'
 
 const copy = value => JSON.parse(JSON.stringify(value))
 const parse = value => {
@@ -11,7 +12,7 @@ const frameKey = inspection => JSON.stringify([inspection?.offset_space, inspect
     [part.id, part.enabled, part.node_path, part.node_paths, part.node_name, part.node_names, part.pivot, part.explode_rotation])])
 const sameOffset = (a, b) => JSON.stringify(a) === JSON.stringify(b)
 
-export function manualLayoutPayload(inspection, revision) {
+export function manualLayoutPayload(inspection, revision, baseline) {
     if (!revision) throw new Error('布局版本尚未读取，请重新加载布局')
     if (!Array.isArray(inspection?.parts) || !inspection.parts.length) throw new Error('没有可保存的部件，请先配置模型拆解部件')
     const ids = new Set()
@@ -26,7 +27,8 @@ export function manualLayoutPayload(inspection, revision) {
     })
     // The dedicated endpoint merges only these positions into the latest full
     // configuration. Never send a stale device/PLC/instance_config replacement.
-    return { revision, parts, enabled: true }
+    const presentation = baseline ? presentationChanges(inspection, baseline) : {}
+    return { revision, parts, enabled: true, ...(Object.keys(presentation).length ? { presentation } : {}) }
 }
 
 export function useManualDisassemblyPage({ devices = ref([]), models, api, ask, initialDeviceId = '', initialModelId = '', scope = 'device' }) {
@@ -105,7 +107,7 @@ export function useManualDisassemblyPage({ devices = ref([]), models, api, ask, 
         saving.value = true
         status.value = modelScope ? '正在保存模型布局…' : '正在保存本设备的部件位置…'
         try {
-            const payload = manualLayoutPayload(draft, revision.value)
+            const payload = manualLayoutPayload(draft, revision.value, modelScope ? baseline : null)
             let result = await write(id, payload)
             if (['DEVICE_INSPECTION_CONFLICT', 'MODEL_INSPECTION_CONFLICT'].includes(result?.code)) {
                 // Rebase ONLY locally edited positions. Unchanged parts and all
@@ -121,8 +123,10 @@ export function useManualDisassemblyPage({ devices = ref([]), models, api, ask, 
                     const remote = latest.inspection.parts.find(p => p.id === part.id)?.explode_offset
                     return !sameOffset(remote, baseline.parts.find(p => p.id === part.id)?.explode_offset) && !sameOffset(remote, part.explode_offset)
                 })
-                if (overlaps.length && await ask({ title: '部件位置发生冲突',
-                    message: `${overlaps.length} 个已拖动部件也被其他操作修改，是否使用当前拖拽位置？`,
+                const displayOverlaps = Object.keys(payload.presentation || {}).filter(key =>
+                    !sameOffset(latest.inspection[key], baseline[key]) && !sameOffset(latest.inspection[key], payload.presentation[key]))
+                if ((overlaps.length || displayOverlaps.length) && await ask({ title: '拆解设置发生冲突',
+                    message: `${overlaps.length} 个部件位置、${displayOverlaps.length} 项显示设置也被其他操作修改，是否使用当前草稿？`,
                     type: 'warning', showCancel: true, cancelText: '保留草稿', confirmText: '使用当前拖拽位置' }) !== true) {
                     status.value = '未覆盖其他修改，当前草稿已保留。'; return false
                 }

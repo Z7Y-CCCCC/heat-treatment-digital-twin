@@ -6,9 +6,11 @@ import { adminNavPages, ADMIN_PAGES } from '../../shared/adminPages.mjs'
 const panel = await readFile(new URL('../src/views/AdminPanel.vue', import.meta.url), 'utf8')
 const transfer = await readFile(new URL('../src/views/admin/components/ModelAssetTransfer.vue', import.meta.url), 'utf8')
 
-test('model management removes acceptance and delivery state but retains inspection, bindings and layout', () => {
+test('model management keeps three asset steps; duplicate bindings live only in the animation workspace', () => {
   const steps = panel.slice(panel.indexOf('const MODEL_LIBRARY_STEPS = ['), panel.indexOf('const modelLibraryStep = ref('))
-  assert.deepEqual([...steps.matchAll(/key: '([^']+)'/g)].map(m => m[1]), ['library', 'ports', 'inspection', 'bindings'])
+  assert.deepEqual([...steps.matchAll(/key: '([^']+)'/g)].map(m => m[1]), ['library', 'ports', 'inspection'])
+  assert.match(panel, /v-show="activeTab === 'model-animations' && modelLibraryStep === 'bindings'"/)
+  assert.match(panel, /<ModelPartActionList/)
   assert.doesNotMatch(panel, /优化与验收|交付状态|提交待验收|发布模型|modelAcceptance|makeAcceptanceSnapshot|delivery_status/)
   assert.match(panel, /MODEL_LIBRARY_STEPS.some\(step => step.key === storedAdminUiState.modelLibraryStep\)/)
   assert.match(panel, /<ModelInspectionEditor/)

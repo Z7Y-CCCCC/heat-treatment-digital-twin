@@ -27,6 +27,7 @@ async function compileSfc(url) {
     return result
 }
 const { default: Editor } = await import(await compileSfc(new URL('../src/views/admin/components/ModelInspectionEditor.vue', import.meta.url)))
+const { default: Playback } = await import(await compileSfc(new URL('../src/views/admin/components/InspectionPlaybackControls.vue', import.meta.url)))
 const { default: Overlay } = await import(await compileSfc(new URL('../src/views/admin/components/ModelInspectionPreviewOverlay.vue', import.meta.url)))
 const { default: RuntimeOverlay } = await import(await compileSfc(new URL('../src/runtime/InspectionOverlay.vue', import.meta.url)))
 
@@ -177,10 +178,10 @@ for (const [label, incoming] of [
     assert.ok(textContent(view.root).includes('JSON 配置未载入'))
 })
 
-test('playback controls emit actual timeline commands including reverse assembly and scrubbing', async t => {
-    const view=fixture(t,{nodes,modelValue:richConfig()})
+test('relocated layout playback controls emit actual timeline commands including reverse assembly and scrubbing', async t => {
+    const view=fixture(t,{previewing:true},Playback)
     await view.render()
-    await click(button(view.root,'▶ 演示拆解'))
+    await click(button(view.root,'▶ 拆解演示'))
     await click(button(view.root,'↶ 反向组装'))
     await click(button(view.root,'暂停'))
     const scrub=descendants(view.root).find(node=>node.props['aria-label']==='拆解进度')

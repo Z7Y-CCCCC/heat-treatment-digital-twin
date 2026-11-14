@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import inspectionConfig from '../../../shared/inspectionConfig.mjs'
 import { InspectionPreview } from './InspectionPreview.js'
+import { INSPECTION_PRESENTATION_FIELDS, assertPresentationPatch, mergePresentationSettings } from '../../../shared/inspectionPresentation.mjs'
 
 const { normalizeInspection, validateInspection } = inspectionConfig
 const clone = value => JSON.parse(JSON.stringify(value))
@@ -66,10 +67,11 @@ function editableConfig(value) {
 
 /** Owns only editor wrappers/material clones; original mesh transforms are never written. */
 export class ManualDisassemblyLayoutRuntime {
-    constructor({ root, scene, inspection, camera = new THREE.PerspectiveCamera(), onChange = () => {} }) {
+    constructor({ root, scene, inspection, camera = new THREE.PerspectiveCamera(), controls, presentation = false, onState = () => {}, onChange = () => {} }) {
         this.root = root
         this.scene = scene
         this.onChange = onChange
+        Object.assign(this, { camera, controls, presentation, onState })
         this.draft = editableConfig(inspection)
         this.saved = clone(this.draft)
         const { map, nodes } = buildManualNodeIndex(root)
@@ -78,7 +80,8 @@ export class ManualDisassemblyLayoutRuntime {
         if (!this.validation.valid) throw new Error(this.validation.errors.map(error => error.message).join('；'))
         // No renderer/controls: reuse production pivot/rotation/offset math,
         // without its click-to-advance handler or automatic camera movement.
-        this.preview = new InspectionPreview({ root, scene, camera, nodeMap: map, nodes, config: { ...this.draft, enabled: true } })
+        this.nodeMap = map
+        this.preview = this.createPreview()
         this.parts = this.preview.parts
         this.selectedId = this.parts[0]?.config.id || ''
         this.history = [clone(this.draft)]
@@ -87,11 +90,43 @@ export class ManualDisassemblyLayoutRuntime {
         this.apply()
     }
 
-    get dirty() { return offsetsKey(this.draft) !== offsetsKey(this.saved) }
+    key(value) { return JSON.stringify([offsetsKey(value), this.presentation ? INSPECTION_PRESENTATION_FIELDS.map(key => value[key]) : null]) }
+    get dirty() { return this.key(this.draft) !== this.key(this.saved) }
     get canUndo() { return this.historyIndex > 0 }
     get canRedo() { return this.historyIndex + 1 < this.history.length }
     get selectedPart() { return this.parts.find(part => part.config.id === this.selectedId) }
     getDraft() { return clone(this.draft) }
+
+    createPreview() {
+        return new InspectionPreview({ root: this.root, scene: this.scene, camera: this.camera,
+            controls: this.presentation ? this.controls : undefined, nodeMap: this.nodeMap, nodes: this.nodes,
+            config: { ...this.draft, enabled: true }, onState: state => this.onState(state) })
+    }
+    rebuildPreview() {
+        const playback = this.preview.capturePlaybackState()
+        this.preview.dispose()
+        this.preview = this.createPreview(); this.parts = this.preview.parts
+        if (this.previewing) this.preview.restorePlaybackState(playback)
+    }
+    setPresentation(patch) {
+        if (!this.presentation || this.drag || this.disposed) return false
+        try { assertPresentationPatch(patch) } catch { return false }
+        const next = mergePresentationSettings(this.draft, patch)
+        if (!validateInspection(next, this.nodes).valid) return false
+        this.draft = next; this.commit(); this.rebuildPreview()
+        if (patch.labels) this.preview.labelsEnabled = this.draft.labels.enabled
+        if (!this.previewing) this.apply()
+        else this.onChange(this)
+        return true
+    }
+    play(command) {
+        if (!this.presentation || this.drag || this.disposed) return false
+        if (!this.previewing) { this.previewing = true; this.preview.selectedId = ''; this.preview.setProgress(this.assembled ? 0 : 1) }
+        if (command.command === 'stage' && command.stage === 'exploded' && this.preview.time >= this.preview.timeline.duration) this.preview.setProgress(0)
+        this.preview.command(command); this.onChange(this); return true
+    }
+    stopPlayback() { this.previewing = false; this.preview.playing = false; this.preview.cameraMotion = null; this.apply() }
+    tick(delta) { if (this.previewing) this.preview.update(delta) }
 
     apply() {
         for (const part of this.parts) {
@@ -105,7 +140,7 @@ export class ManualDisassemblyLayoutRuntime {
     }
 
     select(id) {
-        if (this.drag || this.disposed) return false
+        if (this.drag || this.disposed || this.previewing) return false
         if (!this.parts.some(part => part.config.id === id)) return false
         this.selectedId = id
         this.apply()
@@ -123,7 +158,7 @@ export class ManualDisassemblyLayoutRuntime {
     }
 
     beginDrag(worldPosition = this.selectedCenter()) {
-        if (this.drag || this.disposed || !this.selectedPart || this.assembled
+        if (this.drag || this.disposed || this.previewing || !this.selectedPart || this.assembled
             || !worldPosition?.isVector3 || !worldPosition.toArray().every(Number.isFinite)) return false
         const matrix = this.authorMatrix().clone()
         if (!matrix.elements.every(Number.isFinite) || Math.abs(matrix.determinant()) < 1e-12) return false
@@ -151,7 +186,7 @@ export class ManualDisassemblyLayoutRuntime {
     }
 
     commit() {
-        if (offsetsKey(this.draft) === offsetsKey(this.history[this.historyIndex])) return
+        if (this.key(this.draft) === this.key(this.history[this.historyIndex])) return
         this.history.splice(this.historyIndex + 1)
         this.history.push(clone(this.draft))
         if (this.history.length > 100) this.history.shift()
@@ -159,6 +194,7 @@ export class ManualDisassemblyLayoutRuntime {
     }
 
     setOffset(id, offset) {
+        if (this.drag || this.disposed || this.previewing) return false
         if (!Array.isArray(offset) || offset.length !== 3 || !offset.every(value => Number.isFinite(Number(value)))) return false
         const part = this.draft.parts.find(item => item.id === id)
         if (!part) return false
@@ -168,13 +204,14 @@ export class ManualDisassemblyLayoutRuntime {
         return true
     }
 
-    undo() { if (this.canUndo) { this.draft = clone(this.history[--this.historyIndex]); this.apply() } }
-    redo() { if (this.canRedo) { this.draft = clone(this.history[++this.historyIndex]); this.apply() } }
-    restoreSaved() { this.draft = clone(this.saved); this.commit(); this.apply() }
+    undo() { if (this.canUndo) { this.draft = clone(this.history[--this.historyIndex]); if (this.presentation) this.rebuildPreview(); this.stopPlayback() } }
+    redo() { if (this.canRedo) { this.draft = clone(this.history[++this.historyIndex]); if (this.presentation) this.rebuildPreview(); this.stopPlayback() } }
+    restoreSaved() { this.draft = clone(this.saved); this.commit(); if (this.presentation) this.rebuildPreview(); this.stopPlayback() }
     markSaved(inspection = this.draft) {
         this.draft = editableConfig(inspection)
         this.saved = clone(this.draft)
         this.history = [clone(this.draft)]; this.historyIndex = 0
+        if (this.presentation) this.rebuildPreview()
         this.apply()
     }
     setAssembled(value) { this.assembled = value; this.apply() }

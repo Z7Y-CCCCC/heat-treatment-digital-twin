@@ -9,7 +9,7 @@ import {parse as parseTemplate} from '@vue/compiler-dom'
 const url=new URL('../src/views/admin/components/ModelPartActionList.vue',import.meta.url)
 const source=await readFile(url,'utf8'),descriptor=parse(source).descriptor
 let compiled=compileScript(descriptor,{id:'import-only-part-actions',inlineTemplate:true}).content
-compiled=compiled.replace(/from\s+(['"])([^'"]+)\1/g,(_all,_quote,name)=>`from ${JSON.stringify(import.meta.resolve(name))}`)
+compiled=compiled.replace(/from\s+(['"])([^'"]+)\1/g,(_all,_quote,name)=>`from ${JSON.stringify(name.startsWith('.') ? new URL(name,url).href : import.meta.resolve(name))}`)
 const Component=(await import('data:text/javascript;base64,'+Buffer.from(compiled).toString('base64'))).default
 const render=props=>renderToString(createSSRApp({render:()=>h(Component,props)}))
 
@@ -35,7 +35,7 @@ test('search misses use a search message without pretending the model has no act
 test('actual parent has no manual authoring form and retains the canonical package import/export entry',async()=>{
  const panel=await readFile(new URL('../src/views/AdminPanel.vue',import.meta.url),'utf8')
  const template=parse(panel).descriptor.template.content,ast=parseTemplate(template),nodes=[]
- function visit(node){if(node.tag==='section'&&node.props?.some(prop=>prop.name==='show'&&prop.exp?.content==="modelLibraryStep === 'bindings'"))nodes.push(node);for(const child of node.children||[])visit(child)}
+ function visit(node){if(node.tag==='section'&&node.props?.some(prop=>prop.name==='show'&&prop.exp?.content==="activeTab === 'model-animations' && modelLibraryStep === 'bindings'"))nodes.push(node);for(const child of node.children||[])visit(child)}
  visit(ast);assert.equal(nodes.length,1)
  assert.match(nodes[0].loc.source,/<ModelPartActionList/)
  assert.doesNotMatch(nodes[0].loc.source,/参数配置|新增动作|editModelBinding|removeModelBinding|saveModelPartBindings|modelBindingForm|ModelBindingFields/)

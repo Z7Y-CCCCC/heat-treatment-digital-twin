@@ -1,0 +1,139 @@
+// Real browser + owned SQLite/HTTP fixture. Never connects to the operator's DB.
+const fs = require('node:fs'), path = require('node:path'), assert = require('node:assert/strict');
+const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
+const { startLoggedProcess, waitUntil } = require('../backend/scripts/integration-test-utils.cjs');
+const { stopOwnedSmokeProcess } = require('../desktop/scripts/smoke-sandbox.cjs');
+const root = path.resolve(__dirname, '..');
+const directory = path.join(root, 'output/playwright', `model-workspace-${Date.now()}`);
+fs.mkdirSync(directory, { recursive: true });
+let server, browser, page;
+const checks = [], errors = [];
+const pass = name => { checks.push(name); console.log('PASS ' + name); };
+(async () => {
+    const infoFile = path.join(directory, 'server.json');
+    server = startLoggedProcess(process.execPath, [path.join(__dirname, 'manual-disassembly-ui-server.cjs')], {
+        cwd: root, env: { ...process.env, MANUAL_LAYOUT_UI_INFO_FILE: infoFile }, logFile: path.join(directory, 'server.log')
+    });
+    await waitUntil(() => { assert.equal(server.exitCode, null); return fs.existsSync(infoFile); }, 60000, 'owned UI fixture');
+    const info = JSON.parse(fs.readFileSync(infoFile));
+    browser = await chromium.launch({ channel: 'chrome', headless: true, args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
+    const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
+    await context.addInitScript(({ model }) => { if (!localStorage.getItem('digital_twin_admin_ui_state_v1')) localStorage.setItem('digital_twin_admin_ui_state_v1', JSON.stringify({
+        activeTab: 'models', modelLibraryStep: 'bindings', selectedPreviewModelId: model
+    })); }, { model: info.models[0] });
+    page = await context.newPage(); page.setDefaultTimeout(30000);
+    page.on('pageerror', error => errors.push(error.message));
+    await page.goto(info.origin + '/admin');
+    await page.getByRole('textbox', { name: '账号', exact: true }).fill(info.username);
+    await page.getByRole('textbox', { name: '后台密码', exact: true }).fill(info.password);
+    await page.getByRole('button', { name: '解锁后台', exact: true }).click();
+    const nav = page.getByRole('navigation', { name: '模型库操作步骤' });
+    await nav.waitFor(); assert.equal(await nav.getByRole('button').count(), 3);
+    assert.doesNotMatch(await nav.textContent(), /部位绑定|04/);
+    pass('old fourth-step preference falls back safely; model management has exactly three steps');
+    // This fixture deliberately starts without commissioned port metadata.
+    // Establish explicit test-only directions through the real guarded API.
+    const session = await (await page.request.get(info.origin + '/api/admin-auth/session')).json();
+    for (const id of ['cad_transfer_cart_101300', 'cad_air_cooling_table_115800ht']) {
+        const endpoint = info.origin + `/api/models/${id}/loading-ports`;
+        const current = await (await page.request.get(endpoint)).json();
+        if (current.ports?.inlet && current.ports?.outlet) continue;
+        const port = { position: [0, 0, 0], direction: [-1, 0, 0], nodeName: '' };
+        const response = await page.request.put(endpoint, { headers: { Origin: info.origin, 'X-Admin-Request': '1',
+            'X-CSRF-Token': session.csrfToken, 'X-Factory-ID': 'factory_default' },
+            data: { revision: current.revision, ports: { version: 1, inlet: port, outlet: port } } });
+        assert.equal(response.status(), 200, await response.text());
+    }
+    await page.reload(); await nav.waitFor();
+    const devices = await (await page.request.get(info.origin + '/api/devices')).json();
+    await page.getByRole('button', { name: '拆解布局', exact: true }).click();
+    const modelPicker = () => page.getByRole('combobox', { name: '选择拆解布局模型', exact: true });
+    await modelPicker().selectOption(info.models[0]);
+    const workspace = page.getByTestId('manual-disassembly-layout');
+    await workspace.locator('canvas').waitFor(); await page.waitForTimeout(900);
+    await page.screenshot({ path: path.join(directory, '01-layout-desktop.png'), fullPage: true });
+    await workspace.getByRole('button', { name: '外壳与时序', exact: true }).click();
+    await workspace.getByLabel('退场时长 / 秒', { exact: true }).waitFor();
+    await page.waitForTimeout(700);
+    const bounds = await workspace.evaluate(root => {
+        const rect = selector => { const node = root.querySelector(selector), r = node.getBoundingClientRect(); return {x:r.x,y:r.y,width:r.width,height:r.height,display:getComputedStyle(node).display}; };
+        return {parts:rect('.part-sidebar'),settings:rect('.settings-sidebar'),preview:rect('.viewport-shell')};
+    });
+    fs.writeFileSync(path.join(directory,'layout-bounds.json'),JSON.stringify(bounds,null,2));
+    assert.equal(bounds.parts.display, 'none'); assert.ok(Math.abs(bounds.settings.y - bounds.preview.y) < 3);
+    await page.screenshot({ path: path.join(directory, '02-shell-desktop.png'), fullPage: true });
+    await workspace.getByLabel('退场时长 / 秒', { exact: true }).fill('0.7');
+    await workspace.getByLabel('退场时长 / 秒', { exact: true }).press('Tab');
+    await workspace.getByRole('combobox', { name: '拆解播放速度', exact: true }).selectOption('1.5');
+    await workspace.getByRole('button', { name: '镜头与标签', exact: true }).click();
+    await workspace.getByRole('spinbutton', { name: '完整设备水平角', exact: true }).fill('115');
+    await workspace.getByRole('button', { name: '部件摆放', exact: true }).click();
+    await workspace.getByRole('spinbutton', { name: 'X轴拆解位移', exact: true }).fill('0.25');
+    await workspace.getByRole('spinbutton', { name: 'X轴拆解位移', exact: true }).press('Tab');
+    const response = page.waitForResponse(r => r.request().method() === 'PUT' && new URL(r.url()).pathname === `/api/models/${info.models[0]}/inspection`);
+    await workspace.getByRole('button', { name: '保存布局与设置', exact: true }).click();
+    const saved = await response, payload = saved.request().postDataJSON();
+    assert.equal(saved.status(), 200, await saved.text()); assert.equal((await saved.json()).success, true);
+    assert.equal(payload.presentation.playback_speed, 1.5); assert.equal(payload.presentation.shell_duration, .7);
+    assert.equal(payload.presentation.solid.camera.yaw, 115);
+    assert.deepEqual(Object.keys(payload).sort(), ['enabled', 'parts', 'presentation', 'revision']);
+    assert.equal(payload.parts[0].explode_offset[0], .25);
+    await page.reload(); await modelPicker().selectOption(info.models[0]); await workspace.locator('canvas').waitFor();
+    assert.equal(await workspace.getByRole('combobox', { name: '拆解播放速度' }).inputValue(), '1.5');
+    assert.equal(Number(await workspace.getByRole('spinbutton', { name: 'X轴拆解位移' }).inputValue()), .25);
+    await workspace.getByRole('button', { name: '外壳与时序', exact: true }).click();
+    assert.equal(Number(await workspace.getByLabel('退场时长 / 秒', { exact: true }).inputValue()), .7);
+    await workspace.getByRole('button', { name: '镜头与标签', exact: true }).click();
+    assert.equal(Number(await workspace.getByRole('spinbutton', { name: '完整设备水平角', exact: true }).inputValue()), 115);
+    await page.waitForTimeout(700); await page.screenshot({ path: path.join(directory, '03-camera-desktop.png'), fullPage: true });
+    pass('one revisioned save round-trips offsets, speed, shell timing and camera after full reload');
+    await workspace.getByRole('button', { name: '▶ 拆解演示', exact: true }).click();
+    await page.waitForTimeout(450);
+    const slider = workspace.getByRole('slider', { name: '拆解进度', exact: true });
+    assert.ok(Number(await slider.inputValue()) > 0, 'real Three.js timeline must advance');
+    await workspace.getByRole('button', { name: '暂停', exact: true }).click();
+    await slider.evaluate(input => { input.value = '.7'; input.dispatchEvent(new Event('input', { bubbles: true })); });
+    assert.ok(Math.abs(Number(await slider.inputValue()) - .7) < .01);
+    await workspace.getByRole('button', { name: '↶ 反向组装', exact: true }).click();
+    await page.waitForTimeout(450); assert.ok(Number(await slider.inputValue()) < .7);
+    await workspace.getByRole('button', { name: '返回摆放', exact: true }).click();
+    pass('same real viewport plays, pauses, scrubs, reverses and returns to draggable layout');
+    await page.setViewportSize({ width: 760, height: 1000 }); await page.waitForTimeout(500);
+    assert.equal(await workspace.evaluate(node => node.scrollWidth > node.clientWidth + 2), false);
+    const narrow = await workspace.evaluate(root => { const a=root.querySelector('.settings-sidebar').getBoundingClientRect(),b=root.querySelector('.viewport-shell').getBoundingClientRect();return {settingsBottom:a.bottom,previewTop:b.top,previewHeight:b.height}; });
+    assert.ok(narrow.previewHeight >= 400 && narrow.previewTop >= narrow.settingsBottom - 1, 'narrow settings must not overlap or collapse the real viewport');
+    await workspace.locator('.viewport-shell').scrollIntoViewIfNeeded();
+    await page.screenshot({ path: path.join(directory, '04-layout-narrow.png'), fullPage: true });
+    pass('narrow workspace stacks settings and viewport without horizontal overflow');
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await page.getByRole('button', { name: '模型管理', exact: true }).click();
+    await page.locator(`[data-model-id="${info.models[0]}"]`).locator('td').nth(2).click();
+    await nav.getByRole('button').nth(2).click();
+    assert.equal(await page.locator('.inspection-playback').count(), 0);
+    assert.doesNotMatch(await page.locator('.editor-tabs').textContent(), /外壳与时序|镜头与标签/);
+    await page.waitForTimeout(700); await page.screenshot({ path: path.join(directory, '05-model-structure.png'), fullPage: true });
+    pass('model structure retains nodes and PLC context but no duplicated playback or presentation tabs');
+    await page.getByRole('button', { name: '动作动画', exact: true }).click();
+    await page.getByRole('button', { name: '部件动作', exact: true }).click();
+    for (const id of ['cad_transfer_cart_101300', 'cad_air_cooling_table_115800ht']) {
+        await page.getByRole('combobox', { name: '选择动作动画模型', exact: true }).selectOption(id);
+        await page.getByRole('textbox', { name: '搜索动作节点', exact: true }).fill('辊');
+        await page.getByRole('button', { name: '↙ 进料试播', exact: true }).first().click();
+        const preview = page.getByRole('region', { name: 'CAD 动作本页预览', exact: true });
+        await preview.locator('canvas').waitFor(); await page.waitForTimeout(2200);
+        assert.equal(await preview.locator('.loading').count(), 0, await preview.textContent());
+        assert.match(await preview.locator('.flow-badge').textContent(), /进料/);
+        await page.screenshot({ path: path.join(directory, `06-${id}-inlet.png`), fullPage: true });
+        await page.getByRole('button', { name: '↗ 出料试播', exact: true }).first().click();
+        await page.waitForTimeout(700); assert.match(await preview.locator('.flow-badge').textContent(), /出料/);
+        assert.equal(await preview.getAttribute('data-playing'), 'true');
+    }
+    pass('cart and fixed-device real CAD meshes support both flow previews without duplicate actions');
+    assert.deepEqual(await (await page.request.get(info.origin + '/api/devices')).json(), devices, 'model authoring must not rewrite device/site configuration');
+    assert.deepEqual(errors, []);
+    fs.writeFileSync(path.join(directory, 'result.json'), JSON.stringify({ success: true, checks, errors, siteConfigurationWrites: 0 }, null, 2));
+    console.log(JSON.stringify({ success: true, checks: checks.length, directory }));
+})().catch(error => {
+    fs.writeFileSync(path.join(directory, 'failure.json'), JSON.stringify({ message: error.message, stack: error.stack, checks, errors }, null, 2));
+    console.error(error.stack); process.exitCode = 1;
+}).finally(async () => { await browser?.close(); await stopOwnedSmokeProcess(server); });

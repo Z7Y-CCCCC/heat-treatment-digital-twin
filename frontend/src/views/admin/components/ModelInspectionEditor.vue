@@ -16,7 +16,7 @@ const props = defineProps({
     previewDeviceId: { type: String, default: '' }, saving: Boolean, saveRevision: { type: Number, default: 0 }, savedSignature: { type: String, default: '' },
     nativePreviewBusy: Boolean, status: { type: String, default: '' }
 })
-const emit = defineEmits(['update:modelValue', 'save', 'reload', 'command', 'capture-camera', 'native-preview', 'update:previewDeviceId'])
+const emit = defineEmits(['update:modelValue', 'save', 'reload', 'command', 'capture-camera', 'native-preview', 'update:previewDeviceId', 'open-layout'])
 const draft = reactive(normalizeInspection(props.modelValue, props.partBindings))
 const selection = ref(draft.parts[0]?.id || '')
 const selectionOrdinal = ref(draft.parts.length ? 0 : -1)
@@ -236,24 +236,11 @@ defineExpose({ dirty, draft, validation, exportJson, importJson, generateParts, 
 <template>
     <div class="inspection-authoring" data-testid="inspection-editor">
         <header class="editor-heading">
-            <div><h3>拆解编排工作台</h3><p>配置一次，同型号设备复用；部件结构、动画和镜头均由工程师定义。</p></div>
+            <div><h3>拆解部件</h3></div>
+            <button type="button" @click="emit('open-layout')">打开拆解布局 ↗</button>
             <span class="draft-indicator" :class="{ dirty }">{{ dirty ? '未保存的草稿' : '已载入模型配置' }}</span>
             <button type="button" class="primary" data-testid="save-inspection" :disabled="saving || !validation.valid || !nodes.length" @click="save" v-permission="{ page: 'models', action: 'edit' }">{{ saving ? '保存中…' : '保存拆解配置' }}</button>
         </header>
-        <div class="inspection-playback">
-            <div class="playback-buttons">
-                <button type="button" :class="{ active: previewState.stage === 'exploded' }" @click="emit('command', {command:'stage', stage:'exploded'})">▶ 演示拆解</button>
-                <button type="button" :class="{ active: previewState.stage === 'solid' }" @click="emit('command', {command:'stage', stage:'solid'})">↶ 反向组装</button>
-                <button type="button" :class="{ active: previewState.stage === 'xray' }" @click="emit('command', {command:'stage', stage:'xray'})">外壳透视</button>
-                <button type="button" @click="emit('command', {command:previewState.paused ? 'resume' : 'pause'})">{{ previewState.paused ? '继续' : '暂停' }}</button>
-                <label class="check"><input v-model="draft.labels.enabled" type="checkbox"  v-permission="{ page: 'models', action: 'edit' }"/> 空间标签</label>
-            </div>
-            <label class="timeline-scrub"><span>{{ ((previewState.progress || 0) * 100).toFixed(0) }}%</span><input type="range" min="0" max="1" step="0.001" :value="previewState.progress || 0" aria-label="拆解进度" @input="emit('command', {command:'progress', progress:Number($event.target.value)})" /><span>{{ playbackDuration.toFixed(2) }} 秒实际播放</span></label>
-            <label class="timeline-speed"><span>拆解速度</span><input v-model.number="draft.playback_speed" type="range" min="0.25" max="3" step="0.05" aria-label="拆解播放速度"  v-permission="{ page: 'models', action: 'edit' }"/><strong>{{ playbackSpeed.toFixed(2) }}×</strong><button type="button" @click="draft.playback_speed = 1">正常速度</button></label>
-            <div class="speed-hint"><span>0.25× 慢速</span><span>1× 正常</span><span>3× 快速</span><small>修改后保存拆解配置，实时大屏会同步使用该速度。</small></div>
-            <div class="timeline-phases"><span :style="{flex:Math.max(draft.shell_duration, 0.1)}">外壳退场 {{ draft.shell_duration }}s</span><span :style="{flex:Math.max(timeline.duration - draft.shell_duration, 0.1)}">依次展开 {{ draft.parts.filter(p => p.enabled !== false).length }} 个部件 · 组装时整体倒放</span></div>
-        </div>
-
         <div class="preset-row">
             <select v-model="selectedPreset" aria-label="模型拆解预设"><option value="">{{ matchingPresets.length ? '选择可编辑的模型预设' : '暂无此模型预设' }}</option><option v-for="preset in matchingPresets" :key="preset.id" :value="preset.id">{{ preset.name }}</option></select>
             <button type="button" :disabled="!selectedPresetRecord" @click="applyPreset" v-permission="{ page: 'models', action: 'edit' }">应用预设</button>
@@ -265,13 +252,13 @@ defineExpose({ dirty, draft, validation, exportJson, importJson, generateParts, 
         <div v-if="message || status" class="editor-notice" role="status">{{ message || status }}</div>
         <div v-if="validation.errors.length" class="validation-errors" role="alert" data-testid="inspection-errors"><strong>修正后才能保存（{{ validation.errors.length }}）</strong><ul><li v-for="(error, index) in validation.errors" :key="`${error.code}-${index}`"><button v-if="error.partId" type="button" @click="selection = error.partId; activeSection = 'parts'">{{ error.partId }}</button> {{ error.message }}</li></ul></div>
         <details v-if="validation.warnings.length" class="validation-warnings"><summary>{{ validation.warnings.length }} 项编排提示</summary><ul><li v-for="(warning, index) in validation.warnings" :key="index">{{ warning.message }}</li></ul></details>
-        <nav class="editor-tabs" aria-label="拆解配置分类"><button v-for="tab in [{id:'parts',label:'部件与运动'},{id:'shell',label:'外壳与时序'},{id:'camera',label:'镜头与标签'},{id:'exchange',label:'配置与运行端'}]" :key="tab.id" type="button" :class="{ active: activeSection === tab.id }" @click="activeSection = tab.id">{{ tab.label }}</button></nav>
+        <nav class="editor-tabs" aria-label="拆解配置分类"><button v-for="tab in [{id:'parts',label:'部件结构'},{id:'exchange',label:'配置与运行端'}]" :key="tab.id" type="button" :class="{ active: activeSection === tab.id }" @click="activeSection = tab.id">{{ tab.label }}</button></nav>
 
         <section v-if="activeSection === 'parts'">
             <details class="generator-panel"><summary>从模型装配组生成 / 空间布局</summary>
                 <p class="hint">只读取模型真实节点组，不推断或虚构内部机械结构。自动生成只追加，保留现有部件。</p>
                 <div class="grid two"><label>装配组父节点<select v-model="generationParent" v-permission="{ page: 'models', action: 'edit' }"><option value="">自动识别顶层装配组</option><option v-for="node in groupOptions" :key="node.path" :value="node.path">{{ formatNode(node) }}</option></select></label><label>布局方式<select v-model="layoutMode" v-permission="{ page: 'models', action: 'edit' }"><option value="radial">沿实际空间方向展开</option><option value="grid">展台网格排布</option><option value="x">沿 X 轴排开</option><option value="y">沿 Y 轴分层</option><option value="z">沿 Z 轴排开</option></select></label><label>展开间距倍率<input v-model.number="spacing" type="number" min="0.1" max="5" step="0.1"  v-permission="{ page: 'models', action: 'edit' }"/></label><div class="button-row"><button type="button" :disabled="!nodes.length || draft.parts.length >= 64" @click="generateParts">从装配组追加部件</button><button type="button" :disabled="!draft.parts.length || draft.offset_space !== 'model'" @click="applySpread" v-permission="{ page: 'models', action: 'edit' }">应用空间布局</button></div></div>
-                <p v-if="draft.offset_space !== 'model'" class="hint">当前为旧版父节点坐标。自动空间布局需要在“外壳与时序”切换为模型坐标；切换后请复核已有位移。</p>
+                <label>位移坐标<select v-model="draft.offset_space"><option value="model">模型坐标</option><option value="parent">父节点坐标（兼容旧版）</option></select></label>
             </details>
             <div class="part-workbench">
                 <aside class="part-list"><header><strong>装配部件 {{ draft.parts.length }}/64</strong><button type="button" :disabled="draft.parts.length >= 64" @click="addPart" v-permission="{ page: 'models', action: 'edit' }">＋ 新部件</button></header>
@@ -297,19 +284,6 @@ defineExpose({ dirty, draft, validation, exportJson, importJson, generateParts, 
                 </div>
                 <div v-else class="empty-state">选择左侧部件，配置节点、运动和 PLC 参数。</div>
             </div>
-        </section>
-
-        <section v-if="activeSection === 'shell'" class="configuration-section">
-            <div class="section-heading"><h4>外壳先退场，内部部件再展开</h4><label class="check"><input v-model="draft.enabled" type="checkbox"  v-permission="{ page: 'models', action: 'edit' }"/> 启用设备拆解</label></div>
-            <div class="grid three"><label>退场方式<select v-model="draft.shell.transition" v-permission="{ page: 'models', action: 'edit' }"><option value="clip">沿轴逐层裁切</option><option value="fade">渐隐退场</option><option value="hide">定时隐藏</option></select></label><label>裁切轴<select v-model="draft.shell.axis" v-permission="{ page: 'models', action: 'edit' }"><option value="x">X</option><option value="y">Y</option><option value="z">Z</option></select></label><label>裁切方向<select v-model="draft.shell.direction" v-permission="{ page: 'models', action: 'edit' }"><option :value="1">正向</option><option :value="-1">反向</option></select></label><label>外壳退场时长（秒）<input v-model.number="draft.shell_duration" type="number" min="0" max="5" step="0.1"  v-permission="{ page: 'models', action: 'edit' }"/></label><label>透视保留不透明度<input v-model.number="draft.shell.opacity" type="number" min="0" max="1" step="0.01"  v-permission="{ page: 'models', action: 'edit' }"/></label><label class="check"><input v-model="draft.shell.wireframe" type="checkbox"  v-permission="{ page: 'models', action: 'edit' }"/> 透视显示线框</label></div>
-            <div class="target-editor"><strong>外壳节点</strong><p class="hint">请只选择实际外壳网格或外壳专用节点，不要选择包含内部总成的父节点；否则会阻止保存，避免拆解时组件消失。</p><div class="target-chips"><span v-for="entry in nodeEntries(draft.shell)" :key="`${entry.kind}:${entry.value}`" :title="entry.value">{{ entry.label }}<button type="button" :aria-label="`移除外壳 ${entry.label}`" @click="removeNode(draft.shell, entry)" v-permission="{ page: 'models', action: 'edit' }">×</button></span></div><input v-model="nodeQuery" placeholder="搜索外壳模型节点"  v-permission="{ page: 'models', action: 'edit' }"/><select v-model="shellPendingNodes" multiple size="7" aria-label="外壳节点选择" v-permission="{ page: 'models', action: 'edit' }"><option v-for="node in nodeOptions" :key="node.path" :value="node.path">{{ formatNode(node) }}</option></select><button type="button" :disabled="!shellPendingNodes.length" @click="appendNodes(draft.shell, shellPendingNodes)">将选中节点加入外壳</button><label>按原始外壳节点名引用（一行一个）<textarea :value="draft.shell.node_names.join('\n')" rows="2" @input="draft.shell.node_names = splitNodes($event.target.value)" /></label></div>
-            <h4>分解运动与时间轴</h4><div class="grid three"><label>位移坐标<select v-model="draft.offset_space" v-permission="{ page: 'models', action: 'edit' }"><option value="model">模型坐标（推荐新配置）</option><option value="parent">父节点坐标（兼容旧版）</option></select></label><label>默认运动时长（秒）<input v-model.number="draft.animation_duration" type="number" min="0.05" max="10" step="0.05"  v-permission="{ page: 'models', action: 'edit' }"/></label><label>部件依次间隔（秒）<input v-model.number="draft.stagger" type="number" min="0" max="1" step="0.01"  v-permission="{ page: 'models', action: 'edit' }"/></label><label>缓动曲线<select v-model="draft.easing" v-permission="{ page: 'models', action: 'edit' }"><option value="smoothstep">平滑起止</option><option value="cubic">立方缓入缓出</option><option value="linear">匀速</option></select></label></div><p class="hint">每件开始时间 = 外壳退场时长 + 部件顺序 × 依次间隔 + 额外延迟。反向组装沿同一时间轴倒放，可在任意位置暂停或反转。</p>
-            <div class="part-timing-list"><div v-for="part in timeline.parts" :key="part.id"><span>{{ draft.parts.find(item => item.id === part.id)?.name }}</span><div><i :style="{ left: `${part.start / timeline.duration * 100}%`, width: `${part.duration / timeline.duration * 100}%` }" /></div><small>{{ part.start.toFixed(2) }}–{{ (part.start + part.duration).toFixed(2) }}s</small></div></div>
-        </section>
-
-        <section v-if="activeSection === 'camera'" class="configuration-section">
-            <div class="grid two"><label class="check"><input v-model="draft.labels.enabled" type="checkbox"  v-permission="{ page: 'models', action: 'edit' }"/> 默认显示空间标签</label><label class="check"><input v-model="draft.labels.leader_lines" type="checkbox"  v-permission="{ page: 'models', action: 'edit' }"/> 显示标签引线</label></div>
-            <div class="stage-camera-cards"><article v-for="stage in [{key:'solid',name:'完整设备'},{key:'xray',name:'透视内部'},{key:'exploded',name:'全部拆解'}]" :key="stage.key"><header><h4>{{ stage.name }}</h4><button type="button" @click="emit('command', {command:'stage', stage:stage.key})">预览此镜头</button></header><div class="grid two"><label>低代码视角 ID<input v-model="draft[stage.key].view_id" placeholder="可选，桥接大屏视角"  v-permission="{ page: 'models', action: 'edit' }"/></label><label>独立镜头过渡（秒）<input v-model.number="draft[stage.key].transition_seconds" type="number" min="0.05" max="10" step="0.05"  v-permission="{ page: 'models', action: 'edit' }"/></label></div><InspectionCameraFields v-model="draft[stage.key].camera" :label="stage.name" @capture="captureCamera(stage.key)" /></article></div><p class="hint">拆解与组装过程中镜头和完整时间轴同步。鼠标拖动预览可手动构图，再点“记录当前预览镜头”。</p>
         </section>
 
         <section v-if="activeSection === 'exchange'" class="configuration-section">

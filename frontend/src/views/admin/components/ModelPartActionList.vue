@@ -1,4 +1,5 @@
 <script setup>
+import { isConveyorAction } from '../../../three/conveyorPreview.js'
 const props = defineProps({
     entries: { type: Array, default: () => [] },
     total: { type: Number, default: 0 },
@@ -10,7 +11,7 @@ const props = defineProps({
     activeProcessId: { type: String, default: '' },
     formatBindingName: { type: Function, default: binding => binding.name || binding.node_name || binding.id || '未命名动作' }
 })
-const emit = defineEmits(['update:search', 'update:page', 'preview-binding', 'preview-process'])
+const emit = defineEmits(['update:search', 'update:page', 'preview-binding', 'preview-process', 'preview-flow'])
 function preview(entry) {
     if (entry.process) emit('preview-process', entry.process.id)
     else emit('preview-binding', entry.index)
@@ -31,6 +32,7 @@ function changePage(value) {
                     <small>{{ entry.process?.detail || '已有部件动作' }} · 点击预览</small>
                 </button>
                 <button type="button" class="preview-button" :aria-label="`预览${entry.process ? entry.process.label : formatBindingName(entry.binding)}`" @click="preview(entry)">预览</button>
+                <div v-if="isConveyorAction(entry)" class="flow-previews" aria-label="辊筒双向试播"><button type="button" @click="emit('preview-flow',entry,'inlet')">↙ 进料试播</button><button type="button" @click="emit('preview-flow',entry,'outlet')">↗ 出料试播</button></div>
             </article>
             <p v-if="!entries.length" class="action-empty" role="status">{{ search ? '没有匹配的动作' : '暂无动作，请导入动作包' }}</p>
         </div>
@@ -45,6 +47,7 @@ function changePage(value) {
     </section>
 </template>
 <style scoped>
+.action-card{flex-wrap:wrap}.flow-previews{flex-basis:100%;display:flex;gap:8px;padding-top:9px;border-top:1px solid #e8eef4}.flow-previews button{flex:1;border:1px solid #cbdfe9;background:#f0f7fa;border-radius:7px;padding:8px 10px;color:#2e738d;font:inherit;cursor:pointer}.flow-previews button:hover{background:#e0f0f6}.flow-previews button:focus-visible{outline:2px solid #397f9e;outline-offset:2px}
 .imported-action-list{display:flex;flex:1;flex-direction:column;min-height:0;gap:12px;color:#34455d;font-size:calc(12px * var(--admin-font-scale,1))}
 .action-list-heading{padding:11px 12px;border:1px solid #e5ebf6;border-radius:8px;background:#f5f8fd;color:#2463dd;font-weight:600}.action-list-heading span{margin-left:5px;color:#8494ac}
 .action-search{box-sizing:border-box;width:100%;padding:10px 12px;border:1px solid #d6deeb;border-radius:8px;font:inherit}
