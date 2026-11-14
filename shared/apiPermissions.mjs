@@ -70,6 +70,7 @@ export function apiPermission(path, method = 'GET', body) {
     return safe ? read(previewPages) : any('admin', ...previewPages.map(k => p(k, 'edit')))
   }
   if (resource('devices')) {
+    if (path === '/api/devices/docking-calibration' && method === 'PUT') return any('admin', p('lines', 'edit'), p('composer', 'edit'))
     if (path === '/api/devices/loading-alignment' && method === 'PUT') return any('admin', p('lines', 'edit'), p('composer', 'edit'))
     if (/\/loading-ports$/.test(path)) return safe ? read(['devices', 'models', 'lines', 'composer'], true) : any('admin', p('devices', 'edit'))
     if (/\/animations$/.test(path)) return safe ? read(['model-animations']) : any('admin', p('model-animations', 'edit'))

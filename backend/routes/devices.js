@@ -13,7 +13,17 @@ const { validateMovementConfig, validateMovementSources } = require('../services
 const { assertDeviceLineUnits, loadDeviceLineContext } = require('../services/deviceLineUnits');
 const { loadDeviceLoadingPorts, publicDeviceLoadingPorts, saveDeviceLoadingPorts, normalizeInstanceLoadingPorts } = require('../services/loadingPorts');
 const { saveLoadingAlignment } = require('../services/deviceLoadingAlignment');
+const { saveDockingCalibration } = require('../services/dockingCalibration');
 const { validateLoadingPortSignalSources } = require('../services/loadingPortSignals');
+
+router.put('/docking-calibration', async (req, res) => {
+    try {
+        const db = await getDb();
+        const devices = await db.transaction(tx => saveDockingCalibration(tx, req.body, req.factoryId, getDbStatus().type));
+        for (const device of devices) broadcastDeviceConfigurationChanged(device.id, device.instance_config);
+        res.json({ success: true, devices: devices.map(publicDevice) });
+    } catch (error) { res.status(error.statusCode || 400).json({ error: error.message, code: error.code }); }
+});
 
 router.put('/loading-alignment', async (req, res) => {
     try {

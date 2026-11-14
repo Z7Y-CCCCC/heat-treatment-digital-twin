@@ -3441,6 +3441,27 @@ function applySavedLoadingPorts(result) {
         savedDeviceLayoutSnapshots.value[result.device.id] = deviceLayoutSnapshot(result.device)
     }
 }
+async function canOpenDockingCalibration(lineId) {
+    if (!canAdminApi('/api/devices/docking-calibration', 'PUT')) return false
+    if (lineDeviceLayoutBusy.value || showDeviceForm.value) {
+        await alert('请先结束正在保存或编辑的设备，再打开对接校准。', { title: '避免覆盖配置' })
+        return false
+    }
+    const line = lines.value.find(row => String(row.id) === String(lineId))
+    if (!line || lineHasUnsavedLayout(line)) {
+        await alert('请先保存当前产线和设备的布局修改，再生成对接校准预览。', { title: '请先保存布局' })
+        return false
+    }
+    return true
+}
+function applySavedDockingCalibration(result) {
+    if (result?.success !== true || !Array.isArray(result.devices)) return
+    for (const device of result.devices) {
+        patchDeviceLocally(device.id, device)
+        savedDeviceLayoutSnapshots.value[device.id] = deviceLayoutSnapshot(device)
+    }
+    scheduleNativeScenePreview({ source: 'lines', includeLayout: true, deviceOverride: null })
+}
 async function openDeviceLoadingPorts(device) {
     if (!canAdminPage('devices', 'edit')) return
     if (showDeviceForm.value) return alert('请先保存或取消正在编辑的设备，再调整进出料口。', { title: '避免覆盖配置' })
@@ -8510,7 +8531,8 @@ async function openAdminSetupStep(step) {
                     <p v-if="activeTab === 'model-animations' && motionWorkspaceMode === 'live' && motionFactoryError" role="alert">{{ motionFactoryError }} <button type="button" class="btn btn-sm" @click="loadMotionFactories">重试</button></p>
                     <DeviceAnimationLink v-if="activeTab === 'model-animations' && motionWorkspaceMode === 'live' && motionFactoryId" ref="deviceAnimationLinkRef" device-picker-target="#motion-live-device-picker" :models="models" :devices="devices" :workshops="workshops" :lines="lines" :factories="motionFactories" :factory-id="motionFactoryId" :request-factory-switch="requestMotionFactorySwitch" :confirm="confirm" />
                     <LoadingPortWorkspace v-if="activeTab === 'models' && modelLibraryStep === 'ports' && activePreviewModel" ref="modelLoadingPortRef"
-                        :model="activePreviewModel" :devices="devices" :confirm="confirm" @saved="applySavedLoadingPorts" />
+                        :model="activePreviewModel" :devices="devices" :lines="lines" :models="models" :confirm="confirm"
+                        :can-calibrate="canOpenDockingCalibration" @saved="applySavedLoadingPorts" @calibrated="applySavedDockingCalibration" />
                     <div v-if="activeTab === 'model-animations' ? motionWorkspaceMode === 'parts' : modelLibraryStep !== 'ports'" class="model-library-layout" :class="{ 'animation-workspace': activeTab === 'model-animations' }">
                         <section class="model-library-main">
                             <section v-if="activeTab === 'models'" v-show="modelLibraryStep === 'library'" class="model-library-step-panel">

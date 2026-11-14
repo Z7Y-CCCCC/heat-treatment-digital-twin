@@ -370,6 +370,7 @@ export const adminApi = {
     async getDeviceLoadingPorts(id, options = {}) { return readApiJson(await fetch(`${API_BASE}/devices/${pathId(id)}/loading-ports`, { cache: 'no-store', signal: options.signal }), '读取设备进出料口失败', true) },
     async saveDeviceLoadingPorts(id, data, options = {}) { return readApiJson(await fetch(`${API_BASE}/devices/${pathId(id)}/loading-ports`, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data), signal: options.signal }), '保存设备进出料口失败', true) },
     async applyLoadingAlignment(data) { return readApiJson(await fetch(`${API_BASE}/devices/loading-alignment`, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) }), '对齐保存失败，设备位置未改变', true) },
+    async saveDockingCalibration(data) { return readApiJson(await fetch(`${API_BASE}/devices/docking-calibration`, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) }), '校准保存失败，设备位置未改变', true) },
     async saveModelBindings(id, data) { return readApiJson(await fetch(`${API_BASE}/models/${pathId(id)}/bindings`, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) }), '保存动作动画失败') },
     async renameModel(id, name) { return readApiJson(await fetch(`${API_BASE}/models/${pathId(id)}/name`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) }), '保存模型名称失败') },
     async deleteModel(id) {
