@@ -6,16 +6,17 @@ import { adminNavPages, ADMIN_PAGES } from '../../shared/adminPages.mjs'
 const panel = await readFile(new URL('../src/views/AdminPanel.vue', import.meta.url), 'utf8')
 const transfer = await readFile(new URL('../src/views/admin/components/ModelAssetTransfer.vue', import.meta.url), 'utf8')
 
-test('model management keeps three asset steps; duplicate bindings live only in the animation workspace', () => {
+test('model management keeps only assets and ports, with no structure editor anywhere in the panel', () => {
   const steps = panel.slice(panel.indexOf('const MODEL_LIBRARY_STEPS = ['), panel.indexOf('const modelLibraryStep = ref('))
-  assert.deepEqual([...steps.matchAll(/key: '([^']+)'/g)].map(m => m[1]), ['library', 'ports', 'inspection'])
+  assert.deepEqual([...steps.matchAll(/key: '([^']+)'/g)].map(m => m[1]), ['library', 'ports'])
   assert.match(panel, /v-show="activeTab === 'model-animations' && modelLibraryStep === 'bindings'"/)
   assert.match(panel, /<ModelPartActionList/)
   assert.doesNotMatch(panel, /优化与验收|交付状态|提交待验收|发布模型|modelAcceptance|makeAcceptanceSnapshot|delivery_status/)
   assert.match(panel, /MODEL_LIBRARY_STEPS.some\(step => step.key === storedAdminUiState.modelLibraryStep\)/)
-  assert.match(panel, /<ModelInspectionEditor/)
+  assert.doesNotMatch(panel, /ModelInspectionEditor|部件结构|拆解部件|openModelDisassemblyLayout|async function saveModelInspection\(/)
   assert.match(panel, /<ManualDisassemblyLayout/)
-  assert.match(panel, /modelLibraryStep === 'inspection'/)
+  assert.doesNotMatch(panel, /modelLibraryStep === 'inspection'/)
+  assert.match(panel, /MODEL_LIBRARY_STEPS.some\(step => step.key === modelLibraryStep.value\)/)
   assert.ok(adminNavPages('models').some(p => p.key === 'disassembly-layout'))
   assert.deepEqual(ADMIN_PAGES.find(p => p.key === 'models').actions, ['view', 'edit', 'delete'])
 })
@@ -86,4 +87,15 @@ for (const reused of [false, true]) test(`raw model upload selects the server's 
   assert.equal(modelUploading.value, false); assert.equal(state.modelLibraryStep.value, 'library')
   assert.match(alerts[0].message, reused ? /直接复用，不重复创建/ : /已上传/)
   assert.match(state.modelPreviewStatus.value, reused ? /已复用已有模型/ : /已上传/)
+})
+
+test('removed inspection and binding steps cannot be selected or mutate a model', async () => {
+  const steps = [{ key: 'library' }, { key: 'ports' }], modelLibraryStep = { value: 'library' }
+  const deps = { MODEL_LIBRARY_STEPS: steps, modelLibraryStep, modelNameSaving: { value: false }, modelUploading: { value: false },
+    activePreviewModel: { value: { id: 'model-a' } }, activePreviewIsEnvironment: { value: false },
+    modelLoadingPortRef: { value: { canLeave: () => { throw Error('removed steps must not start navigation') } } },
+    nextTick: () => { throw Error('unexpected render') }, renderSelectedModelPreview: () => { throw Error('unexpected render') }, disposeModelPreview: () => {} }
+  const body = panel.slice(panel.indexOf('function modelLibraryStepRequiresModel('), panel.indexOf('async function loadModels('))
+  const select = new Function(...Object.keys(deps), `${body};return selectModelLibraryStep`)(...Object.values(deps))
+  for (const step of ['inspection', 'bindings']) { await select(step); assert.equal(modelLibraryStep.value, 'library') }
 })

@@ -19,7 +19,7 @@ const pass = name => { checks.push(name); console.log('PASS ' + name); };
     browser = await chromium.launch({ channel: 'chrome', headless: true, args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
     const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
     await context.addInitScript(({ model }) => { if (!localStorage.getItem('digital_twin_admin_ui_state_v1')) localStorage.setItem('digital_twin_admin_ui_state_v1', JSON.stringify({
-        activeTab: 'models', modelLibraryStep: 'bindings', selectedPreviewModelId: model
+        activeTab: 'models', modelLibraryStep: 'inspection', selectedPreviewModelId: model
     })); }, { model: info.models[0] });
     page = await context.newPage(); page.setDefaultTimeout(30000);
     page.on('pageerror', error => errors.push(error.message));
@@ -28,9 +28,9 @@ const pass = name => { checks.push(name); console.log('PASS ' + name); };
     await page.getByRole('textbox', { name: '后台密码', exact: true }).fill(info.password);
     await page.getByRole('button', { name: '解锁后台', exact: true }).click();
     const nav = page.getByRole('navigation', { name: '模型库操作步骤' });
-    await nav.waitFor(); assert.equal(await nav.getByRole('button').count(), 3);
-    assert.doesNotMatch(await nav.textContent(), /部位绑定|04/);
-    pass('old fourth-step preference falls back safely; model management has exactly three steps');
+    await nav.waitFor(); assert.equal(await nav.getByRole('button').count(), 2);
+    assert.doesNotMatch(await nav.textContent(), /部位绑定|拆解|03|04/);
+    pass('old third-step preference falls back safely; model management has exactly two steps');
     // This fixture deliberately starts without commissioned port metadata.
     // Establish explicit test-only directions through the real guarded API.
     const session = await (await page.request.get(info.origin + '/api/admin-auth/session')).json();
@@ -108,11 +108,16 @@ const pass = name => { checks.push(name); console.log('PASS ' + name); };
     await page.setViewportSize({ width: 1440, height: 1000 });
     await page.getByRole('button', { name: '模型管理', exact: true }).click();
     await page.locator(`[data-model-id="${info.models[0]}"]`).locator('td').nth(2).click();
-    await nav.getByRole('button').nth(2).click();
-    assert.equal(await page.locator('.inspection-playback').count(), 0);
-    assert.doesNotMatch(await page.locator('.editor-tabs').textContent(), /外壳与时序|镜头与标签/);
-    await page.waitForTimeout(700); await page.screenshot({ path: path.join(directory, '05-model-structure.png'), fullPage: true });
-    pass('model structure retains nodes and PLC context but no duplicated playback or presentation tabs');
+    assert.equal(await nav.getByRole('button').count(), 2);
+    assert.equal(await page.locator('.model-inspection-editor').count(), 0);
+    assert.equal(await page.getByRole('button', { name: '部件结构', exact: true }).count(), 0);
+    await page.waitForTimeout(700); await page.screenshot({ path: path.join(directory, '05-model-two-steps.png'), fullPage: true });
+    await page.getByRole('button', { name: '拆解布局', exact: true }).click();
+    await workspace.locator('canvas').waitFor();
+    assert.equal(await page.locator('.model-inspection-editor, .disassembly-workspace-modes').count(), 0);
+    assert.equal(await page.getByRole('button', { name: '部件结构', exact: true }).count(), 0);
+    assert.equal(await workspace.getByRole('button', { name: '部件摆放', exact: true }).count(), 1);
+    pass('complex structure editor is absent from both pages; existing layout and effects remain available');
     await page.getByRole('button', { name: '动作动画', exact: true }).click();
     await page.getByRole('button', { name: '部件动作', exact: true }).click();
     for (const id of ['cad_transfer_cart_101300', 'cad_air_cooling_table_115800ht']) {
@@ -120,7 +125,7 @@ const pass = name => { checks.push(name); console.log('PASS ' + name); };
         await page.getByRole('textbox', { name: '搜索动作节点', exact: true }).fill('辊');
         await page.getByRole('button', { name: '↙ 进料试播', exact: true }).first().click();
         const preview = page.getByRole('region', { name: 'CAD 动作本页预览', exact: true });
-        await preview.locator('canvas').waitFor(); await page.waitForTimeout(2200);
+        await preview.locator('canvas').waitFor(); await preview.locator('.loading').waitFor({ state: 'hidden', timeout: 60000 }); await page.waitForTimeout(700);
         assert.equal(await preview.locator('.loading').count(), 0, await preview.textContent());
         assert.match(await preview.locator('.flow-badge').textContent(), /进料/);
         await page.screenshot({ path: path.join(directory, `06-${id}-inlet.png`), fullPage: true });
@@ -129,6 +134,10 @@ const pass = name => { checks.push(name); console.log('PASS ' + name); };
         assert.equal(await preview.getAttribute('data-playing'), 'true');
     }
     pass('cart and fixed-device real CAD meshes support both flow previews without duplicate actions');
+    await page.getByRole('button', { name: '模型管理', exact: true }).click();
+    await nav.waitFor();
+    assert.equal(await nav.getByRole('button').first().getAttribute('aria-current'), 'step', 'returning from animation bindings restores asset navigation');
+    assert.equal(await page.locator('.model-inspection-editor').count(), 0);
     assert.deepEqual(await (await page.request.get(info.origin + '/api/devices')).json(), devices, 'model authoring must not rewrite device/site configuration');
     assert.deepEqual(errors, []);
     fs.writeFileSync(path.join(directory, 'result.json'), JSON.stringify({ success: true, checks, errors, siteConfigurationWrites: 0 }, null, 2));
