@@ -9,5 +9,8 @@ export function normalizeCartTransfer(value) {
   if (value.kind === 'single' && (value.presentation !== 'model' || node)) fail('单向小车沿用原模型')
   if (value.kind === 'rotating' && value.presentation === 'model' && !node.trim()) fail('请选择模型的上转台节点')
   if (value.presentation === 'simple' && node) fail('简模使用自带转台节点')
+  // Legacy presentation flags never replace the selected model. Low-poly carts
+  // are ordinary GLB library assets; rotation must target their real node.
+  if (value.presentation === 'simple') return defaultCartTransfer()
   return { version: 1, kind: value.kind, presentation: value.presentation, turntableNodeName: node }
 }

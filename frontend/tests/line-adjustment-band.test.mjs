@@ -134,7 +134,7 @@ test('real parent drag clamps without jumping to pointer centre and stops when i
   handler({clientY:-999});assert.equal(updates.at(-1).lanes[0].offsetZ,band.minZ);assert.match(dependencies.lineSelectionFeedback.value,/边界/)
   handler({clientY:999});assert.equal(updates.at(-1).lanes[0].offsetZ,band.maxZ)
   dependencies.lineAdjustmentPending.value=true;handler({clientY:120});assert.equal(stops,1);assert.equal(updates.length,3)
-  assert.match(panel.template.content,/<LineAdjustmentOverlay/);assert.match(panel.template.content,/@click="recheckLineAdjustmentBand"/)
+  assert.doesNotMatch(panel.template.content,/<LineAdjustmentOverlay/);assert.doesNotMatch(panel.template.content,/@click="recheckLineAdjustmentBand"/)
   assert.match(extract('saveSelectedLineLayout'),/lineAdjustmentBand\(layout, rows\)\?\.currentInside/)
 })
 
@@ -146,7 +146,7 @@ test('confirmed template reapplies the measured distance rather than retaining a
 
 test('real parent geometry key ignores rigid lane translation but observes model revisions, scale, mirrors and rail path changes',()=>{
   const p=plan(),line={id:'L',layout:p.layout},devices={value:p.rows.map(row=>({id:row.id,line_id:'L',model_type:'model',pos_y:row.y,pos_z:row.z,scale:1,rotation_y:0,instance_config:{...(row.laneId?{laneId:row.laneId,laneLineId:'L'}:{railId:row.railId,railLineId:'L'}),mirrorX:false}}))},models={value:[{id:'model',file_path:'/model.glb',default_scale:1,updated_at:'v1'}]}
-  const deps={selectedLineEditor:{value:line},getLineLayout:l=>l.layout,activeTab:{value:'lines'},devices,models,parseInstanceConfig:c=>c,getFactoryScope:()=> 'F',snapshotJson:JSON.stringify,measureLineLayoutEnvelopes:async()=>p.rows}
+  const deps={selectedLineEditor:{value:line},getLineLayout:l=>l.layout,activeTab:{value:'lines'},isArrangementLinePlan:{get value(){return deps.activeTab.value==='lines'}},devices,models,parseInstanceConfig:c=>c,getFactoryScope:()=> 'F',snapshotJson:JSON.stringify,measureLineLayoutEnvelopes:async()=>p.rows}
   const request=new Function(...Object.keys(deps),extract('lineAdjustmentRequest')+';return lineAdjustmentRequest')(...Object.values(deps))
   const original=request().key
   line.layout.lanes[0].offsetZ-=.1;devices.value.find(row=>row.id==='furnace').pos_z-=.1

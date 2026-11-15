@@ -7,11 +7,14 @@ const props = defineProps({
   lines: { type: Array, default: () => [] }, workshops: { type: Array, default: () => [] },
   selectedId: { type: String, default: '' }, layout: { type: Object, required: true },
   draft: { type: Object, required: true }, busy: Boolean, creating: Boolean,
-  layoutDirty: Boolean, layoutSaving: Boolean,
+  layoutDirty: Boolean, layoutSaving: Boolean, guided: Boolean,
   savedSnapshot: { type: String, default: '' },
   deviceCount: { type: Number, default: 0 }, totalDevices: { type: Number, default: 0 }
 })
-const emit = defineEmits(['select', 'delete', 'create', 'edit', 'add-item', 'remove-item', 'change-item', 'change-rail-spacing', 'choose-placement-template', 'save-layout', 'focus-item'])
+const emit = defineEmits(['select', 'delete', 'create', 'edit', 'add-item', 'remove-item', 'change-item', 'change-rail-spacing', 'choose-placement-template', 'save-layout', 'focus-item', 'docking-preview'])
+const guidedKind = ref('')
+const selectedGuidedKind = computed(() => guidedKind.value || props.layout.placementTemplate?.kind || 'single-negative')
+const guidedMode = computed(() => selectedGuidedKind.value === 'dual' ? 'dual' : 'single')
 const popup = ref(''), popupElement = ref(null), popupStyle = ref({}), modal = ref(''), modalElement = ref(null)
 const lineTrigger = ref(null), laneTrigger = ref(null), railTrigger = ref(null), createTrigger = ref(null)
 const lineQuery = ref(''), editDraft = ref({})
@@ -139,7 +142,7 @@ onUnmounted(() => {
   window.removeEventListener('resize', positionPopup); window.removeEventListener('scroll', positionPopup, true)
   resizeObserver?.disconnect()
 })
-defineExpose({ closeCreation: () => { modal.value = ''; modalReturnFocus?.focus?.({ preventScroll: true }) } })
+defineExpose({ openCreation: () => openModal('create'), editLine: line => openModal('edit', line), closeCreation: () => { modal.value = ''; modalReturnFocus?.focus?.({ preventScroll: true }) } })
 </script>
 
 <template>
@@ -154,7 +157,14 @@ defineExpose({ closeCreation: () => { modal.value = ''; modalReturnFocus?.focus?
     </div>
     <div v-if="selected" class="line-placement-templates" role="group" aria-label="产线布局模板">
       <div class="placement-heading"><strong>布局模板</strong><span>导轨固定 · 设备线围绕导轨摆放</span></div>
-      <div class="placement-options">
+      <div v-if="guided" class="placement-options guided-placement-options" role="group" aria-label="自动排布方式">
+        <button type="button" class="placement-option" :class="{ active: guidedMode === 'single' }" :aria-pressed="guidedMode === 'single'" :disabled="!canEdit || busy" @click="guidedKind = 'single-negative'">单侧</button>
+        <button type="button" class="placement-option" :class="{ active: guidedMode === 'dual' }" :aria-pressed="guidedMode === 'dual'" :disabled="!canEdit || busy" @click="guidedKind = 'dual'">双侧</button>
+        <select v-if="guidedMode === 'single'" :value="selectedGuidedKind" aria-label="单侧设备位置" :disabled="!canEdit || busy" @change="guidedKind = $event.target.value"><option value="single-negative">导轨上侧</option><option value="single-positive">导轨下侧</option></select>
+        <button type="button" class="btn btn-sm" title="只调整设备排与导轨的间距，不改设备左右位置" :disabled="!canEdit || busy || creating" @click="emit('choose-placement-template', selectedGuidedKind)">预览自动排布</button>
+        <button type="button" class="btn btn-sm" :disabled="busy || creating" @click="emit('docking-preview')">对接预览</button>
+      </div>
+      <div v-else class="placement-options">
         <button v-for="option in LINE_PLACEMENT_TEMPLATES" :key="option.id" type="button" class="placement-option" :class="{ active: layout.placementTemplate?.kind === option.id }" :aria-pressed="layout.placementTemplate?.kind === option.id" :disabled="!canEdit || busy || creating" @click="emit('choose-placement-template', option.id)">
           <svg viewBox="0 0 100 44" aria-hidden="true"><path v-if="option.id !== 'single-positive'" class="template-lane" d="M14 9h72"/><path class="template-rail" d="M8 20h84M8 24h84"/><path v-if="option.id !== 'single-negative'" class="template-lane" d="M14 35h72"/></svg>
           <span>{{ option.label }}</span><small>{{ option.id === 'dual' ? '第二条线受约束跟随' : '设备线在导轨一侧' }}</small>

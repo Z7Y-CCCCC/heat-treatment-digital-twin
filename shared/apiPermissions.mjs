@@ -62,6 +62,18 @@ export function apiPermission(path, method = 'GET', body) {
     if (resource('platform/designer') || resource('platform/widgets')) return any('admin', p('platform.designer', action))
     return 'admin'
   }
+  if (resource('workshop-arrangement')) {
+    if (method !== 'PUT' || !body || typeof body !== 'object' || Array.isArray(body)
+        || Object.keys(body).some(k => !['lines', 'placements', 'devices', 'grounds'].includes(k))
+        || ['lines', 'placements', 'devices', 'grounds'].some(k => !Array.isArray(body[k]))
+        || !Object.values(body).some(v => v.length)) return { any: [] }
+    return any('admin', all(
+      ...(body.lines.length ? [p('lines', 'edit')] : []),
+      ...(body.placements.length ? [p('workshops', 'edit')] : []),
+      ...(body.devices.length ? [any(p('composer', 'edit'), p('lines', 'edit'))] : []),
+      ...(body.grounds.length ? [p('composer', 'edit')] : [])
+    ))
+  }
   if (resource('native-preview')) {
     // The header's connection count is display-safe, not a draft-preview grant.
     // Keep this exact path separate from every authoring/navigation endpoint.

@@ -15,16 +15,16 @@ const simple = { version: 1, kind: 'rotating', presentation: 'simple', turntable
         const loaded = await fixture.ok(route); assert.equal(loaded.cartSupported, true); assert.equal(loaded.cartTransfer.kind, 'single');
         assert.deepEqual(JSON.parse(fixture.sql.prepare('SELECT instance_config FROM devices WHERE id=?').get(fixture.cartId).instance_config), before, 'read does not migrate any site configuration');
         const saved = await fixture.ok(route, 'PUT', { revision: loaded.revision, overrides: loaded.overrides, cartTransfer: simple });
-        assert.deepEqual(saved.cartTransfer, simple); assert.deepEqual(saved.ports, loaded.ports);
+        assert.deepEqual(saved.cartTransfer, normalizeCartTransfer(null)); assert.deepEqual(saved.ports, loaded.ports);
         const instance = JSON.parse(fixture.sql.prepare('SELECT instance_config FROM devices WHERE id=?').get(fixture.cartId).instance_config);
-        assert.deepEqual(instance, { ...before, loadingPortOverrides: loaded.overrides, cartTransfer: simple });
+        assert.deepEqual(instance, { ...before, loadingPortOverrides: loaded.overrides, cartTransfer: normalizeCartTransfer(null) });
         assert.deepEqual(instance.movement, before.movement, 'both-side target map is retained, no duplicate station configuration');
         assert.equal((await fixture.request(route, 'PUT', { revision: loaded.revision, overrides: loaded.overrides, cartTransfer: normalizeCartTransfer(null) })).status, 409);
-        const legacy = await fixture.ok(route, 'PUT', { revision: saved.revision, overrides: saved.overrides }); assert.deepEqual(legacy.cartTransfer, simple);
+        const legacy = await fixture.ok(route, 'PUT', { revision: saved.revision, overrides: saved.overrides }); assert.deepEqual(legacy.cartTransfer, normalizeCartTransfer(null));
         const fixedRoute = '/api/devices/' + fixture.targetId + '/loading-ports'; const fixed = await fixture.ok(fixedRoute); assert.equal(fixed.cartSupported, false);
-        assert.equal((await fixture.request(fixedRoute, 'PUT', { revision: fixed.revision, overrides: fixed.overrides, cartTransfer: simple })).status, 400);
+        assert.equal((await fixture.request(fixedRoute, 'PUT', { revision: fixed.revision, overrides: fixed.overrides, cartTransfer: {version:1,kind:'rotating',presentation:'model',turntableNodeName:'Upper'} })).status, 400);
         const modelRoute = '/api/models/' + fixture.cartModel.id + '/loading-ports'; const model = await fixture.ok(modelRoute);
         assert.equal((await fixture.request(modelRoute, 'PUT', { revision: model.revision, ports: model.ports, cartTransfer: simple })).status, 400);
-        console.log(JSON.stringify({ success: true, optInOnly: true, simpleModelNeedsNoNewPlcPoints: true, stationAndPortDefinitionsReused: true, cas: true, notAModelSeed: true }));
+        console.log(JSON.stringify({ success: true, optInOnly: true, legacySimpleCannotReplaceSelectedModel: true, stationAndPortDefinitionsReused: true, cas: true, notAModelSeed: true }));
     } finally { await fixture.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

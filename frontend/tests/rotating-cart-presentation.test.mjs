@@ -3,7 +3,6 @@ import assert from 'node:assert/strict'
 import * as THREE from 'three'
 import { readFile } from 'node:fs/promises'
 import { createSimpleRotatingCart } from '../src/three/simpleRotatingCart.js'
-import { LoadingPortPreview } from '../src/three/LoadingPortPreview.js'
 import { normalizeCartTransfer } from '../../shared/cartTransferConfig.mjs'
 
 const ports = () => ({ version: 1, inlet: { position: [0, .5, 1], direction: [0, 0, 1], nodeName: '' }, outlet: { position: [0, .5, 1], direction: [0, 0, 1], nodeName: '' } })
@@ -24,15 +23,19 @@ test('new simple model still needs an authored mouth, never manufactures an orig
   assert.equal(createSimpleRotatingCart(bounds(), null), null)
   assert.equal(createSimpleRotatingCart(new THREE.Box3(), ports().outlet), null)
 })
-test('preview swaps only the selected presentation and restores original visibility on return', () => {
-  const root = new THREE.Group(), body = new THREE.Mesh(new THREE.BoxGeometry(3, 1, 2), new THREE.MeshBasicMaterial())
-  root.add(body); root.updateMatrixWorld(true)
-  const preview = { root, clearCartTransfer: LoadingPortPreview.prototype.clearCartTransfer }
-  LoadingPortPreview.prototype.setCartTransfer.call(preview, { version: 1, kind: 'rotating', presentation: 'simple', turntableNodeName: '' }, ports())
-  assert.equal(body.visible, false); assert.ok(root.getObjectByName('__SimpleCartUpper'))
-  LoadingPortPreview.prototype.setCartTransfer.call(preview, normalizeCartTransfer(null), ports())
-  assert.equal(body.visible, true); assert.equal(root.getObjectByName('__SimpleCartUpper'), undefined); assert.equal(root.children.length, 1)
+test('port authoring cannot replace the selected CAD geometry with the runtime cart placeholder', async () => {
+  const preview = await readFile(new URL('../src/three/LoadingPortPreview.js', import.meta.url), 'utf8')
+  const editor = await readFile(new URL('../src/views/admin/components/LoadingPortEditor.vue', import.meta.url), 'utf8')
+  assert.doesNotMatch(preview, /createSimpleRotatingCart|hiddenCartMeshes|setCartTransfer|clearCartTransfer/)
+  assert.doesNotMatch(editor, /setCartTransfer/)
+  assert.match(editor, /runtime\.load\(loaded\.value\.model/)
+  assert.match(editor, /实时大屏与对齐预览均使用设备绑定的模型/)
+  assert.doesNotMatch(editor, /<option value="simple">/)
+  assert.deepEqual(normalizeCartTransfer({ version: 1, kind: 'rotating', presentation: 'simple', turntableNodeName: '' }), normalizeCartTransfer(null))
+  // Rotation still binds an actual node; it cannot choose a hidden substitute.
+  assert.match(editor, /cartTransfer: normalizeCartTransfer\(clone\(cartDraft\.value\)\)/)
 })
+
 test('fine-model adapter only names a turntable node; no PLC rotation feedback or physical tuning is required', () => {
   assert.deepEqual(normalizeCartTransfer({ version: 1, kind: 'rotating', presentation: 'model', turntableNodeName: 'Upper' }), { version: 1, kind: 'rotating', presentation: 'model', turntableNodeName: 'Upper' })
   for (const extra of ['anglePointId', 'speed', 'acceleration', 'distance']) assert.throws(() => normalizeCartTransfer({ version: 1, kind: 'rotating', presentation: 'simple', turntableNodeName: '', [extra]: 1 }))

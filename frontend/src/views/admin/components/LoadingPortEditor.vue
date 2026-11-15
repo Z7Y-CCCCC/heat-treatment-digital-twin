@@ -27,7 +27,7 @@ const instanceMode = computed(() => !!context.value?.device)
 const editable = computed(() => canAdminPage(instanceMode.value ? 'devices' : 'models', 'edit'))
 const dirty = computed(() => regionSelecting.value || !!draft.value && (JSON.stringify(draft.value) !== savedSignature.value || instanceMode.value && (JSON.stringify(signalDraft.value) !== savedSignals.value || JSON.stringify(cartDraft.value) !== savedCart.value)))
 const cartMode = computed({ get: () => cartDraft.value.kind === 'single' ? 'single' : cartDraft.value.presentation,
-  set: value => { if (canChange()) cartDraft.value = value === 'single' ? normalizeCartTransfer(null) : { version: 1, kind: 'rotating', presentation: value, turntableNodeName: '' } } })
+  set: value => { if (canChange() && ['single', 'model'].includes(value)) cartDraft.value = value === 'single' ? normalizeCartTransfer(null) : { version: 1, kind: 'rotating', presentation: value, turntableNodeName: '' } } })
 const busy = computed(() => loading.value || saving.value)
 const title = computed(() => context.value?.device?.name || context.value?.model?.name || context.value?.model?.id || '模型')
 const kindLabel = computed(() => activeKind.value === 'inlet' ? '进料口' : '出料口')
@@ -191,7 +191,6 @@ async function preparePreview() {
     const entries = await runtime.load(loaded.value.model, { signal: controller.signal })
     if (disposed || generation !== version || preview !== runtime || controller.signal.aborted) return
     nodes.value = entries || []; previewReady.value = true; runtime.setPorts(effectivePorts.value, suggestion.value, activeKind.value)
-    runtime.setCartTransfer?.(instanceMode.value ? cartDraft.value : null, effectivePorts.value)
     runtime.setRegionMode?.(regionMode.value)
     runtime.setPicking?.(picking.value&&regionMode.value)
   } catch (cause) {
@@ -313,7 +312,6 @@ watch(activeKind, () => { preview?.cancelRegion?.();regionSelecting.value=false;
 watch(selectedNode, id => preview?.selectNode(id))
 watch(picking, value => preview?.setPicking(value&&regionMode.value))
 watch([effectivePorts, suggestion, activeKind], () => preview?.setPorts(effectivePorts.value, suggestion.value, activeKind.value), { deep: true })
-watch([cartDraft, effectivePorts], () => preview?.setCartTransfer?.(instanceMode.value ? cartDraft.value : null, effectivePorts.value), { deep: true })
 onMounted(async () => { mounted = true; await nextTick(); if (loaded.value) void preparePreview() })
 onUnmounted(() => { disposed = true; generation++; requestAbort?.abort(); saveAbort?.abort(); previewAbort?.abort(); preview?.dispose(); preview = null })
 defineExpose({ canLeave, savePending: () => dirty.value ? save() : !busy.value, discardPending, busy, dirty })
@@ -332,7 +330,8 @@ defineExpose({ canLeave, savePending: () => dirty.value ? save() : !busy.value, 
     <div v-else class="editor-body">
       <div class="config-panel">
         <fieldset v-if="instanceMode" class="port-fields signal-fields" :disabled="busy || !editable || conflict || !!pendingContext">
-          <label v-if="loaded.cartSupported">小车机构<select v-model="cartMode" aria-label="小车机构"><option value="single">单向小车</option><option value="simple">旋转小车 · 简模</option><option value="model">旋转小车 · 模型转台</option></select></label>
+          <label v-if="loaded.cartSupported">小车机构<select v-model="cartMode" aria-label="小车机构"><option value="single">单向小车</option><option value="model">旋转小车 · 模型转台</option></select></label>
+          <p v-if="loaded.cartSupported" class="notice" role="status">实时大屏与对齐预览均使用设备绑定的模型；如需低模小车，请在模型库中选择对应模型。</p>
           <label v-if="loaded.cartSupported && cartMode === 'model'">上转台节点<input v-model="cartDraft.turntableNodeName" list="turntable-node-options" aria-label="上转台节点" maxlength="512"><datalist id="turntable-node-options"><option v-for="node in nodes.filter(node => node.name)" :key="node.id" :value="node.name">{{ node.path }}</option></datalist></label>
           <label>进料／取料信号<select v-model="signalDraft.inletPointId" aria-label="进料取料信号"><option :value="null">不绑定</option><option v-for="point in signalPoints" :key="point.id" :value="String(point.id)">{{ point.label || point.name }} · {{ point.id }}</option><option v-if="signalDraft.inletPointId && !signalPoints.some(point => String(point.id) === signalDraft.inletPointId)" :value="signalDraft.inletPointId">原点位不可用</option></select></label>
           <label>出料／送料信号<select v-model="signalDraft.outletPointId" aria-label="出料送料信号"><option :value="null">不绑定</option><option v-for="point in signalPoints" :key="point.id" :value="String(point.id)">{{ point.label || point.name }} · {{ point.id }}</option><option v-if="signalDraft.outletPointId && !signalPoints.some(point => String(point.id) === signalDraft.outletPointId)" :value="signalDraft.outletPointId">原点位不可用</option></select></label>

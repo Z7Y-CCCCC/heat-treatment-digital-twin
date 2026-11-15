@@ -148,6 +148,7 @@ export const adminApi = {
     // 产线
     async getLines() { return (await fetch(`${API_BASE}/lines`)).json() },
     async createLine(data) { return readApiJson(await fetch(`${API_BASE}/lines`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) }), '创建产线失败') },
+    async saveWorkshopArrangement(data) { return readApiJson(await fetch(`${API_BASE}/workshop-arrangement`, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) }), '保存车间编排失败', true) },
     async updateLine(id, data) { return readApiJson(await fetch(`${API_BASE}/lines/${pathId(id)}`, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) }), '保存产线失败') },
     async getLineDeletionImpact(id) { return readApiJson(await fetch(`${API_BASE}/lines/${pathId(id)}/deletion-impact`), '读取产线关联项失败') },
     async deleteLine(id, confirmationName) {

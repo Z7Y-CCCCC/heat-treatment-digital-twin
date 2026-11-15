@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "assetSpec": {
+    "version": "1.0.0",
+    "device_family": "旋转小车",
+    "unit": "m",
+    "notes": "普通可选低模资产，不替换其他设备模型。旋转机构可绑定 __SimpleCartUpper；底盘不旋转。"
+  },
+  "loadingPorts": {
+    "version": 1,
+    "inlet": {
+      "position": [
+        0,
+        1,
+        2
+      ],
+      "direction": [
+        0,
+        0,
+        1
+      ],
+      "nodeName": "Physical shared loading mouth"
+    },
+    "outlet": {
+      "position": [
+        0,
+        1,
+        2
+      ],
+      "direction": [
+        0,
+        0,
+        1
+      ],
+      "nodeName": "Physical shared loading mouth"
+    }
+  },
+  "optimization": {
+    "mode": "off",
+    "mergeStatic": false,
+    "instanceRepeated": false,
+    "materialEnhancement": "original"
+  },
+  "inspection": {
+    "enabled": false,
+    "parts": []
+  }
+}

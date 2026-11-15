@@ -27,7 +27,8 @@ test('workshop space omits the duplicate layout button while keeping top tabs an
   assert.match(space, /@click="resetWorkshopSpatialPreview"/)
   assert.match(space, /:disabled="!workshopSpatialDirty \|\| workshopSavingId === selectedWorkshopEditor.id"/)
   assert.match(space, /@click="saveWorkshopSpatialLayout\(\)"/)
-  assert.match(panel, /key: 'layout', number: '03', title: '产线布局'/)
+  assert.doesNotMatch(panel, /key: 'layout', number: '03', title: '产线布局'/)
+  assert.match(panel, /<WorkshopArrangement v-if="activeTab === 'composer'"/)
   assert.match(panel, /@click="selectWorkshopManagementStep\(step.key\)"/)
 })
 
@@ -184,7 +185,7 @@ test('factory controls and account permissions occupy standalone admin pages', a
   assert.match(panel.slice(factoryStart, platformStart), /activeTab === 'users'.*manageUsers/s)
   const { adminMainTabs } = await import('../../shared/adminPages.mjs')
   const tabs = adminMainTabs()
-  assert.ok(tabs.findIndex(page => page.key === 'factories') < tabs.findIndex(page => page.key === 'composer'))
+  assert.equal(tabs.some(page => page.key === 'composer'), false, 'workshop arrangement belongs under factory modelling, not at the top level')
   assert.match(panel, /adminMainTabs\(adminPageCatalog\.value\)/)
   assert.doesNotMatch(panel.slice(factoryStart, platformStart), /factory-hierarchy-note/)
   assert.equal(tabs.find(page => page.key === 'users').label, '用户与权限')

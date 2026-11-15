@@ -4,7 +4,6 @@ import { loadConfiguredGltf, disposeSceneObject } from '../runtime/ConfiguredFac
 import { resolveBackendAssetUrl } from './ModelFactory.js'
 import { restoreGltfNodeNames } from './gltfNodeIdentity.js'
 import { inferLoadingPort } from './lineLoadingAlignment.js'
-import { createSimpleRotatingCart } from './simpleRotatingCart.js'
 import { loadingPortRegionSurface, loadingPortRegionFromSurfaces } from './loadingPortRegion.js'
 
 function isEditorNode(node, root) {
@@ -454,27 +453,8 @@ export class LoadingPortPreview {
     if (suggestion) marker(suggestion, activeKind, true)
   }
 
-  setCartTransfer(config, ports) {
-    if (!this.root) return
-    const signature = JSON.stringify([config, ports])
-    if (signature === this.cartSignature) return
-    this.cartSignature = signature
-    this.clearCartTransfer()
-    if (config?.kind !== 'rotating' || config.presentation !== 'simple') return
-    const bounds = nodeBoundsInLoadingRoot(this.root, this.root)
-    const visual = createSimpleRotatingCart(bounds, ports?.outlet || ports?.inlet)
-    if (!visual) return
-    this.hiddenCartMeshes = []
-    this.root.traverse(node => { if (node.isMesh) { this.hiddenCartMeshes.push([node, node.visible]); node.visible = false } })
-    this.simpleCart = visual.root; this.root.add(visual.root)
-  }
-  clearCartTransfer() {
-    for (const [mesh, visible] of this.hiddenCartMeshes || []) mesh.visible = visible
-    if (this.simpleCart) { this.root?.remove(this.simpleCart); disposeSceneObject(this.simpleCart) }
-    this.hiddenCartMeshes = []; this.simpleCart = null
-  }
+  // Authoring always measures the selected asset, never a generated cart substitute.
   clearAsset() {
-    this.clearCartTransfer(); this.cartSignature = null
     this.gesture?.reset()
     this.cancelRegion()
     this.labels?.clear()

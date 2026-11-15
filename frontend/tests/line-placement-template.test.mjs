@@ -1,3 +1,4 @@
+import { planGuidedLineArrangement } from '../../shared/lineGuidedArrangement.mjs'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
@@ -115,12 +116,15 @@ test('real parent pointer handler blocks rail and secondary-line dragging before
 test('real template parent measures and confirms before one atomic draft application; cancellation, changed drafts and busy state never write data', async () => {
   const line = { id: 'L', layout: layout() }, state = { value: line }, loading = { value: false }, devices = { value: [] }, errors = [], applied = []
   let measures = 0, confirmations = 0, choice = true, changeOnConfirm = false
+  let resolveModal
+  const proposal = { set value(value) { if (!value) return; confirmations++; if (changeOnConfirm) devices.value.push({ id: 'changed' }); queueMicrotask(() => resolveModal(choice)) } }
   const dependencies = { canAdminPage: () => true, lineDeviceLayoutBusy: { value: false }, lineCreating: { value: false }, selectedLineEditor: state,
     snapshotJson: JSON.stringify, getLineLayout: value => value.layout, devices, models: { value: [] }, getFactoryScope: () => 'F', lineLoadingMeasuring: loading,
-    measureLineLayoutEnvelopes: async () => { measures++; return rows() }, planLinePlacementTemplate, adminPanelDisposed: false, lineSceneUnitsPerMeter: () => .8,
+    measureLineLayoutEnvelopes: async () => { measures++; return rows() }, planLinePlacementTemplate, planGuidedLineArrangement, arrangementProposal: proposal, arrangementProposalResolve: null, arrangementUndo: { value: null }, adminPanelDisposed: false, lineSceneUnitsPerMeter: () => .8,
     confirm: async () => { confirmations++; if (changeOnConfirm) devices.value.push({ id: 'changed' }); return choice },
     applyLineLayoutDraft: (_line, value) => applied.push(value), alert: message => errors.push(message) }
-  const handler = new Function(...Object.keys(dependencies), extract('chooseLinePlacementTemplate') + ';return chooseLinePlacementTemplate')(...Object.values(dependencies))
+  const api = new Function(...Object.keys(dependencies), extract('chooseLinePlacementTemplate') + ';return { handler: chooseLinePlacementTemplate, resolve: value => arrangementProposalResolve?.(value) }')(...Object.values(dependencies))
+  const handler = api.handler; resolveModal = api.resolve
   await handler('dual'); assert.equal(applied.length, 1); assert.equal(measures, 1); assert.equal(confirmations, 1); assert.equal(loading.value, false)
   choice = false; await handler('dual'); assert.equal(applied.length, 1); assert.equal(loading.value, false)
   choice = true; changeOnConfirm = true; await handler('dual'); assert.equal(applied.length, 1); assert.match(errors.at(-1), /未覆盖/)
