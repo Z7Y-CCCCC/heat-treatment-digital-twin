@@ -89,6 +89,21 @@ test('shared save requires every affected scope rather than granting line/ground
   batch.grounds.push({ id: 'w' })
   assert.equal(allowsRequirement(apiPermission('/api/workshop-arrangement', 'PUT', batch), { active: true, pagePermissions: grants }), false)
 })
+
+test('selecting another already rendered device retains its healthy canvas and transform handles', async () => {
+  const source = await readFile(new URL('../src/views/AdminPanel.vue', import.meta.url), 'utf8')
+  const code = source.slice(source.indexOf('async function openArrangementDevice('), source.indexOf('async function setArrangementView('))
+  let rebuilt = 0, focused = 0, attached = 0
+  const deps = { arrangementBusy:{value:false},canAdminPage:()=>true,
+    arrangementDevices:{value:[{id:'a',arrangementWorkshopId:'w',arrangementLineId:'l'}]},stageArrangementDevice(){},
+    selectedWorkshopEditorId:{value:''},selectedLineEditorId:{value:''},selectedComposerLineId:{value:''},arrangementLayer:{value:'line'},
+    selectedComposerDeviceId:{value:''},syncComposerDraftFromSelection(){},arrangementView:{value:'three'},composerPreviewMode:{value:'line'},
+    nextTick:async()=>{},composerRuntime:{furnaces:new Map([['a',{}]]),isRenderSurfaceHealthy:()=>true},
+    composerTransform:{sync(){attached++}},focusComposerPreview(){focused++},resizeComposerPreviewAfterLayout(){},scheduleComposerPreview(){rebuilt++} }
+  const select = new Function(...Object.keys(deps),code+'; return openArrangementDevice')(...Object.values(deps))
+  await select('a');assert.equal(rebuilt,0);assert.equal(focused,1);assert.equal(attached,1)
+  deps.composerRuntime.furnaces.clear();await select('a');assert.equal(rebuilt,1,'missing models still request a real reload')
+})
 test('old page renders and workshop step 03 are removed, with retained in-workbench views and local drafts', async () => {
   const source = await readFile(new URL('../src/views/AdminPanel.vue', import.meta.url), 'utf8')
   const shell = await readFile(new URL('../src/views/admin/components/WorkshopArrangement.vue', import.meta.url), 'utf8')

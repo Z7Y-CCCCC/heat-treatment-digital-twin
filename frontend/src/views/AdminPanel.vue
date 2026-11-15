@@ -7461,7 +7461,12 @@ async function openArrangementDevice(id) {
     if (device.arrangementLineId) { selectedLineEditorId.value = device.arrangementLineId; selectedComposerLineId.value = device.arrangementLineId; arrangementLayer.value = 'line' }
     selectedComposerDeviceId.value = id; syncComposerDraftFromSelection()
     arrangementView.value = 'three'; composerPreviewMode.value = 'device'
-    await nextTick(); scheduleComposerPreview(0)
+    await nextTick()
+    // Selection alone must not dispose a healthy canvas and its new handles.
+    // The runtime already owns all placed models; rebuild only when needed.
+    if (composerRuntime?.furnaces.has(id) && composerRuntime.isRenderSurfaceHealthy()) {
+        composerTransform?.sync(); focusComposerPreview(); resizeComposerPreviewAfterLayout()
+    } else scheduleComposerPreview(0)
 }
 async function setArrangementView(view) {
     if (arrangementBusy.value || !['plan', 'three'].includes(view) || view === 'three' && !canAdminPage('composer')) return
