@@ -1,0 +1,61 @@
+/* A bounded workbench, not three vertically stacked legacy pages. */
+.composer-active .admin-content{overflow:hidden;padding-bottom:14px}
+.arrangement-workshop-plan,.arrangement-three-stage,.workshop-arrangement .line-planner-tab,.workshop-arrangement .line-planner-shell{height:100%;min-height:0;margin:0;padding:0;overflow:hidden}
+.arrangement-workshop-plan .workshop-map-shell{height:100%;display:flex;flex-direction:column;border:0;border-radius:0;box-shadow:none;background:#f5f7fa}
+.arrangement-workshop-plan .workshop-map-toolbar{padding:14px 20px;flex:none;border-bottom:1px solid #e6eaf0;background:#fff}
+.arrangement-workshop-plan .workshop-map-toolbar h3{font-size:13px;margin:0 0 4px}.arrangement-workshop-plan .workshop-map-toolbar p{font-size:11px;color:#8b95a3;margin:0}
+.arrangement-workshop-plan .workshop-map-layout{grid-template-columns:minmax(0,1fr) 252px;min-height:0;flex:1;overflow:hidden}
+.arrangement-workshop-plan .workshop-map-board{padding:32px 20px 30px 35px;min-height:0;overflow:hidden}
+.arrangement-workshop-plan .workshop-map-stage{height:100%;min-height:0;box-sizing:border-box;border-color:#d3dce7;background-color:#edf2f6;border-radius:12px}
+.arrangement-workshop-plan .workshop-map-inspector{overflow-y:auto;min-height:0;padding:16px;background:#fff;border-left:1px solid #e5eaf0}
+.arrangement-workshop-plan .workshop-map-inspector h4{font-size:12px}.arrangement-workshop-plan .workshop-map-inspector label{font-size:11px}.arrangement-workshop-plan .workshop-map-inspector input,.arrangement-workshop-plan .workshop-map-inspector select{font-size:12px;min-height:32px}
+.arrangement-workshop-plan .workshop-map-dimension{font-size:10px;color:#8390a2}.arrangement-workshop-plan .workshop-map-dimension-x{top:11px}.arrangement-workshop-plan .workshop-map-dimension-z{left:10px}
+.arrangement-three-stage{position:relative}.arrangement-three-stage .composer-preview{height:100%;min-height:0;margin:0;border:0;border-radius:0;display:flex;flex-direction:column;background:#eef2f7}
+.arrangement-three-stage .composer-preview-stage{flex:1;min-height:0;height:auto}.arrangement-three-stage .composer-preview-toolbar{padding:10px 16px;min-height:42px;background:#fff;border-bottom:1px solid #e7eaf0;flex:none}.arrangement-three-stage .composer-preview-footer{font-size:10px;flex:none;background:#fff;padding:7px 16px}.arrangement-three-stage .composer-preview-toolbar strong{font-size:12px}.arrangement-three-stage .composer-preview-toolbar span{font-size:11px}
+.arrangement-ground-inspector{position:absolute;top:72px;right:16px;bottom:38px;width:270px;overflow-y:auto;z-index:5;background:#ffffffed;border:1px solid #e1e7ef;border-radius:12px;box-shadow:0 8px 28px #24364d12;backdrop-filter:blur(12px)}
+.arrangement-ground-inspector .composer-section{margin:0;padding:14px;border:0;box-shadow:none;background:transparent}.arrangement-ground-inspector summary{font-size:12px;font-weight:600}.arrangement-ground-inspector :deep(.ground-editor){padding:8px 0;font-size:11px}
+.arrangement-three-stage .composer-device-layout-float{width:280px;max-height:calc(100% - 110px);border-radius:12px;box-shadow:0 8px 28px #24364d18;background:#fffffff2;backdrop-filter:blur(12px)}
+.arrangement-three-stage .composer-device-layout-float-body{padding:14px;font-size:11px;max-height:none;overflow-y:auto}.arrangement-three-stage .composer-device-layout-float-body label{font-size:11px}.arrangement-inspector-help{font-size:10px;color:#8c98a7;line-height:1.6;margin:0 0 12px}.arrangement-three-stage .composer-device-layout-float-body input,.arrangement-three-stage .composer-device-layout-float-body select{min-height:30px;font-size:11px}
+.workshop-arrangement .line-planner-layout{min-height:0;height:100%;display:grid;grid-template-rows:auto minmax(0,1fr);overflow:hidden}.workshop-arrangement .line-planner-preview{min-height:0;display:flex;flex-direction:column;margin:0;padding:0;border:0;border-radius:0;overflow:hidden}
+.workshop-arrangement .line-preview-stage{flex:1;min-height:0;height:auto;border:0;border-radius:0;margin:0;background-color:#f1f5f9}.workshop-arrangement .line-selection-toolbar{flex:none;padding:8px 16px;font-size:11px;border-bottom:1px solid #e2e8f0;background:#fff}.workshop-arrangement .line-selection-toolbar input{width:64px;min-height:26px;font-size:11px}.workshop-arrangement .line-selection-toolbar .btn{font-size:11px;min-height:27px}
+.workshop-arrangement :deep(.line-config-toolbar){padding:10px 16px;gap:8px;border:0;border-bottom:1px solid #e5eaf1;border-radius:0;margin:0;background:white}.workshop-arrangement :deep(.line-placement-templates){margin:0;padding:8px 0 0;border:0;background:none}.workshop-arrangement :deep(.placement-heading),.workshop-arrangement :deep(.line-placement-templates>p),.workshop-arrangement :deep(.line-picker-label),.workshop-arrangement :deep(.line-picker-trigger),.workshop-arrangement :deep(.line-preview-metrics),.workshop-arrangement :deep(.line-spacing-actions),.workshop-arrangement :deep(.legacy-spacing-settings){display:none}
+.workshop-arrangement :deep(.placement-options){display:flex;gap:6px}.workshop-arrangement :deep(.placement-option){display:flex;align-items:center;gap:8px;padding:6px 12px;min-height:36px;flex:none;max-width:180px}.workshop-arrangement :deep(.placement-option svg){width:42px;height:22px}.workshop-arrangement :deep(.placement-option small){display:none}.workshop-arrangement :deep(.placement-option span){font-size:11px}
+@media(max-width:1100px){.arrangement-workshop-plan .workshop-map-layout{grid-template-columns:minmax(0,1fr) 215px}.arrangement-workshop-plan .workshop-map-inspector{padding:12px}.arrangement-ground-inspector{width:240px}.workshop-arrangement .line-selection-toolbar{gap:6px}.workshop-arrangement .line-selection-hint{display:none}}
+@media(max-width:760px){.arrangement-workshop-plan .workshop-map-layout{display:block;position:relative}.arrangement-workshop-plan .workshop-map-board{height:100%;padding:28px 12px 28px 28px}.arrangement-workshop-plan .workshop-map-inspector{position:absolute;right:8px;bottom:8px;width:210px;max-height:48%;border:1px solid #e1e7ef;border-radius:10px;box-shadow:0 5px 20px #24364d15;background:#fffffff2;z-index:4}.arrangement-workshop-plan .workshop-map-toolbar{padding:10px 13px}.arrangement-workshop-plan .workshop-map-toolbar p{display:none}.arrangement-ground-inspector{right:8px;top:60px;bottom:30px;width:235px}.arrangement-three-stage .composer-device-layout-float{max-width:calc(100% - 16px);width:245px}.workshop-arrangement .line-selection-toolbar{flex-wrap:wrap;padding:7px 10px}.workshop-arrangement :deep(.placement-option){padding:5px 8px;gap:4px}.workshop-arrangement :deep(.placement-option svg){width:30px}.arrangement-three-stage .composer-preview-toolbar{gap:5px;padding:8px}.arrangement-three-stage .composer-preview-toolbar strong,.arrangement-three-stage .composer-preview-toolbar span{display:none}.arrangement-three-stage .preview-camera-buttons{margin-left:auto}}
+
+.workshop-arrangement .line-planner-shell{display:flex;flex-direction:column}.workshop-arrangement .line-planner-layout{flex:1}
+.workshop-arrangement :deep(.guided-placement-options select){border:1px solid #e1e7ef;border-radius:7px;background:#fff;font-size:11px;padding:5px 8px;color:#52627b}
+
+.arrangement-model-caption{font-size:12px;color:#536a86;margin-bottom:10px}.arrangement-port-shortcut{width:100%;margin-bottom:12px}.arrangement-space-details{border-top:1px solid #e6ebf1;padding-top:12px}.arrangement-space-details summary{font-size:12px;font-weight:600;color:#5e748f;cursor:pointer;margin-bottom:12px}.workshop-arrangement :deep(.line-config-toolbar>button.btn){display:none}
+
+.arrangement-docking-backdrop{position:fixed;inset:0;z-index:17000;display:grid;place-items:center;background:#26354b66;backdrop-filter:blur(5px);padding:20px}.arrangement-docking-dialog{width:min(1150px,calc(100vw - 40px));max-height:calc(100dvh - 40px);overflow-y:auto;border-radius:16px;background:#fff;box-shadow:0 20px 70px #17253c30}.arrangement-docking-dialog>header{display:flex;justify-content:space-between;gap:14px;align-items:center;padding:18px 22px;border-bottom:1px solid #e8edf3}.arrangement-docking-dialog h3{font-size:16px;margin:0}.arrangement-docking-dialog header p{font-size:11px;color:#8a96a7;margin:6px 0 0}.arrangement-docking-dialog :deep(.docking-calibration){padding:18px}
+
+.arrangement-more-actions{position:relative;align-self:center;font-size:11px;color:#8190a5}.arrangement-more-actions summary{cursor:pointer;list-style:none;padding:6px 9px}.arrangement-more-actions>div{position:absolute;top:100%;right:0;padding:6px;border:1px solid #e1e7ee;border-radius:9px;background:#fff;box-shadow:0 8px 25px #26354c18;z-index:7;white-space:nowrap}
+
+/* An always-reachable pool toggle, with a bounded single-row tray in the canvas. */
+.workshop-arrangement .line-device-pool-toggle{margin-left:auto;display:inline-flex;align-items:center;gap:7px;white-space:nowrap}
+.workshop-arrangement .line-device-pool-toggle strong{padding:1px 6px;border-radius:4px;background:#edf2f8;font-size:10px}
+.workshop-arrangement .line-device-pool-toggle[aria-expanded=true]{border-color:#a4b9d2;background:#f3f7fc;color:#375b83}
+.workshop-arrangement .line-device-pool-dock{position:relative;left:auto;bottom:auto;z-index:8;flex:0 0 auto;width:100%;max-width:100%;max-height:none;padding:0;box-sizing:border-box;pointer-events:auto}
+.workshop-arrangement .line-device-pool{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:9px 12px;box-sizing:border-box;width:100%;padding:10px 12px;background:#fffffff2;border-color:#d9e2ed;border-radius:11px;box-shadow:0 8px 24px #293d531c}
+.workshop-arrangement .line-device-pool-title{min-width:0;border:0;padding:0;cursor:default;touch-action:auto;grid-template-columns:minmax(0,1fr)}
+.workshop-arrangement .line-device-pool-title strong{font-size:11px}.workshop-arrangement .line-device-pool-title span{font-size:10px}
+.workshop-arrangement .line-device-pool-items{grid-column:1/-1;grid-row:2;min-width:0;display:flex;gap:8px;overflow-x:auto;overscroll-behavior-x:contain;padding-bottom:3px;scrollbar-width:thin}
+.workshop-arrangement .line-device-pool-chip{flex:0 0 138px;min-width:0;min-height:44px}.workshop-arrangement .line-device-pool-chip strong{font-size:11px}.workshop-arrangement .line-device-pool-chip span{font-size:10px}
+.workshop-arrangement .line-device-pool-close{grid-column:2;grid-row:1;min-width:44px;height:27px;font-size:10px;border-radius:6px}
+
+/* Use the actual flex host height, not a second viewport height inside an
+   embedded window. Legacy min-height selectors otherwise push the tray below
+   the clipped canvas even when the outer scrollbar is at its end. */
+.admin-container.composer-active .admin-content{display:flex;flex-direction:column;overflow:hidden;min-height:0}
+.admin-container.composer-active .tab-transition-host{display:flex;flex-direction:column;height:100%;min-height:0;flex:1}
+.admin-container.composer-active .workshop-arrangement{height:100%;min-height:0;flex:1}
+.admin-container.composer-active .workshop-arrangement .line-planner-tab,.admin-container.composer-active .workshop-arrangement .line-planner-shell,.admin-container.composer-active .workshop-arrangement .line-planner-layout,.admin-container.composer-active .workshop-arrangement .line-preview-stage{min-height:0}
+.admin-container.composer-active .workshop-arrangement .line-device-pool{border-width:0 0 1px;border-radius:0;box-shadow:none;padding:9px 14px;gap:6px 12px;background:#f8fafd}
+.composer-direct-tools{display:flex;gap:5px;align-items:center;flex-wrap:wrap;margin-left:auto}
+.composer-direct-tools button,.composer-direct-tools select{border:1px solid #dbe3ed;border-radius:6px;background:#fff;color:#61738b;font-size:11px;padding:6px 8px;cursor:pointer}
+.composer-direct-tools button[aria-pressed=true]{background:#edf4ff;border-color:#7fa8df;color:#315c92}.composer-direct-tools button:disabled{opacity:.45;cursor:default}
+.arrangement-three-stage .composer-preview-toolbar{flex-wrap:wrap;gap:8px}
+.arrangement-three-stage .composer-preview-toolbar>.preview-camera-buttons{margin-left:auto}
+.arrangement-three-stage .composer-device-layout-float{width:230px;top:76px}
+.arrangement-three-stage .composer-preview-footer{white-space:nowrap;text-overflow:ellipsis;overflow:hidden}

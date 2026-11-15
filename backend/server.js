@@ -152,6 +152,7 @@ app.use('/api/settings', factoryContext, require('./routes/settings')(settingsCo
 app.use('/api/view-navigation', require('./routes/viewNavigation')(settingsController));
 app.use('/api/appearance-assets', createOperationRateLimiter({ name: 'appearance-upload', limit: 30 }), require('./routes/appearanceAssets'));
 const nativePreviewController = { wsServer: null };
+app.use('/api/workshop-arrangement', factoryContext, require('./services/configurationSync').configurationMutation('workshop-arrangement'), require('./routes/workshopArrangement'));
 app.use('/api/native-preview', factoryContext, require('./routes/nativePreview')(nativePreviewController));
 app.use('/api/platform', factoryContext, require('./routes/platform'));
 app.use('/api/data-sources', factoryContext, require('./routes/dataSources'));

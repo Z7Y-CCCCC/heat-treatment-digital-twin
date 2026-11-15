@@ -2,7 +2,7 @@
 import { computed, ref, watch, onMounted, onUnmounted } from 'vue'
 import { normalizeGround, MAX_GROUND_AREAS } from '../../../../../shared/industrialGround.mjs'
 import { adminApi } from '../../../config/factoryConfig.js'
-const props = defineProps({ workshop: Object, readonly: Boolean, confirmLeave: Function })
+const props = defineProps({ workshop: Object, readonly: Boolean, confirmLeave: Function, managed: Boolean })
 const emit = defineEmits(['preview', 'saved'])
 const records = ref({}), selected = ref(''), busy = ref(false), message = ref('')
 const record = computed(() => records.value[props.workshop?.id])
@@ -69,7 +69,9 @@ async function canLeave() {
 function beforeUnload(event) { if (dirty.value) { event.preventDefault(); event.returnValue = '' } }
 onMounted(() => window.addEventListener('beforeunload', beforeUnload))
 onUnmounted(() => window.removeEventListener('beforeunload', beforeUnload))
-defineExpose({ savePending, discardPending, canLeave, dirty })
+function pendingChanges() { return Object.entries(records.value).filter(([, r]) => JSON.stringify(r.draft) !== r.saved).map(([id, r]) => ({ id, ground: normalizeGround(r.draft), expectedRevision: r.revision })) }
+function acceptChanges(rows) { for (const row of rows) { const r = records.value[row.id]; if (!r) continue; r.hasGround = true; r.draft = row.ground; r.saved = JSON.stringify(row.ground); r.revision = row.revision; emit('saved', row) } }
+defineExpose({ savePending, discardPending, canLeave, dirty, pendingChanges, acceptChanges })
 </script>
 <template>
   <section v-if="workshop && draft" class="ground-editor" aria-label="车间地面编辑">
@@ -92,7 +94,7 @@ defineExpose({ savePending, discardPending, canLeave, dirty })
         <label class="wide">区域标高（米）<input v-model.number="area.elevation" type="number" min="-100" max="100" step="0.1" /></label>
         <button type="button" class="wide" @click="draft.areas = draft.areas.filter(a => a.id !== selected); selected = draft.areas[0]?.id || ''">删除区域</button>
       </div>
-      <button type="button" class="ground-save" :disabled="!dirty" @click="savePending().catch(() => {})">{{ busy ? '保存中…' : '保存地面' }}</button>
+      <button type="button" v-if="!managed" class="ground-save" :disabled="!dirty" @click="savePending().catch(() => {})">{{ busy ? '保存中…' : '保存地面' }}</button>
     </fieldset>
     <p v-if="message" role="status">{{ message }}</p>
   </section>

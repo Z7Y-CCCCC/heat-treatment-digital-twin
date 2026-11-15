@@ -25,7 +25,7 @@ test('the shared fixed/auxiliary directory table exposes only edit and delete, n
   assert.equal((tables.match(/@click="openEditDevice\(d\)"/g) || []).length, 1)
   assert.equal((tables.match(/@click="deleteDevice\(d\.id\)"/g) || []).length, 1)
   assert.match(tables, /formatPlcDeviceStatus\(d\)/)
-  assert.equal((panel.match(/@click="openDeviceLoadingPorts/g) || []).length, 0, 'port configuration belongs to model management, not the line-layout toolbar')
+  assert.equal((panel.match(/@click="openDeviceLoadingPorts/g) || []).length, 1, 'one contextual device inspector shortcut reuses the existing editor; no repeated table/toolbar shortcuts')
   assert.match(panel, /<LoadingPortWorkspace[^>]*modelLibraryStep === 'ports'[^>]*ref="modelLoadingPortRef"[\s\S]*?:model="activePreviewModel" :devices="devices"/)
 })
 test('port editors guard navigation and save or discard explicitly during a factory switch', () => {
@@ -58,8 +58,9 @@ test('saved instance calibration updates the saved snapshot without overwriting 
 })
 test('alignment never uses the old immediate-save button and waits for a dedicated apply event', () => {
   assert.doesNotMatch(panel, /alignLineLoadingFaces|>进料口对齐<|measureLoadingFaces/)
-  assert.match(panel, /openLineLoadingAlignment\('faces'\)/)
-  assert.match(panel, /openLineLoadingAlignment\('heights'\)/)
+  assert.doesNotMatch(panel, /@click="openLineLoadingAlignment\('faces'\)"/)
+  assert.doesNotMatch(panel, /@click="openLineLoadingAlignment\('heights'\)"/)
+  assert.match(panel, /<LineArrangementProposal/)
   const open = panel.slice(panel.indexOf('async function openLineLoadingAlignment('), panel.indexOf('async function applyLineLoadingAlignment('))
   assert.match(open, /lineLayoutDirty\.value/)
   assert.doesNotMatch(open, /adminApi\.|saveLineDevicePlan/)

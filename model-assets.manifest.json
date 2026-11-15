@@ -419,6 +419,11 @@
       "sha256": "bb5451b6c12f655090a2fd9eda44826281302304d4801eb3dff0d70a3cc845df"
     },
     {
+      "path": "backend/assets/models/simple_rotating_cart_v1.glb",
+      "bytes": 83544,
+      "sha256": "4e53e76403f55beced7c6304677cff7c6b096a30911b70f3f0f2dcf044ee20d8"
+    },
+    {
       "path": "backend/assets/models/ultrasonic_cleaner_cad.glb",
       "bytes": 17041044,
       "sha256": "a46f8fe286165ee2e1a72192051dec1a0a98861ce228aa2f23fad508e1a65281"

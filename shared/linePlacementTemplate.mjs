@@ -20,6 +20,8 @@ export function resolveLinePlacementTemplate(layout) {
       || !finite(t.minimumDistance) || t.minimumDistance <= 0) fail('产线布局模板无效')
   if (t.compact !== undefined && typeof t.compact !== 'boolean'
       || t.clearanceGapMeters !== undefined && (!Number.isFinite(t.clearanceGapMeters) || t.clearanceGapMeters <= 0 || t.clearanceGapMeters > 10)) fail('产线布局留缝设置无效')
+  if (t.independentSides !== undefined && typeof t.independentSides !== 'boolean') fail('双侧排布方式无效')
+  if (t.independentSides && t.kind === 'dual' && (!finite(t.secondaryMinimumDistance) || t.secondaryMinimumDistance <= 0)) fail('第二侧间距无效')
   const rails = layout.rails || [], lanes = layout.lanes || []
   if (rails.length !== 1 || rails[0].id !== t.railId || rails[0].spacing != null
       || rails[0].offsetZ !== t.railOffsetZ) fail('模板中的小车导轨为固定基准，不能移动或关联旧式跟随间距')
@@ -32,7 +34,10 @@ export function resolveLinePlacementTemplate(layout) {
   if (t.kind === 'dual') {
     const secondary = next.lanes.find(row => row.id === t.secondaryLaneId)
     if (!secondary || t.secondaryLaneId === t.primaryLaneId) fail('双侧模板缺少独立的第二条设备线')
-    secondary.offsetZ = Number((t.railOffsetZ - sign * distance).toFixed(6))
+    if (t.independentSides) {
+      const secondaryDistance = (t.railOffsetZ - secondary.offsetZ) * sign
+      if (!finite(secondaryDistance) || secondaryDistance < t.secondaryMinimumDistance - 1e-7) fail('第二侧设备线侵入小车通道')
+    } else secondary.offsetZ = Number((t.railOffsetZ - sign * distance).toFixed(6))
     if (!finite(secondary.offsetZ) || Math.fround(secondary.offsetZ) === Math.fround(t.railOffsetZ)) fail('第二条设备线超出场景坐标范围')
   }
   return next
@@ -99,7 +104,7 @@ export function lineTemplateSpacingLimits(layout,rows,lanes,rail,gapMeters){
   return {minimum,maximum}
 }
 
-export function planLinePlacementTemplate(layout, kind, rows, gapMeters) {
+export function planLinePlacementTemplate(layout, kind, rows, gapMeters, { independentSides = false } = {}) {
   if (!LINE_PLACEMENT_TEMPLATES.some(row => row.id === kind)) fail('请选择一种布局模板')
   lineEnvelopeIntersections(rows)
   const next = clone(layout), units = next.sceneUnitsPerMeter ?? 1, dual = kind === 'dual'
@@ -118,15 +123,22 @@ export function planLinePlacementTemplate(layout, kind, rows, gapMeters) {
   next.lanes = dual ? [primary, secondary] : [primary]
   const side = dual ? (next.placementTemplate?.primarySide || (primary.offsetZ < rail.offsetZ ? 'negative' : 'positive')) : kind === 'single-negative' ? 'negative' : 'positive'
   const sign = side === 'negative' ? -1 : 1
-  const limits=lineTemplateSpacingLimits(next,rows,[[primary,sign],...(dual?[[secondary,-sign]]:[])],rail,gapMeters)
+  const limits=lineTemplateSpacingLimits(next,rows,[[primary,sign],...(dual&&!independentSides?[[secondary,-sign]]:[])],rail,gapMeters)
   let minimum=compact?Math.ceil((limits.minimum/units-1e-8)*20)/20*units:Math.ceil(limits.minimum*10)/10
-  if(minimum>limits.maximum+1e-6)fail(`这组设备的进料面没有对齐，无法同时留缝并在原行程内交接。请先点“进料面前后对齐”，再选择模板；设备联动的“一键演示”不受影响。`)
+  if(minimum>limits.maximum+1e-6)fail(`这组设备的进料面没有对齐，无法同时留缝并在原行程内交接。请核对进出料口位置和模型朝向；未改变原布局，也不会拉长机构行程。`)
+  let secondaryMinimum = minimum
+  if (dual && independentSides) {
+    const other = lineTemplateSpacingLimits(next, rows, [[secondary, -sign]], rail, gapMeters)
+    secondaryMinimum = compact ? Math.ceil((other.minimum / units - 1e-8) * 20) / 20 * units : Math.ceil(other.minimum * 10) / 10
+    if (secondaryMinimum > other.maximum + 1e-6) fail('第二侧设备的料口与原机构行程没有可用间距，请核对该侧料口和模型朝向；未改变原布局。')
+  }
   // Only explicit, confirmed template application selects the measured gap.
   const distance = minimum
   delete rail.spacing
   next.placementTemplate = { version: 1, kind, railId: rail.id, railOffsetZ: rail.offsetZ, primaryLaneId: primary.id, primarySide: side,
-    ...(dual ? { secondaryLaneId: secondary.id } : {}), minimumDistance: minimum,...(compact?{clearanceGapMeters:gapMeters,compact:true}: {}) }
+    ...(dual ? { secondaryLaneId: secondary.id, ...(independentSides ? { independentSides: true, secondaryMinimumDistance: secondaryMinimum } : {}) } : {}), minimumDistance: minimum,...(compact?{clearanceGapMeters:gapMeters,compact:true}: {}) }
   primary.offsetZ = Number((rail.offsetZ + sign * distance).toFixed(6))
+  if (dual && independentSides) secondary.offsetZ = Number((rail.offsetZ - sign * secondaryMinimum).toFixed(6))
   const resolved = resolveLinePlacementTemplate(next)
   const moved = rows.map(row => {
     const oldLane = layout.lanes.find(lane => lane.id === row.laneId), newLane = resolved.lanes.find(lane => lane.id === row.laneId)
